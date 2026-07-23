@@ -2,7 +2,25 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
+#include <filesystem>
+#include <string>
+#include <system_error>
+#include <thread>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #if defined(_M_X64) || defined(__x86_64__) || defined(_M_IX86) || defined(__i386__)
 #define ATX_ARCH_X86 1
@@ -12,6 +30,11 @@
 #endif
 
 namespace atx::vol::detail {
+
+using atx::core::Err;
+using atx::core::ErrorCode;
+using atx::core::Ok;
+using atx::core::Status;
 
 namespace {
 
@@ -114,6 +137,79 @@ crc32c_update_hw(std::uint32_t crc, const std::byte *p, std::size_t n) noexcept 
     dst[i] = c;
   }
   return dst;
+}
+
+namespace {
+
+// fsync `p`'s already-written contents to stable storage. The caller wrote and
+// closed the file; we re-open it to flush its cached pages (FlushFileBuffers /
+// fsync operate on the file, not the writing handle).
+[[nodiscard]] Status fsync_file(const std::filesystem::path &p) {
+#if defined(_WIN32)
+  const std::wstring wp = p.wstring();
+  HANDLE h = ::CreateFileW(wp.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    return Err(ErrorCode::IoError, "flush_and_publish_file: cannot open temp for fsync");
+  }
+  const BOOL flushed = ::FlushFileBuffers(h);
+  ::CloseHandle(h);
+  if (flushed == FALSE) {
+    return Err(ErrorCode::IoError, "flush_and_publish_file: FlushFileBuffers failed");
+  }
+  return Ok();
+#else
+  const std::string sp = p.string();
+  const int fd = ::open(sp.c_str(), O_RDONLY);
+  if (fd < 0) {
+    return Err(ErrorCode::IoError, "flush_and_publish_file: cannot open temp for fsync");
+  }
+  const int rc = ::fsync(fd);
+  ::close(fd);
+  if (rc != 0) {
+    return Err(ErrorCode::IoError, "flush_and_publish_file: fsync failed");
+  }
+  return Ok();
+#endif
+}
+
+} // namespace
+
+Status flush_and_publish_file(std::string_view tmp_path, std::string_view dst_path) {
+  namespace fs = std::filesystem;
+  const fs::path tmp{std::string(tmp_path)};
+  const fs::path dst{std::string(dst_path)};
+
+  // (1) Durability: flush the temp to disk BEFORE it becomes the live file, so a
+  // machine crash after the rename can never expose a correctly-named but empty /
+  // garbage file (which the rename would have substituted for the prior good one).
+  if (Status s = fsync_file(tmp); !s) {
+    return s;
+  }
+
+  // (2) Atomic publish with bounded retry + exponential backoff. On Windows the
+  // rename fails while any process holds `dst` open without FILE_SHARE_DELETE
+  // (MSVC ifstream, mmap); the hold is usually brief, so back off and retry.
+  // Cumulative budget ~635 ms across 8 attempts (5,10,20,40,80,160,320 ms gaps).
+  constexpr int kMaxAttempts = 8;
+  std::chrono::milliseconds delay{5};
+  std::error_code ec;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    ec.clear();
+    fs::rename(tmp, dst, ec);
+    if (!ec) {
+      return Ok();
+    }
+    if (attempt + 1 < kMaxAttempts) {
+      std::this_thread::sleep_for(delay);
+      delay *= 2;
+    }
+  }
+  // Final failure: PRESERVE the temp (do not delete) so the freshly written bytes
+  // survive for recovery; the prior good `dst` is also still intact (rename never
+  // succeeded). Clear IoError.
+  return Err(ErrorCode::IoError,
+             "flush_and_publish_file: rename failed after retries (temp preserved)");
 }
 
 } // namespace atx::vol::detail

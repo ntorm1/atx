@@ -127,6 +127,7 @@ add_executable(atx-vol-tests
     zc_view_parity_diag_test.cpp     # WS-ZC1: owned-reconstruct vs borrowed-view parity on a real archive
     # Pipeline-SOTA WS-C (storage hardening) — appended target:
     surface_archive_v2_adversarial_test.cpp # C1/C4: view semantic+bounds validation, corruption corpus, x-check
+    surface_archive_durability_test.cpp      # C3: fsync-before-rename + reader-held rename retry / preserve-temp
     # Wave-P AAD greeks (Agent greeks) — appended target:
     adjoint_greeks_test.cpp          # P2: adjoint/IFT American greeks parity vs central-diff FD
     # solve-wall SOTA WS-V (verify agent) — appended target:

@@ -248,6 +248,37 @@ to a `PricedSurface` reconstructed from the same bytes.
   **`open` verifies header + metadata + framing bounds only.** Per-record CRC is
   checked **only** by the explicit `validate_symbol` / `validate_all` API — never
   on the price path. This is the lazy-CRC win (#5).
+- **Durable atomic publish (C3 / SE-P2-1, SE-P2-2).** All three writers
+  (`write_surface_archive_v2_file`, v1 `write_surface_archive_file`, and the
+  SurfaceDb `write_manifest_file_atomic`) publish through the one shared primitive
+  `detail::flush_and_publish_file(tmp, dst)`: write payload → close → **fsync the
+  temp** (`FlushFileBuffers`) → **rename** with **bounded retry + exponential
+  backoff** (8 attempts, ~635 ms cumulative). The fsync-before-rename closes the
+  crash-consistency gap: without it, a power loss AFTER the rename but BEFORE the
+  OS flushed the data could leave a correctly-named destination with empty/garbage
+  content while the rename had already destroyed the prior good version (data
+  loss, not just unavailability). With the fsync the temp's bytes are on stable
+  storage before it ever becomes the live file. The retry addresses the Windows
+  `MoveFileEx(REPLACE_EXISTING)` failure when a reader holds the destination open
+  without `FILE_SHARE_DELETE` (MSVC `std::ifstream`, `open_mapped`): a brief hold
+  (a concurrent backtest reading the partition mid-republish) is ridden out by the
+  backoff instead of failing the publish. On final failure (destination held for
+  the whole budget) the temp is **preserved**, not deleted, so the freshly written
+  bytes are recoverable and the prior good destination is still intact.
+  - **fsync scope / residual gap.** The fsync covers the temp file's data. The
+    parent-directory entry is not separately fsync'd (a POSIX durability nicety;
+    on Windows `FlushFileBuffers` on the file is the available primitive) — a note
+    for a future POSIX port, not a Windows correctness gap. There is **no
+    automated power-loss test** (a unit test cannot cut power); the fsync
+    *presence* is code-review-verifiable, and the reader-held rename retry /
+    temp-preservation behavior is covered by `surface_archive_durability_test.cpp`
+    via a `FILE_SHARE_READ` holder.
+  - **External truncation of a mapped archive** (SE-P2-4) remains a standard mmap
+    hazard: another process truncating/replacing-in-place a file that is currently
+    `open_mapped` raises `EXCEPTION_IN_PAGE_ERROR` (Windows) / `SIGBUS` (POSIX) on
+    page access — a crash, not a `Result`. The sharing-mode lock above makes the
+    truncation itself usually fail on Windows; the failure mode is otherwise the
+    undefined mmap default. Documented, not handled.
 
 ### 5.1 Migration (v2 `0101` → `0102`, n_quad_price)
 

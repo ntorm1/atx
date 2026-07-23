@@ -785,14 +785,10 @@ namespace {
       return Err(ErrorCode::IoError, "SurfaceDb: manifest write failed");
     }
   }
-  std::error_code ec;
-  std::filesystem::rename(tmp, dst, ec);
-  if (ec) {
-    std::error_code ec2;
-    std::filesystem::remove(tmp, ec2);
-    return Err(ErrorCode::IoError, "SurfaceDb: manifest rename failed");
-  }
-  return Ok();
+  // Durable atomic publish: fsync the temp before the rename, retry under a
+  // reader-held manifest, preserve the temp on final failure (C3 / SE-P2-1,
+  // SE-P2-2). Shared primitive with the v1 + v2 archive writers.
+  return detail::flush_and_publish_file(tmp.string(), dst.string());
 }
 
 // Read a file fully into memory. NotFound if missing, IoError on any stream
