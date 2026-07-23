@@ -1975,13 +1975,21 @@ TEST(AndersenLakeCallSlice, FastPresetDegenerateEuroAndValidation) {
     EXPECT_EQ(px[i], value_or_fail(andersen_lake(S, strikes[i], T, 0.2, r, q, Side::Call, fast)));
   }
 
-  // Degenerate sigma -> intrinsic per strike.
+  // Degenerate sigma -> the European sigma->0 limit df*(F-K)+ floored at the spot
+  // intrinsic per strike (A4/PR-C4), NOT the spot intrinsic alone. Here q>0 (call
+  // American regime) and holding beats exercising, so the ITM strikes lift above
+  // their spot intrinsic (e.g. K=540: df*(F-540) ~ 62.07 > 60).
   ASSERT_TRUE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.0, r, q,
                                        std::span<double>(px), std::nullopt)
                   .has_value());
-  EXPECT_DOUBLE_EQ(px[0], 60.0); // 600 - 540
-  EXPECT_DOUBLE_EQ(px[1], 0.0);  // 600 - 600
-  EXPECT_DOUBLE_EQ(px[2], 0.0);  // max(600 - 660, 0)
+  const double F_deg = S * std::exp((r - q) * T);
+  const double df_deg = std::exp(-r * T);
+  const auto call_lim = [&](double K) {
+    return std::max(df_deg * std::max(F_deg - K, 0.0), std::max(S - K, 0.0));
+  };
+  EXPECT_NEAR(px[0], call_lim(540.0), 1.0e-9);
+  EXPECT_NEAR(px[1], call_lim(600.0), 1.0e-9);
+  EXPECT_NEAR(px[2], call_lim(660.0), 1.0e-9); // deep OTM -> 0
 
   // q <= 0: European call per strike (matches the andersen_lake short-circuit).
   ASSERT_TRUE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.2, r, 0.0,
@@ -3633,6 +3641,47 @@ TEST(AmericanCachedCarryDrift, CountsQueryVsBakedRateDriftOnly) {
   ASSERT_TRUE(g2.has_value());
   EXPECT_EQ(L::snapshot().get(L::Solve::CacheCarryDrift), std::uint64_t{0})
       << "per-tenor q_eff drift is legitimate in-fit usage and must not be flagged";
+}
+
+// ── A4 (PR-C4): sigma->0 regime-correct European limit ───────────────────────
+//
+// The degenerate sigma-guard returned SPOT intrinsic ahead of regime
+// classification, so a carry-dominant European-regime case collapsed to 0 at
+// sigma->0 instead of the correct European limit df*(forward intrinsic) floored at
+// the spot intrinsic. Put r=0, q=5%, T=1, S=K=100 has forward F=95.12 and a
+// sigma->0 limit df*(K-F)+ = 4.877, discontinuous with the sigma=1.1e-8 Black-76
+// branch that returned ~4.877 while sigma=0.9e-8 returned 0.
+TEST(AmericanSigmaZeroLimit, CarryDominantPut_TendsToDiscountedForwardIntrinsic) {
+  const double S = 100.0;
+  const double K = 100.0;
+  const double T = 1.0;
+  const double r = 0.0;
+  const double q = 0.05;
+  const double F = S * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  const double euro_limit = df * std::max(K - F, 0.0); // ~4.877
+  ASSERT_GT(euro_limit, 4.0);
+
+  const auto p = american_price(S, K, T, /*sigma=*/1.0e-9, r, q, Side::Put);
+  ASSERT_TRUE(p.has_value()) << p.error().to_string();
+  EXPECT_NEAR(*p, euro_limit, 1.0e-6)
+      << "sigma->0 put must tend to df*(K-F)+ (carry-dominant European limit), not 0";
+
+  // Continuity across the guard: sigma just ABOVE the guard prices the same limit.
+  const auto p_above = american_price(S, K, T, /*sigma=*/2.0e-8, r, q, Side::Put);
+  ASSERT_TRUE(p_above.has_value()) << p_above.error().to_string();
+  EXPECT_NEAR(*p, *p_above, 1.0e-4) << "sigma->0 limit must be continuous across the guard";
+
+  // The AloPricer sigma-sweep object shares the transformed-put degenerate guard.
+  atx::vol::AloPricer alo(S, K, T, r, q, Side::Put);
+  EXPECT_NEAR(alo.price(1.0e-9), euro_limit, 1.0e-6)
+      << "AloPricer sigma->0 must match the carry-dominant European limit";
+
+  // BAW shares the same guard and must give the same limit (no split-brain).
+  const auto pbaw = american_price(S, K, T, /*sigma=*/1.0e-9, r, q, Side::Put,
+                                   atx::vol::AmericanMethod::Baw);
+  ASSERT_TRUE(pbaw.has_value()) << pbaw.error().to_string();
+  EXPECT_NEAR(*pbaw, euro_limit, 1.0e-6) << "BAW sigma->0 must match the AL limit";
 }
 
 } // namespace

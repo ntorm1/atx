@@ -1760,6 +1760,23 @@ constexpr const char *kDoubleContinuationMsg =
   return Ok(al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q));
 }
 
+// A4 (PR-C4): the sigma->0 limit of an American option is the European sigma->0
+// limit df*(forward intrinsic) floored at the spot (immediate-exercise) intrinsic —
+// at sigma=0 there is no time value, so the value is max(hold-to-expiry, exercise
+// now). Correct in BOTH regimes: in the European regime early exercise is never
+// optimal and df*(forward intrinsic) dominates; in the American regime the spot
+// intrinsic wins where exercise is optimal. Callers gate the double-continuation
+// Unsupported corner separately (it has no single-boundary price).
+[[nodiscard]] inline double sigma_zero_american_limit(double S, double K, double T, double r,
+                                                      double q, Side side) noexcept {
+  const double df = std::exp(-r * T);
+  const double F = S * std::exp((r - q) * T);
+  const double fwd_intr = (side == Side::Call) ? (F - K) : (K - F);
+  const double euro_lim = df * (fwd_intr > 0.0 ? fwd_intr : 0.0);
+  const double spot_intr = (side == Side::Call) ? (S - K) : (K - S);
+  return std::max(euro_lim, spot_intr > 0.0 ? spot_intr : 0.0);
+}
+
 // Shared core of the public andersen_lake entry point, parameterized on `specialize`
 // so detail::andersen_lake_generic_kernel can force the generic runtime-trip-count
 // kernel for the SAME scheme and prove the specialized path is bit-identical.
@@ -1782,10 +1799,23 @@ constexpr const char *kDoubleContinuationMsg =
     return Err(ErrorCode::InvalidArgument, "andersen_lake: r and q must be finite");
   }
 
-  // Degenerate: T ~ 0 or sigma ~ 0 collapses to intrinsic.
-  if (T <= 1.0e-12 || sigma <= 1.0e-8) {
+  // Degenerate T ~ 0: no time left, collapse to the spot intrinsic.
+  if (T <= 1.0e-12) {
     const double intr = (side == Side::Call) ? (S - K) : (K - S);
     return Ok(intr > 0.0 ? intr : 0.0);
+  }
+  // Degenerate sigma ~ 0 (A4/PR-C4): classify the regime FIRST (the double-
+  // continuation corner has no single-boundary price, matching the main path
+  // below), then return the European sigma->0 limit floored at the spot intrinsic —
+  // NOT the spot intrinsic alone, which was wrong (and discontinuous) for a carry-
+  // dominant European-regime option (e.g. a put with r=0, q>0 -> df*(K-F)+ > 0).
+  if (sigma <= 1.0e-8) {
+    const double rate0 = (side == Side::Put) ? r : q;
+    const double yield0 = (side == Side::Put) ? q : r;
+    if (classify_regime(rate0, yield0) == ExerciseRegime::Unsupported) {
+      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+    }
+    return Ok(sigma_zero_american_limit(S, K, T, r, q, side));
   }
 
   const double rate = (side == Side::Put) ? r : q;
@@ -2041,17 +2071,23 @@ double AloPricer::price(double sigma) noexcept {
     return std::numeric_limits<double>::quiet_NaN();
   }
   State &s = *st_;
-  // Degenerate: sigma ~ 0 or T ~ 0 collapses to intrinsic (internal-put intrinsic
-  // Kp - Sp equals the original option's intrinsic for both sides).
-  if (!(sigma > 1.0e-8) || s.T <= 1.0e-12) {
+  // Degenerate T ~ 0: no time left, collapse to the spot intrinsic (internal-put
+  // intrinsic Kp - Sp equals the original option's intrinsic for both sides).
+  if (s.T <= 1.0e-12) {
     const double intr = s.Kp - s.Sp;
     return (intr > 0.0) ? intr : 0.0;
   }
   // Double-continuation corner: no single-boundary price exists (andersen_lake
   // returns NotImplemented here). Surface NaN, matching the boundary-collapse
-  // failure convention below.
+  // failure convention below — and at sigma->0 too, consistent with the core.
   if (s.unsupported) {
     return std::numeric_limits<double>::quiet_NaN();
+  }
+  // Degenerate sigma ~ 0 (A4/PR-C4): the European sigma->0 limit df*(Kp-Fp)+ in the
+  // transformed put space, floored at the spot intrinsic — not the spot intrinsic
+  // alone, which was wrong (and discontinuous) for a carry-dominant option.
+  if (!(sigma > 1.0e-8)) {
+    return sigma_zero_american_limit(s.Sp, s.Kp, s.T, s.rp, s.qp, Side::Put);
   }
   const double euro = euro_put_sk(s.Sp, s.Kp, s.T, sigma, s.rp, s.qp);
   if (s.european_only) {
@@ -2150,11 +2186,23 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes, doubl
 
   const std::size_t n = strikes.size();
 
-  // Degenerate: T ~ 0 or sigma ~ 0 collapses to intrinsic (mirrors andersen_lake).
-  if (T <= 1.0e-12 || sigma <= 1.0e-8) {
+  // Degenerate T ~ 0: spot intrinsic per strike (mirrors andersen_lake).
+  if (T <= 1.0e-12) {
     for (std::size_t i = 0; i < n; ++i) {
       const double intr = S - strikes[i];
       price_out[i] = (intr > 0.0) ? intr : 0.0;
+    }
+    return Ok();
+  }
+  // Degenerate sigma ~ 0 (A4/PR-C4): the European sigma->0 limit floored at the
+  // spot intrinsic per strike — not the spot intrinsic alone. Classify the (call)
+  // regime first so the double-continuation corner errors like the main path.
+  if (sigma <= 1.0e-8) {
+    if (classify_regime(/*rate=*/q, /*yield=*/r) == ExerciseRegime::Unsupported) {
+      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+      price_out[i] = sigma_zero_american_limit(S, strikes[i], T, r, q, Side::Call);
     }
     return Ok();
   }
@@ -2275,11 +2323,23 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes, double
 
   const std::size_t n = strikes.size();
 
-  // Degenerate: T ~ 0 or sigma ~ 0 collapses to intrinsic (mirrors andersen_lake).
-  if (T <= 1.0e-12 || sigma <= 1.0e-8) {
+  // Degenerate T ~ 0: spot intrinsic per strike (mirrors andersen_lake).
+  if (T <= 1.0e-12) {
     for (std::size_t i = 0; i < n; ++i) {
       const double intr = strikes[i] - S; // put intrinsic K_i - S
       price_out[i] = (intr > 0.0) ? intr : 0.0;
+    }
+    return Ok();
+  }
+  // Degenerate sigma ~ 0 (A4/PR-C4): the European sigma->0 limit floored at the
+  // spot intrinsic per strike — not the spot intrinsic alone. Classify the (put)
+  // regime first so the double-continuation corner errors like the main path.
+  if (sigma <= 1.0e-8) {
+    if (classify_regime(/*rate=*/r, /*yield=*/q) == ExerciseRegime::Unsupported) {
+      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+      price_out[i] = sigma_zero_american_limit(S, strikes[i], T, r, q, Side::Put);
     }
     return Ok();
   }
@@ -2368,9 +2428,19 @@ Result<double> baw_american(double S, double K, double T, double sigma, double r
   const std::uint16_t mi = max_iter ? max_iter : std::uint16_t{16};
   const double tt = (tol > 0.0) ? tol : 1.0e-8;
 
-  if (T <= 1.0e-12 || sigma <= 1.0e-8) {
+  // Degenerate T ~ 0: spot intrinsic.
+  if (T <= 1.0e-12) {
     const double intr = (side == Side::Call) ? (S - K) : (K - S);
     return Ok(intr > 0.0 ? intr : 0.0);
+  }
+  // Degenerate sigma ~ 0 (A4/PR-C4): the European sigma->0 limit floored at the
+  // spot intrinsic (consistent with andersen_lake), NOT the spot intrinsic alone.
+  if (sigma <= 1.0e-8) {
+    if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
+                        /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
+      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
+    }
+    return Ok(sigma_zero_american_limit(S, K, T, r, q, side));
   }
 
   const double euro =
