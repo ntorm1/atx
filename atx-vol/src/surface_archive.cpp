@@ -809,6 +809,39 @@ Result<SurfaceArchiveV2> SurfaceArchiveV2::open_impl(std::span<const std::byte> 
       return Err(ErrorCode::ParseError, "SurfaceArchiveV2::open: record offset misaligned");
     }
   }
+
+  // SE-P2-7: cross-check the lookup table against the directory. v2 previously
+  // validated directory entries + lookup symbol_len only — never that an OCCUPIED
+  // lookup slot AGREES with a directory entry. So a slot whose (offset,size) was
+  // tampered to point at another valid record served the WRONG symbol's surface
+  // with no error (v1's map_all cross-checks find_directory_slot per entry). Verify
+  // (a) every slot carries a known flag and the occupied count equals surface_count,
+  // and (b) every directory entry resolves through the lookup to a slot with
+  // identical (offset,size,uid,symbol_hash). O(surface_count) hash probes at open,
+  // off the hot path. Combined, these force a bijection between occupied slots and
+  // directory entries, so no tampered/extra slot can serve a mismatched record.
+  std::uint32_t occupied = 0;
+  for (const ArchiveV2LookupSlot &slot : a.lookup_) {
+    if (slot.flags == kArchiveV2SlotOccupied) {
+      ++occupied;
+    } else if (slot.flags != kArchiveV2SlotEmpty) {
+      return Err(ErrorCode::ParseError, "SurfaceArchiveV2::open: lookup slot has unknown flags");
+    }
+  }
+  if (occupied != h.surface_count) {
+    return Err(ErrorCode::ParseError,
+               "SurfaceArchiveV2::open: occupied lookup slots != surface count");
+  }
+  for (const ArchiveV2DirEntry &de : a.directory_) {
+    const ArchiveV2LookupSlot *s =
+        a.find_slot(std::string_view(de.symbol, static_cast<std::size_t>(de.symbol_len)));
+    if (s == nullptr || s->surface_offset != de.surface_offset ||
+        s->surface_size != de.surface_size || s->uid != de.uid ||
+        s->symbol_hash != de.symbol_hash) {
+      return Err(ErrorCode::ParseError,
+                 "SurfaceArchiveV2::open: lookup/directory disagreement");
+    }
+  }
   return Ok(std::move(a));
 }
 
@@ -990,6 +1023,14 @@ Result<std::vector<PricedSurfaceView>> SurfaceArchiveV2::map_all() const {
     if (de.surface_offset > bytes_.size() || de.surface_size > bytes_.size() - de.surface_offset) {
       return Err(ErrorCode::ParseError, "SurfaceArchiveV2::map_all: record out of bounds");
     }
+    // Directory n_slices (u16) must agree with the record header n_slices (u32) —
+    // v1 checks the analogous pair; a mismatch means a corrupt/aliased directory
+    // entry (SE-P2-7, P3 note). surface_size >= sizeof(header) was pinned at open.
+    ArchiveV2SurfaceHeader hh;
+    std::memcpy(&hh, bytes_.data() + de.surface_offset, sizeof hh);
+    if (hh.n_slices != de.n_slices) {
+      return Err(ErrorCode::ParseError, "SurfaceArchiveV2::map_all: directory/record n_slices mismatch");
+    }
     auto v = PricedSurfaceView::create_over_record(
         bytes_.subspan(static_cast<std::size_t>(de.surface_offset),
                        static_cast<std::size_t>(de.surface_size)));
@@ -1033,6 +1074,10 @@ Result<std::vector<ArchivedSurfaceView>> SurfaceArchiveV2::map_all_with_provenan
     const std::byte *rec = bytes_.data() + de.surface_offset;
     ArchiveV2SurfaceHeader h;
     std::memcpy(&h, rec, sizeof h);
+    if (h.n_slices != de.n_slices) {
+      return Err(ErrorCode::ParseError,
+                 "SurfaceArchiveV2::map_all_with_provenance: directory/record n_slices mismatch");
+    }
     auto prov = provenance_from_v2_header(h);
     if (!prov) {
       return tl::unexpected<atx::core::Error>(std::move(prov).error());
