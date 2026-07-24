@@ -35,6 +35,31 @@ This replaces the old per-symbol tree `<root>/<symbol>/<date>.parquet` (one file
 per `(symbol, date)`). To convert an existing per-symbol tree, see
 [Sibling tools](#sibling-tools).
 
+## Build
+
+The tool target is **gated behind the cmake cache flag `ATX_BUILD_EXAMPLES`,
+which is OFF by default** — the plain `configure` verb
+(`pwsh scripts/atx-build.ps1 configure`, i.e. `cmake --preset dev`) builds the
+library and tests but **omits** this CLI. Enable the flag explicitly at configure
+time, then build the target:
+
+```bash
+# Configure with the tool enabled. The `configure` verb does not forward extra
+# -D flags, so pass the flag through the wrapper's raw cmake path:
+pwsh scripts/atx-build.ps1 --preset dev -DATX_BUILD_EXAMPLES=ON
+# (equivalently, straight cmake in the MSVC dev env: cmake --preset dev -DATX_BUILD_EXAMPLES=ON)
+
+# Build just the CLI:
+pwsh scripts/atx-build.ps1 build atx-vol-surface-db-build
+# -> build/bin/atx-vol-surface-db-build(.exe)
+```
+
+The exact cache flag is **`-DATX_BUILD_EXAMPLES=ON`**. It only ADDS the
+example/tool targets (it does not change the library or tests). If you forget it,
+the build fails with `ninja: error: unknown target 'atx-vol-surface-db-build'` —
+that means the current build dir was configured without the flag; re-run the
+configure line above.
+
 ## Usage
 
 ```
@@ -63,6 +88,32 @@ silent gap). With no `--symbols`, the effective universe is the sorted distinct
 **union** of `underlying` across every readable date in range; every date then
 spans the full union, so the ingest grid is rectangular (date × union) with
 visible holes where a symbol is absent from a given date.
+
+### Interest rate / carry — read this before trusting a green exit
+
+**The rate is fixed at `r = 0.0`; there is no `--r` flag (by design).** The tool
+constructs `OpraHiveSpec` with its default `r` of 0.0 (plus the loader's optional
+term-structure pillars, which the CLI does not expose either), so the implied
+forward is the spot. This is correct for a hive whose quotes were priced at zero
+carry.
+
+**Silent-failure trap.** If the hive's quotes embed a **non-zero** carry (a real
+funding/borrow rate baked into the option prices), every full fit fails on the
+put-call-parity / forward mismatch — but the **build still exits 0**. The
+per-symbol config classification is tolerant enough to pass, so the failure is
+visible **only** in the coverage counters, not the exit code:
+
+- `coverage.cells_ok` will be **0** (or far below `cells_to_fit`), and
+- `coverage.cells_failed` will carry the whole universe, with each
+  `symbol.<S> ... ok=0 failed=N` row confirming it.
+
+**Operator checklist:** after any build, do not trust exit 0 alone —
+**inspect `cells_ok` vs `cells_failed` and the per-symbol rows** (or the
+`--report` CSV's section 2). A universe of `failed` fits under a green exit means
+a carry mismatch (or otherwise unfittable boards), not a successful build. The
+real fix for non-zero-carry hives is the per-cell **market-inputs** path
+(`OpraHiveSpec.market_inputs` / term-structure pillars), a future CLI surface —
+not yet wired here.
 
 ### Examples
 
