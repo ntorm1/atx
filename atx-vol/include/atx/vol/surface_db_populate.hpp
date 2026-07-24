@@ -149,10 +149,19 @@ struct UniversePopulateCoverage {
   std::uint32_t cells_failed{0};             // populate n_failed over the (re)written dates
   std::uint32_t dates_total{0};              // distinct dates among the loaded boards
   std::uint32_t dates_written{0};            // dates that needed a (re)write this run
-  std::uint32_t dates_skipped_complete{0};   // dates whose loaded cells were all present
+  // Dates with NOTHING left to add: every loaded cell is either already in the
+  // partition or config-DISABLED (a disabled cell can never be added, so a date
+  // whose only gap is disabled symbols is complete, not pending).
+  std::uint32_t dates_skipped_complete{0};
   std::uint32_t dates_skipped_would_drop{0}; // dates skipped to avoid dropping an existing symbol
   std::vector<PopulateSymbolStats> per_symbol; // from the underlying populate (written dates only)
 };
+// NOTE: the cell counters do NOT reconcile against `cells_loaded`. A DISABLED cell
+// that is absent from its partition on a skipped-complete date is in none of
+// `cells_to_fit` / `cells_refit` / `cells_already_present`, and
+// `PopulateSymbolStats::n_disabled` only covers the dates this run WROTE — so
+// `cells_loaded` is the input count, not the sum of a partition. Treat it as
+// such: there is deliberately no disabled-cell counter here.
 
 // Seed per-symbol configs (idempotent) then cell-aware-resume-populate the given
 // boards into `db`. Empty `boards` is a graceful no-op (all-zero coverage), NOT an

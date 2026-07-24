@@ -573,7 +573,11 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
       ++to_add;
     }
     if (to_add == 0u) {
-      ++cov.dates_skipped_complete; // every loaded cell already present
+      // Nothing left to add: every loaded cell is either already present or
+      // config-disabled (a disabled cell can never be added, so a date whose only
+      // gap is disabled symbols is COMPLETE, not pending — that is what makes a
+      // rebuild converge). `cells_already_present` counts only the present ones.
+      ++cov.dates_skipped_complete;
       cov.cells_already_present += present;
       continue;
     }

@@ -183,15 +183,21 @@ disposition counters partition the distinct symbols seen:
 | Field | Meaning |
 | --- | --- |
 | `coverage.cells_loaded` | Boards handed to the populate (available parquet cells). |
-| `coverage.cells_to_fit` | NEW `(symbol, date)` cells scheduled this run. |
+| `coverage.cells_to_fit` | NEW `(symbol, date)` cells scheduled this run. A **config-disabled** cell is never counted — it can never be added, so counting it would keep its date pending forever. |
 | `coverage.cells_refit` | Already-present cells re-fit by a same-date rewrite. |
 | `coverage.cells_already_present` | Skipped: symbol already in its date partition. |
 | `coverage.cells_ok` / `cells_failed` | Fit outcomes over the (re)written dates. |
 | `coverage.dates_total` | Distinct dates among the loaded boards. |
 | `coverage.dates_written` | Dates that needed a (re)write this run. |
-| `coverage.dates_skipped_complete` | Dates whose loaded cells were all already present. |
+| `coverage.dates_skipped_complete` | Dates with **nothing left to add**: every loaded cell is either already present or config-disabled. |
 | `coverage.dates_skipped_would_drop` | Dates skipped to avoid dropping an existing symbol (safety guard). |
 | `symbol.<S> ...` | Per-symbol populate stats over the written dates. |
+
+**The cell counters do not reconcile against `cells_loaded`** — do not read them as
+a partition. A config-disabled cell that is absent from its partition on a
+skipped-complete date appears in none of `cells_to_fit`, `cells_refit` or
+`cells_already_present`, and the per-symbol `disabled=` column only covers the
+dates this run actually wrote. `cells_loaded` is the input count.
 
 **Hive ingest** — the first two counters describe distinct **dates**, the last two
 describe **cells**:

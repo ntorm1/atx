@@ -192,10 +192,13 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec& spec, const OpraBatch
   // ── Phase B: build entries date-major × `effective` (rectangular) ─────────
   // Missing/quarantined/coverage-hole cells are finalized in place; present,
   // readable cells queue a load. A symbol absent from a present date's file is a
-  // VISIBLE coverage hole: it is fed through the table seam like any other and
-  // returns a zero-match Err (counted in n_error) — exactly as an explicit
-  // request for that symbol would. Entry order is fixed here, before any parallel
-  // work, so it is independent of worker count.
+  // VISIBLE coverage hole (counted in n_error, and in n_coverage_holes): in
+  // DISCOVERY mode the pre-pass already knows this date's symbol set, so the hole
+  // is finalized right here with the table seam's exact zero-match Err and NO read
+  // is queued; in explicit mode the set is only known in the panel pass, which
+  // classifies it there. Either way the cell carries the same Err an explicit
+  // request for that symbol always did. Entry order is fixed here, before any
+  // parallel work, so it is independent of worker count.
   OpraBatchResult result;
   std::vector<DateReadTask> tasks;
   for (DateInfo& di : days) {

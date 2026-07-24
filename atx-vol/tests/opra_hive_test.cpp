@@ -498,6 +498,73 @@ TEST(OpraHive, ExplicitSymbolsCoverageHoleIsNotALoadError) {
   fs::remove_all(tmp2);
 }
 
+// A file that is BOTH schema-broken AND missing a requested symbol. The hole
+// check precedes the table seam's required-column validation, so the absent
+// symbol reads as a coverage hole while the symbols the file DOES carry surface
+// the schema defect — which is what keeps a broken date from ever reporting as
+// all-holes. (CorruptDateFileCountsError cannot cover this: it truncates the file
+// so read_parquet fails outright and no cell can be classified at all.)
+TEST(OpraHive, SchemaBrokenFileStillReportsHoleAndDefectSeparately) {
+  namespace io = atx::core::io;
+  const fs::path root = fs::temp_directory_path() / "atx_opra_hive_broken_schema";
+  fs::remove_all(root);
+  const fs::path dir = root / "date=2026-07-01";
+  fs::create_directories(dir);
+
+  // Valid, readable parquet with a good `underlying` column carrying {AAA, CCC},
+  // but MISSING the required `ask_sz` column — so `underlying` discovery works
+  // while the seam rejects every cell it is asked to build.
+  const std::vector<std::string> und = {"AAA", "AAA", "CCC", "CCC"};
+  const std::vector<std::string> sym = {
+      "AAA   260729C00100000", "AAA   260729P00100000",
+      "CCC   260729C00100000", "CCC   260729P00100000"};
+  const std::vector<atx::i64> ts(4, atx::i64{1'782'244'500'000'000'000});
+  const std::vector<atx::i64> inst = {1, 2, 3, 4};
+  const std::vector<atx::i64> px(4, atx::i64{1'000'000'000});
+  const std::vector<atx::i64> sz(4, atx::i64{10});
+  const std::vector<io::WriteColumn> cols = {
+      {"ts", std::span<const atx::i64>(ts)},
+      {"underlying", std::span<const std::string>(und)},
+      {"symbol", std::span<const std::string>(sym)},
+      {"instrument_id", std::span<const atx::i64>(inst)},
+      {"bid_px", std::span<const atx::i64>(px)},
+      {"ask_px", std::span<const atx::i64>(px)},
+      {"bid_sz", std::span<const atx::i64>(sz)},
+      // ask_sz DELIBERATELY omitted — a required column.
+  };
+  ASSERT_TRUE(io::write_parquet(cols, (dir / "data.parquet").string()).has_value());
+
+  ahv::OpraHiveSpec spec;
+  spec.root_dir = root.string();
+  spec.date_lo = "2026-07-01";
+  spec.date_hi = "2026-07-01";
+  spec.symbols = {"AAA", "BBB", "CCC"};
+  spec.r = 0.03;
+
+  const auto res = ahv::load_opra_hive(spec);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  EXPECT_EQ(res->n_total, std::size_t{3});
+  EXPECT_EQ(res->n_loaded, std::size_t{0});  // the schema defect fails every build
+  EXPECT_EQ(res->n_missing, std::size_t{0}); // the file is present
+  EXPECT_EQ(res->n_error, std::size_t{3});
+  EXPECT_EQ(res->n_coverage_holes, std::size_t{1}); // only BBB, the absent symbol
+
+  const ahv::OpraBatchEntry *bbb = find_cell(*res, "BBB", "2026-07-01");
+  ASSERT_NE(bbb, nullptr);
+  ASSERT_FALSE(bbb->panel.has_value());
+  EXPECT_TRUE(bbb->coverage_hole);
+
+  // The symbols the file DOES carry surface the real defect, so the date can
+  // never be mistaken for "all holes".
+  for (const std::string &s : {"AAA", "CCC"}) {
+    const ahv::OpraBatchEntry *e = find_cell(*res, s, "2026-07-01");
+    ASSERT_NE(e, nullptr) << s;
+    ASSERT_FALSE(e->panel.has_value()) << s;
+    EXPECT_FALSE(e->coverage_hole) << s;
+  }
+  fs::remove_all(root);
+}
+
 // Non-uniform hive: one date's file is missing a symbol that OTHER dates carry.
 // Discovery must resolve the 3-symbol UNION, lay out a RECTANGULAR grid over it,
 // and make the absent (date, symbol) cell a VISIBLE Err (n_error) — not a silent
