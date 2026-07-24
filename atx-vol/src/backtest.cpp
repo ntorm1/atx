@@ -1967,12 +1967,30 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
           vega = current_risk->vega[lot_index] / weight;
         }
       }
-      const double mark = lot.entry_price; // entry_mark (fill at mid)
+      const double mark = lot.entry_price; // the FILL price the strategy chose
+      // F2: the price the BOOK is carried at this row. Identical to the fill
+      // unless the caller opted into fill-slippage accounting, which makes the
+      // (fill - mark) gap a realized cost instead of an invisible one.
+      double model_mark = mark;
+      if (cfg.book_entry_fill_slippage) {
+        if (current_risk == nullptr || current_risk->status[lot_index] != PriceStatus::Ok) {
+          return Err(ErrorCode::NotFound,
+                     "run_backtest: no model mark to price entry fill slippage against for lot id=" +
+                         std::to_string(lot.id) + " uid=" + std::to_string(lot.contract.uid));
+        }
+        model_mark = current_risk->price[lot_index];
+      }
       const double hs = half_spread(mark, vega);
+      // Signed: positive whenever the fill is worse than the mark (buying above
+      // it, selling below it), negative on genuine price improvement.
+      const double fill_slippage = lot.qty * lot.multiplier * (mark - model_mark);
       const double leg_cost = std::fabs(lot.qty) * lot.multiplier * hs +
-                              cfg.frictions.per_contract_cost * std::fabs(lot.qty);
+                              cfg.frictions.per_contract_cost * std::fabs(lot.qty) + fill_slippage;
       ex.cost += leg_cost;
-      cash -= lot.qty * lot.multiplier * mark; // premium paid (long) / received (short)
+      // Premium at the CARRY mark; the fill/mark gap rides in `leg_cost`, and
+      // `cash -= ex.cost` below completes it — so cash still moves by exactly
+      // qty*multiplier*fill, and NAV now sees the gap too.
+      cash -= lot.qty * lot.multiplier * model_mark;
       ex.turnover_notional += std::fabs(lot.qty * lot.multiplier * mark);
       ex.turnover_vega += std::fabs(lot.qty * lot.multiplier * vega);
     }

@@ -523,3 +523,296 @@ TEST(ListedDispersionStrategy, RejectsInvalidScheduleOrDeltaBand) {
   ASSERT_FALSE(bad_band.has_value());
   EXPECT_EQ(bad_band.error().code(), ErrorCode::InvalidArgument);
 }
+
+// â”€â”€ WS-F F2 (BT-P1-1): quote-side fills â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//
+// The listed route selects on real NBBO and RECORDS it (`raw_bid`/`raw_ask`/
+// `raw_mid`) but has always filled at `model_mark` â€” its own fitted value. Any
+// signal correlated with the fit's deviation from tradeable quotes (dispersion
+// implied correlation is exactly that) therefore booked the fit error as day-0
+// PnL that no market participant could capture.
+//
+// The fixture below is that scenario, made explicit: every leg is re-quoted so
+// the NBBO brackets the model mark and sits on the UNFAVOURABLE side of it (the
+// model says a leg we BUY is cheaper than the market will sell it, and a leg we
+// SELL is richer than the market will pay). With that placement the ordering
+//
+//     NAV(CrossSpread) < NAV(QuoteMid) < NAV(ModelMark)
+//
+// holds by construction on a round trip. If it does not order, the fill
+// accounting is wrong.
+
+namespace {
+
+constexpr std::int64_t kDayNs = 86'400LL * 1'000'000'000LL;
+constexpr std::int64_t kF2Expiry = kNow + 60 * kDayNs; // survives every replay date
+
+[[nodiscard]] PricedSurface make_surface_at(std::uint32_t uid, double spot, std::int64_t now_ts) {
+  CurveSurface curves;
+  std::vector<SliceContext> context;
+  const double terms[] = {0.05, 0.10, 0.20, 0.50};
+  std::uint16_t expiry_id = 0;
+  for (const double T : terms) {
+    EssviParams params{};
+    params.theta = 0.04 + 0.01 * T;
+    params.phi = 1.4;
+    params.rho = -0.35;
+    params.psi = 0.5;
+    params.p = 0.5;
+    params.lambda = 0.5;
+    params.T = T;
+    params.F = spot;
+    params.expiry_id = expiry_id++;
+    curves.push(std::make_unique<EssviCurve>(params, std::exp(-kR * T)));
+    context.push_back(SliceContext{T, spot, 0.0, 0.02, 100, 7});
+  }
+  PricingContext pricing;
+  pricing.S = spot;
+  pricing.r = kR;
+  pricing.now_ts_ns = now_ts;
+  pricing.method = AmericanMethod::AndersenLake;
+  pricing.al_opts = al_fast_opts();
+  pricing.uid = uid;
+  auto result = PricedSurface::create(std::move(curves), std::move(context), pricing);
+  EXPECT_TRUE(result.has_value()) << result.error().to_string();
+  return std::move(*result);
+}
+
+[[nodiscard]] ListedOptionQuote f2_option(const std::string &symbol, std::uint32_t id, double strike,
+                                          Side side, const std::string &trade_date,
+                                          std::int64_t now_ts) {
+  ListedOptionQuote q;
+  q.trade_date = trade_date;
+  q.symbol = symbol;
+  q.instrument_id = id;
+  q.raw_symbol = symbol + std::to_string(id);
+  q.expiry_ts_ns = kF2Expiry;
+  q.strike = strike;
+  q.side = side;
+  q.bid = 1.0; // placeholder: requote_unfavourably() rewrites every leg's NBBO
+  q.ask = 1.2;
+  q.quote_ts_ns = now_ts;
+  q.standard_monthly = true;
+  q.standard_deliverable = true;
+  q.source_fingerprint = 100u + id;
+  return q;
+}
+
+[[nodiscard]] ListedStraddle f2_straddle(const std::string &symbol, std::uint32_t uid,
+                                         std::uint32_t id, double strike, double weight,
+                                         const std::string &trade_date, std::int64_t now_ts) {
+  ListedStraddle result;
+  result.symbol = symbol;
+  result.uid = uid;
+  result.expiry_ts_ns = kF2Expiry;
+  result.strike = strike;
+  result.call = f2_option(symbol, id, strike, Side::Call, trade_date, now_ts);
+  result.put = f2_option(symbol, id + 1u, strike, Side::Put, trade_date, now_ts);
+  result.raw_weight = weight;
+  result.normalized_weight = weight;
+  return result;
+}
+
+[[nodiscard]] ListedDispersionSelection f2_selection(const std::string &trade_date,
+                                                     std::int64_t now_ts) {
+  ListedDispersionSelection result;
+  result.trade_date = trade_date;
+  result.valuation_ts_ns = now_ts;
+  result.expiry_ts_ns = kF2Expiry;
+  result.dte_days = static_cast<double>(kF2Expiry - now_ts) / kListedNsPerDay;
+  result.index = f2_straddle("SPY", 1u, 1u, 500.0, 0.0, trade_date, now_ts);
+  result.names.push_back(f2_straddle("N0", 2u, 3u, 100.0, 0.4, trade_date, now_ts));
+  result.names.push_back(f2_straddle("N1", 3u, 5u, 200.0, 0.6, trade_date, now_ts));
+  return result;
+}
+
+// Place each leg's NBBO so the model mark is on the FAVOURABLE side of the mid
+// for the direction we trade it: buying (quantity > 0) faces a mid above the
+// mark, selling (quantity < 0) faces a mid below it. `half_frac` then opens a
+// two-sided market around that mid, so crossing costs strictly more than the
+// mid. `raw_mid` is recomputed as the exact half-sum validate_roll demands.
+void requote_unfavourably(ListedScheduleRoll &roll, double edge_frac, double half_frac) {
+  for (ListedScheduleLeg &leg : roll.legs) {
+    const double m = leg.model_mark;
+    EXPECT_GT(m, 0.0) << "fixture needs a positive mark on every leg";
+    const double sign = (leg.quantity >= 0.0) ? 1.0 : -1.0;
+    const double mid = m + sign * edge_frac * m;
+    const double half = half_frac * m;
+    leg.raw_bid = mid - half;
+    leg.raw_ask = mid + half;
+    leg.raw_mid = 0.5 * (leg.raw_bid + leg.raw_ask);
+    EXPECT_GT(leg.raw_bid, 0.0);
+  }
+}
+
+struct F2Fixture {
+  fs::path dir;
+  CorpusManifest manifest;
+  ListedDispersionSchedule schedule;
+};
+
+[[nodiscard]] F2Fixture make_f2_fixture(const char *tag) {
+  F2Fixture out;
+  out.dir = fresh_dir(tag);
+  const std::string dates[] = {"2026-07-10", "2026-07-11", "2026-07-12"};
+  const std::int64_t stamps[] = {kNow, kNow + kDayNs, kNow + 2 * kDayNs};
+
+  for (std::size_t d = 0; d < 3; ++d) {
+    const double drift = 1.0 + 0.004 * static_cast<double>(d);
+    std::vector<PricedSurface> day;
+    day.push_back(make_surface_at(1u, 500.0 * drift, stamps[d]));
+    day.push_back(make_surface_at(2u, 100.0 * drift, stamps[d]));
+    day.push_back(make_surface_at(3u, 200.0 * drift, stamps[d]));
+    const std::string path = (out.dir / (dates[d] + ".atxvsa")).string();
+    const std::vector<SurfaceArchiveItem> items = {
+        {"SPY", &day[0]}, {"N0", &day[1]}, {"N1", &day[2]}};
+    EXPECT_TRUE(write_surface_archive_v2_file(path, items).has_value());
+    out.manifest.dates.push_back(dates[d]);
+    CorpusEntry e;
+    e.date = dates[d];
+    e.symbol = "SPY";
+    e.status = CorpusFitStatus::Ok;
+    e.archive_path = path;
+    out.manifest.entries.push_back(std::move(e));
+
+    if (d == 2) {
+      continue; // two rolls: open on date 0, roll (round trip) on date 1
+    }
+    auto snapshot = MarketSnapshot::load(path);
+    EXPECT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+    ListedScheduleBuildConfig cfg;
+    cfg.gross_index_vega_target_per_vol_point = 1000.0;
+    cfg.cohort = static_cast<std::uint32_t>(4u + d);
+    cfg.surface_fingerprint = 12345u;
+    auto roll =
+        build_listed_dispersion_roll(f2_selection(dates[d], stamps[d]), snapshot->set(), cfg);
+    EXPECT_TRUE(roll.has_value()) << roll.error().to_string();
+    requote_unfavourably(*roll, /*edge_frac=*/0.01, /*half_frac=*/0.02);
+    out.schedule.rolls.push_back(std::move(*roll));
+  }
+  return out;
+}
+
+} // namespace
+
+TEST(ListedDispersionStrategy, QuoteSideFillsOrderNavCrossSpreadBelowMidBelowModelMark) {
+  const F2Fixture fx = make_f2_fixture("f2-fill-policy");
+  auto clock = Clock::from_manifest(fx.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const auto run_with = [&](ScheduleFillPolicy fp) -> Result<BacktestResult> {
+    auto strategy =
+        ListedDispersionStrategy::create(fx.schedule, 0.0, ScheduleMarkPolicy::ExactArchive, fp);
+    EXPECT_TRUE(strategy.has_value());
+    if (!strategy) {
+      return atx::core::Err(strategy.error());
+    }
+    RunConfig cfg;
+    cfg.price.n_threads = 1u;
+    cfg.prefetch_snapshots = false;
+    // F2 needs the engine to CHARGE the fill/mark gap, and F1(d) proves the
+    // charge closes the books: NAV must still equal liquidation on every row.
+    cfg.book_entry_fill_slippage = true;
+    cfg.reconcile_nav = true;
+    return run_backtest(*clock, *strategy, cfg);
+  };
+
+  const auto model = run_with(ScheduleFillPolicy::ModelMark);
+  ASSERT_TRUE(model.has_value()) << model.error().to_string();
+  const auto mid = run_with(ScheduleFillPolicy::QuoteMid);
+  ASSERT_TRUE(mid.has_value()) << mid.error().to_string();
+  const auto cross = run_with(ScheduleFillPolicy::CrossSpread);
+  ASSERT_TRUE(cross.has_value()) << cross.error().to_string();
+
+  ASSERT_EQ(model->size(), 3u);
+  ASSERT_EQ(mid->size(), 3u);
+  ASSERT_EQ(cross->size(), 3u);
+
+  // THE gate.
+  EXPECT_LT(cross->nav.back(), mid->nav.back());
+  EXPECT_LT(mid->nav.back(), model->nav.back());
+  std::printf("[F2] final NAV  cross=%.6f  mid=%.6f  model=%.6f\n", cross->nav.back(),
+              mid->nav.back(), model->nav.back());
+
+  // The ordering is the SLIPPAGE, not noise: every quote-side run pays strictly
+  // more realized cost on both trading rows, and the crossing run pays most.
+  for (std::size_t i = 0; i < 2u; ++i) {
+    EXPECT_GT(mid->cost[i], model->cost[i]) << "row " << i;
+    EXPECT_GT(cross->cost[i], mid->cost[i]) << "row " << i;
+  }
+
+  // Accounting closure: each run reconciles NAV against an independently
+  // recomputed liquidation value on every row (F1(d)). Without the engine's
+  // fill-slippage booking these tracks would diverge by exactly the slippage.
+  for (const BacktestResult *r : {&*model, &*mid, &*cross}) {
+    ASSERT_EQ(r->nav_liquidation.size(), r->nav.size());
+    for (std::size_t i = 0; i < r->nav.size(); ++i) {
+      EXPECT_NEAR(r->nav_liquidation[i], r->nav[i], 1.0e-9) << "row " << i;
+    }
+  }
+
+  // ModelMark is the compatibility default.
+  auto legacy = ListedDispersionStrategy::create(fx.schedule);
+  ASSERT_TRUE(legacy.has_value());
+  EXPECT_EQ(legacy->fill_policy(), ScheduleFillPolicy::ModelMark);
+
+  std::error_code ec;
+  fs::remove_all(fx.dir, ec);
+}
+
+TEST(ListedDispersionStrategy, QuoteSideFillsFailClosedOnALegWithNoUsableTwoSidedQuote) {
+  const F2Fixture fx = make_f2_fixture("f2-missing-quote");
+
+  // A zero bid: the mid becomes ask/2, a price nobody trades at, and there is no
+  // bid to hit at all. ModelMark is unaffected; both quote-side policies refuse.
+  ListedDispersionSchedule broken = fx.schedule;
+  ListedScheduleLeg &leg = broken.rolls.front().legs.front();
+  leg.raw_bid = 0.0;
+  leg.raw_mid = 0.5 * (leg.raw_bid + leg.raw_ask);
+
+  EXPECT_TRUE(ListedDispersionStrategy::create(broken).has_value())
+      << "the zero bid must not break the model-mark route";
+
+  for (const ScheduleFillPolicy fp :
+       {ScheduleFillPolicy::QuoteMid, ScheduleFillPolicy::CrossSpread}) {
+    auto strategy =
+        ListedDispersionStrategy::create(broken, 0.0, ScheduleMarkPolicy::ExactArchive, fp);
+    ASSERT_FALSE(strategy.has_value()) << "quote-side fill accepted an unquotable leg";
+    EXPECT_EQ(strategy.error().code(), ErrorCode::NotFound);
+    EXPECT_NE(strategy.error().message().find("two-sided quote"), std::string::npos)
+        << strategy.error().message();
+  }
+
+  // A crossed book (ask < bid) never reaches the fill layer through the strategy
+  // — schedule validation rejects the artifact outright — so assert BOTH: the
+  // strategy refuses it, and the fill primitive refuses it on its own terms.
+  ListedDispersionSchedule crossed = fx.schedule;
+  ListedScheduleLeg &cl = crossed.rolls.front().legs.front();
+  const double b = cl.raw_bid;
+  cl.raw_bid = cl.raw_ask;
+  cl.raw_ask = b;
+  cl.raw_mid = 0.5 * (cl.raw_bid + cl.raw_ask);
+  EXPECT_FALSE(ListedDispersionStrategy::create(crossed, 0.0, ScheduleMarkPolicy::ExactArchive,
+                                                ScheduleFillPolicy::CrossSpread)
+                   .has_value());
+  const auto crossed_px = listed_leg_fill_price(cl, ScheduleFillPolicy::CrossSpread);
+  ASSERT_FALSE(crossed_px.has_value());
+  EXPECT_EQ(crossed_px.error().code(), ErrorCode::NotFound);
+
+  // And the direction is right: a long leg lifts the offer, a short hits the bid.
+  const ListedScheduleRoll &roll = fx.schedule.rolls.front();
+  for (const ListedScheduleLeg &l : roll.legs) {
+    auto crossed_px = listed_leg_fill_price(l, ScheduleFillPolicy::CrossSpread);
+    ASSERT_TRUE(crossed_px.has_value()) << crossed_px.error().to_string();
+    EXPECT_DOUBLE_EQ(*crossed_px, l.quantity >= 0.0 ? l.raw_ask : l.raw_bid);
+    auto mid_px = listed_leg_fill_price(l, ScheduleFillPolicy::QuoteMid);
+    ASSERT_TRUE(mid_px.has_value());
+    EXPECT_DOUBLE_EQ(*mid_px, 0.5 * (l.raw_bid + l.raw_ask));
+    // Crossing is never better than the mid, for either direction.
+    const double cross_cost = l.quantity * l.multiplier * (*crossed_px - *mid_px);
+    EXPECT_GT(cross_cost, 0.0);
+  }
+
+  std::error_code ec;
+  fs::remove_all(fx.dir, ec);
+}

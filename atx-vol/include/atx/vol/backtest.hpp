@@ -457,6 +457,24 @@ struct RunConfig {
   // deviates from `nav` by more than `reconcile_nav_tol`. OFF by default: it is a
   // debug/audit gate, and it costs nothing when off (one bool test per row).
   bool reconcile_nav{false};
+  // WS-F F2 (BT-P1-1): book the ENTRY FILL SLIPPAGE — qty*multiplier*(fill -
+  // model mark) — as a realized execution cost.
+  //
+  // The engine carries the book at its model mark but pays `Lot::entry_price`.
+  // When a strategy fills AWAY from the mark (a quote-side fill policy, an
+  // ask-crossing entry) the difference never reaches NAV: NAV is a sum of
+  // mark-to-mark moves, and the very first move is measured from the entry
+  // date's mark, not from what was paid. So an entry crossing the spread used to
+  // look free. With this on, the gap is charged into `cost` (hence into NAV and,
+  // exactly once, into cash) and `reconcile_nav` closes.
+  //
+  // OFF by default and BIT-IDENTICAL when off: the mark used is `entry_price`
+  // itself, so the booked slippage is exactly 0.0 and the cash expression is
+  // unchanged. On, an entry whose model mark cannot be solved is a hard error
+  // rather than a silent zero. Note the modeled `FrictionModel` half-spread is
+  // ADDITIVE to this; a run using real quote-side fills normally sets
+  // `half_spread_bps`/`vol_tick` to 0 so the spread is not paid twice.
+  bool book_entry_fill_slippage{false};
   // Absolute drift tolerance for `reconcile_nav`. The two quantities are the same
   // flows summed in different orders, so the honest floor is rounding
   // (~|cash|*eps per row), not zero. Must be finite and positive.
