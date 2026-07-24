@@ -60,11 +60,11 @@
 
 **Notes:** Header-light — include only what the signatures need (`dispersion_workflow.hpp`, `listed_opra.hpp`, `listed_dispersion_schedule.hpp`, `backtest.hpp` for `MarketSnapshot`/`QueryExecution`). `listed_quotes_for_date` needs live OPRA parquet, so it is NOT unit-tested here — its correctness is pinned by the T10 fixture gate; the T1 tests cover the pure/synthetic-surface seams.
 
-- [ ] **Step 1: Write the failing test** — in `listed_dispersion_pipeline_test.cpp`: (a) `static_assert(kVegaVolPointToUnitVol == 100.0)` + a runtime `EXPECT_EQ`; (b) `ListedDispersionMethodology{}.policy_fingerprint()` is nonzero and stable across two calls, and two methodologies differing in one threshold produce different fingerprints; (c) `make_listed_forward_lookup(snapshot)` over a synthetic `MarketSnapshot` (build a `SurfaceSet` from `make_surface`, mirror `listed_dispersion_reconciliation_test.cpp:35-76`) returns a finite positive forward; `make_listed_risk_lookup(...)` returns a finite `ListedOptionRisk`.
-- [ ] **Step 2: Run test to verify it fails** — `cmake --build C:\atx\build-rel --target atx-vol-tests` → expected FAIL: `listed_dispersion_pipeline.hpp` not found.
-- [ ] **Step 3: Implement** the header + `.cpp`; register the `.cpp` in `atx-vol/CMakeLists.txt` and the test in `atx-vol/tests/CMakeLists.txt`. Lift the three helpers verbatim (preserve comments); define the constant + methodology.
-- [ ] **Step 4: Run test to verify it passes** — build + `C:\atx\build-rel\bin\atx-vol-tests.exe --gtest_filter=ListedDispersionPipeline.*` → PASS.
-- [ ] **Step 5: Commit** (`git add atx-vol/include/atx/vol/listed_dispersion_pipeline.hpp atx-vol/src/listed_dispersion_pipeline.cpp atx-vol/CMakeLists.txt atx-vol/tests/listed_dispersion_pipeline_test.cpp atx-vol/tests/CMakeLists.txt`).
+- [x] **Step 1: Write the failing test** — in `listed_dispersion_pipeline_test.cpp`: (a) `static_assert(kVegaVolPointToUnitVol == 100.0)` + a runtime `EXPECT_EQ`; (b) `ListedDispersionMethodology{}.policy_fingerprint()` is nonzero and stable across two calls, and two methodologies differing in one threshold produce different fingerprints; (c) `make_listed_forward_lookup(snapshot)` over a synthetic `MarketSnapshot` (build a `SurfaceSet` from `make_surface`, mirror `listed_dispersion_reconciliation_test.cpp:35-76`) returns a finite positive forward; `make_listed_risk_lookup(...)` returns a finite `ListedOptionRisk`.
+- [x] **Step 2: Run test to verify it fails** — `cmake --build C:\atx\build-rel --target atx-vol-tests` → expected FAIL: `listed_dispersion_pipeline.hpp` not found.
+- [x] **Step 3: Implement** the header + `.cpp`; register the `.cpp` in `atx-vol/CMakeLists.txt` and the test in `atx-vol/tests/CMakeLists.txt`. Lift the three helpers verbatim (preserve comments); define the constant + methodology.
+- [x] **Step 4: Run test to verify it passes** — build + `C:\atx\build-rel\bin\atx-vol-tests.exe --gtest_filter=ListedDispersionPipeline.*` → PASS.
+- [x] **Step 5: Commit** (`git add atx-vol/include/atx/vol/listed_dispersion_pipeline.hpp atx-vol/src/listed_dispersion_pipeline.cpp atx-vol/CMakeLists.txt atx-vol/tests/listed_dispersion_pipeline_test.cpp atx-vol/tests/CMakeLists.txt`).
 
 ---
 
@@ -80,11 +80,11 @@
 
 **The defect (M1):** `reconcile_listed_dispersion` (`src/listed_dispersion_reconciliation.cpp:240-243`) hard-requires `snapshots.front().date == schedule.rolls.front().roll_date`. The example (`spy_dispersion_backtest.cpp:627-641`) feeds it the FULL `clock.refs()` timeline, so any leading warm-up/low-coverage session (front date < first roll date) aborts an otherwise-valid corpus. Today it only works because `date_lo` coincides with the first roll. **Fix at the new seam** (leave the low-level precondition intact as a defensive invariant — see open question 3): trim in `assemble_reconciliation_snapshots`.
 
-- [ ] **Step 1: Write the failing (RED) test** — `ReconcileClockCoupling_AbortsOnWarmupLeadIn`: build a valid one-roll `ListedDispersionSchedule` (via `build_listed_dispersion_roll` over synthetic surfaces, per the schedule-test pattern) whose `rolls.front().roll_date` is day-1; construct a strictly-ordered `ListedReconciliationSnapshot` vector `[{date=day0, surfaces=&set0, ...}, {date=day1,...}, {date=day2,...}]` (day0 < roll_date). Assert `reconcile_listed_dispersion(schedule, full)` returns `Err` with code `InvalidArgument` (documents the defect — the front-date check at `:240` fires before any pricing, so no surfaces are dereferenced on this path). This RED test is the anchor; it stays green forever as the low-level precondition.
-- [ ] **Step 2: Run to verify it fails** — the *new seam* does not exist yet, so also add `ReconcileListedSchedule_TrimsWarmupLeadIn` (the GREEN target): `reconcile_listed_schedule(schedule, full)` should succeed and equal `reconcile_listed_dispersion(schedule, full.subspan(first_roll_index))`. Build → FAIL: `reconcile_listed_schedule` undefined. (The RED anchor from Step 1 passes immediately — that is expected; it PROVES the defect exists.)
-- [ ] **Step 3: Implement** `assemble_reconciliation_snapshots` (find the first index with `date == rolls.front().roll_date`; error if none; return the trimmed copy) + `reconcile_listed_schedule` (assemble → reconcile). No change to `listed_dispersion_reconciliation.cpp`.
-- [ ] **Step 4: Run to verify it passes** — build + `--gtest_filter=ListedDispersionPipeline.*:ReconcileListedSchedule*:ReconcileClockCoupling*` → PASS (trim seam succeeds on warm-up; equality with the manually-trimmed reconcile holds).
-- [ ] **Step 5: Commit** (`git add atx-vol/include/atx/vol/listed_dispersion_pipeline.hpp atx-vol/src/listed_dispersion_pipeline.cpp atx-vol/tests/listed_dispersion_pipeline_test.cpp`).
+- [x] **Step 1: Write the failing (RED) test** — `ReconcileClockCoupling_AbortsOnWarmupLeadIn`: build a valid one-roll `ListedDispersionSchedule` (via `build_listed_dispersion_roll` over synthetic surfaces, per the schedule-test pattern) whose `rolls.front().roll_date` is day-1; construct a strictly-ordered `ListedReconciliationSnapshot` vector `[{date=day0, surfaces=&set0, ...}, {date=day1,...}, {date=day2,...}]` (day0 < roll_date). Assert `reconcile_listed_dispersion(schedule, full)` returns `Err` with code `InvalidArgument` (documents the defect — the front-date check at `:240` fires before any pricing, so no surfaces are dereferenced on this path). This RED test is the anchor; it stays green forever as the low-level precondition.
+- [x] **Step 2: Run to verify it fails** — the *new seam* does not exist yet, so also add `ReconcileListedSchedule_TrimsWarmupLeadIn` (the GREEN target): `reconcile_listed_schedule(schedule, full)` should succeed and equal `reconcile_listed_dispersion(schedule, full.subspan(first_roll_index))`. Build → FAIL: `reconcile_listed_schedule` undefined. (The RED anchor from Step 1 passes immediately — that is expected; it PROVES the defect exists.)
+- [x] **Step 3: Implement** `assemble_reconciliation_snapshots` (find the first index with `date == rolls.front().roll_date`; error if none; return the trimmed copy) + `reconcile_listed_schedule` (assemble → reconcile). No change to `listed_dispersion_reconciliation.cpp`.
+- [x] **Step 4: Run to verify it passes** — build + `--gtest_filter=ListedDispersionPipeline.*:ReconcileListedSchedule*:ReconcileClockCoupling*` → PASS (trim seam succeeds on warm-up; equality with the manually-trimmed reconcile holds).
+- [x] **Step 5: Commit** (`git add atx-vol/include/atx/vol/listed_dispersion_pipeline.hpp atx-vol/src/listed_dispersion_pipeline.cpp atx-vol/tests/listed_dispersion_pipeline_test.cpp`).
 
 ---
 
@@ -100,11 +100,11 @@
 
 **Notes:** the full build needs live OPRA + surfaces, so its economic output is pinned at T10 (byte-identical `trade_schedule` golden `b640b3ab…`). The T3 unit tests cover the *pure* acceptance logic that does not need parquet.
 
-- [ ] **Step 1: Write the failing test** — `BuildSchedule_RejectsEmptyAndSubThreshold`: drive the acceptance gate directly — an empty roll set → `Err(Unavailable, "…entry/three-roll acceptance gate")`; a core-mode run with < `core_min_rolls` rolls → `Err`. (Construct via a minimal synthetic `quote_source`/clock stub or, if parquet is unavoidable, assert the gate branch through a seam that takes a pre-built `std::vector<ListedScheduleRoll>` — factor the acceptance check into a testable `Status accept_listed_schedule(const ListedDispersionSchedule&, const ListedScheduleSpec&, const ListedDispersionMethodology&)` helper.)
-- [ ] **Step 2: Run to verify it fails** — build → FAIL: `build_listed_dispersion_schedule` / `accept_listed_schedule` undefined.
-- [ ] **Step 3: Implement** the builder + the extracted acceptance helper; enforce the M1 clock/first-roll coupling at build.
-- [ ] **Step 4: Run to verify it passes** — build + filter → PASS.
-- [ ] **Step 5: Commit** (explicit paths: module hpp/cpp + test).
+- [x] **Step 1: Write the failing test** — `BuildSchedule_RejectsEmptyAndSubThreshold`: drive the acceptance gate directly — an empty roll set → `Err(Unavailable, "…entry/three-roll acceptance gate")`; a core-mode run with < `core_min_rolls` rolls → `Err`. (Construct via a minimal synthetic `quote_source`/clock stub or, if parquet is unavoidable, assert the gate branch through a seam that takes a pre-built `std::vector<ListedScheduleRoll>` — factor the acceptance check into a testable `Status accept_listed_schedule(const ListedDispersionSchedule&, const ListedScheduleSpec&, const ListedDispersionMethodology&)` helper.)
+- [x] **Step 2: Run to verify it fails** — build → FAIL: `build_listed_dispersion_schedule` / `accept_listed_schedule` undefined.
+- [x] **Step 3: Implement** the builder + the extracted acceptance helper; enforce the M1 clock/first-roll coupling at build.
+- [x] **Step 4: Run to verify it passes** — build + filter → PASS.
+- [x] **Step 5: Commit** (explicit paths: module hpp/cpp + test).
 
 ---
 
@@ -121,11 +121,11 @@
 
 **I1 (the headline gate):** `project_listed_schedule` and `run-projected-backtest --execution cold` must share ONE code path / ONE asserted constant (`analytic=true` + `QueryExecution::ColdReference`), so the persisted `projected_schedule` marks equal the live cold seed marks the replay recomputes — guarded at compile time, not by luck.
 
-- [ ] **Step 1: Write the failing test** — `TwoRouteColdParity_LegMarksEqual`: over synthetic surfaces, build a one-roll listed schedule; run `project_listed_schedule(listed, archives, {analytic:true, execution:ColdReference})`; independently compute each leg's cold seed mark through the SAME `make_listed_risk_lookup`/`full_greek_seed(..., analytic=true, ColdReference)` the projected-backtest replay uses; assert per-leg `model_mark` bit-equality (`EXPECT_EQ` on the raw doubles). Add `ProjectionConfigColdIsCanonical` asserting `ProjectionConfig{}.analytic == true && ProjectionConfig{}.execution == QueryExecution::ColdReference`.
-- [ ] **Step 2: Run to verify it fails** — build → FAIL: `project_listed_schedule` undefined.
-- [ ] **Step 3: Implement** `project_listed_schedule` + `ListedArchiveLookup` + `ProjectionConfig`, lifting the cold reprice; the projected-backtest replay (wired in T9) reads the same `ProjectionConfig` constant.
-- [ ] **Step 4: Run to verify it passes** — build + filter → PASS (bit-exact leg-mark parity).
-- [ ] **Step 5: Commit** (module hpp/cpp + test).
+- [x] **Step 1: Write the failing test** — `TwoRouteColdParity_LegMarksEqual`: over synthetic surfaces, build a one-roll listed schedule; run `project_listed_schedule(listed, archives, {analytic:true, execution:ColdReference})`; independently compute each leg's cold seed mark through the SAME `make_listed_risk_lookup`/`full_greek_seed(..., analytic=true, ColdReference)` the projected-backtest replay uses; assert per-leg `model_mark` bit-equality (`EXPECT_EQ` on the raw doubles). Add `ProjectionConfigColdIsCanonical` asserting `ProjectionConfig{}.analytic == true && ProjectionConfig{}.execution == QueryExecution::ColdReference`.
+- [x] **Step 2: Run to verify it fails** — build → FAIL: `project_listed_schedule` undefined.
+- [x] **Step 3: Implement** `project_listed_schedule` + `ListedArchiveLookup` + `ProjectionConfig`, lifting the cold reprice; the projected-backtest replay (wired in T9) reads the same `ProjectionConfig` constant.
+- [x] **Step 4: Run to verify it passes** — build + filter → PASS (bit-exact leg-mark parity).
+- [x] **Step 5: Commit** (module hpp/cpp + test).
 
 ---
 
@@ -141,11 +141,11 @@
 
 **Notes:** the TSV emission stays in the CLI (three bespoke schemas are out-of-archive per the design partition rule — NOT folded into `run.atxrun` this wave, no schema bump). The library returns the frames/legs/risks; the CLI serializes.
 
-- [ ] **Step 1: Write the failing test** — `DispersionBookVar_SplitsConfidences`: build a small `DispersionBook` + synthetic scenarios; assert `dispersion_book_var(book, scenarios, {0.95, 0.99}, cfg)` returns two `risks` with `confidence` 0.95/0.99, `n_positions == book.positions.size()`, and every frame `n_failed == 0`. (Synthetic surfaces; small position count.)
-- [ ] **Step 2: Run to verify it fails** — build → FAIL: `dispersion_book_var` undefined.
-- [ ] **Step 3: Implement** the lift; route the ×100 through `kVegaVolPointToUnitVol`.
-- [ ] **Step 4: Run to verify it passes** — build + filter → PASS.
-- [ ] **Step 5: Commit** (module hpp/cpp + test).
+- [x] **Step 1: Write the failing test** — `DispersionBookVar_SplitsConfidences`: build a small `DispersionBook` + synthetic scenarios; assert `dispersion_book_var(book, scenarios, {0.95, 0.99}, cfg)` returns two `risks` with `confidence` 0.95/0.99, `n_positions == book.positions.size()`, and every frame `n_failed == 0`. (Synthetic surfaces; small position count.)
+- [x] **Step 2: Run to verify it fails** — build → FAIL: `dispersion_book_var` undefined.
+- [x] **Step 3: Implement** the lift; route the ×100 through `kVegaVolPointToUnitVol`.
+- [x] **Step 4: Run to verify it passes** — build + filter → PASS.
+- [x] **Step 5: Commit** (module hpp/cpp + test).
 
 ---
 
@@ -162,11 +162,11 @@
 
 **Freeze guard (critical):** this is a pure dedup. The emitted TSV bytes, the encoder's column order, and `ra_schema_hash()` (`0xdcce…`) must be **bit-identical** afterward. The registry (`run_archive_schema.hpp`) and `_schema.py` are NOT touched. A `static_assert`/test pins `backtest_series_columns()`'s names to the registry `backtest` columns[2..26] in order, so the shared table can never drift from the frozen registry.
 
-- [ ] **Step 1: Write the failing test** — `BacktestSeriesColumns_MatchRegistryOrder`: assert `backtest_series_columns()` has 25 entries whose `name`s equal `ra_sections()`'s `backtest` section columns index 2..26 in order (skipping `date`,`ts_ns`); and a round-trip test that `encode_backtest_section` output over a 2-row `BacktestResult` is column-for-column value-equal to `append_backtest_series_tsv` (already covered by existing tests — extend to assert every one of the 25 columns, closing Minor #17's "one value per dtype-class" gap for this section).
-- [ ] **Step 2: Run to verify it fails** — build → FAIL: `backtest_series_columns` undefined.
-- [ ] **Step 3: Implement** the shared header; rewrite both `dbl_cols[]` sites to iterate it. Verify NO change to `schema_hash` and NO edit to `run_archive_schema.hpp`/`_schema.py`.
-- [ ] **Step 4: Run to verify it passes** — build + run full `RunArchive*`/`Tearsheet*` filters → PASS; the committed fixture `MatchesCommittedPythonFixture` still byte-identical (proves bytes unchanged).
-- [ ] **Step 5: Commit** (`git add atx-vol/include/atx/vol/backtest_series_columns.hpp atx-vol/src/tearsheet.cpp atx-vol/src/run_archive.cpp atx-vol/tests/run_archive_test.cpp`).
+- [x] **Step 1: Write the failing test** — `BacktestSeriesColumns_MatchRegistryOrder`: assert `backtest_series_columns()` has 25 entries whose `name`s equal `ra_sections()`'s `backtest` section columns index 2..26 in order (skipping `date`,`ts_ns`); and a round-trip test that `encode_backtest_section` output over a 2-row `BacktestResult` is column-for-column value-equal to `append_backtest_series_tsv` (already covered by existing tests — extend to assert every one of the 25 columns, closing Minor #17's "one value per dtype-class" gap for this section).
+- [x] **Step 2: Run to verify it fails** — build → FAIL: `backtest_series_columns` undefined.
+- [x] **Step 3: Implement** the shared header; rewrite both `dbl_cols[]` sites to iterate it. Verify NO change to `schema_hash` and NO edit to `run_archive_schema.hpp`/`_schema.py`.
+- [x] **Step 4: Run to verify it passes** — build + run full `RunArchive*`/`Tearsheet*` filters → PASS; the committed fixture `MatchesCommittedPythonFixture` still byte-identical (proves bytes unchanged).
+- [x] **Step 5: Commit** (`git add atx-vol/include/atx/vol/backtest_series_columns.hpp atx-vol/src/tearsheet.cpp atx-vol/src/run_archive.cpp atx-vol/tests/run_archive_test.cpp`).
 
 ---
 
@@ -182,11 +182,11 @@
 
 **Freeze guard:** the committed golden fixture is written by the T5-era test helper with its own fixed `created_ts_ns` — this task does NOT touch the writer's `created_ts_ns==0 ⇒ system-clock` semantics, only what `RunDir` PASSES. Fixture bytes unaffected. The economic golden dumps (`backtest`/`projected_cold` section TSVs) do not include `created_ts_ns`, so the 135-session hashes are unaffected.
 
-- [ ] **Step 1: Write the failing tests** — `RunDir_WriteIsByteDeterministic`: write the same sections to two temp run dirs with identical inputs; assert the two `run.atxrun` files are byte-identical. `RunDir_VerifyRejectsCountGateMismatch`: build a `run.atxrun` whose `backtest` and `reconciliation` sections have unequal `n_rows`; assert `RunDir::verify()` returns `Err(InvalidArgument)` (the cardinality cross-check).
-- [ ] **Step 2: Run to verify they fail** — build → FAIL (nondeterministic bytes today; no count-gate negative coverage).
-- [ ] **Step 3: Implement** the deterministic `created_ts_ns` in `RunDir::write_run_archive`; add the count-gate negative test (the gate already exists in `verify` — this is coverage, so if it already passes, keep it as a locked regression).
-- [ ] **Step 4: Run to verify they pass** — build + `RunDir*` filter → PASS; `MatchesCommittedPythonFixture` still byte-identical.
-- [ ] **Step 5: Commit** (`git add atx-vol/include/atx/vol/run_archive.hpp atx-vol/src/run_archive.cpp atx-vol/tests/run_archive_test.cpp`).
+- [x] **Step 1: Write the failing tests** — `RunDir_WriteIsByteDeterministic`: write the same sections to two temp run dirs with identical inputs; assert the two `run.atxrun` files are byte-identical. `RunDir_VerifyRejectsCountGateMismatch`: build a `run.atxrun` whose `backtest` and `reconciliation` sections have unequal `n_rows`; assert `RunDir::verify()` returns `Err(InvalidArgument)` (the cardinality cross-check).
+- [x] **Step 2: Run to verify they fail** — build → FAIL (nondeterministic bytes today; no count-gate negative coverage).
+- [x] **Step 3: Implement** the deterministic `created_ts_ns` in `RunDir::write_run_archive`; add the count-gate negative test (the gate already exists in `verify` — this is coverage, so if it already passes, keep it as a locked regression).
+- [x] **Step 4: Run to verify they pass** — build + `RunDir*` filter → PASS; `MatchesCommittedPythonFixture` still byte-identical.
+- [x] **Step 5: Commit** (`git add atx-vol/include/atx/vol/run_archive.hpp atx-vol/src/run_archive.cpp atx-vol/tests/run_archive_test.cpp`).
 
 ---
 
@@ -202,11 +202,11 @@
 - **#12** `RunArchive.close()` (`runarchive.py:534-543`) must not leak `_fh` on `BufferError` (outstanding numpy views) — close `_fh` in a `finally`/best-effort path; test that `close()` with a live view does not leave the handle dangling (or documents the retry).
 - **#13** Forged non-utf8 string table currently raises `UnicodeDecodeError` — wrap `_string_table`'s `.decode` (`:287`) so corruption raises the documented `ValueError` instead.
 
-- [ ] **Step 1: Write the failing tests** — add the four cases above to `test_runarchive.py`, each starting from a valid fixture-derived buffer and patching bytes (CRCs recomputed where `open()` would otherwise reject earlier). RED because the reader raises the wrong exception type / leaks the handle.
-- [ ] **Step 2: Run to verify they fail** — `pytest atx-vol/python/tests/test_runarchive.py -v` → FAIL (wrong exception / leak).
-- [ ] **Step 3: Implement** the `ValueError` wrapping for section-framing + version + non-utf8; fix `close()`.
-- [ ] **Step 4: Run to verify they pass** — `pytest atx-vol/python` → PASS (all prior tests still green).
-- [ ] **Step 5: Commit** (`git add atx-vol/python/src/atxvol/report/runarchive.py atx-vol/python/tests/test_runarchive.py`).
+- [x] **Step 1: Write the failing tests** — add the four cases above to `test_runarchive.py`, each starting from a valid fixture-derived buffer and patching bytes (CRCs recomputed where `open()` would otherwise reject earlier). RED because the reader raises the wrong exception type / leaks the handle.
+- [x] **Step 2: Run to verify they fail** — `pytest atx-vol/python/tests/test_runarchive.py -v` → FAIL (wrong exception / leak).
+- [x] **Step 3: Implement** the `ValueError` wrapping for section-framing + version + non-utf8; fix `close()`.
+- [x] **Step 4: Run to verify they pass** — `pytest atx-vol/python` → PASS (all prior tests still green).
+- [x] **Step 5: Commit** (`git add atx-vol/python/src/atxvol/report/runarchive.py atx-vol/python/tests/test_runarchive.py`).
 
 ---
 
@@ -228,11 +228,11 @@ Replace, per subcommand, the inline economics with the library seams — preserv
 - Replace loose methodology literals (`min_names 51`, core `60/3/40`) with `ListedDispersionMethodology` reads (L9).
 - **Document the per-track archive constraint** (F1 remainder): a header comment + one line in the plan/ledger stating that route-scoped `meta`/`diagnostics` section names would require a `kRaMinor` schema bump + new golden, so Wave B keeps the Wave-A **merge-write** (identity-hash-guarded union) as the shared-dir mechanism and does NOT introduce per-track section names. No format change this wave.
 
-- [ ] **Step 1: Write the failing test** — extend the 3-session fixture e2e (`test_dispersion_runarchive_e2e.py`, fixture recipe from `dispersion-parity/task-9-report.md`; NEVER modify `scratchpad\paired`): run `build-schedule → run-backtest → project-schedule → run-projected-backtest --execution cold` and assert `run.atxrun` reproduces the known 3-session economics `final_nav=-456.5769067` (dates=3, rolls=1) and that the listed + projected sections coexist (merge-write union). RED because the example still has inline economics (or the test asserts a seam the CLI does not yet call).
-- [ ] **Step 2: Run to verify it fails** — build the example (`scratchpad\build_example.bat` or the `atxvol_spy_dispersion_backtest` target); run the fixture pipeline → FAIL until cutover.
-- [ ] **Step 3: Implement** the cutover; delete the now-duplicated inline economics from the example (they live in the module).
-- [ ] **Step 4: Run to verify it passes** — rebuild example; run the 3-session fixture pipeline; `pytest atx-vol/python` → PASS; economics byte-identical (`final_nav=-456.5769067`).
-- [ ] **Step 5: Commit** (`git add atx-vol/examples/spy_dispersion_backtest.cpp atx-vol/python/tests/test_dispersion_runarchive_e2e.py`).
+- [x] **Step 1: Write the failing test** — extend the 3-session fixture e2e (`test_dispersion_runarchive_e2e.py`, fixture recipe from `dispersion-parity/task-9-report.md`; NEVER modify `scratchpad\paired`): run `build-schedule → run-backtest → project-schedule → run-projected-backtest --execution cold` and assert `run.atxrun` reproduces the known 3-session economics `final_nav=-456.5769067` (dates=3, rolls=1) and that the listed + projected sections coexist (merge-write union). RED because the example still has inline economics (or the test asserts a seam the CLI does not yet call).
+- [x] **Step 2: Run to verify it fails** — build the example (`scratchpad\build_example.bat` or the `atxvol_spy_dispersion_backtest` target); run the fixture pipeline → FAIL until cutover.
+- [x] **Step 3: Implement** the cutover; delete the now-duplicated inline economics from the example (they live in the module).
+- [x] **Step 4: Run to verify it passes** — rebuild example; run the 3-session fixture pipeline; `pytest atx-vol/python` → PASS; economics byte-identical (`final_nav=-456.5769067`).
+- [x] **Step 5: Commit** (`git add atx-vol/examples/spy_dispersion_backtest.cpp atx-vol/python/tests/test_dispersion_runarchive_e2e.py`).
 
 ---
 
@@ -240,10 +240,10 @@ Replace, per subcommand, the inline economics with the library seams — preserv
 
 **Files:** Modify this plan (check boxes); update `.superpowers/sdd/backtest-wave-b/progress.md` (controller-owned ledger).
 
-- [ ] **Step 1:** Full Release build of `atx-vol` targets + `atx-vol-tests`; run `atx-vol-tests.exe` from `C:\atx\build-rel` CWD (all green **modulo** the three documented pre-existing reds: `BoundaryHoist.PriceBitIdenticalToPrechange`, `SurfaceV2Qualification…/Latency`, `…/Balanced`); run `pytest atx-vol/python` (all green incl. the new reader-hardening + e2e tests).
-- [ ] **Step 2:** Controller runs the **parity-full (135-session)** pipeline end-to-end on the idle box (`C:\atx-data`, controller-only): confirm economics UNCHANGED — listed `final_nav=125026.0592`, projected-cold `final_nav=123243.1172`, `dates=135`, `rolls=7`, daily-pnl `corr=0.99718`, `mark_divergence` rows=0. Confirm the golden dump hashes still match: `dump backtest --tsv == a05470c7…`, `projected_cold == cbabca44…`, `trade_schedule == b640b3ab…`, `projected_schedule == d6793d46…`. Confirm `run.atxrun` opens + `validate_all()` passes + the Python reader renders the report.
-- [ ] **Step 3:** Confirm the **M1 fix is exercised in production** — the parity-full run's clock does not abort on any leading warm-up/low-coverage session (previously masked because `date_lo` == first roll). Confirm the merge-write union still holds (listed + projected sections coexist in the shared parity-full dir). No new loose result TSVs; no schema bump (`kRaMinor` still 0; `schema_hash` still `0xdcce…`).
-- [ ] **Step 4: Commit** the ledger + checked plan.
+- [x] **Step 1:** Full Release build of `atx-vol` targets + `atx-vol-tests`; run `atx-vol-tests.exe` from `C:\atx\build-rel` CWD (all green **modulo** the three documented pre-existing reds: `BoundaryHoist.PriceBitIdenticalToPrechange`, `SurfaceV2Qualification…/Latency`, `…/Balanced`); run `pytest atx-vol/python` (all green incl. the new reader-hardening + e2e tests).
+- [x] **Step 2:** Controller runs the **parity-full (135-session)** pipeline end-to-end on the idle box (`C:\atx-data`, controller-only): confirm economics UNCHANGED — listed `final_nav=125026.0592`, projected-cold `final_nav=123243.1172`, `dates=135`, `rolls=7`, daily-pnl `corr=0.99718`, `mark_divergence` rows=0. Confirm the golden dump hashes still match: `dump backtest --tsv == a05470c7…`, `projected_cold == cbabca44…`, `trade_schedule == b640b3ab…`, `projected_schedule == d6793d46…`. Confirm `run.atxrun` opens + `validate_all()` passes + the Python reader renders the report.
+- [x] **Step 3:** Confirm the **M1 fix is exercised in production** — the parity-full run's clock does not abort on any leading warm-up/low-coverage session (previously masked because `date_lo` == first roll). Confirm the merge-write union still holds (listed + projected sections coexist in the shared parity-full dir). No new loose result TSVs; no schema bump (`kRaMinor` still 0; `schema_hash` still `0xdcce…`).
+- [x] **Step 4: Commit** the ledger + checked plan.
 
 ---
 
@@ -302,3 +302,121 @@ Replace, per subcommand, the inline economics with the library seams — preserv
 6. **T7 addition (Minor #16)**: run_archive writer still flush-not-fsync —
    commit 86f2210 fixed only the surface archive. Mirror its
    fsync-before-rename pattern in `write_run_archive_file` as part of T7.
+
+---
+
+## Gate outcome (controller, 2026-07-24)
+
+Commit chain on `main`, base `6e3af60`:
+`12a6e4c` T8 -> `4d12d96` T1 -> `bb0e744` T2 -> `f9fb4e2` T3 -> `17b1477` T4 ->
+`c2e5463` T5 -> `b1cfd16` T6 -> `9a24e78` T7 -> `382fee2` T9.
+
+All nine implementation tasks closed with both verdicts green (Spec compliance
+✅ / Code quality Approved) and zero unresolved Critical or Important findings.
+Per-task detail and the full Minor roll-up live in
+`.superpowers/sdd/backtest-wave-b/progress.md`.
+
+**Step 1** — full Release build; `atx-vol-tests.exe` from `C:\atx\build-rel` CWD:
+2013 ran, **1967 passed / 43 skipped / 3 failed**, the three failures being
+exactly the documented pre-existing reds. `pytest atx-vol/python`: 87 passed,
+plus the 5 archive e2e tests passing on an isolated rerun (a concurrent-load
+scheduling error by the controller — full gtest, the 135-session parity run and
+the Python suite at once — had made the spawned example exe fail-fast with
+`0xC0000409`; the exe is healthy standalone).
+
+**Step 2** — parity-full (135-session) end-to-end rerun: economics **exact**.
+Listed `final_nav=125026.0592`, projected-cold `final_nav=123243.1172`,
+`dates=135`, `rolls=7`, daily-pnl `corr=0.99718`, `mark_divergence rows=0`.
+4/4 golden hashes matched (`a05470c7…` backtest dump, `cbabca44…`
+projected_cold, `b640b3ab…` trade_schedule, `d6793d46…` projected_schedule).
+`validate_all()` passes; the Python reader renders the parity report (153986 B).
+
+**Step 3** — **NOT satisfied; see the final review.** The parity-full clock ran
+all 135 sessions without aborting, but that does **not** demonstrate the M1 fix:
+in this corpus `date_lo` equals the first roll date, so the lead-in is zero and
+the trimming path never executes. The claim that M1 is "exercised in production"
+was an overstatement by the controller — a run with no lead-in cannot exercise a
+lead-in fix. The final review then showed the fix does not work end-to-end at
+all (Important #1 below), so this step is genuinely open, not merely unproven.
+The rest of Step 3 does hold: the merge-write union holds — the shared parity-full dir carries **9** sections
+(listed + projected coexisting, `projected_schedule` included because this run
+also took step 3 under merge-write, vs Wave A's 8). No new loose result TSVs;
+no schema bump (`kRaMinor` still 0, `schema_hash` still `0xdcce47781ac8390d`).
+
+Determinism note: whole-file `run.atxrun` bytes differ across an identical rerun
+because the `diagnostics` section carries wall-clock `wall_ms`. By design — the
+economics sections are byte-stable (dump hashes exact across the rerun), so the
+T7 guarantee (identical payloads -> identical bytes) is unaffected.
+
+### Carried out of Wave B
+
+1. **`run-projected-var` economics are unpinned.** No golden was ever captured
+   for that route (raised as a controller note by the T5 reviewer). It is the
+   one Wave B surface with no regression anchor. Capture
+   `run-projected-var --run <DIR>` output as a golden before Wave C touches the
+   projection path.
+2. **The Python test suite was restructured after the gate and is uncommitted.**
+   The archive e2e module used to spawn the C++ dispersion pipeline six times to
+   produce a `run.atxrun` it then merely read — the wrong layer, and the reason
+   the suite took ~15 minutes. It now reads a committed 9-section archive fixture
+   (`tests/data/runarchive/dispersion_paired.atxrun`); the two contracts only the
+   CLI can demonstrate are kept behind a `slow` marker, deselected by default.
+   Redundant work was also removed from `test_backtest.py` (6 backtests -> 4, and
+   a smaller surface fixture), `test_parity.py` (one report build, not six) and
+   `test_runarchive.py` (one shared mapping). **This work is unverified** — it has
+   never been run green — and is deliberately left out of the Wave B commits.
+
+### Final whole-branch review (fresh Opus reviewer, 6e3af60..382fee2)
+
+Full report: `.superpowers/sdd/backtest-wave-b/final-review.md`.
+
+**Spec compliance: ✅** — every task landed and the extractions are faithful
+lifts with no economic delta (each moved block traced against the code it
+replaced). **Code quality: Request changes** — 0 Critical, 3 Important, 7 Minor.
+**Wave B is therefore NOT closed.**
+
+**Important 1 — the M1 warm-up-lead-in fix does not work end-to-end.**
+`assemble_reconciliation_snapshots` trims leading pre-roll sessions, so
+`reconcile_listed_schedule` returns `clock.size() - lead_in` rows; the next call
+in `run-backtest`, `validate_listed_reconciliation_backtest`
+(`listed_dispersion_reconciliation.cpp:344-348`), hard-requires
+`rows.size() == backtest.size()` while the backtest still spans every clock date.
+The abort simply moves downstream, with a more misleading message
+("invalid tolerance or row count"). `RunDir::verify` (`run_archive.cpp:1630`)
+carries the same gate over the archive sections. The T2 test is green because it
+exercises the seam in isolation and never reaches the validator. Controller
+verified this independently against the code before accepting it.
+*Fix:* make both gates date-aligned — require the reconciliation rows to be a
+contiguous suffix of the backtest dates and compare pairwise from that offset,
+which is behaviour-identical when the lead-in is zero.
+
+**Important 2 — `ListedArchiveLookup`'s borrow contract changes the memory
+profile.** The old loop freed each `MarketSnapshot` per roll; the borrowed-pointer
+seam forces the caller to retain every roll-date board (a full heap deserialize,
+not an mmap) for the whole call. Harmless at 7 rolls, ~120 boards resident on a
+multi-year corpus.
+
+**Important 3 — `ListedDispersionMethodology` is a third copy of the thresholds,
+not the single authority its header claims.** `verify` still uses
+`RunVerifyOptions`' independent 60/3/40 (`run_archive.hpp:566-568`) and the cold
+route reads `ProjectionConfig`. Four of its seven fields are dead; the worst is
+`query_route`, a `ColdReference` that nothing reads sitting beside the real
+authority.
+
+**Minor (7)** — the T6 `static_assert` cannot pin member bindings and the only
+independent oracle uses `{0.0, 0.0}` for 23 of 25 fixture columns;
+`BuildScheduleSymbolIsDeclared` cannot fail; `TwoRouteColdParity_LegMarksEqual`
+is `f(x) == f(x)` (the real I1 gate is the Python e2e); a permanently-zero
+`archive_load` diagnostics row; the projected-VaR failure gate moved ahead of the
+diagnostic TSV writes (stale artifacts, lost evidence); an undocumented borrow in
+`assemble_reconciliation_snapshots`' return; and the merge-write identity hash
+covering only `run_spec.tsv` + `universe_schedule.tsv` (pre-existing at 191e409,
+outside the diff).
+
+Explicitly cleared, so they are not re-checked: `hash_archive_file` is
+byte-identical (`read_text` was already binary-mode); the build-schedule loop and
+the cold projection are line-for-line verbatim; every literal->policy
+substitution is value-identical; `analytic_greeks = true` matches `RunConfig`'s
+existing default (no economics change); the rename is unreachable unless
+write+sync+close all succeeded; and `created_ts_ns` bits round-trip while
+`ArchiveContentIdentity` still discriminates content.
