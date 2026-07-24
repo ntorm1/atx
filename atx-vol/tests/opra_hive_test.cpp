@@ -408,13 +408,94 @@ TEST(OpraHive, CorruptDateFileCountsError) {
   EXPECT_EQ(res->n_missing, std::size_t{0});
   EXPECT_EQ(res->n_error, std::size_t{3}); // 07-02's 3 symbols error
 
+  // A genuinely broken file is a DEFECT, never a coverage hole: the split must
+  // not let corruption hide in hole noise (a hole and a wrong-schema file both
+  // surface InvalidArgument, so this is exactly what an error-code test would
+  // have gotten wrong).
+  EXPECT_EQ(res->n_coverage_holes, std::size_t{0});
+  EXPECT_EQ(res->n_loaded + res->n_missing + res->n_error, res->n_total);
+
   for (const std::string &sym : {"AAA", "BBB", "CCC"}) {
     const ahv::OpraBatchEntry *e = find_cell(*res, sym, "2026-07-02");
     ASSERT_NE(e, nullptr) << sym;
     ASSERT_FALSE(e->panel.has_value()) << sym;
     EXPECT_NE(e->panel.error().code(), ahv::ErrorCode::NotFound) << sym; // present, not missing
+    EXPECT_FALSE(e->coverage_hole) << sym;
   }
   fs::remove_all(root);
+}
+
+// Explicit-symbol mode: a requested symbol absent from a present, readable date
+// file is a COVERAGE HOLE, not a defect. This path is classified by the loader's
+// own per-date underlying scan (phase A never reads the file in explicit mode),
+// so it needs its own coverage separate from the discovery case below.
+TEST(OpraHive, ExplicitSymbolsCoverageHoleIsNotALoadError) {
+  const fs::path root = fs::temp_directory_path() / "atx_opra_hive_explicit_hole";
+  const fs::path tmp2 = fs::temp_directory_path() / "atx_opra_hive_explicit_hole_d2";
+  fs::remove_all(root);
+  fs::remove_all(tmp2);
+
+  // Uniform base (3 dates x AAA/BBB/CCC), then rewrite 2026-07-02 with ONLY
+  // {AAA, CCC}: BBB is present on the other two dates and a hole on that one.
+  tsupport::SyntheticHiveSpec full;
+  full.dates = {"2026-07-01", "2026-07-02", "2026-07-03"};
+  tsupport::write_synthetic_hive_v2(root, full);
+
+  tsupport::SyntheticHiveSpec d2only;
+  d2only.dates = {"2026-07-02"};
+  d2only.symbols = {"AAA", "CCC"};
+  tsupport::write_synthetic_hive_v2(tmp2, d2only);
+
+  std::error_code fec;
+  fs::remove(root / "date=2026-07-02" / "data.parquet", fec);
+  fs::copy_file(tmp2 / "date=2026-07-02" / "data.parquet",
+                root / "date=2026-07-02" / "data.parquet", fec);
+  ASSERT_FALSE(fec) << fec.message();
+
+  ahv::OpraHiveSpec spec;
+  spec.root_dir = root.string();
+  spec.date_lo = "2026-07-01";
+  spec.date_hi = "2026-07-03";
+  spec.symbols = {"AAA", "BBB", "CCC"}; // EXPLICIT, not discovery
+  spec.r = 0.03;
+
+  spec.n_threads = 1;
+  const auto serial = ahv::load_opra_hive(spec);
+  spec.n_threads = 8;
+  const auto parallel = ahv::load_opra_hive(spec);
+  ASSERT_TRUE(serial.has_value()) << serial.error().to_string();
+  ASSERT_TRUE(parallel.has_value()) << parallel.error().to_string();
+
+  EXPECT_EQ(serial->n_total, std::size_t{9});
+  EXPECT_EQ(serial->n_loaded, std::size_t{8});
+  EXPECT_EQ(serial->n_missing, std::size_t{0});
+  EXPECT_EQ(serial->n_error, std::size_t{1});
+  EXPECT_EQ(serial->n_coverage_holes, std::size_t{1}); // the ONE hole, not a defect
+  EXPECT_EQ(serial->n_loaded + serial->n_missing + serial->n_error, serial->n_total);
+
+  const ahv::OpraBatchEntry *hole = find_cell(*serial, "BBB", "2026-07-02");
+  ASSERT_NE(hole, nullptr);
+  ASSERT_FALSE(hole->panel.has_value());
+  EXPECT_TRUE(hole->coverage_hole);
+  // The Err shape is unchanged by the structural classification.
+  EXPECT_NE(hole->panel.error().code(), ahv::ErrorCode::NotFound);
+
+  // Every loaded cell stays a non-hole, and the classification is worker-count
+  // independent (it is derived per date from that date's own table).
+  EXPECT_EQ(serial->n_coverage_holes, parallel->n_coverage_holes);
+  ASSERT_EQ(serial->entries.size(), parallel->entries.size());
+  for (std::size_t i = 0; i < serial->entries.size(); ++i) {
+    EXPECT_EQ(serial->entries[i].coverage_hole, parallel->entries[i].coverage_hole)
+        << "entry " << i;
+    EXPECT_EQ(serial->entries[i].panel.has_value(), parallel->entries[i].panel.has_value())
+        << "entry " << i;
+    if (serial->entries[i].panel.has_value()) {
+      EXPECT_FALSE(serial->entries[i].coverage_hole) << "entry " << i;
+    }
+  }
+
+  fs::remove_all(root);
+  fs::remove_all(tmp2);
 }
 
 // Non-uniform hive: one date's file is missing a symbol that OTHER dates carry.
@@ -478,11 +559,18 @@ TEST(OpraHive, DiscoversUnionAcrossNonUniformDates) {
     }
   }
 
+  // ...and it is classified as a COVERAGE HOLE, not a defect: n_coverage_holes is
+  // a SUB-COUNT of n_error (the partition invariant is untouched), so the build
+  // driver can report "the universe is sparse" separately from "the data is bad".
+  EXPECT_EQ(serial->n_coverage_holes, std::size_t{1});
+  EXPECT_EQ(serial->n_loaded + serial->n_missing + serial->n_error, serial->n_total);
+
   // The coverage hole is an Err entry, NOT NotFound (the file is present).
   const ahv::OpraBatchEntry *hole = find_cell(*serial, "BBB", "2026-07-02");
   ASSERT_NE(hole, nullptr);
   ASSERT_FALSE(hole->panel.has_value());
   EXPECT_NE(hole->panel.error().code(), ahv::ErrorCode::NotFound);
+  EXPECT_TRUE(hole->coverage_hole);
   // The two symbols that ARE on that date loaded fine.
   for (const std::string &sym : {"AAA", "CCC"}) {
     const ahv::OpraBatchEntry *e = find_cell(*serial, sym, "2026-07-02");
@@ -494,6 +582,7 @@ TEST(OpraHive, DiscoversUnionAcrossNonUniformDates) {
   // Determinism holds on the non-uniform hive.
   EXPECT_EQ(serial->n_loaded, parallel->n_loaded);
   EXPECT_EQ(serial->n_error, parallel->n_error);
+  EXPECT_EQ(serial->n_coverage_holes, parallel->n_coverage_holes);
   ASSERT_EQ(serial->entries.size(), parallel->entries.size());
   for (std::size_t i = 0; i < serial->entries.size(); ++i) {
     EXPECT_EQ(serial->entries[i].symbol, parallel->entries[i].symbol) << "entry " << i;

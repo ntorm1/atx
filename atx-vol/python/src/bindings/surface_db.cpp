@@ -85,6 +85,7 @@ namespace {
   out["n_dates_loaded"] = r.n_dates_loaded;
   out["n_dates_missing"] = r.n_dates_missing;
   out["n_load_errors"] = r.n_load_errors;
+  out["n_coverage_holes"] = r.n_coverage_holes;
   return out;
 }
 

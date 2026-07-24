@@ -143,6 +143,15 @@ struct OpraBatchEntry {
   bool used_market_input_fallback{false};
   std::uint64_t market_input_fingerprint{0};
 
+  // This cell is a COVERAGE HOLE, not a defect: the date's file is present and
+  // readable, and this symbol is simply absent from it (a sparse universe, not a
+  // corrupt hive). Set only by `load_opra_hive`, which classifies it structurally
+  // from the file's own distinct-underlying set — `load_opra_daterange` (the v1
+  // per-(symbol,date) layout) has no such case and never sets it. The entry's
+  // `panel` still carries the same zero-match `Err` it always did, so this is a
+  // pure ANNOTATION: it changes no error, code, or message.
+  bool coverage_hole{false};
+
   Result<OpraPanel> panel;            // Ok | Err(NotFound) | Err(load failure)
 };
 
@@ -155,6 +164,13 @@ struct OpraBatchResult {
   std::size_t n_loaded = 0;          // panel.has_value()
   std::size_t n_missing = 0;         // Err(NotFound) — file absent (non-fatal)
   std::size_t n_error = 0;           // Err(...) — file present but load failed
+  // How many of `n_error` are `entry.coverage_hole` — a present, readable date
+  // file that simply does not carry that symbol. A SUB-COUNT of `n_error`, never
+  // a fourth bucket: the partition n_loaded + n_missing + n_error == n_total
+  // still holds, and `n_error - n_coverage_holes` is the count of cells that
+  // failed for a real defect (unreadable/unparseable file, wrong schema,
+  // quarantined market inputs). Only `load_opra_hive` ever raises it.
+  std::size_t n_coverage_holes = 0;
 };
 
 // Progress sink: called once per (symbol, date) AFTER its entry is appended, with

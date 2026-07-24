@@ -83,11 +83,19 @@ atx-vol-surface-db-build --db <root> --hive <root>
 
 **Discover-all vs explicit `--symbols`.** With an explicit list, exactly those
 underliers are loaded for every date (a date whose file lacks a requested symbol
-is a visible coverage hole — a zero-match load error for that cell, never a
-silent gap). With no `--symbols`, the effective universe is the sorted distinct
-**union** of `underlying` across every readable date in range; every date then
-spans the full union, so the ingest grid is rectangular (date × union) with
-visible holes where a symbol is absent from a given date.
+is a visible coverage hole — counted in `n_coverage_holes`, never a silent gap).
+With no `--symbols`, the effective universe is the sorted distinct **union** of
+`underlying` across every readable date in range; every date then spans the full
+union, so the ingest grid is rectangular (date × union) with visible holes where
+a symbol is absent from a given date.
+
+Real hives have **non-uniform** per-date coverage (names list, delist, or simply
+were not pulled that day), so a discover-all build over a wide universe reports a
+**large `n_coverage_holes` and that is healthy** — it is the sparseness of the
+grid, not a data defect. `n_load_errors` is the counter that means something is
+wrong. The two are classified structurally by the loader (a hole is a present,
+readable date file that does not carry that symbol), never guessed from an error
+code, so real corruption can never hide in hole noise.
 
 ### Interest rate / carry — read this before trusting a green exit
 
@@ -185,13 +193,22 @@ disposition counters partition the distinct symbols seen:
 | `coverage.dates_skipped_would_drop` | Dates skipped to avoid dropping an existing symbol (safety guard). |
 | `symbol.<S> ...` | Per-symbol populate stats over the written dates. |
 
-**Hive ingest** — the three date counters describe distinct **dates**, not cells:
+**Hive ingest** — the first two counters describe distinct **dates**, the last two
+describe **cells**:
 
 | Field | Meaning |
 | --- | --- |
 | `n_dates_loaded` | Distinct dates that produced at least one board. |
 | `n_dates_missing` | Distinct in-range dates that produced **none** (a fully absent OR fully unreadable date). The window is enumerated as **calendar** days, so every weekend and market holiday in range is counted missing — a July window always shows ~9. |
-| `n_load_errors` | **Cell** count of present-but-unparseable files (never reach the fit). |
+| `n_load_errors` | **Cell** count of real ingest **defects**: a present file that is unreadable/unparseable, has the wrong schema, or whose market inputs quarantined the cell. Never reaches the fit. **This is the counter to alarm on.** |
+| `n_coverage_holes` | **Cell** count of **coverage holes**: the date file is present and readable, the symbol is simply not in it. Expected and healthy on a sparse universe; never reaches the fit. |
+
+The two cell counters exhaust the loader's erroring cells
+(`n_load_errors + n_coverage_holes == OpraBatchResult::n_error`) and are split by
+the loader **structurally** — a hole is decided from the date file's own
+distinct-`underlying` set, not from an error code (a hole and a wrong-schema file
+both surface `InvalidArgument`, so a code test would report a corrupt date as
+holes and let real corruption hide).
 
 **Double-count, by design.** A date whose file is present but fully corrupt is
 counted in **both** `n_dates_missing` (it produced no boards, so it is not a

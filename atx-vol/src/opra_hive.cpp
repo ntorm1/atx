@@ -71,7 +71,21 @@ struct DateInfo {
   bool present{false};
   std::optional<io::ParquetTable> table{};    // discovery cached read (present & OK)
   std::optional<atx::core::Error> read_error{}; // discovery: present but unreadable
+  // Discovery mode only: this date file's own distinct `underlying` set, sorted
+  // and unique (the very set its contribution to the union came from). Engaged
+  // exactly when `table` is — a symbol absent from it is a COVERAGE HOLE, not a
+  // load failure.
+  std::vector<std::string> symbols_present{};
 };
+
+// The Err a cell gets when its symbol is simply not in a present, readable date
+// file. Byte-identical to what the table seam (`panel_from_table`'s zero-match
+// branch) returns, so classifying the hole structurally instead of by calling the
+// seam changes nothing an `.error()` reader can observe.
+[[nodiscard]] atx::core::Error coverage_hole_error(const std::string& symbol) {
+  return atx::core::Error{ErrorCode::InvalidArgument,
+                          "underlying '" + symbol + "' not found in parquet"};
+}
 
 // One present date's per-symbol split, deferred to the parallel pass. `table` is
 // engaged only in discovery mode (the cached pre-pass read, reused here); in
@@ -146,9 +160,13 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec& spec, const OpraBatch
         if (!syms.has_value()) {
           di.read_error = syms.error(); // e.g. `underlying` present but not string-typed
         } else {
-          for (std::string& s : *syms) {
-            discovered.push_back(std::move(s));
+          for (const std::string& s : *syms) {
+            discovered.push_back(s);
           }
+          // Retained (sorted+unique, as distinct_underlyings returns it) so phase
+          // B can tell a COVERAGE HOLE — a union symbol this date simply does not
+          // carry — from a genuine load failure, without inspecting error codes.
+          di.symbols_present = std::move(*syms);
           di.table = std::move(*tbl);
         }
       }
@@ -224,6 +242,19 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec& spec, const OpraBatch
         result.entries.push_back(std::move(entry));
         continue;
       }
+      // Discovery: the file is present AND readable and we already hold its own
+      // distinct-underlying set, so a symbol absent from it is a COVERAGE HOLE by
+      // construction — finalize it here with the seam's exact zero-match Err and
+      // queue no read (calling the seam merely to be handed that error back is
+      // wasted work). Classified structurally, so the counter never has to infer
+      // "sparse universe" vs "broken file" from an error code.
+      if (di.table.has_value() &&
+          !std::binary_search(di.symbols_present.begin(), di.symbols_present.end(), symbol)) {
+        entry.coverage_hole = true;
+        entry.panel = Err(coverage_hole_error(symbol));
+        result.entries.push_back(std::move(entry));
+        continue;
+      }
 
       OpraLoadSpec load;
       load.path = di.path;
@@ -259,13 +290,32 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec& spec, const OpraBatch
   // from the table yields a zero-match Err for that slot). read_parquet /
   // LazyParquet hold no shared mutable state (distinct files, a fresh per-call
   // reader), so the outcome is independent of worker count / claim order.
+  // Split one date's table across its queued symbols, classifying a symbol the
+  // file does not carry as a COVERAGE HOLE instead of calling the seam for the
+  // error. `present` is the file's own distinct-underlying set (sorted+unique) or
+  // EMPTY-AND-UNKNOWN when it could not be computed (no/!string `underlying`
+  // column) — in which case nothing is a hole and every cell goes to the seam, so
+  // a schema-broken file still surfaces its real error on every cell.
+  const auto split_table = [&](const io::ParquetTable& tbl, const DateReadTask& task,
+                               const std::vector<std::string>* present) {
+    for (const SymbolLoad& sl : task.loads) {
+      OpraBatchEntry& entry = result.entries[sl.slot];
+      if (present != nullptr &&
+          !std::binary_search(present->begin(), present->end(), entry.symbol)) {
+        entry.coverage_hole = true;
+        entry.panel = Err(coverage_hole_error(entry.symbol));
+        continue;
+      }
+      entry.panel = load_opra_cbbo_from_table(tbl, sl.load);
+    }
+  };
+
   parallel_for_dynamic(tasks.size(), spec.n_threads, [&](std::size_t k) {
     const DateReadTask& task = tasks[k];
     if (task.table.has_value()) {
-      const io::ParquetTable& tbl = *task.table;
-      for (const SymbolLoad& sl : task.loads) {
-        result.entries[sl.slot].panel = load_opra_cbbo_from_table(tbl, sl.load);
-      }
+      // Discovery mode: holes were already finalized serially in phase B from the
+      // pre-pass symbol set, so every queued load here is a symbol the file has.
+      split_table(*task.table, task, nullptr);
       return;
     }
     Result<io::ParquetTable> fresh = io::read_parquet(task.path);
@@ -277,9 +327,12 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec& spec, const OpraBatch
       }
       return;
     }
-    for (const SymbolLoad& sl : task.loads) {
-      result.entries[sl.slot].panel = load_opra_cbbo_from_table(*fresh, sl.load);
-    }
+    // Explicit mode: phase A never read this file, so compute its distinct
+    // underlyings ONCE here (one extra column scan per date, cheap next to panel
+    // construction) and classify holes from it. Purely per-date and derived from
+    // the task's own table, so it stays worker-count independent.
+    const Result<std::vector<std::string>> present = distinct_underlyings(*fresh);
+    split_table(*fresh, task, present.has_value() ? &*present : nullptr);
   });
 
   // ── Serial post-join: deterministic counters + in-order progress ──────────
@@ -287,7 +340,9 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec& spec, const OpraBatch
   // counters are independent of worker count / completion order and partition the
   // entries: n_loaded + n_missing + n_error == n_total. A NotFound panel is a
   // missing file; any other Err (quarantine / read / load / coverage-hole
-  // failure) is n_error.
+  // failure) is n_error. `n_coverage_holes` is counted INSIDE that last branch,
+  // so it is a sub-count of n_error by construction and the partition is
+  // untouched.
   std::size_t done = 0;
   for (const OpraBatchEntry& entry : result.entries) {
     if (entry.panel.has_value()) {
@@ -296,6 +351,9 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec& spec, const OpraBatch
       ++result.n_missing;
     } else {
       ++result.n_error;
+      if (entry.coverage_hole) {
+        ++result.n_coverage_holes;
+      }
     }
     ++done;
     if (progress) {

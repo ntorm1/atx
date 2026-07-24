@@ -18,6 +18,9 @@
 //   * `spec.symbols` non-empty  — load exactly those underliers, in the given
 //     order, for every date (a date whose file lacks a requested symbol yields
 //     an Err entry for it, exactly as the table seam reports a zero-match filter).
+//     The per-date distinct-underlying set is computed once per date in the panel
+//     pass (one extra column scan, cheap next to panel construction) so those
+//     cells can be marked as coverage holes — see below.
 //   * `spec.symbols` empty      — DISCOVER: the effective symbol list is the
 //     sorted distinct UNION of `underlying` across every present, readable date,
 //     resolved in a SERIAL pre-pass (one materialized read per date, cached and
@@ -25,10 +28,35 @@
 //     union, so the entry grid is rectangular and globally deterministic
 //     (date-major × union), independent of which date carries which symbol. A
 //     symbol in the union but ABSENT from a given date's file is a VISIBLE
-//     coverage hole: it is fed through the table seam exactly like an explicit
-//     request and returns a zero-match `Err` (bumping `n_error`), never a silent
-//     gap. If NO date in range is readable the union is empty and each date
-//     contributes a single anonymous entry (see below).
+//     coverage hole: it carries the same zero-match `Err` (bumping `n_error`),
+//     never a silent gap. If NO date in range is readable the union is empty and
+//     each date contributes a single anonymous entry (see below).
+//
+// ## Coverage holes vs defects
+//
+// A cell is a COVERAGE HOLE iff its date file is PRESENT and READABLE and the
+// file's own distinct-`underlying` set does not contain the symbol — a sparse
+// universe, not a broken hive. That is decided STRUCTURALLY from the file's
+// symbol set (the discovery pre-pass's, or one extra per-date scan in explicit
+// mode), never from an error code: a hole and a wrong-schema file both surface
+// `InvalidArgument`, so a code test would report a corrupt date as holes.
+// Such a cell is marked `entry.coverage_hole`, finalized WITHOUT calling the
+// table seam (there is nothing to read), and carries the seam's exact zero-match
+// `Err` — a pure annotation, observably identical to any `.error()` reader.
+// `n_coverage_holes` counts them and is a SUB-COUNT of `n_error`, so the
+// partition below is unchanged; `n_error - n_coverage_holes` is the real-defect
+// count. Two consequences worth knowing:
+//   * In DISCOVERY mode the hole check runs BEFORE market-input resolution, so a
+//     hole is never quarantined and never trips `MissingMarketInputPolicy::Error`
+//     — a cell with no data has no market inputs to demand. In EXPLICIT mode the
+//     file's symbol set is only known in the panel pass, so a hole that is ALSO
+//     missing market inputs is quarantined first and counts as a defect.
+//   * The hole check also precedes the seam's required-column validation, so in a
+//     file that is BOTH schema-broken and missing a symbol, that symbol's cell
+//     reads as a hole. The file's other cells still surface the schema error, so
+//     a broken date can never report as all-holes.
+// A cell that could not be classified (no readable `underlying` column at all) is
+// never a hole: it goes to the seam and surfaces the real error.
 //
 // ## Missing / corrupt dates (non-fatal)
 //

@@ -133,20 +133,30 @@ struct SurfaceDbBuildSpec {
 };
 
 // The full disposition of a `build_surface_db` call: the stage-1 config report,
-// the stage-2 populate coverage, and the DISTINCT-DATE ingest tallies. The three
-// date counters describe the hive load, not cells: `n_dates_loaded` is the number
+// the stage-2 populate coverage, and the ingest tallies. The two DATE counters
+// describe the hive load in distinct dates, not cells: `n_dates_loaded` is the number
 // of distinct dates that produced at least one board; `n_dates_missing` is the
 // number of distinct in-range dates that produced NONE (a fully absent or
 // unreadable date) — the window is enumerated as CALENDAR days, so every weekend
-// and market holiday in range counts as missing (a July window always shows ~9);
-// `n_load_errors` is the CELL count of present-but-unparseable files (the loader's
-// `n_error`), which never reach the fit.
+// and market holiday in range counts as missing (a July window always shows ~9).
+//
+// The last two split the loader's `n_error` cells into the two things an operator
+// must NOT confuse: `n_load_errors` is the CELL count of real defects — a present
+// file that is unreadable/unparseable, has the wrong schema, or whose market
+// inputs quarantined the cell; `n_coverage_holes` is the CELL count of a present,
+// readable date file that simply does not carry that symbol. A real hive has
+// non-uniform per-date coverage, so a discover-all build reports MANY holes and
+// that is healthy — it is `n_load_errors` that means "something is wrong with the
+// data". Both are classified structurally by `load_opra_hive` (never inferred from
+// an error code), and together they exhaust the loader's `n_error`. Neither ever
+// reaches the fit.
 struct SurfaceDbBuildReport {
   AutoConfigReport config;
   UniversePopulateCoverage coverage;
   std::size_t n_dates_loaded{0};
   std::size_t n_dates_missing{0};
   std::size_t n_load_errors{0};
+  std::size_t n_coverage_holes{0};
 };
 
 // Run the whole build (see `SurfaceDbBuildSpec`). Idempotent/resumable: re-running
@@ -165,7 +175,8 @@ struct SurfaceDbBuildReport {
 // Write `r` as a two-section CSV (reuses `write_populate_stats_csv`'s formatting
 // discipline: an owned buffer flushed to a binary/truncating stream, IoError on
 // open/write failure). Section 1 is a `key,value` table of every scalar counter
-// (config.*, coverage.*, and the three date counters); section 2 is a
+// (config.*, coverage.*, and the ingest counters n_dates_loaded / n_dates_missing
+// / n_load_errors / n_coverage_holes); section 2 is a
 // `symbol,n_attempted,n_ok,n_failed,n_disabled` row per `coverage.per_symbol`
 // entry. The first line is always the pinned header `key,value`.
 [[nodiscard]] Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view path);

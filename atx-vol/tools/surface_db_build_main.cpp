@@ -125,6 +125,7 @@ void print_report(const SurfaceDbBuildReport &r) {
   std::printf("n_dates_loaded %zu\n", r.n_dates_loaded);
   std::printf("n_dates_missing %zu\n", r.n_dates_missing);
   std::printf("n_load_errors %zu\n", r.n_load_errors);
+  std::printf("n_coverage_holes %zu\n", r.n_coverage_holes);
 
   // The disabled-on-selection-failure names (fail-closed; never silently served).
   std::printf("config.failed_symbols");

@@ -296,6 +296,7 @@ TEST(BuildSurfaceDb, EndToEndOnFixtureHive) {
   EXPECT_EQ(rep->n_dates_loaded, std::size_t{3});
   EXPECT_EQ(rep->n_dates_missing, std::size_t{3}); // 07-03, 07-04, 07-05 gap
   EXPECT_EQ(rep->n_load_errors, std::size_t{0});
+  EXPECT_EQ(rep->n_coverage_holes, std::size_t{0}); // uniform hive: no holes either
   EXPECT_EQ(rep->config.n_configured, 3u);
   EXPECT_EQ(rep->config.n_disabled_failed, 0u);
   EXPECT_EQ(rep->coverage.cells_to_fit, 9u);
@@ -332,6 +333,39 @@ TEST(BuildSurfaceDb, RerunFitsZero) {
   auto db = SurfaceDb::open(f.db.string());
   ASSERT_TRUE(db.has_value());
   EXPECT_EQ(db->partitions().size(), std::size_t{3}); // no rewrite
+}
+
+// Non-uniform per-date coverage — the SHAPE OF EVERY REAL HIVE — must report as
+// coverage holes, NOT as load errors. A discover-all build lays a rectangular
+// date x union grid, so every name absent from a given day is an erroring cell;
+// counting those as `n_load_errors` would make a healthy sparse universe read as
+// "the hive is corrupt" and let real corruption hide in the noise.
+TEST(BuildSurfaceDb, CoverageHolesAreNotLoadErrors) {
+  tsupport::SyntheticHiveSpec fx; // AAA/BBB/CCC x {07-01, 07-02, 07-06}
+  const BuildFixture f = make_build_fixture("holes", fx);
+
+  // Rewrite 07-02 with only {AAA, CCC}: BBB is a hole on exactly that date.
+  const fs::path tmp2 = fresh_dir("holes_d2");
+  tsupport::SyntheticHiveSpec d2only;
+  d2only.dates = {fx.dates[1]};
+  d2only.symbols = {"AAA", "CCC"};
+  tsupport::write_synthetic_hive_v2(tmp2, d2only);
+  std::error_code fec;
+  fs::remove(f.hive / ("date=" + fx.dates[1]) / "data.parquet", fec);
+  fs::copy_file(tmp2 / ("date=" + fx.dates[1]) / "data.parquet",
+                f.hive / ("date=" + fx.dates[1]) / "data.parquet", fec);
+  ASSERT_FALSE(fec) << fec.message();
+
+  SurfaceDbBuildSpec spec = build_spec(f, fx);
+  spec.hive.symbols = {}; // discover-all: the production universe build
+
+  const auto rep = build_surface_db(spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_EQ(rep->n_coverage_holes, std::size_t{1}); // (BBB, 07-02) — sparse, fine
+  EXPECT_EQ(rep->n_load_errors, std::size_t{0});    // nothing is actually broken
+  EXPECT_EQ(rep->n_dates_loaded, std::size_t{3});
+  EXPECT_EQ(rep->coverage.cells_to_fit, 8u); // the 9-cell grid minus the hole
+  EXPECT_EQ(rep->coverage.cells_ok, 8u);
 }
 
 // A DISABLED symbol must not keep its dates in the rewrite set forever. Its cell

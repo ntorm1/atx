@@ -241,8 +241,9 @@ Result<SurfaceDbBuildReport> build_surface_db(const SurfaceDbBuildSpec &spec) {
   // 3. One board per SUCCESSFULLY loaded cell; missing/corrupt cells are tallied
   //    and never fit. The date counters are DISTINCT dates (a date is "loaded"
   //    when any of its cells produced a panel, "missing" when none did — so a
-  //    per-symbol coverage hole inside a present date is not a missing date).
-  //    n_load_errors is the cell count of present-but-unparseable files.
+  //    per-symbol coverage hole inside a present date is not a missing date);
+  //    note the window is enumerated as CALENDAR days, so weekends and holidays
+  //    land in n_dates_missing.
   SurfaceDbBuildReport report;
   std::vector<CorpusBoard> boards;
   boards.reserve(loaded->n_loaded);
@@ -253,12 +254,17 @@ Result<SurfaceDbBuildReport> build_surface_db(const SurfaceDbBuildSpec &spec) {
     if (entry.panel.has_value()) {
       loaded_dates.insert(entry.date);
       boards.push_back(corpus_board_from_opra(entry.date, entry.symbol, std::move(*entry.panel)));
-    } else if (entry.panel.error().code() != ErrorCode::NotFound) {
-      ++report.n_load_errors; // file present but failed to parse
     }
   }
   report.n_dates_loaded = loaded_dates.size();
   report.n_dates_missing = all_dates.size() - loaded_dates.size();
+  // Split the loader's erroring cells into "the universe is sparse" and "the data
+  // is bad" — taken from the loader's OWN structural classification, never
+  // inferred from an error code here (a coverage hole and a wrong-schema file are
+  // both InvalidArgument, so a code test would misreport a corrupt date as holes).
+  // n_coverage_holes is a sub-count of n_error, so the subtraction cannot wrap.
+  report.n_coverage_holes = loaded->n_coverage_holes;
+  report.n_load_errors = loaded->n_error - loaded->n_coverage_holes;
 
   // 4. Auto-generate per-symbol manifest configs from the loaded boards. Runs
   //    BEFORE the populate so its richer per-board family pin is in place; the
@@ -333,6 +339,7 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
   kv("n_dates_loaded", fmt_usize(r.n_dates_loaded));
   kv("n_dates_missing", fmt_usize(r.n_dates_missing));
   kv("n_load_errors", fmt_usize(r.n_load_errors));
+  kv("n_coverage_holes", fmt_usize(r.n_coverage_holes));
 
   // Section 2: one per-symbol coverage row (from the populate; written dates).
   out += "symbol,n_attempted,n_ok,n_failed,n_disabled\n";
