@@ -421,6 +421,15 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(migrate_atxvsa_v1_to_v2 tools/migrate_atxvsa_v1_to_v2.cpp)
     target_link_libraries(migrate_atxvsa_v1_to_v2 PRIVATE atx::vol atx::core atx-vol-archive-v1 atx_warnings)
 
+    # Surface-db production build CLI (Task 6): the one-call build_surface_db
+    # driver wrapped in a hand-rolled arg loop -- create-or-open a SurfaceDb,
+    # load an OPRA hive v2 window, auto-generate per-symbol fit configs, and
+    # cell-aware-streaming-populate every (symbol, date) surface. Resumable/
+    # idempotent (re-run over an unchanged hive fits zero). See
+    # tools/surface_db_build_main.cpp and docs/surface-db-build.md.
+    add_executable(atx-vol-surface-db-build tools/surface_db_build_main.cpp)
+    target_link_libraries(atx-vol-surface-db-build PRIVATE atx::vol atx::core atx_warnings)
+
     # Earnings-censored atmCen reproduction (Task 7): thin CLI over the shared
     # run_earnings_repro library pipeline (atx/vol/earnings_repro.hpp) -- OPRA
     # parquet -> fitted VolaSession -> Task 5 earnings TSV -> iEMove + the 12
