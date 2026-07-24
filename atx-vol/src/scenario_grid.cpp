@@ -233,7 +233,15 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
     // Exact cell — Phase A: one shocked reprice per Ok unique (P0 amortized). A
     // unique whose base wasn't ready or whose shocked solve fails leaves NaN in
     // `pprime` (a fallback) and is counted once for this cell.
-    std::vector<double> pprime(n_unique, kNaN);
+    //
+    // GR-P3-S: `pprime` is per-WORKER scratch (static thread_local), reused across
+    // every cell this worker runs, instead of a fresh heap allocation per cell —
+    // the module's allocation-free-in-the-risk-loop discipline. Each cell fully
+    // re-initialises it to kNaN before use, so the value written into every slot is
+    // byte-identical to the per-cell-allocated vector and the matrix stays
+    // bit-identical for any n_threads (workers touch disjoint output cells).
+    static thread_local std::vector<double> pprime;
+    pprime.assign(n_unique, kNaN);
     std::size_t nfb = 0;
     for (std::size_t u = 0; u < n_unique; ++u) {
       if (uni_ok[u] == 0u) {

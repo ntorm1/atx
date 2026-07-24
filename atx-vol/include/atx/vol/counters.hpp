@@ -697,6 +697,17 @@ enum class Solve : unsigned {
   // in the per-step mark memo. The L2 settlement-mark memo drives this to 0;
   // tapped ONLY from loop-owned backtest.cpp.
   DuplicateMarkSolves,
+  // WS-A A3 (GR-P2-3, append-only). A cached-jet SERVE (american_price_cached /
+  // american_greeks_first_order) whose query risk-free rate has drifted from the
+  // fixed-carry correction cache's baked rate by more than the C2 stale-gate
+  // (25 bps) — an intraday-rate-move or stale-market cache served through a
+  // representative-carry cache, silently mixing old-carry early-exercise
+  // sensitivities into fresh-carry Black-76 legs. RATE-ONLY: the per-tenor q_eff
+  // drift from the mid-expiry representative carry is a legitimate in-fit artifact
+  // (american.cpp american_price_cached note — an assert on baked_q at 25 bps
+  // aborted the suite), so it is deliberately not counted. In-fit de-Am queries at
+  // the session rate == baked rate, so this stays 0 through a normal fit/serve.
+  CacheCarryDrift,
   Count_
 };
 
@@ -707,7 +718,7 @@ inline constexpr unsigned kCount = static_cast<unsigned>(Solve::Count_);
 inline constexpr const char *kNames[kCount] = {
     "sl_al_boundary_solves", "sl_al_premium_evals",     "sl_greeks_fd",
     "sl_greeks_analytic",    "sl_greeks_adjoint",       "sl_iv_newton_iters",
-    "sl_duplicate_mark_solves",
+    "sl_duplicate_mark_solves", "sl_cache_carry_drift",
 };
 
 // A merged, point-in-time copy. Plain values (not atomics) so it is trivially

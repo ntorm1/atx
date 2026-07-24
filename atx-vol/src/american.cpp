@@ -1760,6 +1760,23 @@ constexpr const char *kDoubleContinuationMsg =
   return Ok(al_put_price_from_boundary(bnd, ws, S, K, T, sigma, r, q));
 }
 
+// A4 (PR-C4): the sigma->0 limit of an American option is the European sigma->0
+// limit df*(forward intrinsic) floored at the spot (immediate-exercise) intrinsic —
+// at sigma=0 there is no time value, so the value is max(hold-to-expiry, exercise
+// now). Correct in BOTH regimes: in the European regime early exercise is never
+// optimal and df*(forward intrinsic) dominates; in the American regime the spot
+// intrinsic wins where exercise is optimal. Callers gate the double-continuation
+// Unsupported corner separately (it has no single-boundary price).
+[[nodiscard]] inline double sigma_zero_american_limit(double S, double K, double T, double r,
+                                                      double q, Side side) noexcept {
+  const double df = std::exp(-r * T);
+  const double F = S * std::exp((r - q) * T);
+  const double fwd_intr = (side == Side::Call) ? (F - K) : (K - F);
+  const double euro_lim = df * (fwd_intr > 0.0 ? fwd_intr : 0.0);
+  const double spot_intr = (side == Side::Call) ? (S - K) : (K - S);
+  return std::max(euro_lim, spot_intr > 0.0 ? spot_intr : 0.0);
+}
+
 // Shared core of the public andersen_lake entry point, parameterized on `specialize`
 // so detail::andersen_lake_generic_kernel can force the generic runtime-trip-count
 // kernel for the SAME scheme and prove the specialized path is bit-identical.
@@ -1782,10 +1799,20 @@ constexpr const char *kDoubleContinuationMsg =
     return Err(ErrorCode::InvalidArgument, "andersen_lake: r and q must be finite");
   }
 
-  // Degenerate: T ~ 0 or sigma ~ 0 collapses to intrinsic.
-  if (T <= 1.0e-12 || sigma <= 1.0e-8) {
+  // Degenerate T ~ 0: no time left, collapse to the spot intrinsic.
+  if (T <= 1.0e-12) {
     const double intr = (side == Side::Call) ? (S - K) : (K - S);
     return Ok(intr > 0.0 ? intr : 0.0);
+  }
+  // Degenerate sigma ~ 0 (A4/PR-C4): the European sigma->0 limit df*(forward
+  // intrinsic) floored at the spot intrinsic — NOT the spot intrinsic alone, which
+  // was wrong (and discontinuous) for a carry-dominant European-regime option
+  // (e.g. a put with r=0, q>0 -> df*(K-F)+ > 0). At sigma=0 there is no optionality,
+  // so this deterministic max(hold, exercise) is valid in EVERY regime — the
+  // double-continuation corner is a sigma>0 single-boundary limitation, not a
+  // sigma=0 one, so this is priced (as the pre-A4 degenerate guard did), not errored.
+  if (sigma <= 1.0e-8) {
+    return Ok(sigma_zero_american_limit(S, K, T, r, q, side));
   }
 
   const double rate = (side == Side::Put) ? r : q;
@@ -1843,6 +1870,22 @@ constexpr const char *kDoubleContinuationMsg =
   return price;
 }
 
+// GR-P2-3 baked-carry staleness tripwire. Counts a cached-jet serve whose query
+// risk-free rate has drifted from the fixed-carry cache's baked rate by more than
+// the C2 stale-gate (25 bps) into the always-on solve ledger. RATE-ONLY: the
+// per-tenor q_eff drift from the mid-expiry representative carry is a legitimate
+// in-fit artifact (see the american_price_cached A9 note below — an assert on
+// baked_q at 25 bps aborted the suite), so it is deliberately not counted. In-fit
+// de-Am and a flat-rate session serve query at the baked rate, so this stays 0
+// through a normal fit/serve; it fires only on a genuine query-vs-baked rate move.
+inline void count_cache_carry_drift(double baked_r, double query_r) noexcept {
+  constexpr double kCacheCarryDriftTol = 0.0025; // 25 bps, matches session cache_side_covers
+  if (std::isfinite(baked_r) && std::isfinite(query_r) &&
+      std::fabs(query_r - baked_r) > kCacheCarryDriftTol) {
+    counters::ledger::bump(counters::ledger::Solve::CacheCarryDrift);
+  }
+}
+
 // Cached routes obtain the full correction gradient/Hessian from one
 // differentiated Clenshaw traversal; no off-point finite differences remain.
 template <typename Correction>
@@ -1867,6 +1910,7 @@ void american_greeks_first_order(double S, double K, double T, double sigma, dou
   double d2c_ds2 = 0.0;
   double c_val = 0.0;
   if (correction) {
+    count_cache_carry_drift(correction->baked_r(), r); // GR-P2-3
     const CorrSecondOrder corr = correction->eval_second_order(k_log, T, sigma);
     c_val = corr.value;
     dc_dk = corr.dk_log;
@@ -2024,11 +2068,20 @@ double AloPricer::price(double sigma) noexcept {
     return std::numeric_limits<double>::quiet_NaN();
   }
   State &s = *st_;
-  // Degenerate: sigma ~ 0 or T ~ 0 collapses to intrinsic (internal-put intrinsic
-  // Kp - Sp equals the original option's intrinsic for both sides).
-  if (!(sigma > 1.0e-8) || s.T <= 1.0e-12) {
+  // Degenerate T ~ 0: no time left, collapse to the spot intrinsic (internal-put
+  // intrinsic Kp - Sp equals the original option's intrinsic for both sides).
+  if (s.T <= 1.0e-12) {
     const double intr = s.Kp - s.Sp;
     return (intr > 0.0) ? intr : 0.0;
+  }
+  // Degenerate sigma ~ 0 (A4/PR-C4): the European sigma->0 limit df*(Kp-Fp)+ in the
+  // transformed put space, floored at the spot intrinsic — not the spot intrinsic
+  // alone, which was wrong (and discontinuous) for a carry-dominant option. Priced
+  // in EVERY regime (no optionality at sigma=0), so this precedes the unsupported
+  // check — matching the pre-A4 degenerate guard, which priced sigma->0 regardless
+  // of regime (the double-continuation corner is a sigma>0 limitation only).
+  if (!(sigma > 1.0e-8)) {
+    return sigma_zero_american_limit(s.Sp, s.Kp, s.T, s.rp, s.qp, Side::Put);
   }
   // Double-continuation corner: no single-boundary price exists (andersen_lake
   // returns NotImplemented here). Surface NaN, matching the boundary-collapse
@@ -2133,11 +2186,20 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes, doubl
 
   const std::size_t n = strikes.size();
 
-  // Degenerate: T ~ 0 or sigma ~ 0 collapses to intrinsic (mirrors andersen_lake).
-  if (T <= 1.0e-12 || sigma <= 1.0e-8) {
+  // Degenerate T ~ 0: spot intrinsic per strike (mirrors andersen_lake).
+  if (T <= 1.0e-12) {
     for (std::size_t i = 0; i < n; ++i) {
       const double intr = S - strikes[i];
       price_out[i] = (intr > 0.0) ? intr : 0.0;
+    }
+    return Ok();
+  }
+  // Degenerate sigma ~ 0 (A4/PR-C4): the European sigma->0 limit floored at the
+  // spot intrinsic per strike — not the spot intrinsic alone. Priced in EVERY
+  // regime (no optionality at sigma=0), as the pre-A4 degenerate guard did.
+  if (sigma <= 1.0e-8) {
+    for (std::size_t i = 0; i < n; ++i) {
+      price_out[i] = sigma_zero_american_limit(S, strikes[i], T, r, q, Side::Call);
     }
     return Ok();
   }
@@ -2258,11 +2320,20 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes, double
 
   const std::size_t n = strikes.size();
 
-  // Degenerate: T ~ 0 or sigma ~ 0 collapses to intrinsic (mirrors andersen_lake).
-  if (T <= 1.0e-12 || sigma <= 1.0e-8) {
+  // Degenerate T ~ 0: spot intrinsic per strike (mirrors andersen_lake).
+  if (T <= 1.0e-12) {
     for (std::size_t i = 0; i < n; ++i) {
       const double intr = strikes[i] - S; // put intrinsic K_i - S
       price_out[i] = (intr > 0.0) ? intr : 0.0;
+    }
+    return Ok();
+  }
+  // Degenerate sigma ~ 0 (A4/PR-C4): the European sigma->0 limit floored at the
+  // spot intrinsic per strike — not the spot intrinsic alone. Priced in EVERY
+  // regime (no optionality at sigma=0), as the pre-A4 degenerate guard did.
+  if (sigma <= 1.0e-8) {
+    for (std::size_t i = 0; i < n; ++i) {
+      price_out[i] = sigma_zero_american_limit(S, strikes[i], T, r, q, Side::Put);
     }
     return Ok();
   }
@@ -2351,9 +2422,16 @@ Result<double> baw_american(double S, double K, double T, double sigma, double r
   const std::uint16_t mi = max_iter ? max_iter : std::uint16_t{16};
   const double tt = (tol > 0.0) ? tol : 1.0e-8;
 
-  if (T <= 1.0e-12 || sigma <= 1.0e-8) {
+  // Degenerate T ~ 0: spot intrinsic.
+  if (T <= 1.0e-12) {
     const double intr = (side == Side::Call) ? (S - K) : (K - S);
     return Ok(intr > 0.0 ? intr : 0.0);
+  }
+  // Degenerate sigma ~ 0 (A4/PR-C4): the European sigma->0 limit floored at the
+  // spot intrinsic (consistent with andersen_lake), NOT the spot intrinsic alone.
+  // Priced in EVERY regime (no optionality at sigma=0), as the pre-A4 guard did.
+  if (sigma <= 1.0e-8) {
+    return Ok(sigma_zero_american_limit(S, K, T, r, q, side));
   }
 
   const double euro =
@@ -2478,6 +2556,7 @@ double american_price_cached(double S, double K, double T, double sigma, double 
   const double euro = black76_price_from_lnfk(F, K, T, sigma, df, ln_fk, sqrt_t, side);
   const double k_log = -ln_fk;
   const double corr = correction->eval(k_log, T, sigma);
+  count_cache_carry_drift(correction->baked_r(), r); // GR-P2-3
   ATX_VOL_COUNT(CacheHits);
   // A2 (core-review finding 2): floor at max(intrinsic, euro, 0), matching the
   // cold clamp chain — the correction clamps to its box edge out-of-box, so the
@@ -2508,6 +2587,7 @@ double american_price_cached(double S, double K, double T, double sigma, double 
   const double sqrt_t = (T > 0.0) ? std::sqrt(T) : 0.0;
   const double euro = black76_price_from_lnfk(F, K, T, sigma, df, ln_fk, sqrt_t, side);
   const double corr = correction.eval(-ln_fk, T, sigma);
+  count_cache_carry_drift(correction.baked_r(), r); // GR-P2-3
   ATX_VOL_COUNT(CacheHits);
   // A2 (core-review finding 2): floor at max(intrinsic, euro, 0) — see the
   // single-cache overload above.

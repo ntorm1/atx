@@ -255,3 +255,21 @@ if(Python3_Interpreter_FOUND)
     )
     set_tests_properties(SpyDispersionPnlReport PROPERTIES LABELS atx_vol)
 endif()
+
+# PR-C2 non-AVX2 CI leg: run the pricing correctness suites with the whole process
+# pinned to the scalar ISA (ATX_SIMD_ISA=ForceScalar), keeping the scalar
+# patch-paths honest against the Auto-ON AVX2 marks. The filter runs only scalar
+# VALUE suites plus the ScalarLegEnv self-check that PROVES the env diverted the
+# process onto scalar (use_avx2()==false on an AVX2 host). It EXCLUDES the *Batch*
+# suites (american_batch_test) — those install their own SIMD ISA override and
+# restore it to Auto, which would clobber the env-seeded ForceScalar for later
+# tests in this process. Under a normal run these tests run Auto via the
+# gtest_discover labels above; here they re-run under ForceScalar.
+add_test(
+    NAME atx-vol-pricing-forcescalar
+    COMMAND atx-vol-tests
+        --gtest_filter=ScalarLegEnv.*:American*:AmericanIv*:CorrectionCache*:Bulk*:VolaSession*:*Deam*:*Parity*:-*Batch*:AvxBoundary*:VectorMath*:Simd*
+)
+set_tests_properties(atx-vol-pricing-forcescalar PROPERTIES
+    ENVIRONMENT "ATX_SIMD_ISA=ForceScalar"
+    LABELS atx_vol)

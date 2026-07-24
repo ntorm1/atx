@@ -983,6 +983,32 @@ bool CorrectionBlend::usable(Side side) const noexcept {
   return lower->side() == side;
 }
 
+double CorrectionBlend::baked_r() const noexcept {
+  if (!valid()) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  // eval() reads `upper` only at weight 1; every other case reads `lower`. The two
+  // blended endpoints share the same baked rate (the carry bank blends only q), so
+  // the active endpoint's baked_r is the blend's baked rate.
+  const CorrectionCache *active = (upper_weight == 1.0) ? upper : lower;
+  return active->baked_r();
+}
+
+bool CorrectionBlend::contains(double k_log, double T, double sigma) const noexcept {
+  if (!valid()) {
+    return false;
+  }
+  // Mirror eval()'s endpoint selection: a query is in-box iff every cache eval()
+  // would actually read contains it (so nothing is clamped to a box edge).
+  if (upper_weight == 0.0 || lower == upper) {
+    return lower->contains(k_log, T, sigma);
+  }
+  if (upper_weight == 1.0) {
+    return upper->contains(k_log, T, sigma);
+  }
+  return lower->contains(k_log, T, sigma) && upper->contains(k_log, T, sigma);
+}
+
 double CorrectionBlend::eval(double k_log, double T, double sigma) const noexcept {
   if (!valid()) {
     return std::numeric_limits<double>::quiet_NaN();

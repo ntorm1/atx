@@ -33,7 +33,9 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib> // std::getenv / getenv_s (ForceScalar env leg)
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -531,6 +533,30 @@ TEST(SimdIsaOverride, MathModeReferenceRoutesScalar) {
   ASSERT_TRUE(black76_price_batch(g.F, g.K, g.T, g.sigma, g.df, g.side, std::span<double>(fast))
                   .has_value());
   EXPECT_GT(bit_diffs(fast, ref), 0u) << "FastDeterministic did not take the AVX2 fast path";
+}
+
+// PR-C2 non-AVX2 test leg: proves the ATX_SIMD_ISA env override seeds the
+// process-global scalar ISA at load. Meaningful only under the
+// `atx_vol_pricing_forcescalar` ctest leg (tests/CMakeLists.txt), which launches
+// the binary with ATX_SIMD_ISA=ForceScalar and a filter that runs NO override-
+// mutating suite; a normal run leaves the var unset and skips. On an AVX2 host
+// use_avx2() is TRUE by default, so asserting FALSE here confirms the env actually
+// diverted the whole process onto the scalar path.
+TEST(ScalarLegEnv, ForceScalarEnvSeedsScalarOverride) {
+#if defined(_WIN32)
+  std::size_t sz = 0;
+  char buf[16] = {};
+  const bool set = (getenv_s(&sz, buf, sizeof(buf), "ATX_SIMD_ISA") == 0 && sz != 0);
+  const bool force_scalar = set && std::string_view{buf} == "ForceScalar";
+#else
+  const char *e = std::getenv("ATX_SIMD_ISA");
+  const bool force_scalar = (e != nullptr && std::string_view{e} == "ForceScalar");
+#endif
+  if (!force_scalar) {
+    GTEST_SKIP() << "ATX_SIMD_ISA != ForceScalar; env leg not active";
+  }
+  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceScalar);
+  EXPECT_FALSE(simd::use_avx2());
 }
 
 } // namespace
