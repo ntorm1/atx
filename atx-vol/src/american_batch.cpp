@@ -304,10 +304,14 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
     ws.lane_route[i] = simd::SimdRoute::Scalar; // scalar Greek stencil (honest)
   };
 
-  // K3 laned fast path: when the AVX2 Greeks route is selected (Auto respects the dark
-  // ship gate, so this is dark in production until the PM flips it — ForceAvx2 opts in
-  // for the bench/A-B), the analytic PUT lanes go through the laned bundle
-  // (american_put_greeks_batch), which solves the 5 boundaries 4-wide per pack and
+  // K3 laned fast path: taken when the AVX2 Greeks route is selected for this isa
+  // (avx2_greeks_selected: Auto => AVX2 on an AVX2 host, since kShipAvx2Greeks is now
+  // true; ForceScalar => never). It is NOT dark at the flag level any more; in
+  // production it engages only where the SOLE surface caller (priced_surface.cpp)
+  // opts in, which still gates its greeks route on ForceAvx2 for seed-bit-identity
+  // (WS-G G4) — a caller policy, not this dispatch. The analytic PUT lanes go through
+  // the laned bundle (american_put_greeks_batch), which solves the 5 boundaries
+  // 4-wide per pack and
   // patches any non-early-exercise / non-finite lane through scalar american_greeks_al.
   // CALL lanes stay on the scalar analytic route (the laned kernel is put-native).
   if (analytic && simd::avx2_greeks_selected(kernel.isa)) {

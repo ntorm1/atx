@@ -85,7 +85,9 @@ inline constexpr bool kShipAvx2Boundary = true;
 } // namespace
 
 // Whether the AVX2 boundary route is selected for `isa` on this host (ForceAvx2 =>
-// AVX2 iff supported; Auto => scalar, the bit-reproducible default; ForceScalar => never).
+// AVX2 iff supported; Auto => AVX2 too, since kShipAvx2Boundary is true under the
+// user Auto-ON override documented above — NOT scalar; ForceScalar => never, which
+// is the bit-reproducible scalar path a caller opts into for cross-host identity).
 // Mirrors avx2_greeks_selected. Exposed so a threaded marks caller (portfolio_pricer)
 // can gate its H0 invariant-pack-membership tile schedule on the SAME predicate the
 // dispatch uses — the tile schedule engages exactly when this is true (i.e. under the

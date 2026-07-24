@@ -275,8 +275,9 @@ redundant per-strike inversion removed from the borrow solve (`resolve_chain_for
 and per-leg Newton warm-starts across the borrow fixed point. Once the cold path is
 this fast, the correction cache no longer speeds up a *one-shot* surface build (it
 costs more to build than it saves there) — its payoff is the repeated-query hot
-path (15.5× above). **SIMD/AVX2 was investigated and does not help here** (see the
-SIMD note under *Deferred*).
+path (15.5× above). **In-solve SIMD/AVX2 vectorization of the cold AL inner loop
+does not help here** (see the SIMD note under *Deferred*); the separate
+batch-across-contracts *marks* path is AVX2-packed and ships Auto-ON.
 
 Run: `opra_dbn_to_parquet` then `opra_parity_bench` (both opt-in via
 `-DATX_BUILD_EXAMPLES=ON`; the bench skips cleanly if the Parquet is absent).
@@ -325,25 +326,34 @@ Faithful numeric behavior is preserved everywhere; the following are throughput
 or research-mode refinements deferred as clearly-marked `// PORT NOTE:`s, none of
 which change the numerical results of the shipped paths:
 
-- **SIMD vectorization.** The batch APIs ship scalar-backed (each lane calls the
-  ported scalar kernel), so `batch == scalar` holds bit-for-bit — the exact
-  contract the C's AVX2 kernels went to lane-patching lengths to preserve.
-  AVX2/AVX-512 vectorization of Φ/log/exp is a throughput-only follow-on.
-  **Measured, not just deferred:** the Andersen–Lake Gauss-Legendre quad loop
-  (the dominant cold cost) was vectorized two ways and both reverted. The kernel
-  is transcendental-bound (per point: 2×√, log, 2×exp, 2×Φ) and its data layout
-  is already SoA and L1-resident, so there is no cache/AoS→SoA win — the only
-  lever is faster vector transcendentals. (1) A portable **xsimd** AVX2 rewrite
-  ran **≈6.6× slower** — xsimd's polynomial `exp`/`log`/`erfc` are far heavier
-  than the SVML-backed scalar libm the loop already calls, and 4-wide throughput
-  could not overcome the per-call cost. (2) **Intel SVML** vector intrinsics
+- **SIMD vectorization — batch-across-contracts AVX2 is SHIPPED (Auto-ON marks);
+  in-solve vectorization is not.** The American-boundary **marks** batch and the
+  laned analytic-greeks bundle ship **AVX2-ON under the default `ATX_SIMD_ISA=Auto`**
+  (`kShipAvx2Boundary` / `kShipAvx2Greeks`, `simd/american_boundary_batch.cpp`): on
+  an AVX2 host the default marks are the 4-lane boundary pack (≈2.5–3.1× on the dev
+  box, quiet-window A/B ratified), **~1e-13 USD** from the scalar oracle
+  (economically nil — 10+ orders below a tick) and thread-count-invariant via the
+  same-predicate tile schedule. So `batch == scalar` is **no longer bit-for-bit by
+  default** on AVX2 hosts: the contract relaxes from bit-reproducible-by-default to
+  reproducible-per-host. `ATX_SIMD_ISA=ForceScalar` restores the exact scalar
+  boundary solve (run as a dedicated non-AVX2 test leg — `atx_vol_pricing_forcescalar`
+  in `tests/CMakeLists.txt`); `ForceAvx2` forces the pack on any host; the B76 span
+  batches (`batch.hpp`) stay scalar-backed.
+  What is **not** vectorized is the Andersen–Lake Gauss-Legendre quad loop *within a
+  single boundary solve*: **in-solve vectorization was measured two ways and both
+  reverted.** That inner kernel is transcendental-bound (per point: 2×√, log, 2×exp,
+  2×Φ) and already SoA + L1-resident, so there is no cache/AoS→SoA win — the only
+  lever is faster vector transcendentals. (1) A portable **xsimd** AVX2 rewrite ran
+  **≈6.6× slower** — xsimd's polynomial `exp`/`log`/`erfc` are far heavier than the
+  SVML-backed scalar libm the loop already calls, and 4-wide throughput could not
+  overcome the per-call cost. (2) **Intel SVML** vector intrinsics
   (`_mm256_exp_pd`/`_mm256_cdfnorm_pd`) do beat scalar but compile only under MSVC
-  `cl.exe`; the project's **clang-cl** toolchain exposes no SVML, and the one
-  clang route (`-fveclib=SVML`) would add a fragile Intel SVML runtime-DLL
-  dependency to the whole library. A profitable vectorization therefore needs
-  either that runtime dependency or a batch-across-options SoA American solver
-  (many strikes' boundaries advanced together) — both larger than warranted at
-  ≈0.8 ms/quote. The scalar kernel is the measured optimum in-toolchain.
+  `cl.exe`; the project's **clang-cl** toolchain exposes no SVML, and the one clang
+  route (`-fveclib=SVML`) would add a fragile Intel SVML runtime-DLL dependency to
+  the whole library. The profitable route is exactly the **batch-across-contracts**
+  SoA American solver (many independent boundaries advanced 4-wide) — which now
+  **exists and is the shipped Auto-ON marks path**; the scalar kernel remains the
+  in-toolchain optimum only for the single-boundary *inner* loop.
 - **SpiderRock parquet decoder.** The in-memory quote-frame / install path is
   ported and tested; the bespoke ~1.4k-line Thrift/Parquet byte-decoder (built on
   `malloc`/`goto`, and with no committed `.parquet` fixture — the upstream tests

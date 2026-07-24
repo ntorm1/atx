@@ -1,13 +1,20 @@
 #pragma once
 
-// Scalar Cody rational-erfc Φ / φ for the scalar IV + Black-76 hot path (K1).
+// Scalar Cody rational-erfc Φ / φ (K1) — a validated leaf, NOT wired into any hot
+// path today.
+//
+// STATUS (kept, not deleted; corrected drift, PR-C2): K1 was SHELVED as
+// perf-neutral — no production TU includes this header (src/implied_vol.cpp and
+// src/black76.cpp do NOT), and it is exercised only by scalar_erfc_test.cpp. It is
+// retained (with its ≈1.1e-16-vs-std::erfc test) as a revival-ready drop-in should
+// a future scalar hot path want to avoid libm's std::erfc / std::exp.
 //
 // This is the SCALAR sibling of detail/vector_math.hpp's validated AVX2 kernels
-// (erfc_nonneg_pd / norm_cdf_erfc_pd / exp_pd). It exists so the scalar hot path
-// (src/implied_vol.cpp, src/black76.cpp) can evaluate Φ and φ WITHOUT libm's
-// std::erfc / std::exp, which dominate the per-Halley-step cost of the inverter
-// (2·Φ + 1·φ per step ⇒ ~2 std::erfc + 1 std::exp, and std::erfc alone is tens
-// of ns). Unlike the AVX2 kernel — which evaluates all three Cody regions
+// (erfc_nonneg_pd / norm_cdf_erfc_pd / exp_pd). Were it wired in, a scalar hot path
+// could evaluate Φ and φ WITHOUT libm's std::erfc / std::exp, which dominate the
+// per-Halley-step cost of an inverter (2·Φ + 1·φ per step ⇒ ~2 std::erfc + 1
+// std::exp, and std::erfc alone is tens of ns). Unlike the AVX2 kernel — which
+// evaluates all three Cody regions
 // branchlessly and blends — the scalar routine BRANCH-SELECTS the single
 // applicable region, so a typical call runs one rational plus (region 2/3) one
 // exp, not three rationals plus an exp.
