@@ -1302,12 +1302,17 @@ CorpusManifest make_manifest(std::size_t n_dates) {
   return manifest;
 }
 
-// Two reconciliation rows + two contract marks (encode_* build the sections).
-ListedDispersionReconciliation make_reconciliation() {
+// `n_rows` reconciliation rows + `n_rows` contract marks (encode_* build the
+// sections). The default (2) reproduces the original fixture byte-for-byte
+// ("2026-07-11", "2026-07-12"); a caller can request a different count to drive
+// verify()'s backtest/reconciliation cardinality cross-check off its match.
+ListedDispersionReconciliation make_reconciliation(int n_rows = 2) {
   ListedDispersionReconciliation rec;
-  for (int i = 0; i < 2; ++i) {
+  for (int i = 0; i < n_rows; ++i) {
+    char date[16] = {};
+    std::snprintf(date, sizeof date, "2026-07-%02d", i + 11);
     ListedReconciliationRow row;
-    row.date = i == 0 ? "2026-07-11" : "2026-07-12";
+    row.date = date;
     row.valuation_ts_ns = 100 + i;
     row.held_cohort = 1;
     row.model_option_pnl = 1.0 + i;
@@ -1408,6 +1413,57 @@ std::filesystem::path fresh_run_dir(std::string_view name) {
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);
   return dir;
+}
+
+// Portable text inputs for the byte-determinism test: run_spec.tsv carries a
+// dir-INDEPENDENT universe path (relative, not `dir / ...`), so run_spec.tsv is
+// byte-identical across two different run-dir paths. run_identity_hash is a hash
+// of the run_spec + universe bytes, so identical bytes -> identical identity ->
+// (with the T7 deterministic created_ts_ns) byte-identical run.atxrun. Only the
+// two inputs run_identity_hash reads are written (manifest/schedule are not
+// needed for the write path).
+void write_run_dir_text_inputs_portable(const std::filesystem::path& dir) {
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  ASSERT_FALSE(ec) << ec.message();
+
+  RunSpec spec;
+  spec.label = "rundir-determinism";
+  spec.date_lo = "2026-07-10";
+  spec.date_hi = "2026-07-10";
+  spec.opra_root = "/data/opra";
+  spec.universe_path = std::filesystem::path(std::string(kUniverseScheduleFile)); // dir-independent
+  spec.min_names = 40;
+  spec.min_weight_coverage = 0.8;
+  spec.core_mode = false;
+  ASSERT_TRUE(write_resolved_spec(dir / std::string(kRunSpecFile), spec).has_value());
+
+  std::ofstream u(dir / std::string(kUniverseScheduleFile), std::ios::binary | std::ios::trunc);
+  u << "effective_date\tsymbol\traw_weight\tsource\tas_of\n"
+    << "2026-07-10\tSPY\t1.0\tauthored\t2026-07-10\n";
+  ASSERT_TRUE(u.good());
+}
+
+// Like write_run_dir_archive, but the reconciliation (and contract_marks)
+// section carries 3 rows while the backtest section carries 2 — so the archive
+// trips verify()'s count gate (backtest.n_rows() != reconciliation.n_rows()).
+void write_run_dir_archive_row_mismatch(const std::filesystem::path& dir) {
+  const BacktestResult r = make_encoder_fixture_result();             // 2 rows; outlives write
+  const ListedDispersionReconciliation rec = make_reconciliation(3);  // 3 rows (!= 2)
+  RunSpec spec;
+  spec.label = "rundir-test";
+  spec.date_lo = "2026-07-10";
+  spec.date_hi = "2026-07-10";
+
+  std::vector<RaSectionData> sections;
+  sections.push_back(encode_backtest_section("backtest", r));  // borrows r
+  sections.push_back(encode_reconciliation_section(rec));      // arena-owned
+  sections.push_back(encode_contract_marks_section(rec));      // arena-owned
+  sections.push_back(encode_meta_section(spec));               // arena-owned
+
+  const RunDir run_dir(dir);
+  const auto st = run_dir.write_run_archive(sections);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
 }
 
 TEST(RunDir, ReadsInputsAndArchive) {
@@ -1529,6 +1585,75 @@ TEST(RunDir, VerifyEnforcesCoreModeGate) {
 
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);
+}
+
+// ── Task 7 (Minor #9): verify count-gate negative path ───────────────────────
+//
+// verify() cross-checks that the backtest and reconciliation sections carry the
+// SAME row count (the per-session cardinality). An archive whose two sections
+// disagree must be REJECTED with InvalidArgument — not crash, not pass. This
+// locks the existing gate (it had no mismatch-path coverage before).
+TEST(RunDir, VerifyRejectsCountGateMismatch) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_verify_countgate_test");
+  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+  write_run_dir_archive_row_mismatch(dir);  // backtest=2 rows, reconciliation=3 rows
+
+  const RunDir run_dir(dir);
+  const auto st = run_dir.verify();
+  ASSERT_FALSE(st.has_value()) << "count-gate mismatch should fail verify()";
+  EXPECT_EQ(st.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+// ── Task 7 (Minor #7): deterministic created_ts_ns => byte-identical archive ──
+//
+// RunDir::write_run_archive derives created_ts_ns deterministically from the run
+// identity (a content-derived pseudo-timestamp), NOT the wall clock. Two writes
+// of the SAME run-dir inputs therefore produce a byte-identical run.atxrun. This
+// was impossible before T7 (the writer stamped the system clock, so the header's
+// created_ts_ns + header_crc32c varied run-to-run). Written to two DIFFERENT dirs
+// so merge-write does not carry the first write's sections into the second.
+TEST(RunDir, WriteIsByteDeterministic) {
+  const auto slurp = [](const std::filesystem::path& p) {
+    std::ifstream in(p, std::ios::binary | std::ios::ate);
+    EXPECT_TRUE(in.good()) << "cannot open " << p.string();
+    const std::streamsize size = in.tellg();
+    std::vector<char> bytes(static_cast<std::size_t>(size < 0 ? 0 : size));
+    in.seekg(0);
+    in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    return bytes;
+  };
+
+  const std::filesystem::path dir_a = fresh_run_dir("atx_rundir_determinism_a");
+  write_run_dir_text_inputs_portable(dir_a);
+  write_run_dir_archive(dir_a);
+
+  const std::filesystem::path dir_b = fresh_run_dir("atx_rundir_determinism_b");
+  write_run_dir_text_inputs_portable(dir_b);
+  write_run_dir_archive(dir_b);
+
+  const std::vector<char> a = slurp(dir_a / "run.atxrun");
+  const std::vector<char> b = slurp(dir_b / "run.atxrun");
+  ASSERT_FALSE(a.empty());
+  ASSERT_EQ(a.size(), b.size()) << "run.atxrun byte-length differs across identical-input writes";
+  EXPECT_TRUE(a == b)
+      << "run.atxrun bytes differ across identical-input writes (created_ts_ns not deterministic?)";
+
+  // The stamped created_ts_ns IS the run identity (not 0 / wall-clock), and the
+  // identity round-trips through the header.
+  auto id = RunDir(dir_a).run_identity_hash();
+  ASSERT_TRUE(id.has_value()) << id.error().to_string();
+  RunArchiveHeader h{};
+  ASSERT_GE(a.size(), sizeof h);
+  std::memcpy(&h, a.data(), sizeof h);
+  EXPECT_EQ(h.run_identity_hash, *id);
+  EXPECT_EQ(h.created_ts_ns, *id);  // created_ts_ns := static_cast<int64>(identity), bits preserved
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir_a, ec);
+  std::filesystem::remove_all(dir_b, ec);
 }
 
 // ── Task 7 / I1: merge-write publish (accumulate the UNION across routes) ─────

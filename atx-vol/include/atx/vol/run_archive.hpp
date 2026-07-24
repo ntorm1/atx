@@ -64,7 +64,12 @@ inline constexpr char kRaSectionMagic[8] = {'A', 'T', 'X', 'R', 'S', 'C', '0', '
 struct RunArchiveHeader {
   char magic[8]{};                     // "ATXRUN01", no NUL (kRaMagic)
   std::uint64_t file_size{};
-  std::uint64_t created_ts_ns{};
+  std::uint64_t created_ts_ns{};       // writer stamp. NOT necessarily wall clock:
+                                       // RunDir::write_run_archive derives it
+                                       // deterministically from the run identity
+                                       // (content-derived pseudo-ts) so the bytes
+                                       // are reproducible; wall-clock provenance
+                                       // for a run is the run-dir file mtimes.
   std::uint64_t schema_hash{};         // ra_schema_hash() at write time
   std::uint64_t writer_version_hash{}; // informational; 0 if unset
   std::uint64_t run_identity_hash{};   // identity of the producing run
@@ -291,8 +296,13 @@ write_run_archive(std::span<const RaSectionData> sections, std::int64_t created_
                   std::uint64_t run_identity_hash);
 
 // As above, persisted atomically: build the full buffer in memory, write
-// "<path>.tmp", flush/close, then rename over `path` (destination removed first
-// — Windows rename does not replace). Adds IoError on filesystem failure.
+// "<path>.tmp", FSYNC it to stable storage, then rename over `path` — a durable
+// publish, so a crash after the rename can never expose a correctly-named but
+// unflushed file. The rename replaces an existing destination, is retried under
+// a reader-held destination (bounded backoff), and the temp is preserved on
+// final failure (mirrors commit 86f2210). Adds IoError on filesystem failure.
+// created_ts_ns == 0 still fills from the system clock (the low-level default;
+// RunDir passes a deterministic identity-derived stamp instead).
 [[nodiscard]] Status write_run_archive_file(std::string_view path,
                                             std::span<const RaSectionData> sections,
                                             std::int64_t created_ts_ns,
@@ -582,9 +592,13 @@ public:
   // for identical input bytes on one platform/binary.
   [[nodiscard]] Result<std::uint64_t> run_identity_hash() const;
 
-  // Publish <dir>/run.atxrun atomically (write_run_archive_file's tmp+rename),
-  // stamping the computed run_identity_hash. created_ts_ns fills from the system
-  // clock. Propagates every write_run_archive validation error plus IoError.
+  // Publish <dir>/run.atxrun atomically (write_run_archive_file's fsync +
+  // tmp+rename), stamping the computed run_identity_hash. created_ts_ns is
+  // derived DETERMINISTICALLY from that identity (a content-derived pseudo-
+  // timestamp, NOT the wall clock), so two writes of identical run-dir inputs
+  // produce a byte-identical run.atxrun — a run's wall-clock provenance is its
+  // run-dir file mtimes, not this field. Propagates every write_run_archive
+  // validation error plus IoError.
   //
   // MERGE-WRITE: two result-producing routes (run-backtest and
   // run-projected-backtest) may share a run dir, each supplying only its own

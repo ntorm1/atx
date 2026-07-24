@@ -33,9 +33,23 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+// Durable atomic publish (T7 / Minor #16): fsync the temp file to stable storage
+// BEFORE the rename so a crash after the rename can never expose a correctly-
+// named but unflushed run.atxrun. _commit / fsync operate on the stream's
+// underlying file descriptor. Mirrors commit 86f2210's fsync-before-rename
+// pattern for the surface archives (kept self-contained here — the shared
+// detail::flush_and_publish_file primitive lives on a separate branch and this
+// task's scope is the run-archive files only).
+#if defined(_WIN32)
+#include <io.h>     // _commit, _fileno
+#else
+#include <unistd.h> // fsync, fileno
+#endif
 
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"               // hash_bytes / hash_combine (RunDir identity)
@@ -430,6 +444,39 @@ Result<std::vector<std::byte>> write_run_archive(std::span<const RaSectionData> 
   return Ok(std::move(buffer));
 }
 
+namespace {
+
+// Open `p` for binary writing. On Windows use _wfopen so Unicode run-dir paths
+// round-trip (std::fopen takes a narrow path); std::fopen elsewhere.
+[[nodiscard]] std::FILE *ra_fopen_write_binary(const std::filesystem::path &p) noexcept {
+#if defined(_WIN32)
+  std::FILE *fp = nullptr;
+  if (::_wfopen_s(&fp, p.wstring().c_str(), L"wb") != 0) {
+    return nullptr;
+  }
+  return fp;
+#else
+  return std::fopen(p.string().c_str(), "wb");
+#endif
+}
+
+// fsync an open stream's data to STABLE STORAGE. fflush only pushes the CRT
+// buffer into the OS page cache; _commit / fsync force it out to the device so
+// the temp is durable BEFORE it is renamed over the live file (durability, not
+// just availability). Mirrors commit 86f2210's fsync-before-rename.
+[[nodiscard]] bool ra_fsync_stream(std::FILE *fp) noexcept {
+  if (std::fflush(fp) != 0) {
+    return false;
+  }
+#if defined(_WIN32)
+  return ::_commit(::_fileno(fp)) == 0;
+#else
+  return ::fsync(::fileno(fp)) == 0;
+#endif
+}
+
+} // namespace
+
 Status write_run_archive_file(std::string_view path, std::span<const RaSectionData> sections,
                               std::int64_t created_ts_ns, std::uint64_t run_identity_hash) {
   auto built = write_run_archive(sections, created_ts_ns, run_identity_hash);
@@ -440,33 +487,53 @@ Status write_run_archive_file(std::string_view path, std::span<const RaSectionDa
   const std::filesystem::path dst{std::string(path)};
   std::filesystem::path tmp = dst;
   tmp += ".tmp";
+
+  // 1. Write the whole buffer to <path>.tmp and fsync it to stable storage
+  //    BEFORE the rename. Without the fsync a machine crash after the rename but
+  //    before the OS flushed the temp could leave a correctly-named run.atxrun
+  //    with empty/garbage content while the rename had already destroyed the
+  //    prior good version (durability, not just availability). The previous
+  //    writer only flushed the ofstream (OS buffers). Mirrors commit 86f2210.
   {
-    std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
-    if (!os) {
+    std::FILE *fp = ra_fopen_write_binary(tmp);
+    if (fp == nullptr) {
       return Err(ErrorCode::IoError, "write_run_archive_file: cannot open temp file");
     }
-    os.write(reinterpret_cast<const char *>(buffer.data()),
-             static_cast<std::streamsize>(buffer.size()));
-    os.flush();
-    if (!os) {
+    const bool wrote =
+        buffer.empty() || std::fwrite(buffer.data(), 1, buffer.size(), fp) == buffer.size();
+    const bool synced = wrote && ra_fsync_stream(fp);
+    const bool closed = std::fclose(fp) == 0; // always close, even on prior failure
+    if (!wrote || !synced || !closed) {
       std::error_code ec;
       std::filesystem::remove(tmp, ec);
       return Err(ErrorCode::IoError, "write_run_archive_file: write failed");
     }
   }
-  // Atomic publish: remove any existing destination first (Windows rename does
-  // not replace) then rename — mirrors the pending→rename pattern in
-  // listed_dispersion_reconciliation.cpp.
+
+  // 2. Atomic publish: rename the fsync'd temp over `path` with bounded retry +
+  //    exponential backoff. std::filesystem::rename lowers to
+  //    MoveFileEx(REPLACE_EXISTING) on Windows — it replaces an existing regular
+  //    file but FAILS while a reader holds the destination open without
+  //    FILE_SHARE_DELETE (MSVC ifstream / open_mapped); a brief hold is ridden
+  //    out by the backoff (~635 ms across 8 attempts). On FINAL failure the temp
+  //    is PRESERVED (not deleted) so the freshly written bytes are recoverable
+  //    and the prior good destination stays intact. Mirrors commit 86f2210.
+  constexpr int kMaxAttempts = 8;
+  std::chrono::milliseconds delay{5};
   std::error_code ec;
-  std::filesystem::remove(dst, ec);
-  ec.clear();
-  std::filesystem::rename(tmp, dst, ec);
-  if (ec) {
-    std::error_code ec2;
-    std::filesystem::remove(tmp, ec2);
-    return Err(ErrorCode::IoError, "write_run_archive_file: cannot publish file");
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    ec.clear();
+    std::filesystem::rename(tmp, dst, ec);
+    if (!ec) {
+      return Ok();
+    }
+    if (attempt + 1 < kMaxAttempts) {
+      std::this_thread::sleep_for(delay);
+      delay *= 2;
+    }
   }
-  return Ok();
+  return Err(ErrorCode::IoError,
+             "write_run_archive_file: cannot publish file (rename failed after retries)");
 }
 
 // ── Section encoders (Task 5): library type → staged RaSectionData ───────────
@@ -1497,11 +1564,18 @@ Status RunDir::write_run_archive(std::span<const RaSectionData> sections) const 
     }
   }
 
-  // created_ts_ns == 0 -> the writer fills from the system clock. Identity, not
-  // the timestamp, is what pins the producing run.
+  // created_ts_ns is derived DETERMINISTICALLY from the run identity (a
+  // content-derived pseudo-timestamp), NOT the wall clock (Minor #7 / Controller
+  // decision #1). `identity` is forced nonzero, so the cast is nonzero and the
+  // low-level writer treats it as an explicit stamp — never the
+  // `created_ts_ns == 0 => system-clock` fallback. Two writes of the same run-dir
+  // inputs therefore produce a byte-identical run.atxrun (stable header_crc32c /
+  // ArchiveContentIdentity, and a stable future Wave-E cache key). This field is
+  // NOT wall-clock provenance for a run — that is the run-dir file mtimes; see
+  // run_archive.hpp (RunArchiveHeader::created_ts_ns, RunDir::write_run_archive).
+  const std::int64_t created_ts_ns = static_cast<std::int64_t>(identity);
   if (!merge || carried.empty()) {
-    return write_run_archive_file(archive_path.string(), sections,
-                                  /*created_ts_ns=*/0, identity);
+    return write_run_archive_file(archive_path.string(), sections, created_ts_ns, identity);
   }
 
   std::vector<RaSectionData> merged;
@@ -1512,8 +1586,7 @@ Status RunDir::write_run_archive(std::span<const RaSectionData> sections) const 
   for (const RaSectionData &sd : sections) {
     merged.push_back(sd); // copies spans + shared storage ptr; sources outlive the call
   }
-  return write_run_archive_file(archive_path.string(), merged,
-                                /*created_ts_ns=*/0, identity);
+  return write_run_archive_file(archive_path.string(), merged, created_ts_ns, identity);
 }
 
 Result<RunArchive> RunDir::archive() const {
