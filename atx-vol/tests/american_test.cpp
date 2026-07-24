@@ -1860,12 +1860,21 @@ TEST(AloPricer, StaticGeometryExpCallsArePaidOncePerReset) {
 // r <= 0) collapses to the European price — mirroring andersen_lake's guards.
 TEST(AloPricer, DegenerateAndEuropeanBranches) {
   {
+    // Put r>0: exercise-now (K-S=10) beats holding (df*(K-F)+ ~ 4.6), so the
+    // A4/PR-C4 sigma->0 limit max(df*(K-F)+, (K-S)+) is still the spot intrinsic.
     AloPricer pr(100.0, 110.0, 1.0, 0.05, 0.0, Side::Put);
-    EXPECT_NEAR(pr.price(1.0e-12), 10.0, 1.0e-9); // intrinsic K - S
+    EXPECT_NEAR(pr.price(1.0e-12), 10.0, 1.0e-9);
   }
   {
-    AloPricer pr(100.0, 90.0, 1.0, 0.05, 0.0, Side::Call);
-    EXPECT_NEAR(pr.price(1.0e-12), 10.0, 1.0e-9); // intrinsic S - K
+    // Call q=0: holding (df*(F-K)+ ~ 14.39) beats exercising (S-K=10), so the
+    // A4/PR-C4 sigma->0 limit lifts ABOVE the old spot intrinsic (10.0). This
+    // pinned the pre-fix bug.
+    const double S = 100.0, K = 90.0, T = 1.0, r = 0.05, q = 0.0;
+    AloPricer pr(S, K, T, r, q, Side::Call);
+    const double F = S * std::exp((r - q) * T);
+    const double df = std::exp(-r * T);
+    const double lim = std::max(df * std::max(F - K, 0.0), std::max(S - K, 0.0));
+    EXPECT_NEAR(pr.price(1.0e-12), lim, 1.0e-9);
   }
   {
     // Put with r < 0: no early exercise -> European put.

@@ -1804,17 +1804,14 @@ constexpr const char *kDoubleContinuationMsg =
     const double intr = (side == Side::Call) ? (S - K) : (K - S);
     return Ok(intr > 0.0 ? intr : 0.0);
   }
-  // Degenerate sigma ~ 0 (A4/PR-C4): classify the regime FIRST (the double-
-  // continuation corner has no single-boundary price, matching the main path
-  // below), then return the European sigma->0 limit floored at the spot intrinsic —
-  // NOT the spot intrinsic alone, which was wrong (and discontinuous) for a carry-
-  // dominant European-regime option (e.g. a put with r=0, q>0 -> df*(K-F)+ > 0).
+  // Degenerate sigma ~ 0 (A4/PR-C4): the European sigma->0 limit df*(forward
+  // intrinsic) floored at the spot intrinsic — NOT the spot intrinsic alone, which
+  // was wrong (and discontinuous) for a carry-dominant European-regime option
+  // (e.g. a put with r=0, q>0 -> df*(K-F)+ > 0). At sigma=0 there is no optionality,
+  // so this deterministic max(hold, exercise) is valid in EVERY regime — the
+  // double-continuation corner is a sigma>0 single-boundary limitation, not a
+  // sigma=0 one, so this is priced (as the pre-A4 degenerate guard did), not errored.
   if (sigma <= 1.0e-8) {
-    const double rate0 = (side == Side::Put) ? r : q;
-    const double yield0 = (side == Side::Put) ? q : r;
-    if (classify_regime(rate0, yield0) == ExerciseRegime::Unsupported) {
-      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
-    }
     return Ok(sigma_zero_american_limit(S, K, T, r, q, side));
   }
 
@@ -2077,17 +2074,20 @@ double AloPricer::price(double sigma) noexcept {
     const double intr = s.Kp - s.Sp;
     return (intr > 0.0) ? intr : 0.0;
   }
-  // Double-continuation corner: no single-boundary price exists (andersen_lake
-  // returns NotImplemented here). Surface NaN, matching the boundary-collapse
-  // failure convention below — and at sigma->0 too, consistent with the core.
-  if (s.unsupported) {
-    return std::numeric_limits<double>::quiet_NaN();
-  }
   // Degenerate sigma ~ 0 (A4/PR-C4): the European sigma->0 limit df*(Kp-Fp)+ in the
   // transformed put space, floored at the spot intrinsic — not the spot intrinsic
-  // alone, which was wrong (and discontinuous) for a carry-dominant option.
+  // alone, which was wrong (and discontinuous) for a carry-dominant option. Priced
+  // in EVERY regime (no optionality at sigma=0), so this precedes the unsupported
+  // check — matching the pre-A4 degenerate guard, which priced sigma->0 regardless
+  // of regime (the double-continuation corner is a sigma>0 limitation only).
   if (!(sigma > 1.0e-8)) {
     return sigma_zero_american_limit(s.Sp, s.Kp, s.T, s.rp, s.qp, Side::Put);
+  }
+  // Double-continuation corner: no single-boundary price exists (andersen_lake
+  // returns NotImplemented here). Surface NaN, matching the boundary-collapse
+  // failure convention below.
+  if (s.unsupported) {
+    return std::numeric_limits<double>::quiet_NaN();
   }
   const double euro = euro_put_sk(s.Sp, s.Kp, s.T, sigma, s.rp, s.qp);
   if (s.european_only) {
@@ -2195,12 +2195,9 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes, doubl
     return Ok();
   }
   // Degenerate sigma ~ 0 (A4/PR-C4): the European sigma->0 limit floored at the
-  // spot intrinsic per strike — not the spot intrinsic alone. Classify the (call)
-  // regime first so the double-continuation corner errors like the main path.
+  // spot intrinsic per strike — not the spot intrinsic alone. Priced in EVERY
+  // regime (no optionality at sigma=0), as the pre-A4 degenerate guard did.
   if (sigma <= 1.0e-8) {
-    if (classify_regime(/*rate=*/q, /*yield=*/r) == ExerciseRegime::Unsupported) {
-      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
-    }
     for (std::size_t i = 0; i < n; ++i) {
       price_out[i] = sigma_zero_american_limit(S, strikes[i], T, r, q, Side::Call);
     }
@@ -2332,12 +2329,9 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes, double
     return Ok();
   }
   // Degenerate sigma ~ 0 (A4/PR-C4): the European sigma->0 limit floored at the
-  // spot intrinsic per strike — not the spot intrinsic alone. Classify the (put)
-  // regime first so the double-continuation corner errors like the main path.
+  // spot intrinsic per strike — not the spot intrinsic alone. Priced in EVERY
+  // regime (no optionality at sigma=0), as the pre-A4 degenerate guard did.
   if (sigma <= 1.0e-8) {
-    if (classify_regime(/*rate=*/r, /*yield=*/q) == ExerciseRegime::Unsupported) {
-      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
-    }
     for (std::size_t i = 0; i < n; ++i) {
       price_out[i] = sigma_zero_american_limit(S, strikes[i], T, r, q, Side::Put);
     }
@@ -2435,11 +2429,8 @@ Result<double> baw_american(double S, double K, double T, double sigma, double r
   }
   // Degenerate sigma ~ 0 (A4/PR-C4): the European sigma->0 limit floored at the
   // spot intrinsic (consistent with andersen_lake), NOT the spot intrinsic alone.
+  // Priced in EVERY regime (no optionality at sigma=0), as the pre-A4 guard did.
   if (sigma <= 1.0e-8) {
-    if (classify_regime(/*rate=*/(side == Side::Put) ? r : q,
-                        /*yield=*/(side == Side::Put) ? q : r) == ExerciseRegime::Unsupported) {
-      return Err(ErrorCode::NotImplemented, kDoubleContinuationMsg);
-    }
     return Ok(sigma_zero_american_limit(S, K, T, r, q, side));
   }
 
