@@ -9,6 +9,7 @@ namespace py = pybind11;
 
 void bind_pricing(py::module_ &m);
 void bind_surface(py::module_ &m);
+void bind_surface_db(py::module_ &m);
 
 PYBIND11_MODULE(_core, m) {
   m.doc() = "pybind11 bindings for atx-vol";
@@ -27,4 +28,5 @@ PYBIND11_MODULE(_core, m) {
   m.attr("__version__") = atx::vol::version();
   bind_pricing(m);
   bind_surface(m);
+  bind_surface_db(m);
 }

@@ -51,6 +51,7 @@ pybind11_add_module(_core
     src/bindings/module.cpp
     src/bindings/pricing.cpp
     src/bindings/surface.cpp
+    src/bindings/surface_db.cpp
 )
 target_include_directories(_core PRIVATE src/bindings)
 target_link_libraries(_core PRIVATE atx::vol)
