@@ -39,8 +39,14 @@ from .charts import Series
 from .components import (
     Column, Figure, Note, Prose, Report, Section, Stat, StatRow, Subhead, Table,
 )
+from .runarchive import RunArchive
 
-__all__ = ["ParityStats", "compute_parity_stats", "build_parity_report"]
+__all__ = [
+    "ParityStats",
+    "compute_parity_stats",
+    "build_parity_report",
+    "build_parity_report_from_archive",
+]
 
 # Colour follows route identity, not chart or rank: the listed route is always
 # the first validated palette slot and the projected route the second, in every
@@ -89,14 +95,6 @@ def _read_tsv(path: str) -> tuple[list[str], list[dict[str, str]]]:
     if header is None:
         raise ValueError(f"{path}: no column header row found")
     return header, rows
-
-
-def _floats(rows: Sequence[dict[str, str]], name: str) -> list[float]:
-    out = []
-    for r in rows:
-        v = r.get(name, "")
-        out.append(float(v) if v not in ("", None) else float("nan"))
-    return out
 
 
 # ── Stats ────────────────────────────────────────────────────────────────────
@@ -157,14 +155,6 @@ def _money(v: float, dp: int = 0) -> str:
     return f"{'-' if v < 0 else ''}${abs(v):,.{dp}f}"
 
 
-def _cum(values: Sequence[float]) -> list[float]:
-    out, run = [], 0.0
-    for v in values:
-        run += v if math.isfinite(v) else 0.0
-        out.append(run)
-    return out
-
-
 def _short(dates: Sequence[str]) -> list[str]:
     return [d[5:] if len(d) == 10 else d for d in dates]
 
@@ -187,17 +177,168 @@ def build_parity_report(
     out_html: str,
     *,
     projected_label: str = "projected (cold)",
+    listed_diagnostics_tsv: str | None = None,
+    projected_diagnostics_tsv: str | None = None,
+    schedule_diagnostics_tsv: str | None = None,
 ) -> ParityStats:
     """Render the two-route comparison to ``out_html`` and return its stats.
 
     ``projected_tsv`` may be either the canonical cold run or the diagnostic
     fast-tier run; ``projected_label`` names it in every legend and caption.
+
+    The three optional ``*_diagnostics_tsv`` arguments are the per-subcommand
+    ``diagnostics_<subcommand>.tsv`` phase-timing files the example emits
+    (``run-backtest``, ``run-projected-backtest``, ``project-schedule``
+    respectively). When any is supplied a "Runtime diagnostics" section is
+    rendered between mark divergence and methodology; when all are ``None`` the
+    document is byte-for-byte what it was before (existing callers unaffected).
+    The returned :class:`ParityStats` never depends on the diagnostics inputs.
     """
     _, listed_rows = _read_tsv(listed_tsv)
     _, projected_rows = _read_tsv(projected_tsv)
     _, divergence_rows = _read_tsv(mark_divergence_tsv)
     _, schedule_rows = _read_tsv(schedule_tsv)
 
+    diag_listed = _read_tsv(listed_diagnostics_tsv)[1] if listed_diagnostics_tsv else None
+    diag_projected = _read_tsv(projected_diagnostics_tsv)[1] if projected_diagnostics_tsv else None
+    diag_schedule = _read_tsv(schedule_diagnostics_tsv)[1] if schedule_diagnostics_tsv else None
+
+    return _render_parity(
+        listed_rows, projected_rows, divergence_rows, schedule_rows, out_html,
+        projected_label, diag_listed, diag_projected, diag_schedule,
+    )
+
+
+# ── RunArchive builder (reads run.atxrun instead of loose TSVs) ───────────────
+
+# Backtest-section columns the report consumes, pulled as ``{col: str}`` rows so
+# they slot straight into the same row-dict pipeline the TSV path feeds.
+_BACKTEST_ROW_COLS = ("pnl_total", "nav", "pnl_gamma", "pnl_vega", "pnl_theta",
+                      "pnl_unexplained")
+
+# Default projected-track label, keyed on the archive section that was actually
+# resolved so a projected_nodiv run is never mislabelled "cold". An explicit
+# ``projected_label`` always overrides these; an unrecognised explicit section
+# falls back to naming itself, and a self-parity run (no projected section) is
+# labelled below as "listed (self)".
+_PROJECTED_SECTION_LABELS = {
+    "projected_cold": "projected (cold)",
+    "projected_nodiv": "projected (no-divergence)",
+}
+
+
+def _backtest_rows(archive: RunArchive, section: str) -> list[dict[str, str]]:
+    sec = archive.section(section)
+    date = sec.dict("date").tolist()
+    cols = {c: sec.f64(c) for c in _BACKTEST_ROW_COLS}
+    # repr(float(...)) round-trips the stored double exactly through float().
+    return [
+        {"date": date[i], **{c: repr(float(cols[c][i])) for c in _BACKTEST_ROW_COLS}}
+        for i in range(len(date))
+    ]
+
+
+def _schedule_rows(archive: RunArchive, section: str = "trade_schedule") -> list[dict[str, str]]:
+    if section not in archive:
+        return []
+    sec = archive.section(section)
+    symbol = sec.dict("symbol").tolist()
+    is_index = sec.u8enum("is_index").tolist()   # labels "0" / "1"
+    n_names = sec.u32("n_names")
+    gross_vega = sec.f64("gross_index_vega_target")
+    expiry = sec.i64("expiry_ts_ns")
+    return [
+        {"symbol": symbol[i], "is_index": is_index[i], "n_names": str(int(n_names[i])),
+         "gross_index_vega_target": repr(float(gross_vega[i])),
+         "expiry_ts_ns": str(int(expiry[i]))}
+        for i in range(len(symbol))
+    ]
+
+
+def _divergence_rows(archive: RunArchive, section: str = "mark_divergence") -> list[dict[str, str]]:
+    if section not in archive:
+        return []
+    sec = archive.section(section)
+    symbol = sec.dict("symbol").tolist()
+    side = sec.u8enum("side").tolist()           # labels "Call" / "Put"
+    strike = sec.f64("strike")
+    sched = sec.f64("schedule_mark")
+    live = sec.f64("live_mark")
+    diff = sec.f64("diff")
+    bps = sec.f64("abs_diff_bps_of_mark")
+    return [
+        {"symbol": symbol[i], "side": side[i], "strike": repr(float(strike[i])),
+         "schedule_mark": repr(float(sched[i])), "live_mark": repr(float(live[i])),
+         "diff": repr(float(diff[i])), "abs_diff_bps_of_mark": repr(float(bps[i]))}
+        for i in range(len(symbol))
+    ]
+
+
+def build_parity_report_from_archive(
+    listed_archive: str,
+    out_html: str,
+    *,
+    projected_archive: str | None = None,
+    listed_section: str = "backtest",
+    projected_section: str | None = None,
+    projected_label: str | None = None,
+) -> ParityStats:
+    """Render the two-route comparison by reading ``run.atxrun`` result containers.
+
+    The RunArchive counterpart of :func:`build_parity_report`: the listed track is
+    the ``listed_section`` (default ``backtest``) of ``listed_archive``; the
+    projected track is ``projected_section`` of ``projected_archive`` (defaulting
+    to the same archive). When no projected section is named, the first present of
+    ``projected_cold`` / ``projected_nodiv`` is used; if neither exists (a
+    listed-only run, as in the guarded 3-session fixture) the listed track stands
+    in as a self-parity so the document still renders. The schedule and
+    mark-divergence panels read the ``trade_schedule`` / ``mark_divergence``
+    sections when present, else render empty.
+
+    ``projected_label`` names the projected route in every legend and caption. It
+    defaults to ``None``, meaning *derive it from the resolved section* —
+    ``projected (cold)`` for ``projected_cold``, ``projected (no-divergence)`` for
+    ``projected_nodiv``, and ``listed (self)`` for the self-parity fallback — so a
+    no-divergence archive is never rendered as cold. Passing an explicit string
+    overrides the derivation.
+    """
+    listed = RunArchive.open(listed_archive)
+    same = projected_archive is None or projected_archive == listed_archive
+    projected = listed if same else RunArchive.open(projected_archive)
+    try:
+        listed_rows = _backtest_rows(listed, listed_section)
+        schedule_rows = _schedule_rows(listed)
+        divergence_rows = _divergence_rows(projected)
+
+        psec = projected_section
+        if psec is None:
+            psec = next((s for s in ("projected_cold", "projected_nodiv") if s in projected), None)
+        projected_rows = _backtest_rows(projected, psec) if psec is not None else listed_rows
+
+        if projected_label is None:
+            projected_label = (
+                "listed (self)" if psec is None
+                else _PROJECTED_SECTION_LABELS.get(psec, f"projected ({psec})")
+            )
+
+        return _render_parity(
+            listed_rows, projected_rows, divergence_rows, schedule_rows, out_html,
+            projected_label, None, None, None,
+        )
+    finally:
+        if projected is not listed:
+            projected.close()
+        listed.close()
+
+
+def _render_parity(listed_rows, projected_rows, divergence_rows, schedule_rows, out_html,
+                   projected_label, diag_listed, diag_projected, diag_schedule) -> ParityStats:
+    """Fold aligned listed/projected row-dicts into the report + its stats.
+
+    Shared tail of :func:`build_parity_report` (TSV inputs) and
+    :func:`build_parity_report_from_archive` (RunArchive inputs): both produce the
+    four row-dict lists, this renders them identically.
+    """
     # Align session-for-session on date (listed order wins).
     proj_by_date = {r["date"]: r for r in projected_rows}
     aligned = [(l, proj_by_date[l["date"]]) for l in listed_rows if l["date"] in proj_by_date]
@@ -215,13 +356,15 @@ def build_parity_report(
     report = _assemble(
         projected_label, dates, ticks, l_daily, p_daily, l_nav, p_nav, residual,
         aligned, divergence_rows, schedule_rows, stats,
+        diag_listed, diag_projected, diag_schedule,
     )
     report.write(out_html)
     return stats
 
 
 def _assemble(projected_label, dates, ticks, l_daily, p_daily, l_nav, p_nav,
-              residual, aligned, divergence_rows, schedule_rows, stats) -> Report:
+              residual, aligned, divergence_rows, schedule_rows, stats,
+              diag_listed=None, diag_projected=None, diag_schedule=None) -> Report:
     n = len(dates)
     date_lo = dates[0] if dates else "?"
     date_hi = dates[-1] if dates else "?"
@@ -266,6 +409,8 @@ def _assemble(projected_label, dates, ticks, l_daily, p_daily, l_nav, p_nav,
     _add_scatter(report, projected_label, ticks, l_daily, p_daily, dates)
     _add_attribution(report, projected_label, aligned)
     _add_divergence(report, divergence_rows)
+    if diag_listed or diag_projected or diag_schedule:
+        _add_diagnostics(report, diag_listed, diag_projected, diag_schedule)
     _add_methodology(report, projected_label, date_lo, date_hi, n, index_sym, names,
                      n_names, index_vega, expiry)
     return report
@@ -511,6 +656,100 @@ def _add_divergence(report, divergence_rows) -> None:
                 table_label=f"Show worst offenders ({len(offenders)} rows)",
             ),
         ],
+    ))
+
+
+def _phase_count(row) -> int:
+    try:
+        return int(row["count"])
+    except (KeyError, ValueError):
+        return 0
+
+
+def _diag_table(rows) -> Table:
+    """A per-route phase table: phase, wall ms, unit count, ms per unit.
+
+    ``ms / unit`` is the phase's wall time divided by its unit count; it is left
+    blank (an em dash) for phases whose count is 0 (n/a), so a rate is only ever
+    shown where dividing is meaningful.
+    """
+    body = []
+    for row in rows:
+        wall = _num(row.get("wall_ms", ""))
+        count = _phase_count(row)
+        per = wall / count if count > 0 else None
+        body.append((
+            row.get("phase", "?"),
+            f"{wall:,.3f}",
+            f"{count:,}" if count > 0 else "—",
+            f"{per:,.3f}" if per is not None else "—",
+        ))
+    return Table(
+        [Column("Phase", mono=True), Column("Wall (ms)"), Column("Count"),
+         Column("ms / unit")],
+        body, numbered=False,
+    )
+
+
+def _phase(rows, name):
+    return next((r for r in rows if r.get("phase") == name), None)
+
+
+def _add_diagnostics(report, diag_listed, diag_projected, diag_schedule) -> None:
+    body: list = []
+
+    # Hero: the projected route's throughput, so the ms/session claim is
+    # self-documenting from the artifact rather than shell `time` folklore.
+    total = _phase(diag_projected, "total") if diag_projected else None
+    if total is not None:
+        total_ms = _num(total.get("wall_ms", ""))
+        sessions = _phase_count(total)
+        per = total_ms / sessions if sessions > 0 else float("nan")
+        body.append(StatRow([
+            Stat("Projected route wall", f"{total_ms:,.1f} ms",
+                 "run-projected-backtest, end to end"),
+            Stat("Priced sessions", f"{sessions:,}", "one re-mark per session"),
+            Stat("Per session", f"{per:,.2f} ms" if math.isfinite(per) else "--",
+                 "wall time ÷ sessions"),
+        ]))
+
+    # One phase table per supplied route, in execution order (schedule builder,
+    # then the two priced routes).
+    for label, rows in (
+        ("Route P builder — project-schedule", diag_schedule),
+        ("Listed route — run-backtest", diag_listed),
+        ("Projected route — run-projected-backtest", diag_projected),
+    ):
+        if not rows:
+            continue
+        body.append(Subhead(label))
+        body.append(_diag_table(rows))
+
+    # Surface the reconciliation-dominates claim when the listed route is present.
+    recon = _phase(diag_listed, "reconciliation") if diag_listed else None
+    listed_total = _phase(diag_listed, "total") if diag_listed else None
+    if recon is not None and listed_total is not None:
+        denom = _num(listed_total.get("wall_ms", ""))
+        share = (_num(recon.get("wall_ms", "")) / denom * 100.0) if denom > 0 else float("nan")
+        if math.isfinite(share):
+            body.append(Note(
+                "The listed route's wall time is dominated by <b>reconciliation</b> — the "
+                "OPRA parquet join that re-marks every session against the exchange tape — "
+                f"at <b>{share:.0f}%</b> of the subcommand. That join is the cost the two-route "
+                "design isolates behind the frozen schedule; the projected route replaces it "
+                "with surface re-marks."
+            ))
+
+    report.add(Section(
+        "Runtime diagnostics",
+        lede=(
+            "Phase-level wall time for each route, taken on a monotonic clock and written next "
+            "to the run artifacts, so the performance claims are provable from the run itself "
+            "rather than shell timing. Each phase carries its own unit count (sessions, rolls, "
+            "legs, or archive loads); <span class='mono'>ms / unit</span> is that phase's wall "
+            "time divided by its count, shown only where a count applies."
+        ),
+        body=body,
     ))
 
 

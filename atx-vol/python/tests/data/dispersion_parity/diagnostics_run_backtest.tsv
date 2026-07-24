@@ -1,0 +1,7 @@
+ATX_DISPERSION_DIAGNOSTICS	1
+subcommand	phase	wall_ms	count
+run_backtest	setup_read	20.000	0
+run_backtest	engine_run	60.000	3
+run_backtest	reconciliation	510.000	3
+run_backtest	write_outputs	8.000	0
+run_backtest	total	600.000	3

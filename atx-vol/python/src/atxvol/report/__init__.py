@@ -33,12 +33,18 @@ from .components import (
     Subhead,
     Table,
 )
-from .parity import ParityStats, build_parity_report, compute_parity_stats
+from .parity import (
+    ParityStats,
+    build_parity_report,
+    build_parity_report_from_archive,
+    compute_parity_stats,
+)
 
 __all__ = [
     "charts", "theme",
     "Series", "line_chart", "bar_chart", "small_multiple",
     "Report", "Section", "Prose", "Subhead", "Raw", "Note",
     "Stat", "StatRow", "Table", "Column", "Figure", "FacetGrid",
-    "ParityStats", "build_parity_report", "compute_parity_stats",
+    "ParityStats", "build_parity_report", "build_parity_report_from_archive",
+    "compute_parity_stats",
 ]

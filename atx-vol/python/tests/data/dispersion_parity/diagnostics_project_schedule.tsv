@@ -1,0 +1,7 @@
+ATX_DISPERSION_DIAGNOSTICS	1
+subcommand	phase	wall_ms	count
+project_schedule	setup_read	10.000	0
+project_schedule	archive_load	40.000	1
+project_schedule	cold_solve	230.000	46
+project_schedule	validate_write	5.000	0
+project_schedule	total	300.000	1
