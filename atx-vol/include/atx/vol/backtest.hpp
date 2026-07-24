@@ -344,6 +344,38 @@ public:
   std::vector<Lot> lots;
 };
 
+// ── EXERCISE MODEL: what this engine does and does NOT simulate (WS-F F3) ────
+//
+// EXPIRY SETTLEMENT is the ONLY exercise event. Every American lot is carried to
+// its `expiry_ts_ns` and cash-settled at intrinsic against the spot observed at
+// the exactly-matching snapshot. There is deliberately no assignment or
+// early-exercise simulation:
+//
+//   * a short ITM call over an ex-date is never assigned away;
+//   * a long deep-ITM put's optimal early exercise is never taken. Its forgone
+//     value IS carried in the mark (the pricer is American), but it is never
+//     REALIZED, so a hold-to-expiry book gives the early-exercise premium back
+//     at expiry instead of capturing it.
+//
+// Roll-at-N-DTE strategies (the dispersion route) mostly dodge this because
+// they close well before expiry. `HoldToExpiry` / `CloseAtHorizon` DSL books do
+// NOT: read their settlement PnL as a lower bound on an optimally-exercised
+// book.
+//
+// Nor is there any corporate-action handling: `Lot` is immutable by design, so a
+// split in-window would change K and multiplier with no adjustment.
+//
+// This is a TRACKED DEFERRAL, not an oversight — see the sprint plan
+// §9 ("Assignment/early-exercise simulation in the backtest"). Closing it needs
+// an exercise-boundary decision rule per step, a settlement/assignment cash
+// convention, and share-delivery into the hedge ledger; that is its own design,
+// and half of it (a discrete-cash-dividend PDE American pricer) is the same
+// §9 deferral the pricing lane carries.
+//
+// What IS modelled, as of WS-F: discrete cash dividends on the HEDGE SHARE
+// ledger (`FinancingConfig::share_dividends`) — the leg of P1-4 that needed no
+// exercise model.
+
 // ── Execution frictions + financing (Phase B2) ───────────────────────────────
 
 // Modeled bid/ask + costs applied ONLY to traded quantity (entries, roll-closes,
@@ -359,6 +391,24 @@ struct FrictionModel {
   double hedge_slippage_bps{0.0}; // shares fill at S * (1 +/- bps/1e4)
 };
 
+// WS-F F3(b) (BT-P1-4). One discrete cash dividend on one underlier's SHARES.
+// The hedge-share ledger used to accrue dividends only as a continuous
+// `q_eff_at(0.25)` proxy — the surface's effective carry at a FIXED 3-month
+// tenor, regardless of the step length and regardless of where the ex-dates
+// actually fall — while the OPTION surfaces price the real discrete schedule.
+// A delta-hedged book across ex-dates on a high-yield name therefore carried a
+// systematic hedge-carry bias.
+//
+// The archive does NOT persist the corpus dividend schedule (`PricingContext`
+// carries S / r / now_ts only), so replay cannot rediscover it: the schedule is
+// a caller input, and it must be THE SAME schedule that priced the surfaces or
+// the ledger and the marks disagree.
+struct ShareDividend {
+  std::uint32_t uid{0};      // underlier whose shares pay/receive
+  std::int64_t ex_ts_ns{0};  // ex-date instant (epoch ns)
+  double amount{0.0};        // cash per share, >= 0
+};
+
 // Engine-internal cash / borrow ledger config. The B2 DEFAULT keeps `finance_premium`
 // and `shares_carry` OFF (a documented deviation from the design's true-defaults) so
 // that a default `RunConfig{}` reproduces B1 bit-for-bit; operators opt in explicitly.
@@ -369,6 +419,16 @@ struct FinancingConfig {
   // r*S*dt here; when it is on, the cash ledger already carries that funding.
   bool shares_carry{false};
   double initial_cash{0.0}; // opening cash balance
+  // F3(b): discrete cash dividends on hedge shares. EMPTY BY DEFAULT, and an
+  // empty schedule leaves every run bit-identical. A step whose (base, shifted]
+  // window contains an ex-date books `shares * amount` into BOTH cash and the
+  // financing column — a real cash event, so it is booked whether or not
+  // `shares_carry` is on. For a uid that HAS a schedule the continuous
+  // `q_eff_at(0.25)` dividend proxy is suppressed (its yield term drops to 0,
+  // the funding term is unaffected): the discrete cash IS the dividend, and
+  // charging both would double-count. uids with no schedule keep the proxy
+  // exactly as before.
+  std::vector<ShareDividend> share_dividends{};
 };
 
 // ── Run config + result ─────────────────────────────────────────────────────

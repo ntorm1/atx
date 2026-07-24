@@ -348,6 +348,13 @@ private:
     return Err(ErrorCode::InvalidArgument,
                "run_backtest: borrow_rate must be finite and nonnegative");
   }
+  for (const ShareDividend &div : cfg.financing.share_dividends) {
+    if (div.uid == 0u || div.ex_ts_ns <= 0 || !finite_nonnegative(div.amount)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest: share dividend needs a real uid, a positive ex-date and a "
+                 "finite nonnegative amount");
+    }
+  }
   if (cfg.reconcile_nav && !(std::isfinite(cfg.reconcile_nav_tol) && cfg.reconcile_nav_tol > 0.0)) {
     return Err(ErrorCode::InvalidArgument,
                "run_backtest: reconcile_nav_tol must be finite and positive");
@@ -2243,13 +2250,37 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       const double borrow = -cfg.financing.borrow_rate * short_amt * Sb * dt; // 0 when rate 0
       financing += borrow;
       financing_noncash_step += borrow;
+      // F3(b): discrete dividend cash on every ex-date inside this step's
+      // (base, shifted] window. Long shares receive it, short shares pay it.
+      // This is a CASH event, not a modelled accrual, so it moves the ledger and
+      // is deliberately NOT part of `financing_noncash_step`.
+      bool uid_has_dividend_schedule = false;
+      double dividend_cash = 0.0;
+      for (const ShareDividend &div : cfg.financing.share_dividends) {
+        if (div.uid != uid) {
+          continue;
+        }
+        uid_has_dividend_schedule = true;
+        if (div.ex_ts_ns > base->ts_ns() && div.ex_ts_ns <= shifted->ts_ns()) {
+          dividend_cash += n * div.amount;
+        }
+      }
+      if (dividend_cash != 0.0) {
+        financing += dividend_cash;
+        cash += dividend_cash;
+      }
       if (cfg.financing.shares_carry) {
         // Buying shares has already reduced the financed cash balance, so cash
         // carry owns the funding cost when enabled. Charging r here too would
         // count it twice. Without cash financing, retain the standalone (q-r)
         // total-carry shortcut.
         const double funding_rate = cfg.financing.finance_premium ? 0.0 : bs->pricing().r;
-        const double carry = n * (bs->q_eff_at(0.25) - funding_rate) * Sb * dt;
+        // F3(b): a uid with a real dividend schedule books the CASH above, so its
+        // continuous yield proxy drops out (charging both double-counts). The
+        // funding leg is unaffected. uids with no schedule keep the pre-F3
+        // expression bit-for-bit.
+        const double q_proxy = uid_has_dividend_schedule ? 0.0 : bs->q_eff_at(0.25);
+        const double carry = n * (q_proxy - funding_rate) * Sb * dt;
         financing += carry;
         financing_noncash_step += carry;
       }

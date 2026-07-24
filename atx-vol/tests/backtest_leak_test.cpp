@@ -340,3 +340,143 @@ TEST(BacktestLeak, NavLiquidationReconciliationObservesTheExcludeAndReportDrift)
   ASSERT_FALSE(r.has_value()) << "reconciliation did not observe the truncated-NAV drift";
   EXPECT_NE(r.error().to_string().find("reconcil"), std::string::npos) << r.error().to_string();
 }
+
+// â”€â”€ F3(b) BT-P1-4: discrete dividends on the hedge-share ledger â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//
+// The option surfaces price the real discrete dividend schedule, but the SHARE
+// ledger only ever accrued a continuous `q_eff_at(0.25)` proxy â€” the surface's
+// effective carry at a FIXED 3-month tenor, ignoring both the step length and
+// where the ex-dates actually fall â€” and only when `shares_carry` was opted
+// into (default off). A delta-hedged book crossing an ex-date therefore booked
+// no dividend cash at all under the default config.
+//
+// The fixture: a short-put book on BBB with a daily delta hedge, so a real
+// SHORT share position is carried across a step containing an ex-date. Short
+// shares PAY the dividend, so the run with a schedule must lose exactly
+// `shares * amount` of NAV relative to the run without one â€” and the share
+// count is recoverable from the fixture, so the test asserts the AMOUNT, not
+// merely a direction.
+TEST(BacktestLeak, HedgeSharesBookDiscreteDividendCashOnExDates) {
+  const fs::path dir = fresh_dir("f3b-ex-div");
+  constexpr int kDates = 5;
+  const GapCorpus corpus = make_gap_corpus(dir, kDates, /*gap_step=*/-1); // no gap
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 200LL * kDayNs;
+  constexpr double kDivAmount = 0.85; // cash per share
+
+  const auto run = [&](std::vector<ShareDividend> divs) -> Result<BacktestResult> {
+    GapStrategy strat{kUidB, 150.0, expiry,
+                      HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 0.0},
+                      /*close_step=*/0};
+    RunConfig cfg;
+    cfg.reconcile_nav = true;
+    cfg.financing.share_dividends = std::move(divs);
+    return run_backtest(*clock, strat, cfg);
+  };
+
+  const auto base = run({});
+  ASSERT_TRUE(base.has_value()) << base.error().to_string();
+
+  // Ex-date strictly inside the step from date 2 to date 3.
+  const std::int64_t ex_ts = kBaseNow + 2LL * kDayNs + kDayNs / 2;
+  const auto with_div = run({ShareDividend{kUidB, ex_ts, kDivAmount}});
+  ASSERT_TRUE(with_div.has_value()) << with_div.error().to_string();
+
+  ASSERT_EQ(base->size(), static_cast<std::size_t>(kDates));
+  ASSERT_EQ(with_div->size(), static_cast<std::size_t>(kDates));
+
+  // Recover the share count carried over step 2 -> 3 from that row's share PnL
+  // and the fixture's own spots (make_gap_corpus: S = 150 * (1 + 0.006*d)).
+  const double S2 = 150.0 * (1.0 + 0.006 * 2.0);
+  const double S3 = 150.0 * (1.0 + 0.006 * 3.0);
+  const double shares = base->pnl_shares[3] / (S3 - S2);
+  ASSERT_LT(shares, 0.0) << "fixture must carry a SHORT hedge (short 2 puts => positive delta)";
+
+  const double expected = shares * kDivAmount; // negative: short shares pay
+  const double actual = with_div->financing[3] - base->financing[3];
+  EXPECT_NEAR(actual, expected, 1.0e-9 * std::max(1.0, std::fabs(expected)));
+  EXPECT_LT(actual, 0.0);
+  std::printf("[F3b] shares=%.6f  dividend cash=%.6f (expected %.6f)\n", shares, actual, expected);
+
+  // The dividend is CASH, not a modelled accrual: the ledger balance moves by
+  // the same amount, and NAV still reconciles against liquidation on every row.
+  EXPECT_NEAR(with_div->cash[3] - base->cash[3], expected,
+              1.0e-9 * std::max(1.0, std::fabs(expected)));
+  ASSERT_EQ(with_div->nav_liquidation.size(), with_div->nav.size());
+  for (std::size_t i = 0; i < with_div->nav.size(); ++i) {
+    EXPECT_NEAR(with_div->nav_liquidation[i], with_div->nav[i], 1.0e-9) << "row " << i;
+  }
+
+  // Rows OUTSIDE the ex-date window are untouched, bit-for-bit: a dividend
+  // schedule is not a global re-scaling of the financing column.
+  for (std::size_t i = 0; i < base->size(); ++i) {
+    if (i == 3) {
+      continue;
+    }
+    EXPECT_EQ(with_div->financing[i], base->financing[i]) << "row " << i;
+  }
+
+  // An empty schedule is the identity: same run, byte-for-byte NAV.
+  const auto again = run({});
+  ASSERT_TRUE(again.has_value()) << again.error().to_string();
+  for (std::size_t i = 0; i < base->size(); ++i) {
+    EXPECT_EQ(again->nav[i], base->nav[i]) << "row " << i;
+  }
+}
+
+// The discrete schedule REPLACES the q_eff proxy for the names it covers rather
+// than stacking on top of it: with `shares_carry` on, a uid carrying a schedule
+// accrues no continuous dividend yield (the funding leg is untouched), so the
+// dividend is never counted twice.
+TEST(BacktestLeak, DiscreteDividendScheduleSupersedesTheContinuousCarryProxy) {
+  const fs::path dir = fresh_dir("f3b-proxy-supersede");
+  constexpr int kDates = 5;
+  const GapCorpus corpus = make_gap_corpus(dir, kDates, /*gap_step=*/-1);
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 200LL * kDayNs;
+
+  const auto run = [&](bool with_schedule) -> Result<BacktestResult> {
+    GapStrategy strat{kUidB, 150.0, expiry,
+                      HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 0.0},
+                      /*close_step=*/0};
+    RunConfig cfg;
+    cfg.reconcile_nav = true;
+    cfg.financing.shares_carry = true;
+    if (with_schedule) {
+      // A schedule whose only ex-date is far outside the run: it contributes NO
+      // cash, so any difference is purely the suppressed yield proxy.
+      cfg.financing.share_dividends = {ShareDividend{kUidB, kBaseNow + 400LL * kDayNs, 1.0}};
+    }
+    return run_backtest(*clock, strat, cfg);
+  };
+
+  const auto proxy = run(false);
+  ASSERT_TRUE(proxy.has_value()) << proxy.error().to_string();
+  const auto scheduled = run(true);
+  ASSERT_TRUE(scheduled.has_value()) << scheduled.error().to_string();
+
+  // The proxy was doing real work (the fixture's surfaces carry q_eff = 2%), so
+  // suppressing it must move the financing column â€” otherwise this test could
+  // not observe a double count.
+  bool moved = false;
+  for (std::size_t i = 1; i < proxy->size(); ++i) {
+    if (scheduled->financing[i] != proxy->financing[i]) {
+      moved = true;
+    }
+  }
+  EXPECT_TRUE(moved) << "the q_eff proxy contributed nothing; the test cannot observe suppression";
+
+  // And the suppression is exactly the yield leg: short shares under the proxy
+  // PAY q*S*dt, so removing it makes financing strictly larger on every step.
+  for (std::size_t i = 1; i < proxy->size(); ++i) {
+    EXPECT_GE(scheduled->financing[i], proxy->financing[i]) << "row " << i;
+  }
+  ASSERT_EQ(scheduled->nav_liquidation.size(), scheduled->nav.size());
+  for (std::size_t i = 0; i < scheduled->nav.size(); ++i) {
+    EXPECT_NEAR(scheduled->nav_liquidation[i], scheduled->nav[i], 1.0e-9) << "row " << i;
+  }
+}
