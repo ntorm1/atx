@@ -349,6 +349,16 @@ struct CorpusPhaseTimings {
   double checkpoint_s{0.0};    // per-date checkpoint read + write
   std::uint64_t fanout_calls{0};   // pools spawned == date-boundary drains
   std::uint64_t boards_fitted{0};  // boards handed to those pools
+  // T1 (perf, BT-T1): inner-fit-worker reclaim by a DRAINING across-board pool.
+  // Counted only on the across-board parallel arm (n > 1 boards and a non-serial
+  // `CorpusConfig::n_threads`) -- the arm that pins each board's inner fit to one
+  // worker while the pool is saturated. `inner_worker_slots` sums the inner
+  // fit-worker budget each of those boards was OFFERED; `reclaimed_inner_boards`
+  // counts the boards offered more than one, i.e. the boards that picked up outer
+  // workers the pool could no longer use. Diagnostic only -- never serialized, so
+  // they cannot move an output byte.
+  std::uint64_t reclaimed_inner_boards{0};
+  std::uint64_t inner_worker_slots{0};
 };
 
 [[nodiscard]] CorpusPhaseTimings corpus_phase_timings() noexcept;

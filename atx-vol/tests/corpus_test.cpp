@@ -2013,6 +2013,60 @@ TEST(CorpusBuildSession, BatchedAppendResumesFromPerDateCheckpoints) {
   expect_corpora_byte_identical(resumed, clean, dates);
 }
 
+// ── T1 (BT-T1): the DRAINING fan-out reclaims inner fit workers ─────────────
+//
+// Two rules compose into the BT-T1 worker cap. `run_bounded_fit_tasks` clamps
+// its worker count at the TASK count, so an across-board pool wider than the
+// board list simply cannot use the surplus. And `build_corpus_core` pins every
+// board's INNER fit to a single worker whenever the outer arm is parallel — the
+// guard that stops the two levels multiplying into H^2 runnable threads while
+// the pool IS saturated. Together: the last boards standing hold the whole
+// machine and run on one core each.
+//
+// A 2-board batch on an 8-wide outer budget is that state for its entire life:
+// 2 outer workers busy, 6 idle, both boards pinned to one inner worker. The fix
+// hands the idle share of the outer budget to the boards still in flight.
+//
+// Gated on the phase-timing counters (process-global, never serialized, so they
+// cannot move an output byte) rather than a wall clock — this box is shared, and
+// a throughput assertion here would be noise. The counter statement is exact:
+// every board on the parallel arm reports the inner budget it was offered.
+TEST(CorpusBuildSession, DrainingFanOutReclaimsInnerFitWorkers) {
+  reset_corpus_phase_timings();
+  const std::vector<std::string> dates = {"2026-06-17"}; // make_mixed_boards => 2 boards
+  const fs::path out = fresh_out_dir("t1-inner-reclaim");
+  auto built = build_batched(out, dates, 1u, 8u); // 8-wide outer budget, 2 boards
+  ASSERT_TRUE(built.has_value()) << built.error().to_string();
+
+  const CorpusPhaseTimings t = corpus_phase_timings();
+  ASSERT_EQ(t.boards_fitted, 2u);
+  EXPECT_EQ(t.reclaimed_inner_boards, 2u)
+      << "both boards of a 2-board / 8-worker fan-out must reclaim the 6 outer "
+         "workers the pool cannot use as INNER fit parallelism";
+  EXPECT_GE(t.inner_worker_slots, 8u)
+      << "the reclaimed inner budgets must add up to at least the outer budget";
+}
+
+// T1 companion gate: the reclaim changes only HOW MANY workers a board's inner
+// fit is offered, never a fitted value. Same boards, outer-serial (which keeps
+// the caller's inner budget) vs an 8-wide pool whose surplus the boards reclaim
+// — archive bytes must match exactly. This is the thread-count-invariance gate
+// for the reclaim; `BatchedAppendDeterministicAcrossThreadCounts` covers the
+// saturated-pool case, this one covers the maximally-reclaimed case.
+TEST(CorpusBuildSession, InnerWorkerReclaimIsByteIdenticalToSerial) {
+  const std::vector<std::string> dates = {"2026-06-17"};
+  const fs::path serial = fresh_out_dir("t1-reclaim-serial");
+  const fs::path wide = fresh_out_dir("t1-reclaim-wide");
+
+  auto s = build_batched(serial, dates, 1u, 1u);
+  auto w = build_batched(wide, dates, 1u, 8u);
+  ASSERT_TRUE(s.has_value()) << s.error().to_string();
+  ASSERT_TRUE(w.has_value()) << w.error().to_string();
+
+  expect_manifests_equivalent(*s, *w);
+  expect_corpora_byte_identical(serial, wide, dates);
+}
+
 TEST(CorpusBuildSession, RejectsDuplicateCanonicalSymbolsBeforeFitting) {
   const fs::path out = fresh_out_dir("streaming-duplicate");
   QualifiedCorpusConfig cfg;

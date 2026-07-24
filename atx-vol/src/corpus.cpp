@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <system_error> // std::error_code
+#include <thread>       // std::thread::hardware_concurrency (T1 outer-budget mirror)
 #include <utility>      // std::move
 #include <vector>
 
@@ -522,6 +523,9 @@ std::atomic<double> g_archive_write_s{0.0};
 std::atomic<double> g_checkpoint_s{0.0};
 std::atomic<std::uint64_t> g_fanout_calls{0};
 std::atomic<std::uint64_t> g_boards_fitted{0};
+// T1: inner-fit-worker budgets offered on the across-board parallel arm.
+std::atomic<std::uint64_t> g_reclaimed_inner_boards{0};
+std::atomic<std::uint64_t> g_inner_worker_slots{0};
 
 void add_seconds(std::atomic<double> &sink, double value) noexcept {
   double expected = sink.load(std::memory_order_relaxed);
@@ -577,6 +581,74 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
   }
   const bool qualified = admission != nullptr;
 
+  // T1 (BT-T1): observe the inner fit-worker budget each board is OFFERED on the
+  // across-board parallel arm. Diagnostic only (relaxed, process-global, never
+  // serialized); called from fit workers, so it must be lock-free — it is.
+  const auto note_inner_workers = [](unsigned workers) noexcept {
+    g_inner_worker_slots.fetch_add(workers, std::memory_order_relaxed);
+    if (workers > 1u) {
+      g_reclaimed_inner_boards.fetch_add(1u, std::memory_order_relaxed);
+    }
+  };
+
+  // ── T1 (perf, BT-T1): last-board-standing reclaims inner fit workers ────────
+  //
+  // Two rules used to compose into the ~9/16 worker cap. `run_bounded_fit_tasks`
+  // clamps its worker count at the TASK count, so an across-board pool wider than
+  // the task list cannot use the surplus at all; and the arm below pins every
+  // board's INNER fit to one worker whenever the outer arm is parallel — the guard
+  // that stops the two levels multiplying into H^2 runnable threads. Together they
+  // mean the boards still standing as the pool drains hold the whole machine and
+  // use one core each. (The other half of BT-T1 — one fan-out per DATE — is
+  // already gone: `append_dates` pools every un-checkpointed date's boards into a
+  // single fan-out, so what remains is the drain of that one pool.)
+  //
+  // The fix hands the idle share of the outer budget to whoever is still running:
+  // a task claimed while `left` tasks are unfinished is offered
+  // `outer_budget / min(outer_budget, left)` inner workers. The numerator is the
+  // BUDGET, not the pool's clamped worker count — the clamp is precisely what
+  // strands the surplus (a 2-task pool on an 8-wide budget runs 2 workers and
+  // leaves 6 unplaced), so measuring against the clamped width would report the
+  // pool as perfectly busy and reclaim nothing.
+  //
+  // This CANNOT oversubscribe. Take any instant with `m` tasks running. Every one
+  // of them was claimed at a moment when `unfinished_tasks` was at least `m`
+  // (the counter only falls, and each of those tasks was itself unfinished then),
+  // so each was offered at most `outer_budget / min(outer_budget, m)` workers, and
+  // since `m <= outer_budget` the m slices sum to at most `outer_budget`. The
+  // saturated regime is unchanged by construction: while `left >= outer_budget`
+  // every board is offered exactly 1, byte-for-byte the historical schedule.
+  //
+  // Determinism is NOT weakened. `left` is scheduling-dependent, so the inner
+  // budget a given board receives varies run to run — but the inner budget has
+  // never been allowed to change a fitted value: it fans expiry preparation into
+  // disjoint per-chain slots (session.cpp / surface_parity.cpp), which is exactly
+  // what the existing 1-vs-8-worker byte gates already exercise (an outer-serial
+  // build keeps the caller's inner budget while a parallel one pins 1, and their
+  // archives are asserted byte-identical). `InnerWorkerReclaimIsByteIdenticalToSerial`
+  // gates the maximally-reclaimed case specifically.
+  //
+  // `outer_budget` mirrors run_bounded_fit_tasks' own resolution (0 => machine
+  // width) so the two never disagree about how wide the pool actually is.
+  const unsigned outer_budget = cfg.n_threads != 0u
+                                    ? cfg.n_threads
+                                    : std::max(1u, std::thread::hardware_concurrency());
+  std::atomic<std::size_t> unfinished_tasks{0};
+  const auto inner_workers_now = [&unfinished_tasks, outer_budget]() noexcept -> unsigned {
+    if (outer_budget <= 1u) {
+      return 1u;
+    }
+    const std::size_t left = unfinished_tasks.load(std::memory_order_acquire);
+    const std::size_t sharers =
+        std::min<std::size_t>(outer_budget, std::max<std::size_t>(left, 1u));
+    return std::max(1u, static_cast<unsigned>(outer_budget / sharers));
+  };
+  // Decrements `unfinished_tasks` on scope exit — after the task's fit has been
+  // written to its slot, and even if that fit throws.
+  struct TaskDone {
+    std::atomic<std::size_t> &counter;
+    ~TaskDone() { counter.fetch_sub(1u, std::memory_order_release); }
+  };
 
   // ── Fan out board fits; each worker writes its own disjoint slot ───────────
   std::vector<FitSlot> slots(n);
@@ -619,16 +691,24 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
       chains.emplace_back(s, e);
       s = e;
     }
+    // T1: the chain arm's tasks are CHAINS, so the reclaim's `left` counts chains
+    // still running, not boards.
+    unfinished_tasks.store(chains.size(), std::memory_order_release);
     schedule_status = detail::run_bounded_fit_tasks(
         chains.size(), cfg.n_threads,
-        [&boards, &slots, &cfg, admission, n, &order_sd, &chains](std::size_t chain_idx) -> Status {
+        [&boards, &slots, &cfg, admission, n, &order_sd, &chains, &note_inner_workers,
+         &inner_workers_now, &unfinished_tasks](std::size_t chain_idx) -> Status {
+          const TaskDone chain_done{unfinished_tasks};
           WarmCacheExport carried; // prior-date caches carried down this symbol's chain
           const std::pair<std::size_t, std::size_t> range = chains[chain_idx];
           for (std::size_t p = range.first; p < range.second; ++p) {
             const std::size_t board_idx = order_sd[p];
             PricerConfig fit_config = cfg.fit_template;
             if (n > 1u && cfg.n_threads != 1u) {
-              fit_config.fit_workers = 1u; // outer parallelism is ACROSS chains
+              // Outer parallelism is ACROSS chains; a chain running while the
+              // pool drains reclaims the workers the pool can no longer place.
+              fit_config.fit_workers = inner_workers_now();
+              note_inner_workers(fit_config.fit_workers);
             }
             // Every chain board builds/uses a WIDE (chain-cache-mode) cache so it
             // stays reusable across forward dates; when a prior date's cache is in
@@ -670,15 +750,23 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
         // warm cache, so which core runs a chain cannot change a fitted surface.
         detail::FitAffinity::PerformanceThenEfficiencyCores);
   } else {
+    unfinished_tasks.store(n, std::memory_order_release);
     schedule_status = detail::run_bounded_fit_tasks(
-        n, cfg.n_threads, [&boards, &slots, &cfg, admission, n](std::size_t index) -> Status {
+        n, cfg.n_threads,
+        [&boards, &slots, &cfg, admission, n, &note_inner_workers, &inner_workers_now,
+         &unfinished_tasks](std::size_t index) -> Status {
+          const TaskDone board_done{unfinished_tasks};
           PricerConfig fit_config = cfg.fit_template;
           // Auto or explicit multi-worker outer scheduling owns the machine
           // budget. Keep each non-eSSVI board's expiry preparation serial so the
-          // two levels cannot multiply into H^2 runnable threads. An explicitly
-          // serial outer scheduler retains the caller's inner budget.
+          // two levels cannot multiply into H^2 runnable threads -- but only for
+          // as long as the pool is actually saturated (T1): once fewer tasks are
+          // unfinished than the pool is wide, the boards still standing take the
+          // idle share instead of leaving it on the floor. An explicitly serial
+          // outer scheduler retains the caller's inner budget.
           if (n > 1u && cfg.n_threads != 1u) {
-            fit_config.fit_workers = 1u;
+            fit_config.fit_workers = inner_workers_now();
+            note_inner_workers(fit_config.fit_workers);
           }
           slots[index] = fit_board(boards[index], fit_config, admission);
           return Ok();
@@ -1047,6 +1135,8 @@ CorpusPhaseTimings corpus_phase_timings() noexcept {
   out.checkpoint_s = g_checkpoint_s.load(std::memory_order_relaxed);
   out.fanout_calls = g_fanout_calls.load(std::memory_order_relaxed);
   out.boards_fitted = g_boards_fitted.load(std::memory_order_relaxed);
+  out.reclaimed_inner_boards = g_reclaimed_inner_boards.load(std::memory_order_relaxed);
+  out.inner_worker_slots = g_inner_worker_slots.load(std::memory_order_relaxed);
   return out;
 }
 
@@ -1056,6 +1146,8 @@ void reset_corpus_phase_timings() noexcept {
   g_checkpoint_s.store(0.0, std::memory_order_relaxed);
   g_fanout_calls.store(0u, std::memory_order_relaxed);
   g_boards_fitted.store(0u, std::memory_order_relaxed);
+  g_reclaimed_inner_boards.store(0u, std::memory_order_relaxed);
+  g_inner_worker_slots.store(0u, std::memory_order_relaxed);
 }
 
 CorpusBuildSession::CorpusBuildSession(std::string out_dir, QualifiedCorpusConfig cfg)
