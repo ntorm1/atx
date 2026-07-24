@@ -333,7 +333,16 @@ struct SurfaceArchiveWriteOpts {
   std::uint32_t lookup_load_pct{70};
   std::uint32_t blob_alignment{kArchiveBlobAlign};
   std::uint32_t array_alignment{kArchiveArrayAlign};
-  // Stamp for `ArchiveHeader::created_ts_ns`. 0 => fill from the system clock.
+  // Stamp for `ArchiveHeader::created_ts_ns`. A 0 sentinel is filled from a
+  // DETERMINISTIC content hash — CRC-32C of the payload span [header, EOF) folded
+  // with file_size — NOT the wall clock. It is therefore a content-derived
+  // IDENTITY, not a timestamp: it may be negative as int64, ordering by it is
+  // meaningless, it carries only ~32 bits of content entropy, and it is never
+  // tamper evidence (CRC is linear/forgeable). Two identical builds get identical
+  // stamps (SnapshotCache reproducibility); two different builds get distinct ones
+  // (staleness). An explicit nonzero value is honored verbatim (tests pin it). See
+  // docs/atxvsa2-format.md §5.2. (Both v1 and v2 archive writers behave this way;
+  // the SurfaceDb MANIFEST timestamps, by contrast, stay wall-clock.)
   std::int64_t created_ts_ns{0};
 };
 
@@ -571,7 +580,16 @@ struct ArchiveV2SurfaceHeader {
   std::uint16_t al_n_collocation{};
   std::uint16_t al_n_quadrature{};
   std::uint16_t al_max_newton_iter{};
-  std::uint16_t reserved_u16{};
+  // AlOpts::n_quad_price — the decoupled premium (pricing) Gauss-Legendre order
+  // (SE-P1-2). 0 ties it to al_n_quadrature (the historical behavior), so this
+  // field reads back as 0 on every pre-C2 archive (it occupied a zero-filled
+  // reserved u16), and the reader maps 0 -> tied. Reusing the reserved slot keeps
+  // the layout (and the sizeof-fold in schema_hash_v2) byte-identical; the salt
+  // is bumped ANYWAY so a pre-C2 reader rejects a NEW archive that actually sets a
+  // decoupled premium order (rather than silently mispricing it with the tied
+  // order), while this reader's prior-salt accept-list keeps every pre-C2 archive
+  // openable (see schema_hash_v2 / open_impl and docs/atxvsa2-format.md §5).
+  std::uint16_t al_n_quad_price{};
   std::uint8_t reserved[66]{}; // pad to 256
 };
 static_assert(sizeof(ArchiveV2SurfaceHeader) == 256, "ArchiveV2SurfaceHeader layout drift");
@@ -611,6 +629,8 @@ static_assert(offsetof(ArchiveV2SurfaceHeader, col_payload_off_off) == 144);
 static_assert(offsetof(ArchiveV2SurfaceHeader, uid) == 152);
 static_assert(offsetof(ArchiveV2SurfaceHeader, n_slices) == 156);
 static_assert(offsetof(ArchiveV2SurfaceHeader, payload_crc32c) == 168);
+// n_quad_price (C2): pins the reused reserved slot; a pre-C2 archive stored 0 here.
+static_assert(offsetof(ArchiveV2SurfaceHeader, al_n_quad_price) == 188);
 
 // ── v2 writer ────────────────────────────────────────────────────────────────
 
@@ -618,7 +638,11 @@ struct ArchiveV2WriteOpts {
   std::uint32_t flags{0};
   std::uint32_t lookup_load_pct{70};                    // (0, 100]
   std::uint32_t surface_alignment{kArchiveV2SurfaceAlign};
-  std::int64_t created_ts_ns{0}; // 0 => system clock
+  // 0 => a DETERMINISTIC content hash (CRC-32C of [header,EOF) folded with
+  // file_size), NOT the wall clock: a content-derived identity, not a timestamp —
+  // may be negative int64, ~32-bit entropy, never tamper evidence. Explicit
+  // nonzero honored verbatim. See docs/atxvsa2-format.md §5.2.
+  std::int64_t created_ts_ns{0};
 };
 
 // Serialize `items` into an in-memory ATXVSA2 buffer (memcpy-bound). Same
@@ -684,6 +708,23 @@ public:
   [[nodiscard]] std::uint32_t count() const noexcept { return header_.surface_count; }
   [[nodiscard]] const ArchiveV2Header &header() const noexcept { return header_; }
   [[nodiscard]] std::span<const ArchiveV2DirEntry> directory() const noexcept { return directory_; }
+
+  // ── Framing-only enumeration seam (C6 / SE-P2-6) ────────────────────────────
+  //
+  // `entries()` returns the parsed directory — one `ArchiveV2DirEntry` per surface,
+  // sorted by canonical symbol (offset/size/uid/symbol/n_slices/kind_bits/
+  // payload_crc32c) — and `entry_count()` its size. Both are O(1) and read ONLY the
+  // metadata parsed at `open()`; they touch NO surface record body, so they never
+  // materialize a `PricedSurfaceView` (nor the eager ConvexDense/SplineVol curves
+  // that `map_all()` builds per record). A checkpoint/resume counter that only needs
+  // "how many surfaces / which uids / which kinds" MUST use these, not `map_all()`,
+  // whose per-record view construction makes resume O(heavy-payload) instead of
+  // O(framing). This is the cross-workstream seam the corpus checkpoint consumes
+  // (sprint WS-T / T2); `entries()` is the WS-T-facing name for the same span
+  // `directory()` exposes.
+  [[nodiscard]] std::span<const ArchiveV2DirEntry> entries() const noexcept { return directory_; }
+  [[nodiscard]] std::size_t entry_count() const noexcept { return directory_.size(); }
+
   [[nodiscard]] ArchiveContentIdentity identity() const noexcept {
     return ArchiveContentIdentity{header_.file_size, header_.created_ts_ns, header_.header_crc32c,
                                   header_.metadata_crc32c};

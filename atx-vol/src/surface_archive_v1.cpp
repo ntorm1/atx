@@ -722,14 +722,9 @@ Status write_surface_archive_file(std::string_view path, std::span<const Surface
       return Err(ErrorCode::IoError, "write_surface_archive_file: write failed");
     }
   }
-  std::error_code ec;
-  std::filesystem::rename(tmp, dst, ec);
-  if (ec) {
-    std::error_code ec2;
-    std::filesystem::remove(tmp, ec2);
-    return Err(ErrorCode::IoError, "write_surface_archive_file: rename failed");
-  }
-  return Ok();
+  // Durable atomic publish: fsync + retry-under-reader + preserve-temp (C3 /
+  // SE-P2-1, SE-P2-2), shared with the v2 + manifest writers.
+  return detail::flush_and_publish_file(tmp.string(), dst.string());
 }
 
 // ── Reader ───────────────────────────────────────────────────────────────
