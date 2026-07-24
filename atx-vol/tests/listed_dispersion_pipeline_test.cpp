@@ -467,9 +467,12 @@ TEST(ListedDispersionPipeline, BuildSchedule_RejectsEmptyAndSubThreshold) {
 // The full builder symbol exists with the planned signature. Its economic path is
 // parquet-backed (pinned at T10); here we only pin the declaration/link + contract.
 TEST(ListedDispersionPipeline, BuildScheduleSymbolIsDeclared) {
+  // T9/O4: the builder gained a trailing optional `PhaseTimer *` (default nullptr) so
+  // the CLI can charge the `selection` / `quote_join` diagnostics phases the extraction
+  // would otherwise have collapsed. A null timer is economically identical.
   using BuilderFn = Result<ListedDispersionSchedule> (*)(
       const Clock &, const ListedScheduleSpec &, const ListedDispersionMethodology &,
-      std::span<const UniverseRow>, const ListedDefinitionTable &, const RunSpec &);
+      std::span<const UniverseRow>, const ListedDefinitionTable &, const RunSpec &, PhaseTimer *);
   const BuilderFn fn = &build_listed_dispersion_schedule;
   EXPECT_NE(reinterpret_cast<const void *>(fn), nullptr);
 }

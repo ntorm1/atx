@@ -21,6 +21,7 @@
 #include "atx/vol/opra_batch.hpp"        // OpraBatchResult, OpraBatchEntry, load_opra_daterange
 #include "atx/vol/portfolio_pricer.hpp"  // kNsPerYear, Position
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, FullGreekSeed
+#include "atx/vol/run_diagnostics.hpp"   // PhaseTimer (optional build-schedule phase timing, T9/O4)
 
 namespace atx::vol {
 
@@ -214,21 +215,31 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
                                  const ListedDispersionMethodology &method,
                                  std::span<const UniverseRow> universe_rows,
                                  const ListedDefinitionTable &definitions,
-                                 const RunSpec &quote_source) {
+                                 const RunSpec &quote_source, PhaseTimer *timer) {
   // Verbatim lift of build_schedule_command's selection loop
-  // (spy_dispersion_backtest.cpp:446-535). Phase timing and the trade_schedule /
-  // section writes stay in the CLI (T9); this function owns only the economics that
-  // produce the ListedDispersionSchedule.
+  // (spy_dispersion_backtest.cpp:446-535). The trade_schedule / section writes stay
+  // in the CLI (T9); this function owns the economics that produce the
+  // ListedDispersionSchedule. `timer` (optional, T9/O4) charges the `selection` /
+  // `quote_join` phases exactly as the example measured them inline, so the CLI's
+  // build-schedule diagnostics keep their pre-lift per-phase granularity; a null
+  // timer skips the charges and is economically identical.
   const std::vector<std::string> symbols = all_symbols(universe_rows);
   ListedDispersionSchedule schedule;
   std::int64_t active_expiry = 0;
   for (const SnapshotRef &ref : clock.refs()) {
+    // selection: snapshot load + universe resolve. count=1 is charged once per
+    // evaluated roll date (deferrals included); DTE-skip dates below charge only
+    // their load time, with no evaluation count.
+    const auto sel_start = PhaseTimer::now();
     ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(ref.archive_path));
     const double active_dte =
         active_expiry == 0
             ? 0.0
             : static_cast<double>(active_expiry - snapshot.ts_ns()) / kListedNsPerDay;
     if (active_expiry != 0 && active_dte > spec.roll_dte_days) {
+      if (timer) {
+        timer->add("selection", sel_start);
+      }
       continue;
     }
     ATX_TRY(DispersionUniverse authored, universe_at(universe_rows, ref.date));
@@ -237,10 +248,19 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
         ResolvedUniverse resolved,
         resolve_universe_uids(
             authored, [&](std::string_view symbol) { return snapshot.uid_of(symbol); }, missing));
+    if (timer) {
+      timer->add("selection", sel_start, 1u);
+    }
 
+    // quote_join: the OPRA parquet join re-marking the roll-date universe.
+    const auto join_start = PhaseTimer::now();
     ATX_TRY(std::vector<ListedOptionQuote> quotes,
             listed_quotes_for_date(quote_source, definitions, symbols, ref.date));
+    if (timer) {
+      timer->add("quote_join", join_start, 1u);
+    }
 
+    const auto eval_start = PhaseTimer::now();
     ListedDispersionSelectionConfig selection_config;
     selection_config.target_dte_days = spec.target_dte_days;
     selection_config.min_dte_days = spec.min_dte_days;
@@ -249,6 +269,9 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
     const ListedForwardLookup forward = make_listed_forward_lookup(snapshot);
     const auto selected = select_listed_dispersion(ref.date, snapshot.ts_ns(), resolved.universe,
                                                    quotes, forward, selection_config);
+    if (timer) {
+      timer->add("selection", eval_start);
+    }
     if (!selected) {
       if (active_expiry == 0) {
         continue;
@@ -274,6 +297,7 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
                    coverage);
       continue;
     }
+    const auto build_start = PhaseTimer::now();
     ListedScheduleBuildConfig build;
     build.gross_index_vega_target_per_vol_point = spec.gross_index_vega;
     build.cohort = static_cast<std::uint32_t>(schedule.rolls.size() + 1u);
@@ -283,6 +307,9 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
             build_listed_dispersion_roll(*selected, snapshot.set(), build));
     active_expiry = roll.expiry_ts_ns;
     schedule.rolls.push_back(std::move(roll));
+    if (timer) {
+      timer->add("selection", build_start);
+    }
   }
 
   // Entry/three-roll acceptance gate (extracted so it is unit-testable).
@@ -470,6 +497,9 @@ dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &mat
 
   DispersionBookVar result;
   result.n_positions = relative_positions.size();
+  // Surfaced for the CLI's projected_var.tsv provenance column (prepared_fingerprint),
+  // so the caller need not rebuild the projection just to echo its identity hash.
+  result.prepared_fingerprint = prepared.fingerprint();
   result.frames.assign(scenarios.size(), HistoricalProjectionFrame{});
   result.legs.assign(scenarios.size() * relative_positions.size(), ProjectedOption{});
   ATX_TRY_VOID(prepared.evaluate_into(scenarios, result.frames, result.legs, cfg));

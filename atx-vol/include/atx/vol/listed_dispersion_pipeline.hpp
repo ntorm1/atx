@@ -35,6 +35,11 @@
 
 namespace atx::vol {
 
+// Forward-declared so the schedule builder can accept the CLI's phase timer by
+// pointer without this header pulling in run_diagnostics.hpp. Defined in
+// atx/vol/run_diagnostics.hpp; the .cpp includes it for the definition.
+class PhaseTimer;
+
 // Per-vol-point → per-unit-vol factor (M9 / I4). `spec.gross_index_vega` is dollars
 // vega per VOL POINT per side; the library dispersion configs take dollars vega per
 // UNIT vol (a unit vol is 100 vol points), so the boundary that hands the library a
@@ -163,12 +168,21 @@ struct ListedScheduleSpec {
 // (`reconcile_listed_schedule` trimming the full clock timeline down to the first
 // roll date) is explicit rather than emergent. A first roll date absent from the
 // clock is `Err(InvalidArgument)`.
+//
+// `timer` (optional, T9/O4): when non-null, the selection loop charges the same
+// per-phase wall time the example measured inline before the lift — `selection`
+// (snapshot load + universe resolve + select + roll build) and `quote_join` (the
+// per-date OPRA parquet join) — into the CLI's PhaseTimer, so build-schedule's
+// `diagnostics` section keeps its pre-lift per-phase granularity. The CLI keeps
+// timing `setup_read` / `write_outputs` around its own reads/writes. Pure telemetry:
+// it never affects the returned schedule, and a null timer (the default) is
+// economically identical.
 [[nodiscard]] Result<ListedDispersionSchedule>
 build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &spec,
                                  const ListedDispersionMethodology &method,
                                  std::span<const UniverseRow> universe_rows,
                                  const ListedDefinitionTable &definitions,
-                                 const RunSpec &quote_source);
+                                 const RunSpec &quote_source, PhaseTimer *timer = nullptr);
 
 // ── Cold projection (M6, I1) ────────────────────────────────────────────────────
 
@@ -225,6 +239,10 @@ struct DispersionBookVar {
   std::vector<ProjectedOption> legs;             // scenario-major: scenarios * n_positions
   std::vector<ProjectedHistoricalVar> risks;     // one per requested confidence, input order
   std::size_t n_positions{0};                    // == book.positions.size()
+  // The prepared relative-template projection's identity hash
+  // (`PreparedHistoricalProjection::fingerprint()`), surfaced so the CLI can emit
+  // the `projected_var.tsv` provenance column without rebuilding the projection.
+  std::uint64_t prepared_fingerprint{0};
 };
 
 // Verbatim lift of run_projected_var_command's book -> OptionProjectionSpec synthesis

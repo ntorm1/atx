@@ -134,3 +134,60 @@ def test_dump_reproduces_backtest_tsv_byteshape(run_dir: Path):
     golden = _SP / "t7-check" / "run" / "backtest.tsv"
     # Compare byte-for-byte against the T7 golden backtest.tsv.
     assert proc.stdout == golden.read_bytes()
+
+
+def _run_argv(*args: str) -> subprocess.CompletedProcess:
+    env = dict(os.environ)
+    env["PATH"] = str(_BIN) + os.pathsep + env.get("PATH", "")
+    return subprocess.run(
+        [str(_EXE), *args], env=env, capture_output=True, text=True, timeout=600
+    )
+
+
+@pytest.fixture(scope="module")
+def projected_run_dir(tmp_path_factory) -> Path:
+    """A fresh fixture copy run through the FULL listed + cold-projected pipeline.
+
+    build-schedule -> run-backtest -> project-schedule -> run-projected-backtest
+    --execution cold, all publishing into ONE run.atxrun via the identity-guarded
+    merge-write. Its own copy, so it never perturbs the listed-only ``run_dir`` tests.
+    """
+    dst = tmp_path_factory.mktemp("t9proj") / "run"
+    shutil.copytree(_PAIRED_RUN, dst)
+    for stale in ("backtest.tsv", "reconciliation.tsv", "contract_marks.tsv"):
+        (dst / stale).unlink(missing_ok=True)
+    inv = dst / "occ_ess_inventory.tsv"
+    data = inv.read_bytes()
+    for old, new in ((str(_PAIRED_RUN), str(dst)),
+                     (str(_PAIRED_RUN).replace("\\", "/"), str(dst).replace("\\", "/"))):
+        data = data.replace(old.encode("utf-8"), new.encode("utf-8"))
+    inv.write_bytes(data)
+
+    steps = (
+        ("build-schedule", "--run", str(dst)),
+        ("run-backtest", "--run", str(dst)),
+        ("project-schedule", "--run", str(dst)),
+        ("run-projected-backtest", "--run", str(dst),
+         "--schedule", "projected_schedule.tsv", "--execution", "cold"),
+    )
+    for step in steps:
+        proc = _run_argv(*step)
+        assert proc.returncode == 0, f"{step[0]} failed: {proc.stdout}\n{proc.stderr}"
+    return dst
+
+
+def test_projected_cold_union_and_zero_divergence(projected_run_dir: Path):
+    # I1 closure + merge-write union (Wave B T9/O1): after the cold-projected pipeline
+    # run.atxrun carries BOTH the listed sections (backtest / trade_schedule) and the
+    # projected sections (projected_cold / mark_divergence), and the mark_divergence
+    # section is EMPTY — the persisted projected_schedule marks equal the marks the cold
+    # replay recomputes because ONE ProjectionConfig{} (analytic + ColdReference)
+    # governs both routes. A nonzero row count would mean the two cold routes drifted.
+    for section in ("backtest", "trade_schedule", "projected_cold", "mark_divergence"):
+        proc = _run_argv("runarchive", "dump", str(projected_run_dir), section)
+        assert proc.returncode == 0, f"section {section} missing: {proc.stderr}"
+        assert f"section {section}:" in proc.stdout
+
+    div = _run_argv("runarchive", "dump", str(projected_run_dir), "mark_divergence")
+    # Summary line shape: "section mark_divergence: rows=0 cols=10".
+    assert "rows=0 " in div.stdout, div.stdout
