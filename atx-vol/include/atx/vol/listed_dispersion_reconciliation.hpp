@@ -98,6 +98,15 @@ reconcile_listed_dispersion(const ListedDispersionSchedule &schedule,
 // Validate the independent exact-mark model P&L against the option portion of
 // the canonical backtest result. Shares, financing, costs, and settlement are
 // removed using the engine's own exported columns.
+//
+// The reconciliation must be a contiguous SUFFIX of the backtest, matched by
+// date: it starts at some backtest row and runs to the last one. That is the M1
+// shape — `assemble_reconciliation_snapshots` trims the warm-up sessions ahead
+// of the first roll, so on a corpus with a lead-in the reconciliation is shorter
+// than the backtest by exactly that lead-in. A reconciliation whose first date
+// is absent from the backtest, or which stops before the backtest's last
+// session, is rejected. With no lead-in the offset is zero and the comparison is
+// the historical row-for-row one.
 [[nodiscard]] Status
 validate_listed_reconciliation_backtest(const ListedDispersionReconciliation &reconciliation,
                                         const BacktestResult &backtest,

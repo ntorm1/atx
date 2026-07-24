@@ -47,25 +47,41 @@ class PhaseTimer;
 // scattered at two boundaries in the example. The extraction must be sizing-exact.
 inline constexpr double kVegaVolPointToUnitVol = 100.0;
 
-// One versioned methodology policy replacing the loose inline literals previously
-// scattered across build-corpus / build-schedule / verify / run-projected-backtest.
-// Thresholds are pinned to the current production values (51 / 60 / 3 / 40).
+// The versioned authority for the listed route's ENTRY AND ACCEPTANCE FLOORS,
+// replacing the loose inline literals that were scattered across build-corpus and
+// build-schedule. Values are pinned to the current production numbers (51/60/3).
+//
+// SCOPE — read this before adding a field. This struct is the authority for the
+// three floors below and nothing else. It is deliberately NOT the home of:
+//   * the archive verify floors — `RunVerifyOptions` (`run_archive.hpp`) carries
+//     its own independent 60/3/40, because the result store must not depend on
+//     the listed route. Those numbers duplicate these ON PURPOSE and must be
+//     changed together;
+//   * the cold-route knobs — `ProjectionConfig` below is the single asserted
+//     parity constant both cold routes read;
+//   * the corpus admission rule — the CLI builds its own `CorpusAdmissionRule`
+//     with production values at `spy_dispersion_backtest.cpp:340-353`.
+// An earlier revision carried an `admission` rule, a `core_min_names_per_roll`,
+// a `query_route` and an `occ_ess_authority` here. No consumer ever read any of
+// them: they were folded into the fingerprint and nothing else, and the
+// `admission` default did not even match the production rule the CLI builds — a
+// policy struct whose fields are silently ignored is worse than no policy struct,
+// so they were removed rather than left to look authoritative.
 struct ListedDispersionMethodology {
-  // Corpus admission rule (fit-quality gate applied to every profile).
-  CorpusAdmissionRule admission{};
   // Entry-gate floor: SPY plus at least 50 constituent names (core mode).
+  // Read by build-corpus (`spy_dispersion_backtest.cpp:324`).
   std::size_t min_names_entry{51};
-  // Core-mode acceptance floors.
+  // Core-mode acceptance floors. `core_min_dates` is read by build-schedule
+  // (`spy_dispersion_backtest.cpp:429`); `core_min_rolls` by
+  // `accept_listed_schedule` below.
   std::size_t core_min_dates{60};
   std::size_t core_min_rolls{3};
-  std::uint32_t core_min_names_per_roll{40};
-  // Canonical query route for the cold economics (route P).
-  QueryExecution query_route{QueryExecution::ColdReference};
-  // Whether every qualified date must carry OCC ESS settlement authority.
-  bool occ_ess_authority{true};
 
-  // Deterministic, nonzero, order-independent identity over all policy fields.
-  // Two policies that differ in any single field produce different fingerprints.
+  // Deterministic, nonzero identity over all policy fields. The fields are
+  // folded in a FIXED order — the property is layout independence (the fold is
+  // padding-free, so it does not depend on struct layout), NOT independence of
+  // the field order itself. Two policies that differ in any single field
+  // produce different fingerprints.
   [[nodiscard]] std::uint64_t policy_fingerprint() const;
 };
 
@@ -106,6 +122,18 @@ listed_quotes_for_date(const RunSpec &spec, const ListedDefinitionTable &definit
 // strategy's pre-roll silence. The coupling is made explicit here (an error if the
 // first roll date is absent from the timeline) rather than left emergent; the
 // low-level precondition stays intact as a defensive invariant.
+//
+// BORROW: the returned elements are copies of the `ListedReconciliationSnapshot`
+// structs, but each one still points at storage owned by the caller — the
+// `quotes` span and the `surfaces` set are borrowed from whatever backs
+// `full_timeline`. That storage must outlive the returned vector and every
+// reconcile driven from it.
+//
+// CAUTION (open defect, Wave B final review Important #1): trimming makes the
+// reconciliation shorter than the backtest, and
+// `validate_listed_reconciliation_backtest` still hard-requires equal row
+// counts — so a nonzero lead-in currently aborts one call later instead of
+// here. Do not treat this seam as closing M1 until that gate is date-aligned.
 [[nodiscard]] Result<std::vector<ListedReconciliationSnapshot>>
 assemble_reconciliation_snapshots(std::span<const ListedReconciliationSnapshot> full_timeline,
                                   const ListedDispersionSchedule &schedule);
@@ -142,9 +170,11 @@ struct ListedScheduleSpec {
 // gate (spy_dispersion_backtest.cpp:532-534): an empty roll set fails the entry
 // gate, and a core-mode schedule with fewer than `method.core_min_rolls` (3) rolls
 // fails the three-roll gate — both `Err(Unavailable, "…entry/three-roll acceptance
-// gate")`. It enforces NO other floor: in particular `core_min_names_per_roll` is
-// NOT consulted here (that methodology field is inert in the example's build path;
-// activating it would be a new gate). Returns `Ok()` when the schedule is accepted.
+// gate")`. It enforces NO other floor: in particular there is NO names-per-roll
+// floor here. The example's build path never applied one, so adding it would be a
+// new, behaviour-changing gate; the 40-name floor that exists lives in
+// `RunVerifyOptions` and applies at archive-verify time, not at build time.
+// Returns `Ok()` when the schedule is accepted.
 [[nodiscard]] Status accept_listed_schedule(const ListedDispersionSchedule &schedule,
                                             const ListedScheduleSpec &spec,
                                             const ListedDispersionMethodology &method);
@@ -189,9 +219,17 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
 // Per-roll snapshot provider for the cold projection: resolve (load) the surface
 // archive for a roll date and hand back a BORROWED MarketSnapshot. Replaces the
 // example's inline `archive_of` map + `MarketSnapshot::load` (spy_dispersion_backtest
-// .cpp:691-714). The returned pointer must stay valid for the duration of the
-// `project_listed_schedule` call — the caller owns snapshot lifetime, matching the
-// example where each per-roll snapshot lives across its member repricing.
+// .cpp:691-714). The caller owns snapshot lifetime.
+//
+// LIFETIME: the returned pointer must stay valid until the NEXT call to the
+// lookup — that is, for as long as `project_listed_schedule` is processing that
+// one roll. It does NOT have to survive the whole call. The projection
+// dereferences the snapshot only inside the roll iteration that requested it
+// (the rolls it emits are plain data: strikes, sizes and greeks, never pointers
+// into the board), so a caller may release each board as soon as the next roll
+// date is requested. Requiring whole-call validity would force every roll-date
+// board — a full heap deserialize each, not an mmap — to stay resident, making
+// peak memory scale with the roll count for no benefit.
 using ListedArchiveLookup =
     std::function<Result<const MarketSnapshot *>(std::string_view roll_date)>;
 

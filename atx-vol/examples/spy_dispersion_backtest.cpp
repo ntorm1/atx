@@ -618,14 +618,20 @@ Status project_schedule_command(const fs::path &run_dir) {
     archive_of.emplace(ref.date, ref.archive_path);
   }
 
-  // Owning per-roll snapshot cache for the projection. The ListedArchiveLookup hands
-  // project_listed_schedule a BORROWED MarketSnapshot*, so the loaded snapshots must
-  // outlive the whole call (O3 — a per-roll local would dangle: UAF). std::map nodes
-  // are pointer-stable, so a &cache[date] handed back stays valid as later roll dates
-  // load into the same map. A roll date absent from the qualified clock returns
-  // Ok(nullptr); project_listed_schedule turns that into the example's exact NotFound
-  // message ("no qualified archive for roll date ...") (O2).
-  std::map<std::string, MarketSnapshot> snapshot_cache;
+  // Owning SINGLE-SLOT per-roll snapshot cache for the projection. The
+  // ListedArchiveLookup hands project_listed_schedule a BORROWED MarketSnapshot*,
+  // which must stay valid until the next lookup call — the projection dereferences
+  // it only while processing that one roll and never retains it afterwards (the
+  // rolls it emits are plain data), so exactly one board needs to be resident at a
+  // time. A cumulative cache kept every roll-date board alive for the whole call;
+  // each is a full heap deserialize (not an mmap), so peak memory scaled with the
+  // roll count — harmless at 7 rolls, ~120 boards resident on a multi-year corpus.
+  // Re-emplacing releases the previous board before the new one is stored. A roll
+  // date absent from the qualified clock returns Ok(nullptr);
+  // project_listed_schedule turns that into the example's exact NotFound message
+  // ("no qualified archive for roll date ...") (O2).
+  std::string cached_date;
+  std::optional<MarketSnapshot> cached_snapshot;
   const ListedArchiveLookup archive_lookup =
       [&](std::string_view roll_date) -> Result<const MarketSnapshot *> {
     const std::string key(roll_date);
@@ -634,14 +640,14 @@ Status project_schedule_command(const fs::path &run_dir) {
       const MarketSnapshot *none = nullptr;
       return Ok(none);
     }
-    const auto cached = snapshot_cache.find(key);
-    if (cached != snapshot_cache.end()) {
-      const MarketSnapshot *hit = &cached->second;
+    if (cached_snapshot.has_value() && cached_date == key) {
+      const MarketSnapshot *hit = &*cached_snapshot;
       return Ok(hit);
     }
     ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(archive->second));
-    const auto inserted = snapshot_cache.emplace(key, std::move(snapshot)).first;
-    const MarketSnapshot *loaded = &inserted->second;
+    cached_snapshot.emplace(std::move(snapshot)); // frees the previous roll's board
+    cached_date = key;
+    const MarketSnapshot *loaded = &*cached_snapshot;
     return Ok(loaded);
   };
   timer.add("setup_read", phase);

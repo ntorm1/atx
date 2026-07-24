@@ -35,8 +35,20 @@ struct BacktestSeriesColumn {
 };
 
 // The 25 F64 series columns (`pnl_total` … `n_unpriced_greeks`), in the exact
-// order both writers emit them after `date`/`ts_ns`. This is the ONLY place the
-// production column list lives.
+// order both writers emit them after `date`/`ts_ns`. This is the only place the
+// list lives *for the tearsheet writer and the RunArchive encoder* — the two
+// serializers that share this canonical order.
+//
+// It is NOT the only copy in the codebase. `run_report.cpp:78`
+// (`write_backtest_series_csv`) keeps its own hand-maintained list of the same
+// 25 names in a DIFFERENT order: `nav` sits at CSV index 1 rather than at
+// canonical index 14, i.e. `csv == [pnl_total, nav] ++ (canonical \ {pnl_total,
+// nav})`. That ordering is a published CSV contract, pinned by
+// `run_report_test.cpp` (`kPinnedHeader`) and `mag7_dispersion_report_test.py`
+// (`SERIES_HEADER`), so it cannot be driven off this table without an explicit
+// permutation — a naive iteration would move `nav` from CSV field 3 to field 16
+// and rewrite every emitted row. Deduplicating it is a deliberate schema
+// decision, not a cleanup; see the Wave B minors triage.
 inline constexpr BacktestSeriesColumn kBacktestSeriesColumns[] = {
     {"pnl_total", &BacktestResult::pnl_total},
     {"pnl_delta", &BacktestResult::pnl_delta},

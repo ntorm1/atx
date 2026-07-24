@@ -216,11 +216,14 @@ TEST(ListedDispersionPipeline, PolicyFingerprintStableAndSensitive) {
   // Stable across calls on an unchanged policy.
   EXPECT_EQ(fp, method.policy_fingerprint());
 
-  // Default thresholds are pinned to the current production values.
+  // Default thresholds are pinned to the current production values. The policy
+  // carries exactly the floors a consumer actually reads — the four fields that
+  // were folded into the fingerprint but never read by anything (admission rule,
+  // core_min_names_per_roll, query_route, occ_ess_authority) were removed in the
+  // Wave B final-review pass, so this list IS the struct.
   EXPECT_EQ(method.min_names_entry, 51u);
   EXPECT_EQ(method.core_min_dates, 60u);
   EXPECT_EQ(method.core_min_rolls, 3u);
-  EXPECT_EQ(method.core_min_names_per_roll, 40u);
 
   // Any single-threshold difference perturbs the fingerprint.
   ListedDispersionMethodology bumped_entry = method;
@@ -235,13 +238,10 @@ TEST(ListedDispersionPipeline, PolicyFingerprintStableAndSensitive) {
   bumped_rolls.core_min_rolls = 4u;
   EXPECT_NE(bumped_rolls.policy_fingerprint(), fp);
 
-  ListedDispersionMethodology bumped_names = method;
-  bumped_names.core_min_names_per_roll = 41u;
-  EXPECT_NE(bumped_names.policy_fingerprint(), fp);
-
-  ListedDispersionMethodology flipped_authority = method;
-  flipped_authority.occ_ess_authority = !method.occ_ess_authority;
-  EXPECT_NE(flipped_authority.policy_fingerprint(), fp);
+  // Every remaining field is covered above: fingerprint sensitivity is total, so
+  // a field added without a matching case here leaves a silent hole.
+  EXPECT_NE(bumped_entry.policy_fingerprint(), bumped_dates.policy_fingerprint());
+  EXPECT_NE(bumped_dates.policy_fingerprint(), bumped_rolls.policy_fingerprint());
 }
 
 // ── (c) per-date adapter seams over a synthetic snapshot (L8) ─────────────────
@@ -332,6 +332,12 @@ TEST(ListedDispersionPipeline, ReconcileClockCoupling_AbortsOnWarmupLeadIn) {
   const auto aborted = reconcile_listed_dispersion(schedule, full);
   ASSERT_FALSE(aborted);
   EXPECT_EQ(aborted.error().code(), ErrorCode::InvalidArgument);
+  // Nail the SPECIFIC guard: InvalidArgument has three sources in this function
+  // (empty timeline, bad tolerance, front-date mismatch), so matching the code
+  // alone would keep passing if the abort moved to a different one.
+  EXPECT_NE(aborted.error().to_string().find("first snapshot must be first entry date"),
+            std::string::npos)
+      << aborted.error().to_string();
 }
 
 // GREEN target: the new seam trims the warm-up lead-in so reconciliation starts at
@@ -386,6 +392,103 @@ TEST(ListedDispersionPipeline, ReconcileListedSchedule_TrimsWarmupLeadIn) {
   const std::vector<ListedReconciliationSnapshot> no_roll = {full.front()}; // day0 only
   EXPECT_FALSE(assemble_reconciliation_snapshots(no_roll, schedule));
   EXPECT_FALSE(reconcile_listed_schedule(schedule, no_roll));
+}
+
+// M1 END-TO-END (Wave B final review, Important #1). The two tests above stop at
+// the seam — they never call the validator that run-backtest invokes on the very
+// next line, which is why the defect shipped. Trimming makes the reconciliation
+// SHORTER than the backtest, and validate_listed_reconciliation_backtest used to
+// hard-require equal row counts, so a warm-up lead-in still aborted the run one
+// call downstream under a misleading message ("invalid tolerance or row count").
+// This test drives the PRODUCTION pair — reconcile_listed_schedule over the full
+// clock timeline, then the validator against a full-clock backtest — with a
+// nonzero lead-in.
+TEST(ListedDispersionPipeline, ValidateReconciliationAcceptsWarmupLeadIn) {
+  const std::vector<PricedSurface> day0 = surfaces(kNow0, 0.0);
+  const std::vector<PricedSurface> day1 = surfaces(kNow1, 2.0);
+  const std::vector<PricedSurface> day2 = surfaces(kNow2, -1.0);
+
+  ListedDispersionSchedule schedule;
+  schedule.rolls.push_back(roll(selection("2026-07-11", kNow1, kExpiry1, 1u), day1, 4u));
+
+  auto set0 = SurfaceSet::create(pointers(day0));
+  auto set1 = SurfaceSet::create(pointers(day1));
+  auto set2 = SurfaceSet::create(pointers(day2));
+  ASSERT_TRUE(set0 && set1 && set2);
+  const std::vector<ListedOptionQuote> quotes1 =
+      quotes_for(schedule.rolls[0], *set1, "2026-07-11", kNow1, 0u);
+  const std::vector<ListedOptionQuote> quotes2 =
+      quotes_for(schedule.rolls[0], *set2, "2026-07-12", kNow2, 1000u);
+
+  // The full clock.refs() timeline run-backtest hands the reconciler: one
+  // warm-up session ahead of the first roll, then the roll and a held session.
+  const std::vector<ListedReconciliationSnapshot> full = {
+      {"2026-07-10", kNow0, &*set0, {}},
+      {"2026-07-11", kNow1, &*set1, quotes1},
+      {"2026-07-12", kNow2, &*set2, quotes2},
+  };
+
+  auto reconciliation = reconcile_listed_schedule(schedule, full);
+  ASSERT_TRUE(reconciliation)
+      << (reconciliation ? std::string{} : reconciliation.error().to_string());
+  // The lead-in really is trimmed: fewer reconciliation rows than clock sessions.
+  ASSERT_EQ(reconciliation->rows.size(), full.size() - 1u);
+
+  // The backtest the engine produces alongside it: one row per clock session,
+  // INCLUDING the warm-up. Its option P&L is reconstructed from the
+  // reconciliation for the sessions they share (row 0 is the warm-up, all zero),
+  // so the only thing under test is the row-count / date-alignment contract, not
+  // the P&L arithmetic.
+  BacktestResult backtest;
+  backtest.date = {"2026-07-10", "2026-07-11", "2026-07-12"};
+  backtest.ts_ns = {kNow0, kNow1, kNow2};
+  backtest.pnl_total.assign(backtest.date.size(), 0.0);
+  backtest.pnl_settlement.assign(backtest.date.size(), 0.0);
+  backtest.pnl_shares.assign(backtest.date.size(), 0.0);
+  backtest.financing.assign(backtest.date.size(), 0.0);
+  backtest.cost.assign(backtest.date.size(), 0.0);
+  for (std::size_t i = 0; i < reconciliation->rows.size(); ++i) {
+    backtest.pnl_total[i + 1] = reconciliation->rows[i].model_option_pnl;
+  }
+  ASSERT_EQ(backtest.date[1], reconciliation->rows.front().date);
+
+  // THE GATE. Before the fix this returned InvalidArgument purely because
+  // 2 rows != 3 rows, defeating M1 in production.
+  const auto ok = validate_listed_reconciliation_backtest(*reconciliation, backtest);
+  EXPECT_TRUE(ok) << (ok ? std::string{} : ok.error().to_string());
+
+  // Suffix-ness is still enforced, not merely relaxed: a reconciliation that
+  // stops before the backtest's last session is rejected.
+  BacktestResult longer = backtest;
+  longer.date.push_back("2026-07-13");
+  longer.ts_ns.push_back(kNow2 + 1);
+  longer.pnl_total.push_back(0.0);
+  longer.pnl_settlement.push_back(0.0);
+  longer.pnl_shares.push_back(0.0);
+  longer.financing.push_back(0.0);
+  longer.cost.push_back(0.0);
+  EXPECT_FALSE(validate_listed_reconciliation_backtest(*reconciliation, longer));
+
+  // ... and a reconciliation whose first date is absent from the backtest is an
+  // error rather than a silent pass.
+  BacktestResult disjoint = backtest;
+  disjoint.date = {"2026-08-10", "2026-08-11", "2026-08-12"};
+  EXPECT_FALSE(validate_listed_reconciliation_backtest(*reconciliation, disjoint));
+
+  // With no lead-in the offset is zero and the comparison is the historical
+  // row-for-row one, unchanged.
+  BacktestResult exact;
+  exact.date = {"2026-07-11", "2026-07-12"};
+  exact.ts_ns = {kNow1, kNow2};
+  exact.pnl_total = {reconciliation->rows[0].model_option_pnl,
+                     reconciliation->rows[1].model_option_pnl};
+  exact.pnl_settlement.assign(2, 0.0);
+  exact.pnl_shares.assign(2, 0.0);
+  exact.financing.assign(2, 0.0);
+  exact.cost.assign(2, 0.0);
+  const auto zero_lead_in = validate_listed_reconciliation_backtest(*reconciliation, exact);
+  EXPECT_TRUE(zero_lead_in)
+      << (zero_lead_in ? std::string{} : zero_lead_in.error().to_string());
 }
 
 // ── Task 3 — build_listed_dispersion_schedule + acceptance gate (M7) ──────────
@@ -453,12 +556,16 @@ TEST(ListedDispersionPipeline, BuildSchedule_RejectsEmptyAndSubThreshold) {
   EXPECT_FALSE(accept_listed_schedule(two, strict, method));
 
   // Three rolls satisfy the core-mode three-roll gate — even though every roll
-  // carries only two names (< core_min_names_per_roll = 40). This pins that the
-  // extraction did NOT silently activate a names-per-roll floor.
+  // carries only two names, far below the 40-name floor `RunVerifyOptions` applies
+  // at archive-verify time. This pins that the extraction did NOT silently
+  // activate a names-per-roll floor in the build path (the acceptance gate is
+  // rolls-only). The floor is deliberately not a field of the methodology policy:
+  // no build-path consumer reads one.
+  constexpr std::uint32_t kVerifyNamesPerRollFloor = 40u; // RunVerifyOptions' value
   const ListedDispersionSchedule three = schedule_with_rolls(3u);
   ASSERT_EQ(three.rolls.size(), 3u);
   for (const ListedScheduleRoll &r : three.rolls) {
-    EXPECT_LT(r.n_names, method.core_min_names_per_roll);
+    EXPECT_LT(r.n_names, kVerifyNamesPerRollFloor);
   }
   EXPECT_TRUE(accept_listed_schedule(three, strict, method));
   EXPECT_TRUE(accept_listed_schedule(three, loose, method));
@@ -488,6 +595,12 @@ TEST(ListedDispersionPipeline, BuildScheduleSymbolIsDeclared) {
 // The single asserted parity constant is canonically cold: certified analytic greeks
 // on the ColdReference route, no fast tier. Both cold routes read THIS default.
 TEST(ListedDispersionPipeline, ProjectionConfigColdIsCanonical) {
+  // Pinned at COMPILE time, not merely at run time: the parity constant is a
+  // default-member-initializer, so a drift in it is a compile error here rather
+  // than a test that must be run to notice.
+  static_assert(ProjectionConfig{}.analytic, "the cold parity constant must be analytic");
+  static_assert(ProjectionConfig{}.execution == QueryExecution::ColdReference,
+                "the cold parity constant must be the ColdReference route");
   const ProjectionConfig cfg{};
   EXPECT_TRUE(cfg.analytic);
   EXPECT_EQ(cfg.execution, QueryExecution::ColdReference);
@@ -653,4 +766,18 @@ TEST(ListedDispersionPipeline, DispersionBookVar_SplitsConfidences) {
   for (const ProjectedHistoricalVar &risk : var->risks) {
     EXPECT_EQ(risk.n_scenarios, scenarios.size());
   }
+
+  // Free risk invariants — these cost nothing and are what actually catches a
+  // synthesis that wires the confidences, the tail or the reference the wrong way
+  // round. The structural assertions above would all still pass under such a bug.
+  for (const ProjectedHistoricalVar &risk : var->risks) {
+    // ES is the mean of the tail beyond VaR, so it can never be the smaller loss.
+    EXPECT_GE(risk.expected_shortfall, risk.value_at_risk) << risk.confidence;
+    // The reference is the book's current value: the LAST (most recent) scenario
+    // frame, not the first — swapping them silently reverses every P&L sign.
+    EXPECT_EQ(risk.reference_value, var->frames.back().value);
+  }
+  // A deeper confidence is a worse loss: VaR(99%) >= VaR(95%).
+  EXPECT_GE(var->risks[1].value_at_risk, var->risks[0].value_at_risk);
+  EXPECT_GE(var->risks[1].expected_shortfall, var->risks[0].expected_shortfall);
 }

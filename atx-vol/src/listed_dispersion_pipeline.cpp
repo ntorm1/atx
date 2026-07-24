@@ -64,38 +64,16 @@ std::uint64_t ListedDispersionMethodology::policy_fingerprint() const {
     key.append(std::to_string(value));
     key.push_back('|');
   };
-  const auto append_dbl = [&key](double value) {
-    char buffer[32];
-    std::snprintf(buffer, sizeof(buffer), "%.17g", value);
-    key.append(buffer);
-    key.push_back('|');
-  };
-  const auto append_opt = [&](const std::optional<double> &value) {
-    if (value) {
-      append_dbl(*value);
-    } else {
-      key.append("na|");
-    }
-  };
-
-  key.append("listed-dispersion-methodology-v1|");
-  append_u64(admission.min_quotes);
-  append_u64(admission.min_slices);
-  append_u64(admission.min_holdout);
-  append_opt(admission.min_fit_in_band);
-  append_opt(admission.min_oos_in_band);
-  append_opt(admission.min_oos_vega_weighted);
-  append_opt(admission.max_mean_vol_rmse);
-  append_opt(admission.max_mean_reduced_chi2);
-  append_u64(admission.require_calendar_arb_free ? 1u : 0u);
-  append_dbl(admission.calendar_abs_k);
-  append_u64(admission.require_source_provenance ? 1u : 0u);
+  // v2: the four fields no consumer ever read (admission rule,
+  // core_min_names_per_roll, query_route, occ_ess_authority) were removed from the
+  // policy, so the key version is bumped — a v1 and a v2 fingerprint are not
+  // comparable. The fingerprint is not persisted anywhere (the corpus
+  // `policy_fingerprint` the CLI stamps is an unrelated literal hash), so the bump
+  // moves no stored bytes.
+  key.append("listed-dispersion-methodology-v2|");
   append_u64(min_names_entry);
   append_u64(core_min_dates);
   append_u64(core_min_rolls);
-  append_u64(core_min_names_per_roll);
-  append_u64(static_cast<std::uint64_t>(query_route));
-  append_u64(occ_ess_authority ? 1u : 0u);
 
   const std::uint64_t hash = atx::core::hash_bytes(key.data(), key.size());
   return hash == 0u ? 1u : hash;
@@ -199,9 +177,10 @@ Status accept_listed_schedule(const ListedDispersionSchedule &schedule,
                               const ListedDispersionMethodology &method) {
   // Verbatim entry/three-roll acceptance gate (spy_dispersion_backtest.cpp:532-534),
   // with the loose literal `3u` replaced by the methodology's `core_min_rolls`
-  // (value-identical, L9). NO other floor is applied here — `core_min_names_per_roll`
-  // is deliberately NOT consulted (it is inert in the example's build path; enforcing
-  // it here would be a new, behavior-changing gate).
+  // (value-identical, L9). NO other floor is applied here — in particular no
+  // names-per-roll floor, which the example's build path never applied either;
+  // enforcing one here would be a new, behavior-changing gate. The 40-name floor
+  // that does exist belongs to RunVerifyOptions, at archive-verify time.
   if (schedule.rolls.empty() ||
       (spec.core_mode && schedule.rolls.size() < method.core_min_rolls)) {
     return Err(ErrorCode::Unavailable,

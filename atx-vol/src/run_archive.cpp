@@ -1627,10 +1627,34 @@ Status RunDir::verify(const RunVerifyOptions &options) const {
   if (backtest.n_rows() == 0) {
     return Err(ErrorCode::InvalidArgument, "RunDir::verify: empty backtest section");
   }
-  if (auto reconciliation = archive.section("reconciliation");
-      reconciliation && reconciliation->n_rows() != backtest.n_rows()) {
-    return Err(ErrorCode::InvalidArgument,
-               "RunDir::verify: backtest/reconciliation row-count disagreement");
+  if (auto reconciliation = archive.section("reconciliation"); reconciliation) {
+    // M1: the reconciliation timeline is trimmed to the first roll date, so it is
+    // a contiguous SUFFIX of the backtest's per-session rows — not necessarily
+    // the whole of it. An equal-count gate here rejected exactly the warm-up
+    // lead-in corpus the trim exists to admit. Check suffix-ness for real: the
+    // reconciliation must be non-empty, no longer than the backtest, and its
+    // dates must match the backtest's tail row-for-row (the same contract
+    // validate_listed_reconciliation_backtest enforces at write time).
+    const std::uint64_t reconciliation_rows = reconciliation->n_rows();
+    if (reconciliation_rows == 0 || reconciliation_rows > backtest.n_rows()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "RunDir::verify: backtest/reconciliation row-count disagreement");
+    }
+    const RaDictColumn backtest_dates = backtest.dict_col("date");
+    const RaDictColumn reconciliation_dates = reconciliation->dict_col("date");
+    if (backtest_dates.size() != backtest.n_rows() ||
+        reconciliation_dates.size() != reconciliation_rows) {
+      return Err(ErrorCode::InvalidArgument,
+                 "RunDir::verify: backtest/reconciliation date column missing or short");
+    }
+    const std::uint64_t offset = backtest.n_rows() - reconciliation_rows;
+    for (std::uint64_t i = 0; i < reconciliation_rows; ++i) {
+      if (reconciliation_dates.at(static_cast<std::size_t>(i)) !=
+          backtest_dates.at(static_cast<std::size_t>(offset + i))) {
+        return Err(ErrorCode::InvalidArgument,
+                   "RunDir::verify: backtest/reconciliation date alignment disagreement");
+      }
+    }
   }
 
   // 5. Core-mode acceptance: the date / roll / breadth floors (lifted verbatim
