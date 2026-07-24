@@ -230,7 +230,20 @@ struct StrikePolicy {
 // Sizing / construction policy for a dispersion book.
 struct DispersionConfig {
   double target_T{30.0 / 365.25}; // straddle tenor (year-fraction), > 0
-  double target_vega{10000.0};    // index-leg gross vega the book scales to, > 0
+  // ── UNIT (E1 / AN-P1-1): DOLLARS OF VEGA PER VOL POINT ────────────────────
+  //
+  // The index-leg gross vega the book scales to, in DOLLARS PER ONE VOL POINT
+  // (a 0.01 move in sigma) — the industry convention, and the SAME unit as the
+  // listed route's `ListedScheduleBuildConfig::
+  // gross_index_vega_target_per_vol_point`. Handed the same number, the two
+  // dispersion routes now build the same-sized book.
+  //
+  // BREAKING CHANGE (E1). This field used to be read as dollars per UNIT vol
+  // (per 1.00 of sigma), so `build_dispersion_book` produced a book 100x
+  // SMALLER than the listed schedule for the same value. Callers that were
+  // tuned against the old projected-route behaviour must DIVIDE their old
+  // `target_vega` by 100 to keep the same book size. Must be > 0.
+  double target_vega{10000.0};
   DispersionSide side{DispersionSide::ShortIndexLongNames};
   double multiplier{100.0};  // option contract multiplier, > 0
   MissingNameSpec missing{}; // missing-name policy (default Error => pre-S1-3 book)
