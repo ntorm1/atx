@@ -23,6 +23,7 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/priced_surface.hpp"
+#include "atx/vol/strip_grid.hpp"
 
 namespace atx::vol {
 
@@ -37,12 +38,14 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 // Odd grid size at least 11. Composite Simpson wants an odd node count (an even
 // interval count) and enough resolution for the 3-point second difference; we
 // BUMP a too-small request up rather than erroring on it.
+//
+// E2: node-count policy delegated to the shared strip/grid convention
+// (`strip_grid.hpp`). The `< 11` test stays on the signed request so a negative
+// `n_grid` still floors to 11 instead of converting to a huge size_t.
 [[nodiscard]] int odd_grid_size(int requested) {
-  int n = requested < 11 ? 11 : requested;
-  if (n % 2 == 0) {
-    ++n;
-  }
-  return n;
+  const std::size_t base =
+      requested < 11 ? std::size_t{11} : static_cast<std::size_t>(requested);
+  return static_cast<int>(strip::odd_nodes(base, std::size_t{11}));
 }
 
 // Log-moneyness grid k_i = -kh + i·Δk (K_i = F·e^{k_i}) plus the served IV, the
@@ -67,7 +70,8 @@ struct PriceGrid {
 template <typename Fn> [[nodiscard]] double simpson_weighted(std::size_t n, double dk, Fn &&f) {
   double acc = f(0) + f(n - 1);
   for (std::size_t i = 1; i + 1 < n; ++i) {
-    acc += ((i % 2 != 0) ? 4.0 : 2.0) * f(i);
+    // E2: shared weight, identical to the retired inline (i % 2 ? 4 : 2).
+    acc += strip::simpson_weight(i, n) * f(i);
   }
   return acc * dk / 3.0;
 }
@@ -82,11 +86,14 @@ template <typename Fn> [[nodiscard]] double simpson_weighted(std::size_t n, doub
   const int n = odd_grid_size(cfg.n_grid);
   const std::size_t nn = static_cast<std::size_t>(n);
 
-  double kh = std::max(-cfg.k_min, cfg.k_max);
+  // E2: span policy delegated to the shared strip/grid convention
+  // (`strip_grid.hpp`). Bit-identical to the retired inline
+  // `max(max(-k_min,k_max), width_sigmas*atm*sqrt(T))` — this TU is where the
+  // policy was already RIGHT; E2 propagates it to the derivatives var strip
+  // rather than changing it here.
   const double atm = ps.iv(F, T);
-  if (std::isfinite(atm) && atm > 0.0) {
-    kh = std::max(kh, cfg.width_sigmas * atm * std::sqrt(T));
-  }
+  const double kh =
+      strip::adaptive_half_width(std::max(-cfg.k_min, cfg.k_max), atm, T, cfg.width_sigmas);
 
   PriceGrid g;
   g.F = F;

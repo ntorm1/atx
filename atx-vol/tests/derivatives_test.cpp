@@ -108,6 +108,70 @@ TEST(VarStrip, FlatVol_HighQuality_RecoversSigmaSquaredTighter) {
   EXPECT_LT(std::fabs(q->fair_strike_dec - sigma_atm * sigma_atm), 1.0e-5);
 }
 
+// ── E2 / AN-P1-2: adaptive var-strip wings ───────────────────────────────
+//
+// The quality tier fixed the log-strike span (Standard ±1.5) with no reference
+// to σ√T. A σ = 60%, T = 1y name needs ±3.6 to reach 6σ√T, so the Standard
+// strip integrated only the middle ~2.5σ of the distribution and reported
+// K_var biased LOW — and, because a parametric eSSVI surface returns a finite
+// IV at every k, the StripTruncated* flags never fired. Silently wrong.
+//
+// Truth for a flat-vol lognormal surface is K_var == σ² exactly.
+TEST(VarStrip, HighVolLongTenor_AdaptiveWingsRecoverSigmaSquared) {
+  const double spot = 100.0;
+  const double sigma_atm = 0.60;
+  const double T_test = 1.00; // 6σ√T = 3.6, far outside the Standard ±1.5
+  const EssviSurface surf = make_flat_surface(sigma_atm, 0.01, 2.00);
+  const CurveSet cs = make_flat_curves(spot, 0.01, 2.00);
+
+  ASSERT_LT(std::fabs(surf.iv(0.0, T_test) - sigma_atm), 1.0e-7);
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = DerivQuality::Standard;
+
+  const auto q = var_swap_fair_strike(surf, cs, T_test, cfg);
+  ASSERT_TRUE(q.has_value());
+
+  const double truth = sigma_atm * sigma_atm; // 0.36
+  // Gate: within 0.5 VARIANCE POINT of the closed form (1 var pt = 1e-4 in
+  // decimal variance).
+  EXPECT_NEAR(q->fair_strike_dec, truth, 0.5e-4)
+      << "K_var=" << q->fair_strike_dec << " truth=" << truth
+      << " bias=" << 1.0e4 * (q->fair_strike_dec - truth) << " var pts";
+
+  // With the adaptive span the strip is complete, so neither wing is truncated.
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::StripTruncatedLeft));
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::StripTruncatedRight));
+}
+
+// E2 / AN-P1-2 second half: truncation must be reported from SPAN COVERAGE, not
+// from IV finiteness. A caller that pins a deliberately narrow span on the same
+// high-vol tenor gets a biased K_var — that is its right — but it must be told.
+TEST(VarStrip, PinnedNarrowSpanOnHighVolTenorFlagsBothWings) {
+  const double sigma_atm = 0.60;
+  const double T_test = 1.00;
+  const EssviSurface surf = make_flat_surface(sigma_atm, 0.01, 2.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 2.00);
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = DerivQuality::Standard;
+  cfg.k_min_log = -0.60; // explicit span, far inside 6σ√T = 3.6
+  cfg.k_max_log = 0.60;
+
+  const auto q = var_swap_fair_strike(surf, cs, T_test, cfg);
+  ASSERT_TRUE(q.has_value());
+
+  // The IV is finite at both boundaries — the pre-E2 condition — so this can
+  // only pass if truncation is decided by coverage.
+  EXPECT_TRUE(std::isfinite(surf.iv(-0.60, T_test)));
+  EXPECT_TRUE(std::isfinite(surf.iv(0.60, T_test)));
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::StripTruncatedLeft));
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::StripTruncatedRight));
+
+  // And the pinned span really is biased low, which is what the flag warns of.
+  EXPECT_LT(q->fair_strike_dec, sigma_atm * sigma_atm);
+}
+
 // ── Aged dispatch (test_vol_deriv_aged.c) ────────────────────────────────
 
 // Mid-life variance swap with rv_done == K_var_future: the linear blend must

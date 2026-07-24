@@ -8,6 +8,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/black76.hpp"
+#include "atx/vol/strip_grid.hpp"
 
 namespace atx::vol {
 
@@ -19,13 +20,10 @@ namespace {
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
-// Composite-Simpson weight for node i in [0, n-1] when n is odd: end nodes
-// weight 1, interior nodes alternate 4 / 2 (mirrors the C's simpson_w).
+// Composite-Simpson weight. E2: delegated to the shared strip/grid convention
+// (`strip_grid.hpp`) so this TU and analytics_density.cpp quadrature identically.
 [[nodiscard]] double simpson_w(std::size_t i, std::size_t n) noexcept {
-  if (i == 0 || i == n - 1) {
-    return 1.0;
-  }
-  return (i % 2 != 0) ? 4.0 : 2.0;
+  return strip::simpson_weight(i, n);
 }
 
 // Quality-driven default log-strike grid (strip_quality_defaults). Node counts
@@ -50,11 +48,17 @@ struct StripGrid {
   return StripGrid{-1.5, 1.5, 257};  // unreachable; STANDARD fallback
 }
 
-// Forward at an arbitrary maturity T from the curve set: linear interpolation
-// in T across the fitted forward points with flat (clamped) extrapolation
-// outside the pillar range — the atx-curve analogue of the C's
+// Forward at an arbitrary maturity T from the curve set, with flat (clamped)
+// extrapolation outside the pillar range — the atx-curve analogue of the C's
 // ats_vol_curve_forward_T under ATS_VOL_EXTRAP_CLAMP_FOR_REPORTING. Falls back
 // to the reference spot when no forward curve has been set (F == S).
+//
+// E2 / AN-P1-2: the INTERIOR blend is now LINEAR IN log(F)
+// (`strip::forward_log_blend`), matching `projection.cpp`'s `curve_forward_T`.
+// It used to be linear in F, so the same forward curve read at the same T gave
+// two different answers depending on which module asked. Clamped extrapolation
+// and the pillar values themselves are unchanged, so this moves nothing on a
+// flat or single-pillar forward curve.
 //
 // Precondition (matches the C, documented not checked): forward points are in
 // ascending T order.
@@ -71,12 +75,7 @@ struct StripGrid {
   }
   for (std::size_t i = 1; i < pts.size(); ++i) {
     if (T <= pts[i].T) {
-      const double t0 = pts[i - 1].T;
-      const double t1 = pts[i].T;
-      const double f0 = pts[i - 1].F;
-      const double f1 = pts[i].F;
-      const double alpha = (t1 > t0) ? (T - t0) / (t1 - t0) : 0.0;
-      return f0 + alpha * (f1 - f0);
+      return strip::forward_log_blend(pts[i - 1].T, pts[i - 1].F, pts[i].T, pts[i].F, T);
     }
   }
   return pts.back().F;
@@ -291,13 +290,19 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   }
 
   // Grid bounds and node count: quality default, overridden by the config.
+  // An explicit [k_min_log, k_max_log] PINS the span — the caller asked for
+  // exactly that strip and gets exactly it (with a truncation flag if it does
+  // not cover the wings). Otherwise the tier span is a FLOOR that E2 widens to
+  // the tenor's own vol scale below, once the ATM vol is known.
   StripGrid grid = strip_quality_defaults(cfg.quality);
+  bool span_pinned = false;
   if (cfg.k_min_log != 0.0 || cfg.k_max_log != 0.0) {
     if (!(cfg.k_min_log < cfg.k_max_log)) {
       return Err(ErrorCode::InvalidArgument, "k_min_log must be < k_max_log");
     }
     grid.k_min_log = cfg.k_min_log;
     grid.k_max_log = cfg.k_max_log;
+    span_pinned = true;
   }
   if (cfg.strip_nodes != 0u) {
     std::uint32_t n = cfg.strip_nodes;
@@ -315,6 +320,29 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   const double df = curves.yield.disc(T);
   if (!(F > 0.0) || !(df > 0.0)) {
     return Err(ErrorCode::OutOfRange, "forward/discount unavailable at T");
+  }
+
+  // ── E2 / AN-P1-2: adaptive wings ────────────────────────────────────────
+  //
+  // The tier span is fixed in k and knows nothing about σ√T, so a high-vol or
+  // long-dated tenor integrated only the middle of its own distribution and
+  // reported K_var biased LOW. Widen the (symmetric) span to the shared
+  // convention `max(tier_span, 6·σ_atm·√T)` — the same policy
+  // `analytics_density.cpp` already used via `RndConfig::width_sigmas`.
+  //
+  // `required` is also what decides truncation below. A tenor whose ATM vol is
+  // unusable yields required == 0, i.e. "coverage not judgeable", and the span
+  // stays at the tier default.
+  const double sigma_atm = surface.iv(0.0, T);
+  const double required = strip::required_half_width(sigma_atm, T, strip::kDefaultWidthSigmas);
+  if (!span_pinned) {
+    const double floor_half = std::fmax(-grid.k_min_log, grid.k_max_log);
+    const double kh =
+        strip::adaptive_half_width(floor_half, sigma_atm, T, strip::kDefaultWidthSigmas);
+    if (kh > 0.0) {
+      grid.k_min_log = -kh;
+      grid.k_max_log = kh;
+    }
   }
 
   const std::size_t n = grid.n_nodes;
@@ -347,11 +375,21 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
 
   const double k_var = (2.0 / T) * integral;
 
+  // E2 / AN-P1-2: truncation is a COVERAGE property, not a NaN property. The
+  // old code raised these flags only when the surface returned a non-finite IV
+  // at an integration boundary — which a parametric eSSVI/SVI surface never
+  // does, so a truncated parametric strip claimed full coverage. Report a wing
+  // as truncated when the span does not reach 6·σ_atm·√T on that side, OR when
+  // the boundary node was unusable (the original condition, still meaningful
+  // for surfaces with genuine NaN wings).
+  const strip::WingCoverage cover =
+      strip::wing_coverage(grid.k_min_log, grid.k_max_log, required);
+
   DerivFlags flags = DerivFlags::None;
-  if (bad_first) {
+  if (bad_first || cover.left_short) {
     flags |= DerivFlags::StripTruncatedLeft;
   }
-  if (bad_last) {
+  if (bad_last || cover.right_short) {
     flags |= DerivFlags::StripTruncatedRight;
   }
 

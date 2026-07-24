@@ -14,7 +14,8 @@
 #include "atx/core/math.hpp"    // norm_cdf
 #include "atx/vol/american.hpp" // american_price_cached
 #include "atx/vol/black76.hpp"  // black76_price
-#include "atx/vol/event_vol.hpp" // EventSchedule, count_events_at, event_aware_w
+#include "atx/vol/event_vol.hpp"  // EventSchedule, count_events_at, event_aware_
+#include "atx/vol/strip_grid.hpp" // strip::forward_log_blend (E2 shared convention)w
 
 namespace atx::vol {
 
@@ -280,10 +281,11 @@ Result<ForwardLookup> curve_forward_T(const CurveSet& curves, double T,
   const Row& plo = rows[lo_pos];
   const Row& phi = rows[hi_pos];
 
-  // Linear in log(F): keeps the result positive and monotone-friendly.
-  const double alpha = (T - plo.T) / (phi.T - plo.T);
-  const double log_f = std::log(plo.F) + alpha * (std::log(phi.F) - std::log(plo.F));
-  out.F = std::exp(log_f);
+  // Linear in log(F): keeps the result positive and monotone-friendly. E2
+  // single-sourced this into `strip::forward_log_blend` so the derivatives var
+  // strip reads the same forward at the same T (it used to interpolate linearly
+  // in F). Bit-identical to the expression it replaces on a validated bracket.
+  out.F = strip::forward_log_blend(plo.T, plo.F, phi.T, phi.F, T);
   out.lo_idx = plo.idx;
   out.hi_idx = phi.idx;
   out.flags |= kFlagForwardInterp;
