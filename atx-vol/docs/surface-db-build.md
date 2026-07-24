@@ -190,7 +190,7 @@ disposition counters partition the distinct symbols seen:
 | Field | Meaning |
 | --- | --- |
 | `n_dates_loaded` | Distinct dates that produced at least one board. |
-| `n_dates_missing` | Distinct in-range dates that produced **none** (a fully absent OR fully unreadable date). |
+| `n_dates_missing` | Distinct in-range dates that produced **none** (a fully absent OR fully unreadable date). The window is enumerated as **calendar** days, so every weekend and market holiday in range is counted missing — a July window always shows ~9. |
 | `n_load_errors` | **Cell** count of present-but-unparseable files (never reach the fit). |
 
 **Double-count, by design.** A date whose file is present but fully corrupt is
@@ -216,8 +216,16 @@ work already done:
    loaded board adds a symbol the partition does not already carry. So as the
    OPRA pull dribbles in new `(symbol, date)` cells, only the new work is fit; a
    re-run over unchanged data fits **zero** (`cells_to_fit == 0`,
-   `dates_written == 0`, `dates_skipped_complete == dates_total`). A **grown**
-   hive (new dates, or new symbols on existing dates) fits only the delta.
+   `dates_written == 0`, `dates_skipped_complete == dates_total`) **once every
+   loaded cell has either fitted successfully or been config-disabled** — a
+   disabled cell is excluded from the pending tally, since it can never be added.
+   A **grown** hive (new dates, or new symbols on existing dates) fits only the
+   delta.
+   - A cell that **fails to fit** is *not* suppressed: there is no persisted
+     known-failed state, so it is retried on every run, which keeps its date in
+     the rewrite set and re-fits that date's siblings. That is the deliberate
+     cost of giving a transient failure another chance — a name that fails
+     permanently should be disabled in the manifest to converge.
    - Safety guard: a date is **skipped, never rewritten**, if its partition
      already holds a symbol NOT present in this run's loaded set — a
      whole-partition rewrite would drop it (`dates_skipped_would_drop`). This

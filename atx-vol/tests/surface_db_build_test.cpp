@@ -259,6 +259,31 @@ struct BuildFixture {
   return spec;
 }
 
+// Load the fixture hive's boards through the real loader (load_opra_hive ->
+// corpus_board_from_opra) — the exact ingest build_surface_db runs, but against
+// an EXISTING fixture rather than a freshly made one.
+[[nodiscard]] std::vector<CorpusBoard> load_fixture_hive_boards(const BuildFixture &f,
+                                                                const tsupport::SyntheticHiveSpec &fx) {
+  OpraHiveSpec spec;
+  spec.root_dir = f.hive.string();
+  spec.date_lo = fx.dates.front();
+  spec.date_hi = fx.dates.back();
+  spec.symbols = fx.symbols;
+  spec.r = fx.r;
+
+  std::vector<CorpusBoard> boards;
+  const auto res = load_opra_hive(spec);
+  EXPECT_TRUE(res.has_value()) << (res ? "" : res.error().to_string());
+  if (res.has_value()) {
+    for (const OpraBatchEntry &e : res->entries) {
+      if (e.panel.has_value()) {
+        boards.push_back(corpus_board_from_opra(e.date, e.symbol, *e.panel));
+      }
+    }
+  }
+  return boards;
+}
+
 // One call over a fresh 3x3 hive builds an end-to-end db: 3 dates loaded (the
 // 07-03/04/05 calendar gap is missing), 3 symbols configured, 9 cells fit, and
 // the REOPENED db carries 3 partitions / 3 symbols with a mappable surface.
@@ -307,6 +332,55 @@ TEST(BuildSurfaceDb, RerunFitsZero) {
   auto db = SurfaceDb::open(f.db.string());
   ASSERT_TRUE(db.has_value());
   EXPECT_EQ(db->partitions().size(), std::size_t{3}); // no rewrite
+}
+
+// A DISABLED symbol must not keep its dates in the rewrite set forever. Its cell
+// can never be added (the population loop skips it, so it never lands in the
+// written partition), so counting it as "to add" makes every later run see the
+// same permanent gap and rewrite — and therefore RE-FIT — that whole date on
+// every run. With the disabled cell excluded from the tally the build reaches a
+// fixed point: the second run over an unchanged hive fits ZERO.
+TEST(BuildSurfaceDb, RerunFitsZeroWithDisabledSymbol) {
+  const tsupport::SyntheticHiveSpec fx; // AAA/BBB/CCC x 3 dates
+  const BuildFixture f = make_build_fixture("rerun_disabled", fx);
+  const SurfaceDbBuildSpec spec = build_spec(f, fx);
+
+  // Pre-seed the manifest with a DISABLED CCC through the real fail-closed path
+  // (SelectionFailureStoredDisabled's technique: gut CCC to a single quote so
+  // selection cannot run). generate_symbol_configs is skip-existing, so both
+  // builds below leave that disabled config exactly as it is.
+  {
+    auto db = SurfaceDb::create(f.db.string());
+    ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+    std::vector<CorpusBoard> gutted = load_fixture_hive_boards(f, fx);
+    ASSERT_EQ(gutted.size(), std::size_t{9});
+    for (CorpusBoard &b : gutted) {
+      if (b.symbol == "CCC") {
+        ASSERT_FALSE(b.frame.rows.empty());
+        b.frame.rows.resize(1);
+      }
+    }
+    const auto cfg = generate_symbol_configs(*db, gutted, AutoConfigSpec{});
+    ASSERT_TRUE(cfg.has_value()) << (cfg ? "" : cfg.error().to_string());
+    ASSERT_EQ(cfg->n_disabled_failed, 1u);
+    const auto ccc = db->symbol_config("CCC");
+    ASSERT_TRUE(ccc.has_value());
+    ASSERT_FALSE(ccc->enabled);
+  }
+
+  const auto rep1 = build_surface_db(spec);
+  ASSERT_TRUE(rep1.has_value()) << (rep1 ? "" : rep1.error().to_string());
+  ASSERT_EQ(rep1->coverage.dates_written, 3u); // AAA/BBB written on all 3 dates
+
+  // Second run over the UNCHANGED hive. CCC is still disabled and still absent
+  // from every partition — a gap that can never close — so there is nothing to
+  // do: no date is rewritten and no cell is (re)fit.
+  const auto rep2 = build_surface_db(spec);
+  ASSERT_TRUE(rep2.has_value()) << (rep2 ? "" : rep2.error().to_string());
+  EXPECT_EQ(rep2->coverage.cells_to_fit, 0u);
+  EXPECT_EQ(rep2->coverage.dates_written, 0u);
+  EXPECT_EQ(rep2->coverage.dates_skipped_complete, 3u);
+  EXPECT_EQ(rep2->coverage.cells_refit, 0u);
 }
 
 // Growing the hive by one date rebuilds ONLY that date: the three prior dates

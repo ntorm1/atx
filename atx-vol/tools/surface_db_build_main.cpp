@@ -4,9 +4,11 @@
 // every (symbol, date) surface — the one-call `build_surface_db` driver
 // (atx/vol/surface_db_build.hpp) wrapped in a hand-rolled arg loop.
 //
-// Fully resumable: re-running over an unchanged hive fits ZERO (configs
-// skip-existing, the cell-aware populate writes no date), a grown hive fits only
-// the new dates, and an un-pulled (empty) window is a graceful all-zero success.
+// Fully resumable: re-running over an unchanged hive fits ZERO once every cell has
+// either fitted successfully or been config-disabled (configs skip-existing, the
+// cell-aware populate writes no date; a cell that FAILS to fit is retried, so it
+// keeps re-fitting its date). A grown hive fits only the new dates, and an
+// un-pulled (empty) window is a graceful all-zero success.
 //
 // Usage:
 //   atx-vol-surface-db-build --db <root> --hive <root>

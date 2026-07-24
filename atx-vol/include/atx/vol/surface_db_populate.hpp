@@ -115,7 +115,10 @@ populate_surface_db(SurfaceDb &db, std::span<const CorpusBoard> boards,
 // idempotent resume: a partition (= date) is (re)written only when a loaded board
 // adds a symbol the partition does not already carry, so re-running as the OPRA
 // pull dribbles in new (symbol,date) cells fits only the new work and a re-run over
-// unchanged data fits ZERO. Uses the fused streaming populate_surface_db underneath
+// unchanged data fits ZERO once every loaded cell has either fitted successfully or
+// been config-disabled (a disabled cell is excluded from the pending tally; a cell
+// that FAILS to fit is not, so it is retried — see build_surface_db's contract).
+// Uses the fused streaming populate_surface_db underneath
 // (per-date fit->serialize->release on the executor pool), so RSS stays
 // O(dates in flight). The caller loads the hive (load_opra_daterange ->
 // corpus_board_from_opra) and hands the available boards in; this function owns the
@@ -136,7 +139,10 @@ struct UniversePopulateSpec {
 
 struct UniversePopulateCoverage {
   std::uint32_t cells_loaded{0};             // boards handed in (available parquet cells)
-  std::uint32_t cells_to_fit{0};             // NEW (symbol,date) cells scheduled this run
+  // NEW (symbol,date) cells scheduled this run. A cell whose resolved config is
+  // DISABLED is never counted: it can never be added to a partition, so treating
+  // it as pending work would keep its date in the rewrite set forever.
+  std::uint32_t cells_to_fit{0};
   std::uint32_t cells_refit{0};              // already-present cells re-fit by a same-date rewrite
   std::uint32_t cells_already_present{0};    // skipped: symbol already in its date partition
   std::uint32_t cells_ok{0};                 // populate n_ok over the (re)written dates

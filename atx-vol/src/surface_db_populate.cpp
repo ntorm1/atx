@@ -57,6 +57,17 @@ namespace {
   return out;
 }
 
+// The ONE place a board's effective fit config is resolved: the symbol's
+// manifest entry when present, else the caller's fallback. Both the population
+// loop's disabled-skip and the cell-aware resume filter's disabled-exclusion go
+// through this, so the two cannot drift out of agreement about which cells will
+// actually be written.
+[[nodiscard]] SymbolFitConfig resolve_symbol_config(SurfaceDb &db, const std::string &symbol,
+                                                    const SymbolFitConfig &fallback) {
+  const Result<SymbolFitConfig> found = db.symbol_config(symbol);
+  return found.has_value() ? *found : fallback;
+}
+
 struct SymbolAccum {
   PopulateSymbolStats stats;
   double oos_sum{0.0};
@@ -188,8 +199,7 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
     std::size_t enabled_in_range = 0u;
     for (std::size_t pos = range.begin; pos < range.end; ++pos) {
       const CorpusBoard &board = boards[order[pos]];
-      const Result<SymbolFitConfig> found = db.symbol_config(board.symbol);
-      resolved_cfgs[pos] = found.has_value() ? *found : cfg.fallback;
+      resolved_cfgs[pos] = resolve_symbol_config(db, board.symbol, cfg.fallback);
       if (resolved_cfgs[pos].enabled) {
         fit_positions.push_back(pos);
         fit_task_range.push_back(r);
@@ -536,6 +546,10 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
   }
   cov.dates_total = static_cast<std::uint32_t>(by_date.size());
 
+  // The fallback the populate below will resolve an unconfigured symbol against;
+  // hoisted so the filter's disabled-check and the fit's are the SAME decision.
+  const SymbolFitConfig fallback_cfg = symbol_config_from_preset(spec.preset);
+
   std::vector<CorpusBoard> kept; // boards on the dates that need a (re)write
   for (const auto &[date, idxs] : by_date) {
     const Result<SurfaceArchiveV2> part = db.open_partition(date); // Err(NotFound) if none yet
@@ -545,9 +559,18 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
       const bool in_db = part.has_value() && part->find(boards[i].symbol).has_value();
       if (in_db) {
         ++present;
-      } else {
-        ++to_add;
+        continue;
       }
+      // A cell whose resolved config is DISABLED can never be added: the
+      // population loop skips it (n_disabled) so it never lands in the written
+      // partition. Counting it as "to add" would make EVERY later run see the
+      // same permanent gap and rewrite -- and therefore re-fit -- the whole date,
+      // so the build would never reach a fixed point. Resolved through the same
+      // seam the population loop uses, so the two cannot drift.
+      if (!resolve_symbol_config(db, boards[i].symbol, fallback_cfg).enabled) {
+        continue;
+      }
+      ++to_add;
     }
     if (to_add == 0u) {
       ++cov.dates_skipped_complete; // every loaded cell already present
@@ -574,7 +597,7 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
   //    the cell-aware filter above already chose exactly the dates to rewrite.
   if (!kept.empty()) {
     SurfaceDbPopulateConfig pcfg;
-    pcfg.fallback = symbol_config_from_preset(spec.preset);
+    pcfg.fallback = fallback_cfg;
     pcfg.n_threads = spec.fit_workers;
     pcfg.skip_existing = false;
     const Result<SurfaceDbPopulateStats> st = populate_surface_db(db, kept, pcfg, test_hooks);

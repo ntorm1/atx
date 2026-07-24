@@ -51,7 +51,10 @@ namespace atx::vol {
 // contractual (Task 5's build driver constructs this directly).
 struct AutoConfigSpec {
   // Board date used for per-symbol selection. Empty ("") => each symbol's
-  // EARLIEST available board (min date string) is used.
+  // EARLIEST available board (min date string) is used. A non-empty date a given
+  // symbol has NO board for falls back to that symbol's earliest board (per
+  // symbol, silently — one symbol missing the requested date never fails the
+  // call or skips the symbol).
   std::string config_date{};
   // Base preset captured into every symbol's config (`symbol_config_from_preset`).
   // The fit-policy decision pins the curve FAMILY; this preset is the numerical
@@ -134,8 +137,10 @@ struct SurfaceDbBuildSpec {
 // date counters describe the hive load, not cells: `n_dates_loaded` is the number
 // of distinct dates that produced at least one board; `n_dates_missing` is the
 // number of distinct in-range dates that produced NONE (a fully absent or
-// unreadable date); `n_load_errors` is the CELL count of present-but-unparseable
-// files (the loader's `n_error`), which never reach the fit.
+// unreadable date) — the window is enumerated as CALENDAR days, so every weekend
+// and market holiday in range counts as missing (a July window always shows ~9);
+// `n_load_errors` is the CELL count of present-but-unparseable files (the loader's
+// `n_error`), which never reach the fit.
 struct SurfaceDbBuildReport {
   AutoConfigReport config;
   UniversePopulateCoverage coverage;
@@ -146,7 +151,11 @@ struct SurfaceDbBuildReport {
 
 // Run the whole build (see `SurfaceDbBuildSpec`). Idempotent/resumable: re-running
 // over an unchanged hive re-fits ZERO (configs skip-existing, the populate's
-// cell-aware filter writes no date); a grown hive fits only the new dates. An
+// cell-aware filter writes no date) ONCE every loaded cell has either fitted
+// successfully or been config-disabled. A cell that FAILS to fit is deliberately
+// retried — there is no persisted known-failed state — so it keeps its date in the
+// rewrite set and that date's siblings are re-fit on every run: the price of giving
+// a transient failure another chance. A grown hive fits only the new dates. An
 // EMPTY window (un-pulled days) is a graceful success with all-zero coverage — the
 // db is still created. Top-level Err only on a malformed hive spec (`load_opra_hive`)
 // or a db config/write failure; a single unloadable/unselectable board never
