@@ -271,10 +271,16 @@ TEST(EssviDeAm, RawRouteIsBiasedOnAmericanBoard) {
                te_last.truth.sigma0);
 
   // The raw Black-76 inversion leaves the American put-side early-exercise
-  // premium in the fitted vols. Pin the observed bias floor (measured ~940 bps):
-  // this documents the disease and will FAIL if someone silently
-  // de-Americanizes the default path.
-  EXPECT_GT(dev_raw, 2.0e-2);  // measured 0.094; pinned well above the de-Am residual
+  // premium in the fitted vols. This documents the disease and will FAIL if
+  // someone silently de-Americanizes the default path.
+  // FT-C9a re-pin: the alternate eSSVI driver no longer runs the quality-
+  // destroying theta-scale calendar projection by default (essvi_alt_driver_
+  // theta_project, default off). The old ~940 bps figure was largely that
+  // projection AMPLIFYING the raw bias on this crossing-heavy American board; the
+  // true raw European-on-American disease is ~77 bps ATM inflation (old 0.094 ->
+  // new 0.0077, delta -857 bps). Still an order of magnitude above the <1 bp cold
+  // de-Am residual, so the disease/cure separation the test guards is intact.
+  EXPECT_GT(dev_raw, 5.0e-3);  // ~77 bps raw disease; pinned above the de-Am residual
 }
 
 // ── Test: cold de-Am removes the bias (the cure) ──────────────────────────
@@ -293,8 +299,9 @@ TEST(EssviDeAm, ColdDeAmRemovesBias) {
   const double dev_cold = max_iv_dev_vs_truth(cold, *board, 0.04);
 
   // Direct positive check (guards against a NaN-masked false pass): on the
-  // longest tenor — where the raw fit inflated the ATM vol from 0.162 to ~0.25 —
-  // the de-Am fit must land back on the generating ATM vol.
+  // longest tenor — where the raw fit inflates the ATM vol above the generating
+  // 0.162 (to ~0.169 with the theta-projection now off by default; FT-C9a) — the
+  // de-Am fit must land back on the generating ATM vol.
   const auto slices = cold.essvi_slices();
   const std::size_t last = slices.size() - 1;
   const SynthExpiry& te_last = truth_for_T(board->spec, slices[last].T);

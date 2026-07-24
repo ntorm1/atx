@@ -123,6 +123,86 @@ TEST(EssviFitSlice, RecoversSyntheticSlice_WithinFewBps) {
   EXPECT_NEAR(fit.rho, rho_true, 3.0e-2);
 }
 
+// FT-C3 (B3a): eSSVI lee_project enforced theta*phi*(1+|rho|) <= 4/T with theta =
+// TOTAL variance. The true Lee/Gatheral wing constraint in total variance is
+// T-free (theta*phi*(1+|rho|) <= 4 — exactly the Mingone cube's own bound
+// essvi_phi_max). At T > 1 the 4/T form is over-tight (4/T = 2 at T = 2): a
+// high-vol steep-skew 2y slice whose wing slope is admissible (2.69 <= 4) but
+// exceeds 4/T gets its wings silently flattened below market. Post-fix the wings
+// track the quotes.
+TEST(EssviFitSlice, LongDatedSteepWings_NotFlattenedByLeeProjection) {
+  const double theta_true = 1.20;   // high ATM total variance (sigma_atm ~ 0.77 @ T=2)
+  const double phi_true = 1.40;
+  const double rho_true = -0.60;    // steep skew
+  const double T = 2.0;
+  const double F = 100.0;
+  // theta*phi*(1+|rho|) = 1.2*1.4*1.6 = 2.688 : admissible (<= 4) but > 4/T = 2.
+  const EssviParams truth = backbone(theta_true, phi_true, rho_true, T);
+
+  std::vector<FitObs> obs;
+  const int n = 41;
+  for (int i = 0; i < n; ++i) {
+    const double k = -0.80 + 1.60 * static_cast<double>(i) / static_cast<double>(n - 1);
+    const double w = essvi_backbone_w(truth, k);
+    FitObs o{};
+    o.k = k;
+    o.w_mkt = w;
+    o.sigma_mkt = std::sqrt(w / T);
+    o.weight_w = 1.0;
+    o.active_weight_w = 1.0;
+    o.F = F;
+    o.K = F * std::exp(k);
+    o.df = 1.0;
+    obs.push_back(o);
+  }
+
+  FitDiag diag{};
+  const auto res = essvi_fit_slice(obs, T, F, calib_default_opts(), &diag);
+  ASSERT_TRUE(res.has_value());
+  const EssviParams& fit = *res;
+
+  // The fitted wing slope must NOT be clamped to the over-tight 4/T = 2.
+  const double wing = fit.theta * fit.phi * (1.0 + std::fabs(fit.rho));
+  EXPECT_GT(wing, 2.3)
+      << "fitted wing slope clamped to the over-tight 4/T bound: " << wing;
+
+  // Deep-wing IV must track the quotes (a few bps), not be flattened below them.
+  double max_dv = 0.0;
+  for (int i = 0; i < n; ++i) {
+    const double dv = std::fabs(slice_iv(fit, obs[i].k, T) - obs[i].sigma_mkt);
+    max_dv = std::max(max_dv, dv);
+  }
+  EXPECT_LT(max_dv, 3.0e-3) << "wing IV flattened below quotes (max dv=" << max_dv << ")";
+}
+
+// FT-P (B6b): the eSSVI LM lm_step's per-damping-trial MatX(3,3)/VecX(3)
+// allocation is replaced with reused thread_local buffers (bit-identical solve —
+// no numerical change). Pin the fitted cube params on a fixed fixture so any
+// accidental numeric drift is caught bit-for-bit.
+TEST(EssviFitSlice, FixedFixtureFit_IsBitIdentical) {
+  const double T = 0.5;
+  const double F = 100.0;
+  const EssviParams truth = backbone(0.040, 1.5, -0.30, T);
+  std::vector<FitObs> obs;
+  const int n = 41;
+  for (int i = 0; i < n; ++i) {
+    const double k = -0.40 + 0.80 * static_cast<double>(i) / static_cast<double>(n - 1);
+    const double w = essvi_backbone_w(truth, k);
+    FitObs o{};
+    o.k = k; o.w_mkt = w; o.sigma_mkt = std::sqrt(w / T);
+    o.weight_w = 1.0; o.active_weight_w = 1.0; o.F = F; o.K = F * std::exp(k); o.df = 1.0;
+    obs.push_back(o);
+  }
+  const auto res = essvi_fit_slice(obs, T, F, calib_default_opts());
+  ASSERT_TRUE(res.has_value());
+  const EssviParams f = *res;
+  // Goldens captured from the pre-refactor build (heap MatX(3,3)/VecX(3) per LM
+  // damping trial); the thread_local-buffer refactor must preserve them.
+  EXPECT_EQ(f.theta, 0.040000000000000001);
+  EXPECT_EQ(f.phi, 1.4999999999999996);
+  EXPECT_EQ(f.rho, -0.30000000000000004);
+}
+
 TEST(EssviFitSlice, ThetaFloor_RaisesAtmTotalVariance) {
   // Observations generated from a LOW ATM total variance (theta = 0.04).
   const double theta_true = 0.040;
@@ -470,6 +550,93 @@ TEST(EssviCalibSurface, RecoversSyntheticSurface_WithinTolerance) {
   ASSERT_TRUE(arb.has_value());
   EXPECT_EQ(arb->n_calendar, 0u);
   EXPECT_EQ(arb->n_butterfly, 0u);
+}
+
+// FT-C9a (B5c): the alternate eSSVI driver (essvi_calib_surface[_sequential])
+// ran arb_project_calendar_essvi — the quality-destroying "Project"-style theta
+// bump the README warns about — by DEFAULT whenever validate_no_arb was set
+// (true by default), silently moving the ATM total-variance level to remove a
+// calendar crossing. That theta bump must be an EXPLICIT opt-in, not folded into
+// validate_no_arb; the default must leave the ATM level unmoved.
+TEST(EssviCalibSurface, AlternateDriverDefault_DoesNotThetaBumpCrossing) {
+  const double kF = 100.0;
+  const double phi = 1.0;
+  const double rho = -0.25;
+  const std::array<double, 2> ts{0.25, 0.50};
+  const std::array<double, 2> thetas{0.060, 0.040};  // crossing: theta2 < theta1
+
+  Underlying u;
+  u.uid = 1u;
+  u.ticker = "X";
+  u.spot = kF;
+  std::vector<double> strikes;
+  for (double K = 84.0; K <= 116.0 + 1e-9; K += 2.0) {
+    strikes.push_back(K);
+  }
+  for (std::size_t si = 0; si < 2; ++si) {
+    const EssviParams tr = backbone(thetas[si], phi, rho, ts[si]);
+    Chain c;
+    c.uid = 1u;
+    c.expiry_id = static_cast<std::uint16_t>(si);
+    c.expiry_ns = static_cast<std::int64_t>(ts[si] * 3.15e16);
+    c.T = ts[si];
+    c.strikes = strikes;
+    const std::size_t n2 = strikes.size() * 2u;
+    c.bids.assign(n2, 0.0);
+    c.asks.assign(n2, 0.0);
+    c.mids.assign(n2, 0.0);
+    c.ivs.assign(n2, std::numeric_limits<double>::quiet_NaN());
+    c.bid_sizes.assign(n2, 1);
+    c.ask_sizes.assign(n2, 1);
+    c.ts_ns.assign(n2, 0);
+    c.flags.assign(n2, 0u);
+    for (std::size_t s = 0; s < strikes.size(); ++s) {
+      const double K = strikes[s];
+      const double k = std::log(K / kF);
+      const double sig = std::sqrt(essvi_backbone_w(tr, k) / ts[si]);
+      for (int side_i = 0; side_i < 2; ++side_i) {
+        const auto side = static_cast<Side>(static_cast<std::uint8_t>(side_i));
+        const std::size_t idx = chain_index(static_cast<std::uint16_t>(s), side);
+        const double mid = black76_price(kF, K, ts[si], sig, 1.0, side);
+        const double vega = black76_value_and_vega(kF, K, ts[si], sig, 1.0, side).vega;
+        const double half = std::min(0.005 * vega, 0.25 * mid);
+        c.mids[idx] = mid;
+        c.bids[idx] = mid - half;
+        c.asks[idx] = mid + half;
+      }
+    }
+    u.chains.push_back(std::move(c));
+  }
+  CurveSet cs;
+  cs.spot = kF;
+  std::vector<ForwardPoint> fps;
+  for (const Chain& c : u.chains) {
+    ForwardPoint fp{};
+    fp.expiry_ns = c.expiry_ns;
+    fp.T = c.T;
+    fp.F = kF;
+    fps.push_back(fp);
+  }
+  cs.forward.set(fps);
+
+  auto surf_res = VolSurface::create(1u, Parametrization::Essvi, u.chains.size());
+  ASSERT_TRUE(surf_res.has_value());
+  VolSurface surface = *surf_res;
+  const auto st = essvi_calib_surface(surface, u, cs, calib_default_opts());
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+  ASSERT_EQ(surface.n_slices(), 2u);
+
+  const double iv1 = surface.iv_on_slice(0u, 0.0);
+  const double iv2 = surface.iv_on_slice(1u, 0.0);
+  const double theta1 = iv1 * iv1 * ts[0];
+  const double theta2 = iv2 * iv2 * ts[1];
+  // Default must NOT run the theta bump: the ATM crossing is preserved and the
+  // T2 ATM level stays near its raw independent fit (0.040).
+  EXPECT_LT(theta2, theta1)
+      << "default alternate driver theta-bumped the crossing (theta2=" << theta2
+      << " theta1=" << theta1 << ")";
+  EXPECT_NEAR(theta2, 0.040, 5.0e-3)
+      << "ATM level moved from its raw fit (theta2=" << theta2 << ")";
 }
 
 TEST(EssviCalibSurface, NonEssviSurface_ReturnsInvalidArgument) {

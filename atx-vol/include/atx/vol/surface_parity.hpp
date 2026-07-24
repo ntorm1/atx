@@ -205,8 +205,21 @@ struct SurfaceParityInputs {
   // the permissive eSSVI cold-driver predicate (the policy the served eSSVI
   // `run_surface_parity` path prepares under), keeping those thin expiries;
   // under it the pre-pass audits fitted inversions per `deam.audit_fit_inversions`.
-  // Only consulted by `fit_curve_surface`; `run_surface_parity` does not read it.
+  // Consulted by `fit_curve_surface` always, and by `run_surface_parity` only
+  // when `essvi_serve_configured_prep` is TRUE (FT-C8 flag-guarded rollout below).
   PreparedObservationPolicy fit_prep_policy{PreparedObservationPolicy::Configured};
+
+  // FT-C8 flag-guarded rollout: whether the served eSSVI path (`run_surface_parity`)
+  // prepares its observation population under the configured `fit_prep_policy`
+  // (the full CalibOpts filter cascade — kill-mask flags, max_spread_vol,
+  // max_spread_to_mid_pct, min_vega_weight, anchors, max_obs_per_slice) instead
+  // of the permissive `LegacyEssviCompatibility` predicate the canonical default
+  // family historically fit under (strike>0 + quote_valid only). The default eSSVI
+  // family otherwise fits a filter-free population while every other family gets
+  // the configured cascade — exactly the family-dependent policy the facade denies.
+  // DEFAULT FALSE => byte-identical to the historical served-eSSVI Legacy prep;
+  // the flip to TRUE is gated behind the XOM+SPY in-band%/chi2/vol-RMSE A/B.
+  bool essvi_serve_configured_prep{false};
 
   // W3.3 (F3): opt-in per-slice Legacy-prep rescue (thin-slice recovery). When
   // TRUE and the primary `fit_prep_policy` is Configured, a slice whose

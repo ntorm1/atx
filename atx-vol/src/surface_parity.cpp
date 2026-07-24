@@ -18,6 +18,7 @@
 #include "atx/vol/calib.hpp"            // FitObs, FitDiag, CalibOpts
 #include "atx/vol/deamer.hpp"           // de_americanize_chain, european_equiv_iv, otm_side
 #include "atx/vol/essvi_calib.hpp"      // essvi_fit_slice
+#include "atx/vol/parallel_for.hpp"     // parallel_for_dynamic (per-chain prepass fan-out)
 #include "atx/vol/parity.hpp"           // chain_parity, ParityInputs, ParityReport
 #include "atx/vol/prepared_fitting.hpp" // PreparedSlice legacy compatibility seam
 #include "atx/vol/types.hpp"
@@ -293,8 +294,49 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   double ms_deam = 0.0;
   double ms_fit = 0.0;
 
-  // Chains are stored ascending in T; walk them in that order so slices land
-  // in the surface ascending as set_slice_essvi requires.
+  // 1-2. One shared carry + observation seam per expiry. FT-C8: honor the
+  // configured `fit_prep_policy` (the full CalibOpts filter cascade) when the
+  // flag-guarded rollout is enabled; default stays the permissive
+  // LegacyEssviCompatibility predicate (byte-identical).
+  const PreparedObservationPolicy prep_policy =
+      in.essvi_serve_configured_prep ? in.fit_prep_policy
+                                     : PreparedObservationPolicy::LegacyEssviCompatibility;
+
+  // FT-P: the per-expiry preparation (carry solve + de-Am observation build) is
+  // the dominant per-chain cost and INDEPENDENT across expiries, so fan it out
+  // over `in.fit_workers` into DISJOINT per-chain slots (prepare_expiry is a pure
+  // function of (chain, in) and reads in.deam.caches read-only — the same
+  // concurrent-read contract fit_curve_surface's prepass relies on). The fit +
+  // set_slice + scoring pass below stays SEQUENTIAL in ascending T (the
+  // MonotoneFit calendar floor is a loop-carry), so the assembled surface, its
+  // per-slice diagnostics and slice order are BIT-IDENTICAL for any worker count
+  // — only the embarrassingly-parallel prepass fans out. (fit_workers: 0 => auto,
+  // 1 => serial byte-for-byte, N => N workers.)
+  struct PreppedSlot {
+    std::optional<Result<CanonicalPreparedExpiry>> result; // nullopt => T<=0 skip
+    PrepareExpiryDiagnostics prep_diag{};
+  };
+  std::vector<PreppedSlot> slots(n_chains);
+  parallel_for_dynamic(n_chains, in.fit_workers, [&](std::size_t i, unsigned) {
+    if (!(under.chains[i].T > 0.0)) {
+      return; // degenerate maturity: leave nullopt; phase 2 records the skip
+    }
+    try {
+      slots[i].result = prepare_expiry(under.chains[i], static_cast<std::uint32_t>(i),
+                                       in, prep_policy, &slots[i].prep_diag);
+    } catch (...) {
+      // A worker escape would std::terminate the jthread; record a failed slot
+      // (calib_pool/essvi parallel precedent). prepare_expiry uses Result, so
+      // this is defensive only.
+      slots[i].result.emplace(
+          Err(ErrorCode::Internal, "run_surface_parity: prepare_expiry threw"));
+    }
+  });
+
+  // Chains are stored ascending in T; consume them in that order so slices land
+  // in the surface ascending as set_slice_essvi requires. This pass is serial:
+  // the calendar floor (MonotoneFit) is a loop-carry and the surface writes are
+  // ordered, so the result is invariant to the prepass worker count.
   for (std::size_t chain_index = 0u; chain_index < under.chains.size(); ++chain_index) {
     const Chain &chain = under.chains[chain_index];
     const double T = chain.T;
@@ -304,13 +346,8 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       continue; // degenerate maturity: skip (not fatal)
     }
 
-    // 1-2. One shared carry + observation seam. Compatibility preparation
-    // consumes in.deam.caches unconditionally, preserving this cold eSSVI
-    // driver's historical cache behavior.
-    PrepareExpiryDiagnostics prep_diag{};
-    Result<CanonicalPreparedExpiry> prepared_result =
-        prepare_expiry(chain, static_cast<std::uint32_t>(chain_index), in,
-                       PreparedObservationPolicy::LegacyEssviCompatibility, &prep_diag);
+    PrepareExpiryDiagnostics &prep_diag = slots[chain_index].prep_diag;
+    Result<CanonicalPreparedExpiry> &prepared_result = *slots[chain_index].result;
     if (time_stages) {
       ms_carry += prep_diag.carry_solve_ms;
       ms_deam += prep_diag.observation_deam_ms;
