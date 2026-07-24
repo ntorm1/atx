@@ -469,6 +469,33 @@ struct ContractPnl {
   return !(std::isfinite(c.K) && c.K > 0.0 && std::isfinite(c.T) && c.T > 0.0);
 }
 
+// G1 (GR-P2-1): a finite mark no longer certifies an Ok Greek lane. The scalar
+// production bundles (american_greeks_fd / american_greeks_al) can return SUCCESS
+// with a NON-finite differenced Greek — e.g. an extreme spot where the FD gamma
+// denominator hS*hS underflows to 0 while the deep-ITM mark stays finite — yet
+// PriceTotals / reduce_pnl_totals gate on STATUS only, so one such lane poisons the
+// whole book's totals (violating the frame's "no NaN enters a total" contract). The
+// AVX2 laned kernel already guards exactly this (simd/american_greeks_avx2.cpp);
+// this sweeps every REQUESTED column finite at the scalar Ok-stamp before Ok:
+// price/delta/gamma/theta always, vega/volga/vanna, rho, charm per GreekNeeds. A
+// non-finite requested column demotes the lane to NumericError (NaN-isolated like
+// every other error lane).
+[[nodiscard]] bool greeks_all_finite(const AmericanGreeks &g,
+                                     PricedSurface::GreekNeeds needs) noexcept {
+  bool ok = std::isfinite(g.price) && std::isfinite(g.delta) && std::isfinite(g.gamma) &&
+            std::isfinite(g.theta);
+  if (needs.vega) {
+    ok = ok && std::isfinite(g.vega) && std::isfinite(g.volga) && std::isfinite(g.vanna);
+  }
+  if (needs.rho) {
+    ok = ok && std::isfinite(g.rho);
+  }
+  if (needs.charm) {
+    ok = ok && std::isfinite(g.charm);
+  }
+  return ok;
+}
+
 // dSigma/dk at k_log = ln(K / F(T)) off a served `PricedSurface`, central FD
 // (h = 1e-4) -- the same scheme adjusted_greeks.hpp's `surface_skew_slope`
 // applies to a `VolSurface`. Adapted here because `PricedSurface` is
@@ -804,7 +831,7 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
         }
         continue;
       }
-      if (!b_status[p].has_value() || !std::isfinite(b_greeks[p].price)) {
+      if (!b_status[p].has_value() || !greeks_all_finite(b_greeks[p], greek_needs)) {
         out.status = PriceStatus::NumericError;
         continue;
       }
@@ -1269,6 +1296,38 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
   if (Status s = price_into(surfaces, fields, view, *returning_ws_, opts); !s.has_value()) {
     return Err(s.error());
   }
+
+  // GR-F1 carry axis: opt-in ∂P/∂q column on the returning frame, computed via the
+  // analytic-AL carry tier (american_carry_greeks_al) at each contract's resolved
+  // (sigma, rate, q_eff). SERIAL per position, so the column and its total are
+  // thread-count invariant by construction; it lives off the caller-owned in-place
+  // path (no PriceFrameView span). Non-Ok / model-missing lanes stay NaN; the total
+  // sums the position-scaled column over Ok lanes in input order. `total.dP_dq`
+  // otherwise stays NaN (from PriceTotals{}), never read as a carry-flat book.
+  if (want_greeks && opts.carry_greeks) {
+    const std::span<const Position> positions = pf_.positions();
+    f.dP_dq.assign(n, kNaN);
+    double total_dP_dq = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+      if (f.status[i] != PriceStatus::Ok) {
+        continue;
+      }
+      const Position &p = positions[i];
+      const SurfaceRef surf = surfaces.find(p.contract.uid);
+      if (surf == nullptr) {
+        continue; // defensive: an Ok lane always resolved a surface
+      }
+      const PricedSurface::ResolvedSurfacePoint rp = surf->resolve(p.contract.K, p.contract.T);
+      const Result<CarryGreeks> cg = american_carry_greeks_al(
+          surf->pricing().S, p.contract.K, p.contract.T, rp.sigma, rp.rate, rp.q_eff,
+          p.contract.side, std::optional<AlOpts>{surf->pricing().al_opts});
+      const double w = p.qty * eff_multiplier(p.multiplier);
+      const double scaled = cg.has_value() ? w * cg->dP_dq : kNaN;
+      f.dP_dq[i] = scaled;
+      total_dP_dq += scaled; // a NaN lane naturally propagates to the total
+    }
+    f.total.dP_dq = total_dP_dq;
+  }
   return f;
 }
 
@@ -1440,6 +1499,14 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
         continue;
       }
       out.gb = cached != nullptr ? cached->g : b_greeks[p];
+      // G1 (GR-P2-1): out.gb are the Taylor coefficients; a non-finite one would
+      // poison PnlTotals (reduce_pnl_totals gates on status only). The P&L base solve
+      // always requests the full bundle (EF::FirstOrder | EF::SecondOrder), so require
+      // all eight finite. (A cached base already passed this on its price Ok-stamp.)
+      if (!greeks_all_finite(out.gb, PricedSurface::GreekNeeds{})) {
+        out.status = PriceStatus::NumericError;
+        continue;
+      }
       out.price_base = cached != nullptr ? cached->fair_value : b_greeks[p].price;
       out.price_target = s_price[p];
       out.dS = dS;
@@ -1957,6 +2024,99 @@ void PortfolioPricer::retained_marks(const PortfolioWorkspace &ws,
     out.push_back(RetainedMark{cur[i].uid, cur[i].K, cur[i].T, cur[i].side, w.px[i].fair_value,
                                w.px[i].status});
   }
+}
+
+// ── GR-F1: bucketed risk reduction ─────────────────────────────────────────
+std::vector<RiskBucket> reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf,
+                                            RiskBucketKey by, PriceTotals *grand) {
+  const std::size_t n = frame.size();
+  const bool greeks = frame.greeks_materialized();
+  const bool carry = frame.carry_materialized();
+  const std::span<const Position> positions = pf.positions();
+  const bool have_positions = positions.size() == n;
+
+  // A fresh subtotal matched to what the frame materialized: pv/greeks accumulate
+  // from 0; unmaterialized Greek columns stay NaN (never a false 0); dP_dq starts
+  // at 0 when the carry column is present, else stays NaN.
+  const auto fresh = [&]() noexcept {
+    PriceTotals t{}; // pv/greeks 0, dP_dq NaN, n_ok 0
+    if (!greeks) {
+      t.delta = t.gamma = t.vega = t.theta = t.rho = kNaN;
+      t.vanna = t.volga = t.charm = kNaN;
+    }
+    if (carry) {
+      t.dP_dq = 0.0;
+    }
+    return t;
+  };
+  const auto add_row = [&](PriceTotals &t, std::size_t i) noexcept {
+    t.pv += frame.pv[i];
+    if (greeks) {
+      t.delta += frame.delta[i];
+      t.gamma += frame.gamma[i];
+      t.vega += frame.vega[i];
+      t.theta += frame.theta[i];
+      t.rho += frame.rho[i];
+      t.vanna += frame.vanna[i];
+      t.volga += frame.volga[i];
+      t.charm += frame.charm[i];
+    }
+    if (carry) {
+      t.dP_dq += frame.dP_dq[i];
+    }
+    ++t.n_ok;
+  };
+
+  std::vector<RiskBucket> buckets;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (frame.status[i] != PriceStatus::Ok) {
+      continue;
+    }
+    std::uint64_t key = 0;
+    double T = 0.0;
+    if (by == RiskBucketKey::ByUnderlier) {
+      key = frame.uid[i];
+    } else {
+      T = have_positions ? positions[i].contract.T : 0.0;
+      key = std::bit_cast<std::uint64_t>(T); // T > 0 => bit order == value order
+    }
+    auto it = std::find_if(buckets.begin(), buckets.end(),
+                           [key](const RiskBucket &b) noexcept { return b.key == key; });
+    PriceTotals *t = nullptr;
+    if (it != buckets.end()) {
+      t = &it->totals;
+    } else {
+      buckets.push_back(RiskBucket{key, T, fresh()});
+      t = &buckets.back().totals;
+    }
+    add_row(*t, i);
+  }
+
+  std::sort(buckets.begin(), buckets.end(),
+            [](const RiskBucket &a, const RiskBucket &b) noexcept { return a.key < b.key; });
+
+  if (grand != nullptr) {
+    PriceTotals g = fresh();
+    for (const RiskBucket &b : buckets) {
+      g.pv += b.totals.pv;
+      if (greeks) {
+        g.delta += b.totals.delta;
+        g.gamma += b.totals.gamma;
+        g.vega += b.totals.vega;
+        g.theta += b.totals.theta;
+        g.rho += b.totals.rho;
+        g.vanna += b.totals.vanna;
+        g.volga += b.totals.volga;
+        g.charm += b.totals.charm;
+      }
+      if (carry) {
+        g.dP_dq += b.totals.dP_dq;
+      }
+      g.n_ok += b.totals.n_ok;
+    }
+    *grand = g;
+  }
+  return buckets;
 }
 
 } // namespace atx::vol

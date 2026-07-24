@@ -652,3 +652,116 @@ TEST(PortfolioRisk, Scenario_SurfaceTwist_ReturnsNotImplemented) {
   ASSERT_FALSE(pnl.has_value());
   EXPECT_EQ(pnl.error().code(), atx::vol::ErrorCode::NotImplemented);
 }
+
+// ── G3 (GR-P1-1): the B76AlCache theoretical plan reported the American price with
+// EUROPEAN first-order greeks — a hedger off it under-hedges by the full EEP delta.
+// The fix corrects delta/vega/theta/rho with the same correction jet price_option
+// uses, so they must now DIFFER from the bare-European (no-cache) greeks. ──
+TEST(PortfolioRisk, G3_PriceGroup_B76AlCache_GreeksCarryEEPCorrection) {
+  CurveSet cs = make_cs4();
+  VolSurface sf = make_surf4();
+  // Populated put correction cache over a box covering the leg (proven non-trivial
+  // by ProjectCompare_RouteSwap: F*c > 1e-4 at K=95, T=0.50).
+  auto corr = CorrectionCache::build(8u, 6u, 4u, 0.04, 0.0, -0.4, 0.4, 0.05, 1.0,
+                                     0.10, 0.50, Side::Put);
+  ASSERT_TRUE(corr.has_value());
+
+  TheoreticalLeg leg = theo_strike(0, 1u, Side::Put, 0.50, 95.0, 1.0);
+  leg.route_policy = RoutePolicy::B76AlCache;
+
+  // Cache bound -> B76AlCache route active (American mark + correction jet).
+  auto plan_c = PricingPlan::create(std::span<const TheoreticalLeg>(&leg, 1));
+  ASSERT_TRUE(plan_c.has_value());
+  MarketBinding bc;
+  bc.set_market(1u, UnderlyingMarket{&sf, &cs, nullptr, &corr.value()});
+  ASSERT_TRUE(plan_c->bind_market(bc, atx::vol::time_model_clock()).has_value());
+  const auto rc = plan_c->price(PortfolioRiskMode::FirstOrder, AggMode::Total);
+  ASSERT_TRUE(rc.has_value());
+  const auto& lc = rc->legs[0];
+  ASSERT_EQ(lc.route, RoutePolicy::B76AlCache);
+  ASSERT_EQ(lc.status, LaneStatus::Ok);
+
+  // No cache -> the SAME route policy falls back to B76Only (pure European greeks).
+  auto plan_e = PricingPlan::create(std::span<const TheoreticalLeg>(&leg, 1));
+  ASSERT_TRUE(plan_e.has_value());
+  MarketBinding be;
+  be.set_market(1u, UnderlyingMarket{&sf, &cs, nullptr, nullptr});
+  ASSERT_TRUE(plan_e->bind_market(be, atx::vol::time_model_clock()).has_value());
+  const auto re = plan_e->price(PortfolioRiskMode::FirstOrder, AggMode::Total);
+  ASSERT_TRUE(re.has_value());
+  const auto& le = re->legs[0];
+  ASSERT_EQ(le.route, RoutePolicy::B76Only);
+
+  // Same resolved (F, K, T, IV) in both, so the only difference is the correction
+  // jet. Pre-fix the greeks were bit-identical to the European leg (they ignored the
+  // correction) while only the price differed; the fix makes them American.
+  EXPECT_DOUBLE_EQ(lc.iv, le.iv);
+  EXPECT_NE(lc.delta, le.delta);
+  EXPECT_NE(lc.vega, le.vega);
+  EXPECT_NE(lc.theta, le.theta);
+  EXPECT_NE(lc.rho, le.rho);
+  // gamma stays the Black-76 leg on both paths (sibling price_option corrects only
+  // the four first-order axes) and the American mark exceeds the European (EEP >= 0).
+  EXPECT_DOUBLE_EQ(lc.gamma, le.gamma);
+  EXPECT_GT(lc.price, le.price);
+}
+
+// ── G3 (GR-P1-2): the scenario engine priced base + shocked legs in pure Black-76
+// even when a per-side correction cache was bound, so an American book's scenario
+// PnL silently excluded the EEP change. The fix applies the SAME overlay to both
+// legs; the scenario PnL must now match an overlay-inclusive reprice, and move off
+// the European value. ──
+TEST(PortfolioRisk, G3_Scenario_IncludesEEPOverlayWhenCacheBound) {
+  Universe u;
+  const double T = 0.5;
+  const double r = 0.04;
+  const std::array<double, 3> strikes{95.0, 100.0, 105.0};
+  ExpiryId eid = 0;
+  const Uid uid = add_underlying(u, "AAA", 100.0, strikes, T, eid);
+  CurveSet cs = make_curves(100.0, r, T);
+  const double F = cs.forward.forward_at(eid);
+  VolSurface sf = make_surface1(uid, T, F, eid);
+  auto corr = CorrectionCache::build(8u, 6u, 4u, 0.04, 0.0, -0.4, 0.4, 0.05, 1.0,
+                                     0.10, 0.50, Side::Put);
+  ASSERT_TRUE(corr.has_value());
+
+  MarketBinding b;
+  b.universe = &u;
+  b.set_market(uid, UnderlyingMarket{&sf, &cs, nullptr, &corr.value()}); // put cache
+
+  const std::array<double, 2> qtys{2.0, -1.0};
+  std::vector<PortfolioLeg> book;
+  for (std::uint16_t sx = 0; sx < 2; ++sx) {
+    book.push_back(PortfolioLeg{LegKind::Option, uid,
+                                make_contract_id(uid, eid, sx, Side::Put),
+                                qtys[sx], 100.0, 0.0, 0u});
+  }
+
+  const std::array<Shock, 1> shocks{Shock{ShockKind::SpotPct, 0.02}};
+  const auto pnl = atx::vol::scenario_pnl(book, b, shocks);
+  ASSERT_TRUE(pnl.has_value());
+
+  // Independent reprice: engine arithmetic + the EEP overlay on both legs.
+  const double rr = cs.yield.zero(T);
+  const double df = std::exp(-rr * T);
+  const double S = 100.0;
+  const double q = rr - std::log(F / S) / T;
+  double expected = 0.0;
+  double expected_euro = 0.0;
+  for (std::uint16_t sx = 0; sx < 2; ++sx) {
+    const double K = strikes[sx];
+    const double sigma = sf.iv(std::log(K / F), T);
+    const double base_e = black76_price(F, K, T, sigma, df, Side::Put);
+    const double base = base_e + F * corr->eval(std::log(K / F), T, sigma);
+    const double s_s = S * 1.02;
+    const double f_s = s_s * std::exp((rr - q) * T);
+    const double p_s_e = black76_price(f_s, K, T, sigma, df, Side::Put);
+    const double p_s = p_s_e + f_s * corr->eval(std::log(K / f_s), T, sigma);
+    expected += qtys[sx] * (p_s - base);
+    expected_euro += qtys[sx] * (p_s_e - base_e);
+  }
+  EXPECT_NEAR(pnl.value(), expected, 1e-6);
+  // Non-vacuous: the overlay actually moved the scenario PnL off the European value.
+  EXPECT_GT(std::fabs(expected - expected_euro), 1e-6);
+  EXPECT_GT(std::fabs(pnl.value() - expected_euro), 1e-6);
+}
