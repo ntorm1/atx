@@ -127,4 +127,80 @@ double event_aware_w(double w_lo, double T_lo, std::size_t n_lo, double w_hi, do
   return w_cen_query + static_cast<double>(n_query) * emove * emove;
 }
 
+// ── implied_emove_joint (E3a / AN-P1-3) ──────────────────────────────────
+
+namespace {
+
+// The pre-E3a solve, expressed over a usable/sorted observation set: the first
+// ascending-T adjacent pair whose event count RISES brackets the next event.
+[[nodiscard]] Result<double> two_pillar_over(std::span<const CensorObsInput> sorted) {
+  for (std::size_t i = 0; i + 1 < sorted.size(); ++i) {
+    if (sorted[i + 1].n > sorted[i].n) {
+      return implied_emove(sorted[i].w_dirty, sorted[i].T, sorted[i].n, sorted[i + 1].w_dirty,
+                           sorted[i + 1].T, sorted[i + 1].n);
+    }
+  }
+  return Err(ErrorCode::NotFound, "implied_emove_joint: no adjacent pair brackets an event");
+}
+
+} // namespace
+
+Result<EmoveSolution> implied_emove_joint(std::span<const CensorObsInput> obs,
+                                          const EarningsFitConfig &cfg) {
+  // Drop unusable pillars rather than failing the whole solve: `fit_earnings_term`
+  // rejects the ENTIRE span on the first bad observation, so this filter is what
+  // keeps one dead expiry from costing the underlying its eMove.
+  std::vector<CensorObsInput> usable;
+  usable.reserve(obs.size());
+  for (const CensorObsInput &o : obs) {
+    if (std::isfinite(o.T) && o.T > 0.0 && std::isfinite(o.w_dirty) && o.w_dirty > 0.0) {
+      usable.push_back(o);
+    }
+  }
+  if (usable.size() < 2) {
+    return Err(ErrorCode::InvalidArgument,
+               "implied_emove_joint: need at least two usable expiries");
+  }
+  std::sort(usable.begin(), usable.end(),
+            [](const CensorObsInput &a, const CensorObsInput &b) { return a.T < b.T; });
+
+  // Identification check — see the header. A constant event count carries no
+  // information about eMove, and four free parameters interpolate four points.
+  std::size_t event_bearing = 0;
+  bool n_varies = false;
+  for (const CensorObsInput &o : usable) {
+    if (o.n > 0) {
+      ++event_bearing;
+    }
+    if (o.n != usable.front().n) {
+      n_varies = true;
+    }
+  }
+  const bool identified = usable.size() >= kJointMinPillars && n_varies && event_bearing >= 2;
+
+  if (identified) {
+    const Result<EarningsTermFit> fit = fit_earnings_term(usable, cfg);
+    if (fit.has_value() && std::isfinite(fit->emove) && fit->emove >= 0.0 &&
+        fit->fit_code != EmoveFitCode::Degenerate &&
+        !(fit->fit_code == EmoveFitCode::CenterFlat && event_bearing > 0)) {
+      EmoveSolution out;
+      out.emove = fit->emove;
+      out.method = EmoveMethod::Joint;
+      out.fit_code = fit->fit_code;
+      out.fit_error = fit->fit_error;
+      out.expiry_count = fit->expiry_count;
+      return Ok(out);
+    }
+    // Fall through to the two-pillar solve on any joint failure: a degenerate or
+    // non-finite joint answer is worse than the biased-but-bounded one.
+  }
+
+  ATX_TRY(const double emove, two_pillar_over(usable));
+  EmoveSolution out;
+  out.emove = emove;
+  out.method = EmoveMethod::TwoPillar;
+  out.expiry_count = usable.size();
+  return Ok(out);
+}
+
 }  // namespace atx::vol

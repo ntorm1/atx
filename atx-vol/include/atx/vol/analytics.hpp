@@ -63,7 +63,8 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/types.hpp" // Side, Result, Status, ErrorCode
+#include "atx/vol/event_vol.hpp" // EventSchedule, EmoveSolution (earnings_implied_move_ex)
+#include "atx/vol/types.hpp"     // Side, Result, Status, ErrorCode
 
 namespace atx::vol {
 
@@ -335,9 +336,19 @@ struct SurfaceDiff {
 [[nodiscard]] double atmf_vol_ex_earnings(const PricedSurface &ps, double T,
                                           const EventContext &ctx) noexcept;
 
-// Implied per-event earnings move from the two fitted expiries bracketing the
-// next earnings date. InvalidArgument if no such bracket exists or the pair does
-// not identify eMove (see event_vol.hpp::implied_emove).
+// E3a / AN-P1-3. Implied per-event earnings move, solved over ALL fitted
+// expiries via `implied_emove_joint` (event_vol.hpp): the identified joint
+// {eMove, st, lt, decay} fit when the pillar set supports it, falling back to
+// the pre-E3a two-pillar bracket when it does not. This `_ex` overload reports
+// WHICH solve produced the answer (`EmoveSolution::method`) along with the joint
+// fit's outcome code, residual and expiry count.
+[[nodiscard]] Result<EmoveSolution> earnings_implied_move_ex(const PricedSurface &ps,
+                                                             const EventContext &ctx);
+
+// Back-compatible scalar projection of `earnings_implied_move_ex`.
+// InvalidArgument if the schedule is null or fewer than two expiries are usable;
+// NotFound if no adjacent pair brackets an event and the joint fit was not
+// available either.
 [[nodiscard]] Result<double> earnings_implied_move(const PricedSurface &ps,
                                                    const EventContext &ctx);
 

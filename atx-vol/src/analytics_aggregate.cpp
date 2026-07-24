@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/event_vol.hpp"      // count_events_at, implied_emove
+#include "atx/vol/event_vol.hpp"      // count_events_at, implied_emove_joint
 #include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext
 #include "atx/vol/pricer_fitter.hpp"  // PricerFitter, FittedSurface
 #include "atx/vol/session.hpp"        // VolaSession, SessionInputs, SessionDiagnostics
@@ -36,27 +36,36 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 }
 } // namespace
 
-Result<double> earnings_implied_move(const PricedSurface &ps, const EventContext &ctx) {
+Result<EmoveSolution> earnings_implied_move_ex(const PricedSurface &ps, const EventContext &ctx) {
   if (ctx.schedule == nullptr) {
     return Err(ErrorCode::InvalidArgument, "no event schedule");
   }
   const std::int64_t now = ps.pricing().now_ts_ns;
   const std::span<const SliceContext> pillars = ps.context();
 
-  // Walk ascending-T pillars; the first adjacent pair whose event count rises
-  // (n_{i+1} > n_i) brackets the next earnings date between those two expiries.
-  for (std::size_t i = 0; i + 1 < pillars.size(); ++i) {
-    const double T1 = pillars[i].T;
-    const double T2 = pillars[i + 1].T;
-    const std::size_t n1 = count_events_at(*ctx.schedule, now, T1);
-    const std::size_t n2 = count_events_at(*ctx.schedule, now, T2);
-    if (n2 > n1) {
-      const double w1 = ps.total_variance(ps.forward_at(T1), T1);
-      const double w2 = ps.total_variance(ps.forward_at(T2), T2);
-      return implied_emove(w1, T1, n1, w2, T2, n2);
-    }
+  // E3a / AN-P1-3. This used to scan for the FIRST adjacent pair whose event
+  // count rose and hand that single bracket to `implied_emove` — a two-pillar
+  // solve that forces one flat censored variance across the bracket, so the
+  // censored term structure inside it aliased straight into eMove² (the sweep's
+  // AAPL case: +173% when no near expiry spans the event). Now EVERY fitted
+  // pillar is offered to `implied_emove_joint`, which runs the identified
+  // {eMove, st, lt, decay} fit when the pillar set supports it and falls back to
+  // exactly the old two-pillar bracket when it does not.
+  std::vector<CensorObsInput> obs;
+  obs.reserve(pillars.size());
+  for (const SliceContext &p : pillars) {
+    CensorObsInput o;
+    o.T = p.T;
+    o.w_dirty = ps.total_variance(ps.forward_at(p.T), p.T);
+    o.n = count_events_at(*ctx.schedule, now, p.T);
+    obs.push_back(o);
   }
-  return Err(ErrorCode::NotFound, "no earnings bracket in fitted expiries");
+  return implied_emove_joint(obs);
+}
+
+Result<double> earnings_implied_move(const PricedSurface &ps, const EventContext &ctx) {
+  ATX_TRY(const EmoveSolution sol, earnings_implied_move_ex(ps, ctx));
+  return Ok(sol.emove);
 }
 
 Result<SurfaceAnalytics> compute_surface_analytics(const PricedSurface &ps,
