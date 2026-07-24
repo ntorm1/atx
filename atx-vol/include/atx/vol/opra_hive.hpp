@@ -18,18 +18,25 @@
 //   * `spec.symbols` non-empty  — load exactly those underliers, in the given
 //     order, for every date (a date whose file lacks a requested symbol yields
 //     an Err entry for it, exactly as the table seam reports a zero-match filter).
-//   * `spec.symbols` empty      — DISCOVER: each present date contributes the
-//     sorted distinct `underlying` set found in its own file. Discovery runs in
-//     a SERIAL pre-pass (reads each present file's `underlying` column once) so
-//     entry order is globally deterministic before any parallel work; the read
-//     is materialized once per date and reused by the panel pass (never re-read).
+//   * `spec.symbols` empty      — DISCOVER: the effective symbol list is the
+//     sorted distinct UNION of `underlying` across every present, readable date,
+//     resolved in a SERIAL pre-pass (one materialized read per date, cached and
+//     reused by the panel pass — never re-read). EVERY date then spans the FULL
+//     union, so the entry grid is rectangular and globally deterministic
+//     (date-major × union), independent of which date carries which symbol. A
+//     symbol in the union but ABSENT from a given date's file is a VISIBLE
+//     coverage hole: it is fed through the table seam exactly like an explicit
+//     request and returns a zero-match `Err` (bumping `n_error`), never a silent
+//     gap. If NO date in range is readable the union is empty and each date
+//     contributes a single anonymous entry (see below).
 //
 // ## Missing / corrupt dates (non-fatal)
 //
-//   * A calendar date with no `date=<d>/data.parquet` is NON-fatal: with an
-//     explicit symbol list it yields one `Err(NotFound)` per requested symbol;
-//     under discovery (empty `symbols`) it contributes a single anonymous
-//     `Err(NotFound)` entry (`symbol == ""`). Either way `n_missing` bumps.
+//   * A calendar date with no `date=<d>/data.parquet` is NON-fatal: it yields one
+//     `Err(NotFound)` per EFFECTIVE symbol (the requested list, or the discovered
+//     union), bumping `n_missing`. Only in the degenerate discovery case where the
+//     union is empty does a missing date contribute a single anonymous
+//     `Err(NotFound)` (`symbol == ""`).
 //   * A date file that EXISTS but fails to read/parse (corrupt/truncated) is NOT
 //     missing: each of that date's cells gets the loader's `Err(...)` and bumps
 //     `n_error`. The whole batch is still `Ok`.

@@ -11,7 +11,7 @@
 #include <utility>
 #include <vector>
 
-#include "atx/core/error.hpp"        // Ok, Err, ErrorCode
+#include "atx/core/error.hpp"        // Ok, Err, ErrorCode, Error
 #include "atx/core/io/parquet.hpp"   // read_parquet, ParquetTable
 #include "atx/vol/opra_panel.hpp"    // OpraLoadSpec, load_opra_cbbo_from_table
 #include "atx/vol/parallel_for.hpp"  // parallel_for_dynamic (W4.3 per-date fan-out)
@@ -41,25 +41,41 @@ constexpr std::string_view kDateFileName = "data.parquet";
 
 // The sorted distinct `underlying` set of an already-read date table (discovery
 // mode). Copies the borrowed string-views into owned strings so the caller may
-// then move the table on.
-[[nodiscard]] std::vector<std::string> distinct_underlyings(const io::ParquetTable& table) {
-  std::vector<std::string> out;
+// then move the table on. Err when the column is absent OR not string-typed
+// (`strings()` fails) — the caller surfaces that as a date-level read failure
+// rather than silently dropping the date.
+[[nodiscard]] Result<std::vector<std::string>> distinct_underlyings(const io::ParquetTable& table) {
   const auto und = table.strings("underlying");
   if (!und.has_value()) {
-    return out; // caller checks the column separately; empty => nothing to load
+    return Err(und.error());
   }
+  std::vector<std::string> out;
   out.reserve(und->size());
   for (const std::string_view sv : *und) {
     out.emplace_back(sv);
   }
   std::sort(out.begin(), out.end());
   out.erase(std::unique(out.begin(), out.end()), out.end());
-  return out;
+  return Ok(std::move(out));
 }
 
-// One present date's read + per-symbol split, deferred to the parallel pass.
-// `table` is engaged only in discovery mode (the cached pre-pass read, reused
-// here); in explicit mode it is nullopt and the worker performs the single read.
+// One calendar date's pre-pass state. In discovery mode a present, readable file
+// is read ONCE here (to contribute to the union) and its table is cached in
+// `table` for reuse by the panel pass; an unreadable present file records the
+// failure in `read_error` so every one of its cells surfaces it.
+struct DateInfo {
+  std::string date;
+  std::string snapshot_iso;
+  std::int64_t snapshot_ts_ns{0};
+  std::string path;
+  bool present{false};
+  std::optional<io::ParquetTable> table{};    // discovery cached read (present & OK)
+  std::optional<atx::core::Error> read_error{}; // discovery: present but unreadable
+};
+
+// One present date's per-symbol split, deferred to the parallel pass. `table` is
+// engaged only in discovery mode (the cached pre-pass read, reused here); in
+// explicit mode it is nullopt and the worker performs the single read.
 struct SymbolLoad {
   std::size_t slot;  // index into result.entries this load finalizes (disjoint)
   OpraLoadSpec load; // fully resolved read spec (built serially, read in parallel)
@@ -98,96 +114,127 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec& spec, const OpraBatch
 
   const bool discover = spec.symbols.empty();
 
-  OpraBatchResult result;
+  // ── Phase A: enumerate the calendar range; discover the symbol UNION ───────
+  // Every date is stat'd. In discovery mode each PRESENT file is read ONCE here
+  // (to contribute its underlyings to the union U) and the table is cached for
+  // reuse by the panel pass — one materialized read per date. The union is
+  // resolved BEFORE any entries are built so the entry grid is rectangular and
+  // globally deterministic (date-major × the sorted union), independent of which
+  // date carries which symbol.
   std::unordered_map<std::string, std::int64_t> snap_ts_cache;
-  std::vector<DateReadTask> tasks;
-
-  // ── Serial pre-pass: enumerate dates, size entries, resolve market inputs ──
-  // Missing/quarantined cells are finalized in place here; present dates queue a
-  // DateReadTask. In discovery mode this pass also performs the ONE materialized
-  // read per present date (to discover its underlyings) and caches it for reuse
-  // by the panel pass. Entry order is fixed here (date-major, then symbol-major),
-  // BEFORE any parallel work, so it is independent of worker count.
+  std::vector<DateInfo> days;
+  std::vector<std::string> discovered; // accumulates U (unsorted, with dups)
   for (std::int64_t serial = serial_lo; serial <= serial_hi; ++serial) {
-    const std::string date = obd::format_civil(obd::civil_from_days(serial));
-    const std::string snapshot_iso = date + spec.snapshot_suffix;
-    const std::int64_t snap_ts = obd::memo_iso_to_ns(snap_ts_cache, snapshot_iso);
-    const std::string path = hive_date_path(spec.root_dir, date);
+    DateInfo di;
+    di.date = obd::format_civil(obd::civil_from_days(serial));
+    di.snapshot_iso = di.date + spec.snapshot_suffix;
+    di.snapshot_ts_ns = obd::memo_iso_to_ns(snap_ts_cache, di.snapshot_iso);
+    di.path = hive_date_path(spec.root_dir, di.date);
 
     std::error_code ec;
-    const bool present = fs::exists(fs::path(path), ec) && !ec;
+    di.present = fs::exists(fs::path(di.path), ec) && !ec;
 
-    // Finalize one absent/anonymous entry in place (no read queued).
-    const auto emit_finalized = [&](std::string symbol, tl::unexpected<atx::core::Error> err) {
-      OpraBatchEntry entry;
-      entry.symbol = std::move(symbol);
-      entry.date = date;
-      entry.path = path;
-      entry.snapshot_ts_ns = snap_ts;
-      entry.panel = std::move(err);
-      result.entries.push_back(std::move(entry));
-    };
-
-    if (!present) {
-      // Absent file: NotFound. Explicit symbols -> one NotFound per requested
-      // symbol; discovery -> a single anonymous NotFound entry.
-      if (discover) {
-        emit_finalized("", Err(ErrorCode::NotFound, "no parquet at '" + path + "'"));
+    if (discover && di.present) {
+      Result<io::ParquetTable> tbl = io::read_parquet(di.path);
+      if (!tbl.has_value()) {
+        di.read_error = tbl.error(); // present but unreadable (corrupt/truncated)
+      } else if (!tbl->schema().find("underlying")) {
+        di.read_error = atx::core::Error{
+            ErrorCode::InvalidArgument, "hive date file '" + di.path + "' has no 'underlying' column"};
       } else {
-        for (const std::string& symbol : spec.symbols) {
-          emit_finalized(symbol, Err(ErrorCode::NotFound, "no parquet at '" + path + "'"));
+        Result<std::vector<std::string>> syms = distinct_underlyings(*tbl);
+        if (!syms.has_value()) {
+          di.read_error = syms.error(); // e.g. `underlying` present but not string-typed
+        } else {
+          for (std::string& s : *syms) {
+            discovered.push_back(std::move(s));
+          }
+          di.table = std::move(*tbl);
         }
       }
+    }
+    days.push_back(std::move(di));
+  }
+
+  // Effective symbol list: the requested symbols (explicit, given order) or the
+  // sorted distinct union across all present, readable dates (discovery).
+  std::vector<std::string> effective;
+  if (discover) {
+    std::sort(discovered.begin(), discovered.end());
+    discovered.erase(std::unique(discovered.begin(), discovered.end()), discovered.end());
+    effective = std::move(discovered);
+  } else {
+    effective = spec.symbols;
+  }
+  // Degenerate discovery: no symbols were discoverable from ANY date (the range
+  // holds no readable file). There is no union to make a grid over, so each date
+  // contributes a single anonymous entry rather than being silently dropped.
+  const bool degenerate = discover && effective.empty();
+
+  // ── Phase B: build entries date-major × `effective` (rectangular) ─────────
+  // Missing/quarantined/coverage-hole cells are finalized in place; present,
+  // readable cells queue a load. A symbol absent from a present date's file is a
+  // VISIBLE coverage hole: it is fed through the table seam like any other and
+  // returns a zero-match Err (counted in n_error) — exactly as an explicit
+  // request for that symbol would. Entry order is fixed here, before any parallel
+  // work, so it is independent of worker count.
+  OpraBatchResult result;
+  std::vector<DateReadTask> tasks;
+  for (DateInfo& di : days) {
+    if (degenerate) {
+      OpraBatchEntry entry;
+      entry.symbol = "";
+      entry.date = di.date;
+      entry.path = di.path;
+      entry.snapshot_ts_ns = di.snapshot_ts_ns;
+      if (!di.present) {
+        entry.panel = Err(ErrorCode::NotFound, "no parquet at '" + di.path + "'");
+      } else if (di.read_error.has_value()) {
+        entry.panel = Err(*di.read_error);
+      } else {
+        entry.panel = Err(ErrorCode::Unavailable,
+                          "hive date file '" + di.path + "' has no underlyings to discover");
+      }
+      result.entries.push_back(std::move(entry));
       continue;
     }
 
-    // Present: determine this date's symbol list (and, in discovery mode, cache
-    // the single read).
-    std::vector<std::string> date_symbols;
-    std::optional<io::ParquetTable> cached;
-    if (discover) {
-      Result<io::ParquetTable> tbl = io::read_parquet(path);
-      if (!tbl.has_value()) {
-        // Present but unreadable: cannot discover -> a single anonymous error
-        // entry (NOT NotFound; the file exists). Counts toward n_error.
-        emit_finalized("", Err(tbl.error()));
-        continue;
-      }
-      if (!tbl->schema().find("underlying")) {
-        emit_finalized("", Err(ErrorCode::InvalidArgument,
-                               "hive date file '" + path + "' has no 'underlying' column"));
-        continue;
-      }
-      date_symbols = distinct_underlyings(*tbl);
-      cached = std::move(*tbl);
-    } else {
-      date_symbols = spec.symbols; // explicit, given order
-    }
-
-    // Build entries + queue the reads for this present date.
     DateReadTask task;
-    task.path = path;
-    if (cached.has_value()) {
-      task.table = std::move(cached);
+    task.path = di.path;
+    if (di.table.has_value()) {
+      task.table = std::move(di.table); // discovery cached read, reused below
     }
-    for (const std::string& symbol : date_symbols) {
+    for (const std::string& symbol : effective) {
       const std::size_t slot = result.entries.size();
       OpraBatchEntry entry;
       entry.symbol = symbol;
-      entry.date = date;
-      entry.path = path;
-      entry.snapshot_ts_ns = snap_ts;
+      entry.date = di.date;
+      entry.path = di.path;
+      entry.snapshot_ts_ns = di.snapshot_ts_ns;
+
+      if (!di.present) {
+        // Absent file: NotFound for every symbol of the (rectangular) grid.
+        entry.panel = Err(ErrorCode::NotFound, "no parquet at '" + di.path + "'");
+        result.entries.push_back(std::move(entry));
+        continue;
+      }
+      if (di.read_error.has_value()) {
+        // Discovery: the whole date was unreadable -> every cell surfaces it.
+        entry.panel = Err(*di.read_error);
+        result.entries.push_back(std::move(entry));
+        continue;
+      }
 
       OpraLoadSpec load;
-      load.path = path;
+      load.path = di.path;
       load.underlying = symbol;
-      load.snapshot_iso = snapshot_iso;
+      load.snapshot_iso = di.snapshot_iso;
       load.r = spec.r;
       load.provenance_mode = spec.provenance_mode;
 
       const obd::MarketResolve mr =
-          obd::resolve_market_inputs(spec.market_inputs, spec.missing_market_inputs, date,
-                                        symbol, spec.yc_pillar_t, spec.yc_pillar_r, entry, load);
+          obd::resolve_market_inputs(spec.market_inputs, spec.missing_market_inputs, di.date,
+                                     symbol, spec.yc_pillar_t, spec.yc_pillar_r, entry, load);
       if (mr.kind == obd::MarketResolveKind::Fatal) {
         return Err(ErrorCode::Unavailable, mr.message);
       }
@@ -208,7 +255,8 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec& spec, const OpraBatch
   // Each task owns a DISJOINT set of pre-sized entry slots and writes only its
   // own. The date file is read exactly once per task — the reused discovery read
   // (discovery mode) or a fresh read here (explicit mode) — then split per
-  // underlying via the pure `load_opra_cbbo_from_table` seam. read_parquet /
+  // underlying via the pure `load_opra_cbbo_from_table` seam (a symbol absent
+  // from the table yields a zero-match Err for that slot). read_parquet /
   // LazyParquet hold no shared mutable state (distinct files, a fresh per-call
   // reader), so the outcome is independent of worker count / claim order.
   parallel_for_dynamic(tasks.size(), spec.n_threads, [&](std::size_t k) {
@@ -222,8 +270,8 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec& spec, const OpraBatch
     }
     Result<io::ParquetTable> fresh = io::read_parquet(task.path);
     if (!fresh.has_value()) {
-      // Present-but-unreadable date: every requested symbol for it errors (not
-      // NotFound — the file exists), so the date lands in n_error, not n_missing.
+      // Present-but-unreadable date (explicit mode): every requested symbol for it
+      // errors (not NotFound — the file exists), so it lands in n_error.
       for (const SymbolLoad& sl : task.loads) {
         result.entries[sl.slot].panel = Err(fresh.error());
       }
@@ -238,7 +286,8 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec& spec, const OpraBatch
   // Counted FROM the completed slots (never mutated in the parallel loop), so the
   // counters are independent of worker count / completion order and partition the
   // entries: n_loaded + n_missing + n_error == n_total. A NotFound panel is a
-  // missing file; any other Err (quarantine / read / load failure) is n_error.
+  // missing file; any other Err (quarantine / read / load / coverage-hole
+  // failure) is n_error.
   std::size_t done = 0;
   for (const OpraBatchEntry& entry : result.entries) {
     if (entry.panel.has_value()) {

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -414,6 +415,95 @@ TEST(OpraHive, CorruptDateFileCountsError) {
     EXPECT_NE(e->panel.error().code(), ahv::ErrorCode::NotFound) << sym; // present, not missing
   }
   fs::remove_all(root);
+}
+
+// Non-uniform hive: one date's file is missing a symbol that OTHER dates carry.
+// Discovery must resolve the 3-symbol UNION, lay out a RECTANGULAR grid over it,
+// and make the absent (date, symbol) cell a VISIBLE Err (n_error) — not a silent
+// hole. Determinism must still hold on the non-uniform case (1 vs 8 threads).
+TEST(OpraHive, DiscoversUnionAcrossNonUniformDates) {
+  const fs::path root = fs::temp_directory_path() / "atx_opra_hive_nonuniform";
+  const fs::path tmp2 = fs::temp_directory_path() / "atx_opra_hive_nonuniform_d2";
+  fs::remove_all(root);
+  fs::remove_all(tmp2);
+
+  // Uniform base (3 dates × AAA/BBB/CCC), then rewrite 2026-07-02 with ONLY
+  // {AAA, CCC} so BBB is a coverage hole on that date (present on the others).
+  tsupport::SyntheticHiveSpec full;
+  full.dates = {"2026-07-01", "2026-07-02", "2026-07-03"};
+  tsupport::write_synthetic_hive_v2(root, full);
+
+  tsupport::SyntheticHiveSpec d2only;
+  d2only.dates = {"2026-07-02"};
+  d2only.symbols = {"AAA", "CCC"};
+  tsupport::write_synthetic_hive_v2(tmp2, d2only);
+
+  const fs::path d2_dst = root / "date=2026-07-02" / "data.parquet";
+  const fs::path d2_src = tmp2 / "date=2026-07-02" / "data.parquet";
+  ASSERT_TRUE(fs::exists(d2_src));
+  std::error_code fec;
+  fs::remove(d2_dst, fec);
+  fs::copy_file(d2_src, d2_dst, fec);
+  ASSERT_FALSE(fec) << fec.message();
+
+  ahv::OpraHiveSpec spec;
+  spec.root_dir = root.string();
+  spec.date_lo = "2026-07-01";
+  spec.date_hi = "2026-07-03";
+  spec.symbols = {}; // discover -> union across dates
+  spec.r = 0.03;
+
+  spec.n_threads = 1;
+  const auto serial = ahv::load_opra_hive(spec);
+  spec.n_threads = 8;
+  const auto parallel = ahv::load_opra_hive(spec);
+  ASSERT_TRUE(serial.has_value()) << serial.error().to_string();
+  ASSERT_TRUE(parallel.has_value()) << parallel.error().to_string();
+
+  // Rectangular grid over the 3-symbol union: 3 dates × 3 = 9 cells; the one
+  // coverage hole (2026-07-02, BBB) is a visible error.
+  EXPECT_EQ(serial->n_total, std::size_t{9});
+  EXPECT_EQ(serial->n_loaded, std::size_t{8});
+  EXPECT_EQ(serial->n_missing, std::size_t{0});
+  EXPECT_EQ(serial->n_error, std::size_t{1});
+  ASSERT_EQ(serial->entries.size(), std::size_t{9});
+
+  const std::vector<std::string> u = {"AAA", "BBB", "CCC"};
+  const std::vector<std::string> dts = {"2026-07-01", "2026-07-02", "2026-07-03"};
+  for (std::size_t d = 0; d < dts.size(); ++d) {
+    for (std::size_t s = 0; s < u.size(); ++s) {
+      const std::size_t i = d * 3 + s; // rectangular indexing must hold
+      EXPECT_EQ(serial->entries[i].date, dts[d]) << "entry " << i;
+      EXPECT_EQ(serial->entries[i].symbol, u[s]) << "entry " << i;
+    }
+  }
+
+  // The coverage hole is an Err entry, NOT NotFound (the file is present).
+  const ahv::OpraBatchEntry *hole = find_cell(*serial, "BBB", "2026-07-02");
+  ASSERT_NE(hole, nullptr);
+  ASSERT_FALSE(hole->panel.has_value());
+  EXPECT_NE(hole->panel.error().code(), ahv::ErrorCode::NotFound);
+  // The two symbols that ARE on that date loaded fine.
+  for (const std::string &sym : {"AAA", "CCC"}) {
+    const ahv::OpraBatchEntry *e = find_cell(*serial, sym, "2026-07-02");
+    ASSERT_NE(e, nullptr) << sym;
+    EXPECT_TRUE(e->panel.has_value())
+        << sym << ": " << (e->panel.has_value() ? "" : e->panel.error().to_string());
+  }
+
+  // Determinism holds on the non-uniform hive.
+  EXPECT_EQ(serial->n_loaded, parallel->n_loaded);
+  EXPECT_EQ(serial->n_error, parallel->n_error);
+  ASSERT_EQ(serial->entries.size(), parallel->entries.size());
+  for (std::size_t i = 0; i < serial->entries.size(); ++i) {
+    EXPECT_EQ(serial->entries[i].symbol, parallel->entries[i].symbol) << "entry " << i;
+    EXPECT_EQ(serial->entries[i].date, parallel->entries[i].date) << "entry " << i;
+    EXPECT_EQ(serial->entries[i].panel.has_value(), parallel->entries[i].panel.has_value())
+        << "entry " << i;
+  }
+
+  fs::remove_all(root);
+  fs::remove_all(tmp2);
 }
 
 } // namespace
