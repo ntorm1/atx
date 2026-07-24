@@ -2281,6 +2281,11 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
 
   RunConfig serial_cfg;
   serial_cfg.price.n_threads = 1u;
+  // WS-F F1(c): the RunConfig default is now UnpricedLotPolicy::Error. This
+  // scoreboard deliberately drives the below-minimum-survivor regime (the final
+  // date drops 4 of 5 names) and asserts the EXCLUSION counts below, so it must
+  // opt into the lenient policy explicitly.
+  serial_cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
   DispersionStrategy serial_strategy{universe, dispersion_cfg};
   auto serial = run_backtest(*clock, serial_strategy, serial_cfg);
   ASSERT_TRUE(serial.has_value()) << serial.error().to_string();

@@ -348,6 +348,10 @@ private:
     return Err(ErrorCode::InvalidArgument,
                "run_backtest: borrow_rate must be finite and nonnegative");
   }
+  if (cfg.reconcile_nav && !(std::isfinite(cfg.reconcile_nav_tol) && cfg.reconcile_nav_tol > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: reconcile_nav_tol must be finite and positive");
+  }
   return Ok();
 }
 
@@ -532,14 +536,21 @@ public:
   // the pre-B3 overlay (same uid order, same per-uid frame-order delta sum, same
   // cash accumulation order).
   //
+  // WS-F F1(a) (BT-P1-3): `spot_of` returns Result<double> and this pass returns
+  // Status, so a uid with no base surface FAILS CLOSED instead of trading at spot
+  // 0.0. The old signature returned a bare double whose missing-surface value was
+  // 0.0, which made `cash -= shares_to_trade * 0.0` flatten a residual share
+  // position for FREE and left the ledger at zero with no error and no flag.
+  //
   // Steady-state allocation-free: the per-uid delta aggregate and the dedup set are
   // held as DENSE, generation-STAMPED vectors (not node-based unordered_map/set that
   // reallocate a node per key on every clear()+reinsert). A per-pass `generation_`
   // bump invalidates last pass's stamps in O(1) with no clears, so after warm-up
   // (every uid resident in `scratch_index_`) the pass performs no heap allocation.
   template <typename SpotOf>
-  void hedge_daily(const std::vector<Lot> &lots, const PriceFrame &frame, double band,
-                   double hedge_slippage_bps, SpotOf &&spot_of, double &cash, double &cost) {
+  [[nodiscard]] Status hedge_daily(const std::vector<Lot> &lots, const PriceFrame &frame,
+                                   double band, double hedge_slippage_bps, SpotOf &&spot_of,
+                                   double &cash, double &cost) {
     ++generation_;
     order_.clear(); // vector clear keeps capacity (no per-element deallocation)
     // 1. Aggregate Ok option delta per uid in ONE frame pass (frame order per uid).
@@ -576,12 +587,17 @@ public:
       const double net = option_delta + get(uid);
       if (std::fabs(net) > band) {
         const double shares_to_trade = -net;
-        const double spot = spot_of(uid);
+        const Result<double> spot_res = spot_of(uid);
+        if (!spot_res) {
+          return Err(spot_res.error());
+        }
+        const double spot = *spot_res;
         cost += std::fabs(shares_to_trade) * spot * (hedge_slippage_bps / 1.0e4);
         cash -= shares_to_trade * spot;
         add(uid, shares_to_trade);
       }
     }
+    return Ok();
   }
 
 private:
@@ -1821,6 +1837,55 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     out.n_unpriced_greeks.push_back(n_unpriced_greeks);
   };
 
+  // ── F1(d) NAV-vs-liquidation reconciliation (RunConfig::reconcile_nav) ──────
+  //
+  // NAV is a cumulative flow sum. This recomputes the book's liquidation value
+  // from an INDEPENDENT set of inputs — the cash ledger, the row's repriced book
+  // PV, the share ledger marked at this row's spots — and anchors it so it is
+  // directly comparable to NAV (which starts at 0 while liquidation starts at
+  // `initial_cash`). The only term that is not directly observable in cash or a
+  // mark is financing that accrued to NAV without moving cash (borrow + shares
+  // carry), so it is carried as a running total.
+  //
+  // Every trade the engine books is liquidation-NEUTRAL by construction (a hedge
+  // moves cash and share MTM by the same notional; a roll-close moves cash and
+  // book PV by the same mark; an entry at its own model mark likewise), so any
+  // deviation is a genuine accounting leak: excluded held-lot PnL, a share
+  // position that went unmarked, a settlement whose surface vanished, or a fill
+  // priced away from the mark the book is carried at.
+  double financing_noncash_total = 0.0;
+  const auto liquidation_value = [&](const MarketSnapshot &snap,
+                                     const PriceTotals &book_totals) -> double {
+    double shares_mtm = 0.0;
+    for (const auto &[uid, n] : hedge_ledger.entries()) {
+      const SurfaceRef s = snap.find(uid);
+      if (s == nullptr) {
+        continue; // unvaluable; shows up as drift, which is the point
+      }
+      shares_mtm += n * s->pricing().S;
+    }
+    return (cash - cfg.financing.initial_cash) + book_totals.pv + shares_mtm +
+           financing_noncash_total;
+  };
+  const auto reconcile_row = [&](const std::string &date, double nav_v,
+                                 const PriceTotals &book_totals,
+                                 const MarketSnapshot &snap) -> Status {
+    if (!cfg.reconcile_nav) {
+      return Ok();
+    }
+    const double liq = liquidation_value(snap, book_totals);
+    out.nav_liquidation.push_back(liq);
+    const double drift = liq - nav_v;
+    if (!(std::fabs(drift) <= cfg.reconcile_nav_tol)) {
+      return Err(ErrorCode::Internal,
+                 "run_backtest: NAV reconciliation failed on " + date + " (nav=" +
+                     std::to_string(nav_v) + ", liquidation=" + std::to_string(liq) +
+                     ", drift=" + std::to_string(drift) +
+                     ", tol=" + std::to_string(cfg.reconcile_nav_tol) + ")");
+    }
+    return Ok();
+  };
+
   // Signal series: names captured on the first recorded row, then one value per
   // recorded row per series (NaN when a name is absent that row).
   bool sig_init = false;
@@ -1982,13 +2047,20 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     // per-uid whole-frame rescan (see HedgeLedger::hedge_daily).
     if (hedge_fires && current_risk != nullptr) {
       ATX_VOL_PROFILE_SCOPE(HedgeRisk);
-      hedge_ledger.hedge_daily(
+      // F1(a): no surface for a uid the hedge wants to trade => hard error. The
+      // pre-F1 lambda returned 0.0 here and the pass filled at spot 0.0.
+      ATX_TRY_VOID(hedge_ledger.hedge_daily(
           book.lots, *current_risk, hedge_spec.band, cfg.frictions.hedge_slippage_bps,
-          [&base_snap](std::uint32_t uid) -> double {
+          [&base_snap](std::uint32_t uid) -> Result<double> {
             const SurfaceRef surface = base_snap.find(uid);
-            return surface != nullptr ? surface->pricing().S : 0.0;
+            if (surface == nullptr) {
+              return Err(ErrorCode::NotFound,
+                         "run_backtest: no surface for delta hedge on uid=" + std::to_string(uid) +
+                             " (share fill would price at spot 0.0)");
+            }
+            return Ok(surface->pricing().S);
           },
-          cash, ex.cost);
+          cash, ex.cost));
     }
 
     cash -= ex.cost; // realized frictions hit cash at fill
@@ -2060,6 +2132,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     push_row(refs[0].date, base->ts_ns(), nav, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
              0.0, 0.0, ex->cost, nav, cash, g_delta, g->total, ex->turnover_notional,
              ex->turnover_vega, book.lots.size(), 0.0, static_cast<double>(g->n_unpriced));
+    ATX_TRY_VOID(reconcile_row(refs[0].date, nav, g->total, *base));
     record_signals(*base);
   }
 
@@ -2112,6 +2185,13 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
         (static_cast<double>(shifted->ts_ns()) - static_cast<double>(base->ts_ns())) / kNsPerYear;
     double shares_pnl = 0.0;
     double financing = 0.0;
+    // F1(d): financing credited to NAV but NOT to the cash ledger (borrow + shares
+    // carry). The cash-carry leg below grows `cash` itself, so it must NOT be
+    // accumulated here or the reconciliation would double-count it.
+    double financing_noncash_step = 0.0;
+    // F1(b): hedge-share ledger entries this step could not value (base or shifted
+    // surface absent with a non-zero position).
+    std::uint32_t n_unpriced_shares = 0;
     if (cfg.financing.finance_premium) {
       // Backing-agnostic (WS-ZC1): index 0 is the first archive-order surface whether
       // this snapshot owns its surfaces or borrows mapped views.
@@ -2124,19 +2204,36 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       const SurfaceRef bs = base->find(uid);
       const SurfaceRef ss = shifted->find(uid);
       if (bs == nullptr || ss == nullptr) {
+        // F1(b) (BT-P1-3): shares held across a surface gap used to be skipped in
+        // SILENCE — the position's move over the step vanished from NAV with no
+        // count, no flag and no error, and reappeared as an unexplained level
+        // shift when the surface came back. A flat (n == 0) ledger slot carries no
+        // economics, so only a live position is a valuation failure.
+        if (n != 0.0) {
+          if (cfg.unpriced == UnpricedLotPolicy::Error) {
+            return Err(ErrorCode::NotFound,
+                       "run_backtest: hedge share position on uid=" + std::to_string(uid) +
+                           " has no surface this step (shares=" + std::to_string(n) + ")");
+          }
+          ++n_unpriced_shares;
+        }
         continue;
       }
       const double Sb = bs->pricing().S;
       shares_pnl += n * (ss->pricing().S - Sb);                      // shares held over the step
       const double short_amt = std::max(0.0, -n);                    // |min(shares,0)|
-      financing += -cfg.financing.borrow_rate * short_amt * Sb * dt; // borrow (0 when rate 0)
+      const double borrow = -cfg.financing.borrow_rate * short_amt * Sb * dt; // 0 when rate 0
+      financing += borrow;
+      financing_noncash_step += borrow;
       if (cfg.financing.shares_carry) {
         // Buying shares has already reduced the financed cash balance, so cash
         // carry owns the funding cost when enabled. Charging r here too would
         // count it twice. Without cash financing, retain the standalone (q-r)
         // total-carry shortcut.
         const double funding_rate = cfg.financing.finance_premium ? 0.0 : bs->pricing().r;
-        financing += n * (bs->q_eff_at(0.25) - funding_rate) * Sb * dt;
+        const double carry = n * (bs->q_eff_at(0.25) - funding_rate) * Sb * dt;
+        financing += carry;
+        financing_noncash_step += carry;
       }
     }
 
@@ -2204,7 +2301,9 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     b_cost += ex->cost;
     b_turn_notl += ex->turnover_notional;
     b_turn_vega += ex->turnover_vega;
-    b_nunpriced += static_cast<double>(step->n_unpriced);
+    // F1(b): unpriced hedge-share positions join the row's exclusion count.
+    b_nunpriced += static_cast<double>(step->n_unpriced) + static_cast<double>(n_unpriced_shares);
+    financing_noncash_total += financing_noncash_step;
 
     // 7. Record @ granularity: book greeks (net delta incl. shares) + B2 columns.
     const bool is_last = (i + 1 == refs.size());
@@ -2229,6 +2328,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
                b_theta, b_rho, b_charm, b_unexpl, b_settle, b_shares, b_fin, b_cost, nav, cash,
                g_delta, g->total, b_turn_notl, b_turn_vega, book.lots.size(), b_nunpriced,
                static_cast<double>(g->n_unpriced));
+      ATX_TRY_VOID(reconcile_row(refs[i].date, nav, g->total, *base));
       record_signals(*base);
       b_total = b_delta = b_gamma = b_vega = b_vanna = b_volga = 0.0;
       b_theta = b_rho = b_charm = b_unexpl = b_settle = 0.0;
