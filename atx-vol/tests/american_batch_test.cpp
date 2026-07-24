@@ -1320,6 +1320,75 @@ TEST(AmericanCallGreeksBatchAvx2, MatchesScalarAl) {
   EXPECT_LT(mc, 2e-4) << "charm";
 }
 
+// FIX-1 / F1 (rev-ws-g M1-1): the A9 unrequested-column zeroing must apply to the CALL
+// batch's scalar-patch path exactly as it does to the put batch's.
+//
+// The merge that produced this file's trunk took the A9 zeroing from one parent (which had
+// only the put wrapper) and the call wrapper from the other (which had no zeroing), so the
+// union lost the pairing. Consequence on a live path: solve_pnl_uniques sets
+// base_needs.rho = (dr != 0.0), so on an ordinary no-rate-shift P&L step an AVX2-handled
+// call lane returns rho == 0 while a scalar-patched call lane returns the FD oracle's fully
+// populated rho — the same output column carrying an ISA- and lane-dependent value.
+//
+// The batch below straddles the patch boundary deliberately: n=3 is not a multiple of the
+// 4-wide pack, and lane 1 carries q <= 0, which fails the call kernel's American-regime
+// eligibility (classify_regime(q, r)) and is therefore serviced by the scalar oracle while
+// lanes 0 and 2 are vector-handled.
+TEST(AmericanCallGreeksBatchAvx2, DeltaOnlyZeroesUnrequestedAcrossHandledAndPatchedLanes) {
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on host";
+  }
+  // Lane 0: q=0.06 > 0 -> American call, vector-handled.
+  // Lane 1: q=-0.01 <= 0 -> not American -> scalar patch (the RED-before lane).
+  // Lane 2: q=0.03 > 0 -> American call, vector-handled.
+  const std::vector<double> S = {100, 100, 100};
+  const std::vector<double> K = {100, 100, 100};
+  const std::vector<double> T = {0.5, 0.5, 0.5};
+  const std::vector<double> sig = {0.25, 0.25, 0.25};
+  const std::vector<double> r = {0.01, 0.02, 0.01};
+  const std::vector<double> q = {0.06, -0.01, 0.03};
+  const std::size_t n = S.size();
+
+  // Anti-vacuity: request the FULL bundle first and prove the patched lane genuinely
+  // carries nonzero vega/rho/charm. Without this the "== 0.0" assertions below could pass
+  // simply because the lane's greeks happen to vanish.
+  std::vector<AmericanGreeks> full(n);
+  const simd::SimdRoute froute = simd::american_call_greeks_batch(
+      S.data(), K.data(), T.data(), sig.data(), r.data(), q.data(), n, std::nullopt,
+      full.data(), simd::SimdIsa::ForceAvx2, /*need_vega=*/true, /*need_rho=*/true,
+      /*need_charm=*/true);
+  EXPECT_EQ(froute, simd::SimdRoute::Avx2);
+  EXPECT_NE(full[1].vega, 0.0) << "patched lane must have a nonzero vega when requested";
+  EXPECT_NE(full[1].rho, 0.0) << "patched lane must have a nonzero rho when requested";
+  EXPECT_NE(full[1].charm, 0.0) << "patched lane must have a nonzero charm when requested";
+
+  // Delta-only request: no vega, no rho, no charm.
+  std::vector<AmericanGreeks> g(n);
+  const simd::SimdRoute route = simd::american_call_greeks_batch(
+      S.data(), K.data(), T.data(), sig.data(), r.data(), q.data(), n, std::nullopt, g.data(),
+      simd::SimdIsa::ForceAvx2, /*need_vega=*/false, /*need_rho=*/false, /*need_charm=*/false);
+  EXPECT_EQ(route, simd::SimdRoute::Avx2);
+  for (std::size_t i = 0; i < n; ++i) {
+    // Requested columns finite in every lane (all three are priceable at their base).
+    EXPECT_TRUE(std::isfinite(g[i].price)) << "i=" << i;
+    EXPECT_TRUE(std::isfinite(g[i].delta)) << "i=" << i;
+    EXPECT_TRUE(std::isfinite(g[i].gamma)) << "i=" << i;
+    EXPECT_TRUE(std::isfinite(g[i].theta)) << "i=" << i;
+    // Unrequested columns are exactly 0 in EVERY lane (vector-handled AND scalar-patched).
+    EXPECT_EQ(g[i].vega, 0.0) << "i=" << i;
+    EXPECT_EQ(g[i].volga, 0.0) << "i=" << i;
+    EXPECT_EQ(g[i].vanna, 0.0) << "i=" << i;
+    EXPECT_EQ(g[i].rho, 0.0) << "i=" << i;
+    EXPECT_EQ(g[i].charm, 0.0) << "i=" << i;
+  }
+  // The scalar-patched lane still serves the REQUESTED columns from the scalar oracle.
+  const auto ref = american_greeks_al(S[1], K[1], T[1], sig[1], r[1], q[1], Side::Call,
+                                      std::nullopt);
+  ASSERT_TRUE(ref.has_value());
+  EXPECT_NEAR(g[1].delta, ref->delta, 1e-12);
+  EXPECT_NEAR(g[1].price, ref->price, 1e-12);
+}
+
 // Greeks batch: bit-identical to per-contract american_greeks_fd.
 Book make_american_greeks_book() {
   Book b;
