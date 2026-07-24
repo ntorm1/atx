@@ -599,7 +599,8 @@ struct SeedStageCounts {
 
 [[nodiscard]] SeedStageCounts
 stage_full_greek_seeds(const SurfaceSet &surfaces, std::span<const OptionContract> contracts,
-                       bool analytic, QueryExecution query_execution, bool skew_adjusted_delta,
+                       bool analytic, QueryExecution query_execution,
+                       PricedSurface::GreekNeeds greek_needs, bool skew_adjusted_delta,
                        const StickyParams &sticky, std::span<const FullGreekSeed> seeds,
                        std::vector<ContractPx> &staged, std::vector<std::uint8_t> &accepted,
                        std::vector<std::uint32_t> &seed_order,
@@ -645,6 +646,21 @@ stage_full_greek_seeds(const SurfaceSet &surfaces, std::span<const OptionContrac
       consistent = consistent && candidate_is_consistent;
     }
     if (!consistent) {
+      counts.rejected_candidates += static_cast<std::uint64_t>(std::distance(first, last));
+      continue;
+    }
+
+    // FIX-1/F2 (rev-ws-g G1 I-1): the THIRD Ok-stamp. A seed is not validated on mint
+    // -- PricedSurface::full_greek_seed gates on isfinite(price) alone, and neither
+    // seed_route_matches nor same_seed_semantics inspects finiteness -- and an ACCEPTED
+    // seed bypasses the guarded stamp entirely: it is copied straight into the frame,
+    // is_seeded() makes solve_span skip the contract, and an all-accepted batch is
+    // skipped outright. So sweep the REQUESTED columns finite here, with the same
+    // GreekNeeds semantics the price-path and P&L stamps use. A poisoned seed is
+    // rejected as a candidate rather than stamped NumericError, so the contract falls
+    // through to the ordinary solve and is re-guarded at that stamp -- a seed is only a
+    // reuse optimization, so declining to trust it is always safe.
+    if (!greeks_all_finite(representative.greeks(), greek_needs)) {
       counts.rejected_candidates += static_cast<std::uint64_t>(std::distance(first, last));
       continue;
     }
@@ -1163,8 +1179,9 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
       ATX_VOL_COUNT_N(FullGreekSeedRejectedCandidates, seeds.size());
     } else {
       const SeedStageCounts counts = stage_full_greek_seeds(
-          surfaces, contracts, analytic, opts.query_execution, opts.skew_adjusted_delta,
-          opts.sticky, seeds, w.seed_px, w.seed_accepted, w.seed_order, w.seed_candidate_matched);
+          surfaces, contracts, analytic, opts.query_execution, opts.greek_needs,
+          opts.skew_adjusted_delta, opts.sticky, seeds, w.seed_px, w.seed_accepted, w.seed_order,
+          w.seed_candidate_matched);
       (void)counts;
       ATX_VOL_COUNT_N(FullGreekSeedReuseLanes, counts.accepted_unique);
       ATX_VOL_COUNT_N(FullGreekSeedRejectedCandidates, counts.rejected_candidates);

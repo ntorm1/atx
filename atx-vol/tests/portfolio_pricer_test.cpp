@@ -3742,6 +3742,73 @@ TEST(PortfolioPricer, G1_NonFiniteBaseGreek_IsIsolatedFromPnlTotals) {
   EXPECT_EQ(f.total.n_ok, 1u);
 }
 
+// ── FIX-1 / F2 (rev-ws-g G1 I-1): the SEED-STAGING Ok-stamp must sweep too ──
+//
+// G1 guarded two PriceStatus::Ok stamp sites, but `stage_full_greek_seeds` stamps a
+// THIRD one with no finite sweep at all, and it is a complete bypass rather than a
+// redundant path: an accepted seed is copied straight into the frame, `is_seeded()`
+// makes solve_span skip the contract so the guarded stamp is never reached, and when
+// every seed is accepted the batch is skipped outright. The seed itself is not
+// validated on mint either -- PricedSurface::full_greek_seed gates only on
+// isfinite(price) -- so a NaN gamma is mintable and carries an Ok status into
+// PriceTotals, which gates on STATUS only.
+//
+// This is a shipped path, not a test seam: dispersion mints seeds, entry_risk_seeds()
+// exposes them and backtest.cpp feeds them to the pricer on every entry, so GR-P2-1
+// remains open exactly where the volume is. Same defect and same trigger as the two G1
+// tests above, driven through the seed-staging entry point instead of the solve.
+TEST(PortfolioPricerSeed, F2_NonFiniteGreekSeedDoesNotBypassTheFiniteSweep) {
+  // Kernel-level precondition (identical to G1's): a SUCCESSFUL differenced bundle
+  // with a finite mark and a non-finite gamma.
+  const auto probe = american_greeks_fd(kG1TinyS, 100.0, 0.05, 0.9, kR, 0.02, Side::Put);
+  ASSERT_TRUE(probe.has_value());
+  EXPECT_TRUE(std::isfinite(probe->price));
+  EXPECT_FALSE(std::isfinite(probe->gamma));
+
+  const PricedSurface s_norm = make_essvi(1, 3);
+  const PricedSurface s_ext = make_essvi(2, 3, /*theta_bump=*/0.0, /*S=*/kG1TinyS, kR, kNow,
+                                         /*q_eff=*/0.02, /*flat_smile=*/true);
+  const SurfaceSet surfaces = set_of({&s_norm, &s_ext});
+
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 100.0, 0.15, Side::Call}, +5.0, 100.0}, // finite Greeks
+      {/*id*/ 2, {2, 100.0, 0.05, Side::Put}, +3.0, 100.0},  // non-finite gamma
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const PriceOptions options{.n_threads = 1};
+
+  // The poisoned seed is mintable TODAY: full_greek_seed gates on isfinite(price) only.
+  auto seed = s_ext.full_greek_seed(100.0, 0.05, Side::Put, options.analytic_greeks,
+                                    options.query_execution);
+  ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
+  EXPECT_TRUE(std::isfinite(seed->greeks().price));   // finite mark ...
+  EXPECT_FALSE(std::isfinite(seed->greeks().gamma));  // ... poisoned gamma in the seed.
+  const std::array<FullGreekSeed, 1> seeds{std::move(*seed)};
+
+  const std::size_t n = pricer.portfolio().n_positions();
+  PortfolioWorkspace ws;
+  ws.reserve(pricer.portfolio().n_contracts(), n);
+  FrameStore seeded(n, /*want_greeks=*/true);
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::FullGreeks, seeded.view(), ws, options,
+                              seeds)
+                  .has_value());
+
+  EXPECT_EQ(seeded.status[0], PriceStatus::Ok);
+  // The poisoned seeded lane is quarantined (was silently Ok pre-fix): the seed is
+  // rejected, the contract falls through to the normal solve, and the guarded stamp
+  // demotes it exactly as the unseeded G1 lane above.
+  EXPECT_EQ(seeded.status[1], PriceStatus::NumericError);
+
+  // The book totals stay finite: the NaN Greek is isolated, never summed.
+  EXPECT_TRUE(std::isfinite(seeded.total.gamma));
+  EXPECT_TRUE(std::isfinite(seeded.total.delta));
+  EXPECT_TRUE(std::isfinite(seeded.total.vega));
+  EXPECT_EQ(seeded.total.n_ok, 1u); // only the normal lane contributes
+}
+
 // ── G2 (GR-F1): bucketed risk + carry column ───────────────────────────────
 
 // All-column bit-exact equality of two PriceTotals (incl. the GR-F1 dP_dq axis).
