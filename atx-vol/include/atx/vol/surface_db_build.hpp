@@ -1,7 +1,15 @@
 #pragma once
 
-// surface_db_build — auto-generation of a SurfaceDb's per-symbol fit MANIFEST
-// from a set of loaded OPRA boards, part 1: `generate_symbol_configs`.
+// surface_db_build — build a production SurfaceDb from OPRA boards, in two
+// stages that share this header:
+//
+//   1. `generate_symbol_configs` — auto-generate the manifest's per-symbol fit
+//      configuration from a set of loaded boards (below).
+//   2. `build_surface_db` — the one-call driver that chains hive load ->
+//      config generation -> streaming populate into a single create-or-open
+//      call, plus `write_build_report_csv` for its report (bottom of file).
+//
+// ── Stage 1: `generate_symbol_configs` ──────────────────────────────────────
 //
 // Where `surface_db_populate.hpp` FITS boards into partitions, this stage decides
 // HOW each symbol should be fit and writes that decision into the manifest's
@@ -21,16 +29,21 @@
 // upserts one at a time, so re-running it is deterministic. Not safe to call
 // concurrently with other mutators on the SAME `db` (they share the manifest
 // mutex, but interleaved upserts would race the skip-existing/idempotence
-// bookkeeping this stage owns).
+// bookkeeping this stage owns). `build_surface_db` is likewise single-threaded
+// at the driver level (its fits fan out internally); one build per db root.
 
+#include <cstddef>
 #include <cstdint>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
-#include "atx/vol/corpus.hpp"     // CorpusBoard
-#include "atx/vol/surface_db.hpp" // SurfaceDb, SymbolFitConfig, FitPreset
-#include "atx/vol/types.hpp"      // Result
+#include "atx/vol/corpus.hpp"             // CorpusBoard
+#include "atx/vol/opra_hive.hpp"          // OpraHiveSpec
+#include "atx/vol/surface_db.hpp"         // SurfaceDb, SymbolFitConfig, FitPreset
+#include "atx/vol/surface_db_populate.hpp" // UniversePopulateCoverage, PopulateSymbolStats
+#include "atx/vol/types.hpp"             // Result, Status
 
 namespace atx::vol {
 
@@ -92,5 +105,60 @@ struct AutoConfigReport {
 [[nodiscard]] Result<AutoConfigReport>
 generate_symbol_configs(SurfaceDb &db, std::span<const CorpusBoard> boards,
                         const AutoConfigSpec &spec);
+
+// ── Stage 2: `build_surface_db` — the one-call build driver ─────────────────
+//
+// Everything a production build needs in one call: (1) create the db at
+// `db_root` iff it has no manifest yet, else open the existing one (mirrors
+// `SurfaceDb::open`'s NotFound probe — a resumed build reuses the same root);
+// (2) load the `hive` window (`load_opra_hive`); (3) build one `CorpusBoard`
+// per SUCCESSFULLY loaded cell (missing/corrupt cells are tallied, never fit);
+// (4) `generate_symbol_configs` over those boards (`auto_config`); (5)
+// `populate_universe_streaming` them (cell-aware resume, RSS O(dates in
+// flight)) with an index leg / preset / worker budget from this spec.
+//
+// Field names/defaults are contractual (the CLI and Python bindings construct
+// this directly).
+struct SurfaceDbBuildSpec {
+  std::string db_root;         // created if absent, else opened (resume)
+  OpraHiveSpec hive;           // the hive window to load (root_dir/date span/symbols)
+  AutoConfigSpec auto_config{}; // per-symbol config-generation policy (stage 1)
+  // Numerical tier every symbol's fit runs at (passed to the populate);
+  // `auto_config.preset` seeds the manifest, this drives the populate fallback.
+  FitPreset preset{FitPreset::Populate};
+  unsigned fit_workers{0}; // 0 = auto (honors ATX_VOL_FIT_WORKERS); 1 = serial
+};
+
+// The full disposition of a `build_surface_db` call: the stage-1 config report,
+// the stage-2 populate coverage, and the DISTINCT-DATE ingest tallies. The three
+// date counters describe the hive load, not cells: `n_dates_loaded` is the number
+// of distinct dates that produced at least one board; `n_dates_missing` is the
+// number of distinct in-range dates that produced NONE (a fully absent or
+// unreadable date); `n_load_errors` is the CELL count of present-but-unparseable
+// files (the loader's `n_error`), which never reach the fit.
+struct SurfaceDbBuildReport {
+  AutoConfigReport config;
+  UniversePopulateCoverage coverage;
+  std::size_t n_dates_loaded{0};
+  std::size_t n_dates_missing{0};
+  std::size_t n_load_errors{0};
+};
+
+// Run the whole build (see `SurfaceDbBuildSpec`). Idempotent/resumable: re-running
+// over an unchanged hive re-fits ZERO (configs skip-existing, the populate's
+// cell-aware filter writes no date); a grown hive fits only the new dates. An
+// EMPTY window (un-pulled days) is a graceful success with all-zero coverage — the
+// db is still created. Top-level Err only on a malformed hive spec (`load_opra_hive`)
+// or a db config/write failure; a single unloadable/unselectable board never
+// aborts the build (it is tallied and, for config, stored disabled).
+[[nodiscard]] Result<SurfaceDbBuildReport> build_surface_db(const SurfaceDbBuildSpec &spec);
+
+// Write `r` as a two-section CSV (reuses `write_populate_stats_csv`'s formatting
+// discipline: an owned buffer flushed to a binary/truncating stream, IoError on
+// open/write failure). Section 1 is a `key,value` table of every scalar counter
+// (config.*, coverage.*, and the three date counters); section 2 is a
+// `symbol,n_attempted,n_ok,n_failed,n_disabled` row per `coverage.per_symbol`
+// entry. The first line is always the pinned header `key,value`.
+[[nodiscard]] Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view path);
 
 } // namespace atx::vol

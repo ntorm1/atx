@@ -1,16 +1,25 @@
 #include "atx/vol/surface_db_build.hpp"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "atx/core/error.hpp"
 #include "atx/vol/chain.hpp"          // OptionChain (board -> Underlying, corpus_board_fit path)
 #include "atx/vol/curve_selector.hpp" // select_curve, production_selector_config, SelectorResult
 #include "atx/vol/fit_policy.hpp"     // select_fit_policy, FitDecision
+#include "atx/vol/opra_batch.hpp"     // corpus_board_from_opra, OpraBatchEntry/Result
+#include "atx/vol/opra_hive.hpp"      // load_opra_hive, OpraHiveSpec
 #include "atx/vol/session.hpp"        // make_session_inputs, SessionInputs
+#include "atx/vol/surface_db_populate.hpp" // populate_universe_streaming, UniversePopulateSpec
 #include "atx/vol/surface_parity.hpp" // SurfaceParityInputs
 #include "atx/vol/universe.hpp"       // Underlying, Chain
 #include "atx/vol/vol_curve.hpp"      // CurveConfig (dense index recipe)
@@ -200,6 +209,155 @@ Result<AutoConfigReport> generate_symbol_configs(SurfaceDb &db, std::span<const 
 
   std::sort(report.failed_symbols.begin(), report.failed_symbols.end());
   return Ok(std::move(report));
+}
+
+// ── Stage 2: the one-call build driver + its report CSV ──────────────────────
+
+Result<SurfaceDbBuildReport> build_surface_db(const SurfaceDbBuildSpec &spec) {
+  // 1. Create-or-open. Mirror SurfaceDb::open's NotFound probe: a manifest at
+  //    the root => open (resume); absent => create. This keeps a re-run of the
+  //    build over the same root idempotent (open the db it made last time).
+  const std::filesystem::path root_path{spec.db_root};
+  const std::filesystem::path manifest_file = root_path / std::string(kSurfaceDbManifestName);
+  std::error_code exists_ec;
+  const bool manifest_present = std::filesystem::exists(manifest_file, exists_ec);
+  if (exists_ec) {
+    return Err(ErrorCode::IoError, "build_surface_db: failed to stat db_root");
+  }
+  Result<SurfaceDb> db_res =
+      manifest_present ? SurfaceDb::open(spec.db_root) : SurfaceDb::create(spec.db_root);
+  if (!db_res) {
+    return Err(db_res.error());
+  }
+  SurfaceDb db = std::move(*db_res);
+
+  // 2. Load the hive window. A missing/un-pulled window is Ok (no boards); the
+  //    ONLY top-level Err here is a malformed hive spec (empty root, bad dates).
+  Result<OpraBatchResult> loaded = load_opra_hive(spec.hive);
+  if (!loaded) {
+    return Err(loaded.error());
+  }
+
+  // 3. One board per SUCCESSFULLY loaded cell; missing/corrupt cells are tallied
+  //    and never fit. The date counters are DISTINCT dates (a date is "loaded"
+  //    when any of its cells produced a panel, "missing" when none did — so a
+  //    per-symbol coverage hole inside a present date is not a missing date).
+  //    n_load_errors is the cell count of present-but-unparseable files.
+  SurfaceDbBuildReport report;
+  std::vector<CorpusBoard> boards;
+  boards.reserve(loaded->n_loaded);
+  std::set<std::string> loaded_dates;
+  std::set<std::string> all_dates;
+  for (OpraBatchEntry &entry : loaded->entries) {
+    all_dates.insert(entry.date);
+    if (entry.panel.has_value()) {
+      loaded_dates.insert(entry.date);
+      boards.push_back(corpus_board_from_opra(entry.date, entry.symbol, std::move(*entry.panel)));
+    } else if (entry.panel.error().code() != ErrorCode::NotFound) {
+      ++report.n_load_errors; // file present but failed to parse
+    }
+  }
+  report.n_dates_loaded = loaded_dates.size();
+  report.n_dates_missing = all_dates.size() - loaded_dates.size();
+
+  // 4. Auto-generate per-symbol manifest configs from the loaded boards. Runs
+  //    BEFORE the populate so its richer per-board family pin is in place; the
+  //    populate's own seeding then finds every symbol already configured. An
+  //    empty board set is an all-zero report (Ok).
+  Result<AutoConfigReport> cfg = generate_symbol_configs(db, boards, spec.auto_config);
+  if (!cfg) {
+    return Err(cfg.error());
+  }
+  report.config = std::move(*cfg);
+
+  // 5. Cell-aware streaming populate. The index leg / preset / worker budget come
+  //    from this spec; an empty board set is a graceful all-zero no-op.
+  UniversePopulateSpec pspec;
+  pspec.index_symbol = spec.auto_config.index_symbol;
+  pspec.preset = spec.preset;
+  pspec.fit_workers = spec.fit_workers;
+  Result<UniversePopulateCoverage> cov = populate_universe_streaming(db, boards, pspec);
+  if (!cov) {
+    return Err(cov.error());
+  }
+  report.coverage = std::move(*cov);
+
+  return Ok(std::move(report));
+}
+
+namespace {
+
+// CSV scalar formatting — an independent small twin of surface_db_populate.cpp's
+// fmt helpers (those are TU-private there), keeping this file's report writer
+// self-contained rather than coupling the two.
+[[nodiscard]] std::string fmt_u32(std::uint32_t v) {
+  char buf[16];
+  const int len = std::snprintf(buf, sizeof buf, "%u", v);
+  return std::string(buf, static_cast<std::size_t>(len > 0 ? len : 0));
+}
+
+[[nodiscard]] std::string fmt_usize(std::size_t v) {
+  char buf[24];
+  const int len = std::snprintf(buf, sizeof buf, "%zu", v);
+  return std::string(buf, static_cast<std::size_t>(len > 0 ? len : 0));
+}
+
+} // namespace
+
+Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view path) {
+  std::string out;
+  out.reserve(1024 + r.coverage.per_symbol.size() * 48);
+
+  // Section 1: key,value scalar table. First line is the pinned header.
+  out += "key,value\n";
+  const auto kv = [&out](std::string_view key, const std::string &value) {
+    out += key;
+    out += ',';
+    out += value;
+    out += '\n';
+  };
+  kv("config.n_symbols", fmt_u32(r.config.n_symbols));
+  kv("config.n_configured", fmt_u32(r.config.n_configured));
+  kv("config.n_skipped_existing", fmt_u32(r.config.n_skipped_existing));
+  kv("config.n_disabled_failed", fmt_u32(r.config.n_disabled_failed));
+  kv("coverage.cells_loaded", fmt_u32(r.coverage.cells_loaded));
+  kv("coverage.cells_to_fit", fmt_u32(r.coverage.cells_to_fit));
+  kv("coverage.cells_refit", fmt_u32(r.coverage.cells_refit));
+  kv("coverage.cells_already_present", fmt_u32(r.coverage.cells_already_present));
+  kv("coverage.cells_ok", fmt_u32(r.coverage.cells_ok));
+  kv("coverage.cells_failed", fmt_u32(r.coverage.cells_failed));
+  kv("coverage.dates_total", fmt_u32(r.coverage.dates_total));
+  kv("coverage.dates_written", fmt_u32(r.coverage.dates_written));
+  kv("coverage.dates_skipped_complete", fmt_u32(r.coverage.dates_skipped_complete));
+  kv("coverage.dates_skipped_would_drop", fmt_u32(r.coverage.dates_skipped_would_drop));
+  kv("n_dates_loaded", fmt_usize(r.n_dates_loaded));
+  kv("n_dates_missing", fmt_usize(r.n_dates_missing));
+  kv("n_load_errors", fmt_usize(r.n_load_errors));
+
+  // Section 2: one per-symbol coverage row (from the populate; written dates).
+  out += "symbol,n_attempted,n_ok,n_failed,n_disabled\n";
+  for (const PopulateSymbolStats &s : r.coverage.per_symbol) {
+    out += s.symbol;
+    out += ',';
+    out += fmt_u32(s.n_attempted);
+    out += ',';
+    out += fmt_u32(s.n_ok);
+    out += ',';
+    out += fmt_u32(s.n_failed);
+    out += ',';
+    out += fmt_u32(s.n_disabled);
+    out += '\n';
+  }
+
+  std::ofstream os(std::string(path), std::ios::binary | std::ios::trunc);
+  if (!os) {
+    return Err(ErrorCode::IoError, "write_build_report_csv: cannot open file");
+  }
+  os.write(out.data(), static_cast<std::streamsize>(out.size()));
+  if (!os) {
+    return Err(ErrorCode::IoError, "write_build_report_csv: write failed");
+  }
+  return Ok();
 }
 
 } // namespace atx::vol

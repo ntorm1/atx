@@ -4,6 +4,12 @@
 // overwrite escape hatch, the pinned dense index recipe, and fail-closed
 // disabling of a symbol whose board cannot be selected on.
 //
+// BuildSurfaceDb suite (Task 5) — proves the one-call build driver
+// (build_surface_db): create-or-open, hive load, config generation, streaming
+// populate, and the resume/incremental/no-op semantics, asserting the REOPENED
+// db reality (partitions + map_surface), not just the report counters. Plus a
+// write_build_report_csv round-trip.
+//
 // Boards are built from the Task 2 synthetic hive fixture through the real
 // Task 3 loader (load_opra_hive) + corpus_board_from_opra, so the selection
 // path runs against genuine loader output.
@@ -12,6 +18,8 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <utility>
 #include <vector>
@@ -215,6 +223,173 @@ TEST(GenerateSymbolConfigs, DeepSelectionPinsAndEnables) {
     EXPECT_TRUE(aaa->pin_curve);
     EXPECT_EQ(aaa->preset, FitPreset::Populate);
   }
+}
+
+// ── BuildSurfaceDb suite (Task 5) ───────────────────────────────────────────
+
+// A fresh temp workspace holding a synthetic hive and a db root under it.
+struct BuildFixture {
+  fs::path root; // fresh temp dir (removed on construction)
+  fs::path hive; // root/hive  — the OPRA hive v2 tree
+  fs::path db;   // root/db    — the SurfaceDb root
+};
+
+// Materialize `fx` as a hive-v2 tree under a fresh workspace named `name`.
+[[nodiscard]] BuildFixture make_build_fixture(std::string_view name,
+                                              const tsupport::SyntheticHiveSpec &fx) {
+  BuildFixture f;
+  f.root = fresh_dir(name);
+  f.hive = f.root / "hive";
+  f.db = f.root / "db";
+  tsupport::write_synthetic_hive_v2(f.hive, fx);
+  return f;
+}
+
+// A build spec pointing a db at the fixture's hive over `fx`'s full date span,
+// loading exactly `fx`'s symbols (the ingest a production build runs).
+[[nodiscard]] SurfaceDbBuildSpec build_spec(const BuildFixture &f,
+                                            const tsupport::SyntheticHiveSpec &fx) {
+  SurfaceDbBuildSpec spec;
+  spec.db_root = f.db.string();
+  spec.hive.root_dir = f.hive.string();
+  spec.hive.date_lo = fx.dates.front();
+  spec.hive.date_hi = fx.dates.back();
+  spec.hive.symbols = fx.symbols;
+  spec.hive.r = fx.r;
+  return spec;
+}
+
+// One call over a fresh 3x3 hive builds an end-to-end db: 3 dates loaded (the
+// 07-03/04/05 calendar gap is missing), 3 symbols configured, 9 cells fit, and
+// the REOPENED db carries 3 partitions / 3 symbols with a mappable surface.
+TEST(BuildSurfaceDb, EndToEndOnFixtureHive) {
+  const tsupport::SyntheticHiveSpec fx; // AAA/BBB/CCC x {07-01,07-02,07-06}
+  const BuildFixture f = make_build_fixture("e2e", fx);
+
+  const auto rep = build_surface_db(build_spec(f, fx));
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_EQ(rep->n_dates_loaded, std::size_t{3});
+  EXPECT_EQ(rep->n_dates_missing, std::size_t{3}); // 07-03, 07-04, 07-05 gap
+  EXPECT_EQ(rep->n_load_errors, std::size_t{0});
+  EXPECT_EQ(rep->config.n_configured, 3u);
+  EXPECT_EQ(rep->config.n_disabled_failed, 0u);
+  EXPECT_EQ(rep->coverage.cells_to_fit, 9u);
+  EXPECT_EQ(rep->coverage.cells_failed, 0u);
+  EXPECT_EQ(rep->coverage.cells_ok, 9u); // == cells_to_fit, n_failed == 0
+  EXPECT_EQ(rep->coverage.dates_written, 3u);
+
+  // Reopened-db reality (not just the returned counters).
+  auto db = SurfaceDb::open(f.db.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  EXPECT_EQ(db->partitions().size(), std::size_t{3});
+  EXPECT_EQ(db->symbols().size(), std::size_t{3});
+  const auto surf = db->map_surface("2026-07-01", "AAA");
+  EXPECT_TRUE(surf.has_value()) << (surf ? "" : surf.error().to_string());
+}
+
+// An immediate second build over the same db + hive fits nothing: every cell is
+// already present (cells_to_fit == 0, dates_written == 0) and every symbol is
+// already configured (skipped, not reconfigured).
+TEST(BuildSurfaceDb, RerunFitsZero) {
+  const tsupport::SyntheticHiveSpec fx;
+  const BuildFixture f = make_build_fixture("rerun", fx);
+  const SurfaceDbBuildSpec spec = build_spec(f, fx);
+
+  ASSERT_TRUE(build_surface_db(spec).has_value());
+  const auto rep2 = build_surface_db(spec); // opens the existing db
+  ASSERT_TRUE(rep2.has_value()) << (rep2 ? "" : rep2.error().to_string());
+  EXPECT_EQ(rep2->coverage.cells_to_fit, 0u);
+  EXPECT_EQ(rep2->coverage.dates_written, 0u);
+  EXPECT_EQ(rep2->coverage.dates_skipped_complete, 3u);
+  EXPECT_EQ(rep2->config.n_configured, 0u);
+  EXPECT_EQ(rep2->config.n_skipped_existing, 3u);
+
+  auto db = SurfaceDb::open(f.db.string());
+  ASSERT_TRUE(db.has_value());
+  EXPECT_EQ(db->partitions().size(), std::size_t{3}); // no rewrite
+}
+
+// Growing the hive by one date rebuilds ONLY that date: the three prior dates
+// are complete-skips, one new partition is written.
+TEST(BuildSurfaceDb, IncrementalNewDateOnly) {
+  tsupport::SyntheticHiveSpec fx; // 3 dates
+  const BuildFixture f = make_build_fixture("incr", fx);
+  ASSERT_TRUE(build_surface_db(build_spec(f, fx)).has_value());
+
+  // Add a 4th date and re-materialize the hive in place; rebuild the same db.
+  fx.dates.push_back("2026-07-07");
+  tsupport::write_synthetic_hive_v2(f.hive, fx);
+  const auto rep = build_surface_db(build_spec(f, fx)); // date_hi now 07-07
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_EQ(rep->n_dates_loaded, std::size_t{4});
+  EXPECT_EQ(rep->coverage.dates_written, 1u);          // only the new date
+  EXPECT_EQ(rep->coverage.cells_to_fit, 3u);           // its 3 symbols
+  EXPECT_EQ(rep->coverage.dates_skipped_complete, 3u); // the prior dates
+
+  auto db = SurfaceDb::open(f.db.string());
+  ASSERT_TRUE(db.has_value());
+  EXPECT_EQ(db->partitions().size(), std::size_t{4});
+  EXPECT_TRUE(db->map_surface("2026-07-07", "BBB").has_value());
+}
+
+// An un-pulled window (empty hive) is a graceful no-op: Ok, all-zero coverage,
+// no boards, and the freshly created db has no partitions.
+TEST(BuildSurfaceDb, UnpulledWindowGracefulNoop) {
+  const fs::path root = fresh_dir("unpulled");
+  const fs::path hive = root / "hive";
+  fs::create_directories(hive); // empty: no date=<d>/data.parquet under it
+  const fs::path db_root = root / "db";
+
+  SurfaceDbBuildSpec spec;
+  spec.db_root = db_root.string();
+  spec.hive.root_dir = hive.string();
+  spec.hive.date_lo = "2026-07-01";
+  spec.hive.date_hi = "2026-07-03";
+  spec.hive.symbols = {"AAA", "BBB", "CCC"};
+  spec.hive.r = 0.03;
+
+  const auto rep = build_surface_db(spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_EQ(rep->n_dates_loaded, std::size_t{0});
+  EXPECT_EQ(rep->n_dates_missing, std::size_t{3});
+  EXPECT_EQ(rep->coverage.cells_loaded, 0u);
+  EXPECT_EQ(rep->coverage.cells_to_fit, 0u);
+  EXPECT_EQ(rep->coverage.cells_ok, 0u);
+  EXPECT_EQ(rep->coverage.dates_written, 0u);
+
+  // The db was still created; it simply holds no partitions.
+  auto reopened = SurfaceDb::open(db_root.string());
+  ASSERT_TRUE(reopened.has_value()) << (reopened ? "" : reopened.error().to_string());
+  EXPECT_TRUE(reopened->partitions().empty());
+}
+
+// write_build_report_csv emits the pinned "key,value" scalar section header on
+// line 1, then per-symbol coverage rows; the file exists and carries both.
+TEST(BuildSurfaceDb, ReportCsvRoundTrips) {
+  const tsupport::SyntheticHiveSpec fx;
+  const BuildFixture f = make_build_fixture("csv", fx);
+  const auto rep = build_surface_db(build_spec(f, fx));
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+
+  const fs::path csv = f.root / "report.csv";
+  const Status w = write_build_report_csv(*rep, csv.string());
+  ASSERT_TRUE(w.has_value()) << (w ? "" : w.error().to_string());
+  ASSERT_TRUE(fs::exists(csv));
+
+  std::ifstream is(csv.string(), std::ios::binary);
+  ASSERT_TRUE(is.good());
+  std::string first_line;
+  std::getline(is, first_line);
+  if (!first_line.empty() && first_line.back() == '\r') {
+    first_line.pop_back();
+  }
+  EXPECT_EQ(first_line, "key,value"); // pinned header
+
+  const std::string body((std::istreambuf_iterator<char>(is)),
+                         std::istreambuf_iterator<char>());
+  EXPECT_NE(body.find("coverage.cells_ok,9"), std::string::npos);
+  EXPECT_NE(body.find("symbol,n_attempted,n_ok,n_failed,n_disabled"), std::string::npos);
+  EXPECT_NE(body.find("AAA,3,3,0,0"), std::string::npos);
 }
 
 } // namespace
