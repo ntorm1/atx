@@ -627,6 +627,71 @@ TEST(ListedDispersionPipeline, BuildScheduleSymbolIsDeclared) {
   EXPECT_NE(reinterpret_cast<const void *>(fn), nullptr);
 }
 
+// ── REV-FIXTAIL I-A — the three F6 quote-quality keys reach the SHIPPED route ──
+//
+// `quote_min_bid`, `quote_max_age_ns` and `quote_reject_locked` bound by name in
+// the strict typed reader (dispersion_run.cpp), passed `reject_unknown()`, and
+// were then written into `run_config.tsv` — an artifact dispersion_run.hpp
+// documents as "the EFFECTIVE value of every execution knob the run actually
+// used". Their only consumer was `dispersion_build_schedule`, a LIBRARY-ONLY
+// entry point with no shipped caller: the shipped `build-schedule` builds a
+// `ListedScheduleSpec`, which carried no quality member, so the declared policy
+// never reached `select_listed_dispersion` and the effective-config record
+// asserted a filter that never ran. Fourth instance of the sprint's knob class,
+// and the first to publish the ignored value as provenance.
+//
+// The wiring is gated HERE rather than by a comment because the selection config
+// the builder runs under is now built by one named function that both the loop
+// and this test call — the same reason F5's `make_listed_replay_run_config`
+// exists. A "verbatim" comment cannot fail; this can.
+TEST(ListedDispersionPipeline, ScheduleSpecQualityPolicyReachesSelection) {
+  ListedScheduleSpec spec{};
+  spec.target_dte_days = 45.0;
+  spec.min_dte_days = 20.0;
+  spec.max_dte_days = 70.0;
+  spec.min_names = 12u;
+  spec.quality.min_bid = 0.05;
+  spec.quality.max_quote_age_ns = 300'000'000'000LL;
+  spec.quality.reject_locked = true;
+
+  const ListedDispersionSelectionConfig selection = listed_selection_config_from(spec);
+
+  // The four the loop already carried, so the lift stays verbatim.
+  EXPECT_DOUBLE_EQ(selection.target_dte_days, 45.0);
+  EXPECT_DOUBLE_EQ(selection.min_dte_days, 20.0);
+  EXPECT_DOUBLE_EQ(selection.max_dte_days, 70.0);
+  EXPECT_EQ(selection.min_names, 12u);
+  // The three that did not.
+  EXPECT_DOUBLE_EQ(selection.quality.min_bid, 0.05)
+      << "spec key `quote_min_bid` is published as effective and never reached selection";
+  EXPECT_EQ(selection.quality.max_quote_age_ns, 300'000'000'000LL)
+      << "spec key `quote_max_age_ns` is published as effective and never reached selection";
+  EXPECT_TRUE(selection.quality.reject_locked)
+      << "spec key `quote_reject_locked` is published as effective and never reached selection";
+}
+
+// The other half: wiring the three cannot move a golden. Every quality default on
+// `ListedScheduleSpec` is exactly the value `ListedDispersionSelectionConfig`
+// already default-constructed inside the selection loop, so a spec naming none of
+// the three produces a byte-identical selection config before and after. (Measured
+// alongside: no run_spec.tsv under the published corpus root names any of the
+// three keys, so no pinned run changes.) If a default here ever diverges, this
+// pins the day it happens.
+TEST(ListedDispersionPipeline, DefaultScheduleSpecKeepsTheShippedSelectionDefaults) {
+  const ListedDispersionSelectionConfig selection =
+      listed_selection_config_from(ListedScheduleSpec{});
+  const ListedDispersionSelectionConfig pinned{}; // what the loop built before
+
+  EXPECT_DOUBLE_EQ(selection.target_dte_days, pinned.target_dte_days);
+  EXPECT_DOUBLE_EQ(selection.min_dte_days, pinned.min_dte_days);
+  EXPECT_DOUBLE_EQ(selection.max_dte_days, pinned.max_dte_days);
+  EXPECT_EQ(selection.min_names, pinned.min_names);
+  EXPECT_DOUBLE_EQ(selection.required_multiplier, pinned.required_multiplier);
+  EXPECT_DOUBLE_EQ(selection.quality.min_bid, pinned.quality.min_bid);
+  EXPECT_EQ(selection.quality.max_quote_age_ns, pinned.quality.max_quote_age_ns);
+  EXPECT_EQ(selection.quality.reject_locked, pinned.quality.reject_locked);
+}
+
 // ── Task 4 — project_listed_schedule + I1 two-route cold parity (M6, I1) ──────
 //
 // project_listed_schedule authors the projected_schedule marks; run-projected-backtest

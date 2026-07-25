@@ -334,6 +334,15 @@ struct DispersionRunConfig {
 // the listed route emitted no such record at all. Key/value TSV in the same
 // key vocabulary as the spec; it is a RECORD of the run, not a re-runnable
 // spec (it deliberately omits the corpus/date/path keys).
+//
+// "EFFECTIVE" IS A LOAD-BEARING WORD (REV-FIXTAIL I-A). Every key emitted here
+// must be one some stage of the run directory actually honoured. It is written by
+// `run-backtest`, but its scope is the RUN, so a key applied at an earlier stage
+// of the same run directory belongs here — the three `quote_*` keys apply at
+// `build-schedule` and are honoured on BOTH routes since I-A. A key that no stage
+// reads does NOT belong here: publishing one as effective is strictly worse than
+// ignoring it, because a reader can act on it. Before adding a row, name the code
+// that consumes the value.
 [[nodiscard]] Status write_dispersion_effective_config(const std::filesystem::path &path,
                                                        const DispersionRunConfig &config);
 
@@ -544,13 +553,27 @@ struct DispersionVerifyReport {
 // spec governs the shipped listed replay and `run_config.tsv` is emitted on it.
 // The two bodies therefore differ ONLY in how they persist results.
 //
-// KNOWN RESIDUAL GAP, named rather than left to be discovered: F6's quote-quality
-// admission (`DispersionRunConfig::quote_quality` -> `select_listed_dispersion`)
-// and its `quote_rejects.tsv` tally reach selection only through
-// `dispersion_build_schedule`. The shipped `build-schedule` delegates selection to
-// `build_listed_dispersion_schedule` (listed_dispersion_pipeline.hpp), whose
-// `ListedScheduleSpec` has no quality member, so closing this needs an API change
-// in that header — a change of ownership, not a wiring fix, and out of scope here.
+// F6's quote-quality admission (`DispersionRunConfig::quote_quality` ->
+// `select_listed_dispersion`) USED TO reach selection only through
+// `dispersion_build_schedule`, i.e. only on the library-only route. That was worse
+// than a silently-ignored knob, because `write_dispersion_effective_config` echoed
+// all three `quote_*` keys into `run_config.tsv` — an artifact this header
+// documents as the EFFECTIVE value of every knob the run used — so a reader
+// reconciling a shipped run against that record was told a filter applied that
+// never ran. CLOSED (REV-FIXTAIL I-A): `ListedScheduleSpec` gained a `quality`
+// member and `build_listed_dispersion_schedule` builds its selection config
+// through the named `listed_selection_config_from`, so the shipped `build-schedule`
+// honours the declared policy and the effective-config record is true on both
+// routes. Golden-neutral by construction — the new default IS what the loop
+// default-constructed (`ListedDispersionPipeline.DefaultScheduleSpecKeepsTheShipped
+// SelectionDefaults`).
+//
+// WHAT REMAINS, stated so it is not rediscovered as the same defect: only
+// `dispersion_build_schedule` writes the per-date `quote_rejects.tsv` tally. The
+// shipped `build-schedule` never wrote it — not before this fix and not after —
+// so on that route the policy now applies but its per-date accounting is not
+// published. That is a missing REPORT, not an unhonoured knob, and no artifact
+// claims otherwise.
 //
 // `dispersion_verify` (below) is likewise LIBRARY ONLY for the same reason: it
 // verifies the loose artifact envelope and folds in the M1 native reference

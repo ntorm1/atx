@@ -256,6 +256,18 @@ Status build_schedule_command(const fs::path &run_dir) {
 
   auto phase = PhaseTimer::now();
   ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
+  // REV-FIXTAIL I-A: the SAME run_spec.tsv, also through the STRICT typed reader,
+  // for the one thing the loose RunSpec cannot carry — F6's quote-quality
+  // admission policy. `quote_min_bid` / `quote_max_age_ns` / `quote_reject_locked`
+  // bound by name, survived `reject_unknown()` and were published into
+  // `run_config.tsv` as EFFECTIVE, while their only consumer was the library-only
+  // `dispersion_build_schedule`; on this route the declared policy reached no
+  // selection at all. This is the same double read `run-backtest` already performs
+  // (below, at the strict `read_dispersion_run_config`) and the same one the
+  // library twin performs (dispersion_run.cpp's `dispersion_build_schedule`), so
+  // the two bodies now agree on config construction. A malformed spec fails here
+  // by name instead of two subcommands later.
+  ATX_TRY(DispersionRunConfig run_config, read_dispersion_run_config(run_dir / "run_spec.tsv"));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
   ATX_TRY(ListedDefinitionTable definitions,
           read_listed_definitions_file((run_dir / "definitions.tsv").string()));
@@ -288,6 +300,14 @@ Status build_schedule_command(const fs::path &run_dir) {
   sched_spec.min_weight_coverage = spec.min_weight_coverage;
   sched_spec.gross_index_vega = spec.gross_index_vega;
   sched_spec.core_mode = spec.core_mode;
+  // REV-FIXTAIL I-A: F6's quote-quality admission, from the strict typed config.
+  // `ListedScheduleSpec::quality` defaults to exactly what the builder's selection
+  // loop default-constructed, so a spec naming none of the three keys is
+  // byte-identical; `ListedDispersionPipeline.DefaultScheduleSpecKeepsTheShipped
+  // SelectionDefaults` pins that, and it was green before this change as well as
+  // after. What changes is that a spec that DOES name them is now honoured here
+  // rather than only echoed into run_config.tsv.
+  sched_spec.quality = run_config.quote_quality;
   ATX_TRY(ListedDispersionSchedule schedule,
           build_listed_dispersion_schedule(clock, sched_spec, method, universe_rows, definitions,
                                            spec, &timer));

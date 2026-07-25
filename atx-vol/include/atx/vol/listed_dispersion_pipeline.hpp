@@ -170,7 +170,23 @@ struct ListedScheduleSpec {
   // listed and projected routes now build the same-sized book (REV-TAIL M-6).
   double gross_index_vega{10000.0};
   bool core_mode{false};
+  // F6 quote-quality admission (REV-FIXTAIL I-A). This member is why the three
+  // `quote_*` spec keys are now honoured on the SHIPPED `build-schedule` and not
+  // only on the library-only `dispersion_build_schedule`. Before it existed the
+  // keys parsed, validated, were echoed into `run_config.tsv` as EFFECTIVE, and
+  // reached no shipped selection. The default is exactly what the selection loop
+  // default-constructed, so wiring it moves nothing.
+  ListedQuoteQualityConfig quality{};
 };
+
+// The `ListedDispersionSelectionConfig` the schedule builder's selection loop
+// runs under, built from the swept spec. One named function rather than four
+// assignments inline (REV-FIXTAIL I-A) for the reason `make_listed_replay_run_
+// config` is one: a knob that is copied here is provably reachable from the
+// shipped route and one that is not is provably dead, and a test can call THIS
+// instead of restating it under a "verbatim" comment that cannot fail.
+[[nodiscard]] ListedDispersionSelectionConfig
+listed_selection_config_from(const ListedScheduleSpec &spec);
 
 // The entry/three-roll acceptance gate, factored out of the schedule builder so it
 // is unit-testable without live parquet. Verbatim behavior of the example's final

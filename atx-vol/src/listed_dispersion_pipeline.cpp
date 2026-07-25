@@ -192,6 +192,20 @@ Status accept_listed_schedule(const ListedDispersionSchedule &schedule,
   return Ok();
 }
 
+ListedDispersionSelectionConfig listed_selection_config_from(const ListedScheduleSpec &spec) {
+  // REV-FIXTAIL I-A. The first four are the verbatim assignments the selection
+  // loop made inline; `quality` is the fix. Everything not assigned keeps
+  // `ListedDispersionSelectionConfig`'s own default (`required_multiplier`), so
+  // a default spec reproduces the pre-fix config field for field.
+  ListedDispersionSelectionConfig selection_config;
+  selection_config.target_dte_days = spec.target_dte_days;
+  selection_config.min_dte_days = spec.min_dte_days;
+  selection_config.max_dte_days = spec.max_dte_days;
+  selection_config.min_names = spec.min_names;
+  selection_config.quality = spec.quality;
+  return selection_config;
+}
+
 Result<ListedDispersionSchedule>
 build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &spec,
                                  const ListedDispersionMethodology &method,
@@ -243,11 +257,7 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
     }
 
     const auto eval_start = PhaseTimer::now();
-    ListedDispersionSelectionConfig selection_config;
-    selection_config.target_dte_days = spec.target_dte_days;
-    selection_config.min_dte_days = spec.min_dte_days;
-    selection_config.max_dte_days = spec.max_dte_days;
-    selection_config.min_names = spec.min_names;
+    const ListedDispersionSelectionConfig selection_config = listed_selection_config_from(spec);
     const ListedForwardLookup forward = make_listed_forward_lookup(snapshot);
     const auto selected = select_listed_dispersion(ref.date, snapshot.ts_ns(), resolved.universe,
                                                    quotes, forward, selection_config);
