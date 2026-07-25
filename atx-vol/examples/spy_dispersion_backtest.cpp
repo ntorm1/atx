@@ -823,6 +823,15 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   // are borrowed by the observer and must outlive the run_backtest call that
   // consumes it.
   std::vector<ListedMarkDivergenceRow> observed;
+  // Callback count for the observer-coverage gate after the priced run — the half of
+  // the evidence-channel contract that `all_rolls_consumed()` structurally cannot
+  // supply (see the two-gate comment at the priced run). A DEDICATED counter, not a
+  // read-back of the `divergence_replay` phase's count: `PhaseTimer::phases()` does
+  // expose one, but that phase list is held byte-stable for the `diagnostics`
+  // ARTIFACT, so keying a fail-closed correctness gate off a phase NAME would let a
+  // future rename there silently disarm it. Same lifetime story as `observed` — the
+  // wrapper borrows it and both outlive the run_backtest call.
+  std::size_t observer_calls = 0u;
   if (!skip_divergence) {
     // `schedule` is the very object ListedDispersionStrategy::create copies below,
     // so the observer's schedule and the strategy's are value-equal by construction
@@ -838,10 +847,18 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
     // run_backtest's ATX_TRY_VOID exactly as it would unwrapped. The inner
     // observer is captured BY VALUE so the wrapper owns it; `timer` is a local of
     // this function and outlives `config`.
-    config.step_observer = [&timer, inner = make_mark_divergence_observer(schedule, observed)](
+    //
+    // The wrapper is ALSO where collection coverage is witnessed: `observer_calls` is
+    // bumped in lockstep with the phase's unit count, so the two can never disagree.
+    // Counting here rather than inside make_mark_divergence_observer is deliberate —
+    // this is the site that is conditional, so it is the site whose absence has to be
+    // observable.
+    config.step_observer = [&timer, &observer_calls,
+                            inner = make_mark_divergence_observer(schedule, observed)](
                                const StepEvent &event) -> Status {
       const auto cb_start = PhaseTimer::now();
       Status observed_status = inner(event);
+      ++observer_calls;
       timer.add("divergence_replay", cb_start, 1u);
       return observed_status;
     };
@@ -854,20 +871,44 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   ATX_TRY(ListedDispersionStrategy strategy,
           ListedDispersionStrategy::create(schedule, spec.delta_band, ScheduleMarkPolicy::Record));
   ATX_TRY(BacktestResult backtest, run_backtest(clock, strategy, config));
-  // An empty mark_divergence section must mean "every roll fired and none
-  // diverged", never "the replay silently skipped rolls" — it is the evidence
-  // channel for the parity report's zero-divergence claim.
+  // EVIDENCE CHANNEL FOR THE ZERO-DIVERGENCE CLAIM — TWO GATES, ONE CONTRACT.
+  // An empty `mark_divergence` section must mean "every roll fired and none diverged",
+  // never "nothing was looking". It takes BOTH checks below to say that, and neither
+  // one alone is sufficient:
   //
-  // (The comment above is carried verbatim from the deleted shadow replay's
-  // post-loop gate. This gate is now the only one, and it guards the same claim on
-  // the same schedule: the observer only ever appends rows for a roll the priced
-  // strategy actually fired, so "every roll consumed" here is exactly the
-  // precondition that makes a zero-row `mark_divergence` section readable as
-  // "no divergence" rather than "no coverage". The message text differs from the
-  // shadow's because the subject differs — one run, not a replay — but the
-  // evidence-channel contract does not.)
+  //   (1) ROLL COVERAGE — `all_rolls_consumed()`, carried from the deleted shadow
+  //       replay's post-loop gate (the message differs because the subject does: one
+  //       run, not a replay). It interrogates the priced STRATEGY: every scheduled
+  //       roll actually fired, so no roll went unexamined by the object the observer
+  //       reads.
+  //   (2) COLLECTION COVERAGE — `observer_calls == clock.size()`. It interrogates the
+  //       observer WRAPPER: the observer was installed and fired on every session.
+  //
+  // (2) exists because (1) structurally cannot supply it. The strategy does not know
+  // whether an observer was ever attached, so on its own (1) cannot distinguish "the
+  // observer ran and legitimately found zero divergences" — the normal, expected cold
+  // outcome — from "the observer was never installed, so of course the section is
+  // empty". The shadow's single gate COULD distinguish them, because the object it
+  // interrogated was the object its own collection loop had just walked; moving
+  // collection into `config.step_observer` split that one guarantee into two, and only
+  // one of the two halves came across with the comment.
+  //
+  // What the pair deliberately does NOT claim: that the observer's detection logic is
+  // itself correct. That is the observer's own contract — its roll-cursor and
+  // valuation-timestamp guards fail CLOSED through run_backtest's ATX_TRY_VOID, so a
+  // fired-but-misaligned observer aborts the run rather than under-reporting, and the
+  // ListedDispersionPipeline observer tests pin the row content.
   if (!strategy.all_rolls_consumed()) {
     return Err(ErrorCode::Unavailable, "projected backtest did not consume every scheduled roll");
+  }
+  // Skipped entirely under --no-divergence: no observer is installed there BY DESIGN
+  // and no `mark_divergence` section is written, so there is no empty-section claim to
+  // protect and a zero count is the correct state, not a failure.
+  if (!skip_divergence && observer_calls != clock.size()) {
+    return Err(ErrorCode::Unavailable,
+               "the mark-divergence observer did not fire on every session (" +
+                   std::to_string(observer_calls) + " of " + std::to_string(clock.size()) +
+                   "), so an empty mark_divergence section cannot be read as 'no divergence'");
   }
   timer.add("priced_run", priced_start, backtest.size());
 
