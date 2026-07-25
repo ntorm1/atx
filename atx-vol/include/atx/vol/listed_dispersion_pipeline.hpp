@@ -161,6 +161,13 @@ struct ListedScheduleSpec {
   double roll_dte_days{7.0};
   std::size_t min_names{10};
   double min_weight_coverage{0.8};
+  // UNIT: DOLLARS OF VEGA PER VOL POINT. Assigned straight through to
+  // `ListedScheduleBuildConfig::gross_index_vega_target_per_vol_point`
+  // (listed_dispersion_pipeline.cpp:284), whose name states the unit this bare
+  // `double` does not. Since E1 this is ALSO the unit of
+  // `DispersionConfig::target_vega` and `DispersionBacktestConfig::
+  // gross_index_vega`, which is the point of E1: handed the same number, the
+  // listed and projected routes now build the same-sized book (REV-TAIL M-6).
   double gross_index_vega{10000.0};
   bool core_mode{false};
 };

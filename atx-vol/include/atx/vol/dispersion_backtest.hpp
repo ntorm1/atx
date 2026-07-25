@@ -58,6 +58,18 @@ struct DispersionCostModel {
 struct DispersionBacktestConfig {
   double target_dte_days{30.0};
   double roll_dte_days{7.0};
+  // ── UNIT (E1 / AN-P1-1): DOLLARS OF VEGA PER VOL POINT ────────────────────
+  //
+  // Assigned STRAIGHT THROUGH to `DispersionConfig::target_vega`
+  // (dispersion_backtest.cpp:26) with no scaling, so it carries that field's
+  // unit exactly: dollars of index-leg gross vega per ONE VOL POINT (a 0.01
+  // move in sigma). Same unit as `ListedScheduleSpec::gross_index_vega` and
+  // `ListedScheduleBuildConfig::gross_index_vega_target_per_vol_point`.
+  //
+  // BREAKING CHANGE (E1), recorded here because E1 changed this field's MEANING
+  // without touching this header (REV-TAIL M-6). It used to reach a
+  // `target_vega` read as dollars per UNIT vol, so the same number now builds a
+  // book 100x LARGER. A caller tuned before E1 must DIVIDE its old value by 100.
   double gross_index_vega{10'000.0};
   double delta_band{0.0};
   std::size_t min_names{2};

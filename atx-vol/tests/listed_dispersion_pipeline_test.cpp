@@ -725,19 +725,27 @@ TEST(ListedDispersionPipeline, TwoRouteColdParity_LegMarksEqual) {
   fs::remove_all(dir, error);
 }
 
-// ── Task 5 — dispersion_book_var + kVegaVolPointToUnitVol routing (M8) ─────────
+// ── Task 5 — dispersion_book_var (M8) ─────────────────────────────────────────
 //
 // dispersion_book_var lifts run_projected_var_command's book -> OptionProjectionSpec
 // synthesis + PreparedHistoricalProjection::evaluate_into + projected_historical_var
-// per confidence (spy_dispersion_backtest.cpp:1119-1194). The book is pre-built by
-// the caller: the per-vol-point vega * kVegaVolPointToUnitVol scaling lives in the
-// DispersionConfig builder (a CLI boundary wired at T9), so the lift itself carries
-// no vega x100. The library re-projects the book positions across historical
-// scenarios and splits the loss quantile per requested confidence; the CLI keeps the
-// three bespoke TSV emissions (out-of-archive per the partition rule).
+// per confidence. The book is pre-built by the caller, so the lift itself applies no
+// vega scaling of any kind. The library re-projects the book positions across
+// historical scenarios and splits the loss quantile per requested confidence; the
+// CLI keeps the three bespoke TSV emissions (out-of-archive per the partition rule).
 //
-// The lift reads dispersion.projected_maturity (:1124), defined at :1114 OUTSIDE the
-// :1119-1194 range, so the relative-template maturity is a required input here (the
+// REV-TAIL M-5 / I-2, two corrections to what this block used to say. (1) The
+// "per-vol-point vega * kVegaVolPointToUnitVol scaling in the DispersionConfig
+// builder (a CLI boundary wired at T9)" no longer exists: E1 redefined
+// `DispersionConfig::target_vega` as dollars per VOL POINT, and there is now no
+// scaling anywhere on this route. (2) The `spy_dispersion_backtest.cpp:1119-1194`
+// line references described a CLI body that no longer exists -- `run-projected-var`
+// is a dispatch into `dispersion_run_projected_var`, which since REV-TAIL I-2 calls
+// THIS function, so this test now gates the shipped route rather than a duplicate
+// of it.
+//
+// The lift reads `dispersion.projected_maturity`, which was defined OUTSIDE the
+// lifted range, so the relative-template maturity is a required input here (the
 // plan's book-only signature omits it; days(N) is a relative template that MUST NOT
 // be reconstructed to an absolute expiry, or per-scenario aging would change).
 TEST(ListedDispersionPipeline, DispersionBookVar_SplitsConfidences) {
@@ -758,11 +766,21 @@ TEST(ListedDispersionPipeline, DispersionBookVar_SplitsConfidences) {
 
   DispersionConfig dispersion;
   dispersion.target_T = kTargetDteDays / 365.25;
-  // Mirror the CLI boundary (spy_dispersion_backtest.cpp:1110): per-vol-point gross
-  // vega scaled to per-unit-vol via the T1 constant that replaces the hand-applied
-  // * 100.0 (M9). The scaling is upstream of dispersion_book_var (which takes the
-  // built book), so the constant is exercised here, at the book-build boundary.
-  dispersion.target_vega = 100.0 * kVegaVolPointToUnitVol;
+  // UNITS (E1 / AN-P1-1). `DispersionConfig::target_vega` is DOLLARS OF VEGA PER
+  // VOL POINT (dispersion.hpp:249-262), so a $100/vol-point index leg is written
+  // as `100.0` and scaled by nothing.
+  //
+  // REV-TAIL M-5: this line read `100.0 * kVegaVolPointToUnitVol`, under a comment
+  // claiming to "mirror the CLI boundary (spy_dispersion_backtest.cpp:1110)". E1
+  // abolished that boundary -- the example carries ZERO `kVegaVolPointToUnitVol`
+  // uses at this tip -- so the line denoted $10,000/vol-point where $100 was
+  // intended, a 100x book. Every assertion in this test is structural (counts,
+  // n_failed, ES >= VaR, VaR(99) >= VaR(95), reference == frames.back().value) and
+  // therefore SCALE-INVARIANT: it passed either way and could never self-correct,
+  // which made it the most misleading text in the tree about the exact unit hazard
+  // that produced the 100x bug this sprint fixed. Do not reintroduce a scaling
+  // here without changing what `target_vega` means.
+  dispersion.target_vega = 100.0;
   dispersion.side = DispersionSide::ShortIndexLongNames;
   dispersion.multiplier = 100.0;
   dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, 2u};
