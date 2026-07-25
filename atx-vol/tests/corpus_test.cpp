@@ -40,6 +40,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -2082,6 +2083,7 @@ namespace {
 const std::vector<std::string> kDrainDates = {"2026-06-17", "2026-06-18", "2026-06-19",
                                               "2026-06-22"};
 constexpr unsigned kDrainOuterBudget = 4u;
+constexpr std::size_t kDrainBoards = 8u;
 
 } // namespace
 
@@ -2153,6 +2155,70 @@ TEST(CorpusBuildSession, StragglerReclaimsInnerWorkersWhileStillRunning) {
       << " back=" << straggler_offers.back() << ")";
   EXPECT_EQ(straggler_offers.back(), kDrainOuterBudget)
       << "the last board standing should be offered the whole outer budget";
+}
+
+// T-I2: the drain regime itself, with a pool that genuinely SATURATES.
+//
+// `DrainingFanOutReclaimsInnerFitWorkers` is named for this regime but runs 2
+// boards against an 8-wide budget — `left <= 2 < 8` from the very first claim,
+// so the pool is never full and never drains. That is the small-book case, not
+// BT-T1's. No test anywhere used n > outer_budget, which is why the claim-time
+// reclaim's total inertness on a saturated pool went unnoticed.
+//
+// 8 boards against a 4-wide budget, asserting both halves of the contract per
+// individual offer rather than over process-global sums:
+//
+//   (a) while the pool is SATURATED (`left >= budget`) every board is offered
+//       exactly one inner worker — the "the saturated regime is bit-for-bit
+//       unchanged" claim, previously carried only by argument;
+//   (b) the budget is RE-RESOLVED as the pool drains rather than frozen at
+//       claim, so every board resolves more than once and there are strictly
+//       more offers than boards. This is the half a claim-time-only reclaim
+//       fails, and the gate that would have caught T-I1.
+TEST(CorpusBuildSession, SaturatedFanOutOffersOneWorkerUntilItDrains) {
+  reset_corpus_phase_timings();
+  const fs::path out = fresh_out_dir("t1-saturated-drain");
+
+  std::mutex mu;
+  std::vector<std::pair<std::size_t, unsigned>> offers; // (unfinished, workers)
+  std::map<std::size_t, std::size_t> per_board;         // board -> resolutions
+  CorpusFitTestHooks hooks;
+  hooks.on_inner_fit_workers = [&](std::size_t board, std::size_t unfinished, unsigned workers) {
+    const std::lock_guard<std::mutex> lk(mu);
+    offers.emplace_back(unfinished, workers);
+    ++per_board[board];
+  };
+
+  auto built = build_batched(out, kDrainDates, kDrainDates.size(), kDrainOuterBudget, 1,
+                             /*scrub=*/true, &hooks);
+  ASSERT_TRUE(built.has_value()) << built.error().to_string();
+  ASSERT_EQ(corpus_phase_timings().boards_fitted, kDrainBoards);
+
+  const std::lock_guard<std::mutex> lk(mu);
+  ASSERT_FALSE(offers.empty());
+  ASSERT_EQ(per_board.size(), kDrainBoards);
+  for (const auto &[board, resolutions] : per_board) {
+    EXPECT_GT(resolutions, 1u) << "board " << board
+                               << " resolved its inner budget once for its entire life";
+  }
+  std::size_t saturated = 0;
+  std::size_t reclaimed_while_draining = 0;
+  for (const auto &[left, workers] : offers) {
+    if (left >= kDrainOuterBudget) {
+      ++saturated;
+      EXPECT_EQ(workers, 1u) << "a SATURATED pool (" << left << " tasks left, " << kDrainOuterBudget
+                             << "-wide budget) must keep every board's inner fit serial";
+    } else if (workers > 1u) {
+      ++reclaimed_while_draining;
+    }
+  }
+  EXPECT_GT(saturated, 0u) << "the fixture must actually saturate the pool (" << kDrainBoards
+                           << " boards vs a " << kDrainOuterBudget << "-wide budget)";
+  EXPECT_GT(reclaimed_while_draining, 0u) << "no board reclaimed anything as the pool drained";
+  EXPECT_GT(offers.size(), kDrainBoards)
+      << "only " << offers.size() << " budget resolutions for " << kDrainBoards
+      << " boards: the inner budget is frozen at claim time instead of being re-resolved as "
+         "the fan-out drains";
 }
 
 // ── T2 (SE-P2-6 / SE-P2-3): framing-only checkpoint resume + payload scrub ───
