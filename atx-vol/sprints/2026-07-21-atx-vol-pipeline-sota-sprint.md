@@ -338,7 +338,7 @@ Shared-file rules:
 | C | feat/pipeline-c | wt-pipe-c | blocked on M | — | — |
 | G | feat/pipeline-g | wt-pipe-g | blocked on M | — | — |
 | E | feat/pipeline-e | wt-pipe-e | blocked on M | — | — |
-| F | feat/pipeline-f | wt-pipe-f | blocked on M | — | — |
+| F | feat/pipeline-f | wt-pipe-f | DONE (6 commits) | F5 tip | F1 leak family (default `unpriced`=Error, spot-0.0 hedge fails closed, unmarked shares follow policy, opt-in NAV-vs-liquidation recon); F2 `ScheduleFillPolicy` + `book_entry_fill_slippage` (fills at ask/bid were BIT-IDENTICAL in NAV before); F3 discrete share divs + assignment deferral doc, **F3(a) PREMISE FAILED** (WS-M C3 already made PIT removals expressible); F6 quote-quality gates (zero bid / staleness / locked flag) — **admission-changing, see report**; F4 listed route honours the typed spec + build-corpus no longer erases typed keys; F5 `referenced_uids()` subset-deser, 33.3% record bytes, NAV bit-identical |
 | T | feat/pipeline-t | wt-pipe-t | blocked on M | — | — |
 | Y | feat/pipeline-y | wt-pipe-y | blocked on M (Y1-Y3 could pre-fork; Y4 post-M) | — | — |
 
