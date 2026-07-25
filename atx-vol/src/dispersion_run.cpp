@@ -1508,6 +1508,33 @@ RunConfig dispersion_engine_run_config_from(const DispersionRunConfig &config) {
   return run;
 }
 
+RunConfig make_listed_replay_run_config(const DispersionRunConfig &config, const Clock &clock,
+                                        const ListedDispersionStrategy &strategy) {
+  RunConfig run = dispersion_engine_run_config_from(config);
+  // WS-F F5 (BT-T2), review follow-up. `dispersion_run_backtest` supplies its
+  // OWN cache — it shares one across the replay and the reconciliation pass —
+  // and the engine deliberately never subsets a SUPPLIED cache, because it
+  // cannot know what else the caller will serve from it. So F5 was inert on
+  // exactly the path whose premise motivated it: the listed `run-backtest`
+  // still loaded the whole board every date.
+  //
+  // The caller DOES know. Both consumers of this cache touch exactly the
+  // schedule's uids — the replay through `ListedDispersionStrategy`, and
+  // `reconcile_listed_dispersion`, which resolves nothing but `leg.uid`
+  // (listed_dispersion_reconciliation.cpp:147) — so the cache is subsetted at
+  // construction. `uid_of` is unaffected: `MarketSnapshot::load` builds the
+  // symbol table from the WHOLE archive directory even under a subset.
+  //
+  // Capacity is the full clock, not the private cache's 3, because the
+  // reconciliation pass below holds every date's snapshot alive at once; a
+  // bounded cache would evict and re-load them.
+  const std::span<const std::uint32_t> replay_uids = strategy.referenced_uids();
+  run.snapshot_cache = std::make_shared<SnapshotCache>(
+      clock.size() > 0u ? clock.size() : 1u,
+      std::vector<std::uint32_t>(replay_uids.begin(), replay_uids.end()));
+  return run;
+}
+
 Status persist_typed_spec_keys(const fs::path &source_spec, const fs::path &run_spec) {
   ATX_TRY(KvMap source_values, read_kv_tsv(source_spec));
   // Exactly the vocabulary `write_resolved_spec` emits. Anything else in the
@@ -2051,28 +2078,11 @@ Status dispersion_run_backtest(const fs::path &run_dir) {
           ListedDispersionStrategy::create(schedule, spec.delta_band,
                                            ScheduleMarkPolicy::ExactArchive,
                                            run_config.fill_policy));
-  RunConfig config = dispersion_engine_run_config_from(run_config);
-  // WS-F F5 (BT-T2), review follow-up. This function supplies its OWN cache — it
-  // shares one across the replay and the reconciliation pass below — and the
-  // engine deliberately never subsets a SUPPLIED cache, because it cannot know
-  // what else the caller will serve from it. So F5 was inert on exactly the path
-  // whose premise motivated it: the listed `run-backtest` still loaded the whole
-  // board every date.
-  //
-  // The caller DOES know. Both consumers of this cache touch exactly the
-  // schedule's uids — the replay through `ListedDispersionStrategy`, and
-  // `reconcile_listed_dispersion`, which resolves nothing but `leg.uid`
-  // (listed_dispersion_reconciliation.cpp:147) — so the cache is subsetted at
-  // construction. `uid_of` is unaffected: `MarketSnapshot::load` builds the
-  // symbol table from the WHOLE archive directory even under a subset.
-  //
-  // Capacity is the full clock, not the private cache's 3, because the
-  // reconciliation pass below holds every date's snapshot alive at once; a
-  // bounded cache would evict and re-load them.
-  const std::span<const std::uint32_t> replay_uids = strategy.referenced_uids();
-  config.snapshot_cache = std::make_shared<SnapshotCache>(
-      clock.size() > 0u ? clock.size() : 1u,
-      std::vector<std::uint32_t>(replay_uids.begin(), replay_uids.end()));
+  // FIX-F N2: ONE named construction, shared with the guard test, so the guard
+  // cannot drift from what production actually runs. Everything the replay
+  // needs — the F4 typed-spec engine config AND F5's subsetted snapshot cache —
+  // is assembled there.
+  RunConfig config = make_listed_replay_run_config(run_config, clock, strategy);
   // The run records WHAT produced its numbers, regime first (M4), before the
   // replay so a failed run still leaves the evidence of what it attempted.
   ATX_TRY_VOID(write_dispersion_effective_config(run_dir / "run_config.tsv", run_config));

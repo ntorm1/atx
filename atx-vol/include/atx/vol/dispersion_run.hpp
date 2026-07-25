@@ -255,6 +255,22 @@ struct DispersionRunConfig {
 // that is set here is provably reachable and one that is not is provably dead.
 [[nodiscard]] RunConfig dispersion_engine_run_config_from(const DispersionRunConfig &config);
 
+// F5 (BT-T2) + FIX-F N2: the ONE construction of the engine RunConfig the listed
+// `run-backtest` replay runs under — the F4 typed-spec config above PLUS the
+// snapshot cache subsetted to the schedule's referenced uids, which the replay
+// and the reconciliation pass share.
+//
+// It is a named function rather than four lines inside `dispersion_run_backtest`
+// because the first guard written for F5 rebuilt the construction inside the
+// test, under the comment "verbatim the construction dispersion_run_backtest
+// performs". A comment cannot fail: reverting the production subsetting left the
+// whole suite green, which is the same blind spot that let F5 ship inert on this
+// path to begin with. The guard now calls THIS function, so "verbatim" becomes
+// "the same code" and reverting the subsetting turns the guard red.
+[[nodiscard]] RunConfig make_listed_replay_run_config(const DispersionRunConfig &config,
+                                                      const Clock &clock,
+                                                      const ListedDispersionStrategy &strategy);
+
 // F4: emit `run_config.tsv` — the EFFECTIVE value of every execution knob the
 // run actually used, REGIME FIRST (M4's reporting contract). A published NAV
 // that does not say which frictions produced it is not a result, and until F4
