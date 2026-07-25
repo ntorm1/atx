@@ -918,6 +918,85 @@ TEST(ListedDispersionPipeline, MarkDivergenceObserverCapturesThePerturbedLeg) {
   fs::remove_all(dir, error);
 }
 
+// MULTIPLICITY + ORDER. Every other fixture perturbs exactly one leg, which leaves the
+// per-divergence loop and the `out.push_back` APPEND semantics untested — and "one row
+// per divergence, in divergence order, accumulating" is precisely what T4 bit-compares
+// against the shadow's arena. Three otherwise-invisible defects are gated here:
+// clear-then-push, a `break` after the first push, and hoisting the push out of the loop.
+// (Accumulation ACROSS steps is gated by …RidesTheEngineStepHook's two-roll clock.)
+TEST(ListedDispersionPipeline, MarkDivergenceObserverAppendsOneRowPerDivergedLegInOrder) {
+  const std::vector<PricedSurface> source = surfaces(kNow0, 0.0);
+  ListedDispersionSchedule schedule = divergence_schedule(source);
+  std::vector<ListedScheduleLeg> &legs = schedule.rolls.front().legs;
+  // The roll is 2 x (1 index + 2 names) = 6 legs, ordered index call/put then each name's
+  // call/put. Perturb legs[2] (the N0 CALL) and legs[5] (the N1 PUT): different symbol,
+  // different side AND different strike, so the two rows cannot be confused for each
+  // other and neither can stand in for the other under a matching bug.
+  ASSERT_EQ(legs.size(), 6u);
+  const double first_live = legs[2].model_mark;
+  const double second_live = legs[5].model_mark;
+  legs[2].model_mark += 0.01;
+  legs[5].model_mark += 0.02; // a DIFFERENT perturbation, so the rows' diffs differ too
+  const ListedScheduleLeg first = legs[2];
+  const ListedScheduleLeg second = legs[5];
+  ASSERT_NE(first.symbol, second.symbol);
+  ASSERT_NE(first.side, second.side);
+  ASSERT_NE(first.strike, second.strike);
+
+  const fs::path dir = fresh_divergence_dir("multiplicity");
+  auto snapshot = MarketSnapshot::load(write_archive(dir, "2026-07-10", source));
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+  auto strategy = ListedDispersionStrategy::create(schedule, 0.0, ScheduleMarkPolicy::Record);
+  ASSERT_TRUE(strategy.has_value()) << strategy.error().to_string();
+  PortfolioState book;
+  std::uint64_t next_id = 100u;
+  ASSERT_TRUE(strategy->on_step(*snapshot, 0u, book, next_id).has_value());
+  // TWO divergences on one step: the input multiplicity the collector must reproduce.
+  const std::vector<MarkDivergence> &divergences = strategy->last_mark_divergences();
+  ASSERT_EQ(divergences.size(), 2u);
+
+  std::vector<ListedMarkDivergenceRow> rows;
+  const StepObserver observer = make_mark_divergence_observer(schedule, rows);
+  const SnapshotRef ref{"2026-07-11", "observer-does-not-read-this.atxvsa"};
+  const Status status = observer(StepEvent{0u, ref, *snapshot, *strategy});
+  ASSERT_TRUE(status.has_value()) << status.error().to_string();
+  // ONE row per divergence — not one row, not one per leg.
+  ASSERT_EQ(rows.size(), divergences.size());
+  ASSERT_EQ(rows.size(), 2u);
+
+  // DIVERGENCE ORDER, asserted against the strategy's own sequence (a different object,
+  // so this is not a restatement of the collector's own loop). Reversing or reordering
+  // the loop moves these.
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    EXPECT_EQ(rows[i].strike, divergences[i].strike) << i;
+    EXPECT_EQ(rows[i].expiry_ts_ns, divergences[i].expiry_ts_ns) << i;
+    EXPECT_EQ(rows[i].side, divergences[i].side) << i;
+    EXPECT_EQ(rows[i].schedule_mark, divergences[i].schedule_mark) << i;
+    EXPECT_EQ(rows[i].live_mark, divergences[i].live_mark) << i;
+  }
+  // And against the fixture's independently known legs, so the relational loop above
+  // cannot be satisfied by two copies of the same row.
+  EXPECT_EQ(rows[0].symbol, first.symbol);
+  EXPECT_EQ(rows[0].raw_symbol, first.raw_symbol);
+  EXPECT_EQ(rows[0].side, first.side);
+  EXPECT_EQ(rows[0].strike, first.strike);
+  EXPECT_EQ(rows[0].schedule_mark, first.model_mark);
+  EXPECT_EQ(rows[0].live_mark, first_live);
+  EXPECT_EQ(rows[1].symbol, second.symbol);
+  EXPECT_EQ(rows[1].raw_symbol, second.raw_symbol);
+  EXPECT_EQ(rows[1].side, second.side);
+  EXPECT_EQ(rows[1].strike, second.strike);
+  EXPECT_EQ(rows[1].schedule_mark, second.model_mark);
+  EXPECT_EQ(rows[1].live_mark, second_live);
+  // The two rows are genuinely distinct, including their metrics — the perturbations
+  // differ by 2x, so a duplicated row cannot satisfy both.
+  EXPECT_NE(rows[0].symbol, rows[1].symbol);
+  EXPECT_NE(rows[0].diff, rows[1].diff);
+  EXPECT_NE(rows[0].abs_diff_bps_of_mark, rows[1].abs_diff_bps_of_mark);
+  std::error_code error;
+  fs::remove_all(dir, error);
+}
+
 TEST(ListedDispersionPipeline, MarkDivergenceObserverIsSilentWhenNothingDiverged) {
   const std::vector<PricedSurface> source = surfaces(kNow0, 0.0);
   const ListedDispersionSchedule clean = divergence_schedule(source);
@@ -1077,33 +1156,58 @@ TEST(ListedDispersionPipeline, MarkDivergenceObserverGuardsTheRollCursorAndValua
   fs::remove_all(dir, error);
 }
 
-// THE ENGINE-INTEGRATION GATE. Everything above hand-builds its StepEvent and so
-// cannot observe where the engine fires the hook. This one drives the real
-// `run_backtest` strategy overload with nothing but `RunConfig::step_observer` set,
-// and asserts a nonzero row count came back — which is exactly what the shadow replay
-// loop in the dispersion example produced by re-walking the clock. If the hook were
-// fired anywhere that has already cleared or overwritten the strategy's per-step
-// divergence record, this test reports 0 rows and fails; every unit test above would
-// still pass.
+// THE ENGINE-INTEGRATION GATE. Everything above hand-builds its StepEvent and so cannot
+// observe where — or whether — the engine fires the hook. This one drives the real
+// `run_backtest` strategy overload with nothing but `RunConfig::step_observer` set, over
+// a TWO-DATE / TWO-ROLL clock, and asserts three rows accumulated across two steps:
+//
+//   * a nonzero row count at all — if the hook fired anywhere that has already cleared
+//     or overwritten last_mark_divergences_, this reports 0 and fails while every unit
+//     test above still passes;
+//   * rows from BOTH steps, which is the only collector-level coverage of T1's per-step
+//     firing site (a one-date clock exercises the inception site alone);
+//   * ACCUMULATION — `out` is appended to, never cleared per call. A per-call clear
+//     leaves only the last step's rows, which no single-step test can see.
 TEST(ListedDispersionPipeline, MarkDivergenceObserverRidesTheEngineStepHook) {
-  const std::vector<PricedSurface> source = surfaces(kNow0, 0.0);
-  ListedDispersionSchedule schedule = divergence_schedule(source);
-  ListedScheduleLeg &target = schedule.rolls.front().legs.back();
-  const double live_mark = target.model_mark;
-  target.model_mark += 0.01;
-  const ListedScheduleLeg perturbed = target;
+  const std::vector<PricedSurface> day0 = surfaces(kNow0, 0.0);
+  const std::vector<PricedSurface> day1 = surfaces(kNow1, 2.0);
+  ListedDispersionSchedule schedule;
+  schedule.rolls.push_back(roll(selection("2026-07-10", kNow0, kExpiry0, 1u), day0, 4u));
+  schedule.rolls.push_back(roll(selection("2026-07-11", kNow1, kExpiry1, 101u), day1, 5u));
+  ASSERT_EQ(schedule.rolls[0].legs.size(), 6u);
+  ASSERT_EQ(schedule.rolls[1].legs.size(), 6u);
+
+  // ONE diverged leg on the first roll, TWO on the second. So the expected row sequence
+  // is [roll0 N1-put, roll1 N0-call, roll1 N1-put]: a total that no per-call clear (2),
+  // no `break` (2) and no hoisted push (2) can produce.
+  const double live_a = schedule.rolls[0].legs[5].model_mark;
+  schedule.rolls[0].legs[5].model_mark += 0.01;
+  const double live_b = schedule.rolls[1].legs[2].model_mark;
+  schedule.rolls[1].legs[2].model_mark += 0.01;
+  const double live_c = schedule.rolls[1].legs[5].model_mark;
+  schedule.rolls[1].legs[5].model_mark += 0.02;
+  const ListedScheduleLeg leg_a = schedule.rolls[0].legs[5];
+  const ListedScheduleLeg leg_b = schedule.rolls[1].legs[2];
+  const ListedScheduleLeg leg_c = schedule.rolls[1].legs[5];
 
   const fs::path dir = fresh_divergence_dir("engine");
   CorpusManifest manifest;
-  manifest.dates.push_back("2026-07-10");
-  CorpusEntry entry;
-  entry.date = "2026-07-10";
-  entry.symbol = "SPY";
-  entry.status = CorpusFitStatus::Ok;
-  entry.archive_path = write_archive(dir, "2026-07-10", source);
-  manifest.entries.push_back(std::move(entry));
+  manifest.dates = {"2026-07-10", "2026-07-11"};
+  CorpusEntry entry0;
+  entry0.date = "2026-07-10";
+  entry0.symbol = "SPY";
+  entry0.status = CorpusFitStatus::Ok;
+  entry0.archive_path = write_archive(dir, "2026-07-10", day0);
+  CorpusEntry entry1;
+  entry1.date = "2026-07-11";
+  entry1.symbol = "SPY";
+  entry1.status = CorpusFitStatus::Ok;
+  entry1.archive_path = write_archive(dir, "2026-07-11", day1);
+  manifest.entries.push_back(std::move(entry0));
+  manifest.entries.push_back(std::move(entry1));
   auto clock = Clock::from_manifest(manifest);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  ASSERT_EQ(clock->size(), 2u);
   auto strategy = ListedDispersionStrategy::create(schedule, 0.0, ScheduleMarkPolicy::Record);
   ASSERT_TRUE(strategy.has_value()) << strategy.error().to_string();
 
@@ -1113,23 +1217,49 @@ TEST(ListedDispersionPipeline, MarkDivergenceObserverRidesTheEngineStepHook) {
   config.step_observer = make_mark_divergence_observer(schedule, rows);
   const auto result = run_backtest(*clock, *strategy, config);
   ASSERT_TRUE(result.has_value()) << result.error().to_string();
-  // The run genuinely happened and the roll genuinely fired.
-  ASSERT_EQ(result->size(), 1u);
+  // The run genuinely stepped twice and BOTH rolls genuinely fired.
+  ASSERT_EQ(result->size(), 2u);
   ASSERT_TRUE(strategy->all_rolls_consumed());
+  ASSERT_EQ(strategy->next_roll_index(), 2u);
 
-  // THE GATE: strictly more than zero rows, collected by the engine's own hook.
-  ASSERT_EQ(rows.size(), 1u);
-  EXPECT_EQ(rows.front().date, "2026-07-10"); // the clock ref's date
-  EXPECT_EQ(rows.front().symbol, perturbed.symbol);
-  EXPECT_EQ(rows.front().raw_symbol, perturbed.raw_symbol);
-  EXPECT_EQ(rows.front().strike, perturbed.strike);
-  EXPECT_EQ(rows.front().expiry_ts_ns, perturbed.expiry_ts_ns);
-  EXPECT_EQ(rows.front().side, perturbed.side);
-  EXPECT_EQ(rows.front().schedule_mark, perturbed.model_mark);
-  EXPECT_DOUBLE_EQ(rows.front().live_mark, live_mark);
-  EXPECT_NE(rows.front().live_mark, rows.front().schedule_mark);
-  EXPECT_LT(rows.front().diff, 0.0);
-  EXPECT_GT(rows.front().abs_diff_bps_of_mark, 0.0);
+  // THE GATE: three rows, accumulated across two steps, in divergence-then-step order.
+  ASSERT_EQ(rows.size(), 3u);
+  // Rows from BOTH steps: step 0's inception fire and step 1's per-step fire.
+  EXPECT_EQ(rows[0].date, "2026-07-10");
+  EXPECT_EQ(rows[1].date, "2026-07-11");
+  EXPECT_EQ(rows[2].date, "2026-07-11");
+  // Step 0's single row survived step 1 — i.e. `out` was appended to, not rebuilt.
+  EXPECT_EQ(rows[0].symbol, leg_a.symbol);
+  EXPECT_EQ(rows[0].raw_symbol, leg_a.raw_symbol);
+  EXPECT_EQ(rows[0].side, leg_a.side);
+  EXPECT_EQ(rows[0].strike, leg_a.strike);
+  EXPECT_EQ(rows[0].expiry_ts_ns, leg_a.expiry_ts_ns);
+  EXPECT_EQ(rows[0].schedule_mark, leg_a.model_mark);
+  EXPECT_EQ(rows[0].live_mark, live_a);
+  // Step 1's two rows, in the roll's leg order (N0 call before N1 put).
+  EXPECT_EQ(rows[1].symbol, leg_b.symbol);
+  EXPECT_EQ(rows[1].raw_symbol, leg_b.raw_symbol);
+  EXPECT_EQ(rows[1].side, leg_b.side);
+  EXPECT_EQ(rows[1].strike, leg_b.strike);
+  EXPECT_EQ(rows[1].expiry_ts_ns, leg_b.expiry_ts_ns);
+  EXPECT_EQ(rows[1].schedule_mark, leg_b.model_mark);
+  EXPECT_EQ(rows[1].live_mark, live_b);
+  EXPECT_EQ(rows[2].symbol, leg_c.symbol);
+  EXPECT_EQ(rows[2].raw_symbol, leg_c.raw_symbol);
+  EXPECT_EQ(rows[2].side, leg_c.side);
+  EXPECT_EQ(rows[2].strike, leg_c.strike);
+  EXPECT_EQ(rows[2].expiry_ts_ns, leg_c.expiry_ts_ns);
+  EXPECT_EQ(rows[2].schedule_mark, leg_c.model_mark);
+  EXPECT_EQ(rows[2].live_mark, live_c);
+  // Roll 1's expiry differs from roll 0's, so a collector that reused the previous
+  // roll's legs is caught independently of the symbols.
+  EXPECT_NE(rows[0].expiry_ts_ns, rows[1].expiry_ts_ns);
+  for (const ListedMarkDivergenceRow &row : rows) {
+    EXPECT_NE(row.live_mark, row.schedule_mark);
+    EXPECT_LT(row.diff, 0.0); // every frozen mark was perturbed UP
+    EXPECT_GT(row.abs_diff_bps_of_mark, 0.0);
+    EXPECT_TRUE(std::isfinite(row.abs_diff_bps_of_mark));
+  }
   std::error_code error;
   fs::remove_all(dir, error);
 }

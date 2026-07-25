@@ -286,10 +286,22 @@ struct ListedMarkDivergenceRow {
 [[nodiscard]] double listed_mark_divergence_bps(double schedule_mark, double live_mark) noexcept;
 
 // Build a StepObserver that appends one row per leg whose live mark diverged from
-// its frozen schedule mark on the step just observed. Requires the observed strategy
-// to be a ListedDispersionStrategy (Record policy); anything else is a fail-closed
-// InvalidArgument. `schedule` and `out` MUST outlive the run_backtest call that
-// consumes the returned observer.
+// its frozen schedule mark on the step just observed, in divergence order, ACCUMULATING
+// across steps — `out` is appended to and never cleared, so one observer collects a
+// whole run. Requires the observed strategy to be a ListedDispersionStrategy (Record
+// policy); anything else is a fail-closed InvalidArgument. `schedule` and `out` MUST
+// outlive the run_backtest call that consumes the returned observer.
+//
+// SCHEDULE RELATIONSHIP — the invariant is VALUE equality, not object identity.
+// `ListedDispersionStrategy::create` takes its schedule BY VALUE and stores a copy, so
+// the observed strategy and this `schedule` are NEVER the same object; there is no
+// identity to rely on. What the two fail-closed guards below rest on is that the
+// observed schedule is value-equal to the one the strategy replays — same roll count,
+// same roll ORDER, same leg keys — which the production wiring satisfies because both
+// sides descend from one parsed schedule and nothing on the path reorders rolls
+// (`validate_listed_dispersion_schedule` takes a const reference). Under that invariant
+// both guards are unconditionally satisfied and cannot fire on legitimate input; a
+// caller that breaks value equality gets a named Err instead of undefined behavior.
 //
 // BOOK INDEPENDENCE (the L10 equivalence property — do not weaken it). Every row is
 // derived from exactly three inputs: the strategy's already-computed

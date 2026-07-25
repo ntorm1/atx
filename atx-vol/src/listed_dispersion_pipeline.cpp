@@ -478,11 +478,12 @@ StepObserver make_mark_divergence_observer(const ListedDispersionSchedule &sched
     // Divergences are populated only on a roll step; the roll that just fired owns
     // the legs carrying each contract's symbol/raw_symbol. A non-empty record implies
     // on_step returned Ok, so the cursor has already advanced past that roll and is
-    // at least 1 — but `schedule` here is an INDEPENDENT input (the caller may hand a
-    // schedule that is not the strategy's), so the bound is checked rather than
-    // assumed. Indexing an unrelated schedule would be undefined behavior, and the
-    // shadow replay this observer replaces could not hit it (it shared one schedule
-    // object with its strategy).
+    // at least 1 — but `schedule` here is an INDEPENDENT input and is never the
+    // strategy's own object (create() stores a copy), so the bound is checked against
+    // the observed schedule rather than assumed from the cursor. Indexing a schedule
+    // that is not value-equal to the strategy's would be undefined behavior; the shadow
+    // replay this observer replaces could not reach that state, because its strategy
+    // was constructed from the very schedule its loop indexed.
     const std::size_t roll_index = strategy->next_roll_index();
     if (roll_index == 0u || roll_index > schedule.rolls.size()) {
       return Err(ErrorCode::InvalidArgument,
