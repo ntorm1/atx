@@ -80,21 +80,69 @@ def _read_tsv(path: str) -> tuple[list[str], list[dict[str, str]]]:
     """
     header: list[str] | None = None
     rows: list[dict[str, str]] = []
+    magic: str | None = None
     with open(path, "r", encoding="utf-8") as fh:
-        for line in fh:
+        for lineno, line in enumerate(fh, start=1):
             line = line.rstrip("\r\n")
             if not line or line.startswith("#"):
                 continue
             fields = line.split("\t")
             if header is None and _MAGIC_RE.match(fields[0]):
-                continue  # magic sentinel line, e.g. ATX_LISTED_DISPERSION_SCHEDULE
+                # FIX-5/M11: the magic line used to be skipped without a glance. Its
+                # C++ sibling, `read_dict_tsv` in src/dispersion_run.cpp, validates
+                # both the sentinel and its version; a silent skip here means a file
+                # written by a NEWER schedule writer is parsed by column name against
+                # the old expectations and reported as a clean comparison. The version
+                # token is retained and checked below rather than discarded.
+                magic = line
+                continue
             if header is None:
                 header = fields
                 continue
+            # FIX-5/M11: `dict(zip(header, fields))` silently truncated to the SHORTER
+            # of the two — a ragged row dropped its tail columns and every downstream
+            # `row[name]` then read a value from the wrong record or raised a bare
+            # KeyError far from the cause. The C++ sibling errors on exactly this, so
+            # match it: a shape mismatch is a corrupt file, not a row to interpret.
+            if len(fields) != len(header):
+                raise ValueError(
+                    f"{path}:{lineno}: ragged row — {len(fields)} fields against "
+                    f"{len(header)} header columns. First field: {fields[0]!r}"
+                )
             rows.append(dict(zip(header, fields)))
     if header is None:
         raise ValueError(f"{path}: no column header row found")
+    if magic is not None:
+        _check_magic_version(path, magic)
     return header, rows
+
+
+# Sentinel lines are `ATX_<NAME>\t<version>` (or `ATX_<NAME>` alone on the older
+# writers). Only major-version compatibility is asserted: this reader addresses
+# columns by NAME, so an added column is harmless, but a major bump is the
+# writer's own declaration that names/semantics moved.
+_SUPPORTED_MAGIC_MAJOR = 1
+
+
+def _check_magic_version(path: str, magic_line: str) -> None:
+    parts = magic_line.split("\t")
+    if len(parts) < 2 or not parts[1].strip():
+        return  # pre-versioned writer; nothing to check
+    token = parts[1].strip()
+    major = token.split(".")[0]
+    try:
+        major_i = int(major)
+    except ValueError:
+        raise ValueError(
+            f"{path}: unparseable schema version {token!r} on the {parts[0]} "
+            "sentinel line"
+        ) from None
+    if major_i != _SUPPORTED_MAGIC_MAJOR:
+        raise ValueError(
+            f"{path}: {parts[0]} schema major version {major_i} is not supported "
+            f"by this reader (expected {_SUPPORTED_MAGIC_MAJOR}). Columns are read "
+            "by name, so a major bump means names or semantics moved."
+        )
 
 
 # ── Stats ────────────────────────────────────────────────────────────────────

@@ -17,6 +17,14 @@ namespace atx::vol::simd::detail {
 // other greeks each gate a group of solves: vega/volga/vanna -> the sigma+/- solves;
 // rho -> the r+/- solves; charm -> the wide S+/-2h speed stencils. A default-true
 // GreekNeeds keeps the full 5-solve bundle (backward-compatible).
+//
+// FIX-5/M2: this is one of TWO independent GreekNeeds structs — the other is
+// `atx::vol::GreekNeeds` in include/atx/vol/priced_surface.hpp, which is what every
+// caller above american_boundary_batch.cpp speaks. There is no converting constructor
+// and no static_assert between them; they meet in american_boundary_batch.cpp, which
+// now initializes this one by DESIGNATED initializer, so a field reorder on either
+// side can no longer silently mis-map the mask. Keep the field NAMES
+// (vega/rho/charm) identical across the two; the ORDER is no longer load-bearing.
 struct GreekNeeds {
     bool vega = true;  // vega, volga, vanna (the sigma+/- solves)
     bool rho = true;   // rho (the r+/- solves)

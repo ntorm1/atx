@@ -677,7 +677,26 @@ TEST(DispersionWorkflow, TightGrossVegaLimitClampsTheBookAndRecordsTheReason) {
   ASSERT_TRUE(clamped) << clamped.error().to_string();
 
   // The book is scaled down toward the limit, not left oversized.
-  EXPECT_LT(std::fabs(clamped->track.gross_vega.front()), 0.5 * natural_vega);
+  //
+  // FIX-5/M5: this used to read
+  //     EXPECT_LT(fabs(clamped->track.gross_vega.front()), 0.5 * natural_vega);
+  // which compared the NET book vega (the track column, x multiplier) against the
+  // probe's GROSS quantity. `natural_gross_vega`'s own comment above explains that a
+  // vega-neutral dispersion book drives the NET column to ~0 BY CONSTRUCTION, so that
+  // assertion held whether or not the clamp fired — near-vacuous by the sprint's own
+  // definition. 2a7321c fixed the LIMIT computation and left the ASSERTION.
+  //
+  // The net-vega column cannot carry this property at all, so the size claim is made
+  // on a column that genuinely scales with book size, against the unlimited run as its
+  // own control. Both runs share a fixture, a schedule and a config modulo the limit,
+  // so the only thing that can move this is the clamp.
+  ASSERT_FALSE(unlimited->track.turnover_notional.empty());
+  ASSERT_FALSE(clamped->track.turnover_notional.empty());
+  EXPECT_GT(unlimited->track.turnover_notional.front(), 0.0)
+      << "control run must actually open a book, else the comparison is vacuous";
+  EXPECT_LT(clamped->track.turnover_notional.front(),
+            unlimited->track.turnover_notional.front())
+      << "a clamped book must trade less notional than the unclamped one";
   // Still trading — a clamp is not a halt.
   EXPECT_GT(clamped->track.n_open_lots.front(), 0u);
 

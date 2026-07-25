@@ -171,6 +171,29 @@ void greeks_scalar_lane(const double* S, const double* K, const double* T,
     }
 }
 
+// A9's unrequested-column zeroing, factored out (FIX-5/M4). The AVX2 kernel leaves
+// unrequested greeks at 0 (K4 first-order tier); the scalar oracle returns a FULL
+// bundle — and american_greeks_al may route to american_greeks_fd, which ignores the
+// needs mask — so any lane that came from the scalar oracle must be zeroed to keep the
+// bundle internally consistent. This was applied only to the AVX2 route's PATCHED
+// lanes; the `!avx2` whole-batch early return returned the full bundle unzeroed, so a
+// {delta}-only caller got different unrequested columns depending on the ISA. Put and
+// call were symmetric, so it is an ISA asymmetry rather than an F1 one, and latent —
+// both production callers pre-gate on avx2_greeks_selected — but it is the same
+// "same request, answer depends on the route" class the sprint exists to close.
+void zero_unrequested(AmericanGreeks& gp, bool need_vega, bool need_rho,
+                      bool need_charm) noexcept {
+    if (!need_vega) {
+        gp.vega = gp.volga = gp.vanna = 0.0;
+    }
+    if (!need_rho) {
+        gp.rho = 0.0;
+    }
+    if (!need_charm) {
+        gp.charm = 0.0;
+    }
+}
+
 } // namespace
 
 bool avx2_greeks_selected(SimdIsa isa) noexcept {
@@ -197,13 +220,21 @@ SimdRoute american_put_greeks_batch(const double* S, const double* K, const doub
     }
     if (!avx2) {
         // Scalar oracle stays the full american_greeks_al bundle (correctness first; the
-        // first-order solve-skip win is on the laned majority, not the scalar patch).
+        // first-order solve-skip win is on the laned majority, not the scalar patch) —
+        // but FIX-5/M4: the unrequested columns are still zeroed, exactly as the AVX2
+        // route's patched lanes are, so this wrapper's contract ("unrequested greeks
+        // left 0") does not depend on which ISA answered.
         for (std::size_t i = 0; i < n; ++i) {
             greeks_scalar_lane(S, K, T, sigma, r, q, opts, Side::Put, out_greeks, i);
+            zero_unrequested(out_greeks[i], need_vega, need_rho, need_charm);
         }
         return SimdRoute::Scalar;
     }
-    const detail::GreekNeeds needs{need_vega, need_rho, need_charm};
+    // FIX-5/M2: designated initializers at the bridge between the two independent
+    // GreekNeeds structs (priced_surface.hpp's, whose fields arrive here as the three
+    // bool parameters, and simd/american_greeks_avx2.hpp's). Positional aggregate init
+    // silently mis-mapped the mask if either side were reordered; by name it cannot.
+    const detail::GreekNeeds needs{.vega = need_vega, .rho = need_rho, .charm = need_charm};
     // AVX2 route: lane the bundle, then patch the lanes the kernel could not handle
     // (non-early-exercise on any needed bump state, or non-finite) through the scalar
     // oracle. Chunked with a stack `handled` buffer to stay allocation-free.
@@ -218,22 +249,10 @@ SimdRoute american_put_greeks_batch(const double* S, const double* K, const doub
             if (!handled[i]) {
                 greeks_scalar_lane(S + off, K + off, T + off, sigma + off, r + off, q + off,
                                    opts, Side::Put, out_greeks + off, i);
-                // A9 (simd-review finding 9): the vector-handled lanes leave the
-                // unrequested greeks at 0 (K4 first-order tier). The scalar oracle
-                // returns a FULL bundle — and american_greeks_al may itself route to
-                // american_greeks_fd, which ignores the needs mask — so zero the
-                // unrequested columns here to keep the laned bundle internally
-                // consistent across handled and patched lanes.
-                AmericanGreeks& gp = out_greeks[off + i];
-                if (!need_vega) {
-                    gp.vega = gp.volga = gp.vanna = 0.0;
-                }
-                if (!need_rho) {
-                    gp.rho = 0.0;
-                }
-                if (!need_charm) {
-                    gp.charm = 0.0;
-                }
+                // A9 (simd-review finding 9): keep the patched lane consistent with the
+                // vector-handled ones. Shared with the `!avx2` route as of FIX-5/M4 —
+                // one definition, so the two can no longer drift apart.
+                zero_unrequested(out_greeks[off + i], need_vega, need_rho, need_charm);
             }
         }
     }
@@ -255,12 +274,16 @@ SimdRoute american_call_greeks_batch(const double* S, const double* K, const dou
         return avx2 ? SimdRoute::Avx2 : SimdRoute::Scalar;
     }
     if (!avx2) {
+        // FIX-5/M4, kept symmetric with the put wrapper: zero the unrequested columns
+        // on this route too, so the contract does not depend on the ISA.
         for (std::size_t i = 0; i < n; ++i) {
             greeks_scalar_lane(S, K, T, sigma, r, q, opts, Side::Call, out_greeks, i);
+            zero_unrequested(out_greeks[i], need_vega, need_rho, need_charm);
         }
         return SimdRoute::Scalar;
     }
-    const detail::GreekNeeds needs{need_vega, need_rho, need_charm};
+    // FIX-5/M2: by name, not by position — see the put wrapper.
+    const detail::GreekNeeds needs{.vega = need_vega, .rho = need_rho, .charm = need_charm};
     constexpr std::size_t kChunk = 512;
     for (std::size_t off = 0; off < n; off += kChunk) {
         const std::size_t cn = (n - off < kChunk) ? (n - off) : kChunk;
@@ -273,23 +296,10 @@ SimdRoute american_call_greeks_batch(const double* S, const double* K, const dou
                 greeks_scalar_lane(S + off, K + off, T + off, sigma + off, r + off, q + off,
                                    opts, Side::Call, out_greeks + off, i);
                 // A9 (simd-review finding 9) — mirrored onto the call path by FIX-1/F1
-                // (rev-ws-g M1-1). Identical rationale to the put wrapper above: the
-                // vector-handled lanes leave the unrequested greeks at 0 (K4 first-order
-                // tier), the scalar oracle returns a FULL bundle — and american_greeks_al
-                // may itself route to american_greeks_fd, which ignores the needs mask —
-                // so zero the unrequested columns here to keep the laned bundle internally
-                // consistent across handled and patched lanes. Kept deliberately symmetric
-                // with the put wrapper; do not "improve" one side alone.
-                AmericanGreeks& gp = out_greeks[off + i];
-                if (!need_vega) {
-                    gp.vega = gp.volga = gp.vanna = 0.0;
-                }
-                if (!need_rho) {
-                    gp.rho = 0.0;
-                }
-                if (!need_charm) {
-                    gp.charm = 0.0;
-                }
+                // (rev-ws-g M1-1). Identical rationale to the put wrapper above, and as
+                // of FIX-5/M4 literally the same code, so the symmetry is structural
+                // rather than a comment asking future readers to preserve it.
+                zero_unrequested(out_greeks[off + i], need_vega, need_rho, need_charm);
             }
         }
     }

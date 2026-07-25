@@ -659,15 +659,26 @@ stage_full_greek_seeds(const SurfaceSet &surfaces, std::span<const OptionContrac
     // rejected as a candidate rather than stamped NumericError, so the contract falls
     // through to the ordinary solve and is re-guarded at that stamp -- a seed is only a
     // reuse optimization, so declining to trust it is always safe.
-    if (!greeks_all_finite(representative.greeks(), greek_needs)) {
+    //
+    // FIX-5/M1: this was the ONE stamp of the four that guarded the requested set but
+    // did NOT normalize first, so `out.g = representative.greeks()` copied an
+    // UNREQUESTED non-finite slot straight through — and FIX-1/F3's whole point is
+    // that a consumer's `g.rho * dr` is NaN even when dr is 0.0. Dormant today only
+    // because `full_greek_seed` mints under the full default `needs`; it goes live the
+    // moment `full_greek_seed` learns a `needs` parameter. Normalizing here costs
+    // nothing (it only touches non-finite unrequested slots, so every seed accepted
+    // today stays bit-for-bit identical) and removes the dependency on that accident.
+    AmericanGreeks seed_g = representative.greeks();
+    detail::normalize_unrequested_greeks(seed_g, greek_needs);
+    if (!greeks_all_finite(seed_g, greek_needs)) {
       counts.rejected_candidates += static_cast<std::uint64_t>(std::distance(first, last));
       continue;
     }
 
     ContractPx &out = staged[contract_index];
     out = ContractPx{};
-    out.fair_value = representative.greeks().price;
-    out.g = representative.greeks();
+    out.fair_value = seed_g.price;
+    out.g = seed_g;
     out.iv = representative.iv();
     out.status = PriceStatus::Ok;
     if (skew_adjusted_delta) {

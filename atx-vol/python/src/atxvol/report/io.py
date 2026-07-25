@@ -81,6 +81,16 @@ def read_backtest_tsv(path: str) -> tuple["_av.BacktestResult", dict[str, str], 
         # broke the module's own bit-exact round-trip claim for this column.
         result.ts_ns = [int(r[ti]) for r in rows]
 
+    # FIX-5/M11 — KNOWN GAP, deliberately not closed here. `resize` above zero-fills
+    # every series, and a series the file OMITS is therefore indistinguishable
+    # downstream from one the file reports as genuinely 0.0 — attribution charts fold
+    # those zeros in and render a missing axis as a flat, present, zero axis. Closing
+    # it needs a per-column presence signal, and `BacktestResult` is the C++ binding's
+    # type with no such field and no room for one that does not change the public API;
+    # the honest options are a `columns_present` accessor on the binding or a fourth
+    # element on this function's return tuple, both of which are API changes rather
+    # than a fix. Recorded rather than papered over. Callers that need the distinction
+    # today can read it off the `header` the file carried.
     for name in _SERIES:
         if name in index:
             setattr(result, name, column(name))
