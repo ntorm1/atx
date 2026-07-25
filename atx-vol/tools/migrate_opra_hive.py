@@ -103,33 +103,59 @@ def _validate_schema(schema: pa.Schema, path) -> None:
 
 
 def _footer_underlyings(path) -> Optional[Set[str]]:
-    """Distinct ``underlying`` values recoverable from parquet footer statistics
-    alone (no data scan). Returns ``None`` when the footer cannot answer it
-    (missing stats), which the caller treats as "cannot prove superset" and so
-    rewrites — the safe, correctness-preserving direction.
+    """Distinct ``underlying`` values in a destination date file — exact for
+    any writer, not just the one this tool uses.
 
-    Files we write have one row group per underlying (min == max per group), so
-    the union of per-row-group {min, max} is the exact distinct set. For any
-    other file this union is always a SUBSET of the true set (min/max are real
-    values present), so it can never wrongly claim a superset.
+    Fast path: when every row group holds a single underlying (min == max ==
+    that value), footer statistics give the full set with no data scan. But
+    the one-row-group-per-underlying layout ``_write_atomic`` produces is a
+    convention of this tool, not a frozen invariant of every file this
+    function might be asked about — a hand-written or future destination file
+    could pack several underlyings into one sorted row group. In that case
+    min/max are only the two extremes and every name sorting strictly between
+    them is invisible to a naive {min, max} union, which makes the union a
+    strict SUBSET of the true set.
+
+    That undercount is not cosmetic. ``migrate()`` treats this return value as
+    "what the destination already has" and skips the source merge only when it
+    is a superset of the source's underlyings. An undercounted destination set
+    can spuriously fail that superset test even though the true destination
+    already covers the source, and when it does, control falls through to
+    ``_merge_date``, which rebuilds the date file from the v1 sources ALONE
+    and ``os.replace``s it over the destination — silently discarding every
+    underlying the destination had that is absent from the v1 tree (for
+    example, anything a paid Databento pull added there). So when a row
+    group's statistics are absent, lack min/max, or have ``min != max``, fall
+    back to a single-column full read of ``underlying`` for the whole file —
+    still far cheaper than reading the data columns, and correct regardless of
+    row-group layout. Do not "optimize" this fallback away: the failure mode
+    it prevents is not a wrong skip, it is a destructive rewrite.
+
+    Returns ``None`` only when the file cannot be opened, or has no
+    ``underlying`` column, or the fallback read itself fails — every one of
+    those is "cannot determine the destination's set" and the caller treats
+    ``None`` as "cannot prove superset", forcing a rewrite. That is the safe
+    direction: an empty ``set()`` would also fail the superset test and force
+    the same rewrite, but without honestly saying the check couldn't be done,
+    so a read failure must never be reported as ``set()``.
     """
     try:
         pf = pq.ParquetFile(path)
-    except Exception:  # noqa: BLE001 — unreadable footer -> force rewrite
-        return None
-    md = pf.metadata
-    names = pf.schema_arrow.names
-    if "underlying" not in names:
-        return None
-    ci = names.index("underlying")
-    out: Set[str] = set()
-    for rg in range(md.num_row_groups):
-        stats = md.row_group(rg).column(ci).statistics
-        if stats is None or not stats.has_min_max:
+        names = pf.schema_arrow.names
+        if "underlying" not in names:
             return None
-        out.add(stats.min)
-        out.add(stats.max)
-    return out
+        ci = names.index("underlying")
+        md = pf.metadata
+        out: Set[str] = set()
+        for rg in range(md.num_row_groups):
+            stats = md.row_group(rg).column(ci).statistics
+            if stats is None or not stats.has_min_max or stats.min != stats.max:
+                return set(pf.read(columns=["underlying"]).column(0).to_pylist())
+            out.add(stats.min)
+        return out
+    except Exception:  # noqa: BLE001 — unreadable file/footer -> force rewrite,
+        # never silently degrade to set() (see docstring)
+        return None
 
 
 # ── per-date merge / atomic write ────────────────────────────────────────────

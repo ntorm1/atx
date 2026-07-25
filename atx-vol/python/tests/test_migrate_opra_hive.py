@@ -257,3 +257,93 @@ def test_merge_date_direct(tmp_path):
     t = pf.read()
     pairs = list(zip(t.column("underlying").to_pylist(), t.column("symbol").to_pylist()))
     assert pairs == sorted(pairs)
+
+
+# ── IMP-3 regression: footer min/max union under-reports a multi-underlying
+# row group, which used to make migrate() rebuild (and destroy) the
+# destination from the v1 sources alone ────────────────────────────────────
+def test_multi_underlying_row_group_dest_not_destructively_rewritten(tmp_path):
+    """A destination file with a SINGLE row group spanning {AAA, MMM, ZZZ} has
+    footer stats min=AAA, max=ZZZ -- MMM sorts strictly between them and is
+    invisible to a naive min/max union, so the old code's derived destination
+    set was {AAA, ZZZ}, silently missing MMM.
+
+    The v1 source tree for this date holds {AAA, MMM} (MMM exists in both
+    places; ZZZ is paid-only -- added by a Databento pull and never present in
+    v1). Because MMM is invisible to the old derived set, the old superset
+    check {AAA, ZZZ} >= {AAA, MMM} spuriously evaluates False (MMM looks
+    "missing" even though the true destination has it), so the old code falls
+    through to ``_merge_date``, which rebuilds the date file from the v1
+    sources ALONE -- silently destroying ZZZ, which has no source to rebuild
+    from. (Using MMM itself as the only "missing" source symbol would not
+    reproduce the destructive path: since MMM is also in v1, the naive rebuild
+    would still contain it, masking the bug. ZZZ -- present only in the true
+    destination set and never in any derived/rederived set -- is what actually
+    gets lost, and that is the concrete harm this test guards against.)
+
+    Confirmed failing against the pre-fix ``_footer_underlyings``: pre-fix,
+    this scenario produces ``status == "written"`` and ZZZ is gone from the
+    destination afterward (verified by running this exact construction
+    against the unpatched function before the fix landed)."""
+    src, dst = tmp_path / "v1", tmp_path / "v2"
+    _write_v1(src, "AAA", D1, ["AAA_C1"])
+    _write_v1(src, "MMM", D1, ["MMM_C1"])
+    # ZZZ deliberately absent from v1 -- paid-only, must never be rebuilt away.
+
+    whole = pa.concat_tables(
+        [
+            _v1_table("AAA", ["AAA_C1"]),
+            _v1_table("MMM", ["MMM_C1"]),
+            _v1_table("ZZZ", ["ZZZ_C1"]),
+        ]
+    ).cast(mig.CANONICAL_SCHEMA)
+    dst_f = _dst_file(dst, D1)
+    dst_f.parent.mkdir(parents=True, exist_ok=True)
+    # ONE write_table call -> ONE row group (do not rely on default row-group
+    # sizing, which could accidentally split per-underlying and hide the bug).
+    with pq.ParquetWriter(dst_f, whole.schema) as writer:
+        writer.write_table(whole)
+
+    pf = pq.ParquetFile(dst_f)
+    assert pf.metadata.num_row_groups == 1, "fixture must produce a single row group"
+    ci = pf.schema_arrow.names.index("underlying")
+    st = pf.metadata.row_group(0).column(ci).statistics
+    assert st.has_min_max and st.min == "AAA" and st.max == "ZZZ"  # MMM invisible to min/max
+    del pf, st  # release the open file handle -- Windows os.replace() inside
+    # migrate() would otherwise fail with PermissionError, not the assertion
+    # this test actually means to exercise
+
+    before = dst_f.read_bytes()
+    stats = mig.migrate(src, dst)
+
+    assert stats.n_skipped == 1
+    assert stats.n_written == 0
+    assert stats.results[0].status == "skipped"
+    assert dst_f.read_bytes() == before  # destination bytes untouched
+    # the critical assertion: ZZZ (paid-for, not in v1) must still be there
+    assert set(pq.read_table(dst_f).column("underlying").to_pylist()) == {"AAA", "MMM", "ZZZ"}
+
+
+def test_footer_underlyings_returns_none_for_unreadable_file(tmp_path):
+    """The ``None`` ("cannot prove superset" -> force rewrite) contract must
+    survive the fix for files that cannot be opened at all."""
+    assert mig._footer_underlyings(tmp_path / "does_not_exist.parquet") is None
+
+
+def test_footer_underlyings_no_stats_falls_back_to_full_read(tmp_path):
+    """A row group written with column statistics disabled must not be
+    reported as an unrecoverable ``None`` (the pre-fix function's behaviour,
+    which forced an always-rewrite for such files) -- it must fall back to a
+    full read of the ``underlying`` column and return the exact set."""
+    path = tmp_path / "data.parquet"
+    table = pa.concat_tables(
+        [_v1_table("AAA", ["AAA_C1"]), _v1_table("ZZZ", ["ZZZ_C1"])]
+    ).cast(mig.CANONICAL_SCHEMA)
+    pq.write_table(table, path, write_statistics=False)
+
+    pf = pq.ParquetFile(path)
+    ci = pf.schema_arrow.names.index("underlying")
+    st = pf.metadata.row_group(0).column(ci).statistics
+    assert st is None or not st.has_min_max  # precondition: no usable stats
+
+    assert mig._footer_underlyings(path) == {"AAA", "ZZZ"}
