@@ -451,6 +451,12 @@ struct DispersionVerifyReport {
 // construction from the OPRA panels, manifest/quality assembly, the session
 // bookkeeping between dates). Printed rather than hidden so the parts sum to the
 // whole and a large residual stays visible.
+//
+// The line's twelve fields and the two rules that govern them — NEW FIELDS
+// APPEND, and every field is `name=value` — are documented in full at the
+// definition (`src/dispersion_run.cpp`) and gated by `CorpusPhaseLine.
+// FieldLayoutIsAppendOnlyAndEveryFieldIsSelfDescribing`. Out-of-tree operator
+// scripts scrape this line positionally, so neither rule is cosmetic.
 [[nodiscard]] std::string format_corpus_phase_line(double ingest_s, double build_s,
                                                    const CorpusPhaseTimings &phases,
                                                    std::size_t date_batch);

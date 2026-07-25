@@ -273,3 +273,199 @@ TEST(DispersionReferenceReconcile, CorruptScheduleQuantityIsRejected) {
   std::error_code error;
   fs::remove_all(run, error);
 }
+
+// ── (5) MINORS M10: a missing STRING column must stop the run ───────────────
+//
+// The reconciler's three column accessors did not agree on what a missing
+// column means. `dec()` and `intcol()` (dispersion_run.cpp) return
+// `recon_fail("invalid decimal/integer column <name>")`; `str()` returned a
+// reference to a function-local static empty string, so an artifact that had
+// lost a string column outright kept reconciling — with "" substituted for the
+// value everywhere it was read.
+//
+// That is not a style point: both scenarios below reconcile CLEAN today.
+// Scenario A publishes roll records whose `date` field is the empty string;
+// scenario B scores every lot "no usable quote" because the column that says
+// otherwise is gone, and agrees with a reconciliation file that recorded the
+// same zero coverage for the same reason.
+
+namespace {
+
+// Deletes `name` from a header-indexed TSV — the header cell and the
+// corresponding cell of every row — leaving an artifact that is still
+// well-formed (every row aligns to the header, so `read_dict_tsv`'s ragged-row
+// gate does not fire) and merely one column short. That is the shape a schema
+// change or a truncated writer produces, and the shape the reconciler has to
+// survive loudly.
+std::string drop_column(const std::string &text, std::string_view name, bool has_magic) {
+  std::vector<std::string> lines;
+  std::size_t start = 0;
+  while (start <= text.size()) {
+    const std::size_t end = text.find('\n', start);
+    if (end == std::string::npos) {
+      if (start < text.size()) {
+        lines.push_back(text.substr(start));
+      }
+      break;
+    }
+    lines.push_back(text.substr(start, end - start));
+    start = end + 1;
+  }
+  const std::size_t header_index = has_magic ? 1u : 0u;
+  EXPECT_GT(lines.size(), header_index) << "fixture has no header line";
+  auto split_tab = [](const std::string &line) {
+    std::vector<std::string> out;
+    std::size_t cursor = 0;
+    while (true) {
+      const std::size_t tab = line.find('\t', cursor);
+      if (tab == std::string::npos) {
+        out.push_back(line.substr(cursor));
+        break;
+      }
+      out.push_back(line.substr(cursor, tab - cursor));
+      cursor = tab + 1;
+    }
+    return out;
+  };
+  const std::vector<std::string> header = split_tab(lines[header_index]);
+  std::size_t column = header.size();
+  for (std::size_t i = 0; i < header.size(); ++i) {
+    if (header[i] == name) {
+      column = i;
+    }
+  }
+  EXPECT_LT(column, header.size()) << "fixture has no column named " << name;
+  std::string out;
+  for (std::size_t i = 0; i < lines.size(); ++i) {
+    if (i < header_index) {
+      out += lines[i];
+      out.push_back('\n');
+      continue;
+    }
+    std::vector<std::string> cells = split_tab(lines[i]);
+    if (column < cells.size()) {
+      cells.erase(cells.begin() + static_cast<std::ptrdiff_t>(column));
+    }
+    for (std::size_t c = 0; c < cells.size(); ++c) {
+      if (c != 0) {
+        out.push_back('\t');
+      }
+      out += cells[c];
+    }
+    out.push_back('\n');
+  }
+  return out;
+}
+
+// The reconciliation a run produces when `contract_marks.tsv` has no `status`
+// column: every lot is scored "no usable quote", so quote-mid P&L, quote NAV
+// and coverage are all zero and `n_quote_mid_lots` is zero on every date. The
+// numbers are internally consistent — which is exactly why the missing column
+// is invisible without an explicit presence check.
+std::string reconciliation_text_zero_quote_coverage() {
+  std::string text =
+      tsv_row({"date", "valuation_ts_ns", "held_cohort", "model_option_pnl", "quote_mid_pnl",
+               "model_minus_quote_pnl", "model_nav", "quote_mid_nav", "quote_mid_coverage",
+               "n_held_lots", "n_quote_mid_lots"});
+  text += tsv_row({"2026-07-10", "100", "1", "0", "0", "0", "0", "0", "0", "4", "0"});
+  text += tsv_row({"2026-07-11", "200", "1", "200", "0", "200", "200", "0", "0", "4", "0"});
+  return text;
+}
+
+} // namespace
+
+TEST(DispersionReferenceReconcile, M10_ScheduleWithNoRollDateColumnIsRejected) {
+  const fs::path run = make_run_dir("m10_roll_date");
+  // Every numeric column the reconciler reads is intact, so `dec()`/`intcol()`
+  // are all satisfied. Only `roll_date` — read exclusively through `str()` — is
+  // gone, and it is the identity of the roll record that gets PUBLISHED into
+  // reference_reconciliation.tsv.
+  write_file(run / "trade_schedule.tsv",
+             drop_column(schedule_text(), "roll_date", /*has_magic=*/true));
+
+  auto records = reconcile_dispersion_reference(run, /*schedule_only=*/true);
+  ASSERT_FALSE(records)
+      << "a trade_schedule.tsv with no roll_date column reconciled clean and published "
+      << records->size() << " record(s), the first carrying date=\""
+      << (records->empty() ? std::string{} : (*records)[0].date) << "\"";
+  EXPECT_NE(records.error().to_string().find("roll_date"), std::string::npos)
+      << "the error must name the missing column, as dec()/intcol() do: "
+      << records.error().to_string();
+
+  std::error_code error;
+  fs::remove_all(run, error);
+}
+
+// The same property on the real artifacts this box carries, rather than on
+// synthetic ones. The M10 fix turns a missing string column into an error, so
+// the question it raises is empirical: does any real reconciler input actually
+// LACK one of the columns `str()` reads? This drives every published run
+// directory under the reference corpus through the reconciler and requires both
+// that it succeeds and that no published record carries an empty date — the
+// observable signature of the degrade this fix removes.
+//
+// STRICTLY READ-ONLY. `reconcile_dispersion_reference` opens the four artifacts
+// and writes nothing; the sidecar is published by the separate
+// `write_reference_reconciliation_file`, which is deliberately NOT called here.
+// The reference corpus is never written to.
+TEST(DispersionReferenceReconcileRealData, PublishedRunDirectoriesCarryEveryStringColumn) {
+  const fs::path root = "C:/atx-data/spy-dispersion/runs";
+  std::error_code error;
+  if (!fs::is_directory(root, error)) {
+    GTEST_SKIP() << "reference run corpus absent: " << root.string();
+  }
+  std::vector<fs::path> run_dirs;
+  for (const fs::directory_entry &entry : fs::directory_iterator(root, error)) {
+    if (!entry.is_directory(error)) {
+      continue;
+    }
+    const fs::path dir = entry.path();
+    bool complete = true;
+    for (const char *artifact :
+         {"trade_schedule.tsv", "contract_marks.tsv", "reconciliation.tsv", "backtest.tsv"}) {
+      if (!fs::is_regular_file(dir / artifact, error)) {
+        complete = false;
+      }
+    }
+    if (complete) {
+      run_dirs.push_back(dir);
+    }
+  }
+  if (run_dirs.empty()) {
+    GTEST_SKIP() << "no complete run directory under " << root.string();
+  }
+  for (const fs::path &dir : run_dirs) {
+    auto records = reconcile_dispersion_reference(dir, /*schedule_only=*/false);
+    ASSERT_TRUE(records) << dir.filename().string() << ": " << records.error().to_string();
+    EXPECT_FALSE(records->empty()) << dir.filename().string() << " produced no records";
+    for (const ReferenceReconRecord &record : *records) {
+      EXPECT_FALSE(record.date.empty())
+          << dir.filename().string() << ": a published " << record.record_type
+          << " record carries an empty date — the signature of a string column read through a "
+             "silent empty-string degrade";
+    }
+  }
+}
+
+TEST(DispersionReferenceReconcile, M10_ContractMarksWithNoStatusColumnIsRejected) {
+  const fs::path run = make_run_dir("m10_status");
+  write_file(run / "trade_schedule.tsv", schedule_text());
+  write_file(run / "contract_marks.tsv", drop_column(marks_text(), "status", /*has_magic=*/false));
+  write_file(run / "reconciliation.tsv", reconciliation_text_zero_quote_coverage());
+  write_file(run / "backtest.tsv", backtest_text());
+
+  auto records = reconcile_dispersion_reference(run, /*schedule_only=*/false);
+  ASSERT_FALSE(records)
+      << "contract marks with no status column reconciled clean: every lot was scored \"no "
+         "usable quote\", giving quote NAV "
+      << (records->size() < 3u ? 0.0 : (*records)[2].computed_quote_mid_nav)
+      << " and coverage " << (records->size() < 3u ? 0.0 : (*records)[2].quote_mid_coverage)
+      << " against a model NAV of "
+      << (records->size() < 3u ? 0.0 : (*records)[2].computed_model_nav);
+  EXPECT_NE(records.error().to_string().find("status"), std::string::npos)
+      << "the error must name the missing column, as dec()/intcol() do: "
+      << records.error().to_string();
+
+  std::error_code error;
+  fs::remove_all(run, error);
+}
