@@ -7,7 +7,9 @@
 
 #include "atx/vol/curve.hpp"
 #include "atx/vol/derivatives.hpp"
+#include "atx/vol/priced_surface.hpp"  // E6: PricedSurface-native overloads
 #include "atx/vol/surface.hpp"
+#include "support/analytics_fixture.hpp" // E6: testkit::make_flat_surface
 
 // Vol-derivatives coverage, ported from the C ats-vol Sprint-22 tests:
 //   test_vol_deriv_var_strip.c    -> VarStrip (flat-vol strip recovers sigma^2)
@@ -170,6 +172,52 @@ TEST(VarStrip, PinnedNarrowSpanOnHighVolTenorFlagsBothWings) {
 
   // And the pinned span really is biased low, which is what the flag warns of.
   EXPECT_LT(q->fair_strike_dec, sigma_atm * sigma_atm);
+}
+
+// ── E6 / AN-W: var swap reachable from a PricedSurface ───────────────────
+//
+// `derivatives.hpp` was templated on the LEGACY calibration-grade surface types
+// (EssviSurface / SviSurface), so the modern fitted pipeline — which produces a
+// PricedSurface — could not call `var_swap_fair_strike` without hand-converting
+// slices. The module was consequently reachable only from this test file.
+//
+// The PricedSurface overload takes NO CurveSet: the surface's own fitted
+// pillars supply forward and discount. On a flat-vol surface the var strike is
+// still exactly sigma^2, which is what makes this an end-to-end check of the
+// carry extraction and not just of the plumbing.
+TEST(VarStrip, PricedSurfaceOverloadRecoversSigmaSquaredEndToEnd) {
+  constexpr double kSigma = 0.30;
+  const atx::vol::PricedSurface ps =
+      atx::vol::testkit::make_flat_surface(7, 100.0, 100.0, kSigma);
+  const double T = 0.35; // a fitted pillar of the shared fixture grid
+
+  const auto q = atx::vol::var_swap_fair_strike(ps, T);
+  ASSERT_TRUE(q.has_value()) << q.error().to_string();
+
+  const double truth = kSigma * kSigma;
+  EXPECT_NEAR(q->fair_strike_dec, truth, 0.5e-4)
+      << "K_var=" << q->fair_strike_dec << " truth=" << truth
+      << " bias=" << 1.0e4 * (q->fair_strike_dec - truth) << " var pts";
+  // 6*sigma*sqrt(T) = 1.065 < the Standard tier's 1.5 floor, so the adaptive
+  // span leaves the tier span in place and neither wing is truncated.
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::StripTruncatedLeft));
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::StripTruncatedRight));
+
+  // The vol-swap and unified-price entry points are reachable the same way.
+  const auto v = atx::vol::vol_swap_fair_strike(ps, T);
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_NEAR(v->fair_strike_dec, kSigma, 5.0e-3) << "K_vol=" << v->fair_strike_dec;
+
+  atx::vol::DerivContract c{};
+  c.kind = DerivKind::VarSwap;
+  c.maturity_t = T;
+  c.notional = 1.0e6;
+  c.strike_dec = q->fair_strike_dec; // struck fair => PV 0
+  c.marking = DerivMarkingConvention::Otc;
+  const auto priced = atx::vol::deriv_price(ps, c);
+  ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
+  EXPECT_NEAR(priced->fair_strike_dec, q->fair_strike_dec, 1e-12);
+  EXPECT_LT(std::fabs(priced->pv), 1.0e-6 * c.notional * q->fair_strike_dec);
 }
 
 // ── Aged dispatch (test_vol_deriv_aged.c) ────────────────────────────────

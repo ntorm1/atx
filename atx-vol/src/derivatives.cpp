@@ -6,9 +6,13 @@
 #include <span>
 #include <utility>
 
+#include <vector>
+
 #include "atx/core/error.hpp"
 #include "atx/vol/black76.hpp"
+#include "atx/vol/priced_surface.hpp" // E6: PricedSurface-native entry points
 #include "atx/vol/strip_grid.hpp"
+#include "atx/vol/surface_parity.hpp" // SliceContext (E6 carry extraction)
 
 namespace atx::vol {
 
@@ -555,5 +559,90 @@ template Result<DerivQuote> deriv_price<EssviSurface>(
     const EssviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&);
 template Result<DerivQuote> deriv_price<SviSurface>(
     const SviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&);
+
+// ── E6 / AN-W: PricedSurface-native entry points ───────────────────────────
+
+namespace {
+
+// The fitted surface's OWN carry, expressed as a CurveSet so the strip resolves
+// forward and discount exactly as it does on the templated path. Pillars come
+// straight from the surface's fitted `context()`; between them `resolve_forward`
+// applies the shared log-F convention (strip_grid.hpp, E2) and `YieldCurve`
+// interpolates the per-expiry rates `rate_at` decodes from each slice's own
+// discount factor.
+[[nodiscard]] Result<CurveSet> carry_from(const PricedSurface& ps) {
+  const std::span<const SliceContext> pillars = ps.context();
+  if (pillars.empty()) {
+    return Err(ErrorCode::InvalidArgument, "deriv: surface carries no fitted pillar");
+  }
+  CurveSet cs;
+  cs.spot = ps.pricing().S;
+
+  std::vector<double> ts;
+  std::vector<double> rates;
+  std::vector<ForwardPoint> fwd;
+  ts.reserve(pillars.size());
+  rates.reserve(pillars.size());
+  fwd.reserve(pillars.size());
+  for (const SliceContext& p : pillars) {
+    if (!(p.T > 0.0) || !(p.forward > 0.0)) {
+      continue; // a degenerate pillar contributes no carry
+    }
+    ts.push_back(p.T);
+    rates.push_back(ps.rate_at(p.T));
+    ForwardPoint fp;
+    fp.T = p.T;
+    fp.F = p.forward;
+    fp.q_eff = p.q_eff;
+    fwd.push_back(fp);
+  }
+  if (ts.empty()) {
+    return Err(ErrorCode::InvalidArgument, "deriv: surface carries no usable fitted pillar");
+  }
+  ATX_TRY_VOID(cs.set_yield(ts, rates));
+  cs.forward.set(fwd);
+  return Ok(std::move(cs));
+}
+
+// Presents a PricedSurface through the LOG-MONEYNESS `iv(k_log, T)` contract the
+// strip templates require. `PricedSurface::iv` is STRIKE-based, so the
+// conversion has to happen somewhere; doing it here — against the SAME CurveSet
+// the strip integrates over — is what makes k = 0 the strip's own ATM forward
+// rather than an approximately-similar one.
+struct PricedSurfaceStripView {
+  const PricedSurface* ps;
+  const CurveSet* curves;
+
+  [[nodiscard]] double iv(double k_log, double T) const noexcept {
+    const double F = resolve_forward(*curves, T);
+    if (!(F > 0.0) || !std::isfinite(k_log)) {
+      return kNaN;
+    }
+    return ps->iv(F * std::exp(k_log), T);
+  }
+};
+
+} // namespace
+
+Result<DerivQuote> var_swap_fair_strike(const PricedSurface& surface, double T,
+                                        const DerivConfig& cfg) {
+  ATX_TRY(const CurveSet curves, carry_from(surface));
+  const PricedSurfaceStripView view{&surface, &curves};
+  return var_swap_fair_strike(view, curves, T, cfg);
+}
+
+Result<DerivQuote> vol_swap_fair_strike(const PricedSurface& surface, double T,
+                                        const DerivConfig& cfg) {
+  ATX_TRY(const CurveSet curves, carry_from(surface));
+  const PricedSurfaceStripView view{&surface, &curves};
+  return vol_swap_fair_strike(view, curves, T, cfg);
+}
+
+Result<DerivQuote> deriv_price(const PricedSurface& surface, const DerivContract& contract,
+                               const DerivConfig& cfg) {
+  ATX_TRY(const CurveSet curves, carry_from(surface));
+  const PricedSurfaceStripView view{&surface, &curves};
+  return deriv_price(view, curves, contract, cfg);
+}
 
 }  // namespace atx::vol

@@ -54,6 +54,12 @@
 #include "atx/vol/types.hpp"
 
 namespace atx::vol {
+// E6: used only by const-reference in the PricedSurface-native overloads below,
+// so the heavy definition stays out of this header.
+class PricedSurface;
+} // namespace atx::vol
+
+namespace atx::vol {
 
 // ── Enums ────────────────────────────────────────────────────────────────
 
@@ -309,5 +315,37 @@ extern template Result<DerivQuote> deriv_price<EssviSurface>(
     const EssviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&);
 extern template Result<DerivQuote> deriv_price<SviSurface>(
     const SviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&);
+
+// ── E6 / AN-W: PricedSurface-native entry points ────────────────────────────
+//
+// The templates above are stranded on the LEGACY calibration-grade surface types
+// (`EssviSurface` / `SviSurface`, surface.hpp). The modern fitted pipeline
+// produces a `PricedSurface`, so reaching `var_swap_fair_strike` from it meant
+// hand-converting slices — which is why this whole module was reachable only
+// from its own unit test.
+//
+// These overloads take a `PricedSurface` and NO `CurveSet`: the surface already
+// carries its own per-expiry forwards and discount factors, and using them is
+// the only way the strip's k = 0 is the surface's OWN ATM forward. The carry is
+// read off the fitted pillars (`context()` forwards, `rate_at`) and interpolated
+// between them by the same shared convention the strip integrates under
+// (`strip_grid.hpp`, E2), so a var strike taken here and one taken through the
+// templated `CurveSet` path on the same carry agree by construction rather than
+// by coincidence.
+//
+// Numeric behaviour is otherwise unchanged: identical grid, identical adaptive
+// span, identical Simpson quadrature, identical flags.
+//
+// @return the same error contract as the templated overloads, plus
+//         InvalidArgument when the surface carries no usable fitted pillar.
+[[nodiscard]] Result<DerivQuote> var_swap_fair_strike(const PricedSurface& surface, double T,
+                                                      const DerivConfig& cfg = DerivConfig{});
+
+[[nodiscard]] Result<DerivQuote> vol_swap_fair_strike(const PricedSurface& surface, double T,
+                                                      const DerivConfig& cfg = DerivConfig{});
+
+[[nodiscard]] Result<DerivQuote> deriv_price(const PricedSurface& surface,
+                                             const DerivContract& contract,
+                                             const DerivConfig& cfg = DerivConfig{});
 
 }  // namespace atx::vol
