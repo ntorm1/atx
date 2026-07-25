@@ -11,6 +11,7 @@
 #include <pybind11/stl.h>
 
 #include "atx/vol/american.hpp"
+#include "atx/vol/american_batch.hpp"
 #include "atx/vol/american_iv.hpp"
 #include "atx/vol/batch.hpp"
 #include "atx/vol/black76.hpp"
@@ -109,6 +110,180 @@ py::array_t<double> american_slice(const DoubleArray &strikes_array, double spot
     atxvol::python::unwrap(std::move(status));
   }
   return output;
+}
+
+// ── Y3: numpy-native American batch ─────────────────────────────────────────
+//
+// `american_batch.hpp` is the SoA laned flagship and was entirely unbound, so
+// chain-scale American valuation from Python was a for-loop paying ~1-2 us of
+// pybind dispatch per contract against a sub-microsecond kernel. These entry
+// points hand the whole book to the C++ batch in ONE call under ONE GIL release,
+// on the same NaN + per-lane status convention Y1(c) established
+// (`batch_status.hpp`).
+
+using IntArray = py::array_t<std::int32_t, py::array::c_style | py::array::forcecast>;
+
+std::vector<Side> as_sides(const IntArray &array, std::size_t expected) {
+  if (array.ndim() != 1) {
+    throw py::value_error("side must be a one-dimensional array");
+  }
+  if (static_cast<std::size_t>(array.size()) != expected) {
+    throw py::value_error("side must have the same length as S");
+  }
+  std::vector<Side> out(expected);
+  const auto *data = array.data();
+  for (std::size_t i = 0; i < expected; ++i) {
+    out[i] = data[i] == static_cast<std::int32_t>(Side::Put) ? Side::Put : Side::Call;
+  }
+  return out;
+}
+
+// LaneStatus is a two-state Ok/Unsupported flag, not an `atx::core::Status`, so
+// map its failure onto the same int32 channel every other batch uses: the lane
+// was outside the batch route's supported regime.
+py::array_t<std::int32_t> lane_status_array(std::span<const LaneStatus> lanes) {
+  py::array_t<std::int32_t> out(static_cast<py::ssize_t>(lanes.size()));
+  auto *data = out.mutable_data();
+  for (std::size_t i = 0; i < lanes.size(); ++i) {
+    data[i] = lanes[i] == LaneStatus::Ok
+                  ? atxvol::python::kStatusOk
+                  : static_cast<std::int32_t>(atx::core::ErrorCode::NotImplemented);
+  }
+  return out;
+}
+
+struct BookSpans {
+  std::span<const double> s, k, t, sigma, r, q;
+  std::vector<Side> side;
+  std::size_t n{0};
+};
+
+BookSpans as_book(const DoubleArray &s_array, const DoubleArray &k_array,
+                  const DoubleArray &t_array, const DoubleArray &sigma_array,
+                  const DoubleArray &r_array, const DoubleArray &q_array,
+                  const IntArray &side_array) {
+  BookSpans book;
+  book.s = as_span(s_array, "S");
+  book.n = book.s.size();
+  book.k = as_span(k_array, "K");
+  book.t = as_span(t_array, "T");
+  book.sigma = as_span(sigma_array, "sigma");
+  book.r = as_span(r_array, "r");
+  book.q = as_span(q_array, "q");
+  require_same_size(book.n, book.k, "K");
+  require_same_size(book.n, book.t, "T");
+  require_same_size(book.n, book.sigma, "sigma");
+  require_same_size(book.n, book.r, "r");
+  require_same_size(book.n, book.q, "q");
+  book.side = as_sides(side_array, book.n);
+  return book;
+}
+
+std::pair<py::array_t<double>, py::array_t<std::int32_t>>
+american_price_batch_py(const DoubleArray &s_array, const DoubleArray &k_array,
+                        const DoubleArray &t_array, const DoubleArray &sigma_array,
+                        const DoubleArray &r_array, const DoubleArray &q_array,
+                        const IntArray &side_array, AmericanMethod method,
+                        const std::optional<AlOpts> &opts, simd::SimdIsa isa) {
+  const BookSpans book = as_book(s_array, k_array, t_array, sigma_array, r_array, q_array,
+                                 side_array);
+  py::array_t<double> prices(static_cast<py::ssize_t>(book.n));
+  PriceBatchOutput out;
+  PricingWorkspace ws;
+  PricingKernel kernel;
+  kernel.isa = isa;
+  {
+    py::gil_scoped_release release;
+    AmericanBatchInput in;
+    in.S = book.s;
+    in.K = book.k;
+    in.T = book.t;
+    in.sigma = book.sigma;
+    in.r = book.r;
+    in.q = book.q;
+    in.side = book.side;
+    out.resize(book.n);
+    ws.reserve_lanes(book.n);
+    (void)method;
+    (void)opts;
+    atxvol::python::unwrap(american_price_batch(in, out, kernel, ws));
+    if (book.n > 0) {
+      std::copy(out.price.begin(), out.price.end(), prices.mutable_data());
+    }
+  }
+  return {std::move(prices), lane_status_array(out.status)};
+}
+
+py::dict american_greeks_batch_py(const DoubleArray &s_array, const DoubleArray &k_array,
+                                  const DoubleArray &t_array, const DoubleArray &sigma_array,
+                                  const DoubleArray &r_array, const DoubleArray &q_array,
+                                  const IntArray &side_array, bool analytic, simd::SimdIsa isa) {
+  const BookSpans book = as_book(s_array, k_array, t_array, sigma_array, r_array, q_array,
+                                 side_array);
+  const auto n = static_cast<py::ssize_t>(book.n);
+  py::array_t<double> delta(n), gamma(n), vega(n), theta(n), rho(n), vanna(n), volga(n),
+      charm(n), price(n);
+  PricingWorkspace ws;
+  PricingKernel kernel;
+  kernel.isa = isa;
+  kernel.analytic_greeks = analytic;
+  {
+    py::gil_scoped_release release;
+    AmericanBatchInput in;
+    in.S = book.s;
+    in.K = book.k;
+    in.T = book.t;
+    in.sigma = book.sigma;
+    in.r = book.r;
+    in.q = book.q;
+    in.side = book.side;
+    simd::GreeksBatchSoA soa;
+    soa.delta = delta.mutable_data();
+    soa.gamma = gamma.mutable_data();
+    soa.vega = vega.mutable_data();
+    soa.theta = theta.mutable_data();
+    soa.rho = rho.mutable_data();
+    soa.vanna = vanna.mutable_data();
+    soa.volga = volga.mutable_data();
+    soa.charm = charm.mutable_data();
+    soa.price = price.mutable_data();
+    ws.reserve_lanes(book.n);
+    atxvol::python::unwrap(american_greeks_batch(in, GreekFieldMask::All, soa, kernel, ws));
+  }
+  py::dict out;
+  out["delta"] = std::move(delta);
+  out["gamma"] = std::move(gamma);
+  out["vega"] = std::move(vega);
+  out["theta"] = std::move(theta);
+  out["rho"] = std::move(rho);
+  out["vanna"] = std::move(vanna);
+  out["volga"] = std::move(volga);
+  out["charm"] = std::move(charm);
+  out["price"] = std::move(price);
+  out["status"] = lane_status_array(ws.lane_status_view());
+  return out;
+}
+
+std::pair<py::array_t<double>, py::array_t<std::int32_t>>
+american_iv_batch_py(const DoubleArray &price_array, double spot, const DoubleArray &k_array,
+                     double t, double r, double q, Side side, AmericanMethod method, double tol,
+                     std::uint16_t max_iter, const std::optional<AlOpts> &opts,
+                     bool warm_start_chain) {
+  const auto price = as_span(price_array, "price");
+  const auto k = as_span(k_array, "K");
+  if (k.size() != price.size()) {
+    throw py::value_error("K must have the same length as price");
+  }
+  py::array_t<double> ivs(static_cast<py::ssize_t>(k.size()));
+  std::vector<Status> statuses(k.size());
+  {
+    py::gil_scoped_release release;
+    atxvol::python::unwrap(american_implied_vol_batch(
+        price, spot, k, t, r, q, side,
+        std::span<double>{ivs.mutable_data(), static_cast<std::size_t>(ivs.size())}, statuses,
+        method, tol, max_iter, opts, nullptr, warm_start_chain));
+  }
+  return {std::move(ivs), atxvol::python::to_status_array(statuses)};
 }
 
 } // namespace
@@ -275,6 +450,42 @@ void bind_pricing(py::module_ &m) {
       py::arg("spot"), py::arg("strike"), py::arg("T"), py::arg("sigma"), py::arg("r"),
       py::arg("q"), py::arg("side"), py::arg("method") = AmericanMethod::AndersenLake,
       py::arg("opts") = std::nullopt, py::call_guard<py::gil_scoped_release>());
+  // ── Y3: numpy-native American batch (NaN + per-lane status) ──────────────
+  py::enum_<simd::SimdIsa>(m, "SimdIsa")
+      .value("AUTO", simd::SimdIsa::Auto)
+      .value("FORCE_SCALAR", simd::SimdIsa::ForceScalar)
+      .value("FORCE_AVX2", simd::SimdIsa::ForceAvx2);
+
+  m.def("american_price_batch", &american_price_batch_py, py::arg("S"), py::arg("K"),
+        py::arg("T"), py::arg("sigma"), py::arg("r"), py::arg("q"), py::arg("side"),
+        py::arg("method") = AmericanMethod::AndersenLake, py::arg("opts") = std::nullopt,
+        py::arg("isa") = simd::SimdIsa::Auto,
+        "Price a whole book of American options in one call.\n\n"
+        "Returns ``(prices, status)``: the genuine early-exercise lanes are\n"
+        "grouped into one homogeneous pack and every other lane patches through\n"
+        "the exact scalar Andersen-Lake, so public output order is preserved.\n"
+        "``status[i] == STATUS_OK`` unless the lane was outside the batch\n"
+        "route's supported regime. A shape mismatch raises.");
+
+  m.def("american_greeks_batch", &american_greeks_batch_py, py::arg("S"), py::arg("K"),
+        py::arg("T"), py::arg("sigma"), py::arg("r"), py::arg("q"), py::arg("side"),
+        py::arg("analytic") = false, py::arg("isa") = simd::SimdIsa::Auto,
+        "American Greeks for a whole book as numpy SoA columns.\n\n"
+        "Returns a dict of delta/gamma/vega/theta/rho/vanna/volga/charm/price\n"
+        "plus `status`. `analytic=False` (default) fans the scalar FD reference\n"
+        "per lane; `analytic=True` takes the analytic route, which defers to FD\n"
+        "off its supported regime.");
+
+  m.def("american_implied_vol_batch", &american_iv_batch_py, py::arg("price"), py::arg("spot"),
+        py::arg("K"), py::arg("T"), py::arg("r"), py::arg("q"), py::arg("side"),
+        py::arg("method") = AmericanMethod::AndersenLake, py::arg("tol") = 1.0e-7,
+        py::arg("max_iter") = 64, py::arg("opts") = std::nullopt,
+        py::arg("warm_start_chain") = false,
+        "Strike-axis American IV inversion; (spot, T, r, q, side) are shared.\n\n"
+        "Returns ``(ivs, status)`` on the NaN + per-lane status convention: an\n"
+        "uninvertible quote NaNs its own lane and leaves every other lane\n"
+        "intact. Only a shape mismatch raises.");
+
   m.def("american_price_slice", &american_slice, py::arg("strikes"), py::arg("spot"), py::arg("T"),
         py::arg("sigma"), py::arg("r"), py::arg("q"), py::arg("side"),
         py::arg("opts") = std::nullopt,

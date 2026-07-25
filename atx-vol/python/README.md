@@ -58,6 +58,34 @@ prices = atxvol.black76_price_batch(
 )
 ```
 
+## Numpy-native batch American and surface grids
+
+Chain-scale American valuation goes through the C++ SoA batch in one call rather
+than a Python loop over the scalar entry points. All of these use the NaN +
+per-lane status convention above.
+
+```python
+prices, status = av.american_price_batch(S, K, T, sigma, r, q, side)
+g = av.american_greeks_batch(S, K, T, sigma, r, q, side)     # dict of SoA columns
+ivs, status = av.american_implied_vol_batch(price, spot, K, T, r, q, av.Side.PUT)
+
+cols = priced_surface.grid(K, T, side)   # iv / total_variance / fair_value / greeks
+```
+
+These are **parity-exact**, not approximate: `american_price_batch` on the
+`SimdIsa.FORCE_SCALAR` route is bit-identical to a loop over `american_price`,
+`american_greeks_batch(analytic=False)` is bit-identical to a loop over
+`american_greeks_fd`, `american_implied_vol_batch` is bit-identical to a loop
+over `american_implied_vol`, and `PricedSurface.grid` is bit-identical to the
+per-point `iv` / `total_variance` / `fair_value` / `greeks` calls.
+`tests/test_batch.py` pins all four with `tobytes()` / `==` comparisons.
+
+What the batch buys is structural: one pybind dispatch and one GIL release for
+the whole book instead of one per contract, with the kernel free to group the
+genuine early-exercise lanes into a single pack. The magnitude of that win is
+hardware- and load-dependent — measure it on your own quiet host rather than
+trusting a number quoted here.
+
 ## Fitting a surface from quotes
 
 The library's blessed lifecycle is chain → fit → priced surface → archive → book.

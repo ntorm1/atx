@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -20,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -30,12 +32,23 @@
 #include "atx/vol/surface_parity.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "atx/vol/vol_surface.hpp"
+#include "batch_status.hpp"
 #include "result.hpp"
 
 namespace py = pybind11;
 using namespace atx::vol;
 
 namespace {
+
+using DoubleArray = py::array_t<double, py::array::c_style | py::array::forcecast>;
+using IntArray = py::array_t<std::int32_t, py::array::c_style | py::array::forcecast>;
+
+std::span<const double> as_double_span(const DoubleArray &array, const char *name) {
+  if (array.ndim() != 1) {
+    throw py::value_error(std::string{name} + " must be a one-dimensional array");
+  }
+  return {array.data(), static_cast<std::size_t>(array.size())};
+}
 
 void write_partition(SurfaceDb &db, const std::string &key, const py::list &items,
                      const ArchiveV2WriteOpts &opts) {
@@ -67,6 +80,94 @@ void write_partition(SurfaceDb &db, const std::string &key, const py::list &item
     py::gil_scoped_release release;
     atxvol::python::unwrap(db.write_partition(key, archive_items, opts));
   }
+}
+
+// ── Y3: vectorized PricedSurface query ──────────────────────────────────────
+//
+// The query methods were scalar-per-call and held the GIL, so a chain-scale
+// valuation from Python was a for-loop paying pybind dispatch on every point and
+// blocking every other thread throughout. `grid` walks the whole (K, T, side)
+// selection in one C++ pass under one GIL release, writing preallocated numpy
+// buffers, on the Y1(c) NaN + per-lane status convention: a point the surface
+// cannot serve NaNs its own row and records its ErrorCode, it does not abort the
+// grid.
+py::dict priced_surface_grid(const PricedSurface &self, const DoubleArray &k_array,
+                             const DoubleArray &t_array, const IntArray &side_array,
+                             QueryExecution execution) {
+  const auto k = as_double_span(k_array, "K");
+  const auto t = as_double_span(t_array, "T");
+  if (t.size() != k.size()) {
+    throw py::value_error("T must have the same length as K");
+  }
+  if (side_array.ndim() != 1 || static_cast<std::size_t>(side_array.size()) != k.size()) {
+    throw py::value_error("side must be a one-dimensional array as long as K");
+  }
+  const auto n = static_cast<py::ssize_t>(k.size());
+  py::array_t<double> iv(n), w(n), value(n), delta(n), gamma(n), vega(n), theta(n), rho(n),
+      vanna(n), volga(n), charm(n);
+  py::array_t<std::int32_t> status(n);
+  const auto *sides = side_array.data();
+  {
+    py::gil_scoped_release release;
+    auto *iv_p = iv.mutable_data();
+    auto *w_p = w.mutable_data();
+    auto *value_p = value.mutable_data();
+    auto *delta_p = delta.mutable_data();
+    auto *gamma_p = gamma.mutable_data();
+    auto *vega_p = vega.mutable_data();
+    auto *theta_p = theta.mutable_data();
+    auto *rho_p = rho.mutable_data();
+    auto *vanna_p = vanna.mutable_data();
+    auto *volga_p = volga.mutable_data();
+    auto *charm_p = charm.mutable_data();
+    auto *status_p = status.mutable_data();
+    constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
+    for (std::size_t i = 0; i < k.size(); ++i) {
+      const Side side =
+          sides[i] == static_cast<std::int32_t>(Side::Put) ? Side::Put : Side::Call;
+      iv_p[i] = self.iv(k[i], t[i]);
+      w_p[i] = self.total_variance(k[i], t[i]);
+      status_p[i] = atxvol::python::kStatusOk;
+      auto fv = self.fair_value(k[i], t[i], side, execution);
+      if (!fv) {
+        value_p[i] = kNan;
+        status_p[i] = static_cast<std::int32_t>(fv.error().code());
+      } else {
+        value_p[i] = *fv;
+      }
+      auto g = self.greeks(k[i], t[i], side, execution);
+      if (!g) {
+        delta_p[i] = gamma_p[i] = vega_p[i] = theta_p[i] = kNan;
+        rho_p[i] = vanna_p[i] = volga_p[i] = charm_p[i] = kNan;
+        if (status_p[i] == atxvol::python::kStatusOk) {
+          status_p[i] = static_cast<std::int32_t>(g.error().code());
+        }
+        continue;
+      }
+      delta_p[i] = g->delta;
+      gamma_p[i] = g->gamma;
+      vega_p[i] = g->vega;
+      theta_p[i] = g->theta;
+      rho_p[i] = g->rho;
+      vanna_p[i] = g->vanna;
+      volga_p[i] = g->volga;
+      charm_p[i] = g->charm;
+    }
+  }
+  py::dict out;
+  out["iv"] = std::move(iv);
+  out["total_variance"] = std::move(w);
+  out["fair_value"] = std::move(value);
+  out["delta"] = std::move(delta);
+  out["gamma"] = std::move(gamma);
+  out["vega"] = std::move(vega);
+  out["theta"] = std::move(theta);
+  out["rho"] = std::move(rho);
+  out["vanna"] = std::move(vanna);
+  out["volga"] = std::move(volga);
+  out["charm"] = std::move(charm);
+  out["status"] = std::move(status);
+  return out;
 }
 
 } // namespace
@@ -154,6 +255,13 @@ void bind_surface_db(py::module_ &m) {
           "FROM and is left empty; do not reuse it.")
       .def("iv", &PricedSurface::iv, py::arg("K"), py::arg("T"))
       .def("total_variance", &PricedSurface::total_variance, py::arg("K"), py::arg("T"))
+      .def("grid", &priced_surface_grid, py::arg("K"), py::arg("T"), py::arg("side"),
+           py::arg("execution") = QueryExecution::Configured,
+           "Vectorized query over a (K, T, side) selection.\n\n"
+           "Returns a dict of numpy columns — iv, total_variance, fair_value and\n"
+           "every Greek — plus `status`. A point the surface cannot serve NaNs\n"
+           "its own row and records int(ErrorCode) in `status`; only a shape\n"
+           "mismatch raises. Releases the GIL for the whole walk.")
       .def(
           "fair_value",
           [](const PricedSurface &self, double k, double t, Side side, QueryExecution execution) {
