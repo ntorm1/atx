@@ -335,7 +335,79 @@ honestly extrapolating to a 30-year horizon rather than silently clamping.
 
 Both failures trace to the same 9 cells.
 
-<!-- STEP3-DIAGNOSIS -->
+### Root cause
+
+A source investigation found the mechanism, and — because the code was destroying the
+evidence — it could not name which predicate actually fired. That gap was closed first
+(commit `069669e`), then the build was re-run to measure it.
+
+**The fitter already computed a perfect diagnostic and the code threw it away twice.**
+`pricer_fitter.cpp:1425-1444` builds a rejection error carrying the model, the failure
+mask, butterfly and calendar slack with the offending slice and log-moneyness, and carry
+and inversion status. It was discarded at `corpus_board_fit.cpp:287` (only `.code()`
+kept) and again at `surface_db_populate.cpp:416-419` (`++n_failed`). The config stage
+already named its failures in `config.failed_symbols`; the fit stage named nothing. So
+an operator who lost 9 cells had a number and no next step — which is exactly the
+position this run was in.
+
+With the reason preserved, the re-run reports each failed cell. Decoded against
+`ValidationFailure` (`surface_policy.hpp:66-89`):
+
+| cells | model | mask | decodes to |
+|---|---|---|---|
+| AAPL ×5, NVDA ×1 | essvi | 2049 | `CarryGap \| InvalidDomain` |
+| AAPL ×2 (07-09, 07-10) | essvi | 2176 | `CarryGap \| InversionResidual` |
+| SPY ×2 (07-07, 07-22) | convex-dense | 2064 | `CarryGap \| Butterfly` |
+
+Sample line, verbatim:
+
+```
+failed_cell 2026-07-22 SPY code=Unavailable detail=risk surface rejected: model=convex-dense
+  mask=2064 butterfly=2 butterfly_slack=0.000107 butterfly_k=-0.104167 butterfly_slice=0
+  slopes=-0.999893/-1.000000 calendar=0 ... carry=failed inversion=ok
+```
+
+Three readings, in order of what they rule out:
+
+1. **`CarryGap` (bit 11) is set on 100% of failures — and is never the killer.** Its own
+   documentation (`surface_policy.hpp:79-88`) says admission *publishes* a candidate whose
+   only defect is CarryGap, as Degraded with the reason retained. So the cause of death is
+   always the companion bit: `InvalidDomain`, `InversionResidual`, or `Butterfly`.
+2. **This is not a missing dividend input.** The obvious guess — that `--r 0.043` with no
+   dividend yield distorts the forward — is wrong. Carry is solved *per expiry from the
+   board itself* by put-call parity (`curve_fit.cpp:134-143`); `r` is only the fallback
+   flat rate when that solve fails (`opra_hive.hpp:113`). CarryGap therefore reports
+   genuine carry-solve difficulty on real quotes, not a mis-specified input.
+3. **The failures are marginal, not catastrophic.** SPY on 2026-07-22 misses the
+   butterfly bound by `0.000107` with slopes of `-0.999893/-1.000000` — a hair over the
+   no-arbitrage boundary. That is precisely the regime a different curve family is
+   expected to recover.
+
+**Nothing recovers them, because the recovery ladder is switched off for every
+production cell.** `generate_symbol_configs` stores `pin_curve = true` unconditionally
+(`surface_db_build.cpp:116`, and `:39` for the index leg). A pinned config leaves
+`decision_` unset (`pricer_fitter.cpp:1140`), which makes `auto_routed` false at `:1245`,
+which disables both fallback ladders — construction failure at `:1249` and admission
+rejection at `:1352`. Every cell gets exactly one curve-family attempt with no recovery,
+so a board the Svi or ConvexDense rung would have caught becomes a hard cell loss.
+
+One hypothesis was **refuted** and is worth recording, because it is the intuitive one:
+that a single config chosen from one date fails to generalise across dates. For these
+three symbols it cannot be the cause — SPY is index-pinned without ever looking at a
+board, and AAPL and NVDA both hit the compiled-in ticker seed table at confidence 0.95
+with a never-populated `fit_context`, so board features never enter the routing decision
+and a per-date re-derivation would produce identical configs. It does, however, become
+live at production width: **37 of the 51 universe names are unseeded** and route on
+date-varying board features.
+
+A second latent trap was found and is **not** active in this run: a stored config with
+`decision.curve.kind == LinearVariance` hard-fails every one of that symbol's cells at
+`pricer_fitter.cpp:1027`. Cross-referencing the universe against the seed table
+(`profile.cpp:250-276`), SPY is the only ETF-classified name present and it is already
+the `--index` symbol — so the trap is latent. There is only one `--index` slot, so any
+future universe carrying a second ETF would hit it, silently, as a bare count.
+
+<!-- STEP3-FIXB -->
 
 ---
 
