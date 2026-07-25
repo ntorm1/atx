@@ -44,6 +44,14 @@ struct SyntheticHiveSpec {
   std::vector<std::string> dates{{"2026-07-01", "2026-07-02", "2026-07-06"}};
   double spot{100.0};
   double r{0.03};
+  // Truncate each (symbol, date) cell to this many quote rows. 0 (default) = the
+  // full 36-row board (9 strikes x 2 expiries x {C,P}). A small value writes a
+  // hive whose boards are REAL but unselectable, which is how a case reproduces
+  // the fail-closed "config selection failed" path FROM DISK rather than gutting
+  // `CorpusBoard::frame.rows` in memory after the load. The regimes are narrow:
+  // 1 row is rejected by the loader itself (the cell never reaches config), 2
+  // rows load cleanly and fail curve selection, and >= 4 rows select fine.
+  std::size_t max_rows_per_cell{0};
 };
 
 namespace detail {
@@ -152,7 +160,11 @@ inline void write_synthetic_hive_v2(const std::filesystem::path &root,
   std::vector<detail::SynthRow> rows;
   for (const std::string &date : spec.dates) {
     for (const std::string &sym : spec.symbols) {
+      const std::size_t before = rows.size();
       detail::append_symbol_date_rows(sym, date, spec, rows);
+      if (spec.max_rows_per_cell > 0 && rows.size() - before > spec.max_rows_per_cell) {
+        rows.resize(before + spec.max_rows_per_cell);
+      }
     }
   }
   // Sort by (date, underlying, symbol) so each date bucket write_hive_parquet

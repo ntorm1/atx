@@ -555,6 +555,121 @@ TEST(SurfaceDbTotalFitFailure, HealthyBuildIsNotFailure) {
   EXPECT_FALSE(is_total_fit_failure(coverage_report(9u, 9u, 0u)));
 }
 
+// ── is_total_config_failure — the SAME trap one stage earlier ───────────────
+//
+// `is_total_fit_failure` only sees cells that were SCHEDULED. When config
+// selection fails for every symbol, every config is stored disabled, nothing is
+// ever scheduled (`cells_to_fit == 0`), and the fit predicate reads that as the
+// healthy "nothing to do" resume. The build exits 0 over a database that has no
+// enabled symbol and will never have a surface.
+
+// A report with the config counters the predicate reads set explicitly. The three
+// dispositions partition the symbols the stage saw (`n_configured +
+// n_skipped_existing + n_disabled_failed == n_symbols`), so they are set as a set.
+[[nodiscard]] SurfaceDbBuildReport config_report(std::uint32_t configured,
+                                                 std::uint32_t skipped_existing,
+                                                 std::uint32_t disabled_failed) {
+  SurfaceDbBuildReport r;
+  r.config.n_symbols = configured + skipped_existing + disabled_failed;
+  r.config.n_configured = configured;
+  r.config.n_skipped_existing = skipped_existing;
+  r.config.n_disabled_failed = disabled_failed;
+  return r;
+}
+
+// EVERY symbol we tried to configure was disabled by a selection failure, and the
+// run got nothing out of it. Same class of silent green as a total fit failure,
+// and it reuses the same exit.
+TEST(SurfaceDbTotalConfigFailure, EveryConfigDisabledIsFailure) {
+  EXPECT_TRUE(is_total_config_failure(config_report(0u, 0u, 3u)));
+  // ...and the fit predicate cannot see it: nothing was ever scheduled.
+  EXPECT_FALSE(is_total_fit_failure(config_report(0u, 0u, 3u)));
+}
+
+// PARTIAL selection failure is normal production output — a real universe carries
+// names whose board cannot pin a curve, and they are fail-closed disabled while
+// the rest build. Exactly the rule cd9b491 established for the fit stage.
+TEST(SurfaceDbTotalConfigFailure, PartialConfigFailureIsNotFailure) {
+  EXPECT_FALSE(is_total_config_failure(config_report(2u, 0u, 1u)));
+  EXPECT_FALSE(is_total_config_failure(config_report(1u, 0u, 8u))); // even 1/9 is not "nothing"
+}
+
+// The RESUME path: every symbol was already configured, so the stage disabled
+// nothing and attempted nothing. This is the convergence guarantee and must stay
+// green — it is the shape the new predicate has to be distinguishable from.
+TEST(SurfaceDbTotalConfigFailure, NothingToDoResumeIsNotFailure) {
+  EXPECT_FALSE(is_total_config_failure(config_report(0u, 3u, 0u)));
+  SurfaceDbBuildReport resumed = config_report(0u, 3u, 0u);
+  resumed.coverage.cells_loaded = 9u;
+  resumed.coverage.cells_already_present = 9u;
+  resumed.coverage.dates_skipped_complete = 3u;
+  EXPECT_FALSE(is_total_config_failure(resumed));
+  // An empty window saw no symbols at all — nothing was attempted, nothing failed.
+  EXPECT_FALSE(is_total_config_failure(config_report(0u, 0u, 0u)));
+}
+
+// A clean build configures everything and is obviously not a failure.
+TEST(SurfaceDbTotalConfigFailure, HealthyBuildIsNotFailure) {
+  EXPECT_FALSE(is_total_config_failure(config_report(3u, 0u, 0u)));
+}
+
+// The one shape that must NOT be swept in: symbols that were already configured
+// went on to fit successfully, and only the newly-seen names failed selection. The
+// run produced surfaces, so it is partial, not dead.
+TEST(SurfaceDbTotalConfigFailure, NewNamesFailingBesideProductiveFitsIsNotFailure) {
+  SurfaceDbBuildReport r = config_report(0u, 5u, 2u);
+  r.coverage.cells_to_fit = 5u;
+  r.coverage.cells_ok = 5u;
+  EXPECT_FALSE(is_total_config_failure(r));
+}
+
+// The config trap end to end at the library level: a hive whose every board is
+// REAL but unselectable (one quote per cell — a single strike cannot pin a curve
+// family). Every symbol is stored disabled, so nothing is ever scheduled, the
+// build returns Ok, and `is_total_fit_failure` sees the healthy nothing-to-do
+// resume. Only the config predicate can tell this apart from a converged re-run.
+TEST(BuildSurfaceDb, EverySymbolFailingSelectionIsTotalConfigFailure) {
+  tsupport::SyntheticHiveSpec fx;
+  // Two quotes per cell: enough for the LOADER to accept every board (all three
+  // dates load, zero load errors — the config stage really does see all three
+  // symbols), and far too few for `select_fit_policy` to pin a curve family.
+  fx.max_rows_per_cell = 2;
+  const BuildFixture f = make_build_fixture("all_configs_disabled", fx);
+
+  const auto rep = build_surface_db(build_spec(f, fx));
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string()); // still Ok — the trap
+  EXPECT_EQ(rep->n_dates_loaded, std::size_t{3}); // the boards are REAL, not quarantined
+  EXPECT_EQ(rep->n_load_errors, std::size_t{0});
+  EXPECT_EQ(rep->config.n_symbols, 3u);
+  EXPECT_EQ(rep->config.n_configured, 0u);
+  EXPECT_EQ(rep->config.n_disabled_failed, 3u);
+  EXPECT_EQ(rep->config.failed_symbols.size(), std::size_t{3}); // each one named
+  EXPECT_EQ(rep->coverage.cells_to_fit, 0u);                    // nothing scheduled...
+  EXPECT_EQ(rep->coverage.cells_ok, 0u);                        // ...so nothing fitted
+
+  EXPECT_FALSE(is_total_fit_failure(*rep)) << "the fit predicate cannot see this — that IS the bug";
+  EXPECT_TRUE(is_total_config_failure(*rep));
+
+  // The database it left behind: created, no enabled symbol, no partition. This is
+  // the thing that used to pass a build AND an unguarded verify.
+  auto db = SurfaceDb::open(f.db.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  EXPECT_EQ(db->partitions().size(), std::size_t{0});
+  for (const std::string &s : db->symbols()) {
+    const auto cfg = db->symbol_config(s);
+    ASSERT_TRUE(cfg.has_value()) << (cfg ? "" : cfg.error().to_string());
+    EXPECT_FALSE(cfg->enabled) << s;
+  }
+
+  // Same hive, full boards: the predicate stays quiet on a healthy build.
+  const tsupport::SyntheticHiveSpec full;
+  const BuildFixture g = make_build_fixture("all_configs_ok", full);
+  const auto good = build_surface_db(build_spec(g, full));
+  ASSERT_TRUE(good.has_value()) << (good ? "" : good.error().to_string());
+  EXPECT_EQ(good->config.n_configured, 3u);
+  EXPECT_FALSE(is_total_config_failure(*good));
+}
+
 // The production trap, end to end at the library level: the synthetic hive is
 // priced at a NON-ZERO rate (SyntheticHiveSpec::r == 0.03), so building it with
 // the CLI's old hard-wired r = 0.0 fails every single fit while the build itself

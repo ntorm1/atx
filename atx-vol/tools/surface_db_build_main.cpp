@@ -32,8 +32,9 @@
 //
 // Prints one line per report field to stdout; exits 0 on Ok, 1 on Err (message
 // on stderr), 2 on a usage error (unknown/missing/malformed flag), 3 when the
-// build ran but produced NOTHING (see is_total_fit_failure). See
-// atx-vol/docs/surface-db-build.md.
+// build ran but produced NOTHING — either every symbol failed CONFIG SELECTION
+// (is_total_config_failure) or work was scheduled and no cell fitted
+// (is_total_fit_failure). See atx-vol/docs/surface-db-build.md.
 
 #include <cerrno>
 #include <cmath>
@@ -54,10 +55,12 @@ using namespace atx::vol;
 
 namespace {
 
-// The build ran to completion but fitted NOTHING. Distinct from 1 (the tool or
+// The build ran to completion and produced NOTHING. Distinct from 1 (the tool or
 // the db broke, no report) and from 2 (the operator's command line was wrong):
-// the inputs parsed, the work was scheduled, and every single cell failed. A
-// script can therefore tell "atx is broken" from "your data/rate is wrong".
+// the inputs parsed and every symbol died — either at config selection or at the
+// fit. A script can therefore tell "atx is broken" from "your data/rate is wrong".
+// ONE code for both stages: the question a script asks is "did this run produce
+// anything?", and the stderr diagnostic names which stage swallowed it.
 constexpr int kExitTotalFitFailure = 3;
 
 void print_usage(std::FILE *out) {
@@ -269,10 +272,31 @@ int main(int argc, char **argv) {
     std::printf("report %s\n", report_path.c_str());
   }
 
-  // The silent-failure trap: a build that scheduled work and fitted NOTHING used
-  // to exit 0, so an operator saw green over an empty database. It is a failure,
-  // and the diagnostic names the top suspect (the report above is still printed
-  // and the --report CSV still written — this only changes the exit code).
+  // The silent-failure trap, one stage EARLIER than the fit: if config selection
+  // failed for every symbol, every config is stored disabled, nothing is ever
+  // scheduled, and `is_total_fit_failure` below cannot see it — `cells_to_fit`
+  // is 0, which is also what a healthy nothing-to-do resume looks like. Checked
+  // first because it is the upstream cause: when both fire, the config stage is
+  // what the operator has to fix.
+  if (is_total_config_failure(*report)) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db-build: TOTAL CONFIG FAILURE: %u symbols attempted, 0 "
+                 "configured (%u disabled by a selection failure).\n"
+                 "  Every symbol's config board failed to build a selectable underlying, so "
+                 "every config was stored DISABLED and no cell was ever scheduled to fit. The "
+                 "database now has no enabled symbol and will stay empty. Most likely causes: "
+                 "the hive window holds no usable board for these names (check "
+                 "n_dates_loaded / n_load_errors above), or the universe is wrong. The failed "
+                 "names are on the config.failed_symbols line.\n",
+                 report->config.n_configured + report->config.n_disabled_failed,
+                 report->config.n_disabled_failed);
+    return kExitTotalFitFailure;
+  }
+
+  // A build that scheduled work and fitted NOTHING used to exit 0, so an operator
+  // saw green over an empty database. It is a failure, and the diagnostic names
+  // the top suspect (the report above is still printed and the --report CSV still
+  // written — this only changes the exit code).
   if (is_total_fit_failure(*report)) {
     std::fprintf(stderr,
                  "atx-vol-surface-db-build: TOTAL FIT FAILURE: %u cells scheduled, 0 fitted "

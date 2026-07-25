@@ -318,6 +318,19 @@ bool is_total_fit_failure(const SurfaceDbBuildReport &r) {
   return r.coverage.cells_to_fit > 0 && r.coverage.cells_ok == 0;
 }
 
+bool is_total_config_failure(const SurfaceDbBuildReport &r) {
+  // Same shape as above (attempted > 0, succeeded == 0) read on the CONFIG stage's
+  // counters, because a universe swallowed here never reaches the fit stage's
+  // counters at all: everything is disabled, nothing is scheduled, and
+  // `is_total_fit_failure` sees the resume path. `n_skipped_existing` is
+  // deliberately NOT part of "attempted" — a symbol left untouched by the
+  // idempotent resume was not tried, so a re-run over an already-configured db
+  // stays green. The `cells_ok` clause keeps a run that DID produce surfaces out
+  // of it (only its new names failed selection): partial, not dead.
+  return r.config.n_disabled_failed > 0 && r.config.n_configured == 0 &&
+         r.coverage.cells_ok == 0;
+}
+
 Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view path) {
   std::string out;
   out.reserve(1024 + r.coverage.per_symbol.size() * 48);

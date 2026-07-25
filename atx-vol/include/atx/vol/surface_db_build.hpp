@@ -178,6 +178,35 @@ struct SurfaceDbBuildReport {
 // why the decision lives here (testable) and not in `main`.
 [[nodiscard]] bool is_total_fit_failure(const SurfaceDbBuildReport &r);
 
+// The SAME silent-green trap, one stage earlier — and invisible to the predicate
+// above. When per-symbol CONFIG SELECTION fails for every symbol the stage tried,
+// every config is stored disabled (fail-closed), so nothing is ever scheduled:
+// `cells_to_fit == 0`, `cells_ok == 0`, and `is_total_fit_failure` reads that as
+// the healthy "nothing to do" resume. The build exits 0 over a database with no
+// enabled symbol that will never hold a surface.
+//
+// True iff the config stage ATTEMPTED at least one symbol and not one of them was
+// configured (`n_disabled_failed > 0 && n_configured == 0`) AND the run produced
+// no surface at all (`coverage.cells_ok == 0`). The shape mirrors
+// `is_total_fit_failure` deliberately: attempted > 0, succeeded == 0.
+//
+// Equally narrow, for the same reasons — three neighbouring shapes stay green:
+//   - PARTIAL selection failure (`n_configured > 0` alongside some
+//     `n_disabled_failed`) is normal: a real universe carries names whose board
+//     cannot pin a curve, and they are disabled while the rest build.
+//   - NOTHING TO DO (`n_disabled_failed == 0`) covers both the resume over an
+//     already-configured db (every symbol `n_skipped_existing`) and the empty
+//     window (no symbols seen at all). The convergence guarantee needs this.
+//   - NEW NAMES FAILING BESIDE PRODUCTIVE FITS: only newly-seen symbols failed
+//     selection while already-configured ones went on to fit. `cells_ok > 0`, so
+//     the run produced surfaces — partial, not dead.
+//
+// The CLI maps this to the SAME exit code as a total fit failure: both answer the
+// one question "did this run produce anything at all?", and a script branching on
+// the exit does not care which stage swallowed the universe (the stderr
+// diagnostic names the stage).
+[[nodiscard]] bool is_total_config_failure(const SurfaceDbBuildReport &r);
+
 // Run the whole build (see `SurfaceDbBuildSpec`). Idempotent/resumable: re-running
 // over an unchanged hive re-fits ZERO (configs skip-existing, the populate's
 // cell-aware filter writes no date) ONCE every loaded cell has either fitted
