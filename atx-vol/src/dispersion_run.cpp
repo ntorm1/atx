@@ -1546,6 +1546,22 @@ Status persist_typed_spec_keys(const fs::path &source_spec, const fs::path &run_
   return out ? Ok() : Err(ErrorCode::IoError, "cannot flush typed run config keys");
 }
 
+Status
+write_quote_reject_report(const fs::path &path,
+                          std::span<const std::pair<std::string, ListedQuoteRejectCounts>> rows) {
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    return Err(ErrorCode::IoError, "cannot write " + path.string());
+  }
+  out << "date\tnot_two_sided\tzero_bid\tstale\tlocked\tnon_standard\ttotal_dropped\n";
+  for (const auto &[date, counts] : rows) {
+    out << date << '\t' << counts.not_two_sided << '\t' << counts.zero_bid << '\t' << counts.stale
+        << '\t' << counts.locked << '\t' << counts.non_standard << '\t' << counts.total_dropped()
+        << '\n';
+  }
+  return out ? Ok() : Err(ErrorCode::IoError, "cannot flush " + path.string());
+}
+
 Status write_dispersion_effective_config(const fs::path &path, const DispersionRunConfig &config) {
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   if (!out) {
@@ -1923,6 +1939,10 @@ Status dispersion_build_schedule(const fs::path &run_dir) {
   const std::vector<std::string> symbols = all_symbols(universe_rows);
   ListedDispersionSchedule schedule;
   std::int64_t active_expiry = 0;
+  // F6 (BT-P2-8): per-date quote-admission tally. Persisted below, because a
+  // counter that only exists in memory cannot answer "why did this schedule
+  // change" after the fact — which is exactly the question a moved golden asks.
+  std::vector<std::pair<std::string, ListedQuoteRejectCounts>> quote_reject_rows;
   for (const SnapshotRef &ref : clock.refs()) {
     ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(ref.archive_path));
     const double active_dte =
@@ -1960,6 +1980,12 @@ Status dispersion_build_schedule(const fs::path &run_dir) {
     };
     const auto selected = select_listed_dispersion(ref.date, snapshot.ts_ns(), resolved.universe,
                                                    quotes, forward, selection_config);
+    if (selected) {
+      // F6: the per-date admission tally, recorded for EVERY date selection ran
+      // on — including dates whose roll is later deferred below — so an operator
+      // can see what the quality gates rejected without re-running selection.
+      quote_reject_rows.push_back({ref.date, selected->quote_rejects});
+    }
     if (!selected) {
       if (active_expiry == 0) {
         continue;
@@ -2001,6 +2027,7 @@ Status dispersion_build_schedule(const fs::path &run_dir) {
   }
   ATX_TRY_VOID(
       write_listed_dispersion_schedule_file((run_dir / "trade_schedule.tsv").string(), schedule));
+  ATX_TRY_VOID(write_quote_reject_report(run_dir / "quote_rejects.tsv", quote_reject_rows));
   std::printf("built immutable schedule: rolls=%zu\n", schedule.rolls.size());
   return Ok();
 }

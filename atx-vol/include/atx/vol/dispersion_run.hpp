@@ -276,6 +276,19 @@ struct DispersionRunConfig {
 [[nodiscard]] Status persist_typed_spec_keys(const std::filesystem::path &source_spec,
                                              const std::filesystem::path &run_spec);
 
+// F6: emit `quote_rejects.tsv` — the per-date quote-admission tally that
+// `build-schedule` accumulated, one row per date selection ran on. Dates absent
+// from the file either held an unexpired cohort (no roll attempted) or failed
+// selection outright.
+//
+// A counter that exists only in memory cannot answer "why did this schedule
+// change" after the fact, which is precisely the question a moved golden asks.
+// `locked` counts every locked market SEEN whether or not the policy dropped it,
+// so `total_dropped` deliberately excludes it.
+[[nodiscard]] Status write_quote_reject_report(
+    const std::filesystem::path &path,
+    std::span<const std::pair<std::string, ListedQuoteRejectCounts>> rows);
+
 // Classify a run config's execution assumptions. Purely a function of the
 // frictions + cost model that actually reach the engine.
 [[nodiscard]] DispersionFrictionRegime

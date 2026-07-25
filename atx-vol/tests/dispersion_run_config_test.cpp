@@ -1057,3 +1057,40 @@ TEST(DispersionRunConfigStrict, BuildCorpusPreservesEveryTypedKeyIntoTheRunDirec
 
   fs::remove_all(run_dir, error);
 }
+
+TEST(DispersionRunConfigStrict, QuoteRejectReportIsAPerDateAuditTrailForTheAdmissionGates) {
+  // F6's counters existed only in memory, so "check quote_rejects if a schedule
+  // SHA moves" was not performable after the fact. `build-schedule` now persists
+  // them; this pins the shape and the arithmetic of that artifact.
+  const fs::path dir = fs::temp_directory_path() / "atx-disp-quote-rejects";
+  std::error_code error;
+  fs::remove_all(dir, error);
+  fs::create_directories(dir, error);
+  const fs::path path = dir / "quote_rejects.tsv";
+
+  ListedQuoteRejectCounts clean{};
+  ListedQuoteRejectCounts dirty{};
+  dirty.zero_bid = 2u;
+  dirty.stale = 3u;
+  dirty.locked = 5u; // flagged, NOT dropped under the default policy
+  dirty.non_standard = 1u;
+  const std::vector<std::pair<std::string, ListedQuoteRejectCounts>> rows = {
+      {"2026-01-02", clean}, {"2026-02-02", dirty}};
+  ASSERT_TRUE(write_quote_reject_report(path, rows).has_value());
+
+  std::ifstream in(path, std::ios::binary);
+  std::string header;
+  std::string row0;
+  std::string row1;
+  ASSERT_TRUE(std::getline(in, header));
+  ASSERT_TRUE(std::getline(in, row0));
+  ASSERT_TRUE(std::getline(in, row1));
+  EXPECT_EQ(header, "date\tnot_two_sided\tzero_bid\tstale\tlocked\tnon_standard\ttotal_dropped");
+  EXPECT_EQ(row0, "2026-01-02\t0\t0\t0\t0\t0\t0");
+  // total_dropped = 2 + 3 + 1 = 6: `locked` is flagged but admitted, so it must
+  // NOT inflate the dropped count.
+  EXPECT_EQ(row1, "2026-02-02\t0\t2\t3\t5\t1\t6");
+  EXPECT_EQ(dirty.total_dropped(), 6u);
+
+  fs::remove_all(dir, error);
+}
