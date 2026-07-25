@@ -332,6 +332,22 @@ struct DispersionVerifyReport {
   std::size_t n_rolls{0};
 };
 
+// ── Corpus phase-split line (B1 / T1) ───────────────────────────────────────
+//
+// The single line `dispersion_build_corpus` prints under
+// `ATX_VOL_CORPUS_PHASE_TIMING`. Factored out as a PURE function of its inputs
+// so its contents can be gated directly, without driving an 82-date corpus
+// build to find out what the probe would have reported: the caller prints
+// exactly this string and nothing else.
+//
+// `other_s` is build-phase wall NOT attributed to a named phase (board
+// construction from the OPRA panels, manifest/quality assembly, the session
+// bookkeeping between dates). Printed rather than hidden so the parts sum to the
+// whole and a large residual stays visible.
+[[nodiscard]] std::string format_corpus_phase_line(double ingest_s, double build_s,
+                                                   const CorpusPhaseTimings &phases,
+                                                   std::size_t date_batch);
+
 // ── File-oriented workflow entry points (the CLI dispatches to these) ───────
 
 [[nodiscard]] Status dispersion_build_corpus(const std::filesystem::path &source_spec_path,
