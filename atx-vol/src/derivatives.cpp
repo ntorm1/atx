@@ -337,15 +337,34 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   // `required` is also what decides truncation below. A tenor whose ATM vol is
   // unusable yields required == 0, i.e. "coverage not judgeable", and the span
   // stays at the tier default.
+  //
+  // FIX-E M-6: the width is a CONFIG knob (`DerivConfig::width_sigmas`), as it
+  // already was on the density route. 0 keeps the shared 6σ default, so every
+  // existing caller is unchanged; a negative value turns vol scaling off, which
+  // is the escape hatch for a caller who wants an exactly-specified strip and
+  // does not want it flagged short.
+  const double width_sigmas =
+      cfg.width_sigmas == 0.0 ? strip::kDefaultWidthSigmas : cfg.width_sigmas;
   const double sigma_atm = surface.iv(0.0, T);
-  const double required = strip::required_half_width(sigma_atm, T, strip::kDefaultWidthSigmas);
+  const double required = strip::required_half_width(sigma_atm, T, width_sigmas);
   if (!span_pinned) {
     const double floor_half = std::fmax(-grid.k_min_log, grid.k_max_log);
-    const double kh =
-        strip::adaptive_half_width(floor_half, sigma_atm, T, strip::kDefaultWidthSigmas);
+    const double kh = strip::adaptive_half_width(floor_half, sigma_atm, T, width_sigmas);
     if (kh > 0.0) {
       grid.k_min_log = -kh;
       grid.k_max_log = kh;
+    }
+    // FIX-E M-7: SCALE THE NODE COUNT WITH THE SPAN. A tier promises a
+    // resolution (Δk), not just a node count: Standard is 257 nodes over ±1.5,
+    // i.e. Δk ≈ 0.0117. Widening to ±3.6 at 257 nodes silently made Δk 2.4x
+    // COARSER (3.6x on Fast) on exactly the tenors E2 widens — trading a
+    // truncation bias for a quadrature one. Hold Δk at the tier's own value
+    // instead. Only when the caller has not pinned `strip_nodes`: an explicit
+    // node count is a request, same as an explicit span.
+    if (cfg.strip_nodes == 0u && kh > floor_half && floor_half > 0.0) {
+      const double intervals = static_cast<double>(grid.n_nodes - 1) * (kh / floor_half);
+      grid.n_nodes = strip::odd_nodes(
+          static_cast<std::size_t>(std::ceil(intervals)) + 1u, grid.n_nodes);
     }
   }
 
@@ -575,22 +594,18 @@ namespace {
   if (pillars.empty()) {
     return Err(ErrorCode::InvalidArgument, "deriv: surface carries no fitted pillar");
   }
-  // FITTED-RANGE GATE. Between pillars this CurveSet reproduces the surface's own
-  // carry; OUTSIDE them it does not, and the disagreement is not benign.
-  // `resolve_forward` clamps flat past the end pillars, whereas
-  // `PricedSurface::forward_at` keeps extrapolating economically
-  // (S·exp((r−q_eff)·T)). The strip prices every node at F·e^x and reads its vol
-  // from `ps.iv(F·e^x, T)`, so a forward that is not the surface's own would put
-  // k = 0 somewhere other than the surface's ATM and bias K_var — silently.
-  // Refuse instead. A caller who genuinely wants an extrapolated tenor supplies
-  // its own `CurveSet` through the templated overload and owns that choice.
+  // FITTED-RANGE GATE (applied below, once the usable pillar set is known).
+  // Between pillars this CurveSet reproduces the surface's own carry; OUTSIDE
+  // them it does not, and the disagreement is not benign. `resolve_forward`
+  // clamps flat past the end pillars, whereas `PricedSurface::forward_at` keeps
+  // extrapolating economically (S·exp((r−q_eff)·T)). The strip prices every node
+  // at F·e^x and reads its vol from `ps.iv(F·e^x, T)`, so a forward that is not
+  // the surface's own would put k = 0 somewhere other than the surface's ATM and
+  // bias K_var — silently. Refuse instead. A caller who genuinely wants an
+  // extrapolated tenor supplies its own `CurveSet` through the templated
+  // overload and owns that choice.
   if (!(T > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "deriv: T must be > 0");
-  }
-  if (T < pillars.front().T || T > pillars.back().T) {
-    return Err(ErrorCode::OutOfRange,
-               "deriv: T is outside the surface's fitted pillar range; the "
-               "PricedSurface overloads do not extrapolate carry");
   }
   CurveSet cs;
   cs.spot = ps.pricing().S;
@@ -616,6 +631,22 @@ namespace {
   if (ts.empty()) {
     return Err(ErrorCode::InvalidArgument, "deriv: surface carries no usable fitted pillar");
   }
+  // FIX-E I-5. The gate runs AFTER the filter and on the SURVIVING pillars.
+  // Gating on `pillars.front()/back()` while building the CurveSet from the
+  // filtered list is two different pillar sets in one function: if the first or
+  // last pillar is degenerate (T <= 0 or forward <= 0) it is dropped from the
+  // curve but still widens the admitted range, so an admitted T could land
+  // outside the surviving forward curve — exactly the flat-clamp-vs-extrapolate
+  // disagreement the gate exists to prevent, reopened on the degenerate-pillar
+  // path. `ts` is the correct set: it is the one the curve is built from, so
+  // "admitted" and "interpolated rather than clamped" become the same
+  // condition by construction. (`ps.context()` is ascending in T, and the
+  // filter preserves order, so front/back of `ts` are its min/max.)
+  if (T < ts.front() || T > ts.back()) {
+    return Err(ErrorCode::OutOfRange,
+               "deriv: T is outside the surface's usable fitted pillar range; the "
+               "PricedSurface overloads do not extrapolate carry");
+  }
   ATX_TRY_VOID(cs.set_yield(ts, rates));
   cs.forward.set(fwd);
   return Ok(std::move(cs));
@@ -629,12 +660,23 @@ namespace {
 // `ps->forward_at(T)`: inside the fitted pillar range (the only range
 // `carry_from` admits) the two agree, and using the strip's own forward is what
 // keeps the two reads on the same strike by construction.
+// FIX-E M-8: the forward is CONSTANT across a strip but `resolve_forward` is a
+// linear scan over the pillars, and the strip calls `iv` once per node (97-2049
+// times). Resolve it once for the strip's own tenor at construction and reuse it
+// whenever the query T matches; a query at any other T (nothing does today, but
+// the templates are free to) falls back to the full resolve, so the cache is an
+// optimisation and never a behaviour change.
 struct PricedSurfaceStripView {
   const PricedSurface* ps;
   const CurveSet* curves;
+  double T_cached;
+  double F_cached;
+
+  PricedSurfaceStripView(const PricedSurface* surface, const CurveSet* cs, double T) noexcept
+      : ps{surface}, curves{cs}, T_cached{T}, F_cached{resolve_forward(*cs, T)} {}
 
   [[nodiscard]] double iv(double k_log, double T) const noexcept {
-    const double F = resolve_forward(*curves, T);
+    const double F = (T == T_cached) ? F_cached : resolve_forward(*curves, T);
     if (!(F > 0.0) || !std::isfinite(k_log)) {
       return kNaN;
     }
@@ -647,21 +689,21 @@ struct PricedSurfaceStripView {
 Result<DerivQuote> var_swap_fair_strike(const PricedSurface& surface, double T,
                                         const DerivConfig& cfg) {
   ATX_TRY(const CurveSet curves, carry_from(surface, T));
-  const PricedSurfaceStripView view{&surface, &curves};
+  const PricedSurfaceStripView view{&surface, &curves, T};
   return var_swap_fair_strike(view, curves, T, cfg);
 }
 
 Result<DerivQuote> vol_swap_fair_strike(const PricedSurface& surface, double T,
                                         const DerivConfig& cfg) {
   ATX_TRY(const CurveSet curves, carry_from(surface, T));
-  const PricedSurfaceStripView view{&surface, &curves};
+  const PricedSurfaceStripView view{&surface, &curves, T};
   return vol_swap_fair_strike(view, curves, T, cfg);
 }
 
 Result<DerivQuote> deriv_price(const PricedSurface& surface, const DerivContract& contract,
                                const DerivConfig& cfg) {
   ATX_TRY(const CurveSet curves, carry_from(surface, contract.maturity_t));
-  const PricedSurfaceStripView view{&surface, &curves};
+  const PricedSurfaceStripView view{&surface, &curves, contract.maturity_t};
   return deriv_price(view, curves, contract, cfg);
 }
 

@@ -54,12 +54,10 @@
 #include "atx/vol/types.hpp"
 
 namespace atx::vol {
+
 // E6: used only by const-reference in the PricedSurface-native overloads below,
 // so the heavy definition stays out of this header.
 class PricedSurface;
-} // namespace atx::vol
-
-namespace atx::vol {
 
 // ── Enums ────────────────────────────────────────────────────────────────
 
@@ -215,6 +213,21 @@ struct DerivConfig {
   double k_min_log = 0.0;         // log-strike grid lower (0 -> quality default)
   double k_max_log = 0.0;         // log-strike grid upper (0 -> quality default)
   std::uint32_t strip_nodes = 0;  // 0 -> quality default
+  // E2 / AN-P1-2 adaptive wing width, in σ√T units — the same policy knob
+  // `RndConfig::width_sigmas` has always had on the density route (FIX-E M-6:
+  // E2 changed THIS route's span policy without giving it the knob).
+  //
+  //   0        -> the shared default, strip::kDefaultWidthSigmas = 6.
+  //   > 0      -> span floor widened to `width_sigmas·σ_atm·√T`, and the
+  //               truncation flags measure against that same requirement.
+  //   < 0      -> vol scaling OFF. The span stays exactly at the tier default
+  //               (or at an explicit [k_min_log, k_max_log]) AND the wings are
+  //               no longer judged against a vol-scaled requirement. This is the
+  //               escape hatch for a caller who genuinely wants an
+  //               exactly-specified strip: before it existed, pinning the bounds
+  //               got you the strip you asked for but permanently flagged it
+  //               truncated.
+  double width_sigmas = 0.0;
   // Reserved — must be left at 0.
   double abs_price_tol = 0.0;
   double rel_price_tol = 0.0;
