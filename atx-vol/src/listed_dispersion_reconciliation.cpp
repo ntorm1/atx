@@ -377,20 +377,54 @@ reconcile_listed_dispersion(const ListedDispersionSchedule &schedule,
 Status validate_listed_reconciliation_backtest(const ListedDispersionReconciliation &reconciliation,
                                                const BacktestResult &backtest,
                                                double absolute_tolerance) {
-  if (!finite(absolute_tolerance) || absolute_tolerance < 0.0 ||
-      reconciliation.rows.size() != backtest.size()) {
+  if (!finite(absolute_tolerance) || absolute_tolerance < 0.0) {
+    return Err(ErrorCode::InvalidArgument, "listed reconciliation/backtest: invalid tolerance");
+  }
+  if (reconciliation.rows.empty()) {
+    // An empty reconciliation is consistent only with an empty backtest.
+    if (backtest.size() != 0) {
+      return Err(ErrorCode::InvalidArgument,
+                 "listed reconciliation/backtest: empty reconciliation against a non-empty "
+                 "backtest");
+    }
+    return Ok();
+  }
+  // M1. The reconciliation timeline is TRIMMED to start at the first roll date
+  // (assemble_reconciliation_snapshots): any leading warm-up / low-coverage
+  // session ahead of the first roll is dropped, because the strategy emits
+  // nothing there. The backtest still carries one row per clock session. So the
+  // reconciliation is a contiguous SUFFIX of the backtest, not necessarily the
+  // whole of it — requiring equal row counts here rejected exactly the corpus
+  // the trim exists to admit, merely moving the abort one call downstream under
+  // a misleading message. Align on the reconciliation's first date and require
+  // it to run to the end. When the lead-in is zero the offset is zero and this
+  // is bit-identical to the historical row-for-row comparison.
+  std::size_t offset = backtest.size();
+  for (std::size_t i = 0; i < backtest.size(); ++i) {
+    if (backtest.date[i] == reconciliation.rows.front().date) {
+      offset = i;
+      break;
+    }
+  }
+  if (offset == backtest.size()) {
     return Err(ErrorCode::InvalidArgument,
-               "listed reconciliation/backtest: invalid tolerance or row count");
+               "listed reconciliation/backtest: reconciliation start date absent from the backtest");
+  }
+  if (offset + reconciliation.rows.size() != backtest.size()) {
+    return Err(ErrorCode::InvalidArgument,
+               "listed reconciliation/backtest: reconciliation is not a contiguous suffix of the "
+               "backtest");
   }
   for (std::size_t i = 0; i < reconciliation.rows.size(); ++i) {
-    if (reconciliation.rows[i].date != backtest.date[i]) {
+    const std::size_t b = offset + i;
+    if (reconciliation.rows[i].date != backtest.date[b]) {
       return Err(ErrorCode::InvalidArgument, "listed reconciliation/backtest: date mismatch");
     }
-    double option_pnl = backtest.pnl_total[i];
-    option_pnl -= backtest.pnl_settlement[i];
-    option_pnl -= backtest.pnl_shares[i];
-    option_pnl -= backtest.financing[i];
-    option_pnl += backtest.cost[i];
+    double option_pnl = backtest.pnl_total[b];
+    option_pnl -= backtest.pnl_settlement[b];
+    option_pnl -= backtest.pnl_shares[b];
+    option_pnl -= backtest.financing[b];
+    option_pnl += backtest.cost[b];
     if (std::fabs(option_pnl - reconciliation.rows[i].model_option_pnl) > absolute_tolerance) {
       return Err(ErrorCode::InvalidArgument,
                  "listed reconciliation/backtest: model option P&L mismatch");

@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "atx/core/datetime.hpp"
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"
 #include "atx/vol/data.hpp"
@@ -251,9 +252,72 @@ Result<ListedDefinitionTable> read_listed_definitions_file(std::string_view path
   return parse_listed_definitions(contents);
 }
 
+namespace {
+
+// UTC day serial (days since 1970-01-01) of an expiry instant. Canonicalizes
+// away the time-of-day so a midnight-UTC and a 16:00-ET (20:00Z) stamp of the
+// same expiry map to one date.
+[[nodiscard]] std::int64_t expiry_day_serial(std::int64_t expiry_ts_ns) noexcept {
+  namespace time = atx::core::time;
+  const time::CivilTime civil = time::to_civil_utc(time::Timestamp::from_unix_nanos(expiry_ts_ns));
+  return time::days_from_civil(civil.date.year, civil.date.month, civil.date.day);
+}
+
+} // namespace
+
+std::vector<std::int64_t> standard_monthly_sessions(std::span<const std::int64_t> expiry_ts_ns) {
+  namespace time = atx::core::time;
+  // Distinct expiry dates (day serials), ascending. Sorting groups by month and
+  // lets the third-Friday / Thursday-before lookups use binary search.
+  std::vector<std::int64_t> days;
+  days.reserve(expiry_ts_ns.size());
+  for (const std::int64_t ns : expiry_ts_ns) {
+    if (ns > 0) {
+      days.push_back(expiry_day_serial(ns));
+    }
+  }
+  std::sort(days.begin(), days.end());
+  days.erase(std::unique(days.begin(), days.end()), days.end());
+  const auto observed = [&](std::int64_t serial) {
+    return std::binary_search(days.begin(), days.end(), serial);
+  };
+
+  std::vector<std::int64_t> sessions;
+  std::int64_t last_year_month = -1;
+  for (const std::int64_t serial : days) {
+    const time::Date date = time::civil_from_days(serial);
+    const std::int64_t year_month = static_cast<std::int64_t>(date.year) * 12 + date.month;
+    if (year_month == last_year_month) {
+      continue; // one lookup per calendar month
+    }
+    last_year_month = year_month;
+    const std::int64_t third_friday =
+        time::nth_weekday_of_month(date.year, date.month, time::Weekday::Friday, 3).to_days();
+    if (observed(third_friday)) {
+      sessions.push_back(third_friday);
+    } else if (observed(third_friday - 1)) { // Thursday immediately before (holiday shift)
+      sessions.push_back(third_friday - 1);
+    }
+    // else: no standard-monthly session observed for this month in this universe.
+  }
+  // `days` is ascending so months (and thus sessions) are emitted in order, but
+  // keep the sort explicit — is_standard_monthly_expiry relies on it.
+  std::sort(sessions.begin(), sessions.end());
+  return sessions;
+}
+
+bool is_standard_monthly_expiry(std::span<const std::int64_t> sessions,
+                                std::int64_t expiry_ts_ns) {
+  if (expiry_ts_ns <= 0) {
+    return false;
+  }
+  return std::binary_search(sessions.begin(), sessions.end(), expiry_day_serial(expiry_ts_ns));
+}
+
 Result<std::vector<ListedOptionQuote>>
 listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_ns,
-                        const OpraPanel &panel, const ListedDefinitionTable &definitions) {
+                        const OpraPanel &panel, const ListedDefinitionTable &definitions,
+                        MissingDefinitionPolicy policy) {
   if (trade_date.empty() || valuation_ts_ns <= 0 || panel.frame.uid.empty() ||
       panel.frame.snapshot_ts_ns != valuation_ts_ns || panel.source_schema_version < 2 ||
       !panel.provenance_complete || panel.source_fingerprint == 0u ||
@@ -301,6 +365,15 @@ listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_n
       // ever selects 21-60 DTE, so these are pure noise here. Invariant: on this
       // path every kept quote has expiry strictly after the trade date.
       if (missing_osi.expiry_iso == trade_date) {
+        continue;
+      }
+      // No point-in-time definition for a standard-root, non-0DTE contract. By
+      // default this is a fatal missing authority; a caller may opt into
+      // SkipUnlisted to treat it as panel noise (an intraday-listed contract the
+      // authority does not yet know) outside its universe. This is the ONLY
+      // behavior the policy alters — the look-ahead/expiry and economics-agreement
+      // checks below stay fatal for any contract that DOES have a definition.
+      if (policy == MissingDefinitionPolicy::SkipUnlisted) {
         continue;
       }
       return Err(ErrorCode::NotFound, "listed OPRA join: contract definition missing");

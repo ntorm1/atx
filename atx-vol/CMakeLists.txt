@@ -46,6 +46,8 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/data.cpp
     src/detail/archive_util.cpp
     src/surface_archive.cpp
+    src/run_archive.cpp
+    src/run_diagnostics.cpp
     src/surface_db.cpp
     src/batch.cpp
     src/portfolio_price.cpp
@@ -97,6 +99,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/dispersion.cpp
     src/dispersion_strangle.cpp
     src/dispersion_backtest.cpp
+    src/backtest_driver.cpp
     src/dispersion_workflow.cpp
     src/listed_dispersion.cpp
     src/listed_opra.cpp
@@ -105,6 +108,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/listed_dispersion_reconciliation.cpp
     src/listed_dispersion_strategy.cpp
     src/dispersion_run.cpp
+    src/listed_dispersion_pipeline.cpp
     src/backtest.cpp
     src/snapshot_cache.cpp
     src/strategy.cpp

@@ -36,6 +36,8 @@ add_executable(atx-vol-tests
     fit_policy_test.cpp
     curve_selector_test.cpp
     data_test.cpp
+    run_archive_test.cpp
+    run_diagnostics_test.cpp
     surface_archive_test.cpp
     surface_db_test.cpp
     batch_test.cpp
@@ -97,6 +99,7 @@ add_executable(atx-vol-tests
     listed_dispersion_schedule_test.cpp
     listed_dispersion_reconciliation_test.cpp
     listed_dispersion_strategy_test.cpp
+    listed_dispersion_pipeline_test.cpp
     backtest_test.cpp
     strategy_test.cpp
     dispersion_strangle_test.cpp
@@ -104,6 +107,7 @@ add_executable(atx-vol-tests
     tearsheet_test.cpp
     benchmark_stats_test.cpp         # X5 IR / alpha / beta / tracking error
     run_report_test.cpp
+    backtest_driver_test.cpp
     backtest_real_test.cpp
     spy_strangle_backtest_test.cpp
     surface_db_backtest_test.cpp

@@ -17,12 +17,17 @@
 //      only, never engine settlement).
 //   4. VegaFlatAtEntry            — net entry-cohort vega ~ 0 on every date.
 //   5. DeterminismAcrossThreads   — n_threads 1 vs 4 -> bit-identical result.
+//
+// Plus DISABLED_PersistFixtureDbForDriverGoldens — not a test: a fixture
+// emitter that persists the db above at $ATX_MAG7_FIXTURE_DB for the driver
+// output-byte goldens (Wave C T2). DISABLED_, so the suite never runs it.
 
 #include <gtest/gtest.h>
 
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -118,8 +123,7 @@ constexpr int kNumDates = 12;
 // Build a fresh SurfaceDb at a self-cleaning temp root: kNumDates daily
 // partitions, each holding all 7 names + SPY (distinct uids 1..8, gentle
 // per-date spot drift so PnL is non-degenerate). Returns the db root path.
-[[nodiscard]] fs::path build_fixture_db(std::string_view tag) {
-  const fs::path root = test_root(tag);
+[[nodiscard]] fs::path build_fixture_db_at(const fs::path &root) {
   auto db = SurfaceDb::create(root.string());
   EXPECT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
   const std::int64_t base_ts = 1'700'000'000'000'000'000LL;
@@ -144,6 +148,11 @@ constexpr int kNumDates = 12;
     EXPECT_TRUE(db->write_partition(date, items).has_value());
   }
   return root;
+}
+
+// Same content, at a self-cleaning per-test temp root.
+[[nodiscard]] fs::path build_fixture_db(std::string_view tag) {
+  return build_fixture_db_at(test_root(tag));
 }
 
 // TEST-scale strategy config, shared across every test in this file.
@@ -183,6 +192,25 @@ void expect_result_bit_identical(const BacktestResult &a, const BacktestResult &
       EXPECT_TRUE(bits_equal((*va)[i], (*vb)[i])) << i;
     }
   }
+}
+
+// ATX_MAG7_FIXTURE_DB, or "" when unset/empty. Read with _dupenv_s under
+// MSVC/clang-cl: plain std::getenv trips /WX (-Wdeprecated-declarations); same
+// pattern as spy_fit_corpus_test.cpp:37-51.
+[[nodiscard]] std::string fixture_db_env() {
+#if defined(_MSC_VER)
+  char *e = nullptr;
+  std::size_t n = 0;
+  if (::_dupenv_s(&e, &n, "ATX_MAG7_FIXTURE_DB") != 0 || e == nullptr) {
+    return {};
+  }
+  std::string out(e);
+  std::free(e);
+  return out;
+#else
+  const char *e = std::getenv("ATX_MAG7_FIXTURE_DB");
+  return (e == nullptr) ? std::string{} : std::string(e);
+#endif
 }
 
 [[nodiscard]] std::string read_file(const std::string &path) {
@@ -384,4 +412,55 @@ TEST(Mag7DispersionBacktest, DeterminismAcrossThreads) {
 
   std::error_code ec;
   fs::remove_all(db_root, ec);
+}
+
+// ── Fixture emitter (NOT a test; DISABLED_ so the suite never runs it) ───────
+//
+// Persists this file's deterministic fixture db (12 daily partitions
+// 2026-03-01..12, 8 symbols = the 7 kNames + SPY, uids 1..8, fixed
+// base_ts = 1'700'000'000'000'000'000, fixed kBaseSpot/kVolBump) at the path in
+// the ATX_MAG7_FIXTURE_DB environment variable and does NOT delete it, so the
+// example-driver binaries (mag7_dispersion_backtest, spy_dispersion_pnl) can be
+// run against a stable db to capture output-byte goldens.
+//
+// The db's CONTENT is reproducible; its per-partition `file_size` and
+// `created_ts_ns` (which db_stats.csv reports) are NOT reproducible across
+// rebuilds. So it is built ONCE per wave and reused unchanged; any golden that
+// covers db_stats.csv is a same-db golden only.
+//
+// Run explicitly:
+//   $env:ATX_MAG7_FIXTURE_DB = "<dir>"
+//   atx-vol-tests.exe --gtest_also_run_disabled_tests \
+//     --gtest_filter=Mag7DispersionBacktest.DISABLED_PersistFixtureDbForDriverGoldens
+TEST(Mag7DispersionBacktest, DISABLED_PersistFixtureDbForDriverGoldens) {
+  const std::string dest = fixture_db_env();
+  if (dest.empty()) {
+    GTEST_SKIP() << "ATX_MAG7_FIXTURE_DB unset";
+  }
+  const fs::path root(dest);
+  std::error_code ec;
+  fs::remove_all(root, ec); // fresh build; the caller owns the path
+  const fs::path built = build_fixture_db_at(root);
+  ASSERT_EQ(built, root);
+
+  auto db = SurfaceDb::open(root.string());
+  ASSERT_TRUE(db.has_value()) << db.error().to_string();
+  const auto parts = db->partitions();
+  EXPECT_EQ(parts.size(), static_cast<std::size_t>(kNumDates));
+  // The 8 symbols live INSIDE each partition archive. `write_partition` only
+  // refreshes provenance on symbols already in the manifest symbol table
+  // (src/surface_db.cpp:1122-1135) and never adds any, so a db built purely by
+  // write_partition has an EMPTY manifest symbol table — `db->symbols()` is 0
+  // by construction, not by defect. The per-partition surface_count is the
+  // check that actually witnesses the 8 symbols.
+  EXPECT_TRUE(db->symbols().empty());
+  for (const auto &p : parts) {
+    EXPECT_EQ(p.surface_count, static_cast<std::uint32_t>(kNames.size() + 1)) << p.key;
+  }
+  auto clock = Clock::from_surface_db(*db);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  std::printf("persisted fixture db: %s (%zu partitions, surface_count=%u each)\n",
+              root.string().c_str(), parts.size(),
+              parts.empty() ? 0U : parts.front().surface_count);
+  // Deliberately NOT removed.
 }
