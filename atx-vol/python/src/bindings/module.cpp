@@ -14,6 +14,7 @@ void bind_strategy(py::module_ &m);
 void bind_backtest(py::module_ &m);
 void bind_analytics(py::module_ &m);
 void bind_dispersion(py::module_ &m);
+void bind_fit(py::module_ &m);
 
 PYBIND11_MODULE(_core, m) {
   m.doc() = "pybind11 bindings for atx-vol";
@@ -55,4 +56,8 @@ PYBIND11_MODULE(_core, m) {
   // whose nested RunConfig must already be registered by `bind_backtest`, and
   // subclasses the IStrategy that `bind_strategy` registers.
   bind_dispersion(m);
+  // Last: `bind_fit` defaults a py::arg to PricerConfig{}, whose QueryPricingTier
+  // is registered by `bind_backtest`, and it returns PricedSurface / AmericanGreeks
+  // registered by `bind_surface_db` / `bind_pricing`.
+  bind_fit(m);
 }

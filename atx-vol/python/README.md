@@ -58,6 +58,50 @@ prices = atxvol.black76_price_batch(
 )
 ```
 
+## Fitting a surface from quotes
+
+The library's blessed lifecycle is chain → fit → priced surface → archive → book.
+The front half is reachable from Python: bring your own quote columns, install
+them into an `OptionChain`, fit, and price the whole board as numpy SoA.
+
+```python
+import atxvol as av
+
+frame = av.QuoteFrame.from_arrays(
+    uid="SPY", snapshot_iso="2026-06-19", spot=600.0, rate=0.043,
+    expiry_iso=expiry_iso,                 # one entry per row
+    strike=strike, side=side,              # side: int(av.Side.CALL) / int(av.Side.PUT)
+    bid=bid, ask=ask,                      # numpy float64 columns
+)
+chain = av.OptionChain.from_frame(frame, av.MarketEnv.flat(600.0, 0.043, now_ns))
+
+cfg = av.PricerConfig()
+cfg.preset = av.FitPreset.ROBUST
+cfg.curve_kind = av.VolCurveKind.CONVEX_DENSE   # None => the policy routes it
+fitter = av.PricerFitter(cfg)
+fitter.fit(chain)
+
+cols = fitter.value_chain(chain, av.OutputField.MODEL_IV | av.OutputField.GREEKS)
+cols["model_iv"], cols["vega"]            # numpy arrays aligned with cols["ids"]
+
+priced = fitter.surface().to_priced_surface()   # into the archive / backtest half
+```
+
+`av.make_spy_synthetic_panel()` returns a deterministic known-truth board (frame
+plus a ready `MarketEnv`) if you want to try the pipeline with no data on hand.
+
+Notes that matter:
+
+- **`value_chain` is bit-identical for any `n_threads`** (disjoint output slots,
+  pure const reads). `0` uses the config's thread count, `1` is serial.
+  `tests/test_fit.py` pins that from Python with a `tobytes()` comparison.
+- **Unrequested columns come back empty**, not zero-filled, so a field you did
+  not ask for can never be mistaken for a field that came back zero.
+- `value_chain_ids(chain, ids, fields)` prices only a selection, preserving order
+  and duplicates — the quote-update path, with work proportional to the selection.
+- `fit`, `value_chain` and `to_priced_surface` all release the GIL.
+- `OutputField` is a bit set: `MODEL_IV | GREEKS` works exactly as in C++.
+
 ## Backtesting
 
 The full `examples/spy_dispersion_pnl.cpp` pipeline is available from Python —

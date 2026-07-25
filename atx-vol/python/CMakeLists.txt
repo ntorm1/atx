@@ -56,6 +56,7 @@ pybind11_add_module(_core
     src/bindings/backtest.cpp
     src/bindings/analytics.cpp
     src/bindings/dispersion.cpp
+    src/bindings/fit.cpp
 )
 target_include_directories(_core PRIVATE src/bindings)
 target_link_libraries(_core PRIVATE atx::vol)
