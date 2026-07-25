@@ -312,6 +312,7 @@ Branch `feat/pipeline-y`, worktree `wt-pipe-y`. Owns: everything under
 | `analytics_*`, `dispersion.cpp`, `listed_dispersion_schedule.cpp`, `event_vol`, `earnings_term_fit`, `derivatives.*`, `projection.cpp`, `vol.hpp` | **WS-E** |
 | `backtest.*`, `dispersion_workflow`, `listed_dispersion{,_strategy,_reconciliation}`, `examples/{spy,mag7}_dispersion_backtest.cpp` | **WS-F** |
 | `corpus.cpp`, `fit_scheduler.*`, `corpus_board_fit.*` | **WS-T** |
+| `parallel_for.hpp`, `dispersion_run.{hpp,cpp}` | **WS-T** — added post-hoc, see the shared-file rule below (rev2-ws-t N-M6) |
 | `atx-vol/python/**` | **WS-Y** |
 
 Shared-file rules:
@@ -320,6 +321,17 @@ Shared-file rules:
 - `counters.hpp` (solve ledger extensions): WS-A adds counters; others consume read-only.
 - `priced_surface.cpp` greeks routing (`:1061-1074`, G4): **WS-G**, not WS-A (WS-A stays out of priced_surface.cpp).
 - Nobody touches `C:\atx-data\**`. Golden re-pins are WS-M's alone (plus the single coordinated E1 re-pin, executed with the PM).
+- `parallel_for.hpp` and `dispersion_run.{hpp,cpp}` had **no owner** when this table was written, and
+  WS-T edited both under T-I1 / T-I4 (rev2-ws-t N-M6). Recorded here so the next author does not
+  repeat it silently — **controller to confirm the assignment**. `parallel_for.hpp` is the sharper
+  of the two: it is the AUTO-resolution seam for every consumer of `parallel_for` /
+  `parallel_for_dynamic`, including WS-B's `curve_fit.cpp`, `surface_parity.cpp` and
+  `essvi_calib.cpp`. WS-T's change is behaviour-preserving for all of them today because
+  `corpus.cpp` is the only TU that installs a `ScopedElasticWorkerBudget` (2 hits, both there) and
+  an explicit non-zero worker count still bypasses the elastic path entirely — a claim now gated
+  directly by `ParallelForElastic.ExplicitWorkerCountBypassesTheElasticPath`. Any workstream that
+  installs a second resolver, or that resolves AUTO itself and then passes 0, must re-derive the
+  per-worker-scratch bound before doing so.
 
 ## 6. Merge order & gates
 
@@ -342,8 +354,9 @@ this sprint). Trunk tip after the wave-1 merge train: **264b2fe**.
 | G | feat/pipeline-g | wt-pipe-g | MERGED (96172e5) | de0101b | 3 commits + G4 no-code-change (premise overtaken by the WS-M merge: Auto already rides the laned AVX2 greeks via `avx2_greeks_selected`, GreekNeeds threaded); owning suites green (219 pass / 2 skip); full-serial verdict folded into the trunk gate; review in flight, carries the M1 AVX2 auto-merge deep-dive mandate |
 | E | feat/pipeline-e | wt-pipe-e | in flight (wave 2) | 264b2fe | forked from the merged trunk; E3b unblocked by the WS-A merge; E1's golden re-pin is a coordinated PM event, serialized against WS-F |
 | F | feat/pipeline-f | wt-pipe-f | in flight (wave 2) | 264b2fe | forked from the merged trunk; golden re-pin serialized against WS-E's E1 |
-| T | feat/pipeline-t | wt-pipe-t | FIX-T applied — rev-ws-t Needs-work (narrow) closed: T-I1 lifetime-aware reclaim, T-I2 saturated drain gate, T-I3 payload-bit scrub poison, T-I4 counters on the PHASE line | (see gate row below) | T1/T2 as before, plus 4 review-fix commits. See the FIX-T row in §7 for gates |
+| T | feat/pipeline-t | wt-pipe-t | FIX-T + FIX-T2 applied — rev-ws-t Needs-work (narrow) closed: T-I1 lifetime-aware reclaim, T-I2 saturated drain gate, T-I3 payload-bit scrub poison, T-I4 counters on the PHASE line; re-review returned approve-with-follow-ups and those are closed too | see FIX-T2 row | T1/T2 as before, plus 4 review-fix commits (`1a51c37` T-I1, `54e0602` T-I2, `50fa69f` T-I3, `9cfcbc3` T-I4), the trunk merge `817959a`, and 3 FIX-T2 commits. **82-date byte gate (restored inline — this row's cross-reference to a non-existent §7 FIX-T row had lost it, rev2-ws-t N-M4):** parallel (`fit_workers=0`) vs serial (`fit_workers=1`), run specs differing in that one key only — **82/82 archives identical, 0 differ, 0 missing**; digest-of-digests equal across serial / pre-fix parallel / fix-tip parallel; `quality.tsv`, `surface_manifest.tsv`, `archives/manifest.tsv`, `archives/quality.tsv` equal under out_dir normalization, `input_inventory.tsv` / `methodology_map.tsv` equal raw; `counts 1309 902 0 407 0 0` — **admitted=902, source_failed=407** — and identical `fingerprints` rows on both sides; 1313 index rows, 238 checkpoint files. Independently re-verified at tip `817959a` by the second reviewer from the on-disk artifacts. Gates: FIX-T2 row below |
 | Y | feat/pipeline-y | wt-pipe-y | in flight (wave 2) | 10609ee | trunk + one base commit snapshotting the in-flight Python layer the PY-* findings were written against (see 10609ee's message); `test_dispersion_runarchive_e2e.py` is environment-blocked here by design |
+| **FIX-T2** | feat/pipeline-t | wt-pipe-t | re-review (independent second reviewer) returned **approve-with-follow-ups** at `817959a` — 0 Critical, 2 Important, 6 Minor, all four original T-I findings confirmed CLOSED in mechanism. Follow-ups now closed: N-I1, N-I2, N-M1, N-M2, N-M3, N-M4, N-M6. N-M5 left alone by direction (WS-C's `surface_db_populate.cpp:300-307`, controller-tracked) | `cf7a36c` → `a8fc072` → `811ffe1` (+ this doc commit) | **Full serial `ctest -L atx_vol -j 1`, FULL label, no `-R`: 100% tests passed, 0 tests failed out of 2129** (2135 registered, 6 disabled, 47 skipped — data-guarded). Beats the reviewer's independently-observed baseline on the same branch (0 failed of 2123, same 47 skipped / 6 disabled) by exactly the six new gates. All eleven WS-T gates green (#2068-2079 `BatchedAppend*`, `DefaultStampBuildsAreByteReproducible`, `DrainingFanOutReclaimsInnerFitWorkers`, `InnerWorkerReclaimIsByteIdenticalToSerial`, `StragglerReclaimsInnerWorkersWhileStillRunning`, `SaturatedFanOutOffersOneWorkerUntilItDrains`, `CheckpointResumeIsFramingOnly`, `CheckpointScrubRejectsCorruptedPayload`, `CheckpointScrubAcceptsIntactArchive`). New: `ParallelForElastic.*` ×5 (#1101-1105) + `CorpusPhaseLine.TruncatedLineDoesNotOverreadTheFormatBuffer` (#1322), all Passed. **No golden moved.** **PHASE-line probe, run for real** through `dispersion_build_corpus` with `ATX_VOL_CORPUS_PHASE_TIMING=1`: 6-date parallel arm `reclaimed=2 inner_slots=1491 boards=66`, 20-date parallel arm `reclaimed=15 inner_slots=5221 boards=220`, and the serial control (`fit_workers=1`) `reclaimed=0 inner_slots=0` — so the reclaim demonstrably fires in production and the counters are not noise. Fresh 6-date byte gate at this tip: parallel vs serial **6/6 archives identical, 0 differ**, digest-of-digests `6ebd02cc…` equal, all six index files equal under out_dir normalization, `admitted=66 / source_failed=22` both sides. The 82-date arm itself was NOT re-run and no PHASE line exists for it — stated as not measured. **No timing number here is citable**; four agents shared the box (wall 1249 s, recorded only for the record) |
 
 ## 8. Dispatch protocol (per subagent)
 
