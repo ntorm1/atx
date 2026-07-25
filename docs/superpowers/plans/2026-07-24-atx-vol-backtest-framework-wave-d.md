@@ -666,7 +666,7 @@ omission in the task report so it is a decision, not drift.
       `dump mark_divergence --tsv` sha256 == **`MD-CFG`** with the same N rows. This is the one gate that proves the
       deletion preserved the *nonzero* divergence channel, not just the empty one. If T4 Step 2 escalated, record
       here what substituted for it.
-- [ ] **Step 5: Fresh-reviewer final whole-branch review**, read-only, over `587ee97..HEAD`, with an explicit charter
+- [x] **Step 5: Fresh-reviewer final whole-branch review**, read-only, over `587ee97..HEAD`, with an explicit charter
       derived from Wave B's miss: **verify the PRODUCTION path, not the seam.** Specifically require the reviewer to
       answer, with file:line evidence: (a) is the observer fired at a point definitionally equivalent to the shadow's
       read (nothing between `on_step` and the read)?; (b) does any consumer downstream of `mark_divergence` still
@@ -675,7 +675,7 @@ omission in the task report so it is a decision, not drift.
       trap Wave B had to undo)?; (e) does the L12 default reproduce the pre-change `all_symbols` / `universe_at`
       outputs element-for-element, argued from the code and not from the goldens alone?; (f) is `record_every_n > 1`
       handled consistently between events and rows?
-- [ ] **Step 6: Commit** the ledger + this checked plan.
+- [x] **Step 6: Commit** the ledger + this checked plan.
 
 ---
 

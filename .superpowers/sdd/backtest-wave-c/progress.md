@@ -1818,3 +1818,111 @@ Input pin (any task mutating these invalidates its own numbers):
     projected_schedule.tsv 99cf42402326109c      archives 51 / occ_ess 49
 Sized deliberately: big enough that `run-backtest` at 21.8 s and `build-schedule` at 14.5 s
 are measurable above noise, small enough to iterate on.
+
+### Wave D — WHOLE-BRANCH REVIEW (T7 Step 5), fresh reviewer, read-only
+
+**Wave D spec compliance ✅ / quality APPROVED with findings. 0 Critical, 2 Important,
+6 Minor.** Scope `cb875dc..HEAD`, `atx-vol/` only (Wave C is separately closed; the
+sprint-wide A-E review comes at sprint close). Review file: `WAVE-D-whole-review.md`.
+Run strictly read-only — no build, no binary — deliberately, so it could overlap Wave E
+T1's measurement window without perturbing it.
+
+Charter answers, all with `file:line` evidence:
+
+**(a) Observer fires at a point definitionally equivalent to the shadow's read — YES at
+both sites.** `backtest.cpp:1868-1880` and `:2011-2023` have only the `if (!st) return Err`
+check between `on_step` and the observer. **One honest non-identity named:** the observer's
+snapshot comes from `snapshot_cache->load(path, tier, build_policy)` while the shadow used
+`MarketSnapshot::load(path, tier)` (`backtest.cpp:1141`). Content-equivalence there is
+closed **empirically** by T4/T5, **not definitionally** — which is exactly how T2's review
+framed it before T4 ran, and it is the right way to state it.
+
+**(b) No downstream consumer assumes the shadow's row set** — and the finding is sharper
+than "no". The encoder is unchanged and positional by construction; C++ `verify` never
+mentions `mark_divergence`; Python `_divergence_rows` (`parity.py:258`) reads **by column
+name**; and `_add_divergence` (`parity.py:606-610`) **sorts by bps and takes the top 12**.
+So the pinned positional row order has **no in-tree consumer at all** — it is enforced
+solely by the out-of-process section sha256. Worth knowing: the ordering guarantee T3's
+comparator was built to protect is real but is currently load-bearing only for the byte
+gates, not for any reader.
+
+**(c) 17 of 18 new tests genuinely falsifiable**, each named with its oracle. The single
+green-lock is `DispersionWorkflow.RunSpecIndexSymbolDefaultsToSpy`
+(`dispersion_workflow_test.cpp:72`), which restates `dispersion_workflow.hpp:49` and
+cannot fail. Zero-row vacuity is otherwise handled correctly, notably by the paired
+nonzero control in `MarkDivergenceObserverIsSilentWhenNothingDiverged`.
+
+**(d) One dead field found.** `StepEvent::ref` / `snapshot` / `strategy` are read at
+`listed_dispersion_pipeline.cpp:516` / `:499` / `:470`. **`step_index` has NO production
+reader** — tests only — and `strategy_test.cpp:1649-1651` asserts a correlation no in-tree
+code performs. `RunSpec::index_symbol` is read by eight C++ sites but is invisible to
+Python (see Important-2).
+
+**(e) The L12 default reproduces the old outputs element-for-element, argued from source**:
+the seed `std::string(string_view{"SPY"})` is byte-identical; the dedup loop and
+`std::sort` are untouched and operate on a unique-element set (a total order gives unique
+output); `universe_at`'s `std::map` iteration and `Err(Unavailable)` are unchanged; and the
+SPY-as-constituent case dedups to one occurrence in `all_symbols` and is filtered out of
+`names` exactly as before.
+
+**(f) `record_every_n > 1` is consistent and deliberate.** The observer fires at
+`backtest.cpp:1878`/`:2021`, forty lines before the `record` predicate at `:2064`, so
+events == `clock.size()` while rows are downsampled. The section is stride-invariant
+(`row.date` comes from the clock, not the recorded series), nothing joins the two counts,
+and `record_every_n` is never set on this path anyway.
+
+#### IMPORTANT-1 — the evidence-channel contract WAS weakened, and both T5's implementer and T5's reviewer missed it
+
+`spy_dispersion_backtest.cpp:823-837`. The retained `all_rolls_consumed()` gate **cannot
+distinguish "the observer ran and found zero divergences" from "the observer was never
+installed"** — but the comment T5 carried onto it claims exactly that distinction. The
+shadow's original gate COULD make it, because it interrogated the same object its own
+collection loop had just read; the priced run's gate interrogates the strategy, which
+knows nothing about whether an observer was attached.
+
+This is the single highest-value item in the wave and it is worth being blunt about the
+process: the controller's T5 dispatch named this as "the single highest-value check in the
+review", T5's reviewer examined it and accepted the carry, and the overclaim still
+survived to a third pair of eyes. A comment that asserts a guarantee the code no longer
+provides is worse than no comment, because it stops the next reader from looking.
+
+Latent, not live — T4's and T7's N=137 both prove the observer fires today. **Fix ordered
+(Wave D T8): the observer wrapper already counts callbacks into the `divergence_replay`
+phase at `:811`; gate that count against `clock.size()` so "never installed" and
+"installed and silent" become distinguishable, and make the comment true again.**
+
+#### IMPORTANT-2 — the Python RunSpec binding omits `index_symbol`, undocumented
+
+`python/src/bindings/dispersion.cpp:66-95` does not expose `index_symbol`, while
+`read_run_spec` IS bound at `:105-110` and the bound `all_symbols` / `universe_at` take no
+index argument. So a run spec carrying a non-default index would give the C++ CLI and any
+Python tool **different universes, silently**. Inert today because everything is SPY.
+**The distinction from the deliberate `step_observer` omission is the point: that one was
+recorded as a decision; this one was not.** Python is out of scope this sprint and the
+constraints forbid binding edits, so this is recorded as a NAMED FOLLOW-UP rather than
+fixed: expose `index_symbol` on the `RunSpec` binding and thread it through the bound
+`all_symbols`/`universe_at`, in the wave that reopens Python.
+
+#### Carried items, adjudicated
+
+- **`meta` gaining a row: CLOSED as a non-issue** (was T6 concern 4). The Python reader is
+  key-name matched (`runarchive.py:631-636`) and the test is literally named
+  `test_meta_section_matched_by_key_name`. No positional consumer exists.
+- The other three carried items (dangling `collect_mark_divergence_replay` provenance
+  comments; the stale `--no-divergence` "bare-backtest wall-time path" framing; stale
+  `"SPY"` prose in the example's error message and methodology map) confirmed correctly
+  characterised. To the Wave E comment sweep.
+- **The reviewer noticed an unlisted commit in the range**: `017fc5c`, the pre-Wave-D build
+  fix, also changes `universe_autofit`'s `parse_preset("populate")` behaviour. Correct
+  catch — that was disclosed in the sprint status doc but not in the Wave D commit list.
+  Behavioural change inside a build fix is exactly the kind of thing a range review should
+  surface, and it did.
+
+#### Controller decision on the dead field
+
+`StepEvent::step_index` stays. Wave B's lesson was "a field nothing reads is an active
+trap", and this one IS read — by tests, and it is a natural member of a public
+step-observation API whose whole purpose is to let a caller correlate events with steps.
+Recording the decision explicitly, with the fact that no PRODUCTION reader exists, so it is
+a decision rather than an oversight. If Wave E or a later wave finds it still unread by any
+consumer, delete it then.
