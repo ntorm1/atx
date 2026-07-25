@@ -2248,6 +2248,58 @@ void poison_archive_record_bodies(const fs::path &archive) {
   out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
 }
 
+// T-I3: media bit-rot INSIDE an otherwise perfectly well-formed record — the
+// scenario SE-P2-3 is actually about, and the one `poison_archive_record_bodies`
+// above cannot express.
+//
+// That poison 0xFF-fills from `header().data_offset` to EOF. Records begin AT
+// `data_offset`, so it destroys each record's own `ArchiveV2SurfaceHeader.magic`
+// too, and `validate_record` rejects on the magic compare BEFORE it ever
+// computes the CRC. A verifier that only walked framing would pass that test.
+//
+// This flips ONE bit deep inside a record's payload instead: the low bit of the
+// first slice's `forward` (a f64 in the columnar section). Everything the
+// structure depends on is byte-intact — magic, `record_size`, `n_slices`, every
+// column offset, the stored `payload_crc32c`, the lookup table and the whole
+// directory (so `metadata_crc32c` still verifies and `open()` still succeeds).
+// A low mantissa bit also keeps the value a finite, sane forward (relative
+// change ~1e-16), so nothing downstream can reject it structurally either. The
+// per-record CRC is the ONLY thing in the format that can see it.
+void bitrot_one_record_payload_bit(const fs::path &archive) {
+  std::uint64_t record_offset = 0;
+  {
+    auto arch = SurfaceArchiveV2::open_file(archive.generic_string());
+    ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+    ASSERT_GT(arch->entry_count(), 0u);
+    record_offset = arch->entries()[0].surface_offset;
+  }
+  std::string bytes = read_all_bytes(archive);
+  ASSERT_LE(static_cast<std::size_t>(record_offset) + sizeof(ArchiveV2SurfaceHeader), bytes.size());
+
+  ArchiveV2SurfaceHeader before{};
+  std::memcpy(&before, bytes.data() + record_offset, sizeof before);
+  ASSERT_EQ(std::memcmp(before.magic, "ATXVSR20", 8), 0);
+  ASSERT_GT(before.n_slices, 0u);
+  ASSERT_GE(before.col_forward_off, sizeof(ArchiveV2SurfaceHeader))
+      << "the forward column must live past the record header, not inside it";
+
+  const std::size_t victim =
+      static_cast<std::size_t>(record_offset) + static_cast<std::size_t>(before.col_forward_off);
+  ASSERT_LT(victim, bytes.size());
+  bytes[victim] = static_cast<char>(static_cast<unsigned char>(bytes[victim]) ^ 0x01u);
+
+  // Prove the poison is payload-only: the record header must come back byte-for
+  // byte identical, or this fixture is testing framing again.
+  ArchiveV2SurfaceHeader after{};
+  std::memcpy(&after, bytes.data() + record_offset, sizeof after);
+  ASSERT_EQ(std::memcmp(&before, &after, sizeof before), 0)
+      << "the record header must be untouched: this poison exists to reach the CRC compare";
+
+  std::ofstream out(archive, std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(out.good());
+  out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
 } // namespace
 
 // T2a (SE-P2-6): checkpoint resume must be O(framing), not O(heavy payload).
@@ -2293,17 +2345,59 @@ TEST(CorpusBuildSession, CheckpointResumeIsFramingOnly) {
 // point (already re-opening the archive, once per resumed date), and it is where
 // a corrupt payload costs a refit instead of a wrong price.
 //
-// Same poison fixture as the framing test above, opposite expectation: with the
-// scrub ON (the `--qualify` default) the resume must FAIL with a named error
-// rather than hand back a checkpoint over corrupt surfaces.
+// T-I3: the poison here is ONE FLIPPED BIT inside an otherwise well-formed
+// record, not a wiped data section. The wiped-section poison destroys each
+// record's own magic, so `validate_record` rejects at the framing compare
+// (surface_archive.cpp:1398) and never reaches the CRC compare at :1401 — a
+// framing-only walk would have satisfied it, which is not what SE-P2-3 is about.
+//
+// The test discriminates in three steps, so it can only pass because the CRC is
+// actually computed:
+//   (i)   the poisoned archive still OPENS and still MATERIALIZES every record —
+//         header CRC, metadata CRC, directory and framing all verify, so
+//         everything short of the per-record payload CRC is blind to it, while
+//         `validate_all()` (which does compute it) rejects;
+//   (ii)  with the scrub OFF the corrupt checkpoint is SERVED. That is SE-P2-3
+//         as shipped behaviour, observed rather than argued;
+//   (iii) with the scrub ON — the `--qualify` default — the resume FAILS with an
+//         error naming the site.
 TEST(CorpusBuildSession, CheckpointScrubRejectsCorruptedPayload) {
   const std::vector<std::string> dates = {"2026-06-17"};
   const fs::path out = fresh_out_dir("t2-scrub-corrupt");
+  const fs::path archive = out / "2026-06-17.atxvsa";
 
   auto first = build_batched(out, dates, 1u, 4u);
   ASSERT_TRUE(first.has_value()) << first.error().to_string();
-  poison_archive_record_bodies(out / "2026-06-17.atxvsa");
+  bitrot_one_record_payload_bit(archive);
 
+  // (i) Everything except the payload CRC is blind to this poison.
+  {
+    auto arch = SurfaceArchiveV2::open_file(archive.generic_string());
+    ASSERT_TRUE(arch.has_value())
+        << "the poisoned archive must still OPEN (header + metadata CRC intact): "
+        << arch.error().to_string();
+    auto mapped = arch->map_all();
+    EXPECT_TRUE(mapped.has_value())
+        << "the poisoned record must still MATERIALIZE — otherwise this fixture is testing "
+           "framing again, not bit-rot: "
+        << (mapped.has_value() ? std::string{} : mapped.error().to_string());
+    const Status scrub = arch->validate_all();
+    ASSERT_FALSE(scrub.has_value()) << "validate_all must catch a flipped payload bit";
+    EXPECT_NE(scrub.error().to_string().find("checksum"), std::string::npos)
+        << "the rejection must come from the CRC compare, not the framing compare: "
+        << scrub.error().to_string();
+  }
+
+  // (ii) Scrub OFF: the corrupt checkpoint is served. This is the SE-P2-3 defect.
+  fs::remove(out / "manifest.tsv");
+  fs::remove(out / "quality.tsv");
+  auto unverified = build_batched(out, dates, 1u, 4u, 1, /*scrub=*/false);
+  ASSERT_TRUE(unverified.has_value())
+      << "without the scrub the corrupt checkpoint must be SERVED — if it is not, this test "
+         "is not discriminating on the CRC: "
+      << unverified.error().to_string();
+
+  // (iii) Scrub ON (the default): rejected, by name.
   fs::remove(out / "manifest.tsv");
   fs::remove(out / "quality.tsv");
   auto resumed = build_batched(out, dates, 1u, 4u); // scrub defaults ON
