@@ -23,7 +23,7 @@ is claimed as finished unless it says so.
 | E analytics | `feat/pipeline-e` | `81cfc33` | complete; E4 premise-failed, no code | **not reviewed** | ✗ |
 | F backtest | `feat/pipeline-f` | `4e7e04c` | F1–F6 + 3 review follow-ups | approve-with-follow-ups, follow-ups closed but **not re-reviewed** | ✗ |
 | T corpus | `feat/pipeline-t` | `817959a` | T1–T2 + 4 review follow-ups | needs-work → **fixes not re-reviewed** | ✗ |
-| Y python | `feat/pipeline-y` | `cfbcd97` | Y1–Y4 committed | **not reviewed** | ✗ |
+| Y python | `feat/pipeline-y` | `cfbcd97` | complete, Y1–Y4 | **not reviewed** | ✗ |
 | FIX-3 | `feat/pipeline-fix3` | `ed8c751` | **in flight, no commits yet** | — | ✗ |
 
 All four wave-2 branches have already merged the trunk into themselves, so they carry
@@ -99,6 +99,15 @@ carry similar unswept fallout.
   Rather than fake a measurement, the counter now reports `stale_unevaluable` separately
   and does not treat it as a rejection. The machinery goes live when a per-quote-timestamped
   source is wired.
+- One dispatch assumption of mine was simply wrong, and is corrected here: WS-Y was told
+  `test_dispersion_runarchive_e2e.py` would be environment-blocked on this trunk and to
+  deselect it. It was not blocked — it passes, 5 tests. The end-to-end path works here.
+- `pytest` hangs on this host through a WMI stall reached via `pyreadline3` and
+  `numpy.testing`. WS-Y worked around it; any future python-touching work should be told
+  before it loses time to the same thing.
+- `build_report` now refuses a regime-less run in the in-memory path too, which is one step
+  past the plan's literal wording. Easy to relax — a reviewer should decide it deliberately
+  rather than it being kept or dropped by default.
 - Deferred with confirmed blockers: A5, A6, A7's solve-count half, B4's default flip, B6's
   selector holdout, B7's baseline JSON. All timing and throughput rows across every
   workstream are deferred to a quiet-window re-run; **none of the numbers measured during
@@ -154,6 +163,13 @@ Worth recording, because it is the argument for keeping independent review in th
 
 ## 6. Next steps, in order
 
+0. Two couplings that must be handled *during* the merge, not after:
+   - `implied_vol_batch` now returns `(vols, status)` — an intended API break from Y1(c)
+     that belongs in the sprint report.
+   - `test_run_config_defaults_mirror_the_engine_header` will go RED the moment WS-F
+     merges. That is by design: Python deliberately inherits the engine default rather
+     than being quietly more permissive than it. The WS-F merge commit must update that
+     assertion and the README together.
 1. Finish FIX-3; merge.
 2. Review E and Y; re-review F's and T's follow-ups. Merge wave 2 in order **Y → E → T → F**
    — Y has zero file overlap, and F last so it absorbs the one real conflict
