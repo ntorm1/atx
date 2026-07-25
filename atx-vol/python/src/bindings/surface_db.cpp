@@ -268,9 +268,19 @@ void bind_surface_db(py::module_ &m) {
            py::arg("execution") = QueryExecution::Configured,
            "Vectorized query over a (K, T, side) selection.\n\n"
            "Returns a dict of numpy columns — iv, total_variance, fair_value and\n"
-           "every Greek — plus `status`. A point the surface cannot serve NaNs\n"
-           "its own row and records int(ErrorCode) in `status`; only a shape\n"
-           "mismatch raises. Releases the GIL for the whole walk.")
+           "every Greek — plus `status`. Only a shape mismatch or an\n"
+           "unrecognised `side` code raises. Releases the GIL for the whole walk.\n\n"
+           "READ `status` PRECISELY. The columns fail INDEPENDENTLY and each\n"
+           "NaNs on its own failure, but there is one status column:\n"
+           "  * `status[i]` is the FIRST failure of (`fair_value`, `greeks`),\n"
+           "    and STATUS_OK when neither failed;\n"
+           "  * `iv` and `total_variance` never feed it at all — out of domain\n"
+           "    they return a bare NaN, so a NaN `iv` can report STATUS_OK.\n"
+           "So `status != STATUS_OK` does NOT mean the row is unusable: if\n"
+           "`fair_value` failed and `greeks` did not, all eight Greek columns\n"
+           "hold valid numbers. The correct usability filter is per column —\n"
+           "`np.isfinite(cols[name])` — and `status` tells you WHY a column\n"
+           "failed, not WHICH one did.")
       .def(
           "fair_value",
           [](const PricedSurface &self, double k, double t, Side side, QueryExecution execution) {

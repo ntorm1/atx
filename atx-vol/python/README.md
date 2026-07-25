@@ -287,7 +287,28 @@ codes = status[~ok]                # int(ErrorCode) per failed lane
 ```
 
 A raised exception from a batch function always means the *call* was malformed
-(shape mismatch, wrong rank), never that one lane misbehaved.
+(shape mismatch, wrong rank, or an unrecognised `side` code), never that one lane
+misbehaved.
+
+Two qualifications, because `status == av.STATUS_OK` is not the same predicate
+everywhere:
+
+- **`PricedSurface.grid` has one status column over columns that fail
+  independently.** `status[i]` is the *first* failure of (`fair_value`,
+  `greeks`), and `iv` / `total_variance` never feed it at all — out of domain
+  they return a bare NaN, so a NaN `iv` can report `STATUS_OK`. Filtering a grid
+  with `ok = status == av.STATUS_OK` therefore discards valid marks: if
+  `fair_value` failed and `greeks` did not, all eight Greek columns are good. Use
+  `np.isfinite(cols[name])` **per column** as the usability filter, and read
+  `status` for *why* a column failed rather than *which* one did.
+- **`american_price_batch` / `american_greeks_batch` carry a 2-valued channel in
+  an 11-valued type.** Their kernel reports `LaneStatus::Ok | Unsupported`, not an
+  `atx::core::Status`, and `Unsupported` is mapped onto
+  `int(ErrorCode.NOT_IMPLEMENTED)` — "outside this route's supported regime". It
+  cannot be told apart from a genuine `NOT_IMPLEMENTED`. `implied_vol_batch` and
+  `american_implied_vol_batch` do carry the true per-lane code, as does
+  `american_price_batch` on its non-default `method` / `opts` route (which runs
+  the scalar pricer and therefore has real codes to report).
 
 Long-running American and batch kernels, `run_backtest`, and the TSV writers all
 release the Python GIL. `AloPricer.price` deliberately does **not**: it mutates

@@ -239,6 +239,40 @@ def test_priced_surface_grid_nans_a_failing_point_instead_of_raising(priced):
     assert all(int(got["status"][i]) == av.STATUS_OK for i in range(len(k)) if i != 2)
 
 
+def test_priced_surface_grid_status_is_the_first_failure_of_fair_value_then_greeks(priced):
+    # I3 (rev-ws-y): the columns fail INDEPENDENTLY and each NaNs on its own
+    # failure, but there is ONE status column — so `status != STATUS_OK` does not
+    # mean the row is unusable, and `status == STATUS_OK` does not promise a
+    # finite `iv`. Pin the exact rule the docstring and README now teach, so it
+    # cannot drift back into the vaguer "a point the surface cannot serve records
+    # its ErrorCode". If someone wired `iv` or `total_variance` into `status`,
+    # this fails.
+    k, t, side = _grid_points(priced)
+    t = t.copy()
+    t[1] = -1.0     # degenerate row
+    t[4] = 0.0      # degenerate row
+    got = priced.grid(k, t, side)
+
+    for i in range(len(k)):
+        s = av.Side.CALL if side[i] == int(av.Side.CALL) else av.Side.PUT
+        try:
+            priced.fair_value(float(k[i]), float(t[i]), s)
+            fv_code = av.STATUS_OK
+        except av.AtxError as err:
+            fv_code = int(err.code)
+        try:
+            priced.greeks(float(k[i]), float(t[i]), s)
+            g_code = av.STATUS_OK
+        except av.AtxError as err:
+            g_code = int(err.code)
+
+        expected = fv_code if fv_code != av.STATUS_OK else g_code
+        assert int(got["status"][i]) == expected, (
+            f"row {i}: status {int(got['status'][i])} is neither fair_value's "
+            f"code ({fv_code}) nor, failing that, greeks' ({g_code})"
+        )
+
+
 def test_priced_surface_grid_rejects_an_unrecognised_side_code(priced):
     # Third copy of the same decode (I2). Same rule, same coded error.
     k, t, side = _grid_points(priced)
