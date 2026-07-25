@@ -17,6 +17,8 @@ import pathlib
 import subprocess
 import sys
 
+import pytest
+
 import conftest
 
 
@@ -98,6 +100,111 @@ def _clean_env() -> dict[str, str]:
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     return env
+
+
+# ── REV-TAIL M-3/M-4 — the GATED driver must be no weaker than this guard ─────
+#
+# `conftest.py` defends ad-hoc runs; `_ctest_pytest_driver.py` defends the
+# registered ctest lane. The lane is the more important path, and it carried the
+# weaker check: a string prefix where this file uses path containment, and it was
+# this file that shipped the test forbidding the prefix form. The pair below pins
+# the two against each other so they cannot drift apart again.
+
+
+def _driver_is_inside():
+    """The REAL ``_is_inside`` out of ``_ctest_pytest_driver.py``.
+
+    The driver cannot be imported — its module body ends in
+    ``raise SystemExit(pytest.main(...))``, so importing it would run the whole
+    suite recursively. Its function is therefore lifted out of the source by
+    ``ast`` and executed, which gates the shipped code rather than a copy of it.
+    """
+    import ast
+    import os
+
+    source = (pathlib.Path(__file__).resolve().parent / "_ctest_pytest_driver.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source)
+    fn = next(
+        (n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_is_inside"),
+        None,
+    )
+    assert fn is not None, "_ctest_pytest_driver.py no longer defines _is_inside"
+    namespace: dict = {"os": os}
+    exec(compile(ast.Module(body=[fn], type_ignores=[]), "<driver>", "exec"), namespace)
+    return namespace["_is_inside"]
+
+
+def test_the_gated_driver_uses_containment_not_a_string_prefix():
+    """REV-TAIL M-3. ``<src>-other`` must NOT pass as in-tree in the DRIVER either.
+
+    ``test_is_inside_is_a_path_containment_test_not_a_string_prefix`` above has
+    forbidden this for ``conftest`` since RECONCILE 4, while the driver the ctest
+    lane actually runs kept ``os.path.abspath(path).startswith(os.path.abspath(
+    SRC))`` — which accepts exactly the sibling this rejects.
+    """
+    is_inside = _driver_is_inside()
+    root = pathlib.Path("C:/x/src").resolve() if sys.platform == "win32" else pathlib.Path("/x/src")
+    assert is_inside(str(root / "atxvol" / "__init__.py"), str(root))
+    assert not is_inside(str(root.parent / "src-other" / "atxvol" / "__init__.py"), str(root))
+    assert not is_inside(None, str(root))
+    assert not is_inside("", str(root))
+
+
+def test_the_two_guards_agree_on_every_case():
+    """Same input, same verdict — the property that keeps them from drifting."""
+    is_inside = _driver_is_inside()
+    root = pathlib.Path("C:/x/src").resolve() if sys.platform == "win32" else pathlib.Path("/x/src")
+    cases = (
+        str(root / "atxvol" / "__init__.py"),
+        str(root.parent / "src-other" / "atxvol" / "__init__.py"),
+        str(root.parent / "elsewhere" / "atxvol.py"),
+        None,
+        "",
+    )
+    for case in cases:
+        assert is_inside(case, str(root)) == conftest._is_inside(case, root), case
+
+
+def _split_resolution(monkeypatch, core_origin: str) -> str:
+    """Make ``atxvol`` resolve in tree and ``atxvol._core`` resolve to ``core_origin``."""
+    pkg = str(conftest._SRC / "atxvol" / "__init__.py")
+    monkeypatch.setattr(
+        conftest, "_spec_origin", lambda name: pkg if name == "atxvol" else core_origin
+    )
+    return pkg
+
+
+def test_a_split_resolution_is_contamination_and_the_guard_says_so(monkeypatch):
+    """REV-TAIL M-4. ``_check_resolution`` used to return the moment ``atxvol``
+    alone resolved in tree, never examining ``_core`` — it was resolved only to
+    build the message. So an environment with the pure-Python package in tree and
+    the COMPILED extension from a site-packages install elsewhere passed this
+    guard and hard-failed the gated driver, which loops over both. The docstring
+    promised parity; the code did not deliver it.
+
+    ``<src>-other`` is used for the foreign path on purpose: it is also the
+    string-prefix trap, so this fails for the right reason under either check."""
+    foreign = str(
+        conftest._SRC.parent / (conftest._SRC.name + "-other") / "atxvol" / "_core.pyd"
+    )
+    pkg = _split_resolution(monkeypatch, foreign)
+    with pytest.raises(pytest.UsageError) as excinfo:
+        conftest._check_resolution()
+    message = str(excinfo.value)
+    assert foreign in message, message
+    assert pkg in message, message
+
+
+def test_an_unbuilt_extension_is_not_contamination(monkeypatch):
+    """The other half of M-4, and the reason it is not simply `and _is_inside`.
+
+    A worktree with no compiled ``_core`` is the NORMAL case for this guard —
+    it is why resolution goes through ``find_spec`` instead of importing — and
+    tightening M-4 must not turn that into a blanket collection abort."""
+    _split_resolution(monkeypatch, f"{conftest._UNRESOLVED} (no module named 'atxvol._core')")
+    conftest._check_resolution()  # must not raise
 
 
 def test_missing_atxvol_is_not_treated_as_contamination():

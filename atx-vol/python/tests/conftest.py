@@ -114,9 +114,24 @@ def _check_resolution() -> None:
         # the individual test modules report it far better than a blanket
         # collection abort would — there is no contamination to warn about.
         return
-    if _is_inside(pkg, _SRC):
-        return
     core = _spec_origin("atxvol._core")
+    # REV-TAIL M-4. This used to return the moment `atxvol` ALONE resolved in
+    # tree, and resolved `core` only to BUILD the failure message — so a SPLIT
+    # resolution (pure-Python package in tree, compiled extension out of it)
+    # passed this guard while `_ctest_pytest_driver.py`, which loops over BOTH,
+    # hard-failed on the same environment. The module docstring promises this
+    # file reports what the gated path enforces; it did not.
+    #
+    # This is not hypothetical on this box: with the ScikitBuild finder in place
+    # `atxvol` resolves to C:\atx\atx-vol\python\src\atxvol\__init__.py while
+    # `atxvol._core` resolves to the user's site-packages .pyd — two different
+    # locations already.
+    #
+    # An UNRESOLVABLE `_core` is not contamination and must not fire: a worktree
+    # with no built extension is the normal case here (it is why `_spec_origin`
+    # avoids importing), and the individual modules report it far better.
+    if _is_inside(pkg, _SRC) and (core.startswith(_UNRESOLVED) or _is_inside(core, _SRC)):
+        return
     raise pytest.UsageError(_contamination_message(pkg, core))
 
 

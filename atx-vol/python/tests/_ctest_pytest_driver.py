@@ -104,10 +104,34 @@ except Exception as exc:  # pragma: no cover - environment probe
     )
     raise SystemExit(SKIP)
 
+def _is_inside(path, root):
+    """Path CONTAINMENT, not a string prefix (REV-TAIL M-3).
+
+    ``<root>-other`` starts with ``<root>`` as a STRING but is a DIFFERENT
+    directory, so the ``startswith`` form this replaces would let a sibling
+    checkout pass as in-tree -- precisely the contamination this check exists to
+    stop. ``conftest.py`` has used ``commonpath`` since RECONCILE 4 and ships
+    ``test_is_inside_is_a_path_containment_test_not_a_string_prefix`` forbidding
+    the prefix form; this driver -- the one the GATED ctest lane actually runs --
+    still carried it, so the weaker check was on the more important path.
+
+    Kept as a local copy rather than imported from ``conftest``: this module runs
+    BEFORE pytest starts and must not depend on pytest's collection machinery.
+    ``test_conftest_guard.py`` pins the two implementations against each other.
+    """
+    if not path:
+        return False
+    try:
+        root = os.path.abspath(root)
+        return os.path.commonpath([os.path.abspath(path), root]) == root
+    except ValueError:  # different drives on Windows
+        return False
+
+
 # Wrong-sources check is a HARD failure: a green run against another checkout is
 # worse than a red one.
 for mod, path in (("atxvol", atxvol.__file__), ("atxvol._core", atxvol._core.__file__)):
-    if not os.path.abspath(path).startswith(os.path.abspath(SRC)):
+    if not _is_inside(path, SRC):
         print(
             f"FAIL: {mod} resolved to {path}, which is OUTSIDE this tree's "
             f"{SRC}. An editable install is shadowing the sources under test."
