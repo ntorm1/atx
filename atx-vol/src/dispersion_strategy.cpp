@@ -379,10 +379,28 @@ DispersionStrategy::signals(const MarketSnapshot &base) const {
   // X4 CORRELATION GAMMA. A vega-neutral dispersion book is short correlation
   // CONVEXITY, not correlation-flat — the exposure the headline implied-corr
   // signal cannot show. The book's rho sensitivity runs entirely through the
-  // index leg, whose signed total vega is `target_vega` carried with the index
-  // side's sign, so both derivatives follow from the signal alone.
+  // index leg, so both derivatives follow from the signal plus that leg's
+  // signed dollar vega.
+  //
+  // UNIT (FIX-E C-1). `correlation_vega`/`correlation_gamma` multiply
+  // `d sigma_idx / d rho`, which is per UNIT vol per unit rho, so the argument
+  // must be the index leg's dollar vega per UNIT vol. Since E1 `target_vega` is
+  // read as dollars per VOL POINT, and the leg the sizing actually builds
+  // carries
+  //
+  //     straddle_vega * |straddle_qty| * multiplier
+  //         == target_vega / kVegaPerVolPoint          (== 100 * target_vega)
+  //
+  // — the identity `ProjectedAndListedRoutesAgreeOnVegaUnit` pins. Passing
+  // `target_vega` raw therefore understated BOTH persisted telemetry columns by
+  // exactly 100x. Divide by `kVegaPerVolPoint` to get back to per-unit-vol
+  // dollars. Derived from the config rather than from the book because
+  // `signals` runs on every step, including steps that open no book; the
+  // equality with the built book is asserted by
+  // `Strategy.DispersionCorrelationTelemetryMatchesTheBuiltBook`.
   const double index_signed_vega =
-      (cfg_.side == DispersionSide::ShortIndexLongNames ? -1.0 : 1.0) * cfg_.target_vega;
+      (cfg_.side == DispersionSide::ShortIndexLongNames ? -1.0 : 1.0) * cfg_.target_vega /
+      kVegaPerVolPoint;
   risk.emplace_back("corr_vega", correlation_vega(*sig, index_signed_vega));
   risk.emplace_back("corr_gamma", correlation_gamma(*sig, index_signed_vega, sig->T_used));
   return risk;

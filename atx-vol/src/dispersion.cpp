@@ -623,7 +623,9 @@ namespace {
   // `target_vega` built a projected-route book 100x SMALLER than the listed
   // one (AN-P1-1). Projected-route books therefore GROW 100x at this change —
   // see the CHANGELOG note and `ProjectedAndListedRoutesAgreeOnVegaUnit`.
-  constexpr double kVegaPerVolPoint = 0.01;
+  // `kVegaPerVolPoint` now lives in dispersion.hpp — `DispersionStrategy::
+  // signals` needs the same conversion to recover the index leg's dollar vega
+  // per UNIT vol for the correlation telemetry (FIX-E C-1).
   index_leg->leg.straddle_qty =
       index_sign * cfg.target_vega /
       (index_leg->leg.straddle_vega * cfg.multiplier * kVegaPerVolPoint);

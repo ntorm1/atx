@@ -175,8 +175,9 @@ constexpr double kW1 = 0.4;
 // gross vega per VOL POINT (a 0.01 move in sigma) — the canonical unit, shared
 // with the listed route. `PortfolioPricer`'s `vega` column and
 // `DispersionLeg::straddle_vega` are both dP/dsigma per UNIT vol, so a priced
-// book total is converted into the config's unit by multiplying by this.
-constexpr double kVegaPerVolPoint = 0.01;
+// book total is converted into the config's unit by multiplying by
+// `atx::vol::kVegaPerVolPoint` (dispersion.hpp — FIX-E C-1 hoisted it out of
+// dispersion.cpp so production code shares the ONE constant this test uses).
 
 // Sum the priced book's position vega, bucketed into (index leg, name legs).
 // UNIT: dollars per UNIT vol (the PortfolioPricer column's own unit).
