@@ -83,8 +83,19 @@ class MigrationStats:
 
 # ── schema / footer helpers ──────────────────────────────────────────────────
 def _validate_schema(schema: pa.Schema, path) -> None:
-    """Fail closed on any drift from the frozen canonical schema."""
-    if not schema.equals(CANONICAL_SCHEMA, check_metadata=False):
+    """Fail closed on any drift from the frozen canonical schema.
+
+    The column contract is (name, type) in order -- that is what the C++ loaders
+    validate and all that changes how bytes are read. Nullability is arrow
+    metadata: the real v1 corpus was written with every field ``not null`` while
+    ``CANONICAL_SCHEMA`` declares them nullable, and ``pa.Schema.equals`` counts
+    that as drift, which rejected every genuine source file. Compare names and
+    types so real drift (a renamed, reordered, missing or retyped column) still
+    fails closed.
+    """
+    if list(schema.names) != list(CANONICAL_SCHEMA.names) or list(schema.types) != list(
+        CANONICAL_SCHEMA.types
+    ):
         raise ValueError(
             f"schema drift in {path}: file schema does not match the canonical "
             f"OPRA v2 schema.\n  expected: {CANONICAL_SCHEMA}\n  got:      {schema}"
