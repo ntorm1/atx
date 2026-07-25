@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -179,6 +181,24 @@ BookSpans as_book(const DoubleArray &s_array, const DoubleArray &k_array,
   return book;
 }
 
+// C2 (rev-ws-y): `method` and `opts` are HONOURED, never accepted and dropped.
+//
+// The laned flagship `american_price_batch(in, out, kernel, ws)` has no channel
+// for either — only `american_price_batch_resolved` carries them, and that
+// entry point requires a single broadcast (S, T, r, q), which a general book
+// does not have. So the binding routes on engagement instead of lying about it:
+//
+//   * default engagement (Andersen-Lake, no AlOpts) -> the vectorized batch,
+//     which is exactly what that route computes;
+//   * ANY other engagement -> the exact scalar `american_price` per lane, under
+//     the same single GIL release. That is the same patch-to-scalar rule the
+//     batch already applies to its own non-pack lanes, so the answer is
+//     bit-identical to a loop over `american_price` for every value the
+//     signature admits (`test_batch.py` pins all four).
+//
+// Silently returning the Andersen-Lake price for `method=BAW` with STATUS_OK on
+// every lane — 2.8e-2, ~0.45% on a $6-8 option — is the exact "silent wrong
+// numbers with no diagnostic channel" class this sprint exists to kill.
 std::pair<py::array_t<double>, py::array_t<std::int32_t>>
 american_price_batch_py(const DoubleArray &s_array, const DoubleArray &k_array,
                         const DoubleArray &t_array, const DoubleArray &sigma_array,
@@ -188,6 +208,31 @@ american_price_batch_py(const DoubleArray &s_array, const DoubleArray &k_array,
   const BookSpans book = as_book(s_array, k_array, t_array, sigma_array, r_array, q_array,
                                  side_array);
   py::array_t<double> prices(static_cast<py::ssize_t>(book.n));
+  // Hoisted ABOVE every GIL release: `mutable_data()` touches a Python object's
+  // internals, and `american_slice` already sets that precedent in this file.
+  auto *price_p = prices.mutable_data();
+
+  if (method != AmericanMethod::AndersenLake || opts.has_value()) {
+    py::array_t<std::int32_t> status(static_cast<py::ssize_t>(book.n));
+    auto *status_p = status.mutable_data();
+    {
+      py::gil_scoped_release release;
+      constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
+      for (std::size_t i = 0; i < book.n; ++i) {
+        auto priced = american_price(book.s[i], book.k[i], book.t[i], book.sigma[i], book.r[i],
+                                     book.q[i], book.side[i], method, opts);
+        if (!priced) {
+          price_p[i] = kNan;
+          status_p[i] = static_cast<std::int32_t>(priced.error().code());
+          continue;
+        }
+        price_p[i] = *priced;
+        status_p[i] = atxvol::python::kStatusOk;
+      }
+    }
+    return {std::move(prices), std::move(status)};
+  }
+
   PriceBatchOutput out;
   PricingWorkspace ws;
   PricingKernel kernel;
@@ -204,11 +249,9 @@ american_price_batch_py(const DoubleArray &s_array, const DoubleArray &k_array,
     in.side = book.side;
     out.resize(book.n);
     ws.reserve_lanes(book.n);
-    (void)method;
-    (void)opts;
     atxvol::python::unwrap(american_price_batch(in, out, kernel, ws));
     if (book.n > 0) {
-      std::copy(out.price.begin(), out.price.end(), prices.mutable_data());
+      std::copy(out.price.begin(), out.price.end(), price_p);
     }
   }
   return {std::move(prices), lane_status_array(out.status)};
@@ -465,7 +508,13 @@ void bind_pricing(py::module_ &m) {
         "grouped into one homogeneous pack and every other lane patches through\n"
         "the exact scalar Andersen-Lake, so public output order is preserved.\n"
         "``status[i] == STATUS_OK`` unless the lane was outside the batch\n"
-        "route's supported regime. A shape mismatch raises.");
+        "route's supported regime. A shape mismatch raises.\n\n"
+        "``method`` and ``opts`` are honoured: the default engagement\n"
+        "(Andersen-Lake, no ``AlOpts``) takes the laned route, and ANY other\n"
+        "engagement takes the exact scalar ``american_price`` per lane under the\n"
+        "same single GIL release — bit-identical to a loop over\n"
+        "``american_price`` either way. ``isa`` selects the laned route's kernel\n"
+        "and therefore has no effect on the non-default engagement.");
 
   m.def("american_greeks_batch", &american_greeks_batch_py, py::arg("S"), py::arg("K"),
         py::arg("T"), py::arg("sigma"), py::arg("r"), py::arg("q"), py::arg("side"),

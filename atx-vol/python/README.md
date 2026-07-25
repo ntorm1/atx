@@ -73,12 +73,21 @@ cols = priced_surface.grid(K, T, side)   # iv / total_variance / fair_value / gr
 ```
 
 These are **parity-exact**, not approximate: `american_price_batch` on the
-`SimdIsa.FORCE_SCALAR` route is bit-identical to a loop over `american_price`,
+`SimdIsa.FORCE_SCALAR` route is bit-identical to a loop over `american_price`
+**for every `method` / `opts` the signature admits**,
 `american_greeks_batch(analytic=False)` is bit-identical to a loop over
 `american_greeks_fd`, `american_implied_vol_batch` is bit-identical to a loop
 over `american_implied_vol`, and `PricedSurface.grid` is bit-identical to the
 per-point `iv` / `total_variance` / `fair_value` / `greeks` calls.
 `tests/test_batch.py` pins all four with `tobytes()` / `==` comparisons.
+
+`american_price_batch` routes on engagement to keep that claim true. The default
+engagement (`method=ANDERSEN_LAKE`, `opts=None`) takes the laned C++ batch; any
+other `method` or an engaged `AlOpts` takes the exact scalar `american_price` per
+lane inside the same single GIL release, because the laned entry point has no
+channel for either knob. So `method=BAW` returns the BAW price rather than
+silently returning the Andersen-Lake one, at the cost of the pack dispatch;
+`isa` selects the laned kernel and therefore does nothing on the scalar route.
 
 What the batch buys is structural: one pybind dispatch and one GIL release for
 the whole book instead of one per contract, with the kernel free to group the

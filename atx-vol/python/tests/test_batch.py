@@ -53,6 +53,51 @@ def test_american_price_batch_matches_the_scalar_loop():
     assert prices.tobytes() == expected.tobytes()
 
 
+# The batch signature offers `method` and `opts`. Cover EVERY value it admits:
+# pinning only the default is exactly why a knob that parsed and did nothing
+# survived a green gate (rev-ws-y C2).
+_ENGAGED_OPTS = av.AlOpts(3, 3, 1, 1.0e-1)
+
+
+@pytest.mark.parametrize("method",
+                         [av.AmericanMethod.ANDERSEN_LAKE, av.AmericanMethod.BAW],
+                         ids=["andersen_lake", "baw"])
+@pytest.mark.parametrize("opts", [None, _ENGAGED_OPTS],
+                         ids=["default_opts", "engaged_opts"])
+def test_american_price_batch_honours_every_method_and_opts(method, opts):
+    spot, strike, t, sigma, r, q, side = _book(24)
+    prices, status = av.american_price_batch(spot, strike, t, sigma, r, q, side,
+                                             method=method, opts=opts,
+                                             isa=av.SimdIsa.FORCE_SCALAR)
+    assert np.all(status == av.STATUS_OK)
+    expected = np.array([
+        av.american_price(spot[i], strike[i], t[i], sigma[i], r[i], q[i],
+                          av.Side.CALL if side[i] == int(av.Side.CALL) else av.Side.PUT,
+                          method=method, opts=opts)
+        for i in range(len(strike))
+    ])
+    # Bit-identity for every engagement the signature admits, not just the
+    # default one. A knob the batch cannot honour must not price silently.
+    assert prices.tobytes() == expected.tobytes()
+
+
+def test_american_price_batch_method_is_not_a_no_op():
+    # The failure mode C2 describes is an argument that parses and is discarded:
+    # every method returned the Andersen-Lake number with STATUS_OK on every
+    # lane. Andersen-Lake and BAW are different models, so if these agree
+    # bit-for-bit across a whole book, one of them is not being asked for.
+    spot, strike, t, sigma, r, q, side = _book(24)
+    al, _ = av.american_price_batch(spot, strike, t, sigma, r, q, side,
+                                    method=av.AmericanMethod.ANDERSEN_LAKE)
+    baw, _ = av.american_price_batch(spot, strike, t, sigma, r, q, side,
+                                     method=av.AmericanMethod.BAW)
+    assert al.tobytes() != baw.tobytes()
+
+    engaged, _ = av.american_price_batch(spot, strike, t, sigma, r, q, side,
+                                         opts=_ENGAGED_OPTS)
+    assert engaged.tobytes() != al.tobytes()
+
+
 def test_american_price_batch_rejects_a_shape_error():
     spot, strike, t, sigma, r, q, side = _book(8)
     with pytest.raises(ValueError):
