@@ -21,6 +21,7 @@
 #include "atx/vol/session.hpp"        // make_session_inputs, SessionInputs
 #include "atx/vol/surface_db_populate.hpp" // populate_universe_streaming, UniversePopulateSpec
 #include "atx/vol/surface_parity.hpp" // SurfaceParityInputs
+#include "atx/vol/surface_policy.hpp" // has_output, SurfacePurpose (LinearVariance guard)
 #include "atx/vol/universe.hpp"       // Underlying, Chain
 #include "atx/vol/vol_curve.hpp"      // CurveConfig (dense index recipe)
 #include "surface_db_seed.hpp"
@@ -142,17 +143,29 @@ namespace {
     }
 
     // A PINNED LinearVariance config is a guaranteed 100% cell loss, not a fit
-    // risk: the risk pipeline's input validation refuses it outright
+    // risk: the RISK pipeline's input validation refuses it outright
     // (`cfg_.curve->kind == VolCurveKind::LinearVariance` -> hard InvalidArgument,
     // "invalid correctness policy for requested risk surface", pricer_fitter.cpp),
     // so EVERY cell of the symbol fails identically, every run. Reachable here for
     // any ultra-liquid index/ETF name that is not the one `--index` slot
     // (`select_fit_policy`: IndexEtfUltraLiquid -> LinearVariance). Fail closed at
     // CONFIG time so the symbol is named in `failed_symbols` instead of showing up
-    // as an unexplained `cells_failed` count. Unpinned the family is harmless —
-    // the fitter substitutes ConvexDense on the auto route — so the guard is
-    // scoped to the pin that makes it fatal.
-    if (cfg.pin_curve && cfg.curve.kind == VolCurveKind::LinearVariance) {
+    // as an unexplained `cells_failed` count.
+    //
+    // Both conjuncts narrow the guard to exactly the case that is fatal, because
+    // over-rejecting here silently loses cells that would have fitted:
+    //   - `pin_curve`: unpinned, the auto route substitutes ConvexDense for a
+    //     LinearVariance decision, so the family is harmless.
+    //   - a Risk output: the clause above lives INSIDE the risk build, which
+    //     `pricer_fitter.cpp`'s mark-only early return skips entirely when the
+    //     request carries no Risk purpose — and that mark path pins
+    //     LinearVariance itself, so it is the family's home, not its grave.
+    //     `symbol_config_from_preset(FitPreset::Hft)` maps to MarketMark-only
+    //     (`map_legacy_fit_preset`), so without this conjunct
+    //     `--preset hft --pin-curve-family true` would disable every
+    //     IndexEtfUltraLiquid-profiled symbol for a fit that would have succeeded.
+    if (cfg.pin_curve && cfg.curve.kind == VolCurveKind::LinearVariance &&
+        has_output(cfg.surface_policy.outputs, SurfacePurpose::Risk)) {
       return false;
     }
 

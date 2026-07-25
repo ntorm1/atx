@@ -40,6 +40,7 @@
 #include "atx/vol/surface_db.hpp"       // SurfaceDb, SymbolFitConfig
 #include "atx/vol/surface_db_build.hpp" // AutoConfigSpec, AutoConfigReport, generate_symbol_configs
 #include "atx/vol/surface_db_populate.hpp" // UniversePopulateSpec, populate_universe_streaming
+#include "atx/vol/surface_policy.hpp"      // has_output, SurfacePurpose
 #include "atx/vol/types.hpp"
 #include "atx/vol/vol_curve.hpp" // VolCurveKind
 
@@ -285,6 +286,38 @@ TEST(GenerateSymbolConfigs, PinnedLinearVarianceRejectedAtConfigTime) {
     EXPECT_EQ(s.n_failed, 0u);
   }
   EXPECT_TRUE(saw_bbb);
+}
+
+// The guard's SECOND conjunct: the clause it defends lives inside the RISK build,
+// which the fitter skips outright for a mark-only request — and that mark path
+// pins LinearVariance itself. `symbol_config_from_preset(Hft)` maps to
+// MarketMark-only, so a pinned LinearVariance under `--preset hft` is the family's
+// intended home and must NOT be disabled; rejecting it would lose cells that fit.
+TEST(GenerateSymbolConfigs, PinnedLinearVarianceKeptForAMarkOnlyPreset) {
+  std::vector<CorpusBoard> boards = load_fixture_boards("linvar_mark");
+  ASSERT_FALSE(boards.empty());
+  for (CorpusBoard &b : boards) {
+    if (b.symbol == "BBB") {
+      b.fit_context.profile_override = ProfileKind::IndexEtfUltraLiquid;
+    }
+  }
+  SurfaceDb db = make_db("linvar_mark");
+
+  AutoConfigSpec spec;
+  spec.preset = FitPreset::Hft; // -> SurfaceOutputs::MarketMark, no Risk output
+  spec.pin_curve_family = true;
+  const auto rep = generate_symbol_configs(db, boards, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_EQ(rep->n_configured, 3u);
+  EXPECT_EQ(rep->n_disabled_failed, 0u);
+  EXPECT_TRUE(rep->failed_symbols.empty());
+
+  const auto bbb = db.symbol_config("BBB");
+  ASSERT_TRUE(bbb.has_value());
+  EXPECT_TRUE(bbb->enabled); // kept: the mark path fits exactly this family
+  EXPECT_TRUE(bbb->pin_curve);
+  EXPECT_EQ(bbb->curve.kind, VolCurveKind::LinearVariance);
+  EXPECT_FALSE(has_output(bbb->surface_policy.outputs, SurfacePurpose::Risk));
 }
 
 // The same board UNPINNED is not a defect: the fitter substitutes ConvexDense for

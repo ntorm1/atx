@@ -95,10 +95,12 @@ struct AutoConfigSpec {
   // machine-generated per-symbol guess is not that, which is why it is opt-in.
   //
   // Also gates the LinearVariance fail-closed guard: a pinned LinearVariance
-  // config makes the risk pipeline hard-reject EVERY cell of that symbol
+  // config makes the RISK pipeline hard-reject EVERY cell of that symbol
   // ("invalid correctness policy for requested risk surface"), so when this is
-  // true such a symbol is disabled at config time and named in
-  // `failed_symbols` rather than failing 100% of its cells at fit time.
+  // true AND the symbol's policy requests a Risk output, such a symbol is
+  // disabled at config time and named in `failed_symbols` rather than failing
+  // 100% of its cells at fit time. A mark-only policy (e.g. the Hft preset) is
+  // deliberately exempt — the mark path pins LinearVariance itself.
   bool pin_curve_family{false};
 };
 
@@ -128,10 +130,10 @@ struct AutoConfigReport {
 // instead, falling back to the fit-policy decision on a NotFound/Unavailable
 // selector outcome. A symbol whose board fails to build a selectable underlying
 // — or whose deep selection fails with a hard (non-fallback) error, or throws, or
-// (when pinning) whose chosen family is `LinearVariance`, which the risk pipeline
-// refuses outright — is stored DISABLED (`symbol_config_from_preset(spec.preset)`
-// with `enabled = false`) and recorded in `failed_symbols` (`n_disabled_failed`);
-// the call still succeeds.
+// (when pinning a Risk-requesting policy) whose chosen family is `LinearVariance`,
+// which the risk pipeline refuses outright — is stored DISABLED
+// (`symbol_config_from_preset(spec.preset)` with `enabled = false`) and recorded
+// in `failed_symbols` (`n_disabled_failed`); the call still succeeds.
 //
 // @return the disposition report, or an Error only on a db write failure
 //         (`upsert_symbol` IoError/ParseError propagated). An empty `boards`

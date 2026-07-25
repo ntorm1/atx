@@ -182,9 +182,18 @@ The fit policy routes any ultra-liquid index/ETF profile to that family, so this
 hits any index/ETF name in the universe that is not the single `--index` symbol.
 With `--pin-curve-family true`, such a symbol is now rejected at **config** time —
 stored **disabled** and named in `config.failed_symbols` — instead of silently
-turning into an unexplained `cells_failed` count. Unpinned the family is harmless
-(the fitter substitutes the dense model on the auto route), so the guard is scoped
-to the pin that makes it fatal.
+turning into an unexplained `cells_failed` count.
+
+The guard is deliberately narrow, because over-rejecting loses cells that would
+have fitted. It needs **both**:
+
+- the **pin** — unpinned, the fitter substitutes the dense model on the auto
+  route, so the family is harmless; and
+- a **Risk** output in the symbol's policy — the refusal lives inside the *risk*
+  build, which the fitter skips entirely for a mark-only request, and that mark
+  path pins `LinearVariance` itself. `--preset hft` maps to MarketMark-only, so
+  `--preset hft --pin-curve-family true` keeps those symbols enabled and fits
+  them on exactly that family.
 
 ### Interest rate / carry — the single most likely way a build produces nothing
 
