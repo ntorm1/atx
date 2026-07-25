@@ -419,12 +419,21 @@ divergence **on a real corpus** before the shadow loop is deleted. The comparato
 is the run. The named artifact is the `mark_divergence` section, compared two ways: in-process (observer vs shadow,
 bit-exact, by the T3 comparator) and out-of-process (`runarchive dump mark_divergence --tsv`, sha256, before vs after).
 
-- [ ] **Step 1:** On the idle box, on the parity-full 135-session corpus, run
+**[CONTROLLER ERRATUM — Wave D's 6th plan error, measured.** Steps 1 and 2 omit
+`--schedule projected_schedule.tsv`. Without it the run defaults to `trade_schedule.tsv` and Step 1's own acceptance
+line is unreachable: measured `final_nav=125026.0592`, not `123243.1172`, and its `projected_cold` dump hashed
+`a05470c7a6f6572f` — byte-identical to the sprint's **`backtest`** golden, because replaying the trade schedule cold
+just reproduces the plain listed backtest. The contract is in code at `spy_dispersion_backtest.cpp:677`
+("projected_schedule.tsv stays a text INPUT: run-projected-backtest reads it back via `--schedule`") and the authority
+is `parity_full_run.ps1:30-33`, whose Step 4 passes it. **The same omission is in Task 7 Step 3 and Wave E Task 9
+Step 3.** Both steps below were run WITH the flag; that is what the checked boxes attest.**]**
+
+- [x] **Step 1:** On the idle box, on the parity-full 135-session corpus, run
       `run-projected-backtest --run <parity-full> --execution cold` with the T3 build. Require: exit 0;
       `mark divergence equivalence: observer=0 shadow=0 rows MATCH`; `projected backtest complete [cold]: dates=135
       rolls=7 final_nav=123243.1172`; `dump projected_cold --tsv` sha256 first-16 == `cbabca44`;
       `dump mark_divergence --tsv` is header-only. Record the `mark_divergence` sha256 as golden **`MD-COLD`**.
-- [ ] **Step 2:** **The primary, non-vacuous proof.** Run
+- [x] **Step 2:** **The primary, non-vacuous proof.** Run
       `run-projected-backtest --run <parity-full-copy> --execution configured` with the T3 build. Require: exit 0 and
       `mark divergence equivalence: observer=N shadow=N rows MATCH` with **N > 0**. Record N and the
       `dump mark_divergence --tsv` sha256 as golden **`MD-CFG`**. Use a **copy** of the run dir (or a dedicated
@@ -435,13 +444,16 @@ bit-exact, by the T3 comparator) and out-of-process (`runarchive dump mark_diver
       `model_mark` perturbed in a copied `trade_schedule.tsv`, run cold) OR record explicitly that the only
       falsifiable evidence for L10 is T2's gtest plus T3's RED probe, and decide — on the record — whether that is
       sufficient to authorize the T5 deletion. Silence here is the Wave B failure mode.
-- [ ] **Step 3:** If either comparison reports a MISMATCH, **STOP**. Do not "fix" the observer to match the shadow and
+- [x] **Step 3:** *(No MISMATCH on either route — this step was not triggered. Recorded so its unchecked state is not
+      read as skipped.)* If either comparison reports a MISMATCH, **STOP**. Do not "fix" the observer to match the shadow and
       do not re-pin the golden. Diagnose which side is right: the shadow loads each session with the 2-argument
       `MarketSnapshot::load(path, tier)` while the engine loads through `snapshot_cache->load(path, tier,
       cfg.query_cache_build_policy)`, so a fast-tier / cache-build-policy difference is the most likely cause and the
       **engine's** prices are the economically real ones. Any golden move is an explicit controller economic decision
       recorded in the ledger with the reason, not a task step.
-- [ ] **Step 4:** Record in `.superpowers/sdd/backtest-wave-d/progress.md`: `MD-COLD`, `MD-CFG`, N, both console
+- [x] **Step 4:** *(Recorded in `.superpowers/sdd/backtest-wave-c/progress.md`, the single ledger this sprint uses for
+      Waves C/D/E. `MD-COLD` = `c9a04d1bcf0e3c07`, `MD-CFG` = `9e958a90ae15ac74`, N = 137.)*
+      Record in `.superpowers/sdd/backtest-wave-d/progress.md`: `MD-COLD`, `MD-CFG`, N, both console
       transcripts, and the explicit statement **"observer-derived divergence == shadow-derived divergence, bit-exact,
       on N > 0 real rows — the T5 deletion is authorized."** Commit the ledger.
 

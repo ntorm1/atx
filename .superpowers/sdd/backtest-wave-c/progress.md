@@ -1152,3 +1152,119 @@ T3: fix round 1/5 — code fix COMMITTED as 5c227e8, but the round is NOT closed
   Working tree is clean for every file this sprint touched. The pre-existing unrelated
   uncommitted work was never staged at any point.
   Status doc: docs/superpowers/2026-07-25-atx-vol-backtest-sprint-status.md
+
+### Wave D T4 (135-session observer/shadow equivalence proof) — CONTROLLER, GREEN
+
+T4: **GREEN. The T5 deletion is AUTHORIZED.** Run on COPIES ONLY; `parity-full` was
+  never written — its `run.atxrun` hashed `D88BFEE04D3EF300` before the first copy and
+  `D88BFEE04D3EF300` after every run in this task.
+
+  **PLAN ERROR (Wave D's 6th), CONFIRMED AGAINST THE AUTHORITY.** The brief's Step 1 and
+  Step 2 invocations omit `--schedule projected_schedule.tsv`. As written they cannot
+  meet Step 1's own acceptance line. Measured, not argued: the brief's literal command
+  (`run-projected-backtest --run <dir> --execution cold`, default schedule) produced
+  `final_nav=125026.0592`, NOT the required `123243.1172` — and its `projected_cold`
+  dump hashed **`a05470c7a6f6572f`, byte-identical to the sprint's `backtest` golden
+  `a05470c7`**. Replaying `trade_schedule.tsv` cold reproduces the plain listed backtest
+  exactly, which is the correct behaviour and the proof of the diagnosis. The contract is
+  stated in code at `spy_dispersion_backtest.cpp:677` — *"projected_schedule.tsv stays a
+  text INPUT: run-projected-backtest reads it back via --schedule"* — and the authority is
+  `parity_full_run.ps1:30-33`, whose Step 4 passes `--schedule <run>/projected_schedule.tsv`.
+  The briefs paraphrased that step and dropped the flag. **The same omission is in
+  `task-7-brief.md` Step 3 and Wave E `task-9-brief.md` Step 3** — both corrected here by
+  reference rather than left to be rediscovered at the gate.
+  Side benefit: the accidental run re-verified the `a05470c7` `backtest` golden on 135
+  sessions, from a completely different subcommand than the one that pinned it.
+
+  **BASELINE (parity-full, read-only, before anything ran).** Captured with bash
+  redirection, hashed in PowerShell:
+    projected_cold   48627 B  136 lines  cbabca44e411d4d9   == the Wave A/B pin cbabca44
+    mark_divergence     98 B    1 line   c9a04d1bcf0e3c07   header-only, rows=0
+    meta               751 B   24 lines  2946e79b31e701a0
+    diagnostics        368 B    7 lines  02ca2f17c0a069ff
+
+  **TOOLING HAZARD, NEW AND MEASURED — PowerShell `>` CORRUPTS A BYTE GATE.** The first
+  baseline capture used PowerShell `>` to redirect the exe's stdout and hashed
+  `E0C2ABB1AA1E49DB` for `projected_cold` — a clean FAIL against the `cbabca44` pin. The
+  bytes were never wrong; PS 5.1 decodes native stdout to text and re-encodes it with a
+  UTF-8 BOM and CRLF. Re-captured through bash redirection the same dump hashed
+  `cbabca44e411d4d9`. **Rule, now binding for the rest of the sprint: capture bytes with
+  bash `>`, hash with PowerShell `Get-FileHash`. Never redirect a native exe with
+  PowerShell `>` into anything a hash will be taken of.** This sits alongside the existing
+  Bash-`diff`-exit-code hazard; both are ways to manufacture a false gate verdict.
+
+  **STEP 1 — cold, canonical (`--schedule projected_schedule.tsv --execution cold`), on
+  the copy `t4-cold`. PASS, 4/4 acceptance criteria:**
+    exit 0
+    `mark divergence equivalence: observer=0 shadow=0 rows MATCH (VACUOUS: 0 rows
+     compared, a plumbing check and NOT the observer/shadow equivalence proof)`
+    `projected backtest complete [cold]: dates=135 rolls=7 final_nav=123243.1172`  EXACT
+    projected_cold  48627 B  136 lines  **cbabca44e411d4d9** == pin, and
+      `Compare-Object` vs the untouched baseline = **0 differing lines**
+    mark_divergence 98 B 1 line **c9a04d1bcf0e3c07** == baseline, header-only
+    wall 1091.602 ms / 135 sessions = 8.086 ms/session
+  **`MD-COLD` = `c9a04d1bcf0e3c07138e3ba4752c6c7ca762e68dffc5af9f607000cd2fcd6085`.**
+  Note the T3 fix is doing exactly its job here: this MATCH is labelled VACUOUS on the
+  stdout line itself. Before `5c227e8` this transcript would have read as a bare
+  unqualified MATCH — i.e. Important 2 was a real hazard and this is the run that would
+  have carried it into the deletion decision.
+
+  **STEP 2 — THE PRIMARY NON-VACUOUS PROOF. configured, canonical, WITH
+  `--require-divergence-rows`, on the copy `t4-cfg`. PASS:**
+    exit 0 (the opt-in proof gate was satisfied, not merely absent)
+    `mark divergence equivalence: observer=137 shadow=137 rows MATCH`   **N = 137 > 0**
+    `projected backtest complete [configured]: dates=135 rolls=7 final_nav=132776.9818`
+    mark_divergence 22182 B 138 lines (137 rows + header) **9e958a90ae15ac74**
+    projected_cold  48572 B 136 lines  467d4b2a29437da8   (diagnostic route, not a golden)
+    wall 45947.434 ms / 135 sessions = 340.351 ms/session
+  **`MD-CFG` = `9e958a90ae15ac74…`, N = 137.**
+
+  **THE STATEMENT THE BRIEF REQUIRES:** *observer-derived divergence == shadow-derived
+  divergence, bit-exact, on N = 137 real rows drawn from a 135-session / 7-roll
+  production corpus — the T5 deletion is authorized.*
+
+  What that sentence does and does not cover, stated so T5's reviewer does not have to
+  rediscover it: the comparison is bit-exact over all ten registry columns, positional
+  (no sort, no key join, no tolerance), row-count checked before any value is read. It
+  covers the load-path axis that T2's review flagged as the genuinely unmeasured half —
+  the shadow loads each session through `MarketSnapshot::load(path, tier)` while the
+  engine loads through `SnapshotCache::load(path, tier, build_policy)` — because
+  `live_mark` is one of the ten compared columns and a tier or cache-build-policy
+  difference would land on it and on the row set. On the configured route, where 137 rows
+  exist and every one of them is a live-vs-frozen mark difference, that axis is now
+  measured rather than assumed. It does NOT prove anything about routes or corpora not
+  run here.
+
+  **DETERMINISM — PROVEN, not asserted.** A third pass ran the identical configured
+  invocation on a SECOND fresh copy (`t4-cfg2`) made from `parity-full` after Step 2 had
+  already finished, so it shares no state with Step 2's dir:
+    `observer=137 shadow=137 rows MATCH`, `final_nav=132776.9818` (identical)
+    mark_divergence 9e958a90ae15ac74 == 9e958a90ae15ac74, Compare-Object = 0 diff lines
+    projected_cold  467d4b2a29437da8 == 467d4b2a29437da8, Compare-Object = 0 diff lines
+
+  **NON-VACUITY OF THE 137 ROWS — enumerated, because "N > 0" alone is a weak claim.**
+  The section is not padding and not a repeated constant:
+    137 rows / **137 distinct `abs_diff_bps_of_mark` values** (no duplicates at all)
+    137 distinct `raw_symbol` values (every row a different contract)
+    **7 distinct dates == the corpus's 7 rolls** — so the observer accumulated across
+      every roll, which is precisely the property T2's fix round had to add a gate for
+      (`out.clear()`, `break`-after-first and hoisted-push all survived T2's original
+      seven tests); here it is demonstrated at production scale
+    11 distinct underlyings: AAPL, AMZN, AVGO, GOOGL, JPM, LLY, META, MSFT, NVDA, SPY, XOM
+    bps spread 2.3076e-12 .. 795.7988 — five orders of magnitude below one bp up to eight
+      hundred, i.e. the comparison is exercised across the full dynamic range of the
+      metric, including values where a tolerance-based comparator would have hidden a
+      real difference. Both `Call` and `Put` sides present.
+
+  **ESCALATION PATH NOT TAKEN.** The pre-decided fallback (perturbed-`model_mark` copied
+  schedule) was not needed: the configured route completed on the real corpus and yielded
+  N = 137 > 0. Recording that it was available and unused, so the absence of an
+  escalation note is not read as an oversight.
+
+  **ARTIFACTS RETAINED FOR T7 STEP 4:** `C:\atx-data\spy-dispersion\runs\t4-cold`,
+  `t4-cfg`, `t4-cfg2` (metadata-only copies, ~12 MB each — the two 696 MB
+  `definitions*.tsv` are deliberately excluded because `run_projected_backtest_command`
+  reads only `run_spec.tsv`, `surface_manifest.tsv` and the schedule; verified by reading
+  the function, and by these runs completing). The manifest's `archive_path` column is
+  ABSOLUTE (`C:/atx-data/spy-dispersion/runs/bt-sota-full/archives/...`), which is what
+  makes a metadata-only copy run correctly and keep the same `run_identity_hash`.
