@@ -361,4 +361,45 @@ Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec) 
   return Ok(std::move(out));
 }
 
+// ── set_symbol_enabled ──────────────────────────────────────────────────────
+
+Result<SymbolEnableChange> set_symbol_enabled(SurfaceDb &db, std::string_view symbol,
+                                              bool enabled) {
+  // Read the STORED config first. This is also the existence check: a symbol the
+  // manifest does not configure is NotFound and nothing is written, rather than
+  // `upsert_symbol` quietly creating a default-constructed config for a name the
+  // operator most likely misspelled.
+  Result<SymbolFitConfig> cfg = db.symbol_config(symbol);
+  if (!cfg) {
+    return Err(cfg.error());
+  }
+
+  SymbolEnableChange out;
+  out.symbol = canonical_ascii(symbol);
+  out.was_enabled = cfg->enabled;
+  out.now_enabled = enabled;
+  out.changed = cfg->enabled != enabled;
+
+  // Already in the requested state: do NOT write. A no-op rewrite would bump the
+  // generation and move nothing, and an operator script that re-asserts the
+  // desired state on every run would churn the manifest for no reason.
+  if (!out.changed) {
+    out.generation = db.generation();
+    return Ok(std::move(out));
+  }
+
+  // One field. Everything else in `cfg` is the config as stored — an operator's
+  // tuned knobs, or the selector's chosen curve family — and it goes back
+  // unchanged. Provenance is preserved by `upsert_symbol` itself: passing
+  // `nullopt` for an EXISTING symbol keeps the record's stored provenance rather
+  // than clearing it (surface_db.cpp, the `replaced` branch), so `config
+  // --symbol` reads the same provenance after this call as before.
+  cfg->enabled = enabled;
+  if (const Status up = db.upsert_symbol(symbol, *cfg); !up) {
+    return Err(up.error());
+  }
+  out.generation = db.generation();
+  return Ok(std::move(out));
+}
+
 } // namespace atx::vol

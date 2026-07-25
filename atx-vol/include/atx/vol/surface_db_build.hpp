@@ -356,6 +356,23 @@ reported_failed_cells(const SurfaceDbBuildReport &r,
 // different `--r`. Any future change that maps this predicate to an exit code
 // must first show it cannot fire on a converged database — and it can.
 //
+// IT MAY NEVER CLEAR, AND THAT IS NOT A DEFECT (FIX-G). On a database holding
+// permanently-failing cells this fires on EVERY run, forever — that is the
+// `prod-2026-07` condition, not an edge case: 9 cells over 8 symbols on 8 dates,
+// each of those symbols healthy on its other 16. Only two actions clear it and on
+// that population usually neither applies. "Fix the cell" needs the failure to be
+// a defect, and three of those nine are genuinely arbitrage-violating boards.
+// "Disable the name" (`atx-vol-surface-db disable`, the operator-facing form of
+// `SurfaceDb::upsert_symbol` with `enabled = false`) is a per-SYMBOL switch aimed
+// at a per-CELL problem, so it costs the name on every date it fits.
+//
+// The CLI therefore says so, and names the failing cells on the warning line, so
+// what the operator watches is the SET CHANGING rather than the line existing. A
+// recurring line an operator is never told is expected is a line they stop
+// reading — and reading (b), the systematic regression this exists to surface,
+// goes with it. Any future edit that makes this quieter must keep the naming: the
+// cell set is the only thing that separates (a) from (b).
+//
 // COUNTER CHOICE: `cells_carried`, never `cells_carried_disabled`. `cells_carried`
 // is the term that GRANTS the exemption, so the warning must be keyed on the same
 // term or it would not cover what was given up. FIX-E's `cells_carried_disabled`
@@ -363,8 +380,15 @@ reported_failed_cells(const SurfaceDbBuildReport &r,
 // read by neither exit-code predicate, so a run carrying only those is NOT exempt
 // — it still exits 3, and warning on it would duplicate that verdict.
 //
-// Disjoint from `is_total_fit_failure` by construction (`cells_carried == 0`
-// there, `> 0` here), so the CLI can never emit both for one run.
+// Disjoint from BOTH exit-3 predicates by construction, not just the one this
+// warning was carved out of (M-A): `is_total_fit_failure` requires
+// `cells_carried == 0` and so does `is_total_config_failure`, while this requires
+// `> 0`, so all three are pairwise disjoint on that single term. The CLI can
+// never emit a verdict and this hedge for one run, and that is a property of the
+// predicates rather than of the order `main` tests them in.
+// `SurfaceDbCarryMaskedFitFailure.NeverOverlapsEitherExitCode` proves it over the
+// whole small-counter space rather than sampling one point, so dropping the
+// `cells_carried` conjunct from EITHER exit predicate fails there.
 [[nodiscard]] bool is_carry_masked_fit_failure(const SurfaceDbBuildReport &r);
 
 // The SAME silent-green trap, one stage earlier — and invisible to the predicate

@@ -418,10 +418,25 @@ bool is_carry_masked_fit_failure(const SurfaceDbBuildReport &r) {
   // exemption, so it is what the warning must track. A run carrying only
   // preserved-because-disabled surfaces is still a TOTAL FIT FAILURE and exits 3.
   //
-  // No `cells_to_fit` conjunct on purpose. `cells_failed > 0` is the stronger and
-  // more direct statement -- a cell can reach the fitter as a REFIT (a carry the
-  // fingerprint could not vouch for) without ever being counted in `cells_to_fit`,
-  // and a run that lost every such cell is the same silence for the operator.
+  // No `cells_to_fit` conjunct, and it would be a NO-OP if there were one (M-B).
+  // `cells_carried` is only ever accumulated in the frame that also runs
+  // `cov.cells_to_fit += to_add` on a date being written, and that frame is
+  // reached only when `to_add > 0` (surface_db_populate.cpp: a date with
+  // `to_add == 0` is `dates_skipped_complete` and `continue`s before either
+  // counter moves). So `cells_carried > 0` already implies `cells_to_fit > 0` and
+  // adding the conjunct could not change this predicate's value on any reachable
+  // report.
+  //
+  // The reason previously written here -- that a REFIT cell can reach the fitter
+  // without being counted in `cells_to_fit`, and a run that lost every such cell
+  // would be silenced by the conjunct -- is true about refits but describes a
+  // shape this predicate cannot see: a run whose every refit died has
+  // `cells_carried == 0` (a refit is precisely a present cell the carry gate
+  // declined), so it lands in `is_total_fit_failure` and exits 3, correctly.
+  // Recorded rather than deleted because it is the kind of not-quite-right reason
+  // this branch's history is made of, and a future reader will otherwise re-derive
+  // it. `cells_failed > 0` is still the right conjunct on its own merits: it is
+  // the direct statement of "something was offered to the fitter and died".
   return r.coverage.cells_ok == 0 && r.coverage.cells_failed > 0 &&
          r.coverage.cells_carried > 0;
 }

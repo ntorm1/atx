@@ -1,17 +1,46 @@
 #pragma once
 
-// surface_db_admin — pure INSPECTION / VERIFICATION over an already-open
-// `SurfaceDb` (surface_db.hpp). This is the library half of the management
-// surface; `tools/surface_db_main.cpp` (target `atx-vol-surface-db`) is a thin
-// print-only shell over exactly these five calls.
+// surface_db_admin — INSPECTION / VERIFICATION over an already-open `SurfaceDb`
+// (surface_db.hpp), plus the ONE management action an operator performs on a
+// built database. This is the library half of the management surface;
+// `tools/surface_db_main.cpp` (target `atx-vol-surface-db`) is a thin shell over
+// exactly these calls.
 //
-// Everything here is a query: nothing in this header creates, mutates, fits or
-// persists anything. Each entry point takes a `const SurfaceDb &` plus plain
-// arguments and returns a plain owning struct through the repo's `Result<T>`
-// vocabulary — NO iostream, NO printf, NO formatting decisions. Output shape is
-// the CLI's business, so a Python/notebook/service caller can consume the same
-// structs without re-parsing text. (That is the point: verifying a built
-// database must not require the pybind11 wrapper.)
+// Each entry point takes a `SurfaceDb` reference plus plain arguments and returns
+// a plain owning struct through the repo's `Result<T>` vocabulary — NO iostream,
+// NO printf, NO formatting decisions. Output shape is the CLI's business, so a
+// Python/notebook/service caller can consume the same structs without re-parsing
+// text. (That is the point: verifying a built database must not require the
+// pybind11 wrapper.)
+//
+// ── QUERY / MUTATION SPLIT, and why the split moved (FIX-G) ──────────────────
+//
+// The five `describe_*` / `query_*` / `verify_*` calls are queries and take a
+// `const SurfaceDb &`. `set_symbol_enabled` — the sixth, added last — takes a
+// NON-const `SurfaceDb &` and writes the manifest, and the const-ness is the only
+// marker a caller needs: a `const SurfaceDb &` cannot reach it.
+//
+// This header used to open "everything here is a query: nothing in this header
+// creates, mutates, fits or persists anything". That sentence described the SCOPE
+// this file had reached, not a safety property anyone had chosen, and the
+// distinction matters because the codebase does record chosen safety properties
+// when it makes them — `surface-db-build.md`'s "the library exposes an
+// `overwrite_existing` escape hatch; the CLI does not — it is deliberately
+// non-destructive" is what one looks like. Nothing equivalent was ever written
+// for this surface. Meanwhile `AutoConfigSpec::retry_disabled` defaults to false
+// specifically to protect "an operator `upsert_symbol` with `enabled = false`
+// fences a symbol out of production" (surface_db_build.hpp), and
+// `surface-db-build.md` names that disable as the standing remedy for a
+// permanently-failing name — a remedy no shipped tool could perform. The gap was
+// recorded as a gap ("the admin CLI has no enable/disable verb today"), never as
+// a guarantee.
+//
+// So the write path is deliberately ONE FIELD WIDE. `set_symbol_enabled` flips
+// `SymbolFitConfig::enabled` and touches nothing else; there is no `upsert` verb,
+// no config editor, and no partition mutation here. That keeps the build CLI's
+// "a stored config is never clobbered" posture intact — an operator's tuned
+// config survives this call byte-for-byte — while making the one documented
+// remedy reachable.
 //
 // ── The five questions ───────────────────────────────────────────────────────
 //
@@ -26,6 +55,13 @@
 //   verify_db          — "is the whole thing healthy?"    walk every cell; map
 //                        it, verify its stored payload CHECKSUM, and evaluate one
 //                        ATM-ish point to prove it produces a usable number.
+//
+// ── The one action ───────────────────────────────────────────────────────────
+//
+//   set_symbol_enabled — "stop / resume fitting THIS name."  flip the stored
+//                        `SymbolFitConfig::enabled` bit and nothing else.
+//                        Disabling does NOT delete what the symbol already
+//                        fitted — see the call for the full argument.
 //
 // ── What a green `verify_db` does and does NOT prove ─────────────────────────
 //
@@ -61,12 +97,19 @@
 //
 // ── Thread safety ────────────────────────────────────────────────────────────
 //
-// Every function is a `const` query over `SurfaceDb`'s own thread-safe const
-// API (immutable manifest snapshot + the internally-locked partition view
-// cache), so any number of threads may call these concurrently on one `const
-// SurfaceDb &`. They are NOT synchronized against a concurrent writer mutating
-// the same db; a mid-walk `write_partition` is observed as a torn view (some
-// cells from before, some after), never as a data race.
+// Every QUERY is a `const` call over `SurfaceDb`'s own thread-safe const API
+// (immutable manifest snapshot + the internally-locked partition view cache), so
+// any number of threads may call these concurrently on one `const SurfaceDb &`.
+// They are NOT synchronized against a concurrent writer mutating the same db; a
+// mid-walk `write_partition` is observed as a torn view (some cells from before,
+// some after), never as a data race.
+//
+// `set_symbol_enabled` is a MUTATION. In-process it is as safe as any other
+// manifest mutation — `SurfaceDb::upsert_symbol` serializes on the db's own mutex
+// and swaps an atomically-rewritten snapshot — so a concurrent reader sees the
+// manifest before or after, never torn. CROSS-PROCESS is the rule that matters
+// and it is `surface_db.hpp`'s, not a new one: SINGLE WRITER, many readers. See
+// the call's CONCURRENCY paragraph for the specific way a build violates it.
 
 #include <cstddef>
 #include <cstdint>
@@ -347,5 +390,70 @@ struct DbVerifyReport {
 // `selected_no_cells`). A caller wiring this into a script should branch on
 // `ok()`, not on the Result.
 [[nodiscard]] Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec = {});
+
+// ── set_symbol_enabled — the one management action ──────────────────────────
+
+// What `set_symbol_enabled` did. `changed == false` means the symbol was ALREADY
+// in the requested state and no manifest write happened at all (so `generation`
+// did not move) — the call is idempotent, and a converging operator script can
+// run it unconditionally.
+struct SymbolEnableChange {
+  std::string symbol{}; // canonical spelling, as stored in the manifest
+  bool was_enabled{false};
+  bool now_enabled{false};
+  bool changed{false};         // false => already in this state; nothing was written
+  std::uint64_t generation{0}; // manifest generation AFTER the call
+};
+
+// Set `symbol`'s stored `SymbolFitConfig::enabled` to `enabled`, leaving every
+// other field of that config — and the symbol's stored provenance — untouched.
+//
+// This is the operator-facing form of the remedy `surface-db-build.md` has always
+// named ("disable the name"), and it is intentionally the ONLY write in this
+// header. It reads the stored config, flips one bool, and hands it back to
+// `SurfaceDb::upsert_symbol` — the same serialized, atomically-rewritten,
+// generation-bumping writer the build path uses (`generate_symbol_configs`,
+// `populate_universe_streaming`). There is no second writer and no second
+// encoding of a `SymbolFitConfig`.
+//
+// WHAT `enabled = false` MEANS, EXACTLY. STOP FITTING, not delete:
+//   - the populate stops scheduling the symbol on every date, forever, until it
+//     is re-enabled — this is a per-SYMBOL switch, never a per-cell one;
+//   - every surface it ALREADY fitted stays in its partition, keeps loading and
+//     keeps serving (nothing on the read path gates on `enabled`), and is
+//     re-emitted verbatim through any later rewrite of those dates
+//     (`UniversePopulateCoverage::cells_carried_disabled`). That preservation is
+//     FIX-E's; before it, disabling a name silently destroyed everything it had
+//     produced on the next unrelated rewrite of each of its dates. This call is
+//     the reason that invariant now has an operator who can reach it, so it is
+//     pinned end to end by `SurfaceDbAdmin.DisableThenRebuildPreservesStored*`
+//     and the enable round trip beside it.
+//
+// ENABLE IS NOT `--retry-disabled`. This flips the STORED config's bit and runs
+// no selection. When the disable came from the operator, that is exactly right —
+// the config is theirs and it comes back untouched. When it came from a FAILED
+// CONFIG SELECTION (`AutoConfigReport::n_disabled_failed`), the stored config is
+// the fallback `symbol_config_from_preset(preset)` that selection fell back to,
+// and re-enabling it fits that generic config rather than a chosen one.
+// `atx-vol-surface-db-build --retry-disabled` is the instrument for that case: it
+// re-SELECTS the symbol as if it were new.
+//
+// CONCURRENCY. `surface_db.hpp` documents the database as SINGLE WRITER, many
+// readers, and this call is a writer. Do not run it while a build is running
+// against the same root, in either order: a build holds an in-memory manifest
+// snapshot for the whole run and every `write_partition` persists THAT snapshot's
+// symbol table, so a disable landing mid-build is silently overwritten by the
+// next partition write, and `DbConfigAttestation`'s fold would be taken over
+// configs the surfaces were not fitted under. Nothing detects this — there is no
+// lock file — so it is a scheduling rule, and it is the same one every other
+// manifest mutation on this database has always been under.
+//
+// Errors: NotFound when `symbol` is not in the manifest's symbol table (this call
+// never CREATES a config — an operator fencing out a name they cannot see named
+// the wrong name, and inventing a default config for it would be the silent
+// wrong answer); InvalidArgument on an empty canonical symbol; IoError/ParseError
+// propagated from the manifest rewrite.
+[[nodiscard]] Result<SymbolEnableChange> set_symbol_enabled(SurfaceDb &db, std::string_view symbol,
+                                                            bool enabled);
 
 } // namespace atx::vol

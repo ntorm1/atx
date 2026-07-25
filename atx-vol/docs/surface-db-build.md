@@ -247,13 +247,22 @@ suite — the CLI only maps it to an exit code.
   complete database, and the un-pulled empty window. `cells_ok` is legitimately
   `0` because nothing was scheduled. Exit `0` — the build's convergence guarantee
   ("a re-run fits zero") depends on it.
-- **Carried-only** (`cells_carried > 0` with `cells_ok == 0`) is the **converged
-  steady state** once a date holds a permanently-failing cell. That date is
-  rewritten on every run and its failure retried forever (there is deliberately no
-  persisted known-failed state), while its healthy siblings are *carried* rather
-  than re-fitted — so `cells_ok` is legitimately `0` on a database that is
-  entirely healthy. Exit `0`. Before carry-over those siblings were re-fitted and
-  `cells_ok` was large, which is the only reason this shape never misfired.
+- **Carried-only** (`cells_carried > 0` with `cells_ok == 0`) is the
+  **converged-with-permanent-failures** steady state once a date holds a
+  permanently-failing cell. That date is rewritten on every run and its failure
+  retried forever (there is deliberately no persisted known-failed state), while
+  its healthy siblings are *carried* rather than re-fitted — so `cells_ok` is
+  legitimately `0` on a database that is otherwise entirely healthy. Exit `0`.
+  Before carry-over those siblings were re-fitted and `cells_ok` was large, which
+  is the only reason this shape never misfired.
+
+  > **"Converged" is used in two senses in this document and they differ.** This
+  > shape is converged in the sense that matters operationally — *no re-run will
+  > ever produce anything new* — and it **warns on every run**. A **fully
+  > converged** database, the one called "genuinely converged" fifty lines below,
+  > additionally has `cells_failed == 0` and is **silent**. `prod-2026-07` is the
+  > first kind, permanently. If your database warns every run, that is not
+  > evidence it has failed to converge.
 
 > **Known limit.** The exemption is keyed on `cells_carried == 0`, so **any** run
 > that carried at least one cell is exempt from this predicate — a strictly wider
@@ -278,25 +287,43 @@ stderr **warning** and exit **0**
 the `SurfaceDbCarryMaskedFitFailure` suite and the end-to-end
 `BuildSurfaceDb.CarryMaskedFitFailureFiresOnTheAmbiguousShapeAndNotOnAConvergedDb`):
 
+Transcribed from a real resume of a production-shaped database (51 symbols, the
+2026-07-01 partition, whose MCD cell is one of the nine deliberately-left-failing
+cells):
+
 ```
-$ atx-vol-surface-db-build --db /db --hive /hive --from 2026-07-01 --to 2026-07-06 --r 0.03
+$ atx-vol-surface-db-build --db /db --hive C:/atx-data/opra-hive \
+      --from 2026-07-01 --to 2026-07-01 --r 0.043 --index SPY
 ... (the full report still prints to stdout, and --report is still written) ...
-atx-vol-surface-db-build: WARNING (exit 0): 0 cells fitted, 3 failed, 6 carried.
+atx-vol-surface-db-build: WARNING (exit 0): 0 cells fitted, 1 failed, 50 carried.
+  Cells that failed (1 shown, 0 elided): 2026-07-01/MCD
   This run produced no NEW surface. Two very different runs look like this and the
   counters cannot tell them apart:
     (a) the converged steady state — a permanently-failing cell is retried on every
     run (by design; nothing is persisted as known-failed) while its healthy siblings
     are carried. Nothing is wrong.
     (b) every cell this run scheduled died for a SYSTEMATIC reason — a fitter or
-    loader regression, or a bad config for a newly-added name — beside 6 carried
+    loader regression, or a bad config for a newly-added name — beside 50 carried
     cells that were never re-fitted and so could not re-fail. Before carry-over this
     run would have exited 3.
-  The failed_cell lines above (and every one of them in --report) carry each cell's
-  own reason: one recurring name failing the same gate is (a); a fresh name, or a
-  new reason, is (b).
+  Compare the list above with the previous run's: the SAME cells failing the same way
+  is (a); a fresh name, or a new reason, is (b). The failed_cell lines on stdout carry
+  each cell's own reason, and --report writes every one of them.
+  Clearing it: fix the failing cell, or stop fitting the name entirely with
+  `atx-vol-surface-db disable --db <root> --symbol <SYM> --yes` (its stored surfaces
+  are kept). Disabling costs that symbol on EVERY date, so on a name that is healthy
+  everywhere else it trades many good surfaces for one silenced line — usually a bad
+  deal. If neither applies, this line is EXPECTED on every run and is not a defect on
+  its own; what you watch is the list above CHANGING.
 $ echo $?
 0
 ```
+
+The `Cells that failed` list is what makes (a) and (b) separable at a glance: it is
+the only thing that distinguishes them, so it is on the warning rather than left
+for you to reconstruct from the `failed_cell` lines. It is bounded by the same
+`--max-failures` cap as those lines and elision is counted, never silent
+(`--max-failures 0` prints `Cells that failed (0 shown, 1 elided):`).
 
 It fires on `cells_ok == 0 && cells_failed > 0 && cells_carried > 0` and on nothing
 else. Three consequences worth knowing:
@@ -305,11 +332,38 @@ else. Three consequences worth knowing:
   the steady state this feature exists to produce; a non-zero code for it is
   exactly the destructive false verdict the carry clause removed. The warning
   exists *because* the exit code cannot come back.
-- **A genuinely converged database is silent.** Once no date has anything left to
-  schedule, `cells_failed` is `0` and nothing prints. The warning recurs only while
-  a cell keeps failing — and the way to stop it is to fix that cell or disable the
-  name (`upsert_symbol` with `enabled = false`; FIX-E keeps its stored surfaces),
-  not to ignore the line.
+- **A FULLY converged database is silent.** Once no date has anything left to
+  schedule, `cells_failed` is `0` and nothing prints. The warning recurs for as
+  long as a cell keeps failing. (See the note under **Carried-only** above: a
+  database that warns on every run is still converged in the sense that no re-run
+  will produce anything new. Silence requires the stronger property.)
+- **On a database with permanently-failing cells, this line is EXPECTED on every
+  run, and there may be no action that clears it.** That is the honest statement
+  and the manual used to imply otherwise. There are exactly two clearing actions
+  and on the population that actually produces this warning, usually neither
+  applies:
+  1. **Fix the failing cell.** Only possible when the failure is a defect. It
+     frequently is not — of `prod-2026-07`'s nine residual failures, three are
+     genuinely arbitrage-violating boards (18–21 butterfly *and* 17–28 calendar
+     violations) and the rest miss a no-arb bound marginally. There is nothing to
+     fix in the code, and tuning the admission thresholds until the number is
+     clean defeats the instrumentation.
+  2. **Stop fitting the name** —
+     `atx-vol-surface-db disable --db <root> --symbol <SYM> --yes`. See
+     [Disabling a name](#disabling-a-name--the-remedy-and-its-real-price) for what
+     this costs; the short version is that `enabled` is a per-**symbol** switch
+     while these failures are per-**cell**, so it removes the name from **every**
+     date, past and future. `prod-2026-07`'s nine failures are nine cells spread
+     over eight symbols on eight dates, and every one of those symbols fits on its
+     other sixteen dates. Silencing SPY's two marginal cells would cost SPY's
+     other fifteen surfaces and the index leg with them.
+
+  **When neither applies, the correct action is to accept the warning.** It is not
+  a defect signal on its own. What you watch is the `Cells that failed` list
+  **changing** — a name that was not there before, or a familiar name failing for
+  a new reason — because that, and only that, separates reading (b) from reading
+  (a). Compare it against the previous run's; `--report` gives you a diffable CSV
+  of every cell if you want to automate the comparison.
 - **It reads `cells_carried`, not `cells_carried_disabled`.** `cells_carried` is
   what grants the exit-3 exemption, so it is what the warning must track. A run
   that carried only *disabled* symbols' preserved surfaces is not exempt — it still
@@ -601,8 +655,13 @@ work already done:
    - A cell that **fails to fit** is *not* suppressed: there is no persisted
      known-failed state, so it is retried on every run, which keeps its date in
      the rewrite set and re-fits that date's siblings. That is the deliberate
-     cost of giving a transient failure another chance — a name that fails
-     permanently should be disabled in the manifest to converge.
+     cost of giving a transient failure another chance. A name that fails on
+     **every** date can be taken out of the schedule with
+     `atx-vol-surface-db disable --db <root> --symbol <SYM> --yes`, and then the
+     database converges to silence. That is the only case where disabling is the
+     right instrument: it is a per-**symbol** switch, so a name that fails on a
+     few dates and fits on the rest loses the ones that fit too. See
+     [Disabling a name](#disabling-a-name--the-remedy-and-its-real-price).
    - **Disabling a name never deletes what it already produced.** `enabled =
      false` means *stop fitting this symbol*; the surfaces it fitted before the
      disable stay in their partitions, keep loading, and are re-emitted verbatim
@@ -668,10 +727,12 @@ pre-pass).
 
 ## `atx-vol-surface-db` — managing and verifying a built database
 
-**Verifying a built database requires no Python.** Everything below runs from the
+**Managing and verifying a built database requires no Python.** Everything below
+runs from the
 command line against a `SurfaceDb` root: what it contains, how each symbol is
-configured, what one cell evaluates to, and whether every selected cell still
-holds intact bytes that evaluate to a usable number (read
+configured, what one cell evaluates to, whether every selected cell still
+holds intact bytes that evaluate to a usable number, and whether a name is fitted
+at all (read
 [what a green `verify` does and does not prove](#what-a-green-verify-proves-and-does-not-prove)
 before you treat it as an acceptance gate). The
 pybind11 wrapper is not needed, not installed, and not on the verification path
@@ -712,10 +773,96 @@ atx-vol-surface-db <subcommand> --db <root> [flags]
 | `config` | `--symbol SYM` | One symbol's full stored fit config + provenance. |
 | `query` | `--key KEY --symbol SYM --strike K --tenor T` | What does this cell evaluate to? iv / total variance / forward / uid / slices. |
 | `verify` | `[--from KEY] [--to KEY] [--symbols A,B,C] [--include-disabled] [--probe-tenor T] [--max-failures N] [--min-cells N]` | Does every selected cell still map, checksum and evaluate? |
+| `enable` | `--symbol SYM` | Resume fitting SYM on every date. **Writes the manifest.** |
+| `disable` | `--symbol SYM --yes` | Stop fitting SYM on **every** date. Its stored surfaces are kept. **Writes the manifest.** |
 
 `query` and `verify` both go through **`SurfaceDb::map_surface`** — the zero-copy
 path production readers use (and the one the retired Python check made) — so a
 green result is evidence about the path that actually serves.
+
+**Six of the eight subcommands are read-only.** `enable` and `disable` are the
+tool's only writes, and they change exactly one field of one symbol's stored
+config (`SymbolFitConfig::enabled`) through the same
+`SurfaceDb::upsert_symbol` the build path uses. There is deliberately no
+`upsert` / `config --set` verb: a stored config is never clobbered here, matching
+`atx-vol-surface-db-build`, which withholds the library's `overwrite_existing`
+for the same reason.
+
+> **Single writer.** Do not run `enable` / `disable` while a build is running
+> against the same root. A build holds one in-memory manifest snapshot for its
+> whole run and every partition write persists that snapshot's symbol table, so a
+> mutation landing mid-build is silently overwritten. Nothing detects this — there
+> is no lock file — so it is a scheduling rule. It is the same one
+> `surface_db.hpp` has always stated for this database ("cross-process: single
+> writer, many readers").
+
+### Disabling a name — the remedy, and its real price
+
+`disable` is the action the build CLI's carry-masked warning and the resume
+semantics above both name. Read this before using it.
+
+```
+$ atx-vol-surface-db disable --db /db --symbol SPY --yes
+symbol SPY
+enabled_before 1
+enabled 0
+changed 1
+generation 91
+```
+
+**What it does.** `enabled = false` means **stop fitting this symbol**. The
+populate stops scheduling it on every date, forever, until it is enabled again.
+
+**What it does *not* do.** It does not delete anything. Every surface the symbol
+already fitted stays in its partition, still loads, still serves (nothing on the
+read path gates on `enabled`), and is re-emitted **verbatim** through any later
+rewrite of those dates — counted as `coverage.cells_carried_disabled` on the
+build report. This is load-bearing enough to be pinned end to end by
+`SurfaceDbAdmin.DisableThenRebuildPreservesTheStoredSurfaceBytes` (byte-identical
+records either side of a real rewrite) and
+`SurfaceDbAdmin.DisableEnableRoundTripRefitsTheSymbolWithNoDataLost`. Before this
+was fixed, disabling a name silently destroyed everything it had produced on the
+next unrelated rewrite of each of its dates.
+
+**The price, stated plainly.** `enabled` is a per-**symbol** switch. There is no
+per-cell disable and there is deliberately no persisted known-failed state, so:
+
+> **Disabling a symbol removes it from EVERY date — the ones it fits as well as
+> the ones it does not, and every future date until it is re-enabled.**
+
+That makes it the **wrong instrument for a small number of bad cells on an
+otherwise healthy name**, which is the common case. On `prod-2026-07`, SPY fails
+on 2 of its 17 dates; disabling it to silence those two would cost the other 15
+stored surfaces from the schedule and remove the designated index leg from every
+future build. When a name fails on a *few* dates and fits on the rest, the honest
+answer is to **accept the warning** — see
+[the warning's clearing actions](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing)
+above. Disabling is the right instrument only when the name fails on
+**substantially all** of its dates, or when you are deliberately fencing it out
+of production for a reason unrelated to fitting.
+
+**Flags and exits.**
+
+- `--yes` is required by `disable` and by nothing else. It is checked with the
+  other usage rules, *before* the database is opened, so a refusal cannot have
+  written anything. Missing it is exit `2`.
+- `enable` needs no confirmation: it is the recovering direction, and
+  `--retry-disabled` already re-enables without one.
+- Both are **idempotent**. Re-asserting the state a symbol is already in prints
+  `changed 0`, writes nothing, does not bump `generation`, and exits `0` — so a
+  converging operator script may assert the desired state unconditionally.
+- A symbol the manifest does not configure is exit `1` (`NotFound`), not `2`: it
+  is a fact about the database, not about the command line. Nothing is created.
+
+**`enable` is not `--retry-disabled`.** `enable` restores the **stored** config
+as-is and runs no selection. When the disable was yours, that is exactly right —
+your config comes back untouched (proven by the config fold: a disable/enable
+round trip returns the stored record to its original bytes). When the disable came
+from a **failed config selection** (`config.n_disabled_failed`), the stored config
+is the generic preset fallback that selection fell back to, and re-enabling it
+fits *that* rather than a chosen one. Use
+`atx-vol-surface-db-build --retry-disabled` for that case: it re-**selects** the
+symbol as if it were new.
 
 ### What a green `verify` proves, and does not prove
 
@@ -980,9 +1127,9 @@ into green — but it is still the only thing that knows what "big enough" means
 
 | Exit | When |
 | --- | --- |
-| `0` | Succeeded. For `verify`: the walk **covered cells**, every one passed all three gates, **and** `cells_checked >= --min-cells`. |
-| `1` | A runtime failure (message on **stderr**, no `verdict` line) — db won't open, unknown partition/symbol, unreadable partition file. **Or** `verify` returned `verdict FAILED` on **stdout**: failing cells, too few cells, or a walk that selected none. |
-| `2` | A usage error — unknown subcommand, unknown flag, a required flag missing, a flag left **without a value**, or a malformed numeric value. Every one of these is decided **before the database is opened**, so a typo'd subcommand against an unreadable `--db` reports the typo, not the open failure. Usage on stderr. |
+| `0` | Succeeded. For `verify`: the walk **covered cells**, every one passed all three gates, **and** `cells_checked >= --min-cells`. For `enable`/`disable`: the symbol **is now** in the requested state, whether or not this run put it there (`changed 0` is a success — the verbs are idempotent). |
+| `1` | A runtime failure (message on **stderr**, no `verdict` line) — db won't open, unknown partition/symbol, unreadable partition file, or an `enable`/`disable` naming a symbol the manifest does not configure. **Or** `verify` returned `verdict FAILED` on **stdout**: failing cells, too few cells, or a walk that selected none. |
+| `2` | A usage error — unknown subcommand, unknown flag, a required flag missing (**`disable`'s `--yes` is one**), a flag left **without a value**, or a malformed numeric value. Every one of these is decided **before the database is opened**, so a typo'd subcommand against an unreadable `--db` reports the typo, not the open failure — and a `disable` refused for want of `--yes` provably wrote nothing. Usage on stderr. |
 
 The `verdict` line disambiguates the two meanings of exit 1: a health failure
 always prints one, a runtime failure never does.

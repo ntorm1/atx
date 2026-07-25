@@ -1,9 +1,13 @@
-// surface_db_main — the production surface-database MANAGEMENT CLI: inspect and
-// verify a database that `atx-vol-surface-db-build` produced, with no Python in
-// the loop. Six subcommands (`info`, `partitions`, `symbols`, `config`, `query`,
-// `verify`), each a parse -> one library call -> print shell over
-// atx/vol/surface_db_admin.hpp. All logic lives in that library; nothing here
-// decides anything about the database.
+// surface_db_main — the production surface-database MANAGEMENT CLI: inspect,
+// verify and fence a database that `atx-vol-surface-db-build` produced, with no
+// Python in the loop. Eight subcommands (`info`, `partitions`, `symbols`,
+// `config`, `query`, `verify`, `enable`, `disable`), each a parse -> one library
+// call -> print shell over atx/vol/surface_db_admin.hpp. All logic lives in that
+// library; nothing here decides anything about the database.
+//
+// SIX OF THE EIGHT ARE READ-ONLY. `enable` / `disable` write the manifest, and
+// they are the only writes this tool has. See the WRITE PATH note below the
+// subcommand list.
 //
 // Usage:
 //   atx-vol-surface-db <subcommand> --db <root> [flags]
@@ -28,18 +32,52 @@
 //                              FAILED verdict. `--min-cells` additionally fails a
 //                              database smaller than the operator expected — the
 //                              one thing the library cannot know.
+//   enable  --symbol <SYM>     start fitting SYM again on every date.
+//   disable --symbol <SYM> --yes
+//                              STOP fitting SYM on every date. Its already-stored
+//                              surfaces are kept, keep loading, and survive later
+//                              rewrites verbatim — `enabled = false` means stop
+//                              fitting, never delete.
+//
+// ── WRITE PATH ───────────────────────────────────────────────────────────────
+//
+// `enable` / `disable` are this tool's only writes and they change exactly one
+// field of one symbol's stored config (`SymbolFitConfig::enabled`) through
+// `set_symbol_enabled`, which hands it to the same `SurfaceDb::upsert_symbol` the
+// build path uses. There is no `upsert`/`config --set` verb: a stored config is
+// never clobbered here, matching `atx-vol-surface-db-build`, which deliberately
+// withholds the library's `overwrite_existing` for the same reason.
+//
+// `--yes` is REQUIRED by `disable` and by nothing else. The asymmetry is the
+// blast radius, not squeamishness about writing: `enabled` is a per-SYMBOL
+// switch, so disabling a name to silence a handful of bad cells stops fitting it
+// on EVERY date and every future date. `enable` is the recovering direction and
+// needs no confirmation (the build CLI's `--retry-disabled` already re-enables
+// without one).
+//
+// SINGLE WRITER. Do not run `enable`/`disable` while a build is running against
+// the same root. A build holds one in-memory manifest snapshot for its whole run
+// and every partition write persists that snapshot's symbol table, so a mutation
+// landing mid-build is silently overwritten. Nothing detects this; it is the
+// scheduling rule `surface_db.hpp` has always stated for this database.
 //
 // Output is line-oriented and stable for scripting: scalars print as `key value`
 // (mirroring atx-vol-surface-db-build), and repeated records print as
 // `<record> <id> field=value ...`. See atx-vol/docs/surface-db-build.md.
 //
 // Exit codes (same convention as atx-vol-surface-db-build):
-//   0  ok — and, for `verify`, the walk covered cells and every one passed.
+//   0  ok — and, for `verify`, the walk covered cells and every one passed. For
+//      `enable`/`disable`, the symbol is now in the requested state, whether or
+//      not this run is what put it there (`changed 0` is a success: the verbs are
+//      idempotent so a converging script can assert the state unconditionally).
 //   1  runtime failure (message on stderr), OR `verify` returned a FAILED verdict
-//      (on stdout — a runtime failure prints no verdict line).
-//   2  usage error: unknown subcommand, unknown flag, a required flag missing, a
-//      flag left WITHOUT a value, or a malformed numeric value. Every one of
-//      these is decided before the database is opened.
+//      (on stdout — a runtime failure prints no verdict line). An `enable` /
+//      `disable` naming a symbol the manifest does not configure is a runtime
+//      failure: it is a fact about the database, not about the command line.
+//   2  usage error: unknown subcommand, unknown flag, a required flag missing (of
+//      which `disable`'s `--yes` is one), a flag left WITHOUT a value, or a
+//      malformed numeric value. Every one of these is decided before the database
+//      is opened, so no usage error can ever have written anything.
 
 #include <cerrno>
 #include <cstddef>
@@ -73,6 +111,9 @@ void print_usage(std::FILE *out) {
       "  verify [--from KEY] [--to KEY] [--symbols A,B,C] [--include-disabled]\n"
       "         [--probe-tenor T] [--max-failures N] [--min-cells N]\n"
       "                                map + ATM-evaluate every cell; nonzero exit on failure\n"
+      "  enable  --symbol SYM          resume fitting SYM on every date\n"
+      "  disable --symbol SYM --yes    STOP fitting SYM on EVERY date (stored surfaces\n"
+      "                                are kept and keep serving; --yes is required)\n"
       "exit: 0 ok / 1 runtime failure or verify found failing cells / 2 usage\n");
 }
 
@@ -384,6 +425,62 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
   return passed ? 0 : 1;
 }
 
+// `enable` and `disable` are the same call with a different bool. The only
+// asymmetry is which advisory note follows, and each note exists because the verb
+// it follows is routinely reached for the wrong reason:
+//
+//   disable — an operator arrives here from the build CLI's carry-masked warning,
+//             which names FAILING CELLS. `enabled` is per SYMBOL. Say the cost out
+//             loud at the moment it is paid, and say what was NOT lost (the
+//             stored surfaces), because that is the invariant the operator has to
+//             trust to use this at all.
+//   enable  — this flips the stored config's bit and runs no selection. If the
+//             disable came from a failed config SELECTION, the stored config is
+//             the generic fallback and `--retry-disabled` is the right tool.
+//
+// Both notes go to stderr so stdout stays the parseable `key value` record.
+int run_set_enabled(SurfaceDb &db, const std::string &symbol, bool enabled) {
+  const Result<SymbolEnableChange> ch = set_symbol_enabled(db, symbol, enabled);
+  if (!ch) {
+    std::fprintf(stderr, "atx-vol-surface-db: set_symbol_enabled(%s, %s): %s\n", symbol.c_str(),
+                 enabled ? "enabled" : "disabled", ch.error().to_string().c_str());
+    return 1;
+  }
+  std::printf("symbol %s\n", ch->symbol.c_str());
+  std::printf("enabled_before %d\n", ch->was_enabled ? 1 : 0);
+  std::printf("enabled %d\n", ch->now_enabled ? 1 : 0);
+  std::printf("changed %d\n", ch->changed ? 1 : 0);
+  std::printf("generation %llu\n", static_cast<unsigned long long>(ch->generation));
+
+  if (!ch->changed) {
+    std::fprintf(stderr, "atx-vol-surface-db: %s was already %s; nothing was written.\n",
+                 ch->symbol.c_str(), enabled ? "enabled" : "disabled");
+    return 0;
+  }
+  if (enabled) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db: %s is ENABLED again and will be fitted on every date the "
+                 "hive carries for it.\n"
+                 "  This restored the STORED config as-is; no selection was re-run. If the disable "
+                 "came from a failed config selection (config.failed_symbols on a build report, "
+                 "n_disabled_failed), that stored config is the generic preset fallback — re-run "
+                 "the build with --retry-disabled instead, which re-SELECTS the symbol.\n",
+                 ch->symbol.c_str());
+    return 0;
+  }
+  std::fprintf(stderr,
+               "atx-vol-surface-db: %s is DISABLED. It will not be fitted on ANY date, past or "
+               "future, until it is enabled again.\n"
+               "  Nothing was deleted: every surface %s already fitted stays in its partition, "
+               "still loads, still serves, and is re-emitted verbatim through any later rewrite of "
+               "those dates (coverage.cells_carried_disabled on the build report).\n"
+               "  If you came here to silence a few failing CELLS on an otherwise healthy name, "
+               "this is the wrong instrument — it costs that name on every date it fits today. "
+               "See 'Disabling a name' in atx-vol/docs/surface-db-build.md.\n",
+               ch->symbol.c_str(), ch->symbol.c_str());
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -404,6 +501,7 @@ int main(int argc, char **argv) {
   std::string tenor_arg;
   DbVerifySpec verify_spec;
   std::size_t min_cells = 0;
+  bool confirmed = false; // --yes; required by `disable` and by nothing else
 
   for (int i = 2; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -438,6 +536,8 @@ int main(int argc, char **argv) {
       verify_spec.symbols = split_csv(nv());
     } else if (a == "--include-disabled") {
       verify_spec.include_disabled = true;
+    } else if (a == "--yes") {
+      confirmed = true;
     } else if (a == "--probe-tenor") {
       verify_spec.probe_T = std::strtod(nv(), nullptr);
     } else if (a == "--max-failures") {
@@ -483,7 +583,8 @@ int main(int argc, char **argv) {
   // itself was wrong. A usage error must never depend on the db being readable.
   const bool known_subcommand = subcommand == "info" || subcommand == "partitions" ||
                                 subcommand == "symbols" || subcommand == "config" ||
-                                subcommand == "query" || subcommand == "verify";
+                                subcommand == "query" || subcommand == "verify" ||
+                                subcommand == "enable" || subcommand == "disable";
   if (!known_subcommand) {
     std::fprintf(stderr, "atx-vol-surface-db: unknown subcommand: %s\n", subcommand.c_str());
     print_usage(stderr);
@@ -508,8 +609,35 @@ int main(int argc, char **argv) {
                  "atx-vol-surface-db: query requires --key, --symbol, --strike and --tenor\n");
     return 2;
   }
+  if ((subcommand == "enable" || subcommand == "disable") && symbol.empty()) {
+    std::fprintf(stderr, "atx-vol-surface-db: %s requires --symbol <SYM>\n", subcommand.c_str());
+    return 2;
+  }
+  // The confirmation. Checked HERE, with the other usage rules, so a `disable`
+  // without `--yes` cannot have opened the database, let alone written to it —
+  // the tool's standing rule that a usage error never depends on the db being
+  // readable buys, for free, that it also never depends on the db being intact.
+  // The message is the warning, not a scolding: it states the blast radius the
+  // operator is confirming and the one thing that is NOT at risk.
+  if (subcommand == "disable" && !confirmed) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db: disable requires --yes.\n"
+                 "  `enabled` is a per-SYMBOL switch: disabling %s stops it being fitted on EVERY "
+                 "date it fits today and on every future date. It does NOT delete anything — the "
+                 "surfaces it already produced stay stored and keep serving.\n"
+                 "  If you are here to silence a few failing cells on an otherwise healthy name, "
+                 "that trade is almost never worth it; see 'Disabling a name' in "
+                 "atx-vol/docs/surface-db-build.md.\n",
+                 symbol.c_str());
+    return 2;
+  }
 
-  const Result<SurfaceDb> db = SurfaceDb::open(db_root);
+  // Non-const because `enable`/`disable` mutate. Note what did NOT change: there
+  // is one `SurfaceDb::open`, it takes no lock and has no read-only mode (it
+  // reads the manifest bytes and parses them), so the read-only-ness of this tool
+  // was only ever this local's `const`. The six query subcommands still bind it
+  // to a `const SurfaceDb &` and are unaffected.
+  Result<SurfaceDb> db = SurfaceDb::open(db_root);
   if (!db) {
     std::fprintf(stderr, "atx-vol-surface-db: open(%s): %s\n", db_root.c_str(),
                  db.error().to_string().c_str());
@@ -532,7 +660,13 @@ int main(int argc, char **argv) {
     return run_query(*db, key, symbol, std::strtod(strike_arg.c_str(), nullptr),
                      std::strtod(tenor_arg.c_str(), nullptr));
   }
-  // `verify` is the last of the six `known_subcommand` names, so this is the end
-  // of the dispatch — an unknown name already exited 2 above, before the open.
+  if (subcommand == "enable") {
+    return run_set_enabled(*db, symbol, true);
+  }
+  if (subcommand == "disable") {
+    return run_set_enabled(*db, symbol, false);
+  }
+  // `verify` is the last of the eight `known_subcommand` names, so this is the
+  // end of the dispatch — an unknown name already exited 2 above, before the open.
   return run_verify(*db, verify_spec, min_cells);
 }

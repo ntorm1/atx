@@ -481,12 +481,36 @@ int main(int argc, char **argv) {
   // it is indistinguishable from the converged steady state, which is a healthy
   // production database, and failing it is precisely the defect the carry clause
   // fixed. So the tool says the two are different instead of judging between them.
-  // Disjoint from `is_total_fit_failure` by construction, so this never doubles up
-  // with the block above.
+  // Disjoint from BOTH exit-3 blocks above by construction — each requires
+  // `cells_carried == 0` and this requires `> 0` — so it never doubles up with
+  // either, independently of the order they are tested in here.
   if (is_carry_masked_fit_failure(*report)) {
     std::fprintf(stderr,
                  "atx-vol-surface-db-build: WARNING (exit 0): 0 cells fitted, %u failed, "
-                 "%u carried.\n"
+                 "%u carried.\n",
+                 report->coverage.cells_failed, report->coverage.cells_carried);
+
+    // FIX-G. The warning used to state counters and send the operator off to find
+    // the `failed_cell` lines themselves. On the flagship database this fires on
+    // EVERY run — the residual failures are a permanent per-run condition — so
+    // "go read the report" is a cost paid every time, and a line that costs
+    // something every time and says nothing new is the line that gets trained
+    // away. The whole discriminator between (a) and (b) below is WHICH cells
+    // failed, so put them on the warning itself.
+    //
+    // Bounded by the same `--max-failures` cap as the `failed_cell` block, using
+    // the same library helper and the same never-silent elision count, so a
+    // wholesale failure cannot flood stderr and a truncated list can never read
+    // as the whole set.
+    const ReportedFailedCells warned = reported_failed_cells(*report, max_failed_cells);
+    std::fprintf(stderr, "  Cells that failed (%zu shown, %zu elided):", warned.reported.size(),
+                 warned.n_elided);
+    for (const FailedCell &f : warned.reported) {
+      std::fprintf(stderr, " %s/%s", f.date.c_str(), f.symbol.c_str());
+    }
+    std::fprintf(stderr, "\n");
+
+    std::fprintf(stderr,
                  "  This run produced no NEW surface. Two very different runs look like "
                  "this and the counters cannot tell them apart:\n"
                  "    (a) the converged steady state — a permanently-failing cell is retried "
@@ -496,11 +520,26 @@ int main(int argc, char **argv) {
                  "fitter or loader regression, or a bad config for a newly-added name — "
                  "beside %u carried cells that were never re-fitted and so could not "
                  "re-fail. Before carry-over this run would have exited 3.\n"
-                 "  The failed_cell lines above (and every one of them in --report) carry "
-                 "each cell's own reason: one recurring name failing the same gate is (a); "
-                 "a fresh name, or a new reason, is (b).\n",
-                 report->coverage.cells_failed, report->coverage.cells_carried,
+                 "  Compare the list above with the previous run's: the SAME cells failing "
+                 "the same way is (a); a fresh name, or a new reason, is (b). The "
+                 "failed_cell lines on stdout carry each cell's own reason, and --report "
+                 "writes every one of them.\n",
                  report->coverage.cells_carried);
+
+    // The remedy, stated honestly. `atx-vol-surface-db disable` exists now (it did
+    // not when this warning was written, which is why the manual named a C++ API
+    // call), but it is a per-SYMBOL switch aimed at a per-CELL problem, and for
+    // the population that actually produces this warning — a name that fits on 16
+    // of its 17 dates — it is the wrong trade. Saying so here is the point: an
+    // operator who cannot clear a line, and is not told that not clearing it is
+    // correct, stops reading it.
+    std::fprintf(
+        stderr, "  Clearing it: fix the failing cell, or stop fitting the name entirely with "
+                "`atx-vol-surface-db disable --db <root> --symbol <SYM> --yes` (its stored "
+                "surfaces are kept). Disabling costs that symbol on EVERY date, so on a name "
+                "that is healthy everywhere else it trades many good surfaces for one silenced "
+                "line — usually a bad deal. If neither applies, this line is EXPECTED on every "
+                "run and is not a defect on its own; what you watch is the list above CHANGING.\n");
   }
 
   return 0;

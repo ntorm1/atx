@@ -863,5 +863,324 @@ TEST(SurfaceDbAdmin, VerifyDbEmptyDatabaseIsVacuouslyOk) {
   EXPECT_EQ(desc->total_bytes_on_disk, std::uint64_t{0});
 }
 
+// ── set_symbol_enabled — the one management action (FIX-G) ──────────────────
+//
+// The build CLI's carry-masked warning, and the manual before it, name exactly
+// one remedy for a permanently-failing name: disable it. Until this call existed
+// that remedy was a C++ API call reachable from no shipped tool. What follows
+// pins the call itself, and then pins END TO END the invariant the two commits
+// before it exist to protect — `enabled = false` means STOP FITTING, never
+// DELETE — because an operator who cannot trust that will not use the remedy.
+
+// A build restricted to a subset of the fixture's symbols and dates, so a later
+// build can WIDEN it and thereby trigger a real rewrite (a new symbol on an
+// existing date) or a real new fit (a new date).
+[[nodiscard]] SurfaceDbBuildSpec
+narrowed_spec(const AdminFixture &f, std::vector<std::string> symbols, std::size_t n_dates) {
+  SurfaceDbBuildSpec spec = build_spec(f);
+  spec.hive.symbols = std::move(symbols);
+  spec.hive.date_lo = f.fx.dates.front();
+  spec.hive.date_hi = f.fx.dates.at(n_dates - 1);
+  return spec;
+}
+
+// The exact on-disk bytes of one stored surface record, read through the
+// archive's own directory. This is the only oracle that distinguishes PRESERVED
+// from RE-EMITTED-AFTER-A-REFIT: a re-fit under any config satisfies
+// `load_surface` while silently changing the stored values.
+[[nodiscard]] std::vector<std::byte>
+stored_record_bytes(const AdminFixture &f, std::string_view key, std::string_view symbol) {
+  const RecordExtent ext = record_extent(f, key, symbol);
+  std::vector<std::byte> out;
+  if (ext.size == 0) {
+    return out;
+  }
+  std::ifstream in(partition_file(f, key), std::ios::binary);
+  EXPECT_TRUE(in.good());
+  if (!in.good()) {
+    return out;
+  }
+  out.resize(static_cast<std::size_t>(ext.size));
+  in.seekg(static_cast<std::streamoff>(ext.offset), std::ios::beg);
+  in.read(reinterpret_cast<char *>(out.data()), static_cast<std::streamsize>(ext.size));
+  EXPECT_EQ(static_cast<std::uint64_t>(in.gcount()), ext.size);
+  return out;
+}
+
+// The whole point of routing this through `upsert_symbol` rather than writing a
+// second manifest writer: one field moves and the rest of the stored config —
+// which may be an operator's tuned override — comes back byte-for-byte.
+TEST(SurfaceDbAdmin, SetSymbolEnabledMovesOneFieldAndIsIdempotent) {
+  const AdminFixture f = make_fixture("set_enabled_one_field");
+  build_healthy_db(f);
+  SurfaceDb db = open_db(f);
+
+  const std::vector<std::string> just_bbb{"BBB"};
+  const auto before = db.symbol_config("BBB");
+  ASSERT_TRUE(before.has_value()) << (before ? "" : before.error().to_string());
+  ASSERT_TRUE(before->enabled);
+  const auto prov_before = db.surface_provenance("BBB");
+  ASSERT_TRUE(prov_before.has_value()) << (prov_before ? "" : prov_before.error().to_string());
+  const std::uint64_t gen_before = db.generation();
+  // The oracle for "nothing else moved" is the PUBLIC fold: `config_fingerprint`
+  // digests the whole 256-byte encoded config (surface_policy included) with only
+  // the provenance half zeroed. Comparing structs field by field would miss a
+  // knob `SymbolFitConfig` grows later; this cannot.
+  const std::uint64_t fp_before = db.config_fingerprint(just_bbb);
+  ASSERT_NE(fp_before, 0u) << "0 is the unknown sentinel; a configured symbol must fold";
+
+  const auto off = set_symbol_enabled(db, "bbb", false); // case-insensitive, like every lookup
+  ASSERT_TRUE(off.has_value()) << (off ? "" : off.error().to_string());
+  EXPECT_EQ(off->symbol, "BBB"); // canonical spelling echoed back
+  EXPECT_TRUE(off->was_enabled);
+  EXPECT_FALSE(off->now_enabled);
+  EXPECT_TRUE(off->changed);
+  EXPECT_GT(off->generation, gen_before) << "a real change must persist and bump the generation";
+
+  const auto after = db.symbol_config("BBB");
+  ASSERT_TRUE(after.has_value()) << (after ? "" : after.error().to_string());
+  EXPECT_FALSE(after->enabled);
+  // The knobs an operator reads back are unchanged while it is off.
+  EXPECT_EQ(after->preset, before->preset);
+  EXPECT_EQ(after->pin_curve, before->pin_curve);
+  EXPECT_EQ(after->curve.kind, before->curve.kind);
+  EXPECT_DOUBLE_EQ(after->band_k, before->band_k);
+  EXPECT_EQ(after->surface_policy.quality_mode, before->surface_policy.quality_mode);
+  EXPECT_EQ(after->surface_policy.risk_admission, before->surface_policy.risk_admission);
+  // `enabled` IS in the fold, which is why disabling a name invalidates the
+  // carry-over fingerprint of every partition holding it — the mechanism
+  // `DisabledSymbolStoredSurfaceSurvivesARewrite` depends on. Pinned so a future
+  // change that drops it from the fold is caught here too.
+  EXPECT_NE(db.config_fingerprint(just_bbb), fp_before)
+      << "`enabled` must be part of the config fold";
+
+  // Provenance survives. `upsert_symbol(sym, cfg)` defaults its provenance
+  // argument to nullopt, which for an EXISTING symbol means KEEP — if that ever
+  // changed to "clear", `config --symbol` would start reporting provenance 0
+  // after a disable and the manifest would have lost the fit's own record of
+  // itself.
+  const auto prov_after = db.surface_provenance("BBB");
+  ASSERT_TRUE(prov_after.has_value()) << (prov_after ? "" : prov_after.error().to_string());
+  EXPECT_EQ(prov_before->has_value(), prov_after->has_value());
+
+  // Idempotent, and a no-op writes NOTHING: a converging operator script may
+  // assert the desired state on every run without churning the manifest.
+  const std::uint64_t gen_off = db.generation();
+  const auto again = set_symbol_enabled(db, "BBB", false);
+  ASSERT_TRUE(again.has_value()) << (again ? "" : again.error().to_string());
+  EXPECT_FALSE(again->changed);
+  EXPECT_FALSE(again->was_enabled);
+  EXPECT_FALSE(again->now_enabled);
+  EXPECT_EQ(again->generation, gen_off) << "a no-op must not rewrite the manifest";
+
+  // ...and back. The fold returning to its ORIGINAL value is the proof that the
+  // disable moved one bit and nothing else: had it zeroed or defaulted any other
+  // field, re-enabling would not restore it and this would differ.
+  const auto on = set_symbol_enabled(db, "BBB", true);
+  ASSERT_TRUE(on.has_value()) << (on ? "" : on.error().to_string());
+  EXPECT_TRUE(on->changed);
+  EXPECT_TRUE(on->now_enabled);
+  EXPECT_EQ(db.config_fingerprint(just_bbb), fp_before)
+      << "a disable/enable round trip must return the stored config to its original bytes";
+}
+
+// A name the manifest does not configure is NotFound, and nothing is written.
+// The alternative — `upsert_symbol` inventing a default config for it — would
+// turn a typo into a silently-created disabled symbol that no build ever fixes.
+TEST(SurfaceDbAdmin, SetSymbolEnabledOnAnUnconfiguredSymbolIsNotFoundAndWritesNothing) {
+  const AdminFixture f = make_fixture("set_enabled_unknown");
+  build_healthy_db(f);
+  SurfaceDb db = open_db(f);
+
+  const std::uint64_t gen_before = db.generation();
+  const auto miss = set_symbol_enabled(db, "ZZZ", false);
+  ASSERT_FALSE(miss.has_value());
+  EXPECT_EQ(miss.error().code(), ErrorCode::NotFound);
+  EXPECT_EQ(db.generation(), gen_before) << "a failed lookup must not have written the manifest";
+  EXPECT_EQ(db.symbols(), (std::vector<std::string>{"AAA", "BBB", "CCC"}))
+      << "no symbol may have been created";
+}
+
+// ── THE INVARIANT, END TO END ───────────────────────────────────────────────
+//
+// A disable performed through the shipped path must not cost the symbol its
+// stored surfaces. This drives the WHOLE stack the operator drives — the same
+// `set_symbol_enabled` the CLI's `disable` calls, then `build_surface_db`, the
+// one-call driver behind `atx-vol-surface-db-build` — and compares the stored
+// record BYTES either side of a rewrite that really happened.
+//
+// The rewrite has to be real or the test passes vacuously: build 1 covers
+// {AAA, BBB} on two dates, and build 2 widens the universe to {AAA, BBB, CCC} on
+// the SAME two dates, so CCC is a genuinely new cell on each, each date's
+// partition is rewritten from scratch, and BBB's bytes have to survive that
+// rewrite rather than merely never be touched. That is exactly the unrelated
+// trigger FIX-E's defect fired on.
+TEST(SurfaceDbAdmin, DisableThenRebuildPreservesTheStoredSurfaceBytes) {
+  const AdminFixture f = make_fixture("disable_preserves_bytes");
+  const std::vector<std::string> dates{f.fx.dates[0], f.fx.dates[1]};
+
+  // Build 1: AAA and BBB over two dates. BBB must be STORED before it is
+  // disabled, or nothing is at risk and the test proves nothing.
+  {
+    const auto first = build_surface_db(narrowed_spec(f, {"AAA", "BBB"}, 2));
+    ASSERT_TRUE(first.has_value()) << (first ? "" : first.error().to_string());
+    ASSERT_EQ(first->coverage.cells_ok, 4u) << "2 symbols x 2 dates must have fitted";
+    ASSERT_EQ(first->coverage.dates_written, 2u);
+  }
+  std::vector<std::vector<std::byte>> bbb_before;
+  for (const std::string &d : dates) {
+    bbb_before.push_back(stored_record_bytes(f, d, "BBB"));
+    ASSERT_FALSE(bbb_before.back().empty()) << d;
+  }
+
+  // The operator action, through the exact call `atx-vol-surface-db disable` makes.
+  {
+    SurfaceDb db = open_db(f);
+    const auto ch = set_symbol_enabled(db, "BBB", false);
+    ASSERT_TRUE(ch.has_value()) << (ch ? "" : ch.error().to_string());
+    ASSERT_TRUE(ch->changed);
+    ASSERT_FALSE(ch->now_enabled);
+  }
+
+  // Build 2: the unrelated trigger. CCC is new on both dates, so both partitions
+  // are rewritten. Nothing about CCC concerns BBB.
+  const auto second = build_surface_db(narrowed_spec(f, {"AAA", "BBB", "CCC"}, 2));
+  ASSERT_TRUE(second.has_value()) << (second ? "" : second.error().to_string());
+  ASSERT_EQ(second->coverage.dates_written, 2u)
+      << "both dates must really have been rewritten, or the bytes survived by not being touched";
+  ASSERT_EQ(second->coverage.dates_skipped_would_drop, 0u);
+  EXPECT_EQ(second->coverage.cells_carried_disabled, 2u)
+      << "BBB's two cells must be counted as PRESERVED";
+  EXPECT_EQ(second->config.n_disabled_existing, 1u) << "the build must still NAME the disabled BBB";
+
+  // The disable took effect on the FIT side: BBB was not offered to the fitter.
+  const auto bbb_stats =
+      std::find_if(second->coverage.per_symbol.begin(), second->coverage.per_symbol.end(),
+                   [](const PopulateSymbolStats &s) { return s.symbol == "BBB"; });
+  ASSERT_NE(bbb_stats, second->coverage.per_symbol.end());
+  EXPECT_EQ(bbb_stats->n_ok, 0u) << "a disabled symbol must not be fitted";
+  EXPECT_EQ(bbb_stats->n_carried, 0u) << "a preserved cell is not a healthy carried one";
+
+  // ── The bite: byte-identical, on every date. ──────────────────────────────
+  for (std::size_t i = 0; i < dates.size(); ++i) {
+    const std::vector<std::byte> after = stored_record_bytes(f, dates[i], "BBB");
+    ASSERT_EQ(bbb_before[i].size(), after.size()) << dates[i];
+    EXPECT_EQ(0, std::memcmp(bbb_before[i].data(), after.data(), after.size()))
+        << "disabling BBB changed its stored surface on " << dates[i]
+        << " -- `enabled = false` must mean STOP FITTING, never DELETE or REWRITE";
+  }
+
+  // And the surfaces are not merely present bytes: they still map, checksum and
+  // evaluate, through the same walk an operator runs. The default walk drops the
+  // disabled column, so this is the `--include-disabled` case, and `verify` names
+  // BBB as a column it would otherwise not have looked at.
+  const SurfaceDb db = open_db(f);
+  DbVerifySpec forced;
+  forced.include_disabled = true;
+  const auto all = verify_db(db, forced);
+  ASSERT_TRUE(all.has_value()) << (all ? "" : all.error().to_string());
+  EXPECT_EQ(all->cells_checked, std::size_t{6}); // 3 symbols x 2 dates
+  EXPECT_TRUE(all->ok()) << "a preserved disabled surface must still be a HEALTHY cell";
+
+  const auto defaulted = verify_db(db, DbVerifySpec{});
+  ASSERT_TRUE(defaulted.has_value()) << (defaulted ? "" : defaulted.error().to_string());
+  EXPECT_EQ(defaulted->disabled_symbols, (std::vector<std::string>{"BBB"}));
+
+  fs::remove_all(f.root);
+}
+
+// The round trip. Disable -> rebuild -> enable -> rebuild returns BBB to normal
+// fitting, and everything it held before the disable is still there afterwards.
+//
+// Build 3 WIDENS the date window rather than re-running the same one, because a
+// resume over an unchanged window is `dates_skipped_complete` and would prove
+// only that nothing happened. The new date is a cell BBB has never fitted, so
+// "BBB fits again" is observed, not inferred.
+TEST(SurfaceDbAdmin, DisableEnableRoundTripRefitsTheSymbolWithNoDataLost) {
+  const AdminFixture f = make_fixture("disable_enable_round_trip");
+  const std::vector<std::string> old_dates{f.fx.dates[0], f.fx.dates[1]};
+  const std::string new_date = f.fx.dates[2];
+
+  {
+    const auto first = build_surface_db(narrowed_spec(f, {"AAA", "BBB"}, 2));
+    ASSERT_TRUE(first.has_value()) << (first ? "" : first.error().to_string());
+    ASSERT_EQ(first->coverage.cells_ok, 4u);
+  }
+  std::vector<std::vector<std::byte>> bbb_before;
+  for (const std::string &d : old_dates) {
+    bbb_before.push_back(stored_record_bytes(f, d, "BBB"));
+    ASSERT_FALSE(bbb_before.back().empty()) << d;
+  }
+  const std::vector<std::string> just_bbb{"BBB"};
+  const std::uint64_t fp_before = open_db(f).config_fingerprint(just_bbb);
+  ASSERT_NE(fp_before, 0u);
+
+  { // disable
+    SurfaceDb db = open_db(f);
+    const auto ch = set_symbol_enabled(db, "BBB", false);
+    ASSERT_TRUE(ch.has_value()) << (ch ? "" : ch.error().to_string());
+    ASSERT_TRUE(ch->changed);
+  }
+  { // rebuild over the same window, with CCC as the unrelated rewrite trigger
+    const auto second = build_surface_db(narrowed_spec(f, {"AAA", "BBB", "CCC"}, 2));
+    ASSERT_TRUE(second.has_value()) << (second ? "" : second.error().to_string());
+    ASSERT_EQ(second->coverage.dates_written, 2u);
+    ASSERT_EQ(second->coverage.cells_carried_disabled, 2u);
+  }
+  { // enable
+    SurfaceDb db = open_db(f);
+    const auto ch = set_symbol_enabled(db, "BBB", true);
+    ASSERT_TRUE(ch.has_value()) << (ch ? "" : ch.error().to_string());
+    ASSERT_TRUE(ch->changed);
+    ASSERT_TRUE(ch->now_enabled);
+    // Re-enabling restores the config the operator disabled, not a fresh one.
+    EXPECT_EQ(db.config_fingerprint(just_bbb), fp_before)
+        << "the re-enabled config must be the one that was disabled, byte for byte";
+  }
+
+  // Build 3: the full window. The third date has never been written, so every
+  // symbol is a new cell there -- including BBB, whose re-fit is the observation
+  // this test exists for. `retry_disabled` is NOT set: an operator `enable` must
+  // stand on its own without the build flag.
+  const auto third = build_surface_db(narrowed_spec(f, {"AAA", "BBB", "CCC"}, 3));
+  ASSERT_TRUE(third.has_value()) << (third ? "" : third.error().to_string());
+  EXPECT_EQ(third->coverage.dates_written, 1u) << "only the new date should be written";
+  EXPECT_EQ(third->coverage.cells_ok, 3u) << "all three symbols must fit on the new date";
+  EXPECT_EQ(third->config.n_disabled_existing, 0u) << "nothing is disabled any more";
+  EXPECT_TRUE(third->config.failed_symbols.empty());
+
+  const auto bbb_stats =
+      std::find_if(third->coverage.per_symbol.begin(), third->coverage.per_symbol.end(),
+                   [](const PopulateSymbolStats &s) { return s.symbol == "BBB"; });
+  ASSERT_NE(bbb_stats, third->coverage.per_symbol.end());
+  EXPECT_EQ(bbb_stats->n_ok, 1u) << "BBB must be fitting normally again";
+  EXPECT_EQ(bbb_stats->n_disabled, 0u);
+
+  // NO DATA LOST across the whole round trip: the pre-disable bytes on the old
+  // dates are still exactly the pre-disable bytes, and BBB now also holds the new
+  // date's surface.
+  for (std::size_t i = 0; i < old_dates.size(); ++i) {
+    const std::vector<std::byte> after = stored_record_bytes(f, old_dates[i], "BBB");
+    ASSERT_EQ(bbb_before[i].size(), after.size()) << old_dates[i];
+    EXPECT_EQ(0, std::memcmp(bbb_before[i].data(), after.data(), after.size()))
+        << "a disable/enable round trip lost BBB's stored surface on " << old_dates[i];
+  }
+
+  const SurfaceDb db = open_db(f);
+  EXPECT_TRUE(db.load_surface(new_date, "BBB").has_value())
+      << "BBB must have produced a surface on the date it was enabled for";
+  const auto sym = describe_symbol(db, "BBB");
+  ASSERT_TRUE(sym.has_value()) << (sym ? "" : sym.error().to_string());
+  EXPECT_TRUE(sym->enabled);
+
+  // The default walk sees BBB again -- no dropped column, and every cell healthy.
+  const auto rep = verify_db(db, DbVerifySpec{});
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_TRUE(rep->disabled_symbols.empty());
+  EXPECT_TRUE(rep->ok());
+  EXPECT_EQ(rep->cells_checked, std::size_t{9}); // 3 symbols x 3 dates, nothing missing
+  fs::remove_all(f.root);
+}
+
 } // namespace
 } // namespace atx::vol

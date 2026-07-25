@@ -1111,14 +1111,58 @@ TEST(SurfaceDbCarryMaskedFitFailure, SilentWhenAnythingFitted) {
   EXPECT_FALSE(is_carry_masked_fit_failure(partial));
 }
 
-// The warning and the exit code are DISJOINT: the predicate above needs
-// `cells_carried == 0`, this one needs `> 0`. The CLI can never emit both, so a
-// dead build gets the verdict and never the hedge.
-TEST(SurfaceDbCarryMaskedFitFailure, NeverOverlapsTheExitCode) {
-  const SurfaceDbBuildReport dead = coverage_report(3u, 0u, 3u); // cells_carried == 0
-  EXPECT_TRUE(is_total_fit_failure(dead));
-  EXPECT_FALSE(is_carry_masked_fit_failure(dead))
-      << "a genuine total fit failure must get the exit code, not the warning";
+// The warning and the exit codes are DISJOINT: BOTH exit-3 predicates need
+// `cells_carried == 0`, this one needs `> 0`. The CLI can never emit a verdict
+// and the hedge for one run, so a dead build gets the verdict and never both.
+//
+// M-A. This used to assert the property at ONE point (a single dead report) and
+// against ONE of the two exit-3 predicates, while being named for the general
+// rule. That is a sample, not a proof: dropping the `cells_carried` conjunct from
+// `is_total_config_failure` left the old test green. Enumerate the whole
+// small-counter space instead — every (to_fit, ok, failed, carried) in {0,1,2}^4
+// crossed with both config dispositions — and assert the invariant the name
+// claims. 162 points, no fixture, microseconds.
+TEST(SurfaceDbCarryMaskedFitFailure, NeverOverlapsEitherExitCode) {
+  std::size_t warned = 0;
+  std::size_t fit_failed = 0;
+  std::size_t config_failed = 0;
+  for (std::uint32_t to_fit = 0; to_fit <= 2; ++to_fit) {
+    for (std::uint32_t ok = 0; ok <= 2; ++ok) {
+      for (std::uint32_t failed = 0; failed <= 2; ++failed) {
+        for (std::uint32_t carried = 0; carried <= 2; ++carried) {
+          // The two config dispositions that matter: a stage that enabled
+          // something (`n_configured = 1`), and one that enabled nothing and
+          // disabled three (the exit-3 config shape).
+          for (int disposition = 0; disposition < 2; ++disposition) {
+            const std::uint32_t configured = disposition == 0 ? 1u : 0u;
+            const std::uint32_t disabled_failed = disposition == 0 ? 0u : 3u;
+            SurfaceDbBuildReport r = coverage_report(to_fit, ok, failed);
+            r.coverage.cells_carried = carried;
+            r.config.n_symbols = configured + disabled_failed;
+            r.config.n_configured = configured;
+            r.config.n_disabled_failed = disabled_failed;
+
+            const bool warn = is_carry_masked_fit_failure(r);
+            const bool fit = is_total_fit_failure(r);
+            const bool conf = is_total_config_failure(r);
+            warned += warn ? 1u : 0u;
+            fit_failed += fit ? 1u : 0u;
+            config_failed += conf ? 1u : 0u;
+
+            EXPECT_FALSE(warn && (fit || conf))
+                << "warning and exit 3 both fire at to_fit=" << to_fit << " ok=" << ok
+                << " failed=" << failed << " carried=" << carried << " configured=" << configured
+                << " disabled_failed=" << disabled_failed;
+          }
+        }
+      }
+    }
+  }
+  // The sweep must actually reach all three verdicts, or "never overlaps" would
+  // hold vacuously over a space where nothing fires.
+  EXPECT_GT(warned, 0u);
+  EXPECT_GT(fit_failed, 0u);
+  EXPECT_GT(config_failed, 0u);
 }
 
 // COUNTER CHOICE, pinned. `cells_carried` is what grants the exit-3 exemption, so
