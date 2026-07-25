@@ -284,7 +284,16 @@ class Section:
         # both paths; the numeric column views stay zero-copy (they never route
         # through here).
         blob = bytes(self._buf[blob_base:blob_base + offsets[n]])
-        return [blob[offsets[i]:offsets[i + 1]].decode("utf-8") for i in range(n)]
+        try:
+            return [blob[offsets[i]:offsets[i + 1]].decode("utf-8")
+                    for i in range(n)]
+        except UnicodeDecodeError as exc:
+            # A forged/corrupt string table can hold non-utf8 bytes. Surface the
+            # documented ValueError the rest of the reader raises on hostile input
+            # rather than letting a raw UnicodeDecodeError escape.
+            raise ValueError(
+                f"RunArchive: string table is not valid UTF-8 ({exc})"
+            ) from exc
 
 
 # ── Archive ──────────────────────────────────────────────────────────────────
@@ -530,17 +539,30 @@ class RunArchive:
     # -- lifecycle ------------------------------------------------------------
 
     def close(self) -> None:
-        """Release the mapping and file handle (invalidates outstanding views)."""
-        if self._mm is not None:
-            try:
+        """Release the mapping and the file handle.
+
+        Closing the mapping invalidates outstanding zero-copy views. If numpy
+        views are still exported over the mmap, ``mmap.close()`` raises
+        ``BufferError`` and the mapping is *retained* for them — ``_mm`` stays
+        set so a later ``close()`` (after the views are dropped) releases it. The
+        OS file handle, however, is released unconditionally in a ``finally``:
+        the mapping stays valid independently of the descriptor (on both POSIX
+        and Windows), so the handle is never leaked, even on the BufferError
+        path. ``close()`` is idempotent.
+        """
+        try:
+            if self._mm is not None:
                 self._mm.close()
-            except BufferError:
-                # numpy views still exported; leave the mapping open for them.
-                return
-            self._mm = None
-        if self._fh is not None:
-            self._fh.close()
-            self._fh = None
+                self._mm = None
+        except BufferError:
+            # numpy views still export the mapping; keep it mapped for them and
+            # let a later close() release it once they are gone. Fall through to
+            # release the file handle regardless — do not leak it.
+            pass
+        finally:
+            if self._fh is not None:
+                self._fh.close()
+                self._fh = None
 
     def __enter__(self) -> "RunArchive":
         return self

@@ -71,7 +71,7 @@
 - `diagnostics` ← `subcommand, phase, wall_ms, count`.
 - `meta` ← ScalarKV (resolved spec echo, window, roll-level scalars, input hashes, counts).
 
-- [ ] **Step 1: Write the failing test** — schema hash is deterministic + backtest schema is exactly 27 columns with `nav` at column index 16.
+- [x] **Step 1: Write the failing test** — schema hash is deterministic + backtest schema is exactly 27 columns with `nav` at column index 16.
 
 ```cpp
 // in atx-vol/tests/run_archive_test.cpp
@@ -96,13 +96,13 @@ static void test_schema_registry() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails** — Run (from a configured Release build dir): `cmake --build C:\atx\build-rel --target atx-vol-tests` → expected FAIL: `run_archive_schema.hpp` not found.
+- [x] **Step 2: Run test to verify it fails** — Run (from a configured Release build dir): `cmake --build C:\atx\build-rel --target atx-vol-tests` → expected FAIL: `run_archive_schema.hpp` not found.
 
-- [ ] **Step 3: Implement `run_archive_schema.hpp`** — the enums, `RaColumn`/`RaSection`, `static constexpr RaColumn kBacktestCols[] = {...}` in the pinned order, the other section arrays enumerated from their writers, `ra_sections()` returning a `constexpr` array, and `ra_schema_hash()` as a `constexpr` FNV-1a-style fold over `(name,kind)` per section and `(name,dtype,unit)` per column plus `kRaSchemaSalt`. No I/O, no allocation — pure `constexpr`.
+- [x] **Step 3: Implement `run_archive_schema.hpp`** — the enums, `RaColumn`/`RaSection`, `static constexpr RaColumn kBacktestCols[] = {...}` in the pinned order, the other section arrays enumerated from their writers, `ra_sections()` returning a `constexpr` array, and `ra_schema_hash()` as a `constexpr` FNV-1a-style fold over `(name,kind)` per section and `(name,dtype,unit)` per column plus `kRaSchemaSalt`. No I/O, no allocation — pure `constexpr`.
 
-- [ ] **Step 4: Run test to verify it passes** — `cmake --build C:\atx\build-rel --target atx-vol-tests && C:\atx\build-rel\bin\atx-vol-tests.exe` → PASS.
+- [x] **Step 4: Run test to verify it passes** — `cmake --build C:\atx\build-rel --target atx-vol-tests && C:\atx\build-rel\bin\atx-vol-tests.exe` → PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add atx-vol/include/atx/vol/run_archive_schema.hpp atx-vol/tests/run_archive_test.cpp atx-vol/tests/CMakeLists.txt
@@ -122,7 +122,7 @@ git commit -F <(printf '%s\n' "feat(vol): RunArchive column registry + schema_ha
 
 Header fields (256 B): `char magic[8]` (`ATXRUN01`), `u64 file_size, created_ts_ns, schema_hash, writer_version_hash, run_identity_hash, section_dir_offset, data_offset`, `u32 section_count, header_crc32c` (own field zeroed), `u32 metadata_crc32c` (over section directory), `u32 flags`, `u16 major, minor, header_size, endian, pointer_bits, reserved_u16`, `u8 reserved[...]` pad to 256.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```cpp
 static void test_struct_abi() {
@@ -137,10 +137,10 @@ static void test_struct_abi() {
 }
 ```
 
-- [ ] **Step 2: Run to verify it fails** — build target; expected FAIL: `run_archive.hpp` missing / static_assert.
-- [ ] **Step 3: Implement the structs** in `run_archive.hpp` with exact fixed-width fields, `static_assert` on `sizeof` and each load-bearing `offsetof`, mirroring the ATXVSA2 field ordering. `RaSectionDescriptor` carries `{kind, char name[32], u64 section_offset, section_size, n_rows; u32 n_cols, col_desc_offset, payload_crc32c}` (payload_crc32c is a COPY of the section's own CRC so `metadata_crc32c` covers it — the F6 trick at `surface_archive.hpp:519-527`).
-- [ ] **Step 4: Run to verify it passes** — build; PASS.
-- [ ] **Step 5: Commit** (`git add atx-vol/include/atx/vol/run_archive.hpp atx-vol/tests/run_archive_test.cpp`).
+- [x] **Step 2: Run to verify it fails** — build target; expected FAIL: `run_archive.hpp` missing / static_assert.
+- [x] **Step 3: Implement the structs** in `run_archive.hpp` with exact fixed-width fields, `static_assert` on `sizeof` and each load-bearing `offsetof`, mirroring the ATXVSA2 field ordering. `RaSectionDescriptor` carries `{kind, char name[32], u64 section_offset, section_size, n_rows; u32 n_cols, col_desc_offset, payload_crc32c}` (payload_crc32c is a COPY of the section's own CRC so `metadata_crc32c` covers it — the F6 trick at `surface_archive.hpp:519-527`).
+- [x] **Step 4: Run to verify it passes** — build; PASS.
+- [x] **Step 5: Commit** (`git add atx-vol/include/atx/vol/run_archive.hpp atx-vol/tests/run_archive_test.cpp`).
 
 ---
 
@@ -158,7 +158,7 @@ static void test_struct_abi() {
 
 Layout: header → section directory (sorted by name) → 64-B-aligned sections; each section = `RaSectionHeader` + `RaColumnDescriptor[]` + 8-B-aligned typed column arrays; dict-str → u32 code column + string table at aux offset; u8-enum → u8 code column + label table. `header_crc32c` over header (own field zeroed); `metadata_crc32c` over the section directory; per-section `payload_crc32c` over the section with its own field zeroed, copied into the descriptor. Stamp `schema_hash = ra_schema_hash()`.
 
-- [ ] **Step 1: Write the failing test** — write a 2-row `backtest` section + a `meta` scalar section, assert bytes nonempty, magic present, `header_crc32c` verifies.
+- [x] **Step 1: Write the failing test** — write a 2-row `backtest` section + a `meta` scalar section, assert bytes nonempty, magic present, `header_crc32c` verifies.
 
 ```cpp
 static void test_writer_roundtrip_bytes() {
@@ -175,10 +175,10 @@ static void test_writer_roundtrip_bytes() {
 }
 ```
 
-- [ ] **Step 2: Run to verify it fails** — build; FAIL: `write_run_archive` undefined.
-- [ ] **Step 3: Implement** the two-pass writer (size then fill) in `src/run_archive.cpp`, mirroring `write_surface_archive_v2` in `src/surface_archive.cpp`. Register `src/run_archive.cpp` in `atx-vol/CMakeLists.txt`.
-- [ ] **Step 4: Run to verify it passes** — build + run; PASS.
-- [ ] **Step 5: Commit.**
+- [x] **Step 2: Run to verify it fails** — build; FAIL: `write_run_archive` undefined.
+- [x] **Step 3: Implement** the two-pass writer (size then fill) in `src/run_archive.cpp`, mirroring `write_surface_archive_v2` in `src/surface_archive.cpp`. Register `src/run_archive.cpp` in `atx-vol/CMakeLists.txt`.
+- [x] **Step 4: Run to verify it passes** — build + run; PASS.
+- [x] **Step 5: Commit.**
 
 ---
 
@@ -192,7 +192,7 @@ static void test_writer_roundtrip_bytes() {
 
 `open` validates: magic, major/minor, endian==1, pointer_bits==64, `schema_hash == ra_schema_hash()`, header CRC, metadata CRC, directory bounds. Per-section CRC is NOT checked on open.
 
-- [ ] **Step 1: Write the failing tests** — round-trip equality, schema-hash drift rejection, CRC tamper rejection.
+- [x] **Step 1: Write the failing tests** — round-trip equality, schema-hash drift rejection, CRC tamper rejection.
 
 ```cpp
 static void test_reader_roundtrip() {
@@ -223,10 +223,10 @@ static void test_reader_rejects_crc_tamper() {
 }
 ```
 
-- [ ] **Step 2: Run to verify they fail** — build; FAIL.
-- [ ] **Step 3: Implement** `RunArchive::open_impl` (mirror `SurfaceArchiveV2::open_impl`), `section`, the typed views, and `open_mapped` through the existing mmap seam.
-- [ ] **Step 4: Run to verify they pass** — build + run; PASS.
-- [ ] **Step 5: Commit.**
+- [x] **Step 2: Run to verify they fail** — build; FAIL.
+- [x] **Step 3: Implement** `RunArchive::open_impl` (mirror `SurfaceArchiveV2::open_impl`), `section`, the typed views, and `open_mapped` through the existing mmap seam.
+- [x] **Step 4: Run to verify they pass** — build + run; PASS.
+- [x] **Step 5: Commit.**
 
 ---
 
@@ -241,7 +241,7 @@ static void test_reader_rejects_crc_tamper() {
 - `RaSectionData encode_contract_marks_section(const ListedDispersionReconciliation&);`
 - `RaSectionData encode_meta_section(const RunSpec&, /* roll scalars, input hashes, counts */);`
 
-- [ ] **Step 1: Write the failing test** — encode a small `BacktestResult`, write→open, assert every one of the 25 double columns round-trips bit-exactly and matches the source vectors; a signal column appears.
+- [x] **Step 1: Write the failing test** — encode a small `BacktestResult`, write→open, assert every one of the 25 double columns round-trips bit-exactly and matches the source vectors; a signal column appears.
 
 ```cpp
 static void test_encode_backtest_valueexact() {
@@ -259,10 +259,10 @@ static void test_encode_backtest_valueexact() {
 }
 ```
 
-- [ ] **Step 2: Run to verify it fails** — build; FAIL.
-- [ ] **Step 3: Implement** the encoders. Read each source writer to pin the exact columns/types before encoding (registry Task 1 is authoritative).
-- [ ] **Step 4: Run to verify it passes** — build + run; PASS.
-- [ ] **Step 5: Commit.**
+- [x] **Step 2: Run to verify it fails** — build; FAIL.
+- [x] **Step 3: Implement** the encoders. Read each source writer to pin the exact columns/types before encoding (registry Task 1 is authoritative).
+- [x] **Step 4: Run to verify it passes** — build + run; PASS.
+- [x] **Step 5: Commit.**
 
 ---
 
@@ -272,11 +272,11 @@ static void test_encode_backtest_valueexact() {
 
 **Interfaces (Produces):** `class PhaseTimer` (verbatim from `spy_dispersion_backtest.cpp:105-146` — steady_clock, named phases, `now()`, `add(phase, start, count)`), and `RaSectionData encode_diagnostics_section(const PhaseTimer&, std::string_view subcommand, std::uint64_t total_count);`.
 
-- [ ] **Step 1: Write the failing test** — a `PhaseTimer` with two phases produces a `diagnostics` section whose `phase` dict column contains both names and `total` row.
-- [ ] **Step 2: Run to verify it fails.**
-- [ ] **Step 3: Implement** — lift `PhaseTimer` unchanged; add the section encoder.
-- [ ] **Step 4: Run to verify it passes.**
-- [ ] **Step 5: Commit.**
+- [x] **Step 1: Write the failing test** — a `PhaseTimer` with two phases produces a `diagnostics` section whose `phase` dict column contains both names and `total` row.
+- [x] **Step 2: Run to verify it fails.**
+- [x] **Step 3: Implement** — lift `PhaseTimer` unchanged; add the section encoder.
+- [x] **Step 4: Run to verify it passes.**
+- [x] **Step 5: Commit.**
 
 ---
 
@@ -286,11 +286,11 @@ static void test_encode_backtest_valueexact() {
 
 **Interfaces (Produces):** `class RunDir` owning a run-directory path; `Result<RunSpec> spec()`, `Result<Clock> clock()`, `Result<ListedDispersionSchedule> schedule()` — reads the inputs that stay text + the archive sections that don't; `Status write_run_archive(std::span<const RaSectionData>)` (writes `<dir>/run.atxrun` atomically, computing `run_identity_hash` from run_spec bytes + input fingerprints); `Result<RunArchive> archive()` (open_mapped); `Status verify(const /*methodology*/ ...)` — envelope/existence/count/core-mode gates (ex `spy_dispersion_backtest.cpp:552-587`, now over archive sections + the retained text inputs).
 
-- [ ] **Step 1: Write the failing test** — build a temp run dir with a written `run.atxrun`, `RunDir::verify()` passes; corrupt a section CRC → `verify()` fails.
-- [ ] **Step 2: Run to verify it fails.**
-- [ ] **Step 3: Implement** `RunDir`.
-- [ ] **Step 4: Run to verify it passes.**
-- [ ] **Step 5: Commit.**
+- [x] **Step 1: Write the failing test** — build a temp run dir with a written `run.atxrun`, `RunDir::verify()` passes; corrupt a section CRC → `verify()` fails.
+- [x] **Step 2: Run to verify it fails.**
+- [x] **Step 3: Implement** `RunDir`.
+- [x] **Step 4: Run to verify it passes.**
+- [x] **Step 5: Commit.**
 
 ---
 
@@ -303,7 +303,7 @@ static void test_encode_backtest_valueexact() {
 - `read_backtest_section(archive, name="backtest") -> tuple[BacktestResult-like, dict, dict]` — the drop-in shim replacing `io.read_backtest_tsv`, returning `(result, meta, extra)` with the same shape `parity.py` consumes today.
 - `_schema.py` is generated from the C++ `ra_sections()` (single source) so the two `schema_hash`es agree by construction.
 
-- [ ] **Step 1: Write the failing test** (pytest) — a C++-written `run.atxrun` fixture opens, `section("backtest").f64("nav")` equals known values, and a byte-patched `schema_hash` raises at `open`.
+- [x] **Step 1: Write the failing test** (pytest) — a C++-written `run.atxrun` fixture opens, `section("backtest").f64("nav")` equals known values, and a byte-patched `schema_hash` raises at `open`.
 
 ```python
 def test_open_and_read(tmp_path):
@@ -320,10 +320,10 @@ def test_schema_drift_raises(tmp_path):
         RunArchive.open(str(q))
 ```
 
-- [ ] **Step 2: Run to verify it fails** — `pytest atx-vol/python/tests/test_runarchive.py -v` → FAIL (module missing).
-- [ ] **Step 3: Implement** `runarchive.py`, the codegen for `_schema.py`, and the header `struct` format string matching Task 2's layout exactly.
-- [ ] **Step 4: Run to verify it passes** — pytest → PASS.
-- [ ] **Step 5: Commit.**
+- [x] **Step 2: Run to verify it fails** — `pytest atx-vol/python/tests/test_runarchive.py -v` → FAIL (module missing).
+- [x] **Step 3: Implement** `runarchive.py`, the codegen for `_schema.py`, and the header `struct` format string matching Task 2's layout exactly.
+- [x] **Step 4: Run to verify it passes** — pytest → PASS.
+- [x] **Step 5: Commit.**
 
 ---
 
@@ -340,11 +340,11 @@ Replace, per subcommand, the loose-TSV result writes with `RunDir::write_run_arc
 - `build-schedule`: `trade_schedule` section.
 Delete the lifted `PhaseTimer`/`write_diagnostics` from the example (now in `run_diagnostics`). Add a `runarchive dump <run_dir> <section> [--tsv]` subcommand that reads a section and prints the legacy TSV shape (the escape hatch). Port `io.py`/`parity.py` to `runarchive.read_backtest_section` + `archive.section(...)`; **delete the phantom `step_pnl_total`** from `io._SERIES`.
 
-- [ ] **Step 1: Write the failing test** — on the 3-session fixture copy (recipe from the prior sprint's `task-9-report.md`; NEVER modify `scratchpad\paired`), `run-backtest` then `parity.py` render reads from `run.atxrun` and reproduces the known final NAV / daily-pnl correlation. (Author as a pytest end-to-end guarded to the fixture.)
-- [ ] **Step 2: Run to verify it fails** — build example + run subcommand → FAIL (still writing/reading TSV).
-- [ ] **Step 3: Implement** the cutover.
-- [ ] **Step 4: Run to verify it passes** — rebuild example (`scratchpad\build_example.bat`), run the fixture pipeline, run pytest → PASS; economics unchanged (final NAV, corr, zero mark divergence).
-- [ ] **Step 5: Commit.**
+- [x] **Step 1: Write the failing test** — on the 3-session fixture copy (recipe from the prior sprint's `task-9-report.md`; NEVER modify `scratchpad\paired`), `run-backtest` then `parity.py` render reads from `run.atxrun` and reproduces the known final NAV / daily-pnl correlation. (Author as a pytest end-to-end guarded to the fixture.)
+- [x] **Step 2: Run to verify it fails** — build example + run subcommand → FAIL (still writing/reading TSV).
+- [x] **Step 3: Implement** the cutover.
+- [x] **Step 4: Run to verify it passes** — rebuild example (`scratchpad\build_example.bat`), run the fixture pipeline, run pytest → PASS; economics unchanged (final NAV, corr, zero mark divergence).
+- [x] **Step 5: Commit.**
 
 ---
 
@@ -352,10 +352,10 @@ Delete the lifted `PhaseTimer`/`write_diagnostics` from the example (now in `run
 
 **Files:** Modify `docs/superpowers/plans/2026-07-21-...-wave-a-runarchive.md` (check boxes); update the sprint progress ledger.
 
-- [ ] **Step 1:** Full Release build of `atx-vol` targets + `atx-vol-tests`; run `atx-vol-tests.exe` (all green) and the Python suite (`pytest atx-vol/python`, all green incl. new tests).
-- [ ] **Step 2:** Controller runs the parity-full (135-session) pipeline end-to-end on the idle box; confirm economics unchanged reading from RunArchive (final NAV listed 125,026.06 vs projected-cold 123,243.12; daily-pnl corr 0.9972; zero mark divergences), and that `run.atxrun` opens + `validate_all()` passes + Python reader renders the report.
-- [ ] **Step 3:** Confirm the loose result TSVs are gone from the run dir (only inputs + `run.atxrun` + compliance text remain); `runarchive dump` regenerates a section on demand.
-- [ ] **Step 4: Commit** the ledger + checked plan.
+- [x] **Step 1:** Full Release build of `atx-vol` targets + `atx-vol-tests`; run `atx-vol-tests.exe` (all green) and the Python suite (`pytest atx-vol/python`, all green incl. new tests).
+- [x] **Step 2:** Controller runs the parity-full (135-session) pipeline end-to-end on the idle box; confirm economics unchanged reading from RunArchive (final NAV listed 125,026.06 vs projected-cold 123,243.12; daily-pnl corr 0.9972; zero mark divergences), and that `run.atxrun` opens + `validate_all()` passes + Python reader renders the report.
+- [x] **Step 3:** Confirm the loose result TSVs are gone from the run dir (only inputs + `run.atxrun` + compliance text remain); `runarchive dump` regenerates a section on demand.
+- [x] **Step 4: Commit** the ledger + checked plan.
 
 ---
 

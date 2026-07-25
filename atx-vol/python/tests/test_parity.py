@@ -277,6 +277,96 @@ def test_diagnostics_returns_unchanged_parity_stats(tmp_path):
     assert base == withd
 
 
+# ── Archive projected-track label derivation (FIX-NOW #3) ────────────────────
+#
+# build_parity_report_from_archive resolves the projected section dynamically
+# (explicit projected_section, else first of projected_cold / projected_nodiv,
+# else the listed track as a self-parity). The default label must follow the
+# section that was actually resolved — a projected_nodiv archive must never be
+# labelled "cold" — while an explicitly passed projected_label still wins. These
+# tests monkeypatch the archive + section readers so no real mmap is needed and
+# capture the projected_label handed to the render tail.
+
+
+class _FakeArchive:
+    """Membership + close stand-in for RunArchive.
+
+    Only ``name in archive`` (section resolution) and ``close`` are exercised by
+    build_parity_report_from_archive once the row readers are stubbed out.
+    """
+
+    def __init__(self, sections):
+        self._sections = set(sections)
+
+    def __contains__(self, name):
+        return name in self._sections
+
+    def close(self):
+        pass
+
+
+def _patch_archive(monkeypatch, sections):
+    """Stub RunArchive.open + the section readers; capture the render label.
+
+    Returns a dict that build_parity_report_from_archive's render tail fills with
+    the ``projected_label`` it was handed, so a test can assert on it directly.
+    """
+    captured: dict[str, str] = {}
+    archive = _FakeArchive(sections)
+    monkeypatch.setattr(parity.RunArchive, "open",
+                        classmethod(lambda cls, path: archive))
+    monkeypatch.setattr(parity, "_backtest_rows", lambda a, section: [])
+    monkeypatch.setattr(parity, "_schedule_rows",
+                        lambda a, section="trade_schedule": [])
+    monkeypatch.setattr(parity, "_divergence_rows",
+                        lambda a, section="mark_divergence": [])
+
+    def _fake_render(listed_rows, projected_rows, divergence_rows, schedule_rows,
+                     out_html, projected_label, *rest):
+        captured["label"] = projected_label
+        return ParityStats(float("nan"), 0.0, 0.0, 0)
+
+    monkeypatch.setattr(parity, "_render_parity", _fake_render)
+    return captured
+
+
+def test_archive_label_defaults_to_no_divergence_for_nodiv_section(monkeypatch):
+    # A projected_nodiv run must not render as cold.
+    captured = _patch_archive(monkeypatch, {"projected_nodiv"})
+    parity.build_parity_report_from_archive("run.atxrun", "out.html")
+    assert captured["label"] == "projected (no-divergence)"
+
+
+def test_archive_label_defaults_to_cold_for_cold_section(monkeypatch):
+    # Regression guard: the canonical cold section keeps its historical label.
+    captured = _patch_archive(monkeypatch, {"projected_cold"})
+    parity.build_parity_report_from_archive("run.atxrun", "out.html")
+    assert captured["label"] == "projected (cold)"
+
+
+def test_archive_label_prefers_cold_when_both_sections_present(monkeypatch):
+    # Resolution order is (projected_cold, projected_nodiv); cold wins, and the
+    # label follows the section actually chosen.
+    captured = _patch_archive(monkeypatch, {"projected_cold", "projected_nodiv"})
+    parity.build_parity_report_from_archive("run.atxrun", "out.html")
+    assert captured["label"] == "projected (cold)"
+
+
+def test_archive_label_defaults_to_self_when_no_projected_section(monkeypatch):
+    # A listed-only run stands in as a self-parity; the label says so.
+    captured = _patch_archive(monkeypatch, set())
+    parity.build_parity_report_from_archive("run.atxrun", "out.html")
+    assert captured["label"] == "listed (self)"
+
+
+def test_archive_explicit_projected_label_overrides_derivation(monkeypatch):
+    # An explicit label wins over the section-derived default.
+    captured = _patch_archive(monkeypatch, {"projected_nodiv"})
+    parity.build_parity_report_from_archive(
+        "run.atxrun", "out.html", projected_label="projected (custom)")
+    assert captured["label"] == "projected (custom)"
+
+
 # ── Amendment 7: no binding import ──────────────────────────────────────────
 
 def test_parity_module_carries_no_binding_import():

@@ -33,14 +33,29 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
+
+// Durable atomic publish (T7 / Minor #16): fsync the temp file to stable storage
+// BEFORE the rename so a crash after the rename can never expose a correctly-
+// named but unflushed run.atxrun. _commit / fsync operate on the stream's
+// underlying file descriptor. Mirrors commit 86f2210's fsync-before-rename
+// pattern for the surface archives (kept self-contained here — the shared
+// detail::flush_and_publish_file primitive lives on a separate branch and this
+// task's scope is the run-archive files only).
+#if defined(_WIN32)
+#include <io.h>     // _commit, _fileno
+#else
+#include <unistd.h> // fsync, fileno
+#endif
 
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"               // hash_bytes / hash_combine (RunDir identity)
 #include "atx/tsdb/mapping.hpp"            // tsdb::Mapping (read-only mmap seam)
 #include "atx/vol/backtest.hpp"            // BacktestResult, Clock (Task 5 encoders / RunDir)
+#include "atx/vol/backtest_series_columns.hpp" // backtest_series_columns() (T6 single source)
 #include "atx/vol/corpus.hpp"              // CorpusManifest, read_manifest_file (RunDir::clock)
 #include "atx/vol/detail/archive_util.hpp" // crc32c, crc32c_update, align_up
 #include "atx/vol/dispersion_workflow.hpp" // RunSpec, read_run_spec (Task 5 meta / RunDir::spec)
@@ -429,6 +444,39 @@ Result<std::vector<std::byte>> write_run_archive(std::span<const RaSectionData> 
   return Ok(std::move(buffer));
 }
 
+namespace {
+
+// Open `p` for binary writing. On Windows use _wfopen so Unicode run-dir paths
+// round-trip (std::fopen takes a narrow path); std::fopen elsewhere.
+[[nodiscard]] std::FILE *ra_fopen_write_binary(const std::filesystem::path &p) noexcept {
+#if defined(_WIN32)
+  std::FILE *fp = nullptr;
+  if (::_wfopen_s(&fp, p.wstring().c_str(), L"wb") != 0) {
+    return nullptr;
+  }
+  return fp;
+#else
+  return std::fopen(p.string().c_str(), "wb");
+#endif
+}
+
+// fsync an open stream's data to STABLE STORAGE. fflush only pushes the CRT
+// buffer into the OS page cache; _commit / fsync force it out to the device so
+// the temp is durable BEFORE it is renamed over the live file (durability, not
+// just availability). Mirrors commit 86f2210's fsync-before-rename.
+[[nodiscard]] bool ra_fsync_stream(std::FILE *fp) noexcept {
+  if (std::fflush(fp) != 0) {
+    return false;
+  }
+#if defined(_WIN32)
+  return ::_commit(::_fileno(fp)) == 0;
+#else
+  return ::fsync(::fileno(fp)) == 0;
+#endif
+}
+
+} // namespace
+
 Status write_run_archive_file(std::string_view path, std::span<const RaSectionData> sections,
                               std::int64_t created_ts_ns, std::uint64_t run_identity_hash) {
   auto built = write_run_archive(sections, created_ts_ns, run_identity_hash);
@@ -439,33 +487,53 @@ Status write_run_archive_file(std::string_view path, std::span<const RaSectionDa
   const std::filesystem::path dst{std::string(path)};
   std::filesystem::path tmp = dst;
   tmp += ".tmp";
+
+  // 1. Write the whole buffer to <path>.tmp and fsync it to stable storage
+  //    BEFORE the rename. Without the fsync a machine crash after the rename but
+  //    before the OS flushed the temp could leave a correctly-named run.atxrun
+  //    with empty/garbage content while the rename had already destroyed the
+  //    prior good version (durability, not just availability). The previous
+  //    writer only flushed the ofstream (OS buffers). Mirrors commit 86f2210.
   {
-    std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
-    if (!os) {
+    std::FILE *fp = ra_fopen_write_binary(tmp);
+    if (fp == nullptr) {
       return Err(ErrorCode::IoError, "write_run_archive_file: cannot open temp file");
     }
-    os.write(reinterpret_cast<const char *>(buffer.data()),
-             static_cast<std::streamsize>(buffer.size()));
-    os.flush();
-    if (!os) {
+    const bool wrote =
+        buffer.empty() || std::fwrite(buffer.data(), 1, buffer.size(), fp) == buffer.size();
+    const bool synced = wrote && ra_fsync_stream(fp);
+    const bool closed = std::fclose(fp) == 0; // always close, even on prior failure
+    if (!wrote || !synced || !closed) {
       std::error_code ec;
       std::filesystem::remove(tmp, ec);
       return Err(ErrorCode::IoError, "write_run_archive_file: write failed");
     }
   }
-  // Atomic publish: remove any existing destination first (Windows rename does
-  // not replace) then rename — mirrors the pending→rename pattern in
-  // listed_dispersion_reconciliation.cpp.
+
+  // 2. Atomic publish: rename the fsync'd temp over `path` with bounded retry +
+  //    exponential backoff. std::filesystem::rename lowers to
+  //    MoveFileEx(REPLACE_EXISTING) on Windows — it replaces an existing regular
+  //    file but FAILS while a reader holds the destination open without
+  //    FILE_SHARE_DELETE (MSVC ifstream / open_mapped); a brief hold is ridden
+  //    out by the backoff (~635 ms across 8 attempts). On FINAL failure the temp
+  //    is PRESERVED (not deleted) so the freshly written bytes are recoverable
+  //    and the prior good destination stays intact. Mirrors commit 86f2210.
+  constexpr int kMaxAttempts = 8;
+  std::chrono::milliseconds delay{5};
   std::error_code ec;
-  std::filesystem::remove(dst, ec);
-  ec.clear();
-  std::filesystem::rename(tmp, dst, ec);
-  if (ec) {
-    std::error_code ec2;
-    std::filesystem::remove(tmp, ec2);
-    return Err(ErrorCode::IoError, "write_run_archive_file: cannot publish file");
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    ec.clear();
+    std::filesystem::rename(tmp, dst, ec);
+    if (!ec) {
+      return Ok();
+    }
+    if (attempt + 1 < kMaxAttempts) {
+      std::this_thread::sleep_for(delay);
+      delay *= 2;
+    }
   }
-  return Ok();
+  return Err(ErrorCode::IoError,
+             "write_run_archive_file: cannot publish file (rename failed after retries)");
 }
 
 // ── Section encoders (Task 5): library type → staged RaSectionData ───────────
@@ -566,6 +634,28 @@ std::string format_meta_double(double v) {
   return std::string(buf, static_cast<std::size_t>(len > 0 ? len : 0));
 }
 
+// FREEZE GUARD (T6): the shared backtest_series_columns() table MUST stay in
+// lockstep with the FROZEN RunArchive registry kBacktestCols[2..26] — the
+// registry fold feeds ra_schema_hash() (0xdcce47781ac8390d). This compile-time
+// check makes any name/order/dtype drift a build error, so the single-source
+// dedup can never silently change the on-disk schema.
+[[nodiscard]] constexpr bool backtest_series_matches_registry() noexcept {
+  const std::span<const BacktestSeriesColumn> cols = backtest_series_columns();
+  constexpr std::span<const RaColumn> reg = kBacktestCols;
+  if (cols.size() + 2 != reg.size()) {
+    return false;
+  }
+  for (std::size_t i = 0; i < cols.size(); ++i) {
+    if (cols[i].name != reg[i + 2].name || reg[i + 2].dtype != RaDType::F64) {
+      return false;
+    }
+  }
+  return true;
+}
+static_assert(backtest_series_matches_registry(),
+              "backtest_series_columns() drifted from the frozen kBacktestCols registry "
+              "(name/order/dtype) — a schema-hash break");
+
 } // namespace
 
 RaSectionData encode_backtest_section(std::string name, const BacktestResult &r) {
@@ -584,38 +674,12 @@ RaSectionData encode_backtest_section(std::string name, const BacktestResult &r)
   sec.columns.emplace_back("date", dates.finish(*arena));
   sec.columns.emplace_back("ts_ns", RaColumnData::of_i64(r.ts_ns));
 
-  // EXACTLY the append_backtest_series_tsv member order (tearsheet.cpp), which
-  // is the kBacktestCols registry order — value-equality with the TSV is spans
-  // over the very vectors that writer serializes.
-  const std::pair<const char *, const std::vector<double> *> dbl_cols[] = {
-      {"pnl_total", &r.pnl_total},
-      {"pnl_delta", &r.pnl_delta},
-      {"pnl_gamma", &r.pnl_gamma},
-      {"pnl_vega", &r.pnl_vega},
-      {"pnl_vanna", &r.pnl_vanna},
-      {"pnl_volga", &r.pnl_volga},
-      {"pnl_theta", &r.pnl_theta},
-      {"pnl_rho", &r.pnl_rho},
-      {"pnl_charm", &r.pnl_charm},
-      {"pnl_unexplained", &r.pnl_unexplained},
-      {"pnl_settlement", &r.pnl_settlement},
-      {"pnl_shares", &r.pnl_shares},
-      {"financing", &r.financing},
-      {"cost", &r.cost},
-      {"nav", &r.nav},
-      {"cash", &r.cash},
-      {"gross_delta", &r.gross_delta},
-      {"gross_gamma", &r.gross_gamma},
-      {"gross_vega", &r.gross_vega},
-      {"gross_theta", &r.gross_theta},
-      {"turnover_notional", &r.turnover_notional},
-      {"turnover_vega", &r.turnover_vega},
-      {"n_open_lots", &r.n_open_lots},
-      {"n_unpriced_lots", &r.n_unpriced_lots},
-      {"n_unpriced_greeks", &r.n_unpriced_greeks},
-  };
-  for (const auto &[cname, col] : dbl_cols) {
-    sec.columns.emplace_back(cname, RaColumnData::of_f64(*col));
+  // The 25 F64 columns come from the single source of truth shared with the TSV
+  // writer (backtest_series_columns.hpp) — pinned by the static_assert above to
+  // the frozen kBacktestCols registry order, so value-equality with the TSV is
+  // guaranteed and the emitted column set can never drift from the schema hash.
+  for (const auto &col : backtest_series_columns()) {
+    sec.columns.emplace_back(std::string(col.name), RaColumnData::of_f64(r.*col.member));
   }
   // Per-signal series are appended dynamically after the registry columns,
   // exactly like the TSV writer appends them after the fixed header.
@@ -1345,6 +1409,74 @@ Result<std::string> read_run_dir_file(const std::filesystem::path &path) {
   return Ok(std::move(text));
 }
 
+// Deep-copy one already-framed section from an opened archive into an owned,
+// re-writable RaSectionData (its column spans park in a fresh EncoderArena on
+// `storage`, so the returned section outlives the source archive). Columns are
+// reconstructed in stored order and dtype; dict/enum tables are copied entry by
+// entry, so re-encoding reproduces the same layout. Used by the merge-write path
+// to carry forward sections a later same-inputs write does not itself supply.
+RaSectionData carry_forward_section(const RaSectionView &view) {
+  auto arena = std::make_shared<EncoderArena>();
+  RaSectionData sec;
+  sec.name = std::string(view.name());
+  sec.kind = view.kind();
+  sec.n_rows = view.n_rows();
+  sec.columns.reserve(view.columns().size());
+  for (const RaColumnDescriptor &cd : view.columns()) {
+    const std::string_view cname(cd.name, cd.name_len);
+    std::string name(cname);
+    switch (cd.dtype) {
+    case RaDType::F64: {
+      const std::span<const double> s = view.f64_col(cname);
+      sec.columns.emplace_back(std::move(name),
+                               arena_f64(*arena, std::vector<double>(s.begin(), s.end())));
+      break;
+    }
+    case RaDType::I64: {
+      const std::span<const std::int64_t> s = view.i64_col(cname);
+      sec.columns.emplace_back(std::move(name),
+                               arena_i64(*arena, std::vector<std::int64_t>(s.begin(), s.end())));
+      break;
+    }
+    case RaDType::U32: {
+      const std::span<const std::uint32_t> s = view.u32_col(cname);
+      sec.columns.emplace_back(std::move(name),
+                               arena_u32(*arena, std::vector<std::uint32_t>(s.begin(), s.end())));
+      break;
+    }
+    case RaDType::U8Enum: {
+      const std::span<const std::uint8_t> codes = view.u8enum_col(cname);
+      const RaStringTable labels = view.u8enum_labels(cname);
+      std::vector<std::string> label_vec;
+      label_vec.reserve(labels.size());
+      for (std::size_t k = 0; k < labels.size(); ++k) {
+        label_vec.emplace_back(labels.at(k));
+      }
+      sec.columns.emplace_back(
+          std::move(name), arena_u8enum(*arena, std::vector<std::uint8_t>(codes.begin(), codes.end()),
+                                        std::move(label_vec)));
+      break;
+    }
+    case RaDType::DictStr: {
+      const RaDictColumn dc = view.dict_col(cname);
+      const std::span<const std::uint32_t> codes = dc.codes();
+      const RaStringTable table = dc.table();
+      std::vector<std::string> table_vec;
+      table_vec.reserve(table.size());
+      for (std::size_t k = 0; k < table.size(); ++k) {
+        table_vec.emplace_back(table.at(k));
+      }
+      sec.columns.emplace_back(
+          std::move(name), arena_dict(*arena, std::vector<std::uint32_t>(codes.begin(), codes.end()),
+                                      std::move(table_vec)));
+      break;
+    }
+    }
+  }
+  sec.storage = std::move(arena);
+  return sec;
+}
+
 } // namespace
 
 Result<RunSpec> RunDir::spec() const { return read_run_spec(dir_ / std::string(kRunSpecFile)); }
@@ -1383,10 +1515,78 @@ Result<std::uint64_t> RunDir::run_identity_hash() const {
 
 Status RunDir::write_run_archive(std::span<const RaSectionData> sections) const {
   ATX_TRY(const std::uint64_t identity, run_identity_hash());
-  // created_ts_ns == 0 -> the writer fills from the system clock. Identity, not
-  // the timestamp, is what pins the producing run.
-  return write_run_archive_file((dir_ / std::string(kRunArchiveFile)).string(), sections,
-                                /*created_ts_ns=*/0, identity);
+  const std::filesystem::path archive_path = dir_ / std::string(kRunArchiveFile);
+
+  // MERGE-WRITE with an identity-hash staleness guard. Two result-producing
+  // routes (run-backtest and run-projected-backtest) can target the same run dir
+  // and each supplies only its own sections; a plain full-overwrite would
+  // silently destroy the other route's sections. Instead, when an existing
+  // run.atxrun in this dir opens cleanly AND its header run_identity_hash equals
+  // the recomputed identity (i.e. the inputs are unchanged), carry forward every
+  // existing section whose name is NOT in the incoming write set, so the archive
+  // accumulates the UNION of both routes' results. On a name collision the NEW
+  // section wins (meta and diagnostics collide across routes — the freshest
+  // write is authoritative). If the inputs changed (identity differs) or the
+  // existing archive is unreadable/corrupt, we start FRESH from only the new
+  // sections: stale results must never mix with new inputs.
+  //
+  // open_file (not open_mapped) reads the existing archive into an owned buffer,
+  // so no OS file mapping is held across the tmp+rename replace below — on
+  // Windows a live mapping would make the rename fail.
+  std::vector<RaSectionData> carried; // owns the deep-copied carried sections
+  bool merge = false;
+  std::error_code ec;
+  if (std::filesystem::exists(archive_path, ec) && !ec) {
+    if (auto existing = RunArchive::open_file(archive_path.string());
+        existing && existing->header().run_identity_hash == identity) {
+      std::vector<std::string_view> incoming;
+      incoming.reserve(sections.size());
+      for (const RaSectionData &sd : sections) {
+        incoming.push_back(sd.name);
+      }
+      merge = true;
+      for (const RaSectionDescriptor &de : existing->directory()) {
+        const std::string_view carried_name = descriptor_name(de);
+        if (std::find(incoming.begin(), incoming.end(), carried_name) != incoming.end()) {
+          continue; // superseded by the incoming write (new-wins)
+        }
+        auto view = existing->section(carried_name);
+        if (!view) {
+          // A carried section fails per-section framing (payload tamper the
+          // header/metadata CRC did not cover) -> treat the archive as corrupt
+          // and start fresh rather than mix a bad section into the new write.
+          merge = false;
+          carried.clear();
+          break;
+        }
+        carried.push_back(carry_forward_section(*view));
+      }
+    }
+  }
+
+  // created_ts_ns is derived DETERMINISTICALLY from the run identity (a
+  // content-derived pseudo-timestamp), NOT the wall clock (Minor #7 / Controller
+  // decision #1). `identity` is forced nonzero, so the cast is nonzero and the
+  // low-level writer treats it as an explicit stamp — never the
+  // `created_ts_ns == 0 => system-clock` fallback. Two writes of the same run-dir
+  // inputs therefore produce a byte-identical run.atxrun (stable header_crc32c /
+  // ArchiveContentIdentity, and a stable future Wave-E cache key). This field is
+  // NOT wall-clock provenance for a run — that is the run-dir file mtimes; see
+  // run_archive.hpp (RunArchiveHeader::created_ts_ns, RunDir::write_run_archive).
+  const std::int64_t created_ts_ns = static_cast<std::int64_t>(identity);
+  if (!merge || carried.empty()) {
+    return write_run_archive_file(archive_path.string(), sections, created_ts_ns, identity);
+  }
+
+  std::vector<RaSectionData> merged;
+  merged.reserve(carried.size() + sections.size());
+  for (RaSectionData &c : carried) {
+    merged.push_back(std::move(c));
+  }
+  for (const RaSectionData &sd : sections) {
+    merged.push_back(sd); // copies spans + shared storage ptr; sources outlive the call
+  }
+  return write_run_archive_file(archive_path.string(), merged, created_ts_ns, identity);
 }
 
 Result<RunArchive> RunDir::archive() const {
@@ -1427,10 +1627,34 @@ Status RunDir::verify(const RunVerifyOptions &options) const {
   if (backtest.n_rows() == 0) {
     return Err(ErrorCode::InvalidArgument, "RunDir::verify: empty backtest section");
   }
-  if (auto reconciliation = archive.section("reconciliation");
-      reconciliation && reconciliation->n_rows() != backtest.n_rows()) {
-    return Err(ErrorCode::InvalidArgument,
-               "RunDir::verify: backtest/reconciliation row-count disagreement");
+  if (auto reconciliation = archive.section("reconciliation"); reconciliation) {
+    // M1: the reconciliation timeline is trimmed to the first roll date, so it is
+    // a contiguous SUFFIX of the backtest's per-session rows — not necessarily
+    // the whole of it. An equal-count gate here rejected exactly the warm-up
+    // lead-in corpus the trim exists to admit. Check suffix-ness for real: the
+    // reconciliation must be non-empty, no longer than the backtest, and its
+    // dates must match the backtest's tail row-for-row (the same contract
+    // validate_listed_reconciliation_backtest enforces at write time).
+    const std::uint64_t reconciliation_rows = reconciliation->n_rows();
+    if (reconciliation_rows == 0 || reconciliation_rows > backtest.n_rows()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "RunDir::verify: backtest/reconciliation row-count disagreement");
+    }
+    const RaDictColumn backtest_dates = backtest.dict_col("date");
+    const RaDictColumn reconciliation_dates = reconciliation->dict_col("date");
+    if (backtest_dates.size() != backtest.n_rows() ||
+        reconciliation_dates.size() != reconciliation_rows) {
+      return Err(ErrorCode::InvalidArgument,
+                 "RunDir::verify: backtest/reconciliation date column missing or short");
+    }
+    const std::uint64_t offset = backtest.n_rows() - reconciliation_rows;
+    for (std::uint64_t i = 0; i < reconciliation_rows; ++i) {
+      if (reconciliation_dates.at(static_cast<std::size_t>(i)) !=
+          backtest_dates.at(static_cast<std::size_t>(offset + i))) {
+        return Err(ErrorCode::InvalidArgument,
+                   "RunDir::verify: backtest/reconciliation date alignment disagreement");
+      }
+    }
   }
 
   // 5. Core-mode acceptance: the date / roll / breadth floors (lifted verbatim

@@ -216,6 +216,16 @@ def build_parity_report(
 _BACKTEST_ROW_COLS = ("pnl_total", "nav", "pnl_gamma", "pnl_vega", "pnl_theta",
                       "pnl_unexplained")
 
+# Default projected-track label, keyed on the archive section that was actually
+# resolved so a projected_nodiv run is never mislabelled "cold". An explicit
+# ``projected_label`` always overrides these; an unrecognised explicit section
+# falls back to naming itself, and a self-parity run (no projected section) is
+# labelled below as "listed (self)".
+_PROJECTED_SECTION_LABELS = {
+    "projected_cold": "projected (cold)",
+    "projected_nodiv": "projected (no-divergence)",
+}
+
 
 def _backtest_rows(archive: RunArchive, section: str) -> list[dict[str, str]]:
     sec = archive.section(section)
@@ -271,7 +281,7 @@ def build_parity_report_from_archive(
     projected_archive: str | None = None,
     listed_section: str = "backtest",
     projected_section: str | None = None,
-    projected_label: str = "projected (cold)",
+    projected_label: str | None = None,
 ) -> ParityStats:
     """Render the two-route comparison by reading ``run.atxrun`` result containers.
 
@@ -284,6 +294,13 @@ def build_parity_report_from_archive(
     in as a self-parity so the document still renders. The schedule and
     mark-divergence panels read the ``trade_schedule`` / ``mark_divergence``
     sections when present, else render empty.
+
+    ``projected_label`` names the projected route in every legend and caption. It
+    defaults to ``None``, meaning *derive it from the resolved section* —
+    ``projected (cold)`` for ``projected_cold``, ``projected (no-divergence)`` for
+    ``projected_nodiv``, and ``listed (self)`` for the self-parity fallback — so a
+    no-divergence archive is never rendered as cold. Passing an explicit string
+    overrides the derivation.
     """
     listed = RunArchive.open(listed_archive)
     same = projected_archive is None or projected_archive == listed_archive
@@ -297,6 +314,12 @@ def build_parity_report_from_archive(
         if psec is None:
             psec = next((s for s in ("projected_cold", "projected_nodiv") if s in projected), None)
         projected_rows = _backtest_rows(projected, psec) if psec is not None else listed_rows
+
+        if projected_label is None:
+            projected_label = (
+                "listed (self)" if psec is None
+                else _PROJECTED_SECTION_LABELS.get(psec, f"projected ({psec})")
+            )
 
         return _render_parity(
             listed_rows, projected_rows, divergence_rows, schedule_rows, out_html,

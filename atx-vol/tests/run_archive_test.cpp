@@ -13,6 +13,7 @@
 #include "atx/vol/run_archive_schema.hpp"
 
 #include "atx/vol/backtest.hpp"            // BacktestResult (Task 5 encoders)
+#include "atx/vol/backtest_series_columns.hpp" // backtest_series_columns() (T6 single source)
 #include "atx/vol/corpus.hpp"              // CorpusManifest (RunDir::clock via manifest)
 #include "atx/vol/detail/archive_util.hpp" // crc32c (independent CRC check)
 #include "atx/vol/dispersion_workflow.hpp" // RunSpec (Task 5 meta encoder)
@@ -20,6 +21,7 @@
 #include "atx/vol/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/surface_archive.hpp" // ArchiveContentIdentity (identity())
+#include "atx/vol/tearsheet.hpp"       // write_backtest_tsv (T6 TSV/encoder column parity)
 
 #include <gtest/gtest.h>
 
@@ -27,6 +29,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -718,6 +721,115 @@ TEST(RunArchiveEncoders, BacktestSectionRoundTripsValueExact) {
   EXPECT_EQ(dates.at(1), "2026-07-12");
 }
 
+// ── T6: 25-double backtest column single-source-of-truth ─────────────────────
+// backtest_series_columns() is the ONE ordered {name, member-ptr} table that
+// BOTH append_backtest_series_tsv (tearsheet.cpp) and encode_backtest_section
+// (run_archive.cpp) iterate. It must never drift from the FROZEN registry
+// kBacktestCols[2..26] (whose fold feeds ra_schema_hash() == 0xdcce…): this test
+// pins the shared table's names/order to the registry, and the encoder side
+// carries a compile-time static_assert of the same invariant.
+TEST(RunArchiveEncoders, BacktestSeriesColumnsMatchRegistryOrder) {
+  const auto cols = backtest_series_columns();
+  ASSERT_EQ(cols.size(), 25u) << "the backtest series has exactly 25 F64 columns";
+
+  const RaSection* bt = find_section("backtest");
+  ASSERT_NE(bt, nullptr);
+  ASSERT_EQ(bt->columns.size(), 27u); // date + ts_ns + 25 doubles
+
+  // Shared-table names == registry backtest columns index 2..26, in order.
+  for (std::size_t i = 0; i < cols.size(); ++i) {
+    EXPECT_EQ(cols[i].name, bt->columns[i + 2].name) << "column " << i;
+  }
+  EXPECT_EQ(cols.front().name, "pnl_total");
+  EXPECT_EQ(cols.back().name, "n_unpriced_greeks");
+}
+
+// The whole point of the dedup: the TSV writer and the archive encoder emit the
+// SAME 25 columns, in the SAME order, with byte-identical values — because both
+// now iterate the single source. Prove it column-for-column: encode + TSV-write
+// the same BacktestResult, then for every shared column assert the TSV cell, the
+// decoded archive value, and the source member vector are all bit-identical.
+TEST(RunArchiveEncoders, BacktestSeriesColumnsTsvEncoderParity) {
+  const BacktestResult r = make_encoder_fixture_result();
+
+  // Archive side.
+  const RaSectionData sec = encode_backtest_section("backtest", r);
+  auto bytes = write_run_archive(std::span(&sec, 1), 1, 1);
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+  auto ar = RunArchive::open(std::move(*bytes));
+  ASSERT_TRUE(ar.has_value()) << ar.error().to_string();
+  auto v = ar->section("backtest");
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+
+  // TSV side.
+  const std::filesystem::path tsv_path =
+      std::filesystem::temp_directory_path() / "atx_t6_backtest_series.tsv";
+  std::error_code ec;
+  std::filesystem::remove(tsv_path, ec);
+  const Status st = write_backtest_tsv(r, tsv_path.string());
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+
+  // Parse the TSV into a header + rows of tab-separated cells.
+  std::ifstream is(tsv_path, std::ios::binary);
+  ASSERT_TRUE(is.good());
+  const std::string content((std::istreambuf_iterator<char>(is)),
+                            std::istreambuf_iterator<char>());
+  std::vector<std::vector<std::string>> table;
+  for (std::size_t start = 0; start < content.size();) {
+    const std::size_t nl = content.find('\n', start);
+    if (nl == std::string::npos) break;
+    const std::string line = content.substr(start, nl - start);
+    std::vector<std::string> cells;
+    for (std::size_t cs = 0;;) {
+      const std::size_t tab = line.find('\t', cs);
+      if (tab == std::string::npos) {
+        cells.push_back(line.substr(cs));
+        break;
+      }
+      cells.push_back(line.substr(cs, tab - cs));
+      cs = tab + 1;
+    }
+    table.push_back(std::move(cells));
+    start = nl + 1;
+  }
+  ASSERT_EQ(table.size(), r.size() + 1); // header + one row per step
+  const std::vector<std::string>& header = table.front();
+
+  // Frozen leading header: date, ts_ns, then the 25 shared columns in order.
+  ASSERT_GE(header.size(), 27u);
+  EXPECT_EQ(header[0], "date");
+  EXPECT_EQ(header[1], "ts_ns");
+  const auto cols = backtest_series_columns();
+  for (std::size_t i = 0; i < cols.size(); ++i) {
+    EXPECT_EQ(header[i + 2], cols[i].name) << "header column " << (i + 2);
+  }
+
+  const auto col_index = [&](std::string_view name) -> std::size_t {
+    for (std::size_t i = 0; i < header.size(); ++i) {
+      if (header[i] == name) return i;
+    }
+    ADD_FAILURE() << "column not found in TSV: " << name;
+    return header.size();
+  };
+
+  // Column-for-column bit-parity: TSV cell == decoded archive == source member.
+  for (const auto& col : cols) {
+    const std::size_t ci = col_index(col.name);
+    ASSERT_LT(ci, header.size()) << col.name;
+    const auto archive = v->f64_col(col.name);
+    const std::vector<double>& src = r.*col.member;
+    ASSERT_EQ(archive.size(), r.size()) << col.name;
+    ASSERT_EQ(src.size(), r.size()) << col.name;
+    for (std::size_t row = 0; row < r.size(); ++row) {
+      const double from_tsv = std::strtod(table[row + 1][ci].c_str(), nullptr);
+      EXPECT_EQ(std::memcmp(&from_tsv, &src[row], sizeof(double)), 0)
+          << col.name << " TSV vs source, row " << row;
+      EXPECT_EQ(std::memcmp(&archive[row], &src[row], sizeof(double)), 0)
+          << col.name << " archive vs source, row " << row;
+    }
+  }
+}
+
 TEST(RunArchiveEncoders, ReconciliationSectionRoundTrips) {
   ListedDispersionReconciliation rec;
   ListedReconciliationRow a;
@@ -1003,7 +1115,7 @@ std::filesystem::path python_fixture_path() {
          tail;
 }
 
-TEST(RunArchiveEncoders, WritesPythonFixture) {
+TEST(RunArchiveEncoders, MatchesCommittedPythonFixture) {
   const BacktestResult r = make_encoder_fixture_result();
   std::vector<RaSectionData> sections;
   sections.push_back(encode_backtest_section("backtest", r));
@@ -1022,19 +1134,43 @@ TEST(RunArchiveEncoders, WritesPythonFixture) {
   meta.columns.emplace_back("value", RaColumnData::of_dict(kv_codes, value_table));
   sections.push_back(std::move(meta));
 
-  const std::filesystem::path path = python_fixture_path();
+  // Determinism / freeze guard. Write to a TEMP path with the SAME pinned
+  // created_ts_ns the committed fixture was written with, then assert the bytes
+  // are IDENTICAL to the committed golden. This test does NOT regenerate the
+  // committed fixture: an encoder or determinism regression must fail RED here,
+  // not silently rewrite the frozen anchor the Python reader pins against.
+  const std::filesystem::path temp_path =
+      std::filesystem::temp_directory_path() / "atx_wave_a_fixture_roundtrip.atxrun";
   std::error_code ec;
-  std::filesystem::create_directories(path.parent_path(), ec);
-  ASSERT_FALSE(ec) << ec.message();
+  std::filesystem::remove(temp_path, ec);
 
   // created_ts_ns MUST be nonzero: 0 falls back to the system clock, and the
-  // committed fixture bytes must be identical across reruns.
-  const auto st = write_run_archive_file(path.string(), sections,
+  // produced bytes must be identical to the committed fixture across reruns.
+  const auto st = write_run_archive_file(temp_path.string(), sections,
                                          /*created_ts_ns=*/123456789,
                                          /*run_identity_hash=*/0xABCDEFull);
   ASSERT_TRUE(st.has_value()) << st.error().to_string();
 
-  auto ar = RunArchive::open_file(path.string());
+  // Byte-identity vs the committed golden fixture (the file itself is frozen).
+  const std::filesystem::path committed = python_fixture_path();
+  ASSERT_TRUE(std::filesystem::exists(committed))
+      << "committed fixture missing: " << committed.string();
+  const auto slurp = [](const std::filesystem::path& p) {
+    std::ifstream in(p, std::ios::binary | std::ios::ate);
+    EXPECT_TRUE(in.good()) << "cannot open " << p.string();
+    const std::streamsize size = in.tellg();
+    std::vector<char> bytes(static_cast<std::size_t>(size < 0 ? 0 : size));
+    in.seekg(0);
+    in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    return bytes;
+  };
+  const std::vector<char> produced = slurp(temp_path);
+  const std::vector<char> golden = slurp(committed);
+  ASSERT_EQ(produced.size(), golden.size()) << "fixture byte-length drift vs committed golden";
+  EXPECT_TRUE(produced == golden) << "fixture byte drift vs committed golden";
+
+  // The produced archive still round-trips (framing + values).
+  auto ar = RunArchive::open_file(temp_path.string());
   ASSERT_TRUE(ar.has_value()) << ar.error().to_string();
   EXPECT_EQ(ar->header().created_ts_ns, 123456789u);
   EXPECT_EQ(ar->header().run_identity_hash, 0xABCDEFull);
@@ -1058,6 +1194,8 @@ TEST(RunArchiveEncoders, WritesPythonFixture) {
   EXPECT_EQ(mv->dict_col("key").at(2), "date_hi");
   EXPECT_EQ(mv->dict_col("value").at(2), "2026-07-12");
   EXPECT_TRUE(ar->validate_all().has_value());
+
+  std::filesystem::remove(temp_path, ec);
 }
 
 // ── Task 7: RunDir (typed run-directory handle + verify) ─────────────────────
@@ -1164,12 +1302,17 @@ CorpusManifest make_manifest(std::size_t n_dates) {
   return manifest;
 }
 
-// Two reconciliation rows + two contract marks (encode_* build the sections).
-ListedDispersionReconciliation make_reconciliation() {
+// `n_rows` reconciliation rows + `n_rows` contract marks (encode_* build the
+// sections). The default (2) reproduces the original fixture byte-for-byte
+// ("2026-07-11", "2026-07-12"); a caller can request a different count to drive
+// verify()'s backtest/reconciliation cardinality cross-check off its match.
+ListedDispersionReconciliation make_reconciliation(int n_rows = 2) {
   ListedDispersionReconciliation rec;
-  for (int i = 0; i < 2; ++i) {
+  for (int i = 0; i < n_rows; ++i) {
+    char date[16] = {};
+    std::snprintf(date, sizeof date, "2026-07-%02d", i + 11);
     ListedReconciliationRow row;
-    row.date = i == 0 ? "2026-07-11" : "2026-07-12";
+    row.date = date;
     row.valuation_ts_ns = 100 + i;
     row.held_cohort = 1;
     row.model_option_pnl = 1.0 + i;
@@ -1270,6 +1413,57 @@ std::filesystem::path fresh_run_dir(std::string_view name) {
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);
   return dir;
+}
+
+// Portable text inputs for the byte-determinism test: run_spec.tsv carries a
+// dir-INDEPENDENT universe path (relative, not `dir / ...`), so run_spec.tsv is
+// byte-identical across two different run-dir paths. run_identity_hash is a hash
+// of the run_spec + universe bytes, so identical bytes -> identical identity ->
+// (with the T7 deterministic created_ts_ns) byte-identical run.atxrun. Only the
+// two inputs run_identity_hash reads are written (manifest/schedule are not
+// needed for the write path).
+void write_run_dir_text_inputs_portable(const std::filesystem::path& dir) {
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  ASSERT_FALSE(ec) << ec.message();
+
+  RunSpec spec;
+  spec.label = "rundir-determinism";
+  spec.date_lo = "2026-07-10";
+  spec.date_hi = "2026-07-10";
+  spec.opra_root = "/data/opra";
+  spec.universe_path = std::filesystem::path(std::string(kUniverseScheduleFile)); // dir-independent
+  spec.min_names = 40;
+  spec.min_weight_coverage = 0.8;
+  spec.core_mode = false;
+  ASSERT_TRUE(write_resolved_spec(dir / std::string(kRunSpecFile), spec).has_value());
+
+  std::ofstream u(dir / std::string(kUniverseScheduleFile), std::ios::binary | std::ios::trunc);
+  u << "effective_date\tsymbol\traw_weight\tsource\tas_of\n"
+    << "2026-07-10\tSPY\t1.0\tauthored\t2026-07-10\n";
+  ASSERT_TRUE(u.good());
+}
+
+// Like write_run_dir_archive, but the reconciliation (and contract_marks)
+// section carries 3 rows while the backtest section carries 2 — so the archive
+// trips verify()'s count gate (backtest.n_rows() != reconciliation.n_rows()).
+void write_run_dir_archive_row_mismatch(const std::filesystem::path& dir) {
+  const BacktestResult r = make_encoder_fixture_result();             // 2 rows; outlives write
+  const ListedDispersionReconciliation rec = make_reconciliation(3);  // 3 rows (!= 2)
+  RunSpec spec;
+  spec.label = "rundir-test";
+  spec.date_lo = "2026-07-10";
+  spec.date_hi = "2026-07-10";
+
+  std::vector<RaSectionData> sections;
+  sections.push_back(encode_backtest_section("backtest", r));  // borrows r
+  sections.push_back(encode_reconciliation_section(rec));      // arena-owned
+  sections.push_back(encode_contract_marks_section(rec));      // arena-owned
+  sections.push_back(encode_meta_section(spec));               // arena-owned
+
+  const RunDir run_dir(dir);
+  const auto st = run_dir.write_run_archive(sections);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
 }
 
 TEST(RunDir, ReadsInputsAndArchive) {
@@ -1388,6 +1582,235 @@ TEST(RunDir, VerifyEnforcesCoreModeGate) {
   RunVerifyOptions relaxed;
   relaxed.enforce_core_mode = false;
   EXPECT_TRUE(run_dir.verify(relaxed).has_value());
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+// ── Task 7 (Minor #9): verify count-gate negative path ───────────────────────
+//
+// verify() cross-checks that the backtest and reconciliation sections carry the
+// SAME row count (the per-session cardinality). An archive whose two sections
+// disagree must be REJECTED with InvalidArgument — not crash, not pass. This
+// locks the existing gate (it had no mismatch-path coverage before).
+TEST(RunDir, VerifyRejectsCountGateMismatch) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_verify_countgate_test");
+  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+  write_run_dir_archive_row_mismatch(dir);  // backtest=2 rows, reconciliation=3 rows
+
+  const RunDir run_dir(dir);
+  const auto st = run_dir.verify();
+  ASSERT_FALSE(st.has_value()) << "count-gate mismatch should fail verify()";
+  EXPECT_EQ(st.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+// ── Task 7 (Minor #7): deterministic created_ts_ns => byte-identical archive ──
+//
+// RunDir::write_run_archive derives created_ts_ns deterministically from the run
+// identity (a content-derived pseudo-timestamp), NOT the wall clock. Two writes
+// of the SAME run-dir inputs therefore produce a byte-identical run.atxrun. This
+// was impossible before T7 (the writer stamped the system clock, so the header's
+// created_ts_ns + header_crc32c varied run-to-run). Written to two DIFFERENT dirs
+// so merge-write does not carry the first write's sections into the second.
+TEST(RunDir, WriteIsByteDeterministic) {
+  const auto slurp = [](const std::filesystem::path& p) {
+    std::ifstream in(p, std::ios::binary | std::ios::ate);
+    EXPECT_TRUE(in.good()) << "cannot open " << p.string();
+    const std::streamsize size = in.tellg();
+    std::vector<char> bytes(static_cast<std::size_t>(size < 0 ? 0 : size));
+    in.seekg(0);
+    in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    return bytes;
+  };
+
+  const std::filesystem::path dir_a = fresh_run_dir("atx_rundir_determinism_a");
+  write_run_dir_text_inputs_portable(dir_a);
+  write_run_dir_archive(dir_a);
+
+  const std::filesystem::path dir_b = fresh_run_dir("atx_rundir_determinism_b");
+  write_run_dir_text_inputs_portable(dir_b);
+  write_run_dir_archive(dir_b);
+
+  const std::vector<char> a = slurp(dir_a / "run.atxrun");
+  const std::vector<char> b = slurp(dir_b / "run.atxrun");
+  ASSERT_FALSE(a.empty());
+  ASSERT_EQ(a.size(), b.size()) << "run.atxrun byte-length differs across identical-input writes";
+  EXPECT_TRUE(a == b)
+      << "run.atxrun bytes differ across identical-input writes (created_ts_ns not deterministic?)";
+
+  // The stamped created_ts_ns IS the run identity (not 0 / wall-clock), and the
+  // identity round-trips through the header.
+  auto id = RunDir(dir_a).run_identity_hash();
+  ASSERT_TRUE(id.has_value()) << id.error().to_string();
+  RunArchiveHeader h{};
+  ASSERT_GE(a.size(), sizeof h);
+  std::memcpy(&h, a.data(), sizeof h);
+  EXPECT_EQ(h.run_identity_hash, *id);
+  EXPECT_EQ(h.created_ts_ns, *id);  // created_ts_ns := static_cast<int64>(identity), bits preserved
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir_a, ec);
+  std::filesystem::remove_all(dir_b, ec);
+}
+
+// ── Task 7 / I1: merge-write publish (accumulate the UNION across routes) ─────
+
+// Helper: read one meta value by key out of an opened archive's meta section.
+std::string meta_value_of(RunArchive& archive, std::string_view key) {
+  auto meta = archive.section("meta");
+  if (!meta) return {};
+  const RaDictColumn keys = meta->dict_col("key");
+  const RaDictColumn values = meta->dict_col("value");
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    if (keys.at(i) == key) return std::string(values.at(i));
+  }
+  return {};
+}
+
+// (a) A projected-style write into a run dir that already holds a listed-style
+// archive (SAME inputs) yields the UNION: the listed sections are carried
+// forward with their values intact, the projected section is added, and the
+// colliding meta is the NEW one (new-wins).
+TEST(RunDir, MergeWriteCarriesUnsupersededSectionsOnSameInputs) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_mergewrite_union_test");
+  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+  write_run_dir_archive(dir);  // listed set: backtest, reconciliation, contract_marks, meta
+
+  const RunDir run_dir(dir);
+
+  // Projected-style write, unchanged inputs: a new section name (projected_cold)
+  // + a colliding meta carrying a projected-only label/key.
+  const BacktestResult pr = make_encoder_fixture_result();  // outlives the write
+  RunSpec proj_spec;
+  proj_spec.label = "projected-run";
+  proj_spec.date_lo = "2026-07-10";
+  proj_spec.date_hi = "2026-07-10";
+  const std::vector<std::pair<std::string, std::string>> proj_meta_extra = {
+      {"projected_execution", "cold"}};
+  std::vector<RaSectionData> proj_sections;
+  proj_sections.push_back(encode_backtest_section("projected_cold", pr));
+  proj_sections.push_back(encode_meta_section(proj_spec, proj_meta_extra));
+  ASSERT_TRUE(run_dir.write_run_archive(proj_sections).has_value());
+
+  auto archive = run_dir.archive();
+  ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
+
+  // The UNION is present: listed sections carried + projected section added.
+  EXPECT_TRUE(archive->section("backtest").has_value());        // carried
+  EXPECT_TRUE(archive->section("reconciliation").has_value());  // carried
+  EXPECT_TRUE(archive->section("contract_marks").has_value());  // carried
+  EXPECT_TRUE(archive->section("projected_cold").has_value());  // new
+  EXPECT_TRUE(archive->section("meta").has_value());            // new-wins
+  EXPECT_EQ(archive->count(), 5u);
+
+  // Carried backtest values are intact (bit-exact through the deep copy).
+  auto bt = archive->section("backtest");
+  ASSERT_TRUE(bt.has_value()) << bt.error().to_string();
+  EXPECT_EQ(bt->f64_col("nav")[1], 101.5);
+  EXPECT_EQ(bt->f64_col("pnl_vega")[0], 1.25);
+  EXPECT_EQ(bt->f64_col("atm_iv")[1], 0.21);  // dynamically-appended signal survives
+  EXPECT_EQ(bt->dict_col("date").at(0), "2026-07-11");
+  EXPECT_EQ(bt->i64_col("ts_ns")[1], 20);
+
+  // Carried reconciliation intact.
+  auto rec = archive->section("reconciliation");
+  ASSERT_TRUE(rec.has_value()) << rec.error().to_string();
+  EXPECT_EQ(rec->n_rows(), 2u);
+
+  // meta is the NEW one (new-wins on the name collision).
+  EXPECT_EQ(meta_value_of(*archive, "label"), "projected-run");
+  EXPECT_EQ(meta_value_of(*archive, "projected_execution"), "cold");
+
+  // Every section (carried + new) survives the layered CRC.
+  EXPECT_TRUE(archive->validate_all().has_value());
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+// (b) Mutating run_spec.tsv between writes changes the run_identity_hash, so the
+// stale listed sections are DROPPED — only the new set survives.
+TEST(RunDir, MergeWriteDropsCarriedSectionsWhenInputsChange) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_mergewrite_stale_test");
+  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+  write_run_dir_archive(dir);  // listed set
+
+  // Mutate run_spec.tsv -> its bytes change -> run_identity_hash changes.
+  {
+    std::ofstream s(dir / std::string(kRunSpecFile), std::ios::binary | std::ios::app);
+    s << "# mutated inputs\n";
+    ASSERT_TRUE(s.good());
+  }
+
+  const RunDir run_dir(dir);
+  const BacktestResult pr = make_encoder_fixture_result();  // outlives the write
+  std::vector<RaSectionData> proj_sections;
+  proj_sections.push_back(encode_backtest_section("projected_cold", pr));
+  {
+    RunSpec proj_spec;
+    proj_spec.label = "projected-run";
+    proj_spec.date_lo = "2026-07-10";
+    proj_spec.date_hi = "2026-07-10";
+    proj_sections.push_back(encode_meta_section(proj_spec));
+  }
+  ASSERT_TRUE(run_dir.write_run_archive(proj_sections).has_value());
+
+  auto archive = run_dir.archive();
+  ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
+
+  // Only the NEW set survives; stale listed sections are gone.
+  EXPECT_EQ(archive->count(), 2u);
+  EXPECT_TRUE(archive->section("projected_cold").has_value());
+  EXPECT_TRUE(archive->section("meta").has_value());
+  EXPECT_FALSE(archive->section("backtest").has_value());
+  EXPECT_FALSE(archive->section("reconciliation").has_value());
+  EXPECT_FALSE(archive->section("contract_marks").has_value());
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+// (c) A pre-existing corrupt run.atxrun is not readable, so the write succeeds
+// FRESH (no throw), replacing the corrupt file with only the new sections.
+TEST(RunDir, MergeWriteStartsFreshOnCorruptExistingArchive) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_mergewrite_corrupt_test");
+  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+
+  // Plant a corrupt run.atxrun (not a valid archive: bad magic + short).
+  const std::filesystem::path archive_path = dir / std::string(kRunArchiveFile);
+  {
+    std::ofstream out(archive_path, std::ios::binary | std::ios::trunc);
+    const char junk[] = "NOTATXRUN garbage bytes -- not a valid archive at all ....";
+    out.write(junk, static_cast<std::streamsize>(sizeof junk));
+    ASSERT_TRUE(out.good());
+  }
+
+  const RunDir run_dir(dir);
+  const BacktestResult r = make_encoder_fixture_result();
+  const ListedDispersionReconciliation rec = make_reconciliation();
+  RunSpec spec;
+  spec.label = "rundir-test";
+  spec.date_lo = "2026-07-10";
+  spec.date_hi = "2026-07-10";
+  std::vector<RaSectionData> sections;
+  sections.push_back(encode_backtest_section("backtest", r));
+  sections.push_back(encode_reconciliation_section(rec));
+  sections.push_back(encode_contract_marks_section(rec));
+  sections.push_back(encode_meta_section(spec));
+
+  // Must succeed (fresh container), not error or throw on the corrupt file.
+  const auto st = run_dir.write_run_archive(sections);
+  ASSERT_TRUE(st.has_value()) << st.error().to_string();
+
+  auto archive = run_dir.archive();
+  ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
+  EXPECT_EQ(archive->count(), 4u);
+  EXPECT_TRUE(archive->section("backtest").has_value());
+  EXPECT_TRUE(archive->section("meta").has_value());
+  EXPECT_TRUE(archive->validate_all().has_value());
 
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);

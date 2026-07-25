@@ -32,6 +32,7 @@
 #include "atx/vol/dispersion_workflow.hpp"
 #include "atx/vol/historical_projection.hpp"
 #include "atx/vol/listed_dispersion.hpp"
+#include "atx/vol/listed_dispersion_pipeline.hpp"
 #include "atx/vol/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/listed_dispersion_strategy.hpp"
@@ -96,10 +97,13 @@ std::uint64_t hash_text(std::string_view text) {
   return hash == 0u ? 1u : hash;
 }
 
-Result<std::uint64_t> hash_file(const fs::path &path) {
-  ATX_TRY(std::string bytes, read_text(path));
-  return Ok(hash_text(bytes));
-}
+// The archive-file fingerprint that build-schedule stamped as `surface_fingerprint`
+// now lives in the library (listed_dispersion_pipeline.cpp `hash_archive_file`, an
+// anonymous-namespace helper byte-for-byte identical to the old example `hash_file`).
+// After the T9 build-schedule cutover the example had no remaining caller, so its
+// duplicate `hash_file` was removed rather than exporting the library's internal
+// helper (O5). `hash_text` (build-corpus input/policy fingerprints) and `read_text`
+// stay — they have other callers.
 
 // ── Runtime diagnostics ──────────────────────────────────────────────────────
 // PhaseTimer + the `diagnostics` section encoder now live in the library
@@ -314,7 +318,10 @@ Status build_corpus_command(const fs::path &source_spec_path, const fs::path &ru
   ATX_TRY(RunSpec spec, read_run_spec(source_spec_path));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(spec.universe_path));
   const std::vector<std::string> symbols = all_symbols(universe_rows);
-  if (spec.core_mode && symbols.size() < 51u) {
+  // L9: the loose entry-gate floor (SPY + 50 names) reads from the one versioned
+  // methodology policy instead of a scattered literal. `min_names_entry` == 51.
+  const ListedDispersionMethodology methodology;
+  if (spec.core_mode && symbols.size() < methodology.min_names_entry) {
     return Err(ErrorCode::InvalidArgument, "core mode requires SPY plus at least 50 names");
   }
   ATX_TRY(OpraBatchResult batch,
@@ -398,31 +405,10 @@ Status build_corpus_command(const fs::path &source_spec_path, const fs::path &ru
   return Ok();
 }
 
-Result<std::vector<ListedOptionQuote>> load_listed_quotes(const RunSpec &spec,
-                                                          const ListedDefinitionTable &definitions,
-                                                          std::span<const std::string> symbols,
-                                                          std::string_view date) {
-  ATX_TRY(OpraBatchResult batch, load_opra_daterange(batch_spec(spec, symbols, date, date)));
-  std::vector<ListedOptionQuote> quotes;
-  for (const OpraBatchEntry &entry : batch.entries) {
-    if (!entry.panel) {
-      continue;
-    }
-    // SkipUnlisted: both consumers of this helper (build-schedule roll-date
-    // selection and run-backtest reconciliation) only ever act on defined,
-    // standard-monthly 21-60 DTE contracts. A quote with no point-in-time
-    // definition is an intraday-listed contract outside that universe on its
-    // listing day; dropping it is a no-op on every date where the join already
-    // succeeds (the skip can only fire where the strict Error policy would have
-    // hard-failed), so currently-passing runs stay bit-for-bit unchanged.
-    ATX_TRY(std::vector<ListedOptionQuote> joined,
-            listed_quotes_from_opra(date, entry.panel->frame.snapshot_ts_ns, *entry.panel,
-                                    definitions, MissingDefinitionPolicy::SkipUnlisted));
-    quotes.insert(quotes.end(), std::make_move_iterator(joined.begin()),
-                  std::make_move_iterator(joined.end()));
-  }
-  return Ok(std::move(quotes));
-}
+// The per-date OPRA quote join (formerly the example's `load_listed_quotes`) now
+// lives in the library as `listed_quotes_for_date` (verbatim lift, T1). Both former
+// consumers — build-schedule (via build_listed_dispersion_schedule) and run-backtest
+// reconciliation — call the library seam, so the example's duplicate was removed (T9).
 
 Status build_schedule_command(const fs::path &run_dir) {
   const auto cmd_start = PhaseTimer::now();
@@ -436,103 +422,36 @@ Status build_schedule_command(const fs::path &run_dir) {
   ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
   ATX_TRY(Clock clock, Clock::from_manifest(manifest));
   ATX_TRY_VOID(verify_occ_ess_evidence(run_dir, clock));
-  if (spec.core_mode && clock.size() < 60u) {
+  // L9: the core-mode admitted-date floor reads from the versioned methodology
+  // (`core_min_dates` == 60) instead of a scattered literal. The same policy is
+  // handed to the library builder for the entry/three-roll acceptance gate.
+  const ListedDispersionMethodology method;
+  if (spec.core_mode && clock.size() < method.core_min_dates) {
     return Err(ErrorCode::Unavailable, "core mode requires at least 60 admitted dates");
   }
-  const std::vector<std::string> symbols = all_symbols(universe_rows);
-  ListedDispersionSchedule schedule;
-  std::int64_t active_expiry = 0;
   timer.add("setup_read", phase);
-  for (const SnapshotRef &ref : clock.refs()) {
-    // selection: snapshot load + universe resolve. count=1 is charged once per
-    // evaluated roll date (a date that reaches selection, deferrals included);
-    // DTE-skip dates below charge only their load time, with no evaluation count.
-    const auto sel_start = PhaseTimer::now();
-    ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(ref.archive_path));
-    const double active_dte =
-        active_expiry == 0
-            ? 0.0
-            : static_cast<double>(active_expiry - snapshot.ts_ns()) / kListedNsPerDay;
-    if (active_expiry != 0 && active_dte > spec.roll_dte_days) {
-      timer.add("selection", sel_start);
-      continue;
-    }
-    ATX_TRY(DispersionUniverse authored, universe_at(universe_rows, ref.date));
-    MissingNameSpec missing{MissingNamePolicy::DropRenormalize, spec.min_names};
-    ATX_TRY(
-        ResolvedUniverse resolved,
-        resolve_universe_uids(
-            authored, [&](std::string_view symbol) { return snapshot.uid_of(symbol); }, missing));
-    timer.add("selection", sel_start, 1u);
 
-    // quote_join: the OPRA parquet join re-marking the roll-date universe.
-    const auto join_start = PhaseTimer::now();
-    ATX_TRY(std::vector<ListedOptionQuote> quotes,
-            load_listed_quotes(spec, definitions, symbols, ref.date));
-    timer.add("quote_join", join_start, 1u);
+  // Selection + roll economics live in the library (listed_dispersion_pipeline). The
+  // swept knobs are pulled from RunSpec into the POD ListedScheduleSpec; the rest of
+  // RunSpec (OPRA parquet coordinates) is handed on as the quote source. The CLI's
+  // PhaseTimer is threaded in (T9/O4) so the library charges the `selection` /
+  // `quote_join` phases and build-schedule's diagnostics keep per-phase granularity.
+  // The DTE roll-trigger, per-date universe rebind, forward lookup, coverage gate,
+  // deferral, cohort numbering, surface fingerprint, roll sizing, the entry/three-roll
+  // acceptance gate, and the M1 clock/first-roll coupling check all run inside the call.
+  ListedScheduleSpec sched_spec;
+  sched_spec.target_dte_days = spec.target_dte_days;
+  sched_spec.min_dte_days = spec.min_dte_days;
+  sched_spec.max_dte_days = spec.max_dte_days;
+  sched_spec.roll_dte_days = spec.roll_dte_days;
+  sched_spec.min_names = spec.min_names;
+  sched_spec.min_weight_coverage = spec.min_weight_coverage;
+  sched_spec.gross_index_vega = spec.gross_index_vega;
+  sched_spec.core_mode = spec.core_mode;
+  ATX_TRY(ListedDispersionSchedule schedule,
+          build_listed_dispersion_schedule(clock, sched_spec, method, universe_rows, definitions,
+                                           spec, &timer));
 
-    const auto eval_start = PhaseTimer::now();
-    ListedDispersionSelectionConfig selection_config;
-    selection_config.target_dte_days = spec.target_dte_days;
-    selection_config.min_dte_days = spec.min_dte_days;
-    selection_config.max_dte_days = spec.max_dte_days;
-    selection_config.min_names = spec.min_names;
-    const ListedForwardLookup forward = [&](const DispersionMember &member,
-                                            std::int64_t expiry) -> Result<double> {
-      const PricedSurface *surface = snapshot.find(member.uid);
-      if (surface == nullptr) {
-        return Err(ErrorCode::NotFound, "surface missing");
-      }
-      const double term = static_cast<double>(expiry - snapshot.ts_ns()) / kNsPerYear;
-      const double value = surface->forward_at(term);
-      return std::isfinite(value) && value > 0.0
-                 ? Ok(value)
-                 : Err(ErrorCode::Unavailable, "forward unavailable");
-    };
-    const auto selected = select_listed_dispersion(ref.date, snapshot.ts_ns(), resolved.universe,
-                                                   quotes, forward, selection_config);
-    timer.add("selection", eval_start);
-    if (!selected) {
-      if (active_expiry == 0) {
-        continue;
-      }
-      std::fprintf(stderr, "roll deferred on %s: %s\n", ref.date.c_str(),
-                   selected.error().to_string().c_str());
-      continue;
-    }
-    double requested_weight = 0.0;
-    for (const DispersionMember &name : authored.names) {
-      requested_weight += name.weight;
-    }
-    double traded_weight = 0.0;
-    for (const ListedStraddle &name : selected->names) {
-      traded_weight += name.raw_weight;
-    }
-    const double coverage = traded_weight / requested_weight;
-    if (coverage < spec.min_weight_coverage) {
-      if (active_expiry == 0) {
-        continue;
-      }
-      std::fprintf(stderr, "roll deferred on %s: weight coverage %.6f\n", ref.date.c_str(),
-                   coverage);
-      continue;
-    }
-    const auto build_start = PhaseTimer::now();
-    ListedScheduleBuildConfig build;
-    build.gross_index_vega_target_per_vol_point = spec.gross_index_vega;
-    build.cohort = static_cast<std::uint32_t>(schedule.rolls.size() + 1u);
-    ATX_TRY(const std::uint64_t archive_fingerprint, hash_file(ref.archive_path));
-    build.surface_fingerprint = archive_fingerprint;
-    ATX_TRY(ListedScheduleRoll roll,
-            build_listed_dispersion_roll(*selected, snapshot.set(), build));
-    active_expiry = roll.expiry_ts_ns;
-    schedule.rolls.push_back(std::move(roll));
-    timer.add("selection", build_start);
-  }
-  if (schedule.rolls.empty() || (spec.core_mode && schedule.rolls.size() < 3u)) {
-    return Err(ErrorCode::Unavailable,
-               "schedule does not satisfy entry/three-roll acceptance gate");
-  }
   const auto write_start = PhaseTimer::now();
   // trade_schedule.tsv stays a text INPUT: run-backtest / project-schedule /
   // run-projected-backtest read it back through read_listed_dispersion_schedule_
@@ -629,7 +548,7 @@ Status run_backtest_command(const fs::path &run_dir) {
             config.snapshot_cache->load(ref.archive_path, config.query_pricing_tier));
     snapshot_owners.push_back(std::move(snapshot));
     ATX_TRY(std::vector<ListedOptionQuote> quotes,
-            load_listed_quotes(spec, definitions, symbols, ref.date));
+            listed_quotes_for_date(spec, definitions, symbols, ref.date));
     quote_owners.push_back(std::move(quotes));
   }
   std::vector<ListedReconciliationSnapshot> reconciliation_snapshots;
@@ -639,8 +558,14 @@ Status run_backtest_command(const fs::path &run_dir) {
         ListedReconciliationSnapshot{clock.refs()[i].date, snapshot_owners[i]->ts_ns(),
                                      &snapshot_owners[i]->set(), quote_owners[i]});
   }
+  // M1 wired into production (design §3): the reconciler is fed the FULL clock.refs()
+  // timeline (every session, including any leading warm-up / low-coverage session
+  // before the first roll). reconcile_listed_schedule trims that lead-in down to the
+  // first roll date before reconciling, so a warm-up session no longer aborts an
+  // otherwise-valid corpus (the old reconcile_listed_dispersion hard-required the
+  // front date to equal the first roll date).
   ATX_TRY(ListedDispersionReconciliation reconciliation,
-          reconcile_listed_dispersion(schedule, reconciliation_snapshots));
+          reconcile_listed_schedule(schedule, reconciliation_snapshots));
   ATX_TRY_VOID(validate_listed_reconciliation_backtest(reconciliation, backtest));
   timer.add("reconciliation", phase, clock.size());
 
@@ -693,136 +618,61 @@ Status project_schedule_command(const fs::path &run_dir) {
     archive_of.emplace(ref.date, ref.archive_path);
   }
 
-  // Cold certified economics on both sides, matching the run-projected-backtest
-  // --execution cold replay route (RunConfig default analytic AL greeks +
-  // ColdReference), so the persisted schedule marks equal the live cold seed marks
-  // that replay recomputes.
-  const bool analytic = true;
-  const QueryExecution execution = QueryExecution::ColdReference;
-
-  ListedDispersionSchedule projected;
-  projected.rolls.reserve(listed.rolls.size());
-  timer.add("setup_read", phase);
-  for (const ListedScheduleRoll &roll : listed.rolls) {
-    const auto archive = archive_of.find(roll.roll_date);
+  // Owning SINGLE-SLOT per-roll snapshot cache for the projection. The
+  // ListedArchiveLookup hands project_listed_schedule a BORROWED MarketSnapshot*,
+  // which must stay valid until the next lookup call — the projection dereferences
+  // it only while processing that one roll and never retains it afterwards (the
+  // rolls it emits are plain data), so exactly one board needs to be resident at a
+  // time. A cumulative cache kept every roll-date board alive for the whole call;
+  // each is a full heap deserialize (not an mmap), so peak memory scaled with the
+  // roll count — harmless at 7 rolls, ~120 boards resident on a multi-year corpus.
+  // Re-emplacing releases the previous board before the new one is stored. A roll
+  // date absent from the qualified clock returns Ok(nullptr);
+  // project_listed_schedule turns that into the example's exact NotFound message
+  // ("no qualified archive for roll date ...") (O2).
+  std::string cached_date;
+  std::optional<MarketSnapshot> cached_snapshot;
+  const ListedArchiveLookup archive_lookup =
+      [&](std::string_view roll_date) -> Result<const MarketSnapshot *> {
+    const std::string key(roll_date);
+    const auto archive = archive_of.find(key);
     if (archive == archive_of.end()) {
-      return Err(ErrorCode::NotFound,
-                 "project-schedule: no qualified archive for roll date " + roll.roll_date);
+      const MarketSnapshot *none = nullptr;
+      return Ok(none);
     }
-    // archive_load: one snapshot deserialize per roll (count=archives loaded).
-    const auto load_start = PhaseTimer::now();
+    if (cached_snapshot.has_value() && cached_date == key) {
+      const MarketSnapshot *hit = &*cached_snapshot;
+      return Ok(hit);
+    }
     ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(archive->second));
-    timer.add("archive_load", load_start, 1u);
-    // cold_solve: cold per-leg pricing + straddle rebuild + vega sizing for this
-    // roll (count=legs solved).
-    const auto solve_start = PhaseTimer::now();
-    if (snapshot.ts_ns() != roll.valuation_ts_ns) {
-      return Err(ErrorCode::InvalidArgument,
-                 "project-schedule: archive valuation timestamp differs from roll");
-    }
-    const double residual_T =
-        static_cast<double>(roll.expiry_ts_ns - roll.valuation_ts_ns) / kNsPerYear;
-    if (!(residual_T > 0.0)) {
-      return Err(ErrorCode::InvalidArgument, "project-schedule: nonpositive residual tenor");
-    }
-    if (roll.legs.size() != 2u * (1u + roll.n_names) || roll.legs.size() < 2u) {
-      return Err(ErrorCode::InvalidArgument, "project-schedule: malformed frozen roll");
-    }
+    cached_snapshot.emplace(std::move(snapshot)); // frees the previous roll's board
+    cached_date = key;
+    const MarketSnapshot *loaded = &*cached_snapshot;
+    return Ok(loaded);
+  };
+  timer.add("setup_read", phase);
 
-    // Cold per-share greeks at (uid, projected strike, residual T, side) for sizing.
-    const ListedRiskLookup cold_lookup =
-        [&](std::uint32_t uid, const ListedOptionQuote &quote) -> Result<ListedOptionRisk> {
-      const PricedSurface *surface = snapshot.find(uid);
-      if (surface == nullptr) {
-        return Err(ErrorCode::NotFound, "project-schedule: projected surface unavailable");
-      }
-      ATX_TRY(FullGreekSeed seed,
-              surface->full_greek_seed(quote.strike, residual_T, quote.side, analytic, execution));
-      return Ok(ListedOptionRisk{seed.greeks().price, seed.greeks().delta, seed.greeks().vega});
-    };
-
-    // Rebuild one member straddle from its frozen call/put legs, replacing the listed
-    // strike with the surface ATM forward at residual T. forward_at is the same accessor
-    // the synthetic dispersion route (resolve_leg / resolve_atm_iv) uses for its
-    // ATM-forward strike. The synthetic raw quote is priced at the cold model value
-    // (zero synthetic spread — there is no listed market at the interpolated strike);
-    // raw_symbol / instrument_id / source_fingerprint retain the listed contract each
-    // projected straddle idealizes (provenance + a unique per-leg source key).
-    const auto make_straddle =
-        [&](const ListedScheduleLeg &call_leg,
-            const ListedScheduleLeg &put_leg) -> Result<ListedStraddle> {
-      const PricedSurface *surface = snapshot.find(call_leg.uid);
-      if (surface == nullptr) {
-        return Err(ErrorCode::NotFound, "project-schedule: projected surface unavailable");
-      }
-      const double K = surface->forward_at(residual_T);
-      if (!(K > 0.0)) {
-        return Err(ErrorCode::Unavailable, "project-schedule: no ATM forward at residual tenor");
-      }
-      const auto make_quote = [&](const ListedScheduleLeg &leg,
-                                  Side side) -> Result<ListedOptionQuote> {
-        ATX_TRY(FullGreekSeed seed,
-                surface->full_greek_seed(K, residual_T, side, analytic, execution));
-        ListedOptionQuote quote;
-        quote.trade_date = roll.roll_date;
-        quote.symbol = leg.symbol;
-        quote.instrument_id = leg.instrument_id;
-        quote.raw_symbol = leg.raw_symbol;
-        quote.expiry_ts_ns = leg.expiry_ts_ns;
-        quote.strike = K;
-        quote.side = side;
-        quote.bid = seed.greeks().price;
-        quote.ask = seed.greeks().price;
-        quote.quote_ts_ns = roll.valuation_ts_ns;
-        quote.multiplier = leg.multiplier;
-        quote.standard_monthly = true;
-        quote.standard_deliverable = true;
-        quote.source_fingerprint = leg.source_fingerprint;
-        return Ok(std::move(quote));
-      };
-      ListedStraddle straddle;
-      straddle.symbol = call_leg.symbol;
-      straddle.uid = call_leg.uid;
-      straddle.expiry_ts_ns = call_leg.expiry_ts_ns;
-      straddle.strike = K;
-      ATX_TRY(straddle.call, make_quote(call_leg, Side::Call));
-      ATX_TRY(straddle.put, make_quote(put_leg, Side::Put));
-      straddle.raw_weight = call_leg.normalized_weight;
-      straddle.normalized_weight = call_leg.normalized_weight;
-      return Ok(std::move(straddle));
-    };
-
-    // Frozen roll legs are call/put pairs, index pair first.
-    ListedDispersionSelection selection;
-    selection.trade_date = roll.roll_date;
-    selection.valuation_ts_ns = roll.valuation_ts_ns;
-    selection.expiry_ts_ns = roll.expiry_ts_ns;
-    selection.dte_days =
-        static_cast<double>(roll.expiry_ts_ns - roll.valuation_ts_ns) / kListedNsPerDay;
-    ATX_TRY(selection.index, make_straddle(roll.legs[0], roll.legs[1]));
-    selection.names.reserve(roll.n_names);
-    for (std::size_t i = 2u; i + 1u < roll.legs.size(); i += 2u) {
-      ATX_TRY(ListedStraddle name, make_straddle(roll.legs[i], roll.legs[i + 1u]));
-      selection.names.push_back(std::move(name));
-    }
-
-    ListedScheduleBuildConfig build_cfg;
-    build_cfg.gross_index_vega_target_per_vol_point = roll.gross_index_vega_target_per_vol_point;
-    build_cfg.side = DispersionSide::ShortIndexLongNames;
-    build_cfg.cohort = roll.cohort;
-    build_cfg.surface_fingerprint = roll.legs.front().surface_fingerprint;
-    ATX_TRY(ListedScheduleRoll projected_roll,
-            build_listed_dispersion_roll(selection, cold_lookup, build_cfg));
-    std::printf("  roll %u %s: net_vega=%.10g gross_vega=%.10g index_K=%.6f (listed %.6f)\n",
-                projected_roll.cohort, projected_roll.roll_date.c_str(),
-                projected_roll.net_vega_per_vol_point, projected_roll.gross_vega_per_vol_point,
-                projected_roll.legs.front().strike, roll.legs.front().strike);
-    projected.rolls.push_back(std::move(projected_roll));
-    timer.add("cold_solve", solve_start, roll.legs.size());
+  // Cold reprice in the library (listed_dispersion_pipeline). ProjectionConfig{} is the
+  // single asserted parity constant (analytic + ColdReference) that the
+  // run-projected-backtest --execution cold replay ALSO reads (I1), so one config
+  // governs both cold routes and no hardcoded analytic/ColdReference literal survives
+  // in the projection path. The per-roll snapshot load / valuation-ts / residual-tenor
+  // / roll-shape guards, member restrike to the surface ATM forward, cold certified
+  // greeks, listed sizing (build_listed_dispersion_roll) and the schedule validator all
+  // run inside the call; the per-roll stdout diagnostic line prints from within it. The
+  // whole call is charged to cold_solve (archive_load's per-load subset is no longer
+  // separable now the loop lives in the library — only build-schedule per-phase
+  // granularity was a T9 obligation; the diagnostics SECTION format is unchanged).
+  const auto solve_start = PhaseTimer::now();
+  ATX_TRY(ListedDispersionSchedule projected,
+          project_listed_schedule(listed, archive_lookup, ProjectionConfig{}));
+  std::uint64_t projected_legs = 0;
+  for (const ListedScheduleRoll &roll : listed.rolls) {
+    projected_legs += roll.legs.size();
   }
+  timer.add("cold_solve", solve_start, projected_legs);
 
   const auto write_start = PhaseTimer::now();
-  ATX_TRY_VOID(validate_listed_dispersion_schedule(projected));
   // projected_schedule.tsv stays a text INPUT: run-projected-backtest reads it
   // back via --schedule (the retained input read path). It is ALSO folded into
   // run.atxrun as the projected_schedule section.
@@ -914,10 +764,12 @@ Status collect_mark_divergence_replay(const ListedDispersionSchedule &schedule, 
 // economics permitted with a cold price execution while no fast tier is prepared).
 // Records per-roll mark divergence between the frozen schedule marks and the live seed
 // marks. `--schedule` selects the input schedule (default trade_schedule.tsv);
-// `--out` the backtest output (default projected_backtest.tsv). `--no-divergence` skips
-// the mark-divergence replay pass (and its mark_divergence.tsv output), leaving only the
-// priced backtest — the bare-backtest wall-time path. The priced run is independent of
-// the replay, so the backtest output is byte-identical either way.
+// `--out` is a provenance label only — no file is written under it; the name is
+// recorded in the run.atxrun `meta` section (requested_out) so the request stays
+// visible. `--no-divergence` skips the mark-divergence replay pass (and its
+// `mark_divergence` section), leaving only the priced backtest — the
+// bare-backtest wall-time path. The priced run is independent of the replay, so
+// the backtest output is byte-identical either way.
 Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &schedule_file,
                                       const std::string &execution, const fs::path &out_file,
                                       bool skip_divergence) {
@@ -942,12 +794,21 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   config.unpriced = UnpricedLotPolicy::Error;
   config.snapshot_cache = std::make_shared<SnapshotCache>();
   if (cold) {
-    // Route P canonical: cold certified economics both sides, no fast tier attached.
+    // Route P canonical (I1): cold certified economics both sides, no fast tier
+    // attached. The SAME ProjectionConfig{} constant that project_listed_schedule
+    // authored the persisted projected_schedule marks through governs this replay's
+    // cold seed — one config drives BOTH cold routes (execution AND analytic), so the
+    // persisted marks and the marks this replay recomputes cannot silently drift (the
+    // I1 root cause: two hand-maintained copies). `analytic` equals RunConfig::price's
+    // default (true), so setting it explicitly is economically a no-op that removes the
+    // last hardcoded ColdReference/analytic literal from the replay path.
     // Record policy reprices the projected definitions through the ColdReference route.
     // required_economic_execution() == Configured means "no cold requirement": the
     // engine gate only enforces anything when a strategy requires ColdReference, so a
     // Record strategy runs under any execution, including this explicit cold override.
-    config.price.query_execution = QueryExecution::ColdReference;
+    const ProjectionConfig cold_cfg;
+    config.price.query_execution = cold_cfg.execution;
+    config.price.analytic_greeks = cold_cfg.analytic;
   } else {
     // Attaching the prepared fast tier (with_query_pricing, propagated by
     // MarketSnapshot::load with no silent cold fallback) makes the Configured queries
@@ -1026,8 +887,9 @@ Status run_surface_backtest_command(const fs::path &run_dir) {
   config.roll_dte_days = spec.roll_dte_days;
   // spec.gross_index_vega is dollars vega per VOL POINT per side; the library
   // dispersion configs take dollars vega per UNIT vol (a unit vol is 100 vol
-  // points), so scale by 100 at this boundary.
-  config.gross_index_vega = spec.gross_index_vega * 100.0;
+  // points), so scale by the per-vol-point -> per-unit-vol factor at this boundary
+  // (M9/I4: the named constant replaces the hand-applied * 100.0 literal).
+  config.gross_index_vega = spec.gross_index_vega * kVegaVolPointToUnitVol;
   config.delta_band = spec.delta_band;
   config.min_names = spec.min_names;
   config.run.unpriced = UnpricedLotPolicy::Error;
@@ -1104,8 +966,10 @@ Status run_projected_var_command(const fs::path &run_dir) {
   dispersion.target_T = spec.target_dte_days / 365.25;
   // spec.gross_index_vega is dollars vega per VOL POINT per side; the library
   // dispersion configs take dollars vega per UNIT vol (a unit vol is 100 vol
-  // points), so scale by 100 at this boundary.
-  dispersion.target_vega = spec.gross_index_vega * 100.0;
+  // points), so scale by the per-vol-point -> per-unit-vol factor at this boundary
+  // (M9/I4: the named constant replaces the hand-applied * 100.0 literal). The scaled
+  // book is what dispersion_book_var re-projects — the library applies no further x100.
+  dispersion.target_vega = spec.gross_index_vega * kVegaVolPointToUnitVol;
   dispersion.side = DispersionSide::ShortIndexLongNames;
   dispersion.multiplier = 100.0;
   dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, spec.min_names};
@@ -1114,25 +978,20 @@ Status run_projected_var_command(const fs::path &run_dir) {
   ATX_TRY(DispersionBook initial,
           build_dispersion_book(resolved.universe, snapshots.front()->set(), dispersion));
 
-  std::vector<RelativeOptionPosition> relative_positions;
-  relative_positions.reserve(initial.positions.size());
-  for (const Position &position : initial.positions) {
-    OptionProjectionSpec option;
-    option.uid = position.contract.uid;
-    option.maturity = *dispersion.projected_maturity;
-    option.strike = ProjectedStrikeSpec::atm_forward();
-    option.side = position.contract.side;
-    option.multiplier = position.multiplier;
-    relative_positions.push_back({option, position.qty});
-  }
-  ATX_TRY(PreparedHistoricalProjection prepared,
-          PreparedHistoricalProjection::create(relative_positions));
-  std::vector<HistoricalProjectionFrame> frames(scenarios.size());
-  std::vector<ProjectedOption> legs(scenarios.size() * relative_positions.size());
+  // The relative-template synthesis + prepare + evaluate + per-confidence VaR split
+  // now live in the library (dispersion_book_var). The CLI keeps the three bespoke
+  // loose-TSV emissions (out-of-archive per the design partition rule — no schema
+  // bump this wave). `maturity` MUST stay the relative days(N) template, NOT the
+  // book's absolute expiry, or per-scenario aging would change. elapsed_seconds now
+  // spans the whole call (prepare + evaluate + risk) — projections_per_second is
+  // non-deterministic wall-clock telemetry, unaffected economically.
+  const std::vector<double> confidences = {0.95, 0.99};
   HistoricalProjectionConfig config;
   config.n_threads = spec.fit_workers;
   const auto started = std::chrono::steady_clock::now();
-  ATX_TRY_VOID(prepared.evaluate_into(scenarios, frames, legs, config));
+  ATX_TRY(DispersionBookVar var,
+          dispersion_book_var(initial, *dispersion.projected_maturity, scenarios, confidences,
+                              config));
   const double elapsed_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 
@@ -1147,19 +1006,19 @@ Status run_projected_var_command(const fs::path &run_dir) {
   leg_out << std::setprecision(17)
           << "date\tleg\tuid\tside\texpiry_ts_ns\tstrike\tquantity\tmultiplier\tmark\t"
              "delta\tgamma\tvega\ttheta\tdefinition_fingerprint\tstatus\n";
-  for (std::size_t scenario = 0; scenario < frames.size(); ++scenario) {
-    const HistoricalProjectionFrame &frame = frames[scenario];
+  for (std::size_t scenario = 0; scenario < var.frames.size(); ++scenario) {
+    const HistoricalProjectionFrame &frame = var.frames[scenario];
     frame_out << clock.refs()[scenario].date << '\t' << frame.ts_ns << '\t' << frame.value << '\t'
               << frame.delta << '\t' << frame.gamma << '\t' << frame.vega << '\t' << frame.theta
               << '\t' << frame.n_ok << '\t' << frame.n_failed << '\t'
               << frame.definition_fingerprint << '\n';
-    for (std::size_t leg = 0; leg < relative_positions.size(); ++leg) {
-      const ProjectedOption &projected = legs[scenario * relative_positions.size() + leg];
+    for (std::size_t leg = 0; leg < var.n_positions; ++leg) {
+      const ProjectedOption &projected = var.legs[scenario * var.n_positions + leg];
       leg_out << clock.refs()[scenario].date << '\t' << leg << '\t'
               << projected.definition.contract.uid << '\t'
               << (projected.definition.contract.side == Side::Call ? "Call" : "Put") << '\t'
               << projected.definition.expiry_ts_ns << '\t' << projected.definition.contract.K
-              << '\t' << relative_positions[leg].quantity << '\t' << projected.definition.multiplier
+              << '\t' << initial.positions[leg].qty << '\t' << projected.definition.multiplier
               << '\t' << projected.model_mark << '\t' << projected.greeks.delta << '\t'
               << projected.greeks.gamma << '\t' << projected.greeks.vega << '\t'
               << projected.greeks.theta << '\t' << projected.definition.fingerprint << '\t'
@@ -1170,10 +1029,6 @@ Status run_projected_var_command(const fs::path &run_dir) {
   leg_out.close();
   if (!frame_out || !leg_out)
     return Err(ErrorCode::IoError, "projected VaR: output write failed");
-  for (const HistoricalProjectionFrame &frame : frames) {
-    if (frame.n_failed != 0u)
-      return Err(ErrorCode::Unavailable, "projected VaR: incomplete scenario projection");
-  }
 
   std::ofstream summary(run_dir / "projected_var.tsv", std::ios::binary | std::ios::trunc);
   if (!summary)
@@ -1181,29 +1036,30 @@ Status run_projected_var_command(const fs::path &run_dir) {
   summary << std::setprecision(17)
           << "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
              "n_positions\tprojections_per_second\tprepared_fingerprint\n";
-  for (const double confidence : {0.95, 0.99}) {
-    ATX_TRY(ProjectedHistoricalVar risk,
-            projected_historical_var(frames, frames.back().value, confidence));
+  for (const ProjectedHistoricalVar &risk : var.risks) {
     summary << risk.confidence << '\t' << risk.reference_value << '\t' << risk.value_at_risk << '\t'
-            << risk.expected_shortfall << '\t' << risk.n_scenarios << '\t'
-            << relative_positions.size() << '\t'
-            << (static_cast<double>(legs.size()) / elapsed_seconds) << '\t'
-            << prepared.fingerprint() << '\n';
+            << risk.expected_shortfall << '\t' << risk.n_scenarios << '\t' << var.n_positions
+            << '\t' << (static_cast<double>(var.legs.size()) / elapsed_seconds) << '\t'
+            << var.prepared_fingerprint << '\n';
   }
   if (!summary)
     return Err(ErrorCode::IoError, "projected VaR: summary write failed");
   std::printf("projected relative-template VaR complete: scenarios=%zu positions=%zu rate=%.1f/s\n",
-              frames.size(), relative_positions.size(),
-              static_cast<double>(legs.size()) / elapsed_seconds);
+              var.frames.size(), var.n_positions,
+              static_cast<double>(var.legs.size()) / elapsed_seconds);
   return Ok();
 }
 
 // runarchive dump <run_dir> <section> [--tsv]: the escape hatch. Opens
 // <run_dir>/run.atxrun and either prints a one-line section summary (default) or,
-// with --tsv, streams the section back out in the legacy loose-TSV shape —
-// columns in stored order, %.17g doubles / %lld i64 / %u u32 / decoded dict and
-// enum strings. For the backtest section that reproduces write_backtest_tsv
-// byte-for-byte (date + ts_ns + the 25 registry doubles + any per-signal series).
+// with --tsv, streams the section back out in a loose-TSV shape — columns in
+// stored order, %.17g doubles / %lld i64 / %u u32 / decoded dict and enum
+// strings. The byte-identical legacy TSV shape holds only for the backtest-schema
+// sections (backtest / projected_cold / projected_nodiv): they reproduce
+// write_backtest_tsv byte-for-byte (date + ts_ns + the 25 registry doubles + any
+// per-signal series). Other sections (e.g. contract_marks / reconciliation) are
+// NOT byte-identical to their legacy writers — an NA-able F64 stored as quiet NaN
+// prints here as "nan", where those writers emit "NA".
 // stdout is switched to binary so the emitted \n line endings are not translated.
 Status runarchive_dump_command(const fs::path &run_dir, const std::string &section_name, bool tsv) {
   ATX_TRY(RunArchive archive,
