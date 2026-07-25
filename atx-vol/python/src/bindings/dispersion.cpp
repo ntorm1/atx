@@ -138,7 +138,18 @@ void bind_dispersion(py::module_ &m) {
       .def(py::init<>())
       .def_readwrite("target_dte_days", &DispersionBacktestConfig::target_dte_days)
       .def_readwrite("roll_dte_days", &DispersionBacktestConfig::roll_dte_days)
-      .def_readwrite("gross_index_vega", &DispersionBacktestConfig::gross_index_vega)
+      // REV-TAIL M-6. Bare `def_readwrite` with no docstring, on the one field
+      // E1 changed the MEANING of. A Python caller tuned before E1 who keeps
+      // their old number now builds a book 100x too large, and nothing on this
+      // side of the boundary said so. The unit is stated where the caller meets
+      // it, not only in the C++ header they never open.
+      .def_readwrite("gross_index_vega", &DispersionBacktestConfig::gross_index_vega,
+                     "Index-leg gross vega target, in DOLLARS OF VEGA PER VOL POINT "
+                     "(a 0.01 move in sigma).\n\n"
+                     "BREAKING CHANGE (E1): this field used to be read as dollars per "
+                     "UNIT vol (per 1.00 of sigma), so the same value now builds a book "
+                     "100x LARGER. Code tuned against the pre-E1 projected route must "
+                     "DIVIDE its old value by 100. Must be > 0.")
       .def_readwrite("delta_band", &DispersionBacktestConfig::delta_band)
       .def_readwrite("min_names", &DispersionBacktestConfig::min_names)
       .def_readwrite("entry_every_n", &DispersionBacktestConfig::entry_every_n)
