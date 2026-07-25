@@ -15,6 +15,7 @@
 #include <span>
 
 #include "atx/core/error.hpp"
+#include "atx/core/math.hpp"     // norm_cdf (E5 forward-delta strike solve)
 #include "atx/vol/event_vol.hpp" // count_events_at, censored_total_variance
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/strategy.hpp" // resolve_strike_by_delta
@@ -56,11 +57,153 @@ double atmf_vol(const PricedSurface &ps, double T) noexcept {
   return ps.iv(F, T);
 }
 
-Result<double> vol_at_delta(const PricedSurface &ps, double T, Side side, double abs_delta) {
+namespace {
+
+// Inverse standard-normal CDF by bisection on the monotone `norm_cdf`. Halving
+// [-10, 10] reaches the double's own resolution and the loop bound is static.
+// This is a wing-strike solve run a handful of times per tenor, never a hot
+// path, so a dependency-free exact-by-construction inverse beats a rational
+// approximation whose error budget would have to be re-argued.
+[[nodiscard]] double norm_inv(double p) noexcept {
+  if (!(p > 0.0) || !(p < 1.0)) {
+    return kNaN;
+  }
+  constexpr double kZBound = 10.0;
+  // FIX-E M-4: a `p` outside the bracket's own reach used to come back CLAMPED
+  // at ±10 with no signal — the same silent-boundary pattern this file was just
+  // repaired for one function away. Refuse instead; `strike_by_forward_delta`'s
+  // `isfinite(z)` guard turns it into "delta target unreachable", which is what
+  // it is. norm_cdf(±10) ≈ 7.6e-24, so no reachable delta target is affected.
+  if (p <= atx::core::norm_cdf(-kZBound) || p >= atx::core::norm_cdf(kZBound)) {
+    return kNaN;
+  }
+  double lo = -kZBound;
+  double hi = kZBound;
+  for (int i = 0; i < 200; ++i) {
+    const double mid = 0.5 * (lo + hi);
+    if (atx::core::norm_cdf(mid) < p) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+    if (hi - lo <= 1.0e-15 * (1.0 + std::fabs(lo))) {
+      break;
+    }
+  }
+  return 0.5 * (lo + hi);
+}
+
+// E5 / AN-P2-6: the European Black-76 FORWARD-delta strike.
+//
+//   call: N(d1) = Δ            put: N(d1) − 1 = −Δ  ⇒  N(d1) = 1 − Δ
+//   d1 = (ln(F/K) + v²/2)/v    ⇒  ln(F/K) = z·v − v²/2
+//   ⇒ K = F·exp(−z·v + v²/2),  v = σ(K,T)·√T
+//
+// σ depends on K through the smile, so this is a fixed point: seeded at K = F
+// and iterated in log-strike. On a flat smile it lands on the closed form in one
+// step. Statically bounded, no allocation.
+//
+// ── CONVERGENCE CRITERION (FIX-E I-3) ────────────────────────────────────────
+//
+// The iterate is a log-strike, so the tolerance is a tolerance ON ln K: a step
+// of `tol` moves the strike by a RELATIVE `tol`. The criterion must therefore be
+// argued in that unit.
+//
+// The first cut of this guard used 1e-14, which is one ulp of ln K at these
+// magnitudes (|ln K| ≈ 5-7 for equity strikes, so ulp(ln K) ≈ 1e-15..1e-16) —
+// i.e. a demand for near-exact fixed-point stationarity. The iteration is an
+// undamped fixed point whose contraction factor is |(−z + v)·(dσ/dk)·√T|;
+// reaching 1e-14 inside 64 steps needs a factor below ≈0.60, which a steep
+// single-name smile exceeds while still converging perfectly well. The result
+// was `Err` (hence a NaN RR/BF cell) on wings that were fine — trading a
+// silently-wrong answer for a refusal on usable input.
+//
+// `kForwardDeltaLogKTol = 1e-10` is the defensible tolerance in the quantity's
+// own units: 1e-10 in ln K is 1e-10 RELATIVE in K, i.e. sub-nanodollar on a
+// $500 strike and about six orders of magnitude tighter than the tightest
+// downstream consumer (RR/BF are reported in vol points, ~1e-4). It is still
+// ~1e5 ulps above the noise floor, so it is reachable, not aspirational. With
+// 128 steps it admits any contraction factor below ≈0.83 — every smile whose
+// wings carry information — while a genuinely divergent or oscillating solve
+// (factor ≥ 1) never gets under it and is still reported as a failure.
+inline constexpr double kForwardDeltaLogKTol = 1.0e-10;
+inline constexpr int kForwardDeltaMaxSteps = 128;
+
+[[nodiscard]] Result<double> strike_by_forward_delta(const PricedSurface &ps, double T, Side side,
+                                                     double abs_delta) {
+  const double F = ps.forward_at(T);
+  if (!(T > 0.0) || !(F > 0.0) || !std::isfinite(F)) {
+    return Err(ErrorCode::InvalidArgument, "strike_at_delta: no usable forward at this tenor");
+  }
+  const double z = norm_inv(side == Side::Call ? abs_delta : 1.0 - abs_delta);
+  if (!std::isfinite(z)) {
+    return Err(ErrorCode::InvalidArgument, "strike_at_delta: delta target unreachable");
+  }
+  const double sqrt_T = std::sqrt(T);
+
+  double K = F;
+  bool converged = false;
+  for (int i = 0; i < kForwardDeltaMaxSteps; ++i) {
+    const double sigma = ps.iv(K, T);
+    if (!std::isfinite(sigma) || sigma <= 0.0) {
+      // FIX-E M-3: a SOLVE failure, not a bad argument (see below).
+      return Err(ErrorCode::Unavailable,
+                 "strike_at_delta: surface vol unusable at the candidate strike");
+    }
+    const double v = sigma * sqrt_T;
+    const double K_next = F * std::exp(-z * v + 0.5 * v * v);
+    if (!std::isfinite(K_next) || K_next <= 0.0) {
+      return Err(ErrorCode::Unavailable, "strike_at_delta: divergent forward-delta solve");
+    }
+    const double step = std::fabs(std::log(K_next / K));
+    K = K_next;
+    if (step <= kForwardDeltaLogKTol) {
+      converged = true;
+      break;
+    }
+  }
+  // A genuinely divergent or oscillating smile keeps the fixed point moving for
+  // the whole iteration budget. Returning the last iterate would hand back an
+  // unconverged wing strike that looks exactly like a converged one — a silent
+  // wrong number feeding RR/BF. Fail loudly instead; the caller's
+  // `value_or_nan` wrapper in the aggregate turns it into a NaN cell, which is
+  // the honest answer.
+  //
+  // FIX-E M-3: `Unavailable`, not `InvalidArgument` — here and on the two
+  // in-loop failure exits above. Nothing about the ARGUMENTS was invalid; the
+  // solver failed on this surface. That distinction is what lets a caller
+  // separate "you asked for delta 1.5" (InvalidArgument, checked up front) from
+  // "the solve did not converge here" (Unavailable).
+  if (!converged) {
+    return Err(ErrorCode::Unavailable,
+               "strike_at_delta: forward-delta fixed point did not converge");
+  }
+  return Ok(K);
+}
+
+} // namespace
+
+Result<double> strike_at_delta(const PricedSurface &ps, double T, Side side, double abs_delta,
+                               DeltaConvention convention) {
+  if (!(abs_delta > 0.0 && abs_delta < 1.0)) {
+    return Err(ErrorCode::InvalidArgument, "strike_at_delta: abs_delta must be in (0,1)");
+  }
+  switch (convention) {
+  case DeltaConvention::American:
+    // Bit-identical to the pre-E5 path.
+    return resolve_strike_by_delta(ps, T, side, abs_delta);
+  case DeltaConvention::Forward:
+    return strike_by_forward_delta(ps, T, side, abs_delta);
+  }
+  return Err(ErrorCode::NotImplemented, "strike_at_delta: unknown delta convention");
+}
+
+Result<double> vol_at_delta(const PricedSurface &ps, double T, Side side, double abs_delta,
+                            DeltaConvention convention) {
   if (!(abs_delta > 0.0 && abs_delta < 1.0)) {
     return Err(ErrorCode::InvalidArgument, "vol_at_delta: abs_delta must be in (0,1)");
   }
-  ATX_TRY(auto K, resolve_strike_by_delta(ps, T, side, abs_delta));
+  ATX_TRY(auto K, strike_at_delta(ps, T, side, abs_delta, convention));
   return Ok(ps.iv(K, T));
 }
 
@@ -71,17 +214,19 @@ double vol_at_moneyness(const PricedSurface &ps, double T, double moneyness) noe
   return ps.iv(ps.forward_at(T) * moneyness, T);
 }
 
-Result<double> risk_reversal(const PricedSurface &ps, double T, double abs_delta) {
+Result<double> risk_reversal(const PricedSurface &ps, double T, double abs_delta,
+                             DeltaConvention convention) {
   // Equity sign: RR = σ(Δ-put) − σ(Δ-call)  (positive = downside rich).
-  ATX_TRY(auto p, vol_at_delta(ps, T, Side::Put, abs_delta));
-  ATX_TRY(auto c, vol_at_delta(ps, T, Side::Call, abs_delta));
+  ATX_TRY(auto p, vol_at_delta(ps, T, Side::Put, abs_delta, convention));
+  ATX_TRY(auto c, vol_at_delta(ps, T, Side::Call, abs_delta, convention));
   return Ok(p - c);
 }
 
-Result<double> butterfly(const PricedSurface &ps, double T, double abs_delta) {
+Result<double> butterfly(const PricedSurface &ps, double T, double abs_delta,
+                         DeltaConvention convention) {
   // BF = ½(σ_put + σ_call) − σ_atm at the given absolute delta.
-  ATX_TRY(auto p, vol_at_delta(ps, T, Side::Put, abs_delta));
-  ATX_TRY(auto c, vol_at_delta(ps, T, Side::Call, abs_delta));
+  ATX_TRY(auto p, vol_at_delta(ps, T, Side::Put, abs_delta, convention));
+  ATX_TRY(auto c, vol_at_delta(ps, T, Side::Call, abs_delta, convention));
   const double a = atmf_vol(ps, T);
   return Ok(0.5 * (p + c) - a);
 }

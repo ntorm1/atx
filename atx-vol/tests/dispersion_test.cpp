@@ -171,7 +171,16 @@ constexpr double kW1 = 0.4;
 
 [[nodiscard]] DispersionUniverse make_universe() { return make_universe_w(kW0, kW1); }
 
+// E1 / AN-P1-1 unit seam. `DispersionConfig::target_vega` is now dollars of
+// gross vega per VOL POINT (a 0.01 move in sigma) — the canonical unit, shared
+// with the listed route. `PortfolioPricer`'s `vega` column and
+// `DispersionLeg::straddle_vega` are both dP/dsigma per UNIT vol, so a priced
+// book total is converted into the config's unit by multiplying by
+// `atx::vol::kVegaPerVolPoint` (dispersion.hpp — FIX-E C-1 hoisted it out of
+// dispersion.cpp so production code shares the ONE constant this test uses).
+
 // Sum the priced book's position vega, bucketed into (index leg, name legs).
+// UNIT: dollars per UNIT vol (the PortfolioPricer column's own unit).
 struct BucketedVega {
   double index{0.0};
   double names{0.0};
@@ -282,7 +291,7 @@ TEST(Dispersion, Book_IsVegaNeutral) {
   // Vega-neutral construction: index vega == -(basket vega), and the index leg
   // carries target_vega of gross vega (sign per side).
   EXPECT_TRUE(close(v.index, -v.names)) << v.index << " vs " << -v.names;
-  EXPECT_TRUE(close(std::fabs(v.index), cfg.target_vega)) << v.index;
+  EXPECT_TRUE(close(std::fabs(v.index) * kVegaPerVolPoint, cfg.target_vega)) << v.index;
   EXPECT_LT(v.index, 0.0); // short index
 
   std::printf("[dispersion] n_names=%zu book_vega_idx=%.2f book_vega_names=%.2f\n",
@@ -359,8 +368,17 @@ TEST(Dispersion, BookEconomicallyStableAfterVegaOnlyResolve) {
     EXPECT_NEAR(leg.sigma, expected_sigma, 5.0e-5);
     EXPECT_NEAR(leg.straddle_vega, expected_vega,
                 1.0e-5 * std::max(1.0, std::fabs(expected_vega)));
-    EXPECT_NEAR(leg.straddle_qty, expected_qty,
-                1.0e-5 * std::max(1.0, std::fabs(expected_qty)));
+    // E1 / AN-P1-1 DOCUMENTED DRIFT. The pinned anchors were captured when
+    // `target_vega` was read as dollars per UNIT vol. E1 made it dollars per
+    // VOL POINT (the canonical unit, shared with the listed route), which
+    // multiplies every sized quantity by exactly 1/kVegaPerVolPoint = 100 and
+    // leaves K / T / sigma / straddle_vega / marks untouched — all of which
+    // are still pinned bit-for-bit against the ORIGINAL anchors above. Scaling
+    // the expectation here (rather than re-capturing) keeps that 100x the only
+    // thing this change is allowed to have moved.
+    const double expected_qty_scaled = expected_qty / kVegaPerVolPoint;
+    EXPECT_NEAR(leg.straddle_qty, expected_qty_scaled,
+                1.0e-5 * std::max(1.0, std::fabs(expected_qty_scaled)));
     // This carry-correction work package permits two-tenths of a cent on the
     // deliberately wide synthetic fixture (observed maximum: 0.122 cents).
     EXPECT_NEAR(leg.call_mark, expected_call, 2.0e-3);
@@ -392,8 +410,8 @@ TEST(Dispersion, BookEconomicallyStableAfterVegaOnlyResolve) {
   // SAME independent cross-check Book_IsVegaNeutral runs) — an end-to-end
   // pin on top of the per-leg field pins above.
   const BucketedVega v = price_bucketed_vega(*book, *set, u.index.uid);
-  EXPECT_NEAR(v.index, -cfg.target_vega, 1.0e-6 * cfg.target_vega);
-  EXPECT_NEAR(v.names, cfg.target_vega, 1.0e-6 * cfg.target_vega);
+  EXPECT_NEAR(v.index * kVegaPerVolPoint, -cfg.target_vega, 1.0e-6 * cfg.target_vega);
+  EXPECT_NEAR(v.names * kVegaPerVolPoint, cfg.target_vega, 1.0e-6 * cfg.target_vega);
   EXPECT_TRUE(close(v.index, -v.names, 1.0e-9)) << v.index << " vs " << -v.names;
 }
 
@@ -456,7 +474,7 @@ TEST(Dispersion, Signal_ScaleInvariantInWeights) {
   ASSERT_TRUE(book.has_value()) << book.error().to_string();
   const BucketedVega v = price_bucketed_vega(*book, *set, u_scaled.index.uid);
   EXPECT_TRUE(close(v.index, -v.names)) << v.index << " vs " << -v.names;
-  EXPECT_TRUE(close(std::fabs(v.index), cfg.target_vega)) << v.index;
+  EXPECT_TRUE(close(std::fabs(v.index) * kVegaPerVolPoint, cfg.target_vega)) << v.index;
 }
 
 // ── 3. with_uid remaps only the uid and reprices bit-identically ────────────
@@ -721,7 +739,7 @@ TEST(Dispersion, DropRenormalizeBookIsVegaNeutralOverSurvivors) {
   // Σ|name-leg gross vega| == index-leg gross vega: vega-neutral over survivors.
   const BucketedVega v = price_bucketed_vega(*book, *set, u.index.uid);
   EXPECT_TRUE(close(v.index, -v.names, 1e-9)) << v.index << " vs " << -v.names;
-  EXPECT_TRUE(close(std::fabs(v.index), cfg.target_vega, 1e-9)) << v.index;
+  EXPECT_TRUE(close(std::fabs(v.index) * kVegaPerVolPoint, cfg.target_vega, 1e-9)) << v.index;
   EXPECT_LT(v.index, 0.0); // short index
 }
 
@@ -1073,7 +1091,8 @@ TEST(DispersionX4, GammaNeutral_MatchesGammaNotVega) {
   for (const DispersionLeg &leg : g->name_legs) {
     basket_vega += std::fabs(leg.straddle_qty) * leg.straddle_vega * gamma_cfg.multiplier;
   }
-  EXPECT_GT(std::fabs(basket_vega - gamma_cfg.target_vega), 1e-6 * gamma_cfg.target_vega)
+  EXPECT_GT(std::fabs(basket_vega * kVegaPerVolPoint - gamma_cfg.target_vega),
+            1e-6 * gamma_cfg.target_vega)
       << "gamma_neutral coincidentally reproduced vega neutrality â€” test is not discriminating";
 }
 

@@ -8,7 +8,8 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/data.hpp"      // data_install, iso_to_ns, year_fraction
+#include "atx/vol/data.hpp"             // data_install, iso_to_ns, year_fraction
+#include "atx/vol/earnings_term_fit.hpp" // fit_earnings_term, EarningsFitConfig (FIX-E I-2)
 #include "atx/vol/event_vol.hpp"
 #include "atx/vol/panel.hpp"     // SynthPanelSpec, make_synthetic_american_panel
 #include "atx/vol/session.hpp"   // VolaSession, SessionInputs (production seam)
@@ -485,6 +486,216 @@ TEST(Session, VolTimeConventionSolvesEmoveViaStampedExpiry) {
   ASSERT_TRUE(std::isfinite(w_events));
   ASSERT_TRUE(std::isfinite(w_plain));
   EXPECT_LT(w_events, w_plain) << "w_events=" << w_events << " w_plain=" << w_plain;
+}
+
+// ── E3b / AN-P1-3: the SESSION's eMove solve ─────────────────────────────
+//
+// `VolaSession::build`'s `solve_implied_emove` was the same two-pillar solve
+// `earnings_implied_move` used before E3a: find the first fitted expiry pair
+// bracketing the next event, hand it to `implied_emove`. On this AAPL-shaped
+// panel — six expiries, two events, and NO near expiry spanning the first
+// event, so the only bracket is the wide (0.05y, 0.30y) one — the censored
+// term structure inside that bracket aliases into eMove² and the answer comes
+// out ~+157% high. Every event-aware query on the session then serves off it.
+//
+// Six FLAT-smile expiries whose true ATM vols are built straight from the
+// SpiderRock decomposition sigma_i = sqrt(sigma_C(T_i)² + n_i·eMove²/T_i) — the
+// same construction `make_event_panel` uses for two.
+struct JointEventPanel {
+  SynthPanelSpec spec;
+  std::int64_t now_ns = 0;
+  std::vector<std::int64_t> event_ns;
+  std::vector<std::string> expiry_isos;
+  std::vector<double> T;
+  std::vector<std::size_t> n;
+  double emove = 0.0208; // the atmCen sweep's AAPL truth
+};
+
+[[nodiscard]] double joint_sigma_c(double T) {
+  constexpr double kSt = 0.22;
+  constexpr double kLt = 0.28;
+  constexpr double kDecay = 1.5;
+  return kLt + (kSt - kLt) * std::exp(-kDecay * T);
+}
+
+[[nodiscard]] JointEventPanel make_joint_event_panel() {
+  JointEventPanel fx;
+  const std::string snapshot = "2026-06-19";
+  // ~0.05, 0.30, 0.55, 0.80, 1.05, 1.30 years out.
+  fx.expiry_isos = {"2026-07-07", "2026-10-07", "2027-01-06",
+                    "2027-04-07", "2027-07-07", "2027-10-06"};
+  // Event 1 sits between expiry 1 and expiry 2 — a DELIBERATELY WIDE bracket,
+  // the "no near expiry spans the event" case. Event 2 sits between 4 and 5.
+  const std::vector<std::string> event_isos = {"2026-08-05", "2027-05-14"};
+  fx.n = {0, 1, 1, 1, 2, 2};
+
+  fx.spec.uid = "SYNTHJOINT";
+  fx.spec.snapshot_iso = snapshot;
+  fx.spec.spot = 100.0;
+  fx.spec.r = 0.03;
+  fx.spec.borrow = 0.0;
+
+  for (std::size_t i = 0; i < fx.expiry_isos.size(); ++i) {
+    const double T = year_fraction(snapshot, fx.expiry_isos[i]);
+    fx.T.push_back(T);
+    const double sc = joint_sigma_c(T);
+    const double sigma =
+        std::sqrt(sc * sc + static_cast<double>(fx.n[i]) * fx.emove * fx.emove / T);
+    fx.spec.expiries.push_back(SynthExpiry{fx.expiry_isos[i], T, S3Params{sigma, 0.0, 0.0}});
+  }
+  for (double K = 60.0; K <= 140.0 + 1e-9; K += 5.0) {
+    fx.spec.strikes.push_back(K);
+  }
+  fx.spec.half_spread_frac = 0.02;
+
+  fx.now_ns = iso_to_ns(snapshot);
+  for (const std::string &iso : event_isos) {
+    fx.event_ns.push_back(iso_to_ns(iso));
+  }
+  return fx;
+}
+
+TEST(Session, JointEmoveSolveBeatsTwoPillarOnWideBracket) {
+  const JointEventPanel fx = make_joint_event_panel();
+  Universe u;
+  const Underlying *under = install_event_panel(fx.spec, u);
+  ASSERT_NE(under, nullptr);
+  ASSERT_EQ(under->chains.size(), std::size_t{6});
+
+  const auto sched = std::make_shared<EventSchedule>(fx.event_ns);
+  // The fixture's intended event counts really are what the schedule yields.
+  for (std::size_t i = 0; i < fx.T.size(); ++i) {
+    ASSERT_EQ(sched->count_between(fx.now_ns, iso_to_ns(fx.expiry_isos[i])), fx.n[i])
+        << "expiry " << i;
+  }
+
+  SessionInputs in;
+  in.S = fx.spec.spot;
+  in.r = fx.spec.r;
+  in.now_ts_ns = fx.now_ns;
+  in.deam.n_atm = 3;
+  in.events = sched;
+  const auto sess = VolaSession::build(*under, in);
+  ASSERT_TRUE(sess.has_value()) << sess.error().to_string();
+
+  const double got = sess->diagnostics().implied_emove;
+  ASSERT_TRUE(std::isfinite(got)) << "implied_emove was NaN";
+
+  // The gate: within 25% of truth. The two-pillar solve on this wide bracket
+  // is ~+157% off, so this cannot pass by accident.
+  EXPECT_NEAR(got, fx.emove, 0.25 * fx.emove)
+      << "got=" << got << " truth=" << fx.emove
+      << " err=" << 100.0 * (got - fx.emove) / fx.emove << "%";
+
+  // The diagnostic says WHICH solve produced it, and on this board it is the
+  // joint one — so the accuracy above cannot be a lucky two-pillar bracket.
+  EXPECT_EQ(sess->diagnostics().emove_method, atx::vol::EmoveMethod::Joint);
+
+  // Parity with the E3a direct call: rebuilding the same observation set off
+  // the session's OWN fitted slices and calling `implied_emove_joint` must land
+  // on exactly the session's number. This is what makes the session solve and
+  // the analytics solve the same solve, rather than two that merely agree.
+  const auto exps = sess->expiries();
+  ASSERT_EQ(exps.size(), fx.T.size());
+  std::vector<atx::vol::CensorObsInput> obs;
+  obs.reserve(exps.size());
+  for (std::size_t i = 0; i < exps.size(); ++i) {
+    atx::vol::CensorObsInput o;
+    o.T = exps[i].T;
+    o.w_dirty = sess->total_variance(exps[i].forward, exps[i].T);
+    o.n = sched->count_between(fx.now_ns, iso_to_ns(fx.expiry_isos[i]));
+    obs.push_back(o);
+  }
+  const auto direct = atx::vol::implied_emove_joint(obs);
+  ASSERT_TRUE(direct.has_value()) << direct.error().to_string();
+  EXPECT_EQ(direct->method, atx::vol::EmoveMethod::Joint);
+  EXPECT_NEAR(direct->emove, got, 1.0e-9 * std::max(1.0, got))
+      << "direct=" << direct->emove << " session=" << got;
+
+  // And the retired two-pillar solve on the SAME fitted surface really is the
+  // biased answer, so this test is measuring the fix.
+  const auto two_pillar =
+      implied_emove(obs[0].w_dirty, obs[0].T, obs[0].n, obs[1].w_dirty, obs[1].T, obs[1].n);
+  ASSERT_TRUE(two_pillar.has_value()) << two_pillar.error().to_string();
+  EXPECT_GT(*two_pillar, 2.0 * fx.emove)
+      << "two-pillar=" << *two_pillar << " (err "
+      << 100.0 * (*two_pillar - fx.emove) / fx.emove << "%)";
+
+  // FIX-E I-2: the fit's OUTCOME CODE reaches the session boundary too. On this
+  // board the joint fit is a real answer, so the code must be one of the two
+  // that MEAN "answer" — a `MaxSteps` or bound-pinned code here would mean the
+  // session published an unconverged solve as if it had converged.
+  const auto code = sess->diagnostics().emove_fit_code;
+  EXPECT_TRUE(code == atx::vol::EmoveFitCode::Ok || code == atx::vol::EmoveFitCode::Minimum)
+      << "session published a non-answer fit_code=" << static_cast<int>(code);
+}
+
+// ── FIX-E I-2: a bound-pinned / non-converged joint fit is NOT an answer ─────
+//
+// `fit_earnings_term`'s outer golden-section search reports `LeftBound` /
+// `RightBound` when the optimum pins at a bracket end and `MaxSteps` when it
+// exhausts `max_iters`. In all three cases what comes back is the search's
+// last/clamped ITERATE, not a solved optimum — `LeftBound` pins at `emove_lo`,
+// whose default is 0.0, i.e. "no event move", exactly the kind of
+// plausible-looking wrong number this sprint exists to remove. E3a accepted all
+// three as converged Joint answers.
+//
+// The fixture is the E3a AAPL-shaped set, generated EXACTLY from the SR
+// decomposition w_i = n_i·eMove² + σ_C(T_i)²·T_i, so the joint fit has a
+// zero-residual solution at the truth whenever the bracket contains it.
+// Squeezing `emove_hi` BELOW the truth forces the search to pin — the defect is
+// injected through the CONFIG, not through a hand-built pathological input.
+TEST(EventVolJoint, BoundPinnedFitIsRejectedAndReportedThroughTheStatusChannel) {
+  constexpr double kSt = 0.22;
+  constexpr double kLt = 0.28;
+  constexpr double kDecay = 1.5;
+  constexpr double kTruthEmove = 0.0208;
+  const auto sigma_c = [](double T) { return kLt + (kSt - kLt) * std::exp(-kDecay * T); };
+
+  const std::vector<double> Ts = {0.02, 0.30, 0.55, 0.80, 1.05, 1.30};
+  const std::vector<std::size_t> ns = {0, 1, 1, 1, 2, 2};
+  std::vector<atx::vol::CensorObsInput> obs;
+  obs.reserve(Ts.size());
+  for (std::size_t i = 0; i < Ts.size(); ++i) {
+    const double s = sigma_c(Ts[i]);
+    atx::vol::CensorObsInput o;
+    o.T = Ts[i];
+    o.w_dirty = static_cast<double>(ns[i]) * kTruthEmove * kTruthEmove + s * s * Ts[i];
+    o.n = ns[i];
+    obs.push_back(o);
+  }
+
+  // (a) CONTROL. With the default bracket [0, 0.30] the joint fit genuinely IS
+  // the answer here, so the rejection below cannot be "the joint path never
+  // worked on this set".
+  const auto healthy = atx::vol::implied_emove_joint(obs);
+  ASSERT_TRUE(healthy.has_value()) << healthy.error().to_string();
+  EXPECT_EQ(healthy->method, atx::vol::EmoveMethod::Joint);
+  EXPECT_NEAR(healthy->emove, kTruthEmove, 0.25 * kTruthEmove);
+
+  // (b) Squeeze the bracket's upper end BELOW the truth: the search can now only
+  // pin at its right bound.
+  atx::vol::EarningsFitConfig pinned;
+  pinned.emove_hi = 0.005; // truth is 0.0208 — the optimum is outside
+  const auto probe = atx::vol::fit_earnings_term(obs, pinned);
+  ASSERT_TRUE(probe.has_value()) << probe.error().to_string();
+  ASSERT_EQ(probe->fit_code, atx::vol::EmoveFitCode::RightBound)
+      << "fixture no longer pins the search; fit_code=" << static_cast<int>(probe->fit_code);
+
+  // (c) THE GATE. That pinned iterate must NOT be served as a Joint answer.
+  const auto got = atx::vol::implied_emove_joint(obs, pinned);
+  ASSERT_TRUE(got.has_value()) << got.error().to_string();
+  EXPECT_EQ(got->method, atx::vol::EmoveMethod::TwoPillar)
+      << "a bound-pinned iterate (emove=" << probe->emove
+      << ") was served as a converged Joint fit";
+  // The status channel says WHY it fell back, not merely THAT it did.
+  EXPECT_EQ(got->fit_code, atx::vol::EmoveFitCode::RightBound);
+  // And the value really is the fallback bracket's, not the bound.
+  EXPECT_NE(got->emove, probe->emove);
+  const auto bracket =
+      implied_emove(obs[0].w_dirty, obs[0].T, obs[0].n, obs[1].w_dirty, obs[1].T, obs[1].n);
+  ASSERT_TRUE(bracket.has_value()) << bracket.error().to_string();
+  EXPECT_NEAR(got->emove, *bracket, 1.0e-12);
 }
 
 }  // namespace

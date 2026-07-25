@@ -180,6 +180,90 @@ TEST(ListedDispersionSchedule, SurfaceAdapterUsesOnlyMarkDeltaVegaRoutes) {
   }
 }
 
+// ── E1 / AN-P1-1: ONE vega unit across both dispersion routes ───────────────
+//
+// `DispersionConfig::target_vega` (projected/surface route) and
+// `ListedScheduleBuildConfig::gross_index_vega_target_per_vol_point` (listed
+// route) are the same conceptual knob: "how much index-leg gross vega does this
+// book carry". Handed the SAME number, against the SAME three PricedSurfaces,
+// at the SAME tenor, side and contract multiplier, the two routes must size the
+// index leg to the same DOLLAR VEGA PER VOL POINT.
+//
+// Before E1 the projected route divided by `straddle_vega * multiplier` where
+// `straddle_vega` is dP/dsigma per UNIT vol, so its book carried target_vega
+// dollars per 1.00 of vol == target_vega/100 dollars per vol point — exactly
+// 100x smaller than the listed route's book for the same knob value.
+//
+// The two routes strike differently by construction (listed: the selected
+// listed strike, 500; projected: the ATM forward, ~501.65), so the comparison
+// is a 5% economic band, not an equality. A 100x unit error clears that band by
+// three and a half orders of magnitude.
+TEST(ListedDispersionSchedule, ProjectedAndListedRoutesAgreeOnVegaUnit) {
+  auto index = surface(1u, 500.0, 0.22);
+  auto name0 = surface(2u, 100.0, 0.30);
+  auto name1 = surface(3u, 200.0, 0.34);
+  ASSERT_TRUE(index.has_value()) << index.error().to_string();
+  ASSERT_TRUE(name0.has_value()) << name0.error().to_string();
+  ASSERT_TRUE(name1.has_value()) << name1.error().to_string();
+  std::vector<PricedSurface> surfaces;
+  surfaces.push_back(std::move(*index));
+  surfaces.push_back(std::move(*name0));
+  surfaces.push_back(std::move(*name1));
+  std::vector<const PricedSurface *> pointers;
+  pointers.reserve(surfaces.size());
+  for (const PricedSurface &item : surfaces) {
+    pointers.push_back(&item);
+  }
+  auto set = SurfaceSet::create(pointers);
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+
+  constexpr double kTargetVega = 10000.0;   // dollars per vol point, both routes
+  constexpr double kMultiplier = 100.0;     // same contract multiplier
+  constexpr double kTenor = 30.0 / 365.25;  // same tenor: kExpiry - kValuation
+
+  // ── listed route ──
+  ListedScheduleBuildConfig listed_cfg = build_config();
+  listed_cfg.gross_index_vega_target_per_vol_point = kTargetVega;
+  auto roll = build_listed_dispersion_roll(selection(), *set, listed_cfg);
+  ASSERT_TRUE(roll.has_value()) << roll.error().to_string();
+  ASSERT_EQ(roll->legs.size(), 6u);
+  ASSERT_TRUE(roll->legs[0].is_index);
+  ASSERT_TRUE(roll->legs[1].is_index);
+  const double listed_index_vega_per_vol_point =
+      std::fabs(roll->legs[0].achieved_leg_vega_per_vol_point) +
+      std::fabs(roll->legs[1].achieved_leg_vega_per_vol_point);
+
+  // ── projected route, same knob value ──
+  DispersionUniverse universe;
+  universe.index = DispersionMember{"SPY", 1u, 0.0};
+  universe.names.push_back(DispersionMember{"N0", 2u, 1.0});
+  universe.names.push_back(DispersionMember{"N1", 3u, 2.0});
+
+  DispersionConfig projected_cfg;
+  projected_cfg.target_T = kTenor;
+  projected_cfg.target_vega = kTargetVega;
+  projected_cfg.side = DispersionSide::ShortIndexLongNames;
+  projected_cfg.multiplier = kMultiplier;
+  auto book = build_dispersion_book(universe, *set, projected_cfg);
+  ASSERT_TRUE(book.has_value()) << book.error().to_string();
+
+  // The book's index-leg dollar vega per vol point, expressed in the LISTED
+  // route's own arithmetic (per-share vega -> per contract -> per vol point).
+  const DispersionLeg &leg = book->index_leg;
+  const double projected_index_vega_per_vol_point =
+      std::fabs(leg.straddle_qty) * leg.straddle_vega * kMultiplier * 0.01;
+
+  EXPECT_NEAR(projected_index_vega_per_vol_point, listed_index_vega_per_vol_point,
+              0.05 * listed_index_vega_per_vol_point)
+      << "projected route index vega/vol-pt = " << projected_index_vega_per_vol_point
+      << ", listed route = " << listed_index_vega_per_vol_point << " (ratio "
+      << (listed_index_vega_per_vol_point / projected_index_vega_per_vol_point) << "x)";
+
+  // And the canonical unit is absolute, not merely mutually consistent: a
+  // target_vega of 10000 means $10,000 of index vega per 1 vol point.
+  EXPECT_NEAR(projected_index_vega_per_vol_point, kTargetVega, 0.05 * kTargetVega);
+}
+
 TEST(ListedDispersionSchedule, SizesShortIndexLongNamesVegaFlat) {
   auto roll = build_listed_dispersion_roll(selection(), risks(), build_config());
   ASSERT_TRUE(roll.has_value()) << roll.error().to_string();

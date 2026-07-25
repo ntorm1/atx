@@ -1228,6 +1228,114 @@ TEST(Strategy, DispersionParity) {
               sig->implied_corr, v_index, v_names);
 }
 
+// ── FIX-E C-1: the correlation telemetry must describe the book actually built
+//
+// `corr_vega` / `corr_gamma` are PERSISTED track columns (they become series in
+// the run artifact), so a unit error in them outlives the run. Both are
+// `correlation_{vega,gamma}(signal, index_signed_vega)`, and the derivative they
+// multiply — `d sigma_idx / d rho` — is per UNIT vol, so `index_signed_vega`
+// must be the index leg's dollar vega per UNIT vol.
+//
+// Since E1 `DispersionConfig::target_vega` is read as dollars per VOL POINT, so
+// the leg the sizing builds carries `target_vega / kVegaPerVolPoint` = 100x that
+// number. `signals()` passed `target_vega` RAW, understating both columns by
+// exactly 100x, and nothing asserted the wiring.
+//
+// This test closes that: the expectation is derived from the BUILT BOOK
+// (`straddle_vega * straddle_qty * multiplier`, cross-checked against the priced
+// portfolio's own vega column) and the signal's own derivative fields — never
+// from the expression under test. It therefore asserts the WIRING, not the
+// arithmetic, which `DispersionX4.CorrelationGamma_MatchesHandComputedDerivatives`
+// already covers.
+TEST(Strategy, DispersionCorrelationTelemetryMatchesTheBuiltBook) {
+  const fs::path dir = fresh_dir("dispersion-corr-telemetry");
+  const PricedSurface idx = make_surface(1, 500.0, 500.0, kBaseNow, 0.00);
+  const PricedSurface n0 = make_surface(2, 100.0, 100.0, kBaseNow, 0.02);
+  const PricedSurface n1 = make_surface(3, 120.0, 120.0, kBaseNow, 0.03);
+  const std::string path =
+      write_archive(dir, "2026-10-01", {{"IDX", &idx}, {"NM0", &n0}, {"NM1", &n1}});
+  auto snap = MarketSnapshot::load(path);
+  ASSERT_TRUE(snap.has_value()) << snap.error().to_string();
+
+  DispersionUniverse u;
+  u.index = DispersionMember{"IDX", 1, 0.0};
+  u.names.push_back(DispersionMember{"NM0", 2, 0.6});
+  u.names.push_back(DispersionMember{"NM1", 3, 0.4});
+  DispersionConfig cfg; // ShortIndexLongNames, target_vega = 10000 $/vol-pt, mult 100
+  cfg.record_diagnostics = true;
+  const DispersionStrategy strat{u, cfg};
+
+  // ── what the strategy actually emitted ───────────────────────────────────
+  const std::vector<std::pair<std::string, double>> rows = strat.signals(*snap);
+  const auto row = [&rows](const char *key) -> double {
+    for (const auto &kv : rows) {
+      if (kv.first == key) {
+        return kv.second;
+      }
+    }
+    ADD_FAILURE() << "signal row '" << key << "' was not emitted";
+    return std::numeric_limits<double>::quiet_NaN();
+  };
+
+  // ── the expectation, DERIVED FROM THE BOOK ───────────────────────────────
+  auto book = strat.build_book(*snap);
+  ASSERT_TRUE(book.has_value()) << book.error().to_string();
+  // `straddle_qty` already carries the side's sign, so this product is the index
+  // leg's SIGNED dollar vega per unit vol.
+  const double book_index_signed_vega =
+      book->index_leg.straddle_vega * book->index_leg.straddle_qty * cfg.multiplier;
+  ASSERT_LT(book_index_signed_vega, 0.0) << "a short-index book must carry negative index vega";
+
+  // Tie that leg quantity to the PRICED book, so the derivation is anchored on
+  // the portfolio the strategy opens rather than on the sizing struct alone.
+  {
+    auto pf = Portfolio::create(book->positions);
+    ASSERT_TRUE(pf.has_value());
+    const PortfolioPricer pricer{std::move(*pf)};
+    auto frame = pricer.price(snap->set());
+    ASSERT_TRUE(frame.has_value()) << frame.error().to_string();
+    double priced_index_vega = 0.0;
+    for (std::size_t i = 0; i < frame->size(); ++i) {
+      if (frame->uid[i] == 1) {
+        priced_index_vega += frame->vega[i];
+      }
+    }
+    EXPECT_NEAR(priced_index_vega, book_index_signed_vega,
+                5.0e-3 * std::fabs(book_index_signed_vega))
+        << "the leg's straddle_vega*qty*mult is not the book's priced index vega";
+  }
+
+  auto sig = dispersion_signal(u, snap->set(), cfg.target_T);
+  ASSERT_TRUE(sig.has_value()) << sig.error().to_string();
+  ASSERT_GT(std::fabs(sig->d_sigma_d_rho), 0.0); // else both assertions are vacuous
+
+  //   dP/drho   = v * dsigma/drho
+  //   d2P/drho2 = v * [ (-sigma*T/4)*(dsigma/drho)^2 + d2sigma/drho2 ]
+  const double expect_corr_vega = book_index_signed_vega * sig->d_sigma_d_rho;
+  const double expect_corr_gamma =
+      book_index_signed_vega *
+      (-0.25 * sig->sigma_index * sig->T_used * sig->d_sigma_d_rho * sig->d_sigma_d_rho +
+       sig->d2_sigma_d_rho2);
+
+  EXPECT_NEAR(row("corr_vega"), expect_corr_vega, 1.0e-9 * std::fabs(expect_corr_vega))
+      << "corr_vega does not describe the index leg the strategy builds";
+  EXPECT_NEAR(row("corr_gamma"), expect_corr_gamma, 1.0e-9 * std::fabs(expect_corr_gamma))
+      << "corr_gamma does not describe the index leg the strategy builds";
+
+  // ── NON-VACUITY ──────────────────────────────────────────────────────────
+  // The retired expression passed `-target_vega` ($ per VOL POINT). Pin that it
+  // is exactly 1/kVegaPerVolPoint = 100x away from the book's per-unit-vol vega,
+  // so the assertions above cannot both hold under the old wiring.
+  const double retired_index_signed_vega = -cfg.target_vega;
+  EXPECT_NEAR(book_index_signed_vega, retired_index_signed_vega / kVegaPerVolPoint,
+              1.0e-9 * std::fabs(book_index_signed_vega));
+  EXPECT_GT(std::fabs(row("corr_vega")),
+            50.0 * std::fabs(correlation_vega(*sig, retired_index_signed_vega)));
+
+  std::printf("[strategy] corr_vega=%.6f corr_gamma=%.6f book_index_vega=%.2f\n", row("corr_vega"),
+              row("corr_gamma"), book_index_signed_vega);
+}
+
 TEST(Strategy, DispersionHonorsPriceOptionsAndPublishesExactEntrySeeds) {
   const fs::path dir = fresh_dir("dispersion-price-options-seeds");
   const PricedSurface idx = make_surface(1, 500.0, 500.0, kBaseNow, 0.00);

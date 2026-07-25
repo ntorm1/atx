@@ -227,10 +227,39 @@ struct StrikePolicy {
   double target_abs_delta{0.25}; // DeltaStrangle only; in (0, 1)
 };
 
+// ── E1 / AN-P1-1: the ONE vol-point conversion ──────────────────────────────
+//
+// One VOL POINT is a 0.01 move in sigma. Every per-share/per-contract vega in
+// this module (`DispersionLeg::straddle_vega`, `PortfolioPricer`'s `vega`
+// column) is a dP/dsigma per UNIT vol; `DispersionConfig::target_vega` is
+// dollars per VOL POINT. So
+//
+//     $ per vol point  =  $ per unit vol * kVegaPerVolPoint
+//     $ per unit vol   =  $ per vol point / kVegaPerVolPoint
+//
+// This lives in the header (rather than as a file-local constant in
+// dispersion.cpp) precisely because the conversion is needed OUTSIDE the sizing
+// code: `DispersionStrategy::signals` has to undo it to recover the index leg's
+// dollar vega per unit vol for the correlation telemetry (FIX-E C-1).
+inline constexpr double kVegaPerVolPoint = 0.01;
+
 // Sizing / construction policy for a dispersion book.
 struct DispersionConfig {
   double target_T{30.0 / 365.25}; // straddle tenor (year-fraction), > 0
-  double target_vega{10000.0};    // index-leg gross vega the book scales to, > 0
+  // ── UNIT (E1 / AN-P1-1): DOLLARS OF VEGA PER VOL POINT ────────────────────
+  //
+  // The index-leg gross vega the book scales to, in DOLLARS PER ONE VOL POINT
+  // (a 0.01 move in sigma) — the industry convention, and the SAME unit as the
+  // listed route's `ListedScheduleBuildConfig::
+  // gross_index_vega_target_per_vol_point`. Handed the same number, the two
+  // dispersion routes now build the same-sized book.
+  //
+  // BREAKING CHANGE (E1). This field used to be read as dollars per UNIT vol
+  // (per 1.00 of sigma), so `build_dispersion_book` produced a book 100x
+  // SMALLER than the listed schedule for the same value. Callers that were
+  // tuned against the old projected-route behaviour must DIVIDE their old
+  // `target_vega` by 100 to keep the same book size. Must be > 0.
+  double target_vega{10000.0};
   DispersionSide side{DispersionSide::ShortIndexLongNames};
   double multiplier{100.0};  // option contract multiplier, > 0
   MissingNameSpec missing{}; // missing-name policy (default Error => pre-S1-3 book)
@@ -284,8 +313,15 @@ struct DispersionSignal {
 // The book's correlation exposure runs entirely through the INDEX leg — the
 // constituent vols are the independent variables of the identity and do not move
 // with rho — so both derivatives scale with the index leg's signed total vega
-// `index_signed_vega` ($ per vol point; NEGATIVE for the classic
-// ShortIndexLongNames book).
+// `index_signed_vega`.
+//
+// UNIT (FIX-E C-1): dollars per UNIT vol (per 1.00 of sigma), i.e.
+// `straddle_vega * straddle_qty * multiplier` off the built book — NOT dollars
+// per vol point, and NOT `DispersionConfig::target_vega`, which since E1 is read
+// in the per-vol-point unit and is therefore 100x smaller. `d sigma_idx/d rho`
+// below is per unit vol per unit rho, so the product only has the advertised
+// "$ per 1.00 of rho" meaning when the argument is per unit vol.
+// NEGATIVE for the classic ShortIndexLongNames book.
 //
 //   dP/drho   = index_signed_vega * (d sigma_idx / d rho)
 //

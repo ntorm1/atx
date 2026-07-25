@@ -170,7 +170,10 @@ def build(meta: dict, df: pd.DataFrame, out: Path) -> None:
         f"{meta.get('date_lo', '?')} → {meta.get('date_hi', '?')}   |   "
         f"{meta.get('n_sessions', '?')} sessions   |   "
         f"{meta.get('weighting', '?')} / {meta.get('strike_rule', '?')}   |   "
-        f"gross index vega ${_f(meta, 'gross_index_vega'):,.0f}",
+        # FIX-E M-11: label the unit. `gross_index_vega` is dollars per ONE VOL
+        # POINT (E1 / AN-P1-1); printing it bare invited reading it as dollars
+        # per unit vol, which is what it meant before E1 on this route.
+        f"gross index vega ${_f(meta, 'gross_index_vega'):,.0f}/vol pt",
         ha="left", fontsize=9.5, color=MUTE,
     )
 

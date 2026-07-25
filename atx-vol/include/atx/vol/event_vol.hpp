@@ -113,7 +113,8 @@
 #include <span>
 #include <vector>
 
-#include "atx/vol/types.hpp"  // Result, ErrorCode
+#include "atx/vol/earnings_term_fit.hpp" // CensorObsInput, EarningsFitConfig, EmoveFitCode
+#include "atx/vol/types.hpp"            // Result, ErrorCode
 
 namespace atx::vol {
 
@@ -224,5 +225,104 @@ class EventSchedule {
                                    double w_hi, double T_hi, std::size_t n_hi,
                                    double T_query, std::size_t n_query,
                                    double emove) noexcept;
+
+// ── E3a / AN-P1-3: the production eMove solve ───────────────────────────────
+//
+// `implied_emove` above identifies eMove from exactly TWO expiries, which forces
+// the assumption that ONE flat censored instantaneous variance spans the whole
+// bracket. It does not, and the error is not benign: with n1 = 0 and n2 = 1,
+//
+//     e²_two-pillar = eMove² + T2·(σ_C(T2)² − σ_C(T1)²)
+//
+// so every bit of censored TERM STRUCTURE inside the bracket aliases directly
+// into eMove². The wider the bracket the worse it gets — and the bracket is
+// widest in exactly the case that matters, when no near expiry spans the event.
+// The atmCen convention sweep measured AAPL at eMove 0.0567 against a truth of
+// 0.0208: +173%.
+//
+// `fit_earnings_term` (earnings_term_fit.hpp) solves the identified problem —
+// {eMove, st, lt, decay} over ALL usable expiries at once — and has been
+// available, well-guarded and unit-tested, but wired only into the
+// earnings-repro pipeline. This is the seam that promotes it to production.
+
+// Which solve produced an eMove.
+enum class EmoveMethod : std::uint8_t {
+  TwoPillar = 0, // implied_emove on the first bracketing pillar pair
+  Joint = 1,     // fit_earnings_term over ALL usable pillars
+};
+
+// Minimum usable pillar count before the joint fit is even attempted. The fit
+// has FOUR free parameters {eMove, st, lt, decay}; four points can be
+// interpolated exactly, leaving the residual — which is the entire signal the
+// outer eMove search ranks on — identically zero and the optimum arbitrary.
+// Five is the first count with a degree of freedom to spare.
+inline constexpr std::size_t kJointMinPillars = 5;
+
+// An eMove plus how it was obtained. `fit_code` / `fit_error` / `expiry_count`
+// describe the joint fit and are only meaningful when `method == Joint`.
+struct EmoveSolution {
+  double emove{0.0};
+  EmoveMethod method{EmoveMethod::TwoPillar};
+  EmoveFitCode fit_code{EmoveFitCode::Ok};
+  double fit_error{0.0};
+  std::size_t expiry_count{0};
+};
+
+// Joint eMove over ALL usable pillars, with a two-pillar fallback.
+//
+// Observations with a non-finite / non-positive `T` or `w_dirty` are DROPPED
+// rather than fatal: one unusable pillar must not cost the whole solve. `obs`
+// need not be sorted; the fallback sorts by T internally.
+//
+// The joint fit is attempted only when the problem is actually IDENTIFIED:
+//   * at least `kJointMinPillars` usable observations;
+//   * at least two DISTINCT event counts among them (a constant n carries no
+//     information about eMove at all — every candidate shifts the whole
+//     censored curve by the same amount, which the 3-parameter term curve
+//     simply absorbs); and
+//   * at least two event-bearing (n > 0) observations, matching
+//     `fit_earnings_term`'s own degeneracy rule.
+// Otherwise — and whenever the joint fit errors, or returns a non-finite eMove,
+// or reports an outcome that is NOT an answer — this falls back to
+// `implied_emove` on the first ascending-T adjacent pair whose event count
+// rises, i.e. exactly the pre-E3a behaviour, and reports
+// `EmoveMethod::TwoPillar` so the caller can tell which answer it got.
+//
+// ── WHAT COUNTS AS AN ANSWER (FIX-E I-2) ────────────────────────────────────
+//
+// ACCEPTED: `Ok` (converged interior minimum) and `Minimum` (best point found,
+// genuinely identified, just not a clean interior converge).
+//
+// REJECTED, each falling back to the two-pillar bracket:
+//   * `Degenerate`  — fewer than two usable expiries / unsolvable;
+//   * `CenterFlat`  — objective flat across the bracket, when events are
+//                     actually present (with no events there is nothing to
+//                     identify and the flat answer is the correct one);
+//   * `MaxSteps`    — the outer search hit `EarningsFitConfig::max_iters`.
+//                     `earnings_term_fit.cpp` documents this as "the search did
+//                     not converge, so its bound/flat diagnosis is unreliable";
+//   * `LeftBound`   — optimum pinned at `emove_lo` (default 0.0, i.e. "no event
+//                     move" — a completely plausible-looking wrong number);
+//   * `RightBound`  — optimum pinned at `emove_hi` (default 0.30).
+//
+// A bound-pinned or step-exhausted search returns its last/clamped iterate, not
+// a solved optimum. Accepting it is the same defect class this sprint removed
+// from `strike_at_delta` — a solver handing back its last iterate as if it were
+// an answer. The fix is the status channel, NOT a wider iteration budget: a
+// bracket the optimum genuinely sits outside of is not fixed by more steps.
+//
+// The returned `fit_code` is always the joint fit's own code when the joint path
+// ran, so a caller can tell a converged answer from a fallback and WHY it fell
+// back; on the fallback path it is the rejected code (`Ok` when the joint fit
+// was never attempted).
+//
+// @param obs  per-expiry dirty ATM total variance / year-fraction / event count
+// @param cfg  joint-fit knobs (search bracket, iteration cap, censoring floor)
+// @return Ok(EmoveSolution) with `emove >= 0`.
+//         Err(InvalidArgument) if fewer than two observations are usable.
+//         Err(NotFound) if the joint fit was unavailable and no adjacent pair
+//         brackets an event.
+[[nodiscard]] Result<EmoveSolution> implied_emove_joint(std::span<const CensorObsInput> obs,
+                                                        const EarningsFitConfig &cfg = {});
 
 }  // namespace atx::vol

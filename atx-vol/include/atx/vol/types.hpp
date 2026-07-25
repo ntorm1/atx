@@ -36,6 +36,37 @@ enum class ExerciseStyle : std::uint8_t {
   American = 1,
 };
 
+// ── Quote-delta convention (E5 / AN-P2-6) ───────────────────────────────────
+//
+// THE library-wide delta vocabulary. Introduced in `projection.hpp` (its first
+// consumer) and moved here by FIX-E M-9: a vocabulary shared by projection,
+// analytics and portfolio risk belongs with the rest of the shared vocabulary,
+// not behind an include that drags in `vol_surface.hpp`, `correction.hpp`,
+// `curve.hpp` and `universe.hpp` to name one enum.
+//
+// AN-P2-6 is a convention-FRAGMENTATION defect — analytics solved American
+// |delta|, projection solved European B76 forward delta, and
+// contract_projection solved American delta seeded from a carry-discounted spot
+// inversion, i.e. three different answers to "what is the 25-delta strike". So
+// this enum is extended IN PLACE; a second enum beside it would deepen exactly
+// the disease it exists to cure.
+//
+// Not every consumer supports every convention. `projection.cpp`'s coordinate
+// solves accept `Forward` ONLY and return NotImplemented otherwise. The
+// analytics wing/RR/BF solves (`analytics.hpp`) accept both and default to
+// `American`, which is their shipped behaviour.
+enum class DeltaConvention : std::uint8_t {
+  // European Black-76 FORWARD delta: N(d1) for a call, N(d1) - 1 for a put, with
+  // d1 = (ln(F/K) + sigma^2*T/2) / (sigma*sqrt(T)). No discounting, no early
+  // exercise. The vendor-standard quote convention.
+  Forward = 0,
+  // AMERICAN spot delta, dP/dS on the American mark — what the analytics
+  // wings/RR/BF have always used (`resolve_strike_by_delta`, strategy.hpp). On a
+  // high-carry or deep-ITM-early-exercise name this resolves a materially
+  // different strike from `Forward`.
+  American = 1,
+};
+
 // ── Pricing route (shared diagnostic tag) ─────────────────────────────────
 //
 // Which American pricing route a leg actually took. Ports the C

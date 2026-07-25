@@ -605,8 +605,30 @@ namespace {
 
   const double index_sign = cfg.side == DispersionSide::ShortIndexLongNames ? -1.0 : 1.0;
   const double name_sign = -index_sign;
+  // ── E1 / AN-P1-1: `target_vega` is DOLLAR VEGA PER VOL POINT ──────────────
+  //
+  // CANONICAL UNIT (industry convention, and what the listed route has always
+  // used): `cfg.target_vega` is dollars of index-leg gross vega per ONE VOL
+  // POINT — a 0.01 move in sigma. `DispersionLeg::straddle_vega` is a per-share
+  // dP/dsigma, i.e. per UNIT vol, so a contract's vega per vol point is
+  //
+  //     straddle_vega * multiplier * kVegaPerVolPoint
+  //
+  // which is textually the same expression the listed route builds as
+  // `vega_per_contract_per_vol_point` (listed_dispersion_schedule.cpp). Sizing
+  // off it makes both routes produce the same book from the same knob value.
+  //
+  // BEFORE THIS FIX the `* 0.01` was present in the listed route and ABSENT
+  // here, so `build_dispersion_book` sized per UNIT vol: the same
+  // `target_vega` built a projected-route book 100x SMALLER than the listed
+  // one (AN-P1-1). Projected-route books therefore GROW 100x at this change —
+  // see the CHANGELOG note and `ProjectedAndListedRoutesAgreeOnVegaUnit`.
+  // `kVegaPerVolPoint` now lives in dispersion.hpp — `DispersionStrategy::
+  // signals` needs the same conversion to recover the index leg's dollar vega
+  // per UNIT vol for the correlation telemetry (FIX-E C-1).
   index_leg->leg.straddle_qty =
-      index_sign * cfg.target_vega / (index_leg->leg.straddle_vega * cfg.multiplier);
+      index_sign * cfg.target_vega /
+      (index_leg->leg.straddle_vega * cfg.multiplier * kVegaPerVolPoint);
 
   // ── X4 WEIGHTING POLICY ───────────────────────────────────────────────────
   //
@@ -619,8 +641,9 @@ namespace {
   if (cfg.weighting == WeightingScheme::VegaNeutral) {
     for (std::size_t k = 0; k < used_names.size(); ++k) {
       const double normalized_weight = universe.names[used_names[k]].weight / sum_w;
-      name_legs[k].straddle_qty = name_sign * normalized_weight * cfg.target_vega /
-                                  (name_legs[k].straddle_vega * cfg.multiplier);
+      name_legs[k].straddle_qty =
+          name_sign * normalized_weight * cfg.target_vega /
+          (name_legs[k].straddle_vega * cfg.multiplier * kVegaPerVolPoint);
     }
   } else {
     // Every non-default scheme matches the basket to the INDEX leg on the

@@ -279,6 +279,78 @@ TEST(AnalyticsAggregate, EarningsImpliedMoveRecoversEmbeddedMove) {
   EXPECT_NEAR(*e, 0.06, 5e-3);
 }
 
+// ── E3a / AN-P1-3: joint eMove vs the naive two-pillar solve ────────────────
+//
+// The AAPL-shaped case from the atmCen convention sweep: NO near expiry spans
+// the event, so the only bracketing pair is WIDE (0.02y, 0.30y). `implied_emove`
+// assumes one flat censored instantaneous variance across that bracket, so the
+// censored term structure's own steepness inside it aliases straight into e².
+// Algebraically, with n1 = 0 and n2 = 1,
+//
+//     e²_two-pillar = eMove² + T2·(σ_C(T2)² − σ_C(T1)²)
+//
+// which for this contango censored curve is a large POSITIVE bias — the sweep
+// measured AAPL at +173%, and this fixture reproduces +172%.
+//
+// The observations are generated EXACTLY from the SpiderRock decomposition
+// w_i = n_i·eMove² + σ_C(T_i)²·T_i with σ_C(T) = lt + (st−lt)·e^{−decay·T}, so
+// the joint fit over ALL SIX pillars has a zero-residual solution at the truth
+// and no excuse to miss it.
+TEST(AnalyticsAggregate, JointEmoveRecoversTruthWhereTwoPillarIsBiased) {
+  constexpr double kSt = 0.22;
+  constexpr double kLt = 0.28;
+  constexpr double kDecay = 1.5;
+  constexpr double kTruthEmove = 0.0208; // the sweep's AAPL truth
+  const auto sigma_c = [](double T) { return kLt + (kSt - kLt) * std::exp(-kDecay * T); };
+
+  const std::vector<double> Ts = {0.02, 0.30, 0.55, 0.80, 1.05, 1.30};
+  const std::vector<std::size_t> ns = {0, 1, 1, 1, 2, 2};
+  std::vector<double> thetas;
+  thetas.reserve(Ts.size());
+  for (std::size_t i = 0; i < Ts.size(); ++i) {
+    const double s = sigma_c(Ts[i]);
+    thetas.push_back(static_cast<double>(ns[i]) * kTruthEmove * kTruthEmove + s * s * Ts[i]);
+  }
+  const PricedSurface ps = make_theta_surface(11, 100.0, 100.0, Ts, thetas);
+
+  // Two events: one at 0.05y (between the 0.02 and 0.30 pillars — the wide
+  // bracket) and one at 0.90y (between 0.80 and 1.05). Both sit well away from
+  // any pillar so no year-fraction convention detail can flip a count.
+  const EventSchedule sched(std::vector<std::int64_t>{
+      testkit::kFixtureNow + static_cast<std::int64_t>(0.05 * testkit::kYearNs),
+      testkit::kFixtureNow + static_cast<std::int64_t>(0.90 * testkit::kYearNs)});
+  for (std::size_t i = 0; i < Ts.size(); ++i) {
+    ASSERT_EQ(count_events_at(sched, testkit::kFixtureNow, Ts[i]), ns[i]) << "T=" << Ts[i];
+  }
+
+  EventContext ctx;
+  ctx.schedule = &sched;
+
+  const auto e = earnings_implied_move(ps, ctx);
+  ASSERT_TRUE(e.has_value()) << e.error().to_string();
+  EXPECT_NEAR(*e, kTruthEmove, 0.25 * kTruthEmove)
+      << "eMove=" << *e << " truth=" << kTruthEmove
+      << " err=" << 100.0 * (*e - kTruthEmove) / kTruthEmove << "%";
+
+  // Non-vacuity: the accuracy above must come from the JOINT fit, not from a
+  // lucky two-pillar fallback. The `_ex` overload reports which solve ran.
+  const auto ex = earnings_implied_move_ex(ps, ctx);
+  ASSERT_TRUE(ex.has_value()) << ex.error().to_string();
+  EXPECT_EQ(ex->method, EmoveMethod::Joint);
+  EXPECT_EQ(ex->expiry_count, Ts.size());
+  EXPECT_DOUBLE_EQ(ex->emove, *e);
+
+  // And the two-pillar solve this replaced really is the +173% answer, so the
+  // test is measuring a fix and not an unrelated coincidence.
+  const double w1 = ps.total_variance(ps.forward_at(Ts[0]), Ts[0]);
+  const double w2 = ps.total_variance(ps.forward_at(Ts[1]), Ts[1]);
+  const auto two_pillar = implied_emove(w1, Ts[0], ns[0], w2, Ts[1], ns[1]);
+  ASSERT_TRUE(two_pillar.has_value()) << two_pillar.error().to_string();
+  EXPECT_GT(*two_pillar, 2.5 * kTruthEmove)
+      << "two-pillar=" << *two_pillar << " (err "
+      << 100.0 * (*two_pillar - kTruthEmove) / kTruthEmove << "%)";
+}
+
 TEST(AnalyticsAggregate, EarningsImpliedMoveFlatSurfaceIsZero) {
   // No event lump: both slices are pure diffusion at the same σ, so the solved
   // e² clamps to ~0.

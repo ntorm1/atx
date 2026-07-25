@@ -581,6 +581,39 @@ namespace {
   return total;
 }
 
+// The quantity `DispersionRiskLimits::max_gross_vega` is actually compared
+// against: the risk probe's GROSS vega, Σ|straddle_vega × straddle_qty| over the
+// index leg AND every basket leg (`dispersion_strategy.cpp`, `risk_probe`).
+//
+// The X3 limit tests used to read `track.gross_vega.front()` instead, which is
+// the NET book vega — a vega-neutral dispersion book drives that to zero by
+// construction, so "0.25 × natural_vega" was 0.25 of a floating-point residual.
+// It happened to be a denormal-ish nonzero, so the tests passed; E1 (AN-P1-1)
+// rescaled the book and the residual now cancels to EXACTLY 0.0, which turned
+// the limit into 0.0 == "unlimited" and unmasked the latent defect. Measuring
+// the probe's own quantity from the strategy's own builder makes these tests
+// independent of that cancellation.
+[[nodiscard]] double natural_gross_vega(const PitFixture &fixture,
+                                        const std::vector<UniverseRow> &schedule,
+                                        const DispersionBacktestConfig &config) {
+  auto snap = MarketSnapshot::load(fixture.clock.refs().front().archive_path);
+  EXPECT_TRUE(snap.has_value());
+  if (!snap.has_value()) {
+    return 0.0;
+  }
+  DispersionStrategy strategy = make_dispersion_backtest_strategy(schedule, config, "SPY");
+  auto book = strategy.build_book(*snap);
+  EXPECT_TRUE(book.has_value());
+  if (!book.has_value()) {
+    return 0.0;
+  }
+  double gross = std::fabs(book->index_leg.straddle_vega * book->index_leg.straddle_qty);
+  for (const DispersionLeg &leg : book->name_legs) {
+    gross += std::fabs(leg.straddle_vega * leg.straddle_qty);
+  }
+  return gross;
+}
+
 } // namespace
 
 // X2. Frictions were never wired into the dispersion path — RunConfig carried
@@ -631,7 +664,7 @@ TEST(DispersionWorkflow, TightGrossVegaLimitClampsTheBookAndRecordsTheReason) {
   auto unlimited =
       run_dispersion_surface_backtest(fixture.clock, schedule, pit_backtest_config(), "SPY");
   ASSERT_TRUE(unlimited) << unlimited.error().to_string();
-  const double natural_vega = std::fabs(unlimited->track.gross_vega.front());
+  const double natural_vega = natural_gross_vega(fixture, schedule, pit_backtest_config());
   ASSERT_GT(natural_vega, 0.0);
   // Default limits are unlimited => no risk telemetry columns at all, which is
   // what keeps the pinned golden's schema unchanged.
@@ -656,6 +689,9 @@ TEST(DispersionWorkflow, TightGrossVegaLimitClampsTheBookAndRecordsTheReason) {
   ASSERT_FALSE(scale->empty());
   EXPECT_LT(scale->front(), 1.0) << "the clamp factor must be recorded";
   EXPECT_GT(scale->front(), 0.0);
+  // And it is the RIGHT factor: limit / requested == 0.25 by construction, now
+  // that `natural_vega` measures the quantity the probe actually compares.
+  EXPECT_NEAR(scale->front(), 0.25, 1.0e-9) << "clamp scale must equal limit/requested";
   EXPECT_EQ(reason->front(), static_cast<double>(RiskBreachReason::GrossVega));
   EXPECT_EQ(to_string(RiskBreachReason::GrossVega), "max_gross_vega");
 
@@ -671,7 +707,8 @@ TEST(DispersionWorkflow, HaltActionOpensNoRiskAndIsNeverSilent) {
   auto unlimited =
       run_dispersion_surface_backtest(fixture.clock, schedule, pit_backtest_config(), "SPY");
   ASSERT_TRUE(unlimited) << unlimited.error().to_string();
-  const double natural_vega = std::fabs(unlimited->track.gross_vega.front());
+  const double natural_vega = natural_gross_vega(fixture, schedule, pit_backtest_config());
+  ASSERT_GT(natural_vega, 0.0);
 
   DispersionBacktestConfig halting = pit_backtest_config();
   halting.limits.max_gross_vega = 0.25 * natural_vega;

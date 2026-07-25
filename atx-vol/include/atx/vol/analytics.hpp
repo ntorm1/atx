@@ -34,9 +34,35 @@
 //   - Constant-maturity quantities are read straight off the surface's own
 //     interpolation (`iv(K,T)` / `total_variance(K,T)`); this module never
 //     re-interpolates vol linearly in T.
-//   - Delta strikes use `resolve_strike_by_delta` (American |delta|, absolute
-//     target). Risk reversal uses the equity sign `RR = σ(Δ-put) − σ(Δ-call)`
-//     (positive = downside rich). Vols are annualized lognormal.
+//   - Delta strikes are resolved under an EXPLICIT `DeltaConvention`
+//     (projection.hpp), defaulting to `American` — `resolve_strike_by_delta`,
+//     i.e. dP/dS on the American mark, absolute target. See the
+//     "Delta conventions" section below: this used to be an undocumented
+//     module-local choice, and it does NOT agree with the European B76 forward
+//     delta that `projection.cpp` solves or with `contract_projection.cpp`'s
+//     carry-seeded American solve (AN-P2-6). Risk reversal uses the equity sign
+//     `RR = σ(Δ-put) − σ(Δ-call)` (positive = downside rich). Vols are
+//     annualized lognormal.
+//
+// ## Delta conventions (AN-P2-6) — read before comparing a Δ-strike to anyone
+//
+// THREE different "25-delta strikes" exist in this library, and they are three
+// different strikes:
+//
+//   1. `DeltaConvention::American` — dP/dS on the American mark
+//      (`resolve_strike_by_delta`, strategy.hpp). What THIS module has always
+//      used and still defaults to, so no existing number moves.
+//   2. `DeltaConvention::Forward` — European Black-76 FORWARD delta, N(d1) for a
+//      call and N(d1)−1 for a put. What `projection.cpp`'s coordinate solves use,
+//      and the vendor-standard quote convention. Select it here for
+//      vendor-comparable wings/RR/BF.
+//   3. `contract_projection.cpp` solves American delta seeded from a
+//      carry-discounted spot-delta inversion — a third route, not selectable
+//      here, and documented in that module.
+//
+// (1) and (2) diverge with carry and with early-exercise premium; on a
+// high-carry or deep-ITM name the gap is economically material. Anything that
+// compares an atx RR/BF against a vendor's must pin the convention explicitly.
 //
 // A `PricedSurface` does NOT retain an `EventSchedule`; earnings-dependent
 // fields require an `EventContext` on the bare-surface path (the session
@@ -63,7 +89,11 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/types.hpp" // Side, Result, Status, ErrorCode
+#include "atx/vol/event_vol.hpp" // EventSchedule, EmoveSolution (earnings_implied_move_ex)
+// FIX-E M-9: `DeltaConvention` lives in types.hpp now. This header used to pull
+// the whole projection spine (vol_surface / correction / curve / universe) to
+// name one enum.
+#include "atx/vol/types.hpp" // Side, Result, Status, ErrorCode, DeltaConvention
 
 namespace atx::vol {
 
@@ -107,6 +137,11 @@ struct RndConfig {
 struct AnalyticsConfig {
   TenorGrid tenors = TenorGrid::standard();
   std::vector<double> delta_points = {0.25, 0.10}; // abs deltas for wings/RR/BF
+  // E5 / AN-P2-6. Convention the wing / RR / BF strike solves use. `American`
+  // (dP/dS on the American mark) is the shipped behaviour and the default —
+  // selecting `Forward` gives vendor-comparable Black-76 forward-delta strikes.
+  // See the "Delta conventions" section in this header's module comment.
+  DeltaConvention delta_convention = DeltaConvention::American;
   std::vector<double> moneyness_points = {0.90, 0.95, 1.00, 1.05, 1.10}; // K = F·m
   double skew_k_ref = 0.10; // 3-pivot skew/curvature pivot
   bool ex_earnings = true;  // censored (de-earnings-ed) ATM
@@ -243,6 +278,14 @@ struct SurfaceAnalytics {
   double ts_ratio_1m_3m = 0.0; // σ_1m / σ_3m
   bool backwardation = false;  // front in-range ATM > back in-range ATM
   bool valid = false;          // at least one in-range (non-extrapolated) tenor
+  // FIX-E M-5 / AN-P2-6. WHICH delta convention resolved this bundle's wings
+  // (`put_delta_vol` / `call_delta_vol` / `risk_reversal` / `butterfly`) —
+  // copied from the `AnalyticsConfig` that produced it. Without it the emitted
+  // bundle is a set of wing numbers with no statement of what "25 delta" meant,
+  // which is exactly where AN-P2-6's fragmentation actually bites: the knob is
+  // enforced at the API, but the ARTIFACT was unlabelled.
+  // `write_surface_analytics_csv` emits it in the meta header.
+  DeltaConvention delta_convention = DeltaConvention::American;
 };
 
 // ── Two-surface change analytics ────────────────────────────────────────────
@@ -277,6 +320,10 @@ struct SurfaceDiff {
   double sticky_delta_atm_pred = 0.0;  // 0
   double residual_atm_move = 0.0;      // observed Δσ_atm − sticky_strike_atm_pred
   bool valid = false;
+  // FIX-E M-5 / I-1. WHICH delta convention resolved `d_vol_fixed_delta`,
+  // `d_risk_reversal_25` and `d_butterfly_25` — copied from the config, and now
+  // actually HONOURED by `compute_surface_diff` (it used to be ignored here).
+  DeltaConvention delta_convention = DeltaConvention::American;
 };
 
 // ── Primitives (public: composable and unit-testable) ───────────────────────
@@ -288,18 +335,43 @@ struct SurfaceDiff {
 [[nodiscard]] double atmf_vol(const PricedSurface &ps, double T) noexcept;
 [[nodiscard]] double atmf_forward(const PricedSurface &ps, double T) noexcept;
 
-// Smile vol at the strike whose American |delta| equals `abs_delta` on `side`.
+// E5 / AN-P2-6. The strike whose |delta| equals `abs_delta` on `side`, under an
+// EXPLICIT convention. `American` delegates to `resolve_strike_by_delta`
+// (strategy.hpp) — bit-identical to the pre-E5 behaviour. `Forward` solves the
+// European Black-76 forward-delta strike:
+//
+//     N(d1) = Δ_call  /  N(d1) − 1 = −Δ_put   =>   K = F·exp(−z·v + v²/2)
+//
+// with z = N⁻¹(Δ) for a call, N⁻¹(1−Δ) for a put, and v = σ(K,T)·√T. Because σ
+// depends on K through the smile this is a fixed point, seeded at K = F and
+// iterated to a tight log-strike tolerance; on a flat smile it converges in one
+// step to the closed form.
+//
+// InvalidArgument if `abs_delta` ∉ (0,1), the tenor has no usable forward/vol,
+// or the target is unreachable.
+[[nodiscard]] Result<double> strike_at_delta(const PricedSurface &ps, double T, Side side,
+                                             double abs_delta,
+                                             DeltaConvention convention =
+                                                 DeltaConvention::American);
+
+// Smile vol at the strike whose |delta| equals `abs_delta` on `side`. The
+// convention defaults to `American`, which is what this module has always used.
 // InvalidArgument if `abs_delta` ∉ (0,1) or the target is unreachable.
 [[nodiscard]] Result<double> vol_at_delta(const PricedSurface &ps, double T, Side side,
-                                          double abs_delta);
+                                          double abs_delta,
+                                          DeltaConvention convention = DeltaConvention::American);
 
 // Smile vol at K = F(T)·moneyness (moneyness = 1.0 is ATMF). NaN outside domain.
 [[nodiscard]] double vol_at_moneyness(const PricedSurface &ps, double T, double moneyness) noexcept;
 
 // Risk reversal σ(Δ-put) − σ(Δ-call) and butterfly ½(σ_put+σ_call) − σ_atm at
-// the given absolute delta. InvalidArgument if either wing strike is unreachable.
-[[nodiscard]] Result<double> risk_reversal(const PricedSurface &ps, double T, double abs_delta);
-[[nodiscard]] Result<double> butterfly(const PricedSurface &ps, double T, double abs_delta);
+// the given absolute delta, under the given convention (default `American`).
+// InvalidArgument if either wing strike is unreachable.
+[[nodiscard]] Result<double> risk_reversal(const PricedSurface &ps, double T, double abs_delta,
+                                           DeltaConvention convention =
+                                               DeltaConvention::American);
+[[nodiscard]] Result<double> butterfly(const PricedSurface &ps, double T, double abs_delta,
+                                       DeltaConvention convention = DeltaConvention::American);
 
 // ATM level, skew slope ∂σ/∂k, curvature ∂²σ/∂k² via a 3-pivot quadratic through
 // k ∈ {−k_ref, 0, +k_ref}. `valid` is false if any pivot is NaN.
@@ -335,9 +407,19 @@ struct SurfaceDiff {
 [[nodiscard]] double atmf_vol_ex_earnings(const PricedSurface &ps, double T,
                                           const EventContext &ctx) noexcept;
 
-// Implied per-event earnings move from the two fitted expiries bracketing the
-// next earnings date. InvalidArgument if no such bracket exists or the pair does
-// not identify eMove (see event_vol.hpp::implied_emove).
+// E3a / AN-P1-3. Implied per-event earnings move, solved over ALL fitted
+// expiries via `implied_emove_joint` (event_vol.hpp): the identified joint
+// {eMove, st, lt, decay} fit when the pillar set supports it, falling back to
+// the pre-E3a two-pillar bracket when it does not. This `_ex` overload reports
+// WHICH solve produced the answer (`EmoveSolution::method`) along with the joint
+// fit's outcome code, residual and expiry count.
+[[nodiscard]] Result<EmoveSolution> earnings_implied_move_ex(const PricedSurface &ps,
+                                                             const EventContext &ctx);
+
+// Back-compatible scalar projection of `earnings_implied_move_ex`.
+// InvalidArgument if the schedule is null or fewer than two expiries are usable;
+// NotFound if no adjacent pair brackets an event and the joint fit was not
+// available either.
 [[nodiscard]] Result<double> earnings_implied_move(const PricedSurface &ps,
                                                    const EventContext &ctx);
 

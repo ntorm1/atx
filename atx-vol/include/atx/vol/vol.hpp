@@ -175,8 +175,43 @@
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/dispersion.hpp"
 #include "atx/vol/dispersion_backtest.hpp"
+#include "atx/vol/dispersion_strangle.hpp" // strangle DSL over the dispersion book
 #include "atx/vol/dispersion_workflow.hpp"
 #include "atx/vol/listed_dispersion.hpp"
 #include "atx/vol/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/listed_dispersion_strategy.hpp"
+#include "atx/vol/strategy.hpp" // StrategySpec, LifecycleSpec, resolve_strike_by_delta
+
+// ── Surface analytics (E5 / AN-W) ───────────────────────────────────────────
+//
+// The analytics flagship — `compute_surface_analytics` (ATMF term structure,
+// delta wings / RR / BF, skew & curvature, forward vol), the
+// closed-form-validated density stack (Breeden-Litzenberger RND, implied
+// CDF/quantiles, BKM moments, the OTM log-strip MFIV / variance swap), the
+// implied-correlation helpers, and the SpiderRock-parity earnings-censored ATM
+// pipeline.
+//
+// These were absent from the umbrella before E5, which made the layer
+// effectively unshippable through the one-include public API: a caller who
+// included `atx/vol/vol.hpp` could not name `AnalyticsConfig`,
+// `compute_surface_analytics`, `risk_neutral_density`, `EventSchedule`,
+// `fit_earnings_term` or the vol-time clock at all. `vol_umbrella_test.cpp` now
+// names a symbol from EACH of the headers below, so dropping one fails a test
+// instead of silently shrinking the public surface again.
+//
+// Delta-convention note (AN-P2-6): `analytics.hpp` documents the three
+// "25-delta strike" conventions that exist in this library and exposes the
+// choice as `AnalyticsConfig::delta_convention` (`DeltaConvention`,
+// single-sourced from `projection.hpp`). It defaults to `American` — the
+// shipped behaviour.
+#include "atx/vol/analytics.hpp"         // SurfaceAnalytics, RND/BKM, var swap, implied corr
+#include "atx/vol/dense_slice.hpp"       // densified convex slice fit
+#include "atx/vol/earnings_term_fit.hpp" // joint {eMove, st, lt, decay} censored term fit
+#include "atx/vol/event_vol.hpp"         // EventSchedule, censoring, implied_emove_joint
+#include "atx/vol/sr_tenor_grid.hpp"     // SpiderRock 12-point native tenor grid
+#include "atx/vol/vol_time.hpp"          // hybrid business/vol-time clock
+
+// ── Reporting artifacts ─────────────────────────────────────────────────────
+#include "atx/vol/run_report.hpp" // run-directory metric / series writers
+#include "atx/vol/tearsheet.hpp"  // TearSheet performance summary (+ benchmark-relative)
