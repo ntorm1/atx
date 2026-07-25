@@ -89,8 +89,20 @@ enum class Counter : unsigned {
   //     nothing and reads 0 while being perfectly healthy.
   //   * lanes patched back to scalar INSIDE a dispatched pack (all-ineligible packs,
   //     non-finite results). The pack was still dispatched; this counts dispatches,
-  //     not lanes — pair it with AmericanWrapperKnownScalarLanes for the lane view.
-  //   * AVX2 work reached by any route other than simd::american_put_boundary_batch
+  //     not lanes. There is NO counter that gives the lane view alongside it:
+  //     AmericanWrapperKnownScalarLanes is bumped ONLY inside
+  //     american_price_batch_resolved, so it does not exist at american_price_batch
+  //     at all, and at either entry it cannot see lanes the AVX2 driver patched to
+  //     scalar inside a pack it had already dispatched. The per-lane view is the
+  //     ROUTE output, not a counter: PriceBatchOutput::route[] at american_price_batch
+  //     and ResolvedAmericanPriceBatchRequest::pack_dispatch[] at the resolved entry.
+  //   * AVX2 dispatched from ANYWHERE outside american_batch.cpp's two entries. The
+  //     bumps live in the two CALLERS, not inside simd::american_put_boundary_batch,
+  //     so every OTHER caller of that same function dispatches AVX2 packs and bumps
+  //     nothing: bench/american_shootout_bench.cpp's run_boundary_batch (which backs
+  //     the registered american/boundary_batch/avx2 and .../avx2_qlfast rows) and the
+  //     direct call sites in simd_american_test.cpp, simd_vector_math_test.cpp and
+  //     american_batch_test.cpp. Likewise AVX2 reached by a different route entirely
   //     (e.g. the laned Greeks kernel in american_greeks_avx2.cpp).
   // Therefore: NON-ZERO proves complete packs went to AVX2; ZERO does NOT prove the
   // pack path is dead. It is not a general "the AVX2 path was taken" observable and
