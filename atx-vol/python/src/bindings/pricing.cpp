@@ -59,11 +59,12 @@ py::array_t<double> price_batch(const DoubleArray &f_array, const DoubleArray &k
 
   py::array_t<double> output(static_cast<py::ssize_t>(f.size()));
   std::vector<Side> sides(f.size(), side);
+  // Hoisted above the release (M3): `mutable_data()` reaches into a Python
+  // object's internals, and `american_slice` below already sets that precedent.
+  const std::span<double> out{output.mutable_data(), static_cast<std::size_t>(output.size())};
   {
     py::gil_scoped_release release;
-    atxvol::python::unwrap(black76_price_batch(
-        f, k, t, sigma, df, sides,
-        std::span<double>{output.mutable_data(), static_cast<std::size_t>(output.size())}));
+    atxvol::python::unwrap(black76_price_batch(f, k, t, sigma, df, sides, out));
   }
   return output;
 }
@@ -89,12 +90,10 @@ iv_batch(const DoubleArray &price_array, const DoubleArray &f_array, const Doubl
   py::array_t<double> output(static_cast<py::ssize_t>(f.size()));
   std::vector<Side> sides(f.size(), side);
   std::vector<Status> statuses(f.size());
+  const std::span<double> out{output.mutable_data(), static_cast<std::size_t>(output.size())};
   {
     py::gil_scoped_release release;
-    atxvol::python::unwrap(implied_vol_batch(
-        price, f, k, t, df, sides,
-        std::span<double>{output.mutable_data(), static_cast<std::size_t>(output.size())},
-        statuses));
+    atxvol::python::unwrap(implied_vol_batch(price, f, k, t, df, sides, out, statuses));
   }
   return {std::move(output), atxvol::python::to_status_array(statuses)};
 }
@@ -273,6 +272,17 @@ py::dict american_greeks_batch_py(const DoubleArray &s_array, const DoubleArray 
   PricingKernel kernel;
   kernel.isa = isa;
   kernel.analytic_greeks = analytic;
+  // Every `mutable_data()` hoisted above the release (M3).
+  simd::GreeksBatchSoA soa;
+  soa.delta = delta.mutable_data();
+  soa.gamma = gamma.mutable_data();
+  soa.vega = vega.mutable_data();
+  soa.theta = theta.mutable_data();
+  soa.rho = rho.mutable_data();
+  soa.vanna = vanna.mutable_data();
+  soa.volga = volga.mutable_data();
+  soa.charm = charm.mutable_data();
+  soa.price = price.mutable_data();
   {
     py::gil_scoped_release release;
     AmericanBatchInput in;
@@ -283,16 +293,6 @@ py::dict american_greeks_batch_py(const DoubleArray &s_array, const DoubleArray 
     in.r = book.r;
     in.q = book.q;
     in.side = book.side;
-    simd::GreeksBatchSoA soa;
-    soa.delta = delta.mutable_data();
-    soa.gamma = gamma.mutable_data();
-    soa.vega = vega.mutable_data();
-    soa.theta = theta.mutable_data();
-    soa.rho = rho.mutable_data();
-    soa.vanna = vanna.mutable_data();
-    soa.volga = volga.mutable_data();
-    soa.charm = charm.mutable_data();
-    soa.price = price.mutable_data();
     ws.reserve_lanes(book.n);
     atxvol::python::unwrap(american_greeks_batch(in, GreekFieldMask::All, soa, kernel, ws));
   }
@@ -322,12 +322,12 @@ american_iv_batch_py(const DoubleArray &price_array, double spot, const DoubleAr
   }
   py::array_t<double> ivs(static_cast<py::ssize_t>(k.size()));
   std::vector<Status> statuses(k.size());
+  const std::span<double> out{ivs.mutable_data(), static_cast<std::size_t>(ivs.size())};
   {
     py::gil_scoped_release release;
-    atxvol::python::unwrap(american_implied_vol_batch(
-        price, spot, k, t, r, q, side,
-        std::span<double>{ivs.mutable_data(), static_cast<std::size_t>(ivs.size())}, statuses,
-        method, tol, max_iter, opts, nullptr, warm_start_chain));
+    atxvol::python::unwrap(american_implied_vol_batch(price, spot, k, t, r, q, side, out,
+                                                      statuses, method, tol, max_iter, opts,
+                                                      nullptr, warm_start_chain));
   }
   return {std::move(ivs), atxvol::python::to_status_array(statuses)};
 }

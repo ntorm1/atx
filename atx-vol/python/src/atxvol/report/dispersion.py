@@ -118,7 +118,8 @@ def build_report_from_run(run_dir: str, path: str, *, label: str = "") -> str:
     """Render a `spy_dispersion_backtest` run directory into an HTML report.
 
     Raises `FileNotFoundError` if the directory carries none of `TRACK_NAMES`,
-    and `ValueError` if the run carries no `friction_regime` — see `REGIMES`.
+    and `atxvol.AtxError` with `code == ErrorCode.INVALID_ARGUMENT` if the run
+    carries no `friction_regime` — see `REGIMES`.
     """
     backtest = ""
     for name in TRACK_NAMES:
@@ -163,7 +164,12 @@ def _regime(spec: Mapping[str, str], source: str) -> tuple[str, str, str, str]:
     """
     key = str(spec.get(REGIME_KEY, "")).strip()
     if not key:
-        raise ValueError(
+        # A CODED error, like the rest of this surface. The refusal is a contract
+        # violation by the caller, and everywhere else in this layer that is an
+        # `AtxError` carrying `ErrorCode.INVALID_ARGUMENT` — which is PY-1's
+        # whole point. A caller wrapping the pipeline in `except av.AtxError`
+        # used to miss this one because it was a bare `ValueError`.
+        error = _av.AtxError(
             f"{source} carries no `{REGIME_KEY}`. Refusing to render: a dispersion "
             "headline is meaningless without the execution regime that produced "
             "it — on the pinned run the same strategy returns +247.41 "
@@ -172,6 +178,8 @@ def _regime(spec: Mapping[str, str], source: str) -> tuple[str, str, str, str]:
             f"`{REGIME_KEY}` (write_dispersion_tearsheet), or pass it in the "
             "metadata mapping."
         )
+        error.code = _av.ErrorCode.INVALID_ARGUMENT
+        raise error
     tone, badge, gloss = REGIMES.get(key, ("unknown", key.upper(), ""))
     return key, tone, badge, gloss
 
@@ -477,6 +485,7 @@ def build_report(result, sheet, meta: Mapping[str, str], path: str) -> str:
     `meta` must carry `friction_regime`; this entry point is held to exactly the
     same contract as `build_report_from_run` (both go through `_render`, which
     refuses first). An in-memory caller is not a licence to publish an
-    unqualified headline — it is the same number in the same document.
+    unqualified headline — it is the same number in the same document. The
+    refusal is an `atxvol.AtxError` with `code == ErrorCode.INVALID_ARGUMENT`.
     """
     return _render(result, sheet, dict(meta), {}, path, meta.get("strategy", ""))

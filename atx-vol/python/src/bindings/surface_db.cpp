@@ -117,20 +117,23 @@ py::dict priced_surface_grid(const PricedSurface &self, const DoubleArray &k_arr
       sides[i] = atxvol::python::decode_side(codes[i], i);
     }
   }
+  // Every `mutable_data()` hoisted above the release (M3): these reach into a
+  // Python object's internals, and `american_slice` in pricing.cpp already sets
+  // that precedent.
+  auto *iv_p = iv.mutable_data();
+  auto *w_p = w.mutable_data();
+  auto *value_p = value.mutable_data();
+  auto *delta_p = delta.mutable_data();
+  auto *gamma_p = gamma.mutable_data();
+  auto *vega_p = vega.mutable_data();
+  auto *theta_p = theta.mutable_data();
+  auto *rho_p = rho.mutable_data();
+  auto *vanna_p = vanna.mutable_data();
+  auto *volga_p = volga.mutable_data();
+  auto *charm_p = charm.mutable_data();
+  auto *status_p = status.mutable_data();
   {
     py::gil_scoped_release release;
-    auto *iv_p = iv.mutable_data();
-    auto *w_p = w.mutable_data();
-    auto *value_p = value.mutable_data();
-    auto *delta_p = delta.mutable_data();
-    auto *gamma_p = gamma.mutable_data();
-    auto *vega_p = vega.mutable_data();
-    auto *theta_p = theta.mutable_data();
-    auto *rho_p = rho.mutable_data();
-    auto *vanna_p = vanna.mutable_data();
-    auto *volga_p = volga.mutable_data();
-    auto *charm_p = charm.mutable_data();
-    auto *status_p = status.mutable_data();
     constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
     for (std::size_t i = 0; i < k.size(); ++i) {
       const Side side = sides[i];

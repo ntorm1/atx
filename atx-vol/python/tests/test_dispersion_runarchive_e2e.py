@@ -30,14 +30,48 @@ from pathlib import Path
 
 import pytest
 
-# The session scratchpad root that carries the pristine paired fixture. Absolute
-# and machine-specific by design; the guard below skips everywhere it is absent.
-_SP = Path(
+# Where the pristine paired fixture and the built CLI live.
+#
+# Both are resolvable rather than hardcoded (rev-ws-y M4). The original pinned an
+# agent session scratchpad — one user profile, one dead session UUID — plus a
+# fixed `C:\atx\build-rel\bin`, which meant the module was dead on arrival off one
+# box and its green there was an accident of which machine ran it. It is
+# `skipif`-guarded, so the failure mode is a permanent silent skip.
+#
+# Order: an explicit environment override, then a location derivable from this
+# checkout, then the historical absolute path (kept last so the box that carries
+# the fixture keeps running the test).
+_LEGACY_SP = Path(
     r"C:\Users\natha\AppData\Local\Temp\claude\c--atx"
     r"\b8ae4870-03de-493c-ad84-2006e8f7409e\scratchpad"
 )
+_REPO = Path(__file__).resolve().parents[3]   # <repo>/atx-vol/python/tests -> <repo>
+
+
+def _first_dir(*candidates: Path | None) -> Path:
+    for candidate in candidates:
+        if candidate is not None and candidate.is_dir():
+            return candidate
+    return candidates[-1] if candidates and candidates[-1] is not None else Path()
+
+
+_ENV_ROOT = os.environ.get("ATXVOL_FIXTURE_ROOT")
+# The root that carries BOTH `paired/run` (the pristine input) and `t7-check/run`
+# (the T7 golden `backtest.tsv` the dump test compares against byte-for-byte).
+_SP = _first_dir(
+    Path(_ENV_ROOT) if _ENV_ROOT else None,
+    _REPO / "atx-vol" / "python" / "tests" / "data" / "dispersion-e2e",
+    _LEGACY_SP,
+)
 _PAIRED_RUN = _SP / "paired" / "run"
-_BIN = Path(r"C:\atx\build-rel\bin")
+
+_ENV_BIN = os.environ.get("ATXVOL_BIN")
+_BIN = _first_dir(
+    Path(_ENV_BIN) if _ENV_BIN else None,
+    _REPO / "build-rel" / "bin",
+    _REPO / "build" / "bin",
+    Path(r"C:\atx\build-rel\bin"),
+)
 _EXE = _BIN / "atxvol_spy_dispersion_backtest.exe"
 
 # Known-good economics on this fixture (T7/T8 golden), formatted like the CLI's

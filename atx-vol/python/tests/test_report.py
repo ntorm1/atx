@@ -41,6 +41,35 @@ def test_series_color_never_cycles():
         theme.series_color(-1)
 
 
+def test_banner_text_clears_wcag_aa_on_every_tone():
+    # M1 (rev-ws-y): the band used to be white text on the saturated status
+    # colour — `ok` 3.74:1, `warn` 3.19:1, `unknown` 3.87:1 against a 4.5:1 bar,
+    # so three of four tones failed. `Banner` is the one component whose
+    # docstring makes an accessibility claim, so the claim is measured here.
+    # The palette itself is unchanged (it is validated as a set and shared by
+    # value with tools/spy_dispersion_tearsheet_report.py); the band is what
+    # changed.
+    for tone, color in theme.STATUS.items():
+        tint = theme.BANNER_TINT[tone]
+        badge = theme.contrast_ratio(theme.INK, tint)
+        body = theme.contrast_ratio(theme.INK_2, tint)
+        assert badge >= 4.5, f"{tone}: badge {badge:.2f}:1 on {tint}"
+        assert body >= 4.5, f"{tone}: detail/aside {body:.2f}:1 on {tint}"
+        # The colour is now carried by the leading rule — a non-text graphic,
+        # held to the 3:1 bar against the page surface it sits on.
+        rule = theme.contrast_ratio(color, theme.SURFACE)
+        assert rule >= 3.0, f"{tone}: rule {rule:.2f}:1 on the surface"
+        # And the tint must still read as a band, not as the page.
+        assert theme.contrast_ratio(tint, theme.SURFACE) > 1.0
+
+
+def test_contrast_ratio_is_the_wcag_formula():
+    # Anchors, so the helper the accessibility gate depends on is itself pinned.
+    assert theme.contrast_ratio("#000000", "#ffffff") == pytest.approx(21.0, abs=1e-9)
+    assert theme.contrast_ratio("#ffffff", "#ffffff") == pytest.approx(1.0, abs=1e-9)
+    assert theme.contrast_ratio("#0d9488", "#ffffff") == pytest.approx(3.74, abs=0.01)
+
+
 def test_stylesheet_defines_every_token_it_uses():
     css = theme.stylesheet()
     used = set(re.findall(r"var\((--[a-z0-9-]+)\)", css))
@@ -357,9 +386,32 @@ def test_build_report_from_run_refuses_a_track_with_no_regime(tmp_path):
 
     run = _write_run_dir(tmp_path, "surface_backtest.tsv", loose=True,
                          spec={"label": "spy_dispersion_82"})
-    with pytest.raises(ValueError, match="friction_regime"):
+    # The refusal is a CODED error, like the rest of this surface: a caller
+    # wrapping the pipeline in `except av.AtxError` must not miss this one
+    # because it was spelled `ValueError` (rev-ws-y minor).
+    with pytest.raises(av.AtxError, match="friction_regime") as excinfo:
         build_report_from_run(str(run), str(tmp_path / "out.html"))
+    assert excinfo.value.code == av.ErrorCode.INVALID_ARGUMENT
     assert not (tmp_path / "out.html").exists()
+
+
+def test_build_report_refuses_an_in_memory_run_with_no_regime(tmp_path):
+    # The in-memory entry point is held to the same contract, and to the same
+    # exception type: `build_report` writes the same HTML to the same path, and
+    # a reader cannot tell which entry point produced it.
+    from atxvol.report.dispersion import build_report
+
+    result = av.BacktestResult()
+    result.resize(2)
+    result.date = ["2026-01-02", "2026-01-05"]
+    result.ts_ns = [1, 2]
+    result.nav = [100.0, 101.0]
+    result.pnl_total = [0.0, 1.0]
+    out = tmp_path / "inmem.html"
+    with pytest.raises(av.AtxError, match="friction_regime") as excinfo:
+        build_report(result, av.tearsheet(result), {"label": "x"}, str(out))
+    assert excinfo.value.code == av.ErrorCode.INVALID_ARGUMENT
+    assert not out.exists()
 
 
 def test_build_report_from_run_renders_the_regime_banner(tmp_path):

@@ -192,7 +192,12 @@ QuoteFrame frame_from_arrays(std::string uid, std::string snapshot_iso, double s
   if (!(t_max > 0.0)) {
     throw py::value_error("no expiry in `expiry_iso` is after `snapshot_iso`");
   }
-  const double t_lo = std::max(1.0e-3, t_min * 0.5);
+  // The floor must never rise ABOVE the shortest expiry, or the bracket stops
+  // spanning the range the comment above promises (M5). The old 1e-3 floor did
+  // exactly that for a 0DTE/1DTE board — any `t_min` under ~2e-3 y (≈17 h). The
+  // curve is flat, so this changes no number on a board that already spanned;
+  // it makes the invariant the comment asserts the one the code enforces.
+  const double t_lo = std::max(1.0e-9, t_min * 0.5);
   const double t_hi = std::max(t_lo * 2.0, t_max * 1.5);
   frame.yc_pillar_t = {t_lo, t_hi};
   frame.yc_pillar_r = {rate, rate};

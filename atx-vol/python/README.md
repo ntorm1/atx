@@ -19,7 +19,7 @@
 Build from an environment where `VCPKG_ROOT` points at the vcpkg installation:
 
 ```powershell
-cd C:\atx\atx-vol\python
+cd <repo>\atx-vol\python
 python -m pip install .
 ```
 
@@ -222,7 +222,9 @@ The renderer looks for `surface_pnl_track.tsv`, `pnl_track.tsv`,
 ### The friction regime is mandatory
 
 `build_report_from_run` and `build_report` both **refuse** a run that carries no
-`friction_regime`, raising `ValueError`. This is not a formality: on the pinned
+`friction_regime`, raising `atxvol.AtxError` with
+`code == ErrorCode.INVALID_ARGUMENT` — the same coded channel as the rest of this
+API, so `except atxvol.AtxError` catches it. This is not a formality: on the pinned
 82-session run the same strategy over the same surfaces returns **+247.41**
 frictionless, **+12.81** under retail frictions and **-64.60** once square-root
 impact is added — roughly 95% friction-dominated, and the sign flips. An
