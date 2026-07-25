@@ -356,10 +356,23 @@ Result<std::int64_t> intcol(const DictTsv &tsv, std::size_t row, std::string_vie
   return Ok(parsed);
 }
 
-const std::string &str(const DictTsv &tsv, std::size_t row, std::string_view name) {
-  static const std::string kEmpty;
+// MINORS M10: the third accessor now fails on the same condition as the other
+// two. It used to answer a reference to a function-local static empty string
+// when the column was absent, so a missing STRING column degraded into "" and
+// flowed on while a missing NUMERIC column stopped the run. Two silent
+// outcomes, both demonstrated in dispersion_run_test.cpp: a trade_schedule.tsv
+// that had lost `roll_date` reconciled clean and published roll records with an
+// empty date, and contract marks that had lost `status` scored every lot "no
+// usable quote" and agreed with a reconciliation file that recorded the same
+// zero coverage for the same reason. Returned BY VALUE rather than by reference
+// so no caller can hold a pointer into a row: the strings are short artifact
+// cells and every existing caller already copied them.
+Result<std::string> str(const DictTsv &tsv, std::size_t row, std::string_view name) {
   const std::string *value = tsv.cell(row, name);
-  return value == nullptr ? kEmpty : *value;
+  if (value == nullptr) {
+    return recon_fail("missing string column " + std::string(name));
+  }
+  return Ok(*value);
 }
 
 Status close_to(double actual, double expected, double tolerance, const char *label) {
@@ -377,7 +390,8 @@ Result<std::vector<ReferenceReconRecord>> verify_schedule(const fs::path &path) 
   std::vector<std::pair<std::string, std::int64_t>> ordered_keys;
   for (std::size_t r = 0; r < tsv.rows.size(); ++r) {
     ATX_TRY(std::int64_t cohort, intcol(tsv, r, "cohort"));
-    const std::pair<std::string, std::int64_t> key{str(tsv, r, "roll_date"), cohort};
+    ATX_TRY(std::string roll_date, str(tsv, r, "roll_date"));
+    const std::pair<std::string, std::int64_t> key{roll_date, cohort};
     if (grouped.find(key) == grouped.end()) {
       if (!ordered_keys.empty()) {
         const auto &last = ordered_keys.back();
@@ -390,8 +404,11 @@ Result<std::vector<ReferenceReconRecord>> verify_schedule(const fs::path &path) 
       ordered_keys.push_back(key);
       grouped.emplace(key, std::vector<std::size_t>{});
     }
-    const std::array<std::string, 4> contract_key{str(tsv, r, "roll_date"), str(tsv, r, "symbol"),
-                                                  str(tsv, r, "raw_symbol"), str(tsv, r, "side")};
+    ATX_TRY(std::string symbol, str(tsv, r, "symbol"));
+    ATX_TRY(std::string raw_symbol, str(tsv, r, "raw_symbol"));
+    ATX_TRY(std::string side, str(tsv, r, "side"));
+    const std::array<std::string, 4> contract_key{roll_date, std::move(symbol),
+                                                  std::move(raw_symbol), std::move(side)};
     if (!seen_contracts.insert(contract_key).second) {
       return recon_fail("duplicate schedule contract");
     }
@@ -420,16 +437,21 @@ Result<std::vector<ReferenceReconRecord>> verify_schedule(const fs::path &path) 
           "roll_date", "cohort", "expiry_ts_ns",       "is_index",         "symbol",
           "uid",       "strike", "quantity",           "multiplier",       "normalized_weight",
           "target_straddle_vega"};
-      bool pair_ok = str(tsv, call, "side") == "C" && str(tsv, put, "side") == "P";
+      ATX_TRY(std::string call_side, str(tsv, call, "side"));
+      ATX_TRY(std::string put_side, str(tsv, put, "side"));
+      bool pair_ok = call_side == "C" && put_side == "P";
       for (const std::string_view field : kPairFields) {
-        if (str(tsv, call, field) != str(tsv, put, field)) {
+        ATX_TRY(std::string call_value, str(tsv, call, field));
+        ATX_TRY(std::string put_value, str(tsv, put, field));
+        if (call_value != put_value) {
           pair_ok = false;
         }
       }
       if (!pair_ok) {
         return recon_fail("invalid call/put pair for roll");
       }
-      const bool is_index = str(tsv, call, "is_index") == "1";
+      ATX_TRY(std::string index_flag, str(tsv, call, "is_index"));
+      const bool is_index = index_flag == "1";
       if (is_index != (pair_index == 0)) {
         return recon_fail("index pair ordering mismatch for roll");
       }
@@ -523,22 +545,29 @@ verify_marks_and_reconciliation(const fs::path &marks_path, const fs::path &reco
 
   auto mark_key = [&](std::size_t row) -> Result<std::tuple<std::int64_t, std::string, std::string>> {
     ATX_TRY(std::int64_t cohort, intcol(marks, row, "cohort"));
-    return Ok(std::make_tuple(cohort, str(marks, row, "raw_symbol"), str(marks, row, "side")));
+    ATX_TRY(std::string raw_symbol, str(marks, row, "raw_symbol"));
+    ATX_TRY(std::string side, str(marks, row, "side"));
+    return Ok(std::make_tuple(cohort, std::move(raw_symbol), std::move(side)));
   };
-  auto raw_ok = [&](std::size_t row) { return str(marks, row, "status") == "Ok"; };
+  auto raw_ok = [&](std::size_t row) -> Result<bool> {
+    ATX_TRY(std::string status, str(marks, row, "status"));
+    return Ok(status == "Ok");
+  };
 
   std::map<std::string, std::vector<std::size_t>> by_date;
   std::vector<std::string> dates;
   std::set<std::array<std::string, 5>> seen_marks;
   for (std::size_t r = 0; r < marks.rows.size(); ++r) {
     ATX_TRY(std::int64_t cohort, intcol(marks, r, "cohort"));
-    const std::array<std::string, 5> key{str(marks, r, "date"), str(marks, r, "role"),
-                                         std::to_string(cohort), str(marks, r, "raw_symbol"),
-                                         str(marks, r, "side")};
+    ATX_TRY(std::string date, str(marks, r, "date"));
+    ATX_TRY(std::string role, str(marks, r, "role"));
+    ATX_TRY(std::string raw_symbol, str(marks, r, "raw_symbol"));
+    ATX_TRY(std::string side, str(marks, r, "side"));
+    const std::array<std::string, 5> key{date, std::move(role), std::to_string(cohort),
+                                         std::move(raw_symbol), std::move(side)};
     if (!seen_marks.insert(key).second) {
       return recon_fail("duplicate contract mark");
     }
-    const std::string date = str(marks, r, "date");
     if (by_date.find(date) == by_date.end()) {
       if (!dates.empty() && date <= dates.back()) {
         return recon_fail("contract mark dates are not ordered");
@@ -552,7 +581,7 @@ verify_marks_and_reconciliation(const fs::path &marks_path, const fs::path &reco
   std::unordered_map<std::string, std::size_t> expected_by_date;
   std::vector<std::string> expected_dates;
   for (std::size_t r = 0; r < expected.rows.size(); ++r) {
-    const std::string date = str(expected, r, "date");
+    ATX_TRY(std::string date, str(expected, r, "date"));
     if (expected_by_date.emplace(date, r).second) {
       expected_dates.push_back(date);
     } else {
@@ -573,9 +602,10 @@ verify_marks_and_reconciliation(const fs::path &marks_path, const fs::path &reco
     std::vector<std::size_t> entries;
     std::vector<std::size_t> held;
     for (const std::size_t row : daily) {
-      if (str(marks, row, "role") == "Entry") {
+      ATX_TRY(std::string role, str(marks, row, "role"));
+      if (role == "Entry") {
         entries.push_back(row);
-      } else if (str(marks, row, "role") == "Held") {
+      } else if (role == "Held") {
         held.push_back(row);
       }
     }
@@ -595,7 +625,8 @@ verify_marks_and_reconciliation(const fs::path &marks_path, const fs::path &reco
       }
       held_count = static_cast<std::int64_t>(entries.size());
       for (const std::size_t row : entries) {
-        quote_count += raw_ok(row) ? 1 : 0;
+        ATX_TRY(bool quote_usable, raw_ok(row));
+        quote_count += quote_usable ? 1 : 0;
       }
       ATX_TRY(held_cohort, intcol(marks, entries.front(), "cohort"));
     } else {
@@ -616,7 +647,9 @@ verify_marks_and_reconciliation(const fs::path &marks_path, const fs::path &reco
         ATX_TRY(double model_mark, dec(marks, row, "model_mark"));
         ATX_TRY(double prior_model_mark, dec(marks, prior, "model_mark"));
         model_pnl += scale * (model_mark - prior_model_mark);
-        if (raw_ok(row) && raw_ok(prior)) {
+        ATX_TRY(bool row_quote_usable, raw_ok(row));
+        ATX_TRY(bool prior_quote_usable, raw_ok(prior));
+        if (row_quote_usable && prior_quote_usable) {
           ATX_TRY(double raw_mid, dec(marks, row, "raw_mid"));
           ATX_TRY(double prior_raw_mid, dec(marks, prior, "raw_mid"));
           quote_pnl += scale * (raw_mid - prior_raw_mid);
@@ -680,7 +713,9 @@ Status verify_backtest(const fs::path &backtest_path, const fs::path &reconcilia
     return recon_fail("backtest/reconciliation dates disagree");
   }
   for (std::size_t r = 0; r < rows.rows.size(); ++r) {
-    if (str(rows, r, "date") != str(reconciliation, r, "date")) {
+    ATX_TRY(std::string backtest_date, str(rows, r, "date"));
+    ATX_TRY(std::string reconciliation_date, str(reconciliation, r, "date"));
+    if (backtest_date != reconciliation_date) {
       return recon_fail("backtest/reconciliation dates disagree");
     }
   }
