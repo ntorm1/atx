@@ -16,10 +16,12 @@
 // symbol table (`SurfaceDb::upsert_symbol`) BEFORE any populate runs. For each
 // symbol it takes one representative board, classifies it through the shared
 // atx-vol fit-policy seam (`select_fit_policy`, optionally the full held-out
-// `select_curve` search), and stores a `SymbolFitConfig` whose curve family is
-// pinned to the policy's choice. A symbol whose board cannot be selected on is
-// stored DISABLED (fail closed — never silently served), the top-level call
-// still succeeding so one bad board never sinks a universe build.
+// `select_curve` search), and stores a `SymbolFitConfig` carrying the chosen
+// curve family — as a PREFERRED ROUTE by default, or as a hard PIN when
+// `AutoConfigSpec::pin_curve_family` is set (see there for why the default is
+// not to pin). A symbol whose board cannot be selected on is stored DISABLED
+// (fail closed — never silently served), the top-level call still succeeding so
+// one bad board never sinks a universe build.
 //
 // ── Ownership / thread-safety ────────────────────────────────────────────────
 //
@@ -72,6 +74,32 @@ struct AutoConfigSpec {
   // false (default) => a symbol already present in the manifest is left
   // UNTOUCHED (idempotent resume; operator overrides win). true => overwrite it.
   bool overwrite_existing{false};
+  // Does the selected curve family become a HARD PIN in the stored config
+  // (`SymbolFitConfig::pin_curve`), or only the preferred route?
+  //
+  // false (DEFAULT) => `pin_curve` is left false. The family this stage chose is
+  // still written to `SymbolFitConfig::curve` (an operator can read which family
+  // the policy liked, and `--pin-curve-family true` on the CLI turns it into a
+  // pin), but the fit AUTO-ROUTES: `PricerFitter` re-derives the decision per
+  // board and — crucially — keeps BOTH of its recovery ladders alive, the
+  // construction-failure ladder and the admission-rejection ladder
+  // (`pricer_fitter.cpp`'s `auto_routed`, which is false whenever anything is
+  // pinned). A production build over real OPRA boards lost 10 of 45 cells to
+  // marginal, single-attempt admission rejections that those ladders exist to
+  // recover; the pin was switched on for 100% of symbols, so the ladders were
+  // off for 100% of cells.
+  //
+  // true => `pin_curve` is set, restoring the pre-2026-07-25 behaviour: exactly
+  // one curve-family attempt per cell, no recovery. The pin's "never silently
+  // substituted" immunity is meant for an OPERATOR's explicit instruction; a
+  // machine-generated per-symbol guess is not that, which is why it is opt-in.
+  //
+  // Also gates the LinearVariance fail-closed guard: a pinned LinearVariance
+  // config makes the risk pipeline hard-reject EVERY cell of that symbol
+  // ("invalid correctness policy for requested risk surface"), so when this is
+  // true such a symbol is disabled at config time and named in
+  // `failed_symbols` rather than failing 100% of its cells at fit time.
+  bool pin_curve_family{false};
 };
 
 // What `generate_symbol_configs` did. The three disposition counters partition
@@ -94,13 +122,16 @@ struct AutoConfigReport {
 // index recipe (`seed_symbol_config`); otherwise build the board's `OptionChain`
 // (`OptionChain::from_frame`, the corpus_board_fit path), classify it with
 // `select_fit_policy`, and store `symbol_config_from_preset(spec.preset)` with
-// the policy's curve pinned (`pin_curve = true`, `curve = decision.curve`). When
-// `spec.deep_selection`, `select_curve`'s held-out winner is pinned instead,
-// falling back to the fit-policy decision on a NotFound/Unavailable selector
-// outcome. A symbol whose board fails to build a selectable underlying — or whose
-// deep selection fails with a hard (non-fallback) error, or throws — is stored
-// DISABLED (`symbol_config_from_preset(spec.preset)` with `enabled = false`) and
-// recorded in `failed_symbols` (`n_disabled_failed`); the call still succeeds.
+// the policy's curve recorded (`curve = decision.curve`) and
+// `pin_curve = spec.pin_curve_family` (default false — see `AutoConfigSpec`).
+// When `spec.deep_selection`, `select_curve`'s held-out winner is recorded
+// instead, falling back to the fit-policy decision on a NotFound/Unavailable
+// selector outcome. A symbol whose board fails to build a selectable underlying
+// — or whose deep selection fails with a hard (non-fallback) error, or throws, or
+// (when pinning) whose chosen family is `LinearVariance`, which the risk pipeline
+// refuses outright — is stored DISABLED (`symbol_config_from_preset(spec.preset)`
+// with `enabled = false`) and recorded in `failed_symbols` (`n_disabled_failed`);
+// the call still succeeds.
 //
 // @return the disposition report, or an Error only on a db write failure
 //         (`upsert_symbol` IoError/ParseError propagated). An empty `boards`

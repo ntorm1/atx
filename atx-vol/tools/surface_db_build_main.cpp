@@ -14,7 +14,8 @@
 //   atx-vol-surface-db-build --db <root> --hive <root>
 //       --from YYYY-MM-DD --to YYYY-MM-DD
 //       [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045]
-//       [--deep-selection] [--fit-workers N] [--report out.csv] [--max-failures N]
+//       [--deep-selection] [--pin-curve-family true|false]
+//       [--fit-workers N] [--report out.csv] [--max-failures N]
 //
 //   --db            SurfaceDb root (created if absent, else opened/resumed).
 //   --hive          OPRA hive v2 root holding date=<YYYY-MM-DD>/data.parquet.
@@ -27,6 +28,16 @@
 //                   match the rate the hive's quotes were priced under, or every
 //                   put-call-parity forward is wrong and every fit fails.
 //   --deep-selection  run the full held-out select_curve OOS search per symbol.
+//   --pin-curve-family true|false  store the auto-selected curve family as a HARD
+//                   PIN (default false). Pinned, each cell gets exactly ONE
+//                   family attempt: PricerFitter's construction-failure and
+//                   admission-rejection fallback ladders are both disabled for a
+//                   pinned symbol. Unpinned (default) the family is recorded as
+//                   the preferred route and the fit auto-routes with both ladders
+//                   live — a production build lost 10 of 45 cells to marginal
+//                   single-attempt rejections the ladders exist to recover. Pass
+//                   `true` to restore the old behaviour. Requires a value; a
+//                   missing or unrecognised one is a usage error (exit 2).
 //   --fit-workers   outer fit fan-out; 0 = auto (honors ATX_VOL_FIT_WORKERS).
 //   --report        also write the three-section CSV report to this path.
 //   --max-failures  cap on the printed `failed_cell` lines (default 32). Overflow
@@ -72,7 +83,8 @@ void print_usage(std::FILE *out) {
                "usage: atx-vol-surface-db-build --db <root> --hive <root> "
                "--from YYYY-MM-DD --to YYYY-MM-DD\n"
                "         [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045] "
-               "[--deep-selection] [--fit-workers N] [--report out.csv] "
+               "[--deep-selection] [--pin-curve-family true|false] "
+               "[--fit-workers N] [--report out.csv] "
                "[--max-failures N]\n");
 }
 
@@ -119,6 +131,24 @@ void print_usage(std::FILE *out) {
   }
   out = v;
   return true;
+}
+
+// Parse an explicit boolean flag value. Same strict-parsing discipline as
+// `parse_finite_double` above and for the same reason: the value decides whether
+// a production build gets one curve attempt per cell or the full fallback ladder,
+// so a typo must be a loud usage error, never a silent default. Only these six
+// spellings are accepted; anything else — including an ABSENT value, which the
+// caller passes in as "" — is rejected.
+[[nodiscard]] bool parse_bool(std::string_view text, bool &out) {
+  if (text == "true" || text == "1" || text == "on") {
+    out = true;
+    return true;
+  }
+  if (text == "false" || text == "0" || text == "off") {
+    out = false;
+    return true;
+  }
+  return false;
 }
 
 // Split a comma-separated list, trimming surrounding whitespace and dropping
@@ -260,6 +290,16 @@ int main(int argc, char **argv) {
       }
     } else if (a == "--deep-selection") {
       spec.auto_config.deep_selection = true;
+    } else if (a == "--pin-curve-family") {
+      const std::string_view text = nv();
+      if (!parse_bool(text, spec.auto_config.pin_curve_family)) {
+        std::fprintf(stderr,
+                     "atx-vol-surface-db-build: --pin-curve-family expects "
+                     "true|false (or 1|0, on|off), got '%.*s'\n",
+                     static_cast<int>(text.size()), text.data());
+        print_usage(stderr);
+        return 2;
+      }
     } else if (a == "--fit-workers") {
       spec.fit_workers = static_cast<unsigned>(std::strtoul(nv(), nullptr, 10));
       fit_workers_set = true;

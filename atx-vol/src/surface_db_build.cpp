@@ -32,10 +32,13 @@ using atx::core::ErrorCode;
 using atx::core::Ok;
 
 SymbolFitConfig seed_symbol_config(std::string_view symbol, FitPreset preset,
-                                   std::string_view index_symbol) {
+                                   std::string_view index_symbol, bool pin_curve_family) {
   SymbolFitConfig cfg = symbol_config_from_preset(preset);
   if (!index_symbol.empty() && symbol == index_symbol) {
-    cfg.pin_curve = true;
+    // The recipe is recorded either way; `pin_curve` decides whether it is a hard
+    // pin (one attempt, no recovery) or the family the auto route starts from
+    // with PricerFitter's two fallback ladders still live.
+    cfg.pin_curve = pin_curve_family;
     cfg.curve = CurveConfig{}; // default = the dense index recipe (node_cap 40)
   }
   return cfg;
@@ -106,13 +109,19 @@ namespace {
       return false;
     }
 
-    // Board-feature classification: pins the curve FAMILY. The numerical preset
-    // tier stays the operator-selected `spec.preset` (matching
+    // Board-feature classification: chooses the curve FAMILY. The numerical
+    // preset tier stays the operator-selected `spec.preset` (matching
     // populate_universe_streaming's seeding and the StoresConfigPerSymbol
     // contract); the policy decides the family, not the tier.
+    //
+    // `pin_curve` is the operator's call, not this stage's: pinned, the fit gets
+    // exactly one family attempt and PricerFitter's construction-failure and
+    // admission-rejection ladders are both dead for the symbol; unpinned
+    // (default), the family below is a recorded preference and the fit
+    // auto-routes with both ladders live.
     const FitDecision decision = select_fit_policy(under, board.symbol, board.fit_context, {});
     SymbolFitConfig cfg = symbol_config_from_preset(spec.preset);
-    cfg.pin_curve = true;
+    cfg.pin_curve = spec.pin_curve_family;
     cfg.curve = decision.curve;
 
     if (spec.deep_selection) {
@@ -120,17 +129,31 @@ namespace {
       const Result<SelectorResult> selected =
           select_curve(under, sp, production_selector_config());
       if (selected.has_value()) {
-        cfg.curve = selected->chosen; // pin the held-out winner
-        cfg.pin_curve = true;
+        cfg.curve = selected->chosen; // the held-out winner replaces the policy's
       } else {
         const ErrorCode code = selected.error().code();
         // NotFound (no scorable holdout) / Unavailable (budget) are not defects:
-        // fall back to the fit-policy decision curve already pinned above. Any
+        // fall back to the fit-policy decision curve already recorded above. Any
         // other error (e.g. InvalidArgument) is a hard selection failure.
         if (code != ErrorCode::NotFound && code != ErrorCode::Unavailable) {
           return false;
         }
       }
+    }
+
+    // A PINNED LinearVariance config is a guaranteed 100% cell loss, not a fit
+    // risk: the risk pipeline's input validation refuses it outright
+    // (`cfg_.curve->kind == VolCurveKind::LinearVariance` -> hard InvalidArgument,
+    // "invalid correctness policy for requested risk surface", pricer_fitter.cpp),
+    // so EVERY cell of the symbol fails identically, every run. Reachable here for
+    // any ultra-liquid index/ETF name that is not the one `--index` slot
+    // (`select_fit_policy`: IndexEtfUltraLiquid -> LinearVariance). Fail closed at
+    // CONFIG time so the symbol is named in `failed_symbols` instead of showing up
+    // as an unexplained `cells_failed` count. Unpinned the family is harmless —
+    // the fitter substitutes ConvexDense on the auto route — so the guard is
+    // scoped to the pin that makes it fatal.
+    if (cfg.pin_curve && cfg.curve.kind == VolCurveKind::LinearVariance) {
+      return false;
     }
 
     out = std::move(cfg);
@@ -176,10 +199,13 @@ Result<AutoConfigReport> generate_symbol_configs(SurfaceDb &db, std::span<const 
       continue;
     }
 
-    // The index leg is pinned to the dense recipe (shared with
-    // populate_universe_streaming), bypassing per-board selection.
+    // The index leg takes the dense recipe (shared with
+    // populate_universe_streaming), bypassing per-board selection. Whether that
+    // recipe is a hard pin is `spec.pin_curve_family` here too — the index leg is
+    // exactly where an unrecovered single attempt cost production cells.
     if (!spec.index_symbol.empty() && symbol == spec.index_symbol) {
-      const SymbolFitConfig cfg = seed_symbol_config(symbol, spec.preset, spec.index_symbol);
+      const SymbolFitConfig cfg =
+          seed_symbol_config(symbol, spec.preset, spec.index_symbol, spec.pin_curve_family);
       if (const Status up = db.upsert_symbol(symbol, cfg); !up.has_value()) {
         return Err(up.error());
       }

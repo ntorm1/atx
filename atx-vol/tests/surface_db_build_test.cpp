@@ -35,9 +35,11 @@
 #include "atx/vol/corpus.hpp"           // CorpusBoard
 #include "atx/vol/opra_batch.hpp"       // corpus_board_from_opra
 #include "atx/vol/opra_hive.hpp"        // OpraHiveSpec, load_opra_hive
+#include "atx/vol/profile.hpp"          // ProfileKind (FitContext::profile_override)
 #include "atx/vol/session.hpp"          // FitPreset
 #include "atx/vol/surface_db.hpp"       // SurfaceDb, SymbolFitConfig
 #include "atx/vol/surface_db_build.hpp" // AutoConfigSpec, AutoConfigReport, generate_symbol_configs
+#include "atx/vol/surface_db_populate.hpp" // UniversePopulateSpec, populate_universe_streaming
 #include "atx/vol/types.hpp"
 #include "atx/vol/vol_curve.hpp" // VolCurveKind
 
@@ -158,9 +160,9 @@ TEST(GenerateSymbolConfigs, OverwriteReplacesExisting) {
   EXPECT_DOUBLE_EQ(db.symbol_config("AAA")->band_k, auto_band_k); // restored
 }
 
-// The index symbol is pinned to the dense index recipe (ConvexDense), which
-// differs from the parsimonious family a non-index board is pinned to.
-TEST(GenerateSymbolConfigs, IndexSymbolPinnedDense) {
+// The index symbol takes the dense index recipe (ConvexDense), which differs
+// from the parsimonious family a non-index board's policy picks.
+TEST(GenerateSymbolConfigs, IndexSymbolGetsDenseRecipe) {
   const std::vector<CorpusBoard> boards = load_fixture_boards("index");
   SurfaceDb db = make_db("index");
 
@@ -172,13 +174,142 @@ TEST(GenerateSymbolConfigs, IndexSymbolPinnedDense) {
 
   const auto aaa = db.symbol_config("AAA");
   ASSERT_TRUE(aaa.has_value());
-  EXPECT_TRUE(aaa->pin_curve);
   EXPECT_EQ(aaa->curve.kind, VolCurveKind::ConvexDense); // dense index recipe
 
   const auto bbb = db.symbol_config("BBB");
   ASSERT_TRUE(bbb.has_value());
-  // A non-index board is pinned to the fit-policy family, not the dense recipe.
+  // A non-index board records the fit-policy family, not the dense recipe.
   EXPECT_NE(bbb->curve.kind, VolCurveKind::ConvexDense);
+}
+
+// ── FIX-B: the curve family is a PREFERRED ROUTE, not a pin, unless asked ─────
+//
+// A pinned config makes `PricerFitter::auto_routed` false, which switches OFF
+// both recovery ladders (construction-failure and admission-rejection) for every
+// cell of that symbol. This stage used to pin unconditionally, so the ladders
+// were dead for 100% of a production universe and a marginal admission rejection
+// became a hard cell loss. The pin is now the operator's explicit choice.
+
+// DEFAULT: no symbol is pinned — neither the policy-routed names nor the index
+// leg — while the chosen family is still recorded for the operator to read.
+TEST(GenerateSymbolConfigs, DoesNotPinCurveFamilyByDefault) {
+  const std::vector<CorpusBoard> boards = load_fixture_boards("nopin");
+  SurfaceDb db = make_db("nopin");
+
+  AutoConfigSpec spec;
+  spec.index_symbol = "AAA"; // the index leg is the other pin site
+  const auto rep = generate_symbol_configs(db, boards, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  ASSERT_EQ(rep->n_configured, 3u);
+
+  for (const char *sym : {"AAA", "BBB", "CCC"}) {
+    const auto cfg = db.symbol_config(sym);
+    ASSERT_TRUE(cfg.has_value()) << sym;
+    EXPECT_TRUE(cfg->enabled) << sym;
+    EXPECT_FALSE(cfg->pin_curve) << sym; // the ladder stays alive
+  }
+  // Unpinned does NOT mean unrecorded: the selected family is still stored.
+  EXPECT_EQ(db.symbol_config("AAA")->curve.kind, VolCurveKind::ConvexDense);
+  EXPECT_NE(db.symbol_config("BBB")->curve.kind, VolCurveKind::ConvexDense);
+}
+
+// The knob restores the old behaviour, at BOTH sites: the policy route and the
+// index leg. Asserted on the stored config, not on a log line.
+TEST(GenerateSymbolConfigs, PinCurveFamilyKnobPinsBothRoutes) {
+  const std::vector<CorpusBoard> boards = load_fixture_boards("dopin");
+  SurfaceDb db = make_db("dopin");
+
+  AutoConfigSpec spec;
+  spec.index_symbol = "AAA";
+  spec.pin_curve_family = true;
+  const auto rep = generate_symbol_configs(db, boards, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  ASSERT_EQ(rep->n_configured, 3u);
+
+  for (const char *sym : {"AAA", "BBB", "CCC"}) {
+    const auto cfg = db.symbol_config(sym);
+    ASSERT_TRUE(cfg.has_value()) << sym;
+    EXPECT_TRUE(cfg->pin_curve) << sym;
+  }
+  EXPECT_EQ(db.symbol_config("AAA")->curve.kind, VolCurveKind::ConvexDense);
+}
+
+// A board whose fit policy routes to LinearVariance is a guaranteed 100% cell
+// loss ONCE PINNED: the risk pipeline refuses the config outright, so every cell
+// fails identically with `invalid correctness policy for requested risk surface`
+// and the operator sees only a `cells_failed` number. It is rejected at CONFIG
+// time instead — disabled, named in `failed_symbols` — and its cells are never
+// attempted. `profile_override` is the same seam the ticker-seed table uses for a
+// real index/ETF name that is not the one `--index` slot.
+TEST(GenerateSymbolConfigs, PinnedLinearVarianceRejectedAtConfigTime) {
+  std::vector<CorpusBoard> boards = load_fixture_boards("linvar_pin");
+  ASSERT_FALSE(boards.empty());
+  for (CorpusBoard &b : boards) {
+    if (b.symbol == "BBB") {
+      b.fit_context.profile_override = ProfileKind::IndexEtfUltraLiquid;
+    }
+  }
+  SurfaceDb db = make_db("linvar_pin");
+
+  AutoConfigSpec spec;
+  spec.pin_curve_family = true;
+  const auto rep = generate_symbol_configs(db, boards, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string()); // top-level Ok
+  EXPECT_EQ(rep->n_symbols, 3u);
+  EXPECT_EQ(rep->n_configured, 2u);
+  EXPECT_EQ(rep->n_disabled_failed, 1u);
+  ASSERT_EQ(rep->failed_symbols.size(), std::size_t{1});
+  EXPECT_EQ(rep->failed_symbols.front(), "BBB");
+
+  const auto bbb = db.symbol_config("BBB");
+  ASSERT_TRUE(bbb.has_value());
+  EXPECT_FALSE(bbb->enabled); // fail closed, never silently served
+
+  // ...and the populate never attempts a fit for it: 3 disabled cells, 0 failed,
+  // and nothing in the per-cell failure channel.
+  UniversePopulateSpec pspec;
+  pspec.preset = FitPreset::Populate;
+  pspec.fit_workers = 1u;
+  const auto cov = populate_universe_streaming(db, boards, pspec);
+  ASSERT_TRUE(cov.has_value()) << (cov ? "" : cov.error().to_string());
+  EXPECT_EQ(cov->cells_failed, 0u);
+  EXPECT_TRUE(cov->failed_cells.empty());
+  bool saw_bbb = false;
+  for (const PopulateSymbolStats &s : cov->per_symbol) {
+    if (s.symbol != "BBB") {
+      continue;
+    }
+    saw_bbb = true;
+    EXPECT_EQ(s.n_disabled, 3u);
+    EXPECT_EQ(s.n_ok, 0u);
+    EXPECT_EQ(s.n_failed, 0u);
+  }
+  EXPECT_TRUE(saw_bbb);
+}
+
+// The same board UNPINNED is not a defect: the fitter substitutes ConvexDense for
+// a LinearVariance auto-route decision, so disabling the symbol here would throw
+// away cells that fit fine. The guard is scoped to the pin that makes it fatal.
+TEST(GenerateSymbolConfigs, UnpinnedLinearVarianceIsNotRejected) {
+  std::vector<CorpusBoard> boards = load_fixture_boards("linvar_nopin");
+  ASSERT_FALSE(boards.empty());
+  for (CorpusBoard &b : boards) {
+    if (b.symbol == "BBB") {
+      b.fit_context.profile_override = ProfileKind::IndexEtfUltraLiquid;
+    }
+  }
+  SurfaceDb db = make_db("linvar_nopin");
+
+  const auto rep = generate_symbol_configs(db, boards, AutoConfigSpec{}); // default: no pin
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_EQ(rep->n_configured, 3u);
+  EXPECT_EQ(rep->n_disabled_failed, 0u);
+
+  const auto bbb = db.symbol_config("BBB");
+  ASSERT_TRUE(bbb.has_value());
+  EXPECT_TRUE(bbb->enabled);
+  EXPECT_FALSE(bbb->pin_curve);
+  EXPECT_EQ(bbb->curve.kind, VolCurveKind::LinearVariance); // recorded, not pinned
 }
 
 // A board gutted to a single quote cannot support curve selection: it is stored
@@ -210,9 +341,10 @@ TEST(GenerateSymbolConfigs, SelectionFailureStoredDisabled) {
 }
 
 // deep_selection runs the full held-out select_curve search and still produces
-// enabled, pinned configs for genuinely fittable boards (smoke coverage of the
-// deep path beyond the 5 mandatory cases).
-TEST(GenerateSymbolConfigs, DeepSelectionPinsAndEnables) {
+// enabled configs for genuinely fittable boards (smoke coverage of the deep path
+// beyond the 5 mandatory cases). Its winner obeys `pin_curve_family` like the
+// policy route does — the ladder is not something the deep search opts out of.
+TEST(GenerateSymbolConfigs, DeepSelectionEnablesAndHonorsThePinKnob) {
   const std::vector<CorpusBoard> boards = load_fixture_boards("deep");
   SurfaceDb db = make_db("deep");
 
@@ -226,8 +358,19 @@ TEST(GenerateSymbolConfigs, DeepSelectionPinsAndEnables) {
   const auto aaa = db.symbol_config("AAA");
   ASSERT_TRUE(aaa.has_value());
   if (aaa->enabled) {
-    EXPECT_TRUE(aaa->pin_curve);
+    EXPECT_FALSE(aaa->pin_curve); // default: preferred route, ladder alive
     EXPECT_EQ(aaa->preset, FitPreset::Populate);
+  }
+
+  SurfaceDb pinned_db = make_db("deep_pinned");
+  AutoConfigSpec pinned = spec;
+  pinned.pin_curve_family = true;
+  const auto pinned_rep = generate_symbol_configs(pinned_db, boards, pinned);
+  ASSERT_TRUE(pinned_rep.has_value()) << (pinned_rep ? "" : pinned_rep.error().to_string());
+  const auto pinned_aaa = pinned_db.symbol_config("AAA");
+  ASSERT_TRUE(pinned_aaa.has_value());
+  if (pinned_aaa->enabled) {
+    EXPECT_TRUE(pinned_aaa->pin_curve);
   }
 }
 

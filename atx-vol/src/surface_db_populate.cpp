@@ -537,8 +537,15 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
       continue;
     }
     // Seeding recipe shared bit-for-bit with generate_symbol_configs (Task 4):
-    // the preset's config, dense-index-pinned for the index leg.
-    const SymbolFitConfig c = seed_symbol_config(sym, spec.preset, spec.index_symbol);
+    // the preset's config, dense-index-pinned for the index leg. The pin stays
+    // TRUE here on purpose: this seeding is a no-op inside `build_surface_db`
+    // (generate_symbol_configs has already configured every symbol, so the
+    // has_value() check above skips them all), and `UniversePopulateSpec` carries
+    // no operator knob — so flipping it would silently change the contract for
+    // direct callers of this driver without any way to opt back. The operator's
+    // choice lives on AutoConfigSpec::pin_curve_family, one stage up.
+    const SymbolFitConfig c = seed_symbol_config(sym, spec.preset, spec.index_symbol,
+                                                 /*pin_curve_family=*/true);
     const Status up = db.upsert_symbol(sym, c);
     if (!up) {
       return Err(up.error());

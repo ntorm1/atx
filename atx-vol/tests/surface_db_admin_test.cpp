@@ -311,7 +311,8 @@ TEST(SurfaceDbAdmin, DescribePartitionUnknownKeyIsNotFound) {
 // ── describe_symbol ─────────────────────────────────────────────────────────
 
 // An auto-configured symbol reports enabled, its stored preset, and the curve
-// family the fit-policy pinned.
+// family the fit-policy chose (recorded as the preferred route — the auto-config
+// stage does not pin unless asked, so the fitter's fallback ladders stay alive).
 TEST(SurfaceDbAdmin, DescribeSymbolReflectsStoredConfig) {
   const AdminFixture f = make_fixture("describe_sym");
   build_healthy_db(f);
@@ -322,7 +323,7 @@ TEST(SurfaceDbAdmin, DescribeSymbolReflectsStoredConfig) {
   EXPECT_EQ(sym->symbol, "AAA");
   EXPECT_TRUE(sym->enabled);
   EXPECT_EQ(sym->preset, FitPreset::Populate);
-  EXPECT_TRUE(sym->pin_curve); // generate_symbol_configs pins the policy's family
+  EXPECT_FALSE(sym->pin_curve); // generate_symbol_configs records, does not pin
 
   const auto stored = db.symbol_config("AAA");
   ASSERT_TRUE(stored.has_value());

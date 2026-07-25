@@ -71,7 +71,8 @@ configure line above.
 atx-vol-surface-db-build --db <root> --hive <root>
     --from YYYY-MM-DD --to YYYY-MM-DD
     [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045]
-    [--deep-selection] [--fit-workers N] [--report out.csv] [--max-failures N]
+    [--deep-selection] [--pin-curve-family true|false]
+    [--fit-workers N] [--report out.csv] [--max-failures N]
 ```
 
 | Flag | Required | Meaning |
@@ -80,10 +81,11 @@ atx-vol-surface-db-build --db <root> --hive <root>
 | `--hive <root>` | yes | OPRA hive-v2 root holding `date=<YYYY-MM-DD>/data.parquet`. |
 | `--from` / `--to` | yes | Inclusive date window (every calendar date in range is enumerated). |
 | `--symbols A,B,C` | no | CSV universe. **Omit (or empty) to discover** every underlying present in the window. Surrounding whitespace per field is trimmed. |
-| `--index SPY` | no | Designated index leg — pinned to the dense index recipe (bypasses per-board selection), for both config generation and the populate. |
+| `--index SPY` | no | Designated index leg — gets the dense index recipe (bypasses per-board selection), for both config generation and the populate. Whether that recipe is a hard **pin** is `--pin-curve-family`. |
 | `--preset NAME` | no | `fast` \| `accurate` \| `robust` \| `hft` \| `populate`. Default `populate`. Drives both the manifest seeding and the populate fit tier. |
 | `--r RATE` | no | Flat continuously-compounded carry rate (`OpraHiveSpec.r`). Default **`0.0`**. **Must match the rate the hive's quotes were priced under** — read [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing) before every run. Must be a finite number consuming the whole token; `abc`, `0.03x`, `nan`, `inf` and a missing value are all **exit 2**, never a silent `0.0`. Negative rates are accepted. |
-| `--deep-selection` | no | Additionally run the full held-out `select_curve` OOS search per symbol and pin its winner (falls back to the fit-policy decision when the selector has no scorable holdout). |
+| `--deep-selection` | no | Additionally run the full held-out `select_curve` OOS search per symbol and record its winner as that symbol's family (falls back to the fit-policy decision when the selector has no scorable holdout). Obeys `--pin-curve-family` like the cheap route does. |
+| `--pin-curve-family true\|false` | no | Default **`false`**. Store the auto-selected curve family as a **hard pin** (`true`) or as the preferred route only (`false`). Pinning gives each cell exactly one family attempt and **disables both fallback ladders** — read [The curve family is a route, not a pin](#the-curve-family-is-a-route-not-a-pin) before setting it. Requires a value: `--pin-curve-family` with a missing or unrecognised value is **exit 2**, never a silent default. Accepts `true\|1\|on` and `false\|0\|off`. |
 | `--fit-workers N` | no | Outer fit fan-out. `0` = auto (honors `ATX_VOL_FIT_WORKERS`); `1` = serial. |
 | `--report out.csv` | no | Also write the three-section CSV report to this path. |
 | `--max-failures N` | no | `32`. Cap on the printed `failed_cell` lines. Overflow is counted in `coverage.failed_cells_elided`, never dropped silently, and the `--report` CSV always carries the **full** list. `0` prints no per-cell detail at all. Same flag name, parsing and semantics as `atx-vol-surface-db verify`. |
@@ -103,6 +105,59 @@ grid, not a data defect. `n_load_errors` is the counter that means something is
 wrong. The two are classified structurally by the loader (a hole is a present,
 readable date file that does not carry that symbol), never guessed from an error
 code, so real corruption can never hide in hole noise.
+
+### The curve family is a route, not a pin
+
+Stage 1 classifies each symbol's board and picks a curve family. It used to store
+that choice as a **hard pin** (`SymbolFitConfig::pin_curve`) for **every** symbol,
+unconditionally. **As of 2026-07-25 it does not pin unless you ask
+(`--pin-curve-family true`).**
+
+The default flipped because a pin is not just a preference — it is an
+instruction to `PricerFitter` that the family must never be substituted. Inside
+the risk pipeline, `auto_routed` is false whenever anything is pinned, and that
+one boolean gates **both** recovery ladders:
+
+- the **construction-failure** ladder (the fit did not build → try the next
+  family), and
+- the **admission-rejection** ladder (the fit built but failed a no-arbitrage /
+  coverage gate → try the next family, each rung re-checked against the *full*
+  admission contract).
+
+So a pinned cell gets **exactly one curve-family attempt, with no recovery**. A
+production build over real OPRA data lost **10 of 45 cells** that way, and the
+per-cell reasons showed the failures were *marginal* — e.g. an SPY board rejected
+on butterfly with a slack of `0.000107`, a hair over the boundary — exactly the
+regime a different family is expected to recover. The ladders exist for this and
+were off for 100% of cells.
+
+Unpinned, nothing is lost: the chosen family is still written to the manifest
+(`atx-vol-surface-db config --symbol SYM` shows it, and `--pin-curve-family true`
+turns it back into a pin), the fitter re-derives the same policy decision per
+board, and the ladder is there when the first attempt does not survive admission.
+The "never silently substituted" immunity a pin buys is meant for an **operator's
+explicit instruction**; a machine-generated per-symbol guess is not that.
+
+**What `true` costs you.** It restores the old single-attempt behaviour exactly.
+Use it when you need a symbol's family held fixed across dates — a controlled
+comparison, or reproducing an older database.
+
+**What `false` costs you.** An *ambiguous* board (low classifier confidence) makes
+the fitter run its own held-out selector at fit time rather than taking the stored
+family, and a rejected board now pays for its ladder rungs. Both are extra work
+per cell, so a build over a large universe can take longer than the pinned run
+did. That is the intended trade: cells recovered for fit time spent.
+
+**The `LinearVariance` trap (only reachable with `true`).** The risk pipeline
+refuses a `LinearVariance` *pin* outright — `InvalidArgument: invalid correctness
+policy for requested risk surface`, on **every** cell of that symbol, every run.
+The fit policy routes any ultra-liquid index/ETF profile to that family, so this
+hits any index/ETF name in the universe that is not the single `--index` symbol.
+With `--pin-curve-family true`, such a symbol is now rejected at **config** time —
+stored **disabled** and named in `config.failed_symbols` — instead of silently
+turning into an unexplained `cells_failed` count. Unpinned the family is harmless
+(the fitter substitutes the dense model on the auto route), so the guard is scoped
+to the pin that makes it fatal.
 
 ### Interest rate / carry — the single most likely way a build produces nothing
 
@@ -247,6 +302,12 @@ atx-vol-surface-db-build \
 atx-vol-surface-db-build \
   --db /db --hive /hive --from 2026-07-01 --to 2026-07-31 --r 0.0425 \
   --preset robust --deep-selection --fit-workers 1
+
+# Restore the pre-2026-07-25 behaviour: the selected family is a HARD PIN, one
+# curve attempt per cell, no fallback ladder.
+atx-vol-surface-db-build \
+  --db /db --hive /hive --from 2026-07-01 --to 2026-07-31 --r 0.0425 \
+  --index SPY --pin-curve-family true
 ```
 
 **Every example passes `--r`.** Omitting it is a build at zero carry — see
@@ -302,7 +363,7 @@ retried on the next run exactly as before (see [Resume semantics](#resume-semant
 | --- | --- |
 | `0` | Build succeeded — including **partial** coverage, a no-op **resume**, and a graceful empty-window no-op. |
 | `1` | A build error — malformed hive spec, or a db config/write failure. Message on stderr, **no report printed**. |
-| `2` | A usage error — unknown flag, a missing required flag, an unknown `--preset`, or a malformed `--r`. Usage on stderr. |
+| `2` | A usage error — unknown flag, a missing required flag, an unknown `--preset`, or a malformed `--r` / `--pin-curve-family`. Usage on stderr. |
 | `3` | **The build ran to completion and produced NOTHING** — either **total config failure** (`n_disabled_failed > 0`, `n_configured == 0`, `cells_ok == 0`: every symbol was disabled by a selection failure, so nothing was ever scheduled) or **total fit failure** (`cells_to_fit > 0` and `cells_ok == 0`: work was scheduled and no cell fitted). One code for both — the script's question is "did this run produce anything?" and the stderr diagnostic names the stage. The full report still prints and `--report` is still written. See [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing). |
 
 `3` is deliberately distinct from `1`: `1` means *atx or the database broke* (no
@@ -324,7 +385,7 @@ disposition counters partition the distinct symbols seen:
 | `config.n_symbols` | Distinct symbols across the loaded boards. |
 | `config.n_configured` | Freshly configured (or overwritten), enabled. |
 | `config.n_skipped_existing` | Already in the manifest, left untouched (idempotent resume). |
-| `config.n_disabled_failed` | Selection failed → stored **disabled** (never silently served). |
+| `config.n_disabled_failed` | Selection failed → stored **disabled** (never silently served). Also covers a `--pin-curve-family true` run whose chosen family is `LinearVariance`, which the risk pipeline refuses outright — see [The curve family is a route, not a pin](#the-curve-family-is-a-route-not-a-pin). |
 | `config.failed_symbols` | The disabled names (sorted). |
 
 **Populate coverage** (`populate_universe_streaming`, stage 2). Cells are
@@ -593,7 +654,10 @@ symbol <SYM> enabled=<0|1> preset=<name> pin_curve=<0|1> curve=<kind> provenance
 
 `preset` uses the same vocabulary as the build CLI's `--preset`
 (`fast|accurate|robust|hft|populate`), so a listing feeds straight back into a
-rebuild. `curve` is only meaningful when `pin_curve=1`.
+rebuild. `curve` is BINDING only when `pin_curve=1`; with `pin_curve=0` (the build
+CLI's default — see [The curve family is a route, not a pin](#the-curve-family-is-a-route-not-a-pin))
+it records the family stage 1 selected as the preferred route, and the fitter
+auto-routes with its fallback ladders live.
 
 **`config --symbol SYM`** — `key value` scalars: `symbol`, `enabled`, `preset`,
 `pin_curve`, `curve`, `band_k`, `policy.*`, `provenance` (0/1) and, when
