@@ -17,11 +17,59 @@ the C++ lifecycle test uses, so this runs everywhere.
 from __future__ import annotations
 
 import math
+import os
+import subprocess
+import sys
+import textwrap
 
 import numpy as np
 import pytest
 
 import atxvol as av
+
+# Directory that `import atxvol` resolved to, so a child interpreter exercises
+# THIS package rather than whatever an editable install would find first.
+_SRC = os.path.dirname(os.path.dirname(os.path.abspath(av.__file__)))
+
+_PREAMBLE = """
+import sys
+sys.path.insert(0, {src!r})
+# A scikit-build-core editable install registers a meta-path finder that
+# outranks sys.path; drop it so the assert below can actually bind.
+sys.meta_path[:] = [f for f in sys.meta_path
+                   if "ScikitBuild" not in type(f).__name__]
+import faulthandler
+faulthandler.enable()
+import atxvol as av
+assert av.__file__.startswith({src!r}), av.__file__
+assert av._core.__file__.startswith({src!r}), av._core.__file__
+
+
+def _fitter():
+    panel = av.make_spy_synthetic_panel()
+    chain = av.OptionChain.from_frame(panel.frame, panel.env)
+    cfg = av.PricerConfig()
+    cfg.preset = av.FitPreset.FAST
+    cfg.curve_kind = av.VolCurveKind.CONVEX_DENSE
+    cfg.n_threads = 1
+    f = av.PricerFitter(cfg)
+    f.fit(chain)
+    return chain, f
+"""
+
+
+def _in_fresh_interpreter(body: str) -> subprocess.CompletedProcess:
+    """Run `body` in a brand-new interpreter and hand back the result.
+
+    A use-after-free does not raise — it takes the process down with an access
+    violation. Driving it out-of-process turns that into an exit code this
+    module can assert on, instead of killing the whole pytest session.
+    """
+    script = _PREAMBLE.format(src=_SRC) + textwrap.dedent(body)
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True, text=True, timeout=900,
+    )
 
 
 @pytest.fixture(scope="module")
@@ -234,6 +282,62 @@ def test_to_priced_surface_hands_the_fit_to_the_priced_surface_api(fitted):
     t = float(snap["T"][i])
     # The sealed snapshot serves the same IV the live session does.
     assert priced.iv(k, t) == pytest.approx(fitter.surface().iv(k, t), rel=1e-9)
+
+
+def test_surface_handle_survives_a_refit():
+    # C1 (rev-ws-y): `PricerFitter` owns its surfaces as
+    # `shared_ptr<const FittedSurface>` and `fit()` REPLACES the stored
+    # generation. A binding that hands Python a raw pointer under
+    # `reference_internal` keeps the FITTER alive and nothing at all keeps the
+    # GENERATION alive, so the second fit frees the object a live Python handle
+    # points at. Four lines, and the interpreter dies with 0xC0000005:
+    #
+    #     f.fit(c); s = f.surface(); f.fit(c); s.iv(...)
+    #
+    # `keep_alive` cannot fix it — the fitter legitimately outlives the
+    # generation — so the handle has to be a co-owner, not an observer.
+    proc = _in_fresh_interpreter(
+        """
+        chain, f = _fitter()
+        s = f.surface()
+        before = s.iv(600.0, 0.25)
+        f.fit(chain)                 # replaces the fitter's shared_ptr generation
+        after = s.iv(600.0, 0.25)    # <- access violation while `surface()` observes
+        assert before == after, (before, after)
+        assert after == after, "surface served NaN"
+        # The old handle keeps its OWN generation alive and serving, side by side
+        # with the fitter's new one.
+        fresh = f.surface()
+        assert fresh.iv(600.0, 0.25) == after
+        print("SURVIVED", before, after)
+        """
+    )
+    assert proc.returncode == 0, (
+        f"refit invalidated the live surface handle: exit {proc.returncode}\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+    )
+    assert "SURVIVED" in proc.stdout, proc.stdout
+
+
+def test_surface_outlives_the_fitter_that_produced_it():
+    # The other half of the same ownership question: dropping the fitter must
+    # not invalidate a surface a caller still holds.
+    proc = _in_fresh_interpreter(
+        """
+        chain, f = _fitter()
+        s = f.surface()
+        expected = s.iv(600.0, 0.25)
+        del f
+        import gc; gc.collect()
+        assert s.iv(600.0, 0.25) == expected
+        print("SURVIVED", expected)
+        """
+    )
+    assert proc.returncode == 0, (
+        f"dropping the fitter invalidated the surface: exit {proc.returncode}\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
+    )
+    assert "SURVIVED" in proc.stdout, proc.stdout
 
 
 def test_fit_rejects_a_chain_it_did_not_fit(panel, fitted):

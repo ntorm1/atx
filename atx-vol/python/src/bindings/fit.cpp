@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -418,7 +419,21 @@ void bind_fit(py::module_ &m) {
           },
           "Pin the curve family (None => the profile policy routes the board).");
 
-  py::class_<FittedSurface>(m, "FittedSurface")
+  // SHARED holder, deliberately (rev-ws-y C1). `PricerFitter` owns its surfaces
+  // as `shared_ptr<const FittedSurface>` and `fit()` REPLACES the stored
+  // generation, so a Python handle has to be a CO-OWNER of the generation it was
+  // handed. The default unique holder plus `reference_internal` cannot express
+  // that: `reference_internal` is `reference` + `keep_alive<0,1>`, which keeps
+  // the FITTER alive and nothing at all keeps the GENERATION alive — the next
+  // `fit()` drops the last reference and the live handle dangles (a four-line
+  // reproducible access violation, `test_fit.py`). `keep_alive` is structurally
+  // the wrong tool here: the fitter legitimately outlives the generation.
+  //
+  // The holder is a per-TYPE decision in pybind11, so every binding that
+  // returns, accepts or stores a `FittedSurface` must agree — `surface()` below
+  // is the only one today; a future `risk_surface()` / `market_mark_surface()` /
+  // `bundle()` must hand back the owning `shared_ptr` the same way.
+  py::class_<FittedSurface, std::shared_ptr<FittedSurface>>(m, "FittedSurface")
       .def("iv", &FittedSurface::iv, py::arg("K"), py::arg("T"),
            py::call_guard<py::gil_scoped_release>())
       .def(
@@ -459,17 +474,36 @@ void bind_fit(py::module_ &m) {
       .def(
           "surface",
           [](const PricerFitter &self) {
-            const FittedSurface *surface = self.surface();
-            if (surface == nullptr) {
+            // Hand back the OWNER, not the observer. `surface()` returns a raw
+            // pointer into whichever generation the fail-closed default-purpose
+            // routing selected; `bundle()` carries the matching shared_ptr
+            // leases, so recover the owning handle by identity rather than
+            // re-deriving the routing rule here (which would then have two
+            // places to disagree). The const_cast is at the binding seam only:
+            // every bound method on FittedSurface is a const query.
+            const FittedSurface *raw = self.surface();
+            if (raw == nullptr) {
               throw atxvol::python::AtxException(atx::core::Error{
                   atx::core::ErrorCode::Unavailable,
                   "no surface is served for the config's default purpose"});
             }
-            return surface;
+            const SurfaceBundle bundle = self.bundle();
+            std::shared_ptr<const FittedSurface> owner;
+            if (bundle.risk.get() == raw) {
+              owner = bundle.risk;
+            } else if (bundle.market_mark.get() == raw) {
+              owner = bundle.market_mark;
+            } else {
+              throw atxvol::python::AtxException(atx::core::Error{
+                  atx::core::ErrorCode::Internal,
+                  "served surface is not one of the fitter's published leases"});
+            }
+            return std::const_pointer_cast<FittedSurface>(owner);
           },
-          // The fitter owns the surface (shared_ptr held in the fitter); a
-          // Python handle must not outlive it.
-          py::return_value_policy::reference_internal)
+          "The served surface for the config's default purpose.\n\n"
+          "The returned handle CO-OWNS its generation: a later `fit()` publishes\n"
+          "a new generation without invalidating a handle a caller still holds,\n"
+          "and the handle stays valid after the fitter itself is dropped.")
       .def(
           "value_chain",
           [](const PricerFitter &self, const OptionChain &chain, OutputField fields,
