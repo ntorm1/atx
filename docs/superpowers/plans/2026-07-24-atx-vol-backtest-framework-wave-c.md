@@ -189,26 +189,46 @@ struct RunOutcome {
 
 | Driver (target) | Invocation | Artifact | Class | Filter regex | sha256[0..16) |
 |---|---|---|---|---|---|
-| `atxvol_dispersion_backtest` | *(no args)* | `%TEMP%\atx-dispersion-backtest\dispersion.tsv` | whole-file | — | `________________` |
-| `atxvol_strategy_examples` | *(no args)* | `%TEMP%\atx-strategy-examples\exampleA\example_a.tsv` | whole-file | — | `________________` |
-| `atxvol_strategy_examples` | *(no args)* | `%TEMP%\atx-strategy-examples\exampleB\example_b.tsv` | whole-file | — | `________________` |
-| `spy_strangle_backtest` | *(no args → seeded synthetic corpus)* | `%TEMP%\atx-spy-strangle-backtest\spy_short_strangle.tsv` | whole-file (`write_backtest_tsv` has no meta) | — | `________________` |
-| `spy_strangle_backtest` | *(no args)* | `%TEMP%\atx-spy-strangle-backtest\spy_short_strangle.csv` | filtered | `^# (wall_clock_ms|steps_per_s|snapshot_preload_ms)=` **+ whatever the double-run shows drifting among the `# pricing_*` sampled-telemetry lines (`:501-504`)** | `________________` |
-| `mag7_dispersion_backtest` | `--db $FX\mag7_db --out $FX\pre\mag7 --threads 1` | `series.csv` | whole-file | — | `________________` |
-| `mag7_dispersion_backtest` | *(as above)* | `strategy_metrics.csv` | whole-file | — | `________________` |
-| `mag7_dispersion_backtest` | *(as above)* | `engine_metrics.csv` | filtered | `^(wall_clock_ms|steps_per_s),` | `________________` |
-| `mag7_dispersion_backtest` | *(as above)* | `db_stats.csv` | whole-file, **same-db only** | — | `________________` |
-| `spy_dispersion_pnl` | `--db $FX\mag7_db --names AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA --index SPY --min-names 4 --out $FX\pre\pnl --threads 1` | `pnl_track.tsv` | filtered | `^# (wall_clock_ms|steps_per_s)=` | `________________` |
+| `atxvol_dispersion_backtest` | *(no args)* | `%TEMP%\atx-dispersion-backtest\dispersion.tsv` | whole-file | — | `87DA84887A2793AE` |
+| `atxvol_strategy_examples` | *(no args)* | `%TEMP%\atx-strategy-examples\exampleA\example_a.tsv` | whole-file | — | `59A8C0174510C8D8` |
+| `atxvol_strategy_examples` | *(no args)* | `%TEMP%\atx-strategy-examples\exampleB\example_b.tsv` | whole-file | — | `5647023F4B98FEC8` |
+| `spy_strangle_backtest` | *(no args → seeded synthetic corpus)* | `%TEMP%\atx-spy-strangle-backtest\spy_short_strangle.tsv` | whole-file (`write_backtest_tsv` has no meta) | — | `57A351D477E84F10` |
+| `spy_strangle_backtest` | *(no args)* | `%TEMP%\atx-spy-strangle-backtest\spy_short_strangle.csv` | filtered | `^# (wall_clock_ms|steps_per_s)=` — **narrower than this plan proposed**: three runs showed `# snapshot_preload_ms` and all four `# pricing_*` sampled-telemetry lines are constant (`0`/`0`/`0`/`0`, `sample_period=64`) on the no-args golden path, so they stay INSIDE the gate | `1B632185037D31B5` |
+| `mag7_dispersion_backtest` | `--db $FX\mag7_db --out $FX\pre\mag7 --threads 1` | `series.csv` | whole-file | — | `128DBD4E99118D36` |
+| `mag7_dispersion_backtest` | *(as above)* | `strategy_metrics.csv` | whole-file | — | `D49500348A9E5B3C` |
+| `mag7_dispersion_backtest` | *(as above)* | `engine_metrics.csv` | filtered | `^(wall_clock_ms|steps_per_s),` | `7A56EA26F3EC5395` |
+| `mag7_dispersion_backtest` | *(as above)* | `db_stats.csv` | whole-file, **same-db only**; NOT a wave gate (controller decision 3) | — | `6916983A49E258C5` |
+| `spy_dispersion_pnl` | `--db $FX\mag7_db --names AAPL,MSFT,GOOGL,AMZN,NVDA,META,TSLA --index SPY --min-names 4 --out $FX\pre\pnl --threads 1` | `pnl_track.tsv` | filtered | `^# (wall_clock_ms|steps_per_s)=` | `CC90B900A7116CC3` |
 
-Notes on the table: `--threads 1` is used on the two db drivers to remove any doubt about thread-count effects, though `Mag7DispersionBacktest.DeterminismAcrossThreads` and `SpyDispersionPnl.Determinism_TwoRunAndThreads` already pin bit-identity across 1 vs 4. `spy_dispersion_pnl` is invoked with `--names` (not `--universe`) so no external universe fixture is needed; the fixture db's 7 names + SPY satisfy `--min-names 4`. `populate_stats.csv` will be absent (a synthetic db has none) — that absence is itself part of the golden and must still be absent post-migration.
+**Hashes above are CONFIRMED (T2, HEAD `e996f2c` + the test-file change): three independent runs
+(two back-to-back, a third from a fully wiped `%TEMP%\atx-*` + `$FX\pre`) produced identical values
+for all ten. Hashing method: whole-file = `Get-FileHash -Algorithm SHA256 <file>`, first 16 hex.
+Filtered = drop lines matching the regex, `-join "`n"`, sha256 of the UTF-8 bytes, first 16 hex
+(the protocol above). The full derivation — invocations, filters, drifting values — is duplicated
+in `.superpowers/sdd/backtest-wave-c/progress.md` § `T2 goldens`, which is the durable copy
+(`$FX` is scratchpad and may be cleaned).**
 
-- [ ] **Step 1: Write the failing check** — run `C:\atx\build-rel\bin\atx-vol-tests.exe --gtest_also_run_disabled_tests --gtest_filter=Mag7DispersionBacktest.DISABLED_PersistFixtureDbForDriverGoldens` → expected FAIL/`0 tests ran`: the test does not exist. Also confirm `C:\atx\build-rel\bin` currently contains **only** `atxvol_spy_dispersion_backtest.exe` and `databento_spy_dispersion_definitions.exe`, i.e. none of the five Wave C drivers is built yet.
-- [ ] **Step 2: Implement the fixture emitter** — add `DISABLED_PersistFixtureDbForDriverGoldens` to `atx-vol/tests/mag7_dispersion_backtest_test.cpp`, reusing `build_fixture_db`'s body but writing to `ATX_MAG7_FIXTURE_DB` and skipping the trailing `fs::remove_all`. Build `atx-vol-tests`; run it with the env var set to `$FX\mag7_db`; assert the db opens (`SurfaceDb::open`) with 12 partitions and 8 symbols.
-- [ ] **Step 3: Build the five drivers and capture goldens** — ONE build invocation, all five targets:
+Notes on the table: `--threads 1` is used on the two db drivers to remove any doubt about thread-count effects, though `Mag7DispersionBacktest.DeterminismAcrossThreads` and `SpyDispersionPnl.Determinism_TwoRunAndThreads` already pin bit-identity across 1 vs 4. `spy_dispersion_pnl` is invoked with `--names` (not `--universe`) so no external universe fixture is needed; the fixture db's 7 names + SPY satisfy `--min-names 4`. `populate_stats.csv` will be absent (a synthetic db has none) — that absence is itself part of the golden and must still be absent post-migration (T2 confirmed: mag7's out dir holds exactly `series.csv`, `strategy_metrics.csv`, `engine_metrics.csv`, `db_stats.csv`).
+
+- [x] **Step 1: Write the failing check** — run `C:\atx\build-rel\bin\atx-vol-tests.exe --gtest_also_run_disabled_tests --gtest_filter=Mag7DispersionBacktest.DISABLED_PersistFixtureDbForDriverGoldens` → expected FAIL/`0 tests ran`: the test does not exist. Also confirm `C:\atx\build-rel\bin` currently contains **only** `atxvol_spy_dispersion_backtest.exe` and `databento_spy_dispersion_definitions.exe`, i.e. none of the five Wave C drivers is built yet. *(Done: `Running 0 tests`, `filter … did not match any test`; `bin` held only `atx-vol-tests.exe`, `atxvol_spy_dispersion_backtest.exe`, `databento_spy_dispersion_definitions.exe`.)*
+- [x] **Step 2: Implement the fixture emitter** — add `DISABLED_PersistFixtureDbForDriverGoldens` to `atx-vol/tests/mag7_dispersion_backtest_test.cpp`, reusing `build_fixture_db`'s body but writing to `ATX_MAG7_FIXTURE_DB` and skipping the trailing `fs::remove_all`. Build `atx-vol-tests`; run it with the env var set to `$FX\mag7_db`; assert the db opens (`SurfaceDb::open`) with 12 partitions and 8 symbols. *(Done, with one correction to this plan: `db->symbols()` is **empty**, not 8 — `write_partition` only refreshes provenance on symbols already in the manifest symbol table (`src/surface_db.cpp:1122-1135`) and never adds any, so a db built purely by `write_partition` has no manifest symbol table. The 8 symbols are witnessed instead by `DbPartitionInfo::surface_count == 8` on all 12 partitions, plus `Clock::from_surface_db` succeeding. `std::getenv` trips `/WX -Wdeprecated-declarations`; read via the `_dupenv_s` pattern from `spy_fit_corpus_test.cpp:37-51`.)*
+- [x] **Step 3: Build the five drivers and capture goldens** — ONE build invocation, all five targets:
   `cmake --build C:\atx\build-rel --target atxvol_dispersion_backtest atxvol_strategy_examples spy_strangle_backtest mag7_dispersion_backtest spy_dispersion_pnl`.
-  Then, with `$env:PATH = "C:\atx\build-rel\bin;$env:PATH"`, run **each driver twice**, hash per the protocol, and require the two hashes to agree. Record every hex in the table above. For any artifact whose two runs disagree, identify the drifting line(s), extend that artifact's filter regex, re-verify agreement, and record **both** the regex and the observed drifting values.
-- [ ] **Step 4: Verify the goldens are a real gate** — confirm each hex is reproducible a third time from a clean artifact dir (delete `%TEMP%\atx-*` and `$FX\pre` first, so the goldens do not depend on leftover state), and that `atx-vol-tests.exe` still reports the same pass/skip/fail counts as before this task (the new test is `DISABLED_`, so the suite total must be unchanged modulo one added disabled test).
-- [ ] **Step 5: Commit** — `git add atx-vol/tests/mag7_dispersion_backtest_test.cpp docs/superpowers/plans/2026-07-24-atx-vol-backtest-framework-wave-c.md .superpowers/sdd/backtest-wave-c/progress.md`
+  Then, with `$env:PATH = "C:\atx\build-rel\bin;$env:PATH"`, run **each driver twice**, hash per the protocol, and require the two hashes to agree. Record every hex in the table above. For any artifact whose two runs disagree, identify the drifting line(s), extend that artifact's filter regex, re-verify agreement, and record **both** the regex and the observed drifting values. *(Done. All five drivers exit 0. 7/10 artifacts were byte-stable unfiltered on the first double run; the only drift anywhere was `wall_clock_ms` + its derived `steps_per_s` in three artifacts — no other telemetry moved, so no filter had to be widened beyond the two keys.)*
+- [x] **Step 4: Verify the goldens are a real gate** — confirm each hex is reproducible a third time from a clean artifact dir (delete `%TEMP%\atx-*` and `$FX\pre` first, so the goldens do not depend on leftover state), and that `atx-vol-tests.exe` still reports the same pass/skip/fail counts as before this task (the new test is `DISABLED_`, so the suite total must be unchanged modulo one added disabled test). *(Done: all 216 `%TEMP%\atx-*` dirs and `$FX\pre` wiped, third run reproduced all ten hexes exactly. Each filtered artifact differs from the pre-migration bytes on **exactly two** lines, both matching its filter — verified line-by-line with PowerShell, not `diff`. Suite: 2019 ran / 1973 passed / 43 skipped / 3 failed (the three documented reds) / **7** disabled — identical to the pre-task baseline modulo the one added `DISABLED_`.)*
+- [x] **Step 5: Commit** — `git add atx-vol/tests/mag7_dispersion_backtest_test.cpp docs/superpowers/plans/2026-07-24-atx-vol-backtest-framework-wave-c.md .superpowers/sdd/backtest-wave-c/progress.md`
+
+**Reference bytes for T3–T6.** T2 also left an unfiltered copy of all ten artifacts at
+`$FX\golden-ref\` (same run that produced the table). Migration tasks use it for the
+"unfiltered file differs on exactly the filtered lines" audit. It is scratchpad — if it is gone,
+re-derive it by rebuilding the drivers **at `e996f2c`** and re-running the invocations above.
+
+**Tooling warning for later tasks.** In this environment the Bash tool's `grep` and `diff` are
+proxied and returned WRONG answers during T2 (`diff` reported "Files are identical" for two files
+whose sha256 differed; piped `grep -c` reported 0 matches on a stream that had 2). **Do every
+hash/line comparison in PowerShell** (`Get-FileHash`, `Get-Content` + an index loop or
+`Compare-Object`). A migration task that "verified" its gate through Bash `diff` has verified
+nothing.
 
 ---
 
