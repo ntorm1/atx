@@ -20,7 +20,7 @@ is claimed as finished unless it says so.
 | G greeks | `feat/pipeline-g` | `de0101b` | done | **needs-work → fixed** (0C/3I) | ✅ `96172e5` |
 | FIX-1 | `feat/pipeline-fix1` | `36bf7e3` | done | folded into final review | ✅ `09060a2` |
 | FIX-2 | `feat/pipeline-fix2` | `c601504` | done | folded into final review | ✅ `63daffe`, `ed8c751` |
-| E analytics | `feat/pipeline-e` | `81cfc33` | E1–E6 committed | **not reviewed** | ✗ |
+| E analytics | `feat/pipeline-e` | `81cfc33` | complete; E4 premise-failed, no code | **not reviewed** | ✗ |
 | F backtest | `feat/pipeline-f` | `4e7e04c` | F1–F6 + 3 review follow-ups | approve-with-follow-ups, follow-ups closed but **not re-reviewed** | ✗ |
 | T corpus | `feat/pipeline-t` | `817959a` | T1–T2 + 4 review follow-ups | needs-work → **fixes not re-reviewed** | ✗ |
 | Y python | `feat/pipeline-y` | `cfbcd97` | Y1–Y4 committed | **not reviewed** | ✗ |
@@ -41,6 +41,20 @@ FIX-1 and FIX-2 and their post-merge test counts are the quotable ones.
   by running it read-only; nothing was written under `C:\atx-data`.
 - **The suite is now safe to run in two worktrees at once** (FIX-2 F2-A), demonstrated
   with two concurrent processes of the same binary, distinct temp roots, no leak.
+- **WS-E closed green after merging the trunk**: `ctest -L atx_vol -j 1` = 2121/2121
+  passed, 0 failed. This is the first full-suite count in the sprint taken after both
+  environment defects in §4 were fixed, so it is the first one that can be relied on.
+  It is a branch count, not the trunk gate still owed in §3.1.
+
+### A finding that applies to every workstream
+
+WS-E's per-task gates all passed, and then three real defects surfaced only when the full
+suite was run: a scale drift its own `-R` filters never selected, an **unconverged fixed
+point silently returning a wrong number** in the forward-delta solve, and a forward
+mismatch outside the fitted pillars that contradicted the header claim written directly
+above it. Every workstream in this sprint gated iteratively on `--gtest_filter`. That
+practice is not sufficient on its own, and the final review should assume other branches
+carry similar unswept fallout.
 
 ## 3. Open items, by severity
 
