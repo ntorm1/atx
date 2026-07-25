@@ -122,6 +122,11 @@ raise SystemExit(
         [
             TESTS,
             "-q",
+            # Skip reasons in the gate log (PY-FIX 1). Without this, `-q` prints a
+            # bare `s` and the reason is never recorded anywhere — which is how a
+            # module-wide guard misfire (5 tests silently not running on every
+            # worktree) survived. A skip is only acceptable when the log says why.
+            "-rs",
             "-o", "addopts=",          # ignore any ambient addopts
             "-p", "no:cacheprovider",  # never write .pytest_cache into the tree
             "--rootdir", PYROOT,

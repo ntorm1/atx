@@ -16,12 +16,73 @@
 
 ## Build and install
 
-Build from an environment where `VCPKG_ROOT` points at the vcpkg installation:
+This is a **standalone** scikit-build-core project (its own `project()`, its own
+build tree) that `add_subdirectory`s the entire monorepo. Building the wheel
+builds atx-core and atx-vol too — around 190 targets in Release. Budget minutes,
+not seconds, and read the next section before you start one.
+
+### It looks like a hang. It is not.
+
+`pip` captures build output. Without `-v` you get
+
+```
+Building wheel for atxvol (pyproject.toml) ...
+```
+
+and then **nothing at all** — no compiler lines, no progress, no error — until
+the whole build finishes. Every expensive step below is silent, so with the
+documented invocation the first honest signal is the exit code, tens of minutes
+later. This has cost more than one person an hour of deciding whether to kill it.
+
+- **Always pass `-v`.**
+- If a run is already going without it, look at whether
+  `atx-vol/python/build/<wheel-tag>/` is still growing before concluding it is
+  stuck. Silence is the normal state, not evidence of a stall.
+
+Durations quoted here are log facts from a shared developer box, not benchmarks:
+treat them as orders of magnitude. With dependencies already populated, ccache
+warm and `-j 2`: configure 7.1 s, complete wheel 6m53s.
+
+### What it needs before it can be fast
+
+**An MSVC environment.** `pyproject.toml` pins `clang-cl`, and CMake needs the
+Windows SDK's `mt.exe` on `PATH` to link even its compiler probe. Run everything
+from a `vcvars64.bat` shell. (`scripts/atx-build.ps1` does this for the monorepo
+build; `pip` does not do it for you.)
+
+**A vcpkg tree.** The manifest is arrow[parquet], openssl, zstd, zlib-ng and
+gtest. `CMakeLists.txt` reuses `<repo>/build-rel/vcpkg_installed` or
+`<repo>/build/vcpkg_installed` when either exists — **a fresh worktree has
+neither**, and vcpkg then builds all of it from source into the wheel's build
+tree. That is ~1.1 GB installed and by far the longest thing that can happen
+here. Point it at a tree you already have.
+
+**A populated FetchContent tree.** The root project clones spdlog, tl-expected,
+unordered_dense, Eigen and xsimd, plus databento's json/httplib/date: nine git
+clones on a cold tree, also silent (49 s when measured here). `$ATX_DEPS_DIR` —
+or `FETCHCONTENT_BASE_DIR` — points them at a shared cache.
+
+**A parallelism cap, on a shared or memory-limited box.** `pip` passes no `-j`,
+so ninja uses every core, and a heavy clang-cl TU in this tree holds 1-3 GB.
+`CMAKE_BUILD_PARALLEL_LEVEL` is the only lever you have from here.
+
+### The recipe
+
+From a `vcvars64` shell, in `<repo>\atx-vol\python`:
 
 ```powershell
-cd <repo>\atx-vol\python
-python -m pip install .
+$env:CMAKE_BUILD_PARALLEL_LEVEL = "2"
+$env:SKBUILD_CMAKE_DEFINE = "VCPKG_INSTALLED_DIR=<abs>/vcpkg_installed;FETCHCONTENT_BASE_DIR=<repo>/deps/py"
+
+python -m pip wheel . --no-deps -w dist -v
+python -m pip install dist\atxvol-0.1.0-cp312-cp312-win_amd64.whl
 ```
+
+Two steps rather than `pip install .` on purpose: `pip install .` **replaces
+whatever `atxvol` is already installed** — including an editable install
+pointing at a different checkout — and it does that before you know whether the
+build even works. Building the wheel first keeps a failed build from taking your
+working install with it.
 
 For an editable development install with tests:
 
@@ -30,9 +91,34 @@ python -m pip install -e ".[test]"
 python -m pytest tests
 ```
 
-The build uses scikit-build-core, CMake, Ninja, clang-cl, and pybind11. It reuses
-the monorepo's `build-rel/vcpkg_installed` or `build/vcpkg_installed` tree when
-present and otherwise lets vcpkg install the manifest dependencies.
+### Iterating on the extension only
+
+When you only need `_core` (which is all `atx-vol/tests/CMakeLists.txt`'s
+`atx-vol-python` ctest lane consumes), skip packaging and drive CMake directly.
+Configure measured at 14.3 s against a populated dependency tree:
+
+```powershell
+cmake -S . -B build/py -GNinja -DCMAKE_BUILD_TYPE=Release `
+  -DCMAKE_C_COMPILER=clang-cl -DCMAKE_CXX_COMPILER=clang-cl `
+  -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
+  -DVCPKG_INSTALLED_DIR=<abs>/vcpkg_installed `
+  -DFETCHCONTENT_BASE_DIR=<repo>/deps/py `
+  -DATX_BUILD_TESTS=OFF -DATX_BUILD_BENCH=OFF -DATX_BUILD_EXAMPLES=OFF
+cmake --build build/py --target _core -j 2
+```
+
+Copy the resulting `_core.*.pyd` beside the package at `src/atxvol/`; the ctest
+lane imports it from there.
+
+### One thing that is *not* the cause
+
+A silent 23-minute configure was once attributed to `FetchContent` re-running its
+nested subbuilds, with `-DFETCHCONTENT_FULLY_DISCONNECTED=ON` recommended as the
+fix. That does not survive measurement: the same configure with no such flag,
+against the same populated dependency tree, completes in 14.3 s, and the update
+steps account for about 3 s of it. Do not adopt the flag as a habit — it makes
+population impossible, so it fails outright on a genuinely fresh tree. The silent
+minutes are pip's output capture, vcpkg, and the first clone, in that order.
 
 ## Quick start
 
