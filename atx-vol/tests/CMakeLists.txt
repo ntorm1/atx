@@ -151,6 +151,7 @@ add_executable(atx-vol-tests
     # Pipeline-SOTA FIX-2 (F2-A) — appended targets:
     support/process_scratch.cpp      # per-process temp root (concurrent-worktree isolation)
     process_scratch_test.cpp         # F2-A: two live processes must not share a scratch root
+    laned_greek_ok_stamp_test.cpp    # F2-B: laned Ok-stamp guards the REQUESTED greek set
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
