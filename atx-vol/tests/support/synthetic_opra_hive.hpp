@@ -52,6 +52,13 @@ struct SyntheticHiveSpec {
   // 1 row is rejected by the loader itself (the cell never reaches config), 2
   // rows load cleanly and fail curve selection, and >= 4 rows select fine.
   std::size_t max_rows_per_cell{0};
+  // Symbols whose OSI root gets a trailing "1" appended (the OCC adjusted /
+  // non-standard-deliverable convention). Such a row's `symbol` column then
+  // disagrees with its `underlying` column by MORE than punctuation — "AAA1" vs
+  // "AAA" — which is the real divergence class `pull_opra_hive.py`'s trailing-digit
+  // strip can manufacture, and the one the loader must refuse rather than merge
+  // into the vanilla chain. Empty (default) = every symbol is its own root.
+  std::vector<std::string> adjusted_root_symbols{};
 };
 
 namespace detail {
@@ -136,6 +143,14 @@ inline void append_symbol_date_rows(const std::string &symbol, const std::string
   const atx::i64 ts_ns =
       timestamp_from_utc(trade.year, trade.month, trade.day, 19U, 55U, 0U, 0U).unix_nanos();
 
+  // The root this symbol's contracts trade under. Normally the dot-stripped
+  // ticker; with `adjusted_root_symbols` it also carries the OCC trailing-digit
+  // adjustment marker, so `symbol` and `underlying` name different underliers.
+  const bool adjusted = std::find(spec.adjusted_root_symbols.begin(),
+                                  spec.adjusted_root_symbols.end(),
+                                  symbol) != spec.adjusted_root_symbols.end();
+  const std::string root = adjusted ? osi_root(symbol) + "1" : symbol;
+
   const int dtes[] = {28, 56};
   const double strikes[] = {80.0, 85.0, 90.0, 95.0, 100.0, 105.0, 110.0, 115.0, 120.0};
   constexpr double kNsPerYear = 365.0 * 24.0 * 3600.0 * 1e9;
@@ -155,7 +170,7 @@ inline void append_symbol_date_rows(const std::string &symbol, const std::string
       const double sigma = 0.25 + 0.02 * m * m;
       for (const char cp : {'C', 'P'}) {
         const double mid = black_price(spec.spot, k, t, spec.r, sigma, cp == 'C');
-        out.push_back(SynthRow{date, symbol, osi_symbol(symbol, ym, cp, k), ts_ns,
+        out.push_back(SynthRow{date, symbol, osi_symbol(root, ym, cp, k), ts_ns,
                                to_px(0.98 * mid), to_px(1.02 * mid)});
       }
     }

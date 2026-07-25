@@ -399,6 +399,36 @@ Result<OsiSymbol> parse_osi_symbol(std::string_view sym) {
   return Ok(std::move(out));
 }
 
+namespace {
+
+// Is `root` the OSI/OCC wire encoding of the underlier ticker `underlying`?
+//
+// The OSI root namespace cannot express punctuation, so a class share trades
+// under a dot-stripped root (`BRK.B` -> `BRKB`). Dots are the ONLY difference
+// tolerated: this is a fail-closed identity guard, and a wider normalizer would
+// let two genuinely distinct tickers compare equal — precisely the "invent a
+// third namespace" trap the BRK.B diagnosis warned against. Same rule, same
+// direction, as `pull_opra_hive.py`'s `sym.replace(".","")` and
+// `build_ochain.cpp`'s `strip_dot`.
+//
+// Allocation-free: this runs once per kept quote row (millions per hive load).
+[[nodiscard]] bool osi_root_matches_underlying(std::string_view root,
+                                               std::string_view underlying) noexcept {
+  std::size_t i = 0;
+  for (const char c : underlying) {
+    if (c == '.') {
+      continue;
+    }
+    if (i >= root.size() || root[i] != c) {
+      return false;
+    }
+    ++i;
+  }
+  return i == root.size();
+}
+
+} // namespace
+
 Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
   // ── Projected read (W4.3) ─────────────────────────────────────────────────
   // Decode ONLY the columns panel construction consumes (verified against every
@@ -611,9 +641,11 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
     // only when the file has no `underlying` column at all.
     //
     // Read the other way round (root first, column second) this line was the one
-    // place a single underlier acquired TWO names. For every ticker whose
-    // universe spelling is its OSI root the two derivations are byte-identical
-    // and nobody notices; for a punctuated ticker they are not. A production
+    // place a single underlier acquired TWO names. The two derivations are
+    // byte-identical exactly when a DATA INVARIANT holds — per row, `underlying`
+    // equals the OSI root of that row's own `symbol` — which is a property of the
+    // hive, not of this code; see the guard below, which is what makes it a
+    // checked precondition rather than an assumption. A production
     // 51-name build lost BRK.B entirely this way: the column said `BRK.B`, every
     // OSI symbol said `BRKB  260702C00270000`, so `data_install` interned BOTH,
     // filed all 1,838 quotes under `BRKB`, and handed the caller the handle to an
@@ -629,6 +661,34 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
     // identity of an underlier. Nothing on disk changes; only which of two
     // already-present strings the in-memory rows are keyed by.
     row.uid = !und.empty() ? std::string(und) : osi->root;
+    // FIX-C-1 per-row identity guard — the one that can actually fire.
+    //
+    // Keying rows by the `underlying` column is only correct while that column
+    // really does name the same underlier the row's OSI symbol does. Dots are the
+    // expected, legitimate difference (`BRK.B` / `BRKB`): the OSI root namespace
+    // cannot express punctuation, so those are two spellings of one identity and
+    // the load proceeds. ANY OTHER difference is two different underliers, and
+    // merging them is a silent pricing error rather than a lost symbol — the
+    // adjusted-deliverable class is the live example: `pull_opra_hive.py:293-295`
+    // strips a trailing digit from the root before mapping, so an `AAPL1` (post
+    // corporate action, non-standard deliverable) row can carry
+    // `underlying = "AAPL"`. Before FIX-C-1 such rows keyed to `AAPL1` and were
+    // segregated into their own underlier — accidental, but protective, since an
+    // adjusted deliverable is not comparable to the vanilla chain at the same
+    // strike. Keying by the column alone would silently merge them into it.
+    //
+    // So: fail the cell LOUD (the hive loader tallies it in n_load_errors) rather
+    // than drop the rows, which would silently change chain composition — the very
+    // class of defect this fix exists to close. Verified not to fire on the live
+    // hive: across all 140 date files the only raw divergence is
+    // ('BRK.B','BRKB'), and after dot-stripping there is none at all.
+    if (!und.empty() && !osi->root.empty() && und != osi->root &&
+        !osi_root_matches_underlying(osi->root, und)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "row symbol '" + std::string(symbols[i]) + "' has OSI root '" + osi->root +
+                     "' but its underlying column says '" + std::string(und) +
+                     "': these name two different underliers, not one");
+    }
     row.expiry_iso = std::move(osi->expiry_iso);
     row.strike = osi->strike;
     row.side = osi->side;
@@ -724,16 +784,19 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
   }
 
   ATX_TRY_VOID(build_uid_list(frame));
-  // FIX-C-1 structural guard. A FILTERED load addresses exactly ONE underlier, so
-  // its frame must carry exactly ONE uid — `spec.underlying`, seeded first by
-  // build_uid_list and then matched by every kept row. Two or more means some row
-  // was keyed in a different namespace from the frame, which is never legitimate
-  // and is precisely the shape that silently filed BRK.B's 1,838 quotes under
-  // `BRKB` while handing every caller the handle to an empty `BRK.B`. That defect
-  // was invisible because NOTHING compared the two strings; this compares them, so
-  // a future divergence is a loud per-cell load error (n_load_errors) instead of a
-  // symbol that disappears from the database. Unfiltered (discover/mixed) loads are
-  // exempt: several uids are their normal shape.
+  // FIX-C-1 frame-level tripwire. A FILTERED load addresses exactly ONE underlier,
+  // so its frame must carry exactly ONE uid — `spec.underlying`, seeded first by
+  // build_uid_list and then matched by every kept row. Unfiltered (discover/mixed)
+  // loads are exempt: several uids are their normal shape.
+  //
+  // Be precise about what this is and is not. Given the row-uid rule above it is
+  // UNREACHABLE on today's code — the filter at the top of the row loop drops every
+  // row whose `underlying` differs from `spec.underlying`, so every kept row's uid
+  // IS the frame's uid and build_uid_list dedupes to one. The *reachable* identity
+  // check is the per-row `osi_root_matches_underlying` guard above; this one is a
+  // cheap regression tripwire that fails loudly if a future edit reintroduces a
+  // second derivation of the frame's name, which is exactly how BRK.B was lost.
+  // Kept for that reason, not because it can fire today.
   if (!filter.empty() && frame.uid_strs.size() > 1u) {
     std::string list;
     for (std::size_t j = 0; j < frame.uid_strs.size(); ++j) {

@@ -228,9 +228,15 @@ struct OpraPanel {
 //      `CorpusBoard::symbol` -> the manifest/archive's `canonical_symbol`, which
 //      preserves dots). Deriving the two from different sources is what made a
 //      punctuated ticker (`underlying = "BRK.B"`, OSI root `BRKB`) intern as TWO
-//      underliers and lose all of its quotes; a filtered load now also FAILS
-//      (InvalidArgument) if its rows resolve to more than one uid, so that
-//      divergence can never again be silent.
+//      underliers and lose all of its quotes.
+//
+//      That rule is only sound while the column really does name the same
+//      underlier the row's OSI symbol does, so it is CHECKED per row, not
+//      assumed: a row whose `underlying` and OSI root differ by anything other
+//      than punctuation (dots, which the OSI namespace cannot express) is a hard
+//      InvalidArgument — two underliers, and merging them would be a silent
+//      pricing error rather than a lost symbol. The live case is the
+//      adjusted-deliverable class (`AAPL1` rows whose column says `AAPL`).
 //   5. Spot: spec.spot_override if > 0, else imply from the earliest expiry with
 //      a co-terminal call/put pair (both mids > 0) via imply_forward_atm_pcp at
 //      the curve's rate r(T_front), then implied_spot = F * exp(-r(T_front) *

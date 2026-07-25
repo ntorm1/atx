@@ -185,10 +185,12 @@ struct UniversePopulateCoverage {
   std::uint32_t dates_skipped_would_drop{0}; // dates skipped to avoid dropping an existing symbol
   std::vector<PopulateSymbolStats> per_symbol; // from the underlying populate (written dates only)
   // WHY each of `cells_failed` failed, ascending by (date, symbol) — the fit
-  // stage's answer to `AutoConfigReport::failed_symbols`, which has always named
-  // the symbols the CONFIG stage refused. Carried straight through from the
-  // underlying populate (same determinism guarantee), so `failed_cells.size() ==
-  // cells_failed` over the dates this run wrote.
+  // stage's answer to `AutoConfigReport::failed_symbols`, which names the symbols
+  // the CONFIG stage is not serving (as of FIX-C-2 that is the STANDING disabled
+  // set — this run's refusals plus the ones already stored disabled — not just
+  // this run's). Carried straight through from the underlying populate (same
+  // determinism guarantee), so `failed_cells.size() == cells_failed` over the
+  // dates this run wrote.
   std::vector<FailedCell> failed_cells;
 };
 // NOTE: the cell counters do NOT reconcile against `cells_loaded`. A DISABLED cell

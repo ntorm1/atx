@@ -122,6 +122,57 @@ TEST(ListedOpra, RejectsMissingLookAheadAndContradictoryDefinitions) {
       atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *wrong_table));
 }
 
+// FIX-C-1 regression. The panel keys its rows by the hive's `underlying` column —
+// the universe spelling — while `raw_symbol` carries the OSI wire encoding, which
+// cannot express punctuation. For a class share those are two spellings of ONE
+// identity (`BRK.B` / `BRKB`), and the economics guard must accept them.
+//
+// This is the exact shape the C-1 loader change produces, and a `!=` compare here
+// would hard-Err it. The blast radius is not one contract:
+// `listed_dispersion_pipeline.cpp` calls this under ATX_TRY, so the whole date's
+// join dies for EVERY name, and `MissingDefinitionPolicy::SkipUnlisted` cannot
+// rescue it because the economics check is deliberately fatal. It is reachable
+// with committed data — `atx-vol/data/universe/spy_top50_2026-01-01.csv` lists
+// BRK.B and `spy_dispersion_backtest.cpp` feeds that universe through this join.
+TEST(ListedOpra, PunctuatedTickerJoinsAgainstItsDotStrippedOsiRoot) {
+  OpraPanel source = panel();
+  source.frame.uid = "BRK.B";
+  for (QuoteRow &row : source.frame.rows) {
+    row.uid = "BRK.B"; // the loader's row uid: the universe/`underlying` spelling
+  }
+  source.source_identities = {
+      OpraInstrumentIdentity{101, "BRKB  260717C00600000"}, // ...and the OSI wire root
+      OpraInstrumentIdentity{102, "BRKB  260717P00600000"},
+  };
+  auto defs = definitions();
+  defs[0].raw_symbol = "BRKB  260717C00600000";
+  defs[1].raw_symbol = "BRKB  260717P00600000";
+  auto table = ListedDefinitionTable::create(std::move(defs));
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  const auto quotes =
+      atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table);
+  ASSERT_TRUE(quotes) << (quotes ? std::string{} : quotes.error().to_string());
+  ASSERT_EQ(quotes->size(), 2u);
+  // The emitted symbol must be the UNIVERSE spelling: `listed_dispersion.cpp`'s
+  // candidate scan compares it against `DispersionMember::symbol`, which comes
+  // from the dotted universe file. Emitting the root here is how this name used
+  // to be dropped from every dispersion basket.
+  EXPECT_EQ((*quotes)[0].symbol, "BRK.B");
+  EXPECT_EQ((*quotes)[1].symbol, "BRK.B");
+  // ...while provenance keeps the exact wire identity, unnormalized.
+  EXPECT_EQ((*quotes)[0].raw_symbol, "BRKB  260717C00600000");
+
+  // The relaxation is punctuation-only, not a general fuzzy match: a root that
+  // differs by anything else is still a hard economics disagreement.
+  OpraPanel mismatched = source;
+  for (QuoteRow &row : mismatched.frame.rows) {
+    row.uid = "BRK.C"; // dot-stripped: "BRKC" != "BRKB"
+  }
+  EXPECT_FALSE(atx::vol::listed_quotes_from_opra(kDate, mismatched.frame.snapshot_ts_ns, mismatched,
+                                                 *table));
+}
+
 TEST(ListedOpra, MissingNumericRootAdjustmentsAreExcluded) {
   OpraPanel source = panel();
   source.source_identities = {

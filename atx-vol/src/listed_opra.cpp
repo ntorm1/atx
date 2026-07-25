@@ -36,6 +36,31 @@ constexpr std::string_view kHeader =
   return std::tie(definition.trade_date, definition.instrument_id, definition.raw_symbol);
 }
 
+// Is `root` the OSI/OCC wire encoding of the underlier ticker `ticker`?
+//
+// The OSI root namespace cannot express punctuation, so a class share trades
+// under a dot-stripped root: the universe says `BRK.B`, every OPRA symbol says
+// `BRKB  260702C00270000`. Dots are the ONLY difference tolerated — deliberately
+// narrower than a general normalizer, because widening it would let two genuinely
+// distinct tickers compare equal, and this is a fail-closed economics guard. It
+// is the same rule `pull_opra_hive.py` (`sym.replace(".","")`) and
+// `build_ochain.cpp`'s `strip_dot` already apply, in the same direction.
+//
+// Allocation-free (this runs per quote row): walks `ticker` skipping '.'.
+[[nodiscard]] bool osi_root_matches_ticker(std::string_view root, std::string_view ticker) noexcept {
+  std::size_t i = 0;
+  for (const char c : ticker) {
+    if (c == '.') {
+      continue;
+    }
+    if (i >= root.size() || root[i] != c) {
+      return false;
+    }
+    ++i;
+  }
+  return i == root.size();
+}
+
 void append_u64(std::string &out, std::uint64_t value) {
   char buffer[32];
   const auto [end, error] = std::to_chars(buffer, buffer + sizeof buffer, value);
@@ -384,8 +409,20 @@ listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_n
     }
     ATX_TRY(const OsiSymbol osi, parse_osi_symbol(identity->raw_symbol));
     const std::string symbol = row.uid.empty() ? panel.frame.uid : row.uid;
-    if (osi.root != symbol || osi.expiry_iso != row.expiry_iso || osi.side != row.side ||
-        osi.strike != row.strike || ns_to_iso_date(definition->expiry_ts_ns) != osi.expiry_iso) {
+    // The root clause compares two spellings of ONE identity across a namespace
+    // boundary: `symbol` is the underlier's ticker (the universe/hive spelling the
+    // panel keys rows by, and the spelling `quote.symbol` below must carry so the
+    // dispersion membership compare in `listed_dispersion.cpp` matches), while
+    // `osi.root` is its OSI wire encoding, which cannot express punctuation. For
+    // every dot-free ticker the two are byte-equal and this is the same tautology
+    // it always was; for a class share (`BRK.B` / `BRKB`) they differ by exactly
+    // the dots. A plain `!=` here would hard-Err such a name — and because
+    // `listed_dispersion_pipeline.cpp` calls this under ATX_TRY, that error takes
+    // down the WHOLE date's join for every name, turning one reported drop into a
+    // total outage. Everything else in the clause stays an exact compare.
+    if (!osi_root_matches_ticker(osi.root, symbol) || osi.expiry_iso != row.expiry_iso ||
+        osi.side != row.side || osi.strike != row.strike ||
+        ns_to_iso_date(definition->expiry_ts_ns) != osi.expiry_iso) {
       return Err(ErrorCode::InvalidArgument,
                  "listed OPRA join: quote, OSI, and definition economics disagree");
     }

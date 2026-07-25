@@ -920,6 +920,28 @@ TEST(SurfaceDbTotalConfigFailure, HealthyBuildIsNotFailure) {
   EXPECT_FALSE(is_total_config_failure(config_report(3u, 0u, 0u)));
 }
 
+// FIX-C-2 changed one exit-code shape in the OTHER direction, so pin it: new
+// names failing selection beside symbols that were already configured and ENABLED
+// but produced no cell this run (a converged resume — `cells_ok == 0` because
+// there was nothing to do, not because nothing works).
+//
+// The old predicate read only this run's fresh verdicts, saw `n_configured == 0`,
+// and called that a total config failure — exit 3 over a database serving five
+// symbols perfectly well. Reading the standing state gets it right: five enabled,
+// so the database is alive and the three new failures are partial. Exit 0.
+TEST(SurfaceDbTotalConfigFailure, NewNamesFailingBesideAConvergedResumeIsNotFailure) {
+  SurfaceDbBuildReport r = config_report(0u, 5u, 3u); // 5 skipped (all ENABLED), 3 newly disabled
+  r.coverage.cells_ok = 0u;                          // converged: nothing left to fit
+  r.coverage.cells_already_present = 15u;
+  r.coverage.dates_skipped_complete = 3u;
+  EXPECT_FALSE(is_total_config_failure(r));
+
+  // The distinguishing bit is whether those five are actually enabled. Mark them
+  // disabled and the same counters become the dead database, and exit 3.
+  r.config.n_disabled_existing = 5u;
+  EXPECT_TRUE(is_total_config_failure(r));
+}
+
 // FIX-C-2. The SAME dead database, one run later. Every symbol is stored disabled
 // and therefore SKIPPED, so this run's fresh-failure counter is 0 and the shape is
 // byte-identical to the healthy nothing-to-do resume above — except that not one
@@ -1098,6 +1120,41 @@ TEST(BuildSurfaceDb, PunctuatedTickerIsConfiguredAndFitted) {
   // ...and the fitter really produced a surface for it on every date.
   for (const std::string &date : fx.dates) {
     EXPECT_TRUE(db->map_surface(date, "BRK.B").has_value()) << date;
+  }
+}
+
+// The other side of the C-1 rule, and the guard that can actually fire. Keying
+// rows by the `underlying` column is sound only while that column names the same
+// underlier the row's OSI symbol does. Dots are a legitimate difference (above);
+// anything else is TWO underliers. The live way to manufacture that is the OCC
+// adjusted-deliverable class — `pull_opra_hive.py` strips a trailing digit from
+// the root before mapping, so an `AAA1` row can end up carrying
+// `underlying = "AAA"`. Merging those into the vanilla chain at the same strike is
+// a silent pricing error, strictly worse than the lost symbol C-1 fixed, so the
+// loader refuses the cell loudly and it lands in `n_load_errors`.
+TEST(BuildSurfaceDb, RootDisagreeingBeyondPunctuationIsALoudLoadError) {
+  tsupport::SyntheticHiveSpec fx;
+  fx.symbols = {"AAA", "BBB"};
+  fx.adjusted_root_symbols = {"BBB"}; // BBB's contracts trade as "BBB1"
+  const BuildFixture f = make_build_fixture("adjusted_root", fx);
+
+  const auto rep = build_surface_db(build_spec(f, fx));
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string()); // one bad cell never aborts
+  // Loud and correctly classified: a real defect, not a sparse-universe hole.
+  EXPECT_EQ(rep->n_load_errors, std::size_t{3}); // BBB on each of the 3 dates
+  EXPECT_EQ(rep->n_coverage_holes, std::size_t{0});
+  // BBB never reaches config (no board at all), and is NOT silently folded into
+  // some other underlier's chains.
+  EXPECT_EQ(rep->config.n_symbols, 1u);
+  EXPECT_EQ(rep->config.n_configured, 1u);
+  EXPECT_EQ(rep->coverage.cells_ok, 3u); // AAA's three dates, unaffected
+
+  auto db = SurfaceDb::open(f.db.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  EXPECT_FALSE(db->symbol_config("BBB").has_value());
+  EXPECT_TRUE(db->symbol_config("AAA").has_value());
+  for (const std::string &date : fx.dates) {
+    EXPECT_TRUE(db->map_surface(date, "AAA").has_value()) << date;
   }
 }
 
