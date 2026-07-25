@@ -123,9 +123,12 @@ py::array_t<double> american_slice(const DoubleArray &strikes_array, double spot
 // on the same NaN + per-lane status convention Y1(c) established
 // (`batch_status.hpp`).
 
-using IntArray = py::array_t<std::int32_t, py::array::c_style | py::array::forcecast>;
 
-std::vector<Side> as_sides(const IntArray &array, std::size_t expected) {
+// FIX-5 (final-review Minor): the array arrives UNTYPED so the caller's dtype is
+// still visible; `as_side_codes` rejects a float kind before any cast (see
+// sides.hpp) and returns the int32 view. int64 columns keep working.
+std::vector<Side> as_sides(const py::object &raw, std::size_t expected) {
+  const atxvol::python::SideCodes array = atxvol::python::as_side_codes(raw);
   if (array.ndim() != 1) {
     throw py::value_error("side must be a one-dimensional array");
   }
@@ -165,7 +168,7 @@ struct BookSpans {
 BookSpans as_book(const DoubleArray &s_array, const DoubleArray &k_array,
                   const DoubleArray &t_array, const DoubleArray &sigma_array,
                   const DoubleArray &r_array, const DoubleArray &q_array,
-                  const IntArray &side_array) {
+                  const py::object &side_array) {
   BookSpans book;
   book.s = as_span(s_array, "S");
   book.n = book.s.size();
@@ -205,7 +208,7 @@ std::pair<py::array_t<double>, py::array_t<std::int32_t>>
 american_price_batch_py(const DoubleArray &s_array, const DoubleArray &k_array,
                         const DoubleArray &t_array, const DoubleArray &sigma_array,
                         const DoubleArray &r_array, const DoubleArray &q_array,
-                        const IntArray &side_array, AmericanMethod method,
+                        const py::object &side_array, AmericanMethod method,
                         const std::optional<AlOpts> &opts, simd::SimdIsa isa) {
   const BookSpans book = as_book(s_array, k_array, t_array, sigma_array, r_array, q_array,
                                  side_array);
@@ -262,7 +265,8 @@ american_price_batch_py(const DoubleArray &s_array, const DoubleArray &k_array,
 py::dict american_greeks_batch_py(const DoubleArray &s_array, const DoubleArray &k_array,
                                   const DoubleArray &t_array, const DoubleArray &sigma_array,
                                   const DoubleArray &r_array, const DoubleArray &q_array,
-                                  const IntArray &side_array, bool analytic, simd::SimdIsa isa) {
+                                  const py::object &side_array, bool analytic,
+                                  simd::SimdIsa isa) {
   const BookSpans book = as_book(s_array, k_array, t_array, sigma_array, r_array, q_array,
                                  side_array);
   const auto n = static_cast<py::ssize_t>(book.n);

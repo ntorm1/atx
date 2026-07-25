@@ -59,7 +59,6 @@ namespace {
 
 using DoubleArray = py::array_t<double, py::array::c_style | py::array::forcecast>;
 using IdArray = py::array_t<std::uint64_t, py::array::c_style | py::array::forcecast>;
-using IntArray = py::array_t<std::int32_t, py::array::c_style | py::array::forcecast>;
 
 template <class T> py::array_t<T> to_array(const std::vector<T> &values) {
   py::array_t<T> out(static_cast<py::ssize_t>(values.size()));
@@ -134,9 +133,11 @@ std::vector<OptionId> as_ids(const IdArray &array) {
 // row per (expiry, strike, side) triple; every column must be the same length.
 QuoteFrame frame_from_arrays(std::string uid, std::string snapshot_iso, double spot, double rate,
                              const std::vector<std::string> &expiry_iso,
-                             const DoubleArray &strike_array, const IntArray &side_array,
+                             const DoubleArray &strike_array, const py::object &raw_side,
                              const DoubleArray &bid_array, const DoubleArray &ask_array,
                              const std::vector<DividendEvent> &divs) {
+  // FIX-5 (final-review Minor): dtype kind validated before the cast (sides.hpp).
+  const atxvol::python::SideCodes side_array = atxvol::python::as_side_codes(raw_side);
   const auto strike = as_span(strike_array, "strike");
   const auto bid = as_span(bid_array, "bid");
   const auto ask = as_span(ask_array, "ask");
