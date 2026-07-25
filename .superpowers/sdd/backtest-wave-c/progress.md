@@ -2041,3 +2041,53 @@ New order: **T4+T5 (P3) -> T3 (P2) -> T6 -> T7+T8 (P1) -> T9 (gate)**.
 **3. Python follow-up recorded** (out of scope this sprint): the parity report's
 "reconciliation dominates" note is now **measurably wrong** — definitions parsing dominates
 both subcommands by a wide margin — and its lookup is dead code besides.
+
+### STOP POINT — 2026-07-25 (second), user instruction "stop here"
+
+HEAD `79b2fa6`. Wave D CLOSED (T1-T8, gate PASS, whole-branch review Approved).
+Wave E: T1 closed and reviewed; T2 (P5) DROPPED as already-delivered by Wave D T5;
+T4 (P3a+P3c) COMMITTED BUT UNREVIEWED.
+
+**`79b2fa6` is the only commit on this branch no reviewer has seen.** The implementer
+committed the code and was stopped while writing its report, so
+`2026-07-24-atx-vol-backtest-framework-wave-e/task-4-report.md` does NOT exist and the
+measurements survive only in the commit message. Same failure shape as the earlier T3
+stop, and the same remedy applies: **review `0622d52..79b2fa6` before anything else**, and
+re-run the byte gate (all seven T1 section hashes + both `final_nav` pins) and the full
+suite, because neither is on the record for this commit.
+
+T4's numbers, from the commit message (shared box, both sides warmed with a discarded run,
+median of 3):
+    definitions_parse build-schedule  20317 -> 17509 (a) -> 13699 ms
+    definitions_parse run-backtest    20560 -> 16892 (a) -> 13776 ms
+    peak working set  2797.5 -> 1806.4 MB  (-991 MB, -35.4%, moves only with (c))
+~33% off the dominant phase; the win is attributed to (a) and (c) separately as required.
+Verified at the stop point: `ListedOpra.*:StandardMonthlyClassifier.*` **24/24 PASS**.
+
+Two design notes from T4's commit message worth carrying into its review: `std::once_flag`
+was deliberately NOT used (neither copyable nor movable — a member of that type would
+delete the class's copy AND move constructors, and every read path moves the table out of a
+`Result`), and `fingerprint()` drops `noexcept` because its first call now allocates and can
+throw. Also flagged there: a DEFAULT-CONSTRUCTED table now reports a different fingerprint —
+the reviewer should decide whether that is reachable in-tree.
+
+**CONTROLLER ERROR #4, MINE — live, and caught before it corrupted a result.** The shipped
+`relocate-fixture.sh` hard-coded an all-backslash `PRISTINE` constant while `build-corpus`
+records the inventory path MIXED (`C:/.../run` + `\occ_ess\DATE.txt`). `String.Replace`
+matched nothing, the script aborted before deleting `run.atxrun`, and a "relocated" copy
+could keep a stale archive — which `write_run_archive` MERGES, so a carried-forward section
+would have silently contaminated byte gates. Found by Wave D T8's reviewer. Fixed to derive
+the prefix from the file itself, delete `run.atxrun` first and unconditionally, report
+`REPLACED=n`, and fail loudly on zero replacements. Self-tested: `REPLACED=49`,
+`build-schedule` EXIT 0 on the copy, pristine fixture's six pinned inputs all MATCH.
+Note the helper deletes `run.atxrun` by design, so `verify --run <COPY>` fails until the
+pipeline has run — expected, not a relocation failure.
+
+This is the **sixth** distinct way a byte gate has silently lied in this sprint, and the
+first authored by the controller rather than found in the tooling.
+
+Working tree clean for every sprint source file; the pre-existing unrelated uncommitted work
+(Python bindings split, `atx-core` sqlite, `atx-db/`, `atx-kb/`, surface-db docs) was never
+staged at any point.
+
+Status doc: `docs/superpowers/2026-07-25-atx-vol-backtest-sprint-status-2.md`
