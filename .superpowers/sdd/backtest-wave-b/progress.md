@@ -489,3 +489,41 @@ All 3 Important findings CLOSED. Remaining, carried out of the wave:
     dedup (a schema decision, not a cleanup).
   - The Python test-suite restructure is UNVERIFIED and deliberately
     UNCOMMITTED (see the plan doc's "Carried out of Wave B").
+
+## run-projected-var GOLDEN CAPTURED (controller, 2026-07-24)
+
+Closes the last item carried out of Wave B: the projected-VaR route had no
+regression anchor of any kind (raised as a controller note by the T5 reviewer).
+
+Captured on parity-full (135 sessions, 22 positions) via
+`run-projected-var --run <DIR>`:
+  `projected relative-template VaR complete: scenarios=135 positions=22`
+
+GOLDEN (sha256, first 16 hex):
+  projected_risk_scenarios.tsv  0cf8ac4b50f34ea6   (20696 B, 135 rows)
+  projected_risk_legs.tsv       0a8b38984c7b6064   (634566 B, 2970 rows)
+  projected_var.tsv ECONOMICS   d370c78dbb01b513   (374 B, 2 rows)
+
+IMPORTANT — `projected_var.tsv` is NOT byte-stable as a whole file: column 7
+`projections_per_second` is a wall-clock-derived rate (31800.894… on the first
+run, 32822.3 on an immediate rerun). The golden is therefore the file with FIELD
+7 EXCLUDED:
+  awk -F'\t' 'BEGIN{OFS="\t"}{ $7=""; sub(/\t\t/,"\t"); print }' projected_var.tsv
+The other two files carry no timing column (verified from their headers) and are
+byte-goldens as-is.
+
+DETERMINISM PROVEN: an immediate second `run-projected-var` on the same dir
+reproduced all three hashes exactly (0cf8ac4b / 0a8b3898 / d370c78d), while the
+reported rate changed — i.e. the economics are stable and only the excluded
+telemetry moves.
+
+Economic values pinned (from projected_var.tsv):
+  reference_value 280232.52872350701 (both rows)
+  95%: VaR 164113.53597877346  ES 169286.48040274251
+  99%: VaR 172540.63396786354  ES 174814.16710811283
+  n_scenarios 135, n_positions 22, prepared_fingerprint 9589445363048240406
+
+Side benefit: this production output independently confirms the VaR invariants
+added to `DispersionBookVar_SplitsConfidences` in the fix round — ES >= VaR on
+both confidences, VaR and ES both monotone in confidence, and reference_value
+identical across rows (== frames.back().value).
