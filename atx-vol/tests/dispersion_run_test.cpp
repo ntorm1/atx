@@ -459,7 +459,9 @@ TEST(DispersionReferenceReconcileRealData, PublishedRunDirectoriesCarryEveryStri
   // REV-TAIL I-1(b). This used to `GTEST_SKIP` green when nothing qualified,
   // which made it a test that could stop covering anything without saying so.
   // The RunArchive cutover positively asserts the shipped pipeline NO LONGER
-  // writes these four loose artifacts (test_dispersion_runarchive_e2e.py:305),
+  // writes these four loose artifacts (test_dispersion_runarchive_e2e.py:366-367,
+  // `test_run_archive_is_published` — cite the TEST NAME, not only the line: this
+  // citation has now gone stale twice by line-shift alone, REV-FIXTAIL Minor 1),
   // so every run directory published from now on is excluded BY CONSTRUCTION and
   // this test's coverage decays silently as the corpus ages. 9 of the 20
   // directories under the corpus root qualify today (measured 2026-07-25); the
@@ -583,9 +585,10 @@ TEST(DispersionLibraryOnlyEntryPoints, EachIsReachableAndFailsClosedNamingTheMis
 
 // ── REV-TAIL I-3 — the four keys that parsed, validated, and did nothing ──────
 //
-// `dispersion_run_surface_backtest` (dispersion_run.cpp:2377) reads the STRICT
-// typed config, so `unpriced`, `provenance`, `book_entry_fill_slippage` and
-// `reconcile_nav` each bind by name (binder at :1434-1443) and survive
+// `dispersion_run_surface_backtest` (dispersion_run.cpp:2382, whose strict read is
+// at :2387) reads the STRICT typed config, so `unpriced`, `provenance`,
+// `book_entry_fill_slippage` and `reconcile_nav` each bind by name (`provenance`
+// at :1428-1431, the other three at :1434, :1442 and :1443) and survive
 // `reject_unknown()`. It then hands off to `dispersion_backtest_config_from`,
 // which hardcoded `run.unpriced = UnpricedLotPolicy::Error` and never set the
 // other three at all. Four spec keys accepted by name, zero effect on the shipped
@@ -594,8 +597,11 @@ TEST(DispersionLibraryOnlyEntryPoints, EachIsReachableAndFailsClosedNamingTheMis
 //
 // This asserts the one property that makes a knob a knob: a non-default value set
 // on the typed spec is the value the engine actually runs under. `config.run` is
-// what reaches `run_backtest` (dispersion_backtest.cpp:112,120), so this is the
-// engine's real input and not a bookkeeping copy.
+// what reaches `run_backtest` on the SHIPPED route — `run_dispersion_surface_
+// backtest`, at dispersion_run.cpp:971 and :978 — so this is the engine's real
+// input and not a bookkeeping copy. (REV-FIXTAIL Minor 2: this used to cite
+// dispersion_backtest.cpp:112,120. Those lines are in `run_dispersion_backtest`,
+// a route this fix is not about; the property held, the pointer did not.)
 TEST(DispersionBacktestConfigFrom, EveryDeclaredEngineKnobReachesTheEngineRunConfig) {
   DispersionRunConfig config;
   config.unpriced = UnpricedLotPolicy::ExcludeAndReport;
@@ -629,7 +635,7 @@ TEST(DispersionBacktestConfigFrom, DefaultSpecKeepsTheShippedEngineDefaults) {
   EXPECT_FALSE(backtest.run.reconcile_nav);
 }
 
-// The two builders must agree on every knob they both carry. `dispersion_run.hpp:291`
+// The two builders must agree on every knob they both carry. `dispersion_run.hpp:306`
 // calls `dispersion_engine_run_config_from` "the single place the typed spec becomes
 // engine behaviour, so a knob that is set here is provably reachable and one that is
 // not is provably dead". That claim is only true while the surface route's builder

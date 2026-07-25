@@ -66,13 +66,31 @@ def _spec_origin(name: str) -> str:
     Falls back to an already-imported module's ``__file__`` (the ctest driver
     imports ``atxvol`` before pytest starts), and to the namespace-package
     search locations when a spec carries no origin.
+
+    REV-FIXTAIL Minor 5. ``find_spec("atxvol._core")`` imports the PARENT
+    package, and ``atxvol/__init__.py`` does ``from . import _core`` — so
+    resolving the extension executes that module body. Since REV-TAIL M-4 the
+    caller resolves ``_core`` on every collection rather than only on the failure
+    path, which means that module body now runs during collection of every ad-hoc
+    run. The narrow ``except`` this replaces caught only ImportError /
+    AttributeError / ValueError, so anything else out of that body aborted
+    COLLECTION — the blanket outcome the caller's early return at
+    ``_check_resolution`` exists to avoid, arriving through a different door.
+
+    Broadened deliberately: this function answers "where would ``name`` resolve",
+    and every failure to answer is the same answer — it does not. The exception
+    type and message are carried into the string, so nothing is swallowed
+    silently, and an unresolvable ``_core`` is already treated as "no
+    contamination" (``test_an_unbuilt_extension_is_not_contamination``) rather
+    than as a pass. Reporting the import problem per module is strictly better
+    than one collection-wide abort naming this file.
     """
     mod = sys.modules.get(name)
     if mod is not None and getattr(mod, "__file__", None):
         return str(mod.__file__)
     try:
         spec = importlib.util.find_spec(name)
-    except (ImportError, AttributeError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 — see the docstring; any failure means "unresolvable"
         return f"{_UNRESOLVED} ({type(exc).__name__}: {exc})"
     if spec is None:
         return f"{_UNRESOLVED} (no module named {name!r} on this interpreter)"

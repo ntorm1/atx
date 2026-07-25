@@ -38,10 +38,17 @@
 //     `project-schedule` and `run-projected-backtest`, which do publish sections
 //     and are CLI-bodied. The membership list was right; the rule was not.)
 //
-// Consequence for readers of the tests: for the three DISPATCHED entry points,
-// `dispersion_run_test.cpp` coverage is also CLI coverage. For the other three it
-// is not coverage of a CLI path and — until REV-TAIL I-1 — was not coverage at
-// all; see the per-entry-point block further down for exactly what now backs them.
+// Consequence for readers of the tests: WHERE `dispersion_run_test.cpp` covers a
+// DISPATCHED entry point, that coverage is also CLI coverage — but today it
+// covers none of the three directly (measured at this revision: 0 calls to
+// `dispersion_build_corpus`, 0 to `dispersion_run_projected_var`, and for
+// `dispersion_run_surface_backtest` a single mention in a comment). REV-FIXTAIL
+// Minor 4: the previous wording stated the implication as though the coverage
+// existed, which is the same class of claim REV-TAIL I-1 deleted below, surviving
+// in a neighbouring sentence. For the other three — the library-only ones, which
+// that file DOES drive — the coverage is not coverage of a CLI path and, until
+// REV-TAIL I-1, was not coverage at all; see the per-entry-point block further
+// down for exactly what now backs them.
 //
 // REPRODUCIBILITY: the pinned admission thresholds / fingerprint material that
 // determine which surfaces are admitted -- and therefore the dispersion golden

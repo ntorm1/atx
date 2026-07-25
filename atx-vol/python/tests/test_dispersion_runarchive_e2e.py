@@ -148,7 +148,30 @@ _FIXTURE_CANDIDATES: tuple[tuple[str, Path | None], ...] = (
     ("<repo>/atx-vol/python/tests/data/dispersion-e2e",
      _REPO / "atx-vol" / "python" / "tests" / "data" / "dispersion-e2e"),
 )
-_SP, _FIXTURE_TRACE = _resolve_root(_FIXTURE_CANDIDATES, (Path("paired") / "run",))
+# REV-FIXTAIL Minor 6: the selection rule now checks what the skip message below
+# (`_skip_reason`) already TELLS the reader a fixture root must carry. It used to
+# require only that `paired/run` was a directory, so a half-populated root was
+# SELECTED and the module went red on a missing input instead of skipping with the
+# recipe — a guard whose own documentation was the stricter of the two. Rule 1 of
+# the discovery policy above is exactly this ("select on the artifact, not on the
+# folder"); it was applied to the binary half and only partly to the fixture half.
+# `archives` and `occ_ess` are checked as directories rather than by glob, which
+# is all `_resolve_root` can express and is enough to separate a real run
+# directory from an empty shell.
+_PAIRED_REQUIREMENTS: tuple[Path, ...] = tuple(
+    Path("paired") / "run" / leaf
+    for leaf in (
+        "run_spec.tsv",
+        "universe_schedule.tsv",
+        "definitions.tsv",
+        "surface_manifest.tsv",
+        "quality.tsv",
+        "occ_ess_inventory.tsv",
+        "occ_ess",
+        "archives",
+    )
+)
+_SP, _FIXTURE_TRACE = _resolve_root(_FIXTURE_CANDIDATES, _PAIRED_REQUIREMENTS)
 _PAIRED_RUN = (_SP / "paired" / "run") if _SP is not None else None
 
 _ENV_BIN = os.environ.get("ATXVOL_BIN")
@@ -234,7 +257,8 @@ def _skip_reason(
         )
     if fixture_root is None:
         lines.append(
-            "paired fixture root (must hold paired/run) -- searched, in order:"
+            "paired fixture root (must hold a POPULATED paired/run -- see the "
+            "file list below) -- searched, in order:"
         )
         lines.extend(fixture_trace)
         lines.append(
@@ -401,10 +425,34 @@ def test_dump_reproduces_backtest_tsv_byteshape(run_dir: Path):
 
     What replaced it gates the property the name actually claims -- the SHAPE and
     the PRECISION of the rendering -- against the archive THIS run produced, so it
-    needs no golden, no second build line and no network of temp directories. The
-    economics are pinned separately and exactly by
-    `test_io_reads_final_nav_from_archive` and `_EXPECTED_FINAL_NAV`, which match
-    both the old and the new value to 10 significant figures.
+    needs no golden, no second build line and no network of temp directories.
+
+    WHAT WAS GIVEN UP, stated exactly (REV-FIXTAIL Minor 7, correcting this
+    docstring). The byte compare pinned all 78 non-date cells. This test pins ONE
+    economic value: the RUN'S FINAL NAV, at 10 significant figures, in assertion 5
+    -- the same figure `test_io_reads_final_nav_from_archive` reads out of the
+    archive through the Python path, and it matches both the old and the new
+    golden at that width. The previous wording here said "the economics are pinned
+    separately and EXACTLY", which one scalar at 10 s.f. is not. The trade is still
+    the right one -- the golden was foreign, out of repo, RED here and unrunnable
+    everywhere else -- but the sentence overstated what remains, and this module
+    exists because an overstated coverage claim is how a gap survives.
+
+    WHAT ASSERTIONS 1 AND 2 ARE AND ARE NOT. `lines[0].split("\\t") == columns` and
+    `len(body) == n_rows` are TAUTOLOGICAL: both the summary path and the `--tsv`
+    path in `runarchive_dump_command` iterate the same `view.columns()` span and
+    the same `view.n_rows()`, so they compare the archive to itself and cannot
+    observe a change in which columns the WRITER stores. They are kept, not
+    strengthened, and the reason is deliberate: the only way to strengthen them is
+    to restate the expected column set here, which would make a second
+    hand-maintained copy of the RunArchive schema registry
+    (`atx/vol/run_archive_schema.hpp`, whose backtest column set is machine-checked
+    under RECONCILE 3's `--check` region and pinned by the schema hash). Two
+    hand-maintained copies of one list is the I1 root cause, and the registry is
+    the stronger mechanism. What these two DO observe is not nothing -- an embedded
+    tab or newline in a rendered cell, and a `--tsv` render that disagrees with the
+    summary it was produced beside. Assertions 3, 4 and 5 are the load-bearing
+    ones.
     """
     summary = _run_argv("runarchive", "dump", str(run_dir), "backtest")
     assert summary.returncode == 0, summary.stderr
@@ -457,6 +505,15 @@ def test_dump_reproduces_backtest_tsv_byteshape(run_dir: Path):
     #    permanently satisfied by the timestamp column and observe nothing. Over
     #    fractional cells alone the measured width is 17 and a %g regression
     #    gives 6, so 16 separates them with margin at both ends.
+    #
+    #    THE FLOOR IS DATA-DEPENDENT, and that is the safe direction (REV-FIXTAIL
+    #    Minor 8, noted rather than changed). `widest >= 16` asserts a property of
+    #    the FIXTURE as well as of the renderer: a corpus whose doubles all happened
+    #    to render short would go red here for a reason that is not a renderer
+    #    regression. It can only produce a false RED, never a false green, and on a
+    #    real 3-session corpus (measured width 17) it is not a live risk. Recorded
+    #    so the next reader does not diagnose a red here as `%.17g` having been lost
+    #    without first checking the fixture.
     fractional = [
         _significant_digits(cell)
         for row in body

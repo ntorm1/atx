@@ -1580,7 +1580,7 @@ DispersionBacktestConfig dispersion_backtest_config_from(const DispersionRunConf
   // `run-surface-backtest` accepted four spec keys by name and gave them no effect.
   //
   // Deferring to `dispersion_engine_run_config_from` makes the "single place"
-  // claim at dispersion_run.hpp:291-293 literally true — there is now exactly one
+  // claim at dispersion_run.hpp:305-307 literally true — there is now exactly one
   // construction of the engine RunConfig, and a knob visible there is reachable
   // from BOTH routes. It cannot move a golden: every one of the four defaults to
   // precisely the value this block hardcoded or inherited (`unpriced` Error,
