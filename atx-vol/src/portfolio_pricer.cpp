@@ -3,6 +3,10 @@
 
 #include "atx/vol/portfolio_pricer.hpp"
 
+#include "laned_greek_run.hpp" // FIX-5/I1+M3: the SINGLE definition of the Ok-stamp
+                               // sweep (detail::requested_greeks_finite) and of the
+                               // unrequested-slot normalization the adjoint arm needs.
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -480,20 +484,15 @@ struct ContractPnl {
 // price/delta/gamma/theta always, vega/volga/vanna, rho, charm per GreekNeeds. A
 // non-finite requested column demotes the lane to NumericError (NaN-isolated like
 // every other error lane).
+//
+// FIX-5/M3: this used to be a verbatim copy of `detail::requested_greeks_finite`
+// (src/laned_greek_run.hpp), despite that header's own comment insisting on a
+// SINGLE definition for every Greek route. Two copies of a predicate whose whole
+// job is to make two routes agree is the defect shape one layer up, so the name is
+// kept — it is the one every stamp in this file reads — and the body now delegates.
 [[nodiscard]] bool greeks_all_finite(const AmericanGreeks &g,
                                      PricedSurface::GreekNeeds needs) noexcept {
-  bool ok = std::isfinite(g.price) && std::isfinite(g.delta) && std::isfinite(g.gamma) &&
-            std::isfinite(g.theta);
-  if (needs.vega) {
-    ok = ok && std::isfinite(g.vega) && std::isfinite(g.volga) && std::isfinite(g.vanna);
-  }
-  if (needs.rho) {
-    ok = ok && std::isfinite(g.rho);
-  }
-  if (needs.charm) {
-    ok = ok && std::isfinite(g.charm);
-  }
-  return ok;
+  return detail::requested_greeks_finite(g, needs);
 }
 
 // dSigma/dk at k_log = ln(K / F(T)) off a served `PricedSurface`, central FD
@@ -833,13 +832,30 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
         const Result<AmericanGreeks> ga = detail::american_greeks_adjoint(
             surf->pricing().S, kcol[p], tcol[p], rp.sigma, rp.rate, rp.q_eff, scol[p],
             std::optional<AlOpts>{surf->pricing().al_opts}, &took);
-        if (!ga.has_value() || !std::isfinite(ga->price)) {
+        // FIX-5/I1: the FOURTH Ok-stamp. This arm used to gate on isfinite(price)
+        // alone — the exact predicate FIX-1/F2, FIX-2/F2-B and FIX-3/F3-A each
+        // replaced — fourteen lines above the correctly guarded stamp below, and it
+        // is the SOLE gate on this route (`fields` is EF::Iv only, so nothing
+        // upstream normalizes). american_greeks_adjoint hands its unclaimed corners
+        // to american_greeks_fd, which returns SUCCESS with a non-finite differenced
+        // Greek at the extreme documented above; PriceTotals sums on STATUS alone,
+        // so such a lane was counted in n_ok and poisoned the book totals. Same
+        // shape as the non-adjoint stamp: normalize the UNREQUESTED slots first
+        // (FIX-1/F3's load-bearing half — a consumer's `g.rho * dr` is NaN even when
+        // dr is 0.0), then sweep the REQUESTED set finite.
+        if (!ga.has_value()) {
           out.status = PriceStatus::NumericError;
           continue;
         }
-        b_greeks[p] = *ga;
-        out.fair_value = ga->price;
-        out.g = *ga;
+        AmericanGreeks gg = *ga;
+        detail::normalize_unrequested_greeks(gg, greek_needs);
+        if (!greeks_all_finite(gg, greek_needs)) {
+          out.status = PriceStatus::NumericError;
+          continue;
+        }
+        b_greeks[p] = gg;
+        out.fair_value = gg.price;
+        out.g = gg;
         out.status = PriceStatus::Ok;
         if (skew_adjusted_delta) {
           const double slope = priced_surface_skew_slope(*surf, kcol[p], tcol[p]);
