@@ -446,19 +446,29 @@ def test_dump_reproduces_backtest_tsv_byteshape(run_dir: Path):
             float(cell)  # raises, and the traceback names the offending cell
 
     # 4. FULL PRECISION. `%.17g` doubles carry up to 17 significant digits; a
-    #    renderer that regressed to plain `%g` would cap every cell at 6 and the
+    #    renderer that regressed to plain `%g` would cap them at 6 and the
     #    archive would silently stop round-tripping. Nothing else in this module
-    #    can observe that, and it is exactly what the byte compare was standing
-    #    in for.
-    widest = max(
+    #    can observe that, and it is what the byte compare was standing in for.
+    #
+    #    ONLY FRACTIONAL CELLS COUNT, and that restriction is the whole test.
+    #    Measured on this fixture: the widest cell in the WHOLE table is `ts_ns`
+    #    at 19 digits -- an i64 rendered by %lld, which no double-formatting
+    #    regression would touch. A threshold taken over every cell would sit
+    #    permanently satisfied by the timestamp column and observe nothing. Over
+    #    fractional cells alone the measured width is 17 and a %g regression
+    #    gives 6, so 16 separates them with margin at both ends.
+    fractional = [
         _significant_digits(cell)
         for row in body
         for name, cell in zip(columns, row.split("\t"))
-        if name != "date"
-    )
+        if name != "date" and ("." in cell or "e" in cell or "E" in cell)
+    ]
+    assert fractional, "no fractional cell in the table: nothing pins the double format"
+    widest = max(fractional)
     assert widest >= 16, (
-        f"no cell carries more than {widest} significant digits: the dump is no "
-        f"longer emitting %.17g doubles and the archive round-trip is lossy"
+        f"no fractional cell carries more than {widest} significant digits: the "
+        f"dump is no longer emitting %.17g doubles and the archive round-trip is "
+        f"lossy"
     )
 
     # 5. And it is THIS run's archive, not some other: the nav column's last row
