@@ -302,12 +302,33 @@ TEST(ListedDispersionPipeline, ForwardAndRiskLookupsOverSyntheticSnapshot) {
 // warm-up / low-coverage session on day0 (2026-07-10), strictly before the first
 // roll — exactly what run-backtest hands the reconciler from clock.refs().
 
-// RED anchor (documents the defect; stays green forever as the defensive
-// invariant): feeding the FULL warm-up-led timeline straight into the low-level
-// reconciler aborts. The front-date hard-require at
-// listed_dispersion_reconciliation.cpp:240 fires before any pricing, so no
-// surfaces are dereferenced on this path.
-TEST(ListedDispersionPipeline, ReconcileClockCoupling_AbortsOnWarmupLeadIn) {
+// PREMISE SUPERSEDED at the main -> feat/pipeline-m merge; rewritten to assert the
+// contract that actually holds.
+//
+// This was main's RED anchor: it asserted that feeding the FULL warm-up-led timeline
+// straight into the low-level reconciler ABORTS on the front-date hard-require
+// ("first snapshot must be first entry date"). The trunk fixed the SAME underlying
+// defect independently and at a lower layer — `276239d fix(vol): point-in-time
+// dispersion universe + removals + reconcile deferral (C1-C4)`, change C2:
+//
+//   "reconcile_listed_dispersion no longer requires the first snapshot to be the
+//    first entry date. The schedule builder legitimately defers the first roll
+//    (coverage gate); pre-entry dates now emit flat position-free rows, so
+//    row-count alignment with the canonical backtest is preserved. A genuinely
+//    missing first-roll date is still a hard error."
+//
+// So main's M1 (trim the lead-in in a wrapping seam) and the trunk's C2 (tolerate
+// the lead-in in the reconciler itself) are CONVERGENT fixes for one defect. Both
+// survive the merge and both work; only this negative control became false, because
+// the guard it pinned no longer exists.
+//
+// Rewritten rather than deleted, and deliberately NOT a duplicate of the trunk's
+// `ListedDispersionReconciliation.ToleratesDeferredFirstRollWithLeadingFlatDates`
+// (which already covers the flat-leading-row shape in detail). What that test does
+// NOT cover, and what this one now pins, is the guard's SURVIVING teeth: a timeline
+// with no snapshot on/after the first scheduled roll date is still a hard error.
+// Without this, C2's relaxation could silently widen into "any timeline is fine".
+TEST(ListedDispersionPipeline, ReconcileClockCoupling_ToleratesWarmupLeadInButNotAMissingEntry) {
   const std::vector<PricedSurface> day0 = surfaces(kNow0, 0.0);
   const std::vector<PricedSurface> day1 = surfaces(kNow1, 2.0);
   const std::vector<PricedSurface> day2 = surfaces(kNow2, -1.0);
@@ -331,15 +352,27 @@ TEST(ListedDispersionPipeline, ReconcileClockCoupling_AbortsOnWarmupLeadIn) {
       {"2026-07-12", kNow2, &*set2, quotes2}, // held
   };
 
-  const auto aborted = reconcile_listed_dispersion(schedule, full);
-  ASSERT_FALSE(aborted);
-  EXPECT_EQ(aborted.error().code(), ErrorCode::InvalidArgument);
-  // Nail the SPECIFIC guard: InvalidArgument has three sources in this function
-  // (empty timeline, bad tolerance, front-date mismatch), so matching the code
-  // alone would keep passing if the abort moved to a different one.
-  EXPECT_NE(aborted.error().to_string().find("first snapshot must be first entry date"),
-            std::string::npos)
-      << aborted.error().to_string();
+  // C2: the warm-up lead-in is now TOLERATED at the low level. One row per snapshot
+  // is emitted throughout (so the timeline stays aligned with the canonical
+  // backtest), and the pre-entry date is flat and position-free.
+  const auto tolerated = reconcile_listed_dispersion(schedule, full);
+  ASSERT_TRUE(tolerated) << tolerated.error().to_string();
+  ASSERT_EQ(tolerated->rows.size(), full.size());
+  EXPECT_EQ(tolerated->rows[0].date, "2026-07-10");
+  EXPECT_EQ(tolerated->rows[0].n_held_lots, 0u);
+
+  // The surviving hard error: drop every snapshot on/after the first roll date and
+  // the reconciler must still refuse. Nail the SPECIFIC guard — InvalidArgument has
+  // several sources in this function, so matching the code alone would keep passing
+  // if the abort moved to a different one.
+  const std::vector<ListedReconciliationSnapshot> lead_in_only = {full[0]};
+  const auto missing_entry = reconcile_listed_dispersion(schedule, lead_in_only);
+  ASSERT_FALSE(missing_entry);
+  EXPECT_EQ(missing_entry.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(
+      missing_entry.error().to_string().find("no snapshot on/after the first scheduled roll date"),
+      std::string::npos)
+      << missing_entry.error().to_string();
 }
 
 // GREEN target: the new seam trims the warm-up lead-in so reconciliation starts at
@@ -370,10 +403,18 @@ TEST(ListedDispersionPipeline, ReconcileListedSchedule_TrimsWarmupLeadIn) {
   };
   const std::size_t first_roll_index = 1u; // day1 is the first roll date in `full`
 
-  // The production pattern (full clock timeline) still aborts at the low level ...
-  EXPECT_FALSE(reconcile_listed_dispersion(schedule, full));
+  // The production pattern (full clock timeline) is now ACCEPTED at the low level
+  // too, since the trunk's C2 (276239d) relaxed the front-date hard-require — see
+  // the note on ReconcileClockCoupling_ToleratesWarmupLeadInButNotAMissingEntry.
+  // The two routes differ in SHAPE, not in success: C2 keeps the pre-entry session
+  // as a flat position-free row (one row per snapshot, aligned with the canonical
+  // backtest), whereas the M1 seam TRIMS it, so the seam emits one row fewer. That
+  // difference is asserted directly below.
+  const auto untrimmed = reconcile_listed_dispersion(schedule, full);
+  ASSERT_TRUE(untrimmed) << untrimmed.error().to_string();
+  EXPECT_EQ(untrimmed->rows.size(), full.size());
 
-  // ... but the seam trims the lead-in and succeeds.
+  // ... and the seam trims the lead-in and succeeds.
   auto trimmed = reconcile_listed_schedule(schedule, full);
   ASSERT_TRUE(trimmed) << (trimmed ? std::string{} : trimmed.error().to_string());
 
