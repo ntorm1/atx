@@ -1686,6 +1686,71 @@ TEST(SurfaceDbPopulate, CarriedCellsLeaveTheFitSuccessRateUndefinedNotZero) {
   std::filesystem::remove_all(root);
 }
 
+// FIX-D newly COUPLES the carry set to the inner worker count, and carry-over's
+// whole premise ("a resume equals a fresh build for the cells it does re-fit")
+// therefore now rests on the byte-identity-across-worker-counts invariant.
+//
+// The mechanism: carried cells are excluded from `fit_positions`, which shrinks
+// `n_fit_boards`, which is what the shared budget is divided by. A date whose 3
+// boards are all fit at budget 8 gives each board's inner fit 8/3; on a resume
+// where 2 of the 3 are carried, the ONE refit board is fit with the whole 8. Same
+// cell, different inner allocation, and nothing but that invariant says the bytes
+// come out the same.
+//
+// The invariant IS tested directly (SharedWorkerBudgetKeepsOutputByteIdentical),
+// but never THROUGH the carry path -- every FIX-D/E/F test runs at `carry_spec()`,
+// i.e. fit_workers 0. This closes that gap: same symbol, same board, reached once
+// as one of three fresh fits and once as the sole survivor of a carry, and the
+// surfaces must be bit-identical.
+TEST(SurfaceDbPopulate, CarryPathKeepsTheRefitCellBitIdenticalAcrossWorkerBudgets) {
+  std::vector<CorpusBoard> all = carry_seed_boards();
+  all.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+
+  // Reference: one fresh pass, all three boards offered to the fitter together.
+  const auto ref_root = test_root("carry_worker_identity_ref");
+  auto ref_db = SurfaceDb::create(ref_root.string());
+  ASSERT_TRUE(ref_db.has_value());
+  auto ref = populate_universe_streaming(*ref_db, all, carry_spec(8u));
+  ASSERT_TRUE(ref.has_value()) << (ref ? "" : ref.error().to_string());
+  ASSERT_EQ(ref->cells_ok, 3u);
+  ASSERT_EQ(ref->cells_carried, 0u) << "the reference must be a FRESH fit, not a carry";
+
+  // Resume: AAA/BBB are seeded first, so the second pass carries them and CCC is
+  // the only board the fitter ever sees on the rewrite.
+  const auto res_root = test_root("carry_worker_identity_resume");
+  auto res_db = SurfaceDb::create(res_root.string());
+  ASSERT_TRUE(res_db.has_value());
+  auto seed = populate_universe_streaming(*res_db, carry_seed_boards(), carry_spec(8u));
+  ASSERT_TRUE(seed.has_value()) << (seed ? "" : seed.error().to_string());
+  ASSERT_EQ(seed->cells_ok, 2u);
+  auto resume = populate_universe_streaming(*res_db, all, carry_spec(8u));
+  ASSERT_TRUE(resume.has_value()) << (resume ? "" : resume.error().to_string());
+  ASSERT_EQ(resume->cells_carried, 2u) << "the carry must actually have engaged";
+  ASSERT_EQ(resume->cells_ok, 1u) << "CCC must be the only cell fit on the rewrite";
+  ASSERT_EQ(resume->cells_refit, 0u);
+
+  // The cell that was FIT under two different inner allocations.
+  const auto ref_ccc = ref_db->load_surface(kDate0, "CCC");
+  const auto res_ccc = res_db->load_surface(kDate0, "CCC");
+  ASSERT_TRUE(ref_ccc.has_value()) << (ref_ccc ? "" : ref_ccc.error().to_string());
+  ASSERT_TRUE(res_ccc.has_value()) << (res_ccc ? "" : res_ccc.error().to_string());
+  expect_surface_bits_equal(*res_ccc, *ref_ccc);
+
+  // And the carried pair, which the rewrite must have re-emitted rather than
+  // re-fitted -- same comparison, so a silent re-fit at a different budget would
+  // show up here too.
+  for (const char *symbol : {"AAA", "BBB"}) {
+    const auto ref_s = ref_db->load_surface(kDate0, symbol);
+    const auto res_s = res_db->load_surface(kDate0, symbol);
+    ASSERT_TRUE(ref_s.has_value()) << symbol;
+    ASSERT_TRUE(res_s.has_value()) << symbol;
+    expect_surface_bits_equal(*res_s, *ref_s);
+  }
+
+  std::filesystem::remove_all(ref_root);
+  std::filesystem::remove_all(res_root);
+}
+
 
 // THE acceptance gate. A resume over an unchanged database and hive must re-fit
 // NOTHING that already succeeded, while still retrying the cell that failed.
