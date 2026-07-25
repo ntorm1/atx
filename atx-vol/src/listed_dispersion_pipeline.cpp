@@ -202,7 +202,7 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
   // `quote_join` phases exactly as the example measured them inline, so the CLI's
   // build-schedule diagnostics keep their pre-lift per-phase granularity; a null
   // timer skips the charges and is economically identical.
-  const std::vector<std::string> symbols = all_symbols(universe_rows);
+  const std::vector<std::string> symbols = all_symbols(universe_rows, quote_source.index_symbol);
   ListedDispersionSchedule schedule;
   std::int64_t active_expiry = 0;
   for (const SnapshotRef &ref : clock.refs()) {
@@ -221,7 +221,8 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
       }
       continue;
     }
-    ATX_TRY(DispersionUniverse authored, universe_at(universe_rows, ref.date));
+    ATX_TRY(DispersionUniverse authored,
+            universe_at(universe_rows, ref.date, quote_source.index_symbol));
     MissingNameSpec missing{MissingNamePolicy::DropRenormalize, spec.min_names};
     ATX_TRY(
         ResolvedUniverse resolved,

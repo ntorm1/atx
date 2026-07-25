@@ -1094,6 +1094,9 @@ TEST(RunArchiveEncoders, MetaSectionEchoesResolvedSpec) {
   EXPECT_EQ(value_of("min_weight_coverage"), "0.80000000000000004"); // %.17g
   EXPECT_EQ(value_of("gross_index_vega"), "10000");
   EXPECT_EQ(value_of("core_mode"), "0");
+  // L12: the meta echo must not silently omit a resolved knob. `index_symbol`
+  // is appended last, mirroring write_resolved_spec's key order.
+  EXPECT_EQ(value_of("index_symbol"), "SPY");
   // Caller-supplied extra pairs ride behind the spec echo.
   EXPECT_EQ(value_of("input_hash"), "0xabc");
   EXPECT_EQ(value_of("n_dates"), "2");

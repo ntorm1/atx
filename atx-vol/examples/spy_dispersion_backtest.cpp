@@ -317,7 +317,7 @@ Status write_methodology_map(const fs::path &path) {
 Status build_corpus_command(const fs::path &source_spec_path, const fs::path &run_dir) {
   ATX_TRY(RunSpec spec, read_run_spec(source_spec_path));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(spec.universe_path));
-  const std::vector<std::string> symbols = all_symbols(universe_rows);
+  const std::vector<std::string> symbols = all_symbols(universe_rows, spec.index_symbol);
   // L9: the loose entry-gate floor (SPY + 50 names) reads from the one versioned
   // methodology policy instead of a scattered literal. `min_names_entry` == 51.
   const ListedDispersionMethodology methodology;
@@ -538,7 +538,7 @@ Status run_backtest_command(const fs::path &run_dir) {
   // the reconciliation. This phase's cost dominating the subcommand is the claim
   // the diagnostics prove.
   phase = PhaseTimer::now();
-  const std::vector<std::string> symbols = all_symbols(universe_rows);
+  const std::vector<std::string> symbols = all_symbols(universe_rows, spec.index_symbol);
   std::vector<std::shared_ptr<const MarketSnapshot>> snapshot_owners;
   std::vector<std::vector<ListedOptionQuote>> quote_owners;
   snapshot_owners.reserve(clock.size());
@@ -912,7 +912,8 @@ Status run_surface_backtest_command(const fs::path &run_dir) {
   if (clock.size() == 0u) {
     return Err(ErrorCode::Unavailable, "surface backtest: empty qualified clock");
   }
-  ATX_TRY(DispersionUniverse universe, universe_at(universe_rows, clock.refs().front().date));
+  ATX_TRY(DispersionUniverse universe,
+          universe_at(universe_rows, clock.refs().front().date, spec.index_symbol));
 
   DispersionBacktestConfig config;
   config.target_dte_days = spec.target_dte_days;
@@ -989,7 +990,8 @@ Status run_projected_var_command(const fs::path &run_dir) {
     scenarios.push_back({snapshots.back()->ts_ns(), &snapshots.back()->set()});
   }
 
-  ATX_TRY(DispersionUniverse authored, universe_at(universe_rows, clock.refs().front().date));
+  ATX_TRY(DispersionUniverse authored,
+          universe_at(universe_rows, clock.refs().front().date, spec.index_symbol));
   ATX_TRY(ResolvedUniverse resolved,
           resolve_universe_uids(
               authored, [&](std::string_view symbol) { return snapshots.front()->uid_of(symbol); },

@@ -100,6 +100,7 @@ add_executable(atx-vol-tests
     listed_dispersion_reconciliation_test.cpp
     listed_dispersion_strategy_test.cpp
     listed_dispersion_pipeline_test.cpp
+    dispersion_workflow_test.cpp
     backtest_test.cpp
     strategy_test.cpp
     dispersion_strangle_test.cpp

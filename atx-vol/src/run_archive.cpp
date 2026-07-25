@@ -964,7 +964,7 @@ RaSectionData encode_meta_section(const RunSpec &spec,
   // use %.17g per the registry's meta contract (write_resolved_spec's
   // default iostream precision would truncate).
   std::vector<std::pair<std::string, std::string>> pairs;
-  pairs.reserve(21 + extra.size());
+  pairs.reserve(22 + extra.size());
   pairs.emplace_back("label", spec.label);
   pairs.emplace_back("date_lo", spec.date_lo);
   pairs.emplace_back("date_hi", spec.date_hi);
@@ -989,6 +989,10 @@ RaSectionData encode_meta_section(const RunSpec &spec,
   pairs.emplace_back("delta_band", format_meta_double(spec.delta_band));
   pairs.emplace_back("fit_workers", std::to_string(spec.fit_workers));
   pairs.emplace_back("core_mode", spec.core_mode ? "1" : "0");
+  // L12: appended last, matching write_resolved_spec's trailing append. This
+  // adds a ROW to the meta ScalarKV section, not a column, so the RunArchive
+  // schema hash is untouched.
+  pairs.emplace_back("index_symbol", spec.index_symbol);
   for (const auto &kv : extra) {
     pairs.push_back(kv);
   }
