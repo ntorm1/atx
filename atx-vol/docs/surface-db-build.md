@@ -81,7 +81,7 @@ atx-vol-surface-db-build --db <root> --hive <root>
 | `--hive <root>` | yes | OPRA hive-v2 root holding `date=<YYYY-MM-DD>/data.parquet`. |
 | `--from` / `--to` | yes | Inclusive date window (every calendar date in range is enumerated). |
 | `--symbols A,B,C` | no | CSV universe. **Omit (or empty) to discover** every underlying present in the window. Surrounding whitespace per field is trimmed. |
-| `--index SPY` | no | Designated index leg — gets the dense index recipe (bypasses per-board selection), for both config generation and the populate. Whether that recipe is a hard **pin** is `--pin-curve-family`. |
+| `--index SPY` | no | Designated index leg — its config records the dense index recipe (bypassing per-board selection) instead of a classified family, for both config generation and the populate. **Under the default `--pin-curve-family false` that recipe never reaches the fit**: the stored `curve` is only consumed when `pin_curve` is set (`pricer_config_for_symbol`, and `apply_symbol_config`'s curve/calib assignment), so by default `--index` is a config-time annotation and the index leg auto-routes like every other symbol. It becomes load-bearing again with `--pin-curve-family true`. |
 | `--preset NAME` | no | `fast` \| `accurate` \| `robust` \| `hft` \| `populate`. Default `populate`. Drives both the manifest seeding and the populate fit tier. |
 | `--r RATE` | no | Flat continuously-compounded carry rate (`OpraHiveSpec.r`). Default **`0.0`**. **Must match the rate the hive's quotes were priced under** — read [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing) before every run. Must be a finite number consuming the whole token; `abc`, `0.03x`, `nan`, `inf` and a missing value are all **exit 2**, never a silent `0.0`. Negative rates are accepted. |
 | `--deep-selection` | no | Additionally run the full held-out `select_curve` OOS search per symbol and record its winner as that symbol's family (falls back to the fit-policy decision when the selector has no scorable holdout). Obeys `--pin-curve-family` like the cheap route does. |
@@ -142,11 +142,38 @@ explicit instruction**; a machine-generated per-symbol guess is not that.
 Use it when you need a symbol's family held fixed across dates — a controlled
 comparison, or reproducing an older database.
 
-**What `false` costs you.** An *ambiguous* board (low classifier confidence) makes
-the fitter run its own held-out selector at fit time rather than taking the stored
-family, and a rejected board now pays for its ladder rungs. Both are extra work
-per cell, so a build over a large universe can take longer than the pinned run
-did. That is the intended trade: cells recovered for fit time spent.
+**What `false` costs you — and this is the part to read twice: it changes the
+fitted numbers, not just the runtime.**
+
+*Numerically.* Unpinning does not merely re-choose the curve *family*; it hands
+the fit a different **calibration**. `PricerFitter` only looks up the classified
+profile's `calib` when its internal `decision_` is populated, and `decision_` is
+populated **only on the unpinned branch**. So:
+
+- **Pinned**, a cell fits with an essentially **default-constructed `CalibOpts`**
+  (the fit-policy decision never fills `curve.parametric` — nothing in
+  `fit_policy.cpp` writes that field — so the stored, faithfully round-tripped
+  config carries calibration defaults), plus the handful of fields the preset and
+  the risk-quality policy pin.
+- **Unpinned**, the same cell fits with the **profile's tuned calib**. For an
+  index/ETF-class board that is e.g. `max_outer_iter` 4 → 50, `huber_k` 1.5 → 2.0,
+  `residual_disable` true → false, `residual_basis_kind` None → HingeQuad
+  (`profile.cpp`'s `build_spy_like`), and `ConvexDense`'s `node_cap` is re-derived
+  from the risk tier (40 → 60 at Balanced) instead of copied verbatim.
+
+This is the auto route working as designed, and it is very likely a large part of
+why coverage improves — but **expect fitted IVs, total variances and surface RMSE
+to move**, not just to appear for cells that previously failed. Do not compare a
+`false` database against a `true` one expecting bit-identical surfaces for the
+cells that succeeded in both; they were fit by a different calibration.
+
+*In time.* An *ambiguous* board (low classifier confidence) makes the fitter run
+its own held-out selector at fit time rather than taking the stored family, and a
+rejected board now pays for its ladder rungs. Both are extra work per cell, so a
+build over a large universe can take longer than the pinned run did.
+
+That is the intended trade: cells recovered, and a better-calibrated fit, for fit
+time spent.
 
 **The `LinearVariance` trap (only reachable with `true`).** The risk pipeline
 refuses a `LinearVariance` *pin* outright — `InvalidArgument: invalid correctness
