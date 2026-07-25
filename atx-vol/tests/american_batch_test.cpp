@@ -1578,5 +1578,107 @@ TEST(AmericanGreeksBatch, EmptyIsNoOp) {
           .has_value());
 }
 
+// ── FIX-5 / I3 — the SECOND laned-Greek driver: american_greeks_batch's two
+//    Ok-stamps must guard the REQUESTED set, and must agree across sides. ─────
+//
+// american_greeks_batch stamps LaneStatus from two different places:
+//   * the scalar route (`price_lane`) — used by every lane on the FD route and by
+//     the CALL lanes on the analytic route — stamped Ok whenever the bundle merely
+//     `has_value()`;
+//   * the laned route (`flush`) — the analytic PUT lanes — stamped from
+//     `isfinite(price)` alone.
+// Neither consulted GreekNeeds, so a bundle with a finite mark and a NaN in a
+// REQUESTED column was certified Ok on both; and because the two predicates differ,
+// the same input could be demoted as a put and certified as a call. That is the F1
+// defect class (same output column, same request, answer depending on which lane the
+// kernel handled) reproduced on STATUS rather than on value.
+//
+// The defect is pre-existing, but WS-Y made this function public Python API
+// (python/src/bindings/pricing.cpp, called with GreekFieldMask::All — every Greek
+// requested and, pre-fix, none guarded), so the sprint changed its exposure.
+//
+// Trigger is G1's: at S = 1e-160 the FD gamma denominator hS*hS = (1e-3*S)^2
+// underflows to 0.0 while the mark stays finite, so gamma = 0/0 = NaN on a
+// SUCCESSFUL bundle. Both sides are driven in ONE call.
+constexpr double kI3TinyS = 1.0e-160;
+
+TEST(AmericanGreeksBatch, I3_OkStampGuardsTheRequestedGreekSetOnBothSides) {
+  // Kernel-level precondition, asserted for BOTH sides: a SUCCESSFUL differenced
+  // bundle with a finite mark and a non-finite gamma.
+  for (const Side sd : {Side::Put, Side::Call}) {
+    const auto probe =
+        american_greeks_fd(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, sd);
+    ASSERT_TRUE(probe.has_value()) << "side " << static_cast<int>(sd);
+    EXPECT_TRUE(std::isfinite(probe->price)) << "side " << static_cast<int>(sd);
+    EXPECT_FALSE(std::isfinite(probe->gamma)) << "side " << static_cast<int>(sd);
+  }
+
+  // Identical inputs modulo `side`, in the SAME call — the asymmetry's own shape.
+  Book b;
+  b.push(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, Side::Put);
+  b.push(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, Side::Call);
+  const std::size_t n = b.size();
+  std::vector<double> px(n, 0.0), gm(n, 0.0), dl(n, 0.0);
+  simd::GreeksBatchSoA out;
+  out.price = px.data();
+  out.gamma = gm.data();
+  out.delta = dl.data();
+  PricingKernel kernel; // FD route (analytic_greeks defaults false)
+  PricingWorkspace ws;
+  // GreekFieldMask::All is exactly what the Python binding passes.
+  ASSERT_TRUE(american_greeks_batch(b.view(), GreekFieldMask::All, out, kernel, ws)
+                  .has_value());
+
+  // Half 1 — a NaN in a REQUESTED column may not be certified Ok. Pre-fix both
+  // lanes were LaneStatus::Ok carrying a NaN gamma.
+  EXPECT_EQ(ws.lane_status_view()[0], LaneStatus::Unsupported) << "put lane";
+  EXPECT_EQ(ws.lane_status_view()[1], LaneStatus::Unsupported) << "call lane";
+
+  // Half 2 — and the two sides agree, which is the property that makes the
+  // put/call split structurally impossible rather than merely absent today.
+  EXPECT_EQ(ws.lane_status_view()[0], ws.lane_status_view()[1])
+      << "same input modulo side, different status";
+}
+
+TEST(AmericanGreeksBatch, I3_AnalyticRoutePutAndCallStampsAgree) {
+  // The analytic route is where the two stamps physically diverge: PUT lanes go
+  // through the laned bundle (isfinite(price)) and CALL lanes through the scalar
+  // fan (has_value()). Same input modulo side, same call, so whatever either
+  // stamp decides, both must decide it — and an Ok lane must carry finite
+  // requested Greeks.
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "analytic laned put route needs an AVX2 host";
+  }
+  Book b;
+  b.push(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, Side::Put);
+  b.push(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, Side::Call);
+  const std::size_t n = b.size();
+  std::vector<double> px(n, 0.0), gm(n, 0.0), dl(n, 0.0), th(n, 0.0);
+  simd::GreeksBatchSoA out;
+  out.price = px.data();
+  out.gamma = gm.data();
+  out.delta = dl.data();
+  out.theta = th.data();
+  PricingKernel kernel;
+  kernel.analytic_greeks = true;
+  kernel.isa = simd::SimdIsa::Auto;
+  PricingWorkspace ws;
+  ASSERT_TRUE(american_greeks_batch(b.view(), GreekFieldMask::All, out, kernel, ws)
+                  .has_value());
+
+  EXPECT_EQ(ws.lane_status_view()[0], ws.lane_status_view()[1])
+      << "analytic put (laned) and call (scalar) stamps disagree on the same input";
+  for (std::size_t i = 0; i < n; ++i) {
+    if (ws.lane_status_view()[i] != LaneStatus::Ok) {
+      continue;
+    }
+    // An Ok lane's REQUESTED columns are finite — the whole point of the stamp.
+    EXPECT_TRUE(std::isfinite(px[i])) << "lane " << i << " price";
+    EXPECT_TRUE(std::isfinite(dl[i])) << "lane " << i << " delta";
+    EXPECT_TRUE(std::isfinite(gm[i])) << "lane " << i << " gamma";
+    EXPECT_TRUE(std::isfinite(th[i])) << "lane " << i << " theta";
+  }
+}
+
 } // namespace
 } // namespace atx::vol

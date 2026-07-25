@@ -22,6 +22,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <type_traits>
 #include <utility>
@@ -29,6 +30,7 @@
 
 #include "atx/vol/american.hpp" // american_greeks_fd — G1 kernel-defect probe
 #include "atx/vol/black76.hpp"
+#include "atx/vol/detail/adjoint_greeks.hpp" // american_greeks_adjoint — FIX-5/I1 probe
 #include "atx/vol/counters.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
@@ -3957,6 +3959,100 @@ TEST(PortfolioPricer, F3_UnrequestedNonFiniteRhoKeepsTheLaneAndTheTotalsFinite) 
   EXPECT_TRUE(std::isfinite(f.total.pnl_delta));
   EXPECT_TRUE(std::isfinite(f.total.pnl_gamma));
   EXPECT_TRUE(std::isfinite(f.total.pnl_vega));
+}
+
+// ── FIX-5 / I1: the FOURTH portfolio Ok-stamp — the ADJOINT-greeks route ──────
+//
+// FIX-1/F2, FIX-2/F2-B and FIX-3/F3-A each replaced an `isfinite(price)`-only
+// Ok-stamp with the GreekNeeds sweep. `solve_span`'s adjoint arm
+// (portfolio_pricer.cpp, the `if (adjoint_greeks)` block) kept the OLD predicate,
+// fourteen lines above the correctly-guarded non-adjoint stamp in the same loop:
+// it never consulted `greek_needs`, never called normalize_unrequested_greeks, and
+// then wrote `out.g` and stamped `Ok`.
+//
+// The trigger is the SAME one G1 pins, reached through a different door:
+// `american_greeks_adjoint` claims only genuine early-exercise puts in the American
+// regime and hands every corner it cannot claim to `american_greeks_fd`
+// (detail/adjoint_greeks.cpp, its final `return`) — the bundle that returns SUCCESS
+// with a finite deep-ITM mark and a gamma of 0/0 once the FD denominator
+// hS*hS = (1e-3*S)^2 underflows. This route requests EF::Iv only, so nothing
+// upstream normalizes or guards: this stamp is the sole gate.
+//
+// PriceTotals sums on STATUS alone (reduce_price_totals: `t.gamma += ...; ++t.n_ok`),
+// so pre-fix the lane is certified Ok, counted in n_ok, and its NaN gamma lands in
+// the book total — the exact GR-P2-1 breach the whole FIX-1 chain exists to prevent.
+// `PriceOptions::adjoint_greeks` defaults false, but it is public and Python-bound
+// (python/src/bindings/backtest.cpp), so a caller who turns it on hits this.
+TEST(PortfolioPricer, I1_AdjointRouteNonFiniteGreekIsIsolatedFromTotals) {
+  // Kernel-level precondition, asserted on the ADJOINT entry point rather than on
+  // american_greeks_fd: at this extreme the adjoint declines and falls through to
+  // the differenced bundle, which SUCCEEDS with a finite mark and a NaN gamma.
+  bool took_adjoint = true;
+  const auto probe = detail::american_greeks_adjoint(kG1TinyS, 100.0, 0.05, 0.9, kR, 0.02,
+                                                     Side::Put, std::nullopt, &took_adjoint);
+  ASSERT_TRUE(probe.has_value());            // a SUCCESSFUL call ...
+  EXPECT_FALSE(took_adjoint);                // ... that fell through to american_greeks_fd ...
+  EXPECT_TRUE(std::isfinite(probe->price));  // ... with a finite mark ...
+  EXPECT_FALSE(std::isfinite(probe->gamma)); // ... but a non-finite gamma.
+
+  // Identical book and surfaces to G1_NonFiniteGreekOnFinitePriceLane, so the ONLY
+  // difference between the two tests is which route the Ok-stamp sits on.
+  const PricedSurface s_norm = make_essvi(1, 3);
+  const PricedSurface s_ext = make_essvi(2, 3, /*theta_bump=*/0.0, /*S=*/kG1TinyS, kR, kNow,
+                                         /*q_eff=*/0.02, /*flat_smile=*/true);
+  const SurfaceSet surfaces = set_of({&s_norm, &s_ext});
+
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 100.0, 0.15, Side::Put}, +5.0, 100.0}, // finite Greeks
+      {/*id*/ 2, {2, 100.0, 0.05, Side::Put}, +3.0, 100.0}, // non-finite gamma
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const auto fr = pricer.price(surfaces, PriceOptions{.adjoint_greeks = true});
+  ASSERT_TRUE(fr.has_value()) << fr.error().to_string();
+  const PriceFrame &f = *fr;
+  ASSERT_EQ(f.size(), 2u);
+
+  EXPECT_EQ(f.status[0], PriceStatus::Ok);
+  // The poisoned lane is quarantined. Pre-FIX-5 this was Ok — the adjoint stamp
+  // checked only isfinite(price), which is TRUE here.
+  EXPECT_EQ(f.status[1], PriceStatus::NumericError);
+
+  // ... so the book totals stay finite and the lane is not counted.
+  EXPECT_TRUE(std::isfinite(f.total.gamma));
+  EXPECT_TRUE(std::isfinite(f.total.delta));
+  EXPECT_TRUE(std::isfinite(f.total.vega));
+  EXPECT_TRUE(std::isfinite(f.total.theta));
+  EXPECT_EQ(f.total.n_ok, 1u);
+}
+
+TEST(PortfolioPricer, I1_AdjointRouteAgreesWithTheFdRouteOnTheStamp) {
+  // The route-agreement half: FIX-3/F3-A's whole point is that a lane's STATUS may
+  // not depend on which route computed it. Same book, same surfaces, adjoint on and
+  // off — the status column must be identical. Pre-fix the adjoint frame stamped Ok
+  // where the FD frame stamped NumericError.
+  const PricedSurface s_norm = make_essvi(1, 3);
+  const PricedSurface s_ext = make_essvi(2, 3, /*theta_bump=*/0.0, /*S=*/kG1TinyS, kR, kNow,
+                                         /*q_eff=*/0.02, /*flat_smile=*/true);
+  const SurfaceSet surfaces = set_of({&s_norm, &s_ext});
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 100.0, 0.15, Side::Put}, +5.0, 100.0},
+      {/*id*/ 2, {2, 100.0, 0.05, Side::Put}, +3.0, 100.0},
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+
+  const auto fd = pricer.price(surfaces, PriceOptions{});
+  const auto ad = pricer.price(surfaces, PriceOptions{.adjoint_greeks = true});
+  ASSERT_TRUE(fd.has_value());
+  ASSERT_TRUE(ad.has_value());
+  ASSERT_EQ(fd->size(), ad->size());
+  for (std::size_t i = 0; i < fd->size(); ++i) {
+    EXPECT_EQ(fd->status[i], ad->status[i]) << "lane " << i << " — route-dependent Ok-stamp";
+  }
+  EXPECT_EQ(fd->total.n_ok, ad->total.n_ok);
 }
 
 // ── G2 (GR-F1): bucketed risk + carry column ───────────────────────────────

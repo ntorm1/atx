@@ -1,11 +1,37 @@
-"""RunArchive (ATXRUN01) column registry — GENERATED, do not edit by hand.
-
-Source of truth: atx-vol/include/atx/vol/run_archive_schema.hpp
-Regenerate:      python atx-vol/tools/gen_runarchive_schema.py
+"""RunArchive (ATXRUN01) column registry.
 
 Carries the format identity and the column registry as plain data, plus a
 byte-for-byte port of the C++ ``ra_schema_hash()`` FNV-1a-64 fold so the
 pure-Python reader can pin a file's schema at open. No third-party imports.
+
+PROVENANCE (corrected, FIX-5/I5). This file previously declared itself
+``GENERATED, do not edit by hand``, named
+``atx-vol/include/atx/vol/run_archive_schema.hpp`` as its source of truth and
+``atx-vol/tools/gen_runarchive_schema.py`` as the regeneration path. **Neither
+file exists in this repository**, and neither does any other ATXRUN01 producer:
+``git ls-files`` matching ``run_archive`` returns only this reader, its two
+fixtures and its two test files. The header/generator belong to the out-of-tree
+C++ writer. So in THIS repo this module is hand-maintained and is itself the
+authority for the pure-Python reader, and the header at the top said the
+opposite — which is why ``test_runarchive.py``'s anti-drift guard skipped in
+silence against its own docstring. That guard now asserts in both worlds; see
+``test_schema_py_not_stale_vs_cpp_header``.
+
+The real drift detector is ``RA_SCHEMA_HASH``: the writer stamps its own fold
+into every file and ``RunArchive.open`` rejects a mismatch, so a registry that
+diverges from the producer fails loudly at open rather than silently mis-reading
+columns.
+
+WHY THE UNIT STRINGS CANNOT SIMPLY BE CORRECTED. ``ra_schema_hash`` folds the
+unit string of every column (see the ``fbytes(h, unit)`` line below), so the unit
+annotations are part of the persisted format identity, not documentation.
+Relabelling the three blank ``gross_vega`` units moves the hash from
+``0xdcce47781ac8390d`` to ``0xd173d8c005a70291`` (measured), which would reject
+every existing ``.atxrun`` — including both committed fixtures — at open. Unit
+corrections therefore belong to a coordinated format-version bump with the C++
+writer, not to this file alone. Until then the semantics that the blank
+annotations fail to carry are recorded in ``COLUMN_NOTES`` below, which is
+deliberately NOT folded into the hash.
 """
 
 from __future__ import annotations
@@ -263,3 +289,45 @@ def ra_schema_hash() -> int:
 
 
 RA_SCHEMA_HASH = ra_schema_hash()
+
+
+# ── Column semantics the registry's unit strings do not carry (FIX-5/I5) ─────
+#
+# NOT folded into ra_schema_hash() — this is documentation, and adding it to the
+# fold would change the format identity (see the module docstring). Keyed by
+# (section, column). Consult it before comparing a column across sections.
+#
+# The live collision: ``gross_vega`` is one name over two units 100x apart AND a
+# gross/net flip, with the unit annotation blank exactly where it is needed.
+COLUMN_NOTES = {
+    # Producer: src/backtest.cpp:1603,1862 — `out.gross_vega.push_back(g.vega)`,
+    # where `g` is the summed book bundle. So despite the name this is the NET
+    # (signed, summed) book vega, and it is the pricer's dP/dsigma per UNIT vol.
+    # A vega-neutral book drives it to ~0 by construction. Divide by 100 to
+    # compare against the schedule sections' per-vol-point figures.
+    ('backtest', 'gross_vega'): (
+        'usd_per_unitvol; NET signed book vega (dP/dsigma per unit vol), not gross'),
+    ('projected_cold', 'gross_vega'): (
+        'usd_per_unitvol; NET signed book vega (dP/dsigma per unit vol), not gross'),
+    ('projected_nodiv', 'gross_vega'): (
+        'usd_per_unitvol; NET signed book vega (dP/dsigma per unit vol), not gross'),
+    # Producer: src/listed_dispersion_schedule.cpp:310,360 —
+    # `roll.gross_vega_per_vol_point += fabs(leg.achieved_leg_vega_per_vol_point)`.
+    # Genuinely GROSS (absolute values summed) and genuinely per VOL POINT, i.e.
+    # 100x the units of the `backtest` column of the same name.
+    ('trade_schedule', 'gross_vega'): (
+        'usd_per_volpt; GROSS (sum of |achieved leg vega|) — 100x the backtest column'),
+    ('projected_schedule', 'gross_vega'): (
+        'usd_per_volpt; GROSS (sum of |achieved leg vega|) — 100x the backtest column'),
+    # Same blank-unit class, same producer family, recorded for completeness.
+    ('backtest', 'turnover_vega'): 'usd_per_unitvol',
+    ('backtest', 'gross_delta'): 'per share',
+    ('backtest', 'gross_gamma'): 'per share^2',
+    ('backtest', 'gross_theta'): 'usd_per_year',
+}
+
+
+def column_note(section: str, column: str) -> str:
+    """The recorded semantics of a column whose registry unit is blank or
+    misleading, or '' when the registry annotation is already sufficient."""
+    return COLUMN_NOTES.get((section, column), '')

@@ -217,4 +217,7 @@ const bool g_scratch_installed = install_process_scratch_root();
 // Referenced so the initializer above can never be considered unused.
 [[nodiscard]] bool process_scratch_installed() noexcept { return g_scratch_installed; }
 
-} // namespace atx::vol::test
+} // namespace atx::test
+  // FIX-5/M7: this trailer read `atx::vol::test`; the namespace opened above is
+  // `atx::test` — F3-B renamed it when the TU moved to //tests/support and missed
+  // the closer.

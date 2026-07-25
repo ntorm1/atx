@@ -48,9 +48,10 @@ namespace atx::vol::detail {
          method == AmericanMethod::AndersenLake && simd::avx2_greeks_selected(isa);
 }
 
-// FIX-2/F2-B (rev-ws-g M1-5): the finite sweep behind the Greek Ok-stamp. Mirrors
-// `greeks_all_finite` in portfolio_pricer.cpp EXACTLY — the semantics FIX-1 locked at the
-// three portfolio Ok-stamps (740b040 F2, 9c3e1d0 F3): price/delta/gamma/theta always,
+// FIX-2/F2-B (rev-ws-g M1-5): the finite sweep behind the Greek Ok-stamp. It IS
+// `greeks_all_finite` in portfolio_pricer.cpp — as of FIX-5/M3 that name delegates here
+// instead of carrying a second copy. The semantics FIX-1 locked at the portfolio
+// Ok-stamps (740b040 F2, 9c3e1d0 F3): price/delta/gamma/theta always,
 // vega/volga/vanna, rho and charm only when the caller REQUESTED them. Guarding the full
 // bundle instead would veto perfectly good lanes on a column that was never materialized
 // (FIX-1/F3), and guarding the price alone lets a NaN greek out on an Ok lane (F2-B).
@@ -62,6 +63,17 @@ namespace atx::vol::detail {
 // which left the same lane certifiable Ok on one ISA and demoted on another. Any future
 // change to these two functions must stay a change to BOTH routes at once, which is
 // exactly what having one definition buys.
+//
+// FIX-5 (I1, I3, M3) — the census, because "the three portfolio Ok-stamps" was carried in
+// four commit bodies and in this comment, and it was wrong. There are FOUR stamps in
+// portfolio_pricer.cpp (seed-staging, marks, ADJOINT, non-adjoint greeks) — I1 found the
+// adjoint one still on the pre-FIX-1 `isfinite(price)` predicate — and a second laned-Greek
+// driver outside that file entirely, `american_greeks_batch` (src/american_batch.cpp),
+// whose scalar and laned arms each carried their own predicate and disagreed by side (I3).
+// Every one of them now routes through THESE two functions. The list of routes that must
+// stay on this definition is: laned_greek_run's scatter; both evaluate_resolved
+// implementations; all four portfolio_pricer stamps (via `greeks_all_finite`, which
+// delegates here as of M3); and american_greeks_batch's two arms.
 [[nodiscard]] inline bool requested_greeks_finite(const AmericanGreeks &g,
                                                   GreekNeeds needs) noexcept {
   bool ok = std::isfinite(g.price) && std::isfinite(g.delta) && std::isfinite(g.gamma) &&

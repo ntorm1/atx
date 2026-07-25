@@ -42,7 +42,6 @@ using namespace atx::vol;
 namespace {
 
 using DoubleArray = py::array_t<double, py::array::c_style | py::array::forcecast>;
-using IntArray = py::array_t<std::int32_t, py::array::c_style | py::array::forcecast>;
 
 std::span<const double> as_double_span(const DoubleArray &array, const char *name) {
   if (array.ndim() != 1) {
@@ -93,8 +92,10 @@ void write_partition(SurfaceDb &db, const std::string &key, const py::list &item
 // cannot serve NaNs its own row and records its ErrorCode, it does not abort the
 // grid.
 py::dict priced_surface_grid(const PricedSurface &self, const DoubleArray &k_array,
-                             const DoubleArray &t_array, const IntArray &side_array,
+                             const DoubleArray &t_array, const py::object &raw_side,
                              QueryExecution execution) {
+  // FIX-5 (final-review Minor): dtype kind validated before the cast (sides.hpp).
+  const atxvol::python::SideCodes side_array = atxvol::python::as_side_codes(raw_side);
   const auto k = as_double_span(k_array, "K");
   const auto t = as_double_span(t_array, "T");
   if (t.size() != k.size()) {

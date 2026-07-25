@@ -18,22 +18,81 @@
 // `err.code`, not on prose. (Shape/rank errors keep raising `ValueError`: those
 // are malformed *calls*, not a rejected value.)
 //
-// KNOWN RESIDUE: `side` columns are declared `forcecast`, so a float array is
-// truncated to int32 BEFORE this decoder sees it. A float `-1` still arrives as
-// -1 and is rejected, but a float that truncates onto a VALID code — 0.5 -> 0 —
-// is by then indistinguishable from a genuine CALL. Pass `side` with an integer
-// dtype. Dropping `forcecast` would fix it and would also reject the very common
-// int64 column, which is a worse trade.
+// FIX-5 (final review, Minor) — the residue below is CLOSED, and the trade it
+// described was a false dichotomy. It used to read:
+//
+//   KNOWN RESIDUE: `side` columns are declared `forcecast`, so a float array is
+//   truncated to int32 BEFORE this decoder sees it. [...] Dropping `forcecast`
+//   would fix it and would also reject the very common int64 column, which is a
+//   worse trade.
+//
+// Both halves of that were true. Verified on this host, numpy 1.26.4 /
+// pybind11 numpy.h: `array_t<T, ExtraFlags>::raw_array_t` calls `PyArray_FromAny`
+// with `NPY_ARRAY_ENSUREARRAY | ExtraFlags`, so without NPY_ARRAY_FORCECAST the
+// conversion is held to numpy's default SAFE casting — and
+// `np.can_cast(int64, int32, 'safe')` is False, so an int64 column really would be
+// rejected. With forcecast, `np.array([0.5]).astype(int32)` is `0`, i.e. exactly
+// `int(Side.CALL)`, and by the time `decode_side` sees it the float origin is gone.
+//
+// But those were never the only two options. The array can be accepted UNTYPED, so
+// the caller's own dtype is still visible, and rejected on its KIND before any cast
+// — `as_side_codes` below. int64 (kind 'i') keeps working; float64 (kind 'f') is
+// rejected with the same coded AtxError; the cost is one branch per CALL, not per
+// element. Every binding that takes a `side` column now goes through it.
 
 #include <cstddef>
 #include <cstdint>
 #include <string>
+
+#include <pybind11/numpy.h>
+#include <pybind11/pybind11.h>
 
 #include "atx/core/error.hpp"
 #include "atx/vol/types.hpp"
 #include "result.hpp"
 
 namespace atxvol::python {
+
+namespace py = pybind11;
+
+// The int32 view every `side` consumer wants. Kept as one alias so the forcecast
+// flag lives in exactly one place.
+using SideCodes = py::array_t<std::int32_t, py::array::c_style | py::array::forcecast>;
+
+// Validate the caller's dtype KIND, then cast. Integer ('i'), unsigned ('u') and
+// boolean ('b') kinds are accepted — every one of them represents its values
+// exactly, so the cast to int32 cannot invent a valid Side code that the caller did
+// not write. A float column is refused here rather than silently truncated.
+//
+// The parameter is `py::object`, not `py::array`: pybind11's caster for a bare
+// `py::array` argument is the generic object caster (`isinstance<array>` — it does
+// NOT convert), which would newly reject the plain Python lists that `forcecast`
+// used to accept. `py::array::ensure` reproduces the old acceptance surface (a list
+// of ints materializes as an int64 array, kind 'i', and is admitted; a list of
+// floats materializes as float64 and is refused, which is the point).
+[[nodiscard]] inline SideCodes as_side_codes(const py::object &src,
+                                             const char *what = "side") {
+  const py::array side = py::array::ensure(src);
+  if (!side) {
+    throw py::value_error(std::string(what) + " must be an array or array-like");
+  }
+  const char kind = side.dtype().kind();
+  if (kind != 'i' && kind != 'u' && kind != 'b') {
+    throw AtxException(atx::core::Error{
+        atx::core::ErrorCode::InvalidArgument,
+        std::string(what) + " must have an integer dtype; got dtype kind '" +
+            std::string(1, kind) +
+            "'. A float column is truncated toward zero on the way in, so 0.5 would "
+            "arrive as int(Side.CALL) == 0 and price silently as a call. Cast the "
+            "column yourself (e.g. .astype(np.int32)) so the rounding is yours."});
+  }
+  SideCodes out = SideCodes::ensure(side);
+  if (!out) {
+    throw py::value_error(std::string(what) +
+                          " could not be converted to a contiguous int32 array");
+  }
+  return out;
+}
 
 [[nodiscard]] inline atx::vol::Side decode_side(std::int32_t code, std::size_t index) {
   if (code == static_cast<std::int32_t>(atx::vol::Side::Call)) {

@@ -264,6 +264,26 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/spy_dispersion_pnl_report_test.py
     )
     set_tests_properties(SpyDispersionPnlReport PROPERTIES LABELS atx_vol)
+    # FIX-5/I6: the atx-vol Python suite — eight test_*.py modules that, before
+    # this line, were registered with ZERO ctest tests. `grep -rn "pytest"
+    # --include=CMakeLists.txt .` returned nothing repo-wide and a grep for any
+    # pytest test name in the whole-repo gate log returned 0, so an entire
+    # workstream's output was gated by nothing. The driver explains why this is a
+    # script and not a bare `-m pytest` (extension guard, source pinning, and two
+    # host stalls that hang pytest); it exits SKIP_RETURN_CODE when the compiled
+    # extension is absent, so the lane shows as Skipped-with-a-reason in the gate
+    # log rather than vanishing. atx-vol/python is a STANDALONE scikit-build-core
+    # project, not an add_subdirectory of this build, so there is no _core target
+    # here to guard on at configure time — hence the run-time guard.
+    add_test(
+        NAME atx-vol-python
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/_ctest_pytest_driver.py
+    )
+    set_tests_properties(atx-vol-python PROPERTIES
+        LABELS atx_vol
+        SKIP_RETURN_CODE 77
+        TIMEOUT 900)
 endif()
 
 # PR-C2 non-AVX2 CI leg: run the pricing correctness suites with the whole process
