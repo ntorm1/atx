@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
@@ -551,6 +552,33 @@ template <unsigned NB>
   return al_cheb_eval_t<0>(z, w, y, n, zq);
 }
 
+// A6 (PR-P2): the HOISTED counterpart of al_cheb_eval_t for the specialized kernel.
+//
+// `qq[k]` holds wbary[k] / (zq - z[k]) and `den` their running sum — both laid down
+// once per solve by al_bind_geometry_static from the SAME two doubles, with the same
+// operator, accumulated in the same left-to-right order. `num` here accumulates the
+// same products in the same order over the sweep-varying y[]. So
+//
+//     al_cheb_eval_hoisted<NB>(qq, den, hit, y) == al_cheb_eval_t<NB>(z, w, y, n, zq)
+//
+// BIT-for-bit, not merely to a tolerance — which is the whole justification for the
+// hoist and is gated by BoundaryHoist.SpecializedMatchesGeneric (the generic kernel
+// is untouched and still evaluates the inline form) plus
+// BoundaryHoist.HoistedBaryTableMatchesInlineFormula (the table itself, entry by
+// entry). `hit >= 0` reproduces the inline `dz == 0.0` early return.
+template <unsigned NB>
+[[nodiscard]] double al_cheb_eval_hoisted(const double *qq, double den, int hit,
+                                          const double *y) noexcept {
+  if (hit >= 0) {
+    return y[static_cast<unsigned>(hit)];
+  }
+  double num = 0.0;
+  for (unsigned k = 0; k < NB; ++k) {
+    num += qq[k] * y[k];
+  }
+  return num / den;
+}
+
 // ── AL boundary state + scheme ──────────────────────────────────────────
 //
 // AlScheme / AlBoundary / AlWorkspace and the kGeo* geometry-sizing constants
@@ -866,7 +894,21 @@ void al_bind_geometry_static(const AlBoundary &bnd, AlWorkspace &ws, double r,
   const double *xs = ws.qx_fp;
   const double *wv = ws.qw_fp;
   const unsigned nq = ws.n_quad_fp;
+  const unsigned nb = bnd.n;
   const double T = bnd.T;
+  // A6 defensive bound: every scheme al_fp_specialized admits fits kGeoBarySize by
+  // construction (static_assert'd below). Should a future scheme be added there
+  // WITHOUT growing the table, fall back to the generic kernel rather than write out
+  // of bounds — the same safety shape as the R-30 specialize-off fallback.
+  static_assert((7u - 1u) * 8u * 7u <= kGeoBarySize, "(7,8) bary table overflow");
+  static_assert((7u - 1u) * 16u * 7u <= kGeoBarySize, "(7,16) bary table overflow");
+  static_assert((12u - 1u) * 24u * 12u <= kGeoBarySize, "(12,24) bary table overflow");
+  if (nb == 0 || (nb - 1u) * nq * nb > kGeoBarySize) {
+    ws.specialize = false;
+    ws.geo_static_bound = false;
+    g_specialize_off_fallbacks.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
   for (std::uint16_t j = 1; j < bnd.n; ++j) {
     const double tau = bnd.tau[j];
     if (tau <= 1.0e-14) {
@@ -874,6 +916,7 @@ void al_bind_geometry_static(const AlBoundary &bnd, AlWorkspace &ws, double r,
     }
     const double half_tau = 0.5 * tau;
     const unsigned gbase = static_cast<unsigned>(j) * kGeoQuadStride;
+    const unsigned bpair = (static_cast<unsigned>(j) - 1u) * nq;
     for (unsigned i = 0; i < nq; ++i) {
       const double u = half_tau * (1.0 + xs[i]);
       const double t_u = tau - u;
@@ -884,11 +927,30 @@ void al_bind_geometry_static(const AlBoundary &bnd, AlWorkspace &ws, double r,
       // stored zc is bit-identical to the inline computation).
       const double u_eff = (u >= T) ? T : u;
       const double zz = 2.0 * std::sqrt(u_eff / T) - 1.0;
-      ws.geo_zc[gbase + i] = atx::core::clamp(zz, -1.0, 1.0);
+      const double zc = atx::core::clamp(zz, -1.0, 1.0);
+      ws.geo_zc[gbase + i] = zc;
       ws.geo_weru[gbase + i] = wv[i] * std::exp(r * u);
       ws.geo_wequ[gbase + i] = wv[i] * std::exp(q * u);
       ATX_VOL_COUNT_N(ExpCalls, 2); // exp(r·u), exp(q·u) — now paid ONCE per solve
       counters::lightweight::record_exp_calls(2u);
+      // A6: the barycentric denominator half at this zc — the SAME expression, the
+      // SAME operands and the SAME accumulation order al_cheb_eval_t ran inline on
+      // every sweep. That is what makes al_cheb_eval_hoisted bit-identical to it.
+      const unsigned bbase = (bpair + i) * nb;
+      double den = 0.0;
+      int hit = -1;
+      for (unsigned k = 0; k < nb; ++k) {
+        const double dz = zc - bnd.z[k];
+        if (dz == 0.0) {
+          hit = static_cast<int>(k); // the inline path returns y[k] here
+          break;
+        }
+        const double qq = bnd.wbary[k] / dz;
+        ws.geo_bary[bbase + k] = qq;
+        den += qq;
+      }
+      ws.geo_bary_den[bpair + i] = den;
+      ws.geo_bary_hit[bpair + i] = static_cast<std::int8_t>(hit);
     }
   }
   ws.geo_static_bound = true;
@@ -1000,6 +1062,9 @@ void eqn_b_ND_impl(const AlBoundary &bnd, const AlWorkspace &ws, unsigned node_i
     // Specialized: read the sweep-invariant geometry; evaluate only the
     // sweep-VARYING Chebyshev value + b_from_y in the loop.
     const unsigned gbase = node_idx * kGeoQuadStride;
+    // A6: node_idx >= 1 on every specialized entry (both sweeps loop from 1), which
+    // is what makes the packed (j-1) barycentric row index well-formed.
+    const unsigned bpair = (node_idx - 1u) * nq;
     const double rq = r - q;
     for (unsigned i = 0; i < nq; ++i) {
       const double u = half_tau * (1.0 + xs[i]);
@@ -1007,8 +1072,11 @@ void eqn_b_ND_impl(const AlBoundary &bnd, const AlWorkspace &ws, unsigned node_i
       if (t_u <= 1.0e-14) {
         continue;
       }
-      const double y_val = al_cheb_eval_t<NB>(bnd.z.data(), bnd.wbary.data(), bnd.y.data(), bnd.n,
-                                              ws.geo_zc[gbase + i]);
+      // A6 (PR-P2): the barycentric denominator is sweep-invariant and now comes from
+      // the per-solve table instead of nb divisions per (node, quad node) per sweep.
+      const double y_val = al_cheb_eval_hoisted<NB>(&ws.geo_bary[(bpair + i) * NB],
+                                                    ws.geo_bary_den[bpair + i],
+                                                    ws.geo_bary_hit[bpair + i], bnd.y.data());
       const double bu = b_from_y(y_val, bnd.xmax);
       if (!(bu > 0.0)) {
         continue;
@@ -3801,6 +3869,88 @@ Result<double> andersen_lake_generic_kernel(double S, double K, double T, double
                                             double q, Side side,
                                             const std::optional<AlOpts> &opts) {
   return andersen_lake_core(S, K, T, sigma, r, q, side, opts, /*specialize=*/false);
+}
+
+namespace {
+// Bitwise double compare for the A6 audit — `==` cannot certify bit-identity (it is
+// true for +0/-0 and false for NaN/NaN, both of which the audit must call correctly).
+[[nodiscard]] bool bits_identical(double a, double b) noexcept {
+  return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+}
+} // namespace
+
+AlBaryHoistAudit al_bary_hoist_audit(double K, double T, double sigma, double r, double q,
+                                     const std::optional<AlOpts> &opts) noexcept {
+  AlBaryHoistAudit out;
+  const AlScheme sch = scheme_from_opts(opts);
+  AlBoundary bnd;
+  AlWorkspace ws;
+  al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
+  if (!(bnd.xmax > 0.0)) {
+    return out;
+  }
+  const detail::GaussLegendre *fp = gl_find(sch.n_quad_fp);
+  const detail::GaussLegendre *pr = gl_find(sch.n_quad_price);
+  if (!fp || !fp->ok || !pr || !pr->ok) {
+    return out;
+  }
+  ws.qx_fp = fp->nodes.data();
+  ws.qw_fp = fp->weights.data();
+  ws.n_quad_fp = sch.n_quad_fp;
+  ws.qx_price = pr->nodes.data();
+  ws.qw_price = pr->weights.data();
+  ws.n_quad_price = sch.n_quad_price;
+  al_bind_geometry(bnd, ws, sigma, r, q);
+  out.specialized = ws.specialize && ws.geo_static_bound;
+  if (!out.specialized) {
+    return out; // generic scheme: the hoisted kernel is not taken, nothing to audit
+  }
+  const double *xs = ws.qx_fp;
+  const unsigned nq = ws.n_quad_fp;
+  const unsigned nb = bnd.n;
+  for (std::uint16_t j = 1; j < bnd.n; ++j) {
+    const double tau = bnd.tau[j];
+    if (tau <= 1.0e-14) {
+      continue;
+    }
+    const double half_tau = 0.5 * tau;
+    const unsigned gbase = static_cast<unsigned>(j) * kGeoQuadStride;
+    const unsigned bpair = (static_cast<unsigned>(j) - 1u) * nq;
+    for (unsigned i = 0; i < nq; ++i) {
+      const double u = half_tau * (1.0 + xs[i]);
+      if (tau - u <= 1.0e-14) {
+        continue;
+      }
+      ++out.entries;
+      // The INLINE form al_cheb_eval_t evaluated on every sweep, recomputed here from
+      // the stored zc — same operands, same order.
+      const double zc = ws.geo_zc[gbase + i];
+      const unsigned bbase = (bpair + i) * nb;
+      double den = 0.0;
+      int hit = -1;
+      bool bad = false;
+      for (unsigned k = 0; k < nb; ++k) {
+        const double dz = zc - bnd.z[k];
+        if (dz == 0.0) {
+          hit = static_cast<int>(k);
+          break;
+        }
+        const double qq = bnd.wbary[k] / dz;
+        if (!bits_identical(qq, ws.geo_bary[bbase + k])) {
+          bad = true;
+        }
+        den += qq;
+      }
+      if (!bits_identical(den, ws.geo_bary_den[bpair + i]) ||
+          hit != static_cast<int>(ws.geo_bary_hit[bpair + i])) {
+        bad = true;
+      }
+      if (bad) {
+        ++out.mismatches;
+      }
+    }
+  }
+  return out;
 }
 
 Result<double> andersen_lake_seeded(double S, double K, double T, double sigma, double r, double q,
