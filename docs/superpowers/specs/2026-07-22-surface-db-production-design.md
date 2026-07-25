@@ -168,7 +168,13 @@ Orchestration: create-or-open db → `load_opra_hive` → boards via
 `corpus_board_from_opra` → `generate_symbol_configs` → 
 `populate_universe_streaming`. Fully resumable at every stage (hive resume,
 config idempotence, cell-aware populate resume): **re-running an unchanged
-build fits zero and spends $0**.
+build RE-FITS zero and spends $0**. The gate is `coverage.cells_refit == 0`,
+**not** `cells_to_fit == 0`: a permanently-failing cell is absent from its
+partition, so it is rescheduled and re-attempted forever and its date is
+rewritten on every run while its healthy siblings are carried. Measured on
+`prod-2026-07`, pass 2: `cells_refit 0`, `cells_carried 150`, `cells_to_fit 3`,
+`cells_ok 0`, `cells_failed 3`, exit 0. Only a database with no permanently-
+failing cell reaches `cells_to_fit == 0`.
 
 Consumers:
 
@@ -178,6 +184,12 @@ Consumers:
   `bindings/surface_db.cpp`) extended with `build_surface_db`,
   `populate` coverage/report structs, and hive load introspection, so a
   notebook can build and query the same db the C++ tools produce.
+  **Shipped with a known limitation:** `import atxvol` and `import pyarrow` in
+  the same interpreter collide over Arrow DLLs, so the notebook route is not
+  usable wherever `pyarrow` is present (loud `ImportError`, never wrong
+  numbers). Building *and verifying* a database needs no Python at all — that is
+  what `atx-vol-surface-db-build` and `atx-vol-surface-db` are for; see
+  `atx-vol/python/README.md` for the exact error text in both directions.
 
 ## 6. Scale posture (millions of surfaces)
 

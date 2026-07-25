@@ -6,8 +6,16 @@ cell-aware-streaming-populates every `(symbol, date)` vol surface. One call over
 `build_surface_db` (`atx/vol/surface_db_build.hpp`) wrapped in a hand-rolled arg
 loop (`tools/surface_db_build_main.cpp`).
 
-It is **fully resumable at every stage**: re-running over an unchanged hive fits
-**zero** surfaces and spends nothing. See "Resume semantics" below.
+It is **fully resumable at every stage**: re-running over an unchanged hive
+**re-fits zero** stored surfaces and spends nothing. The gate is
+`coverage.cells_refit == 0`, **not** `cells_to_fit == 0` — a permanently-failing
+cell is absent from its partition, so it is rescheduled and re-attempted on every
+run forever, its date is rewritten, and its healthy siblings are *carried*
+(re-emitted verbatim) rather than re-fitted. A second pass over the finished
+`prod-2026-07` measures exactly that: `cells_refit 0`, `cells_carried 150`,
+`cells_to_fit 3`, `cells_ok 0`, `cells_failed 3` — the converged steady state, and
+it exits `0`. Only a database with **no** permanently-failing cell reaches
+`cells_to_fit == 0`. See "Resume semantics" below.
 
 Once a database is built, its companion tool **`atx-vol-surface-db`** inspects
 and verifies it entirely from the command line — see
@@ -44,18 +52,18 @@ per `(symbol, date)`). To convert an existing per-symbol tree, see
 
 The tool target is **gated behind the cmake cache flag `ATX_BUILD_EXAMPLES`,
 which is OFF by default** — the plain `configure` verb
-(`pwsh scripts/atx-build.ps1 configure`, i.e. `cmake --preset dev`) builds the
+(`powershell scripts/atx-build.ps1 configure`, i.e. `cmake --preset dev`) builds the
 library and tests but **omits** this CLI. Enable the flag explicitly at configure
 time, then build the target:
 
 ```bash
 # Configure with the tool enabled. The `configure` verb does not forward extra
 # -D flags, so pass the flag through the wrapper's raw cmake path:
-pwsh scripts/atx-build.ps1 --preset dev -DATX_BUILD_EXAMPLES=ON
+powershell scripts/atx-build.ps1 --preset dev -DATX_BUILD_EXAMPLES=ON
 # (equivalently, straight cmake in the MSVC dev env: cmake --preset dev -DATX_BUILD_EXAMPLES=ON)
 
 # Build just the CLI:
-pwsh scripts/atx-build.ps1 build atx-vol-surface-db-build
+powershell scripts/atx-build.ps1 build atx-vol-surface-db-build
 # -> build/bin/atx-vol-surface-db-build(.exe)
 ```
 
@@ -87,8 +95,9 @@ atx-vol-surface-db-build --db <root> --hive <root>
 | `--deep-selection` | no | Additionally run the full held-out `select_curve` OOS search per symbol and record its winner as that symbol's family (falls back to the fit-policy decision when the selector has no scorable holdout). Obeys `--pin-curve-family` like the cheap route does. |
 | `--retry-disabled` | no | Re-attempt the symbols whose **stored** config is disabled instead of skipping them. Without it a fail-closed disable is permanent for the life of the database — the symbol is skipped as already-configured on every later run, so no fix to the loader, the hive or the selector can ever reach it. Enabled configs are still left untouched (unlike `overwrite_existing`), so a tuned config is never clobbered; it *does* re-enable a symbol an operator disabled by hand, which is why it is opt-in. The standing disabled names print on `config.failed_symbols` every run. |
 | `--pin-curve-family true\|false` | no | Default **`false`**. Store the auto-selected curve family as a **hard pin** (`true`) or as the preferred route only (`false`). Pinning gives each cell exactly one family attempt and **disables both fallback ladders** — read [The curve family is a route, not a pin](#the-curve-family-is-a-route-not-a-pin) before setting it. Requires a value: `--pin-curve-family` with a missing or unrecognised value is **exit 2**, never a silent default. Accepts `true\|1\|on` and `false\|0\|off`. |
-| `--fit-workers N` | no | Outer fit fan-out. `0` = auto (honors `ATX_VOL_FIT_WORKERS`); `1` = serial. |
-| `--report out.csv` | no | Also write the four-section CSV report to this path. |
+| `--fit-workers N` | no | Outer fit fan-out. Default **`0`** = auto (honors `ATX_VOL_FIT_WORKERS`); `1` = serial. **Deliberately not strictly parsed:** an unparseable value coerces to `0`, and `0` is a legitimate, safe choice — unlike `--r`, where every value is a *claim about the market* and a coerced `0.0` is a wrong claim, which is why that one is strict. A *missing* value is still exit 2. Results are byte-identical for any value. |
+| `--report out.csv` | no | Also write the four-section CSV report to this path. A write failure is reported on stderr and makes the run exit `1` — but it never masks exit `3`; see the exit table. |
+| `--help` / `-h` | no | Print usage to stdout and exit `0`. Ignores everything else on the line. |
 | `--max-failures N` | no | `32`. Cap on the printed `failed_cell` lines. Overflow is counted in `coverage.failed_cells_elided`, never dropped silently, and the `--report` CSV always carries the **full** list. `0` prints no per-cell detail at all. Same flag name, parsing and semantics as `atx-vol-surface-db verify`. |
 
 **Discover-all vs explicit `--symbols`.** With an explicit list, exactly those
@@ -133,7 +142,8 @@ regime a different family is expected to recover. The ladders exist for this and
 were off for 100% of cells.
 
 Unpinned, nothing is lost: the chosen family is still written to the manifest
-(`atx-vol-surface-db config --symbol SYM` shows it, and `--pin-curve-family true`
+(`atx-vol-surface-db config --db <root> --symbol SYM` shows it, and
+`--pin-curve-family true`
 turns it back into a pin), the fitter re-derives the same policy decision per
 board, and the ladder is there when the first attempt does not survive admission.
 The "never silently substituted" immunity a pin buys is meant for an **operator's
@@ -217,6 +227,63 @@ failure shows up in the coverage counters, not in stage 1:
 Every failed cell prints the fitter's own reason, so a carry mismatch (every cell
 failing the same way at the same gate) is distinguishable at a glance from a set
 of genuinely marginal boards.
+
+#### A wrong `--r` DESTROYS surfaces you already had
+
+This is not only a run that produces nothing. On any date the run **rewrites**, a
+present, *enabled* cell whose re-fit fails **loses its stored surface** — a
+partition rewrite is whole-file, and a cell that did not fit is simply not in the
+new file. That is measured, current behaviour, not a hypothetical: **one
+production-shaped run with the wrong `--r` destroyed 95 stored surfaces.**
+
+Nothing on disk records it. The format keeps no tombstone, so a destroyed cell is
+byte-for-byte a cell that was never fitted; the only instrument that sees it is
+`verify`'s `absent` list **changing** (see
+[Absence is not a failure](#absence-is-not-a-failure--the-cells-the-database-never-stored)),
+and only if you kept the previous run's list. It is pinned as current behaviour by
+`SurfaceDbPopulate.DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrivesTheRetry`;
+closing it needs an archive format change.
+
+So the order of operations matters more than it looks: **get `--r` right on the
+first run over a database you care about.** If you are unsure of the rate, prove
+it on a **copy** of the db root, not on the real one.
+
+#### Re-running at the corrected `--r` does NOT repair the database
+
+The carry-over fingerprint (`config_fingerprint`, FIX-D) folds the **fit configs
+only**. `--r` is a *market input*, not a fit config: it is not in
+`SymbolFitConfig`, it is not folded, and **changing it does not invalidate a single
+stored surface.** Neither does changing the snapshot minute or the hive contents.
+
+The remedy an operator naturally reaches for therefore silently does nothing:
+
+- a date with nothing left to add is `dates_skipped_complete` and is not touched
+  at all (that has always been true);
+- a date that *is* rewritten **carries its wrong-rate surfaces forward verbatim**,
+  because their configs did not change and the fingerprint still matches. Before
+  carry-over those siblings were re-fitted, so the corrected rate did reach them.
+
+`coverage.cells_carried` is the only trace, and `verify` reports the database
+green — every byte checksums, because the bytes are exactly the ones the wrong
+rate produced. **There is no `--force-refit` flag.** What actually recovers a
+poisoned database:
+
+1. **Delete the affected partition files** — `<db-root>/partitions/<KEY>.atxvsa`,
+   one per date — and re-run the build over those dates. The date then reads as
+   never written, every loaded cell is re-fit at the correct rate, and the stale
+   manifest record is overwritten by the rewrite. Two things to know before you
+   do it: between the delete and the rebuild `verify` reports those cells
+   `unmappable` / `verdict FAILED` (correct — the bytes really are gone), and a
+   symbol stored on that date that is **not** in the rebuild's loaded set is not
+   restored, because deleting a partition deletes it. Re-run with the **same
+   `--symbols`** (or none) as the run that built it.
+2. **Or build into a fresh `--db` root** and swap the roots when it finishes.
+   Slower, and the only option that never leaves a half-state on disk.
+
+The same reasoning applies to any change the fingerprint does not cover — a
+changed fitter, a re-pulled hive date. The full statement of what the fingerprint
+does and does not vouch for is at `kSurfaceDbCarryOverFitSalt`
+(`atx/vol/surface_db.hpp`).
 
 **This is no longer a silent green exit.** A build that scheduled work and
 produced **nothing at all** — nothing fitted *and* nothing carried
@@ -565,13 +632,38 @@ retried on the next run exactly as before (see [Resume semantics](#resume-semant
 | Exit | When |
 | --- | --- |
 | `0` | Build succeeded — including **partial** coverage, a no-op **resume**, and a graceful empty-window no-op. Also the **carry-masked** shape (`cells_ok == 0`, `cells_failed > 0`, `cells_carried > 0`), which prints a stderr WARNING and still exits `0` — see [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing). |
-| `1` | A build error — malformed hive spec, or a db config/write failure. Message on stderr, **no report printed**. |
-| `2` | A usage error — unknown flag, a missing required flag, an unknown `--preset`, or a malformed `--r` / `--pin-curve-family`. Usage on stderr. |
+| `1` | A build error — malformed hive spec, or a db config/write failure. Message on stderr, **no report printed**. **One exception, and it is the only way `1` arrives with a report on stdout:** `--report` was given and the CSV could not be written. The build itself succeeded, the full report printed, and stderr names the write failure. It never masks `3` — see below. |
+| `2` | A usage error — unknown flag, a missing required flag, **a value-taking flag left at the end of the argv** (see below), an unknown `--preset`, or a malformed `--r` / `--pin-curve-family` / `--max-failures`. Usage on stderr. |
 | `3` | **The build ran to completion and produced NOTHING** — either **total config failure** (`disabled > 0`, `enabled == 0`, `cells_ok == 0`, `cells_carried == 0`: every symbol was disabled by a selection failure, so nothing was ever scheduled) or **total fit failure** (`cells_to_fit > 0`, `cells_ok == 0`, `cells_carried == 0`: work was scheduled, no cell fitted, and nothing was carried either). One code for both — the script's question is "did this run produce anything?" and the stderr diagnostic names the stage. The full report still prints and `--report` is still written. See [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing). |
 
-`3` is deliberately distinct from `1`: `1` means *atx or the database broke* (no
-report to read), `3` means *the tool worked and your inputs produced nothing* —
-almost always a `--r` mismatch. A script can branch on that.
+`3` is deliberately distinct from `1`: `1` means *atx or the database broke*
+(nothing ran, so there is no report to read — the one exception is a `--report`
+CSV that could not be written, where the report *did* print), `3` means *the tool
+worked and your inputs produced nothing* — almost always a `--r` mismatch. A
+script can branch on that.
+
+**A `--report` write failure never preempts `3`.** The CSV is attempted after the
+report prints and before the failure predicates, and a failure there is recorded
+on stderr rather than returned immediately, so a totally dead build still exits
+`3` with its `TOTAL FIT FAILURE` banner and its `--r` advice. `1` for a report
+failure is reached only when no predicate fired — i.e. the build was otherwise
+fine and the only thing that went wrong is the file you asked for.
+
+**Every value-taking flag requires its value.** A flag left at the end of the argv
+— the shape a dropped shell variable produces — is a **usage error, exit 2**,
+never an empty string silently read as a choice. This is the same rule
+`atx-vol-surface-db` already applies, and it closes four traps on this CLI:
+`--report $OUT` with `OUT` unset wrote no CSV and **exited 0**, `--symbols $LIST`
+unset fell back to *discover every symbol in the hive* (the universe silently
+widened), `--index` unset dropped the index leg, and `--fit-workers` unset meant
+`auto`.
+
+```
+$ atx-vol-surface-db-build --db /db --hive /hive --from 2026-07-01 --to 2026-07-06 --report $OUT
+atx-vol-surface-db-build: --report requires a value
+$ echo $?
+2
+```
 
 Note: a single unloadable or unselectable board never aborts the build — it is
 tallied (and, for config, stored **disabled** = fail-closed) and the call still
@@ -666,7 +758,9 @@ work already done:
    delta.
    - A cell that **fails to fit** is *not* suppressed: there is no persisted
      known-failed state, so it is retried on every run, which keeps its date in
-     the rewrite set and re-fits that date's siblings. That is the deliberate
+     the rewrite set and puts that date's siblings through a rewrite (they are
+     *carried* verbatim when the config fingerprint still vouches for them,
+     re-fitted when it does not). That is the deliberate
      cost of giving a transient failure another chance. A name that fails on
      **every** date can be taken out of the schedule with
      `atx-vol-surface-db disable --db <root> --symbol <SYM> --yes`, and then the
@@ -674,6 +768,23 @@ work already done:
      right instrument: it is a per-**symbol** switch, so a name that fails on a
      few dates and fits on the rest loses the ones that fit too. See
      [Disabling a name](#disabling-a-name--the-remedy-and-its-real-price).
+   - **A cell that was ALREADY STORED and fails its re-fit loses its stored
+     surface.** This is the sharp edge of the bullet above and it is the one
+     deletion on the rewrite path. A rewrite is whole-file: the date's new
+     partition is assembled from what this run has, so a present, *enabled* cell
+     that does not fit this time is simply not in it. **Measured: one
+     production-shaped run with the wrong `--r` destroyed 95 stored surfaces.**
+     Nothing on disk records the loss (no tombstone — a destroyed cell is
+     byte-for-byte a never-fitted one), and the only instrument that sees it is
+     `verify`'s `absent` set changing between runs. It is pinned as current
+     behaviour by
+     `SurfaceDbPopulate.DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrivesTheRetry`
+     — closing it needs an archive format change, because *presence* is exactly
+     what keeps the cell in the retry loop. Practical consequence: a run with a
+     bad `--r`, a broken fitter or a truncated hive date is not merely
+     unproductive, it is **destructive**, so prove a doubtful input on a copy of
+     the db root first. See
+     [A wrong `--r` destroys surfaces you already had](#a-wrong---r-destroys-surfaces-you-already-had).
    - **Disabling a name never deletes what it already produced.** `enabled =
      false` means *stop fitting this symbol*; the surfaces it fitted before the
      disable stay in their partitions, keep loading, and are re-emitted verbatim
@@ -774,7 +885,18 @@ powershell scripts/atx-build.ps1 build atx-vol-surface-db
 atx-vol-surface-db <subcommand> --db <root> [flags]
 ```
 
-`--db <root>` is required by every subcommand.
+`--db <root>` is required by every subcommand. `--help` / `-h` (in place of a
+subcommand, or anywhere after one) prints usage to stdout and exits `0`; both
+binaries take it.
+
+> **Flags are parsed once, for all subcommands, and are not validated per
+> subcommand.** `verify --key 2026-07-01` is accepted and `--key` is simply never
+> read — the whole database is walked while you believe you scoped it. So is
+> `--symbol` where `--symbols` was meant (one letter, and the walk widens from one
+> name to the manifest). Nothing warns. Check the `partitions` / `symbols` counts
+> in the output against what you asked for; they are the record of what was
+> actually walked. This is a pre-existing property of both CLIs, kept deliberately
+> at branch end rather than changed under a release.
 
 | Subcommand | Flags | Answers |
 | --- | --- | --- |
@@ -783,8 +905,8 @@ atx-vol-surface-db <subcommand> --db <root> [flags]
 | `partitions` | `--key KEY` | What does THIS partition actually hold? Reads the `.atxvsa` directory, not the manifest. |
 | `symbols` | — | One `symbol` line per configured symbol. |
 | `config` | `--symbol SYM` | One symbol's full stored fit config + provenance. |
-| `query` | `--key KEY --symbol SYM --strike K --tenor T` | What does this cell evaluate to? iv / total variance / forward / uid / slices. |
-| `verify` | `[--from KEY] [--to KEY] [--symbols A,B,C] [--include-disabled] [--probe-tenor T] [--max-failures N] [--min-cells N] [--max-absent N]` | Does every selected cell the database **holds** still map, checksum and evaluate — and which cells does it not hold? |
+| `query` | `--key KEY --symbol SYM --strike K --tenor T` | What does this cell evaluate to? iv / total variance / forward / uid / slices. `--strike` and `--tenor` are **strictly parsed** — a finite number **> 0** consuming the whole token, else exit 2. `--strike abc` used to be no error at all: it answered, in full detail, about `K = 0`. |
+| `verify` | `[--from KEY] [--to KEY] [--symbols A,B,C] [--include-disabled] [--probe-tenor T] [--max-failures N] [--min-cells N] [--max-absent N]` | Does every selected cell the database **holds** still map, checksum and evaluate, does each partition record still match its file — and which cells does the database not hold? |
 | `enable` | `--symbol SYM` | Resume fitting SYM on every date. **Writes the manifest.** |
 | `disable` | `--symbol SYM --yes` | Stop fitting SYM on **every** date. Its stored surfaces are kept. **Writes the manifest.** |
 
@@ -807,6 +929,19 @@ for the same reason.
 > is no lock file — so it is a scheduling rule. It is the same one
 > `surface_db.hpp` has always stated for this database ("cross-process: single
 > writer, many readers").
+>
+> **State the other direction too, because it is the worse one.** There is **no
+> compare-and-swap on the generation counter**: `upsert_symbol` and
+> `write_partition` each rewrite the whole manifest from *their own* snapshot, so
+> the interleaving also runs backwards. An `enable`/`disable` that reads the
+> manifest before a partition commits and writes after it **drops that committed
+> partition record** and **regresses the generation counter** — the partition file
+> is on disk, indexed by nothing, and every later `refresh()` sees a generation no
+> newer than the one it holds and never picks the newer manifest up. Losing an
+> operator's config edit is annoying; losing an indexed partition is data the
+> database no longer knows it has. Both directions are documented at the source
+> (`surface_db_admin.hpp`, `tools/surface_db_main.cpp`); the rule that avoids both
+> is the same one — one writer at a time.
 
 ### Disabling a name — the remedy, and its real price
 
@@ -880,8 +1015,13 @@ symbol as if it were new.
 
 Each selected cell passes **three gates**, in order, stopping at the first failure
 — with one **triage** step in front of them deciding whether the cell is in the
-game at all:
+game at all, and one **per-partition** check in front of the row:
 
+-1. **index** *(per partition, not per cell)* — the manifest's record for this
+   partition against the file it points at: `surface_count` vs the archive
+   directory's own count, `file_size` vs the size on disk. A disagreement is
+   `partitions_index_mismatch` and it **fails the verdict** — see
+   [The partition-index cross-check](#the-partition-index-cross-check--the-opens-but-is-wrong-case).
 0. **presence** *(only when the map below fails, and only when it failed with
    `NotFound`)* — re-open the cell's partition and ask its archive **directory**
    whether the symbol is there. Not there ⇒ `absent`: nothing was ever stored, so
@@ -899,7 +1039,7 @@ game at all:
 
 **It proves**, for every cell the database **holds**: the file is there, the bytes
 are the bytes that were written, and the surface produces a usable number at one
-point.
+point. And, for every partition in range: the manifest still describes that file.
 
 **It does not prove** the numbers are *right* — no oracle is consulted, and a
 surface fitted from bad market data checksums perfectly and probes fine. It says
@@ -1018,13 +1158,19 @@ cells_unmappable <n>        # the directory DOES list it and it would not map --
                             #    partition file itself would not open
 cells_non_finite <n>        # bytes intact, but the ATM probe produced no usable number
 cells_checksum <n>          # mapped, but the payload no longer matches its stored CRC
+partitions_index_mismatch <n>  # per PARTITION, outside the cell sum above: the manifest
+                            #    record disagrees with the file it indexes. MOVES the verdict
 symbols_disabled <n>        # manifest symbols the walk DROPPED (stored config disabled)
 failures_reported <n>       # fail lines below (capped by --max-failures)
 failures_elided <n>         # faults NOT listed -- truncation is never silent
 absent_reported <n>         # absent lines below (same cap, INDEPENDENT budget)
 absent_elided <n>           # absences NOT listed -- also never silent
+index_faults_reported <n>   # partition_index_mismatch lines below (same cap, third budget)
+index_faults_elided <n>     # index faults NOT listed -- also never silent
 fail <KEY> <SYM> kind=<unmappable|checksum|non_finite> detail=<message>
 absent <KEY> <SYM>          # no detail=: nothing failed, so there is no error to quote
+partition_index_mismatch <KEY> manifest_surfaces=<n> archive_surfaces=<n> \
+                              manifest_bytes=<n> bytes_on_disk=<n>
 disabled_symbol <SYM>       # one per dropped column, so `ok` is never a blank cheque
 min_cells <n>
 max_absent <n|unset>
@@ -1053,6 +1199,48 @@ counter, and it does not move the verdict. See
 *"this database is fresh"* from *"this database is full and your window matched
 none of it"*.
 
+#### The partition-index cross-check — the "opens but is wrong" case
+
+Every gate above reads the partition **file**. `partitions_index_mismatch` is the
+one check that reads the manifest's **claim about** that file and compares the
+two: the record's `surface_count` against the archive directory's own count, and
+its `file_size` against the file's size on disk.
+
+It exists because `write_partition` writes the archive **first** and the manifest
+**second** — the correct order, because the reverse would let an interrupted
+archive write advance the index. The price of that choice is a window: a crash, or
+a manifest-write error, *between* the two leaves the new file beside a **stale
+record**. The database then opens cleanly, every cell maps, checksums and probes,
+and the only thing wrong is that the index lies. Nothing else in the tool can see
+it, which is exactly why it is worth a line.
+
+```
+partitions_index_mismatch 1
+partition_index_mismatch 2026-07-02 manifest_surfaces=50 archive_surfaces=51 \
+                                    manifest_bytes=142080 bytes_on_disk=144896
+verdict FAILED
+```
+
+- **It moves the verdict** (`FAILED`, exit 1), unlike `cells_absent`. The
+  difference is that a mismatch is never a healthy steady state: it is a torn
+  write or a hand-edited directory, always.
+- **Nothing stored is lost, and no surface is mis-served.** The bytes are in the
+  file and they map. The build's carry gate is not fooled either — it recomputes
+  its fingerprint over the *archive's* own directory, so a stale record cannot
+  make it reuse the wrong surfaces. What is wrong is every number the manifest
+  reports about that key (`info` / `partitions` counts and byte totals) and any
+  consumer that trusts them.
+- **A partition that will not open at all is not counted here.** Every one of its
+  cells is already `unmappable`, which is louder and more precise; counting it
+  twice would just double-report the same bytes.
+- **Repair: get the date rewritten**, which re-stamps the record. A build re-run
+  does that only if the date still has a cell to add — an already-complete date is
+  skipped untouched and stays stale. For that case, delete
+  `<db>/partitions/<KEY>.atxvsa` and rebuild the date with the **same `--symbols`**
+  set that built it (anything outside that set is not restored).
+- Cost: one extra header+directory read per partition in range — `O(partitions)`,
+  not `O(cells)`, on a walk that is about to map every cell in the row anyway.
+
 ### `verify` flags
 
 | Flag | Default | Meaning |
@@ -1060,7 +1248,7 @@ none of it"*.
 | `--from KEY` / `--to KEY` | unbounded | Inclusive partition-key range, compared lexicographically on the canonical (upper-cased) key. ISO dates sort correctly, so `--from 2026-07-01 --to 2026-07-31` is a July restriction. |
 | `--symbols A,B,C` | manifest symbol table | Restrict the columns. Whitespace per field is trimmed, same rule as the build CLI. A name the manifest never configured is **accepted, not rejected** — asserting that a ticker is not in this database is a legitimate question — and every one of its cells comes back `absent`, `verdict ok`, exit `0`. If that is the whole walk, you get the [nothing-stored warning](#when-the-walk-finds-nothing-stored); a typo'd ticker looks exactly like a ticker that was never built. |
 | `--include-disabled` | off | Include fail-closed **disabled** symbols. By default they are skipped, and what that skip hides depends on **when** the name was disabled. Disabled **before it ever fitted**: it is absent from every partition, so checking it would report a missing cell on every date of every healthy database — that is the skip this default exists for. Disabled **after it fitted**: it **keeps** its stored surfaces (`enabled = false` means *stop fitting*, never *delete* — see [Resume semantics](#resume-semantics)) and they still load, so the default walk leaves **real cells unverified**. Turn this on to walk both cases; the first reports the whole column `absent` and still verifies **clean**, the second reports the cells that are actually there. It does **not** prove a disabled name is absent — it reports whatever is there, which is the point. |
-| `--probe-tenor T` | `30/365` | Tenor for the per-cell ATM evaluation. Must be finite and > 0. |
+| `--probe-tenor T` | `30/365` | Tenor for the per-cell ATM evaluation. **Strictly parsed**: must be a finite number **> 0** consuming the whole token. `abc`, `0`, `-1` and a missing value are **exit 2**, decided before the database opens — they used to coerce to `0.0`, which the library rejected, surfacing as a bare exit 1 with no verdict line. |
 | `--max-failures N` | `32` | Cap on `fail` lines **and, on an independent budget, on `absent` lines**. Overflow is counted in `failures_elided` / `absent_elided`, never dropped silently, and the `cells_*` totals stay exact. `0` prints no detail at all and elides everything. Same strict parsing as `--min-cells`. The budgets are separate so a database with many absences can never elide the one `fail` line beside them. |
 | `--min-cells N` | `0` | Fail when fewer than `N` cells were checked. **Strictly parsed** — see below. |
 | `--max-absent N` | unset | Exit **4** (`verdict ABSENT`) when more than `N` cells are **absent**. Off by default, deliberately: a converged database is permanently non-zero here, so a default ceiling would exit non-zero forever. **Strictly parsed.** See [Absence is not a failure](#absence-is-not-a-failure--the-cells-the-database-never-stored). |
@@ -1310,7 +1498,7 @@ does **not** notice a full-size grid quietly hollowing out: 867 cells checked is
 | Exit | When |
 | --- | --- |
 | `0` | Succeeded. For `verify`: the walk **covered cells**, every cell the database **holds** passed all three gates, `cells_checked >= --min-cells`, and `cells_absent <= --max-absent` (which is vacuous unless you passed the flag). Cells the database does **not** hold are counted, named and warned about on stderr **without** changing this — so **without `--max-absent`, a run that destroyed stored surfaces exits `0`**, where before FIX-H it exited `1` on the same run that a healthy database also exited `1`. That flag is what makes the non-zero *discriminating*; pass it. A walk that read cells and found **none** of them stored is also `0`, with its own stderr warning — see [When the walk finds nothing stored](#when-the-walk-finds-nothing-stored). For `enable`/`disable`: the symbol **is now** in the requested state, whether or not this run put it there (`changed 0` is a success — the verbs are idempotent). |
-| `1` | A runtime failure (message on **stderr**, no `verdict` line) — db won't open, unknown partition/symbol, unreadable partition file, or an `enable`/`disable` naming a symbol the manifest does not configure. **Or** `verify` returned `verdict FAILED` on **stdout**: failing cells, too few cells, or a walk that selected none. |
+| `1` | A runtime failure (message on **stderr**, no `verdict` line) — db won't open, unknown partition/symbol, unreadable partition file, or an `enable`/`disable` naming a symbol the manifest does not configure. **Or** `verify` returned `verdict FAILED` on **stdout**: failing cells, a partition record that disagrees with the file it indexes, too few cells, or a walk that selected none. |
 | `2` | A usage error — unknown subcommand, unknown flag, a required flag missing (**`disable`'s `--yes` is one**), a flag left **without a value**, or a malformed numeric value. Every one of these is decided **before the database is opened**, so a typo'd subcommand against an unreadable `--db` reports the typo, not the open failure — and a `disable` refused for want of `--yes` provably wrote nothing. Usage on stderr. |
 | `4` | `verify` only, and **only if you passed `--max-absent N`**: more cells are `absent` than `N` allows (`verdict ABSENT`). Nothing failed a gate — this is a **coverage** answer, kept off code `1` so a script can tell *"the database is damaged"* from *"the database is missing cells I did not expect it to be missing"*. `FAILED` wins when both hold. See [Absence is not a failure](#absence-is-not-a-failure--the-cells-the-database-never-stored). |
 

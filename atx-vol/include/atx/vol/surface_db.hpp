@@ -323,6 +323,48 @@ struct DbSymbolEntry {
 // cannot corrupt the file — but a consumer that assumed one partition means one
 // fitter version would be wrong, and nothing on disk records which records came
 // from where.
+//
+// IT ALSO DOES NOT COVER THE MARKET INPUTS — READ THIS BEFORE TRUSTING A CARRY.
+// `fold_symbol_configs` folds the manifest's per-symbol `DbSymbolRecord`, i.e. the
+// FIT CONFIGS, and nothing else. `OpraHiveSpec::r` — the carry rate, which the
+// build CLI's `--r` sets — is not in `SymbolFitConfig` and is NOT folded. Neither
+// is the snapshot minute nor the hive's contents. That is the more likely change
+// of the two documented here: a changed fitter takes a source edit, a wrong `--r`
+// takes one CLI flag, and a wrong `--r` is this tool's headline hazard
+// (atx-vol/docs/surface-db-build.md, "Interest rate / carry").
+//
+// THE CONSEQUENCE IS OPERATIONAL, AND IT HAS BEEN MEASURED. A build at the wrong
+// `--r` partly succeeds — on a production-shaped copy, `cells_ok 55 /
+// cells_failed 98`, and a wrong-`--r` run of that class DESTROYED 95 already-
+// stored surfaces on the dates it rewrote (a present, enabled cell whose re-fit
+// fails loses its stored surface; see surface_db_populate.cpp's degraded-cell
+// block). The operator notices and re-runs at the CORRECTED rate. Nothing is
+// re-fitted:
+//   - a date with nothing left to add is `dates_skipped_complete` and is not
+//     touched at all (pre-existing, unchanged by carry-over);
+//   - a date that IS rewritten carries its wrong-rate surfaces forward VERBATIM,
+//     because their configs did not change and so this fingerprint still matches.
+//     Before carry-over those siblings were re-fit and the corrected rate did
+//     reach them. This is the part carry-over made worse.
+// `cells_carried` is the only trace, and `verify` reports the database green —
+// every byte checksums, because the bytes are exactly the ones the wrong rate
+// produced. A poisoned database CANNOT be repaired by re-running it.
+//
+// WHAT AN OPERATOR MUST ACTUALLY DO. There is no `--force-refit` flag; a re-run is
+// not a repair. Two remedies, both blunt, and they are the whole list:
+//   1. DELETE the affected partition files (`<db-root>/partitions/<KEY>.atxvsa`)
+//      and re-run the build over those dates. `open_partition` then fails, the
+//      date is treated as never written, every loaded cell is re-fit at the new
+//      rate, and `write_partition` overwrites the stale manifest record. Between
+//      the delete and the rebuild `verify` reports those cells `unmappable` and
+//      `verdict FAILED` — correct, the bytes really are gone. A symbol stored on
+//      that date but NOT in the rebuild's loaded set is not restored: deleting a
+//      partition deletes it.
+//   2. Or build into a FRESH `--db` root and swap the roots when it finishes.
+//      Slower, and the only option that never leaves a half-state on disk.
+// Bumping this salt is NOT a third remedy: it forces a re-fit only of the dates a
+// run REWRITES, leaves every `dates_skipped_complete` date exactly as it was, and
+// needs a rebuilt binary.
 inline constexpr std::uint64_t kSurfaceDbCarryOverFitSalt = 0x5CA1'AB1E'F17D'0001ull;
 
 // Does the caller of `write_partition` ATTEST that the surfaces it is handing

@@ -851,6 +851,15 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
     }
     // Guard: the partition holds a symbol not in this run's loaded set (present <
     // total) — a whole-partition rewrite from `idxs` alone would drop it. Skip.
+    //
+    // It compares a COUNT, so it assumes `idxs` holds at most one board per
+    // symbol. A duplicate (date, symbol) board would double-count `present` and
+    // could push it up to `part->count()` while a stored symbol really is missing
+    // from the loaded set. That fails safe TODAY only by accident of a downstream
+    // check: `write_surface_archive_v2_file` rejects a duplicate canonical symbol
+    // with AlreadyExists (surface_archive.cpp), so the build aborts loudly instead
+    // of dropping the surface. Do not remove that rejection without making this a
+    // set comparison — it is the only thing standing behind this line.
     if (part.has_value() && present < part->count()) {
       ++cov.dates_skipped_would_drop;
       cov.cells_already_present += present;
