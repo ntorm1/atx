@@ -8,7 +8,8 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/data.hpp"      // data_install, iso_to_ns, year_fraction
+#include "atx/vol/data.hpp"             // data_install, iso_to_ns, year_fraction
+#include "atx/vol/earnings_term_fit.hpp" // fit_earnings_term, EarningsFitConfig (FIX-E I-2)
 #include "atx/vol/event_vol.hpp"
 #include "atx/vol/panel.hpp"     // SynthPanelSpec, make_synthetic_american_panel
 #include "atx/vol/session.hpp"   // VolaSession, SessionInputs (production seam)
@@ -619,6 +620,82 @@ TEST(Session, JointEmoveSolveBeatsTwoPillarOnWideBracket) {
   EXPECT_GT(*two_pillar, 2.0 * fx.emove)
       << "two-pillar=" << *two_pillar << " (err "
       << 100.0 * (*two_pillar - fx.emove) / fx.emove << "%)";
+
+  // FIX-E I-2: the fit's OUTCOME CODE reaches the session boundary too. On this
+  // board the joint fit is a real answer, so the code must be one of the two
+  // that MEAN "answer" — a `MaxSteps` or bound-pinned code here would mean the
+  // session published an unconverged solve as if it had converged.
+  const auto code = sess->diagnostics().emove_fit_code;
+  EXPECT_TRUE(code == atx::vol::EmoveFitCode::Ok || code == atx::vol::EmoveFitCode::Minimum)
+      << "session published a non-answer fit_code=" << static_cast<int>(code);
+}
+
+// ── FIX-E I-2: a bound-pinned / non-converged joint fit is NOT an answer ─────
+//
+// `fit_earnings_term`'s outer golden-section search reports `LeftBound` /
+// `RightBound` when the optimum pins at a bracket end and `MaxSteps` when it
+// exhausts `max_iters`. In all three cases what comes back is the search's
+// last/clamped ITERATE, not a solved optimum — `LeftBound` pins at `emove_lo`,
+// whose default is 0.0, i.e. "no event move", exactly the kind of
+// plausible-looking wrong number this sprint exists to remove. E3a accepted all
+// three as converged Joint answers.
+//
+// The fixture is the E3a AAPL-shaped set, generated EXACTLY from the SR
+// decomposition w_i = n_i·eMove² + σ_C(T_i)²·T_i, so the joint fit has a
+// zero-residual solution at the truth whenever the bracket contains it.
+// Squeezing `emove_hi` BELOW the truth forces the search to pin — the defect is
+// injected through the CONFIG, not through a hand-built pathological input.
+TEST(EventVolJoint, BoundPinnedFitIsRejectedAndReportedThroughTheStatusChannel) {
+  constexpr double kSt = 0.22;
+  constexpr double kLt = 0.28;
+  constexpr double kDecay = 1.5;
+  constexpr double kTruthEmove = 0.0208;
+  const auto sigma_c = [](double T) { return kLt + (kSt - kLt) * std::exp(-kDecay * T); };
+
+  const std::vector<double> Ts = {0.02, 0.30, 0.55, 0.80, 1.05, 1.30};
+  const std::vector<std::size_t> ns = {0, 1, 1, 1, 2, 2};
+  std::vector<atx::vol::CensorObsInput> obs;
+  obs.reserve(Ts.size());
+  for (std::size_t i = 0; i < Ts.size(); ++i) {
+    const double s = sigma_c(Ts[i]);
+    atx::vol::CensorObsInput o;
+    o.T = Ts[i];
+    o.w_dirty = static_cast<double>(ns[i]) * kTruthEmove * kTruthEmove + s * s * Ts[i];
+    o.n = ns[i];
+    obs.push_back(o);
+  }
+
+  // (a) CONTROL. With the default bracket [0, 0.30] the joint fit genuinely IS
+  // the answer here, so the rejection below cannot be "the joint path never
+  // worked on this set".
+  const auto healthy = atx::vol::implied_emove_joint(obs);
+  ASSERT_TRUE(healthy.has_value()) << healthy.error().to_string();
+  EXPECT_EQ(healthy->method, atx::vol::EmoveMethod::Joint);
+  EXPECT_NEAR(healthy->emove, kTruthEmove, 0.25 * kTruthEmove);
+
+  // (b) Squeeze the bracket's upper end BELOW the truth: the search can now only
+  // pin at its right bound.
+  atx::vol::EarningsFitConfig pinned;
+  pinned.emove_hi = 0.005; // truth is 0.0208 — the optimum is outside
+  const auto probe = atx::vol::fit_earnings_term(obs, pinned);
+  ASSERT_TRUE(probe.has_value()) << probe.error().to_string();
+  ASSERT_EQ(probe->fit_code, atx::vol::EmoveFitCode::RightBound)
+      << "fixture no longer pins the search; fit_code=" << static_cast<int>(probe->fit_code);
+
+  // (c) THE GATE. That pinned iterate must NOT be served as a Joint answer.
+  const auto got = atx::vol::implied_emove_joint(obs, pinned);
+  ASSERT_TRUE(got.has_value()) << got.error().to_string();
+  EXPECT_EQ(got->method, atx::vol::EmoveMethod::TwoPillar)
+      << "a bound-pinned iterate (emove=" << probe->emove
+      << ") was served as a converged Joint fit";
+  // The status channel says WHY it fell back, not merely THAT it did.
+  EXPECT_EQ(got->fit_code, atx::vol::EmoveFitCode::RightBound);
+  // And the value really is the fallback bracket's, not the bound.
+  EXPECT_NE(got->emove, probe->emove);
+  const auto bracket =
+      implied_emove(obs[0].w_dirty, obs[0].T, obs[0].n, obs[1].w_dirty, obs[1].T, obs[1].n);
+  ASSERT_TRUE(bracket.has_value()) << bracket.error().to_string();
+  EXPECT_NEAR(got->emove, *bracket, 1.0e-12);
 }
 
 }  // namespace

@@ -178,27 +178,57 @@ Result<EmoveSolution> implied_emove_joint(std::span<const CensorObsInput> obs,
   }
   const bool identified = usable.size() >= kJointMinPillars && n_varies && event_bearing >= 2;
 
+  // FIX-E I-2. ONLY a code that represents an ANSWER is accepted. `MaxSteps`,
+  // `LeftBound` and `RightBound` are the search's last/clamped iterate, not a
+  // solved optimum — `LeftBound` in particular pins at `emove_lo`, whose default
+  // is 0.0 ("no event move"), which is exactly the kind of plausible-looking
+  // wrong number this sprint exists to remove. See the header for the full
+  // table. The fix is the STATUS CHANNEL, not a wider iteration budget.
+  const auto joint_code_is_an_answer = [event_bearing](EmoveFitCode code) noexcept {
+    switch (code) {
+    case EmoveFitCode::Ok:
+    case EmoveFitCode::Minimum:
+      return true;
+    case EmoveFitCode::CenterFlat:
+      // With no events there is nothing to identify and flat IS the answer.
+      return event_bearing == 0;
+    case EmoveFitCode::MaxSteps:
+    case EmoveFitCode::LeftBound:
+    case EmoveFitCode::RightBound:
+    case EmoveFitCode::Degenerate:
+      return false;
+    }
+    return false;
+  };
+
+  EmoveFitCode joint_code = EmoveFitCode::Ok;
   if (identified) {
     const Result<EarningsTermFit> fit = fit_earnings_term(usable, cfg);
-    if (fit.has_value() && std::isfinite(fit->emove) && fit->emove >= 0.0 &&
-        fit->fit_code != EmoveFitCode::Degenerate &&
-        !(fit->fit_code == EmoveFitCode::CenterFlat && event_bearing > 0)) {
-      EmoveSolution out;
-      out.emove = fit->emove;
-      out.method = EmoveMethod::Joint;
-      out.fit_code = fit->fit_code;
-      out.fit_error = fit->fit_error;
-      out.expiry_count = fit->expiry_count;
-      return Ok(out);
+    if (fit.has_value()) {
+      joint_code = fit->fit_code;
+      if (std::isfinite(fit->emove) && fit->emove >= 0.0 &&
+          joint_code_is_an_answer(fit->fit_code)) {
+        EmoveSolution out;
+        out.emove = fit->emove;
+        out.method = EmoveMethod::Joint;
+        out.fit_code = fit->fit_code;
+        out.fit_error = fit->fit_error;
+        out.expiry_count = fit->expiry_count;
+        return Ok(out);
+      }
     }
-    // Fall through to the two-pillar solve on any joint failure: a degenerate or
-    // non-finite joint answer is worse than the biased-but-bounded one.
+    // Fall through to the two-pillar solve on any joint failure: a degenerate,
+    // non-converged, bound-pinned or non-finite joint answer is worse than the
+    // biased-but-bounded one.
   }
 
   ATX_TRY(const double emove, two_pillar_over(usable));
   EmoveSolution out;
   out.emove = emove;
   out.method = EmoveMethod::TwoPillar;
+  // Carry the REJECTED joint code out so a caller can tell WHY it got the
+  // fallback, not merely THAT it did. `Ok` here means the joint path never ran.
+  out.fit_code = joint_code;
   out.expiry_count = usable.size();
   return Ok(out);
 }

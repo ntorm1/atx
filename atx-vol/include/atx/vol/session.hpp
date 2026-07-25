@@ -321,6 +321,19 @@ struct SessionDiagnostics {
   // meaningful when `implied_emove` is finite; on a declined solve it keeps its
   // `TwoPillar` default and means nothing.
   EmoveMethod emove_method{EmoveMethod::TwoPillar};
+  // FIX-E I-2. The joint fit's OUTCOME CODE. Without it the status channel at
+  // the session boundary is incomplete: `emove_method` alone cannot distinguish
+  // a converged joint answer from a fallback, nor say WHY the fallback
+  // happened. Read it together with `emove_method`:
+  //   * `Joint` + `Ok`/`Minimum`    — the identified joint fit converged;
+  //   * `TwoPillar` + `Ok`          — the joint fit was never attempted (the
+  //                                   slice set does not identify it);
+  //   * `TwoPillar` + anything else — the joint fit RAN and was REJECTED, and
+  //                                   this names the failure (`MaxSteps` /
+  //                                   `LeftBound` / `RightBound` /
+  //                                   `CenterFlat` / `Degenerate`).
+  // Only meaningful when `implied_emove` is finite.
+  EmoveFitCode emove_fit_code{EmoveFitCode::Ok};
   std::size_t n_carry_slices{0};    // slices with a resolved carry diagnostic
   std::size_t n_carry_confident{0}; // carry slices clearing confidence gates
   // Expiries the fit DROPPED because carry could not be resolved (confidence

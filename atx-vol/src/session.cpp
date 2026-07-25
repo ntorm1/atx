@@ -262,7 +262,8 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
 
 [[nodiscard]] double solve_implied_emove(const EventSchedule *events, std::int64_t now_ts_ns,
                                          std::span<const EssviParams> slices,
-                                         EmoveMethod *out_method = nullptr) noexcept {
+                                         EmoveMethod *out_method = nullptr,
+                                         EmoveFitCode *out_fit_code = nullptr) noexcept {
   if (events == nullptr || slices.size() < 2) {
     return kNaN;
   }
@@ -333,6 +334,12 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
   }
   if (out_method != nullptr) {
     *out_method = solved->method;
+  }
+  // FIX-E I-2: the joint fit's outcome code travels with the method, so the
+  // session boundary can tell a converged joint answer from a fallback and say
+  // which failure caused the fallback.
+  if (out_fit_code != nullptr) {
+    *out_fit_code = solved->fit_code;
   }
   return solved->emove;
 }
@@ -1407,10 +1414,15 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   // E3b: `emove_method` records WHICH solve produced the value — the identified
   // joint fit over all fitted slices, or the two-pillar bracket fallback. It is
   // only meaningful when `implied_emove` is finite.
+  // FIX-E I-2: `emove_fit_code` completes the status channel — see
+  // SessionDiagnostics for how the (method, code) pair reads.
   EmoveMethod emove_method = EmoveMethod::TwoPillar;
-  diag.implied_emove = solve_implied_emove(eff.events.get(), eff.now_ts_ns,
-                                           rep.surface.essvi_slices(), &emove_method);
+  EmoveFitCode emove_fit_code = EmoveFitCode::Ok;
+  diag.implied_emove =
+      solve_implied_emove(eff.events.get(), eff.now_ts_ns, rep.surface.essvi_slices(),
+                          &emove_method, &emove_fit_code);
   diag.emove_method = emove_method;
+  diag.emove_fit_code = emove_fit_code;
 
   std::vector<std::vector<FitObs>> incremental_obs;
   std::vector<std::vector<double>> incremental_mids;

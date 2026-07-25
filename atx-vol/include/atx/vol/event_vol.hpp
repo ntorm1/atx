@@ -283,11 +283,38 @@ struct EmoveSolution {
 //   * at least two event-bearing (n > 0) observations, matching
 //     `fit_earnings_term`'s own degeneracy rule.
 // Otherwise — and whenever the joint fit errors, or returns a non-finite eMove,
-// or reports a degenerate outcome (`Degenerate`, or `CenterFlat` with events
-// actually present) — this falls back to `implied_emove` on the first
-// ascending-T adjacent pair whose event count rises, i.e. exactly the pre-E3a
-// behaviour, and reports `EmoveMethod::TwoPillar` so the caller can tell which
-// answer it got.
+// or reports an outcome that is NOT an answer — this falls back to
+// `implied_emove` on the first ascending-T adjacent pair whose event count
+// rises, i.e. exactly the pre-E3a behaviour, and reports
+// `EmoveMethod::TwoPillar` so the caller can tell which answer it got.
+//
+// ── WHAT COUNTS AS AN ANSWER (FIX-E I-2) ────────────────────────────────────
+//
+// ACCEPTED: `Ok` (converged interior minimum) and `Minimum` (best point found,
+// genuinely identified, just not a clean interior converge).
+//
+// REJECTED, each falling back to the two-pillar bracket:
+//   * `Degenerate`  — fewer than two usable expiries / unsolvable;
+//   * `CenterFlat`  — objective flat across the bracket, when events are
+//                     actually present (with no events there is nothing to
+//                     identify and the flat answer is the correct one);
+//   * `MaxSteps`    — the outer search hit `EarningsFitConfig::max_iters`.
+//                     `earnings_term_fit.cpp` documents this as "the search did
+//                     not converge, so its bound/flat diagnosis is unreliable";
+//   * `LeftBound`   — optimum pinned at `emove_lo` (default 0.0, i.e. "no event
+//                     move" — a completely plausible-looking wrong number);
+//   * `RightBound`  — optimum pinned at `emove_hi` (default 0.30).
+//
+// A bound-pinned or step-exhausted search returns its last/clamped iterate, not
+// a solved optimum. Accepting it is the same defect class this sprint removed
+// from `strike_at_delta` — a solver handing back its last iterate as if it were
+// an answer. The fix is the status channel, NOT a wider iteration budget: a
+// bracket the optimum genuinely sits outside of is not fixed by more steps.
+//
+// The returned `fit_code` is always the joint fit's own code when the joint path
+// ran, so a caller can tell a converged answer from a fallback and WHY it fell
+// back; on the fallback path it is the rejected code (`Ok` when the joint fit
+// was never attempted).
 //
 // @param obs  per-expiry dirty ATM total variance / year-fraction / event count
 // @param cfg  joint-fit knobs (search bracket, iteration cap, censoring floor)
