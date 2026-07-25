@@ -1553,11 +1553,12 @@ write_quote_reject_report(const fs::path &path,
   if (!out) {
     return Err(ErrorCode::IoError, "cannot write " + path.string());
   }
-  out << "date\tnot_two_sided\tzero_bid\tstale\tlocked\tnon_standard\ttotal_dropped\n";
+  out << "date\tnot_two_sided\tzero_bid\tstale\tstale_unevaluable\tlocked\tnon_standard\t"
+         "total_dropped\n";
   for (const auto &[date, counts] : rows) {
     out << date << '\t' << counts.not_two_sided << '\t' << counts.zero_bid << '\t' << counts.stale
-        << '\t' << counts.locked << '\t' << counts.non_standard << '\t' << counts.total_dropped()
-        << '\n';
+        << '\t' << counts.stale_unevaluable << '\t' << counts.locked << '\t' << counts.non_standard
+        << '\t' << counts.total_dropped() << '\n';
   }
   return out ? Ok() : Err(ErrorCode::IoError, "cannot flush " + path.string());
 }

@@ -184,6 +184,15 @@ void tally(ListedQuoteRejectCounts &counts, ListedQuoteReject reject) noexcept {
       ++counts.locked;
       ++local.locked;
     }
+    // The staleness gate is only meaningful when the source carries an
+    // observation time independent of the valuation instant. When it does not
+    // (the OPRA panel is snapshot-stamped) every age is exactly 0 and a `stale`
+    // count of 0 would describe the FEED, not the market. Count that case so the
+    // report can tell the two apart.
+    if (quality.max_quote_age_ns > 0 && q.quote_ts_ns == valuation_ts_ns) {
+      ++counts.stale_unevaluable;
+      ++local.stale_unevaluable;
+    }
     const ListedQuoteReject reject = classify_listed_quote(q, valuation_ts_ns, quality);
     if (reject != ListedQuoteReject::None) {
       if (reject != ListedQuoteReject::Locked) { // already flagged above

@@ -73,6 +73,24 @@ struct ListedQuoteQualityConfig {
   double min_bid{0.0};
   // Maximum age of `quote_ts_ns` behind the valuation instant. 0 DISABLES the
   // check (the pre-F6 contract). Default 10 minutes.
+  //
+  // INERT ON THE CURRENT OPRA PATH, and the tally says so rather than reporting
+  // a reassuring zero. Measured 2026-07-24 over
+  // `C:\atx-data\spy-dispersion\opra\*\2026-01-02.parquet` (6 symbols, 852-2833
+  // rows each): the panel's `ts` column holds ONE distinct value per file — the
+  // 19:55:00Z snapshot instant — so it is a snapshot stamp, not a per-quote
+  // observation time. `opra_panel.cpp` therefore leaves `QuoteRow::ts_ns` at 0
+  // and `listed_opra.cpp:330` substitutes the valuation instant, giving every
+  // quote an age of exactly 0. This gate cannot fire on that source, and a
+  // `stale = 0` count would be a statement about the DATA when it is really a
+  // statement about the FEED. `ListedQuoteRejectCounts::stale_unevaluable`
+  // counts those quotes, so the report distinguishes "nothing was stale" from
+  // "staleness was unmeasurable".
+  //
+  // The gate is live the moment a per-quote-timestamped source is wired
+  // (`ListedOptionQuote::quote_ts_ns` is a real field; an intraday MBP feed
+  // carries `ts_recv`), which is why the machinery stays rather than being
+  // deleted.
   std::int64_t max_quote_age_ns{600LL * 1'000'000'000LL};
   // A LOCKED market (ask == bid) is counted but NOT dropped by default: the mid
   // is still the true price, so dropping it would discard a good quote. Set
@@ -100,6 +118,14 @@ struct ListedQuoteRejectCounts {
   std::uint32_t stale{0};
   std::uint32_t locked{0};
   std::uint32_t non_standard{0}; // wrong multiplier / not standard monthly or deliverable
+  // Quotes the staleness gate could NOT evaluate: age exactly 0 while the gate
+  // was enabled, i.e. the source supplied no observation time independent of the
+  // valuation instant (see ListedQuoteQualityConfig::max_quote_age_ns — the
+  // current OPRA panel is snapshot-stamped, so this equals the inspected quote
+  // count and `stale` is necessarily 0). Reported so a zero `stale` is never
+  // mistaken for evidence that nothing was stale. NOT a rejection: these quotes
+  // are admitted, so it does not enter `total_dropped`.
+  std::uint32_t stale_unevaluable{0};
 
   [[nodiscard]] std::uint32_t total_dropped() const noexcept {
     return not_two_sided + zero_bid + stale + non_standard;

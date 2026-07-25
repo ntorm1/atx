@@ -370,3 +370,72 @@ TEST(ListedDispersion, AZeroBidIndexQuoteCannotNominateAnExpiry) {
   EXPECT_EQ(selected->expiry_ts_ns, good)
       << "an unquotable index row must not nominate its expiry";
 }
+
+// F6 review follow-up (Important #1). The staleness gate cannot fire on the
+// current OPRA path: `opra_panel.cpp` never assigns `QuoteRow::ts_ns` and
+// `listed_opra.cpp:330` substitutes the valuation instant when it is 0, so
+// every quote's age is exactly 0.
+//
+// MEASURED, not assumed: `C:\atx-data\spy-dispersion\opra\*\2026-01-02.parquet`
+// (6 symbols, 852-2833 rows each) carries ONE distinct `ts` per file — the
+// 19:55:00Z snapshot instant. It is a snapshot stamp, not a per-quote
+// observation time, so there is nothing to plumb through.
+//
+// A `stale = 0` count would therefore be a statement about the FEED wearing the
+// clothes of a statement about the MARKET. This pins the distinction: quotes the
+// gate could not evaluate are counted separately, and they are NOT rejections.
+TEST(ListedDispersion, StalenessGateReportsWhenItCannotEvaluateRatherThanReportingZero) {
+  const std::int64_t expiry = kValuation + 30 * kDay;
+  constexpr std::int64_t kMinute = 60LL * 1'000'000'000LL;
+  std::uint32_t id = 1;
+  std::vector<ListedOptionQuote> quotes;
+  // Every quote stamped AT the valuation instant — exactly what the OPRA join
+  // produces from a snapshot-stamped panel.
+  add_pair(quotes, "SPY", id, expiry, 99.0);
+  add_pair(quotes, "N0", id, expiry, 49.0);
+  add_pair(quotes, "N1", id, expiry, 75.0);
+
+  auto snapshot_stamped =
+      select_listed_dispersion(kDate, kValuation, universe(), quotes, forwards(), config());
+  ASSERT_TRUE(snapshot_stamped.has_value()) << snapshot_stamped.error().to_string();
+  EXPECT_EQ(snapshot_stamped->names.size(), 2u);
+  // Nothing was rejected as stale ...
+  EXPECT_EQ(snapshot_stamped->quote_rejects.stale, 0u);
+  // ... and that zero is explained rather than trusted: every inspected quote
+  // was unevaluable, so the gate measured nothing.
+  EXPECT_EQ(snapshot_stamped->quote_rejects.stale_unevaluable, 6u);
+  // An unevaluable quote is ADMITTED, so it must not inflate the dropped count.
+  EXPECT_EQ(snapshot_stamped->quote_rejects.total_dropped(), 0u);
+
+  // A source that DOES carry an independent observation time is evaluated
+  // normally — the machinery is inert on this feed, not broken.
+  for (ListedOptionQuote &q : quotes) {
+    q.quote_ts_ns = kValuation - 2 * kMinute; // fresh, but independently stamped
+  }
+  auto timestamped =
+      select_listed_dispersion(kDate, kValuation, universe(), quotes, forwards(), config());
+  ASSERT_TRUE(timestamped.has_value()) << timestamped.error().to_string();
+  EXPECT_EQ(timestamped->quote_rejects.stale, 0u);
+  EXPECT_EQ(timestamped->quote_rejects.stale_unevaluable, 0u)
+      << "an independently stamped quote is evaluable, whether or not it is stale";
+
+  // ... and the same source past the bound is genuinely rejected.
+  for (ListedOptionQuote &q : quotes) {
+    q.quote_ts_ns = kValuation - 30 * kMinute;
+  }
+  auto expired =
+      select_listed_dispersion(kDate, kValuation, universe(), quotes, forwards(), config());
+  ASSERT_FALSE(expired.has_value()) << "every leg is stale; no basket should survive";
+
+  // With the gate DISABLED nothing is unevaluable either — there is no gate to
+  // be unable to evaluate.
+  ListedDispersionSelectionConfig off = config();
+  off.quality.max_quote_age_ns = 0;
+  for (ListedOptionQuote &q : quotes) {
+    q.quote_ts_ns = kValuation;
+  }
+  auto gate_off = select_listed_dispersion(kDate, kValuation, universe(), quotes, forwards(), off);
+  ASSERT_TRUE(gate_off.has_value()) << gate_off.error().to_string();
+  EXPECT_EQ(gate_off->quote_rejects.stale_unevaluable, 0u);
+  EXPECT_EQ(gate_off->quote_rejects.stale, 0u);
+}
