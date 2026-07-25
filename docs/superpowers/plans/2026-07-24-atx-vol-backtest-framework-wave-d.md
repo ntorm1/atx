@@ -583,7 +583,7 @@ omission in the task report so it is a decision, not drift.
    rows. Confirm both facts in the report.
 4. Nothing else. `batch_spec`, `read_universe`, the `UniverseRow` schema, `universe_schedule.tsv` — all untouched.
 
-- [ ] **Step 1: Write the failing tests** — create `atx-vol/tests/dispersion_workflow_test.cpp` (this closes the
+- [x] **Step 1: Write the failing tests** — create `atx-vol/tests/dispersion_workflow_test.cpp` (this closes the
       module's zero-direct-coverage gap) with, at minimum:
   - `RunSpecIndexSymbolDefaultsToSpy` — `EXPECT_EQ(RunSpec{}.index_symbol, "SPY")`.
   - `AllSymbolsDefaultIsUnchanged` — over a fixture row set `{ "AAPL", "MSFT", "SPY" }`, `all_symbols(rows)` (no
@@ -607,14 +607,14 @@ omission in the task report so it is a decision, not drift.
     value (write→read closure).
   - In `atx-vol/tests/run_archive_test.cpp`, extend `RunArchiveEncoders.MetaSectionEchoesResolvedSpec` (`:1088-1096`)
     with `EXPECT_EQ(value_of("index_symbol"), "SPY")` — the meta echo must not silently omit a resolved knob.
-- [ ] **Step 2: Run tests to verify they fail** — register the new file in `atx-vol/tests/CMakeLists.txt`, then
+- [x] **Step 2: Run tests to verify they fail** — register the new file in `atx-vol/tests/CMakeLists.txt`, then
       `cmake --build C:\atx\build-rel --target atx-vol-tests` → expected FAIL: `'index_symbol': is not a member of
       'atx::vol::RunSpec'`, and `all_symbols`/`universe_at` "does not take 2/3 arguments". Record the diagnostics.
-- [ ] **Step 3: Implement** the header field, the two defaulted signatures, the three literal replacements
+- [x] **Step 3: Implement** the header field, the two defaulted signatures, the three literal replacements
       (`dispersion_workflow.cpp:224,238,240`), the parse + empty-guard, the resolved-spec append, the
       `encode_meta_section` append + `reserve` bump, and the six call-site threads in the table. Touch **no** pybind11
       file.
-- [ ] **Step 4: Run tests to verify they pass** — **full build** (`cmake --build C:\atx\build-rel`, all targets — a
+- [x] **Step 4: Run tests to verify they pass** — **full build** (`cmake --build C:\atx\build-rel`, all targets — a
       public library signature changed and the bindings must be proven to still compile against the default). Then:
   - `C:\atx\build-rel\bin\atx-vol-tests.exe --gtest_filter=DispersionWorkflow.*` → all PASS.
   - `--gtest_filter=RunArchive*:RunDir.*:ListedDispersion*:Tearsheet*` → all PASS, including
@@ -627,7 +627,7 @@ omission in the task report so it is a decision, not drift.
     **byte-identical to their pre-T6 values on that fixture** (capture the four sha256s before the change).
   - Confirm the enumerated deltas and nothing more: `run_spec.tsv` unchanged in a dir whose `build-corpus` was not
     re-run; `dump meta --tsv` gains exactly one row `index_symbol\tSPY`.
-- [ ] **Step 5: Commit** — `git add atx-vol/include/atx/vol/dispersion_workflow.hpp atx-vol/src/dispersion_workflow.cpp atx-vol/src/run_archive.cpp atx-vol/src/listed_dispersion_pipeline.cpp atx-vol/examples/spy_dispersion_backtest.cpp atx-vol/tests/dispersion_workflow_test.cpp atx-vol/tests/run_archive_test.cpp atx-vol/tests/CMakeLists.txt`
+- [x] **Step 5: Commit** — `git add atx-vol/include/atx/vol/dispersion_workflow.hpp atx-vol/src/dispersion_workflow.cpp atx-vol/src/run_archive.cpp atx-vol/src/listed_dispersion_pipeline.cpp atx-vol/examples/spy_dispersion_backtest.cpp atx-vol/tests/dispersion_workflow_test.cpp atx-vol/tests/run_archive_test.cpp atx-vol/tests/CMakeLists.txt`
 
 ---
 

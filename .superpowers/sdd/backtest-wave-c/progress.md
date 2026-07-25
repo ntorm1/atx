@@ -1496,3 +1496,162 @@ T5: implementer DONE_WITH_CONCERNS, commit `d955e93`, one file
     framing is now a rounding error. **Wave E decision.**
   - `SPRINT-CONSTRAINTS.md`'s suite baseline was stale (2020/1974); controller corrected it
     to 2034/1988 in place.
+
+### Wave D T6 (L12 — RunSpec.index_symbol, de-SPY all_symbols / universe_at) — impl + review
+
+T6: **Spec ✅ / Code quality APPROVED. Zero Critical, ONE Important (documentation and
+  Task-7 scoping — NO source change required), 5 Minors.** Review: `task-6-review.md`.
+
+  **THE REVIEWER DISPROVED THE IMPLEMENTER'S COVERAGE CLAIM, THEN CLOSED THE GAP ITSELF.**
+  The report claimed the two library sites are "exercised by 19 passing
+  `ListedDispersionPipeline.*` tests". That is **false**: no test calls
+  `build_listed_dispersion_schedule` at all. The only reference is
+  `listed_dispersion_pipeline_test.cpp:622` taking its ADDRESS
+  (`BuildScheduleSymbolIsDeclared`), and the file's own comment at `:613-614` says so. Its
+  sole tree-wide caller is `spy_dispersion_backtest.cpp:452` (`build-schedule`) — another
+  command the fixture cannot run. **So all SIX threaded sites are compile-covered only,
+  not four.** The gap was twice as wide as disclosed.
+
+  Rather than merely reporting that, the reviewer built its **own differential
+  executable** — the pre-change (`d955e93`) function bodies linked against the shipped
+  `build-rel\lib\atx-vol.lib`, under the real `/WX` flags — and ran
+  **20,000 row-sets / 76,630 `universe_at` pairs: ZERO mismatches**, with a negative
+  control returning False. It also reconstructed the old bodies to verify the RED:
+  `all_symbols` 3≠4, and `universe_at` `"SPY"`≠`"QQQ"` **and** `names.size()` 2≠3 — i.e.
+  `UniverseAtHonoursIndexSymbol` genuinely catches BOTH predicted defects, not just the
+  mislabelled index.
+  **That differential is a stronger claim than any gate the brief specified**: it proves
+  the defaulted functions are behaviourally identical to the hardcoded ones over 20k
+  randomized inputs, not merely on the one default path a byte golden walks.
+
+  Reviewer's own evidence: suite 2044/1998/43/3/7 (3 documented reds); `DispersionWorkflow.*`
+  10/10; `RunArchive*:RunDir.*:ListedDispersion*:Tearsheet*` 82/82 including
+  `MatchesCommittedPythonFixture` and `SchemaHashStableAndNonzero`
+  (`0xdcce47781ac8390d`, `kRaMinor 0`); on its own fresh COPY of the fixture, configured
+  `mark_divergence` == T5's pre-T6 pin `39D47B8B…A91F`, determinism agreed across two
+  independent runs, `run_spec.tsv` `2AF1B37C…F75B` unchanged (`Compare-Object` 0 rows),
+  `meta` 25 lines with `index_symbol\tSPY` sitting between `core_mode` and
+  `projected_execution`.
+
+  All four implementer concerns UPHELD. Concern 1 upheld **but understating the gap**
+  (six sites, not four) — with the reviewer's judgement that the evidence base is
+  nonetheless adequate, because the 20k differential proves function identity and every
+  site threads `"SPY"` today, making **Task 7 a LIVENESS gate rather than an economics
+  gate.** Accepted. Concern 2 upheld: the root `CMakeLists.txt` never adds
+  `atx-vol/python`, there are zero PYTHON/PYBIND cache entries and no `_core*.pyd`, so the
+  controller's full-build justification was simply wrong; the reviewer recompiled both
+  binding expressions itself under the real `/WX` flags, exit 0. Concern 3 upheld: it
+  re-hashed all 13 captured artifacts, 13/13 match, and confirmed the PRE captures are
+  provably pre-change (24-line `meta` vs 25). Concern 4 upheld:
+  `RunDir::verify` (`run_archive.cpp:1629-1662`) counts `backtest`/`reconciliation` only,
+  `_schema.py:27-30` registers `meta` as 2 columns, and no positional Python `meta`
+  consumer exists.
+
+  T6 review Minors, all carried: the meta-side append ORDER is asserted only by comment,
+  not by a test; `ReadRunSpecRejectsEmptyIndexSymbol` does not assert the message;
+  `write_resolved_spec` can emit an empty value its own parser would reject (unreachable
+  in-tree); stale "SPY" prose in the example's error message and methodology map; the
+  Python docstring still says "SPY is the index leg".
+
+#### Controller action on the Important — all six sites are now EXECUTED at T7
+
+The brief's T7 Step 3 sequence reaches only three sites. Two additions were made, and
+the site map was verified from the code rather than from the brief (which mislabels
+`:320` as belonging to `build-schedule` — it is in **`build_corpus_command`**, and the
+controller repeated that error in the T6 dispatch before the reviewer corrected it):
+
+| site | carrying command | in brief's T7? |
+|---|---|---|
+| `spy_dispersion_backtest.cpp:320` `all_symbols` | **`build-corpus`** | no — ADDED |
+| `:541` `all_symbols` | `run-backtest` | yes |
+| `:915` `universe_at` | **`run-surface-backtest`** | no — ADDED |
+| `:992` `universe_at` | `run-projected-var` | yes |
+| `listed_dispersion_pipeline.cpp:205` `all_symbols` | `build-schedule` (sole caller `:452`) | yes |
+| `:224` `universe_at` | `build-schedule` | yes |
+
+`build-corpus` is run as a **one-day** corpus over the real 11-symbol universe into a
+scratch dir (`t7-corpus1d`) — OPRA day files are 50-200 KB, so it is cheap — which also
+executes `write_resolved_spec`'s new append, the other new L12 write path. It is NOT run
+against any existing corpus, because `build-corpus` is the one command that rewrites
+`run_spec.tsv` and would move `run_identity_hash` for that dir.
+
+Independently of execution, the controller **read all six call sites** and confirmed each
+threads the correct field. One is subtle and worth recording: the two library sites must
+use `quote_source.index_symbol`, not `spec.index_symbol`, because the `spec` in scope
+there is a `ListedScheduleSpec` — a different type with no such field. Passing the wrong
+object would not compile, which is why that pair is safe by construction.
+
+### Wave D T6 — implementation detail
+
+T6: implementer DONE_WITH_CONCERNS, commit `0a895b8`, 8 files, +270/-15 = net **+255**
+  (production code alone +57/-15; the new `dispersion_workflow_test.cpp` is +209 of it).
+  A net ADD is correct here and is not a regression against T5's -193: L12 removes three
+  string literals and adds a field, two defaulted parameters, a parse arm, a guard, two
+  appends and — the bulk of it — **the first direct test file `dispersion_workflow` has
+  ever had.** The module previously had zero direct coverage.
+  Suite **2044/1998/43/3/7** = +10/+10 over the 2034/1988 baseline, same three documented
+  reds. `DispersionWorkflow.*` 10/10; `RunArchive*:RunDir.*:ListedDispersion*:Tearsheet*`
+  82/82 including `MatchesCommittedPythonFixture`.
+
+  GATES: `projected_cold` and `mark_divergence` byte-identical on BOTH routes, with the
+  configured `mark_divergence` reproducing T5's raw-LF pin `39D47B8B…A91F` exactly;
+  `meta` gains **exactly one** row `index_symbol\tSPY` (24 -> 25, `Compare-Object` count
+  1, nothing else moved); `run_spec.tsv` unchanged (`2AF1B37C…`) in a dir whose
+  `build-corpus` was not re-run — which is what keeps `run_identity_hash` stable for every
+  existing corpus and is the difference between a no-op and silently invalidating the
+  parity corpus; `ra_schema_hash` and `kRaMinor` untouched.
+  `UniverseAtHonoursIndexSymbol` was a **genuine observed RED** catching both predicted
+  defects (the old hardcode mislabels the index AND silently drops SPY from `names`).
+  The Vacuity Ledger declares four gates weak/near-vacuous rather than counting them.
+  No Python edited; the `.def_readwrite` omission recorded as a decision.
+
+  **CONCERN 1 — THE REAL FINDING, AND IT IS A COVERAGE GAP, NOT A DEFECT.** The brief's
+  Step 4 byte gate is unrunnable and its numbers are stale — independently confirmed by
+  the controller before dispatch and by the implementer during it. The surviving 3-session
+  fixture is 3 sessions / **2 rolls** with navs `-6679.892579` / `-4779.718393`, not the
+  brief's `rolls=1, -456.5769067` (that fixture was cleaned with a prior sprint's
+  scratchpad); and it carries no `definitions.tsv` and no `universe_schedule.tsv`, so
+  `build-schedule`, `run-backtest`, `run-surface-backtest` and `run-projected-var` — **the
+  four commands carrying all four example-side call sites** — cannot run on it at all.
+  **Those four sites are therefore COMPILE-COVERED ONLY, never executed by this task.**
+  Behavioural coverage comes from the two LIBRARY sites
+  (`listed_dispersion_pipeline.cpp:205,:224`, exercised by 19 passing
+  `ListedDispersionPipeline.*`) plus the 10 new unit tests.
+  Stated plainly by the implementer rather than left for a reviewer to find, which is the
+  behaviour this process exists to produce.
+  **CONTROLLER ACTION: Task 7's 135-session run is therefore load-bearing for L12 itself,
+  not merely for its own gate.** The brief's T7 Step 3 sequence reaches only three of the
+  four sites (`:320` build-schedule, `:541` run-backtest, `:992` run-projected-var), so
+  **`run-surface-backtest` has been ADDED to the T7 gate** specifically to execute the
+  fourth (`:915`). Recorded here so the addition is a decision, not an undocumented
+  deviation from the brief.
+
+  **CONCERN 2 — THE CONTROLLER'S DISPATCH WAS WRONG AGAIN, AND THE IMPLEMENTER'S
+  SUBSTITUTE IS BETTER THAN WHAT I ASKED FOR.** My dispatch (and the brief's Step 4)
+  justified the mandatory full build as proving the pybind11 bindings still compile
+  against the defaulted signature. They do not: `atx-vol/python/` is a **standalone
+  scikit-build-core project** and is not in `build-rel` at all (no `PYTHON`/`PYBIND` cache
+  entries), so a full `build-rel` build cannot compile a single binding TU and never
+  could. The implementer proved the claim properly instead — it compiled a probe TU
+  containing the two `dispersion.cpp` call expressions **verbatim**, with the real
+  `compile_commands.json` flags, under `/WX`: EXIT=0. That is direct evidence where the
+  full build was a non-sequitur. **This is my second dispatch error in two tasks; both
+  were caught by implementers and both are recorded as mine.**
+
+  **CONCERN 3 — A FOURTH FALSE-GATE METHODOLOGY DEFECT, SELF-CAUGHT MID-RUN.** The
+  implementer's first comparison script defined `function H`, which resolved to the
+  built-in `Get-History` alias. All six hashes came back `$null`, so every verdict was a
+  vacuous `$null -eq $null` -> `True`: **six gates "passed" having compared nothing.** It
+  caught this itself, rewrote with `Get-Sha` / `Get-Lines` helpers that `throw` on a
+  missing or empty file, re-ran everything, and added an explicit negative control showing
+  the comparator can return `False`. All reported numbers come from the corrected run.
+  **This is the fourth distinct way a byte gate has silently lied in this sprint**, after
+  Bash `diff`'s exit code, PowerShell `>` BOM/CRLF re-encoding, and unrecorded capture
+  convention. All four are now enumerated in `SPRINT-CONSTRAINTS.md` under one rule:
+  **a comparison that cannot be shown to fail has not been run — print both values and
+  prove the comparator can say False.**
+
+  CONCERN 4, carried: `meta` now has 24 rows where a positional Python reader might assume
+  23. Nothing in C++ counts `meta` rows (`RunDir::verify` compares `backtest` vs
+  `reconciliation` cardinalities only, verified in code) and `MatchesCommittedPythonFixture`
+  is green, but pytest is out of scope this sprint. **For the final review.**
