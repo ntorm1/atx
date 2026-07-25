@@ -307,21 +307,31 @@ def test_schema_py_not_stale_vs_cpp_header():
         )
         return
 
+    # The checks are LINE-ANCHORED on the declaration FORM, not on a substring
+    # search: the corrected docstring quotes the old claim in order to explain that
+    # it was wrong, and a bare `"GENERATED, do not edit by hand" not in doc` would
+    # trip on that quotation. What must not come back is the module *declaring*
+    # itself generated — the header line ending in that phrase, and the
+    # ``Source of truth:`` / ``Regenerate:`` fields naming files that do not exist.
     doc = (_schema.__doc__ or "")
-    assert "GENERATED, do not edit by hand" not in doc, (
+    lines = [ln.strip() for ln in doc.splitlines()]
+    assert not any(ln.endswith("GENERATED, do not edit by hand.") for ln in lines), (
         f"_schema.py declares itself generated, but {header} is absent — the "
         "declared source of truth does not exist in this repo. Either land the "
         "header and generator, or state the real provenance."
     )
-    assert "Regenerate:" not in doc, (
+    assert not any(ln.startswith("Source of truth:") for ln in lines), (
+        f"_schema.py names a source of truth, but {header} is absent."
+    )
+    assert not any(ln.startswith("Regenerate:") for ln in lines), (
         f"_schema.py advertises a regeneration path, but {generator} is absent."
     )
     # And the provenance it DOES state must be the honest one: the module has to
     # say, in words, that the C++ writer's header is not in this repository.
     flat = " ".join(doc.split())
-    assert "does not exist in this repo" in flat or (
-        "Neither file exists in this repository" in flat
-    ), "_schema.py must record that its C++ source of truth is out-of-tree"
+    assert "Neither file exists in this repository" in flat, (
+        "_schema.py must record that its C++ source of truth is out-of-tree"
+    )
 
 
 def test_gross_vega_unit_collision_is_documented():
