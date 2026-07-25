@@ -310,6 +310,14 @@ namespace {
 
 } // namespace
 
+bool is_total_fit_failure(const SurfaceDbBuildReport &r) {
+  // Exactly two conditions, both required (see the header for why neither may be
+  // widened): work WAS scheduled, and none of it landed. `cells_to_fit == 0` is
+  // the resume/empty-window path and stays a success; any `cells_ok > 0` is
+  // partial coverage, which is normal production output.
+  return r.coverage.cells_to_fit > 0 && r.coverage.cells_ok == 0;
+}
+
 Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view path) {
   std::string out;
   out.reserve(1024 + r.coverage.per_symbol.size() * 48);

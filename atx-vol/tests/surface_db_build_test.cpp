@@ -10,6 +10,11 @@
 // db reality (partitions + map_surface), not just the report counters. Plus a
 // write_build_report_csv round-trip.
 //
+// SurfaceDbTotalFitFailure suite — proves `is_total_fit_failure`, the predicate
+// the build CLI turns into a NON-zero exit code: a build that attempted work and
+// fitted nothing is a failure, while partial coverage and the nothing-to-do
+// resume path are both successes.
+//
 // Boards are built from the Task 2 synthetic hive fixture through the real
 // Task 3 loader (load_opra_hive) + corpus_board_from_opra, so the selection
 // path runs against genuine loader output.
@@ -17,6 +22,7 @@
 #include "support/synthetic_opra_hive.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -498,6 +504,81 @@ TEST(BuildSurfaceDb, ReportCsvRoundTrips) {
   EXPECT_NE(body.find("coverage.cells_ok,9"), std::string::npos);
   EXPECT_NE(body.find("symbol,n_attempted,n_ok,n_failed,n_disabled"), std::string::npos);
   EXPECT_NE(body.find("AAA,3,3,0,0"), std::string::npos);
+}
+
+// ── is_total_fit_failure — the CLI's exit-code decision ─────────────────────
+//
+// The predicate the build CLI uses to turn "the build ran and produced nothing"
+// into a NON-zero exit. Unit-tested directly on hand-built reports so the three
+// shapes it must distinguish are pinned independently of any fit running.
+
+// A report with the coverage counters the predicate reads set explicitly; every
+// other field stays default (the predicate must not depend on them).
+[[nodiscard]] SurfaceDbBuildReport coverage_report(std::uint32_t to_fit, std::uint32_t ok,
+                                                   std::uint32_t failed) {
+  SurfaceDbBuildReport r;
+  r.coverage.cells_loaded = to_fit;
+  r.coverage.cells_to_fit = to_fit;
+  r.coverage.cells_ok = ok;
+  r.coverage.cells_failed = failed;
+  return r;
+}
+
+// Work was scheduled and NOT ONE cell fitted — the carry-mismatch signature. This
+// is the only shape that may fail the build.
+TEST(SurfaceDbTotalFitFailure, TotalFailureIsFailure) {
+  EXPECT_TRUE(is_total_fit_failure(coverage_report(9u, 0u, 9u)));
+}
+
+// Partial coverage is NORMAL in production (real hives carry unfittable boards).
+// Widening the predicate to "any failure" would red-flag every healthy universe
+// build, so this must stay false even when most cells failed.
+TEST(SurfaceDbTotalFitFailure, PartialFailureIsNotFailure) {
+  EXPECT_FALSE(is_total_fit_failure(coverage_report(9u, 5u, 4u)));
+  EXPECT_FALSE(is_total_fit_failure(coverage_report(9u, 1u, 8u))); // even 1/9 is not "nothing"
+}
+
+// Nothing to do — the RESUME path over an already-complete db (and the un-pulled
+// empty window). cells_ok is legitimately 0 because no cell was scheduled. The
+// build's convergence guarantee is "a re-run fits zero", so this MUST stay green.
+TEST(SurfaceDbTotalFitFailure, NothingToDoIsNotFailure) {
+  EXPECT_FALSE(is_total_fit_failure(coverage_report(0u, 0u, 0u)));
+  SurfaceDbBuildReport resumed = coverage_report(0u, 0u, 0u);
+  resumed.coverage.cells_loaded = 9u; // 9 cells loaded, all already present
+  resumed.coverage.cells_already_present = 9u;
+  resumed.coverage.dates_skipped_complete = 3u;
+  EXPECT_FALSE(is_total_fit_failure(resumed));
+}
+
+// A clean build is obviously not a failure.
+TEST(SurfaceDbTotalFitFailure, HealthyBuildIsNotFailure) {
+  EXPECT_FALSE(is_total_fit_failure(coverage_report(9u, 9u, 0u)));
+}
+
+// The production trap, end to end at the library level: the synthetic hive is
+// priced at a NON-ZERO rate (SyntheticHiveSpec::r == 0.03), so building it with
+// the CLI's old hard-wired r = 0.0 fails every single fit while the build itself
+// still returns Ok — exactly the silent green exit `--r` and this predicate close.
+// The same build with the MATCHING r fits everything.
+TEST(BuildSurfaceDb, ZeroCarryAgainstNonZeroHiveIsTotalFailure) {
+  const tsupport::SyntheticHiveSpec fx; // r = 0.03
+  ASSERT_GT(fx.r, 0.0) << "fixture must embed a non-zero carry for this test to mean anything";
+  const BuildFixture f = make_build_fixture("carry_mismatch", fx);
+
+  SurfaceDbBuildSpec spec = build_spec(f, fx);
+  spec.hive.r = 0.0; // the pre---r CLI default: wrong for this hive
+  const auto bad = build_surface_db(spec);
+  ASSERT_TRUE(bad.has_value()) << (bad ? "" : bad.error().to_string()); // still Ok — the trap
+  EXPECT_GT(bad->coverage.cells_to_fit, 0u);
+  EXPECT_EQ(bad->coverage.cells_ok, 0u);
+  EXPECT_TRUE(is_total_fit_failure(*bad));
+
+  // Same hive, same db root, correct carry: the build converges.
+  const BuildFixture g = make_build_fixture("carry_match", fx);
+  const auto good = build_surface_db(build_spec(g, fx)); // spec.hive.r == fx.r
+  ASSERT_TRUE(good.has_value()) << (good ? "" : good.error().to_string());
+  EXPECT_EQ(good->coverage.cells_ok, 9u);
+  EXPECT_FALSE(is_total_fit_failure(*good));
 }
 
 } // namespace

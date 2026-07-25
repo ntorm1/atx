@@ -159,6 +159,25 @@ struct SurfaceDbBuildReport {
   std::size_t n_coverage_holes{0};
 };
 
+// Did this build attempt work and get NOTHING out of it? True iff it scheduled at
+// least one cell (`coverage.cells_to_fit > 0`) and not one of them fitted
+// (`coverage.cells_ok == 0`) — the signature of a systematically wrong build
+// input, the carry-rate mismatch (`OpraHiveSpec.r` disagreeing with the rate the
+// hive's quotes were priced under) being the top suspect: every put-call-parity
+// forward is then wrong and every full fit fails identically.
+//
+// Deliberately NARROW — the two neighbouring shapes are both healthy and must not
+// be swept in:
+//   - PARTIAL failure (`cells_ok > 0` with some `cells_failed`) is normal in
+//     production: real hives carry unfittable boards. Not a failure.
+//   - NOTHING TO DO (`cells_to_fit == 0`) is the resume path over an already
+//     complete database (and the un-pulled empty window). The build's convergence
+//     guarantee is exactly "a re-run fits zero", so this must stay a success.
+//
+// Pure predicate over the report; the CLI uses it to pick its exit code, which is
+// why the decision lives here (testable) and not in `main`.
+[[nodiscard]] bool is_total_fit_failure(const SurfaceDbBuildReport &r);
+
 // Run the whole build (see `SurfaceDbBuildSpec`). Idempotent/resumable: re-running
 // over an unchanged hive re-fits ZERO (configs skip-existing, the populate's
 // cell-aware filter writes no date) ONCE every loaded cell has either fitted

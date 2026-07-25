@@ -13,7 +13,7 @@
 // Usage:
 //   atx-vol-surface-db-build --db <root> --hive <root>
 //       --from YYYY-MM-DD --to YYYY-MM-DD
-//       [--symbols A,B,C] [--index SPY] [--preset populate]
+//       [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045]
 //       [--deep-selection] [--fit-workers N] [--report out.csv]
 //
 //   --db            SurfaceDb root (created if absent, else opened/resumed).
@@ -23,14 +23,20 @@
 //                   in the window (rectangular date x union grid, visible holes).
 //   --index         designated index leg, pinned to the dense index recipe.
 //   --preset        fast | accurate | robust | hft | populate (default populate).
+//   --r             flat continuously-compounded carry rate (default 0.0). MUST
+//                   match the rate the hive's quotes were priced under, or every
+//                   put-call-parity forward is wrong and every fit fails.
 //   --deep-selection  run the full held-out select_curve OOS search per symbol.
 //   --fit-workers   outer fit fan-out; 0 = auto (honors ATX_VOL_FIT_WORKERS).
 //   --report        also write the two-section CSV report to this path.
 //
 // Prints one line per report field to stdout; exits 0 on Ok, 1 on Err (message
-// on stderr), 2 on a usage error (unknown/missing flag). See
+// on stderr), 2 on a usage error (unknown/missing/malformed flag), 3 when the
+// build ran but produced NOTHING (see is_total_fit_failure). See
 // atx-vol/docs/surface-db-build.md.
 
+#include <cerrno>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -48,12 +54,40 @@ using namespace atx::vol;
 
 namespace {
 
+// The build ran to completion but fitted NOTHING. Distinct from 1 (the tool or
+// the db broke, no report) and from 2 (the operator's command line was wrong):
+// the inputs parsed, the work was scheduled, and every single cell failed. A
+// script can therefore tell "atx is broken" from "your data/rate is wrong".
+constexpr int kExitTotalFitFailure = 3;
+
 void print_usage(std::FILE *out) {
   std::fprintf(out,
                "usage: atx-vol-surface-db-build --db <root> --hive <root> "
                "--from YYYY-MM-DD --to YYYY-MM-DD\n"
-               "         [--symbols A,B,C] [--index SPY] [--preset populate] "
+               "         [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045] "
                "[--deep-selection] [--fit-workers N] [--report out.csv]\n");
+}
+
+// Parse a FINITE double from a flag value, consuming the whole token.
+//
+// Deliberately stricter than the `--fit-workers` strtoul path next door, which
+// silently coerces a typo to 0: a silently-zeroed carry rate is precisely the
+// trap `--r` exists to close, so `--r abc`, `--r 0.03x`, `--r nan`, `--r inf`
+// and an absent value are all hard usage errors instead.
+[[nodiscard]] bool parse_finite_double(std::string_view text, double &out) {
+  if (text.empty()) {
+    return false;
+  }
+  const std::string s(text);
+  const char *first = s.c_str();
+  char *end = nullptr;
+  errno = 0;
+  const double v = std::strtod(first, &end);
+  if (end != first + s.size() || errno == ERANGE || !std::isfinite(v)) {
+    return false; // trailing junk, out of range, or nan/inf
+  }
+  out = v;
+  return true;
 }
 
 // Split a comma-separated list, trimming surrounding whitespace and dropping
@@ -167,6 +201,15 @@ int main(int argc, char **argv) {
       spec.auto_config.index_symbol = nv();
     } else if (a == "--preset") {
       preset_name = nv();
+    } else if (a == "--r") {
+      const std::string_view text = nv();
+      if (!parse_finite_double(text, spec.hive.r)) {
+        std::fprintf(stderr,
+                     "atx-vol-surface-db-build: --r expects a finite number, got '%.*s'\n",
+                     static_cast<int>(text.size()), text.data());
+        print_usage(stderr);
+        return 2;
+      }
     } else if (a == "--deep-selection") {
       spec.auto_config.deep_selection = true;
     } else if (a == "--fit-workers") {
@@ -224,6 +267,22 @@ int main(int argc, char **argv) {
       return 1;
     }
     std::printf("report %s\n", report_path.c_str());
+  }
+
+  // The silent-failure trap: a build that scheduled work and fitted NOTHING used
+  // to exit 0, so an operator saw green over an empty database. It is a failure,
+  // and the diagnostic names the top suspect (the report above is still printed
+  // and the --report CSV still written — this only changes the exit code).
+  if (is_total_fit_failure(*report)) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db-build: TOTAL FIT FAILURE: %u cells scheduled, 0 fitted "
+                 "(%u failed).\n"
+                 "  Most likely cause: the carry rate does not match the hive. This build used "
+                 "--r %.17g. If the hive's quotes embed a non-zero funding/borrow rate, every "
+                 "put-call-parity forward is wrong and every fit fails identically. Re-run with "
+                 "the matching --r <rate>.\n",
+                 report->coverage.cells_to_fit, report->coverage.cells_failed, spec.hive.r);
+    return kExitTotalFitFailure;
   }
 
   return 0;

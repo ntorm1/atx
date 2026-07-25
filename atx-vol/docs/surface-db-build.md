@@ -70,7 +70,7 @@ configure line above.
 ```
 atx-vol-surface-db-build --db <root> --hive <root>
     --from YYYY-MM-DD --to YYYY-MM-DD
-    [--symbols A,B,C] [--index SPY] [--preset populate]
+    [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045]
     [--deep-selection] [--fit-workers N] [--report out.csv]
 ```
 
@@ -82,6 +82,7 @@ atx-vol-surface-db-build --db <root> --hive <root>
 | `--symbols A,B,C` | no | CSV universe. **Omit (or empty) to discover** every underlying present in the window. Surrounding whitespace per field is trimmed. |
 | `--index SPY` | no | Designated index leg — pinned to the dense index recipe (bypasses per-board selection), for both config generation and the populate. |
 | `--preset NAME` | no | `fast` \| `accurate` \| `robust` \| `hft` \| `populate`. Default `populate`. Drives both the manifest seeding and the populate fit tier. |
+| `--r RATE` | no | Flat continuously-compounded carry rate (`OpraHiveSpec.r`). Default **`0.0`**. **Must match the rate the hive's quotes were priced under** — read [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing) before every run. Must be a finite number consuming the whole token; `abc`, `0.03x`, `nan`, `inf` and a missing value are all **exit 2**, never a silent `0.0`. Negative rates are accepted. |
 | `--deep-selection` | no | Additionally run the full held-out `select_curve` OOS search per symbol and pin its winner (falls back to the fit-policy decision when the selector has no scorable holdout). |
 | `--fit-workers N` | no | Outer fit fan-out. `0` = auto (honors `ATX_VOL_FIT_WORKERS`); `1` = serial. |
 | `--report out.csv` | no | Also write the two-section CSV report to this path. |
@@ -102,34 +103,66 @@ wrong. The two are classified structurally by the loader (a hole is a present,
 readable date file that does not carry that symbol), never guessed from an error
 code, so real corruption can never hide in hole noise.
 
-### Interest rate / carry — read this before trusting a green exit
+### Interest rate / carry — the single most likely way a build produces nothing
 
-**The rate is fixed at `r = 0.0`; there is no `--r` flag (by design).** The tool
-constructs `OpraHiveSpec` with its default `r` of 0.0 (plus the loader's optional
-term-structure pillars, which the CLI does not expose either), so the implied
-forward is the spot. This is correct for a hive whose quotes were priced at zero
-carry.
+**`--r` sets the flat continuously-compounded carry rate, and it defaults to
+`0.0`.** The default is only correct for a hive whose quotes were priced at
+**zero** carry; with it, the implied forward is the spot.
 
-**Silent-failure trap.** If the hive's quotes embed a **non-zero** carry (a real
-funding/borrow rate baked into the option prices), every full fit fails on the
-put-call-parity / forward mismatch — but the **build still exits 0**. The
-per-symbol config classification is tolerant enough to pass, so the failure is
-visible **only** in the coverage counters, not the exit code:
+**Pass `--r` on every real run.** If the hive's quotes embed a non-zero
+funding/borrow rate (any real OPRA data does), leaving `--r` at `0.0` makes every
+put-call-parity forward wrong and **every full fit fails, identically**. The
+per-symbol config classification is tolerant enough to pass anyway, so the
+failure shows up in the coverage counters, not in stage 1:
 
-- `coverage.cells_ok` will be **0** (or far below `cells_to_fit`), and
-- `coverage.cells_failed` will carry the whole universe, with each
-  `symbol.<S> ... ok=0 failed=N` row confirming it.
+- `coverage.cells_ok` is **0** (or far below `cells_to_fit`),
+- `coverage.cells_failed` carries the whole universe, with each
+  `symbol.<S> ... ok=0 failed=N` row confirming it, and
+- **no partition is written at all** — the database ends up empty.
 
-**Operator checklist:** after any build, do not trust exit 0 alone —
-**inspect `cells_ok` vs `cells_failed` and the per-symbol rows** (or the
-`--report` CSV's section 2), then run
-`atx-vol-surface-db verify --db <root> --min-cells <expected>` (below), which
+**This is no longer a silent green exit.** A build that scheduled work and fitted
+**nothing** (`cells_to_fit > 0` and `cells_ok == 0`) now exits **3** and prints a
+diagnostic on stderr naming the carry rate it used:
+
+```
+$ atx-vol-surface-db-build --db /db --hive /hive --from 2026-07-01 --to 2026-07-06
+... (the full report still prints to stdout, and --report is still written) ...
+atx-vol-surface-db-build: TOTAL FIT FAILURE: 9 cells scheduled, 0 fitted (9 failed).
+  Most likely cause: the carry rate does not match the hive. This build used --r 0.
+  If the hive's quotes embed a non-zero funding/borrow rate, every put-call-parity
+  forward is wrong and every fit fails identically. Re-run with the matching --r <rate>.
+$ echo $?
+3
+```
+
+The decision lives in the library as
+`is_total_fit_failure(const SurfaceDbBuildReport&)`
+(`atx/vol/surface_db_build.hpp`), unit-tested in the `SurfaceDbTotalFitFailure`
+suite — the CLI only maps it to an exit code.
+
+**It is deliberately narrow, and the two neighbouring shapes stay green:**
+
+- **Partial** failure (`cells_ok > 0` alongside some `cells_failed`) is **normal
+  production output** — real hives carry unfittable boards. Exit `0`.
+- **Nothing to do** (`cells_to_fit == 0`) is the **resume** path over an already
+  complete database, and the un-pulled empty window. `cells_ok` is legitimately
+  `0` because nothing was scheduled. Exit `0` — the build's convergence guarantee
+  ("a re-run fits zero") depends on it.
+
+So exit 3 answers exactly one question — "did this run get anything at all?" — and
+**partial coverage is still your job to inspect.**
+
+**Operator checklist:** a green exit no longer hides a *totally* dead build, but
+it still does not mean full coverage. After any build, **inspect `cells_ok` vs
+`cells_failed` and the per-symbol rows** (or the `--report` CSV's section 2), then
+run `atx-vol-surface-db verify --db <root> --min-cells <expected>` (below), which
 turns "the database is the size and shape I expected, and every cell evaluates"
-into a single exit code. A universe of `failed` fits under a green exit means
-a carry mismatch (or otherwise unfittable boards), not a successful build. The
-real fix for non-zero-carry hives is the per-cell **market-inputs** path
-(`OpraHiveSpec.market_inputs` / term-structure pillars), a future CLI surface —
-not yet wired here.
+into a single exit code.
+
+The finer fix for hives with a real term structure (rather than one flat rate) is
+the per-cell **market-inputs** path (`OpraHiveSpec.market_inputs` /
+`yc_pillar_t`/`yc_pillar_r`), which the CLI does **not** expose — `--r` is the
+single flat rate only.
 
 ### Examples
 
@@ -139,19 +172,22 @@ atx-vol-surface-db-build \
   --db   C:/atx-data/surfdb-2026-07 \
   --hive C:/atx-data/opra-hive \
   --from 2026-07-01 --to 2026-07-31 \
-  --symbols SPY,AAPL,MSFT --index SPY \
+  --symbols SPY,AAPL,MSFT --index SPY --r 0.0425 \
   --report C:/atx-data/surfdb-2026-07/build_report.csv
 
 # Discover the whole universe present in the window (no --symbols):
 atx-vol-surface-db-build \
   --db C:/atx-data/surfdb-2026-07 --hive C:/atx-data/opra-hive \
-  --from 2026-07-01 --to 2026-07-31
+  --from 2026-07-01 --to 2026-07-31 --r 0.0425
 
 # Deep per-symbol curve selection, serial fit (reproducible), robust tier:
 atx-vol-surface-db-build \
-  --db /db --hive /hive --from 2026-07-01 --to 2026-07-31 \
+  --db /db --hive /hive --from 2026-07-01 --to 2026-07-31 --r 0.0425 \
   --preset robust --deep-selection --fit-workers 1
 ```
+
+**Every example passes `--r`.** Omitting it is a build at zero carry — see
+[Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing).
 
 ### Output and exit codes
 
@@ -163,13 +199,18 @@ one `symbol.<S> attempted=.. ok=.. failed=.. disabled=..` line per symbol. With
 
 | Exit | When |
 | --- | --- |
-| `0` | Build succeeded (including a graceful empty-window no-op). |
-| `1` | A build error — malformed hive spec, or a db config/write failure. Message on stderr. |
-| `2` | A usage error — unknown flag, a missing required flag, or an unknown `--preset`. Usage on stderr. |
+| `0` | Build succeeded — including **partial** coverage, a no-op **resume**, and a graceful empty-window no-op. |
+| `1` | A build error — malformed hive spec, or a db config/write failure. Message on stderr, **no report printed**. |
+| `2` | A usage error — unknown flag, a missing required flag, an unknown `--preset`, or a malformed `--r`. Usage on stderr. |
+| `3` | **Total fit failure** — the build ran to completion but fitted **nothing** (`cells_to_fit > 0` and `cells_ok == 0`). The full report still prints and `--report` is still written; a diagnostic naming the carry rate goes to stderr. See [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing). |
+
+`3` is deliberately distinct from `1`: `1` means *atx or the database broke* (no
+report to read), `3` means *the tool worked and your inputs produced nothing* —
+almost always a `--r` mismatch. A script can branch on that.
 
 Note: a single unloadable or unselectable board never aborts the build — it is
 tallied (and, for config, stored **disabled** = fail-closed) and the call still
-succeeds.
+succeeds. Partial failure is **not** exit 3.
 
 ## Report fields
 
@@ -446,9 +487,9 @@ finite, positive vol.
 
 An empty database has no broken cell, so `verify` correctly reports
 `verdict ok`. That is honest and it is also a **silent pass**: a build whose
-every fit failed (the carry-mismatch trap documented above — `cells_ok 0`,
-green exit) writes *no partition at all*, and the resulting database then passes
-an unguarded `verify`:
+every fit failed (the carry-mismatch trap documented above — `cells_ok 0`) writes
+*no partition at all*, and the resulting database then passes an unguarded
+`verify`:
 
 ```
 $ atx-vol-surface-db verify --db /db
@@ -467,6 +508,13 @@ atx-vol-surface-db verify --db /db --min-cells 9   # -> verdict FAILED, exit 1
 `--min-cells` is a CLI-side floor on `cells_checked`; the library
 (`verify_db`) deliberately keeps vacuous-ok so a legitimately fresh root is not
 an error.
+
+The build CLI now catches that *specific* case at its own exit (a totally failed
+build exits `3`, above), so the two guards are complementary rather than
+redundant: exit 3 catches "this **run** produced nothing", `--min-cells` catches
+"this **database** is smaller than I expected" — including a database that never
+got built, was built over the wrong window, or lost partitions to a later
+accident. Keep `--min-cells` in every script.
 
 ### Exit codes
 
