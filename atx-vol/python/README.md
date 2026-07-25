@@ -227,8 +227,8 @@ The renderer looks for `surface_pnl_track.tsv`, `pnl_track.tsv`,
 `friction_regime`, raising `atxvol.AtxError` with
 `code == ErrorCode.INVALID_ARGUMENT` — the same coded channel as the rest of this
 API, so `except atxvol.AtxError` catches it. This is not a formality: on the pinned
-82-session run the same strategy over the same surfaces returns **+247.41**
-frictionless, **+12.81** under retail frictions and **-64.60** once square-root
+82-session run the same strategy over the same surfaces returns **+24740.62**
+frictionless, **+1280.83** under retail frictions and **-6460.23** once square-root
 impact is added — roughly 95% friction-dominated, and the sign flips. An
 unlabelled headline is misleading rather than merely incomplete, which is why
 `write_dispersion_tearsheet` leads both artifacts with `friction_regime` /

@@ -35,8 +35,8 @@ from .io import read_backtest_tsv, read_kv_tsv
 # ── The friction regime is a first-class dimension, not a footnote ──────────
 #
 # On the pinned 82-session run the SAME strategy over the SAME surfaces returns
-# +247.41 frictionless, +12.81 under retail frictions (cost 234.60) and -64.60
-# once square-root impact is added (cost 312.01): ~95% friction-dominated, and
+# +24740.62 frictionless, +1280.83 under retail frictions (cost 23459.79) and
+# -6460.23 once square-root impact is added (cost 31200.85): ~95% friction-dominated, and
 # the SIGN FLIPS under modest impact. A tearsheet showing only the frictionless
 # number is not incomplete, it is actively misleading. So the engine leads both
 # reporting artifacts with `friction_regime` / `friction_detail`
@@ -172,8 +172,8 @@ def _regime(spec: Mapping[str, str], source: str) -> tuple[str, str, str, str]:
         error = _av.AtxError(
             f"{source} carries no `{REGIME_KEY}`. Refusing to render: a dispersion "
             "headline is meaningless without the execution regime that produced "
-            "it — on the pinned run the same strategy returns +247.41 "
-            "frictionless and -64.60 once impact is added, so the sign itself is "
+            "it — on the pinned run the same strategy returns +24740.62 "
+            "frictionless and -6460.23 once impact is added, so the sign itself is "
             "a function of the regime. Re-run with a build that emits "
             f"`{REGIME_KEY}` (write_dispersion_tearsheet), or pass it in the "
             "metadata mapping."

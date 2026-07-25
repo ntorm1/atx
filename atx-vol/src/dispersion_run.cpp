@@ -4,7 +4,8 @@
 // lives here. Each stage is a plain function so it can be driven from a unit test
 // off the filesystem, and the reproduction-critical admission constants are named
 // on DispersionCorpusPolicy (see dispersion_run.hpp). This is a behavior-preserving
-// extraction: the dispersion golden (final_nav = 247.4065016443293) is unchanged.
+// extraction: the dispersion golden (final_nav = 24740.624124981368, post-E1) is
+// unchanged by THIS extraction.
 
 #include "atx/vol/dispersion_run.hpp"
 

@@ -338,8 +338,8 @@ def test_colophon_escapes_run_supplied_values(tmp_path):
 # ── PY-4: the friction regime is the first key of every artifact ────────────
 #
 # The sprint's own numbers: the same strategy over the same surfaces returns
-# +247.41 frictionless, +12.81 under retail frictions and -64.60 once impact is
-# added. The headline is ~95% friction-dominated and the SIGN FLIPS, so an
+# +24740.62 frictionless, +1280.83 under retail frictions and -6460.23 once impact
+# is added. The headline is ~95% friction-dominated and the SIGN FLIPS, so an
 # unlabelled number is not merely incomplete, it is misleading. `write_dispersion_
 # tearsheet` therefore leads both artifacts with `friction_regime` /
 # `friction_detail` (dispersion_run.hpp, "THE REGIME IS NOT OPTIONAL METADATA"),

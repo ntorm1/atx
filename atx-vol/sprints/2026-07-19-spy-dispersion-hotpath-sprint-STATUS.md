@@ -61,7 +61,7 @@ fresh worktree and run 3×, deterministic):
 | `SurfaceV2Provenance.ValidationFallbackAdmissionRecordsTheServedFamily` | pre-existing (FAIL on 8cb4576) |
 | `PricerFitterTest.LocalRiskRefitPublishesCopyOnWriteGeneration` | pre-existing (FAIL 3/3 on 8cb4576) |
 
-### Byte-identity (rel-avx2 replay) — RE-PINNED post-merge 2026-07-21 (WS-M M2)
+### Byte-identity (rel-avx2 replay) — RE-PINNED 2026-07-25 (Pipeline SOTA, WS-E E1)
 
 The golden pin is `sha256(surface_backtest.tsv)` — the surface-only replay payload
 (`dispersion_run_surface_backtest`; see the in-code note at `dispersion_run.cpp`
@@ -72,26 +72,69 @@ supporting determinism evidence. `backtest_profile.tsv`/`backtest_counters.tsv`
 carry timing/counter data and are written only under `-DATX_VOL_PROFILE/COUNTERS`
 (OFF for the golden build) — NOT part of the pin.
 
-**Current pins** (re-pinned post-merge 2026-07-21, engine = main A9 kernel + branch
-tolerance re-band, 3×-stable; measured on `build-rel-avx2`, run-to-run identity
-verified via `sha256sum` + `cmp`):
+**Current pins** (re-pinned 2026-07-25 on the Pipeline SOTA integration trunk
+`feat/pipeline-m` at tip `6b6aa7e`, 3×-stable; measured on `build-rel-avx2`
+**rebuilt at that tip**, run-to-run identity verified via `sha256sum` + `cmp`):
 
-- 82-session (`bt-sota-baseline`, final_nav 247.4062412)
-  `5e7ca06514dfe121308643cc431c90858827c180fdbc9c84e906a49fe4715af4` — **3×-stable**
+- 82-session (`bt-sota-baseline`, final_nav 24740.624124981368)
+  `1b99512ad6c7049aa9e41bd9002ae933c502d9ce4b7d5d58e19b6efdbacad2bd` — **3×-stable**
 - 135-session (`bt-sota-full`, final_nav 1283.615746)
-  `141173fdc35eed9fbb0263c87729c547e9f0eac144c1c336173c932ac69f2835` — **3×-stable**
+  `141173fdc35eed9fbb0263c87729c547e9f0eac144c1c336173c932ac69f2835` — re-pinned in
+  the FOLLOWING commit (one commit per pin)
 
-**They moved ONCE from the pre-merge pins** (82: `0737660775601f1609690568d930c62c46a1dddd0d97784036916ba4c5484c3a`,
-135: `ac97a643851fa9988880d85af3201ef39158aa7e054f8c74062f0c4e68970b33`) because the
-M1 keystone merge repriced the golden replay through the peer "pricing/greeks SOTA
-sprint" A9 American-greeks kernel — the deferred-integration note below predicted
-exactly this legitimate break. This is a one-time re-pin, NOT engine
-nondeterminism: the M2 gate ran each replay 3× serially and every artifact was
-byte-identical. Supporting artifact SHAs (each 3×-stable):
-82 pnl_track `94afbf8668d37053245e60e6fd52f665d6fd230f540813c929be83eda55c875b`,
-82 tearsheet `584a6ff4569ea5888210ba7c4f32b6922a9a4f4ed74c8a7ca54efcaab39d63cd`,
+**Why they moved: WS-E's E1 unit migration, an exact ×100 rescale.**
+`DispersionConfig::target_vega` is now dollars of index gross vega **per vol
+point** rather than per unit vol (`kVegaPerVolPoint = 0.01`, `dispersion.hpp`),
+matching the listed route. The golden `run_spec` sets `gross_index_vega 10000`
+unchanged, so a default-configured book now carries exactly 1/0.01 = 100× the
+contracts it used to. Same strikes, same expiries, same fitted vols, same
+per-share marks, same lot cardinality (`n_open_lots` bit-identical).
+
+Attribution was **measured, not assumed** — every moved column was checked
+against both candidate causes (see the re-pin report):
+
+- Every $-denominated and risk-denominated column is **× exactly 100**, with a
+  residual of ≤ 1.43e-13 relative — the round-off of re-running the same
+  arithmetic at 100× scale, not a second effect. `date`, `ts_ns`, `pnl_rho`,
+  `pnl_settlement`, `financing`, `cost`, `n_open_lots`, `n_unpriced_lots`,
+  `n_unpriced_greeks` are **bit-identical**.
+- `gross_delta` and `gross_vega` do not present a clean ×100 on a handful of
+  rows. Both are cancellation residue, not signal: the book is delta-hedged at
+  `delta_band 0`, so `gross_delta` is structurally zero (|value| ≤ 1.8e-14 old,
+  ≤ 2.7e-12 new across every row), and `gross_vega`'s off-ratio rows are exactly
+  the 5 (82-session) / 9 (135-session) roll dates where the book is rebuilt
+  vega-flat (|value| ≤ 3e-12 old, ≤ 3.1e-10 new, against a column magnitude of
+  2.8e+03 old / 2.8e+05 new). 77/82 and 126/135 rows match ×100 to 1e-9
+  relative. **Zero columns are unexplained.**
+- **Control experiment.** Re-running the same tip with `gross_index_vega 100`
+  (backing E1 out by restoring the old book size) reproduces the OLD pins'
+  economics to ≤ 8.02e-14 relative on every economically non-zero cell — 82
+  final_nav 247.40624124981315 → 247.4062412498136 (+1.8e-16 rel), 135
+  1283.6157456348383 → 1283.6157456348378 (−3.5e-16 rel). E1 is therefore the
+  **only** cause of the move; there is no residual pricing/greeks drift in these
+  two artifacts, because the wave-1 kernel change was already in the M2 baseline
+  they are being compared against.
+
+Economic materiality (sprint §3 standing authorization): the ×100 is a
+deliberate, documented unit change, not a value change — the book is a different
+size by construction and every ratio, normalized statistic and lot count is
+invariant. The non-E1 residual is ≤ 8.02e-14 relative, i.e. **twelve or more
+orders of magnitude below a $0.01 tick** on a $24.7k NAV. Not economically
+meaningful.
+
+Each replay was run **3× serially** at this tip and every artifact was
+byte-identical across all three, so this is a one-time re-pin, NOT engine
+nondeterminism. Supporting artifact SHAs (each 3×-stable):
+82 pnl_track `e112f7631314a6864d3b6c30646e56243bb014704de68b464d8e77b559d60030`,
+82 tearsheet `5b7ee40990fc198660f4abe2a19a94776976a0b4a7ee09503d4d9ff0a2da05f0`,
 135 pnl_track `20e6ee2c3319f37ea4c689f294c2c4a7559486545448c3d26bd0a375ce1d4619`,
 135 tearsheet `c41f7e07c19d6e068a18538e0efe183eda296eff87d2a704e7db1887040daa79`.
+
+**Pin lineage.** Pre-M1 (82 `0737660775601f1609690568d930c62c46a1dddd0d97784036916ba4c5484c3a`,
+135 `ac97a643851fa9988880d85af3201ef39158aa7e054f8c74062f0c4e68970b33`) → M2
+post-merge, A9 American-greeks kernel (82 `5e7ca06514dfe121308643cc431c90858827c180fdbc9c84e906a49fe4715af4`,
+135 `141173fdc35eed9fbb0263c87729c547e9f0eac144c1c336173c932ac69f2835`) → the
+current values above, moved by E1.
 
 WS-X-B's `dispersion_run.cpp` edits and the strike-param-by-presence fix (`ac8758e`)
 did **not** move the payload (the golden `run_spec` sets no strike field; `ac8758e`
@@ -270,13 +313,16 @@ zero** new failures.
 
 ### Biggest economic finding (WS-X, reproduced independently by WS-X-B)
 
-With impact coefficients `k=0.02, β=0.6, participation=0.02`, retail preset:
+With impact coefficients `k=0.02, β=0.6, participation=0.02`, retail preset
+(**re-measured 2026-07-25 at `feat/pipeline-m` tip `6b6aa7e`, post-E1**; the whole
+table is ×100 versus the pre-E1 figures because the default book is now 100×
+larger — every ratio below is unchanged):
 
 | Regime | Return | Cost |
 |---|---|---|
-| Frictionless | **+247.41** | 0 |
-| Retail frictions | **+12.81** | 234.60 |
-| + Almgren √-impact | **−64.60** | 312.01 (**126% of gross**) |
+| Frictionless | **+24740.62** | 0 |
+| Retail frictions | **+1280.83** | 23459.79 |
+| + Almgren √-impact | **−6460.23** | 31200.85 (**126% of gross**) |
 
 **The pinned headline result is ~95% friction-dominated and flips sign under
 modest impact.** Any report that shows only the frictionless number is
@@ -568,13 +614,15 @@ Doing nothing strands four agents indefinitely.
 - **Universe:** single `effective_date` block (2026-01-02), 10 equal-weight names
   (AAPL AMZN AVGO LLY GOOGL JPM META MSFT NVDA XOM). **No reconstitution in-window**
   → PIT activation cannot move the golden on this fixture.
-- **Expected SHAs (rel-avx2, `sha256(surface_backtest.tsv)`)** — re-pinned post-merge
-  2026-07-21 (WS-M M2), engine = main A9 kernel + branch tolerance re-band, 3×-stable
-  (pre-merge values in parentheses moved once via the peer A9 greeks kernel):
-  - 82-session `5e7ca06514dfe121308643cc431c90858827c180fdbc9c84e906a49fe4715af4`
-    (was `0737660775601f1609690568d930c62c46a1dddd0d97784036916ba4c5484c3a`)
+- **Expected SHAs (rel-avx2, `sha256(surface_backtest.tsv)`)** — re-pinned 2026-07-25
+  at `feat/pipeline-m` tip `6b6aa7e`, 3×-stable. Moved by WS-E's E1 unit migration
+  (`target_vega` is now $ per VOL POINT, so the default book is exactly 100× larger);
+  see "Byte-identity (rel-avx2 replay)" above for the measured per-column attribution.
+  Prior values in parentheses:
+  - 82-session `1b99512ad6c7049aa9e41bd9002ae933c502d9ce4b7d5d58e19b6efdbacad2bd`
+    (was `5e7ca065…` at M2, `0737660775601f16…` pre-merge)
   - 135-session `141173fdc35eed9fbb0263c87729c547e9f0eac144c1c336173c932ac69f2835`
-    (was `ac97a643851fa9988880d85af3201ef39158aa7e054f8c74062f0c4e68970b33`)
+    (was `ac97a643851fa998…` pre-merge) — re-pinned in the FOLLOWING commit
 
 ### Build incantation (per worktree)
 

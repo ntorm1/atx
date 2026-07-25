@@ -7,7 +7,7 @@
 // subcommands (project-schedule, run-projected-backtest) are still implemented in
 // this translation unit pending their library-seam extraction (WS-F). The pinned
 // admission thresholds that make the dispersion golden
-// (final_nav = 247.4065016443293) reproduce byte-for-byte are DispersionCorpusPolicy
+// (final_nav = 24740.624124981368) reproduce byte-for-byte are DispersionCorpusPolicy
 // library constants, not literals here.
 
 #include <algorithm>

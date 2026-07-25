@@ -472,7 +472,10 @@ private:
 // silent.
 //
 // ALL DEFAULTS ARE UNLIMITED (0 == no limit), so a default config reproduces the
-// pinned 82-session golden bit-for-bit.
+// pinned 82-session golden bit-for-bit. That golden is
+// `final_nav = 24740.624124981368` since the E1 unit migration (2026-07-25):
+// `target_vega` and these limits are denominated per VOL POINT, so the default
+// book -- and every $-denominated figure below -- is 100x its pre-E1 value.
 
 enum class RiskBreachAction : std::uint8_t {
   Clamp = 0, // scale the entry down to the binding limit and keep trading

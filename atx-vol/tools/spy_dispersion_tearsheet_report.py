@@ -15,8 +15,8 @@ Writes `<stem>_tearsheet.png` and, alongside it, a self-contained
 
 THE FRICTION REGIME IS A FIRST-CLASS DIMENSION, NOT A FOOTNOTE.
 On the pinned 82-session run the same strategy over the same surfaces returns
-+247.41 frictionless, +12.81 under retail frictions (cost 234.60), and -64.60
-once square-root impact is added (cost 312.01) -- roughly 95% friction-dominated,
++24740.62 frictionless, +1280.83 under retail frictions (cost 23459.79), and
+-6460.23 once square-root impact is added (cost 31200.85) -- roughly 95% friction-dominated,
 and the SIGN FLIPS under modest impact. A tearsheet that showed only the
 frictionless number would be actively misleading, so:
 
@@ -344,8 +344,8 @@ def write_html(meta: dict, png: Path, out: Path) -> None:
      src="data:image/png;base64,{b64}"></figure>
 <p class="note">Every figure on this page was produced under the
    <b>{esc(regime_key)}</b> execution regime. Results from different regimes are
-   not comparable: on the pinned run the same strategy returns +247.41
-   frictionless, +12.81 frictioned, and &minus;64.60 with square-root impact.</p>
+   not comparable: on the pinned run the same strategy returns +24740.62
+   frictionless, +1280.83 frictioned, and &minus;6460.23 with square-root impact.</p>
 </main></body></html>
 """
     out.write_text(doc, encoding="utf-8")

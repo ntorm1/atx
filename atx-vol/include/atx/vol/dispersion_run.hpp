@@ -8,8 +8,13 @@
 //
 // REPRODUCIBILITY: the pinned admission thresholds / fingerprint material that
 // determine which surfaces are admitted -- and therefore the dispersion golden
-// (final_nav = 247.4065016443293, 82-session) -- are named library constants on
+// (final_nav = 24740.624124981368, 82-session) -- are named library constants on
 // DispersionCorpusPolicy below. No example-only literal is load-bearing.
+//
+// UNITS (E1, 2026-07-25): `DispersionConfig::target_vega` is dollars of index
+// gross vega per VOL POINT, so the default book is 100x the size it was before
+// E1 and every $-denominated golden figure in this header is 100x its former
+// value. Measured, 3x-stable, at feat/pipeline-m tip 6b6aa7e.
 
 #include <cstddef>
 #include <cstdint>
@@ -118,7 +123,7 @@ run_dispersion_surface_backtest(const Clock &clock, std::vector<UniverseRow> sch
 // key is either bound to a typed field or rejected BY NAME.
 //
 // DEFAULTS ARE THE FRICTIONLESS GOLDEN. Every field below defaults to the value
-// the pinned 82-session run (final_nav = 247.4065016443293) already used, so a
+// the pinned 82-session run (final_nav = 24740.624124981368) already used, so a
 // spec that omits a knob reproduces byte-for-byte. Realism is opt-in.
 
 struct DispersionDateRange {
@@ -172,9 +177,9 @@ struct DispersionFitConfig {
 // THIS IS NOT COSMETIC. Measured on the pinned 82-session run, the SAME strategy
 // over the SAME surfaces returns:
 //
-//   Frictionless           +247.41     (the reproducibility pin)
-//   Frictioned             + 12.81     (cost 234.60 — 95% of the gross result)
-//   FrictionedWithImpact   - 64.60     (cost 312.01 — the SIGN FLIPS)
+//   Frictionless           +24740.62   (the reproducibility pin)
+//   Frictioned             + 1280.83   (cost 23459.79 — 95% of the gross result)
+//   FrictionedWithImpact   - 6460.23   (cost 31200.85 — the SIGN FLIPS)
 //
 // A headline number is therefore meaningless without its regime, and a tearsheet
 // that reports only the frictionless figure is actively misleading. Every

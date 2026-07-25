@@ -41,7 +41,7 @@ namespace {
 }
 
 // VERBATIM copy of C:\atx-data\spy-dispersion\runs\bt-sota-baseline\run_spec.tsv,
-// the spec behind the pinned 82-session golden (final_nav = 247.4065016443293).
+// the spec behind the pinned 82-session golden (final_nav = 24740.624124981368).
 // Every one of its keys is legitimate, so strict parsing must accept all of them.
 constexpr const char *kBaselineSpec = "key\tvalue\n"
                                       "label\tSPY listed-options dispersion bt-sota baseline\n"
