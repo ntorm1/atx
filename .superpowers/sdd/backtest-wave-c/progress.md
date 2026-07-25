@@ -1926,3 +1926,118 @@ step-observation API whose whole purpose is to let a caller correlate events wit
 Recording the decision explicitly, with the fact that no PRODUCTION reader exists, so it is
 a decision rather than an oversight. If Wave E or a later wave finds it still unread by any
 consumer, delete it then.
+
+## WAVE E
+
+### Wave E T1 (measurement substrate + the seven section goldens) — impl + review
+
+T1: implementer DONE_WITH_CONCERNS, commit `d844f26`, 3 files
+  (`examples/spy_dispersion_backtest.cpp`, new `include/atx/vol/run_diagnostics.hpp`,
+  new `tests/run_diagnostics_test.cpp`).
+  **Review: Spec ✅ / Code quality APPROVED. 0 Critical, 1 Important, 5 Minor.**
+  Suite 2047/2001/43/3/7 = baseline + 3 new tests, the 3 reds sanctioned.
+  RED observed as a real RUNTIME assertion failure (not a compile error), with an
+  anti-vacuity control passing alongside it.
+
+  **THE SEVEN GOLDENS (sha256[0..16), bash capture / `Get-FileHash`, data_rows = lines-1).
+  A later Wave E task that cannot reproduce these has failed:**
+    backtest            5c5cbc8f936e754b    49
+    reconciliation      35f0625d917f9dc5    49
+    contract_marks      04162f9a4157e03d  1122
+    trade_schedule      8d4f223f3b83b8bf    66
+    projected_cold      ef3505e073da2200    49
+    projected_schedule  0d84ddc6368b1c5f    66
+    mark_divergence     c9a04d1bcf0e3c07     0
+  `final_nav` pins: run-backtest **22635.66476**, projected cold **18528.61666**.
+  **The reviewer reproduced ALL SEVEN plus both navs from its own fresh fixture copy with
+  its OWN independent relocation**, with five negative controls (3 False, 2 throw). It also
+  regenerated `trade_schedule.tsv 4712bfd422285b6a` and `projected_schedule.tsv
+  99cf42402326109c` and matched controller pins that **predate T1** — stronger economics
+  evidence than the report itself claimed.
+  Binary provenance was verified rather than assumed: the reviewer proved its snapshotted
+  binaries were built from `d844f26` (they contain the new phase names and do NOT contain
+  the observer-gate string from the concurrently-dirty worktree) and `Compare-Object`'d
+  T1's two edited regions committed-vs-worktree at 0 diff lines.
+
+  **THE MEASUREMENT — this is the deliverable, and it reshaped the wave:**
+    `definitions_parse` = **95.2%** of build-schedule, **71.8%** of run-backtest
+      (reviewer independently: 95.2-97.1% / 73.4-74.5%). The rest of `setup_read` is
+      44.6 ms and 1.4 ms respectively.
+    old `reconciliation` decomposes to `snapshot_load` **0.23%** / `quote_join` **81.5%**
+      / `reconcile` **17.4%** (reviewer: 0.21-0.22 / 80.1-80.6 / 19.2-19.7).
+
+  **IMPORTANT (IMP-1) — PAGE CACHE, and it is NOT the "indicative timings" point.**
+  The reviewer measured `definitions_parse` swinging **24885 -> 11506 ms (2.16x) between
+  two CONSECUTIVE runs of the same binary**, purely from OS page-cache state on the 697 MB
+  `definitions.tsv` (13013 -> 18388 ms the other way in run-backtest). T1 published its
+  decomposed table as the wave's A/B reference with no cache caveat. **Under the one-run
+  measurement the controller had just authorized, a P3 result read against that table is
+  indistinguishable from cache noise — you could "prove" a 2x win by measuring cold-before
+  and warm-after.**
+  **CONTROLLER ACTION, taken immediately:** the user's relaxation removed a CPU-contention
+  control; page-cache state is an ORTHOGONAL axis and a much larger confound, so it is
+  explicitly carved out. `SPRINT-CONSTRAINTS.md` now binds any task measuring
+  `definitions_parse` / `quote_join` / `reconcile` to: never A/B against another session's
+  table; take before and after yourself back-to-back; **warm both sides with a discarded
+  run and say so**; report the discarded cold number; and if cold-vs-warm exceeds ~1.5x the
+  claimed win, declare the claim unsupported by that measurement. One extra run per side,
+  removes a 2.16x systematic error.
+
+  **THE PARTITION ARGUMENT WAS INVERTED — conclusion right, reasoning wrong.** T1 offered
+  its within-run coverage residual (whole-command total minus phase sum, 0.11-0.22% and
+  0.02-0.04%, positive every rep) as proof that the split is disjoint. The reviewer showed
+  a residual is a **NET** measure and is therefore **blind to a double-count cancelled by
+  an equal gap**, so it cannot prove disjointness and the commit message's "none is counted
+  twice" is not what it demonstrates (Minor M1). **The partition is nonetheless CONFIRMED**,
+  structurally: the reviewer walked the committed blob line by line and established the
+  brackets are sequential and lexically non-overlapping, that the first new bracket opens at
+  the identical statement the old one did and the last closes at the identical one, and that
+  the only uncharged intervals are the `add()` calls themselves. Its own residuals were
+  +20.6/+17.5 ms (build-schedule) and +9.2/+7.9 ms (run-backtest), positive every rep, with
+  the phase-sum identity exact to 3.6e-12.
+  Worth keeping as a general lesson: **a net-zero check cannot prove a pairwise property.**
+
+  CONCERNS, all adjudicated by the reviewer:
+  1. **Fixture not relocatable — CONFIRMED empirically with a matched control** (`verify`
+     EXIT=1 "path escapes run envelope" with the pristine inventory on a copy, EXIT=0 after
+     relocation). **Neutrality claim CORRECT**: `row[1]` is read at exactly one site (the
+     guard at `:277`); `:280` reads from `expected`, not from the row. The reviewer's
+     independent rewrite produced byte-identical non-path columns (`9f04736f835668ca` both
+     sides) and all seven hashes still reproduced.
+     **CONTROLLER ACTION: shipped `<scratchpad>/wave-e/relocate-fixture.sh`**, which copies
+     the pristine fixture, rewrites the one column via PowerShell `String.Replace` (not
+     regex — the paths contain backslashes), **fails loudly if it replaces nothing**, and
+     deletes `run.atxrun` so merge-write cannot carry a stale section into a comparison.
+     Every remaining Wave E task uses it instead of reinventing the rewrite.
+  2. `parity.py:729` — CONFIRMED, and **less severe than reported**: no in-tree caller
+     supplies `listed_diagnostics_tsv` at all, and the note it drops was **already false**.
+     "Silently drops" is the right characterisation. Correct not to escalate.
+  3. Third file (`run_diagnostics.hpp`) — **JUSTIFIED, not scope creep.**
+     `CMakeLists.txt:321-322` proves `atx-vol-tests` cannot see the example binary, so the
+     brief's Step 3 was unimplementable as written.
+  4. Indicative timings — expected and not raised, per the relaxed protocol.
+  5. Stale brief pins and line numbers — substitutions correct, both navs reproduced.
+
+#### Controller decisions on T1's measurement
+
+**1. WAVE E T2 (P5) IS DROPPED — ALREADY DELIVERED BY WAVE D T5, not skipped.**
+P5 was chartered to route the mark-divergence replay's duplicate per-session
+`MarketSnapshot::load` through the shared `SnapshotCache`. **That replay no longer exists**
+— `collect_mark_divergence_replay` was deleted by Wave D T5, and with it the entire second
+pass over the clock. Verified: the symbol greps to zero tree-wide.
+**Evidence corrected by the reviewer, and the correction matters:** the decisive fact is
+that `run-projected-backtest`'s `archive_load` phase now measures **exactly 0 ms / count 0**
+— i.e. the subcommand P5 targeted performs no archive loads at all. The controller had
+first cited `snapshot_load` at 0.23%, which is a **different subcommand** (`run_backtest`)
+and is corroborating, not decisive. Recorded because citing the wrong evidence for a right
+conclusion is exactly the habit this sprint keeps catching.
+
+**2. P3 IS REORDERED AHEAD OF P2.** Reviewer agrees "emphatically". P3's target is
+71.8-95.2% of the two subcommands; P2's `quote_join` is 81.5% of a phase that is a much
+smaller share of run-backtest and **0% of build-schedule**. Ordering P3 first also feeds
+Task 7's P1 GO/NO-GO decision sooner, which the plan already gates on P3's measurement.
+New order: **T4+T5 (P3) -> T3 (P2) -> T6 -> T7+T8 (P1) -> T9 (gate)**.
+
+**3. Python follow-up recorded** (out of scope this sprint): the parity report's
+"reconciliation dominates" note is now **measurably wrong** — definitions parsing dominates
+both subcommands by a wide margin — and its lookup is dead code besides.
