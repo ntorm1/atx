@@ -48,12 +48,20 @@ namespace atx::vol::detail {
          method == AmericanMethod::AndersenLake && simd::avx2_greeks_selected(isa);
 }
 
-// FIX-2/F2-B (rev-ws-g M1-5): the finite sweep behind this driver's Ok-stamp. Mirrors
+// FIX-2/F2-B (rev-ws-g M1-5): the finite sweep behind the Greek Ok-stamp. Mirrors
 // `greeks_all_finite` in portfolio_pricer.cpp EXACTLY — the semantics FIX-1 locked at the
 // three portfolio Ok-stamps (740b040 F2, 9c3e1d0 F3): price/delta/gamma/theta always,
 // vega/volga/vanna, rho and charm only when the caller REQUESTED them. Guarding the full
 // bundle instead would veto perfectly good lanes on a column that was never materialized
 // (FIX-1/F3), and guarding the price alone lets a NaN greek out on an Ok lane (F2-B).
+//
+// FIX-3/F3-A: this and `normalize_unrequested_greeks` below are now the SINGLE definition
+// of that stamp for every Greek route — the laned scatter here AND the scalar
+// `evaluate_resolved` in priced_surface.cpp / priced_surface_view.cpp, which both include
+// this header. They are deliberately not duplicated: F2-B guarded only the laned driver,
+// which left the same lane certifiable Ok on one ISA and demoted on another. Any future
+// change to these two functions must stay a change to BOTH routes at once, which is
+// exactly what having one definition buys.
 [[nodiscard]] inline bool requested_greeks_finite(const AmericanGreeks &g,
                                                   GreekNeeds needs) noexcept {
   bool ok = std::isfinite(g.price) && std::isfinite(g.delta) && std::isfinite(g.gamma) &&

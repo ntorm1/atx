@@ -712,8 +712,20 @@ PricedSurfaceView::evaluate_resolved(const ResolvedSurfacePoint &p, Side side, E
       r.status = Err(g.error());
       return r;
     }
-    r.greeks = *g;
-    r.price = g->price;
+    // FIX-3/F3-A: identical stamp semantics to PricedSurface::evaluate_resolved and to
+    // the shared laned driver (FIX-2/F2-B c601504; FIX-1 740b040 / 9c3e1d0). The view
+    // is the type the archive / SurfaceDb replay path serves, so leaving it on an
+    // unconditional Ok would have made a REPLAYED book disagree with the freshly-fit
+    // book it is supposed to reproduce, on ISA alone. Guard the REQUESTED set only and
+    // normalize an unrequested non-finite slot to its canonical unmaterialized 0.0.
+    AmericanGreeks gg = *g;
+    detail::normalize_unrequested_greeks(gg, needs);
+    r.greeks = gg;
+    r.price = gg.price;
+    if (!detail::requested_greeks_finite(gg, needs)) {
+      r.status = Err(ErrorCode::Internal,
+                     "PricedSurfaceView::evaluate: non-finite price or requested Greek");
+    }
     return r;
   }
   if (has_field(fields, EvalField::Price)) {

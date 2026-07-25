@@ -870,8 +870,33 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
       r.status = Err(g.error());
       return r;
     }
-    r.greeks = *g;
-    r.price = g->price;
+    // FIX-3/F3-A: stamp with the SAME semantics the laned driver uses (FIX-2/F2-B
+    // c601504, itself matching FIX-1's 740b040 / 9c3e1d0). Before this the stamp here
+    // was an unconditional default-constructed Ok, so one identical lane came back Ok
+    // on ForceScalar / a non-AVX2 host / the FD route and DEMOTED under the laned
+    // route — an ISA-dependent status on a live pricing input, the same defect shape
+    // rev-ws-g found in the put/call unrequested-Greek asymmetry.
+    //
+    // Reachability, which is why BOTH halves are needed here: the FD route
+    // (american_greeks_fd takes no mask) and the cached-correction route both IGNORE
+    // `needs` and return the full oracle bundle, and the cold AL route leaves an
+    // unrequested slot NON-finite rather than 0. So an unrequested column really can
+    // arrive here non-finite — guarding the full bundle would veto a lane on a column
+    // the caller never asked for (FIX-1/F3's over-guard defect), and merely widening
+    // the mask without normalizing would hand a NaN to a consumer whose `g.rho * dr`
+    // is NaN even at dr == 0.0. Normalization is restricted to the non-finite case, so
+    // every lane admitted today is bit-for-bit unchanged.
+    AmericanGreeks gg = *g;
+    detail::normalize_unrequested_greeks(gg, needs);
+    r.greeks = gg;
+    r.price = gg.price;
+    if (!detail::requested_greeks_finite(gg, needs)) {
+      // NaN-isolated by STATUS, exactly as the laned stamp and FIX-1's portfolio
+      // stamps do; the computed columns are left in place for diagnosis because every
+      // consumer gates on status.
+      r.status = Err(ErrorCode::Internal,
+                     "PricedSurface::evaluate: non-finite price or requested Greek");
+    }
     return r;
   }
   if (has_field(fields, EvalField::Price)) {
@@ -1115,8 +1140,14 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
             return resolve_with_carry_and_bracket(K[e], t, fc, surface_bracket);
           },
           [&](std::size_t e, Side sd) {
+            // FIX-3/F3-A: `needs` MUST be threaded. Without it the fallback recomputed
+            // the full default bundle and was then judged under full-bundle finiteness,
+            // i.e. a narrowed caller's lane could be vetoed on a column it never
+            // requested — FIX-1/F3's over-guard defect, reintroduced on the fallback
+            // path. It also restores surface/view parity: the view's identical lambda
+            // (priced_surface_view.cpp) has always passed `needs`.
             return evaluate_resolved(resolve_with_carry_and_bracket(K[e], t, fc, surface_bracket),
-                                     sd, fields, analytic, execution);
+                                     sd, fields, analytic, execution, needs);
           });
       i = j;
       continue;

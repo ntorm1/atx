@@ -22,6 +22,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <span>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -3757,6 +3758,33 @@ TEST(PortfolioPricer, G1_NonFiniteBaseGreek_IsIsolatedFromPnlTotals) {
 // exposes them and backtest.cpp feeds them to the pricer on every entry, so GR-P2-1
 // remains open exactly where the volume is. Same defect and same trigger as the two G1
 // tests above, driven through the seed-staging entry point instead of the solve.
+//
+// FIX-3/F3-A UPDATE — what this test can and can no longer observe, and why.
+//
+// When FIX-1/F2 was written, the sentence above ("the seed itself is not validated on
+// mint") was true on EVERY route. FIX-2/F2-B (c601504) then guarded the laned analytic
+// driver, and F3-A guards `evaluate_resolved` -- the scalar/FD routing. `full_greek_seed`
+// mints through a one-element `evaluate_batch` and returns `Err` when that lane's status
+// is not Ok, so a bundle with a finite mark and a non-finite REQUESTED greek is now
+// UNMINTABLE on both routes. (It became unmintable on the analytic route at c601504;
+// this test kept passing only because PriceOptions::analytic_greeks defaults to false,
+// so it minted via FD. Route agreement is precisely what F3-A buys, so the FD route now
+// refuses too -- the alternative would have been to leave the mint's answer depending on
+// the host ISA, which is the defect F3-A exists to close.)
+//
+// `FullGreekSeed`'s constructor is private and friended to PricedSurface /
+// PricedSurfaceView only, so with the mint closed there is NO public way to hand
+// `stage_full_greek_seeds` a poisoned seed. Its finite sweep (portfolio_pricer.cpp,
+// "the THIRD Ok-stamp") is therefore KEPT -- a seed is a plain value type that a future
+// caller could obtain from a deserialized run archive or a differently-configured mint,
+// and a guard that costs one predicate call is not worth deleting for coverage tidiness
+// -- but it is now unreachable through the public API and this test can no longer drive
+// it. That loss of coverage is recorded rather than papered over.
+//
+// What the test asserts instead is the STRICTLY STRONGER property F3-A delivers: the
+// poisoned seed is refused at the mint, one layer earlier than the staging sweep, and
+// the same book still quarantines the same lane end-to-end when priced with the seed set
+// a caller is actually left holding (empty).
 TEST(PortfolioPricerSeed, F2_NonFiniteGreekSeedDoesNotBypassTheFiniteSweep) {
   // Kernel-level precondition (identical to G1's): a SUCCESSFUL differenced bundle
   // with a finite mark and a non-finite gamma.
@@ -3779,27 +3807,34 @@ TEST(PortfolioPricerSeed, F2_NonFiniteGreekSeedDoesNotBypassTheFiniteSweep) {
   const PortfolioPricer pricer(std::move(*pf));
   const PriceOptions options{.n_threads = 1};
 
-  // The poisoned seed is mintable TODAY: full_greek_seed gates on isfinite(price) only.
-  auto seed = s_ext.full_greek_seed(100.0, 0.05, Side::Put, options.analytic_greeks,
-                                    options.query_execution);
-  ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
-  EXPECT_TRUE(std::isfinite(seed->greeks().price));   // finite mark ...
-  EXPECT_FALSE(std::isfinite(seed->greeks().gamma));  // ... poisoned gamma in the seed.
-  const std::array<FullGreekSeed, 1> seeds{std::move(*seed)};
+  // FIX-3/F3-A: the poisoned seed is no longer mintable on EITHER route. Both are
+  // asserted, because a one-route assertion is exactly what let the ISA-dependence hide.
+  for (const bool analytic : {false, true}) {
+    const auto seed =
+        s_ext.full_greek_seed(100.0, 0.05, Side::Put, analytic, options.query_execution);
+    EXPECT_FALSE(seed.has_value())
+        << "analytic=" << analytic
+        << ": full_greek_seed minted a seed whose REQUESTED gamma is non-finite; an accepted "
+           "seed is copied straight into the frame and bypasses every downstream stamp";
+  }
+  // And the caller's default route (analytic_greeks defaults to false) is the FD one
+  // F3-A closed, i.e. the assertion above is not vacuous on the shipped configuration.
+  EXPECT_FALSE(options.analytic_greeks);
 
+  // End-to-end, with the seed set a caller is actually left holding once the mint
+  // refuses: the lane is still quarantined and the book totals still survive.
   const std::size_t n = pricer.portfolio().n_positions();
   PortfolioWorkspace ws;
   ws.reserve(pricer.portfolio().n_contracts(), n);
   FrameStore seeded(n, /*want_greeks=*/true);
   ASSERT_TRUE(pricer
                   .price_into(surfaces, PriceFieldMask::FullGreeks, seeded.view(), ws, options,
-                              seeds)
+                              std::span<const FullGreekSeed>{})
                   .has_value());
 
   EXPECT_EQ(seeded.status[0], PriceStatus::Ok);
-  // The poisoned seeded lane is quarantined (was silently Ok pre-fix): the seed is
-  // rejected, the contract falls through to the normal solve, and the guarded stamp
-  // demotes it exactly as the unseeded G1 lane above.
+  // The poisoned lane is quarantined (was silently Ok pre-FIX-1): the contract takes the
+  // normal solve and the guarded stamp demotes it exactly as the unseeded G1 lane above.
   EXPECT_EQ(seeded.status[1], PriceStatus::NumericError);
 
   // The book totals stay finite: the NaN Greek is isolated, never summed.
@@ -3867,10 +3902,15 @@ TEST(PortfolioPricer, F3_UnrequestedNonFiniteRhoKeepsTheLaneAndTheTotalsFinite) 
   // a finite EVERYTHING else, so the only column that can veto it is one the no-rate-shift
   // P&L step never requests.
   const PricedSurface probe_surface = make_long_dated(2);
-  auto probe = probe_surface.full_greek_seed(100.0, 1.0e7, Side::Put, /*analytic=*/false,
-                                             QueryExecution::Configured);
+  // FIX-3/F3-A: this probe used to go through full_greek_seed. That path now REFUSES to
+  // mint a bundle carrying a non-finite REQUESTED greek (the mint gates on the
+  // evaluate_batch status, and that status finally means something on the scalar/FD
+  // route too), so the probe reads the bundle directly instead. greeks(...) is the same
+  // FD oracle the seed's one-element evaluate_batch resolved to for analytic=false, so
+  // the precondition being asserted is unchanged.
+  auto probe = probe_surface.greeks(100.0, 1.0e7, Side::Put, QueryExecution::Configured);
   ASSERT_TRUE(probe.has_value()) << probe.error().to_string();
-  const AmericanGreeks &pg = probe->greeks();
+  const AmericanGreeks &pg = *probe;
   EXPECT_TRUE(std::isfinite(pg.price));
   EXPECT_TRUE(std::isfinite(pg.delta));
   EXPECT_TRUE(std::isfinite(pg.gamma));
