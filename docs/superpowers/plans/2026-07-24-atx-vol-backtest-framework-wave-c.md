@@ -1,6 +1,6 @@
 # Backtest Framework — Wave C: `backtest_driver` spine + example-driver migration Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Close **L11** by extracting the part of the driver spine that is *genuinely* shared across the five example drivers — the timed engine call, the `tearsheet()` fold, and the `EngineRunStats` capture — into a new library seam `atx/vol/backtest_driver.{hpp,cpp}` (`run_timed(...) -> RunOutcome{BacktestResult, TearSheet, EngineRunStats}`), migrate all five drivers onto it with **provably byte-identical output**, and port mag7's renderer artifacts to RunArchive on the **write side only** (the five CSVs stay byte-identical; the Python read-side cutover is out of scope this wave).
 
@@ -157,16 +157,16 @@ struct RunOutcome {
 
 **Notes:** `SnapshotCacheStats` has no `operator==` (`backtest.hpp:160-174`, 8 `uint64_t` fields) — the test compares fields individually. Fixture: the local synthetic-corpus trio in the `tearsheet_test.cpp`/`backtest_driver_test.cpp` style; do NOT try to share it with the examples (see the L11 table's note).
 
-- [ ] **Step 1: Write the failing test** — `atx-vol/tests/backtest_driver_test.cpp`:
+- [x] **Step 1: Write the failing test** — `atx-vol/tests/backtest_driver_test.cpp`:
   - `RunTimed_ResultIsBitIdenticalToRunBacktest`: build a 12-date synthetic 1-symbol corpus + the `StrategySpec` from `tearsheet_test.cpp::WorkedExampleA` (3m 25Δ put, `EveryStep`+`HoldToExpiry`, daily `DeltaToZero`); run `run_backtest(clock, s1, cfg)` and `run_timed(clock, s2, cfg)` with `cfg.price.n_threads = 1`; assert `date[i]` string-equal and **all 25 double columns** bit-equal via `std::memcmp`-style `bits_equal` for every row (not a 10-column subset — `expect_result_bit_identical` in the existing tests covers only 10, and the archive/CSV writers emit all 25).
   - `RunTimed_SheetEqualsTearsheetOfResult`: every `TearSheet` field bit-equal to `tearsheet(outcome.result)`.
   - `RunTimed_StatsCaptureStepsAndCache`: `stats.n_steps == result.size()`; `stats.wall_clock_ms > 0.0`; with a shared `SnapshotCache`, all 8 `stats.cache` fields equal `cfg.snapshot_cache->stats()`.
   - `RunTimed_NullCacheYieldsZeroedStats`: `RunConfig{}` (null cache) → `run_timed` succeeds and all 8 `stats.cache` fields are 0.
   - `RunTimedDispersion_ResultIsBitIdenticalToRunDispersionBacktest`: the 3-symbol index+2-name corpus from `examples/dispersion_backtest.cpp:123-145` (`IDX`/`NM0`/`NM1`, weights 0.6/0.4, `min_names=2`, `record_diagnostics=true`); `run_dispersion_backtest(clock, u, config)` vs `run_timed(clock, u, config)` — all 25 columns bit-equal **and** `result.signals` name-for-name, value-for-value bit-equal (this overload is the only one that produces signals).
-- [ ] **Step 2: Run test to verify it fails** — `cmake --build C:\atx\build-rel --target atx-vol-tests` → expected FAIL: `atx/vol/backtest_driver.hpp` not found.
-- [ ] **Step 3: Implement** the header + `.cpp` per the contract above; register `src/backtest_driver.cpp` in `atx-vol/CMakeLists.txt` and the test in `atx-vol/tests/CMakeLists.txt`.
-- [ ] **Step 4: Run test to verify it passes** — `cmake --build C:\atx\build-rel --target atx-vol-tests` then `C:\atx\build-rel\bin\atx-vol-tests.exe --gtest_filter=BacktestDriver.*:RunTimed*` → PASS (5/5).
-- [ ] **Step 5: Commit** — `git add atx-vol/include/atx/vol/backtest_driver.hpp atx-vol/src/backtest_driver.cpp atx-vol/CMakeLists.txt atx-vol/tests/backtest_driver_test.cpp atx-vol/tests/CMakeLists.txt`
+- [x] **Step 2: Run test to verify it fails** — `cmake --build C:\atx\build-rel --target atx-vol-tests` → expected FAIL: `atx/vol/backtest_driver.hpp` not found.
+- [x] **Step 3: Implement** the header + `.cpp` per the contract above; register `src/backtest_driver.cpp` in `atx-vol/CMakeLists.txt` and the test in `atx-vol/tests/CMakeLists.txt`.
+- [x] **Step 4: Run test to verify it passes** — `cmake --build C:\atx\build-rel --target atx-vol-tests` then `C:\atx\build-rel\bin\atx-vol-tests.exe --gtest_filter=BacktestDriver.*:RunTimed*` → PASS (5/5).
+- [x] **Step 5: Commit** — `git add atx-vol/include/atx/vol/backtest_driver.hpp atx-vol/src/backtest_driver.cpp atx-vol/CMakeLists.txt atx-vol/tests/backtest_driver_test.cpp atx-vol/tests/CMakeLists.txt`
 
 ---
 
@@ -245,11 +245,11 @@ nothing.
 
 **Byte gate (the whole point):** `dispersion.tsv`, `example_a.tsv`, `example_b.tsv` whole-file hashes **identical to T2**. Stdout is not gated (`dispersion_backtest` already printed a wall-clock `engine_ms`, so its stdout was never stable; `strategy_examples`' `print_headline` prints only tearsheet values, which do not move — so if the implementer adds a timing line, the tearsheet lines above it must be unchanged).
 
-- [ ] **Step 1: Write the failing test** — extend `backtest_driver_test.cpp` with `RunTimedDispersion_SignalsSurviveTheSeam`: over the `IDX`/`NM0`/`NM1` corpus with `record_diagnostics = true`, assert `run_timed`'s outcome carries the **same non-empty signal set** (names in order, every value bit-equal) as `run_dispersion_backtest` — because `dispersion_backtest.cpp:171-176` prints `r.signals` first/last and `write_backtest_tsv` appends one column per signal, so a dropped or reordered signal would move `dispersion.tsv`'s bytes. RED if `run_timed` were to copy rather than move / reorder signals; author it before touching the drivers so the seam property is pinned independently of the driver diff.
-- [ ] **Step 2: Run to verify it fails or is a genuine lock** — `cmake --build C:\atx\build-rel --target atx-vol-tests`; run `--gtest_filter=*RunTimedDispersion*`. If it passes immediately (the T1 implementation already moves faithfully), disclose that in the report as a **regression lock, not a RED** — Wave B's T8 set this precedent and its reviewer accepted it explicitly. Do not fabricate a RED.
-- [ ] **Step 3: Implement** the two driver edits above. Delete the now-dead `<chrono>` include only if nothing else in the file uses it (`dispersion_backtest.cpp` will still need it if a timing print remains).
-- [ ] **Step 4: Run to verify it passes** — ONE build: `cmake --build C:\atx\build-rel --target atx-vol-tests atxvol_dispersion_backtest atxvol_strategy_examples`. Then: `atx-vol-tests.exe --gtest_filter=BacktestDriver.*:RunTimed*:TearSheet.*` → PASS. Then delete `%TEMP%\atx-dispersion-backtest` and `%TEMP%\atx-strategy-examples`, run both binaries, and assert all **three** whole-file hashes equal the T2 hexes. Paste the observed hexes beside the expected ones in the task report.
-- [ ] **Step 5: Commit** — `git add atx-vol/examples/dispersion_backtest.cpp atx-vol/examples/strategy_examples.cpp atx-vol/tests/backtest_driver_test.cpp`
+- [x] **Step 1: Write the failing test** — extend `backtest_driver_test.cpp` with `RunTimedDispersion_SignalsSurviveTheSeam`: over the `IDX`/`NM0`/`NM1` corpus with `record_diagnostics = true`, assert `run_timed`'s outcome carries the **same non-empty signal set** (names in order, every value bit-equal) as `run_dispersion_backtest` — because `dispersion_backtest.cpp:171-176` prints `r.signals` first/last and `write_backtest_tsv` appends one column per signal, so a dropped or reordered signal would move `dispersion.tsv`'s bytes. RED if `run_timed` were to copy rather than move / reorder signals; author it before touching the drivers so the seam property is pinned independently of the driver diff.
+- [x] **Step 2: Run to verify it fails or is a genuine lock** — `cmake --build C:\atx\build-rel --target atx-vol-tests`; run `--gtest_filter=*RunTimedDispersion*`. If it passes immediately (the T1 implementation already moves faithfully), disclose that in the report as a **regression lock, not a RED** — Wave B's T8 set this precedent and its reviewer accepted it explicitly. Do not fabricate a RED.
+- [x] **Step 3: Implement** the two driver edits above. Delete the now-dead `<chrono>` include only if nothing else in the file uses it (`dispersion_backtest.cpp` will still need it if a timing print remains).
+- [x] **Step 4: Run to verify it passes** — ONE build: `cmake --build C:\atx\build-rel --target atx-vol-tests atxvol_dispersion_backtest atxvol_strategy_examples`. Then: `atx-vol-tests.exe --gtest_filter=BacktestDriver.*:RunTimed*:TearSheet.*` → PASS. Then delete `%TEMP%\atx-dispersion-backtest` and `%TEMP%\atx-strategy-examples`, run both binaries, and assert all **three** whole-file hashes equal the T2 hexes. Paste the observed hexes beside the expected ones in the task report.
+- [x] **Step 5: Commit** — `git add atx-vol/examples/dispersion_backtest.cpp atx-vol/examples/strategy_examples.cpp atx-vol/tests/backtest_driver_test.cpp`
 
 ---
 
@@ -284,11 +284,11 @@ The `fprintf` text stays `"run_backtest: %s\n"` verbatim — the message is part
 
 **Byte gate:** `spy_short_strangle.tsv` whole-file hash == T2; `spy_short_strangle.csv` filtered hash == T2 (using the exact filter T2 recorded).
 
-- [ ] **Step 1: Write the failing test** — this driver's flow has no library seam left to test that T1 does not already cover, and adding a fifth re-implementation of it would be the "copy to fix a copy" anti-pattern the Wave B triage rejected (T6-2). So the RED for this task is **the byte gate itself, run against the un-migrated binary with the migration's intended `cache_stats` source substituted**: temporarily replace `:468-469`'s ternary with `SnapshotCacheStats{}` unconditionally, rebuild, run, and confirm the `.csv` filtered hash **still matches T2** (proving the `# cache_*` lines are already all-zero on the golden path, i.e. the substitution is byte-safe). Revert the probe. Record the probe and its result — this is the same explicit-RED-probe discipline the Wave B fix round used for the I1 gate.
-- [ ] **Step 2: Run to verify the probe result** — ONE build: `cmake --build C:\atx\build-rel --target spy_strangle_backtest`; run; hash; confirm; revert the probe and rebuild clean.
-- [ ] **Step 3: Implement** the `run_timed` substitution exactly as shown; grep-verify trap 1; delete the now-unused `t_run0`/`t_run1` locals.
-- [ ] **Step 4: Run to verify it passes** — ONE build: `cmake --build C:\atx\build-rel --target atx-vol-tests spy_strangle_backtest`. `atx-vol-tests.exe --gtest_filter=SpyStrangleBacktest.*:BacktestDriver.*:RunTimed*` → PASS (4 + 6). Delete `%TEMP%\atx-spy-strangle-backtest`, run the binary, assert both hashes == T2.
-- [ ] **Step 5: Commit** — `git add atx-vol/examples/spy_strangle_backtest.cpp`
+- [x] **Step 1: Write the failing test** — this driver's flow has no library seam left to test that T1 does not already cover, and adding a fifth re-implementation of it would be the "copy to fix a copy" anti-pattern the Wave B triage rejected (T6-2). So the RED for this task is **the byte gate itself, run against the un-migrated binary with the migration's intended `cache_stats` source substituted**: temporarily replace `:468-469`'s ternary with `SnapshotCacheStats{}` unconditionally, rebuild, run, and confirm the `.csv` filtered hash **still matches T2** (proving the `# cache_*` lines are already all-zero on the golden path, i.e. the substitution is byte-safe). Revert the probe. Record the probe and its result — this is the same explicit-RED-probe discipline the Wave B fix round used for the I1 gate.
+- [x] **Step 2: Run to verify the probe result** — ONE build: `cmake --build C:\atx\build-rel --target spy_strangle_backtest`; run; hash; confirm; revert the probe and rebuild clean.
+- [x] **Step 3: Implement** the `run_timed` substitution exactly as shown; grep-verify trap 1; delete the now-unused `t_run0`/`t_run1` locals.
+- [x] **Step 4: Run to verify it passes** — ONE build: `cmake --build C:\atx\build-rel --target atx-vol-tests spy_strangle_backtest`. `atx-vol-tests.exe --gtest_filter=SpyStrangleBacktest.*:BacktestDriver.*:RunTimed*` → PASS (4 + 6). Delete `%TEMP%\atx-spy-strangle-backtest`, run the binary, assert both hashes == T2.
+- [x] **Step 5: Commit** — `git add atx-vol/examples/spy_strangle_backtest.cpp`
 
 ---
 
@@ -317,11 +317,11 @@ const double peak_lots = r.size() ? *std::max_element(r.n_open_lots.begin(), r.n
 
 **Byte gate:** `pnl_track.tsv` filtered hash (drop `^# (wall_clock_ms|steps_per_s)=`) == T2. Every other meta key, its position, and the whole series must be byte-identical — in particular the 12 tearsheet-derived meta values (`total_return` … `peak_open_lots`) come from `outcome->sheet`, so a tearsheet that differed by one ULP would show up here. That is the point.
 
-- [ ] **Step 1: Write the failing test** — extend `backtest_driver_test.cpp` with `RunTimed_SheetFieldsAreBitEqualUnderFmtNum`: for a run over the T1 fixture, format all 12 meta-bound `TearSheet` fields with `snprintf("%.10g")` from both `outcome.sheet` and `tearsheet(outcome.result)` and assert the **strings** are equal. This pins the exact quantity `pnl_track.tsv` embeds (a `%.10g` rendering), which is strictly what the byte golden depends on, and it is not a restatement of `RunTimed_SheetEqualsTearsheetOfResult` (that one compares raw doubles; this one compares what reaches the file).
-- [ ] **Step 2: Run to verify it fails or is a lock** — build `atx-vol-tests`; `--gtest_filter=*SheetFieldsAreBitEqual*`. Disclose honestly if it is a lock rather than a RED.
-- [ ] **Step 3: Implement** the `run_timed` substitution; delete the `t0`/`t1` locals; leave `<chrono>` only if still needed.
-- [ ] **Step 4: Run to verify it passes** — ONE build: `cmake --build C:\atx\build-rel --target atx-vol-tests spy_dispersion_pnl`. `atx-vol-tests.exe --gtest_filter=SpyDispersionPnl.*:BacktestDriver.*:RunTimed*` → PASS (8 + 7). Delete `$FX\post\pnl`, run with the T2 invocation but `--out $FX\post\pnl`, assert the filtered hash == T2. **Also assert the unfiltered file differs from T2's unfiltered bytes only on the two filtered lines** (`Compare-Object` the two files line-by-line and require exactly two differing lines, both matching the filter) — this closes the hole where a filter silently masks a real change.
-- [ ] **Step 5: Commit** — `git add atx-vol/examples/spy_dispersion_pnl.cpp atx-vol/tests/backtest_driver_test.cpp`
+- [x] **Step 1: Write the failing test** — extend `backtest_driver_test.cpp` with `RunTimed_SheetFieldsAreBitEqualUnderFmtNum`: for a run over the T1 fixture, format all 12 meta-bound `TearSheet` fields with `snprintf("%.10g")` from both `outcome.sheet` and `tearsheet(outcome.result)` and assert the **strings** are equal. This pins the exact quantity `pnl_track.tsv` embeds (a `%.10g` rendering), which is strictly what the byte golden depends on, and it is not a restatement of `RunTimed_SheetEqualsTearsheetOfResult` (that one compares raw doubles; this one compares what reaches the file).
+- [x] **Step 2: Run to verify it fails or is a lock** — build `atx-vol-tests`; `--gtest_filter=*SheetFieldsAreBitEqual*`. Disclose honestly if it is a lock rather than a RED.
+- [x] **Step 3: Implement** the `run_timed` substitution; delete the `t0`/`t1` locals; leave `<chrono>` only if still needed.
+- [x] **Step 4: Run to verify it passes** — ONE build: `cmake --build C:\atx\build-rel --target atx-vol-tests spy_dispersion_pnl`. `atx-vol-tests.exe --gtest_filter=SpyDispersionPnl.*:BacktestDriver.*:RunTimed*` → PASS (8 + 7). Delete `$FX\post\pnl`, run with the T2 invocation but `--out $FX\post\pnl`, assert the filtered hash == T2. **Also assert the unfiltered file differs from T2's unfiltered bytes only on the two filtered lines** (`Compare-Object` the two files line-by-line and require exactly two differing lines, both matching the filter) — this closes the hole where a filter silently masks a real change.
+- [x] **Step 5: Commit** — `git add atx-vol/examples/spy_dispersion_pnl.cpp atx-vol/tests/backtest_driver_test.cpp`
 
 ---
 
@@ -349,15 +349,15 @@ const double wall_ms = stats.wall_clock_ms;        // still needed by the consol
 
 **Byte gate:** `series.csv` whole-file == T2; `strategy_metrics.csv` whole-file == T2; `db_stats.csv` whole-file == T2 (same `$FX\mag7_db`); `engine_metrics.csv` filtered (`^(wall_clock_ms|steps_per_s),`) == T2 — and, per the T5 discipline, the unfiltered `engine_metrics.csv` must differ from T2's on **exactly those two rows** (the four `cache_*`/`n_steps` rows are deterministic and must be byte-identical).
 
-- [ ] **Step 1: Write the failing test** — the byte gate is the test here, and it needs a RED that proves it can fail. Probe: temporarily change `stats.n_steps` to `r.size() + 1` in `backtest_driver.cpp`, rebuild `atx-vol-tests` + `mag7_dispersion_backtest`, run the driver, and confirm `engine_metrics.csv`'s filtered hash **differs** from T2 (because `n_steps` and the derived `steps_per_s` move) **and** that `atx-vol-tests --gtest_filter=*StatsCaptureStepsAndCache*` FAILS. Revert. This proves both the library test and the artifact gate are live for this driver.
-- [ ] **Step 2: Run to verify the probe** — ONE build for the probe, one to revert.
-- [ ] **Step 3: Implement** the substitution above; delete `:201-215`'s timer locals and the `EngineRunStats stats;` assembly.
-- [ ] **Step 4: Run to verify it passes** — ONE build: `cmake --build C:\atx\build-rel --target atx-vol-tests mag7_dispersion_backtest`. `atx-vol-tests.exe --gtest_filter=Mag7DispersionBacktest.*:RunReport.*:BacktestDriver.*:RunTimed*` → PASS (5 + 6 + 7). Delete `$FX\post\mag7`, run with `--db $FX\mag7_db --out $FX\post\mag7 --threads 1`, assert all four hashes per the byte gate and the exactly-two-differing-rows check. Confirm `populate_stats.csv` is still absent.
-- [ ] **Step 5: Commit** — `git add atx-vol/examples/mag7_dispersion_backtest.cpp`
+- [x] **Step 1: Write the failing test** — the byte gate is the test here, and it needs a RED that proves it can fail. Probe: temporarily change `stats.n_steps` to `r.size() + 1` in `backtest_driver.cpp`, rebuild `atx-vol-tests` + `mag7_dispersion_backtest`, run the driver, and confirm `engine_metrics.csv`'s filtered hash **differs** from T2 (because `n_steps` and the derived `steps_per_s` move) **and** that `atx-vol-tests --gtest_filter=*StatsCaptureStepsAndCache*` FAILS. Revert. This proves both the library test and the artifact gate are live for this driver.
+- [x] **Step 2: Run to verify the probe** — ONE build for the probe, one to revert.
+- [x] **Step 3: Implement** the substitution above; delete `:201-215`'s timer locals and the `EngineRunStats stats;` assembly.
+- [x] **Step 4: Run to verify it passes** — ONE build: `cmake --build C:\atx\build-rel --target atx-vol-tests mag7_dispersion_backtest`. `atx-vol-tests.exe --gtest_filter=Mag7DispersionBacktest.*:RunReport.*:BacktestDriver.*:RunTimed*` → PASS (5 + 6 + 7). Delete `$FX\post\mag7`, run with `--db $FX\mag7_db --out $FX\post\mag7 --threads 1`, assert all four hashes per the byte gate and the exactly-two-differing-rows check. Confirm `populate_stats.csv` is still absent.
+- [x] **Step 5: Commit** — `git add atx-vol/examples/mag7_dispersion_backtest.cpp`
 
 ---
 
-## Task 7: mag7 → RunArchive, WRITE side only (`backtest` + `meta` sections); the five CSVs are UNCHANGED
+## Task 7: mag7 → RunArchive, WRITE side only (`backtest` + `meta` sections); the five CSVs are UNCHANGED  **[DROPPED by controller decision 1 — Wave C is spine-only. Boxes deliberately left unchecked.]**
 
 **Files:**
 - Modify: `atx-vol/include/atx/vol/run_archive.hpp`, `atx-vol/src/run_archive.cpp` (one additive encoder)
@@ -432,12 +432,12 @@ Implement `encode_meta_section` and `encode_meta_kv_section` over one shared hel
 
 **Files:** Modify this plan (check boxes); update `.superpowers/sdd/backtest-wave-c/progress.md` (controller-owned ledger).
 
-- [ ] **Step 1: Full build.** `cmake --build C:\atx\build-rel` (all targets, including all five drivers, `atx-vol-tests`, `atxvol_spy_dispersion_backtest`). Zero new warnings under `/WX`.
-- [ ] **Step 2: Full gtest from `C:\atx\build-rel` CWD.** `cd C:\atx\build-rel; .\bin\atx-vol-tests.exe` → all green **modulo exactly the three documented pre-existing reds** (`BoundaryHoist.PriceBitIdenticalToPrechange`, `SurfaceV2Qualification…/Latency`, `…/Balanced`). Record the ran/passed/skipped/failed counts and compare the total against Wave B's post-fix-round baseline plus the tasks' new tests. Any fourth failure blocks the gate.
-- [ ] **Step 3: Re-verify every T2 byte golden at HEAD, from clean artifact dirs.** Delete `%TEMP%\atx-dispersion-backtest`, `%TEMP%\atx-strategy-examples`, `%TEMP%\atx-spy-strangle-backtest`, `$FX\post`. Run all five drivers with the T2 invocations. Assert **all ten** hashes in the T2 table. For each filtered artifact, additionally assert the unfiltered file differs from the T2 unfiltered capture on **exactly** the filtered lines. Report a hash table with expected-vs-observed side by side.
-- [ ] **Step 4: Freeze verification.** `ra_schema_hash() == 0xdcce47781ac8390d`; `kRaMinor == 0`; `git diff 587ee97..HEAD --stat` contains **no** `run_archive_schema.hpp`, no `_schema.py`, no `*.atxrun`, no `*.py` at all, and no `src/run_report.cpp`/`include/atx/vol/run_report.hpp`/`tests/run_report_test.cpp` **content** change beyond what T7 declares (T7 touches none of the three — confirm the diff agrees). Confirm the committed fixture sha256 `71ea9632…29f7424` is unchanged.
-- [ ] **Step 5: Regression check on the Wave B route.** `atxvol_spy_dispersion_backtest` still builds and its Wave B goldens are untouched by construction (Wave C edits none of its files) — confirm by `git diff --name-only 587ee97..HEAD` showing `examples/spy_dispersion_backtest.cpp` absent. The 135-session parity run is **not** required this wave (no economics seam was touched); state that explicitly rather than silently skipping it.
-- [ ] **Step 6: Commit** the ledger + checked plan.
+- [x] **Step 1: Full build.** `cmake --build C:\atx\build-rel` (all targets, including all five drivers, `atx-vol-tests`, `atxvol_spy_dispersion_backtest`). Zero new warnings under `/WX`.
+- [x] **Step 2: Full gtest from `C:\atx\build-rel` CWD.** `cd C:\atx\build-rel; .\bin\atx-vol-tests.exe` → all green **modulo exactly the three documented pre-existing reds** (`BoundaryHoist.PriceBitIdenticalToPrechange`, `SurfaceV2Qualification…/Latency`, `…/Balanced`). Record the ran/passed/skipped/failed counts and compare the total against Wave B's post-fix-round baseline plus the tasks' new tests. Any fourth failure blocks the gate.
+- [x] **Step 3: Re-verify every T2 byte golden at HEAD, from clean artifact dirs.** Delete `%TEMP%\atx-dispersion-backtest`, `%TEMP%\atx-strategy-examples`, `%TEMP%\atx-spy-strangle-backtest`, `$FX\post`. Run all five drivers with the T2 invocations. Assert **all ten** hashes in the T2 table. For each filtered artifact, additionally assert the unfiltered file differs from the T2 unfiltered capture on **exactly** the filtered lines. Report a hash table with expected-vs-observed side by side.
+- [x] **Step 4: Freeze verification.** `ra_schema_hash() == 0xdcce47781ac8390d`; `kRaMinor == 0`; `git diff 587ee97..HEAD --stat` contains **no** `run_archive_schema.hpp`, no `_schema.py`, no `*.atxrun`, no `*.py` at all, and no `src/run_report.cpp`/`include/atx/vol/run_report.hpp`/`tests/run_report_test.cpp` **content** change beyond what T7 declares (T7 touches none of the three — confirm the diff agrees). Confirm the committed fixture sha256 `71ea9632…29f7424` is unchanged.
+- [x] **Step 5: Regression check on the Wave B route.** `atxvol_spy_dispersion_backtest` still builds and its Wave B goldens are untouched by construction (Wave C edits none of its files) — confirm by `git diff --name-only 587ee97..HEAD` showing `examples/spy_dispersion_backtest.cpp` absent. The 135-session parity run is **not** required this wave (no economics seam was touched); state that explicitly rather than silently skipping it.
+- [x] **Step 6: Commit** the ledger + checked plan.
 
 ---
 
