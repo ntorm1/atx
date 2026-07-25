@@ -172,8 +172,21 @@ Worth recording, because it is the argument for keeping independent review in th
      assertion and the README together.
 1. Finish FIX-3; merge.
 2. Review E and Y; re-review F's and T's follow-ups. Merge wave 2 in order **Y → E → T → F**
-   — Y has zero file overlap, and F last so it absorbs the one real conflict
-   (`corpus_test.cpp`, where F's and T's edits are independent regions).
+   — Y is provably independent (zero shared files with E, T or F), and F merges last so it
+   absorbs both contact points. A file-level overlap audit corrects what an earlier draft of
+   this document said; the two things to handle at merge are:
+   - **`src/dispersion_run.cpp`, inside `dispersion_build_corpus`.** F inserts
+     `persist_typed_spec_keys(...)` right after `write_resolved_spec`; T replaces the inline
+     PHASE printf block with `format_corpus_phase_line(...)`, four lines below. Likely a
+     conflict, which is the safe outcome. Both sides are wanted — read the merged function and
+     confirm both survived, whether or not git asked. `corpus_test.cpp` and
+     `dispersion_run.hpp` are far enough apart to renumber cleanly.
+   - **`tests/multiname_pipeline_test.cpp`, shared by E and F, and it will auto-merge
+     silently.** Both edit `HeldLotWithoutSurfaceIsCountedNotHidden`, 38 lines apart. More
+     importantly F edits `GrossVegaIsUnderReportedWhenALegIsUnpriced` while E1 rescales vega
+     ×100. If F asserted against a hardcoded vega magnitude, the merge either breaks it or —
+     the worse case — leaves it passing in the wrong unit. Every vega assertion in that file
+     must be read for units after both merges.
 3. Run the whole-repo serial gate on the merged trunk, at low concurrency, end to end.
 4. Quiet-window run: the golden re-pin as a single serialized event covering both causes in
    §3.3, against the full run dir so §3.4 resolves; then the deferred timing rows (T1
