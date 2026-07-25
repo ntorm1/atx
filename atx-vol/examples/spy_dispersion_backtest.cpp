@@ -468,12 +468,23 @@ Status build_schedule_command(const fs::path &run_dir) {
   // file (the retained input read path). The schedule is ALSO folded into
   // run.atxrun as the trade_schedule section (the result container). run-backtest
   // later republishes run.atxrun with the full economic result set.
+  //
+  // ORDERING IS LOAD-BEARING (Wave E T6): trade_schedule.tsv is one of the five
+  // files RunDir::run_identity_hash folds, and that identity is the merge-write
+  // cache key. This write MUST stay ABOVE the write_run_archive call below. If the
+  // archive were stamped first, trade_schedule.tsv would appear afterwards, the
+  // next route (run-backtest) would recompute a different identity, and its write
+  // would start FRESH — silently dropping this command's trade_schedule section
+  // with no error. Pinned by
+  // RunDir.MergeWriteDropsCarriedSectionsWhenAFoldedInputAppearsLate.
   ATX_TRY_VOID(
       write_listed_dispersion_schedule_file((run_dir / "trade_schedule.tsv").string(), schedule));
   std::vector<RaSectionData> sections;
   sections.push_back(encode_schedule_section("trade_schedule", schedule));
   timer.add("write_outputs", write_start);
   sections.push_back(encode_diagnostics_section(timer, "build_schedule", schedule.rolls.size()));
+  // Must stay BELOW the trade_schedule.tsv write above — see the ordering note
+  // there and the contract on RunDir::run_identity_hash.
   ATX_TRY_VOID(RunDir(run_dir).write_run_archive(sections));
   std::printf("built immutable schedule: rolls=%zu\n", schedule.rolls.size());
   print_diag_summary("build_schedule", PhaseTimer::now() - cmd_start, schedule.rolls.size(), "roll",

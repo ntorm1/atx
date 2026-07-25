@@ -1389,6 +1389,36 @@ void write_run_dir_text_inputs(const std::filesystem::path& dir, bool core_mode,
                   .has_value());
 }
 
+// Append one byte to an existing run-dir file — a minimal byte mutation. None of
+// these files is re-parsed by run_identity_hash (it hashes raw bytes), so the
+// appended byte cannot fail a parser instead of moving the hash.
+void append_identity_probe_byte(const std::filesystem::path& path) {
+  std::ofstream out(path, std::ios::binary | std::ios::app);
+  out.put('#');
+  ASSERT_TRUE(out.good()) << "cannot append to " << path.string();
+}
+
+// All five folded inputs plus one deliberately-unfolded run-dir file.
+// write_run_dir_text_inputs supplies run_spec / universe_schedule /
+// surface_manifest / trade_schedule through the library writers;
+// input_inventory.tsv has no library writer (write_input_inventory lives in the
+// example orchestrator), so a representative header + row is written literally.
+void write_run_dir_folded_inputs(const std::filesystem::path& dir) {
+  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+  {
+    std::ofstream inv(dir / std::string(kInputInventoryFile), std::ios::binary | std::ios::trunc);
+    inv << "date\tsymbol\tn_rows\tsource_fingerprint\tmarket_input_fingerprint\n"
+        << "2026-07-10\tSPY\t128\t1111111111\t2222222222\n";
+    ASSERT_TRUE(inv.good());
+  }
+  // Not a folded input — the negative control below mutates this one.
+  {
+    std::ofstream q(dir / "quality.tsv", std::ios::binary | std::ios::trunc);
+    q << "date\tstatus\n2026-07-10\tOk\n";
+    ASSERT_TRUE(q.good());
+  }
+}
+
 // Write run.atxrun via RunDir. The BacktestResult is spanned in place by
 // encode_backtest_section, so it MUST outlive the write call (RaColumnData rule);
 // keeping it local to this function guarantees that.
@@ -1677,9 +1707,16 @@ std::string meta_value_of(RunArchive& archive, std::string_view key) {
 // archive (SAME inputs) yields the UNION: the listed sections are carried
 // forward with their values intact, the projected section is added, and the
 // colliding meta is the NEW one (new-wins).
+//
+// Wave E T6 fix 1: the run dir is now populated with ALL FIVE folded inputs (via
+// write_run_dir_folded_inputs) rather than four, so this test also covers the
+// widened cache key's stability — it fails if the widening ever turns a
+// same-inputs merge into a fresh write. It is a POSITIVE CONTROL for T6 (green
+// before and after the widening) and is not counted as a gate for it; the T6
+// gates are the two RED tests further down.
 TEST(RunDir, MergeWriteCarriesUnsupersededSectionsOnSameInputs) {
   const std::filesystem::path dir = fresh_run_dir("atx_rundir_mergewrite_union_test");
-  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+  write_run_dir_folded_inputs(dir);
   write_run_dir_archive(dir);  // listed set: backtest, reconciliation, contract_marks, meta
 
   const RunDir run_dir(dir);
@@ -1827,39 +1864,18 @@ TEST(RunDir, MergeWriteStartsFreshOnCorruptExistingArchive) {
 // (surface_manifest.tsv), a re-fingerprinted OPRA input set (input_inventory.tsv)
 // or a rebuilt schedule (trade_schedule.tsv) did NOT invalidate the merge — the
 // archive could union a `backtest` computed from one input set with a
-// `projected_cold` computed from another. The two tests below are the gate on
-// that: the first pins per-file sensitivity of the key, the second pins the
-// end-to-end consequence (no stale carry-forward after a corpus change).
-
-// Append one byte to an existing run-dir file — a minimal byte mutation. None of
-// these files is re-parsed by run_identity_hash (it hashes raw bytes), so the
-// appended byte cannot fail a parser instead of moving the hash.
-void append_identity_probe_byte(const std::filesystem::path& path) {
-  std::ofstream out(path, std::ios::binary | std::ios::app);
-  out.put('#');
-  ASSERT_TRUE(out.good()) << "cannot append to " << path.string();
-}
-
-// All five folded inputs plus one deliberately-unfolded run-dir file.
-// write_run_dir_text_inputs supplies run_spec / universe_schedule /
-// surface_manifest / trade_schedule through the library writers;
-// input_inventory.tsv has no library writer (write_input_inventory lives in the
-// example orchestrator), so a representative header + row is written literally.
-void write_run_dir_folded_inputs(const std::filesystem::path& dir) {
-  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
-  {
-    std::ofstream inv(dir / std::string(kInputInventoryFile), std::ios::binary | std::ios::trunc);
-    inv << "date\tsymbol\tn_rows\tsource_fingerprint\tmarket_input_fingerprint\n"
-        << "2026-07-10\tSPY\t128\t1111111111\t2222222222\n";
-    ASSERT_TRUE(inv.good());
-  }
-  // Not a folded input — the negative control below mutates this one.
-  {
-    std::ofstream q(dir / "quality.tsv", std::ios::binary | std::ios::trunc);
-    q << "date\tstatus\n2026-07-10\tOk\n";
-    ASSERT_TRUE(q.good());
-  }
-}
+// `projected_cold` computed from another. The tests below are the gate on that:
+//   * RunIdentityIsSensitiveToEachFoldedInput — per-file sensitivity of the key;
+//   * MergeWriteRejectsCarryForwardAfterManifestChange — the end-to-end
+//     consequence (no stale carry-forward after a corpus change);
+//   * MergeWriteDropsCarriedSectionsWhenAFoldedInputAppearsLate — the same, for a
+//     folded input going ABSENT -> PRESENT between two writes, which is the
+//     cross-file ordering invariant the pipeline now depends on;
+//   * RunIdentityIsDeliberatelyBlindToDefinitionsContent — NOT a gate: it records
+//     the one input that is deliberately NOT folded, as a known limitation.
+// The union-survival positive control lives in
+// MergeWriteCarriesUnsupersededSectionsOnSameInputs above (all five folded inputs
+// present and unchanged => the merge still unions).
 
 // Per-file sensitivity of the cache key. run_spec.tsv and universe_schedule.tsv
 // were already folded, so those two legs are POSITIVE CONTROLS (they pass before
@@ -1980,16 +1996,76 @@ TEST(RunDir, MergeWriteRejectsCarryForwardAfterManifestChange) {
   std::filesystem::remove_all(dir, ec);
 }
 
-// The union must still survive when EVERY folded input is present and unchanged
-// — the legitimate within-one-input-set accumulation the pipeline depends on
-// (build-schedule -> run-backtest -> project-schedule -> run-projected-backtest
-// each write different sections into the same run.atxrun). This is a POSITIVE
-// CONTROL for the widened key: it is green before and after, and its job is to
-// prove the widening did not turn every merge into a fresh write.
-TEST(RunDir, MergeWriteStillUnionsWithAllFoldedInputsPresent) {
-  const std::filesystem::path dir = fresh_run_dir("atx_rundir_mergewrite_union_folded_test");
+// The ORDERING INVARIANT documented on RunDir::run_identity_hash, pinned as a
+// consequence (Wave E T6 fix 1, review M-1/M-2). A folded input that was ABSENT
+// when archive A was stamped and APPEARS before archive B is written moves the
+// cache key, so B must start FRESH — A's sections must NOT be carried forward.
+//
+// That is exactly the shape of the pipeline hazard: build_schedule_command writes
+// trade_schedule.tsv (a folded input) five lines BEFORE its own write_run_archive.
+// If those two statements were ever swapped, this is what the pipeline would do —
+// silently drop the trade_schedule section on run-backtest's write, with no error.
+// The union-survival counterpart (all five inputs present and unchanged => the
+// merge still unions) is the POSITIVE CONTROL in
+// MergeWriteCarriesUnsupersededSectionsOnSameInputs above.
+//
+// Distinct from MergeWriteDropsCarriedSectionsWhenInputsChange (mutates an
+// already-folded run_spec.tsv) and from MergeWriteRejectsCarryForwardAfterManifest
+// Change (mutates an existing surface_manifest.tsv): here the file's TRANSITION IS
+// ABSENT -> PRESENT, which is the case skip-if-absent makes possible and which no
+// other test covers.
+TEST(RunDir, MergeWriteDropsCarriedSectionsWhenAFoldedInputAppearsLate) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_mergewrite_late_input_test");
   write_run_dir_folded_inputs(dir);
-  write_run_dir_archive(dir);  // set A
+
+  // Park trade_schedule.tsv outside the run dir so write A sees it ABSENT (the
+  // skip-if-absent leg of the fold). Its real bytes are restored below.
+  const std::filesystem::path schedule_path = dir / std::string(kTradeScheduleFile);
+  const std::filesystem::path parked = dir.parent_path() / "atx_rundir_late_input_parked.tsv";
+  {
+    std::error_code ec;
+    ASSERT_TRUE(std::filesystem::is_regular_file(schedule_path, ec)) << schedule_path.string();
+    ASSERT_GT(std::filesystem::file_size(schedule_path, ec), 0u);
+    std::filesystem::remove(parked, ec);
+    std::filesystem::rename(schedule_path, parked, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    ASSERT_FALSE(std::filesystem::exists(schedule_path, ec)) << "folded input must be absent for A";
+  }
+
+  const auto id_absent = RunDir(dir).run_identity_hash();
+  ASSERT_TRUE(id_absent.has_value()) << id_absent.error().to_string();
+  ASSERT_NE(*id_absent, 0u);
+
+  write_run_dir_archive(dir);  // set A: backtest, reconciliation, contract_marks, meta
+
+  // Anti-vacuity: set A really is on disk, so "only B survives" below is a real
+  // observation and not a comparison over an empty archive. Scoped so the mapping
+  // is released before the second write's tmp+rename.
+  {
+    auto before = RunDir(dir).archive();
+    ASSERT_TRUE(before.has_value()) << before.error().to_string();
+    ASSERT_EQ(before->count(), 4u);
+    ASSERT_TRUE(before->section("backtest").has_value());
+    ASSERT_TRUE(before->section("reconciliation").has_value());
+    ASSERT_TRUE(before->section("contract_marks").has_value());
+  }
+
+  // The folded input APPEARS between the two writes.
+  {
+    std::error_code ec;
+    std::filesystem::rename(parked, schedule_path, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    ASSERT_TRUE(std::filesystem::is_regular_file(schedule_path, ec));
+    ASSERT_GT(std::filesystem::file_size(schedule_path, ec), 0u);
+  }
+
+  // The mechanism, asserted directly: the key moved because the file appeared.
+  // EXPECT (not ASSERT) so a regression reports BOTH the mechanism and its
+  // economic consequence (the stale carry-forward asserted at the end) in one run.
+  const auto id_present = RunDir(dir).run_identity_hash();
+  ASSERT_TRUE(id_present.has_value()) << id_present.error().to_string();
+  EXPECT_NE(*id_present, *id_absent)
+      << "a folded input appearing between two writes did not move the cache key";
 
   const RunDir run_dir(dir);
   const BacktestResult pr = make_encoder_fixture_result();  // outlives the write
@@ -2006,17 +2082,78 @@ TEST(RunDir, MergeWriteStillUnionsWithAllFoldedInputsPresent) {
 
   auto archive = run_dir.archive();
   ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
-  EXPECT_EQ(archive->count(), 5u) << "the same-inputs union did not survive";
-  EXPECT_TRUE(archive->section("backtest").has_value());        // carried
-  EXPECT_TRUE(archive->section("reconciliation").has_value());  // carried
-  EXPECT_TRUE(archive->section("contract_marks").has_value());  // carried
-  EXPECT_TRUE(archive->section("projected_cold").has_value());  // new
-  EXPECT_TRUE(archive->section("meta").has_value());            // new-wins
-  EXPECT_EQ(meta_value_of(*archive, "label"), "projected-run");
-  EXPECT_EQ(archive->section("backtest").value().f64_col("nav")[1], 101.5);
-  EXPECT_TRUE(archive->validate_all().has_value());
+  EXPECT_EQ(archive->count(), 2u)
+      << "stale sections were carried across a folded input appearing between writes";
+  EXPECT_TRUE(archive->section("projected_cold").has_value());
+  EXPECT_TRUE(archive->section("meta").has_value());
+  EXPECT_FALSE(archive->section("backtest").has_value());
+  EXPECT_FALSE(archive->section("reconciliation").has_value());
+  EXPECT_FALSE(archive->section("contract_marks").has_value());
 
   std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+  std::filesystem::remove(parked, ec);
+}
+
+// ── THIS TEST RECORDS A KNOWN GAP. IT IS NOT A PROPERTY ANYONE WANTS. ─────────
+//
+// run_identity_hash does not fold definitions.tsv, on COST GROUNDS ALONE (~700 MB
+// on a production run). It is NOT covered transitively by any folded input:
+// build-corpus COPIES definitions.tsv without reading it, and write_input_inventory
+// derives source_fingerprint / market_input_fingerprint solely from the OPRA batch.
+// The Wave E T6 review falsified the opposite claim on the real driver — a changed
+// definitions.tsv, all five folded inputs byte-identical, the identity unmoved, and
+// a six-section run-backtest write producing a nine-section archive.
+//
+// The assertion below pins that blindness so the gap is VISIBLE in the suite rather
+// than latent in a comment. It is a documented limitation, NOT an endorsement:
+// callers that swap definitions in place must delete run.atxrun. Wave E's
+// definitions-cache task already computes hash_bytes over the whole of
+// definitions.tsv on the read path, where the bytes are resident — folding that
+// value in here would close the gap at no extra I/O. WHEN THAT HAPPENS THIS TEST
+// SHOULD FAIL, and the correct response is to DELETE IT, never to restore the
+// blindness it records.
+TEST(RunDir, RunIdentityIsDeliberatelyBlindToDefinitionsContent) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_identity_definitions_gap_test");
+  write_run_dir_folded_inputs(dir);
+
+  // A definitions.tsv the way build-corpus leaves one: a real, non-empty run-dir
+  // file that the economics DO read (run_backtest_command parses it and feeds
+  // listed_quotes_for_date), and that the identity nevertheless ignores.
+  const std::filesystem::path definitions = dir / "definitions.tsv";
+  {
+    std::ofstream d(definitions, std::ios::binary | std::ios::trunc);
+    d << "trade_date\traw_symbol\tunderlying\texpiration\tstrike\tinstrument_class\n"
+      << "2026-07-10\tSPY   260717C00500000\tSPY\t2026-07-17\t500.0\tC\n";
+    ASSERT_TRUE(d.good());
+  }
+
+  std::error_code ec;
+  ASSERT_TRUE(std::filesystem::is_regular_file(definitions, ec)) << definitions.string();
+  const auto size_before = std::filesystem::file_size(definitions, ec);
+  ASSERT_GT(size_before, 0u) << "anti-vacuity: an absent/empty definitions.tsv would pass trivially";
+
+  const RunDir run_dir(dir);
+  auto base = run_dir.run_identity_hash();
+  ASSERT_TRUE(base.has_value()) << base.error().to_string();
+  ASSERT_NE(*base, 0u);
+
+  append_identity_probe_byte(definitions);
+  ASSERT_EQ(std::filesystem::file_size(definitions, ec), size_before + 1)
+      << "anti-vacuity: the definitions bytes must really have changed";
+
+  // THE GAP: the cache key does not see it, so a merge-write would carry stale
+  // sections across a definitions change. Recorded, not endorsed.
+  EXPECT_EQ(run_dir.run_identity_hash().value(), *base)
+      << "definitions.tsv is now folded into the run identity — the gap this test "
+         "records is CLOSED. Delete this test rather than reverting the fold.";
+
+  // Non-vacuity of the comparison itself: on this very run dir the identity CAN
+  // move — a folded input proves the EXPECT_EQ above is not comparing constants.
+  append_identity_probe_byte(dir / std::string(kSurfaceManifestFile));
+  EXPECT_NE(run_dir.run_identity_hash().value(), *base)
+      << "control: a folded input must still move the key";
+
   std::filesystem::remove_all(dir, ec);
 }
 

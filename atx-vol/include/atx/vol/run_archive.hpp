@@ -600,10 +600,28 @@ public:
   // Files 2-5 are SKIPPED WHEN ABSENT, so a partially-populated run dir still
   // yields an identity.
   //
-  // definitions.tsv is DELIBERATELY NOT FOLDED (it is ~700 MB; hashing it on
-  // every archive write would cost more than the write). It is covered
-  // transitively by (3) and (4) — see the rationale in run_archive.cpp. Do not
-  // "fix" this by folding the definitions bytes.
+  // ORDERING INVARIANT — cross-file and load-bearing. A command that writes one
+  // of files 2-5 into a run dir MUST do so BEFORE its own write_run_archive call.
+  // A folded input that appears (or changes) AFTER an archive was stamped makes
+  // the next route recompute a different identity, so its write starts FRESH and
+  // silently drops the earlier route's sections, with no error.
+  // build_schedule_command writes trade_schedule.tsv immediately before its own
+  // write_run_archive for exactly this reason (examples/spy_dispersion_backtest
+  // .cpp); moving the archive write above it breaks the pipeline's section union.
+  // Pinned by RunDir.MergeWriteDropsCarriedSectionsWhenAFoldedInputAppearsLate.
+  //
+  // definitions.tsv is DELIBERATELY NOT FOLDED, on COST GROUNDS ALONE: it is
+  // ~700 MB on a production run, so hashing it on every archive write would cost
+  // far more than the write itself. It is NOT covered transitively by (3) or (4)
+  // — no folded input is derived from the definitions bytes at all (build-corpus
+  // COPIES definitions.tsv without reading it; write_input_inventory consumes
+  // only the OPRA batch). So a definitions-ONLY change does NOT invalidate the
+  // merge-write guard below, and sections computed from the OLD definitions are
+  // carried across it. That is a KNOWN, BOUNDED, DOCUMENTED GAP — not a covered
+  // case — pinned as a limitation by
+  // RunDir.RunIdentityIsDeliberatelyBlindToDefinitionsContent. Callers that swap
+  // definitions in place must delete run.atxrun. Full rationale, and the cheap
+  // remedy that would close it, in run_archive.cpp.
   [[nodiscard]] Result<std::uint64_t> run_identity_hash() const;
 
   // Publish <dir>/run.atxrun atomically (write_run_archive_file's fsync +

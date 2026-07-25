@@ -1520,14 +1520,48 @@ Result<std::uint64_t> RunDir::run_identity_hash() const {
   // Files 2-5 are SKIPPED WHEN ABSENT, so a partially-populated run dir (e.g.
   // after build-corpus but before build-schedule) still yields an identity.
   //
-  // definitions.tsv is DELIBERATELY NOT FOLDED — do not "fix" this. It is ~700 MB
-  // on a production run; hashing it on every archive write would cost far more
-  // than the write itself. It is covered TRANSITIVELY: input_inventory.tsv (4)
-  // carries the per-cell source_fingerprint / market_input_fingerprint of every
-  // OPRA input the definitions are derived from (write_input_inventory,
-  // examples/spy_dispersion_backtest.cpp), and surface_manifest.tsv (3) carries
-  // the per-date corpus identity. A definitions change that could move the
-  // economics moves one of those two.
+  // ORDERING INVARIANT — cross-file and load-bearing. A command that writes one
+  // of files 2-5 into the run dir MUST write it BEFORE its own write_run_archive
+  // call. A folded input that appears (or changes) after an archive was stamped
+  // makes the next route recompute a DIFFERENT identity, so the merge-write below
+  // starts FRESH and silently drops the earlier route's sections, with no error.
+  // build_schedule_command writes trade_schedule.tsv five lines before its own
+  // write_run_archive for exactly this reason (examples/spy_dispersion_backtest
+  // .cpp); moving the archive write above it breaks the pipeline's section union.
+  // Pinned by RunDir.MergeWriteDropsCarriedSectionsWhenAFoldedInputAppearsLate.
+  //
+  // definitions.tsv is DELIBERATELY NOT FOLDED, and the reason is COST ALONE. It
+  // is ~700 MB on a production run; hashing it on every archive write would cost
+  // far more than the write itself — a perf regression inside a perf wave.
+  //
+  // It is NOT covered transitively by (3) or (4). An earlier version of this
+  // comment claimed that it was; the claim was FALSE and was falsified on the real
+  // driver (Wave E T6 review): definitions.tsv was changed, all five folded inputs
+  // stayed byte-identical, the identity did not move, and a six-section
+  // run-backtest write produced a NINE-section archive — three sections computed
+  // against the OLD definitions were carried forward. The cause is structural, not
+  // incidental: NO folded input is derived from the definitions bytes.
+  // build_corpus_command COPIES definitions.tsv into the run dir without ever
+  // reading it (fs::copy_file, examples/spy_dispersion_backtest.cpp) and persists
+  // the fixed relative literal "definitions.tsv" into run_spec.tsv; and
+  // write_input_inventory (same file) derives every column — source_fingerprint
+  // and market_input_fingerprint included — solely from the OpraBatchResult quote
+  // panels, with `definitions` not even a parameter.
+  //
+  // Consequence, stated plainly: a change confined to definitions.tsv does NOT
+  // invalidate the merge-write guard, and stale sections WILL be carried across
+  // it. That is a KNOWN, BOUNDED, DOCUMENTED GAP. Callers that swap definitions in
+  // place must delete run.atxrun. The gap is pinned — deliberately, AS A
+  // LIMITATION — by RunDir.RunIdentityIsDeliberatelyBlindToDefinitionsContent, so
+  // it stays visible in the suite instead of latent in a comment.
+  //
+  // The remedy is identified and cheap; it is simply not this function's job.
+  // Wave E's definitions-cache task computes atx::core::hash_bytes over the FULL
+  // content of definitions.tsv on the READ path, where read_listed_definitions_
+  // file already holds those bytes resident — so folding that already-computed
+  // digest in here (as a sixth input, or via a small run-dir file recording it)
+  // would close the gap at NO extra I/O. Until that value exists, do NOT "fix"
+  // this by hashing the definitions bytes here.
   //
   // hash_bytes is the same wyhash the orchestrator fingerprints inputs with
   // (hash_file), so a RunDir identity is comparable to those fingerprints;
