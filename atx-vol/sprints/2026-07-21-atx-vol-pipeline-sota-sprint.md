@@ -278,6 +278,63 @@ Branch `feat/pipeline-f`, worktree `wt-pipe-f`. Owns: `backtest.{cpp,hpp}`,
 | **F5** | BT-T2 | Subset-deserialize for schedule strategies | Strategy overload: when the strategy can enumerate uids up front (add `IStrategy::referenced_uids()` optional hook; `ListedDispersionStrategy` returns the schedule's set), construct the private snapshot cache with the subset (`backtest.cpp:1424-1434` pattern at `:1836-1838`). | Byte-identity of NAV track vs whole-board load on the golden fixture + measured per-date load-bytes drop (counter). | perf |
 | **F6** | BT-P2-8 | Quote-quality gates | `is_valid_listed_quote`: reject bid == 0 (config floor), flag locked markets, add staleness threshold on `quote_ts_ns` (config, default 10 min) with per-date reject counters in the join report. | Tests: zero-bid quote excluded from selection (fails today); stale-quote fixture rejected with named reason. | fix |
 
+> **F4 CORRECTION (RECONCILE 2, 2026-07-25).** The F4 row above specifies a CLI
+> **flag** surface that does not exist and never did. `git log --all -S` for
+> `--half-spread-bps` and for `--frictions=off` returns exactly one commit —
+> `d4ade5b`, the commit that authored THIS PLAN. No source file in any commit on
+> any branch has ever contained those strings, and `dispersion_run.cpp` contains
+> zero `--flag` string literals, so it is not an argument parser. This is not
+> merge damage; it is an authoring error in F4 that WS-F's two reviews and the
+> final whole-branch review all missed.
+>
+> **F4 nevertheless LANDED, by a different mechanism: typed spec keys.** The
+> execution knobs are set in the run spec TSV, not on argv, and the chain is:
+>
+> ```
+> run_spec.tsv key  ->  read_dispersion_run_config   (STRICT: unknown key fails BY NAME)
+>                   ->  DispersionRunConfig          (typed fields)
+>                   ->  dispersion_engine_run_config_from / dispersion_backtest_config_from
+>                   ->  engine RunConfig             (frictions, financing, provenance, unpriced)
+>                   ->  write_dispersion_effective_config -> run_config.tsv, REGIME FIRST
+> ```
+>
+> Key-for-flag, every item the row names is reachable: `--half-spread-bps` is
+> `friction_half_spread_bps`, `--vol-tick` is `friction_vol_tick`,
+> `--hedge-slippage-bps` is `friction_hedge_slippage_bps`, `--impact` is
+> `cost_impact_k` / `cost_adv_fraction`, the `FinancingConfig` flags are the
+> `financing_*` keys, `--provenance=require-admitted-risk` is
+> `provenance  require_admitted_risk`, and `--unpriced=error|exclude` is
+> `unpriced`. `persist_typed_spec_keys` carries all of them through build-corpus
+> into the run directory, which `write_resolved_spec` alone would have erased.
+>
+> **The gate's round-trip test exists**, spelled in keys rather than flags:
+> `DispersionRunConfigStrict.EffectiveRunConfigArtifactRecordsRegimeFirstAndEveryValue`
+> (spec → RunConfig → artifact TSV keys present WITH values, regime first),
+> `…ListedEngineConfigCarriesEveryDeclaredExecutionKnob`,
+> `…DefaultSpecStillYieldsThePinnedFrictionlessEngineConfig` and
+> `…BuildCorpusPreservesEveryTypedKeyIntoTheRunDirectory`
+> (`atx-vol/tests/dispersion_run_config_test.cpp`).
+>
+> **One clause of the gate is NOT met and will not be met as written:**
+> *"frictionless run now requires explicit `--frictions=off`."* It contradicts
+> the design that shipped. X1 pins every `DispersionRunConfig` default to the
+> value the 82-session golden already used precisely so a spec that omits a knob
+> reproduces byte-for-byte; making frictionless an error would fail every
+> existing spec and fixture and would move the pinned reproduction. §3's
+> no-golden-moves rule governs. The shipped substitute is **mandatory
+> disclosure instead of mandatory opt-out**: every run emits `run_config.tsv`
+> with `friction_regime` as its first data row, and the console line names the
+> regime, so a frictionless run is explicit in the artifact even though it is
+> the default in the spec — e.g. `regime=frictionless (mid fills, no commission,
+> no impact) cost=0`. Recorded as unmet-by-design, not as satisfied.
+>
+> **Reachability from the shipped binary was severed by the merge and is
+> restored by RECONCILE 1.** Between `b48ec35` and `347ad44` the example built
+> `RunConfig config; config.unpriced = Error;` and build-corpus dropped every
+> typed key, so the chain above was live in the library and dead on the command
+> line. Measured on the frictioned 82-session spec: `final_nav 24740.62412`
+> (frictionless, spec ignored) -> `1280.834458`, `cost 23459.78967`.
+
 ### WS-T — Corpus throughput
 
 Branch `feat/pipeline-t`, worktree `wt-pipe-t`. Owns: `corpus.cpp`,
@@ -353,7 +410,7 @@ this sprint). Trunk tip after the wave-1 merge train: **264b2fe**.
 | C | feat/pipeline-c | wt-pipe-c | MERGED (9390a15) | 07dd317 | 6 commits; owning suites green (adversarial 17/17, writer/archive/db 140, db+populate 66/66, durability 2/2); full-serial verdict folded into the trunk gate; review in flight |
 | G | feat/pipeline-g | wt-pipe-g | MERGED (96172e5) | de0101b | 3 commits + G4 no-code-change (premise overtaken by the WS-M merge: Auto already rides the laned AVX2 greeks via `avx2_greeks_selected`, GreekNeeds threaded); owning suites green (219 pass / 2 skip); full-serial verdict folded into the trunk gate; review in flight, carries the M1 AVX2 auto-merge deep-dive mandate |
 | E | feat/pipeline-e | wt-pipe-e | in flight (wave 2) | 264b2fe | forked from the merged trunk; E3b unblocked by the WS-A merge; E1's golden re-pin is a coordinated PM event, serialized against WS-F |
-| F | feat/pipeline-f | wt-pipe-f | DONE — re-reviewed (0 Critical, 3 Important); N1/N2 closed by FIX-F, **N3 open and owned by the controller** | branch tip | **FIX-F (re-review follow-ups):** N1 — `6142699` did not compile standalone (it wrote `counts.stale_unevaluable` one commit before the member existed), so `git bisect` broke across it and its quoted GREEN cannot have come from that tree; repaired by rewriting the pair, both rewritten commits built and re-measured, bodies re-derived. N2 — the F5 guard rebuilt the production construction instead of calling it; now one named `make_listed_replay_run_config` called by `dispersion_run_backtest` and by the guard, proven by a physical revert (RED) and restore (GREEN). BT-P2-8 corrected to **partial** in §2 (staleness half unevaluable on this feed). **N3 NOT closed here:** the 135-session drift table quoted below (`pnl_charm` 1.87e-05, final `nav` +7.109e-13 rel) was measured at 21:48, BEFORE `c601504` (greek Ok-stamp) and before the merge — it does not describe the branch tip. Re-measurement belongs to the controller's serialized re-pin; WS-F did not re-measure and did not re-pin. — 10 commits. F1 leak family (default `unpriced`=Error; spot-0.0 hedge and unmarked shares fail closed; opt-in NAV-vs-liquidation recon). F2 `ScheduleFillPolicy` + `RunConfig::book_entry_fill_slippage` — crossing the spread on every leg was BIT-IDENTICAL in NAV before, so the policy alone would have been vacuous. **F3(a) PREMISE FAILED** (WS-M's C3 already made PIT removals expressible); F3(b) discrete share dividends; F3(c) assignment deferral documented. F6 quote-quality gates: zero-bid rejection is admission-changing; staleness is **provably INERT** on the snapshot-stamped OPRA panel (measured: one distinct `ts` per file) and now reports `stale_unevaluable` instead of a reassuring 0. F4 listed route honours the typed spec, and build-corpus no longer ERASES every typed key on the way into the run dir. F5 `IStrategy::referenced_uids()` subset-deser: 33.3% record bytes, NAV bit-identical. Pinned 135-session replay run read-only: **does NOT abort** under F1(a)/(b); artifact moves 7.1e-13 rel on final NAV — wave-1 pricing drift, not WS-F |
+| F | feat/pipeline-f | wt-pipe-f | DONE — re-reviewed (0 Critical, 3 Important); N1/N2 closed by FIX-F, **N3 open and owned by the controller** | branch tip | **FIX-F (re-review follow-ups):** N1 — `6142699` did not compile standalone (it wrote `counts.stale_unevaluable` one commit before the member existed), so `git bisect` broke across it and its quoted GREEN cannot have come from that tree; repaired by rewriting the pair, both rewritten commits built and re-measured, bodies re-derived. N2 — the F5 guard rebuilt the production construction instead of calling it; now one named `make_listed_replay_run_config` called by `dispersion_run_backtest` and by the guard, proven by a physical revert (RED) and restore (GREEN). BT-P2-8 corrected to **partial** in §2 (staleness half unevaluable on this feed). **N3 NOT closed here:** the 135-session drift table quoted below (`pnl_charm` 1.87e-05, final `nav` +7.109e-13 rel) was measured at 21:48, BEFORE `c601504` (greek Ok-stamp) and before the merge — it does not describe the branch tip. Re-measurement belongs to the controller's serialized re-pin; WS-F did not re-measure and did not re-pin. — 10 commits. F1 leak family (default `unpriced`=Error; spot-0.0 hedge and unmarked shares fail closed; opt-in NAV-vs-liquidation recon). F2 `ScheduleFillPolicy` + `RunConfig::book_entry_fill_slippage` — crossing the spread on every leg was BIT-IDENTICAL in NAV before, so the policy alone would have been vacuous. **F3(a) PREMISE FAILED** (WS-M's C3 already made PIT removals expressible); F3(b) discrete share dividends; F3(c) assignment deferral documented. F6 quote-quality gates: zero-bid rejection is admission-changing; staleness is **provably INERT** on the snapshot-stamped OPRA panel (measured: one distinct `ts` per file) and now reports `stale_unevaluable` instead of a reassuring 0. F4 listed route honours the typed spec, and build-corpus no longer ERASES every typed key on the way into the run dir. **[RECONCILE 2, 2026-07-25] This row is accurate about the MECHANISM and that is the point: F4 landed as typed SPEC KEYS, never as the CLI flags §4's F4 row specifies — those flag strings exist in no commit on any branch outside this plan document. See the F4 CORRECTION note under §4/WS-F for the key-for-flag mapping, the four round-trip gates that stand in for the plan's named CLI round-trip test, and the one gate clause (`frictionless run now requires explicit --frictions=off`) that is unmet BY DESIGN because it contradicts X1's pinned frictionless defaults. Reachability from the shipped binary was severed by the merge (`b48ec35`) and restored at `347ad44`.** F5 `IStrategy::referenced_uids()` subset-deser: 33.3% record bytes, NAV bit-identical. Pinned 135-session replay run read-only: **does NOT abort** under F1(a)/(b); artifact moves 7.1e-13 rel on final NAV — wave-1 pricing drift, not WS-F |
 | T | feat/pipeline-t | wt-pipe-t | FIX-T + FIX-T2 applied — rev-ws-t Needs-work (narrow) closed: T-I1 lifetime-aware reclaim, T-I2 saturated drain gate, T-I3 payload-bit scrub poison, T-I4 counters on the PHASE line; re-review returned approve-with-follow-ups and those are closed too | see FIX-T2 row | T1/T2 as before, plus 4 review-fix commits (`1a51c37` T-I1, `54e0602` T-I2, `50fa69f` T-I3, `9cfcbc3` T-I4), the trunk merge `817959a`, and 3 FIX-T2 commits. **82-date byte gate (restored inline — this row's cross-reference to a non-existent §7 FIX-T row had lost it, rev2-ws-t N-M4):** parallel (`fit_workers=0`) vs serial (`fit_workers=1`), run specs differing in that one key only — **82/82 archives identical, 0 differ, 0 missing**; digest-of-digests equal across serial / pre-fix parallel / fix-tip parallel; `quality.tsv`, `surface_manifest.tsv`, `archives/manifest.tsv`, `archives/quality.tsv` equal under out_dir normalization, `input_inventory.tsv` / `methodology_map.tsv` equal raw; `counts 1309 902 0 407 0 0` — **admitted=902, source_failed=407** — and identical `fingerprints` rows on both sides; 1313 index rows, 238 checkpoint files. Independently re-verified at tip `817959a` by the second reviewer from the on-disk artifacts. Gates: FIX-T2 row below |
 | Y | feat/pipeline-y | wt-pipe-y | in flight (wave 2) | 10609ee | trunk + one base commit snapshotting the in-flight Python layer the PY-* findings were written against (see 10609ee's message); `test_dispersion_runarchive_e2e.py` is environment-blocked here by design |
 | **FIX-T2** | feat/pipeline-t | wt-pipe-t | re-review (independent second reviewer) returned **approve-with-follow-ups** at `817959a` — 0 Critical, 2 Important, 6 Minor, all four original T-I findings confirmed CLOSED in mechanism. Follow-ups now closed: N-I1, N-I2, N-M1, N-M2, N-M3, N-M4, N-M6. N-M5 left alone by direction (WS-C's `surface_db_populate.cpp:300-307`, controller-tracked) | `cf7a36c` → `a8fc072` → `811ffe1` (+ this doc commit) | **Full serial `ctest -L atx_vol -j 1`, FULL label, no `-R`: 100% tests passed, 0 tests failed out of 2129** (2135 registered, 6 disabled, 47 skipped — data-guarded). Beats the reviewer's independently-observed baseline on the same branch (0 failed of 2123, same 47 skipped / 6 disabled) by exactly the six new gates. All eleven WS-T gates green (#2068-2079 `BatchedAppend*`, `DefaultStampBuildsAreByteReproducible`, `DrainingFanOutReclaimsInnerFitWorkers`, `InnerWorkerReclaimIsByteIdenticalToSerial`, `StragglerReclaimsInnerWorkersWhileStillRunning`, `SaturatedFanOutOffersOneWorkerUntilItDrains`, `CheckpointResumeIsFramingOnly`, `CheckpointScrubRejectsCorruptedPayload`, `CheckpointScrubAcceptsIntactArchive`). New: `ParallelForElastic.*` ×5 (#1101-1105) + `CorpusPhaseLine.TruncatedLineDoesNotOverreadTheFormatBuffer` (#1322), all Passed. **No golden moved.** **PHASE-line probe, run for real** through `dispersion_build_corpus` with `ATX_VOL_CORPUS_PHASE_TIMING=1`: 6-date parallel arm `reclaimed=2 inner_slots=1491 boards=66`, 20-date parallel arm `reclaimed=15 inner_slots=5221 boards=220`, and the serial control (`fit_workers=1`) `reclaimed=0 inner_slots=0` — so the reclaim demonstrably fires in production and the counters are not noise. Fresh 6-date byte gate at this tip: parallel vs serial **6/6 archives identical, 0 differ**, digest-of-digests `6ebd02cc…` equal, all six index files equal under out_dir normalization, `admitted=66 / source_failed=22` both sides. The 82-date arm itself was NOT re-run and no PHASE line exists for it — stated as not measured. **No timing number here is citable**; four agents shared the box (wall 1249 s, recorded only for the record) |
