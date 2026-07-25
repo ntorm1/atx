@@ -1022,3 +1022,73 @@ TEST(ListedDispersionStrategy, AStrategyThatCannotEnumerateItsNamesStillLoadsThe
   std::error_code ec;
   fs::remove_all(fx.dir, ec);
 }
+
+// F5 review follow-up. The engine never subsets a caller-SUPPLIED cache — it
+// cannot know what else the caller will serve from it — so any driver that
+// supplies its own cache silently opted out of F5. `dispersion_run_backtest`
+// does exactly that (it shares one cache between the replay and the
+// reconciliation pass), which left F5 inert on the listed `run-backtest`: the
+// very path whose premise motivated the task.
+//
+// The fix is at the CALL SITE, not in the engine: a caller that knows its
+// referenced set constructs the cache with it. This pins that mechanism — the
+// same construction `dispersion_run_backtest` now performs — end to end.
+TEST(ListedDispersionStrategy, ASuppliedCacheSubsetsOnlyWhenTheCallerNamesTheUids) {
+  const F2Fixture fx = make_wide_fixture("f5-supplied-cache", /*n_filler=*/6);
+  auto clock = Clock::from_manifest(fx.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  enum class Cache { WholeBoardSupplied, SubsetSupplied };
+  const auto run = [&](Cache mode) -> std::pair<Result<BacktestResult>, std::uint64_t> {
+    auto strategy = ListedDispersionStrategy::create(fx.schedule);
+    EXPECT_TRUE(strategy.has_value());
+    RunConfig cfg;
+    cfg.price.n_threads = 1u;
+    cfg.prefetch_snapshots = false;
+    if (mode == Cache::WholeBoardSupplied) {
+      cfg.snapshot_cache = std::make_shared<SnapshotCache>();
+    } else {
+      // Verbatim the construction dispersion_run_backtest performs.
+      const std::span<const std::uint32_t> uids = strategy->referenced_uids();
+      cfg.snapshot_cache = std::make_shared<SnapshotCache>(
+          clock->size() > 0u ? clock->size() : 1u,
+          std::vector<std::uint32_t>(uids.begin(), uids.end()));
+    }
+    MarketSnapshot::reset_deserialized_bytes();
+    auto result = run_backtest(*clock, *strategy, cfg);
+    return {std::move(result), MarketSnapshot::deserialized_bytes()};
+  };
+
+  auto [board, board_bytes] = run(Cache::WholeBoardSupplied);
+  ASSERT_TRUE(board.has_value()) << board.error().to_string();
+  auto [subset, subset_bytes] = run(Cache::SubsetSupplied);
+  ASSERT_TRUE(subset.has_value()) << subset.error().to_string();
+
+  expect_track_bit_identical(*subset, *board);
+  EXPECT_LT(subset_bytes, board_bytes);
+  EXPECT_LT(static_cast<double>(subset_bytes), 0.5 * static_cast<double>(board_bytes));
+  std::printf("[F5 supplied cache] record bytes  subset=%llu  whole-board=%llu  (%.1f%%)\n",
+              static_cast<unsigned long long>(subset_bytes),
+              static_cast<unsigned long long>(board_bytes),
+              100.0 * static_cast<double>(subset_bytes) / static_cast<double>(board_bytes));
+
+  // A supplied cache with a LARGE capacity must not evict across the run: the
+  // reconciliation pass that shares this cache holds every date alive at once,
+  // and an evicting cache would silently re-load (and re-count) each date.
+  // One archive open per date is the invariant.
+  MarketSnapshot::reset_open_count();
+  auto strategy = ListedDispersionStrategy::create(fx.schedule);
+  ASSERT_TRUE(strategy.has_value());
+  const std::span<const std::uint32_t> uids = strategy->referenced_uids();
+  RunConfig cfg;
+  cfg.price.n_threads = 1u;
+  cfg.prefetch_snapshots = false;
+  cfg.snapshot_cache = std::make_shared<SnapshotCache>(
+      clock->size(), std::vector<std::uint32_t>(uids.begin(), uids.end()));
+  const auto once = run_backtest(*clock, *strategy, cfg);
+  ASSERT_TRUE(once.has_value()) << once.error().to_string();
+  EXPECT_EQ(MarketSnapshot::open_count(), static_cast<std::uint64_t>(clock->size()));
+
+  std::error_code ec;
+  fs::remove_all(fx.dir, ec);
+}
