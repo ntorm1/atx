@@ -4,18 +4,31 @@ Carries the format identity and the column registry as plain data, plus a
 byte-for-byte port of the C++ ``ra_schema_hash()`` FNV-1a-64 fold so the
 pure-Python reader can pin a file's schema at open. No third-party imports.
 
-PROVENANCE (corrected, FIX-5/I5). This file previously declared itself
-``GENERATED, do not edit by hand``, named
-``atx-vol/include/atx/vol/run_archive_schema.hpp`` as its source of truth and
-``atx-vol/tools/gen_runarchive_schema.py`` as the regeneration path. **Neither
-file exists in this repository**, and neither does any other ATXRUN01 producer:
-``git ls-files`` matching ``run_archive`` returns only this reader, its two
-fixtures and its two test files. The header/generator belong to the out-of-tree
-C++ writer. So in THIS repo this module is hand-maintained and is itself the
-authority for the pure-Python reader, and the header at the top said the
-opposite — which is why ``test_runarchive.py``'s anti-drift guard skipped in
-silence against its own docstring. That guard now asserts in both worlds; see
-``test_schema_py_not_stale_vs_cpp_header``.
+PROVENANCE. This module is PARTLY generated, and the split is explicit rather
+than a convention:
+
+* The block between ``# --- BEGIN GENERATED`` and ``# --- END GENERATED`` is
+  written by ``atx-vol/tools/gen_runarchive_schema.py`` from
+  ``atx-vol/include/atx/vol/run_archive_schema.hpp``. Do not hand-edit it; edit
+  the header and regenerate.
+* Everything OUTSIDE those markers — this docstring and the ``COLUMN_NOTES``
+  table at the bottom — is hand-maintained and is preserved verbatim across
+  regeneration. It is not compared by ``--check``.
+
+History, because it explains why the partition exists (FIX-5/I5, then
+RECONCILE 3). This file once declared itself ``GENERATED, do not edit by hand``
+and named a header and a generator that **did not exist in this repository** —
+the ATXRUN01 writer was out-of-tree — which is how ``test_runarchive.py``'s
+anti-drift guard came to skip in silence against its own docstring. FIX-5
+corrected the claim and made the guard assert in both worlds. The header and
+generator then LANDED with the main → feat/pipeline-m merge, the guard flipped
+to its live ``--check`` branch by itself with no edit exactly as designed, and
+the check FAILED — not on registry drift (the registry was proven
+byte-identical) but on FIX-5's own two hand-maintained regions, which an
+all-or-nothing generator would have DELETED to turn the check green. Splitting
+the file into a generated region and a preserved region is what lets both hold
+at once. See ``test_schema_py_not_stale_vs_cpp_header`` and its three
+companion drift tests.
 
 The real drift detector is ``RA_SCHEMA_HASH``: the writer stamps its own fold
 into every file and ``RunArchive.open`` rejects a mismatch, so a registry that
@@ -33,6 +46,13 @@ writer, not to this file alone. Until then the semantics that the blank
 annotations fail to carry are recorded in ``COLUMN_NOTES`` below, which is
 deliberately NOT folded into the hash.
 """
+
+# --- BEGIN GENERATED: gen_runarchive_schema.py <- run_archive_schema.hpp ---
+# Everything between these markers is machine-written from the C++ header and
+# is what `gen_runarchive_schema.py --check` compares. Do not edit it by hand;
+# edit run_archive_schema.hpp and regenerate. Text OUTSIDE the markers (the
+# module docstring above, COLUMN_NOTES below) is hand-maintained and preserved
+# verbatim across regeneration.
 
 from __future__ import annotations
 
@@ -289,6 +309,7 @@ def ra_schema_hash() -> int:
 
 
 RA_SCHEMA_HASH = ra_schema_hash()
+# --- END GENERATED ---
 
 
 # ── Column semantics the registry's unit strings do not carry (FIX-5/I5) ─────

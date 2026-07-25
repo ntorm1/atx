@@ -326,12 +326,193 @@ def test_schema_py_not_stale_vs_cpp_header():
     assert not any(ln.startswith("Regenerate:") for ln in lines), (
         f"_schema.py advertises a regeneration path, but {generator} is absent."
     )
-    # And the provenance it DOES state must be the honest one: the module has to
-    # say, in words, that the C++ writer's header is not in this repository.
-    flat = " ".join(doc.split())
-    assert "Neither file exists in this repository" in flat, (
-        "_schema.py must record that its C++ source of truth is out-of-tree"
+    # RECONCILE 3: FIX-5 also asserted here that the docstring literally contains
+    # "Neither file exists in this repository". That sentence was the truth of a
+    # tree where the header was absent; the header has since LANDED, the docstring
+    # states the real (partly-generated) provenance, and re-asserting the old
+    # sentence in the absent-branch would demand the module lie about a state it
+    # is no longer in. The three LINE-ANCHORED negatives above are the teeth —
+    # they are what stops a module from advertising a source of truth it does not
+    # have, in either world — so they are kept and the positive is dropped.
+
+
+# ── the generated/preserved boundary (RECONCILE 3) ───────────────────────────
+#
+# `_schema.py` is PARTLY generated: `gen_runarchive_schema.py` owns the block
+# between the BEGIN/END GENERATED markers, and the module docstring plus
+# COLUMN_NOTES are hand-maintained and preserved across regeneration.
+#
+# Scoping `--check` to a region is only safe if the region cannot be quietly
+# shrunk, unmarked, or shadowed — otherwise a loud failure has been traded for a
+# guard that cannot fire, which is the exact defect class this sprint has closed
+# four times. Every test below therefore MUTATES a throwaway copy and asserts
+# `--check` goes RED. The committed pair's green is asserted by
+# `test_schema_py_not_stale_vs_cpp_header` above; these prove it is green for a
+# reason.
+#
+# Nothing here touches a tracked file: the header and `_schema.py` are copied
+# into pytest's tmp_path and the generator is driven over the copies via
+# `--header` / `--out`.
+
+_ATX_VOL = pathlib.Path(__file__).resolve().parents[2]
+_CPP_HEADER = _ATX_VOL / "include" / "atx" / "vol" / "run_archive_schema.hpp"
+_GENERATOR = _ATX_VOL / "tools" / "gen_runarchive_schema.py"
+_SCHEMA_PY = _ATX_VOL / "python" / "src" / "atxvol" / "report" / "_schema.py"
+
+_needs_generator = pytest.mark.skipif(
+    not (_CPP_HEADER.exists() and _GENERATOR.exists()),
+    reason=(
+        "run_archive_schema.hpp / gen_runarchive_schema.py are not in this tree "
+        "(out-of-tree C++ writer); the generated-region boundary cannot be "
+        "exercised here"
+    ),
+)
+
+
+def _sandbox(tmp_path):
+    """A throwaway (header, _schema.py) pair. Never the tracked files."""
+    header = tmp_path / "run_archive_schema.hpp"
+    out = tmp_path / "_schema.py"
+    header.write_bytes(_CPP_HEADER.read_bytes())
+    out.write_bytes(_SCHEMA_PY.read_bytes())
+    return header, out
+
+
+def _run_generator(header, out, *extra):
+    return subprocess.run(
+        [sys.executable, str(_GENERATOR), "--header", str(header), "--out", str(out),
+         *extra],
+        capture_output=True, text=True,
     )
+
+
+def _check(header, out):
+    return _run_generator(header, out, "--check")
+
+
+@_needs_generator
+def test_sandbox_copy_of_the_committed_pair_checks_green(tmp_path):
+    """Control. Without it every RED below could come from the copy mechanics
+    rather than from the mutation under test."""
+    header, out = _sandbox(tmp_path)
+    proc = _check(header, out)
+    assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
+
+
+@_needs_generator
+def test_registry_drift_in_the_header_turns_check_red(tmp_path):
+    """A renamed column is real schema drift: it moves ``ra_schema_hash`` and
+    would make the reader mis-name a column of every archive."""
+    header, out = _sandbox(tmp_path)
+    src = header.read_text(encoding="utf-8")
+    assert '{"turnover_notional", RaDType::F64, "usd"}' in src
+    header.write_text(
+        src.replace('{"turnover_notional", RaDType::F64, "usd"}',
+                    '{"turnover_notionall", RaDType::F64, "usd"}'),
+        encoding="utf-8",
+    )
+    proc = _check(header, out)
+    assert proc.returncode != 0, f"drifted registry passed --check:\n{proc.stdout}"
+
+
+@_needs_generator
+def test_drift_the_schema_hash_does_not_cover_turns_check_red(tmp_path):
+    """THE anti-vacuity test.
+
+    ``ra_schema_hash`` folds the salt and the registry — it does NOT fold
+    ``kRaMajor`` / ``kRaMinor``. So bumping the minor version is header drift
+    that the golden-hash assertion is blind to by construction, and the ONLY
+    thing that can catch it is the generated-region comparison itself. If
+    scoping ``--check`` to a region had broken that comparison, this test is
+    what notices."""
+    header, out = _sandbox(tmp_path)
+    src = header.read_text(encoding="utf-8")
+    assert "inline constexpr std::uint16_t kRaMinor = 0;" in src
+    header.write_text(
+        src.replace("inline constexpr std::uint16_t kRaMinor = 0;",
+                    "inline constexpr std::uint16_t kRaMinor = 7;"),
+        encoding="utf-8",
+    )
+    proc = _check(header, out)
+    assert proc.returncode == 1, f"minor-version drift passed --check:\n{proc.stdout}"
+    assert "stale" in proc.stderr, proc.stderr
+    # And it is genuinely invisible to the hash pin, or the test proves nothing:
+    # the run got far enough to compare regions rather than dying on the golden.
+    assert "header parse drifted" not in proc.stderr, proc.stderr
+
+
+@_needs_generator
+def test_removing_a_region_marker_turns_check_red(tmp_path):
+    """Deleting the markers must not degrade ``--check`` into a no-op."""
+    header, out = _sandbox(tmp_path)
+    text = out.read_text(encoding="utf-8")
+    assert "# --- END GENERATED ---" in text
+    out.write_text(text.replace("# --- END GENERATED ---\n", ""), encoding="utf-8")
+    proc = _check(header, out)
+    assert proc.returncode == 1, f"unmarked file passed --check:\n{proc.stdout}"
+    assert "END GENERATED" in proc.stderr and "cannot fire" in proc.stderr, proc.stderr
+
+
+@_needs_generator
+def test_shrinking_the_region_turns_check_red(tmp_path):
+    """Moving END upward would smuggle generated content (here, the whole
+    ``SECTIONS`` registry) into the region ``--check`` does not compare. The
+    boundary is machine-checked precisely so that this cannot work.
+
+    Two independent mechanisms make it red and the OWNED-NAME one wins the race,
+    so that is what is asserted: the demoted text still ASSIGNS ``SECTIONS`` /
+    ``RA_SCHEMA_HASH`` / ``ra_schema_hash``, and the preserved region is
+    forbidden to assign a generator-owned name. (Had the demoted text contained
+    no such assignment, the truncated-region compare would have caught it
+    instead — that path is covered by
+    ``test_drift_the_schema_hash_does_not_cover_turns_check_red``.)"""
+    header, out = _sandbox(tmp_path)
+    text = out.read_text(encoding="utf-8")
+    moved = text.replace("# --- END GENERATED ---\n", "")
+    marker = "# Registry: (section_name, kind_code,"
+    assert marker in moved
+    moved = moved.replace(marker, "# --- END GENERATED ---\n" + marker, 1)
+    out.write_text(moved, encoding="utf-8")
+    proc = _check(header, out)
+    assert proc.returncode == 1, f"shrunken region passed --check:\n{proc.stdout}"
+    assert "SECTIONS" in proc.stderr and "override the generated registry" in proc.stderr, (
+        proc.stderr
+    )
+
+
+@_needs_generator
+def test_preserved_region_may_not_shadow_a_generated_name(tmp_path):
+    """The subtle hole in any region-scoped check: rebind a generated name AFTER
+    the region and the reader uses a registry the header never produced, while
+    the region itself still compares equal."""
+    header, out = _sandbox(tmp_path)
+    out.write_text(out.read_text(encoding="utf-8") + "\nSECTIONS = ()\n",
+                   encoding="utf-8")
+    proc = _check(header, out)
+    assert proc.returncode == 1, f"shadowed registry passed --check:\n{proc.stdout}"
+    assert "SECTIONS" in proc.stderr, proc.stderr
+
+
+@_needs_generator
+def test_regeneration_preserves_the_hand_maintained_regions(tmp_path):
+    """The property FIX-5 refused to trade away: regenerating must NOT delete the
+    provenance docstring or the COLUMN_NOTES unit-hazard table."""
+    header, out = _sandbox(tmp_path)
+    # Make the region genuinely stale first, so the write has something to do.
+    stale = out.read_text(encoding="utf-8").replace("RA_MINOR = 0", "RA_MINOR = 3")
+    out.write_text(stale, encoding="utf-8")
+    assert _check(header, out).returncode == 1
+
+    proc = _run_generator(header, out)
+    assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
+
+    rewritten = out.read_text(encoding="utf-8")
+    assert "RA_MINOR = 0" in rewritten                      # region restored
+    assert "COLUMN_NOTES = {" in rewritten                  # epilogue survived
+    assert "def column_note(" in rewritten
+    assert "usd_per_unitvol; NET signed book vega" in rewritten
+    assert "PROVENANCE." in rewritten                       # preamble survived
+    assert _check(header, out).returncode == 0
 
 
 def test_gross_vega_unit_collision_is_documented():
