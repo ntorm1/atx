@@ -26,15 +26,22 @@
 //     here. Those three are exact supersets of the bodies they replaced, so the
 //     union costs nothing and recovers X1/X2/X3/X4/X5/X6, C1-ACTIVATE and F4's
 //     `persist_typed_spec_keys`.
-//   * Where main's design PUBLISHES ARCHIVE SECTIONS (build-schedule, run-backtest,
-//     verify), the CLI keeps its own body — dispatching here would write loose
-//     result files the reporting layer cannot read — but takes the CONFIG
+//   * Where the two designs disagree about the RESULT ENVELOPE — the library
+//     writes loose result TSVs and main's design uses `run.atxrun` (build-schedule,
+//     run-backtest, verify) — the CLI keeps its own body, because dispatching here
+//     would write files the reporting layer cannot read. It still takes the CONFIG
 //     CONSTRUCTION from here, so F4/F5 stay reachable from the command line.
+//     (REV-TAIL M-1: this rule used to read "where main's design PUBLISHES ARCHIVE
+//     SECTIONS". That is wrong for `verify`, which publishes nothing — it READS
+//     (`RunDir(run_dir).verify()`), and it is library-only because its twin reads
+//     LOOSE artifacts the cutover no longer writes. It also omitted
+//     `project-schedule` and `run-projected-backtest`, which do publish sections
+//     and are CLI-bodied. The membership list was right; the rule was not.)
 //
-// Consequence for readers of the tests: `dispersion_run_test.cpp` exercises these
-// entry points directly off the filesystem. For the three dispatched entry points
-// that coverage is also CLI coverage; for the rest it is coverage of library
-// behaviour and claims nothing about a CLI path.
+// Consequence for readers of the tests: for the three DISPATCHED entry points,
+// `dispersion_run_test.cpp` coverage is also CLI coverage. For the other three it
+// is not coverage of a CLI path and — until REV-TAIL I-1 — was not coverage at
+// all; see the per-entry-point block further down for exactly what now backs them.
 //
 // REPRODUCIBILITY: the pinned admission thresholds / fingerprint material that
 // determine which surfaces are admitted -- and therefore the dispersion golden
@@ -511,9 +518,11 @@ struct DispersionVerifyReport {
 // ── File-oriented workflow entry points ─────────────────────────────────────
 //
 // WHO CALLS THESE (RECONCILE 1, 2026-07-25). Read the contract at the top of this
-// header first; this is the per-entry-point half of it. Three of the five DO back
-// a shipped subcommand and two DELIBERATELY do not, and the difference is not an
-// oversight in either direction.
+// header first; this is the per-entry-point half of it. There are SIX file-oriented
+// entry points in this block (the five declared immediately below plus
+// `dispersion_verify`). Three DO back a shipped subcommand and three DELIBERATELY
+// do not, and the difference is not an oversight in either direction.
+// (REV-TAIL M-1: this said "three of the five", miscounting both halves.)
 //
 //   dispersion_build_corpus         <- `spy_dispersion_backtest build-corpus`
 //   dispersion_run_surface_backtest <- `spy_dispersion_backtest run-surface-backtest`
@@ -547,10 +556,34 @@ struct DispersionVerifyReport {
 // verifies the loose artifact envelope and folds in the M1 native reference
 // reconciliation, both of which read result files the cutover no longer writes.
 //
-// These are not dead code and must not be deleted as such: each is covered
-// directly off the filesystem by `dispersion_run_test.cpp`, which never invokes
-// the example binary, so the coverage is of LIBRARY behaviour and does not
-// pretend to gate a CLI path.
+// WHAT ACTUALLY COVERS THE THREE LIBRARY-ONLY ENTRY POINTS (REV-TAIL I-1,
+// 2026-07-25). This block used to claim that "each is covered directly off the
+// filesystem by `dispersion_run_test.cpp`". THAT WAS FALSE: that file called none
+// of the six, and `dispersion_build_schedule`, `dispersion_run_backtest` and
+// `dispersion_verify` had zero callers and zero tests — so the instruction not to
+// delete them rested on coverage that did not exist. `run_spec_from` had neither
+// a caller nor a test either. The determination, re-derived from the tree rather
+// than inherited: they are NOT accidentally-unwired code that the CLI seam work
+// (`347ad44`) failed to reach, and they are NOT dead code to delete. They are a
+// deliberate, documented RESERVE — the reason is the cutover argument above, and
+// it holds. What they lacked was any evidence they still work.
+//
+// They now have a floor rather than a claim:
+//   `DispersionLibraryOnlyEntryPoints.EachIsReachableAndFailsClosedNamingTheMissing
+//   Spec` drives all three off `tmp_path` and pins that each is LINKED, REACHABLE
+//   and FAILS CLOSED naming its missing input.
+// That is deliberately modest — it gates reachability and fail-closed behaviour,
+// NOT the economics. Anyone relying on these for economics must build the coverage
+// first. State it as reserve; do not restate it as coverage.
+//
+// CONSEQUENCE FOR M10 (`5d5af01`), stated so the next reader is not misled the way
+// this block previously misled: M10's fail-closed `str()` change is real and is
+// directly tested off `tmp_path` (`DispersionReferenceReconcile.M10_*`), but it
+// reaches NO SHIPPED BINARY. Its only public reach is `reconcile_dispersion_
+// reference` -> `dispersion_verify`, and the shipped `verify` subcommand calls
+// `RunDir(run_dir).verify()` instead (spy_dispersion_backtest.cpp:329). The MINORS
+// report's claim that it protects a production path was true at `5d5af01` and is
+// stale now.
 
 [[nodiscard]] Status dispersion_build_corpus(const std::filesystem::path &source_spec_path,
                                              const std::filesystem::path &run_dir,

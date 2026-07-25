@@ -57,6 +57,43 @@ fs::path make_run_dir(std::string_view leaf) {
   return dir;
 }
 
+// The four loose artifacts `reconcile_dispersion_reference` opens. A directory
+// missing any one of them cannot drive the reconciler at all, so it is not
+// evidence either way and is excluded rather than failed.
+constexpr const char *kLooseReconcilerInputs[] = {"trade_schedule.tsv", "contract_marks.tsv",
+                                                  "reconciliation.tsv", "backtest.tsv"};
+
+// Directories under `root` that carry all four. `rejected` accumulates one line
+// per excluded directory naming what it lacked — so a caller that finds NOTHING
+// can say why, instead of skipping green with no signal (REV-TAIL I-1(b)).
+// Factored out of the data-gated test so the selection rule itself is testable
+// on synthetic input, off `tmp_path`, on every box.
+std::vector<fs::path> scan_complete_reference_run_dirs(const fs::path &root, std::string &rejected) {
+  std::vector<fs::path> run_dirs;
+  std::error_code error;
+  for (const fs::directory_entry &entry : fs::directory_iterator(root, error)) {
+    if (!entry.is_directory(error)) {
+      continue;
+    }
+    const fs::path dir = entry.path();
+    std::string missing;
+    for (const char *artifact : kLooseReconcilerInputs) {
+      if (!fs::is_regular_file(dir / artifact, error)) {
+        if (!missing.empty()) {
+          missing += ", ";
+        }
+        missing += artifact;
+      }
+    }
+    if (missing.empty()) {
+      run_dirs.push_back(dir);
+    } else {
+      rejected += "  - " + dir.filename().string() + ": missing " + missing + "\n";
+    }
+  }
+  return run_dirs;
+}
+
 // Mirrors reference_spy_dispersion_test.py::schedule_rows.
 std::string schedule_text(std::string_view spy_call_quantity = "-1") {
   std::string text = "ATX_LISTED_DISPERSION_SCHEDULE\t1\n";
@@ -412,28 +449,29 @@ TEST(DispersionReferenceReconcileRealData, PublishedRunDirectoriesCarryEveryStri
   const fs::path root = "C:/atx-data/spy-dispersion/runs";
   std::error_code error;
   if (!fs::is_directory(root, error)) {
-    GTEST_SKIP() << "reference run corpus absent: " << root.string();
+    GTEST_SKIP() << "reference run corpus absent: " << root.string()
+                 << " -- this check is empirical and needs the published corpus. Its synthetic "
+                    "twin (DispersionReferenceReconcile.M10_*) runs everywhere and is what gates "
+                    "the fix itself.";
   }
-  std::vector<fs::path> run_dirs;
-  for (const fs::directory_entry &entry : fs::directory_iterator(root, error)) {
-    if (!entry.is_directory(error)) {
-      continue;
-    }
-    const fs::path dir = entry.path();
-    bool complete = true;
-    for (const char *artifact :
-         {"trade_schedule.tsv", "contract_marks.tsv", "reconciliation.tsv", "backtest.tsv"}) {
-      if (!fs::is_regular_file(dir / artifact, error)) {
-        complete = false;
-      }
-    }
-    if (complete) {
-      run_dirs.push_back(dir);
-    }
-  }
-  if (run_dirs.empty()) {
-    GTEST_SKIP() << "no complete run directory under " << root.string();
-  }
+  std::string rejected;
+  const std::vector<fs::path> run_dirs = scan_complete_reference_run_dirs(root, rejected);
+  // REV-TAIL I-1(b). This used to `GTEST_SKIP` green when nothing qualified,
+  // which made it a test that could stop covering anything without saying so.
+  // The RunArchive cutover positively asserts the shipped pipeline NO LONGER
+  // writes these four loose artifacts (test_dispersion_runarchive_e2e.py:305),
+  // so every run directory published from now on is excluded BY CONSTRUCTION and
+  // this test's coverage decays silently as the corpus ages. 9 of the 20
+  // directories under the corpus root qualify today (measured 2026-07-25); the
+  // floor below turns the day that reaches 0 into a red test rather than a green
+  // skip nobody reads. A missing corpus root (CI) still skips, loudly, above.
+  ASSERT_FALSE(run_dirs.empty())
+      << "the reference run corpus at " << root.string()
+      << " exists but no longer carries a single directory with all four loose artifacts, so this "
+         "check has silently stopped covering anything. Either the corpus has aged past the "
+         "RunArchive cutover -- in which case this test needs re-basing onto run.atxrun rather "
+         "than deleting -- or the corpus moved. Rejected directories:\n"
+      << rejected;
   for (const fs::path &dir : run_dirs) {
     auto records = reconcile_dispersion_reference(dir, /*schedule_only=*/false);
     ASSERT_TRUE(records) << dir.filename().string() << ": " << records.error().to_string();
@@ -445,6 +483,102 @@ TEST(DispersionReferenceReconcileRealData, PublishedRunDirectoriesCarryEveryStri
              "silent empty-string degrade";
     }
   }
+}
+
+// ── REV-TAIL I-1(b) — the floor under the data-gated M10 check ────────────────
+//
+// The selection rule the real-data test depends on, driven on synthetic input so
+// it runs on every box including CI. Without this the floor added above would
+// itself be untested: the only thing standing between "the corpus aged out" and
+// "a green skip nobody reads" is that this scan returns empty AND names why.
+TEST(DispersionReferenceRunDirScan, ExcludesIncompleteDirectoriesAndNamesWhatTheyLack) {
+  const fs::path root = make_run_dir("scan_root");
+  const fs::path complete = root / "complete-run";
+  const fs::path partial = root / "partial-run";
+  fs::create_directories(complete);
+  fs::create_directories(partial);
+  for (const char *artifact : kLooseReconcilerInputs) {
+    write_file(complete / artifact, "x\n");
+  }
+  // Everything but `backtest.tsv` — the artifact the RunArchive cutover stopped
+  // writing, which is precisely how a real directory falls out of the corpus.
+  write_file(partial / "trade_schedule.tsv", "x\n");
+  write_file(partial / "contract_marks.tsv", "x\n");
+  write_file(partial / "reconciliation.tsv", "x\n");
+
+  std::string rejected;
+  const std::vector<fs::path> found = scan_complete_reference_run_dirs(root, rejected);
+
+  ASSERT_EQ(found.size(), 1u);
+  EXPECT_EQ(found.front().filename().string(), "complete-run");
+  EXPECT_NE(rejected.find("partial-run"), std::string::npos)
+      << "an excluded directory must be NAMED, or an empty result explains nothing: " << rejected;
+  EXPECT_NE(rejected.find("backtest.tsv"), std::string::npos)
+      << "the rejection must name the missing artifact: " << rejected;
+
+  std::error_code error;
+  fs::remove_all(root, error);
+}
+
+// And the empty case the floor exists to catch: a corpus root that exists but
+// carries nothing usable must produce an empty result WITH a non-empty
+// explanation, which is what makes the ASSERT_FALSE message above actionable.
+TEST(DispersionReferenceRunDirScan, AnAgedOutCorpusYieldsNothingAndSaysWhy) {
+  const fs::path root = make_run_dir("scan_aged");
+  fs::create_directories(root / "post-cutover-run");
+  write_file(root / "post-cutover-run" / "run.atxrun", "x\n");
+
+  std::string rejected;
+  const std::vector<fs::path> found = scan_complete_reference_run_dirs(root, rejected);
+
+  EXPECT_TRUE(found.empty());
+  EXPECT_FALSE(rejected.empty())
+      << "an empty scan with an empty explanation is the silent-skip defect this floor removes";
+  EXPECT_NE(rejected.find("post-cutover-run"), std::string::npos) << rejected;
+
+  std::error_code error;
+  fs::remove_all(root, error);
+}
+
+// ── REV-TAIL I-1 — the three LIBRARY-ONLY entry points ────────────────────────
+//
+// `dispersion_build_schedule`, `dispersion_run_backtest` and `dispersion_verify`
+// have no production caller: the shipped subcommands of the same name keep their
+// own bodies -- `build_schedule_command` and `run_backtest_command` publish
+// run.atxrun sections (spy_dispersion_backtest.cpp:307 and :453) and
+// `verify_command` READS one (`RunDir(run_dir).verify()` at :329) -- because the
+// three library twins write the loose result files the RunArchive cutover
+// replaced. That is a DELIBERATE split and is documented at dispersion_run.hpp's
+// declaration block.
+//
+// What was NOT true is the sentence that block used to carry: that each is
+// "covered directly off the filesystem by dispersion_run_test.cpp". This file
+// called none of them, so ~500 lines of reserve were held in the tree on the
+// strength of a coverage claim with nothing behind it. This is that coverage,
+// written to be honest about what it is: it does not pretend to exercise the
+// economics, it pins that each entry point is LINKED, REACHABLE, and FAILS
+// CLOSED naming its missing input rather than succeeding vacuously on an empty
+// directory. A reserve nobody calls at least cannot rot into a silent no-op.
+TEST(DispersionLibraryOnlyEntryPoints, EachIsReachableAndFailsClosedNamingTheMissingSpec) {
+  const fs::path run = make_run_dir("library_only_empty");
+
+  const Status build_schedule = dispersion_build_schedule(run);
+  ASSERT_FALSE(build_schedule) << "dispersion_build_schedule accepted an empty run directory";
+  EXPECT_NE(build_schedule.error().to_string().find("run_spec"), std::string::npos)
+      << "the error must name the input it could not read: " << build_schedule.error().to_string();
+
+  const Status run_backtest = dispersion_run_backtest(run);
+  ASSERT_FALSE(run_backtest) << "dispersion_run_backtest accepted an empty run directory";
+  EXPECT_NE(run_backtest.error().to_string().find("run_spec"), std::string::npos)
+      << "the error must name the input it could not read: " << run_backtest.error().to_string();
+
+  const Result<DispersionVerifyReport> verify = dispersion_verify(run);
+  ASSERT_FALSE(verify) << "dispersion_verify passed an empty run directory";
+  EXPECT_NE(verify.error().to_string().find("run_spec"), std::string::npos)
+      << "the error must name the input it could not read: " << verify.error().to_string();
+
+  std::error_code error;
+  fs::remove_all(run, error);
 }
 
 // ── REV-TAIL I-3 — the four keys that parsed, validated, and did nothing ──────
