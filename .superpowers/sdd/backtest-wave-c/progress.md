@@ -1268,3 +1268,89 @@ T4: **GREEN. The T5 deletion is AUTHORIZED.** Run on COPIES ONLY; `parity-full` 
   the function, and by these runs completing). The manifest's `archive_path` column is
   ABSOLUTE (`C:/atx-data/spy-dispersion/runs/bt-sota-full/archives/...`), which is what
   makes a metadata-only copy run correctly and keep the same `run_identity_hash`.
+
+### Wave D T3 fix round 1 (5c227e8) — SCOPED RE-REVIEW, CLEAN
+
+T3 fix 1: **Spec ✅ / Code quality APPROVED. Zero Critical, zero Important. 5 Minors.**
+  The fix round is CLOSED and `5c227e8` is no longer the branch's one unreviewed commit.
+  Review file: `.superpowers/sdd/2026-07-24-atx-vol-backtest-framework-wave-d/task-3-rereview.md`.
+
+  **THE DECISIVE TEST, run rather than argued.** Important 1's second half was "relocate
+  the `return Err` to AFTER `write_run_archive` so a rejected proof still leaves the
+  artifact behind." The reviewer built a zero-row fixture, set the flag, DELETED the
+  existing `run.atxrun` first so a survivor could not be mistaken for a leftover, and got:
+    `EXIT=1, archive_before=False, archive_after=True, size=7248`
+  and then dumped all four sections cleanly OUT of that post-failure archive
+  (`projected_cold` 4 lines, `mark_divergence` 1, `meta` 24, `diagnostics` 7). Before the
+  fix the same scenario left NO `run.atxrun` at all.
+
+  **BOTH OLD DEFECTS INVERTED, measured on the same fixture:**
+    configured + 0 rows + no flag -> **exit 0** (was: exit 1 AND a destroyed archive)
+    cold       + 0 rows + flag    -> **exit 1** (was: PASSED — this is the genuinely
+                                     vacuous case the old route-conditioned guard let
+                                     through, and it is the more interesting half: the
+                                     old guard was not merely too strict, it was
+                                     simultaneously too strict on one route and too
+                                     lax on the other)
+  Route-independence confirmed STRUCTURALLY, not by inspection of intent: `cold` is read
+  at exactly one site (`:948`, config selection) and appears nowhere on the guard path;
+  the predicate is `require_divergence_rows && (n_rows == 0)`. Flag parse verified clean
+  in first/middle/last argv position; typos and unknown flags exit 2 with usage.
+
+  Evidence: suite 2034/1988/43/3/7 (ZERO delta, the 3 documented reds only); targeted
+  filter 118/118; 8-case flag matrix + 5 parse cases with stdout and stderr captured to
+  separate files; full build exit 0, no first-party warnings, the added line
+  clang-format-clean.
+
+  **ARTIFACT INVARIANCE ACROSS THE FIX — proven against an INDEPENDENT pre-fix capture.**
+  The prior reviewer's `md_cfg.tsv`, produced from the `f60ce3c` binary, is byte-identical
+  to the re-reviewer's post-fix dump from the `5c227e8` binary:
+    both = 39D47B8B64AF852C08CE6983821A95A3ED2FC3BC3D22A1FD4ADCEB7C8D95A91F
+  Two different agents, two different builds, one hash. That is a stronger invariance
+  claim than a self-comparison could ever be.
+
+  **MINOR 2 IS A CONTROLLER-LEVEL METHODOLOGY FINDING, not a task nit.** T3's quoted gates
+  `893A01F1728A4E25` (cold) and `AFD4C06EC0E6878A` (configured) are hashes of a
+  **CRLF-normalised** capture. The raw `runarchive dump --tsv` bytes use bare LF and hash
+  to `39D47B8B64AF852C…`. A future re-check taken with a raw capture would read as drift
+  and fail a gate that is actually green.
+  **This is the SAME hazard the controller hit independently during T4 from the opposite
+  direction** — a PowerShell `>` capture of `projected_cold` hashed `E0C2ABB1AA1E49DB`, a
+  clean-looking FAIL against the `cbabca44` pin, purely from BOM + CRLF re-encoding. Two
+  agents, two tasks, same root cause, in one session.
+  **RULE, now binding for the rest of the sprint: capture bytes with bash redirection,
+  hash with PowerShell `Get-FileHash`, and record which convention a pinned hash was taken
+  under.** T5's dispatch carries the raw values, not T3's CRLF ones.
+
+  Minor 1 (`--no-divergence --require-divergence-rows` silently ignores the proof gate):
+    accepted, no change. Cannot produce a false positive — with `--no-divergence` no MATCH
+    line prints at all, so any downstream grep fails loudly rather than quietly.
+  Minor 3 (a MISMATCH still discards the valid `projected_cold`/`meta`/`diagnostics`):
+    accepted, deliberate, documented in code at `:1019-1024`. Defensible: merge-write
+    would overwrite a good section with one whose provenance the run had just refuted.
+    Recorded, not actioned. Moot after T5 deletes the comparator.
+  Minor 4 (a naive `rows MATCH` grep still matches the VACUOUS line): by design per the
+    controller ruling — the greppability of `mark divergence equivalence:` / `rows MATCH`
+    was a requirement, and the qualifier is a suffix. Mitigated by the flag's exit code,
+    which is what T4 actually relied on.
+  Minor 5 (4 comment lines added by the commit still carry em-dashes): the ASCII claim was
+    about printed/greppable string literals and is true as stated. Phrasing note only.
+
+  **PROCESS GAP, RECORDED HONESTLY: the implementer's §10 fix report was never written.**
+  `task-3-report.md` carries the pointer header at lines 3-9 but the body still ends at §9
+  — the implementer was stopped mid-sentence appending it. **This re-review is therefore
+  the sole evidence record for the fix**, which is why it was run before T5 rather than
+  waived. It also independently corroborated the flag at production scale by noticing that
+  commit `819c442` (T4) had already exercised `--require-divergence-rows` on the
+  135-session corpus at exit 0 with observer=137 shadow=137.
+
+  No source modified, nothing committed, `C:\atx-data` never touched.
+
+#### Controller ruling on `--require-divergence-rows` (for T5)
+
+The flag is **deleted by T5 together with the comparator it gates.** Its documented
+purpose is that the observer/shadow *comparison* is vacuous; after T5 there is no
+comparison, so the flag would gate nothing. This is not churn: it was added because T3's
+original guard was actively destructive, T4 used it to make the 135-session proof
+fail-closed rather than silently vacuous, and it retires with the machinery it guarded.
+Recorded here so the delete reads as a decision rather than drift.
