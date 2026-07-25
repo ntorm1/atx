@@ -432,6 +432,15 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(atx-vol-surface-db-build tools/surface_db_build_main.cpp)
     target_link_libraries(atx-vol-surface-db-build PRIVATE atx::vol atx::core atx_warnings)
 
+    # Surface-db MANAGEMENT/INSPECTION CLI: info / partitions / symbols / config
+    # / query / verify over a built database, so verifying one needs no Python
+    # binding. Thin shell over the surface_db_admin library
+    # (atx/vol/surface_db_admin.hpp); gate test: SurfaceDbAdmin
+    # (tests/surface_db_admin_test.cpp). Same ATX_BUILD_EXAMPLES gate as the
+    # build CLI above. See tools/surface_db_main.cpp and docs/surface-db-build.md.
+    add_executable(atx-vol-surface-db tools/surface_db_main.cpp)
+    target_link_libraries(atx-vol-surface-db PRIVATE atx::vol atx::core atx_warnings)
+
     # Earnings-censored atmCen reproduction (Task 7): thin CLI over the shared
     # run_earnings_repro library pipeline (atx/vol/earnings_repro.hpp) -- OPRA
     # parquet -> fitted VolaSession -> Task 5 earnings TSV -> iEMove + the 12

@@ -9,6 +9,11 @@ loop (`tools/surface_db_build_main.cpp`).
 It is **fully resumable at every stage**: re-running over an unchanged hive fits
 **zero** surfaces and spends nothing. See "Resume semantics" below.
 
+Once a database is built, its companion tool **`atx-vol-surface-db`** inspects
+and verifies it entirely from the command line — see
+[Managing and verifying a built database](#atx-vol-surface-db--managing-and-verifying-a-built-database).
+**No Python is involved in verification.**
+
 ## OPRA hive v2 — the on-disk layout it reads
 
 ```
@@ -117,7 +122,10 @@ visible **only** in the coverage counters, not the exit code:
 
 **Operator checklist:** after any build, do not trust exit 0 alone —
 **inspect `cells_ok` vs `cells_failed` and the per-symbol rows** (or the
-`--report` CSV's section 2). A universe of `failed` fits under a green exit means
+`--report` CSV's section 2), then run
+`atx-vol-surface-db verify --db <root> --min-cells <expected>` (below), which
+turns "the database is the size and shape I expected, and every cell evaluates"
+into a single exit code. A universe of `failed` fits under a green exit means
 a carry mismatch (or otherwise unfittable boards), not a successful build. The
 real fix for non-zero-carry hives is the per-cell **market-inputs** path
 (`OpraHiveSpec.market_inputs` / term-structure pillars), a future CLI surface —
@@ -289,6 +297,237 @@ discovery retention is the memory ceiling for a wide window. For very long
 ranges, build in date chunks (the cell-aware resume makes chunked runs stitch
 losslessly) or pass an explicit `--symbols` list (which skips the discovery
 pre-pass).
+
+## `atx-vol-surface-db` — managing and verifying a built database
+
+**Verifying a built database requires no Python.** Everything below runs from the
+command line against a `SurfaceDb` root: what it contains, how each symbol is
+configured, what one cell evaluates to, and whether every cell is healthy. The
+pybind11 wrapper is not needed, not installed, and not on the verification path
+— the old production run-plan step "query check via python binding
+(`map_surface` one cell)" is replaced by `atx-vol-surface-db query` and
+`atx-vol-surface-db verify`.
+
+The tool is a **thin shell**: every subcommand parses flags, calls exactly one
+function in `atx/vol/surface_db_admin.hpp`, and prints. All logic — and the test
+gate (`SurfaceDbAdmin`, `atx-vol/tests/surface_db_admin_test.cpp`) — lives in
+that library, so a service or notebook consumes the same structs without parsing
+this text.
+
+### Build
+
+Same `ATX_BUILD_EXAMPLES` gate as `atx-vol-surface-db-build` (see
+[Build](#build) above — if that CLI is in your build dir, this one is too):
+
+```bash
+powershell scripts/atx-build.ps1 build atx-vol-surface-db
+# -> build/bin/atx-vol-surface-db(.exe)
+```
+
+### Subcommands
+
+```
+atx-vol-surface-db <subcommand> --db <root> [flags]
+```
+
+`--db <root>` is required by every subcommand.
+
+| Subcommand | Flags | Answers |
+| --- | --- | --- |
+| `info` | — | What is in this database? Generation, symbol/partition counts, surface count, bytes, then one `partition` line each. |
+| `partitions` | — | One `partition` line per partition (the `info` tail on its own, for piping). |
+| `partitions` | `--key KEY` | What does THIS partition actually hold? Reads the `.atxvsa` directory, not the manifest. |
+| `symbols` | — | One `symbol` line per configured symbol. |
+| `config` | `--symbol SYM` | One symbol's full stored fit config + provenance. |
+| `query` | `--key KEY --symbol SYM --strike K --tenor T` | What does this cell evaluate to? iv / total variance / forward / uid / slices. |
+| `verify` | `[--from KEY] [--to KEY] [--symbols A,B,C] [--include-disabled] [--probe-tenor T] [--max-failures N] [--min-cells N]` | Is the whole thing healthy? |
+
+`query` and `verify` both go through **`SurfaceDb::map_surface`** — the zero-copy
+path production readers use (and the one the retired Python check made) — so a
+green result is evidence about the path that actually serves.
+
+### Output format
+
+Line-oriented and stable for scripting; **no JSON**. Two shapes only:
+
+- **Scalars** print as `key value` (one per line), mirroring
+  `atx-vol-surface-db-build`'s stdout.
+- **Repeated records** print as `<record> <id> field=value field=value ...`.
+  Record types: `partition`, `surface`, `symbol`, `fail`.
+
+Fields never move and record lines never wrap, so
+`grep '^fail '`, `awk '$1=="partition"'`, and
+`... | grep '^cells_ok ' | cut -d' ' -f2` are all stable.
+
+**`info`**
+
+```
+root <path>
+generation <u64>            # manifest generation (++ on every rewrite)
+symbols <n>                 # configured symbols
+symbols_enabled <n>         # of those, not fail-closed-disabled
+partitions <n>
+partitions_missing <n>      # manifest entries whose file is NOT on disk
+surfaces <u64>              # sum of per-partition surface counts
+manifest_bytes <u64>        # sum of the sizes the manifest recorded at write time
+bytes_on_disk <u64>         # sum of the sizes the files have NOW
+partition <KEY> surfaces=<n> manifest_bytes=<n> bytes_on_disk=<n> present=<0|1> created_ts_ns=<n>
+```
+
+The two byte figures are **not** redundant. `manifest_bytes` is what the manifest
+recorded when the partition was written; `bytes_on_disk` is what is there now. A
+mismatch, or `present=0` / a non-zero `partitions_missing`, means the directory
+was edited behind the manifest's back — exactly the corruption an inspector
+exists to find.
+
+**`partitions --key KEY`** — read from the archive directory:
+
+```
+partition <KEY> manifest_surfaces=<n> archive_surfaces=<n> manifest_bytes=<n> bytes_on_disk=<n>
+surface <SYM> uid=<n> slices=<n> bytes=<n>
+```
+
+`manifest_surfaces` disagreeing with `archive_surfaces` means the manifest and
+the file have drifted apart.
+
+**`symbols`**
+
+```
+symbol <SYM> enabled=<0|1> preset=<name> pin_curve=<0|1> curve=<kind> provenance=<0|1>
+```
+
+`preset` uses the same vocabulary as the build CLI's `--preset`
+(`fast|accurate|robust|hft|populate`), so a listing feeds straight back into a
+rebuild. `curve` is only meaningful when `pin_curve=1`.
+
+**`config --symbol SYM`** — `key value` scalars: `symbol`, `enabled`, `preset`,
+`pin_curve`, `curve`, `band_k`, `policy.*`, `provenance` (0/1) and, when
+provenance is present, `provenance.purpose`, `.quality_mode`, `.state`,
+`.admitted`, `.validation_failures`, `.source_generation`, `.served_generation`,
+`.legacy_format`.
+
+**`query`** — `key value` scalars: `key`, `symbol`, `strike`, `tenor`, `iv`,
+`total_variance`, `forward`, `uid`, `n_slices`. Doubles print at `%.17g`
+(round-trip exact).
+
+**`verify`**
+
+```
+partitions <n>              # partitions in range (the walk's rows)
+symbols <n>                 # symbols in the walk (the walk's columns)
+cells_checked <n>           # == cells_ok + cells_unmappable + cells_non_finite
+cells_ok <n>
+cells_unmappable <n>        # map_surface failed (file gone/corrupt, or symbol absent)
+cells_non_finite <n>        # mapped, but the ATM probe produced no usable number
+failures_reported <n>       # fail lines below (capped by --max-failures)
+failures_elided <n>         # faults NOT listed -- truncation is never silent
+fail <KEY> <SYM> kind=<unmappable|non_finite> detail=<message>
+min_cells <n>
+verdict <ok|FAILED>
+```
+
+Each cell is **mapped and then evaluated**: `K` = that surface's own
+`forward_at(probe_tenor)`, `T` = `probe_tenor` (default 30/365). Mapping alone
+only proves the bytes parse; the ATM evaluation proves the surface produces a
+finite, positive vol.
+
+### `verify` flags
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--from KEY` / `--to KEY` | unbounded | Inclusive partition-key range, compared lexicographically on the canonical (upper-cased) key. ISO dates sort correctly, so `--from 2026-07-01 --to 2026-07-31` is a July restriction. |
+| `--symbols A,B,C` | manifest symbol table | Restrict the columns. Whitespace per field is trimmed, same rule as the build CLI. |
+| `--include-disabled` | off | Include fail-closed **disabled** symbols. By default they are skipped: a disabled symbol is never populated into any partition, so checking it would report a missing cell on every date of every healthy database. Turning this on is how you *prove* a disabled name is genuinely absent. |
+| `--probe-tenor T` | `30/365` | Tenor for the per-cell ATM evaluation. Must be finite and > 0. |
+| `--max-failures N` | `32` | Cap on `fail` lines. Overflow is counted in `failures_elided`, never dropped silently, and the `cells_*` totals stay exact. `0` prints no detail at all and elides everything. |
+| `--min-cells N` | `0` | Fail when fewer than `N` cells were checked. **Read the trap below.** |
+
+### The empty-database trap — why `--min-cells` exists
+
+An empty database has no broken cell, so `verify` correctly reports
+`verdict ok`. That is honest and it is also a **silent pass**: a build whose
+every fit failed (the carry-mismatch trap documented above — `cells_ok 0`,
+green exit) writes *no partition at all*, and the resulting database then passes
+an unguarded `verify`:
+
+```
+$ atx-vol-surface-db verify --db /db
+partitions 0
+cells_checked 0
+...
+verdict ok            # nothing was checked, so nothing failed
+```
+
+In a script, always assert the expected size:
+
+```bash
+atx-vol-surface-db verify --db /db --min-cells 9   # -> verdict FAILED, exit 1
+```
+
+`--min-cells` is a CLI-side floor on `cells_checked`; the library
+(`verify_db`) deliberately keeps vacuous-ok so a legitimately fresh root is not
+an error.
+
+### Exit codes
+
+| Exit | When |
+| --- | --- |
+| `0` | Succeeded. For `verify`: every checked cell passed **and** `cells_checked >= --min-cells`. |
+| `1` | A runtime failure (message on **stderr**, no `verdict` line) — db won't open, unknown partition/symbol, unreadable partition file. **Or** `verify` found failing cells / too few cells (`verdict FAILED` on **stdout**). |
+| `2` | A usage error — unknown subcommand, unknown flag, or a missing required flag. Usage on stderr. |
+
+The `verdict` line disambiguates the two meanings of exit 1: a health failure
+always prints one, a runtime failure never does.
+
+### Worked session
+
+```bash
+$ atx-vol-surface-db info --db /db
+root /db
+generation 7
+symbols 3
+symbols_enabled 3
+partitions 3
+partitions_missing 0
+surfaces 9
+manifest_bytes 12288
+bytes_on_disk 12288
+partition 2026-07-01 surfaces=3 manifest_bytes=4096 bytes_on_disk=4096 present=1 created_ts_ns=...
+
+$ atx-vol-surface-db partitions --db /db --key 2026-07-01
+partition 2026-07-01 manifest_surfaces=3 archive_surfaces=3 manifest_bytes=4096 bytes_on_disk=4096
+surface AAA uid=3061902210 slices=2 bytes=544
+
+$ atx-vol-surface-db query --db /db --key 2026-07-01 --symbol AAA --strike 100 --tenor 0.0821917808
+iv 0.24600158507884576
+total_variance 0.0049739819064085963
+forward 100.26404035644119
+
+# Health gate, sized: nine cells, all of them healthy.
+$ atx-vol-surface-db verify --db /db --min-cells 9 && echo HEALTHY
+cells_checked 9
+cells_ok 9
+verdict ok
+HEALTHY
+
+# After `rm /db/partitions/2026-07-02.atxvsa` -- every cell of that date is named:
+$ atx-vol-surface-db verify --db /db
+cells_checked 9
+cells_ok 6
+cells_unmappable 3
+fail 2026-07-02 AAA kind=unmappable detail=NotFound: SurfaceArchiveV2::open_file: file not found
+fail 2026-07-02 BBB kind=unmappable detail=NotFound: SurfaceArchiveV2::open_file: file not found
+fail 2026-07-02 CCC kind=unmappable detail=NotFound: SurfaceArchiveV2::open_file: file not found
+verdict FAILED
+$ echo $?
+1
+```
+
+**Operator checklist after a build:** `atx-vol-surface-db verify --db <root>
+--min-cells <expected>`, then read `info` for `partitions_missing` and the
+`manifest_bytes` vs `bytes_on_disk` agreement. That, plus the build's
+`cells_ok` / `cells_failed` check above, is the whole acceptance path — no
+Python.
 
 ## Sibling tools
 
