@@ -27,9 +27,56 @@ import atxvol as _av
 from . import charts, theme
 from .charts import Series
 from .components import (
-    Column, FacetGrid, Figure, Note, Prose, Report, Section, Stat, StatRow, Subhead, Table, esc,
+    Banner, Column, FacetGrid, Figure, Note, Prose, Report, Section, Stat, StatRow, Subhead,
+    Table, esc,
 )
 from .io import read_backtest_tsv, read_kv_tsv
+
+# ── The friction regime is a first-class dimension, not a footnote ──────────
+#
+# On the pinned 82-session run the SAME strategy over the SAME surfaces returns
+# +247.41 frictionless, +12.81 under retail frictions (cost 234.60) and -64.60
+# once square-root impact is added (cost 312.01): ~95% friction-dominated, and
+# the SIGN FLIPS under modest impact. A tearsheet showing only the frictionless
+# number is not incomplete, it is actively misleading. So the engine leads both
+# reporting artifacts with `friction_regime` / `friction_detail`
+# (`dispersion_run.hpp`: "THE REGIME IS NOT OPTIONAL METADATA"), and this
+# renderer honours the same contract:
+#
+#   * a full-width colour-coded BANNER carrying its own text label sits directly
+#     under the masthead, before any number;
+#   * every headline tile is captioned with the regime, so a cropped screenshot
+#     of a single tile still says which assumptions produced it;
+#   * the P&L chart title names it; and
+#   * a track with no regime is REFUSED rather than silently rendered.
+#
+# Key -> (Banner tone, text badge, plain-language gloss). The tones come from
+# `theme.STATUS`, a validated 3-state set.
+REGIME_KEY = "friction_regime"
+DETAIL_KEY = "friction_detail"
+REGIMES: Mapping[str, tuple[str, str, str]] = {
+    "frictionless": (
+        "ok", "FRICTIONLESS",
+        "mid fills, no commission — an upper bound, not a tradeable result",
+    ),
+    "frictioned": ("warn", "FRICTIONED", "spread + commission applied"),
+    "frictioned+impact": (
+        "alert", "FRICTIONED + IMPACT",
+        "spread + commission + square-root market impact",
+    ),
+}
+
+# Series files a run directory may carry, in preference order. The two
+# `surface_*` names are `write_dispersion_tearsheet`'s; `pnl_track.tsv` is what
+# the README's Python pipeline writes (`write_backtest_pnl_tsv`) and was missing
+# here, so a user following the README then calling this renderer hit a bare
+# FileNotFoundError; `backtest.tsv` is the legacy loose-SoA name.
+TRACK_NAMES = (
+    "surface_pnl_track.tsv",
+    "pnl_track.tsv",
+    "surface_backtest.tsv",
+    "backtest.tsv",
+)
 
 # Attribution axes. Display order == palette slot order, which is the exact
 # arrangement the palette was validated in: permuting the two only weakens the
@@ -68,15 +115,32 @@ def _short(dates: Sequence[str]) -> list[str]:
 
 
 def build_report_from_run(run_dir: str, path: str, *, label: str = "") -> str:
-    """Render a `spy_dispersion_backtest` run directory into an HTML report."""
-    backtest = os.path.join(run_dir, "surface_backtest.tsv")
-    if not os.path.exists(backtest):
-        backtest = os.path.join(run_dir, "backtest.tsv")
+    """Render a `spy_dispersion_backtest` run directory into an HTML report.
+
+    Raises `FileNotFoundError` if the directory carries none of `TRACK_NAMES`,
+    and `ValueError` if the run carries no `friction_regime` — see `REGIMES`.
+    """
+    backtest = ""
+    for name in TRACK_NAMES:
+        candidate = os.path.join(run_dir, name)
+        if os.path.exists(candidate):
+            backtest = candidate
+            break
+    if not backtest:
+        raise FileNotFoundError(
+            f"{run_dir}: no backtest series found (looked for "
+            + ", ".join(TRACK_NAMES) + ")"
+        )
     result, meta, _extra = read_backtest_tsv(backtest)
 
-    spec_path = os.path.join(run_dir, "run_spec.tsv")
-    spec = read_kv_tsv(spec_path) if os.path.exists(spec_path) else {}
-    spec.update(meta)  # a PnL-track meta header wins over the run spec
+    # Precedence, weakest first: the run spec, then the tearsheet metric table,
+    # then the track's own `# key=value` header — closest to the numbers wins.
+    spec: dict[str, str] = {}
+    for name in ("run_spec.tsv", "surface_tearsheet.tsv"):
+        candidate = os.path.join(run_dir, name)
+        if os.path.exists(candidate):
+            spec.update(read_kv_tsv(candidate))
+    spec.update(meta)
 
     counters_path = os.path.join(run_dir, "backtest_counters.tsv")
     counters = read_kv_tsv(counters_path) if os.path.exists(counters_path) else {}
@@ -86,8 +150,41 @@ def build_report_from_run(run_dir: str, path: str, *, label: str = "") -> str:
     return _render(result, sheet, spec, counters, path, label or spec.get("label", ""))
 
 
+def _regime(spec: Mapping[str, str], source: str) -> tuple[str, str, str, str]:
+    """Resolve `(key, tone, badge, gloss)` or refuse.
+
+    The refusal is the point of this function. An unlabelled dispersion headline
+    is the specific failure this report exists to prevent, so a track with no
+    regime is not renderable — not rendered with a caveat, not rendered greyed
+    out. An UNRECOGNISED regime string is still rendered, on the neutral
+    "unknown" tone with its raw text as the badge: a new engine-side regime name
+    must not black out a report, but it must not borrow another state's colour
+    either.
+    """
+    key = str(spec.get(REGIME_KEY, "")).strip()
+    if not key:
+        raise ValueError(
+            f"{source} carries no `{REGIME_KEY}`. Refusing to render: a dispersion "
+            "headline is meaningless without the execution regime that produced "
+            "it — on the pinned run the same strategy returns +247.41 "
+            "frictionless and -64.60 once impact is added, so the sign itself is "
+            "a function of the regime. Re-run with a build that emits "
+            f"`{REGIME_KEY}` (write_dispersion_tearsheet), or pass it in the "
+            "metadata mapping."
+        )
+    tone, badge, gloss = REGIMES.get(key, ("unknown", key.upper(), ""))
+    return key, tone, badge, gloss
+
+
 def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
             path: str, label: str) -> str:
+    # Before anything is computed, let alone written: no regime, no report.
+    regime, regime_tone, regime_badge, regime_gloss = _regime(spec, label or "this run")
+    # The short tag repeated on every headline tile, so no number can be read
+    # without the assumptions that produced it — including in a cropped
+    # screenshot of one tile.
+    tag = f"regime: {regime}"
+
     cols = result.to_dict()
     dates = list(cols["date"])
     ticks = _short(dates)
@@ -97,6 +194,9 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
 
     total = sheet.total_return
     tone = "pos" if total > 0 else "neg" if total < 0 else ""
+    # Cost comes from the library's own fold, never re-derived here.
+    cost = sheet.attr_cost
+    gross = total + cost
     date_lo = spec.get("date_lo", dates[0] if dates else "?")
     date_hi = spec.get("date_hi", dates[-1] if dates else "?")
 
@@ -117,6 +217,7 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
             "inside the backtest."
         ),
         meta=(
+            ("Regime", regime),
             ("Window", f"{date_lo} → {date_hi}"),
             ("Sessions", f"{n}"),
             ("Target DTE", f"{num('target_dte_days', 30):.0f}d "
@@ -141,6 +242,15 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
         ),
     )
 
+    # ── The regime banner — full width, before any number ───────────────────
+    share = f"{abs(cost) / abs(gross) * 100.0:.0f}% of gross" if abs(gross) > 1e-12 else ""
+    report.add(Banner(
+        badge=regime_badge,
+        detail=" · ".join(p for p in (spec.get(DETAIL_KEY, ""), regime_gloss) if p),
+        aside=f"cost {_money(cost, 2)}" + (f"  =  {share}" if share else ""),
+        tone=regime_tone,
+    ))
+
     # ── 01 Headline ─────────────────────────────────────────────────────────
     up = sum(1 for v in daily[1:] if v > 0)
     down = sum(1 for v in daily[1:] if v < 0)
@@ -148,17 +258,21 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
         "Headline",
         lede=(
             "Every figure below is folded by the atx-vol tearsheet from the engine's own "
-            "TSV; the report layer formats, it does not compute."
+            "TSV; the report layer formats, it does not compute. Every tile is captioned "
+            "with the execution regime, because on this strategy the headline is "
+            "friction-dominated and its sign is a function of the regime."
         ),
         body=[
             StatRow([
-                Stat("Total return", _money(total), "cumulative $ P&L", tone),
-                Stat("Sharpe", f"{sheet.sharpe:.2f}", "annualized, 252d"),
-                Stat("Annualized vol", _money(sheet.ann_vol), "of the $ P&L series"),
-                Stat("Max drawdown", _money(sheet.max_drawdown), "peak to trough"),
-                Stat("Hit rate", f"{sheet.hit_rate * 100:.0f}%", f"{up} up / {down} down"),
-                Stat("Return on vega", f"{sheet.return_on_gross_vega:.4f}",
-                     "per unit gross vega"),
+                Stat("Net return (after cost)", _money(total), tag, tone),
+                Stat("Gross return (pre-cost)", _money(gross), "frictionless equivalent"),
+                Stat("Cost drag", _money(-abs(cost)), tag, "neg" if cost > 0 else ""),
+                Stat("Sharpe", f"{sheet.sharpe:.2f}", tag),
+                Stat("Max drawdown", _money(sheet.max_drawdown), tag),
+                Stat("Hit rate", f"{sheet.hit_rate * 100:.0f}%",
+                     f"{up} up / {down} down · {tag}"),
+                Stat("Return on vega", f"{sheet.return_on_gross_vega:.4f}", tag),
+                Stat("Annualized vol", _money(sheet.ann_vol), f"of the $ P&L series · {tag}"),
             ]),
         ],
     ))
@@ -179,9 +293,10 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
                             label_end=True)],
                     ticks, height=340, chart_id="nav",
                 ),
-                title="Cumulative P&L",
-                subtitle="Net asset value from inception, in dollars. One series — the "
-                         "title names it, so no legend box.",
+                title=f"Cumulative P&L — {regime}",
+                subtitle="Net asset value from inception, in dollars, under the regime "
+                         "named in the title. One series — the title names it, so no "
+                         "legend box.",
                 caption=(
                     f"The book finishes at <b>{_money(total)}</b> over {n} sessions, "
                     f"peak-to-trough drawdown <b>{_money(sheet.max_drawdown)}</b>. "
@@ -357,5 +472,11 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
 
 # Backwards-compatible entry point for an in-memory run.
 def build_report(result, sheet, meta: Mapping[str, str], path: str) -> str:
-    """Render a `BacktestResult` + `TearSheet` + metadata mapping."""
+    """Render a `BacktestResult` + `TearSheet` + metadata mapping.
+
+    `meta` must carry `friction_regime`; this entry point is held to exactly the
+    same contract as `build_report_from_run` (both go through `_render`, which
+    refuses first). An in-memory caller is not a licence to publish an
+    unqualified headline — it is the same number in the same document.
+    """
     return _render(result, sheet, dict(meta), {}, path, meta.get("strategy", ""))

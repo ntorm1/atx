@@ -133,6 +133,30 @@ from atxvol.report.dispersion import build_report_from_run
 build_report_from_run("runs/golden-run", "pnl_track.html")
 ```
 
+The renderer looks for `surface_pnl_track.tsv`, `pnl_track.tsv`,
+`surface_backtest.tsv` and `backtest.tsv` in that order, and merges metadata from
+`run_spec.tsv`, `surface_tearsheet.tsv` and the track's own `# key=value` header
+(closest to the numbers wins).
+
+### The friction regime is mandatory
+
+`build_report_from_run` and `build_report` both **refuse** a run that carries no
+`friction_regime`, raising `ValueError`. This is not a formality: on the pinned
+82-session run the same strategy over the same surfaces returns **+247.41**
+frictionless, **+12.81** under retail frictions and **-64.60** once square-root
+impact is added — roughly 95% friction-dominated, and the sign flips. An
+unlabelled headline is misleading rather than merely incomplete, which is why
+`write_dispersion_tearsheet` leads both artifacts with `friction_regime` /
+`friction_detail` ("THE REGIME IS NOT OPTIONAL METADATA", `dispersion_run.hpp`).
+
+When the key is present the report carries it in four places: a full-width
+colour-coded `Banner` under the masthead before any number, a caption on every
+headline tile, the masthead byline, and the P&L chart title. Colour is never the
+only channel — the banner always prints its own text badge. An unrecognised
+regime string still renders, on the neutral `unknown` tone with its raw text as
+the badge, so a new engine-side regime name cannot black out a report or borrow
+another state's colour.
+
 The series palette in `atxvol.report.theme` is validated, not chosen by eye — it
 passes the lightness-band, chroma-floor, colorblind-separation (worst adjacent
 ΔE 8.6), normal-vision (ΔE 17.2) and 3:1 contrast checks against the theme's own

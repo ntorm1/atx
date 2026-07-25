@@ -285,6 +285,9 @@ def test_colophon_escapes_run_supplied_values(tmp_path):
     sheet = av.tearsheet(result)
 
     meta = {
+        # PY-4: no regime, no report — `build_report` is held to the same
+        # contract as `build_report_from_run`.
+        "friction_regime": "frictionless",
         "strategy": "<script>alert(1)</script>",
         "opra_root": r"C:\data\<opra>",
         "min_names": "4 & 5",
@@ -301,3 +304,123 @@ def test_colophon_escapes_run_supplied_values(tmp_path):
     assert "&lt;0.8" in html
     # The colophon's own markup must survive escaping of the interpolated data.
     assert "<b>Run</b>" in html
+
+
+# ── PY-4: the friction regime is the first key of every artifact ────────────
+#
+# The sprint's own numbers: the same strategy over the same surfaces returns
+# +247.41 frictionless, +12.81 under retail frictions and -64.60 once impact is
+# added. The headline is ~95% friction-dominated and the SIGN FLIPS, so an
+# unlabelled number is not merely incomplete, it is misleading. `write_dispersion_
+# tearsheet` therefore leads both artifacts with `friction_regime` /
+# `friction_detail` (dispersion_run.hpp, "THE REGIME IS NOT OPTIONAL METADATA"),
+# and this renderer must honour the same contract.
+
+def _run_result(n: int = 3):
+    result = av.BacktestResult()
+    result.resize(n)
+    result.date = ["2026-07-0%d" % (i + 1) for i in range(n)]
+    result.ts_ns = [1_753_920_000_000_000_000 + i for i in range(n)]
+    result.pnl_total = [0.0, 120.0, -55.0][:n]
+    result.nav = [0.0, 120.0, 65.0][:n]
+    result.cost = [0.0, 30.0, 25.0][:n]
+    result.gross_vega = [10_000.0, 10_000.0, 10_000.0][:n]
+    return result
+
+
+_REGIME_META = {
+    "friction_regime": "frictioned+impact",
+    "friction_detail": "spread 0.35 + commission 0.65/contract + sqrt impact 0.10",
+    "label": "spy_dispersion_82",
+    "opra_root": "OPRA",
+}
+
+
+def _write_run_dir(tmp_path, name: str, *, meta=None, loose=False, spec=None):
+    run = tmp_path / "run"
+    run.mkdir(exist_ok=True)
+    result = _run_result()
+    if loose:
+        av.write_backtest_tsv(result, str(run / name))
+    else:
+        av.write_backtest_pnl_tsv(result, dict(meta or {}), str(run / name))
+    if spec is not None:
+        (run / "run_spec.tsv").write_text(
+            "key\tvalue\n" + "".join(f"{k}\t{v}\n" for k, v in spec.items()),
+            encoding="utf-8",
+        )
+    return run
+
+
+def test_build_report_from_run_refuses_a_track_with_no_regime(tmp_path):
+    from atxvol.report.dispersion import build_report_from_run
+
+    run = _write_run_dir(tmp_path, "surface_backtest.tsv", loose=True,
+                         spec={"label": "spy_dispersion_82"})
+    with pytest.raises(ValueError, match="friction_regime"):
+        build_report_from_run(str(run), str(tmp_path / "out.html"))
+    assert not (tmp_path / "out.html").exists()
+
+
+def test_build_report_from_run_renders_the_regime_banner(tmp_path):
+    from atxvol.report.dispersion import build_report_from_run
+
+    run = _write_run_dir(tmp_path, "surface_pnl_track.tsv", meta=_REGIME_META)
+    out = tmp_path / "out.html"
+    build_report_from_run(str(run), str(out))
+    html = out.read_text(encoding="utf-8")
+
+    # Full-width banner, before any number, carrying a TEXT label — colour is
+    # never the only channel.
+    assert '<div class="banner alert"' in html
+    assert "FRICTIONED + IMPACT" in html
+    assert "spread 0.35 + commission 0.65/contract + sqrt impact 0.10" in html
+    # Every headline tile is captioned with the regime, so a cropped screenshot
+    # of one tile still says which assumptions produced it.
+    assert html.count("regime: frictioned+impact") >= 6
+    # And the track's own chart title names it.
+    assert "Cumulative P&amp;L — frictioned+impact" in html
+
+
+def test_build_report_from_run_accepts_the_pnl_track_naming(tmp_path):
+    # The README's Python pipeline writes `pnl_track.tsv`; the renderer only
+    # looked for the C++ run-dir names, so following the README then calling the
+    # renderer raised FileNotFoundError.
+    from atxvol.report.dispersion import build_report_from_run
+
+    run = _write_run_dir(tmp_path, "pnl_track.tsv", meta=_REGIME_META)
+    out = tmp_path / "out.html"
+    assert build_report_from_run(str(run), str(out)) == str(out)
+    assert "FRICTIONED + IMPACT" in out.read_text(encoding="utf-8")
+
+
+def test_build_report_from_run_reads_the_regime_from_the_tearsheet_tsv(tmp_path):
+    # `surface_tearsheet.tsv` is a `metric<TAB>value` table that also leads with
+    # the regime, so a legacy loose-SoA run dir beside one is still renderable.
+    from atxvol.report.dispersion import build_report_from_run
+
+    run = _write_run_dir(tmp_path, "surface_backtest.tsv", loose=True)
+    (run / "surface_tearsheet.tsv").write_text(
+        "metric\tvalue\nfriction_regime\tfrictionless\n"
+        "friction_detail\tmid fills, no commission\ntotal_return\t247.41\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "out.html"
+    build_report_from_run(str(run), str(out))
+    html = out.read_text(encoding="utf-8")
+    assert '<div class="banner ok"' in html
+    assert "FRICTIONLESS" in html
+    assert "metric" not in read_kv_tsv(str(run / "surface_tearsheet.tsv"))
+
+
+def test_regime_status_palette_is_the_validated_three_state_set():
+    # Ported verbatim from tools/spy_dispersion_tearsheet_report.py, where it was
+    # validated as a 3-state set: CVD separation dE 12.5 (protan) / 13.0
+    # (tritan), normal-vision floor 21.2, all above the chroma floor and >= 3:1
+    # against the surface. Changing a value means re-running the validator.
+    assert theme.STATUS == {
+        "ok": "#0d9488",
+        "warn": "#d97706",
+        "alert": "#c2185b",
+        "unknown": theme.MUTED,
+    }

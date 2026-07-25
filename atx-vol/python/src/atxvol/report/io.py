@@ -123,8 +123,14 @@ def read_backtest_archive(
     return result, meta, owned_extra
 
 
+# Column-name headers the two-column TSVs in a run directory use: `run_spec.tsv`
+# and `backtest_counters.tsv` say `key`, `surface_tearsheet.tsv` says `metric`
+# (write_dispersion_tearsheet's `metric<TAB>value` table).
+_KV_HEADERS = frozenset({("key", "value"), ("metric", "value")})
+
+
 def read_kv_tsv(path: str) -> dict[str, str]:
-    """Read a two-column `key<TAB>value` TSV (the run_spec / counters files)."""
+    """Read a two-column `key<TAB>value` TSV (run_spec / counters / tearsheet)."""
     out: dict[str, str] = {}
     seen_data = False
     with open(path, "r", encoding="utf-8") as fh:
@@ -137,7 +143,7 @@ def read_kv_tsv(path: str) -> dict[str, str]:
             # line 0: pinning it to the file's first line let any leading comment
             # push a {"key": "value"} entry into the spec dict, which then
             # rendered as a configuration row.
-            if not seen_data and key.strip().lower() == "key" and value.strip().lower() == "value":
+            if not seen_data and (key.strip().lower(), value.strip().lower()) in _KV_HEADERS:
                 seen_data = True
                 continue
             seen_data = True
