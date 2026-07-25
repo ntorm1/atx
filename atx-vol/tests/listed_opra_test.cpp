@@ -851,4 +851,198 @@ TEST(ListedOpra, ParseAcceptsEmptyLinesExactlyAsItDoesToday) {
   EXPECT_EQ(rejection(with_line(good, 2, " ")), kByParserRow);
 }
 
+// --- the single-pass field-boundary scan ---------------------------------
+//
+// The per-row `std::vector<std::string_view>` from `split` was replaced by a
+// forward scan into a stack `std::string_view fields[9]`. Two properties that
+// `split(...).size() != 9` gave for free now have to be re-established by hand,
+// and each is RED-provable against the naive scan the rewrite invites:
+//
+//   (1) NO NINTH TAB. A scan that locates the first eight tabs and lets field 8
+//       stop at the NEXT tab silently DROPS everything past it: the row then
+//       parses exactly as if it had nine fields. Task 4's single 10-field case
+//       (`row + "\textra"`) does fire against that scan — it was observed
+//       ACCEPTED — but a row whose ninth tab is TRAILING is the sharper
+//       discriminator, because then fields 0-8 are byte-identical to a row that
+//       parses and no numeric gate can fire for an unrelated reason. The
+//       interior cases below additionally pin that the assertion is on the tab
+//       COUNT and not on the tail content.
+//   (2) NO STALE FIELD. A `fields[9]` array hoisted out of the row loop — the
+//       obvious way to write it — is only PARTIALLY overwritten by a short row,
+//       so the missing trailing fields keep the PREVIOUS row's values and an
+//       eight-field row parses using its predecessor's tail. This is invisible
+//       on the first data row (the array is still empty there), which is why
+//       these cases mutate the SECOND one.
+//
+// Both were observed RED against exactly that naive scan before the correct
+// scan was written; the failure output is in the task report.
+
+TEST(ListedOpra, ParseRejectsRowsWithMoreThanNineFields) {
+  const std::string good = good_tsv();
+  ASSERT_FALSE(good.empty());
+  const std::string row0 = line_at(good, 2);
+  const std::string row1 = line_at(good, 3);
+  const std::vector<std::string> parts1 = split_on(row1, '\t');
+  ASSERT_EQ(split_on(row0, '\t').size(), 9u);
+  ASSERT_EQ(parts1.size(), 9u);
+  // Anti-vacuity: unmutated, both data rows really do parse.
+  auto base = atx::vol::parse_listed_definitions(good);
+  ASSERT_TRUE(base) << (base ? std::string{} : base.error().to_string());
+  ASSERT_EQ(base->definitions().size(), 2u);
+
+  // A ninth tab with NOTHING after it. Every field, including the complete
+  // source_fingerprint in field 8, is byte-identical to the accepted row, so no
+  // numeric gate can fire — only the tab count distinguishes this input.
+  EXPECT_EQ(rejection(with_line(good, 2, row0 + "\t")), kByParserRow) << "trailing tab on row 0";
+  EXPECT_EQ(rejection(with_line(good, 3, row1 + "\t")), kByParserRow) << "trailing tab on row 1";
+
+  // A ninth tab with content after it, and an eleventh field.
+  EXPECT_EQ(rejection(with_line(good, 3, row1 + "\textra")), kByParserRow) << "ten fields";
+  EXPECT_EQ(rejection(with_line(good, 3, row1 + "\t7\t8")), kByParserRow) << "eleven fields";
+
+  // An extra EMPTY field inserted at each position in turn: ten fields, with the
+  // ninth tab in the interior rather than at the tail.
+  for (std::size_t at = 0; at <= parts1.size(); ++at) {
+    std::vector<std::string> widened = parts1;
+    widened.insert(widened.begin() + static_cast<std::ptrdiff_t>(at), std::string{});
+    ASSERT_EQ(widened.size(), 10u) << at;
+    EXPECT_EQ(rejection(with_line(good, 3, join_on(widened, '\t'))), kByParserRow)
+        << "empty field inserted at " << at;
+  }
+}
+
+TEST(ListedOpra, ParseRejectsRowsWithFewerThanNineFields) {
+  const std::string good = good_tsv();
+  ASSERT_FALSE(good.empty());
+  const std::string row0 = line_at(good, 2);
+  const std::string row1 = line_at(good, 3);
+  const std::vector<std::string> parts0 = split_on(row0, '\t');
+  const std::vector<std::string> parts1 = split_on(row1, '\t');
+  ASSERT_EQ(parts0.size(), 9u);
+  ASSERT_EQ(parts1.size(), 9u);
+  // Anti-vacuity for the stale-field cases: the two rows DIFFER in the columns a
+  // leak would supply, so a leaked value is observable rather than accidentally
+  // right. (They share trade_date, expiry and multiplier by construction.)
+  ASSERT_NE(parts0[1], parts1[1]); // instrument_id
+  ASSERT_NE(parts0[2], parts1[2]); // raw_symbol
+  ASSERT_NE(parts0[8], parts1[8]); // source_fingerprint
+  auto base = atx::vol::parse_listed_definitions(good);
+  ASSERT_TRUE(base) << (base ? std::string{} : base.error().to_string());
+  ASSERT_EQ(base->definitions().size(), 2u);
+
+  // Drop each field in turn from the SECOND data row — the row a hoisted
+  // `fields[9]` would fill from its predecessor.
+  for (std::size_t drop = 0; drop < parts1.size(); ++drop) {
+    std::vector<std::string> shortened = parts1;
+    shortened.erase(shortened.begin() + static_cast<std::ptrdiff_t>(drop));
+    ASSERT_EQ(shortened.size(), 8u) << drop;
+    EXPECT_EQ(rejection(with_line(good, 3, join_on(shortened, '\t'))), kByParserRow)
+        << "field " << drop << " dropped from row 1";
+  }
+  // ...and from the FIRST, where there is no predecessor to leak from.
+  for (std::size_t drop = 0; drop < parts0.size(); ++drop) {
+    std::vector<std::string> shortened = parts0;
+    shortened.erase(shortened.begin() + static_cast<std::ptrdiff_t>(drop));
+    ASSERT_EQ(shortened.size(), 8u) << drop;
+    EXPECT_EQ(rejection(with_line(good, 2, join_on(shortened, '\t'))), kByParserRow)
+        << "field " << drop << " dropped from row 0";
+  }
+
+  // Every separator count from 0 to 7. `keep == 1` is a tab-free row; the all-
+  // empty case has the right number of separators for eight fields and none of
+  // the content.
+  for (std::size_t keep = 1; keep < parts1.size(); ++keep) {
+    const std::vector<std::string> prefix(parts1.begin(),
+                                          parts1.begin() + static_cast<std::ptrdiff_t>(keep));
+    EXPECT_EQ(rejection(with_line(good, 3, join_on(prefix, '\t'))), kByParserRow)
+        << "first " << keep << " fields only";
+  }
+  EXPECT_EQ(rejection(with_line(good, 3, "\t\t\t\t\t\t\t")), kByParserRow) << "eight empty fields";
+}
+
+// A wide, multi-date fixture. Field widths vary in every column (1-to-10-digit
+// instrument ids, 1-to-20-digit fingerprints, four raw_symbol roots, five
+// multiplier spellings), all four flag combinations occur, and the rows span
+// three trade dates so the row loop crosses date boundaries. 60 rows.
+std::vector<ListedContractDefinition> wide_definitions() {
+  const std::vector<std::string> dates = {"2026-06-01", "2026-06-02", "2026-06-03"};
+  const std::vector<std::uint32_t> ids = {1u, 42u, 65535u, 1000000u, 4294967295u};
+  const std::vector<double> multipliers = {1.0, 10.0, 100.0, 0.5, 1234.5678};
+  const std::vector<std::uint64_t> prints = {1u, 4242u, 18446744073709551615ull};
+  const std::vector<std::string> roots = {"A", "SPY", "BRKB", "NDXP"};
+  std::vector<ListedContractDefinition> rows;
+  std::size_t k = 0;
+  for (const std::string &date : dates) {
+    for (const std::uint32_t id : ids) {
+      for (const std::string &root : roots) {
+        ListedContractDefinition row;
+        row.trade_date = date;
+        row.instrument_id = id;
+        row.raw_symbol =
+            root + std::string(6u - root.size(), ' ') + "260918C0060000" + std::to_string(k % 10u);
+        row.definition_ts_ns = iso_to_ns(date + "T09:30:00Z") + static_cast<std::int64_t>(k);
+        row.expiry_ts_ns = iso_to_ns("2026-09-18T20:00:00Z");
+        row.multiplier = multipliers[k % multipliers.size()];
+        row.standard_monthly = (k % 2u) == 0u;
+        row.standard_deliverable = (k % 3u) == 0u;
+        row.source_fingerprint = prints[k % prints.size()];
+        rows.push_back(row);
+        ++k;
+      }
+    }
+  }
+  return rows;
+}
+
+TEST(ListedOpra, ParseIsByteIdenticalToPriorImplementation) {
+  // The round-trip invariant is the PRIMARY correctness oracle for the scan
+  // rewrite: it asserts every one of the nine field boundaries on every row, not
+  // just the ones a hand-written negative case happens to name.
+  auto table = ListedDefinitionTable::create(wide_definitions());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  ASSERT_EQ(table->definitions().size(), 60u);
+  const std::string text = atx::vol::serialize_listed_definitions(*table);
+  ASSERT_FALSE(text.empty());
+
+  // Anti-vacuity: the fixture really is ragged. If every row were the same width
+  // an off-by-one in the scan could survive.
+  {
+    const std::vector<std::string> lines = split_on(text, '\n');
+    ASSERT_EQ(lines.size(), 63u); // magic, header, 60 rows, trailing empty
+    std::vector<std::size_t> widths;
+    for (std::size_t i = 2; i + 1 < lines.size(); ++i) {
+      ASSERT_EQ(split_on(lines[i], '\t').size(), 9u) << i;
+      widths.push_back(lines[i].size());
+    }
+    std::sort(widths.begin(), widths.end());
+    widths.erase(std::unique(widths.begin(), widths.end()), widths.end());
+    ASSERT_GE(widths.size(), 6u) << "fixture rows are not ragged enough to pin boundaries";
+  }
+
+  auto parsed = atx::vol::parse_listed_definitions(text);
+  ASSERT_TRUE(parsed) << (parsed ? std::string{} : parsed.error().to_string());
+  EXPECT_EQ(parsed->definitions().size(), 60u);
+  EXPECT_TRUE(std::ranges::equal(parsed->definitions(), table->definitions()));
+  EXPECT_EQ(atx::vol::serialize_listed_definitions(*parsed), text);
+  EXPECT_EQ(parsed->fingerprint(), table->fingerprint());
+
+  // Unterminated input: identical rows, so the final row's field 8 is bounded by
+  // end-of-input rather than by a '\n'.
+  auto unterminated = atx::vol::parse_listed_definitions(text.substr(0, text.size() - 1));
+  ASSERT_TRUE(unterminated) << (unterminated ? std::string{} : unterminated.error().to_string());
+  EXPECT_TRUE(std::ranges::equal(unterminated->definitions(), table->definitions()));
+
+  // Negative control: the comparison above can say False. One byte of one field
+  // is changed and the re-serialized text must differ from the original.
+  const std::size_t last_tab = text.rfind('\t');
+  ASSERT_NE(last_tab, std::string::npos);
+  std::string mutated = text;
+  mutated[last_tab + 1u] = (mutated[last_tab + 1u] == '9') ? '8' : '9';
+  ASSERT_NE(mutated, text); // the perturbation landed
+  auto reparsed = atx::vol::parse_listed_definitions(mutated);
+  ASSERT_TRUE(reparsed) << (reparsed ? std::string{} : reparsed.error().to_string());
+  EXPECT_NE(atx::vol::serialize_listed_definitions(*reparsed), text);
+  EXPECT_NE(reparsed->fingerprint(), table->fingerprint());
+}
+
 } // namespace

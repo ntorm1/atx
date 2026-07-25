@@ -88,19 +88,68 @@ void append_double(std::string &out, double value) {
   return iso_to_ns(std::string_view(buffer, total));
 }
 
-[[nodiscard]] std::vector<std::string_view> split(std::string_view text, char delimiter) {
-  std::vector<std::string_view> fields;
-  std::size_t start = 0;
-  while (start <= text.size()) {
-    const std::size_t end = text.find(delimiter, start);
-    fields.push_back(
-        text.substr(start, end == std::string_view::npos ? text.size() - start : end - start));
-    if (end == std::string_view::npos) {
+// Locate the nine tab-separated fields of `line` into `out`, in a single forward
+// pass with no allocation. Replaces a per-row `std::vector<std::string_view>`
+// built by the old `split(line, '\t')` — one heap allocation per row, on a file
+// of ~8.7M rows.
+//
+// Returns false unless `line` carries EXACTLY eight separators. `split(...)
+// .size() != 9` gave both directions for free; a scan gives neither, and both
+// are load-bearing:
+//
+//   - FEWER than eight tabs: the scan stops early and leaves `out` PARTIALLY
+//     written, so the caller must treat a false return as "read nothing". `out`
+//     is therefore declared per row by the caller rather than hoisted out of the
+//     row loop: a hoisted buffer would let a short row silently inherit its
+//     predecessor's trailing fields. (Observed: with a hoisted buffer an
+//     eight-field row parses using the previous row's source_fingerprint.)
+//   - A NINTH tab: a scan that stops once it has eight separators leaves the
+//     tenth field unread past the end of `out[8]` and accepts a 10-field row as
+//     if it had nine. The absence of any further tab before end-of-line is
+//     therefore asserted explicitly rather than implied.
+//
+// LF-only, exactly as before: '\r' is not a separator and is not stripped, so a
+// CRLF file still fails the header equality gate.
+[[nodiscard]] bool find_row_fields(std::string_view line, std::string_view (&out)[9]) noexcept {
+  if (line.empty()) {
+    return false;
+  }
+  const char *cursor = line.data();
+  const char *const end = cursor + line.size();
+  for (std::size_t f = 0; f < 8; ++f) {
+    const char *const tab = static_cast<const char *>(
+        std::memchr(cursor, '\t', static_cast<std::size_t>(end - cursor)));
+    if (tab == nullptr) {
+      return false; // fewer than eight separators
+    }
+    out[f] = std::string_view(cursor, static_cast<std::size_t>(tab - cursor));
+    cursor = tab + 1;
+  }
+  if (std::memchr(cursor, '\t', static_cast<std::size_t>(end - cursor)) != nullptr) {
+    return false; // a ninth separator: ten or more fields
+  }
+  out[8] = std::string_view(cursor, static_cast<std::size_t>(end - cursor));
+  return true;
+}
+
+// Number of '\n' bytes in `text`. `split(text, '\n').size()` is exactly this
+// plus one; recovering the count with one sequential memchr pass is what lets
+// `definitions` still be reserved exactly once without materialising the line
+// index (see `parse_listed_definitions`).
+[[nodiscard]] std::size_t count_newlines(std::string_view text) noexcept {
+  std::size_t count = 0;
+  const char *cursor = text.data();
+  const char *const end = cursor + text.size();
+  while (cursor != end) {
+    const char *const found = static_cast<const char *>(
+        std::memchr(cursor, '\n', static_cast<std::size_t>(end - cursor)));
+    if (found == nullptr) {
       break;
     }
-    start = end + 1;
+    ++count;
+    cursor = found + 1;
   }
-  return fields;
+  return count;
 }
 
 template <typename T> [[nodiscard]] bool parse_integer(std::string_view text, T &value) {
@@ -257,22 +306,56 @@ std::string serialize_listed_definitions(const ListedDefinitionTable &table) {
 }
 
 Result<ListedDefinitionTable> parse_listed_definitions(std::string_view tsv) {
-  const std::vector<std::string_view> lines = split(tsv, '\n');
-  if (lines.size() < 2 || lines[0] != kMagic || lines[1] != kHeader) {
+  // Forward line walk, no line index. `split(tsv, '\n')` used to materialise one
+  // `string_view` per line: on the ~8.7M-row production file that is ~140 MB of
+  // index, and its geometric growth peaks at ~2.5x that in transient
+  // reallocation, all on top of the ~700 MB buffer the views point into. Nothing
+  // here needs random access — the rows are consumed strictly in order.
+  //
+  // `cursor > tsv.size()` is the exhausted state, so a final line with no '\n'
+  // advances the cursor to `tsv.size() + 1`. That reproduces `split`'s element
+  // sequence exactly, INCLUDING the single empty element `split("")` yields and
+  // the trailing empty element after a terminating '\n' (which the empty-line
+  // skip below absorbs, unchanged).
+  std::size_t cursor = 0;
+  const auto exhausted = [&] { return cursor > tsv.size(); };
+  const auto next_line = [&] {
+    const std::size_t newline = tsv.find('\n', cursor);
+    const std::size_t end = newline == std::string_view::npos ? tsv.size() : newline;
+    const std::string_view line = tsv.substr(cursor, end - cursor);
+    cursor = end + 1;
+    return line;
+  };
+
+  const std::string_view magic = next_line(); // cursor starts at 0, so always present
+  if (exhausted()) {                          // fewer than two lines
     return Err(ErrorCode::ParseError, "listed definitions: bad header");
   }
+  const std::string_view header = next_line();
+  if (magic != kMagic || header != kHeader) {
+    return Err(ErrorCode::ParseError, "listed definitions: bad header");
+  }
+
   std::vector<ListedContractDefinition> definitions;
-  definitions.reserve(lines.size() - 2);
-  for (std::size_t i = 2; i < lines.size(); ++i) {
-    if (lines[i].empty()) {
-      continue;
+  // `split(tsv, '\n').size()` was `count_newlines(tsv) + 1`, so the old
+  // `lines.size() - 2` is `count_newlines(tsv) - 1`. The header gate above has
+  // already established two lines, hence at least one '\n'. Reserving exactly
+  // once still matters: on the production file this vector reaches ~1 GB, and
+  // geometric growth would peak at ~1.5x that while moving 8.7M rows.
+  definitions.reserve(count_newlines(tsv) - 1u);
+  while (!exhausted()) {
+    const std::string_view line = next_line();
+    if (line.empty()) {
+      continue; // absorbs the trailing element after a final '\n'
     }
-    const std::vector<std::string_view> fields = split(lines[i], '\t');
+    // Declared INSIDE the loop on purpose — see `find_row_fields`: a partial
+    // write from a short row must never be visible to the next row.
+    std::string_view fields[9];
     ListedContractDefinition definition;
     std::uint64_t instrument_id = 0;
     unsigned monthly = 0;
     unsigned deliverable = 0;
-    if (fields.size() != 9 || !parse_integer(fields[1], instrument_id) ||
+    if (!find_row_fields(line, fields) || !parse_integer(fields[1], instrument_id) ||
         instrument_id > std::numeric_limits<std::uint32_t>::max() ||
         !parse_integer(fields[3], definition.definition_ts_ns) ||
         !parse_integer(fields[4], definition.expiry_ts_ns) ||
