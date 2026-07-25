@@ -1,17 +1,14 @@
 # atx-vol backtesting sprint — status
 
-**As of** 2026-07-25, HEAD `6c389de` on branch **`sprint/atx-vol-backtest-waves-cde`**.
-**Stopped at the user's request, mid-Wave-D.** The working tree is clean for every file
-this sprint touched. **One landed commit is UNREVIEWED** — see
-[Stop point](#stop-point-one-unreviewed-commit).
+**As of** 2026-07-25, HEAD `876e0d5` on branch **`sprint/atx-vol-backtest-waves-cde`**.
+**Wave D is CLOSED.** Every commit on the branch has been reviewed. Wave E is in progress.
 
-Nothing was merged into local `main` this session, per instruction. `main` still points at
+Nothing has been merged into local `main`, per instruction. `main` still points at
 `2858cab` (Wave C T4). The branch carries everything after it.
 
 The sprint's charter: productionize the backtesting pipeline — get the economics out of a
 ~1000-line example file into the library, give results a real storage format, and improve
-correctness and performance. **Waves A, B and C are closed. Wave D is 3 of 7 tasks in.
-Wave E is planned and not started.**
+correctness and performance. **Waves A, B, C and D are closed. Wave E is under way.**
 
 ---
 
@@ -23,27 +20,107 @@ Wave E is planned and not started.**
 | **B** | `listed_dispersion_pipeline` — dispersion economics under test, M1 fixed, two-route parity guarded, CLI thinned | **CLOSED** `587ee97` |
 | **C** | `backtest_driver` spine; migrate all five example drivers | **CLOSED** `cb875dc` — gate PASS |
 | — | pre-Wave-D hygiene: make the full Release build green | **DONE** `017fc5c` |
-| **D** | `StepObserver` (L10) retires the divergence shadow loop; de-SPY `dispersion_workflow` (L12) | **T1–T3 landed**, T3 in a fix round; T4–T7 not started |
-| **E** | Perf — 4 passes kept of the original 7 | Planned, not started |
+| **D** | `StepObserver` (L10) retires the divergence shadow loop; de-SPY `dispersion_workflow` (L12) | **CLOSED** `876e0d5` — gate PASS, whole-branch review Approved |
+| **E** | Perf — 4 passes kept of the original 7 | **In progress** — T1 running |
 
 ### Commit chain on the branch
 
 ```
-6c389de  docs(vol): sprint status at the Wave D stop point             (this file)
-5c227e8  fix(vol): vacuity gate opt-in and non-destructive   (D T3 fix 1, UNREVIEWED)
-f60ce3c  feat(vol): dual-run mark-divergence equivalence arbiter        (D T3)
-c438a64  test(vol): gate divergence row multiplicity and accumulation   (D T2 fix)
-c464051  feat(vol): mark-divergence collector on the step observer      (D T2)
-42c60d8  feat(vol): RunConfig::step_observer — the L10 substrate        (D T1)
-017fc5c  fix(build): make the full Release build green                  (hygiene)
-cb875dc  docs(vol): close Wave C — gate PASS, honest wave verdict       (C T8)
-36f9707  refactor(vol): migrate mag7_dispersion_backtest                (C T6)
-a9e62e4  test(vol): say what the PnL-track gate actually covers         (C T5 fix)
-35a55cf  refactor(vol): migrate spy_dispersion_pnl                      (C T5)
+876e0d5  docs(vol): Wave D whole-branch review — Approved, 0 Critical
+5ab3778  docs(vol): Wave D T7 gate — Steps 1-4 GREEN, all six L12 sites executed
+20d0c00  docs(vol): close Wave D T6
+0a895b8  refactor(vol): RunSpec.index_symbol replaces the SPY hardcode     (D T6)
+3e1db2b  docs(vol): close Wave D T5
+d955e93  refactor(vol)!: delete the mark-divergence shadow loop            (D T5)
+47c0d35  docs(vol): close the T3 fix round — re-review clean
+819c442  docs(vol): Wave D T4 — 135-session equivalence proof GREEN
+f4e6350  docs(vol): correct the stop point
+6c389de  docs(vol): sprint status at the Wave D stop point
+5c227e8  fix(vol): vacuity gate opt-in and non-destructive                 (D T3 fix 1)
+f60ce3c  feat(vol): dual-run mark-divergence equivalence arbiter           (D T3)
+c438a64  test(vol): gate divergence row multiplicity and accumulation      (D T2 fix)
+c464051  feat(vol): mark-divergence collector on the step observer         (D T2)
+42c60d8  feat(vol): RunConfig::step_observer — the L10 substrate           (D T1)
+017fc5c  fix(build): make the full Release build green                     (hygiene)
+cb875dc  docs(vol): close Wave C — gate PASS, honest wave verdict          (C T8)
+36f9707  refactor(vol): migrate mag7_dispersion_backtest                   (C T6)
+a9e62e4  test(vol): say what the PnL-track gate actually covers            (C T5 fix)
+35a55cf  refactor(vol): migrate spy_dispersion_pnl                         (C T5)
 --- main is here: 2858cab ---
 ```
 
-Branch diff vs `main`: **16 files, +2072 / −79.**
+Branch diff vs `main`: **20 commits, 24 files, +3843 / −209.**
+
+---
+
+## Wave D — closed
+
+Wave D retired a **shadow replay loop** (`collect_mark_divergence_replay`) that re-walked
+the clock and re-loaded every archive to recompute mark divergence the engine already knew
+as it stepped. The payoff is deleting working code, so the wave was built entirely around
+proving the replacement equivalent *first*.
+
+| Task | What | Result |
+|---|---|---|
+| T1 | `StepObserver` + `StepEvent` + `RunConfig::step_observer`, engine firing | `42c60d8`. Approved first pass. |
+| T2 | mark-divergence collector on the observer | `c464051`..`c438a64`. Clean after 1 fix round. |
+| T3 | dual-run bit-exact comparator, shadow retained | `f60ce3c`..`5c227e8`. Re-review clean, 0 Crit / 0 Imp. |
+| T4 | **135-session equivalence proof** (controller) | `819c442`. **N = 137 rows, bit-exact.** |
+| T5 | **delete the shadow loop** | `d955e93`. **−193 lines (−150 code).** Review clean first pass. |
+| T6 | L12 — `RunSpec.index_symbol`, de-SPY `all_symbols`/`universe_at` | `0a895b8`. Approved, 1 Important (report, not code). |
+| T7 | wave gate + whole-branch review | `5ab3778`, `876e0d5`. **Gate PASS.** |
+
+**Suite: 2020 → 2044 ran, 1974 → 1998 passed.** Skipped/failed/disabled unchanged; the 3
+failures remain exactly the documented pre-existing reds. Every test the wave added passes.
+
+### The wave's central claim, and the three independent proofs behind it
+
+The claim is that the observer-derived `mark_divergence` section is the same artifact the
+shadow produced. Three different agents established it three different ways:
+
+1. **T4, on the production corpus:** `observer=137 shadow=137 rows MATCH` across 7 rolls
+   and 11 underlyings, 137 *distinct* bps values spanning 2.3e-12 to 795.8 bps, determinism
+   proven on an independent pass from a fresh copy.
+2. **T5's reviewer, inside the container:** per-section **binary payload crc32c + sha256**
+   compared pre/post deletion — `mark_divergence`, `projected_cold` and `projected_nodiv`
+   all binary-identical. This caught what no gate in the brief could: a TSV dump renders
+   *decoded* rows, so a changed dictionary-encoding order would produce identical text and
+   a different `run.atxrun`.
+3. **T7, after the deletion:** `MD-CFG = 9e958a90ae15ac74` at N=137, byte-identical to what
+   T4 measured while both sources still existed.
+
+### Wave D's honest weak spots
+
+- **The arena staging has no automated test.** T5 fills `MarkDivergenceArena` from the
+  observer's rows in registry order; a transposition of two same-typed columns would be
+  invisible to any gate where both sources already agreed. The same exposure the shadow
+  had, so not a regression — but not closed either.
+- **`verify` could not run on the parity corpus at all** (it needs `quality.tsv`, which
+  that corpus has never had — proven by running `verify` read-only against the untouched
+  source and getting the identical error). The gate was satisfied on a different corpus
+  and the substitution is stated, not hidden.
+- **The pinned positional row order of `mark_divergence` has no in-tree consumer.** Python
+  reads by column name, then sorts by bps and takes the top 12. The ordering is enforced
+  solely by the out-of-process section sha256.
+- **`StepEvent::step_index` has no production reader** — tests only. Kept as a recorded
+  decision (it is a natural member of a public step-observation API), not an oversight.
+
+### Two Important findings from the whole-branch review
+
+**1. The evidence-channel contract was weakened, and two earlier passes missed it.** The
+retained `all_rolls_consumed()` gate cannot distinguish *"the observer ran and found zero
+divergences"* from *"the observer was never installed"* — but the comment T5 moved onto it
+claims exactly that distinction. The shadow's gate could make it, because it interrogated
+the same object its collection loop read. The T5 dispatch named this as the highest-value
+check in that review, T5's reviewer examined it and accepted the carry, and the overclaim
+still survived to a third pair of eyes. Latent (T4 and T7 both prove the observer fires),
+and **being fixed rather than carried.**
+
+**2. The Python `RunSpec` binding omits `index_symbol`** while `read_run_spec` is bound and
+the bound `all_symbols`/`universe_at` take no index argument — so a non-default index would
+silently give the C++ CLI and Python different universes. Inert today. The distinction from
+the deliberate `step_observer` omission is the point: that one was recorded as a decision,
+this one was not. Python is out of scope this sprint, so it is a **named follow-up**.
 
 ---
 
@@ -110,159 +187,15 @@ warning belongs to the wave that introduced it.
 
 ---
 
-## Wave D — where it actually is
-
-Wave D retires a **shadow replay loop** (`collect_mark_divergence_replay`) that re-walks the
-clock and re-loads every archive to recompute mark divergence the engine already knew as it
-stepped. The payoff is deleting working code, so the wave is built entirely around proving
-the replacement equivalent first.
-
-| Task | What | Result |
-|---|---|---|
-| T1 | `StepObserver` + `StepEvent` + `RunConfig::step_observer`, engine firing | `42c60d8`. **Approved first pass.** Suite +5/+5. |
-| T2 | mark-divergence collector on the observer | `c464051`..`c438a64`. Clean after 1 fix round. Suite +7/+7 then +1/+1. |
-| T3 | dual-run comparator, shadow **retained** | `f60ce3c`. Spec ✅, 2 Importants. Fix `5c227e8` landed but is **UNREVIEWED**. |
-| T4 | 135-session equivalence proof (controller) — **BLOCKS T5** | Not started. Prepared; see below. |
-| T5 | delete the shadow loop | Blocked on T4 by design. |
-| T6 | L12 — `RunSpec.index_symbol`, de-SPY `all_symbols`/`universe_at` | Not started. |
-| T7 | Wave-D integration gate | Not started. |
-
-### The three findings that carried the wave
-
-**1. Bit-identity is structurally implied, not hoped.** T1's review established something
-stronger than the implementer claimed: `ListedDispersionStrategy::on_step` **never reads
-`book`** — it only writes it, after the divergence loop — and the rows are computed from the
-snapshot + the frozen schedule + the policy alone. So every book difference between the
-shadow (which skips transition validation, execute, hedge, settlement and expiry erase) and
-the observer riding the real engine book is **provably irrelevant** to the divergence rows.
-T1 *enabled* T4's proof rather than foreclosing it.
-
-**2. The load path is the half that is genuinely unmeasured.** `live_mark` comes from the
-loaded surface, and the two routes load differently — the shadow calls
-`MarketSnapshot::load(path, tier)`, the engine calls
-`SnapshotCache::load(path, tier, build_policy)`. Under the CLI's `Eager` default they
-agree, and both reduce to *deserialize archive → `with_query_pricing(tier)`*, a
-deterministic pure function of the same bytes. **That is why T4 must measure it on a route
-with a nonzero row count** — and it is what makes the comparator the right instrument for
-*future* divergence, which is what the deletion really rests on.
-
-**3. T2 shipped a collector whose multiplicity and accumulation were ungated.** Every
-fixture perturbed one leg on one step and the engine test ran a one-date clock, so three
-mutations survived all seven tests: `out.clear()` before the push, `break` after the first
-push, and hoisting the push out of the loop — exactly the properties T4 bit-compares. The
-fix perturbs two non-adjacent legs (differing in symbol, side, strike, `diff` **and** bps)
-and rebuilds the engine test on a two-date/two-roll clock giving 3 accumulated rows.
-Mutation evidence isolates each gate: M-F → 2 failures, M-G → 2, **M-H → 1, the engine test
-alone**, proving it is the two-roll clock and not the multiplicity test that closes
-accumulation.
-
-Also worth recording: T2's implementer **added a 7th test the brief did not specify**,
-driving the real `run_backtest`. All five briefed tests hand-build the `StepEvent`, so as
-specified the task would have shipped with **zero evidence the collector is reachable from
-the engine** — the precise Wave B failure mode.
-
----
-
-## Stop point: one unreviewed commit
-
-**Resume here.** Wave D T3's fix round 1 was dispatched, and its **code fix committed as
-`5c227e8`** before work stopped. What did *not* happen:
-
-- the implementer's **fix report was never appended** to `task-3-report.md` (it was stopped
-  mid-sentence doing exactly that), so the fix's own test evidence is not on the record;
-- the **scoped re-review never ran**, so `5c227e8` is the only commit on this branch that no
-  reviewer has seen.
-
-Everything else is clean: the working tree has no modifications to any file this sprint
-touched, and the pre-existing unrelated uncommitted work (Python bindings split, `atx-core`
-sqlite, `atx-db/`, `atx-kb/`, surface-db docs, `atx-vol/sprints/*`) was never staged at any
-point, as required.
-
-**To resume:** re-run the fix round's verification (fixture matrix across `configured`,
-`cold`, `--no-divergence`, and the new flag both set and unset — including the
-flag-set-with-zero-rows case, which must fail *after* writing the archive, with the archive
-demonstrably present afterwards), then run the scoped re-review of `f60ce3c..5c227e8`
-before T4.
-
-### What the fix was for
-
-Two Important findings, no Criticals. The comparator itself was judged sound: the reviewer
-searched for a path where it could report identical while the sources differ and **found
-none** except `n == 0`, and it independently reproduced T3's
-`observer=36 shadow=36 rows MATCH` on a 3-session/2-roll fixture.
-
-**Important 1 is the controller's fault and is recorded as such.** My dispatch said the
-comparator "must assert the compared row count is > 0 on that route and fail the gate as
-vacuous if it is 0". I did not scope it; the implementer built exactly that; it is
-mis-scoped. The reviewer proved it empirically rather than arguing it:
-
-- Zero rows on `--execution configured` is **legitimately reachable**. A row exists iff
-  `seed.greeks().price != leg.model_mark` (exact `!=`), and `QueryPricingRoute::ColdFallback`
-  is documented as what a fast-configured surface reports outside its certified correction
-  box — with `priced_surface_test.cpp` pinning that fallback as **exactly equal** to the cold
-  value. A run whose legs all fall outside the box reproduces the frozen cold marks
-  bit-for-bit and emits zero rows, as does any schedule authored under the fast tier.
-- It patched a fixture's `trade_schedule.tsv` so each diverging leg's `model_mark` equalled
-  the configured route's own `live_mark` — a well-formed schedule that passes validation —
-  and got `EXIT=1`.
-- **Worse than an exit code: the run's whole output is destroyed.** The `return Err`
-  precedes `write_run_archive`, so the run dir afterwards contains **no `run.atxrun` at
-  all** — `projected_cold`, `meta`, `diagnostics` lost. Before the change that run wrote all
-  four sections and exited 0.
-- **And the conditioning is keyed on the wrong axis.** On the same patched fixture, `cold`
-  produced 36 rows and passed while `configured` produced 0 and failed. Neither "cold ⇒ 0"
-  nor "configured ⇒ > 0" is a property of the routes — both are properties of the schedule's
-  provenance. The guard *permits* the one genuinely vacuous case and *kills* a run that is
-  merely uninteresting, on the **default** route.
-
-**Ruling given, both halves:** make the guard opt-in and route-independent via
-`--require-divergence-rows` (T4's proof run passes it; nothing else gains a failure mode),
-**and** relocate the `return Err` to after `write_run_archive` regardless — the exit code is
-recoverable, the archive is not.
-
-**Important 2:** the MATCH line goes to stdout while the "0 rows — plumbing check" caveat
-goes to stderr, so a stdout-only log shows a bare, unqualified
-`mark divergence equivalence: observer=0 shadow=0 rows MATCH`. That is exactly what T4 greps
-and what a ledger transcript would carry — i.e. the artifact **T5's deletion decision rests
-on**. Fix is to put the qualifier on the same stdout line.
-
-A background PowerShell job hashing `parity-full`'s two 696 MB `definitions*.tsv` files
-(to decide whether the T4 corpus copy can skip one) was also stopped. Read-only, no output,
-nothing to clean up.
-
----
-
-## T4 is prepared — read this before running it
-
-T4 is the 135-session equivalence proof and it **blocks T5**. Two things were settled before
-stopping:
-
-1. **Run on COPIES ONLY. Never on `parity-full` itself.** The plan's Step 1 says to run cold
-   directly on it. That is unsafe: `run-projected-backtest` writes `projected_cold`,
-   `mark_divergence`, `meta` and `diagnostics`, and `run_archive`'s merge-write carries
-   sections forward only if their name is **not** in the incoming write set — *"on a name
-   collision the NEW section wins."* Running in place would overwrite the pinned cold
-   goldens the proof exists to compare against. A copy is free and correct:
-   `run_identity_hash` folds only `run_spec.tsv` + `universe_schedule.tsv`, and the
-   manifest's archive paths are absolute, so a metadata-only copy runs correctly and keeps
-   the same identity. (`parity-full` is 1.4 GB, dominated by two 696 MB `definitions*.tsv`;
-   `definitions-orig.tsv` is a backup the run does not read.)
-2. **The escalation path is pre-decided, so nobody improvises at the gate.** If
-   `--execution configured` cannot complete on the corpus, or yields N == 0, fall back to the
-   **perturbed-`model_mark` copied-schedule corpus**. Do **not** fall back to "T2's gtest
-   plus T3's RED probe suffice" — a gtest that hand-builds a `StepEvent` cannot prove the
-   engine fires the hook where the shadow looped, and that is the entire claim T5 rests on.
-   If both routes fail to produce a nonzero-row bit-comparison, **T5 is not dispatched and
-   the shadow stays**, recorded as a wave shortfall. Deleting a shadow whose replacement was
-   never proven on a nonzero corpus is precisely Wave B's defect class.
-
-The T4 invocation to use is in `task-3-report.md`; it needs the `--require-divergence-rows`
-flag from the in-flight fix round appended to it.
-
----
-
 ## Residual risks carried into Wave E and the final review
 
+0. **Two named follow-ups out of Wave D**, both out of this sprint's scope rather than
+   forgotten: expose `index_symbol` on the Python `RunSpec` binding and thread it through
+   the bound `all_symbols`/`universe_at` (Important-2 above); and reconcile
+   `build_corpus_command`, which writes `occ_ess_inventory.tsv` only when `occ_ess_root` is
+   set, with `build_schedule_command`, which calls `verify_occ_ess_evidence`
+   **unconditionally** — so a corpus legitimately built without an OCC ESS root can never
+   run `build-schedule`.
 1. **The largest one, from Wave C: no committed golden pins any driver's bytes.** All ten of
    Wave C's goldens live in session scratchpad. `mag7/engine_metrics.csv` even embeds an
    absolute `# db_root=` path, so **four** of the ten die with the scratchpad, not one.
@@ -285,24 +218,34 @@ flag from the in-flight fix round appended to it.
 
 ---
 
-## Tooling hazard — corrected this session
+## Tooling hazard — five ways a byte gate has silently lied
 
-The earlier status doc claimed "`diff` and `grep` via the Bash tool return WRONG answers".
-That overstated it. Measured on a purpose-built fixture:
+This is the sprint's most transferable finding, and it kept growing. Every one of these was
+observed, not theorised, and each produced a gate verdict that was **wrong in a way that
+looked right**. All five are now enumerated in `SPRINT-CONSTRAINTS.md` and handed to every
+subagent.
 
-- **`diff` prints the correct textual difference but returns exit code 0 on differing
-  files**, while `rtk proxy diff` correctly returns 1. Reading its output is safe; branching
-  on `$?`, `&&`, `||`, or `if diff a b; then` silently concludes "identical".
-- **`grep` is clean** — correct counts, exit 0 on match and 1 on no match, including through
-  a pipe. The earlier claim that a piped `grep -c` miscounted **does not reproduce** and is
-  withdrawn.
+| # | How it lied | Evidence |
+|---|---|---|
+| 1 | Bash **`diff` returns exit 0 on differing files** (it prints the correct difference). `if diff a b; then`, `&&`, `\|\|`, `$?` all conclude "identical". `rtk proxy diff` returns 1 correctly. | measured on a purpose-built fixture |
+| 2 | **PowerShell `>` redirecting a native exe** re-encodes with a UTF-8 BOM and CRLF | same `projected_cold` dump: `E0C2ABB1…` (FAIL) via PowerShell vs `cbabca44…` (PASS) via bash |
+| 3 | **Unrecorded capture convention** — a hash pinned under CRLF normalisation reads as drift when re-checked raw | `AFD4C06E…` (CRLF) vs `39D47B8B…` (raw LF), same artifact |
+| 4 | **A PowerShell helper named after a built-in alias** — `function H` resolved to `Get-History`, so every hash was `$null` | six gates "passed" comparing `$null` to `$null` |
+| 5 | **`printf` interpreting backslashes** in Windows paths (`\a`, `\r`) | `C:\atx-data\…` silently became `C:tx-data\…` |
 
-The operative rule is unchanged and still binding: establish and verify every byte
-comparison in PowerShell (`Get-FileHash`, `Compare-Object`) and **print both values**. That
-protocol earned itself during Wave C's gate — a case-insensitive PowerShell variable
+Two of these were found by subagents reporting against their own work.
+
+**The unifying rule, and the one worth keeping: a comparison that cannot be shown to fail
+has not been run.** Capture bytes with bash `>`, hash with PowerShell `Get-FileHash`, print
+both the computed and the expected value, record which convention a pin was taken under,
+and include a negative control that demonstrably returns `False`.
+
+That protocol earned itself twice. In Wave C's gate a case-insensitive PowerShell variable
 collision (`$ref` clobbering `$REF`) made two audits print `ref lines = 0 / COUNT DIFFERS`,
-indistinguishable from a real gate failure. Printing both values plus line counts is what
-caught it; a boolean-only verdict would have produced a false GATE FAIL.
+indistinguishable from a real failure — printing both values plus line counts is what
+caught it. And in Wave D's gate, `trade_schedule.tsv` matched its golden **only because
+`build-schedule` had failed and left the copied file untouched**: a copy-integrity check
+masquerading as a regeneration gate, caught only by noticing the mtime had not moved.
 
 Separately, the **Grep tool** (not just Bash grep) still mis-renders characters — it showed
 `//` as `\` in a header twice this sprint. Use Read when exact characters matter.
