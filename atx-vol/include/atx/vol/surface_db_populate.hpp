@@ -14,6 +14,7 @@
 // this header/impl adds only the per-symbol config resolution, date grouping,
 // uid stamping, and SurfaceDb partition writes on top.
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -77,13 +78,28 @@ struct SurfaceDbPopulateStats {
 struct PopulateTestHooks {
   std::function<void(const std::string &date, const std::string &symbol)> before_board_fit{};
   std::function<void(const std::string &date)> after_partition_write{};
-  // U4 (R-14): observe the per-board inner fit-worker budget resolved from the
-  // shared pool (budget / min(budget, n_boards); 0 = auto sizing, the
-  // outer-serial mode). Called once on the caller thread before the fit
-  // fan-out, so the test needs no synchronization. The sole use is the
-  // shared-worker-budget test asserting a small book splits the pool across
-  // boards instead of pinning each board to one worker.
-  std::function<void(unsigned inner_fit_workers)> on_inner_fit_workers{};
+  // U4 (R-14) / FIX-4: observe EVERY inner fit-worker budget OFFER, together with
+  // the live outstanding-board count the offer was resolved against
+  // (`inner_fit_workers == inner_budget / min(inner_budget, boards_outstanding)`;
+  // 0 = auto sizing, the outer-serial mode). FIX-4 made the budget live, so this
+  // fires more than once per board: once at claim and once per surface-build
+  // request the fit issues (see surface_db_populate.cpp's reclaim block).
+  //
+  // THREAD-SAFETY CHANGED WITH FIX-4: this now runs on the fitting WORKER thread
+  // and several boards can resolve concurrently — the callback must synchronize
+  // itself. Carrying `boards_outstanding` is what makes a test able to assert the
+  // offer function per offer instead of racing on "the" resolved value.
+  std::function<void(const std::string &symbol, unsigned inner_fit_workers,
+                     std::size_t boards_outstanding)>
+      on_inner_fit_workers{};
+  // FIX-4: fires immediately after a board's fit slot is complete and the
+  // outstanding-board count has been decremented; receives the POST-decrement
+  // count. This is the deterministic release seam for the straggler gate: a test
+  // holding one board inside `before_board_fit` can wait for
+  // `boards_outstanding == 1` instead of sleeping. Runs on the fit worker thread
+  // (concurrently across boards); a throwing callback is swallowed because this
+  // fires from a destructor.
+  std::function<void(std::size_t boards_outstanding)> on_board_fit_done{};
 };
 
 // Fit every board and store one partition per distinct board date (key =
