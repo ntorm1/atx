@@ -58,11 +58,12 @@
 #include <vector>
 
 #include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest.hpp" // Clock, run_backtest, RunConfig, BacktestResult, MarketSnapshot
-#include "atx/vol/corpus.hpp"   // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/counters.hpp" // always-on sampled pricing telemetry
-#include "atx/vol/data.hpp"     // iso_to_ns, ns_to_iso_date, year_fraction, QuoteFrame
-#include "atx/vol/panel.hpp"    // make_synthetic_american_panel, SynthPanelSpec, load_chain_csv
+#include "atx/vol/backtest.hpp" // Clock, RunConfig, BacktestResult, MarketSnapshot, SnapshotCache
+#include "atx/vol/backtest_driver.hpp" // run_timed (the timed-engine + tearsheet + stats spine)
+#include "atx/vol/corpus.hpp"          // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/counters.hpp"        // always-on sampled pricing telemetry
+#include "atx/vol/data.hpp"            // iso_to_ns, ns_to_iso_date, year_fraction, QuoteFrame
+#include "atx/vol/panel.hpp" // make_synthetic_american_panel, SynthPanelSpec, load_chain_csv
 #include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext
 #include "atx/vol/s3.hpp"             // S3Params
 #include "atx/vol/strategy.hpp"       // DeclarativeStrategy, StrategySpec
@@ -453,20 +454,25 @@ int main(int argc, char **argv) {
                 static_cast<int>(query_pricing_label.size()), query_pricing_label.data(),
                 preload_ms);
   }
+  // Time the engine, fold the tearsheet, capture the stats: the `run_timed` spine.
+  // Its timed interval brackets the ENGINE CALL ONLY, so `# wall_clock_ms` /
+  // `# steps_per_s` keep their pre-spine meaning; the preload timer above is a
+  // SEPARATE interval and stays outside it. The telemetry delta below still measures
+  // engine work alone: the fold `run_timed` performs is pure arithmetic over the
+  // result vectors and touches no counter (src/tearsheet.cpp includes no counters.hpp).
   const counters::lightweight::Snapshot telemetry_before = counters::lightweight::snapshot();
-  const auto t_run0 = std::chrono::steady_clock::now();
-  auto res = run_backtest(*clock, strat, run_config);
-  const auto t_run1 = std::chrono::steady_clock::now();
+  auto outcome = run_timed(*clock, strat, run_config);
   const counters::lightweight::Snapshot telemetry =
       counters::lightweight::delta(telemetry_before, counters::lightweight::snapshot());
-  if (!res) {
-    std::fprintf(stderr, "run_backtest: %s\n", res.error().to_string().c_str());
+  if (!outcome) {
+    std::fprintf(stderr, "run_backtest: %s\n", outcome.error().to_string().c_str());
     return 1;
   }
-  const BacktestResult &r = *res;
-  const TearSheet t = tearsheet(r);
-  const SnapshotCacheStats cache_stats =
-      run_config.snapshot_cache ? run_config.snapshot_cache->stats() : SnapshotCacheStats{};
+  const BacktestResult &r = outcome->result;
+  const TearSheet t = outcome->sheet;
+  // The spine applies this driver's own former ternary (cache ? ->stats() : {}), so
+  // this stays all-zero on the default non-adaptive, non-preload path.
+  const SnapshotCacheStats cache_stats = outcome->stats.cache;
 
   // ── 3. Table + tearsheet ──────────────────────────────────────────────────
   const std::string tsv = (base / "spy_short_strangle.tsv").string();
@@ -476,7 +482,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  const double run_ms = std::chrono::duration<double, std::milli>(t_run1 - t_run0).count();
+  const double run_ms = outcome->stats.wall_clock_ms;
   const int priced_steps = static_cast<int>(r.size()) - 1;
 
   // CSV (pnl + greeks) with a `# key=value` metadata header the Python tearsheet
