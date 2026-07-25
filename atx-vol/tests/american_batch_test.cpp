@@ -25,6 +25,8 @@
 #include <barrier>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <optional>
 #include <thread>
@@ -334,7 +336,16 @@ TEST(AmericanPriceBatch, AvxPackDispatchesAreCountedOnThisEntryToo) {
   ASSERT_EQ(n_pack_lanes, 14u) << "every lane must reach the pack for the count below";
 
   if constexpr (counters::counters_enabled()) {
-    EXPECT_EQ(counters::snapshot().get(counters::Counter::AmericanAvxPackDispatches), 3u);
+    // Printed, not merely asserted: under the gate's counters-OFF build this whole
+    // block vanishes, so a counters-ON run is the ONLY thing that ever observes the
+    // bump (REVA7FIX §7). Emitting the value makes such a run self-documenting
+    // instead of leaving "the assertion did not fail" as the only evidence.
+    const std::uint64_t packs =
+        counters::snapshot().get(counters::Counter::AmericanAvxPackDispatches);
+    std::printf("[REVA7FIX] american_price_batch AVX2 pack dispatches = %llu "
+                "(expected floor(14/4) = 3)\n",
+                static_cast<unsigned long long>(packs));
+    EXPECT_EQ(packs, 3u);
   }
 }
 
