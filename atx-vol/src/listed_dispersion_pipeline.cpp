@@ -106,7 +106,10 @@ listed_quotes_for_date(const RunSpec &spec, const ListedDefinitionTable &definit
 
 ListedForwardLookup make_listed_forward_lookup(const MarketSnapshot &snapshot) {
   return [&snapshot](const DispersionMember &member, std::int64_t expiry) -> Result<double> {
-    const PricedSurface *surface = snapshot.find(member.uid);
+    // WS-ZC1: SurfaceSet::find resolves to a `SurfaceRef` handle (owned OR mapped-view
+    // backed), not a `const PricedSurface *`. Only the DECLARED TYPE changes — the
+    // self-proxy `operator->` and the nullptr comparison keep their exact syntax.
+    const SurfaceRef surface = snapshot.find(member.uid);
     if (surface == nullptr) {
       return Err(ErrorCode::NotFound, "surface missing");
     }
@@ -121,7 +124,7 @@ ListedRiskLookup make_listed_risk_lookup(const MarketSnapshot &snapshot, double 
                                          bool analytic, QueryExecution execution) {
   return [&snapshot, residual_T, analytic, execution](
              std::uint32_t uid, const ListedOptionQuote &quote) -> Result<ListedOptionRisk> {
-    const PricedSurface *surface = snapshot.find(uid);
+    const SurfaceRef surface = snapshot.find(uid); // WS-ZC1 handle, see above
     if (surface == nullptr) {
       return Err(ErrorCode::NotFound, "project-schedule: projected surface unavailable");
     }
@@ -371,7 +374,7 @@ Result<ListedDispersionSchedule> project_listed_schedule(const ListedDispersionS
     const auto make_straddle =
         [&](const ListedScheduleLeg &call_leg,
             const ListedScheduleLeg &put_leg) -> Result<ListedStraddle> {
-      const PricedSurface *surface = snapshot->find(call_leg.uid);
+      const SurfaceRef surface = snapshot->find(call_leg.uid); // WS-ZC1 handle, see above
       if (surface == nullptr) {
         return Err(ErrorCode::NotFound, "project-schedule: projected surface unavailable");
       }

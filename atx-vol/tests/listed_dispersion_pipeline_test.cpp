@@ -152,7 +152,9 @@ std::vector<ListedOptionQuote> quotes_for(const ListedScheduleRoll &roll,
                                           std::int64_t now, std::uint32_t id_offset) {
   std::vector<ListedOptionQuote> quotes;
   for (const ListedScheduleLeg &leg : roll.legs) {
-    const PricedSurface *surface = surfaces.find(leg.uid);
+    // WS-ZC1: SurfaceSet::find resolves to a `SurfaceRef` handle, not a
+    // `const PricedSurface *`. Declared type only; `->` and nullptr compare unchanged.
+    const SurfaceRef surface = surfaces.find(leg.uid);
     EXPECT_NE(surface, nullptr);
     const double term = static_cast<double>(leg.expiry_ts_ns - now) / kNsPerYear;
     auto mark = surface->fair_value(leg.strike, term, leg.side);
