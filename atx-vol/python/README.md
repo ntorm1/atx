@@ -295,3 +295,19 @@ the pricer's cached exercise boundary, so the GIL is what keeps two Python
 threads sharing one pricer from racing in C++. Use one `AloPricer` per thread, or
 the batch entry points, for concurrency.
 
+`PricerFitter` is the other mutating object, and it is handled differently
+because it cannot use the same answer. `PricerFitter.fit` mutates (it stores the
+surface, replacing any prior fit) while `value_chain` is const and internally
+parallel — and `value_chain` is long enough that it *must* release the GIL, at
+which point the GIL no longer serializes anything against it. So the binding
+carries its own reader/writer lock: `fit` and `set_threads` take the writer lock,
+`value_chain` / `value_chain_ids` / `surface` / `fitted` take the reader lock,
+and every one of them releases the GIL first. Concurrent `value_chain` calls on
+one fitter therefore run together, as `pricer_fitter.hpp` promises, and a
+concurrent `fit` waits for them instead of freeing the surface underneath them.
+Distinct fitters never contend.
+
+`PricerFitter.surface()` returns a handle that **co-owns** its generation, so a
+later `fit()` publishes a new generation without invalidating a handle you still
+hold, and the handle outlives the fitter itself.
+

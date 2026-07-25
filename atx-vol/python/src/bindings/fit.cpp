@@ -10,17 +10,24 @@
 //     -> PricerFitter::value_chain(OutputField)  -> numpy SoA
 //     -> FittedSurface::session().to_priced_surface() -> the existing API
 //
-// GIL: `fit` and `value_chain` are pure C++ over const state and fan out across
-// their own workers, so both release it — the pattern `run_backtest` already
-// proves. `value_chain` is documented bit-identical for any thread count, and
-// `test_fit.py` drives that invariant FROM PYTHON, because a binding that fanned
-// out through its own pool would break it invisibly.
+// GIL: `fit` and `value_chain` are both long C++ calls that fan out across their
+// own workers, so both release it — the pattern `run_backtest` already proves.
+// `fit` is NOT const, though: `pricer_fitter.hpp` states that it "mutates
+// (stores the surface) and needs exclusive access", while `value_chain` is const
+// and safe to run concurrently. Once `value_chain` runs GIL-free the GIL cannot
+// supply that exclusivity, so `PyPricerFitter` below carries a `shared_mutex`
+// and the binding — not the interpreter — is what serializes the mutator against
+// the readers. `value_chain` is documented bit-identical for any thread count,
+// and `test_fit.py` drives that invariant FROM PYTHON, because a binding that
+// fanned out through its own pool would break it invisibly.
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <span>
 #include <string>
 #include <utility>
@@ -198,6 +205,116 @@ struct SynthPanelPy {
   MarketEnv env;
   std::vector<double> truth_iv;
   std::vector<double> truth_forward;
+};
+
+// ── I1: binding-side reader/writer serialization for PricerFitter ───────────
+//
+// `pricer_fitter.hpp:22-24` is explicit: "`fit` mutates (stores the surface) and
+// needs exclusive access. `value_chain` is const and internally parallel;
+// concurrent `value_chain` calls on one fitter are safe." The library STATES
+// that requirement; it does not enforce it, and a Python caller has no way to.
+//
+// The GIL cannot supply the exclusivity here, which is what makes this different
+// from `AloPricer::price` (PY-5, `pricing.cpp`, where holding the GIL genuinely
+// is the whole synchronization story). `value_chain` is long and genuinely
+// parallel, so it must release the GIL — and once one side of a mutator/reader
+// pair runs GIL-free, the GIL serializes nothing. `fit` reassigning the
+// non-atomic `shared_ptr market_mark_surface_` while `value_chain` copies it is
+// a data race whose failure mode is refcount corruption; `test_fit.py` drives it
+// out of process and it dies with an access violation.
+//
+// So the exclusivity lives here: unique lock for the mutators, shared lock for
+// the const readers. Every lock is taken with the GIL ALREADY RELEASED. A thread
+// must never block on this mutex while holding the interpreter — that would
+// stall every unrelated Python thread for the duration of a fit, i.e. reproduce
+// the cost of holding the GIL through `fit` without any of the benefit.
+class PyPricerFitter {
+public:
+  explicit PyPricerFitter(PricerConfig cfg) : fitter_(std::move(cfg)) {}
+
+  void fit(const OptionChain &chain) {
+    py::gil_scoped_release release;
+    const std::unique_lock<std::shared_mutex> lock(mu_);
+    atxvol::python::unwrap(fitter_.fit(chain));
+  }
+
+  [[nodiscard]] bool fitted() const {
+    py::gil_scoped_release release;
+    const std::shared_lock<std::shared_mutex> lock(mu_);
+    return fitter_.fitted();
+  }
+
+  void set_threads(unsigned n) {
+    py::gil_scoped_release release;
+    const std::unique_lock<std::shared_mutex> lock(mu_);
+    fitter_.set_threads(n);
+  }
+
+  // Hands back the OWNER of the served generation, not an observer of it: see
+  // the FittedSurface holder note in `bind_fit`. `surface()` returns a raw
+  // pointer into whichever generation the fail-closed default-purpose routing
+  // selected, and `bundle()` carries the matching shared_ptr leases, so the
+  // owning handle is recovered by identity rather than by re-deriving the
+  // routing rule here (which would then have two places to disagree). The
+  // const_cast is at the binding seam only: every bound method is a const query.
+  [[nodiscard]] std::shared_ptr<FittedSurface> surface() const {
+    std::shared_ptr<const FittedSurface> owner;
+    bool served = false;
+    {
+      py::gil_scoped_release release;
+      const std::shared_lock<std::shared_mutex> lock(mu_);
+      const FittedSurface *raw = fitter_.surface();
+      served = raw != nullptr;
+      if (served) {
+        const SurfaceBundle bundle = fitter_.bundle();
+        if (bundle.risk.get() == raw) {
+          owner = bundle.risk;
+        } else if (bundle.market_mark.get() == raw) {
+          owner = bundle.market_mark;
+        }
+      }
+    }
+    if (!served) {
+      throw atxvol::python::AtxException(
+          atx::core::Error{atx::core::ErrorCode::Unavailable,
+                           "no surface is served for the config's default purpose"});
+    }
+    if (!owner) {
+      throw atxvol::python::AtxException(
+          atx::core::Error{atx::core::ErrorCode::Internal,
+                           "served surface is not one of the fitter's published leases"});
+    }
+    return std::const_pointer_cast<FittedSurface>(owner);
+  }
+
+  [[nodiscard]] py::dict value_chain(const OptionChain &chain, OutputField fields,
+                                     unsigned n_threads) const {
+    ChainValuation valuation;
+    {
+      py::gil_scoped_release release;
+      const std::shared_lock<std::shared_mutex> lock(mu_);
+      valuation = atxvol::python::unwrap(fitter_.value_chain(chain, fields, n_threads));
+    }
+    return valuation_to_dict(valuation);
+  }
+
+  [[nodiscard]] py::dict value_chain_ids(const OptionChain &chain, const IdArray &ids,
+                                         OutputField fields, unsigned n_threads) const {
+    // Decoded with the GIL still held: `as_ids` reads a numpy object.
+    const std::vector<OptionId> selected = as_ids(ids);
+    ChainValuation valuation;
+    {
+      py::gil_scoped_release release;
+      const std::shared_lock<std::shared_mutex> lock(mu_);
+      valuation =
+          atxvol::python::unwrap(fitter_.value_chain(chain, selected, fields, n_threads));
+    }
+    return valuation_to_dict(valuation);
+  }
+
+private:
+  PricerFitter fitter_;
+  mutable std::shared_mutex mu_;
 };
 
 SynthPanelPy make_spy_panel(const std::string &snapshot_iso) {
@@ -459,82 +576,36 @@ void bind_fit(py::module_ &m) {
           "Seal this fit into an owned PricedSurface — the hand-off into the\n"
           "archive / SurfaceDb / backtest half of the lifecycle.");
 
-  py::class_<PricerFitter>(m, "PricerFitter")
+  // Bound through `PyPricerFitter`, whose whole job is the reader/writer lock
+  // the library's documented thread-safety contract needs and the GIL cannot
+  // provide once `value_chain` releases it (see the class comment above).
+  py::class_<PyPricerFitter>(m, "PricerFitter")
       .def(py::init<PricerConfig>(), py::arg("config") = PricerConfig{})
-      .def(
-          "fit",
-          [](PricerFitter &self, const OptionChain &chain) {
-            atxvol::python::unwrap(self.fit(chain));
-          },
-          py::arg("chain"), py::call_guard<py::gil_scoped_release>(),
-          "Fit the surface from `chain` and store it, replacing any prior fit.\n"
-          "The prior surface is left intact on failure.")
-      .def_property_readonly("fitted", &PricerFitter::fitted)
-      .def("set_threads", &PricerFitter::set_threads, py::arg("n"))
-      .def(
-          "surface",
-          [](const PricerFitter &self) {
-            // Hand back the OWNER, not the observer. `surface()` returns a raw
-            // pointer into whichever generation the fail-closed default-purpose
-            // routing selected; `bundle()` carries the matching shared_ptr
-            // leases, so recover the owning handle by identity rather than
-            // re-deriving the routing rule here (which would then have two
-            // places to disagree). The const_cast is at the binding seam only:
-            // every bound method on FittedSurface is a const query.
-            const FittedSurface *raw = self.surface();
-            if (raw == nullptr) {
-              throw atxvol::python::AtxException(atx::core::Error{
-                  atx::core::ErrorCode::Unavailable,
-                  "no surface is served for the config's default purpose"});
-            }
-            const SurfaceBundle bundle = self.bundle();
-            std::shared_ptr<const FittedSurface> owner;
-            if (bundle.risk.get() == raw) {
-              owner = bundle.risk;
-            } else if (bundle.market_mark.get() == raw) {
-              owner = bundle.market_mark;
-            } else {
-              throw atxvol::python::AtxException(atx::core::Error{
-                  atx::core::ErrorCode::Internal,
-                  "served surface is not one of the fitter's published leases"});
-            }
-            return std::const_pointer_cast<FittedSurface>(owner);
-          },
-          "The served surface for the config's default purpose.\n\n"
-          "The returned handle CO-OWNS its generation: a later `fit()` publishes\n"
-          "a new generation without invalidating a handle a caller still holds,\n"
-          "and the handle stays valid after the fitter itself is dropped.")
-      .def(
-          "value_chain",
-          [](const PricerFitter &self, const OptionChain &chain, OutputField fields,
-             unsigned n_threads) {
-            ChainValuation valuation;
-            {
-              py::gil_scoped_release release;
-              valuation =
-                  atxvol::python::unwrap(self.value_chain(chain, fields, n_threads));
-            }
-            return valuation_to_dict(valuation);
-          },
-          py::arg("chain"), py::arg("fields"), py::arg("n_threads") = 0,
-          "Price the chain's options for `fields` as numpy SoA columns.\n\n"
-          "DETERMINISTIC: bit-identical for any `n_threads` (disjoint output\n"
-          "slots, pure const reads). 0 => the config's n_threads; 1 => serial.\n"
-          "Unrequested columns come back EMPTY, never zero-filled.")
-      .def(
-          "value_chain_ids",
-          [](const PricerFitter &self, const OptionChain &chain, const IdArray &ids,
-             OutputField fields, unsigned n_threads) {
-            const std::vector<OptionId> selected = as_ids(ids);
-            ChainValuation valuation;
-            {
-              py::gil_scoped_release release;
-              valuation = atxvol::python::unwrap(
-                  self.value_chain(chain, selected, fields, n_threads));
-            }
-            return valuation_to_dict(valuation);
-          },
-          py::arg("chain"), py::arg("ids"), py::arg("fields"), py::arg("n_threads") = 0,
-          "Price only `ids`, preserving caller order and duplicates — the\n"
-          "quote-update path, with work proportional to the selection.");
+      .def("fit", &PyPricerFitter::fit, py::arg("chain"),
+           "Fit the surface from `chain` and store it, replacing any prior fit.\n"
+           "The prior surface is left intact on failure.\n\n"
+           "Releases the GIL, and takes this fitter's WRITER lock while it does:\n"
+           "`fit` mutates, so it is serialized against itself and against every\n"
+           "concurrent `value_chain` / `surface` on the same object. Distinct\n"
+           "fitters never contend.")
+      .def_property_readonly("fitted", &PyPricerFitter::fitted)
+      .def("set_threads", &PyPricerFitter::set_threads, py::arg("n"))
+      .def("surface", &PyPricerFitter::surface,
+           "The served surface for the config's default purpose.\n\n"
+           "The returned handle CO-OWNS its generation: a later `fit()` publishes\n"
+           "a new generation without invalidating a handle a caller still holds,\n"
+           "and the handle stays valid after the fitter itself is dropped.")
+      .def("value_chain", &PyPricerFitter::value_chain, py::arg("chain"), py::arg("fields"),
+           py::arg("n_threads") = 0,
+           "Price the chain's options for `fields` as numpy SoA columns.\n\n"
+           "DETERMINISTIC: bit-identical for any `n_threads` (disjoint output\n"
+           "slots, pure const reads). 0 => the config's n_threads; 1 => serial.\n"
+           "Unrequested columns come back EMPTY, never zero-filled.\n\n"
+           "Releases the GIL under this fitter's READER lock: concurrent\n"
+           "`value_chain` calls on one fitter run together, as the library\n"
+           "documents; a concurrent `fit` waits for them.")
+      .def("value_chain_ids", &PyPricerFitter::value_chain_ids, py::arg("chain"),
+           py::arg("ids"), py::arg("fields"), py::arg("n_threads") = 0,
+           "Price only `ids`, preserving caller order and duplicates — the\n"
+           "quote-update path, with work proportional to the selection.");
 }

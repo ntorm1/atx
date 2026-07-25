@@ -239,9 +239,11 @@ def test_value_chain_is_bit_identical_across_n_threads(fitted):
 
 
 def test_value_chain_releases_the_gil(fitted):
-    # fit / value_chain are pure C++ over const state, so they must not hold the
-    # interpreter — the pattern run_backtest already proves. Same probe shape as
-    # the AloPricer GIL test, inverted: here the release is the contract.
+    # `value_chain` is const, internally parallel and genuinely long, so it must
+    # not hold the interpreter — the pattern run_backtest already proves. Same
+    # probe shape as the AloPricer GIL test, inverted: here the release is the
+    # contract. `fit` releases it too (see test_fit_releases_the_gil); what makes
+    # that safe is the binding's reader/writer lock, not the GIL.
     import threading
 
     chain, fitter = fitted
@@ -282,6 +284,91 @@ def test_to_priced_surface_hands_the_fit_to_the_priced_surface_api(fitted):
     t = float(snap["T"][i])
     # The sealed snapshot serves the same IV the live session does.
     assert priced.iv(k, t) == pytest.approx(fitter.surface().iv(k, t), rel=1e-9)
+
+
+def test_fit_releases_the_gil(fitted):
+    # The other half of I1's contract. `fit` is the longest call in this module,
+    # so holding the GIL for its whole duration would freeze every unrelated
+    # Python thread in the process. It releases — and is safe while released
+    # because the binding takes a WRITER lock, not because the GIL is helping.
+    import threading
+
+    chain, fitter = fitted
+    counter = 0
+    stop = threading.Event()
+
+    def spin() -> None:
+        nonlocal counter
+        while not stop.is_set():
+            counter += 1
+
+    spinner = threading.Thread(target=spin, daemon=True)
+    spinner.start()
+    try:
+        start = counter
+        while counter == start:
+            pass
+        before = counter
+        fitter.fit(chain)
+        advanced = counter - before
+    finally:
+        stop.set()
+        spinner.join(timeout=5.0)
+
+    assert advanced > 0
+
+
+def test_concurrent_fit_and_value_chain_on_one_fitter_is_safe():
+    # I1 (rev-ws-y): `pricer_fitter.hpp` is explicit that "`fit` mutates (stores
+    # the surface) and needs exclusive access", while `value_chain` is const and
+    # safe to call concurrently. Both bindings release the GIL, so the GIL cannot
+    # be the thing providing that exclusivity — `fit()` reassigning the
+    # non-atomic `shared_ptr market_mark_surface_` while `value_chain()` copies
+    # it is a data race whose failure mode is refcount corruption.
+    #
+    # Out-of-process, because the failure is an access violation rather than an
+    # exception. Pre-fix this crashed 3 runs in 4 at eight rounds; the writer/
+    # reader lock makes it deterministic.
+    proc = _in_fresh_interpreter(
+        """
+        import threading
+
+        chain, f = _fitter()
+        rounds = 40
+        errors = []
+
+        def refit():
+            for _ in range(rounds):
+                try:
+                    f.fit(chain)
+                except Exception as exc:
+                    errors.append(repr(exc))
+
+        def price():
+            for _ in range(rounds):
+                try:
+                    f.value_chain(chain, av.OutputField.MODEL_IV, n_threads=1)
+                    f.surface().iv(600.0, 0.25)
+                except Exception as exc:
+                    errors.append(repr(exc))
+
+        threads = [threading.Thread(target=refit)]
+        threads += [threading.Thread(target=price) for _ in range(3)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, errors[:3]
+        assert f.fitted
+        print("SURVIVED", rounds)
+        """
+    )
+    assert proc.returncode == 0, (
+        f"concurrent fit/value_chain on one fitter: exit {proc.returncode}\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr[:4000]}"
+    )
+    assert "SURVIVED" in proc.stdout, proc.stdout
 
 
 def test_surface_handle_survives_a_refit():
