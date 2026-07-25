@@ -6,6 +6,11 @@ add_executable(atx-impl-tests ${ATX_IMPL_TEST_SOURCES})
 add_dependencies(atx-impl-tests atx-shm-worker)
 target_link_libraries(atx-impl-tests
     PRIVATE atx-impl-core GTest::gtest_main atx_warnings)
+# FIX-3/F3-B: per-process temp root. 42 files in this suite build scratch paths as
+# fixed leaves under the machine-wide temp dir (canonically sweep_test.cpp's
+# atx_sweep_* library/output roots) and remove_all them on entry, so two concurrent
+# runs of this binary delete each other's trees mid-test. See //tests/CMakeLists.txt.
+target_link_libraries(atx-impl-tests PRIVATE atx-test-scratch)
 find_package(Threads REQUIRED)
 target_link_libraries(atx-impl-tests PRIVATE Threads::Threads)
 # The load test builds a synthetic ORATS zip in-process via <miniz.h>.
