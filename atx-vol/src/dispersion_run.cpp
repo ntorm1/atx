@@ -790,7 +790,12 @@ std::string format_corpus_phase_line(double ingest_s, double build_s,
                     // phase-timing probe cannot report whether the reclaim fired.
                     static_cast<unsigned long long>(phases.reclaimed_inner_boards),
                     static_cast<unsigned long long>(phases.inner_worker_slots), date_batch);
-  return written > 0 ? std::string(buf, static_cast<std::size_t>(written)) : std::string{};
+  // rev2-ws-t N-M2: `written` is snprintf's UNTRUNCATED length, so it can exceed
+  // `sizeof buf`. Sizing the std::string from it read past the end of the buffer
+  // whenever the line truncated (measured: 1073 bytes returned from a 512-byte
+  // buffer). Build from the NUL terminator instead — identical in the
+  // non-truncating case, which is every realistic one (~270 chars).
+  return written > 0 ? std::string(buf) : std::string{};
 }
 
 // ── Public: fingerprints + corpus config ────────────────────────────────────

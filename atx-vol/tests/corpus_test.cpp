@@ -2264,6 +2264,43 @@ TEST(CorpusPhaseLine, ReportsTheInnerWorkerReclaimCounters) {
       << "the quiet-window probe cannot see inner_worker_slots: " << line;
 }
 
+// rev2-ws-t N-M2: `format_corpus_phase_line` formats into a fixed 512-byte
+// buffer, and `std::snprintf` returns the length it WOULD have written, not the
+// length it did. `std::string(buf, written)` therefore reads `written - 511`
+// bytes PAST the end of `buf` the moment the line truncates — an out-of-bounds
+// read in a public pure function that runs on EVERY corpus build, whose six
+// `double` arguments are all caller-supplied. `/W4 /permissive- /WX` does not
+// diagnose it and no sanitizer runs in this suite, so the observable proxy is
+// the one invariant a correct implementation cannot violate: the returned
+// string can never be longer than the buffer that produced it, and its size
+// must agree with its own NUL terminator.
+//
+// Two `%.2f` conversions of 1e300 are ~304 characters each, so the line
+// truncates on its second field with no help from the counters.
+TEST(CorpusPhaseLine, TruncatedLineDoesNotOverreadTheFormatBuffer) {
+  CorpusPhaseTimings phases;
+  phases.fit_fanout_s = 1.0;
+  phases.archive_write_s = 2.0;
+  phases.checkpoint_s = 3.0;
+  phases.fanout_calls = 11;
+  phases.boards_fitted = 902;
+  phases.reclaimed_inner_boards = 137;
+  phases.inner_worker_slots = 4242;
+
+  constexpr std::size_t kFormatBuffer = 512;  // dispersion_run.cpp: char buf[512]
+  const std::string line = format_corpus_phase_line(/*ingest_s=*/1e300, /*build_s=*/1e300, phases,
+                                                    /*date_batch=*/8u);
+  EXPECT_LE(line.size(), kFormatBuffer - 1u)
+      << "format_corpus_phase_line returned " << line.size()
+      << " bytes from a " << kFormatBuffer
+      << "-byte buffer: snprintf's return value is the UNTRUNCATED length, so the "
+         "std::string ctor read past the end of the buffer";
+  EXPECT_EQ(line.size(), std::strlen(line.c_str()))
+      << "the returned string extends past its own NUL terminator — it carries bytes "
+         "that were never written by snprintf";
+  EXPECT_EQ(line.rfind("PHASE ", 0), 0u) << "truncation must still yield a well-formed prefix";
+}
+
 // ── T2 (SE-P2-6 / SE-P2-3): framing-only checkpoint resume + payload scrub ───
 namespace {
 
