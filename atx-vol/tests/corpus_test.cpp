@@ -31,6 +31,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -1819,9 +1820,11 @@ namespace {
 // per_flush == 1 is exactly the historical one-pool-per-date path.
 [[nodiscard]] Result<QualifiedCorpusManifest>
 build_batched(const fs::path &out, const std::vector<std::string> &dates, std::size_t per_flush,
-              unsigned n_threads, std::int64_t created_ts = 1, bool scrub = true) {
+              unsigned n_threads, std::int64_t created_ts = 1, bool scrub = true,
+              const CorpusFitTestHooks *hooks = nullptr) {
   QualifiedCorpusConfig cfg;
   cfg.build.n_threads = n_threads;
+  cfg.build.test_hooks = hooks;
   cfg.verify_checkpoint_payload_crc = scrub;
   // 1 pins an explicit stamp (the historical byte-identity tests); 0 leaves the
   // production sentinel, which the writer now fills from an archive-content hash.
@@ -2066,6 +2069,90 @@ TEST(CorpusBuildSession, InnerWorkerReclaimIsByteIdenticalToSerial) {
 
   expect_manifests_equivalent(*s, *w);
   expect_corpora_byte_identical(serial, wide, dates);
+}
+
+// ── T-I1 / T-I2 (review rev-ws-t): the DRAIN regime, measured ───────────────
+namespace {
+
+// Four dates x make_mixed_boards => 8 boards in ONE fan-out. Against the 4-wide
+// outer budget below that is a genuinely SATURATED pool (n > budget), which is
+// the regime BT-T1 is about and which no test covered: every gate that existed
+// ran 2 boards against an 8-wide budget, i.e. left <= 2 < 8 from the very first
+// claim, so the pool was never full and never drained.
+const std::vector<std::string> kDrainDates = {"2026-06-17", "2026-06-18", "2026-06-19",
+                                              "2026-06-22"};
+constexpr unsigned kDrainOuterBudget = 4u;
+
+} // namespace
+
+// T-I1: "last-board-STANDING", not "last-board-CLAIMED".
+//
+// BT-T1's symptom is a straggler — the SPY index board — holding the machine at
+// low occupancy at the end of a phase. That board is claimed EARLY, while the
+// pool is still saturated, so a reclaim evaluated once at claim time offers it
+// exactly one inner worker and it keeps exactly one for its entire life no
+// matter how empty the machine gets around it. The boards that reclaim anything
+// are the ones claimed DURING the drain — which are, by construction, the short
+// ones that were never the problem.
+//
+// So the gate is not "somebody reclaimed": it is that a board claimed while the
+// pool was saturated is offered MORE inner workers later in its own life, once
+// its siblings have drained. Made deterministic (no sleeps, no timing) with the
+// two test hooks: board 0 — the SPY board, first task claimed — blocks inside
+// its first budget resolution until `on_board_fit_done` reports that exactly one
+// task is left standing (itself), then continues and is re-resolved.
+TEST(CorpusBuildSession, StragglerReclaimsInnerWorkersWhileStillRunning) {
+  const fs::path out = fresh_out_dir("t1-straggler-growth");
+
+  std::mutex mu;
+  std::condition_variable cv;
+  bool siblings_drained = false;
+  std::vector<unsigned> straggler_offers; // guarded by mu
+  std::vector<std::size_t> straggler_left;
+
+  CorpusFitTestHooks hooks;
+  hooks.on_board_fit_done = [&](std::size_t, std::size_t unfinished) {
+    if (unfinished > 1u) {
+      return; // somebody other than the straggler is still running
+    }
+    const std::lock_guard<std::mutex> lk(mu);
+    siblings_drained = true;
+    cv.notify_all();
+  };
+  hooks.on_inner_fit_workers = [&](std::size_t board, std::size_t unfinished, unsigned workers) {
+    if (board != 0u) {
+      return; // only the straggler is instrumented
+    }
+    std::unique_lock<std::mutex> lk(mu);
+    straggler_offers.push_back(workers);
+    straggler_left.push_back(unfinished);
+    if (straggler_offers.size() == 1u) {
+      // Hold this board IN FLIGHT while every sibling finishes. One of the four
+      // outer workers is parked here; the other three drain the remaining seven
+      // boards, so this cannot deadlock.
+      cv.wait(lk, [&] { return siblings_drained; });
+    }
+  };
+
+  auto built = build_batched(out, kDrainDates, kDrainDates.size(), kDrainOuterBudget, 1,
+                             /*scrub=*/true, &hooks);
+  ASSERT_TRUE(built.has_value()) << built.error().to_string();
+
+  const std::lock_guard<std::mutex> lk(mu);
+  ASSERT_GE(straggler_offers.size(), 2u)
+      << "the straggler's inner fit-worker budget was resolved " << straggler_offers.size()
+      << " time(s) for its whole life: it is frozen at CLAIM time, so a board claimed while "
+         "the pool is saturated can never pick up the workers its siblings release";
+  EXPECT_GE(straggler_left.front(), kDrainOuterBudget)
+      << "the straggler must be claimed while the pool is still saturated";
+  EXPECT_EQ(straggler_offers.front(), 1u)
+      << "a saturated pool must still offer exactly one inner worker per board";
+  EXPECT_GT(straggler_offers.back(), straggler_offers.front())
+      << "after every sibling drained, the last board STANDING must be offered more inner "
+         "workers than it was at claim time (front=" << straggler_offers.front()
+      << " back=" << straggler_offers.back() << ")";
+  EXPECT_EQ(straggler_offers.back(), kDrainOuterBudget)
+      << "the last board standing should be offered the whole outer budget";
 }
 
 // ── T2 (SE-P2-6 / SE-P2-3): framing-only checkpoint resume + payload scrub ───

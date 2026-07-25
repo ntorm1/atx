@@ -26,6 +26,7 @@
 #include "atx/core/hash.hpp"
 #include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
 #include "atx/vol/dispersion.hpp"           // with_uid
+#include "atx/vol/parallel_for.hpp"         // ScopedElasticWorkerBudget (T1 live inner budget)
 #include "atx/vol/priced_surface.hpp"       // PricedSurface
 #include "atx/vol/session.hpp"              // VolaSession::to_priced_surface
 #include "atx/vol/universe.hpp"             // uid_for_symbol
@@ -555,6 +556,51 @@ private:
          (!qualified || slot.admission.disposition == CorpusDisposition::Admitted);
 }
 
+// ── T1 (perf, BT-T1): the LIVE inner fit-worker budget of one in-flight board ─
+//
+// One of these is stack-allocated per board fit and installed as that thread's
+// elastic AUTO resolver (parallel_for.hpp) for the duration of the fit, so every
+// inner fan-out the fit reaches re-asks how much of the outer pool is idle
+// instead of inheriting a width frozen when the board was claimed. See the long
+// note at the install site in `build_corpus_core`.
+struct InnerBudgetTicket {
+  const std::atomic<std::size_t> *unfinished{nullptr}; // outer tasks still running
+  unsigned outer_budget{1};
+  std::size_t board_index{0};
+  const CorpusFitTestHooks *hooks{nullptr};
+  std::atomic<bool> reclaimed{false}; // this board was offered > 1 at least once
+};
+
+// The elastic AUTO resolver itself. noexcept (it is called from
+// `atx_resolve_fanout_workers`), lock-free apart from an optional test hook.
+unsigned resolve_inner_budget(void *ctx) noexcept {
+  InnerBudgetTicket &t = *static_cast<InnerBudgetTicket *>(ctx);
+  std::size_t left = 1u;
+  unsigned workers = 1u;
+  if (t.outer_budget > 1u) {
+    left = t.unfinished->load(std::memory_order_acquire);
+    const std::size_t sharers =
+        std::min<std::size_t>(t.outer_budget, std::max<std::size_t>(left, 1u));
+    workers = std::max(1u, static_cast<unsigned>(t.outer_budget / sharers));
+  }
+  // Diagnostic only (relaxed, process-global, never serialized). `inner_worker_slots`
+  // sums every budget OFFERED; `reclaimed_inner_boards` counts distinct BOARDS that
+  // were offered more than one at least once, so the name keeps meaning boards even
+  // though a board is now re-resolved many times.
+  g_inner_worker_slots.fetch_add(workers, std::memory_order_relaxed);
+  if (workers > 1u && !t.reclaimed.exchange(true, std::memory_order_relaxed)) {
+    g_reclaimed_inner_boards.fetch_add(1u, std::memory_order_relaxed);
+  }
+  if (t.hooks != nullptr && t.hooks->on_inner_fit_workers) {
+    // This function is noexcept; a throwing test hook must not std::terminate.
+    try {
+      t.hooks->on_inner_fit_workers(t.board_index, left, workers);
+    } catch (...) {
+    }
+  }
+  return workers;
+}
+
 [[nodiscard]] Result<CorpusBuildArtifacts>
 build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
                   const CorpusConfig &cfg, const CorpusAdmissionPolicy *admission,
@@ -581,17 +627,7 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
   }
   const bool qualified = admission != nullptr;
 
-  // T1 (BT-T1): observe the inner fit-worker budget each board is OFFERED on the
-  // across-board parallel arm. Diagnostic only (relaxed, process-global, never
-  // serialized); called from fit workers, so it must be lock-free — it is.
-  const auto note_inner_workers = [](unsigned workers) noexcept {
-    g_inner_worker_slots.fetch_add(workers, std::memory_order_relaxed);
-    if (workers > 1u) {
-      g_reclaimed_inner_boards.fetch_add(1u, std::memory_order_relaxed);
-    }
-  };
-
-  // ── T1 (perf, BT-T1): last-board-standing reclaims inner fit workers ────────
+  // ── T1 (perf, BT-T1): the LAST BOARD STANDING reclaims inner fit workers ───
   //
   // Two rules used to compose into the ~9/16 worker cap. `run_bounded_fit_tasks`
   // clamps its worker count at the TASK count, so an across-board pool wider than
@@ -604,20 +640,44 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
   // single fan-out, so what remains is the drain of that one pool.)
   //
   // The fix hands the idle share of the outer budget to whoever is still running:
-  // a task claimed while `left` tasks are unfinished is offered
+  // while `left` tasks are unfinished, a running board is offered
   // `outer_budget / min(outer_budget, left)` inner workers. The numerator is the
   // BUDGET, not the pool's clamped worker count — the clamp is precisely what
   // strands the surplus (a 2-task pool on an 8-wide budget runs 2 workers and
   // leaves 6 unplaced), so measuring against the clamped width would report the
   // pool as perfectly busy and reclaim nothing.
   //
-  // This CANNOT oversubscribe. Take any instant with `m` tasks running. Every one
-  // of them was claimed at a moment when `unfinished_tasks` was at least `m`
-  // (the counter only falls, and each of those tasks was itself unfinished then),
-  // so each was offered at most `outer_budget / min(outer_budget, m)` workers, and
-  // since `m <= outer_budget` the m slices sum to at most `outer_budget`. The
-  // saturated regime is unchanged by construction: while `left >= outer_budget`
-  // every board is offered exactly 1, byte-for-byte the historical schedule.
+  // ## Why this is re-resolved DURING the fit, not once at claim
+  //
+  // Evaluating it once, when the task is claimed, does not address BT-T1 at all —
+  // and on a saturated pool it is provably INERT. A dynamic pool with budget `B`
+  // only ever claims a task while at least `B` tasks are unfinished (the `B-1`
+  // tasks in flight plus the one being claimed), so `left >= B` at every claim and
+  // `B / min(B, left)` is always exactly 1. Measured on an 8-board / 4-wide
+  // fixture: 8 claim-time resolutions, ALL of them 1, zero reclaimed. The only
+  // boards a claim-time reclaim can ever widen are those claimed after the pool
+  // has stopped being full — i.e. the short tail, never the straggler that sets
+  // the makespan. BT-T1's symptom is the opposite one: the SPY board is claimed
+  // EARLY and is still running, alone, at the end.
+  //
+  // So the budget is a LIVE quantity for the board's whole life. Each board
+  // installs an `InnerBudgetTicket` as its thread's elastic AUTO resolver
+  // (parallel_for.hpp) and hands its fit `fit_workers = 0` (AUTO); every inner
+  // fan-out the fit reaches then re-resolves against the current `left`. A board
+  // that starts while the pool is full runs its first fan-outs serially and widens
+  // as its siblings drain.
+  //
+  // This CANNOT oversubscribe — and the proof is now stronger than the claim-time
+  // one, because it no longer has to reason about when a task was claimed. Take
+  // any instant with `m` tasks running. Each one's CURRENTLY ACTIVE inner fan-out
+  // was sized at some earlier moment, and `unfinished_tasks` only falls, so `left`
+  // was >= m then; each therefore holds at most `outer_budget / min(outer_budget, m)`
+  // workers, and the m slices sum to at most `outer_budget`. Inner fan-outs are
+  // sequential within a board (the jthread join is a barrier), so a board never
+  // holds two at once. The saturated regime is unchanged by construction: while
+  // `left >= outer_budget` every resolution returns exactly 1, which is the
+  // historical schedule — asserted per-offer by
+  // `SaturatedFanOutOffersOneWorkerUntilItDrains`, not argued.
   //
   // Determinism is NOT weakened. `left` is scheduling-dependent, so the inner
   // budget a given board receives varies run to run — but the inner budget has
@@ -628,26 +688,34 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
   // archives are asserted byte-identical). `InnerWorkerReclaimIsByteIdenticalToSerial`
   // gates the maximally-reclaimed case specifically.
   //
-  // `outer_budget` mirrors run_bounded_fit_tasks' own resolution (0 => machine
+  // Nesting stays bounded: `parallel_for*` installs a serial AUTO resolver on the
+  // workers it spawns beneath an elastic budget, so a fan-out reached from inside
+  // an inner fan-out resolves AUTO to 1 exactly as the old `fit_workers = 1` pin
+  // did. `outer_budget` mirrors run_bounded_fit_tasks' own resolution (0 => machine
   // width) so the two never disagree about how wide the pool actually is.
   const unsigned outer_budget = cfg.n_threads != 0u
                                     ? cfg.n_threads
                                     : std::max(1u, std::thread::hardware_concurrency());
   std::atomic<std::size_t> unfinished_tasks{0};
-  const auto inner_workers_now = [&unfinished_tasks, outer_budget]() noexcept -> unsigned {
-    if (outer_budget <= 1u) {
-      return 1u;
-    }
-    const std::size_t left = unfinished_tasks.load(std::memory_order_acquire);
-    const std::size_t sharers =
-        std::min<std::size_t>(outer_budget, std::max<std::size_t>(left, 1u));
-    return std::max(1u, static_cast<unsigned>(outer_budget / sharers));
-  };
   // Decrements `unfinished_tasks` on scope exit — after the task's fit has been
   // written to its slot, and even if that fit throws.
+  const CorpusFitTestHooks *const hooks = cfg.test_hooks; // null in production
   struct TaskDone {
     std::atomic<std::size_t> &counter;
-    ~TaskDone() { counter.fetch_sub(1u, std::memory_order_release); }
+    const CorpusFitTestHooks *hooks;
+    std::size_t task_index;
+    ~TaskDone() {
+      const std::size_t left = counter.fetch_sub(1u, std::memory_order_acq_rel) - 1u;
+      if (hooks == nullptr || !hooks->on_board_fit_done) {
+        return;
+      }
+      // A destructor is implicitly noexcept: a throwing test hook would
+      // std::terminate the whole process instead of failing the test.
+      try {
+        hooks->on_board_fit_done(task_index, left);
+      } catch (...) {
+      }
+    }
   };
 
   // ── Fan out board fits; each worker writes its own disjoint slot ───────────
@@ -696,19 +764,27 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
     unfinished_tasks.store(chains.size(), std::memory_order_release);
     schedule_status = detail::run_bounded_fit_tasks(
         chains.size(), cfg.n_threads,
-        [&boards, &slots, &cfg, admission, n, &order_sd, &chains, &note_inner_workers,
-         &inner_workers_now, &unfinished_tasks](std::size_t chain_idx) -> Status {
-          const TaskDone chain_done{unfinished_tasks};
+        [&boards, &slots, &cfg, admission, n, &order_sd, &chains, outer_budget, &unfinished_tasks,
+         hooks](std::size_t chain_idx) -> Status {
+          const TaskDone chain_done{unfinished_tasks, hooks, chain_idx};
           WarmCacheExport carried; // prior-date caches carried down this symbol's chain
           const std::pair<std::size_t, std::size_t> range = chains[chain_idx];
           for (std::size_t p = range.first; p < range.second; ++p) {
             const std::size_t board_idx = order_sd[p];
             PricerConfig fit_config = cfg.fit_template;
+            // Outer parallelism is ACROSS chains; a chain running while the pool
+            // drains reclaims the workers the pool can no longer place. The
+            // budget is re-resolved at every inner fan-out for as long as this
+            // board is in flight, not frozen when the chain was claimed.
+            InnerBudgetTicket ticket;
+            std::optional<ScopedElasticWorkerBudget> elastic;
             if (n > 1u && cfg.n_threads != 1u) {
-              // Outer parallelism is ACROSS chains; a chain running while the
-              // pool drains reclaims the workers the pool can no longer place.
-              fit_config.fit_workers = inner_workers_now();
-              note_inner_workers(fit_config.fit_workers);
+              ticket.unfinished = &unfinished_tasks;
+              ticket.outer_budget = outer_budget;
+              ticket.board_index = board_idx;
+              ticket.hooks = hooks;
+              fit_config.fit_workers = 0u; // AUTO == the live ticket below
+              elastic.emplace(&resolve_inner_budget, &ticket);
             }
             // Every chain board builds/uses a WIDE (chain-cache-mode) cache so it
             // stays reusable across forward dates; when a prior date's cache is in
@@ -753,20 +829,27 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
     unfinished_tasks.store(n, std::memory_order_release);
     schedule_status = detail::run_bounded_fit_tasks(
         n, cfg.n_threads,
-        [&boards, &slots, &cfg, admission, n, &note_inner_workers, &inner_workers_now,
-         &unfinished_tasks](std::size_t index) -> Status {
-          const TaskDone board_done{unfinished_tasks};
+        [&boards, &slots, &cfg, admission, n, outer_budget, &unfinished_tasks,
+         hooks](std::size_t index) -> Status {
+          const TaskDone board_done{unfinished_tasks, hooks, index};
           PricerConfig fit_config = cfg.fit_template;
           // Auto or explicit multi-worker outer scheduling owns the machine
           // budget. Keep each non-eSSVI board's expiry preparation serial so the
           // two levels cannot multiply into H^2 runnable threads -- but only for
           // as long as the pool is actually saturated (T1): once fewer tasks are
-          // unfinished than the pool is wide, the boards still standing take the
-          // idle share instead of leaving it on the floor. An explicitly serial
+          // unfinished than the pool is wide, the boards STILL STANDING take the
+          // idle share instead of leaving it on the floor, re-checked at every
+          // inner fan-out for as long as the board runs. An explicitly serial
           // outer scheduler retains the caller's inner budget.
+          InnerBudgetTicket ticket;
+          std::optional<ScopedElasticWorkerBudget> elastic;
           if (n > 1u && cfg.n_threads != 1u) {
-            fit_config.fit_workers = inner_workers_now();
-            note_inner_workers(fit_config.fit_workers);
+            ticket.unfinished = &unfinished_tasks;
+            ticket.outer_budget = outer_budget;
+            ticket.board_index = index;
+            ticket.hooks = hooks;
+            fit_config.fit_workers = 0u; // AUTO == the live ticket below
+            elastic.emplace(&resolve_inner_budget, &ticket);
           }
           slots[index] = fit_board(boards[index], fit_config, admission);
           return Ok();
