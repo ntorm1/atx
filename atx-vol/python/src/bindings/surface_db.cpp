@@ -53,7 +53,11 @@ namespace {
   return d;
 }
 
-// A plain nested dict mirroring SurfaceDbBuildReport field-for-field.
+// A plain nested dict mirroring SurfaceDbBuildReport, with one deliberate gap:
+// `coverage` does NOT carry `failed_cells` (the per-cell fit-failure-reason
+// list added alongside this comment's original "field-for-field" claim,
+// which that addition made false). Every other config/coverage field below
+// is a direct field-for-field copy.
 [[nodiscard]] py::dict report_to_dict(const SurfaceDbBuildReport &r) {
   py::dict config;
   config["n_symbols"] = r.config.n_symbols;

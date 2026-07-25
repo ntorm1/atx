@@ -1040,6 +1040,20 @@ TEST(SurfaceDbPopulate, FailedCellCarriesTheFittersOwnReason) {
 // The input order is deliberately scrambled and the failing symbols deliberately
 // interleave with a succeeding one, so an implementation that pushed from the
 // workers (or that appended in input order) produces a visibly different list.
+//
+// The four failing boards (AAA/MMM x kDate0/kDate1) deliberately use DIFFERENT
+// strike counts (make_board_n_strikes), not the identical-size make_board used
+// everywhere else in this suite. With identical sizes the U2 LPT claim-order
+// stable_sort (surface_db_populate.cpp:233, descending frame rows) has nothing
+// to reorder -- all four tie, so the tie-break (original position) happens to
+// preserve (date,symbol) order, and a regression that pushed from fit_task
+// (worker-side) instead of the single drain thread would only be caught
+// *racily*, by concurrently-claimed instant failures under 8 workers. Sizing
+// them 11/13/15/17 (see LptClaimsLargestBoardsFirstDeterministically above for
+// why n_strikes controls frame.rows.size() monotonically) makes the LPT claim
+// order the EXACT REVERSE of (date,symbol) order, so a worker-side push would
+// now produce the wrong sequence DETERMINISTICALLY, at every position, under
+// any worker count -- not just under a race.
 TEST(SurfaceDbPopulate, FailedCellsSortedByDateThenSymbolForAnyWorkerBudget) {
   const auto run = [](std::string_view name, unsigned threads) {
     const auto root = test_root(name);
@@ -1051,11 +1065,19 @@ TEST(SurfaceDbPopulate, FailedCellsSortedByDateThenSymbolForAnyWorkerBudget) {
 
     std::vector<CorpusBoard> boards; // scrambled: neither date- nor symbol-sorted
     boards.push_back(make_board(kDate1, "ZZZ", 70.0, 0.31));
-    boards.push_back(make_board(kDate0, "MMM", 60.0, 0.34));
-    boards.push_back(make_board(kDate1, "AAA", 101.0, 0.27));
+    boards.push_back(make_board_n_strikes(kDate0, "MMM", 60.0, 0.34, 13));
+    boards.push_back(make_board_n_strikes(kDate1, "AAA", 101.0, 0.27, 15));
     boards.push_back(make_board(kDate0, "ZZZ", 69.0, 0.32));
-    boards.push_back(make_board(kDate1, "MMM", 61.0, 0.33));
-    boards.push_back(make_board(kDate0, "AAA", 100.0, 0.28));
+    boards.push_back(make_board_n_strikes(kDate1, "MMM", 61.0, 0.33, 17));
+    boards.push_back(make_board_n_strikes(kDate0, "AAA", 100.0, 0.28, 11));
+
+    // The sizes must be genuinely, strictly ordered (else the LPT-contradiction
+    // claim above is vacuous): descending row count is [MMM/date1, AAA/date1,
+    // MMM/date0, AAA/date0] -- the exact reverse of the pinned (date,symbol)
+    // order asserted below ([AAA/date0, MMM/date0, AAA/date1, MMM/date1]).
+    EXPECT_GT(boards[4].frame.rows.size(), boards[2].frame.rows.size()) << "MMM/date1 > AAA/date1";
+    EXPECT_GT(boards[2].frame.rows.size(), boards[1].frame.rows.size()) << "AAA/date1 > MMM/date0";
+    EXPECT_GT(boards[1].frame.rows.size(), boards[5].frame.rows.size()) << "MMM/date0 > AAA/date0";
 
     SurfaceDbPopulateConfig cfg;
     cfg.n_threads = threads;

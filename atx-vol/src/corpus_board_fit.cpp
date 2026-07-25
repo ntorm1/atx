@@ -383,7 +383,20 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
     // already produced.
     slot.status = CorpusFitStatus::Failed;
     slot.error_code = ErrorCode::Internal;
-    slot.error_message = std::string("exception during fit: ") + ex.what();
+    try {
+      // This concatenation itself allocates. If `ex` IS the std::bad_alloc this
+      // handler exists to catch, the allocator may still be exhausted right here
+      // — capturing the message must not be able to throw a SECOND exception,
+      // because a throw from inside a catch clause is not caught by this
+      // function's own try/catch: it would escape fit_board, be caught by
+      // fit_scheduler.cpp's run_next as FailureKind::Exception, and turn this
+      // single Failed board (partial coverage preserved) into a hard Err out of
+      // populate_surface_db — exit 1 for the whole build. An empty message on a
+      // genuine OOM is strictly better than that.
+      slot.error_message = std::string("exception during fit: ") + ex.what();
+    } catch (...) {
+      slot.error_message.clear();
+    }
     slot.admission =
         terminal_decision(CorpusDisposition::FitFailed, CorpusAdmissionReason::FitError);
     return slot;
@@ -391,7 +404,11 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
     // Same contract for a non-std exception, which carries no readable text.
     slot.status = CorpusFitStatus::Failed;
     slot.error_code = ErrorCode::Internal;
-    slot.error_message = "unknown exception during fit";
+    try {
+      slot.error_message = "unknown exception during fit"; // may allocate (SSO-exceeding); see above
+    } catch (...) {
+      slot.error_message.clear();
+    }
     slot.admission =
         terminal_decision(CorpusDisposition::FitFailed, CorpusAdmissionReason::FitError);
     return slot;
