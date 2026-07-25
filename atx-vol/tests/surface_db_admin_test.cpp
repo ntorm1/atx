@@ -520,6 +520,103 @@ TEST(SurfaceDbAdmin, VerifyDbHealthyIsAllOk) {
   EXPECT_EQ(rep->n_failures_elided, std::size_t{0});
   EXPECT_TRUE(rep->absent_cells.empty());
   EXPECT_EQ(rep->n_absent_elided, std::size_t{0});
+  // Gate -1 over a database written by the real writer: every manifest record
+  // still describes its file. This is the false-positive guard for the check
+  // below — a cross-check that fired on a freshly built database would be worse
+  // than no cross-check at all.
+  EXPECT_EQ(rep->partitions_index_mismatch, std::size_t{0});
+  EXPECT_TRUE(rep->index_faults.empty());
+  EXPECT_EQ(rep->n_index_faults_elided, std::size_t{0});
+}
+
+// The "opens but is wrong" case: the partition FILE is a perfectly good file and
+// the manifest RECORD describes a different one.
+//
+// `write_partition` writes the archive first and the manifest second — correct,
+// because the reverse would let an interrupted archive write advance the index —
+// so a crash or a manifest-write error BETWEEN the two leaves exactly this. It is
+// reproduced here without a crash, by dropping a narrower database's partition
+// file on top of this one's: same key, fewer surfaces, different size, while the
+// manifest keeps the record of the write it no longer has.
+//
+// Every per-cell gate passes. That is the whole point — the bytes are sound, the
+// cells map and checksum, and the only thing wrong is the index. Nothing else in
+// the tool can see it.
+TEST(SurfaceDbAdmin, VerifyDbCatchesAPartitionRecordThatDisagreesWithItsFile) {
+  const AdminFixture f = make_fixture("verify_index_mismatch");
+  build_healthy_db(f); // 3 symbols x 3 dates
+
+  // A second database over the SAME hive but a NARROWER universe, so its
+  // partitions hold 2 surfaces where the first holds 3.
+  AdminFixture narrow = f;
+  narrow.db = f.root / "db_narrow";
+  {
+    SurfaceDbBuildSpec nspec = build_spec(narrow);
+    nspec.hive.symbols = {f.fx.symbols[0], f.fx.symbols[1]};
+    const auto nrep = build_surface_db(nspec);
+    ASSERT_TRUE(nrep.has_value()) << (nrep ? "" : nrep.error().to_string());
+    ASSERT_EQ(nrep->coverage.cells_ok, 6u);
+  }
+
+  const std::string key = f.fx.dates.front();
+  const std::uintmax_t narrow_bytes = fs::file_size(partition_file(narrow, key));
+  fs::copy_file(partition_file(narrow, key), partition_file(f, key),
+                fs::copy_options::overwrite_existing);
+
+  const SurfaceDb db = open_db(f);
+  DbVerifySpec spec;
+  spec.key_lo = key; // scope to the damaged row so the counters are unambiguous
+  spec.key_hi = key;
+  const auto rep = verify_db(db, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+
+  EXPECT_EQ(rep->partitions_index_mismatch, std::size_t{1});
+  ASSERT_EQ(rep->index_faults.size(), std::size_t{1});
+  EXPECT_EQ(rep->index_faults[0].key, key);
+  EXPECT_EQ(rep->index_faults[0].manifest_surface_count, 3u); // what the record claims
+  EXPECT_EQ(rep->index_faults[0].archive_surface_count, 2u);  // what the file holds
+  EXPECT_EQ(rep->index_faults[0].bytes_on_disk, static_cast<std::uint64_t>(narrow_bytes));
+  EXPECT_EQ(rep->n_index_faults_elided, std::size_t{0});
+  // Note which half of the check earned this: at fixture scale BOTH files are
+  // block-padded to the same size, so the byte comparison sees nothing and the
+  // SURFACE COUNT is what catches it. That is the argument for comparing both —
+  // either number can move without the other.
+
+  // It MOVES the verdict — unlike absence, a stale record is never a healthy
+  // steady state.
+  EXPECT_FALSE(rep->ok());
+
+  // And it is the ONLY thing wrong: no cell is damaged. The two symbols the file
+  // still holds pass every gate; the third is simply not there, which is absence,
+  // not a fault.
+  EXPECT_EQ(rep->cells_checked, std::size_t{3});
+  EXPECT_EQ(rep->cells_ok, std::size_t{2});
+  EXPECT_EQ(rep->cells_absent, std::size_t{1});
+  EXPECT_EQ(rep->cells_unmappable, std::size_t{0});
+  EXPECT_EQ(rep->cells_checksum, std::size_t{0});
+  EXPECT_EQ(rep->cells_non_finite, std::size_t{0});
+  EXPECT_TRUE(rep->failures.empty());
+}
+
+// A partition file that will not open at all is NOT an index fault. Every one of
+// its cells is already reported `unmappable`, which is louder and more precise, so
+// counting the row twice would only double-report the same bytes.
+TEST(SurfaceDbAdmin, VerifyDbUnopenablePartitionIsNotCountedAsAnIndexMismatch) {
+  const AdminFixture f = make_fixture("verify_index_unopenable");
+  build_healthy_db(f);
+  const std::string key = f.fx.dates.front();
+  ASSERT_TRUE(fs::remove(partition_file(f, key)));
+
+  const SurfaceDb db = open_db(f);
+  DbVerifySpec spec;
+  spec.key_lo = key;
+  spec.key_hi = key;
+  const auto rep = verify_db(db, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_EQ(rep->partitions_index_mismatch, std::size_t{0});
+  EXPECT_TRUE(rep->index_faults.empty());
+  EXPECT_EQ(rep->cells_unmappable, std::size_t{3}); // the loud answer, unchanged
+  EXPECT_FALSE(rep->ok());
 }
 
 // The spec restricts the walk: a key range and a symbol subset shrink the grid

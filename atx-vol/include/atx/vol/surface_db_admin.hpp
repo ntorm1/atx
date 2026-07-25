@@ -68,7 +68,10 @@
 // PROVES, for every cell the spec selected: the partition file opened, the record
 // framing and bounds parse, the record's bytes still match the payload CRC the
 // writer computed (so no bit rot / partial copy / hand edit), and the surface
-// evaluates to a finite, positive implied vol at ONE ATM-ish point.
+// evaluates to a finite, positive implied vol at ONE ATM-ish point. And, for every
+// partition in range, that the manifest's record still DESCRIBES that file (its
+// surface count and byte size) — the one thing no per-cell gate can see, because a
+// stale index sits beside a perfectly good file.
 //
 // Does NOT prove: that the numbers are RIGHT (no oracle is consulted — a surface
 // fitted from bad market data checksums perfectly and probes fine); that any point
@@ -339,6 +342,33 @@ struct DbAbsentCell {
   std::string symbol{};
 };
 
+// One partition whose MANIFEST RECORD disagrees with the partition FILE it
+// indexes — the "opens but is wrong" case, and the only inconsistency the
+// per-cell gates below structurally cannot see, because they read the file and
+// the file is fine.
+//
+// HOW IT HAPPENS. `SurfaceDb::write_partition` writes the archive FIRST and the
+// manifest SECOND. That order is correct and is argued at the call: it means an
+// interrupted archive write never advances the partition index. The cost of that
+// choice is this window — a crash, or a `persist_locked` error, BETWEEN the two
+// leaves the newly rewritten file beside a STALE record whose `surface_count`,
+// `file_size`, `created_ts_ns` and carry-over `config_fingerprint` all describe
+// the previous write. The database then opens cleanly and reports wrong numbers,
+// which is worse than one that fails to open, because nothing looks wrong.
+//
+// WHAT IT CANNOT CAUSE, checked rather than assumed: a false carry. The carry
+// gate recomputes its fold over the ARCHIVE's own directory (surface_db_populate),
+// so a torn write moves the symbol set, moves the fold, and fails the gate closed.
+// The exposure is bookkeeping — `info` / `partitions` byte and surface counts, and
+// any consumer that trusts them — not stored-surface soundness.
+struct DbPartitionIndexFault {
+  std::string key{};
+  std::uint32_t manifest_surface_count{0}; // what the manifest record claims
+  std::uint32_t archive_surface_count{0};  // what the file's own directory holds
+  std::uint64_t manifest_bytes{0};         // file bytes the record recorded at write time
+  std::uint64_t bytes_on_disk{0};          // file bytes now
+};
+
 // What to verify. All fields are restrictions on an otherwise exhaustive walk.
 struct DbVerifySpec {
   // Inclusive partition-key range, compared lexicographically against the
@@ -425,6 +455,23 @@ struct DbVerifyReport {
   // even look at?", and an operator needs both.
   std::vector<std::string> disabled_symbols{};
 
+  // Partitions IN RANGE whose manifest record disagrees with their file — see
+  // `DbPartitionIndexFault`. CORRUPTION-CLASS: this one DOES move `ok()`, unlike
+  // `cells_absent`, and the difference is that it can never be a healthy steady
+  // state. A converged production database has permanent absences and ZERO index
+  // mismatches; a mismatch is always either a torn write or an edited directory.
+  //
+  // It is per-PARTITION, so it sits OUTSIDE the `cells_checked` exhaustion
+  // invariant above and is counted on its own budget (a database with many
+  // absences must not be able to elide the one index fault beside them, the same
+  // argument `DbVerifySpec::max_reported_failures` makes for the other two lists).
+  // A partition whose file will not open at all is NOT counted here: every cell on
+  // that row is already reported `unmappable`, which is the louder and more
+  // precise answer, and a second fault over the same bytes would double-report it.
+  std::size_t partitions_index_mismatch{0};
+  std::vector<DbPartitionIndexFault> index_faults{}; // capped at spec.max_reported_failures
+  std::size_t n_index_faults_elided{0};              // never silent
+
   // The walk covered NOTHING over a database that has something. Not one byte of
   // any partition was read, so every counter above is zero and every failure list
   // is empty — the exact shape of a perfect result. It is reachable three ways and
@@ -474,18 +521,24 @@ struct DbVerifyReport {
   // expects no holes pins `--max-absent 0` and gets a non-zero exit for any
   // absence at all, this shape included.
   //
-  // DISJOINT FROM A FAILED VERDICT BY CONSTRUCTION, not by the order a caller
-  // tests things in: `cells_absent == cells_checked` forces every fault counter to
-  // zero through the exhaustion invariant above, so this can never fire on a run
-  // that also reports corruption. (`--min-cells` can still fail the same run; that
-  // is a floor on the grid and an orthogonal statement, and both are then true.)
+  // DISJOINT FROM A CELL-FAULT VERDICT BY CONSTRUCTION, not by the order a caller
+  // tests things in: `cells_absent == cells_checked` forces every CELL fault
+  // counter to zero through the exhaustion invariant above, so this can never fire
+  // on a run that also reports a corrupt cell. (`--min-cells` can still fail the
+  // same run; that is a floor on the grid and an orthogonal statement, and both are
+  // then true. So can `partitions_index_mismatch`, for the same reason — it is a
+  // statement about a partition RECORD, not about a cell, so it lives outside the
+  // exhaustion invariant this disjointness rests on.)
   [[nodiscard]] constexpr bool stored_no_selected_cell() const noexcept {
     return cells_checked > 0 && cells_absent == cells_checked;
   }
 
   // CORRUPTION-CLASS ONLY, and `cells_absent` is deliberately not in the list.
   // The verdict answers "is everything this database STORED still good?" — every
-  // term here is a byte or a number that went wrong under a cell that exists.
+  // term here is a byte or a number that went wrong under a cell that exists, or
+  // (the partition-index term) an index entry that no longer describes the file it
+  // points at. A mismatch there is never a healthy steady state, which is exactly
+  // why it belongs here and absence does not.
   // "Which cells does it not hold?" is a different question with a different
   // audience and no in-band answer (a never-fitted cell and a destroyed one are
   // indistinguishable on disk), so it gets its own counter and its own list and
@@ -493,13 +546,23 @@ struct DbVerifyReport {
   // database read FAILED forever, which is precisely the state FIX-H found.
   [[nodiscard]] constexpr bool ok() const noexcept {
     return cells_unmappable == 0 && cells_non_finite == 0 && cells_checksum == 0 &&
-           !selected_no_cells();
+           partitions_index_mismatch == 0 && !selected_no_cells();
   }
 };
 
-// Walk the (partition x symbol) grid selected by `spec`. Each cell passes three
-// gates, in this order, and stops at the first that fails — preceded by one
-// TRIAGE step that decides whether the cell is in the game at all:
+// Walk the (partition x symbol) grid selected by `spec`. Each ROW (= partition)
+// is cross-checked against its manifest record first; then each cell passes three
+// gates, in this order, stopping at the first that fails — preceded by one TRIAGE
+// step that decides whether the cell is in the game at all:
+//
+//  -1. index      — per PARTITION, not per cell. Compare the manifest record's
+//                   `surface_count` / `file_size` against the file's own directory
+//                   count and its size on disk. A mismatch is
+//                   `partitions_index_mismatch` and it DOES move the verdict; see
+//                   `DbPartitionIndexFault` for the torn-write window it catches
+//                   and for why no per-cell gate can see it. A partition that will
+//                   not open is skipped here and left to gate 0/1, which report
+//                   every one of its cells `unmappable`.
 //
 //   0. presence   — only when the map below fails, and only when it failed with
 //                   NotFound. Re-open the cell's partition and ask its archive
@@ -528,13 +591,17 @@ struct DbVerifyReport {
 // anyway — a health check that skips the checksum the format already carries is
 // not a health check, and it is the only gate that sees intra-record damage.
 //
-// Gate 0 costs one extra partition open, LAZILY and at most ONCE per partition
-// row, and only on a row where some cell failed to map: a database with nothing
-// missing pays nothing at all, and the pathological case is one re-read of each
-// partition file. It deliberately does NOT hoist to an unconditional
-// open-per-row — the mapping path is the one production readers use (see "Why
-// map_surface and not load_surface" above) and it stays the primary gate; the
-// directory is consulted only to CLASSIFY a failure it already produced.
+// Gates -1 and 0 share ONE partition open per row, taken up front. Gate 0's use
+// of it is unchanged in every observable way — the directory is still consulted
+// only to CLASSIFY a mapping failure the map already produced, and the mapping
+// path stays the primary gate (see "Why map_surface and not load_surface" above).
+// What changed is only WHEN the open happens: gate -1 needs the file's own
+// directory count on EVERY row, including rows where nothing failed, because a
+// stale index record is invisible from the cells (they all map fine — the file is
+// the correct one, it is the record that lies). So the open can no longer be
+// lazy, and making gate 0 re-open the same file afterwards would have been
+// strictly worse. The cost is O(partitions in range), not O(cells): one extra
+// header+directory read per row on a walk that is about to map every cell in it.
 //
 // A cell failure is TALLIED, never fatal — the whole point is to enumerate every
 // broken cell in one pass. Err is reserved for a spec that cannot be honored:

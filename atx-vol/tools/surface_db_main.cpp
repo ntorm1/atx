@@ -129,6 +129,7 @@
 // database produces it — see the block at the call site.
 
 #include <cerrno>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -207,6 +208,35 @@ void print_usage(std::FILE *out) {
     return false;
   }
   out = static_cast<std::size_t>(v);
+  return true;
+}
+
+// Parse a FINITE, STRICTLY POSITIVE double consuming the WHOLE token — the shape
+// every numeric this tool takes actually requires (a tenor and a strike are both
+// meaningless at 0 or below).
+//
+// Same discipline as `parse_count`, closing the same hole one type over: the bare
+// `strtod` this replaced coerced anything unparseable to 0.0, so `--probe-tenor
+// abc` reached the library as a rejected probe_T and surfaced as a bare exit 1
+// with NO verdict line — a usage error dressed as a runtime failure, decided after
+// the database was opened rather than before — while `query --strike abc` was not
+// an error at all: it answered, in full detail, about K = 0.
+[[nodiscard]] bool parse_positive_double(std::string_view text, double &out) {
+  if (text.empty()) {
+    return false;
+  }
+  const std::string s(text);
+  const char *first = s.c_str();
+  char *end = nullptr;
+  errno = 0;
+  const double v = std::strtod(first, &end);
+  if (end != first + s.size() || errno == ERANGE) {
+    return false; // trailing junk or out of range
+  }
+  if (!std::isfinite(v) || v <= 0.0) {
+    return false;
+  }
+  out = v;
   return true;
 }
 
@@ -449,11 +479,17 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
   std::printf("cells_unmappable %zu\n", rep->cells_unmappable);
   std::printf("cells_non_finite %zu\n", rep->cells_non_finite);
   std::printf("cells_checksum %zu\n", rep->cells_checksum);
+  // Per PARTITION, not per cell, so it sits after the cell counters and outside
+  // their sum. It moves the verdict: an index record that no longer describes its
+  // file is never a healthy steady state.
+  std::printf("partitions_index_mismatch %zu\n", rep->partitions_index_mismatch);
   std::printf("symbols_disabled %zu\n", rep->disabled_symbols.size());
   std::printf("failures_reported %zu\n", rep->failures.size());
   std::printf("failures_elided %zu\n", rep->n_failures_elided);
   std::printf("absent_reported %zu\n", rep->absent_cells.size());
   std::printf("absent_elided %zu\n", rep->n_absent_elided);
+  std::printf("index_faults_reported %zu\n", rep->index_faults.size());
+  std::printf("index_faults_elided %zu\n", rep->n_index_faults_elided);
   for (const DbCellFault &f : rep->failures) {
     std::printf("fail %s %s kind=%s detail=%s\n", f.key.c_str(), f.symbol.c_str(),
                 failure_name(f.kind), f.detail.c_str());
@@ -465,6 +501,17 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
   // whole life of the tool.
   for (const DbAbsentCell &a : rep->absent_cells) {
     std::printf("absent %s %s\n", a.key.c_str(), a.symbol.c_str());
+  }
+  // Its own record type again, and for the mirror-image reason: a script that
+  // greps `^fail ` is asking about a damaged CELL, and nothing is wrong with any
+  // cell here — the file is fine and the manifest's claim about it is not. Both
+  // numbers of both pairs print, because which pair moved says which write tore.
+  for (const DbPartitionIndexFault &m : rep->index_faults) {
+    std::printf("partition_index_mismatch %s manifest_surfaces=%u archive_surfaces=%u "
+                "manifest_bytes=%llu bytes_on_disk=%llu\n",
+                m.key.c_str(), m.manifest_surface_count, m.archive_surface_count,
+                static_cast<unsigned long long>(m.manifest_bytes),
+                static_cast<unsigned long long>(m.bytes_on_disk));
   }
   // The columns this walk never looked at. `verdict ok` over a database that is
   // permanently missing a requested name is otherwise indistinguishable from
@@ -489,6 +536,31 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
                  "the symbols that were walked. Re-run with --include-disabled to check them, or "
                  "rebuild with --retry-disabled to re-attempt them.\n",
                  rep->disabled_symbols.size());
+  }
+  // The "opens but is wrong" block. It is a FAILED verdict, so it does not need
+  // to argue for attention — it needs to say what to do, because the natural
+  // reading of a verify failure is "my bytes rotted" and that is not what this is.
+  if (rep->partitions_index_mismatch > 0) {
+    std::fprintf(
+        stderr,
+        "atx-vol-surface-db: %zu partition record(s) DISAGREE with the file they index — the "
+        "manifest's surface count or byte size is not what the partition actually holds.\n"
+        "  The bytes are FINE (every cell above passed its gates); the INDEX is stale. That is "
+        "the signature of a write that tore between the archive and the manifest: "
+        "write_partition writes the archive first and the manifest second, so a crash or a "
+        "manifest-write error in between leaves exactly this. Editing files under "
+        "<db>/partitions by hand produces it too.\n"
+        "  Nothing stored is lost and nothing is silently mis-served: the surfaces are in the "
+        "file, they map, and the build's carry gate recomputes its fingerprint over the FILE's "
+        "own directory, so a stale record cannot make it reuse the wrong bytes. What IS wrong "
+        "is every number the manifest reports about these keys — `info` / `partitions` counts "
+        "and byte totals, and any consumer that trusts them.\n"
+        "  Repair: get the date REWRITTEN, which re-stamps the record. A build re-run does that "
+        "only if the date still has a cell to add — a date that is already complete is skipped "
+        "untouched and stays stale. If it is complete, delete the partition file "
+        "(<db>/partitions/<KEY>.atxvsa) and re-run the build over that date with the SAME "
+        "--symbols set that built it; anything not in that set is not restored.\n",
+        rep->partitions_index_mismatch);
   }
   // The absence block. It prints whenever anything is absent, which on a
   // converged production database is EVERY run — and saying so is the point. The
@@ -696,8 +768,13 @@ int main(int argc, char **argv) {
   std::string db_root;
   std::string key;
   std::string symbol;
-  std::string strike_arg;
-  std::string tenor_arg;
+  // `query`'s two numerics, strictly parsed at the flag rather than coerced at the
+  // call. The `_set` bools are what let a MISSING one be a usage error instead of
+  // a confident answer about K = 0 / T = 0.
+  double strike = 0.0;
+  double tenor = 0.0;
+  bool strike_set = false;
+  bool tenor_set = false;
   DbVerifySpec verify_spec;
   std::size_t min_cells = 0;
   AbsentCeiling max_absent;
@@ -725,9 +802,26 @@ int main(int argc, char **argv) {
     } else if (a == "--symbol") {
       symbol = nv();
     } else if (a == "--strike") {
-      strike_arg = nv();
+      const std::string_view text = nv();
+      if (!missing_value && !parse_positive_double(text, strike)) {
+        std::fprintf(stderr,
+                     "atx-vol-surface-db: --strike expects a finite number > 0, got '%.*s'\n",
+                     static_cast<int>(text.size()), text.data());
+        print_usage(stderr);
+        return 2;
+      }
+      strike_set = !missing_value;
     } else if (a == "--tenor") {
-      tenor_arg = nv();
+      const std::string_view text = nv();
+      if (!missing_value && !parse_positive_double(text, tenor)) {
+        std::fprintf(stderr,
+                     "atx-vol-surface-db: --tenor expects a finite number > 0 (years), got "
+                     "'%.*s'\n",
+                     static_cast<int>(text.size()), text.data());
+        print_usage(stderr);
+        return 2;
+      }
+      tenor_set = !missing_value;
     } else if (a == "--from") {
       verify_spec.key_lo = nv();
     } else if (a == "--to") {
@@ -739,7 +833,15 @@ int main(int argc, char **argv) {
     } else if (a == "--yes") {
       confirmed = true;
     } else if (a == "--probe-tenor") {
-      verify_spec.probe_T = std::strtod(nv(), nullptr);
+      const std::string_view text = nv();
+      if (!missing_value && !parse_positive_double(text, verify_spec.probe_T)) {
+        std::fprintf(stderr,
+                     "atx-vol-surface-db: --probe-tenor expects a finite number > 0 (years), "
+                     "got '%.*s'\n",
+                     static_cast<int>(text.size()), text.data());
+        print_usage(stderr);
+        return 2;
+      }
     } else if (a == "--max-failures") {
       const std::string_view text = nv();
       if (!missing_value && !parse_count(text, verify_spec.max_reported_failures)) {
@@ -819,8 +921,7 @@ int main(int argc, char **argv) {
     std::fprintf(stderr, "atx-vol-surface-db: config requires --symbol <SYM>\n");
     return 2;
   }
-  if (subcommand == "query" &&
-      (key.empty() || symbol.empty() || strike_arg.empty() || tenor_arg.empty())) {
+  if (subcommand == "query" && (key.empty() || symbol.empty() || !strike_set || !tenor_set)) {
     std::fprintf(stderr,
                  "atx-vol-surface-db: query requires --key, --symbol, --strike and --tenor\n");
     return 2;
@@ -873,8 +974,7 @@ int main(int argc, char **argv) {
     return run_config(*db, symbol);
   }
   if (subcommand == "query") {
-    return run_query(*db, key, symbol, std::strtod(strike_arg.c_str(), nullptr),
-                     std::strtod(tenor_arg.c_str(), nullptr));
+    return run_query(*db, key, symbol, strike, tenor);
   }
   if (subcommand == "enable") {
     return run_set_enabled(*db, symbol, true);

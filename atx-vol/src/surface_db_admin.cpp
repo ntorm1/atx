@@ -291,15 +291,17 @@ Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec) 
   const std::string lo = canonical_ascii(spec.key_lo);
   const std::string hi = canonical_ascii(spec.key_hi);
   const std::vector<DbPartitionInfo> all_partitions = db.partitions();
-  std::vector<std::string> keys;
+  // The rows, carrying their MANIFEST RECORD with them: gate -1 compares that
+  // record against the file, so the walk needs the whole entry, not just the key.
+  std::vector<DbPartitionInfo> rows;
   for (const DbPartitionInfo &p : all_partitions) {
     if ((lo.empty() || p.key >= lo) && (hi.empty() || p.key <= hi)) {
-      keys.push_back(p.key);
+      rows.push_back(p);
     }
   }
 
   DbVerifyReport out;
-  out.n_partitions = keys.size();
+  out.n_partitions = rows.size();
   // Range-INDEPENDENT, and that is the point: it is what lets `selected_no_cells`
   // tell "this database is fresh" from "this run's window/symbol set matched
   // nothing in a database that is full".
@@ -333,36 +335,59 @@ Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec) 
     }
   };
 
+  // And again for the partition-index faults, on a THIRD independent budget. Same
+  // argument as the absence list: one number spent per list, never one pool shared,
+  // so a database with many absences can never elide the index fault beside them.
+  const auto record_index_fault = [&](DbPartitionIndexFault fault) {
+    if (out.index_faults.size() < spec.max_reported_failures) {
+      out.index_faults.push_back(std::move(fault));
+    } else {
+      ++out.n_index_faults_elided;
+    }
+  };
+
   // Partition-major so each partition file is opened once and every symbol in it
   // is probed against the same cached mapping (the LRU view cache holds 16).
-  for (const std::string &key : keys) {
-    // Gate 0's evidence, opened LAZILY and at most once per row: the partition's
-    // own archive directory, which lists exactly the symbols the file holds. It
-    // is touched only when a cell on this row fails to map, so a row with nothing
-    // missing never pays for it. `open_partition` re-reads the file rather than
-    // borrowing the db's cached mapping (there is no accessor for that mapping
-    // without a successful map, which is precisely what we do not have here); a
-    // concurrent writer can therefore make the two disagree, which is the torn
-    // view this header already documents as the concurrent-writer contract.
-    std::optional<Result<SurfaceArchiveV2>> row_directory;
+  for (const DbPartitionInfo &row : rows) {
+    const std::string &key = row.key;
+    // ONE open per row, serving gate -1 and gate 0 both. `open_partition` re-reads
+    // the file rather than borrowing the db's cached mapping (there is no accessor
+    // for that mapping without a successful map, which is precisely what gate 0
+    // does not have); a concurrent writer can therefore make the two disagree,
+    // which is the torn view this header already documents as the
+    // concurrent-writer contract.
+    const Result<SurfaceArchiveV2> row_archive = db.open_partition(key);
+
+    // ── Gate -1: the manifest's RECORD against the FILE it indexes ────────────
+    // The one inconsistency no per-cell gate can see: after a torn write (archive
+    // rewritten, manifest not yet persisted) every cell still maps, checksums and
+    // probes — the file is a perfectly good file — while the index describes the
+    // PREVIOUS write. See `DbPartitionIndexFault` for the window and for why the
+    // write order that opens it is nevertheless the right one.
+    //
+    // A partition that will not open is deliberately NOT counted here: gate 0/1
+    // is about to report every cell on this row `unmappable`, which is louder and
+    // more precise, and a second fault over the same bytes would double-report it.
+    if (row_archive) {
+      const auto archive_count = static_cast<std::uint32_t>(row_archive->count());
+      const std::uint64_t live_bytes = stat_partition(db.root(), key).bytes;
+      if (archive_count != row.surface_count || live_bytes != row.file_size) {
+        ++out.partitions_index_mismatch;
+        record_index_fault(DbPartitionIndexFault{key, row.surface_count, archive_count,
+                                                 row.file_size, live_bytes});
+      }
+    }
+
     // "The partition opened, and it does NOT list this symbol" — the one fact
     // that separates a cell that was never stored from one that is unreadable.
     // A partition that will not open answers `false`: the directory that would
     // decide is itself the thing that is missing, so the cell keeps the
     // corruption reading rather than being quietly excused as absent.
-    const auto never_stored = [&](const std::string &partition_key,
-                                  const std::string &sym) -> bool {
-      if (!row_directory.has_value()) { // the OPTIONAL: has this row been opened yet?
-        row_directory.emplace(db.open_partition(partition_key));
-      }
-      // ...and this is the RESULT of that open, which is a different question with
-      // an identically-spelled test. Name it so the two cannot be misread for each
-      // other two lines apart.
-      const Result<SurfaceArchiveV2> &opened = *row_directory;
-      if (!opened) {
+    const auto never_stored = [&](const std::string &sym) -> bool {
+      if (!row_archive) {
         return false;
       }
-      const Result<ArchiveV2DirEntry> entry = opened->find(sym);
+      const Result<ArchiveV2DirEntry> entry = row_archive->find(sym);
       return !entry && entry.error().code() == ErrorCode::NotFound;
     };
 
@@ -382,7 +407,7 @@ Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec) 
         // entry, or a ParseError/IoError from a partition that opened for the
         // directory read and broke on the record. Absence must mean "the map said
         // NOT FOUND and the directory agrees", so any other error stays a fault.
-        if (mapped.error().code() == ErrorCode::NotFound && never_stored(key, symbol)) {
+        if (mapped.error().code() == ErrorCode::NotFound && never_stored(symbol)) {
           ++out.cells_absent;
           record_absent(key, symbol);
           continue;
