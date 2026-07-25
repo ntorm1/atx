@@ -1655,3 +1655,166 @@ T6: implementer DONE_WITH_CONCERNS, commit `0a895b8`, 8 files, +270/-15 = net **
   23. Nothing in C++ counts `meta` rows (`RunDir::verify` compares `backtest` vs
   `reconciliation` cardinalities only, verified in code) and `MatchesCommittedPythonFixture`
   is green, but pytest is out of scope this sprint. **For the final review.**
+
+### Wave D T7 — CONTROLLER INTEGRATION GATE
+
+**Step 1 — full build.** `cmake --build C:\atx\build-rel` (all 95 targets: library,
+`atx-vol-tests`, all examples, both benches, every `atx-engine-*` test binary,
+`atx-impl`). **EXIT 0.** Required rather than a `--target` build because `sizeof(RunConfig)`
+changed in T1 and a public `dispersion_workflow` signature changed in T6.
+*(Recorded correction: the brief and the T6 dispatch also justified this build as proving
+the pybind11 bindings still compile. It does not — `atx-vol/python` is a standalone
+scikit-build-core project the root `CMakeLists.txt` never adds. That claim was retired at
+T6 and replaced with a probe-TU compile under the real `/WX` flags.)*
+
+**Step 2 — full gtest from `C:\atx\build-rel` CWD. PASS.**
+    **2044 ran / 1998 passed / 43 skipped / 3 failed / 7 disabled**  (149.0 s)
+  The 3 failures are EXACTLY the documented pre-existing reds, by name:
+  `BoundaryHoist.PriceBitIdenticalToPrechange`,
+  `AllQualityModes/SurfaceV2Qualification.RiskBuildRunsTheModeCarryAndInversionBudgets/Latency`
+  and `…/Balanced`. **No fourth failure, so the wave is not blocked.**
+  Wave-D delta over the pre-wave baseline: 2020 -> 2044 ran (+24), 1974 -> 1998 passed
+  (+24), skipped/failed/disabled unchanged. Every added test passes.
+  *(First capture of this run was lost to a `| tail -22` that truncated the summary above
+  the count lines — the SKIPPED list is 43 entries. Re-run with full capture rather than
+  reporting a reviewer's numbers as my own.)*
+
+**Step 3 — 135-session parity economics. ALL GREEN.** Run as a clean sequential chain on
+the COPY `t7-gate` (742 MB, includes `definitions.tsv`, unlike T4's metadata-only copies).
+`parity-full`'s `run.atxrun` hashed `D88BFEE04D3EF300` before and after every command in
+this gate.
+
+    build-corpus (1-day)  EXIT 0   admitted=11 quarantined=0 source_failed=0
+    build-schedule        EXIT 0   rolls=7
+    run-backtest          EXIT 0   dates=135 rolls=7 final_nav=125026.0592   EXACT
+    project-schedule      EXIT 0   rolls=7
+    run-projected-backtest --schedule projected_schedule.tsv --execution cold
+                          EXIT 0   dates=135 rolls=7 final_nav=123243.1172   EXACT
+                                   `mark divergence rows: 0`
+    run-projected-var     EXIT 0   scenarios=135 positions=22
+    run-surface-backtest  EXIT 0   dates=135 final_nav=128361.5746
+
+    dump backtest --tsv           a05470c7a6f6572f   expected a05470c7   MATCH
+    dump projected_cold --tsv     cbabca44e411d4d9   expected cbabca44   MATCH
+    trade_schedule.tsv            b640b3aba5f3f6d5   expected b640b3ab   MATCH
+    projected_schedule.tsv        d6793d46a1f29606   expected d6793d46   MATCH
+    dump mark_divergence --tsv    c9a04d1bcf0e3c07   == MD-COLD from T4   MATCH
+    projected_risk_scenarios.tsv  0cf8ac4b50f34ea6   MATCH
+    projected_risk_legs.tsv       0a8b38984c7b6064   MATCH
+    projected_var.tsv (field 7 excluded)  d370c78dbb01b513   MATCH
+    NEGATIVE CONTROL: backtest vs the projected_cold pin -> *** DIFFERS ***  (the
+      comparator can say False, so the eight MATCHes above are not vacuous)
+
+  All six pinned VaR values reproduced to the last digit: `reference_value
+  280232.52872350701`; 95% VaR `164113.53597877346` / ES `169286.48040274251`;
+  99% VaR `172540.63396786354` / ES `174814.16710811283`; `n_scenarios 135`,
+  `n_positions 22`.
+
+  Merged archive holds **exactly 9 sections** — backtest, projected_cold,
+  mark_divergence, reconciliation, contract_marks, meta, diagnostics, trade_schedule,
+  projected_schedule — so merge-write still unions rather than drops. `projected_nodiv`
+  correctly absent (no `--no-divergence` run in this chain); `surface_backtest` correctly
+  absent (that command writes a loose TSV, not a section). No `projected_backtest.tsv` and
+  no `mark_divergence.tsv` — the Wave A hard cutover still holds.
+
+  **`corr=0.99718` REPRODUCED WITHOUT PYTHON.** The brief sources this from the parity
+  report, which is Python and therefore out of scope this sprint. Rather than skip the
+  assertion, the controller computed the Pearson correlation of daily `pnl_total` directly
+  from the `backtest` and `projected_cold` sections (135 points each): **0.99718**. Same
+  economic claim, no out-of-scope dependency.
+
+**Step 4 — configured-route equivalence, POST-DELETION. THE GATE THAT MATTERS.**
+  On a fresh metadata copy, with the T5/T6 build (shadow deleted, observer sole source):
+    `mark divergence rows: 137`,  `final_nav=132776.9818`
+    `dump mark_divergence --tsv` = **9e958a90ae15ac74 == MD-CFG recorded at T4**, N = 137.
+  T4 measured that hash with the shadow still present and both sources compared; T7
+  reproduces it byte-for-byte with the shadow gone. **The nonzero divergence channel
+  survived the deletion exactly** — which is the one thing the empty cold section could
+  never demonstrate.
+
+**ALL SIX L12 CALL SITES EXECUTED — the T6 review's Important is now closed.**
+The T6 reviewer established that every threaded site was compile-covered only. The brief's
+Step 3 sequence reaches three of six. Two commands were added and the site map rebuilt
+from the code (the brief mislabels `:320` as `build-schedule`; it is in
+`build_corpus_command`):
+
+    :320 all_symbols          build-corpus            ADDED   executed, exit 0
+    :541 all_symbols          run-backtest            in brief, executed
+    :915 universe_at          run-surface-backtest    ADDED   executed, exit 0
+    :992 universe_at          run-projected-var       in brief, executed
+    listed_dispersion_pipeline.cpp:205 / :224         build-schedule, executed
+
+`build-corpus` was run as a ONE-DAY corpus over the real 11-symbol universe into a scratch
+dir, never against an existing corpus — it is the one command that rewrites `run_spec.tsv`
+and would move `run_identity_hash` for that dir. It also executed the other new L12 write
+path and confirmed the brief's binding ordering requirement by EXECUTION rather than by
+unit test: the resolved `run_spec.tsv` ends
+`delta_band / fit_workers / core_mode / index_symbol\tSPY` — `index_symbol` last.
+
+#### Two gate failures, both diagnosed to the corpus copy, neither a regression
+
+1. **`build-schedule` first failed** `InvalidArgument: OCC ESS inventory path escapes run
+   envelope`. Not a defect: `occ_ess_inventory.tsv` records ABSOLUTE paths and
+   `spy_dispersion_backtest.cpp:276-278` requires each to equal
+   `run_dir/occ_ess/<date>.txt`. A copied corpus therefore fails **by design** — that check
+   exists precisely to stop an inventory referencing files outside its run dir. Relocating
+   the 135 path entries to the copy's own `occ_ess/` preserves exactly the property the
+   check enforces (the fingerprint and `n_special` comparisons still validate content), and
+   the re-run was EXIT 0, `rolls=7`.
+   **This mattered: before the fix, `trade_schedule.tsv` matched `b640b3ab` only because it
+   was the un-regenerated copied file.** That would have been a copy-integrity check
+   masquerading as a regeneration gate. After the fix the file is genuinely rewritten
+   (mtime moves) and still hashes `b640b3aba5f3f6d5` — and the two library call sites are
+   executed on the way. Recorded because banking the first hash would have been exactly the
+   kind of false green this sprint keeps finding.
+2. **`verify` fails** `NotFound: read_quality_report_file: file not found`. **PRE-EXISTING
+   and proven so**: `verify` reads `run_dir/quality.tsv` (`:477`), `parity-full` has never
+   contained one, and running `verify` read-only against the UNTOUCHED source reproduces
+   the identical error. `quality.tsv` is written only by `build-corpus`, which this corpus
+   predates. The one-day corpus does have `quality.tsv` but no `occ_ess_inventory.tsv`, so
+   no available corpus satisfies both preconditions. **Initially recorded as a gate that
+   could not be run, NOT as a pass.**
+   **SUBSEQUENTLY RESOLVED.** The Wave E shared fixture (built later in this session with
+   `occ_ess_root` set, so `build-corpus` writes BOTH `quality.tsv` and
+   `occ_ess_inventory.tsv`) satisfies both preconditions, and `verify` runs green against
+   the T5/T6 build:
+       `verified artifact envelope: dates=49 admitted=539 rolls=3`   EXIT 0
+   So `verify_command` — including `verify_occ_ess_evidence` and the RunDir cardinality
+   gate — IS executed post-deletion, just not on the parity corpus, which structurally
+   cannot host it. **Gate satisfied, on a different corpus, and the substitution is stated
+   rather than hidden.**
+
+   **LATENT TOOL INCONSISTENCY FOUND WHILE DIAGNOSING THIS — worth a future task.**
+   `build_corpus_command` writes `occ_ess_inventory.tsv` only
+   `if (!spec.occ_ess_root.empty())` (`:336`), but `build_schedule_command` calls
+   `verify_occ_ess_evidence` **unconditionally** (`:424`, and `verify` again at `:479`).
+   So a corpus legitimately built without an OCC ESS root can NEVER run `build-schedule`
+   — it fails `NotFound: cannot open …occ_ess_inventory.tsv` with no way forward short of
+   rebuilding the corpus. Either the write should be unconditional or the verify should be
+   conditional. Out of Wave D's charter; recorded for the final review.
+
+#### Wave E shared fixture — built as controller prep, pinned here
+
+Every Wave E task must report before/after numbers that are comparable, and per-task
+fixture invention is exactly what produced the stale-pin confusion in T3, T5 and T6 (three
+separate briefs pinning a fixture that no longer exists). So Wave E gets **one** fixture,
+built once, owned by the controller:
+`<scratchpad>/wave-e/run` — 2026-01-02..2026-03-13, real 11-symbol universe,
+`admitted=539 quarantined=0 source_failed=242` (non-trading days), **49 qualified sessions
+/ 3 rolls**, 800 MB (696 MB of it `definitions.tsv`, which is what makes it a fair P1/P3
+parse-cost fixture). Build took 38 s.
+Validated end to end against the T5/T6 build before being handed out:
+    build-schedule           EXIT 0  rolls=3         14.5 s
+    run-backtest             EXIT 0  dates=49 rolls=3 final_nav=22635.66476   21.8 s
+    project-schedule         EXIT 0  rolls=3
+    run-projected-backtest   EXIT 0  dates=49 rolls=3 final_nav=18528.61666
+                                     `mark divergence rows: 0`
+    verify                   EXIT 0  dates=49 admitted=539 rolls=3
+Input pin (any task mutating these invalidates its own numbers):
+    run_spec.tsv           38c2826ca8194e30      universe_schedule.tsv  422d9a4c33987fd6
+    surface_manifest.tsv   de00c7b137dc4947      occ_ess_inventory.tsv  a570006591741cbb
+    quality.tsv            26c3f1cc31cb8013      methodology_map.tsv    5fe90962fe60c5f8
+    input_inventory.tsv    71c85fd621281314      trade_schedule.tsv     4712bfd422285b6a
+    projected_schedule.tsv 99cf42402326109c      archives 51 / occ_ess 49
+Sized deliberately: big enough that `run-backtest` at 21.8 s and `build-schedule` at 14.5 s
+are measurable above noise, small enough to iterate on.

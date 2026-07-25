@@ -635,15 +635,15 @@ omission in the task report so it is a decision, not drift.
 
 **Files:** this plan (check boxes); `.superpowers/sdd/backtest-wave-d/progress.md` (controller-owned ledger).
 
-- [ ] **Step 1: Full build.** `cmake --build C:\atx\build-rel` — every target (library, `atx-vol-tests`, all 7
+- [x] **Step 1: Full build.** `cmake --build C:\atx\build-rel` — every target (library, `atx-vol-tests`, all 7
       examples, both benches, the python module). Exit 0, no new warnings-as-errors. A `--target` build does not
       satisfy this step: `sizeof(RunConfig)` changed in T1 and a public `dispersion_workflow` signature changed in T6.
-- [ ] **Step 2: Full gtest from `C:\atx\build-rel` CWD.**
+- [x] **Step 2: Full gtest from `C:\atx\build-rel` CWD.**
       `cd C:\atx\build-rel; $env:PATH = "C:\atx\build-rel\bin;$env:PATH"; .\bin\atx-vol-tests.exe`
       → all green **modulo exactly** the three documented pre-existing reds
       (`BoundaryHoist.PriceBitIdenticalToPrechange`, `SurfaceV2Qualification…/Latency`, `…/Balanced`). Any fourth
       failure blocks the wave. Record the pass/skip/fail counts (Wave B's post-fix baseline: 3 failed).
-- [ ] **Step 3: Parity-full economics — UNCHANGED.** On the 135-session corpus (`C:\atx-data`, controller-only) run
+- [x] **Step 3: Parity-full economics — UNCHANGED.** On the 135-session corpus (`C:\atx-data`, controller-only) run
       `build-schedule → run-backtest → project-schedule → run-projected-backtest --execution cold`, then
       `run-projected-var`. Require:
   - listed `backtest complete: dates=135 rolls=7 final_nav=125026.0592`
@@ -661,7 +661,7 @@ omission in the task report so it is a decision, not drift.
   - `dump mark_divergence --tsv` sha256 == **`MD-COLD`** from T4.
   - `RunDir::verify` / `validate_all()` pass; the merge-write union still holds (9 sections in the shared dir); no new
     loose result TSVs; `kRaMinor` still 0; `schema_hash` still `0xdcce47781ac8390d`.
-- [ ] **Step 4: Configured-route equivalence, post-deletion.** On the configured-route dir from T4 Step 2, re-run
+- [x] **Step 4: Configured-route equivalence, post-deletion.** On the configured-route dir from T4 Step 2, re-run
       `run-projected-backtest --execution configured` with the **T5/T6** build and require
       `dump mark_divergence --tsv` sha256 == **`MD-CFG`** with the same N rows. This is the one gate that proves the
       deletion preserved the *nonzero* divergence channel, not just the empty one. If T4 Step 2 escalated, record
