@@ -728,3 +728,412 @@ evidence**, with three of its factual claims recorded as errata.
 **What Wave C is NOT:** a code-reduction win. Any later reader looking for one will not
 find it, and should read the L11-reality-check section rather than re-litigating the
 abstraction.
+
+---
+
+## Pre-Wave-D hygiene commit — `017fc5c`
+
+Not part of any wave's plan. Dispatched because Wave C's gate found that
+`cmake --build C:\atx\build-rel` (the DEFAULT target) exits 1 on two `/WX` errors, and
+**Wave D T1 mandates a full build** (`sizeof(RunConfig)` grows and 46 files include
+`backtest.hpp`), so the breakage was load-bearing rather than cosmetic.
+
+Two files, both pre-existing breakage, neither in `git diff 587ee97..HEAD`:
+
+1. `atx-vol/examples/universe_autofit.cpp` — `preset_name`'s switch over `FitPreset` was
+   non-exhaustive: `FitPreset::Populate = 4` (`session.hpp:244`) was unhandled. Added the
+   case. **Also** added `parse_preset`'s `"populate"` arm, so the new printer branch is
+   reachable from the CLI rather than dead — a deliberate 1-line behaviour addition
+   (`--preset populate` previously fell through to `Fast`), recorded rather than slipped in.
+2. `atx-engine/tests/core/phase4_integration_test.cpp` — **this one was a real bug, not a
+   warning.** `apply_guard` asserted with `ATX_ASSERT`, which `macro.hpp:126-132` defines as
+   `((void)0)` under `NDEBUG`. In Release the body vanished — which is *why* both parameters
+   read as unused, but the real consequence is that
+   `EXPECT_DEATH(apply_guard(model.value(), 0U), ".*")` at `:513` **could not pass in
+   Release**: the guard no longer aborted. The test was vacuous under NDEBUG, and had
+   escaped notice only because this target had never been built here. Fixed by switching to
+   the unconditional `ATX_CHECK` — which makes the parameters genuinely used (warning gone
+   as a side effect) and makes the EXPECT_DEATH real. **Explicitly NOT fixed with
+   `[[maybe_unused]]`**, which would have silenced the compiler and left the test vacuous.
+   Comments naming the old macro were corrected, with the NDEBUG reason recorded in-place.
+
+Verification: full default-target build exits **0**, zero first-party warnings (only the 7
+expected third-party spdlog `/MP` lines). `atx-vol-tests` 2021/1975/43/3/7 from
+`build-rel` CWD, failures exactly the three documented reds — so the `universe_autofit`
+edit broke nothing.
+
+**Byproduct worth recording:** `atx-engine-core-tests.exe` now exists and ran for the first
+time ever in this build dir — **326 ran / 314 passed / 12 failed**, all pre-existing
+death-test-style failures (Market / Portfolio / RollingPanel / SimClock). Reported as
+information, NOT chased: they predate this sprint entirely and are outside its charter. The
+one test that fix 2 targets,
+`Phase4IntegrationDeathTest.Firewall_ApplyInsideFitWindow_CallerGuardAborts`, **passes**,
+and its log confirms the abort now fires through `ATX_CHECK` — direct evidence the
+EXPECT_DEATH is non-vacuous in Release, which is the point of the fix.
+
+This also closes Wave C's gate caveat: from `017fc5c` onward, "the full build is green" IS
+a claim that can be made, and any new warning in Waves D/E is that wave's own.
+
+---
+
+## Task ledger — Wave D
+
+Plan: `docs/superpowers/plans/2026-07-24-atx-vol-backtest-framework-wave-d.md`
+Workspace: `.superpowers/sdd/2026-07-24-atx-vol-backtest-framework-wave-d/`
+Base: `017fc5c` (the pre-Wave-D hygiene commit, itself on Wave C's close `cb875dc`).
+
+### Wave D T1 (StepObserver substrate) — COMPLETE
+
+T1: complete (commit 42c60d8, review clean, ZERO fix rounds — spec PASS, quality APPROVED)
+  3 files, +326/-0, zero deletions: backtest.hpp, src/backtest.cpp, tests/strategy_test.cpp.
+  `step_observer` is the LAST member of RunConfig, appended after `settlement_mark_memo`
+  with a default member initializer and the third "Appended for positional aggregate source
+  compatibility" comment. Exactly one field. No existing member moved, renamed or retyped.
+  FULL default-target build exit 0, zero first-party warnings. Suite 2026/1980/43/3/7 from
+  build-rel CWD = baseline +5/+5 exactly, no fourth failure. The REVIEWER independently
+  re-ran both the 5-test filter (5/5) and the full binary and reproduced the counts.
+  BLAST-RADIUS CLAIMS SPOT-CHECKED BY THE REVIEWER — all four hold: zero positional
+  aggregate-init sites (all 9 `RunConfig{` hits are `RunConfig{}` value-init), zero
+  sizeof/offsetof asserts, zero byte-serialization of any cfg/config in atx-vol, and
+  run_identity_hash folds run_spec.tsv (+ optional universe_schedule.tsv) FILE BYTES only.
+  The reviewer added the check that actually closes the silent-drop question and that the
+  implementer did not make: **no function anywhere in atx-vol/atx-engine takes RunConfig BY
+  VALUE**, and the complete set of functions accepting one is the two run_backtest
+  overloads, run_timed, the shadow, and one bench reporter. There is no fourth engine path
+  that could ignore the observer.
+  run_timed FORWARDS CLEANLY, both slots verified from source: slot A is
+  `run_backtest(clock, strat, cfg)` on the same object by `const RunConfig &`; slot B goes
+  through `run_dispersion_backtest`, whose entire body is
+  `return run_backtest(clock, strategy, config.run);`. No Wave C edit needed, no drop path.
+  FIRING SITES JUDGED CORRECT by the reviewer, and this is the part that matters: only two
+  `on_step` call sites exist in backtest.cpp and each is immediately followed by a fire, so
+  fire count == clock.size(), exactly the shadow's iteration count. There is NO
+  step-loop-body-scope `continue` (the only `continue`s are inside the inner hedge-ledger
+  and expiry loops), and every other exit between the top of an iteration and the fire is a
+  hard `return Err` that aborts the whole run — so no path silently skips a step the shadow
+  would have counted. That was the defect class that would have made T3/T4's equivalence
+  proof pass while the real outputs differed.
+  NO STALE VIEW: `base = std::move(shifted)` precedes `on_step`, so `*base` already
+  corresponds to `refs[i]` at fire time; `refs` is a const span, MarketSnapshot is const,
+  and nothing between the fire and the end of the iteration touches `strat`.
+  B0 fixed-book overload FAILS CLOSED with InvalidArgument, placed after
+  validate_run_config / validate_run_query_route but BEFORE validate_lot_economics and the
+  `refs.empty()` check — so the rejection cannot be masked by a bad book or clock.
+  NO DEAD MEMBERS: all four StepEvent members are read by
+  StepObserverFiresOncePerStepInOrder in this very commit, and task-2-brief names a second
+  reader for three of them.
+
+#### The review's most important finding: bit-identity is STRUCTURALLY IMPLIED, not hoped
+
+The implementer raised a forward-looking concern that the shadow replay steps a book mutated
+only by `on_step` (no transition validation, execute, hedge, settlement or expiry erase) and
+loads via uncached `MarketSnapshot::load`, whereas the observer rides the real engine book
+and the SnapshotCache — so bit-identity is "expected but must be proven". **The reviewer
+established a stronger result: `ListedDispersionStrategy::on_step` NEVER READS `book`.** It
+only writes it (`book.lots = std::move(replacement)`), and the divergence rows are computed
+in the pre-mutation seeds loop from `base` + the frozen schedule + `policy_` alone.
+Therefore every book difference in the implementer's concern is **provably irrelevant** to
+`last_mark_divergences_`. On the snapshot half: `run_projected_backtest_command` builds ONE
+RunConfig shared by both routes, so tier and price are identical; `query_cache_build_policy`
+is never overridden so it stays `Eager` (no ReuseOnly cold-key downgrade); and
+subset-deserialize is wired only for the FIXED-BOOK overload's private cache, so the
+strategy overload's cache reaches the same whole-board `MarketSnapshot::load(path, tier)`
+the shadow calls. **T1 has ENABLED the T3/T4 proof, not foreclosed it.** The residual risk
+is narrower than reported: only a future flag turning on ReuseOnly, or a strategy-side uid
+subset, would break the argument. Carry this argument into T3 and T4 — it is what makes the
+comparison a proof rather than a coincidence.
+
+#### Plan errors found (Wave D's first three), all judged correct
+
+1. The Python module is **not** in the `build-rel` default target — no pybind target, no
+   `.pyd`, no pybind entry in CMakeCache. So a full build gives NO binding coverage. The
+   reviewer strengthened this: at HEAD there is **no tracked RunConfig binding at all** —
+   the 11-entry `def_readwrite` list ending at `settlement_mark_memo` lives in the
+   UNTRACKED `python/src/bindings/backtest.cpp`. "Binding untouched" therefore holds
+   trivially, for a stronger reason than the plan gave.
+2. `backtest.hpp` has **45** includers, not 46.
+3. `RunConfig` reference count: the plan's "~120 sites" is a large understatement.
+   Implementer measured 206 across 40 files; reviewer measures 219 lines / 220 occurrences
+   across 40 files. Direction correct, exact figure not reproducible — see the minor below.
+
+T1: minor (deferred): `tests/strategy_test.cpp:1656`'s stride gate asserts
+  `EXPECT_LT(res->size(), corpus.day_off.size())` where the recorded row set at stride 3 is
+  deterministically {0, 3, 6}. `<` passes for ANY row count in 0..6, including a future
+  regression recording only row 0. Fix is `EXPECT_EQ(res->size(), 3u)`. The BRIEF specified
+  `<`, so this is an inherited brief weakness, not a deviation — but in a wave whose whole
+  premise is falsifiability it is worth one line. CARRIED TO THE WAVE D GATE (T7).
+T1: minor (deferred): report §6c row 3 overstates its own disclosure — it claims no
+  mutation could reach `EXPECT_EQ(fired, 3u)`, but a deferred-abort mutation (capture the
+  observer's Error, continue the loop, return it after) leaves `res` in Err so
+  `ASSERT_FALSE(res.has_value())` still passes while `fired == 7`, isolating exactly that
+  assertion. The recorded CONCLUSION ("regression lock, not a demonstrated RED") is the
+  conservative and correct one, so the accounting is honest in direction; only the
+  impossibility claim is wrong.
+T1: minor (deferred): two report overstatements. (a) "206 references across 40 files" does
+  not reproduce (219/220 across 40). (b) "the backtest.hpp ABI note that already declares
+  RunConfig layout-fragile stays accurate" — **there is no such note.** The only ABI comment
+  in the header is about the IStrategy vtable, and nothing in the header claims RunConfig is
+  trivially copyable, so adding a std::function falsified nothing. The conclusion holds; the
+  cited support does not exist.
+T1: minor (deferred) — **FORWARD NOTE, MUST REACH T3.**
+  `collect_mark_divergence_replay` takes `const RunConfig &config` and steps a strategy once
+  per clock date WITHOUT consulting `config.step_observer`. T3's brief sets
+  `config.step_observer` on that same shared config while keeping the shadow alive, so
+  during T3 the shared config carries an observer the shadow silently ignores. Harmless
+  there (shadow writes `arena`, observer writes `observed`, no double count) and T1 could
+  not have guarded it because the shadow is not an engine entry point — but T3's report must
+  say so explicitly, so the "no silently ignored observer" invariant is not assumed total.
+
+#### Controller resolution of T1's two "cannot verify" items
+
+1. "Full build exit 0 / zero first-party warnings" — reviewer was correctly forbidden from
+   building. Accepted: `build-rel/bin/atx-vol-tests.exe` (09:11:17) postdates all three
+   sources (latest 09:09:51) and passes the full suite, and the immediately preceding
+   hygiene commit `017fc5c` had already established a green full build with the 7 known
+   third-party lines as the only warnings. Any first-party warning would have been new.
+2. "The compile-time RED and the four behavioural mutations M1-M4" — unreproducible after
+   revert by construction. Accepted: the 12 quoted diagnostics are internally consistent
+   (`-Werror,-Wunused-parameter` matches tree policy, line/column pairs land on the five
+   `cfg.step_observer =` assignments), zero mutation scaffolding survives in the tree
+   (`MUTATION` / `m3_prev_base` → 0 matches), and the reviewer independently confirmed the
+   vacuity properties of all five gates from the source.
+
+### Wave D T2 (mark-divergence collector) — implementation + review
+
+T2: implementer DONE_WITH_CONCERNS (commit c464051, 3 files, +473/-0):
+  listed_dispersion_pipeline.{hpp,cpp} + tests/listed_dispersion_pipeline_test.cpp.
+  Suite 2033/1987/43/3/7 from build-rel CWD = +7/+7 over T1's 2026/1980 baseline, failures
+  exactly the three documented reds. Full default-target build exit 0, zero first-party
+  warnings. Reviewer independently re-ran BOTH the targeted filter (ListedDispersionPipeline.*
+  18/18 = 11 pre-existing + 7 new) and the full suite, and reproduced the counts by
+  `--gtest_list_tests` arithmetic (2040 listed - 7 disabled = 2033 runnable).
+  SPEC ✅ with two disclosed, justified deviations (the bps literals, and tests-after-impl
+  with the compile RED reconstructed — cited diagnostic line numbers match the landed file).
+
+  THE THREE THINGS THAT MATTER MOST, all verified by the reviewer from source rather than
+  taken from the report:
+  1. **The downcast is fail-SAFE, not fail-silent.** `Err(InvalidArgument, "...strategy is
+     not a ListedDispersionStrategy")` propagates through `ATX_TRY_VOID` at BOTH engine fire
+     sites, aborting mid-step before transition validation; and the fixed-book overload
+     already rejects `step_observer` outright. There is no path where the collector returns
+     Ok() having observed nothing it should have observed.
+  2. **Book independence HOLDS**, read set enumerated line by line: the collector reads
+     exactly `last_mark_divergences()`, `next_roll_index()`, `schedule.rolls[...]`,
+     `event.ref.date`, `event.snapshot.ts_ns()`. `ListedDispersionStrategy::on_step` touches
+     `book` exactly once — `book.lots = std::move(replacement)` — AFTER the seeds/divergence
+     loop, and `StepEvent` carries no book at all, so the dependence is structurally
+     impossible to add by accident. **T4's proof is not foreclosed.**
+  3. **Neither fail-closed guard can fire on legitimate production input.** A non-empty
+     divergence record implies on_step passed its valuation-ts check, so
+     `base.ts_ns() == roll.valuation_ts_ns`; and implies `++next_roll_` ran, so
+     `1 <= next_roll_ <= rolls.size()`. Both unconditionally satisfied. No row changes.
+
+  ANTI-VACUITY: no test is satisfiable by a collector emitting zero rows (every capture path
+  asserts `rows.size() == 1` before reading fields; every rejection path requires an Err,
+  which a no-op collector cannot produce), and none is satisfiable by an engine that never
+  fires. The bps expectations are hand-derived dyadic literals, not read back from the
+  function. The one `f(x)==f(x)`-shaped assertion re-derives the formula inline instead of
+  calling `listed_mark_divergence_bps`, so it does catch a numerator/denominator swap.
+
+  THE IMPLEMENTER ADDED A 7TH TEST THE BRIEF DID NOT SPECIFY, and it was right to:
+  `MarkDivergenceObserverRidesTheEngineStepHook` drives the real `run_backtest` strategy
+  overload. All five briefed tests hand-build the StepEvent, so **as specified this task
+  would have shipped with zero evidence the collector is reachable from the engine** — the
+  precise Wave B failure mode. Mutation M-A (a fail-silent collector) proves it is the only
+  gate catching zero rows at engine scale.
+
+  ENVIRONMENT HAZARD, judged PURELY ENVIRONMENTAL by the reviewer: the implementer's first
+  full build failed on three unrelated targets and killed the PowerShell host with
+  `llvm-objdump ... OutOfMemoryException`; an immediate retry with no source change was
+  exit 0. Only three TUs include the touched header, and none of the three failing targets
+  (`spy_carry_diag`, `spy_dec_curve`, `spy_fit_matrix_bench`) contains any `listed_dispersion`
+  reference — an additive header include plus two new symbols cannot produce a link-stage OOM.
+  **CONTROLLER NOTE: the box is shared with other sessions' worktrees. This sprint's
+  implementers are dispatched strictly one at a time, so the contention is external. It
+  matters for WAVE E, whose measurement protocol requires a quiet box — Wave E tasks must
+  confirm quiet before measuring and discard any pair of numbers straddling foreign load.**
+
+  PLAN ERROR (Wave D's 4th), CONFIRMED: the brief's four pinned bps literals cannot hold
+  under the `EXPECT_EQ` the brief also demands — `(2.0, 2.02)`, `(2.0, 1.98)` and
+  `(-1.0, -1.01)` all yield `100.00000000000009`. The implementer preserved all four CASES
+  with dyadic inputs (2500.0 / 0.0), which keeps `EXPECT_EQ` and weakens no coverage.
+  (The implementer's *supporting* reasoning was itself wrong twice — see the minor below.)
+  PLAN ERROR WITHDRAWN: the report's plan-error #2 is a misreading. The brief cited
+  `:714-747` as the inner block to lift, not as the function's extent, and both the
+  NotFound message and the three arithmetic lines are exact.
+
+T2: fix round 1/5 dispatched — 1 Important, 3 Minors:
+  IMPORTANT: nothing gates row MULTIPLICITY or ACCUMULATION, which are exactly the two
+  properties the shadow's arena has and exactly what T4 bit-compares. Every fixture perturbs
+  one leg on one step and the engine test runs a ONE-DATE clock, so three mutations survive
+  all seven tests: `out.clear()` before push (invisible because every test uses a private
+  vector expecting one row), `break` after the first push, and hoisting the push out of the
+  loop. Fix: perturb two legs (the roll has six), assert rows.size()==2 with distinct legs in
+  divergence order; and give the engine test a two-date/two-roll clock so accumulation across
+  steps is proven — which also closes the fact that NO collector-level test currently
+  exercises T1's per-step firing site, only the inception site.
+  Minor 1: `test:1129` uses EXPECT_DOUBLE_EQ for `live_mark` where every other mark
+  assertion in the file (including `schedule_mark` three lines above) is EXPECT_EQ and
+  passes. Undisclosed. Likely cause: engine route has `price.analytic_greeks == true` while
+  the unit tests' 4-arg on_step uses `PriceOptions{}` with it false. **Either tighten to
+  EXPECT_EQ or document why — because if the two routes are NOT bit-identical on `live_mark`,
+  that is a finding the controller needs BEFORE T4, not after.**
+  Minor 2: the header comment's "one schedule object shared by strategy and observer" is
+  factually wrong — `ListedDispersionStrategy::create` takes the schedule BY VALUE and stores
+  a copy, so they are never the same object. Conclusion survives via value-equality; restate
+  the invariant as value-equality, since that is what a caller can actually violate.
+  Minor 3: correct the report's false lemma — 100 bps is a relative diff of 1e-2 not 1e-4,
+  and exactly 100.0 IS reachable (`bps(100.0, 101.0) == 100.0` exactly).
+
+#### Two forward notes the controller carries (NOT for T2 to fix)
+
+- **For T5's brief:** the shadow ends with
+  `Err(Unavailable, "divergence replay did not consume every scheduled roll")`, whose comment
+  is the very claim the fail-safety argument rests on ("an empty section must mean every roll
+  fired"). A per-step observer structurally cannot carry it. It is **not lost** — the priced
+  run already re-checks the same strategy — but T5 must keep that check when it deletes the
+  shadow and accept that the message text changes.
+- **For T4's brief, verbatim:** book independence is necessary but NOT sufficient for the
+  equivalence T4 asserts. `live_mark` comes from the loaded surface, and the two routes load
+  differently — the shadow uses `MarketSnapshot::load(path, tier)` while the engine uses
+  `SnapshotCache::load(path, tier, build_policy)`. Under the CLI's `Eager` default these
+  should agree, and on `--execution cold` the tier is `LegacyCompatible` on both sides — but
+  **that is the half of the equivalence T4 must actually MEASURE**, and it must measure it on
+  a route producing a nonzero row count. Also use a corpus with MORE THAN ONE ROLL, and
+  report the row count compared.
+
+T2: fix round 1/5 (4 addressed, 0 open; commits c464051..c438a64)
+T2: complete (commits 42c60d8..c438a64, review clean after 1 fix round)
+  The Important was CORRECT and the fix confirmed it: all three named mutations DID survive
+  round 1. New gates:
+  - `MarkDivergenceObserverAppendsOneRowPerDivergedLegInOrder` perturbs legs[2] (N0 CALL,
+    +0.01) and legs[5] (N1 PUT, +0.02) — deliberately NOT an adjacent pair, so the two rows
+    differ in symbol, side, strike, diff AND bps and neither can substitute for the other.
+    Order asserted element-wise against the STRATEGY's own divergence vector (a different
+    object), so it is not a restatement of the collector's loop.
+  - Engine test rebuilt on a TWO-DATE / TWO-ROLL clock: 1 diverged leg on roll 0, 2 on
+    roll 1 -> 3 accumulated rows, a total no per-call clear (2), break (2) or hoisted
+    push (2) can produce. This also closed the round-1 hole that NO collector-level test
+    exercised T1's per-step firing site — only the inception site.
+  MUTATION EVIDENCE, each isolating a different gate: M-F clear-then-push -> 2 FAILED
+  (1 vs 2, 1 vs 3); M-G break -> 2 FAILED (1 vs 2, 2 vs 3); M-H per-call clear -> **1
+  FAILED, the engine test ALONE** (2 vs 3) — direct proof that the two-roll clock, not the
+  multiplicity test, is what closes accumulation. All reverted.
+  DISCLOSED PLAINLY: both new gates passed on first run. The behaviour was already correct,
+  merely ungated — no RED claimed. Correct framing, confirmed by the re-reviewer.
+  Minor 1 tightened to EXPECT_EQ AND IT PASSES — the engine route's disk-round-tripped
+  archive mark under analytic_greeks=true equals the schedule's in-memory authored
+  model_mark BIT-FOR-BIT, and the unit tests' PriceOptions{} route equals the same value, so
+  the two agree transitively. Minor 2's invariant restated as value-equality in both header
+  and .cpp, with a note that `out` accumulates and is never cleared. Minor 3's false lemma
+  withdrawn in place and plan-error #2 withdrawn as a misreading — itemised in report §9.5
+  so the corrections are auditable rather than silent.
+  Suite 2034/1988/43/3/7, reproduced by the re-reviewer; ListedDispersionPipeline.* 19/19;
+  full default-target build exit 0, zero first-party warnings. Guard logic, the downcast
+  fail-safe path and book-independence are BYTE-IDENTICAL to round 1 (the .hpp/.cpp changes
+  are comment-only), so nothing was weakened to make the new gates pass.
+T2: minor (deferred): the third round-1 mutation ("hoist the push out of the loop") has no
+  explicit post-fix negative-control run — logically subsumed by ASSERT_EQ(rows.size(), 2u)
+  (any code producing fewer than 2 rows on a 2-divergence call fails it) but not empirically
+  exercised as its own mutation.
+T2: minor (deferred), self-disclosed: the two-roll clock proves accumulation across TWO
+  steps, not arbitrary N.
+
+### Wave D T3 (dual-run equivalence comparator, shadow RETAINED) — implementation + review
+
+T3: implementer DONE_WITH_CONCERNS (commit f60ce3c, 1 file, +185/-0, ZERO deletions —
+  the shadow is retained by construction and the emitted artifact still comes from the
+  arena). Full suite 2034/1988/43/3/7 = ZERO delta (the example is a standalone
+  add_executable, not linked into atx-vol-tests, so a gtest delta is structurally
+  impossible — the reviewer confirmed this rather than accepting the number). Targeted
+  filter 118/118. Full build exit 0, zero first-party warnings.
+  FIXTURE RUN: 3 sessions / 2 rolls, `--execution configured` -> **observer=36 shadow=36
+  rows MATCH**, exit 0, final_nav=-4779.718393. Cold -> 0 rows MATCH. `--no-divergence`
+  unchanged. **The REVIEWER independently reproduced every one of those numbers**, plus the
+  19/0/17 row split by date and 36 distinct raw_symbol values.
+  FOUR RED PROBES, coverage judged ADEQUATE by the reviewer and covering the modes that
+  matter: row-COUNT (checked first, before any value is read), **row-ORDER** (positional
+  walk, no sort/key-join — the reviewer singled this one out as the probe the brief did NOT
+  ask for and the one that matters most, since key-joining is the "obvious improvement" that
+  would silently destroy the discriminator), value, and vacuity. Residue impossible: the
+  diff is +185/-0, so no probe line can survive in any form.
+  THREAT MODEL SEARCHED BY THE REVIEWER: no path exists where the comparator reports
+  identical while the sources differ — row count checked first, all ten registry columns
+  compared, positional walk, no tolerance / sort / key join / field exemption, arena
+  structural guards make every per-row read in-bounds and every dict decode valid. **The
+  only hole is n == 0**, which is exactly what the vacuity guard exists for.
+  Value-equality preserved: the observer's schedule is passed as an lvalue to `create`
+  (by value -> copy) with NO std::move, so it stays value-equal; validate takes const& and
+  does not reorder.
+  The "shadow ignores step_observer" fact is made STRUCTURAL rather than argued — the
+  observer is installed AFTER `collect_mark_divergence_replay` returns.
+
+  PLAN ERROR (Wave D's 5th), CONFIRMED: the brief's pinned fixture is GONE — both
+  `C:\atx\scratchpad` and `C:\atx\.scratchpad` are absent. The implementer rebuilt an
+  equivalent from `C:\atx-data` READ-ONLY (archives copied out, nothing written there) at
+  3 sessions / **2 rolls** rather than the brief's 1. The reviewer judged the rebuild
+  **adequate and strictly better**: it exercises both T1 firing sites (inception i=0 -> 19
+  rows; per-step i=2 -> 17 rows), an accumulation boundary (a per-call out.clear() would
+  have yielded 17, not 36), and one quiet non-roll step (i=1 -> 0). **The brief's
+  `dates=3 rolls=1` economics acceptance line is RETIRED, not open.**
+
+  MERGE-WRITE WARNING FOR T4, CONFIRMED BY THE REVIEWER FROM `run_archive.cpp`: on an
+  existing archive whose `run_identity_hash` matches, sections carry forward only if their
+  name is NOT in the incoming write set — **"on a name collision the NEW section wins."**
+  `run-projected-backtest` writes projected_cold, mark_divergence, meta and diagnostics, so
+  running it on `parity-full` would REPLACE ALL FOUR and destroy the pinned cold
+  `mark_divergence rows=0`. The copy remedy is sound: `run_identity_hash` folds only
+  run_spec.tsv + universe_schedule.tsv, and the manifest's archive paths are ABSOLUTE, so a
+  metadata-only copy runs correctly and keeps the same identity. **T4 RUNS ON A COPY.**
+
+T3: fix round 1/5 dispatched — 2 Importants, no Criticals.
+  **IMPORTANT 1 IS THE CONTROLLER'S FAULT, recorded as such.** My dispatch told the
+  implementer the comparator "must assert the compared row count is > 0 on that route and
+  fail the gate as vacuous if it is 0". I did not scope it; the implementer built exactly
+  that; it is mis-scoped. The reviewer proved it EMPIRICALLY rather than arguing it:
+  - Zero rows on `--execution configured` is LEGITIMATELY REACHABLE. A row exists iff
+    `seed.greeks().price != leg.model_mark` (exact !=), and `QueryPricingRoute::ColdFallback`
+    is documented as what a fast-configured surface reports outside its certified correction
+    box, with `priced_surface_test.cpp` pinning that fallback as EXACTLY EQUAL to the cold
+    value. So a configured run whose legs all fall outside the box reproduces the frozen cold
+    marks bit-for-bit and emits zero rows — as does any schedule authored under the fast tier.
+  - REPRODUCED: the reviewer copied the fixture, rewrote trade_schedule.tsv so each diverging
+    leg's model_mark equals the configured route's own live_mark (a well-formed schedule that
+    passes validation), and got `Unavailable: ... 0 divergence rows`, EXIT=1.
+  - **WORSE THAN AN EXIT CODE: the run's entire output is destroyed.** The `return Err`
+    precedes `write_run_archive`, and the reviewer confirmed the run dir afterwards contains
+    NO run.atxrun at all — projected_cold, meta and diagnostics lost. Before the change that
+    run wrote all four sections and exited 0.
+  - **The conditioning is keyed on the wrong axis.** On the same patched fixture, `cold`
+    produced 36 rows and PASSED while `configured` produced 0 and FAILED. Neither
+    "cold => 0" nor "configured => >0" is a property of the routes; both are properties of
+    the schedule's provenance. So the guard PERMITS the one genuinely vacuous case
+    (cold + 0 rows) and KILLS a run that is merely uninteresting — on the DEFAULT route.
+  CONTROLLER RULING, both halves ordered: (1) make the guard OPT-IN and route-independent
+  via `--require-divergence-rows` — T4's proof run passes it, nothing else gains a failure
+  mode, and it also lets the cold route be checked for non-vacuity on a corpus that does
+  produce rows; (2) relocate the `return Err` to AFTER `write_run_archive` regardless, so a
+  rejected proof still leaves the artifact behind. The exit code is recoverable; the archive
+  is not.
+  IMPORTANT 2: the MATCH line goes to stdout while the "0 rows — plumbing check" caveat goes
+  to stderr, so a stdout-only log shows a bare unqualified
+  `mark divergence equivalence: observer=0 shadow=0 rows MATCH`. That stdout line is what T4
+  greps and what a ledger transcript would carry — i.e. exactly the artifact **T5's deletion
+  decision rests on**. Fix: put the qualifier on the same stdout line as a suffix; any
+  `mark divergence equivalence:` / `rows MATCH` grep still matches.
+
+T3: minor (accepted, no change): the bit-compare rationale claims discriminations these
+  fields cannot exercise — -0.0 is unreachable (a row exists only when live != schedule),
+  abs_diff_bps_of_mark returns literal 0.0 on both sides for a zero denominator, and the
+  schedule parser rejects non-finite model_mark. The deviation is SAFE and STANDS:
+  bit-compare is never weaker than == on any value these fields can hold.
+T3: minor (accepted, report-only): "a difference surfaces three times over" is inflated —
+  `diff` and `abs_diff_bps_of_mark` are computed from live_mark/schedule_mark by identical
+  arithmetic on both sides, so they are not independent detectors.
+T3: minor (accepted, report-only): "the two load paths are genuinely independent" is true as
+  to shared state, but both reduce to *deserialize archive -> with_query_pricing(tier)*, a
+  deterministic pure function of the same bytes — so bit agreement was EXPECTED, not a
+  coincidence surviving a hard test. The comparator still covers the axis (a ReuseOnly /
+  referenced_uids / tier difference would land on live_mark and on the row set and be
+  reported), which is what makes it the right instrument for FUTURE divergence — and that,
+  not the current agreement, is what T5's deletion actually rests on.
