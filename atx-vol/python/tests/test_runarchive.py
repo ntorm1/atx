@@ -275,23 +275,101 @@ def test_generated_schema_registry_shape():
 def test_schema_py_not_stale_vs_cpp_header():
     """Catch C++ registry drift: re-parse ``run_archive_schema.hpp`` via the
     generator's ``--check`` and fail if the committed ``_schema.py`` no longer
-    matches the header. ``test_generated_schema_hash_matches_golden`` only pins
-    ``_schema.py`` to a constant — an unmirrored header change would stay green
-    without this. Skip only if the header/generator are genuinely absent (e.g. a
-    sdist install); in this repo they are present and this MUST run."""
+    matches the header.
+
+    FIX-5/I5 — this test used to take an unconditional ``pytest.skip`` on this
+    tree, against its own docstring ("in this repo they are present and this
+    MUST run"), because neither the header nor the generator is tracked here:
+    the ATXRUN01 C++ writer is out-of-tree. A guard that always skips is worse
+    than no guard, because it reads as coverage.
+
+    It now asserts in BOTH worlds rather than skipping in one:
+
+    * header + generator present  -> run ``--check`` exactly as before, so the
+      day the C++ side lands in this repo the guard starts working with no edit;
+    * header + generator absent   -> assert ``_schema.py`` does not ADVERTISE a
+      provenance it does not have. The silent skip was only possible because the
+      module claimed to be generated from files that do not exist; forbidding
+      that claim is the property that actually holds on this tree, and it is
+      what stops the misleading header from coming back.
+    """
     atx_vol = pathlib.Path(__file__).resolve().parents[2]  # .../atx-vol
     header = atx_vol / "include" / "atx" / "vol" / "run_archive_schema.hpp"
     generator = atx_vol / "tools" / "gen_runarchive_schema.py"
-    if not header.exists() or not generator.exists():
-        pytest.skip(f"header/generator not present (sdist install?): {header}")
-    proc = subprocess.run(
-        [sys.executable, str(generator), "--check"],
-        capture_output=True, text=True,
+    if header.exists() and generator.exists():
+        proc = subprocess.run(
+            [sys.executable, str(generator), "--check"],
+            capture_output=True, text=True,
+        )
+        assert proc.returncode == 0, (
+            "_schema.py is stale vs run_archive_schema.hpp (rerun "
+            f"gen_runarchive_schema.py):\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
+        )
+        return
+
+    doc = (_schema.__doc__ or "")
+    assert "GENERATED, do not edit by hand" not in doc, (
+        f"_schema.py declares itself generated, but {header} is absent — the "
+        "declared source of truth does not exist in this repo. Either land the "
+        "header and generator, or state the real provenance."
     )
-    assert proc.returncode == 0, (
-        "_schema.py is stale vs run_archive_schema.hpp (rerun "
-        f"gen_runarchive_schema.py):\nstdout: {proc.stdout}\nstderr: {proc.stderr}"
+    assert "Regenerate:" not in doc, (
+        f"_schema.py advertises a regeneration path, but {generator} is absent."
     )
+    # And the provenance it DOES state must be the honest one: the module has to
+    # say, in words, that the C++ writer's header is not in this repository.
+    flat = " ".join(doc.split())
+    assert "does not exist in this repo" in flat or (
+        "Neither file exists in this repository" in flat
+    ), "_schema.py must record that its C++ source of truth is out-of-tree"
+
+
+def test_gross_vega_unit_collision_is_documented():
+    """FIX-5/I5 — ``gross_vega`` carries the SAME name over two units 100x apart
+    plus a gross/net flip, and the registry's unit annotation is blank exactly
+    where it matters:
+
+      trade_schedule / projected_schedule -> 'usd_per_volpt', produced by
+        listed_dispersion_schedule.cpp:310,360 (sum of |achieved leg vega| per
+        VOL POINT — genuinely gross);
+      backtest / projected_cold / projected_nodiv -> '', produced by
+        backtest.cpp:1603,1862 (`out.gross_vega.push_back(g.vega)` — the pricer's
+        dP/dsigma per UNIT vol, and per 2a7321c the NET book figure).
+
+    The units cannot be corrected in ``SECTIONS`` without moving
+    ``RA_SCHEMA_HASH`` — ``ra_schema_hash`` folds the unit string of every
+    column, so relabelling would reject every existing ``.atxrun`` at open. The
+    semantics therefore live in the non-hashed ``COLUMN_NOTES``, and this test
+    pins that they are recorded for every blank-unit ``gross_vega`` entry AND
+    that recording them did not perturb the format identity."""
+    blank = []
+    labelled = []
+    for section, _kind, cols in _schema.SECTIONS:
+        for cname, _dtype, unit in cols:
+            if cname != "gross_vega":
+                continue
+            (blank if unit == "" else labelled).append((section, unit))
+
+    # The collision is real and still present (this test is not vacuous).
+    assert [s for s, _ in blank] == ["backtest", "projected_cold", "projected_nodiv"]
+    assert labelled == [
+        ("trade_schedule", "usd_per_volpt"),
+        ("projected_schedule", "usd_per_volpt"),
+    ]
+
+    # Every blank one is documented, and says both the unit and the gross/net flip.
+    for section, _unit in blank:
+        note = _schema.column_note(section, "gross_vega")
+        assert "usd_per_unitvol" in note, section
+        assert "NET" in note, section
+    # The labelled ones are documented as gross, so the two are distinguishable.
+    for section, _unit in labelled:
+        note = _schema.column_note(section, "gross_vega")
+        assert "usd_per_volpt" in note and "GROSS" in note, section
+
+    # COLUMN_NOTES is documentation, NOT format identity: adding it must not have
+    # moved the hash the reader pins archives against.
+    assert _schema.RA_SCHEMA_HASH == GOLDEN_SCHEMA_HASH
 
 
 # ── reader hardening: forged descriptors, version gate, close(), utf-8 ───────

@@ -231,7 +231,12 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
             ("Target DTE", f"{num('target_dte_days', 30):.0f}d "
                            f"({num('min_dte_days', 21):.0f}–{num('max_dte_days', 60):.0f})"),
             ("Roll", f"{num('roll_dte_days', 7):.0f}d to expiry"),
-            ("Index vega", _money(num("gross_index_vega", 10000))),
+            # FIX-5/M6, mirroring FIX-E M-11 on tools/spy_dispersion_tearsheet_report.py:176:
+            # `gross_index_vega` is dollars per ONE VOL POINT after E1/AN-P1-1 rescaled it
+            # by 100x. Printing it bare invites reading it as dollars per unit vol — which
+            # is exactly what it meant on this route BEFORE E1, so the ambiguity is a live
+            # 100x. E1 landed after this renderer was written and could not reach it.
+            ("Index vega", f"{_money(num('gross_index_vega', 10000))}/vol pt"),
             ("Delta band", f"{num('delta_band', 0):.0f}"),
         ),
         colophon=(
