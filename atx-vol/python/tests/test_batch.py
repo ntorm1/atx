@@ -104,6 +104,34 @@ def test_american_price_batch_rejects_a_shape_error():
         av.american_price_batch(spot, strike[:4], t, sigma, r, q, side)
 
 
+@pytest.mark.parametrize("bad", [77, -1, 2, -2], ids=["77", "minus1", "2", "minus2"])
+def test_american_batch_rejects_an_unrecognised_side_code(bad):
+    # I2 (rev-ws-y): the decode used to test only for Put, so EVERY other code
+    # became a Call. `-1` is a common "put" spelling in external chain data, so a
+    # user importing a book got every leg priced as a call with STATUS_OK and no
+    # diagnostic. Reject it, with a code a caller can dispatch on.
+    spot, strike, t, sigma, r, q, _ = _book(8)
+    side = np.full(len(strike), bad, dtype=np.int32)
+    with pytest.raises(av.AtxError) as excinfo:
+        av.american_price_batch(spot, strike, t, sigma, r, q, side)
+    assert excinfo.value.code == av.ErrorCode.INVALID_ARGUMENT
+
+    with pytest.raises(av.AtxError):
+        av.american_greeks_batch(spot, strike, t, sigma, r, q, side)
+
+
+def test_american_batch_rejects_a_float_side_column():
+    # `forcecast` truncates a float column to int32 before the decoder sees it.
+    # A float `-1` put convention therefore arrives as -1 and is rejected. The
+    # residue is documented, not fixed: a float that truncates onto a VALID code
+    # (0.5 -> 0) is indistinguishable from CALL by value, so `side` should be an
+    # integer dtype (see `sides.hpp`).
+    spot, strike, t, sigma, r, q, _ = _book(8)
+    with pytest.raises(av.AtxError):
+        av.american_price_batch(spot, strike, t, sigma, r, q,
+                                np.full(len(strike), -1.5))
+
+
 def test_american_greeks_batch_matches_the_scalar_fd_loop():
     spot, strike, t, sigma, r, q, side = _book(32)
     got = av.american_greeks_batch(spot, strike, t, sigma, r, q, side,
@@ -209,6 +237,14 @@ def test_priced_surface_grid_nans_a_failing_point_instead_of_raising(priced):
     assert math.isnan(got["fair_value"][2])
     assert int(got["status"][2]) != av.STATUS_OK
     assert all(int(got["status"][i]) == av.STATUS_OK for i in range(len(k)) if i != 2)
+
+
+def test_priced_surface_grid_rejects_an_unrecognised_side_code(priced):
+    # Third copy of the same decode (I2). Same rule, same coded error.
+    k, t, side = _grid_points(priced)
+    with pytest.raises(av.AtxError) as excinfo:
+        priced.grid(k, t, np.full(len(k), -1, dtype=np.int32))
+    assert excinfo.value.code == av.ErrorCode.INVALID_ARGUMENT
 
 
 def test_priced_surface_grid_rejects_a_shape_error(priced):

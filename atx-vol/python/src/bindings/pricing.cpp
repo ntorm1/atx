@@ -22,6 +22,7 @@
 #include "atx/vol/types.hpp"
 #include "batch_status.hpp"
 #include "result.hpp"
+#include "sides.hpp"
 
 namespace py = pybind11;
 using namespace atx::vol;
@@ -135,7 +136,9 @@ std::vector<Side> as_sides(const IntArray &array, std::size_t expected) {
   std::vector<Side> out(expected);
   const auto *data = array.data();
   for (std::size_t i = 0; i < expected; ++i) {
-    out[i] = data[i] == static_cast<std::int32_t>(Side::Put) ? Side::Put : Side::Call;
+    // One shared decoder (I2): an unrecognised code is rejected, never folded
+    // onto Call. See sides.hpp.
+    out[i] = atxvol::python::decode_side(data[i], i);
   }
   return out;
 }

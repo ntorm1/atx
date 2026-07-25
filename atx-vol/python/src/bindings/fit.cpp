@@ -50,6 +50,7 @@
 #include "atx/vol/types.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "result.hpp"
+#include "sides.hpp"
 
 namespace py = pybind11;
 using namespace atx::vol;
@@ -162,7 +163,10 @@ QuoteFrame frame_from_arrays(std::string uid, std::string snapshot_iso, double s
     row.uid = uid;
     row.expiry_iso = expiry_iso[i];
     row.strike = strike[i];
-    row.side = sides[i] == static_cast<std::int32_t>(Side::Put) ? Side::Put : Side::Call;
+    // One shared decoder (I2). Rejecting here matters most: a board imported
+    // with a +1/-1 convention would otherwise be INSTALLED with every leg as a
+    // call, and every number downstream would be silently wrong.
+    row.side = atxvol::python::decode_side(sides[i], i);
     row.bid = bid[i];
     row.ask = ask[i];
     row.bid_size = 1;

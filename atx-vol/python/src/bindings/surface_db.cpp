@@ -34,6 +34,7 @@
 #include "atx/vol/vol_surface.hpp"
 #include "batch_status.hpp"
 #include "result.hpp"
+#include "sides.hpp"
 
 namespace py = pybind11;
 using namespace atx::vol;
@@ -106,7 +107,16 @@ py::dict priced_surface_grid(const PricedSurface &self, const DoubleArray &k_arr
   py::array_t<double> iv(n), w(n), value(n), delta(n), gamma(n), vega(n), theta(n), rho(n),
       vanna(n), volga(n), charm(n);
   py::array_t<std::int32_t> status(n);
-  const auto *sides = side_array.data();
+  // Decoded up front, with the GIL still held and before a single point is
+  // priced: one shared decoder (I2, `sides.hpp`), and an unrecognised code is a
+  // rejected CALL rather than a half-written grid.
+  std::vector<Side> sides(k.size());
+  {
+    const auto *codes = side_array.data();
+    for (std::size_t i = 0; i < k.size(); ++i) {
+      sides[i] = atxvol::python::decode_side(codes[i], i);
+    }
+  }
   {
     py::gil_scoped_release release;
     auto *iv_p = iv.mutable_data();
@@ -123,8 +133,7 @@ py::dict priced_surface_grid(const PricedSurface &self, const DoubleArray &k_arr
     auto *status_p = status.mutable_data();
     constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
     for (std::size_t i = 0; i < k.size(); ++i) {
-      const Side side =
-          sides[i] == static_cast<std::int32_t>(Side::Put) ? Side::Put : Side::Call;
+      const Side side = sides[i];
       iv_p[i] = self.iv(k[i], t[i]);
       w_p[i] = self.total_variance(k[i], t[i]);
       status_p[i] = atxvol::python::kStatusOk;

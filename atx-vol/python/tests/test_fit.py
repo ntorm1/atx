@@ -145,6 +145,27 @@ def test_quote_frame_from_arrays_builds_a_fittable_chain():
     assert chain.spot == pytest.approx(spot)
 
 
+def test_quote_frame_from_arrays_rejects_an_unrecognised_side_code():
+    # I2 (rev-ws-y), the ingestion copy of the same decode. This one is the worst
+    # of the three: a whole board imported with the +1/-1 convention would be
+    # INSTALLED with every leg as a call, and every number downstream — fit,
+    # value_chain, the priced surface — would be silently wrong.
+    n = 6
+    with pytest.raises(av.AtxError) as excinfo:
+        av.QuoteFrame.from_arrays(
+            uid="TEST",
+            snapshot_iso="2026-06-19",
+            spot=100.0,
+            rate=0.03,
+            expiry_iso=["2026-09-18"] * n,
+            strike=np.linspace(90.0, 110.0, n),
+            side=np.full(n, -1, dtype=np.int32),
+            bid=np.full(n, 1.0),
+            ask=np.full(n, 1.1),
+        )
+    assert excinfo.value.code == av.ErrorCode.INVALID_ARGUMENT
+
+
 def test_option_chain_update_quotes_is_visible_in_the_snapshot(panel):
     chain = av.OptionChain.from_frame(panel.frame, panel.env)
     ids = chain.ids()[:4]
