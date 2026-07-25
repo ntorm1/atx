@@ -27,6 +27,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -283,6 +284,39 @@ void expect_sheet_bit_identical(const TearSheet &a, const TearSheet &b) {
   return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
+// `spy_dispersion_pnl.cpp:56-60`'s `fmt_num`, verbatim — the rendering that
+// reaches the artifact's meta prelude.
+[[nodiscard]] std::string fmt_num_10g(double v) {
+  char buf[64];
+  std::snprintf(buf, sizeof buf, "%.10g", v);
+  return buf;
+}
+
+// The 11 result/tearsheet-derived meta keys `spy_dispersion_pnl.cpp:502,515-524`
+// inlines into `pnl_track.tsv`, in the driver's order. The two further derived
+// keys it embeds — `wall_clock_ms` and `steps_per_s` (`:525-526`) — are omitted
+// here for the same reason T2's golden filters them: they are wall-clock and
+// cannot be equal across two runs. The other 30 `Meta` keys are identity/config
+// strings that do not touch the seam.
+[[nodiscard]] std::vector<std::pair<std::string, std::string>>
+pnl_meta_block(const BacktestResult &r, const TearSheet &ts) {
+  const double peak_lots =
+      r.size() ? *std::max_element(r.n_open_lots.begin(), r.n_open_lots.end()) : 0.0;
+  return {
+      {"n_steps", std::to_string(r.size())},
+      {"total_return", fmt_num_10g(ts.total_return)},
+      {"ann_return", fmt_num_10g(ts.ann_return)},
+      {"ann_vol", fmt_num_10g(ts.ann_vol)},
+      {"sharpe", fmt_num_10g(ts.sharpe)},
+      {"max_drawdown", fmt_num_10g(ts.max_drawdown)},
+      {"hit_rate", fmt_num_10g(ts.hit_rate)},
+      {"avg_gross_vega", fmt_num_10g(ts.avg_gross_vega)},
+      {"avg_gross_gamma", fmt_num_10g(ts.avg_gross_gamma)},
+      {"return_on_gross_vega", fmt_num_10g(ts.return_on_gross_vega)},
+      {"peak_open_lots", fmt_num_10g(peak_lots)},
+  };
+}
+
 void expect_cache_stats_equal(const SnapshotCacheStats &a, const SnapshotCacheStats &b) {
   // SnapshotCacheStats has no operator== (backtest.hpp) — compare all 8 fields.
   EXPECT_EQ(a.loads, b.loads);
@@ -466,4 +500,77 @@ TEST(BacktestDriver, RunTimedDispersion_SignalsSurviveTheSeam) {
   EXPECT_TRUE(direct_bytes == seam_bytes) << "run_timed's result serialises to different bytes";
   std::printf("[backtest_driver] emitted TSV: %zu bytes identical both routes, %zu signal col(s)\n",
               direct_bytes.size(), outcome->result.signals.size());
+}
+
+// ── 7. Wave C T5: the PnL-track artifact — meta prelude AND series — is
+//      byte-identical through the seam. `examples/spy_dispersion_pnl.cpp`
+//      INLINES its headline metrics into the artifact's `# key=value` prelude at
+//      `%.10g` (design §6/I7's "keep BOTH conventions": mag7 writes a separate
+//      metrics file, this driver does not) and emits the whole thing with
+//      `write_backtest_pnl_tsv` — an emitter with no other C++ test in the tree;
+//      only Python reads it. So this gate runs the driver's own composition,
+//      spine outcome -> `%.10g` meta -> emitted bytes, from BOTH routes.
+//
+//      RESCOPED from the plan's `RunTimed_SheetFieldsAreBitEqualUnderFmtNum` as
+//      specified (snprintf `outcome.sheet` and `tearsheet(outcome.result)` and
+//      compare the strings), which is strictly IMPLIED by test 2 above: `%.10g`
+//      of two bit-equal doubles is equal by construction, so it could not fail
+//      unless test 2 failed first. What is genuinely uncovered is the
+//      composition — which is what T2's filtered golden `CC90B900A7116CC3` is a
+//      hash of.
+//
+//      RESOLUTION LIMIT (measured, and it corrects the task text): `%.10g`
+//      ABSORBS a 1-ULP tearsheet difference —
+//      `nextafter(387.1141627)` renders byte-identically — so `pnl_track.tsv`'s
+//      meta prelude cannot witness a 1-ULP sheet change. The ULP-level guarantee
+//      comes from test 2's bit comparison, not from this artifact (the `%.17g`
+//      series body carries no tearsheet value). A relative 1e-9 nudge of
+//      `outcome->sheet.total_return` DOES move the emitted bytes and was run as
+//      this gate's negative control: `direct_bytes == seam_bytes` failed at
+//      equal length (4895 both sides), i.e. the assertion, not the size
+//      precheck, is what catches it.
+TEST(BacktestDriver, RunTimed_SheetFieldsAreBitEqualUnderFmtNum) {
+  const fs::path dir = fresh_dir("pnl-meta");
+  const CorpusManifest manifest = single_name_corpus(dir, "SPY", 12);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const StrategySpec spec = worked_example_a_spec();
+  DeclarativeStrategy s1{spec};
+  DeclarativeStrategy s2{spec};
+  RunConfig cfg;
+  cfg.price.n_threads = 1;
+
+  auto baseline = run_backtest(*clock, s1, cfg); // the engine, called directly
+  auto outcome = run_timed(*clock, s2, cfg);     // the same engine, through the spine
+  ASSERT_TRUE(baseline.has_value()) << baseline.error().to_string();
+  ASSERT_TRUE(outcome.has_value()) << outcome.error().to_string();
+  EXPECT_TRUE(sheet_is_nondegenerate(outcome->sheet))
+      << "an all-zero sheet would make this comparison vacuous";
+
+  const auto meta_direct = pnl_meta_block(*baseline, tearsheet(*baseline));
+  const auto meta_seam = pnl_meta_block(outcome->result, outcome->sheet);
+
+  const std::string direct_path = (dir / "route_direct_pnl.tsv").string();
+  const std::string seam_path = (dir / "route_run_timed_pnl.tsv").string();
+  const Status st_direct = write_backtest_pnl_tsv(*baseline, meta_direct, direct_path);
+  const Status st_seam = write_backtest_pnl_tsv(outcome->result, meta_seam, seam_path);
+  ASSERT_TRUE(st_direct.has_value()) << st_direct.error().to_string();
+  ASSERT_TRUE(st_seam.has_value()) << st_seam.error().to_string();
+
+  const std::string direct_bytes = read_file_bytes(direct_path);
+  const std::string seam_bytes = read_file_bytes(seam_path);
+  ASSERT_GT(direct_bytes.size(), 0u);
+  // Anti-vacuity: every key must really be in the prelude with its rendered
+  // value, else two files that both dropped the same key compare "identical".
+  for (const auto &kv : meta_direct) {
+    EXPECT_NE(direct_bytes.find("# " + kv.first + "=" + kv.second + "\n"), std::string::npos)
+        << "meta key missing from the emitted prelude: " << kv.first;
+  }
+  ASSERT_EQ(direct_bytes.size(), seam_bytes.size()) << "emitted PnL-track lengths differ";
+  EXPECT_TRUE(direct_bytes == seam_bytes) << "the seam moved the PnL-track bytes";
+  std::printf("[backtest_driver] pnl_track: %zu bytes identical both routes, %zu meta key(s), "
+              "total_return=%s peak_open_lots=%s\n",
+              direct_bytes.size(), meta_seam.size(), meta_seam[1].second.c_str(),
+              meta_seam.back().second.c_str());
 }
