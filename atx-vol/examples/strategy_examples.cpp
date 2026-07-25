@@ -22,7 +22,8 @@
 #include <vector>
 
 #include "atx/vol/american.hpp"         // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest.hpp"         // Clock, run_backtest, RunConfig
+#include "atx/vol/backtest.hpp"         // Clock, RunConfig
+#include "atx/vol/backtest_driver.hpp"  // run_timed (timed engine + tearsheet + stats spine)
 #include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"         // DeclarativeStrategy, StrategySpec
@@ -158,20 +159,20 @@ int run_example_a(const fs::path& base) {
   spec.hedge = HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 0.0};
   DeclarativeStrategy strat{spec};
 
-  auto res = run_backtest(*clock, strat);
-  if (!res) {
-    std::fprintf(stderr, "run A: %s\n", res.error().to_string().c_str());
+  // Spine (5+6+7); `outcome->stats` DISCARDED in both examples — stdout must not move.
+  auto outcome = run_timed(*clock, strat);
+  if (!outcome) {
+    std::fprintf(stderr, "run A: %s\n", outcome.error().to_string().c_str());
     return 1;
   }
-  const TearSheet t = tearsheet(*res);
-  print_headline("Example A", t);
+  print_headline("Example A", outcome->sheet);
   const std::string tsv = (dir / "example_a.tsv").string();
-  const Status st = write_backtest_tsv(*res, tsv);
+  const Status st = write_backtest_tsv(outcome->result, tsv);
   if (!st) {
     std::fprintf(stderr, "tsv A: %s\n", st.error().to_string().c_str());
     return 1;
   }
-  std::printf("[Example A] wrote %s (%zu rows)\n", tsv.c_str(), res->size());
+  std::printf("[Example A] wrote %s (%zu rows)\n", tsv.c_str(), outcome->result.size());
   return 0;
 }
 
@@ -219,20 +220,19 @@ int run_example_b(const fs::path& base) {
   spec.hedge = HedgeSpec{HedgeSpec::Kind::None, HedgeSpec::Cadence::Daily, 0.0};
   DeclarativeStrategy strat{spec};
 
-  auto res = run_backtest(*clock, strat);
-  if (!res) {
-    std::fprintf(stderr, "run B: %s\n", res.error().to_string().c_str());
+  auto outcome = run_timed(*clock, strat);
+  if (!outcome) {
+    std::fprintf(stderr, "run B: %s\n", outcome.error().to_string().c_str());
     return 1;
   }
-  const TearSheet t = tearsheet(*res);
-  print_headline("Example B", t);
+  print_headline("Example B", outcome->sheet);
   const std::string tsv = (dir / "example_b.tsv").string();
-  const Status st = write_backtest_tsv(*res, tsv);
+  const Status st = write_backtest_tsv(outcome->result, tsv);
   if (!st) {
     std::fprintf(stderr, "tsv B: %s\n", st.error().to_string().c_str());
     return 1;
   }
-  std::printf("[Example B] wrote %s (%zu rows)\n", tsv.c_str(), res->size());
+  std::printf("[Example B] wrote %s (%zu rows)\n", tsv.c_str(), outcome->result.size());
   return 0;
 }
 

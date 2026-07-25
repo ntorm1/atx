@@ -32,6 +32,9 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <ios>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <utility>
@@ -273,6 +276,13 @@ void expect_sheet_bit_identical(const TearSheet &a, const TearSheet &b) {
   return any;
 }
 
+// Whole-file bytes, opened binary so nothing normalises line endings.
+[[nodiscard]] std::string read_file_bytes(const std::string &path) {
+  std::ifstream in(path, std::ios::binary);
+  EXPECT_TRUE(in.good()) << path;
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
 void expect_cache_stats_equal(const SnapshotCacheStats &a, const SnapshotCacheStats &b) {
   // SnapshotCacheStats has no operator== (backtest.hpp) — compare all 8 fields.
   EXPECT_EQ(a.loads, b.loads);
@@ -408,4 +418,52 @@ TEST(BacktestDriver, RunTimedDispersion_ResultIsBitIdenticalToRunDispersionBackt
   std::printf("[backtest_driver] dispersion: %zu rows, %zu signal(s), first='%s'\n",
               outcome->result.size(), outcome->result.signals.size(),
               outcome->result.signals.front().first.c_str());
+}
+
+// ── 6. Wave C T3: the signals survive the seam all the way into the EMITTED
+//      BYTES. `examples/dispersion_backtest.cpp` writes its golden artifact with
+//      `write_backtest_tsv`, which appends one column per signal in
+//      `r.signals` order — so a dropped, reordered or stale signal moves
+//      `dispersion.tsv`. Test 5 above compares the in-memory doubles; this one
+//      compares what actually reaches the file, which is what the T2 whole-file
+//      golden `87DA84887A2793AE` is a hash of. Deliberately NOT a restatement:
+//      it is the only gate here that runs the driver's serializer.
+TEST(BacktestDriver, RunTimedDispersion_SignalsSurviveTheSeam) {
+  const fs::path dir = fresh_dir("signals-tsv");
+  const CorpusManifest manifest = dispersion_corpus(dir);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  DispersionBacktestConfig config; // the driver's config, verbatim
+  config.min_names = 2u;
+  config.record_diagnostics = true;
+  config.run.price.n_threads = 1;
+
+  auto baseline = run_dispersion_backtest(*clock, dispersion_universe(), config);
+  auto outcome = run_timed(*clock, dispersion_universe(), config);
+  ASSERT_TRUE(baseline.has_value()) << baseline.error().to_string();
+  ASSERT_TRUE(outcome.has_value()) << outcome.error().to_string();
+  ASSERT_FALSE(outcome->result.signals.empty())
+      << "no signals => this gate cannot see a signal regression";
+
+  const std::string direct_path = (dir / "route_direct.tsv").string();
+  const std::string seam_path = (dir / "route_run_timed.tsv").string();
+  const Status st_direct = write_backtest_tsv(*baseline, direct_path);
+  const Status st_seam = write_backtest_tsv(outcome->result, seam_path);
+  ASSERT_TRUE(st_direct.has_value()) << st_direct.error().to_string();
+  ASSERT_TRUE(st_seam.has_value()) << st_seam.error().to_string();
+
+  const std::string direct_bytes = read_file_bytes(direct_path);
+  const std::string seam_bytes = read_file_bytes(seam_path);
+  ASSERT_GT(direct_bytes.size(), 0u);
+  // Each signal must be a real column in the header, else "identical" would be
+  // two files that both lost the same signal.
+  const std::string header = direct_bytes.substr(0, direct_bytes.find('\n'));
+  for (const auto &sig : outcome->result.signals) {
+    EXPECT_NE(header.find(sig.first), std::string::npos) << "signal column: " << sig.first;
+  }
+  ASSERT_EQ(direct_bytes.size(), seam_bytes.size()) << "emitted TSV lengths differ";
+  EXPECT_TRUE(direct_bytes == seam_bytes) << "run_timed's result serialises to different bytes";
+  std::printf("[backtest_driver] emitted TSV: %zu bytes identical both routes, %zu signal col(s)\n",
+              direct_bytes.size(), outcome->result.signals.size());
 }
