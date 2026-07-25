@@ -87,10 +87,11 @@ live hypothesis because the test opens its library under `tmpdir(...)`.
    at `-j 4` across all 19 test targets died in a clang crash with no code error, and a retry
    completed at exit 0 — consistent with the RAM ceiling in §6 rather than with any defect.
    What is missing is the test run, not the build.
-2. **The deferred benches were never run**, so criterion 7 is unmet: corpus fan-out worker
-   utilization ≥ 14/16, B7's baseline JSON, G4's A/B, A5/A6/A7's solve-count half. Every
-   throughput number produced during this sprint was measured on a contended box and **none is
-   citable.** This is the largest remaining gap and it needs a genuinely quiet window.
+2. ~~**The deferred benches were never run**~~ — **partly closed by the BENCH pass, see §9.**
+   The utilization row, A7's solve-count half, A5's routing evidence and G4's policy half are
+   now measured; **B7's baseline JSON, G4's A/B row and A5/A6's timing halves remain unmeasured**
+   because the box was never quiet long enough. Every throughput number produced *before* the
+   BENCH pass was measured on a contended box and **none of those is citable.**
 3. **Carried open with reasons**, from FIX-5: WS-F minors M9, M10, and the third part of M11.
 4. **FIX-3's coverage loss stands**: closing the poisoned-seed mint on both routes left the
    staging finite-sweep unreachable through the public API, because `FullGreekSeed`'s
@@ -170,17 +171,111 @@ the tip before measuring. Had it not been, the pins would have encoded the wrong
 | 4 | Backtest artifacts carry a mandatory friction regime end-to-end | **Met** |
 | 5 | Canonical risk frame exposes bucketed vega + dP/dq | **Met** |
 | 6 | Python fits a surface from quotes, batch-prices with NaN+status | **Met** — and now actually gated |
-| 7 | Fitting bench re-pointed; corpus worker utilization ≥ 14/16 or a written explanation | **NOT met** — bench re-pointed, utilization never measured on a quiet box (§4.2) |
+| 7 | Fitting bench re-pointed; corpus worker utilization ≥ 14/16 or a written explanation | **Met via the written-explanation clause (§9).** Re-point verified in code, not on assertion. Utilization **measured: 13.30/16** (5 reps, spread 13.17–13.56), target 14/16 **missed by 0.70 cores**, with the mechanism identified and evidenced. The clause is satisfied; the ≥14/16 threshold itself is not, and B7's baseline JSON is still outstanding |
 | 8 | No stale contract docs | **Met** — 13 prose sites carrying a stale `final_nav` were found and corrected, two of them in shipped headers |
 
 ## 8. Next steps, in order
 
 1. Finish the whole-repo serial gate on `99d10c0`, full label, `-j 1`. Expect the two
    pre-existing engine failures and nothing else.
-2. Quiet-window bench run for criterion 7 and the other deferred rows.
+2. ~~Quiet-window bench run for criterion 7 and the other deferred rows.~~ Done for the rows
+   §9 lists as measured. Still owed, and **only** on a box with no other session on it:
+   B7's `i7-1260p-clang18-avx2-fitting.json`, G4's A/B row, A5/A6's timing halves.
 3. Decide M9, M10, M11-part-3.
 4. Append the sprint report to the plan; delete `scratch-m2/` (~260 MB) and trim the remaining
    worktree build directories.
 5. The merge to `main` is the user's call. This trunk is verified to be internally consistent,
    independently reviewed end to end, and free of regressions attributable to the sprint across
    the whole repo — with the one gap in §4.1 stated plainly.
+
+## 9. BENCH pass — the deferred perf rows, measured (2026-07-25)
+
+Binaries: `build-rel-avx2` **rebuilt from `0be71e7`** (the tip at the time), clang-cl 18,
+`/arch:AVX2`, `-DATX_BUILD_BENCH=ON -DATX_VOL_COUNTERS=ON -DATX_VOL_PROFILE=ON`. The dir was
+found four days stale (7/21) **and** configured `ATX_VOL_COUNTERS=OFF ATX_VOL_PROFILE=OFF
+ATX_BUILD_BENCH=OFF` — i.e. the Google Benchmark targets did not exist in it at all — so every
+number below comes from a fresh build, not the stale tree.
+
+**Box conditions, stated because they decide citability.** The box was NOT exclusively
+available: another Claude session ran repeated `ctest` sweeps (`atx-db-tests`,
+`atx-core-tests`, `atx-vol-tests`, `atx-engine-*`) across the entire window, at times two
+`ctest` processes at once. Host: 16 logical cores (4 P + SMT, 8 E), 15.7 GB RAM, 4.9–7.7 GB
+free. Rows were therefore split by whether their quantity is contention-immune.
+
+| row | quantity | measured | spread (n) | target | verdict |
+|---|---|---|---|---|---|
+| **T1** | mean busy cores over the fit fan-out, 11-name × 20 sessions = 220 boards | **13.30 / 16** | 13.17–13.56 (5) | ≥ 14/16 | **missed by 0.70**, mechanism below |
+| **A7** | `sl_al_boundary_solves` per scenario grid | **896** | **0** (3) | count drop | **drop = 0** — warm-start never landed |
+| **A5** | `cnt_american_avx_pack_dispatches` in the cache build | **0** | 0 (3×2) | ≥ 2× time | **not landed**; timing not run |
+| **A6** | — | — | — | ≥ 8% | **not landed**; named gate row does not exist |
+| **G4** | policy: which route does `Auto` take | **laned AVX2, live** | — | measured decision | policy half **closed**; A/B row not run |
+| **B7** | re-point verified in code | **verified** | — | baseline JSON | re-point **confirmed**; **JSON not produced** |
+
+### T1 — the headline, and why it falls short
+
+The restructure works and the number proves it. Forcing the pre-B1 shape with
+`ATX_VOL_CORPUS_DATE_BATCH=1` (one fan-out per date, 20 drains) reproduces **10.06 / 10.26 /
+10.29** — the plan's cited ~9/16 starting point, on the same binary and box. Shipped batching
+(`date_batch=8`, 4 fan-out calls) gives **13.30**. The spreads do not overlap: **+3.0 cores,
++30%, demonstrated.**
+
+The residual 2.7 cores are **not pool drain**, and that is measured rather than assumed.
+`ATX_VOL_CORPUS_DATE_BATCH=20` removes 90% of the remaining drains (20 → 2 fan-out calls,
+`reclaimed` 159 → 16) and yields 13.27 / 13.50 / **13.91** — a median move of +0.20 inside a
+0.64 spread. A spread that swallows its own effect has not demonstrated it, so that lever is
+spent and the idle time lives *inside* the fan-out.
+
+It is **per-board scaling loss**. At `fit_workers=8` the fan-out reaches 7.78 of a budget of 8
+on the least-contended rep — **97% of budget** — against 13.17/16 = **82%** at full width. The
+scheduler fills a 16-wide pool correctly; the work does not scale linearly to 16 threads on a
+host whose upper 8 logical CPUs are SMT siblings and E-cores and cannot each return a full core.
+Reaching 14/16 = 87.5% of budget is a per-board scaling problem, not a fan-out scheduling one.
+
+Phase-split log (criterion 7's named artifact), shipped default:
+```
+PHASE ingest_s=0.24 build_s=33.08 fit_fanout_s=32.40 archive_write_s=0.19 checkpoint_s=0.09
+      other_s=0.41 fanout_calls=4 boards=220 date_batch=8 reclaimed=31 inner_slots=5320
+```
+The fan-out is 98% of build time, so the occupancy figure is not being diluted by serial phases.
+
+**On the two coexisting reclaim mechanisms (§4.5):** the utilization shortfall is not evidence
+against them. `reclaimed` falls 159 → 32 → 16 as batching widens, i.e. the elastic budget fires
+mostly in tails that batching has already removed — consistent with the reviewer's finding that
+they cannot compound.
+
+### What is NOT measured, and why that is the honest answer
+
+**B7's baseline JSON is not committed.** The re-point itself is verified in code rather than on
+WS-B's word: `fit/facade/hft_mark/spy_synth` calls `PricerFitter::fit`
+(`fitting_throughput_bench.cpp:377`) and emits per-phase counters (`:402-405`); the
+`essvi_calib_surface` row is renamed `fit/surface_cold_altdriver/*` and carries an explicit
+"do NOT gate fit-perf work on it". Two caveats for whoever finishes it:
+- The plan names phases *carry / de-Am / cache / calib / diag* via a `FitTimings` struct. **No
+  such symbol exists.** The shipped struct is `FitPhaseTimings` (`pricer_fitter.hpp:348-358`)
+  and splits by surface *purpose* (market-mark / risk build / risk validation / total). The
+  per-phase requirement is met in form, not in the decomposition the plan names.
+- A baseline recorded on a contended box would be *slow*, and `compare_baseline.py` only gates
+  on ratio > 1.10 with CV ≤ 5%. A slow baseline therefore does not raise a false alarm — it
+  **permanently weakens the gate**, hiding real regressions underneath it. That is why one was
+  not committed rather than committed-with-a-caveat. Record it with the same
+  `ATX_VOL_COUNTERS`/`ATX_VOL_PROFILE` setting used for comparison runs.
+
+**A5 and A6 did not land**, so their targets are not evaluable — there is no change to be 2×
+or 8% faster than. A5's evidence is machine-level, not a source reading:
+`cnt_american_avx_pack_dispatches = 0` on both `correction/cache/build/{put,call}` across 3
+reps, with `sl_al_boundary_solves = 96 = expected_boundary_solves` — the 4-lane pack path is
+never entered and every (T, σ) node row still pays one cold scalar AL solve.
+`boundary_interp.cpp` has not been touched since 2026-07-17, before this sprint. For A6,
+`al_cheb_eval_t` (`american.cpp:526-548`) still computes `w[i]/dz` and accumulates `den` inside
+the loop on every call from `:1010`, and the workspace (`american_boundary.hpp:85-88`) holds
+only `geo_zc/geo_v/geo_weru/geo_wequ` — no `geo_bary`/`geo_den`, so the specified ~28 KB
+workspace growth is absent. Separately, **A6's gate names a bench row that does not exist**: no
+registered benchmark name in `atx-vol/bench/*.cpp` contains "sweep". The nearest real rows are
+`american/ladder/*` (which does emit `n_sweeps`) and `american/price/*`. That gate cannot be
+evaluated as written and needs re-specifying.
+
+**G4's A/B row was not run**, but the policy question it exists to settle needed no stopwatch
+and is closed — see the `[BENCH G4]` commit. `Auto` rides the laned AVX2 greeks
+(`kShipAvx2Greeks = true`, and the surface caller flipped with it at
+`priced_surface.cpp:1111-1134`). README.md:329-341 already stated this correctly; three other
+sites did not and were corrected.
