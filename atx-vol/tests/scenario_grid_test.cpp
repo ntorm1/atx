@@ -775,7 +775,71 @@ namespace {
   return spec;
 }
 
+// A vol ladder whose SPOT axis is entirely inside the Taylor radius. `is_exact` is
+// `|sp| > rad_spot || |dvol| > rad_vol`, so with the only spot shock at 0.0 a column
+// routes Exact iff its own |dvol| exceeds rad_vol: 4 of these 7 columns
+// ({-0.06,-0.04,+0.04,+0.06}) contain an Exact cell and 3 ({-0.02,0.0,+0.02}) contain
+// none at all. A wholly-Taylor column owes NO reprice and therefore no boundary solve
+// — that is what A7-1c pins. This is a legal spec that no other A7 test reaches:
+// `all_exact_spec` sets both radii to 0.0, which forces every cell Exact by
+// construction and hides any per-column waste.
+[[nodiscard]] ScenarioGridSpec taylor_spot_axis_spec(unsigned n_threads = 1) {
+  ScenarioGridSpec spec;
+  spec.spot_pct = {0.0};
+  spec.vol_bump = {-0.06, -0.04, -0.02, 0.0, 0.02, 0.04, 0.06};
+  spec.dr = 5e-4;
+  spec.dt = 3.0 / 365.0;
+  spec.n_threads = n_threads;
+  spec.taylor_radius_spot = 0.01; // |0.0| <= 0.01 => the spot axis never routes Exact
+  spec.taylor_radius_vol = 0.03;  // 4 Exact columns, 3 wholly-Taylor columns
+  return spec;
+}
+
 } // namespace
+
+// ── A7-1c. A wholly-TAYLOR vol column costs ZERO boundary solves. ────────────
+// The reuse arm hoisted the solve to (unique x vol column), but the `is_exact`
+// filter that decides whether the column owes a reprice at all sits INSIDE the spot
+// loop that follows the solve. On a grid whose spot axis is wholly inside the radius,
+// the columns that route pure Taylor still paid one cold boundary solve per put
+// unique — A7's own gate quantity moving the WRONG way, above even the pre-A7
+// per-cell cost (which is `n_exact_cells * n_unique`, and is the ceiling asserted
+// below). Values were never affected; the extra boundary was discarded unread.
+TEST(ScenarioGrid, ExactArmWhollyTaylorVolColumnCostsNoSolve) {
+  const PricedSurface base = make_essvi(1, 5);
+  const SurfaceSet bset = set_of({&base});
+  const std::vector<Position> book = put_only_book();
+  const ScenarioGridSpec spec = taylor_spot_axis_spec();
+
+  const std::size_t n_unique = book.size(); // one position per unique
+  const std::size_t n_spot = spec.spot_pct.size();
+  const std::size_t n_vol = spec.vol_bump.size();
+
+  // Anti-vacuity: the grid must really be mixed — some Exact columns (else there is
+  // no Exact arm to measure) and some wholly-Taylor ones (else this is A7-1 again).
+  auto probe = scenario_grid(book, bset, spec);
+  ASSERT_TRUE(probe.has_value()) << probe.error().to_string();
+  ASSERT_EQ(probe->n_ok, n_unique);
+  ASSERT_EQ(probe->n_exact_fallback_lanes, 0u);
+  std::size_t n_exact_cells = 0;
+  for (const std::uint8_t rv : probe->route) {
+    n_exact_cells += (rv == static_cast<std::uint8_t>(ScenarioRoute::Exact)) ? 1u : 0u;
+  }
+  ASSERT_EQ(n_exact_cells, 4u);
+  ASSERT_EQ(probe->route.size() - n_exact_cells, 3u);
+
+  // One solve per (put unique x EXACT vol column). With a single spot value the
+  // Exact-cell count and the Exact-column count coincide, so this number is also
+  // exactly the pre-A7 per-cell cost: A7 must never exceed it.
+  const std::size_t n_exact_cols = n_exact_cells / n_spot;
+  const std::uint64_t solves = exact_arm_solves(book, bset, spec, n_unique);
+  std::printf("[A7-1c] taylor-spot-axis exact-arm solves = %llu (per-column-blind would be %zu, "
+              "pre-A7 per-cell would be %zu)\n",
+              static_cast<unsigned long long>(solves), n_vol * n_unique,
+              n_exact_cells * n_unique);
+  EXPECT_LE(solves, static_cast<std::uint64_t>(n_exact_cells * n_unique));
+  EXPECT_EQ(solves, static_cast<std::uint64_t>(n_exact_cols * n_unique));
+}
 
 // ── A7-1. A PUT unique pays ONE boundary solve per vol column, not per cell. ──
 TEST(ScenarioGrid, ExactArmPutBoundarySolvesDropToOnePerVolColumn) {

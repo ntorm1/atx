@@ -176,13 +176,22 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
   // every Exact cell (each cell then costs one shocked solve per unique).
   const double rad_spot = spec.taylor_radius_spot;
   const double rad_vol = spec.taylor_radius_vol;
-  bool any_exact = false;
-  for (std::size_t i = 0; i < n_spot && !any_exact; ++i) {
-    any_exact = std::abs(spec.spot_pct[i]) > rad_spot;
-  }
-  for (std::size_t j = 0; j < n_vol && !any_exact; ++j) {
-    any_exact = std::abs(spec.vol_bump[j]) > rad_vol;
-  }
+  // The routing predicate `|sp| > rad_spot || |dvol| > rad_vol` is a DISJUNCTION of
+  // two independent per-axis tests, so it factors: a whole vol column j contains an
+  // Exact cell iff SOME spot leaves the spot radius (which makes every column Exact
+  // somewhere) or that column's OWN bump leaves the vol radius. Keeping the two halves
+  // apart — rather than collapsing them into one `any_exact` flag — is what lets
+  // Phase A skip a column that owes no reprice at all; see the guard there.
+  const auto axis_exceeds = [](const std::vector<double> &axis, double rad) noexcept {
+    for (const double v : axis) {
+      if (std::abs(v) > rad) {
+        return true;
+      }
+    }
+    return false;
+  };
+  const bool spot_axis_exact = axis_exceeds(spec.spot_pct, rad_spot);
+  const bool any_exact = spot_axis_exact || axis_exceeds(spec.vol_bump, rad_vol);
 
   const std::span<const OptionContract> contracts = portfolio.contracts();
   std::vector<UniExact> uni;
@@ -276,9 +285,19 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
   // ScenarioGrid.ExactArmSolveCountIsThreadInvariant). The (unique x column) grain is
   // also wider than the old per-cell grain on any realistic book.
   //
-  // `pprime_all` costs one double per (cell, unique) — i.e. one double per shocked
-  // solve the grid was already going to perform — so it cannot dominate the work it
-  // indexes. Allocated only when routing can actually fire.
+  // `pprime_all` is a DENSE [cell][unique] scratch: `n_cells * n_unique` doubles,
+  // allocated once per call whenever routing can fire at all — NOT one double per
+  // reprice actually performed. Under the default radii most cells route Taylor, and
+  // their rows stay NaN and are never read; the over-allocation is deliberate, because
+  // a dense row stride is what makes a slot address `(i*n_vol + j)*n_unique + u` a pure
+  // function of the task index, and that is exactly what keeps Phase A's writes
+  // disjoint and the matrix bit-identical at any thread count. It replaces the pre-A7
+  // `static thread_local` per-cell scratch (n_threads * n_unique doubles, re-`assign`ed
+  // per cell): the module's allocation-free discipline is about the PER-CELL body,
+  // which is still allocation-free — this is one heap allocation for the whole call. If
+  // a grid ever grows large enough for `n_cells * n_unique` to matter, the fix is a
+  // Taylor-column-compacted row index, not a return to per-worker scratch (which is
+  // what made the solve count depend on the thread partition).
   std::vector<double> pprime_all; // [cell][unique] row-major; NaN => fallback lane
   if (any_exact) {
     pprime_all.assign(n_cells * n_unique, kNaN);
@@ -286,6 +305,17 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
     pricing_executor().run_blocks(n_unique * n_vol, spec.n_threads, [&](std::size_t t) {
       const std::size_t u = t / n_vol;
       const std::size_t j = t % n_vol;
+      // Column filter FIRST, ahead of the solve. `is_exact(sp, vol_bump[j])` is false
+      // for every spot on a column that clears neither radius, so the loop below owes
+      // no reprice and the boundary this task would solve is discarded unread. Without
+      // this guard a grid whose spot axis lies wholly inside its radius (e.g. a pure
+      // vol ladder, spot_pct = {0.0}) pays one cold solve per (put unique x column)
+      // including the Taylor-only ones — A7's own ledger quantity rising ABOVE the
+      // pre-A7 per-cell cost. Pinned by
+      // ScenarioGrid.ExactArmWhollyTaylorVolColumnCostsNoSolve.
+      if (!spot_axis_exact && !(std::abs(vol_bump[j]) > rad_vol)) {
+        return; // wholly-Taylor column: leaves NaN, which Phase B never reads
+      }
       if (uni_ok[u] == 0u) {
         return; // excluded unique; leaves NaN, exactly as the pre-A7 loop did
       }
