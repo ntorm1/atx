@@ -58,6 +58,11 @@ target_link_libraries(atx-core-tests
         atx::core
         GTest::gtest_main
         atx_warnings
+        # FIX-3/F3-B: per-process temp root. databento_test.cpp's atx_db_*_dest and
+        # parquet_writer_test.cpp's atx_pqw_* leaves are fixed names under the
+        # machine-wide temp dir that remove_all on entry, so two concurrent runs of
+        # this binary delete each other's fixtures mid-test. See //tests/CMakeLists.txt.
+        atx-test-scratch
 )
 
 # Threads for the disruptor's multi-threaded tests (std::thread).

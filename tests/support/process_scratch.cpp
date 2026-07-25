@@ -1,23 +1,43 @@
-// FIX-2/F2-A: give every atx-vol test PROCESS its own private temp root.
+// FIX-2/F2-A + FIX-3/F3-B: give every ATX test PROCESS its own private temp root.
 //
-// WHY THIS TU EXISTS AND WHY IT HAS NO HEADER. ~35 fixtures in this suite build a
-// scratch path as `temp_directory_path() / "<fixed name>"`, and most `remove_all()`
-// it on entry (canonical shape: `test_root()` at surface_db_populate_test.cpp:48-53).
+// WHY THIS TU EXISTS AND WHY IT HAS NO HEADER. 124 test files across atx-core (4),
+// atx-vol (29), atx-tsdb (1), atx-engine (48) and atx-impl (42) build a scratch path
+// as `temp_directory_path() / "<fixed name>"`, and most `remove_all()` it on entry.
+// Canonical shapes, one per suite:
+//   atx-vol    `test_root()`  surface_db_populate_test.cpp:48-53  (remove_all on entry)
+//   atx-engine `tmp_dir()`    store/store_db_test.cpp:16-19       (remove_all on entry)
+//   atx-impl   `atx_sweep_*`  sweep_test.cpp:155-162              (remove_all on entry)
+//   atx-tsdb   `atx_dated_*`  load_parquet_test.cpp:98-101        (remove_all on entry)
+//   atx-core   `atx_db_*_dest` databento_test.cpp:49-50           (remove_all on entry)
 // `temp_directory_path()` is machine-wide, so two concurrently running processes of
-// this binary -- the normal case in this sprint, with parallel agents in parallel
+// the same binary -- the normal case in this sprint, with parallel agents in parallel
 // worktrees -- resolve the SAME directory and wipe each other's trees mid-run. That
 // surfaced twice within an hour on two different branches as
 // `IoError: write_surface_archive_v2_file: cannot open temp file` in
 // SurfaceDbPopulate.* and CorpusGeneratedProperty.*, every one of which passes in
-// isolation on the same binary.
+// isolation on the same binary. The uniform `remove_all`-on-entry is why this class is
+// DESTRUCTIVE rather than merely racy: process B entering the fixture deletes process
+// A's tree while A is still writing into it, so the symptom is a filesystem error on a
+// path the test just created, not an assertion.
 //
-// Fixing the ~35 call sites one by one would touch test files owned by half the
+// Fixing the 124 call sites one by one would touch test files owned by half the
 // sprint's workstreams and would leave the NEXT fixed-name fixture free to
 // reintroduce the bug. So the fix is applied once, at the root of the class: before
 // main() runs, this TU creates a directory unique to this process and repoints the
 // process's TMP/TEMP/TMPDIR at it. Every existing and future fixture keeps calling
 // `temp_directory_path()` unchanged and transparently lands inside a per-process
-// sandbox. No fixture, and no CMake wiring beyond linking this file, has to know.
+// sandbox. No fixture, and no CMake wiring beyond linking `atx-test-scratch`, has to
+// know.
+//
+// WHY IT LIVES AT THE REPO ROOT, AND WHY IT IS AN **OBJECT** LIBRARY. F2-A landed it
+// as a plain source file listed in `atx-vol/tests/CMakeLists.txt`. F3-B extends the
+// same mechanism to the other four suites, and an atx-engine / atx-impl test target
+// reaching into atx-vol's test directory would invert the project dependency order --
+// so the TU moved here and is compiled ONCE into the `atx-test-scratch` OBJECT library
+// (tests/CMakeLists.txt), which every test executable links. It must stay an OBJECT
+// library: nothing any test references is defined here, so a static archive's member
+// would be dropped at link time and the namespace-scope initializer below would
+// silently never run -- the isolation would vanish with no diagnostic at all.
 //
 // UNIQUENESS IS SETTLED BY THE FILESYSTEM, NOT BY THE NAME. The candidate name mixes
 // the process id with a hash of this executable's own path (so roots from different
@@ -31,11 +51,15 @@
 // (ctest's PRE_TEST discovery mode) alike -- a unique-but-immortal root would just
 // trade a collision for a disk leak. Reclamation is registered ONLY when we actually
 // created a fresh directory, so the degraded path can never delete the machine-wide
-// temp dir. Set ATX_VOL_KEEP_SCRATCH=1 to keep the tree for post-mortem inspection.
+// temp dir. Set ATX_KEEP_SCRATCH=1 (or the F2-A spelling ATX_VOL_KEEP_SCRATCH=1) to
+// keep the tree for post-mortem inspection.
 //
-// Proven by tests/process_scratch_test.cpp, which launches a real second process of
-// this binary and asserts the two do not share a root, do not wipe each other's
-// fixture trees, and do not leak their roots (including on a failing exit).
+// Proven by atx-vol/tests/process_scratch_test.cpp, which launches a real second
+// process of its binary and asserts the two do not share a root, do not wipe each
+// other's fixture trees, and do not leak their roots (including on a failing exit).
+// That proof is binary-agnostic -- it asserts only properties of THIS mechanism -- so
+// it is not duplicated per suite; F3-B's acceptance instead ran two concurrent
+// processes of a non-atx-vol binary and observed two distinct live roots.
 
 #include <cstdint>
 #include <cstdio>
@@ -50,7 +74,7 @@
 #include <unistd.h>
 #endif
 
-namespace atx::vol::test {
+namespace atx::test {
 namespace {
 
 namespace fs = std::filesystem;
@@ -96,19 +120,28 @@ void set_env_var(const char *name, const std::string &value) {
 #endif
 }
 
-[[nodiscard]] bool keep_scratch_requested() {
+// ATX_KEEP_SCRATCH is the repo-wide spelling; ATX_VOL_KEEP_SCRATCH is F2-A's original
+// and stays honored so an operator's existing muscle memory keeps working.
+[[nodiscard]] bool env_flag_set(const char *name) {
 #ifdef _WIN32
   char buf[16];
-  const DWORD n = ::GetEnvironmentVariableA("ATX_VOL_KEEP_SCRATCH", buf, static_cast<DWORD>(sizeof buf));
+  const DWORD n = ::GetEnvironmentVariableA(name, buf, static_cast<DWORD>(sizeof buf));
   return n > 0 && n < sizeof buf && buf[0] != '0';
 #else
-  const char *v = std::getenv("ATX_VOL_KEEP_SCRATCH");
+  const char *v = std::getenv(name);
   return v != nullptr && v[0] != '\0' && v[0] != '0';
 #endif
 }
 
-// Kept short on purpose: it is prepended to every fixture path in the suite, and
-// Windows still enforces MAX_PATH on the deeper SurfaceDb trees.
+[[nodiscard]] bool keep_scratch_requested() {
+  return env_flag_set("ATX_KEEP_SCRATCH") || env_flag_set("ATX_VOL_KEEP_SCRATCH");
+}
+
+// Kept short on purpose: it is prepended to every fixture path in every suite, and
+// Windows still enforces MAX_PATH on the deeper SurfaceDb trees. The `atxv-` prefix is
+// F2-A's and is deliberately UNCHANGED even though F3-B made the mechanism repo-wide:
+// it is the string an operator greps for when sweeping leftover roots, and renaming it
+// would silently invalidate that instruction for no functional gain.
 [[nodiscard]] std::string scratch_leaf(unsigned long long pid, std::uint64_t image_salt,
                                        unsigned attempt) {
   char buf[64];
