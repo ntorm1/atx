@@ -48,6 +48,17 @@ This includes `DispersionBacktestConfig::gross_index_vega` and the
 Callers that were already feeding the listed route's number now get a book that
 matches it, which is the point.
 
+**Migration also applies to RISK LIMITS, and silently if you skip it.**
+`DispersionRiskLimits::max_gross_vega` / `max_gross_notional` and
+`DispersionRunConfig::capital` (`dispersion_run.cpp`, `strategy.hpp`) are
+compared against a book that is now 100x larger. Following the migration above
+(divide `gross_index_vega` by 100) DOES fix them, because
+`measure_book`/`binding_limit` scale with the book — but a spec that sets a
+limit and is NOT migrated starts CLAMPING or HALTING with no error: the same
+limit value now binds at 1/100th of the intended book size. The failure mode is
+a book that quietly stops trading, not a diagnostic. Migrate the limits with the
+target, or set them to 0 (unlimited) while you do.
+
 **Affected surfaces.** `DispersionConfig::target_vega`,
 `DispersionBacktestConfig::gross_index_vega`, the `gross_index_vega` run-spec
 key, `dispersion_run_surface_backtest`, `dispersion_run_projected_var`, and
