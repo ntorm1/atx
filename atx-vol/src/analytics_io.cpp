@@ -62,6 +62,19 @@ void put_u32(std::string &s, std::uint32_t v) {
   s.append(buf, static_cast<std::size_t>(len > 0 ? len : 0));
 }
 
+// FIX-E M-5 / AN-P2-6: the delta convention the wings were resolved under,
+// written by NAME so the artifact says what "25 delta" meant rather than
+// leaving the reader to guess (or to track down which enumerator `1` was).
+[[nodiscard]] const char *delta_convention_name(DeltaConvention c) noexcept {
+  switch (c) {
+  case DeltaConvention::American:
+    return "American";
+  case DeltaConvention::Forward:
+    return "Forward";
+  }
+  return "Unknown";
+}
+
 // A `%.10g` cell if `j` is in range, else an empty field — deterministic, and
 // guards against reading past a short/absent aligned vector.
 void put_g10_or_empty(std::string &s, const std::vector<double> &v, std::size_t j) {
@@ -116,6 +129,8 @@ Status write_surface_analytics_csv(const SurfaceAnalytics &a, std::string_view p
   }
   out += "\n# backwardation=";
   out += a.backwardation ? '1' : '0';
+  out += "\n# delta_convention=";
+  out += delta_convention_name(a.delta_convention);
   out += "\n# valid=";
   out += a.valid ? '1' : '0';
   out += '\n';
@@ -244,6 +259,8 @@ Status write_surface_diff_csv(const SurfaceDiff &d, std::string_view path) {
   put_g10(out, d.sticky_delta_atm_pred);
   out += "\n# residual_atm_move=";
   put_g10(out, d.residual_atm_move);
+  out += "\n# delta_convention=";
+  out += delta_convention_name(d.delta_convention);
   out += "\n# valid=";
   out += d.valid ? '1' : '0';
   out += '\n';

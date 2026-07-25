@@ -90,8 +90,10 @@
 #include <vector>
 
 #include "atx/vol/event_vol.hpp" // EventSchedule, EmoveSolution (earnings_implied_move_ex)
-#include "atx/vol/projection.hpp" // DeltaConvention (E5 / AN-P2-6, single-sourced)
-#include "atx/vol/types.hpp"      // Side, Result, Status, ErrorCode
+// FIX-E M-9: `DeltaConvention` lives in types.hpp now. This header used to pull
+// the whole projection spine (vol_surface / correction / curve / universe) to
+// name one enum.
+#include "atx/vol/types.hpp" // Side, Result, Status, ErrorCode, DeltaConvention
 
 namespace atx::vol {
 
@@ -276,6 +278,14 @@ struct SurfaceAnalytics {
   double ts_ratio_1m_3m = 0.0; // σ_1m / σ_3m
   bool backwardation = false;  // front in-range ATM > back in-range ATM
   bool valid = false;          // at least one in-range (non-extrapolated) tenor
+  // FIX-E M-5 / AN-P2-6. WHICH delta convention resolved this bundle's wings
+  // (`put_delta_vol` / `call_delta_vol` / `risk_reversal` / `butterfly`) —
+  // copied from the `AnalyticsConfig` that produced it. Without it the emitted
+  // bundle is a set of wing numbers with no statement of what "25 delta" meant,
+  // which is exactly where AN-P2-6's fragmentation actually bites: the knob is
+  // enforced at the API, but the ARTIFACT was unlabelled.
+  // `write_surface_analytics_csv` emits it in the meta header.
+  DeltaConvention delta_convention = DeltaConvention::American;
 };
 
 // ── Two-surface change analytics ────────────────────────────────────────────
@@ -310,6 +320,10 @@ struct SurfaceDiff {
   double sticky_delta_atm_pred = 0.0;  // 0
   double residual_atm_move = 0.0;      // observed Δσ_atm − sticky_strike_atm_pred
   bool valid = false;
+  // FIX-E M-5 / I-1. WHICH delta convention resolved `d_vol_fixed_delta`,
+  // `d_risk_reversal_25` and `d_butterfly_25` — copied from the config, and now
+  // actually HONOURED by `compute_surface_diff` (it used to be ignored here).
+  DeltaConvention delta_convention = DeltaConvention::American;
 };
 
 // ── Primitives (public: composable and unit-testable) ───────────────────────

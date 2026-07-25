@@ -31,11 +31,12 @@
 // wrong, which is the AN-P1-2 defect. `wing_coverage` below decides truncation
 // by comparing the actual span against the vol-scaled requirement.
 //
-// FORWARD INTERPOLATION IS LOG-LINEAR IN F. `forward_log_interp` matches
+// FORWARD INTERPOLATION IS LOG-LINEAR IN F. `forward_log_blend` matches
 // `projection.cpp`'s `curve_forward_T` exactly (linear in log F, clamped
 // outside the pillar range), so a forward read for a var strip and a forward
 // read for a projection agree by construction.
 
+#include <algorithm> // std::max (adaptive_half_width) — was only transitive
 #include <cmath>
 #include <cstddef>
 

@@ -7,14 +7,21 @@
 // algebra checked against hand-computed baskets.
 
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <limits>
+#include <memory>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "atx/vol/american.hpp"  // al_fast_opts, AmericanMethod
 #include "atx/vol/analytics.hpp"
 #include "atx/vol/event_vol.hpp"
 #include "atx/vol/priced_surface.hpp"
+#include "atx/vol/surface_parity.hpp" // SliceContext
+#include "atx/vol/vol_curve.hpp"      // CurveSurface, EssviCurve
+#include "atx/vol/vol_surface.hpp"    // EssviParams
 #include "support/analytics_fixture.hpp"
 
 namespace atx::vol {
@@ -314,6 +321,230 @@ TEST(AnalyticsPrimitives, AggregateHonorsDeltaConventionConfig) {
   }
   EXPECT_TRUE(any_valid) << "fixture produced no comparable tenor";
   EXPECT_TRUE(any_differs) << "the config knob did not reach the wing solve";
+
+  // FIX-E M-5: the bundle RECORDS the convention it was produced under. Without
+  // it the emitted artifact is a set of wing numbers with no statement of what
+  // "25 delta" meant — which is where AN-P2-6's fragmentation actually bites.
+  EXPECT_EQ(a->delta_convention, DeltaConvention::American);
+  EXPECT_EQ(b->delta_convention, DeltaConvention::Forward);
+}
+
+// ── FIX-E I-1: `compute_surface_diff` must honour the same knob ──────────────
+//
+// The diff resolved its four 25Δ wings with the convention-free `vol_at_delta`
+// overload while reading the SAME `cfg` for `skew_k_ref` eight lines later. So
+// one `AnalyticsConfig` produced a B76-forward analytics bundle and an American
+// diff bundle in the same TU, and `d_vol_fixed_delta` / `d_risk_reversal_25` /
+// `d_butterfly_25` are all exported (analytics_io.cpp) — two shipped artifacts
+// disagreeing on convention, which is a fresh instance of exactly the
+// fragmentation AN-P2-6 exists to cure.
+TEST(AnalyticsPrimitives, SurfaceDiffHonorsDeltaConventionConfig) {
+  // Same underlying (uid must match), skewed so the two conventions resolve
+  // genuinely different strikes; `vol_bump` gives the diff something to measure.
+  const PricedSurface a = testkit::make_skewed_surface(5, 100.0, 100.0, testkit::kFixtureNow, 0.0);
+  const PricedSurface b =
+      testkit::make_skewed_surface(5, 102.0, 102.0, testkit::kFixtureNow + testkit::kDayNs, 0.01);
+
+  AnalyticsConfig cfg_am;
+  cfg_am.compute_rnd = false;
+  cfg_am.compute_varswap = false;
+  AnalyticsConfig cfg_b76 = cfg_am;
+  cfg_b76.delta_convention = DeltaConvention::Forward;
+
+  const auto d_am = compute_surface_diff(a, b, cfg_am);
+  const auto d_b76 = compute_surface_diff(a, b, cfg_b76);
+  ASSERT_TRUE(d_am.has_value()) << d_am.error().to_string();
+  ASSERT_TRUE(d_b76.has_value()) << d_b76.error().to_string();
+  ASSERT_EQ(d_am->tenors.size(), d_b76->tenors.size());
+
+  // The recorded provenance (M-5).
+  EXPECT_EQ(d_am->delta_convention, DeltaConvention::American);
+  EXPECT_EQ(d_b76->delta_convention, DeltaConvention::Forward);
+
+  bool any_valid = false;
+  bool any_differs = false;
+  bool fixed_strike_identical = true;
+  for (std::size_t i = 0; i < d_am->tenors.size(); ++i) {
+    const TenorDiff &x = d_am->tenors[i];
+    const TenorDiff &y = d_b76->tenors[i];
+    if (!x.valid || !y.valid) {
+      continue;
+    }
+    if (std::isfinite(x.d_risk_reversal_25) && std::isfinite(y.d_risk_reversal_25) &&
+        std::isfinite(x.d_vol_fixed_delta) && std::isfinite(y.d_vol_fixed_delta)) {
+      any_valid = true;
+      if (x.d_risk_reversal_25 != y.d_risk_reversal_25 ||
+          x.d_vol_fixed_delta != y.d_vol_fixed_delta) {
+        any_differs = true;
+      }
+    }
+    // CONTROL: the non-delta fields are convention-independent, so a difference
+    // there would mean the test is measuring something other than the knob.
+    if (std::isfinite(x.d_vol_fixed_strike) && x.d_vol_fixed_strike != y.d_vol_fixed_strike) {
+      fixed_strike_identical = false;
+    }
+  }
+  EXPECT_TRUE(any_valid) << "fixture produced no comparable tenor";
+  EXPECT_TRUE(any_differs) << "compute_surface_diff ignored cfg.delta_convention";
+  EXPECT_TRUE(fixed_strike_identical)
+      << "a non-delta diff field moved with the convention — the knob reached too far";
+}
+
+// ── FIX-E I-3 / I-4: the forward-delta convergence gate ─────────────────────
+//
+// The B76-forward strike solve is an undamped fixed point in log-strike whose
+// contraction factor is |(−z + v)·(dσ/dk)·√T|. On an eSSVI slice the at-the-
+// money slope is dσ/dk = σ·ρ·φ/2, so `phi` is a direct dial on that factor —
+// which makes this fixture a controlled test of the CONVERGENCE CRITERION
+// rather than of any particular surface.
+//
+// The criterion had no test at all: `ce70b6c` added the `converged` guard and
+// touched `derivatives_test.cpp` / `multiname_pipeline_test.cpp` only. Its first
+// cut (1e-14 in ln K, 64 steps) demanded a contraction factor below ≈0.60 and
+// returned `Err` — hence a NaN RR/BF cell — on steeper single-name smiles that
+// converge perfectly well. Both sides are covered here: a steep wing that MUST
+// come back with a value, and a genuinely divergent solve that MUST come back as
+// an error rather than a plausible-looking strike.
+[[nodiscard]] PricedSurface make_steep_smile_surface(std::uint32_t uid, double fwd,
+                                                     double sigma_atm, double phi, double rho,
+                                                     const std::vector<double> &Ts) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  std::uint16_t i = 0;
+  for (const double T : Ts) {
+    EssviParams e{};
+    e.theta = sigma_atm * sigma_atm * T; // ATM total variance ⇒ iv(F,T) == sigma_atm
+    e.phi = phi;
+    e.rho = rho;
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = fwd;
+    e.expiry_id = i;
+    cs.push(std::make_unique<EssviCurve>(e, std::exp(-testkit::kFixtureRate * T)));
+    ctx.push_back(SliceContext{T, fwd, 0.0, 0.0, 250, 7});
+    ++i;
+  }
+  PricingContext pc;
+  pc.S = fwd;
+  pc.r = testkit::kFixtureRate;
+  pc.now_ts_ns = testkit::kFixtureNow;
+  pc.method = AmericanMethod::AndersenLake;
+  pc.al_opts = al_fast_opts();
+  pc.uid = uid;
+  return testkit::unwrap_surface(PricedSurface::create(std::move(cs), std::move(ctx), pc));
+}
+
+// The 25Δ CALL is the discriminating side: z = N^-1(0.25) < 0, so the factor
+// |(−z + v)| ≈ 0.67 + v ADDS rather than nearly cancelling (on the put side
+// z > 0 and (−z + v) is a difference that collapses towards 0 once the wing vol
+// rises). ρ > 0 puts the steep side of the eSSVI smile under that call.
+constexpr double kZCall25 = -0.6744897501960817; // N^-1(0.25)
+
+// AN INDEPENDENT REPLAY OF THE FIXED POINT, off the surface, counting how many
+// steps it needs to reach each tolerance. This is what makes the two tests
+// below non-vacuous WITHOUT restating the criterion under test: it measures the
+// input's difficulty directly, so "the old 1e-14/64-step criterion could not
+// reach this, the new 1e-10/128-step one can" becomes a MEASUREMENT rather than
+// an assertion about constants.
+struct StepCounts {
+  int to_1e14{-1}; // steps to a 1e-14 log-strike step (-1 == never, within cap)
+  int to_1e10{-1}; // steps to a 1e-10 log-strike step (-1 == never, within cap)
+};
+
+[[nodiscard]] StepCounts forward_delta_step_counts(const PricedSurface &ps, double T, double z,
+                                                   int cap) {
+  const double F = ps.forward_at(T);
+  const double sqrt_T = std::sqrt(T);
+  double K = F;
+  StepCounts out;
+  for (int i = 1; i <= cap; ++i) {
+    const double sigma = ps.iv(K, T);
+    if (!std::isfinite(sigma) || sigma <= 0.0) {
+      break;
+    }
+    const double v = sigma * sqrt_T;
+    const double K_next = F * std::exp(-z * v + 0.5 * v * v);
+    if (!std::isfinite(K_next) || K_next <= 0.0) {
+      break;
+    }
+    const double step = std::fabs(std::log(K_next / K));
+    K = K_next;
+    if (out.to_1e10 < 0 && step <= 1.0e-10) {
+      out.to_1e10 = i;
+    }
+    if (step <= 1.0e-14) {
+      out.to_1e14 = i;
+      break;
+    }
+  }
+  return out;
+}
+
+// A steep smile that CONVERGES. Synthetic and deliberately extreme — the point
+// is to exercise the convergence criterion, not to claim a market-realistic
+// board — but it is a perfectly well-posed solve with a genuine fixed point, and
+// the pre-FIX-E criterion refused it.
+TEST(AnalyticsPrimitives, ForwardDeltaSolveSucceedsOnASteepSmileWing) {
+  constexpr double kT = 0.10;
+  const std::vector<double> Ts = {0.05, 0.10, 0.25};
+  const PricedSurface ps = make_steep_smile_surface(31, 100.0, 0.50, 30.0, 0.9, Ts);
+
+  const auto k = strike_at_delta(ps, kT, Side::Call, 0.25, DeltaConvention::Forward);
+  ASSERT_TRUE(k.has_value()) << "a usable steep-smile wing was refused: " << k.error().to_string();
+  EXPECT_GT(*k, ps.forward_at(kT)); // a 25Δ call is struck above the forward
+
+  // The answer really satisfies the forward-delta fixed point, so "converged"
+  // means converged and not merely "stopped".
+  const double F = ps.forward_at(kT);
+  const double v = ps.iv(*k, kT) * std::sqrt(kT);
+  const double k_fixed_point = F * std::exp(-kZCall25 * v + 0.5 * v * v);
+  EXPECT_NEAR(*k, k_fixed_point, 1.0e-8 * *k);
+
+  // NON-VACUITY. Replay the fixed point independently: the OLD criterion
+  // (1e-14 in ln K within 64 steps) does not reach this input, so before FIX-E
+  // I-3 this wing came back as `Err` and `value_or_nan` turned the RR/BF cell
+  // into NaN. The new criterion does reach it, comfortably inside its budget.
+  const StepCounts steps = forward_delta_step_counts(ps, kT, kZCall25, 4096);
+  std::printf("[fix-e I-3] steep wing K=%.6f steps_to_1e10=%d steps_to_1e14=%d\n", *k,
+              steps.to_1e10, steps.to_1e14);
+  EXPECT_TRUE(steps.to_1e14 < 0 || steps.to_1e14 > 64)
+      << "fixture is not hard enough: the retired 1e-14/64-step gate already reached it in "
+      << steps.to_1e14 << " steps";
+  ASSERT_GT(steps.to_1e10, 0) << "fixture does not converge at all — wrong test";
+  EXPECT_LE(steps.to_1e10, 128) << "fixture does not fit the shipped 128-step budget";
+}
+
+// A genuinely DIVERGENT solve: no tolerance is reachable, so the only honest
+// answer is an error rather than the last iterate.
+TEST(AnalyticsPrimitives, ForwardDeltaSolveReportsNonConvergenceInsteadOfALastIterate) {
+  constexpr double kT = 0.50;
+  const std::vector<double> Ts = {0.25, 0.50, 1.00};
+  const PricedSurface ps = make_steep_smile_surface(32, 100.0, 0.30, 200.0, 0.9, Ts);
+
+  const auto k = strike_at_delta(ps, kT, Side::Call, 0.25, DeltaConvention::Forward);
+  EXPECT_FALSE(k.has_value()) << "a non-convergent solve returned a plausible-looking strike: "
+                              << (k.has_value() ? *k : 0.0);
+  if (!k.has_value()) {
+    // FIX-E M-3: a solve failure is `Unavailable`, not `InvalidArgument` —
+    // nothing about the ARGUMENTS was invalid.
+    std::printf("[fix-e I-4] non-convergent code=%d msg=%s\n", static_cast<int>(k.error().code()),
+                k.error().to_string().c_str());
+    EXPECT_EQ(k.error().code(), ErrorCode::Unavailable);
+  }
+
+  // NON-VACUITY: the input really is beyond any tolerance, not merely beyond the
+  // shipped budget. 4096 replay steps reach neither 1e-10 nor 1e-14, so widening
+  // the iteration budget — the fix this one deliberately is NOT — would not help.
+  const StepCounts steps = forward_delta_step_counts(ps, kT, kZCall25, 4096);
+  EXPECT_LT(steps.to_1e10, 0) << "fixture converges in " << steps.to_1e10
+                              << " steps; it is slow, not divergent";
+  EXPECT_LT(steps.to_1e14, 0);
+
+  // The aggregate turns that error into a NaN cell rather than a number.
+  const auto rr = risk_reversal(ps, kT, 0.25, DeltaConvention::Forward);
+  EXPECT_FALSE(rr.has_value());
 }
 
 // ── implied_correlation_clean / dirty ───────────────────────────────────────

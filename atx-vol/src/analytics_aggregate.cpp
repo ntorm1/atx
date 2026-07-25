@@ -76,6 +76,8 @@ Result<SurfaceAnalytics> compute_surface_analytics(const PricedSurface &ps,
   out.as_of_ts_ns = ps.pricing().now_ts_ns;
   out.spot = ps.pricing().S;
   out.implied_emove = (ctx != nullptr && ctx->schedule != nullptr) ? ctx->implied_emove : 0.0;
+  // FIX-E M-5: the bundle records the convention that produced its wings.
+  out.delta_convention = cfg.delta_convention;
 
   const std::vector<double> &tenors = cfg.tenors.tenors_years;
   const std::vector<std::string> &labels = cfg.tenors.labels;
@@ -298,6 +300,8 @@ Result<SurfaceDiff> compute_surface_diff(const PricedSurface &a, const PricedSur
   out.spot2 = b.pricing().S;
   out.d_spot = out.spot2 - out.spot1;
   out.log_return = (out.spot1 > 0.0 && out.spot2 > 0.0) ? std::log(out.spot2 / out.spot1) : kNaN;
+  // FIX-E M-5: the diff records the convention that produced its wing deltas.
+  out.delta_convention = cfg.delta_convention;
 
   const std::vector<double> &tenors = cfg.tenors.tenors_years;
   const std::vector<std::string> &labels = cfg.tenors.labels;
@@ -341,10 +345,18 @@ Result<SurfaceDiff> compute_surface_diff(const PricedSurface &a, const PricedSur
     // Resolve each 25Δ wing ONCE (4 root-finds, not 10) and derive the fixed-delta
     // change, risk-reversal change, and butterfly change from those four vols.
     // Any wing NaN propagates through the arithmetic into the derived field.
-    const double pa = value_or_nan(vol_at_delta(a, T, Side::Put, 0.25));
-    const double ca = value_or_nan(vol_at_delta(a, T, Side::Call, 0.25));
-    const double pb = value_or_nan(vol_at_delta(b, T, Side::Put, 0.25));
-    const double cb = value_or_nan(vol_at_delta(b, T, Side::Call, 0.25));
+    //
+    // FIX-E I-1: the wings honour `cfg.delta_convention`, exactly as
+    // `compute_surface_analytics` does. Ignoring it here (while reading `cfg`
+    // eight lines below for `skew_k_ref`) would let ONE config object produce a
+    // B76-forward analytics bundle and an American diff bundle in the same TU —
+    // a fresh instance of the convention fragmentation AN-P2-6 exists to cure,
+    // and `d_vol_fixed_delta` / `d_risk_reversal_25` / `d_butterfly_25` are all
+    // exported (analytics_io.cpp).
+    const double pa = value_or_nan(vol_at_delta(a, T, Side::Put, 0.25, cfg.delta_convention));
+    const double ca = value_or_nan(vol_at_delta(a, T, Side::Call, 0.25, cfg.delta_convention));
+    const double pb = value_or_nan(vol_at_delta(b, T, Side::Put, 0.25, cfg.delta_convention));
+    const double cb = value_or_nan(vol_at_delta(b, T, Side::Call, 0.25, cfg.delta_convention));
     td.d_vol_fixed_delta = pb - pa;
     td.d_risk_reversal_25 = (pb - cb) - (pa - ca);
     td.d_butterfly_25 = (0.5 * (pb + cb) - vb) - (0.5 * (pa + ca) - va);

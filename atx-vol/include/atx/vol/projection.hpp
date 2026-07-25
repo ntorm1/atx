@@ -106,29 +106,18 @@ enum class CoordKind : std::uint8_t {
 
 // ── Quote-delta convention (E5 / AN-P2-6) ───────────────────────────────────
 //
-// THE library-wide delta vocabulary. Deliberately extended IN PLACE rather than
-// duplicated: AN-P2-6 is a convention-FRAGMENTATION defect — analytics solved
-// American |delta|, projection solved European B76 forward delta, and
-// contract_projection solved American delta seeded from a carry-discounted spot
-// inversion, i.e. three different answers to "what is the 25-delta strike" — so
-// declaring a second enum beside this one would have deepened exactly the
-// disease the task exists to cure.
+// `DeltaConvention` NOW LIVES IN `types.hpp` (FIX-E M-9). It was declared here
+// because projection was its first consumer, but calling it "THE library-wide
+// delta vocabulary" while making every consumer include the whole projection
+// spine — `vol_surface.hpp`, `correction.hpp`, `curve.hpp`, `universe.hpp` — to
+// name one enum was a contradiction. It sits with the rest of the shared
+// vocabulary now; `projection.hpp` still includes `types.hpp`, so this header's
+// own `DeltaConvention` uses are unchanged.
 //
 // Not every consumer supports every convention. `projection.cpp`'s coordinate
 // solves accept `Forward` ONLY and return NotImplemented otherwise (unchanged by
 // E5). The analytics wing/RR/BF solves (`analytics.hpp`) accept both and default
 // to `American`, which is their shipped behaviour.
-enum class DeltaConvention : std::uint8_t {
-  // European Black-76 FORWARD delta: N(d1) for a call, N(d1) - 1 for a put, with
-  // d1 = (ln(F/K) + sigma^2*T/2) / (sigma*sqrt(T)). No discounting, no early
-  // exercise. The vendor-standard quote convention.
-  Forward = 0,
-  // AMERICAN spot delta, dP/dS on the American mark — what the analytics
-  // wings/RR/BF have always used (`resolve_strike_by_delta`, strategy.hpp). On a
-  // high-carry or deep-ITM-early-exercise name this resolves a materially
-  // different strike from `Forward`.
-  American = 1,
-};
 
 // Maturity interpolation mode for the INSERTED-SLICE path
 // (`surface_insert_vol_slice` / `w_on_inserted_slice` / `iv_on_inserted_slice`

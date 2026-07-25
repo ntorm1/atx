@@ -68,8 +68,17 @@ namespace {
   if (!(p > 0.0) || !(p < 1.0)) {
     return kNaN;
   }
-  double lo = -10.0;
-  double hi = 10.0;
+  constexpr double kZBound = 10.0;
+  // FIX-E M-4: a `p` outside the bracket's own reach used to come back CLAMPED
+  // at ±10 with no signal — the same silent-boundary pattern this file was just
+  // repaired for one function away. Refuse instead; `strike_by_forward_delta`'s
+  // `isfinite(z)` guard turns it into "delta target unreachable", which is what
+  // it is. norm_cdf(±10) ≈ 7.6e-24, so no reachable delta target is affected.
+  if (p <= atx::core::norm_cdf(-kZBound) || p >= atx::core::norm_cdf(kZBound)) {
+    return kNaN;
+  }
+  double lo = -kZBound;
+  double hi = kZBound;
   for (int i = 0; i < 200; ++i) {
     const double mid = 0.5 * (lo + hi);
     if (atx::core::norm_cdf(mid) < p) {
@@ -93,6 +102,33 @@ namespace {
 // σ depends on K through the smile, so this is a fixed point: seeded at K = F
 // and iterated in log-strike. On a flat smile it lands on the closed form in one
 // step. Statically bounded, no allocation.
+//
+// ── CONVERGENCE CRITERION (FIX-E I-3) ────────────────────────────────────────
+//
+// The iterate is a log-strike, so the tolerance is a tolerance ON ln K: a step
+// of `tol` moves the strike by a RELATIVE `tol`. The criterion must therefore be
+// argued in that unit.
+//
+// The first cut of this guard used 1e-14, which is one ulp of ln K at these
+// magnitudes (|ln K| ≈ 5-7 for equity strikes, so ulp(ln K) ≈ 1e-15..1e-16) —
+// i.e. a demand for near-exact fixed-point stationarity. The iteration is an
+// undamped fixed point whose contraction factor is |(−z + v)·(dσ/dk)·√T|;
+// reaching 1e-14 inside 64 steps needs a factor below ≈0.60, which a steep
+// single-name smile exceeds while still converging perfectly well. The result
+// was `Err` (hence a NaN RR/BF cell) on wings that were fine — trading a
+// silently-wrong answer for a refusal on usable input.
+//
+// `kForwardDeltaLogKTol = 1e-10` is the defensible tolerance in the quantity's
+// own units: 1e-10 in ln K is 1e-10 RELATIVE in K, i.e. sub-nanodollar on a
+// $500 strike and about six orders of magnitude tighter than the tightest
+// downstream consumer (RR/BF are reported in vol points, ~1e-4). It is still
+// ~1e5 ulps above the noise floor, so it is reachable, not aspirational. With
+// 128 steps it admits any contraction factor below ≈0.83 — every smile whose
+// wings carry information — while a genuinely divergent or oscillating solve
+// (factor ≥ 1) never gets under it and is still reported as a failure.
+inline constexpr double kForwardDeltaLogKTol = 1.0e-10;
+inline constexpr int kForwardDeltaMaxSteps = 128;
+
 [[nodiscard]] Result<double> strike_by_forward_delta(const PricedSurface &ps, double T, Side side,
                                                      double abs_delta) {
   const double F = ps.forward_at(T);
@@ -107,31 +143,39 @@ namespace {
 
   double K = F;
   bool converged = false;
-  for (int i = 0; i < 64; ++i) {
+  for (int i = 0; i < kForwardDeltaMaxSteps; ++i) {
     const double sigma = ps.iv(K, T);
     if (!std::isfinite(sigma) || sigma <= 0.0) {
-      return Err(ErrorCode::InvalidArgument,
+      // FIX-E M-3: a SOLVE failure, not a bad argument (see below).
+      return Err(ErrorCode::Unavailable,
                  "strike_at_delta: surface vol unusable at the candidate strike");
     }
     const double v = sigma * sqrt_T;
     const double K_next = F * std::exp(-z * v + 0.5 * v * v);
     if (!std::isfinite(K_next) || K_next <= 0.0) {
-      return Err(ErrorCode::InvalidArgument, "strike_at_delta: divergent forward-delta solve");
+      return Err(ErrorCode::Unavailable, "strike_at_delta: divergent forward-delta solve");
     }
     const double step = std::fabs(std::log(K_next / K));
     K = K_next;
-    if (step <= 1.0e-14) {
+    if (step <= kForwardDeltaLogKTol) {
       converged = true;
       break;
     }
   }
-  // A steep or oscillating smile can keep the fixed point moving for the whole
-  // iteration budget. Returning the last iterate would hand back an unconverged
-  // wing strike that looks exactly like a converged one — a silent wrong number
-  // feeding RR/BF. Fail loudly instead; the caller's `value_or_nan` wrapper in
-  // the aggregate turns it into a NaN cell, which is the honest answer.
+  // A genuinely divergent or oscillating smile keeps the fixed point moving for
+  // the whole iteration budget. Returning the last iterate would hand back an
+  // unconverged wing strike that looks exactly like a converged one — a silent
+  // wrong number feeding RR/BF. Fail loudly instead; the caller's
+  // `value_or_nan` wrapper in the aggregate turns it into a NaN cell, which is
+  // the honest answer.
+  //
+  // FIX-E M-3: `Unavailable`, not `InvalidArgument` — here and on the two
+  // in-loop failure exits above. Nothing about the ARGUMENTS was invalid; the
+  // solver failed on this surface. That distinction is what lets a caller
+  // separate "you asked for delta 1.5" (InvalidArgument, checked up front) from
+  // "the solve did not converge here" (Unavailable).
   if (!converged) {
-    return Err(ErrorCode::InvalidArgument,
+    return Err(ErrorCode::Unavailable,
                "strike_at_delta: forward-delta fixed point did not converge");
   }
   return Ok(K);
