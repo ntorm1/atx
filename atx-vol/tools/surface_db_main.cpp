@@ -23,15 +23,17 @@
 //                              evaluate one cell through the zero-copy
 //                              map_surface path (iv, total variance, forward).
 //   verify [--from KEY] [--to KEY] [--symbols A,B,C] [--include-disabled]
-//          [--probe-tenor T] [--max-failures N] [--min-cells N]
+//          [--probe-tenor T] [--max-failures N] [--min-cells N] [--max-absent N]
 //                              walk every (partition, symbol) cell: map it, check
 //                              its stored payload CRC, and evaluate one ATM
-//                              point; print the counters, each failing cell, and
-//                              a `verdict` line. A walk that covered ZERO cells
-//                              over a database that HAS partitions is itself a
-//                              FAILED verdict. `--min-cells` additionally fails a
-//                              database smaller than the operator expected — the
-//                              one thing the library cannot know.
+//                              point; print the counters, each failing cell, each
+//                              ABSENT cell, and a `verdict` line. A walk that
+//                              covered ZERO cells over a database that HAS
+//                              partitions is itself a FAILED verdict.
+//                              `--min-cells` additionally fails a database
+//                              smaller than the operator expected, and
+//                              `--max-absent` fails one MISSING more cells than
+//                              expected — the two things the library cannot know.
 //   enable  --symbol <SYM>     start fitting SYM again on every date.
 //   disable --symbol <SYM> --yes
 //                              STOP fitting SYM on every date. Its already-stored
@@ -72,10 +74,12 @@
 // `<record> <id> field=value ...`. See atx-vol/docs/surface-db-build.md.
 //
 // Exit codes (same convention as atx-vol-surface-db-build):
-//   0  ok — and, for `verify`, the walk covered cells and every one passed. For
-//      `enable`/`disable`, the symbol is now in the requested state, whether or
-//      not this run is what put it there (`changed 0` is a success: the verbs are
-//      idempotent so a converging script can assert the state unconditionally).
+//   0  ok — and, for `verify`, the walk covered cells and every one the database
+//      HOLDS passed. Cells it does not hold are counted, named, and warned about
+//      on stderr without moving this (see ABSENCE below). For `enable`/`disable`,
+//      the symbol is now in the requested state, whether or not this run is what
+//      put it there (`changed 0` is a success: the verbs are idempotent so a
+//      converging script can assert the state unconditionally).
 //   1  runtime failure (message on stderr), OR `verify` returned a FAILED verdict
 //      (on stdout — a runtime failure prints no verdict line). An `enable` /
 //      `disable` naming a symbol the manifest does not configure is a runtime
@@ -84,6 +88,32 @@
 //      which `disable`'s `--yes` is one), a flag left WITHOUT a value, or a
 //      malformed numeric value. Every one of these is decided before the database
 //      is opened, so no usage error can ever have written anything.
+//   4  `verify` only, and only when the operator asked for it: more cells are
+//      ABSENT than the `--max-absent N` ceiling allows. Nothing is corrupt — this
+//      is a COVERAGE answer, kept off code 1 so a script can tell "the database
+//      is missing more than I said to expect" from "the database is damaged".
+//      3 is skipped: it is atx-vol-surface-db-build's total-failure code and the
+//      two tools share one exit vocabulary.
+//
+// ── ABSENCE, and why it is not a failure (FIX-H) ─────────────────────────────
+//
+// `verify` used to report a cell the database never stored and a cell it stored
+// and can no longer read as the same thing (`unmappable`). The finished
+// production database has 9 permanently-unfittable cells out of 867, so it
+// printed `verdict FAILED` and exited 1 on every run while being completely
+// healthy — and a permanently-red signal is not a signal. The partition's own
+// archive directory tells the two apart, so absence now has its own counter, its
+// own capped list, and no vote in the verdict.
+//
+// It is NOT quiet. Absence prints `cells_absent`, one `absent <KEY> <SYM>` line
+// per cell (bounded by --max-failures, with a never-silent `absent_elided`), and
+// a stderr block that states the two readings and says what to watch. It is not
+// quiet in a SCRIPT either: `--max-absent N` turns "more than N cells missing"
+// into exit 4. That flag is the instrument for the one thing this tool genuinely
+// cannot see — a stored surface DESTROYED by a whole-partition rewrite is
+// byte-for-byte a cell that was never fitted, so the count is the only handle,
+// and only the operator knows what the expected count is. It is the same
+// division of labour as `--min-cells`.
 
 #include <cerrno>
 #include <cstddef>
@@ -104,6 +134,18 @@ using namespace atx::vol;
 
 namespace {
 
+// `verify` found more ABSENT cells than `--max-absent` allows. Its own code, and
+// deliberately not 1: absence is a coverage answer over an otherwise intact
+// database, and a script that treats "the database is damaged" and "the database
+// is missing two more cells than last month" identically will act wrongly on one
+// of them. Never reached without the flag — a converged production database is
+// permanently non-zero on `cells_absent`, so an unconditional non-zero here would
+// rebuild the permanently-red verdict this whole change removes (the same
+// argument `is_carry_masked_fit_failure` records for keeping the build CLI at
+// exit 0 — surface_db_build.hpp). 3 belongs to atx-vol-surface-db-build's
+// total-failure code; the two tools share one exit vocabulary, so it is skipped.
+constexpr int kExitAbsentOverLimit = 4;
+
 void print_usage(std::FILE *out) {
   std::fprintf(
       out,
@@ -115,12 +157,13 @@ void print_usage(std::FILE *out) {
       "  query --key KEY --symbol SYM --strike K --tenor T\n"
       "                                evaluate one cell (zero-copy map_surface)\n"
       "  verify [--from KEY] [--to KEY] [--symbols A,B,C] [--include-disabled]\n"
-      "         [--probe-tenor T] [--max-failures N] [--min-cells N]\n"
+      "         [--probe-tenor T] [--max-failures N] [--min-cells N] [--max-absent N]\n"
       "                                map + ATM-evaluate every cell; nonzero exit on failure\n"
       "  enable  --symbol SYM          resume fitting SYM on every date\n"
       "  disable --symbol SYM --yes    STOP fitting SYM on EVERY date (stored surfaces\n"
       "                                are kept and keep serving; --yes is required)\n"
-      "exit: 0 ok / 1 runtime failure or verify found failing cells / 2 usage\n");
+      "exit: 0 ok / 1 runtime failure or verify found failing cells / 2 usage /\n"
+      "      4 verify found more absent cells than --max-absent allows\n");
 }
 
 // Parse a non-negative count from a flag value, consuming the WHOLE token.
@@ -350,6 +393,15 @@ int run_query(const SurfaceDb &db, const std::string &key, const std::string &sy
   return 0;
 }
 
+// The operator's expected ABSENT ceiling, or "no ceiling asked for". Absence is
+// permanent and non-zero on a healthy converged database, so this is opt-in by
+// construction: a default ceiling of 0 would exit non-zero on `prod-2026-07`
+// forever and rebuild the trained-away signal FIX-H removed.
+struct AbsentCeiling {
+  bool set{false};
+  std::size_t max{0};
+};
+
 // `min_cells` is a presentation-layer floor on `cells_checked`, not a library
 // concept: it is the one number only the OPERATOR knows (how big this database is
 // supposed to be), so a script asserts it here. It is no longer the only thing
@@ -358,7 +410,15 @@ int run_query(const SurfaceDb &db, const std::string &key, const std::string &sy
 // db, so forgetting `--min-cells` no longer turns "checked nothing" into green.
 // The floor still catches what the library cannot know: a database that IS
 // smaller than intended (wrong window, lost partitions, never built).
-int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_cells) {
+//
+// `absent` is the SAME division of labour on the other axis — not "is this
+// database big enough?" but "is it missing the cells I already know it is missing,
+// and no others?". The library cannot answer that either, and for a harder reason:
+// a stored surface destroyed by a whole-partition rewrite leaves no trace, so the
+// count of absences is the only handle there is, and the expected count is a fact
+// about the universe rather than about the database.
+int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_cells,
+               AbsentCeiling absent) {
   const Result<DbVerifyReport> rep = verify_db(db, spec);
   if (!rep) {
     std::fprintf(stderr, "atx-vol-surface-db: verify_db: %s\n", rep.error().to_string().c_str());
@@ -369,15 +429,29 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
   std::printf("symbols %zu\n", rep->n_symbols);
   std::printf("cells_checked %zu\n", rep->cells_checked);
   std::printf("cells_ok %zu\n", rep->cells_ok);
+  // Between `cells_ok` and the three fault counters on purpose: the five terms
+  // print in the order of the invariant they satisfy (they sum to cells_checked),
+  // and absence sits on the healthy side of the fault boundary, not inside it.
+  std::printf("cells_absent %zu\n", rep->cells_absent);
   std::printf("cells_unmappable %zu\n", rep->cells_unmappable);
   std::printf("cells_non_finite %zu\n", rep->cells_non_finite);
   std::printf("cells_checksum %zu\n", rep->cells_checksum);
   std::printf("symbols_disabled %zu\n", rep->disabled_symbols.size());
   std::printf("failures_reported %zu\n", rep->failures.size());
   std::printf("failures_elided %zu\n", rep->n_failures_elided);
+  std::printf("absent_reported %zu\n", rep->absent_cells.size());
+  std::printf("absent_elided %zu\n", rep->n_absent_elided);
   for (const DbCellFault &f : rep->failures) {
     std::printf("fail %s %s kind=%s detail=%s\n", f.key.c_str(), f.symbol.c_str(),
                 failure_name(f.kind), f.detail.c_str());
+  }
+  // Its own record type, never a `fail` line, because a script that greps
+  // `^fail ` is asking about damage and these cells are not damaged. No
+  // `detail=`: there is no error to quote, and inventing one ("symbol not
+  // present") is exactly the sentence that made this look like a fault for the
+  // whole life of the tool.
+  for (const DbAbsentCell &a : rep->absent_cells) {
+    std::printf("absent %s %s\n", a.key.c_str(), a.symbol.c_str());
   }
   // The columns this walk never looked at. `verdict ok` over a database that is
   // permanently missing a requested name is otherwise indistinguishable from
@@ -403,12 +477,59 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
                  "rebuild with --retry-disabled to re-attempt them.\n",
                  rep->disabled_symbols.size());
   }
+  // The absence block. It prints whenever anything is absent, which on a
+  // converged production database is EVERY run — and saying so is the point. The
+  // discriminator between the two readings is not the line's existence but the
+  // SET, so the cells are named above and the operator is told, here, that the
+  // line recurring is expected and the set moving is not. The build CLI's
+  // carry-masked warning says the same thing about the same population; the two
+  // are one statement in two registers and should change together.
+  if (rep->cells_absent > 0) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db: NOTE: %zu of %zu checked cell(s) are ABSENT — their "
+                 "partition's archive directory does not list the symbol, so no surface was "
+                 "ever stored for them. This does NOT move the verdict.\n"
+                 "  %zu named as `absent` lines on stdout, %zu elided by --max-failures.\n",
+                 rep->cells_absent, rep->cells_checked, rep->absent_cells.size(),
+                 rep->n_absent_elided);
+    std::fprintf(
+        stderr,
+        "  Two very different histories produce an absent cell and NOTHING on disk tells "
+        "them apart — the format keeps no tombstone, so a destroyed cell is byte-for-byte "
+        "a cell that was never fitted:\n"
+        "    (a) the fit for that (date, symbol) permanently FAILS, so nothing was ever "
+        "written. Expected, permanent, not a defect — this is the converged steady state, "
+        "and it is why the verdict ignores this count.\n"
+        "    (b) a surface WAS stored there and is GONE. A present, enabled cell whose "
+        "re-fit fails loses its stored surface, because a partition rewrite is whole-file. "
+        "That is measured, current behaviour, not a hypothetical.\n"
+        "  Compare the `absent` list with the previous run's: the SAME cells is (a); cells "
+        "that used to verify and now do not is (b), and the count is the only handle you "
+        "have on it. Wire the expected count into the script with `--max-absent N` so a "
+        "growth exits %d instead of needing a human to notice.\n",
+        kExitAbsentOverLimit);
+  }
   std::printf("min_cells %zu\n", min_cells);
+  if (absent.set) {
+    std::printf("max_absent %zu\n", absent.max);
+  } else {
+    std::printf("max_absent unset\n");
+  }
   const bool enough = rep->cells_checked >= min_cells;
   if (!enough) {
     std::fprintf(stderr,
                  "atx-vol-surface-db: verify checked %zu cells, below the required minimum %zu\n",
                  rep->cells_checked, min_cells);
+  }
+  const bool within_absent_ceiling = !absent.set || rep->cells_absent <= absent.max;
+  if (!within_absent_ceiling) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db: verify found %zu absent cell(s), above the declared "
+                 "maximum %zu. Nothing is corrupt — %zu cell(s) failed a gate — but this "
+                 "database is missing cells you did not expect it to be missing. Diff the "
+                 "`absent` lines above against the set you sized this ceiling on.\n",
+                 rep->cells_absent, absent.max,
+                 rep->cells_unmappable + rep->cells_non_finite + rep->cells_checksum);
   }
   // A walk that covered nothing over a database that HAS partitions prints every
   // counter as zero and no fail line — the exact shape of a perfect result. Say
@@ -426,9 +547,24 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
   }
   // The verdict is the scriptable answer; the exit code mirrors it so a shell
   // can branch on either. A runtime failure above returns 1 WITHOUT a verdict.
-  const bool passed = rep->ok() && enough;
-  std::printf("verdict %s\n", passed ? "ok" : "FAILED");
-  return passed ? 0 : 1;
+  //
+  // Three values now, and FAILED wins: a database that is both damaged and
+  // missing more than expected has one answer worth acting on first, and a
+  // caller that saw only `ABSENT` would go looking for missing coverage while
+  // the bytes were rotting. `ABSENT` therefore means EXACTLY "nothing failed a
+  // gate, the walk was big enough, and the only thing wrong is that more cells
+  // are missing than you declared" — it is unreachable without --max-absent.
+  const bool failed = !rep->ok() || !enough;
+  if (failed) {
+    std::printf("verdict FAILED\n");
+    return 1;
+  }
+  if (!within_absent_ceiling) {
+    std::printf("verdict ABSENT\n");
+    return kExitAbsentOverLimit;
+  }
+  std::printf("verdict ok\n");
+  return 0;
 }
 
 // `enable` and `disable` are the same call with a different bool. The only
@@ -518,6 +654,7 @@ int main(int argc, char **argv) {
   std::string tenor_arg;
   DbVerifySpec verify_spec;
   std::size_t min_cells = 0;
+  AbsentCeiling max_absent;
   bool confirmed = false; // --yes; required by `disable` and by nothing else
 
   for (int i = 2; i < argc; ++i) {
@@ -576,6 +713,22 @@ int main(int argc, char **argv) {
         print_usage(stderr);
         return 2;
       }
+    } else if (a == "--max-absent") {
+      // Same strict rule as --min-cells and --max-failures, and for the sharper
+      // version of the same reason: this flag's entire job is to fail a database
+      // that is missing MORE than expected, so coercing a typo to 0 would not
+      // merely fail open — it would flip the flag's meaning to "no cell may ever
+      // be absent" and fire on every healthy run instead.
+      const std::string_view text = nv();
+      if (!missing_value && !parse_count(text, max_absent.max)) {
+        std::fprintf(stderr,
+                     "atx-vol-surface-db: --max-absent expects a non-negative integer, got "
+                     "'%.*s'\n",
+                     static_cast<int>(text.size()), text.data());
+        print_usage(stderr);
+        return 2;
+      }
+      max_absent.set = !missing_value;
     } else if (a == "--help" || a == "-h") {
       print_usage(stdout);
       return 0;
@@ -685,5 +838,5 @@ int main(int argc, char **argv) {
   }
   // `verify` is the last of the eight `known_subcommand` names, so this is the
   // end of the dispatch — an unknown name already exited 2 above, before the open.
-  return run_verify(*db, verify_spec, min_cells);
+  return run_verify(*db, verify_spec, min_cells, max_absent);
 }

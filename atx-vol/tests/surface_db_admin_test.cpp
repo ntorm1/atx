@@ -24,6 +24,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -212,6 +213,50 @@ void edit_record(const AdminFixture &f, std::string_view key, std::string_view s
     ASSERT_TRUE(out.good());
   }
   ASSERT_EQ(fs::file_size(path), before) << "in-place edit must preserve the file length";
+}
+
+// ── losing ONE cell the way production loses one (FIX-H) ────────────────────
+//
+// Rewrite `key` with every symbol it holds EXCEPT `drop`, through the real
+// `SurfaceDb::write_partition`. This is not a synthetic mutilation: a partition
+// rewrite is whole-file, so a cell whose re-fit fails is dropped exactly like
+// this, and a cell that never fitted was never in the file to begin with. The two
+// are byte-for-byte identical afterwards — which is the whole reason `verify`
+// cannot judge an absence and must name it instead.
+//
+// The manifest is updated with the file (write_partition does both), so the
+// result is a consistent database that is simply missing one cell.
+void drop_cell(const AdminFixture &f, std::string_view key, std::string_view drop) {
+  SurfaceDb db = open_db(f);
+  std::vector<std::string> names;
+  std::vector<PricedSurface> surfaces;
+  {
+    const auto part = db.open_partition(key);
+    ASSERT_TRUE(part.has_value()) << (part ? "" : part.error().to_string());
+    auto all = part->reconstruct_all(); // directory order, same order as directory()
+    ASSERT_TRUE(all.has_value()) << (all ? "" : all.error().to_string());
+    const std::span<const ArchiveV2DirEntry> dir = part->directory();
+    ASSERT_EQ(dir.size(), all->size());
+    for (std::size_t i = 0; i < dir.size(); ++i) {
+      const std::string name(dir[i].symbol,
+                             std::min<std::size_t>(dir[i].symbol_len, sizeof(dir[i].symbol)));
+      if (name == drop) {
+        continue;
+      }
+      names.push_back(name);
+      surfaces.push_back(std::move((*all)[i]));
+    }
+  }
+  ASSERT_FALSE(names.empty()) << "dropping the only symbol would be a different fixture";
+  ASSERT_EQ(names.size(), surfaces.size());
+  // Pointers are taken only after `surfaces` has stopped growing.
+  std::vector<SurfaceArchiveItem> items;
+  items.reserve(names.size());
+  for (std::size_t i = 0; i < names.size(); ++i) {
+    items.push_back(SurfaceArchiveItem{names[i], &surfaces[i], std::nullopt});
+  }
+  const Status wrote = db.write_partition(key, items);
+  ASSERT_TRUE(wrote.has_value()) << (wrote ? "" : wrote.error().to_string());
 }
 
 // ── describe_db ─────────────────────────────────────────────────────────────
@@ -465,6 +510,7 @@ TEST(SurfaceDbAdmin, VerifyDbHealthyIsAllOk) {
   EXPECT_EQ(rep->n_symbols, std::size_t{3});
   EXPECT_EQ(rep->cells_checked, std::size_t{9});
   EXPECT_EQ(rep->cells_ok, std::size_t{9});
+  EXPECT_EQ(rep->cells_absent, std::size_t{0}); // a full grid is missing nothing
   EXPECT_EQ(rep->cells_unmappable, std::size_t{0});
   EXPECT_EQ(rep->cells_non_finite, std::size_t{0});
   EXPECT_EQ(rep->cells_checksum, std::size_t{0}); // every payload matches its stored CRC
@@ -472,6 +518,8 @@ TEST(SurfaceDbAdmin, VerifyDbHealthyIsAllOk) {
   EXPECT_FALSE(rep->selected_no_cells());
   EXPECT_TRUE(rep->failures.empty());
   EXPECT_EQ(rep->n_failures_elided, std::size_t{0});
+  EXPECT_TRUE(rep->absent_cells.empty());
+  EXPECT_EQ(rep->n_absent_elided, std::size_t{0});
 }
 
 // The spec restricts the walk: a key range and a symbol subset shrink the grid
@@ -498,8 +546,15 @@ TEST(SurfaceDbAdmin, VerifyDbHonorsRangeAndSymbolSubset) {
 // fixture builds (CCC is gutted so selection refuses it on the first run) — is
 // never populated into any partition, so it must be excluded by default:
 // otherwise every healthy database reports a missing cell on every date.
-// `include_disabled` forces it in, and then the whole column shows up as
-// unmappable, each cell identified.
+// `include_disabled` forces it in, and then the whole column shows up as ABSENT,
+// each cell identified — and the database still verifies CLEAN.
+//
+// That last clause is FIX-H's, and it is what makes `--include-disabled` worth
+// running: before it, forcing the column in reported three `unmappable` faults
+// and `verdict FAILED`, so the flag whose job is to PROVE a disabled name is not
+// there could only ever answer by calling the database broken. Now it answers the
+// question that was asked — these three cells were never stored — without
+// claiming anything is wrong.
 //
 // SCOPE, deliberately narrow (FIX-E): this is NOT the general invariant "a
 // disabled symbol is never in any partition". A symbol disabled AFTER it fitted
@@ -545,24 +600,36 @@ TEST(SurfaceDbAdmin, VerifyDbSkipsDisabledSymbolByDefault) {
   forced.include_disabled = true;
   const auto all = verify_db(db, forced);
   ASSERT_TRUE(all.has_value()) << (all ? "" : all.error().to_string());
-  EXPECT_FALSE(all->ok());
+  EXPECT_TRUE(all->ok()) << "never-stored cells are not a corrupt database";
   EXPECT_EQ(all->n_symbols, std::size_t{3});
   // Nothing was dropped this time, so there is nothing to name.
   EXPECT_TRUE(all->disabled_symbols.empty());
   EXPECT_EQ(all->cells_checked, std::size_t{9});
   EXPECT_EQ(all->cells_ok, std::size_t{6});
-  EXPECT_EQ(all->cells_unmappable, std::size_t{3}); // CCC on all three dates
-  ASSERT_EQ(all->failures.size(), std::size_t{3});
-  for (const DbCellFault &fault : all->failures) {
-    EXPECT_EQ(fault.symbol, "CCC");
-    EXPECT_EQ(fault.kind, DbCellFailure::Unmappable);
-    EXPECT_FALSE(fault.detail.empty());
+  EXPECT_EQ(all->cells_absent, std::size_t{3}); // CCC on all three dates
+  EXPECT_EQ(all->cells_unmappable, std::size_t{0});
+  // Absent, so nothing is on the FAULT list at all — the answer is on its own.
+  EXPECT_TRUE(all->failures.empty());
+  EXPECT_EQ(all->n_failures_elided, std::size_t{0});
+  ASSERT_EQ(all->absent_cells.size(), std::size_t{3});
+  EXPECT_EQ(all->n_absent_elided, std::size_t{0});
+  for (const DbAbsentCell &cell : all->absent_cells) {
+    EXPECT_EQ(cell.symbol, "CCC");
+    EXPECT_FALSE(cell.key.empty()); // the DATE is the identity that lets a set be diffed
   }
 }
 
 // A partition file unlinked from under the manifest breaks every cell in that
 // date. Verify must report the failure with the cell identified — key AND symbol
 // — and keep the rest of the database's verdict intact.
+//
+// THE FIX-H BOUNDARY, and the reason this test is now load-bearing twice over: a
+// vanished partition file must NOT be excused as absence. The directory that
+// decides "was this ever stored?" lives INSIDE the file, so when the file is gone
+// the question is unanswerable — and the honest answer to an unanswerable
+// question about stored data is the corruption one. If this ever starts counting
+// `cells_absent`, the single loudest form of data loss the tool can see (a whole
+// date deleted) has gone quiet and green.
 TEST(SurfaceDbAdmin, VerifyDbReportsBrokenPartitionCells) {
   const AdminFixture f = make_fixture("verify_broken");
   build_healthy_db(f);
@@ -576,6 +643,8 @@ TEST(SurfaceDbAdmin, VerifyDbReportsBrokenPartitionCells) {
   EXPECT_EQ(rep->cells_checked, std::size_t{9});
   EXPECT_EQ(rep->cells_ok, std::size_t{6});
   EXPECT_EQ(rep->cells_unmappable, std::size_t{3});
+  EXPECT_EQ(rep->cells_absent, std::size_t{0}) << "an unreadable partition is not an absent cell";
+  EXPECT_TRUE(rep->absent_cells.empty());
   EXPECT_EQ(rep->cells_non_finite, std::size_t{0});
   EXPECT_EQ(rep->n_failures_elided, std::size_t{0}); // 3 < the default cap
 
@@ -618,6 +687,144 @@ TEST(SurfaceDbAdmin, VerifyDbCapsFailureListAndCountsElisions) {
   EXPECT_TRUE(quiet->failures.empty());
   EXPECT_EQ(quiet->n_failures_elided, std::size_t{3});
   EXPECT_EQ(quiet->cells_unmappable, std::size_t{3});
+}
+
+// ── absence vs corruption (FIX-H) ───────────────────────────────────────────
+//
+// The defect these three pin: `verify_db` reported a cell that was NEVER STORED
+// and a cell that was stored and can no longer be read as the same thing, so the
+// finished production database — 9 permanently-unfittable cells out of 867,
+// re-fitting nothing, entirely healthy — printed `verdict FAILED` and exited 1 on
+// every run. A permanently-red verdict is not a signal, and the signal it was
+// drowning is the one that would catch a real, measured, still-unfixed data-loss
+// path: a whole-partition rewrite destroying stored surfaces.
+
+// A cell the database does not hold, in the shape production actually has it: an
+// ENABLED symbol that fits on two dates and is missing on the third. The verdict
+// must be clean, and the cell must still be counted and NAMED — the whole design
+// is "loud but not a failure", and dropping either half of that is the failure
+// mode on the other side.
+TEST(SurfaceDbAdmin, VerifyDbNeverStoredCellIsAbsentNotAFailure) {
+  const AdminFixture f = make_fixture("verify_absent");
+  build_healthy_db(f);
+  drop_cell(f, "2026-07-02", "CCC");
+  const SurfaceDb db = open_db(f);
+
+  const auto rep = verify_db(db, DbVerifySpec{});
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_TRUE(rep->ok()) << "a converged database missing a permanently-unfittable cell is healthy";
+  EXPECT_EQ(rep->cells_checked, std::size_t{9});
+  EXPECT_EQ(rep->cells_ok, std::size_t{8});
+  EXPECT_EQ(rep->cells_absent, std::size_t{1});
+  // NOT a fault, in any of the three counters or on the fault list.
+  EXPECT_EQ(rep->cells_unmappable, std::size_t{0});
+  EXPECT_EQ(rep->cells_non_finite, std::size_t{0});
+  EXPECT_EQ(rep->cells_checksum, std::size_t{0});
+  EXPECT_TRUE(rep->failures.empty());
+  EXPECT_EQ(rep->n_failures_elided, std::size_t{0});
+
+  // ...and still fully identified, because the operator's question is never "is
+  // anything absent?" (on a converged database the answer is permanently yes) but
+  // "is it the SAME set as last time?".
+  ASSERT_EQ(rep->absent_cells.size(), std::size_t{1});
+  EXPECT_EQ(rep->absent_cells.front().key, "2026-07-02");
+  EXPECT_EQ(rep->absent_cells.front().symbol, "CCC");
+  EXPECT_EQ(rep->n_absent_elided, std::size_t{0});
+
+  // The counters still exhaust the walk, with absence as the fifth term.
+  EXPECT_EQ(rep->cells_ok + rep->cells_absent + rep->cells_unmappable + rep->cells_non_finite +
+                rep->cells_checksum,
+            rep->cells_checked);
+
+  // The symbol is untouched everywhere else — this is one missing CELL, not a
+  // broken column, which is exactly the population that made the old verdict red.
+  const auto other = db.map_surface("2026-07-01", "CCC");
+  ASSERT_TRUE(other.has_value()) << (other ? "" : other.error().to_string());
+}
+
+// The two conditions in ONE database, told apart. This is the test that says the
+// fix did its job: a report can carry both answers at once, they never contaminate
+// each other's counter or list, and only the corruption moves the verdict.
+TEST(SurfaceDbAdmin, VerifyDbSeparatesAbsentCellsFromCorruptOnes) {
+  const AdminFixture f = make_fixture("verify_absent_vs_corrupt");
+  build_healthy_db(f);
+  drop_cell(f, "2026-07-02", "CCC");                    // never-stored: not a defect
+  edit_record(f, "2026-07-01", "AAA", [](std::span<std::byte> rec) {
+    rec.back() ^= std::byte{0xFF};                      // stored and now rotten: a defect
+  });
+  const SurfaceDb db = open_db(f);
+
+  const auto rep = verify_db(db, DbVerifySpec{});
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_FALSE(rep->ok()) << "absence must not launder a checksum fault into a clean verdict";
+  EXPECT_EQ(rep->cells_checked, std::size_t{9});
+  EXPECT_EQ(rep->cells_ok, std::size_t{7});
+  EXPECT_EQ(rep->cells_absent, std::size_t{1});
+  EXPECT_EQ(rep->cells_checksum, std::size_t{1});
+  EXPECT_EQ(rep->cells_unmappable, std::size_t{0});
+
+  // Each on its own list, each naming its own cell, neither carrying the other's.
+  ASSERT_EQ(rep->failures.size(), std::size_t{1});
+  EXPECT_EQ(rep->failures.front().key, "2026-07-01");
+  EXPECT_EQ(rep->failures.front().symbol, "AAA");
+  EXPECT_EQ(rep->failures.front().kind, DbCellFailure::ChecksumMismatch);
+  ASSERT_EQ(rep->absent_cells.size(), std::size_t{1});
+  EXPECT_EQ(rep->absent_cells.front().key, "2026-07-02");
+  EXPECT_EQ(rep->absent_cells.front().symbol, "CCC");
+
+  // Removing the corruption alone flips the verdict, with the absence unmoved:
+  // the two are independent inputs, not one blended "something is missing" score.
+  const AdminFixture clean = make_fixture("verify_absent_only");
+  build_healthy_db(clean);
+  drop_cell(clean, "2026-07-02", "CCC");
+  const SurfaceDb clean_db = open_db(clean);
+  const auto clean_rep = verify_db(clean_db, DbVerifySpec{});
+  ASSERT_TRUE(clean_rep.has_value()) << (clean_rep ? "" : clean_rep.error().to_string());
+  EXPECT_TRUE(clean_rep->ok());
+  EXPECT_EQ(clean_rep->cells_absent, rep->cells_absent);
+}
+
+// The absent list obeys the cap, and the cap's budget is its OWN. A shared pool
+// would let absence — permanently non-zero on a converged database, and recorded
+// first — elide the corruption fault that appeared beside it, which is the one
+// line in the whole report that must never be the one that gets dropped.
+TEST(SurfaceDbAdmin, VerifyDbAbsentListCapIsSeparateFromTheFailureCap) {
+  const AdminFixture f = make_fixture("verify_absent_cap");
+  build_healthy_db(f);
+  for (const char *key : {"2026-07-01", "2026-07-02", "2026-07-06"}) {
+    drop_cell(f, key, "CCC"); // three absences, one per date
+  }
+  edit_record(f, "2026-07-01", "AAA",
+              [](std::span<std::byte> rec) { rec.back() ^= std::byte{0xFF}; });
+  const SurfaceDb db = open_db(f);
+
+  DbVerifySpec spec;
+  spec.max_reported_failures = 1; // one number, spent twice
+  const auto rep = verify_db(db, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_FALSE(rep->ok());
+  EXPECT_EQ(rep->cells_absent, std::size_t{3}); // totals are never truncated
+  EXPECT_EQ(rep->cells_checksum, std::size_t{1});
+
+  // The fault survived three absences competing for the same numeric cap.
+  ASSERT_EQ(rep->failures.size(), std::size_t{1});
+  EXPECT_EQ(rep->failures.front().kind, DbCellFailure::ChecksumMismatch);
+  EXPECT_EQ(rep->n_failures_elided, std::size_t{0});
+  // ...and the absent list truncated on its own budget, saying so.
+  EXPECT_EQ(rep->absent_cells.size(), std::size_t{1});
+  EXPECT_EQ(rep->n_absent_elided, std::size_t{2});
+
+  // A zero cap retains no detail at all on either list and elides everything --
+  // the counters still tell the truth (the `max_reported_failures == 0` contract).
+  DbVerifySpec none;
+  none.max_reported_failures = 0;
+  const auto quiet = verify_db(db, none);
+  ASSERT_TRUE(quiet.has_value()) << (quiet ? "" : quiet.error().to_string());
+  EXPECT_TRUE(quiet->absent_cells.empty());
+  EXPECT_EQ(quiet->n_absent_elided, std::size_t{3});
+  EXPECT_EQ(quiet->cells_absent, std::size_t{3});
+  EXPECT_TRUE(quiet->failures.empty());
+  EXPECT_EQ(quiet->n_failures_elided, std::size_t{1});
 }
 
 // A spec that cannot be honored is an Err, not a silently-degraded walk.

@@ -364,6 +364,14 @@ else. Three consequences worth knowing:
   a new reason — because that, and only that, separates reading (b) from reading
   (a). Compare it against the previous run's; `--report` gives you a diffable CSV
   of every cell if you want to automate the comparison.
+
+  **The same nine cells are what `verify` reports as `absent`**, from the other
+  end: the build says "these did not fit", the verifier says "the database does not
+  hold these". The two lists should agree, and
+  [Absence is not a failure](#absence-is-not-a-failure--the-cells-the-database-never-stored)
+  is where that count becomes scriptable (`--max-absent`). If a cell shows up
+  `absent` in `verify` that this warning has never named, it did not fail to
+  fit — it was **destroyed**, and that is the reading to act on.
 - **It reads `cells_carried`, not `cells_carried_disabled`.** `cells_carried` is
   what grants the exit-3 exemption, so it is what the warning must track. A run
   that carried only *disabled* symbols' preserved surfaces is not exempt — it still
@@ -772,7 +780,7 @@ atx-vol-surface-db <subcommand> --db <root> [flags]
 | `symbols` | — | One `symbol` line per configured symbol. |
 | `config` | `--symbol SYM` | One symbol's full stored fit config + provenance. |
 | `query` | `--key KEY --symbol SYM --strike K --tenor T` | What does this cell evaluate to? iv / total variance / forward / uid / slices. |
-| `verify` | `[--from KEY] [--to KEY] [--symbols A,B,C] [--include-disabled] [--probe-tenor T] [--max-failures N] [--min-cells N]` | Does every selected cell still map, checksum and evaluate? |
+| `verify` | `[--from KEY] [--to KEY] [--symbols A,B,C] [--include-disabled] [--probe-tenor T] [--max-failures N] [--min-cells N] [--max-absent N]` | Does every selected cell the database **holds** still map, checksum and evaluate — and which cells does it not hold? |
 | `enable` | `--symbol SYM` | Resume fitting SYM on every date. **Writes the manifest.** |
 | `disable` | `--symbol SYM --yes` | Stop fitting SYM on **every** date. Its stored surfaces are kept. **Writes the manifest.** |
 
@@ -866,8 +874,14 @@ symbol as if it were new.
 
 ### What a green `verify` proves, and does not prove
 
-Each selected cell passes **three gates**, in order, stopping at the first failure:
+Each selected cell passes **three gates**, in order, stopping at the first failure
+— with one **triage** step in front of them deciding whether the cell is in the
+game at all:
 
+0. **presence** *(only when the map below fails)* — re-open the cell's partition
+   and ask its archive **directory** whether the symbol is there. Not there ⇒
+   `absent`: nothing was ever stored, so there are no bytes to gate. There, or the
+   partition will not open at all ⇒ the mapping failure is real (`unmappable`).
 1. **map** — `map_surface`: the partition file opens, and the record's magic,
    framing and column bounds parse.
 2. **checksum** — `SurfaceArchiveV2::validate_symbol`: the record's payload bytes
@@ -876,15 +890,19 @@ Each selected cell passes **three gates**, in order, stopping at the first failu
    `forward_at(probe_tenor)`, `T` = `probe_tenor`) and require a finite, positive
    implied vol.
 
-**It proves**, for every cell the flags selected: the file is there, the bytes are
-the bytes that were written, and the surface produces a usable number at one point.
+**It proves**, for every cell the database **holds**: the file is there, the bytes
+are the bytes that were written, and the surface produces a usable number at one
+point.
 
 **It does not prove** the numbers are *right* — no oracle is consulted, and a
 surface fitted from bad market data checksums perfectly and probes fine. It says
 nothing about points other than the probe, nothing about cells the flags excluded,
 and it cannot know how big the database was *supposed* to be — that is
-`--min-cells`, which only you can supply. It is a **byte-integrity + liveness
-check over a selected grid**, deliberately not more.
+`--min-cells`, which only you can supply. Nor does it judge the cells the database
+does **not** hold: those are counted and named, never scored — see
+[Absence is not a failure](#absence-is-not-a-failure--the-cells-the-database-never-stored).
+It is a **byte-integrity + liveness check over a selected grid**, deliberately not
+more.
 
 #### Why gate 2 exists
 
@@ -919,10 +937,10 @@ Line-oriented and stable for scripting; **no JSON**. Two shapes only:
 - **Scalars** print as `key value` (one per line), mirroring
   `atx-vol-surface-db-build`'s stdout.
 - **Repeated records** print as `<record> <id> field=value field=value ...`.
-  Record types: `partition`, `surface`, `symbol`, `fail`.
+  Record types: `partition`, `surface`, `symbol`, `fail`, `absent`.
 
 Fields never move and record lines never wrap, so
-`grep '^fail '`, `awk '$1=="partition"'`, and
+`grep '^fail '`, `grep '^absent '`, `awk '$1=="partition"'`, and
 `... | grep '^cells_ok ' | cut -d' ' -f2` are all stable.
 
 **`info`**
@@ -985,18 +1003,25 @@ provenance is present, `provenance.purpose`, `.quality_mode`, `.state`,
 partitions <n>              # partitions in range (the walk's rows)
 partitions_in_db <n>        # partitions the manifest holds, IGNORING --from/--to
 symbols <n>                 # symbols in the walk (the walk's columns)
-cells_checked <n>           # == cells_ok + cells_unmappable + cells_non_finite + cells_checksum
+cells_checked <n>           # == cells_ok + cells_absent + cells_unmappable
+                            #    + cells_non_finite + cells_checksum
 cells_ok <n>
-cells_unmappable <n>        # map_surface failed (file gone/corrupt, or symbol absent)
+cells_absent <n>            # never stored: the partition's directory does not list it
+cells_unmappable <n>        # the directory DOES list it and it would not map -- or the
+                            #    partition file itself would not open
 cells_checksum <n>          # mapped, but the payload no longer matches its stored CRC
 cells_non_finite <n>        # bytes intact, but the ATM probe produced no usable number
 symbols_disabled <n>        # manifest symbols the walk DROPPED (stored config disabled)
 failures_reported <n>       # fail lines below (capped by --max-failures)
 failures_elided <n>         # faults NOT listed -- truncation is never silent
+absent_reported <n>         # absent lines below (same cap, INDEPENDENT budget)
+absent_elided <n>           # absences NOT listed -- also never silent
 fail <KEY> <SYM> kind=<unmappable|checksum|non_finite> detail=<message>
+absent <KEY> <SYM>          # no detail=: nothing failed, so there is no error to quote
 disabled_symbol <SYM>       # one per dropped column, so `ok` is never a blank cheque
 min_cells <n>
-verdict <ok|FAILED>
+max_absent <n|unset>
+verdict <ok|ABSENT|FAILED>
 ```
 
 `symbols_disabled` / `disabled_symbol` do **not** change the verdict, and that is
@@ -1010,9 +1035,12 @@ print (and a stderr note points at `--include-disabled` and the build's
 a hard `FAILED` via [the zero-cell verdict](#the-zero-cell-verdict--verify-cannot-pass-what-it-never-read).
 
 The three `kind`s stay distinct so a fault names its own root cause: `unmappable`
-is "the file or the record is not there / does not parse", `checksum` is "the bytes
-changed under us", `non_finite` is "valid bytes, unusable surface". See
-[the three gates](#what-a-green-verify-proves-and-does-not-prove).
+is "the record should be there and is not readable", `checksum` is "the bytes
+changed under us", `non_finite` is "valid bytes, unusable surface". A cell that was
+never stored is **not one of them** — it is `absent`, on its own line and its own
+counter, and it does not move the verdict. See
+[the gates](#what-a-green-verify-proves-and-does-not-prove) and
+[Absence is not a failure](#absence-is-not-a-failure--the-cells-the-database-never-stored).
 
 `partitions_in_db` is range-independent on purpose: it is what lets the tool tell
 *"this database is fresh"* from *"this database is full and your window matched
@@ -1024,10 +1052,11 @@ none of it"*.
 | --- | --- | --- |
 | `--from KEY` / `--to KEY` | unbounded | Inclusive partition-key range, compared lexicographically on the canonical (upper-cased) key. ISO dates sort correctly, so `--from 2026-07-01 --to 2026-07-31` is a July restriction. |
 | `--symbols A,B,C` | manifest symbol table | Restrict the columns. Whitespace per field is trimmed, same rule as the build CLI. |
-| `--include-disabled` | off | Include fail-closed **disabled** symbols. By default they are skipped, and what that skip hides depends on **when** the name was disabled. Disabled **before it ever fitted**: it is absent from every partition, so checking it would report a missing cell on every date of every healthy database — that is the skip this default exists for. Disabled **after it fitted**: it **keeps** its stored surfaces (`enabled = false` means *stop fitting*, never *delete* — see [Resume semantics](#resume-semantics)) and they still load, so the default walk leaves **real cells unverified**. Turn this on to walk both cases; the first reports the whole column `unmappable`, the second reports the cells that are actually there. It does **not** prove a disabled name is absent — it reports whatever is there, which is the point. |
+| `--include-disabled` | off | Include fail-closed **disabled** symbols. By default they are skipped, and what that skip hides depends on **when** the name was disabled. Disabled **before it ever fitted**: it is absent from every partition, so checking it would report a missing cell on every date of every healthy database — that is the skip this default exists for. Disabled **after it fitted**: it **keeps** its stored surfaces (`enabled = false` means *stop fitting*, never *delete* — see [Resume semantics](#resume-semantics)) and they still load, so the default walk leaves **real cells unverified**. Turn this on to walk both cases; the first reports the whole column `absent` and still verifies **clean**, the second reports the cells that are actually there. It does **not** prove a disabled name is absent — it reports whatever is there, which is the point. |
 | `--probe-tenor T` | `30/365` | Tenor for the per-cell ATM evaluation. Must be finite and > 0. |
-| `--max-failures N` | `32` | Cap on `fail` lines. Overflow is counted in `failures_elided`, never dropped silently, and the `cells_*` totals stay exact. `0` prints no detail at all and elides everything. Same strict parsing as `--min-cells`. |
+| `--max-failures N` | `32` | Cap on `fail` lines **and, on an independent budget, on `absent` lines**. Overflow is counted in `failures_elided` / `absent_elided`, never dropped silently, and the `cells_*` totals stay exact. `0` prints no detail at all and elides everything. Same strict parsing as `--min-cells`. The budgets are separate so a database with many absences can never elide the one `fail` line beside them. |
 | `--min-cells N` | `0` | Fail when fewer than `N` cells were checked. **Strictly parsed** — see below. |
+| `--max-absent N` | unset | Exit **4** (`verdict ABSENT`) when more than `N` cells are **absent**. Off by default, deliberately: a converged database is permanently non-zero here, so a default ceiling would exit non-zero forever. **Strictly parsed.** See [Absence is not a failure](#absence-is-not-a-failure--the-cells-the-database-never-stored). |
 
 **Every value-taking flag requires its value.** A flag left at the end of the
 argv — the shape a dropped shell variable produces — is a **usage error, exit 2**,
@@ -1036,10 +1065,11 @@ never an empty string silently read as a choice. This closed two live traps:
 (you asked about one and got all of them, exit 0), and `--min-cells $EXPECTED`
 with `EXPECTED` unset used to mean *"no floor at all"*.
 
-`--min-cells` and `--max-failures` additionally require a **non-negative integer
-consuming the whole token**: `abc`, `9x`, `-1` and a missing value are all exit 2,
-never a silent `0`. `--min-cells` is the one flag whose entire job is to fail a
-too-small database, so coercing a typo to `0` made it **fail open**:
+`--min-cells`, `--max-failures` and `--max-absent` additionally require a
+**non-negative integer consuming the whole token**: `abc`, `9x`, `-1` and a missing
+value are all exit 2, never a silent `0`. `--min-cells` is the one flag whose
+entire job is to fail a too-small database, so coercing a typo to `0` made it
+**fail open**:
 
 ```
 $ atx-vol-surface-db verify --db /db --min-cells $EXPECTED    # EXPECTED unset
@@ -1047,6 +1077,102 @@ atx-vol-surface-db: --min-cells requires a value
 $ echo $?
 2
 ```
+
+### Absence is not a failure — the cells the database never stored
+
+**Expect a converged production database to report absent cells on every run.**
+The flagship `prod-2026-07` database reports **9** of its 867, permanently, and it
+is completely healthy: a two-pass rebuild at the correct `--r` re-fits *nothing*
+(`cells_refit 0`, `cells_carried 150`, 858 → 858 surfaces). Those 9 are 8 symbols
+that each fit on their other 16 dates and permanently fail on one — three of them
+on genuinely arbitrage-violating boards. There is nothing to fix and nothing to
+clear.
+
+```
+cells_checked 867
+cells_ok 858
+cells_absent 9
+cells_unmappable 0
+verdict ok
+```
+
+`verify` used to call every one of those `unmappable` and print `verdict FAILED`,
+exit 1, on **every run over a finished, healthy database**. That is the same
+disease as the build CLI's false TOTAL FIT FAILURE on a converged resume, on a
+different code path, and it has the same cost: an operator who is told FAILED
+every day stops reading FAILED, and the real failure arrives in a signal they
+have already muted. A permanently-red signal is not a signal.
+
+**What separates the two.** The partition's archive **directory** lists exactly the
+symbols the file holds:
+
+| Report | Means | Verdict |
+| --- | --- | --- |
+| `absent` | The directory does not list the symbol. **Nothing was ever stored there.** | not affected |
+| `unmappable` | The directory **does** list it and it would not map — or the partition file would not open at all, so the directory that decides is itself missing. | `FAILED` |
+
+A deleted partition file therefore stays `unmappable`, loudly. Absence is only
+ever reported about a partition that opened and parsed.
+
+#### What absence cannot tell you, and what to do about it
+
+An absent cell has two possible histories and **nothing on disk distinguishes
+them** — the format keeps no tombstone, so a destroyed cell is byte-for-byte a
+cell that was never fitted:
+
+- **(a) the fit permanently fails** for that `(date, symbol)`, so nothing was ever
+  written. Expected, permanent, not a defect. This is `prod-2026-07`'s 9.
+- **(b) a surface was stored there and is gone.** A present, *enabled* cell whose
+  re-fit fails **loses its stored surface**, because a partition rewrite is
+  whole-file. This is measured, current behaviour, not a hypothetical: one
+  production-shaped run with the wrong `--r` destroyed **95 stored surfaces**.
+  It is pinned as current behaviour by
+  `SurfaceDbPopulate.DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrivesTheRetry`;
+  closing it needs an archive format change, so until then `verify` is the
+  instrument that sees it.
+
+So the tool names the ambiguity instead of judging it — the same choice, for the
+same reason, as the build CLI's
+[carry-masked warning](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing).
+Every absent cell is printed:
+
+```
+absent 2026-07-01 MCD
+absent 2026-07-08 COST
+...
+```
+
+**What you watch is that set CHANGING, not that it exists.** Same cells as last
+run ⇒ (a). A cell that verified last month and is absent today ⇒ (b), and it is
+the *only* way (b) ever shows up.
+
+**Make it scriptable — this is the part that matters.** A human diff of the
+`absent` block is the diagnosis; the ceiling is the alarm. Record the count your
+database is expected to be missing and assert it:
+
+```bash
+# prod-2026-07: 9 permanently-unfittable cells, 858 stored surfaces.
+atx-vol-surface-db verify --db /data/surface-db/prod-2026-07 \
+    --min-cells 867 --max-absent 9
+```
+
+- nothing missing beyond the 9, nothing corrupt → `verdict ok`, exit **0**
+- a 10th cell goes missing → `verdict ABSENT`, exit **4**, and the `absent` lines
+  tell you which
+- anything fails a gate → `verdict FAILED`, exit **1**, which **wins** over
+  `ABSENT`: a damaged database is the answer to act on first
+
+`--max-absent` is off by default on purpose. A default ceiling of `0` would exit
+non-zero on `prod-2026-07` forever — the permanently-red verdict again, wearing a
+different number. It is the same division of labour as `--min-cells`: the expected
+count is a fact about your universe, not about the database, and only you can
+supply it.
+
+> **Raise the ceiling deliberately, never reflexively.** `--max-absent` is a
+> declaration that you have *looked at* the absent set and accepted it. Bumping it
+> from 9 to 104 because the alarm fired is how (b) gets acknowledged into silence.
+> Diff the `absent` lines first; if a cell in there used to hold a surface, you
+> have lost data and the number is not the problem.
 
 ### The zero-cell verdict — `verify` cannot pass what it never read
 
@@ -1111,25 +1237,34 @@ always assert it:
 atx-vol-surface-db verify --db /db --min-cells 9   # -> verdict FAILED, exit 1
 ```
 
-Three guards now stack, and they are complementary rather than redundant:
+Four guards now stack, and they are complementary rather than redundant:
 
 | Guard | Catches |
 | --- | --- |
 | build exit `3` | "this **run** produced nothing" — every symbol died at config selection, or every scheduled cell failed to fit. |
 | zero-cell `FAILED` verdict | "this **run of verify** read nothing" over a database that holds partitions — all symbols disabled, an empty `--symbols`, or a window that matched nothing. Needs no flag. |
-| `--min-cells N` | "this **database** is smaller than I expected" — including one that was never built. The only guard that can know the intended size, so it is the only one you must remember. |
+| `--min-cells N` | "this **database** is smaller than I expected" — including one that was never built. Counts every cell the walk *looked at*, absent ones included, so it is a statement about the **grid**. |
+| `--max-absent N` | "this database is **missing more cells** than I expected" — the only guard that can see a stored surface that was destroyed, because nothing on disk records that it ever existed. A statement about the **holes** in that grid. |
 
-**Keep `--min-cells` in every script.** It is no longer the *only* thing between a
-broken database and `verdict ok` — forgetting it can no longer turn "read nothing"
-into green — but it is still the only thing that knows what "big enough" means.
+**Keep `--min-cells` in every script**, and `--max-absent` beside it once you know
+your absent count. `--min-cells` is no longer the *only* thing between a broken
+database and `verdict ok` — forgetting it can no longer turn "read nothing" into
+green — but it is still the only thing that knows what "big enough" means, and it
+does **not** notice a full-size grid quietly hollowing out: 867 cells checked is
+867 whether 858 of them hold a surface or 763 do. That is `--max-absent`'s job.
 
 ### Exit codes
 
 | Exit | When |
 | --- | --- |
-| `0` | Succeeded. For `verify`: the walk **covered cells**, every one passed all three gates, **and** `cells_checked >= --min-cells`. For `enable`/`disable`: the symbol **is now** in the requested state, whether or not this run put it there (`changed 0` is a success — the verbs are idempotent). |
+| `0` | Succeeded. For `verify`: the walk **covered cells**, every cell the database **holds** passed all three gates, `cells_checked >= --min-cells`, and `cells_absent <= --max-absent` (which is vacuous unless you passed the flag). Cells the database does not hold are counted, named and warned about on stderr **without** changing this. For `enable`/`disable`: the symbol **is now** in the requested state, whether or not this run put it there (`changed 0` is a success — the verbs are idempotent). |
 | `1` | A runtime failure (message on **stderr**, no `verdict` line) — db won't open, unknown partition/symbol, unreadable partition file, or an `enable`/`disable` naming a symbol the manifest does not configure. **Or** `verify` returned `verdict FAILED` on **stdout**: failing cells, too few cells, or a walk that selected none. |
 | `2` | A usage error — unknown subcommand, unknown flag, a required flag missing (**`disable`'s `--yes` is one**), a flag left **without a value**, or a malformed numeric value. Every one of these is decided **before the database is opened**, so a typo'd subcommand against an unreadable `--db` reports the typo, not the open failure — and a `disable` refused for want of `--yes` provably wrote nothing. Usage on stderr. |
+| `4` | `verify` only, and **only if you passed `--max-absent N`**: more cells are `absent` than `N` allows (`verdict ABSENT`). Nothing failed a gate — this is a **coverage** answer, kept off code `1` so a script can tell *"the database is damaged"* from *"the database is missing cells I did not expect it to be missing"*. `FAILED` wins when both hold. See [Absence is not a failure](#absence-is-not-a-failure--the-cells-the-database-never-stored). |
+
+`3` is not used by this tool: it is `atx-vol-surface-db-build`'s total-failure
+code, and the two tools share one exit vocabulary so a wrapper script can read
+either without a lookup table.
 
 The `verdict` line disambiguates the two meanings of exit 1: a health failure
 always prints one, a runtime failure never does.
@@ -1159,22 +1294,26 @@ total_variance 0.0049739819064085963
 forward 100.26404035644119
 
 # Health gate, sized: nine cells, all mapped, checksummed and evaluated.
-$ atx-vol-surface-db verify --db /db --min-cells 9 && echo HEALTHY
+$ atx-vol-surface-db verify --db /db --min-cells 9 --max-absent 0 && echo HEALTHY
 partitions 3
 partitions_in_db 3
 symbols 3
 cells_checked 9
 cells_ok 9
+cells_absent 0
 cells_unmappable 0
 cells_non_finite 0
 cells_checksum 0
 verdict ok
 HEALTHY
 
-# After `rm /db/partitions/2026-07-02.atxvsa` -- every cell of that date is named:
+# After `rm /db/partitions/2026-07-02.atxvsa` -- every cell of that date is named,
+# and it stays `unmappable`: the directory that would prove "never stored" is
+# inside the file that is gone.
 $ atx-vol-surface-db verify --db /db
 cells_checked 9
 cells_ok 6
+cells_absent 0
 cells_unmappable 3
 fail 2026-07-02 AAA kind=unmappable detail=NotFound: SurfaceArchiveV2::open_file: file not found
 fail 2026-07-02 BBB kind=unmappable detail=NotFound: SurfaceArchiveV2::open_file: file not found
@@ -1188,6 +1327,7 @@ $ echo $?
 $ atx-vol-surface-db verify --db /db
 cells_checked 9
 cells_ok 8
+cells_absent 0
 cells_unmappable 0
 cells_non_finite 0
 cells_checksum 1
@@ -1195,16 +1335,42 @@ fail 2026-07-01 AAA kind=checksum detail=ParseError: SurfaceArchiveV2::validate:
 verdict FAILED
 $ echo $?
 1
+
+# A cell CCC never fitted on 07-02. The database is intact; it simply does not
+# hold that one. Named, counted, and green -- until you declare a ceiling it
+# breaks.
+$ atx-vol-surface-db verify --db /db
+cells_checked 9
+cells_ok 8
+cells_absent 1
+cells_unmappable 0
+absent 2026-07-02 CCC
+max_absent unset
+verdict ok
+$ echo $?
+0
+
+$ atx-vol-surface-db verify --db /db --max-absent 0
+atx-vol-surface-db: verify found 1 absent cell(s), above the declared maximum 0. ...
+cells_absent 1
+absent 2026-07-02 CCC
+max_absent 0
+verdict ABSENT
+$ echo $?
+4
 ```
 
 **Operator checklist after a build:** `atx-vol-surface-db verify --db <root>
---min-cells <expected>`, then read `info` for `partitions_missing` and the
-`manifest_bytes` vs `bytes_on_disk` agreement. That, plus the build's
-`cells_ok` / `cells_failed` check above, is the whole acceptance path — no
-Python. Remember what the green means: the bytes are intact and every selected
-cell evaluates, **not** that the numbers are right or that the coverage is
-complete (see
-[what a green `verify` proves](#what-a-green-verify-proves-and-does-not-prove)).
+--min-cells <expected> --max-absent <expected-holes>`, then read `info` for
+`partitions_missing` and the `manifest_bytes` vs `bytes_on_disk` agreement. That,
+plus the build's `cells_ok` / `cells_failed` check above, is the whole acceptance
+path — no Python. On the first run of a new database, leave `--max-absent` off,
+read the `absent` block, satisfy yourself that every cell in it is a fit that
+genuinely fails, and *then* pin the count. Remember what the green means: the bytes
+are intact and every cell the database holds evaluates, **not** that the numbers
+are right or that the coverage is complete (see
+[what a green `verify` proves](#what-a-green-verify-proves-and-does-not-prove) and
+[Absence is not a failure](#absence-is-not-a-failure--the-cells-the-database-never-stored)).
 
 ## Sibling tools
 

@@ -78,6 +78,38 @@
 // spec excluded. It IS a byte-integrity + liveness check over a selected grid, and
 // it is deliberately not more than that.
 //
+// ── ABSENCE IS NOT A FAULT (FIX-H) ───────────────────────────────────────────
+//
+// A selected cell can be missing for two reasons that could not be more
+// different, and `verify_db` used to report both as `Unmappable`. The cost was
+// not cosmetic: the flagship production database — healthy, converged, re-fitting
+// nothing — printed `verdict FAILED` and exited 1 on EVERY run, because 9 of its
+// 867 cells are permanently unfittable.
+//
+//   NEVER STORED   the fit for that (partition, symbol) permanently fails, so
+//                  nothing was ever written there. Expected, permanent, and not a
+//                  defect. On `prod-2026-07` that is 9 cells over 8 symbols, each
+//                  of which fits fine on its other 16 dates.
+//   STORED, GONE   the surface WAS written and the partition no longer carries
+//                  it. That is data loss.
+//
+// The partition's own ARCHIVE DIRECTORY separates those from the corruption case:
+// it lists exactly the symbols the file holds. Absent from the directory => it
+// was never stored (`cells_absent`). Present in the directory and the map fails
+// => something that should be readable is not (`cells_unmappable`).
+//
+// WHAT THE DIRECTORY CANNOT DO is tell the two ABSENCES apart, because the format
+// keeps no tombstone: a cell a whole-partition rewrite destroyed is byte-for-byte
+// a cell that was never fitted (`SurfaceDbPopulate.DegradedCellLosesItsStored
+// SurfaceAndPresenceIsWhatDrivesTheRetry` pins that loss as current behaviour).
+// So `ok()` deliberately ignores `cells_absent` — a permanently-red verdict is
+// not a signal, and one that fires on a converged database trains the operator to
+// stop reading it — and the report NAMES the absent cells instead, under the same
+// cap and the same never-silent elision count as the faults, so what an operator
+// watches is the absent SET rather than the fact that absence exists. Same
+// discipline, for the same reason, as `is_carry_masked_fit_failure`
+// (surface_db_build.hpp), which took the identical decision one tool over.
+//
 // ── Why `map_surface` and not `load_surface` ─────────────────────────────────
 //
 // `query_surface` / `verify_db` deliberately go through the ZERO-COPY
@@ -260,11 +292,22 @@ inline constexpr double kSurfaceDbVerifyProbeT = 30.0 / 365.0;
 // truncation read as "everything passed".
 inline constexpr std::size_t kSurfaceDbVerifyMaxFailures = 32;
 
-// Why one cell failed. The three kinds are three DIFFERENT questions answered in
+// Why one cell FAILED. The three kinds are three DIFFERENT questions answered in
 // order, and they stay distinct so a fault names its own root cause.
+//
+// A cell the partition never stored is NOT one of them and deliberately has no
+// enumerator here (see `DbAbsentCell`): everything in this enum is a
+// corruption-class fault that moves `ok()`, and absence is not. Giving absence a
+// kind would have put it in `failures` beside the faults, where the counter that
+// drives the verdict would have had to special-case it and a `fail` line would
+// have kept saying "fail" about a cell nothing is wrong with.
 enum class DbCellFailure : std::uint8_t {
-  // `map_surface` did not return a surface: the partition file is missing or
-  // corrupt, or the partition simply does not carry that symbol.
+  // The partition's directory says the symbol IS there and `map_surface` still
+  // did not return a surface — or the partition could not be opened AT ALL
+  // (file missing, framing/CRC damage at open), in which case the directory that
+  // would have answered "was this ever stored?" is itself what is unreadable.
+  // Either way something that should be readable is not. A symbol simply absent
+  // from a partition the walk opened fine is NOT this — it is `cells_absent`.
   Unmappable = 0,
   // The surface mapped and its bytes are intact, but the ATM probe did not
   // produce a usable number (non-finite, or a non-positive implied vol).
@@ -283,6 +326,17 @@ struct DbCellFault {
   std::string symbol{};
   DbCellFailure kind{DbCellFailure::Unmappable};
   std::string detail{}; // the mapping error's text, or the offending probe value
+};
+
+// One selected (partition, symbol) cell the partition's archive directory does
+// NOT list — the surface was never stored there. No `detail`, on purpose: there
+// is no error to quote, because nothing failed. The cell's IDENTITY is the whole
+// payload, because the operator's question is never "why is this one absent?"
+// (the database cannot know) but "is this the same set that was absent last
+// time?".
+struct DbAbsentCell {
+  std::string key{};
+  std::string symbol{};
 };
 
 // What to verify. All fields are restrictions on an otherwise exhaustive walk.
@@ -306,11 +360,19 @@ struct DbVerifySpec {
   // Cap on `DbVerifyReport::failures`. Extra faults are counted in
   // `n_failures_elided`, never dropped silently. 0 retains no detail at all
   // (every fault is elided) — the counters still tell the truth.
+  //
+  // It caps `DbVerifyReport::absent_cells` too, and the two budgets are
+  // INDEPENDENT: this is one number spent twice, never one pool shared. Sharing
+  // would have made absence able to hide corruption — a converged production
+  // database carries absences permanently (9 on `prod-2026-07`) and they are
+  // recorded first, so a shared 32-cell pool would elide the ONE checksum fault
+  // that appeared beside 40 absences. The cap exists to bound output, not to
+  // ration it between two questions of different severity.
   std::size_t max_reported_failures{kSurfaceDbVerifyMaxFailures};
 };
 
-// The health verdict. `cells_checked == cells_ok + cells_unmappable +
-// cells_non_finite + cells_checksum` always holds.
+// The health verdict. `cells_checked == cells_ok + cells_absent +
+// cells_unmappable + cells_non_finite + cells_checksum` always holds.
 struct DbVerifyReport {
   std::size_t n_partitions{0};       // partitions IN RANGE (the walk's rows)
   std::size_t n_partitions_in_db{0}; // partitions the manifest holds, range-independent
@@ -322,6 +384,33 @@ struct DbVerifyReport {
   std::size_t cells_checksum{0};       // mapped, but the payload CRC did not match
   std::vector<DbCellFault> failures{}; // capped at spec.max_reported_failures
   std::size_t n_failures_elided{0};    // faults NOT in `failures` (never silent)
+
+  // Cells the walk selected that their partition's archive directory does NOT
+  // list. NOT a fault, NOT in `failures`, and NOT read by `ok()` — see the
+  // ABSENCE IS NOT A FAULT block at the top of this header for the whole
+  // argument. The short form: this counter is PERMANENTLY NON-ZERO on a healthy
+  // converged database (every permanently-unfittable cell lands here on every
+  // run, forever), so a verdict that read it would be permanently FAILED, which
+  // is the defect FIX-H exists to remove.
+  //
+  // It is also, today, the ONLY place a DESTROYED surface shows up. A present,
+  // enabled cell whose re-fit fails loses its stored surface, because a partition
+  // rewrite is whole-file — 95 surfaces were lost that way in one measured run on
+  // a production-shaped copy, and that loss is pinned as CURRENT BEHAVIOUR by
+  // `SurfaceDbPopulate.DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrives
+  // TheRetry` (fixing it needs an archive format change). A destroyed cell and a
+  // never-fitted cell are byte-for-byte identical on disk; nothing in the format
+  // records which happened.
+  //
+  // That is why this is a COUNT plus a NAMED, CAPPED LIST rather than a verdict:
+  // the discriminator is not the number's existence but whether the SET CHANGED
+  // since the last run, which only a reader (or an operator-supplied ceiling —
+  // `atx-vol-surface-db verify --max-absent N`) can decide. Making it silent
+  // would trade a false alarm for a silent data loss; making it a verdict would
+  // reinstate the false alarm. It is loud and it does not judge.
+  std::size_t cells_absent{0};
+  std::vector<DbAbsentCell> absent_cells{}; // capped at spec.max_reported_failures
+  std::size_t n_absent_elided{0};           // absences NOT in `absent_cells` (never silent)
   // The manifest symbols this walk DROPPED because their stored config is
   // disabled (canonical, sorted). Populated only on the default exhaustive walk —
   // an explicit `spec.symbols` is honoured verbatim (a named disabled symbol IS
@@ -353,22 +442,40 @@ struct DbVerifyReport {
     return n_partitions_in_db > 0 && cells_checked == 0;
   }
 
+  // CORRUPTION-CLASS ONLY, and `cells_absent` is deliberately not in the list.
+  // The verdict answers "is everything this database STORED still good?" — every
+  // term here is a byte or a number that went wrong under a cell that exists.
+  // "Which cells does it not hold?" is a different question with a different
+  // audience and no in-band answer (a never-fitted cell and a destroyed one are
+  // indistinguishable on disk), so it gets its own counter and its own list and
+  // leaves this alone. Adding it here would make every converged production
+  // database read FAILED forever, which is precisely the state FIX-H found.
   [[nodiscard]] constexpr bool ok() const noexcept {
     return cells_unmappable == 0 && cells_non_finite == 0 && cells_checksum == 0 &&
            !selected_no_cells();
   }
 };
 
-// Walk the (partition x symbol) grid selected by `spec`. Each cell passes THREE
-// gates, in this order, and stops at the first that fails:
+// Walk the (partition x symbol) grid selected by `spec`. Each cell passes three
+// gates, in this order, and stops at the first that fails — preceded by one
+// TRIAGE step that decides whether the cell is in the game at all:
 //
+//   0. presence   — only when the map below fails, and only when it failed with
+//                   NotFound. Re-open the cell's partition and ask its archive
+//                   DIRECTORY whether the symbol is there. Not there =>
+//                   `cells_absent`, and no fault is recorded: the surface was
+//                   never stored, and no gate can be applied to bytes that do not
+//                   exist. There => the mapping failure is real and falls through
+//                   to `Unmappable`. When the partition itself cannot be opened,
+//                   the directory is exactly what is missing, so the cell stays
+//                   `Unmappable` (the corruption reading), and that is the case
+//                   the removed-partition-file test pins. Any error OTHER than
+//                   NotFound stays a fault whatever the directory says.
 //   1. map        — `SurfaceDb::map_surface`; proves magic, framing and bounds.
 //   2. checksum   — `SurfaceArchiveV2::validate_symbol` over the archive the map
 //                   already holds open; proves the payload BYTES are the ones the
 //                   writer checksummed. Ordered before the probe because a byte
-//                   fault is the root cause of any number it produces, and after
-//                   the map because "this partition does not carry that symbol"
-//                   must stay `Unmappable` rather than becoming a checksum fault.
+//                   fault is the root cause of any number it produces.
 //   3. probe      — evaluate one ATM-ish point (K = the surface's own
 //                   `forward_at(probe_T)`, T = `probe_T`) to prove the surface
 //                   yields a finite, positive implied vol rather than merely
@@ -380,15 +487,26 @@ struct DbVerifyReport {
 // anyway — a health check that skips the checksum the format already carries is
 // not a health check, and it is the only gate that sees intra-record damage.
 //
+// Gate 0 costs one extra partition open, LAZILY and at most ONCE per partition
+// row, and only on a row where some cell failed to map: a database with nothing
+// missing pays nothing at all, and the pathological case is one re-read of each
+// partition file. It deliberately does NOT hoist to an unconditional
+// open-per-row — the mapping path is the one production readers use (see "Why
+// map_surface and not load_surface" above) and it stays the primary gate; the
+// directory is consulted only to CLASSIFY a failure it already produced.
+//
 // A cell failure is TALLIED, never fatal — the whole point is to enumerate every
 // broken cell in one pass. Err is reserved for a spec that cannot be honored:
 // InvalidArgument (non-finite / non-positive `probe_T`, an empty or oversized
 // entry in `spec.symbols`) or a manifest whose stored config fails to decode.
 //
 // The report is all-ok (`DbVerifyReport::ok()`) exactly when every selected cell
-// passed all three gates AND the walk actually selected cells (see
-// `selected_no_cells`). A caller wiring this into a script should branch on
-// `ok()`, not on the Result.
+// that the database ACTUALLY HOLDS passed all three gates AND the walk actually
+// selected cells (see `selected_no_cells`). Absent cells do not move the verdict;
+// they are counted and named (`cells_absent` / `absent_cells`) and a caller that
+// wants to gate on them must supply its own expected ceiling, because nothing in
+// the database knows what that ceiling is. A caller wiring this into a script
+// should branch on `ok()`, not on the Result.
 [[nodiscard]] Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec = {});
 
 // ── set_symbol_enabled — the one management action ──────────────────────────

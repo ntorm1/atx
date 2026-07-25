@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -322,13 +323,66 @@ Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec) 
     }
   };
 
+  // The same cap discipline for absences, on its OWN budget — see
+  // `DbVerifySpec::max_reported_failures` for why the two must not share a pool.
+  const auto record_absent = [&](std::string key, std::string symbol) {
+    if (out.absent_cells.size() < spec.max_reported_failures) {
+      out.absent_cells.push_back(DbAbsentCell{std::move(key), std::move(symbol)});
+    } else {
+      ++out.n_absent_elided;
+    }
+  };
+
   // Partition-major so each partition file is opened once and every symbol in it
   // is probed against the same cached mapping (the LRU view cache holds 16).
   for (const std::string &key : keys) {
+    // Gate 0's evidence, opened LAZILY and at most once per row: the partition's
+    // own archive directory, which lists exactly the symbols the file holds. It
+    // is touched only when a cell on this row fails to map, so a row with nothing
+    // missing never pays for it. `open_partition` re-reads the file rather than
+    // borrowing the db's cached mapping (there is no accessor for that mapping
+    // without a successful map, which is precisely what we do not have here); a
+    // concurrent writer can therefore make the two disagree, which is the torn
+    // view this header already documents as the concurrent-writer contract.
+    std::optional<Result<SurfaceArchiveV2>> row_directory;
+    // "The partition opened, and it does NOT list this symbol" — the one fact
+    // that separates a cell that was never stored from one that is unreadable.
+    // A partition that will not open answers `false`: the directory that would
+    // decide is itself the thing that is missing, so the cell keeps the
+    // corruption reading rather than being quietly excused as absent.
+    const auto never_stored = [&](const std::string &partition_key,
+                                  const std::string &sym) -> bool {
+      if (!row_directory.has_value()) {
+        row_directory.emplace(db.open_partition(partition_key));
+      }
+      if (!row_directory->has_value()) {
+        return false;
+      }
+      const Result<ArchiveV2DirEntry> entry = (*row_directory)->find(sym);
+      return !entry && entry.error().code() == ErrorCode::NotFound;
+    };
+
     for (const std::string &symbol : *symbols) {
       ++out.cells_checked;
       const Result<LoadedSurface> mapped = db.map_surface(key, symbol);
       if (!mapped) {
+        // Gate 0. Nothing was ever written here, so there are no bytes to have
+        // gone bad and no fault to record — only a cell the database does not
+        // hold. Counted and named, never folded into the verdict: see the
+        // ABSENCE IS NOT A FAULT block in surface_db_admin.hpp.
+        //
+        // TWO conditions, and the NotFound one is not redundant. The directory
+        // probe answers "is this symbol in the file?", so on its own it would
+        // reclassify EVERY mapping failure whose symbol happens not to be in the
+        // file — including an InvalidArgument from a malformed `spec.symbols`
+        // entry, or a ParseError/IoError from a partition that opened for the
+        // directory read and broke on the record. Absence must mean "the map said
+        // NOT FOUND and the directory agrees", so any other error stays a fault.
+        if (mapped.error().code() == ErrorCode::NotFound && never_stored(key, symbol)) {
+          ++out.cells_absent;
+          record_absent(key, symbol);
+          continue;
+        }
         ++out.cells_unmappable;
         record(key, symbol, DbCellFailure::Unmappable, mapped.error().to_string());
         continue;
