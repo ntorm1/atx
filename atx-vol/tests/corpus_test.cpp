@@ -2215,6 +2215,16 @@ TEST(CorpusBuildSession, SaturatedFanOutOffersOneWorkerUntilItDrains) {
   }
   EXPECT_GT(saturated, 0u) << "the fixture must actually saturate the pool (" << kDrainBoards
                            << " boards vs a " << kDrainOuterBudget << "-wide budget)";
+  // This is the only assertion in the fixture that pins the drain-time property
+  // itself. The two around it are necessary but not sufficient: `saturated`
+  // shows the fixture reached saturation, and `offers.size() > kDrainBoards`
+  // shows the budget was re-resolved more than once per board -- but neither
+  // distinguishes a re-resolution that handed back a WIDER budget from one that
+  // returned the same width. Only a width > 1 observed while tasks remain is
+  // evidence that a board which was already claimed and still running actually
+  // reclaimed. Relax this line and the fixture stops testing T-I1 and starts
+  // testing only that the resolver gets called more than once, which is the
+  // shape of the vacuous guard the first review rejected.
   EXPECT_GT(reclaimed_while_draining, 0u) << "no board reclaimed anything as the pool drained";
   EXPECT_GT(offers.size(), kDrainBoards)
       << "only " << offers.size() << " budget resolutions for " << kDrainBoards
