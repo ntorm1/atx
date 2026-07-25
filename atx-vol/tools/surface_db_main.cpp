@@ -60,6 +60,12 @@
 // and every partition write persists that snapshot's symbol table, so a mutation
 // landing mid-build is silently overwritten. Nothing detects this; it is the
 // scheduling rule `surface_db.hpp` has always stated for this database.
+// The reverse direction is worse and is not hypothetical: both writers rewrite
+// the WHOLE manifest — symbols and the partition table — from their own snapshot
+// with no compare-and-swap on `generation`, so an interleaved mutation can drop a
+// partition record the build already committed and regress the generation, after
+// which `refresh()` will not pick the newer manifest up. See
+// `set_symbol_enabled`'s CONCURRENCY note in surface_db_admin.hpp.
 //
 // Output is line-oriented and stable for scripting: scalars print as `key value`
 // (mirroring atx-vol-surface-db-build), and repeated records print as
@@ -436,7 +442,12 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
 //             trust to use this at all.
 //   enable  — this flips the stored config's bit and runs no selection. If the
 //             disable came from a failed config SELECTION, the stored config is
-//             the generic fallback and `--retry-disabled` is the right tool.
+//             the generic fallback, and re-selecting needs `--retry-disabled` on a
+//             symbol that is STILL disabled (`surface_db_build.cpp`: an enabled
+//             existing config is `n_skipped_existing` regardless of the flag). So
+//             the note must NOT say "just rebuild with --retry-disabled" — by the
+//             time it prints, this command has already disarmed that flag, and the
+//             rebuild would silently fit under the fallback instead.
 //
 // Both notes go to stderr so stdout stays the parseable `key value` record.
 int run_set_enabled(SurfaceDb &db, const std::string &symbol, bool enabled) {
@@ -463,8 +474,14 @@ int run_set_enabled(SurfaceDb &db, const std::string &symbol, bool enabled) {
                  "hive carries for it.\n"
                  "  This restored the STORED config as-is; no selection was re-run. If the disable "
                  "came from a failed config selection (config.failed_symbols on a build report, "
-                 "n_disabled_failed), that stored config is the generic preset fallback — re-run "
-                 "the build with --retry-disabled instead, which re-SELECTS the symbol.\n",
+                 "n_disabled_failed), that stored config is the generic preset fallback and the "
+                 "symbol will now be fitted under it.\n"
+                 "  To re-SELECT it instead, run 'disable %s' and then rebuild with "
+                 "--retry-disabled. Do NOT just rebuild with --retry-disabled now: that flag only "
+                 "re-selects symbols whose stored config is STILL DISABLED, so on a symbol this "
+                 "command has just enabled it is a silent no-op — the build skips it as already "
+                 "configured, fits it under the fallback, and reports nothing.\n",
+                 ch->symbol.c_str(),
                  ch->symbol.c_str());
     return 0;
   }

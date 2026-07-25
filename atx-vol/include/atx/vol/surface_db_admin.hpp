@@ -448,6 +448,18 @@ struct SymbolEnableChange {
 // lock file — so it is a scheduling rule, and it is the same one every other
 // manifest mutation on this database has always been under.
 //
+// STATE THE OTHER DIRECTION TOO, because it is the worse one and "your disable
+// gets overwritten" reads as if the build always wins. Both `upsert_symbol` and
+// `write_partition` rewrite the ENTIRE manifest — symbol table AND partition
+// table — from their own in-process snapshot, with no compare-and-swap on
+// `generation`. So an interleaved disable can just as easily DROP a partition
+// record the build has already committed, and can regress the generation counter;
+// once it has regressed, `SurfaceDb::refresh` will not pick the newer manifest up,
+// because it compares generations. The loss there is a partition the database
+// stops knowing about, not a setting that did not stick. Closing this properly
+// means a generation compare-and-swap on the manifest rewrite, which is a real
+// design change and not a doc fix.
+//
 // Errors: NotFound when `symbol` is not in the manifest's symbol table (this call
 // never CREATES a config — an operator fencing out a name they cannot see named
 // the wrong name, and inventing a default config for it would be the silent
