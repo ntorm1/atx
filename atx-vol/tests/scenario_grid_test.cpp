@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "atx/vol/american.hpp"
+#include "atx/vol/counters.hpp" // A7: the always-on sl_al_boundary_solves ledger
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/scenario_grid.hpp"
@@ -692,4 +693,198 @@ TEST(ScenarioGrid, MeasureTaylorRadius) {
     std::printf("    vol  %-7.4f  %.6f\n", b, worst_dev(false, b));
   }
   SUCCEED();
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// A7 (GR-P3-S) — the Exact arm's boundary-solve ledger, and the value-identity
+// guard that makes the drop legitimate.
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// The Andersen-Lake exercise boundary depends on (K, T, sigma, r, q) but NOT on the
+// spot S (american.cpp's "S-independence seam"). Every Exact cell of one grid shares
+// K, q, T' = T - dt and r' = r + dr, so for a PUT (whose internal-put strike is K)
+// the boundary is a function of the VOL-BUMP INDEX ALONE: one solve per
+// (unique, vol column) prices the whole spot axis of that column, bit-for-bit.
+//
+// A CALL is the McDonald-Schroder internal put P(K, S', q, r'): its internal-put
+// STRIKE is the shocked spot S', so its boundary moves with BOTH axes and no exact
+// reuse exists. That asymmetry is pinned below deliberately — reusing a call's
+// boundary across the spot axis would only be homogeneity-EXACT in R, a few ULP off
+// in IEEE, which is precisely the value shift these tests forbid.
+
+namespace {
+
+// Whole-book ledger delta (`sl_al_boundary_solves`) for one scenario_grid call.
+[[nodiscard]] std::uint64_t grid_boundary_solves(const std::vector<Position> &book,
+                                                 const SurfaceSet &bset,
+                                                 const ScenarioGridSpec &spec) {
+  const auto before = counters::ledger::snapshot();
+  auto r = scenario_grid(book, bset, spec);
+  const auto after = counters::ledger::snapshot();
+  EXPECT_TRUE(r.has_value());
+  return (after - before).get(counters::ledger::Solve::AlBoundarySolves);
+}
+
+// The Exact ARM's own cold solves, isolated from the (route-independent) Greek
+// bundle by differencing against the SAME grid with routing disabled, then removing
+// the one base-reprice (P0) solve each Ok unique pays before the cell fill.
+[[nodiscard]] std::uint64_t exact_arm_solves(const std::vector<Position> &book,
+                                             const SurfaceSet &bset, ScenarioGridSpec spec,
+                                             std::size_t n_unique) {
+  ScenarioGridSpec taylor = spec;
+  taylor.taylor_radius_spot = kInf;
+  taylor.taylor_radius_vol = kInf;
+  const std::uint64_t greeks_only = grid_boundary_solves(book, bset, taylor);
+  const std::uint64_t total = grid_boundary_solves(book, bset, spec);
+  EXPECT_GE(total, greeks_only + n_unique);
+  return total - greeks_only - static_cast<std::uint64_t>(n_unique);
+}
+
+// A put-only book: 5 distinct strikes, one unique each.
+[[nodiscard]] std::vector<Position> put_only_book() {
+  std::vector<Position> book;
+  std::uint64_t id = 0;
+  for (double K : {92.0, 98.0, 100.0, 104.0, 110.0}) {
+    book.push_back({id++, {1, K, 0.30, Side::Put}, -3.0, 100.0});
+  }
+  return book;
+}
+
+// A call-only book on the SAME strikes/tenor, so the two ledger readings differ
+// only by the side (and therefore only by whether boundary reuse exists).
+[[nodiscard]] std::vector<Position> call_only_book() {
+  std::vector<Position> book;
+  std::uint64_t id = 0;
+  for (double K : {92.0, 98.0, 100.0, 104.0, 110.0}) {
+    book.push_back({id++, {1, K, 0.18, Side::Call}, +4.0, 100.0});
+  }
+  return book;
+}
+
+// The all-Exact grid both ledger tests use: no zero on either axis and both radii 0,
+// so every one of the 4 x 3 cells routes Exact.
+[[nodiscard]] ScenarioGridSpec all_exact_spec(unsigned n_threads = 1) {
+  ScenarioGridSpec spec;
+  spec.spot_pct = {-0.10, -0.05, 0.05, 0.10};
+  spec.vol_bump = {-0.04, 0.02, 0.06};
+  spec.dr = 5e-4;
+  spec.dt = 3.0 / 365.0;
+  spec.n_threads = n_threads;
+  spec.taylor_radius_spot = 0.0;
+  spec.taylor_radius_vol = 0.0;
+  return spec;
+}
+
+} // namespace
+
+// ── A7-1. A PUT unique pays ONE boundary solve per vol column, not per cell. ──
+TEST(ScenarioGrid, ExactArmPutBoundarySolvesDropToOnePerVolColumn) {
+  const PricedSurface base = make_essvi(1, 5);
+  const SurfaceSet bset = set_of({&base});
+  const std::vector<Position> book = put_only_book();
+  const ScenarioGridSpec spec = all_exact_spec();
+
+  const std::size_t n_unique = book.size(); // one position per unique
+  const std::size_t n_cells = spec.spot_pct.size() * spec.vol_bump.size();
+  const std::size_t n_cols = spec.vol_bump.size();
+
+  // Every cell must actually be Exact, else the count below means nothing.
+  auto probe = scenario_grid(book, bset, spec);
+  ASSERT_TRUE(probe.has_value()) << probe.error().to_string();
+  ASSERT_EQ(probe->n_cells(), n_cells);
+  ASSERT_EQ(probe->n_ok, n_unique);
+  ASSERT_EQ(probe->n_exact_fallback_lanes, 0u);
+  for (const std::uint8_t rv : probe->route) {
+    ASSERT_EQ(rv, static_cast<std::uint8_t>(ScenarioRoute::Exact));
+  }
+
+  const std::uint64_t solves = exact_arm_solves(book, bset, spec, n_unique);
+  std::printf("[A7] put-only exact-arm solves = %llu (per-cell would be %zu)\n",
+              static_cast<unsigned long long>(solves), n_cells * n_unique);
+  EXPECT_LT(solves, static_cast<std::uint64_t>(n_cells * n_unique));
+  EXPECT_EQ(solves, static_cast<std::uint64_t>(n_cols * n_unique));
+}
+
+// ── A7-2. The drop is STRUCTURAL: the same count at any thread count. ────────
+// Reuse driven by a per-worker cache would make this number depend on how the
+// cells were partitioned; reuse driven by the (unique, vol column) shape cannot.
+TEST(ScenarioGrid, ExactArmSolveCountIsThreadInvariant) {
+  const PricedSurface base = make_essvi(1, 5);
+  const SurfaceSet bset = set_of({&base});
+  const std::vector<Position> book = put_only_book();
+  const std::size_t n_unique = book.size();
+
+  const std::uint64_t s1 = exact_arm_solves(book, bset, all_exact_spec(1), n_unique);
+  const std::uint64_t s8 = exact_arm_solves(book, bset, all_exact_spec(8), n_unique);
+  EXPECT_EQ(s1, s8);
+}
+
+// ── A7-3. A CALL unique keeps its per-cell solve (documented asymmetry). ─────
+TEST(ScenarioGrid, ExactArmCallBoundarySolvesStayPerCell) {
+  const PricedSurface base = make_essvi(1, 5);
+  const SurfaceSet bset = set_of({&base});
+  const std::vector<Position> book = call_only_book();
+  const ScenarioGridSpec spec = all_exact_spec();
+  const std::size_t n_unique = book.size();
+  const std::size_t n_cells = spec.spot_pct.size() * spec.vol_bump.size();
+
+  const std::uint64_t solves = exact_arm_solves(book, bset, spec, n_unique);
+  EXPECT_EQ(solves, static_cast<std::uint64_t>(n_cells * n_unique));
+}
+
+// ── A7-3b. The mixed-book count follows the per-side formula exactly. ────────
+// n_put * n_vol_columns + n_call * n_exact_cells. Pinning it here is what lets the
+// drop on any other book (e.g. the pg_observability bench's 32-put / 24-call, 8
+// Exact cell, 3-column shape: 448 -> 288 Exact-arm solves) be derived rather than
+// guessed.
+TEST(ScenarioGrid, ExactArmMixedBookFollowsPerSideFormula) {
+  const PricedSurface base = make_essvi(1, 5);
+  const SurfaceSet bset = set_of({&base});
+  const std::vector<Position> book = mixed_book(); // 5 puts + 5 calls, distinct uniques
+  const ScenarioGridSpec spec = all_exact_spec();
+  const std::size_t n_unique = book.size();
+  const std::size_t n_cells = spec.spot_pct.size() * spec.vol_bump.size();
+  const std::size_t n_cols = spec.vol_bump.size();
+
+  const std::uint64_t solves = exact_arm_solves(book, bset, spec, n_unique);
+  std::printf("[A7] mixed-book exact-arm solves = %llu (per-cell would be %zu)\n",
+              static_cast<unsigned long long>(solves), n_cells * n_unique);
+  EXPECT_EQ(solves, static_cast<std::uint64_t>(5 * n_cols + 5 * n_cells));
+}
+
+// ── A7-4. VALUE IDENTITY: every Exact cell equals the cold per-cell algorithm. ─
+// The oracle IS the pre-change path: american_price once per (cell x unique) with
+// no reuse of any kind, reduced over positions in input order. Bitwise equality is
+// required — this is what makes the solve-count drop a hoist rather than a change
+// of numerics.
+TEST(ScenarioGrid, ExactCellsMatchColdPerCellOracleBitwise) {
+  const PricedSurface base = make_essvi(1, 5);
+  const SurfaceSet bset = set_of({&base});
+  const std::vector<Position> book = mixed_book(); // 5 calls + 5 puts, distinct uniques
+  const double S = base.pricing().S;
+
+  ScenarioGridSpec spec = all_exact_spec();
+  auto r = scenario_grid(book, bset, spec);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+
+  for (std::size_t i = 0; i < spec.spot_pct.size(); ++i) {
+    for (std::size_t j = 0; j < spec.vol_bump.size(); ++j) {
+      const std::size_t c = i * r->n_vol + j;
+      ASSERT_EQ(r->route[c], static_cast<std::uint8_t>(ScenarioRoute::Exact)) << "cell " << c;
+      const double sp = spec.spot_pct[i];
+      const double dvol = spec.vol_bump[j];
+      double expected = 0.0;
+      for (const Position &p : book) { // fixed INPUT order — the reduction contract
+        const auto d = exact_pershare(base, p.contract.K, p.contract.T, p.contract.side, sp, dvol,
+                                      spec.dt, spec.dr);
+        if (d.has_value() && std::isfinite(*d)) {
+          expected += *d * (p.qty * eff_mult(p.multiplier));
+        } else {
+          expected += scenario_taylor_leg(scaled_greeks(base, p), sp * S, dvol, spec.dt, spec.dr);
+        }
+      }
+      EXPECT_TRUE(bits_equal(r->pnl[c], expected))
+          << "cell " << c << " got " << r->pnl[c] << " expected " << expected;
+    }
+  }
 }

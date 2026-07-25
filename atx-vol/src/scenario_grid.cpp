@@ -25,9 +25,13 @@
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/pricing_executor.hpp" // pricing_executor(): the shared P1.4 pool
 
+#include "american_boundary.hpp" // amer:: boundary seam (A7 spot-axis reuse)
+
 namespace atx::vol {
 
 namespace {
+
+constexpr double kNaNv = std::numeric_limits<double>::quiet_NaN();
 
 // Effective deliverable, mirroring portfolio_pricer.cpp `eff_multiplier`: a
 // non-finite / non-positive multiplier defaults to 100. The Taylor path already
@@ -60,7 +64,45 @@ struct UniExact {
   AmericanMethod method{AmericanMethod::AndersenLake};
   AlOpts al_opts{};
   bool ready{false};
+  // A7 (GR-P3-S): may this unique's shocked exercise boundary be solved ONCE per
+  // vol column and reused across the whole spot axis? See `boundary_spot_invariant`.
+  bool reuse_boundary{false};
+  amer::AlScheme sch{}; // == scheme_from_opts(al_opts), resolved once per unique
 };
+
+// A7: is this unique's SHOCKED internal-put boundary independent of the spot shock?
+//
+// american.cpp's S-independence seam: the Andersen-Lake boundary is a function of
+// (K, T, sigma, r, q) and NOT of the spot — al_solve_put is exactly
+// al_solve_put_boundary + al_put_price_from_boundary(.., S, ..). Within ONE grid,
+// K / q / T' = T-dt / r' = r+dr are the same in every cell and only sigma moves with
+// the vol axis, so a PUT (internal-put strike = K) has one boundary per vol column.
+//
+// A CALL is the McDonald-Schroder internal put P(K, S', q, r'): its internal-put
+// STRIKE is the shocked spot S', so its boundary moves with the spot axis too. Its
+// boundary is homogeneity-reusable in R but only to a few ULP in IEEE, which would
+// shift served values — so calls deliberately keep the cold per-cell solve.
+//
+// Every condition here is cell-INVARIANT (Tp/rp are grid scalars); the per-cell
+// preconditions andersen_lake_core also checks (S' > 0, sigma' > 1e-8) are re-checked
+// at the point of use, and any lane that misses one falls back to `american_price`
+// itself, so the fast path is entered only where it reproduces it bit-for-bit.
+[[nodiscard]] bool boundary_spot_invariant(const UniExact &ue, double Tp, double rp) noexcept {
+  return ue.method == AmericanMethod::AndersenLake && ue.side == Side::Put && ue.K > 0.0 &&
+         Tp > 1.0e-12 && std::isfinite(rp) && std::isfinite(ue.q_eff) &&
+         detail::classify_regime(/*rate=*/rp, /*yield=*/ue.q_eff) ==
+             detail::ExerciseRegime::American;
+}
+
+// The pre-A7 shocked reprice, verbatim: one cold `american_price` per (cell, unique).
+// This is the oracle the reuse path must reproduce, and the fallback for every lane
+// the reuse path declines.
+[[nodiscard]] double shocked_price_cold(const UniExact &ue, double Sp, double sig, double rp,
+                                        double Tp) noexcept {
+  const Result<double> px = american_price(Sp, ue.K, Tp, sig, rp, ue.q_eff, ue.side, ue.method,
+                                           std::optional<AlOpts>{ue.al_opts});
+  return (px && std::isfinite(*px)) ? *px : kNaNv;
+}
 
 } // namespace
 
@@ -179,6 +221,13 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
         ue.P0 = *p0;
         ue.ready = true;
       }
+      // A7: resolve the AL scheme once (andersen_lake_core does scheme_from_opts on
+      // every call) and decide, from the CELL-INVARIANT shocked contract, whether the
+      // spot axis can share one boundary solve.
+      ue.sch = amer::scheme_from_opts(std::optional<AlOpts>{pc.al_opts});
+      const double Tp_grid = std::max(oc.T - spec.dt, kMinT);
+      const double rate_grid = rp.rate + spec.dr;
+      ue.reuse_boundary = boundary_spot_invariant(ue, Tp_grid, rate_grid);
     }
   }
 
@@ -208,6 +257,93 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
   std::vector<std::size_t> cell_fallback(n_cells, 0u);
   std::size_t *fallback = cell_fallback.data();
 
+  const auto is_exact = [&](double sp, double dvol) noexcept {
+    return (std::abs(sp) > rad_spot) || (std::abs(dvol) > rad_vol);
+  };
+
+  // ── Phase A (A7 / GR-P3-S): the shocked reprices, HOISTED out of the cell loop. ──
+  //
+  // Pre-A7 this ran inside the per-cell body: one cold `american_price` per
+  // (Exact cell x Ok unique), so every cell re-solved every unique's exercise
+  // boundary from a Barone-Adesi-Whaley seed even though — for a put — the boundary
+  // is the SAME object in every cell of a vol column (see `boundary_spot_invariant`).
+  //
+  // The fan-out is now over (unique x VOL COLUMN): task t = u*n_vol + j solves that
+  // unique's boundary once and prices every spot shock of column j against it. Task t
+  // writes only slots (i, j, u), which are disjoint across tasks, so the matrix is
+  // bit-identical at any n_threads AND the solve count is a property of the grid
+  // shape rather than of the thread partition (pinned by
+  // ScenarioGrid.ExactArmSolveCountIsThreadInvariant). The (unique x column) grain is
+  // also wider than the old per-cell grain on any realistic book.
+  //
+  // `pprime_all` costs one double per (cell, unique) — i.e. one double per shocked
+  // solve the grid was already going to perform — so it cannot dominate the work it
+  // indexes. Allocated only when routing can actually fire.
+  std::vector<double> pprime_all; // [cell][unique] row-major; NaN => fallback lane
+  if (any_exact) {
+    pprime_all.assign(n_cells * n_unique, kNaN);
+    double *pp = pprime_all.data();
+    pricing_executor().run_blocks(n_unique * n_vol, spec.n_threads, [&](std::size_t t) {
+      const std::size_t u = t / n_vol;
+      const std::size_t j = t % n_vol;
+      if (uni_ok[u] == 0u) {
+        return; // excluded unique; leaves NaN, exactly as the pre-A7 loop did
+      }
+      const UniExact &ue = uni[u];
+      if (!ue.ready) {
+        return; // base reprice failed -> NaN -> counted once per Exact cell in Phase B
+      }
+      const double dvol = vol_bump[j];
+      const double sig = std::max(ue.sigma + dvol, kSigmaFloor);
+      const double rp_rate = ue.rate + dr;
+      const double Tp = std::max(ue.T - dt, kMinT);
+
+      // Reuse arm: ONE boundary for the whole column. al_solve_put_boundary +
+      // al_put_price_from_boundary IS al_solve_put's American branch, and both take
+      // bnd/ws by const reference on the price side, so each spot shock reproduces
+      // `american_price` bit-for-bit (ScenarioGrid.ExactCellsMatchColdPerCellOracleBitwise).
+      if (ue.reuse_boundary && sig > 1.0e-8 && Tp > 1.0e-12) {
+        amer::AlBoundary bnd;
+        amer::AlWorkspace ws;
+        if (amer::al_solve_put_boundary(ue.K, Tp, sig, rp_rate, ue.q_eff, ue.sch, bnd, ws) ==
+            amer::AlSolveStatus::Ok) {
+          for (std::size_t i = 0; i < n_spot; ++i) {
+            const double sp = spot_pct[i];
+            if (!is_exact(sp, dvol)) {
+              continue; // Taylor cell — no reprice is owed
+            }
+            const double Sp = ue.S * (1.0 + sp);
+            if (!(Sp > 0.0)) {
+              continue; // american_price would return InvalidArgument -> fallback lane
+            }
+            const double v =
+                amer::al_put_price_from_boundary(bnd, ws, Sp, ue.K, Tp, sig, rp_rate, ue.q_eff);
+            if (std::isfinite(v)) {
+              pp[(i * n_vol + j) * n_unique + u] = v;
+            }
+          }
+          return;
+        }
+        // Collapsed / table-missing: fall through so the lane takes american_price's
+        // own error handling (Err -> NaN -> fallback), unchanged.
+      }
+
+      // Cold arm: the pre-A7 path, one `american_price` per Exact cell of this column.
+      for (std::size_t i = 0; i < n_spot; ++i) {
+        const double sp = spot_pct[i];
+        if (!is_exact(sp, dvol)) {
+          continue;
+        }
+        const double v = shocked_price_cold(ue, ue.S * (1.0 + sp), sig, rp_rate, Tp);
+        if (std::isfinite(v)) {
+          pp[(i * n_vol + j) * n_unique + u] = v;
+        }
+      }
+    });
+  }
+
+  const double *pprime_base = pprime_all.empty() ? nullptr : pprime_all.data();
+
   pricing_executor().run_blocks(n_cells, spec.n_threads, [&](std::size_t c) {
     const std::size_t i_spot = c / n_vol;
     const std::size_t j_vol = c % n_vol;
@@ -230,37 +366,18 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
       return;
     }
 
-    // Exact cell — Phase A: one shocked reprice per Ok unique (P0 amortized). A
-    // unique whose base wasn't ready or whose shocked solve fails leaves NaN in
-    // `pprime` (a fallback) and is counted once for this cell.
-    //
-    // GR-P3-S: `pprime` is per-WORKER scratch (static thread_local), reused across
-    // every cell this worker runs, instead of a fresh heap allocation per cell —
-    // the module's allocation-free-in-the-risk-loop discipline. Each cell fully
-    // re-initialises it to kNaN before use, so the value written into every slot is
-    // byte-identical to the per-cell-allocated vector and the matrix stays
-    // bit-identical for any n_threads (workers touch disjoint output cells).
-    static thread_local std::vector<double> pprime;
-    pprime.assign(n_unique, kNaN);
+    // Exact cell — Phase A already filled this cell's row of shocked reprices (one
+    // per Ok unique, P0 amortized). A unique whose base wasn't ready or whose shocked
+    // solve failed left NaN there; count those once for this cell. The tally is an
+    // integer add over a fixed index range, so it is order-independent and matches
+    // the pre-A7 in-line count lane for lane.
+    const double *pprime = pprime_base + c * n_unique;
     std::size_t nfb = 0;
     for (std::size_t u = 0; u < n_unique; ++u) {
       if (uni_ok[u] == 0u) {
-        continue; // excluded unique; its positions are gated by pos_ok in Phase B
+        continue; // excluded unique; its positions are gated by pos_ok below
       }
-      const UniExact &ue = uni[u];
-      if (!ue.ready) {
-        ++nfb; // base reprice failed for an Ok unique (defensive) -> Taylor fallback
-        continue;
-      }
-      const double Sp = ue.S * (1.0 + sp);
-      const double sig = std::max(ue.sigma + dvol, kSigmaFloor);
-      const double rp_rate = ue.rate + dr;
-      const double Tp = std::max(ue.T - dt, kMinT);
-      const Result<double> px = american_price(Sp, ue.K, Tp, sig, rp_rate, ue.q_eff, ue.side,
-                                               ue.method, std::optional<AlOpts>{ue.al_opts});
-      if (px && std::isfinite(*px)) {
-        pprime[u] = *px;
-      } else {
+      if (!std::isfinite(pprime[u])) {
         ++nfb;
       }
     }
