@@ -1539,14 +1539,21 @@ Result<std::uint64_t> RunDir::run_identity_hash() const {
   // driver (Wave E T6 review): definitions.tsv was changed, all five folded inputs
   // stayed byte-identical, the identity did not move, and a six-section
   // run-backtest write produced a NINE-section archive — three sections computed
-  // against the OLD definitions were carried forward. The cause is structural, not
-  // incidental: NO folded input is derived from the definitions bytes.
+  // against the OLD definitions were carried forward. (3) surface_manifest.tsv and
+  // (4) input_inventory.tsv are NOT derived from the definitions bytes at all:
   // build_corpus_command COPIES definitions.tsv into the run dir without ever
   // reading it (fs::copy_file, examples/spy_dispersion_backtest.cpp) and persists
   // the fixed relative literal "definitions.tsv" into run_spec.tsv; and
   // write_input_inventory (same file) derives every column — source_fingerprint
   // and market_input_fingerprint included — solely from the OpraBatchResult quote
-  // panels, with `definitions` not even a parameter.
+  // panels, with `definitions` not even a parameter. (5) trade_schedule.tsv is
+  // DIFFERENT: build_schedule_command DOES read definitions.tsv and hands it to
+  // build_listed_dispersion_schedule (listed_dispersion_pipeline.cpp), which uses
+  // it in the selection loop, so trade_schedule.tsv genuinely IS derived from
+  // definitions content. That does not reopen the gap, because the guard's
+  // premise is a change CONFINED to definitions.tsv: build-schedule was NOT
+  // rerun, so trade_schedule.tsv's bytes — and therefore its fold contribution —
+  // did not move either.
   //
   // Consequence, stated plainly: a change confined to definitions.tsv does NOT
   // invalidate the merge-write guard, and stale sections WILL be carried across

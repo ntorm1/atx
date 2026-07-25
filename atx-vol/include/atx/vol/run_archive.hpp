@@ -612,13 +612,18 @@ public:
   //
   // definitions.tsv is DELIBERATELY NOT FOLDED, on COST GROUNDS ALONE: it is
   // ~700 MB on a production run, so hashing it on every archive write would cost
-  // far more than the write itself. It is NOT covered transitively by (3) or (4)
-  // — no folded input is derived from the definitions bytes at all (build-corpus
-  // COPIES definitions.tsv without reading it; write_input_inventory consumes
-  // only the OPRA batch). So a definitions-ONLY change does NOT invalidate the
-  // merge-write guard below, and sections computed from the OLD definitions are
-  // carried across it. That is a KNOWN, BOUNDED, DOCUMENTED GAP — not a covered
-  // case — pinned as a limitation by
+  // far more than the write itself. (3) and (4) are NOT derived from the
+  // definitions bytes at all (build-corpus COPIES definitions.tsv without
+  // reading it; write_input_inventory consumes only the OPRA batch). (5)
+  // trade_schedule.tsv IS derived from definitions.tsv — build_schedule_command
+  // reads it and feeds it into build_listed_dispersion_schedule's selection loop
+  // — but that does not reopen the gap: the guard's premise is a change CONFINED
+  // to definitions.tsv, and that means build-schedule was NOT rerun, so
+  // trade_schedule.tsv's bytes, and therefore its fold contribution, do not move
+  // either. So a definitions-ONLY change does NOT invalidate the merge-write
+  // guard below, and sections computed from the OLD definitions are carried
+  // across it. That is a KNOWN, BOUNDED, DOCUMENTED GAP — not a covered case —
+  // pinned as a limitation by
   // RunDir.RunIdentityIsDeliberatelyBlindToDefinitionsContent. Callers that swap
   // definitions in place must delete run.atxrun. Full rationale, and the cheap
   // remedy that would close it, in run_archive.cpp.

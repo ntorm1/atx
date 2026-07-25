@@ -2098,12 +2098,17 @@ TEST(RunDir, MergeWriteDropsCarriedSectionsWhenAFoldedInputAppearsLate) {
 // ── THIS TEST RECORDS A KNOWN GAP. IT IS NOT A PROPERTY ANYONE WANTS. ─────────
 //
 // run_identity_hash does not fold definitions.tsv, on COST GROUNDS ALONE (~700 MB
-// on a production run). It is NOT covered transitively by any folded input:
-// build-corpus COPIES definitions.tsv without reading it, and write_input_inventory
-// derives source_fingerprint / market_input_fingerprint solely from the OPRA batch.
-// The Wave E T6 review falsified the opposite claim on the real driver — a changed
-// definitions.tsv, all five folded inputs byte-identical, the identity unmoved, and
-// a six-section run-backtest write producing a nine-section archive.
+// on a production run). surface_manifest.tsv and input_inventory.tsv are NOT
+// derived from the definitions bytes at all: build-corpus COPIES definitions.tsv
+// without reading it, and write_input_inventory derives source_fingerprint /
+// market_input_fingerprint solely from the OPRA batch. trade_schedule.tsv IS
+// derived from definitions.tsv (build-schedule reads it and feeds it into the
+// selection loop) — but that does not close the gap this test pins, because the
+// scenario below changes ONLY definitions.tsv without rerunning build-schedule,
+// so trade_schedule.tsv's bytes never move either. The Wave E T6 review
+// falsified the opposite claim on the real driver — a changed definitions.tsv,
+// all five folded inputs byte-identical, the identity unmoved, and a
+// six-section run-backtest write producing a nine-section archive.
 //
 // The assertion below pins that blindness so the gap is VISIBLE in the suite rather
 // than latent in a comment. It is a documented limitation, NOT an endorsement:
