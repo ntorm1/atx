@@ -255,6 +255,12 @@ neighbours. Whatever rejects these cells, it is not quote volume.
 
 ### Gate 2 — CLI verify: **FAILED, and correctly so**
 
+> **Superseded 2026-07-25 (FIX-H).** The `FAILED` verdict and exit 1 recorded in
+> this section and in Step 6's gate below were **not** correct: `verify` could not
+> tell a cell that was never stored from one that is stored and unreadable, so it
+> called all nine permanently-unfittable cells `unmappable`. It now reports them as
+> `absent`, `verdict ok`, exit 0. See the addendum at the end of this file.
+
 The plan calls for a query check "via python binding". Python work is paused by operator
 instruction, so verification runs through `atx-vol-surface-db`, the management CLI built
 for exactly this. It is the stronger check anyway: it maps and ATM-evaluates *every*
@@ -761,6 +767,9 @@ defect, and the honest invariant is `cells_refit == 0`.
 
 **Gate — CLI verify: FAILED verdict, correctly, and the integrity result is strong.**
 
+> **Superseded 2026-07-25 (FIX-H).** "Correctly" is wrong; the integrity result is
+> unaffected and still stands. See the addendum at the end of this file.
+
 ```
 $ atx-vol-surface-db verify --db C:/atx-data/surface-db/prod-2026-07 --min-cells 800
 partitions 17 / partitions_in_db 17 / symbols 50
@@ -818,3 +827,57 @@ a reader who saw only those numbers might conclude otherwise.
 <!-- STEP7 -->
 
 **Cumulative realized spend for this run: $0.0000 / $100.**
+
+---
+
+## Addendum — 2026-07-25: the `verify` FAILED verdicts above were the tool's defect, not the database's
+
+Every place this log records `atx-vol-surface-db verify` reaching `verdict FAILED`
+and exit 1 on `prod-2026-07` — "Gate 2 — CLI verify: **FAILED, and correctly so**"
+and Step 6's "FAILED verdict, correctly" — recorded a real observation and drew the
+wrong conclusion from it. **FIX-H** corrected the tool.
+
+`verify` walked the (partition × symbol) grid and classified anything that would
+not map as `unmappable`, which conflated two conditions:
+
+- a cell that was **never stored** because its fit permanently fails — the nine
+  cells this log spends Step 3 characterising, on eight symbols that each fit on
+  their other sixteen dates;
+- a cell that **was stored and can no longer be read** — genuine corruption.
+
+The partition's own archive lookup/directory separates them, and `verify` now
+consults it. Against the same unmodified database:
+
+```
+cells_checked 867
+cells_ok 858
+cells_absent 9        <- was cells_unmappable 9
+cells_unmappable 0
+cells_non_finite 0
+cells_checksum 0
+verdict ok            <- was verdict FAILED
+$ echo $?
+0                     <- was 1
+```
+
+The nine cells are unchanged and still named individually, now as `absent` records
+rather than `fail` records. **Nothing about the database changed and no integrity
+finding in this log is affected**: `cells_checksum 0` and `cells_non_finite 0` were
+true then and are true now, and every byte-integrity conclusion drawn above still
+stands.
+
+What changed is what those numbers were allowed to mean. A converged production
+database read `FAILED` on every run, which trains an operator to ignore the word —
+and the signal it was masking is the one that would catch the 95 stored surfaces a
+wrong-`--r` run destroyed elsewhere in this sprint. Absence is now counted, listed
+and warned about without moving the verdict, and an operator makes it a hard gate
+with the ceiling flag:
+
+```bash
+atx-vol-surface-db verify --db C:/atx-data/surface-db/prod-2026-07 \
+    --min-cells 867 --max-absent 9
+```
+
+**Without `--max-absent`, a run that destroyed stored surfaces exits 0.** The nine
+above are this database's expected count; it is the number to pin. See
+"Absence is not a failure" in `atx-vol/docs/surface-db-build.md`.

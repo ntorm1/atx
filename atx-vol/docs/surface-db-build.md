@@ -469,9 +469,13 @@ it still does not mean full coverage. After any build, **inspect `cells_ok` vs
 `cells_failed`, the per-symbol rows and the `failed_cell` lines** (or the
 `--report` CSV's sections 2–4 — section 2 names every disabled symbol, section 4
 every lost cell and why), then
-run `atx-vol-surface-db verify --db <root> --min-cells <expected>` (below), which
-turns "the database is the size and shape I expected, and every cell evaluates"
-into a single exit code.
+run `atx-vol-surface-db verify --db <root> --min-cells <expected>
+--max-absent <expected-holes>` (below), which turns "the database is the size and
+shape I expected, and every cell it holds evaluates" into a single exit code.
+Both numbers matter: `--min-cells` sizes the grid and `--max-absent` sizes the
+**holes** in it, and without the second a run that destroyed stored surfaces exits
+`0` — see
+[Absence is not a failure](#absence-is-not-a-failure--the-cells-the-database-never-stored).
 
 The finer fix for hives with a real term structure (rather than one flat rate) is
 the per-cell **market-inputs** path (`OpraHiveSpec.market_inputs` /
@@ -878,10 +882,13 @@ Each selected cell passes **three gates**, in order, stopping at the first failu
 — with one **triage** step in front of them deciding whether the cell is in the
 game at all:
 
-0. **presence** *(only when the map below fails)* — re-open the cell's partition
-   and ask its archive **directory** whether the symbol is there. Not there ⇒
-   `absent`: nothing was ever stored, so there are no bytes to gate. There, or the
-   partition will not open at all ⇒ the mapping failure is real (`unmappable`).
+0. **presence** *(only when the map below fails, and only when it failed with
+   `NotFound`)* — re-open the cell's partition and ask its archive **directory**
+   whether the symbol is there. Not there ⇒ `absent`: nothing was ever stored, so
+   there are no bytes to gate. There, or the partition will not open at all ⇒ the
+   mapping failure is real (`unmappable`). Any other error — a `ParseError` from a
+   damaged record or archive, an `IoError`, an `InvalidArgument` from a malformed
+   `--symbols` entry — stays `unmappable` whatever the directory says.
 1. **map** — `map_surface`: the partition file opens, and the record's magic,
    framing and column bounds parse.
 2. **checksum** — `SurfaceArchiveV2::validate_symbol`: the record's payload bytes
@@ -1009,8 +1016,8 @@ cells_ok <n>
 cells_absent <n>            # never stored: the partition's directory does not list it
 cells_unmappable <n>        # the directory DOES list it and it would not map -- or the
                             #    partition file itself would not open
-cells_checksum <n>          # mapped, but the payload no longer matches its stored CRC
 cells_non_finite <n>        # bytes intact, but the ATM probe produced no usable number
+cells_checksum <n>          # mapped, but the payload no longer matches its stored CRC
 symbols_disabled <n>        # manifest symbols the walk DROPPED (stored config disabled)
 failures_reported <n>       # fail lines below (capped by --max-failures)
 failures_elided <n>         # faults NOT listed -- truncation is never silent
@@ -1051,7 +1058,7 @@ none of it"*.
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--from KEY` / `--to KEY` | unbounded | Inclusive partition-key range, compared lexicographically on the canonical (upper-cased) key. ISO dates sort correctly, so `--from 2026-07-01 --to 2026-07-31` is a July restriction. |
-| `--symbols A,B,C` | manifest symbol table | Restrict the columns. Whitespace per field is trimmed, same rule as the build CLI. |
+| `--symbols A,B,C` | manifest symbol table | Restrict the columns. Whitespace per field is trimmed, same rule as the build CLI. A name the manifest never configured is **accepted, not rejected** — asserting that a ticker is not in this database is a legitimate question — and every one of its cells comes back `absent`, `verdict ok`, exit `0`. If that is the whole walk, you get the [nothing-stored warning](#when-the-walk-finds-nothing-stored); a typo'd ticker looks exactly like a ticker that was never built. |
 | `--include-disabled` | off | Include fail-closed **disabled** symbols. By default they are skipped, and what that skip hides depends on **when** the name was disabled. Disabled **before it ever fitted**: it is absent from every partition, so checking it would report a missing cell on every date of every healthy database — that is the skip this default exists for. Disabled **after it fitted**: it **keeps** its stored surfaces (`enabled = false` means *stop fitting*, never *delete* — see [Resume semantics](#resume-semantics)) and they still load, so the default walk leaves **real cells unverified**. Turn this on to walk both cases; the first reports the whole column `absent` and still verifies **clean**, the second reports the cells that are actually there. It does **not** prove a disabled name is absent — it reports whatever is there, which is the point. |
 | `--probe-tenor T` | `30/365` | Tenor for the per-cell ATM evaluation. Must be finite and > 0. |
 | `--max-failures N` | `32` | Cap on `fail` lines **and, on an independent budget, on `absent` lines**. Overflow is counted in `failures_elided` / `absent_elided`, never dropped silently, and the `cells_*` totals stay exact. `0` prints no detail at all and elides everything. Same strict parsing as `--min-cells`. The budgets are separate so a database with many absences can never elide the one `fail` line beside them. |
@@ -1168,11 +1175,55 @@ different number. It is the same division of labour as `--min-cells`: the expect
 count is a fact about your universe, not about the database, and only you can
 supply it.
 
+> **Without this flag, a run that destroyed stored surfaces exits `0`.** Say that
+> to yourself once before you skip it. Before FIX-H it exited `1` — but so did every
+> healthy run of the same database, every day, which is exactly why no gate could
+> branch on it and why the number changing from 9 to 104 went unnoticed. The
+> ceiling is what buys back a **discriminating** non-zero. **Set it on your first
+> run.** If your database is expected to have no holes at all — most are; only a
+> universe carrying permanently-unfittable names has a non-zero steady state —
+> then the value is `--max-absent 0`, and any absence whatsoever exits `4`.
+
 > **Raise the ceiling deliberately, never reflexively.** `--max-absent` is a
 > declaration that you have *looked at* the absent set and accepted it. Bumping it
 > from 9 to 104 because the alarm fired is how (b) gets acknowledged into silence.
 > Diff the `absent` lines first; if a cell in there used to hold a surface, you
 > have lost data and the number is not the problem.
+
+#### When the walk finds *nothing* stored
+
+One shape deserves its own note because it used to be a `FAILED` verdict and is
+now `ok`: the walk read cells and the database holds **none** of them —
+`cells_checked > 0`, `cells_ok 0`, `cells_absent == cells_checked`. `--min-cells`
+cannot catch it (it counts the **grid**, and a grid of pure holes is full-sized)
+and the [zero-cell verdict](#the-zero-cell-verdict--verify-cannot-pass-what-it-never-read)
+cannot either (the walk was not empty). The tool prints a stderr **warning** naming
+the two readings:
+
+```
+$ atx-vol-surface-db verify --db /data/surface-db/prod-2026-07 --symbols ZZZZ
+atx-vol-surface-db: WARNING (exit 0 unless a ceiling says otherwise): the walk read
+17 cell(s) and this database holds NONE of them — every one is absent. ...
+cells_checked 17
+cells_ok 0
+cells_absent 17
+verdict ok
+$ echo $?
+0
+```
+
+- **you narrowed the walk onto cells the database legitimately does not hold** — a
+  `--symbols` name the manifest never configured, or a `--from`/`--to` window whose
+  every cell permanently fails. The answer is correct.
+- **the database holds nothing where you looked** — never built over that window,
+  built over a different one, or every surface there was destroyed.
+
+It stays exit `0` because the first reading is an ordinary correct invocation on a
+healthy database: `verify --symbols MCD --from 2026-07-01 --to 2026-07-01` against
+`prod-2026-07` — an operator checking the one cell they already know is absent —
+is exactly this shape. Making it non-zero would turn the most deliberate use of the
+tool red on a database that is fine. **`--max-absent 0` is the switch that makes it
+an exit `4`** on a database that expects no holes.
 
 ### The zero-cell verdict — `verify` cannot pass what it never read
 
@@ -1237,14 +1288,15 @@ always assert it:
 atx-vol-surface-db verify --db /db --min-cells 9   # -> verdict FAILED, exit 1
 ```
 
-Four guards now stack, and they are complementary rather than redundant:
+Five guards now stack, and they are complementary rather than redundant:
 
 | Guard | Catches |
 | --- | --- |
 | build exit `3` | "this **run** produced nothing" — every symbol died at config selection, or every scheduled cell failed to fit. |
 | zero-cell `FAILED` verdict | "this **run of verify** read nothing" over a database that holds partitions — all symbols disabled, an empty `--symbols`, or a window that matched nothing. Needs no flag. |
-| `--min-cells N` | "this **database** is smaller than I expected" — including one that was never built. Counts every cell the walk *looked at*, absent ones included, so it is a statement about the **grid**. |
-| `--max-absent N` | "this database is **missing more cells** than I expected" — the only guard that can see a stored surface that was destroyed, because nothing on disk records that it ever existed. A statement about the **holes** in that grid. |
+| nothing-stored **warning** | "this run of verify read cells and the database holds **none** of them" — `cells_ok 0` with every cell `absent`. Needs no flag; **stderr only, exit 0**, because a deliberate narrowing onto known-absent cells produces the same shape. See [When the walk finds nothing stored](#when-the-walk-finds-nothing-stored). |
+| `--min-cells N` | "this **database** is smaller than I expected" — including one that was never built. Counts every cell the walk *looked at*, absent ones included, so it is a statement about the **grid** and is fully satisfied by a grid of pure holes. |
+| `--max-absent N` | "this database is **missing more cells** than I expected" — the only guard that can see a stored surface that was destroyed, because nothing on disk records that it ever existed. A statement about the **holes** in that grid, and the only one that turns the two rows above into a non-zero exit. |
 
 **Keep `--min-cells` in every script**, and `--max-absent` beside it once you know
 your absent count. `--min-cells` is no longer the *only* thing between a broken
@@ -1257,7 +1309,7 @@ does **not** notice a full-size grid quietly hollowing out: 867 cells checked is
 
 | Exit | When |
 | --- | --- |
-| `0` | Succeeded. For `verify`: the walk **covered cells**, every cell the database **holds** passed all three gates, `cells_checked >= --min-cells`, and `cells_absent <= --max-absent` (which is vacuous unless you passed the flag). Cells the database does not hold are counted, named and warned about on stderr **without** changing this. For `enable`/`disable`: the symbol **is now** in the requested state, whether or not this run put it there (`changed 0` is a success — the verbs are idempotent). |
+| `0` | Succeeded. For `verify`: the walk **covered cells**, every cell the database **holds** passed all three gates, `cells_checked >= --min-cells`, and `cells_absent <= --max-absent` (which is vacuous unless you passed the flag). Cells the database does **not** hold are counted, named and warned about on stderr **without** changing this — so **without `--max-absent`, a run that destroyed stored surfaces exits `0`**, where before FIX-H it exited `1` on the same run that a healthy database also exited `1`. That flag is what makes the non-zero *discriminating*; pass it. A walk that read cells and found **none** of them stored is also `0`, with its own stderr warning — see [When the walk finds nothing stored](#when-the-walk-finds-nothing-stored). For `enable`/`disable`: the symbol **is now** in the requested state, whether or not this run put it there (`changed 0` is a success — the verbs are idempotent). |
 | `1` | A runtime failure (message on **stderr**, no `verdict` line) — db won't open, unknown partition/symbol, unreadable partition file, or an `enable`/`disable` naming a symbol the manifest does not configure. **Or** `verify` returned `verdict FAILED` on **stdout**: failing cells, too few cells, or a walk that selected none. |
 | `2` | A usage error — unknown subcommand, unknown flag, a required flag missing (**`disable`'s `--yes` is one**), a flag left **without a value**, or a malformed numeric value. Every one of these is decided **before the database is opened**, so a typo'd subcommand against an unreadable `--db` reports the typo, not the open failure — and a `disable` refused for want of `--yes` provably wrote nothing. Usage on stderr. |
 | `4` | `verify` only, and **only if you passed `--max-absent N`**: more cells are `absent` than `N` allows (`verdict ABSENT`). Nothing failed a gate — this is a **coverage** answer, kept off code `1` so a script can tell *"the database is damaged"* from *"the database is missing cells I did not expect it to be missing"*. `FAILED` wins when both hold. See [Absence is not a failure](#absence-is-not-a-failure--the-cells-the-database-never-stored). |
@@ -1364,11 +1416,15 @@ $ echo $?
 --min-cells <expected> --max-absent <expected-holes>`, then read `info` for
 `partitions_missing` and the `manifest_bytes` vs `bytes_on_disk` agreement. That,
 plus the build's `cells_ok` / `cells_failed` check above, is the whole acceptance
-path — no Python. On the first run of a new database, leave `--max-absent` off,
-read the `absent` block, satisfy yourself that every cell in it is a fit that
-genuinely fails, and *then* pin the count. Remember what the green means: the bytes
-are intact and every cell the database holds evaluates, **not** that the numbers
-are right or that the coverage is complete (see
+path — no Python. **Both numbers are required to make the exit code mean
+something**, and `--max-absent` is the one people skip: without it a run that
+destroyed stored surfaces exits `0`. On a brand-new database you do not yet know
+the number, so run it once with `--max-absent 0`, read whatever `absent` block
+comes back, satisfy yourself that every cell in it is a fit that genuinely fails,
+and pin *that* count from then on — do not leave the flag off while you decide.
+Remember what the green means: the bytes are intact and every cell the database
+holds evaluates, **not** that the numbers are right or that the coverage is
+complete (see
 [what a green `verify` proves](#what-a-green-verify-proves-and-does-not-prove) and
 [Absence is not a failure](#absence-is-not-a-failure--the-cells-the-database-never-stored)).
 

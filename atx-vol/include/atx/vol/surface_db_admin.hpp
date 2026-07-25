@@ -442,6 +442,47 @@ struct DbVerifyReport {
     return n_partitions_in_db > 0 && cells_checked == 0;
   }
 
+  // The walk DID read cells, and the database held NOT ONE of them. Every
+  // selected cell is absent and nothing failed a gate, so `ok()` is true, every
+  // fault list is empty, and the only non-zero counters are `cells_checked` and
+  // `cells_absent`. `selected_no_cells` cannot see this — it asks whether the walk
+  // was empty, and this walk was not — and neither can `--min-cells`, which counts
+  // the GRID and is fully satisfied by a grid of pure holes.
+  //
+  // A WARNING, NEVER A VERDICT, and the reason is the same one that keeps
+  // `cells_absent` out of `ok()`: this shape is reachable on a perfectly healthy
+  // database by an ordinary, CORRECT invocation. `verify --symbols MCD
+  // --from 2026-07-01 --to 2026-07-01` against the finished `prod-2026-07` — an
+  // operator checking the one cell they already know is absent — is
+  // `cells_checked 1, cells_ok 0, cells_absent 1`. So is `--symbols` naming a
+  // ticker the manifest never configured, which `DbVerifySpec::symbols` documents
+  // as a legitimate thing to assert about. Mapping this to an exit code would make
+  // the narrowest, most deliberate use of the tool red on a healthy database,
+  // which is the defect FIX-H removed wearing a smaller blast radius.
+  //
+  // WHAT IT IS FOR. On a database whose steady-state absent count is ZERO — most
+  // databases, including the manual's worked-session one — "every cell I looked at
+  // is a hole" is a real alarm, and before FIX-H it arrived as `unmappable` and a
+  // FAILED verdict. It now arrives as `ok`, so something has to say it out loud.
+  // Two readings, and this predicate makes no claim about which:
+  //   - you NARROWED the walk onto cells the database legitimately does not hold
+  //     (an unconfigured `--symbols` name; a window whose every cell permanently
+  //     fails). The answer is correct and nothing is wrong.
+  //   - the database holds nothing WHERE YOU LOOKED — never built over that
+  //     window, built over the wrong one, or every surface there was destroyed.
+  // The scriptable form of the second reading is `--max-absent N`; a database that
+  // expects no holes pins `--max-absent 0` and gets a non-zero exit for any
+  // absence at all, this shape included.
+  //
+  // DISJOINT FROM A FAILED VERDICT BY CONSTRUCTION, not by the order a caller
+  // tests things in: `cells_absent == cells_checked` forces every fault counter to
+  // zero through the exhaustion invariant above, so this can never fire on a run
+  // that also reports corruption. (`--min-cells` can still fail the same run; that
+  // is a floor on the grid and an orthogonal statement, and both are then true.)
+  [[nodiscard]] constexpr bool stored_no_selected_cell() const noexcept {
+    return cells_checked > 0 && cells_absent == cells_checked;
+  }
+
   // CORRUPTION-CLASS ONLY, and `cells_absent` is deliberately not in the list.
   // The verdict answers "is everything this database STORED still good?" — every
   // term here is a byte or a number that went wrong under a cell that exists.

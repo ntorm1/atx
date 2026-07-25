@@ -352,13 +352,17 @@ Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec) 
     // corruption reading rather than being quietly excused as absent.
     const auto never_stored = [&](const std::string &partition_key,
                                   const std::string &sym) -> bool {
-      if (!row_directory.has_value()) {
+      if (!row_directory.has_value()) { // the OPTIONAL: has this row been opened yet?
         row_directory.emplace(db.open_partition(partition_key));
       }
-      if (!row_directory->has_value()) {
+      // ...and this is the RESULT of that open, which is a different question with
+      // an identically-spelled test. Name it so the two cannot be misread for each
+      // other two lines apart.
+      const Result<SurfaceArchiveV2> &opened = *row_directory;
+      if (!opened) {
         return false;
       }
-      const Result<ArchiveV2DirEntry> entry = (*row_directory)->find(sym);
+      const Result<ArchiveV2DirEntry> entry = opened->find(sym);
       return !entry && entry.error().code() == ErrorCode::NotFound;
     };
 

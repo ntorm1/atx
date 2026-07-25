@@ -827,6 +827,72 @@ TEST(SurfaceDbAdmin, VerifyDbAbsentListCapIsSeparateFromTheFailureCap) {
   EXPECT_EQ(quiet->n_failures_elided, std::size_t{1});
 }
 
+// The walk read cells and the database held NOT ONE of them. `ok()` is true and
+// must stay true — a deliberate narrowing onto known-absent cells has this exact
+// shape and is a correct answer — but nothing else in the report can see the
+// condition, so it gets its own predicate for the CLI to warn on.
+//
+// It is the gap FIX-H opened and this closes: before, an all-absent walk arrived
+// as `unmappable` and `verdict FAILED`. `--min-cells` cannot catch it (it counts
+// the GRID, and a grid of pure holes is full-sized) and `selected_no_cells` cannot
+// either (that walk was empty; this one was not).
+TEST(SurfaceDbAdmin, VerifyDbStoredNoSelectedCellIsFlaggedWithoutFailing) {
+  const AdminFixture f = make_fixture("verify_stored_nothing");
+  build_healthy_db(f);
+  const SurfaceDb db = open_db(f);
+
+  // A ticker the manifest never configured — which `DbVerifySpec::symbols`
+  // deliberately accepts, because asserting a name is NOT in a database is a
+  // legitimate question. Every cell of that column is absent.
+  DbVerifySpec unconfigured;
+  unconfigured.symbols = {"ZZZZ"};
+  const auto rep = verify_db(db, unconfigured);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_EQ(rep->cells_checked, std::size_t{3});
+  EXPECT_EQ(rep->cells_ok, std::size_t{0});
+  EXPECT_EQ(rep->cells_absent, std::size_t{3});
+  EXPECT_TRUE(rep->stored_no_selected_cell());
+  EXPECT_TRUE(rep->ok()) << "nothing failed a gate, so the verdict must stay clean";
+  EXPECT_FALSE(rep->selected_no_cells()) << "the walk was not empty -- that is a different flag";
+
+  // The healthy full walk is not this. Neither is a walk that stored SOME of what
+  // it read, which is the boundary the predicate has to hold at.
+  const auto full = verify_db(db, DbVerifySpec{});
+  ASSERT_TRUE(full.has_value()) << (full ? "" : full.error().to_string());
+  EXPECT_FALSE(full->stored_no_selected_cell());
+
+  const AdminFixture partial = make_fixture("verify_stored_something");
+  build_healthy_db(partial);
+  drop_cell(partial, "2026-07-02", "CCC");
+  const SurfaceDb partial_db = open_db(partial);
+  const auto some = verify_db(partial_db, DbVerifySpec{});
+  ASSERT_TRUE(some.has_value()) << (some ? "" : some.error().to_string());
+  EXPECT_EQ(some->cells_absent, std::size_t{1});
+  EXPECT_FALSE(some->stored_no_selected_cell()) << "one hole is not an empty database";
+
+  // DISJOINT FROM A FAILED VERDICT BY CONSTRUCTION: any cell that failed a gate is
+  // a cell that is NOT absent, so `cells_absent == cells_checked` cannot hold
+  // beside corruption. Proved rather than asserted in prose -- a whole date whose
+  // file is gone is `unmappable`, not absent, so the predicate stays false while
+  // the verdict is FAILED, and the CLI can never print both messages for one run.
+  const AdminFixture broken = make_fixture("verify_stored_nothing_broken");
+  build_healthy_db(broken);
+  std::error_code ec;
+  ASSERT_TRUE(fs::remove(partition_file(broken, "2026-07-02"), ec)) << ec.message();
+  const SurfaceDb broken_db = open_db(broken);
+  DbVerifySpec one_date;
+  one_date.key_lo = "2026-07-02";
+  one_date.key_hi = "2026-07-02";
+  const auto dead = verify_db(broken_db, one_date);
+  ASSERT_TRUE(dead.has_value()) << (dead ? "" : dead.error().to_string());
+  EXPECT_EQ(dead->cells_checked, std::size_t{3});
+  EXPECT_EQ(dead->cells_ok, std::size_t{0});
+  EXPECT_EQ(dead->cells_unmappable, std::size_t{3});
+  EXPECT_FALSE(dead->ok());
+  EXPECT_FALSE(dead->stored_no_selected_cell())
+      << "a walk that read nothing but FAULTS is a FAILED verdict, not this warning";
+}
+
 // A spec that cannot be honored is an Err, not a silently-degraded walk.
 TEST(SurfaceDbAdmin, VerifyDbRejectsBadProbeTenor) {
   const AdminFixture f = make_fixture("verify_badspec");

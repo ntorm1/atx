@@ -114,6 +114,19 @@
 // byte-for-byte a cell that was never fitted, so the count is the only handle,
 // and only the operator knows what the expected count is. It is the same
 // division of labour as `--min-cells`.
+//
+// STATE THE COST PLAINLY, because it is paid by whoever does not pass the flag:
+// WITHOUT `--max-absent`, a run that DESTROYED stored surfaces exits 0. Before
+// FIX-H it exited 1 — but so did every healthy run of the same database, which is
+// why nothing could branch on it. The ceiling is what buys back a DISCRIMINATING
+// non-zero, so it belongs in the first script that runs this. A database expected
+// to have no holes at all pins `--max-absent 0`.
+//
+// One shape gets its own stderr warning on top: the walk read cells and the
+// database held NONE of them (`DbVerifyReport::stored_no_selected_cell`). That
+// was a FAILED verdict before FIX-H and is now `ok`, so the tool says it out
+// loud. It stays exit 0 because a correct, deliberate narrowing on a HEALTHY
+// database produces it — see the block at the call site.
 
 #include <cerrno>
 #include <cstddef>
@@ -506,7 +519,40 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
         "  Compare the `absent` list with the previous run's: the SAME cells is (a); cells "
         "that used to verify and now do not is (b), and the count is the only handle you "
         "have on it. Wire the expected count into the script with `--max-absent N` so a "
-        "growth exits %d instead of needing a human to notice.\n",
+        "growth exits %d instead of needing a human to notice — WITHOUT it, a run that "
+        "destroyed stored surfaces exits 0.\n",
+        kExitAbsentOverLimit);
+  }
+  // EVERY cell the walk read is a hole. `ok()` is true (nothing failed a gate),
+  // `--min-cells` is satisfied (it counts the grid, and a grid of pure holes is
+  // full-sized), and `selected_no_cells` cannot see it (the walk was not empty).
+  // Before FIX-H this shape arrived as `unmappable` and a FAILED verdict, so on a
+  // database that expects no holes it was an alarm that has just gone quiet.
+  //
+  // It stays a WARNING and not an exit code because it is reachable by a correct
+  // invocation on a healthy database — `--symbols MCD --from 2026-07-01 --to
+  // 2026-07-01` against `prod-2026-07` is exactly this shape, and it is the right
+  // answer. The full argument is at `stored_no_selected_cell`'s declaration. Like
+  // the build CLI's carry-masked warning, this names the two readings instead of
+  // choosing between them.
+  if (rep->stored_no_selected_cell()) {
+    std::fprintf(
+        stderr,
+        "atx-vol-surface-db: WARNING (exit 0 unless a ceiling says otherwise): the walk read "
+        "%zu cell(s) and this database holds NONE of them — every one is absent. Nothing "
+        "failed a gate, so the verdict below is about a database that stored nothing where "
+        "you looked.\n"
+        "  Two readings, and the counters cannot tell them apart:\n"
+        "    (a) you NARROWED the walk onto cells this database legitimately does not hold "
+        "— a --symbols name the manifest never configured, or a --from/--to window whose "
+        "every cell permanently fails. The answer is correct and nothing is wrong.\n"
+        "    (b) the database holds nothing WHERE YOU LOOKED — it was never built over that "
+        "window, it was built over a different one, or every surface there has been "
+        "destroyed.\n"
+        "  The walk selected %zu symbol(s) over %zu of the %zu partition(s) in the db; if "
+        "you did not narrow it deliberately, read (b). If this database is supposed to have "
+        "NO absent cells, run it with `--max-absent 0` so this exits %d instead of 0.\n",
+        rep->cells_checked, rep->n_symbols, rep->n_partitions, rep->n_partitions_in_db,
         kExitAbsentOverLimit);
   }
   std::printf("min_cells %zu\n", min_cells);
