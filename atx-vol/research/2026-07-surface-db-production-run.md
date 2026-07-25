@@ -407,7 +407,56 @@ A second latent trap was found and is **not** active in this run: a stored confi
 the `--index` symbol — so the trap is latent. There is only one `--index` slot, so any
 future universe carrying a second ETF would hit it, silently, as a bare count.
 
-<!-- STEP3-FIXB -->
+### The fix, and what it recovered
+
+`dba34a6` makes pinning a choice instead of a hard-coded constant: `AutoConfigSpec` gains
+a knob, defaulting to **not** pinning, with an opt-in CLI flag to restore the old
+behaviour. The stored config still carries the selected policy family as the preferred
+route — the fitter simply auto-routes, so its ladder stays alive. The change is scoped to
+where the pin is *set*, deliberately not to `pricer_fitter.cpp`, which is shared with the
+backtest and dispersion pipelines that this work cannot test.
+
+Re-measured on a **fresh** database root over the identical range and symbols, so the
+comparison is like-for-like rather than contaminated by surfaces the pinned path had
+already stored:
+
+| | pinned (before) | unpinned (after) |
+|---|---|---|
+| cells stored | 35 / 45 | **42 / 45** |
+| cells failed | 10 | **3** |
+| AAPL | 7 failed | 1 failed |
+| NVDA | 1 failed | 0 failed |
+| SPY | 2 failed | 2 failed |
+
+Coverage 77.8% → **93.3%**. The ladder recovers 7 of the 10 lost cells, which is the
+empirical justification for the change.
+
+SPY's count is unchanged but its *dates* moved — 2026-07-07 recovered, 2026-07-15 newly
+failed — because unpinning also changes SPY's numerics: the index leg now runs the dense
+fit at the risk preset's `max_obs_per_slice` (60) rather than the stored `node_cap` (40).
+That is the auto route's own value rather than a tuning choice, but it is a real change
+to production output and is called out here so nobody reads it as noise.
+
+An independent justification for the default flip turned up during implementation, which
+is worth recording because it inverts the framing: **the manifest does not round-trip a
+pinned curve's `parametric` numerics**, so pinning had been overwriting the risk preset's
+calibration with defaults. On that reading the pin was not merely restrictive, it was
+actively degrading the fit.
+
+### The 3 residual failures
+
+```
+failed_cell 2026-07-14 AAPL model=essvi        mask=2049 carry=ok     inversion=ok
+failed_cell 2026-07-15 SPY  model=convex-dense mask=2064 carry=failed butterfly_slack=0.000000 slopes=-0.999966/-0.999966
+failed_cell 2026-07-22 SPY  model=convex-dense mask=2064 carry=failed butterfly_slack=0.000107 slopes=-0.999893/-1.000000
+```
+
+Both SPY residuals are `carry=failed` together with a butterfly violation sitting *on*
+the no-arbitrage boundary — slopes of −0.999966 and −1.000000. That is a carry-solve and
+model-boundary problem, not a routing one, so the fallback ladder has nothing left to
+offer. These are **not** chased here: the honest outcome is 3 named failures with their
+reasons on record, and tuning admission thresholds to manufacture a clean number would be
+the opposite of what this instrumentation was built for.
 
 ---
 
