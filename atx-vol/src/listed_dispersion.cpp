@@ -189,6 +189,12 @@ void tally(ListedQuoteRejectCounts &counts, ListedQuoteReject reject) noexcept {
     // (the OPRA panel is snapshot-stamped) every age is exactly 0 and a `stale`
     // count of 0 would describe the FEED, not the market. Count that case so the
     // report can tell the two apart.
+    //
+    // FIX-F m1: deliberately BEFORE the admission decision, and deliberately
+    // overlapping the rejection buckets. "Could this feed support a staleness
+    // judgement" is a question about the feed, and the answer is the same
+    // whether or not the quote was rejected for some other reason. Nothing sums
+    // this with `zero_bid`, and it stays out of `total_dropped()`.
     if (quality.max_quote_age_ns > 0 && q.quote_ts_ns == valuation_ts_ns) {
       ++counts.stale_unevaluable;
       ++local.stale_unevaluable;
@@ -198,6 +204,12 @@ void tally(ListedQuoteRejectCounts &counts, ListedQuoteReject reject) noexcept {
       if (reject != ListedQuoteReject::Locked) { // already flagged above
         tally(counts, reject);
         tally(local, reject);
+      } else {
+        // FIX-F M2: the flag was counted above whatever the policy says; this
+        // records that the policy actually REFUSED the quote, so a
+        // policy-dropped quote is no longer absent from every dropped total.
+        ++counts.locked_dropped;
+        ++local.locked_dropped;
       }
       continue;
     }
@@ -317,7 +329,11 @@ ListedQuoteReject classify_listed_quote(const ListedOptionQuote &quote,
 Result<ListedDispersionSelection> select_listed_dispersion(
     std::string_view trade_date, std::int64_t valuation_ts_ns, const DispersionUniverse &universe,
     std::span<const ListedOptionQuote> quotes, const ListedForwardLookup &forward_lookup,
-    const ListedDispersionSelectionConfig &config) {
+    const ListedDispersionSelectionConfig &config,
+    ListedQuoteRejectCounts *first_candidate_rejects) {
+  if (first_candidate_rejects != nullptr) {
+    *first_candidate_rejects = ListedQuoteRejectCounts{};
+  }
   if (trade_date.empty() || valuation_ts_ns <= 0 || !forward_lookup) {
     return Err(ErrorCode::InvalidArgument,
                "select_listed_dispersion: invalid date, timestamp, or forward lookup");
@@ -350,6 +366,17 @@ Result<ListedDispersionSelection> select_listed_dispersion(
     return aa < ab || (aa == ab && a < b);
   });
 
+  // FIX-F m4: the tally of the FIRST candidate expiry inspected, published even
+  // when no expiry ever yields a basket, so `build-schedule` can report what the
+  // gates rejected on a date that failed selection outright.
+  bool captured_first = false;
+  const auto capture_first = [&](const ListedQuoteRejectCounts &r) {
+    if (first_candidate_rejects != nullptr && !captured_first) {
+      *first_candidate_rejects = r;
+      captured_first = true;
+    }
+  };
+
   for (const std::int64_t expiry : expiries) {
     // F6: the tally is per CANDIDATE expiry — it describes the expiry actually
     // chosen, not the union of every expiry tried and discarded.
@@ -358,6 +385,7 @@ Result<ListedDispersionSelection> select_listed_dispersion(
         find_straddle(universe.index, expiry, valuation_ts_ns, sorted_quotes, forward_lookup,
                       config.required_multiplier, config.quality, rejects);
     if (!index.straddle.has_value()) {
+      capture_first(rejects);
       continue;
     }
 
@@ -378,6 +406,7 @@ Result<ListedDispersionSelection> select_listed_dispersion(
       }
     }
 
+    capture_first(rejects);
     if (names.size() < config.min_names || !finite_positive(survivor_weight)) {
       continue;
     }

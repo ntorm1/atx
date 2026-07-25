@@ -245,8 +245,11 @@ struct DispersionRunConfig {
   bool reconcile_nav{false};                                   // `reconcile_nav`
   // F6 quote-quality admission, consumed by `build-schedule`. Note its own
   // defaults are NOT the pre-F6 behaviour (a zero bid is now rejected and a
-  // 10-minute staleness bound applies) — that is the BT-P2-8 fix, and
-  // `quote_max_quote_age_ns = 0` restores the old contract.
+  // 10-minute staleness bound applies) — that is the BT-P2-8 fix, and the spec
+  // line `quote_max_age_ns	0` restores the old contract. (FIX-F M1: this
+  // named a key that does not exist, `quote_max_quote_age_ns`. It is the one
+  // line an operator reads under re-pin pressure; see dispersion_run.cpp's
+  // binder, which is the authority.)
   ListedQuoteQualityConfig quote_quality{};
 };
 
@@ -292,18 +295,39 @@ struct DispersionRunConfig {
 [[nodiscard]] Status persist_typed_spec_keys(const std::filesystem::path &source_spec,
                                              const std::filesystem::path &run_spec);
 
+// One row of `quote_rejects.tsv`.
+struct QuoteRejectRow {
+  std::string date{};
+  // FIX-F m4. TRUE: selection produced a basket and `counts` describes the
+  // expiry it CHOSE. FALSE: selection failed on this date and `counts`
+  // describes the FIRST candidate expiry it inspected — all zeros if it failed
+  // before inspecting any. The distinction is a column in the artifact rather
+  // than an omission, because a row that silently means two different things is
+  // worse than no row.
+  bool selected{true};
+  ListedQuoteRejectCounts counts{};
+};
+
 // F6: emit `quote_rejects.tsv` — the per-date quote-admission tally that
-// `build-schedule` accumulated, one row per date selection ran on. Dates absent
-// from the file either held an unexpired cohort (no roll attempted) or failed
-// selection outright.
+// `build-schedule` accumulated, one row per date selection RAN on, succeeded or
+// not. Dates absent from the file held an unexpired cohort, so no roll was
+// attempted and no quote was inspected.
 //
 // A counter that exists only in memory cannot answer "why did this schedule
 // change" after the fact, which is precisely the question a moved golden asks.
+//
+// SCHEMA. The file leads with `# schema=quote_rejects/<version>` (FIX-F m5) —
+// the `#`-metadata convention `write_backtest_pnl_tsv` already uses — so a
+// positional reader can fail loudly instead of silently shifting when a column
+// is inserted. Version 1 is:
+//   date, selection, not_two_sided, zero_bid, stale, stale_unevaluable,
+//   locked, locked_dropped, non_standard, total_dropped
 // `locked` counts every locked market SEEN whether or not the policy dropped it,
-// so `total_dropped` deliberately excludes it.
-[[nodiscard]] Status write_quote_reject_report(
-    const std::filesystem::path &path,
-    std::span<const std::pair<std::string, ListedQuoteRejectCounts>> rows);
+// so `total_dropped` excludes it and counts `locked_dropped` instead;
+// `stale_unevaluable` is a measurability report, not a rejection, and is
+// excluded outright.
+[[nodiscard]] Status write_quote_reject_report(const std::filesystem::path &path,
+                                               std::span<const QuoteRejectRow> rows);
 
 // Classify a run config's execution assumptions. Purely a function of the
 // frictions + cost model that actually reach the engine.

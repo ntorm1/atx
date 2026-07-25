@@ -109,26 +109,47 @@ enum class ListedQuoteReject : std::uint8_t {
 
 [[nodiscard]] const char *to_string(ListedQuoteReject reject) noexcept;
 
-// Per-date admission tally for the join report. `locked` counts EVERY locked
-// market seen, whether or not the policy dropped it, so the flag survives the
-// default no-drop policy.
+// Per-date admission tally for the join report.
+//
+// Two of these are OBSERVATION counters, not rejection counters, and they are
+// deliberately allowed to overlap the rejection buckets: `locked` counts EVERY
+// locked market seen whether or not the policy dropped it, and
+// `stale_unevaluable` counts every quote whose age the gate could not evaluate
+// whatever else was wrong with it. Only the rejection buckets sum into
+// `total_dropped()`.
 struct ListedQuoteRejectCounts {
   std::uint32_t not_two_sided{0};
   std::uint32_t zero_bid{0};
   std::uint32_t stale{0};
   std::uint32_t locked{0};
   std::uint32_t non_standard{0}; // wrong multiplier / not standard monthly or deliverable
-  // Quotes the staleness gate could NOT evaluate: age exactly 0 while the gate
-  // was enabled, i.e. the source supplied no observation time independent of the
-  // valuation instant (see ListedQuoteQualityConfig::max_quote_age_ns — the
-  // current OPRA panel is snapshot-stamped, so this equals the inspected quote
-  // count and `stale` is necessarily 0). Reported so a zero `stale` is never
-  // mistaken for evidence that nothing was stale. NOT a rejection: these quotes
-  // are admitted, so it does not enter `total_dropped`.
+  // Quotes the staleness gate INSPECTED and could not evaluate: age exactly 0
+  // while the gate was enabled, i.e. the source supplied no observation time
+  // independent of the valuation instant (see
+  // ListedQuoteQualityConfig::max_quote_age_ns — the current OPRA panel is
+  // snapshot-stamped, so every inspected quote lands here and `stale` is
+  // necessarily 0). Reported so a zero `stale` is never mistaken for evidence
+  // that nothing was stale.
+  //
+  // FIX-F m1/m2, stated precisely because the previous wording was wrong twice:
+  //  - it is NOT the inspected quote count. A non-standard quote is skipped
+  //    before the gate ever looks at it, so it is not counted here.
+  //  - "these quotes are admitted" was untrue. The gate inspects a quote before
+  //    the admission decision, so a quote that is snapshot-stamped AND zero-bid
+  //    lands in `zero_bid` AND here. That overlap is INTENDED: this counter
+  //    answers "could the feed support a staleness judgement", which is a
+  //    question about the FEED, and the answer does not change because the quote
+  //    was rejected for some other reason. Nothing sums the two, and it stays
+  //    out of `total_dropped()`, so the overlap is arithmetically inert.
   std::uint32_t stale_unevaluable{0};
+  // FIX-F M2. `locked` is a flag count; this is the subset the policy actually
+  // REFUSED (`reject_locked = true`). Without it a policy-dropped quote appeared
+  // in no dropped total at all — including the persisted `total_dropped` column.
+  // Zero under the default no-drop policy, so no existing run's arithmetic moves.
+  std::uint32_t locked_dropped{0};
 
   [[nodiscard]] std::uint32_t total_dropped() const noexcept {
-    return not_two_sided + zero_bid + stale + non_standard;
+    return not_two_sided + zero_bid + stale + non_standard + locked_dropped;
   }
   [[nodiscard]] bool operator==(const ListedQuoteRejectCounts &) const = default;
 };
@@ -195,9 +216,19 @@ using ListedForwardLookup =
 // minimizes |K-F| with the lower strike winning a tie. Expected component market
 // unavailability is recorded in `dropped`; malformed identities, look-ahead,
 // invalid config/universe, and any index-leg failure are hard errors.
+//
+// FIX-F m4: `first_candidate_rejects`, when non-null, receives the admission
+// tally of the FIRST candidate expiry inspected (the one closest to target) —
+// whether or not selection ultimately succeeds. On the success path the caller
+// wants `ListedDispersionSelection::quote_rejects`, which describes the expiry
+// actually CHOSEN; this exists so a caller can still report what the gates
+// rejected on a date where selection FAILED, which is precisely the date an
+// operator most wants the tally for. It stays all-zero when selection fails
+// before any candidate expiry is inspected (bad config/universe/quotes).
 [[nodiscard]] Result<ListedDispersionSelection> select_listed_dispersion(
     std::string_view trade_date, std::int64_t valuation_ts_ns, const DispersionUniverse &universe,
     std::span<const ListedOptionQuote> quotes, const ListedForwardLookup &forward_lookup,
-    const ListedDispersionSelectionConfig &config = {});
+    const ListedDispersionSelectionConfig &config = {},
+    ListedQuoteRejectCounts *first_candidate_rejects = nullptr);
 
 } // namespace atx::vol

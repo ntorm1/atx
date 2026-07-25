@@ -18,9 +18,16 @@ enum class ListedMarkRole : std::uint8_t { Entry = 0, Held = 1 };
 enum class ListedMarkStatus : std::uint8_t {
   Ok = 0,
   NoRawQuote = 1,
-  CrossedQuote = 2,
+  CrossedQuote = 2, // ask < bid, or a non-finite / non-positive ask
   NoSurface = 3,
   PricingError = 4,
+  // FIX-F M3. F6 tightened `is_valid_listed_quote` from `bid >= 0` to `bid > 0`,
+  // which silently re-labelled every zero-bid quote here as `CrossedQuote` — the
+  // right DROP with the wrong REASON, in a persisted artifact. A zero bid is not
+  // a crossed book; it is an absent bid. Dropping behaviour is unchanged
+  // (`has_raw_mid` still keys on `Ok` alone), so no NAV or mark moves — only the
+  // reason an operator reads.
+  ZeroBidQuote = 5,
 };
 
 [[nodiscard]] const char *to_string(ListedMarkRole role) noexcept;

@@ -1075,25 +1075,43 @@ TEST(DispersionRunConfigStrict, QuoteRejectReportIsAPerDateAuditTrailForTheAdmis
   dirty.stale_unevaluable = 7u; // reported, NOT dropped
   dirty.locked = 5u;            // flagged, NOT dropped under the default policy
   dirty.non_standard = 1u;
-  const std::vector<std::pair<std::string, ListedQuoteRejectCounts>> rows = {
-      {"2026-01-02", clean}, {"2026-02-02", dirty}};
+  // FIX-F M2: the subset the policy REFUSED. Under the default no-drop policy
+  // this is 0 and `total_dropped` is unchanged; when `reject_locked` is set it
+  // must be counted, or a policy-dropped quote appears in no dropped total.
+  ListedQuoteRejectCounts strict = dirty;
+  strict.locked_dropped = 4u;
+  // FIX-F m4: a date whose selection FAILED still gets a row, marked `no_basket`
+  // and carrying the first candidate expiry's tally.
+  const std::vector<QuoteRejectRow> rows = {{"2026-01-02", true, clean},
+                                            {"2026-02-02", true, dirty},
+                                            {"2026-03-02", false, strict}};
   ASSERT_TRUE(write_quote_reject_report(path, rows).has_value());
 
   std::ifstream in(path, std::ios::binary);
+  std::string schema;
   std::string header;
   std::string row0;
   std::string row1;
+  std::string row2;
+  ASSERT_TRUE(std::getline(in, schema));
   ASSERT_TRUE(std::getline(in, header));
   ASSERT_TRUE(std::getline(in, row0));
   ASSERT_TRUE(std::getline(in, row1));
-  EXPECT_EQ(header, "date\tnot_two_sided\tzero_bid\tstale\tstale_unevaluable\tlocked\t"
-                    "non_standard\ttotal_dropped");
-  EXPECT_EQ(row0, "2026-01-02\t0\t0\t0\t0\t0\t0\t0");
-  // total_dropped = 2 + 3 + 1 = 6: `locked` is flagged but admitted, and
-  // `stale_unevaluable` is a measurability report rather than a rejection, so
-  // neither may inflate the dropped count.
-  EXPECT_EQ(row1, "2026-02-02\t0\t2\t3\t7\t5\t1\t6");
+  ASSERT_TRUE(std::getline(in, row2));
+  // FIX-F m5: a version line, so a positional reader written against an older
+  // column order fails loudly instead of silently shifting one column left.
+  EXPECT_EQ(schema, "# schema=quote_rejects/1");
+  EXPECT_EQ(header, "date\tselection\tnot_two_sided\tzero_bid\tstale\tstale_unevaluable\tlocked\t"
+                    "locked_dropped\tnon_standard\ttotal_dropped");
+  EXPECT_EQ(row0, "2026-01-02\tok\t0\t0\t0\t0\t0\t0\t0\t0");
+  // total_dropped = 2 + 3 + 1 = 6: `locked` is flagged but admitted under the
+  // default policy, and `stale_unevaluable` is a measurability report rather
+  // than a rejection, so neither may inflate the dropped count.
+  EXPECT_EQ(row1, "2026-02-02\tok\t0\t2\t3\t7\t5\t0\t1\t6");
   EXPECT_EQ(dirty.total_dropped(), 6u);
+  // ... and 6 + 4 = 10 once the policy actually refuses the locked markets.
+  EXPECT_EQ(row2, "2026-03-02\tno_basket\t0\t2\t3\t7\t5\t4\t1\t10");
+  EXPECT_EQ(strict.total_dropped(), 10u);
 
   fs::remove_all(dir, error);
 }

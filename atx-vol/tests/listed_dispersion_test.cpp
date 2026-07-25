@@ -332,6 +332,7 @@ TEST(ListedDispersion, LockedMarketIsFlaggedButAdmittedUnlessPolicySaysOtherwise
   ASSERT_EQ(selected->names.size(), 2u);
   EXPECT_DOUBLE_EQ(selected->names[0].strike, 49.0) << "a locked market is not a bad price";
   EXPECT_EQ(selected->quote_rejects.locked, 1u) << "the locked market must still be flagged";
+  EXPECT_EQ(selected->quote_rejects.locked_dropped, 0u) << "the default policy drops nothing";
   EXPECT_EQ(selected->quote_rejects.total_dropped(), 0u);
 
   // An operator who does not want to trade locked markets can say so.
@@ -343,6 +344,42 @@ TEST(ListedDispersion, LockedMarketIsFlaggedButAdmittedUnlessPolicySaysOtherwise
   ASSERT_EQ(dropped_locked->names.size(), 2u);
   EXPECT_DOUBLE_EQ(dropped_locked->names[0].strike, 51.0);
   EXPECT_EQ(dropped_locked->quote_rejects.locked, 1u);
+  // FIX-F M2: the quote the POLICY refused has to appear in a dropped total.
+  // Before this it appeared in none — `locked` was a flag count that
+  // `total_dropped()` deliberately excluded, so a policy-dropped quote was
+  // invisible to every total, including the persisted `total_dropped` column.
+  EXPECT_EQ(dropped_locked->quote_rejects.locked_dropped, 1u);
+  EXPECT_EQ(dropped_locked->quote_rejects.total_dropped(), 1u);
+}
+
+// FIX-F m4. A date whose selection FAILS is the date an operator most wants the
+// admission tally for, and it used to produce no tally at all: the counts died
+// with the Result's error, so `quote_rejects.tsv` had a row only where nothing
+// went wrong. The out-parameter reports the first candidate expiry's tally
+// regardless of outcome.
+TEST(ListedDispersion, TheAdmissionTallySurvivesAFailedSelection) {
+  const std::int64_t expiry = kValuation + 30 * kDay;
+  std::uint32_t id = 1;
+  std::vector<ListedOptionQuote> quotes;
+  add_pair(quotes, "SPY", id, expiry, 99.0);
+  // Every component quote is zero-bid, so no basket can form on this expiry —
+  // but the gates rejected six quotes on the way to finding that out.
+  for (const char *symbol : {"N0", "N1"}) {
+    quotes.push_back(quote(symbol, id++, expiry, 50.0, Side::Call, /*bid=*/0.0, /*ask=*/2.0));
+    quotes.push_back(quote(symbol, id++, expiry, 50.0, Side::Put, /*bid=*/0.0, /*ask=*/2.0));
+  }
+
+  ListedQuoteRejectCounts attempted{};
+  auto failed = select_listed_dispersion(kDate, kValuation, universe(), quotes, forwards(),
+                                         config(), &attempted);
+  ASSERT_FALSE(failed.has_value()) << "the fixture must actually fail selection";
+  EXPECT_EQ(attempted.zero_bid, 4u) << "the tally must survive the error";
+  EXPECT_EQ(attempted.total_dropped(), 4u);
+
+  // Passing no out-parameter is still valid and observes nothing.
+  auto again =
+      select_listed_dispersion(kDate, kValuation, universe(), quotes, forwards(), config());
+  EXPECT_FALSE(again.has_value());
 }
 
 TEST(ListedDispersion, AZeroBidIndexQuoteCannotNominateAnExpiry) {

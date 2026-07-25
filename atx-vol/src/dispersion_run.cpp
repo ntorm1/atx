@@ -1573,18 +1573,22 @@ Status persist_typed_spec_keys(const fs::path &source_spec, const fs::path &run_
   return out ? Ok() : Err(ErrorCode::IoError, "cannot flush typed run config keys");
 }
 
-Status
-write_quote_reject_report(const fs::path &path,
-                          std::span<const std::pair<std::string, ListedQuoteRejectCounts>> rows) {
+Status write_quote_reject_report(const fs::path &path, std::span<const QuoteRejectRow> rows) {
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   if (!out) {
     return Err(ErrorCode::IoError, "cannot write " + path.string());
   }
-  out << "date\tnot_two_sided\tzero_bid\tstale\tstale_unevaluable\tlocked\tnon_standard\t"
-         "total_dropped\n";
-  for (const auto &[date, counts] : rows) {
-    out << date << '\t' << counts.not_two_sided << '\t' << counts.zero_bid << '\t' << counts.stale
-        << '\t' << counts.stale_unevaluable << '\t' << counts.locked << '\t' << counts.non_standard
+  // FIX-F m5: a version line, so a positional reader written against an older
+  // column order fails loudly instead of silently shifting. Same `#`-metadata
+  // convention `write_backtest_pnl_tsv` uses.
+  out << "# schema=quote_rejects/1\n";
+  out << "date\tselection\tnot_two_sided\tzero_bid\tstale\tstale_unevaluable\tlocked\t"
+         "locked_dropped\tnon_standard\ttotal_dropped\n";
+  for (const QuoteRejectRow &row : rows) {
+    const ListedQuoteRejectCounts &counts = row.counts;
+    out << row.date << '\t' << (row.selected ? "ok" : "no_basket") << '\t' << counts.not_two_sided
+        << '\t' << counts.zero_bid << '\t' << counts.stale << '\t' << counts.stale_unevaluable
+        << '\t' << counts.locked << '\t' << counts.locked_dropped << '\t' << counts.non_standard
         << '\t' << counts.total_dropped() << '\n';
   }
   return out ? Ok() : Err(ErrorCode::IoError, "cannot flush " + path.string());
@@ -1970,7 +1974,7 @@ Status dispersion_build_schedule(const fs::path &run_dir) {
   // F6 (BT-P2-8): per-date quote-admission tally. Persisted below, because a
   // counter that only exists in memory cannot answer "why did this schedule
   // change" after the fact — which is exactly the question a moved golden asks.
-  std::vector<std::pair<std::string, ListedQuoteRejectCounts>> quote_reject_rows;
+  std::vector<QuoteRejectRow> quote_reject_rows;
   for (const SnapshotRef &ref : clock.refs()) {
     ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(ref.archive_path));
     const double active_dte =
@@ -2006,14 +2010,19 @@ Status dispersion_build_schedule(const fs::path &run_dir) {
                  ? Ok(value)
                  : Err(ErrorCode::Unavailable, "forward unavailable");
     };
-    const auto selected = select_listed_dispersion(ref.date, snapshot.ts_ns(), resolved.universe,
-                                                   quotes, forward, selection_config);
-    if (selected) {
-      // F6: the per-date admission tally, recorded for EVERY date selection ran
-      // on — including dates whose roll is later deferred below — so an operator
-      // can see what the quality gates rejected without re-running selection.
-      quote_reject_rows.push_back({ref.date, selected->quote_rejects});
-    }
+    // FIX-F m4: the tally of the first candidate expiry, filled even when
+    // selection fails — the date an operator most wants the tally for is exactly
+    // the date that produced no basket.
+    ListedQuoteRejectCounts attempted_rejects{};
+    const auto selected =
+        select_listed_dispersion(ref.date, snapshot.ts_ns(), resolved.universe, quotes, forward,
+                                 selection_config, &attempted_rejects);
+    // F6: the per-date admission tally, recorded for EVERY date selection ran
+    // on — including dates whose roll is later deferred below, and (FIX-F m4)
+    // dates where selection failed outright — so an operator can see what the
+    // quality gates rejected without re-running selection.
+    quote_reject_rows.push_back(selected ? QuoteRejectRow{ref.date, true, selected->quote_rejects}
+                                         : QuoteRejectRow{ref.date, false, attempted_rejects});
     if (!selected) {
       if (active_expiry == 0) {
         continue;
@@ -2049,13 +2058,17 @@ Status dispersion_build_schedule(const fs::path &run_dir) {
     active_expiry = roll.expiry_ts_ns;
     schedule.rolls.push_back(std::move(roll));
   }
+  // FIX-F m3: BEFORE the acceptance gate. The tally is evidence ABOUT the gates,
+  // and a run that fails the entry/three-roll gate is the case where an operator
+  // most wants to know what the quality gates rejected. F4 writes `run_config.tsv`
+  // before the replay for the same reason; the same principle applies here.
+  ATX_TRY_VOID(write_quote_reject_report(run_dir / "quote_rejects.tsv", quote_reject_rows));
   if (schedule.rolls.empty() || (spec.core_mode && schedule.rolls.size() < 3u)) {
     return Err(ErrorCode::Unavailable,
                "schedule does not satisfy entry/three-roll acceptance gate");
   }
   ATX_TRY_VOID(
       write_listed_dispersion_schedule_file((run_dir / "trade_schedule.tsv").string(), schedule));
-  ATX_TRY_VOID(write_quote_reject_report(run_dir / "quote_rejects.tsv", quote_reject_rows));
   std::printf("built immutable schedule: rolls=%zu\n", schedule.rolls.size());
   return Ok();
 }
