@@ -38,6 +38,7 @@
 #include "atx/vol/counters.hpp"
 #include "atx/vol/historical_projection.hpp"
 #include "atx/vol/listed_dispersion.hpp"
+#include "atx/vol/listed_dispersion_pipeline.hpp" // ListedDispersionMethodology (L9)
 #include "atx/vol/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/listed_dispersion_strategy.hpp"
@@ -1897,7 +1898,13 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
   ATX_TRY(RunSpec spec, read_run_spec(source_spec_path));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(spec.universe_path));
   const std::vector<std::string> symbols = all_symbols(universe_rows);
-  if (spec.core_mode && symbols.size() < 51u) {
+  // L9 (RECONCILE 1): the entry-gate floor reads from the ONE versioned
+  // methodology policy rather than a scattered literal. `min_names_entry` == 51,
+  // so this is the same gate the inline `51u` enforced — main's example already
+  // read it from here, and dispatching build-corpus into this function must not
+  // quietly put the literal back.
+  const ListedDispersionMethodology methodology;
+  if (spec.core_mode && symbols.size() < methodology.min_names_entry) {
     return Err(ErrorCode::InvalidArgument, "core mode requires SPY plus at least 50 names");
   }
   // B1: time the up-front ingest separately from everything after it. This is

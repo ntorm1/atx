@@ -29,6 +29,7 @@
 #include "atx/vol/counters.hpp"
 #include "atx/vol/dispersion.hpp"
 #include "atx/vol/dispersion_backtest.hpp"
+#include "atx/vol/dispersion_run.hpp"
 #include "atx/vol/dispersion_workflow.hpp"
 #include "atx/vol/historical_projection.hpp"
 #include "atx/vol/listed_dispersion.hpp"
@@ -92,18 +93,17 @@ Result<std::string> read_text(const fs::path &path) {
   return Ok(std::move(text));
 }
 
-std::uint64_t hash_text(std::string_view text) {
-  const std::uint64_t hash = atx::core::hash_bytes(text.data(), text.size());
-  return hash == 0u ? 1u : hash;
-}
-
 // The archive-file fingerprint that build-schedule stamped as `surface_fingerprint`
 // now lives in the library (listed_dispersion_pipeline.cpp `hash_archive_file`, an
 // anonymous-namespace helper byte-for-byte identical to the old example `hash_file`).
 // After the T9 build-schedule cutover the example had no remaining caller, so its
 // duplicate `hash_file` was removed rather than exporting the library's internal
-// helper (O5). `hash_text` (build-corpus input/policy fingerprints) and `read_text`
-// stay — they have other callers.
+// helper (O5). `read_text` stays — `verify_occ_ess_evidence` still calls it.
+//
+// RECONCILE 1: `hash_text` went the same way. It existed only to seed build-corpus's
+// input/policy fingerprints, and build-corpus is now a one-line dispatch into
+// `dispersion_build_corpus`, which computes both from the NAMED constants on
+// `DispersionCorpusPolicy` (dispersion_run.hpp) instead of from example literals.
 
 // ── Runtime diagnostics ──────────────────────────────────────────────────────
 // PhaseTimer + the `diagnostics` section encoder now live in the library
@@ -179,75 +179,12 @@ RaSectionData build_mark_divergence_section(std::shared_ptr<MarkDivergenceArena>
   return sec;
 }
 
-Status write_input_inventory(const fs::path &path, const OpraBatchResult &batch) {
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) {
-    return Err(ErrorCode::IoError, "cannot write input inventory");
-  }
-  out << "date\tsymbol\tpath\tstatus\tsource_schema_version\tsource_fingerprint\t"
-         "market_input_fingerprint\n";
-  for (const OpraBatchEntry &entry : batch.entries) {
-    out << entry.date << '\t' << entry.symbol << '\t' << entry.path << '\t';
-    if (entry.panel) {
-      out << "Loaded\t" << entry.panel->source_schema_version << '\t'
-          << entry.panel->source_fingerprint << '\t'
-          << entry.panel->market_input_provenance.fingerprint;
-    } else {
-      out << (entry.panel.error().code() == ErrorCode::NotFound ? "Missing" : "Error")
-          << "\t0\t0\t0";
-    }
-    out << '\n';
-  }
-  return out ? Ok() : Err(ErrorCode::IoError, "cannot flush input inventory");
-}
-
-Status persist_occ_ess_evidence(const fs::path &run_dir, const RunSpec &spec,
-                                const OpraBatchResult &batch) {
-  std::set<std::string> loaded_dates;
-  for (const OpraBatchEntry &entry : batch.entries) {
-    if (entry.panel) {
-      loaded_dates.insert(entry.date);
-    }
-  }
-  if (loaded_dates.empty()) {
-    return Err(ErrorCode::NotFound, "no loaded dates for OCC ESS evidence");
-  }
-
-  const fs::path evidence_dir = run_dir / "occ_ess";
-  std::error_code error;
-  fs::create_directories(evidence_dir, error);
-  if (error) {
-    return Err(ErrorCode::IoError, "cannot create OCC ESS evidence directory");
-  }
-  std::ofstream inventory(run_dir / "occ_ess_inventory.tsv", std::ios::binary | std::ios::trunc);
-  if (!inventory) {
-    return Err(ErrorCode::IoError, "cannot write OCC ESS inventory");
-  }
-  inventory << "date\tpath\tn_special_symbols\tsource_fingerprint\n";
-  for (const std::string &date : loaded_dates) {
-    const fs::path source = spec.occ_ess_root / (date + ".txt");
-    ATX_TRY(OccEssReport report, read_occ_ess_report_file(source.string()));
-    if (report.trade_date() != date) {
-      return Err(ErrorCode::InvalidArgument, "OCC ESS evidence date mismatch");
-    }
-    ATX_TRY(std::string bytes, read_text(source));
-    const fs::path target = evidence_dir / (date + ".txt");
-    const fs::path pending = target.string() + ".pending";
-    {
-      std::ofstream output(pending, std::ios::binary | std::ios::trunc);
-      if (!output || !output.write(bytes.data(), static_cast<std::streamsize>(bytes.size()))) {
-        return Err(ErrorCode::IoError, "cannot write pending OCC ESS evidence");
-      }
-    }
-    fs::rename(pending, target, error);
-    if (error) {
-      return Err(ErrorCode::IoError, "cannot publish OCC ESS evidence");
-    }
-    inventory << date << '\t' << target.string() << '\t' << report.special_symbols().size() << '\t'
-              << report.source_fingerprint() << '\n';
-  }
-  return inventory ? Ok() : Err(ErrorCode::IoError, "cannot flush OCC ESS inventory");
-}
+// RECONCILE 1: `write_input_inventory` and `persist_occ_ess_evidence` were
+// example-local duplicates of the library's own copies (src/dispersion_run.cpp:113
+// and :135, the T-wave lift). Their only caller was `build_corpus_command`, which
+// is now a dispatch into `dispersion_build_corpus`; the library writes both
+// artifacts. `verify_occ_ess_evidence` below is NOT a duplicate in that sense —
+// two shipped subcommands (`build-schedule`, `verify`) still call it here.
 
 Status verify_occ_ess_evidence(const fs::path &run_dir, const Clock &clock) {
   ATX_TRY(std::string inventory, read_text(run_dir / "occ_ess_inventory.tsv"));
@@ -291,119 +228,22 @@ Status verify_occ_ess_evidence(const fs::path &run_dir, const Clock &clock) {
   return Ok();
 }
 
-Status write_methodology_map(const fs::path &path) {
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) {
-    return Err(ErrorCode::IoError, "cannot write methodology map");
-  }
-  out << "choice\tpublic_anchor\tatx_adaptation\n"
-      << "short_index_atm_straddle\tCboe traditional dispersion\tSPY American ETF options "
-         "replace SPX\n"
-      << "long_component_atm_straddles\tCboe traditional dispersion\tpoint-in-time supplied "
-         "SPY constituent proxy\n"
-      << "top_50_breadth\tCboe COR3M top-50 value-weighted basket\texact only when supplied "
-         "schedule matches official effective basket\n"
-      << "surface_prices_and_greeks\tCboe fitted option analytics\tatx-vol American fitted "
-         "surfaces reloaded from ATXVSA\n"
-      << "daily_hedge_monthly_roll\tBNP Paribas public dispersion implementation\tdaily close "
-         "delta hedge and common listed monthly expiry\n"
-      << "standard_contract_rule\tOCC daily Equity Special Settlements and OIC contract-size "
-         "guidance\tvalidated non-special products use 100 shares when OPRA deliverable fields "
-         "are undefined\n"
-      << "vega_flat\tdirect Greek identity\tcontinuous notional using served American vegas\n";
-  return out ? Ok() : Err(ErrorCode::IoError, "cannot flush methodology map");
-}
-
-Status build_corpus_command(const fs::path &source_spec_path, const fs::path &run_dir) {
-  ATX_TRY(RunSpec spec, read_run_spec(source_spec_path));
-  ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(spec.universe_path));
-  const std::vector<std::string> symbols = all_symbols(universe_rows);
-  // L9: the loose entry-gate floor (SPY + 50 names) reads from the one versioned
-  // methodology policy instead of a scattered literal. `min_names_entry` == 51.
-  const ListedDispersionMethodology methodology;
-  if (spec.core_mode && symbols.size() < methodology.min_names_entry) {
-    return Err(ErrorCode::InvalidArgument, "core mode requires SPY plus at least 50 names");
-  }
-  ATX_TRY(OpraBatchResult batch,
-          load_opra_daterange(batch_spec(spec, symbols, spec.date_lo, spec.date_hi)));
-
-  std::error_code fs_error;
-  fs::create_directories(run_dir / "archives", fs_error);
-  if (fs_error) {
-    return Err(ErrorCode::IoError, "cannot create run directory");
-  }
-  ATX_TRY_VOID(write_input_inventory(run_dir / "input_inventory.tsv", batch));
-  if (!spec.occ_ess_root.empty())
-    ATX_TRY_VOID(persist_occ_ess_evidence(run_dir, spec, batch));
-  ATX_TRY_VOID(write_methodology_map(run_dir / "methodology_map.tsv"));
-  QualifiedCorpusConfig config;
-  config.build.n_threads = spec.fit_workers;
-  config.build.fit_template.preset = FitPreset::Hft;
-  CurveConfig direct_curve;
-  direct_curve.kind = VolCurveKind::LinearVariance;
-  config.build.fit_template.curve = direct_curve;
-  config.build.fit_template.enforce_calendar_floor = true;
-  config.admission.enabled = true;
-  CorpusAdmissionRule rule;
-  rule.min_quotes = 20u;
-  rule.min_slices = 2u;
-  rule.require_calendar_arb_free = true;
-  rule.calendar_abs_k = 0.7;
-  rule.require_source_provenance = true;
-  for (CorpusAdmissionRule &profile_rule : config.admission.by_profile) {
-    profile_rule = rule;
-  }
-  config.input_fingerprint =
-      hash_text(spec.date_lo + "|" + spec.date_hi + "|" + std::to_string(symbols.size()));
-  config.policy_fingerprint =
-      hash_text("spy-listed-dispersion-admission-v4-pinned-linear-calendar-floor-k0.7");
-  ATX_TRY(CorpusBuildSession session,
-          CorpusBuildSession::create((run_dir / "archives").string(), config));
-  std::size_t cursor = 0;
-  while (cursor < batch.entries.size()) {
-    const std::string date = batch.entries[cursor].date;
-    std::vector<CorpusCellInput> cells;
-    while (cursor < batch.entries.size() && batch.entries[cursor].date == date) {
-      OpraBatchEntry &entry = batch.entries[cursor++];
-      if (entry.panel) {
-        cells.emplace_back(
-            corpus_board_from_opra(entry.date, entry.symbol, std::move(*entry.panel)));
-      } else {
-        CorpusSourceFailure failure;
-        failure.date = entry.date;
-        failure.symbol = entry.symbol;
-        failure.reason = entry.panel.error().code() == ErrorCode::NotFound
-                             ? CorpusAdmissionReason::MissingSource
-                             : CorpusAdmissionReason::InvalidSourceSchema;
-        failure.error_code = entry.panel.error().code();
-        cells.emplace_back(std::move(failure));
-      }
-    }
-    ATX_TRY_VOID(session.append_date(date, cells));
-  }
-  ATX_TRY(QualifiedCorpusManifest built, session.finish());
-  ATX_TRY_VOID(write_manifest_file((run_dir / "surface_manifest.tsv").string(), built.manifest));
-  ATX_TRY_VOID(write_quality_report_file((run_dir / "quality.tsv").string(), built.quality));
-  fs::copy_file(spec.universe_path, run_dir / "universe_schedule.tsv",
-                fs::copy_options::overwrite_existing, fs_error);
-  if (fs_error) {
-    return Err(ErrorCode::IoError, "cannot copy universe schedule");
-  }
-  RunSpec persisted_spec = spec;
-  persisted_spec.universe_path = "universe_schedule.tsv";
-  if (!spec.definitions_path.empty()) {
-    fs_error.clear();
-    fs::copy_file(spec.definitions_path, run_dir / "definitions.tsv",
-                  fs::copy_options::overwrite_existing, fs_error);
-    if (fs_error)
-      return Err(ErrorCode::IoError, "cannot copy definitions");
-    persisted_spec.definitions_path = "definitions.tsv";
-  }
-  ATX_TRY_VOID(write_resolved_spec(run_dir / "run_spec.tsv", persisted_spec));
-  std::printf("built qualified corpus: admitted=%u quarantined=%u source_failed=%u\n",
-              built.quality.n_admitted, built.quality.n_quarantined, built.quality.n_source_failed);
-  return Ok();
-}
+// RECONCILE 1 — `build-corpus` is a dispatch into `dispersion_build_corpus`, so the
+// ~90-line body and `write_methodology_map` that used to live here are gone. The
+// library entry point writes the same artifacts in the same order and adds the two
+// things this copy could not reach:
+//
+//   * `persist_typed_spec_keys` (F4/BT-W). `write_resolved_spec` re-emits ONLY the
+//     RunSpec vocabulary, so THIS copy silently ERASED every typed execution knob
+//     (friction_*, financing_*, cost_*, provenance, unpriced, fill_policy, quote_*)
+//     on the way into the run directory. A spec could declare frictions, be
+//     accepted, and have them dropped before any later stage could read them.
+//   * the pinned admission/fit constants as NAMED members of
+//     `DispersionCorpusPolicy` rather than inline literals, which is what makes the
+//     reproduction knobs greppable from one place.
+//
+// See the seam contract at the top of atx/vol/dispersion_run.hpp for why this
+// subcommand dispatches and `build-schedule` / `run-backtest` / `verify` do not.
 
 // The per-date OPRA quote join (formerly the example's `load_listed_quotes`) now
 // lives in the library as `listed_quotes_for_date` (verbatim lift, T1). Both former
@@ -519,11 +359,37 @@ Status run_backtest_command(const fs::path &run_dir) {
   ATX_TRY(Clock clock, Clock::from_manifest(manifest));
   ATX_TRY(ListedDispersionSchedule schedule,
           read_listed_dispersion_schedule_file((run_dir / "trade_schedule.tsv").string()));
+  // RECONCILE 2 (F4/BT-W + F5/BT-T2). This block used to be:
+  //
+  //     RunConfig config;
+  //     config.unpriced = UnpricedLotPolicy::Error;
+  //     config.snapshot_cache = std::make_shared<SnapshotCache>();
+  //
+  // i.e. exactly the pre-F4 defect WS-F closed and the main->pipeline-m merge
+  // re-opened by taking main's example wholesale: `friction_*`, `financing_*`,
+  // `cost_*`, `provenance`, `fill_policy`, `book_entry_fill_slippage` and
+  // `reconcile_nav` were parsed, echoed into the run dir, and then had NO effect
+  // on the headline listed artifact. Every published listed NAV was frictionless,
+  // carry-free and provenance-permissive regardless of what the spec declared.
+  //
+  // The SAME run_spec.tsv is now also read through the STRICT typed reader, and
+  // the engine config comes from the ONE named construction the F5 guard test
+  // also calls (`make_listed_replay_run_config`), so a knob is either visible
+  // there or provably dead, and the snapshot cache is subsetted to the schedule's
+  // referenced uids. `read_dispersion_run_config` binds every RunSpec key too, so
+  // a run dir written before this change reads identically; an unknown key now
+  // fails BY NAME instead of being silently ignored.
+  ATX_TRY(DispersionRunConfig run_config, read_dispersion_run_config(run_dir / "run_spec.tsv"));
   ATX_TRY(ListedDispersionStrategy strategy,
-          ListedDispersionStrategy::create(schedule, spec.delta_band));
-  RunConfig config;
-  config.unpriced = UnpricedLotPolicy::Error;
-  config.snapshot_cache = std::make_shared<SnapshotCache>();
+          ListedDispersionStrategy::create(schedule, spec.delta_band,
+                                           ScheduleMarkPolicy::ExactArchive,
+                                           run_config.fill_policy));
+  RunConfig config = make_listed_replay_run_config(run_config, clock, strategy);
+  // M4's reporting contract: the run records WHAT produced its numbers, regime
+  // first, BEFORE the replay, so a failed run still leaves the evidence of what it
+  // attempted. A published NAV that does not say which frictions produced it is
+  // not a result — and until this line the listed route emitted no such record.
+  ATX_TRY_VOID(write_dispersion_effective_config(run_dir / "run_config.tsv", run_config));
   timer.add("setup_read", phase);
 
   phase = PhaseTimer::now();
@@ -872,191 +738,31 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   return Ok();
 }
 
-Status run_surface_backtest_command(const fs::path &run_dir) {
-  ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
-  ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
-  ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
-  ATX_TRY(Clock clock, Clock::from_manifest(manifest));
-  if (clock.size() == 0u) {
-    return Err(ErrorCode::Unavailable, "surface backtest: empty qualified clock");
-  }
-  ATX_TRY(DispersionUniverse universe, universe_at(universe_rows, clock.refs().front().date));
-
-  DispersionBacktestConfig config;
-  config.target_dte_days = spec.target_dte_days;
-  config.roll_dte_days = spec.roll_dte_days;
-  // UNITS (E1 / AN-P1-1, resolved at the main->pipeline-m merge). This boundary
-  // used to scale by kVegaVolPointToUnitVol (== 100) because the library read
-  // `DispersionConfig::target_vega` / `DispersionBacktestConfig::gross_index_vega`
-  // as dollars per UNIT vol. E1 changed that contract: both are now dollars per
-  // VOL POINT — the same unit as `spec.gross_index_vega` and as the listed route's
-  // `ListedScheduleBuildConfig::gross_index_vega_target_per_vol_point`. The header
-  // states the caller obligation explicitly ("Callers that were tuned against the
-  // old projected-route behaviour must DIVIDE their old target_vega by 100"), so
-  // the multiply is dropped rather than retained: keeping it would build a book
-  // 100x oversized. This is the assignment the post-E1 library seam already makes
-  // (src/dispersion_run.cpp: `config.gross_index_vega = spec.gross_index_vega;`).
-  config.gross_index_vega = spec.gross_index_vega;
-  config.delta_band = spec.delta_band;
-  config.min_names = spec.min_names;
-  config.run.unpriced = UnpricedLotPolicy::Error;
-#if defined(ATX_VOL_PROFILE)
-  phase_profile::reset();
-#endif
-#if defined(ATX_VOL_COUNTERS)
-  counters::reset();
-#endif
-  ATX_TRY(BacktestResult backtest, run_dispersion_backtest(clock, std::move(universe), config));
-#if defined(ATX_VOL_PROFILE)
-  {
-    const phase_profile::Snapshot measured = phase_profile::snapshot();
-    const double total_ns = static_cast<double>(
-        measured.nanoseconds[static_cast<unsigned>(phase_profile::Region::BacktestTotal)]);
-    std::ofstream output(run_dir / "backtest_profile.tsv", std::ios::binary | std::ios::trunc);
-    if (!output)
-      return Err(ErrorCode::IoError, "cannot write backtest profile");
-    output << "region\tcalls\ttotal_ms\tpct_backtest\tns_per_call\n" << std::setprecision(17);
-    for (unsigned i = 0; i < phase_profile::kCount; ++i) {
-      const double ns = static_cast<double>(measured.nanoseconds[i]);
-      const double calls = static_cast<double>(measured.calls[i]);
-      output << phase_profile::kNames[i] << '\t' << measured.calls[i] << '\t' << ns / 1.0e6 << '\t'
-             << (total_ns > 0.0 ? 100.0 * ns / total_ns : 0.0) << '\t'
-             << (calls > 0.0 ? ns / calls : 0.0) << '\n';
-    }
-    if (!output)
-      return Err(ErrorCode::IoError, "cannot flush backtest profile");
-  }
-#endif
-#if defined(ATX_VOL_COUNTERS)
-  {
-    const counters::Snapshot measured = counters::snapshot();
-    std::ofstream output(run_dir / "backtest_counters.tsv", std::ios::binary | std::ios::trunc);
-    if (!output)
-      return Err(ErrorCode::IoError, "cannot write backtest counters");
-    output << "counter\tvalue\n";
-    for (unsigned i = 0; i < counters::kCount; ++i)
-      output << counters::kNames[i] << '\t' << measured.values[i] << '\n';
-    if (!output)
-      return Err(ErrorCode::IoError, "cannot flush backtest counters");
-  }
-#endif
-  ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / "surface_backtest.tsv").string()));
-  std::printf("surface-only projected backtest complete: dates=%zu final_nav=%.10g\n",
-              backtest.size(), backtest.nav.back());
-  return Ok();
-}
-
-Status run_projected_var_command(const fs::path &run_dir) {
-  ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
-  ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
-  ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
-  ATX_TRY(Clock clock, Clock::from_manifest(manifest));
-  if (clock.size() == 0u)
-    return Err(ErrorCode::Unavailable, "projected VaR: empty qualified clock");
-
-  std::vector<std::unique_ptr<MarketSnapshot>> snapshots;
-  std::vector<HistoricalProjectionScenario> scenarios;
-  snapshots.reserve(clock.size());
-  scenarios.reserve(clock.size());
-  for (const SnapshotRef &ref : clock.refs()) {
-    ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(ref.archive_path));
-    snapshots.push_back(std::make_unique<MarketSnapshot>(std::move(snapshot)));
-    scenarios.push_back({snapshots.back()->ts_ns(), &snapshots.back()->set()});
-  }
-
-  ATX_TRY(DispersionUniverse authored, universe_at(universe_rows, clock.refs().front().date));
-  ATX_TRY(ResolvedUniverse resolved,
-          resolve_universe_uids(
-              authored, [&](std::string_view symbol) { return snapshots.front()->uid_of(symbol); },
-              MissingNameSpec{MissingNamePolicy::DropRenormalize, spec.min_names}));
-  DispersionConfig dispersion;
-  dispersion.target_T = spec.target_dte_days / 365.25;
-  // UNITS (E1 / AN-P1-1, resolved at the main->pipeline-m merge). See the matching
-  // note in run_surface_backtest_command: `DispersionConfig::target_vega` is now
-  // dollars per VOL POINT, so `spec.gross_index_vega` is already in the target unit
-  // and the old kVegaVolPointToUnitVol multiply is dropped. dispersion_book_var
-  // re-projects this book and applies no further scaling, so retaining the x100
-  // here would have made the projected-VaR book 100x oversized.
-  dispersion.target_vega = spec.gross_index_vega;
-  dispersion.side = DispersionSide::ShortIndexLongNames;
-  dispersion.multiplier = 100.0;
-  dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, spec.min_names};
-  dispersion.projected_maturity =
-      ProjectedMaturitySpec::days(static_cast<std::int32_t>(std::llround(spec.target_dte_days)));
-  ATX_TRY(DispersionBook initial,
-          build_dispersion_book(resolved.universe, snapshots.front()->set(), dispersion));
-
-  // The relative-template synthesis + prepare + evaluate + per-confidence VaR split
-  // now live in the library (dispersion_book_var). The CLI keeps the three bespoke
-  // loose-TSV emissions (out-of-archive per the design partition rule — no schema
-  // bump this wave). `maturity` MUST stay the relative days(N) template, NOT the
-  // book's absolute expiry, or per-scenario aging would change. elapsed_seconds now
-  // spans the whole call (prepare + evaluate + risk) — projections_per_second is
-  // non-deterministic wall-clock telemetry, unaffected economically.
-  const std::vector<double> confidences = {0.95, 0.99};
-  HistoricalProjectionConfig config;
-  config.n_threads = spec.fit_workers;
-  const auto started = std::chrono::steady_clock::now();
-  ATX_TRY(DispersionBookVar var,
-          dispersion_book_var(initial, *dispersion.projected_maturity, scenarios, confidences,
-                              config));
-  const double elapsed_seconds =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-
-  std::ofstream frame_out(run_dir / "projected_risk_scenarios.tsv",
-                          std::ios::binary | std::ios::trunc);
-  std::ofstream leg_out(run_dir / "projected_risk_legs.tsv", std::ios::binary | std::ios::trunc);
-  if (!frame_out || !leg_out)
-    return Err(ErrorCode::IoError, "projected VaR: cannot open output");
-  frame_out << std::setprecision(17)
-            << "date\tts_ns\tvalue\tdelta\tgamma\tvega\ttheta\tn_ok\tn_failed\t"
-               "definition_fingerprint\n";
-  leg_out << std::setprecision(17)
-          << "date\tleg\tuid\tside\texpiry_ts_ns\tstrike\tquantity\tmultiplier\tmark\t"
-             "delta\tgamma\tvega\ttheta\tdefinition_fingerprint\tstatus\n";
-  for (std::size_t scenario = 0; scenario < var.frames.size(); ++scenario) {
-    const HistoricalProjectionFrame &frame = var.frames[scenario];
-    frame_out << clock.refs()[scenario].date << '\t' << frame.ts_ns << '\t' << frame.value << '\t'
-              << frame.delta << '\t' << frame.gamma << '\t' << frame.vega << '\t' << frame.theta
-              << '\t' << frame.n_ok << '\t' << frame.n_failed << '\t'
-              << frame.definition_fingerprint << '\n';
-    for (std::size_t leg = 0; leg < var.n_positions; ++leg) {
-      const ProjectedOption &projected = var.legs[scenario * var.n_positions + leg];
-      leg_out << clock.refs()[scenario].date << '\t' << leg << '\t'
-              << projected.definition.contract.uid << '\t'
-              << (projected.definition.contract.side == Side::Call ? "Call" : "Put") << '\t'
-              << projected.definition.expiry_ts_ns << '\t' << projected.definition.contract.K
-              << '\t' << initial.positions[leg].qty << '\t' << projected.definition.multiplier
-              << '\t' << projected.model_mark << '\t' << projected.greeks.delta << '\t'
-              << projected.greeks.gamma << '\t' << projected.greeks.vega << '\t'
-              << projected.greeks.theta << '\t' << projected.definition.fingerprint << '\t'
-              << to_string(projected.status) << '\n';
-    }
-  }
-  frame_out.close();
-  leg_out.close();
-  if (!frame_out || !leg_out)
-    return Err(ErrorCode::IoError, "projected VaR: output write failed");
-
-  std::ofstream summary(run_dir / "projected_var.tsv", std::ios::binary | std::ios::trunc);
-  if (!summary)
-    return Err(ErrorCode::IoError, "projected VaR: cannot open summary");
-  summary << std::setprecision(17)
-          << "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
-             "n_positions\tprojections_per_second\tprepared_fingerprint\n";
-  for (const ProjectedHistoricalVar &risk : var.risks) {
-    summary << risk.confidence << '\t' << risk.reference_value << '\t' << risk.value_at_risk << '\t'
-            << risk.expected_shortfall << '\t' << risk.n_scenarios << '\t' << var.n_positions
-            << '\t' << (static_cast<double>(var.legs.size()) / elapsed_seconds) << '\t'
-            << var.prepared_fingerprint << '\n';
-  }
-  if (!summary)
-    return Err(ErrorCode::IoError, "projected VaR: summary write failed");
-  std::printf("projected relative-template VaR complete: scenarios=%zu positions=%zu rate=%.1f/s\n",
-              var.frames.size(), var.n_positions,
-              static_cast<double>(var.legs.size()) / elapsed_seconds);
-  return Ok();
-}
+// RECONCILE 1 -- `run-surface-backtest` and `run-projected-var` are dispatches into
+// `dispersion_run_surface_backtest` / `dispersion_run_projected_var`. The ~185 lines
+// that used to sit here were a SECOND, older implementation of both: same artifacts
+// (`surface_backtest.tsv`, `projected_risk_scenarios.tsv`, `projected_risk_legs.tsv`,
+// `projected_var.tsv`), same order, same `#if ATX_VOL_PROFILE / ATX_VOL_COUNTERS`
+// probes, and NEITHER route touches `run.atxrun` on either side -- which is exactly
+// why they can be unioned with main's RunArchive design without conflict.
+//
+// What this copy could not reach, and the library does:
+//   * X1 strict typed spec -- a misspelled or unimplemented key fails BY NAME here
+//     instead of being silently dropped by `read_run_spec`;
+//   * X2/X6 frictions, financing, costs and X3 risk limits actually reaching the
+//     engine (this copy hardcoded `config.run.unpriced = Error` and nothing else,
+//     so a spec's declared frictions changed no number);
+//   * X4 weighting / strike policies, and the previously-hardcoded multiplier;
+//   * X5 `surface_tearsheet.tsv` + `surface_pnl_track.tsv`, regime FIRST, and the
+//     regime named on the console line;
+//   * C1-ACTIVATE point-in-time universe resolution -- this copy froze the basket at
+//     the first session date, so a mid-window reconstitution was silently ignored.
+//
+// The E1 unit resolution the merge recorded at these two call sites is preserved,
+// not lost: `dispersion_backtest_config_from` and `dispersion_run_projected_var`
+// assign `gross_index_vega` / `target_vega` straight from the spec with no
+// `kVegaVolPointToUnitVol` scaling, which is the same post-E1 assignment those
+// comments described, and dispersion_run.hpp's header block states the contract.
 
 // runarchive dump <run_dir> <section> [--tsv]: the escape hatch. Opens
 // <run_dir>/run.atxrun and either prints a one-line section summary (default) or,
@@ -1210,9 +916,26 @@ int main(int argc, char **argv) {
       return 2;
     }
   }
+  // RECONCILE 1 — the CLI/library split, in one place. `dispersion_run.hpp` states
+  // the same contract entry point by entry point and is the authority; this table
+  // is what makes it observable from the command line:
+  //
+  //   build-corpus         -> atx::vol::dispersion_build_corpus        (library)
+  //   run-surface-backtest -> atx::vol::dispersion_run_surface_backtest(library)
+  //   run-projected-var    -> atx::vol::dispersion_run_projected_var   (library)
+  //   build-schedule       -> local; publishes run.atxrun sections
+  //   run-backtest         -> local; publishes run.atxrun sections
+  //   project-schedule     -> local; RunArchive-era subcommand, no library twin
+  //   run-projected-backtest -> local; RunArchive-era subcommand, no library twin
+  //   verify               -> local; RunDir::verify over run.atxrun
+  //
+  // The three that dispatch are the three where BOTH designs write only loose
+  // TSVs, so the union is exact. The rest are on main's RunArchive cutover, whose
+  // library twins still write the loose result files that cutover replaced —
+  // dispatching them would break the archive the Python layer reads.
   Status status = Err(ErrorCode::InvalidArgument, "unknown command");
   if (command == "build-corpus" && !spec.empty() && !out.empty()) {
-    status = build_corpus_command(spec, out);
+    status = atx::vol::dispersion_build_corpus(spec, out);
   } else if (command == "build-schedule" && !run.empty()) {
     status = build_schedule_command(run);
   } else if (command == "run-backtest" && !run.empty()) {
@@ -1225,9 +948,9 @@ int main(int argc, char **argv) {
         execution.empty() ? std::string("configured") : execution,
         out.empty() ? fs::path("projected_backtest.tsv") : out, no_divergence);
   } else if (command == "run-surface-backtest" && !run.empty()) {
-    status = run_surface_backtest_command(run);
+    status = atx::vol::dispersion_run_surface_backtest(run);
   } else if (command == "run-projected-var" && !run.empty()) {
-    status = run_projected_var_command(run);
+    status = atx::vol::dispersion_run_projected_var(run);
   } else if (command == "verify" && !run.empty()) {
     status = verify_command(run);
   } else {

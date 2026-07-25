@@ -6,6 +6,36 @@
 // (~620 LOC of library workflow trapped in an example main) live here so the
 // example is thin CLI glue and every stage is unit-testable off the filesystem.
 //
+// SEAM CONTRACT (RECONCILE 1, 2026-07-25) — READ THIS BEFORE DELETING ANYTHING.
+// This is a PARTIALLY-DISPATCHED seam, on purpose, and the split is stated in full
+// at the "File-oriented workflow entry points" block below.
+//
+// Background: the main -> feat/pipeline-m merge took main's version of the example
+// wholesale, because main had hard-cut the CLI over to the `run.atxrun` RunArchive
+// result container and the shared Python layer is written against that container.
+// The side effect was that NO shipped binary called into this header, leaving a
+// tested library with no production caller — the shape that rots quietly and is
+// then deleted by someone who assumes it was always dead. It was not, and this
+// note exists so nobody has to reconstruct that.
+//
+// The resolution is a UNION where the two designs are compatible, not a blanket
+// restore and not a blanket retreat to library-only:
+//
+//   * Where BOTH designs write only loose TSVs and neither touches `run.atxrun`
+//     (build-corpus, run-surface-backtest, run-projected-var), the CLI dispatches
+//     here. Those three are exact supersets of the bodies they replaced, so the
+//     union costs nothing and recovers X1/X2/X3/X4/X5/X6, C1-ACTIVATE and F4's
+//     `persist_typed_spec_keys`.
+//   * Where main's design PUBLISHES ARCHIVE SECTIONS (build-schedule, run-backtest,
+//     verify), the CLI keeps its own body — dispatching here would write loose
+//     result files the reporting layer cannot read — but takes the CONFIG
+//     CONSTRUCTION from here, so F4/F5 stay reachable from the command line.
+//
+// Consequence for readers of the tests: `dispersion_run_test.cpp` exercises these
+// entry points directly off the filesystem. For the three dispatched entry points
+// that coverage is also CLI coverage; for the rest it is coverage of library
+// behaviour and claims nothing about a CLI path.
+//
 // REPRODUCIBILITY: the pinned admission thresholds / fingerprint material that
 // determine which surfaces are admitted -- and therefore the dispersion golden
 // (final_nav = 24740.624124981368, 82-session) -- are named library constants on
@@ -461,7 +491,49 @@ struct DispersionVerifyReport {
                                                    const CorpusPhaseTimings &phases,
                                                    std::size_t date_batch);
 
-// ── File-oriented workflow entry points (the CLI dispatches to these) ───────
+// ── File-oriented workflow entry points ─────────────────────────────────────
+//
+// WHO CALLS THESE (RECONCILE 1, 2026-07-25). Read the contract at the top of this
+// header first; this is the per-entry-point half of it. Three of the five DO back
+// a shipped subcommand and two DELIBERATELY do not, and the difference is not an
+// oversight in either direction.
+//
+//   dispersion_build_corpus         <- `spy_dispersion_backtest build-corpus`
+//   dispersion_run_surface_backtest <- `spy_dispersion_backtest run-surface-backtest`
+//   dispersion_run_projected_var    <- `spy_dispersion_backtest run-projected-var`
+//
+// dispersion_build_schedule / dispersion_run_backtest — LIBRARY ONLY, and the
+// shipped subcommands of the same name do NOT call them. Both write the loose
+// `backtest.tsv` / `reconciliation.tsv` / `contract_marks.tsv` / `trade_schedule
+// .tsv` result files that the RunArchive cutover REPLACED with `run.atxrun`
+// sections; the Python reporting layer (`atxvol.report`, and the e2e module that
+// executes this binary and reads `run.atxrun` back) is written against the
+// archive. Dispatching them would publish a run directory the reporting layer
+// cannot read, so the CLI keeps its own archive-publishing bodies.
+//
+// What the CLI DOES take from `dispersion_run_backtest` is its CONFIG
+// CONSTRUCTION, which is the part that carries F4/F5: `run-backtest` calls
+// `read_dispersion_run_config` + `make_listed_replay_run_config` +
+// `write_dispersion_effective_config` exactly as this function does, so the typed
+// spec governs the shipped listed replay and `run_config.tsv` is emitted on it.
+// The two bodies therefore differ ONLY in how they persist results.
+//
+// KNOWN RESIDUAL GAP, named rather than left to be discovered: F6's quote-quality
+// admission (`DispersionRunConfig::quote_quality` -> `select_listed_dispersion`)
+// and its `quote_rejects.tsv` tally reach selection only through
+// `dispersion_build_schedule`. The shipped `build-schedule` delegates selection to
+// `build_listed_dispersion_schedule` (listed_dispersion_pipeline.hpp), whose
+// `ListedScheduleSpec` has no quality member, so closing this needs an API change
+// in that header — a change of ownership, not a wiring fix, and out of scope here.
+//
+// `dispersion_verify` (below) is likewise LIBRARY ONLY for the same reason: it
+// verifies the loose artifact envelope and folds in the M1 native reference
+// reconciliation, both of which read result files the cutover no longer writes.
+//
+// These are not dead code and must not be deleted as such: each is covered
+// directly off the filesystem by `dispersion_run_test.cpp`, which never invokes
+// the example binary, so the coverage is of LIBRARY behaviour and does not
+// pretend to gate a CLI path.
 
 [[nodiscard]] Status dispersion_build_corpus(const std::filesystem::path &source_spec_path,
                                              const std::filesystem::path &run_dir,
