@@ -329,15 +329,22 @@ extern template Result<DerivQuote> deriv_price<SviSurface>(
 // the only way the strip's k = 0 is the surface's OWN ATM forward. The carry is
 // read off the fitted pillars (`context()` forwards, `rate_at`) and interpolated
 // between them by the same shared convention the strip integrates under
-// (`strip_grid.hpp`, E2), so a var strike taken here and one taken through the
-// templated `CurveSet` path on the same carry agree by construction rather than
-// by coincidence.
+// (`strip_grid.hpp`, E2).
+//
+// FITTED-RANGE ONLY. `T` must lie within `[context().front().T,
+// context().back().T]`; outside it these return `OutOfRange`. This is a real
+// restriction and it is deliberate: past the end pillars the strip's forward
+// clamps flat while `PricedSurface::forward_at` keeps extrapolating
+// economically, so the two would disagree and bias K_var with no signal. A
+// caller who genuinely wants an extrapolated tenor supplies its own `CurveSet`
+// through the templated overload above and owns that choice explicitly.
 //
 // Numeric behaviour is otherwise unchanged: identical grid, identical adaptive
 // span, identical Simpson quadrature, identical flags.
 //
 // @return the same error contract as the templated overloads, plus
-//         InvalidArgument when the surface carries no usable fitted pillar.
+//         InvalidArgument when the surface carries no usable fitted pillar and
+//         OutOfRange when `T` falls outside the fitted pillar range.
 [[nodiscard]] Result<DerivQuote> var_swap_fair_strike(const PricedSurface& surface, double T,
                                                       const DerivConfig& cfg = DerivConfig{});
 

@@ -220,6 +220,34 @@ TEST(VarStrip, PricedSurfaceOverloadRecoversSigmaSquaredEndToEnd) {
   EXPECT_LT(std::fabs(priced->pv), 1.0e-6 * c.notional * q->fair_strike_dec);
 }
 
+// E6 fitted-range gate. Outside the fitted pillars the strip's forward clamps
+// flat while `PricedSurface::forward_at` keeps extrapolating economically, so
+// the strip's k = 0 would stop being the surface's ATM and K_var would be biased
+// with no signal. These overloads refuse rather than serve that quietly; the
+// templated CurveSet overload remains available for a caller that wants an
+// extrapolated tenor and will own the choice.
+TEST(VarStrip, PricedSurfaceOverloadRefusesTenorsOutsideTheFittedPillars) {
+  const atx::vol::PricedSurface ps =
+      atx::vol::testkit::make_flat_surface(8, 100.0, 100.0, 0.30);
+  const auto ctx = ps.context();
+  ASSERT_FALSE(ctx.empty());
+  const double below = 0.5 * ctx.front().T;
+  const double above = 2.0 * ctx.back().T;
+
+  const auto lo = atx::vol::var_swap_fair_strike(ps, below);
+  ASSERT_FALSE(lo.has_value()) << "below-range tenor must be refused, got "
+                               << (lo.has_value() ? lo->fair_strike_dec : 0.0);
+  EXPECT_EQ(lo.error().code(), ErrorCode::OutOfRange);
+
+  const auto hi = atx::vol::var_swap_fair_strike(ps, above);
+  ASSERT_FALSE(hi.has_value());
+  EXPECT_EQ(hi.error().code(), ErrorCode::OutOfRange);
+
+  // The in-range endpoints themselves are accepted (the gate is inclusive).
+  EXPECT_TRUE(atx::vol::var_swap_fair_strike(ps, ctx.front().T).has_value());
+  EXPECT_TRUE(atx::vol::var_swap_fair_strike(ps, ctx.back().T).has_value());
+}
+
 // ── Aged dispatch (test_vol_deriv_aged.c) ────────────────────────────────
 
 // Mid-life variance swap with rv_done == K_var_future: the linear blend must

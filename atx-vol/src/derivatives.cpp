@@ -570,10 +570,27 @@ namespace {
 // applies the shared log-F convention (strip_grid.hpp, E2) and `YieldCurve`
 // interpolates the per-expiry rates `rate_at` decodes from each slice's own
 // discount factor.
-[[nodiscard]] Result<CurveSet> carry_from(const PricedSurface& ps) {
+[[nodiscard]] Result<CurveSet> carry_from(const PricedSurface& ps, double T) {
   const std::span<const SliceContext> pillars = ps.context();
   if (pillars.empty()) {
     return Err(ErrorCode::InvalidArgument, "deriv: surface carries no fitted pillar");
+  }
+  // FITTED-RANGE GATE. Between pillars this CurveSet reproduces the surface's own
+  // carry; OUTSIDE them it does not, and the disagreement is not benign.
+  // `resolve_forward` clamps flat past the end pillars, whereas
+  // `PricedSurface::forward_at` keeps extrapolating economically
+  // (S·exp((r−q_eff)·T)). The strip prices every node at F·e^x and reads its vol
+  // from `ps.iv(F·e^x, T)`, so a forward that is not the surface's own would put
+  // k = 0 somewhere other than the surface's ATM and bias K_var — silently.
+  // Refuse instead. A caller who genuinely wants an extrapolated tenor supplies
+  // its own `CurveSet` through the templated overload and owns that choice.
+  if (!(T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "deriv: T must be > 0");
+  }
+  if (T < pillars.front().T || T > pillars.back().T) {
+    return Err(ErrorCode::OutOfRange,
+               "deriv: T is outside the surface's fitted pillar range; the "
+               "PricedSurface overloads do not extrapolate carry");
   }
   CurveSet cs;
   cs.spot = ps.pricing().S;
@@ -606,9 +623,12 @@ namespace {
 
 // Presents a PricedSurface through the LOG-MONEYNESS `iv(k_log, T)` contract the
 // strip templates require. `PricedSurface::iv` is STRIKE-based, so the
-// conversion has to happen somewhere; doing it here — against the SAME CurveSet
-// the strip integrates over — is what makes k = 0 the strip's own ATM forward
-// rather than an approximately-similar one.
+// conversion has to happen somewhere, and it MUST use the same forward the strip
+// itself uses — otherwise the vol would be read at one strike while the price is
+// computed at another. Hence `resolve_forward(*curves, T)` here rather than
+// `ps->forward_at(T)`: inside the fitted pillar range (the only range
+// `carry_from` admits) the two agree, and using the strip's own forward is what
+// keeps the two reads on the same strike by construction.
 struct PricedSurfaceStripView {
   const PricedSurface* ps;
   const CurveSet* curves;
@@ -626,21 +646,21 @@ struct PricedSurfaceStripView {
 
 Result<DerivQuote> var_swap_fair_strike(const PricedSurface& surface, double T,
                                         const DerivConfig& cfg) {
-  ATX_TRY(const CurveSet curves, carry_from(surface));
+  ATX_TRY(const CurveSet curves, carry_from(surface, T));
   const PricedSurfaceStripView view{&surface, &curves};
   return var_swap_fair_strike(view, curves, T, cfg);
 }
 
 Result<DerivQuote> vol_swap_fair_strike(const PricedSurface& surface, double T,
                                         const DerivConfig& cfg) {
-  ATX_TRY(const CurveSet curves, carry_from(surface));
+  ATX_TRY(const CurveSet curves, carry_from(surface, T));
   const PricedSurfaceStripView view{&surface, &curves};
   return vol_swap_fair_strike(view, curves, T, cfg);
 }
 
 Result<DerivQuote> deriv_price(const PricedSurface& surface, const DerivContract& contract,
                                const DerivConfig& cfg) {
-  ATX_TRY(const CurveSet curves, carry_from(surface));
+  ATX_TRY(const CurveSet curves, carry_from(surface, contract.maturity_t));
   const PricedSurfaceStripView view{&surface, &curves};
   return deriv_price(view, curves, contract, cfg);
 }

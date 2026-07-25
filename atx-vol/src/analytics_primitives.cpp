@@ -106,6 +106,7 @@ namespace {
   const double sqrt_T = std::sqrt(T);
 
   double K = F;
+  bool converged = false;
   for (int i = 0; i < 64; ++i) {
     const double sigma = ps.iv(K, T);
     if (!std::isfinite(sigma) || sigma <= 0.0) {
@@ -120,8 +121,18 @@ namespace {
     const double step = std::fabs(std::log(K_next / K));
     K = K_next;
     if (step <= 1.0e-14) {
+      converged = true;
       break;
     }
+  }
+  // A steep or oscillating smile can keep the fixed point moving for the whole
+  // iteration budget. Returning the last iterate would hand back an unconverged
+  // wing strike that looks exactly like a converged one — a silent wrong number
+  // feeding RR/BF. Fail loudly instead; the caller's `value_or_nan` wrapper in
+  // the aggregate turns it into a NaN cell, which is the honest answer.
+  if (!converged) {
+    return Err(ErrorCode::InvalidArgument,
+               "strike_at_delta: forward-delta fixed point did not converge");
   }
   return Ok(K);
 }
