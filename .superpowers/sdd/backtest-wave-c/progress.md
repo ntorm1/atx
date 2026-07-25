@@ -1354,3 +1354,145 @@ comparison, so the flag would gate nothing. This is not churn: it was added beca
 original guard was actively destructive, T4 used it to make the 135-session proof
 fail-closed rather than silently vacuous, and it retires with the machinery it guarded.
 Recorded here so the delete reads as a decision rather than drift.
+
+### Wave D T5 (delete the shadow loop — the L10 payoff) — implementation + review
+
+T5: **REVIEW CLEAN ON THE FIRST PASS. Spec ✅ / Code quality APPROVED, zero Critical,
+  zero Important.** Two Minors, both carried. Review file: `task-5-review.md`.
+
+  **THE REVIEWER RAN A GATE NOBODY ASKED FOR, AND IT IS THE ONE THAT MATTERS.** Every gate
+  in the brief, in the dispatch and in the implementer's report compares **TSV dumps**. A
+  TSV dump renders the decoded logical rows — it structurally CANNOT see the dictionary
+  encoding, so a changed `dict_intern` insertion order would produce identical TSV and a
+  different `run.atxrun`. The controller's dispatch flagged that as an open question and
+  asked the reviewer to say whether any gate covered it. Instead of answering, it closed
+  it: it parsed the `run.atxrun` container and compared **per-section binary payload
+  crc32c + sha256** between the pre-change and post-change binaries.
+    mark_divergence BINARY-IDENTICAL  cfg CE2CE861 (4280 B / 36 rows), cold C6C24283,
+                                      --schedule 61DF66C4
+    projected_cold  BINARY-IDENTICAL  8AB97D2C / 3ED85C3B / 05A6AAF1
+    projected_nodiv BINARY-IDENTICAL  3ED85C3B  (== cold projected_cold, as designed)
+    only `diagnostics` (wall_ms) and `meta` (run-dir path) differ — both expected.
+  **The deletion is now proven byte-identical at the container level, not merely at the
+  rendered-text level.** That is a materially stronger claim than the task was asked for.
+
+  The reviewer also re-linked the example itself and re-derived all nine of the
+  implementer's hashes from its OWN post-change binary against the implementer's PRE
+  captures — i.e. it did not accept a single reported number.
+  Suite 2034/1988/43/3/7 (exact baseline, 3 documented reds); filter 118/118; determinism
+  reproduced across two independent runs; diagnostics 7 lines with
+  `[setup_read, divergence_replay, archive_load, priced_run, write_outputs, total]`
+  identical pre/post on all FIVE routes, `divergence_replay` count 3, `archive_load` 0/0;
+  the retired flag returns rc=2 in both argv positions.
+
+  BOTH implementer concerns UPHELD by the reviewer:
+  - Concern 1 (the controller's dispatch error) — upheld. `run_fixture.ps1:20,:34` pass no
+    `--schedule`, so T3's pins are default-invocation. The reviewer additionally verified
+    the implementer's claim to have gated BOTH invocations pre/post was true and
+    like-for-like (one parameterised capture script, five routes, both phases) by
+    re-deriving all nine hashes itself.
+  - Concern 2 (its own `MD-3S-COLD` gate is near-vacuous) — upheld and "correctly
+    reasoned". Cold `mark_divergence` is 98 bytes of header only, byte-identical to the
+    135-session corpus's, and satisfiable by a build with NO observer installed.
+    `projected_cold` is the load-bearing cold gate; the reviewer confirmed its binary
+    payload identity too.
+
+  T5 review Minor M1: dangling `collect_mark_divergence_replay` provenance comments left
+    in `listed_dispersion_pipeline.hpp:282` and `.cpp:451` — outside the brief's one-file
+    scope. **Carried to a Wave E comment sweep.**
+  T5 review Minor M2: the doc block this commit rewrote still calls `--no-divergence` "the
+    bare-backtest wall-time path" while the same commit reduces that saving to 0.0069 ms
+    of 24.03 ms. **Carried to Wave E** (same item as implementer concern 4).
+  T5 review Minor M3: the arena staging has no automated test — the same exposure the
+    shadow had, so not a regression. Carried to the final review.
+
+### Wave D T5 — implementation detail
+
+T5: implementer DONE_WITH_CONCERNS, commit `d955e93`, one file
+  (`atx-vol/examples/spy_dispersion_backtest.cpp`), 108 insertions / 301 deletions.
+  **LINE DELTA 1459 -> 1266 = -193** (-150 code, -37 comment, -6 blank). Of the 301
+  removed lines 174 were code; of the 108 added, 24 — a 7.25:1 code reduction on the
+  touched region. `grep -c collect_mark_divergence_replay` 4 -> 0; every deleted symbol
+  (`collect_mark_divergence_replay`, `compare_mark_divergence_sources`, `bit_equal`,
+  `fmt_g17`, `require_divergence_rows`) greps to ZERO tree-wide (controller re-verified).
+  Suite 2034/1988/43/3/7 from build-rel CWD — EXACT baseline, the 3 documented reds only.
+  Targeted 118/118. Full build exit 0, zero first-party warnings; clang-format sites
+  9 -> 8 (the lost one was inside deleted code).
+
+  **THIS IS THE FIRST REAL CODE-SIZE WIN OF THE SPRINT.** Wave C was chartered to reduce
+  duplication and came out +12 lines — recorded honestly at the time as a wash. Wave D
+  was chartered to delete a shadow and deleted 193 lines, 150 of them code. Worth stating
+  plainly because the two waves are often conflated: the abstraction did not pay, the
+  measurement-then-deletion did.
+
+  **THE INVARIANT SURVIVED, and the carry is argued rather than asserted** (controller
+  read the landed code at `:826-836` directly). The deleted loop's post-loop gate carried
+  the evidence-channel contract — *"an empty mark_divergence section must mean 'every roll
+  fired and none diverged', never 'the replay silently skipped rolls'"*. That comment is
+  carried verbatim onto the priced run's pre-existing `all_rolls_consumed()` gate, with an
+  added paragraph explaining WHY the surviving gate covers the same failure mode: the
+  observer only ever appends rows for a roll the priced strategy actually fired, so "every
+  roll consumed" is exactly the precondition that makes a zero-row section readable as
+  "no divergence" rather than "no coverage". The message text differs ("projected backtest"
+  vs "divergence replay") because the subject differs — one run, not a replay. Accepted.
+
+  The arena fill is registry-order, positional and append-only, with the SAME `dict_intern`
+  calls and the same `Side::Call ? 0 : 1` mapping the shadow staged with, so
+  `build_mark_divergence_section` is untouched and sees a bit-identical arena.
+  `--require-divergence-rows` retired in full, with a negative control: it now exits 2 with
+  usage in BOTH terminal and non-terminal argv position rather than being silently ignored.
+
+  GATES (both values printed in the report):
+    mark_divergence configured pre == post ==
+      39D47B8B64AF852C08CE6983821A95A3ED2FC3BC3D22A1FD4ADCEB7C8D95A91F  (37 lines / 36 rows)
+      — equals the raw-LF anchor two independent reviewers produced across the T3 fix.
+    projected_cold identical on ALL FOUR routes — the gate that actually proves removing
+      the shadow did not perturb the priced run.
+    projected_nodiv identical, and equal to cold's projected_cold.
+    diagnostics byte-stable at 7 lines, same five phase names in order, `divergence_replay`
+      count still 3.
+    determinism proven, both hashes agreeing.
+    `meta` differed by exactly 2 bytes — traced to the implementer's own pre/post DIRECTORY
+      NAMES, not to the change; a normalised comparison and a same-directory determinism
+      run both hash equal. Cause measured rather than waved away.
+  Cold wall time 108/124/146 ms -> 71/92/101 ms, reported as an OBSERVATION not a gate
+  (perf is Wave E).
+
+  **CONTROLLER DISPATCH ERROR, MINE, RECORDED AS SUCH.** My T5 dispatch carried correction
+  4: "the canonical invocation includes `--schedule projected_schedule.tsv`". That is true
+  for the 135-session parity corpus and I had just measured it there (T4) — but I
+  generalized it to T3's 3-session fixture without checking how that fixture was pinned.
+  The implementer caught it and cited the generator: `<scratchpad>\run_fixture.ps1:20,:34`
+  passes NO `--schedule`, so T3's `-6679.892579` / `-4779.718393` and the `39D47B8B…`
+  anchor all come from the DEFAULT invocation. With `--schedule` the fixture yields
+  `-3944.275714` / `-2080.502348` and a different 5886-byte dump hashing `791FF53E…`.
+  **Controller verified `run_fixture.ps1` directly — the implementer is right.** Corrections
+  2 and 4 were mutually exclusive on that fixture and I did not notice. The implementer's
+  remedy was better than either: it gated BOTH invocations pre/post, so the result is
+  invocation-independent. Task 7 is unaffected — `parity_full_run.ps1` correctly passes
+  `--schedule` for the 135-session corpus, which is where my T4 finding actually applies.
+  Lesson for the remaining tasks: an invocation is a property of the FIXTURE, not of the
+  subcommand; cite the generator that pinned the hash, not a different corpus's script.
+
+  **ANTI-VACUITY, VOLUNTEERED BY THE IMPLEMENTER — the right outcome, recorded as a win.**
+  It reports that the `MD-3S-COLD` gate is near-vacuous and explains why: a zero-row
+  `mark_divergence` dump is the header and nothing else, so it is satisfied by ANY build
+  that emits the column names in order — including one with no observer installed at all.
+  It confirmed the controller's untested hypothesis in the process: the fixture's raw cold
+  hash is `C9A04D1BCF0E3C07…`, byte-identical to the 135-session cold hash, because a
+  header-only dump is corpus-independent. Conclusion accepted: **the cold route's
+  load-bearing artifact is `projected_cold`, not `mark_divergence`.** Both gates pass;
+  only one carries information, and the report says so instead of counting two.
+  Its Vacuity Ledger labels gates 3 and 8 as weak rather than tallying them — which is
+  exactly the discipline Wave B lacked.
+
+  CARRIED, not actioned:
+  - `archive_load` now reads `0/0` in every `run_projected_backtest` diagnostics section.
+    Intended and documented in-code (the loads belong to `priced_run` now), but it IS a
+    value-column change an operator will see. No in-tree reader asserts nonzero; the
+    Python side could not be checked (out of scope this sprint). **For the final review.**
+  - `--no-divergence` now skips only 0.398 ms (cold) / 0.046 ms (configured) of callback
+    rather than a whole second pass, so its documented "bare-backtest wall-time path"
+    framing is now a rounding error. **Wave E decision.**
+  - `SPRINT-CONSTRAINTS.md`'s suite baseline was stale (2020/1974); controller corrected it
+    to 2034/1988 in place.
