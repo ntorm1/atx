@@ -102,15 +102,9 @@ SimdIsa simd_isa_override() noexcept {
 }
 
 bool use_avx2() noexcept {
-    switch (simd_isa_override()) {
-        case SimdIsa::ForceScalar:
-            return false;
-        case SimdIsa::ForceAvx2:
-            return true; // caller must have confirmed have_avx2()
-        case SimdIsa::Auto:
-            break;
-    }
-    return have_avx2();
+    // FIX-5/I2: the decision itself lives in the header as a pure function so the
+    // non-AVX2-host arm is testable on this (AVX2) host.
+    return resolve_use_avx2(simd_isa_override(), have_avx2());
 }
 
 // ── P3.3 math modes (a name over the existing ISA seam; no new dispatch) ──────
