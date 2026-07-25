@@ -106,6 +106,7 @@ add_executable(atx-vol-tests
     backtest_exec_test.cpp
     tearsheet_test.cpp
     run_report_test.cpp
+    backtest_driver_test.cpp
     backtest_real_test.cpp
     spy_strangle_backtest_test.cpp
     surface_db_backtest_test.cpp

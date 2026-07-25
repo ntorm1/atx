@@ -99,6 +99,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/dispersion.cpp
     src/dispersion_strangle.cpp
     src/dispersion_backtest.cpp
+    src/backtest_driver.cpp
     src/dispersion_workflow.cpp
     src/listed_dispersion.cpp
     src/listed_opra.cpp
