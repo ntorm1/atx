@@ -283,11 +283,45 @@ struct DbSymbolEntry {
   std::optional<SurfaceProvenance> provenance{};
 };
 
+// ── Carry-over fit salt (FIX-D) ──────────────────────────────────────────────
+//
+// Mixed into `surface_db_config_fingerprint`. Bumping it invalidates every
+// stored fingerprint, so every partition re-fits once instead of reusing its
+// stored surfaces.
+//
+// WHAT THIS IS NOT: it is **not** a build fingerprint, and it does **not**
+// detect a changed fitter. Nothing in either on-disk format records which binary
+// produced a surface — `ArchiveV2Header::writer_version_hash` exists but the
+// writer hard-codes it to 0 (surface_archive.cpp). So a change to
+// `pricer_fitter.cpp`, `curve_fit.cpp`, `essvi_calib.cpp`, `surface_parity.cpp`
+// or any curve fitter alters fitted surface bytes with NO config change and NO
+// automatic invalidation. Whoever makes such a change must bump this BY HAND,
+// the same discipline `kV2Salt` / `kV3Salt` already rely on in
+// surface_archive.cpp.
+//
+// WHY THAT IS ACCEPTABLE HERE: the same exposure already exists, entirely
+// unguarded, on the path this one mirrors. A date with no failing cell is
+// `dates_skipped_complete` and its stored surfaces are never refreshed under ANY
+// predicate — not config, not hive contents, not fitter version (3 of the 6
+// dates in the measured production run). Carry-over makes that existing,
+// accepted contract uniform across all dates and puts a STRICTER gate on it than
+// the skip path has, which is none. This salt narrows an existing hole; it does
+// not open a new one. Do not read it as a guarantee that a stale fit will be
+// noticed.
+inline constexpr std::uint64_t kSurfaceDbCarryOverFitSalt = 0x5CA1'AB1E'F17D'0001ull;
+
 struct DbPartitionInfo {
   std::string key{}; // canonical
   std::uint32_t surface_count{};
   std::uint64_t file_size{};
   std::int64_t created_ts_ns{};
+  // FIX-D: fingerprint of the per-symbol fit CONFIGS this partition was written
+  // under (see `surface_db_config_fingerprint`). Stored in the partition record's
+  // previously-unused `reserved0`, so no on-disk struct changes size and no
+  // existing manifest is rejected. 0 means UNKNOWN — either a manifest written
+  // before this field existed, or a symbol whose config is no longer in the
+  // manifest — and unknown always means "do not reuse the stored surfaces".
+  std::uint64_t config_fingerprint{0};
 };
 
 struct SurfaceDbManifestWriteOpts {
@@ -435,6 +469,26 @@ public:
   [[nodiscard]] Result<std::optional<SurfaceProvenance>>
   surface_provenance(std::string_view symbol) const;
   [[nodiscard]] std::vector<DbPartitionInfo> partitions() const;
+
+  // ── Fit-config fingerprint (FIX-D carry-over predicate) ──
+  //
+  // Fold the CURRENT manifest fit-config of each named symbol into one stable
+  // u64. Symbols are canonicalized and sorted internally, so caller order is
+  // irrelevant; the fold is over `encode_symbol_record(.., provenance=nullopt)`,
+  // the exact fixed-width mirror of `SymbolFitConfig` (INCLUDING surface_policy),
+  // with the provenance half zeroed so that `write_partition`'s own provenance
+  // write-back does not move the value. Returns 0 if ANY named symbol has no
+  // manifest entry — 0 is the "unknown, never reuse" sentinel and is never
+  // returned for a successful fold.
+  //
+  // A caller compares this against the fingerprint stored on the partition
+  // (`partition_config_fingerprint`) to answer "were these surfaces produced by
+  // the configs currently in the manifest?".
+  [[nodiscard]] std::uint64_t config_fingerprint(std::span<const std::string> symbols) const;
+
+  // The fingerprint recorded when `key`'s partition was last written. 0 if the
+  // partition is absent, or was written before this field existed.
+  [[nodiscard]] std::uint64_t partition_config_fingerprint(std::string_view key) const;
 
   // ── Manifest mutation (serialized; atomic rewrite; generation++) ──
   [[nodiscard]] Status upsert_symbol(

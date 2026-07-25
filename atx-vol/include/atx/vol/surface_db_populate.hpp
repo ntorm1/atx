@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <map>
 #include <span>
 #include <string>
 #include <string_view>
@@ -42,6 +43,14 @@ struct SurfaceDbPopulateConfig {
   // the unpinned/uncapped scaling curve or on hosts where the pin is unwanted;
   // results are byte-identical either way (pinning only steers scheduling).
   bool pin_outer_workers{true};
+  // FIX-D carry-over: date -> canonical symbols whose ALREADY-STORED surface is
+  // to be re-emitted into the rewritten partition instead of re-fitted. A carried
+  // cell is not dispatched to the fitter at all; its record is read back with
+  // `reconstruct_entry` (byte-lossless, gated by SurfaceArchiveV2.Reemit* tests)
+  // and appended to the write. The CALLER owns the validity decision -- this
+  // struct carries no predicate. `populate_universe_streaming` populates it; a
+  // direct caller that leaves it empty gets exactly the previous behaviour.
+  std::map<std::string, std::vector<std::string>> carry_over{};
 };
 
 struct PopulateSymbolStats {
@@ -50,6 +59,10 @@ struct PopulateSymbolStats {
   std::uint32_t n_ok{0};
   std::uint32_t n_failed{0};
   std::uint32_t n_disabled{0}; // skipped because manifest enabled=false
+  // FIX-D: cells re-emitted from the existing partition instead of re-fitted.
+  // Deliberately NOT folded into n_ok: n_ok means "cells this run FITTED", which
+  // is what `is_total_fit_failure`'s cells_ok == 0 clause depends on.
+  std::uint32_t n_carried{0};
   // Mean fit-quality score over successful fits, when the shared corpus fit
   // path yields one (oos_in_band from curve selection; see corpus.cpp's
   // CorpusEntry.oos_in_band recording). NaN when unavailable (e.g. the
@@ -82,6 +95,7 @@ struct SurfaceDbPopulateStats {
   std::uint32_t n_boards{0};
   std::uint32_t n_ok{0};
   std::uint32_t n_failed{0};
+  std::uint32_t n_carried{0}; // FIX-D: cells re-emitted from the existing partition
   std::uint32_t n_dates_written{0};
   std::uint32_t n_dates_skipped_existing{0};
   std::vector<PopulateSymbolStats> per_symbol; // sorted by symbol
@@ -172,7 +186,17 @@ struct UniversePopulateCoverage {
   // DISABLED is never counted: it can never be added to a partition, so treating
   // it as pending work would keep its date in the rewrite set forever.
   std::uint32_t cells_to_fit{0};
-  std::uint32_t cells_refit{0};              // already-present cells re-fit by a same-date rewrite
+  // Already-present cells dragged back through the FITTER by a same-date
+  // rewrite. FIX-D: this is now the FAILURE mode, not the normal one -- a cell
+  // only lands here when its stored surface could not be validated for reuse
+  // (see cells_carried). On a resume over an unchanged database and hive this
+  // must be 0; a nonzero value means something invalidated the carry.
+  std::uint32_t cells_refit{0};
+  // FIX-D: already-present cells whose STORED surface was re-emitted verbatim
+  // into the rewritten partition instead of being re-fitted. Byte-identical to
+  // what was there before (SurfaceArchiveV2.Reemit* is the gate). These are NOT
+  // counted in cells_ok, which keeps meaning "cells this run fitted".
+  std::uint32_t cells_carried{0};
   std::uint32_t cells_already_present{0};    // skipped: symbol already in its date partition
   std::uint32_t cells_ok{0};                 // populate n_ok over the (re)written dates
   std::uint32_t cells_failed{0};             // populate n_failed over the (re)written dates

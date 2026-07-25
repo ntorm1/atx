@@ -13,7 +13,10 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <optional>
+#include <utility>
 #include <fstream>
 #include <iterator>
 #include <mutex>
@@ -429,7 +432,13 @@ TEST(SurfaceDbPopulate, UniverseStreamingCellAwareIncrementalResume) {
   auto cov_b = populate_universe_streaming(*db, full, spec);
   ASSERT_TRUE(cov_b.has_value()) << (cov_b ? "" : cov_b.error().to_string());
   EXPECT_EQ(cov_b->cells_to_fit, 1u);        // only GOOGL is new work
-  EXPECT_EQ(cov_b->cells_refit, 2u);         // AAPL/NVDA re-fit by the same-date rewrite
+  // FIX-D: AAPL/NVDA are CARRIED (their stored surfaces re-emitted verbatim),
+  // not dragged back through the fitter. This assertion previously read
+  // `cells_refit == 2` and was the amplification itself: one new symbol forced a
+  // re-fit of every healthy sibling on the date, at 49x the useful work on the
+  // production universe.
+  EXPECT_EQ(cov_b->cells_refit, 0u);
+  EXPECT_EQ(cov_b->cells_carried, 2u);
   EXPECT_EQ(cov_b->dates_written, 1u);       // the one date is rewritten
   EXPECT_EQ(cov_b->dates_skipped_complete, 0u);
 
@@ -1535,6 +1544,297 @@ TEST(SurfaceDbPopulate, PinnedConfigHonored) {
   EXPECT_EQ(s->kind_at(0), VolCurveKind::ConvexDense);
 
   std::filesystem::remove_all(root);
+}
+
+// ── FIX-D: carry-over instead of re-fit on a whole-partition rewrite ─────────
+//
+// A date-keyed partition must be written whole, so adding one cell rewrites the
+// file. It used to also RE-FIT every cell already in it: on the production
+// universe, 3 permanently-failing cells dragged 147 healthy siblings back through
+// the fitter on every resume. These tests pin the fix and its safety gates.
+
+namespace {
+
+[[nodiscard]] std::vector<std::byte> read_file_bytes(const std::filesystem::path &p) {
+  std::ifstream is(p, std::ios::binary | std::ios::ate);
+  EXPECT_TRUE(is.good()) << p.string();
+  if (!is.good()) {
+    return {};
+  }
+  const auto n = static_cast<std::size_t>(is.tellg());
+  is.seekg(0);
+  std::vector<std::byte> out(n);
+  is.read(reinterpret_cast<char *>(out.data()), static_cast<std::streamsize>(n));
+  EXPECT_TRUE(is.good()) << p.string();
+  return out;
+}
+
+[[nodiscard]] std::filesystem::path partition_file(const std::filesystem::path &root,
+                                                   std::string_view key) {
+  return root / std::string(kSurfaceDbPartitionDir) /
+         (std::string(key) + std::string(kSurfaceDbPartitionExt));
+}
+
+// The ACTUAL stored bytes of one symbol's record, sliced straight out of the
+// partition file at the offset/size the archive directory reports. Deliberately
+// not a checksum or a summary: a carried record could round-trip a stale CRC
+// field unchanged and still have lost a payload byte.
+[[nodiscard]] std::vector<std::byte> stored_record_bytes(const std::filesystem::path &root,
+                                                         std::string_view key,
+                                                         std::string_view symbol) {
+  const std::vector<std::byte> file = read_file_bytes(partition_file(root, key));
+  EXPECT_FALSE(file.empty());
+  auto arch = SurfaceArchiveV2::open(std::vector<std::byte>(file));
+  EXPECT_TRUE(arch.has_value());
+  if (!arch.has_value()) {
+    return {};
+  }
+  auto entry = arch->find(symbol);
+  EXPECT_TRUE(entry.has_value()) << symbol;
+  if (!entry.has_value()) {
+    return {};
+  }
+  const auto off = static_cast<std::size_t>(entry->surface_offset);
+  const auto size = static_cast<std::size_t>(entry->surface_size);
+  EXPECT_LE(off + size, file.size());
+  return std::vector<std::byte>(file.begin() + static_cast<std::ptrdiff_t>(off),
+                                file.begin() + static_cast<std::ptrdiff_t>(off + size));
+}
+
+[[nodiscard]] UniversePopulateSpec carry_spec(unsigned workers = 0u) {
+  UniversePopulateSpec spec;
+  spec.index_symbol = ""; // no index pin -- let the auto-selector fit
+  spec.preset = FitPreset::Fast;
+  spec.fit_workers = workers;
+  return spec;
+}
+
+// Two healthy symbols on one date; the partition they produce is the thing a
+// later rewrite must not disturb.
+[[nodiscard]] std::vector<CorpusBoard> carry_seed_boards() {
+  return {make_board(kDate0, "AAA", 100.0, 0.28), make_board(kDate0, "BBB", 60.0, 0.34)};
+}
+
+} // namespace
+
+// THE acceptance gate. A resume over an unchanged database and hive must re-fit
+// NOTHING that already succeeded, while still retrying the cell that failed.
+//
+// `cells_to_fit == 0` is deliberately NOT asserted: it is unachievable by design
+// on data containing permanent failures. There is no persisted known-failed state
+// (surface_db_build.hpp), precisely so a TRANSIENT failure stays retryable, so a
+// permanently-failing cell is re-attempted on every run forever. The honest
+// invariant is `cells_refit == 0`.
+TEST(SurfaceDbPopulate, ResumeCarriesHealthySiblingsAndStillRetriesTheFailingCell) {
+  const auto root = test_root("carry_retry");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u) << "the seed boards must fit for this test to mean anything";
+
+  // CCC is a PERMANENTLY failing cell: the risk pipeline refuses this config in
+  // its input validation, on every run, forever.
+  ASSERT_TRUE(db->upsert_symbol("CCC", rejected_risk_config()).has_value());
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+
+  // Twice: the steady state must be steady, not merely reached once.
+  for (int run = 1; run <= 2; ++run) {
+    auto cov = populate_universe_streaming(*db, full, carry_spec());
+    ASSERT_TRUE(cov.has_value()) << "run " << run << ": " << (cov ? "" : cov.error().to_string());
+    EXPECT_EQ(cov->cells_refit, 0u)
+        << "run " << run << ": a resume must re-fit nothing that already succeeded";
+    EXPECT_EQ(cov->cells_carried, 2u) << "run " << run;
+    EXPECT_EQ(cov->cells_to_fit, 1u)
+        << "run " << run << ": the failing cell is retried forever, by design";
+    EXPECT_EQ(cov->cells_failed, 1u) << "run " << run;
+    EXPECT_EQ(cov->dates_written, 1u) << "run " << run;
+    // The carried cells are not counted as fits: cells_ok keeps meaning "cells
+    // this run FITTED", which is what is_total_fit_failure depends on.
+    EXPECT_EQ(cov->cells_ok, 0u) << "run " << run;
+    // The failing cell still names itself (FIX-A's channel must survive).
+    ASSERT_EQ(cov->failed_cells.size(), std::size_t{1}) << "run " << run;
+    EXPECT_EQ(cov->failed_cells[0].symbol, "CCC") << "run " << run;
+  }
+
+  // The carried surfaces are still there and still load.
+  for (const char *symbol : {"AAA", "BBB"}) {
+    EXPECT_TRUE(db->load_surface(kDate0, symbol).has_value()) << symbol;
+  }
+  std::filesystem::remove_all(root);
+}
+
+// The safety gate for the whole change: a carried record is byte-identical to the
+// one it replaced. Compares the stored bytes of the record extent itself, so a
+// dropped payload field cannot hide behind a recomputed CRC or a summary field.
+TEST(SurfaceDbPopulate, CarriedRecordBytesAreIdenticalToWhatTheyReplaced) {
+  const auto root = test_root("carry_bytes");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+
+  const std::vector<std::byte> aaa_before = stored_record_bytes(root, kDate0, "AAA");
+  const std::vector<std::byte> bbb_before = stored_record_bytes(root, kDate0, "BBB");
+  ASSERT_FALSE(aaa_before.empty());
+  ASSERT_FALSE(bbb_before.empty());
+
+  // A new symbol that genuinely FITS forces the whole-partition rewrite, so the
+  // records physically move within the file (the directory grows) -- which is
+  // exactly why this compares extracted extents rather than file offsets.
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+  ASSERT_EQ(cov2->cells_carried, 2u) << "the carry must actually have engaged";
+  ASSERT_EQ(cov2->cells_ok, 1u) << "CCC must have fit, so the partition really was rewritten";
+
+  const std::vector<std::byte> aaa_after = stored_record_bytes(root, kDate0, "AAA");
+  const std::vector<std::byte> bbb_after = stored_record_bytes(root, kDate0, "BBB");
+  ASSERT_EQ(aaa_before.size(), aaa_after.size());
+  ASSERT_EQ(bbb_before.size(), bbb_after.size());
+  EXPECT_EQ(0, std::memcmp(aaa_before.data(), aaa_after.data(), aaa_before.size()))
+      << "carried record for AAA is not byte-identical to the one it replaced";
+  EXPECT_EQ(0, std::memcmp(bbb_before.data(), bbb_after.data(), bbb_before.size()))
+      << "carried record for BBB is not byte-identical to the one it replaced";
+
+  std::filesystem::remove_all(root);
+}
+
+// A changed fit config must INVALIDATE the carry. The predicate is deliberately
+// whole-partition: changing one symbol's config re-fits every cell on the date,
+// because a partition is rewritten whole anyway and per-cell granularity would
+// let one symbol's change hide another's staleness in the same file.
+TEST(SurfaceDbPopulate, ChangedSymbolConfigInvalidatesTheCarryAndForcesRefit) {
+  const auto root = test_root("carry_cfg_change");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+  const std::uint64_t fp_before = db->partition_config_fingerprint(kDate0);
+  ASSERT_NE(fp_before, 0u) << "a partition written by this code must carry a fingerprint";
+
+  // Change exactly ONE field of ONE symbol's config -- the fingerprint must move.
+  auto aaa_cfg = db->symbol_config("AAA");
+  ASSERT_TRUE(aaa_cfg.has_value());
+  SymbolFitConfig changed = *aaa_cfg;
+  changed.band_k += 0.25;
+  ASSERT_TRUE(db->upsert_symbol("AAA", changed).has_value());
+
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+  EXPECT_EQ(cov2->cells_carried, 0u) << "a changed config must not be carried over";
+  EXPECT_EQ(cov2->cells_refit, 2u) << "both present cells must be re-fit, not just the changed one";
+  EXPECT_EQ(cov2->cells_to_fit, 1u);
+
+  std::filesystem::remove_all(root);
+}
+
+// The backward-compatibility default, tested rather than asserted: a partition
+// written before the fingerprint existed stores 0, and 0 means UNKNOWN, and
+// unknown must NEVER carry. This is what makes the first resume of the existing
+// production database re-fit once (and only once) instead of silently reusing
+// surfaces whose provenance cannot be established.
+TEST(SurfaceDbPopulate, ZeroConfigFingerprintNeverCarries) {
+  const auto root = test_root("carry_zero_fp");
+  {
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value());
+    auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+    ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+    ASSERT_EQ(cov1->cells_ok, 2u);
+    ASSERT_NE(db->partition_config_fingerprint(kDate0), 0u);
+
+    // Rewrite the manifest exactly as a pre-FIX-D writer would have: same symbols,
+    // same partitions, fingerprint field left 0.
+    const std::vector<std::string> names = db->symbols();
+    std::vector<SymbolFitConfig> cfgs;
+    std::vector<std::optional<SurfaceProvenance>> provs;
+    for (const std::string &sym : names) {
+      auto c = db->symbol_config(sym);
+      ASSERT_TRUE(c.has_value()) << sym;
+      cfgs.push_back(*c);
+      auto p = db->surface_provenance(sym);
+      ASSERT_TRUE(p.has_value()) << sym;
+      provs.push_back(*p);
+    }
+    std::vector<DbSymbolEntry> entries;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+      entries.push_back(DbSymbolEntry{names[i], cfgs[i], provs[i]});
+    }
+    std::vector<DbPartitionInfo> parts = db->partitions();
+    for (DbPartitionInfo &p : parts) {
+      p.config_fingerprint = 0u; // the pre-FIX-D on-disk state
+    }
+    SurfaceDbManifestWriteOpts opts;
+    opts.generation = db->generation() + 1u;
+    auto bytes = write_db_manifest(entries, parts, opts);
+    ASSERT_TRUE(bytes.has_value()) << (bytes ? "" : bytes.error().to_string());
+    std::ofstream os(root / std::string(kSurfaceDbManifestName), std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(os.good());
+    os.write(reinterpret_cast<const char *>(bytes->data()),
+             static_cast<std::streamsize>(bytes->size()));
+    ASSERT_TRUE(os.good());
+  }
+
+  auto db = SurfaceDb::open(root.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  ASSERT_EQ(db->partition_config_fingerprint(kDate0), 0u)
+      << "the pre-FIX-D manifest simulation did not take effect";
+
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov.has_value()) << (cov ? "" : cov.error().to_string());
+  EXPECT_EQ(cov->cells_carried, 0u) << "an unknown (0) fingerprint must never carry";
+  EXPECT_EQ(cov->cells_refit, 2u);
+
+  std::filesystem::remove_all(root);
+}
+
+// Determinism through the carry path: the stored bytes must not depend on the
+// worker count. The carried records are written by the single drain thread while
+// the newly-fitted one comes off the shared pool, so this covers the interleaving
+// the change actually introduces.
+TEST(SurfaceDbPopulate, CarryOverIsByteIdenticalAcrossWorkerCounts) {
+  const auto serial_root = test_root("carry_det_serial");
+  const auto parallel_root = test_root("carry_det_parallel");
+
+  for (const auto &[root, workers] : std::vector<std::pair<std::filesystem::path, unsigned>>{
+           {serial_root, 1u}, {parallel_root, 8u}}) {
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value());
+    auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec(workers));
+    ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+    ASSERT_EQ(cov1->cells_ok, 2u);
+
+    std::vector<CorpusBoard> full = carry_seed_boards();
+    full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+    auto cov2 = populate_universe_streaming(*db, full, carry_spec(workers));
+    ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+    ASSERT_EQ(cov2->cells_carried, 2u) << "workers=" << workers;
+    ASSERT_EQ(cov2->cells_ok, 1u) << "workers=" << workers;
+  }
+
+  for (const char *symbol : {"AAA", "BBB", "CCC"}) {
+    const std::vector<std::byte> a = stored_record_bytes(serial_root, kDate0, symbol);
+    const std::vector<std::byte> b = stored_record_bytes(parallel_root, kDate0, symbol);
+    ASSERT_FALSE(a.empty()) << symbol;
+    ASSERT_EQ(a.size(), b.size()) << symbol;
+    EXPECT_EQ(0, std::memcmp(a.data(), b.data(), a.size()))
+        << "record bytes for " << symbol << " differ between 1 and 8 workers";
+  }
+
+  std::filesystem::remove_all(serial_root);
+  std::filesystem::remove_all(parallel_root);
 }
 
 } // namespace atx::vol

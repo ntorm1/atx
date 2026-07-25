@@ -623,3 +623,163 @@ TEST(SurfaceArchiveV2, InstanceIdSemantics) {
   PricedSurfaceView moved = std::move(*a);
   EXPECT_EQ(moved.instance_id(), id); // move transfers identity
 }
+
+// ── FIX-D gate: reconstruct -> re-emit is BYTE-lossless ──────────────────────
+//
+// The surface-db carry-over (populate_universe_streaming) re-emits an
+// already-stored surface into a rewritten partition INSTEAD of re-fitting it. That
+// is only sound if the round trip
+//
+//     stored record bytes -> reconstruct_entry -> write_surface_archive_v2
+//
+// reproduces the record byte-for-byte. `surface_archive.hpp` CLAIMS this ("the
+// inverse of write_surface_archive_v2, bit-identical to the source surface") but
+// nothing tested the claim in the direction the carry-over depends on, and a
+// single dropped field would silently perturb stored surfaces while every summary,
+// checksum and view-parity test stayed green (the record CRC is recomputed from
+// whatever the re-emit produced, so it cannot catch a lossy field either).
+//
+// These tests compare ACTUAL BYTES: the whole file, plus each record's extent
+// individually so a failure names the losing symbol. `created_ts_ns` is pinned so
+// even the header is comparable (0 would mean "system clock").
+namespace {
+
+constexpr std::int64_t kPinnedCreatedTs = 1'700'000'000'123'456'789LL;
+
+[[nodiscard]] ArchiveV2WriteOpts pinned_opts() {
+  ArchiveV2WriteOpts opts;
+  opts.created_ts_ns = kPinnedCreatedTs;
+  return opts;
+}
+
+// Re-emit an archive using ONLY what the reader hands back — no source surface is
+// in scope, exactly as in the carry-over path.
+[[nodiscard]] std::vector<std::byte> reemit_via_reconstruct(const std::vector<std::byte> &bytes) {
+  auto arch = SurfaceArchiveV2::open(std::vector<std::byte>(bytes));
+  EXPECT_TRUE(arch.has_value());
+  if (!arch.has_value()) {
+    return {};
+  }
+  const std::span<const atx::vol::ArchiveV2DirEntry> dir = arch->directory();
+  std::vector<atx::vol::ArchivedSurface> recon;
+  std::vector<std::string> names;
+  recon.reserve(dir.size());
+  names.reserve(dir.size());
+  for (const atx::vol::ArchiveV2DirEntry &e : dir) {
+    auto got = arch->reconstruct_entry(e);
+    EXPECT_TRUE(got.has_value()) << (got.has_value() ? "" : got.error().to_string());
+    if (!got.has_value()) {
+      return {};
+    }
+    recon.push_back(std::move(*got));
+    names.emplace_back(e.symbol, e.symbol_len);
+  }
+  std::vector<SurfaceArchiveItem> items;
+  items.reserve(recon.size());
+  for (std::size_t i = 0; i < recon.size(); ++i) {
+    // A record written with no provenance reads back as `legacy_format`, which the
+    // writer refuses to re-emit explicitly; nullopt reproduces the same zero bytes.
+    std::optional<SurfaceProvenance> prov;
+    if (!recon[i].provenance.legacy_format) {
+      prov = recon[i].provenance;
+    }
+    items.push_back(SurfaceArchiveItem{names[i], &recon[i].surface, prov});
+  }
+  auto rebuilt = write_surface_archive_v2(items, pinned_opts());
+  EXPECT_TRUE(rebuilt.has_value()) << (rebuilt.has_value() ? "" : rebuilt.error().to_string());
+  return rebuilt.has_value() ? std::move(*rebuilt) : std::vector<std::byte>{};
+}
+
+void expect_reemit_byte_identical(std::span<const SurfaceArchiveItem> items, const char *label) {
+  auto first = write_surface_archive_v2(items, pinned_opts());
+  ASSERT_TRUE(first.has_value()) << label << ": " << first.error().to_string();
+  const std::vector<std::byte> a = std::move(*first);
+  const std::vector<std::byte> b = reemit_via_reconstruct(a);
+  ASSERT_FALSE(b.empty()) << label << ": re-emit produced nothing";
+
+  // Per-record extents first: a mismatch then names the symbol that lost a field.
+  auto arch_a = SurfaceArchiveV2::open(std::vector<std::byte>(a));
+  ASSERT_TRUE(arch_a.has_value()) << label;
+  for (const atx::vol::ArchiveV2DirEntry &e : arch_a->directory()) {
+    const std::string sym(e.symbol, e.symbol_len);
+    ASSERT_LE(e.surface_offset + e.surface_size, b.size()) << label << " " << sym;
+    EXPECT_EQ(0, std::memcmp(a.data() + e.surface_offset, b.data() + e.surface_offset,
+                             static_cast<std::size_t>(e.surface_size)))
+        << label << ": record bytes differ for " << sym;
+  }
+  // Then the whole file (header, lookup table, directory, padding and all).
+  ASSERT_EQ(a.size(), b.size()) << label << ": file size differs";
+  EXPECT_EQ(0, std::memcmp(a.data(), b.data(), a.size())) << label << ": file bytes differ";
+}
+
+void expect_kind_reemit_byte_identical(const PricedSurface &ps, const char *label) {
+  const SurfaceProvenance prov = make_provenance();
+  const std::array<SurfaceArchiveItem, 1> with_prov{SurfaceArchiveItem{"SYM", &ps, prov}};
+  expect_reemit_byte_identical(with_prov, label);
+  // And the legacy (marker == 0) shape, which takes the nullopt branch above.
+  const std::array<SurfaceArchiveItem, 1> no_prov{SurfaceArchiveItem{"SYM", &ps, std::nullopt}};
+  expect_reemit_byte_identical(no_prov, label);
+}
+
+} // namespace
+
+TEST(SurfaceArchiveV2, ReemitByteIdentical_Essvi) {
+  expect_kind_reemit_byte_identical(make_essvi(42, 5), "essvi");
+}
+
+TEST(SurfaceArchiveV2, ReemitByteIdentical_Svi) {
+  expect_kind_reemit_byte_identical(make_svi(7, 4), "svi");
+}
+
+TEST(SurfaceArchiveV2, ReemitByteIdentical_C8) {
+  expect_kind_reemit_byte_identical(make_c8(8, 4), "c8");
+}
+
+TEST(SurfaceArchiveV2, ReemitByteIdentical_ConvexDense) {
+  expect_kind_reemit_byte_identical(make_convex(9, 24, 61), "convex_dense");
+}
+
+TEST(SurfaceArchiveV2, ReemitByteIdentical_Linear) {
+  expect_kind_reemit_byte_identical(make_linear(10, 4, 13), "linear_variance");
+}
+
+TEST(SurfaceArchiveV2, ReemitByteIdentical_SplineVol) {
+  expect_kind_reemit_byte_identical(make_spline(11, 16), "spline_vol");
+}
+
+// The shape the carry-over actually writes: one partition, every curve kind, mixed
+// provenance — re-emitted from the reader alone.
+TEST(SurfaceArchiveV2, ReemitByteIdentical_MixedBoard) {
+  const PricedSurface s_spy = make_convex(100, 6, 25);
+  const PricedSurface s_aaa = make_essvi(101, 5);
+  const PricedSurface s_bbb = make_c8(102, 4);
+  const PricedSurface s_ccc = make_linear(103, 4, 13);
+  const PricedSurface s_ddd = make_svi(104, 5);
+  const PricedSurface s_eee = make_spline(105, 5);
+  SurfaceProvenance degraded = make_provenance();
+  degraded.state = SurfaceState::Degraded;
+  degraded.validation.failures = ValidationFailure::CarryGap;
+  degraded.source_generation = 11;
+  const SurfaceProvenance healthy = make_provenance();
+  const std::array<SurfaceArchiveItem, 6> items{
+      SurfaceArchiveItem{"SPY", &s_spy, healthy},   SurfaceArchiveItem{"AAA", &s_aaa, degraded},
+      SurfaceArchiveItem{"BBB", &s_bbb, std::nullopt}, SurfaceArchiveItem{"CCC", &s_ccc, healthy},
+      SurfaceArchiveItem{"DDD", &s_ddd, degraded},  SurfaceArchiveItem{"EEE", &s_eee, healthy}};
+  expect_reemit_byte_identical(items, "mixed_board");
+}
+
+// Two round trips: re-emitting the re-emit must still be the same bytes, so a
+// repeatedly-resumed partition cannot drift one field per rewrite.
+TEST(SurfaceArchiveV2, ReemitByteIdenticalIsIdempotent) {
+  const PricedSurface ps = make_convex(9, 8, 33);
+  const SurfaceProvenance prov = make_provenance();
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SYM", &ps, prov}};
+  auto first = write_surface_archive_v2(items, pinned_opts());
+  ASSERT_TRUE(first.has_value());
+  const std::vector<std::byte> a = std::move(*first);
+  const std::vector<std::byte> b = reemit_via_reconstruct(a);
+  ASSERT_FALSE(b.empty());
+  const std::vector<std::byte> c = reemit_via_reconstruct(b);
+  ASSERT_EQ(a.size(), c.size());
+  EXPECT_EQ(0, std::memcmp(a.data(), c.data(), a.size()));
+}

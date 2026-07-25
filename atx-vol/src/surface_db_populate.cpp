@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/detail/archive_util.hpp"  // canonicalize_symbol (carry-over key match)
 #include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
 #include "atx/vol/dispersion.hpp"           // with_uid
 #include "atx/vol/pricer_fitter.hpp"        // PricerConfig
@@ -182,6 +183,22 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   std::vector<SymbolFitConfig> resolved_cfgs(n);
   std::vector<FitSlot> slots(n);
 
+  // FIX-D: which positions are CARRIED (re-emitted from the existing partition)
+  // rather than fitted. Resolved once, up front, so the fit scheduling below can
+  // simply skip them -- a carried cell never reaches fit_board.
+  std::vector<bool> carried(n, false);
+  if (!cfg.carry_over.empty()) {
+    for (std::size_t pos = 0; pos < n; ++pos) {
+      const CorpusBoard &board = boards[order[pos]];
+      const auto it = cfg.carry_over.find(board.date);
+      if (it == cfg.carry_over.end()) {
+        continue;
+      }
+      const std::string canon = detail::canonicalize_symbol(board.symbol, kSurfaceDbKeyMax);
+      carried[pos] = std::find(it->second.begin(), it->second.end(), canon) != it->second.end();
+    }
+  }
+
   // Enabled boards to fit, in deterministic (date asc, symbol asc) order, each
   // tagged with its date-range index. `remaining[r]` counts the enabled fits
   // still in flight for range r; a worker decrements it as each board finishes
@@ -200,7 +217,10 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
     for (std::size_t pos = range.begin; pos < range.end; ++pos) {
       const CorpusBoard &board = boards[order[pos]];
       resolved_cfgs[pos] = resolve_symbol_config(db, board.symbol, cfg.fallback);
-      if (resolved_cfgs[pos].enabled) {
+      // A carried cell is not fit work: it must not be queued and must not be
+      // counted into this range's in-flight total, or the drain would wait on a
+      // decrement that never comes.
+      if (resolved_cfgs[pos].enabled && !carried[pos]) {
         fit_positions.push_back(pos);
         fit_task_range.push_back(r);
         ++enabled_in_range;
@@ -378,12 +398,49 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       const std::string &date = boards[order[range.begin]].date;
 
       // ── Sequential aggregation: stats + owning storage for the write ────────
+      // `items` holds a string_view into `names` and a pointer into `stamped`, so
+      // NEITHER may reallocate while items are live. Carried cells push into the
+      // same two vectors, so the reserve must cover them too -- a carry list is a
+      // subset of this date's boards on the streaming path, but this is a public
+      // config field and must not corrupt memory if a direct caller oversteps.
+      const auto carry_it = cfg.carry_over.find(date);
+      const std::size_t carry_n =
+          carry_it != cfg.carry_over.end() ? carry_it->second.size() : 0u;
       std::vector<std::string> names;     // owning symbol storage (kept alive
       std::vector<PricedSurface> stamped; // across write_partition below)
-      names.reserve(range_n);
-      stamped.reserve(range_n);
+      names.reserve(range_n + carry_n);
+      stamped.reserve(range_n + carry_n);
       std::vector<SurfaceArchiveItem> items;
-      items.reserve(range_n);
+      items.reserve(range_n + carry_n);
+
+      // ── FIX-D: read the carried cells back BEFORE the write ─────────────────
+      // db.write_partition replaces the partition file (tmp+rename) and evicts
+      // its cache, so the existing records must be materialized into OWNED
+      // surfaces first. `reconstruct_entry` (not reconstruct_symbol) is required:
+      // it returns the record's own SurfaceProvenance in the same pass, and
+      // write_partition writes that provenance back into the manifest symbol
+      // entry -- dropping it would silently downgrade every carried symbol's
+      // manifest provenance to legacy. The archive is closed at the end of this
+      // block, before the write.
+      if (carry_n > 0u) {
+        const Result<SurfaceArchiveV2> part = db.open_partition(date);
+        if (!part) {
+          return Err(part.error());
+        }
+        for (const std::string &sym : carry_it->second) {
+          const Result<ArchiveV2DirEntry> entry = part->find(sym);
+          if (!entry) {
+            return Err(entry.error());
+          }
+          Result<ArchivedSurface> got = part->reconstruct_entry(*entry);
+          if (!got) {
+            return Err(got.error());
+          }
+          names.push_back(sym);
+          stamped.push_back(std::move(got->surface));
+          items.push_back(SurfaceArchiveItem{names.back(), &stamped.back(), got->provenance});
+        }
+      }
 
       for (std::size_t pos = range.begin; pos < range.end; ++pos) {
         const CorpusBoard &board = boards[order[pos]];
@@ -394,6 +451,17 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
         const SymbolFitConfig &resolved = resolved_cfgs[pos];
         if (!resolved.enabled) {
           ++acc.stats.n_disabled;
+          continue;
+        }
+
+        // FIX-D: a carried cell was never dispatched, so its slot is empty and
+        // must not be read as a failed fit. Its item was already appended above.
+        // It is counted in n_carried and deliberately NOT in n_ok: n_ok means
+        // "cells this run fitted", which is what `is_total_fit_failure`'s
+        // cells_ok == 0 clause (surface_db_build.cpp) depends on.
+        if (carried[pos]) {
+          ++acc.stats.n_carried;
+          ++stats.n_carried;
           continue;
         }
 
@@ -567,14 +635,48 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
   const SymbolFitConfig fallback_cfg = symbol_config_from_preset(spec.preset);
 
   std::vector<CorpusBoard> kept; // boards on the dates that need a (re)write
+  std::map<std::string, std::vector<std::string>> carry_over;
   for (const auto &[date, idxs] : by_date) {
     const Result<SurfaceArchiveV2> part = db.open_partition(date); // Err(NotFound) if none yet
+
+    // ── FIX-D: is this partition's stored work still valid to reuse? ──────────
+    // The predicate is deliberately WHOLE-PARTITION and conservative: if ANY
+    // symbol in the file has a config that differs from the manifest's current
+    // one, nothing on this date is carried and the date re-fits exactly as
+    // before. A partition is rewritten whole anyway, so per-cell granularity
+    // would buy nothing and would let a config change to one symbol hide another
+    // symbol's staleness in the same file. A 0 stored fingerprint means UNKNOWN
+    // (a manifest written before the field existed) and never carries -- which is
+    // why the first resume of a pre-FIX-D database still re-fits once, then
+    // converges. See kSurfaceDbCarryOverFitSalt for what this does NOT catch.
+    bool carry_valid = false;
+    if (part.has_value()) {
+      std::vector<std::string> part_symbols;
+      part_symbols.reserve(part->directory().size());
+      for (const ArchiveV2DirEntry &e : part->directory()) {
+        part_symbols.emplace_back(e.symbol, e.symbol_len);
+      }
+      const std::uint64_t stored = db.partition_config_fingerprint(date);
+      carry_valid = stored != 0u && stored == db.config_fingerprint(part_symbols);
+    }
+
     std::uint32_t present = 0;
     std::uint32_t to_add = 0;
+    std::vector<std::string> carry_syms;
     for (const std::size_t i : idxs) {
       const bool in_db = part.has_value() && part->find(boards[i].symbol).has_value();
       if (in_db) {
         ++present;
+        // Carry only an ENABLED cell. A present-but-disabled cell is left out on
+        // purpose so this change does not alter its (buggy) existing handling --
+        // see the separate finding in the FIX-D report: such a cell is dropped
+        // from the rewritten partition today, and fixing that here would bury a
+        // data-loss repair inside a performance change.
+        if (carry_valid &&
+            resolve_symbol_config(db, boards[i].symbol, fallback_cfg).enabled) {
+          carry_syms.push_back(
+              detail::canonicalize_symbol(boards[i].symbol, kSurfaceDbKeyMax));
+        }
         continue;
       }
       // A cell whose resolved config is DISABLED can never be added: the
@@ -606,7 +708,16 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
     }
     ++cov.dates_written;
     cov.cells_to_fit += to_add;
-    cov.cells_refit += present;
+    // FIX-D: the already-present cells split into carried (re-emitted verbatim)
+    // and refit (everything the predicate could not vouch for). `kept` still gets
+    // ALL of idxs so the per-symbol n_attempted / n_disabled bookkeeping is
+    // unchanged; populate_surface_db skips the fit for the carried ones.
+    const auto carried_here = static_cast<std::uint32_t>(carry_syms.size());
+    cov.cells_carried += carried_here;
+    cov.cells_refit += present - carried_here;
+    if (carried_here > 0u) {
+      carry_over.emplace(date, std::move(carry_syms));
+    }
     for (const std::size_t i : idxs) {
       kept.push_back(boards[i]);
     }
@@ -620,12 +731,20 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
     pcfg.fallback = fallback_cfg;
     pcfg.n_threads = spec.fit_workers;
     pcfg.skip_existing = false;
+    pcfg.carry_over = std::move(carry_over);
     const Result<SurfaceDbPopulateStats> st = populate_surface_db(db, kept, pcfg, test_hooks);
     if (!st) {
       return Err(st.error());
     }
     cov.cells_ok = st->n_ok;
     cov.cells_failed = st->n_failed;
+    // Cross-check the two halves of the carry decision: what the filter above
+    // asked for must equal what the populate actually re-emitted, or the
+    // coverage counters would describe a write that did not happen.
+    if (st->n_carried != cov.cells_carried) {
+      return Err(ErrorCode::Internal,
+                 "populate_universe_streaming: carried-cell count disagrees with populate");
+    }
     cov.per_symbol = std::move(st->per_symbol);
     // The per-cell reasons ride along with the count they explain; the populate
     // already ordered them by (date, symbol), so nothing re-sorts here.

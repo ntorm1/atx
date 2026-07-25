@@ -296,6 +296,21 @@ decode_surface_policy_record(const DbSymbolRecord &record) noexcept {
   return rec;
 }
 
+// FNV-1a/64 over raw bytes. Deliberately NOT atx::core::hash_bytes (wyhash):
+// that is documented as "not stable across process restarts or platforms", and
+// this digest is PERSISTED and compared across runs. FNV-1a is fixed arithmetic,
+// so the same bytes fold to the same value on every process and host.
+[[nodiscard]] std::uint64_t fnv1a_fold(std::uint64_t h, const void *data,
+                                       std::size_t len) noexcept {
+  constexpr std::uint64_t kPrime = 0x1000'0000'01b3ull;
+  const auto *p = static_cast<const std::uint8_t *>(data);
+  for (std::size_t i = 0; i < len; ++i) {
+    h ^= static_cast<std::uint64_t>(p[i]);
+    h *= kPrime;
+  }
+  return h;
+}
+
 // Wire-range validation for every enum stored as uint8. A manifest written by
 // a future writer (wider enum) must be rejected here, not aliased into a
 // different-but-valid-looking enumerator.
@@ -385,6 +400,38 @@ SymbolFitConfig decode_symbol_record(const DbSymbolRecord &rec) {
   cfg.surface_policy = decode_surface_policy(rec);
 
   return cfg;
+}
+
+// Fold the fit CONFIG of each named symbol into one stable digest. `canon` must
+// already be canonicalized; it is sorted here so caller order cannot change the
+// result. Each symbol contributes the 256 bytes of its record re-encoded with
+// provenance = nullopt: that strips the provenance half of the embedded
+// DbSurfacePolicyRecord (which `write_partition` rewrites on every write, and
+// which is not part of the config) while keeping every genuine config field,
+// surface_policy included. Returns 0 — the "unknown, never reuse" sentinel — if
+// any symbol has no manifest entry.
+[[nodiscard]] std::uint64_t fold_symbol_configs(std::span<const DbSymbolRecord> recs,
+                                                std::vector<std::string> canon) {
+  std::sort(canon.begin(), canon.end());
+  std::uint64_t h = fnv1a_fold(0xcbf2'9ce4'8422'2325ull, &kSurfaceDbCarryOverFitSalt,
+                               sizeof kSurfaceDbCarryOverFitSalt);
+  for (const std::string &sym : canon) {
+    const DbSymbolRecord *found = nullptr;
+    for (const DbSymbolRecord &rec : recs) {
+      if (std::string_view(rec.symbol, rec.symbol_len) == sym) {
+        found = &rec;
+        break;
+      }
+    }
+    if (found == nullptr) {
+      return 0u; // a symbol we have no config for -> unknown -> never reuse
+    }
+    const DbSymbolRecord clean =
+        encode_symbol_record(sym, decode_symbol_record(*found), std::nullopt);
+    h = fnv1a_fold(h, &clean, sizeof clean);
+  }
+  // Never hand back the sentinel for a successful fold.
+  return h == 0u ? 1u : h;
 }
 
 // ── Fitting-pipeline binding ────────────────────────────────────────────────
@@ -531,6 +578,12 @@ Result<std::vector<std::byte>> write_db_manifest(std::span<const DbSymbolEntry> 
     p.rec.surface_count = info.surface_count;
     p.rec.file_size = info.file_size;
     p.rec.created_ts_ns = info.created_ts_ns;
+    // FIX-D: previously-unused reserved field. Symmetric with decode_partitions
+    // below -- the decode half is NOT optional, because every manifest mutation
+    // round-trips the untouched partitions through DbPartitionInfo, so a
+    // write-only field would be wiped from every other partition on the next
+    // upsert_symbol.
+    p.rec.reserved0 = info.config_fingerprint;
     part_plans.push_back(p);
   }
 
@@ -830,6 +883,7 @@ decode_partitions(std::span<const DbPartitionRecord> recs) {
     info.surface_count = rec.surface_count;
     info.file_size = rec.file_size;
     info.created_ts_ns = rec.created_ts_ns;
+    info.config_fingerprint = rec.reserved0; // FIX-D; 0 on a pre-FIX-D manifest
     out.push_back(std::move(info));
   }
   return out;
@@ -941,6 +995,20 @@ SurfaceDb::surface_provenance(std::string_view symbol) const {
 
 std::vector<DbPartitionInfo> SurfaceDb::partitions() const {
   return decode_partitions(manifest()->partitions());
+}
+
+std::uint64_t SurfaceDb::config_fingerprint(std::span<const std::string> symbols) const {
+  std::vector<std::string> canon;
+  canon.reserve(symbols.size());
+  for (const std::string &sym : symbols) {
+    canon.push_back(detail::canonicalize_symbol(sym, kSurfaceDbKeyMax));
+  }
+  return fold_symbol_configs(manifest()->symbols(), std::move(canon));
+}
+
+std::uint64_t SurfaceDb::partition_config_fingerprint(std::string_view key) const {
+  const DbPartitionRecord *rec = manifest()->find_partition(key);
+  return rec != nullptr ? rec->reserved0 : 0u;
 }
 
 // ── SurfaceDb: manifest mutation ──────────────────────────────────────────
@@ -1111,8 +1179,20 @@ Status SurfaceDb::write_partition(std::string_view key, std::span<const SurfaceA
   std::vector<DbPartitionInfo> parts = decode_partitions(snap->partitions());
   const auto it = std::find_if(parts.begin(), parts.end(),
                                [&](const DbPartitionInfo &p) { return p.key == *canon; });
+  // FIX-D: record the configs these surfaces were produced under, so a later
+  // resume can tell whether reusing them is still sound. Computed from the
+  // manifest snapshot (which already reflects any upsert_symbol) over exactly the
+  // symbols going into this partition; the provenance this call is about to write
+  // back is excluded from the fold, so the value is stable across rewrites that
+  // change nothing but provenance.
+  std::vector<std::string> written_symbols;
+  written_symbols.reserve(items.size());
+  for (const SurfaceArchiveItem &item : items) {
+    written_symbols.push_back(detail::canonicalize_symbol(item.symbol, kSurfaceDbKeyMax));
+  }
   DbPartitionInfo info{*canon, static_cast<std::uint32_t>(items.size()),
-                       static_cast<std::uint64_t>(file_size), wall_clock_ns()};
+                       static_cast<std::uint64_t>(file_size), wall_clock_ns(),
+                       fold_symbol_configs(snap->symbols(), std::move(written_symbols))};
   if (it != parts.end()) {
     *it = info; // rewrite: overwriting an existing key is allowed.
   } else {
