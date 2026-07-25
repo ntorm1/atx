@@ -183,8 +183,21 @@ struct PopulateTestHooks {
 // `cfg.attest` to it — so by DEFAULT the partitions this writes carry NO
 // config fingerprint and a later resume re-fits them rather than reusing them
 // (fail closed; see `SurfaceDbPopulateConfig::attest`).
-// Top-level Err only on: empty boards span, db write errors, or a date key
-// the db rejects.
+// Top-level Err only on: empty boards span, db write errors, a date key
+// the db rejects, or a CARRY READ-BACK failure.
+//
+// THE CARRY READ-BACK FAILURE (FIX-F, M-6). A cell named in `carry_over` whose
+// stored record cannot be opened, found, or reconstructed is a hard Err that
+// aborts the whole populate — it does not skip the record and carry on. This is
+// wider than it was before FIX-E: an ENABLED carry only reaches the read-back
+// behind the caller's fingerprint gate, while a DISABLED (preserved) carry
+// reaches it on EVERY rewrite of that date, including on pre-FIX-D databases
+// whose records are the oldest in the deployment. Failing loud is deliberate:
+// the only alternative is to write the partition without the record, which is
+// the very deletion the preserve exists to prevent, performed on the one record
+// already known to be unreadable. Nothing already earned is lost — this date's
+// `write_partition` has not run, and every earlier date is already committed and
+// will be skipped by a re-run.
 [[nodiscard]] Result<SurfaceDbPopulateStats>
 populate_surface_db(SurfaceDb &db, std::span<const CorpusBoard> boards,
                     const SurfaceDbPopulateConfig &cfg = {},

@@ -494,10 +494,19 @@ TEST(SurfaceDbAdmin, VerifyDbHonorsRangeAndSymbolSubset) {
   EXPECT_EQ(rep->cells_ok, std::size_t{4});
 }
 
-// A DISABLED symbol is never populated into any partition, so it must be
-// excluded by default — otherwise every healthy database reports a missing cell
-// on every date. `include_disabled` forces it in, and then the whole column
-// shows up as unmappable, each cell identified.
+// A symbol disabled at CONFIG time — before it ever fitted, which is what this
+// fixture builds (CCC is gutted so selection refuses it on the first run) — is
+// never populated into any partition, so it must be excluded by default:
+// otherwise every healthy database reports a missing cell on every date.
+// `include_disabled` forces it in, and then the whole column shows up as
+// unmappable, each cell identified.
+//
+// SCOPE, deliberately narrow (FIX-E): this is NOT the general invariant "a
+// disabled symbol is never in any partition". A symbol disabled AFTER it fitted
+// keeps its stored surfaces — `enabled = false` means stop fitting, not delete —
+// so for that symbol the default skip leaves REAL cells unwalked and
+// `--include-disabled` reports what is there rather than proving absence. This
+// test exercises only the config-time case, which is why it is still correct.
 TEST(SurfaceDbAdmin, VerifyDbSkipsDisabledSymbolByDefault) {
   const AdminFixture f = make_fixture("verify_disabled");
   {

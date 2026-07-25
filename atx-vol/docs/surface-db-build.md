@@ -534,7 +534,7 @@ disposition counters partition the distinct symbols seen:
 | --- | --- |
 | `coverage.cells_loaded` | Boards handed to the populate (available parquet cells). |
 | `coverage.cells_to_fit` | NEW `(symbol, date)` cells scheduled this run. A **config-disabled** cell is never counted — it can never be added, so counting it would keep its date pending forever. |
-| `coverage.cells_refit` | Already-present cells that a same-date rewrite put back through the **fitter**. Carry-over split this population: an already-present cell dragged into a rewrite is now either *carried* or *refit*, never both. On a converged database this should be **`0`** — that is the invariant a cheap resume rests on, and it is the number to watch, not `cells_to_fit`. |
+| `coverage.cells_refit` | Already-present cells that a same-date rewrite put back through the **fitter**. Carry-over and the disabled-preserve split this population **three** ways, not two: an already-present cell dragged into a rewrite is *carried* (`cells_carried`, the fingerprint still vouches for it), *preserved because its config is disabled* (`cells_carried_disabled`, never offered to the fitter), or *refit* — exactly one of the three, never two, and this row counts only the last. On a converged database this should be **`0`** — that is the invariant a cheap resume rests on, and it is the number to watch, not `cells_to_fit`. |
 | `coverage.cells_carried` | Already-present cells re-emitted **verbatim** from the existing partition instead of being re-fitted, because the stored config fingerprint still matches. Byte-identical to what they replaced. Deliberately **not** counted in `cells_ok` — nothing was fitted — which is why both exit-code predicates read this counter explicitly. |
 | `coverage.cells_carried_disabled` | Already-present cells whose config is **disabled** and whose stored surface was re-emitted verbatim so the rewrite would not **delete** it. `enabled = false` means *stop fitting this symbol*, never *delete what is already stored*. Deliberately **separate** from `cells_carried`, which both exit-code predicates read as evidence the run produced a serviceable database — a switched-off name's leftover bytes are not that evidence. Counted in neither `cells_refit` (never offered to the fitter) nor `cells_ok`. Unlike `cells_carried` this does **not** depend on the config fingerprint: the alternative to preserving is deletion, not a re-fit, so the fingerprint has no say. |
 | `coverage.cells_already_present` | Skipped: symbol already in its date partition. |
@@ -612,13 +612,24 @@ work already done:
      surface it had already fitted, on the next rewrite of each of those dates —
      and the trigger was unrelated (any new enabled symbol arriving on the date).
      `--retry-disabled` therefore recovers both the config *and* the data.
+     - **New failure mode, deliberate.** Re-emitting a stored record means
+       *reading* it, so a record that cannot be opened or reconstructed
+       (unreadable file, failed checksum, unparseable record) now **aborts the
+       build** with that error instead of being silently dropped. The alternative
+       is to write the date's partition without it — which is the deletion this
+       preserve exists to prevent, performed on the one record already known to
+       be broken. Nothing already built is lost: the date being rewritten has not
+       been written yet, every earlier date was committed atomically, and a re-run
+       skips them. Diagnose with `verify` (its `unmappable` / `checksum` kinds
+       name the same bytes), then repair or drop that partition.
    - Safety guard: a date is **skipped, never rewritten**, if its partition
      already holds a symbol NOT present in this run's loaded set — a
      whole-partition rewrite would drop it (`dates_skipped_would_drop`). This
      cannot happen on the intended grow-only workflow but guards a
      narrower-symbol re-run from data loss. It is the *other* half of the same
-     concern as the bullet above: that one covers a stored symbol this run did
-     not load at all, this one a stored symbol it loaded but will not fit.
+     concern as the bullet above: that one covers a stored symbol this run
+     **did** load but will not fit (disabled), this one a stored symbol it did
+     **not** load at all.
 
 An **empty window** (un-pulled days) is a graceful success: all-zero coverage,
 the db still created. Absent dates in range are non-fatal (`n_dates_missing`).
@@ -866,7 +877,7 @@ none of it"*.
 | --- | --- | --- |
 | `--from KEY` / `--to KEY` | unbounded | Inclusive partition-key range, compared lexicographically on the canonical (upper-cased) key. ISO dates sort correctly, so `--from 2026-07-01 --to 2026-07-31` is a July restriction. |
 | `--symbols A,B,C` | manifest symbol table | Restrict the columns. Whitespace per field is trimmed, same rule as the build CLI. |
-| `--include-disabled` | off | Include fail-closed **disabled** symbols. By default they are skipped: a disabled symbol is never populated into any partition, so checking it would report a missing cell on every date of every healthy database. Turning this on is how you *prove* a disabled name is genuinely absent. |
+| `--include-disabled` | off | Include fail-closed **disabled** symbols. By default they are skipped, and what that skip hides depends on **when** the name was disabled. Disabled **before it ever fitted**: it is absent from every partition, so checking it would report a missing cell on every date of every healthy database — that is the skip this default exists for. Disabled **after it fitted**: it **keeps** its stored surfaces (`enabled = false` means *stop fitting*, never *delete* — see [Resume semantics](#resume-semantics)) and they still load, so the default walk leaves **real cells unverified**. Turn this on to walk both cases; the first reports the whole column `unmappable`, the second reports the cells that are actually there. It does **not** prove a disabled name is absent — it reports whatever is there, which is the point. |
 | `--probe-tenor T` | `30/365` | Tenor for the per-cell ATM evaluation. Must be finite and > 0. |
 | `--max-failures N` | `32` | Cap on `fail` lines. Overflow is counted in `failures_elided`, never dropped silently, and the `cells_*` totals stay exact. `0` prints no detail at all and elides everything. Same strict parsing as `--min-cells`. |
 | `--min-cells N` | `0` | Fail when fewer than `N` cells were checked. **Strictly parsed** — see below. |

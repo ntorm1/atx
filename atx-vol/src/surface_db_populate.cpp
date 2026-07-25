@@ -423,6 +423,34 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       // entry -- dropping it would silently downgrade every carried symbol's
       // manifest provenance to legacy. The archive is closed at the end of this
       // block, before the write.
+      //
+      // ── FIX-F (M-6): a read-back failure here ABORTS THE BUILD, deliberately ──
+      // Before FIX-E only an ENABLED carry reached this loop, and only behind
+      // `carry_valid`; a DISABLED carry now reaches it unconditionally, on the
+      // database class most likely to hold an old or damaged record. So the
+      // blast radius of a `find`/`reconstruct_entry` failure grew from "a carry
+      // the caller opted into" to "any rewrite of a date holding a disabled
+      // symbol", and the decision to fail loud is re-taken here rather than
+      // inherited:
+      //
+      //   - The alternative is to SKIP the unreadable record and write the
+      //     partition without it -- which is the FIX-E defect exactly, executed
+      //     on the one record we already know we cannot reproduce. A corrupt
+      //     record that cannot be re-emitted is a record the rewrite would
+      //     DELETE. Silence here converts "one record is unreadable" into "one
+      //     record no longer exists".
+      //   - Aborting costs nothing already earned. `db.write_partition` for THIS
+      //     date has not run, so the partition file and manifest are untouched;
+      //     every EARLIER date was already committed atomically (see the U3 note
+      //     at the end of this function) and a re-run with the cell-aware filter
+      //     skips them. The operator loses the remainder of one run, not data.
+      //   - It is diagnosable: the archive's own error (NotFound / ParseError /
+      //     checksum) names the partition and the record, and `verify` walks the
+      //     same bytes.
+      //
+      // Documented as a failure mode on `populate_surface_db` (header) and in
+      // the operator manual's resume-semantics section. Do not "scope" this to a
+      // skip without re-arguing the three points above.
       if (carry_n > 0u) {
         const Result<SurfaceArchiveV2> part = db.open_partition(date);
         if (!part) {
@@ -497,6 +525,41 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
         } else {
           ++acc.stats.n_failed;
           ++stats.n_failed;
+          // ── FIX-F (FIX-E review I-2): the stored record is NOT preserved here,
+          // and that is a KNOWN, ARGUED limit rather than an oversight ─────────
+          // A cell that fitted once and later degraded is `present`, ENABLED, and
+          // fails its re-fit; nothing is appended to `items`, so the
+          // whole-partition rewrite below drops the surface it had. The
+          // would-drop guard cannot help — the cell was counted into `present`
+          // before its outcome was known, the same structural cause FIX-E fixed
+          // for the disabled case. Preserving the bytes is a ~10-line change
+          // right here (read the record back beside the disabled carry above),
+          // and it is deliberately NOT made, because presence is load-bearing
+          // one frame up:
+          //
+          //   `populate_universe_streaming` counts a cell into `to_add` only when
+          //   it is ABSENT from the partition, and a date with `to_add == 0` is
+          //   `dates_skipped_complete` — never rewritten again. So a preserved
+          //   failed cell retires its own date from the rewrite set: the cell is
+          //   never re-attempted, the failure never re-reported, and a surface
+          //   the fitter has just REJECTED is served indefinitely with nothing on
+          //   disk recording that. Withholding the fingerprint attestation does
+          //   not rescue this — the skip happens before `carry_valid` is ever
+          //   consulted. It would also contradict the "a failing cell is retried
+          //   forever; there is no persisted known-failed state" contract that
+          //   `is_total_fit_failure`, `is_carry_masked_fit_failure` and
+          //   `build_surface_db` all document and depend on.
+          //
+          // Trading a one-shot data loss for permanent silent staleness is the
+          // worse of the two. The fix needs PERSISTED per-cell state — "these
+          // bytes are a preserved failure: re-attempt this cell, never carry it"
+          // — which neither the manifest nor the archive record today; see
+          // `.superpowers/sdd/surface-db-prod/fixF-report.md` for the format
+          // change that would carry it. Pinned by
+          // SurfaceDbPopulate.DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrivesTheRetry,
+          // which asserts BOTH halves so a future preserve cannot land without
+          // confronting the second one.
+          //
           // Record WHY, not merely that it happened: `slot.error_message` is the
           // fitter's own rejection text (corpus_board_fit.cpp), which used to die
           // here alongside the code. DETERMINISM: this push_back runs on the

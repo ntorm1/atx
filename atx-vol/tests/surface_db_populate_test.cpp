@@ -2280,4 +2280,137 @@ TEST(SurfaceDbPopulate, NarrowerRerunSkipsTheDateRatherThanDroppingAnAbsentSymbo
   std::filesystem::remove_all(root);
 }
 
+// ── FIX-F (FIX-E review I-2): the last member of the data-loss family ────────
+//
+// This test PINS CURRENT BEHAVIOUR, INCLUDING A REAL DEFECT. It is not an
+// aspiration and it must not be "made to pass" by preserving the bytes without
+// first reading the argument below (and `.superpowers/sdd/surface-db-prod/
+// fixF-report.md`). Two facts are asserted, and the second is why the obvious
+// fix is REFUSED rather than merely unwritten.
+//
+// FACT 1 (the defect, legs 1-2). A cell that fitted ONCE and later DEGRADES
+// loses its stored surface. AAA fits and is stored; its config then changes so
+// the fit fails; an unrelated new symbol on the same date forces the rewrite.
+// `items` is appended only for `CorpusFitStatus::Ok`, `write_partition` replaces
+// the whole file, and the would-drop guard cannot fire because AAA was counted
+// into `present` before its fit outcome was known — the identical structural
+// cause FIX-E repaired for the DISABLED case. Note the population: not the cells
+// that always failed (those were never stored, so nothing is at risk), but the
+// ones that worked and stopped.
+//
+// FACT 2 (why preserving the bytes is not a local fix, legs 3-5). PRESENCE, not
+// the config fingerprint, is what keeps a date in the rewrite set:
+// `populate_universe_streaming` counts a cell into `to_add` only when it is NOT
+// in the partition, and a date with `to_add == 0` is `dates_skipped_complete` —
+// never rewritten, so its cells are never offered to the fitter again. Leg 3
+// shows the failing cell being retried and re-reported EXACTLY BECAUSE it is
+// absent; legs 4-5 show that the moment the cell is present the date leaves the
+// rewrite set for good. Preserving a failed cell's bytes therefore does not just
+// risk blessing them via the fingerprint (the attestation could be withheld) — it
+// removes the cell from the retry loop on ANY attestation, silently freezing a
+// surface the fitter has just rejected and retiring the failure from every future
+// report. That trades a one-shot data loss for permanent silent staleness, which
+// is the worse of the two, and it contradicts the "a failing cell is retried
+// forever / there is no persisted known-failed state" contract that
+// `is_total_fit_failure`, `is_carry_masked_fit_failure` and `build_surface_db`
+// all document and depend on. Closing it needs PERSISTED per-cell state saying
+// "these bytes are a preserved failure: re-attempt this cell, never carry it" —
+// a manifest/archive format change, specified in the report.
+TEST(SurfaceDbPopulate, DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrivesTheRetry) {
+  const auto root = test_root("degraded_cell_loss");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  // ── Leg 1: AAA and BBB fit and are stored. AAA is now a REAL asset. ────────
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u) << "the seed boards must fit or nothing is at risk";
+  ASSERT_TRUE(db->load_surface(kDate0, "AAA").has_value())
+      << "AAA must be STORED before it degrades, or this tests the wrong population";
+  const auto aaa_healthy = db->symbol_config("AAA");
+  ASSERT_TRUE(aaa_healthy.has_value());
+
+  // ── Leg 2: AAA degrades, an unrelated new symbol rewrites the date ────────
+  // The config change is one way in; a thinned board or a fitter regression are
+  // the others. All three land on the same branch: a present, ENABLED cell whose
+  // re-fit fails contributes nothing to `items`.
+  ASSERT_TRUE(db->upsert_symbol("AAA", rejected_risk_config()).has_value());
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30)); // new, enabled, fits
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  ASSERT_EQ(cov2->dates_written, 1u) << "the date must really have been rewritten";
+  ASSERT_EQ(cov2->dates_skipped_would_drop, 0u)
+      << "the guard must NOT have fired: AAA was counted into `present` before its fit ran, "
+         "which is exactly why it cannot protect this cell";
+  ASSERT_EQ(cov2->cells_carried, 0u) << "changing AAA's config moved the fold, so nothing carries";
+  EXPECT_EQ(cov2->cells_refit, 2u) << "AAA and BBB were both dragged back through the fitter";
+  EXPECT_EQ(cov2->cells_ok, 2u) << "BBB re-fit and CCC fit";
+  EXPECT_EQ(cov2->cells_failed, 1u);
+
+  // The failure is reported with the fitter's own reason (069669e's channel).
+  ASSERT_EQ(cov2->failed_cells.size(), std::size_t{1});
+  EXPECT_EQ(cov2->failed_cells[0].symbol, "AAA");
+  EXPECT_EQ(cov2->failed_cells[0].code, ErrorCode::InvalidArgument);
+  EXPECT_EQ(cov2->failed_cells[0].detail, "invalid correctness policy for requested risk surface");
+
+  // ── THE BITE ──────────────────────────────────────────────────────────────
+  // A surface that existed, loaded, and was servable is gone, destroyed by a
+  // rewrite triggered by an unrelated symbol.
+  EXPECT_FALSE(db->load_surface(kDate0, "AAA").has_value())
+      << "CURRENT BEHAVIOUR, and the defect: a degraded cell's stored surface is deleted. If this "
+         "now passes, the preserve landed -- re-read FACT 2 above and the FIX-F report before "
+         "deleting this assertion";
+  EXPECT_TRUE(db->load_surface(kDate0, "BBB").has_value());
+  EXPECT_TRUE(db->load_surface(kDate0, "CCC").has_value());
+
+  // ── Leg 3: the retry loop, and what powers it ─────────────────────────────
+  // Same boards, same configs. AAA is retried and re-reported ONLY because it is
+  // ABSENT: `to_add` counts cells that are not in the partition. Its healthy
+  // siblings are carried, so this is the documented converged steady state.
+  auto cov3 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov3.has_value()) << (cov3 ? "" : cov3.error().to_string());
+  EXPECT_EQ(cov3->cells_to_fit, 1u) << "the absent failing cell is what keeps the date pending";
+  EXPECT_EQ(cov3->dates_written, 1u);
+  EXPECT_EQ(cov3->cells_carried, 2u) << "BBB and CCC are carried, not re-fit";
+  EXPECT_EQ(cov3->cells_refit, 0u);
+  EXPECT_EQ(cov3->cells_ok, 0u);
+  EXPECT_EQ(cov3->cells_failed, 1u) << "and the failure is REPORTED AGAIN -- every run, forever";
+  ASSERT_EQ(cov3->failed_cells.size(), std::size_t{1});
+  EXPECT_EQ(cov3->failed_cells[0].symbol, "AAA");
+  {
+    // The shape a74eb92's warning exists to name: nothing fitted, something
+    // failed, something carried. Exit stays 0; the warning does the talking.
+    SurfaceDbBuildReport report;
+    report.coverage = *cov3;
+    EXPECT_FALSE(is_total_fit_failure(report));
+    EXPECT_TRUE(is_carry_masked_fit_failure(report));
+  }
+
+  // ── Legs 4-5: presence ENDS the retry, permanently ────────────────────────
+  // Restore AAA to the config it fitted under; it is added back, and from then
+  // on the date has nothing to add. This is the state a preserved failed cell
+  // would land in -- except the cell would still be failing and its surface
+  // would be the one the fitter just rejected, with no run ever revisiting it.
+  ASSERT_TRUE(db->upsert_symbol("AAA", *aaa_healthy).has_value());
+  auto cov4 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov4.has_value()) << (cov4 ? "" : cov4.error().to_string());
+  ASSERT_EQ(cov4->cells_ok, 1u) << "AAA must fit again for leg 5 to mean anything";
+  ASSERT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+
+  auto cov5 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov5.has_value()) << (cov5 ? "" : cov5.error().to_string());
+  EXPECT_EQ(cov5->cells_to_fit, 0u) << "a PRESENT cell is never counted as pending work";
+  EXPECT_EQ(cov5->dates_skipped_complete, 1u)
+      << "presence alone retires the date from the rewrite set -- no fingerprint involved";
+  EXPECT_EQ(cov5->dates_written, 0u);
+  EXPECT_EQ(cov5->cells_failed, 0u) << "and with the date skipped, no cell on it is ever offered "
+                                       "to the fitter again -- which is why preserving a FAILED "
+                                       "cell's bytes would silence its failure forever";
+  EXPECT_EQ(cov5->cells_already_present, 3u);
+
+  std::filesystem::remove_all(root);
+}
+
 } // namespace atx::vol
