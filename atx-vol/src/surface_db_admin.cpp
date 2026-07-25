@@ -65,6 +65,13 @@ struct OnDiskSize {
   return "forward=" + std::to_string(forward) + " iv=" + std::to_string(iv);
 }
 
+// The ONE rule for "this evaluated to a usable implied vol", shared by
+// `query_surface`'s spot check and `verify_db`'s per-cell probe. They used to
+// disagree — query rejected only non-finite while verify also rejected `iv <= 0`,
+// so `query` printed `iv 0` and exited 0 on a cell `verify` called broken. Both
+// now call this, so they cannot drift apart again.
+[[nodiscard]] bool usable_iv(double iv) noexcept { return std::isfinite(iv) && iv > 0.0; }
+
 } // namespace
 
 // ── describe_db ─────────────────────────────────────────────────────────────
@@ -209,9 +216,9 @@ Result<SurfacePointQuote> query_surface(const SurfaceDb &db, std::string_view ke
   out.uid = view.uid();
   out.n_slices = view.n_slices();
 
-  if (!std::isfinite(out.iv) || !std::isfinite(out.total_variance)) {
+  if (!usable_iv(out.iv) || !std::isfinite(out.total_variance)) {
     return Err(ErrorCode::Internal, "query_surface: " + out.key + "/" + out.symbol +
-                                        " evaluated non-finite (" +
+                                        " evaluated unusable (" +
                                         describe_point(out.forward, out.iv) + ")");
   }
   return Ok(std::move(out));
@@ -274,8 +281,9 @@ Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec) 
   // sorted by canonical key, and ISO dates order correctly under that compare.
   const std::string lo = canonical_ascii(spec.key_lo);
   const std::string hi = canonical_ascii(spec.key_hi);
+  const std::vector<DbPartitionInfo> all_partitions = db.partitions();
   std::vector<std::string> keys;
-  for (const DbPartitionInfo &p : db.partitions()) {
+  for (const DbPartitionInfo &p : all_partitions) {
     if ((lo.empty() || p.key >= lo) && (hi.empty() || p.key <= hi)) {
       keys.push_back(p.key);
     }
@@ -283,6 +291,10 @@ Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec) 
 
   DbVerifyReport out;
   out.n_partitions = keys.size();
+  // Range-INDEPENDENT, and that is the point: it is what lets `selected_no_cells`
+  // tell "this database is fresh" from "this run's window/symbol set matched
+  // nothing in a database that is full".
+  out.n_partitions_in_db = all_partitions.size();
   out.n_symbols = symbols->size();
 
   // Record a fault, honoring the cap. Truncation is COUNTED, never silent: a
@@ -308,12 +320,24 @@ Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec) 
         record(key, symbol, DbCellFailure::Unmappable, mapped.error().to_string());
         continue;
       }
-      // Mapping alone only proves the bytes parse. Evaluate one ATM-ish point —
-      // K at the surface's own forward — to prove it produces a usable number.
+      // Mapping validated magic, framing and bounds — NOT one payload byte. The
+      // record carries its own CRC-32C; check it against the archive the map is
+      // already holding open (`LoadedSurface::partition`), so this costs no extra
+      // open and no extra mapping — only the read of the payload it checksums.
+      // Without this, intra-record damage maps cleanly, and a probe that happens
+      // to miss the damaged slices reports the cell healthy.
+      const Status crc = mapped->partition->validate_symbol(symbol);
+      if (!crc) {
+        ++out.cells_checksum;
+        record(key, symbol, DbCellFailure::ChecksumMismatch, crc.error().to_string());
+        continue;
+      }
+      // Bytes intact. Evaluate one ATM-ish point — K at the surface's own forward
+      // — to prove valid bytes actually produce a usable number.
       const PricedSurfaceView &view = mapped->view;
       const double forward = view.forward_at(spec.probe_T);
       const double iv = view.iv(forward, spec.probe_T);
-      if (!std::isfinite(forward) || forward <= 0.0 || !std::isfinite(iv) || iv <= 0.0) {
+      if (!std::isfinite(forward) || forward <= 0.0 || !usable_iv(iv)) {
         ++out.cells_non_finite;
         record(key, symbol, DbCellFailure::NonFinite, describe_point(forward, iv));
         continue;

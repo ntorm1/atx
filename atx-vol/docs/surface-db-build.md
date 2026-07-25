@@ -152,6 +152,62 @@ suite — the CLI only maps it to an exit code.
 So exit 3 answers exactly one question — "did this run get anything at all?" — and
 **partial coverage is still your job to inspect.**
 
+### The same trap one stage earlier — total CONFIG failure
+
+`is_total_fit_failure` only sees cells that were **scheduled**, and stage 1 can
+swallow the universe before anything is scheduled at all. If per-symbol **config
+selection** fails for every symbol — every board classified unselectable — then
+every config is stored **disabled** (fail-closed), `cells_to_fit` is `0`, and the
+fit predicate reads that as the healthy *nothing-to-do resume*. The build used to
+exit `0`, indistinguishable from a converged re-run, over a database with **no
+enabled symbol** that will never hold a surface.
+
+That is now exit **3** as well, via the sibling predicate
+`is_total_config_failure(const SurfaceDbBuildReport&)`
+(`SurfaceDbTotalConfigFailure` suite, plus the end-to-end
+`BuildSurfaceDb.EverySymbolFailingSelectionIsTotalConfigFailure`):
+
+```
+$ atx-vol-surface-db-build --db /db --hive /hive --from 2026-07-01 --to 2026-07-06 --r 0.03
+atx-vol-surface-db-build: TOTAL CONFIG FAILURE: 3 symbols attempted, 0 configured
+  (3 disabled by a selection failure).
+  Every symbol's config board failed to build a selectable underlying, so every config
+  was stored DISABLED and no cell was ever scheduled to fit. ...
+... (the full report still prints to stdout) ...
+config.n_configured 0
+config.n_disabled_failed 3
+coverage.cells_to_fit 0
+config.failed_symbols AAA BBB CCC
+$ echo $?
+3
+```
+
+True iff the config stage **attempted** at least one symbol and configured none
+(`n_disabled_failed > 0 && n_configured == 0`) **and** the run produced no surface
+(`cells_ok == 0`) — the same attempted-nothing-succeeded shape as the fit
+predicate. **Three neighbouring shapes stay green**, for the same reasons:
+
+- **Partial** selection failure (`n_configured > 0` beside some
+  `n_disabled_failed`): a real universe carries names whose board cannot pin a
+  curve; they are disabled while the rest build. Exit `0`.
+- **Nothing to do** (`n_disabled_failed == 0`): every symbol was already
+  configured (`n_skipped_existing`), or the window was empty. `n_skipped_existing`
+  is deliberately **not** part of "attempted" — a symbol the idempotent resume left
+  untouched was not tried, so a re-run stays green. Exit `0`.
+- **New names failing beside productive fits**: only newly-seen symbols failed
+  selection while already-configured ones fitted. `cells_ok > 0`, so the run
+  produced surfaces — partial, not dead. Exit `0`.
+
+Both predicates map to the **same** exit `3`: a script asks "did this run produce
+anything at all?", and the stderr diagnostic names which stage swallowed it. The
+config check runs first, because when both fire the config stage is the upstream
+cause and the thing to fix.
+
+**A resumed all-disabled database is still exit 0** — nothing was attempted, so
+nothing failed. That database is caught downstream instead, by `verify`: a walk
+that selects zero cells over a db that holds partitions is a `FAILED` verdict (see
+[The zero-cell verdict](#the-zero-cell-verdict--verify-cannot-pass-what-it-never-read)).
+
 **Operator checklist:** a green exit no longer hides a *totally* dead build, but
 it still does not mean full coverage. After any build, **inspect `cells_ok` vs
 `cells_failed` and the per-symbol rows** (or the `--report` CSV's section 2), then
@@ -202,7 +258,7 @@ one `symbol.<S> attempted=.. ok=.. failed=.. disabled=..` line per symbol. With
 | `0` | Build succeeded — including **partial** coverage, a no-op **resume**, and a graceful empty-window no-op. |
 | `1` | A build error — malformed hive spec, or a db config/write failure. Message on stderr, **no report printed**. |
 | `2` | A usage error — unknown flag, a missing required flag, an unknown `--preset`, or a malformed `--r`. Usage on stderr. |
-| `3` | **Total fit failure** — the build ran to completion but fitted **nothing** (`cells_to_fit > 0` and `cells_ok == 0`). The full report still prints and `--report` is still written; a diagnostic naming the carry rate goes to stderr. See [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing). |
+| `3` | **The build ran to completion and produced NOTHING** — either **total config failure** (`n_disabled_failed > 0`, `n_configured == 0`, `cells_ok == 0`: every symbol was disabled by a selection failure, so nothing was ever scheduled) or **total fit failure** (`cells_to_fit > 0` and `cells_ok == 0`: work was scheduled and no cell fitted). One code for both — the script's question is "did this run produce anything?" and the stderr diagnostic names the stage. The full report still prints and `--report` is still written. See [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing). |
 
 `3` is deliberately distinct from `1`: `1` means *atx or the database broke* (no
 report to read), `3` means *the tool worked and your inputs produced nothing* —
@@ -343,7 +399,10 @@ pre-pass).
 
 **Verifying a built database requires no Python.** Everything below runs from the
 command line against a `SurfaceDb` root: what it contains, how each symbol is
-configured, what one cell evaluates to, and whether every cell is healthy. The
+configured, what one cell evaluates to, and whether every selected cell still
+holds intact bytes that evaluate to a usable number (read
+[what a green `verify` does and does not prove](#what-a-green-verify-proves-and-does-not-prove)
+before you treat it as an acceptance gate). The
 pybind11 wrapper is not needed, not installed, and not on the verification path
 — the old production run-plan step "query check via python binding
 (`map_surface` one cell)" is replaced by `atx-vol-surface-db query` and
@@ -381,11 +440,59 @@ atx-vol-surface-db <subcommand> --db <root> [flags]
 | `symbols` | — | One `symbol` line per configured symbol. |
 | `config` | `--symbol SYM` | One symbol's full stored fit config + provenance. |
 | `query` | `--key KEY --symbol SYM --strike K --tenor T` | What does this cell evaluate to? iv / total variance / forward / uid / slices. |
-| `verify` | `[--from KEY] [--to KEY] [--symbols A,B,C] [--include-disabled] [--probe-tenor T] [--max-failures N] [--min-cells N]` | Is the whole thing healthy? |
+| `verify` | `[--from KEY] [--to KEY] [--symbols A,B,C] [--include-disabled] [--probe-tenor T] [--max-failures N] [--min-cells N]` | Does every selected cell still map, checksum and evaluate? |
 
 `query` and `verify` both go through **`SurfaceDb::map_surface`** — the zero-copy
 path production readers use (and the one the retired Python check made) — so a
 green result is evidence about the path that actually serves.
+
+### What a green `verify` proves, and does not prove
+
+Each selected cell passes **three gates**, in order, stopping at the first failure:
+
+1. **map** — `map_surface`: the partition file opens, and the record's magic,
+   framing and column bounds parse.
+2. **checksum** — `SurfaceArchiveV2::validate_symbol`: the record's payload bytes
+   still match the **CRC-32C the writer stored inside the record**.
+3. **probe** — evaluate one ATM-ish point (`K` = that surface's own
+   `forward_at(probe_tenor)`, `T` = `probe_tenor`) and require a finite, positive
+   implied vol.
+
+**It proves**, for every cell the flags selected: the file is there, the bytes are
+the bytes that were written, and the surface produces a usable number at one point.
+
+**It does not prove** the numbers are *right* — no oracle is consulted, and a
+surface fitted from bad market data checksums perfectly and probes fine. It says
+nothing about points other than the probe, nothing about cells the flags excluded,
+and it cannot know how big the database was *supposed* to be — that is
+`--min-cells`, which only you can supply. It is a **byte-integrity + liveness
+check over a selected grid**, deliberately not more.
+
+#### Why gate 2 exists
+
+`map_surface` validates the header, the framing and the column bounds — **not one
+payload byte**. So intra-record damage that preserves length (bit rot, a partial
+copy, a hand edit) maps *cleanly*; and because the ATM probe only touches the
+slices bracketing `probe_tenor`, a surface whose far-dated slice is shredded
+returns a finite positive `iv` and used to print `verdict ok`. Whole-file
+truncation was always caught (the header/metadata CRCs at open); this closed the
+gap between those two. Corruption is reported as its own kind:
+
+```
+cells_checksum 1
+fail 2026-07-01 AAA kind=checksum detail=ParseError: SurfaceArchiveV2::validate: record checksum mismatch
+```
+
+**Cost.** Gate 2 reads and checksums every selected record's payload, which is
+strictly more IO than the map-and-probe walk (which touches only the header, the
+column offsets and two slices). It is the **default anyway, with no opt-out flag**:
+a health check that skips the checksum the format already carries is not a health
+check, and this is the only gate that can see intra-record damage. If a
+whole-universe verify ever becomes too slow to run as a gate, the right lever is
+the one already there — narrow the grid with `--from`/`--to`/`--symbols` and verify
+in shards — not a flag that makes the cheap answer the silent one. (`verify` is an
+acceptance step, not a hot path; a `--no-checksum` flag would exist only to be left
+on in the script that mattered.)
 
 ### Output format
 
@@ -455,22 +562,28 @@ provenance is present, `provenance.purpose`, `.quality_mode`, `.state`,
 
 ```
 partitions <n>              # partitions in range (the walk's rows)
+partitions_in_db <n>        # partitions the manifest holds, IGNORING --from/--to
 symbols <n>                 # symbols in the walk (the walk's columns)
-cells_checked <n>           # == cells_ok + cells_unmappable + cells_non_finite
+cells_checked <n>           # == cells_ok + cells_unmappable + cells_non_finite + cells_checksum
 cells_ok <n>
 cells_unmappable <n>        # map_surface failed (file gone/corrupt, or symbol absent)
-cells_non_finite <n>        # mapped, but the ATM probe produced no usable number
+cells_checksum <n>          # mapped, but the payload no longer matches its stored CRC
+cells_non_finite <n>        # bytes intact, but the ATM probe produced no usable number
 failures_reported <n>       # fail lines below (capped by --max-failures)
 failures_elided <n>         # faults NOT listed -- truncation is never silent
-fail <KEY> <SYM> kind=<unmappable|non_finite> detail=<message>
+fail <KEY> <SYM> kind=<unmappable|checksum|non_finite> detail=<message>
 min_cells <n>
 verdict <ok|FAILED>
 ```
 
-Each cell is **mapped and then evaluated**: `K` = that surface's own
-`forward_at(probe_tenor)`, `T` = `probe_tenor` (default 30/365). Mapping alone
-only proves the bytes parse; the ATM evaluation proves the surface produces a
-finite, positive vol.
+The three `kind`s stay distinct so a fault names its own root cause: `unmappable`
+is "the file or the record is not there / does not parse", `checksum` is "the bytes
+changed under us", `non_finite` is "valid bytes, unusable surface". See
+[the three gates](#what-a-green-verify-proves-and-does-not-prove).
+
+`partitions_in_db` is range-independent on purpose: it is what lets the tool tell
+*"this database is fresh"* from *"this database is full and your window matched
+none of it"*.
 
 ### `verify` flags
 
@@ -480,49 +593,110 @@ finite, positive vol.
 | `--symbols A,B,C` | manifest symbol table | Restrict the columns. Whitespace per field is trimmed, same rule as the build CLI. |
 | `--include-disabled` | off | Include fail-closed **disabled** symbols. By default they are skipped: a disabled symbol is never populated into any partition, so checking it would report a missing cell on every date of every healthy database. Turning this on is how you *prove* a disabled name is genuinely absent. |
 | `--probe-tenor T` | `30/365` | Tenor for the per-cell ATM evaluation. Must be finite and > 0. |
-| `--max-failures N` | `32` | Cap on `fail` lines. Overflow is counted in `failures_elided`, never dropped silently, and the `cells_*` totals stay exact. `0` prints no detail at all and elides everything. |
-| `--min-cells N` | `0` | Fail when fewer than `N` cells were checked. **Read the trap below.** |
+| `--max-failures N` | `32` | Cap on `fail` lines. Overflow is counted in `failures_elided`, never dropped silently, and the `cells_*` totals stay exact. `0` prints no detail at all and elides everything. Same strict parsing as `--min-cells`. |
+| `--min-cells N` | `0` | Fail when fewer than `N` cells were checked. **Strictly parsed** — see below. |
 
-### The empty-database trap — why `--min-cells` exists
+**Every value-taking flag requires its value.** A flag left at the end of the
+argv — the shape a dropped shell variable produces — is a **usage error, exit 2**,
+never an empty string silently read as a choice. This closed two live traps:
+`partitions --key $KEY` with `KEY` unset used to mean *"list every partition"*
+(you asked about one and got all of them, exit 0), and `--min-cells $EXPECTED`
+with `EXPECTED` unset used to mean *"no floor at all"*.
 
-An empty database has no broken cell, so `verify` correctly reports
-`verdict ok`. That is honest and it is also a **silent pass**: a build whose
-every fit failed (the carry-mismatch trap documented above — `cells_ok 0`) writes
-*no partition at all*, and the resulting database then passes an unguarded
-`verify`:
+`--min-cells` and `--max-failures` additionally require a **non-negative integer
+consuming the whole token**: `abc`, `9x`, `-1` and a missing value are all exit 2,
+never a silent `0`. `--min-cells` is the one flag whose entire job is to fail a
+too-small database, so coercing a typo to `0` made it **fail open**:
+
+```
+$ atx-vol-surface-db verify --db /db --min-cells $EXPECTED    # EXPECTED unset
+atx-vol-surface-db: --min-cells requires a value
+$ echo $?
+2
+```
+
+### The zero-cell verdict — `verify` cannot pass what it never read
+
+A walk that selected **nothing** found nothing broken, so every counter is `0` and
+no `fail` line prints — the exact shape of a perfect result. Over a database that
+**holds partitions**, that is not health: real surfaces sat on disk and not one
+byte was read. It is now a **`FAILED` verdict** (library-side, so every caller gets
+it — `DbVerifyReport::selected_no_cells()`), with a stderr diagnostic naming which
+of the three doors you came through:
+
+```
+$ atx-vol-surface-db verify --db /db
+atx-vol-surface-db: verify checked 0 cells while the database holds 3 partitions
+  -- nothing was read, so nothing could fail.
+  3 partition(s) matched --from/--to, and 0 symbol(s) were selected. ...
+partitions 3
+partitions_in_db 3
+symbols 0
+cells_checked 0
+verdict FAILED
+$ echo $?
+1
+```
+
+The three doors, all previously green:
+
+- **every symbol is fail-closed disabled** — the default walk drops the columns, so
+  a db with three populated partitions reported `symbols 0 / cells_checked 0 /
+  verdict ok`. (This is exactly the database a resumed all-disabled build leaves
+  behind, which the build's own exit correctly calls a no-op resume.)
+- **`--symbols` named nothing the manifest configures.**
+- **`--from`/`--to` matched no partition** — wrong window, or wrong db root.
+
+**A genuinely fresh root (`partitions_in_db 0`) stays green**, deliberately: there
+is nothing to be wrong about yet, and failing a newly created database would make
+`verify` unusable as a post-`create` smoke test. The distinction drawn is between
+*"there is no data"* and *"there is data and you read none of it"*. The operator's
+question at a fresh root — *"this should not still be empty"* — is `--min-cells`,
+which is the one number only the operator knows.
+
+### The empty-database trap — why `--min-cells` still exists
+
+A **fresh** database (`partitions_in_db 0`) has no broken cell and no data to have
+read, so `verify` reports `verdict ok`. That is honest, and it is still a **silent
+pass** for the one case the zero-cell verdict above deliberately excludes: a
+database that was never built, was built over the wrong window, or lost partitions
+to a later accident looks exactly like a database created five seconds ago.
 
 ```
 $ atx-vol-surface-db verify --db /db
 partitions 0
+partitions_in_db 0
 cells_checked 0
 ...
-verdict ok            # nothing was checked, so nothing failed
+verdict ok            # there is nothing here, and nothing claims otherwise
 ```
 
-In a script, always assert the expected size:
+Only the operator knows how big this database is supposed to be. In a script,
+always assert it:
 
 ```bash
 atx-vol-surface-db verify --db /db --min-cells 9   # -> verdict FAILED, exit 1
 ```
 
-`--min-cells` is a CLI-side floor on `cells_checked`; the library
-(`verify_db`) deliberately keeps vacuous-ok so a legitimately fresh root is not
-an error.
+Three guards now stack, and they are complementary rather than redundant:
 
-The build CLI now catches that *specific* case at its own exit (a totally failed
-build exits `3`, above), so the two guards are complementary rather than
-redundant: exit 3 catches "this **run** produced nothing", `--min-cells` catches
-"this **database** is smaller than I expected" — including a database that never
-got built, was built over the wrong window, or lost partitions to a later
-accident. Keep `--min-cells` in every script.
+| Guard | Catches |
+| --- | --- |
+| build exit `3` | "this **run** produced nothing" — every symbol died at config selection, or every scheduled cell failed to fit. |
+| zero-cell `FAILED` verdict | "this **run of verify** read nothing" over a database that holds partitions — all symbols disabled, an empty `--symbols`, or a window that matched nothing. Needs no flag. |
+| `--min-cells N` | "this **database** is smaller than I expected" — including one that was never built. The only guard that can know the intended size, so it is the only one you must remember. |
+
+**Keep `--min-cells` in every script.** It is no longer the *only* thing between a
+broken database and `verdict ok` — forgetting it can no longer turn "read nothing"
+into green — but it is still the only thing that knows what "big enough" means.
 
 ### Exit codes
 
 | Exit | When |
 | --- | --- |
-| `0` | Succeeded. For `verify`: every checked cell passed **and** `cells_checked >= --min-cells`. |
-| `1` | A runtime failure (message on **stderr**, no `verdict` line) — db won't open, unknown partition/symbol, unreadable partition file. **Or** `verify` found failing cells / too few cells (`verdict FAILED` on **stdout**). |
-| `2` | A usage error — unknown subcommand, unknown flag, or a missing required flag. Usage on stderr. |
+| `0` | Succeeded. For `verify`: the walk **covered cells**, every one passed all three gates, **and** `cells_checked >= --min-cells`. |
+| `1` | A runtime failure (message on **stderr**, no `verdict` line) — db won't open, unknown partition/symbol, unreadable partition file. **Or** `verify` returned `verdict FAILED` on **stdout**: failing cells, too few cells, or a walk that selected none. |
+| `2` | A usage error — unknown subcommand, unknown flag, a required flag missing, a flag left **without a value**, or a malformed numeric value. Every one of these is decided **before the database is opened**, so a typo'd subcommand against an unreadable `--db` reports the typo, not the open failure. Usage on stderr. |
 
 The `verdict` line disambiguates the two meanings of exit 1: a health failure
 always prints one, a runtime failure never does.
@@ -551,10 +725,16 @@ iv 0.24600158507884576
 total_variance 0.0049739819064085963
 forward 100.26404035644119
 
-# Health gate, sized: nine cells, all of them healthy.
+# Health gate, sized: nine cells, all mapped, checksummed and evaluated.
 $ atx-vol-surface-db verify --db /db --min-cells 9 && echo HEALTHY
+partitions 3
+partitions_in_db 3
+symbols 3
 cells_checked 9
 cells_ok 9
+cells_unmappable 0
+cells_non_finite 0
+cells_checksum 0
 verdict ok
 HEALTHY
 
@@ -569,13 +749,29 @@ fail 2026-07-02 CCC kind=unmappable detail=NotFound: SurfaceArchiveV2::open_file
 verdict FAILED
 $ echo $?
 1
+
+# One byte flipped INSIDE a record: it still maps, still probes to a good iv,
+# and the payload CRC names the exact cell.
+$ atx-vol-surface-db verify --db /db
+cells_checked 9
+cells_ok 8
+cells_unmappable 0
+cells_non_finite 0
+cells_checksum 1
+fail 2026-07-01 AAA kind=checksum detail=ParseError: SurfaceArchiveV2::validate: record checksum mismatch
+verdict FAILED
+$ echo $?
+1
 ```
 
 **Operator checklist after a build:** `atx-vol-surface-db verify --db <root>
 --min-cells <expected>`, then read `info` for `partitions_missing` and the
 `manifest_bytes` vs `bytes_on_disk` agreement. That, plus the build's
 `cells_ok` / `cells_failed` check above, is the whole acceptance path — no
-Python.
+Python. Remember what the green means: the bytes are intact and every selected
+cell evaluates, **not** that the numbers are right or that the coverage is
+complete (see
+[what a green `verify` proves](#what-a-green-verify-proves-and-does-not-prove)).
 
 ## Sibling tools
 

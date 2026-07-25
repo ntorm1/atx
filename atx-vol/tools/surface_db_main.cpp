@@ -20,23 +20,28 @@
 //                              map_surface path (iv, total variance, forward).
 //   verify [--from KEY] [--to KEY] [--symbols A,B,C] [--include-disabled]
 //          [--probe-tenor T] [--max-failures N] [--min-cells N]
-//                              walk every (partition, symbol) cell, map it and
-//                              evaluate one ATM point; print the counters, each
-//                              failing cell, and a `verdict` line. `--min-cells`
-//                              additionally fails a database that checked fewer
-//                              cells than expected (an EMPTY db has no broken
-//                              cell and would otherwise pass vacuously).
+//                              walk every (partition, symbol) cell: map it, check
+//                              its stored payload CRC, and evaluate one ATM
+//                              point; print the counters, each failing cell, and
+//                              a `verdict` line. A walk that covered ZERO cells
+//                              over a database that HAS partitions is itself a
+//                              FAILED verdict. `--min-cells` additionally fails a
+//                              database smaller than the operator expected — the
+//                              one thing the library cannot know.
 //
 // Output is line-oriented and stable for scripting: scalars print as `key value`
 // (mirroring atx-vol-surface-db-build), and repeated records print as
 // `<record> <id> field=value ...`. See atx-vol/docs/surface-db-build.md.
 //
 // Exit codes (same convention as atx-vol-surface-db-build):
-//   0  ok — and, for `verify`, every checked cell passed.
-//   1  runtime failure (message on stderr), OR `verify` found failing cells
-//      (`verdict FAILED` on stdout — a runtime failure prints no verdict line).
-//   2  usage error (unknown/missing flag, unknown subcommand).
+//   0  ok — and, for `verify`, the walk covered cells and every one passed.
+//   1  runtime failure (message on stderr), OR `verify` returned a FAILED verdict
+//      (on stdout — a runtime failure prints no verdict line).
+//   2  usage error: unknown subcommand, unknown flag, a required flag missing, a
+//      flag left WITHOUT a value, or a malformed numeric value. Every one of
+//      these is decided before the database is opened.
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -69,6 +74,37 @@ void print_usage(std::FILE *out) {
       "         [--probe-tenor T] [--max-failures N] [--min-cells N]\n"
       "                                map + ATM-evaluate every cell; nonzero exit on failure\n"
       "exit: 0 ok / 1 runtime failure or verify found failing cells / 2 usage\n");
+}
+
+// Parse a non-negative count from a flag value, consuming the WHOLE token.
+//
+// Carries the same discipline as atx-vol-surface-db-build's `parse_finite_double`
+// (--r), and for the same reason. The bare `strtoull` this replaced silently
+// coerced anything unparseable to 0 — and for `--min-cells`, 0 is "no floor at
+// all", so the one flag whose entire job is to fail a too-small database FAILED
+// OPEN. `verify --db /db --min-cells $EXPECTED` with EXPECTED unset drops the
+// word entirely, the shell hands us `--min-cells` as the last argv, the value
+// reads as ""; an empty or all-disabled database then printed `verdict ok` and
+// exited 0 with no diagnostic. `--min-cells abc` did the same. Both are usage
+// errors now.
+[[nodiscard]] bool parse_count(std::string_view text, std::size_t &out) {
+  if (text.empty()) {
+    return false;
+  }
+  const std::string s(text);
+  const char *first = s.c_str();
+  char *end = nullptr;
+  errno = 0;
+  const unsigned long long v = std::strtoull(first, &end, 10);
+  if (end != first + s.size() || errno == ERANGE) {
+    return false; // trailing junk or out of range
+  }
+  // strtoull accepts a leading '-' and wraps it; a negative count is nonsense.
+  if (s.find('-') != std::string::npos) {
+    return false;
+  }
+  out = static_cast<std::size_t>(v);
+  return true;
 }
 
 // Split a comma-separated list, trimming whitespace and dropping empty fields —
@@ -125,6 +161,8 @@ std::vector<std::string> split_csv(std::string_view csv) {
     return "unmappable";
   case DbCellFailure::NonFinite:
     return "non_finite";
+  case DbCellFailure::ChecksumMismatch:
+    return "checksum";
   }
   return "unknown"; // unreachable for valid enumerators
 }
@@ -266,11 +304,13 @@ int run_query(const SurfaceDb &db, const std::string &key, const std::string &sy
 }
 
 // `min_cells` is a presentation-layer floor on `cells_checked`, not a library
-// concept: an EMPTY database has no broken cell, so `verify_db` correctly calls
-// it healthy — but "verdict ok" over zero cells is exactly the silent pass a
-// health gate must not give (a build whose every fit failed writes no partition
-// at all and lands here). A script asserts the expected size with `--min-cells`;
-// 0 (the default) keeps the vacuous-ok behavior for a legitimately fresh root.
+// concept: it is the one number only the OPERATOR knows (how big this database is
+// supposed to be), so a script asserts it here. It is no longer the only thing
+// standing between a broken database and `verdict ok`, though — the library's
+// `selected_no_cells()` already fails a walk that covered nothing over a populated
+// db, so forgetting `--min-cells` no longer turns "checked nothing" into green.
+// The floor still catches what the library cannot know: a database that IS
+// smaller than intended (wrong window, lost partitions, never built).
 int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_cells) {
   const Result<DbVerifyReport> rep = verify_db(db, spec);
   if (!rep) {
@@ -278,11 +318,13 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
     return 1;
   }
   std::printf("partitions %zu\n", rep->n_partitions);
+  std::printf("partitions_in_db %zu\n", rep->n_partitions_in_db);
   std::printf("symbols %zu\n", rep->n_symbols);
   std::printf("cells_checked %zu\n", rep->cells_checked);
   std::printf("cells_ok %zu\n", rep->cells_ok);
   std::printf("cells_unmappable %zu\n", rep->cells_unmappable);
   std::printf("cells_non_finite %zu\n", rep->cells_non_finite);
+  std::printf("cells_checksum %zu\n", rep->cells_checksum);
   std::printf("failures_reported %zu\n", rep->failures.size());
   std::printf("failures_elided %zu\n", rep->n_failures_elided);
   for (const DbCellFault &f : rep->failures) {
@@ -295,6 +337,20 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
     std::fprintf(stderr,
                  "atx-vol-surface-db: verify checked %zu cells, below the required minimum %zu\n",
                  rep->cells_checked, min_cells);
+  }
+  // A walk that covered nothing over a database that HAS partitions prints every
+  // counter as zero and no fail line — the exact shape of a perfect result. Say
+  // out loud why it is not one, and how each of the three doors is reached.
+  if (rep->selected_no_cells()) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db: verify checked 0 cells while the database holds %zu "
+                 "partitions — nothing was read, so nothing could fail.\n"
+                 "  %zu partition(s) matched --from/--to, and %zu symbol(s) were selected. A "
+                 "zero symbol count means every symbol is fail-closed DISABLED (use "
+                 "--include-disabled to prove they are absent) or --symbols named none that the "
+                 "manifest configures; a zero partition count means --from/--to matched no "
+                 "partition.\n",
+                 rep->n_partitions_in_db, rep->n_partitions, rep->n_symbols);
   }
   // The verdict is the scriptable answer; the exit code mirrors it so a shell
   // can branch on either. A runtime failure above returns 1 WITHOUT a verdict.
@@ -326,8 +382,19 @@ int main(int argc, char **argv) {
 
   for (int i = 2; i < argc; ++i) {
     const std::string_view a = argv[i];
-    // Value for a flag that takes one; "" when the flag ended the argv.
-    const auto nv = [&]() -> const char * { return (i + 1 < argc) ? argv[++i] : ""; };
+    // Value for a flag that takes one. A flag that ENDED the argv used to yield
+    // "", and every consumer then read that as a deliberate choice: `--key` meant
+    // "list every partition" (the operator asked about one and silently got all
+    // of them, exit 0), `--min-cells` meant "no floor". A dropped shell variable
+    // is never a choice — record it and make it a usage error below.
+    bool missing_value = false;
+    const auto nv = [&]() -> const char * {
+      if (i + 1 < argc) {
+        return argv[++i];
+      }
+      missing_value = true;
+      return "";
+    };
     if (a == "--db") {
       db_root = nv();
     } else if (a == "--key") {
@@ -349,10 +416,24 @@ int main(int argc, char **argv) {
     } else if (a == "--probe-tenor") {
       verify_spec.probe_T = std::strtod(nv(), nullptr);
     } else if (a == "--max-failures") {
-      verify_spec.max_reported_failures =
-          static_cast<std::size_t>(std::strtoull(nv(), nullptr, 10));
+      const std::string_view text = nv();
+      if (!missing_value && !parse_count(text, verify_spec.max_reported_failures)) {
+        std::fprintf(stderr,
+                     "atx-vol-surface-db: --max-failures expects a non-negative integer, got "
+                     "'%.*s'\n",
+                     static_cast<int>(text.size()), text.data());
+        print_usage(stderr);
+        return 2;
+      }
     } else if (a == "--min-cells") {
-      min_cells = static_cast<std::size_t>(std::strtoull(nv(), nullptr, 10));
+      const std::string_view text = nv();
+      if (!missing_value && !parse_count(text, min_cells)) {
+        std::fprintf(stderr,
+                     "atx-vol-surface-db: --min-cells expects a non-negative integer, got '%.*s'\n",
+                     static_cast<int>(text.size()), text.data());
+        print_usage(stderr);
+        return 2;
+      }
     } else if (a == "--help" || a == "-h") {
       print_usage(stdout);
       return 0;
@@ -361,6 +442,27 @@ int main(int argc, char **argv) {
       print_usage(stderr);
       return 2;
     }
+    // One check for EVERY value-taking flag: a flag that ended the argv never
+    // reaches its consumer as "".
+    if (missing_value) {
+      std::fprintf(stderr, "atx-vol-surface-db: %.*s requires a value\n",
+                   static_cast<int>(a.size()), a.data());
+      print_usage(stderr);
+      return 2;
+    }
+  }
+
+  // Is this even a subcommand? Checked FIRST, and before the open: a typo'd
+  // subcommand alongside an unreadable --db used to report the open failure and
+  // exit 1, telling the operator to go look at the database when the command
+  // itself was wrong. A usage error must never depend on the db being readable.
+  const bool known_subcommand = subcommand == "info" || subcommand == "partitions" ||
+                                subcommand == "symbols" || subcommand == "config" ||
+                                subcommand == "query" || subcommand == "verify";
+  if (!known_subcommand) {
+    std::fprintf(stderr, "atx-vol-surface-db: unknown subcommand: %s\n", subcommand.c_str());
+    print_usage(stderr);
+    return 2;
   }
 
   if (db_root.empty()) {
@@ -405,11 +507,7 @@ int main(int argc, char **argv) {
     return run_query(*db, key, symbol, std::strtod(strike_arg.c_str(), nullptr),
                      std::strtod(tenor_arg.c_str(), nullptr));
   }
-  if (subcommand == "verify") {
-    return run_verify(*db, verify_spec, min_cells);
-  }
-
-  std::fprintf(stderr, "atx-vol-surface-db: unknown subcommand: %s\n", subcommand.c_str());
-  print_usage(stderr);
-  return 2;
+  // `verify` is the last of the six `known_subcommand` names, so this is the end
+  // of the dispatch — an unknown name already exited 2 above, before the open.
+  return run_verify(*db, verify_spec, min_cells);
 }

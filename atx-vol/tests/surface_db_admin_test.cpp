@@ -19,21 +19,27 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/corpus.hpp"           // CorpusBoard
-#include "atx/vol/opra_batch.hpp"       // corpus_board_from_opra
-#include "atx/vol/opra_hive.hpp"        // OpraHiveSpec, load_opra_hive
-#include "atx/vol/session.hpp"          // FitPreset
-#include "atx/vol/surface_db.hpp"       // SurfaceDb
-#include "atx/vol/surface_db_admin.hpp" // the unit under test
-#include "atx/vol/surface_db_build.hpp" // build_surface_db, generate_symbol_configs
+#include "atx/vol/corpus.hpp"                // CorpusBoard
+#include "atx/vol/detail/archive_util.hpp"   // crc32c (test-side record CRC repair)
+#include "atx/vol/opra_batch.hpp"            // corpus_board_from_opra
+#include "atx/vol/opra_hive.hpp"             // OpraHiveSpec, load_opra_hive
+#include "atx/vol/session.hpp"               // FitPreset
+#include "atx/vol/surface_archive.hpp"       // ArchiveV2SurfaceHeader, ArchiveV2DirEntry
+#include "atx/vol/surface_db.hpp"            // SurfaceDb
+#include "atx/vol/surface_db_admin.hpp"      // the unit under test
+#include "atx/vol/surface_db_build.hpp"      // build_surface_db, generate_symbol_configs
 #include "atx/vol/types.hpp"
 
 namespace atx::vol {
@@ -124,6 +130,88 @@ SurfaceDbBuildReport build_healthy_db(const AdminFixture &f) {
 [[nodiscard]] fs::path partition_file(const AdminFixture &f, std::string_view key) {
   return f.db / std::string(kSurfaceDbPartitionDir) /
          (std::string(key) + std::string(kSurfaceDbPartitionExt));
+}
+
+// ── byte-level record surgery (real damage to a real database) ──────────────
+//
+// Whole-file TRUNCATION is already caught at open by the header/metadata CRCs, so
+// it proves nothing about the payload. These helpers damage ONE record IN PLACE,
+// preserving the file's length and the archive's framing — the bit-rot / partial-
+// copy / hand-edit case that maps cleanly and is only visible to the record's own
+// payload checksum.
+
+// The on-disk extent of one surface record, read from the archive's OWN directory
+// so the test never hard-codes a layout. The db + mapping are released before this
+// returns (Windows will not let a mapped file be rewritten).
+struct RecordExtent {
+  std::uint64_t offset{0};
+  std::uint64_t size{0};
+};
+[[nodiscard]] RecordExtent record_extent(const AdminFixture &f, std::string_view key,
+                                         std::string_view symbol) {
+  RecordExtent out;
+  const SurfaceDb db = open_db(f);
+  const auto archive = db.open_partition(key);
+  EXPECT_TRUE(archive.has_value()) << (archive ? "" : archive.error().to_string());
+  if (!archive) {
+    return out;
+  }
+  for (const ArchiveV2DirEntry &e : archive->directory()) {
+    const std::string name(e.symbol, std::min<std::size_t>(e.symbol_len, sizeof(e.symbol)));
+    if (name == symbol) {
+      out.offset = e.surface_offset;
+      out.size = e.surface_size;
+      break;
+    }
+  }
+  EXPECT_GT(out.size, std::uint64_t{0}) << symbol;
+  return out;
+}
+
+// Recompute a record's payload CRC over its (already-edited) bytes — the exact
+// rule `record_crc_v2` applies: CRC-32C of the whole record with the checksum
+// field itself zeroed. Used to make a REWRITTEN record self-consistent, so a case
+// can exercise a non-checksum failure without tripping the checksum one.
+void repair_record_crc(std::span<std::byte> record) {
+  constexpr std::size_t kCrcOff = offsetof(ArchiveV2SurfaceHeader, payload_crc32c);
+  const std::uint32_t zero = 0;
+  std::memcpy(record.data() + kCrcOff, &zero, sizeof zero);
+  const std::uint32_t crc = detail::crc32c(record.data(), record.size());
+  std::memcpy(record.data() + kCrcOff, &crc, sizeof crc);
+}
+
+// Apply `mutate` to one record's bytes and write the partition file back. The span
+// is the record's exact extent, so an edit can never change the file's length.
+template <class Fn>
+void edit_record(const AdminFixture &f, std::string_view key, std::string_view symbol,
+                 Fn &&mutate) {
+  const RecordExtent ext = record_extent(f, key, symbol);
+  ASSERT_GT(ext.size, std::uint64_t{0});
+  const fs::path path = partition_file(f, key);
+
+  std::vector<std::byte> bytes;
+  {
+    std::ifstream in(path, std::ios::binary);
+    ASSERT_TRUE(in.good()) << path.string();
+    in.seekg(0, std::ios::end);
+    const auto n = static_cast<std::size_t>(in.tellg());
+    in.seekg(0, std::ios::beg);
+    bytes.resize(n);
+    in.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(n));
+    ASSERT_EQ(static_cast<std::size_t>(in.gcount()), n);
+  }
+  ASSERT_LE(ext.offset + ext.size, bytes.size());
+  mutate(std::span<std::byte>(bytes.data() + ext.offset, static_cast<std::size_t>(ext.size)));
+
+  const std::size_t before = bytes.size();
+  {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(out.good()) << path.string();
+    out.write(reinterpret_cast<const char *>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+    ASSERT_TRUE(out.good());
+  }
+  ASSERT_EQ(fs::file_size(path), before) << "in-place edit must preserve the file length";
 }
 
 // ── describe_db ─────────────────────────────────────────────────────────────
@@ -378,6 +466,9 @@ TEST(SurfaceDbAdmin, VerifyDbHealthyIsAllOk) {
   EXPECT_EQ(rep->cells_ok, std::size_t{9});
   EXPECT_EQ(rep->cells_unmappable, std::size_t{0});
   EXPECT_EQ(rep->cells_non_finite, std::size_t{0});
+  EXPECT_EQ(rep->cells_checksum, std::size_t{0}); // every payload matches its stored CRC
+  EXPECT_EQ(rep->n_partitions_in_db, std::size_t{3});
+  EXPECT_FALSE(rep->selected_no_cells());
   EXPECT_TRUE(rep->failures.empty());
   EXPECT_EQ(rep->n_failures_elided, std::size_t{0});
 }
@@ -534,8 +625,202 @@ TEST(SurfaceDbAdmin, VerifyDbRejectsBadProbeTenor) {
   EXPECT_EQ(bad_sym.error().code(), ErrorCode::InvalidArgument);
 }
 
-// An empty database (no partitions) verifies vacuously ok — zero cells checked.
-// A verifier that failed on "nothing to check" would block a fresh root.
+// ── zero cells over a POPULATED database ────────────────────────────────────
+//
+// A walk that selected nothing found nothing broken, so the counters are all zero
+// and every failure list is empty. That is not health: three real partitions sat
+// on disk and not one byte of them was read. `ok()` must not be true here.
+
+// Every symbol fail-closed DISABLED, with the partitions still on disk. The
+// default walk drops every column, so `symbols 0 / cells_checked 0` — and the
+// database it never opened is the one the operator is about to trade on.
+TEST(SurfaceDbAdmin, VerifyDbAllSymbolsDisabledOverPopulatedDbIsNotOk) {
+  const AdminFixture f = make_fixture("verify_all_disabled");
+  build_healthy_db(f);
+  {
+    SurfaceDb db = open_db(f);
+    for (const std::string &name : db.symbols()) {
+      auto cfg = db.symbol_config(name);
+      ASSERT_TRUE(cfg.has_value()) << (cfg ? "" : cfg.error().to_string());
+      cfg->enabled = false;
+      const Status st = db.upsert_symbol(name, *cfg);
+      ASSERT_TRUE(st.has_value()) << (st ? "" : st.error().to_string());
+    }
+  }
+  const SurfaceDb db = open_db(f);
+
+  const auto rep = verify_db(db, DbVerifySpec{});
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_EQ(rep->n_partitions, std::size_t{3}); // the partitions are all still there
+  EXPECT_EQ(rep->n_partitions_in_db, std::size_t{3});
+  EXPECT_EQ(rep->n_symbols, std::size_t{0}); // ...and not one column was selected
+  EXPECT_EQ(rep->cells_checked, std::size_t{0});
+  EXPECT_TRUE(rep->failures.empty());
+  EXPECT_TRUE(rep->selected_no_cells());
+  EXPECT_FALSE(rep->ok()) << "a walk that opened nothing over a populated db is not health";
+
+  // ...and it is not a blanket "zero cells is an error": forcing the disabled
+  // columns back in checks all nine and passes, so the verdict tracks what was
+  // actually covered, not merely whether the symbols are enabled.
+  DbVerifySpec forced;
+  forced.include_disabled = true;
+  const auto all = verify_db(db, forced);
+  ASSERT_TRUE(all.has_value()) << (all ? "" : all.error().to_string());
+  EXPECT_EQ(all->cells_checked, std::size_t{9});
+  EXPECT_FALSE(all->selected_no_cells());
+  EXPECT_TRUE(all->ok());
+}
+
+// A `--from`/`--to` window that matches no partition. Same shape, different door:
+// the database is fine and full, the RUN checked nothing.
+TEST(SurfaceDbAdmin, VerifyDbKeyRangeMatchingNothingIsNotOk) {
+  const AdminFixture f = make_fixture("verify_empty_range");
+  build_healthy_db(f);
+  const SurfaceDb db = open_db(f);
+
+  DbVerifySpec spec;
+  spec.key_lo = "2026-08-01"; // the fixture is all July
+  spec.key_hi = "2026-08-31";
+  const auto rep = verify_db(db, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_EQ(rep->n_partitions, std::size_t{0});       // no rows in range...
+  EXPECT_EQ(rep->n_partitions_in_db, std::size_t{3}); // ...over a database that is full
+  EXPECT_EQ(rep->cells_checked, std::size_t{0});
+  EXPECT_TRUE(rep->selected_no_cells());
+  EXPECT_FALSE(rep->ok()) << "a range that selected no cells over a populated db is not health";
+
+  // The range that DOES match is unaffected — this is not "ranges are suspect".
+  DbVerifySpec july;
+  july.key_lo = "2026-07-01";
+  july.key_hi = "2026-07-31";
+  const auto hit = verify_db(db, july);
+  ASSERT_TRUE(hit.has_value()) << (hit ? "" : hit.error().to_string());
+  EXPECT_EQ(hit->cells_checked, std::size_t{9});
+  EXPECT_TRUE(hit->ok());
+}
+
+// ── payload checksum ────────────────────────────────────────────────────────
+
+// One byte flipped INSIDE a record, length preserved. The archive's framing,
+// magic and bounds are all still correct, so the surface maps and the ATM probe
+// returns a perfectly usable number — the walk sees nothing wrong. The record's
+// own payload CRC, which the format has carried all along, says it is corrupt.
+TEST(SurfaceDbAdmin, VerifyDbDetectsInPlacePayloadCorruption) {
+  const AdminFixture f = make_fixture("verify_crc");
+  build_healthy_db(f);
+  // Flip the LAST byte of AAA's record on 2026-07-01: deep in the payload, past
+  // everything `map_symbol` / `create_over_record` look at.
+  edit_record(f, "2026-07-01", "AAA", [](std::span<std::byte> rec) {
+    rec.back() ^= std::byte{0xFF};
+  });
+  const SurfaceDb db = open_db(f);
+
+  // The damage is INVISIBLE to the map + probe walk...
+  const auto mapped = db.map_surface("2026-07-01", "AAA");
+  ASSERT_TRUE(mapped.has_value()) << (mapped ? "" : mapped.error().to_string());
+  const double fwd = mapped->view.forward_at(kSurfaceDbVerifyProbeT);
+  const double iv = mapped->view.iv(fwd, kSurfaceDbVerifyProbeT);
+  EXPECT_TRUE(std::isfinite(fwd));
+  EXPECT_GT(fwd, 0.0);
+  EXPECT_TRUE(std::isfinite(iv));
+  EXPECT_GT(iv, 0.0);
+
+  // ...and plainly visible to the checksum the record already carries.
+  const auto archive = db.open_partition("2026-07-01");
+  ASSERT_TRUE(archive.has_value()) << (archive ? "" : archive.error().to_string());
+  const Status crc = archive->validate_symbol("AAA");
+  EXPECT_FALSE(crc.has_value()) << "the fixture must actually corrupt the payload";
+
+  const auto rep = verify_db(db, DbVerifySpec{});
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_EQ(rep->cells_checked, std::size_t{9});
+  EXPECT_EQ(rep->cells_ok, std::size_t{8});
+  EXPECT_FALSE(rep->ok()) << "verify must not pass a database whose bytes fail their own CRC";
+  // Its OWN kind: not lumped in with an unmappable file or a bad number, in the
+  // counters or in the failure list.
+  EXPECT_EQ(rep->cells_checksum, std::size_t{1});
+  EXPECT_EQ(rep->cells_unmappable, std::size_t{0});
+  EXPECT_EQ(rep->cells_non_finite, std::size_t{0});
+  ASSERT_EQ(rep->failures.size(), std::size_t{1});
+  EXPECT_EQ(rep->failures.front().key, "2026-07-01"); // attributed to the exact cell
+  EXPECT_EQ(rep->failures.front().symbol, "AAA");
+  EXPECT_EQ(rep->failures.front().kind, DbCellFailure::ChecksumMismatch);
+  EXPECT_FALSE(rep->failures.front().detail.empty()); // carries the checksum error text
+
+  // The counters still exhaust the walk.
+  EXPECT_EQ(rep->cells_ok + rep->cells_unmappable + rep->cells_non_finite + rep->cells_checksum,
+            rep->cells_checked);
+}
+
+// ── the ATM probe branch ────────────────────────────────────────────────────
+
+// A stored surface whose forward curve is degenerate (spot AND every slice forward
+// rewritten to 0) but whose record CRC is REPAIRED, so the bytes are perfectly
+// self-consistent. Mapping proves nothing about it; only the ATM evaluation can
+// tell it apart from a healthy cell. This is the one thing that makes `verify`
+// more than a map-only walk, and it must be reported as its own failure kind, not
+// as a checksum fault.
+TEST(SurfaceDbAdmin, VerifyDbFlagsNonFiniteAtmProbe) {
+  const AdminFixture f = make_fixture("verify_nonfinite");
+  build_healthy_db(f);
+  edit_record(f, "2026-07-06", "BBB", [](std::span<std::byte> rec) {
+    ArchiveV2SurfaceHeader h{};
+    std::memcpy(&h, rec.data(), sizeof h);
+    const double zero = 0.0;
+    std::memcpy(rec.data() + offsetof(ArchiveV2SurfaceHeader, S), &zero, sizeof zero);
+    for (std::uint32_t i = 0; i < h.n_slices; ++i) {
+      std::memcpy(rec.data() + h.col_forward_off + i * sizeof(double), &zero, sizeof zero);
+    }
+    repair_record_crc(rec);
+  });
+  const SurfaceDb db = open_db(f);
+
+  // The record is BYTE-VALID — the checksum branch must stay silent about it.
+  const auto archive = db.open_partition("2026-07-06");
+  ASSERT_TRUE(archive.has_value()) << (archive ? "" : archive.error().to_string());
+  const Status crc = archive->validate_symbol("BBB");
+  EXPECT_TRUE(crc.has_value()) << (crc ? "" : crc.error().to_string());
+
+  // It still maps — the failure is only reachable by EVALUATING it.
+  const auto mapped = db.map_surface("2026-07-06", "BBB");
+  ASSERT_TRUE(mapped.has_value()) << (mapped ? "" : mapped.error().to_string());
+  const double fwd = mapped->view.forward_at(kSurfaceDbVerifyProbeT);
+  EXPECT_FALSE(std::isfinite(fwd) && fwd > 0.0) << "fwd=" << fwd;
+
+  const auto rep = verify_db(db, DbVerifySpec{});
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_FALSE(rep->ok());
+  EXPECT_EQ(rep->cells_checked, std::size_t{9});
+  EXPECT_EQ(rep->cells_ok, std::size_t{8});
+  EXPECT_EQ(rep->cells_unmappable, std::size_t{0});
+  EXPECT_EQ(rep->cells_non_finite, std::size_t{1});
+  EXPECT_EQ(rep->cells_checksum, std::size_t{0}); // the bytes are fine; the SURFACE is not
+  ASSERT_EQ(rep->failures.size(), std::size_t{1});
+  EXPECT_EQ(rep->failures.front().key, "2026-07-06");
+  EXPECT_EQ(rep->failures.front().symbol, "BBB");
+  EXPECT_EQ(rep->failures.front().kind, DbCellFailure::NonFinite);
+  EXPECT_FALSE(rep->failures.front().detail.empty()); // carries the offending numbers
+
+  // The spot check agrees with the walk: `query` must not print a number for a
+  // cell `verify` calls broken.
+  const auto q = query_surface(db, "2026-07-06", "BBB", 100.0, kSurfaceDbVerifyProbeT);
+  ASSERT_FALSE(q.has_value()) << "query_surface must reject what verify_db rejects";
+  EXPECT_EQ(q.error().code(), ErrorCode::Internal);
+
+  // Every other cell is untouched.
+  const auto aaa = query_surface(db, "2026-07-06", "AAA",
+                                 db.map_surface("2026-07-06", "AAA")->view.forward_at(
+                                     kSurfaceDbVerifyProbeT),
+                                 kSurfaceDbVerifyProbeT);
+  EXPECT_TRUE(aaa.has_value()) << (aaa ? "" : aaa.error().to_string());
+}
+
+// A genuinely FRESH database (no partitions at all) verifies vacuously ok — the
+// one zero-cell shape that stays green. A verifier that failed on "there is
+// nothing here yet" would block a newly created root, and the operator's real
+// question there ("this should not still be empty") is `--min-cells`, which only
+// the operator can answer. Contrast the two cases above: partitions exist and the
+// walk read none of them.
 TEST(SurfaceDbAdmin, VerifyDbEmptyDatabaseIsVacuouslyOk) {
   const fs::path root = fresh_dir("verify_empty");
   auto created = SurfaceDb::create((root / "db").string());
@@ -545,6 +830,8 @@ TEST(SurfaceDbAdmin, VerifyDbEmptyDatabaseIsVacuouslyOk) {
   ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
   EXPECT_TRUE(rep->ok());
   EXPECT_EQ(rep->n_partitions, std::size_t{0});
+  EXPECT_EQ(rep->n_partitions_in_db, std::size_t{0}); // nothing to have been wrong about
+  EXPECT_FALSE(rep->selected_no_cells());
   EXPECT_EQ(rep->cells_checked, std::size_t{0});
 
   const auto desc = describe_db(*created);

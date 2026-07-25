@@ -23,9 +23,24 @@
 //                        + the stored provenance when present.
 //   query_surface      — "what does this cell evaluate to?" iv / total variance
 //                        / uid / n_slices at one (K, T), through `map_surface`.
-//   verify_db          — "is the whole thing healthy?"    walk every cell, map
-//                        it, and evaluate one ATM-ish point to prove it produces
-//                        a finite number.
+//   verify_db          — "is the whole thing healthy?"    walk every cell; map
+//                        it, verify its stored payload CHECKSUM, and evaluate one
+//                        ATM-ish point to prove it produces a usable number.
+//
+// ── What a green `verify_db` does and does NOT prove ─────────────────────────
+//
+// PROVES, for every cell the spec selected: the partition file opened, the record
+// framing and bounds parse, the record's bytes still match the payload CRC the
+// writer computed (so no bit rot / partial copy / hand edit), and the surface
+// evaluates to a finite, positive implied vol at ONE ATM-ish point.
+//
+// Does NOT prove: that the numbers are RIGHT (no oracle is consulted — a surface
+// fitted from bad market data checksums perfectly and probes fine); that any point
+// other than the probe is usable; that the database has the coverage you expect
+// (that is `cells_checked` against a caller-supplied floor — `verify_db` reports
+// the count, it cannot know the intended one); or anything at all about cells the
+// spec excluded. It IS a byte-integrity + liveness check over a selected grid, and
+// it is deliberately not more than that.
 //
 // ── Why `map_surface` and not `load_surface` ─────────────────────────────────
 //
@@ -129,8 +144,10 @@ struct PartitionDescription {
 };
 
 // Open partition `key` and enumerate the symbols it carries. Errors: NotFound
-// (no such partition in the manifest), IoError / ParseError (the manifest lists
-// it but the file is gone or unreadable), InvalidArgument (malformed key).
+// (no such partition in the manifest — AND the case where the manifest lists it
+// but the file is gone, which `SurfaceArchiveV2::open_file` also reports as
+// NotFound), ParseError (the file is there but does not parse as a v2 archive),
+// IoError (present and indexed, but unreadable), InvalidArgument (malformed key).
 [[nodiscard]] Result<PartitionDescription> describe_partition(const SurfaceDb &db,
                                                               std::string_view key);
 
@@ -175,11 +192,14 @@ struct SurfacePointQuote {
 
 // Map (`key`, `symbol`) through the zero-copy `SurfaceDb::map_surface` and
 // evaluate it at (`K`, `T`). Errors: InvalidArgument (non-finite or
-// non-positive K/T, malformed key), NotFound (no such partition, or the
-// partition does not carry that symbol), IoError / ParseError (partition file
-// missing or corrupt). A mapped surface that evaluates to a non-finite iv is
-// reported as Internal — a stored surface that cannot produce a number is a
-// defect, not an empty answer.
+// non-positive K/T, malformed key), NotFound (no such partition, the partition
+// file is missing, or the partition does not carry that symbol), ParseError (the
+// partition file is present but corrupt). A mapped surface that evaluates to an
+// UNUSABLE point — non-finite total variance, or an iv that is non-finite or
+// non-positive — is reported as Internal. That is the SAME usability rule
+// `verify_db`'s per-cell probe applies (both go through the one `usable_iv`
+// predicate), so a spot check can never print a number for a cell the walk calls
+// broken.
 [[nodiscard]] Result<SurfacePointQuote> query_surface(const SurfaceDb &db, std::string_view key,
                                                       std::string_view symbol, double K, double T);
 
@@ -197,14 +217,21 @@ inline constexpr double kSurfaceDbVerifyProbeT = 30.0 / 365.0;
 // truncation read as "everything passed".
 inline constexpr std::size_t kSurfaceDbVerifyMaxFailures = 32;
 
-// Why one cell failed.
+// Why one cell failed. The three kinds are three DIFFERENT questions answered in
+// order, and they stay distinct so a fault names its own root cause.
 enum class DbCellFailure : std::uint8_t {
   // `map_surface` did not return a surface: the partition file is missing or
   // corrupt, or the partition simply does not carry that symbol.
   Unmappable = 0,
-  // The surface mapped, but the ATM probe did not produce a usable number
-  // (non-finite, or a non-positive implied vol).
+  // The surface mapped and its bytes are intact, but the ATM probe did not
+  // produce a usable number (non-finite, or a non-positive implied vol).
   NonFinite = 1,
+  // The record's bytes no longer match the payload CRC the writer stored in it
+  // (`SurfaceArchiveV2::validate_symbol`). Mapping only checks magic, framing and
+  // bounds, so intra-record damage — bit rot, a partial copy, a hand edit — maps
+  // CLEANLY and can still probe to a plausible number when the corruption misses
+  // the slices the probe touches. This is the only check that reads the payload.
+  ChecksumMismatch = 2,
 };
 
 // One failing (partition, symbol) cell, identified.
@@ -240,26 +267,62 @@ struct DbVerifySpec {
 };
 
 // The health verdict. `cells_checked == cells_ok + cells_unmappable +
-// cells_non_finite` always holds.
+// cells_non_finite + cells_checksum` always holds.
 struct DbVerifyReport {
-  std::size_t n_partitions{0}; // partitions in range (the walk's rows)
-  std::size_t n_symbols{0};    // symbols in the walk (the walk's columns)
+  std::size_t n_partitions{0};       // partitions IN RANGE (the walk's rows)
+  std::size_t n_partitions_in_db{0}; // partitions the manifest holds, range-independent
+  std::size_t n_symbols{0};          // symbols in the walk (the walk's columns)
   std::size_t cells_checked{0};
   std::size_t cells_ok{0};
   std::size_t cells_unmappable{0};
   std::size_t cells_non_finite{0};
+  std::size_t cells_checksum{0};       // mapped, but the payload CRC did not match
   std::vector<DbCellFault> failures{}; // capped at spec.max_reported_failures
   std::size_t n_failures_elided{0};    // faults NOT in `failures` (never silent)
 
+  // The walk covered NOTHING over a database that has something. Not one byte of
+  // any partition was read, so every counter above is zero and every failure list
+  // is empty — the exact shape of a perfect result. It is reachable three ways and
+  // all three are operator errors, not health:
+  //   - every symbol is fail-closed DISABLED (the default walk drops the columns),
+  //   - `spec.symbols` names only symbols the manifest never configured,
+  //   - `spec.key_lo`/`key_hi` select no partition (wrong window, wrong db).
+  //
+  // A genuinely FRESH root (`n_partitions_in_db == 0`) is deliberately excluded:
+  // there is nothing to be wrong about yet, a newly created db must not be an
+  // error, and the caller-supplied `--min-cells` floor is the right instrument for
+  // "this database should not be empty by now". The distinction this makes is
+  // between "there is no data" and "there is data and you looked at none of it".
+  [[nodiscard]] constexpr bool selected_no_cells() const noexcept {
+    return n_partitions_in_db > 0 && cells_checked == 0;
+  }
+
   [[nodiscard]] constexpr bool ok() const noexcept {
-    return cells_unmappable == 0 && cells_non_finite == 0;
+    return cells_unmappable == 0 && cells_non_finite == 0 && cells_checksum == 0 &&
+           !selected_no_cells();
   }
 };
 
-// Walk the (partition x symbol) grid selected by `spec`; for each cell
-// `map_surface` it and evaluate one ATM-ish point (K = the surface's own
-// `forward_at(probe_T)`, T = `probe_T`) to prove the surface produces a finite,
-// positive implied vol rather than merely mapping.
+// Walk the (partition x symbol) grid selected by `spec`. Each cell passes THREE
+// gates, in this order, and stops at the first that fails:
+//
+//   1. map        — `SurfaceDb::map_surface`; proves magic, framing and bounds.
+//   2. checksum   — `SurfaceArchiveV2::validate_symbol` over the archive the map
+//                   already holds open; proves the payload BYTES are the ones the
+//                   writer checksummed. Ordered before the probe because a byte
+//                   fault is the root cause of any number it produces, and after
+//                   the map because "this partition does not carry that symbol"
+//                   must stay `Unmappable` rather than becoming a checksum fault.
+//   3. probe      — evaluate one ATM-ish point (K = the surface's own
+//                   `forward_at(probe_T)`, T = `probe_T`) to prove the surface
+//                   yields a finite, positive implied vol rather than merely
+//                   holding valid bytes.
+//
+// COST: gate 2 reads and checksums every selected record's payload, which is
+// strictly more IO than the map-and-probe walk (which touches only the header,
+// the column offsets, and the slices bracketing `probe_T`). It is the default
+// anyway — a health check that skips the checksum the format already carries is
+// not a health check, and it is the only gate that sees intra-record damage.
 //
 // A cell failure is TALLIED, never fatal — the whole point is to enumerate every
 // broken cell in one pass. Err is reserved for a spec that cannot be honored:
@@ -267,7 +330,8 @@ struct DbVerifyReport {
 // entry in `spec.symbols`) or a manifest whose stored config fails to decode.
 //
 // The report is all-ok (`DbVerifyReport::ok()`) exactly when every selected cell
-// mapped AND evaluated; a caller wiring this into a script should branch on
+// passed all three gates AND the walk actually selected cells (see
+// `selected_no_cells`). A caller wiring this into a script should branch on
 // `ok()`, not on the Result.
 [[nodiscard]] Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec = {});
 
