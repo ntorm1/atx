@@ -7,7 +7,6 @@
 // writes the full series (including the signal column) to a TSV via
 // `write_backtest_tsv`. OFF by default (ATX_BUILD_EXAMPLES).
 
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -19,8 +18,9 @@
 #include <vector>
 
 #include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest.hpp" // Clock, run_backtest
-#include "atx/vol/corpus.hpp"   // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/backtest.hpp"        // Clock
+#include "atx/vol/backtest_driver.hpp" // run_timed (the timed engine + tearsheet + stats spine)
+#include "atx/vol/corpus.hpp"          // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/counters.hpp"
 #include "atx/vol/dispersion.hpp" // DispersionUniverse, DispersionConfig, DispersionMember
 #include "atx/vol/dispersion_backtest.hpp"
@@ -152,17 +152,16 @@ int main() {
 #if defined(ATX_VOL_COUNTERS)
   counters::reset();
 #endif
-  const auto engine_start = std::chrono::steady_clock::now();
-  auto res = run_dispersion_backtest(*clock, u, config);
-  const double engine_ms =
-      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - engine_start)
-          .count();
-  if (!res) {
-    std::fprintf(stderr, "run: %s\n", res.error().to_string().c_str());
+  // Stages 5+6+7 via the `backtest_driver` spine; it times the engine call ONLY,
+  // so `engine_ms` keeps exactly its pre-migration meaning.
+  auto outcome = run_timed(*clock, u, config);
+  if (!outcome) {
+    std::fprintf(stderr, "run: %s\n", outcome.error().to_string().c_str());
     return 1;
   }
-  const BacktestResult &r = *res;
-  const TearSheet t = tearsheet(r);
+  const BacktestResult &r = outcome->result;
+  const TearSheet t = outcome->sheet;
+  const double engine_ms = outcome->stats.wall_clock_ms;
 
   std::printf("[dispersion] rows=%zu engine_ms=%.3f total_return=%.4f sharpe=%.4f max_dd=%.4f "
               "avg_gross_vega=%.2f pnl_per_vega_traded=%.6f\n",

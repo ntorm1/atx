@@ -234,3 +234,37 @@ generated descriptor, so a future C++ column rename is caught at open, not at re
 - Do not modify golden fixtures. Controller owns `C:\atx-data` run dirs (subagents never touch them).
 - Commit trailer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`.
 - Detailed task decomposition + acceptance gates: produced by the writing-plans step from this spec.
+
+---
+
+## Errata (controller, 2026-07-24, from Wave C planning)
+
+§4.3 and finding L11 were checked against the code before Wave C was scoped. Three
+statements in §4.3 are wrong, and L11's headline does not survive contact:
+
+1. **"The strategy-agnostic 9-stage spine is copy-pasted across 5 of 6 drivers"
+   (L11) is false as headlined.** Stage by stage across the five named drivers:
+   `Args`/`split`/`join`/`fmt_num` 2/5; RunConfig overlay 2/5; clock source 0/5
+   identical; strategy construct 0/5 identical; output shape 0/5 (four genuinely
+   distinct shapes); `EngineRunStats` 1/5. Only stages 5+6+7 — the timed engine
+   call, the `tearsheet()` fold, the stats capture — are common to all five, and
+   four of those six nodes are ALREADY library calls. Wave C therefore extracts
+   one small function, not a `BacktestJob`. (The review text itself hedged the
+   headline as overstated; the measurement above is how overstated.)
+2. **The third engine slot does not exist.** §4.3 says the engine slot abstracts
+   `run_backtest` vs `run_dispersion_backtest` vs "the tradeable manual
+   evaluator". `examples/spy_strangle_tradeable.cpp` has no `run_backtest`, no
+   `BacktestResult` and no `tearsheet` — it emits three comparison series over
+   date pairs. There are TWO slots, not three.
+3. **"six example drivers"** — the sixth is Wave B's thin
+   `run_surface_backtest_command`, which has neither a tearsheet nor stats, so it
+   is not a spine instance either.
+
+§4.3's stated RETURN type `{BacktestResult, TearSheet, EngineRunStats}` is correct
+and is what Wave C implements; only the `BacktestJob` INPUT struct is unsupported
+by the code.
+
+Separately: the synthetic-corpus helper trio that L11 groups into the spine appears
+in 28 files, not 5. It is real duplication but the library is the wrong home for it
+and it is not a driver-spine concern — it belongs to a standalone test-hygiene
+sweep.

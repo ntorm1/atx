@@ -350,11 +350,16 @@ T7 guarantee (identical payloads -> identical bytes) is unaffected.
 
 ### Carried out of Wave B
 
-1. **`run-projected-var` economics are unpinned.** No golden was ever captured
-   for that route (raised as a controller note by the T5 reviewer). It is the
-   one Wave B surface with no regression anchor. Capture
-   `run-projected-var --run <DIR>` output as a golden before Wave C touches the
-   projection path.
+1. **`run-projected-var` economics are unpinned.** ~~No golden was ever captured
+   for that route.~~ **CLOSED 2026-07-24** — golden captured on parity-full
+   (135 scenarios, 22 positions) and proven to reproduce across an immediate
+   rerun: `projected_risk_scenarios.tsv` `0cf8ac4b50f34ea6`,
+   `projected_risk_legs.tsv` `0a8b38984c7b6064`, and `projected_var.tsv` with
+   field 7 excluded `d370c78dbb01b513`. That exclusion is required:
+   `projections_per_second` is a wall-clock rate and moves every run (31800.9 ->
+   32822.3 on back-to-back runs), so the whole-file hash is meaningless while the
+   economics beside it are exact. Full detail and the pinned VaR/ES values are in
+   the ledger.
 2. **The Python test suite was restructured after the gate and is uncommitted.**
    The archive e2e module used to spawn the C++ dispersion pipeline six times to
    produce a `run.atxrun` it then merely read — the wrong layer, and the reason
