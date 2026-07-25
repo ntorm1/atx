@@ -65,23 +65,32 @@ carry similar unswept fallout.
    several agents were building — see §4. Must be re-run end to end at low concurrency.
 2. **Wave 2 is unreviewed.** E and Y have never been reviewed at all. F's and T's review
    follow-ups were implemented but not re-reviewed. Four reviews are outstanding.
-3. **The golden re-pin has not been run.** Two independent, separable causes will move the
-   82- and 135-session pins:
-   - **WS-E's E1** — an exact ×100 projected-route book rescale (unit correction: dollar
-     vega per vol point). Analytic, not measured.
-   - **Wave 1's pricing/greeks drift** — measured at 1e-7..1e-13 relative, concentrated in
-     greek-derived columns. Final NAV moved `125026.05919122705 → 125026.05919131593`,
-     i.e. 7.1e-13 relative, which is ten-plus orders below a tick.
-   These do not resemble each other, so contributions can be attributed at re-pin without
-   a fork-base A/B rebuild. Old pins: 82s `5e7ca065…`, 135s `141173fd…`.
-4. **A reconciliation blocker will be hit during that re-pin.** `run-backtest` writes
-   `backtest.tsv` and then fails in the reconciliation stage with
-   `NotFound: listed OPRA join: contract definition missing`. The diff over
-   `listed_opra.cpp`, `opra_panel.cpp` and `opra_batch.cpp` is empty, so no workstream
-   caused it. Either the five-file input copy used for the test was incomplete, or it is a
-   pre-existing condition — the run dir holds a `definitions-orig.tsv` of identical size,
-   so the definitions input has been swapped at least once. Running against the full run
-   dir rather than a copy distinguishes these immediately.
+3. **The golden re-pin is DONE** (2026-07-25, at tip `6b6aa7e`, `build-rel-avx2` rebuilt
+   at that tip, each artifact produced 3× and byte-identical every time):
+   - 82-session `5e7ca065…` → `1b99512ad6c7049aa9e41bd9002ae933c502d9ce4b7d5d58e19b6efdbacad2bd`
+   - 135-session `141173fd…` → `61da2ef78cf0d6de36baf0ac3bbe400eb13ae09cdea0f021a8224e184747f914`
+
+   **Only ONE of the two predicted causes actually moved these two artifacts.**
+   **WS-E's E1** is responsible for the whole move: every $-denominated column is
+   × exactly 100 (residual ≤ 1.43e-13 rel), confirmed by a control run at
+   `gross_index_vega 100` that reproduces the old pins' economics to ≤ 8.02e-14 rel.
+   **Wave 1's pricing/greeks drift does NOT appear in these two pins** — it was already
+   baked into the M2 baseline (2026-07-21) that they were pinned at. It is still visible
+   on the LISTED route (`parity-full`), whose reference `backtest.tsv` predates wave 1;
+   re-measured at this tip, final NAV moves `125026.05919122705 → 125026.05919131792`,
+   i.e. **+7.269e-13** relative (the 2026-07-24 figure of +7.109e-13 was measured before
+   `c601504` and is superseded). See the re-pin report for the full per-column tables.
+4. **The reconciliation blocker is PRE-EXISTING, not a sprint regression.** Re-run against
+   the FULL run directory copied to scratch (not a five-file subset), `run-backtest` still
+   writes `backtest.tsv` and then fails identically with
+   `NotFound: listed OPRA join: contract definition missing` (`listed_opra.cpp:306`), 3/3
+   runs. It also fails identically when `definitions-orig.tsv` is substituted for
+   `definitions.tsv`, and both attempts emit a byte-identical `backtest.tsv`
+   (`6400a682…`), so the incomplete-copy hypothesis is **refuted**. Known-issue row, not a
+   regression. Separately confirmed as a data-hygiene finding: the two definitions files
+   are the same size (730,526,177 B) but **different content**
+   (`abdd613d…` vs `45bce5e2…`), so `parity-full`'s definitions input really was swapped
+   at some point — but that swap is not the cause of this failure.
 5. **FIX-3 is in flight and unfinished** — the Ok-stamp is still ISA-dependent on the
    scalar path, and the temp-isolation fix does not yet cover `atx-impl`, `atx-engine` or
    `atx-tsdb` tests.

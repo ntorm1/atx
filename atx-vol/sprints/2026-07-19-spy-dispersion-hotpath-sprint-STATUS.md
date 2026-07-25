@@ -78,9 +78,8 @@ carry timing/counter data and are written only under `-DATX_VOL_PROFILE/COUNTERS
 
 - 82-session (`bt-sota-baseline`, final_nav 24740.624124981368)
   `1b99512ad6c7049aa9e41bd9002ae933c502d9ce4b7d5d58e19b6efdbacad2bd` — **3×-stable**
-- 135-session (`bt-sota-full`, final_nav 1283.615746)
-  `141173fdc35eed9fbb0263c87729c547e9f0eac144c1c336173c932ac69f2835` — re-pinned in
-  the FOLLOWING commit (one commit per pin)
+- 135-session (`bt-sota-full`, final_nav 128361.57456348382)
+  `61da2ef78cf0d6de36baf0ac3bbe400eb13ae09cdea0f021a8224e184747f914` — **3×-stable**
 
 **Why they moved: WS-E's E1 unit migration, an exact ×100 rescale.**
 `DispersionConfig::target_vega` is now dollars of index gross vega **per vol
@@ -127,8 +126,8 @@ byte-identical across all three, so this is a one-time re-pin, NOT engine
 nondeterminism. Supporting artifact SHAs (each 3×-stable):
 82 pnl_track `e112f7631314a6864d3b6c30646e56243bb014704de68b464d8e77b559d60030`,
 82 tearsheet `5b7ee40990fc198660f4abe2a19a94776976a0b4a7ee09503d4d9ff0a2da05f0`,
-135 pnl_track `20e6ee2c3319f37ea4c689f294c2c4a7559486545448c3d26bd0a375ce1d4619`,
-135 tearsheet `c41f7e07c19d6e068a18538e0efe183eda296eff87d2a704e7db1887040daa79`.
+135 pnl_track `95b6f339ae8c3bf96ecae6f4d73b4b844f356ec72f0841fdbcfc338973fb25f7`,
+135 tearsheet `cb8632991c7b3f65af588efd78444140ce3db57cdecb7f3cad4d6c7b7cfe498b`.
 
 **Pin lineage.** Pre-M1 (82 `0737660775601f1609690568d930c62c46a1dddd0d97784036916ba4c5484c3a`,
 135 `ac97a643851fa9988880d85af3201ef39158aa7e054f8c74062f0c4e68970b33`) → M2
@@ -621,8 +620,8 @@ Doing nothing strands four agents indefinitely.
   Prior values in parentheses:
   - 82-session `1b99512ad6c7049aa9e41bd9002ae933c502d9ce4b7d5d58e19b6efdbacad2bd`
     (was `5e7ca065…` at M2, `0737660775601f16…` pre-merge)
-  - 135-session `141173fdc35eed9fbb0263c87729c547e9f0eac144c1c336173c932ac69f2835`
-    (was `ac97a643851fa998…` pre-merge) — re-pinned in the FOLLOWING commit
+  - 135-session `61da2ef78cf0d6de36baf0ac3bbe400eb13ae09cdea0f021a8224e184747f914`
+    (was `141173fd…` at M2, `ac97a643851fa998…` pre-merge)
 
 ### Build incantation (per worktree)
 
