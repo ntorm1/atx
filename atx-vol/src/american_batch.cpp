@@ -1,5 +1,8 @@
 #include "atx/vol/american_batch.hpp"
 
+#include "laned_greek_run.hpp"           // FIX-5/I3: detail::{normalize_unrequested_greeks,
+                                         // requested_greeks_finite} — the SINGLE Ok-stamp
+                                         // definition FIX-1/2/3 established
 #include "atx/vol/american.hpp"          // andersen_lake, american_greeks_fd/al, classify_regime
 #include "atx/vol/counters.hpp"          // exact resolved-route diagnostics
 #include "atx/vol/pricing_executor.hpp"  // PricingExecutor
@@ -283,6 +286,10 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
                          has_field(fields, GreekFieldMask::Vanna);
   const bool need_rho = has_field(fields, GreekFieldMask::Rho);
   const bool need_charm = has_field(fields, GreekFieldMask::Charm);
+  // FIX-5/I3: the REQUESTED Greek set, in the vocabulary the shared Ok-stamp speaks.
+  // Same derivation the K4 solve-skip selectors above use, so the columns that were
+  // asked for are exactly the columns that are swept.
+  const GreekNeeds needs{need_vega, need_rho, need_charm};
   const auto price_lane = [&](std::size_t i) noexcept {
     const Side side = in.side[i];
     const Result<AmericanGreeks> g =
@@ -291,9 +298,24 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
                                       need_rho, need_charm)
                  : american_greeks_fd(in.S[i], in.K[i], in.T[i], in.sigma[i],
                                       in.r[i], in.q[i], side);
+    // FIX-5/I3: `has_value()` alone certified a bundle with a finite mark and a NaN
+    // in a REQUESTED column as Ok — the pre-FIX-1 predicate, on the driver WS-Y made
+    // public Python API (bindings/pricing.cpp, GreekFieldMask::All). Route both this
+    // stamp and the laned one below through the SINGLE shared pair so they cannot
+    // disagree by side: normalize the unrequested slots (FIX-1/F3's load-bearing
+    // half), then sweep the requested set finite.
     if (g.has_value()) {
-      write_masked(greeks, i, *g, fields);
-      ws.lane_status[i] = LaneStatus::Ok;
+      AmericanGreeks gg = *g;
+      detail::normalize_unrequested_greeks(gg, needs);
+      if (detail::requested_greeks_finite(gg, needs)) {
+        write_masked(greeks, i, gg, fields);
+        ws.lane_status[i] = LaneStatus::Ok;
+      } else {
+        // Computed columns are left in place for diagnosis (exactly as
+        // laned_greek_run's scatter does); consumers gate on status.
+        write_masked(greeks, i, gg, fields);
+        ws.lane_status[i] = LaneStatus::Unsupported;
+      }
     } else {
       AmericanGreeks nan_g;
       nan_g.delta = nan_g.gamma = nan_g.vega = nan_g.theta = nan_g.rho =
@@ -313,7 +335,11 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
   // the laned bundle (american_put_greeks_batch), which solves the 5 boundaries
   // 4-wide per pack and
   // patches any non-early-exercise / non-finite lane through scalar american_greeks_al.
-  // CALL lanes stay on the scalar analytic route (the laned kernel is put-native).
+  // CALL lanes stay on the scalar analytic route. FIX-5/M8: that is this driver's own
+  // choice, not a kernel limitation — simd::american_call_greeks_batch exists and
+  // src/laned_greek_run.hpp uses it; this driver simply never adopted it. (The two
+  // routes' Ok-stamps are shared as of FIX-5/I3, so the split no longer costs status
+  // agreement; adopting the call kernel here remains a follow-up.)
   if (analytic && simd::avx2_greeks_selected(kernel.isa)) {
     // Chunked gather of PUT lanes -> laned dispatch -> scatter (allocation-free).
     constexpr std::size_t kC = 256;
@@ -332,8 +358,15 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
           need_rho, need_charm);
       for (std::size_t j = 0; j < cnt; ++j) {
         const std::size_t oi = oidx[j];
-        const bool ok = std::isfinite(gbuf[j].price);
-        write_masked(greeks, oi, gbuf[j], fields);
+        // FIX-5/I3: was `isfinite(gbuf[j].price)` — a DIFFERENT predicate from the
+        // scalar stamp the CALL lanes take, so identical inputs modulo `side` could
+        // be demoted as a put and certified as a call in the same call. Both routes
+        // now share one definition, which is what makes the split impossible rather
+        // than merely absent.
+        AmericanGreeks gg = gbuf[j];
+        detail::normalize_unrequested_greeks(gg, needs);
+        const bool ok = detail::requested_greeks_finite(gg, needs);
+        write_masked(greeks, oi, gg, fields);
         ws.lane_status[oi] = ok ? LaneStatus::Ok : LaneStatus::Unsupported;
         ws.lane_route[oi] = route;
       }
