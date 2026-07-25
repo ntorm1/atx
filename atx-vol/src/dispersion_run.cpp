@@ -806,6 +806,40 @@ Status verify_backtest(const fs::path &backtest_path, const fs::path &reconcilia
 } // namespace
 
 // ── Public: corpus phase-split line (B1 / T1) ───────────────────────────────
+//
+// FIELD LAYOUT — this is a contract. The line goes to stdout under
+// `ATX_VOL_CORPUS_PHASE_TIMING` and is read by operator scripts OUTSIDE this
+// repo, which no change made here can update.
+//
+//   1  PHASE            record tag (the only field that is not name=value)
+//   2  ingest_s         wall in the OPRA ingest phase
+//   3  build_s          wall in the build phase
+//   4  fit_fanout_s     build-phase wall inside the fit fan-out
+//   5  archive_write_s  build-phase wall writing surface archives
+//   6  checkpoint_s     build-phase wall writing checkpoints
+//   7  other_s          build_s minus the three named phases above
+//   8  fanout_calls     fan-out invocations
+//   9  boards           boards fitted
+//  10  date_batch       dates per ingest batch (ATX_VOL_CORPUS_DATE_BATCH)
+//  11  reclaimed        T1/T-I4: distinct BOARDS that picked up inner workers a
+//                       draining pool could no longer place
+//  12  inner_slots      T1/T-I4: raw SUM of every inner budget offered — many
+//                       per board, NOT a per-board mean. Without 11 and 12 the
+//                       phase-timing probe cannot report whether the reclaim
+//                       fired at all.
+//
+// TWO RULES, both gated by `CorpusPhaseLine.
+// FieldLayoutIsAppendOnlyAndEveryFieldIsSelfDescribing`:
+//
+//   * NEW FIELDS APPEND. `9cfcbc3` inserted fields 11 and 12 BETWEEN `boards`
+//     and `date_batch`, pushing `date_batch` from field 10 to field 12 and
+//     shifting every positional reader — for no gain, since the counters read
+//     no better beside `boards` than at the end. Field 10 is restored here
+//     [MINORS M9], and appending is the rule that keeps it stable.
+//   * EVERY FIELD IS `name=value`. Keying by NAME is always available and is
+//     what a consumer should prefer; the stable position is a courtesy for
+//     `awk '{print $10}'`. The gate keeps both true at once, so a future field
+//     can neither be inserted nor emitted as a bare positional value.
 std::string format_corpus_phase_line(double ingest_s, double build_s,
                                      const CorpusPhaseTimings &phases, std::size_t date_batch) {
   const double named = phases.fit_fanout_s + phases.archive_write_s + phases.checkpoint_s;
@@ -814,18 +848,13 @@ std::string format_corpus_phase_line(double ingest_s, double build_s,
       std::snprintf(buf, sizeof buf,
                     "PHASE ingest_s=%.2f build_s=%.2f fit_fanout_s=%.2f archive_write_s=%.2f "
                     "checkpoint_s=%.2f other_s=%.2f fanout_calls=%llu boards=%llu "
-                    "reclaimed=%llu inner_slots=%llu date_batch=%zu",
+                    "date_batch=%zu reclaimed=%llu inner_slots=%llu",
                     ingest_s, build_s, phases.fit_fanout_s, phases.archive_write_s,
                     phases.checkpoint_s, build_s - named,
                     static_cast<unsigned long long>(phases.fanout_calls),
-                    static_cast<unsigned long long>(phases.boards_fitted),
-                    // T1 / T-I4: `reclaimed` is the number of distinct BOARDS that
-                    // picked up inner workers a draining pool could no longer place;
-                    // `inner_slots` is the raw sum of every inner budget offered
-                    // (many per board — NOT a per-board mean). Without these two the
-                    // phase-timing probe cannot report whether the reclaim fired.
+                    static_cast<unsigned long long>(phases.boards_fitted), date_batch,
                     static_cast<unsigned long long>(phases.reclaimed_inner_boards),
-                    static_cast<unsigned long long>(phases.inner_worker_slots), date_batch);
+                    static_cast<unsigned long long>(phases.inner_worker_slots));
   // rev2-ws-t N-M2: `written` is snprintf's UNTRUNCATED length, so it can exceed
   // `sizeof buf`. Sizing the std::string from it read past the end of the buffer
   // whenever the line truncated (measured: 1073 bytes returned from a 512-byte

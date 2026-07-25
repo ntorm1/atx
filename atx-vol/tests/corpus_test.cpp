@@ -2274,6 +2274,75 @@ TEST(CorpusPhaseLine, ReportsTheInnerWorkerReclaimCounters) {
       << "the quiet-window probe cannot see inner_worker_slots: " << line;
 }
 
+// MINORS M9: the PHASE line's field LAYOUT is a contract, and the way it stays
+// one is that new fields are APPENDED.
+//
+// `9cfcbc3` added `reclaimed=` and `inner_slots=` in the middle of the line,
+// between `boards=` and `date_batch=`, which moved `date_batch` from field 10
+// to field 12. Every in-tree consumer keys by name — `CorpusPhaseLine.
+// ReportsTheInnerWorkerReclaimCounters` above is a substring search, and no
+// fixture, golden or `.tsv` in the tree mentions the line at all — so nothing
+// here broke. What broke is out-of-tree: this line is printed to stdout under
+// `ATX_VOL_CORPUS_PHASE_TIMING` and is scraped positionally by operator scripts
+// that no change in this repo can reach.
+//
+// The insertion bought nothing (the two counters read no better beside
+// `boards=` than at the end), so this restores field 10 and states the rule
+// that keeps it stable: NEW FIELDS APPEND. Position is a courtesy for `awk`;
+// the NAME is the contract, and this gate pins both so the next addition
+// cannot silently take the courtesy away.
+TEST(CorpusPhaseLine, FieldLayoutIsAppendOnlyAndEveryFieldIsSelfDescribing) {
+  CorpusPhaseTimings phases;
+  phases.fit_fanout_s = 12.5;
+  phases.archive_write_s = 2.0;
+  phases.checkpoint_s = 0.5;
+  phases.fanout_calls = 11;
+  phases.boards_fitted = 902;
+  phases.reclaimed_inner_boards = 137;
+  phases.inner_worker_slots = 4242;
+
+  const std::string line = format_corpus_phase_line(/*ingest_s=*/30.0, /*build_s=*/20.0, phases,
+                                                    /*date_batch=*/8u);
+  std::vector<std::string> fields;
+  for (std::size_t cursor = 0; cursor <= line.size();) {
+    const std::size_t space = line.find(' ', cursor);
+    if (space == std::string::npos) {
+      fields.push_back(line.substr(cursor));
+      break;
+    }
+    fields.push_back(line.substr(cursor, space - cursor));
+    cursor = space + 1;
+  }
+
+  // The layout, in order. The first nine entries are the ORIGINAL line
+  // (`6fddfba`); the last two are `9cfcbc3`'s counters, appended.
+  static constexpr const char *kLayout[] = {
+      "ingest_s",     "build_s", "fit_fanout_s", "archive_write_s", "checkpoint_s", "other_s",
+      "fanout_calls", "boards",  "date_batch",   "reclaimed",       "inner_slots"};
+  constexpr std::size_t kFieldCount = sizeof(kLayout) / sizeof(kLayout[0]);
+
+  ASSERT_EQ(fields.size(), kFieldCount + 1u) << line;
+  EXPECT_EQ(fields[0], "PHASE") << line;
+  for (std::size_t i = 0; i < kFieldCount; ++i) {
+    const std::string &field = fields[i + 1u];
+    const std::size_t equals = field.find('=');
+    ASSERT_NE(equals, std::string::npos)
+        << "field " << (i + 1u) << " is positional, not name=value: '" << field
+        << "' — a bare value makes the ORDER load-bearing for every consumer, which is the "
+           "failure this gate exists to prevent: "
+        << line;
+    EXPECT_EQ(field.substr(0, equals), kLayout[i])
+        << "field " << (i + 1u) << " is '" << field.substr(0, equals) << "', expected '"
+        << kLayout[i] << "'. New PHASE fields APPEND — inserting one shifts every field after "
+        << "it under a positional reader. Line: " << line;
+    EXPECT_FALSE(field.substr(equals + 1u).empty()) << "empty value in field: " << field;
+  }
+  // `date_batch` is field 10 of the record (index 9 counting the PHASE tag as
+  // field 1), which is where `6fddfba` put it and where an `awk '{print $10}'`
+  // still finds it.
+  EXPECT_EQ(fields[9], "date_batch=8") << line;
+}
+
 // rev2-ws-t N-M2: `format_corpus_phase_line` formats into a fixed 512-byte
 // buffer, and `std::snprintf` returns the length it WOULD have written, not the
 // length it did. `std::string(buf, written)` therefore reads `written - 511`
