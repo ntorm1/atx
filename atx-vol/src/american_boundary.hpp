@@ -53,6 +53,18 @@ inline constexpr unsigned kGeoSize = kGeoNodeMax * kGeoQuadStride;  // 512 doubl
 // {(7,8), (7,16), (12,24)} take the hoisted kernel, so the table needs the max over
 // those of (nb-1)*nq*nb = 11*24*12 = 3168 doubles. Total workspace growth ~27 KB.
 //
+// WHICH TEST PROVES THE BIT-IDENTITY (REVWSA finding 2). The LOAD-BEARING one is the
+// PRE-EXISTING BoundaryHoist.SpecializedMatchesGeneric (american_test.cpp): bits_equal
+// between the hoisted kernel and the untouched generic kernel over 5*4*3*3*3*2*3
+// parameter combinations across all three specialized schemes. Because it compares end
+// PRICES it is what covers the kernel's read stride and `num` order. A6's own
+// BoundaryHoist.HoistedBaryTableMatchesInlineFormula (via al_bary_hoist_audit) is
+// narrower: it proves the BIND stored bit-exactly what the inline formula produced,
+// and detects absence via `entries > 0`, but it recomputes with the bind's own
+// indexing and never calls al_cheb_eval_hoisted. Its "99144 entries, 0 mismatches" is
+// not, on its own, the proof of the hoist — and its RED (`entries == 0` at the parent)
+// is self-referential, since the audit function does not exist there.
+//
 // THROUGHPUT GATE, RE-SPECIFIED. A6's plan text gates this hoist on ">= 8% on the
 // bench sweep row". No such row exists: no name registered in atx-vol/bench/*.cpp
 // contains "sweep" (the only "sweep" artifact in the tree is an unrelated
@@ -75,6 +87,12 @@ inline constexpr unsigned kGeoSize = kGeoNodeMax * kGeoQuadStride;  // 512 doubl
 // >= 8% half of the gate is deferred to a quiet-window re-run against the rows
 // above. What IS proved is the half that makes the hoist legitimate at all:
 // bit-identity, by BoundaryHoist.HoistedBaryTableMatchesInlineFormula.
+// COUPLING (REVWSA finding 4). These two bounds are the largest (n_boundary,
+// n_quad_fp) that `al_fp_specialized` (american.cpp) admits — today (12,24). They are
+// NOT independent knobs: adding a scheme there without raising them here would size
+// geo_bary too small. That coupling is enforced from the other side, at compile time,
+// by `al_bary_table_fits_every_specialized_scheme()`, which evaluates the predicate
+// itself over a wide (nb,nq) sweep. If that static_assert ever fires, raise these two.
 inline constexpr unsigned kGeoBaryNodeMax = 12;  // max specialized n_boundary
 inline constexpr unsigned kGeoBaryQuadMax = 24;  // max specialized n_quad_fp
 inline constexpr unsigned kGeoBaryPairs = (kGeoBaryNodeMax - 1u) * kGeoBaryQuadMax;  // 264

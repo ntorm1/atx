@@ -2454,16 +2454,33 @@ TEST(BoundaryHoist, SpecializedMatchesGeneric) {
 
 // ── A6 (PR-P2): the sweep-invariant BARYCENTRIC hoist ─────────────────────────
 //
-// SpecializedMatchesGeneric above already proves the specialized kernel is bit-equal
-// to the untouched generic reference, and PriceBitIdenticalToPrechange pins absolute
-// values — but neither can tell whether the barycentric denominator was actually
-// hoisted out of the sweep or is still being recomputed inside it. This test is the
-// observable that distinguishes those two worlds, i.e. the one A6's absence failed:
-// `entries` counts the (collocation node, quad node) pairs the per-solve table binds,
-// and it is 0 in a tree where the hoist does not exist. `mismatches` then proves the
-// stored quotients / sums / exact-node hits are BIT-for-bit the values the inline
-// al_cheb_eval_t computed, which is what makes the change a hoist rather than a
-// numerical variant.
+// WHICH TEST CARRIES THE BIT-IDENTITY CLAIM — NOT THIS ONE (REVWSA finding 2).
+// SpecializedMatchesGeneric above is the load-bearing proof, and it is PRE-EXISTING,
+// not added by A6: it compares end PRICES out of the hoisted kernel and the untouched
+// generic kernel over 5*4*3*3*3*2*3 combinations across all three specialized
+// schemes, with EXPECT_GT(checked, 200) as its anti-vacuity guard. That makes it the
+// only test here that can catch a wrong READ stride or a reordered `num` accumulation
+// inside al_cheb_eval_hoisted, because those change the price.
+//
+// What THIS test adds is narrower and orthogonal. Neither SpecializedMatchesGeneric
+// nor PriceBitIdenticalToPrechange can tell whether the barycentric denominator was
+// actually hoisted out of the sweep or is still recomputed inside it — both worlds
+// price identically. `entries` counts the (collocation node, quad node) pairs the
+// per-solve table binds and is 0 in a tree with no hoist; `mismatches` proves the
+// STORED quotients / sums / exact-node hits are bit-for-bit what the inline
+// al_cheb_eval_t computed, judged against an independently written reference
+// expression. Its limits, stated plainly so the next reader does not over-credit it:
+// it recomputes using the BIND's own index arithmetic and never calls
+// al_cheb_eval_hoisted, so it cannot catch a stride or read-order error in the
+// kernel. "99144 entries, 0 mismatches" is a real result about the bind, not the
+// whole proof of the hoist.
+//
+// AND ITS RED IS SELF-REFERENTIAL (REVWSA finding 3). A6's recorded absence signal —
+// `entries == 0` at the parent commit 9940182 — holds there because
+// al_bary_hoist_audit does not exist at that commit, which is trivially true of any
+// newly added data structure. It was taken from history rather than by reverting the
+// tree, which was the right call; it is still not an independent pre-existing
+// observable and must not be read as one.
 TEST(BoundaryHoist, HoistedBaryTableMatchesInlineFormula) {
   using atx::vol::detail::al_bary_hoist_audit;
   const std::optional<AlOpts> fast = al_fast_opts();          // {7,16}

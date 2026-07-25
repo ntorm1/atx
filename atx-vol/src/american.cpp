@@ -610,6 +610,31 @@ template <unsigned NB>
   return (nb == 7 && nq == 8) || (nb == 7 && nq == 16) || (nb == 12 && nq == 24);
 }
 
+// A6 / REVWSA finding 4: the geo_bary sizing guard, DERIVED from al_fp_specialized
+// above instead of hand-copied from it. The original shipped as three
+// `static_assert`s that restated (7,8) / (7,16) / (12,24) literally, so a FOURTH
+// scheme admitted above without growing kGeoBarySize would have compiled cleanly and
+// then silently taken the runtime `specialize = false` fallback in
+// al_bind_geometry_static — losing the hoist with no diagnostic anywhere. Sweeping a
+// domain that comfortably contains any scheme the AL ladder could plausibly add and
+// letting the predicate itself decide membership makes that a BUILD failure.
+// The bound sweep is deliberately much wider than kGeoNodeMax / kGeoQuadStride: a
+// scheme that overflows those is exactly the case this must not miss.
+[[nodiscard]] constexpr bool al_bary_table_fits_every_specialized_scheme() noexcept {
+  for (unsigned nb = 1; nb <= 64u; ++nb) {
+    for (unsigned nq = 1; nq <= 64u; ++nq) {
+      if (al_fp_specialized(nb, nq) && (nb - 1u) * nq * nb > kGeoBarySize) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+static_assert(al_bary_table_fits_every_specialized_scheme(),
+              "a scheme al_fp_specialized() admits does not fit geo_bary: grow "
+              "kGeoBaryNodeMax / kGeoBaryQuadMax in american_boundary.hpp, or the new "
+              "scheme silently loses the barycentric hoist at runtime");
+
 // AlWorkspace now lives in namespace amer (american_boundary.hpp).
 
 } // namespace
@@ -896,13 +921,13 @@ void al_bind_geometry_static(const AlBoundary &bnd, AlWorkspace &ws, double r,
   const unsigned nq = ws.n_quad_fp;
   const unsigned nb = bnd.n;
   const double T = bnd.T;
-  // A6 defensive bound: every scheme al_fp_specialized admits fits kGeoBarySize by
-  // construction (static_assert'd below). Should a future scheme be added there
-  // WITHOUT growing the table, fall back to the generic kernel rather than write out
-  // of bounds — the same safety shape as the R-30 specialize-off fallback.
-  static_assert((7u - 1u) * 8u * 7u <= kGeoBarySize, "(7,8) bary table overflow");
-  static_assert((7u - 1u) * 16u * 7u <= kGeoBarySize, "(7,16) bary table overflow");
-  static_assert((12u - 1u) * 24u * 12u <= kGeoBarySize, "(12,24) bary table overflow");
+  // A6 defensive bound. Every scheme al_fp_specialized admits fits kGeoBarySize by
+  // construction — enforced at compile time by
+  // al_bary_table_fits_every_specialized_scheme(), which is DERIVED from the
+  // predicate rather than restating its scheme list (REVWSA finding 4). This runtime
+  // arm is therefore unreachable today; it stays as the same safety shape as the R-30
+  // specialize-off fallback, so a bound that ever did slip through falls back to the
+  // generic kernel instead of writing out of bounds.
   if (nb == 0 || (nb - 1u) * nq * nb > kGeoBarySize) {
     ws.specialize = false;
     ws.geo_static_bound = false;
