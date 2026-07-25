@@ -213,3 +213,31 @@ def test_pnl_tsv_roundtrip(run, tmp_path):
     # A sequence of pairs is accepted alongside a dict.
     av.write_backtest_pnl_tsv(run, list(meta.items()), str(tmp_path / "pairs.tsv"))
     assert (tmp_path / "pairs.tsv").read_bytes() == path.read_bytes()
+
+
+# ── Config defaults are INHERITED from the engine, never re-declared here ────
+
+def test_run_config_defaults_mirror_the_engine_header():
+    """`RunConfig()` must be exactly the C++ `RunConfig{}`, whatever that is.
+
+    The binding is `py::init<>()` — a passthrough — and that is the deliberate
+    choice: the Python layer must never be silently *more permissive* than the
+    engine, and a Python-side override would be a second source of truth that
+    drifts from `backtest.hpp` the first time a default moves.
+
+    The consequence is that an engine-side default flip changes the Python
+    contract too. This test is the tripwire that makes that explicit: when a
+    default legitimately moves in `backtest.hpp`, update the expectation HERE and
+    the README's backtest section in the SAME commit, so the new Python behaviour
+    is reviewed rather than discovered as an exception at a caller's call site.
+
+    Pinned against `backtest.hpp` RunConfig as of feat/pipeline-y.
+    """
+    cfg = av.RunConfig()
+    assert cfg.unpriced == av.UnpricedLotPolicy.EXCLUDE_AND_REPORT
+    assert cfg.record_every_n == 1
+    assert cfg.prefetch_snapshots is True
+    assert cfg.settlement_mark_memo is True
+    assert cfg.query_pricing_tier == av.QueryPricingTier.LEGACY_COMPATIBLE
+    assert cfg.query_cache_build_policy == av.QueryCacheBuildPolicy.EAGER
+    assert cfg.surface_provenance_policy == av.SurfaceProvenancePolicy.COMPATIBILITY

@@ -234,3 +234,70 @@ def test_loaded_result_folds_through_the_library_tearsheet(tmp_path):
     sheet = av.tearsheet(back)
     assert sheet.total_return == pytest.approx(60.0)
     assert sheet.max_drawdown == pytest.approx(40.0)
+
+
+# ── PY-2 / io fidelity ──────────────────────────────────────────────────────
+
+def test_ts_ns_round_trips_at_a_real_nanosecond_epoch(tmp_path):
+    # Regression (PY-2): the reader routed the int64 `ts_ns` column through
+    # `float()`. Nanosecond epochs are ~1.7e18, past 2^53, where a double's ulp
+    # is 256 — so stamps came back off by up to +/-128ns while the module
+    # advertised a bit-exact round-trip. The old test used ts_ns=[1,2,3] and
+    # could not observe it.
+    stamps = [1_753_920_000_123_456_789, 1_753_920_086_400_000_001,
+              1_753_920_172_800_000_003]
+    result = av.BacktestResult()
+    result.resize(3)
+    result.date = ["2026-07-31", "2026-08-01", "2026-08-02"]
+    result.ts_ns = stamps
+
+    path = str(tmp_path / "ns.tsv")
+    av.write_backtest_tsv(result, path)
+    back, _, _ = read_backtest_tsv(path)
+
+    assert list(back.ts_ns) == stamps
+
+
+def test_read_kv_tsv_skips_the_header_after_a_comment(tmp_path):
+    # Regression (PY-io): the header skip was pinned to line index 0, so any
+    # leading comment let the literal column names enter the spec dict as a
+    # {"key": "value"} entry, which then rendered as a configuration row.
+    path = tmp_path / "spec.tsv"
+    path.write_text(
+        "# emitted by run_surface_backtest_command\nkey\tvalue\nlabel\tSPY run\n",
+        encoding="utf-8",
+    )
+    assert read_kv_tsv(str(path)) == {"label": "SPY run"}
+
+
+def test_colophon_escapes_run_supplied_values(tmp_path):
+    # Regression (PY-8): `spec` values are read from run artifacts and were
+    # interpolated raw into the colophon, which components.Report joins as
+    # markup. A '<' in a path or label corrupts (or injects into) the document.
+    from atxvol.report.dispersion import build_report
+
+    result = av.BacktestResult()
+    result.resize(2)
+    result.date = ["2026-01-02", "2026-01-05"]
+    result.ts_ns = [1, 2]
+    result.pnl_total = [0.0, 100.0]
+    result.nav = [0.0, 100.0]
+    sheet = av.tearsheet(result)
+
+    meta = {
+        "strategy": "<script>alert(1)</script>",
+        "opra_root": r"C:\data\<opra>",
+        "min_names": "4 & 5",
+        "min_weight_coverage": "<0.8",
+    }
+    path = str(tmp_path / "inject.html")
+    build_report(result, sheet, meta, path)
+    html = (tmp_path / "inject.html").read_text(encoding="utf-8")
+
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert "&lt;opra&gt;" in html
+    assert "4 &amp; 5" in html
+    assert "&lt;0.8" in html
+    # The colophon's own markup must survive escaping of the interpolated data.
+    assert "<b>Run</b>" in html

@@ -75,7 +75,11 @@ def read_backtest_tsv(path: str) -> tuple["_av.BacktestResult", dict[str, str], 
         result.date = [r[di] for r in rows]
     if "ts_ns" in index:
         ti = index["ts_ns"]
-        result.ts_ns = [int(float(r[ti])) for r in rows]
+        # PY-2: parse as int64, never through float(). The writer emits `%lld`
+        # and nanosecond epochs are ~1.7e18 — past 2^53, where a double's ulp is
+        # 256 — so a float() detour silently moved stamps by up to +/-128ns and
+        # broke the module's own bit-exact round-trip claim for this column.
+        result.ts_ns = [int(r[ti]) for r in rows]
 
     for name in _SERIES:
         if name in index:
@@ -122,13 +126,20 @@ def read_backtest_archive(
 def read_kv_tsv(path: str) -> dict[str, str]:
     """Read a two-column `key<TAB>value` TSV (the run_spec / counters files)."""
     out: dict[str, str] = {}
+    seen_data = False
     with open(path, "r", encoding="utf-8") as fh:
-        for n, line in enumerate(fh):
+        for line in fh:
             line = line.rstrip("\n").rstrip("\r")
             if not line or line.startswith("#"):
                 continue
             key, _, value = line.partition("\t")
-            if n == 0 and key.strip().lower() == "key":
-                continue  # column-name header
+            # The column-name header is the first NON-COMMENT line, not literally
+            # line 0: pinning it to the file's first line let any leading comment
+            # push a {"key": "value"} entry into the spec dict, which then
+            # rendered as a configuration row.
+            if not seen_data and key.strip().lower() == "key" and value.strip().lower() == "value":
+                seen_data = True
+                continue
+            seen_data = True
             out[key.strip()] = value.strip()
     return out

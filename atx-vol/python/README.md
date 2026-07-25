@@ -93,6 +93,16 @@ series = result.to_dict()          # every column as a NumPy array
 av.write_backtest_pnl_tsv(result, {"strategy": "spy_dispersion_vega_flat"}, "pnl_track.tsv")
 ```
 
+`RunConfig()` is a passthrough of the engine's `RunConfig{}` — the bindings never
+re-declare a default. Python therefore inherits engine-side policy changes rather
+than being silently more permissive than the C++ library; in particular
+`RunConfig.unpriced` currently defaults to `UnpricedLotPolicy.EXCLUDE_AND_REPORT`,
+and a run that must not tolerate unpriced lots sets
+`run_cfg.unpriced = av.UnpricedLotPolicy.ERROR` explicitly.
+`tests/test_backtest.py::test_run_config_defaults_mirror_the_engine_header` pins
+the current values so an engine-side flip is reviewed, not discovered at a call
+site.
+
 A corpus can also be authored from Python: build a `CurveSurface` with
 `push_essvi`, seal it via `PricedSurface.create`, and archive a partition with
 `SurfaceDb.write_partition([(symbol, surface), ...])`. Note that
@@ -147,7 +157,36 @@ result.validate()           # raises if any column length disagrees
 `tearsheet` and both TSV writers validate their input and raise `ValueError` on
 a ragged result rather than reading out of bounds.
 
+## Errors, batch status, and the GIL
+
 Functions returning `atx::core::Result<T>` raise `atxvol.AtxError` on failure.
+The exception carries the structured code as well as the message, so failures can
+be dispatched on programmatically rather than by matching prose:
+
+```python
+try:
+    av.implied_vol(1.0, -1.0, 100.0, 0.5, 0.99, av.Side.CALL)
+except av.AtxError as err:
+    assert err.code is av.ErrorCode.INVALID_ARGUMENT
+```
+
+Vectorized entry points follow the C++ layer's **NaN + per-lane status**
+convention instead of aborting the batch on the first bad lane — real chains
+carry uninvertible quotes, and discarding the good lanes would make the
+vectorized path useless on exactly the data it exists for:
+
+```python
+vols, status = av.implied_vol_batch(price, F, K, T, df, av.Side.CALL)
+ok = status == av.STATUS_OK        # failed lanes are NaN in `vols`
+codes = status[~ok]                # int(ErrorCode) per failed lane
+```
+
+A raised exception from a batch function always means the *call* was malformed
+(shape mismatch, wrong rank), never that one lane misbehaved.
+
 Long-running American and batch kernels, `run_backtest`, and the TSV writers all
-release the Python GIL.
+release the Python GIL. `AloPricer.price` deliberately does **not**: it mutates
+the pricer's cached exercise boundary, so the GIL is what keeps two Python
+threads sharing one pricer from racing in C++. Use one `AloPricer` per thread, or
+the batch entry points, for concurrency.
 

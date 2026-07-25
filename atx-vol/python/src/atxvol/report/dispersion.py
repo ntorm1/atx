@@ -27,7 +27,7 @@ import atxvol as _av
 from . import charts, theme
 from .charts import Series
 from .components import (
-    Column, FacetGrid, Figure, Note, Prose, Report, Section, Stat, StatRow, Subhead, Table,
+    Column, FacetGrid, Figure, Note, Prose, Report, Section, Stat, StatRow, Subhead, Table, esc,
 )
 from .io import read_backtest_tsv, read_kv_tsv
 
@@ -126,12 +126,16 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
             ("Delta band", f"{num('delta_band', 0):.0f}"),
         ),
         colophon=(
-            f"<b>Run</b> {label}" if label else "<b>Run</b> spy_dispersion_backtest",
+            # The colophon is a raw-markup channel by design (components.Report
+            # joins the lines verbatim), so every value read out of a run artifact
+            # has to be escaped on the way in: a '<' in a path, label or spec value
+            # otherwise corrupts — or injects into — the document.
+            f"<b>Run</b> {esc(label)}" if label else "<b>Run</b> spy_dispersion_backtest",
             "<b>Source</b> examples/spy_dispersion_backtest.cpp · "
             "run_surface_backtest_command → write_backtest_tsv → surface_backtest.tsv",
-            f"<b>Data</b> {spec.get('opra_root', 'OPRA')} · flat rate "
-            f"{num('flat_rate', 0.043):.3f} · min names {spec.get('min_names', '?')} · "
-            f"weight coverage ≥ {spec.get('min_weight_coverage', '?')}",
+            f"<b>Data</b> {esc(spec.get('opra_root', 'OPRA'))} · flat rate "
+            f"{num('flat_rate', 0.043):.3f} · min names {esc(spec.get('min_names', '?'))} · "
+            f"weight coverage ≥ {esc(spec.get('min_weight_coverage', '?'))}",
             "<b>Report</b> rendered by atxvol.report from the engine's TSV — "
             "metrics folded by atx-vol's own tearsheet",
         ),

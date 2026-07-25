@@ -3,6 +3,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <pybind11/numpy.h>
@@ -16,6 +17,7 @@
 #include "atx/vol/greeks.hpp"
 #include "atx/vol/implied_vol.hpp"
 #include "atx/vol/types.hpp"
+#include "batch_status.hpp"
 #include "result.hpp"
 
 namespace py = pybind11;
@@ -62,9 +64,14 @@ py::array_t<double> price_batch(const DoubleArray &f_array, const DoubleArray &k
   return output;
 }
 
-py::array_t<double> iv_batch(const DoubleArray &price_array, const DoubleArray &f_array,
-                             const DoubleArray &k_array, const DoubleArray &t_array,
-                             const DoubleArray &df_array, Side side) {
+// PY-3: NaN + per-lane status, the convention `batch.hpp` already documents and
+// the binding used to erase. `implied_vol_batch` writes NaN into the value slot
+// and the lane's Error into the parallel status span; raising on the first bad
+// lane discarded every good one, which is fatal on real NBBO chains (crossed
+// markets, prices below intrinsic). Only a malformed CALL raises now.
+std::pair<py::array_t<double>, py::array_t<std::int32_t>>
+iv_batch(const DoubleArray &price_array, const DoubleArray &f_array, const DoubleArray &k_array,
+         const DoubleArray &t_array, const DoubleArray &df_array, Side side) {
   const auto price = as_span(price_array, "price");
   const auto f = as_span(f_array, "F");
   const auto k = as_span(k_array, "K");
@@ -85,14 +92,7 @@ py::array_t<double> iv_batch(const DoubleArray &price_array, const DoubleArray &
         std::span<double>{output.mutable_data(), static_cast<std::size_t>(output.size())},
         statuses));
   }
-  for (std::size_t i = 0; i < statuses.size(); ++i) {
-    if (!statuses[i]) {
-      const auto &error = statuses[i].error();
-      throw atxvol::python::AtxException(atx::core::Error{
-          error.code(), "batch lane " + std::to_string(i) + ": " + error.message()});
-    }
-  }
-  return output;
+  return {std::move(output), atxvol::python::to_status_array(statuses)};
 }
 
 py::array_t<double> american_slice(const DoubleArray &strikes_array, double spot, double t,
@@ -126,6 +126,12 @@ void bind_pricing(py::module_ &m) {
       .value("NOT_IMPLEMENTED", atx::core::ErrorCode::NotImplemented)
       .value("IO_ERROR", atx::core::ErrorCode::IoError)
       .value("PARSE_ERROR", atx::core::ErrorCode::ParseError);
+
+  // Sentinel for the NaN + per-lane status convention (batch_status.hpp): every
+  // vectorized entry point returns a parallel int32 status array whose entries
+  // are STATUS_OK or int(ErrorCode). ErrorCode::Unknown is 0, so success needs a
+  // value from outside the enum.
+  m.attr("STATUS_OK") = atxvol::python::kStatusOk;
 
   py::enum_<Side>(m, "Side").value("CALL", Side::Call).value("PUT", Side::Put).export_values();
   py::enum_<ExerciseStyle>(m, "ExerciseStyle")
@@ -201,7 +207,18 @@ void bind_pricing(py::module_ &m) {
       .def(py::init<double, double, double, double, double, Side, const std::optional<AlOpts> &>(),
            py::arg("spot"), py::arg("strike"), py::arg("T"), py::arg("r"), py::arg("q"),
            py::arg("side"), py::arg("opts") = std::nullopt)
-      .def("price", &AloPricer::price, py::arg("sigma"), py::call_guard<py::gil_scoped_release>());
+      // PY-5: NO `gil_scoped_release` here. `AloPricer::price` is non-const — it
+      // mutates the cached exercise boundary — so releasing the GIL let two
+      // Python threads sharing one pricer race in C++ with no lock: undefined
+      // behaviour, not a slow path. Holding the GIL is the whole synchronization
+      // story for this object. The long-running kernels that legitimately release
+      // it (`andersen_lake`, the batch entry points, `run_backtest`) are all
+      // stateless or own their scratch.
+      .def("price", &AloPricer::price, py::arg("sigma"),
+           "Price at `sigma`, reusing this pricer's cached exercise boundary.\n\n"
+           "Mutates cached state, so this call holds the GIL: one `AloPricer` is\n"
+           "safe to share across Python threads, and concurrency comes from using\n"
+           "one pricer per thread or from the batch entry points.");
 
   m.def("black76_price", &black76_price, py::arg("F"), py::arg("K"), py::arg("T"), py::arg("sigma"),
         py::arg("df"), py::arg("side"), py::call_guard<py::gil_scoped_release>());
@@ -226,7 +243,10 @@ void bind_pricing(py::module_ &m) {
         "Vectorized Black-76 pricing over equal-length one-dimensional arrays.");
   m.def("implied_vol_batch", &iv_batch, py::arg("price"), py::arg("F"), py::arg("K"), py::arg("T"),
         py::arg("df"), py::arg("side"),
-        "Vectorized implied-vol inversion; raises AtxError with the failing lane.");
+        "Vectorized implied-vol inversion.\n\n"
+        "Returns ``(vols, status)``. A lane that cannot be inverted yields NaN in\n"
+        "``vols`` and ``int(ErrorCode)`` in ``status``; a converged lane yields\n"
+        "``STATUS_OK``. Only a malformed call (shape mismatch, wrong rank) raises.");
 
   m.def(
       "andersen_lake",

@@ -18,14 +18,25 @@ void bind_dispersion(py::module_ &m);
 PYBIND11_MODULE(_core, m) {
   m.doc() = "pybind11 bindings for atx-vol";
 
+  // PY-1: the raised exception carries the STRUCTURED code, not just prose.
+  // `AtxException` holds `atx::core::ErrorCode` and the module binds that enum,
+  // so programmatic dispatch (retry on Unavailable, skip on NotFound) can read
+  // `err.code` instead of regex-matching a message that is not a contract. The
+  // message itself is unchanged — it still leads with the code's name.
   static py::exception<atxvol::python::AtxException> exc(m, "AtxError");
+  exc.attr("code") = py::none(); // class-level default for hand-constructed instances
   py::register_exception_translator([](std::exception_ptr ptr) {
     try {
       if (ptr) {
         std::rethrow_exception(ptr);
       }
     } catch (const atxvol::python::AtxException &error) {
-      py::set_error(exc, error.what());
+      // `py::exception` shadows object_api::operator() with the deprecated
+      // set-error overload, so go through a plain object to CONSTRUCT one.
+      py::object exc_type = py::reinterpret_borrow<py::object>(py::handle(exc));
+      py::object instance = exc_type(error.what());
+      instance.attr("code") = py::cast(error.code());
+      py::set_error(exc, instance);
     }
   });
 
