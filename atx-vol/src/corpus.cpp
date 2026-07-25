@@ -976,7 +976,7 @@ struct CorpusDateCheckpoint {
 [[nodiscard]] Result<std::optional<CorpusDateCheckpoint>>
 read_date_checkpoint(std::string_view out_dir, std::string_view date,
                      std::span<const std::string> expected_symbols, std::uint64_t input_fingerprint,
-                     std::uint64_t policy_fingerprint) {
+                     std::uint64_t policy_fingerprint, bool scrub_payload_crc) {
   const std::filesystem::path manifest_path = checkpoint_path(out_dir, date, ".manifest.tsv");
   const std::filesystem::path quality_path = checkpoint_path(out_dir, date, ".quality.tsv");
   std::error_code manifest_error;
@@ -1045,16 +1045,36 @@ read_date_checkpoint(std::string_view out_dir, std::string_view date,
       return Err(ErrorCode::ParseError,
                  "CorpusBuildSession: date checkpoint archive count mismatch");
     }
-    // Only the surface COUNT is cross-checked here, so map zero-copy views (no
-    // per-surface reconstruct); the v2 subset-map touches nothing but framing.
-    ATX_TRY(std::vector<PricedSurfaceView> mapped, archive.map_all());
-    if (mapped.size() != admitted) {
+    // T2 / SE-P2-6: framing-ONLY enumeration. This used to call `map_all()` on
+    // the strength of a comment claiming "the v2 subset-map touches nothing but
+    // framing" — false for the heavy kinds: `map_all` builds a
+    // `PricedSurfaceView` per record, which eagerly materializes
+    // ConvexDense/SplineVol curves (allocations, node-array copies, spline
+    // second-derivative solves), making resume O(heavy payload) for a dense
+    // SPY-style date when all this check wants is a count. WS-C's C6 accessors
+    // (`entries()`/`entry_count()`) are the seam: O(1), read only the directory
+    // parsed at open, and touch no record body at all.
+    if (archive.entry_count() != static_cast<std::size_t>(admitted)) {
       return Err(ErrorCode::ParseError, "CorpusBuildSession: date checkpoint archive map mismatch");
     }
     for (const CorpusEntry &entry : manifest.entries) {
       if (entry.status == CorpusFitStatus::Ok && !archive.find(entry.symbol)) {
         return Err(ErrorCode::ParseError,
                    "CorpusBuildSession: date checkpoint archive symbol mismatch");
+      }
+    }
+    // T2 / SE-P2-3: the ONE scheduled verification point for the lazy per-record
+    // CRC. Everything above this line is framing; this is the only place the
+    // pipeline reads a record body on purpose, and it does so to reject
+    // corruption rather than to serve it. Opt-out (`verify_checkpoint_payload_crc
+    // = false`) exists for callers with their own scrub schedule; the qualified
+    // corpus path defaults it ON. Re-wrapped with a corpus-level message so the
+    // failure names the site as well as the cause.
+    if (scrub_payload_crc) {
+      const Status scrubbed = archive.validate_all();
+      if (!scrubbed) {
+        return Err(scrubbed.error().code(),
+                   "CorpusBuildSession: date checkpoint archive failed payload CRC scrub");
       }
     }
   }
@@ -1319,7 +1339,8 @@ Status CorpusBuildSession::append_dates(std::span<const DateCells> dates) {
       PhaseTimer ckpt_timer(g_checkpoint_s);
       ATX_TRY(std::optional<CorpusDateCheckpoint> read,
               read_date_checkpoint(out_dir_, one.date, one.symbols, one.input_fingerprint,
-                                   quality_.policy_fingerprint));
+                                   quality_.policy_fingerprint,
+                                   cfg_.verify_checkpoint_payload_crc));
       checkpoint = std::move(read);
     }
     if (checkpoint.has_value()) {

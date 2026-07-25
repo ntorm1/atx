@@ -326,6 +326,24 @@ struct QualifiedCorpusConfig {
   CorpusAdmissionPolicy admission{};
   std::uint64_t input_fingerprint{0};
   std::uint64_t policy_fingerprint{0};
+  // T2 (SE-P2-3): scrub a resumed date's archive against its per-record payload
+  // CRCs before serving the checkpoint.
+  //
+  // The v2 per-record CRC is LAZY by design — never checked on the price path —
+  // and until this flag existed it had no production verifier anywhere:
+  // `validate_symbol`/`validate_all` had zero non-test callers, `open` checks
+  // only header + metadata, and neither `MarketSnapshot::load` nor
+  // `SurfaceDb::load_surface` validates. Media bit-rot inside a record therefore
+  // flowed straight into prices undetected. Checkpoint verification is the one
+  // natural scheduling point: it is already re-opening the archive, it happens
+  // once per resumed date rather than per query, and a corrupt payload found
+  // here costs a refit instead of a wrong price.
+  //
+  // Default ON — this config is the `--qualify` path's config, and the qualified
+  // corpus is exactly the artifact whose integrity claim has to hold. Cleared
+  // only by a caller that has its own scrub schedule (or a test asserting
+  // framing-only resume, which must not read record bodies at all).
+  bool verify_checkpoint_payload_crc{true};
 };
 
 // B1 (perf): cumulative wall time spent inside the corpus build, split by phase,

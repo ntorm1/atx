@@ -1819,9 +1819,10 @@ namespace {
 // per_flush == 1 is exactly the historical one-pool-per-date path.
 [[nodiscard]] Result<QualifiedCorpusManifest>
 build_batched(const fs::path &out, const std::vector<std::string> &dates, std::size_t per_flush,
-              unsigned n_threads, std::int64_t created_ts = 1) {
+              unsigned n_threads, std::int64_t created_ts = 1, bool scrub = true) {
   QualifiedCorpusConfig cfg;
   cfg.build.n_threads = n_threads;
+  cfg.verify_checkpoint_payload_crc = scrub;
   // 1 pins an explicit stamp (the historical byte-identity tests); 0 leaves the
   // production sentinel, which the writer now fills from an archive-content hash.
   cfg.build.write_opts.created_ts_ns = created_ts;
@@ -2065,6 +2066,120 @@ TEST(CorpusBuildSession, InnerWorkerReclaimIsByteIdenticalToSerial) {
 
   expect_manifests_equivalent(*s, *w);
   expect_corpora_byte_identical(serial, wide, dates);
+}
+
+// ── T2 (SE-P2-6 / SE-P2-3): framing-only checkpoint resume + payload scrub ───
+namespace {
+
+// Overwrite every surface RECORD BODY (the data section) while leaving the
+// header + metadata section (lookup ‖ directory) byte-intact. `open()` is lazy —
+// header CRC and metadata CRC still verify, the directory still parses — so an
+// enumeration that reads ONLY framing keeps working, while anything that
+// materializes a record (map_all's per-record PricedSurfaceView, or a payload
+// CRC check) hits the poison. This is the same discriminator WS-C's C6 unit test
+// uses (SurfaceArchiveV2.EntriesEnumerateWithoutMaterializingViews).
+void poison_archive_record_bodies(const fs::path &archive) {
+  std::uint64_t data_offset = 0;
+  {
+    auto arch = SurfaceArchiveV2::open_file(archive.generic_string());
+    ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+    data_offset = arch->header().data_offset;
+  }
+  std::string bytes = read_all_bytes(archive);
+  ASSERT_LT(static_cast<std::size_t>(data_offset), bytes.size());
+  for (std::size_t i = static_cast<std::size_t>(data_offset); i < bytes.size(); ++i) {
+    bytes[i] = static_cast<char>(0xFF);
+  }
+  std::ofstream out(archive, std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(out.good());
+  out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+} // namespace
+
+// T2a (SE-P2-6): checkpoint resume must be O(framing), not O(heavy payload).
+//
+// `read_date_checkpoint` cross-checks only the surface COUNT and the admitted
+// symbols, but reached for `map_all()` to do it — which builds a
+// `PricedSurfaceView` per record and EAGERLY materializes ConvexDense/SplineVol
+// curves (allocations, node-array copies, spline second-derivative solves). The
+// in-code comment claiming the v2 subset-map "touches nothing but framing" was
+// simply false for the heavy kinds, and this corpus fixture writes one of each
+// (SPY is pinned to the dense recipe).
+//
+// Observed the way WS-C's own C6 test observes it — by poisoning every record
+// body. A framing-only resume does not read those bytes and succeeds; a resume
+// that materializes views cannot. The scrub added in T2b is switched OFF here
+// precisely so this asserts materialization and nothing else.
+TEST(CorpusBuildSession, CheckpointResumeIsFramingOnly) {
+  const std::vector<std::string> dates = {"2026-06-17"};
+  const fs::path out = fresh_out_dir("t2-framing-resume");
+
+  auto first = build_batched(out, dates, 1u, 4u, 1, /*scrub=*/false);
+  ASSERT_TRUE(first.has_value()) << first.error().to_string();
+  ASSERT_TRUE(fs::exists(out / "2026-06-17.atxvsa"));
+  poison_archive_record_bodies(out / "2026-06-17.atxvsa");
+
+  // A fresh session over the same out_dir resumes from the per-date checkpoint.
+  fs::remove(out / "manifest.tsv");
+  fs::remove(out / "quality.tsv");
+  auto resumed = build_batched(out, dates, 1u, 4u, 1, /*scrub=*/false);
+  ASSERT_TRUE(resumed.has_value())
+      << "checkpoint resume materialized record payloads instead of reading "
+         "framing only: "
+      << resumed.error().to_string();
+  expect_manifests_equivalent(*first, *resumed);
+}
+
+// T2b (SE-P2-3): the lazy per-record CRC finally gets ONE scheduled verifier.
+//
+// `validate_symbol`/`validate_all` had zero non-test callers; `open` checks only
+// header + metadata; neither the snapshot load nor SurfaceDb validates. So a
+// corrupted record body was SERVED — it flowed into prices with nothing in the
+// pipeline able to notice. Checkpoint verification is the natural scheduling
+// point (already re-opening the archive, once per resumed date), and it is where
+// a corrupt payload costs a refit instead of a wrong price.
+//
+// Same poison fixture as the framing test above, opposite expectation: with the
+// scrub ON (the `--qualify` default) the resume must FAIL with a named error
+// rather than hand back a checkpoint over corrupt surfaces.
+TEST(CorpusBuildSession, CheckpointScrubRejectsCorruptedPayload) {
+  const std::vector<std::string> dates = {"2026-06-17"};
+  const fs::path out = fresh_out_dir("t2-scrub-corrupt");
+
+  auto first = build_batched(out, dates, 1u, 4u);
+  ASSERT_TRUE(first.has_value()) << first.error().to_string();
+  poison_archive_record_bodies(out / "2026-06-17.atxvsa");
+
+  fs::remove(out / "manifest.tsv");
+  fs::remove(out / "quality.tsv");
+  auto resumed = build_batched(out, dates, 1u, 4u); // scrub defaults ON
+  ASSERT_FALSE(resumed.has_value())
+      << "a checkpoint whose archive payload is corrupt was served unverified";
+  EXPECT_NE(resumed.error().to_string().find("payload CRC scrub"), std::string::npos)
+      << "corruption must be reported at the checkpoint, by name: "
+      << resumed.error().to_string();
+}
+
+// T2b companion: the scrub must not cry wolf. An INTACT archive resumes exactly
+// as before with the scrub on (this is the default every qualified run takes),
+// and the resumed corpus still matches a clean single-pass build byte for byte.
+TEST(CorpusBuildSession, CheckpointScrubAcceptsIntactArchive) {
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18"};
+  const fs::path resumed_dir = fresh_out_dir("t2-scrub-intact");
+  const fs::path clean = fresh_out_dir("t2-scrub-clean");
+
+  auto partial = build_batched(resumed_dir, dates, 1u, 4u);
+  ASSERT_TRUE(partial.has_value()) << partial.error().to_string();
+  fs::remove(resumed_dir / "manifest.tsv");
+  fs::remove(resumed_dir / "quality.tsv");
+  auto again = build_batched(resumed_dir, dates, 1u, 4u);
+  ASSERT_TRUE(again.has_value()) << again.error().to_string();
+
+  auto reference = build_batched(clean, dates, dates.size(), 4u);
+  ASSERT_TRUE(reference.has_value()) << reference.error().to_string();
+  expect_manifests_equivalent(*again, *reference);
+  expect_corpora_byte_identical(resumed_dir, clean, dates);
 }
 
 TEST(CorpusBuildSession, RejectsDuplicateCanonicalSymbolsBeforeFitting) {
