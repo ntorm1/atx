@@ -1,5 +1,10 @@
 # Surface DB Production — Status Update 2
 
+> **SUPERSEDED.** This document describes the branch at the second operator stop.
+> Everything under *Not done* below has since been completed, and the merge-overlap
+> claim in item 3 was wrong (corrected in place). Read the later status document
+> for the state of the branch at merge.
+
 **Date:** 2026-07-25 (second operator stop)
 **Branch:** `feat/surface-db-prod` — worktree `C:\atx\.claude\worktrees\surface-db-prod`
 **Tip:** `5d26105` · **7 commits** since the last status (`492ff24`), 63 on the branch
@@ -150,8 +155,9 @@ gives a silent no-op. Fixed in `5d26105`.
    use a scratch `--target` with `PYTHONPATH` instead. The binding TU compiles standalone;
    link and import are unverified.
 3. **Merge `main` into this worktree.** Not started. `main` was 6 commits ahead at
-   `2858cab`, all in `backtest_driver`/examples/tests — **zero file overlap**. Re-check the
-   tip at merge time; a neighbouring session is committing actively.
+   `2858cab`, mostly in `backtest_driver`/examples/tests. **Correction: not zero file
+   overlap** — both sides touch `atx-vol/CMakeLists.txt` and `atx-vol/tests/CMakeLists.txt`.
+   Re-check the tip at merge time; a neighbouring session is committing actively.
 
 ## Open items carried forward
 
