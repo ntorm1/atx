@@ -284,20 +284,24 @@ void expect_sheet_bit_identical(const TearSheet &a, const TearSheet &b) {
   return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
-// `spy_dispersion_pnl.cpp:56-60`'s `fmt_num`, verbatim — the rendering that
-// reaches the artifact's meta prelude.
+// A COPY of `spy_dispersion_pnl.cpp:57-61`'s `fmt_num` — the rendering that
+// reaches the artifact's meta prelude. A copy, not the driver's function: if the
+// driver's `%.10g` ever changes, this helper does NOT follow and no assertion
+// here notices (see test 7's "WHAT THIS TEST DOES *NOT* COVER").
 [[nodiscard]] std::string fmt_num_10g(double v) {
   char buf[64];
   std::snprintf(buf, sizeof buf, "%.10g", v);
   return buf;
 }
 
-// The 11 result/tearsheet-derived meta keys `spy_dispersion_pnl.cpp:502,515-524`
-// inlines into `pnl_track.tsv`, in the driver's order. The two further derived
-// keys it embeds — `wall_clock_ms` and `steps_per_s` (`:525-526`) — are omitted
-// here for the same reason T2's golden filters them: they are wall-clock and
-// cannot be equal across two runs. The other 30 `Meta` keys are identity/config
-// strings that do not touch the seam.
+// A COPY (same caveat as `fmt_num_10g`) of the 11 result/tearsheet-derived meta
+// keys `spy_dispersion_pnl.cpp:502,515-524` inlines into `pnl_track.tsv`, in the
+// driver's order. The two further derived keys it embeds — `wall_clock_ms` and
+// `steps_per_s` (`:525-526`) — are omitted here for the same reason T2's golden
+// filters them: they are wall-clock and cannot be equal across two runs. The
+// other 30 `Meta` keys are identity/config strings that do not touch the seam.
+// This is a pure function of `r.size()`, `r.n_open_lots` and 9 `TearSheet`
+// fields — every one of which tests 1 and 2 already pin bit-for-bit.
 [[nodiscard]] std::vector<std::pair<std::string, std::string>>
 pnl_meta_block(const BacktestResult &r, const TearSheet &ts) {
   const double peak_lots =
@@ -502,34 +506,58 @@ TEST(BacktestDriver, RunTimedDispersion_SignalsSurviveTheSeam) {
               direct_bytes.size(), outcome->result.signals.size());
 }
 
-// ── 7. Wave C T5: the PnL-track artifact — meta prelude AND series — is
-//      byte-identical through the seam. `examples/spy_dispersion_pnl.cpp`
-//      INLINES its headline metrics into the artifact's `# key=value` prelude at
-//      `%.10g` (design §6/I7's "keep BOTH conventions": mag7 writes a separate
-//      metrics file, this driver does not) and emits the whole thing with
-//      `write_backtest_pnl_tsv` — an emitter with no other C++ test in the tree;
-//      only Python reads it. So this gate runs the driver's own composition,
-//      spine outcome -> `%.10g` meta -> emitted bytes, from BOTH routes.
+// ── 7. Wave C T5: `write_backtest_pnl_tsv`'s emitted bytes. TWO assertions of
+//      VERY different strength — read the split before trusting this test.
 //
-//      RESCOPED from the plan's `RunTimed_SheetFieldsAreBitEqualUnderFmtNum` as
-//      specified (snprintf `outcome.sheet` and `tearsheet(outcome.result)` and
-//      compare the strings), which is strictly IMPLIED by test 2 above: `%.10g`
-//      of two bit-equal doubles is equal by construction, so it could not fail
-//      unless test 2 failed first. What is genuinely uncovered is the
-//      composition — which is what T2's filtered golden `CC90B900A7116CC3` is a
-//      hash of.
+//      (a) Two-route equality (`direct_bytes == seam_bytes`) is a REGRESSION
+//          LOCK, and it is STRICTLY IMPLIED by tests 1+2.
+//          `write_backtest_pnl_tsv` is `append_meta_header(meta)` +
+//          `append_backtest_series_tsv(r)` (`src/tearsheet.cpp:281-288`), and the
+//          series appender (`:190-233`) reads ONLY `r.date`, `r.ts_ns`, the 25
+//          `backtest_series_columns()` doubles and `r.signals` — precisely the
+//          set test 1 already compares bit-for-bit on this same fixture, spec and
+//          `RunConfig`. `pnl_meta_block` is a pure function of `r.size()`,
+//          `r.n_open_lots` and 9 `TearSheet` fields, pinned by tests 1+2. So (a)
+//          is a theorem given tests 1+2, NOT new coverage. Kept because it is
+//          the cheapest end-to-end statement of the seam contract and it fails
+//          loudly if either premise is ever weakened.
 //
-//      RESOLUTION LIMIT (measured, and it corrects the task text): `%.10g`
-//      ABSORBS a 1-ULP tearsheet difference —
-//      `nextafter(387.1141627)` renders byte-identically — so `pnl_track.tsv`'s
-//      meta prelude cannot witness a 1-ULP sheet change. The ULP-level guarantee
-//      comes from test 2's bit comparison, not from this artifact (the `%.17g`
-//      series body carries no tearsheet value). A relative 1e-9 nudge of
-//      `outcome->sheet.total_return` DOES move the emitted bytes and was run as
-//      this gate's negative control: `direct_bytes == seam_bytes` failed at
-//      equal length (4895 both sides), i.e. the assertion, not the size
-//      precheck, is what catches it.
-TEST(BacktestDriver, RunTimed_SheetFieldsAreBitEqualUnderFmtNum) {
+//      (b) The PRELUDE FRAMING pin is this test's real, not-implied
+//          contribution. A change to `append_meta_header`
+//          (`src/tearsheet.cpp:244-256`) — `# k=v` becoming `#k=v` or `k,v`, a
+//          sorted prelude, a blank line before the series header, or a tab in a
+//          value surviving into the `\t` body — moves BOTH routes identically, so
+//          (a) is blind to it, and `write_backtest_pnl_tsv` has no other C++ test
+//          anywhere in the tree (only Python reads it). (b) pins that framing
+//          against a literal.
+//
+//      WHAT THIS TEST DOES *NOT* COVER, stated plainly because an earlier
+//      version of this comment over-claimed it: `fmt_num_10g` and
+//      `pnl_meta_block` are COPIES of `spy_dispersion_pnl.cpp:57-61` and
+//      `:485-527`, not the driver's own code. Change the driver's `fmt_num` to
+//      `%.9g`, or delete `{"sharpe", fmt_num(ts.sharpe)}` from its `Meta`
+//      literal, and the artifact convention this task exists to preserve changes
+//      while this test still PASSES. The only thing that catches that is T2's
+//      filtered hash `CC90B900A7116CC3`, which lives in session scratchpad and is
+//      NOT committed. The driver-side `Meta` key set and its precision are
+//      pinned by review plus that hash — not here.
+//
+//      Plan-name mapping: the plan asked for
+//      `RunTimed_SheetFieldsAreBitEqualUnderFmtNum` = snprintf `outcome.sheet`
+//      and `tearsheet(outcome.result)` at `%.10g` and compare the strings. That
+//      is strictly implied by test 2 (`%.10g` of two bit-equal doubles is equal
+//      by construction), so it was rescoped rather than written as a duplicate.
+//
+//      RESOLUTION LIMIT (measured; it corrects the task text): `%.10g` ABSORBS a
+//      1-ULP tearsheet difference — `nextafter(387.1141627)` renders
+//      byte-identically — so this prelude cannot witness a 1-ULP sheet change.
+//      That guarantee comes from test 2's bit comparison, not from this artifact
+//      (the `%.17g` series body carries no tearsheet value). A relative 1e-9
+//      nudge of `outcome->sheet.total_return` DOES move the bytes and was run as
+//      (a)'s negative control: `direct_bytes == seam_bytes` failed at equal
+//      length (4895 both sides), i.e. the byte assertion and not the size
+//      precheck is what catches it.
+TEST(BacktestDriver, RunTimed_PnlTrackBytesIdenticalBothRoutes) {
   const fs::path dir = fresh_dir("pnl-meta");
   const CorpusManifest manifest = single_name_corpus(dir, "SPY", 12);
   auto clock = Clock::from_manifest(manifest);
@@ -569,8 +597,38 @@ TEST(BacktestDriver, RunTimed_SheetFieldsAreBitEqualUnderFmtNum) {
   }
   ASSERT_EQ(direct_bytes.size(), seam_bytes.size()) << "emitted PnL-track lengths differ";
   EXPECT_TRUE(direct_bytes == seam_bytes) << "the seam moved the PnL-track bytes";
+
+  // ── (b) The prelude framing pin: the part of this test NOT implied by tests
+  //    1+2. Keys are deliberately NOT alphabetical, because a sorted prelude
+  //    would reorder the driver's 41 keys and move the artifact while (a) stayed
+  //    green. One value is a `%.10g` render, so the artifact's
+  //    10-significant-digit convention is asserted against a literal in a
+  //    COMMITTED test rather than existing only inside the driver. One value
+  //    carries a TAB, which `append_sanitized` (`src/tearsheet.cpp:238-242`) must
+  //    turn into a space or a meta value could inject a spurious column into the
+  //    `\t`-separated body that follows.
+  const std::vector<std::pair<std::string, std::string>> framing_meta = {
+      {"zeta", "1"},
+      {"alpha", fmt_num_10g(1.0 / 3.0)},
+      {"mid", "two\twords"},
+  };
+  const std::string kPrelude = "# zeta=1\n# alpha=0.3333333333\n# mid=two words\n";
+  const std::string kSeriesHead = "date\tts_ns\t";
+  const std::string framing_path = (dir / "framing_pnl.tsv").string();
+  const Status st_framing = write_backtest_pnl_tsv(*baseline, framing_meta, framing_path);
+  ASSERT_TRUE(st_framing.has_value()) << st_framing.error().to_string();
+  const std::string framing_bytes = read_file_bytes(framing_path);
+  ASSERT_GT(framing_bytes.size(), kPrelude.size() + kSeriesHead.size())
+      << "no series body after the prelude — an empty file would make this pin vacuous";
+  EXPECT_EQ(framing_bytes.compare(0, kPrelude.size(), kPrelude), 0)
+      << "prelude framing moved. expected [" << kPrelude << "] got ["
+      << framing_bytes.substr(0, kPrelude.size()) << "]";
+  EXPECT_EQ(framing_bytes.compare(kPrelude.size(), kSeriesHead.size(), kSeriesHead), 0)
+      << "the series header must start immediately after the last `# k=v` line, got ["
+      << framing_bytes.substr(kPrelude.size(), kSeriesHead.size()) << "]";
+
   std::printf("[backtest_driver] pnl_track: %zu bytes identical both routes, %zu meta key(s), "
-              "total_return=%s peak_open_lots=%s\n",
+              "total_return=%s peak_open_lots=%s; prelude framing pinned (%zu bytes)\n",
               direct_bytes.size(), meta_seam.size(), meta_seam[1].second.c_str(),
-              meta_seam.back().second.c_str());
+              meta_seam.back().second.c_str(), kPrelude.size());
 }
