@@ -746,17 +746,32 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
 // probes, and NEITHER route touches `run.atxrun` on either side -- which is exactly
 // why they can be unioned with main's RunArchive design without conflict.
 //
-// What this copy could not reach, and the library does:
+// What this copy could not reach, and the library does. The list is PER ROUTE:
+// it used to be written as one list for both, which was false for
+// `run-projected-var` on two of its five entries (REV-TAIL I-2).
+//
+// `run-surface-backtest` (-> dispersion_run_surface_backtest):
 //   * X1 strict typed spec -- a misspelled or unimplemented key fails BY NAME here
 //     instead of being silently dropped by `read_run_spec`;
 //   * X2/X6 frictions, financing, costs and X3 risk limits actually reaching the
 //     engine (this copy hardcoded `config.run.unpriced = Error` and nothing else,
-//     so a spec's declared frictions changed no number);
+//     so a spec's declared frictions changed no number). Four of those keys bound
+//     and then died in `dispersion_backtest_config_from`; closed at REV-TAIL I-3;
 //   * X4 weighting / strike policies, and the previously-hardcoded multiplier;
 //   * X5 `surface_tearsheet.tsv` + `surface_pnl_track.tsv`, regime FIRST, and the
-//     regime named on the console line;
+//     regime named on the console line.
+//
+// `run-projected-var` (-> dispersion_run_projected_var): exactly ONE of the above.
 //   * C1-ACTIVATE point-in-time universe resolution -- this copy froze the basket at
-//     the first session date, so a mid-window reconstitution was silently ignored.
+//     the first session date (`universe_at(universe_rows, clock.refs().front()
+//     .date)`), so a mid-window reconstitution was silently ignored.
+//   NOT X1: the library route reads the same loose `read_run_spec`
+//   (dispersion_run.cpp:2474), because a projected-VaR run consumes no execution
+//   knobs. NOT X4: it still hardcodes `side = ShortIndexLongNames` and
+//   `multiplier = 100.0` (:2510-2511). Neither is a REGRESSION -- the copy this
+//   dispatch replaced hardcoded both identically -- but neither was recovered, and
+//   claiming otherwise is how a knob gets believed to be wired. X2/X3/X5/X6 do not
+//   apply to this route at all: it runs no engine and writes no tearsheet.
 //
 // The E1 unit resolution the merge recorded at these two call sites is preserved,
 // not lost: `dispersion_backtest_config_from` and `dispersion_run_projected_var`

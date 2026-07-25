@@ -2515,27 +2515,43 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
   ATX_TRY(DispersionBook initial,
           build_dispersion_book(resolved.universe, snapshots.front()->set(), dispersion));
 
-  std::vector<RelativeOptionPosition> relative_positions;
-  relative_positions.reserve(initial.positions.size());
-  for (const Position &position : initial.positions) {
-    OptionProjectionSpec option;
-    option.uid = position.contract.uid;
-    option.maturity = *dispersion.projected_maturity;
-    option.strike = ProjectedStrikeSpec::atm_forward();
-    option.side = position.contract.side;
-    option.multiplier = position.multiplier;
-    relative_positions.push_back({option, position.qty});
-  }
-  ATX_TRY(PreparedHistoricalProjection prepared,
-          PreparedHistoricalProjection::create(relative_positions));
-  std::vector<HistoricalProjectionFrame> frames(scenarios.size());
-  std::vector<ProjectedOption> legs(scenarios.size() * relative_positions.size());
+  // REV-TAIL I-2. The book -> OptionProjectionSpec synthesis + prepare +
+  // evaluate_into + per-confidence VaR split USED to be hand-rolled inline here,
+  // a second copy of `dispersion_book_var` (listed_dispersion_pipeline.cpp:454).
+  // `347ad44` — the commit whose stated purpose was restoring CLI seams — created
+  // that copy by inlining, and in doing so left `dispersion_book_var` with ZERO
+  // production callers: an exported public API whose only remaining caller was a
+  // test. That is exactly the shape this file's own header warns rots quietly and
+  // is then deleted by someone who assumes it was always dead. Worse, the tested
+  // copy was the ORPHANED one — `dispersion_run_projected_var` has no test at all
+  // — so the shipped economics were the untested duplicate of a tested seam.
+  //
+  // What `347ad44` did NOT do is regress this route. The pre-inline CLI body
+  // (`b0080fa:examples/spy_dispersion_backtest.cpp:950,981-982`) read the SAME
+  // loose `read_run_spec` and hardcoded the SAME `side` / `multiplier = 100.0`;
+  // those are not a capability this route ever had and then lost. `347ad44`
+  // genuinely ADDED C1-ACTIVATE point-in-time universe resolution above, replacing
+  // `universe_at(universe_rows, clock.refs().front().date)`. So the correct repair
+  // is to keep the PIT resolution and give the synthesis back to the seam, which
+  // is what this call does.
+  //
+  // ORDERING, stated because it is the one behavioural delta: the incomplete-frame
+  // gate now fires INSIDE `dispersion_book_var`, i.e. BEFORE the loose TSVs are
+  // written, so a failed projection no longer leaves `projected_risk_scenarios
+  // .tsv` / `projected_risk_legs.tsv` behind in the run directory. That is the
+  // `b0080fa` ordering, restored. `elapsed_seconds` likewise spans the whole call
+  // (prepare + evaluate + risk) again rather than `evaluate_into` alone; it feeds
+  // only `projections_per_second`, non-deterministic wall-clock telemetry.
+  const std::vector<double> confidences = {0.95, 0.99};
   HistoricalProjectionConfig config;
   config.n_threads = spec.fit_workers;
   const auto started = std::chrono::steady_clock::now();
-  ATX_TRY_VOID(prepared.evaluate_into(scenarios, frames, legs, config));
+  ATX_TRY(DispersionBookVar var, dispersion_book_var(initial, *dispersion.projected_maturity,
+                                                     scenarios, confidences, config));
   const double elapsed_seconds =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+  const std::vector<HistoricalProjectionFrame> &frames = var.frames;
+  const std::vector<ProjectedOption> &legs = var.legs;
 
   std::ofstream frame_out(run_dir / "projected_risk_scenarios.tsv",
                           std::ios::binary | std::ios::trunc);
@@ -2554,13 +2570,17 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
               << frame.delta << '\t' << frame.gamma << '\t' << frame.vega << '\t' << frame.theta
               << '\t' << frame.n_ok << '\t' << frame.n_failed << '\t'
               << frame.definition_fingerprint << '\n';
-    for (std::size_t leg = 0; leg < relative_positions.size(); ++leg) {
-      const ProjectedOption &projected = legs[scenario * relative_positions.size() + leg];
+    // `var.n_positions == initial.positions.size()`, and the seam builds one
+    // relative template per book position IN ORDER, so leg `i` is book position
+    // `i` and its quantity is `initial.positions[i].qty` — the same value the
+    // inlined copy read out of its own `relative_positions[leg].quantity`.
+    for (std::size_t leg = 0; leg < var.n_positions; ++leg) {
+      const ProjectedOption &projected = legs[scenario * var.n_positions + leg];
       leg_out << clock.refs()[scenario].date << '\t' << leg << '\t'
               << projected.definition.contract.uid << '\t'
               << (projected.definition.contract.side == Side::Call ? "Call" : "Put") << '\t'
               << projected.definition.expiry_ts_ns << '\t' << projected.definition.contract.K
-              << '\t' << relative_positions[leg].quantity << '\t' << projected.definition.multiplier
+              << '\t' << initial.positions[leg].qty << '\t' << projected.definition.multiplier
               << '\t' << projected.model_mark << '\t' << projected.greeks.delta << '\t'
               << projected.greeks.gamma << '\t' << projected.greeks.vega << '\t'
               << projected.greeks.theta << '\t' << projected.definition.fingerprint << '\t'
@@ -2571,10 +2591,8 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
   leg_out.close();
   if (!frame_out || !leg_out)
     return Err(ErrorCode::IoError, "projected VaR: output write failed");
-  for (const HistoricalProjectionFrame &frame : frames) {
-    if (frame.n_failed != 0u)
-      return Err(ErrorCode::Unavailable, "projected VaR: incomplete scenario projection");
-  }
+  // The incomplete-frame gate that used to sit here now fires inside
+  // `dispersion_book_var`, before these writes — see the ordering note above.
 
   std::ofstream summary(run_dir / "projected_var.tsv", std::ios::binary | std::ios::trunc);
   if (!summary)
@@ -2582,19 +2600,16 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
   summary << std::setprecision(17)
           << "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
              "n_positions\tprojections_per_second\tprepared_fingerprint\n";
-  for (const double confidence : {0.95, 0.99}) {
-    ATX_TRY(ProjectedHistoricalVar risk,
-            projected_historical_var(frames, frames.back().value, confidence));
+  for (const ProjectedHistoricalVar &risk : var.risks) {
     summary << risk.confidence << '\t' << risk.reference_value << '\t' << risk.value_at_risk << '\t'
-            << risk.expected_shortfall << '\t' << risk.n_scenarios << '\t'
-            << relative_positions.size() << '\t'
-            << (static_cast<double>(legs.size()) / elapsed_seconds) << '\t'
-            << prepared.fingerprint() << '\n';
+            << risk.expected_shortfall << '\t' << risk.n_scenarios << '\t' << var.n_positions
+            << '\t' << (static_cast<double>(legs.size()) / elapsed_seconds) << '\t'
+            << var.prepared_fingerprint << '\n';
   }
   if (!summary)
     return Err(ErrorCode::IoError, "projected VaR: summary write failed");
   std::printf("projected relative-template VaR complete: scenarios=%zu positions=%zu rate=%.1f/s\n",
-              frames.size(), relative_positions.size(),
+              frames.size(), var.n_positions,
               static_cast<double>(legs.size()) / elapsed_seconds);
   return Ok();
 }
