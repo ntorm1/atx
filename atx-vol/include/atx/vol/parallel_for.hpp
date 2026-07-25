@@ -294,7 +294,31 @@ template <class Invoke> void run_elastic_dynamic(std::size_t n, Invoke &invoke) 
           break;
         }
       }
-      spawn_up_to(resolve(resolve_ctx)); // <- the reclaim, re-asked mid-flight
+      // <- the reclaim, re-asked mid-flight.
+      //
+      // KNOWN RESIDUAL, bounded and deliberate (rev2-ws-t N-M1). This is the ONLY
+      // trigger: the calling thread finishing one of its OWN tasks. Spawned
+      // workers (above) never call `spawn_up_to`; no watchdog does, no tick does.
+      // Three consequences a reader of this line should know:
+      //   (1) the reclaim's granularity is one task. The width cannot move DURING
+      //       a task, however long that task runs;
+      //   (2) so the calling thread's FIRST task always runs at the entry width.
+      //       `run_deam_prepass` (curve_fit.cpp) sorts its schedule descending by
+      //       n_strikes, and a saturated resolver answers 1 at entry, so the
+      //       straggler board's single most expensive expiry is always the first
+      //       one it runs, always at width 1, with no widening possible during
+      //       it. The reclaim can only begin at that board's second chain;
+      //   (3) work that is not `parallel_for_dynamic`-with-AUTO is untouched. The
+      //       STATIC `parallel_for` resolves AUTO exactly once, at entry, and
+      //       serial phases of a fit never re-ask at all.
+      // This is a real residual, not a defect: it is bounded by one task's cost,
+      // and every alternative (a watchdog thread, a polled tick, re-entering a
+      // running task) reintroduces either timing-derived behaviour or a
+      // preemption point inside `invoke`. Do not "fix" it without replacing that
+      // trade-off deliberately. Gated by
+      // ParallelForElastic.GrowsThePoolWhileTheFanOutIsStillRunning, which fails
+      // on four axes if this line is removed.
+      spawn_up_to(resolve(resolve_ctx));
     }
   } // std::jthread join here is the barrier + the happens-before for worker_exc.
   if (worker_exc) {

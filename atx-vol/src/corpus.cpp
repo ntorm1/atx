@@ -776,6 +776,19 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
             // drains reclaims the workers the pool can no longer place. The
             // budget is re-resolved at every inner fan-out for as long as this
             // board is in flight, not frozen when the chain was claimed.
+            //
+            // UNTESTED, and deliberately so (rev2-ws-t N-M3): this install
+            // mirrors the board arm below exactly, but NOTHING reaches it. No
+            // fixture does -- `build_batched` never sets `warm_start_chain` --
+            // and production does not either, for the reason spelled out at the
+            // FitAffinity comment on the board arm below: `CorpusConfig`'s
+            // `warm_start_chain` defaults to false and `dispersion_corpus_config`
+            // never sets it. The drain-regime gates
+            // (CorpusBuildSession.SaturatedFanOutOffersOneWorkerUntilItDrains,
+            // .StragglerReclaimsInnerWorkersWhileStillRunning) therefore cover
+            // the board arm only. If this branch is ever made reachable, extend
+            // one of those fixtures to `warm_start_chain = true` FIRST -- do not
+            // rely on the board arm's coverage to speak for it.
             InnerBudgetTicket ticket;
             std::optional<ScopedElasticWorkerBudget> elastic;
             if (n > 1u && cfg.n_threads != 1u) {
