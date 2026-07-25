@@ -148,10 +148,13 @@ namespace {
 // gate: parity-green + faster-than-scalar ships it (WS-K report: laned greeks beat the scalar
 // american_greeks_al bundle on this host). Auto selects AVX2 on capable CPUs; the scalar
 // american_greeks_al bundle stays the oracle + fallback (ForceScalar, non-AVX2 hosts, and
-// every non-early-exercise / non-finite lane patch). NOTE: the portfolio/priced_surface
-// greeks path does not yet dispatch american_greeks_batch (WS-H wires that) — flipping this
-// only activates AVX2 for the direct american_greeks_batch / american_put_greeks_batch
-// callers today.
+// every non-early-exercise / non-finite lane patch). NOTE (corrected by the BENCH G4 pass):
+// this used to add "the portfolio/priced_surface greeks path does not yet dispatch
+// american_greeks_batch (WS-H wires that), so flipping this only activates AVX2 for the
+// direct callers". That is no longer true — priced_surface.cpp:1111-1134 and
+// priced_surface_view.cpp:968-975 now route through detail::laned_greek_route_selected ->
+// avx2_greeks_selected, so with this flag true the DEFAULT Auto ISA rides the laned bundle
+// on the surface path as well. Changing this constant now changes shipped behaviour.
 inline constexpr bool kShipAvx2Greeks = true;
 
 // Scalar oracle: american_greeks_al per contract (NaN-filled on error, matching the

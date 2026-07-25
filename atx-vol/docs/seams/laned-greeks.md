@@ -31,11 +31,19 @@ sections after it are the original design rationale.
   non-early-exercise / non-finite lanes). Returns `SimdRoute`.
 - **SoA surface (kernel-owned):** `american_greeks_batch(in, GreekFieldMask fields, ...)`
   already routes analytic PUT lanes through the dispatch when `simd::avx2_greeks_selected`
-  (Auto respects the dark `kShipAvx2Greeks` gate); CALL lanes stay on the scalar analytic
-  fan. **L4 does not change this function — it sets `kernel.isa` and the mask.**
-- **Ship gate:** `kShipAvx2Greeks` (false, dark) in `american_boundary_batch.cpp`, mirror
-  of `kShipAvx2Boundary`. The PM flips it after a quiet-window A/B. L4 wires the tier; it
-  does not flip the gate.
+  (under `Auto` that is LIVE, not dark — see the ship gate below); CALL lanes stay on the
+  scalar analytic fan. **L4 does not change this function — it sets `kernel.isa` and the mask.**
+- **Ship gate: `kShipAvx2Greeks` is `true` — LIVE under `Auto`, not dark.**
+  `american_boundary_batch.cpp:155`, mirror of `kShipAvx2Boundary`. So
+  `avx2_greeks_selected(Auto)` returns `have_avx2()` (`:199-208`) and on an AVX2 host the
+  DEFAULT ISA rides the laned bundle. The surface caller flipped with it: the G4 site
+  `priced_surface.cpp:1111-1134` now gates on `detail::laned_greek_route_selected(...)`
+  (which wraps `avx2_greeks_selected`), NOT on the old `resolved_price_isa == ForceAvx2`;
+  `priced_surface_view.cpp:968-975` mirrors it. README.md:329-341 states the same.
+  > This block previously read "(false, dark) … The PM flips it after a quiet-window A/B".
+  > That was true when L4 wired the tier and became false when the gate was flipped; the
+  > BENCH G4 pass corrected it. Corollary for anyone reading the seam: there is no dark
+  > gate left to flip, so a change here is a change to SHIPPED default behaviour.
 
 ### K4 first-order tier — the mask IS the tier (no separate function)
 

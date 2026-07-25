@@ -328,10 +328,15 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
 
   // K3 laned fast path: taken when the AVX2 Greeks route is selected for this isa
   // (avx2_greeks_selected: Auto => AVX2 on an AVX2 host, since kShipAvx2Greeks is now
-  // true; ForceScalar => never). It is NOT dark at the flag level any more; in
-  // production it engages only where the SOLE surface caller (priced_surface.cpp)
-  // opts in, which still gates its greeks route on ForceAvx2 for seed-bit-identity
-  // (WS-G G4) — a caller policy, not this dispatch. The analytic PUT lanes go through
+  // true; ForceScalar => never). It is NOT dark at the flag level any more, AND the
+  // surface caller is no longer holding it back either: priced_surface.cpp:1111-1134
+  // (and priced_surface_view.cpp:968-975) now gate on
+  // detail::laned_greek_route_selected -> simd::avx2_greeks_selected, NOT on the old
+  // resolved_price_isa == ForceAvx2. So under production Auto on an AVX2 host this
+  // path is LIVE end to end. (This comment used to say the surface caller "still
+  // gates its greeks route on ForceAvx2 for seed-bit-identity (WS-G G4)"; that clause
+  // was stale from the P1a gate flip and was corrected by the BENCH G4 pass.)
+  // The analytic PUT lanes go through
   // the laned bundle (american_put_greeks_batch), which solves the 5 boundaries
   // 4-wide per pack and
   // patches any non-early-exercise / non-finite lane through scalar american_greeks_al.
