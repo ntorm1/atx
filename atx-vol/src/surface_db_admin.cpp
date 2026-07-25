@@ -232,8 +232,13 @@ namespace {
 // (a name the manifest never configured is a legitimate thing to assert about);
 // otherwise the manifest's symbol table supplies them, minus the fail-closed
 // disabled ones unless the caller insists.
+//
+// `dropped` collects exactly the names that filter removed, so the walk can NAME
+// the columns it narrowed itself down to rather than silently reporting a clean
+// result over a database that is permanently missing a symbol.
 [[nodiscard]] Result<std::vector<std::string>> verify_symbol_set(const SurfaceDb &db,
-                                                                 const DbVerifySpec &spec) {
+                                                                 const DbVerifySpec &spec,
+                                                                 std::vector<std::string> &dropped) {
   std::vector<std::string> out;
   if (!spec.symbols.empty()) {
     out.reserve(spec.symbols.size());
@@ -260,6 +265,8 @@ namespace {
     }
     if (spec.include_disabled || cfg->enabled) {
       out.push_back(s);
+    } else {
+      dropped.push_back(s); // canonical + sorted, inherited from db.symbols()
     }
   }
   return Ok(std::move(out));
@@ -272,7 +279,8 @@ Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec) 
     return Err(ErrorCode::InvalidArgument, "verify_db: probe_T must be finite and > 0");
   }
 
-  Result<std::vector<std::string>> symbols = verify_symbol_set(db, spec);
+  std::vector<std::string> dropped_disabled;
+  Result<std::vector<std::string>> symbols = verify_symbol_set(db, spec, dropped_disabled);
   if (!symbols) {
     return Err(symbols.error());
   }
@@ -296,6 +304,11 @@ Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec) 
   // nothing in a database that is full".
   out.n_partitions_in_db = all_partitions.size();
   out.n_symbols = symbols->size();
+  // The columns this walk narrowed itself out of. Reported, never acted on: the
+  // verdict stays a statement about the bytes that ARE stored (see the field's
+  // doc), but an operator reading a clean report must be able to see that N
+  // requested names were not looked at at all.
+  out.disabled_symbols = std::move(dropped_disabled);
 
   // Record a fault, honoring the cap. Truncation is COUNTED, never silent: a
   // capped list with a zero elision count would read as "that was all of them".

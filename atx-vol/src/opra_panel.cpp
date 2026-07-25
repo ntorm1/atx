@@ -605,7 +605,30 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
     }
 
     QuoteRow row;
-    row.uid = !osi->root.empty() ? osi->root : std::string(und);
+    // FIX-C-1. The row's uid is the hive's `underlying` column — the SAME string
+    // the filter above matched, `frame.uid` is set from below, `board.symbol`
+    // carries, and the manifest/archive key on. The OSI root is a FALLBACK, used
+    // only when the file has no `underlying` column at all.
+    //
+    // Read the other way round (root first, column second) this line was the one
+    // place a single underlier acquired TWO names. For every ticker whose
+    // universe spelling is its OSI root the two derivations are byte-identical
+    // and nobody notices; for a punctuated ticker they are not. A production
+    // 51-name build lost BRK.B entirely this way: the column said `BRK.B`, every
+    // OSI symbol said `BRKB  260702C00270000`, so `data_install` interned BOTH,
+    // filed all 1,838 quotes under `BRKB`, and handed the caller the handle to an
+    // EMPTY `BRK.B` underlier. `OptionChain::from_frame` then succeeded over a
+    // zero-expiry chain and config selection fail-closed-disabled the symbol.
+    // Nothing compared the two strings, so nothing could report a mismatch.
+    //
+    // The dotted universe spelling is canonical because it is what the REST of
+    // the pipeline already keys on end to end: the operator's `--symbols`, the
+    // hive's discovery/filter (`opra_hive.cpp`), `CorpusBoard::symbol`, the
+    // manifest's symbol table and the archive's `canonical_symbol` (which
+    // preserves dots). The OSI root is a wire encoding of a contract, not the
+    // identity of an underlier. Nothing on disk changes; only which of two
+    // already-present strings the in-memory rows are keyed by.
+    row.uid = !und.empty() ? std::string(und) : osi->root;
     row.expiry_iso = std::move(osi->expiry_iso);
     row.strike = osi->strike;
     row.side = osi->side;
@@ -627,6 +650,11 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
     }
   }
 
+  // The frame's default uid, in the SAME namespace every row above was keyed in
+  // (the `underlying` column, OSI root only when that column is absent) — see the
+  // FIX-C-1 note on `row.uid`. `spec.underlying` is both the row filter and this
+  // default, so on a filtered load every kept row carries exactly this string;
+  // the two fallbacks below mirror the row rule for an unfiltered load.
   std::string frame_uid = spec.underlying;
   if (frame_uid.empty()) {
     frame_uid = !first_underlying.empty() ? first_underlying : first_root;
@@ -696,6 +724,29 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
   }
 
   ATX_TRY_VOID(build_uid_list(frame));
+  // FIX-C-1 structural guard. A FILTERED load addresses exactly ONE underlier, so
+  // its frame must carry exactly ONE uid — `spec.underlying`, seeded first by
+  // build_uid_list and then matched by every kept row. Two or more means some row
+  // was keyed in a different namespace from the frame, which is never legitimate
+  // and is precisely the shape that silently filed BRK.B's 1,838 quotes under
+  // `BRKB` while handing every caller the handle to an empty `BRK.B`. That defect
+  // was invisible because NOTHING compared the two strings; this compares them, so
+  // a future divergence is a loud per-cell load error (n_load_errors) instead of a
+  // symbol that disappears from the database. Unfiltered (discover/mixed) loads are
+  // exempt: several uids are their normal shape.
+  if (!filter.empty() && frame.uid_strs.size() > 1u) {
+    std::string list;
+    for (std::size_t j = 0; j < frame.uid_strs.size(); ++j) {
+      if (j != 0) {
+        list.push_back(',');
+      }
+      list.append(frame.uid_strs[j]);
+    }
+    return Err(ErrorCode::InvalidArgument,
+               "underlying '" + std::string(filter) +
+                   "': rows resolved to more than one uid {" + list +
+                   "} (frame uid and row uids disagree)");
+  }
   build_expiry_inputs(frame);
 
   const std::size_t n_contracts = frame.rows.size();

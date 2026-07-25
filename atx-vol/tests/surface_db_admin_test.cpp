@@ -524,6 +524,13 @@ TEST(SurfaceDbAdmin, VerifyDbSkipsDisabledSymbolByDefault) {
   EXPECT_TRUE(def->ok());
   EXPECT_EQ(def->n_symbols, std::size_t{2});     // CCC excluded
   EXPECT_EQ(def->cells_checked, std::size_t{6}); // 3 dates x {AAA, BBB}
+  // FIX-C-2. The verdict stays `ok` — a fail-closed disable is a legitimate state,
+  // not a corrupt database — but the walk must SAY which columns it dropped.
+  // Without this, an `ok` over a database permanently missing a requested symbol
+  // is byte-for-byte an `ok` over a complete one: the symbol is simply not a
+  // column, so nothing counts it and nothing names it.
+  ASSERT_EQ(def->disabled_symbols.size(), std::size_t{1});
+  EXPECT_EQ(def->disabled_symbols.front(), "CCC");
 
   DbVerifySpec forced;
   forced.include_disabled = true;
@@ -531,6 +538,8 @@ TEST(SurfaceDbAdmin, VerifyDbSkipsDisabledSymbolByDefault) {
   ASSERT_TRUE(all.has_value()) << (all ? "" : all.error().to_string());
   EXPECT_FALSE(all->ok());
   EXPECT_EQ(all->n_symbols, std::size_t{3});
+  // Nothing was dropped this time, so there is nothing to name.
+  EXPECT_TRUE(all->disabled_symbols.empty());
   EXPECT_EQ(all->cells_checked, std::size_t{9});
   EXPECT_EQ(all->cells_ok, std::size_t{6});
   EXPECT_EQ(all->cells_unmappable, std::size_t{3}); // CCC on all three dates
@@ -659,6 +668,8 @@ TEST(SurfaceDbAdmin, VerifyDbAllSymbolsDisabledOverPopulatedDbIsNotOk) {
   EXPECT_TRUE(rep->failures.empty());
   EXPECT_TRUE(rep->selected_no_cells());
   EXPECT_FALSE(rep->ok()) << "a walk that opened nothing over a populated db is not health";
+  // And the report says WHICH names it dropped, so `symbols 0` is not a riddle.
+  EXPECT_EQ(rep->disabled_symbols.size(), std::size_t{3});
 
   // ...and it is not a blanket "zero cells is an error": forcing the disabled
   // columns back in checks all nine and passes, so the verdict tracks what was

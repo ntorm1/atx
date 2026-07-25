@@ -920,6 +920,27 @@ TEST(SurfaceDbTotalConfigFailure, HealthyBuildIsNotFailure) {
   EXPECT_FALSE(is_total_config_failure(config_report(3u, 0u, 0u)));
 }
 
+// FIX-C-2. The SAME dead database, one run later. Every symbol is stored disabled
+// and therefore SKIPPED, so this run's fresh-failure counter is 0 and the shape is
+// byte-identical to the healthy nothing-to-do resume above — except that not one
+// symbol in the database is enabled and no cell can ever be scheduled. The verdict
+// must not depend on which run you are on.
+TEST(SurfaceDbTotalConfigFailure, ResumeOverAnAllDisabledDbIsFailure) {
+  SurfaceDbBuildReport r = config_report(0u, 3u, 0u); // every symbol skip-existing
+  r.config.n_disabled_existing = 3u;                  // ...and every one of them disabled
+  r.config.failed_symbols = {"AAA", "BBB", "CCC"};
+  EXPECT_TRUE(is_total_config_failure(r));
+  // Still invisible to the fit predicate — nothing was ever scheduled.
+  EXPECT_FALSE(is_total_fit_failure(r));
+
+  // One enabled name among them is a PARTIALLY disabled database: a lost symbol,
+  // not a dead build. This is the production 50-of-51 shape and must stay green.
+  SurfaceDbBuildReport partial = config_report(0u, 3u, 0u);
+  partial.config.n_disabled_existing = 1u;
+  partial.config.failed_symbols = {"CCC"};
+  EXPECT_FALSE(is_total_config_failure(partial));
+}
+
 // The one shape that must NOT be swept in: symbols that were already configured
 // went on to fit successfully, and only the newly-seen names failed selection. The
 // run produced surfaces, so it is partial, not dead.
@@ -1001,6 +1022,216 @@ TEST(BuildSurfaceDb, ZeroCarryAgainstNonZeroHiveIsTotalFailure) {
   ASSERT_TRUE(good.has_value()) << (good ? "" : good.error().to_string());
   EXPECT_EQ(good->coverage.cells_ok, 9u);
   EXPECT_FALSE(is_total_fit_failure(*good));
+}
+
+// ── FIX-C-1: a punctuated ticker must reach the fitter ──────────────────────
+//
+// A production 51-name build configured 50 symbols and disabled exactly one:
+// BRK.B, the only ticker in the universe carrying punctuation. Its 1,838 quotes
+// (103 strikes, 14 expiries) were in the hive and in memory the whole time — the
+// loader simply derived the underlier's name TWO ways that agree for every other
+// ticker: `frame.uid` from the hive's `underlying` column ("BRK.B") and every
+// `QuoteRow::uid` from the OSI root ("BRKB"). `intern_ticker` compares exact
+// bytes, so `data_install` created two underliers, filed every quote under the
+// root, and returned the handle to the EMPTY dotted one; config selection then
+// fail-closed-disabled a symbol whose board was complete.
+//
+// The fixture reproduces the real divergence rather than asserting on strings:
+// `underlying` says `BRK.B` while every `symbol` says `BRKB  260729C00100000`,
+// exactly as `pull_opra_hive.py` writes it.
+
+// The loader seam itself: ONE requested name yields ONE uid, and it is the dotted
+// universe spelling the rest of the pipeline keys on — not the wire root.
+TEST(BuildSurfaceDb, PunctuatedTickerLoadsAsOneUnderlier) {
+  tsupport::SyntheticHiveSpec fx;
+  fx.symbols = {"AAA", "BRK.B"};
+  const BuildFixture f = make_build_fixture("dotted_load", fx);
+
+  const std::vector<CorpusBoard> boards = load_fixture_hive_boards(f, fx);
+  ASSERT_EQ(boards.size(), std::size_t{6}); // 2 symbols x 3 dates
+
+  bool saw_dotted = false;
+  for (const CorpusBoard &b : boards) {
+    if (b.symbol != "BRK.B") {
+      continue;
+    }
+    saw_dotted = true;
+    EXPECT_EQ(b.frame.uid, "BRK.B") << "the frame must carry the universe spelling";
+    // The assertion that actually bites: the frame claims exactly ONE underlier.
+    // Pre-fix this was {"BRK.B", "BRKB"} — a single-name board naming two.
+    ASSERT_EQ(b.frame.uid_strs.size(), std::size_t{1})
+        << "frame.uid and the row uids disagree — the BRK.B split";
+    EXPECT_EQ(b.frame.uid_strs.front(), "BRK.B");
+    ASSERT_FALSE(b.frame.rows.empty());
+    for (const QuoteRow &row : b.frame.rows) {
+      EXPECT_EQ(row.uid, "BRK.B");
+    }
+  }
+  EXPECT_TRUE(saw_dotted) << "fixture did not produce a BRK.B board";
+}
+
+// End to end: the punctuated symbol is CONFIGURED (enabled) and FITTED, and its
+// surface is mappable out of the reopened database. Asserting on the config
+// verdict and on real partition bytes, not on a string match.
+TEST(BuildSurfaceDb, PunctuatedTickerIsConfiguredAndFitted) {
+  tsupport::SyntheticHiveSpec fx;
+  fx.symbols = {"AAA", "BRK.B"};
+  const BuildFixture f = make_build_fixture("dotted_e2e", fx);
+
+  const auto rep = build_surface_db(build_spec(f, fx));
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_EQ(rep->n_load_errors, std::size_t{0});
+  EXPECT_EQ(rep->config.n_symbols, 2u);
+  EXPECT_EQ(rep->config.n_configured, 2u);   // BOTH names, not 1 of 2
+  EXPECT_EQ(rep->config.n_disabled_failed, 0u);
+  EXPECT_TRUE(rep->config.failed_symbols.empty())
+      << "a punctuated ticker was disabled: " << rep->config.failed_symbols.front();
+  EXPECT_EQ(rep->coverage.cells_ok, 6u); // 2 symbols x 3 dates, all fitted
+
+  // The manifest holds it ENABLED under its dotted spelling.
+  auto db = SurfaceDb::open(f.db.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  const auto cfg = db->symbol_config("BRK.B");
+  ASSERT_TRUE(cfg.has_value()) << (cfg ? "" : cfg.error().to_string());
+  EXPECT_TRUE(cfg->enabled);
+
+  // ...and the fitter really produced a surface for it on every date.
+  for (const std::string &date : fx.dates) {
+    EXPECT_TRUE(db->map_surface(date, "BRK.B").has_value()) << date;
+  }
+}
+
+// ── FIX-C-2: a standing disabled symbol is named on EVERY run ───────────────
+//
+// The first build over a database names its casualty (`config.failed_symbols`).
+// Every build after it used to name nothing: the disabled config is a stored
+// config, so it became `n_skipped_existing`, its dates reported
+// `dates_skipped_complete`, and the rerun printed an all-green report while the
+// symbol stayed permanently absent from every partition. The one run that named
+// it was the only run that ever would.
+TEST(BuildSurfaceDb, ResumeStillNamesTheDisabledSymbols) {
+  const tsupport::SyntheticHiveSpec fx; // AAA/BBB/CCC x 3 dates
+  const BuildFixture f = make_build_fixture("resume_names_disabled", fx);
+  const SurfaceDbBuildSpec spec = build_spec(f, fx);
+
+  // Store a DISABLED CCC through the real fail-closed path (gut its boards to a
+  // single quote so selection cannot run), exactly as production stored BRK.B.
+  {
+    auto db = SurfaceDb::create(f.db.string());
+    ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+    std::vector<CorpusBoard> gutted = load_fixture_hive_boards(f, fx);
+    for (CorpusBoard &b : gutted) {
+      if (b.symbol == "CCC") {
+        ASSERT_FALSE(b.frame.rows.empty());
+        b.frame.rows.resize(1);
+      }
+    }
+    const auto seeded = generate_symbol_configs(*db, gutted, AutoConfigSpec{});
+    ASSERT_TRUE(seeded.has_value()) << (seeded ? "" : seeded.error().to_string());
+    ASSERT_EQ(seeded->n_disabled_failed, 1u);
+    ASSERT_EQ(seeded->n_disabled_existing, 0u); // freshly failed, not carried
+  }
+
+  ASSERT_TRUE(build_surface_db(spec).has_value()); // first build over the seeded db
+
+  // The RERUN. Nothing failed on this run; CCC is skipped as already-configured.
+  // It must still be named, and counted as a standing disable.
+  const auto rep2 = build_surface_db(spec);
+  ASSERT_TRUE(rep2.has_value()) << (rep2 ? "" : rep2.error().to_string());
+  EXPECT_EQ(rep2->config.n_skipped_existing, 3u);
+  EXPECT_EQ(rep2->config.n_disabled_failed, 0u); // nothing failed HERE — that is the trap
+  EXPECT_EQ(rep2->config.n_disabled_existing, 1u);
+  ASSERT_EQ(rep2->config.failed_symbols.size(), std::size_t{1});
+  EXPECT_EQ(rep2->config.failed_symbols.front(), "CCC");
+  // The partition side of the same story stays all-green, which is why the report
+  // has to carry the name: nothing here says a symbol is missing.
+  EXPECT_EQ(rep2->coverage.cells_to_fit, 0u);
+  EXPECT_EQ(rep2->coverage.dates_skipped_complete, 3u);
+  // 50-of-51 is a partial build, not a dead one — the exit code must stay 0.
+  EXPECT_FALSE(is_total_config_failure(*rep2));
+
+  // The DURABLE artifact carries the name too: the CSV used to hold the count and
+  // never the name, so once the terminal scrollback was gone the evidence was too.
+  const fs::path csv = f.root / "resume-report.csv";
+  ASSERT_TRUE(write_build_report_csv(*rep2, csv.string()).has_value());
+  std::ifstream is(csv.string(), std::ios::binary);
+  ASSERT_TRUE(is.good());
+  const std::string body((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+  EXPECT_NE(body.find("config.n_disabled_existing,1"), std::string::npos);
+  EXPECT_NE(body.find("config_disabled_symbol\nCCC\n"), std::string::npos)
+      << "the --report CSV must name the disabled symbol, not just count it";
+}
+
+// The C-1/C-2 interaction, and the reason a naming fix alone is not enough: an
+// ALREADY-BUILT database carries the disabled config, and skip-existing keeps it
+// disabled forever — so a corrected loader can never reach the symbol it fixed.
+// `retry_disabled` re-selects exactly the stored disables, leaves enabled configs
+// (operator overrides) untouched, and the symbol fits on that same run.
+TEST(BuildSurfaceDb, RetryDisabledReattemptsAStoredDisableAndFitsIt) {
+  const tsupport::SyntheticHiveSpec fx; // AAA/BBB/CCC x 3 dates
+  const BuildFixture f = make_build_fixture("retry_disabled", fx);
+  const SurfaceDbBuildSpec spec = build_spec(f, fx);
+
+  // A database already built with CCC stored disabled (the prod-2026-07 shape).
+  {
+    auto db = SurfaceDb::create(f.db.string());
+    ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+    std::vector<CorpusBoard> gutted = load_fixture_hive_boards(f, fx);
+    for (CorpusBoard &b : gutted) {
+      if (b.symbol == "CCC") {
+        b.frame.rows.resize(1);
+      }
+    }
+    ASSERT_TRUE(generate_symbol_configs(*db, gutted, AutoConfigSpec{}).has_value());
+  }
+  const auto built = build_surface_db(spec);
+  ASSERT_TRUE(built.has_value()) << (built ? "" : built.error().to_string());
+  ASSERT_EQ(built->coverage.cells_ok, 6u); // AAA + BBB only; CCC is fenced out
+  {
+    auto db = SurfaceDb::open(f.db.string());
+    ASSERT_TRUE(db.has_value());
+    EXPECT_FALSE(db->map_surface(fx.dates.front(), "CCC").has_value());
+  }
+
+  // Hand-tune AAA so the retry can be shown NOT to be an overwrite.
+  double tuned_band_k = 0.0;
+  {
+    auto db = SurfaceDb::open(f.db.string());
+    ASSERT_TRUE(db.has_value());
+    const auto aaa = db->symbol_config("AAA");
+    ASSERT_TRUE(aaa.has_value());
+    SymbolFitConfig edited = *aaa;
+    tuned_band_k = edited.band_k + 4.0;
+    edited.band_k = tuned_band_k;
+    ASSERT_TRUE(db->upsert_symbol("AAA", edited).has_value());
+  }
+
+  // The operator's re-attempt, no database deletion involved.
+  SurfaceDbBuildSpec retry = spec;
+  retry.auto_config.retry_disabled = true;
+  const auto rep = build_surface_db(retry);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_EQ(rep->config.n_configured, 1u);        // CCC, re-selected
+  EXPECT_EQ(rep->config.n_skipped_existing, 2u);  // AAA/BBB untouched
+  EXPECT_EQ(rep->config.n_disabled_existing, 0u); // nothing left disabled
+  EXPECT_EQ(rep->config.n_disabled_failed, 0u);
+  EXPECT_TRUE(rep->config.failed_symbols.empty());
+  EXPECT_EQ(rep->coverage.cells_to_fit, 3u); // CCC's three dates, now schedulable
+  EXPECT_EQ(rep->coverage.cells_failed, 0u);
+  EXPECT_GE(rep->coverage.cells_ok, 3u); // + AAA/BBB re-fit by the same-date rewrite
+
+  auto db = SurfaceDb::open(f.db.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  const auto ccc = db->symbol_config("CCC");
+  ASSERT_TRUE(ccc.has_value());
+  EXPECT_TRUE(ccc->enabled);
+  for (const std::string &date : fx.dates) {
+    EXPECT_TRUE(db->map_surface(date, "CCC").has_value()) << date;
+  }
+  // The enabled neighbour kept the operator's edit: a retry is not an overwrite.
+  const auto aaa = db->symbol_config("AAA");
+  ASSERT_TRUE(aaa.has_value());
+  EXPECT_DOUBLE_EQ(aaa->band_k, tuned_band_k);
 }
 
 } // namespace

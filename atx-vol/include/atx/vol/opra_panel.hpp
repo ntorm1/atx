@@ -130,7 +130,11 @@ struct OpraMarketInputProvenance {
 struct OpraLoadSpec {
   std::string path;        // parquet file to read
   std::string underlying;  // keep rows whose `underlying` equals this
-                           // (empty = keep all, frame uid = first seen)
+                           // (empty = keep all, frame uid = first seen).
+                           // ALSO the loaded frame's identity: on a filtered load
+                           // this exact string becomes `frame.uid` AND every
+                           // `QuoteRow::uid` (see the uid-namespace note on
+                           // load_opra_cbbo_parquet step 4).
   std::string snapshot_iso; // "YYYY-MM-DD" or full datetime; stamped on the frame
   double r = 0.0;           // continuously-compounded rate for the spot implication
   double spot_override = 0.0; // if > 0, use this spot instead of implying from PCP
@@ -215,6 +219,18 @@ struct OpraPanel {
 //      term pillars when supplied, else the flat {T=1, r=spec.r}), the kept
 //      rows, then build_uid_list + build_expiry_inputs. With supplied pillars,
 //      each kept row's source rate is stamped with the curve rate at its expiry.
+//
+//      UID NAMESPACE (one rule, both derivations): a row's uid and the frame's
+//      uid both come from the `underlying` COLUMN — the OSI root is used only as
+//      a fallback when the file carries no such column. The dotted universe
+//      spelling is therefore canonical end to end (`--symbols` -> hive discovery
+//      -> `frame.uid` -> `QuoteRow::uid` -> `Universe::intern_ticker` ->
+//      `CorpusBoard::symbol` -> the manifest/archive's `canonical_symbol`, which
+//      preserves dots). Deriving the two from different sources is what made a
+//      punctuated ticker (`underlying = "BRK.B"`, OSI root `BRKB`) intern as TWO
+//      underliers and lose all of its quotes; a filtered load now also FAILS
+//      (InvalidArgument) if its rows resolve to more than one uid, so that
+//      divergence can never again be silent.
 //   5. Spot: spec.spot_override if > 0, else imply from the earliest expiry with
 //      a co-terminal call/put pair (both mids > 0) via imply_forward_atm_pcp at
 //      the curve's rate r(T_front), then implied_spot = F * exp(-r(T_front) *

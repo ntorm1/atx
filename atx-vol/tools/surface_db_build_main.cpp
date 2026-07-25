@@ -14,7 +14,7 @@
 //   atx-vol-surface-db-build --db <root> --hive <root>
 //       --from YYYY-MM-DD --to YYYY-MM-DD
 //       [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045]
-//       [--deep-selection] [--pin-curve-family true|false]
+//       [--deep-selection] [--retry-disabled] [--pin-curve-family true|false]
 //       [--fit-workers N] [--report out.csv] [--max-failures N]
 //
 //   --db            SurfaceDb root (created if absent, else opened/resumed).
@@ -28,6 +28,16 @@
 //                   match the rate the hive's quotes were priced under, or every
 //                   put-call-parity forward is wrong and every fit fails.
 //   --deep-selection  run the full held-out select_curve OOS search per symbol.
+//   --retry-disabled  re-attempt the symbols whose STORED config is disabled,
+//                   instead of skipping them. Without it, a fail-closed disable is
+//                   permanent for the life of the database: the symbol is skipped
+//                   as already-configured on every later run, so no fix to the
+//                   loader, the hive or the selector can ever reach it. Enabled
+//                   configs are still left untouched (unlike a full overwrite), so
+//                   this cannot clobber an operator's tuned config — but it DOES
+//                   re-enable a symbol an operator disabled by hand, which is why
+//                   it is opt-in. The standing disabled names are on the
+//                   config.failed_symbols line of every run's report.
 //   --pin-curve-family true|false  store the auto-selected curve family as a HARD
 //                   PIN (default false). Pinned, each cell gets exactly ONE
 //                   family attempt: PricerFitter's construction-failure and
@@ -83,7 +93,7 @@ void print_usage(std::FILE *out) {
                "usage: atx-vol-surface-db-build --db <root> --hive <root> "
                "--from YYYY-MM-DD --to YYYY-MM-DD\n"
                "         [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045] "
-               "[--deep-selection] [--pin-curve-family true|false] "
+               "[--deep-selection] [--retry-disabled] [--pin-curve-family true|false] "
                "[--fit-workers N] [--report out.csv] "
                "[--max-failures N]\n");
 }
@@ -208,6 +218,7 @@ void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
   std::printf("config.n_configured %u\n", r.config.n_configured);
   std::printf("config.n_skipped_existing %u\n", r.config.n_skipped_existing);
   std::printf("config.n_disabled_failed %u\n", r.config.n_disabled_failed);
+  std::printf("config.n_disabled_existing %u\n", r.config.n_disabled_existing);
   std::printf("coverage.cells_loaded %u\n", r.coverage.cells_loaded);
   std::printf("coverage.cells_to_fit %u\n", r.coverage.cells_to_fit);
   std::printf("coverage.cells_refit %u\n", r.coverage.cells_refit);
@@ -223,7 +234,11 @@ void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
   std::printf("n_load_errors %zu\n", r.n_load_errors);
   std::printf("n_coverage_holes %zu\n", r.n_coverage_holes);
 
-  // The disabled-on-selection-failure names (fail-closed; never silently served).
+  // Every symbol the database is currently NOT serving (fail-closed; never
+  // silently served) — the ones this run disabled AND the ones it found already
+  // stored disabled. Printed on every run, not just the one that first stored the
+  // disable, because a standing failure that only the first run mentions is a
+  // silent failure (FIX-C-2).
   std::printf("config.failed_symbols");
   for (const std::string &s : r.config.failed_symbols) {
     std::printf(" %s", s.c_str());
@@ -290,6 +305,8 @@ int main(int argc, char **argv) {
       }
     } else if (a == "--deep-selection") {
       spec.auto_config.deep_selection = true;
+    } else if (a == "--retry-disabled") {
+      spec.auto_config.retry_disabled = true;
     } else if (a == "--pin-curve-family") {
       const std::string_view text = nv();
       if (!parse_bool(text, spec.auto_config.pin_curve_family)) {
@@ -367,6 +384,26 @@ int main(int argc, char **argv) {
     std::printf("report %s\n", report_path.c_str());
   }
 
+  // A database that is permanently not serving a requested name must not read as
+  // a clean run. The counters and the config.failed_symbols line above already
+  // carry it, but a resumed build is otherwise ALL GREEN — every date
+  // `dates_skipped_complete`, zero cells to fit — so the one line that matters
+  // gets a stderr callout naming the symbols and the flag that retries them.
+  // Not an error: a partially-disabled universe is a legitimate production state.
+  if (report->config.n_disabled_existing > 0) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db-build: %u symbol(s) are STORED DISABLED and were skipped:",
+                 report->config.n_disabled_existing);
+    for (const std::string &s : report->config.failed_symbols) {
+      std::fprintf(stderr, " %s", s.c_str());
+    }
+    std::fprintf(stderr,
+                 "\n  These names are absent from every partition and will stay absent on every "
+                 "rerun: a stored config (even a disabled one) is skip-existing, so the build "
+                 "never re-attempts them. Re-run with --retry-disabled to re-select them once the "
+                 "cause is fixed, or upsert a config by hand.\n");
+  }
+
   // The silent-failure trap, one stage EARLIER than the fit: if config selection
   // failed for every symbol, every config is stored disabled, nothing is ever
   // scheduled, and `is_total_fit_failure` below cannot see it — `cells_to_fit`
@@ -375,16 +412,17 @@ int main(int argc, char **argv) {
   // what the operator has to fix.
   if (is_total_config_failure(*report)) {
     std::fprintf(stderr,
-                 "atx-vol-surface-db-build: TOTAL CONFIG FAILURE: %u symbols attempted, 0 "
-                 "configured (%u disabled by a selection failure).\n"
-                 "  Every symbol's config board failed to build a selectable underlying, so "
-                 "every config was stored DISABLED and no cell was ever scheduled to fit. The "
-                 "database now has no enabled symbol and will stay empty. Most likely causes: "
-                 "the hive window holds no usable board for these names (check "
-                 "n_dates_loaded / n_load_errors above), or the universe is wrong. The failed "
-                 "names are on the config.failed_symbols line.\n",
-                 report->config.n_configured + report->config.n_disabled_failed,
-                 report->config.n_disabled_failed);
+                 "atx-vol-surface-db-build: TOTAL CONFIG FAILURE: %u symbols seen, 0 enabled "
+                 "(%u disabled by a selection failure on this run, %u already stored "
+                 "disabled).\n"
+                 "  NOT ONE symbol in this database has an enabled config, so no cell was ever "
+                 "scheduled to fit; the database will stay empty. Most likely causes: the hive "
+                 "window holds no usable board for these names (check n_dates_loaded / "
+                 "n_load_errors above), or the universe is wrong. The names are on the "
+                 "config.failed_symbols line. If the cause is already fixed, the stored "
+                 "disables still need --retry-disabled to be re-attempted.\n",
+                 report->config.n_symbols, report->config.n_disabled_failed,
+                 report->config.n_disabled_existing);
     return kExitTotalFitFailure;
   }
 

@@ -71,7 +71,7 @@ configure line above.
 atx-vol-surface-db-build --db <root> --hive <root>
     --from YYYY-MM-DD --to YYYY-MM-DD
     [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045]
-    [--deep-selection] [--pin-curve-family true|false]
+    [--deep-selection] [--retry-disabled] [--pin-curve-family true|false]
     [--fit-workers N] [--report out.csv] [--max-failures N]
 ```
 
@@ -85,9 +85,10 @@ atx-vol-surface-db-build --db <root> --hive <root>
 | `--preset NAME` | no | `fast` \| `accurate` \| `robust` \| `hft` \| `populate`. Default `populate`. Drives both the manifest seeding and the populate fit tier. |
 | `--r RATE` | no | Flat continuously-compounded carry rate (`OpraHiveSpec.r`). Default **`0.0`**. **Must match the rate the hive's quotes were priced under** — read [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing) before every run. Must be a finite number consuming the whole token; `abc`, `0.03x`, `nan`, `inf` and a missing value are all **exit 2**, never a silent `0.0`. Negative rates are accepted. |
 | `--deep-selection` | no | Additionally run the full held-out `select_curve` OOS search per symbol and record its winner as that symbol's family (falls back to the fit-policy decision when the selector has no scorable holdout). Obeys `--pin-curve-family` like the cheap route does. |
+| `--retry-disabled` | no | Re-attempt the symbols whose **stored** config is disabled instead of skipping them. Without it a fail-closed disable is permanent for the life of the database — the symbol is skipped as already-configured on every later run, so no fix to the loader, the hive or the selector can ever reach it. Enabled configs are still left untouched (unlike `overwrite_existing`), so a tuned config is never clobbered; it *does* re-enable a symbol an operator disabled by hand, which is why it is opt-in. The standing disabled names print on `config.failed_symbols` every run. |
 | `--pin-curve-family true\|false` | no | Default **`false`**. Store the auto-selected curve family as a **hard pin** (`true`) or as the preferred route only (`false`). Pinning gives each cell exactly one family attempt and **disables both fallback ladders** — read [The curve family is a route, not a pin](#the-curve-family-is-a-route-not-a-pin) before setting it. Requires a value: `--pin-curve-family` with a missing or unrecognised value is **exit 2**, never a silent default. Accepts `true\|1\|on` and `false\|0\|off`. |
 | `--fit-workers N` | no | Outer fit fan-out. `0` = auto (honors `ATX_VOL_FIT_WORKERS`); `1` = serial. |
-| `--report out.csv` | no | Also write the three-section CSV report to this path. |
+| `--report out.csv` | no | Also write the four-section CSV report to this path. |
 | `--max-failures N` | no | `32`. Cap on the printed `failed_cell` lines. Overflow is counted in `coverage.failed_cells_elided`, never dropped silently, and the `--report` CSV always carries the **full** list. `0` prints no per-cell detail at all. Same flag name, parsing and semantics as `atx-vol-surface-db verify`. |
 
 **Discover-all vs explicit `--symbols`.** With an explicit list, exactly those
@@ -266,31 +267,38 @@ That is now exit **3** as well, via the sibling predicate
 
 ```
 $ atx-vol-surface-db-build --db /db --hive /hive --from 2026-07-01 --to 2026-07-06 --r 0.03
-atx-vol-surface-db-build: TOTAL CONFIG FAILURE: 3 symbols attempted, 0 configured
-  (3 disabled by a selection failure).
-  Every symbol's config board failed to build a selectable underlying, so every config
-  was stored DISABLED and no cell was ever scheduled to fit. ...
+atx-vol-surface-db-build: TOTAL CONFIG FAILURE: 3 symbols seen, 0 enabled
+  (3 disabled by a selection failure on this run, 0 already stored disabled).
+  NOT ONE symbol in this database has an enabled config, so no cell was ever
+  scheduled to fit; the database will stay empty. ...
 ... (the full report still prints to stdout) ...
 config.n_configured 0
 config.n_disabled_failed 3
+config.n_disabled_existing 0
 coverage.cells_to_fit 0
 config.failed_symbols AAA BBB CCC
 $ echo $?
 3
 ```
 
-True iff the config stage **attempted** at least one symbol and configured none
-(`n_disabled_failed > 0 && n_configured == 0`) **and** the run produced no surface
-(`cells_ok == 0`) — the same attempted-nothing-succeeded shape as the fit
-predicate. **Three neighbouring shapes stay green**, for the same reasons:
+True iff the config stage left at least one symbol **disabled** and **not one
+enabled**, and the run produced no surface (`cells_ok == 0`) — the same
+attempted-nothing-succeeded shape as the fit predicate, read off the **standing**
+state rather than this run's fresh verdicts:
 
-- **Partial** selection failure (`n_configured > 0` beside some
+```
+disabled = n_disabled_failed + n_disabled_existing
+enabled  = n_configured + (n_skipped_existing - n_disabled_existing)
+```
+
+**Three neighbouring shapes stay green**, for the same reasons:
+
+- **Partial** selection failure (some symbol enabled beside some
   `n_disabled_failed`): a real universe carries names whose board cannot pin a
   curve; they are disabled while the rest build. Exit `0`.
-- **Nothing to do** (`n_disabled_failed == 0`): every symbol was already
-  configured (`n_skipped_existing`), or the window was empty. `n_skipped_existing`
-  is deliberately **not** part of "attempted" — a symbol the idempotent resume left
-  untouched was not tried, so a re-run stays green. Exit `0`.
+- **Nothing to do** (nothing disabled): every symbol was already configured and
+  enabled (`n_skipped_existing`), or the window was empty. Convergence needs this.
+  Exit `0`.
 - **New names failing beside productive fits**: only newly-seen symbols failed
   selection while already-configured ones fitted. `cells_ok > 0`, so the run
   produced surfaces — partial, not dead. Exit `0`.
@@ -300,15 +308,27 @@ anything at all?", and the stderr diagnostic names which stage swallowed it. The
 config check runs first, because when both fire the config stage is the upstream
 cause and the thing to fix.
 
-**A resumed all-disabled database is still exit 0** — nothing was attempted, so
-nothing failed. That database is caught downstream instead, by `verify`: a walk
-that selects zero cells over a db that holds partitions is a `FAILED` verdict (see
-[The zero-cell verdict](#the-zero-cell-verdict--verify-cannot-pass-what-it-never-read)).
+**A resumed all-disabled database is exit 3 too.** It used to be exit `0`:
+"nothing was attempted, so nothing failed" — which meant the *first* run over a
+hopeless universe failed loudly and every later run over that same dead database
+reported green, because its disabled configs had turned into `n_skipped_existing`.
+The predicate now reads the standing state (`n_disabled_existing`), so the answer
+does not depend on which run you are on. `verify` still catches it independently:
+a walk that selects zero cells over a db that holds partitions is a `FAILED`
+verdict (see [The zero-cell verdict](#the-zero-cell-verdict--verify-cannot-pass-what-it-never-read)).
+
+**A PARTIALLY disabled database stays exit 0** — one lost name out of fifty is a
+partial build, not a dead one — but it is no longer silent. `config.failed_symbols`
+carries the standing disabled names on **every** run (not just the one that first
+stored the disable), the `--report` CSV carries them in its
+`config_disabled_symbol` section, and a stderr callout names them and points at
+`--retry-disabled`.
 
 **Operator checklist:** a green exit no longer hides a *totally* dead build, but
 it still does not mean full coverage. After any build, **inspect `cells_ok` vs
 `cells_failed`, the per-symbol rows and the `failed_cell` lines** (or the
-`--report` CSV's sections 2 and 3 — section 3 names every lost cell and why), then
+`--report` CSV's sections 2–4 — section 2 names every disabled symbol, section 4
+every lost cell and why), then
 run `atx-vol-surface-db verify --db <root> --min-cells <expected>` (below), which
 turns "the database is the size and shape I expected, and every cell evaluates"
 into a single exit code.
@@ -355,10 +375,12 @@ Every scalar report field prints one-per-line to **stdout** as `key value`
 (mirroring the CSV `key,value` section), followed by `config.failed_symbols`, one
 `symbol.<S> attempted=.. ok=.. failed=.. disabled=..` line per symbol, and one
 `failed_cell <date> <symbol> code=<Code> detail=<text>` line per **failed cell**.
-With `--report`, the same data is written as CSV: a `key,value` scalar section, a
+With `--report`, the same data is written as CSV in **four** sections: a
+`key,value` scalar section, a `config_disabled_symbol` row per disabled name, a
 `symbol,n_attempted,n_ok,n_failed,n_disabled` row per symbol, then a
 `date,symbol,code,detail` row per failed cell (`detail` is RFC4180-quoted — it is
-free text from the fitter and may contain a comma).
+free text from the fitter and may contain a comma). Every section header is
+emitted even when its list is empty, so the file's shape is constant.
 
 ### Why each cell failed — the `failed_cell` lines
 
@@ -414,7 +436,8 @@ succeeds. Partial failure is **not** exit 3.
 
 **Config generation** (`generate_symbol_configs`, stage 1). The three
 disposition counters partition the distinct symbols seen:
-`n_configured + n_skipped_existing + n_disabled_failed == n_symbols`.
+`n_configured + n_skipped_existing + n_disabled_failed == n_symbols`
+(`n_disabled_existing` is a sub-count of `n_skipped_existing`, not a fourth class).
 
 | Field | Meaning |
 | --- | --- |
@@ -422,7 +445,8 @@ disposition counters partition the distinct symbols seen:
 | `config.n_configured` | Freshly configured (or overwritten), enabled. |
 | `config.n_skipped_existing` | Already in the manifest, left untouched (idempotent resume). |
 | `config.n_disabled_failed` | Selection failed → stored **disabled** (never silently served). Also covers a `--pin-curve-family true` run whose chosen family is `LinearVariance`, which the risk pipeline refuses outright — see [The curve family is a route, not a pin](#the-curve-family-is-a-route-not-a-pin). |
-| `config.failed_symbols` | The disabled names (sorted). |
+| `config.n_disabled_existing` | A **sub-count of `n_skipped_existing`**, not a fourth class: how many skipped symbols carry a **disabled** stored config. Non-zero means the database is not serving that many requested names and will not start on its own — `--retry-disabled` re-attempts them. |
+| `config.failed_symbols` | Every name the database is currently **not** serving, sorted: the `n_disabled_failed` this run disabled **plus** the `n_disabled_existing` it found already disabled. Printed on every run, and written to the CSV's `config_disabled_symbol` section. |
 
 **Populate coverage** (`populate_universe_streaming`, stage 2). Cells are
 `(symbol, date)` pairs; the counters describe what the cell-aware resume did.
@@ -716,12 +740,24 @@ cells_ok <n>
 cells_unmappable <n>        # map_surface failed (file gone/corrupt, or symbol absent)
 cells_checksum <n>          # mapped, but the payload no longer matches its stored CRC
 cells_non_finite <n>        # bytes intact, but the ATM probe produced no usable number
+symbols_disabled <n>        # manifest symbols the walk DROPPED (stored config disabled)
 failures_reported <n>       # fail lines below (capped by --max-failures)
 failures_elided <n>         # faults NOT listed -- truncation is never silent
 fail <KEY> <SYM> kind=<unmappable|checksum|non_finite> detail=<message>
+disabled_symbol <SYM>       # one per dropped column, so `ok` is never a blank cheque
 min_cells <n>
 verdict <ok|FAILED>
 ```
+
+`symbols_disabled` / `disabled_symbol` do **not** change the verdict, and that is
+deliberate: a fail-closed disable is a legitimate production state, not a corrupt
+database, and failing every partially-disabled db would break every operator
+script. What they close is the *reporting* hole — the default walk silently
+narrows its own columns, so `verdict ok` over a database permanently missing a
+requested name was byte-for-byte `verdict ok` over a complete one. Now the names
+print (and a stderr note points at `--include-disabled` and the build's
+`--retry-disabled`). The catastrophic case — **every** symbol disabled — is still
+a hard `FAILED` via [the zero-cell verdict](#the-zero-cell-verdict--verify-cannot-pass-what-it-never-read).
 
 The three `kind`s stay distinct so a fault names its own root cause: `unmappable`
 is "the file or the record is not there / does not parse", `checksum` is "the bytes

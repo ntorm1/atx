@@ -64,6 +64,9 @@ namespace {
   config["n_configured"] = r.config.n_configured;
   config["n_skipped_existing"] = r.config.n_skipped_existing;
   config["n_disabled_failed"] = r.config.n_disabled_failed;
+  config["n_disabled_existing"] = r.config.n_disabled_existing;
+  // The STANDING disabled set (this run's failures + the ones already stored
+  // disabled and skipped), so a resumed build names its casualties too.
   config["failed_symbols"] = r.config.failed_symbols;
 
   py::dict coverage;

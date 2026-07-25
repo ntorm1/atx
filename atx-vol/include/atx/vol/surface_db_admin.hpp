@@ -279,6 +279,19 @@ struct DbVerifyReport {
   std::size_t cells_checksum{0};       // mapped, but the payload CRC did not match
   std::vector<DbCellFault> failures{}; // capped at spec.max_reported_failures
   std::size_t n_failures_elided{0};    // faults NOT in `failures` (never silent)
+  // The manifest symbols this walk DROPPED because their stored config is
+  // disabled (canonical, sorted). Populated only on the default exhaustive walk —
+  // an explicit `spec.symbols` is honoured verbatim (a named disabled symbol IS
+  // walked, and reports its missing cells), and `include_disabled` drops nothing.
+  //
+  // Naming them is the point: the default walk silently narrows its columns, so a
+  // database permanently missing a requested name reads exactly like a healthy
+  // one. It does NOT change `ok()` — a fail-closed disable is a legitimate
+  // production state, not a corrupt database, and flipping the verdict would fail
+  // every operator script over every partially-disabled db. The verdict answers
+  // "are the bytes I stored still good?"; this answers "which names did I not
+  // even look at?", and an operator needs both.
+  std::vector<std::string> disabled_symbols{};
 
   // The walk covered NOTHING over a database that has something. Not one byte of
   // any partition was read, so every counter above is zero and every failure list

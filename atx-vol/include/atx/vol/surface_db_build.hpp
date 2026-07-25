@@ -74,6 +74,27 @@ struct AutoConfigSpec {
   // false (default) => a symbol already present in the manifest is left
   // UNTOUCHED (idempotent resume; operator overrides win). true => overwrite it.
   bool overwrite_existing{false};
+  // Re-attempt the symbols whose STORED config is disabled (FIX-C-2).
+  //
+  // A fail-closed disable is a machine-generated verdict about ONE config board,
+  // not a durable property of the symbol — but skip-existing makes it permanent:
+  // once stored, the symbol is `n_skipped_existing` on every later run and no fix
+  // to the loader, the hive, or the selector can ever reach it. That is how a
+  // build that lost BRK.B to the underlying/OSI-root split (FIX-C-1) would have
+  // stayed broken over the production database even after the split was fixed.
+  //
+  // true => a symbol whose stored config is disabled is re-selected exactly as if
+  // it were new: it becomes `n_configured` (enabled) when selection now succeeds,
+  // or `n_disabled_failed` when it still fails. ENABLED existing configs are
+  // still skipped, so an operator's tuned config is never touched — that is the
+  // difference from `overwrite_existing`, which clobbers everything.
+  //
+  // false (DEFAULT) because a disable can also be deliberate (an operator
+  // `upsert_symbol` with `enabled = false` fences a symbol out of production), and
+  // silently re-enabling that on every build would be its own defect. The standing
+  // disabled set is NAMED in `failed_symbols` on every run instead, so the
+  // operator who needs this knob is told it exists rather than having to know.
+  bool retry_disabled{false};
   // Does the selected curve family become a HARD PIN in the stored config
   // (`SymbolFitConfig::pin_curve`), or only the preferred route?
   //
@@ -112,7 +133,25 @@ struct AutoConfigReport {
   std::uint32_t n_configured{0};       // freshly configured (or overwritten), enabled
   std::uint32_t n_skipped_existing{0}; // already present, left untouched (not overwrite)
   std::uint32_t n_disabled_failed{0};  // selection failed -> stored disabled
-  std::vector<std::string> failed_symbols; // sorted; mirrored as disabled configs in the db
+  // FIX-C-2. A SUB-COUNT of `n_skipped_existing` (not a fourth partition class):
+  // how many of the skipped symbols carry a DISABLED stored config. Zero on a
+  // healthy resume; non-zero means the database is deliberately not serving that
+  // many requested names and will keep not serving them until someone acts
+  // (`AutoConfigSpec::retry_disabled`, or an explicit upsert).
+  std::uint32_t n_disabled_existing{0};
+  // Every symbol this run left DISABLED in the db, sorted — the union of the
+  // `n_disabled_failed` names that failed selection HERE and the
+  // `n_disabled_existing` names that were already stored disabled and skipped.
+  // So `failed_symbols.size() == n_disabled_failed + n_disabled_existing`.
+  //
+  // The union (rather than just this run's fresh failures) is the FIX-C-2 fix.
+  // The first build over a database named its casualty and every build after it
+  // did not: the disabled config became `n_skipped_existing`, the populate
+  // reported the date `dates_skipped_complete`, and a rerun printed an all-green
+  // report while the symbol stayed permanently absent. A standing failure that
+  // only the first run mentions is a silent failure. The name is now on EVERY
+  // run's report and in the `--report` CSV.
+  std::vector<std::string> failed_symbols;
 };
 
 // Auto-generate one `SymbolFitConfig` per distinct symbol in `boards` and upsert
@@ -120,7 +159,10 @@ struct AutoConfigReport {
 //
 // Per symbol (canonical order): pick the config board (`spec.config_date` or the
 // symbol's earliest); if already configured and not `spec.overwrite_existing`,
-// SKIP it (`n_skipped_existing`); if it is `spec.index_symbol`, store the dense
+// SKIP it (`n_skipped_existing`, and additionally `n_disabled_existing` + a
+// `failed_symbols` entry when that stored config is DISABLED — unless
+// `spec.retry_disabled`, which re-selects it as if it were new); if it is
+// `spec.index_symbol`, store the dense
 // index recipe (`seed_symbol_config`); otherwise build the board's `OptionChain`
 // (`OptionChain::from_frame`, the corpus_board_fit path), classify it with
 // `select_fit_policy`, and store `symbol_config_from_preset(spec.preset)` with
@@ -248,18 +290,28 @@ reported_failed_cells(const SurfaceDbBuildReport &r,
 // the healthy "nothing to do" resume. The build exits 0 over a database with no
 // enabled symbol that will never hold a surface.
 //
-// True iff the config stage ATTEMPTED at least one symbol and not one of them was
-// configured (`n_disabled_failed > 0 && n_configured == 0`) AND the run produced
-// no surface at all (`coverage.cells_ok == 0`). The shape mirrors
-// `is_total_fit_failure` deliberately: attempted > 0, succeeded == 0.
+// True iff the config stage left at least one symbol DISABLED and not one symbol
+// ENABLED, and the run produced no surface at all (`coverage.cells_ok == 0`). The
+// shape mirrors `is_total_fit_failure` deliberately: attempted > 0, succeeded == 0.
+// Read off the STANDING state rather than this run's fresh verdicts:
+//   disabled = n_disabled_failed + n_disabled_existing
+//   enabled  = n_configured + (n_skipped_existing - n_disabled_existing)
+//   => disabled > 0 && enabled == 0 && coverage.cells_ok == 0
+//
+// The `n_disabled_existing` term is FIX-C-2's: without it, a RESUME over a
+// database whose every symbol is stored disabled counted as `n_skipped_existing`,
+// scheduled nothing, and exited 0 — the same dead database as a first run that
+// disabled everything, reported as the healthy nothing-to-do path. The predicate
+// asks "does this database serve any symbol at all?", which no run-local counter
+// can answer on its own.
 //
 // Equally narrow, for the same reasons — three neighbouring shapes stay green:
-//   - PARTIAL selection failure (`n_configured > 0` alongside some
+//   - PARTIAL selection failure (some symbol is enabled alongside some
 //     `n_disabled_failed`) is normal: a real universe carries names whose board
 //     cannot pin a curve, and they are disabled while the rest build.
-//   - NOTHING TO DO (`n_disabled_failed == 0`) covers both the resume over an
-//     already-configured db (every symbol `n_skipped_existing`) and the empty
-//     window (no symbols seen at all). The convergence guarantee needs this.
+//   - NOTHING TO DO (nothing disabled) covers both the resume over an
+//     already-configured db (every symbol `n_skipped_existing` and enabled) and
+//     the empty window (no symbols seen at all). Convergence needs this.
 //   - NEW NAMES FAILING BESIDE PRODUCTIVE FITS: only newly-seen symbols failed
 //     selection while already-configured ones went on to fit. `cells_ok > 0`, so
 //     the run produced surfaces — partial, not dead.
@@ -283,16 +335,23 @@ reported_failed_cells(const SurfaceDbBuildReport &r,
 // aborts the build (it is tallied and, for config, stored disabled).
 [[nodiscard]] Result<SurfaceDbBuildReport> build_surface_db(const SurfaceDbBuildSpec &spec);
 
-// Write `r` as a three-section CSV (reuses `write_populate_stats_csv`'s formatting
+// Write `r` as a four-section CSV (reuses `write_populate_stats_csv`'s formatting
 // discipline: an owned buffer flushed to a binary/truncating stream, IoError on
 // open/write failure). Section 1 is a `key,value` table of every scalar counter
 // (config.*, coverage.*, and the ingest counters n_dates_loaded / n_dates_missing
-// / n_load_errors / n_coverage_holes); section 2 is a
+// / n_load_errors / n_coverage_holes); section 2 is a `config_disabled_symbol`
+// row per `config.failed_symbols` entry; section 3 is a
 // `symbol,n_attempted,n_ok,n_failed,n_disabled` row per `coverage.per_symbol`
-// entry; section 3 is a `date,symbol,code,detail` row per `coverage.failed_cells`
+// entry; section 4 is a `date,symbol,code,detail` row per `coverage.failed_cells`
 // entry — the WHOLE list, never the printed cap, because this file is where an
 // operator goes to root-cause the lost cells. The first line is always the pinned
 // header `key,value`.
+//
+// Section 2 is FIX-C-2's: the config stage's disabled NAMES used to exist only on
+// stdout, so the durable artifact could say "1 symbol was disabled" and never
+// which one — and on every run after the first it did not say even that. The
+// section is emitted with its header even when empty, so a consumer parses the
+// same shape whether or not anything is disabled.
 //
 // `detail` is free text from the fitter, so that ONE field is always emitted
 // RFC4180-quoted (wrapped in `"`, embedded `"` doubled) — a rejection message may

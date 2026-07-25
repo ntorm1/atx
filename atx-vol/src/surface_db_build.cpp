@@ -207,9 +207,28 @@ Result<AutoConfigReport> generate_symbol_configs(SurfaceDb &db, std::span<const 
 
     // Idempotent by default: an already-configured symbol is left untouched so a
     // re-run never clobbers an operator override.
-    if (!spec.overwrite_existing && db.symbol_config(symbol).has_value()) {
-      ++report.n_skipped_existing;
-      continue;
+    //
+    // FIX-C-2. A stored DISABLED config is the one existing config a skip must not
+    // swallow silently. It is a standing failure, not a settled state: the symbol
+    // is absent from every partition and will stay absent forever, yet before this
+    // it left no trace after the run that created it (skipped here, and its dates
+    // reported `dates_skipped_complete` by the populate). So a skipped disabled
+    // symbol is now counted AND named on every run — and, with `retry_disabled`,
+    // re-selected instead of skipped, which is the only way a fix to the loader or
+    // the hive can ever reach an ALREADY-BUILT database.
+    if (!spec.overwrite_existing) {
+      if (const Result<SymbolFitConfig> existing = db.symbol_config(symbol); existing.has_value()) {
+        if (existing->enabled || !spec.retry_disabled) {
+          ++report.n_skipped_existing;
+          if (!existing->enabled) {
+            ++report.n_disabled_existing;
+            report.failed_symbols.push_back(symbol);
+          }
+          continue;
+        }
+        // else: disabled + retry_disabled => fall through and re-select it as if
+        // it were new (the index-leg and config_for_board branches below).
+      }
     }
 
     // The index leg takes the dense recipe (shared with
@@ -365,16 +384,23 @@ bool is_total_fit_failure(const SurfaceDbBuildReport &r) {
 }
 
 bool is_total_config_failure(const SurfaceDbBuildReport &r) {
-  // Same shape as above (attempted > 0, succeeded == 0) read on the CONFIG stage's
-  // counters, because a universe swallowed here never reaches the fit stage's
-  // counters at all: everything is disabled, nothing is scheduled, and
-  // `is_total_fit_failure` sees the resume path. `n_skipped_existing` is
-  // deliberately NOT part of "attempted" — a symbol left untouched by the
-  // idempotent resume was not tried, so a re-run over an already-configured db
-  // stays green. The `cells_ok` clause keeps a run that DID produce surfaces out
-  // of it (only its new names failed selection): partial, not dead.
-  return r.config.n_disabled_failed > 0 && r.config.n_configured == 0 &&
-         r.coverage.cells_ok == 0;
+  // Same shape as above (attempted > 0, succeeded == 0) read on the CONFIG stage,
+  // because a universe swallowed here never reaches the fit stage's counters at
+  // all: everything is disabled, nothing is scheduled, and `is_total_fit_failure`
+  // sees the resume path.
+  //
+  // Read off the STANDING state, not this run's fresh verdicts (FIX-C-2). A
+  // skipped-existing symbol was not tried by THIS run, but the database either
+  // serves it or does not, and that is the question the exit code answers. Before
+  // this, the FIRST run over a hopeless universe exited 3 and every later run over
+  // the very same dead database exited 0, because its disabled configs had turned
+  // into `n_skipped_existing`. The `cells_ok` clause still keeps a run that DID
+  // produce surfaces out of it: partial, not dead.
+  const std::uint32_t disabled = r.config.n_disabled_failed + r.config.n_disabled_existing;
+  // n_disabled_existing is a sub-count of n_skipped_existing, so this cannot wrap.
+  const std::uint32_t enabled =
+      r.config.n_configured + (r.config.n_skipped_existing - r.config.n_disabled_existing);
+  return disabled > 0 && enabled == 0 && r.coverage.cells_ok == 0;
 }
 
 Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view path) {
@@ -393,6 +419,7 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
   kv("config.n_configured", fmt_u32(r.config.n_configured));
   kv("config.n_skipped_existing", fmt_u32(r.config.n_skipped_existing));
   kv("config.n_disabled_failed", fmt_u32(r.config.n_disabled_failed));
+  kv("config.n_disabled_existing", fmt_u32(r.config.n_disabled_existing));
   kv("coverage.cells_loaded", fmt_u32(r.coverage.cells_loaded));
   kv("coverage.cells_to_fit", fmt_u32(r.coverage.cells_to_fit));
   kv("coverage.cells_refit", fmt_u32(r.coverage.cells_refit));
@@ -408,7 +435,19 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
   kv("n_load_errors", fmt_usize(r.n_load_errors));
   kv("n_coverage_holes", fmt_usize(r.n_coverage_holes));
 
-  // Section 2: one per-symbol coverage row (from the populate; written dates).
+  // Section 2: WHICH symbols the config stage left DISABLED — the durable
+  // counterpart to the terminal's `config.failed_symbols` line, and the whole
+  // point of FIX-C-2. The count above says how many; only this says which, and
+  // `config.failed_symbols` carries the STANDING set, so a resume names the same
+  // casualties the first build named instead of reporting green over them.
+  // Header emitted even when the list is empty, so the file's shape is constant.
+  out += "config_disabled_symbol\n";
+  for (const std::string &s : r.config.failed_symbols) {
+    out += s;
+    out += '\n';
+  }
+
+  // Section 3: one per-symbol coverage row (from the populate; written dates).
   out += "symbol,n_attempted,n_ok,n_failed,n_disabled\n";
   for (const PopulateSymbolStats &s : r.coverage.per_symbol) {
     out += s.symbol;
@@ -423,7 +462,7 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
     out += '\n';
   }
 
-  // Section 3: WHY each failed cell failed — the fit stage's counterpart to the
+  // Section 4: WHY each failed cell failed — the fit stage's counterpart to the
   // config stage's failed-symbol list. The FULL list, deliberately uncapped: the
   // terminal gets a bounded sample (reported_failed_cells) but this file is the
   // artifact an operator greps to root-cause, so truncating it here would defeat

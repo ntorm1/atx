@@ -101,10 +101,24 @@ struct SynthRow {
   return std::string(buf);
 }
 
+// The OSI root a real feed carries for a universe symbol: the ticker with its
+// punctuation removed (`pull_opra_hive.py`'s `sym.replace(".", "")`, and OCC's
+// own class-share convention — `BRK.B` trades as `BRKB`). A dot-free ticker is
+// its own root, so every pre-existing fixture symbol is byte-for-byte unchanged;
+// only a punctuated one gains the real-world property that its `underlying`
+// column and its `symbol` column disagree. That divergence is the whole point of
+// the fixture: it is what a synthetic hive needs in order to reproduce the
+// production BRK.B loss.
+[[nodiscard]] inline std::string osi_root(std::string symbol) {
+  symbol.erase(std::remove(symbol.begin(), symbol.end(), '.'), symbol.end());
+  return symbol;
+}
+
 // Compose an OSI/OCC 21-char symbol: 6-char space-padded root + YYMMDD + {C|P} +
 // 8-digit strike (price * 1000, zero-padded).
 [[nodiscard]] inline std::string osi_symbol(std::string root, const std::string &ym, char cp,
                                             double strike) {
+  root = osi_root(std::move(root));
   root.resize(6, ' ');
   char buf[9];
   std::snprintf(buf, sizeof(buf), "%08lld", static_cast<long long>(std::llround(strike * 1000.0)));

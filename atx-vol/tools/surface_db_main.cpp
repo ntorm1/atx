@@ -325,11 +325,26 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
   std::printf("cells_unmappable %zu\n", rep->cells_unmappable);
   std::printf("cells_non_finite %zu\n", rep->cells_non_finite);
   std::printf("cells_checksum %zu\n", rep->cells_checksum);
+  std::printf("symbols_disabled %zu\n", rep->disabled_symbols.size());
   std::printf("failures_reported %zu\n", rep->failures.size());
   std::printf("failures_elided %zu\n", rep->n_failures_elided);
   for (const DbCellFault &f : rep->failures) {
     std::printf("fail %s %s kind=%s detail=%s\n", f.key.c_str(), f.symbol.c_str(),
                 failure_name(f.kind), f.detail.c_str());
+  }
+  // The columns this walk never looked at. `verdict ok` over a database that is
+  // permanently missing a requested name is otherwise indistinguishable from
+  // `verdict ok` over a complete one — the symbol is simply not a column.
+  for (const std::string &s : rep->disabled_symbols) {
+    std::printf("disabled_symbol %s\n", s.c_str());
+  }
+  if (!rep->disabled_symbols.empty()) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db: %zu manifest symbol(s) are DISABLED and were not checked "
+                 "(they are absent from every partition). The verdict below describes only the "
+                 "symbols that were walked. Re-run with --include-disabled to prove they are "
+                 "absent, or rebuild with --retry-disabled to re-attempt them.\n",
+                 rep->disabled_symbols.size());
   }
   std::printf("min_cells %zu\n", min_cells);
   const bool enough = rep->cells_checked >= min_cells;
