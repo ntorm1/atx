@@ -314,6 +314,13 @@ struct SessionDiagnostics {
   // finite value here is the ONLY condition under which queries route
   // through the event-aware blend (see SessionInputs::events).
   double implied_emove{std::numeric_limits<double>::quiet_NaN()};
+  // E3b / AN-P1-3. WHICH solve produced `implied_emove`: `Joint` when the
+  // identified {eMove, st, lt, decay} fit over ALL fitted slices ran
+  // (`implied_emove_joint`, event_vol.hpp), `TwoPillar` when the slice set did
+  // not support it and the pre-E3b bracketing solve was used instead. Only
+  // meaningful when `implied_emove` is finite; on a declined solve it keeps its
+  // `TwoPillar` default and means nothing.
+  EmoveMethod emove_method{EmoveMethod::TwoPillar};
   std::size_t n_carry_slices{0};    // slices with a resolved carry diagnostic
   std::size_t n_carry_confident{0}; // carry slices clearing confidence gates
   // Expiries the fit DROPPED because carry could not be resolved (confidence
