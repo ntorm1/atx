@@ -447,6 +447,87 @@ Result<ListedDispersionSchedule> project_listed_schedule(const ListedDispersionS
   return Ok(std::move(projected));
 }
 
+double listed_mark_divergence_bps(const double schedule_mark, const double live_mark) noexcept {
+  // Verbatim arithmetic from the example's `collect_mark_divergence_replay`: the
+  // ratio is taken against |schedule_mark|, and a zero frozen mark collapses the
+  // metric to 0.0 rather than reporting an infinite relative error (finding L2).
+  const double diff = live_mark - schedule_mark;
+  const double denom = std::abs(schedule_mark);
+  return denom > 0.0 ? std::abs(diff) / denom * 1.0e4 : 0.0;
+}
+
+StepObserver make_mark_divergence_observer(const ListedDispersionSchedule &schedule,
+                                           std::vector<ListedMarkDivergenceRow> &out) {
+  // Both captures are borrows, documented at the declaration: the returned observer
+  // is handed to one run_backtest call that both must outlive.
+  return [&schedule, &out](const StepEvent &event) -> Status {
+    // The rows need the listed strategy's per-step divergence record, which is not on
+    // IStrategy. Downcast rather than widen the (documented, ABI-fragile) IStrategy
+    // vtable for a single consumer; a foreign strategy is an InvalidArgument, never a
+    // silent no-op, because a run whose observer quietly observed nothing is exactly
+    // the "dropped observation the caller believes it made" failure class.
+    const auto *strategy = dynamic_cast<const ListedDispersionStrategy *>(&event.strategy);
+    if (strategy == nullptr) {
+      return Err(ErrorCode::InvalidArgument,
+                 "mark divergence observer: strategy is not a ListedDispersionStrategy");
+    }
+    const std::vector<MarkDivergence> &divergences = strategy->last_mark_divergences();
+    if (divergences.empty()) {
+      return Ok();
+    }
+    // Divergences are populated only on a roll step; the roll that just fired owns
+    // the legs carrying each contract's symbol/raw_symbol. A non-empty record implies
+    // on_step returned Ok, so the cursor has already advanced past that roll and is
+    // at least 1 — but `schedule` here is an INDEPENDENT input (the caller may hand a
+    // schedule that is not the strategy's), so the bound is checked rather than
+    // assumed. Indexing an unrelated schedule would be undefined behavior, and the
+    // shadow replay this observer replaces could not hit it (it shared one schedule
+    // object with its strategy).
+    const std::size_t roll_index = strategy->next_roll_index();
+    if (roll_index == 0u || roll_index > schedule.rolls.size()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "mark divergence observer: roll cursor outside the observed schedule");
+    }
+    const ListedScheduleRoll &roll = schedule.rolls[roll_index - 1u];
+    // Fail-closed cross-check in the codebase's existing belt-and-braces style:
+    // ListedDispersionStrategy::on_step already errors unless the stepped snapshot's
+    // valuation timestamp equals the roll's, so this can only fire when the observer
+    // was handed a schedule that does not belong to the observed run. It is also what
+    // makes StepEvent::snapshot load-bearing here rather than decorative.
+    if (event.snapshot.ts_ns() != roll.valuation_ts_ns) {
+      return Err(ErrorCode::InvalidArgument,
+                 "mark divergence observer: step snapshot is not the roll valuation date");
+    }
+    for (const MarkDivergence &divergence : divergences) {
+      const ListedScheduleLeg *matched = nullptr;
+      for (const ListedScheduleLeg &leg : roll.legs) {
+        if (leg.uid == divergence.uid && leg.strike == divergence.strike &&
+            leg.expiry_ts_ns == divergence.expiry_ts_ns && leg.side == divergence.side) {
+          matched = &leg;
+          break;
+        }
+      }
+      if (matched == nullptr) {
+        return Err(ErrorCode::NotFound, "mark divergence leg not found in roll");
+      }
+      ListedMarkDivergenceRow row;
+      row.date = event.ref.date;
+      row.symbol = matched->symbol;
+      row.raw_symbol = matched->raw_symbol;
+      row.strike = divergence.strike;
+      row.expiry_ts_ns = divergence.expiry_ts_ns;
+      row.side = divergence.side;
+      row.schedule_mark = divergence.schedule_mark;
+      row.live_mark = divergence.live_mark;
+      row.diff = divergence.live_mark - divergence.schedule_mark;
+      row.abs_diff_bps_of_mark =
+          listed_mark_divergence_bps(divergence.schedule_mark, divergence.live_mark);
+      out.push_back(std::move(row));
+    }
+    return Ok();
+  };
+}
+
 Result<DispersionBookVar>
 dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &maturity,
                     std::span<const HistoricalProjectionScenario> scenarios,

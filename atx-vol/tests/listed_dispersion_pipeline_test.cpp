@@ -10,16 +10,20 @@
 
 #include "atx/vol/backtest.hpp"                   // MarketSnapshot
 #include "atx/vol/contract_projection.hpp"        // ProjectedMaturitySpec, ProjectedOption
+#include "atx/vol/corpus.hpp"                     // CorpusManifest, CorpusEntry (engine-driven clock)
 #include "atx/vol/dispersion.hpp"                 // DispersionMember, DispersionBook, build_dispersion_book
 #include "atx/vol/historical_projection.hpp"      // HistoricalProjectionScenario/Frame/Config, ProjectedHistoricalVar
 #include "atx/vol/listed_dispersion.hpp"          // ListedOptionQuote
 #include "atx/vol/listed_dispersion_pipeline.hpp" // module under test
 #include "atx/vol/listed_dispersion_reconciliation.hpp" // ListedReconciliationSnapshot, reconcile_listed_dispersion
 #include "atx/vol/listed_dispersion_schedule.hpp" // ListedRiskLookup, ListedOptionRisk
+#include "atx/vol/listed_dispersion_strategy.hpp" // ListedDispersionStrategy, ScheduleMarkPolicy, MarkDivergence
 #include "atx/vol/portfolio_pricer.hpp"           // SurfaceSet, kNsPerYear
 #include "atx/vol/priced_surface.hpp"             // PricedSurface
 #include "atx/vol/query_pricing.hpp"              // QueryExecution
+#include "atx/vol/strategy.hpp"                   // IStrategy (the foreign-strategy stub)
 #include "atx/vol/surface_archive.hpp"            // write_surface_archive_v2_file
+#include "atx/vol/types.hpp"                      // ErrorCode, Side, Status
 #include "atx/vol/vol_curve.hpp"
 #include "atx/vol/vol_surface.hpp"
 
@@ -197,6 +201,41 @@ std::string write_archive(const fs::path &dir, const std::string &date,
   EXPECT_TRUE(status) << (status ? std::string{} : status.error().to_string());
   return path;
 }
+
+// ── Mark-divergence observation scaffolding (L10) ─────────────────────────────
+// Its own tagged temp dir: `fresh_dir()` above is shared and unsuffixed, and it
+// remove_all's on entry, so reusing it here would let one fixture delete another's
+// archive out from under a live MarketSnapshot.
+fs::path fresh_divergence_dir(const char *tag) {
+  const fs::path path = fs::temp_directory_path() / (std::string{"atx-listed-pipeline-div-"} + tag);
+  std::error_code error;
+  fs::remove_all(path, error);
+  fs::create_directories(path, error);
+  return path;
+}
+
+// One roll authored at kNow0 / kExpiry0 over the `surfaces(kNow0, 0.0)` board, so
+// every leg's `model_mark` equals the archived surface's live mark bit-for-bit and
+// perturbing exactly one leg makes exactly that leg diverge.
+//
+// `roll_date` is deliberately "2026-07-10" while the observed clock ref carries
+// "2026-07-11": that makes a row's `date` field unambiguous about which of the two
+// it was read from (production has them equal, which would hide a mix-up).
+ListedDispersionSchedule divergence_schedule(const std::vector<PricedSurface> &source) {
+  ListedDispersionSchedule schedule;
+  schedule.rolls.push_back(roll(selection("2026-07-10", kNow0, kExpiry0, 1u), source, 4u));
+  return schedule;
+}
+
+// A minimal non-listed IStrategy. The observer's downcast must reject it outright:
+// silently recording nothing is the "dropped observation the caller believes it
+// made" failure class.
+class ForeignStrategy final : public IStrategy {
+public:
+  Status on_step(const MarketSnapshot &, std::size_t, PortfolioState &, std::uint64_t &) override {
+    return atx::core::Ok();
+  }
+};
 
 } // namespace
 
@@ -780,4 +819,317 @@ TEST(ListedDispersionPipeline, DispersionBookVar_SplitsConfidences) {
   // A deeper confidence is a worse loss: VaR(99%) >= VaR(95%).
   EXPECT_GE(var->risks[1].value_at_risk, var->risks[0].value_at_risk);
   EXPECT_GE(var->risks[1].expected_shortfall, var->risks[0].expected_shortfall);
+}
+
+// ── (h) Mark divergence collector (L10) ───────────────────────────────────────
+// PROVENANCE OF THE GATES BELOW — read this before adding or relaxing one.
+//   * `BpsMetricMatchesTheFrozenFormula` and the five hand-built-`StepEvent` tests
+//     prove ARITHMETIC AND PLUMBING ONLY. They construct the event themselves, so
+//     they say nothing about where — or whether — the engine fires the hook.
+//   * `MarkDivergenceObserverRidesTheEngineStepHook` is the ENGINE-INTEGRATION gate:
+//     it drives the real `run_backtest` strategy overload and asserts a nonzero row
+//     count came back through `RunConfig::step_observer`. That is the only test here
+//     that can fail if the hook moves to a position where the strategy's per-step
+//     divergence record has already been cleared or overwritten.
+// A comparison that would pass on zero rows is not a gate: the production cold route
+// legitimately emits `mark_divergence rows=0`, so every gate below either asserts a
+// row count > 0 or pairs its zero-row assertion with a nonzero control.
+
+TEST(ListedDispersionPipeline, BpsMetricMatchesTheFrozenFormula) {
+  // Dyadic inputs on purpose, so each expectation is an exactly representable literal
+  // a reader derives by hand from |live - schedule| / |schedule| * 1e4 — not a value
+  // read back out of the function under test. (Decimal cases like 2.0 -> 2.02 are NOT
+  // bit-exactly 100.0 in binary64; see the report's plan-error note.)
+  EXPECT_EQ(listed_mark_divergence_bps(2.0, 2.5), 2500.0);
+  // Absolute value: a live mark BELOW the frozen mark reports the same magnitude.
+  EXPECT_EQ(listed_mark_divergence_bps(2.0, 1.5), 2500.0);
+  // The denominator is |schedule_mark|, so a negative frozen mark still yields a
+  // positive bps rather than a sign-flipped one.
+  EXPECT_EQ(listed_mark_divergence_bps(-1.0, -1.25), 2500.0);
+  // No divergence, no bps — with a nonzero denominator, so this is not the L2 branch.
+  EXPECT_EQ(listed_mark_divergence_bps(4.0, 4.0), 0.0);
+  // Finding L2, PRESERVED deliberately: a zero frozen mark collapses the metric to
+  // exactly 0.0 instead of reporting an infinite relative error, so a deep-OTM leg
+  // with a frozen mark of 0 is UNDERSTATED. This value feeds a pinned artifact
+  // column, so changing it is a deliberate economic decision, not a refactor.
+  EXPECT_EQ(listed_mark_divergence_bps(0.0, 0.5), 0.0);
+  EXPECT_EQ(listed_mark_divergence_bps(-0.0, 0.5), 0.0);
+}
+
+TEST(ListedDispersionPipeline, MarkDivergenceObserverCapturesThePerturbedLeg) {
+  const std::vector<PricedSurface> source = surfaces(kNow0, 0.0);
+  ListedDispersionSchedule schedule = divergence_schedule(source);
+  ASSERT_GE(schedule.rolls.front().legs.size(), 2u);
+  // Perturb the LAST leg (a constituent put, symbol "N1"), never the first (the index
+  // call, "SPY"): a collector that reported `roll.legs.front()` instead of the leg it
+  // actually matched would otherwise pass by coincidence.
+  ListedScheduleLeg &target = schedule.rolls.front().legs.back();
+  const double live_mark = target.model_mark;
+  target.model_mark += 0.01;
+  const ListedScheduleLeg perturbed = target;
+
+  const fs::path dir = fresh_divergence_dir("capture");
+  auto snapshot = MarketSnapshot::load(write_archive(dir, "2026-07-10", source));
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+  auto strategy = ListedDispersionStrategy::create(schedule, 0.0, ScheduleMarkPolicy::Record);
+  ASSERT_TRUE(strategy.has_value()) << strategy.error().to_string();
+
+  PortfolioState book;
+  std::uint64_t next_id = 100u;
+  const Status stepped = strategy->on_step(*snapshot, 0u, book, next_id);
+  ASSERT_TRUE(stepped.has_value()) << stepped.error().to_string();
+  // Anti-vacuity: the collector's INPUT exists and the roll really fired.
+  ASSERT_EQ(strategy->last_mark_divergences().size(), 1u);
+  ASSERT_EQ(strategy->next_roll_index(), 1u);
+
+  std::vector<ListedMarkDivergenceRow> rows;
+  const StepObserver observer = make_mark_divergence_observer(schedule, rows);
+  const SnapshotRef ref{"2026-07-11", "observer-does-not-read-this.atxvsa"};
+  const Status status = observer(StepEvent{0u, ref, *snapshot, *strategy});
+  ASSERT_TRUE(status.has_value()) << status.error().to_string();
+  ASSERT_EQ(rows.size(), 1u);
+  const ListedMarkDivergenceRow &row = rows.front();
+
+  // `date` is the OBSERVED step's clock date, not the roll's authored roll_date; the
+  // fixture makes the two differ so the source is unambiguous.
+  EXPECT_EQ(row.date, "2026-07-11");
+  EXPECT_NE(row.date, schedule.rolls.front().roll_date);
+  // symbol / raw_symbol come from the MATCHED leg, and they are distinct strings, so
+  // neither writing the same field twice nor taking legs.front() survives.
+  EXPECT_EQ(row.symbol, perturbed.symbol);
+  EXPECT_EQ(row.raw_symbol, perturbed.raw_symbol);
+  EXPECT_NE(row.symbol, row.raw_symbol);
+  EXPECT_NE(row.symbol, schedule.rolls.front().legs.front().symbol);
+  EXPECT_EQ(row.strike, perturbed.strike);
+  EXPECT_EQ(row.expiry_ts_ns, perturbed.expiry_ts_ns);
+  EXPECT_EQ(row.side, perturbed.side);
+  // The marks: `schedule_mark` is the FROZEN (perturbed) mark, `live_mark` the mark
+  // the surface actually produced. Swapping them flips the sign of `diff`.
+  EXPECT_EQ(row.schedule_mark, perturbed.model_mark);
+  EXPECT_EQ(row.live_mark, live_mark);
+  EXPECT_NE(row.live_mark, row.schedule_mark);
+  EXPECT_EQ(row.diff, live_mark - perturbed.model_mark);
+  EXPECT_LT(row.diff, 0.0); // the frozen mark was perturbed UP, so live - frozen < 0
+  EXPECT_EQ(row.abs_diff_bps_of_mark,
+            std::abs(live_mark - perturbed.model_mark) / std::abs(perturbed.model_mark) * 1.0e4);
+  EXPECT_GT(row.abs_diff_bps_of_mark, 0.0);
+  EXPECT_TRUE(std::isfinite(row.abs_diff_bps_of_mark));
+  std::error_code error;
+  fs::remove_all(dir, error);
+}
+
+TEST(ListedDispersionPipeline, MarkDivergenceObserverIsSilentWhenNothingDiverged) {
+  const std::vector<PricedSurface> source = surfaces(kNow0, 0.0);
+  const ListedDispersionSchedule clean = divergence_schedule(source);
+  ListedDispersionSchedule perturbed = clean;
+  perturbed.rolls.front().legs.back().model_mark += 0.01;
+
+  const fs::path dir = fresh_divergence_dir("silent");
+  auto snapshot = MarketSnapshot::load(write_archive(dir, "2026-07-10", source));
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+  auto quiet_strategy = ListedDispersionStrategy::create(clean, 0.0, ScheduleMarkPolicy::Record);
+  ASSERT_TRUE(quiet_strategy.has_value()) << quiet_strategy.error().to_string();
+  auto loud_strategy = ListedDispersionStrategy::create(perturbed, 0.0, ScheduleMarkPolicy::Record);
+  ASSERT_TRUE(loud_strategy.has_value()) << loud_strategy.error().to_string();
+
+  PortfolioState quiet_book;
+  std::uint64_t quiet_id = 100u;
+  ASSERT_TRUE(quiet_strategy->on_step(*snapshot, 0u, quiet_book, quiet_id).has_value());
+  PortfolioState loud_book;
+  std::uint64_t loud_id = 100u;
+  ASSERT_TRUE(loud_strategy->on_step(*snapshot, 0u, loud_book, loud_id).has_value());
+
+  // The silence must mean "the roll fired and nothing diverged", never "no roll
+  // fired": the cursor advanced and the book opened the whole roll.
+  ASSERT_TRUE(quiet_strategy->all_rolls_consumed());
+  ASSERT_EQ(quiet_strategy->next_roll_index(), 1u);
+  ASSERT_EQ(quiet_book.lots.size(), clean.rolls.front().legs.size());
+  ASSERT_TRUE(quiet_strategy->last_mark_divergences().empty());
+  ASSERT_EQ(loud_strategy->last_mark_divergences().size(), 1u);
+
+  // ONE observer, TWO events. The clean event must append nothing and the diverging
+  // event must append a row, so the zero-row assertion cannot be satisfied by an
+  // observer that never appends anything at all. Both schedules share every leg KEY
+  // (only one leg's model_mark differs), so a single observer serves both.
+  std::vector<ListedMarkDivergenceRow> rows;
+  const StepObserver observer = make_mark_divergence_observer(clean, rows);
+  const SnapshotRef ref{"2026-07-11", "observer-does-not-read-this.atxvsa"};
+
+  const Status quiet = observer(StepEvent{0u, ref, *snapshot, *quiet_strategy});
+  ASSERT_TRUE(quiet.has_value()) << quiet.error().to_string();
+  EXPECT_TRUE(rows.empty());
+
+  const Status loud = observer(StepEvent{0u, ref, *snapshot, *loud_strategy});
+  ASSERT_TRUE(loud.has_value()) << loud.error().to_string();
+  ASSERT_EQ(rows.size(), 1u);
+  EXPECT_EQ(rows.front().symbol, clean.rolls.front().legs.back().symbol);
+  std::error_code error;
+  fs::remove_all(dir, error);
+}
+
+TEST(ListedDispersionPipeline, MarkDivergenceObserverRejectsAForeignStrategy) {
+  const std::vector<PricedSurface> source = surfaces(kNow0, 0.0);
+  const ListedDispersionSchedule schedule = divergence_schedule(source);
+  const fs::path dir = fresh_divergence_dir("foreign");
+  auto snapshot = MarketSnapshot::load(write_archive(dir, "2026-07-10", source));
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  std::vector<ListedMarkDivergenceRow> rows;
+  const StepObserver observer = make_mark_divergence_observer(schedule, rows);
+  ForeignStrategy foreign;
+  const SnapshotRef ref{"2026-07-11", "observer-does-not-read-this.atxvsa"};
+  const Status status = observer(StepEvent{0u, ref, *snapshot, foreign});
+  ASSERT_FALSE(status.has_value());
+  EXPECT_EQ(status.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(status.error().message().find("not a ListedDispersionStrategy"), std::string::npos);
+  // Fail-CLOSED: the run aborts. A fail-silent observer would return Ok here and the
+  // caller would archive an empty mark_divergence section it believes was measured.
+  EXPECT_TRUE(rows.empty());
+  std::error_code error;
+  fs::remove_all(dir, error);
+}
+
+TEST(ListedDispersionPipeline, MarkDivergenceObserverRejectsAnUnmatchableLeg) {
+  const std::vector<PricedSurface> source = surfaces(kNow0, 0.0);
+  ListedDispersionSchedule schedule = divergence_schedule(source);
+  schedule.rolls.front().legs.back().model_mark += 0.01;
+
+  const fs::path dir = fresh_divergence_dir("unmatchable");
+  auto snapshot = MarketSnapshot::load(write_archive(dir, "2026-07-10", source));
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+  auto strategy = ListedDispersionStrategy::create(schedule, 0.0, ScheduleMarkPolicy::Record);
+  ASSERT_TRUE(strategy.has_value()) << strategy.error().to_string();
+  PortfolioState book;
+  std::uint64_t next_id = 100u;
+  ASSERT_TRUE(strategy->on_step(*snapshot, 0u, book, next_id).has_value());
+  ASSERT_EQ(strategy->last_mark_divergences().size(), 1u);
+
+  // The observer sees a COPY whose leg keys have all moved, so the recorded
+  // divergence can no longer be attributed to a leg. That must abort rather than
+  // emit a row with an empty symbol.
+  ListedDispersionSchedule shifted = schedule;
+  for (ListedScheduleLeg &leg : shifted.rolls.front().legs) {
+    leg.strike += 1.0;
+  }
+  std::vector<ListedMarkDivergenceRow> rows;
+  const StepObserver observer = make_mark_divergence_observer(shifted, rows);
+  const SnapshotRef ref{"2026-07-11", "observer-does-not-read-this.atxvsa"};
+  const Status status = observer(StepEvent{0u, ref, *snapshot, *strategy});
+  ASSERT_FALSE(status.has_value());
+  EXPECT_EQ(status.error().code(), ErrorCode::NotFound);
+  // Byte-identical to the shadow replay's message, so the CLI's error text does not
+  // move when the shadow is deleted. Asserted as a whole string, not just the code.
+  EXPECT_EQ(status.error().message(), "mark divergence leg not found in roll");
+  EXPECT_TRUE(rows.empty());
+  std::error_code error;
+  fs::remove_all(dir, error);
+}
+
+TEST(ListedDispersionPipeline, MarkDivergenceObserverGuardsTheRollCursorAndValuationDate) {
+  const std::vector<PricedSurface> source = surfaces(kNow0, 0.0);
+  ListedDispersionSchedule schedule = divergence_schedule(source);
+  schedule.rolls.front().legs.back().model_mark += 0.01;
+
+  const fs::path dir = fresh_divergence_dir("guards");
+  auto snapshot = MarketSnapshot::load(write_archive(dir, "2026-07-10", source));
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+  auto strategy = ListedDispersionStrategy::create(schedule, 0.0, ScheduleMarkPolicy::Record);
+  ASSERT_TRUE(strategy.has_value()) << strategy.error().to_string();
+  PortfolioState book;
+  std::uint64_t next_id = 100u;
+  ASSERT_TRUE(strategy->on_step(*snapshot, 0u, book, next_id).has_value());
+  ASSERT_EQ(strategy->last_mark_divergences().size(), 1u);
+  const SnapshotRef ref{"2026-07-11", "observer-does-not-read-this.atxvsa"};
+
+  // (a) `schedule` is an independent input, so the roll cursor is bounds-checked
+  // rather than assumed: indexing rolls[cursor - 1] of an unrelated schedule would be
+  // undefined behavior. The shadow replay could not hit this — it shared one schedule
+  // object with its strategy.
+  ListedDispersionSchedule no_rolls;
+  std::vector<ListedMarkDivergenceRow> cursor_rows;
+  const StepObserver cursor_observer = make_mark_divergence_observer(no_rolls, cursor_rows);
+  const Status cursor = cursor_observer(StepEvent{0u, ref, *snapshot, *strategy});
+  ASSERT_FALSE(cursor.has_value());
+  EXPECT_EQ(cursor.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(cursor.error().message().find("roll cursor outside"), std::string::npos);
+  EXPECT_TRUE(cursor_rows.empty());
+
+  // (b) StepEvent::snapshot is load-bearing, not decorative: a roll valued one
+  // nanosecond away from the observed snapshot is not this run's roll.
+  ListedDispersionSchedule off_by_one_ns = schedule;
+  off_by_one_ns.rolls.front().valuation_ts_ns += 1;
+  std::vector<ListedMarkDivergenceRow> ts_rows;
+  const StepObserver ts_observer = make_mark_divergence_observer(off_by_one_ns, ts_rows);
+  const Status ts = ts_observer(StepEvent{0u, ref, *snapshot, *strategy});
+  ASSERT_FALSE(ts.has_value());
+  EXPECT_EQ(ts.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(ts.error().message().find("roll valuation date"), std::string::npos);
+  EXPECT_TRUE(ts_rows.empty());
+
+  // Control: the UNMODIFIED schedule over the very same event DOES produce a row, so
+  // neither rejection above is an unrelated failure wearing a guard's name.
+  std::vector<ListedMarkDivergenceRow> ok_rows;
+  const StepObserver ok_observer = make_mark_divergence_observer(schedule, ok_rows);
+  const Status ok = ok_observer(StepEvent{0u, ref, *snapshot, *strategy});
+  ASSERT_TRUE(ok.has_value()) << ok.error().to_string();
+  EXPECT_EQ(ok_rows.size(), 1u);
+  std::error_code error;
+  fs::remove_all(dir, error);
+}
+
+// THE ENGINE-INTEGRATION GATE. Everything above hand-builds its StepEvent and so
+// cannot observe where the engine fires the hook. This one drives the real
+// `run_backtest` strategy overload with nothing but `RunConfig::step_observer` set,
+// and asserts a nonzero row count came back — which is exactly what the shadow replay
+// loop in the dispersion example produced by re-walking the clock. If the hook were
+// fired anywhere that has already cleared or overwritten the strategy's per-step
+// divergence record, this test reports 0 rows and fails; every unit test above would
+// still pass.
+TEST(ListedDispersionPipeline, MarkDivergenceObserverRidesTheEngineStepHook) {
+  const std::vector<PricedSurface> source = surfaces(kNow0, 0.0);
+  ListedDispersionSchedule schedule = divergence_schedule(source);
+  ListedScheduleLeg &target = schedule.rolls.front().legs.back();
+  const double live_mark = target.model_mark;
+  target.model_mark += 0.01;
+  const ListedScheduleLeg perturbed = target;
+
+  const fs::path dir = fresh_divergence_dir("engine");
+  CorpusManifest manifest;
+  manifest.dates.push_back("2026-07-10");
+  CorpusEntry entry;
+  entry.date = "2026-07-10";
+  entry.symbol = "SPY";
+  entry.status = CorpusFitStatus::Ok;
+  entry.archive_path = write_archive(dir, "2026-07-10", source);
+  manifest.entries.push_back(std::move(entry));
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  auto strategy = ListedDispersionStrategy::create(schedule, 0.0, ScheduleMarkPolicy::Record);
+  ASSERT_TRUE(strategy.has_value()) << strategy.error().to_string();
+
+  std::vector<ListedMarkDivergenceRow> rows;
+  RunConfig config;
+  config.prefetch_snapshots = false;
+  config.step_observer = make_mark_divergence_observer(schedule, rows);
+  const auto result = run_backtest(*clock, *strategy, config);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  // The run genuinely happened and the roll genuinely fired.
+  ASSERT_EQ(result->size(), 1u);
+  ASSERT_TRUE(strategy->all_rolls_consumed());
+
+  // THE GATE: strictly more than zero rows, collected by the engine's own hook.
+  ASSERT_EQ(rows.size(), 1u);
+  EXPECT_EQ(rows.front().date, "2026-07-10"); // the clock ref's date
+  EXPECT_EQ(rows.front().symbol, perturbed.symbol);
+  EXPECT_EQ(rows.front().raw_symbol, perturbed.raw_symbol);
+  EXPECT_EQ(rows.front().strike, perturbed.strike);
+  EXPECT_EQ(rows.front().expiry_ts_ns, perturbed.expiry_ts_ns);
+  EXPECT_EQ(rows.front().side, perturbed.side);
+  EXPECT_EQ(rows.front().schedule_mark, perturbed.model_mark);
+  EXPECT_DOUBLE_EQ(rows.front().live_mark, live_mark);
+  EXPECT_NE(rows.front().live_mark, rows.front().schedule_mark);
+  EXPECT_LT(rows.front().diff, 0.0);
+  EXPECT_GT(rows.front().abs_diff_bps_of_mark, 0.0);
+  std::error_code error;
+  fs::remove_all(dir, error);
 }

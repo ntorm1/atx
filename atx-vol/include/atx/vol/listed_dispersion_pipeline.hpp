@@ -30,6 +30,7 @@
 #include "atx/vol/listed_dispersion.hpp"          // ListedForwardLookup, DispersionMember, ListedOptionQuote
 #include "atx/vol/listed_dispersion_reconciliation.hpp" // ListedReconciliationSnapshot, reconcile_listed_dispersion
 #include "atx/vol/listed_dispersion_schedule.hpp" // ListedRiskLookup, ListedOptionRisk
+#include "atx/vol/listed_dispersion_strategy.hpp" // ListedDispersionStrategy, MarkDivergence
 #include "atx/vol/listed_opra.hpp"                // ListedDefinitionTable, MissingDefinitionPolicy
 #include "atx/vol/types.hpp"                      // Result
 
@@ -262,6 +263,45 @@ struct ProjectionConfig {
 [[nodiscard]] Result<ListedDispersionSchedule>
 project_listed_schedule(const ListedDispersionSchedule &listed, const ListedArchiveLookup &archives,
                         const ProjectionConfig &cfg = {});
+
+// ── Mark divergence observation (L10) ───────────────────────────────────────────
+
+// One mark_divergence row: the frozen schedule mark vs the live seed mark for one
+// leg on one session. Field order and names mirror the kMarkDivergenceCols registry
+// order the example's encoder emits, so the CLI stages a row 1:1 with no reordering.
+struct ListedMarkDivergenceRow {
+  std::string date, symbol, raw_symbol;
+  double strike{0.0};
+  std::int64_t expiry_ts_ns{0};
+  Side side{Side::Call};
+  double schedule_mark{0.0}, live_mark{0.0}, diff{0.0}, abs_diff_bps_of_mark{0.0};
+};
+
+// |live - schedule| / |schedule| * 1e4, and EXACTLY 0.0 when |schedule| == 0.
+// Lifted verbatim from the mark-divergence arithmetic in the example's
+// `collect_mark_divergence_replay`. The zero-denominator collapse is finding L2 — a
+// KNOWN understatement for deep-OTM legs with a frozen mark of 0. It is PRESERVED
+// bit-for-bit here on purpose: the metric feeds a pinned artifact, so changing it is
+// a separate, deliberate economic decision, not a refactor side effect.
+[[nodiscard]] double listed_mark_divergence_bps(double schedule_mark, double live_mark) noexcept;
+
+// Build a StepObserver that appends one row per leg whose live mark diverged from
+// its frozen schedule mark on the step just observed. Requires the observed strategy
+// to be a ListedDispersionStrategy (Record policy); anything else is a fail-closed
+// InvalidArgument. `schedule` and `out` MUST outlive the run_backtest call that
+// consumes the returned observer.
+//
+// BOOK INDEPENDENCE (the L10 equivalence property — do not weaken it). Every row is
+// derived from exactly three inputs: the strategy's already-computed
+// `last_mark_divergences()` / `next_roll_index()`, the frozen `schedule` handed in
+// here, and the observed step's `ref.date` / `snapshot.ts_ns()`. It reads NO
+// `PortfolioState`, no cash/hedge ledger, and nothing the engine mutates after
+// `IStrategy::on_step` returns — which is what lets a shadow replay loop that steps
+// an otherwise-unmanaged book produce byte-identical rows. Adding a book- or
+// engine-mutation-order dependence here would silently invalidate that equivalence.
+[[nodiscard]] StepObserver
+make_mark_divergence_observer(const ListedDispersionSchedule &schedule,
+                              std::vector<ListedMarkDivergenceRow> &out);
 
 // ── Projected relative-template VaR (M8) ────────────────────────────────────────
 
