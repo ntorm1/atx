@@ -163,7 +163,7 @@ def write_run_dir(root: pathlib.Path, with_populate: bool = True) -> pathlib.Pat
     )
     if with_populate:
         populate_meta = {
-            "n_boards": "3", "n_ok": "8", "n_failed": "1", "n_carried": "3",
+            "n_boards": "3", "n_ok": "5", "n_failed": "1", "n_carried": "3",
             "n_dates_written": "3",
         }
         _write_rows(

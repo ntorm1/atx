@@ -218,9 +218,10 @@ Every failed cell prints the fitter's own reason, so a carry mismatch (every cel
 failing the same way at the same gate) is distinguishable at a glance from a set
 of genuinely marginal boards.
 
-**This is no longer a silent green exit.** A build that scheduled work and fitted
-**nothing** (`cells_to_fit > 0` and `cells_ok == 0`) now exits **3** and prints a
-diagnostic on stderr naming the carry rate it used:
+**This is no longer a silent green exit.** A build that scheduled work and
+produced **nothing at all** — nothing fitted *and* nothing carried
+(`cells_to_fit > 0`, `cells_ok == 0`, `cells_carried == 0`) — exits **3** and
+prints a diagnostic on stderr naming the carry rate it used:
 
 ```
 $ atx-vol-surface-db-build --db /db --hive /hive --from 2026-07-01 --to 2026-07-06
@@ -238,7 +239,7 @@ The decision lives in the library as
 (`atx/vol/surface_db_build.hpp`), unit-tested in the `SurfaceDbTotalFitFailure`
 suite — the CLI only maps it to an exit code.
 
-**It is deliberately narrow, and the two neighbouring shapes stay green:**
+**It is deliberately narrow, and the three neighbouring shapes stay green:**
 
 - **Partial** failure (`cells_ok > 0` alongside some `cells_failed`) is **normal
   production output** — real hives carry unfittable boards. Exit `0`.
@@ -246,6 +247,28 @@ suite — the CLI only maps it to an exit code.
   complete database, and the un-pulled empty window. `cells_ok` is legitimately
   `0` because nothing was scheduled. Exit `0` — the build's convergence guarantee
   ("a re-run fits zero") depends on it.
+- **Carried-only** (`cells_carried > 0` with `cells_ok == 0`) is the **converged
+  steady state** once a date holds a permanently-failing cell. That date is
+  rewritten on every run and its failure retried forever (there is deliberately no
+  persisted known-failed state), while its healthy siblings are *carried* rather
+  than re-fitted — so `cells_ok` is legitimately `0` on a database that is
+  entirely healthy. Exit `0`. Before carry-over those siblings were re-fitted and
+  `cells_ok` was large, which is the only reason this shape never misfired.
+
+> **Known limit.** The exemption is keyed on `cells_carried == 0`, so **any** run
+> that carried at least one cell is exempt from this predicate — a strictly wider
+> set than "a converged database". In particular, a run whose every *scheduled*
+> cell failed for a systematic reason (a bad config for a newly-added name, a
+> loader regression) beside a large healthy carried population exits `0`, where
+> before carry-over it would have exited `3`. The counters distinguish the two —
+> `cells_ok 0` with `cells_failed > 0` and `cells_carried > 0` is the ambiguous
+> shape — but the exit code no longer does. A wrong `--r` on a converged database
+> likewise goes unflagged here, because carried cells are never re-fitted and so
+> never re-fail; that question belongs to a stale-input check in the carry gate
+> (comparing each stored record's `S`/`r`/`now_ts_ns` against the loaded board's
+> `MarketEnv`), not to an exit-code predicate. The trade is deliberate: a false
+> `TOTAL FIT FAILURE` on *every* healthy resume, telling the operator to change
+> `--r`, would invalidate every surface in the database if followed.
 
 So exit 3 answers exactly one question — "did this run get anything at all?" — and
 **partial coverage is still your job to inspect.**
@@ -282,16 +305,23 @@ $ echo $?
 ```
 
 True iff the config stage left at least one symbol **disabled** and **not one
-enabled**, and the run produced no surface (`cells_ok == 0`) — the same
-attempted-nothing-succeeded shape as the fit predicate, read off the **standing**
-state rather than this run's fresh verdicts:
+enabled**, and the run produced no surface at all — neither fitted nor carried
+(`cells_ok == 0 && cells_carried == 0`) — the same attempted-nothing-succeeded
+shape as the fit predicate, read off the **standing** state rather than this run's
+fresh verdicts:
 
 ```
 disabled = n_disabled_failed + n_disabled_existing
 enabled  = n_configured + (n_skipped_existing - n_disabled_existing)
+=> disabled > 0 && enabled == 0 && cells_ok == 0 && cells_carried == 0
 ```
 
-**Three neighbouring shapes stay green**, for the same reasons:
+The `cells_carried` conjunct is unreachable today (nothing can be carried when no
+symbol is enabled). It is there so both predicates read the **same** evidence for
+"did this run produce a surface at all" — the coupling whose absence produced the
+false `TOTAL FIT FAILURE` one stage down.
+
+**Four neighbouring shapes stay green**, for the same reasons:
 
 - **Partial** selection failure (some symbol enabled beside some
   `n_disabled_failed`): a real universe carries names whose board cannot pin a
@@ -302,6 +332,9 @@ enabled  = n_configured + (n_skipped_existing - n_disabled_existing)
 - **New names failing beside productive fits**: only newly-seen symbols failed
   selection while already-configured ones fitted. `cells_ok > 0`, so the run
   produced surfaces — partial, not dead. Exit `0`.
+- **Carried-only**: the run re-emitted stored surfaces without fitting any
+  (`cells_carried > 0`). The database served surfaces this run, so it is not
+  dead. Exit `0`.
 
 Both predicates map to the **same** exit `3`: a script asks "did this run produce
 anything at all?", and the stderr diagnostic names which stage swallowed it. The
@@ -373,11 +406,12 @@ atx-vol-surface-db-build \
 
 Every scalar report field prints one-per-line to **stdout** as `key value`
 (mirroring the CSV `key,value` section), followed by `config.failed_symbols`, one
-`symbol.<S> attempted=.. ok=.. failed=.. disabled=..` line per symbol, and one
+`symbol.<S> attempted=.. ok=.. failed=.. disabled=.. carried=..` line per symbol,
+and one
 `failed_cell <date> <symbol> code=<Code> detail=<text>` line per **failed cell**.
 With `--report`, the same data is written as CSV in **four** sections: a
 `key,value` scalar section, a `config_disabled_symbol` row per disabled name, a
-`symbol,n_attempted,n_ok,n_failed,n_disabled` row per symbol, then a
+`symbol,n_attempted,n_ok,n_failed,n_disabled,n_carried` row per symbol, then a
 `date,symbol,code,detail` row per failed cell (`detail` is RFC4180-quoted — it is
 free text from the fitter and may contain a comma). Every section header is
 emitted even when its list is empty, so the file's shape is constant.
@@ -422,7 +456,7 @@ retried on the next run exactly as before (see [Resume semantics](#resume-semant
 | `0` | Build succeeded — including **partial** coverage, a no-op **resume**, and a graceful empty-window no-op. |
 | `1` | A build error — malformed hive spec, or a db config/write failure. Message on stderr, **no report printed**. |
 | `2` | A usage error — unknown flag, a missing required flag, an unknown `--preset`, or a malformed `--r` / `--pin-curve-family`. Usage on stderr. |
-| `3` | **The build ran to completion and produced NOTHING** — either **total config failure** (`n_disabled_failed > 0`, `n_configured == 0`, `cells_ok == 0`: every symbol was disabled by a selection failure, so nothing was ever scheduled) or **total fit failure** (`cells_to_fit > 0` and `cells_ok == 0`: work was scheduled and no cell fitted). One code for both — the script's question is "did this run produce anything?" and the stderr diagnostic names the stage. The full report still prints and `--report` is still written. See [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing). |
+| `3` | **The build ran to completion and produced NOTHING** — either **total config failure** (`disabled > 0`, `enabled == 0`, `cells_ok == 0`, `cells_carried == 0`: every symbol was disabled by a selection failure, so nothing was ever scheduled) or **total fit failure** (`cells_to_fit > 0`, `cells_ok == 0`, `cells_carried == 0`: work was scheduled, no cell fitted, and nothing was carried either). One code for both — the script's question is "did this run produce anything?" and the stderr diagnostic names the stage. The full report still prints and `--report` is still written. See [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing). |
 
 `3` is deliberately distinct from `1`: `1` means *atx or the database broke* (no
 report to read), `3` means *the tool worked and your inputs produced nothing* —
@@ -455,7 +489,8 @@ disposition counters partition the distinct symbols seen:
 | --- | --- |
 | `coverage.cells_loaded` | Boards handed to the populate (available parquet cells). |
 | `coverage.cells_to_fit` | NEW `(symbol, date)` cells scheduled this run. A **config-disabled** cell is never counted — it can never be added, so counting it would keep its date pending forever. |
-| `coverage.cells_refit` | Already-present cells re-fit by a same-date rewrite. |
+| `coverage.cells_refit` | Already-present cells that a same-date rewrite put back through the **fitter**. Carry-over split this population: an already-present cell dragged into a rewrite is now either *carried* or *refit*, never both. On a converged database this should be **`0`** — that is the invariant a cheap resume rests on, and it is the number to watch, not `cells_to_fit`. |
+| `coverage.cells_carried` | Already-present cells re-emitted **verbatim** from the existing partition instead of being re-fitted, because the stored config fingerprint still matches. Byte-identical to what they replaced. Deliberately **not** counted in `cells_ok` — nothing was fitted — which is why both exit-code predicates read this counter explicitly. |
 | `coverage.cells_already_present` | Skipped: symbol already in its date partition. |
 | `coverage.cells_ok` / `cells_failed` | Fit outcomes over the (re)written dates. |
 | `coverage.dates_total` | Distinct dates among the loaded boards. |
