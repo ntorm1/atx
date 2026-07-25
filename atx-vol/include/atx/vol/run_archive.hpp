@@ -547,6 +547,7 @@ private:
 inline constexpr std::string_view kRunSpecFile = "run_spec.tsv";
 inline constexpr std::string_view kUniverseScheduleFile = "universe_schedule.tsv";
 inline constexpr std::string_view kSurfaceManifestFile = "surface_manifest.tsv";
+inline constexpr std::string_view kInputInventoryFile = "input_inventory.tsv";
 inline constexpr std::string_view kTradeScheduleFile = "trade_schedule.tsv";
 inline constexpr std::string_view kRunArchiveFile = "run.atxrun";
 
@@ -584,12 +585,25 @@ public:
   [[nodiscard]] Result<Clock> clock() const;                       // surface_manifest.tsv
   [[nodiscard]] Result<ListedDispersionSchedule> schedule() const; // trade_schedule.tsv
 
-  // Deterministic identity of the producing run: a wyhash fold of the run_spec
-  // bytes and the authored input fingerprint(s) — the same atx::core::hash_bytes
-  // the orchestrator fingerprints inputs with (hash_file). run_spec.tsv is
-  // REQUIRED (a run dir without it is not a run); the universe schedule is folded
-  // in when present. Forced nonzero (0 == "unset" in the header). Deterministic
-  // for identical input bytes on one platform/binary.
+  // Deterministic identity of the producing run — and the merge-write CACHE KEY
+  // (see write_run_archive below): a wyhash fold of the run-dir input bytes, the
+  // same atx::core::hash_bytes the orchestrator fingerprints inputs with
+  // (hash_file). Forced nonzero (0 == "unset" in the header). Deterministic for
+  // identical input bytes on one platform/binary.
+  //
+  // FOLD ORDER is part of the contract (hash_combine is order-sensitive):
+  //   1. run_spec.tsv           REQUIRED — a dir without it is not a run
+  //   2. universe_schedule.tsv  authored universe
+  //   3. surface_manifest.tsv   per-date corpus identity
+  //   4. input_inventory.tsv    per-cell OPRA input fingerprints
+  //   5. trade_schedule.tsv     the immutable schedule both routes read
+  // Files 2-5 are SKIPPED WHEN ABSENT, so a partially-populated run dir still
+  // yields an identity.
+  //
+  // definitions.tsv is DELIBERATELY NOT FOLDED (it is ~700 MB; hashing it on
+  // every archive write would cost more than the write). It is covered
+  // transitively by (3) and (4) — see the rationale in run_archive.cpp. Do not
+  // "fix" this by folding the definitions bytes.
   [[nodiscard]] Result<std::uint64_t> run_identity_hash() const;
 
   // Publish <dir>/run.atxrun atomically (write_run_archive_file's fsync +
@@ -603,7 +617,8 @@ public:
   // MERGE-WRITE: two result-producing routes (run-backtest and
   // run-projected-backtest) may share a run dir, each supplying only its own
   // sections. If an existing run.atxrun opens cleanly AND its run_identity_hash
-  // equals the recomputed one (unchanged inputs), every existing section whose
+  // equals the recomputed one (unchanged inputs — "unchanged" is exactly the fold
+  // list documented on run_identity_hash above), every existing section whose
   // name is NOT in `sections` is carried forward, so the archive accumulates the
   // UNION of both routes' results. On a name collision the NEW section wins (meta
   // and diagnostics collide across routes). If the inputs changed (identity

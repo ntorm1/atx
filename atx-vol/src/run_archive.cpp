@@ -1399,8 +1399,11 @@ RaDictColumn RaSectionView::dict_col(std::string_view name) const noexcept {
 namespace {
 
 // Read a whole run-dir text file into a string (binary). NotFound if it cannot
-// be opened. Mirrors the orchestrator's read_text — the retained text inputs are
-// small (run spec / universe schedule), so a one-shot slurp is fine.
+// be opened. Mirrors the orchestrator's read_text — the retained text inputs
+// folded into the run identity (run spec, universe schedule, surface manifest,
+// input inventory, trade schedule) are all small, so a one-shot slurp is fine.
+// The one large run-dir text file, definitions.tsv, is deliberately never read
+// here — see RunDir::run_identity_hash.
 Result<std::string> read_run_dir_file(const std::filesystem::path &path) {
   std::ifstream stream(path, std::ios::binary);
   if (!stream) {
@@ -1498,21 +1501,51 @@ Result<ListedDispersionSchedule> RunDir::schedule() const {
 }
 
 Result<std::uint64_t> RunDir::run_identity_hash() const {
-  // run_spec.tsv is the run's defining input — required. Fold the authored
-  // universe schedule when present (an input fingerprint). hash_bytes is the same
-  // wyhash the orchestrator fingerprints inputs with (hash_file), so a RunDir
-  // identity is comparable to those fingerprints; deterministic for identical
-  // input bytes on one platform/binary. 0 is reserved for "unset" in the header,
-  // so the result is forced nonzero.
+  // This value is a CACHE KEY, not a label. write_run_archive below carries one
+  // route's sections forward into another route's write whenever the recomputed
+  // identity matches the stored one, so every input that can change a section's
+  // ECONOMICS must be folded in here — otherwise the archive can silently union
+  // a `backtest` computed from one input set with a `projected_cold` computed
+  // from another (Wave E T6; the pre-T6 key folded only files 1 and 2 below, so
+  // a rebuilt corpus or a rebuilt schedule did not invalidate the merge).
+  //
+  // FOLD ORDER — part of the contract. hash_combine is order-sensitive, so
+  // reordering these silently changes every identity:
+  //   1. run_spec.tsv           REQUIRED — a directory without it is not a run.
+  //   2. universe_schedule.tsv  the authored universe.
+  //   3. surface_manifest.tsv   per-date corpus identity (the fitted surfaces).
+  //   4. input_inventory.tsv    per-cell source_fingerprint /
+  //                             market_input_fingerprint for every OPRA input.
+  //   5. trade_schedule.tsv     the immutable schedule both backtest routes read.
+  // Files 2-5 are SKIPPED WHEN ABSENT, so a partially-populated run dir (e.g.
+  // after build-corpus but before build-schedule) still yields an identity.
+  //
+  // definitions.tsv is DELIBERATELY NOT FOLDED — do not "fix" this. It is ~700 MB
+  // on a production run; hashing it on every archive write would cost far more
+  // than the write itself. It is covered TRANSITIVELY: input_inventory.tsv (4)
+  // carries the per-cell source_fingerprint / market_input_fingerprint of every
+  // OPRA input the definitions are derived from (write_input_inventory,
+  // examples/spy_dispersion_backtest.cpp), and surface_manifest.tsv (3) carries
+  // the per-date corpus identity. A definitions change that could move the
+  // economics moves one of those two.
+  //
+  // hash_bytes is the same wyhash the orchestrator fingerprints inputs with
+  // (hash_file), so a RunDir identity is comparable to those fingerprints;
+  // deterministic for identical input bytes on one platform/binary. 0 is reserved
+  // for "unset" in the header, so the result is forced nonzero.
   ATX_TRY(std::string spec_bytes, read_run_dir_file(dir_ / std::string(kRunSpecFile)));
   std::uint64_t identity = atx::core::hash_bytes(spec_bytes.data(), spec_bytes.size());
-  const std::filesystem::path universe = dir_ / std::string(kUniverseScheduleFile);
-  std::error_code ec;
-  if (std::filesystem::exists(universe, ec) && !ec) {
-    ATX_TRY(std::string universe_bytes, read_run_dir_file(universe));
+  for (const std::string_view name : {kUniverseScheduleFile, kSurfaceManifestFile,
+                                      kInputInventoryFile, kTradeScheduleFile}) {
+    const std::filesystem::path input = dir_ / std::string(name);
+    std::error_code ec;
+    if (!std::filesystem::exists(input, ec) || ec) {
+      continue; // skip-if-absent (see contract above)
+    }
+    ATX_TRY(std::string input_bytes, read_run_dir_file(input));
     identity = atx::core::hash_combine(
         static_cast<std::size_t>(identity),
-        atx::core::hash_bytes(universe_bytes.data(), universe_bytes.size()));
+        atx::core::hash_bytes(input_bytes.data(), input_bytes.size()));
   }
   return Ok(identity == 0 ? std::uint64_t{1} : identity);
 }

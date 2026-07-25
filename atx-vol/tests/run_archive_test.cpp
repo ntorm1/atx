@@ -1420,11 +1420,11 @@ std::filesystem::path fresh_run_dir(std::string_view name) {
 
 // Portable text inputs for the byte-determinism test: run_spec.tsv carries a
 // dir-INDEPENDENT universe path (relative, not `dir / ...`), so run_spec.tsv is
-// byte-identical across two different run-dir paths. run_identity_hash is a hash
-// of the run_spec + universe bytes, so identical bytes -> identical identity ->
-// (with the T7 deterministic created_ts_ns) byte-identical run.atxrun. Only the
-// two inputs run_identity_hash reads are written (manifest/schedule are not
-// needed for the write path).
+// byte-identical across two different run-dir paths. run_identity_hash folds the
+// run_spec + universe bytes here (the other three folded inputs are absent and so
+// skipped), so identical bytes -> identical identity -> (with the T7 deterministic
+// created_ts_ns) byte-identical run.atxrun. Only these two of the five folded
+// inputs are written — which also exercises the skip-if-absent rule.
 void write_run_dir_text_inputs_portable(const std::filesystem::path& dir) {
   std::error_code ec;
   std::filesystem::create_directories(dir, ec);
@@ -1813,6 +1813,207 @@ TEST(RunDir, MergeWriteStartsFreshOnCorruptExistingArchive) {
   EXPECT_EQ(archive->count(), 4u);
   EXPECT_TRUE(archive->section("backtest").has_value());
   EXPECT_TRUE(archive->section("meta").has_value());
+  EXPECT_TRUE(archive->validate_all().has_value());
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+// ── Wave E T6: the merge-write cache key folds EVERY input fingerprint file ───
+//
+// RunDir::write_run_archive's identity guard IS a cache: on a match it carries
+// another route's sections forward across a process boundary. Before Wave E T6
+// the key folded only run_spec.tsv + universe_schedule.tsv, so a rebuilt corpus
+// (surface_manifest.tsv), a re-fingerprinted OPRA input set (input_inventory.tsv)
+// or a rebuilt schedule (trade_schedule.tsv) did NOT invalidate the merge — the
+// archive could union a `backtest` computed from one input set with a
+// `projected_cold` computed from another. The two tests below are the gate on
+// that: the first pins per-file sensitivity of the key, the second pins the
+// end-to-end consequence (no stale carry-forward after a corpus change).
+
+// Append one byte to an existing run-dir file — a minimal byte mutation. None of
+// these files is re-parsed by run_identity_hash (it hashes raw bytes), so the
+// appended byte cannot fail a parser instead of moving the hash.
+void append_identity_probe_byte(const std::filesystem::path& path) {
+  std::ofstream out(path, std::ios::binary | std::ios::app);
+  out.put('#');
+  ASSERT_TRUE(out.good()) << "cannot append to " << path.string();
+}
+
+// All five folded inputs plus one deliberately-unfolded run-dir file.
+// write_run_dir_text_inputs supplies run_spec / universe_schedule /
+// surface_manifest / trade_schedule through the library writers;
+// input_inventory.tsv has no library writer (write_input_inventory lives in the
+// example orchestrator), so a representative header + row is written literally.
+void write_run_dir_folded_inputs(const std::filesystem::path& dir) {
+  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+  {
+    std::ofstream inv(dir / std::string(kInputInventoryFile), std::ios::binary | std::ios::trunc);
+    inv << "date\tsymbol\tn_rows\tsource_fingerprint\tmarket_input_fingerprint\n"
+        << "2026-07-10\tSPY\t128\t1111111111\t2222222222\n";
+    ASSERT_TRUE(inv.good());
+  }
+  // Not a folded input — the negative control below mutates this one.
+  {
+    std::ofstream q(dir / "quality.tsv", std::ios::binary | std::ios::trunc);
+    q << "date\tstatus\n2026-07-10\tOk\n";
+    ASSERT_TRUE(q.good());
+  }
+}
+
+// Per-file sensitivity of the cache key. run_spec.tsv and universe_schedule.tsv
+// were already folded, so those two legs are POSITIVE CONTROLS (they pass before
+// the T6 change); the surface_manifest / input_inventory / trade_schedule legs
+// are the RED. The quality.tsv leg is the NEGATIVE CONTROL — it proves the
+// comparison can report "unchanged", so an EXPECT_NE that fires is meaningful.
+TEST(RunDir, RunIdentityIsSensitiveToEachFoldedInput) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_identity_fold_test");
+  write_run_dir_folded_inputs(dir);
+  const RunDir run_dir(dir);
+
+  constexpr std::string_view kFolded[] = {kRunSpecFile, kUniverseScheduleFile, kSurfaceManifestFile,
+                                          kInputInventoryFile, kTradeScheduleFile};
+
+  // Anti-vacuity: every folded input actually exists and is NON-EMPTY, so no leg
+  // can "pass" by hashing an absent or zero-byte file.
+  for (const std::string_view name : kFolded) {
+    const std::filesystem::path p = dir / std::string(name);
+    std::error_code ec;
+    ASSERT_TRUE(std::filesystem::is_regular_file(p, ec)) << p.string();
+    ASSERT_GT(std::filesystem::file_size(p, ec), 0u) << p.string();
+  }
+
+  auto base = run_dir.run_identity_hash();
+  ASSERT_TRUE(base.has_value()) << base.error().to_string();
+  ASSERT_NE(*base, 0u);
+  ASSERT_EQ(run_dir.run_identity_hash().value(), *base) << "identity is not deterministic";
+
+  // NEGATIVE CONTROL: quality.tsv is not part of the run identity.
+  append_identity_probe_byte(dir / "quality.tsv");
+  EXPECT_EQ(run_dir.run_identity_hash().value(), *base)
+      << "identity moved on a file that is not one of the folded inputs";
+
+  // Every folded input must move the key. Mutations accumulate, so each leg is
+  // compared against the value produced by the previous leg.
+  std::uint64_t prev = *base;
+  for (const std::string_view name : kFolded) {
+    append_identity_probe_byte(dir / std::string(name));
+    auto next = run_dir.run_identity_hash();
+    ASSERT_TRUE(next.has_value()) << next.error().to_string();
+    EXPECT_NE(*next, prev) << "run identity is blind to a change in " << name;
+    EXPECT_NE(*next, 0u) << "identity must stay nonzero (0 == unset in the header)";
+    prev = *next;
+  }
+
+  // Skip-if-absent: a partially-populated run dir (only the required run_spec)
+  // still yields a nonzero identity rather than an error.
+  const std::filesystem::path bare = fresh_run_dir("atx_rundir_identity_bare_test");
+  {
+    std::error_code ec;
+    std::filesystem::create_directories(bare, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    RunSpec spec;
+    spec.label = "bare";
+    spec.date_lo = "2026-07-10";
+    spec.date_hi = "2026-07-10";
+    spec.opra_root = "/data/opra";
+    spec.universe_path = std::filesystem::path(std::string(kUniverseScheduleFile));
+    spec.min_names = 40;
+    spec.min_weight_coverage = 0.8;
+    ASSERT_TRUE(write_resolved_spec(bare / std::string(kRunSpecFile), spec).has_value());
+  }
+  auto bare_id = RunDir(bare).run_identity_hash();
+  ASSERT_TRUE(bare_id.has_value()) << bare_id.error().to_string();
+  EXPECT_NE(*bare_id, 0u);
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+  std::filesystem::remove_all(bare, ec);
+}
+
+// End-to-end consequence: a rebuilt corpus (surface_manifest.tsv changed) must
+// invalidate the merge, so a later route's write does NOT carry the earlier
+// route's economically-stale sections forward. run_spec.tsv and
+// universe_schedule.tsv are untouched — exactly the case the pre-T6 key missed.
+TEST(RunDir, MergeWriteRejectsCarryForwardAfterManifestChange) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_mergewrite_manifest_test");
+  write_run_dir_folded_inputs(dir);
+  write_run_dir_archive(dir);  // set A: backtest, reconciliation, contract_marks, meta
+
+  // Anti-vacuity: set A really is on disk, so "only B survives" below is a real
+  // observation and not a comparison over an empty archive. Scoped so the mapping
+  // is released before the second write's tmp+rename.
+  {
+    auto before = RunDir(dir).archive();
+    ASSERT_TRUE(before.has_value()) << before.error().to_string();
+    ASSERT_EQ(before->count(), 4u);
+    ASSERT_TRUE(before->section("backtest").has_value());
+    ASSERT_TRUE(before->section("reconciliation").has_value());
+    ASSERT_TRUE(before->section("contract_marks").has_value());
+  }
+
+  append_identity_probe_byte(dir / std::string(kSurfaceManifestFile));
+
+  const RunDir run_dir(dir);
+  const BacktestResult pr = make_encoder_fixture_result();  // outlives the write
+  std::vector<RaSectionData> proj_sections;
+  proj_sections.push_back(encode_backtest_section("projected_cold", pr));
+  {
+    RunSpec proj_spec;
+    proj_spec.label = "projected-run";
+    proj_spec.date_lo = "2026-07-10";
+    proj_spec.date_hi = "2026-07-10";
+    proj_sections.push_back(encode_meta_section(proj_spec));
+  }
+  ASSERT_TRUE(run_dir.write_run_archive(proj_sections).has_value());
+
+  auto archive = run_dir.archive();
+  ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
+  EXPECT_EQ(archive->count(), 2u) << "stale sections were carried across a corpus change";
+  EXPECT_TRUE(archive->section("projected_cold").has_value());
+  EXPECT_TRUE(archive->section("meta").has_value());
+  EXPECT_FALSE(archive->section("backtest").has_value());
+  EXPECT_FALSE(archive->section("reconciliation").has_value());
+  EXPECT_FALSE(archive->section("contract_marks").has_value());
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+// The union must still survive when EVERY folded input is present and unchanged
+// — the legitimate within-one-input-set accumulation the pipeline depends on
+// (build-schedule -> run-backtest -> project-schedule -> run-projected-backtest
+// each write different sections into the same run.atxrun). This is a POSITIVE
+// CONTROL for the widened key: it is green before and after, and its job is to
+// prove the widening did not turn every merge into a fresh write.
+TEST(RunDir, MergeWriteStillUnionsWithAllFoldedInputsPresent) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_mergewrite_union_folded_test");
+  write_run_dir_folded_inputs(dir);
+  write_run_dir_archive(dir);  // set A
+
+  const RunDir run_dir(dir);
+  const BacktestResult pr = make_encoder_fixture_result();  // outlives the write
+  std::vector<RaSectionData> proj_sections;
+  proj_sections.push_back(encode_backtest_section("projected_cold", pr));
+  {
+    RunSpec proj_spec;
+    proj_spec.label = "projected-run";
+    proj_spec.date_lo = "2026-07-10";
+    proj_spec.date_hi = "2026-07-10";
+    proj_sections.push_back(encode_meta_section(proj_spec));
+  }
+  ASSERT_TRUE(run_dir.write_run_archive(proj_sections).has_value());
+
+  auto archive = run_dir.archive();
+  ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
+  EXPECT_EQ(archive->count(), 5u) << "the same-inputs union did not survive";
+  EXPECT_TRUE(archive->section("backtest").has_value());        // carried
+  EXPECT_TRUE(archive->section("reconciliation").has_value());  // carried
+  EXPECT_TRUE(archive->section("contract_marks").has_value());  // carried
+  EXPECT_TRUE(archive->section("projected_cold").has_value());  // new
+  EXPECT_TRUE(archive->section("meta").has_value());            // new-wins
+  EXPECT_EQ(meta_value_of(*archive, "label"), "projected-run");
+  EXPECT_EQ(archive->section("backtest").value().f64_col("nav")[1], 101.5);
   EXPECT_TRUE(archive->validate_all().has_value());
 
   std::error_code ec;
