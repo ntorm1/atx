@@ -192,7 +192,12 @@ mark_leg(const ListedScheduleLeg &leg, const ListedReconciliationSnapshot &snaps
   mark.raw_ask = quote.ask;
   if (!is_valid_listed_quote(quote)) {
     if (mark.status == ListedMarkStatus::Ok) {
-      mark.status = ListedMarkStatus::CrossedQuote;
+      // FIX-F M3: distinguish the reason. F6's `bid > 0` tightening routed every
+      // zero-bid quote through the crossed-book label; a zero bid is an absent
+      // bid, not an inverted book. The drop itself is unchanged.
+      const bool zero_bid = std::isfinite(quote.bid) && !(quote.bid > 0.0) &&
+                            std::isfinite(quote.ask) && quote.ask > 0.0;
+      mark.status = zero_bid ? ListedMarkStatus::ZeroBidQuote : ListedMarkStatus::CrossedQuote;
     }
     return Ok(std::move(mark));
   }
@@ -229,6 +234,8 @@ const char *to_string(ListedMarkStatus status) noexcept {
     return "NoSurface";
   case ListedMarkStatus::PricingError:
     return "PricingError";
+  case ListedMarkStatus::ZeroBidQuote:
+    return "ZeroBidQuote";
   }
   return "Unknown";
 }

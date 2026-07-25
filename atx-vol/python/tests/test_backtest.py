@@ -231,10 +231,14 @@ def test_run_config_defaults_mirror_the_engine_header():
     the README's backtest section in the SAME commit, so the new Python behaviour
     is reviewed rather than discovered as an exception at a caller's call site.
 
-    Pinned against `backtest.hpp` RunConfig as of feat/pipeline-y.
+    Pinned against `backtest.hpp` RunConfig as of the WS-F merge, which is the
+    first time this tripwire actually fired: WS-F's F1 leak family flipped the
+    engine default from EXCLUDE_AND_REPORT to ERROR so that an unpriced lot fails
+    closed instead of quietly leaving the book. Python inherits that, by the rule
+    above, rather than staying more permissive than the engine.
     """
     cfg = av.RunConfig()
-    assert cfg.unpriced == av.UnpricedLotPolicy.EXCLUDE_AND_REPORT
+    assert cfg.unpriced == av.UnpricedLotPolicy.ERROR
     assert cfg.record_every_n == 1
     assert cfg.prefetch_snapshots is True
     assert cfg.settlement_mark_memo is True

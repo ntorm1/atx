@@ -114,20 +114,103 @@ validate_and_sort_quotes(std::string_view trade_date, std::int64_t valuation_ts_
   return Ok();
 }
 
+// F6: tally one rejected quote and remember the reason so the drop detail can
+// NAME it instead of the generic "no valid pair".
+void tally(ListedQuoteRejectCounts &counts, ListedQuoteReject reject) noexcept {
+  switch (reject) {
+  case ListedQuoteReject::NotTwoSided:
+    ++counts.not_two_sided;
+    return;
+  case ListedQuoteReject::ZeroBid:
+    ++counts.zero_bid;
+    return;
+  case ListedQuoteReject::Stale:
+    ++counts.stale;
+    return;
+  case ListedQuoteReject::Locked:
+    ++counts.locked;
+    return;
+  case ListedQuoteReject::None:
+    return;
+  }
+}
+
+[[nodiscard]] std::string reject_detail(const ListedQuoteRejectCounts &counts) {
+  if (counts.total_dropped() == 0u && counts.locked == 0u) {
+    return {};
+  }
+  std::string out = " (quote rejects:";
+  const auto add = [&out](const char *name, std::uint32_t n) {
+    if (n != 0u) {
+      out += ' ';
+      out += name;
+      out += '=';
+      out += std::to_string(n);
+    }
+  };
+  add("NotTwoSided", counts.not_two_sided);
+  add("ZeroBid", counts.zero_bid);
+  add("Stale", counts.stale);
+  add("Locked", counts.locked);
+  add("NonStandard", counts.non_standard);
+  out += ')';
+  return out;
+}
+
 [[nodiscard]] CandidateResult find_straddle(const DispersionMember &member,
                                             std::int64_t expiry_ts_ns,
+                                            std::int64_t valuation_ts_ns,
                                             const std::vector<ListedOptionQuote> &quotes,
                                             const ListedForwardLookup &forward_lookup,
-                                            double required_multiplier) {
+                                            double required_multiplier,
+                                            const ListedQuoteQualityConfig &quality,
+                                            ListedQuoteRejectCounts &counts) {
   std::map<double, PairAtStrike> pairs;
   bool saw_expiry = false;
+  ListedQuoteRejectCounts local{}; // this member's own tally, for the detail text
   for (const ListedOptionQuote &q : quotes) {
     if (q.symbol != member.symbol || q.expiry_ts_ns != expiry_ts_ns) {
       continue;
     }
     saw_expiry = true;
-    if (!q.standard_monthly || !q.standard_deliverable || q.multiplier != required_multiplier ||
-        !is_valid_listed_quote(q)) {
+    if (!q.standard_monthly || !q.standard_deliverable || q.multiplier != required_multiplier) {
+      ++counts.non_standard;
+      ++local.non_standard;
+      continue;
+    }
+    // A locked market is FLAGGED unconditionally — the count is the signal even
+    // when the policy admits it — then the policy decides admission.
+    if (std::isfinite(q.bid) && q.bid > 0.0 && q.ask == q.bid) {
+      ++counts.locked;
+      ++local.locked;
+    }
+    // The staleness gate is only meaningful when the source carries an
+    // observation time independent of the valuation instant. When it does not
+    // (the OPRA panel is snapshot-stamped) every age is exactly 0 and a `stale`
+    // count of 0 would describe the FEED, not the market. Count that case so the
+    // report can tell the two apart.
+    //
+    // FIX-F m1: deliberately BEFORE the admission decision, and deliberately
+    // overlapping the rejection buckets. "Could this feed support a staleness
+    // judgement" is a question about the feed, and the answer is the same
+    // whether or not the quote was rejected for some other reason. Nothing sums
+    // this with `zero_bid`, and it stays out of `total_dropped()`.
+    if (quality.max_quote_age_ns > 0 && q.quote_ts_ns == valuation_ts_ns) {
+      ++counts.stale_unevaluable;
+      ++local.stale_unevaluable;
+    }
+    const ListedQuoteReject reject = classify_listed_quote(q, valuation_ts_ns, quality);
+    if (reject != ListedQuoteReject::None) {
+      if (reject != ListedQuoteReject::Locked) { // already flagged above
+        tally(counts, reject);
+        tally(local, reject);
+      } else {
+        // FIX-F M2: the flag was counted above whatever the policy says; this
+        // records that the policy actually REFUSED the quote, so a
+        // policy-dropped quote is no longer absent from every dropped total.
+        ++counts.locked_dropped;
+        ++local.locked_dropped;
+      }
       continue;
     }
     PairAtStrike &pair = pairs[q.strike];
@@ -166,8 +249,10 @@ validate_and_sort_quotes(std::string_view trade_date, std::int64_t valuation_ts_
   }
 
   if (best_pair == nullptr) {
+    // F6: name WHY, so a name dropped for stale or zero-bid quotes is
+    // distinguishable from one that simply has no listed pair at this expiry.
     return CandidateResult{std::nullopt, ListedDropReason::NoValidStraddle,
-                           "no standard 100-share two-sided call/put pair"};
+                           "no standard 100-share two-sided call/put pair" + reject_detail(local)};
   }
 
   ListedStraddle out;
@@ -195,15 +280,60 @@ const char *to_string(ListedDropReason reason) noexcept {
   return "Unknown";
 }
 
+const char *to_string(ListedQuoteReject reject) noexcept {
+  switch (reject) {
+  case ListedQuoteReject::None:
+    return "None";
+  case ListedQuoteReject::NotTwoSided:
+    return "NotTwoSided";
+  case ListedQuoteReject::ZeroBid:
+    return "ZeroBid";
+  case ListedQuoteReject::Stale:
+    return "Stale";
+  case ListedQuoteReject::Locked:
+    return "Locked";
+  }
+  return "Unknown";
+}
+
 bool is_valid_listed_quote(const ListedOptionQuote &quote) noexcept {
-  return std::isfinite(quote.bid) && quote.bid >= 0.0 && std::isfinite(quote.ask) &&
+  // F6 (BT-P2-8): `quote.bid > 0.0`, not `>= 0.0`. A zero bid is not a market:
+  // the mid collapses to ask/2 — a price nobody trades at — and there is no bid
+  // to hit at all, so a straddle built on one cannot be exited.
+  return std::isfinite(quote.bid) && quote.bid > 0.0 && std::isfinite(quote.ask) &&
          quote.ask > 0.0 && quote.ask >= quote.bid;
+}
+
+ListedQuoteReject classify_listed_quote(const ListedOptionQuote &quote,
+                                        std::int64_t valuation_ts_ns,
+                                        const ListedQuoteQualityConfig &quality) noexcept {
+  if (!std::isfinite(quote.bid) || !std::isfinite(quote.ask) || !(quote.ask > 0.0) ||
+      quote.ask < quote.bid) {
+    return ListedQuoteReject::NotTwoSided;
+  }
+  // `min_bid` defaults to 0.0, so the default policy is exactly "a zero bid is
+  // not a market"; a configured floor demands a real quoted bid on top.
+  if (!(quote.bid > quality.min_bid) || !(quote.bid > 0.0)) {
+    return ListedQuoteReject::ZeroBid;
+  }
+  if (quality.max_quote_age_ns > 0 && quote.quote_ts_ns > 0 &&
+      valuation_ts_ns - quote.quote_ts_ns > quality.max_quote_age_ns) {
+    return ListedQuoteReject::Stale;
+  }
+  if (quality.reject_locked && quote.ask == quote.bid) {
+    return ListedQuoteReject::Locked;
+  }
+  return ListedQuoteReject::None;
 }
 
 Result<ListedDispersionSelection> select_listed_dispersion(
     std::string_view trade_date, std::int64_t valuation_ts_ns, const DispersionUniverse &universe,
     std::span<const ListedOptionQuote> quotes, const ListedForwardLookup &forward_lookup,
-    const ListedDispersionSelectionConfig &config) {
+    const ListedDispersionSelectionConfig &config,
+    ListedQuoteRejectCounts *first_candidate_rejects) {
+  if (first_candidate_rejects != nullptr) {
+    *first_candidate_rejects = ListedQuoteRejectCounts{};
+  }
   if (trade_date.empty() || valuation_ts_ns <= 0 || !forward_lookup) {
     return Err(ErrorCode::InvalidArgument,
                "select_listed_dispersion: invalid date, timestamp, or forward lookup");
@@ -213,8 +343,11 @@ Result<ListedDispersionSelection> select_listed_dispersion(
 
   std::vector<std::int64_t> expiries;
   for (const ListedOptionQuote &q : sorted_quotes) {
+    // F6: an expiry may only be NOMINATED by an admissible index quote — a
+    // stale or zero-bid row must not steer the whole basket onto its tenor.
     if (q.symbol != universe.index.symbol || !q.standard_monthly || !q.standard_deliverable ||
-        q.multiplier != config.required_multiplier || !is_valid_listed_quote(q)) {
+        q.multiplier != config.required_multiplier ||
+        classify_listed_quote(q, valuation_ts_ns, config.quality) != ListedQuoteReject::None) {
       continue;
     }
     const double dte = static_cast<double>(q.expiry_ts_ns - valuation_ts_ns) / kListedNsPerDay;
@@ -233,10 +366,26 @@ Result<ListedDispersionSelection> select_listed_dispersion(
     return aa < ab || (aa == ab && a < b);
   });
 
+  // FIX-F m4: the tally of the FIRST candidate expiry inspected, published even
+  // when no expiry ever yields a basket, so `build-schedule` can report what the
+  // gates rejected on a date that failed selection outright.
+  bool captured_first = false;
+  const auto capture_first = [&](const ListedQuoteRejectCounts &r) {
+    if (first_candidate_rejects != nullptr && !captured_first) {
+      *first_candidate_rejects = r;
+      captured_first = true;
+    }
+  };
+
   for (const std::int64_t expiry : expiries) {
-    CandidateResult index = find_straddle(universe.index, expiry, sorted_quotes, forward_lookup,
-                                          config.required_multiplier);
+    // F6: the tally is per CANDIDATE expiry — it describes the expiry actually
+    // chosen, not the union of every expiry tried and discarded.
+    ListedQuoteRejectCounts rejects{};
+    CandidateResult index =
+        find_straddle(universe.index, expiry, valuation_ts_ns, sorted_quotes, forward_lookup,
+                      config.required_multiplier, config.quality, rejects);
     if (!index.straddle.has_value()) {
+      capture_first(rejects);
       continue;
     }
 
@@ -247,7 +396,8 @@ Result<ListedDispersionSelection> select_listed_dispersion(
     double survivor_weight = 0.0;
     for (const DispersionMember &member : universe.names) {
       CandidateResult found =
-          find_straddle(member, expiry, sorted_quotes, forward_lookup, config.required_multiplier);
+          find_straddle(member, expiry, valuation_ts_ns, sorted_quotes, forward_lookup,
+                        config.required_multiplier, config.quality, rejects);
       if (found.straddle.has_value()) {
         survivor_weight += member.weight;
         names.push_back(std::move(*found.straddle));
@@ -256,6 +406,7 @@ Result<ListedDispersionSelection> select_listed_dispersion(
       }
     }
 
+    capture_first(rejects);
     if (names.size() < config.min_names || !finite_positive(survivor_weight)) {
       continue;
     }
@@ -273,6 +424,7 @@ Result<ListedDispersionSelection> select_listed_dispersion(
     out.index.normalized_weight = 0.0;
     out.names = std::move(names);
     out.dropped = std::move(dropped);
+    out.quote_rejects = rejects;
     return Ok(std::move(out));
   }
 

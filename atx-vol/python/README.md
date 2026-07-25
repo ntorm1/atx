@@ -177,9 +177,11 @@ av.write_backtest_pnl_tsv(result, {"strategy": "spy_dispersion_vega_flat"}, "pnl
 `RunConfig()` is a passthrough of the engine's `RunConfig{}` — the bindings never
 re-declare a default. Python therefore inherits engine-side policy changes rather
 than being silently more permissive than the C++ library; in particular
-`RunConfig.unpriced` currently defaults to `UnpricedLotPolicy.EXCLUDE_AND_REPORT`,
-and a run that must not tolerate unpriced lots sets
-`run_cfg.unpriced = av.UnpricedLotPolicy.ERROR` explicitly.
+`RunConfig.unpriced` defaults to `UnpricedLotPolicy.ERROR`, so a lot the pricer
+could not value aborts the run rather than leaving the book quietly. A run that
+would rather carry on and account for the gap sets
+`run_cfg.unpriced = av.UnpricedLotPolicy.EXCLUDE_AND_REPORT` explicitly and reads
+the reported count.
 `tests/test_backtest.py::test_run_config_defaults_mirror_the_engine_header` pins
 the current values so an engine-side flip is reviewed, not discovered at a call
 site.

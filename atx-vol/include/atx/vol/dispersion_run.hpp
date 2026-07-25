@@ -24,6 +24,8 @@
 #include "atx/vol/dispersion.hpp"         // DispersionUniverse
 #include "atx/vol/dispersion_backtest.hpp"// DispersionBacktestConfig, run_dispersion_backtest
 #include "atx/vol/dispersion_workflow.hpp"// RunSpec
+#include "atx/vol/listed_dispersion.hpp"  // ListedQuoteQualityConfig (F6)
+#include "atx/vol/listed_dispersion_strategy.hpp" // ScheduleFillPolicy (F2)
 #include "atx/vol/session.hpp"            // FitPreset
 #include "atx/vol/tearsheet.hpp"          // TearSheet
 #include "atx/vol/types.hpp"              // Result, Status
@@ -225,7 +227,107 @@ struct DispersionRunConfig {
   std::filesystem::path benchmark_series{};
   // Periods per year for annualizing. 252 is the shipped convention.
   double periods_per_year{252.0};
+
+  // ── WS-F F4 (BT-W): knobs the LISTED route had no way to reach ─────────────
+  //
+  // X2/X6 wired frictions, financing, limits and costs into the SURFACE
+  // backtest (`dispersion_backtest_config_from`). The listed `run-backtest` —
+  // the headline artifact — still built a default-constructed engine RunConfig
+  // and set only `unpriced`, so every published listed NAV was frictionless,
+  // carry-free and provenance-permissive REGARDLESS of the spec. F4 routes the
+  // same typed config into it via `dispersion_engine_run_config_from`.
+  //
+  // Every default below is the pre-F4 behaviour, so a spec that names none of
+  // them reproduces the pinned run byte-for-byte.
+  UnpricedLotPolicy unpriced{UnpricedLotPolicy::Error};        // spec key `unpriced`
+  ScheduleFillPolicy fill_policy{ScheduleFillPolicy::ModelMark}; // `fill_policy`
+  bool book_entry_fill_slippage{false};                        // `book_entry_fill_slippage`
+  bool reconcile_nav{false};                                   // `reconcile_nav`
+  // F6 quote-quality admission, consumed by `build-schedule`. Note its own
+  // defaults are NOT the pre-F6 behaviour (a zero bid is now rejected and a
+  // 10-minute staleness bound applies) — that is the BT-P2-8 fix, and the spec
+  // line `quote_max_age_ns	0` restores the old contract. (FIX-F M1: this
+  // named a key that does not exist, `quote_max_quote_age_ns`. It is the one
+  // line an operator reads under re-pin pressure; see dispersion_run.cpp's
+  // binder, which is the authority.)
+  ListedQuoteQualityConfig quote_quality{};
 };
+
+// F4: assemble the ENGINE run config the listed replay actually runs under.
+// This is the single place the typed spec becomes engine behaviour, so a knob
+// that is set here is provably reachable and one that is not is provably dead.
+[[nodiscard]] RunConfig dispersion_engine_run_config_from(const DispersionRunConfig &config);
+
+// F5 (BT-T2) + FIX-F N2: the ONE construction of the engine RunConfig the listed
+// `run-backtest` replay runs under — the F4 typed-spec config above PLUS the
+// snapshot cache subsetted to the schedule's referenced uids, which the replay
+// and the reconciliation pass share.
+//
+// It is a named function rather than four lines inside `dispersion_run_backtest`
+// because the first guard written for F5 rebuilt the construction inside the
+// test, under the comment "verbatim the construction dispersion_run_backtest
+// performs". A comment cannot fail: reverting the production subsetting left the
+// whole suite green, which is the same blind spot that let F5 ship inert on this
+// path to begin with. The guard now calls THIS function, so "verbatim" becomes
+// "the same code" and reverting the subsetting turns the guard red.
+[[nodiscard]] RunConfig make_listed_replay_run_config(const DispersionRunConfig &config,
+                                                      const Clock &clock,
+                                                      const ListedDispersionStrategy &strategy);
+
+// F4: emit `run_config.tsv` — the EFFECTIVE value of every execution knob the
+// run actually used, REGIME FIRST (M4's reporting contract). A published NAV
+// that does not say which frictions produced it is not a result, and until F4
+// the listed route emitted no such record at all. Key/value TSV in the same
+// key vocabulary as the spec; it is a RECORD of the run, not a re-runnable
+// spec (it deliberately omits the corpus/date/path keys).
+[[nodiscard]] Status write_dispersion_effective_config(const std::filesystem::path &path,
+                                                       const DispersionRunConfig &config);
+
+// F4: carry every key the RunSpec writer does not emit from `source_spec` into
+// the already-written `run_spec` in the run directory.
+//
+// `write_resolved_spec` only knows the RunSpec vocabulary, so build-corpus used
+// to DROP every typed knob (frictions, financing, costs, limits, provenance,
+// and F4/F6's own keys) when it rewrote the run dir's spec. Wiring a reader is
+// necessary but not sufficient — the declared value has to survive the trip, or
+// the knob is still unreachable in practice. Path-valued extras are rewritten
+// absolute so they still resolve from the run directory.
+[[nodiscard]] Status persist_typed_spec_keys(const std::filesystem::path &source_spec,
+                                             const std::filesystem::path &run_spec);
+
+// One row of `quote_rejects.tsv`.
+struct QuoteRejectRow {
+  std::string date{};
+  // FIX-F m4. TRUE: selection produced a basket and `counts` describes the
+  // expiry it CHOSE. FALSE: selection failed on this date and `counts`
+  // describes the FIRST candidate expiry it inspected — all zeros if it failed
+  // before inspecting any. The distinction is a column in the artifact rather
+  // than an omission, because a row that silently means two different things is
+  // worse than no row.
+  bool selected{true};
+  ListedQuoteRejectCounts counts{};
+};
+
+// F6: emit `quote_rejects.tsv` — the per-date quote-admission tally that
+// `build-schedule` accumulated, one row per date selection RAN on, succeeded or
+// not. Dates absent from the file held an unexpired cohort, so no roll was
+// attempted and no quote was inspected.
+//
+// A counter that exists only in memory cannot answer "why did this schedule
+// change" after the fact, which is precisely the question a moved golden asks.
+//
+// SCHEMA. The file leads with `# schema=quote_rejects/<version>` (FIX-F m5) —
+// the `#`-metadata convention `write_backtest_pnl_tsv` already uses — so a
+// positional reader can fail loudly instead of silently shifting when a column
+// is inserted. Version 1 is:
+//   date, selection, not_two_sided, zero_bid, stale, stale_unevaluable,
+//   locked, locked_dropped, non_standard, total_dropped
+// `locked` counts every locked market SEEN whether or not the policy dropped it,
+// so `total_dropped` excludes it and counts `locked_dropped` instead;
+// `stale_unevaluable` is a measurability report, not a rejection, and is
+// excluded outright.
+[[nodiscard]] Status write_quote_reject_report(const std::filesystem::path &path,
+                                               std::span<const QuoteRejectRow> rows);
 
 // Classify a run config's execution assumptions. Purely a function of the
 // frictions + cost model that actually reach the engine.

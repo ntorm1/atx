@@ -148,6 +148,8 @@ add_executable(atx-vol-tests
     dispersion_workflow_test.cpp     # C1 point-in-time universe, C3 removals, M2 dup keys, M4 index symbol
     # SPY-dispersion hot-path WS-X (config + execution realism) — appended target:
     dispersion_run_config_test.cpp   # X1 strict typed run config, X2 frictions/financing, X6 cost model
+    # Pipeline-SOTA WS-F (backtest economic realism) — appended target:
+    backtest_leak_test.cpp           # F1 accounting-leak family, F2 quote-side fills, F5 subset-deser
     # Pipeline-SOTA FIX-2 (F2-A) — appended targets:
     # (support/process_scratch.cpp moved to //tests/support in FIX-3/F3-B and is now
     #  linked as the repo-wide atx-test-scratch OBJECT library, see below.)

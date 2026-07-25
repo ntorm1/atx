@@ -326,6 +326,37 @@ TEST(ListedDispersionReconciliation, MissingRawQuoteReducesCoverageWithoutPatchi
   EXPECT_EQ(result->marks.back().status, ListedMarkStatus::NoRawQuote);
 }
 
+// FIX-F M3. F6 tightened `is_valid_listed_quote` from `bid >= 0` to `bid > 0`.
+// That silently changed a SECOND consumer: this one, which reported every
+// newly-invalid zero-bid quote as `CrossedQuote` — the right drop under the
+// wrong reason, persisted into `contract_marks.tsv` for an operator to read.
+// A zero bid is an absent bid, not an inverted book.
+TEST(ListedDispersionReconciliation, AZeroBidQuoteIsReportedAsSuchNotAsACrossedBook) {
+  const std::vector<PricedSurface> day0 = surfaces(kNow0, 0.0);
+  const std::vector<PricedSurface> day1 = surfaces(kNow1, 2.0);
+  ListedDispersionSchedule schedule;
+  schedule.rolls.push_back(roll(selection("2026-07-10", kNow0, kExpiry0, 1u), day0, 4u));
+  auto set0 = SurfaceSet::create(pointers(day0));
+  auto set1 = SurfaceSet::create(pointers(day1));
+  ASSERT_TRUE(set0 && set1);
+  std::vector<ListedOptionQuote> quotes0 =
+      quotes_for(schedule.rolls[0], *set0, "2026-07-10", kNow0, 0u);
+  std::vector<ListedOptionQuote> quotes1 =
+      quotes_for(schedule.rolls[0], *set1, "2026-07-11", kNow1, 1000u);
+  ASSERT_FALSE(quotes1.empty());
+  quotes1.back().bid = 0.0; // a real, uncrossed, but unhittable market
+  const std::vector<ListedReconciliationSnapshot> snapshots = {
+      {"2026-07-10", kNow0, &*set0, quotes0},
+      {"2026-07-11", kNow1, &*set1, quotes1},
+  };
+  auto result = reconcile_listed_dispersion(schedule, snapshots);
+  ASSERT_TRUE(result) << (result ? std::string{} : result.error().to_string());
+  EXPECT_EQ(result->marks.back().status, ListedMarkStatus::ZeroBidQuote);
+  EXPECT_STREQ(to_string(result->marks.back().status), "ZeroBidQuote");
+  // The DROP is unchanged — only the reason. `has_raw_mid` still keys on `Ok`.
+  EXPECT_LT(result->rows.back().quote_mid_coverage, 1.0);
+}
+
 // C2: the schedule builder legitimately defers the first roll (coverage gate), so
 // the first entry need not land on the first snapshot. Reconcile must NOT abort;
 // it emits a flat leading row so the timeline stays row-aligned with the backtest.

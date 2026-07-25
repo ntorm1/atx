@@ -691,7 +691,12 @@ TEST(MultinamePipeline, HeldNameGoesMissingMidRunAndRunCompletes) {
   DispersionStrategy strat{u, cfg}; // default lifecycle: RollAtHorizon
 
   // THE gate: the run completes with a full-length result (one row per date).
-  auto res = run_backtest(*clock, strat);
+  // WS-F F1(c): the RunConfig default is now UnpricedLotPolicy::Error, and this
+  // gate is precisely about SURVIVING a mid-run surface gap, so it opts into the
+  // lenient policy explicitly.
+  RunConfig rc_lenient;
+  rc_lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  auto res = run_backtest(*clock, strat, rc_lenient);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   ASSERT_EQ(res->size(), dates.size());
 
@@ -874,7 +879,10 @@ TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
   cfg.missing.policy = MissingNamePolicy::DropRenormalize;
   DispersionStrategy strat{u, cfg};
 
-  auto res = run_backtest(*clock, strat); // default RunConfig: ExcludeAndReport
+  // WS-F F1(c): ExcludeAndReport is now an explicit opt-in (the default is Error).
+  RunConfig rc_lenient;
+  rc_lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  auto res = run_backtest(*clock, strat, rc_lenient);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   ASSERT_EQ(res->size(), dates.size());
 
@@ -1056,7 +1064,10 @@ TEST(MultinamePipeline, BookGreeksUnderCountIsReported) {
   cfg.missing.policy = MissingNamePolicy::DropRenormalize;
   DispersionStrategy strat{u, cfg};
 
-  auto res = run_backtest(*clock, strat); // default RunConfig: ExcludeAndReport
+  // WS-F F1(c): ExcludeAndReport is now an explicit opt-in (the default is Error).
+  RunConfig rc_lenient;
+  rc_lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  auto res = run_backtest(*clock, strat, rc_lenient);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   ASSERT_EQ(res->size(), dates.size());
 
@@ -1121,7 +1132,11 @@ TEST(MultinamePipeline, GrossVegaIsUnderReportedWhenALegIsUnpriced) {
   auto clock_m = Clock::from_manifest(*man_m);
   ASSERT_TRUE(clock_m.has_value()) << clock_m.error().to_string();
   DispersionStrategy strat_m{u, cfg};
-  auto res_m = run_backtest(*clock_m, strat_m);
+  // WS-F F1(c): ExcludeAndReport is now an explicit opt-in (the default is Error);
+  // the whole point of this gate is the truncated (lenient) reading.
+  RunConfig rc_lenient;
+  rc_lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  auto res_m = run_backtest(*clock_m, strat_m, rc_lenient);
   ASSERT_TRUE(res_m.has_value()) << res_m.error().to_string();
 
   // Full basket (BBB present on every date), same universe + strategy.
@@ -1132,7 +1147,7 @@ TEST(MultinamePipeline, GrossVegaIsUnderReportedWhenALegIsUnpriced) {
   auto clock_f = Clock::from_manifest(*man_f);
   ASSERT_TRUE(clock_f.has_value()) << clock_f.error().to_string();
   DispersionStrategy strat_f{u, cfg};
-  auto res_f = run_backtest(*clock_f, strat_f);
+  auto res_f = run_backtest(*clock_f, strat_f, rc_lenient);
   ASSERT_TRUE(res_f.has_value()) << res_f.error().to_string();
 
   ASSERT_EQ(res_m->size(), dates.size());

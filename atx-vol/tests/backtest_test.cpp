@@ -2364,6 +2364,12 @@ TEST(Backtest, BadTargetMarkWithoutFallbackSurfaceNeverBooksAZeroClose) {
   config.frictions.spread_kind = FrictionModel::SpreadKind::PriceBps;
   config.frictions.half_spread_bps = 100.0;
   config.prefetch_snapshots = false;
+  // WS-F F1(c): the default is now UnpricedLotPolicy::Error, whose step-level
+  // held-lot guard would fire FIRST on this corpus (the SPX board is absent on
+  // date 2) and mask the guarantee under test. The subject here is the EXECUTOR's
+  // roll-close guard — it must fail closed regardless of the held-valuation
+  // policy — so pin the lenient policy to let the close path be reached.
+  config.unpriced = UnpricedLotPolicy::ExcludeAndReport;
 
   const auto result = run_backtest(*clock, strategy, config);
   ASSERT_FALSE(result.has_value());
@@ -2409,7 +2415,9 @@ TEST(Backtest, DefaultPolicyIsBitIdenticalToBaseline) {
   auto clock = Clock::from_manifest(man);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
   const std::int64_t expiry = kBaseNow + 120 * kDayNs;    // survives every date
-  auto res = run_backtest(*clock, survivor_book(expiry)); // default: ExcludeAndReport
+  // WS-F F1(c) flipped the default to Error; this corpus never loses a surface,
+  // so the default and the explicit lenient policy must still agree bit-for-bit.
+  auto res = run_backtest(*clock, survivor_book(expiry)); // default: Error (post-F1c)
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   ASSERT_EQ(res->size(), 5u);
 

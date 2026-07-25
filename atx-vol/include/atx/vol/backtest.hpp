@@ -191,6 +191,16 @@ public:
   [[nodiscard]] static std::uint64_t open_count() noexcept;
   static void reset_open_count() noexcept;
 
+  // WS-F F5 (BT-T2): process-wide SURFACE-RECORD BYTES materialized by loads —
+  // the sum of the archive directory entries' `surface_size` over every record a
+  // load turned into a surface or a view. Deterministic by construction (the
+  // same number on a busy host as on a quiet one), so a subset-vs-whole-board
+  // claim is a fact and not a timing measurement. Counts record bytes, not
+  // resident pages: on the mapped tiers the OS faults in only what is read, so
+  // this is the upper bound the subset shrinks.
+  [[nodiscard]] static std::uint64_t deserialized_bytes() noexcept;
+  static void reset_deserialized_bytes() noexcept;
+
 private:
   MarketSnapshot(std::shared_ptr<const SurfaceArchiveV2> archive,
                  std::vector<PricedSurface> &&surfaces, std::vector<PricedSurfaceView> &&views,
@@ -344,6 +354,38 @@ public:
   std::vector<Lot> lots;
 };
 
+// ── EXERCISE MODEL: what this engine does and does NOT simulate (WS-F F3) ────
+//
+// EXPIRY SETTLEMENT is the ONLY exercise event. Every American lot is carried to
+// its `expiry_ts_ns` and cash-settled at intrinsic against the spot observed at
+// the exactly-matching snapshot. There is deliberately no assignment or
+// early-exercise simulation:
+//
+//   * a short ITM call over an ex-date is never assigned away;
+//   * a long deep-ITM put's optimal early exercise is never taken. Its forgone
+//     value IS carried in the mark (the pricer is American), but it is never
+//     REALIZED, so a hold-to-expiry book gives the early-exercise premium back
+//     at expiry instead of capturing it.
+//
+// Roll-at-N-DTE strategies (the dispersion route) mostly dodge this because
+// they close well before expiry. `HoldToExpiry` / `CloseAtHorizon` DSL books do
+// NOT: read their settlement PnL as a lower bound on an optimally-exercised
+// book.
+//
+// Nor is there any corporate-action handling: `Lot` is immutable by design, so a
+// split in-window would change K and multiplier with no adjustment.
+//
+// This is a TRACKED DEFERRAL, not an oversight — see the sprint plan
+// §9 ("Assignment/early-exercise simulation in the backtest"). Closing it needs
+// an exercise-boundary decision rule per step, a settlement/assignment cash
+// convention, and share-delivery into the hedge ledger; that is its own design,
+// and half of it (a discrete-cash-dividend PDE American pricer) is the same
+// §9 deferral the pricing lane carries.
+//
+// What IS modelled, as of WS-F: discrete cash dividends on the HEDGE SHARE
+// ledger (`FinancingConfig::share_dividends`) — the leg of P1-4 that needed no
+// exercise model.
+
 // ── Execution frictions + financing (Phase B2) ───────────────────────────────
 
 // Modeled bid/ask + costs applied ONLY to traded quantity (entries, roll-closes,
@@ -359,6 +401,24 @@ struct FrictionModel {
   double hedge_slippage_bps{0.0}; // shares fill at S * (1 +/- bps/1e4)
 };
 
+// WS-F F3(b) (BT-P1-4). One discrete cash dividend on one underlier's SHARES.
+// The hedge-share ledger used to accrue dividends only as a continuous
+// `q_eff_at(0.25)` proxy — the surface's effective carry at a FIXED 3-month
+// tenor, regardless of the step length and regardless of where the ex-dates
+// actually fall — while the OPTION surfaces price the real discrete schedule.
+// A delta-hedged book across ex-dates on a high-yield name therefore carried a
+// systematic hedge-carry bias.
+//
+// The archive does NOT persist the corpus dividend schedule (`PricingContext`
+// carries S / r / now_ts only), so replay cannot rediscover it: the schedule is
+// a caller input, and it must be THE SAME schedule that priced the surfaces or
+// the ledger and the marks disagree.
+struct ShareDividend {
+  std::uint32_t uid{0};      // underlier whose shares pay/receive
+  std::int64_t ex_ts_ns{0};  // ex-date instant (epoch ns)
+  double amount{0.0};        // cash per share, >= 0
+};
+
 // Engine-internal cash / borrow ledger config. The B2 DEFAULT keeps `finance_premium`
 // and `shares_carry` OFF (a documented deviation from the design's true-defaults) so
 // that a default `RunConfig{}` reproduces B1 bit-for-bit; operators opt in explicitly.
@@ -369,6 +429,16 @@ struct FinancingConfig {
   // r*S*dt here; when it is on, the cash ledger already carries that funding.
   bool shares_carry{false};
   double initial_cash{0.0}; // opening cash balance
+  // F3(b): discrete cash dividends on hedge shares. EMPTY BY DEFAULT, and an
+  // empty schedule leaves every run bit-identical. A step whose (base, shifted]
+  // window contains an ex-date books `shares * amount` into BOTH cash and the
+  // financing column — a real cash event, so it is booked whether or not
+  // `shares_carry` is on. For a uid that HAS a schedule the continuous
+  // `q_eff_at(0.25)` dividend proxy is suppressed (its yield term drops to 0,
+  // the funding term is unaffected): the discrete cash IS the dividend, and
+  // charging both would double-count. uids with no schedule keep the proxy
+  // exactly as before.
+  std::vector<ShareDividend> share_dividends{};
 };
 
 // ── Run config + result ─────────────────────────────────────────────────────
@@ -376,6 +446,9 @@ struct FinancingConfig {
 // What to do when a HELD (non-expiring) lot cannot be valued for step P&L or book
 // Greeks. This policy does not apply to a strategy-driven roll close: omitting a
 // close mark would destroy cash/economic value, so the executor always fails closed.
+// The policy also governs HEDGE SHARES held across a step whose base or shifted
+// surface is absent (WS-F F1(b), BT-P1-3): those shares used to be skipped in
+// silence, so their move vanished from NAV with no count and no flag.
 enum class UnpricedLotPolicy : std::uint8_t {
   // Preserve the historical held-valuation arithmetic (skip the unavailable P&L or
   // Greek lane) and report the exclusion in `BacktestResult::n_unpriced_lots`.
@@ -412,7 +485,14 @@ struct RunConfig {
   unsigned record_every_n{1}; // positive; persist every Nth step (1 = every step)
   // Policy for held P&L/Greek valuation only. Strategy close execution always
   // requires an economically valid mark regardless of this setting.
-  UnpricedLotPolicy unpriced{UnpricedLotPolicy::ExcludeAndReport};
+  //
+  // WS-F F1(c) (BT-P1-2) BREAKING DEFAULT CHANGE: this used to default to
+  // `ExcludeAndReport`, so a default-constructed RunConfig silently truncated NAV
+  // across a missing board (the excluded step's PnL is never recovered when the
+  // surface reappears — NAV permanently diverges from liquidation value, reported
+  // only as a count in `n_unpriced_lots`). A production QIS default must fail
+  // closed; callers that genuinely want the lenient arithmetic now opt in.
+  UnpricedLotPolicy unpriced{UnpricedLotPolicy::Error};
   // A null cache creates a private per-run cache. Supplying one permits archive
   // reuse across backtest and reconciliation passes. Private one-pass caches retain
   // at most the current/base/look-ahead working set. Look-ahead overlaps the next
@@ -434,6 +514,41 @@ struct RunConfig {
   // reproduces the pre-L2 solve-every-settlement behavior (and makes the
   // DuplicateMarkSolves ledger counter observe the duplication it removes).
   bool settlement_mark_memo{true};
+  // WS-F F1(d): per-recorded-row NAV-vs-liquidation reconciliation (IStrategy
+  // overload only — the fixed-book overload has no cash/share ledger to
+  // reconcile against). NAV is a cumulative flow sum; nothing ever checked it
+  // against an INDEPENDENTLY recomputed liquidation value, so the P1-2/P1-3 leak
+  // family drifted it silently. When on, every recorded row recomputes
+  //
+  //   liquidation = (cash - initial_cash) + book MTM (PriceTotals::pv on this
+  //                 row's base) + hedge-share MTM + cumulative NON-CASH financing
+  //
+  // publishes it in `BacktestResult::nav_liquidation`, and aborts the run when it
+  // deviates from `nav` by more than `reconcile_nav_tol`. OFF by default: it is a
+  // debug/audit gate, and it costs nothing when off (one bool test per row).
+  bool reconcile_nav{false};
+  // WS-F F2 (BT-P1-1): book the ENTRY FILL SLIPPAGE — qty*multiplier*(fill -
+  // model mark) — as a realized execution cost.
+  //
+  // The engine carries the book at its model mark but pays `Lot::entry_price`.
+  // When a strategy fills AWAY from the mark (a quote-side fill policy, an
+  // ask-crossing entry) the difference never reaches NAV: NAV is a sum of
+  // mark-to-mark moves, and the very first move is measured from the entry
+  // date's mark, not from what was paid. So an entry crossing the spread used to
+  // look free. With this on, the gap is charged into `cost` (hence into NAV and,
+  // exactly once, into cash) and `reconcile_nav` closes.
+  //
+  // OFF by default and BIT-IDENTICAL when off: the mark used is `entry_price`
+  // itself, so the booked slippage is exactly 0.0 and the cash expression is
+  // unchanged. On, an entry whose model mark cannot be solved is a hard error
+  // rather than a silent zero. Note the modeled `FrictionModel` half-spread is
+  // ADDITIVE to this; a run using real quote-side fills normally sets
+  // `half_spread_bps`/`vol_tick` to 0 so the spread is not paid twice.
+  bool book_entry_fill_slippage{false};
+  // Absolute drift tolerance for `reconcile_nav`. The two quantities are the same
+  // flows summed in different orders, so the honest floor is rounding
+  // (~|cash|*eps per row), not zero. Must be finite and positive.
+  double reconcile_nav_tol{1.0e-6};
 };
 
 // Reusable caller-owned handoff from a step's P&L target solve to the strategy
@@ -501,6 +616,10 @@ struct BacktestResult {
   // Positions whose surface was absent this step; their PnL and greeks are EXCLUDED
   // from this row's totals. 0.0 at inception. Under RunConfig::unpriced == Error a
   // step with a non-zero count aborts the run instead of recording a row.
+  // WS-F F1(b): a HEDGE-SHARE ledger entry whose base or shifted surface is absent
+  // over the step is counted here too (its share MTM and financing are excluded
+  // from this row exactly as an unpriced lot's PnL is), so the column stays the
+  // single honest "positions this row could not value" count.
   std::vector<double> n_unpriced_lots;
   // Positions whose surface was absent on THIS row's date; their greeks are EXCLUDED
   // from this row's `gross_*`. Distinct from `n_unpriced_lots`, which measures the
@@ -520,6 +639,15 @@ struct BacktestResult {
   // which is downsampled). Empty for hand-built results, in which case the
   // consumers fall back to the recorded `pnl_total` rows (i.e. stride-1 behavior).
   std::vector<double> step_pnl_total;
+  // WS-F F1(d): the INDEPENDENTLY recomputed liquidation value at each recorded
+  // row, anchored so it is directly comparable to `nav`:
+  //   (cash - initial_cash) + book MTM + hedge-share MTM + cumulative non-cash
+  //   financing accrual.
+  // EMPTY unless `RunConfig::reconcile_nav` is set (and always empty for the
+  // fixed-book overload, which has no cash/share ledger). When populated it is
+  // parallel to `date`, and the run has already asserted
+  // |nav_liquidation[i] - nav[i]| <= RunConfig::reconcile_nav_tol on every row.
+  std::vector<double> nav_liquidation;
   // Strategy diagnostics: name -> per-recorded-row series (parallel to `date`).
   // Empty for the fixed-book overload; populated by the IStrategy overload.
   std::vector<std::pair<std::string, std::vector<double>>> signals;
