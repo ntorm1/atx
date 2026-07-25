@@ -943,6 +943,12 @@ int main(int argc, char **argv) {
   //   project-schedule     -> local; RunArchive-era subcommand, no library twin
   //   run-projected-backtest -> local; RunArchive-era subcommand, no library twin
   //   verify               -> local; RunDir::verify over run.atxrun
+  //   runarchive dump      -> local; RunArchive section reader, no library twin
+  //
+  // (REV-TAIL M-2: `runarchive dump` was missing from this table, which claims to
+  // be the split "in one place" -- 8 of 9. It is easy to miss because it takes
+  // POSITIONAL arguments and is therefore handled at :889, above the --flag
+  // parser, instead of in the dispatch chain below. It is in `usage()` at :875.)
   //
   // The three that dispatch are the three where BOTH designs write only loose
   // TSVs, so the union is exact. The rest are on main's RunArchive cutover, whose
