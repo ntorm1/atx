@@ -339,7 +339,7 @@ Shared-file rules:
 | G | feat/pipeline-g | wt-pipe-g | blocked on M | — | — |
 | E | feat/pipeline-e | wt-pipe-e | blocked on M | — | — |
 | F | feat/pipeline-f | wt-pipe-f | blocked on M | — | — |
-| T | feat/pipeline-t | wt-pipe-t | blocked on M | — | — |
+| T | feat/pipeline-t | wt-pipe-t | DONE (T1 primary premise-failed: cross-date pooling already landed as B1 `268c0cf`; named alternative — last-board-standing inner-worker reclaim — implemented. T2 done) | c3610ab | serial `ctest -L atx_vol -j 1`: **100% passed, 0 failed of 2103**, 44 skipped (data-guarded), 1314 s. T1 byte gate on the real golden 82-date corpus: serial baseline (`fit_workers=1`) vs production auto fan-out — **82/82 archives `cmp`-identical AND sha256-identical**; manifest/quality/surface_manifest/input_inventory identical (out_dir prefix normalized only). Timing/utilization rows NOT citable — three agents shared the box; quiet-window PM re-run required |
 | Y | feat/pipeline-y | wt-pipe-y | blocked on M (Y1-Y3 could pre-fork; Y4 post-M) | — | — |
 
 ## 8. Dispatch protocol (per subagent)
