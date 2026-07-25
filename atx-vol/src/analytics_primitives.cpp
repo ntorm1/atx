@@ -15,6 +15,7 @@
 #include <span>
 
 #include "atx/core/error.hpp"
+#include "atx/core/math.hpp"     // norm_cdf (E5 forward-delta strike solve)
 #include "atx/vol/event_vol.hpp" // count_events_at, censored_total_variance
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/strategy.hpp" // resolve_strike_by_delta
@@ -56,11 +57,98 @@ double atmf_vol(const PricedSurface &ps, double T) noexcept {
   return ps.iv(F, T);
 }
 
-Result<double> vol_at_delta(const PricedSurface &ps, double T, Side side, double abs_delta) {
+namespace {
+
+// Inverse standard-normal CDF by bisection on the monotone `norm_cdf`. Halving
+// [-10, 10] reaches the double's own resolution and the loop bound is static.
+// This is a wing-strike solve run a handful of times per tenor, never a hot
+// path, so a dependency-free exact-by-construction inverse beats a rational
+// approximation whose error budget would have to be re-argued.
+[[nodiscard]] double norm_inv(double p) noexcept {
+  if (!(p > 0.0) || !(p < 1.0)) {
+    return kNaN;
+  }
+  double lo = -10.0;
+  double hi = 10.0;
+  for (int i = 0; i < 200; ++i) {
+    const double mid = 0.5 * (lo + hi);
+    if (atx::core::norm_cdf(mid) < p) {
+      lo = mid;
+    } else {
+      hi = mid;
+    }
+    if (hi - lo <= 1.0e-15 * (1.0 + std::fabs(lo))) {
+      break;
+    }
+  }
+  return 0.5 * (lo + hi);
+}
+
+// E5 / AN-P2-6: the European Black-76 FORWARD-delta strike.
+//
+//   call: N(d1) = Δ            put: N(d1) − 1 = −Δ  ⇒  N(d1) = 1 − Δ
+//   d1 = (ln(F/K) + v²/2)/v    ⇒  ln(F/K) = z·v − v²/2
+//   ⇒ K = F·exp(−z·v + v²/2),  v = σ(K,T)·√T
+//
+// σ depends on K through the smile, so this is a fixed point: seeded at K = F
+// and iterated in log-strike. On a flat smile it lands on the closed form in one
+// step. Statically bounded, no allocation.
+[[nodiscard]] Result<double> strike_by_forward_delta(const PricedSurface &ps, double T, Side side,
+                                                     double abs_delta) {
+  const double F = ps.forward_at(T);
+  if (!(T > 0.0) || !(F > 0.0) || !std::isfinite(F)) {
+    return Err(ErrorCode::InvalidArgument, "strike_at_delta: no usable forward at this tenor");
+  }
+  const double z = norm_inv(side == Side::Call ? abs_delta : 1.0 - abs_delta);
+  if (!std::isfinite(z)) {
+    return Err(ErrorCode::InvalidArgument, "strike_at_delta: delta target unreachable");
+  }
+  const double sqrt_T = std::sqrt(T);
+
+  double K = F;
+  for (int i = 0; i < 64; ++i) {
+    const double sigma = ps.iv(K, T);
+    if (!std::isfinite(sigma) || sigma <= 0.0) {
+      return Err(ErrorCode::InvalidArgument,
+                 "strike_at_delta: surface vol unusable at the candidate strike");
+    }
+    const double v = sigma * sqrt_T;
+    const double K_next = F * std::exp(-z * v + 0.5 * v * v);
+    if (!std::isfinite(K_next) || K_next <= 0.0) {
+      return Err(ErrorCode::InvalidArgument, "strike_at_delta: divergent forward-delta solve");
+    }
+    const double step = std::fabs(std::log(K_next / K));
+    K = K_next;
+    if (step <= 1.0e-14) {
+      break;
+    }
+  }
+  return Ok(K);
+}
+
+} // namespace
+
+Result<double> strike_at_delta(const PricedSurface &ps, double T, Side side, double abs_delta,
+                               DeltaConvention convention) {
+  if (!(abs_delta > 0.0 && abs_delta < 1.0)) {
+    return Err(ErrorCode::InvalidArgument, "strike_at_delta: abs_delta must be in (0,1)");
+  }
+  switch (convention) {
+  case DeltaConvention::American:
+    // Bit-identical to the pre-E5 path.
+    return resolve_strike_by_delta(ps, T, side, abs_delta);
+  case DeltaConvention::Forward:
+    return strike_by_forward_delta(ps, T, side, abs_delta);
+  }
+  return Err(ErrorCode::NotImplemented, "strike_at_delta: unknown delta convention");
+}
+
+Result<double> vol_at_delta(const PricedSurface &ps, double T, Side side, double abs_delta,
+                            DeltaConvention convention) {
   if (!(abs_delta > 0.0 && abs_delta < 1.0)) {
     return Err(ErrorCode::InvalidArgument, "vol_at_delta: abs_delta must be in (0,1)");
   }
-  ATX_TRY(auto K, resolve_strike_by_delta(ps, T, side, abs_delta));
+  ATX_TRY(auto K, strike_at_delta(ps, T, side, abs_delta, convention));
   return Ok(ps.iv(K, T));
 }
 
@@ -71,17 +159,19 @@ double vol_at_moneyness(const PricedSurface &ps, double T, double moneyness) noe
   return ps.iv(ps.forward_at(T) * moneyness, T);
 }
 
-Result<double> risk_reversal(const PricedSurface &ps, double T, double abs_delta) {
+Result<double> risk_reversal(const PricedSurface &ps, double T, double abs_delta,
+                             DeltaConvention convention) {
   // Equity sign: RR = σ(Δ-put) − σ(Δ-call)  (positive = downside rich).
-  ATX_TRY(auto p, vol_at_delta(ps, T, Side::Put, abs_delta));
-  ATX_TRY(auto c, vol_at_delta(ps, T, Side::Call, abs_delta));
+  ATX_TRY(auto p, vol_at_delta(ps, T, Side::Put, abs_delta, convention));
+  ATX_TRY(auto c, vol_at_delta(ps, T, Side::Call, abs_delta, convention));
   return Ok(p - c);
 }
 
-Result<double> butterfly(const PricedSurface &ps, double T, double abs_delta) {
+Result<double> butterfly(const PricedSurface &ps, double T, double abs_delta,
+                         DeltaConvention convention) {
   // BF = ½(σ_put + σ_call) − σ_atm at the given absolute delta.
-  ATX_TRY(auto p, vol_at_delta(ps, T, Side::Put, abs_delta));
-  ATX_TRY(auto c, vol_at_delta(ps, T, Side::Call, abs_delta));
+  ATX_TRY(auto p, vol_at_delta(ps, T, Side::Put, abs_delta, convention));
+  ATX_TRY(auto c, vol_at_delta(ps, T, Side::Call, abs_delta, convention));
   const double a = atmf_vol(ps, T);
   return Ok(0.5 * (p + c) - a);
 }

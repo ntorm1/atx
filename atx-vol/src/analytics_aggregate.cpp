@@ -144,8 +144,11 @@ Result<SurfaceAnalytics> compute_surface_analytics(const PricedSurface &ps,
     // Delta wings: a wing strike can be unreachable in the far tail — store NaN
     // for that entry rather than failing the whole bundle.
     for (const double d : cfg.delta_points) {
-      const double pv = value_or_nan(vol_at_delta(ps, T, Side::Put, d));
-      const double cv = value_or_nan(vol_at_delta(ps, T, Side::Call, d));
+      // E5 / AN-P2-6: the wing strikes follow the CONFIGURED convention.
+      // `AnalyticsConfig::delta_convention` defaults to American, which is what
+      // this loop has always used, so the default bundle is unchanged.
+      const double pv = value_or_nan(vol_at_delta(ps, T, Side::Put, d, cfg.delta_convention));
+      const double cv = value_or_nan(vol_at_delta(ps, T, Side::Call, d, cfg.delta_convention));
       t.put_delta_vol.push_back(pv);
       t.call_delta_vol.push_back(cv);
       t.risk_reversal.push_back(pv - cv);

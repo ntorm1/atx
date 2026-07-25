@@ -197,6 +197,125 @@ TEST(AnalyticsPrimitives, AtmfVolExEarningsNaNOnOvershoot) {
   EXPECT_TRUE(std::isnan(atmf_vol_ex_earnings(ps, T, ctx)));
 }
 
+// ── E5 / AN-P2-6: the delta convention is a CHOICE, not folklore ────────────
+//
+// Analytics wings/RR/BF resolve their strike with `resolve_strike_by_delta`,
+// i.e. AMERICAN |delta| (dP/dS on the American mark). `projection.cpp` solves
+// EUROPEAN B76 FORWARD delta, and `contract_projection.cpp` solves American
+// delta seeded from a carry-discounted spot-delta inversion. A "25-delta RR"
+// from `compute_surface_analytics` is therefore NOT the same strike as a
+// 25-delta from `surface_solve_k_for_delta`, and neither matches the
+// vendor-standard Black forward delta on a high-carry name.
+//
+// E5 keeps American as the DEFAULT (nothing silently moves) and adds an
+// explicit B76-forward mode for vendor comparability. On a FLAT-vol surface the
+// B76-forward strike has an exact closed form and can be hand-computed:
+//
+//     N(d1) = Delta_call        =>  d1 = z = N^-1(Delta)
+//     ln(F/K) = z*v - 0.5*v^2   =>  K = F*exp(-z*v + 0.5*v^2),  v = sigma*sqrt(T)
+//
+// and for the put, N(d1) - 1 = -Delta  =>  d1 = N^-1(1 - Delta) = -z.
+TEST(AnalyticsPrimitives, B76ForwardDeltaStrikeMatchesClosedForm) {
+  constexpr double kSigma = 0.20;
+  const PricedSurface ps = testkit::make_flat_surface(1, 100.0, 100.0, kSigma);
+  const double T = 0.50;
+  const double F = ps.forward_at(T);
+  const double v = kSigma * std::sqrt(T);
+  constexpr double kDelta = 0.25;
+  // z = N^-1(0.25), hand value to full double precision.
+  constexpr double kZ25 = -0.6744897501960817;
+
+  const double k_call_expected = F * std::exp(-kZ25 * v + 0.5 * v * v);
+  const double k_put_expected = F * std::exp(kZ25 * v + 0.5 * v * v);
+
+  const auto k_call = strike_at_delta(ps, T, Side::Call, kDelta, DeltaConvention::Forward);
+  const auto k_put = strike_at_delta(ps, T, Side::Put, kDelta, DeltaConvention::Forward);
+  ASSERT_TRUE(k_call.has_value()) << k_call.error().to_string();
+  ASSERT_TRUE(k_put.has_value()) << k_put.error().to_string();
+
+  EXPECT_NEAR(*k_call, k_call_expected, 1e-8 * k_call_expected)
+      << "got " << *k_call << " want " << k_call_expected;
+  EXPECT_NEAR(*k_put, k_put_expected, 1e-8 * k_put_expected)
+      << "got " << *k_put << " want " << k_put_expected;
+  // Sanity: the 25-delta call sits ABOVE the forward, the put BELOW.
+  EXPECT_GT(*k_call, F);
+  EXPECT_LT(*k_put, F);
+}
+
+// The two conventions really do disagree — otherwise the knob is decoration.
+TEST(AnalyticsPrimitives, AmericanAndB76ForwardDeltaStrikesDiffer) {
+  const PricedSurface ps = testkit::make_skewed_surface(2, 100.0, 100.0);
+  const double T = 0.50;
+  const auto k_am = strike_at_delta(ps, T, Side::Put, 0.25, DeltaConvention::American);
+  const auto k_b76 = strike_at_delta(ps, T, Side::Put, 0.25, DeltaConvention::Forward);
+  ASSERT_TRUE(k_am.has_value()) << k_am.error().to_string();
+  ASSERT_TRUE(k_b76.has_value()) << k_b76.error().to_string();
+  EXPECT_NE(*k_am, *k_b76) << "american=" << *k_am << " b76fwd=" << *k_b76;
+
+  // American is the DEFAULT: the convention-free overload must be unchanged.
+  const auto k_default = strike_at_delta(ps, T, Side::Put, 0.25);
+  ASSERT_TRUE(k_default.has_value()) << k_default.error().to_string();
+  EXPECT_DOUBLE_EQ(*k_default, *k_am);
+}
+
+TEST(AnalyticsPrimitives, RiskReversalHonorsDeltaConvention) {
+  const PricedSurface ps = testkit::make_skewed_surface(2, 100.0, 100.0);
+  const double T = 0.50;
+  const auto rr_am = risk_reversal(ps, T, 0.25, DeltaConvention::American);
+  const auto rr_b76 = risk_reversal(ps, T, 0.25, DeltaConvention::Forward);
+  ASSERT_TRUE(rr_am.has_value()) << rr_am.error().to_string();
+  ASSERT_TRUE(rr_b76.has_value()) << rr_b76.error().to_string();
+  // Downside skew ⇒ both conventions report a positive equity-sign RR ...
+  EXPECT_GT(*rr_am, 0.0);
+  EXPECT_GT(*rr_b76, 0.0);
+  // ... but they are NOT the same number, which is the whole point of AN-P2-6.
+  EXPECT_NE(*rr_am, *rr_b76) << "american=" << *rr_am << " b76fwd=" << *rr_b76;
+
+  // Default overload == American.
+  const auto rr_default = risk_reversal(ps, T, 0.25);
+  ASSERT_TRUE(rr_default.has_value()) << rr_default.error().to_string();
+  EXPECT_DOUBLE_EQ(*rr_default, *rr_am);
+}
+
+// The aggregate honors the config knob, so the convention reaches the product
+// surface (`TenorAnalytics::risk_reversal`) and not just the primitives.
+TEST(AnalyticsPrimitives, AggregateHonorsDeltaConventionConfig) {
+  const PricedSurface ps = testkit::make_skewed_surface(2, 100.0, 100.0);
+  AnalyticsConfig cfg_am;
+  cfg_am.compute_rnd = false;
+  cfg_am.compute_varswap = false;
+  cfg_am.delta_points = {0.25};
+  AnalyticsConfig cfg_b76 = cfg_am;
+  cfg_b76.delta_convention = DeltaConvention::Forward;
+  EXPECT_EQ(cfg_am.delta_convention, DeltaConvention::American) << "American must be the default";
+
+  const auto a = compute_surface_analytics(ps, cfg_am);
+  const auto b = compute_surface_analytics(ps, cfg_b76);
+  ASSERT_TRUE(a.has_value()) << a.error().to_string();
+  ASSERT_TRUE(b.has_value()) << b.error().to_string();
+  ASSERT_EQ(a->tenors.size(), b->tenors.size());
+
+  bool any_valid = false;
+  bool any_differs = false;
+  for (std::size_t i = 0; i < a->tenors.size(); ++i) {
+    if (!a->tenors[i].valid || !b->tenors[i].valid) {
+      continue;
+    }
+    ASSERT_EQ(a->tenors[i].risk_reversal.size(), std::size_t{1});
+    ASSERT_EQ(b->tenors[i].risk_reversal.size(), std::size_t{1});
+    const double ra = a->tenors[i].risk_reversal[0];
+    const double rb = b->tenors[i].risk_reversal[0];
+    if (std::isfinite(ra) && std::isfinite(rb)) {
+      any_valid = true;
+      if (ra != rb) {
+        any_differs = true;
+      }
+    }
+  }
+  EXPECT_TRUE(any_valid) << "fixture produced no comparable tenor";
+  EXPECT_TRUE(any_differs) << "the config knob did not reach the wing solve";
+}
+
 // ── implied_correlation_clean / dirty ───────────────────────────────────────
 
 TEST(AnalyticsPrimitives, ImpliedCorrelationCleanRecoversHalf) {
