@@ -1,0 +1,274 @@
+#pragma once
+
+// surface_db_admin — pure INSPECTION / VERIFICATION over an already-open
+// `SurfaceDb` (surface_db.hpp). This is the library half of the management
+// surface; `tools/surface_db_main.cpp` (target `atx-vol-surface-db`) is a thin
+// print-only shell over exactly these five calls.
+//
+// Everything here is a query: nothing in this header creates, mutates, fits or
+// persists anything. Each entry point takes a `const SurfaceDb &` plus plain
+// arguments and returns a plain owning struct through the repo's `Result<T>`
+// vocabulary — NO iostream, NO printf, NO formatting decisions. Output shape is
+// the CLI's business, so a Python/notebook/service caller can consume the same
+// structs without re-parsing text. (That is the point: verifying a built
+// database must not require the pybind11 wrapper.)
+//
+// ── The five questions ───────────────────────────────────────────────────────
+//
+//   describe_db        — "what is in this database?"      generation, symbol /
+//                        partition counts, per-partition surface counts + bytes.
+//   describe_partition — "what does THIS date hold?"      the symbols the
+//                        partition's .atxvsa directory actually carries.
+//   describe_symbol    — "how is THIS name configured?"   enabled/preset/curve
+//                        + the stored provenance when present.
+//   query_surface      — "what does this cell evaluate to?" iv / total variance
+//                        / uid / n_slices at one (K, T), through `map_surface`.
+//   verify_db          — "is the whole thing healthy?"    walk every cell, map
+//                        it, and evaluate one ATM-ish point to prove it produces
+//                        a finite number.
+//
+// ── Why `map_surface` and not `load_surface` ─────────────────────────────────
+//
+// `query_surface` / `verify_db` deliberately go through the ZERO-COPY
+// `SurfaceDb::map_surface` path: that is the call production readers make (and
+// the one the retired Python check made), so a green verify is evidence about
+// the path that actually serves, not about a parallel owned-reconstruct route
+// that could diverge.
+//
+// ── Bytes on disk ────────────────────────────────────────────────────────────
+//
+// Two byte counts are reported per partition and they are NOT redundant.
+// `manifest_bytes` is `DbPartitionRecord::file_size` — the size the manifest
+// recorded when the partition was written. `bytes_on_disk` is the file's size
+// right now (0 when the file is absent). A mismatch, or `present == false`,
+// means the directory was edited out from under the manifest — precisely the
+// corruption an operator runs an inspector to find.
+//
+// ── Thread safety ────────────────────────────────────────────────────────────
+//
+// Every function is a `const` query over `SurfaceDb`'s own thread-safe const
+// API (immutable manifest snapshot + the internally-locked partition view
+// cache), so any number of threads may call these concurrently on one `const
+// SurfaceDb &`. They are NOT synchronized against a concurrent writer mutating
+// the same db; a mid-walk `write_partition` is observed as a torn view (some
+// cells from before, some after), never as a data race.
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "atx/vol/session.hpp"        // FitPreset
+#include "atx/vol/surface_archive.hpp" // SurfaceProvenance
+#include "atx/vol/surface_db.hpp"     // SurfaceDb, SymbolFitConfig
+#include "atx/vol/surface_policy.hpp" // SurfacePolicy
+#include "atx/vol/types.hpp"          // Result, Status
+#include "atx/vol/vol_curve.hpp"      // VolCurveKind
+
+namespace atx::vol {
+
+// ── describe_db ─────────────────────────────────────────────────────────────
+
+// One partition as the manifest indexes it, cross-checked against the file that
+// is actually on disk. See the "Bytes on disk" note above for why both byte
+// counts exist.
+struct DbPartitionSummary {
+  std::string key{};                 // canonical partition key (e.g. a trade date)
+  std::uint32_t surface_count{0};    // surfaces the manifest recorded for it
+  std::uint64_t manifest_bytes{0};   // file bytes AT WRITE TIME (manifest record)
+  std::uint64_t bytes_on_disk{0};    // file bytes NOW; 0 when `present` is false
+  bool present{false};               // the .atxvsa file exists under <root>/partitions
+  std::int64_t created_ts_ns{0};
+};
+
+// Whole-database shape. `n_symbols_enabled` counts manifest symbols whose stored
+// `SymbolFitConfig::enabled` is true — a disabled symbol is configured but
+// deliberately never populated or served (fail-closed), so the two counts
+// differing is normal, not a defect.
+struct DbDescription {
+  std::string root{};
+  std::uint64_t generation{0};
+  std::size_t n_symbols{0};
+  std::size_t n_symbols_enabled{0};
+  std::size_t n_partitions{0};
+  std::size_t n_partitions_missing{0}; // manifest entries with no file on disk
+  std::uint64_t total_surface_count{0};
+  std::uint64_t total_manifest_bytes{0};
+  std::uint64_t total_bytes_on_disk{0};
+  std::vector<DbPartitionSummary> partitions{}; // manifest order (sorted by key)
+};
+
+// Summarize `db` from its manifest snapshot plus a `stat` of each partition file.
+// Reads no surface record and opens no archive, so it stays cheap on a
+// thousand-partition database. Err only if a manifest symbol's stored config
+// fails to decode (a corrupt manifest that `open` admitted).
+[[nodiscard]] Result<DbDescription> describe_db(const SurfaceDb &db);
+
+// ── describe_partition ──────────────────────────────────────────────────────
+
+// One surface inside a partition's archive directory. `surface_bytes` is that
+// record's own byte extent within the .atxvsa file.
+struct PartitionSymbolInfo {
+  std::string symbol{};
+  std::uint32_t uid{0};
+  std::uint32_t n_slices{0};
+  std::uint64_t surface_bytes{0};
+};
+
+// What a partition ACTUALLY holds — read from the .atxvsa directory, not from
+// the manifest. `manifest_surface_count` vs `archive_surface_count` disagreeing
+// means the manifest and the file have drifted apart.
+struct PartitionDescription {
+  std::string key{};
+  std::uint32_t manifest_surface_count{0};
+  std::uint32_t archive_surface_count{0};
+  std::uint64_t manifest_bytes{0};
+  std::uint64_t bytes_on_disk{0};
+  std::vector<PartitionSymbolInfo> symbols{}; // archive directory order (canonical)
+};
+
+// Open partition `key` and enumerate the symbols it carries. Errors: NotFound
+// (no such partition in the manifest), IoError / ParseError (the manifest lists
+// it but the file is gone or unreadable), InvalidArgument (malformed key).
+[[nodiscard]] Result<PartitionDescription> describe_partition(const SurfaceDb &db,
+                                                              std::string_view key);
+
+// ── describe_symbol ─────────────────────────────────────────────────────────
+
+// A symbol's stored fit configuration, flattened to the fields an operator
+// checks. `curve_kind` is only meaningful when `pin_curve` is true (otherwise
+// the preset/selector picks the family at fit time).
+struct SymbolDescription {
+  std::string symbol{}; // canonical, as stored in the manifest
+  bool enabled{false};
+  FitPreset preset{FitPreset::Populate};
+  bool pin_curve{false};
+  VolCurveKind curve_kind{};
+  double band_k{0.0};
+  SurfacePolicy surface_policy{};
+  bool has_provenance{false};
+  SurfaceProvenance provenance{}; // meaningful only when `has_provenance`
+};
+
+// Look up `symbol`'s stored config (+ provenance when the manifest carries one).
+// Case-insensitive, like every other SurfaceDb symbol lookup. Errors: NotFound
+// when the symbol is not in the manifest's symbol table.
+[[nodiscard]] Result<SymbolDescription> describe_symbol(const SurfaceDb &db,
+                                                        std::string_view symbol);
+
+// ── query_surface ───────────────────────────────────────────────────────────
+
+// One evaluated point on one stored surface. `forward` is the surface's own
+// interpolated forward at `T` — the anchor an ATM query should use for `K`.
+struct SurfacePointQuote {
+  std::string key{};
+  std::string symbol{};
+  double K{0.0};
+  double T{0.0};
+  double iv{0.0};
+  double total_variance{0.0};
+  double forward{0.0};
+  std::uint32_t uid{0};
+  std::size_t n_slices{0};
+};
+
+// Map (`key`, `symbol`) through the zero-copy `SurfaceDb::map_surface` and
+// evaluate it at (`K`, `T`). Errors: InvalidArgument (non-finite or
+// non-positive K/T, malformed key), NotFound (no such partition, or the
+// partition does not carry that symbol), IoError / ParseError (partition file
+// missing or corrupt). A mapped surface that evaluates to a non-finite iv is
+// reported as Internal — a stored surface that cannot produce a number is a
+// defect, not an empty answer.
+[[nodiscard]] Result<SurfacePointQuote> query_surface(const SurfaceDb &db, std::string_view key,
+                                                      std::string_view symbol, double K, double T);
+
+// ── verify_db ───────────────────────────────────────────────────────────────
+
+// Default ATM probe tenor: ~30 calendar days. Every stored surface is defined at
+// every positive T (short-end scaling / flat long-end extrapolation), so a fixed
+// probe needs no knowledge of the surface's own expiry ladder and stays
+// comparable across cells.
+inline constexpr double kSurfaceDbVerifyProbeT = 30.0 / 365.0;
+
+// Default cap on the failure list `verify_db` returns. A verify over a broken
+// universe must not return a million-entry vector; the cap plus
+// `DbVerifyReport::n_failures_elided` keeps the answer bounded WITHOUT letting
+// truncation read as "everything passed".
+inline constexpr std::size_t kSurfaceDbVerifyMaxFailures = 32;
+
+// Why one cell failed.
+enum class DbCellFailure : std::uint8_t {
+  // `map_surface` did not return a surface: the partition file is missing or
+  // corrupt, or the partition simply does not carry that symbol.
+  Unmappable = 0,
+  // The surface mapped, but the ATM probe did not produce a usable number
+  // (non-finite, or a non-positive implied vol).
+  NonFinite = 1,
+};
+
+// One failing (partition, symbol) cell, identified.
+struct DbCellFault {
+  std::string key{};
+  std::string symbol{};
+  DbCellFailure kind{DbCellFailure::Unmappable};
+  std::string detail{}; // the mapping error's text, or the offending probe value
+};
+
+// What to verify. All fields are restrictions on an otherwise exhaustive walk.
+struct DbVerifySpec {
+  // Inclusive partition-key range, compared lexicographically against the
+  // CANONICAL (upper-cased) key. ISO dates sort correctly under that compare, so
+  // `key_lo = "2026-07-01"`, `key_hi = "2026-07-31"` is a July restriction.
+  // Empty means unbounded on that side.
+  std::string key_lo{};
+  std::string key_hi{};
+  // Symbol subset (canonicalized on entry). Empty = every symbol in the
+  // manifest's symbol table, filtered by `include_disabled`.
+  std::vector<std::string> symbols{};
+  // false (default) => a symbol whose stored config is DISABLED is skipped. A
+  // disabled symbol is never populated into a partition (fail-closed), so
+  // checking it would report a "missing" cell on every partition of every
+  // healthy database. true forces it into the walk.
+  bool include_disabled{false};
+  // Tenor for the per-cell ATM evaluation. Must be finite and > 0.
+  double probe_T{kSurfaceDbVerifyProbeT};
+  // Cap on `DbVerifyReport::failures`. Extra faults are counted in
+  // `n_failures_elided`, never dropped silently. 0 retains no detail at all
+  // (every fault is elided) — the counters still tell the truth.
+  std::size_t max_reported_failures{kSurfaceDbVerifyMaxFailures};
+};
+
+// The health verdict. `cells_checked == cells_ok + cells_unmappable +
+// cells_non_finite` always holds.
+struct DbVerifyReport {
+  std::size_t n_partitions{0}; // partitions in range (the walk's rows)
+  std::size_t n_symbols{0};    // symbols in the walk (the walk's columns)
+  std::size_t cells_checked{0};
+  std::size_t cells_ok{0};
+  std::size_t cells_unmappable{0};
+  std::size_t cells_non_finite{0};
+  std::vector<DbCellFault> failures{}; // capped at spec.max_reported_failures
+  std::size_t n_failures_elided{0};    // faults NOT in `failures` (never silent)
+
+  [[nodiscard]] constexpr bool ok() const noexcept {
+    return cells_unmappable == 0 && cells_non_finite == 0;
+  }
+};
+
+// Walk the (partition x symbol) grid selected by `spec`; for each cell
+// `map_surface` it and evaluate one ATM-ish point (K = the surface's own
+// `forward_at(probe_T)`, T = `probe_T`) to prove the surface produces a finite,
+// positive implied vol rather than merely mapping.
+//
+// A cell failure is TALLIED, never fatal — the whole point is to enumerate every
+// broken cell in one pass. Err is reserved for a spec that cannot be honored:
+// InvalidArgument (non-finite / non-positive `probe_T`, an empty or oversized
+// entry in `spec.symbols`) or a manifest whose stored config fails to decode.
+//
+// The report is all-ok (`DbVerifyReport::ok()`) exactly when every selected cell
+// mapped AND evaluated; a caller wiring this into a script should branch on
+// `ok()`, not on the Result.
+[[nodiscard]] Result<DbVerifyReport> verify_db(const SurfaceDb &db, const DbVerifySpec &spec = {});
+
+} // namespace atx::vol

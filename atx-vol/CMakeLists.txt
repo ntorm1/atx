@@ -98,6 +98,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/corpus.cpp
     src/surface_db_populate.cpp
     src/surface_db_build.cpp
+    src/surface_db_admin.cpp
     src/dispersion.cpp
     src/dispersion_strangle.cpp
     src/dispersion_backtest.cpp
