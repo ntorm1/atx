@@ -79,7 +79,23 @@ enum class Counter : unsigned {
   PoolDispatches,            // run_blocks/run_ranges/run_dynamic pool wakes (0 inline)
   ResolvedPriceWrapperCalls, // exact wrapper entries reached from PricedSurface
   ResolvedPriceWrapperLanes, // lanes submitted to those wrapper entries
-  AmericanAvxPackDispatches, // complete packs actually dispatched to AVX2
+  // COMPLETE 4-lane packs handed to the AVX2 boundary driver — and nothing else.
+  // Bumped at BOTH dispatch sites in american_batch.cpp: `american_price_batch`
+  // (by m/4, the driver's own complete-pack count) and
+  // `american_price_batch_resolved` (one per full pack, as it fills them).
+  // What it deliberately does NOT count, so no gate mis-reads it (REVWSA finding 6):
+  //   * the n % 4 TAIL. Both entries flush a short pack scalar and the AVX2 driver
+  //     prices its own tail scalar, so a workload of < 4 kernel lanes dispatches
+  //     nothing and reads 0 while being perfectly healthy.
+  //   * lanes patched back to scalar INSIDE a dispatched pack (all-ineligible packs,
+  //     non-finite results). The pack was still dispatched; this counts dispatches,
+  //     not lanes — pair it with AmericanWrapperKnownScalarLanes for the lane view.
+  //   * AVX2 work reached by any route other than simd::american_put_boundary_batch
+  //     (e.g. the laned Greeks kernel in american_greeks_avx2.cpp).
+  // Therefore: NON-ZERO proves complete packs went to AVX2; ZERO does NOT prove the
+  // pack path is dead. It is not a general "the AVX2 path was taken" observable and
+  // must not be re-used as one without a lane-count check alongside it.
+  AmericanAvxPackDispatches,
   // Lower bound within this wrapper only: excludes opaque AVX internal patches
   // and scalar American calls made elsewhere in the library.
   AmericanWrapperKnownScalarLanes,
