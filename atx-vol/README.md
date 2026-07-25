@@ -336,7 +336,7 @@ which change the numerical results of the shipped paths:
   same-predicate tile schedule. So `batch == scalar` is **no longer bit-for-bit by
   default** on AVX2 hosts: the contract relaxes from bit-reproducible-by-default to
   reproducible-per-host. `ATX_SIMD_ISA=ForceScalar` restores the exact scalar
-  boundary solve (run as a dedicated non-AVX2 test leg — `atx_vol_pricing_forcescalar`
+  boundary solve (run as a dedicated non-AVX2 test leg — `atx-vol-pricing-forcescalar`
   in `tests/CMakeLists.txt`); `ForceAvx2` forces the pack on any host; the B76 span
   batches (`batch.hpp`) stay scalar-backed.
   What is **not** vectorized is the Andersen–Lake Gauss-Legendre quad loop *within a

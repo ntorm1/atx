@@ -3742,6 +3742,183 @@ TEST(PortfolioPricer, G1_NonFiniteBaseGreek_IsIsolatedFromPnlTotals) {
   EXPECT_EQ(f.total.n_ok, 1u);
 }
 
+// ── FIX-1 / F2 (rev-ws-g G1 I-1): the SEED-STAGING Ok-stamp must sweep too ──
+//
+// G1 guarded two PriceStatus::Ok stamp sites, but `stage_full_greek_seeds` stamps a
+// THIRD one with no finite sweep at all, and it is a complete bypass rather than a
+// redundant path: an accepted seed is copied straight into the frame, `is_seeded()`
+// makes solve_span skip the contract so the guarded stamp is never reached, and when
+// every seed is accepted the batch is skipped outright. The seed itself is not
+// validated on mint either -- PricedSurface::full_greek_seed gates only on
+// isfinite(price) -- so a NaN gamma is mintable and carries an Ok status into
+// PriceTotals, which gates on STATUS only.
+//
+// This is a shipped path, not a test seam: dispersion mints seeds, entry_risk_seeds()
+// exposes them and backtest.cpp feeds them to the pricer on every entry, so GR-P2-1
+// remains open exactly where the volume is. Same defect and same trigger as the two G1
+// tests above, driven through the seed-staging entry point instead of the solve.
+TEST(PortfolioPricerSeed, F2_NonFiniteGreekSeedDoesNotBypassTheFiniteSweep) {
+  // Kernel-level precondition (identical to G1's): a SUCCESSFUL differenced bundle
+  // with a finite mark and a non-finite gamma.
+  const auto probe = american_greeks_fd(kG1TinyS, 100.0, 0.05, 0.9, kR, 0.02, Side::Put);
+  ASSERT_TRUE(probe.has_value());
+  EXPECT_TRUE(std::isfinite(probe->price));
+  EXPECT_FALSE(std::isfinite(probe->gamma));
+
+  const PricedSurface s_norm = make_essvi(1, 3);
+  const PricedSurface s_ext = make_essvi(2, 3, /*theta_bump=*/0.0, /*S=*/kG1TinyS, kR, kNow,
+                                         /*q_eff=*/0.02, /*flat_smile=*/true);
+  const SurfaceSet surfaces = set_of({&s_norm, &s_ext});
+
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 100.0, 0.15, Side::Call}, +5.0, 100.0}, // finite Greeks
+      {/*id*/ 2, {2, 100.0, 0.05, Side::Put}, +3.0, 100.0},  // non-finite gamma
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const PriceOptions options{.n_threads = 1};
+
+  // The poisoned seed is mintable TODAY: full_greek_seed gates on isfinite(price) only.
+  auto seed = s_ext.full_greek_seed(100.0, 0.05, Side::Put, options.analytic_greeks,
+                                    options.query_execution);
+  ASSERT_TRUE(seed.has_value()) << seed.error().to_string();
+  EXPECT_TRUE(std::isfinite(seed->greeks().price));   // finite mark ...
+  EXPECT_FALSE(std::isfinite(seed->greeks().gamma));  // ... poisoned gamma in the seed.
+  const std::array<FullGreekSeed, 1> seeds{std::move(*seed)};
+
+  const std::size_t n = pricer.portfolio().n_positions();
+  PortfolioWorkspace ws;
+  ws.reserve(pricer.portfolio().n_contracts(), n);
+  FrameStore seeded(n, /*want_greeks=*/true);
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::FullGreeks, seeded.view(), ws, options,
+                              seeds)
+                  .has_value());
+
+  EXPECT_EQ(seeded.status[0], PriceStatus::Ok);
+  // The poisoned seeded lane is quarantined (was silently Ok pre-fix): the seed is
+  // rejected, the contract falls through to the normal solve, and the guarded stamp
+  // demotes it exactly as the unseeded G1 lane above.
+  EXPECT_EQ(seeded.status[1], PriceStatus::NumericError);
+
+  // The book totals stay finite: the NaN Greek is isolated, never summed.
+  EXPECT_TRUE(std::isfinite(seeded.total.gamma));
+  EXPECT_TRUE(std::isfinite(seeded.total.delta));
+  EXPECT_TRUE(std::isfinite(seeded.total.vega));
+  EXPECT_EQ(seeded.total.n_ok, 1u); // only the normal lane contributes
+}
+
+// ── FIX-1 / F3 (rev-ws-g G1 I-2): the P&L stamp must guard the REQUESTED set ──
+//
+// The P&L base-solve Ok-stamp passed a default-constructed GreekNeeds{} — i.e. demanded
+// all eight greeks finite — on the stated premise that "the P&L base solve always
+// requests the full bundle". That premise is false and is contradicted ~60 lines above
+// in the same function, where the mask is computed conditionally:
+//     base_needs.rho = (dr != 0.0);
+// EF::FirstOrder|EF::SecondOrder selects which column GROUPS materialize; base_needs
+// selects which boundary SOLVES run. Different axes. So on an ordinary no-rate-shift
+// step (dr == 0.0) rho is NOT requested, yet a lane whose unrequested rho came back
+// non-finite was demoted to NumericError and dropped from PnlTotals — vetoed on a column
+// that is multiplied by dr == 0.0 and cannot reach any output. This is the mirror image
+// of F2: F2 under-guarded, F3 over-guarded.
+//
+// Note the second half of the fix, which a naive relaxation gets wrong: the Taylor term
+// is `prho = g.rho * c.dr`, and NaN * 0.0 is NaN, not 0.0. Merely widening the mask would
+// convert the spurious veto into a poisoned pnl_rho / pnl_unexplained. The unrequested
+// slot is therefore normalized to its canonical unmaterialized value (0.0, exactly what
+// the narrowed kernel leaves there) before the guard runs. This test pins BOTH halves.
+//
+// The trigger is a long-dated deep-ITM put: at T = 1e7 the r+/r- differenced rho is
+// non-finite while price/delta/gamma/theta/vega/volga/vanna/charm are all finite — the
+// finite-everything-but-rho bundle the defect needs, and the only shape that exercises
+// it (a dense scan over S, sigma, r, q and both sides at ordinary maturities produced no
+// such bundle on either the FD or the analytic route).
+[[nodiscard]] PricedSurface make_long_dated(std::uint32_t uid, double theta_bump = 0.0) {
+  constexpr double kLongS = 1.0e-8;  // deep ITM vs the K = 100 contract
+  constexpr double kLongT = 1.0e7;   // long enough that the rho stencil goes non-finite
+  constexpr double kLongR = 0.0;     // r == q_eff keeps F == S and the discount at 1.0
+  constexpr double kLongQ = 0.0;
+  constexpr double kLongSigma = 0.2;
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  const double F = kLongS * std::exp((kLongR - kLongQ) * kLongT); // == kLongS
+  EssviParams e{};
+  // Flat smile (phi = rho = 0) => total variance w == theta, so sigma == sqrt(theta / T).
+  e.theta = kLongSigma * kLongSigma * kLongT + theta_bump;
+  e.phi = 0.0;
+  e.rho = 0.0;
+  e.psi = 0.5;
+  e.p = 0.5;
+  e.lambda = 0.5;
+  e.T = kLongT;
+  e.F = F;
+  e.expiry_id = 0;
+  cs.push(std::make_unique<EssviCurve>(e, std::exp(-kLongR * kLongT)));
+  ctx.push_back(SliceContext{kLongT, F, 0.0, kLongQ, 250, 7});
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx),
+                                  make_pricing(uid, kLongS, kLongR, kNow));
+  EXPECT_TRUE(ps.has_value());
+  return std::move(*ps);
+}
+
+TEST(PortfolioPricer, F3_UnrequestedNonFiniteRhoKeepsTheLaneAndTheTotalsFinite) {
+  // Kernel-level precondition: the bundle this lane resolves to has a non-finite rho and
+  // a finite EVERYTHING else, so the only column that can veto it is one the no-rate-shift
+  // P&L step never requests.
+  const PricedSurface probe_surface = make_long_dated(2);
+  auto probe = probe_surface.full_greek_seed(100.0, 1.0e7, Side::Put, /*analytic=*/false,
+                                             QueryExecution::Configured);
+  ASSERT_TRUE(probe.has_value()) << probe.error().to_string();
+  const AmericanGreeks &pg = probe->greeks();
+  EXPECT_TRUE(std::isfinite(pg.price));
+  EXPECT_TRUE(std::isfinite(pg.delta));
+  EXPECT_TRUE(std::isfinite(pg.gamma));
+  EXPECT_TRUE(std::isfinite(pg.theta));
+  EXPECT_TRUE(std::isfinite(pg.vega));
+  EXPECT_TRUE(std::isfinite(pg.volga));
+  EXPECT_TRUE(std::isfinite(pg.vanna));
+  EXPECT_TRUE(std::isfinite(pg.charm));
+  EXPECT_FALSE(std::isfinite(pg.rho)); // the UNrequested column, and only it
+
+  // Base/target pairs. Every surface keeps its own r across the pair, so dr == 0.0 for
+  // BOTH uids — the ordinary no-rate-shift step, which is exactly when base_needs.rho is
+  // false. The vol axis moves so the step is not degenerate.
+  const PricedSurface s_norm_b = make_essvi(1, 3);
+  const PricedSurface s_norm_t = make_essvi(1, 3, /*theta_bump=*/0.01);
+  const PricedSurface s_long_b = make_long_dated(2);
+  const PricedSurface s_long_t = make_long_dated(2, /*theta_bump=*/1.0e5);
+  const SurfaceSet base = set_of({&s_norm_b, &s_long_b});
+  const SurfaceSet shifted = set_of({&s_norm_t, &s_long_t});
+
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 100.0, 0.15, Side::Call}, +5.0, 100.0}, // ordinary lane
+      {/*id*/ 2, {2, 100.0, 1.0e7, Side::Put}, +3.0, 100.0}, // unrequested rho non-finite
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const auto pr = pricer.pnl_explain(base, shifted);
+  ASSERT_TRUE(pr.has_value()) << pr.error().to_string();
+  const PnlFrame &f = *pr;
+  ASSERT_EQ(f.size(), 2u);
+
+  EXPECT_EQ(f.status[0], PriceStatus::Ok);
+  // Half 1 — the lane is NOT vetoed: its non-finite column was never requested (dr == 0)
+  // and is annihilated by the dr multiplier regardless. Pre-fix this was NumericError.
+  EXPECT_EQ(f.status[1], PriceStatus::Ok);
+  EXPECT_EQ(f.total.n_ok, 2u); // the good lane stays IN the totals
+
+  // Half 2 — and the totals are still finite: the unrequested slot is normalized to 0.0
+  // so `prho = 0.0 * 0.0`, not `NaN * 0.0 == NaN`.
+  EXPECT_TRUE(std::isfinite(f.total.pnl_rho));
+  EXPECT_TRUE(std::isfinite(f.total.pnl_total));
+  EXPECT_TRUE(std::isfinite(f.total.pnl_unexplained));
+  EXPECT_TRUE(std::isfinite(f.total.pnl_delta));
+  EXPECT_TRUE(std::isfinite(f.total.pnl_gamma));
+  EXPECT_TRUE(std::isfinite(f.total.pnl_vega));
+}
+
 // ── G2 (GR-F1): bucketed risk + carry column ───────────────────────────────
 
 // All-column bit-exact equality of two PriceTotals (incl. the GR-F1 dP_dq axis).
