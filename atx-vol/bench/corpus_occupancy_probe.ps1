@@ -64,14 +64,59 @@ $ErrorActionPreference = "Stop"
 $exePath  = (Resolve-Path $Exe).Path
 $specPath = (Resolve-Path $Spec).Path
 $specDir  = Split-Path -Parent $specPath
-$outRoot  = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $OutDir))
+# An absolute -OutDir must NOT be joined onto the working directory: PS 5.1's
+# Join-Path produces 'C:\cwd\C:\atx-data\...' for a rooted right-hand side, which
+# GetFullPath then rejects with "The given path's format is not supported" -- an
+# obscure failure that also meant the guards below were never reached for exactly
+# the absolute paths most worth guarding.
+$outRoot = if ([System.IO.Path]::IsPathRooted($OutDir)) {
+  [System.IO.Path]::GetFullPath($OutDir)
+} else {
+  [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $OutDir))
+}
 $cores = [int]$env:NUMBER_OF_PROCESSORS
+
+# ── -OutDir is deleted before every repetition, so it must be provably ours ────
+# The rep loop below removes $outRoot recursively: a surviving run directory turns
+# the next invocation into a resume rather than the full fan-out this probe exists
+# to measure. That makes -OutDir a destructive parameter, and an unguarded
+# `Remove-Item -Recurse -Force` on a caller-supplied path is one typo away from
+# erasing a published run under the reference-data root. Two independent guards,
+# because the consequence is unrecoverable:
+#
+#   1. Refuse outright anything inside the reference-data root, or a drive root.
+#   2. Delete only directories carrying $probeMarker, which this script writes
+#      after each successful rep. A directory this probe did not create is never
+#      removed automatically -- the caller is told to clear it by hand.
+#
+# The marker is written AFTER the child exits rather than before it starts, so the
+# probe never hands build-corpus a non-empty output directory.
+$probeMarker = ".atx-corpus-occupancy-probe"
+
+foreach ($guarded in @($env:ATX_DATA_ROOT, "C:\atx-data")) {
+  if (-not $guarded) { continue }
+  $g = [System.IO.Path]::GetFullPath($guarded).TrimEnd('\')
+  if ($outRoot -eq $g -or $outRoot.StartsWith("$g\", [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "refusing -OutDir '$outRoot': it is inside the read-only reference-data root '$g'. " +
+          "This probe deletes -OutDir before every repetition, so pointing it at published data would destroy it."
+  }
+}
+if ([System.IO.Path]::GetPathRoot($outRoot) -eq $outRoot) {
+  throw "refusing -OutDir '$outRoot': a drive root is never a probe output directory."
+}
 
 $rows = @()
 foreach ($rep in 1..$Reps) {
   # Cold build every rep: an existing run directory makes the next invocation a
-  # resume rather than the full fan-out this probe exists to measure.
-  if (Test-Path $outRoot) { Remove-Item $outRoot -Recurse -Force }
+  # resume rather than the full fan-out this probe exists to measure. Only a
+  # directory carrying this probe's own marker is removed -- see the guard above.
+  if (Test-Path $outRoot) {
+    if (-not (Test-Path (Join-Path $outRoot $probeMarker))) {
+      throw "refusing to delete '$outRoot': it exists but carries no '$probeMarker' marker, " +
+            "so this probe did not create it. Clear it by hand if you are sure, or pass a fresh -OutDir."
+    }
+    Remove-Item $outRoot -Recurse -Force
+  }
 
   $psi = New-Object System.Diagnostics.ProcessStartInfo
   $psi.FileName = $exePath
@@ -149,6 +194,14 @@ foreach ($rep in 1..$Reps) {
     Write-Host "rep $rep FAILED exit=$($proc.ExitCode)" -ForegroundColor Red
     Write-Host $stdout; Write-Host $stderr
     throw "build-corpus failed on rep $rep"
+  }
+
+  # Claim the directory now that this probe has demonstrably produced it, so the
+  # next rep is allowed to delete it. Written post-run so build-corpus is never
+  # handed a non-empty output directory.
+  if (Test-Path $outRoot) {
+    Set-Content -LiteralPath (Join-Path $outRoot $probeMarker) -Encoding ascii `
+      -Value "Written by atx-vol/bench/corpus_occupancy_probe.ps1. Its presence authorizes that script to delete this directory on a subsequent repetition."
   }
 
   # Parse the PHASE line (dispersion_run.cpp:848-858; every field is name=value).
