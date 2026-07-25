@@ -769,6 +769,30 @@ Status verify_backtest(const fs::path &backtest_path, const fs::path &reconcilia
 
 } // namespace
 
+// ── Public: corpus phase-split line (B1 / T1) ───────────────────────────────
+std::string format_corpus_phase_line(double ingest_s, double build_s,
+                                     const CorpusPhaseTimings &phases, std::size_t date_batch) {
+  const double named = phases.fit_fanout_s + phases.archive_write_s + phases.checkpoint_s;
+  char buf[512];
+  const int written =
+      std::snprintf(buf, sizeof buf,
+                    "PHASE ingest_s=%.2f build_s=%.2f fit_fanout_s=%.2f archive_write_s=%.2f "
+                    "checkpoint_s=%.2f other_s=%.2f fanout_calls=%llu boards=%llu "
+                    "reclaimed=%llu inner_slots=%llu date_batch=%zu",
+                    ingest_s, build_s, phases.fit_fanout_s, phases.archive_write_s,
+                    phases.checkpoint_s, build_s - named,
+                    static_cast<unsigned long long>(phases.fanout_calls),
+                    static_cast<unsigned long long>(phases.boards_fitted),
+                    // T1 / T-I4: `reclaimed` is the number of distinct BOARDS that
+                    // picked up inner workers a draining pool could no longer place;
+                    // `inner_slots` is the raw sum of every inner budget offered
+                    // (many per board — NOT a per-board mean). Without these two the
+                    // phase-timing probe cannot report whether the reclaim fired.
+                    static_cast<unsigned long long>(phases.reclaimed_inner_boards),
+                    static_cast<unsigned long long>(phases.inner_worker_slots), date_batch);
+  return written > 0 ? std::string(buf, static_cast<std::size_t>(written)) : std::string{};
+}
+
 // ── Public: fingerprints + corpus config ────────────────────────────────────
 
 std::uint64_t dispersion_hash_text(std::string_view text) {
@@ -1729,19 +1753,9 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
   std::printf("built qualified corpus: admitted=%u quarantined=%u source_failed=%u\n",
               built.quality.n_admitted, built.quality.n_quarantined, built.quality.n_source_failed);
   if (corpus_phase_timing_enabled()) {
-    const CorpusPhaseTimings phases = corpus_phase_timings();
-    // "other" is build-phase wall NOT attributed to a named phase: board
-    // construction from the OPRA panels, manifest/quality assembly, and the
-    // session bookkeeping between dates. Printed rather than hidden so the parts
-    // sum to the whole and a large residual stays visible instead of being
-    // silently absorbed into a phase it does not belong to.
-    const double named = phases.fit_fanout_s + phases.archive_write_s + phases.checkpoint_s;
-    std::printf("PHASE ingest_s=%.2f build_s=%.2f fit_fanout_s=%.2f archive_write_s=%.2f "
-                "checkpoint_s=%.2f other_s=%.2f fanout_calls=%llu boards=%llu date_batch=%zu\n",
-                ingest_s, build_s, phases.fit_fanout_s, phases.archive_write_s,
-                phases.checkpoint_s, build_s - named,
-                static_cast<unsigned long long>(phases.fanout_calls),
-                static_cast<unsigned long long>(phases.boards_fitted), date_batch);
+    std::printf("%s\n",
+                format_corpus_phase_line(ingest_s, build_s, corpus_phase_timings(), date_batch)
+                    .c_str());
   }
   return Ok();
 }

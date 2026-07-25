@@ -56,6 +56,7 @@
 #include "atx/vol/data.hpp"                 // iso_to_ns, year_fraction
 #include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
 #include "atx/vol/dispersion.hpp"           // DispersionUniverse, DroppedName
+#include "atx/vol/dispersion_run.hpp"       // format_corpus_phase_line (T-I4 probe gate)
 #include "atx/vol/market_env.hpp"           // MarketEnv
 #include "atx/vol/panel.hpp"                // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/priced_surface.hpp"       // PricedSurface
@@ -2219,6 +2220,48 @@ TEST(CorpusBuildSession, SaturatedFanOutOffersOneWorkerUntilItDrains) {
       << "only " << offers.size() << " budget resolutions for " << kDrainBoards
       << " boards: the inner budget is frozen at claim time instead of being re-resolved as "
          "the fan-out drains";
+}
+
+// T-I4: the reclaim counters must be readable from the probe that is supposed
+// to read them.
+//
+// `reclaimed_inner_boards` / `inner_worker_slots` live on `CorpusPhaseTimings`,
+// but the only production surface that reports phase timings is the one `PHASE`
+// line `dispersion_build_corpus` prints under `ATX_VOL_CORPUS_PHASE_TIMING` —
+// and that line did not carry them. The quiet-window probe recommended for the
+// utilization row was therefore inert: it could not report either counter, so
+// the deterministic substitute offered in place of the "≥ 14/16 mean workers"
+// gate was unobtainable, and no evidence could be captured that the reclaim
+// fired at all during a production run.
+//
+// Gated on the pure formatter rather than by driving a corpus build, so the
+// assertion is about the line's CONTENTS and cannot be satisfied by a value
+// that merely exists in the struct.
+TEST(CorpusPhaseLine, ReportsTheInnerWorkerReclaimCounters) {
+  CorpusPhaseTimings phases;
+  phases.fit_fanout_s = 12.5;
+  phases.archive_write_s = 2.0;
+  phases.checkpoint_s = 0.5;
+  phases.fanout_calls = 11;
+  phases.boards_fitted = 902;
+  phases.reclaimed_inner_boards = 137;
+  phases.inner_worker_slots = 4242;
+
+  const std::string line = format_corpus_phase_line(/*ingest_s=*/30.0, /*build_s=*/20.0, phases,
+                                                    /*date_batch=*/8u);
+  // The pre-existing fields must survive verbatim: this line is parsed by hand
+  // and by scripts.
+  EXPECT_EQ(line.rfind("PHASE ", 0), 0u) << line;
+  for (const char *field : {"ingest_s=30.00", "build_s=20.00", "fit_fanout_s=12.50",
+                            "archive_write_s=2.00", "checkpoint_s=0.50", "other_s=5.00",
+                            "fanout_calls=11", "boards=902", "date_batch=8"}) {
+    EXPECT_NE(line.find(field), std::string::npos) << field << " missing from: " << line;
+  }
+  // And the two counters the probe exists to report.
+  EXPECT_NE(line.find("reclaimed=137"), std::string::npos)
+      << "the quiet-window probe cannot see reclaimed_inner_boards: " << line;
+  EXPECT_NE(line.find("inner_slots=4242"), std::string::npos)
+      << "the quiet-window probe cannot see inner_worker_slots: " << line;
 }
 
 // ── T2 (SE-P2-6 / SE-P2-3): framing-only checkpoint resume + payload scrub ───
