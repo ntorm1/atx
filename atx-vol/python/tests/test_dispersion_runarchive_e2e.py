@@ -1,14 +1,18 @@
 """End-to-end gate for the dispersion CLI's hard cutover to RunArchive (Wave A T9).
 
-Guarded to the local 3-session paired fixture and a built example exe: the whole
-module skips cleanly when either is absent (CI / a fresh checkout), so it never
-turns red away from the box that carries the fixture.
+Guarded to a 3-session paired fixture and a built example exe: the whole module
+skips cleanly when either is absent (CI / a fresh checkout), so it never turns
+red away from a box that carries the fixture. The fixture is repo-local or an
+explicit ``$ATXVOL_FIXTURE_ROOT`` opt-in — never a machine-specific absolute
+path (REV-TAIL I-4) — and when it is absent the skip names every candidate it
+tried and the command that produces one.
 
 The flow mirrors the pipeline the sprint runs by hand:
 
-  1. copy the pristine ``scratchpad/paired/run`` fixture into a fresh temp dir
-     (NEVER mutating ``paired``), rewriting only the ``occ_ess_inventory.tsv``
-     path column so the OCC-ESS envelope check resolves inside the copy;
+  1. copy the pristine ``<fixture root>/paired/run`` fixture into a fresh temp
+     dir (NEVER mutating ``paired``), rewriting only the
+     ``occ_ess_inventory.tsv`` path column so the OCC-ESS envelope check
+     resolves inside the copy;
   2. run ``build-schedule`` then ``run-backtest`` — which, post-cutover, publish
      ``run.atxrun`` instead of the loose ``backtest.tsv`` / ``reconciliation.tsv``
      / ``contract_marks.tsv`` result files;
@@ -71,13 +75,32 @@ import pytest
 # (`-DATX_BUILD_EXAMPLES=ON`). A skip nobody can diagnose is the defect; a skip
 # that hands you the fix is a guard.
 #
-# The fixture half keeps its machine-local last resort: it is DATA on this box,
-# not code, and dropping it would make the module skip even where the fixture
-# lives. It is subject to rule 1 all the same.
-_LEGACY_SP = Path(
-    r"C:\Users\natha\AppData\Local\Temp\claude\c--atx"
-    r"\b8ae4870-03de-493c-ad84-2006e8f7409e\scratchpad"
-)
+# 4. NO MACHINE-SPECIFIC ABSOLUTE PATH, EVER (REV-TAIL I-4). The fixture half
+#    used to keep a hardcoded last resort:
+#
+#      _LEGACY_SP = Path(r"C:\Users\natha\AppData\Local\Temp\claude\c--atx"
+#                        r"\b8ae4870-03de-493c-ad84-2006e8f7409e\scratchpad")
+#
+#    justified as "DATA on this box, not code". Two things were wrong with that.
+#    It is a UUID-named temp directory belonging to a Claude session that has
+#    ENDED — it survives only until the next temp sweep, and nothing renews it.
+#    And the repo-local candidate ABOVE it has never existed in the tree, while
+#    $ATXVOL_FIXTURE_ROOT is unset by default, so that dead directory was the
+#    ONLY path on which these five tests could run: everywhere else — CI, a fresh
+#    clone, this box after a sweep — the module skipped permanently. A guard for
+#    the RunArchive cutover that can only fire inside one expired session's
+#    scratch is not a guard.
+#
+#    It is removed. The fixture is now repo-local or an EXPLICIT opt-in, exactly
+#    like the binary half, and the skip reason says how to produce one.
+#
+# The fixture (~19 MB: a 13.8 MB definitions.tsv and three ~1.6 MB .atxvsa
+# archives) is NOT committed. The largest file tracked anywhere in this repo is
+# the vendored sqlite3.c at 9.5 MB and the largest existing test fixture is
+# 1.2 MB, so committing it would double the repo's largest object for one
+# module's benefit. That trade was made deliberately and is recorded here so the
+# next reader does not re-litigate it: the module skips LOUDLY instead, naming
+# every candidate and the command that produces a fixture root.
 _REPO = Path(__file__).resolve().parents[3]   # <repo>/atx-vol/python/tests -> <repo>
 
 _EXE_NAME = "atxvol_spy_dispersion_backtest.exe" if os.name == "nt" \
@@ -116,19 +139,16 @@ def _resolve_root(
 
 
 _ENV_ROOT = os.environ.get("ATXVOL_FIXTURE_ROOT")
-# The root that carries BOTH `paired/run` (the pristine input) and `t7-check/run`
-# (the T7 golden `backtest.tsv` the dump test compares against byte-for-byte).
-# Both are requirements: a root with only one of them cannot run this module.
+# The root that carries `paired/run`, the pristine pipeline input. It used to
+# ALSO have to carry `t7-check/run/backtest.tsv`, an out-of-repo golden the dump
+# test compared against byte-for-byte; that requirement is gone with the golden
+# (REV-TAIL I-4, see test_dump_reproduces_backtest_tsv_byteshape).
 _FIXTURE_CANDIDATES: tuple[tuple[str, Path | None], ...] = (
     ("$ATXVOL_FIXTURE_ROOT", Path(_ENV_ROOT) if _ENV_ROOT else None),
     ("<repo>/atx-vol/python/tests/data/dispersion-e2e",
      _REPO / "atx-vol" / "python" / "tests" / "data" / "dispersion-e2e"),
-    ("machine-local fixture scratchpad", _LEGACY_SP),
 )
-_SP, _FIXTURE_TRACE = _resolve_root(
-    _FIXTURE_CANDIDATES,
-    (Path("paired") / "run", Path("t7-check") / "run" / "backtest.tsv"),
-)
+_SP, _FIXTURE_TRACE = _resolve_root(_FIXTURE_CANDIDATES, (Path("paired") / "run",))
 _PAIRED_RUN = (_SP / "paired" / "run") if _SP is not None else None
 
 _ENV_BIN = os.environ.get("ATXVOL_BIN")
@@ -214,12 +234,29 @@ def _skip_reason(
         )
     if fixture_root is None:
         lines.append(
-            "paired fixture root (must hold paired/run and "
-            "t7-check/run/backtest.tsv) -- searched, in order:"
+            "paired fixture root (must hold paired/run) -- searched, in order:"
         )
         lines.extend(fixture_trace)
         lines.append(
-            "  remedy: point $ATXVOL_FIXTURE_ROOT at a root holding both."
+            "  remedy: set $ATXVOL_FIXTURE_ROOT to a directory holding a "
+            "`paired/run` corpus run directory, or create that directory at "
+            "<repo>/atx-vol/python/tests/data/dispersion-e2e/paired/run."
+        )
+        lines.append(
+            "  to PRODUCE one: atxvol_spy_dispersion_backtest build-corpus "
+            "--spec <spec.tsv> --out <root>/paired/run over a 3-session window. "
+            "The run directory must carry run_spec.tsv, universe_schedule.tsv, "
+            "definitions.tsv, surface_manifest.tsv, quality.tsv, "
+            "occ_ess_inventory.tsv + occ_ess/, and archives/*.atxvsa. This "
+            "module then drives build-schedule and run-backtest over a COPY of "
+            "it and never mutates the original."
+        )
+        lines.append(
+            "  note: it is NOT committed -- ~19 MB, against a repo whose "
+            "largest tracked file is 9.5 MB. That is why this is a skip and "
+            "not a fixture path. It is also why no machine-specific absolute "
+            "path is searched: the previous last-resort candidate was a UUID "
+            "temp directory belonging to an ENDED session (REV-TAIL I-4)."
         )
     if bin_dir is None:
         lines.append(f"driver {_EXE_NAME} -- searched, in order:")
@@ -329,19 +366,105 @@ def test_parity_reads_archive_and_reproduces_economics(run_dir: Path, tmp_path: 
     assert html.startswith("<!doctype html>")
 
 
+def _significant_digits(cell: str) -> int:
+    """Significant decimal digits carried by a rendered number."""
+    mantissa = cell.lstrip("+-").split("e")[0].split("E")[0]
+    return len(mantissa.replace(".", "").lstrip("0")) or 1
+
+
 def test_dump_reproduces_backtest_tsv_byteshape(run_dir: Path):
-    # The escape hatch: `runarchive dump <dir> backtest --tsv` reproduces the
-    # legacy write_backtest_tsv byte-shape (header + %.17g doubles) exactly.
-    env = dict(os.environ)
-    env["PATH"] = str(_BIN) + os.pathsep + env.get("PATH", "")
+    """`runarchive dump <dir> backtest --tsv` renders the archive's own backtest
+    section in the legacy write_backtest_tsv shape: the section's columns, in
+    stored order, at full double precision.
+
+    REV-TAIL I-4 -- WHAT THIS USED TO DO AND WHY IT COULD NOT SURVIVE. It compared
+    `proc.stdout` BYTE FOR BYTE against `<fixture root>/t7-check/run/backtest.tsv`,
+    a golden built by a different agent from a different source line and living
+    outside the repo. Measured on this box at 3d4705e, that compare is RED and the
+    difference is arithmetic noise, not a defect:
+
+        header:            identical, 27 columns
+        rows:              3, as expected
+        cells differing:   38
+        typical magnitude: 1e-16 .. 1e-8 relative
+          nav       -456.57690673503657  vs  -456.576906737012   rel 4.3e-12
+          pnl_total  144.24486394149562  vs   144.24486394228688 rel 5.5e-12
+          pnl_volga    5.1276572495677346 vs    5.1276572680030847 rel 3.6e-09
+        the two largest "relative" gaps are both cells that are ZERO to within
+        1e-7 on both sides (gross_delta 2.3e-13 vs 0, gross_vega -1.6e-07 vs
+        2.4e-10), where a relative measure means nothing.
+
+    A byte-exact compare against a foreign build line cannot survive any
+    ULP-level change, and this sprint shipped two (WS-ZC1 zero-copy, the laned
+    SIMD kernels). It was RED here and skipped everywhere else, so it protected
+    nothing anywhere.
+
+    What replaced it gates the property the name actually claims -- the SHAPE and
+    the PRECISION of the rendering -- against the archive THIS run produced, so it
+    needs no golden, no second build line and no network of temp directories. The
+    economics are pinned separately and exactly by
+    `test_io_reads_final_nav_from_archive` and `_EXPECTED_FINAL_NAV`, which match
+    both the old and the new value to 10 significant figures.
+    """
+    summary = _run_argv("runarchive", "dump", str(run_dir), "backtest")
+    assert summary.returncode == 0, summary.stderr
+    # "section backtest: rows=N cols=M", then one indented column name per line.
+    head, *column_lines = summary.stdout.splitlines()
+    assert head.startswith("section backtest: "), head
+    n_rows = int(head.split("rows=")[1].split()[0])
+    n_cols = int(head.split("cols=")[1].split()[0])
+    columns = [ln.strip() for ln in column_lines if ln.strip()]
+    assert len(columns) == n_cols, f"{len(columns)} names for cols={n_cols}"
+
     proc = subprocess.run(
         [str(_EXE), "runarchive", "dump", str(run_dir), "backtest", "--tsv"],
-        env=env, capture_output=True, timeout=120,
+        env={**os.environ, "PATH": str(_BIN) + os.pathsep + os.environ.get("PATH", "")},
+        capture_output=True, timeout=120,
     )
     assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
-    golden = _SP / "t7-check" / "run" / "backtest.tsv"
-    # Compare byte-for-byte against the T7 golden backtest.tsv.
-    assert proc.stdout == golden.read_bytes()
+    # Byte-level: the writer emits \n, never \r\n, and the reader must not
+    # normalise it -- that is half of "byte shape" and is why stdout is switched
+    # to binary in the dump command.
+    raw = proc.stdout
+    assert b"\r\n" not in raw, "line endings were translated; the \\n shape is lost"
+    lines = raw.decode("utf-8").rstrip("\n").split("\n")
+
+    # 1. The header IS the section's column list, in stored order.
+    assert lines[0].split("\t") == columns
+
+    # 2. Exactly the rows the section declares, each fully populated.
+    body = lines[1:]
+    assert len(body) == n_rows, f"{len(body)} data rows for rows={n_rows}"
+    for row in body:
+        assert len(row.split("\t")) == n_cols, row
+
+    # 3. Every non-date cell is a rendered number.
+    for row in body:
+        for name, cell in zip(columns, row.split("\t")):
+            if name == "date":
+                continue
+            float(cell)  # raises, and the traceback names the offending cell
+
+    # 4. FULL PRECISION. `%.17g` doubles carry up to 17 significant digits; a
+    #    renderer that regressed to plain `%g` would cap every cell at 6 and the
+    #    archive would silently stop round-tripping. Nothing else in this module
+    #    can observe that, and it is exactly what the byte compare was standing
+    #    in for.
+    widest = max(
+        _significant_digits(cell)
+        for row in body
+        for name, cell in zip(columns, row.split("\t"))
+        if name != "date"
+    )
+    assert widest >= 16, (
+        f"no cell carries more than {widest} significant digits: the dump is no "
+        f"longer emitting %.17g doubles and the archive round-trip is lossy"
+    )
+
+    # 5. And it is THIS run's archive, not some other: the nav column's last row
+    #    is the known-good final NAV.
+    nav = [row.split("\t")[columns.index("nav")] for row in body]
+    assert f"{float(nav[-1]):.10g}" == _EXPECTED_FINAL_NAV
 
 
 def _run_argv(*args: str) -> subprocess.CompletedProcess:
