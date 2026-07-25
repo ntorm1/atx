@@ -1,3 +1,6 @@
 /build/
 /dist/
-
+# In-place extension: `cmake --build ... --target _core` output copied beside the
+# package so `pytest` runs against THIS tree instead of an editable install that
+# may point at another checkout.
+src/atxvol/*.pyd
