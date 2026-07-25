@@ -32,6 +32,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional> // std::function — RunConfig::step_observer
 #include <memory>
 #include <optional>
 #include <span>
@@ -297,6 +298,27 @@ enum class SurfaceProvenancePolicy : std::uint8_t {
   RequireAdmittedRisk = 1,
 };
 
+// One observed engine step, handed to RunConfig::step_observer immediately after
+// IStrategy::on_step returns Ok and BEFORE the transition validation / hedge /
+// execute stage. Fires once per clock step INCLUDING inception (step_index 0), in
+// step order, on EVERY step regardless of RunConfig::record_every_n (the recorded
+// BacktestResult rows are downsampled; these events are not). Every reference is
+// borrowed and valid only for the duration of the call.
+struct StepEvent {
+  std::size_t step_index;         // index into Clock::refs(); 0 == inception
+  const SnapshotRef &ref;         // this step's clock entry (date + archive_path)
+  const MarketSnapshot &snapshot; // the base the strategy just stepped on
+  const IStrategy &strategy;      // post-on_step strategy state
+};
+
+// Optional per-step observation hook. Returning Err aborts the run with that error
+// (the engine propagates it verbatim), so an observer may enforce its own
+// invariants fail-closed. C++-only: deliberately NOT exposed through the pybind11
+// RunConfig binding (the hand-kept def_readwrite list in
+// python/src/bindings/backtest.cpp) — a std::function is not sensibly bindable and
+// the Python surface stays unchanged. The omission is a decision, not drift.
+using StepObserver = std::function<Status(const StepEvent &)>;
+
 struct RunConfig {
   // Pricer thread fan-out. Default 0 => use all hardware cores (clamped to the
   // book's unique-contract count). Output is bit-identical to any thread count
@@ -338,6 +360,11 @@ struct RunConfig {
   // reproduces the pre-L2 solve-every-settlement behavior (and makes the
   // DuplicateMarkSolves ledger counter observe the duplication it removes).
   bool settlement_mark_memo{true};
+  // Appended for positional aggregate source compatibility. Empty by default =>
+  // zero cost beyond one predictable branch per step and byte-identical output.
+  // Ignored by no overload: the fixed-book (B0) overload has no strategy, so
+  // setting this there is a fail-closed InvalidArgument, never a silent drop.
+  StepObserver step_observer{};
 };
 
 // Reusable caller-owned handoff from a step's P&L target solve to the strategy
