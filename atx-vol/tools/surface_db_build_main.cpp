@@ -14,7 +14,7 @@
 //   atx-vol-surface-db-build --db <root> --hive <root>
 //       --from YYYY-MM-DD --to YYYY-MM-DD
 //       [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045]
-//       [--deep-selection] [--fit-workers N] [--report out.csv]
+//       [--deep-selection] [--fit-workers N] [--report out.csv] [--max-failures N]
 //
 //   --db            SurfaceDb root (created if absent, else opened/resumed).
 //   --hive          OPRA hive v2 root holding date=<YYYY-MM-DD>/data.parquet.
@@ -28,7 +28,11 @@
 //                   put-call-parity forward is wrong and every fit fails.
 //   --deep-selection  run the full held-out select_curve OOS search per symbol.
 //   --fit-workers   outer fit fan-out; 0 = auto (honors ATX_VOL_FIT_WORKERS).
-//   --report        also write the two-section CSV report to this path.
+//   --report        also write the three-section CSV report to this path.
+//   --max-failures  cap on the printed `failed_cell` lines (default 32). Overflow
+//                   is counted in coverage.failed_cells_elided, never dropped
+//                   silently; the --report CSV always carries the FULL list.
+//                   Same flag name/semantics as atx-vol-surface-db verify.
 //
 // Prints one line per report field to stdout; exits 0 on Ok, 1 on Err (message
 // on stderr), 2 on a usage error (unknown/missing/malformed flag), 3 when the
@@ -68,7 +72,31 @@ void print_usage(std::FILE *out) {
                "usage: atx-vol-surface-db-build --db <root> --hive <root> "
                "--from YYYY-MM-DD --to YYYY-MM-DD\n"
                "         [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045] "
-               "[--deep-selection] [--fit-workers N] [--report out.csv]\n");
+               "[--deep-selection] [--fit-workers N] [--report out.csv] "
+               "[--max-failures N]\n");
+}
+
+// Parse a non-negative count, consuming the whole token. Byte-for-byte the rule
+// atx-vol-surface-db's --max-failures uses (surface_db_main.cpp), so the same
+// string is accepted or rejected identically by both tools.
+[[nodiscard]] bool parse_count(std::string_view text, std::size_t &out) {
+  if (text.empty()) {
+    return false;
+  }
+  const std::string s(text);
+  const char *first = s.c_str();
+  char *end = nullptr;
+  errno = 0;
+  const unsigned long long v = std::strtoull(first, &end, 10);
+  if (end != first + s.size() || errno == ERANGE) {
+    return false; // trailing junk or out of range
+  }
+  // strtoull accepts a leading '-' and wraps it; a negative count is nonsense.
+  if (s.find('-') != std::string::npos) {
+    return false;
+  }
+  out = static_cast<std::size_t>(v);
+  return true;
 }
 
 // Parse a FINITE double from a flag value, consuming the whole token.
@@ -142,9 +170,10 @@ bool parse_preset(std::string_view name, FitPreset &out) {
 }
 
 // Emit every scalar report field, one `key value` line each (mirrors the CSV
-// section-1 key set), then the failed-symbol list and the per-symbol coverage
-// rows. Deterministic and self-describing.
-void print_report(const SurfaceDbBuildReport &r) {
+// section-1 key set), then the failed-symbol list, the per-symbol coverage rows,
+// and the per-cell fit-failure reasons (capped at `max_failed_cells`).
+// Deterministic and self-describing.
+void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
   std::printf("config.n_symbols %u\n", r.config.n_symbols);
   std::printf("config.n_configured %u\n", r.config.n_configured);
   std::printf("config.n_skipped_existing %u\n", r.config.n_skipped_existing);
@@ -176,6 +205,21 @@ void print_report(const SurfaceDbBuildReport &r) {
     std::printf("symbol.%s attempted=%u ok=%u failed=%u disabled=%u\n", s.symbol.c_str(),
                 s.n_attempted, s.n_ok, s.n_failed, s.n_disabled);
   }
+
+  // WHY each cell in coverage.cells_failed failed — the fit stage's counterpart to
+  // config.failed_symbols above, in the populate's deterministic (date, symbol)
+  // order. Capped so a wholesale failure prints a sample rather than a wall of
+  // hundreds of lines, and the elided count keeps the truncation loud (the
+  // failures_reported / failures_elided pair `atx-vol-surface-db verify` uses).
+  // The --report CSV carries every entry.
+  const ReportedFailedCells failed = reported_failed_cells(r, max_failed_cells);
+  std::printf("coverage.failed_cells_reported %zu\n", failed.reported.size());
+  std::printf("coverage.failed_cells_elided %zu\n", failed.n_elided);
+  for (const FailedCell &f : failed.reported) {
+    const std::string_view code_name = atx::core::to_string(f.code);
+    std::printf("failed_cell %s %s code=%.*s detail=%s\n", f.date.c_str(), f.symbol.c_str(),
+                static_cast<int>(code_name.size()), code_name.data(), f.detail.c_str());
+  }
 }
 
 } // namespace
@@ -185,6 +229,7 @@ int main(int argc, char **argv) {
   std::string preset_name = "populate"; // matches the SurfaceDbBuildSpec default (Populate)
   std::string report_path;
   bool fit_workers_set = false;
+  std::size_t max_failed_cells = kSurfaceDbBuildMaxReportedFailedCells;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -220,6 +265,16 @@ int main(int argc, char **argv) {
       fit_workers_set = true;
     } else if (a == "--report") {
       report_path = nv();
+    } else if (a == "--max-failures") {
+      const std::string_view text = nv();
+      if (!parse_count(text, max_failed_cells)) {
+        std::fprintf(stderr,
+                     "atx-vol-surface-db-build: --max-failures expects a non-negative integer, "
+                     "got '%.*s'\n",
+                     static_cast<int>(text.size()), text.data());
+        print_usage(stderr);
+        return 2;
+      }
     } else if (a == "--help" || a == "-h") {
       print_usage(stdout);
       return 0;
@@ -260,7 +315,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  print_report(*report);
+  print_report(*report, max_failed_cells);
 
   if (!report_path.empty()) {
     const Status w = write_build_report_csv(*report, report_path);
@@ -304,7 +359,9 @@ int main(int argc, char **argv) {
                  "  Most likely cause: the carry rate does not match the hive. This build used "
                  "--r %.17g. If the hive's quotes embed a non-zero funding/borrow rate, every "
                  "put-call-parity forward is wrong and every fit fails identically. Re-run with "
-                 "the matching --r <rate>.\n",
+                 "the matching --r <rate>.\n"
+                 "  Do not guess: the failed_cell lines above carry each cell's own reason "
+                 "straight from the fitter, and --report writes all of them.\n",
                  report->coverage.cells_to_fit, report->coverage.cells_failed, spec.hive.r);
     return kExitTotalFitFailure;
   }

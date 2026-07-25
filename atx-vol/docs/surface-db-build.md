@@ -71,7 +71,7 @@ configure line above.
 atx-vol-surface-db-build --db <root> --hive <root>
     --from YYYY-MM-DD --to YYYY-MM-DD
     [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045]
-    [--deep-selection] [--fit-workers N] [--report out.csv]
+    [--deep-selection] [--fit-workers N] [--report out.csv] [--max-failures N]
 ```
 
 | Flag | Required | Meaning |
@@ -85,7 +85,8 @@ atx-vol-surface-db-build --db <root> --hive <root>
 | `--r RATE` | no | Flat continuously-compounded carry rate (`OpraHiveSpec.r`). Default **`0.0`**. **Must match the rate the hive's quotes were priced under** — read [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing) before every run. Must be a finite number consuming the whole token; `abc`, `0.03x`, `nan`, `inf` and a missing value are all **exit 2**, never a silent `0.0`. Negative rates are accepted. |
 | `--deep-selection` | no | Additionally run the full held-out `select_curve` OOS search per symbol and pin its winner (falls back to the fit-policy decision when the selector has no scorable holdout). |
 | `--fit-workers N` | no | Outer fit fan-out. `0` = auto (honors `ATX_VOL_FIT_WORKERS`); `1` = serial. |
-| `--report out.csv` | no | Also write the two-section CSV report to this path. |
+| `--report out.csv` | no | Also write the three-section CSV report to this path. |
+| `--max-failures N` | no | `32`. Cap on the printed `failed_cell` lines. Overflow is counted in `coverage.failed_cells_elided`, never dropped silently, and the `--report` CSV always carries the **full** list. `0` prints no per-cell detail at all. Same flag name, parsing and semantics as `atx-vol-surface-db verify`. |
 
 **Discover-all vs explicit `--symbols`.** With an explicit list, exactly those
 underliers are loaded for every date (a date whose file lacks a requested symbol
@@ -119,6 +120,11 @@ failure shows up in the coverage counters, not in stage 1:
 - `coverage.cells_failed` carries the whole universe, with each
   `symbol.<S> ... ok=0 failed=N` row confirming it, and
 - **no partition is written at all** — the database ends up empty.
+
+**Do not guess which of these it is** — read the `failed_cell` lines (below).
+Every failed cell prints the fitter's own reason, so a carry mismatch (every cell
+failing the same way at the same gate) is distinguishable at a glance from a set
+of genuinely marginal boards.
 
 **This is no longer a silent green exit.** A build that scheduled work and fitted
 **nothing** (`cells_to_fit > 0` and `cells_ok == 0`) now exits **3** and prints a
@@ -210,7 +216,8 @@ that selects zero cells over a db that holds partitions is a `FAILED` verdict (s
 
 **Operator checklist:** a green exit no longer hides a *totally* dead build, but
 it still does not mean full coverage. After any build, **inspect `cells_ok` vs
-`cells_failed` and the per-symbol rows** (or the `--report` CSV's section 2), then
+`cells_failed`, the per-symbol rows and the `failed_cell` lines** (or the
+`--report` CSV's sections 2 and 3 — section 3 names every lost cell and why), then
 run `atx-vol-surface-db verify --db <root> --min-cells <expected>` (below), which
 turns "the database is the size and shape I expected, and every cell evaluates"
 into a single exit code.
@@ -248,10 +255,48 @@ atx-vol-surface-db-build \
 ### Output and exit codes
 
 Every scalar report field prints one-per-line to **stdout** as `key value`
-(mirroring the CSV `key,value` section), followed by `config.failed_symbols` and
-one `symbol.<S> attempted=.. ok=.. failed=.. disabled=..` line per symbol. With
-`--report`, the same data is written as CSV: a `key,value` scalar section then a
-`symbol,n_attempted,n_ok,n_failed,n_disabled` row per symbol.
+(mirroring the CSV `key,value` section), followed by `config.failed_symbols`, one
+`symbol.<S> attempted=.. ok=.. failed=.. disabled=..` line per symbol, and one
+`failed_cell <date> <symbol> code=<Code> detail=<text>` line per **failed cell**.
+With `--report`, the same data is written as CSV: a `key,value` scalar section, a
+`symbol,n_attempted,n_ok,n_failed,n_disabled` row per symbol, then a
+`date,symbol,code,detail` row per failed cell (`detail` is RFC4180-quoted — it is
+free text from the fitter and may contain a comma).
+
+### Why each cell failed — the `failed_cell` lines
+
+`config.failed_symbols` has always named the symbols **config selection** refused.
+The **fit** stage used to name nothing: a lost cell was a `+1` on `cells_failed`
+and no more, even though `PricerFitter` had already built a full diagnostic for it
+and the pipeline then threw it away. It no longer does — the fit `Error`'s message
+travels from the fitter to the report intact:
+
+```
+coverage.cells_ok 33
+coverage.cells_failed 9
+coverage.failed_cells_reported 9
+coverage.failed_cells_elided 0
+failed_cell 2026-07-07 AAPL code=Unavailable detail=risk surface rejected: model=essvi mask=4 butterfly=2 butterfly_slack=0.0031 butterfly_k=-0.18 butterfly_slice=1 ... carry=ok inversion=failed
+```
+
+The `detail` text is the fitter's own, verbatim — for the risk pipeline it names
+the failing gate, the offending slice, the log-moneyness and the slack, which is
+what turns "9 cells failed" into an actionable next step.
+
+Ordering is deterministic: **ascending by (date, symbol)**, and byte-identical for
+any `--fit-workers` value. The list is appended by the single drain thread as it
+walks dates in order, never by a fit worker, so completion order cannot reach it.
+
+Printing is **capped** at `--max-failures` (default 32) because a wholesale
+failure of a 51-symbol × 17-date universe is 867 cells. Truncation is **counted**,
+never silent: `coverage.failed_cells_reported` + `coverage.failed_cells_elided`
+always equals `coverage.cells_failed`, and the `--report` CSV carries every entry
+regardless of the cap. This is the same contract `verify`'s `failures_reported` /
+`failures_elided` pair already uses.
+
+**This is diagnosis, not memory.** Listing a failed cell does **not** mark it
+known-failed: there is deliberately no persisted failure state, so the cell is
+retried on the next run exactly as before (see [Resume semantics](#resume-semantics)).
 
 | Exit | When |
 | --- | --- |
@@ -297,6 +342,8 @@ disposition counters partition the distinct symbols seen:
 | `coverage.dates_skipped_complete` | Dates with **nothing left to add**: every loaded cell is either already present or config-disabled. |
 | `coverage.dates_skipped_would_drop` | Dates skipped to avoid dropping an existing symbol (safety guard). |
 | `symbol.<S> ...` | Per-symbol populate stats over the written dates. |
+| `coverage.failed_cells_reported` / `_elided` | How many `failed_cell` lines were printed, and how many the `--max-failures` cap left out. The two always sum to `cells_failed`; the `--report` CSV is never capped. |
+| `failed_cell <date> <symbol> code=.. detail=..` | One line per failed cell, ascending by (date, symbol) — the fitter's own reason. See [Why each cell failed](#why-each-cell-failed--the-failed_cell-lines). |
 
 **The cell counters do not reconcile against `cells_loaded`** — do not read them as
 a partition. A config-disabled cell that is absent from its partition on a

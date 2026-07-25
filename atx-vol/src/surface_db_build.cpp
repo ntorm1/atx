@@ -310,6 +310,13 @@ namespace {
 
 } // namespace
 
+ReportedFailedCells reported_failed_cells(const SurfaceDbBuildReport &r,
+                                          std::size_t max_reported) noexcept {
+  const std::span<const FailedCell> all{r.coverage.failed_cells};
+  const std::size_t shown = std::min(max_reported, all.size());
+  return ReportedFailedCells{all.first(shown), all.size() - shown};
+}
+
 bool is_total_fit_failure(const SurfaceDbBuildReport &r) {
   // Exactly two conditions, both required (see the header for why neither may be
   // widened): work WAS scheduled, and none of it landed. `cells_to_fit == 0` is
@@ -374,6 +381,32 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
     out += fmt_u32(s.n_failed);
     out += ',';
     out += fmt_u32(s.n_disabled);
+    out += '\n';
+  }
+
+  // Section 3: WHY each failed cell failed — the fit stage's counterpart to the
+  // config stage's failed-symbol list. The FULL list, deliberately uncapped: the
+  // terminal gets a bounded sample (reported_failed_cells) but this file is the
+  // artifact an operator greps to root-cause, so truncating it here would defeat
+  // the whole point of preserving the reason.
+  out += "date,symbol,code,detail\n";
+  for (const FailedCell &f : r.coverage.failed_cells) {
+    out += f.date;
+    out += ',';
+    out += f.symbol;
+    out += ',';
+    out += atx::core::to_string(f.code);
+    out += ',';
+    // The one free-text field: RFC4180-quote it so a comma inside a fitter
+    // message can never shift the columns.
+    out += '"';
+    for (const char c : f.detail) {
+      if (c == '"') {
+        out += '"'; // doubled, per RFC4180
+      }
+      out += c;
+    }
+    out += '"';
     out += '\n';
   }
 

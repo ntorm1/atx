@@ -57,6 +57,27 @@ struct PopulateSymbolStats {
   double mean_oos_in_band{std::numeric_limits<double>::quiet_NaN()};
 };
 
+// One (date, symbol) cell whose fit FAILED, carrying the reason the fit itself
+// produced. `n_failed` answers HOW MANY cells died; this answers WHICH and WHY.
+//
+// `detail` is the fit `Error`'s own message, verbatim — for the risk pipeline
+// that is PricerFitter's formatted rejection string naming the failing gate, the
+// offending slice, the log-moneyness and the slack. It is deliberately NOT a
+// re-derivation: an operator must be able to root-cause a lost cell from the run
+// report alone, which is exactly what a bare `cells_failed` count could not do.
+//
+// Purely diagnostic. Recording a failure does NOT make it sticky: there is no
+// persisted known-failed state (see `surface_db_build.hpp`'s ruling), so a cell
+// listed here is retried on the next run exactly as it was before.
+struct FailedCell {
+  std::string date;   // partition key (the board's date)
+  std::string symbol; // the board's symbol
+  // The fit `Error`, split into its two halves; `detail` is "" when the Error
+  // carried no message.
+  ErrorCode code{ErrorCode::Unknown};
+  std::string detail;
+};
+
 struct SurfaceDbPopulateStats {
   std::uint32_t n_boards{0};
   std::uint32_t n_ok{0};
@@ -64,6 +85,14 @@ struct SurfaceDbPopulateStats {
   std::uint32_t n_dates_written{0};
   std::uint32_t n_dates_skipped_existing{0};
   std::vector<PopulateSymbolStats> per_symbol; // sorted by symbol
+  // One entry per cell counted in `n_failed`, ascending by (date, symbol).
+  //
+  // DETERMINISM (a repo invariant: identical output for any thread count):
+  // entries are appended by the SINGLE drain thread as it walks dates in
+  // ascending order and, within a date, boards in ascending (date, symbol) sort
+  // order — never by a fit worker. Completion order therefore cannot reach this
+  // list, and it is byte-identical for any `SurfaceDbPopulateConfig::n_threads`.
+  std::vector<FailedCell> failed_cells;
 };
 
 // Deterministic test seam for the streaming/per-date-release path. Production
@@ -155,6 +184,12 @@ struct UniversePopulateCoverage {
   std::uint32_t dates_skipped_complete{0};
   std::uint32_t dates_skipped_would_drop{0}; // dates skipped to avoid dropping an existing symbol
   std::vector<PopulateSymbolStats> per_symbol; // from the underlying populate (written dates only)
+  // WHY each of `cells_failed` failed, ascending by (date, symbol) — the fit
+  // stage's answer to `AutoConfigReport::failed_symbols`, which has always named
+  // the symbols the CONFIG stage refused. Carried straight through from the
+  // underlying populate (same determinism guarantee), so `failed_cells.size() ==
+  // cells_failed` over the dates this run wrote.
+  std::vector<FailedCell> failed_cells;
 };
 // NOTE: the cell counters do NOT reconcile against `cells_loaded`. A DISABLED cell
 // that is absent from its partition on a skipped-complete date is in none of

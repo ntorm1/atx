@@ -971,7 +971,127 @@ TEST(SurfaceDbPopulate, FailedFitRecordedNotFatal) {
   EXPECT_EQ(bbb_it->n_failed, 1u);
   EXPECT_EQ(bbb_it->n_ok, 1u);
 
+  // The counter is not the whole story: the cell must NAME itself. Even this
+  // no-Error path (an empty board is Skipped, which populate counts as failed)
+  // carries a reason rather than contributing an anonymous +1.
+  ASSERT_EQ(result->failed_cells.size(), std::size_t{1});
+  EXPECT_EQ(result->failed_cells[0].date, kDate0);
+  EXPECT_EQ(result->failed_cells[0].symbol, "BBB");
+  EXPECT_NE(result->failed_cells[0].detail.find("empty board"), std::string::npos)
+      << result->failed_cells[0].detail;
+
   std::filesystem::remove_all(root);
+}
+
+// A symbol config the risk pipeline refuses up front: `pin_curve` + a
+// LinearVariance family. PricerFitter::fit rejects that combination in its input
+// validation (pricer_fitter.cpp's correctness-policy guard) with a real
+// Error{InvalidArgument, "invalid correctness policy for requested risk surface"}.
+//
+// The point of this test is the MESSAGE, not the count. `fit_board` used to keep
+// `st.error().code()` and drop `st.error().message()`, and the populate then
+// dropped the code too, so a lost cell reached the operator as nothing but a +1 on
+// `n_failed`. Asserting the fitter's own text (not merely that some string is
+// present) is what makes a future refactor that re-drops the message fail here.
+[[nodiscard]] SymbolFitConfig rejected_risk_config() {
+  SymbolFitConfig cfg = symbol_config_from_preset(FitPreset::Populate);
+  cfg.pin_curve = true;
+  cfg.curve.kind = VolCurveKind::LinearVariance;
+  return cfg;
+}
+
+TEST(SurfaceDbPopulate, FailedCellCarriesTheFittersOwnReason) {
+  const auto root = test_root("failed_reason");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  ASSERT_TRUE(db->upsert_symbol("BBB", rejected_risk_config()).has_value());
+
+  const std::vector<CorpusBoard> boards = make_boards(); // AAA + BBB x 2 dates
+  auto result = populate_surface_db(*db, boards, SurfaceDbPopulateConfig{});
+  ASSERT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+
+  EXPECT_EQ(result->n_ok, 2u);     // AAA on both dates
+  EXPECT_EQ(result->n_failed, 2u); // BBB on both dates
+  ASSERT_EQ(result->failed_cells.size(), std::size_t{2});
+
+  const std::string expected_dates[] = {kDate0, kDate1};
+  for (std::size_t i = 0; i < result->failed_cells.size(); ++i) {
+    const FailedCell &f = result->failed_cells[i];
+    EXPECT_EQ(f.date, expected_dates[i]);
+    EXPECT_EQ(f.symbol, "BBB");
+    // The fit Error's code survived...
+    EXPECT_EQ(f.code, ErrorCode::InvalidArgument);
+    // ...and so did its text, verbatim from pricer_fitter.cpp.
+    EXPECT_EQ(f.detail, "invalid correctness policy for requested risk surface") << f.detail;
+  }
+
+  std::filesystem::remove_all(root);
+}
+
+// The failed-cell list is ordered by (date, symbol) — NOT by the order the boards
+// were handed in, and NOT by the order the fits happened to finish.
+//
+// Structural reason: the list is appended by the SINGLE drain thread as it walks
+// dates ascending and, inside a date, boards in the populate's (date asc, symbol
+// asc) sort order. No fit worker ever touches it, so completion order cannot leak
+// in. The two worker budgets below gate that claim the way this suite's other
+// determinism tests do: identical output for any thread count is a repo invariant.
+//
+// The input order is deliberately scrambled and the failing symbols deliberately
+// interleave with a succeeding one, so an implementation that pushed from the
+// workers (or that appended in input order) produces a visibly different list.
+TEST(SurfaceDbPopulate, FailedCellsSortedByDateThenSymbolForAnyWorkerBudget) {
+  const auto run = [](std::string_view name, unsigned threads) {
+    const auto root = test_root(name);
+    auto db = SurfaceDb::create(root.string());
+    EXPECT_TRUE(db.has_value());
+    // AAA and MMM are refused by the risk pipeline (instant failures); ZZZ fits.
+    EXPECT_TRUE(db->upsert_symbol("AAA", rejected_risk_config()).has_value());
+    EXPECT_TRUE(db->upsert_symbol("MMM", rejected_risk_config()).has_value());
+
+    std::vector<CorpusBoard> boards; // scrambled: neither date- nor symbol-sorted
+    boards.push_back(make_board(kDate1, "ZZZ", 70.0, 0.31));
+    boards.push_back(make_board(kDate0, "MMM", 60.0, 0.34));
+    boards.push_back(make_board(kDate1, "AAA", 101.0, 0.27));
+    boards.push_back(make_board(kDate0, "ZZZ", 69.0, 0.32));
+    boards.push_back(make_board(kDate1, "MMM", 61.0, 0.33));
+    boards.push_back(make_board(kDate0, "AAA", 100.0, 0.28));
+
+    SurfaceDbPopulateConfig cfg;
+    cfg.n_threads = threads;
+    auto result = populate_surface_db(*db, boards, cfg);
+    EXPECT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+    std::vector<FailedCell> failed;
+    if (result.has_value()) {
+      EXPECT_EQ(result->n_failed, 4u);
+      failed = result->failed_cells;
+    }
+    std::filesystem::remove_all(root);
+    return failed;
+  };
+
+  const std::vector<FailedCell> serial = run("failed_order_serial", 1u);
+  const std::vector<FailedCell> parallel = run("failed_order_par", 8u);
+
+  // The pinned order: date-major, then symbol ascending.
+  ASSERT_EQ(serial.size(), std::size_t{4});
+  EXPECT_EQ(serial[0].date, kDate0);
+  EXPECT_EQ(serial[0].symbol, "AAA");
+  EXPECT_EQ(serial[1].date, kDate0);
+  EXPECT_EQ(serial[1].symbol, "MMM");
+  EXPECT_EQ(serial[2].date, kDate1);
+  EXPECT_EQ(serial[2].symbol, "AAA");
+  EXPECT_EQ(serial[3].date, kDate1);
+  EXPECT_EQ(serial[3].symbol, "MMM");
+
+  // ...and a wide worker budget reproduces it entry for entry, reason included.
+  ASSERT_EQ(parallel.size(), serial.size());
+  for (std::size_t i = 0; i < serial.size(); ++i) {
+    EXPECT_EQ(parallel[i].date, serial[i].date) << "entry " << i;
+    EXPECT_EQ(parallel[i].symbol, serial[i].symbol) << "entry " << i;
+    EXPECT_EQ(parallel[i].code, serial[i].code) << "entry " << i;
+    EXPECT_EQ(parallel[i].detail, serial[i].detail) << "entry " << i;
+  }
 }
 
 TEST(SurfaceDbPopulate, DateWithZeroSuccessfulFitsWritesNoPartition) {

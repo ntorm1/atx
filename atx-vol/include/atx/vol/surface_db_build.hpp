@@ -159,6 +159,36 @@ struct SurfaceDbBuildReport {
   std::size_t n_coverage_holes{0};
 };
 
+// ── Bounding the failed-cell list for display ───────────────────────────────
+//
+// `report.coverage.failed_cells` holds EVERY failed cell (one per
+// `coverage.cells_failed`), because the `--report` CSV is the artifact an
+// operator greps and truncating it would throw away the very diagnostic this
+// list exists to carry. A terminal is the other consumer, and a
+// 51-symbol x 17-date universe that fails wholesale is 867 cells — nobody reads
+// 867 lines. So the cap is applied at PRESENTATION only, exactly the way
+// `verify_db` already bounds its own fault list (`surface_db_admin.hpp`'s
+// `kSurfaceDbVerifyMaxFailures` / `DbVerifySpec::max_reported_failures` /
+// `DbVerifyReport::n_failures_elided`) — same vocabulary, same contract:
+// truncation is COUNTED, never silent, and the totals stay exact.
+inline constexpr std::size_t kSurfaceDbBuildMaxReportedFailedCells = 32;
+
+// The bounded view of a report's failed cells: the prefix to show plus how many
+// were left out. `reported` BORROWS `r.coverage.failed_cells` and must not
+// outlive `r`. A cap of 0 reports nothing and elides everything (the counters
+// still tell the truth), mirroring `DbVerifySpec::max_reported_failures == 0`.
+struct ReportedFailedCells {
+  std::span<const FailedCell> reported{};
+  std::size_t n_elided{0};
+};
+
+// `reported.size() + n_elided == r.coverage.failed_cells.size()` always holds.
+// The prefix is kept (not a sample) so the shown rows stay in the same
+// deterministic (date, symbol) order the populate produced.
+[[nodiscard]] ReportedFailedCells
+reported_failed_cells(const SurfaceDbBuildReport &r,
+                      std::size_t max_reported = kSurfaceDbBuildMaxReportedFailedCells) noexcept;
+
 // Did this build attempt work and get NOTHING out of it? True iff it scheduled at
 // least one cell (`coverage.cells_to_fit > 0`) and not one of them fitted
 // (`coverage.cells_ok == 0`) — the signature of a systematically wrong build
@@ -220,13 +250,21 @@ struct SurfaceDbBuildReport {
 // aborts the build (it is tallied and, for config, stored disabled).
 [[nodiscard]] Result<SurfaceDbBuildReport> build_surface_db(const SurfaceDbBuildSpec &spec);
 
-// Write `r` as a two-section CSV (reuses `write_populate_stats_csv`'s formatting
+// Write `r` as a three-section CSV (reuses `write_populate_stats_csv`'s formatting
 // discipline: an owned buffer flushed to a binary/truncating stream, IoError on
 // open/write failure). Section 1 is a `key,value` table of every scalar counter
 // (config.*, coverage.*, and the ingest counters n_dates_loaded / n_dates_missing
 // / n_load_errors / n_coverage_holes); section 2 is a
 // `symbol,n_attempted,n_ok,n_failed,n_disabled` row per `coverage.per_symbol`
-// entry. The first line is always the pinned header `key,value`.
+// entry; section 3 is a `date,symbol,code,detail` row per `coverage.failed_cells`
+// entry — the WHOLE list, never the printed cap, because this file is where an
+// operator goes to root-cause the lost cells. The first line is always the pinned
+// header `key,value`.
+//
+// `detail` is free text from the fitter, so that ONE field is always emitted
+// RFC4180-quoted (wrapped in `"`, embedded `"` doubled) — a rejection message may
+// legitimately contain a comma and must not be able to shift the columns. Every
+// other field in every section is a bare token and stays unquoted.
 [[nodiscard]] Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view path);
 
 } // namespace atx::vol

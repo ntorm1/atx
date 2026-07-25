@@ -416,6 +416,15 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
         } else {
           ++acc.stats.n_failed;
           ++stats.n_failed;
+          // Record WHY, not merely that it happened: `slot.error_message` is the
+          // fitter's own rejection text (corpus_board_fit.cpp), which used to die
+          // here alongside the code. DETERMINISM: this push_back runs on the
+          // SINGLE drain thread inside the date-ascending / (date,symbol)-ascending
+          // walk, never on a fit worker, so the list order is fixed by the walk and
+          // is byte-identical for any worker budget. Copies (not moves) because the
+          // slot is const here and is recycled below.
+          stats.failed_cells.push_back(
+              FailedCell{board.date, board.symbol, slot.error_code, slot.error_message});
         }
       }
 
@@ -611,6 +620,9 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
     cov.cells_ok = st->n_ok;
     cov.cells_failed = st->n_failed;
     cov.per_symbol = std::move(st->per_symbol);
+    // The per-cell reasons ride along with the count they explain; the populate
+    // already ordered them by (date, symbol), so nothing re-sorts here.
+    cov.failed_cells = st->failed_cells;
   }
 
   return Ok(std::move(cov));

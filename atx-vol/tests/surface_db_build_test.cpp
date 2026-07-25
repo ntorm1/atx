@@ -504,6 +504,137 @@ TEST(BuildSurfaceDb, ReportCsvRoundTrips) {
   EXPECT_NE(body.find("coverage.cells_ok,9"), std::string::npos);
   EXPECT_NE(body.find("symbol,n_attempted,n_ok,n_failed,n_disabled"), std::string::npos);
   EXPECT_NE(body.find("AAA,3,3,0,0"), std::string::npos);
+  // Section 3 exists even on a clean build (header, no rows) so a consumer can
+  // parse the same shape whether or not anything failed.
+  EXPECT_NE(body.find("date,symbol,code,detail"), std::string::npos);
+}
+
+// ── FIX-A: the fit stage names its failures, like the config stage always has ──
+//
+// `config.failed_symbols` has always named the symbols CONFIG SELECTION refused.
+// A symbol whose FIT failed named nothing — the operator got `cells_failed 9` and
+// no reason, and root-causing it needed a source investigation. These tests pin
+// the reason all the way from PricerFitter to the report, the CSV, and the
+// display cap.
+
+// End to end through `build_surface_db`: a symbol whose stored config makes the
+// risk request unserviceable (pin + LinearVariance — the guard in
+// pricer_fitter.cpp's input validation) fails every one of its cells, and each
+// failure reaches SurfaceDbBuildReport carrying the FITTER's own text.
+//
+// Seeded before the build so generate_symbol_configs' skip-existing leaves it
+// alone (the RerunFitsZeroWithDisabledSymbol technique).
+TEST(BuildSurfaceDb, FailedCellsCarryTheFitReasonIntoTheReport) {
+  const tsupport::SyntheticHiveSpec fx; // AAA/BBB/CCC x 3 dates
+  const BuildFixture f = make_build_fixture("failed_cells", fx);
+  {
+    auto db = SurfaceDb::create(f.db.string());
+    ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+    SymbolFitConfig bbb = symbol_config_from_preset(FitPreset::Populate);
+    bbb.pin_curve = true;
+    bbb.curve.kind = VolCurveKind::LinearVariance;
+    ASSERT_TRUE(db->upsert_symbol("BBB", bbb).has_value());
+  }
+
+  const auto rep = build_surface_db(build_spec(f, fx));
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_EQ(rep->coverage.cells_ok, 6u);     // AAA + CCC on 3 dates
+  EXPECT_EQ(rep->coverage.cells_failed, 3u); // BBB on 3 dates
+
+  // The list explains the counter, one entry per failed cell, (date, symbol) asc.
+  ASSERT_EQ(rep->coverage.failed_cells.size(), std::size_t{3});
+  for (std::size_t i = 0; i < rep->coverage.failed_cells.size(); ++i) {
+    const FailedCell &c = rep->coverage.failed_cells[i];
+    EXPECT_EQ(c.date, fx.dates[i]);
+    EXPECT_EQ(c.symbol, "BBB");
+    EXPECT_EQ(c.code, ErrorCode::InvalidArgument);
+    // Verbatim from pricer_fitter.cpp — not a re-derivation, not a code name.
+    EXPECT_EQ(c.detail, "invalid correctness policy for requested risk surface") << c.detail;
+  }
+
+  // ...and the CSV carries every one of them, reason included.
+  const fs::path csv = f.root / "failed_cells.csv";
+  ASSERT_TRUE(write_build_report_csv(*rep, csv.string()).has_value());
+  std::ifstream is(csv.string(), std::ios::binary);
+  const std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+  EXPECT_NE(text.find("date,symbol,code,detail"), std::string::npos) << text;
+  for (const std::string &d : fx.dates) {
+    EXPECT_NE(text.find(d + ",BBB,InvalidArgument,\"invalid correctness policy for requested "
+                            "risk surface\""),
+              std::string::npos)
+        << text;
+  }
+}
+
+// The display cap. 51 symbols x 17 dates is 867 cells; a wholesale failure must
+// print a bounded sample, and the truncation must be COUNTED — a capped list with
+// a zero elided count would read as "that was all of them". Same contract as
+// verify_db's failures / n_failures_elided, unit-tested on a hand-built report so
+// it is pinned independently of any fit running.
+[[nodiscard]] SurfaceDbBuildReport report_with_failed_cells(std::size_t n) {
+  SurfaceDbBuildReport r;
+  r.coverage.cells_failed = static_cast<std::uint32_t>(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    r.coverage.failed_cells.push_back(
+        FailedCell{"2026-07-01", "S" + std::to_string(i), ErrorCode::Unavailable, "why"});
+  }
+  return r;
+}
+
+TEST(SurfaceDbBuildFailedCellCap, CapsTheListAndCountsWhatItLeftOut) {
+  const SurfaceDbBuildReport r = report_with_failed_cells(5);
+
+  // Under the cap: everything shown, nothing elided.
+  const ReportedFailedCells all = reported_failed_cells(r, 5);
+  EXPECT_EQ(all.reported.size(), std::size_t{5});
+  EXPECT_EQ(all.n_elided, std::size_t{0});
+
+  // Over the cap: the first `cap` rows (keeping the deterministic order) and an
+  // EXACT count of the rest. reported + elided always == the full list.
+  const ReportedFailedCells capped = reported_failed_cells(r, 2);
+  ASSERT_EQ(capped.reported.size(), std::size_t{2});
+  EXPECT_EQ(capped.n_elided, std::size_t{3});
+  EXPECT_EQ(capped.reported.size() + capped.n_elided, r.coverage.failed_cells.size());
+  EXPECT_EQ(capped.reported[0].symbol, "S0");
+  EXPECT_EQ(capped.reported[1].symbol, "S1");
+  EXPECT_EQ(capped.reported[0].detail, "why"); // the reason survives the cap
+
+  // A cap of 0 retains no detail at all and elides everything — the counters
+  // still tell the truth (verify_db's max_reported_failures == 0 semantics).
+  const ReportedFailedCells none = reported_failed_cells(r, 0);
+  EXPECT_TRUE(none.reported.empty());
+  EXPECT_EQ(none.n_elided, std::size_t{5});
+
+  // An empty list is not a truncation.
+  const SurfaceDbBuildReport clean;
+  const ReportedFailedCells nothing = reported_failed_cells(clean);
+  EXPECT_TRUE(nothing.reported.empty());
+  EXPECT_EQ(nothing.n_elided, std::size_t{0});
+
+  // The default cap is what the CLI prints without --max-failures.
+  const SurfaceDbBuildReport big =
+      report_with_failed_cells(kSurfaceDbBuildMaxReportedFailedCells + 7);
+  const ReportedFailedCells defaulted = reported_failed_cells(big);
+  EXPECT_EQ(defaulted.reported.size(), kSurfaceDbBuildMaxReportedFailedCells);
+  EXPECT_EQ(defaulted.n_elided, std::size_t{7});
+}
+
+// The CSV is the artifact an operator greps, so it is NOT subject to the display
+// cap: every failed cell appears, including the ones the terminal elides.
+TEST(SurfaceDbBuildFailedCellCap, ReportCsvKeepsTheCellsTheTerminalElides) {
+  const SurfaceDbBuildReport r =
+      report_with_failed_cells(kSurfaceDbBuildMaxReportedFailedCells + 3);
+  ASSERT_EQ(reported_failed_cells(r).n_elided, std::size_t{3}); // the terminal drops 3
+
+  const fs::path csv = fresh_dir("failed_cells_csv") / "report.csv";
+  fs::create_directories(csv.parent_path());
+  ASSERT_TRUE(write_build_report_csv(r, csv.string()).has_value());
+  std::ifstream is(csv.string(), std::ios::binary);
+  const std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+  for (std::size_t i = 0; i < r.coverage.failed_cells.size(); ++i) {
+    EXPECT_NE(text.find(",S" + std::to_string(i) + ",Unavailable,\"why\""), std::string::npos)
+        << "row " << i << " missing from the CSV";
+  }
 }
 
 // ── is_total_fit_failure — the CLI's exit-code decision ─────────────────────
