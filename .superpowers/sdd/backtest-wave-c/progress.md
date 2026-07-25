@@ -1137,3 +1137,18 @@ T3: minor (accepted, report-only): "the two load paths are genuinely independent
   referenced_uids / tier difference would land on live_mark and on the row set and be
   reported), which is what makes it the right instrument for FUTURE divergence — and that,
   not the current agreement, is what T5's deletion actually rests on.
+
+### STOP POINT — 2026-07-25, user instruction "stop here"
+
+T3: fix round 1/5 — code fix COMMITTED as 5c227e8, but the round is NOT closed:
+  - the implementer's fix report was never appended to task-3-report.md (it was stopped
+    mid-sentence doing exactly that), so the fix's own test evidence is off the record;
+  - **the scoped re-review never ran.** 5c227e8 is the ONLY commit on this branch that no
+    reviewer has seen. Re-review range f60ce3c..5c227e8 before anything else.
+  Resume by re-running the fix round's verification (fixture matrix across configured, cold,
+  --no-divergence, and --require-divergence-rows both set and unset — including the
+  flag-set-with-zero-rows case, which must fail AFTER writing the archive, with the archive
+  demonstrably present afterwards), then the scoped re-review, then T4.
+  Working tree is clean for every file this sprint touched. The pre-existing unrelated
+  uncommitted work was never staged at any point.
+  Status doc: docs/superpowers/2026-07-25-atx-vol-backtest-sprint-status.md

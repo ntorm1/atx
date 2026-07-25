@@ -1,8 +1,9 @@
 # atx-vol backtesting sprint — status
 
-**As of** 2026-07-25, HEAD `f60ce3c` on branch **`sprint/atx-vol-backtest-waves-cde`**.
-**Stopped at the user's request, mid-Wave-D.** One fix round was in flight when work
-stopped — see [In flight](#in-flight-when-work-stopped).
+**As of** 2026-07-25, HEAD `6c389de` on branch **`sprint/atx-vol-backtest-waves-cde`**.
+**Stopped at the user's request, mid-Wave-D.** The working tree is clean for every file
+this sprint touched. **One landed commit is UNREVIEWED** — see
+[Stop point](#stop-point-one-unreviewed-commit).
 
 Nothing was merged into local `main` this session, per instruction. `main` still points at
 `2858cab` (Wave C T4). The branch carries everything after it.
@@ -28,6 +29,8 @@ Wave E is planned and not started.**
 ### Commit chain on the branch
 
 ```
+6c389de  docs(vol): sprint status at the Wave D stop point             (this file)
+5c227e8  fix(vol): vacuity gate opt-in and non-destructive   (D T3 fix 1, UNREVIEWED)
 f60ce3c  feat(vol): dual-run mark-divergence equivalence arbiter        (D T3)
 c438a64  test(vol): gate divergence row multiplicity and accumulation   (D T2 fix)
 c464051  feat(vol): mark-divergence collector on the step observer      (D T2)
@@ -118,7 +121,7 @@ the replacement equivalent first.
 |---|---|---|
 | T1 | `StepObserver` + `StepEvent` + `RunConfig::step_observer`, engine firing | `42c60d8`. **Approved first pass.** Suite +5/+5. |
 | T2 | mark-divergence collector on the observer | `c464051`..`c438a64`. Clean after 1 fix round. Suite +7/+7 then +1/+1. |
-| T3 | dual-run comparator, shadow **retained** | `f60ce3c`. Spec ✅, **2 Importants — fix round in flight.** |
+| T3 | dual-run comparator, shadow **retained** | `f60ce3c`. Spec ✅, 2 Importants. Fix `5c227e8` landed but is **UNREVIEWED**. |
 | T4 | 135-session equivalence proof (controller) — **BLOCKS T5** | Not started. Prepared; see below. |
 | T5 | delete the shadow loop | Blocked on T4 by design. |
 | T6 | L12 — `RunSpec.index_symbol`, de-SPY `all_symbols`/`universe_at` | Not started. |
@@ -160,13 +163,33 @@ the engine** — the precise Wave B failure mode.
 
 ---
 
-## In flight when work stopped
+## Stop point: one unreviewed commit
 
-**Wave D T3, fix round 1 of 5 — dispatched, not yet returned.** Two Important findings, no
-Criticals. The comparator itself was judged sound: the reviewer searched for a path where it
-could report identical while the sources differ and **found none** except `n == 0`, and it
-independently reproduced T3's `observer=36 shadow=36 rows MATCH` on a 3-session/2-roll
-fixture.
+**Resume here.** Wave D T3's fix round 1 was dispatched, and its **code fix committed as
+`5c227e8`** before work stopped. What did *not* happen:
+
+- the implementer's **fix report was never appended** to `task-3-report.md` (it was stopped
+  mid-sentence doing exactly that), so the fix's own test evidence is not on the record;
+- the **scoped re-review never ran**, so `5c227e8` is the only commit on this branch that no
+  reviewer has seen.
+
+Everything else is clean: the working tree has no modifications to any file this sprint
+touched, and the pre-existing unrelated uncommitted work (Python bindings split, `atx-core`
+sqlite, `atx-db/`, `atx-kb/`, surface-db docs, `atx-vol/sprints/*`) was never staged at any
+point, as required.
+
+**To resume:** re-run the fix round's verification (fixture matrix across `configured`,
+`cold`, `--no-divergence`, and the new flag both set and unset — including the
+flag-set-with-zero-rows case, which must fail *after* writing the archive, with the archive
+demonstrably present afterwards), then run the scoped re-review of `f60ce3c..5c227e8`
+before T4.
+
+### What the fix was for
+
+Two Important findings, no Criticals. The comparator itself was judged sound: the reviewer
+searched for a path where it could report identical while the sources differ and **found
+none** except `n == 0`, and it independently reproduced T3's
+`observer=36 shadow=36 rows MATCH` on a 3-session/2-roll fixture.
 
 **Important 1 is the controller's fault and is recorded as such.** My dispatch said the
 comparator "must assert the compared row count is > 0 on that route and fail the gate as
@@ -203,9 +226,9 @@ goes to stderr, so a stdout-only log shows a bare, unqualified
 and what a ledger transcript would carry — i.e. the artifact **T5's deletion decision rests
 on**. Fix is to put the qualifier on the same stdout line.
 
-**Also in flight:** a background PowerShell job hashing `parity-full`'s two 696 MB
-`definitions*.tsv` files to decide whether the T4 corpus copy can skip one. Harmless,
-read-only, no output yet.
+A background PowerShell job hashing `parity-full`'s two 696 MB `definitions*.tsv` files
+(to decide whether the T4 corpus copy can skip one) was also stopped. Read-only, no output,
+nothing to clean up.
 
 ---
 
