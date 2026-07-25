@@ -5,7 +5,9 @@
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -62,6 +64,28 @@ void append_double(std::string &out, double value) {
 [[nodiscard]] std::uint64_t fingerprint_text(std::string_view text) {
   const std::uint64_t hash = atx::core::hash_bytes(text.data(), text.size());
   return hash == 0u ? 1u : hash;
+}
+
+// Epoch-ns of the LAST nanosecond of `trade_date`, formatted into a stack
+// buffer. Replaces a per-row `trade_date + "T23:59:59.999999999Z"` heap
+// concatenation: the stamp is 30 characters, past MSVC's 15-char small-string
+// capacity, so every row used to allocate and free once.
+//
+// Exactly equivalent to the concatenation it replaces, INCLUDING for a
+// trade_date too long to fit. `iso_to_ns` rejects any stamp whose 11th
+// character is not 'T' or ' ' (data.cpp `parse_iso_ns`), so an over-long date
+// yielded 0 before and yields 0 here; both land on the same `trade_end <= 0`
+// rejection. The buffer holds a 12-character date, two more than a valid one.
+[[nodiscard]] std::int64_t end_of_day_ns(std::string_view trade_date) noexcept {
+  constexpr std::string_view kEndOfDay = "T23:59:59.999999999Z";
+  char buffer[32];
+  const std::size_t total = trade_date.size() + kEndOfDay.size();
+  if (trade_date.empty() || total > sizeof buffer) {
+    return 0;
+  }
+  std::memcpy(buffer, trade_date.data(), trade_date.size());
+  std::memcpy(buffer + trade_date.size(), kEndOfDay.data(), kEndOfDay.size());
+  return iso_to_ns(std::string_view(buffer, total));
 }
 
 [[nodiscard]] std::vector<std::string_view> split(std::string_view text, char delimiter) {
@@ -136,6 +160,16 @@ ListedDefinitionTable::create(std::vector<ListedContractDefinition> definitions)
   std::sort(definitions.begin(), definitions.end(),
             [](const auto &a, const auto &b) { return definition_key(a) < definition_key(b); });
 
+  // Single-slot memo for the per-row end-of-day bound. `definition_key`'s FIRST
+  // field is `trade_date`, so the sort above leaves `trade_date` non-decreasing
+  // across this loop: the bound changes only when the date does, and a two-field
+  // (date, bound) memo is exact. A map keyed by date would be correct too but
+  // strictly slower — it is the sort that makes the cheap form sufficient, and
+  // the sort MUST stay above this loop. The memoed view aliases a row of
+  // `definitions`, which is only read until it is moved out below.
+  std::string_view memo_date;
+  std::int64_t memo_trade_end = 0;
+
   for (std::size_t i = 0; i < definitions.size(); ++i) {
     const ListedContractDefinition &definition = definitions[i];
     if (definition.trade_date.empty() || definition.instrument_id == 0 ||
@@ -145,7 +179,13 @@ ListedDefinitionTable::create(std::vector<ListedContractDefinition> definitions)
         definition.source_fingerprint == 0u) {
       return Err(ErrorCode::InvalidArgument, "listed definitions: malformed definition");
     }
-    const std::int64_t trade_end = iso_to_ns(definition.trade_date + "T23:59:59.999999999Z");
+    // The gate above already rejected an empty `trade_date`, so the empty memo
+    // sentinel can never collide with a real date.
+    if (definition.trade_date != memo_date) {
+      memo_date = definition.trade_date;
+      memo_trade_end = end_of_day_ns(memo_date);
+    }
+    const std::int64_t trade_end = memo_trade_end;
     if (trade_end <= 0 || definition.definition_ts_ns > trade_end) {
       return Err(ErrorCode::InvalidArgument,
                  "listed definitions: future or invalid date-scoped definition");
@@ -157,9 +197,17 @@ ListedDefinitionTable::create(std::vector<ListedContractDefinition> definitions)
 
   ListedDefinitionTable table;
   table.definitions_ = std::move(definitions);
-  const std::string serialized = serialize_listed_definitions(table);
-  table.fingerprint_ = fingerprint_text(serialized);
   return Ok(std::move(table));
+}
+
+// Lazy, memoized. See the header for why this is a plain `mutable` memo and not
+// a `std::once_flag`, and why it is not `noexcept`. `serialize_listed_definitions`
+// itself is unchanged — only WHEN it runs moved.
+std::uint64_t ListedDefinitionTable::fingerprint() const {
+  if (fingerprint_ == 0u) {
+    fingerprint_ = fingerprint_text(serialize_listed_definitions(*this));
+  }
+  return fingerprint_;
 }
 
 const ListedContractDefinition *

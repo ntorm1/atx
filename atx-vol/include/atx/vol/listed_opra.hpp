@@ -46,11 +46,32 @@ public:
   [[nodiscard]] std::span<const ListedContractDefinition> definitions() const noexcept {
     return definitions_;
   }
-  [[nodiscard]] std::uint64_t fingerprint() const noexcept { return fingerprint_; }
+  // Content hash of the table's canonical serialization, computed LAZILY on the
+  // first call and memoized thereafter. `create` deliberately does NOT compute
+  // it: on the production definitions table (~700 MB of TSV, ~8.7M rows) the
+  // eager form built a throwaway ~700 MB serialization that was live at the same
+  // time as both the file bytes and the row vector, for a value the backtest
+  // read path never reads. Its two consumers — a write-path stdout diagnostic
+  // and a round-trip equality in the tests — both pay for it only if they ask.
+  //
+  // NOT `noexcept`: the first call serializes and can throw `bad_alloc`. That
+  // throw used to escape `create` (also not noexcept), so it is merely
+  // relocated; a `noexcept` here would turn it into `std::terminate`.
+  //
+  // NOT thread-safe on the first call, and deliberately a plain `mutable` memo
+  // rather than a `std::once_flag`: `std::once_flag` is neither copyable nor
+  // movable, so a member of that type would delete this class's copy AND move
+  // constructors — and every read path moves the table out of a `Result`. No
+  // caller demands the fingerprint concurrently; `find()`, the only method the
+  // per-date path touches, does not read it.
+  [[nodiscard]] std::uint64_t fingerprint() const;
 
 private:
   std::vector<ListedContractDefinition> definitions_{};
-  std::uint64_t fingerprint_{0};
+  // 0 means "not yet computed". Unambiguous as a sentinel because the hash is
+  // folded away from 0 (`fingerprint_text` maps 0 -> 1), so no real fingerprint
+  // is ever 0.
+  mutable std::uint64_t fingerprint_{0};
 };
 
 // Versioned deterministic definition exchange format. It is intentionally a

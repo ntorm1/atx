@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/data.hpp"
@@ -435,6 +437,359 @@ TEST(ListedOpra, DefinitionTableRejectsDuplicateAndFutureDateScopedRows) {
   auto future = definitions();
   future[0].definition_ts_ns = iso_to_ns("2026-06-06T00:00:00Z");
   EXPECT_FALSE(ListedDefinitionTable::create(std::move(future)));
+}
+
+// --- create()'s per-row end-of-day bound ---------------------------------
+//
+// create() admits a row only if its definition_ts_ns is at or before the LAST
+// nanosecond of its own trade_date. The bound is derived per row from that row's
+// date. These tests pin the bound's exact value and its per-date freshness, so a
+// memoized or reformatted derivation has to reproduce the byte-for-byte same
+// admit/reject decision as the plain per-row computation.
+
+// The bound computed the long way: heap concatenation + iso_to_ns, exactly the
+// expression create() used before any memoization.
+std::int64_t reference_trade_end(const std::string &trade_date) {
+  return iso_to_ns(trade_date + "T23:59:59.999999999Z");
+}
+
+ListedContractDefinition dated_definition(const std::string &trade_date, std::uint32_t id,
+                                          const std::string &raw_symbol,
+                                          std::int64_t definition_ts_ns) {
+  ListedContractDefinition out;
+  out.trade_date = trade_date;
+  out.instrument_id = id;
+  out.raw_symbol = raw_symbol;
+  out.definition_ts_ns = definition_ts_ns;
+  out.expiry_ts_ns = iso_to_ns("2026-09-18T20:00:00Z");
+  out.multiplier = 100.0;
+  out.standard_monthly = true;
+  out.standard_deliverable = true;
+  out.source_fingerprint = 4242;
+  return out;
+}
+
+TEST(ListedOpra, DefinitionTableTradeEndMemoMatchesPerRowCompute) {
+  const std::vector<std::string> dates = {"2026-06-03", "2026-06-04", "2026-06-05"};
+  // The three bounds are DISTINCT and strictly increasing. Without this the test
+  // could not tell a per-date bound from a stale one.
+  ASSERT_LT(reference_trade_end(dates[0]), reference_trade_end(dates[1]));
+  ASSERT_LT(reference_trade_end(dates[1]), reference_trade_end(dates[2]));
+
+  // Three rows per date, each stamped AT its own date's exact bound — the
+  // tightest admissible value. A bound that failed to refresh on a date change
+  // would judge every row after the first date against a smaller bound and
+  // reject it.
+  std::vector<ListedContractDefinition> rows;
+  for (const std::string &date : dates) {
+    for (std::uint32_t k = 0; k < 3u; ++k) {
+      rows.push_back(dated_definition(date, 100u + k,
+                                      "SPY   260918C0060000" + std::to_string(k),
+                                      reference_trade_end(date)));
+    }
+  }
+  // Hand them in DESCENDING date order: create() sorts by (trade_date,
+  // instrument_id, raw_symbol) before it walks the rows, and that sort is the
+  // whole reason a single-slot memo is exact. If the sort ever stopped preceding
+  // the loop, the interleaved dates below would break a memo immediately.
+  std::reverse(rows.begin(), rows.end());
+
+  auto table = ListedDefinitionTable::create(rows);
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  ASSERT_EQ(table->definitions().size(), 9u);
+  for (const ListedContractDefinition &kept : table->definitions()) {
+    EXPECT_EQ(kept.definition_ts_ns, reference_trade_end(kept.trade_date)) << kept.trade_date;
+  }
+  // The sort really did run, and it really is date-major.
+  EXPECT_EQ(table->definitions().front().trade_date, dates.front());
+  EXPECT_EQ(table->definitions().back().trade_date, dates.back());
+
+  // One nanosecond past its OWN date's bound is rejected — checked for every
+  // date, so both a bound that never refreshes (breaks on date 2 and 3) and one
+  // that refreshes to the wrong value are caught.
+  for (const std::string &date : dates) {
+    std::vector<ListedContractDefinition> late = rows;
+    std::size_t bumped = 0u;
+    for (ListedContractDefinition &row : late) {
+      if (row.trade_date == date) {
+        row.definition_ts_ns = reference_trade_end(date) + 1;
+        ++bumped;
+      }
+    }
+    ASSERT_EQ(bumped, 3u) << date; // anti-vacuity: the perturbation landed
+    EXPECT_FALSE(ListedDefinitionTable::create(late)) << "date " << date;
+  }
+}
+
+TEST(ListedOpra, DefinitionTableRejectsTradeDateTooLongForTheEndOfDayStamp) {
+  // create() builds "<trade_date>T23:59:59.999999999Z" into a FIXED stack
+  // buffer. Any trade_date too long to fit must still be rejected, exactly as
+  // the old heap concatenation was: iso_to_ns refuses a stamp whose 11th
+  // character is not 'T'/' ', so every over-long date produced 0 before and
+  // must produce 0 now. This pins the buffer guard to the pre-existing
+  // rejection branch rather than to a truncation or an overflow.
+  const std::int64_t valid_ts = iso_to_ns("2026-06-05T12:00:00Z");
+  ASSERT_GT(valid_ts, 0);
+
+  std::vector<ListedContractDefinition> rows = {
+      dated_definition("2026-06-05", 101u, "SPY   260918C00600000", valid_ts)};
+  ASSERT_TRUE(ListedDefinitionTable::create(rows)); // anti-vacuity: the base admits
+
+  for (const char *bad_date : {"2026-06-05X", "2026-06-0", "2026-06-05T00:00:00.000000000Z",
+                               "2026-06-05-padded-well-past-thirty-two-bytes-wide"}) {
+    rows[0].trade_date = bad_date;
+    EXPECT_EQ(reference_trade_end(rows[0].trade_date), 0) << bad_date;
+    EXPECT_FALSE(ListedDefinitionTable::create(rows)) << bad_date;
+  }
+}
+
+TEST(ListedOpra, DefinitionFingerprintIsLazyStableAndSurvivesValueSemantics) {
+  auto table = ListedDefinitionTable::create(definitions());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  // Copied BEFORE the fingerprint is ever demanded. A lazily computed
+  // fingerprint must not depend on WHEN it was first asked for, and the class
+  // must stay copyable and movable — a std::once_flag member would delete both
+  // the copy and the move constructor, and every read path moves this table out
+  // of a Result.
+  ListedDefinitionTable copy_before = *table;
+
+  const std::uint64_t first = table->fingerprint();
+  EXPECT_NE(first, 0u);
+  EXPECT_EQ(table->fingerprint(), first); // idempotent across repeated calls
+  EXPECT_EQ(table->fingerprint(), first);
+  EXPECT_EQ(copy_before.fingerprint(), first);
+
+  ListedDefinitionTable copy_after = *table; // copied with the memo already warm
+  EXPECT_EQ(copy_after.fingerprint(), first);
+  const ListedDefinitionTable moved = std::move(copy_after);
+  EXPECT_EQ(moved.fingerprint(), first); // const-callable
+
+  // Still the serialize/parse round-trip invariant.
+  auto parsed = atx::vol::parse_listed_definitions(atx::vol::serialize_listed_definitions(*table));
+  ASSERT_TRUE(parsed) << (parsed ? std::string{} : parsed.error().to_string());
+  EXPECT_EQ(parsed->fingerprint(), first);
+
+  // Negative control: the fingerprint is content-derived, not a constant.
+  auto other = definitions();
+  other[0].source_fingerprint = 999;
+  auto other_table = ListedDefinitionTable::create(std::move(other));
+  ASSERT_TRUE(other_table) << (other_table ? std::string{} : other_table.error().to_string());
+  EXPECT_NE(other_table->fingerprint(), first);
+
+  // A default-constructed table IS the empty table, and reports the empty
+  // table's fingerprint. Pinned deliberately: while the fingerprint was set
+  // eagerly by create(), a default-constructed table reported 0 because nothing
+  // had ever run. Lazy computation makes the two agree, which is the correct
+  // reading of an empty definitions_ — but it is a behaviour change, so it is
+  // asserted rather than left to chance.
+  auto empty = ListedDefinitionTable::create({});
+  ASSERT_TRUE(empty) << (empty ? std::string{} : empty.error().to_string());
+  const ListedDefinitionTable default_constructed;
+  EXPECT_NE(empty->fingerprint(), 0u);
+  EXPECT_EQ(default_constructed.fingerprint(), empty->fingerprint());
+  EXPECT_NE(default_constructed.fingerprint(), first);
+}
+
+// --- parse_listed_definitions negative surface ---------------------------
+//
+// The magic/header equality gate and the per-row field-count + numeric parses
+// had no direct coverage at all. These are regression LOCKS on current
+// behaviour, not REDs: they must pass against the parser as it stands today, so
+// that a later rewrite of exactly those lines has something to fail against.
+
+std::vector<std::string> split_on(const std::string &text, char delimiter) {
+  std::vector<std::string> parts;
+  std::size_t start = 0;
+  while (start <= text.size()) {
+    const std::size_t end = text.find(delimiter, start);
+    parts.push_back(text.substr(start, end == std::string::npos ? std::string::npos : end - start));
+    if (end == std::string::npos) {
+      break;
+    }
+    start = end + 1;
+  }
+  return parts;
+}
+
+std::string join_on(const std::vector<std::string> &parts, char delimiter) {
+  std::string out;
+  for (std::size_t i = 0; i < parts.size(); ++i) {
+    if (i != 0) {
+      out.push_back(delimiter);
+    }
+    out += parts[i];
+  }
+  return out;
+}
+
+// A known-good serialized table: magic, header, two rows, trailing '\n'.
+std::string good_tsv() {
+  auto table = ListedDefinitionTable::create(definitions());
+  return table ? atx::vol::serialize_listed_definitions(*table) : std::string{};
+}
+
+std::string line_at(const std::string &tsv, std::size_t index) {
+  const std::vector<std::string> lines = split_on(tsv, '\n');
+  return index < lines.size() ? lines[index] : std::string{};
+}
+
+std::string with_line(const std::string &tsv, std::size_t index, const std::string &replacement) {
+  std::vector<std::string> lines = split_on(tsv, '\n');
+  EXPECT_LT(index, lines.size());
+  if (index < lines.size()) {
+    lines[index] = replacement;
+  }
+  return join_on(lines, '\n');
+}
+
+// Replace field `field` of data row `row` (0-based over data rows).
+std::string with_field(const std::string &tsv, std::size_t row, std::size_t field,
+                       const std::string &value) {
+  std::vector<std::string> fields = split_on(line_at(tsv, row + 2u), '\t');
+  EXPECT_EQ(fields.size(), 9u);
+  if (field < fields.size()) {
+    fields[field] = value;
+  }
+  return with_line(tsv, row + 2u, join_on(fields, '\t'));
+}
+
+bool parses(const std::string &tsv) { return atx::vol::parse_listed_definitions(tsv).has_value(); }
+
+TEST(ListedOpra, ParseRejectsMagicAndHeaderCorruption) {
+  const std::string good = good_tsv();
+  ASSERT_FALSE(good.empty());
+  // Anti-vacuity: the unmutated input really does parse, and to two rows.
+  auto base = atx::vol::parse_listed_definitions(good);
+  ASSERT_TRUE(base) << (base ? std::string{} : base.error().to_string());
+  ASSERT_EQ(base->definitions().size(), 2u);
+
+  const std::string magic = line_at(good, 0);
+  const std::string header = line_at(good, 1);
+  ASSERT_EQ(magic, "ATX_LISTED_DEFINITIONS\t1");
+  ASSERT_FALSE(header.empty());
+
+  // Too few lines to carry a magic + header at all.
+  EXPECT_FALSE(parses(""));
+  EXPECT_FALSE(parses(magic));
+  EXPECT_FALSE(parses(magic + "\n"));
+
+  // Magic: version, separator, case, padding, truncation.
+  EXPECT_FALSE(parses(with_line(good, 0, "ATX_LISTED_DEFINITIONS\t2")));
+  EXPECT_FALSE(parses(with_line(good, 0, "ATX_LISTED_DEFINITIONS 1")));
+  EXPECT_FALSE(parses(with_line(good, 0, "atx_listed_definitions\t1")));
+  EXPECT_FALSE(parses(with_line(good, 0, "ATX_LISTED_DEFINITIONS\t1 ")));
+  EXPECT_FALSE(parses(with_line(good, 0, " ATX_LISTED_DEFINITIONS\t1")));
+  EXPECT_FALSE(parses(with_line(good, 0, "ATX_LISTED_DEFINITIONS")));
+  EXPECT_FALSE(parses(with_line(good, 0, "")));
+  // A '\r' before the '\n' is NOT tolerated on the magic line — the equality is
+  // exact, and this file format is LF-only by contract.
+  EXPECT_FALSE(parses(with_line(good, 0, magic + "\r")));
+
+  // Header: an extra column, a dropped column, a renamed column, a reordering.
+  EXPECT_FALSE(parses(with_line(good, 1, header + "\textra")));
+  EXPECT_FALSE(parses(with_line(good, 1, header.substr(0, header.rfind('\t')))));
+  EXPECT_FALSE(parses(with_line(good, 1, "TRADE_DATE" + header.substr(header.find('\t')))));
+  {
+    std::vector<std::string> columns = split_on(header, '\t');
+    ASSERT_EQ(columns.size(), 9u);
+    std::swap(columns[0], columns[1]);
+    EXPECT_FALSE(parses(with_line(good, 1, join_on(columns, '\t'))));
+  }
+  EXPECT_FALSE(parses(with_line(good, 1, "")));
+  EXPECT_FALSE(parses(with_line(good, 1, header + "\r")));
+  // Magic and header transposed.
+  EXPECT_FALSE(parses(with_line(with_line(good, 0, header), 1, magic)));
+}
+
+TEST(ListedOpra, ParseRejectsMalformedRowFieldCountsAndNumerics) {
+  const std::string good = good_tsv();
+  ASSERT_FALSE(good.empty());
+  ASSERT_TRUE(parses(good)); // anti-vacuity
+
+  const std::string row = line_at(good, 2);
+  const std::vector<std::string> fields = split_on(row, '\t');
+  ASSERT_EQ(fields.size(), 9u);
+
+  // Field count: 8 and 10.
+  EXPECT_FALSE(parses(
+      with_line(good, 2, join_on(std::vector<std::string>(fields.begin(), fields.end() - 1), '\t'))));
+  EXPECT_FALSE(parses(with_line(good, 2, row + "\textra")));
+  // A tab-free row is one field, not nine.
+  EXPECT_FALSE(parses(with_line(good, 2, "not-a-row")));
+
+  // instrument_id (field 1): non-numeric, empty, trailing garbage, negative,
+  // and one past the uint32 ceiling the parser enforces.
+  for (const char *bad : {"abc", "", " 101", "101 ", "101x", "-1", "1.0", "0x65", "+101",
+                          "4294967296", "18446744073709551616"}) {
+    EXPECT_FALSE(parses(with_field(good, 0, 1, bad))) << "instrument_id=" << bad;
+  }
+  EXPECT_TRUE(parses(with_field(good, 0, 1, "4294967295"))) << "uint32 ceiling must still parse";
+
+  // definition_ts_ns (3) and expiry_ts_ns (4): int64, no fractional part.
+  for (const char *bad : {"abc", "", "1.5", "1e9", "12345678901234567890123"}) {
+    EXPECT_FALSE(parses(with_field(good, 0, 3, bad))) << "definition_ts_ns=" << bad;
+    EXPECT_FALSE(parses(with_field(good, 0, 4, bad))) << "expiry_ts_ns=" << bad;
+  }
+
+  // multiplier (5): non-numeric, empty, trailing garbage, non-finite, and the
+  // create()-level positivity gate reached through the parser.
+  for (const char *bad : {"abc", "", "100x", "inf", "-inf", "nan", "0", "-100"}) {
+    EXPECT_FALSE(parses(with_field(good, 0, 5, bad))) << "multiplier=" << bad;
+  }
+
+  // standard_monthly (6) / standard_deliverable (7): strictly 0 or 1.
+  for (const char *bad : {"2", "-1", "x", "", "01x"}) {
+    EXPECT_FALSE(parses(with_field(good, 0, 6, bad))) << "standard_monthly=" << bad;
+    EXPECT_FALSE(parses(with_field(good, 0, 7, bad))) << "standard_deliverable=" << bad;
+  }
+
+  // source_fingerprint (8): non-numeric, empty, overflow, and the create()-level
+  // non-zero gate reached through the parser.
+  for (const char *bad : {"abc", "", "-1", "1.0", "18446744073709551616", "0"}) {
+    EXPECT_FALSE(parses(with_field(good, 0, 8, bad))) << "source_fingerprint=" << bad;
+  }
+
+  // Non-numeric fields still reach create()'s structural gates.
+  EXPECT_FALSE(parses(with_field(good, 0, 0, ""))) << "empty trade_date";
+  EXPECT_FALSE(parses(with_field(good, 0, 2, ""))) << "empty raw_symbol";
+  EXPECT_FALSE(parses(with_field(good, 0, 1, "0"))) << "instrument_id 0";
+  // Duplicate key: row 1 made identical to row 0.
+  EXPECT_FALSE(parses(with_line(good, 3, row))) << "duplicate definition key";
+}
+
+TEST(ListedOpra, ParseAcceptsEmptyLinesExactlyAsItDoesToday) {
+  const std::string good = good_tsv();
+  ASSERT_FALSE(good.empty());
+  ASSERT_EQ(good.back(), '\n');
+
+  // The shipped serialization ends with '\n', so split() emits a trailing empty
+  // element that the empty-line skip absorbs. This is load-bearing: the writer's
+  // own output must round-trip.
+  auto trailing = atx::vol::parse_listed_definitions(good);
+  ASSERT_TRUE(trailing) << (trailing ? std::string{} : trailing.error().to_string());
+  EXPECT_EQ(trailing->definitions().size(), 2u);
+
+  // No trailing newline at all: also accepted, same two rows.
+  auto unterminated = atx::vol::parse_listed_definitions(good.substr(0, good.size() - 1));
+  ASSERT_TRUE(unterminated) << (unterminated ? std::string{} : unterminated.error().to_string());
+  EXPECT_EQ(unterminated->definitions().size(), 2u);
+
+  // Interior and repeated blank lines are skipped, not treated as short rows.
+  auto interior = atx::vol::parse_listed_definitions(good + "\n\n\n");
+  ASSERT_TRUE(interior) << (interior ? std::string{} : interior.error().to_string());
+  EXPECT_EQ(interior->definitions().size(), 2u);
+
+  std::vector<std::string> lines = split_on(good, '\n');
+  ASSERT_EQ(lines.size(), 5u); // magic, header, row, row, trailing empty
+  lines.insert(lines.begin() + 3, std::string{});
+  auto between = atx::vol::parse_listed_definitions(join_on(lines, '\n'));
+  ASSERT_TRUE(between) << (between ? std::string{} : between.error().to_string());
+  EXPECT_EQ(between->definitions().size(), 2u);
+
+  // Negative control for this whole test: a blank line is skipped, but a line
+  // that merely LOOKS blank (a single space) is a one-field row and is rejected.
+  EXPECT_FALSE(parses(with_line(good, 2, " ")));
 }
 
 } // namespace
