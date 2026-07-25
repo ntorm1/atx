@@ -67,7 +67,7 @@
 #include "atx/core/domain/domain.hpp"
 #include "atx/core/domain/symbol.hpp"
 #include "atx/core/hash.hpp"
-#include "atx/core/macro.hpp" // ATX_ASSERT (the caller-side apply_guard)
+#include "atx/core/macro.hpp" // ATX_CHECK (the caller-side apply_guard)
 #include "atx/core/types.hpp"
 
 #include "atx/core/linalg/linalg.hpp" // MatX / VecX (the parallel risk harness)
@@ -329,12 +329,14 @@ private:
 //  is supposed to make before applying a fitted object: the apply date MUST be at
 //  or after fit_end (the fit window is the PAST; applying INSIDE it would leak the
 //  in-window labels). Wrapping the misuse in a free function lets EXPECT_DEATH fire
-//  on the ATX_ASSERT abort. This pins the DISCIPLINE; the structural firewall itself
-//  is proven by truncation-invariance (A).
+//  on the ATX_CHECK abort. This pins the DISCIPLINE; the structural firewall itself
+//  is proven by truncation-invariance (A). Deliberately ATX_CHECK, not ATX_ASSERT:
+//  ATX_ASSERT compiles out under NDEBUG, which would make this EXPECT_DEATH vacuous
+//  in Release.
 // ===========================================================================
 void apply_guard(const FactorModel &model, usize apply_date) {
   // apply_date < fit_end() == applying a fitted object INSIDE its own fit window.
-  ATX_ASSERT(apply_date >= model.fit_end());
+  ATX_CHECK(apply_date >= model.fit_end());
 }
 
 // ===========================================================================
