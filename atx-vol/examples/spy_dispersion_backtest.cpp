@@ -412,13 +412,23 @@ Status build_corpus_command(const fs::path &source_spec_path, const fs::path &ru
 
 Status build_schedule_command(const fs::path &run_dir) {
   const auto cmd_start = PhaseTimer::now();
-  PhaseTimer timer({"setup_read", "selection", "quote_join", "write_outputs"});
+  PhaseTimer timer(kBuildSchedulePhases);
 
+  // setup_read is charged in TWO disjoint segments around the definitions read,
+  // which is billed to its own `definitions_parse` phase. The two phases
+  // partition the old single `setup_read` span; nothing between them is
+  // uncharged and nothing is charged twice.
   auto phase = PhaseTimer::now();
   ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
+  timer.add("setup_read", phase);
+
+  const auto definitions_start = PhaseTimer::now();
   ATX_TRY(ListedDefinitionTable definitions,
           read_listed_definitions_file((run_dir / "definitions.tsv").string()));
+  timer.add("definitions_parse", definitions_start, 1u);
+
+  phase = PhaseTimer::now();
   ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
   ATX_TRY(Clock clock, Clock::from_manifest(manifest));
   ATX_TRY_VOID(verify_occ_ess_evidence(run_dir, clock));
@@ -508,13 +518,22 @@ Status verify_command(const fs::path &run_dir) {
 
 Status run_backtest_command(const fs::path &run_dir) {
   const auto cmd_start = PhaseTimer::now();
-  PhaseTimer timer({"setup_read", "engine_run", "reconciliation", "write_outputs"});
+  PhaseTimer timer(kRunBacktestPhases);
 
+  // Two disjoint setup_read segments around the definitions read (as in
+  // build_schedule_command): definitions_parse + setup_read sum to the old
+  // single setup_read span.
   auto phase = PhaseTimer::now();
   ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
+  timer.add("setup_read", phase);
+
+  const auto definitions_start = PhaseTimer::now();
   ATX_TRY(ListedDefinitionTable definitions,
           read_listed_definitions_file((run_dir / "definitions.tsv").string()));
+  timer.add("definitions_parse", definitions_start, 1u);
+
+  phase = PhaseTimer::now();
   ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
   ATX_TRY(Clock clock, Clock::from_manifest(manifest));
   ATX_TRY(ListedDispersionSchedule schedule,
@@ -533,24 +552,39 @@ Status run_backtest_command(const fs::path &run_dir) {
   }
   timer.add("engine_run", phase, backtest.size());
 
-  // reconciliation: the OPRA parquet join re-marking every session against the
-  // exchange tape (load_listed_quotes per date), then folding those marks into
-  // the reconciliation. This phase's cost dominating the subcommand is the claim
-  // the diagnostics prove.
-  phase = PhaseTimer::now();
+  // The re-mark pass: per date, load the certified surface snapshot and join the
+  // OPRA parquet tape, then fold both into the reconciliation. These are three
+  // different costs with three different optimisations, so they are charged to
+  // three DISJOINT phases (`snapshot_load` / `quote_join` / `reconcile`) that
+  // together partition what the old aggregate `reconciliation` phase measured.
+  // Each per-date phase counts one unit per session, so ms/unit reads as
+  // ms/session; `reconcile` keeps the old phase's clock.size() count so its
+  // per-session figure stays comparable across the split.
+  //
+  // The symbol list and the owner reserves are quote-join setup (the symbols are
+  // the join's key set), so they are charged to `quote_join` rather than left
+  // uncharged — that keeps the partition exact rather than approximate.
+  const auto join_setup_start = PhaseTimer::now();
   const std::vector<std::string> symbols = all_symbols(universe_rows, spec.index_symbol);
   std::vector<std::shared_ptr<const MarketSnapshot>> snapshot_owners;
   std::vector<std::vector<ListedOptionQuote>> quote_owners;
   snapshot_owners.reserve(clock.size());
   quote_owners.reserve(clock.size());
+  timer.add("quote_join", join_setup_start);
   for (const SnapshotRef &ref : clock.refs()) {
+    const auto snapshot_start = PhaseTimer::now();
     ATX_TRY(std::shared_ptr<const MarketSnapshot> snapshot,
             config.snapshot_cache->load(ref.archive_path, config.query_pricing_tier));
     snapshot_owners.push_back(std::move(snapshot));
+    timer.add("snapshot_load", snapshot_start, 1u);
+
+    const auto quote_start = PhaseTimer::now();
     ATX_TRY(std::vector<ListedOptionQuote> quotes,
             listed_quotes_for_date(spec, definitions, symbols, ref.date));
     quote_owners.push_back(std::move(quotes));
+    timer.add("quote_join", quote_start, 1u);
   }
+  const auto reconcile_start = PhaseTimer::now();
   std::vector<ListedReconciliationSnapshot> reconciliation_snapshots;
   reconciliation_snapshots.reserve(clock.size());
   for (std::size_t i = 0; i < clock.size(); ++i) {
@@ -567,7 +601,7 @@ Status run_backtest_command(const fs::path &run_dir) {
   ATX_TRY(ListedDispersionReconciliation reconciliation,
           reconcile_listed_schedule(schedule, reconciliation_snapshots));
   ATX_TRY_VOID(validate_listed_reconciliation_backtest(reconciliation, backtest));
-  timer.add("reconciliation", phase, clock.size());
+  timer.add("reconcile", reconcile_start, clock.size());
 
   // Hard cutover: the loose backtest.tsv / reconciliation.tsv / contract_marks.tsv
   // result files are replaced by the run.atxrun result container. The economic
