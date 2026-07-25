@@ -637,6 +637,184 @@ invoice before treating $0.0000 as settled.
 
 ## Steps 6-7 — full production build + final report
 
-<!-- STEP67-RESULT -->
+## Step 6 — Full production build
+
+Full 51-name universe (discovered from the hive, no `--symbols`), 2026-07-01..24,
+`--index SPY --r 0.043`, into a **fresh** database root. Fresh on purpose: the smoke
+database holds surfaces fitted by the pinned path, and mixing pinned and unpinned
+provenance in one production artifact would be dishonest.
+
+### An operational limit, found the hard way
+
+The first attempt ran the whole month as one range and had to be killed: **6.5 GB
+resident after 16 minutes with zero partitions written**, on a 15.7 GB machine with 2.2 GB
+free. The loader holds every date's decoded tables until the parallel pass — a limitation
+already on this branch's minors list, here quantified against real data at production
+width for the first time.
+
+Chunking is safe and yields an identical database: partitions are per-date and
+independent, the build is cell-aware and resumable, config generation runs once on the
+first chunk from the earliest board exactly as the full range would (later chunks report
+`n_skipped_existing` and reuse them), and symbol discovery is a union across dates where
+every session carries all 51 names.
+
+**Operational guidance: a full-month, full-universe build does not fit in 16 GB. Chunk
+it.** Chunks used here: 07-01..09 (6 sessions), 07-10..16 (5), 07-17..24 (6).
+
+Measured later: peak memory is driven far more by symbol width and concurrent fit
+workspaces than by date count — the 6-session chunk still reached 5.7 GB. If memory is
+tight, lowering `--fit-workers` is the better lever than narrowing the range.
+
+### Results
+
+| chunk | sessions | cells ok / attempted | outcome |
+|---|---|---|---|
+| A 07-01..09 | 6 | 297 / 300 | exit 0 |
+| B 07-10..16 | 5 | 247 / 250 | exit 0 |
+| C 07-17..24 | 6 | — | **crashed** (below) |
+| C re-run per date | 6 | 297 / 300 | exit 0 each |
+
+Chunk A also reported `config.n_configured 50`, `n_disabled_failed 1`; chunk B reported
+`n_configured 0`, `n_skipped_existing 51`, confirming **config selection converges at
+production width** — a resume re-selects nothing.
+
+### Chunk C crashed, and the bisect changed the conclusion
+
+```
+[10:02:20.833] [C] [column.hpp:235] CHECK failed: raw != nullptr
+Illegal instruction     ./build/bin/step6-build.exe ... --from 2026-07-17 --to 2026-07-24
+CHUNK_C_EXIT=132
+```
+
+Seventeen minutes of work, **zero partitions written** — the process died rather than
+failing a cell, so nothing was salvaged. That is a categorically worse failure mode than a
+failed fit, which costs exactly one surface.
+
+The obvious reading — a malformed input or a poisonous board — is **wrong**. All six date
+files probe structurally normal (51 row groups each, no zero-row groups, 141k-148k rows),
+and **every one of the six dates succeeds when run individually**, 297/300 with no crash.
+The distinguishing factor was memory: chunk C loaded six dates while a compiler was
+running, with roughly 3 GB free. So this is an allocation failure surfacing as a hard
+`CHECK` rather than as a clean error.
+
+It is **not root-caused to a line** and is recorded as an open finding with its
+reproduction conditions. What is certain is the shape: under memory pressure this pipeline
+aborts the process instead of degrading, and a long chunk loses everything.
+
+### Final production database
+
+```
+$ atx-vol-surface-db info --db C:/atx-data/surface-db/prod-2026-07
+generation 69
+symbols 51
+symbols_enabled 50
+partitions 17
+partitions_missing 0
+surfaces 841
+bytes_on_disk 6631424
+```
+
+**841 surfaces of 850 attempted — 98.9% coverage** (867 cells minus BRK.B's 17), across
+17 sessions and 6.4 MB. Every one of the 9 failures carries a captured reason.
+
+Coverage at production width is *better* than the 3-symbol smoke's 93.3%, which is
+consistent with the unpinned auto route suiting the 37 unseeded names that dominate the
+universe.
+
+The 9 failures split into two kinds, and the distinction is only visible because of the
+instrumentation:
+
+- **Marginal** — SPY 07-15 and 07-22 miss the butterfly bound by 0.000000 and 0.000107
+  with slopes at −1.0, and AAPL 07-14 fails on `InvalidDomain`. These are the same cells
+  the 3-symbol smoke failed, so they are symbol-intrinsic rather than universe-dependent.
+- **Genuinely arbitrage-violating** — MCD 07-01, COST 07-08 and UNH 07-15 report 18-21
+  butterfly violations *together with* 17-28 calendar violations. No curve family should
+  fit these boards, and reporting them honestly is the correct outcome.
+
+Before the instrumentation both classes were the same anonymous count.
+
+### Step 6 gates
+
+**Gate — re-run re-fits nothing: FAILS, and the cost is now measured.** Re-running
+07-01..09 against the finished database:
+
+```
+config.n_skipped_existing 51
+coverage.cells_to_fit             3
+coverage.cells_refit            147
+coverage.cells_already_present  150
+coverage.dates_written            3
+coverage.dates_skipped_complete   3
+```
+
+Three dates hold a failure; each is rewritten whole, dragging all 49 healthy siblings back
+through the fitter. **3 useful retries cost 147 wasted re-fits — a 49× amplification, and
+the multiplier is the universe width.**
+
+**The plan's gate text, `cells_to_fit == 0`, is unachievable by design.** Failed fits
+retry forever so that a transient failure stays recoverable; there is deliberately no
+persisted known-failed state, and confirming this at the source found no channel by which
+a prior failure could suppress a retry. The only way to satisfy the gate as written would
+be to persist known-failed state, which the design explicitly rejects. **The gate is not
+being redefined to make it pass.** The 3 retries are correct. The 147 re-fits are the
+defect, and the honest invariant is `cells_refit == 0`.
+
+**Gate — CLI verify: FAILED verdict, correctly, and the integrity result is strong.**
+
+```
+$ atx-vol-surface-db verify --db C:/atx-data/surface-db/prod-2026-07 --min-cells 800
+partitions 17 / partitions_in_db 17 / symbols 50
+cells_checked 850
+cells_ok        841
+cells_unmappable  9
+cells_non_finite  0
+cells_checksum    0
+failures_reported 9 / failures_elided 0
+fail 2026-07-01 MCD   fail 2026-07-08 COST  fail 2026-07-09 PG
+fail 2026-07-14 AAPL  fail 2026-07-15 SPY   fail 2026-07-15 UNH
+fail 2026-07-20 KO    fail 2026-07-22 SPY   fail 2026-07-23 JPM
+verdict FAILED          ($? = 1)
+```
+
+Verify reaches the same nine cells from the **database alone**, without reading the build
+reports — an independent confirmation rather than an echo. And the two integrity counters
+are the ones that matter: `cells_checksum 0` means every one of the 841 stored surfaces
+passes its payload CRC, and `cells_non_finite 0` means every one evaluates finite at the
+money. The verdict is FAILED because nine requested cells are genuinely absent, which is
+what a truthful verdict should say.
+
+**Gate — CLI query: PASSES, with economically coherent values.**
+
+```
+$ atx-vol-surface-db query --db ... --key 2026-07-24 --tenor 0.0833 --symbol <S> --strike <K>
+SPY   K=740  iv 0.1526  total_variance 0.0019  forward 741.15  n_slices 33
+NVDA  K=207  iv 0.3855  total_variance 0.0124  forward 206.76  n_slices 19
+JPM   K=354  iv 0.2225  total_variance 0.0041  forward 353.55  n_slices 15
+```
+
+Each strike is at that name's own one-month forward. The result is checked as economics,
+not just as a non-crash: **SPY 15.3% < JPM 22.3% < NVDA 38.6%** is the ordering an options
+desk would expect — broad index below a large bank below a high-beta semiconductor — and
+each forward matches the name's price level. A first attempt queried all three at K=100,
+which returned implied vols of 2.13 / 0.83 / 1.34; that is not a defect but the surface
+honestly extrapolating hundreds of points into the wing, and it is recorded here because
+a reader who saw only those numbers might conclude otherwise.
+
+### Step 6 verdict
+
+| acceptance item | result |
+|---|---|
+| partitions, symbols, surfaces, bytes recorded | PASS — 17 / 51 / 841 / 6.4 MB |
+| coverage table | PASS — 98.9%, every failure with a reason |
+| wall time | PASS — ~24 min per 6-session chunk at 12 fit workers |
+| cumulative spend | PASS — $0.0000 |
+| re-run proves fits-zero | **FAIL** — unachievable by design; 49× amplification measured |
+| database integrity | PASS — 0 checksum, 0 non-finite over 841 surfaces |
+| query a cell | PASS — values economically coherent |
+
+
+## Step 7 — Final report
+
+<!-- STEP7 -->
 
 **Cumulative realized spend for this run: $0.0000 / $100.**
