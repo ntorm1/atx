@@ -291,6 +291,18 @@ struct DispersionRunConfig {
 // F4: assemble the ENGINE run config the listed replay actually runs under.
 // This is the single place the typed spec becomes engine behaviour, so a knob
 // that is set here is provably reachable and one that is not is provably dead.
+//
+// REV-TAIL I-3 (2026-07-25): that claim was ASPIRATIONAL until this date. There
+// were two places. `dispersion_backtest_config_from` — the builder the shipped
+// `run-surface-backtest` goes through — hand-built its own `backtest.run`, set
+// frictions/financing, hardcoded `unpriced = Error` over the spec's value, and
+// never set `surface_provenance_policy` / `book_entry_fill_slippage` /
+// `reconcile_nav` at all. Since that route reads the STRICT typed config, those
+// four keys bound by name, passed `reject_unknown()`, and then did nothing.
+// `dispersion_backtest_config_from` now delegates HERE, so the sentence above is
+// literally true and the surface route cannot silently drift from the listed one.
+// `DispersionBacktestConfigFrom.AgreesWithTheEngineRunConfigBuilderOnEveryKnob`
+// is the guard that keeps it true.
 [[nodiscard]] RunConfig dispersion_engine_run_config_from(const DispersionRunConfig &config);
 
 // F5 (BT-T2) + FIX-F N2: the ONE construction of the engine RunConfig the listed
@@ -399,6 +411,11 @@ read_dispersion_run_config(const std::filesystem::path &path);
 // Assemble the surface-only backtest config from the typed run config. This is
 // where X2 frictions/financing, X3 limits, X6 costs and the previously-hardcoded
 // multiplier actually reach the engine.
+//
+// Its `run` member is built by `dispersion_engine_run_config_from` (above) rather
+// than hand-assembled, so the surface route and the listed route honour the SAME
+// set of engine knobs. See REV-TAIL I-3 at that declaration for what this cost
+// before it was true.
 [[nodiscard]] DispersionBacktestConfig
 dispersion_backtest_config_from(const DispersionRunConfig &config);
 

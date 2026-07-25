@@ -1567,18 +1567,28 @@ DispersionBacktestConfig dispersion_backtest_config_from(const DispersionRunConf
   backtest.limits = config.limits;
   backtest.weighting = config.weighting; // X4
   backtest.strike = config.strike;       // X4
-  backtest.run.unpriced = UnpricedLotPolicy::Error;
   // X2/X6: the wiring that never existed. The dispersion path built a RunConfig
   // that left `frictions` and `financing` default-constructed, so every fill was a
   // frictionless mid and no carry ever accrued, regardless of the run spec.
-  backtest.run.frictions = dispersion_effective_frictions(config.frictions, config.costs);
-  backtest.run.financing = config.financing;
-  if (config.rate.apply_to_financing) {
-    // `flat_rate` previously reached the fit batch ONLY. Opting in routes the same
-    // rate into the cash/borrow ledger so a declared r actually accrues carry.
-    backtest.run.financing.borrow_rate = config.rate.flat_rate;
-    backtest.run.financing.finance_premium = true;
-  }
+  //
+  // REV-TAIL I-3. This block used to hand-build `backtest.run`: it set frictions
+  // and financing (X2/X6) but hardcoded `run.unpriced = UnpricedLotPolicy::Error`,
+  // ignoring `config.unpriced`, and never set `surface_provenance_policy`,
+  // `book_entry_fill_slippage` or `reconcile_nav` at all. Because
+  // `dispersion_run_surface_backtest` reads the STRICT typed config, all four of
+  // those keys bound by name and survived `reject_unknown()` — so the shipped
+  // `run-surface-backtest` accepted four spec keys by name and gave them no effect.
+  //
+  // Deferring to `dispersion_engine_run_config_from` makes the "single place"
+  // claim at dispersion_run.hpp:291-293 literally true — there is now exactly one
+  // construction of the engine RunConfig, and a knob visible there is reachable
+  // from BOTH routes. It cannot move a golden: every one of the four defaults to
+  // precisely the value this block hardcoded or inherited (`unpriced` Error,
+  // `provenance` Compatibility, the two flags false), so a spec that does not
+  // mention them yields a byte-identical config. `DispersionBacktestConfigFrom.
+  // DefaultSpecKeepsTheShippedEngineDefaults` pins that, and it was green BEFORE
+  // this change as well as after.
+  backtest.run = dispersion_engine_run_config_from(config);
   return backtest;
 }
 

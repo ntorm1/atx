@@ -447,6 +447,79 @@ TEST(DispersionReferenceReconcileRealData, PublishedRunDirectoriesCarryEveryStri
   }
 }
 
+// ── REV-TAIL I-3 — the four keys that parsed, validated, and did nothing ──────
+//
+// `dispersion_run_surface_backtest` (dispersion_run.cpp:2377) reads the STRICT
+// typed config, so `unpriced`, `provenance`, `book_entry_fill_slippage` and
+// `reconcile_nav` each bind by name (binder at :1434-1443) and survive
+// `reject_unknown()`. It then hands off to `dispersion_backtest_config_from`,
+// which hardcoded `run.unpriced = UnpricedLotPolicy::Error` and never set the
+// other three at all. Four spec keys accepted by name, zero effect on the shipped
+// `run-surface-backtest` — the sprint's signature defect class, on the route
+// 347ad44's own evidence is built on.
+//
+// This asserts the one property that makes a knob a knob: a non-default value set
+// on the typed spec is the value the engine actually runs under. `config.run` is
+// what reaches `run_backtest` (dispersion_backtest.cpp:112,120), so this is the
+// engine's real input and not a bookkeeping copy.
+TEST(DispersionBacktestConfigFrom, EveryDeclaredEngineKnobReachesTheEngineRunConfig) {
+  DispersionRunConfig config;
+  config.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  config.provenance = SurfaceProvenancePolicy::RequireAdmittedRisk;
+  config.book_entry_fill_slippage = true;
+  config.reconcile_nav = true;
+
+  const DispersionBacktestConfig backtest = dispersion_backtest_config_from(config);
+
+  EXPECT_EQ(backtest.run.unpriced, UnpricedLotPolicy::ExcludeAndReport)
+      << "spec key `unpriced` was accepted and then overwritten with a hardcoded Error";
+  EXPECT_EQ(backtest.run.surface_provenance_policy, SurfaceProvenancePolicy::RequireAdmittedRisk)
+      << "spec key `provenance` was accepted and never assigned";
+  EXPECT_TRUE(backtest.run.book_entry_fill_slippage)
+      << "spec key `book_entry_fill_slippage` was accepted and never assigned";
+  EXPECT_TRUE(backtest.run.reconcile_nav)
+      << "spec key `reconcile_nav` was accepted and never assigned";
+}
+
+// The other half of I-3, and the reason wiring the four keys cannot move a golden:
+// every one of them defaults to exactly the value the surface route hardcoded or
+// inherited, so a spec that does not mention them produces a byte-identical engine
+// config before and after the fix. If a default here ever diverges from
+// `RunConfig`'s, this pins the day it happens.
+TEST(DispersionBacktestConfigFrom, DefaultSpecKeepsTheShippedEngineDefaults) {
+  const DispersionBacktestConfig backtest = dispersion_backtest_config_from(DispersionRunConfig{});
+
+  EXPECT_EQ(backtest.run.unpriced, UnpricedLotPolicy::Error);
+  EXPECT_EQ(backtest.run.surface_provenance_policy, SurfaceProvenancePolicy::Compatibility);
+  EXPECT_FALSE(backtest.run.book_entry_fill_slippage);
+  EXPECT_FALSE(backtest.run.reconcile_nav);
+}
+
+// The two builders must agree on every knob they both carry. `dispersion_run.hpp:291`
+// calls `dispersion_engine_run_config_from` "the single place the typed spec becomes
+// engine behaviour, so a knob that is set here is provably reachable and one that is
+// not is provably dead". That claim is only true while the surface route's builder
+// cannot drift from it — which is what this pins.
+TEST(DispersionBacktestConfigFrom, AgreesWithTheEngineRunConfigBuilderOnEveryKnob) {
+  DispersionRunConfig config;
+  config.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  config.provenance = SurfaceProvenancePolicy::RequireAdmittedRisk;
+  config.book_entry_fill_slippage = true;
+  config.reconcile_nav = true;
+  config.rate.flat_rate = 0.043;
+  config.rate.apply_to_financing = true;
+
+  const RunConfig engine = dispersion_engine_run_config_from(config);
+  const RunConfig surface = dispersion_backtest_config_from(config).run;
+
+  EXPECT_EQ(surface.unpriced, engine.unpriced);
+  EXPECT_EQ(surface.surface_provenance_policy, engine.surface_provenance_policy);
+  EXPECT_EQ(surface.book_entry_fill_slippage, engine.book_entry_fill_slippage);
+  EXPECT_EQ(surface.reconcile_nav, engine.reconcile_nav);
+  EXPECT_DOUBLE_EQ(surface.financing.borrow_rate, engine.financing.borrow_rate);
+  EXPECT_EQ(surface.financing.finance_premium, engine.financing.finance_premium);
+}
+
 TEST(DispersionReferenceReconcile, M10_ContractMarksWithNoStatusColumnIsRejected) {
   const fs::path run = make_run_dir("m10_status");
   write_file(run / "trade_schedule.tsv", schedule_text());
