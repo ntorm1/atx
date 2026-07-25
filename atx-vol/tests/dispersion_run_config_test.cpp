@@ -15,10 +15,12 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 
 #include "atx/vol/dispersion_backtest.hpp"
 #include "atx/vol/dispersion_run.hpp"
+#include "atx/vol/dispersion_workflow.hpp" // read_run_spec / write_resolved_spec (F4)
 #include "atx/vol/types.hpp"
 
 using namespace atx::vol;
@@ -832,4 +834,226 @@ TEST(DispersionRunConfigXB, BenchmarkSeriesReader_ParsesAndRefusesMalformedRows)
     ASSERT_FALSE(series.has_value());
     EXPECT_EQ(series.error().code(), ErrorCode::NotFound);
   }
+}
+
+// â”€â”€ WS-F F4 (BT-W): the LISTED route's execution knobs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//
+// X2/X6 routed frictions, financing, limits and costs into the SURFACE backtest
+// (`dispersion_backtest_config_from`). The LISTED `run-backtest` â€” the headline
+// artifact â€” still built `RunConfig config; config.unpriced = Error;` and
+// nothing else, so every published listed NAV was frictionless, carry-free and
+// provenance-permissive REGARDLESS of what the spec declared. And even for the
+// surface route the value could not reach the run directory, because
+// `write_resolved_spec` re-emits only the RunSpec vocabulary at build-corpus
+// time and dropped everything else on the floor.
+
+namespace {
+
+// The pinned baseline plus every execution knob turned on. Nothing here is a
+// recommendation; the point is that each value is observable downstream.
+constexpr const char *kFullyKnobbedSpec =
+    "key\tvalue\n"
+    "label\tF4 wiring\n"
+    "date_lo\t2026-01-02\n"
+    "date_hi\t2026-04-30\n"
+    "snapshot_suffix\tT19:55:00Z\n"
+    "opra_root\tC:\\atx-data\\spy-dispersion\\opra\n"
+    "path_template\t{symbol}/{date}.parquet\n"
+    "universe_schedule\tuniverse_schedule.tsv\n"
+    "flat_rate\t0.043\n"
+    "rate_applies_to_financing\t1\n"
+    "min_names\t10\n"
+    "min_weight_coverage\t0.8\n"
+    "target_dte_days\t30\n"
+    "min_dte_days\t21\n"
+    "max_dte_days\t60\n"
+    "roll_dte_days\t7\n"
+    "gross_index_vega\t10000\n"
+    "delta_band\t0\n"
+    "fit_workers\t0\n"
+    "core_mode\t0\n"
+    "friction_spread_kind\tprice_bps\n"
+    "friction_half_spread_bps\t25\n"
+    "friction_per_contract_cost\t0.65\n"
+    "friction_hedge_slippage_bps\t1.5\n"
+    "cost_impact_k\t0.3\n"
+    "cost_adv_fraction\t0.05\n"
+    "financing_shares_carry\t1\n"
+    "financing_initial_cash\t2500000\n"
+    "provenance\trequire_admitted_risk\n"
+    "unpriced\texclude\n"
+    "fill_policy\tcross_spread\n"
+    "book_entry_fill_slippage\t1\n"
+    "reconcile_nav\t1\n"
+    "quote_min_bid\t0.05\n"
+    "quote_max_age_ns\t300000000000\n"
+    "quote_reject_locked\t1\n";
+
+[[nodiscard]] std::map<std::string, std::string> read_kv(const fs::path &path) {
+  std::map<std::string, std::string> out;
+  std::ifstream in(path, std::ios::binary);
+  std::string line;
+  while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    const std::size_t tab = line.find('\t');
+    if (tab == std::string::npos || line.substr(0, tab) == "key") {
+      continue;
+    }
+    out.emplace(line.substr(0, tab), line.substr(tab + 1));
+  }
+  return out;
+}
+
+} // namespace
+
+TEST(DispersionRunConfigStrict, ListedEngineConfigCarriesEveryDeclaredExecutionKnob) {
+  const fs::path path = write_spec("atx-disp-cfg-f4-knobs", kFullyKnobbedSpec);
+  const Result<DispersionRunConfig> config = read_dispersion_run_config(path);
+  ASSERT_TRUE(config) << config.error().to_string();
+
+  // THE gate: the engine config the listed replay actually runs under.
+  const RunConfig engine = dispersion_engine_run_config_from(*config);
+
+  EXPECT_EQ(engine.frictions.spread_kind, FrictionModel::SpreadKind::PriceBps);
+  // The declared 25 bps is FOLDED with the square-root impact term (X6), so what
+  // reaches the engine is strictly wider than the quoted half-spread. Asserting
+  // equality here would have been asserting that impact is ignored.
+  EXPECT_GT(engine.frictions.half_spread_bps, 25.0);
+  EXPECT_DOUBLE_EQ(engine.frictions.per_contract_cost, 0.65);
+  EXPECT_DOUBLE_EQ(engine.frictions.hedge_slippage_bps, 1.5);
+  EXPECT_TRUE(engine.financing.shares_carry);
+  EXPECT_DOUBLE_EQ(engine.financing.initial_cash, 2'500'000.0);
+  // rate_applies_to_financing routes flat_rate into the ledger.
+  EXPECT_DOUBLE_EQ(engine.financing.borrow_rate, 0.043);
+  EXPECT_TRUE(engine.financing.finance_premium);
+  EXPECT_EQ(engine.surface_provenance_policy, SurfaceProvenancePolicy::RequireAdmittedRisk);
+  EXPECT_EQ(engine.unpriced, UnpricedLotPolicy::ExcludeAndReport);
+  EXPECT_TRUE(engine.book_entry_fill_slippage);
+  EXPECT_TRUE(engine.reconcile_nav);
+  EXPECT_EQ(config->fill_policy, ScheduleFillPolicy::CrossSpread);
+  EXPECT_DOUBLE_EQ(config->quote_quality.min_bid, 0.05);
+  EXPECT_EQ(config->quote_quality.max_quote_age_ns, 300'000'000'000LL);
+  EXPECT_TRUE(config->quote_quality.reject_locked);
+
+  EXPECT_EQ(dispersion_friction_regime(*config), DispersionFrictionRegime::FrictionedWithImpact);
+}
+
+TEST(DispersionRunConfigStrict, DefaultSpecStillYieldsThePinnedFrictionlessEngineConfig) {
+  const fs::path path = write_spec("atx-disp-cfg-f4-default", kBaselineSpec);
+  const Result<DispersionRunConfig> config = read_dispersion_run_config(path);
+  ASSERT_TRUE(config) << config.error().to_string();
+
+  // The reproduction guarantee: a spec that names no execution knob must produce
+  // exactly the engine config the pinned golden ran under.
+  const RunConfig engine = dispersion_engine_run_config_from(*config);
+  const RunConfig pinned{}; // the pre-F4 listed route was this, plus unpriced=Error
+  EXPECT_EQ(engine.frictions.spread_kind, FrictionModel::SpreadKind::None);
+  EXPECT_DOUBLE_EQ(engine.frictions.half_spread_bps, pinned.frictions.half_spread_bps);
+  EXPECT_DOUBLE_EQ(engine.frictions.vol_tick, pinned.frictions.vol_tick);
+  EXPECT_DOUBLE_EQ(engine.frictions.per_contract_cost, pinned.frictions.per_contract_cost);
+  EXPECT_DOUBLE_EQ(engine.frictions.hedge_slippage_bps, pinned.frictions.hedge_slippage_bps);
+  EXPECT_DOUBLE_EQ(engine.financing.borrow_rate, pinned.financing.borrow_rate);
+  EXPECT_EQ(engine.financing.finance_premium, pinned.financing.finance_premium);
+  EXPECT_EQ(engine.financing.shares_carry, pinned.financing.shares_carry);
+  EXPECT_DOUBLE_EQ(engine.financing.initial_cash, pinned.financing.initial_cash);
+  EXPECT_EQ(engine.surface_provenance_policy, SurfaceProvenancePolicy::Compatibility);
+  EXPECT_EQ(engine.unpriced, UnpricedLotPolicy::Error); // the pre-F4 hardcode
+  EXPECT_FALSE(engine.book_entry_fill_slippage);
+  EXPECT_FALSE(engine.reconcile_nav);
+  EXPECT_EQ(config->fill_policy, ScheduleFillPolicy::ModelMark);
+}
+
+TEST(DispersionRunConfigStrict, QuoteSideFillWithoutSlippageBookingIsRejected) {
+  // A fill policy the engine does not CHARGE is invisible in NAV (F2), so the
+  // combination is refused rather than shipped as a knob that does nothing.
+  std::string body = kBaselineSpec;
+  body += "fill_policy\tcross_spread\n";
+  const fs::path path = write_spec("atx-disp-cfg-f4-inert-fill", body);
+  const Result<DispersionRunConfig> config = read_dispersion_run_config(path);
+  ASSERT_FALSE(config);
+  EXPECT_EQ(config.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(config.error().message().find("book_entry_fill_slippage"), std::string::npos)
+      << config.error().message();
+}
+
+TEST(DispersionRunConfigStrict, EffectiveRunConfigArtifactRecordsRegimeFirstAndEveryValue) {
+  const fs::path path = write_spec("atx-disp-cfg-f4-artifact", kFullyKnobbedSpec);
+  const Result<DispersionRunConfig> config = read_dispersion_run_config(path);
+  ASSERT_TRUE(config) << config.error().to_string();
+
+  const fs::path artifact = path.parent_path() / "run_config.tsv";
+  ASSERT_TRUE(write_dispersion_effective_config(artifact, *config).has_value());
+
+  // REGIME FIRST (M4): the very first data row names the execution regime.
+  std::ifstream in(artifact, std::ios::binary);
+  std::string header;
+  std::string first;
+  ASSERT_TRUE(std::getline(in, header));
+  ASSERT_TRUE(std::getline(in, first));
+  EXPECT_EQ(header.substr(0, 9), "key\tvalue");
+  EXPECT_EQ(first.substr(0, first.find('\t')), "friction_regime");
+
+  const std::map<std::string, std::string> kv = read_kv(artifact);
+  for (const char *key : {"friction_regime", "friction_regime_detail", "friction_spread_kind",
+                          "friction_half_spread_bps", "friction_per_contract_cost",
+                          "friction_hedge_slippage_bps", "cost_impact_k", "cost_adv_fraction",
+                          "financing_borrow_rate", "financing_finance_premium",
+                          "financing_shares_carry", "financing_initial_cash", "provenance",
+                          "unpriced", "fill_policy", "book_entry_fill_slippage", "reconcile_nav",
+                          "quote_min_bid", "quote_max_age_ns", "quote_reject_locked"}) {
+    EXPECT_NE(kv.find(key), kv.end()) << "run_config.tsv is missing " << key;
+  }
+  EXPECT_EQ(kv.at("provenance"), "require_admitted_risk");
+  EXPECT_EQ(kv.at("unpriced"), "exclude");
+  EXPECT_EQ(kv.at("fill_policy"), "cross_spread");
+  EXPECT_EQ(kv.at("book_entry_fill_slippage"), "1");
+  EXPECT_EQ(kv.at("quote_max_age_ns"), "300000000000");
+  EXPECT_NE(kv.at("friction_regime_detail").find("bps half-spread"), std::string::npos)
+      << kv.at("friction_regime_detail");
+}
+
+TEST(DispersionRunConfigStrict, BuildCorpusPreservesEveryTypedKeyIntoTheRunDirectory) {
+  // `write_resolved_spec` re-emits ONLY the RunSpec vocabulary, so build-corpus
+  // used to erase every typed knob when it rewrote the run dir's spec: the value
+  // was declared, accepted, and then unreachable by every later stage.
+  const fs::path source = write_spec("atx-disp-cfg-f4-source", kFullyKnobbedSpec);
+
+  const fs::path run_dir = fs::temp_directory_path() / "atx-disp-cfg-f4-rundir";
+  std::error_code error;
+  fs::remove_all(run_dir, error);
+  fs::create_directories(run_dir, error);
+  const fs::path run_spec = run_dir / "run_spec.tsv";
+
+  // What build-corpus writes: the RunSpec projection only.
+  {
+    const Result<RunSpec> spec = read_run_spec(source);
+    ASSERT_TRUE(spec) << spec.error().to_string();
+    ASSERT_TRUE(write_resolved_spec(run_spec, *spec).has_value());
+  }
+  const std::map<std::string, std::string> projected = read_kv(run_spec);
+  ASSERT_EQ(projected.find("friction_half_spread_bps"), projected.end())
+      << "fixture assumption broken: the RunSpec writer already carries typed keys";
+
+  // ... and the F4 repair.
+  ASSERT_TRUE(persist_typed_spec_keys(source, run_spec).has_value());
+  const std::map<std::string, std::string> preserved = read_kv(run_spec);
+  for (const char *key :
+       {"friction_spread_kind", "friction_half_spread_bps", "friction_per_contract_cost",
+        "friction_hedge_slippage_bps", "cost_impact_k", "cost_adv_fraction",
+        "rate_applies_to_financing", "financing_shares_carry", "financing_initial_cash",
+        "provenance", "unpriced", "fill_policy", "book_entry_fill_slippage", "reconcile_nav",
+        "quote_min_bid", "quote_max_age_ns", "quote_reject_locked"}) {
+    EXPECT_NE(preserved.find(key), preserved.end()) << "run dir spec lost " << key;
+  }
+  // The RunSpec keys are NOT duplicated (a duplicate key is a hard parse error).
+  const Result<DispersionRunConfig> round_trip = read_dispersion_run_config(run_spec);
+  ASSERT_TRUE(round_trip) << round_trip.error().to_string();
+  EXPECT_DOUBLE_EQ(round_trip->frictions.half_spread_bps, 25.0);
+  EXPECT_EQ(round_trip->fill_policy, ScheduleFillPolicy::CrossSpread);
+  EXPECT_EQ(round_trip->provenance, SurfaceProvenancePolicy::RequireAdmittedRisk);
+  EXPECT_EQ(round_trip->quote_quality.max_quote_age_ns, 300'000'000'000LL);
+
+  fs::remove_all(run_dir, error);
 }

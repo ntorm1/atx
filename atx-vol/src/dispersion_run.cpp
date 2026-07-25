@@ -1335,6 +1335,23 @@ Result<DispersionRunConfig> read_dispersion_run_config(const fs::path &path) {
       {{"compatibility", SurfaceProvenancePolicy::Compatibility},
        {"require_admitted_risk", SurfaceProvenancePolicy::RequireAdmittedRisk}}));
 
+  // ── WS-F F4 (BT-W): the listed-route execution knobs ──────────────────────
+  ATX_TRY_VOID(binder.enumerated("unpriced", config.unpriced,
+                                 {{"error", UnpricedLotPolicy::Error},
+                                  {"exclude", UnpricedLotPolicy::ExcludeAndReport}}));
+  ATX_TRY_VOID(binder.enumerated("fill_policy", config.fill_policy,
+                                 {{"model_mark", ScheduleFillPolicy::ModelMark},
+                                  {"quote_mid", ScheduleFillPolicy::QuoteMid},
+                                  {"cross_spread", ScheduleFillPolicy::CrossSpread}}));
+  ATX_TRY_VOID(
+      binder.boolean("book_entry_fill_slippage", config.book_entry_fill_slippage));
+  ATX_TRY_VOID(binder.boolean("reconcile_nav", config.reconcile_nav));
+
+  // ── WS-F F6 (BT-P2-8): quote-quality admission, consumed by build-schedule ─
+  ATX_TRY_VOID(binder.number("quote_min_bid", config.quote_quality.min_bid));
+  ATX_TRY_VOID(binder.number("quote_max_age_ns", config.quote_quality.max_quote_age_ns));
+  ATX_TRY_VOID(binder.boolean("quote_reject_locked", config.quote_quality.reject_locked));
+
   // Strictness: everything not bound above is rejected, by name.
   ATX_TRY_VOID(binder.reject_unknown());
 
@@ -1356,6 +1373,19 @@ Result<DispersionRunConfig> read_dispersion_run_config(const fs::path &path) {
   }
   if (config.entry_every_n == 0u) {
     return Err(ErrorCode::InvalidArgument, "entry_every_n must be positive");
+  }
+  if (config.quote_quality.min_bid < 0.0 || config.quote_quality.max_quote_age_ns < 0) {
+    return Err(ErrorCode::InvalidArgument,
+               "quote_min_bid must be nonnegative and quote_max_age_ns must be >= 0 (0 = off)");
+  }
+  if (config.fill_policy != ScheduleFillPolicy::ModelMark && !config.book_entry_fill_slippage) {
+    // A quote-side fill that the engine does not charge is INVISIBLE in NAV
+    // (BT-P1-1 / F2): NAV sums mark-to-mark moves, and the first move is
+    // measured from the entry date's mark, not from what was paid. Accepting
+    // this combination would ship a knob that silently does nothing.
+    return Err(ErrorCode::InvalidArgument,
+               "fill_policy other than model_mark requires book_entry_fill_slippage=1, "
+               "otherwise the fill/mark difference never reaches NAV");
   }
   if (config.costs.k < 0.0 || config.costs.beta <= 0.0 || config.costs.adv_fraction < 0.0) {
     return Err(ErrorCode::InvalidArgument, "invalid transaction-cost model");
@@ -1455,6 +1485,133 @@ DispersionBacktestConfig dispersion_backtest_config_from(const DispersionRunConf
     backtest.run.financing.finance_premium = true;
   }
   return backtest;
+}
+
+RunConfig dispersion_engine_run_config_from(const DispersionRunConfig &config) {
+  // WS-F F4 (BT-W). The listed replay used to construct `RunConfig config;
+  // config.unpriced = Error;` and nothing else — so `friction_*`,
+  // `financing_*`, `cost_*` and `provenance` in the spec were accepted, echoed,
+  // and then had no effect whatsoever on the headline artifact. Every field the
+  // engine honours is now assigned from the typed spec HERE, in one place, so a
+  // knob is either visible in this function or provably dead.
+  RunConfig run;
+  run.unpriced = config.unpriced;
+  run.frictions = dispersion_effective_frictions(config.frictions, config.costs);
+  run.financing = config.financing;
+  if (config.rate.apply_to_financing) {
+    run.financing.borrow_rate = config.rate.flat_rate;
+    run.financing.finance_premium = true;
+  }
+  run.surface_provenance_policy = config.provenance;
+  run.book_entry_fill_slippage = config.book_entry_fill_slippage;
+  run.reconcile_nav = config.reconcile_nav;
+  return run;
+}
+
+Status persist_typed_spec_keys(const fs::path &source_spec, const fs::path &run_spec) {
+  ATX_TRY(KvMap source_values, read_kv_tsv(source_spec));
+  // Exactly the vocabulary `write_resolved_spec` emits. Anything else in the
+  // source spec belongs to the typed config and would otherwise be erased.
+  static constexpr std::string_view kRunSpecKeys[] = {
+      "label",           "date_lo",       "date_hi",           "snapshot_suffix",
+      "opra_root",       "path_template", "universe_schedule", "definitions",
+      "occ_ess_root",    "flat_rate",     "min_names",         "min_weight_coverage",
+      "target_dte_days", "min_dte_days",  "max_dte_days",      "roll_dte_days",
+      "gross_index_vega","delta_band",    "fit_workers",       "core_mode"};
+  std::ofstream out(run_spec, std::ios::binary | std::ios::app);
+  if (!out) {
+    return Err(ErrorCode::IoError, "cannot append typed run config keys to " + run_spec.string());
+  }
+  const fs::path source_base = source_spec.parent_path();
+  for (const auto &[key, value] : source_values) {
+    bool is_run_spec_key = false;
+    for (const std::string_view known : kRunSpecKeys) {
+      if (key == known) {
+        is_run_spec_key = true;
+        break;
+      }
+    }
+    if (is_run_spec_key) {
+      continue;
+    }
+    // `benchmark_series` is the one path-valued extra, and the typed reader
+    // resolves relative paths against the spec's OWN directory — so carry it
+    // across absolute, or the run dir would resolve it somewhere else.
+    if (key == "benchmark_series" && !value.empty() && !fs::path{value}.is_absolute()) {
+      out << key << '\t' << (source_base / value).lexically_normal().string() << '\n';
+      continue;
+    }
+    out << key << '\t' << value << '\n';
+  }
+  return out ? Ok() : Err(ErrorCode::IoError, "cannot flush typed run config keys");
+}
+
+Status write_dispersion_effective_config(const fs::path &path, const DispersionRunConfig &config) {
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    return Err(ErrorCode::IoError, "cannot write effective run config " + path.string());
+  }
+  const RunConfig engine = dispersion_engine_run_config_from(config);
+  const auto num = [](double value) {
+    std::array<char, 40> buffer{};
+    const int written = std::snprintf(buffer.data(), buffer.size(), "%.17g", value);
+    return std::string(buffer.data(), written > 0 ? static_cast<std::size_t>(written) : 0u);
+  };
+  const auto spread_kind = [](FrictionModel::SpreadKind kind) -> const char * {
+    switch (kind) {
+    case FrictionModel::SpreadKind::None:
+      return "none";
+    case FrictionModel::SpreadKind::PriceBps:
+      return "price_bps";
+    case FrictionModel::SpreadKind::VolTicks:
+      return "vol_ticks";
+    }
+    return "none";
+  };
+  const auto fill_policy = [](ScheduleFillPolicy p) -> const char * {
+    switch (p) {
+    case ScheduleFillPolicy::ModelMark:
+      return "model_mark";
+    case ScheduleFillPolicy::QuoteMid:
+      return "quote_mid";
+    case ScheduleFillPolicy::CrossSpread:
+      return "cross_spread";
+    }
+    return "model_mark";
+  };
+  out << "key\tvalue\n"
+      // REGIME FIRST (M4): the first two rows say which execution assumptions
+      // produced every number in this run directory.
+      << "friction_regime\t" << to_string(dispersion_friction_regime(config)) << '\n'
+      << "friction_regime_detail\t"
+      << dispersion_regime_detail(engine.frictions, config.costs) << '\n'
+      << "friction_spread_kind\t" << spread_kind(engine.frictions.spread_kind) << '\n'
+      << "friction_half_spread_bps\t" << num(engine.frictions.half_spread_bps) << '\n'
+      << "friction_vol_tick\t" << num(engine.frictions.vol_tick) << '\n'
+      << "friction_per_contract_cost\t" << num(engine.frictions.per_contract_cost) << '\n'
+      << "friction_hedge_slippage_bps\t" << num(engine.frictions.hedge_slippage_bps) << '\n'
+      << "cost_impact_k\t" << num(config.costs.k) << '\n'
+      << "cost_impact_beta\t" << num(config.costs.beta) << '\n'
+      << "cost_adv_fraction\t" << num(config.costs.adv_fraction) << '\n'
+      << "financing_borrow_rate\t" << num(engine.financing.borrow_rate) << '\n'
+      << "financing_finance_premium\t" << (engine.financing.finance_premium ? 1 : 0) << '\n'
+      << "financing_shares_carry\t" << (engine.financing.shares_carry ? 1 : 0) << '\n'
+      << "financing_initial_cash\t" << num(engine.financing.initial_cash) << '\n'
+      << "provenance\t"
+      << (engine.surface_provenance_policy == SurfaceProvenancePolicy::RequireAdmittedRisk
+              ? "require_admitted_risk"
+              : "compatibility")
+      << '\n'
+      << "unpriced\t" << (engine.unpriced == UnpricedLotPolicy::Error ? "error" : "exclude") << '\n'
+      << "fill_policy\t" << fill_policy(config.fill_policy) << '\n'
+      << "book_entry_fill_slippage\t" << (engine.book_entry_fill_slippage ? 1 : 0) << '\n'
+      << "reconcile_nav\t" << (engine.reconcile_nav ? 1 : 0) << '\n'
+      << "quote_min_bid\t" << num(config.quote_quality.min_bid) << '\n'
+      << "quote_max_age_ns\t" << config.quote_quality.max_quote_age_ns << '\n'
+      << "quote_reject_locked\t" << (config.quote_quality.reject_locked ? 1 : 0) << '\n'
+      << "delta_band\t" << num(config.hedge.band) << '\n'
+      << "gross_index_vega\t" << num(config.gross_index_vega) << '\n';
+  return out ? Ok() : Err(ErrorCode::IoError, "cannot flush effective run config");
 }
 
 Status verify_projected_var_artifacts(const fs::path &run_dir, std::size_t n_sessions) {
@@ -1726,6 +1883,9 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
     persisted_spec.definitions_path = "definitions.tsv";
   }
   ATX_TRY_VOID(write_resolved_spec(run_dir / "run_spec.tsv", persisted_spec));
+  // WS-F F4 (BT-W), second half of the wiring gap: the RunSpec writer knows only
+  // the RunSpec vocabulary, so every typed knob was dropped here.
+  ATX_TRY_VOID(persist_typed_spec_keys(source_spec_path, run_dir / "run_spec.tsv"));
   std::printf("built qualified corpus: admitted=%u quarantined=%u source_failed=%u\n",
               built.quality.n_admitted, built.quality.n_quarantined, built.quality.n_source_failed);
   if (corpus_phase_timing_enabled()) {
@@ -1748,6 +1908,9 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
 
 Status dispersion_build_schedule(const fs::path &run_dir) {
   ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
+  // F6 (BT-P2-8): the quote-quality policy that decides which NBBO rows are
+  // admissible has to reach selection, which is here.
+  ATX_TRY(DispersionRunConfig run_config, read_dispersion_run_config(run_dir / "run_spec.tsv"));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
   ATX_TRY(ListedDefinitionTable definitions,
           read_listed_definitions_file((run_dir / "definitions.tsv").string()));
@@ -1782,6 +1945,7 @@ Status dispersion_build_schedule(const fs::path &run_dir) {
     selection_config.min_dte_days = spec.min_dte_days;
     selection_config.max_dte_days = spec.max_dte_days;
     selection_config.min_names = spec.min_names;
+    selection_config.quality = run_config.quote_quality; // F6
     const ListedForwardLookup forward = [&](const DispersionMember &member,
                                             std::int64_t expiry) -> Result<double> {
       const SurfaceRef surface = snapshot.find(member.uid);
@@ -1843,6 +2007,11 @@ Status dispersion_build_schedule(const fs::path &run_dir) {
 
 Status dispersion_run_backtest(const fs::path &run_dir) {
   ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
+  // F4 (BT-W): the SAME file, read through the STRICT typed reader, so the
+  // execution knobs actually govern the headline artifact instead of being
+  // accepted and ignored. Every RunSpec key is bound by this reader too, so an
+  // existing run dir reads identically; an unknown key now fails BY NAME.
+  ATX_TRY(DispersionRunConfig run_config, read_dispersion_run_config(run_dir / "run_spec.tsv"));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
   ATX_TRY(ListedDefinitionTable definitions,
           read_listed_definitions_file((run_dir / "definitions.tsv").string()));
@@ -1851,10 +2020,14 @@ Status dispersion_run_backtest(const fs::path &run_dir) {
   ATX_TRY(ListedDispersionSchedule schedule,
           read_listed_dispersion_schedule_file((run_dir / "trade_schedule.tsv").string()));
   ATX_TRY(ListedDispersionStrategy strategy,
-          ListedDispersionStrategy::create(schedule, spec.delta_band));
-  RunConfig config;
-  config.unpriced = UnpricedLotPolicy::Error;
+          ListedDispersionStrategy::create(schedule, spec.delta_band,
+                                           ScheduleMarkPolicy::ExactArchive,
+                                           run_config.fill_policy));
+  RunConfig config = dispersion_engine_run_config_from(run_config);
   config.snapshot_cache = std::make_shared<SnapshotCache>();
+  // The run records WHAT produced its numbers, regime first (M4), before the
+  // replay so a failed run still leaves the evidence of what it attempted.
+  ATX_TRY_VOID(write_dispersion_effective_config(run_dir / "run_config.tsv", run_config));
   ATX_TRY(BacktestResult backtest, run_backtest(clock, strategy, config));
   if (!strategy.all_rolls_consumed()) {
     return Err(ErrorCode::Unavailable, "backtest did not consume every scheduled roll");

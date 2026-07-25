@@ -24,6 +24,8 @@
 #include "atx/vol/dispersion.hpp"         // DispersionUniverse
 #include "atx/vol/dispersion_backtest.hpp"// DispersionBacktestConfig, run_dispersion_backtest
 #include "atx/vol/dispersion_workflow.hpp"// RunSpec
+#include "atx/vol/listed_dispersion.hpp"  // ListedQuoteQualityConfig (F6)
+#include "atx/vol/listed_dispersion_strategy.hpp" // ScheduleFillPolicy (F2)
 #include "atx/vol/session.hpp"            // FitPreset
 #include "atx/vol/tearsheet.hpp"          // TearSheet
 #include "atx/vol/types.hpp"              // Result, Status
@@ -225,7 +227,54 @@ struct DispersionRunConfig {
   std::filesystem::path benchmark_series{};
   // Periods per year for annualizing. 252 is the shipped convention.
   double periods_per_year{252.0};
+
+  // ── WS-F F4 (BT-W): knobs the LISTED route had no way to reach ─────────────
+  //
+  // X2/X6 wired frictions, financing, limits and costs into the SURFACE
+  // backtest (`dispersion_backtest_config_from`). The listed `run-backtest` —
+  // the headline artifact — still built a default-constructed engine RunConfig
+  // and set only `unpriced`, so every published listed NAV was frictionless,
+  // carry-free and provenance-permissive REGARDLESS of the spec. F4 routes the
+  // same typed config into it via `dispersion_engine_run_config_from`.
+  //
+  // Every default below is the pre-F4 behaviour, so a spec that names none of
+  // them reproduces the pinned run byte-for-byte.
+  UnpricedLotPolicy unpriced{UnpricedLotPolicy::Error};        // spec key `unpriced`
+  ScheduleFillPolicy fill_policy{ScheduleFillPolicy::ModelMark}; // `fill_policy`
+  bool book_entry_fill_slippage{false};                        // `book_entry_fill_slippage`
+  bool reconcile_nav{false};                                   // `reconcile_nav`
+  // F6 quote-quality admission, consumed by `build-schedule`. Note its own
+  // defaults are NOT the pre-F6 behaviour (a zero bid is now rejected and a
+  // 10-minute staleness bound applies) — that is the BT-P2-8 fix, and
+  // `quote_max_quote_age_ns = 0` restores the old contract.
+  ListedQuoteQualityConfig quote_quality{};
 };
+
+// F4: assemble the ENGINE run config the listed replay actually runs under.
+// This is the single place the typed spec becomes engine behaviour, so a knob
+// that is set here is provably reachable and one that is not is provably dead.
+[[nodiscard]] RunConfig dispersion_engine_run_config_from(const DispersionRunConfig &config);
+
+// F4: emit `run_config.tsv` — the EFFECTIVE value of every execution knob the
+// run actually used, REGIME FIRST (M4's reporting contract). A published NAV
+// that does not say which frictions produced it is not a result, and until F4
+// the listed route emitted no such record at all. Key/value TSV in the same
+// key vocabulary as the spec; it is a RECORD of the run, not a re-runnable
+// spec (it deliberately omits the corpus/date/path keys).
+[[nodiscard]] Status write_dispersion_effective_config(const std::filesystem::path &path,
+                                                       const DispersionRunConfig &config);
+
+// F4: carry every key the RunSpec writer does not emit from `source_spec` into
+// the already-written `run_spec` in the run directory.
+//
+// `write_resolved_spec` only knows the RunSpec vocabulary, so build-corpus used
+// to DROP every typed knob (frictions, financing, costs, limits, provenance,
+// and F4/F6's own keys) when it rewrote the run dir's spec. Wiring a reader is
+// necessary but not sufficient — the declared value has to survive the trip, or
+// the knob is still unreachable in practice. Path-valued extras are rewritten
+// absolute so they still resolve from the run directory.
+[[nodiscard]] Status persist_typed_spec_keys(const std::filesystem::path &source_spec,
+                                             const std::filesystem::path &run_spec);
 
 // Classify a run config's execution assumptions. Purely a function of the
 // frictions + cost model that actually reach the engine.
