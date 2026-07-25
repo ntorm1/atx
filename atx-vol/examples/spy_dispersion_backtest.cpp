@@ -2,6 +2,7 @@
 // Each command is a process boundary; no fitter/session object crosses it.
 
 #include <algorithm>
+#include <bit> // std::bit_cast — the mark-divergence equivalence arbiter's bit compare
 #include <charconv>
 #include <chrono>
 #include <cmath>
@@ -756,6 +757,142 @@ Status collect_mark_divergence_replay(const ListedDispersionSchedule &schedule, 
   return Ok();
 }
 
+// ── L10 dual-run equivalence arbiter (Wave D) ────────────────────────────────
+
+// True iff two doubles are BIT-identical.
+//
+// Stricter than `==` in both of the directions that matter to a drift detector:
+// `==` calls +0.0 equal to -0.0 (which would hide a sign flip on a zero-valued
+// mark) and calls a NaN unequal to a bit-identical NaN (which would report a
+// mismatch where the two sources actually agree). A tolerance is out of the
+// question here — the drift this instrument exists to find is precisely the
+// sub-tolerance kind.
+[[nodiscard]] bool bit_equal(double a, double b) noexcept {
+  return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+}
+
+// Full-precision rendering for a mismatch message: 17 significant digits
+// round-trips every double, so the two reported values differ in print whenever
+// they differ in bits.
+[[nodiscard]] std::string fmt_g17(double value) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.17g", value);
+  return std::string(buf);
+}
+
+// Compare the two INDEPENDENT mark-divergence sources bit-exactly: `observed`,
+// appended per step by make_mark_divergence_observer riding
+// RunConfig::step_observer on the priced run, against `arena`, filled by the
+// shadow replay collect_mark_divergence_replay. Both sources are deliberately
+// kept alive: the emitted `mark_divergence` section is still built from the
+// arena, so the artifact is unchanged by construction and this function is pure
+// evidence for the shadow-deletion decision that follows it.
+//
+// WHAT COUNTS AS A MISMATCH — exactly two things, and nothing is exempt:
+//   * a different ROW COUNT;
+//   * any of the ten registry columns differing at the SAME row index.
+// The walk is POSITIONAL: row i against row i. No sort, no key join, no
+// tolerance, no normalisation, no skipped field. That is deliberate — row order
+// is itself part of the equivalence claim (both sources must emit in step order
+// and, within a step, in the strategy's divergence order), so a comparator that
+// key-joined on (date, symbol, side) would silently normalise a reordering away.
+// The first mismatch wins and names the row index, the column, and both values.
+//
+// WHY THIS IS A MEASUREMENT AND NOT A TAUTOLOGY. Nine of the ten columns are
+// pure functions of the frozen schedule and the clock date, so they agree
+// trivially. `live_mark` is not: it is what the pricer returned off a snapshot
+// the two routes LOAD DIFFERENTLY — the shadow through MarketSnapshot::load, the
+// engine through SnapshotCache::load with a cache-build policy. A load-path
+// difference therefore lands on `live_mark` (reported at full precision) and on
+// the ROW SET itself, because ListedDispersionStrategy records a leg only when
+// its live mark differs from its frozen mark: a leg that diverges on one route
+// but not the other moves the row count. Both are reported, neither normalised.
+Status compare_mark_divergence_sources(const std::vector<ListedMarkDivergenceRow> &observed,
+                                       const MarkDivergenceArena &arena) {
+  const auto n = static_cast<std::size_t>(arena.n_rows);
+  if (observed.size() != n) {
+    return Err(ErrorCode::Internal,
+               "mark divergence observer/shadow mismatch at row " + std::to_string(n) +
+                   " field row_count: observer=" + std::to_string(observed.size()) +
+                   " shadow=" + std::to_string(n));
+  }
+  // The arena must be internally consistent before a single value is read out of
+  // it: a column shorter than n_rows would be read out of range, and a dict code
+  // outside its table would decode to the wrong string — either would make the
+  // comparison measure something other than what it claims. Both are staging
+  // defects in the shadow rather than divergences between the sources, so each
+  // gets its own named error instead of being folded into a field mismatch.
+  if (arena.date_codes.size() != n || arena.symbol_codes.size() != n ||
+      arena.raw_symbol_codes.size() != n || arena.side_codes.size() != n ||
+      arena.strike.size() != n || arena.expiry_ts_ns.size() != n ||
+      arena.schedule_mark.size() != n || arena.live_mark.size() != n || arena.diff.size() != n ||
+      arena.abs_diff_bps_of_mark.size() != n) {
+    return Err(ErrorCode::Internal,
+               "mark divergence shadow arena: a column length disagrees with n_rows");
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    if (arena.date_codes[i] >= arena.date_dict.size() ||
+        arena.symbol_codes[i] >= arena.symbol_dict.size() ||
+        arena.raw_symbol_codes[i] >= arena.raw_symbol_dict.size() || arena.side_codes[i] > 1u) {
+      return Err(ErrorCode::Internal,
+                 "mark divergence shadow arena: dict/enum code out of range at row " +
+                     std::to_string(i));
+    }
+  }
+
+  for (std::size_t i = 0; i < n; ++i) {
+    const ListedMarkDivergenceRow &row = observed[i];
+    const std::string index = std::to_string(i);
+    const auto mismatch = [&index](const char *field, const std::string &obs,
+                                   const std::string &shadow) {
+      return Err(ErrorCode::Internal, "mark divergence observer/shadow mismatch at row " + index +
+                                          " field " + field + ": observer=" + obs +
+                                          " shadow=" + shadow);
+    };
+    // kMarkDivergenceCols registry order, so the field named first is the
+    // leftmost differing column of the row as a `runarchive dump` reader sees it.
+    const std::string &shadow_date = arena.date_dict[arena.date_codes[i]];
+    if (row.date != shadow_date) {
+      return mismatch("date", row.date, shadow_date);
+    }
+    const std::string &shadow_symbol = arena.symbol_dict[arena.symbol_codes[i]];
+    if (row.symbol != shadow_symbol) {
+      return mismatch("symbol", row.symbol, shadow_symbol);
+    }
+    const std::string &shadow_raw = arena.raw_symbol_dict[arena.raw_symbol_codes[i]];
+    if (row.raw_symbol != shadow_raw) {
+      return mismatch("raw_symbol", row.raw_symbol, shadow_raw);
+    }
+    if (!bit_equal(row.strike, arena.strike[i])) {
+      return mismatch("strike", fmt_g17(row.strike), fmt_g17(arena.strike[i]));
+    }
+    if (row.expiry_ts_ns != arena.expiry_ts_ns[i]) {
+      return mismatch("expiry_ts_ns", std::to_string(row.expiry_ts_ns),
+                      std::to_string(arena.expiry_ts_ns[i]));
+    }
+    const std::uint8_t side_code = row.side == Side::Call ? std::uint8_t{0} : std::uint8_t{1};
+    if (side_code != arena.side_codes[i]) {
+      return mismatch("side", std::to_string(static_cast<unsigned>(side_code)),
+                      std::to_string(static_cast<unsigned>(arena.side_codes[i])));
+    }
+    if (!bit_equal(row.schedule_mark, arena.schedule_mark[i])) {
+      return mismatch("schedule_mark", fmt_g17(row.schedule_mark),
+                      fmt_g17(arena.schedule_mark[i]));
+    }
+    if (!bit_equal(row.live_mark, arena.live_mark[i])) {
+      return mismatch("live_mark", fmt_g17(row.live_mark), fmt_g17(arena.live_mark[i]));
+    }
+    if (!bit_equal(row.diff, arena.diff[i])) {
+      return mismatch("diff", fmt_g17(row.diff), fmt_g17(arena.diff[i]));
+    }
+    if (!bit_equal(row.abs_diff_bps_of_mark, arena.abs_diff_bps_of_mark[i])) {
+      return mismatch("abs_diff_bps_of_mark", fmt_g17(row.abs_diff_bps_of_mark),
+                      fmt_g17(arena.abs_diff_bps_of_mark[i]));
+    }
+  }
+  return Ok();
+}
+
 // Projected replay of a listed-format schedule. `--execution configured` (default) is
 // the Task 2 diagnostic: reprice through the fast cached-surrogate tier under
 // QueryExecution::Configured (genuine interpolation) — its fast-tier accuracy gap is
@@ -825,9 +962,24 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   // priced backtest; the divergence_replay/archive_load phases then read 0 and the priced run
   // absorbs its own cold snapshot-cache loads.
   auto divergence_arena = std::make_shared<MarkDivergenceArena>();
+  // The observer's sink — the SECOND, independent mark-divergence source, filled
+  // only by the priced run's step_observer. Declared out here because both it and
+  // `schedule` are borrowed by the observer and must outlive the run_backtest call
+  // that consumes it.
+  std::vector<ListedMarkDivergenceRow> observed;
   if (!skip_divergence) {
     ATX_TRY_VOID(collect_mark_divergence_replay(schedule, clock, config, spec.delta_band, timer,
                                                 *divergence_arena));
+    // Install the observer AFTER the shadow has run, on the config the PRICED run
+    // uses. collect_mark_divergence_replay takes `config` by const reference and
+    // drives its own strategy without ever consulting config.step_observer, so an
+    // earlier assignment would be silently ignored rather than double-counted;
+    // assigning here makes that structural instead of merely true. `schedule` is
+    // the very object ListedDispersionStrategy::create copies below, so the
+    // observer's schedule and the strategy's are value-equal by construction —
+    // which is the invariant make_mark_divergence_observer's two fail-closed
+    // guards (roll cursor, valuation timestamp) rest on.
+    config.step_observer = make_mark_divergence_observer(schedule, observed);
   }
 
   // Primary priced run: the same strategy-aware engine as run-backtest, under the
@@ -841,6 +993,39 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
     return Err(ErrorCode::Unavailable, "projected backtest did not consume every scheduled roll");
   }
   timer.add("priced_run", priced_start, backtest.size());
+
+  // L10 dual-run arbiter. The observer rode the priced run above; the shadow
+  // filled the arena before it. Compare them bit-exactly. Placed after
+  // timer.add("priced_run", ...) on purpose, so the comparison is charged to no
+  // phase and the diagnostics phase list and its per-phase attribution are
+  // exactly what they were before this arbiter existed.
+  if (!skip_divergence) {
+    ATX_TRY_VOID(compare_mark_divergence_sources(observed, *divergence_arena));
+    // VACUITY GUARD. The comparison above is evidence only if it compared
+    // something: over two empty containers it reports "identical" even for an
+    // observer that produced nothing at all, which is precisely the instrument
+    // that would justify deleting working code for nothing. On the fast-tier
+    // `configured` route divergence rows are genuinely nonzero (the tier
+    // interpolates the cached surrogate rather than reproducing the archive
+    // marks), so zero rows there means the run never exercised the collector and
+    // the gate FAILS as vacuous — before the MATCH line is printed, so no
+    // vacuous run can leave a passing evidence line behind. On `cold` the pinned
+    // truth IS zero rows, so zero is accepted there and called out instead.
+    if (!cold && divergence_arena->n_rows == 0u) {
+      return Err(ErrorCode::Unavailable,
+                 "mark divergence equivalence gate is vacuous: the configured route produced 0 "
+                 "divergence rows, so an observer that emitted nothing at all would also compare "
+                 "equal");
+    }
+    std::printf("mark divergence equivalence: observer=%zu shadow=%llu rows MATCH\n",
+                observed.size(), static_cast<unsigned long long>(divergence_arena->n_rows));
+    if (divergence_arena->n_rows == 0u) {
+      std::fprintf(stderr,
+                   "note: 0 rows compared. The cold route's pinned truth is zero mark-divergence "
+                   "rows, so this MATCH is a plumbing check, not the observer/shadow equivalence "
+                   "proof; that proof requires --execution configured.\n");
+    }
+  }
 
   // Hard cutover: the loose projected_backtest.tsv / mark_divergence.tsv result
   // files are replaced by the run.atxrun result container. The priced backtest is
