@@ -403,6 +403,29 @@ bool is_total_fit_failure(const SurfaceDbBuildReport &r) {
          r.coverage.cells_carried == 0;
 }
 
+bool is_carry_masked_fit_failure(const SurfaceDbBuildReport &r) {
+  // The complement of the clause above, and the honest accounting of what it gave
+  // up (see the header for the full argument). Nothing fitted, something failed,
+  // and something healthy was carried -- the shape the carry clause exempts, and
+  // the one that is ambiguous between the converged steady state and a run whose
+  // every scheduled cell died systematically.
+  //
+  // This is a WARNING predicate: the CLI prints it and returns 0. Turning it into
+  // an exit code would recreate C1 exactly, because the converged steady state
+  // over a healthy production database matches it on every run.
+  //
+  // `cells_carried`, not `cells_carried_disabled`: the first is what grants the
+  // exemption, so it is what the warning must track. A run carrying only
+  // preserved-because-disabled surfaces is still a TOTAL FIT FAILURE and exits 3.
+  //
+  // No `cells_to_fit` conjunct on purpose. `cells_failed > 0` is the stronger and
+  // more direct statement -- a cell can reach the fitter as a REFIT (a carry the
+  // fingerprint could not vouch for) without ever being counted in `cells_to_fit`,
+  // and a run that lost every such cell is the same silence for the operator.
+  return r.coverage.cells_ok == 0 && r.coverage.cells_failed > 0 &&
+         r.coverage.cells_carried > 0;
+}
+
 bool is_total_config_failure(const SurfaceDbBuildReport &r) {
   // Same shape as above (attempted > 0, succeeded == 0) read on the CONFIG stage,
   // because a universe swallowed here never reaches the fit stage's counters at

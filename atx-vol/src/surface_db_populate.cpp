@@ -510,26 +510,33 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       }
 
       if (!items.empty()) {
-        // The one caller that can honestly attest the carry-over fingerprint
-        // (FIX-D fix-1, I5): every fitted item in `items` came out of `fit_board`
-        // under the config this loop resolved from THIS manifest moments ago, and
-        // every ENABLED carried item was itself written under an attestation
-        // whose fingerprint still matches (that is what admitted it to the carry
-        // set).
+        // FIX-D fix-2 (I-3): the attestation is the CALLER'S, forwarded, not this
+        // function's to invent. `items` has two provenances and this frame can
+        // only vouch for one of them: every FITTED item came out of `fit_board`
+        // under the config this loop resolved from THIS manifest moments ago, but
+        // every CARRIED item is re-emitted on the strength of `cfg.carry_over`,
+        // whose validity `SurfaceDbPopulateConfig` explicitly says it carries no
+        // predicate for. Stamping unconditionally asserted a gate that lives one
+        // frame up, so a direct caller supplying its own `carry_over` had its
+        // stale surfaces re-blessed on every resume. `cfg.attest` defaults to
+        // `None`, which fails closed (fingerprint 0 = unknown = re-fit).
         //
-        // FIX-E qualifies that claim for the one item class it no longer covers:
-        // a PRESERVED DISABLED record is re-emitted regardless of the
-        // fingerprint, so the stamp does not vouch for it. That is sound because
-        // of what the stamp is USED for -- `populate_universe_streaming` reads it
-        // to decide `carry_valid`, which admits only ENABLED present cells to the
-        // fitted-output carry set. A disabled cell can re-enter that set only by
-        // being re-enabled, and `enabled` is part of the folded config, so
-        // re-enabling necessarily MOVES the fingerprint and forces a re-fit. The
-        // alternative -- attesting `None` on any date holding a disabled symbol --
-        // would permanently un-carry that date's healthy siblings and re-fit them
-        // on every run forever, which is the cost FIX-D exists to remove.
-        const Status w =
-            db.write_partition(date, items, {}, DbConfigAttestation::FitterProduced);
+        // `populate_universe_streaming` is the frame that RUNS the gate
+        // (`carry_valid`), so it is the frame that sets `FitterProduced`.
+        //
+        // FIX-E qualifies the attesting caller's claim for the one item class it
+        // does not cover: a PRESERVED DISABLED record is re-emitted regardless of
+        // the fingerprint, so the stamp does not vouch for it. That is sound
+        // because of what the stamp is USED for -- `populate_universe_streaming`
+        // reads it to decide `carry_valid`, which admits only ENABLED present
+        // cells to the fitted-output carry set. A disabled cell can re-enter that
+        // set only by being re-enabled, and `enabled` is part of the folded
+        // config, so re-enabling necessarily MOVES the fingerprint and forces a
+        // re-fit. The alternative -- attesting `None` on any date holding a
+        // disabled symbol -- would permanently un-carry that date's healthy
+        // siblings and re-fit them on every run forever, which is the cost FIX-D
+        // exists to remove.
+        const Status w = db.write_partition(date, items, {}, cfg.attest);
         if (!w) {
           return Err(w.error());
         }
@@ -823,6 +830,13 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
     pcfg.n_threads = spec.fit_workers;
     pcfg.skip_existing = false;
     pcfg.carry_over = std::move(carry_over);
+    // FIX-D fix-2 (I-3): the frame that RAN the gate is the frame that attests.
+    // `carry_valid` above is the whole claim -- a non-zero stored fingerprint
+    // equal to a freshly recomputed fold over the partition's symbols -- and it
+    // is evaluated HERE, so the `FitterProduced` stamp is set HERE and forwarded
+    // to `write_partition` by the populate rather than asserted by it. Everything
+    // else in the write is this run's own fit under the configs seeded above.
+    pcfg.attest = DbConfigAttestation::FitterProduced;
     const Result<SurfaceDbPopulateStats> st = populate_surface_db(db, kept, pcfg, test_hooks);
     if (!st) {
       return Err(st.error());

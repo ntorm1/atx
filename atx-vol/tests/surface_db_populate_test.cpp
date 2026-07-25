@@ -1821,6 +1821,86 @@ TEST(SurfaceDbPopulate, ChangedSymbolConfigInvalidatesTheCarryAndForcesRefit) {
   std::filesystem::remove_all(root);
 }
 
+// FIX-D fix-2 (I-3). The fail-closed chain must reach the frame that runs the
+// GATE, not stop one frame short of it.
+//
+// `populate_surface_db` used to stamp `FitterProduced` unconditionally, on the
+// strength of a comment asserting that every carried item had already passed a
+// fingerprint check. That check is real but it lives in
+// `populate_universe_streaming`, and `SurfaceDbPopulateConfig::carry_over` says in
+// as many words that the struct carries no predicate -- so a direct caller who
+// filled `carry_over` itself got its stored surfaces re-emitted verbatim AND
+// stamped with a current-config fingerprint, making the staleness STICKY (blessed
+// again by every later resume) instead of one-shot.
+//
+// The claim now travels with the decision: `cfg.attest` defaults to None (no
+// stamp -> fold 0 -> UNKNOWN -> never carried), and only a caller that can vouch
+// for the whole write sets it.
+TEST(SurfaceDbPopulate, AttestationTravelsWithTheCarryDecisionAndDefaultsClosed) {
+  const auto root = test_root("attest_chain_direct");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  // Both symbols configured, so the fold over them is well-defined and non-zero.
+  // (A symbol absent from the manifest collapses the fold to 0 for reasons that
+  // have nothing to do with attesting, which would make this test vacuous.)
+  for (const char *sym : {"AAA", "BBB"}) {
+    ASSERT_TRUE(db->upsert_symbol(sym, symbol_config_from_preset(FitPreset::Fast)).has_value())
+        << sym;
+  }
+
+  SurfaceDbPopulateConfig direct;
+  direct.fallback = symbol_config_from_preset(FitPreset::Fast);
+  direct.skip_existing = false; // rewrite the same date below
+
+  // DEFAULT: no claim, no stamp. A direct caller of this function cannot vouch for
+  // a carry set it may have supplied, so the write is not blessed for reuse.
+  const auto first = populate_surface_db(*db, carry_seed_boards(), direct);
+  ASSERT_TRUE(first.has_value()) << (first ? "" : first.error().to_string());
+  ASSERT_EQ(first->n_ok, 2u);
+  EXPECT_EQ(db->partition_config_fingerprint(kDate0), 0u)
+      << "an unattested populate must not bless its partition for carry-over";
+
+  // The identical call with the caller making the claim stamps exactly the fold
+  // over the symbols written -- which is what a resume compares against.
+  SurfaceDbPopulateConfig attested = direct;
+  attested.attest = DbConfigAttestation::FitterProduced;
+  const auto second = populate_surface_db(*db, carry_seed_boards(), attested);
+  ASSERT_TRUE(second.has_value()) << (second ? "" : second.error().to_string());
+  ASSERT_EQ(second->n_ok, 2u);
+  const std::vector<std::string> written{"AAA", "BBB"};
+  const std::uint64_t stamped = db->partition_config_fingerprint(kDate0);
+  EXPECT_NE(stamped, 0u) << "an attesting caller must be stamped";
+  EXPECT_EQ(stamped, db->config_fingerprint(written));
+
+  std::filesystem::remove_all(root);
+}
+
+// The other end of the same chain: the frame that RUNS the gate (`carry_valid`)
+// is the frame that attests, so a streaming populate is stamped without its
+// caller doing anything -- and the carry it enables on the next run still works.
+// Without this, moving the attestation onto the config would have silently turned
+// carry-over off everywhere.
+TEST(SurfaceDbPopulate, StreamingPopulateAttestsBecauseItRanTheGate) {
+  const auto root = test_root("attest_chain_streaming");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+  EXPECT_NE(db->partition_config_fingerprint(kDate0), 0u)
+      << "the driver that ran the carry gate must stamp what it wrote";
+
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+  EXPECT_EQ(cov2->cells_carried, 2u) << "the stamp must still enable the carry it exists for";
+  EXPECT_EQ(cov2->cells_refit, 0u);
+
+  std::filesystem::remove_all(root);
+}
+
 // The backward-compatibility default, tested rather than asserted: a partition
 // written before the fingerprint existed stores 0, and 0 means UNKNOWN, and
 // unknown must NEVER carry. This is what makes the first resume of the existing

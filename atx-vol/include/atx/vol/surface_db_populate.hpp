@@ -51,6 +51,36 @@ struct SurfaceDbPopulateConfig {
   // struct carries no predicate. `populate_universe_streaming` populates it; a
   // direct caller that leaves it empty gets exactly the previous behaviour.
   std::map<std::string, std::vector<std::string>> carry_over{};
+  // Does this caller ATTEST that the partitions this populate writes may be
+  // stamped with the manifest's current config fingerprint -- i.e. blessed for a
+  // later resume to CARRY instead of re-fitting? Forwarded verbatim to
+  // `SurfaceDb::write_partition`; see `DbConfigAttestation` for the full argument
+  // and for the fold's write-time semantics.
+  //
+  // FIX-D fix-2 (I-3). `populate_surface_db` used to pass `FitterProduced`
+  // UNCONDITIONALLY, on the strength of a comment asserting that every carried
+  // item had itself been admitted by a fingerprint gate. That gate is real, but it
+  // lives one frame UP in `populate_universe_streaming` -- and the field above says
+  // in as many words that this struct carries no predicate. So a direct caller who
+  // filled `carry_over` themselves got their stored surfaces re-emitted verbatim
+  // AND stamped with a current-config fingerprint, making the staleness STICKY
+  // (re-blessed by every later resume) rather than one-shot. That is the exact
+  // outcome the attestation was added to prevent, asserted in a comment as though
+  // it had been checked.
+  //
+  // The claim now travels WITH the decision: whoever fills `carry_over` is the only
+  // one who can vouch for it, so they are the one who sets this. The default is
+  // `None`, which fails CLOSED -- an unstamped partition folds to the 0 "unknown"
+  // sentinel and is re-fit rather than reused, so forgetting to attest costs one
+  // wasted re-fit and never a silently carried stale surface.
+  //
+  // `populate_universe_streaming` sets `FitterProduced` because IT ran the gate
+  // (`carry_valid`: a non-zero stored fingerprint equal to a freshly recomputed
+  // fold over the partition's symbols). A direct caller of `populate_surface_db`
+  // that fits everything itself under this manifest's configs and carries nothing
+  // may honestly set it too; one that supplies a `carry_over` it has not gated
+  // must not.
+  DbConfigAttestation attest{DbConfigAttestation::None};
 };
 
 struct PopulateSymbolStats {
@@ -149,7 +179,10 @@ struct PopulateTestHooks {
 // n_failed and does NOT abort the date (document per-name failures, don't
 // silently drop). A date with zero successful fits writes NO partition.
 // Partition write uses SurfaceArchiveItem{symbol, &surface} with owning
-// symbol-string storage kept alive across the call.
+// symbol-string storage kept alive across the call, and forwards
+// `cfg.attest` to it — so by DEFAULT the partitions this writes carry NO
+// config fingerprint and a later resume re-fits them rather than reusing them
+// (fail closed; see `SurfaceDbPopulateConfig::attest`).
 // Top-level Err only on: empty boards span, db write errors, or a date key
 // the db rejects.
 [[nodiscard]] Result<SurfaceDbPopulateStats>

@@ -60,6 +60,12 @@
 // build ran but produced NOTHING — either every symbol failed CONFIG SELECTION
 // (is_total_config_failure) or work was scheduled and no cell fitted
 // (is_total_fit_failure). See atx-vol/docs/surface-db-build.md.
+//
+// One shape exits 0 with a stderr WARNING instead: nothing fitted, something
+// failed, and something was CARRIED (is_carry_masked_fit_failure). It is exempt
+// from exit 3 because the converged steady state has that exact shape on a
+// perfectly healthy database — but so does a run whose every scheduled cell died,
+// so the tool names the ambiguity rather than judging it.
 
 #include <cerrno>
 #include <cmath>
@@ -447,11 +453,13 @@ int main(int argc, char **argv) {
   //
   // The predicate no longer fires when this run CARRIED stored surfaces (FIX-D
   // fix-1): that shape is the healthy converged resume, not a dead build, and the
-  // `--r` guidance below would have been actively destructive on it. The cost of
-  // that widening — a genuinely wrong `--r` over an already-converged database is
-  // no longer caught here — is written down at the predicate's declaration in
-  // surface_db_build.hpp. `coverage.cells_carried` above is what tells the
-  // operator which of the two a quiet run was.
+  // `--r` guidance below would have been actively destructive on it. The full cost
+  // of that widening — ANY run that carried anything is exempt, including one
+  // whose every scheduled cell failed systematically — is written down at the
+  // predicate's declaration in surface_db_build.hpp. `coverage.cells_carried`
+  // above is what tells the operator a quiet run was a carry, and the
+  // `is_carry_masked_fit_failure` warning below is what tells them the exempt
+  // shape is ambiguous.
   if (is_total_fit_failure(*report)) {
     std::fprintf(stderr,
                  "atx-vol-surface-db-build: TOTAL FIT FAILURE: %u cells scheduled, 0 fitted "
@@ -464,6 +472,35 @@ int main(int argc, char **argv) {
                  "straight from the fitter, and --report writes all of them.\n",
                  report->coverage.cells_to_fit, report->coverage.cells_failed, spec.hive.r);
     return kExitTotalFitFailure;
+  }
+
+  // FIX-D fix-2 (I2). The predicate above is exempt whenever ANYTHING was carried,
+  // which is wider than the converged-database case it was widened for: a run
+  // whose every scheduled cell died systematically, beside a healthy carried
+  // population, is exempt too. The exit code must NOT come back for that shape —
+  // it is indistinguishable from the converged steady state, which is a healthy
+  // production database, and failing it is precisely the defect the carry clause
+  // fixed. So the tool says the two are different instead of judging between them.
+  // Disjoint from `is_total_fit_failure` by construction, so this never doubles up
+  // with the block above.
+  if (is_carry_masked_fit_failure(*report)) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db-build: WARNING (exit 0): 0 cells fitted, %u failed, "
+                 "%u carried.\n"
+                 "  This run produced no NEW surface. Two very different runs look like "
+                 "this and the counters cannot tell them apart:\n"
+                 "    (a) the converged steady state — a permanently-failing cell is retried "
+                 "on every run (by design; nothing is persisted as known-failed) while its "
+                 "healthy siblings are carried. Nothing is wrong.\n"
+                 "    (b) every cell this run scheduled died for a SYSTEMATIC reason — a "
+                 "fitter or loader regression, or a bad config for a newly-added name — "
+                 "beside %u carried cells that were never re-fitted and so could not "
+                 "re-fail. Before carry-over this run would have exited 3.\n"
+                 "  The failed_cell lines above (and every one of them in --report) carry "
+                 "each cell's own reason: one recurring name failing the same gate is (a); "
+                 "a fresh name, or a new reason, is (b).\n",
+                 report->coverage.cells_failed, report->coverage.cells_carried,
+                 report->coverage.cells_carried);
   }
 
   return 0;

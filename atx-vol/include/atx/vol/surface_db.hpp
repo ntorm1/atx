@@ -342,9 +342,25 @@ inline constexpr std::uint64_t kSurfaceDbCarryOverFitSalt = 0x5CA1'AB1E'F17D'000
 // an unstamped partition folds to the 0 "unknown" sentinel and is re-fit rather
 // than reused. Forgetting to attest costs one wasted re-fit; the opposite default
 // costs a silently carried stale surface, which is the outcome this whole design
-// ranks worst. `populate_surface_db` is the one caller that can honestly make the
-// claim (it fits the surfaces itself, through the configs it just resolved from
-// this manifest), and it is the one caller that passes `FitterProduced`.
+// ranks worst.
+//
+// WHO MAY MAKE THE CLAIM (FIX-D fix-2, I-3). `populate_surface_db` fits its own
+// items, but it also re-emits whatever `SurfaceDbPopulateConfig::carry_over` names
+// — a set that struct explicitly carries no predicate for — so it cannot vouch for
+// the whole write either. It therefore FORWARDS its caller's
+// `SurfaceDbPopulateConfig::attest` instead of asserting one, and
+// `populate_universe_streaming` — the frame that actually runs the carry gate
+// (`carry_valid`) — is the one that sets `FitterProduced`. The claim travels with
+// the decision, so the fail-closed chain reaches the gate instead of stopping one
+// frame short of it.
+//
+// WHEN THE CLAIM IS EVALUATED (M-4): the fold is taken at WRITE time, over the
+// manifest snapshot held at that instant — not at the instant the caller resolved
+// the configs it fitted under. `populate_surface_db` resolves its configs once at
+// entry, so an in-process `upsert_symbol` racing a populate would stamp a
+// fingerprint over configs the surfaces were NOT fitted under. Do not mutate the
+// manifest concurrently with a populate. (`build_surface_db` serialises the config
+// and populate stages, so the CLI cannot reach this.)
 enum class DbConfigAttestation : std::uint8_t {
   None = 0,      // do not stamp; this partition will never be carried over
   FitterProduced // these surfaces came out of the fitter under the current configs

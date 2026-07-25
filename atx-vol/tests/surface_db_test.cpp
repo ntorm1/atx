@@ -1138,6 +1138,23 @@ namespace {
   return c;
 }
 
+// The REFERENCE LINEAR SCAN (M-3). Structurally unlike the bisect it checks: no
+// ordering assumption, no `cmp_key`, no early exit -- it compares every record's
+// symbol bytes and returns the index of the match (npos if absent). This is the
+// oracle the test below is named for, and the one thing a `std::lower_bound`
+// oracle cannot be: it does not share the comparator whose correctness is the
+// question.
+[[nodiscard]] std::size_t scan_for_symbol(const DbManifest &m, std::string_view sym) {
+  const std::span<const DbSymbolRecord> recs = m.symbols();
+  std::size_t found = static_cast<std::size_t>(-1);
+  for (std::size_t i = 0; i < recs.size(); ++i) {
+    if (std::string_view(recs[i].symbol, recs[i].symbol_len) == sym) {
+      found = i; // keep going: a duplicate would be a manifest defect, not a hit
+    }
+  }
+  return found;
+}
+
 } // namespace
 
 // FIX-D fix-1. `fold_symbol_configs` bisects the manifest's symbol table instead
@@ -1146,11 +1163,21 @@ namespace {
 // rather than assert it -- on exactly the prefix/length shapes where `cmp_key`'s
 // ordering is load-bearing.
 //
-// The oracle is a manifest holding ONE symbol: there, "find the record for S" is
-// trivially the same answer for any search algorithm. If the bisect over a
-// 20-symbol table returns a different record than the 1-symbol lookup does, the
-// two folds differ -- the fold is over the record's 256 encoded bytes, so a
-// neighbouring record cannot collide by accident.
+// TWO oracles, because one of them alone was circular (M-3):
+//
+//   1. A manifest holding ONE symbol. There, "find the record for S" is trivially
+//      the same answer for any search algorithm, so the fold value it produces is
+//      the value the bisect must reproduce. The fold covers the record's 256
+//      encoded bytes and every config here is unique, so a bisect landing on a
+//      neighbour cannot collide by accident -- but this oracle runs the SAME
+//      `std::lower_bound` under the same `cmp_key`, so it cannot by itself
+//      witness a disagreement between `cmp_key`'s order and the table's actual
+//      order.
+//   2. `scan_for_symbol` -- a real linear scan over the manifest's records that
+//      shares no code with the bisect and assumes no ordering. It establishes
+//      INDEPENDENTLY which physical record belongs to each symbol, so the record
+//      the bisect is required to land on is ground truth rather than a second
+//      opinion from the same comparator.
 TEST(SurfaceDbConfigFingerprint, FoldFindsTheSameRecordAsALinearScan) {
   const auto many_root = test_root("fp_fold_many");
   const auto one_root = test_root("fp_fold_one");
@@ -1165,6 +1192,19 @@ TEST(SurfaceDbConfigFingerprint, FoldFindsTheSameRecordAsALinearScan) {
   }
   // The manifest really is the sorted, prefix-dense table this is meant to probe.
   ASSERT_EQ(many->symbols().size(), syms.size());
+
+  // Oracle 2: the linear scan pins WHICH physical record each symbol owns, with
+  // no help from `cmp_key`. `convex_node_cap` is `16 + i`, unique per symbol, so
+  // this fails loudly if the table's order is not the one the bisect assumes.
+  const std::shared_ptr<const DbManifest> man = many->manifest();
+  ASSERT_TRUE(man != nullptr);
+  ASSERT_EQ(man->symbols().size(), syms.size());
+  for (std::size_t i = 0; i < syms.size(); ++i) {
+    const std::size_t at = scan_for_symbol(*man, syms[i]);
+    ASSERT_NE(at, static_cast<std::size_t>(-1)) << syms[i] << ": absent from the symbol table";
+    EXPECT_EQ(man->symbols()[at].convex_node_cap, 16 + static_cast<int>(i))
+        << syms[i] << ": the record a linear scan finds is not this symbol's config";
+  }
 
   for (std::size_t i = 0; i < syms.size(); ++i) {
     ASSERT_TRUE(one->upsert_symbol(syms[i], fingerprint_config(i)).has_value()) << syms[i];

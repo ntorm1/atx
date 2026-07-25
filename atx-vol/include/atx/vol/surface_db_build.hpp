@@ -293,18 +293,79 @@ reported_failed_cells(const SurfaceDbBuildReport &r,
 // with a different `--r`, which on a healthy converged database would invalidate
 // every surface in it.
 //
-// KNOWN LIMIT of the carry clause: a genuinely wrong `--r` supplied to a
-// converged database now goes UNFLAGGED here, because the healthy cells are
-// carried (not re-fitted, so not re-failed) and only the permanently-failing ones
-// are scheduled. That detection was always incidental — this predicate answers
-// "is this database dead", not "are my market inputs stale" — and the stale-input
-// question needs its own check (compare the stored record's S/r/now_ts_ns against
-// the loaded board's MarketEnv). Trading an incidental catch of a rare misuse for
-// a false alarm on EVERY healthy resume would be the wrong way round.
+// KNOWN LIMIT of the carry clause, stated in its GENERAL form — the exemption is
+// keyed on `cells_carried == 0`, so ANY run that carried at least one cell is
+// exempt from this predicate, whatever became of the cells it scheduled. That is
+// a strictly WIDER set than "a converged database", and the cost is wider than
+// the wrong-`--r` case alone:
+//
+//   - A run whose every SCHEDULED cell failed for a SYSTEMATIC reason — a fitter
+//     regression, a broken loader for a newly-added name, a bad config for it —
+//     beside a large healthy CARRIED population exits 0. Adding one ticker to a
+//     converged 1030-name universe puts `to_add == 1` on every date, so every
+//     date is rewritten: ~257k cells carried, ~250 scheduled, and if all 250 die
+//     the report is `cells_to_fit = 250, cells_failed = 250, cells_ok = 0,
+//     cells_carried >> 0`. Before carry-over that same run re-fit everything and
+//     exited 3.
+//   - A genuinely wrong `--r` over a converged database is one INSTANCE of that,
+//     not the whole of it: the healthy cells are carried, never re-fitted, so
+//     they never re-fail.
+//
+// A staleness check comparing each stored record's S/r/now_ts_ns against the
+// loaded board's MarketEnv is the right home for the stale-input question, but it
+// inspects CARRIED cells and this loss is entirely in the SCHEDULED ones — it
+// cannot recover the verdict. Do not record it as the complement.
+//
+// The trade is still the right way round and must not be undone: a false TOTAL
+// FIT FAILURE on EVERY healthy resume, telling the operator to re-run with a
+// different `--r`, would invalidate every surface in the database if followed.
+// What is restored is the SIGNAL, not the verdict — `is_carry_masked_fit_failure`
+// below names the ambiguous shape on stderr while the exit code stays 0. The
+// operator manual (`atx-vol/docs/surface-db-build.md`, the "Known limit" block in
+// [Interest rate / carry]) states the same limit for the CLI's audience; the two
+// are deliberately one statement in two registers, so change them together.
 //
 // Pure predicate over the report; the CLI uses it to pick its exit code, which is
 // why the decision lives here (testable) and not in `main`.
 [[nodiscard]] bool is_total_fit_failure(const SurfaceDbBuildReport &r);
+
+// The signal the carry exemption gave up — a WARNING, never a verdict.
+//
+// True iff this run fitted NOTHING (`coverage.cells_ok == 0`), something it
+// offered the fitter FAILED (`coverage.cells_failed > 0`), and it CARRIED at
+// least one healthy stored surface (`coverage.cells_carried > 0`). That is
+// exactly the shape `is_total_fit_failure`'s carry clause exempts, and it is
+// genuinely AMBIGUOUS between two runs no counter can tell apart:
+//
+//   - the CONVERGED STEADY STATE: N permanently-failing cells retried forever
+//     (there is no persisted known-failed state, by design) beside their healthy
+//     carried siblings. Nothing is wrong; this is the shape FIX-D exists to
+//     produce.
+//   - EVERY SCHEDULED CELL DIED for a systematic reason, beside a carried
+//     population that was never re-fitted and so could not re-fail.
+//
+// This predicate deliberately makes NO claim about which one happened. It says
+// only that the run is one of the two and that `coverage.failed_cells` — each
+// carrying the fitter's own reason — is where the answer is. Both interpretations
+// print the same counters, which is precisely why the tool has to say they are
+// different rather than leave the operator to notice.
+//
+// THE EXIT CODE STAYS 0. A non-zero exit here would reintroduce the C1 defect the
+// carry clause was added to fix: the first shape above IS a healthy production
+// database, and failing it would once again tell an operator to re-run with a
+// different `--r`. Any future change that maps this predicate to an exit code
+// must first show it cannot fire on a converged database — and it can.
+//
+// COUNTER CHOICE: `cells_carried`, never `cells_carried_disabled`. `cells_carried`
+// is the term that GRANTS the exemption, so the warning must be keyed on the same
+// term or it would not cover what was given up. FIX-E's `cells_carried_disabled`
+// (stored surfaces of a switched-OFF symbol, preserved rather than deleted) is
+// read by neither exit-code predicate, so a run carrying only those is NOT exempt
+// — it still exits 3, and warning on it would duplicate that verdict.
+//
+// Disjoint from `is_total_fit_failure` by construction (`cells_carried == 0`
+// there, `> 0` here), so the CLI can never emit both for one run.
+[[nodiscard]] bool is_carry_masked_fit_failure(const SurfaceDbBuildReport &r);
 
 // The SAME silent-green trap, one stage earlier — and invisible to the predicate
 // above. When per-symbol CONFIG SELECTION fails for every symbol the stage tried,

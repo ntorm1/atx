@@ -260,15 +260,60 @@ suite — the CLI only maps it to an exit code.
 > set than "a converged database". In particular, a run whose every *scheduled*
 > cell failed for a systematic reason (a bad config for a newly-added name, a
 > loader regression) beside a large healthy carried population exits `0`, where
-> before carry-over it would have exited `3`. The counters distinguish the two —
-> `cells_ok 0` with `cells_failed > 0` and `cells_carried > 0` is the ambiguous
-> shape — but the exit code no longer does. A wrong `--r` on a converged database
+> before carry-over it would have exited `3`. The counters IDENTIFY that shape —
+> `cells_ok 0` with `cells_failed > 0` and `cells_carried > 0` — but they cannot
+> resolve it: the converged steady state prints exactly the same numbers. Neither
+> the counters nor the exit code separate the two; only the per-cell reasons do
+> (see the warning below). A wrong `--r` on a converged database
 > likewise goes unflagged here, because carried cells are never re-fitted and so
 > never re-fail; that question belongs to a stale-input check in the carry gate
 > (comparing each stored record's `S`/`r`/`now_ts_ns` against the loaded board's
 > `MarketEnv`), not to an exit-code predicate. The trade is deliberate: a false
 > `TOTAL FIT FAILURE` on *every* healthy resume, telling the operator to change
 > `--r`, would invalidate every surface in the database if followed.
+
+**What was lost is the verdict, not the signal.** The ambiguous shape above gets a
+stderr **warning** and exit **0**
+(`is_carry_masked_fit_failure(const SurfaceDbBuildReport&)`, same header, pinned by
+the `SurfaceDbCarryMaskedFitFailure` suite and the end-to-end
+`BuildSurfaceDb.CarryMaskedFitFailureFiresOnTheAmbiguousShapeAndNotOnAConvergedDb`):
+
+```
+$ atx-vol-surface-db-build --db /db --hive /hive --from 2026-07-01 --to 2026-07-06 --r 0.03
+... (the full report still prints to stdout, and --report is still written) ...
+atx-vol-surface-db-build: WARNING (exit 0): 0 cells fitted, 3 failed, 6 carried.
+  This run produced no NEW surface. Two very different runs look like this and the
+  counters cannot tell them apart:
+    (a) the converged steady state — a permanently-failing cell is retried on every
+    run (by design; nothing is persisted as known-failed) while its healthy siblings
+    are carried. Nothing is wrong.
+    (b) every cell this run scheduled died for a SYSTEMATIC reason — a fitter or
+    loader regression, or a bad config for a newly-added name — beside 6 carried
+    cells that were never re-fitted and so could not re-fail. Before carry-over this
+    run would have exited 3.
+  The failed_cell lines above (and every one of them in --report) carry each cell's
+  own reason: one recurring name failing the same gate is (a); a fresh name, or a
+  new reason, is (b).
+$ echo $?
+0
+```
+
+It fires on `cells_ok == 0 && cells_failed > 0 && cells_carried > 0` and on nothing
+else. Three consequences worth knowing:
+
+- **It stays exit 0, permanently.** Shape (a) is a healthy production database and
+  the steady state this feature exists to produce; a non-zero code for it is
+  exactly the destructive false verdict the carry clause removed. The warning
+  exists *because* the exit code cannot come back.
+- **A genuinely converged database is silent.** Once no date has anything left to
+  schedule, `cells_failed` is `0` and nothing prints. The warning recurs only while
+  a cell keeps failing — and the way to stop it is to fix that cell or disable the
+  name (`upsert_symbol` with `enabled = false`; FIX-E keeps its stored surfaces),
+  not to ignore the line.
+- **It reads `cells_carried`, not `cells_carried_disabled`.** `cells_carried` is
+  what grants the exit-3 exemption, so it is what the warning must track. A run
+  that carried only *disabled* symbols' preserved surfaces is not exempt — it still
+  exits 3.
 
 So exit 3 answers exactly one question — "did this run get anything at all?" — and
 **partial coverage is still your job to inspect.**
@@ -453,7 +498,7 @@ retried on the next run exactly as before (see [Resume semantics](#resume-semant
 
 | Exit | When |
 | --- | --- |
-| `0` | Build succeeded — including **partial** coverage, a no-op **resume**, and a graceful empty-window no-op. |
+| `0` | Build succeeded — including **partial** coverage, a no-op **resume**, and a graceful empty-window no-op. Also the **carry-masked** shape (`cells_ok == 0`, `cells_failed > 0`, `cells_carried > 0`), which prints a stderr WARNING and still exits `0` — see [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing). |
 | `1` | A build error — malformed hive spec, or a db config/write failure. Message on stderr, **no report printed**. |
 | `2` | A usage error — unknown flag, a missing required flag, an unknown `--preset`, or a malformed `--r` / `--pin-curve-family`. Usage on stderr. |
 | `3` | **The build ran to completion and produced NOTHING** — either **total config failure** (`disabled > 0`, `enabled == 0`, `cells_ok == 0`, `cells_carried == 0`: every symbol was disabled by a selection failure, so nothing was ever scheduled) or **total fit failure** (`cells_to_fit > 0`, `cells_ok == 0`, `cells_carried == 0`: work was scheduled, no cell fitted, and nothing was carried either). One code for both — the script's question is "did this run produce anything?" and the stderr diagnostic names the stage. The full report still prints and `--report` is still written. See [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing). |

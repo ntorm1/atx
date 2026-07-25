@@ -813,6 +813,89 @@ TEST(BuildSurfaceDb, ConvergedCarryResumeIsNotATotalFitFailure) {
   // Per-symbol: AAA and CCC each carried on all three dates, and their rows say so.
   EXPECT_NE(text.find("AAA,3,0,0,0,3"), std::string::npos) << text;
   EXPECT_NE(text.find("CCC,3,0,0,0,3"), std::string::npos) << text;
+
+  // FIX-D fix-2 (I-2): the exit code is gone for this shape and must stay gone,
+  // but the run is still worth a word. See the dedicated e2e below for both
+  // halves; this pins that the very report the CLI branches on trips the warning.
+  EXPECT_TRUE(is_carry_masked_fit_failure(*rep2))
+      << "the shape the exit code no longer flags must at least be named";
+}
+
+// FIX-D fix-2 (I-2), end to end on real reports — the warning that replaced the
+// verdict, in both directions.
+//
+// The exemption `is_total_fit_failure` gained is wider than "a converged
+// database": ANY run that carried anything is exempt, including one whose every
+// scheduled cell failed systematically. The exit code cannot come back (it would
+// be C1 again, and it would tell an operator to re-fit a healthy production
+// database under a different --r), so what comes back is a WARNING. For that to
+// be worth anything it has to do two things, and both are asserted here on
+// `SurfaceDbBuildReport`s a real `build_surface_db` produced:
+//
+//   FIRES on the ambiguous shape — nothing fitted, something failed, something
+//   carried. Run 2 below is exactly that.
+//   SILENT on a genuinely converged database — one with nothing left to schedule.
+//   Run 3 below is that, reached the way an operator actually reaches it: by
+//   disabling the name that fails forever.
+TEST(BuildSurfaceDb, CarryMaskedFitFailureFiresOnTheAmbiguousShapeAndNotOnAConvergedDb) {
+  const tsupport::SyntheticHiveSpec fx; // AAA/BBB/CCC x 3 dates
+  const BuildFixture f = make_build_fixture("carry_masked_warn", fx);
+  {
+    auto db = SurfaceDb::create(f.db.string());
+    ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+    // BBB fails forever: pin + LinearVariance is refused by the risk pipeline's
+    // input validation on every run.
+    SymbolFitConfig bbb = symbol_config_from_preset(FitPreset::Populate);
+    bbb.pin_curve = true;
+    bbb.curve.kind = VolCurveKind::LinearVariance;
+    ASSERT_TRUE(db->upsert_symbol("BBB", bbb).has_value());
+  }
+
+  // Run 1 populates: 6 cells fit, 3 fail. Plenty fitted, so nothing to warn about.
+  const auto rep1 = build_surface_db(build_spec(f, fx));
+  ASSERT_TRUE(rep1.has_value()) << (rep1 ? "" : rep1.error().to_string());
+  ASSERT_EQ(rep1->coverage.cells_ok, 6u);
+  EXPECT_FALSE(is_carry_masked_fit_failure(*rep1)) << "a run that fitted 6 cells is legible";
+
+  // Run 2 is the ambiguous shape: ok=0, failed=3, carried=6. Exit stays 0 and the
+  // warning is the only thing that distinguishes it from "everything I scheduled
+  // just died beside a healthy carried population".
+  const auto rep2 = build_surface_db(build_spec(f, fx));
+  ASSERT_TRUE(rep2.has_value()) << (rep2 ? "" : rep2.error().to_string());
+  ASSERT_EQ(rep2->coverage.cells_ok, 0u);
+  ASSERT_EQ(rep2->coverage.cells_failed, 3u);
+  ASSERT_EQ(rep2->coverage.cells_carried, 6u);
+  EXPECT_TRUE(is_carry_masked_fit_failure(*rep2))
+      << "the shape the carry exemption admits must be named on stderr";
+  EXPECT_FALSE(is_total_fit_failure(*rep2)) << "and must NOT come back as an exit code";
+  EXPECT_FALSE(is_total_config_failure(*rep2));
+
+  // The operator acts on the warning: BBB is the name failing every run, so it is
+  // switched off (its already-stored surfaces, if any, are preserved by FIX-E).
+  {
+    auto db = SurfaceDb::open(f.db.string());
+    ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+    auto bbb = db->symbol_config("BBB");
+    ASSERT_TRUE(bbb.has_value());
+    SymbolFitConfig off = *bbb;
+    off.enabled = false;
+    ASSERT_TRUE(db->upsert_symbol("BBB", off).has_value());
+  }
+
+  // Run 3 is a GENUINELY converged database: no date has anything left to add, so
+  // nothing is scheduled, nothing fails, nothing is carried. The warning must go
+  // quiet — a line that prints forever regardless of state is not a signal.
+  const auto rep3 = build_surface_db(build_spec(f, fx));
+  ASSERT_TRUE(rep3.has_value()) << (rep3 ? "" : rep3.error().to_string());
+  EXPECT_EQ(rep3->coverage.cells_to_fit, 0u) << "the disabled name is no longer scheduled";
+  EXPECT_EQ(rep3->coverage.cells_failed, 0u);
+  EXPECT_EQ(rep3->coverage.cells_carried, 0u) << "a skipped-complete date carries nothing";
+  EXPECT_EQ(rep3->coverage.dates_skipped_complete, 3u);
+  EXPECT_FALSE(is_carry_masked_fit_failure(*rep3))
+      << "a converged database must not warn on every run";
+  EXPECT_FALSE(is_total_fit_failure(*rep3));
+  EXPECT_FALSE(is_total_config_failure(*rep3))
+      << "AAA and CCC are still enabled, so the database is not dead";
 }
 
 // The display cap. 51 symbols x 17 dates is 867 cells; a wholesale failure must
@@ -961,6 +1044,95 @@ TEST(SurfaceDbTotalFitFailure, CarriedOnlyResumeIsNotFailure) {
   SurfaceDbBuildReport dead = coverage_report(3u, 0u, 3u);
   dead.coverage.cells_carried = 0u;
   EXPECT_TRUE(is_total_fit_failure(dead));
+}
+
+// ── is_carry_masked_fit_failure — the signal the exemption above gave up ─────
+//
+// FIX-D fix-2 (I-2). The carry clause exempts ANY run that carried anything, not
+// only a converged database. So a run whose every SCHEDULED cell failed
+// systematically, beside a healthy carried population, exits 0 where before
+// carry-over it exited 3. That shape is genuinely ambiguous between "converged,
+// one permanently-bad cell" and "everything I scheduled just died", and no
+// counter can separate them — so the tool WARNS and still exits 0. Restoring the
+// exit code here would recreate C1 exactly, because a healthy production database
+// matches this shape on every run.
+
+// The reviewer's counter-example, and the production shape, are the SAME shape —
+// which is the finding. Both must fire the warning.
+TEST(SurfaceDbCarryMaskedFitFailure, FiresOnTheAmbiguousShape) {
+  // Add one ticker to a converged 1030-name universe: every date is rewritten,
+  // ~257k healthy cells are carried, ~250 new cells are scheduled, and all 250
+  // die for a systematic reason that is not the carry rate.
+  SurfaceDbBuildReport systematic = coverage_report(250u, 0u, 250u);
+  systematic.coverage.cells_carried = 257'000u;
+  EXPECT_TRUE(is_carry_masked_fit_failure(systematic));
+  EXPECT_FALSE(is_total_fit_failure(systematic))
+      << "the exit code must stay 0 — this is the shape C1 exists to protect";
+
+  // The converged steady state (3 permanently-failing cells, 147 carried
+  // siblings) is indistinguishable from it by construction, so it warns too. That
+  // is not a false positive: the warning claims only that the run is one of the
+  // two and points at the failed_cell reasons, which DO separate them.
+  SurfaceDbBuildReport converged = coverage_report(3u, 0u, 3u);
+  converged.coverage.cells_carried = 147u;
+  EXPECT_TRUE(is_carry_masked_fit_failure(converged));
+  EXPECT_FALSE(is_total_fit_failure(converged));
+}
+
+// ...and it must be SILENT on a genuinely converged database, or it is noise. A
+// converged resume has nothing left to schedule: every date is
+// dates_skipped_complete, nothing is fitted, nothing fails, nothing is carried
+// (carrying only happens on a date being rewritten).
+TEST(SurfaceDbCarryMaskedFitFailure, SilentOnAGenuinelyConvergedResume) {
+  SurfaceDbBuildReport resumed = coverage_report(0u, 0u, 0u);
+  resumed.coverage.cells_loaded = 150u;
+  resumed.coverage.cells_already_present = 150u;
+  resumed.coverage.dates_skipped_complete = 3u;
+  EXPECT_FALSE(is_carry_masked_fit_failure(resumed))
+      << "a converged database must not warn on every run";
+  EXPECT_FALSE(is_total_fit_failure(resumed));
+
+  // A rewrite that carried and lost NOTHING is equally quiet: no failure, no
+  // ambiguity to report.
+  SurfaceDbBuildReport clean_carry = coverage_report(0u, 0u, 0u);
+  clean_carry.coverage.cells_carried = 147u;
+  clean_carry.coverage.dates_written = 3u;
+  EXPECT_FALSE(is_carry_masked_fit_failure(clean_carry));
+
+  // And an empty window says nothing at all.
+  EXPECT_FALSE(is_carry_masked_fit_failure(SurfaceDbBuildReport{}));
+}
+
+// Anything fitted at all makes the run legible on its own: partial coverage is
+// normal production output and is not what this warning is about.
+TEST(SurfaceDbCarryMaskedFitFailure, SilentWhenAnythingFitted) {
+  SurfaceDbBuildReport partial = coverage_report(9u, 1u, 8u);
+  partial.coverage.cells_carried = 147u;
+  EXPECT_FALSE(is_carry_masked_fit_failure(partial));
+}
+
+// The warning and the exit code are DISJOINT: the predicate above needs
+// `cells_carried == 0`, this one needs `> 0`. The CLI can never emit both, so a
+// dead build gets the verdict and never the hedge.
+TEST(SurfaceDbCarryMaskedFitFailure, NeverOverlapsTheExitCode) {
+  const SurfaceDbBuildReport dead = coverage_report(3u, 0u, 3u); // cells_carried == 0
+  EXPECT_TRUE(is_total_fit_failure(dead));
+  EXPECT_FALSE(is_carry_masked_fit_failure(dead))
+      << "a genuine total fit failure must get the exit code, not the warning";
+}
+
+// COUNTER CHOICE, pinned. `cells_carried` is what grants the exit-3 exemption, so
+// it is what the warning tracks. FIX-E's `cells_carried_disabled` — preserved
+// surfaces of a symbol the operator switched OFF — grants no exemption, so such a
+// run is still a TOTAL FIT FAILURE and must not be softened into a warning.
+TEST(SurfaceDbCarryMaskedFitFailure, DisabledCarryIsNotHealthyCarry) {
+  SurfaceDbBuildReport preserved = coverage_report(3u, 0u, 3u);
+  preserved.coverage.cells_carried = 0u;
+  preserved.coverage.cells_carried_disabled = 9u;
+  EXPECT_TRUE(is_total_fit_failure(preserved))
+      << "preserved bytes of a switched-off name are not proof the run produced anything";
+  EXPECT_FALSE(is_carry_masked_fit_failure(preserved))
+      << "the warning must not replace the exit code for a shape that is still dead";
 }
 
 // ── is_total_config_failure — the SAME trap one stage earlier ───────────────
