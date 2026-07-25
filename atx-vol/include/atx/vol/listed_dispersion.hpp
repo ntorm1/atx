@@ -59,6 +59,60 @@ struct ListedDroppedName {
   [[nodiscard]] bool operator==(const ListedDroppedName &) const = default;
 };
 
+// ── WS-F F6 (BT-P2-8): quote-quality admission ──────────────────────────────
+//
+// The loader drops crossed NBBO, but selection accepted a ZERO BID and had no
+// staleness check at all beyond "not in the future". A zero-bid leg yields
+// mid = ask/2 — a price nobody trades at, on a side nobody can sell to — and it
+// could enter straddle selection and the recorded `raw_mid` PnL series. A
+// 30-minute-old NBBO row passed as current.
+struct ListedQuoteQualityConfig {
+  // A bid AT OR BELOW this floor is not an executable market. The default 0.0
+  // therefore rejects the zero bid (the defect) while accepting any real one;
+  // raise it to demand a minimum quoted bid.
+  double min_bid{0.0};
+  // Maximum age of `quote_ts_ns` behind the valuation instant. 0 DISABLES the
+  // check (the pre-F6 contract). Default 10 minutes.
+  std::int64_t max_quote_age_ns{600LL * 1'000'000'000LL};
+  // A LOCKED market (ask == bid) is counted but NOT dropped by default: the mid
+  // is still the true price, so dropping it would discard a good quote. Set
+  // true to exclude locked markets from selection as well.
+  bool reject_locked{false};
+};
+
+// Why one quote was not admitted. `None` means admitted.
+enum class ListedQuoteReject : std::uint8_t {
+  None = 0,
+  NotTwoSided = 1, // non-finite, ask <= 0, or crossed (ask < bid)
+  ZeroBid = 2,     // bid <= min_bid: the mid would be the fiction ask/2
+  Stale = 3,       // quote_ts_ns older than max_quote_age_ns
+  Locked = 4,      // ask == bid, and reject_locked is set
+};
+
+[[nodiscard]] const char *to_string(ListedQuoteReject reject) noexcept;
+
+// Per-date admission tally for the join report. `locked` counts EVERY locked
+// market seen, whether or not the policy dropped it, so the flag survives the
+// default no-drop policy.
+struct ListedQuoteRejectCounts {
+  std::uint32_t not_two_sided{0};
+  std::uint32_t zero_bid{0};
+  std::uint32_t stale{0};
+  std::uint32_t locked{0};
+  std::uint32_t non_standard{0}; // wrong multiplier / not standard monthly or deliverable
+
+  [[nodiscard]] std::uint32_t total_dropped() const noexcept {
+    return not_two_sided + zero_bid + stale + non_standard;
+  }
+  [[nodiscard]] bool operator==(const ListedQuoteRejectCounts &) const = default;
+};
+
+// Classify one quote against the quality policy. `valuation_ts_ns` anchors the
+// staleness window; pass the selection's valuation instant.
+[[nodiscard]] ListedQuoteReject
+classify_listed_quote(const ListedOptionQuote &quote, std::int64_t valuation_ts_ns,
+                      const ListedQuoteQualityConfig &quality) noexcept;
+
 struct ListedStraddle {
   std::string symbol{};
   std::uint32_t uid{0};
@@ -80,6 +134,9 @@ struct ListedDispersionSelection {
   ListedStraddle index{};
   std::vector<ListedStraddle> names{};
   std::vector<ListedDroppedName> dropped{};
+  // F6: per-date quote-admission tally over every quote inspected while
+  // selecting the CHOSEN expiry (index leg + every universe member).
+  ListedQuoteRejectCounts quote_rejects{};
 
   [[nodiscard]] bool operator==(const ListedDispersionSelection &) const = default;
 };
@@ -90,6 +147,7 @@ struct ListedDispersionSelectionConfig {
   double max_dte_days{60.0};
   std::size_t min_names{10};
   double required_multiplier{100.0};
+  ListedQuoteQualityConfig quality{}; // F6
 };
 
 // Resolve the forward for one universe member at an exact listed expiry.
@@ -98,6 +156,8 @@ using ListedForwardLookup =
 
 // True only for the locked run's executable quote contract: finite nonnegative
 // bid, finite positive ask, and a noncrossed market.
+// F6 (BT-P2-8): a ZERO bid is no longer executable. It used to pass — yielding
+// mid = ask/2, a fictional price on a side nobody can sell to.
 [[nodiscard]] bool is_valid_listed_quote(const ListedOptionQuote &quote) noexcept;
 
 // Select one common standard-monthly expiry and one actual listed ATM-forward
