@@ -28,6 +28,11 @@ namespace atx::vol::amer {
 inline constexpr std::uint16_t kAlMaxNodes = 32;
 
 // P2.2 sweep-invariant geometry precompute sizing (mirrors american.cpp).
+// BOTH bounds are load-bearing for memory safety, not just capacity: geo_zc /
+// geo_weru / geo_wequ are addressed as [j*kGeoQuadStride + i] for j < n_boundary,
+// i < n_quad_fp, so n_quad_fp > kGeoQuadStride overlaps adjacent rows and
+// n_boundary > kGeoNodeMax runs off the end. Enforced at compile time for every
+// scheme al_fp_specialized admits — see the COUPLING note below.
 inline constexpr unsigned kGeoNodeMax = 16;     // >= max specialized n_boundary (12)
 inline constexpr unsigned kGeoQuadStride = 32;  // >= max specialized n_quad_fp (24)
 inline constexpr unsigned kGeoSize = kGeoNodeMax * kGeoQuadStride;  // 512 doubles
@@ -91,8 +96,12 @@ inline constexpr unsigned kGeoSize = kGeoNodeMax * kGeoQuadStride;  // 512 doubl
 // n_quad_fp) that `al_fp_specialized` (american.cpp) admits — today (12,24). They are
 // NOT independent knobs: adding a scheme there without raising them here would size
 // geo_bary too small. That coupling is enforced from the other side, at compile time,
-// by `al_bary_table_fits_every_specialized_scheme()`, which evaluates the predicate
-// itself over a wide (nb,nq) sweep. If that static_assert ever fires, raise these two.
+// by `al_geometry_tables_fit_every_specialized_scheme()`, which evaluates the predicate
+// itself over the whole reachable (nb,nq) domain. If that static_assert ever fires,
+// raise these two — OR kGeoNodeMax / kGeoQuadStride above, which the SAME sweep also
+// covers (REVA7FIX Minor 3): those two size the row-addressed geo_zc / geo_weru /
+// geo_wequ triple, and a scheme can fit geo_bary while overflowing or overlapping
+// that one. Read the assert's message to see which sizing the new scheme broke.
 inline constexpr unsigned kGeoBaryNodeMax = 12;  // max specialized n_boundary
 inline constexpr unsigned kGeoBaryQuadMax = 24;  // max specialized n_quad_fp
 inline constexpr unsigned kGeoBaryPairs = (kGeoBaryNodeMax - 1u) * kGeoBaryQuadMax;  // 264

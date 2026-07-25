@@ -610,30 +610,74 @@ template <unsigned NB>
   return (nb == 7 && nq == 8) || (nb == 7 && nq == 16) || (nb == 12 && nq == 24);
 }
 
-// A6 / REVWSA finding 4: the geo_bary sizing guard, DERIVED from al_fp_specialized
-// above instead of hand-copied from it. The original shipped as three
-// `static_assert`s that restated (7,8) / (7,16) / (12,24) literally, so a FOURTH
-// scheme admitted above without growing kGeoBarySize would have compiled cleanly and
-// then silently taken the runtime `specialize = false` fallback in
-// al_bind_geometry_static — losing the hoist with no diagnostic anywhere. Sweeping a
-// domain that comfortably contains any scheme the AL ladder could plausibly add and
-// letting the predicate itself decide membership makes that a BUILD failure.
-// The bound sweep is deliberately much wider than kGeoNodeMax / kGeoQuadStride: a
-// scheme that overflows those is exactly the case this must not miss.
-[[nodiscard]] constexpr bool al_bary_table_fits_every_specialized_scheme() noexcept {
-  for (unsigned nb = 1; nb <= 64u; ++nb) {
-    for (unsigned nq = 1; nq <= 64u; ++nq) {
-      if (al_fp_specialized(nb, nq) && (nb - 1u) * nq * nb > kGeoBarySize) {
+// A6 / REVWSA finding 4: the per-solve geometry sizing guard, DERIVED from
+// al_fp_specialized above instead of hand-copied from it. The original shipped as
+// three `static_assert`s that restated (7,8) / (7,16) / (12,24) literally, so a
+// FOURTH scheme admitted above without growing the tables would have compiled
+// cleanly and then silently taken the runtime `specialize = false` fallback in
+// al_bind_geometry_static — losing the hoist with no diagnostic anywhere. Letting
+// the predicate itself decide membership makes that a BUILD failure.
+//
+// Does (nb, nq) fit EVERY table al_bind_geometry_static writes? There are TWO
+// independent sizings and BOTH are required (REVA7FIX Minor 3 — the shipped guard
+// covered only the first, which left a real out-of-bounds write expressible with no
+// diagnostic anywhere):
+//
+//   * geo_bary — PACKED at (bpair + i)*nb, so it needs (nb-1)*nq*nb <= kGeoBarySize.
+//     geo_bary_den / geo_bary_hit are indexed by bpair + i <= (nb-1)*nq, which this
+//     same bound covers since nb >= 1.
+//   * geo_zc / geo_weru / geo_wequ — ROW-ADDRESSED at gbase + i with
+//     gbase = j*kGeoQuadStride, j < nb, i < nq, into kGeoSize = kGeoNodeMax *
+//     kGeoQuadStride doubles. That needs BOTH bounds separately, and the packed bary
+//     bound implies NEITHER:
+//       - nq <= kGeoQuadStride, or row j spills past its own stride into row j+1's
+//         slots. (7,40) passes the bary bound (6*40*7 = 1680 <= 3168) and silently
+//         OVERLAPS adjacent rows — no overflow, just corruption.
+//       - nb <= kGeoNodeMax, or the last row runs off the end of the array. (17,8)
+//         passes the bary bound (16*8*17 = 2176 <= 3168) and writes geo_zc[512..519]
+//         OUT OF BOUNDS on a 512-element array.
+//     Both are pinned as compiled counterexamples below, not left as prose.
+[[nodiscard]] constexpr bool al_scheme_fits_geometry_tables(unsigned nb,
+                                                            unsigned nq) noexcept {
+  return nb >= 1u && nb <= kGeoNodeMax && nq <= kGeoQuadStride &&
+         (nb - 1u) * nq * nb <= kGeoBarySize;
+}
+
+// The three live schemes fit; the three ways to break it do not. These pin the
+// per-scheme predicate directly, so the sweep below cannot go vacuously true.
+static_assert(al_scheme_fits_geometry_tables(7, 8));
+static_assert(al_scheme_fits_geometry_tables(7, 16));
+static_assert(al_scheme_fits_geometry_tables(12, 24));
+static_assert(!al_scheme_fits_geometry_tables(13, 24));  // 12*24*13 = 3744 > geo_bary
+static_assert(!al_scheme_fits_geometry_tables(17, 8));   // geo_zc[512..519], OOB
+static_assert(!al_scheme_fits_geometry_tables(7, 40));   // nq > row stride, rows overlap
+
+// The sweep bound is DERIVED, not chosen (REVA7FIX Minor 4). It is exactly the
+// domain in which al_bind_geometry_static can ever be REACHED, so a scheme outside
+// it cannot corrupt anything and needs no assert:
+//   * nb <= kAlMaxNodes — AlBoundary's z/wbary/x/tau/y are std::array<double,
+//     kAlMaxNodes> and al_init_nodes writes b.z[i] for i < n, so a larger
+//     n_boundary is already unrepresentable; scheme_from_opts clamps to it too.
+//   * nq <= kAlMaxQuad — n_quad_fp is only ever one of the six Gauss-Legendre
+//     orders {8,16,24,32,48,64} that gl_tables() builds and gl_find() resolves;
+//     al_gauss_legendre rejects n > kAlMaxQuad outright, so there is no table to
+//     bind above it.
+[[nodiscard]] constexpr bool al_geometry_tables_fit_every_specialized_scheme() noexcept {
+  for (unsigned nb = 1; nb <= unsigned{kAlMaxNodes}; ++nb) {
+    for (unsigned nq = 1; nq <= kAlMaxQuad; ++nq) {
+      if (al_fp_specialized(nb, nq) && !al_scheme_fits_geometry_tables(nb, nq)) {
         return false;
       }
     }
   }
   return true;
 }
-static_assert(al_bary_table_fits_every_specialized_scheme(),
-              "a scheme al_fp_specialized() admits does not fit geo_bary: grow "
-              "kGeoBaryNodeMax / kGeoBaryQuadMax in american_boundary.hpp, or the new "
-              "scheme silently loses the barycentric hoist at runtime");
+static_assert(al_geometry_tables_fit_every_specialized_scheme(),
+              "a scheme al_fp_specialized() admits does not fit the per-solve geometry "
+              "tables: grow kGeoBaryNodeMax / kGeoBaryQuadMax (geo_bary) and/or "
+              "kGeoNodeMax / kGeoQuadStride (geo_zc / geo_weru / geo_wequ) in "
+              "american_boundary.hpp, or the new scheme silently loses the barycentric "
+              "hoist at runtime — or, for the geo_zc triple, writes out of bounds");
 
 // AlWorkspace now lives in namespace amer (american_boundary.hpp).
 
@@ -921,14 +965,18 @@ void al_bind_geometry_static(const AlBoundary &bnd, AlWorkspace &ws, double r,
   const unsigned nq = ws.n_quad_fp;
   const unsigned nb = bnd.n;
   const double T = bnd.T;
-  // A6 defensive bound. Every scheme al_fp_specialized admits fits kGeoBarySize by
-  // construction — enforced at compile time by
-  // al_bary_table_fits_every_specialized_scheme(), which is DERIVED from the
+  // A6 defensive bound. Every scheme al_fp_specialized admits fits every geometry
+  // table by construction — enforced at compile time by
+  // al_geometry_tables_fit_every_specialized_scheme(), which is DERIVED from the
   // predicate rather than restating its scheme list (REVWSA finding 4). This runtime
   // arm is therefore unreachable today; it stays as the same safety shape as the R-30
   // specialize-off fallback, so a bound that ever did slip through falls back to the
-  // generic kernel instead of writing out of bounds.
-  if (nb == 0 || (nb - 1u) * nq * nb > kGeoBarySize) {
+  // generic kernel instead of writing out of bounds. It calls the SAME predicate the
+  // static_assert sweeps rather than re-stating its arithmetic, so the two cannot
+  // drift — and so it now also covers the geo_zc / geo_weru / geo_wequ row addressing
+  // below, which the hand-copied geo_bary-only expression here did not (REVA7FIX
+  // Minor 3).
+  if (!al_scheme_fits_geometry_tables(nb, nq)) {
     ws.specialize = false;
     ws.geo_static_bound = false;
     g_specialize_off_fallbacks.fetch_add(1, std::memory_order_relaxed);
