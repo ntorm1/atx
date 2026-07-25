@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "atx/core/error.hpp"
 #include "atx/vol/data.hpp"
 #include "atx/vol/listed_opra.hpp"
 
@@ -488,10 +489,13 @@ TEST(ListedOpra, DefinitionTableTradeEndMemoMatchesPerRowCompute) {
                                       reference_trade_end(date)));
     }
   }
-  // Hand them in DESCENDING date order: create() sorts by (trade_date,
-  // instrument_id, raw_symbol) before it walks the rows, and that sort is the
-  // whole reason a single-slot memo is exact. If the sort ever stopped preceding
-  // the loop, the interleaved dates below would break a memo immediately.
+  // Hand them in DESCENDING date order. create() sorts by (trade_date,
+  // instrument_id, raw_symbol) before it walks the rows, and the sort is what
+  // makes a SINGLE memo slot cheap — it is NOT what makes it correct. The memo
+  // compares before it refreshes, so it is exact under any permutation; moving
+  // the sort would cost refreshes, not correctness, and this test would still
+  // pass. Reversing the input therefore proves the sort ran (asserted below),
+  // not that the memo needs it.
   std::reverse(rows.begin(), rows.end());
 
   auto table = ListedDefinitionTable::create(rows);
@@ -656,6 +660,38 @@ std::string with_field(const std::string &tsv, std::size_t row, std::size_t fiel
 
 bool parses(const std::string &tsv) { return atx::vol::parse_listed_definitions(tsv).has_value(); }
 
+// WHICH GATE REJECTED `tsv`, not merely THAT something did.
+//
+// `parse_listed_definitions` re-wraps every create()-level Error as
+// `ErrorCode::ParseError` (listed_opra.cpp, the `return Err(ErrorCode::ParseError,
+// table.error().to_string())` at the tail), so the error CODE is `ParseError` for
+// both layers and cannot discriminate. The wrapped MESSAGE can: the parser's own
+// two rejections carry their message verbatim, whereas a create()-level rejection
+// carries create()'s own `"<Code>: <message>"` rendering as the wrapped text.
+//
+// This matters because a later rewrite of the parser could drop its numeric and
+// field-count validation entirely and still leave a bare `has_value()` assertion
+// green — create()'s structural gate would catch most of these inputs downstream.
+// Pinning the layer turns the whole set into a lock on the PARSER.
+std::string rejection(const std::string &tsv) {
+  auto table = atx::vol::parse_listed_definitions(tsv);
+  if (table) {
+    return "ACCEPTED";
+  }
+  EXPECT_EQ(table.error().code(), atx::core::ErrorCode::ParseError);
+  return table.error().message();
+}
+
+// The parser's own two rejections (the magic/header equality gate and the per-row
+// field-count + numeric gate).
+constexpr const char *kByParserHeader = "listed definitions: bad header";
+constexpr const char *kByParserRow = "listed definitions: malformed row";
+// create()'s rejections, as the parser re-renders them.
+constexpr const char *kByCreateMalformed =
+    "InvalidArgument: listed definitions: malformed definition";
+constexpr const char *kByCreateDuplicate =
+    "AlreadyExists: listed definitions: duplicate definition key";
+
 TEST(ListedOpra, ParseRejectsMagicAndHeaderCorruption) {
   const std::string good = good_tsv();
   ASSERT_FALSE(good.empty());
@@ -669,37 +705,42 @@ TEST(ListedOpra, ParseRejectsMagicAndHeaderCorruption) {
   ASSERT_EQ(magic, "ATX_LISTED_DEFINITIONS\t1");
   ASSERT_FALSE(header.empty());
 
+  // Every case below must be rejected by the PARSER's magic/header equality gate
+  // specifically (kByParserHeader), never by create() downstream — see
+  // `rejection` above for why the error code alone cannot say that.
+
   // Too few lines to carry a magic + header at all.
-  EXPECT_FALSE(parses(""));
-  EXPECT_FALSE(parses(magic));
-  EXPECT_FALSE(parses(magic + "\n"));
+  EXPECT_EQ(rejection(""), kByParserHeader);
+  EXPECT_EQ(rejection(magic), kByParserHeader);
+  EXPECT_EQ(rejection(magic + "\n"), kByParserHeader);
 
   // Magic: version, separator, case, padding, truncation.
-  EXPECT_FALSE(parses(with_line(good, 0, "ATX_LISTED_DEFINITIONS\t2")));
-  EXPECT_FALSE(parses(with_line(good, 0, "ATX_LISTED_DEFINITIONS 1")));
-  EXPECT_FALSE(parses(with_line(good, 0, "atx_listed_definitions\t1")));
-  EXPECT_FALSE(parses(with_line(good, 0, "ATX_LISTED_DEFINITIONS\t1 ")));
-  EXPECT_FALSE(parses(with_line(good, 0, " ATX_LISTED_DEFINITIONS\t1")));
-  EXPECT_FALSE(parses(with_line(good, 0, "ATX_LISTED_DEFINITIONS")));
-  EXPECT_FALSE(parses(with_line(good, 0, "")));
+  EXPECT_EQ(rejection(with_line(good, 0, "ATX_LISTED_DEFINITIONS\t2")), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 0, "ATX_LISTED_DEFINITIONS 1")), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 0, "atx_listed_definitions\t1")), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 0, "ATX_LISTED_DEFINITIONS\t1 ")), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 0, " ATX_LISTED_DEFINITIONS\t1")), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 0, "ATX_LISTED_DEFINITIONS")), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 0, "")), kByParserHeader);
   // A '\r' before the '\n' is NOT tolerated on the magic line — the equality is
   // exact, and this file format is LF-only by contract.
-  EXPECT_FALSE(parses(with_line(good, 0, magic + "\r")));
+  EXPECT_EQ(rejection(with_line(good, 0, magic + "\r")), kByParserHeader);
 
   // Header: an extra column, a dropped column, a renamed column, a reordering.
-  EXPECT_FALSE(parses(with_line(good, 1, header + "\textra")));
-  EXPECT_FALSE(parses(with_line(good, 1, header.substr(0, header.rfind('\t')))));
-  EXPECT_FALSE(parses(with_line(good, 1, "TRADE_DATE" + header.substr(header.find('\t')))));
+  EXPECT_EQ(rejection(with_line(good, 1, header + "\textra")), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 1, header.substr(0, header.rfind('\t')))), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 1, "TRADE_DATE" + header.substr(header.find('\t')))),
+            kByParserHeader);
   {
     std::vector<std::string> columns = split_on(header, '\t');
     ASSERT_EQ(columns.size(), 9u);
     std::swap(columns[0], columns[1]);
-    EXPECT_FALSE(parses(with_line(good, 1, join_on(columns, '\t'))));
+    EXPECT_EQ(rejection(with_line(good, 1, join_on(columns, '\t'))), kByParserHeader);
   }
-  EXPECT_FALSE(parses(with_line(good, 1, "")));
-  EXPECT_FALSE(parses(with_line(good, 1, header + "\r")));
+  EXPECT_EQ(rejection(with_line(good, 1, "")), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 1, header + "\r")), kByParserHeader);
   // Magic and header transposed.
-  EXPECT_FALSE(parses(with_line(with_line(good, 0, header), 1, magic)));
+  EXPECT_EQ(rejection(with_line(with_line(good, 0, header), 1, magic)), kByParserHeader);
 }
 
 TEST(ListedOpra, ParseRejectsMalformedRowFieldCountsAndNumerics) {
@@ -711,51 +752,67 @@ TEST(ListedOpra, ParseRejectsMalformedRowFieldCountsAndNumerics) {
   const std::vector<std::string> fields = split_on(row, '\t');
   ASSERT_EQ(fields.size(), 9u);
 
-  // Field count: 8 and 10.
-  EXPECT_FALSE(parses(
-      with_line(good, 2, join_on(std::vector<std::string>(fields.begin(), fields.end() - 1), '\t'))));
-  EXPECT_FALSE(parses(with_line(good, 2, row + "\textra")));
+  // Every assertion below pins the LAYER that rejected, not merely that something
+  // did — see `rejection` above. Cases marked kByParserRow are locks on the
+  // parser's own gate and would go RED if a rewrite dropped that validation and
+  // let create() catch the input instead.
+
+  // Field count: 8 and 10. Parser gate.
+  EXPECT_EQ(rejection(with_line(good, 2,
+                                join_on(std::vector<std::string>(fields.begin(), fields.end() - 1),
+                                        '\t'))),
+            kByParserRow);
+  EXPECT_EQ(rejection(with_line(good, 2, row + "\textra")), kByParserRow);
   // A tab-free row is one field, not nine.
-  EXPECT_FALSE(parses(with_line(good, 2, "not-a-row")));
+  EXPECT_EQ(rejection(with_line(good, 2, "not-a-row")), kByParserRow);
 
   // instrument_id (field 1): non-numeric, empty, trailing garbage, negative,
-  // and one past the uint32 ceiling the parser enforces.
+  // and one past the uint32 ceiling the parser enforces. All parser gate.
   for (const char *bad : {"abc", "", " 101", "101 ", "101x", "-1", "1.0", "0x65", "+101",
                           "4294967296", "18446744073709551616"}) {
-    EXPECT_FALSE(parses(with_field(good, 0, 1, bad))) << "instrument_id=" << bad;
+    EXPECT_EQ(rejection(with_field(good, 0, 1, bad)), kByParserRow) << "instrument_id=" << bad;
   }
   EXPECT_TRUE(parses(with_field(good, 0, 1, "4294967295"))) << "uint32 ceiling must still parse";
 
-  // definition_ts_ns (3) and expiry_ts_ns (4): int64, no fractional part.
+  // definition_ts_ns (3) and expiry_ts_ns (4): int64, no fractional part. Parser gate.
   for (const char *bad : {"abc", "", "1.5", "1e9", "12345678901234567890123"}) {
-    EXPECT_FALSE(parses(with_field(good, 0, 3, bad))) << "definition_ts_ns=" << bad;
-    EXPECT_FALSE(parses(with_field(good, 0, 4, bad))) << "expiry_ts_ns=" << bad;
+    EXPECT_EQ(rejection(with_field(good, 0, 3, bad)), kByParserRow) << "definition_ts_ns=" << bad;
+    EXPECT_EQ(rejection(with_field(good, 0, 4, bad)), kByParserRow) << "expiry_ts_ns=" << bad;
   }
 
-  // multiplier (5): non-numeric, empty, trailing garbage, non-finite, and the
-  // create()-level positivity gate reached through the parser.
-  for (const char *bad : {"abc", "", "100x", "inf", "-inf", "nan", "0", "-100"}) {
-    EXPECT_FALSE(parses(with_field(good, 0, 5, bad))) << "multiplier=" << bad;
+  // multiplier (5): the parser rejects non-numeric / trailing-garbage / non-finite
+  // forms (parse_double demands full consumption and isfinite)...
+  for (const char *bad : {"abc", "", "100x", "inf", "-inf", "nan"}) {
+    EXPECT_EQ(rejection(with_field(good, 0, 5, bad)), kByParserRow) << "multiplier=" << bad;
+  }
+  // ...but "0" and "-100" are VALID doubles, so they pass the parser and are
+  // rejected one layer down by create()'s positivity gate. Pinning that split is
+  // the point: it says exactly which code owns each rule.
+  for (const char *bad : {"0", "-100"}) {
+    EXPECT_EQ(rejection(with_field(good, 0, 5, bad)), kByCreateMalformed) << "multiplier=" << bad;
   }
 
-  // standard_monthly (6) / standard_deliverable (7): strictly 0 or 1.
+  // standard_monthly (6) / standard_deliverable (7): strictly 0 or 1. Parser gate.
   for (const char *bad : {"2", "-1", "x", "", "01x"}) {
-    EXPECT_FALSE(parses(with_field(good, 0, 6, bad))) << "standard_monthly=" << bad;
-    EXPECT_FALSE(parses(with_field(good, 0, 7, bad))) << "standard_deliverable=" << bad;
+    EXPECT_EQ(rejection(with_field(good, 0, 6, bad)), kByParserRow) << "standard_monthly=" << bad;
+    EXPECT_EQ(rejection(with_field(good, 0, 7, bad)), kByParserRow)
+        << "standard_deliverable=" << bad;
   }
 
-  // source_fingerprint (8): non-numeric, empty, overflow, and the create()-level
-  // non-zero gate reached through the parser.
-  for (const char *bad : {"abc", "", "-1", "1.0", "18446744073709551616", "0"}) {
-    EXPECT_FALSE(parses(with_field(good, 0, 8, bad))) << "source_fingerprint=" << bad;
+  // source_fingerprint (8): non-numeric, empty, negative and overflowing forms are
+  // the parser's; a well-formed "0" is create()'s non-zero gate.
+  for (const char *bad : {"abc", "", "-1", "1.0", "18446744073709551616"}) {
+    EXPECT_EQ(rejection(with_field(good, 0, 8, bad)), kByParserRow) << "source_fingerprint=" << bad;
   }
+  EXPECT_EQ(rejection(with_field(good, 0, 8, "0")), kByCreateMalformed) << "source_fingerprint=0";
 
-  // Non-numeric fields still reach create()'s structural gates.
-  EXPECT_FALSE(parses(with_field(good, 0, 0, ""))) << "empty trade_date";
-  EXPECT_FALSE(parses(with_field(good, 0, 2, ""))) << "empty raw_symbol";
-  EXPECT_FALSE(parses(with_field(good, 0, 1, "0"))) << "instrument_id 0";
-  // Duplicate key: row 1 made identical to row 0.
-  EXPECT_FALSE(parses(with_line(good, 3, row))) << "duplicate definition key";
+  // Fields the parser does not validate at all reach create()'s structural gates.
+  EXPECT_EQ(rejection(with_field(good, 0, 0, "")), kByCreateMalformed) << "empty trade_date";
+  EXPECT_EQ(rejection(with_field(good, 0, 2, "")), kByCreateMalformed) << "empty raw_symbol";
+  EXPECT_EQ(rejection(with_field(good, 0, 1, "0")), kByCreateMalformed) << "instrument_id 0";
+  // Duplicate key: row 1 made identical to row 0. create()'s AlreadyExists gate —
+  // a DIFFERENT create() gate from the malformed one, and the message pins which.
+  EXPECT_EQ(rejection(with_line(good, 3, row)), kByCreateDuplicate) << "duplicate definition key";
 }
 
 TEST(ListedOpra, ParseAcceptsEmptyLinesExactlyAsItDoesToday) {
@@ -788,8 +845,10 @@ TEST(ListedOpra, ParseAcceptsEmptyLinesExactlyAsItDoesToday) {
   EXPECT_EQ(between->definitions().size(), 2u);
 
   // Negative control for this whole test: a blank line is skipped, but a line
-  // that merely LOOKS blank (a single space) is a one-field row and is rejected.
-  EXPECT_FALSE(parses(with_line(good, 2, " ")));
+  // that merely LOOKS blank (a single space) is a one-field row and is rejected
+  // by the PARSER's field-count gate — not swallowed by the skip and not deferred
+  // to create(). Pinning the layer is what makes this a control on the skip.
+  EXPECT_EQ(rejection(with_line(good, 2, " ")), kByParserRow);
 }
 
 } // namespace

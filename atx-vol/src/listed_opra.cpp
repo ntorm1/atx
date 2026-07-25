@@ -160,13 +160,24 @@ ListedDefinitionTable::create(std::vector<ListedContractDefinition> definitions)
   std::sort(definitions.begin(), definitions.end(),
             [](const auto &a, const auto &b) { return definition_key(a) < definition_key(b); });
 
-  // Single-slot memo for the per-row end-of-day bound. `definition_key`'s FIRST
-  // field is `trade_date`, so the sort above leaves `trade_date` non-decreasing
-  // across this loop: the bound changes only when the date does, and a two-field
-  // (date, bound) memo is exact. A map keyed by date would be correct too but
-  // strictly slower — it is the sort that makes the cheap form sufficient, and
-  // the sort MUST stay above this loop. The memoed view aliases a row of
-  // `definitions`, which is only read until it is moved out below.
+  // Single-slot memo for the per-row end-of-day bound.
+  //
+  // CORRECTNESS DOES NOT DEPEND ON THE INPUT ORDER. This is a compare-then-
+  // refresh memo, not a compute-once memo: it recomputes whenever the row's date
+  // differs from the memoized one, so after the `if` below the invariant
+  // `memo_trade_end == end_of_day_ns(definition.trade_date)` holds for EVERY row
+  // under ANY permutation of the input. `end_of_day_ns` is a pure function of its
+  // argument bytes, so a reordering can only change how often it is called.
+  //
+  // What the sort above buys is HIT RATE, not correctness. `definition_key`'s
+  // FIRST field is `trade_date`, so the sort leaves `trade_date` non-decreasing
+  // across this loop and the single slot refreshes once per distinct date (~60)
+  // instead of up to once per row (~8.7M). If the sort ever stopped preceding the
+  // loop the memo would still be exact — just slower — which is why a map keyed
+  // by date is unnecessary here rather than unsafe.
+  //
+  // The memoed view aliases a row of `definitions`, which is only read until it is
+  // moved out below.
   std::string_view memo_date;
   std::int64_t memo_trade_end = 0;
 
