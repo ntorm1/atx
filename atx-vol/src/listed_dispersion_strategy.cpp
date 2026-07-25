@@ -1,5 +1,6 @@
 #include "atx/vol/listed_dispersion_strategy.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -123,11 +124,25 @@ Result<ListedDispersionStrategy> ListedDispersionStrategy::create(ListedDispersi
       }
     }
   }
+  // F5 (BT-T2): the schedule is the COMPLETE set of names this strategy can ever
+  // touch, so the engine can subset-deserialize. Sorted + deduped for a
+  // deterministic set that does not depend on roll/leg order in the artifact.
+  std::vector<std::uint32_t> referenced_uids;
+  for (const ListedScheduleRoll &roll : schedule.rolls) {
+    for (const ListedScheduleLeg &leg : roll.legs) {
+      referenced_uids.push_back(leg.uid);
+    }
+  }
+  std::sort(referenced_uids.begin(), referenced_uids.end());
+  referenced_uids.erase(std::unique(referenced_uids.begin(), referenced_uids.end()),
+                        referenced_uids.end());
+
   HedgeSpec hedge;
   hedge.kind = HedgeSpec::Kind::DeltaToZero;
   hedge.cadence = HedgeSpec::Cadence::Daily;
   hedge.band = delta_band;
-  return Ok(ListedDispersionStrategy{std::move(schedule), hedge, policy, fill});
+  return Ok(ListedDispersionStrategy{std::move(schedule), hedge, policy, fill,
+                                     std::move(referenced_uids)});
 }
 
 Status ListedDispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,

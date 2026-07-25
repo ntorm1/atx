@@ -389,6 +389,26 @@ public:
   [[nodiscard]] virtual QueryExecution required_economic_execution() const noexcept {
     return QueryExecution::Configured;
   }
+  // WS-F F5 (BT-T2): the COMPLETE set of underlier uids this strategy will ever
+  // touch, if it can be enumerated before the run. The engine uses it to build
+  // its PRIVATE snapshot cache with a subset-deserialize, so a replay against a
+  // wide archive reconstructs only the names the strategy references instead of
+  // the whole board on every date.
+  //
+  // The default is EMPTY, which means "not known up front" and keeps the
+  // whole-board load — the correct answer for any strategy that discovers names
+  // inside `on_step` (a point-in-time universe, a signal-driven basket). A
+  // schedule-driven strategy knows the answer exactly.
+  //
+  // CONTRACT — an INCOMPLETE set is a silent wrong number, not a slow run: a uid
+  // omitted here is simply absent from every snapshot, so its lots go unpriced
+  // and its hedge shares unmarked (both now fail closed under F1, but only under
+  // the Error policy). Return everything or return nothing. The engine ignores
+  // this entirely when the caller supplies its own snapshot cache, since a
+  // shared cache may serve other books with different referenced sets.
+  [[nodiscard]] virtual std::span<const std::uint32_t> referenced_uids() const noexcept {
+    return {};
+  }
 };
 
 // Interprets a `StrategySpec` against each snapshot. Holds the lifecycle state:

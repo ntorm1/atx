@@ -39,6 +39,17 @@ namespace {
 // Process-wide archive-open counter (test seam). Loads increment it exactly once.
 std::atomic<std::uint64_t> g_open_count{0};
 
+// WS-F F5 (BT-T2). Process-wide count of SURFACE-RECORD BYTES actually
+// materialized by snapshot loads — the sum of `ArchiveV2DirEntry::surface_size`
+// over every directory entry a load turns into a surface or a view.
+//
+// This is deliberately a DETERMINISTIC counter, not a timing number: it is the
+// same value on a busy host as on a quiet one, so a subset-vs-whole-board claim
+// is a fact rather than a measurement. It counts record bytes, not resident
+// pages: on the borrowed (mapped) tiers the OS faults in only what is read, so
+// this is the upper bound the subset actually shrinks.
+std::atomic<std::uint64_t> g_deserialized_bytes{0};
+
 // A forward-only run owns base, shifted, and at most one prefetched future.
 // Retaining three cache entries covers that working set without accumulating one
 // mapped archive per date. Caller-supplied caches remain reusable and unbounded.
@@ -1165,6 +1176,11 @@ MarketSnapshot::MarketSnapshot(std::shared_ptr<const SurfaceArchiveV2> archive,
 std::uint64_t MarketSnapshot::open_count() noexcept { return g_open_count.load(); }
 void MarketSnapshot::reset_open_count() noexcept { g_open_count.store(0); }
 
+std::uint64_t MarketSnapshot::deserialized_bytes() noexcept {
+  return g_deserialized_bytes.load();
+}
+void MarketSnapshot::reset_deserialized_bytes() noexcept { g_deserialized_bytes.store(0); }
+
 Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
                                             QueryPricingTier query_pricing_tier,
                                             std::span<const std::uint32_t> referenced_uids,
@@ -1309,6 +1325,7 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
       if (wanted_uids.find(e.uid) == wanted_uids.end()) {
         continue;
       }
+      g_deserialized_bytes.fetch_add(e.surface_size, std::memory_order_relaxed); // F5
       // S3 (WS-S): build the surface AND its provenance from the directory entry `e`
       // already in hand — ONE pass over the record extent, no hash re-probe.
       if (borrow) {
@@ -1334,6 +1351,13 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     surfaces.clear();
     views.clear();
     provenance.clear();
+    // F5: the whole-board load materializes every directory entry. Counted here
+    // (rather than inside the archive) so the subset and whole-board paths are
+    // measured by the same rule and are directly comparable. A failed subset
+    // that falls back therefore counts BOTH — which is honest: it did both.
+    for (const ArchiveV2DirEntry &e : dir) {
+      g_deserialized_bytes.fetch_add(e.surface_size, std::memory_order_relaxed);
+    }
     if (borrow) {
       auto mapped = archive->map_all_with_provenance();
       if (!mapped) {
@@ -2094,10 +2118,26 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
 
   // WS-ZC1: a backtest replays a SEALED corpus, and only the PRIVATE cache may be
   // sealed — see the note on the fixed-book overload above.
+  //
+  // WS-F F5 (BT-T2): the strategy overload used to build its private cache with
+  // NO referenced set, on the reasoning that "on_step names are not known up
+  // front". That is false for a schedule-driven strategy — the schedule
+  // enumerates every uid it will ever touch — so a replay against a wide archive
+  // reconstructed the whole board on every date to price ~11 names.
+  // `IStrategy::referenced_uids()` lets a strategy that CAN answer say so; the
+  // empty default keeps the whole-board load for every strategy that cannot.
+  // Only the PRIVATE cache may be subsetted: a caller-supplied cache can be
+  // reused across books whose referenced sets differ, and a subset snapshot
+  // cached under one book would be missing another's uids.
+  const std::span<const std::uint32_t> strategy_uids = strat.referenced_uids();
   const std::shared_ptr<SnapshotCache> snapshot_cache =
       cfg.snapshot_cache ? cfg.snapshot_cache
-                         : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity,
-                                                           ArchiveBacking::Sealed);
+      : strategy_uids.empty()
+          ? std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity, ArchiveBacking::Sealed)
+          : std::make_shared<SnapshotCache>(
+                kPrivateSnapshotCacheCapacity,
+                std::vector<std::uint32_t>(strategy_uids.begin(), strategy_uids.end()),
+                ArchiveBacking::Sealed);
   auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
                                        cfg.query_cache_build_policy);
   if (!base_res) {

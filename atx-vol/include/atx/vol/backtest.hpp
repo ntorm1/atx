@@ -191,6 +191,16 @@ public:
   [[nodiscard]] static std::uint64_t open_count() noexcept;
   static void reset_open_count() noexcept;
 
+  // WS-F F5 (BT-T2): process-wide SURFACE-RECORD BYTES materialized by loads —
+  // the sum of the archive directory entries' `surface_size` over every record a
+  // load turned into a surface or a view. Deterministic by construction (the
+  // same number on a busy host as on a quiet one), so a subset-vs-whole-board
+  // claim is a fact and not a timing measurement. Counts record bytes, not
+  // resident pages: on the mapped tiers the OS faults in only what is read, so
+  // this is the upper bound the subset shrinks.
+  [[nodiscard]] static std::uint64_t deserialized_bytes() noexcept;
+  static void reset_deserialized_bytes() noexcept;
+
 private:
   MarketSnapshot(std::shared_ptr<const SurfaceArchiveV2> archive,
                  std::vector<PricedSurface> &&surfaces, std::vector<PricedSurfaceView> &&views,

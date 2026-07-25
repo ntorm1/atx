@@ -816,3 +816,209 @@ TEST(ListedDispersionStrategy, QuoteSideFillsFailClosedOnALegWithNoUsableTwoSide
   std::error_code ec;
   fs::remove_all(fx.dir, ec);
 }
+
+// â”€â”€ WS-F F5 (BT-T2): subset-deserialize for schedule-driven strategies â”€â”€â”€â”€â”€â”€
+//
+// Subset-deserialize was wired only for the FIXED-BOOK overload's private
+// cache; the strategy overload constructed its private cache with no referenced
+// set "because on_step names are not known up front". For a schedule-driven
+// strategy that is simply false â€” the schedule enumerates every uid it will ever
+// touch â€” so a replay against a wide archive reconstructed the WHOLE BOARD on
+// every date to price a handful of names.
+//
+// The fixture below archives the 3 traded names alongside 6 untraded ones, so
+// the subset is a real subset, and gates on BOTH halves of the claim:
+//   1. the NAV track is BIT-IDENTICAL to the whole-board load (a perf change
+//      that moves a number is a correctness bug), and
+//   2. the load-bytes counter drops â€” a DETERMINISTIC count of record bytes
+//      materialized, not a timing number.
+
+namespace {
+
+// The F2 corpus plus `n_filler` surfaces per date that the schedule never
+// references. Same schedule, same rolls: only the archive is wider.
+[[nodiscard]] F2Fixture make_wide_fixture(const char *tag, int n_filler) {
+  F2Fixture out;
+  out.dir = fresh_dir(tag);
+  const std::string dates[] = {"2026-07-10", "2026-07-11", "2026-07-12"};
+  const std::int64_t stamps[] = {kNow, kNow + kDayNs, kNow + 2 * kDayNs};
+
+  for (std::size_t d = 0; d < 3; ++d) {
+    const double drift = 1.0 + 0.004 * static_cast<double>(d);
+    std::vector<PricedSurface> day;
+    day.push_back(make_surface_at(1u, 500.0 * drift, stamps[d]));
+    day.push_back(make_surface_at(2u, 100.0 * drift, stamps[d]));
+    day.push_back(make_surface_at(3u, 200.0 * drift, stamps[d]));
+    for (int f = 0; f < n_filler; ++f) {
+      day.push_back(make_surface_at(static_cast<std::uint32_t>(100 + f),
+                                    (60.0 + 7.0 * static_cast<double>(f)) * drift, stamps[d]));
+    }
+    std::vector<SurfaceArchiveItem> items;
+    items.push_back(SurfaceArchiveItem{"SPY", &day[0]});
+    items.push_back(SurfaceArchiveItem{"N0", &day[1]});
+    items.push_back(SurfaceArchiveItem{"N1", &day[2]});
+    std::vector<std::string> filler_names;
+    filler_names.reserve(static_cast<std::size_t>(n_filler));
+    for (int f = 0; f < n_filler; ++f) {
+      filler_names.push_back("FILL" + std::to_string(f));
+    }
+    for (int f = 0; f < n_filler; ++f) {
+      items.push_back(SurfaceArchiveItem{filler_names[static_cast<std::size_t>(f)],
+                                         &day[3 + static_cast<std::size_t>(f)]});
+    }
+    const std::string path = (out.dir / (dates[d] + ".atxvsa")).string();
+    EXPECT_TRUE(write_surface_archive_v2_file(path, items).has_value());
+    out.manifest.dates.push_back(dates[d]);
+    CorpusEntry e;
+    e.date = dates[d];
+    e.symbol = "SPY";
+    e.status = CorpusFitStatus::Ok;
+    e.archive_path = path;
+    out.manifest.entries.push_back(std::move(e));
+
+    if (d == 2) {
+      continue;
+    }
+    auto snapshot = MarketSnapshot::load(path);
+    EXPECT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+    ListedScheduleBuildConfig cfg;
+    cfg.gross_index_vega_target_per_vol_point = 1000.0;
+    cfg.cohort = static_cast<std::uint32_t>(4u + d);
+    cfg.surface_fingerprint = 12345u;
+    auto roll =
+        build_listed_dispersion_roll(f2_selection(dates[d], stamps[d]), snapshot->set(), cfg);
+    EXPECT_TRUE(roll.has_value()) << roll.error().to_string();
+    out.schedule.rolls.push_back(std::move(*roll));
+  }
+  return out;
+}
+
+void expect_track_bit_identical(const BacktestResult &a, const BacktestResult &b) {
+  ASSERT_EQ(a.size(), b.size());
+  const auto same = [](const std::vector<double> &x, const std::vector<double> &y,
+                       const char *name) {
+    ASSERT_EQ(x.size(), y.size()) << name;
+    for (std::size_t i = 0; i < x.size(); ++i) {
+      EXPECT_EQ(x[i], y[i]) << name << " row " << i;
+    }
+  };
+  same(a.nav, b.nav, "nav");
+  same(a.pnl_total, b.pnl_total, "pnl_total");
+  same(a.pnl_delta, b.pnl_delta, "pnl_delta");
+  same(a.pnl_vega, b.pnl_vega, "pnl_vega");
+  same(a.pnl_settlement, b.pnl_settlement, "pnl_settlement");
+  same(a.pnl_shares, b.pnl_shares, "pnl_shares");
+  same(a.financing, b.financing, "financing");
+  same(a.cost, b.cost, "cost");
+  same(a.cash, b.cash, "cash");
+  same(a.gross_delta, b.gross_delta, "gross_delta");
+  same(a.gross_vega, b.gross_vega, "gross_vega");
+  same(a.step_pnl_total, b.step_pnl_total, "step_pnl_total");
+}
+
+} // namespace
+
+TEST(ListedDispersionStrategy, ScheduleEnumeratesEveryReferencedUidForSubsetDeserialize) {
+  const F2Fixture fx = make_wide_fixture("f5-referenced-uids", /*n_filler=*/6);
+  auto strategy = ListedDispersionStrategy::create(fx.schedule);
+  ASSERT_TRUE(strategy.has_value()) << strategy.error().to_string();
+
+  const std::span<const std::uint32_t> uids = strategy->referenced_uids();
+  ASSERT_EQ(uids.size(), 3u) << "SPY + 2 names, deduped across both rolls";
+  EXPECT_EQ(uids[0], 1u);
+  EXPECT_EQ(uids[1], 2u);
+  EXPECT_EQ(uids[2], 3u);
+  EXPECT_TRUE(std::is_sorted(uids.begin(), uids.end()));
+
+  // The set covers every leg of every roll â€” an omission is a silent wrong
+  // number (the name would be absent from every snapshot), not a slow run.
+  for (const ListedScheduleRoll &roll : fx.schedule.rolls) {
+    for (const ListedScheduleLeg &leg : roll.legs) {
+      EXPECT_NE(std::find(uids.begin(), uids.end(), leg.uid), uids.end()) << leg.symbol;
+    }
+  }
+  std::error_code ec;
+  fs::remove_all(fx.dir, ec);
+}
+
+TEST(ListedDispersionStrategy, SubsetDeserializeIsNavIdenticalAndLoadsStrictlyFewerBytes) {
+  const F2Fixture fx = make_wide_fixture("f5-subset-bytes", /*n_filler=*/6);
+  auto clock = Clock::from_manifest(fx.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  // `whole_board` forces the pre-F5 path: a CALLER-SUPPLIED cache is never
+  // subsetted (it may be reused across books with different referenced sets),
+  // which is exactly the load the strategy overload used to perform.
+  const auto run = [&](bool whole_board) -> std::pair<Result<BacktestResult>, std::uint64_t> {
+    auto strategy = ListedDispersionStrategy::create(fx.schedule);
+    EXPECT_TRUE(strategy.has_value());
+    RunConfig cfg;
+    cfg.price.n_threads = 1u;
+    cfg.prefetch_snapshots = false; // keep the counter attributable to this run
+    if (whole_board) {
+      cfg.snapshot_cache = std::make_shared<SnapshotCache>();
+    }
+    MarketSnapshot::reset_deserialized_bytes();
+    auto result = run_backtest(*clock, *strategy, cfg);
+    return {std::move(result), MarketSnapshot::deserialized_bytes()};
+  };
+
+  auto [subset, subset_bytes] = run(false);
+  ASSERT_TRUE(subset.has_value()) << subset.error().to_string();
+  auto [board, board_bytes] = run(true);
+  ASSERT_TRUE(board.has_value()) << board.error().to_string();
+
+  // Gate 1: the perf change moves NO number.
+  expect_track_bit_identical(*subset, *board);
+
+  // Gate 2: a deterministic, non-timing drop. 3 of 9 surfaces are referenced, so
+  // the subset must load well under half the record bytes.
+  EXPECT_GT(board_bytes, 0u);
+  EXPECT_LT(subset_bytes, board_bytes);
+  EXPECT_LT(static_cast<double>(subset_bytes), 0.5 * static_cast<double>(board_bytes));
+  std::printf("[F5] record bytes  subset=%llu  whole-board=%llu  (%.1f%%)\n",
+              static_cast<unsigned long long>(subset_bytes),
+              static_cast<unsigned long long>(board_bytes),
+              100.0 * static_cast<double>(subset_bytes) / static_cast<double>(board_bytes));
+
+  std::error_code ec;
+  fs::remove_all(fx.dir, ec);
+}
+
+TEST(ListedDispersionStrategy, AStrategyThatCannotEnumerateItsNamesStillLoadsTheWholeBoard) {
+  // The default `referenced_uids()` is empty and MUST keep the whole-board load:
+  // a strategy that discovers names inside on_step (a point-in-time universe, a
+  // signal-driven basket) would otherwise silently lose them.
+  struct NoHook final : IStrategy {
+    Status on_step(const MarketSnapshot &, std::size_t, PortfolioState &,
+                   std::uint64_t &) override {
+      return atx::core::Ok();
+    }
+  } strategy;
+  EXPECT_TRUE(strategy.referenced_uids().empty());
+
+  const F2Fixture fx = make_wide_fixture("f5-no-hook", /*n_filler=*/6);
+  auto clock = Clock::from_manifest(fx.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  RunConfig cfg;
+  cfg.price.n_threads = 1u;
+  cfg.prefetch_snapshots = false;
+  MarketSnapshot::reset_deserialized_bytes();
+  const auto result = run_backtest(*clock, strategy, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  const std::uint64_t bytes = MarketSnapshot::deserialized_bytes();
+
+  auto listed = ListedDispersionStrategy::create(fx.schedule);
+  ASSERT_TRUE(listed.has_value());
+  RunConfig subset_cfg;
+  subset_cfg.price.n_threads = 1u;
+  subset_cfg.prefetch_snapshots = false;
+  MarketSnapshot::reset_deserialized_bytes();
+  const auto listed_result = run_backtest(*clock, *listed, subset_cfg);
+  ASSERT_TRUE(listed_result.has_value()) << listed_result.error().to_string();
+  EXPECT_LT(MarketSnapshot::deserialized_bytes(), bytes)
+      << "the hookless strategy must still pay for the whole board";
+
+  std::error_code ec;
+  fs::remove_all(fx.dir, ec);
+}

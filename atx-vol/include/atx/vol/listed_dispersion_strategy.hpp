@@ -107,6 +107,13 @@ public:
   }
 
   [[nodiscard]] HedgeSpec hedge_spec() const override { return hedge_; }
+  // F5 (BT-T2): the schedule enumerates every uid this strategy will ever touch,
+  // so the engine can subset-deserialize each date instead of loading the whole
+  // board. Computed once at `create` in ascending uid order (deterministic, and
+  // independent of roll/leg order in the artifact).
+  [[nodiscard]] std::span<const std::uint32_t> referenced_uids() const noexcept override {
+    return referenced_uids_;
+  }
   [[nodiscard]] ScheduleFillPolicy fill_policy() const noexcept { return fill_; }
   [[nodiscard]] const ListedDispersionSchedule &schedule() const noexcept { return schedule_; }
   [[nodiscard]] bool all_rolls_consumed() const noexcept {
@@ -122,8 +129,10 @@ public:
 
 private:
   ListedDispersionStrategy(ListedDispersionSchedule schedule, HedgeSpec hedge,
-                           ScheduleMarkPolicy policy, ScheduleFillPolicy fill) noexcept
-      : schedule_{std::move(schedule)}, hedge_{hedge}, policy_{policy}, fill_{fill} {}
+                           ScheduleMarkPolicy policy, ScheduleFillPolicy fill,
+                           std::vector<std::uint32_t> referenced_uids) noexcept
+      : schedule_{std::move(schedule)}, hedge_{hedge}, policy_{policy}, fill_{fill},
+        referenced_uids_{std::move(referenced_uids)} {}
 
   ListedDispersionSchedule schedule_{};
   HedgeSpec hedge_{};
@@ -131,6 +140,7 @@ private:
   ScheduleFillPolicy fill_{ScheduleFillPolicy::ModelMark};
   std::size_t next_roll_{0};
   double entry_mark_tolerance_{kListedEntryMarkTolerance};
+  std::vector<std::uint32_t> referenced_uids_{}; // F5: ascending, deduped
   std::vector<FullGreekSeed> last_entry_seeds_{};
   std::vector<MarkDivergence> last_mark_divergences_{};
 };
