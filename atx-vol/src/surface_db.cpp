@@ -130,11 +130,26 @@ decode_surface_policy_record(const DbSymbolRecord &record) noexcept {
   return b.data() + static_cast<std::size_t>(off);
 }
 
+// The FNV-1a/64 prime, shared by every FNV fold in this TU.
+//
+// FIX-D fix-1 (I4). It lives here, once, because it did NOT used to: db_schema_hash
+// below spelled it correctly while `fnv1a_fold` (the carry-over fingerprint) had a
+// literal with one hex digit too many -- 0x1000'0000'01b3, which is not FNV's prime
+// and whose avalanche nobody had analysed. Any odd multiplier is deterministic, so
+// the bug was invisible; the failure it risks is a fingerprint COLLISION, i.e.
+// silently carrying a stale surface, the outcome this design ranks worst. One named
+// constant plus the identity check below makes the same typo impossible to repeat.
+inline constexpr std::uint64_t kFnv1a64Prime = 0x100000001b3ull;
+static_assert(kFnv1a64Prime == (1ull << 40) + (1ull << 8) + 0xb3ull,
+              "kFnv1a64Prime is not FNV-1a/64's prime (2^40 + 2^8 + 0xb3)");
+// The matching offset basis, used to seed a fold that starts from nothing.
+inline constexpr std::uint64_t kFnv1a64OffsetBasis = 0xcbf29ce484222325ull;
+
 // Compile-time fingerprint of the on-disk layout. Folds the sizeof of every
 // serialized record + a v1 format salt so a reader built against a different
 // struct shape rejects the file instead of mis-reading bytes.
 [[nodiscard]] std::uint64_t db_schema_hash() noexcept {
-  constexpr std::uint64_t kFnvPrime = 0x100000001b3ull;
+  constexpr std::uint64_t kFnvPrime = kFnv1a64Prime;
   // Salt derived from "atx-vol-surface-db-v1" -- distinct from the archive's
   // kV3Salt so a manifest never aliases into an archive schema hash (or vice
   // versa) even though both fold sizeof()s with the same FNV pattern.
@@ -302,11 +317,12 @@ decode_surface_policy_record(const DbSymbolRecord &record) noexcept {
 // so the same bytes fold to the same value on every process and host.
 [[nodiscard]] std::uint64_t fnv1a_fold(std::uint64_t h, const void *data,
                                        std::size_t len) noexcept {
-  constexpr std::uint64_t kPrime = 0x1000'0000'01b3ull;
+  // FIX-D fix-1 (I4): the shared, identity-checked prime above. This line used to
+  // carry its own literal, and that literal was wrong (see kFnv1a64Prime).
   const auto *p = static_cast<const std::uint8_t *>(data);
   for (std::size_t i = 0; i < len; ++i) {
     h ^= static_cast<std::uint64_t>(p[i]);
-    h *= kPrime;
+    h *= kFnv1a64Prime;
   }
   return h;
 }
@@ -413,21 +429,32 @@ SymbolFitConfig decode_symbol_record(const DbSymbolRecord &rec) {
 [[nodiscard]] std::uint64_t fold_symbol_configs(std::span<const DbSymbolRecord> recs,
                                                 std::vector<std::string> canon) {
   std::sort(canon.begin(), canon.end());
-  std::uint64_t h = fnv1a_fold(0xcbf2'9ce4'8422'2325ull, &kSurfaceDbCarryOverFitSalt,
-                               sizeof kSurfaceDbCarryOverFitSalt);
+  std::uint64_t h =
+      fnv1a_fold(kFnv1a64OffsetBasis, &kSurfaceDbCarryOverFitSalt, sizeof kSurfaceDbCarryOverFitSalt);
   for (const std::string &sym : canon) {
-    const DbSymbolRecord *found = nullptr;
-    for (const DbSymbolRecord &rec : recs) {
-      if (std::string_view(rec.symbol, rec.symbol_len) == sym) {
-        found = &rec;
-        break;
-      }
-    }
-    if (found == nullptr) {
+    // PRECONDITION: `recs` is sorted strictly ascending by `cmp_key` on the
+    // canonical symbol. Every DbManifest comes from `DbManifest::open`, which
+    // REJECTS a manifest that is not (see the "symbols not strictly ascending"
+    // check), so this is enforced, not assumed -- and the writer sorts with the
+    // same comparator. Given that, bisect exactly as `DbManifest::find_symbol`
+    // does: a linear scan here is O(partition symbols x manifest symbols) per
+    // date -- ~1M string compares on a 1030-name universe, in a fix whose entire
+    // premise is that the cost multiplier is the universe width. That the bisect
+    // agrees with the scan it replaced is pinned by
+    // SurfaceDbConfigFingerprint.FoldFindsTheSameRecordAsALinearScan, which
+    // includes the prefix/length cases where `cmp_key`'s ordering is the only
+    // thing keeping the two the same.
+    const auto len = static_cast<std::uint16_t>(sym.size());
+    const auto it = std::lower_bound(recs.begin(), recs.end(), sym,
+                                     [len](const DbSymbolRecord &rec, const std::string &key) {
+                                       return cmp_key(rec.symbol, rec.symbol_len, key.data(),
+                                                      len) < 0;
+                                     });
+    if (it == recs.end() || cmp_key(it->symbol, it->symbol_len, sym.data(), len) != 0) {
       return 0u; // a symbol we have no config for -> unknown -> never reuse
     }
     const DbSymbolRecord clean =
-        encode_symbol_record(sym, decode_symbol_record(*found), std::nullopt);
+        encode_symbol_record(sym, decode_symbol_record(*it), std::nullopt);
     h = fnv1a_fold(h, &clean, sizeof clean);
   }
   // Never hand back the sentinel for a successful fold.
@@ -1148,7 +1175,7 @@ std::string SurfaceDb::partition_path(std::string_view canonical_key) const {
 }
 
 Status SurfaceDb::write_partition(std::string_view key, std::span<const SurfaceArchiveItem> items,
-                                  const ArchiveV2WriteOpts &opts) {
+                                  const ArchiveV2WriteOpts &opts, DbConfigAttestation attest) {
   auto canon = canonicalize_key(key);
   if (!canon) {
     return Err(canon.error());
@@ -1185,14 +1212,24 @@ Status SurfaceDb::write_partition(std::string_view key, std::span<const SurfaceA
   // symbols going into this partition; the provenance this call is about to write
   // back is excluded from the fold, so the value is stable across rewrites that
   // change nothing but provenance.
-  std::vector<std::string> written_symbols;
-  written_symbols.reserve(items.size());
-  for (const SurfaceArchiveItem &item : items) {
-    written_symbols.push_back(detail::canonicalize_symbol(item.symbol, kSurfaceDbKeyMax));
+  //
+  // FIX-D fix-1 (I5): only when the caller ATTESTS that it produced these
+  // surfaces under those configs. Without the attestation the fingerprint stays 0
+  // -- "unknown", never carried -- because this function cannot check the claim
+  // and a wrong one silently reuses a stale surface. Note the fold is skipped
+  // entirely, not computed and discarded: an unattested write must not pay the
+  // manifest walk either.
+  std::uint64_t fingerprint = 0u;
+  if (attest == DbConfigAttestation::FitterProduced) {
+    std::vector<std::string> written_symbols;
+    written_symbols.reserve(items.size());
+    for (const SurfaceArchiveItem &item : items) {
+      written_symbols.push_back(detail::canonicalize_symbol(item.symbol, kSurfaceDbKeyMax));
+    }
+    fingerprint = fold_symbol_configs(snap->symbols(), std::move(written_symbols));
   }
   DbPartitionInfo info{*canon, static_cast<std::uint32_t>(items.size()),
-                       static_cast<std::uint64_t>(file_size), wall_clock_ns(),
-                       fold_symbol_configs(snap->symbols(), std::move(written_symbols))};
+                       static_cast<std::uint64_t>(file_size), wall_clock_ns(), fingerprint};
   if (it != parts.end()) {
     *it = info; // rewrite: overwriting an existing key is allowed.
   } else {

@@ -497,7 +497,13 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       }
 
       if (!items.empty()) {
-        const Status w = db.write_partition(date, items);
+        // The one caller that can honestly attest the carry-over fingerprint
+        // (FIX-D fix-1, I5): every fitted item in `items` came out of `fit_board`
+        // under the config this loop resolved from THIS manifest moments ago, and
+        // every carried item was itself written under an attestation whose
+        // fingerprint still matches (that is what admitted it to the carry set).
+        const Status w =
+            db.write_partition(date, items, {}, DbConfigAttestation::FitterProduced);
         if (!w) {
           return Err(w.error());
         }
@@ -549,16 +555,37 @@ Status write_populate_stats_csv(const SurfaceDbPopulateStats &s, const MetaKv &m
   full_meta.emplace_back("n_boards", fmt_u32(s.n_boards));
   full_meta.emplace_back("n_ok", fmt_u32(s.n_ok));
   full_meta.emplace_back("n_failed", fmt_u32(s.n_failed));
+  // FIX-D fix-1 (I2). Beside n_ok/n_failed because it is the third disposition of
+  // the same cells and the only evidence that carry-over ran: a converged carry
+  // resume writes n_ok=0, n_failed=0 and would otherwise look like a no-op.
+  full_meta.emplace_back("n_carried", fmt_u32(s.n_carried));
   full_meta.emplace_back("n_dates_written", fmt_u32(s.n_dates_written));
 
   std::string body;
   body.reserve(s.per_symbol.size() * 64 + 64);
-  body += "symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band\n";
+  // `n_carried` is APPENDED to the pinned header, not inserted, so a positional
+  // reader of the older columns is unaffected. It goes last rather than beside
+  // n_disabled for that reason, even though it reads better next to it.
+  body += "symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band,n_carried\n";
   for (const PopulateSymbolStats &sym : s.per_symbol) {
-    const std::uint32_t used =
-        sym.n_attempted > sym.n_disabled ? sym.n_attempted - sym.n_disabled : 0u;
-    const std::uint32_t denom = std::max<std::uint32_t>(1u, used);
-    const double success_rate = static_cast<double>(sym.n_ok) / static_cast<double>(denom);
+    // FIX-D fix-1 (I3): a CARRIED cell was never offered to the fitter, so it
+    // belongs in neither half of a FIT success rate. Leaving it in the denominator
+    // reported 0% for every carried symbol (n_ok = 0 over n_attempted = 1) on
+    // exactly the healthy resume this feature produces.
+    //
+    // Excluding it is necessary but NOT sufficient: on a fully-carried symbol the
+    // exclusion empties the denominator, and the old `max(1, used)` floor then
+    // still printed 0/1 = 0 -- the same false 0% by a different route. An empty
+    // denominator means the rate is UNDEFINED (no cell was offered to the fitter),
+    // not zero, so it is emitted as `nan` -- the same "unavailable" convention
+    // this row already uses for mean_oos_in_band, and read as a missing value by
+    // the CSV's pandas consumers. This also corrects the pre-existing all-disabled
+    // row, which reported 0% for the same reason.
+    const std::uint32_t excluded = sym.n_disabled + sym.n_carried;
+    const std::uint32_t used = sym.n_attempted > excluded ? sym.n_attempted - excluded : 0u;
+    const double success_rate = used > 0u ? static_cast<double>(sym.n_ok) /
+                                                static_cast<double>(used)
+                                          : std::numeric_limits<double>::quiet_NaN();
     body += sym.symbol;
     body += ',';
     body += fmt_u32(sym.n_attempted);
@@ -569,9 +596,11 @@ Status write_populate_stats_csv(const SurfaceDbPopulateStats &s, const MetaKv &m
     body += ',';
     body += fmt_u32(sym.n_disabled);
     body += ',';
-    body += fmt10(success_rate);
+    body += fmt_nan_aware10(success_rate);
     body += ',';
     body += fmt_nan_aware10(sym.mean_oos_in_band);
+    body += ',';
+    body += fmt_u32(sym.n_carried);
     body += '\n';
   }
   return write_meta_body(full_meta, body, path, "write_populate_stats_csv");

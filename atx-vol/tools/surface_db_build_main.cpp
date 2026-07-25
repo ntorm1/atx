@@ -222,6 +222,12 @@ void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
   std::printf("coverage.cells_loaded %u\n", r.coverage.cells_loaded);
   std::printf("coverage.cells_to_fit %u\n", r.coverage.cells_to_fit);
   std::printf("coverage.cells_refit %u\n", r.coverage.cells_refit);
+  // FIX-D fix-1 (I2). The converged carry steady state prints ok=0 and refit=0;
+  // without this line the terminal cannot tell it apart from a run that did
+  // nothing at all — and that verdict is now precisely what `is_total_fit_failure`
+  // has been widened to stop treating as a failure, so the counter has to be
+  // visible where the operator reads the exit.
+  std::printf("coverage.cells_carried %u\n", r.coverage.cells_carried);
   std::printf("coverage.cells_already_present %u\n", r.coverage.cells_already_present);
   std::printf("coverage.cells_ok %u\n", r.coverage.cells_ok);
   std::printf("coverage.cells_failed %u\n", r.coverage.cells_failed);
@@ -247,8 +253,8 @@ void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
 
   // Per-symbol populate coverage (written dates only), sorted by symbol.
   for (const PopulateSymbolStats &s : r.coverage.per_symbol) {
-    std::printf("symbol.%s attempted=%u ok=%u failed=%u disabled=%u\n", s.symbol.c_str(),
-                s.n_attempted, s.n_ok, s.n_failed, s.n_disabled);
+    std::printf("symbol.%s attempted=%u ok=%u failed=%u disabled=%u carried=%u\n", s.symbol.c_str(),
+                s.n_attempted, s.n_ok, s.n_failed, s.n_disabled, s.n_carried);
   }
 
   // WHY each cell in coverage.cells_failed failed — the fit stage's counterpart to
@@ -430,6 +436,14 @@ int main(int argc, char **argv) {
   // saw green over an empty database. It is a failure, and the diagnostic names
   // the top suspect (the report above is still printed and the --report CSV still
   // written — this only changes the exit code).
+  //
+  // The predicate no longer fires when this run CARRIED stored surfaces (FIX-D
+  // fix-1): that shape is the healthy converged resume, not a dead build, and the
+  // `--r` guidance below would have been actively destructive on it. The cost of
+  // that widening — a genuinely wrong `--r` over an already-converged database is
+  // no longer caught here — is written down at the predicate's declaration in
+  // surface_db_build.hpp. `coverage.cells_carried` above is what tells the
+  // operator which of the two a quiet run was.
   if (is_total_fit_failure(*report)) {
     std::fprintf(stderr,
                  "atx-vol-surface-db-build: TOTAL FIT FAILURE: %u cells scheduled, 0 fitted "

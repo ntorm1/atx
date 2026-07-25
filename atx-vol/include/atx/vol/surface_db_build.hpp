@@ -271,13 +271,36 @@ reported_failed_cells(const SurfaceDbBuildReport &r,
 // hive's quotes were priced under) being the top suspect: every put-call-parity
 // forward is then wrong and every full fit fails identically.
 //
-// Deliberately NARROW — the two neighbouring shapes are both healthy and must not
-// be swept in:
+// Deliberately NARROW — the three neighbouring shapes are all healthy and must
+// not be swept in:
 //   - PARTIAL failure (`cells_ok > 0` with some `cells_failed`) is normal in
 //     production: real hives carry unfittable boards. Not a failure.
 //   - NOTHING TO DO (`cells_to_fit == 0`) is the resume path over an already
 //     complete database (and the un-pulled empty window). The build's convergence
 //     guarantee is exactly "a re-run fits zero", so this must stay a success.
+//   - CARRIED-ONLY (`cells_carried > 0` with `cells_ok == 0`) is FIX-D's converged
+//     steady state: a date holding one or more PERMANENTLY-failing cells is
+//     rewritten on every run, its failures are retried forever (by design — there
+//     is no persisted known-failed state), and its healthy siblings are carried
+//     rather than re-fitted. So `cells_ok` is legitimately 0 on a database that is
+//     entirely healthy. Before carry-over those siblings were re-fitted and
+//     `cells_ok` was large, which is the only reason this predicate did not
+//     already misfire.
+//
+// That last shape is why the `cells_carried` clause exists and must not be
+// dropped. Getting it wrong is not a cosmetic false alarm: the CLI's diagnostic
+// names a carry-rate mismatch as the top suspect and tells the operator to re-run
+// with a different `--r`, which on a healthy converged database would invalidate
+// every surface in it.
+//
+// KNOWN LIMIT of the carry clause: a genuinely wrong `--r` supplied to a
+// converged database now goes UNFLAGGED here, because the healthy cells are
+// carried (not re-fitted, so not re-failed) and only the permanently-failing ones
+// are scheduled. That detection was always incidental — this predicate answers
+// "is this database dead", not "are my market inputs stale" — and the stale-input
+// question needs its own check (compare the stored record's S/r/now_ts_ns against
+// the loaded board's MarketEnv). Trading an incidental catch of a rare misuse for
+// a false alarm on EVERY healthy resume would be the wrong way round.
 //
 // Pure predicate over the report; the CLI uses it to pick its exit code, which is
 // why the decision lives here (testable) and not in `main`.
@@ -291,12 +314,18 @@ reported_failed_cells(const SurfaceDbBuildReport &r,
 // enabled symbol that will never hold a surface.
 //
 // True iff the config stage left at least one symbol DISABLED and not one symbol
-// ENABLED, and the run produced no surface at all (`coverage.cells_ok == 0`). The
-// shape mirrors `is_total_fit_failure` deliberately: attempted > 0, succeeded == 0.
+// ENABLED, and the run produced no surface at all — neither fitted nor CARRIED
+// (`coverage.cells_ok == 0 && coverage.cells_carried == 0`). The shape mirrors
+// `is_total_fit_failure` deliberately: attempted > 0, succeeded == 0.
 // Read off the STANDING state rather than this run's fresh verdicts:
 //   disabled = n_disabled_failed + n_disabled_existing
 //   enabled  = n_configured + (n_skipped_existing - n_disabled_existing)
-//   => disabled > 0 && enabled == 0 && coverage.cells_ok == 0
+//   => disabled > 0 && enabled == 0 && cells_ok == 0 && cells_carried == 0
+//
+// The `cells_carried` conjunct is FIX-D fix-1's, and it is UNREACHABLE TODAY by
+// the argument in the .cpp — it is there so that the two predicates read the same
+// evidence for "did this run produce a surface at all", which is the coupling
+// whose absence produced the C1 false TOTAL FIT FAILURE one stage down.
 //
 // The `n_disabled_existing` term is FIX-C-2's: without it, a RESUME over a
 // database whose every symbol is stored disabled counted as `n_skipped_existing`,
@@ -305,7 +334,7 @@ reported_failed_cells(const SurfaceDbBuildReport &r,
 // asks "does this database serve any symbol at all?", which no run-local counter
 // can answer on its own.
 //
-// Equally narrow, for the same reasons — three neighbouring shapes stay green:
+// Equally narrow, for the same reasons — four neighbouring shapes stay green:
 //   - PARTIAL selection failure (some symbol is enabled alongside some
 //     `n_disabled_failed`) is normal: a real universe carries names whose board
 //     cannot pin a curve, and they are disabled while the rest build.
@@ -315,6 +344,10 @@ reported_failed_cells(const SurfaceDbBuildReport &r,
 //   - NEW NAMES FAILING BESIDE PRODUCTIVE FITS: only newly-seen symbols failed
 //     selection while already-configured ones went on to fit. `cells_ok > 0`, so
 //     the run produced surfaces — partial, not dead.
+//   - CARRIED-ONLY (`cells_carried > 0`): the run re-emitted stored surfaces, so
+//     it demonstrably produced a populated database. Same class of evidence as
+//     `cells_ok > 0`; see `is_total_fit_failure` above for why FIX-D made this a
+//     shape a `cells_ok == 0` test can no longer distinguish from a dead build.
 //
 // The CLI maps this to the SAME exit code as a total fit failure: both answer the
 // one question "did this run produce anything at all?", and a script branching on
@@ -341,11 +374,17 @@ reported_failed_cells(const SurfaceDbBuildReport &r,
 // (config.*, coverage.*, and the ingest counters n_dates_loaded / n_dates_missing
 // / n_load_errors / n_coverage_holes); section 2 is a `config_disabled_symbol`
 // row per `config.failed_symbols` entry; section 3 is a
-// `symbol,n_attempted,n_ok,n_failed,n_disabled` row per `coverage.per_symbol`
-// entry; section 4 is a `date,symbol,code,detail` row per `coverage.failed_cells`
-// entry — the WHOLE list, never the printed cap, because this file is where an
-// operator goes to root-cause the lost cells. The first line is always the pinned
-// header `key,value`.
+// `symbol,n_attempted,n_ok,n_failed,n_disabled,n_carried` row per
+// `coverage.per_symbol` entry; section 4 is a `date,symbol,code,detail` row per
+// `coverage.failed_cells` entry — the WHOLE list, never the printed cap, because
+// this file is where an operator goes to root-cause the lost cells. The first
+// line is always the pinned header `key,value`.
+//
+// `coverage.cells_carried` (section 1) and `n_carried` (section 3) are FIX-D
+// fix-1's: with `is_total_fit_failure` widened for the carried-only resume, these
+// are the only operator-visible evidence that carry-over ran. Both were APPENDED
+// to their sections rather than inserted, so a positional reader of the older
+// columns is unaffected.
 //
 // Section 2 is FIX-C-2's: the config stage's disabled NAMES used to exist only on
 // stdout, so the durable artifact could say "1 symbol was disabled" and never

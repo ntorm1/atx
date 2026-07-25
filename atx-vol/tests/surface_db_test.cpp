@@ -1115,6 +1115,135 @@ TEST(SurfaceDbPartition, BadKey_Rejected) {
   std::filesystem::remove_all(root);
 }
 
+// ── FIX-D carry-over fingerprint (config_fingerprint / write_partition) ──────
+
+namespace {
+
+// Symbols chosen to stress `cmp_key`'s ordering rule (memcmp of the shorter
+// prefix, THEN length): every prefix relationship appears, so a bisect that used
+// plain lexicographic-with-different-tiebreak, or that mishandled the
+// prefix-equal case, lands on the wrong record instead of failing to find one.
+[[nodiscard]] std::vector<std::string> fingerprint_symbols() {
+  return {"A",  "AA", "AAA", "AAAA", "AB", "ABC", "B",  "BA", "BB", "M",
+          "MS", "MSFT", "S",  "SP",  "SPY", "Z",  "Z0", "Z9", "ZZ", "ZZZ"};
+}
+
+// A config unique to `i`, spread across several fields so a fold that read the
+// neighbouring record cannot coincide.
+[[nodiscard]] SymbolFitConfig fingerprint_config(std::size_t i) {
+  SymbolFitConfig c;
+  c.band_k = 1.0 + 0.125 * static_cast<double>(i);
+  c.curve.convex.node_cap = 16 + static_cast<int>(i);
+  c.al.tol = 1e-8 * (1.0 + static_cast<double>(i));
+  return c;
+}
+
+} // namespace
+
+// FIX-D fix-1. `fold_symbol_configs` bisects the manifest's symbol table instead
+// of scanning it. The bisect is only equivalent to the scan it replaced under the
+// sorted-manifest invariant `DbManifest::open` enforces, so prove the equivalence
+// rather than assert it -- on exactly the prefix/length shapes where `cmp_key`'s
+// ordering is load-bearing.
+//
+// The oracle is a manifest holding ONE symbol: there, "find the record for S" is
+// trivially the same answer for any search algorithm. If the bisect over a
+// 20-symbol table returns a different record than the 1-symbol lookup does, the
+// two folds differ -- the fold is over the record's 256 encoded bytes, so a
+// neighbouring record cannot collide by accident.
+TEST(SurfaceDbConfigFingerprint, FoldFindsTheSameRecordAsALinearScan) {
+  const auto many_root = test_root("fp_fold_many");
+  const auto one_root = test_root("fp_fold_one");
+  auto many = SurfaceDb::create(many_root.string());
+  ASSERT_TRUE(many.has_value());
+  auto one = SurfaceDb::create(one_root.string());
+  ASSERT_TRUE(one.has_value());
+
+  const std::vector<std::string> syms = fingerprint_symbols();
+  for (std::size_t i = 0; i < syms.size(); ++i) {
+    ASSERT_TRUE(many->upsert_symbol(syms[i], fingerprint_config(i)).has_value()) << syms[i];
+  }
+  // The manifest really is the sorted, prefix-dense table this is meant to probe.
+  ASSERT_EQ(many->symbols().size(), syms.size());
+
+  for (std::size_t i = 0; i < syms.size(); ++i) {
+    ASSERT_TRUE(one->upsert_symbol(syms[i], fingerprint_config(i)).has_value()) << syms[i];
+    const std::vector<std::string> just_this{syms[i]};
+    const std::uint64_t bisected = many->config_fingerprint(just_this);
+    const std::uint64_t scanned = one->config_fingerprint(just_this);
+    EXPECT_NE(bisected, 0u) << syms[i] << ": a present symbol must fold, not read as unknown";
+    EXPECT_EQ(bisected, scanned)
+        << syms[i] << ": the bisect over " << syms.size()
+        << " records disagrees with the single-record lookup";
+    ASSERT_TRUE(one->remove_symbol(syms[i]).has_value()) << syms[i];
+  }
+
+  // Caller order cannot move the fold (it sorts internally), and a symbol with no
+  // manifest entry still collapses the whole fold to the 0 "unknown" sentinel --
+  // both properties the scan had and the bisect must keep.
+  const std::vector<std::string> shuffled(syms.rbegin(), syms.rend());
+  EXPECT_EQ(many->config_fingerprint(syms), many->config_fingerprint(shuffled));
+  EXPECT_NE(many->config_fingerprint(syms), 0u);
+  std::vector<std::string> with_absent = syms;
+  with_absent.emplace_back("NOSUCH");
+  EXPECT_EQ(many->config_fingerprint(with_absent), 0u);
+
+  // Sensitivity: changing ONE symbol's config must move exactly that symbol's
+  // fold. A bisect landing on a neighbour would move the wrong one.
+  const std::vector<std::string> target{syms[7]}; // "BA" -- prefix-adjacent to "B"
+  const std::vector<std::string> other{syms[2]};  // "AAA"
+  const std::uint64_t target_before = many->config_fingerprint(target);
+  const std::uint64_t other_before = many->config_fingerprint(other);
+  SymbolFitConfig bumped = fingerprint_config(7);
+  bumped.band_k += 0.5;
+  ASSERT_TRUE(many->upsert_symbol(target[0], bumped).has_value());
+  EXPECT_NE(many->config_fingerprint(target), target_before);
+  EXPECT_EQ(many->config_fingerprint(other), other_before);
+
+  std::filesystem::remove_all(many_root);
+  std::filesystem::remove_all(one_root);
+}
+
+// FIX-D fix-1 (I5). `write_partition` is public API documented to accept
+// arbitrary symbols, and the carry-over fingerprint is a claim it cannot verify.
+// So it is not made by default: an unattested write leaves the partition's
+// fingerprint at the 0 "unknown" sentinel, which never carries. Only a caller
+// that says it fitted these surfaces under the manifest's current configs gets
+// the stamp.
+TEST(SurfaceDbConfigFingerprint, WritePartitionStampsOnlyWhenTheCallerAttests) {
+  const auto root = test_root("fp_attest");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  ASSERT_TRUE(db->upsert_symbol("AAPL", fingerprint_config(1)).has_value());
+  ASSERT_TRUE(db->upsert_symbol("MSFT", fingerprint_config(2)).has_value());
+
+  const auto s1 = make_essvi(/*uid=*/1, /*n_slices=*/2);
+  const auto s2 = make_essvi(/*uid=*/2, /*n_slices=*/2);
+  const std::vector<SurfaceArchiveItem> items{{"AAPL", &s1}, {"MSFT", &s2}};
+
+  // Default: a surface produced who-knows-where. No claim, no stamp.
+  ASSERT_TRUE(db->write_partition("2026-07-10", items).has_value());
+  EXPECT_EQ(db->partition_config_fingerprint("2026-07-10"), 0u)
+      << "an unattested write must not bless its surfaces for carry-over";
+
+  // Explicit attestation: stamped, and stamped with exactly the fold over the
+  // symbols written (which is what the resume compares against).
+  ASSERT_TRUE(
+      db->write_partition("2026-07-10", items, {}, DbConfigAttestation::FitterProduced).has_value());
+  const std::vector<std::string> written{"AAPL", "MSFT"};
+  const std::uint64_t stamped = db->partition_config_fingerprint("2026-07-10");
+  EXPECT_NE(stamped, 0u);
+  EXPECT_EQ(stamped, db->config_fingerprint(written));
+
+  // A rewrite WITHOUT the attestation must clear the claim, not inherit it: the
+  // stored bytes came from somewhere else now.
+  ASSERT_TRUE(db->write_partition("2026-07-10", items).has_value());
+  EXPECT_EQ(db->partition_config_fingerprint("2026-07-10"), 0u)
+      << "an unattested rewrite must retract the previous stamp";
+
+  std::filesystem::remove_all(root);
+}
+
 // ── Fitting-pipeline binding ─────────────────────────────────────────────────
 
 TEST(SurfaceDbApply, PinnedConfig_OverridesPreset) {

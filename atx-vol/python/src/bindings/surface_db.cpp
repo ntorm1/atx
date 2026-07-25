@@ -49,6 +49,9 @@ namespace {
   d["n_ok"] = s.n_ok;
   d["n_failed"] = s.n_failed;
   d["n_disabled"] = s.n_disabled;
+  // FIX-D fix-1 (I2): the third disposition of the same cells. Without it a
+  // carried symbol reads attempted=1, ok=0, failed=0, disabled=0 in python too.
+  d["n_carried"] = s.n_carried;
   d["mean_oos_in_band"] = s.mean_oos_in_band;
   return d;
 }
@@ -73,6 +76,10 @@ namespace {
   coverage["cells_loaded"] = r.coverage.cells_loaded;
   coverage["cells_to_fit"] = r.coverage.cells_to_fit;
   coverage["cells_refit"] = r.coverage.cells_refit;
+  // FIX-D fix-1 (I2): the only signal that carry-over engaged. The converged
+  // carry resume reports cells_ok = 0 and cells_refit = 0, which is otherwise
+  // indistinguishable from a build that did nothing.
+  coverage["cells_carried"] = r.coverage.cells_carried;
   coverage["cells_already_present"] = r.coverage.cells_already_present;
   coverage["cells_ok"] = r.coverage.cells_ok;
   coverage["cells_failed"] = r.coverage.cells_failed;

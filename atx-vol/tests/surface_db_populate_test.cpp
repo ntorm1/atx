@@ -40,6 +40,7 @@
 #include "atx/vol/session.hpp"    // FitPreset
 #include "atx/vol/surface_archive.hpp"
 #include "atx/vol/surface_db.hpp"
+#include "atx/vol/surface_db_build.hpp" // is_total_fit_failure (FIX-D exit-code shape)
 #include "atx/vol/detail/fit_scheduler.hpp" // performance_core_count (C4 wave-2 scaling diagnostic)
 #include "atx/vol/surface_db_populate.hpp"
 #include "atx/vol/types.hpp"
@@ -1175,18 +1176,23 @@ TEST(SurfaceDbPopulate, StatsCsvShape) {
 
   const std::string text = read_file(csv_path);
   EXPECT_NE(text.find("# run=test\n"), std::string::npos);
+  // FIX-D fix-1 (I2). The header is a pinned contract and it MOVED: `n_carried`
+  // is APPENDED (so every older column keeps its position) because a carried
+  // symbol's row otherwise names no disposition at all.
   EXPECT_NE(
-      text.find("symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band\n"),
+      text.find(
+          "symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band,n_carried\n"),
       std::string::npos)
       << text;
+  EXPECT_NE(text.find("# n_carried=0\n"), std::string::npos) << text;
   // AAA: n_attempted=2, n_ok=2, n_failed=0, n_disabled=0 -> success_rate=1;
   // pinned curve -> no OOS score -> "nan" (the NaN-when-unavailable rule).
-  EXPECT_NE(text.find("AAA,2,2,0,0,1,nan\n"), std::string::npos) << text;
+  EXPECT_NE(text.find("AAA,2,2,0,0,1,nan,0\n"), std::string::npos) << text;
   // BBB: same counts (a directly-routed, non-ambiguous board also has no
   // selector OOS score even though its curve isn't pinned -- fit_board's
   // `oos_in_band_available` is tied to the selector having run at all, not
   // to pin_curve specifically; mirrors corpus.cpp's CorpusEntry.oos_in_band).
-  EXPECT_NE(text.find("BBB,2,2,0,0,1,nan\n"), std::string::npos) << text;
+  EXPECT_NE(text.find("BBB,2,2,0,0,1,nan,0\n"), std::string::npos) << text;
 
   std::filesystem::remove_all(root);
 }
@@ -1617,6 +1623,70 @@ namespace {
 
 } // namespace
 
+// FIX-D fix-1 (I3), on a REAL stats struct rather than a hand-built one: a
+// carried symbol must not report a 0% fit success rate.
+//
+// `success_rate` is a FIT rate. A carried cell was never offered to the fitter,
+// so it belongs in neither half of it. Left in the denominator it read
+// n_ok=0 / n_attempted=1 = 0 on every healthy symbol of a converged resume --
+// i.e. the report said the database had totally failed while it was working
+// perfectly, the same false verdict as C1 in a different column. Excluding it
+// EMPTIES the denominator, and an empty denominator means the rate is undefined,
+// not zero: the row now says "nan", the same convention it already uses for an
+// unavailable mean_oos_in_band.
+TEST(SurfaceDbPopulate, CarriedCellsLeaveTheFitSuccessRateUndefinedNotZero) {
+  const auto root = test_root("carry_stats_rate");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+
+  // CCC fails forever, so kDate0 is rewritten on every run and AAA/BBB are
+  // carried: the production shape, in miniature.
+  ASSERT_TRUE(db->upsert_symbol("CCC", rejected_risk_config()).has_value());
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+  ASSERT_EQ(cov2->cells_carried, 2u) << "the carry must actually have engaged";
+  ASSERT_EQ(cov2->cells_ok, 0u);
+
+  SurfaceDbPopulateStats stats;
+  stats.n_boards = cov2->cells_loaded;
+  stats.n_ok = cov2->cells_ok;
+  stats.n_failed = cov2->cells_failed;
+  stats.n_carried = cov2->cells_carried;
+  stats.n_dates_written = cov2->dates_written;
+  stats.per_symbol = cov2->per_symbol;
+
+  const auto csv_path = root / "stats.csv";
+  const Status w = write_populate_stats_csv(stats, MetaKv{}, csv_path.string());
+  ASSERT_TRUE(w.has_value()) << (w ? "" : w.error().to_string());
+  const std::string text = read_file(csv_path);
+
+  // AAA and BBB: attempted=1, ok=0, failed=0, disabled=0, carried=1 -> the fit
+  // denominator is empty -> nan, NOT 0.
+  for (const char *symbol : {"AAA", "BBB"}) {
+    const std::string row = std::string(symbol) + ",1,0,0,0,nan,nan,1\n";
+    EXPECT_NE(text.find(row), std::string::npos)
+        << symbol << " must report an UNDEFINED fit rate and a carried count\n"
+        << text;
+    EXPECT_EQ(text.find(std::string(symbol) + ",1,0,0,0,0,"), std::string::npos)
+        << symbol << " still reports a 0% fit success rate\n"
+        << text;
+  }
+  // CCC genuinely failed its one fit: a real 0% over a non-empty denominator,
+  // which must stay 0 and must be distinguishable from the carried rows above.
+  EXPECT_NE(text.find("CCC,1,0,1,0,0,nan,0\n"), std::string::npos) << text;
+  // The run-level counter reaches the meta block too.
+  EXPECT_NE(text.find("# n_carried=2\n"), std::string::npos) << text;
+
+  std::filesystem::remove_all(root);
+}
+
+
 // THE acceptance gate. A resume over an unchanged database and hive must re-fit
 // NOTHING that already succeeded, while still retrying the cell that failed.
 //
@@ -1657,6 +1727,19 @@ TEST(SurfaceDbPopulate, ResumeCarriesHealthySiblingsAndStillRetriesTheFailingCel
     // The failing cell still names itself (FIX-A's channel must survive).
     ASSERT_EQ(cov->failed_cells.size(), std::size_t{1}) << "run " << run;
     EXPECT_EQ(cov->failed_cells[0].symbol, "CCC") << "run " << run;
+
+    // ── The exit code this shape produces ────────────────────────────────────
+    // END-TO-END, on a REAL coverage struct rather than a hand-built one: this
+    // steady state (cells_to_fit > 0, cells_ok == 0, cells_carried > 0) must NOT
+    // read as a total fit failure. It did before the carry clause was added to
+    // `is_total_fit_failure`, and the CLI's diagnostic for that verdict tells the
+    // operator to re-run with a different --r -- which on this healthy converged
+    // database would invalidate every surface in it. The predicate is unit-tested
+    // on synthetic reports; nothing previously fed it the shape FIX-D creates.
+    SurfaceDbBuildReport report;
+    report.coverage = *cov;
+    EXPECT_FALSE(is_total_fit_failure(report))
+        << "run " << run << ": a converged carry resume must not exit as TOTAL FIT FAILURE";
   }
 
   // The carried surfaces are still there and still load.

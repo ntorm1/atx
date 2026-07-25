@@ -234,10 +234,18 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
                             const PopulateTestHooks *test_hooks = nullptr);
 
 // Stats file for the report: meta (caller's, plus n_boards/n_ok/n_failed/
-// n_dates_written appended), header
-// "symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band",
-// one row per symbol (success_rate = n_ok / max(1, n_attempted - n_disabled),
-// %.10g; mean_oos_in_band prints "nan" when NaN).
+// n_carried/n_dates_written appended), header
+// "symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band,n_carried",
+// one row per symbol (%.10g; mean_oos_in_band prints "nan" when NaN).
+//
+// success_rate = n_ok / (n_attempted - n_disabled - n_carried), and "nan" when
+// that denominator is EMPTY. Both the n_carried subtraction and the nan are
+// FIX-D fix-1's (I3): a carried cell was never offered to the fitter, so it
+// belongs in neither half of a FIT success rate, and a symbol with no fitted-or-
+// failed cell at all has no such rate — the previous `max(1, …)` floor reported
+// 0% for it, which on a converged carry resume is every healthy symbol in the
+// database. `n_carried` is APPENDED to the row so a positional reader of the
+// older columns is unaffected.
 [[nodiscard]] Status write_populate_stats_csv(const SurfaceDbPopulateStats &s, const MetaKv &meta,
                                               std::string_view path);
 

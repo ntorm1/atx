@@ -376,11 +376,22 @@ ReportedFailedCells reported_failed_cells(const SurfaceDbBuildReport &r,
 }
 
 bool is_total_fit_failure(const SurfaceDbBuildReport &r) {
-  // Exactly two conditions, both required (see the header for why neither may be
-  // widened): work WAS scheduled, and none of it landed. `cells_to_fit == 0` is
-  // the resume/empty-window path and stays a success; any `cells_ok > 0` is
-  // partial coverage, which is normal production output.
-  return r.coverage.cells_to_fit > 0 && r.coverage.cells_ok == 0;
+  // Three conditions, all required (see the header for why none may be dropped):
+  // work WAS scheduled, none of it landed, and nothing was CARRIED either.
+  // `cells_to_fit == 0` is the resume/empty-window path and stays a success; any
+  // `cells_ok > 0` is partial coverage, which is normal production output; any
+  // `cells_carried > 0` means the date this run rewrote is full of healthy stored
+  // surfaces, so the build produced a populated database whatever the scheduled
+  // cells did.
+  //
+  // The carry clause is FIX-D's. Without it the converged steady state this whole
+  // feature exists to produce -- N permanently-failing cells retried forever
+  // beside their carried healthy siblings -- reads as (cells_to_fit = N,
+  // cells_ok = 0) and trips the alarm on a perfectly healthy database. Before
+  // carry-over those siblings were re-fitted, so `cells_ok` was large and the
+  // predicate stayed quiet by accident.
+  return r.coverage.cells_to_fit > 0 && r.coverage.cells_ok == 0 &&
+         r.coverage.cells_carried == 0;
 }
 
 bool is_total_config_failure(const SurfaceDbBuildReport &r) {
@@ -396,11 +407,51 @@ bool is_total_config_failure(const SurfaceDbBuildReport &r) {
   // the very same dead database exited 0, because its disabled configs had turned
   // into `n_skipped_existing`. The `cells_ok` clause still keeps a run that DID
   // produce surfaces out of it: partial, not dead.
+  //
+  // ── The C1 audit: does this predicate need the carry clause too? ────────────
+  // It carries the identical `cells_ok == 0` conjunct that FIX-D turned into a
+  // false verdict one stage down, so the question is real. The answer is that the
+  // trap is UNREACHABLE here, and the clause is added anyway. Both halves matter,
+  // so both are written down.
+  //
+  // REACHABILITY. `enabled == 0` and `cells_carried > 0` cannot hold together in
+  // any report `build_surface_db` produces:
+  //   1. `generate_symbol_configs` and `populate_universe_streaming` are handed
+  //      the SAME `boards` span, and the config stage's dispositions partition the
+  //      DISTINCT symbols of that span. So `enabled == 0` means: not one symbol
+  //      among this run's boards has an enabled manifest config.
+  //   2. The config stage stores a config for every symbol it sees (fail-closed
+  //      disabled on a selection failure), so the populate's
+  //      `resolve_symbol_config` never falls back to its enabled default for any
+  //      of them -- every cell resolves DISABLED.
+  //   3. `populate_universe_streaming` increments `to_add` only for an ENABLED
+  //      cell, so `to_add == 0` on every date, so every date takes the
+  //      `dates_skipped_complete` branch, which `continue`s BEFORE
+  //      `cov.cells_carried += carried_here`. `kept` stays empty, the populate is
+  //      never called, and both `cells_carried` and `cells_ok` are 0.
+  // Symmetrically, the carry gate itself only ever admits a cell whose resolved
+  // config is enabled -- so a carried cell is by construction proof that
+  // `enabled > 0`.
+  //
+  // WHY THE CLAUSE IS HERE ANYWAY. C1 happened because this predicate's twin was
+  // silently correct for a reason nobody had written down ("a healthy resume
+  // re-fits its siblings, so cells_ok is large"), and FIX-D invalidated that
+  // reason without the predicate knowing. The reachability argument above is the
+  // same kind of unwritten cross-module coupling: it depends on the populate's
+  // carry gate testing `enabled`, and on the skipped-complete branch short-
+  // circuiting before the carry tally -- two lines in a different file that a
+  // future change may reasonably move. (The already-recorded
+  // present-but-disabled-symbol drop is exactly such a pending change.) The
+  // clause costs one comparison, it is pinned by a unit test, and it keeps the
+  // two exit-code predicates reading the SAME evidence for "did this run produce
+  // a surface at all" -- a carried cell is that evidence just as much as a fitted
+  // one, because the database provably holds and re-emitted it.
   const std::uint32_t disabled = r.config.n_disabled_failed + r.config.n_disabled_existing;
   // n_disabled_existing is a sub-count of n_skipped_existing, so this cannot wrap.
   const std::uint32_t enabled =
       r.config.n_configured + (r.config.n_skipped_existing - r.config.n_disabled_existing);
-  return disabled > 0 && enabled == 0 && r.coverage.cells_ok == 0;
+  return disabled > 0 && enabled == 0 && r.coverage.cells_ok == 0 &&
+         r.coverage.cells_carried == 0;
 }
 
 Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view path) {
@@ -423,6 +474,14 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
   kv("coverage.cells_loaded", fmt_u32(r.coverage.cells_loaded));
   kv("coverage.cells_to_fit", fmt_u32(r.coverage.cells_to_fit));
   kv("coverage.cells_refit", fmt_u32(r.coverage.cells_refit));
+  // FIX-D fix-1 (I2). With `is_total_fit_failure` widened to tolerate a
+  // carried-only resume, this counter is the ONLY external evidence that
+  // carry-over engaged at all: the healthy steady state it produces is
+  // `cells_ok = 0, cells_refit = 0`, which without this line is indistinguishable
+  // from a build that did nothing. It sits beside cells_refit because the two are
+  // the halves of `cells_already_present`-on-a-rewritten-date and are only
+  // interpretable together.
+  kv("coverage.cells_carried", fmt_u32(r.coverage.cells_carried));
   kv("coverage.cells_already_present", fmt_u32(r.coverage.cells_already_present));
   kv("coverage.cells_ok", fmt_u32(r.coverage.cells_ok));
   kv("coverage.cells_failed", fmt_u32(r.coverage.cells_failed));
@@ -448,7 +507,11 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
   }
 
   // Section 3: one per-symbol coverage row (from the populate; written dates).
-  out += "symbol,n_attempted,n_ok,n_failed,n_disabled\n";
+  // `n_carried` appended (FIX-D fix-1, I2): a carried symbol's row otherwise reads
+  // attempted=1 ok=0 failed=0 disabled=0, which names no disposition at all. The
+  // column is APPENDED so a positional reader of the first five fields is
+  // unaffected; the header is a pinned contract and its test was updated with it.
+  out += "symbol,n_attempted,n_ok,n_failed,n_disabled,n_carried\n";
   for (const PopulateSymbolStats &s : r.coverage.per_symbol) {
     out += s.symbol;
     out += ',';
@@ -459,6 +522,8 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
     out += fmt_u32(s.n_failed);
     out += ',';
     out += fmt_u32(s.n_disabled);
+    out += ',';
+    out += fmt_u32(s.n_carried);
     out += '\n';
   }
 

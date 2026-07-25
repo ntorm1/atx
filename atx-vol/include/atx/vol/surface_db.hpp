@@ -303,12 +303,52 @@ struct DbSymbolEntry {
 // unguarded, on the path this one mirrors. A date with no failing cell is
 // `dates_skipped_complete` and its stored surfaces are never refreshed under ANY
 // predicate — not config, not hive contents, not fitter version (3 of the 6
-// dates in the measured production run). Carry-over makes that existing,
-// accepted contract uniform across all dates and puts a STRICTER gate on it than
-// the skip path has, which is none. This salt narrows an existing hole; it does
-// not open a new one. Do not read it as a guarantee that a stale fit will be
-// noticed.
+// dates in the measured production run). Carry-over extends that existing,
+// accepted contract to the remaining dates and puts a STRICTER gate on it than
+// the skip path has, which is none. Do not read it as a guarantee that a stale
+// fit will be noticed.
+//
+// BUT THE TWO ARE NOT THE SAME SHAPE, and the earlier framing of this argument
+// ("carry-over only makes an existing exposure uniform") elided the difference.
+// A SKIPPED date leaves its partition byte-for-byte as some single earlier
+// binary wrote it: stale, perhaps, but SELF-CONSISTENT. A CARRIED REWRITE
+// produces a partition whose records come from two different binaries — the
+// carried ones re-emitted verbatim from the old write, the newly-fitted ones
+// produced by the current fitter — inside one file, under one header. That is a
+// shape the skip path can never produce, and it is strictly newer exposure, not
+// merely the old one spread wider. It is judged acceptable because a partition
+// is a directory of independent per-symbol records with no cross-record
+// invariant (the archive's CRCs are per record; `reconstruct_entry` is
+// byte-lossless, gated by SurfaceArchiveV2.Reemit*), so mixing provenances
+// cannot corrupt the file — but a consumer that assumed one partition means one
+// fitter version would be wrong, and nothing on disk records which records came
+// from where.
 inline constexpr std::uint64_t kSurfaceDbCarryOverFitSalt = 0x5CA1'AB1E'F17D'0001ull;
+
+// Does the caller of `write_partition` ATTEST that the surfaces it is handing
+// over came out of the fitter under the manifest's CURRENT configs?
+//
+// FIX-D fix-1 (I5). The fingerprint stamped on a partition is a claim that a
+// later resume trusts well enough to re-emit the stored surfaces instead of
+// re-fitting them, and nothing in `write_partition` can verify it: a
+// `PricedSurface` carries no record of the config that produced it. Stamping
+// unconditionally made every caller assert it silently — and `write_partition`
+// is public API documented to accept arbitrary symbols, so a caller storing
+// surfaces produced elsewhere (a different config, a different fitter, a
+// hand-built or migrated surface) for symbols that happen to be in the manifest
+// permanently blessed them for carry-over without ever saying so.
+//
+// So the attestation is EXPLICIT and the default is `None`, which fails CLOSED:
+// an unstamped partition folds to the 0 "unknown" sentinel and is re-fit rather
+// than reused. Forgetting to attest costs one wasted re-fit; the opposite default
+// costs a silently carried stale surface, which is the outcome this whole design
+// ranks worst. `populate_surface_db` is the one caller that can honestly make the
+// claim (it fits the surfaces itself, through the configs it just resolved from
+// this manifest), and it is the one caller that passes `FitterProduced`.
+enum class DbConfigAttestation : std::uint8_t {
+  None = 0,      // do not stamp; this partition will never be carried over
+  FitterProduced // these surfaces came out of the fitter under the current configs
+};
 
 struct DbPartitionInfo {
   std::string key{}; // canonical
@@ -316,7 +356,7 @@ struct DbPartitionInfo {
   std::uint64_t file_size{};
   std::int64_t created_ts_ns{};
   // FIX-D: fingerprint of the per-symbol fit CONFIGS this partition was written
-  // under (see `surface_db_config_fingerprint`). Stored in the partition record's
+  // under (computed by `SurfaceDb::config_fingerprint`). Stored in the record's
   // previously-unused `reserved0`, so no on-disk struct changes size and no
   // existing manifest is rejected. 0 means UNKNOWN — either a manifest written
   // before this field existed, or a symbol whose config is no longer in the
@@ -511,9 +551,23 @@ public:
   // written into any number of partitions without ever being registered in
   // the symbol table, and the symbol table may hold config for symbols that
   // never appear in a partition.
+  //
+  // CALLER OBLIGATION (FIX-D). `attest` decides whether this write stamps the
+  // partition with a fingerprint of the manifest's CURRENT fit configs for the
+  // symbols in `items` — a claim, which a later resume trusts by re-emitting the
+  // stored surfaces instead of re-fitting them, that these surfaces came out of
+  // those configs. Nothing here can verify it, so it is not assumed: the default
+  // `DbConfigAttestation::None` stamps nothing, the partition keeps the 0
+  // "unknown" fingerprint, and it is re-fit rather than carried. Pass
+  // `FitterProduced` only if you fitted these surfaces yourself under the configs
+  // currently in this manifest. See `DbConfigAttestation` for the full argument.
+  //
+  // The partition's ARCHIVE and the manifest's provenance write-back are
+  // unaffected by `attest`; it governs the carry-over fingerprint alone.
   [[nodiscard]] Status write_partition(std::string_view key,
                                        std::span<const SurfaceArchiveItem> items,
-                                       const ArchiveV2WriteOpts &opts = {});
+                                       const ArchiveV2WriteOpts &opts = {},
+                                       DbConfigAttestation attest = DbConfigAttestation::None);
   [[nodiscard]] Result<SurfaceArchiveV2> open_partition(std::string_view key) const;
 
   // Reconstruct an OWNED surface for `symbol` in partition `key`. S5: reads the

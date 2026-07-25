@@ -678,8 +678,14 @@ TEST(BuildSurfaceDb, ReportCsvRoundTrips) {
   const std::string body((std::istreambuf_iterator<char>(is)),
                          std::istreambuf_iterator<char>());
   EXPECT_NE(body.find("coverage.cells_ok,9"), std::string::npos);
-  EXPECT_NE(body.find("symbol,n_attempted,n_ok,n_failed,n_disabled"), std::string::npos);
-  EXPECT_NE(body.find("AAA,3,3,0,0"), std::string::npos);
+  // FIX-D fix-1 (I2). The header string is a pinned contract and it MOVED: the
+  // carried counters are the only operator-visible evidence that carry-over
+  // engaged, now that `is_total_fit_failure` no longer flags the carried-only
+  // resume. Both additions APPEND, so the older columns keep their positions.
+  EXPECT_NE(body.find("coverage.cells_carried,0"), std::string::npos) << body;
+  EXPECT_NE(body.find("symbol,n_attempted,n_ok,n_failed,n_disabled,n_carried"), std::string::npos)
+      << body;
+  EXPECT_NE(body.find("AAA,3,3,0,0,0"), std::string::npos) << body;
   // Section 3 exists even on a clean build (header, no rows) so a consumer can
   // parse the same shape whether or not anything failed.
   EXPECT_NE(body.find("date,symbol,code,detail"), std::string::npos);
@@ -740,6 +746,73 @@ TEST(BuildSurfaceDb, FailedCellsCarryTheFitReasonIntoTheReport) {
               std::string::npos)
         << text;
   }
+}
+
+// C1, end to end through the exact object the CLI branches on.
+//
+// This is the second post-FIX-D resume — the run on which the defect appears, and
+// only then, because the first resume still re-fits (the pre-FIX-D manifest has
+// no fingerprint). The database is FULLY HEALTHY: every date holds every symbol
+// that can hold one. BBB fails forever (there is no persisted known-failed state,
+// by design), so its three dates are rewritten on every run, and its healthy
+// siblings are CARRIED rather than re-fitted. The result is
+// `cells_to_fit = 3, cells_ok = 0, cells_carried = 6` — and before the carry
+// clause `is_total_fit_failure` read that as a dead build, so the CLI exited 3
+// printing "TOTAL FIT FAILURE ... Re-run with the matching --r <rate>". An
+// operator who followed that guidance would have re-fitted every surface in the
+// database under a wrong rate.
+//
+// Deliberately NOT a hand-built report: the predicate was already unit-tested on
+// synthetic structs and stayed green through the whole defect. This asserts on a
+// real `UniversePopulateCoverage` assembled by a real `build_surface_db` resume
+// over a failure-bearing database.
+TEST(BuildSurfaceDb, ConvergedCarryResumeIsNotATotalFitFailure) {
+  const tsupport::SyntheticHiveSpec fx; // AAA/BBB/CCC x 3 dates
+  const BuildFixture f = make_build_fixture("carry_exit_code", fx);
+  {
+    auto db = SurfaceDb::create(f.db.string());
+    ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+    // The permanently-failing cell: pin + LinearVariance is refused by the risk
+    // pipeline's input validation on every run, forever.
+    SymbolFitConfig bbb = symbol_config_from_preset(FitPreset::Populate);
+    bbb.pin_curve = true;
+    bbb.curve.kind = VolCurveKind::LinearVariance;
+    ASSERT_TRUE(db->upsert_symbol("BBB", bbb).has_value());
+  }
+
+  // Run 1 populates: AAA and CCC fit on all three dates, BBB fails on all three.
+  const auto rep1 = build_surface_db(build_spec(f, fx));
+  ASSERT_TRUE(rep1.has_value()) << (rep1 ? "" : rep1.error().to_string());
+  ASSERT_EQ(rep1->coverage.cells_ok, 6u);
+  ASSERT_EQ(rep1->coverage.cells_failed, 3u);
+  EXPECT_FALSE(is_total_fit_failure(*rep1)) << "run 1 fitted 6 cells";
+
+  // Run 2 is the converged steady state. Nothing about the database or the hive
+  // changed; the same three dates are rewritten only because BBB is retried.
+  const auto rep2 = build_surface_db(build_spec(f, fx));
+  ASSERT_TRUE(rep2.has_value()) << (rep2 ? "" : rep2.error().to_string());
+  EXPECT_EQ(rep2->coverage.cells_to_fit, 3u) << "the failing cell is retried forever, by design";
+  EXPECT_EQ(rep2->coverage.cells_ok, 0u) << "carried cells are deliberately not counted as fits";
+  EXPECT_EQ(rep2->coverage.cells_carried, 6u) << "the healthy siblings must be carried";
+  EXPECT_EQ(rep2->coverage.cells_refit, 0u);
+  EXPECT_EQ(rep2->coverage.cells_failed, 3u);
+
+  // THE assertion. `cells_to_fit > 0 && cells_ok == 0` on a healthy database.
+  EXPECT_FALSE(is_total_fit_failure(*rep2))
+      << "a converged carry resume must not exit 3 and tell the operator to change --r";
+  EXPECT_FALSE(is_total_config_failure(*rep2)) << "the config stage is healthy too";
+
+  // ...and the operator can SEE that carry-over is what made the run quiet (I2):
+  // without this counter the report is `ok=0 refit=0 failed=3`, indistinguishable
+  // from the dead build the predicate no longer flags.
+  const fs::path csv = f.root / "carry_exit_code.csv";
+  ASSERT_TRUE(write_build_report_csv(*rep2, csv.string()).has_value());
+  std::ifstream is(csv.string(), std::ios::binary);
+  const std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+  EXPECT_NE(text.find("coverage.cells_carried,6"), std::string::npos) << text;
+  // Per-symbol: AAA and CCC each carried on all three dates, and their rows say so.
+  EXPECT_NE(text.find("AAA,3,0,0,0,3"), std::string::npos) << text;
+  EXPECT_NE(text.find("CCC,3,0,0,0,3"), std::string::npos) << text;
 }
 
 // The display cap. 51 symbols x 17 dates is 867 cells; a wholesale failure must
@@ -862,6 +935,34 @@ TEST(SurfaceDbTotalFitFailure, HealthyBuildIsNotFailure) {
   EXPECT_FALSE(is_total_fit_failure(coverage_report(9u, 9u, 0u)));
 }
 
+// FIX-D's converged steady state, and the shape that made this predicate misfire:
+// a date holding permanently-failing cells is rewritten every run, its failures
+// are retried forever (by design), and its healthy siblings are CARRIED rather
+// than re-fitted -- so cells_ok is legitimately 0 on a fully healthy database.
+//
+// This is the production shape exactly: 3 permanently-failing cells, 147 carried
+// siblings. Before the carry clause this returned true and the CLI told the
+// operator to re-run with a different --r, which would have invalidated every
+// surface in the database.
+TEST(SurfaceDbTotalFitFailure, CarriedOnlyResumeIsNotFailure) {
+  SurfaceDbBuildReport carried = coverage_report(3u, 0u, 3u);
+  carried.coverage.cells_carried = 147u;
+  carried.coverage.cells_loaded = 150u;
+  carried.coverage.dates_written = 3u;
+  EXPECT_FALSE(is_total_fit_failure(carried))
+      << "the converged carry steady state is healthy, not a total fit failure";
+
+  // One carried cell is enough: the database is not empty.
+  SurfaceDbBuildReport minimal = coverage_report(1u, 0u, 1u);
+  minimal.coverage.cells_carried = 1u;
+  EXPECT_FALSE(is_total_fit_failure(minimal));
+
+  // But with NOTHING carried and nothing fitted it is still the real failure.
+  SurfaceDbBuildReport dead = coverage_report(3u, 0u, 3u);
+  dead.coverage.cells_carried = 0u;
+  EXPECT_TRUE(is_total_fit_failure(dead));
+}
+
 // ── is_total_config_failure — the SAME trap one stage earlier ───────────────
 //
 // `is_total_fit_failure` only sees cells that were SCHEDULED. When config
@@ -961,6 +1062,34 @@ TEST(SurfaceDbTotalConfigFailure, ResumeOverAnAllDisabledDbIsFailure) {
   partial.config.n_disabled_existing = 1u;
   partial.config.failed_symbols = {"CCC"};
   EXPECT_FALSE(is_total_config_failure(partial));
+}
+
+// FIX-D fix-1: the C1 audit's verdict on THIS predicate, pinned.
+//
+// `is_total_config_failure` carries the identical `cells_ok == 0` conjunct that
+// FIX-D turned into a false verdict one stage down, so it now carries the carry
+// clause too. The trap is unreachable end to end (a carried cell is by
+// construction proof that some symbol is enabled — see the reachability argument
+// in surface_db_build.cpp), which is exactly why it is pinned here on a synthetic
+// report: nothing else can reach the shape, and without a test the clause would
+// be silently deletable.
+TEST(SurfaceDbTotalConfigFailure, CarriedCellsAreProofTheDatabaseIsNotDead) {
+  SurfaceDbBuildReport dead = config_report(0u, 3u, 0u); // every symbol skip-existing
+  dead.config.n_disabled_existing = 3u;                  // ...and every one disabled
+  ASSERT_TRUE(is_total_config_failure(dead)) << "the dead-database baseline must still fire";
+
+  // Same config counters, but this run re-emitted stored surfaces. Whatever the
+  // config stage says, the database demonstrably holds and served surfaces — the
+  // same class of evidence as cells_ok > 0, which has always been an exit.
+  SurfaceDbBuildReport carried = dead;
+  carried.coverage.cells_carried = 147u;
+  EXPECT_FALSE(is_total_config_failure(carried));
+
+  // And the two predicates agree on that evidence: neither may call this dead.
+  carried.coverage.cells_to_fit = 3u;
+  carried.coverage.cells_failed = 3u;
+  EXPECT_FALSE(is_total_fit_failure(carried));
+  EXPECT_FALSE(is_total_config_failure(carried));
 }
 
 // The one shape that must NOT be swept in: symbols that were already configured
