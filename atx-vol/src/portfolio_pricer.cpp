@@ -599,7 +599,8 @@ struct SeedStageCounts {
 
 [[nodiscard]] SeedStageCounts
 stage_full_greek_seeds(const SurfaceSet &surfaces, std::span<const OptionContract> contracts,
-                       bool analytic, QueryExecution query_execution, bool skew_adjusted_delta,
+                       bool analytic, QueryExecution query_execution,
+                       PricedSurface::GreekNeeds greek_needs, bool skew_adjusted_delta,
                        const StickyParams &sticky, std::span<const FullGreekSeed> seeds,
                        std::vector<ContractPx> &staged, std::vector<std::uint8_t> &accepted,
                        std::vector<std::uint32_t> &seed_order,
@@ -645,6 +646,21 @@ stage_full_greek_seeds(const SurfaceSet &surfaces, std::span<const OptionContrac
       consistent = consistent && candidate_is_consistent;
     }
     if (!consistent) {
+      counts.rejected_candidates += static_cast<std::uint64_t>(std::distance(first, last));
+      continue;
+    }
+
+    // FIX-1/F2 (rev-ws-g G1 I-1): the THIRD Ok-stamp. A seed is not validated on mint
+    // -- PricedSurface::full_greek_seed gates on isfinite(price) alone, and neither
+    // seed_route_matches nor same_seed_semantics inspects finiteness -- and an ACCEPTED
+    // seed bypasses the guarded stamp entirely: it is copied straight into the frame,
+    // is_seeded() makes solve_span skip the contract, and an all-accepted batch is
+    // skipped outright. So sweep the REQUESTED columns finite here, with the same
+    // GreekNeeds semantics the price-path and P&L stamps use. A poisoned seed is
+    // rejected as a candidate rather than stamped NumericError, so the contract falls
+    // through to the ordinary solve and is re-guarded at that stamp -- a seed is only a
+    // reuse optimization, so declining to trust it is always safe.
+    if (!greeks_all_finite(representative.greeks(), greek_needs)) {
       counts.rejected_candidates += static_cast<std::uint64_t>(std::distance(first, last));
       continue;
     }
@@ -1163,8 +1179,9 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
       ATX_VOL_COUNT_N(FullGreekSeedRejectedCandidates, seeds.size());
     } else {
       const SeedStageCounts counts = stage_full_greek_seeds(
-          surfaces, contracts, analytic, opts.query_execution, opts.skew_adjusted_delta,
-          opts.sticky, seeds, w.seed_px, w.seed_accepted, w.seed_order, w.seed_candidate_matched);
+          surfaces, contracts, analytic, opts.query_execution, opts.greek_needs,
+          opts.skew_adjusted_delta, opts.sticky, seeds, w.seed_px, w.seed_accepted, w.seed_order,
+          w.seed_candidate_matched);
       (void)counts;
       ATX_VOL_COUNT_N(FullGreekSeedReuseLanes, counts.accepted_unique);
       ATX_VOL_COUNT_N(FullGreekSeedRejectedCandidates, counts.rejected_candidates);
@@ -1416,6 +1433,23 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
       s_tt[p] = tcol[p] - dt; // T_t = T_b - dt (bit-identical to the ungrouped subtraction)
     }
 
+    // WS-P2 rho tier: the ONLY consumer of this bundle's `rho` is the Taylor term
+    // `prho = g.rho * c.dr` below (and its pnl_totals twin). `dr` is a per-(uid)
+    // surface-pair constant already in hand here, and when the P&L step carries NO
+    // rate shift it is exactly 0.0 — so every rho the r± boundary solves produce is
+    // multiplied by zero and discarded. Requesting needs.rho = false makes the kernel
+    // skip that solve pair and leave rho at 0, driving the identical `0.0 * 0.0` term:
+    // a 5-solve bundle becomes 3 with no change to any output column. When dr != 0 the
+    // full bundle is requested exactly as before. `dr` depends only on the two
+    // surfaces, never on the thread partition, so the narrowing is deterministic and
+    // pack-composition invariant.
+    //
+    // FIX-1/F3 (rev-ws-g G1 I-2): hoisted out of the `!reuse_base` block because the
+    // Ok-stamp below must guard EXACTLY this set — it previously hard-coded a full
+    // GreekNeeds{} on the false premise that the P&L base solve always requests
+    // everything.
+    PricedSurface::GreekNeeds base_needs{};
+    base_needs.rho = (dr != 0.0);
     if (!reuse_base) {
       // V1 solve ledger: the pnl base solve is a full-Greek bundle per unique. Route by
       // the analytic flag (the pnl path never takes the adjoint route). When the base
@@ -1431,18 +1465,6 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                                             std::span<Status>(b_status).subspan(s, gsz),
                                             {},
                                             {}};
-      // WS-P2 rho tier: the ONLY consumer of this bundle's `rho` is the Taylor term
-      // `prho = g.rho * c.dr` below (and its pnl_totals twin). `dr` is a per-(uid)
-      // surface-pair constant already in hand here, and when the P&L step carries NO
-      // rate shift it is exactly 0.0 — so every rho the r± boundary solves produce is
-      // multiplied by zero and discarded. Requesting needs.rho = false makes the kernel
-      // skip that solve pair and leave rho at 0, driving the identical `0.0 * 0.0` term:
-      // a 5-solve bundle becomes 3 with no change to any output column. When dr != 0 the
-      // full bundle is requested exactly as before. `dr` depends only on the two
-      // surfaces, never on the thread partition, so the narrowing is deterministic and
-      // pack-composition invariant.
-      PricedSurface::GreekNeeds base_needs{};
-      base_needs.rho = (dr != 0.0);
       (void)sb->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
                                EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic,
                                base_soa, resolved_price_isa, query_execution, base_needs);
@@ -1500,10 +1522,29 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
       }
       out.gb = cached != nullptr ? cached->g : b_greeks[p];
       // G1 (GR-P2-1): out.gb are the Taylor coefficients; a non-finite one would
-      // poison PnlTotals (reduce_pnl_totals gates on status only). The P&L base solve
-      // always requests the full bundle (EF::FirstOrder | EF::SecondOrder), so require
-      // all eight finite. (A cached base already passed this on its price Ok-stamp.)
-      if (!greeks_all_finite(out.gb, PricedSurface::GreekNeeds{})) {
+      // poison PnlTotals (reduce_pnl_totals gates on status only), so sweep them finite
+      // before the Ok-stamp.
+      //
+      // FIX-1/F3 (rev-ws-g G1 I-2): guard EXACTLY the set the solve requested — i.e.
+      // `base_needs`, not a default-constructed GreekNeeds{}. The old comment here
+      // claimed "the P&L base solve always requests the full bundle
+      // (EF::FirstOrder | EF::SecondOrder)", but those flags select which column GROUPS
+      // materialize while `base_needs` selects which boundary SOLVES run — different
+      // axes. `base_needs.rho` is `(dr != 0.0)`, so on an ordinary no-rate-shift step an
+      // unrequested non-finite rho used to veto an otherwise perfectly good lane on a
+      // column that is annihilated by the dr multiplier and cannot reach any output.
+      //
+      // The unrequested slot is normalized to the canonical unmaterialized value (0.0,
+      // exactly what the narrowed kernel leaves there) BEFORE the sweep, because
+      // `prho = g.rho * c.dr` and NaN * 0.0 is NaN, not 0.0 — relaxing the mask alone
+      // would turn a spurious veto into a poisoned pnl_rho/pnl_unexplained. Restricting
+      // the normalization to the non-finite case leaves every currently-admitted lane
+      // bit-for-bit unchanged. (A cached base already passed the price Ok-stamp under
+      // its own mask; re-sweeping under `base_needs` is strictly additional safety.)
+      if (!base_needs.rho && !std::isfinite(out.gb.rho)) {
+        out.gb.rho = 0.0;
+      }
+      if (!greeks_all_finite(out.gb, base_needs)) {
         out.status = PriceStatus::NumericError;
         continue;
       }

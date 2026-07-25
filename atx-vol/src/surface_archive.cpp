@@ -815,11 +815,31 @@ Result<SurfaceArchiveV2> SurfaceArchiveV2::open_impl(std::span<const std::byte> 
   // lookup slot AGREES with a directory entry. So a slot whose (offset,size) was
   // tampered to point at another valid record served the WRONG symbol's surface
   // with no error (v1's map_all cross-checks find_directory_slot per entry). Verify
-  // (a) every slot carries a known flag and the occupied count equals surface_count,
-  // and (b) every directory entry resolves through the lookup to a slot with
-  // identical (offset,size,uid,symbol_hash). O(surface_count) hash probes at open,
-  // off the hot path. Combined, these force a bijection between occupied slots and
-  // directory entries, so no tampered/extra slot can serve a mismatched record.
+  // (a) directory symbols are STRICTLY ascending, hence unique; (b) every slot carries
+  // a known flag and the occupied count equals surface_count; and (c) every directory
+  // entry resolves through the lookup to a slot with identical
+  // (offset,size,uid,symbol_hash). O(surface_count) hash probes at open, off the hot
+  // path.
+  //
+  // Why all three are needed for the bijection (FIX-1/F4, rev-ws-c I-1): (c) alone maps
+  // directory -> slots but never shows the map is ONTO, and (b) alone counts. It is
+  // uniqueness from (a) that makes (c) injective; injective + equal cardinality from (b)
+  // gives surjective. Without (a) a forged file could duplicate a directory symbol so two
+  // entries resolve to the SAME slot — satisfying (b) and (c) — while a second occupied
+  // slot goes unreferenced and completely unvalidated, free to be cross-linked to an
+  // arbitrary record. The directory is written sorted by canonical symbol, so the
+  // ordering check is free; it mirrors the writer's v2_plan_less comparator exactly.
+  for (std::size_t i = 1; i < a.directory_.size(); ++i) {
+    const ArchiveV2DirEntry &prev = a.directory_[i - 1];
+    const ArchiveV2DirEntry &cur = a.directory_[i];
+    const std::uint16_t n = std::min(prev.symbol_len, cur.symbol_len);
+    const int cmp = std::memcmp(prev.symbol, cur.symbol, n);
+    // Strictly ascending iff cmp < 0, or equal prefix and prev is the shorter symbol.
+    if (cmp > 0 || (cmp == 0 && prev.symbol_len >= cur.symbol_len)) {
+      return Err(ErrorCode::ParseError,
+                 "SurfaceArchiveV2::open: directory symbols not strictly ascending");
+    }
+  }
   std::uint32_t occupied = 0;
   for (const ArchiveV2LookupSlot &slot : a.lookup_) {
     if (slot.flags == kArchiveV2SlotOccupied) {
