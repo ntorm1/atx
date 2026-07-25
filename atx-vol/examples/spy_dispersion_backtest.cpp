@@ -907,9 +907,24 @@ Status compare_mark_divergence_sources(const std::vector<ListedMarkDivergenceRow
 // `mark_divergence` section), leaving only the priced backtest — the
 // bare-backtest wall-time path. The priced run is independent of the replay, so
 // the backtest output is byte-identical either way.
+//
+// `--require-divergence-rows` (opt-in, default OFF) turns the observer/shadow
+// equivalence comparison into a PROOF GATE: a comparison over zero rows proves
+// nothing — an observer that emitted nothing at all compares equal to a shadow
+// that emitted nothing at all — so with the flag set a zero compared-row count is
+// a hard failure. It is opt-in and route-INDEPENDENT on purpose. Zero rows is
+// legitimately reachable on BOTH routes, because a row exists only where
+// `seed.greeks().price != leg.model_mark` and that is an exact inequality: a
+// fast-configured surface reports ColdFallback (bit-equal to the cold value)
+// wherever the resolved point sits outside its certified correction box, and a
+// schedule authored under the same tier it is replayed on reproduces its own
+// marks. Zero is therefore a property of the SCHEDULE'S PROVENANCE, not of the
+// execution route, so conditioning the gate on `--execution` would both kill
+// uninteresting-but-valid runs and let the genuinely vacuous cold case through.
+// Without the flag no invocation gains any failure mode it did not already have.
 Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &schedule_file,
                                       const std::string &execution, const fs::path &out_file,
-                                      bool skip_divergence) {
+                                      bool skip_divergence, bool require_divergence_rows) {
   const auto cmd_start = PhaseTimer::now();
   PhaseTimer timer(
       {"setup_read", "divergence_replay", "archive_load", "priced_run", "write_outputs"});
@@ -999,31 +1014,38 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   // timer.add("priced_run", ...) on purpose, so the comparison is charged to no
   // phase and the diagnostics phase list and its per-phase attribution are
   // exactly what they were before this arbiter existed.
+  bool vacuous_proof_gate = false;
   if (!skip_divergence) {
+    // A genuine field/count MISMATCH aborts here, before anything is written.
+    // That is deliberate and is not the same decision as the vacuity gate below:
+    // a mismatch means the two sources disagree about what the rows ARE, so the
+    // `mark_divergence` section about to be built from one of them has exactly
+    // the provenance that was just disproved. Writing it would archive a result
+    // whose correctness the run had already refuted.
     ATX_TRY_VOID(compare_mark_divergence_sources(observed, *divergence_arena));
-    // VACUITY GUARD. The comparison above is evidence only if it compared
-    // something: over two empty containers it reports "identical" even for an
-    // observer that produced nothing at all, which is precisely the instrument
-    // that would justify deleting working code for nothing. On the fast-tier
-    // `configured` route divergence rows are genuinely nonzero (the tier
-    // interpolates the cached surrogate rather than reproducing the archive
-    // marks), so zero rows there means the run never exercised the collector and
-    // the gate FAILS as vacuous — before the MATCH line is printed, so no
-    // vacuous run can leave a passing evidence line behind. On `cold` the pinned
-    // truth IS zero rows, so zero is accepted there and called out instead.
-    if (!cold && divergence_arena->n_rows == 0u) {
-      return Err(ErrorCode::Unavailable,
-                 "mark divergence equivalence gate is vacuous: the configured route produced 0 "
-                 "divergence rows, so an observer that emitted nothing at all would also compare "
-                 "equal");
-    }
-    std::printf("mark divergence equivalence: observer=%zu shadow=%llu rows MATCH\n",
-                observed.size(), static_cast<unsigned long long>(divergence_arena->n_rows));
-    if (divergence_arena->n_rows == 0u) {
+    const bool empty = divergence_arena->n_rows == 0u;
+    // VACUITY. A comparison over zero rows is not evidence: it reports
+    // "identical" for an observer that produced nothing at all, which is the one
+    // instrument that could justify deleting working code for nothing. So the
+    // zero case is always LABELLED, on the same stdout line as the verdict — a
+    // stdout-only transcript is what a later deletion decision will be read from,
+    // and a bare unqualified MATCH in that transcript is the hazard. Under
+    // `--require-divergence-rows` it is additionally a failure, but only after
+    // the archive is written (see the gate at the end of this function): the exit
+    // code is recoverable, a destroyed run.atxrun is not.
+    vacuous_proof_gate = require_divergence_rows && empty;
+    std::printf("mark divergence equivalence: observer=%zu shadow=%llu rows MATCH%s\n",
+                observed.size(), static_cast<unsigned long long>(divergence_arena->n_rows),
+                empty ? " (VACUOUS: 0 rows compared, a plumbing check and NOT the observer/shadow"
+                        " equivalence proof)"
+                      : "");
+    if (empty) {
       std::fprintf(stderr,
-                   "note: 0 rows compared. The cold route's pinned truth is zero mark-divergence "
-                   "rows, so this MATCH is a plumbing check, not the observer/shadow equivalence "
-                   "proof; that proof requires --execution configured.\n");
+                   "note: 0 mark-divergence rows compared. A row exists only where the live seed "
+                   "mark differs from the frozen schedule mark, so zero means this schedule "
+                   "reproduces its own marks on this route; the comparison is a plumbing check, "
+                   "not the observer/shadow equivalence proof. Use a schedule/route pair that "
+                   "produces rows.\n");
     }
   }
 
@@ -1054,6 +1076,18 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
               execution.c_str(), backtest.size(), schedule.rolls.size(), backtest.nav.back());
   print_diag_summary("run_projected_backtest", PhaseTimer::now() - cmd_start, backtest.size(),
                      "session", "sessions");
+  // The opt-in proof gate, deliberately LAST — after write_run_archive, after the
+  // completion line and after the diagnostics summary. The run itself succeeded
+  // and its projected_cold / mark_divergence / meta / diagnostics sections are on
+  // disk; what failed is the requested claim that the comparison proved anything.
+  // Failing before the write would trade a recoverable exit code for a destroyed
+  // result container, which is a strictly worse outcome for the operator.
+  if (vacuous_proof_gate) {
+    return Err(ErrorCode::Unavailable,
+               "--require-divergence-rows: the observer/shadow equivalence comparison is vacuous: "
+               "0 divergence rows were compared, so an observer that emitted nothing at all would "
+               "also have reported MATCH. The run archive was written; the proof gate failed");
+  }
   return Ok();
 }
 
@@ -1324,7 +1358,7 @@ void usage() {
                        "  atxvol_spy_dispersion_backtest project-schedule --run DIR\n"
                        "  atxvol_spy_dispersion_backtest run-projected-backtest --run DIR "
                        "[--schedule FILE] [--execution cold|configured] [--out FILE] "
-                       "[--no-divergence]\n"
+                       "[--no-divergence] [--require-divergence-rows]\n"
                        "  atxvol_spy_dispersion_backtest run-surface-backtest --run DIR\n"
                        "  atxvol_spy_dispersion_backtest run-projected-var --run DIR\n"
                        "  atxvol_spy_dispersion_backtest verify --run DIR\n"
@@ -1362,10 +1396,15 @@ int main(int argc, char **argv) {
   fs::path schedule;
   std::string execution;
   bool no_divergence = false;
+  bool require_divergence_rows = false;
   for (int i = 2; i < argc; ++i) {
     const std::string_view argument = argv[i];
     if (argument == "--no-divergence") {  // value-less flag, checked before the value guard
       no_divergence = true;
+      continue;
+    }
+    if (argument == "--require-divergence-rows") { // value-less flag, same placement rule
+      require_divergence_rows = true;
       continue;
     }
     if (i + 1 >= argc) {
@@ -1400,7 +1439,8 @@ int main(int argc, char **argv) {
     status = run_projected_backtest_command(
         run, schedule.empty() ? fs::path("trade_schedule.tsv") : schedule,
         execution.empty() ? std::string("configured") : execution,
-        out.empty() ? fs::path("projected_backtest.tsv") : out, no_divergence);
+        out.empty() ? fs::path("projected_backtest.tsv") : out, no_divergence,
+        require_divergence_rows);
   } else if (command == "run-surface-backtest" && !run.empty()) {
     status = run_surface_backtest_command(run);
   } else if (command == "run-projected-var" && !run.empty()) {
