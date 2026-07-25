@@ -49,7 +49,14 @@
 //                   `true` to restore the old behaviour. Requires a value; a
 //                   missing or unrecognised one is a usage error (exit 2).
 //   --fit-workers   outer fit fan-out; 0 = auto (honors ATX_VOL_FIT_WORKERS).
-//   --report        also write the three-section CSV report to this path.
+//                   Deliberately NOT strictly parsed: an unparseable value
+//                   coerces to 0, and 0 is a legitimate, safe choice. Contrast
+//                   --r, where every value is a claim about the market and a
+//                   coerced 0.0 is a WRONG claim. A missing value is still a
+//                   usage error, like every other value-taking flag here.
+//   --report        also write the four-section CSV report to this path. A write
+//                   failure is named on stderr and exits 1 -- but it never
+//                   preempts exit 3; see the return at the end of main.
 //   --max-failures  cap on the printed `failed_cell` lines (default 32). Overflow
 //                   is counted in coverage.failed_cells_elided, never dropped
 //                   silently; the --report CSV always carries the FULL list.
@@ -296,8 +303,24 @@ int main(int argc, char **argv) {
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
-    // Fetch the value for a flag that takes one; "" when the flag ended the argv.
-    const auto nv = [&]() -> const char * { return (i + 1 < argc) ? argv[++i] : ""; };
+    // Value for a flag that takes one. A flag that ENDED the argv used to yield ""
+    // and every consumer read that as a deliberate choice: `--report` wrote no CSV
+    // AND EXITED 0 (the run looked clean and the file the operator asked for was
+    // simply not there), `--symbols` fell back to discover-all so the universe
+    // silently WIDENED, `--index` dropped the index leg, `--fit-workers` meant
+    // auto. `--db`/`--hive`/`--from`/`--to` were saved by the required-flag check
+    // below and `--r`/`--preset`/`--pin-curve-family`/`--max-failures` by strict
+    // parsing; the other four were not. A dropped shell variable is never a
+    // choice — record it and make it a usage error, the same rule and the same
+    // words as the sibling admin CLI (tools/surface_db_main.cpp).
+    bool missing_value = false;
+    const auto nv = [&]() -> const char * {
+      if (i + 1 < argc) {
+        return argv[++i];
+      }
+      missing_value = true;
+      return "";
+    };
     if (a == "--db") {
       spec.db_root = nv();
     } else if (a == "--hive") {
@@ -314,7 +337,7 @@ int main(int argc, char **argv) {
       preset_name = nv();
     } else if (a == "--r") {
       const std::string_view text = nv();
-      if (!parse_finite_double(text, spec.hive.r)) {
+      if (!missing_value && !parse_finite_double(text, spec.hive.r)) {
         std::fprintf(stderr,
                      "atx-vol-surface-db-build: --r expects a finite number, got '%.*s'\n",
                      static_cast<int>(text.size()), text.data());
@@ -327,7 +350,7 @@ int main(int argc, char **argv) {
       spec.auto_config.retry_disabled = true;
     } else if (a == "--pin-curve-family") {
       const std::string_view text = nv();
-      if (!parse_bool(text, spec.auto_config.pin_curve_family)) {
+      if (!missing_value && !parse_bool(text, spec.auto_config.pin_curve_family)) {
         std::fprintf(stderr,
                      "atx-vol-surface-db-build: --pin-curve-family expects "
                      "true|false (or 1|0, on|off), got '%.*s'\n",
@@ -342,7 +365,7 @@ int main(int argc, char **argv) {
       report_path = nv();
     } else if (a == "--max-failures") {
       const std::string_view text = nv();
-      if (!parse_count(text, max_failed_cells)) {
+      if (!missing_value && !parse_count(text, max_failed_cells)) {
         std::fprintf(stderr,
                      "atx-vol-surface-db-build: --max-failures expects a non-negative integer, "
                      "got '%.*s'\n",
@@ -355,6 +378,14 @@ int main(int argc, char **argv) {
       return 0;
     } else {
       std::fprintf(stderr, "atx-vol-surface-db-build: unknown flag: %s\n", argv[i]);
+      print_usage(stderr);
+      return 2;
+    }
+    // One check for EVERY value-taking flag: a flag that ended the argv never
+    // reaches its consumer as "".
+    if (missing_value) {
+      std::fprintf(stderr, "atx-vol-surface-db-build: %.*s requires a value\n",
+                   static_cast<int>(a.size()), a.data());
       print_usage(stderr);
       return 2;
     }
@@ -392,14 +423,31 @@ int main(int argc, char **argv) {
 
   print_report(*report, max_failed_cells);
 
+  // A --report write failure must NOT preempt the verdict. Returning 1 here (what
+  // this used to do) jumped over the disabled-symbol callout and BOTH TOTAL
+  // FAILURE blocks below, so a totally dead build whose report path happened to be
+  // unwritable exited 1 with no `TOTAL FIT FAILURE` banner and no `--r` advice —
+  // losing exactly the diagnostic that shape exists to deliver, on exactly the run
+  // that needs it. It also falsified the documented contract that 1 means "no
+  // report to read": `print_report` has already run, so the full report IS on
+  // stdout.
+  //
+  // So: say it on stderr, fall through, and let the predicates pick the code. A
+  // build that produced nothing exits 3 even if the CSV failed — the operator's
+  // question is "did this run produce anything?", not "did the CSV land?", and the
+  // stderr line above is not lost either way. 1 is returned only when no predicate
+  // fires, i.e. the run was otherwise fine and the ONE thing that went wrong is
+  // the file the operator asked for.
+  bool report_write_failed = false;
   if (!report_path.empty()) {
     const Status w = write_build_report_csv(*report, report_path);
     if (!w) {
       std::fprintf(stderr, "atx-vol-surface-db-build: write_build_report_csv(%s): %s\n",
                    report_path.c_str(), w.error().to_string().c_str());
-      return 1;
+      report_write_failed = true;
+    } else {
+      std::printf("report %s\n", report_path.c_str());
     }
-    std::printf("report %s\n", report_path.c_str());
   }
 
   // A database that is permanently not serving a requested name must not read as
@@ -542,5 +590,8 @@ int main(int argc, char **argv) {
                 "run and is not a defect on its own; what you watch is the list above CHANGING.\n");
   }
 
-  return 0;
+  // No predicate fired, so the only thing that can still be wrong is the CSV the
+  // operator asked for and did not get. A script that reads the file must not see
+  // a green exit for a build whose report never landed.
+  return report_write_failed ? 1 : 0;
 }
