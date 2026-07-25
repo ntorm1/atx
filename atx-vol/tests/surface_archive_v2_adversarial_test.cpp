@@ -325,6 +325,56 @@ TEST(SurfaceArchiveV2Adversarial, RejectsCrossLinkedLookupAndDirectory) {
   EXPECT_EQ(arch.error().code(), ErrorCode::ParseError);
 }
 
+// FIX-1 / F4 (rev-ws-c I-1): C4's cross-check claimed to "force a bijection" between
+// occupied slots and directory entries. It did not. It resolves each DIRECTORY entry to
+// a slot, but never checks that every OCCUPIED slot is referenced, and never checks that
+// directory symbols are unique — and `occupied == surface_count` only yields a bijection
+// if they are.
+//
+// The forgery below duplicates a directory symbol so both entries resolve to the SAME
+// slot. Every pre-F4 check still passes: 2 occupied slots == surface_count 2, and both
+// directory entries resolve to a slot with identical (offset, size, uid, symbol_hash).
+// Yet BBB's occupied slot is now referenced by nothing and goes entirely unvalidated —
+// so it can be cross-linked to an arbitrary record and map_symbol("BBB") serves the
+// wrong surface. That is exactly the failure SE-P2-7 describes.
+//
+// Not reachable from any writer output (the writer rejects duplicate canonical symbols),
+// so this closes an overstated guarantee rather than a live defect. The directory is
+// already written sorted by canonical symbol, so requiring STRICTLY ascending symbols
+// gives uniqueness, and uniqueness + the existing count check + the existing per-entry
+// resolution is the real bijection.
+TEST(SurfaceArchiveV2Adversarial, RejectsDuplicateDirectorySymbols) {
+  // Non-vacuity: the untampered archive opens, so the rejection below is attributable
+  // to the forgery alone and not to a broken restamp.
+  ASSERT_TRUE(SurfaceArchiveV2::open(build_two()).has_value());
+
+  std::vector<std::byte> bytes = build_two();
+  const ArchiveV2Header h = read_header(bytes);
+  // Directory is sorted by symbol: [0]=AAA, [1]=BBB. Duplicate AAA over BBB's entry so
+  // BOTH entries resolve to AAA's slot and BBB's slot loses its only referent.
+  const ArchiveV2DirEntry dirA = read_dir(bytes, h, 0);
+  write_dir(bytes, h, 1, dirA);
+  // Cross-link the now-unreferenced BBB slot to AAA's record: the harm the missing
+  // uniqueness check lets through.
+  const std::ptrdiff_t ib = slot_index_for(bytes, h, "BBB");
+  ASSERT_GE(ib, 0);
+  ArchiveV2LookupSlot sb = read_slot(bytes, h, static_cast<std::size_t>(ib));
+  sb.surface_offset = dirA.surface_offset;
+  sb.surface_size = dirA.surface_size;
+  write_slot(bytes, h, static_cast<std::size_t>(ib), sb);
+  restamp_v2_crcs(bytes);
+
+  const auto arch = SurfaceArchiveV2::open(std::move(bytes));
+  ASSERT_FALSE(arch.has_value());
+  EXPECT_EQ(arch.error().code(), ErrorCode::ParseError);
+  // Attribute the rejection to the new ordering check, not to the CRC gate (which also
+  // returns ParseError) — otherwise a future restamp regression would keep this green
+  // for the wrong reason.
+  EXPECT_NE(arch.error().to_string().find("directory symbols not strictly ascending"),
+            std::string::npos)
+      << arch.error().to_string();
+}
+
 // An occupied-slot count that disagrees with surface_count (here: an occupied slot
 // flipped to empty). Pre-C4 open ignored slot flags entirely.
 TEST(SurfaceArchiveV2Adversarial, RejectsOccupiedSlotCountMismatch) {

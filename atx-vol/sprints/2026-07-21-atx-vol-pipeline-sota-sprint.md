@@ -330,17 +330,20 @@ Shared-file rules:
 
 ## 7. Tracker
 
+Integration trunk is `feat/pipeline-m` (user directive: nothing merges to local main
+this sprint). Trunk tip after the wave-1 merge train: **264b2fe**.
+
 | WS | Branch | Worktree | Status | Tip SHA | Gate log |
 |---|---|---|---|---|---|
-| M | feat/pipeline-m | wt-pipe-m | GATED | a11ec71 | serial 0-unexplained; goldens 3×-stable (M2 SHAs); both presets clean; M1 reconcile→M2 re-pin→M3 known-reds→M4 regime pin→M5 doc sync |
-| A | feat/pipeline-a | wt-pipe-a | blocked on M | — | — |
-| B | feat/pipeline-b | wt-pipe-b | blocked on M | — | — |
-| C | feat/pipeline-c | wt-pipe-c | blocked on M | — | — |
-| G | feat/pipeline-g | wt-pipe-g | blocked on M | — | — |
-| E | feat/pipeline-e | wt-pipe-e | blocked on M | — | — |
-| F | feat/pipeline-f | wt-pipe-f | blocked on M | — | — |
-| T | feat/pipeline-t | wt-pipe-t | DONE (T1 primary premise-failed: cross-date pooling already landed as B1 `268c0cf`; named alternative — last-board-standing inner-worker reclaim — implemented. T2 done) | c3610ab | serial `ctest -L atx_vol -j 1`: **100% passed, 0 failed of 2103**, 44 skipped (data-guarded), 1314 s. T1 byte gate on the real golden 82-date corpus: serial baseline (`fit_workers=1`) vs production auto fan-out — **82/82 archives `cmp`-identical AND sha256-identical**; manifest/quality/surface_manifest/input_inventory identical (out_dir prefix normalized only). Timing/utilization rows NOT citable — three agents shared the box; quiet-window PM re-run required |
-| Y | feat/pipeline-y | wt-pipe-y | blocked on M (Y1-Y3 could pre-fork; Y4 post-M) | — | — |
+| M | feat/pipeline-m | wt-pipe-m | GATED, then wave-1 merge train | 264b2fe | M gate @5e2c31a: serial 2048/2048, 0 unexplained; goldens 3×-stable (82s `5e7ca065…`, 135s `141173fd…`); both presets clean; M1 reconcile→M2 re-pin→M3 known-reds→M4 regime pin→M5 doc sync. Merges: 9390a15 C, e35cddf A, 96172e5 G, 264b2fe B — all `--no-ff`, zero conflicts (only A∩C overlap = tests/CMakeLists.txt, append-only both sides) |
+| A | feat/pipeline-a | wt-pipe-a | MERGED (e35cddf) | bf6968c | 7 commits; serial 2057/2057; review Approved-with-minors (0 Critical, 0 Important, 3 Minor, 3 Nit) — reviewer re-ran the failing-first tests, the ForceScalar leg and ScenarioGrid. A5/A6 + A7's solve-count half deferred with confirmed blockers |
+| B | feat/pipeline-b | wt-pipe-b | MERGED (264b2fe) | eed7131 | 8 commits; serial 2011 pass / 43 skip / 0 fail under `-DATX_BUILD_BENCH=ON` (count delta vs the 2048/102 trunk baseline is a config artifact); review Approved-with-minors (0 Critical, 2 Important process-only, 5 Minor). B4 default flip / B6 selector holdout / B7 baseline JSON deferred, blockers confirmed real |
+| C | feat/pipeline-c | wt-pipe-c | MERGED (9390a15) | 07dd317 | 6 commits; owning suites green (adversarial 17/17, writer/archive/db 140, db+populate 66/66, durability 2/2); full-serial verdict folded into the trunk gate; review in flight |
+| G | feat/pipeline-g | wt-pipe-g | MERGED (96172e5) | de0101b | 3 commits + G4 no-code-change (premise overtaken by the WS-M merge: Auto already rides the laned AVX2 greeks via `avx2_greeks_selected`, GreekNeeds threaded); owning suites green (219 pass / 2 skip); full-serial verdict folded into the trunk gate; review in flight, carries the M1 AVX2 auto-merge deep-dive mandate |
+| E | feat/pipeline-e | wt-pipe-e | in flight (wave 2) | 264b2fe | forked from the merged trunk; E3b unblocked by the WS-A merge; E1's golden re-pin is a coordinated PM event, serialized against WS-F |
+| F | feat/pipeline-f | wt-pipe-f | in flight (wave 2) | 264b2fe | forked from the merged trunk; golden re-pin serialized against WS-E's E1 |
+| T | feat/pipeline-t | wt-pipe-t | FIX-T applied — rev-ws-t Needs-work (narrow) closed: T-I1 lifetime-aware reclaim, T-I2 saturated drain gate, T-I3 payload-bit scrub poison, T-I4 counters on the PHASE line | (see gate row below) | T1/T2 as before, plus 4 review-fix commits. See the FIX-T row in §7 for gates |
+| Y | feat/pipeline-y | wt-pipe-y | in flight (wave 2) | 10609ee | trunk + one base commit snapshotting the in-flight Python layer the PY-* findings were written against (see 10609ee's message); `test_dispersion_runarchive_e2e.py` is environment-blocked here by design |
 
 ## 8. Dispatch protocol (per subagent)
 

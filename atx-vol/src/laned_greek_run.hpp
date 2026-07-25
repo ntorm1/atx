@@ -48,6 +48,54 @@ namespace atx::vol::detail {
          method == AmericanMethod::AndersenLake && simd::avx2_greeks_selected(isa);
 }
 
+// FIX-2/F2-B (rev-ws-g M1-5): the finite sweep behind this driver's Ok-stamp. Mirrors
+// `greeks_all_finite` in portfolio_pricer.cpp EXACTLY — the semantics FIX-1 locked at the
+// three portfolio Ok-stamps (740b040 F2, 9c3e1d0 F3): price/delta/gamma/theta always,
+// vega/volga/vanna, rho and charm only when the caller REQUESTED them. Guarding the full
+// bundle instead would veto perfectly good lanes on a column that was never materialized
+// (FIX-1/F3), and guarding the price alone lets a NaN greek out on an Ok lane (F2-B).
+[[nodiscard]] inline bool requested_greeks_finite(const AmericanGreeks &g,
+                                                  GreekNeeds needs) noexcept {
+  bool ok = std::isfinite(g.price) && std::isfinite(g.delta) && std::isfinite(g.gamma) &&
+            std::isfinite(g.theta);
+  if (needs.vega) {
+    ok = ok && std::isfinite(g.vega) && std::isfinite(g.volga) && std::isfinite(g.vanna);
+  }
+  if (needs.rho) {
+    ok = ok && std::isfinite(g.rho);
+  }
+  if (needs.charm) {
+    ok = ok && std::isfinite(g.charm);
+  }
+  return ok;
+}
+
+// FIX-1/F3's second half, applied here: an UNREQUESTED slot that came back non-finite is
+// normalized to its canonical unmaterialized value 0.0 — exactly what the narrowed kernel
+// documents it leaves there ("unrequested greeks are left 0 in out_greeks"). Relaxing the
+// mask WITHOUT this would turn a spurious veto into a poisoned product downstream, because
+// a consumer's `g.rho * dr` is NaN even when dr is 0.0. Restricted to the non-finite case,
+// so every lane that is admitted today stays bit-for-bit identical.
+inline void normalize_unrequested_greeks(AmericanGreeks &g, GreekNeeds needs) noexcept {
+  if (!needs.vega) {
+    if (!std::isfinite(g.vega)) {
+      g.vega = 0.0;
+    }
+    if (!std::isfinite(g.volga)) {
+      g.volga = 0.0;
+    }
+    if (!std::isfinite(g.vanna)) {
+      g.vanna = 0.0;
+    }
+  }
+  if (!needs.rho && !std::isfinite(g.rho)) {
+    g.rho = 0.0;
+  }
+  if (!needs.charm && !std::isfinite(g.charm)) {
+    g.charm = 0.0;
+  }
+}
+
 // Drive entries [begin, end) — a single raw-bit-equal-T run — through the laned analytic
 // Greek kernels, writing iv/price/greeks/status into `out`.
 //
@@ -80,21 +128,40 @@ void laned_greek_run(double S, std::size_t begin, std::size_t end, std::span<con
   std::size_t csN = 0;
 
   const auto scatter = [&](Side sd, std::size_t e, const AmericanGreeks &g) {
-    if (std::isfinite(g.price)) {
+    AmericanGreeks gg = g;
+    normalize_unrequested_greeks(gg, needs);
+    if (requested_greeks_finite(gg, needs)) {
       // american_greeks_al().price IS the American mark (cold-FD invariant), exactly as
       // evaluate_resolved returns g->price for a want_greeks lane.
-      out.greeks[e] = g;
-      out.price[e] = g.price;
+      out.greeks[e] = gg;
+      out.price[e] = gg.price;
       out.status[e] = atx::core::Ok();
       return;
     }
-    // Byte-identical failure fallback: reproduce the caller's exact Err + poison (the
-    // kernel exposes no per-lane ErrorCode).
-    const auto fr = scalar_at(e, sd);
-    out.iv[e] = fr.iv;
-    out.price[e] = fr.price;
-    out.greeks[e] = fr.greeks;
-    out.status[e] = fr.status;
+    if (!std::isfinite(gg.price)) {
+      // Byte-identical failure fallback: reproduce the caller's exact Err + poison (the
+      // kernel exposes no per-lane ErrorCode). UNCHANGED — this is the non-finite-MARK
+      // case that has always taken this route.
+      const auto fr = scalar_at(e, sd);
+      out.iv[e] = fr.iv;
+      out.price[e] = fr.price;
+      out.greeks[e] = fr.greeks;
+      out.status[e] = fr.status;
+      return;
+    }
+    // FIX-2/F2-B (rev-ws-g M1-5): finite MARK, non-finite REQUESTED greek. This stamp used
+    // to gate on isfinite(price) alone, so such a lane came back Ok carrying a NaN greek,
+    // and every DIRECT evaluate_batch consumer — one that does not reach FIX-1's
+    // portfolio-level sweeps — inherited it. Re-routing to `scalar_at` would not close it:
+    // evaluate_resolved returns a default (Ok) status whenever greeks_resolved yields a
+    // value, non-finite columns included. So the lane is NaN-isolated by status here,
+    // exactly as FIX-1 demotes at the portfolio stamps, and the computed columns are left
+    // in place for diagnosis — consumers gate on status.
+    out.greeks[e] = gg;
+    out.price[e] = gg.price;
+    out.status[e] = atx::core::Err(atx::core::ErrorCode::Internal,
+                                   "laned_greek_run: non-finite requested Greek on a "
+                                   "finite-price lane");
   };
 
   const auto flush_put = [&]() {
