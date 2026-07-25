@@ -11,6 +11,8 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
@@ -1197,12 +1199,21 @@ TEST(SurfaceDbPopulate, SharedWorkerBudgetSizesInnerFromSharedPool) {
       boards.push_back(make_board(kDate0, specs[b].symbol, specs[b].spot, specs[b].sigma0));
     }
 
-    unsigned captured_inner = 0u; // hook fires once on the caller thread
+    // FIX-4: the budget is live, so the hook fires once per board CLAIM plus once
+    // per surface-build request, from the fit worker threads. The offer resolved
+    // against the FULL book (outstanding == n) is the deterministic one: nothing
+    // can have completed before the first claim, so such an offer always exists
+    // and always equals the U4 sizing rule for this book size.
+    unsigned captured_inner = 0u;
     bool hook_seen = false;
+    std::mutex hook_mu;
     PopulateTestHooks hooks;
-    hooks.on_inner_fit_workers = [&](unsigned inner) {
-      captured_inner = inner;
-      hook_seen = true;
+    hooks.on_inner_fit_workers = [&](const std::string &, unsigned inner, std::size_t left) {
+      const std::lock_guard<std::mutex> lock(hook_mu);
+      if (left == n) {
+        captured_inner = inner;
+        hook_seen = true;
+      }
     };
 
     SurfaceDbPopulateConfig cfg;
@@ -1260,8 +1271,17 @@ TEST(SurfaceDbPopulate, SharedWorkerBudgetKeepsOutputByteIdentical) {
   auto split_db = SurfaceDb::create(split_root.string());
   ASSERT_TRUE(split_db.has_value());
   unsigned captured_inner = 0u;
+  std::mutex captured_mu;
   PopulateTestHooks hooks;
-  hooks.on_inner_fit_workers = [&](unsigned inner) { captured_inner = inner; };
+  // FIX-4: pin the offer resolved against the full 2-board book (the first claim
+  // always sees outstanding == 2); later offers legitimately widen as the book
+  // drains, and that widening is exactly what this byte-identity gate now covers.
+  hooks.on_inner_fit_workers = [&](const std::string &, unsigned inner, std::size_t left) {
+    const std::lock_guard<std::mutex> lock(captured_mu);
+    if (left == 2u) {
+      captured_inner = inner;
+    }
+  };
   SurfaceDbPopulateConfig split_cfg;
   split_cfg.n_threads = 8u;
   auto split = populate_surface_db(*split_db, boards, split_cfg, &hooks);
@@ -1280,6 +1300,146 @@ TEST(SurfaceDbPopulate, SharedWorkerBudgetKeepsOutputByteIdentical) {
 
   std::filesystem::remove_all(ref_root);
   std::filesystem::remove_all(split_root);
+}
+
+// ── FIX-4 gate: the inner budget must be reclaimed for a board that is ALREADY
+// CLAIMED and STILL RUNNING, not merely at claim time ───────────────────────
+//
+// The defect this pins: `inner_fit_workers` used to be ONE constant for the whole
+// populate call, derived from the TOTAL enabled book. The straggler — the last
+// board still fitting while every other outer worker sits idle at the join
+// barrier — was never re-offered a wider slice, because after the claim there was
+// no further decision point at all.
+//
+// The gate holds ONE board inside its fit — deterministically, on a condition
+// variable released by `on_board_fit_done`; no sleeps, no wall-clock assertion —
+// until every other board has retired, then asserts that board's offers move from
+// 1 (claimed while the pool was saturated) to the WHOLE budget (re-offered while
+// it is still running). Non-vacuous by construction:
+//   * saturation is OBSERVED, not assumed: every offer resolved against
+//     `left >= kBudget` is asserted == 1 INDIVIDUALLY, and `saturated_offers > 0`
+//     fails outright if no offer ever saw a full pool;
+//   * `held.back() == kBudget` is unreachable without a post-claim re-offer. With
+//     the production change reverted the held board gets exactly ONE offer whose
+//     value is 1, so `held.size() > 1u`, `held.back() == kBudget` and
+//     `reclaimed_offers > 0` all fail together.
+// Byte-identity rides along in the same run: the held board is fitted at width
+// kBudget while its siblings ran at width 1, and every surface must still match
+// the serial reference bit-for-bit — worker count is a perf knob, never a value.
+TEST(SurfaceDbPopulate, StragglerReclaimsInnerWorkersWhileStillRunning) {
+  constexpr unsigned kBudget = 4u;
+  const char *const kSymbols[] = {"AAA", "BBB", "CCC", "DDD", "EEE"};
+  constexpr std::size_t kBoards = std::size(kSymbols); // > kBudget: claims saturate
+
+  std::vector<CorpusBoard> boards;
+  boards.reserve(kBoards);
+  for (std::size_t b = 0; b < kBoards; ++b) {
+    boards.push_back(make_board(kDate0, kSymbols[b], 100.0 + 10.0 * static_cast<double>(b),
+                                0.26 + 0.02 * static_cast<double>(b)));
+  }
+
+  struct Offer {
+    std::string symbol;
+    unsigned workers;
+    std::size_t left;
+  };
+  std::mutex mu;
+  std::condition_variable cv;
+  std::vector<Offer> offers;
+  std::string held_symbol;     // the board we pin inside its fit
+  bool drained = false;        // every OTHER board has retired
+  bool released_by_drain = false;
+
+  PopulateTestHooks hooks;
+  hooks.on_inner_fit_workers = [&](const std::string &symbol, unsigned workers, std::size_t left) {
+    const std::lock_guard<std::mutex> lock(mu);
+    offers.push_back(Offer{symbol, workers, left});
+  };
+  hooks.on_board_fit_done = [&](std::size_t left) {
+    const std::lock_guard<std::mutex> lock(mu);
+    if (left <= 1u) {
+      drained = true;
+      cv.notify_all();
+    }
+  };
+  hooks.before_board_fit = [&](const std::string &, const std::string &symbol) {
+    std::unique_lock<std::mutex> lock(mu);
+    if (!held_symbol.empty()) {
+      return; // one straggler is enough; everyone else fits normally
+    }
+    held_symbol = symbol;
+    // Hang guard only — NOT a timing assertion. The pass condition is `drained`,
+    // which `released_by_drain` records; a timeout releases the board so the test
+    // fails on its assertions instead of hanging the suite.
+    released_by_drain = cv.wait_for(lock, std::chrono::seconds(300), [&] { return drained; });
+  };
+
+  const auto root = test_root("straggler_reclaim");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  SurfaceDbPopulateConfig cfg;
+  cfg.n_threads = kBudget;
+  cfg.pin_outer_workers = false; // keep worker_budget == kBudget (no P-core cap)
+  auto populated = populate_surface_db(*db, boards, cfg, &hooks);
+  ASSERT_TRUE(populated.has_value()) << (populated ? "" : populated.error().to_string());
+  ASSERT_EQ(populated->n_ok, static_cast<std::uint32_t>(kBoards));
+
+  ASSERT_FALSE(held_symbol.empty()) << "before_board_fit never fired";
+  EXPECT_TRUE(released_by_drain)
+      << "the straggler was released by the hang guard, not by the drain — the "
+         "on_board_fit_done release seam did not fire";
+
+  // Per-offer saturation observation: while at least kBudget boards are
+  // outstanding the pool is full and NO board may be offered more than one worker.
+  std::size_t saturated_offers = 0u;
+  std::size_t reclaimed_offers = 0u;
+  std::vector<unsigned> held;
+  for (const Offer &o : offers) {
+    if (o.left >= kBudget) {
+      ++saturated_offers;
+      EXPECT_EQ(o.workers, 1u) << "offer to " << o.symbol << " with " << o.left
+                               << " boards outstanding oversubscribed the pool";
+    } else if (o.workers > 1u) {
+      ++reclaimed_offers;
+    }
+    if (o.symbol == held_symbol) {
+      held.push_back(o.workers);
+    }
+  }
+  EXPECT_GT(saturated_offers, 0u) << "no offer was ever resolved against a full pool — the test "
+                                     "did not observe saturation and proves nothing";
+  EXPECT_GT(reclaimed_offers, 0u) << "no board was ever offered more than one worker after the "
+                                     "pool drained — nothing was reclaimed";
+
+  // The straggler itself: claimed while saturated, re-offered the whole budget
+  // while STILL RUNNING. This is the pair the fix exists to produce.
+  ASSERT_GT(held.size(), 1u) << held_symbol
+                             << " was offered a budget exactly once — the reclaim is claim-time "
+                                "only, which is the defect";
+  EXPECT_EQ(held.front(), 1u) << held_symbol << " was not claimed against a saturated pool";
+  EXPECT_EQ(held.back(), kBudget)
+      << held_symbol << " never reclaimed the drained pool while still running";
+
+  // Determinism: the widths above varied WITHIN one run, so every surface must
+  // still be byte-identical to the serial reference.
+  const auto ref_root = test_root("straggler_reclaim_ref");
+  auto ref_db = SurfaceDb::create(ref_root.string());
+  ASSERT_TRUE(ref_db.has_value());
+  SurfaceDbPopulateConfig ref_cfg;
+  ref_cfg.n_threads = 1u;
+  auto ref = populate_surface_db(*ref_db, boards, ref_cfg);
+  ASSERT_TRUE(ref.has_value()) << (ref ? "" : ref.error().to_string());
+  ASSERT_EQ(ref->n_ok, static_cast<std::uint32_t>(kBoards));
+  for (const char *symbol : kSymbols) {
+    const auto got = db->load_surface(kDate0, symbol);
+    const auto want = ref_db->load_surface(kDate0, symbol);
+    ASSERT_TRUE(got.has_value()) << symbol;
+    ASSERT_TRUE(want.has_value()) << symbol;
+    expect_surface_bits_equal(*got, *want);
+  }
+
+  std::filesystem::remove_all(root);
+  std::filesystem::remove_all(ref_root);
 }
 
 // F1 (WS-F): the bulk `Populate` preset must honor the cheaper Andersen-Lake

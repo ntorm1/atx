@@ -274,7 +274,9 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   // That is right once the book is at least as large as the budget, but strands
   // cores on a SMALL book: 2 boards on a 12-wide pool used 2 cores and left 10
   // idle. Instead, SPLIT the shared budget across the boards -- each board's
-  // inner fit gets budget / min(budget, n_boards) workers (>= 1). A 1-board run
+  // inner fit gets budget / min(budget, n_boards) workers (>= 1). [FIX-4 made
+  // `n_boards` here the LIVE outstanding count rather than the whole book; the
+  // sizing rule below is otherwise unchanged.] A 1-board run
   // claims the whole budget; a 4-board run on a 12-wide pool gets 3 each (12
   // cores busy, not 4); a book at or above the budget still gets 1 each -- so the
   // slices sum to the budget and never nest-oversubscribe. The per-board fan-out
@@ -300,14 +302,51 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   const unsigned inner_budget = (e_cores > 0u && worker_budget > e_cores)
                                     ? worker_budget - e_cores
                                     : worker_budget;
-  const unsigned inner_fit_workers =
-      (inner_budget > 1u && n_fit_boards > 0u)
-          ? std::max<unsigned>(1u, inner_budget / static_cast<unsigned>(std::min<std::size_t>(
-                                                      inner_budget, n_fit_boards)))
-          : 0u;
-  if (test_hooks != nullptr && test_hooks->on_inner_fit_workers) {
-    test_hooks->on_inner_fit_workers(inner_fit_workers);
-  }
+  // ── FIX-4: the inner budget is LIVE, not a constant of the whole call ───────
+  // Before FIX-4 the slice above was computed ONCE, from `n_fit_boards` (the
+  // TOTAL enabled book), and the same value was handed to every board. That is
+  // strictly weaker than a claim-time resolution: a 500-board populate on an
+  // 8-wide pool offered `8/8 = 1` inner worker to EVERY board, including the last
+  // board of the last date, running alone while seven outer workers sat idle at
+  // the join barrier. "A pool sized for the fan-out stays sized for the fan-out
+  // long after the fan-out is over."
+  //
+  // `boards_outstanding` is the number of enabled fits that have NOT completed —
+  // unclaimed plus claimed-and-still-running. It starts at the enabled count and
+  // only falls (`MarkDone`, below). Every offer is resolved against its live
+  // value, so the slice widens as the queue drains.
+  //
+  // NON-OVERSUBSCRIPTION (why the slices still sum to the budget). Fix an instant
+  // t with k boards running. Board i's most recent resolution happened at some
+  // t_i <= t; every board unfinished at t was also unfinished at t_i, so the
+  // `left` it read satisfies left_i >= k, hence
+  //   width_i = inner_budget / min(inner_budget, left_i)
+  //          <= inner_budget / min(inner_budget, k).
+  // Summing over the k running boards gives at most `inner_budget` whenever
+  // k <= inner_budget, and at most `inner_budget` again when k > inner_budget
+  // (each width is then 1). The monotone-decrease of `boards_outstanding` is the
+  // whole proof; it is why the counter must be decremented only on completion.
+  //
+  // This is a PERF knob only: `fit_workers` selects how many workers a fan-out
+  // that writes disjoint per-index slots uses, and every atx-vol fan-out is
+  // documented bit-identical for any worker count (parallel_for.hpp's contract).
+  // The gate is SurfaceDbPopulate.StragglerReclaimsInnerWorkersWhileStillRunning,
+  // which fits one board at width 1 and another at the full budget IN THE SAME
+  // RUN and byte-compares every surface against the serial reference.
+  std::atomic<std::size_t> boards_outstanding{n_fit_boards};
+  const auto offer_inner_fit_workers = [&](const std::string &symbol) -> unsigned {
+    const std::size_t left = boards_outstanding.load(std::memory_order_acquire);
+    unsigned inner = 0u; // 0 = auto sizing, the documented outer-serial mode
+    if (inner_budget > 1u && n_fit_boards > 0u) {
+      const std::size_t share = std::max<std::size_t>(
+          1u, std::min<std::size_t>(inner_budget, std::max<std::size_t>(1u, left)));
+      inner = std::max<unsigned>(1u, inner_budget / static_cast<unsigned>(share));
+    }
+    if (test_hooks != nullptr && test_hooks->on_inner_fit_workers) {
+      test_hooks->on_inner_fit_workers(symbol, inner, left);
+    }
+    return inner;
+  };
 
   const auto fit_task = [&](std::size_t task_index) -> Status {
     const std::size_t pos = fit_positions[task_index];
@@ -318,23 +357,42 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
     // decrement runs after the slot write, so a drain that observes zero sees
     // every completed slot for the date (acq_rel/acquire pair). This is what
     // streams writes and bounds peak RSS.
+    //
+    // FIX-4: the same scope exit retires this board from `boards_outstanding`,
+    // which is what makes a still-running straggler's next offer wider. The
+    // outstanding decrement happens BEFORE the per-date one so that a test woken
+    // by `on_board_fit_done` already observes the reclaimed count. The hook is
+    // called inside try/catch: this runs from a destructor, and an escaping
+    // exception would std::terminate.
     struct MarkDone {
       std::atomic<std::size_t> &counter;
+      std::atomic<std::size_t> &outstanding;
+      const PopulateTestHooks *hooks;
       ~MarkDone() {
+        const std::size_t left = outstanding.fetch_sub(1u, std::memory_order_acq_rel) - 1u;
+        if (hooks != nullptr && hooks->on_board_fit_done) {
+          try {
+            hooks->on_board_fit_done(left);
+          } catch (...) { // NOLINT: a throwing test hook must not terminate
+          }
+        }
         if (counter.fetch_sub(1u, std::memory_order_acq_rel) == 1u) {
           counter.notify_all();
         }
       }
-    } mark_done{date_remaining};
+    } mark_done{date_remaining, boards_outstanding, test_hooks};
 
     const CorpusBoard &board = boards[order[pos]];
+    const SymbolFitConfig &resolved = resolved_cfgs[pos];
+    PricerConfig pc = pricer_config_for_symbol(resolved);
+    // Decision point 1 of 2 -- CLAIM. Per-board slice of the shared budget
+    // resolved against the live outstanding count (0 = auto, outer-serial mode).
+    // This one sizes the pre-build phases the fitter runs off `PricerConfig`:
+    // notably the held-out curve selection (pricer_fitter.cpp's `select_curve`).
+    pc.fit_workers = offer_inner_fit_workers(board.symbol);
     if (test_hooks != nullptr && test_hooks->before_board_fit) {
       test_hooks->before_board_fit(board.date, board.symbol);
     }
-    const SymbolFitConfig &resolved = resolved_cfgs[pos];
-    PricerConfig pc = pricer_config_for_symbol(resolved);
-    // Per-board slice of the shared budget (0 = auto, the outer-serial mode).
-    pc.fit_workers = inner_fit_workers;
     // F4 (C2 warm-start chain — deliberately OFF for populate). fit_board's
     // `out_caches` is left nullptr here (no cross-date correction-cache carry),
     // unlike build_corpus's per-symbol chain (corpus.cpp). This is NOT an
@@ -351,9 +409,60 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
     // preserved trivially: nullptr caches => byte-identical across worker budgets.
     // Re-engaging it is only worthwhile if a future mark-grade populate tier turns
     // `use_correction_cache` back on for the SERVED surface (report M1/F4).
-    slots[pos] = fit_board(board, pc, /*admission=*/nullptr, [&resolved](SessionInputs &in) {
-      apply_symbol_config(resolved, in);
-    });
+    // Decision point 2 of 2 -- DRAIN-TIME, for a board ALREADY CLAIMED and STILL
+    // RUNNING. `session_overlay` is invoked by PricerFitter::fit on the fitting
+    // thread immediately before each `VolaSession::build` REQUEST it issues — the
+    // mark build and the risk build on populate's v2 dual path
+    // (pricer_fitter.cpp: the mark overlay before the async mark launch, then the
+    // risk overlay after `apply_risk_policy`/`select_curve`) — and `in.fit_workers`
+    // is what every fan-out inside that build reads (`run_deam_prepass` and the
+    // calendar-repair fan-out in curve_fit.cpp, the slice fan-out in session.cpp,
+    // the per-chain prepass in surface_parity.cpp). Re-asking here is what lets a
+    // board that was claimed while the pool was saturated widen to the whole
+    // budget once its siblings have retired. `apply_symbol_config` is applied
+    // FIRST so the live budget wins over anything the per-symbol preset sets, and
+    // `apply_risk_policy` (which pricer_fitter re-asserts after this overlay) does
+    // not touch `fit_workers`, so the value survives to the build.
+    //
+    // ── THE TRIGGER, stated plainly ─────────────────────────────────────────
+    // The trigger is the STRAGGLER BOARD'S OWN fitting thread reaching the next
+    // surface-build request of the fit it is already inside. Nothing else: not a
+    // sibling completing, not the drain thread, not a timer. Inner fan-out workers
+    // never re-offer — only the board's own thread does.
+    //
+    // WHEN THE TRIGGER DOES NOT FIRE, the width does not move. Three cases, all
+    // bounded and all real:
+    //   (a) the board is already past its last overlay — i.e. inside the risk
+    //       `VolaSession::build`. Trunk's `parallel_for`/`parallel_for_dynamic`
+    //       resolve their width ONCE at entry and never re-ask, so a build that
+    //       started at width 1 stays at width 1 for its whole duration however
+    //       long the pool has been idle. Finer (per-inner-task) reclaim needs an
+    //       ELASTIC fan-out primitive, which does not exist on this trunk; the
+    //       one that does exist lives on the unmerged `feat/pipeline-t` branch,
+    //       and duplicating it here would collide with that branch on a shared
+    //       concurrency primitive. That is the reason the granularity here is a
+    //       build request rather than an inner task.
+    //   (b) the fallback ladder retries a build: the overlay is contractually
+    //       applied once per request and a ladder rung does not re-invoke it, so
+    //       a rung inherits the width its request resolved.
+    //   (c) `inner_budget <= 1` (the documented outer-serial mode): every offer
+    //       is 0 = auto and the reclaim is a no-op by construction.
+    //
+    // ── RESIDUAL, documented where the reclaim code is read ─────────────────
+    // The U2 LPT claim order sorts boards by frame rows DESCENDING, so the single
+    // most expensive board is claimed FIRST — while the pool is maximally
+    // saturated. Its claim offer, and usually both of its overlay offers, are
+    // therefore resolved against a full pool and it commonly runs its ENTIRE fit
+    // at width 1. This is the same residual WS-T recorded for the corpus arm
+    // (there: the straggler's largest expiry always runs at width 1), one level
+    // coarser. It is accepted, not hidden: the reclaim's real yield is the drain
+    // tail — every board whose build request lands after the queue has emptied —
+    // not the LPT head. Do not read the gate below as a claim about the head.
+    slots[pos] = fit_board(board, pc, /*admission=*/nullptr,
+                           [&resolved, &board, &offer_inner_fit_workers](SessionInputs &in) {
+                             apply_symbol_config(resolved, in);
+                             in.fit_workers = offer_inner_fit_workers(board.symbol);
+                           });
     return Ok();
   };
 
