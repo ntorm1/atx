@@ -126,6 +126,47 @@ struct OpraMarketInputProvenance {
 //         numeric / out of range.
 [[nodiscard]] Result<OsiSymbol> parse_osi_symbol(std::string_view sym);
 
+// Is `root` (an OSI/OCC option root, as produced by `parse_osi_symbol`) the wire
+// encoding of the equity ticker `ticker` (the universe / `underlying` spelling)?
+//
+// THE POLICY, stated once for the whole repo:
+//
+//   A trailing digit in an OSI root denotes a DIFFERENT DELIVERABLE, therefore a
+//   DIFFERENT INSTRUMENT. It is not punctuation and must never be normalised
+//   away. The only tolerated difference between an equity ticker and its OSI
+//   root is punctuation (`.`).
+//
+// So `("BRKB", "BRK.B")` is true — the OSI root namespace cannot express `.`, so
+// those are two spellings of ONE identity, a pure encoding artifact — while
+// `("AAPL1", "AAPL")` is FALSE. After a corporate action an `AAPL1` contract's
+// deliverable is not 100 shares of AAPL, so its options are not comparable to the
+// vanilla chain at the same strike and the fitter has no deliverable model with
+// which to tell them apart. Merging them is a silent mispricing, not a lost
+// symbol.
+//
+// THIS IS DELIBERATELY NARROWER THAN THE PYTHON PRODUCERS, AND THAT ASYMMETRY IS
+// A SAFETY PROPERTY, NOT DRIFT. `tools/pull_opra_hive.py` strips a trailing digit
+// from the root before mapping it to a universe symbol, so an adjusted `AAPL1`
+// row can reach disk carrying `underlying = "AAPL"`. This predicate refuses that
+// pair, which is exactly what makes `load_opra_cbbo_parquet`'s per-row identity
+// guard fail LOUD on it instead of silently merging an adjusted deliverable into
+// the vanilla chain. Do NOT widen this to match the producers; if the producers
+// are to change, that is its own decision with its own argument.
+//
+// ASYMMETRY, stated because it is sharp: dots are skipped in `ticker` only, never
+// in `root`. `("BRK.B", "BRK.B")` is therefore FALSE — this is not reflexive over
+// dotted strings. That is sound because the premise of the rule is that the root
+// namespace cannot express punctuation, so a dotted root is not a thing OPRA
+// emits; and it is the behaviour of both copies this function replaces, preserved
+// exactly rather than quietly widened. It is pinned by a test.
+//
+// A PREDICATE, deliberately not a normaliser. There is no `osi_root_of(ticker)`
+// counterpart and there must not be: a normaliser invents a third namespace that
+// callers can key by, and it would allocate on a path that runs once per kept
+// quote row (millions per hive load). This is allocation-free.
+[[nodiscard]] bool osi_root_matches_ticker(std::string_view root,
+                                           std::string_view ticker) noexcept;
+
 // Load spec for `load_opra_cbbo_parquet`.
 struct OpraLoadSpec {
   std::string path;        // parquet file to read

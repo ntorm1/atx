@@ -1920,4 +1920,284 @@ TEST(SurfaceDbPopulate, CarryOverIsByteIdenticalAcrossWorkerCounts) {
   std::filesystem::remove_all(parallel_root);
 }
 
+// ── FIX-E: a present-but-DISABLED symbol survives a rewrite ─────────────────
+//
+// Shared setup for the four tests below: seed {AAA, BBB} on kDate0, then disable
+// BBB in the manifest AFTER it has already fitted and been stored. That is the
+// documented operator remedy for a permanently-failing name
+// (`docs/surface-db-build.md`), and it is the act that used to arm the deletion.
+namespace {
+
+[[nodiscard]] SymbolFitConfig disabled_copy_of(SurfaceDb &db, const char *symbol) {
+  const auto stored = db.symbol_config(symbol);
+  EXPECT_TRUE(stored.has_value()) << symbol;
+  SymbolFitConfig cfg = stored.has_value() ? *stored : symbol_config_from_preset(FitPreset::Fast);
+  cfg.enabled = false;
+  return cfg;
+}
+
+} // namespace
+
+// THE defect gate. A symbol present in a stored partition and DISABLED in the
+// current config was silently DELETED when its date was rewritten -- and the
+// rewrite was triggered by something entirely unrelated (any new enabled symbol
+// arriving on that date).
+//
+// Why the would-drop guard could not save it: the disabled cell was counted into
+// `present` at the top of the filter loop BEFORE `enabled` was consulted, so
+// `present == part->count()` and `present < part->count()` was false. The one
+// guard that exists precisely to refuse a rewrite that drops a stored surface was
+// structurally blind to this case.
+//
+// This test is also the Step-2 gate: disabling BBB CHANGES the manifest config
+// fold, so the stored partition fingerprint no longer matches and `carry_valid`
+// is FALSE on this run (asserted below). If the disabled carry were gated on
+// `carry_valid` -- the obvious way to write this fix -- BBB would still be
+// deleted here, and on the first resume of every pre-FIX-D database, which stores
+// a 0 (unknown) fingerprint. The alternative to carrying a disabled cell is not
+// re-fitting it, it is deleting it, so the fit-config predicate does not apply.
+TEST(SurfaceDbPopulate, DisabledSymbolStoredSurfaceSurvivesARewrite) {
+  const auto root = test_root("disabled_survives_rewrite");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u) << "the seed boards must fit for this test to mean anything";
+  ASSERT_TRUE(db->load_surface(kDate0, "BBB").has_value()) << "BBB must be STORED before it is "
+                                                              "disabled, or nothing is at risk";
+
+  ASSERT_TRUE(db->upsert_symbol("BBB", disabled_copy_of(*db, "BBB")).has_value());
+
+  // The unrelated trigger: a NEW, enabled, genuinely fittable symbol on the same
+  // date. Nothing about it concerns BBB.
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  // The rewrite really happened -- without this the test could pass vacuously
+  // because the date was skipped.
+  ASSERT_EQ(cov2->dates_written, 1u) << "the date must actually have been rewritten";
+  ASSERT_EQ(cov2->dates_skipped_would_drop, 0u) << "the date must not have been skipped";
+  // CCC (new) plus AAA (re-fit, because disabling BBB moved the config fold).
+  ASSERT_EQ(cov2->cells_ok, 2u) << "CCC must have fit, so the partition really was replaced";
+
+  // Step 2, asserted rather than assumed: disabling BBB moved the config fold, so
+  // the enabled carry path is OFF on this run. BBB's survival cannot depend on it.
+  ASSERT_EQ(cov2->cells_carried, 0u)
+      << "disabling BBB must have invalidated the fingerprint; if this is nonzero the test no "
+         "longer exercises the carry_valid == false path it exists to cover";
+  EXPECT_EQ(cov2->cells_refit, 1u) << "AAA is re-fit (invalidated fingerprint); BBB is not";
+  EXPECT_EQ(cov2->cells_carried_disabled, 1u) << "BBB must be counted as PRESERVED, not refit";
+
+  // ── The bite ──────────────────────────────────────────────────────────────
+  EXPECT_TRUE(db->load_surface(kDate0, "BBB").has_value())
+      << "the stored surface of a present-but-disabled symbol was DELETED by an unrelated rewrite";
+  // ...and the rewrite still did its job.
+  EXPECT_TRUE(db->load_surface(kDate0, "CCC").has_value());
+  EXPECT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+
+  // Preserving is not re-enabling: BBB was still not FITTED this run.
+  const auto bbb = std::find_if(cov2->per_symbol.begin(), cov2->per_symbol.end(),
+                                [](const PopulateSymbolStats &s) { return s.symbol == "BBB"; });
+  ASSERT_NE(bbb, cov2->per_symbol.end());
+  EXPECT_EQ(bbb->n_disabled, 1u) << "a preserved cell is still a DISABLED cell";
+  EXPECT_EQ(bbb->n_ok, 0u);
+  EXPECT_EQ(bbb->n_carried, 0u) << "a disabled cell must not read as a healthy carried one";
+
+  std::filesystem::remove_all(root);
+}
+
+// Preservation must be BYTE-preservation, not mere presence: a re-fit under the
+// disabled config (or any lossy re-emit) would satisfy `load_surface` while
+// silently changing the stored values. Mirrors
+// CarriedRecordBytesAreIdenticalToWhatTheyReplaced for the disabled cell.
+TEST(SurfaceDbPopulate, PreservedDisabledRecordBytesAreIdenticalToWhatTheyReplaced) {
+  const auto root = test_root("disabled_bytes");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+
+  const std::vector<std::byte> bbb_before = stored_record_bytes(root, kDate0, "BBB");
+  ASSERT_FALSE(bbb_before.empty());
+
+  ASSERT_TRUE(db->upsert_symbol("BBB", disabled_copy_of(*db, "BBB")).has_value());
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+  ASSERT_EQ(cov2->cells_carried_disabled, 1u);
+  ASSERT_EQ(cov2->cells_ok, 2u) << "the partition really was rewritten (AAA re-fit + CCC new)";
+
+  const std::vector<std::byte> bbb_after = stored_record_bytes(root, kDate0, "BBB");
+  ASSERT_EQ(bbb_before.size(), bbb_after.size());
+  EXPECT_EQ(0, std::memcmp(bbb_before.data(), bbb_after.data(), bbb_before.size()))
+      << "the preserved record for the disabled symbol BBB is not byte-identical";
+
+  std::filesystem::remove_all(root);
+}
+
+// Step 2's other route, and the population most likely to hit this defect: a
+// database written BEFORE the carry-over fingerprint existed stores 0, which means
+// UNKNOWN, which never carries. `ZeroConfigFingerprintNeverCarries` pins that the
+// healthy cells are re-fit here. The disabled cell must STILL survive -- it is not
+// being reused as this run's fitted output, so the fit-config predicate has no say
+// over it. Gating the disabled carry on `carry_valid` leaves the bug fully alive
+// on exactly this database, which is the fix-shaped no-op this test exists to
+// catch.
+TEST(SurfaceDbPopulate, PreFixDDatabaseStillPreservesADisabledSymbolsSurface) {
+  const auto root = test_root("disabled_zero_fp");
+  {
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value());
+    auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+    ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+    ASSERT_EQ(cov1->cells_ok, 2u);
+    ASSERT_TRUE(db->upsert_symbol("BBB", disabled_copy_of(*db, "BBB")).has_value());
+
+    // Rewrite the manifest exactly as a pre-FIX-D writer would have: same symbols
+    // (BBB already disabled), same partitions, fingerprint field left 0.
+    const std::vector<std::string> names = db->symbols();
+    std::vector<DbSymbolEntry> entries;
+    std::vector<SymbolFitConfig> cfgs;
+    std::vector<std::optional<SurfaceProvenance>> provs;
+    cfgs.reserve(names.size());
+    provs.reserve(names.size());
+    for (const std::string &sym : names) {
+      auto c = db->symbol_config(sym);
+      ASSERT_TRUE(c.has_value()) << sym;
+      cfgs.push_back(*c);
+      auto p = db->surface_provenance(sym);
+      ASSERT_TRUE(p.has_value()) << sym;
+      provs.push_back(*p);
+    }
+    for (std::size_t i = 0; i < names.size(); ++i) {
+      entries.push_back(DbSymbolEntry{names[i], cfgs[i], provs[i]});
+    }
+    std::vector<DbPartitionInfo> parts = db->partitions();
+    for (DbPartitionInfo &p : parts) {
+      p.config_fingerprint = 0u; // the pre-FIX-D on-disk state
+    }
+    SurfaceDbManifestWriteOpts opts;
+    opts.generation = db->generation() + 1u;
+    auto bytes = write_db_manifest(entries, parts, opts);
+    ASSERT_TRUE(bytes.has_value()) << (bytes ? "" : bytes.error().to_string());
+    std::ofstream os(root / std::string(kSurfaceDbManifestName), std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(os.good());
+    os.write(reinterpret_cast<const char *>(bytes->data()),
+             static_cast<std::streamsize>(bytes->size()));
+    ASSERT_TRUE(os.good());
+  }
+
+  auto db = SurfaceDb::open(root.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  ASSERT_EQ(db->partition_config_fingerprint(kDate0), 0u)
+      << "the pre-FIX-D manifest simulation did not take effect";
+
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov.has_value()) << (cov ? "" : cov.error().to_string());
+  ASSERT_EQ(cov->dates_written, 1u);
+  EXPECT_EQ(cov->cells_carried, 0u) << "an unknown (0) fingerprint must never carry a FITTED cell";
+  EXPECT_EQ(cov->cells_refit, 1u) << "AAA is re-fit; the disabled BBB is not";
+  EXPECT_EQ(cov->cells_carried_disabled, 1u);
+  EXPECT_TRUE(db->load_surface(kDate0, "BBB").has_value())
+      << "a disabled symbol was deleted on the first resume of a pre-FIX-D database";
+
+  std::filesystem::remove_all(root);
+}
+
+// Convergence: preserving must be a FIXED POINT, not a one-shot rescue. DDD fails
+// permanently (there is no persisted known-failed state, by design), so kDate0 is
+// rewritten on EVERY run forever -- the shape that turns a one-run bug into
+// unbounded drift. Across three consecutive rewrites the disabled surface must
+// stay present, stay byte-identical, and the counters must not move.
+TEST(SurfaceDbPopulate, PreservedDisabledSymbolSurvivesRepeatedRewrites) {
+  const auto root = test_root("disabled_converges");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+  const std::vector<std::byte> bbb_seed = stored_record_bytes(root, kDate0, "BBB");
+  ASSERT_FALSE(bbb_seed.empty());
+
+  ASSERT_TRUE(db->upsert_symbol("BBB", disabled_copy_of(*db, "BBB")).has_value());
+  // A PERMANENTLY failing cell keeps this date in the rewrite set forever.
+  ASSERT_TRUE(db->upsert_symbol("DDD", rejected_risk_config()).has_value());
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "DDD", 80.0, 0.30));
+
+  for (int run = 1; run <= 3; ++run) {
+    auto cov = populate_universe_streaming(*db, full, carry_spec());
+    ASSERT_TRUE(cov.has_value()) << "run " << run << ": " << (cov ? "" : cov.error().to_string());
+    EXPECT_EQ(cov->dates_written, 1u) << "run " << run << ": the failing cell keeps this date hot";
+    EXPECT_EQ(cov->cells_to_fit, 1u) << "run " << run;
+    EXPECT_EQ(cov->cells_failed, 1u) << "run " << run;
+    EXPECT_EQ(cov->cells_carried_disabled, 1u) << "run " << run << ": BBB preserved, every run";
+    // Run 1 re-fits AAA (disabling BBB moved the fold); runs 2+ carry it, because
+    // run 1 re-stamped the fingerprint. Either way BBB is untouched by that
+    // decision -- which is the whole point.
+    EXPECT_EQ(cov->cells_carried, run == 1 ? 0u : 1u) << "run " << run;
+    EXPECT_EQ(cov->cells_refit, run == 1 ? 1u : 0u) << "run " << run;
+
+    ASSERT_TRUE(db->load_surface(kDate0, "BBB").has_value()) << "run " << run;
+    const std::vector<std::byte> bbb_now = stored_record_bytes(root, kDate0, "BBB");
+    ASSERT_EQ(bbb_seed.size(), bbb_now.size()) << "run " << run;
+    EXPECT_EQ(0, std::memcmp(bbb_seed.data(), bbb_now.data(), bbb_seed.size()))
+        << "run " << run << ": the preserved record drifted across rewrites";
+  }
+
+  std::filesystem::remove_all(root);
+}
+
+// The safety guard this defect defeated, tested DIRECTLY for the first time.
+// `dates_skipped_would_drop` had ZERO coverage anywhere in the repo: the counter
+// that refuses a rewrite which would drop a stored surface had never been
+// exercised in either direction.
+//
+// This is the RESIDUAL case FIX-E deliberately does not change: BBB is present in
+// the partition but absent from this run's LOADED BOARDS entirely, so it is in
+// neither `present` nor any carry list, and the only thing that can save it is
+// `present < part->count()`. That path must keep working after the fix -- a fix
+// that widened the carry set must not also have widened `present`.
+TEST(SurfaceDbPopulate, NarrowerRerunSkipsTheDateRatherThanDroppingAnAbsentSymbol) {
+  const auto root = test_root("would_drop_guard");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+
+  // A NARROWER re-run: BBB is not loaded at all this time, and CCC is new. A
+  // whole-partition rewrite from these boards alone would drop BBB.
+  const std::vector<CorpusBoard> narrower = {make_board(kDate0, "AAA", 100.0, 0.28),
+                                             make_board(kDate0, "CCC", 80.0, 0.30)};
+  auto cov2 = populate_universe_streaming(*db, narrower, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  EXPECT_EQ(cov2->dates_skipped_would_drop, 1u) << "the guard must have refused the rewrite";
+  EXPECT_EQ(cov2->dates_written, 0u) << "nothing may be written when the guard fires";
+  EXPECT_EQ(cov2->cells_already_present, 1u) << "only AAA was both loaded and present";
+  EXPECT_EQ(cov2->cells_carried, 0u);
+  EXPECT_EQ(cov2->cells_carried_disabled, 0u);
+
+  // Both stored surfaces survive, including the one this run never mentioned.
+  EXPECT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+  EXPECT_TRUE(db->load_surface(kDate0, "BBB").has_value())
+      << "the whole point of the guard: a symbol absent from the loaded set is not dropped";
+  // ...and the price of that safety, stated: the new symbol was NOT added.
+  EXPECT_FALSE(db->load_surface(kDate0, "CCC").has_value())
+      << "a skipped date adds nothing; that is the documented cost of the guard";
+
+  std::filesystem::remove_all(root);
+}
+
 } // namespace atx::vol

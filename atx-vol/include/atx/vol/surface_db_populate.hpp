@@ -96,6 +96,13 @@ struct SurfaceDbPopulateStats {
   std::uint32_t n_ok{0};
   std::uint32_t n_failed{0};
   std::uint32_t n_carried{0}; // FIX-D: cells re-emitted from the existing partition
+  // FIX-E: present-but-DISABLED cells re-emitted verbatim so a rewrite does not
+  // DELETE them. Deliberately separate from `n_carried`: that counter means
+  // "healthy stored surface reused instead of re-fitted" and is read as evidence
+  // the run produced a serviceable database (`is_total_fit_failure`), which a
+  // preserved disabled cell is not. A cell counted here is ALSO counted in the
+  // per-symbol `n_disabled` -- it was not fitted; only its bytes were kept.
+  std::uint32_t n_carried_disabled{0};
   std::uint32_t n_dates_written{0};
   std::uint32_t n_dates_skipped_existing{0};
   std::vector<PopulateSymbolStats> per_symbol; // sorted by symbol
@@ -174,6 +181,15 @@ populate_surface_db(SurfaceDb &db, std::span<const CorpusBoard> boards,
 // symbol NOT present in this run's loaded set — a whole-partition rewrite would
 // drop it. This cannot happen on the intended workflow (the pull only grows, the
 // full run has a fixed symbol set) but guards a narrower-symbol re-run from data loss.
+//
+// SAFETY (FIX-E): the other way a rewrite could drop a stored surface is a symbol
+// that IS in this run's loaded set but whose manifest config is DISABLED. That
+// cell is never fitted, so a naive rewrite simply omitted it — and the guard
+// above could not fire, because the cell had already been counted into the same
+// number the guard compares. Such a cell is now re-emitted VERBATIM from the
+// existing partition (`cells_carried_disabled`), unconditionally and independent
+// of the carry-over fingerprint: `enabled = false` means stop fitting this
+// symbol, never delete what is already stored.
 struct UniversePopulateSpec {
   std::string index_symbol{};        // pinned to the dense index recipe; empty = none
   FitPreset preset{FitPreset::Fast}; // non-index symbols use this preset's auto-selector
@@ -197,6 +213,23 @@ struct UniversePopulateCoverage {
   // what was there before (SurfaceArchiveV2.Reemit* is the gate). These are NOT
   // counted in cells_ok, which keeps meaning "cells this run fitted".
   std::uint32_t cells_carried{0};
+  // FIX-E: already-present cells whose manifest config is DISABLED and whose
+  // stored surface was therefore re-emitted verbatim rather than deleted.
+  // `enabled = false` means STOP FITTING this symbol; it does not mean DELETE
+  // what is already stored. Before FIX-E such a cell was counted `present`,
+  // excluded from the carry set AND skipped by the populate, so a whole-partition
+  // rewrite triggered by any UNRELATED new symbol on the same date silently
+  // destroyed it -- and the would-drop guard below could not see it, because the
+  // cell had already been counted into the very number that guard compares.
+  //
+  // Kept OUT of `cells_carried` on purpose: that counter means "healthy stored
+  // surface reused instead of re-fitted" and `is_total_fit_failure` /
+  // `is_total_config_failure` read it as proof the run produced a serviceable
+  // database. A preserved disabled surface is not that proof -- it is a config
+  // the operator has switched off, whose bytes are merely not being thrown away.
+  // These cells are in neither `cells_refit` (never offered to the fitter) nor
+  // `cells_ok`.
+  std::uint32_t cells_carried_disabled{0};
   std::uint32_t cells_already_present{0};    // skipped: symbol already in its date partition
   std::uint32_t cells_ok{0};                 // populate n_ok over the (re)written dates
   std::uint32_t cells_failed{0};             // populate n_failed over the (re)written dates

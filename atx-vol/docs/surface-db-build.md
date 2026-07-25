@@ -491,6 +491,7 @@ disposition counters partition the distinct symbols seen:
 | `coverage.cells_to_fit` | NEW `(symbol, date)` cells scheduled this run. A **config-disabled** cell is never counted — it can never be added, so counting it would keep its date pending forever. |
 | `coverage.cells_refit` | Already-present cells that a same-date rewrite put back through the **fitter**. Carry-over split this population: an already-present cell dragged into a rewrite is now either *carried* or *refit*, never both. On a converged database this should be **`0`** — that is the invariant a cheap resume rests on, and it is the number to watch, not `cells_to_fit`. |
 | `coverage.cells_carried` | Already-present cells re-emitted **verbatim** from the existing partition instead of being re-fitted, because the stored config fingerprint still matches. Byte-identical to what they replaced. Deliberately **not** counted in `cells_ok` — nothing was fitted — which is why both exit-code predicates read this counter explicitly. |
+| `coverage.cells_carried_disabled` | Already-present cells whose config is **disabled** and whose stored surface was re-emitted verbatim so the rewrite would not **delete** it. `enabled = false` means *stop fitting this symbol*, never *delete what is already stored*. Deliberately **separate** from `cells_carried`, which both exit-code predicates read as evidence the run produced a serviceable database — a switched-off name's leftover bytes are not that evidence. Counted in neither `cells_refit` (never offered to the fitter) nor `cells_ok`. Unlike `cells_carried` this does **not** depend on the config fingerprint: the alternative to preserving is deletion, not a re-fit, so the fingerprint has no say. |
 | `coverage.cells_already_present` | Skipped: symbol already in its date partition. |
 | `coverage.cells_ok` / `cells_failed` | Fit outcomes over the (re)written dates. |
 | `coverage.dates_total` | Distinct dates among the loaded boards. |
@@ -557,11 +558,22 @@ work already done:
      the rewrite set and re-fits that date's siblings. That is the deliberate
      cost of giving a transient failure another chance — a name that fails
      permanently should be disabled in the manifest to converge.
+   - **Disabling a name never deletes what it already produced.** `enabled =
+     false` means *stop fitting this symbol*; the surfaces it fitted before the
+     disable stay in their partitions, keep loading, and are re-emitted verbatim
+     through any later rewrite of those dates (`coverage.cells_carried_disabled`).
+     That matters because the remedy above is the routine one: before this was
+     fixed, disabling a permanently-failing name silently **destroyed** every
+     surface it had already fitted, on the next rewrite of each of those dates —
+     and the trigger was unrelated (any new enabled symbol arriving on the date).
+     `--retry-disabled` therefore recovers both the config *and* the data.
    - Safety guard: a date is **skipped, never rewritten**, if its partition
      already holds a symbol NOT present in this run's loaded set — a
      whole-partition rewrite would drop it (`dates_skipped_would_drop`). This
      cannot happen on the intended grow-only workflow but guards a
-     narrower-symbol re-run from data loss.
+     narrower-symbol re-run from data loss. It is the *other* half of the same
+     concern as the bullet above: that one covers a stored symbol this run did
+     not load at all, this one a stored symbol it loaded but will not fit.
 
 An **empty window** (un-pulled days) is a graceful success: all-zero coverage,
 the db still created. Absent dates in range are non-fatal (`n_dates_missing`).

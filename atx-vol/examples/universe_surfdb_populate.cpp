@@ -229,11 +229,15 @@ int main(int argc, char **argv) {
   // `carried` sits beside `refit` (FIX-D fix-1, I2): they are the two halves of
   // what a rewritten date did with its already-present cells, and a converged
   // carry resume prints refit=0 ok=0 — which without `carried` reads as a no-op.
-  std::printf("[populate] loaded=%u to_fit=%u refit=%u carried=%u already_present=%u "
-              "ok=%u failed=%u | dates: total=%u written=%u skipped_complete=%u would_drop=%u\n",
+  // `carried_disabled` (FIX-E) is the third: stored cells of a switched-off symbol
+  // that a rewrite PRESERVED rather than deleted.
+  std::printf("[populate] loaded=%u to_fit=%u refit=%u carried=%u carried_disabled=%u "
+              "already_present=%u ok=%u failed=%u | dates: total=%u written=%u "
+              "skipped_complete=%u would_drop=%u\n",
               cov->cells_loaded, cov->cells_to_fit, cov->cells_refit, cov->cells_carried,
-              cov->cells_already_present, cov->cells_ok, cov->cells_failed, cov->dates_total,
-              cov->dates_written, cov->dates_skipped_complete, cov->dates_skipped_would_drop);
+              cov->cells_carried_disabled, cov->cells_already_present, cov->cells_ok,
+              cov->cells_failed, cov->dates_total, cov->dates_written,
+              cov->dates_skipped_complete, cov->dates_skipped_would_drop);
   std::printf("[populate] db=%s\n", db_root.c_str());
 
   // Reuse the populate stats CSV shape for the per-symbol report.

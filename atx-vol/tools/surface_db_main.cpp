@@ -339,11 +339,21 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
     std::printf("disabled_symbol %s\n", s.c_str());
   }
   if (!rep->disabled_symbols.empty()) {
+    // FIX-E corrected this message. It used to assert, as a parenthetical
+    // statement of fact, that disabled symbols "are absent from every partition"
+    // -- which was true only for a symbol disabled BEFORE it ever fitted, and was
+    // being MADE true for the others by the very data-loss bug FIX-E repaired. A
+    // symbol disabled after it fitted keeps its stored surfaces, and they stay
+    // servable (nothing on the read path gates on `enabled`), so the default walk
+    // skipping them now leaves REAL cells unchecked rather than merely
+    // non-existent ones.
     std::fprintf(stderr,
-                 "atx-vol-surface-db: %zu manifest symbol(s) are DISABLED and were not checked "
-                 "(they are absent from every partition). The verdict below describes only the "
-                 "symbols that were walked. Re-run with --include-disabled to prove they are "
-                 "absent, or rebuild with --retry-disabled to re-attempt them.\n",
+                 "atx-vol-surface-db: %zu manifest symbol(s) are DISABLED and were not checked. "
+                 "A symbol disabled BEFORE it ever fitted is absent from every partition, but one "
+                 "disabled AFTER it fitted KEEPS its stored surfaces (and they still load), so "
+                 "this walk may be leaving real cells unverified. The verdict below describes only "
+                 "the symbols that were walked. Re-run with --include-disabled to check them, or "
+                 "rebuild with --retry-disabled to re-attempt them.\n",
                  rep->disabled_symbols.size());
   }
   std::printf("min_cells %zu\n", min_cells);

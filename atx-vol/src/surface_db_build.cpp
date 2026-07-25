@@ -209,13 +209,22 @@ Result<AutoConfigReport> generate_symbol_configs(SurfaceDb &db, std::span<const 
     // re-run never clobbers an operator override.
     //
     // FIX-C-2. A stored DISABLED config is the one existing config a skip must not
-    // swallow silently. It is a standing failure, not a settled state: the symbol
-    // is absent from every partition and will stay absent forever, yet before this
-    // it left no trace after the run that created it (skipped here, and its dates
-    // reported `dates_skipped_complete` by the populate). So a skipped disabled
-    // symbol is now counted AND named on every run — and, with `retry_disabled`,
-    // re-selected instead of skipped, which is the only way a fix to the loader or
-    // the hive can ever reach an ALREADY-BUILT database.
+    // swallow silently. It is a standing failure, not a settled state: no NEW cell
+    // will ever be written for the symbol, yet before this it left no trace after
+    // the run that created it (skipped here, and its dates reported
+    // `dates_skipped_complete` by the populate). So a skipped disabled symbol is
+    // now counted AND named on every run — and, with `retry_disabled`, re-selected
+    // instead of skipped, which is the only way a fix to the loader or the hive
+    // can ever reach an ALREADY-BUILT database.
+    //
+    // FIX-E corrected this paragraph's premise. It used to read "the symbol is
+    // absent from every partition and will stay absent forever", which holds only
+    // for a symbol disabled BEFORE it ever fitted — the case FIX-C-2 was
+    // diagnosing. A symbol disabled AFTER it fitted keeps every surface it already
+    // produced (and they still load; nothing on the read path gates on `enabled`).
+    // The reason that premise LOOKED universal is that the rewrite path was
+    // silently deleting those surfaces, which is the defect FIX-E repaired: the
+    // invariant is now corrected rather than enforced by destruction.
     if (!spec.overwrite_existing) {
       if (const Result<SymbolFitConfig> existing = db.symbol_config(symbol); existing.has_value()) {
         if (existing->enabled || !spec.retry_disabled) {
@@ -430,8 +439,19 @@ bool is_total_config_failure(const SurfaceDbBuildReport &r) {
   //      `cov.cells_carried += carried_here`. `kept` stays empty, the populate is
   //      never called, and both `cells_carried` and `cells_ok` are 0.
   // Symmetrically, the carry gate itself only ever admits a cell whose resolved
-  // config is enabled -- so a carried cell is by construction proof that
-  // `enabled > 0`.
+  // config is enabled to `cells_carried` -- so a carried cell is by construction
+  // proof that `enabled > 0`.
+  //
+  // FIX-E LANDED THE PENDING CHANGE THIS PARAGRAPH ANTICIPATED, and step 3 above
+  // is why it did not break either predicate. A present-but-disabled cell is now
+  // PRESERVED through a rewrite instead of being deleted, so the carry request is
+  // no longer enabled-only -- but its cells are tallied in
+  // `cells_carried_disabled`, a separate counter neither predicate reads, exactly
+  // so `cells_carried` keeps meaning "healthy stored surface reused as this run's
+  // output" and keeps being proof that `enabled > 0`. Had the preserved cells
+  // been folded into `cells_carried`, this clause would have started suppressing
+  // a genuine all-disabled verdict on any database holding an old surface for one
+  // of those symbols.
   //
   // WHY THE CLAUSE IS HERE ANYWAY. C1 happened because this predicate's twin was
   // silently correct for a reason nobody had written down ("a healthy resume
@@ -482,6 +502,13 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
   // the halves of `cells_already_present`-on-a-rewritten-date and are only
   // interpretable together.
   kv("coverage.cells_carried", fmt_u32(r.coverage.cells_carried));
+  // FIX-E. Beside cells_carried because it is the same act -- re-emitting a
+  // stored record instead of re-fitting it -- for a different reason, and the
+  // operator needs to be able to tell them apart: this one names cells whose
+  // config is switched OFF and whose bytes were kept anyway. Before FIX-E they
+  // were deleted by any unrelated rewrite of their date, with no counter, no
+  // message, and no way to notice.
+  kv("coverage.cells_carried_disabled", fmt_u32(r.coverage.cells_carried_disabled));
   kv("coverage.cells_already_present", fmt_u32(r.coverage.cells_already_present));
   kv("coverage.cells_ok", fmt_u32(r.coverage.cells_ok));
   kv("coverage.cells_failed", fmt_u32(r.coverage.cells_failed));

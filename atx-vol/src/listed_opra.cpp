@@ -36,30 +36,13 @@ constexpr std::string_view kHeader =
   return std::tie(definition.trade_date, definition.instrument_id, definition.raw_symbol);
 }
 
-// Is `root` the OSI/OCC wire encoding of the underlier ticker `ticker`?
-//
-// The OSI root namespace cannot express punctuation, so a class share trades
-// under a dot-stripped root: the universe says `BRK.B`, every OPRA symbol says
-// `BRKB  260702C00270000`. Dots are the ONLY difference tolerated — deliberately
-// narrower than a general normalizer, because widening it would let two genuinely
-// distinct tickers compare equal, and this is a fail-closed economics guard. It
-// is the same rule `pull_opra_hive.py` (`sym.replace(".","")`) and
-// `build_ochain.cpp`'s `strip_dot` already apply, in the same direction.
-//
-// Allocation-free (this runs per quote row): walks `ticker` skipping '.'.
-[[nodiscard]] bool osi_root_matches_ticker(std::string_view root, std::string_view ticker) noexcept {
-  std::size_t i = 0;
-  for (const char c : ticker) {
-    if (c == '.') {
-      continue;
-    }
-    if (i >= root.size() || root[i] != c) {
-      return false;
-    }
-    ++i;
-  }
-  return i == root.size();
-}
+// `osi_root_matches_ticker` (the ticker <-> OSI-root identity rule, `BRK.B` <->
+// `BRKB`) used to be duplicated byte-for-byte in this TU's anonymous namespace.
+// FIX-E (E2-b) collapsed the two copies into the single declaration in
+// `opra_panel.hpp`, which this file already includes through `listed_opra.hpp`;
+// the policy — punctuation is the ONLY tolerated difference, a trailing digit is
+// a different deliverable and never matches — lives with it there. Call sites
+// below are unchanged: the shared function kept this copy's name.
 
 void append_u64(std::string &out, std::uint64_t value) {
   char buffer[32];

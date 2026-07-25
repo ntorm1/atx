@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <fstream>
+#include <iterator> // make_move_iterator (FIX-E disabled-carry append)
 #include <limits>
 #include <map>
 #include <string>
@@ -451,6 +452,18 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
         const SymbolFitConfig &resolved = resolved_cfgs[pos];
         if (!resolved.enabled) {
           ++acc.stats.n_disabled;
+          // FIX-E. A disabled cell is still never FITTED -- that policy is
+          // unchanged, and `n_disabled` keeps counting it, which is what the
+          // stats CSV's fit denominator subtracts. What changed is that the
+          // caller may have asked for its ALREADY-STORED record to be re-emitted
+          // rather than dropped; the read-back above has already appended that
+          // item, so it must be tallied here or the caller's cross-check would
+          // describe a write that did not match its request. This branch stays
+          // BEFORE the carried branch on purpose: `n_carried` must not absorb a
+          // disabled cell (see the counter's contract in the header).
+          if (carried[pos]) {
+            ++stats.n_carried_disabled;
+          }
           continue;
         }
 
@@ -500,8 +513,21 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
         // The one caller that can honestly attest the carry-over fingerprint
         // (FIX-D fix-1, I5): every fitted item in `items` came out of `fit_board`
         // under the config this loop resolved from THIS manifest moments ago, and
-        // every carried item was itself written under an attestation whose
-        // fingerprint still matches (that is what admitted it to the carry set).
+        // every ENABLED carried item was itself written under an attestation
+        // whose fingerprint still matches (that is what admitted it to the carry
+        // set).
+        //
+        // FIX-E qualifies that claim for the one item class it no longer covers:
+        // a PRESERVED DISABLED record is re-emitted regardless of the
+        // fingerprint, so the stamp does not vouch for it. That is sound because
+        // of what the stamp is USED for -- `populate_universe_streaming` reads it
+        // to decide `carry_valid`, which admits only ENABLED present cells to the
+        // fitted-output carry set. A disabled cell can re-enter that set only by
+        // being re-enabled, and `enabled` is part of the folded config, so
+        // re-enabling necessarily MOVES the fingerprint and forces a re-fit. The
+        // alternative -- attesting `None` on any date holding a disabled symbol --
+        // would permanently un-carry that date's healthy siblings and re-fit them
+        // on every run forever, which is the cost FIX-D exists to remove.
         const Status w =
             db.write_partition(date, items, {}, DbConfigAttestation::FitterProduced);
         if (!w) {
@@ -692,17 +718,42 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
     std::uint32_t present = 0;
     std::uint32_t to_add = 0;
     std::vector<std::string> carry_syms;
+    // ── FIX-E: present-but-DISABLED cells, tracked SEPARATELY ────────────────
+    // Kept in their own list because the question that admits them is a DIFFERENT
+    // question. `carry_valid` is the fit-config fingerprint predicate; it asks
+    // "are these stored surfaces still sound to reuse AS THIS RUN'S FITTED
+    // OUTPUT?". That question does not arise for a symbol this run produces no
+    // output for at all: the alternative to carrying a disabled cell is not
+    // re-fitting it, it is DELETING it. So a disabled present cell is carried
+    // UNCONDITIONALLY, and gating it on `carry_valid` would be a fix-shaped
+    // no-op -- disabling a symbol MOVES the config fold, so `carry_valid` is
+    // false on precisely the first run after the disable, and a pre-FIX-D
+    // manifest stores the 0 "unknown" fingerprint, which never carries either.
+    // Both cases are pinned by tests.
+    std::vector<std::string> disabled_carry_syms;
     for (const std::size_t i : idxs) {
       const bool in_db = part.has_value() && part->find(boards[i].symbol).has_value();
       if (in_db) {
         ++present;
-        // Carry only an ENABLED cell. A present-but-disabled cell is left out on
-        // purpose so this change does not alter its (buggy) existing handling --
-        // see the separate finding in the FIX-D report: such a cell is dropped
-        // from the rewritten partition today, and fixing that here would bury a
-        // data-loss repair inside a performance change.
-        if (carry_valid &&
-            resolve_symbol_config(db, boards[i].symbol, fallback_cfg).enabled) {
+        // `enabled = false` means STOP FITTING this symbol. It does NOT mean
+        // DELETE what is already stored -- and deletion is what happened before
+        // FIX-E: the cell was counted into `present` here, excluded from the
+        // carry set, then skipped by the populate's disabled branch, so the
+        // whole-partition rewrite (tmp+rename, no merge, no soft-delete) simply
+        // dropped it. The would-drop guard below could not save it either,
+        // because it was already counted into the very number that guard
+        // compares against `part->count()`.
+        //
+        // A disabled config is "a standing failure, not a settled state" (FIX-C,
+        // which is why `--retry-disabled` exists): a provisional, reversible
+        // marker must never trigger irreversible destruction. Preserving also
+        // makes the read path honest -- nothing in load_surface/map_surface
+        // gates on `enabled`, so a preserved surface stays servable for the
+        // dates that already worked.
+        if (!resolve_symbol_config(db, boards[i].symbol, fallback_cfg).enabled) {
+          disabled_carry_syms.push_back(
+              detail::canonicalize_symbol(boards[i].symbol, kSurfaceDbKeyMax));
+        } else if (carry_valid) {
           carry_syms.push_back(
               detail::canonicalize_symbol(boards[i].symbol, kSurfaceDbKeyMax));
         }
@@ -742,9 +793,20 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
     // ALL of idxs so the per-symbol n_attempted / n_disabled bookkeeping is
     // unchanged; populate_surface_db skips the fit for the carried ones.
     const auto carried_here = static_cast<std::uint32_t>(carry_syms.size());
+    // FIX-E: preserved-because-disabled cells are their OWN disposition. They
+    // were never offered to the fitter, so they are not `cells_refit`; and
+    // `cells_carried` must keep meaning "healthy stored surface reused instead of
+    // re-fitted", because `is_total_fit_failure` / `is_total_config_failure` read
+    // it as evidence the run produced a serviceable database -- which a switched-
+    // off config's leftover bytes are not. Every in_db cell lands in exactly one
+    // of the three, so `present - carried_here - disabled_here` cannot underflow.
+    const auto disabled_here = static_cast<std::uint32_t>(disabled_carry_syms.size());
     cov.cells_carried += carried_here;
-    cov.cells_refit += present - carried_here;
-    if (carried_here > 0u) {
+    cov.cells_carried_disabled += disabled_here;
+    cov.cells_refit += present - carried_here - disabled_here;
+    carry_syms.insert(carry_syms.end(), std::make_move_iterator(disabled_carry_syms.begin()),
+                      std::make_move_iterator(disabled_carry_syms.end()));
+    if (!carry_syms.empty()) {
       carry_over.emplace(date, std::move(carry_syms));
     }
     for (const std::size_t i : idxs) {
@@ -773,6 +835,15 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
     if (st->n_carried != cov.cells_carried) {
       return Err(ErrorCode::Internal,
                  "populate_universe_streaming: carried-cell count disagrees with populate");
+    }
+    // FIX-E: the same cross-check on the OTHER half of the carry request. A
+    // disabled cell reaches the populate through the same `carry_over` map but is
+    // tallied on a different branch, so a mis-ordered branch there would silently
+    // stop counting preserved cells while still re-emitting them (or, worse, stop
+    // re-emitting them) with nothing to notice.
+    if (st->n_carried_disabled != cov.cells_carried_disabled) {
+      return Err(ErrorCode::Internal, "populate_universe_streaming: preserved-disabled-cell count "
+                                      "disagrees with populate");
     }
     cov.per_symbol = std::move(st->per_symbol);
     // The per-cell reasons ride along with the count they explain; the populate

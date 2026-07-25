@@ -228,6 +228,12 @@ void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
   // has been widened to stop treating as a failure, so the counter has to be
   // visible where the operator reads the exit.
   std::printf("coverage.cells_carried %u\n", r.coverage.cells_carried);
+  // FIX-E. Stored cells belonging to a DISABLED symbol, preserved through a
+  // rewrite instead of deleted. Separate from cells_carried: those are healthy
+  // surfaces reused as this run's output, these are surfaces of a name the
+  // operator switched off, kept because `enabled = false` means stop fitting, not
+  // delete.
+  std::printf("coverage.cells_carried_disabled %u\n", r.coverage.cells_carried_disabled);
   std::printf("coverage.cells_already_present %u\n", r.coverage.cells_already_present);
   std::printf("coverage.cells_ok %u\n", r.coverage.cells_ok);
   std::printf("coverage.cells_failed %u\n", r.coverage.cells_failed);
@@ -404,10 +410,12 @@ int main(int argc, char **argv) {
       std::fprintf(stderr, " %s", s.c_str());
     }
     std::fprintf(stderr,
-                 "\n  These names are absent from every partition and will stay absent on every "
-                 "rerun: a stored config (even a disabled one) is skip-existing, so the build "
-                 "never re-attempts them. Re-run with --retry-disabled to re-select them once the "
-                 "cause is fixed, or upsert a config by hand.\n");
+                 "\n  No NEW cell will be written for these names on any rerun: a stored config "
+                 "(even a disabled one) is skip-existing, so the build never re-attempts them. "
+                 "One disabled before it ever fitted is absent from every partition; one disabled "
+                 "afterwards KEEPS the surfaces it already produced (FIX-E preserves them through "
+                 "a rewrite). Re-run with --retry-disabled to re-select them once the cause is "
+                 "fixed, or upsert a config by hand.\n");
   }
 
   // The silent-failure trap, one stage EARLIER than the fit: if config selection

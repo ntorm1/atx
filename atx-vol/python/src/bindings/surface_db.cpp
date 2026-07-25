@@ -80,6 +80,10 @@ namespace {
   // carry resume reports cells_ok = 0 and cells_refit = 0, which is otherwise
   // indistinguishable from a build that did nothing.
   coverage["cells_carried"] = r.coverage.cells_carried;
+  // FIX-E: stored cells of a DISABLED symbol, preserved through a rewrite rather
+  // than deleted. Kept out of `cells_carried` because that counter is read as
+  // evidence the run produced a serviceable database.
+  coverage["cells_carried_disabled"] = r.coverage.cells_carried_disabled;
   coverage["cells_already_present"] = r.coverage.cells_already_present;
   coverage["cells_ok"] = r.coverage.cells_ok;
   coverage["cells_failed"] = r.coverage.cells_failed;

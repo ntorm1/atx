@@ -399,23 +399,16 @@ Result<OsiSymbol> parse_osi_symbol(std::string_view sym) {
   return Ok(std::move(out));
 }
 
-namespace {
-
-// Is `root` the OSI/OCC wire encoding of the underlier ticker `underlying`?
-//
-// The OSI root namespace cannot express punctuation, so a class share trades
-// under a dot-stripped root (`BRK.B` -> `BRKB`). Dots are the ONLY difference
-// tolerated: this is a fail-closed identity guard, and a wider normalizer would
-// let two genuinely distinct tickers compare equal — precisely the "invent a
-// third namespace" trap the BRK.B diagnosis warned against. Same rule, same
-// direction, as `pull_opra_hive.py`'s `sym.replace(".","")` and
-// `build_ochain.cpp`'s `strip_dot`.
-//
-// Allocation-free: this runs once per kept quote row (millions per hive load).
-[[nodiscard]] bool osi_root_matches_underlying(std::string_view root,
-                                               std::string_view underlying) noexcept {
+// The one definition of the ticker <-> OSI-root identity rule (FIX-E, E2-b).
+// Was duplicated byte-for-byte here and in `listed_opra.cpp`; the contract, the
+// trailing-digit policy and the reason this is a predicate rather than a
+// normaliser all live on the declaration in `opra_panel.hpp`. Walk `ticker`
+// skipping '.', and require it to consume `root` exactly — so the ONLY tolerated
+// difference is punctuation, and a trailing digit (an adjusted deliverable) never
+// matches.
+bool osi_root_matches_ticker(std::string_view root, std::string_view ticker) noexcept {
   std::size_t i = 0;
-  for (const char c : underlying) {
+  for (const char c : ticker) {
     if (c == '.') {
       continue;
     }
@@ -426,8 +419,6 @@ namespace {
   }
   return i == root.size();
 }
-
-} // namespace
 
 Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
   // ── Projected read (W4.3) ─────────────────────────────────────────────────
@@ -683,7 +674,7 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
     // hive: across all 140 date files the only raw divergence is
     // ('BRK.B','BRKB'), and after dot-stripping there is none at all.
     if (!und.empty() && !osi->root.empty() && und != osi->root &&
-        !osi_root_matches_underlying(osi->root, und)) {
+        !osi_root_matches_ticker(osi->root, und)) {
       return Err(ErrorCode::InvalidArgument,
                  "row symbol '" + std::string(symbols[i]) + "' has OSI root '" + osi->root +
                      "' but its underlying column says '" + std::string(und) +
