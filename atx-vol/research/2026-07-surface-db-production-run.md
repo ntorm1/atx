@@ -437,11 +437,29 @@ fit at the risk preset's `max_obs_per_slice` (60) rather than the stored `node_c
 That is the auto route's own value rather than a tuning choice, but it is a real change
 to production output and is called out here so nobody reads it as noise.
 
-An independent justification for the default flip turned up during implementation, which
-is worth recording because it inverts the framing: **the manifest does not round-trip a
-pinned curve's `parametric` numerics**, so pinning had been overwriting the risk preset's
-calibration with defaults. On that reading the pin was not merely restrictive, it was
-actively degrading the fit.
+**A correction, recorded rather than quietly edited.** The implementation reported an
+independent justification for the flip — that the manifest does not round-trip a pinned
+curve's `parametric` numerics, so pinning overwrote the risk preset's calibration with
+defaults — and an earlier revision of this log repeated it. **That mechanism is wrong.**
+`encode_symbol_record` / `decode_symbol_record` in `surface_db.cpp` round-trip roughly
+thirty `parametric` numeric and enum fields, and `apply_fit_preset` writes exactly two
+calib fields, both of which persist. A preset-derived config round-trips losslessly. Do
+not go looking for a serializer bug; there isn't one.
+
+The conclusion it was reaching for is nonetheless real, by a different and larger
+mechanism. `pricer_fitter.cpp:1151-1159` applies the classified profile's `calib` **only
+when `decision_` is populated**, and `decision_` is repopulated only on the unpinned
+branch (`:1140-1148`). So a pinned cell fits with a default-constructed `CalibOpts` plus
+the two fields `apply_risk_policy` pins, while an unpinned cell fits with the profile's
+tuned calibration — `max_outer_iter` 4 → 50, `huber_k` 1.5 → 2.0, `residual_disable`
+true → false, `residual_basis_kind` None → HingeQuad (`profile.cpp:58-71`). That is the
+auto route working as designed, and it is the most likely reason coverage improved as
+much as it did.
+
+It also means **flipping this default changes fitted output, not merely runtime** — by
+considerably more than the node_cap note above on its own suggests. Anyone comparing
+surfaces built before and after this commit should expect numerical differences
+everywhere, not just on the index leg.
 
 ### The 3 residual failures
 
