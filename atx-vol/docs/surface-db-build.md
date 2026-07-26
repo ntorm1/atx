@@ -81,6 +81,7 @@ atx-vol-surface-db-build --db <root> --hive <root>
     [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045]
     [--deep-selection] [--retry-disabled] [--pin-curve-family true|false]
     [--fit-workers N] [--report out.csv] [--max-failures N]
+    [--allow-coverage-regression] [--strict]
 ```
 
 | Flag | Required | Meaning |
@@ -97,6 +98,7 @@ atx-vol-surface-db-build --db <root> --hive <root>
 | `--pin-curve-family true\|false` | no | Default **`false`**. Store the auto-selected curve family as a **hard pin** (`true`) or as the preferred route only (`false`). Pinning gives each cell exactly one family attempt and **disables both fallback ladders** — read [The curve family is a route, not a pin](#the-curve-family-is-a-route-not-a-pin) before setting it. Requires a value: `--pin-curve-family` with a missing or unrecognised value is **exit 2**, never a silent default. Accepts `true\|1\|on` and `false\|0\|off`. |
 | `--fit-workers N` | no | Outer fit fan-out. Default **`0`** = auto (honors `ATX_VOL_FIT_WORKERS`); `1` = serial. **Deliberately not strictly parsed:** an unparseable value coerces to `0`, and `0` is a legitimate, safe choice — unlike `--r`, where every value is a *claim about the market* and a coerced `0.0` is a wrong claim, which is why that one is strict. A *missing* value is still exit 2. Results are byte-identical for any value. |
 | `--allow-coverage-regression` | no | Permit a date's rewrite to **destroy** a stored surface. Off by default. A partition write is whole-file, so a present, *enabled* cell whose re-fit fails is simply not in the new file and the commit deletes it — [one production-shaped run at the wrong `--r` removed 95 stored surfaces this way](#a-wrong---r-destroys-surfaces-you-already-had). By default such a date is **refused**: the existing partition is left untouched, every other date is built normally, and the run exits **`5`**. Pass this only for a run that *intends* retirement. The destroyed cells are still counted and named either way — see [Refusing a rewrite that would destroy stored surfaces](#refusing-a-rewrite-that-would-destroy-stored-surfaces). |
+| `--strict` | no | Off by default. Make **"scheduled work, fitted nothing" a non-zero exit (`3`) even when the run CARRIED stored surfaces** — the reading the FIX-D carry exemption gave up. **Who should turn it on:** an *unattended scheduler* over a database whose failing-cell set is expected to be **empty** (a fresh build, a CI fixture, a universe with no known-bad names) — for that caller, "I scheduled 250 cells and fitted 0 beside 257k carried" must wake someone up, and nothing else in the tool will. **Who should not:** an *interactive operator* on a database with standing failures; they get the carry-masked **warning** instead, which names the failing cells and says the run is ambiguous rather than judging it. **Why it is opt-in and not the default** — see [Why `--strict` is not the default](#why---strict-is-not-the-default). It never turns a green run non-zero unless work was **scheduled**: a converged resume, a carried-everything rewrite and an empty window all schedule zero cells and stay `0` in strict mode. Its diagnostic deliberately **omits** the `--r` advice the unconditional exit `3` gives. |
 | `--report out.csv` | no | Also write the five-section CSV report to this path. A write failure is reported on stderr and makes the run exit `1` — but it never masks exit `3` or `5`; see the exit table. |
 | `--help` / `-h` | no | Print usage to stdout and exit `0`. Ignores everything else on the line. |
 | `--max-failures N` | no | `32`. Cap on the printed `failed_cell` lines. Overflow is counted in `coverage.failed_cells_elided`, never dropped silently, and the `--report` CSV always carries the **full** list. `0` prints no per-cell detail at all. Same flag name, parsing and semantics as `atx-vol-surface-db verify`. |
@@ -403,6 +405,14 @@ suite — the CLI only maps it to an exit code.
 > `MarketEnv`), not to an exit-code predicate. The trade is deliberate: a false
 > `TOTAL FIT FAILURE` on *every* healthy resume, telling the operator to change
 > `--r`, would invalidate every surface in the database if followed.
+>
+> **You can take the verdict back, per run.** `--strict` (REV-R4, review C-05)
+> drops the `cells_carried` conjunct, so this shape exits `3` again. It is
+> **opt-in** — on a database that holds permanently-failing cells it fires on
+> every run, which is the same permanently-red signal the exemption removed — and
+> its diagnostic deliberately does **not** give the `--r` advice, because on a run
+> that carried surfaces that advice is the destructive one. See the
+> [flag table](#usage) and [Why `--strict` is not the default](#why---strict-is-not-the-default).
 
 **What was lost is the verdict, not the signal.** The ambiguous shape above gets a
 stderr **warning** and exit **0**
@@ -451,10 +461,15 @@ for you to reconstruct from the `failed_cell` lines. It is bounded by the same
 It fires on `cells_ok == 0 && cells_failed > 0 && cells_carried > 0` and on nothing
 else. Three consequences worth knowing:
 
-- **It stays exit 0, permanently.** Shape (a) is a healthy production database and
-  the steady state this feature exists to produce; a non-zero code for it is
-  exactly the destructive false verdict the carry clause removed. The warning
-  exists *because* the exit code cannot come back.
+- **It stays exit 0 by default, permanently.** Shape (a) is a healthy production
+  database and the steady state this feature exists to produce; a non-zero code
+  *by default* for it is exactly the destructive false verdict the carry clause
+  removed. The warning exists because the exit code cannot come back **on its
+  own**. It can come back on your instruction: **`--strict`** turns this shape
+  into exit `3` (and suppresses this warning, which would otherwise print
+  "WARNING (exit 0)" beside a non-zero exit). Pass it only when you know your
+  database is not shape (a) — an unattended scheduler over a universe with no
+  known-bad names. See [Why `--strict` is not the default](#why---strict-is-not-the-default).
 - **A FULLY converged database is silent.** Once no date has anything left to
   schedule, `cells_failed` is `0` and nothing prints. The warning recurs for as
   long as a cell keeps failing. (See the note under **Carried-only** above: a
@@ -693,11 +708,28 @@ retried on the next run exactly as before (see [Resume semantics](#resume-semant
 
 | Exit | When |
 | --- | --- |
-| `0` | Build succeeded — including **partial** coverage, a no-op **resume**, and a graceful empty-window no-op. Also two shapes that print a stderr WARNING and still exit `0`: the **carry-masked** shape (`cells_ok == 0`, `cells_failed > 0`, `cells_carried > 0` — see [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing)), and **partial load corruption** (`n_dates_loaded > 0` with `n_load_errors > 0`: some dates were unreadable, the rest were built). |
+| `0` | Build succeeded — including **partial** coverage, a no-op **resume**, and a graceful empty-window no-op. Also two shapes that print a stderr WARNING and still exit `0`: the **carry-masked** shape (`cells_ok == 0`, `cells_failed > 0`, `cells_carried > 0` — see [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing); **`--strict` turns this one into `3`**, and is the only flag that changes any exit code here), and **partial load corruption** (`n_dates_loaded > 0` with `n_load_errors > 0`: some dates were unreadable, the rest were built). |
 | `1` | A build error — malformed hive spec, or a db config/write failure. Message on stderr, **no report printed**. **One exception, and it is the only way `1` arrives with a report on stdout:** `--report` was given and the CSV could not be written. The build itself succeeded, the full report printed, and stderr names the write failure. It never masks `3` — see below. |
 | `2` | A usage error — unknown flag, a missing required flag, **a value-taking flag left at the end of the argv** (see below), an unknown `--preset`, or a malformed `--r` / `--pin-curve-family` / `--max-failures`. Usage on stderr. |
 | `5` | **At least one date was REFUSED because committing its rewrite would have destroyed a stored surface** (`coverage.dates_refused_coverage_regression > 0`). Nothing was lost: those dates are exactly as they were, and every other date in the run was built normally. Deliberately **not** `3` — the tool worked and the database is intact; what failed is the *request*. It **preempts** `3` and `1` when both apply, because "your inputs would have deleted data" must not be reported as "your inputs produced nothing" — the latter invites the re-run that does the deleting. The exit-3 diagnostics (including the `--r` advice, which is the top suspect for both shapes) still print in full. See [Refusing a rewrite that would destroy stored surfaces](#refusing-a-rewrite-that-would-destroy-stored-surfaces). |
 | `3` | **The build ran to completion and produced NOTHING** — one of **total load failure** (`n_dates_loaded == 0`, `n_load_errors > 0`: files were present in the window and *every one* was unreadable, so not a board reached the fitter), **total config failure** (`disabled > 0`, `enabled == 0`, `cells_ok == 0`, `cells_carried == 0`: every symbol was disabled by a selection failure, so nothing was ever scheduled), or **total fit failure** (`cells_to_fit > 0`, `cells_ok == 0`, `cells_carried == 0`: work was scheduled, no cell fitted, and nothing was carried either). One code for all three — the script's question is "did this run produce anything?" and the stderr diagnostic names the stage. They are tested most-upstream-first, so a corrupt ingest reports as a load failure rather than as the config failure it causes. The full report still prints and `--report` is still written. See [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing). |
+| `3`, **with `--strict` only** | **Strict total fit failure** (`cells_to_fit > 0`, `cells_ok == 0`, *carry ignored*) — the same "scheduled work, fitted nothing" question with the carry exemption removed. Without `--strict` this run exits `0` with the carry-masked warning. **The same code, not a new one:** a script's question is unchanged, `--strict` only makes the answer stricter about what counts as producing something, and a fourth number would force every existing consumer to learn it to keep the behaviour it already has. `5` still preempts it. Its diagnostic **omits the `--r` advice** on purpose — a run that carried surfaces is a run whose stored records validated for reuse, so its rate is not what is wrong, and re-running at a "corrected" `--r` would fail every re-fit (refused date by date, or *destructive* with `--allow-coverage-regression`). It says to compare **this run's failed-cell list against the previous run's** instead. Still `0` under `--strict` when nothing was **scheduled**. |
+
+<a id="why---strict-is-not-the-default"></a>
+**Why `--strict` is not the default.** The review that asked for the strict mode
+suggested it should ideally *be* the default. It is not, and the reason is
+specific to this database rather than to taste. `prod-2026-07` holds cells that
+fail **permanently** — three of them are genuinely arbitrage-violating boards —
+and there is deliberately no persisted known-failed state, so every run retries
+them and every run carries their healthy siblings. That is the converged steady
+state, it produces the strict predicate's exact shape, and a strict *default*
+would therefore exit non-zero on every run of a database that is entirely
+healthy, forever. That permanently-red signal is precisely what the carry
+exemption was added to remove; trading one always-on false alarm for a different
+always-on false alarm is not progress. The flag exists because **no predicate can
+separate the two readings** — the converged steady state and "every scheduled
+cell died systematically" are the same counters — so the flag is the operator
+stating which of the two their database is, and only they know.
 
 **`4` is deliberately skipped.** The companion tool `atx-vol-surface-db` already uses
 `4` for `verify`'s absent-cell verdict, and the two CLIs are run back to back by the

@@ -417,6 +417,54 @@ struct ReportedCoverageRegressionCells {
 // why the decision lives here (testable) and not in `main`.
 [[nodiscard]] bool is_total_fit_failure(const SurfaceDbBuildReport &r);
 
+// REV-R4 (review C-05). The SAME question with the carry exemption REMOVED:
+// "did this run schedule work and fit none of it?", full stop. Exactly the
+// predicate `is_total_fit_failure` was before FIX-D widened it, kept as its own
+// name so the widening above is not quietly undone.
+//
+// `cells_to_fit > 0 && cells_ok == 0`. Two conjuncts, not three: `cells_carried`
+// is deliberately not read. So it is a strict SUPERSET of `is_total_fit_failure`
+// — anything the plain predicate calls a failure this one does too — and the
+// region between them is precisely `cells_carried > 0`, the shape
+// `is_carry_masked_fit_failure` warns about. `SurfaceDbStrictTotalFitFailure.
+// IsAStrictSupersetOfThePlainPredicate` pins that containment over the whole
+// small-counter space rather than at a point.
+//
+// THE CLI USES THIS ONLY UNDER `--strict`, AND `--strict` IS NOT THE DEFAULT.
+// The review asked for the strict mode and suggested it should ideally be the
+// default; the mode is right and the default is not, for a reason specific to
+// this database rather than to taste. `prod-2026-07` holds cells that fail
+// PERMANENTLY — three of them are genuinely arbitrage-violating boards, and
+// there is deliberately no persisted known-failed state, so every run retries
+// them and every run carries their healthy siblings. That is the converged
+// steady state, it produces this predicate's exact shape, and a strict DEFAULT
+// would therefore exit non-zero on every run of a healthy production database,
+// forever. That permanently-red signal is the very thing the carry exemption was
+// added to remove; trading one always-on false alarm for a different always-on
+// false alarm is not progress.
+//
+// So it is opt-in, and it is aimed at a specific caller: an UNATTENDED scheduler
+// over a database whose failing-cell set is expected to be EMPTY (a fresh build,
+// a CI fixture, a universe with no known-bad names). For that caller "I scheduled
+// 250 cells and fitted 0" must be a non-zero exit even though 257k healthy cells
+// were carried past the fitter untouched, because nothing else in the tool will
+// ever wake anyone up. An INTERACTIVE operator on a database with standing
+// failures should NOT pass it: they get `is_carry_masked_fit_failure`'s warning,
+// which names the failing cells and says the run is ambiguous instead of judging
+// it.
+//
+// WHAT THE STRICT DIAGNOSTIC MUST NOT SAY. The unconditional exit-3 block names
+// a carry-rate mismatch as the top suspect and tells the operator to re-run with
+// a different `--r`. On a run this predicate catches and the plain one does not,
+// that advice is the actively dangerous one: a database that CARRIED surfaces is
+// a database whose stored surfaces validated for reuse, so its rate is not the
+// thing that is wrong, and a re-run at a "corrected" `--r` would fail every
+// re-fit and (absent `--allow-coverage-regression`) refuse every date — or, with
+// it, destroy them. The discriminator is the FAILED-CELL SET: the same cells
+// failing the same way as last run is the converged steady state, a fresh name or
+// a new reason is a regression. The CLI says exactly that and nothing about `--r`.
+[[nodiscard]] bool is_strict_total_fit_failure(const SurfaceDbBuildReport &r);
+
 // The signal the carry exemption gave up — a WARNING, never a verdict.
 //
 // True iff this run fitted NOTHING (`coverage.cells_ok == 0`), something it

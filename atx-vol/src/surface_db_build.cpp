@@ -428,6 +428,26 @@ bool is_total_fit_failure(const SurfaceDbBuildReport &r) {
          r.coverage.cells_carried == 0;
 }
 
+bool is_strict_total_fit_failure(const SurfaceDbBuildReport &r) {
+  // REV-R4 (review C-05). The predicate above WITHOUT its carry clause -- the
+  // literal reading of "this run scheduled work and fitted none of it", which is
+  // what an unattended scheduler needs and what the carry exemption gave up.
+  //
+  // `cells_to_fit > 0` is retained and is what keeps `--strict` meaning
+  // "SCHEDULED WORK ALL DIED" rather than "nothing happened": the converged
+  // resume, the un-pulled empty window and the carried-only rewrite that lost
+  // nothing all schedule zero cells, so none of them can reach this even in
+  // strict mode. Dropping that conjunct would make `--strict` fire on every
+  // healthy no-op, which is the failure mode this whole exit-code family keeps
+  // rediscovering.
+  //
+  // Only `cells_ok` counts as production. `cells_carried` is deliberately NOT
+  // read here (that is the entire difference from `is_total_fit_failure`), and
+  // `cells_carried_disabled` is not read by either -- see the header for why the
+  // exemption above is nonetheless correct and stays.
+  return r.coverage.cells_to_fit > 0 && r.coverage.cells_ok == 0;
+}
+
 bool is_carry_masked_fit_failure(const SurfaceDbBuildReport &r) {
   // The complement of the clause above, and the honest accounting of what it gave
   // up (see the header for the full argument). Nothing fitted, something failed,

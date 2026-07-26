@@ -16,7 +16,7 @@
 //       [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045]
 //       [--deep-selection] [--retry-disabled] [--pin-curve-family true|false]
 //       [--fit-workers N] [--report out.csv] [--max-failures N]
-//       [--allow-coverage-regression]
+//       [--allow-coverage-regression] [--strict]
 //
 //   --db            SurfaceDb root (created if absent, else opened/resumed).
 //   --hive          OPRA hive v2 root holding date=<YYYY-MM-DD>/data.parquet.
@@ -72,21 +72,35 @@
 //                   the exit code is 5. Pass this flag only for a run that INTENDS
 //                   retirement; the destroyed cells are still counted and named,
 //                   on stderr and in the --report CSV's section 5.
+//   --strict        make "scheduled work, fitted nothing" a NON-ZERO exit (3)
+//                   even when the run CARRIED stored surfaces. Off by default,
+//                   and deliberately so: the flagship database holds cells that
+//                   fail permanently, so this fires on every run of a perfectly
+//                   healthy database and a strict DEFAULT would be exactly the
+//                   permanently-red signal the carry exemption was added to
+//                   remove. For UNATTENDED SCHEDULERS over a database whose
+//                   failing-cell set is expected to be empty; an interactive
+//                   operator on a database with standing failures should leave it
+//                   off and read the is_carry_masked_fit_failure warning instead.
+//                   The strict diagnostic deliberately does NOT repeat the --r
+//                   advice -- see the block that prints it.
 //
 // Prints one line per report field to stdout; exits 0 on Ok, 1 on Err (message
 // on stderr), 2 on a usage error (unknown/missing/malformed flag), 3 when the
 // build ran but produced NOTHING — every present input file was unreadable
 // (is_total_load_failure), or every symbol failed CONFIG SELECTION
 // (is_total_config_failure), or work was scheduled and no cell fitted
-// (is_total_fit_failure), and 5 when at least one date was REFUSED because its
-// rewrite would have destroyed a stored surface. See
-// atx-vol/docs/surface-db-build.md.
+// (is_total_fit_failure, or is_strict_total_fit_failure under --strict), and 5
+// when at least one date was REFUSED because its rewrite would have destroyed a
+// stored surface. See atx-vol/docs/surface-db-build.md.
 //
 // One shape exits 0 with a stderr WARNING instead: nothing fitted, something
 // failed, and something was CARRIED (is_carry_masked_fit_failure). It is exempt
 // from exit 3 because the converged steady state has that exact shape on a
 // perfectly healthy database — but so does a run whose every scheduled cell died,
-// so the tool names the ambiguity rather than judging it.
+// so the tool names the ambiguity rather than judging it. REV-R4: `--strict`
+// resolves that ambiguity as a FAILURE (still exit 3) for callers who can afford
+// to — see the flag's doc above and is_strict_total_fit_failure's declaration.
 
 #include <cerrno>
 #include <cmath>
@@ -137,7 +151,7 @@ void print_usage(std::FILE *out) {
                "         [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045] "
                "[--deep-selection] [--retry-disabled] [--pin-curve-family true|false] "
                "[--fit-workers N] [--report out.csv] "
-               "[--max-failures N] [--allow-coverage-regression]\n");
+               "[--max-failures N] [--allow-coverage-regression] [--strict]\n");
 }
 
 // Parse a non-negative count, consuming the whole token. Byte-for-byte the rule
@@ -351,6 +365,10 @@ int main(int argc, char **argv) {
   std::string report_path;
   bool fit_workers_set = false;
   std::size_t max_failed_cells = kSurfaceDbBuildMaxReportedFailedCells;
+  // REV-R4 (review C-05). NOT a SurfaceDbBuildSpec field: it changes nothing
+  // about what the build does, only how this process reports the verdict. The
+  // build must be byte-identical with and without it.
+  bool strict = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -401,6 +419,8 @@ int main(int argc, char **argv) {
       spec.auto_config.retry_disabled = true;
     } else if (a == "--allow-coverage-regression") {
       spec.allow_coverage_regression = true;
+    } else if (a == "--strict") {
+      strict = true;
     } else if (a == "--pin-curve-family") {
       const std::string_view text = nv();
       if (!missing_value && !parse_bool(text, spec.auto_config.pin_curve_family)) {
@@ -684,6 +704,75 @@ int main(int argc, char **argv) {
                  "  Do not guess: the failed_cell lines above carry each cell's own reason "
                  "straight from the fitter, and --report writes all of them.\n",
                  report->coverage.cells_to_fit, report->coverage.cells_failed, spec.hive.r);
+    return verdict(kExitTotalFitFailure);
+  }
+
+  // ── REV-R4 (review C-05): --strict ──────────────────────────────────────────
+  //
+  // The same "scheduled work, fitted nothing" question with the carry exemption
+  // removed. Reached only when the block above did NOT fire, so by construction
+  // this run CARRIED something -- `is_strict_total_fit_failure` is a superset of
+  // `is_total_fit_failure` and differs from it exactly on `cells_carried > 0`.
+  // That is why the two blocks cannot double-print and why this one is written
+  // for the carry-masked shape specifically.
+  //
+  // Placed BEFORE the warning below rather than after it because the two are
+  // alternatives, not layers: the warning's whole text is "the tool is not
+  // judging this, here is why it can't". Under --strict the operator has already
+  // told the tool to judge it, so printing the hedge as well -- headed
+  // "WARNING (exit 0)" -- would contradict the exit code this block returns. The
+  // failed-cell list the warning exists to show is reproduced here, from the same
+  // helper under the same --max-failures cap.
+  //
+  // SAME EXIT CODE, 3. No new number. A script's question is unchanged ("did this
+  // run produce anything?"), the answer under --strict is just stricter about
+  // what counts as producing something; inventing a code would force every
+  // existing consumer to learn it to keep the behaviour it already has. It goes
+  // through `verdict()` for the same reason the other three do: a refused
+  // coverage regression still preempts it with 5.
+  //
+  // NO --r ADVICE HERE, DELIBERATELY. The exit-3 block above names a carry-rate
+  // mismatch as the top suspect; on this shape that advice is the dangerous one.
+  // A run that carried surfaces is a run whose stored records validated for
+  // reuse, so the rate this build used is not what is wrong, and "re-run with a
+  // corrected --r" would fail every re-fit -- refusing every date under the
+  // default guard, or destroying those surfaces with --allow-coverage-regression.
+  // What separates the converged steady state from a real regression is WHICH
+  // cells failed, so that is what this says to compare.
+  if (strict && is_strict_total_fit_failure(*report)) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db-build: TOTAL FIT FAILURE (--strict): %u cells scheduled, "
+                 "0 fitted (%u failed), %u carried.\n"
+                 "  Without --strict this run exits 0: carrying stored surfaces exempts it, "
+                 "because the converged steady state -- permanently-failing cells retried "
+                 "forever beside their healthy carried siblings -- has this exact shape on a "
+                 "database that is entirely healthy. You asked for the strict reading, so it "
+                 "is a failure here: this run SCHEDULED work and produced no new surface.\n",
+                 report->coverage.cells_to_fit, report->coverage.cells_failed,
+                 report->coverage.cells_carried);
+
+    const ReportedFailedCells strict_failed = reported_failed_cells(*report, max_failed_cells);
+    std::fprintf(stderr, "  Cells that failed (%zu shown, %zu elided):",
+                 strict_failed.reported.size(), strict_failed.n_elided);
+    for (const FailedCell &f : strict_failed.reported) {
+      std::fprintf(stderr, " %s/%s", f.date.c_str(), f.symbol.c_str());
+    }
+    std::fprintf(stderr, "\n");
+
+    std::fprintf(stderr,
+                 "  WHAT TO COMPARE: this run's failed-cell list against the PREVIOUS run's. "
+                 "The same cells failing the same way is the converged steady state and this "
+                 "exit is expected on every run -- if that is your database, do not pass "
+                 "--strict. A cell that is NEW, or an old cell with a NEW reason, is a real "
+                 "regression: a fitter or loader change, or a bad config for a newly-added "
+                 "name. The failed_cell lines on stdout carry each cell's own reason and "
+                 "--report writes every one of them, so diff the CSVs.\n"
+                 "  Do NOT reach for --r. This run CARRIED %u stored surface(s), which means "
+                 "they validated for reuse -- the rate this build used is not the thing that "
+                 "is wrong. Re-running at a 'corrected' --r would fail every re-fit and be "
+                 "refused date by date (exit 5), or, with --allow-coverage-regression, would "
+                 "DELETE those %u surfaces.\n",
+                 report->coverage.cells_carried, report->coverage.cells_carried);
     return verdict(kExitTotalFitFailure);
   }
 

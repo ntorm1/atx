@@ -1179,6 +1179,124 @@ TEST(SurfaceDbCarryMaskedFitFailure, DisabledCarryIsNotHealthyCarry) {
       << "the warning must not replace the exit code for a shape that is still dead";
 }
 
+// ── is_strict_total_fit_failure — the CLI's opt-in `--strict` verdict ────────
+//
+// REV-R4 (review C-05). The carry exemption is right and stays: without it a
+// healthy converged database exits 3 on every run and the diagnostic advises an
+// `--r` change that would invalidate every surface in it. But the exemption is
+// wider than the shape it was widened for, and an UNATTENDED scheduler over a
+// database with no standing failures needs "scheduled 250, fitted 0" to be
+// non-zero whatever was carried. `--strict` is that reading; it is deliberately
+// NOT the default, because on `prod-2026-07` (which holds permanently-failing
+// cells) a strict default would be non-zero forever — the very permanently-red
+// signal the exemption removed.
+
+// Anything the plain predicate calls a failure, the strict one does too — it is
+// the same test minus one conjunct. So on a run that carried NOTHING the two
+// agree exactly, and `--strict` changes no exit that was already non-zero.
+TEST(SurfaceDbStrictTotalFitFailure, AgreesWithThePlainPredicateWhenNothingWasCarried) {
+  const SurfaceDbBuildReport dead = coverage_report(9u, 0u, 9u);
+  EXPECT_TRUE(is_total_fit_failure(dead));
+  EXPECT_TRUE(is_strict_total_fit_failure(dead));
+}
+
+// THE POINT OF THE FLAG. One report shape, two modes, two answers: the
+// carry-masked shape (nothing fitted, everything scheduled died, a large healthy
+// population carried past the fitter) is exit 0 + a warning by default and a
+// failure under `--strict`.
+//
+// The reviewer's counter-example and the production steady state are the SAME
+// shape — which is the finding, and the reason this is opt-in rather than the
+// default: no predicate can tell them apart, so the flag is the operator saying
+// which of the two their database is.
+TEST(SurfaceDbStrictTotalFitFailure, CarryMaskedShapeIsAFailureOnlyInStrictMode) {
+  // Add one ticker to a converged 1030-name universe: ~250 cells scheduled, all
+  // die systematically, ~257k healthy cells carried.
+  SurfaceDbBuildReport systematic = coverage_report(250u, 0u, 250u);
+  systematic.coverage.cells_carried = 257'000u;
+  EXPECT_FALSE(is_total_fit_failure(systematic))
+      << "the default must stay 0 — this is the shape C1 exists to protect";
+  EXPECT_TRUE(is_carry_masked_fit_failure(systematic)) << "and the default warns instead";
+  EXPECT_TRUE(is_strict_total_fit_failure(systematic))
+      << "--strict is exactly the reading the carry exemption gave up";
+
+  // The production converged steady state is indistinguishable from it, and
+  // strict calls it a failure too. That is not a defect in the predicate — it is
+  // why `--strict` must not be the default on a database like `prod-2026-07`.
+  SurfaceDbBuildReport converged = coverage_report(3u, 0u, 3u);
+  converged.coverage.cells_carried = 147u;
+  EXPECT_FALSE(is_total_fit_failure(converged));
+  EXPECT_TRUE(is_strict_total_fit_failure(converged));
+}
+
+// THE REGRESSION THAT MATTERS. `--strict` must mean "scheduled work all died",
+// never "nothing happened". A healthy converged run that carried everything and
+// scheduled NOTHING is green in BOTH modes — as are the un-pulled empty window
+// and the plain nothing-to-do resume. `cells_to_fit > 0` is the conjunct that
+// guarantees it and it is retained in strict mode for exactly this reason.
+TEST(SurfaceDbStrictTotalFitFailure, StrictDoesNotChangeAHealthyRunThatScheduledNothing) {
+  // Carried everything, scheduled nothing, lost nothing.
+  SurfaceDbBuildReport carried_all = coverage_report(0u, 0u, 0u);
+  carried_all.coverage.cells_loaded = 150u;
+  carried_all.coverage.cells_carried = 150u;
+  carried_all.coverage.dates_written = 3u;
+  EXPECT_FALSE(is_total_fit_failure(carried_all));
+  EXPECT_FALSE(is_strict_total_fit_failure(carried_all))
+      << "strict must mean 'scheduled work all died', not 'nothing happened'";
+
+  // The nothing-to-do resume: every date already complete.
+  SurfaceDbBuildReport resumed = coverage_report(0u, 0u, 0u);
+  resumed.coverage.cells_loaded = 150u;
+  resumed.coverage.cells_already_present = 150u;
+  resumed.coverage.dates_skipped_complete = 3u;
+  EXPECT_FALSE(is_strict_total_fit_failure(resumed));
+
+  // The un-pulled empty window — the build's convergence guarantee depends on it.
+  EXPECT_FALSE(is_strict_total_fit_failure(SurfaceDbBuildReport{}));
+}
+
+// Partial coverage is normal production output in either mode: a real hive
+// carries unfittable boards, and one fitted cell out of nine is not "nothing".
+TEST(SurfaceDbStrictTotalFitFailure, PartialCoverageIsNotAFailureInEitherMode) {
+  SurfaceDbBuildReport partial = coverage_report(9u, 1u, 8u);
+  partial.coverage.cells_carried = 147u;
+  EXPECT_FALSE(is_total_fit_failure(partial));
+  EXPECT_FALSE(is_strict_total_fit_failure(partial));
+
+  SurfaceDbBuildReport healthy = coverage_report(9u, 9u, 0u);
+  EXPECT_FALSE(is_strict_total_fit_failure(healthy));
+}
+
+// The containment the CLI's block ordering relies on, asserted over the whole
+// small-counter space rather than at a point: strict ⊇ plain, and the two differ
+// EXACTLY where something was carried. If that ever stopped holding, the
+// unconditional exit-3 block and the `--strict` block could both fire for one
+// run and print two contradictory diagnostics — one of which is the `--r` advice
+// that is dangerous on precisely this shape.
+TEST(SurfaceDbStrictTotalFitFailure, IsAStrictSupersetOfThePlainPredicate) {
+  std::size_t strict_only = 0;
+  for (std::uint32_t to_fit = 0; to_fit <= 2; ++to_fit) {
+    for (std::uint32_t ok = 0; ok <= 2; ++ok) {
+      for (std::uint32_t failed = 0; failed <= 2; ++failed) {
+        for (std::uint32_t carried = 0; carried <= 2; ++carried) {
+          SurfaceDbBuildReport r = coverage_report(to_fit, ok, failed);
+          r.coverage.cells_carried = carried;
+          const bool plain = is_total_fit_failure(r);
+          const bool strict = is_strict_total_fit_failure(r);
+          EXPECT_TRUE(!plain || strict)
+              << "plain fires and strict does not, at to_fit=" << to_fit << " ok=" << ok
+              << " failed=" << failed << " carried=" << carried;
+          if (strict && !plain) {
+            ++strict_only;
+            EXPECT_GT(carried, 0u) << "the two may differ ONLY on the carry clause";
+          }
+        }
+      }
+    }
+  }
+  EXPECT_GT(strict_only, 0u) << "the sweep must actually reach the strict-only region";
+}
+
 // ── is_total_config_failure — the SAME trap one stage earlier ───────────────
 //
 // `is_total_fit_failure` only sees cells that were SCHEDULED. When config
