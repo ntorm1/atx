@@ -64,8 +64,9 @@
 //
 // Prints one line per report field to stdout; exits 0 on Ok, 1 on Err (message
 // on stderr), 2 on a usage error (unknown/missing/malformed flag), 3 when the
-// build ran but produced NOTHING — either every symbol failed CONFIG SELECTION
-// (is_total_config_failure) or work was scheduled and no cell fitted
+// build ran but produced NOTHING — every present input file was unreadable
+// (is_total_load_failure), or every symbol failed CONFIG SELECTION
+// (is_total_config_failure), or work was scheduled and no cell fitted
 // (is_total_fit_failure). See atx-vol/docs/surface-db-build.md.
 //
 // One shape exits 0 with a stderr WARNING instead: nothing fitted, something
@@ -95,10 +96,11 @@ namespace {
 
 // The build ran to completion and produced NOTHING. Distinct from 1 (the tool or
 // the db broke, no report) and from 2 (the operator's command line was wrong):
-// the inputs parsed and every symbol died — either at config selection or at the
-// fit. A script can therefore tell "atx is broken" from "your data/rate is wrong".
-// ONE code for both stages: the question a script asks is "did this run produce
-// anything?", and the stderr diagnostic names which stage swallowed it.
+// the inputs parsed and everything died — at INGEST (R1-b: every present file in
+// the window was unreadable), at config selection, or at the fit. A script can
+// therefore tell "atx is broken" from "your data/rate is wrong". ONE code for all
+// three stages: the question a script asks is "did this run produce anything?",
+// and the stderr diagnostic names which stage swallowed it.
 constexpr int kExitTotalFitFailure = 3;
 
 void print_usage(std::FILE *out) {
@@ -470,6 +472,52 @@ int main(int argc, char **argv) {
                  "afterwards KEEPS the surfaces it already produced (FIX-E preserves them through "
                  "a rewrite). Re-run with --retry-disabled to re-select them once the cause is "
                  "fixed, or upsert a config by hand.\n");
+  }
+
+  // R1-b (review C-04). The silent-failure trap at INGEST — earlier than either
+  // predicate below, and invisible to both. When NOT ONE requested date could be
+  // read, the fit stage is handed an empty board span, so `cells_to_fit` and every
+  // config counter are 0 — which is byte-for-byte what a healthy no-op window
+  // looks like. A wholly corrupt input window therefore used to print an empty
+  // stderr and exit 0, and no scheduler could tell it from an intentional
+  // nothing-to-do run. Tested FIRST because it is the most upstream cause: a
+  // config stage that disabled everything did so because it was handed nothing,
+  // and the config diagnostic would send the operator to the wrong place.
+  if (is_total_load_failure(*report)) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db-build: TOTAL LOAD FAILURE: 0 of the requested dates were "
+                 "readable (%zu date(s) produced no board, %zu cell(s) failed to load).\n"
+                 "  NOT ONE board reached the fitter, so nothing was configured, nothing was "
+                 "scheduled, and the database is unchanged. This is NOT an empty window: files "
+                 "were present and every one of them was a real defect. Most likely causes: the "
+                 "hive holds truncated or non-Parquet files (an interrupted pull), the wrong "
+                 "--hive root, or a schema the loader does not accept. Check the date=<d>/"
+                 "data.parquet files in the window with `parquet-tools`/`pyarrow`, or re-pull "
+                 "the window, then re-run. A window with NO files present is a different, quiet "
+                 "shape and still exits 0.\n",
+                 report->n_dates_missing, report->n_load_errors);
+    return kExitTotalFitFailure;
+  }
+
+  // Some dates loaded and some did not. NOT a failure — the readable dates were
+  // built and the database really did gain surfaces — but it must not be silent
+  // either: an unattended run that quietly ingests 12 of 17 dates produces a
+  // database with holes nobody asked for. Exit stays 0; the operator watches the
+  // count. Unreachable when the block above fired (that one requires
+  // `n_dates_loaded == 0` and returns).
+  if (report->n_load_errors > 0) {
+    std::fprintf(stderr,
+                 "atx-vol-surface-db-build: WARNING (exit 0): %zu cell(s) failed to LOAD "
+                 "(%zu date(s) loaded, %zu produced no board).\n"
+                 "  These cells never reached the fitter, so they are in neither cells_ok nor "
+                 "cells_failed and no failed_cell line names them. A present file that is "
+                 "unreadable, truncated, wrong-schema, or missing its market inputs lands here; "
+                 "a date that simply does not carry a symbol does NOT (that is "
+                 "n_coverage_holes %zu, which every sparse universe produces). The dates that "
+                 "did load were built normally, and a re-run after fixing or re-pulling the "
+                 "bad files fills the gaps.\n",
+                 report->n_load_errors, report->n_dates_loaded, report->n_dates_missing,
+                 report->n_coverage_holes);
   }
 
   // The silent-failure trap, one stage EARLIER than the fit: if config selection

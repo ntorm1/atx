@@ -264,6 +264,71 @@ struct ReportedFailedCells {
 reported_failed_cells(const SurfaceDbBuildReport &r,
                       std::size_t max_reported = kSurfaceDbBuildMaxReportedFailedCells) noexcept;
 
+// The SAME silent-green trap one stage earlier still — at INGEST, before either
+// predicate below can see anything at all (R1-b, review C-04).
+//
+// True iff the loader produced NOT ONE readable date (`n_dates_loaded == 0`) while
+// at least one present file was a real defect (`n_load_errors > 0`). That is "the
+// entire requested input is corrupt", and until this predicate existed it was
+// indistinguishable, BY EXIT CODE, from "an intentional no-op window": the CLI's
+// only nonzero verdicts read the config and fit stages, and neither stage ever
+// runs when the ingest yields nothing. The reviewer's isolated reproduction —
+// one `date=.../data.parquet` holding non-Parquet bytes — printed
+// `n_dates_loaded 0 / n_load_errors 1 / cells_to_fit 0 / cells_ok 0`, empty
+// stderr, and exit 0. A scheduler cannot act on that.
+//
+// The counters mean different things and both are load-bearing:
+//   - `n_dates_loaded` is a DATE count: distinct in-range dates that produced at
+//     least one board. Zero means the fit stage was handed an EMPTY board span.
+//   - `n_load_errors` is a CELL count of REAL DEFECTS ONLY — a present file that
+//     is unreadable/unparseable, has the wrong schema, or whose market inputs
+//     quarantined the cell. It deliberately EXCLUDES `n_coverage_holes` (a
+//     present, readable date that simply does not carry that symbol), which every
+//     real sparse hive produces in quantity. Keying on `n_error` instead would
+//     fire on a healthy discover-all build of a sparse universe.
+//
+// Three neighbouring shapes stay green, and the second term is what keeps them so:
+//   - NO DATES REQUESTED / NONE PRESENT (`n_load_errors == 0`) is the un-pulled
+//     window — weekends, holidays, a range ahead of the pull. `n_dates_missing`
+//     is large and nothing is wrong. This is a documented graceful no-op and the
+//     build's convergence guarantee depends on it staying exit 0.
+//   - A HEALTHY CONVERGED RESUME loads its dates fine (`n_dates_loaded > 0`), so
+//     the first term excludes it whatever else the run did.
+//   - PARTIAL corruption (some dates readable, some not) has `n_dates_loaded > 0`
+//     and is NOT a failure — the readable dates were built. The CLI prints a loud
+//     stderr WARNING naming `n_load_errors` and still exits 0, because a window
+//     that produced real surfaces is not a dead build and a scheduler must not
+//     retry it as one.
+//
+// DISJOINT FROM BOTH EXIT-3 PREDICATES BELOW, and from the carry-masked warning,
+// by a single REACHABILITY fact rather than by an algebraic conjunct (the same
+// style of argument `is_total_config_failure` uses for its own carry clause):
+// `n_dates_loaded == 0` holds exactly when the loaded board span is EMPTY —
+// `build_surface_db` inserts a date into `loaded_dates` and pushes a board on the
+// very same branch — and an empty span is handed to BOTH later stages. So
+// `generate_symbol_configs` sees zero symbols (`n_disabled_failed`,
+// `n_disabled_existing`, `n_configured`, `n_skipped_existing` all 0) and
+// `populate_universe_streaming` returns its all-zero coverage before doing
+// anything. Each of the other three predicates requires a STRICTLY POSITIVE term
+// from those zeroed counters — `is_total_config_failure` needs `disabled > 0`,
+// `is_total_fit_failure` needs `cells_to_fit > 0`, `is_carry_masked_fit_failure`
+// needs `cells_carried > 0` — so none of them can fire on any report this one
+// fires on. `SurfaceDbTotalLoadFailure.NeverOverlapsAnotherVerdict` pins the
+// reachability link on a REAL corrupt-window build rather than asserting it.
+//
+// IF THEY EVER DID CO-FIRE, THIS ONE WINS, and the CLI tests it FIRST for that
+// reason: it is the most upstream cause. A config stage that disabled everything
+// because it was handed nothing is a consequence of the corrupt ingest, and
+// telling the operator to fix their universe when their data is unreadable sends
+// them to the wrong place. Both map to the same exit code, so the ordering only
+// decides which diagnostic is printed.
+//
+// Maps to `kExitTotalFitFailure` (3) — no new code. 3 already means exactly "the
+// build ran to completion and produced NOTHING, and here is why"; a corrupt-only
+// window is that, one stage earlier. A fourth code would force every existing
+// script to learn it to keep the same behaviour.
+[[nodiscard]] bool is_total_load_failure(const SurfaceDbBuildReport &r);
+
 // Did this build attempt work and get NOTHING out of it? True iff it scheduled at
 // least one cell (`coverage.cells_to_fit > 0`) and not one of them fitted
 // (`coverage.cells_ok == 0`) — the signature of a systematically wrong build

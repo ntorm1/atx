@@ -1636,5 +1636,141 @@ TEST(BuildSurfaceDb, RetryDisabledReattemptsAStoredDisableAndFitsIt) {
   EXPECT_DOUBLE_EQ(aaa->band_k, tuned_band_k);
 }
 
+// ── R1-b (review C-04): a wholly corrupt input window is not a quiet no-op ───
+//
+// The CLI's only nonzero verdicts read the CONFIG and FIT stages, and neither
+// stage runs when the ingest produced nothing — so a window in which every
+// present date file was unreadable printed `n_dates_loaded 0 / n_load_errors 1 /
+// cells_to_fit 0 / cells_ok 0`, an EMPTY stderr, and exit 0. That is byte-for-byte
+// what an intentional no-op window prints, and a scheduler cannot act on the
+// difference. `is_total_load_failure` is the ingest-stage sibling of the two
+// existing exit-3 predicates; these pin the four shapes it must separate.
+
+// A report with only the INGEST counters set; every other field stays default, so
+// the predicate must not depend on them.
+[[nodiscard]] SurfaceDbBuildReport ingest_report(std::size_t dates_loaded,
+                                                 std::size_t dates_missing, std::size_t load_errors,
+                                                 std::size_t coverage_holes) {
+  SurfaceDbBuildReport r;
+  r.n_dates_loaded = dates_loaded;
+  r.n_dates_missing = dates_missing;
+  r.n_load_errors = load_errors;
+  r.n_coverage_holes = coverage_holes;
+  return r;
+}
+
+// Files were present in the window and EVERY one was a real defect. The only
+// shape here that may fail the build.
+TEST(SurfaceDbTotalLoadFailure, EveryPresentFileCorruptIsFailure) {
+  EXPECT_TRUE(is_total_load_failure(ingest_report(0, 1, 1, 0)));   // the reviewer's repro
+  EXPECT_TRUE(is_total_load_failure(ingest_report(0, 17, 51, 0))); // a whole month, dead
+}
+
+// The un-pulled window: nothing present, nothing broken. This is a documented
+// graceful no-op and the build's convergence guarantee depends on it staying 0 —
+// a July window enumerates calendar days, so weekends and holidays alone make
+// `n_dates_missing` ~9 on a perfectly healthy run.
+TEST(SurfaceDbTotalLoadFailure, UnpulledWindowIsNotFailure) {
+  EXPECT_FALSE(is_total_load_failure(ingest_report(0, 3, 0, 0))); // nothing present
+  EXPECT_FALSE(is_total_load_failure(ingest_report(0, 0, 0, 0))); // nothing requested
+}
+
+// COUNTER CHOICE, pinned. `n_load_errors` is the DEFECT-only cell count; the
+// loader splits `n_coverage_holes` (a present, readable date that does not carry
+// that symbol) out of it structurally. Keying this predicate on the loader's raw
+// `n_error` instead would fire on every healthy sparse discover-all universe.
+TEST(SurfaceDbTotalLoadFailure, CoverageHolesAreNotCorruption) {
+  EXPECT_FALSE(is_total_load_failure(ingest_report(0, 2, 0, 40)));
+  EXPECT_FALSE(is_total_load_failure(ingest_report(3, 9, 0, 40)));
+}
+
+// SOME dates readable, some corrupt. NOT a failure — the readable dates were
+// built and the database really did gain surfaces. The CLI prints a loud stderr
+// WARNING naming the count and exits 0; the exit code must not come back.
+TEST(SurfaceDbTotalLoadFailure, PartialCorruptionIsNotFailure) {
+  EXPECT_FALSE(is_total_load_failure(ingest_report(12, 5, 5, 0)));
+  EXPECT_FALSE(is_total_load_failure(ingest_report(1, 16, 16, 0))); // even 1 of 17 loaded
+}
+
+// The healthy converged resume — the shape every steady-state production run has.
+TEST(SurfaceDbTotalLoadFailure, HealthyConvergedResumeIsNotFailure) {
+  SurfaceDbBuildReport r = ingest_report(3, 9, 0, 0);
+  r.coverage.cells_loaded = 9u;
+  r.coverage.cells_already_present = 9u;
+  r.coverage.dates_skipped_complete = 3u;
+  EXPECT_FALSE(is_total_load_failure(r));
+}
+
+// The reviewer's isolated reproduction, run end-to-end through `build_surface_db`
+// against a scratch hive whose one `date=.../data.parquet` holds non-Parquet
+// bytes — and, in the same shot, the REACHABILITY fact the disjointness argument
+// rests on, PROVED on a real report rather than asserted: zero readable dates
+// means an empty board span, which zeroes every counter the other three
+// predicates need to be positive, so no two verdicts can ever fire together.
+TEST(SurfaceDbTotalLoadFailure, NeverOverlapsAnotherVerdict) {
+  const fs::path root = fresh_dir("corrupt_window");
+  const fs::path hive = root / "hive";
+  const fs::path date_dir = hive / "date=2026-07-01";
+  fs::create_directories(date_dir);
+  {
+    std::ofstream os((date_dir / "data.parquet").string(), std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(os.good());
+    os << "this is not a parquet file";
+  }
+
+  SurfaceDbBuildSpec spec;
+  spec.db_root = (root / "db").string();
+  spec.hive.root_dir = hive.string();
+  spec.hive.date_lo = "2026-07-01";
+  spec.hive.date_hi = "2026-07-01";
+  spec.hive.symbols = {"AAA"};
+  spec.hive.r = 0.03;
+
+  const auto rep = build_surface_db(spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+
+  // The counters the reviewer recorded, reproduced.
+  EXPECT_EQ(rep->n_dates_loaded, std::size_t{0});
+  EXPECT_EQ(rep->n_dates_missing, std::size_t{1});
+  EXPECT_GT(rep->n_load_errors, std::size_t{0});
+  EXPECT_EQ(rep->coverage.cells_to_fit, 0u);
+  EXPECT_EQ(rep->coverage.cells_ok, 0u);
+
+  // The verdict that used to be a silent exit 0.
+  EXPECT_TRUE(is_total_load_failure(*rep));
+
+  // ... and it is the ONLY verdict on this report.
+  EXPECT_FALSE(is_total_config_failure(*rep));
+  EXPECT_FALSE(is_total_fit_failure(*rep));
+  EXPECT_FALSE(is_carry_masked_fit_failure(*rep));
+  EXPECT_EQ(rep->config.n_symbols, 0u)
+      << "the config stage must have been handed an empty board span -- the whole "
+         "disjointness argument rests on it";
+}
+
+// The other side of the same coin, end-to-end: ONE corrupt date beside two good
+// ones is NOT a total load failure. The good dates build, the database is real,
+// and the exit code stays 0 (the CLI warns on stderr instead). Pinned so a future
+// widening of the predicate to "any load error" cannot land quietly — that would
+// fail every partially-pulled production window.
+TEST(SurfaceDbTotalLoadFailure, OneCorruptDateBesideGoodOnesStillBuilds) {
+  tsupport::SyntheticHiveSpec fx; // AAA/BBB/CCC x 3 dates
+  const BuildFixture f = make_build_fixture("partial_corrupt", fx);
+  {
+    const fs::path victim = f.hive / ("date=" + fx.dates[1]) / "data.parquet";
+    std::ofstream os(victim.string(), std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(os.good());
+    os << "this is not a parquet file";
+  }
+
+  const auto rep = build_surface_db(build_spec(f, fx));
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_EQ(rep->n_dates_loaded, std::size_t{2});
+  EXPECT_GT(rep->n_load_errors, std::size_t{0});
+  EXPECT_GT(rep->coverage.cells_ok, 0u) << "the readable dates must still have been built";
+  EXPECT_FALSE(is_total_load_failure(*rep))
+      << "a window that produced real surfaces is not a dead build";
+}
+
 } // namespace
 } // namespace atx::vol

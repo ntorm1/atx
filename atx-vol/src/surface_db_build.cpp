@@ -384,6 +384,22 @@ ReportedFailedCells reported_failed_cells(const SurfaceDbBuildReport &r,
   return ReportedFailedCells{all.first(shown), all.size() - shown};
 }
 
+bool is_total_load_failure(const SurfaceDbBuildReport &r) {
+  // R1-b (review C-04). Two terms, and the header explains why neither may be
+  // dropped or widened:
+  //   `n_dates_loaded == 0`  -- NOT ONE date produced a board, so the fit stage
+  //                             was handed an empty span and every counter the
+  //                             other predicates read is structurally zero.
+  //   `n_load_errors > 0`    -- and the reason is REAL DEFECTS, not absence. This
+  //                             is the defect-only cell count: coverage holes are
+  //                             split out into `n_coverage_holes` by the loader's
+  //                             own structural classification, so a healthy sparse
+  //                             discover-all build cannot trip this.
+  // Together: "every present file in the requested window is unreadable", which
+  // no other predicate in this file can see and which used to exit 0.
+  return r.n_dates_loaded == 0u && r.n_load_errors > 0u;
+}
+
 bool is_total_fit_failure(const SurfaceDbBuildReport &r) {
   // Three conditions, all required (see the header for why none may be dropped):
   // work WAS scheduled, none of it landed, and nothing was CARRIED either.
