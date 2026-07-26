@@ -123,6 +123,51 @@ std::string cache_dir_from_env() {
   return path;
 }
 
+// Snapshot look-ahead depth for the projected replay, overridable by
+// ATX_VOL_PREFETCH_DEPTH for host-specific tuning and for reproducing a prior
+// run's pipeline shape. The DEFAULT is the tuned value, not 1: the projected
+// replay's per-step economics are cheap next to deserializing that step's
+// archive, so at depth 1 the run is load-bound and the loads serialize behind
+// the economics one at a time. Depth is a scheduling knob ONLY — the output is
+// bit-identical at every depth (see RunConfig::prefetch_depth), so an override
+// can cost throughput but can never change a number.
+//
+// An unparseable or out-of-range value falls back to the default rather than
+// failing the run: this is a performance hint, and a typo in an env var must not
+// break a production replay. Capped so a fat-fingered value cannot try to hold
+// the entire clock's snapshots in memory at once.
+std::size_t projected_prefetch_depth() {
+  constexpr std::size_t kDefaultDepth = 8u;
+  constexpr std::size_t kMaxDepth = 64u;
+  std::string raw;
+#if defined(_WIN32)
+  char *env = nullptr;
+  std::size_t len = 0;
+  if (_dupenv_s(&env, &len, "ATX_VOL_PREFETCH_DEPTH") == 0 && env != nullptr) {
+    raw.assign(env);
+    std::free(env);
+  }
+#else
+  if (const char *env = std::getenv("ATX_VOL_PREFETCH_DEPTH")) {
+    raw.assign(env);
+  }
+#endif
+  if (raw.empty()) {
+    return kDefaultDepth;
+  }
+  unsigned long long parsed = 0ull;
+  const char *first = raw.c_str();
+  const auto [end, ec] = std::from_chars(first, first + raw.size(), parsed);
+  if (ec != std::errc{} || end != first + raw.size() || parsed == 0ull || parsed > kMaxDepth) {
+    std::fprintf(stderr,
+                 "warning: ATX_VOL_PREFETCH_DEPTH=%s is not an integer in [1, %llu]; using %llu\n",
+                 raw.c_str(), static_cast<unsigned long long>(kMaxDepth),
+                 static_cast<unsigned long long>(kDefaultDepth));
+    return kDefaultDepth;
+  }
+  return static_cast<std::size_t>(parsed);
+}
+
 // The archive-file fingerprint that build-schedule stamped as `surface_fingerprint`
 // now lives in the library (listed_dispersion_pipeline.cpp `hash_archive_file`, an
 // anonymous-namespace helper byte-for-byte identical to the old example `hash_file`).
@@ -871,7 +916,19 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   // Query route for the priced run — the only run there is.
   RunConfig config;
   config.unpriced = UnpricedLotPolicy::Error;
-  config.snapshot_cache = std::make_shared<SnapshotCache>();
+  config.prefetch_depth = projected_prefetch_depth();
+  // Sized to the look-ahead window plus one spare slot, NOT unbounded. The
+  // default-constructed SnapshotCache this replaces was unbounded, so a 135-session
+  // replay retained all 135 reconstructed snapshots for the whole run and freed them
+  // in one storm at teardown — peak memory and that teardown paid for a strictly
+  // forward-only walk that never looks back.
+  //
+  // depth + 2 is the live working set (base + shifted + depth in flight), and it is
+  // safe at that exact size only because bounded mode evicts in insertion order;
+  // see private_snapshot_cache_capacity in backtest.cpp, which sizes run_backtest's
+  // own private cache identically. This call site must not diverge from it, because
+  // supplying a cache opts OUT of that sizing.
+  config.snapshot_cache = std::make_shared<SnapshotCache>(config.prefetch_depth + 2u);
   if (cold) {
     // Route P canonical (I1): cold certified economics both sides, no fast tier
     // attached. The SAME ProjectionConfig{} constant that project_listed_schedule
@@ -963,9 +1020,43 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   // Record policy so the interpolated live seed marks (not the frozen schedule
   // marks) seed each entry, and Configured economics end to end.
   const auto priced_start = PhaseTimer::now();
+#if defined(ATX_VOL_PROFILE)
+  phase_profile::reset();
+#endif
   ATX_TRY(ListedDispersionStrategy strategy,
           ListedDispersionStrategy::create(schedule, spec.delta_band, ScheduleMarkPolicy::Record));
   ATX_TRY(BacktestResult backtest, run_backtest(clock, strategy, config));
+#if defined(ATX_VOL_PROFILE)
+  {
+    // Same per-region dump run-surface-backtest already emitted, for the route the
+    // `diagnostics` section cannot break down: its whole cost is one `priced_run`
+    // row, so a phase list of five names says only "it is all inside run_backtest".
+    // Written to a DISTINCT filename so a run directory can hold both routes'
+    // profiles; the look-ahead depth is stamped in because it is the variable this
+    // profile is usually being read to explain, and a file that does not name it is
+    // unattributable after the fact.
+    const phase_profile::Snapshot measured = phase_profile::snapshot();
+    const double total_ns = static_cast<double>(
+        measured.nanoseconds[static_cast<unsigned>(phase_profile::Region::BacktestTotal)]);
+    std::ofstream output(run_dir / "projected_profile.tsv", std::ios::binary | std::ios::trunc);
+    if (!output) {
+      return Err(ErrorCode::IoError, "cannot write projected profile");
+    }
+    output << "# prefetch_depth=" << config.prefetch_depth << " sessions=" << backtest.size()
+           << '\n';
+    output << "region\tcalls\ttotal_ms\tpct_backtest\tns_per_call\n" << std::setprecision(17);
+    for (unsigned i = 0; i < phase_profile::kCount; ++i) {
+      const double ns = static_cast<double>(measured.nanoseconds[i]);
+      const double calls = static_cast<double>(measured.calls[i]);
+      output << phase_profile::kNames[i] << '\t' << measured.calls[i] << '\t' << ns / 1.0e6 << '\t'
+             << (total_ns > 0.0 ? 100.0 * ns / total_ns : 0.0) << '\t'
+             << (calls > 0.0 ? ns / calls : 0.0) << '\n';
+    }
+    if (!output) {
+      return Err(ErrorCode::IoError, "cannot flush projected profile");
+    }
+  }
+#endif
   // EVIDENCE CHANNEL FOR THE ZERO-DIVERGENCE CLAIM — TWO GATES, ONE CONTRACT.
   // An empty `mark_divergence` section must mean "every roll fired and none diverged",
   // never "nothing was looking". It takes BOTH checks below to say that, and neither
