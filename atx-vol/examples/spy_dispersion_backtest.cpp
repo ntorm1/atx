@@ -1023,6 +1023,9 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
 #if defined(ATX_VOL_PROFILE)
   phase_profile::reset();
 #endif
+#if defined(ATX_VOL_COUNTERS)
+  counters::reset();
+#endif
   ATX_TRY(ListedDispersionStrategy strategy,
           ListedDispersionStrategy::create(schedule, spec.delta_band, ScheduleMarkPolicy::Record));
   ATX_TRY(BacktestResult backtest, run_backtest(clock, strategy, config));
@@ -1054,6 +1057,26 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
     }
     if (!output) {
       return Err(ErrorCode::IoError, "cannot flush projected profile");
+    }
+  }
+#endif
+#if defined(ATX_VOL_COUNTERS)
+  {
+    // The algorithm counters for the SAME window the profile above times. Read
+    // together they answer a question neither answers alone: the profile says which
+    // phase costs the wall time, and these say whether that phase is doing redundant
+    // work (DuplicateMarkSolves) or irreducible work.
+    const counters::Snapshot measured = counters::snapshot();
+    std::ofstream output(run_dir / "projected_counters.tsv", std::ios::binary | std::ios::trunc);
+    if (!output) {
+      return Err(ErrorCode::IoError, "cannot write projected counters");
+    }
+    output << "counter\tvalue\n";
+    for (unsigned i = 0; i < counters::kCount; ++i) {
+      output << counters::kNames[i] << '\t' << measured.values[i] << '\n';
+    }
+    if (!output) {
+      return Err(ErrorCode::IoError, "cannot flush projected counters");
     }
   }
 #endif
