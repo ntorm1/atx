@@ -4909,3 +4909,89 @@ TEST(PortfolioPricer, SkewAdjustedDelta_HealthyBook_LanesUnchangedByTheFiniteGua
     EXPECT_TRUE(bits_equal(adjusted->gamma[i], raw->gamma[i]));
   }
 }
+
+// ── S1-T1 / 1.3: a reused workspace must never republish the prior snapshot ────
+//
+// The P&L unique solve `(void)`-discarded all three of its `evaluate_batch`
+// statuses while `b_*` / `s_*` are the workspace's RETAINED scratch — resized
+// across snapshots, never cleared. The consumer loop gates every lane on exactly
+// those slots (`b_status[p]`, `isfinite(b_greeks[p].price)`, `s_status[p]`,
+// `isfinite(s_price[p])`, `isfinite(s_iv[p])`), so a batch that failed after
+// writing only part of its span left the untouched lanes holding the PREVIOUS
+// snapshot's mark, IV and Ok status — and the loop stamped them Ok as THIS
+// snapshot's marks. Each leg now poisons its whole group span on a batch-level
+// failure, exactly as solve_uniques does on the price path.
+//
+// HONEST SCOPE. A batch-level failure is not reachable from a public input on
+// this code as it stands: `PricedSurface::evaluate_batch` /
+// `PricedSurfaceView::evaluate_batch` return an error Status only from their own
+// span-shape / overlap validation (or from `american_price_batch_resolved`, whose
+// error set is the same), and the P&L solve builds those spans itself from
+// equal-length subspans of its own buffers. Per-lane model failures travel in the
+// per-lane status column, not the batch Status. So this test cannot be a
+// RED->GREEN regression for the poisoning itself; it pins the REACHABLE half of
+// the same invariant — that a lane which was Ok on the previous snapshot of a
+// REUSED workspace is never republished with that snapshot's numbers — and the
+// fresh-vs-reused bit-identity below is what would catch any stale slot leaking
+// through, including a partially poisoned one.
+TEST(PortfolioPricer, PnlExplainInto_ReusedWorkspaceAcrossSnapshots_NeverRepublishesPriorMarks) {
+  const PnlSurfaces snapshot1;
+  auto pf = Portfolio::create(pnl_multi_book());
+  ASSERT_TRUE(pf.has_value()) << pf.error().to_string();
+  const PortfolioPricer pricer(std::move(*pf));
+  const std::size_t n = pricer.portfolio().n_positions();
+
+  // Snapshot 2 moves every level AND drops uid 2's shifted surface, so uid 2's
+  // lanes — Ok with real numbers in snapshot 1 — must go ModelUnavailable here.
+  const std::int64_t two_hours = static_cast<std::int64_t>(2.0 * 3600.0 * 1e9);
+  const PricedSurface b1 = make_essvi(1, 5, 0.0010);
+  const PricedSurface b2 = make_essvi(2, 5, 0.0010);
+  const PricedSurface b3 = make_essvi(3, 5, 0.0010);
+  const PricedSurface t1 = make_essvi(1, 5, 0.0021, kS + 0.7, kR + 0.001, kNow + two_hours);
+  const PricedSurface t3 = make_essvi(3, 5, 0.0021, kS + 0.7, kR + 0.001, kNow + two_hours);
+  const SurfaceSet base2 = set_of({&b1, &b2, &b3});
+  const SurfaceSet shifted2 = set_of({&t1, &t3});
+
+  PortfolioWorkspace reused_ws;
+  reused_ws.reserve(pricer.portfolio().n_contracts(), n);
+  PnlFrameStore first(n);
+  ASSERT_TRUE(
+      pricer.pnl_explain_into(snapshot1.base(), snapshot1.shifted(), first.view(), reused_ws)
+          .has_value());
+
+  // Every uid-2 lane really did carry finite snapshot-1 numbers, so a republish
+  // would be observable.
+  std::size_t uid2_lanes = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (pricer.portfolio().positions()[i].contract.uid != 2u) {
+      continue;
+    }
+    ++uid2_lanes;
+    ASSERT_EQ(first.status[i], PriceStatus::Ok) << i;
+    ASSERT_TRUE(std::isfinite(first.pv_target[i])) << i;
+  }
+  ASSERT_GT(uid2_lanes, 0u);
+
+  PnlFrameStore second(n);
+  ASSERT_TRUE(pricer.pnl_explain_into(base2, shifted2, second.view(), reused_ws).has_value());
+
+  // A cold workspace can hold no prior snapshot at all, so it is the oracle for
+  // "no retained slot leaked into this pass".
+  PortfolioWorkspace fresh_ws;
+  PnlFrameStore fresh(n);
+  ASSERT_TRUE(pricer.pnl_explain_into(base2, shifted2, fresh.view(), fresh_ws).has_value());
+  expect_pnl_frame_bit_identical(second, fresh);
+
+  for (std::size_t i = 0; i < n; ++i) {
+    SCOPED_TRACE(i);
+    if (pricer.portfolio().positions()[i].contract.uid != 2u) {
+      continue;
+    }
+    EXPECT_EQ(second.status[i], PriceStatus::ModelUnavailable);
+    EXPECT_FALSE(std::isfinite(second.pv_target[i]));
+    EXPECT_FALSE(std::isfinite(second.pnl_total[i]));
+  }
+  EXPECT_TRUE(std::isfinite(second.total.pnl_total));
+  EXPECT_EQ(second.total.n_ok, fresh.total.n_ok);
+  EXPECT_LT(second.total.n_ok, first.total.n_ok);
+}

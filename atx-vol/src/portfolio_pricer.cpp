@@ -1726,9 +1726,28 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                                             std::span<Status>(b_status).subspan(s, gsz),
                                             {},
                                             {}};
-      (void)sb->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
-                               EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic,
-                               base_soa, resolved_price_isa, query_execution, base_needs);
+      // S1-T1/1.3: the batch-level Status is NOT discardable. `b_*` / `s_*` are the
+      // workspace's RETAINED scratch — resized across snapshots, never cleared — and
+      // the consumer loop below gates each lane on exactly those slots. A failed
+      // evaluate_batch can return having written only part of the span (it bails out
+      // of its equal-T run the moment a resolved sub-batch fails), so every lane it
+      // did not reach still holds the PREVIOUS snapshot's IV/mark/greeks and its
+      // PREVIOUS Ok status — which the loop below would then republish as this
+      // snapshot's mark, stamped Ok. Poison the whole group span exactly as
+      // solve_uniques does on the price path, so every lane in it falls to
+      // NumericError instead.
+      const Status base_batch =
+          sb->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
+                             EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic,
+                             base_soa, resolved_price_isa, query_execution, base_needs);
+      if (!base_batch.has_value()) {
+        for (std::uint32_t p = s; p < e; ++p) {
+          b_iv[p] = kNaN;
+          b_price[p] = kNaN;
+          b_greeks[p].price = kNaN;
+          b_status[p] = Err(base_batch.error());
+        }
+      }
     }
     // Shifted surface at the COMMON base maturity T_b: iv only (sig_t).
     PricedSurface::EvaluationSoA sig_soa{std::span<double>(s_iv).subspan(s, gsz),
@@ -1737,9 +1756,21 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                                          std::span<Status>(s_junk_status).subspan(s, gsz),
                                          {},
                                          {}};
-    (void)st->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
-                             EF::Iv, /*analytic=*/false, sig_soa, resolved_price_isa,
-                             query_execution);
+    // Same poisoning contract as the base leg. `s_junk_status` is deliberately
+    // never read (this leg's only consumed output is sig_t = s_iv[p]), so poisoning
+    // s_iv is what actually demotes the lane; the junk columns are poisoned too so
+    // no slot of the retained scratch survives a failed batch holding last
+    // snapshot's value.
+    const Status sig_batch =
+        st->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz), EF::Iv,
+                           /*analytic=*/false, sig_soa, resolved_price_isa, query_execution);
+    if (!sig_batch.has_value()) {
+      for (std::uint32_t p = s; p < e; ++p) {
+        s_iv[p] = kNaN;
+        s_junk[p] = kNaN;
+        s_junk_status[p] = Err(sig_batch.error());
+      }
+    }
     // Shifted surface at the rolled maturity T_t: American mark only (price_target).
     PricedSurface::EvaluationSoA px_soa{std::span<double>(s_junk).subspan(s, gsz),
                                         std::span<double>(s_price).subspan(s, gsz),
@@ -1747,9 +1778,16 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                                         std::span<Status>(s_status).subspan(s, gsz),
                                         {},
                                         {}};
-    (void)st->evaluate_batch(kcol.subspan(s, gsz), std::span<double>(s_tt).subspan(s, gsz),
-                             scol.subspan(s, gsz), EF::Price, /*analytic=*/false, px_soa,
-                             resolved_price_isa, query_execution);
+    const Status px_batch = st->evaluate_batch(
+        kcol.subspan(s, gsz), std::span<double>(s_tt).subspan(s, gsz), scol.subspan(s, gsz),
+        EF::Price, /*analytic=*/false, px_soa, resolved_price_isa, query_execution);
+    if (!px_batch.has_value()) {
+      for (std::uint32_t p = s; p < e; ++p) {
+        s_junk[p] = kNaN;
+        s_price[p] = kNaN;
+        s_status[p] = Err(px_batch.error());
+      }
+    }
 
     for (std::uint32_t p = s; p < e; ++p) {
       const std::uint32_t orig = oci[p];
