@@ -218,39 +218,19 @@ Result<double> trading_hours_between(std::int64_t start_ns, std::int64_t end_ns,
     return Ok(0.0);
   }
 
-  // Fail closed before accruing anything: outside `cal`'s covered window the
-  // closure set is unknown, and the loop below would read "not in the table" as
-  // "open for a full session" -- a silent full-session credit for every real
-  // closure it cannot see. The checked span is exactly the day indices whose
-  // closure status can move the result; the loop's one-day padding on each side
-  // is provably non-contributing (see the header contract and z_lo/z_hi below).
-  //
-  // The narrowing is total, not a bet: |day_index(ns)| <= INT64_MAX / 86400e9
-  // ~= 106752 for every representable `ns`, which is three orders of magnitude
-  // inside int32. `z_first <= z_last` here (end_ns > start_ns), and the covered
-  // window is an interval, so checking both endpoints covers everything between.
-  const auto z_first = static_cast<std::int32_t>(day_index(start_ns));
-  const auto z_last = static_cast<std::int32_t>(day_index(end_ns));
-  if (!cal.covers(z_first) || !cal.covers(z_last)) {
-    return Err(ErrorCode::OutOfRange,
-               "trading_hours_between: interval spans days [" + std::to_string(z_first) + ", " +
-                   std::to_string(z_last) + "] outside the calendar's covered window [" +
-                   std::to_string(cal.first_covered_day()) + ", " +
-                   std::to_string(cal.last_covered_day()) + "] (days since 1970-01-01)");
-  }
-
   const double open_hour = p.session_open_hour_et;
   const double close_hour = open_hour + p.session_span_hours;
 
   // Loop over ET calendar day-numbers that could possibly overlap
   // [start_ns, end_ns). The ET/UTC offset is at most 5h, so padding the UTC
   // day-index range by one full day on each side is always sufficient; days
-  // outside the true overlap contribute exactly 0 once intersected below. That
-  // is also why the coverage check above spans only [z_first, z_last]: the
-  // padding day z_lo closes at most 21:00Z on a day strictly before
-  // `start_ns`'s, and z_hi opens no earlier than 13:30Z on a day strictly
-  // after `end_ns`'s, so neither can survive the intersection whatever the
-  // calendar says about it.
+  // outside the true overlap contribute exactly 0 once intersected below.
+  //
+  // The int32 narrowing is total, not a bet: |day_index(ns)| <= INT64_MAX /
+  // 86400e9 ~= 106752 for every representable `ns`, three orders of magnitude
+  // inside int32.
+  const auto z_first = static_cast<std::int32_t>(day_index(start_ns));
+  const auto z_last = static_cast<std::int32_t>(day_index(end_ns));
   std::int64_t z_lo = static_cast<std::int64_t>(z_first) - 1;
   std::int64_t z_hi = static_cast<std::int64_t>(z_last) + 1;
   if (z_hi - z_lo > kMaxLoopDays) {
@@ -259,11 +239,12 @@ Result<double> trading_hours_between(std::int64_t start_ns, std::int64_t end_ns,
 
   double trading_ns = 0.0;
   for (std::int64_t z = z_lo; z <= z_hi; ++z) {
-    if (is_weekend_day(static_cast<std::int32_t>(z))) {
-      continue;
+    const auto z32 = static_cast<std::int32_t>(z);
+    if (is_weekend_day(z32)) {
+      continue;  // a Saturday is a Saturday at any date, table or no table
     }
-    if (cal.is_holiday(static_cast<std::int32_t>(z))) {
-      continue;
+    if (cal.is_holiday(z32)) {
+      continue;  // a LISTED closure is positive information at any date
     }
 
     const std::int64_t sess_open = et_local_to_utc_ns(z, open_hour);
@@ -272,6 +253,23 @@ Result<double> trading_hours_between(std::int64_t start_ns, std::int64_t end_ns,
     const std::int64_t lo = std::max(start_ns, sess_open);
     const std::int64_t hi = std::min(end_ns, sess_close);
     if (hi > lo) {
+      // FAIL CLOSED here, at the CONTRIBUTION site, so the coverage-checked set
+      // is exactly the contributing set for ANY `p`. Gating on the interval's
+      // own day span [z_first, z_last] instead would leave the two padding days
+      // unchecked, and that is only safe while a session cannot spill across a
+      // UTC midnight -- i.e. while `session_open_hour_et + session_span_hours
+      // <= 19` ET. Both are caller-supplied and unvalidated, so an
+      // extended-hours configuration would silently accrue an UNCOVERED day's
+      // trading time: precisely the "unknown day read as open" defect this
+      // guard exists to close. Cheap, too -- two integer compares on the days
+      // that actually accrue.
+      if (!cal.covers(z32)) {
+        return Err(ErrorCode::OutOfRange,
+                   "trading_hours_between: day " + std::to_string(z32) +
+                       " accrues trading time but lies outside the calendar's covered window [" +
+                       std::to_string(cal.first_covered_day()) + ", " +
+                       std::to_string(cal.last_covered_day()) + "] (days since 1970-01-01)");
+      }
       // Each term is at most one session's worth of ns (~2.7e13), far below
       // double's exact-integer range (2^53), so this widening is exact; the
       // running sum stays exact too for any realistic (or even the

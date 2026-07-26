@@ -303,22 +303,59 @@ TEST(VolTime, VolTimeYearsStraddlingWindowStartFailsClosed) {
 }
 
 TEST(VolTime, VolTimeYearsAtWindowBoundaryDaysSucceeds) {
-  // The window is INCLUSIVE on both ends: an interval that stays within
-  // [2024-01-01, 2028-12-31] is answerable and must not be rejected.
+  // The window is INCLUSIVE on both ends: the first and last covered SESSIONS
+  // are answerable in full and must not be rejected.
   VolTimeParams p;
+  p.alpha = 1.0;
   const auto& cal = VolTimeCalendar::us_default();
-  const auto first_day = ns_utc(2024, 1, 1, 0, 0);
-  const auto res_first = vol_time_years(first_day, first_day + kHourNs, p, cal);
-  ASSERT_TRUE(res_first.has_value()) << res_first.error().to_string();
+  // First covered day 2024-01-01 is itself a listed closure, so the first
+  // covered session is Tue 2024-01-02.
+  const auto first_session = ns_utc(2024, 1, 2, 5, 0);  // 00:00 EST
+  EXPECT_NEAR(ok(trading_hours_between(first_session, first_session + kDayNs, p, cal)), 7.5,
+              1e-9);
+  // Last covered session: Fri 2028-12-29 (2028-12-30/31 are the weekend).
+  const auto last_session = ns_utc(2028, 12, 29, 5, 0);
+  EXPECT_NEAR(ok(trading_hours_between(last_session, last_session + kDayNs, p, cal)), 7.5, 1e-9);
+  // The very next weekday, Mon 2029-01-01, is one day past the window. Its
+  // status is unknown to the table (it IS a real NYSE closure), so it fails
+  // closed rather than accruing a full session.
+  const auto past_end = ns_utc(2029, 1, 1, 5, 0);
+  const auto res = trading_hours_between(past_end, past_end + kDayNs, p, cal);
+  ASSERT_FALSE(res.has_value()) << "silently accrued " << *res << " trading hours";
+  EXPECT_EQ(res.error().code(), ErrorCode::OutOfRange);
+}
 
-  // Last covered day, ending just before midnight UTC on 2028-12-31.
-  const auto last_day = ns_utc(2028, 12, 31, 22, 0);
-  const auto res_last = vol_time_years(last_day, last_day + kHourNs, p, cal);
-  ASSERT_TRUE(res_last.has_value()) << res_last.error().to_string();
+TEST(VolTime, ExtendedHoursPaddingDayOutsideWindowFailsClosed) {
+  // Regression for the review finding: the coverage test must sit at the
+  // ACCRUAL site, not on the interval's own day span.
+  //
+  // The session loop walks one padding day beyond each end of the interval.
+  // Those padding days are non-contributing ONLY while a session cannot cross a
+  // UTC midnight (`session_open_hour_et + session_span_hours <= 19` ET) -- and
+  // both fields are caller-supplied and unvalidated. Here a 09:30-21:30 ET
+  // extended-hours window puts Mon 2020-06-15's close at 01:30Z on 06-16, so
+  // that day accrues 1.5h into an interval whose OWN days are both covered. A
+  // window-vs-interval precheck waves it straight through and silently credits
+  // an uncovered day -- exactly the defect this task closes.
+  VolTimeParams p;
+  p.alpha = 1.0;
+  p.session_open_hour_et = 9.5;
+  p.session_span_hours = 12.0;  // closes 21:30 ET == 01:30Z the NEXT UTC day
+  // Covered window opens Tue 2020-06-16; the padding day Mon 2020-06-15 is not
+  // covered. No listed closures, so nothing skips 06-15 for another reason.
+  const VolTimeCalendar cal({}, day_utc(2020, 6, 16), day_utc(2020, 6, 30));
+  const auto start = ns_utc(2020, 6, 16, 0, 0);   // both interval days covered
+  const auto end = ns_utc(2020, 6, 16, 12, 0);    // ends before 06-16's own open
+  const auto res = trading_hours_between(start, end, p, cal);
+  ASSERT_FALSE(res.has_value())
+      << "accrued " << *res << " h, all of it from the UNCOVERED 2020-06-15 session";
+  EXPECT_EQ(res.error().code(), ErrorCode::OutOfRange);
 
-  // One nanosecond past the last covered day flips it closed.
-  const auto past_end = ns_utc(2029, 1, 1, 0, 0);
-  EXPECT_FALSE(vol_time_years(last_day, past_end + 1, p, cal).has_value());
+  // Same params one day later: the padding day (Tue 2020-06-16) is covered, so
+  // the identical spill-across-midnight shape is answerable and does accrue.
+  const auto ok_start = ns_utc(2020, 6, 17, 0, 0);
+  const auto ok_end = ns_utc(2020, 6, 17, 12, 0);
+  EXPECT_NEAR(ok(trading_hours_between(ok_start, ok_end, p, cal)), 1.5, 1e-9);
 }
 
 TEST(VolTime, DegenerateIntervalOutsideWindowStillReturnsZero) {

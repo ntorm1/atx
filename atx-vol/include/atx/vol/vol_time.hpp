@@ -58,12 +58,20 @@
 // last_covered_day()]`, inclusive, in the same days-since-epoch numbering.
 // Outside it the closure set is simply unknown — and "unknown" must never be
 // read as "open". `trading_hours_between` therefore FAILS CLOSED
-// (`ErrorCode::OutOfRange`) whenever the queried interval spans a day the
-// calendar does not cover, and `vol_time_years` / `time_to_expiry_years`
-// propagate that error; the alternative is a silent full-session credit for
-// every uncovered closure (Memorial Day 2020 accrued a full 7.5h session
-// before this guard existed), which corrupts every vol-time number derived
-// from it without a single visible symptom.
+// (`ErrorCode::OutOfRange`) as soon as an uncovered day would accrue trading
+// time, and `vol_time_years` / `time_to_expiry_years` propagate that error;
+// the alternative is a silent full-session credit for every uncovered closure
+// (Memorial Day 2020 accrued a full 7.5h session before this guard existed),
+// which corrupts every vol-time number derived from it without a single
+// visible symptom.
+//
+// The test is "would this day contribute", not "does the interval lie inside
+// the window", and it is applied per-day at the accrual site. That is what
+// keeps it correct for a caller-supplied session window of ANY width: the
+// session loop walks one padding day beyond each end of the interval, and an
+// extended-hours `VolTimeParams` whose close crosses a UTC midnight makes such
+// a padding day genuinely accrue. A window-vs-interval precheck would wave
+// those two days through.
 //
 // `us_default()`'s window is exactly 2024-01-01 .. 2028-12-31, the span its
 // table enumerates. It is deliberately not wider: the pre-2007 US DST rule
@@ -200,13 +208,13 @@ enum class SettlementSession : std::uint8_t {
 // `end_ns <= start_ns` (a degenerate interval reads no calendar day at all, so
 // it is answerable regardless of coverage).
 //
-// FAILS CLOSED with `ErrorCode::OutOfRange` when any day whose closure status
-// could change the answer falls outside `cal`'s covered window. That set is
-// exactly the day indices `[floor(start_ns/1d), floor(end_ns/1d)]`: the
-// session loop also touches one padding day on each side to absorb the <= 5h
-// ET/UTC offset, but a padding day's session provably lies entirely outside
-// `[start_ns, end_ns)` and contributes nothing, so its closure status is
-// irrelevant.
+// FAILS CLOSED with `ErrorCode::OutOfRange` as soon as a day that would accrue
+// trading time falls outside `cal`'s covered window. The check sits at the
+// ACCRUAL site, so the coverage-checked set is exactly the contributing set for
+// any `p` — including an extended-hours session window whose close spills past
+// a UTC midnight and therefore makes a neighbouring day contribute. Days that
+// contribute nothing (weekends, listed closures, and days the interval simply
+// does not overlap) are never checked: their status cannot move the answer.
 //
 // @param start_ns  interval start, epoch nanoseconds (UTC)
 // @param end_ns    interval end, epoch nanoseconds (UTC), exclusive
