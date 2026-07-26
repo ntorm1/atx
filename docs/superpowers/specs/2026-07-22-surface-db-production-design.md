@@ -113,7 +113,17 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec &spec,
   underlier per panel, same error taxonomy), producing the same
   `OpraBatchResult` shape — so `corpus_board_from_opra` and everything
   downstream (populate, backtests) work unchanged.
-- Per-symbol subset loads use row-group pruning on `underlying` stats.
+- Per-symbol subset loads read the whole date file and filter in memory.
+  **Erratum (2026-07-25, external review P-04).** This line originally read
+  "use row-group pruning on `underlying` stats", which contradicted §2's
+  statement that "per-symbol row-group pruning is a documented future
+  optimization, not built now". §2 is what shipped: `load_opra_hive` always
+  calls `io::read_parquet` on the full date file and filters afterwards, so
+  a one-symbol repair still materializes the whole 4,000-symbol date. The
+  sorted `underlying` layout that makes pruning possible is real and is
+  still there; the pruning reader is not. Corrected to match the code rather
+  than the code changed to match the line — pruning is a genuine
+  optimization, but it is not what this branch built.
 - Deterministic entry order: date-major then symbol-major, byte-identical
   result for any `n_threads` (same contract as `load_opra_daterange`).
 
