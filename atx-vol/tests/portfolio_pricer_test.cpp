@@ -4798,3 +4798,114 @@ TEST(PortfolioPricer, PnlExplain_ReturningOverloadQueriedFromManyThreads_Matches
     expect_pnl_frame_bit_identical(observed[t], *serial);
   }
 }
+
+// ── S1-T1 / 1.4: a non-finite VegaSlope must not poison the whole book's delta ──
+//
+// `PriceOptions::skew_adjusted_delta` publishes `delta + VegaSlope * vega` as the
+// delta column AND as `PriceTotals::delta`. `priced_surface_skew_slope` returns
+// NaN whenever its central FD stencil (k_log +/- 1e-4, mapped back through the
+// surface's own forward) lands where `total_variance` declines to serve -- and
+// `solve_span` computed `vega_slope` AFTER stamping the lane Ok and never checked
+// it. `reduce_price_totals` gates on STATUS alone, so ONE deep-wing NaN slope
+// NaN'd the entire book's delta while every lane still read Ok: the same "no NaN
+// enters a total" breach the four existing Ok-stamps (G1 / FIX-1 / FIX-3 / FIX-5)
+// exist to prevent, reached through the one column those stamps do not cover.
+//
+// Trigger: a strike at DBL_MAX. The contract is NOT degenerate (finite, > 0) and
+// prices cleanly -- a call struck there is worth 0 and every FD Greek is 0 -- but
+// the slope's upper stencil point is `K * exp(+1e-4)`, which overflows the double
+// strike axis, so `total_variance(+inf, T)` is NaN and the slope is NaN.
+//
+// Behaviour chosen for the poisoned lane: DEMOTE IT TO NumericError, not "fall
+// back to the unadjusted delta". That is what this file already does with every
+// other non-finite requested output (solve_span's four Ok-stamps), it keeps the
+// lane NaN-isolated out of the totals, and it never silently publishes a
+// different economic quantity (the RAW delta) under a column the caller asked to
+// be skew-adjusted -- the same reasoning PriceTotals uses for NaN-not-0.0.
+TEST(PortfolioPricer, SkewAdjustedDelta_NonFiniteVegaSlopeLaneDemotedAndTotalsStayFinite) {
+  constexpr double kWingK = (std::numeric_limits<double>::max)();
+  const PricedSurface surface = make_essvi(1, 3);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 100.0, 0.15, Side::Call}, +5.0, 100.0},  // healthy lane
+      {/*id*/ 2, {1, kWingK, 0.15, Side::Call}, +3.0, 100.0}, // NaN skew slope
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value()) << pf.error().to_string();
+  const PortfolioPricer pricer(std::move(*pf));
+
+  // Precondition: WITHOUT the skew flag the wing lane prices fine, so anything the
+  // adjusted run does to it is attributable to the slope and to nothing else.
+  const auto raw = pricer.price(surfaces);
+  ASSERT_TRUE(raw.has_value()) << raw.error().to_string();
+  ASSERT_EQ(raw->size(), 2u);
+  ASSERT_EQ(raw->status[0], PriceStatus::Ok);
+  ASSERT_EQ(raw->status[1], PriceStatus::Ok);
+  ASSERT_EQ(raw->total.n_ok, 2u);
+
+  const auto adjusted = pricer.price(surfaces, PriceOptions{.skew_adjusted_delta = true});
+  ASSERT_TRUE(adjusted.has_value()) << adjusted.error().to_string();
+  const PriceFrame &f = *adjusted;
+  ASSERT_EQ(f.size(), 2u);
+
+  EXPECT_EQ(f.status[0], PriceStatus::Ok);
+  // Pre-fix: Ok, with a NaN delta column and a NaN book delta.
+  EXPECT_EQ(f.status[1], PriceStatus::NumericError);
+  EXPECT_EQ(f.total.n_ok, 1u);
+
+  // The healthy position's aggregate risk survives intact.
+  EXPECT_TRUE(std::isfinite(f.delta[0]));
+  EXPECT_TRUE(std::isfinite(f.total.delta));
+  EXPECT_TRUE(std::isfinite(f.total.vega));
+  EXPECT_TRUE(std::isfinite(f.total.gamma));
+  EXPECT_TRUE(std::isfinite(f.total.pv));
+  EXPECT_TRUE(bits_equal(f.total.delta, f.delta[0]));
+  // ... and the demoted lane is NaN-isolated exactly like every other error lane.
+  EXPECT_FALSE(std::isfinite(f.delta[1]));
+  EXPECT_FALSE(std::isfinite(f.pv[1]));
+}
+
+// The healthy-input half: a book with no pathological wing must be bit-identical
+// under `skew_adjusted_delta` before and after the demotion guard, i.e. the guard
+// only ever fires on a lane whose slope is genuinely non-finite. Pinned against an
+// independently recomputed VegaSlope oracle (h = 1e-4 in k_log, the documented
+// stencil) so a drift in either direction is caught.
+TEST(PortfolioPricer, SkewAdjustedDelta_HealthyBook_LanesUnchangedByTheFiniteGuard) {
+  const PricedSurface surface = make_essvi(1, 3);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 92.0, 0.15, Side::Put}, -4.0, 100.0},
+      {/*id*/ 2, {1, 100.0, 0.25, Side::Call}, +6.0, 100.0},
+      {/*id*/ 3, {1, 108.0, 0.35, Side::Call}, +2.0, 100.0},
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value()) << pf.error().to_string();
+  const PortfolioPricer pricer(std::move(*pf));
+
+  const auto raw = pricer.price(surfaces);
+  const auto adjusted = pricer.price(surfaces, PriceOptions{.skew_adjusted_delta = true});
+  ASSERT_TRUE(raw.has_value() && adjusted.has_value());
+  ASSERT_EQ(adjusted->total.n_ok, 3u);
+
+  constexpr double kFdStep = 1e-4;
+  for (std::size_t i = 0; i < book.size(); ++i) {
+    SCOPED_TRACE(i);
+    const OptionContract &c = book[i].contract;
+    ASSERT_EQ(adjusted->status[i], PriceStatus::Ok);
+    // Independent oracle for VegaSlope = (1 - omega) * (-dSigma/dk / S), omega = 0.
+    const double F = surface.forward_at(c.T);
+    const double k_log = std::log(c.K / F);
+    const double sigma = std::sqrt(surface.total_variance(c.K, c.T) / c.T);
+    const double w_plus = surface.total_variance(F * std::exp(k_log + kFdStep), c.T);
+    const double w_minus = surface.total_variance(F * std::exp(k_log - kFdStep), c.T);
+    const double skew_slope = ((w_plus - w_minus) / (2.0 * kFdStep)) / (2.0 * sigma * c.T);
+    const double vega_slope = -skew_slope / surface.pricing().S;
+    ASSERT_TRUE(std::isfinite(vega_slope));
+    const double w = book[i].qty * book[i].multiplier;
+    EXPECT_TRUE(close(adjusted->delta[i], raw->delta[i] + w * vega_slope * (raw->vega[i] / w)));
+    // Every non-delta column is untouched by the adjustment.
+    EXPECT_TRUE(bits_equal(adjusted->pv[i], raw->pv[i]));
+    EXPECT_TRUE(bits_equal(adjusted->vega[i], raw->vega[i]));
+    EXPECT_TRUE(bits_equal(adjusted->gamma[i], raw->gamma[i]));
+  }
+}

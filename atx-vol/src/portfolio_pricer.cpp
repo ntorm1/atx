@@ -541,6 +541,31 @@ struct ContractPnl {
   return dw_dk / (2.0 * sigma * T);
 }
 
+// The I6 skew-adjusted-delta lane guard: this contract's (already omega-blended)
+// VegaSlope, or nullopt when it is NOT finite.
+//
+// `skew_adjusted_delta` makes `delta + vega_slope * vega` the published delta
+// column AND `PriceTotals::delta`, and `reduce_price_totals` sums Ok lanes on
+// STATUS alone. `priced_surface_skew_slope` legitimately returns NaN on a lane
+// whose central FD stencil steps off the servable/representable strike axis (a
+// deep wing) even though the MARK and every Greek on that lane are perfectly
+// finite -- so an unchecked slope let one such lane NaN the whole book's delta
+// while still reading Ok. A nullopt therefore demotes the lane to NumericError at
+// the caller's Ok-stamp, exactly as a non-finite requested Greek does: the lane is
+// NaN-isolated and excluded from every total. Deliberately NOT a silent fallback
+// to the UNADJUSTED delta -- that would publish a different economic quantity than
+// the caller requested under a column it cannot distinguish, the same reason
+// PriceTotals reports NaN rather than 0.0 for a statistic it did not compute.
+[[nodiscard]] std::optional<double> finite_vega_slope(const SurfaceRef &surf, double K, double T,
+                                                      const StickyParams &sticky) noexcept {
+  const double slope = priced_surface_skew_slope(surf, K, T);
+  const double vega_slope = vega_slope_from_skew_slope(slope, surf.pricing().S, sticky);
+  if (!std::isfinite(vega_slope)) {
+    return std::nullopt;
+  }
+  return vega_slope;
+}
+
 [[nodiscard]] bool same_bits(double a, double b) noexcept {
   return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
 }
@@ -675,19 +700,30 @@ stage_full_greek_seeds(const SurfaceSet &surfaces, std::span<const OptionContrac
       continue;
     }
 
+    // I6 lane guard (S1-T1/1.4): a seed whose skew slope is non-finite is REJECTED
+    // as a candidate rather than staged, so the contract falls through to the
+    // ordinary solve and is re-guarded at that stamp — the same treatment this
+    // stage already gives a seed with a non-finite Greek. `seed_route_matches`
+    // already required a registered surface for every candidate that reaches here.
+    std::optional<double> seed_vega_slope{0.0};
+    if (skew_adjusted_delta) {
+      const SurfaceRef surface = surfaces.find(contract.uid);
+      seed_vega_slope = surface != nullptr
+                            ? finite_vega_slope(*surface, contract.K, contract.T, sticky)
+                            : std::optional<double>{0.0};
+      if (!seed_vega_slope.has_value()) {
+        counts.rejected_candidates += static_cast<std::uint64_t>(std::distance(first, last));
+        continue;
+      }
+    }
+
     ContractPx &out = staged[contract_index];
     out = ContractPx{};
     out.fair_value = seed_g.price;
     out.g = seed_g;
     out.iv = representative.iv();
     out.status = PriceStatus::Ok;
-    if (skew_adjusted_delta) {
-      const SurfaceRef surface = surfaces.find(contract.uid);
-      if (surface != nullptr) {
-        const double slope = priced_surface_skew_slope(*surface, contract.K, contract.T);
-        out.vega_slope = vega_slope_from_skew_slope(slope, surface->pricing().S, sticky);
-      }
-    }
+    out.vega_slope = *seed_vega_slope;
     accepted[contract_index] = std::uint8_t{1};
     ++counts.accepted_unique;
   }
@@ -864,28 +900,46 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
           out.status = PriceStatus::NumericError;
           continue;
         }
+        // S1-T1/1.4: the VegaSlope is part of the REQUESTED delta under
+        // skew_adjusted_delta, so it is swept finite BEFORE the Ok-stamp exactly
+        // like the Greek columns above — a NaN slope demotes the lane instead of
+        // riding an Ok status into the book's delta total.
+        std::optional<double> adjoint_vega_slope{0.0};
+        if (skew_adjusted_delta) {
+          adjoint_vega_slope = finite_vega_slope(*surf, kcol[p], tcol[p], sticky);
+          if (!adjoint_vega_slope.has_value()) {
+            out.status = PriceStatus::NumericError;
+            continue;
+          }
+        }
         b_greeks[p] = gg;
         out.fair_value = gg.price;
         out.g = gg;
+        out.vega_slope = *adjoint_vega_slope;
         out.status = PriceStatus::Ok;
-        if (skew_adjusted_delta) {
-          const double slope = priced_surface_skew_slope(*surf, kcol[p], tcol[p]);
-          out.vega_slope = vega_slope_from_skew_slope(slope, surf->pricing().S, sticky);
-        }
         continue;
       }
       if (!b_status[p].has_value() || !greeks_all_finite(b_greeks[p], greek_needs)) {
         out.status = PriceStatus::NumericError;
         continue;
       }
+      // S1-T1/1.4: sweep the VegaSlope finite BEFORE the Ok-stamp (see the adjoint
+      // arm above) — under skew_adjusted_delta it is a REQUESTED input to the
+      // published delta, so a non-finite one must quarantine its lane, not poison
+      // the book.
+      std::optional<double> lane_vega_slope{0.0};
+      if (skew_adjusted_delta) {
+        lane_vega_slope = finite_vega_slope(*surf, kcol[p], tcol[p], sticky);
+        if (!lane_vega_slope.has_value()) {
+          out.status = PriceStatus::NumericError;
+          continue;
+        }
+      }
       // greeks().price IS the American fair_value (bit-identical, cold-FD invariant).
       out.fair_value = b_greeks[p].price;
       out.g = b_greeks[p];
+      out.vega_slope = *lane_vega_slope;
       out.status = PriceStatus::Ok;
-      if (skew_adjusted_delta) {
-        const double slope = priced_surface_skew_slope(*surf, kcol[p], tcol[p]);
-        out.vega_slope = vega_slope_from_skew_slope(slope, surf->pricing().S, sticky);
-      }
     }
   };
 
