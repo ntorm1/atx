@@ -23,8 +23,8 @@ DispersionStrategy make_dispersion_backtest_strategy(DispersionUniverse universe
   }
 
   LifecycleSpec lifecycle;
-  lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
-  lifecycle.holding = LifecycleSpec::Holding::RollAtHorizon;
+  lifecycle.entry = config.entry;
+  lifecycle.holding = config.holding;
   lifecycle.entry_every_n = config.entry_every_n;
   lifecycle.roll_at_T = config.roll_dte_days / 365.25;
 
@@ -33,6 +33,22 @@ DispersionStrategy make_dispersion_backtest_strategy(DispersionUniverse universe
   hedge.cadence = HedgeSpec::Cadence::Daily;
   hedge.band = config.delta_band;
   return DispersionStrategy{std::move(universe), dispersion, lifecycle, hedge};
+}
+
+DispersionBacktestConfig make_dispersion_ladder_config(double target_dte_days,
+                                                       double gross_index_vega,
+                                                       std::size_t min_names) {
+  DispersionBacktestConfig config;
+  config.target_dte_days = target_dte_days;
+  config.gross_index_vega = gross_index_vega;
+  config.min_names = min_names;
+  config.entry = LifecycleSpec::Entry::EveryStep;
+  config.holding = LifecycleSpec::Holding::HoldToExpiry;
+  // `entry_every_n` is read only under Entry::EveryNDays; pinned to 1 anyway so a
+  // reader of a dumped config cannot mistake the inherited default of 21 for a
+  // cadence this shape honours.
+  config.entry_every_n = 1u;
+  return config;
 }
 
 Result<BacktestResult> run_dispersion_backtest(const Clock &clock, DispersionUniverse universe,
