@@ -20,6 +20,8 @@
 #include <utility>
 #include <vector>
 
+#include "step_mark_memo.hpp" // detail::StepMarkMemo — the L2 settlement mark memo
+
 #include "atx/core/error.hpp"
 #include "atx/vol/counters.hpp"      // counters::ledger — V1 always-on solve ledger (per-step scrape)
 #include "atx/vol/phase_profile.hpp"
@@ -156,84 +158,9 @@ private:
 };
 
 // L2 (AL-solve-wall sprint): per-step per-(unique-contract, base-surface) mark memo.
-// A book-greeks pass at a base date POPULATES it (via PortfolioPricer::retained_marks);
-// the NEXT step's settlement (same base date, the expiring lot still priced by that
-// pass) READS the lot's base mark instead of re-solving it. Keyed by bit-exact
-// (uid,K,T,side) and validated against the uid's base-surface instance id, so a
-// stale/mismatched entry fails closed to a fresh solve. Reset+repopulated on every
-// populated step (holds ONE date). The served mark is bit-identical to the
-// settlement solve (FullGreeks mark == Marks mark, L2 crux gate).
-class StepMarkMemo {
-public:
-  void populate_from(const PortfolioPricer &pricer, const PortfolioWorkspace &ws,
-                     const MarketSnapshot &snap) {
-    pricer.retained_marks(ws, marks_scratch_);
-    entries_.clear();
-    entries_.reserve(marks_scratch_.size());
-    for (const RetainedMark &m : marks_scratch_) {
-      if (m.status != PriceStatus::Ok) {
-        continue; // only Ok marks are servable; a failed one must re-solve / fail closed
-      }
-      const SurfaceRef s = snap.find(m.uid);
-      const std::uint64_t inst = s != nullptr ? s->instance_id() : 0u;
-      entries_[key_of(m.uid, m.K, m.T, m.side)] = Val{inst, m.mark};
-    }
-  }
-
-  [[nodiscard]] std::optional<double> find(std::uint32_t uid, double K, double T, Side side,
-                                           std::uint64_t base_surface_instance) const {
-    const auto it = entries_.find(key_of(uid, K, T, side));
-    if (it == entries_.end() || it->second.instance != base_surface_instance) {
-      return std::nullopt;
-    }
-    return it->second.mark;
-  }
-
-  // Reusable settlement scratch (grow-only; keeps compute_step allocation-free after
-  // warm even on settlement steps).
-  [[nodiscard]] std::vector<Lot> &solve_scratch() {
-    solve_lots_.clear();
-    return solve_lots_;
-  }
-  [[nodiscard]] std::vector<double> &served_scratch(std::size_t n) {
-    served_.assign(n, std::numeric_limits<double>::quiet_NaN());
-    return served_;
-  }
-
-private:
-  struct Key {
-    std::uint32_t uid;
-    std::uint64_t kbits;
-    std::uint64_t tbits;
-    std::uint8_t side;
-    bool operator==(const Key &) const noexcept = default;
-  };
-  struct KeyHash {
-    [[nodiscard]] std::size_t operator()(const Key &k) const noexcept {
-      std::size_t h = std::hash<std::uint32_t>{}(k.uid);
-      const auto mix = [&h](std::uint64_t v) {
-        h ^= std::hash<std::uint64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-      };
-      mix(k.kbits);
-      mix(k.tbits);
-      mix(static_cast<std::uint64_t>(k.side));
-      return h;
-    }
-  };
-  struct Val {
-    std::uint64_t instance;
-    double mark;
-  };
-  [[nodiscard]] static Key key_of(std::uint32_t uid, double K, double T, Side side) noexcept {
-    return Key{uid, std::bit_cast<std::uint64_t>(K), std::bit_cast<std::uint64_t>(T),
-               static_cast<std::uint8_t>(side)};
-  }
-
-  std::unordered_map<Key, Val, KeyHash> entries_;
-  std::vector<RetainedMark> marks_scratch_;
-  std::vector<Lot> solve_lots_;
-  std::vector<double> served_;
-};
+// Defined in `src/step_mark_memo.hpp` so its admission contract has a direct unit
+// test; used unqualified here exactly as when it lived in this file.
+using detail::StepMarkMemo;
 
 [[nodiscard]] bool same_double_bits(double lhs, double rhs) noexcept {
   return std::bit_cast<std::uint64_t>(lhs) == std::bit_cast<std::uint64_t>(rhs);
