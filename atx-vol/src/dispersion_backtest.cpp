@@ -71,14 +71,22 @@ FrictionModel dispersion_effective_frictions(const FrictionModel &base,
   if (!costs.active()) {
     return effective; // exact mid-fill reproduction
   }
-  const double impact_fraction = costs.k * std::pow(std::max(costs.adv_fraction, 0.0), costs.beta);
-  // The impact is a fraction of price, so it adds directly to the price-bps
-  // half-spread lane. If the spec configured no spread kind, selecting PriceBps
-  // here is what turns the impact on at all.
-  effective.spread_kind = FrictionModel::SpreadKind::PriceBps;
-  effective.half_spread_bps = base.spread_kind == FrictionModel::SpreadKind::PriceBps
-                                  ? base.half_spread_bps + 1.0e4 * impact_fraction
-                                  : 1.0e4 * impact_fraction;
+  // REVIEW C-4. The impact rides its OWN additive lane (`FrictionModel::
+  // impact_fraction`) and the configured spread kind is left exactly as the spec
+  // named it. This used to rewrite `spread_kind` to `PriceBps` unconditionally,
+  // which silently DELETED a configured `vol_tick`: `base.vol_tick` survived in
+  // the object, but the engine dispatches on the kind and never read it, so a
+  // legal `VolTicks + impact` spec charged impact ONLY and overstated NAV.
+  //
+  // Additive composition is the semantics both headers already documented —
+  // `fill_price` (dispersion_backtest.hpp) is `mid + direction * (half_spread +
+  // impact)`, and `DispersionFrictionRegime::FrictionedWithImpact`
+  // (dispersion_run.hpp) is "the above PLUS an active square-root impact model".
+  //
+  // Accumulating onto `base.impact_fraction` rather than assigning keeps the
+  // fold composable and never silently drops an impact a caller already set.
+  effective.impact_fraction +=
+      costs.k * std::pow(std::max(costs.adv_fraction, 0.0), costs.beta);
   return effective;
 }
 

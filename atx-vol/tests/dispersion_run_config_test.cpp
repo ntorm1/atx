@@ -319,7 +319,11 @@ TEST(DispersionCostModelTest, ImpactIsConcaveInParticipation) {
   EXPECT_NEAR(large / small, std::pow(2.0, 0.6), 1e-12);
 }
 
-TEST(DispersionCostModelTest, ImpactFoldsIntoThePriceBpsSpreadLane) {
+// REVIEW C-4. The impact occupies its OWN additive lane and never rewrites the
+// configured spread kind. (This test previously asserted the opposite — that any
+// active impact folded the model to `PriceBps` — which is exactly the behaviour
+// that deleted a configured `vol_tick`.)
+TEST(DispersionCostModelTest, ImpactRidesItsOwnAdditiveLaneAndKeepsTheSpreadKind) {
   DispersionCostModel model;
   model.k = 0.02;
   model.beta = 0.6;
@@ -328,21 +332,54 @@ TEST(DispersionCostModelTest, ImpactFoldsIntoThePriceBpsSpreadLane) {
 
   const double impact_fraction = model.k * std::pow(model.adv_fraction, model.beta);
 
-  // With no configured spread, the impact alone selects the price-bps lane.
+  // With no configured spread, the impact alone is the whole execution cost —
+  // and the kind stays `None`, because the impact lane no longer needs a lane
+  // to hide in.
   const FrictionModel from_none = dispersion_effective_frictions(FrictionModel{}, model);
-  EXPECT_EQ(from_none.spread_kind, FrictionModel::SpreadKind::PriceBps);
-  EXPECT_NEAR(from_none.half_spread_bps, 1.0e4 * impact_fraction, 1e-9);
+  EXPECT_EQ(from_none.spread_kind, FrictionModel::SpreadKind::None);
+  EXPECT_NEAR(from_none.impact_fraction, impact_fraction, 1e-15);
+  EXPECT_DOUBLE_EQ(from_none.half_spread_bps, 0.0);
 
-  // With a spread already configured, impact ADDS to it.
+  // With a price-bps spread configured, the spread is preserved UNCHANGED and
+  // the impact is carried alongside it.
   FrictionModel base;
   base.spread_kind = FrictionModel::SpreadKind::PriceBps;
   base.half_spread_bps = 25.0;
   const FrictionModel combined = dispersion_effective_frictions(base, model);
-  EXPECT_NEAR(combined.half_spread_bps, 25.0 + 1.0e4 * impact_fraction, 1e-9);
+  EXPECT_EQ(combined.spread_kind, FrictionModel::SpreadKind::PriceBps);
+  EXPECT_DOUBLE_EQ(combined.half_spread_bps, 25.0);
+  EXPECT_NEAR(combined.impact_fraction, impact_fraction, 1e-15);
 }
 
-TEST(DispersionRunConfigStrict, CostKeysReachTheEngineAsAnAddedHalfSpread) {
+// REVIEW C-4 — the combination the pre-fix code silently discarded. The engine
+// charges `vega * vol_tick + mark * impact_fraction`; the ENGINE-LEVEL charged
+// cost is pinned by `Backtest.C4_ImpactIsChargedOnTopOfAVolTickSpreadNotInsteadOfIt`
+// in backtest_test.cpp, which is the independent additive oracle. This one pins
+// the config seam that used to drop `vol_tick` on the floor.
+TEST(DispersionCostModelTest, C4_AVolTickSpreadSurvivesAnActiveImpactModel) {
+  DispersionCostModel model;
+  model.k = 0.02;
+  model.beta = 0.6;
+  model.adv_fraction = 0.04;
+  ASSERT_TRUE(model.active());
+
+  FrictionModel base;
+  base.spread_kind = FrictionModel::SpreadKind::VolTicks;
+  base.vol_tick = 0.15;
+
+  const FrictionModel combined = dispersion_effective_frictions(base, model);
+  EXPECT_EQ(combined.spread_kind, FrictionModel::SpreadKind::VolTicks)
+      << "an active impact model must not rewrite the configured spread kind";
+  EXPECT_DOUBLE_EQ(combined.vol_tick, 0.15) << "the configured vol-tick spread was discarded";
+  EXPECT_NEAR(combined.impact_fraction, model.k * std::pow(model.adv_fraction, model.beta), 1e-15);
+  // ... and the price-bps lane is untouched, so nothing is charged twice.
+  EXPECT_DOUBLE_EQ(combined.half_spread_bps, 0.0);
+}
+
+TEST(DispersionRunConfigStrict, CostKeysReachTheEngineAsASeparateAdditiveImpactLane) {
   const std::string body = std::string(kBaselineSpec) +
+                           "friction_spread_kind\tvol_ticks\n"
+                           "friction_vol_tick\t0.15\n"
                            "cost_impact_k\t0.02\n"
                            "cost_impact_beta\t0.6\n"
                            "cost_adv_fraction\t0.04\n";
@@ -350,10 +387,13 @@ TEST(DispersionRunConfigStrict, CostKeysReachTheEngineAsAnAddedHalfSpread) {
   const Result<DispersionRunConfig> config = read_dispersion_run_config(path);
   ASSERT_TRUE(config) << config.error().to_string();
 
+  // REVIEW C-4: a spec naming BOTH a vol-tick spread and an impact model must
+  // deliver both to the engine. Pre-fix this arrived as `PriceBps` with the
+  // vol-tick silently gone.
   const DispersionBacktestConfig backtest = dispersion_backtest_config_from(*config);
-  EXPECT_EQ(backtest.run.frictions.spread_kind, FrictionModel::SpreadKind::PriceBps);
-  EXPECT_NEAR(backtest.run.frictions.half_spread_bps,
-              1.0e4 * 0.02 * std::pow(0.04, 0.6), 1e-9);
+  EXPECT_EQ(backtest.run.frictions.spread_kind, FrictionModel::SpreadKind::VolTicks);
+  EXPECT_DOUBLE_EQ(backtest.run.frictions.vol_tick, 0.15);
+  EXPECT_NEAR(backtest.run.frictions.impact_fraction, 0.02 * std::pow(0.04, 0.6), 1e-15);
 }
 
 
@@ -943,10 +983,14 @@ TEST(DispersionRunConfigStrict, ListedEngineConfigCarriesEveryDeclaredExecutionK
   const RunConfig engine = dispersion_engine_run_config_from(*config);
 
   EXPECT_EQ(engine.frictions.spread_kind, FrictionModel::SpreadKind::PriceBps);
-  // The declared 25 bps is FOLDED with the square-root impact term (X6), so what
-  // reaches the engine is strictly wider than the quoted half-spread. Asserting
-  // equality here would have been asserting that impact is ignored.
-  EXPECT_GT(engine.frictions.half_spread_bps, 25.0);
+  // REVIEW C-4: the declared 25 bps reaches the engine UNCHANGED, and the
+  // square-root impact term (X6) reaches it as its own additive lane. This used
+  // to assert `half_spread_bps > 25` because impact was folded into the spread —
+  // the fold that discarded a `VolTicks` base. Both halves are asserted, so
+  // dropping either one is red.
+  EXPECT_DOUBLE_EQ(engine.frictions.half_spread_bps, 25.0);
+  EXPECT_NEAR(engine.frictions.impact_fraction, 0.3 * std::pow(0.05, 0.6), 1e-15);
+  EXPECT_GT(engine.frictions.impact_fraction, 0.0);
   EXPECT_DOUBLE_EQ(engine.frictions.per_contract_cost, 0.65);
   EXPECT_DOUBLE_EQ(engine.frictions.hedge_slippage_bps, 1.5);
   EXPECT_TRUE(engine.financing.shares_carry);

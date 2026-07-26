@@ -397,6 +397,22 @@ struct FrictionModel {
   SpreadKind spread_kind{SpreadKind::None};
   double half_spread_bps{0.0};    // PriceBps: half-spread = mark * bps/1e4 (per share)
   double vol_tick{0.0};           // VolTicks: half-spread = vega * vol_tick (per share)
+  // REVIEW C-4. A size/participation-driven impact term, as a FRACTION of the
+  // mark, charged PER SHARE and IN ADDITION to whichever `spread_kind` lane is
+  // selected — including `None`, which is how a pure-impact run is expressed.
+  //
+  // It is its OWN lane rather than a `half_spread_bps` addend because the spread
+  // and the impact scale on different quantities (vega vs price), so folding one
+  // into the other is exact only when both happen to be price-proportional. The
+  // dispersion route used to fold unconditionally and thereby DELETED a
+  // configured `vol_tick` whenever impact was active; see
+  // `dispersion_effective_frictions`. Additivity is the semantics
+  // dispersion_backtest.hpp's `fill_price` already documents:
+  // `mid + direction * (half_spread + impact)`.
+  //
+  // 0.0 (the default) is bit-identical to the pre-C-4 engine: the added term is
+  // exactly `mark * 0.0`.
+  double impact_fraction{0.0};
   double per_contract_cost{0.0};  // $ per option contract traded
   double hedge_slippage_bps{0.0}; // shares fill at S * (1 +/- bps/1e4)
 };

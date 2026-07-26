@@ -180,6 +180,9 @@ void bind_backtest(py::module_ &m) {
       .def_readwrite("spread_kind", &FrictionModel::spread_kind)
       .def_readwrite("half_spread_bps", &FrictionModel::half_spread_bps)
       .def_readwrite("vol_tick", &FrictionModel::vol_tick)
+      // C-4: the additive market-impact lane — a fraction of the mark, charged on
+      // TOP of whichever `spread_kind` lane is selected (including NONE).
+      .def_readwrite("impact_fraction", &FrictionModel::impact_fraction)
       .def_readwrite("per_contract_cost", &FrictionModel::per_contract_cost)
       .def_readwrite("hedge_slippage_bps", &FrictionModel::hedge_slippage_bps);
 

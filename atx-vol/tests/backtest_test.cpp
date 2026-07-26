@@ -36,7 +36,8 @@
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp" // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/counters.hpp"
-#include "atx/vol/portfolio_pricer.hpp" // OptionContract
+#include "atx/vol/dispersion_backtest.hpp" // DispersionCostModel, dispersion_effective_frictions
+#include "atx/vol/portfolio_pricer.hpp"    // OptionContract
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"         // IStrategy
 #include "atx/vol/surface_archive.hpp"  // write_surface_archive_file, SurfaceArchiveItem
@@ -2260,6 +2261,74 @@ TEST(Backtest, VolTicksRollCloseUsesConfiguredFdOrAnalyticGreekRoute) {
     EXPECT_EQ(fd_counts.get(Counter::SurfaceFullGreekRoutes), 4u);
     EXPECT_EQ(analytic_counts.get(Counter::SurfaceFullGreekRoutes), 4u);
   }
+}
+
+// REVIEW C-4 — a configured vol-tick spread must SURVIVE an active impact model.
+//
+// The contract this pins is the one the headers already state:
+//   * dispersion_backtest.hpp:40-45 — "signed half-spread PLUS square-root impact,
+//     both per share", i.e. `mid + direction * (half_spread + impact)`;
+//   * dispersion_run.hpp:250-254 — FrictionedWithImpact is "THE ABOVE PLUS impact".
+//
+// The oracle is ADDITIVITY OF THE CHARGED COST, not the shape of the folded
+// `FrictionModel`: every friction here is charged on the same |qty| * multiplier,
+// and all three runs take the identical VolTicks execution path, so
+//
+//     cost(spread + impact) == cost(spread only) + cost(impact only)
+//
+// exactly, up to the reassociation of a single add. That makes this an
+// independent oracle — it never repeats the production expression.
+//
+// Before the fix `dispersion_effective_frictions` rewrote ANY active-impact
+// configuration to `SpreadKind::PriceBps`, so the third run charged impact ONLY
+// and this failed by exactly `spread_only->cost[1]` (the whole vol-tick spread).
+TEST(Backtest, C4_ImpactIsChargedOnTopOfAVolTickSpreadNotInsteadOfIt) {
+  const fs::path dir = fresh_dir("c4-vol-ticks-plus-impact");
+  auto clock = Clock::from_manifest(make_evolving_corpus(dir, "SPX", 2));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  DispersionCostModel costs;
+  costs.k = 0.02;
+  costs.beta = 0.6;
+  costs.adv_fraction = 0.04;
+  ASSERT_TRUE(costs.active());
+  const DispersionCostModel inert; // k == 0 => inactive, the identity fold
+
+  const auto run_with = [&](double vol_tick, const DispersionCostModel &model) {
+    DeclarativeStrategy strategy{daily_two_leg_roll_spec()};
+    RunConfig config;
+    config.price.n_threads = 1u;
+    config.price.analytic_greeks = true;
+    config.prefetch_snapshots = false;
+    FrictionModel base;
+    base.spread_kind = FrictionModel::SpreadKind::VolTicks;
+    base.vol_tick = vol_tick;
+    config.frictions = dispersion_effective_frictions(base, model);
+    return run_backtest(*clock, strategy, config);
+  };
+
+  // vol_tick == 0 isolates the impact term while keeping the VolTicks lane (and
+  // therefore the identical marks/vegas) selected in all three runs.
+  const auto spread_only = run_with(0.01, inert);
+  const auto impact_only = run_with(0.0, costs);
+  const auto both = run_with(0.01, costs);
+  ASSERT_TRUE(spread_only.has_value()) << spread_only.error().to_string();
+  ASSERT_TRUE(impact_only.has_value()) << impact_only.error().to_string();
+  ASSERT_TRUE(both.has_value()) << both.error().to_string();
+  ASSERT_EQ(both->size(), 2u);
+
+  // Both components must actually bite, or the additive identity is vacuous.
+  ASSERT_GT(spread_only->cost[1], 0.0);
+  ASSERT_GT(impact_only->cost[1], 0.0);
+
+  const double expected = spread_only->cost[1] + impact_only->cost[1];
+  EXPECT_NEAR(both->cost[1], expected, 1.0e-9 * expected)
+      << "vol-tick spread " << spread_only->cost[1] << " + impact " << impact_only->cost[1]
+      << " != charged " << both->cost[1];
+  // The composed run is strictly more expensive than either component alone —
+  // the economic statement C-4 is about (a spec charging impact only overstates NAV).
+  EXPECT_GT(both->cost[1], impact_only->cost[1]);
+  EXPECT_GT(both->cost[1], spread_only->cost[1]);
 }
 
 TEST(Backtest, DuplicateOpenLotIdsFailClosedBeforePricingOrPartialClose) {

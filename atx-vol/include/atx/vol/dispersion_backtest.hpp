@@ -46,11 +46,21 @@ struct DispersionCostModel {
 [[nodiscard]] double fill_price(double signed_qty, double mid, double half_spread, double adv_frac,
                                 const DispersionCostModel &m) noexcept;
 
-// Fold the square-root impact into `base` as an additional price-bps half-spread.
+// Fold the square-root impact into `base` as its own ADDITIVE component.
+//
+// REVIEW C-4. `base.spread_kind` is preserved exactly as configured and the
+// impact accumulates into `FrictionModel::impact_fraction`, which the engine
+// charges ON TOP of the selected spread lane. This function used to rewrite the
+// kind to `PriceBps` whenever impact was active, which meant a `VolTicks` base
+// silently lost its `vol_tick` (the field survived; the engine dispatches on the
+// kind and never read it) and the run charged impact only. The composed model is
+// the one `fill_price` above already documents:
+//     mid + direction * (half_spread + impact)
+// with `half_spread` from the configured kind and `impact` a fraction of the mark.
+//
 // EXACTNESS NOTE: participation is a per-RUN constant here, so the impact is a
-// constant fraction of price and is therefore exactly representable in the
-// existing PriceBps lane. A per-trade, ADV-varying participation would need an
-// engine-side fill hook (the engine owns execution); that is a deliberate
+// constant fraction of price. A per-trade, ADV-varying participation would need
+// an engine-side fill hook (the engine owns execution); that is a deliberate
 // limitation of this seam, not an approximation hidden inside it.
 [[nodiscard]] FrictionModel dispersion_effective_frictions(const FrictionModel &base,
                                                            const DispersionCostModel &costs);

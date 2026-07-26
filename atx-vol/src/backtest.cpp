@@ -347,6 +347,7 @@ private:
   };
   if (!finite_nonnegative(cfg.frictions.half_spread_bps) ||
       !finite_nonnegative(cfg.frictions.vol_tick) ||
+      !finite_nonnegative(cfg.frictions.impact_fraction) ||
       !finite_nonnegative(cfg.frictions.per_contract_cost) ||
       !finite_nonnegative(cfg.frictions.hedge_slippage_bps)) {
     return Err(ErrorCode::InvalidArgument,
@@ -1820,17 +1821,25 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   // `shares` vector + a per-uid whole-frame delta rescan). Bit-identical output.
   HedgeLedger hedge_ledger;
 
-  // Per-share half-spread under the friction model (0 when SpreadKind::None).
+  // Per-share execution half-spread under the friction model: the selected
+  // `spread_kind` lane (0 when None) PLUS the C-4 impact lane. The two are
+  // separate components because they scale on different quantities — the
+  // vol-tick lane on vega, the impact on the mark — so neither is expressible
+  // inside the other. `impact_fraction == 0.0` (the default) adds exactly 0.0
+  // and is therefore bit-identical to the pre-C-4 engine.
   const auto half_spread = [&cfg](double mark, double vega) -> double {
-    switch (cfg.frictions.spread_kind) {
-    case FrictionModel::SpreadKind::None:
+    const auto spread = [&]() -> double {
+      switch (cfg.frictions.spread_kind) {
+      case FrictionModel::SpreadKind::None:
+        return 0.0;
+      case FrictionModel::SpreadKind::PriceBps:
+        return mark * (cfg.frictions.half_spread_bps / 1.0e4);
+      case FrictionModel::SpreadKind::VolTicks:
+        return vega * cfg.frictions.vol_tick;
+      }
       return 0.0;
-    case FrictionModel::SpreadKind::PriceBps:
-      return mark * (cfg.frictions.half_spread_bps / 1.0e4);
-    case FrictionModel::SpreadKind::VolTicks:
-      return vega * cfg.frictions.vol_tick;
-    }
-    return 0.0;
+    }();
+    return spread + mark * cfg.frictions.impact_fraction;
   };
 
   const auto push_row = [&out](const std::string &date, std::int64_t ts, double p_total,
