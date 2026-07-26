@@ -36,6 +36,8 @@
 #include "atx/vol/dispersion_backtest.hpp" // DispersionBacktestConfig, dispersion_config_from
 #include "atx/vol/dispersion_run.hpp"
 #include "atx/vol/dispersion_workflow.hpp" // universe_at, utc_date_from_ns
+#include "atx/vol/listed_opra.hpp"         // ListedDefinitionTable, write_listed_definitions_file
+#include "atx/vol/occ_ess.hpp"             // read_occ_ess_report_file
 #include "atx/vol/priced_surface.hpp"      // PricedSurface, PricingContext
 #include "atx/vol/surface_archive.hpp"     // write_surface_archive_v2_file
 #include "atx/vol/surface_parity.hpp"      // SliceContext
@@ -494,12 +496,15 @@ struct PvFixture {
 // symbol in `pv_symbols()`, so both the first-session basket and the last-session
 // basket resolve against every date — which is what makes the anchor choice show
 // up as a different BOOK rather than as an error.
+// `include_spy = false` leaves SPY out of every archive (it stays in the
+// manifest label only). That is what makes an index-symbol routing defect
+// OBSERVABLE: a route that takes a hardcoded "SPY" index leg then cannot resolve
+// a uid for it at all, instead of quietly resolving the wrong surface.
 [[nodiscard]] PvFixture make_pv_fixture(std::string_view leaf,
                                         const std::vector<PvUniverseBlock> &blocks,
-                                        const std::string &extra_spec = {},
-                                        std::size_t n_dates = 5,
+                                        const std::string &extra_spec = {}, std::size_t n_dates = 5,
                                         std::size_t n_unused_surfaces = 0,
-                                        bool symbol_derived_uids = false) {
+                                        bool symbol_derived_uids = false, bool include_spy = true) {
   PvFixture fixture;
   fixture.dir = make_run_dir(leaf);
   const fs::path archive_dir = fixture.dir / "surfaces";
@@ -541,11 +546,14 @@ struct PvFixture {
                      (40.0 + static_cast<double>(i)) * drift, now,
                      0.01 + 0.0001 * static_cast<double>(i) + bump));
     }
-    std::vector<SurfaceArchiveItem> items = {SurfaceArchiveItem{"SPY", &index},
-                                             SurfaceArchiveItem{"AAA", &aaa},
-                                             SurfaceArchiveItem{"BBB", &bbb},
-                                             SurfaceArchiveItem{"CCC", &ccc}};
+    std::vector<SurfaceArchiveItem> items;
     items.reserve(4u + n_unused_surfaces);
+    if (include_spy) {
+      items.push_back(SurfaceArchiveItem{"SPY", &index});
+    }
+    items.push_back(SurfaceArchiveItem{"AAA", &aaa});
+    items.push_back(SurfaceArchiveItem{"BBB", &bbb});
+    items.push_back(SurfaceArchiveItem{"CCC", &ccc});
     for (std::size_t i = 0u; i < n_unused_surfaces; ++i) {
       items.push_back(SurfaceArchiveItem{unused_symbols[i], &unused_surfaces[i]});
     }
@@ -1518,6 +1526,190 @@ TEST(DispersionBenchmarkJoin, C6_AShiftedEqualLengthBenchmarkIsRejectedNotSilent
   // cannot tell which file to fix.
   EXPECT_NE(message.find(fixture.dates[1]), std::string::npos) << message;
   EXPECT_NE(message.find(fixture.dates[0]), std::string::npos) << message;
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+// ── The spec's `index_symbol` reaches the file-oriented entry points ──────────
+//
+// `all_symbols`/`universe_at` carried an `index_symbol = "SPY"` DEFAULT, and the
+// corpus build, the schedule build and the replay's reconciliation all took it
+// while the configured symbol sat in scope. A run whose index leg is not SPY
+// therefore fetched, resolved and reconciled against SPY without a word — the
+// same defect class as REVIEW C-15, which had already been fixed once on the
+// projected-VaR route only. The default is now GONE from both declarations, so
+// the compiler is what finds a site that forgets to thread the symbol; these
+// tests pin the two entry points whose routing is observable off the filesystem.
+
+namespace {
+
+// A source spec + universe schedule for a run whose index leg is `index_symbol`.
+// The OPRA root EXISTS but is EMPTY, so every (date, symbol) load misses: the
+// corpus produces nothing and the only thing under test is WHICH symbols the
+// build asked for, which `input_inventory.tsv` records verbatim.
+struct IndexRoutingCorpusFixture {
+  fs::path root;
+  fs::path spec_path;
+  fs::path run_dir;
+};
+
+[[nodiscard]] IndexRoutingCorpusFixture
+make_index_routing_corpus_fixture(std::string_view leaf, std::string_view index_symbol,
+                                  std::string_view date) {
+  IndexRoutingCorpusFixture fixture;
+  fixture.root = make_run_dir(leaf);
+  fixture.spec_path = fixture.root / "source" / "run_spec.tsv";
+  fixture.run_dir = fixture.root / "run";
+  std::error_code error;
+  fs::create_directories(fixture.root / "source", error);
+  fs::create_directories(fixture.root / "opra", error);
+  fs::create_directories(fixture.run_dir, error);
+
+  write_file(fixture.root / "source" / "universe_schedule.tsv",
+             "effective_date\tsymbol\traw_weight\tsource\tas_of\n" +
+                 tsv_row({date, "AAA", "0.5", "test", date}) +
+                 tsv_row({date, "BBB", "0.5", "test", date}));
+
+  std::string spec;
+  spec += tsv_row({"date_lo", date});
+  spec += tsv_row({"date_hi", date});
+  spec += tsv_row({"opra_root", (fixture.root / "opra").string()});
+  spec += tsv_row({"universe_schedule", "universe_schedule.tsv"});
+  spec += tsv_row({"min_names", "2"});
+  spec += tsv_row({"index_symbol", index_symbol});
+  write_file(fixture.spec_path, spec);
+  return fixture;
+}
+
+// `dispersion_build_schedule` gates on OCC ESS authority for every admitted
+// date before it reaches the universe, so a fixture that wants to exercise the
+// universe has to carry that evidence. One minimal well-formed report per date,
+// plus the inventory that cross-checks it — the fingerprint is read back through
+// the production parser rather than recomputed here, so this fixture cannot
+// drift from what `verify_occ_ess_evidence` accepts.
+void write_occ_ess_evidence(const fs::path &run_dir, std::span<const std::string> dates) {
+  const fs::path evidence_dir = run_dir / "occ_ess";
+  std::error_code error;
+  fs::create_directories(evidence_dir, error);
+  std::string inventory = "date\tpath\tn_special_symbols\tsource_fingerprint\n";
+  for (const std::string &date : dates) {
+    ASSERT_EQ(date.size(), 10u) << date;
+    const std::string mm_dd_yy =
+        date.substr(5, 2) + "/" + date.substr(8, 2) + "/" + date.substr(2, 2);
+    const std::string yyyymmdd = date.substr(0, 4) + date.substr(5, 2) + date.substr(8, 2);
+    const fs::path report_path = evidence_dir / (date + ".txt");
+    write_file(report_path,
+               "1THE OPTIONS CLEARING CORPORATION\r\n"
+               " NON-STANDARD SETTLEMENTS MRD REPORT ACTIVITY DATE " +
+                   mm_dd_yy +
+                   " PROGRAM-ID DLVC1910AS\r\n"
+                   " REC PROD PKND SRTK ONN CMPN CMPN SECU UNIT SETL STRK FIXED PROCESS SETTLE\r\n"
+                   "0706  ADVM    OSTK  USD   EU    01     01   ADVM 100  MON 100  3.560000  " +
+                   yyyymmdd + "  20251209\r\n");
+    const auto report = read_occ_ess_report_file(report_path.string());
+    ASSERT_TRUE(report.has_value())
+        << (report.has_value() ? std::string{} : report.error().to_string());
+    inventory += tsv_row({date, report_path.lexically_normal().string(),
+                          std::to_string(report->special_symbols().size()),
+                          std::to_string(report->source_fingerprint())});
+  }
+  write_file(run_dir / "occ_ess_inventory.tsv", inventory);
+}
+
+// The distinct symbols `input_inventory.tsv` records the build as having asked
+// the OPRA loader for, sorted.
+[[nodiscard]] std::vector<std::string> requested_symbols(const fs::path &inventory_path) {
+  const std::vector<std::vector<std::string>> rows = read_tsv_rows(inventory_path);
+  std::vector<std::string> symbols;
+  if (rows.empty()) {
+    return symbols;
+  }
+  const std::size_t symbol_col = column_of(rows.front(), "symbol");
+  if (symbol_col == static_cast<std::size_t>(-1)) {
+    return symbols;
+  }
+  for (std::size_t r = 1; r < rows.size(); ++r) {
+    if (symbol_col < rows[r].size() &&
+        std::find(symbols.begin(), symbols.end(), rows[r][symbol_col]) == symbols.end()) {
+      symbols.push_back(rows[r][symbol_col]);
+    }
+  }
+  std::sort(symbols.begin(), symbols.end());
+  return symbols;
+}
+
+} // namespace
+
+TEST(DispersionIndexRouting, CorpusBuildFetchesTheConfiguredIndexLegNotSpy) {
+  const IndexRoutingCorpusFixture fixture =
+      make_index_routing_corpus_fixture("index_routing_corpus_qqq", "QQQ", "2026-07-10");
+
+  // The build itself cannot admit anything from an empty OPRA root; its Status
+  // is deliberately not asserted. What must hold either way is the symbol set it
+  // requested, which it records before it can know whether a source exists.
+  const Status built =
+      dispersion_build_corpus(fixture.spec_path, fixture.run_dir, DispersionCorpusPolicy{});
+  static_cast<void>(built);
+
+  EXPECT_EQ(requested_symbols(fixture.run_dir / "input_inventory.tsv"),
+            (std::vector<std::string>{"AAA", "BBB", "QQQ"}))
+      << "the corpus build did not fetch the configured index leg QQQ — it took the "
+         "`index_symbol = \"SPY\"` default of `all_symbols` while `index_symbol` was in scope, so "
+         "the whole corpus is built against the wrong index";
+
+  std::error_code error;
+  fs::remove_all(fixture.root, error);
+}
+
+// The SPY-index control: the same route, the same fixture shape, index left at
+// SPY. This is what pins that threading the symbol changed NOTHING for a SPY
+// run — without it the test above would also pass on a build that simply always
+// echoed `index_symbol` and had stopped seeding the fetch set at all.
+TEST(DispersionIndexRouting, CorpusBuildWithASpyIndexIsUnchanged) {
+  const IndexRoutingCorpusFixture fixture =
+      make_index_routing_corpus_fixture("index_routing_corpus_spy", "SPY", "2026-07-10");
+
+  const Status built =
+      dispersion_build_corpus(fixture.spec_path, fixture.run_dir, DispersionCorpusPolicy{});
+  static_cast<void>(built);
+
+  EXPECT_EQ(requested_symbols(fixture.run_dir / "input_inventory.tsv"),
+            (std::vector<std::string>{"AAA", "BBB", "SPY"}));
+
+  std::error_code error;
+  fs::remove_all(fixture.root, error);
+}
+
+TEST(DispersionIndexRouting, ScheduleBuildResolvesTheConfiguredIndexLeg) {
+  // AAA is the index leg and SPY is in NO archive, so the wrong index leg is not
+  // a silently different surface — it is a uid that cannot be resolved at all.
+  const std::vector<PvUniverseBlock> blocks = {
+      PvUniverseBlock{"2026-10-01", {{"BBB", 0.5}, {"CCC", 0.5}}}};
+  const PvFixture fixture =
+      make_pv_fixture("index_routing_schedule", blocks, tsv_row({"index_symbol", "AAA"}),
+                      /*n_dates=*/2, /*n_unused_surfaces=*/0, /*symbol_derived_uids=*/false,
+                      /*include_spy=*/false);
+  ASSERT_TRUE(write_listed_definitions_file((fixture.dir / "definitions.tsv").string(),
+                                            ListedDefinitionTable{})
+                  .has_value());
+  write_occ_ess_evidence(fixture.dir, fixture.dates);
+
+  // The fixture carries no OPRA quotes, so selection admits no roll and the
+  // build fails EITHER WAY. What the index symbol decides is WHERE it fails:
+  // the per-date admission tally is written after the loop that resolves the
+  // universe, so its presence is the evidence that the loop ran to completion.
+  const Status built = dispersion_build_schedule(fixture.dir);
+  ASSERT_FALSE(built.has_value()) << "a fixture with no quotes must not produce a schedule";
+  const std::string message = built.error().to_string();
+  EXPECT_EQ(message.find("SPY"), std::string::npos)
+      << "the schedule build resolved its universe against SPY — it took the `index_symbol = "
+         "\"SPY\"` default of `universe_at` while the configured index leg AAA was in scope, so a "
+         "non-SPY run cannot build a schedule at all: "
+      << message;
+  EXPECT_TRUE(fs::exists(fixture.dir / "quote_rejects.tsv"))
+      << "the build stopped before the end of the per-date loop, i.e. before selection ever ran: "
+      << message;
 
   std::error_code error;
   fs::remove_all(fixture.dir, error);

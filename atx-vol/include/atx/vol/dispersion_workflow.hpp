@@ -67,24 +67,28 @@ struct UniverseRow {
 [[nodiscard]] Result<RunSpec> read_run_spec(const std::filesystem::path &path);
 [[nodiscard]] Status write_resolved_spec(const std::filesystem::path &path, const RunSpec &spec);
 [[nodiscard]] Result<std::vector<UniverseRow>> read_universe(const std::filesystem::path &path);
-// `index_symbol` trails with a default rather than taking a `const RunSpec &`
-// so that every existing caller — including the pybind11 bindings, which are
-// out of scope this sprint — keeps compiling and behaving identically with no
-// edit, and so these pure front-end functions do not acquire a dependency on
-// RunSpec's layout.
+// `index_symbol` trails as a plain `string_view` rather than a `const RunSpec &`
+// so these pure front-end functions do not acquire a dependency on RunSpec's
+// layout. It has NO DEFAULT on purpose: the "SPY" default it used to carry was
+// silently taken by four sites in dispersion_run.cpp that had the configured
+// symbol in scope, so a non-SPY run built its corpus, its schedule and its
+// reconciliation against SPY. Requiring the argument makes the compiler, not a
+// reviewer, the thing that finds the next such site. Pass
+// `RunSpec::index_symbol` / `DispersionRunConfig::universe.index_symbol`.
 [[nodiscard]] std::vector<std::string> all_symbols(std::span<const UniverseRow> rows,
-                                                   std::string_view index_symbol = "SPY");
+                                                   std::string_view index_symbol);
 
 // Point-in-time constituent snapshot effective on `date`. Each `effective_date`
 // block is treated as a FULL vendor-style snapshot: membership is EXACTLY the
 // rows carrying the latest effective_date on/before `date` — so a name present in
 // an earlier block but absent from that latest block has LEFT the basket
 // (removals/reweights are expressible; the basket is not append-only). The index
-// leg is `index_symbol` (default "SPY"), which is never a constituent.
+// leg is `index_symbol` (no default — see `all_symbols` above), which is never a
+// constituent.
 // @return Unavailable if no block is effective on/before `date`.
 [[nodiscard]] Result<DispersionUniverse> universe_at(std::span<const UniverseRow> rows,
                                                      std::string_view date,
-                                                     std::string_view index_symbol = "SPY");
+                                                     std::string_view index_symbol);
 
 // UTC calendar date ("YYYY-MM-DD") of a nanosecond-since-epoch timestamp, via
 // pure integer civil-from-days arithmetic (no locale / no platform time zone).

@@ -156,13 +156,13 @@ TEST(DispersionWorkflow, UniverseAtTreatsEachBlockAsFullPitSnapshotSoNamesCanLea
   };
 
   // Inside the first block: all three constituents.
-  auto early = universe_at(rows, "2026-03-15");
+  auto early = universe_at(rows, "2026-03-15", "SPY");
   ASSERT_TRUE(early) << early.error().to_string();
   EXPECT_EQ(names_of(*early), (std::vector<std::string>{"AAA", "BBB", "CCC"}));
 
   // On/after the reconstitution: CCC has LEFT the basket. Pre-C3 the cumulative
   // latest-row-per-symbol map kept CCC forever (the basket could only grow).
-  auto late = universe_at(rows, "2026-07-01");
+  auto late = universe_at(rows, "2026-07-01", "SPY");
   ASSERT_TRUE(late) << late.error().to_string();
   EXPECT_EQ(names_of(*late), (std::vector<std::string>{"AAA", "BBB"}));
 
@@ -173,12 +173,12 @@ TEST(DispersionWorkflow, UniverseAtTreatsEachBlockAsFullPitSnapshotSoNamesCanLea
   }
 
   // Exactly on the reconstitution date the new block is already effective.
-  auto on_date = universe_at(rows, "2026-06-01");
+  auto on_date = universe_at(rows, "2026-06-01", "SPY");
   ASSERT_TRUE(on_date) << on_date.error().to_string();
   EXPECT_EQ(names_of(*on_date), (std::vector<std::string>{"AAA", "BBB"}));
 
   // Before any block is effective there is no basket.
-  EXPECT_FALSE(universe_at(rows, "2025-12-31"));
+  EXPECT_FALSE(universe_at(rows, "2025-12-31", "SPY"));
 }
 
 // ── M4: the index symbol is a parameter, not a hardcoded "SPY" ───────────────
@@ -190,8 +190,8 @@ TEST(DispersionWorkflow, IndexSymbolIsParameterizedAndNeverAConstituent) {
       row("2026-01-02", "SPY", 0.2),
   };
 
-  // Default index stays "SPY": SPY is the index leg, NDX is a constituent.
-  auto spy = universe_at(rows, "2026-02-01");
+  // With "SPY" as the index: SPY is the index leg, NDX is a constituent.
+  auto spy = universe_at(rows, "2026-02-01", "SPY");
   ASSERT_TRUE(spy) << spy.error().to_string();
   EXPECT_EQ(spy->index.symbol, "SPY");
   EXPECT_EQ(names_of(*spy), (std::vector<std::string>{"AAA", "NDX"}));
@@ -203,7 +203,7 @@ TEST(DispersionWorkflow, IndexSymbolIsParameterizedAndNeverAConstituent) {
   EXPECT_EQ(names_of(*ndx), (std::vector<std::string>{"AAA", "SPY"}));
 
   // all_symbols seeds with the configured index, not a hardcoded one.
-  EXPECT_EQ(all_symbols(rows), (std::vector<std::string>{"AAA", "NDX", "SPY"}));
+  EXPECT_EQ(all_symbols(rows, "SPY"), (std::vector<std::string>{"AAA", "NDX", "SPY"}));
   const std::vector<std::string> with_qqq = all_symbols(rows, "QQQ");
   EXPECT_NE(std::find(with_qqq.begin(), with_qqq.end(), "QQQ"), with_qqq.end());
 }
@@ -971,11 +971,13 @@ TEST(DispersionWorkflow, RunSpecIndexSymbolDefaultsToSpy) {
 
 // ── all_symbols ─────────────────────────────────────────────────────────────
 
-TEST(DispersionWorkflow, AllSymbolsDefaultIsUnchanged) {
+TEST(DispersionWorkflow, AllSymbolsWithASpyIndexIsUnchanged) {
   const std::vector<UniverseRow> rows = make_rows();
-  const std::vector<std::string> symbols = all_symbols(std::span<const UniverseRow>{rows});
+  const std::vector<std::string> symbols = all_symbols(std::span<const UniverseRow>{rows}, "SPY");
   // Pre-L12 behaviour, verbatim: seed "SPY", union the rows, dedup, sort. SPY
-  // appears once even though it is also a constituent row.
+  // appears once even though it is also a constituent row. The argument used to
+  // be an `= "SPY"` default; it is now required (a caller that had the run's
+  // index in scope was silently taking it), and a SPY run is bit-unchanged.
   ASSERT_EQ(symbols.size(), 3u);
   EXPECT_EQ(symbols[0], "AAPL");
   EXPECT_EQ(symbols[1], "MSFT");
@@ -997,9 +999,9 @@ TEST(DispersionWorkflow, AllSymbolsHonoursIndexSymbol) {
 
 // ── universe_at ─────────────────────────────────────────────────────────────
 
-TEST(DispersionWorkflow, UniverseAtDefaultIsUnchanged) {
+TEST(DispersionWorkflow, UniverseAtWithASpyIndexIsUnchanged) {
   const std::vector<UniverseRow> rows = make_rows();
-  const auto out = universe_at(std::span<const UniverseRow>{rows}, "2026-01-05");
+  const auto out = universe_at(std::span<const UniverseRow>{rows}, "2026-01-05", "SPY");
   ASSERT_TRUE(out.has_value()) << out.error().to_string();
   EXPECT_EQ(out->index.symbol, "SPY");
   EXPECT_EQ(out->index.weight, 0.0);

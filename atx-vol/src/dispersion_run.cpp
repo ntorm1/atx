@@ -2570,7 +2570,7 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
                                const DispersionCorpusPolicy &policy) {
   ATX_TRY(RunSpec spec, read_run_spec(source_spec_path));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(spec.universe_path));
-  const std::vector<std::string> symbols = all_symbols(universe_rows);
+  const std::vector<std::string> symbols = all_symbols(universe_rows, spec.index_symbol);
   // L9 (RECONCILE 1): the entry-gate floor reads from the ONE versioned
   // methodology policy rather than a scattered literal. `min_names_entry` == 51,
   // so this is the same gate the inline `51u` enforced — main's example already
@@ -2756,7 +2756,8 @@ Status dispersion_build_schedule(const fs::path &run_dir) {
   if (spec.core_mode && clock.size() < 60u) {
     return Err(ErrorCode::Unavailable, "core mode requires at least 60 admitted dates");
   }
-  const std::vector<std::string> symbols = all_symbols(universe_rows);
+  const std::vector<std::string> symbols =
+      all_symbols(universe_rows, run_config.universe.index_symbol);
   ListedDispersionSchedule schedule;
   std::int64_t active_expiry = 0;
   // F6 (BT-P2-8): per-date quote-admission tally. Persisted below, because a
@@ -2772,7 +2773,8 @@ Status dispersion_build_schedule(const fs::path &run_dir) {
     if (active_expiry != 0 && active_dte > spec.roll_dte_days) {
       continue;
     }
-    ATX_TRY(DispersionUniverse authored, universe_at(universe_rows, ref.date));
+    ATX_TRY(DispersionUniverse authored,
+            universe_at(universe_rows, ref.date, run_config.universe.index_symbol));
     MissingNameSpec missing{MissingNamePolicy::DropRenormalize, spec.min_names};
     ATX_TRY(
         ResolvedUniverse resolved,
@@ -2894,7 +2896,8 @@ Status dispersion_run_backtest(const fs::path &run_dir) {
   }
   ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / "backtest.tsv").string()));
 
-  const std::vector<std::string> symbols = all_symbols(universe_rows);
+  const std::vector<std::string> symbols =
+      all_symbols(universe_rows, run_config.universe.index_symbol);
   std::vector<std::shared_ptr<const MarketSnapshot>> snapshot_owners;
   std::vector<std::vector<ListedOptionQuote>> quote_owners;
   snapshot_owners.reserve(clock.size());
