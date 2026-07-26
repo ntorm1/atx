@@ -123,6 +123,12 @@
 
 namespace atx::vol {
 
+// Forward-declared so the seam can accept the CLI's phase timer by pointer
+// without this header pulling in run_diagnostics.hpp. Defined in
+// atx/vol/run_diagnostics.hpp; the .cpp includes it for the definition. Same
+// convention as `build_listed_dispersion_schedule`'s optional `PhaseTimer *`.
+class PhaseTimer;
+
 // ── The encoded payload struct's ABI ────────────────────────────────────────
 //
 // `ListedContractDefinition` is what ATXDEFS1 encodes, field for field, so it is
@@ -395,15 +401,30 @@ read_definitions_cache(std::string_view cache_path, const ListedDefinitionsCache
 // and the miss path.
 //
 // An EMPTY `cache_dir` disables the cache entirely and this degenerates to
-// `read_listed_definitions_file`.
+// `read_listed_definitions_file`. When disabled, the cache is never consulted,
+// so `timer` receives no `definitions_cache` charge at all — "disabled" is not
+// a miss.
 //
-// Every call logs exactly one HIT or MISS line to stderr, with the rejecting
-// guard's message on a miss. Without it a key that stopped matching — the
-// documented consequence of `hash_bytes` not being stable across processes —
-// would be a permanent 100% miss that still writes a ~300 MB blob every run, and
-// nothing but wall time would say so.
+// Every call where `cache_dir` is non-empty logs exactly one HIT or MISS line
+// to stderr, with the rejecting guard's message on a miss. Without it a key
+// that stopped matching — the documented consequence of `hash_bytes` not being
+// stable across processes — would be a permanent 100% miss that still writes a
+// ~300 MB blob every run, and nothing but wall time would say so (review I6).
+//
+// `timer` (optional, review I6 — "the other half"): when non-null and the
+// cache is consulted, charges a `definitions_cache` phase covering exactly the
+// `read_definitions_cache` lookup call — the guard chain on a hit, or the
+// rejecting guard on a miss. `count` is 1 for a HIT, 0 for a MISS: the shape
+// Task 8's brief specifies, so a reader of the `diagnostics` RunArchive section
+// can tell a cached run from a fast-but-uncached one without grepping stderr.
+// The slurp (shared with the direct path) and a miss's subsequent parse/publish
+// are deliberately NOT included in this phase's wall time — they are costs a
+// no-cache run pays too, and blurring them in here would make "the cache's own
+// cost" unreadable. A null timer (the default) is economically identical to
+// today.
 [[nodiscard]] Result<ListedDefinitionTable> read_listed_definitions_cached(
     std::string_view tsv_path, std::string_view cache_dir,
-    DefinitionsCacheFingerprintCheck check = kDefinitionsCacheFingerprintDefault);
+    DefinitionsCacheFingerprintCheck check = kDefinitionsCacheFingerprintDefault,
+    PhaseTimer *timer = nullptr);
 
 } // namespace atx::vol

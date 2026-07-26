@@ -23,6 +23,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"
 #include "atx/vol/detail/archive_util.hpp"
+#include "atx/vol/run_diagnostics.hpp" // PhaseTimer (optional definitions_cache hit/miss phase, review I6)
 
 namespace atx::vol {
 namespace {
@@ -578,7 +579,8 @@ Result<ListedDefinitionTable> read_definitions_cache(std::string_view cache_path
 
 Result<ListedDefinitionTable> read_listed_definitions_cached(std::string_view tsv_path,
                                                              std::string_view cache_dir,
-                                                             DefinitionsCacheFingerprintCheck check) {
+                                                             DefinitionsCacheFingerprintCheck check,
+                                                             PhaseTimer *timer) {
   // The SAME function `read_listed_definitions_file` uses — not a copy of it
   // (review I2: these eight lines were duplicated verbatim, error strings and
   // all, so the `fread` change would otherwise have had to be made twice and
@@ -604,7 +606,17 @@ Result<ListedDefinitionTable> read_listed_definitions_cached(std::string_view ts
 
   const ListedDefinitionsCacheKey key = definitions_cache_key(contents);
   const fs::path cache_file = fs::path{std::string(cache_dir)} / definitions_cache_filename(key);
+  const auto lookup_start = PhaseTimer::now();
   auto hit = read_definitions_cache(cache_file.string(), key, check);
+  if (timer) {
+    // I6 — "the other half". `count` is the hit/miss flag itself (1 = HIT,
+    // 0 = MISS), the shape Task 8's brief specifies, so a `diagnostics` reader
+    // can tell a cached run from a fast-but-uncached one without grepping the
+    // stderr line below. Timed span is deliberately JUST the lookup call: the
+    // slurp above is a cost every path pays (cache or not), and a miss's
+    // parse/publish below are the no-cache cost, not the cache's own cost.
+    timer->add("definitions_cache", lookup_start, hit ? 1u : 0u);
+  }
   if (hit) {
     // OBSERVABILITY, not decoration. `atx::core::hash_bytes` documents itself as
     // deterministic only WITHIN one process; the whole key rests on it also

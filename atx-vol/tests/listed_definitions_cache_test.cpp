@@ -18,6 +18,7 @@
 #include "atx/vol/data.hpp"               // iso_to_ns
 #include "atx/vol/detail/archive_util.hpp" // crc32c (independent CRC recompute)
 #include "atx/vol/listed_opra.hpp"
+#include "atx/vol/run_diagnostics.hpp"     // PhaseTimer (definitions_cache hit/miss phase, review I6)
 
 #include <gtest/gtest.h>
 
@@ -303,6 +304,55 @@ TEST(ListedDefinitionsCache, AbiFoldMovesWhenTheEncodedShapeMoves) {
   const std::uint64_t perturbed = atx::core::hash_bytes(
       static_cast<const void *>(perturbed_shape), sizeof perturbed_shape);
   EXPECT_NE(live, perturbed) << "abi_fold does not depend on the field offsets it claims to pin";
+}
+
+// GATE on the property the WHOLE format rests on, and which its own dependency
+// disclaims. `atx/core/hash.hpp:13-15` says hash_bytes returns the same u64 for
+// identical bytes "within one process — NOT stable across process restarts or
+// platforms". Every one of the five key fields is compared on a cache read, so
+// an unstable `content_hash` is never a bad serve — but it IS a permanent 100%
+// miss that re-publishes a ~300 MB blob on every single run, forever, and since
+// `abi_fold` is hash-derived too it would also change the cache FILENAME every
+// run, so the directory would grow without bound. That is invisible in
+// correctness terms and visible only in wall time, which is why it is pinned
+// here rather than left to a header comment.
+//
+// PROCEDURE ACTUALLY RUN (Wave E T7 fix 1, item 2): this exact test binary was
+// invoked as three SEPARATE OS process launches of
+// `atx-vol-tests.exe --gtest_filter=ListedDefinitionsCache.ContentHashAndAbiFoldAreStableAcrossProcesses`,
+// each its own `bin\atx-vol-tests.exe` invocation from a fresh shell command (not
+// three assertions inside one run — a single process could not test cross-
+// process stability). All three printed the identical
+// `content_hash=0xbe2185a9042c2062 abi_fold=0x3ab6dd71e67cd631`; see the fix
+// report for the three raw stdout captures. If an ankerl bump or a compiler
+// change ever moves either value, this test goes RED and
+// `kDefinitionsParserRevision` / the cache's viability must be revisited — that
+// is the intended failure, not a nuisance.
+TEST(ListedDefinitionsCache, ContentHashAndAbiFoldAreStableAcrossProcesses) {
+  // A fixed byte string, not a file: the property under test is the hash, not
+  // the I/O. Includes a NUL and a high byte so the whole range is exercised.
+  static const std::string kProbe =
+      std::string("ATX_LISTED_DEFINITIONS\t1\n", 25) + std::string(1, '\0') +
+      std::string("\xff\x00\x7f zebra 2026-06-05\t101\tSPY   260717C00600000\n", 48);
+  ASSERT_EQ(kProbe.size(), 74u) << "anti-vacuity: the probe is not the string this test pins";
+
+  const ListedDefinitionsCacheKey key = definitions_cache_key(kProbe);
+  std::printf("[T7 hash-stability] content_hash = 0x%016llx  abi_fold = 0x%016llx\n",
+              static_cast<unsigned long long>(key.content_hash),
+              static_cast<unsigned long long>(key.abi_fold));
+  std::fflush(stdout);
+
+  EXPECT_EQ(key.content_hash, 0xbe2185a9042c2062ull)
+      << "hash_bytes is no longer stable across processes/builds — ATXDEFS1 would miss forever";
+  EXPECT_EQ(key.abi_fold, 0x3ab6dd71e67cd631ull)
+      << "definitions_cache_abi_fold moved: either the struct changed (see the shape pin) or "
+         "hash_bytes is no longer stable";
+
+  // Negative control: a one-byte difference must move the hash, so the equality
+  // above is a real assertion and not a constant that any input would satisfy.
+  std::string perturbed = kProbe;
+  perturbed[0] = 'a';
+  EXPECT_NE(definitions_cache_key(perturbed).content_hash, key.content_hash);
 }
 
 // ── detail::read_whole_file — the shared slurp (review I2) ──────────────────
@@ -885,6 +935,60 @@ TEST(ListedDefinitionsCache, CachedSeamSurvivesAnUnusableCacheDirectory) {
   auto uncached = read_listed_definitions_cached(tsv.string(), "");
   ASSERT_TRUE(uncached);
   expect_rows_bit_identical(*direct, *uncached);
+}
+
+// GATE (review I6, "the other half"). The seam's stderr HIT/MISS lines
+// (`ca74f68`) are observability for a human tailing a log; they do not reach a
+// `diagnostics` RunArchive reader, which has no other way to tell a fast run
+// from a cached one. `read_listed_definitions_cached` now takes an optional
+// `PhaseTimer *` and charges a `definitions_cache` phase whose `count` IS the
+// hit/miss flag (1 = HIT, 0 = MISS) — the shape Task 8's brief specifies for
+// this exact phase. Exercised directly on the seam rather than only through a
+// CLI, since no CLI wiring exists yet (that is Task 8's job, out of scope
+// here).
+TEST(ListedDefinitionsCache, CachedSeamChargesADefinitionsCachePhaseWithHitMissCount) {
+  const fs::path dir = scratch_dir("phase_timer");
+  const fs::path tsv = dir / "definitions.tsv";
+  const fs::path cache = dir / "cache";
+  ASSERT_TRUE(write_listed_definitions_file(tsv.string(), sample_table()));
+
+  // First call: the cache dir does not exist yet, so this must be a MISS.
+  PhaseTimer miss_timer{"definitions_cache"};
+  auto miss = read_listed_definitions_cached(tsv.string(), cache.string(),
+                                             kDefinitionsCacheFingerprintDefault, &miss_timer);
+  ASSERT_TRUE(miss) << (miss ? std::string{} : miss.error().to_string());
+  ASSERT_EQ(miss_timer.phases().size(), 1u) << "the phase must be charged exactly once";
+  EXPECT_EQ(miss_timer.phases().front().name, "definitions_cache");
+  EXPECT_EQ(miss_timer.phases().front().count, 0u) << "a MISS must charge count=0";
+
+  // Second call: the first call published the cache, so this must be a HIT.
+  PhaseTimer hit_timer{"definitions_cache"};
+  auto hit = read_listed_definitions_cached(tsv.string(), cache.string(),
+                                            kDefinitionsCacheFingerprintDefault, &hit_timer);
+  ASSERT_TRUE(hit) << (hit ? std::string{} : hit.error().to_string());
+  ASSERT_EQ(hit_timer.phases().size(), 1u);
+  EXPECT_EQ(hit_timer.phases().front().count, 1u)
+      << "a HIT must charge count=1 — this is the NEGATIVE CONTROL against the "
+         "MISS assertion above: the same phase must be able to read either value";
+
+  // NEGATIVE CONTROL: an empty `cache_dir` disables the cache entirely (per the
+  // header) — it is never CONSULTED, so it must not be charged at all, not even
+  // as a count=0 "miss". `add()` was never called, so `elapsed` is provably its
+  // constructed zero, not merely a fast-but-real measurement.
+  PhaseTimer disabled_timer{"definitions_cache"};
+  auto disabled = read_listed_definitions_cached(
+      tsv.string(), "", kDefinitionsCacheFingerprintDefault, &disabled_timer);
+  ASSERT_TRUE(disabled);
+  ASSERT_EQ(disabled_timer.phases().size(), 1u);
+  EXPECT_EQ(disabled_timer.phases().front().count, 0u);
+  EXPECT_EQ(disabled_timer.phases().front().elapsed, PhaseTimer::Duration::zero())
+      << "a disabled cache must not be charged at all — disabled is not a miss";
+
+  // NEGATIVE CONTROL: a null timer (the default) must not crash and must not be
+  // required — it is the "economically identical to today" path the header
+  // promises.
+  auto no_timer = read_listed_definitions_cached(tsv.string(), cache.string());
+  ASSERT_TRUE(no_timer);
 }
 
 // ── Measurement harness (NOT a gate) ────────────────────────────────────────
