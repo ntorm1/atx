@@ -176,12 +176,24 @@ public:
   // reconstructed surfaces (WS-ZC1).
   [[nodiscard]] bool borrows_views() const noexcept { return !views_.empty(); }
 
-  // Backing-agnostic surface access (archive order). Always non-empty after a
-  // successful load, whichever backing was chosen.
+  // Backing-agnostic surface access (archive order), whichever backing was chosen.
+  //
+  // NOT always non-empty (this used to claim it was): `load`'s subset-miss path —
+  // a requested uid subset that matched no directory entry — deliberately keeps an
+  // EMPTY SurfaceSet rather than falling back to a whole-board read, so a
+  // successfully loaded snapshot can legally own zero surfaces. Callers that want
+  // "the date's first surface" must check `n_surfaces()` (or the null handle below)
+  // before using it.
   [[nodiscard]] std::size_t n_surfaces() const noexcept {
     return views_.empty() ? surfaces_.size() : views_.size();
   }
+  // Out of range (which includes EVERY index of a zero-surface snapshot) yields a
+  // NULL handle — `ref == nullptr`, checkable exactly like `find()`'s result —
+  // instead of indexing an empty backing out of bounds.
   [[nodiscard]] SurfaceRef surface_at(std::size_t i) const noexcept {
+    if (i >= n_surfaces()) {
+      return SurfaceRef{};
+    }
     return views_.empty() ? SurfaceRef{&surfaces_[i]} : SurfaceRef{&views_[i]};
   }
 

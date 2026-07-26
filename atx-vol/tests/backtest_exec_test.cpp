@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <new>
 #include <span>
@@ -1193,7 +1194,79 @@ namespace {
   return cfg;
 }
 
+// Trades nothing and names a uid the corpus does not hold, so the engine's private
+// snapshot cache subsets on it and EVERY date loads through the subset-miss path
+// into a legal zero-surface snapshot.
+class AbsentNameStrategy final : public IStrategy {
+ public:
+  explicit AbsentNameStrategy(std::uint32_t uid) noexcept : uids_{uid} {}
+  Status on_step(const MarketSnapshot&, std::size_t, PortfolioState&, std::uint64_t&) override {
+    return atx::core::Ok();
+  }
+  [[nodiscard]] std::span<const std::uint32_t> referenced_uids() const noexcept override {
+    return uids_;
+  }
+
+ private:
+  std::array<std::uint32_t, 1> uids_;
+};
+
 }  // namespace
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Zero-surface snapshot + finance_premium (plan 1.12).
+//
+// `MarketSnapshot::load`'s subset-miss path LEGALLY yields a snapshot owning no
+// surfaces (a book/strategy naming only uids absent from this partition — the load
+// deliberately keeps an empty SurfaceSet instead of falling back to a whole-board
+// read). The cash-carry accrual then sourced its base-date rate from
+// `base->surface_at(0)`, an unbounded index into an empty backing, and the null
+// `SurfaceRef` that produced dereferenced null in `pricing()`.
+//
+// There is no rate to accrue at on such a date, so the engine follows the step
+// loop's own missing-data convention: a FLAT balance carries no economics (the
+// hedge-share ledger's `n != 0.0` rule), a LIVE one is a valuation failure that
+// must fail closed rather than silently drop a step of financing out of NAV.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(BacktestExec, ZeroSurfaceSnapshotWithLiveCashAndFinancePremiumFailsClosed) {
+  const fs::path dir = fresh_dir("zero-surface-live-cash");
+  const Clock clock = offset_clock(dir, "SPX", {0, 20});
+  AbsentNameStrategy strat{kUid + 1000u};  // no such uid in the archive
+
+  RunConfig cfg;
+  cfg.price.n_threads = 1u;
+  cfg.prefetch_snapshots = false;
+  cfg.financing.finance_premium = true;
+  cfg.financing.initial_cash = 1.0e6;  // a LIVE balance: the accrual has economics
+
+  const auto r = run_backtest(clock, strat, cfg);
+  ASSERT_FALSE(r.has_value()) << "a live cash balance carried across a date with no base surface "
+                                 "must fail closed, not read surface_at(0) out of bounds";
+  EXPECT_EQ(r.error().code(), ErrorCode::NotFound);
+}
+
+TEST(BacktestExec, ZeroSurfaceSnapshotWithZeroCashAndFinancePremiumCarriesNothing) {
+  const fs::path dir = fresh_dir("zero-surface-flat-cash");
+  const Clock clock = offset_clock(dir, "SPX", {0, 20});
+  AbsentNameStrategy strat{kUid + 1000u};
+
+  RunConfig cfg;
+  cfg.price.n_threads = 1u;
+  cfg.prefetch_snapshots = false;
+  cfg.financing.finance_premium = true;
+  cfg.financing.initial_cash = 0.0;  // flat: `cash * (growth - 1)` is 0.0 at any rate
+
+  const auto r = run_backtest(clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  ASSERT_EQ(r->size(), 2u);
+  for (std::size_t i = 0; i < r->size(); ++i) {
+    EXPECT_TRUE(bits_equal(r->financing[i], 0.0)) << "financing row " << i;
+    EXPECT_TRUE(bits_equal(r->cash[i], 0.0)) << "cash row " << i;
+    // `==`, not bit-equality: row 0's NAV is `-ex->cost` over a zero cost, i.e. a
+    // NEGATIVE zero. The sign of zero carries no economics.
+    EXPECT_EQ(r->nav[i], 0.0) << "nav row " << i;
+  }
+}
 
 // Gate: the survivor's expiry-day cost drops 11 -> 6 s/u; warm and no-churn steps
 // are unchanged. Same fixed book as solve_ledger_test's expiry-day scenario.

@@ -2228,10 +2228,29 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     if (cfg.financing.finance_premium) {
       // Backing-agnostic (WS-ZC1): index 0 is the first archive-order surface whether
       // this snapshot owns its surfaces or borrows mapped views.
-      const double r = base->surface_at(0).pricing().r; // base-date rate
-      const double growth = std::exp(r * dt);
-      financing += cash * (growth - 1.0); // cash carry on the pre-step balance
-      cash *= growth;                     // apply to the ledger
+      //
+      // A subset-miss load legally yields a snapshot owning ZERO surfaces, so there
+      // may be no base-date rate to accrue at. Disposition follows the hedge-share
+      // ledger's rule immediately below: a FLAT slot carries no economics — with
+      // cash == 0.0 both `cash * (growth - 1.0)` and `cash *= growth` are exact
+      // no-ops for every finite r, so skipping is bit-identical — while a LIVE
+      // balance is a valuation failure. Silently skipping THAT would delete a step
+      // of financing from NAV permanently (the flow is never recovered when the
+      // board returns) and report it nowhere, so it fails closed.
+      const SurfaceRef base_rate_surface = base->surface_at(0);
+      if (base_rate_surface == nullptr) {
+        if (cash != 0.0) {
+          return Err(ErrorCode::NotFound,
+                     "run_backtest: no base surface on " + refs[i - 1].date +
+                         " to source the premium-financing rate (cash=" +
+                         std::to_string(cash) + ")");
+        }
+      } else {
+        const double r = base_rate_surface->pricing().r; // base-date rate
+        const double growth = std::exp(r * dt);
+        financing += cash * (growth - 1.0); // cash carry on the pre-step balance
+        cash *= growth;                     // apply to the ledger
+      }
     }
     for (const auto &[uid, n] : hedge_ledger.entries()) {
       const SurfaceRef bs = base->find(uid);
