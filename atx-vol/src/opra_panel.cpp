@@ -687,6 +687,13 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
     row.expiry_ns = expiry_instant;       // TRUE 16:00 ET instant -> data_install T
     row.bid = bid;
     row.ask = ask;
+    constexpr std::int64_t kMaxQuoteCount =
+        static_cast<std::int64_t>((std::numeric_limits<std::int32_t>::max)());
+    if (bid_sz[i] < 0 || ask_sz[i] < 0 || bid_sz[i] > kMaxQuoteCount ||
+        ask_sz[i] > kMaxQuoteCount) {
+      return Err(ErrorCode::OutOfRange,
+                 "OPRA displayed size exceeds nonnegative int32 contract range");
+    }
     row.bid_size = static_cast<std::int32_t>(bid_sz[i]);
     row.ask_size = static_cast<std::int32_t>(ask_sz[i]);
     rows.push_back(std::move(row));
@@ -834,6 +841,11 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
   panel.source_fingerprint = source_fingerprint(panel.frame, kept_instrument_ids, kept_mappings,
                                                 panel.source_schema_version);
   panel.provenance_complete = provenance_complete;
+  panel.bid_size_available = true;
+  panel.ask_size_available = true;
+  // cbbo-1m has no interval-volume or open-interest columns.
+  panel.volume_available = false;
+  panel.open_interest_available = false;
   panel.source_instrument_ids = std::move(kept_instrument_ids);
   panel.source_identities.reserve(kept_mappings.size());
   for (auto &[instrument_id, raw_symbol] : kept_mappings) {

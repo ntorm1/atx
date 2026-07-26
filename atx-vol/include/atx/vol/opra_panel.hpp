@@ -230,6 +230,12 @@ struct OpraPanel {
   // panels loaded from the same rows under different T conventions share it.
   std::uint64_t source_fingerprint{0};
   bool provenance_complete{false};
+  // Column-presence metadata. A numeric zero is a valid observed count and
+  // must not be conflated with a source that did not carry the field.
+  bool bid_size_available{false};
+  bool ask_size_available{false};
+  bool volume_available{false};
+  bool open_interest_available{false};
   std::vector<std::uint32_t> source_instrument_ids;      // aligned with frame.rows
   std::vector<OpraInstrumentIdentity> source_identities; // id ascending
   FitContext fit_context{};

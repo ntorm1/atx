@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <span>
 #include <string>
 #include <utility>
@@ -36,17 +37,29 @@ OpraPanel panel() {
                .strike = 600.0,
                .side = Side::Call,
                .bid = 12.0,
-               .ask = 12.2},
+               .ask = 12.2,
+               .bid_size = 17,
+               .ask_size = 23,
+               .volume = 1'234,
+               .open_interest = std::numeric_limits<std::int32_t>::max()},
       QuoteRow{.uid = "SPY",
                .expiry_iso = "2026-07-17",
                .strike = 600.0,
                .side = Side::Put,
                .bid = 11.8,
-               .ask = 12.0},
+               .ask = 12.0,
+               .bid_size = 31,
+               .ask_size = 37,
+               .volume = 5'678,
+               .open_interest = 9'101},
   };
   out.source_schema_version = 2;
   out.source_fingerprint = 991;
   out.provenance_complete = true;
+  out.bid_size_available = true;
+  out.ask_size_available = true;
+  out.volume_available = true;
+  out.open_interest_available = true;
   out.source_instrument_ids = {101, 102};
   out.source_identities = {
       OpraInstrumentIdentity{101, "SPY   260717C00600000"},
@@ -78,11 +91,95 @@ TEST(ListedOpra, StrictJoinPreservesExactSourceIdentityAndExpiry) {
   EXPECT_EQ((*quotes)[0].raw_symbol, "SPY   260717C00600000");
   EXPECT_EQ((*quotes)[0].expiry_ts_ns, iso_to_ns("2026-07-17T20:00:00Z"));
   EXPECT_EQ((*quotes)[0].quote_ts_ns, source.frame.snapshot_ts_ns);
+  EXPECT_EQ((*quotes)[0].bid_size, 17);
+  EXPECT_EQ((*quotes)[0].ask_size, 23);
+  EXPECT_EQ((*quotes)[0].volume, 1'234);
+  EXPECT_EQ((*quotes)[0].open_interest, std::numeric_limits<std::int32_t>::max());
+  EXPECT_TRUE((*quotes)[0].bid_size_available);
+  EXPECT_TRUE((*quotes)[0].ask_size_available);
+  EXPECT_TRUE((*quotes)[0].volume_available);
+  EXPECT_TRUE((*quotes)[0].open_interest_available);
+  EXPECT_EQ((*quotes)[1].bid_size, 31);
+  EXPECT_EQ((*quotes)[1].ask_size, 37);
+  EXPECT_EQ((*quotes)[1].volume, 5'678);
+  EXPECT_EQ((*quotes)[1].open_interest, 9'101);
   EXPECT_EQ((*quotes)[0].multiplier, 100.0);
   EXPECT_TRUE((*quotes)[0].standard_monthly);
   EXPECT_TRUE((*quotes)[0].standard_deliverable);
   EXPECT_NE((*quotes)[0].source_fingerprint, 0u);
   EXPECT_NE((*quotes)[0].source_fingerprint, source.source_fingerprint);
+}
+
+TEST(ListedOpra, RejectsNegativeLiquidityCountsBeforeJoiningAnyQuote) {
+  auto table = ListedDefinitionTable::create(definitions());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  const auto expect_rejected = [&](const auto &make_invalid) {
+    OpraPanel source = panel();
+    make_invalid(source.frame.rows[0]);
+    auto quotes =
+        atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table);
+    ASSERT_FALSE(quotes);
+    EXPECT_EQ(quotes.error().code(), atx::core::ErrorCode::InvalidArgument);
+  };
+
+  expect_rejected([](QuoteRow &row) { row.bid_size = -1; });
+  expect_rejected([](QuoteRow &row) { row.ask_size = -1; });
+  expect_rejected([](QuoteRow &row) { row.volume = -1; });
+  expect_rejected([](QuoteRow &row) { row.open_interest = -1; });
+}
+
+TEST(ListedOpra, ObservedZeroLiquidityRemainsDistinctFromUnavailable) {
+  auto table = ListedDefinitionTable::create(definitions());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  OpraPanel source = panel();
+  QuoteRow &row = source.frame.rows[0];
+  row.bid_size = 0;
+  row.ask_size = 0;
+  row.volume = 0;
+  row.open_interest = 0;
+  auto quotes =
+      atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table);
+  ASSERT_TRUE(quotes) << (quotes ? std::string{} : quotes.error().to_string());
+  ASSERT_EQ(quotes->size(), 2u);
+  EXPECT_EQ((*quotes)[0].bid_size, 0);
+  EXPECT_EQ((*quotes)[0].ask_size, 0);
+  EXPECT_EQ((*quotes)[0].volume, 0);
+  EXPECT_EQ((*quotes)[0].open_interest, 0);
+  EXPECT_TRUE((*quotes)[0].bid_size_available);
+  EXPECT_TRUE((*quotes)[0].ask_size_available);
+  EXPECT_TRUE((*quotes)[0].volume_available);
+  EXPECT_TRUE((*quotes)[0].open_interest_available);
+
+  source.bid_size_available = false;
+  source.ask_size_available = false;
+  source.volume_available = false;
+  source.open_interest_available = false;
+  quotes =
+      atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table);
+  ASSERT_TRUE(quotes) << (quotes ? std::string{} : quotes.error().to_string());
+  EXPECT_FALSE((*quotes)[0].bid_size_available);
+  EXPECT_FALSE((*quotes)[0].ask_size_available);
+  EXPECT_FALSE((*quotes)[0].volume_available);
+  EXPECT_FALSE((*quotes)[0].open_interest_available);
+}
+
+TEST(ListedOpra, LiquidityValidationIsPanelWideWhenFilteringLegs) {
+  auto table = ListedDefinitionTable::create(definitions());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  OpraPanel source = panel();
+  source.frame.rows[0].volume = -1;
+  const std::vector<atx::vol::ListedQuoteKey> wanted = {
+      atx::vol::ListedQuoteKey{"SPY   260717P00600000",
+                               iso_to_ns("2026-07-17T20:00:00Z"), 600.0, Side::Put},
+  };
+  auto quotes =
+      atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table,
+                                        atx::vol::MissingDefinitionPolicy::Error, wanted);
+  ASSERT_FALSE(quotes);
+  EXPECT_EQ(quotes.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
 TEST(ListedOpra, DefinitionTsvRoundTripsDeterministically) {
@@ -480,6 +577,14 @@ void expect_quote_eq(const ListedOptionQuote &got, const ListedOptionQuote &want
   EXPECT_EQ(got.side, want.side) << where;
   EXPECT_EQ(got.bid, want.bid) << where;
   EXPECT_EQ(got.ask, want.ask) << where;
+  EXPECT_EQ(got.bid_size, want.bid_size) << where;
+  EXPECT_EQ(got.ask_size, want.ask_size) << where;
+  EXPECT_EQ(got.volume, want.volume) << where;
+  EXPECT_EQ(got.open_interest, want.open_interest) << where;
+  EXPECT_EQ(got.bid_size_available, want.bid_size_available) << where;
+  EXPECT_EQ(got.ask_size_available, want.ask_size_available) << where;
+  EXPECT_EQ(got.volume_available, want.volume_available) << where;
+  EXPECT_EQ(got.open_interest_available, want.open_interest_available) << where;
   EXPECT_EQ(got.quote_ts_ns, want.quote_ts_ns) << where;
   EXPECT_EQ(got.multiplier, want.multiplier) << where;
   EXPECT_EQ(got.standard_monthly, want.standard_monthly) << where;
