@@ -1580,7 +1580,8 @@ DispersionBacktestConfig dispersion_backtest_config_from(const DispersionRunConf
   // `run-surface-backtest` accepted four spec keys by name and gave them no effect.
   //
   // Deferring to `dispersion_engine_run_config_from` makes the "single place"
-  // claim at dispersion_run.hpp:305-307 literally true — there is now exactly one
+  // claim on `dispersion_engine_run_config_from` (dispersion_run.hpp:323-325)
+  // literally true — there is now exactly one
   // construction of the engine RunConfig, and a knob visible there is reachable
   // from BOTH routes. It cannot move a golden: every one of the four defaults to
   // precisely the value this block hardcoded or inherited (`unpriced` Error,
@@ -2541,7 +2542,7 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
 
   // REV-TAIL I-2. The book -> OptionProjectionSpec synthesis + prepare +
   // evaluate_into + per-confidence VaR split USED to be hand-rolled inline here,
-  // a second copy of `dispersion_book_var` (listed_dispersion_pipeline.cpp:454).
+  // a second copy of `dispersion_book_var` (listed_dispersion_pipeline.cpp:464).
   // `347ad44` — the commit whose stated purpose was restoring CLI seams — created
   // that copy by inlining, and in doing so left `dispersion_book_var` with ZERO
   // production callers: an exported public API whose only remaining caller was a

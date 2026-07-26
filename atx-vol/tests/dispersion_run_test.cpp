@@ -547,8 +547,9 @@ TEST(DispersionReferenceRunDirScan, AnAgedOutCorpusYieldsNothingAndSaysWhy) {
 // `dispersion_build_schedule`, `dispersion_run_backtest` and `dispersion_verify`
 // have no production caller: the shipped subcommands of the same name keep their
 // own bodies -- `build_schedule_command` and `run_backtest_command` publish
-// run.atxrun sections (spy_dispersion_backtest.cpp:307 and :453) and
-// `verify_command` READS one (`RunDir(run_dir).verify()` at :329) -- because the
+// run.atxrun sections (each via `RunDir::write_run_archive`,
+// spy_dispersion_backtest.cpp:337 and :483) and `verify_command` READS one
+// (`RunDir(run_dir).verify()`, :359) -- because the
 // three library twins write the loose result files the RunArchive cutover
 // replaced. That is a DELIBERATE split and is documented at dispersion_run.hpp's
 // declaration block.
@@ -585,8 +586,9 @@ TEST(DispersionLibraryOnlyEntryPoints, EachIsReachableAndFailsClosedNamingTheMis
 
 // ── REV-TAIL I-3 — the four keys that parsed, validated, and did nothing ──────
 //
-// `dispersion_run_surface_backtest` (dispersion_run.cpp:2382, whose strict read is
-// at :2387) reads the STRICT typed config, so `unpriced`, `provenance`,
+// `dispersion_run_surface_backtest` (dispersion_run.cpp:2407, whose strict read
+// -- `read_dispersion_run_config` -- is at :2412) reads the STRICT typed config,
+// so `unpriced`, `provenance`,
 // `book_entry_fill_slippage` and `reconcile_nav` each bind by name (`provenance`
 // at :1428-1431, the other three at :1434, :1442 and :1443) and survive
 // `reject_unknown()`. It then hands off to `dispersion_backtest_config_from`,
@@ -635,8 +637,9 @@ TEST(DispersionBacktestConfigFrom, DefaultSpecKeepsTheShippedEngineDefaults) {
   EXPECT_FALSE(backtest.run.reconcile_nav);
 }
 
-// The two builders must agree on every knob they both carry. `dispersion_run.hpp:306`
-// calls `dispersion_engine_run_config_from` "the single place the typed spec becomes
+// The two builders must agree on every knob they both carry. The declaration
+// comment on `dispersion_engine_run_config_from` (dispersion_run.hpp:324)
+// calls it "the single place the typed spec becomes
 // engine behaviour, so a knob that is set here is provably reachable and one that is
 // not is provably dead". That claim is only true while the surface route's builder
 // cannot drift from it — which is what this pins.

@@ -59,6 +59,23 @@
 // gross vega per VOL POINT, so the default book is 100x the size it was before
 // E1 and every $-denominated golden figure in this header is 100x its former
 // value. Measured, 3x-stable, at feat/pipeline-m tip 6b6aa7e.
+//
+// HOW TO CITE ANOTHER FILE FROM A COMMENT (REV-MTIDY M-1, 2026-07-25).
+// NAME THE SYMBOL FIRST -- the function, test, struct or member -- and treat the
+// line number as a convenience that is ALLOWED to rot:
+//
+//     ...instead (in `verify_command`, spy_dispersion_backtest.cpp:342)
+//
+// not `(spy_dispersion_backtest.cpp:342)` alone. A name survives an insertion
+// above it; a bare line number is silently falsified by one, and then points a
+// reader at unrelated code with full confidence. That is not hypothetical here:
+// the same defect has now been found and re-fixed FOUR times in this sprint, and
+// re-deriving the numbers buys exactly one commit's worth of correctness -- the
+// batch that fixed four stale pointers broke six more in its sister commit. For
+// a citation into a revision that no longer exists, SHA-pin instead
+// (`dispersion_run.cpp` does this once, as
+// `b0080fa:examples/spy_dispersion_backtest.cpp:950,981-982`), which is immune.
+// This is a convention for comments you TOUCH, not a mandate to sweep the repo.
 
 #include <cstddef>
 #include <cstdint>
@@ -380,6 +397,29 @@ struct DispersionRunConfig {
 // reads does NOT belong here: publishing one as effective is strictly worse than
 // ignoring it, because a reader can act on it. Before adding a row, name the code
 // that consumes the value.
+//
+// TWO RESIDUALS ON THAT RULE, stated rather than left to be rediscovered.
+//
+// (1) REV-MTIDY M-4 — the claim now spans two CLI invocations. Every other key
+// here is read and applied by the SAME invocation that publishes it. The three
+// `quote_*` keys are not: they are applied by `build-schedule` and published by
+// a later, separate `run-backtest` process from its own re-read of the same
+// `run_spec.tsv`. Nothing binds the two, so the row is true only if the spec was
+// unchanged between them. Narrow — a run directory is not normally edited
+// mid-pipeline — but it is a real weakness in exactly the claim I-A exists to
+// make true, and closing it would mean carrying the applied values forward in
+// the run archive rather than re-deriving them from the spec.
+//
+// (2) REV-MTIDY M-5 — "name the code that consumes the value" does not
+// distinguish CONSUMED from CONSUMED AND ABLE TO FIRE. `quote_max_age_ns` has a
+// real consumer (`listed_dispersion.cpp`'s staleness gate) and is nonetheless
+// structurally inert on the only production quote source: the OPRA panel is
+// snapshot-stamped, so every quote's age is exactly 0. That is documented in
+// full at `ListedQuoteQualityConfig::max_quote_age_ns`
+// (listed_dispersion.hpp:74-93) and the tally reports it as unmeasurable rather
+// than as a reassuring zero, so no number here is wrong. Read the rule as its
+// stronger form: name the code that consumes the value, AND say so if that code
+// cannot fire on the feed the run actually used.
 [[nodiscard]] Status write_dispersion_effective_config(const std::filesystem::path &path,
                                                        const DispersionRunConfig &config);
 
@@ -650,7 +690,8 @@ struct DispersionVerifyReport {
 // directly tested off `tmp_path` (`DispersionReferenceReconcile.M10_*`), but it
 // reaches NO SHIPPED BINARY. Its only public reach is `reconcile_dispersion_
 // reference` -> `dispersion_verify`, and the shipped `verify` subcommand calls
-// `RunDir(run_dir).verify()` instead (spy_dispersion_backtest.cpp:329). The MINORS
+// `RunDir(run_dir).verify()` instead (in `verify_command`,
+// spy_dispersion_backtest.cpp:359). The MINORS
 // report's claim that it protects a production path was true at `5d5af01` and is
 // stale now.
 

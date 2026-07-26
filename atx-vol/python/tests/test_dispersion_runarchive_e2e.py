@@ -155,9 +155,14 @@ _FIXTURE_CANDIDATES: tuple[tuple[str, Path | None], ...] = (
 # recipe — a guard whose own documentation was the stricter of the two. Rule 1 of
 # the discovery policy above is exactly this ("select on the artifact, not on the
 # folder"); it was applied to the binary half and only partly to the fixture half.
-# `archives` and `occ_ess` are checked as directories rather than by glob, which
-# is all `_resolve_root` can express and is enough to separate a real run
-# directory from an empty shell.
+# REV-MTIDY M-7: `archives` and `occ_ess` are checked for EXISTENCE, not for
+# directory-ness -- `_resolve_root` tests `(candidate / req).exists()` above, so
+# a plain file of either name would satisfy the requirement. That is all this
+# selector can express and it is enough to separate a real run directory from an
+# empty shell, which is the job; the previous wording here said "checked as
+# directories", which the code does not do. Naming the predicate rather than
+# paraphrasing it is the point -- this comment sits inside the commit whose
+# subject was documentation accuracy.
 _PAIRED_REQUIREMENTS: tuple[Path, ...] = tuple(
     Path("paired") / "run" / leaf
     for leaf in (

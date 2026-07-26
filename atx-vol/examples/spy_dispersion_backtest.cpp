@@ -180,8 +180,9 @@ RaSectionData build_mark_divergence_section(std::shared_ptr<MarkDivergenceArena>
 }
 
 // RECONCILE 1: `write_input_inventory` and `persist_occ_ess_evidence` were
-// example-local duplicates of the library's own copies (src/dispersion_run.cpp:113
-// and :135, the T-wave lift). Their only caller was `build_corpus_command`, which
+// example-local duplicates of the library's own copies (`write_input_inventory`
+// and `persist_occ_ess_evidence`, src/dispersion_run.cpp:114 and :136, the
+// T-wave lift). Their only caller was `build_corpus_command`, which
 // is now a dispatch into `dispersion_build_corpus`; the library writes both
 // artifacts. `verify_occ_ess_evidence` below is NOT a duplicate in that sense —
 // two shipped subcommands (`build-schedule`, `verify`) still call it here.
@@ -267,6 +268,22 @@ Status build_schedule_command(const fs::path &run_dir) {
   // library twin performs (dispersion_run.cpp's `dispersion_build_schedule`), so
   // the two bodies now agree on config construction. A malformed spec fails here
   // by name instead of two subcommands later.
+  //
+  // REV-MTIDY M-2, on the SCOPE of that, because the shorter claim ("it cannot
+  // break the pipeline, run-backtest already strict-parses the same file") is
+  // narrower than the change. This read brings `reject_unknown()` and the whole
+  // contract-validation block onto a route that previously ran only the tolerant
+  // `read_run_spec`, which ignores unknown keys silently. The loose reader's key
+  // vocabulary is a strict SUBSET of the strict reader's, so no ACCEPTED key is
+  // now rejected; the exposure is an unrecognised or contract-violating key, and
+  // every candidate in reach passes (all 20 published run dirs, both tracked
+  // example specs, the paired fixture). What the shorter claim misses is the
+  // chain `build-schedule -> project-schedule -> run-projected-backtest`:
+  // `run_projected_backtest_command` reads the loose `read_run_spec` (below) and
+  // never strict-reads, so after this change that chain has no lenient entry
+  // point at all. Judged an improvement — a spec key that is a typo should not
+  // reach a published NAV — but it is a behaviour change on that chain and not
+  // merely a duplicate of a read run-backtest already performs.
   ATX_TRY(DispersionRunConfig run_config, read_dispersion_run_config(run_dir / "run_spec.tsv"));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
   ATX_TRY(ListedDefinitionTable definitions,
@@ -778,10 +795,11 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
 //   * C1-ACTIVATE point-in-time universe resolution -- this copy froze the basket at
 //     the first session date (`universe_at(universe_rows, clock.refs().front()
 //     .date)`), so a mid-window reconstitution was silently ignored.
-//   NOT X1: the library route reads the same loose `read_run_spec`
-//   (dispersion_run.cpp:2474), because a projected-VaR run consumes no execution
-//   knobs. NOT X4: it still hardcodes `side = ShortIndexLongNames` and
-//   `multiplier = 100.0` (:2510-2511). Neither is a REGRESSION -- the copy this
+//   NOT X1: the library route reads the same loose `read_run_spec` (in
+//   `dispersion_run_projected_var`, dispersion_run.cpp:2499), because a
+//   projected-VaR run consumes no execution knobs. NOT X4: that same function
+//   still hardcodes `dispersion.side = ShortIndexLongNames` and
+//   `dispersion.multiplier = 100.0` (:2535-2536). Neither is a REGRESSION -- the copy this
 //   dispatch replaced hardcoded both identically -- but neither was recovered, and
 //   claiming otherwise is how a knob gets believed to be wired. X2/X3/X5/X6 do not
 //   apply to this route at all: it runs no engine and writes no tearsheet.
