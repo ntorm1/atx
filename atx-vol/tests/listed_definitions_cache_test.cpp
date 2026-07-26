@@ -1017,6 +1017,293 @@ TEST(ListedDefinitionsCache, CachedSeamChargesADefinitionsCachePhaseWithHitMissC
   ASSERT_TRUE(no_timer);
 }
 
+// ── Task 8: staleness proofs at the SEAM ────────────────────────────────────
+//
+// Wave E Task 7 built the format and proved the low-level reader
+// (`read_definitions_cache`) rejects a mismatched key (`CacheRejects...`
+// above). Task 8's brief is a STRONGER claim, made at the seam a caller
+// actually invokes: each case below asserts a MISS that falls through to a
+// CORRECT full parse — never an error, and never a stale serve. That is
+// genuinely new coverage, not a duplicate of the low-level tests: those only
+// show the reader says no; these show the seam recovers with the right data.
+//
+// GATE (the headline test, Task 8 Step 1/2). Content changes but
+// `source_size` does NOT. A cache keyed on `(source_size, format_version)`
+// alone — the weakened key Task 8's brief calls for as a deliberate RED
+// check — would still resolve to the SAME filename and would still pass
+// GUARD 2, so the stale (pre-mutation) table would be SERVED. Only a
+// content-derived key forces a miss here. See task-8-report.md for the
+// observed failure when the key was temporarily weakened to prove this test
+// is a real gate (Step 2) rather than vacuously green.
+TEST(ListedDefinitionsCache, CachedSeamRejectsAndReparsesASameSizeContentMutation) {
+  const fs::path dir = scratch_dir("stale_samesize");
+  const fs::path tsv = dir / "definitions.tsv";
+  const fs::path cache = dir / "cache";
+
+  auto source_table = ListedDefinitionTable::create(sample_rows());
+  ASSERT_TRUE(source_table);
+  ASSERT_TRUE(write_listed_definitions_file(tsv.string(), *source_table));
+
+  auto first = read_listed_definitions_cached(tsv.string(), cache.string());
+  ASSERT_TRUE(first) << (first ? std::string{} : first.error().to_string());
+  ASSERT_EQ(first->definitions().size(), 5u);
+
+  // Mutate ONE byte of the TSV IN PLACE, preserving length EXACTLY: the last
+  // character of the first data row is always a digit of `source_fingerprint`
+  // (the row's last column, per kHeader's field order), so incrementing it
+  // mod 10 changes the row's content without touching any delimiter, without
+  // changing the row count, and without changing the file's byte length.
+  const std::uintmax_t size_before = fs::file_size(tsv);
+  {
+    std::string bytes;
+    ASSERT_EQ(detail::read_whole_file(tsv.string(), bytes), detail::FileReadStatus::Ok);
+    const std::size_t first_nl = bytes.find('\n');
+    ASSERT_NE(first_nl, std::string::npos) << "malformed fixture: no magic line";
+    const std::size_t second_nl = bytes.find('\n', first_nl + 1);
+    ASSERT_NE(second_nl, std::string::npos) << "malformed fixture: no header line";
+    const std::size_t third_nl = bytes.find('\n', second_nl + 1);
+    ASSERT_NE(third_nl, std::string::npos) << "malformed fixture: no first data row";
+    ASSERT_GT(third_nl, second_nl + 1u);
+    const std::size_t target = third_nl - 1u; // last byte of the first data row
+    const char before = bytes[target];
+    ASSERT_TRUE(before >= '0' && before <= '9')
+        << "expected the row's last field (source_fingerprint) to end in a digit, got '" << before
+        << "'";
+    bytes[target] = static_cast<char>('0' + ((before - '0' + 1) % 10));
+    ASSERT_NE(bytes[target], before) << "the perturbation did not change the byte";
+    std::ofstream out(tsv, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(out);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    ASSERT_TRUE(out.good());
+  }
+  EXPECT_EQ(fs::file_size(tsv), size_before) << "anti-vacuity: this test's whole premise is a "
+                                                "SAME-SIZE mutation";
+
+  // Independent reference: parse the MUTATED bytes directly, bypassing the
+  // cache entirely, so the assertion below is "the seam agrees with a fresh
+  // parse of what is on disk NOW", not a constant this test invented.
+  auto reference = read_listed_definitions_file(tsv.string());
+  ASSERT_TRUE(reference) << (reference ? std::string{} : reference.error().to_string());
+  EXPECT_NE(reference->fingerprint(), first->fingerprint())
+      << "anti-vacuity: the mutation must actually move the table, or this test proves nothing";
+
+  auto second = read_listed_definitions_cached(tsv.string(), cache.string());
+  ASSERT_TRUE(second) << (second ? std::string{} : second.error().to_string());
+  expect_rows_bit_identical(*reference, *second);
+  EXPECT_EQ(second->fingerprint(), reference->fingerprint());
+  EXPECT_NE(second->fingerprint(), first->fingerprint())
+      << "the STALE (pre-mutation) table was served";
+}
+
+// GATE. Content changes AND `source_size` moves with it (a row is added).
+// Weaker in isolation than the same-size case above (a size-only key would
+// already catch this), but it is one of the five cases the brief enumerates
+// and it exercises a different code path: the appended row changes both
+// `content_hash` and `source_size`, so BOTH the cache filename and GUARD 2
+// move.
+TEST(ListedDefinitionsCache, CachedSeamRejectsAndReparsesADifferentSizeContentChange) {
+  const fs::path dir = scratch_dir("stale_diffsize");
+  const fs::path tsv = dir / "definitions.tsv";
+  const fs::path cache = dir / "cache";
+
+  auto source_table = ListedDefinitionTable::create(sample_rows());
+  ASSERT_TRUE(source_table);
+  ASSERT_TRUE(write_listed_definitions_file(tsv.string(), *source_table));
+
+  auto first = read_listed_definitions_cached(tsv.string(), cache.string());
+  ASSERT_TRUE(first) << (first ? std::string{} : first.error().to_string());
+  ASSERT_EQ(first->definitions().size(), 5u);
+  const std::uintmax_t size_before = fs::file_size(tsv);
+
+  // Append one well-formed extra row (a new instrument_id, so the key stays
+  // unique) by rewriting the file from an expanded row set.
+  std::vector<ListedContractDefinition> expanded_rows = sample_rows();
+  expanded_rows.push_back(ListedContractDefinition{
+      "2026-06-09", 555, "SPY   260821C00650000", iso_to_ns("2026-06-09T12:00:00Z"),
+      iso_to_ns("2026-08-21T20:00:00Z"), 100.0, false, true, 0x1111111111111111ull});
+  auto expanded_table = ListedDefinitionTable::create(std::move(expanded_rows));
+  ASSERT_TRUE(expanded_table);
+  ASSERT_EQ(expanded_table->definitions().size(), 6u);
+  ASSERT_TRUE(write_listed_definitions_file(tsv.string(), *expanded_table));
+  EXPECT_GT(fs::file_size(tsv), size_before) << "anti-vacuity: this test's premise is a "
+                                                "DIFFERENT-size change";
+
+  auto reference = read_listed_definitions_file(tsv.string());
+  ASSERT_TRUE(reference) << (reference ? std::string{} : reference.error().to_string());
+  ASSERT_EQ(reference->definitions().size(), 6u);
+
+  auto second = read_listed_definitions_cached(tsv.string(), cache.string());
+  ASSERT_TRUE(second) << (second ? std::string{} : second.error().to_string());
+  ASSERT_EQ(second->definitions().size(), 6u) << "the stale 5-row cache was served";
+  expect_rows_bit_identical(*reference, *second);
+  EXPECT_NE(second->fingerprint(), first->fingerprint());
+}
+
+// GATE. Simulates the Task 4/5 scenario named explicitly in the brief: the
+// bytes on disk NEVER changed, only what the current build's parser DOES with
+// them did (`kDefinitionsParserRevision` moved). A blob published under the
+// PRIOR revision — same content_hash/source_size/format_version/abi_fold,
+// stamped at the exact path the CURRENT build's key computes — must be a
+// miss, not a serve, even though every OTHER identity field agrees.
+TEST(ListedDefinitionsCache, CachedSeamRejectsAndReparsesWhenParserRevisionMovedSincePublish) {
+  const fs::path dir = scratch_dir("stale_parserrev");
+  const fs::path tsv = dir / "definitions.tsv";
+  const fs::path cache = dir / "cache";
+  std::error_code ec;
+  ASSERT_TRUE(fs::create_directories(cache, ec) || fs::is_directory(cache, ec));
+
+  auto source_table = ListedDefinitionTable::create(sample_rows());
+  ASSERT_TRUE(source_table);
+  ASSERT_TRUE(write_listed_definitions_file(tsv.string(), *source_table));
+
+  std::string bytes;
+  ASSERT_EQ(detail::read_whole_file(tsv.string(), bytes), detail::FileReadStatus::Ok);
+  const ListedDefinitionsCacheKey real_key = definitions_cache_key(bytes);
+  ASSERT_GT(real_key.parser_revision, 0u) << "cannot construct a revision one below zero";
+
+  ListedDefinitionsCacheKey stale_key = real_key;
+  stale_key.parser_revision -= 1u;
+  ASSERT_NE(stale_key, real_key);
+
+  // A DECOY table (4 rows, not 5) stamped under the stale key, planted at the
+  // exact path the CURRENT build's real key resolves to — exactly what a
+  // pre-Task-4/5 cache publish would leave sitting there.
+  std::vector<ListedContractDefinition> decoy_rows = sample_rows();
+  decoy_rows.pop_back();
+  auto decoy_table = ListedDefinitionTable::create(std::move(decoy_rows));
+  ASSERT_TRUE(decoy_table);
+  ASSERT_EQ(decoy_table->definitions().size(), 4u);
+
+  const fs::path planted = cache / definitions_cache_filename(real_key);
+  ASSERT_TRUE(write_definitions_cache(planted.string(), *decoy_table, stale_key));
+  // NEGATIVE CONTROL: readable under its OWN (stale) key, so the rejection
+  // below is attributable to the revision mismatch, not a broken plant.
+  ASSERT_TRUE(read_definitions_cache(planted.string(), stale_key))
+      << "the planted decoy is not even readable under its own key";
+
+  auto served = read_listed_definitions_cached(tsv.string(), cache.string());
+  ASSERT_TRUE(served) << (served ? std::string{} : served.error().to_string());
+  ASSERT_EQ(served->definitions().size(), source_table->definitions().size())
+      << "the parser-revision-stale decoy (4 rows) was served instead of a fresh parse (5 rows)";
+  expect_rows_bit_identical(*source_table, *served);
+}
+
+// GATE. Same shape as the parser-revision case, for `abi_fold`: a blob
+// encoded by a differently-shaped `ListedContractDefinition` — same content,
+// same size, same format/parser revision — must never be decoded as today's
+// shape.
+TEST(ListedDefinitionsCache, CachedSeamRejectsAndReparsesWhenAbiFoldMovedSincePublish) {
+  const fs::path dir = scratch_dir("stale_abifold");
+  const fs::path tsv = dir / "definitions.tsv";
+  const fs::path cache = dir / "cache";
+  std::error_code ec;
+  ASSERT_TRUE(fs::create_directories(cache, ec) || fs::is_directory(cache, ec));
+
+  auto source_table = ListedDefinitionTable::create(sample_rows());
+  ASSERT_TRUE(source_table);
+  ASSERT_TRUE(write_listed_definitions_file(tsv.string(), *source_table));
+
+  std::string bytes;
+  ASSERT_EQ(detail::read_whole_file(tsv.string(), bytes), detail::FileReadStatus::Ok);
+  const ListedDefinitionsCacheKey real_key = definitions_cache_key(bytes);
+
+  ListedDefinitionsCacheKey stale_key = real_key;
+  stale_key.abi_fold ^= 1ull;
+  ASSERT_NE(stale_key, real_key);
+
+  std::vector<ListedContractDefinition> decoy_rows = sample_rows();
+  decoy_rows.pop_back();
+  auto decoy_table = ListedDefinitionTable::create(std::move(decoy_rows));
+  ASSERT_TRUE(decoy_table);
+  ASSERT_EQ(decoy_table->definitions().size(), 4u);
+
+  const fs::path planted = cache / definitions_cache_filename(real_key);
+  ASSERT_TRUE(write_definitions_cache(planted.string(), *decoy_table, stale_key));
+  ASSERT_TRUE(read_definitions_cache(planted.string(), stale_key))
+      << "the planted decoy is not even readable under its own key";
+
+  auto served = read_listed_definitions_cached(tsv.string(), cache.string());
+  ASSERT_TRUE(served) << (served ? std::string{} : served.error().to_string());
+  ASSERT_EQ(served->definitions().size(), source_table->definitions().size())
+      << "the abi_fold-stale decoy (4 rows) was served instead of a fresh parse (5 rows)";
+  expect_rows_bit_identical(*source_table, *served);
+}
+
+// GATE. A published hit whose payload CRC no longer validates (a genuine
+// bit-flip corruption, CRCs left UNREPAIRED — unlike
+// `CacheRejectsTamperedPayloadEvenWithRepairedCrcs`, which isolates GUARD 4)
+// must be a MISS that falls through to a correct full parse, never a partial
+// serve and never a propagated error.
+TEST(ListedDefinitionsCache, CachedSeamRejectsAndReparsesACorruptedHit) {
+  const fs::path dir = scratch_dir("stale_corrupt");
+  const fs::path tsv = dir / "definitions.tsv";
+  const fs::path cache = dir / "cache";
+
+  auto source_table = ListedDefinitionTable::create(sample_rows());
+  ASSERT_TRUE(source_table);
+  ASSERT_TRUE(write_listed_definitions_file(tsv.string(), *source_table));
+
+  auto first = read_listed_definitions_cached(tsv.string(), cache.string());
+  ASSERT_TRUE(first) << (first ? std::string{} : first.error().to_string());
+
+  std::string bytes;
+  ASSERT_EQ(detail::read_whole_file(tsv.string(), bytes), detail::FileReadStatus::Ok);
+  const ListedDefinitionsCacheKey key = definitions_cache_key(bytes);
+  const fs::path published = cache / definitions_cache_filename(key);
+  std::error_code ec;
+  ASSERT_TRUE(fs::is_regular_file(published, ec)) << "the first call did not publish a cache";
+
+  // Flip the LAST byte of the published image WITHOUT restamping the CRCs — a
+  // genuine on-disk corruption, not a self-consistent hand edit.
+  std::vector<std::byte> image = read_all(published);
+  ASSERT_GT(image.size(), sizeof(ListedDefinitionsCacheHeader) + 16u);
+  const std::size_t target = image.size() - 1u;
+  const std::byte before = image[target];
+  image[target] = static_cast<std::byte>(std::to_integer<unsigned>(before) ^ 0x80u);
+  ASSERT_NE(image[target], before) << "the perturbation did not change a byte";
+  write_all(published, image);
+
+  // NEGATIVE CONTROL: the low-level reader rejects the corrupted image
+  // directly, so the seam-level rejection below is attributable to the same
+  // guard, not a different bug.
+  ASSERT_FALSE(read_definitions_cache(published.string(), key))
+      << "the corruption did not actually break the CRC — the rejection below would be vacuous";
+
+  auto second = read_listed_definitions_cached(tsv.string(), cache.string());
+  ASSERT_TRUE(second) << "a corrupted hit must be a MISS that falls through to a full parse, "
+                         "never an error: "
+                      << (second ? std::string{} : second.error().to_string());
+  expect_rows_bit_identical(*source_table, *second);
+  EXPECT_EQ(second->fingerprint(), source_table->fingerprint());
+}
+
+// POSITIVE CASE (Task 8's brief, exact name). A hit that is merely FAST and
+// not IDENTICAL to what cache-disabled parsing produces is a defect — this is
+// the cache's entire contract, proven field-for-field and by `fingerprint()`.
+TEST(ListedDefinitionsCache, CacheHitEqualsFullParseExactly) {
+  const fs::path dir = scratch_dir("hit_equals_full_parse");
+  const fs::path tsv = dir / "definitions.tsv";
+  const fs::path cache = dir / "cache";
+
+  auto source_table = ListedDefinitionTable::create(sample_rows());
+  ASSERT_TRUE(source_table);
+  ASSERT_TRUE(write_listed_definitions_file(tsv.string(), *source_table));
+
+  // Cache DISABLED: an empty cache_dir degenerates to the direct parse.
+  auto disabled = read_listed_definitions_cached(tsv.string(), "");
+  ASSERT_TRUE(disabled) << (disabled ? std::string{} : disabled.error().to_string());
+
+  // MISS (publishes), then a genuine WARM HIT.
+  auto miss = read_listed_definitions_cached(tsv.string(), cache.string());
+  ASSERT_TRUE(miss) << (miss ? std::string{} : miss.error().to_string());
+  auto hit = read_listed_definitions_cached(tsv.string(), cache.string());
+  ASSERT_TRUE(hit) << (hit ? std::string{} : hit.error().to_string());
+
+  expect_rows_bit_identical(*disabled, *hit);
+  EXPECT_EQ(hit->fingerprint(), disabled->fingerprint());
+  EXPECT_NE(hit->fingerprint(), 0u);
+}
+
 // ── Measurement harnesses (NOT gates) ───────────────────────────────────────
 //
 // All three below are skipped unless ATX_T7_DEFINITIONS_TSV names a real
