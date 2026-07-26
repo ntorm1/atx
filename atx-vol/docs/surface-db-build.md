@@ -862,7 +862,7 @@ disposition counters partition the distinct symbols seen:
 | `coverage.cells_carried` | Already-present cells re-emitted **verbatim** from the existing partition instead of being re-fitted, because the stored config fingerprint still matches. Byte-identical to what they replaced. Deliberately **not** counted in `cells_ok` — nothing was fitted — which is why both exit-code predicates read this counter explicitly. |
 | `coverage.cells_carried_disabled` | Already-present cells whose config is **disabled** and whose stored surface was re-emitted verbatim so the rewrite would not **delete** it. `enabled = false` means *stop fitting this symbol*, never *delete what is already stored*. Deliberately **separate** from `cells_carried`, which both exit-code predicates read as evidence the run produced a serviceable database — a switched-off name's leftover bytes are not that evidence. Counted in neither `cells_refit` (never offered to the fitter) nor `cells_ok`. Unlike `cells_carried` this does **not** depend on the config fingerprint: the alternative to preserving is deletion, not a re-fit, so the fingerprint has no say. |
 | `coverage.cells_already_present` | Skipped: symbol already in its date partition. |
-| `coverage.cells_ok` / `cells_failed` | Fit outcomes over the (re)written dates. |
+| `coverage.cells_ok` / `cells_failed` | Fit outcomes over the dates this run put through the **fitter** — outcomes, **not** commits, and **not** "written dates". A cell that fitted on a date the write path then **refused** is still `cells_ok`: it really did fit, it just did not land. `coverage.dates_written` is the authority on what reached disk, which is why the verdict reads it separately. |
 | `coverage.dates_total` | Distinct dates among the loaded boards. |
 | `coverage.dates_written` | Dates this run really **committed** — taken from the write site itself, so it counts commits and never intentions. A date the write path refused is not here, and neither is one whose candidate ended up empty (no partition is written for an empty candidate). It is therefore **not** the count of dates chosen for rewrite; nothing promises `dates_written + dates_refused_coverage_regression` equals that. |
 | `coverage.dates_skipped_complete` | Dates with **nothing left to add**: every loaded cell is either already present or config-disabled. |
@@ -879,8 +879,11 @@ disposition counters partition the distinct symbols seen:
 **The cell counters do not reconcile against `cells_loaded`** — do not read them as
 a partition. A config-disabled cell that is absent from its partition on a
 skipped-complete date appears in none of `cells_to_fit`, `cells_refit` or
-`cells_already_present`, and the per-symbol `disabled=` column only covers the
-dates this run actually wrote. `cells_loaded` is the input count.
+`cells_already_present`, and the per-symbol `disabled=` column covers only the
+dates this run **processed** — it takes rows from a date the coverage guard
+refused, and none at all from a date the resume filter skipped as complete
+(same scope as the `symbol.<S>` row above; it is not "written dates only").
+`cells_loaded` is the input count.
 
 **Hive ingest** — the first two counters describe distinct **dates**, the last two
 describe **cells**:
@@ -1562,14 +1565,15 @@ supply it.
 One shape deserves its own note because it used to be a `FAILED` verdict and is
 now `ok`: the walk read cells and the database holds **none** of them —
 `cells_checked > 0`, `cells_ok 0`, `cells_absent == cells_checked`. `--min-cells`
-cannot catch it (it counts the **grid**, and a grid of pure holes is full-sized)
-and the [zero-cell verdict](#the-zero-cell-verdict--verify-cannot-pass-what-it-never-read)
+cannot catch it (it counts the **grid**, and a grid of pure holes is full-sized —
+a floor set *above* the grid still fails the run, but on **size**, never on this
+shape) and the [zero-cell verdict](#the-zero-cell-verdict--verify-cannot-pass-what-it-never-read)
 cannot either (the walk was not empty). The tool prints a stderr **warning** naming
 the two readings:
 
 ```
 $ atx-vol-surface-db verify --db /data/surface-db/prod-2026-07 --symbols ZZZZ
-atx-vol-surface-db: WARNING (exit 0 unless a ceiling says otherwise): the walk read
+atx-vol-surface-db: WARNING (this warning decides no exit code; the verdict below does): the walk read
 17 cell(s) and this database holds NONE of them — every one is absent. ...
 cells_checked 17
 cells_ok 0
@@ -1585,12 +1589,16 @@ $ echo $?
 - **the database holds nothing where you looked** — never built over that window,
   built over a different one, or every surface there was destroyed.
 
-It stays exit `0` because the first reading is an ordinary correct invocation on a
-healthy database: `verify --symbols MCD --from 2026-07-01 --to 2026-07-01` against
-`prod-2026-07` — an operator checking the one cell they already know is absent —
-is exactly this shape. Making it non-zero would turn the most deliberate use of the
-tool red on a database that is fine. **`--max-absent 0` is the switch that makes it
-an exit `4`** on a database that expects no holes.
+The warning **adds no exit code of its own**, because the first reading is an
+ordinary correct invocation on a healthy database: `verify --symbols MCD --from
+2026-07-01 --to 2026-07-01` against `prod-2026-07` — an operator checking the one
+cell they already know is absent — is exactly this shape. Making it non-zero would
+turn the most deliberate use of the tool red on a database that is fine. So the
+run above exits `0` on the strength of its `verdict ok`, not on the strength of
+the warning: the verdict still decides, and `--min-cells N` above the grid size
+(`FAILED`, exit `1`) or `--max-absent 0` (`ABSENT`, exit `4`) each move it.
+**`--max-absent 0` is the switch that makes this shape an exit `4`** on a database
+that expects no holes.
 
 ### The zero-cell verdict — `verify` cannot pass what it never read
 

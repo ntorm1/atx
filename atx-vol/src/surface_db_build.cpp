@@ -691,7 +691,13 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
     out += '\n';
   }
 
-  // Section 3: one per-symbol coverage row (from the populate; written dates).
+  // Section 3: one per-symbol coverage row, straight from the populate — over the
+  // dates this run PROCESSED, which since REV-R3's coverage guard is NOT the set
+  // it WROTE: a refused date ran its fits in full and withheld only the commit, so
+  // its cells are in these rows while `coverage.dates_written` never counted the
+  // date. (REV-R6: this line said "written dates", the same staleness REV-R5
+  // corrected on the counter's own doc and in `print_report` without reaching the
+  // CSV writer. `UniversePopulateCoverage::per_symbol` is the contract.)
   // `n_carried` appended (FIX-D fix-1, I2): a carried symbol's row otherwise reads
   // attempted=1 ok=0 failed=0 disabled=0, which names no disposition at all. The
   // column is APPENDED so a positional reader of the first five fields is

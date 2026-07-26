@@ -589,8 +589,17 @@ coverage_regression_display_cap(const SurfaceDbBuildReport &r,
 //
 //  3. INDEPENDENT of the exit-5 refusal, which co-occurs with this warning BY
 //     DESIGN. `build_exit_code`'s refusal branch reads
-//     `coverage.dates_refused_coverage_regression`; no predicate in this header
-//     reads that counter, so a refusal is orthogonal to all four. A run that
+//     `coverage.dates_refused_coverage_regression`; NONE OF THE FOUR VERDICT
+//     PREDICATES reads that counter or `dates_refused_partition_unlisted` — check
+//     their declarations: each is a statement about `config.*`, `cells_ok`,
+//     `cells_carried` and `cells_to_fit` only — so a refusal is orthogonal to all
+//     four. (REV-R6: this said "no predicate in this header reads that counter",
+//     which was false in the commit that wrote it —
+//     `refusal_advice_names_the_carry_rate` below reads BOTH refusal counters and
+//     landed in that same commit. It is not a verdict predicate, so the
+//     orthogonality conclusion is unaffected; only the reason given for it was
+//     wrong. Widening a claim from "the four predicates" to "this header" is
+//     exactly how this class gets in.) A run that
 //     carries surfaces, fits nothing, and has one date refused fires this warning
 //     AND returns 5 — the refusal banner is printed unconditionally precisely so
 //     it can never be swallowed. (Within one DATE the two cannot both happen —
@@ -666,7 +675,10 @@ coverage_regression_display_cap(const SurfaceDbBuildReport &r,
 // SIBLING contracts (`is_total_fit_failure`, `reported_failed_cells`) are unit-
 // pinned precisely because the CLI reads them. Exit 5 and its preemption of 3 and
 // 1 rested on a single manual CLI run. Now the decision is a pure function of the
-// report and `SurfaceDbBuildExitMatrix` pins the matrix.
+// report and the seven `SurfaceDbBuildExitCode.*` tests pin the matrix
+// (`atx-vol/tests/surface_db_build_test.cpp`). REV-R6: this cited
+// `SurfaceDbBuildExitMatrix`, which is not a test that exists — the matrix was
+// pinned, but the citation sent a reader looking for it nowhere.
 //
 // REV-R5 (review I-4) finished the job for the CODES: they now live in
 // `atx/vol/surface_db_exit_codes.hpp`, included above, ALONGSIDE

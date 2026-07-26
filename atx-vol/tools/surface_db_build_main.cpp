@@ -266,8 +266,16 @@ bool parse_preset(std::string_view name, FitPreset &out) {
 
 // Emit every scalar report field, one `key value` line each (mirrors the CSV
 // section-1 key set), then the failed-symbol list, the per-symbol coverage rows,
-// and the per-cell fit-failure reasons (capped at `max_failed_cells`).
-// Deterministic and self-describing.
+// the per-cell fit-failure reasons, and the coverage-regression cells. In that
+// order, matching the blocks below.
+//
+// The two cell lists are capped by DIFFERENT numbers (REV-R6; this summary named
+// one cap and omitted the regression block entirely, which REV-R3 added):
+// `failed_cell` is capped at `max_failed_cells`, `coverage_regression_cell` at
+// `coverage_regression_display_cap(r, max_failed_cells)` — which waives the cap
+// on the destructive `--allow-coverage-regression` branch; see that helper.
+// Each list prints its own `_reported` / `_elided` pair, so neither truncation is
+// silent. Deterministic and self-describing.
 void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
   std::printf("config.n_symbols %u\n", r.config.n_symbols);
   std::printf("config.n_configured %u\n", r.config.n_configured);

@@ -286,10 +286,30 @@ struct PopulateTestHooks {
 // `cfg.attest` to it — so by DEFAULT the partitions this writes carry NO
 // config fingerprint and a later resume re-fits them rather than reusing them
 // (fail closed; see `SurfaceDbPopulateConfig::attest`).
-// Top-level Err only on: empty boards span, db write errors, a date key
-// the db rejects, a CARRY READ-BACK failure, an UNREADABLE EXISTING PARTITION on
-// a date about to be rewritten, or a FIT-SCHEDULER TERMINATION that left a date's
-// fits unstarted. This list is meant to be exhaustive — keep it so.
+// TOP-LEVEL Err — every `return Err` in this function's own frame, in source
+// order. REV-R6 re-derived this list by reading them all, because the previous
+// wording claimed to be exhaustive and was short three entries (2, 5 and 8):
+//   1. an EMPTY boards span (`InvalidArgument`).
+//   2. `skip_existing`'s EXISTENCE PROBE failing: any `open_partition` error
+//      other than `NotFound`, on a date this run is about to SKIP rather than
+//      rewrite. Entry 6 is the rewrite-path twin, and is the one the paragraphs
+//      below argue; this one is the same read on a date nothing would have
+//      written, and it aborts too.
+//   3. a FIT-SCHEDULER TERMINATION that left a date's fits UNSTARTED (below).
+//   4. a CARRY READ-BACK failure (below).
+//   5. `with_uid` rejecting a surface that FITTED, while stamping its symbol uid
+//      onto the `PricedSurface` about to be archived.
+//   6. an UNREADABLE EXISTING PARTITION on a date about to be rewritten (below).
+//   7. `db.write_partition` failing — a db write error, or a date key the db
+//      rejects.
+//   8. the fit scheduler's Status, read AFTER the join: a fit task that failed
+//      or threw MID-RUN, once at least one date had already drained. Distinct
+//      from 3, which is pre-task and writes nothing; this one leaves every date
+//      already committed on disk, which is the point of
+//      `SurfaceDbPopulate.CompletedDatesSurviveLaterWorkerThrow`.
+// NOTHING ENFORCES THIS LIST — no test enumerates this function's Err sites, so
+// it is only as complete as its last reader. A new `return Err` belongs here in
+// the commit that writes it.
 //
 // THE UNREADABLE EXISTING PARTITION (REV-R3, review C-02/F-02 and I-3). A date
 // whose partition FILE exists and will not open (any `SurfaceArchiveV2::open_file`
@@ -494,25 +514,52 @@ struct UniversePopulateCoverage {
   // the CONFIG stage is not serving (as of FIX-C-2 that is the STANDING disabled
   // set — this run's refusals plus the ones already stored disabled — not just
   // this run's). Carried straight through from the underlying populate (same
-  // determinism guarantee), so `failed_cells.size() == cells_failed` over the
-  // dates this run wrote.
+  // determinism guarantee), so `failed_cells.size() == cells_failed`: the
+  // populate appends exactly one entry here on the same branch that increments
+  // `n_failed`, and nothing else touches either.
+  //
+  // REV-R6: that identity holds over the same PROCESSED set as `per_symbol`
+  // above, NOT over "the dates this run wrote", which is what this line used to
+  // say. Both sides accumulate in the drain's per-cell walk, which finishes
+  // before the coverage guard's refusal decision and before the write — so a
+  // REFUSED date contributes to both while `dates_written` never counts it. Same
+  // staleness the paragraph above was corrected for, eight lines away from it.
   std::vector<FailedCell> failed_cells;
 };
 // NOTE: the cell counters do NOT reconcile against `cells_loaded`. A DISABLED cell
 // that is absent from its partition on a skipped-complete date is in none of
 // `cells_to_fit` / `cells_refit` / `cells_already_present`, and
-// `PopulateSymbolStats::n_disabled` only covers the dates this run WROTE — so
-// `cells_loaded` is the input count, not the sum of a partition. Treat it as
-// such: there is deliberately no disabled-cell counter here.
+// `PopulateSymbolStats::n_disabled` covers only the dates this run PROCESSED —
+// its increment is in the same pre-write walk as every other counter in
+// `per_symbol` (see that field), so it takes rows from a REFUSED date and takes
+// nothing at all from a date the resume filter skipped as complete. Either way
+// it is short of the loaded set, which is the point here. (REV-R6: this NOTE
+// said "the dates this run WROTE", contradicting the field doc 18 lines above
+// that it annotates.) So `cells_loaded` is the input count, not the sum of a
+// partition. Treat it as such: there is deliberately no disabled-cell counter
+// here.
 
 // Seed per-symbol configs (idempotent) then cell-aware-resume-populate the given
 // boards into `db`. Empty `boards` is a graceful no-op (all-zero coverage), NOT an
-// error — an un-pulled window legitimately yields no boards. Top-level Err only on a
-// db config/write failure, or on anything `populate_surface_db` itself Errs on —
-// which since REV-R3 includes an UNREADABLE EXISTING PARTITION on a date this run
-// was going to rewrite (see that function's contract above; it is not waived by
-// `allow_coverage_regression`). A coverage REFUSAL is deliberately not an Err: the
-// run completes and reports it in `dates_refused_coverage_regression`.
+// error — an un-pulled window legitimately yields no boards.
+//
+// TOP-LEVEL Err — every `return Err` in this function's own frame (REV-R6, same
+// re-derivation as `populate_surface_db`'s list above):
+//   1. `db.upsert_symbol` failing while seeding a per-symbol config.
+//   2. anything `populate_surface_db` itself Errs on, propagated VERBATIM — which
+//      since REV-R3 includes an UNREADABLE EXISTING PARTITION on a date this run
+//      was going to rewrite (see that function's contract above; it is not waived
+//      by `allow_coverage_regression`).
+//   3. TWO `ErrorCode::Internal` cross-checks this function raises ITSELF, added
+//      by FIX-D and FIX-E and NOT covered by the two clauses above: the
+//      populate's `n_carried`, and its `n_carried_disabled`, each compared
+//      against the carry set this function asked for. They assert this file's own
+//      two halves agree; nothing a caller passes can trip them, and no test pins
+//      either. The sentence they falsified predated them and survived an edit to
+//      its very next clause, which is why they are named here rather than folded
+//      into "or on anything the populate Errs on".
+// A coverage REFUSAL is deliberately not an Err: the run completes and reports it
+// in `dates_refused_coverage_regression`.
 [[nodiscard]] Result<UniversePopulateCoverage>
 populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
                             const UniversePopulateSpec &spec,

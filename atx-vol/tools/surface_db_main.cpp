@@ -593,13 +593,19 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
         "  Compare the `absent` list with the previous run's: the SAME cells is (a); cells "
         "that used to verify and now do not is (b), and the count is the only handle you "
         "have on it. Wire the expected count into the script with `--max-absent N` so a "
-        "growth exits %d instead of needing a human to notice — WITHOUT it, a run that "
-        "destroyed stored surfaces exits 0.\n",
+        "growth turns the verdict ABSENT (exit %d) instead of needing a human to notice — "
+        "WITHOUT it this count moves NO verdict at all, so a run that destroyed stored "
+        "surfaces passes.\n",
         kSurfaceDbVerifyExitAbsentOverLimit);
   }
   // EVERY cell the walk read is a hole. `ok()` is true (nothing failed a gate),
-  // `--min-cells` is satisfied (it counts the grid, and a grid of pure holes is
-  // full-sized), and `selected_no_cells` cannot see it (the walk was not empty).
+  // `selected_no_cells` cannot see it (the walk was not empty), and `--min-cells`
+  // is BLIND to it: the floor is `cells_checked >= min_cells`, and `cells_checked`
+  // counts holes, so a grid of pure holes is full-sized and this shape never
+  // shortens it. REV-R6: "blind to it", not "satisfied by it" — `--min-cells` is a
+  // FLOOR, and a floor set ABOVE this walk's grid still makes `enough` false and
+  // the verdict FAILED (exit 1). It just fails on SIZE, never on this shape, which
+  // is why the shape needs its own warning. Default 0 = no floor.
   // Before FIX-H this shape arrived as `unmappable` and a FAILED verdict, so on a
   // database that expects no holes it was an alarm that has just gone quiet.
   //
@@ -609,10 +615,20 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
   // answer. The full argument is at `stored_no_selected_cell`'s declaration. Like
   // the build CLI's carry-masked warning, this names the two readings instead of
   // choosing between them.
+  //
+  // NO EXIT CODE IN THE BANNER (REV-R6), the rule the build CLI adopted in
+  // REV-R5/I-2, applied here. The head read `WARNING (exit 0 unless a CEILING says
+  // otherwise)`, and this file reserves "ceiling" for `--max-absent`
+  // (`AbsentCeiling`) — but `--min-cells` is a FLOOR that this same function turns
+  // into `verdict FAILED` and `return 1` a few lines below, so the banner could be
+  // followed by exit 1 with no ceiling anywhere in the invocation. It now defers to
+  // the verdict, which really is what decides the exit from here on: FAILED -> 1,
+  // ABSENT -> the absent-over-limit code, ok -> 0.
   if (rep->stored_no_selected_cell()) {
     std::fprintf(
         stderr,
-        "atx-vol-surface-db: WARNING (exit 0 unless a ceiling says otherwise): the walk read "
+        "atx-vol-surface-db: WARNING (this warning decides no exit code; the verdict below "
+        "does): the walk read "
         "%zu cell(s) and this database holds NONE of them — every one is absent. Nothing "
         "failed a gate, so the verdict below is about a database that stored nothing where "
         "you looked.\n"
@@ -625,7 +641,8 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
         "destroyed.\n"
         "  The walk selected %zu symbol(s) over %zu of the %zu partition(s) in the db; if "
         "you did not narrow it deliberately, read (b). If this database is supposed to have "
-        "NO absent cells, run it with `--max-absent 0` so this exits %d instead of 0.\n",
+        "NO absent cells, run it with `--max-absent 0` so this turns the verdict ABSENT "
+        "(exit %d) instead of passing.\n",
         rep->cells_checked, rep->n_symbols, rep->n_partitions, rep->n_partitions_in_db,
         kSurfaceDbVerifyExitAbsentOverLimit);
   }
