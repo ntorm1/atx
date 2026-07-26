@@ -204,7 +204,13 @@ target_compile_definitions(atx-vol-tests PRIVATE ATX_VOL_CALIB_POOL_TEST_ONLY)
 # via the header-only examples/amzn_earnings_fit.hpp — add examples/ as a PRIVATE
 # quoted-include root (mirrors how bench adds ../tests) — and bake the committed
 # fixture's absolute path so the test finds it regardless of the ctest CWD.
-target_include_directories(atx-vol-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../examples)
+# Task 4 (sp100-surface-db sprint): surface_db_build_test.cpp's
+# SurfaceDbBuildCli suite includes tools/surface_db_build_cli.hpp -- the
+# --snapshot-suffix validator seam pulled out of surface_db_build_main.cpp's
+# arg loop -- so add tools/ as a PRIVATE quoted-include root too (same pattern
+# as the examples/ root two lines above).
+target_include_directories(atx-vol-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../examples
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/../tools)
 target_compile_definitions(atx-vol-tests PRIVATE
     "ATX_AMZN_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/data/amzn_earnings_2018/amzn_opra_cbbo1m_2018-04-26T1945Z.parquet\"")
 

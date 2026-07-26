@@ -14,6 +14,7 @@
 //   atx-vol-surface-db-build --db <root> --hive <root>
 //       --from YYYY-MM-DD --to YYYY-MM-DD
 //       [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045]
+//       [--snapshot-suffix T19:55:00Z]
 //       [--deep-selection] [--retry-disabled] [--pin-curve-family true|false]
 //       [--fit-workers N] [--report out.csv] [--max-failures N]
 //       [--allow-coverage-regression] [--strict]
@@ -28,6 +29,24 @@
 //   --r             flat continuously-compounded carry rate (default 0.0). MUST
 //                   match the rate the hive's quotes were priced under, or every
 //                   put-call-parity forward is wrong and every fit fails.
+//   --snapshot-suffix  per-date snapshot stamp suffix, `T HH:MM:SSZ` (default
+//                   "T19:55:00Z", byte-identical to the prior unconditional
+//                   default when omitted). Threaded straight into
+//                   OpraHiveSpec::snapshot_suffix (atx/vol/opra_hive.hpp), which
+//                   the loader concatenates onto each date to form the load
+//                   spec's snapshot_iso (opra_hive.cpp) -- the instant the
+//                   T-to-expiry math treats every quote as observed at
+//                   (opra_panel.cpp). Task 4 addendum §B: an ET-anchored
+//                   multi-year backfill (pull_opra_hive.py --snap-et) lands at
+//                   19:55Z on EDT dates and 20:55Z on EST dates, so a build
+//                   whose window sits entirely on the EST side of a DST
+//                   transition must pass --snapshot-suffix T20:55:00Z or every
+//                   cell in it is silently stamped an hour off. Same strict-
+//                   parsing discipline as --r: must match `^T\d{2}:\d{2}:\d{2}Z$`
+//                   (is_valid_snapshot_suffix, surface_db_build_cli.hpp) or it
+//                   is a hard usage error (exit 2) -- a silently-accepted
+//                   malformed stamp would be exactly the trap --r's own strict
+//                   parser exists to close, one field over.
 //   --deep-selection  run the full held-out select_curve OOS search per symbol.
 //   --retry-disabled  re-attempt the symbols whose STORED config is disabled,
 //                   instead of skipping them. Without it, a fail-closed disable is
@@ -127,6 +146,8 @@
 #include "atx/vol/surface_db_populate.hpp" // PopulateSymbolStats
 #include "atx/vol/types.hpp"               // Result, Status
 
+#include "surface_db_build_cli.hpp" // is_valid_snapshot_suffix (Task 4 addendum §B)
+
 using namespace atx::vol;
 
 namespace {
@@ -148,6 +169,7 @@ void print_usage(std::FILE *out) {
                "usage: atx-vol-surface-db-build --db <root> --hive <root> "
                "--from YYYY-MM-DD --to YYYY-MM-DD\n"
                "         [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045] "
+               "[--snapshot-suffix T19:55:00Z] "
                "[--deep-selection] [--retry-disabled] [--pin-curve-family true|false] "
                "[--fit-workers N] [--report out.csv] "
                "[--max-failures N] [--allow-coverage-regression] [--strict]\n");
@@ -431,6 +453,18 @@ int main(int argc, char **argv) {
                      static_cast<int>(text.size()), text.data());
         print_usage(stderr);
         return 2;
+      }
+    } else if (a == "--snapshot-suffix") {
+      const std::string_view text = nv();
+      if (!missing_value && !is_valid_snapshot_suffix(text)) {
+        std::fprintf(stderr,
+                     "atx-vol-surface-db-build: --snapshot-suffix expects 'THH:MM:SSZ', got '%.*s'\n",
+                     static_cast<int>(text.size()), text.data());
+        print_usage(stderr);
+        return 2;
+      }
+      if (!missing_value) {
+        spec.hive.snapshot_suffix = std::string(text);
       }
     } else if (a == "--deep-selection") {
       spec.auto_config.deep_selection = true;

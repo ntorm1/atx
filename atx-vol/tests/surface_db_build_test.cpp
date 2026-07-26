@@ -44,6 +44,8 @@
 #include "atx/vol/types.hpp"
 #include "atx/vol/vol_curve.hpp" // VolCurveKind
 
+#include "surface_db_build_cli.hpp" // is_valid_snapshot_suffix (Task 4 addendum §B seam)
+
 namespace atx::vol {
 namespace {
 
@@ -1754,6 +1756,49 @@ TEST(SurfaceDbBuildExitCode, TheCodesThemselvesAreAContract) {
   EXPECT_EQ(kSurfaceDbBuildExitTotalFitFailure, 3);
   EXPECT_EQ(kSurfaceDbBuildExitCoverageRegression, 5)
       << "4 belongs to atx-vol-surface-db verify; the two tools share one vocabulary";
+}
+
+// ── SurfaceDbBuildCli: the --snapshot-suffix usage-error seam (Task 4 addendum
+// §B) ─────────────────────────────────────────────────────────────────────────
+//
+// `tools/surface_db_build_main.cpp` never set `OpraHiveSpec::snapshot_suffix`
+// before this task, so every build used the header's default "T19:55:00Z"
+// (include/atx/vol/opra_hive.hpp:111) regardless of which snapshot minute the
+// hive was actually pulled at -- wrong for any EST-period chunk of an
+// ET-anchored (--snap-et) multi-year backfill, whose files are stamped 20:55Z.
+//
+// This suite (`SurfaceDbBuildExitCode` above) tests `build_exit_code`, a pure
+// function over a `SurfaceDbBuildReport` -- it has never covered `main()`'s arg
+// loop, and neither this binary nor any other in the tree spawns the real
+// `atx-vol-surface-db-build` process to check a usage-error exit code (grepped
+// for CreateProcess/_popen/std::system/subprocess against atx-vol/tests: the
+// only hit, process_scratch_test.cpp, spawns ITSELF for an unrelated
+// scratch-isolation probe). So there is no existing "spawn the exe" pattern to
+// follow for this flag, and pulling the arg loop's other validators
+// (parse_finite_double et al.) out to a header would be actual restructuring
+// of a file this task does not otherwise touch. The addendum's own escape
+// hatch applies instead: "if parse logic is testable via a seam, use it" --
+// `is_valid_snapshot_suffix` (tools/surface_db_build_cli.hpp) IS that seam,
+// same discipline as --r's parse_finite_double, tested directly here with no
+// subprocess. The CLI's actual rejection (usage error, exit 2, one-line
+// diagnostic on stderr) is wired from this same predicate in
+// surface_db_build_main.cpp -- end-to-end wiring is exercised by the pilot
+// tasks per the addendum, not by this unit test.
+TEST(SurfaceDbBuildCli, SnapshotSuffixAcceptsTheDocumentedFormat) {
+  EXPECT_TRUE(is_valid_snapshot_suffix("T19:55:00Z")) << "the unchanged default must still parse";
+  EXPECT_TRUE(is_valid_snapshot_suffix("T20:55:00Z")) << "EST-period chunks stamp 20:55Z";
+  EXPECT_TRUE(is_valid_snapshot_suffix("T00:00:00Z"));
+}
+
+TEST(SurfaceDbBuildCli, SnapshotSuffixRejectsMalformedValue) {
+  EXPECT_FALSE(is_valid_snapshot_suffix("")) << "an absent value must not silently pass";
+  EXPECT_FALSE(is_valid_snapshot_suffix("19:55:00Z")) << "missing the leading T";
+  EXPECT_FALSE(is_valid_snapshot_suffix("T19:55:00")) << "missing the trailing Z";
+  EXPECT_FALSE(is_valid_snapshot_suffix("T1955:00Z")) << "missing the first colon";
+  EXPECT_FALSE(is_valid_snapshot_suffix("T19:5500Z")) << "missing the second colon";
+  EXPECT_FALSE(is_valid_snapshot_suffix("T19:55:00Z ")) << "trailing junk must not be truncated away";
+  EXPECT_FALSE(is_valid_snapshot_suffix("Tab:cd:efZ")) << "non-digit fields";
+  EXPECT_FALSE(is_valid_snapshot_suffix("t19:55:00z")) << "case-sensitive: only upper-case T/Z";
 }
 
 // ── The CROSS-BINARY half of that contract (REV-R5, review I-4) ──────────────
