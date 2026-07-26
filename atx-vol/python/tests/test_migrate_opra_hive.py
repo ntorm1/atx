@@ -476,6 +476,56 @@ def test_destination_schema_drift_is_error_not_overwrite(tmp_path):
     assert dst_f.read_bytes() == before
 
 
+def test_dry_run_detects_schema_drift_in_source_add_file(tmp_path):
+    """``--dry-run``'s union-merge branch validated only the DESTINATION's
+    schema before reporting ``planned_merge``, never the schemas of the
+    source ``add_files`` it would fold in. So a date whose v1 source has
+    drifted schema was reported as a clean would-be merge, even though the
+    real run's ``_merge_union_date`` validates every add_file too (see
+    ``test_destination_schema_drift_is_error_not_overwrite`` for the
+    equivalent destination-side case) and would actually raise and refuse the
+    date. A dry run exists to predict the real run -- it must classify this
+    date the same way the real run does: ``error``, never ``planned_merge``."""
+    src, dst = tmp_path / "v1", tmp_path / "v2"
+    _write_v1(src, "AAA", D1, ["AAA_C1"])  # valid v1 source, already in dst
+    # MMM is the v1 source the union would ADD (destination lacks it) -- give
+    # it drifted schema (bid_px as int32 instead of the canonical int64).
+    bad = pa.table(
+        {
+            "ts": pa.array([TS], pa.timestamp("ns")),
+            "underlying": pa.array(["MMM"], pa.string()),
+            "symbol": pa.array(["MMM_C1"], pa.string()),
+            "instrument_id": pa.array([1], pa.int64()),
+            "bid_px": pa.array([1], pa.int32()),  # <- drift
+            "ask_px": pa.array([1], pa.int64()),
+            "bid_sz": pa.array([1], pa.int64()),
+            "ask_sz": pa.array([1], pa.int64()),
+        }
+    )
+    (src / "MMM").mkdir(parents=True, exist_ok=True)
+    pq.write_table(bad, src / "MMM" / f"{D1}.parquet")
+
+    dst_f = _dst_file(dst, D1)
+    # Destination has AAA only (valid schema) -- a partial overlap with
+    # {AAA, MMM} forces the union path; MMM is the add_file the destination
+    # lacks and is the one with drifted schema.
+    mig._write_atomic(_v1_table("AAA", ["AAA_C1"]), dst_f)
+    before = dst_f.read_bytes()
+
+    stats = mig.migrate(src, dst, dry_run=True)
+
+    assert stats.results[0].status == "error"  # NOT planned_merge
+    assert "schema" in stats.results[0].detail.lower()
+    assert stats.manifest_path is None
+    assert dst_f.read_bytes() == before  # dry-run never writes
+
+    # The real run must actually refuse this date too, confirming the
+    # dry-run's prediction matches reality (not just a stricter dry-run).
+    stats_real = mig.migrate(src, dst)
+    assert stats_real.results[0].status == "error"
+    assert dst_f.read_bytes() == before  # still untouched
+
+
 def test_dry_run_classifies_without_writing_all_new_shapes(tmp_path):
     """``--dry-run`` must report the same classification as a real run for
     every new outcome, and must never write in any of them."""

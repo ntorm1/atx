@@ -346,16 +346,26 @@ def migrate(src, dst, date_lo=None, date_hi=None, dry_run=False) -> MigrationSta
                 try:
                     dst_pf = pq.ParquetFile(dst_file)
                     _validate_schema(dst_pf.schema_arrow, dst_file)  # metadata only
+                    # The real run (_merge_union_date) validates every add_file's
+                    # schema too, not just the destination's -- a dry-run that
+                    # skipped this could report a clean "planned_merge" for a date
+                    # whose v1 source has schema drift, when the real run would
+                    # actually raise inside _merge_union_date and refuse the date.
+                    # Predict the same outcome here, still metadata-only (no data
+                    # scan, consistent with the rest of this footer-only check).
+                    add_pfs = [pq.ParquetFile(f) for f in add_files]
+                    for f, add_pf in zip(add_files, add_pfs):
+                        _validate_schema(add_pf.schema_arrow, f)
                 except Exception as exc:  # noqa: BLE001 — cannot validate -> error, not a plan
                     stats.n_errors += 1
-                    reason = f"destination exists but failed validation: {exc}"
+                    reason = f"would fail schema validation, real run would refuse: {exc}"
                     stats.results.append(
                         DateResult(date, len(src_files), 0, "error", detail=reason)
                     )
                     print(f"ERROR date={date}: {reason}", file=sys.stderr)
                     continue
                 n_rows = dst_pf.metadata.num_rows + sum(
-                    pq.ParquetFile(f).metadata.num_rows for f in add_files
+                    add_pf.metadata.num_rows for add_pf in add_pfs
                 )
                 stats.results.append(
                     DateResult(date, len(src_files), n_rows, "planned_merge")
