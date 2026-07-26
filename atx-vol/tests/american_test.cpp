@@ -2286,6 +2286,24 @@ TEST(AndersenLakePutSlice, InputValidation) {
                    .has_value());
 }
 
+// Empty slice: a zero-strike request is a valid no-op, exactly as the CALL slice
+// treats it (that one never indexes strikes[] outside the per-strike loops). The
+// put slice reaches the American arm with n == 0 whenever the degenerate/European
+// short-circuits do not fire, and used to read strikes[0] there — an out-of-bounds
+// read on an empty span — to pick its reference strike.
+TEST(AndersenLakePutSlice, EmptyStrikes_ReturnsOkWithoutReadingReferenceStrike) {
+  const std::span<const double> no_strikes{};
+  const std::span<double> no_out{};
+  // American arm (r > 0, non-degenerate T/sigma): the branch that reads strikes[0].
+  EXPECT_TRUE(andersen_lake_put_slice(100.0, no_strikes, 0.5, 0.2, 0.03, 0.0, no_out).has_value());
+  // The call slice's answer on the same empty request, for the consistency claim.
+  EXPECT_TRUE(andersen_lake_call_slice(100.0, no_strikes, 0.5, 0.2, 0.0, 0.03, no_out).has_value());
+  // Degenerate / European short-circuits already handled n == 0; keep them pinned.
+  EXPECT_TRUE(andersen_lake_put_slice(100.0, no_strikes, 0.0, 0.2, 0.03, 0.0, no_out).has_value());
+  EXPECT_TRUE(andersen_lake_put_slice(100.0, no_strikes, 0.5, 0.0, 0.03, 0.0, no_out).has_value());
+  EXPECT_TRUE(andersen_lake_put_slice(100.0, no_strikes, 0.5, 0.2, -0.01, 0.02, no_out).has_value());
+}
+
 // ── Negative-rate regime classification (Task 1, P0.5) ──────────────────────
 //
 // The American pricer's no-early-exercise short-circuit was wrong under negative

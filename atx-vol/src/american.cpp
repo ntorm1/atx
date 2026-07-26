@@ -2492,6 +2492,14 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes, double
   }
 
   const std::size_t n = strikes.size();
+  // Empty slice: nothing to price, and (unlike the call slice, whose boundary is
+  // solved at the FIXED internal strike S) the American arm below picks its
+  // reference strike as strikes[0] — an out-of-bounds read on an empty span. The
+  // call slice answers Ok() on n == 0 with no writes; match that no-op contract
+  // here rather than inventing an error the call side does not report.
+  if (n == 0) {
+    return Ok();
+  }
 
   // Degenerate T ~ 0: spot intrinsic per strike (mirrors andersen_lake).
   if (T <= 1.0e-12) {
