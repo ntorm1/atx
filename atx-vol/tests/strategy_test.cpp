@@ -13,6 +13,10 @@
 //                         drops cohorts as they cross expiry.
 //   5. DispersionParity — a DispersionStrategy opens a vega-neutral book and its
 //                         recorded implied_corr matches dispersion_signal.
+//   6. DispersionLifecycle — run_dispersion_backtest honours the lifecycle fields
+//                         on DispersionBacktestConfig: the ladder shape
+//                         (EveryStep+HoldToExpiry) accumulates a cohort per step
+//                         while the default rolling shape stays at one clip.
 
 #include <gtest/gtest.h>
 
@@ -1420,6 +1424,91 @@ TEST(Strategy, DispersionGrossVegaLimitIsDollarsPerVolPointAtNonHistoricalMultip
 
   std::printf("[strategy] gross_vega_per_vol_point=%.6f retired=%.6f multiplier=%.0f\n", measured,
               retired, kMultiplier);
+}
+
+// ── 6. Dispersion lifecycle is a config parameter, not a constant ───────────
+// `make_dispersion_backtest_strategy` used to hardcode EveryNDays/RollAtHorizon,
+// so the library orchestration could express exactly ONE book shape. This gate
+// pins BOTH shapes through the same `run_dispersion_backtest` entry point and
+// asserts they differ in the way the lifecycle says they should:
+//
+//   default (EveryNDays/RollAtHorizon) — one clip; the book returns to clip size
+//     after each roll, so n_open_lots never exceeds one cohort.
+//   ladder  (EveryStep/HoldToExpiry)   — a fresh cohort per step, none closed at
+//     a horizon, so n_open_lots is exactly (step+1) cohorts for a tenor long
+//     enough that nothing has expired yet.
+//
+// The default-config half is the NEGATIVE CONTROL: it is the behaviour the old
+// hardcoded strategy had, and it must still hold, so a regression that made the
+// lifecycle fields inert would fail the ladder half while leaving this one green
+// (and one that wired them backwards fails this one). Neither assertion alone
+// distinguishes "configurable" from "hardcoded to the other value".
+TEST(Strategy, DispersionLifecycleIsConfigurableAndLadderAccumulatesCohorts) {
+  constexpr std::size_t kLadderDates = 6;
+  constexpr std::size_t kLadderNames = 2;
+  // One lot per straddle leg: (index + names) * 2. Fixed by build_dispersion_book.
+  constexpr double kClipLots = static_cast<double>(1 + kLadderNames) * 2.0;
+  // 90 calendar days at one day per step: with only 6 steps nothing reaches
+  // expiry, so every entered cohort is still open on the last row. That is what
+  // makes the expected count exact rather than a lower bound.
+  constexpr double kTenorDays = 90.0;
+
+  const fs::path dir = fresh_dir("dispersion-ladder");
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (std::size_t d = 0; d < kLadderDates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    const double drift = 1.0 + 0.002 * static_cast<double>(d);
+    const PricedSurface idx = make_surface(1, 500.0 * drift, 500.0 * drift, now, 0.00);
+    const PricedSurface n0 = make_surface(2, 100.0 * drift, 100.0 * drift, now, 0.02);
+    const PricedSurface n1 = make_surface(3, 120.0 * drift, 120.0 * drift, now, 0.03);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-11-%02d", static_cast<int>(d + 1));
+    const std::string date = buf;
+    dp.emplace_back(date, write_archive(dir, date, {{"IDX", &idx}, {"NM0", &n0}, {"NM1", &n1}}));
+  }
+  auto clock = Clock::from_manifest(make_manifest(dp));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  DispersionUniverse u;
+  u.index = DispersionMember{"IDX", 1, 0.0};
+  u.names.push_back(DispersionMember{"NM0", 2, 0.5});
+  u.names.push_back(DispersionMember{"NM1", 3, 0.5});
+
+  // The helper is the documented way to build the ladder shape; assert it sets
+  // what it claims rather than trusting the run to imply it, so a helper that
+  // silently stopped setting the lifecycle would be caught here and not only via
+  // the (slower, more indirect) book-count assertion below.
+  const DispersionBacktestConfig ladder =
+      make_dispersion_ladder_config(kTenorDays, 10'000.0, kLadderNames);
+  EXPECT_EQ(ladder.entry, LifecycleSpec::Entry::EveryStep);
+  EXPECT_EQ(ladder.holding, LifecycleSpec::Holding::HoldToExpiry);
+  EXPECT_EQ(ladder.target_dte_days, kTenorDays);
+
+  DispersionBacktestConfig rolling; // inherited defaults = the old hardcoded pair
+  rolling.min_names = kLadderNames;
+  rolling.target_dte_days = kTenorDays;
+  ASSERT_EQ(rolling.entry, LifecycleSpec::Entry::EveryNDays);
+  ASSERT_EQ(rolling.holding, LifecycleSpec::Holding::RollAtHorizon);
+
+  auto ladder_run = run_dispersion_backtest(*clock, u, ladder);
+  ASSERT_TRUE(ladder_run.has_value()) << ladder_run.error().to_string();
+  auto rolling_run = run_dispersion_backtest(*clock, u, rolling);
+  ASSERT_TRUE(rolling_run.has_value()) << rolling_run.error().to_string();
+  ASSERT_EQ(ladder_run->size(), kLadderDates);
+  ASSERT_EQ(rolling_run->size(), kLadderDates);
+
+  for (std::size_t i = 0; i < kLadderDates; ++i) {
+    EXPECT_EQ(ladder_run->n_open_lots[i], static_cast<double>(i + 1) * kClipLots)
+        << "ladder row " << i;
+    EXPECT_LE(rolling_run->n_open_lots[i], kClipLots) << "rolling row " << i;
+  }
+  // The whole point of the parameter: the shapes must actually diverge. Without
+  // this, both loops above would still pass if the ladder collapsed to one clip
+  // on a one-date clock.
+  EXPECT_GT(ladder_run->n_open_lots.back(), rolling_run->n_open_lots.back());
+
+  std::printf("[strategy] ladder n_open_lots back=%.0f vs rolling=%.0f (clip=%.0f)\n",
+              ladder_run->n_open_lots.back(), rolling_run->n_open_lots.back(), kClipLots);
 }
 
 TEST(Strategy, DispersionHonorsPriceOptionsAndPublishesExactEntrySeeds) {

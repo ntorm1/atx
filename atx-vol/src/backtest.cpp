@@ -50,10 +50,52 @@ std::atomic<std::uint64_t> g_open_count{0};
 // this is the upper bound the subset actually shrinks.
 std::atomic<std::uint64_t> g_deserialized_bytes{0};
 
-// A forward-only run owns base, shifted, and at most one prefetched future.
-// Retaining three cache entries covers that working set without accumulating one
-// mapped archive per date. Caller-supplied caches remain reusable and unbounded.
-constexpr std::size_t kPrivateSnapshotCacheCapacity = 3u;
+// Bounded-cache capacity for a look-ahead of `depth`: exactly the live working set
+// of a forward-only run — `base` + `shifted` + `depth` snapshots in flight.
+//
+// This is derivable rather than tuned only because SnapshotCache's bounded mode
+// evicts in INSERTION order, so the eviction victim is always the lowest-indexed
+// entry, which a forward-only walk has already passed. Under the recency order it
+// used to keep, the victim was instead an unconsumed prefetch (sequential
+// flooding), and no capacity of the form depth + k was reliably safe: depth + 3
+// happened to work at depth 4 and still reloaded at depth 8. See the eviction-order
+// comment in snapshot_cache.cpp.
+//
+// `BacktestPrefetchDepth` pins this by asserting `MarketSnapshot::open_count() ==
+// refs.size()` at several depths — the assertion that fails if either the order or
+// this capacity regresses, since a reload does not change the ECONOMICS.
+[[nodiscard]] constexpr std::size_t private_snapshot_cache_capacity(std::size_t depth) noexcept {
+  return depth + 2u;
+}
+
+// Look-ahead depth actually used: 0 is normalized to 1, because "no look-ahead"
+// is expressed by prefetch_snapshots == false, not by a zero depth.
+[[nodiscard]] constexpr std::size_t effective_prefetch_depth(const RunConfig &cfg) noexcept {
+  return cfg.prefetch_depth == 0u ? 1u : cfg.prefetch_depth;
+}
+
+// Issue the look-ahead prefetches for `refs[first .. first+count)`, skipping past
+// the end of the clock. Callers issue this TWICE per run and once per step: an
+// initial fill of the whole window before the loop, then exactly the ONE ref that
+// newly enters the window at each step. Deliberately NOT a per-step rescan of the
+// whole window — `SnapshotCache::prefetch` reads the candidate archive's identity
+// header on every call (a small file open + read) to fail closed on an archive
+// rewritten in place, so rescanning would multiply that probe by the depth for no
+// added look-ahead. One call per ref per run keeps the probe count exactly what
+// the single-step look-ahead already paid.
+//
+// A prefetch error is propagated, not swallowed: it means the cache could not be
+// asked (an invalid build policy), which is a programming error, and the load that
+// would follow is going to fail anyway.
+[[nodiscard]] Status prefetch_window(SnapshotCache &cache, std::span<const SnapshotRef> refs,
+                                     std::size_t first, std::size_t count, const RunConfig &cfg) {
+  const std::size_t last = first + count < refs.size() ? first + count : refs.size();
+  for (std::size_t k = first; k < last; ++k) {
+    ATX_TRY_VOID(
+        cache.prefetch(refs[k].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy));
+  }
+  return Ok();
+}
 
 // Contract residual T on the snapshot dated `base_ts`: (expiry - base.ts)/year.
 [[nodiscard]] double residual_T(std::int64_t expiry_ts_ns, std::int64_t base_ts_ns) noexcept {
@@ -1279,6 +1321,19 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     // read amplification (67% of backtest wall in the profile) is eliminated. The
     // owned path reconstructs and drops this archive before returning, so it never
     // holds a mapping past the load.
+    //
+    // MEASURED AND KEPT for the WHOLE-BOARD path too, against the intuition that a
+    // reader touching every record should prefer one buffered read. It should not,
+    // here: the reconstruct reads the mapped bytes DIRECTLY, so a read's kernel copy
+    // into a 1.8 MB owned buffer is work with no consumer, while the mapping's
+    // first-touch faults are served from the page cache. Interleaved on the
+    // 135-session projected replay (median wall, 5 reps): mmap 295 ms vs buffered
+    // read 315 ms at look-ahead depth 8, and 368 ms vs 503 ms at depth 1 — mmap
+    // ahead at every depth, and further ahead the less the loads overlap. Cold
+    // (page cache evicted between reps) it also held: 431-464 ms vs 464-501 ms.
+    // An explicit PrefetchVirtualMemory populate of the whole mapping was measured
+    // too and is NOT used: 427-444 ms cold and 298-308 ms warm, inside the noise of
+    // plain mmap, so it buys nothing for the extra call.
     return SurfaceArchiveV2::open_mapped(archive_path);
   }();
   if (!arch) {
@@ -1662,11 +1717,12 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   // used exactly as the caller configured it; the Sealed win is taken on the cache
   // this function constructs and exclusively owns, which is the replay path the
   // optimization was built for and the one no caller can observe.
+  const std::size_t prefetch_depth = effective_prefetch_depth(cfg);
   const std::shared_ptr<SnapshotCache> snapshot_cache =
       cfg.snapshot_cache ? cfg.snapshot_cache
-                         : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity,
-                                                           std::move(book_uids),
-                                                           ArchiveBacking::Sealed);
+                         : std::make_shared<SnapshotCache>(
+                               private_snapshot_cache_capacity(prefetch_depth),
+                               std::move(book_uids), ArchiveBacking::Sealed);
   auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
                                        cfg.query_cache_build_policy);
   if (!base_res) {
@@ -1675,12 +1731,10 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   std::shared_ptr<const MarketSnapshot> base = std::move(*base_res);
   ATX_TRY_VOID(validate_snapshot_provenance(*base, cfg.surface_provenance_policy));
   ATX_TRY_VOID(validate_lot_economics(book.lots, "initial fixed book", base->ts_ns()));
-  if (cfg.prefetch_snapshots && refs.size() > 1) {
-    const Status prefetch_status = snapshot_cache->prefetch(
-        refs[1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
-    if (!prefetch_status) {
-      return Err(prefetch_status.error());
-    }
+  if (cfg.prefetch_snapshots) {
+    // Initial fill of the whole look-ahead window; each later step adds only the
+    // one ref that newly enters it.
+    ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, 1u, prefetch_depth, cfg));
   }
 
   double nav = 0.0;
@@ -1719,12 +1773,10 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     }
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
     ATX_TRY_VOID(validate_snapshot_provenance(*shifted, cfg.surface_provenance_policy));
-    if (cfg.prefetch_snapshots && i + 1 < refs.size()) {
-      const Status prefetch_status = snapshot_cache->prefetch(
-          refs[i + 1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
-      if (!prefetch_status) {
-        return Err(prefetch_status.error());
-      }
+    if (cfg.prefetch_snapshots) {
+      // The window is [i+1, i+depth]; step i-1 already covered through i+depth-1,
+      // so exactly one ref newly enters it here.
+      ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, i + prefetch_depth, 1u, cfg));
     }
 
     // V1 solve ledger: per-step solve deltas when a StepTrace is armed (fixed-book
@@ -2165,12 +2217,14 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   // reused across books whose referenced sets differ, and a subset snapshot
   // cached under one book would be missing another's uids.
   const std::span<const std::uint32_t> strategy_uids = strat.referenced_uids();
+  const std::size_t prefetch_depth = effective_prefetch_depth(cfg);
+  const std::size_t private_capacity = private_snapshot_cache_capacity(prefetch_depth);
   const std::shared_ptr<SnapshotCache> snapshot_cache =
       cfg.snapshot_cache ? cfg.snapshot_cache
       : strategy_uids.empty()
-          ? std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity, ArchiveBacking::Sealed)
+          ? std::make_shared<SnapshotCache>(private_capacity, ArchiveBacking::Sealed)
           : std::make_shared<SnapshotCache>(
-                kPrivateSnapshotCacheCapacity,
+                private_capacity,
                 std::vector<std::uint32_t>(strategy_uids.begin(), strategy_uids.end()),
                 ArchiveBacking::Sealed);
   auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
@@ -2180,12 +2234,10 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   }
   std::shared_ptr<const MarketSnapshot> base = std::move(*base_res);
   ATX_TRY_VOID(validate_snapshot_provenance(*base, cfg.surface_provenance_policy));
-  if (cfg.prefetch_snapshots && refs.size() > 1) {
-    const Status prefetch_status = snapshot_cache->prefetch(
-        refs[1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
-    if (!prefetch_status) {
-      return Err(prefetch_status.error());
-    }
+  if (cfg.prefetch_snapshots) {
+    // Initial fill of the whole look-ahead window; each later step adds only the
+    // one ref that newly enters it.
+    ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, 1u, prefetch_depth, cfg));
   }
 
   double nav = 0.0;
@@ -2259,12 +2311,10 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     }
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
     ATX_TRY_VOID(validate_snapshot_provenance(*shifted, cfg.surface_provenance_policy));
-    if (cfg.prefetch_snapshots && i + 1 < refs.size()) {
-      const Status prefetch_status = snapshot_cache->prefetch(
-          refs[i + 1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
-      if (!prefetch_status) {
-        return Err(prefetch_status.error());
-      }
+    if (cfg.prefetch_snapshots) {
+      // The window is [i+1, i+depth]; step i-1 already covered through i+depth-1,
+      // so exactly one ref newly enters it here.
+      ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, i + prefetch_depth, 1u, cfg));
     }
 
     // V1 solve ledger: record this step's per-unique solve deltas (pnl-base + target +

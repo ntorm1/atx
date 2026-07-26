@@ -6,7 +6,9 @@ build-vs/
 build-bench/
 build-rel-avx2/
 # Catch-all so a new preset's binaryDir (build-rel-avx2, build-hygiene, ...) is
-# never swept into a commit by `git add -A`.
+# never swept into a commit by `git add -A`. Also covers build-relprof, the
+# conventional out-of-tree dir for a -DATX_VOL_PROFILE=ON / -DATX_VOL_COUNTERS=ON
+# instrumented build.
 build-*/
 out/
 cmake-build-*/
