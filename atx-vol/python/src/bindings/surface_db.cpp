@@ -138,6 +138,11 @@ namespace {
   // and they are gone. Both are always present, so a scripted diff of two runs
   // sees a regression appear.
   coverage["dates_refused_coverage_regression"] = r.coverage.dates_refused_coverage_regression;
+  // REV-R3 fix-2 (review N-3): a SUBSET of the key above — the refusals whose
+  // partition file is on disk but unlisted in the manifest. The CLI reads it to
+  // pick which cause its banner names; a Python caller has no banner at all, so
+  // this is the only way it can tell the two causes apart.
+  coverage["dates_refused_partition_unlisted"] = r.coverage.dates_refused_partition_unlisted;
   coverage["dates_dropped_coverage_regression"] = r.coverage.dates_dropped_coverage_regression;
   // REV-R4 (review F-01): the per-cell lists, complete and in the C++ side's own
   // deterministic (date, symbol) order — see report_to_dict's header comment for
@@ -318,13 +323,22 @@ dict
     and deliberately does not invent an exception for it, so a run in which the
     guard refused EVERY date returns successfully and looks like any other result
     dict. ``coverage["cells_ok"]`` counts FITS, not commits, so it can be large on
-    a run that wrote nothing at all. The three keys that carry the verdict:
+    a run that wrote nothing at all. The four keys that carry the verdict:
 
     - ``coverage["dates_refused_coverage_regression"]`` -- dates NOT written
       because the rewrite would have destroyed a stored surface. Non-zero means
       the run did not do what you asked; the existing partitions are intact and
       nothing was lost. This is the key to branch on for the CLI's exit-5
       behaviour.
+    - ``coverage["dates_refused_partition_unlisted"]`` -- a SUBSET of the count
+      above (never larger), telling you WHY those dates were refused, which
+      decides what to do about it. Zero means the cells this run offered really
+      did fail to fit and the carry rate is the first thing to check. Non-zero
+      means that many of the refused dates have a partition file on disk that the
+      manifest does not list -- nothing failed to fit; the index and the disk
+      disagree, and the fix is to re-run those dates over the FULL board set (or
+      delete the stale file), NOT to pass ``allow_coverage_regression=True``,
+      which would delete the surfaces that survived.
     - ``coverage["dates_dropped_coverage_regression"]`` -- dates written ANYWAY
       under ``allow_coverage_regression=True``. Non-zero means the surfaces named
       below are GONE.

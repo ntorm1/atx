@@ -756,13 +756,30 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
           // NotFound when the key is unlisted, without ever touching the file --
           // so a partition file holding surfaces but missing from the manifest
           // came back as "no existing coverage" and was overwritten, which is the
-          // exact outcome this guard exists to prevent. The file-level open makes
-          // the three cases distinguishable, and the branches below MUST keep
-          // them apart:
-          //   - file ABSENT   (NotFound)         -> proceed; nothing to lose.
-          //   - file PRESENT and readable        -> its directory is the existing
-          //                                         set, whatever the manifest says.
-          //   - file PRESENT and unreadable      -> abort (below).
+          // exact outcome this guard exists to prevent.
+          //
+          // What the branches below DO, case by case. Only the first proceeds,
+          // and it is the only one on which anything here has been told the file
+          // is absent:
+          //   - NotFound                       -> proceed; the probe was asked
+          //                                       with an error_code, reported no
+          //                                       error, and reported no file.
+          //   - Ok                             -> its directory is the existing
+          //                                       set, whatever the manifest says.
+          //   - IoError / ParseError / anything -> abort (below). This covers BOTH
+          //     else                              "the file is there and will not
+          //                                       read" AND "the filesystem
+          //                                       declined to say whether it is
+          //                                       there at all".
+          //
+          // REV-R3 fix-2 (review N-1) is that last merge. The probe used to fold
+          // a FAILED existence query into NotFound -- a denied ACL on the file or
+          // on partitions/, a transient volume or SMB fault -- so an unanswerable
+          // filesystem took the proceed-and-overwrite branch. The branch below
+          // keys on `!= NotFound` and therefore needed no change; what changed is
+          // that `open_partition_file` no longer reports an unanswered question
+          // as an answer. Do not "simplify" this by going back to
+          // `SurfaceArchiveV2::open_file` directly: that is where the fold is.
           const Result<SurfaceArchiveV2> part = db.open_partition_file(date);
           if (part.has_value()) {
             stored_symbols.reserve(part->directory().size());
@@ -845,6 +862,28 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
           ++stats.n_dates_dropped_coverage_regression;
         } else {
           ++stats.n_dates_refused_coverage_regression;
+          // REV-R3 fix-2 (review N-3). WHY the rewrite would have lost coverage
+          // decides what the operator should do about it, and the two causes want
+          // opposite actions. The wrong-`--r` incident the banner was written for
+          // is a FIT problem: the cells really did fail, the fix is the build
+          // input. A partition that is on disk but UNLISTED is a manifest/file
+          // DISAGREEMENT: nothing failed, the run was simply narrower than a file
+          // the index does not know about, and it will be refused on every run
+          // forever until the file is deleted or the date is rebuilt over the
+          // full board set. Sending that operator to check `--r` sends them at
+          // the wrong problem, and the escape the banner offers for the fit case
+          // (`--allow-coverage-regression`) would delete the surfaces.
+          //
+          // We are in the branch where `open_partition_file` SUCCEEDED (a
+          // non-empty `lost_symbols` requires a non-empty stored set), so the
+          // file is known present; `partition_listed` is a pure manifest
+          // snapshot lookup with no file I/O, and it is asked only on a date that
+          // is already being refused. DETERMINISM: drain thread, same
+          // date-ascending walk, snapshot read, no atomic, no unordered
+          // iteration.
+          if (!db.partition_listed(date)) {
+            ++stats.n_dates_refused_partition_unlisted;
+          }
         }
       }
       const bool refuse_write = !lost_symbols.empty() && !cfg.allow_coverage_regression;
@@ -1228,6 +1267,7 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
     // the manual's counter table all now claim. Assignment also removes the
     // underflow question rather than arguing it away.
     cov.dates_refused_coverage_regression = st->n_dates_refused_coverage_regression;
+    cov.dates_refused_partition_unlisted = st->n_dates_refused_partition_unlisted;
     cov.dates_dropped_coverage_regression = st->n_dates_dropped_coverage_regression;
     cov.dates_written = st->n_dates_written;
     cov.coverage_regression_cells = st->coverage_regression_cells;

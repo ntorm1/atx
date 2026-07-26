@@ -190,6 +190,16 @@ struct SurfaceDbPopulateStats {
   // every surface it held is still on disk. Non-zero means the run did not do
   // what was asked, which is why the build CLI maps it to a non-zero exit.
   std::uint32_t n_dates_refused_coverage_regression{0};
+  // REV-R3 fix-2 (review N-3). Of the dates in the counter above, how many had a
+  // partition FILE on disk that the manifest does not list. Always <= it. This is
+  // a CAUSE discriminator, not a second refusal counter: a refusal on a listed
+  // partition means this run's cells failed to fit (check the build inputs, the
+  // carry rate first), while a refusal on an unlisted one means the manifest and
+  // the disk disagree (nothing failed; the run was narrower than a file the index
+  // does not know about) and the remedies are different enough that offering the
+  // wrong one is harmful. Refusals only — the destructive branch prints no
+  // cause advice, so it needs no discriminator.
+  std::uint32_t n_dates_refused_partition_unlisted{0};
   // REV-R3. The same detection on a run that set `allow_coverage_regression`:
   // the date WAS written and the stored surfaces named in
   // `coverage_regression_cells` for it are GONE. This exists so the destructive
@@ -450,6 +460,15 @@ struct UniversePopulateCoverage {
   // untouched on disk, and `dates_written` above never counted it (it is the
   // write site's own count).
   std::uint32_t dates_refused_coverage_regression{0};
+  // REV-R3 fix-2 (review N-3). The subset of the counter above whose partition
+  // file was on disk but NOT listed in the manifest — a crash between
+  // `write_partition`'s archive rename and its manifest persist, a restored older
+  // manifest, a hand-assembled root, or a `drop_partition` interrupted (or whose
+  // unlink failed) after its manifest commit. Always <=
+  // `dates_refused_coverage_regression`. The CLI reads it to pick which cause it
+  // names in the refusal banner, because the wrong-carry-rate advice is actively
+  // misleading for this state. Carried straight through from the populate.
+  std::uint32_t dates_refused_partition_unlisted{0};
   // Dates written ANYWAY under `allow_coverage_regression`. The surfaces named
   // for those dates in `coverage_regression_cells` are gone.
   std::uint32_t dates_dropped_coverage_regression{0};

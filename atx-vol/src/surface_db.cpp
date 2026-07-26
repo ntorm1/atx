@@ -1268,16 +1268,70 @@ Result<SurfaceArchiveV2> SurfaceDb::open_partition(std::string_view key) const {
 
 // REV-R3 fix-1 (review I-1). The same open with the manifest gate REMOVED — see
 // the header for why this is a separate entry point rather than a widening of
-// `open_partition`. `SurfaceArchiveV2::open_file` stats the path before reading
-// it, so its `NotFound` is precisely "no such file" and every other code means
-// "the file is there and I could not use it"; that split is the whole contract
-// this function exists to deliver, and nothing here may collapse it.
+// `open_partition`. The one thing this function is for is keeping "there is no
+// file" apart from "there is a file I could not use", because its caller turns
+// the first into a whole-file overwrite.
+//
+// REV-R3 fix-2 (review N-1). WHAT THE PROBE BELOW CHECKS, stated as a check and
+// not as a guarantee — the previous version of this comment claimed the split
+// was already delivered by `SurfaceArchiveV2::open_file`, and it was not:
+//
+//   `std::filesystem::exists(p, ec)` returns false for BOTH "the path is not
+//   there" and "the query itself failed" (access denied on the file or on
+//   `partitions/`, a sharing violation, a transient volume or SMB fault, handle
+//   exhaustion). It distinguishes the two only through `ec`, which it CLEARS for
+//   a merely-absent path and SETS for a failed query. `open_file` folds both
+//   into one `NotFound` (`surface_archive.cpp`), and `NotFound` is the coverage
+//   guard's "nothing on disk, proceed and overwrite" branch — so a filesystem
+//   that could not answer read as a filesystem that answered "empty".
+//
+// So the existence question is asked HERE, where `ec` is looked at, and a failed
+// query becomes `IoError` — which the guard treats as an abort like any other
+// non-`NotFound` code. `open_file` itself is deliberately NOT changed: it has
+// other callers and widening its error contract underneath them is a separate
+// change with a separate blast radius.
+//
+// RESIDUAL, because this file has already had three comments that promised more
+// than the code did: `open_file` re-probes the path itself, so if the filesystem
+// starts failing in the window BETWEEN these two adjacent stats, this still
+// returns `open_file`'s `NotFound`. That window is two syscalls wide on one
+// thread and is the same window a real delete would race; it is narrowed here,
+// not eliminated. Eliminating it means changing `open_file`.
 Result<SurfaceArchiveV2> SurfaceDb::open_partition_file(std::string_view key) const {
   auto canon = canonicalize_key(key);
   if (!canon) {
     return Err(canon.error());
   }
-  return SurfaceArchiveV2::open_file(partition_path(*canon));
+  const std::string path = partition_path(*canon);
+  std::error_code ec;
+  const bool present = std::filesystem::exists(std::filesystem::path(path), ec);
+  if (ec) {
+    // NOT `NotFound`: the filesystem declined to answer, so "absent" is not
+    // something anyone here knows. Armed with a real ERROR_ACCESS_DENIED by
+    // `SurfaceDbPartition.OpenPartitionFileDoesNotReportAnUnanswerableProbeAsAbsent`
+    // (Windows-only — that test records which arming routes do NOT work and why).
+    return Err(ErrorCode::IoError,
+               "SurfaceDb::open_partition_file: cannot determine whether the partition file "
+               "exists");
+  }
+  if (!present) {
+    return Err(ErrorCode::NotFound, "SurfaceDb::open_partition_file: no partition file");
+  }
+  return SurfaceArchiveV2::open_file(path);
+}
+
+// REV-R3 fix-2 (review N-3). Does the MANIFEST list `key`? Pure snapshot lookup:
+// no file I/O, no partition cache, no archive open. It is the other half of the
+// question `open_partition` fuses — `open_partition` = listed AND openable — and
+// the coverage guard needs the halves separately so its refusal banner can say
+// WHICH disagreement it hit. `false` for a key that will not canonicalize: an
+// unrepresentable key cannot be listed under any spelling.
+bool SurfaceDb::partition_listed(std::string_view key) const {
+  auto canon = canonicalize_key(key);
+  if (!canon) {
+    return false;
+  }
+  return manifest()->find_partition(*canon) != nullptr;
 }
 
 namespace {
@@ -1443,23 +1497,50 @@ Status SurfaceDb::drop_partition(std::string_view key) {
 
   // Manifest-first ordering is deliberate, not incidental: the index entry is
   // already gone (and generation already bumped) by the time we get here, so
-  // a crash right at this line leaves only an orphaned .atxvsa file under
-  // partitions/ -- harmless garbage that a future write_partition for the
-  // same key silently overwrites, and that no reader ever sees (the manifest
-  // no longer lists it, so open_partition/load_surface correctly report
-  // NotFound). The reverse order -- unlink the file, then edit the manifest
-  // -- would risk a crash between the two steps that leaves a manifest entry
-  // pointing at a now-missing file: every later open_partition/load_surface
-  // for that key would then surface a confusing IoError/NotFound-on-open
-  // instead of a clean "no such partition." The unlink stays under `*mu_`
-  // (rather than after releasing it) so an in-process write_partition on the
-  // SAME key racing on another thread cannot land its archive write and
-  // manifest entry inside the gap between this manifest commit and the
-  // unlink; see surface_db.hpp's thread-safety note for the residual
-  // ordering this narrows but does not fully close (write_partition's own
-  // archive write still happens before it takes the lock).
+  // a crash right at this line leaves an orphaned .atxvsa file under
+  // partitions/ that no READER ever sees (the manifest no longer lists it, so
+  // open_partition/load_surface correctly report NotFound). The reverse order
+  // -- unlink the file, then edit the manifest -- would risk a crash between
+  // the two steps that leaves a manifest entry pointing at a now-missing file:
+  // every later open_partition/load_surface for that key would then surface a
+  // confusing IoError/NotFound-on-open instead of a clean "no such partition."
+  // The unlink stays under `*mu_` (rather than after releasing it) so an
+  // in-process write_partition on the SAME key racing on another thread cannot
+  // land its archive write and manifest entry inside the gap between this
+  // manifest commit and the unlink; see surface_db.hpp's thread-safety note for
+  // the residual ordering this narrows but does not fully close
+  // (write_partition's own archive write still happens before it takes the
+  // lock).
+  //
+  // REV-R3 fix-2 (review N-2). THE ORPHAN IS NO LONGER HARMLESS, which is what
+  // this comment used to say. It is still invisible to readers and a direct
+  // `write_partition` for the same key still overwrites it silently -- but the
+  // BUILD path, which is the only thing that writes partitions in production,
+  // now runs a coverage guard that opens the partition FILE without asking the
+  // manifest (`open_partition_file`, added for exactly this class of
+  // manifest/file disagreement). That guard reads the orphan, sees symbols the
+  // new candidate lacks, and REFUSES to rewrite the date -- on every run, until
+  // someone deletes the file or rebuilds over the full board set. So an
+  // interrupted drop no longer costs nothing; it costs that date's rebuilds.
+  //
+  // Which is why the unlink error is now returned instead of discarded: a
+  // failed unlink produces the same orphan with no crash at all, and on Windows
+  // it is not exotic (a live mapping in another process blocks it). Reporting
+  // it is a PARTIAL SUCCESS -- the manifest commit above already happened and
+  // is not rolled back, the key really is dropped from the index, and a caller
+  // that retries gets `NotFound`. The message says so, because "drop_partition
+  // failed" would otherwise read as "nothing happened". `remove` on an already
+  // absent path returns false with `ec` CLEARED, so a double-unlink is not an
+  // error here.
   std::error_code ec;
   std::filesystem::remove(path, ec);
+  if (ec) {
+    return Err(ErrorCode::IoError,
+               "SurfaceDb::drop_partition: the manifest entry for '" + *canon +
+                   "' was removed, but its partition file could not be unlinked (" + ec.message() +
+                   "); the file is now an orphan that the build's coverage guard will read and "
+                   "defend -- delete " + path + " by hand");
+  }
   return Ok();
 }
 

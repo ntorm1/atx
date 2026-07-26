@@ -110,9 +110,11 @@
 // resolves that ambiguity as a FAILURE (still exit 3) for callers who can afford
 // to — see the flag's doc above and is_strict_total_fit_failure's declaration.
 
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -301,6 +303,12 @@ void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
   // given and they are gone.
   std::printf("coverage.dates_refused_coverage_regression %u\n",
               r.coverage.dates_refused_coverage_regression);
+  // REV-R3 fix-2 (review N-3). A SUBSET of the line above, not a third outcome:
+  // how many of those refusals were on a partition file the manifest does not
+  // list. Always printed, so the state is greppable in a scheduler's log and not
+  // only readable in the stderr banner.
+  std::printf("coverage.dates_refused_partition_unlisted %u\n",
+              r.coverage.dates_refused_partition_unlisted);
   std::printf("coverage.dates_dropped_coverage_regression %u\n",
               r.coverage.dates_dropped_coverage_regression);
   std::printf("n_dates_loaded %zu\n", r.n_dates_loaded);
@@ -578,17 +586,62 @@ int main(int argc, char **argv) {
     }
     std::fprintf(stderr, "\n");
     if (coverage_refused) {
-      std::fprintf(stderr,
-                   "  Most likely cause: --r does not match the hive. This build used --r %.17g. "
-                   "The carry rate is an ordinary build input that is neither stored in nor "
-                   "checked against the database, and a wrong one fails every re-fit at once -- "
-                   "one production-shaped run at the wrong --r destroyed 95 stored surfaces "
-                   "before this guard existed. The failed_cell lines on stdout carry each cell's "
-                   "own reason.\n"
-                   "  If the fit failures are genuine and you INTEND to retire these cells, "
-                   "re-run with --allow-coverage-regression; the run will then delete them and "
-                   "list exactly what it deleted. Do not pass it to silence this line.\n",
-                   spec.hive.r);
+      // ── REV-R3 fix-2 (review N-3): WHICH cause, and only that cause's advice ──
+      //
+      // A refusal has two quite different causes and they want opposite actions.
+      // The --r advice below is right for the incident this banner was written
+      // for -- a wrong carry rate fails every re-fit at once -- and it is WRONG
+      // for a partition the manifest does not list, where nothing failed to fit
+      // and the run was merely narrower than a file the index has lost track of.
+      // Worse, the escape it offers (--allow-coverage-regression) is exactly what
+      // deletes the surfaces the operator still has.
+      //
+      // So this follows the rule the strict diagnostic already established: on a
+      // state where a piece of advice is not the right advice, do not print it.
+      // The two are printed independently rather than as an if/else because one
+      // run can hold both shapes -- `unlisted` is a documented SUBSET of
+      // `dates_refused_coverage_regression`, so `listed` is the rest, and a mixed
+      // run gets both paragraphs, each scoped to its own date count. The
+      // subtraction is saturating: the subset relation is guaranteed by the
+      // populate that fills these two, and this is a diagnostic, not the place to
+      // find out that a hand-built report disagrees.
+      const std::uint32_t n_unlisted =
+          std::min(report->coverage.dates_refused_partition_unlisted,
+                   report->coverage.dates_refused_coverage_regression);
+      const std::uint32_t n_listed =
+          report->coverage.dates_refused_coverage_regression - n_unlisted;
+      if (n_unlisted > 0) {
+        std::fprintf(
+            stderr,
+            "  %u of those date(s) have a partition FILE on disk that this database's MANIFEST "
+            "does NOT list. That is not a fit problem and --r is not the suspect: the cells above "
+            "did not have to fail for this to happen. The file holds surfaces, the index has lost "
+            "track of it, and this run's board set is narrower than what the file holds -- so the "
+            "rewrite would have deleted the difference. Causes: a crash between a previous run's "
+            "archive write and its manifest commit, a manifest restored from an older copy, a "
+            "hand-assembled or partially-copied database root, or an interrupted/failed "
+            "drop_partition.\n"
+            "  Remedy, and NOT --allow-coverage-regression (it would delete exactly the surfaces "
+            "that survived): re-run those dates over the FULL board set, which rewrites the file "
+            "with everything it already holds and re-lists it in the manifest. If you have "
+            "confirmed the file is genuinely stale, delete <db>/partitions/<DATE>.atxvsa by hand "
+            "and re-run -- that turns the date into a first write.\n",
+            n_unlisted);
+      }
+      if (n_listed > 0) {
+        std::fprintf(stderr,
+                     "  Most likely cause for the remaining %u date(s): --r does not match the "
+                     "hive. This build used --r %.17g. "
+                     "The carry rate is an ordinary build input that is neither stored in nor "
+                     "checked against the database, and a wrong one fails every re-fit at once -- "
+                     "one production-shaped run at the wrong --r destroyed 95 stored surfaces "
+                     "before this guard existed. The failed_cell lines on stdout carry each cell's "
+                     "own reason.\n"
+                     "  If the fit failures are genuine and you INTEND to retire these cells, "
+                     "re-run with --allow-coverage-regression; the run will then delete them and "
+                     "list exactly what it deleted. Do not pass it to silence this line.\n",
+                     n_listed, spec.hive.r);
+      }
     }
   }
 

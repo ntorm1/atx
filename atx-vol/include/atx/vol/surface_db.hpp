@@ -635,8 +635,9 @@ public:
   [[nodiscard]] Result<SurfaceArchiveV2> open_partition(std::string_view key) const;
 
   // Open the partition FILE for `key` directly, WITHOUT the manifest lookup
-  // `open_partition` performs first. So `NotFound` here means the file is
-  // genuinely ABSENT from `<root>/partitions/`, never merely unlisted.
+  // `open_partition` performs first. So a `NotFound` here is never merely
+  // "unlisted" — see the error contract at the bottom of this block for what it
+  // does and does not establish.
   //
   // REV-R3 fix-1 (review I-1). `open_partition` above answers "does this
   // database SERVE this key", and it must keep doing exactly that — its callers
@@ -654,15 +655,48 @@ public:
   // resolve in the FILE's favour. Through `open_partition` it resolved the other
   // way and the rewrite overwrote the file.
   //
-  // Errors are `SurfaceArchiveV2::open_file`'s, verbatim and undiluted:
-  // `NotFound` iff the path does not exist, `IoError`/`ParseError` for a file
-  // that is present and will not read or parse. Callers MUST keep those apart —
-  // conflating them is the fail-open this was added to close.
+  // ERROR CONTRACT — written as what is CHECKED, because the two previous
+  // versions of this paragraph were written as what is guaranteed and both were
+  // false (REV-R3 fix-2, review N-1):
+  //
+  //   `NotFound`     the existence probe was asked with an `std::error_code`,
+  //                  reported no error, and reported the path absent. This is
+  //                  the only code on which a caller may conclude "there is
+  //                  nothing here to lose".
+  //   `IoError`      either the existence probe FAILED (the filesystem declined
+  //                  to answer: denied ACL on the file or on `partitions/`, a
+  //                  sharing violation, a transient volume or SMB fault) or the
+  //                  file is there and would not read.
+  //   `ParseError`   the file is there, read, and is not a valid archive.
+  //   `InvalidArgument`  `key` is not a representable partition key.
+  //
+  // Callers MUST keep `NotFound` apart from the rest — conflating them is the
+  // fail-open this was added to close, and folding a failed probe INTO
+  // `NotFound` is how that fail-open came back a second time.
+  //
+  // What this does NOT establish: `SurfaceArchiveV2::open_file` re-probes the
+  // path internally and still collapses a failed probe into `NotFound`, so a
+  // filesystem that starts failing between the two adjacent stats yields
+  // `NotFound` from here. The window is two syscalls on one thread.
   //
   // NO CACHING, deliberately: this bypasses the S5 partition view cache as well
   // as the manifest, so it always reads what is on disk right now. It is a
   // once-per-written-date call on the drain thread, not a hot path.
   [[nodiscard]] Result<SurfaceArchiveV2> open_partition_file(std::string_view key) const;
+
+  // Does the MANIFEST list a partition for `key`? Snapshot lookup only — no file
+  // I/O, no view cache, nothing on disk is consulted, so this answers ONLY "is
+  // this key in the index", never "is there a file".
+  //
+  // REV-R3 fix-2 (review N-3). `open_partition` asks listed-AND-openable in one
+  // call and returns one `NotFound` for either half. Pairing this with
+  // `open_partition_file` splits it: file present + listed is the ordinary
+  // rewrite, file present + UNLISTED is the manifest/file disagreement the
+  // coverage guard resolves in the file's favour, and the two need different
+  // operator advice — telling someone whose manifest disagrees with the disk to
+  // go check `--r` sends them at the wrong problem. `false` for a key that will
+  // not canonicalize: it cannot be listed under any spelling.
+  [[nodiscard]] bool partition_listed(std::string_view key) const;
 
   // Reconstruct an OWNED surface for `symbol` in partition `key`. S5: reads the
   // partition through a shared, per-partition MMAP CACHE (keyed by canonical key,
@@ -680,6 +714,13 @@ public:
   // per-surface allocation for parametric kinds.
   [[nodiscard]] Result<LoadedSurface> map_surface(std::string_view key,
                                                   std::string_view symbol) const;
+  // Remove `key` from the manifest, then unlink its archive file. Errors:
+  // `InvalidArgument` (unrepresentable key), `NotFound` (the manifest does not
+  // list `key`), `IoError`/`ParseError` from the manifest persist, and — since
+  // REV-R3 fix-2 (review N-2) — `IoError` when the manifest commit SUCCEEDED but
+  // the unlink did not. That last one is a partial success and it is reported
+  // rather than swallowed for a reason the guard created: the leftover `.atxvsa`
+  // is no longer inert (see the ordering note at the unlink in `surface_db.cpp`).
   [[nodiscard]] Status drop_partition(std::string_view key);
 
 private:

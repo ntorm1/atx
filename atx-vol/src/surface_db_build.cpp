@@ -642,6 +642,12 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
   // scripted diff of two report CSVs sees a regression appear.
   kv("coverage.dates_refused_coverage_regression",
      fmt_u32(r.coverage.dates_refused_coverage_regression));
+  // REV-R3 fix-2 (review N-3). A SUBSET of the row above — the refusals whose
+  // partition file is on disk but unlisted in the manifest. Also always emitted:
+  // it is the row that tells a reader which of the two causes a refusal had, and
+  // a row that only appears when non-zero is a row nothing can diff against.
+  kv("coverage.dates_refused_partition_unlisted",
+     fmt_u32(r.coverage.dates_refused_partition_unlisted));
   kv("coverage.dates_dropped_coverage_regression",
      fmt_u32(r.coverage.dates_dropped_coverage_regression));
   kv("n_dates_loaded", fmt_usize(r.n_dates_loaded));
