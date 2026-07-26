@@ -130,10 +130,13 @@ standard_monthly_sessions(std::span<const std::int64_t> expiry_ts_ns);
 //     malformed panel, never an unlisted contract, so no policy softens it;
 //   - the structural numeric-root skip and the same-session (0DTE) skip in the
 //     nullptr branch already fire unconditionally under BOTH policies;
-//   - once a definition IS found, the look-ahead/expiry guard and the
-//     quote/OSI/definition economics-agreement check remain fatal under BOTH
-//     policies. Those signal a definition that exists but contradicts the quote
-//     (corrupted authority), never an absent one, and no policy softens them.
+//   - once a definition IS found, the look-ahead/expiry guard, the OSI parse
+//     of raw_symbol re-checked on this path, the quote/OSI/definition
+//     economics-agreement check, and the future-quote guard all remain fatal
+//     under BOTH policies. The first three signal a definition that exists but
+//     contradicts the quote (corrupted authority); the future-quote guard
+//     signals a quote stamped after valuation. None of the four signals an
+//     absent definition, and no policy softens any of them.
 enum class MissingDefinitionPolicy : std::uint8_t { Error = 0, SkipUnlisted = 1 };
 
 // Join one single-symbol OPRA panel to the point-in-time definition table.

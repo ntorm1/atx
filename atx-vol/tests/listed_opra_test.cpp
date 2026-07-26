@@ -525,7 +525,7 @@ TEST(ListedOpra, FilteredJoinExcludesWantedRawSymbolWithDifferentExpiry) {
 
 TEST(ListedOpra, FilteredJoinStillFatalOnWantedLookAhead) {
   using atx::vol::MissingDefinitionPolicy;
-  // NARROWED GATE 2. The definition for a WANTED contract post-dates the
+  // NARROWED GATE 4. The definition for a WANTED contract post-dates the
   // valuation instant: corrupted authority, and still fatal under the filter.
   const OpraPanel source = wide_panel();
   auto rows = wide_definitions_for_panel();
@@ -558,7 +558,7 @@ TEST(ListedOpra, FilteredJoinStillFatalOnWantedLookAhead) {
 
 TEST(ListedOpra, FilteredJoinStillFatalOnWantedEconomicsMismatch) {
   using atx::vol::MissingDefinitionPolicy;
-  // NARROWED GATE 3. The panel row's expiry disagrees with its own OSI symbol.
+  // NARROWED GATE 6. The panel row's expiry disagrees with its own OSI symbol.
   // raw_symbol, strike and side are untouched, so the row's wanted key is exactly
   // wide_key(2) — there is no ambiguity about whether the caller asked for it.
   OpraPanel source = wide_panel();
@@ -591,7 +591,7 @@ TEST(ListedOpra, FilteredJoinStillFatalOnWantedEconomicsMismatch) {
 
 TEST(ListedOpra, FilteredJoinStillFatalOnWantedFutureQuote) {
   using atx::vol::MissingDefinitionPolicy;
-  // NARROWED GATE 4. A WANTED row stamped after the valuation instant.
+  // NARROWED GATE 7. A WANTED row stamped after the valuation instant.
   OpraPanel source = wide_panel();
   source.frame.rows[2].ts_ns = source.frame.snapshot_ts_ns + 1;
   auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
