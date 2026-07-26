@@ -10,6 +10,7 @@ add_executable(atx-core-tests
     math_test.cpp
     normal_dist_test.cpp
     hash_test.cpp
+    sha256_test.cpp
     decimal_test.cpp
     random_test.cpp
     aligned_test.cpp
@@ -71,17 +72,13 @@ target_link_libraries(atx-core-tests PRIVATE Arrow::arrow_shared Parquet::parque
 # the (first-party) test target directly; their include dirs propagate here only,
 # never to atx-core's public consumers. zstd::libzstd is the same vcpkg zstd Arrow
 # links, so its DLL is already handled by the TARGET_RUNTIME_DLLS copy below.
-# When atx-core is a DLL (ATX_SHARED_LIBS), WINDOWS_EXPORT_ALL_SYMBOLS already
-# re-exports mz_* from atx-core.dll, so re-linking the static atx_miniz would be a
-# duplicate-symbol error — take only its include dir instead. zstd is a separate
-# (vcpkg) DLL, so its import lib is the same either way and stays linked.
-if(ATX_SHARED_LIBS)
-    target_include_directories(atx-core-tests PRIVATE
-        $<TARGET_PROPERTY:atx_miniz,INTERFACE_INCLUDE_DIRECTORIES>)
-    target_link_libraries(atx-core-tests PRIVATE zstd::libzstd)
-else()
-    target_link_libraries(atx-core-tests PRIVATE atx_miniz zstd::libzstd)
-endif()
+# Linked UNCONDITIONALLY (also when atx-core is a DLL): WINDOWS_EXPORT_ALL_SYMBOLS
+# builds atx-core.dll's .def from the target's OWN objects only — symbols pulled
+# in from a PRIVATE static lib (atx_miniz) are never exported, so the test must
+# carry its own copy of miniz. No duplicate-symbol risk: the DLL exports no mz_*.
+# (Verified 2026-07-22: the previous include-dir-only branch left mz_* undefined
+# at lld-link in every dev-shared build.)
+target_link_libraries(atx-core-tests PRIVATE atx_miniz zstd::libzstd)
 
 # Copy Arrow's runtime DLLs (and any other transitive shared deps) next to the
 # test exe so it can be launched directly by ctest.

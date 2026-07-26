@@ -120,16 +120,11 @@ foreach(grp IN LISTS _atx_groups)
     endif()
 
     # data group only: the miniz/zstd link line for the databento e2e fixture.
-    # Shared build: atx-core.dll already re-exports mz_*, so link only the include
-    # dir (re-linking static atx_miniz would duplicate-symbol). See atx-core/tests.
+    # atx_miniz links unconditionally (shared build too): WINDOWS_EXPORT_ALL_SYMBOLS
+    # never exports symbols a DLL absorbed from a PRIVATE static lib, so atx-core.dll
+    # does NOT re-export mz_* — each consumer carries its own copy. See atx-core/tests.
     if(grp STREQUAL "data")
-        if(ATX_SHARED_LIBS)
-            target_include_directories(${_tgt} PRIVATE
-                $<TARGET_PROPERTY:atx_miniz,INTERFACE_INCLUDE_DIRECTORIES>)
-            target_link_libraries(${_tgt} PRIVATE zstd::libzstd)
-        else()
-            target_link_libraries(${_tgt} PRIVATE atx_miniz zstd::libzstd)
-        endif()
+        target_link_libraries(${_tgt} PRIVATE atx_miniz zstd::libzstd)
     endif()
 
     # PRE_TEST: enumerate at ctest time, not as a POST_BUILD step -- relinking no

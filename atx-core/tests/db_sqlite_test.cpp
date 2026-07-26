@@ -1,14 +1,20 @@
 // Tests for the atx::core::db SQLite wrapper (RAII + Result over the C API).
 //
-// Every test runs against an in-memory database (":memory:") so the suite is
-// deterministic, isolated, and touches no filesystem. One behavior per TEST.
+// Tests prefer private in-memory databases. The online-backup concurrency cases
+// use per-test temporary files because independent connections are part of the
+// contract under test.
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
+#include <filesystem>
+#include <latch>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #include <gtest/gtest.h>
@@ -28,6 +34,23 @@ static db::Database open_mem() {
   auto opened = db::Database::open_memory();
   EXPECT_TRUE(opened.has_value()) << (opened ? std::string{} : opened.error().to_string());
   return std::move(*opened);
+}
+
+static std::filesystem::path database_path(std::string_view suffix = {}) {
+  const auto *info = ::testing::UnitTest::GetInstance()->current_test_info();
+  const auto directory = std::filesystem::temp_directory_path() / "atx_core_db_tests";
+  std::error_code error;
+  std::filesystem::create_directories(directory, error);
+  auto name = std::string{info->test_suite_name()} + "_" + info->name();
+  if (!suffix.empty()) {
+    name += "_";
+    name += suffix;
+  }
+  const auto path = directory / (name + ".sqlite");
+  std::filesystem::remove(path, error);
+  std::filesystem::remove(path.string() + "-wal", error);
+  std::filesystem::remove(path.string() + "-shm", error);
+  return path;
 }
 
 // ---------------------------------------------------------------------------
@@ -218,6 +241,47 @@ TEST(DbTransaction, RollbackOnScopeExit_Discards) {
   EXPECT_EQ(q->column_int(0), 0);
 }
 
+TEST(DbStatement, DefaultConstructedEmptyStringViewBindsAsEmptyText) {
+  auto opened = db::Database::open_memory();
+  ASSERT_TRUE(opened) << opened.error().to_string();
+  ASSERT_TRUE(opened->exec("CREATE TABLE values_(value TEXT NOT NULL) STRICT"));
+  auto insert = opened->prepare("INSERT INTO values_(value) VALUES(?1)");
+  ASSERT_TRUE(insert) << insert.error().to_string();
+  const std::string_view empty;
+  ASSERT_TRUE(insert->bind(1, empty));
+  auto inserted = insert->step();
+  ASSERT_TRUE(inserted) << inserted.error().to_string();
+  EXPECT_EQ(*inserted, db::Statement::Step::Done);
+  auto query = opened->prepare("SELECT value,typeof(value),length(value) FROM values_");
+  ASSERT_TRUE(query) << query.error().to_string();
+  auto row = query->step();
+  ASSERT_TRUE(row) << row.error().to_string();
+  ASSERT_EQ(*row, db::Statement::Step::Row);
+  EXPECT_EQ(query->column_text(0), "");
+  EXPECT_EQ(query->column_text(1), "text");
+  EXPECT_EQ(query->column_int(2), 0);
+}
+
+TEST(DbStatement, DefaultConstructedEmptySpanBindsAsEmptyBlob) {
+  auto opened = db::Database::open_memory();
+  ASSERT_TRUE(opened) << opened.error().to_string();
+  ASSERT_TRUE(opened->exec("CREATE TABLE values_(value BLOB NOT NULL) STRICT"));
+  auto insert = opened->prepare("INSERT INTO values_(value) VALUES(?1)");
+  ASSERT_TRUE(insert) << insert.error().to_string();
+  const std::span<const std::byte> empty;
+  ASSERT_TRUE(insert->bind(1, empty));
+  auto inserted = insert->step();
+  ASSERT_TRUE(inserted) << inserted.error().to_string();
+  EXPECT_EQ(*inserted, db::Statement::Step::Done);
+  auto query = opened->prepare("SELECT typeof(value),length(value) FROM values_");
+  ASSERT_TRUE(query) << query.error().to_string();
+  auto row = query->step();
+  ASSERT_TRUE(row) << row.error().to_string();
+  ASSERT_EQ(*row, db::Statement::Step::Row);
+  EXPECT_EQ(query->column_text(0), "blob");
+  EXPECT_EQ(query->column_int(1), 0);
+}
+
 // ---------------------------------------------------------------------------
 //  Prepared-statement cache
 // ---------------------------------------------------------------------------
@@ -230,6 +294,100 @@ TEST(DbDatabase, PrepareCached_ReusesSameStatement) {
   auto b = d.prepare_cached("INSERT INTO t(id) VALUES (?1)");
   ASSERT_TRUE(b.has_value());
   EXPECT_EQ(*a, *b); // same borrowed Statement* from the cache
+}
+
+TEST(DbDatabase, OnlineBackupReportsCompletionAndCopiesCommittedContent) {
+  db::Database source = open_mem();
+  db::Database destination = open_mem();
+  ASSERT_TRUE(source.exec("CREATE TABLE records(id INTEGER PRIMARY KEY,value TEXT NOT NULL)"));
+  ASSERT_TRUE(source.exec(
+      "WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<100) "
+      "INSERT INTO records(id,value) SELECT value,printf('record-%d',value) FROM n"));
+  db::BackupOptions options;
+  options.pages_per_step = 1;
+  auto backed_up = source.backup_to(destination, options);
+  ASSERT_TRUE(backed_up) << backed_up.error().to_string();
+  EXPECT_GT(backed_up->page_count, 0);
+  EXPECT_EQ(backed_up->remaining_pages, 0);
+  EXPECT_GT(backed_up->steps, 0);
+  auto count = destination.prepare("SELECT count(*) FROM records");
+  ASSERT_TRUE(count);
+  ASSERT_EQ(*count->step(), db::Statement::Step::Row);
+  EXPECT_EQ(count->column_int(0), 100);
+}
+
+TEST(DbDatabase, OnlineBackupDoesNotReportBusyDestinationAsSuccess) {
+  db::Database source = open_mem();
+  ASSERT_TRUE(source.exec("CREATE TABLE source_record(value TEXT NOT NULL)"));
+  ASSERT_TRUE(source.exec("INSERT INTO source_record VALUES('must not partially replace')"));
+  const auto destination_path = database_path("destination");
+  auto destination = db::Database::open(destination_path.string());
+  auto blocker = db::Database::open(destination_path.string());
+  ASSERT_TRUE(destination);
+  ASSERT_TRUE(blocker);
+  ASSERT_TRUE(destination->exec("CREATE TABLE marker(value TEXT NOT NULL)"));
+  ASSERT_TRUE(destination->exec("INSERT INTO marker VALUES('preserved')"));
+  ASSERT_TRUE(blocker->exec("BEGIN IMMEDIATE"));
+  ASSERT_TRUE(blocker->exec("UPDATE marker SET value='uncommitted'"));
+  db::BackupOptions options;
+  options.pages_per_step = 1;
+  options.maximum_busy_retries = 0;
+  options.retry_delay_ms = 0;
+  auto backed_up = source.backup_to(*destination, options);
+  ASSERT_FALSE(backed_up);
+  EXPECT_EQ(backed_up.error().code(), atx::core::ErrorCode::Unavailable);
+  ASSERT_TRUE(blocker->exec("ROLLBACK"));
+  auto marker = destination->prepare("SELECT value FROM marker");
+  ASSERT_TRUE(marker);
+  ASSERT_EQ(*marker->step(), db::Statement::Step::Row);
+  EXPECT_EQ(marker->column_text(0), "preserved");
+}
+
+TEST(DbDatabase, OnlineBackupConvergesToAConsistentSnapshotDuringWalWrite) {
+  const auto source_path = database_path("source");
+  const auto destination_path = database_path("destination");
+  auto source = db::Database::open(source_path.string());
+  auto destination = db::Database::open(destination_path.string());
+  ASSERT_TRUE(source);
+  ASSERT_TRUE(destination);
+  ASSERT_TRUE(source->pragma("journal_mode", "WAL"));
+  ASSERT_TRUE(source->pragma("synchronous", "FULL"));
+  ASSERT_TRUE(source->exec(
+      "CREATE TABLE records(id INTEGER PRIMARY KEY,payload BLOB NOT NULL);"
+      "WITH RECURSIVE n(value) AS (VALUES(1) UNION ALL SELECT value+1 FROM n WHERE value<512) "
+      "INSERT INTO records(id,payload) SELECT value,zeroblob(4096) FROM n"));
+
+  std::latch ready{1};
+  std::latch start{1};
+  std::atomic<bool> writer_succeeded{false};
+  std::jthread writer{[&] {
+    auto connection = db::Database::open(source_path.string());
+    ready.count_down();
+    start.wait();
+    std::this_thread::sleep_for(std::chrono::milliseconds{15});
+    if (connection && connection->set_busy_timeout(5'000) &&
+        connection->exec("INSERT INTO records(id,payload) VALUES(513,zeroblob(4096))")) {
+      writer_succeeded.store(true);
+    }
+  }};
+  ready.wait();
+  start.count_down();
+  db::BackupOptions options;
+  options.pages_per_step = 1;
+  options.step_delay_ms = 1;
+  auto backed_up = source->backup_to(*destination, options);
+  writer.join();
+  ASSERT_TRUE(writer_succeeded.load());
+  ASSERT_TRUE(backed_up) << backed_up.error().to_string();
+  EXPECT_GT(backed_up->steps, 100);
+  auto integrity = destination->prepare("PRAGMA integrity_check");
+  ASSERT_TRUE(integrity);
+  ASSERT_EQ(*integrity->step(), db::Statement::Step::Row);
+  EXPECT_EQ(integrity->column_text(0), "ok");
+  auto count = destination->prepare("SELECT count(*) FROM records");
+  ASSERT_TRUE(count);
+  ASSERT_EQ(*count->step(), db::Statement::Step::Row);
+  EXPECT_EQ(count->column_int(0), 513);
 }
 
 // ---------------------------------------------------------------------------

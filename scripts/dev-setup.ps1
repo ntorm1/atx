@@ -46,7 +46,12 @@ if (-not (Test-Path $ccacheExe)) {
 # and hash the cwd (no cross-worktree hits). Only CCACHE_BASEDIR varies per
 # worktree; scripts/atx-build.ps1 exports that one itself.
 & $ccacheExe --set-config 'hash_dir=false'
-& $ccacheExe --set-config 'sloppiness=pch_defines,time_macros'
+# include_file_mtime/ctime: a fresh `git worktree add` stamps every header with a
+# brand-new mtime/ctime; without these keys ccache's "file too new" protection
+# disables direct-mode hits for exactly the fresh-worktree builds the cache exists
+# to accelerate ("Input file modified during compilation" errors are the same
+# symptom). Safe here: sources do not change mid-compile in this workflow.
+& $ccacheExe --set-config 'sloppiness=pch_defines,time_macros,include_file_mtime,include_file_ctime'
 & $ccacheExe --set-config 'ignore_options=-ffile-prefix-map=* /clang:-ffile-prefix-map=*'
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ($userPath -notlike ('*' + $BinDir + '*')) {

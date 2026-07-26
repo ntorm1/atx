@@ -8,6 +8,7 @@
 
 #include "atx/core/db/blob.hpp"
 
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -127,14 +128,27 @@ Status Statement::bind(i32 index, f64 value) {
 
 Status Statement::bind(i32 index, std::string_view text) {
   // SQLITE_TRANSIENT: SQLite makes its own copy, so `text` need not outlive us.
-  const int rc = sqlite3_bind_text(stmt_, index, text.data(), static_cast<int>(text.size()),
-                                   SQLITE_TRANSIENT);
+  // A default-constructed empty string_view may have data()==nullptr; SQLite
+  // interprets a null pointer as SQL NULL even when the byte count is zero.
+  if (text.size() > static_cast<usize>(std::numeric_limits<int>::max())) {
+    return Err(ErrorCode::OutOfRange, "SQLite text binding exceeds INT_MAX bytes");
+  }
+  const char *const data = text.empty() ? "" : text.data();
+  const int rc =
+      sqlite3_bind_text(stmt_, index, data, static_cast<int>(text.size()), SQLITE_TRANSIENT);
   return (rc == SQLITE_OK) ? Ok() : Err(make_error(rc, db_));
 }
 
 Status Statement::bind(i32 index, std::span<const std::byte> blob) {
-  const int rc = sqlite3_bind_blob(stmt_, index, blob.data(), static_cast<int>(blob.size()),
-                                   SQLITE_TRANSIENT);
+  if (blob.size() > static_cast<usize>(std::numeric_limits<int>::max())) {
+    return Err(ErrorCode::OutOfRange, "SQLite blob binding exceeds INT_MAX bytes");
+  }
+  if (blob.empty()) {
+    const int rc = sqlite3_bind_zeroblob(stmt_, index, 0);
+    return (rc == SQLITE_OK) ? Ok() : Err(make_error(rc, db_));
+  }
+  const int rc =
+      sqlite3_bind_blob(stmt_, index, blob.data(), static_cast<int>(blob.size()), SQLITE_TRANSIENT);
   return (rc == SQLITE_OK) ? Ok() : Err(make_error(rc, db_));
 }
 
@@ -352,13 +366,55 @@ Status Database::pragma(std::string_view name, std::string_view value) {
 }
 
 Status Database::backup_to(Database &dest) {
+  ATX_TRY(auto ignored, backup_to(dest, BackupOptions{}));
+  (void)ignored;
+  return Ok();
+}
+
+Result<BackupReport> Database::backup_to(Database &dest, const BackupOptions &options) {
+  if (options.pages_per_step <= 0 || options.maximum_busy_retries < 0 ||
+      options.retry_delay_ms < 0 || options.step_delay_ms < 0) {
+    return Err(ErrorCode::InvalidArgument, "invalid SQLite backup options");
+  }
   sqlite3_backup *const backup = sqlite3_backup_init(dest.db_, "main", db_, "main");
   if (backup == nullptr) {
     return Err(make_error(sqlite3_errcode(dest.db_), dest.db_));
   }
-  sqlite3_backup_step(backup, -1); // -1 => copy all remaining pages
-  const int rc = sqlite3_backup_finish(backup);
-  return (rc == SQLITE_OK) ? Ok() : Err(make_error(rc, dest.db_));
+  BackupReport report;
+  while (true) {
+    const int step_rc = sqlite3_backup_step(backup, options.pages_per_step);
+    ++report.steps;
+    report.remaining_pages = sqlite3_backup_remaining(backup);
+    report.page_count = sqlite3_backup_pagecount(backup);
+    if (step_rc == SQLITE_DONE) {
+      const int finish_rc = sqlite3_backup_finish(backup);
+      if (finish_rc != SQLITE_OK) {
+        return Err(make_error(finish_rc, dest.db_));
+      }
+      return Ok(report);
+    }
+    if (step_rc == SQLITE_OK) {
+      if (options.step_delay_ms != 0) {
+        sqlite3_sleep(options.step_delay_ms);
+      }
+      continue;
+    }
+    if (step_rc == SQLITE_BUSY || step_rc == SQLITE_LOCKED) {
+      if (report.busy_retries >= options.maximum_busy_retries) {
+        Error error = make_error(step_rc, dest.db_);
+        (void)sqlite3_backup_finish(backup);
+        return Err(std::move(error));
+      }
+      ++report.busy_retries;
+      if (options.retry_delay_ms != 0) {
+        sqlite3_sleep(options.retry_delay_ms);
+      }
+      continue;
+    }
+    Error error = make_error(step_rc, dest.db_);
+    (void)sqlite3_backup_finish(backup);
+    return Err(std::move(error));
+  }
 }
 
 // ===========================================================================
@@ -367,6 +423,11 @@ Status Database::backup_to(Database &dest) {
 
 Result<Transaction> Transaction::begin(Database &db) {
   ATX_TRY_VOID(db.exec("BEGIN"));
+  return Ok(Transaction{&db});
+}
+
+Result<Transaction> Transaction::begin_immediate(Database &db) {
+  ATX_TRY_VOID(db.exec("BEGIN IMMEDIATE"));
   return Ok(Transaction{&db});
 }
 

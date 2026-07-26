@@ -18,30 +18,41 @@ Monorepo, layered: `atx-core` (vocab + IO) → `atx-tsdb` (shm store) → `atx-e
 **Compiler: clang-cl 18 (VS 2022 LLVM), Debug `/Od /RTC1 -MDd /Z7` (embedded debug info — keeps objects cacheable), LLD linker, `/W4 /permissive- /WX`.** Ninja ships inside the VS install, not on PATH — use `scripts/atx-build.ps1` from any shell (sources vcvars, pins Ninja + SDK `mt.exe`, exports `CCACHE_BASEDIR`, forwards to cmake/ctest):
 
 ```powershell
-powershell scripts\atx-build.ps1 configure                  # cmake --preset dev into build/
-powershell scripts\atx-build.ps1 build atx-vol-tests        # any target(s)
+powershell scripts\atx-build.ps1 configure                  # cmake --preset dev into build/ (-Preset dev-shared to flip)
+powershell scripts\atx-build.ps1 build atx-vol-tests        # any target(s) — ALWAYS target-scoped, never bare all-targets
+powershell scripts\atx-build.ps1 check atx-vol\src\foo.cpp  # single-TU compile, no link — seconds-level type-check loop
 powershell scripts\atx-build.ps1 -Ctest -L atx_vol_fast     # ctest passthrough
 cmake --preset dev -DATX_TEST_GROUPS="risk;data"            # compile only engine groups you touch
 ```
+
+**Iterate loop discipline:** `check <file.cpp>` while shaping code (compiles just that
+object), `build <owning-test-target>` + `-Ctest -R <Suite>` to go green, full suite only
+at gate time. Never build the whole graph out of habit.
 
 | Preset | Use |
 |---|---|
 | `dev` | **the** iterate preset (scripts target it): ccache + shared deps/vcpkg + PCH, unity OFF, static libs |
 | `ninja` | alias of the same `_base` behavior; same `build/` dir |
-| `dev-shared` | `dev` + atx libs as **DLLs** — smallest artifacts, fastest relinks (experimental) |
+| `dev-shared` | `dev` + atx libs as **DLLs** — smallest artifacts, fastest relinks. **Iteration only, NEVER the test gate**: header-inline instrumentation globals (`atx/vol/counters.hpp` solve ledger) split per DLL image → SolveLedger/BacktestExec observer suites fail deterministically (verified 2026-07-22) |
 | `rel` / `rel-avx2` | Release benchmarks (`build-rel*/`); `rel-avx2` adds global `/arch:AVX2`, never `/fp:fast` |
 | `hygiene` | PCH **OFF** — strict per-TU includes; the include-clean gate (CI/nightly), own `build-hygiene/` |
 | `vs` | Visual Studio MSBuild generator (IDE escape hatch) |
 
-**Worktrees are cheap (2026-07-12 overhaul): fresh worktree → built `atx-vol-tests` in ~98 s.**
+**Worktree POOL first (2026-07-22): lease a warm tree, don't create a fresh one.**
+Measured: fresh worktree builds `atx-vol-tests` in 132 s at only 38% cache hits (PCH-consumer
+TUs structurally miss cross-worktree); the same warm tree no-ops in 5 s and rebuilds a
+preset/branch flip with hot cache in 27 s. Pool trees keep `build/` warm across tasks.
 
 ```powershell
-scripts\dev-setup.ps1                                          # one-time per machine: ccache + caches (then NEW shell)
-scripts\new-worktree.ps1 -Name s8 -Branch feat/s8 -Base main   # worktree + submodules + configure; -Shared for DLLs
+scripts\dev-setup.ps1                                # one-time per machine: ccache + caches (then NEW shell)
+scripts\lease-worktree.ps1 -Branch feat/x            # DEFAULT: lease warm pool tree (auto-grows to 4)
+scripts\lease-worktree.ps1 -Release pool-1           # done: detach branch, keep build/ warm
+scripts\lease-worktree.ps1 -Status                   # who holds what
+scripts\new-worktree.ps1 -Name s8 -Branch feat/s8 -Base main -Isolated   # only for deliberate isolation (deps churn, bench)
 ```
 
-No build tree is copied; three shared caches do the work (full mechanics + caveats: `scripts/dev-setup.md`):
-- **ccache** (`C:\atx-cache\ccache`) — `CCACHE_BASEDIR` + `hash_dir=false` + prefix-map `ignore_options` make the same TU hash identically in every worktree → cross-worktree cache **hits** (objects byte-identical). PCH-consumer test TUs are the exception: they recompile once per worktree at PCH speed. Check health with `ccache -s` — `Uncacheable` should stay ~0.
+No build tree is copied; three shared caches soften what the pool doesn't cover (full mechanics + caveats: `scripts/dev-setup.md`):
+- **ccache** (`C:\atx-cache\ccache`) — `CCACHE_BASEDIR` + `hash_dir=false` + prefix-map `ignore_options` + `include_file_mtime/ctime` sloppiness make the same TU hash identically in every worktree → cross-worktree cache **hits** (objects byte-identical). PCH-consumer test TUs are the exception: they recompile once per worktree at PCH speed — the pool exists precisely because that class never transfers. Check health with `ccache -s` — `Uncacheable` should stay ~0.
 - **shared vcpkg** (`VCPKG_INSTALLED_DIR=C:\atx-cache\vcpkg_installed`) — one Arrow/Parquet/gtest payload, configure says "already installed" in seconds. Branch with a *different* `vcpkg.json`? Override per-worktree: `-DVCPKG_INSTALLED_DIR=build/vcpkg_installed`.
 - **shared FetchContent** (`$ATX_DEPS_DIR` = `C:\atx-cache\deps`, all presets) — spdlog/Eigen/xsimd fetched once.
 
@@ -54,6 +65,7 @@ clangd works immediately (committed `.clangd` reads each worktree's own `build/c
 3. **`-DATX_UNITY_BUILD=ON` (opt-in, cold CI builds only) collides on some test groups** — identically-named file-local helpers merge into one TU (`factory`, `parallel` groups). Unity is OFF in `dev`; leave it off for iteration — per-TU objects are what the cache keys on.
 4. **ProcessExecutor tests need `atx-shm-worker` built beside the test exe** — building only `atx-engine-<group>-tests` omits the worker the multi-process executor spawns; `*SeqParallel` suites then fault (SEH `0xc000001d`). Build both: `... build atx-engine-<group>-tests atx-shm-worker`.
 5. **`pwsh` is not always installed** — use `powershell` (5.1) for the `*.ps1` helpers.
+6. **Pool leases are advisory** (`.atx-lease` marker, git-ignored) — one agent per leased tree; `-Release` refuses a dirty tree, so commit/stash before releasing. Release detaches at the base branch so your feature branch stays mergeable elsewhere while `build/` stays warm.
 
 ---
 

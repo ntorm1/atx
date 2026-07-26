@@ -4,6 +4,36 @@ Goal: a fresh worktree compiles fast and clangd works immediately — no figurin
 compile commands, no re-cloning/re-building third-party each time, and the *same* source
 already compiled in another worktree is a cache **hit**, not a cold recompile.
 
+## Worktree POOL — the default iteration model (2026-07-22)
+
+Fresh-worktree-per-task pays a real tax even with every cache warm: measured on a
+byte-identical checkout of main, `atx-vol-tests` cold-builds in **132 s at only a 38%
+ccache hit rate** — the ~62% misses are structural (PCH-consumer TUs never transfer
+across worktrees, see "PCH semantics" below), and each tree adds GBs of build dir.
+The same tree rebuilt warm: **no-op 5 s**; branch/preset flip with hot cache **27 s**.
+
+So: **lease a persistent pool tree instead of creating a new worktree.**
+
+```powershell
+scripts\lease-worktree.ps1 -Branch feat/x            # lease free pool tree (grows pool to -MaxPool, default 4)
+scripts\lease-worktree.ps1 -Release pool-1           # done: detach branch, keep build/ warm
+scripts\lease-worktree.ps1 -Status                   # who holds what
+```
+
+Lease = `git switch` inside a warm tree (33 s cold-slot one-time setup incl. configure;
+afterwards seconds) → ninja rebuilds only the TUs that differ between branches. Cold-build
+cost is paid once per pool slot, ever. The `.atx-lease` marker is advisory — one agent per
+leased tree. `new-worktree.ps1 -Isolated` remains for work that truly needs an isolated
+deps/build universe (dependency churn, vcpkg manifest edits, bench isolation).
+
+Inside a leased tree, keep builds target-scoped:
+
+```powershell
+powershell scripts\atx-build.ps1 build atx-vol-tests   # never bare `ninja` (all targets)
+powershell scripts\atx-build.ps1 check atx-vol\src\foo.cpp   # single-TU compile, no link — seconds
+powershell scripts\atx-build.ps1 -Ctest -L atx_vol_fast
+```
+
 ## How it works (shared caches, not copied build trees)
 
 | Mechanism | What it removes | Where it lives |
@@ -35,7 +65,12 @@ per-worktree key (`CCACHE_BASEDIR`) itself:
   exclusion does not fire for the `/clang:`-wrapped spelling clang-cl needs, so it is
   excluded explicitly. The flag itself still reaches the compiler (correctness: objects
   stay path-clean and byte-identical, so serving A's object to B is exact).
-- **`CCACHE_SLOPPINESS=pch_defines,time_macros`** — makes PCH-using TUs cacheable.
+- **`CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime`** —
+  `pch_defines,time_macros` make PCH-using TUs cacheable; `include_file_mtime,include_file_ctime`
+  (added 2026-07-22) stop ccache's "file too new" protection from disabling direct-mode
+  hits right after a fresh `git worktree add` stamps every header with a current
+  mtime/ctime ("Input file modified during compilation" errors are the same symptom).
+  Safe: sources do not change mid-compile in this workflow.
 
 Two standing rules that keep this safe (research-verified 2026-07-12):
 
@@ -134,7 +169,14 @@ PCH-consumer test TUs actually compile.
 - `ninja`      — identical inheritance from `_base`; kept as a familiar alias. Same `build/` dir.
 - `dev-shared` — `dev` + atx libraries built as **DLLs** (`ATX_SHARED_LIBS`): each test exe links a
   thin import lib instead of embedding the whole engine → fastest relinks and far smaller per-worktree
-  build dirs. Experimental — validate a full build the first time (uses `WINDOWS_EXPORT_ALL_SYMBOLS`).
+  build dirs. **Never the test gate** (validated 2026-07-22): C++20 `inline`-variable globals in
+  header-only instrumentation (`atx/vol/counters.hpp` — solve ledger, samplers) get one instance
+  PER IMAGE on Windows, so cross-DLL observer tests (SolveLedger.*, BacktestExec solve-economy)
+  scrape an empty copy and fail deterministically while the same tests pass static. Fine for
+  link-speed iteration on non-instrumentation code; run the suite under `dev` before claiming green.
+  (A second latent class — `WINDOWS_EXPORT_ALL_SYMBOLS` exports only the DLL's OWN objects, never
+  symbols absorbed from PRIVATE static libs like `atx_miniz` — was fixed 2026-07-22 by linking
+  `atx_miniz` into consumers unconditionally.)
 - `rel` / `rel-avx2` — Release benchmarks (own build dirs); see preset descriptions.
 - `hygiene`    — PCH **off** (strict per-TU includes) for CI/nightly; own `build-hygiene/` dir.
   Also the right preset for `-DATX_UNITY_BUILD=ON` cold cache-less builds.
@@ -145,4 +187,5 @@ PCH-consumer test TUs actually compile.
 Switch the worktree to `dev-shared` (`cmake --preset dev-shared`). The static `dev`/`ninja` build
 links a full copy of `atx-engine.lib` into all ~14 test exes; the shared build keeps one
 `atx-engine.dll` and links import stubs — typically several GB smaller per worktree and much faster
-to relink after a one-file engine edit.
+to relink after a one-file engine edit. Caveat: iteration-only — see the `dev-shared` bullet above
+(inline-variable instrumentation globals split per DLL image; the test gate stays on `dev`).

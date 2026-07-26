@@ -71,6 +71,7 @@ add_library(atx-core ${ATX_LIB_TYPE}
     src/decimal.cpp
     src/datetime.cpp
     src/symbol.cpp
+    src/sha256.cpp
     src/io/parquet.cpp
     src/io/parquet_writer.cpp
     src/io/zip_reader.cpp

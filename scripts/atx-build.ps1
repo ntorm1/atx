@@ -45,7 +45,8 @@ param(
   [string[]] $Args,
   [switch] $Ctest,
   [switch] $Bench,
-  [string] $Groups = ""
+  [string] $Groups = "",
+  [string] $Preset = "dev"
 )
 
 $ErrorActionPreference = "Stop"
@@ -110,13 +111,55 @@ elseif ($verb -eq "configure") {
   # `dev` is the canonical iterate preset (same binaryDir build/ as `ninja`).
   # Using it here keeps configure consistent with scripts\new-worktree.ps1 —
   # previously this line said `ninja`, silently dropping the shared-deps setup.
-  $cfg = "cmake --preset dev"
+  # -Preset dev-shared flips to the DLL build (same build/ dir).
+  $cfg = "cmake --preset $Preset"
   if ($Groups) { $cfg += " -DATX_TEST_GROUPS=$Groups" }
   if ($Bench)  { $cfg += " -DATX_BUILD_BENCH=ON" }
   $inner = $cfg
 }
 elseif ($verb -eq "build") {
   $inner = "cmake --build `"$RepoRoot\build`" --target " + ($rest -join " ")
+}
+elseif ($verb -eq "check") {
+  # Single-TU type-check loop: compile ONLY the named source's object (no link,
+  # no downstream targets) — seconds per iteration instead of a target build.
+  # Resolves each source to its .obj via ninja's target list, so it works for any
+  # first-party TU without knowing the owning CMake target.
+  if ($rest.Count -eq 0) { throw "usage: atx-build.ps1 check <source.cpp> [more.cpp ...]" }
+  $buildDir = Join-Path $RepoRoot "build"
+  if (-not (Test-Path (Join-Path $buildDir "build.ninja"))) {
+    throw "no build/build.ninja - run: atx-build.ps1 configure"
+  }
+  $ninjaExe = Join-Path $NinjaDir "ninja.exe"
+  # `-t targets all` needs no MSVC env; lines look like "path/to/foo.cpp.obj: CXX_COMPILER__..."
+  $targetLines = & $ninjaExe -C $buildDir -t targets all
+  $objs = @()
+  foreach ($src in $rest) {
+    # Normalize to a repo-relative path fragment. The full source path is not
+    # contiguous in the obj path (CMakeFiles/<tgt>.dir is inserted), so match on
+    # "<parentDir>/<basename>.obj" — the source path relative to its CMakeLists.
+    $rel = ($src -replace '/', '\') -replace '^\.\\', ''
+    $rootPrefix = ([System.IO.Path]::GetFullPath($RepoRoot)).TrimEnd('\') + '\'
+    $abs = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot $rel))
+    if ($abs.StartsWith($rootPrefix)) { $rel = $abs.Substring($rootPrefix.Length) }
+    $leaf = Split-Path $rel -Leaf
+    $parent = Split-Path (Split-Path $rel -Parent) -Leaf
+    $needle = if ($parent) { "\$parent\$leaf.obj" } else { "\$leaf.obj" }
+    $hits = @($targetLines | ForEach-Object { ($_ -split ': ')[0] } |
+      Where-Object { ('\' + ($_ -replace '/', '\')) -like ('*' + $needle) })
+    if ($hits.Count -eq 0) {
+      # Fall back to basename-only (source may sit directly beside its CMakeLists).
+      $hits = @($targetLines | ForEach-Object { ($_ -split ': ')[0] } |
+        Where-Object { ('\' + ($_ -replace '/', '\')) -like ('*\' + $leaf + '.obj') })
+    }
+    if ($hits.Count -eq 0) { throw "check: no object target found for '$src' (is its target configured?)" }
+    if ($hits.Count -gt 1) {
+      Write-Host ("[atx-build] check: '" + $src + "' matches " + $hits.Count + " objects (building all):") -ForegroundColor Yellow
+      $hits | ForEach-Object { Write-Host ("  " + $_) }
+    }
+    $objs += $hits
+  }
+  $inner = "ninja -C `"$buildDir`" " + (($objs | ForEach-Object { '"' + $_ + '"' }) -join " ")
 }
 else {
   # Pass through raw cmake args.

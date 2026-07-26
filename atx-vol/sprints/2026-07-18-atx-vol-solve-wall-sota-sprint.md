@@ -193,30 +193,35 @@ graph TD
 
 | Task | Branch | Status | SHA(s) | Gate result |
 |---|---|---|---|---|
-| V1 | `feat/sw-verify` | ☐ todo | — | ledger rows match §2 cost model (11/6 s/u) |
-| V2 | `feat/sw-verify` | ☐ todo | — | cache-build + diag stamped; attribution decomposed |
-| V3 | `feat/sw-verify` | ☐ todo | — | provisional rows re-captured CV≤5% |
-| V4 | `feat/sw-verify` | ☐ todo (PM) | — | absolutes frozen |
+| V1 | `feat/sw-verify` | ☑ merged | `87ba04e` | always-on solve ledger; rows match §2 cost model (11/6 s/u) |
+| V2 | `feat/sw-verify` | ☑ merged | `d7caa11` (merge `38dd701`) | fit blind-spot attribution (cache-build + diag ms/solves); zero-cost-off gate |
+| V3 | `feat/sw-verify` | ◐ deterministic done / absolutes PROVISIONAL | — | V1/V2 ledger gates green (contention-free); real-corpus absolutes need quiet host + OPRA/SPY data (NOT materialized). Flip-axis quiet capture DID succeed this session (→ WS-K rows) |
+| V4 | `feat/sw-verify` | ◐ PARTIAL ratify (PM) | — | **RATIFIED:** solve economy 11→6 (deterministic ledger); boundary **3.97×** / greeks **2.68×** flip gates (quiet-window best-of-5, CV<5%). **PROVISIONAL:** fd_warm ≥5×, steps/s ≥8×, ms/board, surf/s, YTD — need V3 data-staged quiet capture |
 | K1 | `feat/sw-kernel` | ☑ landed | `033899f` | ladder bench + tier policy + al_opts audit (docs/al-preset-ladder.md) |
 | K2 | `feat/sw-kernel` | ◐ prov. landed (flag OFF, PM quiet-window pending) | `f30abdf`, `b48d4e9`, `73bcaf3` | AlOpts l≠p + specialize (7,8) + ql_fast batch gate rows; ql_fast tier **2.4–3.8× PROVISIONAL** (clears ≥2.5×); accurate 1.4–2.7×; levers 1/5 dead, 4 deferred-to-caller; `kShipAvx2Boundary` left OFF for PM A/B (report kernel-stage1.md) |
 | K3 | `feat/sw-kernel` | ◐ prov. landed (flag OFF, PM quiet-window pending) | `8fc6360`, `3c7e256`, `d53dd4b`, `9e6fa30` | laned analytic put greeks bundle (5 solves/pack 4-wide) parity-gated vs american_greeks_al (economic gate); wired into american_greeks_batch; **~2.5–2.9× PROVISIONAL** vs scalar; `kShipAvx2Greeks` OFF (report kernel-stage2.md) |
 | K4 | `feat/sw-kernel` | ◐ prov. landed | `8480b18` | first-order tier via GreekFieldMask solve-skip (hedge=1 solve/pack vs 5); first-order bit-matches full bundle; **~3.4× vs full laned, ~6× vs scalar PROVISIONAL**; vega-guard resolved moot in analytic path; seam doc updated `39f7881` |
-| K5 | `feat/sw-kernel` | ◐ partial | `9e6fa30`, `8480b18` | A/B rows american_greeks/{laned,laned_scalar,laned_first_order} + gate-flip candidate list (kernel-stage2.md §5); port/price/adjoint baseline + priced_surface arms deferred (§6 follow-ups) |
-| C1 | `feat/sw-fit` | ☐ todo | — | de-Am passes 2→1; outputs bit-identical |
-| C2 | `feat/sw-fit` | ☐ todo | — | solves/board −≥40% dates 2+; quality in-band |
-| C3 | `feat/sw-fit` | ☐ todo | — | Populate tier gated vs Robust |
-| C4 | `feat/sw-fit` | ☐ todo | — | scaling monotone→8, ≥3.5× |
-| C5 | `feat/sw-fit` | ☐ todo | — | carry persistence; ~56 ms/board recovered |
-| C6 | `feat/sw-fit` | ☐ todo | — | universe-date ≤5 s; spy_real ≤8 ms |
-| L1 | `feat/sw-loop` | ☐ todo | — | 11→≤6 s/u ledger gate; bit-identical |
-| L2 | `feat/sw-loop` | ☐ todo | — | dup-mark counter 0 |
-| L3 | `feat/sw-loop` | ☐ todo | — | entry-day resolve ≤50 ms; entries bit-identical |
-| L4 | `feat/sw-loop` | ☐ todo | — | tier policy wired; ≤3 s/u composite |
-| L5 | `feat/sw-loop` | ☐ todo | — | determinism gates + **≥8× steps/s** |
-| G1 | `feat/sw-close` | ☐ todo | — | SurfaceSet on views; map_symbol live |
-| G2 | `feat/sw-close` | ☐ todo | — | v1 out of product lib |
-| G3 | `feat/sw-close` | ☐ todo | — | golden re-pinned green |
-| G4 | `feat/sw-close` | ☐ todo | — | real-universe capture; scoreboard closed |
+| K5 | `feat/sw-kernel` | ☑ merged | `7918f5b` (crux), `10d8515` (adjoint cite) | scalar-route mask solve-skip (ALWAYS-ON, no flag); `FirstOrderMaskBitMatchesFullBundle` green; consolidated flip-candidate table (kernel-stage3.md §6); adjoint first-order deferral VALID (backtest never resolves the adjoint route — route cite kernel-stage3.md §5); port/price/adjoint bench row already exists → G4 capture |
+| C1 | `feat/sw-fit` | ☑ merged | `b50d1cc` | de-Am 2→1/slice, fit byte-identical (6 real boards); audit→input_certification; ZERO cert/admission flips |
+| C2 | `feat/sw-fit` | ☑ merged | `0331c32` | warm-chain default-OFF: −51% solves/board (6862→3335, gate ≥40%); coverage 0.348→0.403, RMSE in-band; 1v8 bit-identical |
+| C3 | `feat/sw-fit` | ☑ merged | `97201f8` | FitPreset::Populate default; RMSE byte-identical 5dp, cache-build 1.95–3.35×, premium-evals −7–16%; 154-test green (gates on eval-count, not solve count) |
+| C4 | `feat/sw-fit` | ☑ merged | `266a9b0`, `5df4b38` | P-core discovery + FitAffinity pinning (default ON), byte-identity pin on/off; scaling curve noise-dominated → ratified curve = G4 quiet-window |
+| C5 | `feat/sw-fit` | ☑ CLOSED (premise-false) | — | retained AloPricer already on main (american_iv.cpp t_alo_slot); residual seed-sharing = §11 dead-end (binding adjudication) |
+| C6 | `feat/sw-fit` | ☑ merged | `e437a9b` | composed lane (Populate + warm-chain) vs Robust COLD: RMSE 0.01908/0.01999, coverage 0.4025/0.3477, arb 0/0 in-band; chain determinism pinned. universe-date/spy_real ms absolute → G4 (blocked-on-data) |
+| L1 | `feat/sw-loop` | ☑ merged | `b64a842` | 11→6 s/u expiry-day steady state; bit-identical (stamp reuse survives membership change) |
+| L2 | `feat/sw-loop` | ☑ merged | `75accad` | dup-mark solves 0; composite ledger [12,12,12,6]→[12,12,6,6]; memo ON==OFF bit-identical |
+| L3 | `feat/sw-loop` | ☑ merged | `24a6b0f`, `430fde8` | entries bit-identical (batched delta-resolver + fanned seed); resolve-wall row provisional (V3/G4) |
+| L4 | `feat/sw-loop` | ☑ merged | `25bea1e`, `3b71882` | K4 first-order tier wired end-to-end (priced_surface GreekNeeds seam); DEFAULT bit-identical, full=5/risk=3/hedge=1 s/u; +stamp guard. **≤3 s/u composite UNREACHABLE** — L1 reuse-coupling (execute bundle = pnl-base; P&L reads all 8) makes narrowing a net loss; honest composite **6** (meets L1 gate). Hedge/PnL parity ε=0 |
+| L5 | `feat/sw-loop` | ☑ merged | `e6118e2` + gates in `backtest_exec_test.cpp` | composed determinism (2-run + 1v4-thread), zero-alloc step-invariance, composed subset+settlement + hedge+cohorts green; **≥8× steps/s PROVISIONAL** pending V3 quiet-window baseline |
+| **WS-L** | **merged → main** | `c736959` | no-ff; PM gate green — 5 pre-existing reds only (fit/G3), ZERO new; 8 earnings fails were CWD-relative fixture false-reds (pass from build/ CWD); ship flags dark |
+| G1 | `feat/sw-close` | ⊘ DEFERRED (carried DoD-debt) | — | STOP+report: est. "~35 sites" wrong — 70+ shared `SurfaceSet::create` callers build owned PricedSurface w/ no archive + `MarketSnapshot` drops the `SurfaceArchiveV2` (view dangle); re-point needs templating the DLL-exported PortfolioPricer / type-erasure = broad ABI churn for ~0% wall. Not forced (§0) |
+| G2 | `feat/sw-close` | ☑ landed | `530035a` | v1 ATXVSA read/write split into dev-only `atx-vol-archive-v1` lib (new surface_archive_v1.cpp); llvm-nm proof vol.lib defines ZERO v1 symbols; all consumers relink clean; 58 v1 round-trips green |
+| G3 | `feat/sw-close` | ☑ landed | `94b96f5` | golden fingerprint re-pinned `7301…8204`→`10442…9642`; grouped==oracle parity + 1/4/8-thread invariance verified green first; retires the known red |
+| G4 | `feat/sw-close` | ⊘ DEFERRED (PM-held) | — | real-universe capture — data-gated (opra_universe/smoke100/SPY fixtures absent) + quiet-host-gated (shared host co-tenants active). Provisional; folds into honest scoreboard |
+| **WS-K** | **merged → main** | `fdf4010` | K1–K5 behind dark flags; laned greeks + first-order tier + scalar mask; seam published for L4 |
+| **WS-C** | **merged → main** | `e0415ca` | C1–C6 fit pipeline: de-Am 2→1, warm-chain −51% solves, Populate tier, P-core pinning |
+| **WS-G** | **merged → main** | `5c28ceb` | G3 golden re-pin (retires red) + G2 v1 link isolation; G1/G4 deferred (documented) |
+| **FLIP** | `feat/sw-avx2-auto` → main | ☑ **SHIPPED `4616c2d`** | `2baceb9`+`746c5dd`+`621fc66`+`f2089b5` | Quiet-window best-of-5 (CV<5%): `kShipAvx2Boundary` **3.97×** ql_fast, `kShipAvx2Greeks` **2.68×** full-bundle (both ≥2.5×✓). Journey: A/B ratified → flip broke thread-determinism → thread-invariant tile fix → concurrent fit+backtest sprint superseded w/ reproducible-by-default → **USER OVERRIDE to Auto-ON** → fresh flip on main infra + drift resolved (ledger SIMD-invariant, ship-gate tests, L2 ≤1e-10). Shipped: `kShipAvx2Boundary=true` (Auto marks→AVX2). Thread-determinism preserved (H0/H5 tile schedule); accepted residual = cross-host ~1e-13 (economically nil, user-accepted, documented). Greeks flag ON but production path not yet batch-wired (concurrent WS-H). Gate: 1874 ran / 1851 pass / 4 pre-existing fit reds / 0 new |
 
 Update convention: `☐ todo → ◐ in-progress → ☑ landed`; paste SHA(s) + one-line gate result. Dispatching session owns merges (§8), each gate re-run on merge.
 

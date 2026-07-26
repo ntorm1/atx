@@ -229,11 +229,11 @@ graph TD
 | B3 | `feat/bt-backtest` | ☑ landed | c869692 (merge 8fdaa41) | O(1) HedgeLedger (was O(book²) hedge rescan + per-step `uids` alloc); bit-identical refactor; alloc gate step-invariant (hedge allocs D=7,2D=7 → 0/step) |
 | B4 | `feat/bt-backtest` | ☑ landed | 6f4009f (merge 8fdaa41) | HoldToExpiry+EveryStep composes at scale: 160 overlapping legs, aligned-tenor expiries settle mid-run (settle_rows=4), 1-vs-4-thread bit-identical; no DSL gap, no full-portfolio reprice on expiry |
 | B5 | `feat/bt-backtest` | ☑ landed | 174f1cd, 241c24b (merge 8fdaa41) | REVIEW APPROVED (0C/1I/4Minor). Determinism split into exact-coverage gates: StrategyLoopHedgeAndCohorts (B3+B4) + FixedBookComposedSubsetAndSettlement (B1+B2: whole-board load fails on mismatched-ts control ⇒ subset path proven load-bearing; settle_rows=1 ⇒ B2 fired; 2-run + 1-vs-4-thread bit-identical). B-suite 206 pass/2 skip/0 fail. Steps/s **provisional** rel-avx2 busy host: universe_strangle_hedged median 18.9 (cv 14.95%>>5%) vs 15.0/28.0 (~1.26×, B3-driven); PM quiet-window re-capture. Adj: (A) B1 view re-point = DoD follow-up; (B) ≥5-10× Backtest = documented deviation (WS-P price-stage SIMD) |
-| D1 | `feat/bt-data` | ☐ todo | — | universe list fixture |
-| D2 | `feat/bt-data` | ☐ todo | — | pull ≤ $300; N names on disk |
-| D3 | `feat/bt-data` | ☐ todo | — | SurfaceDb populated |
-| D4 | `feat/bt-data` | ☐ todo | — | strategy + gate tests |
-| D5 | `feat/bt-data` | ☐ todo | — | **PNG renders end-to-end** |
+| D1 | `feat/bt-data` | ☑ landed | e9e7fc1 (merge 9ecaf4a) | spy_top50_2026-01-01.csv (SEC N-PORT 0001410368-26-020131 asof 2025-12-31) + builder + 3 tests |
+| D2 | `feat/bt-data` | ◐ pulling | 00ff618, fe1975c-M1 (merge 9ecaf4a) | tooling landed + reviewed (estimate-first, realized $0 flat-rate, 51 syms kept, atomic parquet + quarantined DBN cache); pull in progress (~40% of 51×135 sessions, resumable) |
+| D3 | `feat/bt-data` | ☐ blocked | — | awaits pull completion + SPY/XOM fit RCA (bt-spyfit); driver ready (F-c universe_surfdb_populate) |
+| D4 | `feat/bt-data` | ☑ landed | 0fe4bd6 (merge 9ecaf4a) | pure-DSL vega-flat dispersion (hold_to_expiry additive, FlatVega, DeltaToZero); portfolio net-vega ≤1e-9·gross every date; 2-run determinism; fixture-gated |
+| D5 | `feat/bt-data` | ☑ landed (fixture e2e) | cae54a2, fe1975c (merge 9ecaf4a) | binary→TSV→PNG proven on synthetic db (256KB PNG); calendar-gap audit (requested-vs-actual meta, missing_sessions, PNG footer); FINAL real-universe PNG = PM run after D3 |
 
 Update convention: `☐ todo → ◐ in-progress → ☑ landed`; paste the commit SHA(s) and the one-line gate result (measured number). The dispatching session owns merges (order §8), each gate re-run on merge.
 

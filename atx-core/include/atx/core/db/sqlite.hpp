@@ -73,6 +73,23 @@ enum class ColumnType : u8 {
   Null,    // SQLITE_NULL
 };
 
+struct BackupOptions {
+  // Small bounded steps release the source read lock between calls, allowing
+  // writers to continue. A negative SQLite page count is intentionally not
+  // exposed because it would hold the source lock for the entire copy.
+  i32 pages_per_step{256};
+  i32 maximum_busy_retries{200};
+  i32 retry_delay_ms{25};
+  i32 step_delay_ms{};
+};
+
+struct BackupReport {
+  i32 page_count{};
+  i32 remaining_pages{};
+  i32 steps{};
+  i32 busy_retries{};
+};
+
 // ===========================================================================
 //  Statement — a prepared SQL statement (RAII over sqlite3_stmt).
 //
@@ -191,7 +208,10 @@ public:
   // Convenience for `PRAGMA <name> = <value>;`.
   [[nodiscard]] Status pragma(std::string_view name, std::string_view value);
   // Online backup of this database into `dest` (overwrites dest's main db).
+  // The detailed overload copies in bounded steps, retries transient lock
+  // contention, and succeeds only after sqlite3_backup_step reports DONE.
   [[nodiscard]] Status backup_to(Database &dest);
+  [[nodiscard]] Result<BackupReport> backup_to(Database &dest, const BackupOptions &options);
 
   // Escape hatch: the raw connection handle (non-owning, advanced use).
   [[nodiscard]] sqlite3 *handle() const noexcept { return db_; }
@@ -218,6 +238,10 @@ private:
 class Transaction {
 public:
   [[nodiscard]] static Result<Transaction> begin(Database &db);
+  // Acquire the write reservation before any reads. This prevents a deferred
+  // transaction from failing with SQLITE_BUSY_SNAPSHOT when it later upgrades
+  // after another writer commits.
+  [[nodiscard]] static Result<Transaction> begin_immediate(Database &db);
 
   ~Transaction() noexcept;
   Transaction(Transaction &&other) noexcept;

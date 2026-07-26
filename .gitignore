@@ -4,12 +4,15 @@ build-rel/
 build-ninja/
 build-vs/
 build-bench/
+build-rel-avx2/
 out/
 cmake-build-*/
 
 # Git worktrees (isolated workspaces)
 .worktrees/
 /.claire/
+# Worktree-pool lease marker (scripts/lease-worktree.ps1) — per-tree, never committed
+.atx-lease
 
 # Downloaded market data (DBN/parquet dumps from examples) — root-level only,
 # so it never shadows source dirs like atx-engine/{include/atx/engine,src}/data/.

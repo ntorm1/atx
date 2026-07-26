@@ -11,6 +11,9 @@
   "C_Cpp.autocomplete": "disabled",
   "C_Cpp.errorSquiggles": "disabled",
 
+  // clangd language server disabled. Set to true to re-enable.
+  "clangd.enable": false,
+
   "clangd.path": "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/Llvm/x64/bin/clangd.exe",
   "clangd.arguments": [
     "--background-index",

@@ -17,6 +17,16 @@ dependencies = ["numpy>=1.23"]
 [project.optional-dependencies]
 test = ["pytest>=7", "numpy>=1.23"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: drives the built C++ CLI end-to-end; deselected by default, run with `-m slow`",
+]
+# The default suite is pure Python over committed fixtures: subsecond, no build
+# dependency, no pipeline spawns. The `slow` tier holds the CLI-side contracts
+# that no read-side test can observe; run it deliberately (`pytest -m slow`).
+addopts = "-m 'not slow'"
+
 [tool.scikit-build]
 minimum-version = "0.10"
 build-dir = "build/{wheel_tag}"
