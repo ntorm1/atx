@@ -26,6 +26,47 @@ using atx::core::Result;
 
 constexpr std::size_t kNoIndex = (std::numeric_limits<std::size_t>::max)();
 constexpr std::int64_t kMaxExactlyRepresentableContracts = 9'007'199'254'740'991LL;
+constexpr std::uint64_t kFnvOffset = 14'695'981'039'346'656'037ULL;
+constexpr std::uint64_t kFnvPrime = 1'099'511'628'211ULL;
+
+[[nodiscard]] std::uint64_t fold_u64(std::uint64_t hash, std::uint64_t value) noexcept {
+  for (std::size_t byte = 0U; byte < sizeof(value); ++byte) {
+    hash ^= value & 0xFFU;
+    hash *= kFnvPrime;
+    value >>= 8U;
+  }
+  return hash;
+}
+
+[[nodiscard]] std::uint64_t fold_i64(std::uint64_t hash, std::int64_t value) noexcept {
+  return fold_u64(hash, static_cast<std::uint64_t>(value));
+}
+
+[[nodiscard]] std::uint64_t fold_order_request(std::uint64_t hash,
+                                               const OptionOrderRequest &request) noexcept {
+  hash = fold_u64(hash, request.order_id.value);
+  hash = fold_u64(hash, request.strategy_id);
+  hash = fold_u64(hash, request.basket_id);
+  hash = fold_u64(hash, request.contract_id);
+  hash = fold_u64(hash, request.engine_id.id);
+  hash = fold_i64(hash, request.quantity_contracts);
+  hash = fold_i64(hash, request.limit_price.raw());
+  hash = fold_i64(hash, request.decision_ts_ns);
+  hash = fold_i64(hash, request.arrival_ts_ns);
+  hash = fold_i64(hash, request.expire_ts_ns);
+  hash = fold_u64(hash, request.priority_sequence);
+  hash = fold_u64(hash, request.fee_schedule_key);
+  return fold_u64(hash, static_cast<std::uint64_t>(request.time_in_force));
+}
+
+[[nodiscard]] std::uint64_t fold_cancel_request(std::uint64_t hash,
+                                                const OptionCancelRequest &request) noexcept {
+  hash = fold_u64(hash, request.cancel_id.value);
+  hash = fold_u64(hash, request.order_id.value);
+  hash = fold_i64(hash, request.event_ts_ns);
+  hash = fold_i64(hash, request.available_ts_ns);
+  return fold_u64(hash, request.priority_sequence);
+}
 
 [[nodiscard]] bool has_identity(const atx::vol::ArchiveContentIdentity &identity) noexcept {
   return identity.file_size != 0U;
@@ -336,20 +377,23 @@ struct SideState {
 struct BookState {
   SideState bid{};
   SideState ask{};
-  std::size_t buy_heap_offset{0U};
-  std::size_t buy_heap_size{0U};
-  std::size_t buy_heap_capacity{0U};
-  std::size_t sell_heap_offset{0U};
-  std::size_t sell_heap_size{0U};
-  std::size_t sell_heap_capacity{0U};
+  std::size_t buy_root{kNoIndex};
+  std::size_t sell_root{kNoIndex};
+  std::size_t live_head{kNoIndex};
+  std::size_t live_tail{kNoIndex};
   std::size_t ioc_head{kNoIndex};
   std::size_t ioc_tail{kNoIndex};
 };
 
 struct OrderRuntime {
+  std::size_t heap_child{kNoIndex};
+  std::size_t heap_sibling{kNoIndex};
+  std::size_t live_previous{kNoIndex};
+  std::size_t live_next{kNoIndex};
   std::size_t ioc_next{kNoIndex};
   bool live{false};
   bool first_fill_charged{false};
+  bool cancel_pending{false};
 };
 
 [[nodiscard]] Result<std::size_t> workspace_bytes(const OptionReplayLimits &limits,
@@ -369,8 +413,8 @@ struct OrderRuntime {
   ATX_TRY_VOID(add_array(limits.max_orders, sizeof(OptionOrderAudit)));
   ATX_TRY_VOID(add_array(limits.max_orders, sizeof(OrderRuntime)));
   ATX_TRY_VOID(add_array(limits.max_orders, sizeof(OrderLookup)));
-  ATX_TRY_VOID(add_array(limits.max_orders, sizeof(std::size_t)));
   ATX_TRY_VOID(add_array(limits.max_cancellations, sizeof(OptionCancelAudit)));
+  ATX_TRY_VOID(add_array(limits.max_cancellations, sizeof(std::size_t)));
   ATX_TRY_VOID(add_array(limits.max_fee_rows, sizeof(OptionFeeSchedule)));
   ATX_TRY_VOID(add_array(limits.max_tick_rows, sizeof(OptionTickSchedule)));
   ATX_TRY_VOID(add_array(event_capacity, sizeof(ReplayEvent)));
@@ -380,8 +424,8 @@ struct OrderRuntime {
 
 } // namespace
 
-struct OptionExecutionReplay::Impl {
-  explicit Impl(OptionReplayLimits configured_limits) : limits{configured_limits} {}
+struct ReplayCore {
+  explicit ReplayCore(OptionReplayLimits configured_limits) : limits{configured_limits} {}
 
   OptionReplayLimits limits{};
   OptionReplayConfig config{};
@@ -393,14 +437,36 @@ struct OptionExecutionReplay::Impl {
   std::vector<OptionOrderAudit> orders;
   std::vector<OrderRuntime> order_runtime;
   std::vector<OrderLookup> order_lookup;
-  std::vector<std::size_t> order_heap;
   std::vector<OptionCancelAudit> cancellations;
+  // Target resolved when the cancel request is accepted. kNoIndex pins an
+  // unknown-order outcome so a later order cannot inherit an earlier cancel.
+  std::vector<std::size_t> cancellation_targets;
   std::vector<OptionFeeSchedule> fee_schedules;
   std::vector<OptionTickSchedule> tick_schedules;
   std::vector<ReplayEvent> events;
   std::vector<OptionFill> fills;
+  std::vector<ReplayEvent> pending_events;
+  std::vector<OptionOrderRequest> command_orders;
+  std::vector<OptionCancelRequest> command_cancellations;
+  std::vector<std::uint64_t> command_cancel_targets;
+  std::vector<std::int64_t> command_exposure_deltas;
+  std::vector<std::int64_t> command_pending_cancel_values;
+  std::vector<std::uint64_t> command_contract_epochs;
+  std::vector<std::size_t> command_touched_contracts;
+  std::vector<OptionOrderStateSnapshot> order_states;
+  std::vector<OptionContractExposureSnapshot> exposures;
+  std::vector<OptionOrderTransition> transitions;
   OptionReplaySummary summary{};
+  OptionExecutionSessionSummary session_summary{};
   std::size_t working_orders{0U};
+  std::size_t static_event_index{0U};
+  std::size_t new_fill_begin{0U};
+  std::size_t new_transition_begin{0U};
+  std::size_t max_frontiers{0U};
+  std::size_t max_transitions{0U};
+  std::size_t reserved_transitions{0U};
+  std::uint64_t command_epoch{0U};
+  bool session_enabled{false};
 
   void clear() noexcept {
     contracts.clear();
@@ -411,14 +477,29 @@ struct OptionExecutionReplay::Impl {
     orders.clear();
     order_runtime.clear();
     order_lookup.clear();
-    order_heap.clear();
     cancellations.clear();
+    cancellation_targets.clear();
     fee_schedules.clear();
     tick_schedules.clear();
     events.clear();
     fills.clear();
+    pending_events.clear();
+    command_orders.clear();
+    command_cancellations.clear();
+    command_cancel_targets.clear();
+    command_exposure_deltas.clear();
+    command_pending_cancel_values.clear();
+    command_touched_contracts.clear();
+    order_states.clear();
+    exposures.clear();
+    transitions.clear();
     summary = {};
+    session_summary = {};
     working_orders = 0U;
+    static_event_index = 0U;
+    new_fill_begin = 0U;
+    new_transition_begin = 0U;
+    reserved_transitions = 0U;
   }
 
   [[nodiscard]] std::size_t contract_index(std::uint64_t contract_id) const noexcept {
@@ -634,7 +715,6 @@ struct OptionExecutionReplay::Impl {
                                 right.order_key.native_sequence, right.order_key.packet_index,
                                 right.order_key.stable_ingest_ordinal);
               });
-    summary.quote_events = quotes.size();
     return Ok();
   }
 
@@ -717,49 +797,53 @@ struct OptionExecutionReplay::Impl {
     return Ok();
   }
 
+  [[nodiscard]] Result<std::size_t>
+  validate_order_request(const OptionOrderRequest &request) const {
+    const OptionReplayContract *definition = contract_definition(request.contract_id);
+    if (definition == nullptr || request.engine_id != definition->engine_id) {
+      return Err(ErrorCode::InvalidArgument, "option order does not match the execution catalog");
+    }
+    ATX_TRY_VOID(validate_tif(request.time_in_force));
+    if (request.order_id.value == 0U || request.strategy_id == 0U || request.basket_id == 0U ||
+        request.quantity_contracts == 0 ||
+        request.quantity_contracts == (std::numeric_limits<std::int64_t>::min)() ||
+        request.limit_price.raw() <= 0 ||
+        request.decision_ts_ns < definition->definition_available_ts_ns ||
+        request.arrival_ts_ns <= request.decision_ts_ns ||
+        request.arrival_ts_ns >= definition->expiry_ts_ns ||
+        request.arrival_ts_ns > config.replay_end_ts_ns || request.fee_schedule_key == 0U) {
+      return Err(ErrorCode::InvalidArgument, "option order request is invalid");
+    }
+    if ((request.time_in_force == OptionTimeInForce::Day &&
+         (request.expire_ts_ns <= request.arrival_ts_ns ||
+          request.expire_ts_ns > definition->expiry_ts_ns)) ||
+        (request.time_in_force != OptionTimeInForce::Day && request.expire_ts_ns != 0)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "option order expiry is inconsistent with time in force");
+    }
+    if (!has_fee_key(request.fee_schedule_key)) {
+      return Err(ErrorCode::NotFound, "option order fee schedule key is not configured");
+    }
+    const OptionTickSchedule *tick = tick_at(definition->tick_schedule_key, request.arrival_ts_ns);
+    if (tick == nullptr) {
+      return Err(ErrorCode::NotFound, "no effective option tick schedule at order arrival");
+    }
+    if (tick->available_ts_ns > request.decision_ts_ns) {
+      return Err(ErrorCode::InvalidArgument,
+                 "option order uses a tick rule unavailable at decision time");
+    }
+    if (!price_on_tick(*tick, request.limit_price)) {
+      return Err(ErrorCode::InvalidArgument, "option order limit is off its effective tick");
+    }
+    return magnitude_as_size(request.quantity_contracts);
+  }
+
   [[nodiscard]] Result<void> load_orders(std::span<const OptionOrderRequest> input_orders) {
     if (input_orders.size() > limits.max_orders) {
       return Err(ErrorCode::OutOfRange, "option replay order limit exceeded");
     }
     for (const OptionOrderRequest &request : input_orders) {
-      const OptionReplayContract *definition = contract_definition(request.contract_id);
-      if (definition == nullptr || request.engine_id != definition->engine_id) {
-        return Err(ErrorCode::InvalidArgument, "option order does not match the execution catalog");
-      }
-      ATX_TRY_VOID(validate_tif(request.time_in_force));
-      if (request.order_id.value == 0U || request.strategy_id == 0U || request.basket_id == 0U ||
-          request.quantity_contracts == 0 ||
-          request.quantity_contracts == (std::numeric_limits<std::int64_t>::min)() ||
-          request.limit_price.raw() <= 0 ||
-          request.decision_ts_ns < definition->definition_available_ts_ns ||
-          request.arrival_ts_ns <= request.decision_ts_ns ||
-          request.arrival_ts_ns >= definition->expiry_ts_ns ||
-          request.arrival_ts_ns > config.replay_end_ts_ns || request.fee_schedule_key == 0U) {
-        return Err(ErrorCode::InvalidArgument, "option order request is invalid");
-      }
-      if ((request.time_in_force == OptionTimeInForce::Day &&
-           (request.expire_ts_ns <= request.arrival_ts_ns ||
-            request.expire_ts_ns > definition->expiry_ts_ns)) ||
-          (request.time_in_force != OptionTimeInForce::Day && request.expire_ts_ns != 0)) {
-        return Err(ErrorCode::InvalidArgument,
-                   "option order expiry is inconsistent with time in force");
-      }
-      if (!has_fee_key(request.fee_schedule_key)) {
-        return Err(ErrorCode::NotFound, "option order fee schedule key is not configured");
-      }
-      const OptionTickSchedule *tick =
-          tick_at(definition->tick_schedule_key, request.arrival_ts_ns);
-      if (tick == nullptr) {
-        return Err(ErrorCode::NotFound, "no effective option tick schedule at order arrival");
-      }
-      if (tick->available_ts_ns > request.decision_ts_ns) {
-        return Err(ErrorCode::InvalidArgument,
-                   "option order uses a tick rule unavailable at decision time");
-      }
-      if (!price_on_tick(*tick, request.limit_price)) {
-        return Err(ErrorCode::InvalidArgument, "option order limit is off its effective tick");
-      }
-      ATX_TRY(std::size_t requested, magnitude_as_size(request.quantity_contracts));
+      ATX_TRY(std::size_t requested, validate_order_request(request));
       ATX_TRY_VOID(add_size(summary.requested_contracts, requested));
       orders.push_back(OptionOrderAudit{request, 0, request.quantity_contracts, 0U, Decimal{}, 0, 0,
                                         OptionOrderDisposition::OpenAtEnd});
@@ -772,22 +856,6 @@ struct OptionExecutionReplay::Impl {
                                 right.request.order_id.value);
               });
     order_runtime.resize(orders.size());
-    for (const OptionOrderAudit &audit : orders) {
-      BookState &book = books[contract_index(audit.request.contract_id)];
-      if (is_buy(audit.request.quantity_contracts)) {
-        ++book.buy_heap_capacity;
-      } else {
-        ++book.sell_heap_capacity;
-      }
-    }
-    std::size_t heap_offset = 0U;
-    for (BookState &book : books) {
-      book.buy_heap_offset = heap_offset;
-      ATX_TRY(heap_offset, checked_add_size(heap_offset, book.buy_heap_capacity));
-      book.sell_heap_offset = heap_offset;
-      ATX_TRY(heap_offset, checked_add_size(heap_offset, book.sell_heap_capacity));
-    }
-    order_heap.resize(heap_offset, kNoIndex);
     for (std::size_t i = 0; i < orders.size(); ++i) {
       order_lookup.push_back(OrderLookup{orders[i].request.order_id, i});
     }
@@ -801,6 +869,7 @@ struct OptionExecutionReplay::Impl {
                            }) != order_lookup.end()) {
       return Err(ErrorCode::AlreadyExists, "duplicate option replay order id");
     }
+    summary.open_orders = orders.size();
     return Ok();
   }
 
@@ -838,6 +907,9 @@ struct OptionExecutionReplay::Impl {
                        std::tie(right.request.available_ts_ns, right.request.priority_sequence,
                                 right.request.cancel_id.value);
               });
+    for (const OptionCancelAudit &audit : cancellations) {
+      cancellation_targets.push_back(order_index(audit.request.order_id));
+    }
     return Ok();
   }
 
@@ -878,6 +950,48 @@ struct OptionExecutionReplay::Impl {
     std::sort(events.begin(), events.end(), event_less);
   }
 
+  [[nodiscard]] static bool pending_event_greater(const ReplayEvent &left,
+                                                  const ReplayEvent &right) noexcept {
+    return event_less(right, left);
+  }
+
+  void push_pending_event(const ReplayEvent &event) {
+    pending_events.push_back(event);
+    std::push_heap(pending_events.begin(), pending_events.end(), pending_event_greater);
+  }
+
+  [[nodiscard]] ReplayEvent pop_pending_event() {
+    std::pop_heap(pending_events.begin(), pending_events.end(), pending_event_greater);
+    const ReplayEvent event = pending_events.back();
+    pending_events.pop_back();
+    return event;
+  }
+
+  [[nodiscard]] Result<void> process_through(std::int64_t frontier_ts_ns) {
+    ATX_TRY(std::size_t max_steps, checked_add_size(events.size(), pending_events.size()));
+    Result<void> status = Ok();
+    for (std::size_t bounded = 0U; bounded < max_steps; ++bounded) {
+      const bool has_static = static_event_index < events.size();
+      const bool has_pending = !pending_events.empty();
+      if (!has_static && !has_pending) {
+        break;
+      }
+      const bool use_static =
+          has_static &&
+          (!has_pending || !event_less(pending_events.front(), events[static_event_index]));
+      const ReplayEvent &next = use_static ? events[static_event_index] : pending_events.front();
+      if (next.available_ts_ns > frontier_ts_ns) {
+        break;
+      }
+      const ReplayEvent event = use_static ? events[static_event_index++] : pop_pending_event();
+      process_event(event, status);
+      if (!status) {
+        return status;
+      }
+    }
+    return Ok();
+  }
+
   [[nodiscard]] bool better_order(std::size_t left_index, std::size_t right_index,
                                   bool buy) const noexcept {
     const OptionOrderRequest &left = orders[left_index].request;
@@ -889,29 +1003,168 @@ struct OptionExecutionReplay::Impl {
            std::tie(right.arrival_ts_ns, right.priority_sequence, right.order_id.value);
   }
 
+  [[nodiscard]] OptionOrderLifecycleState
+  lifecycle_state(std::size_t order_index_value) const noexcept {
+    const OptionOrderAudit &audit = orders[order_index_value];
+    const OrderRuntime &runtime = order_runtime[order_index_value];
+    switch (audit.disposition) {
+    case OptionOrderDisposition::Filled:
+      return OptionOrderLifecycleState::Filled;
+    case OptionOrderDisposition::Canceled:
+      return OptionOrderLifecycleState::Canceled;
+    case OptionOrderDisposition::Expired:
+      return OptionOrderLifecycleState::Expired;
+    case OptionOrderDisposition::OpenAtEnd:
+      break;
+    }
+    if (runtime.cancel_pending) {
+      return OptionOrderLifecycleState::PendingCancel;
+    }
+    if (!runtime.live) {
+      return OptionOrderLifecycleState::Scheduled;
+    }
+    return audit.filled_contracts == 0 ? OptionOrderLifecycleState::Working
+                                       : OptionOrderLifecycleState::PartiallyFilled;
+  }
+
+  void sync_order_state(std::size_t order_index_value) noexcept {
+    if (!session_enabled) {
+      return;
+    }
+    OptionOrderStateSnapshot &snapshot = order_states[order_index_value];
+    snapshot.remaining_contracts = orders[order_index_value].remaining_contracts;
+    snapshot.state = lifecycle_state(order_index_value);
+    snapshot.cancel_pending = order_runtime[order_index_value].cancel_pending;
+  }
+
+  [[nodiscard]] Result<void>
+  append_transition(std::int64_t event_ts_ns, std::int64_t available_ts_ns,
+                    std::size_t order_index_value, OptionCancelId cancel_id,
+                    OptionOrderTransitionKind kind, OptionOrderLifecycleState state_before,
+                    std::int64_t last_fill_contracts = 0, std::size_t fill_index = 0U,
+                    bool consumes_reservation = false) {
+    if (!session_enabled) {
+      return Ok();
+    }
+    if ((consumes_reservation &&
+         (reserved_transitions == 0U || transitions.size() >= max_transitions)) ||
+        (!consumes_reservation && (reserved_transitions > max_transitions ||
+                                   transitions.size() >= max_transitions - reserved_transitions))) {
+      return Err(ErrorCode::OutOfRange, "option execution transition limit exceeded");
+    }
+    const OptionOrderAudit &audit = orders[order_index_value];
+    transitions.push_back(OptionOrderTransition{
+        static_cast<std::uint64_t>(transitions.size() + 1U), event_ts_ns, available_ts_ns,
+        audit.request.order_id, cancel_id, kind, state_before, lifecycle_state(order_index_value),
+        last_fill_contracts, audit.filled_contracts, audit.remaining_contracts, fill_index});
+    if (consumes_reservation) {
+      --reserved_transitions;
+    }
+    session_summary.transition_count = transitions.size();
+    return Ok();
+  }
+
+  [[nodiscard]] Result<void> append_cancel_only_transition(const OptionCancelRequest &request,
+                                                           OptionOrderTransitionKind kind) {
+    if (!session_enabled) {
+      return Ok();
+    }
+    const bool consumes_reservation = kind != OptionOrderTransitionKind::CancelRequested;
+    if ((consumes_reservation &&
+         (reserved_transitions == 0U || transitions.size() >= max_transitions)) ||
+        (!consumes_reservation && (reserved_transitions > max_transitions ||
+                                   transitions.size() >= max_transitions - reserved_transitions))) {
+      return Err(ErrorCode::OutOfRange, "option execution transition limit exceeded");
+    }
+    const std::int64_t transition_available_ts_ns =
+        kind == OptionOrderTransitionKind::CancelRequested ? request.event_ts_ns
+                                                           : request.available_ts_ns;
+    transitions.push_back(
+        OptionOrderTransition{static_cast<std::uint64_t>(transitions.size() + 1U),
+                              request.event_ts_ns, transition_available_ts_ns, request.order_id,
+                              request.cancel_id, kind, OptionOrderLifecycleState::NotApplicable,
+                              OptionOrderLifecycleState::NotApplicable, 0, 0, 0, 0U});
+    if (consumes_reservation) {
+      --reserved_transitions;
+    }
+    session_summary.transition_count = transitions.size();
+    return Ok();
+  }
+
+  [[nodiscard]] Result<void> move_scheduled_to_working(std::size_t order_index_value) {
+    if (!session_enabled) {
+      return Ok();
+    }
+    const std::size_t contract = contract_index(orders[order_index_value].request.contract_id);
+    OptionContractExposureSnapshot &exposure = exposures[contract];
+    const std::int64_t leaves = orders[order_index_value].remaining_contracts;
+    ATX_TRY(exposure.scheduled_contracts,
+            atx::core::checked_sub(exposure.scheduled_contracts, leaves));
+    ATX_TRY(exposure.working_contracts, atx::core::checked_add(exposure.working_contracts, leaves));
+    return Ok();
+  }
+
+  [[nodiscard]] std::size_t meld_order_roots(std::size_t left, std::size_t right,
+                                             bool buy) noexcept {
+    if (left == kNoIndex) {
+      return right;
+    }
+    if (right == kNoIndex) {
+      return left;
+    }
+    if (better_order(right, left, buy)) {
+      std::swap(left, right);
+    }
+    order_runtime[right].heap_sibling = order_runtime[left].heap_child;
+    order_runtime[left].heap_child = right;
+    return left;
+  }
+
+  void append_live_order(BookState &book, std::size_t order_index_value) noexcept {
+    OrderRuntime &runtime = order_runtime[order_index_value];
+    runtime.live_previous = book.live_tail;
+    runtime.live_next = kNoIndex;
+    if (book.live_tail == kNoIndex) {
+      book.live_head = order_index_value;
+    } else {
+      order_runtime[book.live_tail].live_next = order_index_value;
+    }
+    book.live_tail = order_index_value;
+  }
+
+  void remove_live_order(BookState &book, std::size_t order_index_value) noexcept {
+    OrderRuntime &runtime = order_runtime[order_index_value];
+    if (runtime.live_previous == kNoIndex) {
+      book.live_head = runtime.live_next;
+    } else {
+      order_runtime[runtime.live_previous].live_next = runtime.live_next;
+    }
+    if (runtime.live_next == kNoIndex) {
+      book.live_tail = runtime.live_previous;
+    } else {
+      order_runtime[runtime.live_next].live_previous = runtime.live_previous;
+    }
+    runtime.live_previous = kNoIndex;
+    runtime.live_next = kNoIndex;
+  }
+
   [[nodiscard]] Result<void> insert_order(std::size_t order_index_value) {
     const OptionOrderRequest &request = orders[order_index_value].request;
     const std::size_t contract = contract_index(request.contract_id);
     BookState &book = books[contract];
     const bool buy = is_buy(request.quantity_contracts);
-    const std::size_t offset = buy ? book.buy_heap_offset : book.sell_heap_offset;
-    std::size_t &size = buy ? book.buy_heap_size : book.sell_heap_size;
-    const std::size_t capacity = buy ? book.buy_heap_capacity : book.sell_heap_capacity;
-    if (size >= capacity) {
-      return Err(ErrorCode::Internal, "option order heap capacity invariant failed");
-    }
-    std::size_t position = size;
-    ++size;
-    while (position > 0U) {
-      const std::size_t parent = (position - 1U) / 2U;
-      if (!better_order(order_index_value, order_heap[offset + parent], buy)) {
-        break;
-      }
-      order_heap[offset + position] = order_heap[offset + parent];
-      position = parent;
-    }
-    order_heap[offset + position] = order_index_value;
-    order_runtime[order_index_value].live = true;
+    std::size_t &root = buy ? book.buy_root : book.sell_root;
+    OrderRuntime &runtime = order_runtime[order_index_value];
+    const OptionOrderLifecycleState before = lifecycle_state(order_index_value);
+    runtime.heap_child = kNoIndex;
+    runtime.heap_sibling = kNoIndex;
+    root = meld_order_roots(root, order_index_value, buy);
+    runtime.live = true;
+    append_live_order(book, order_index_value);
+    ATX_TRY_VOID(move_scheduled_to_working(order_index_value));
+    sync_order_state(order_index_value);
+    ATX_TRY_VOID(append_transition(request.decision_ts_ns, request.arrival_ts_ns, order_index_value,
+                                   {}, OptionOrderTransitionKind::Submitted, before, 0, 0U, true));
     if (request.time_in_force == OptionTimeInForce::FirstFutureQuoteOrCancel) {
       if (book.ioc_tail == kNoIndex) {
         book.ioc_head = order_index_value;
@@ -925,48 +1178,76 @@ struct OptionExecutionReplay::Impl {
     return Ok();
   }
 
-  void pop_heap_root(BookState &book, bool buy) noexcept {
-    const std::size_t offset = buy ? book.buy_heap_offset : book.sell_heap_offset;
-    std::size_t &size = buy ? book.buy_heap_size : book.sell_heap_size;
-    if (size == 0U) {
+  void pop_order_root(BookState &book, bool buy) noexcept {
+    std::size_t &root = buy ? book.buy_root : book.sell_root;
+    if (root == kNoIndex) {
       return;
     }
-    --size;
-    if (size == 0U) {
-      return;
+    std::size_t child = order_runtime[root].heap_child;
+    order_runtime[root].heap_child = kNoIndex;
+    order_runtime[root].heap_sibling = kNoIndex;
+
+    std::size_t paired_roots = kNoIndex;
+    for (std::size_t bounded = 0U; child != kNoIndex && bounded < orders.size(); ++bounded) {
+      const std::size_t left = child;
+      const std::size_t right = order_runtime[left].heap_sibling;
+      std::size_t next = kNoIndex;
+      order_runtime[left].heap_sibling = kNoIndex;
+      if (right != kNoIndex) {
+        next = order_runtime[right].heap_sibling;
+        order_runtime[right].heap_sibling = kNoIndex;
+      }
+      const std::size_t merged = meld_order_roots(left, right, buy);
+      order_runtime[merged].heap_sibling = paired_roots;
+      paired_roots = merged;
+      child = next;
     }
-    const std::size_t replacement = order_heap[offset + size];
-    std::size_t position = 0U;
-    while (true) {
-      const std::size_t left = position * 2U + 1U;
-      if (left >= size) {
-        break;
-      }
-      const std::size_t right = left + 1U;
-      std::size_t better_child = left;
-      if (right < size &&
-          better_order(order_heap[offset + right], order_heap[offset + left], buy)) {
-        better_child = right;
-      }
-      if (!better_order(order_heap[offset + better_child], replacement, buy)) {
-        break;
-      }
-      order_heap[offset + position] = order_heap[offset + better_child];
-      position = better_child;
+
+    root = kNoIndex;
+    for (std::size_t bounded = 0U; paired_roots != kNoIndex && bounded < orders.size(); ++bounded) {
+      const std::size_t current = paired_roots;
+      paired_roots = order_runtime[current].heap_sibling;
+      order_runtime[current].heap_sibling = kNoIndex;
+      root = meld_order_roots(root, current, buy);
     }
-    order_heap[offset + position] = replacement;
   }
 
-  void terminalize(std::size_t order_index_value, OptionOrderDisposition disposition) noexcept {
+  [[nodiscard]] Result<void> terminalize(std::size_t order_index_value,
+                                         OptionOrderDisposition disposition) {
     OrderRuntime &runtime = order_runtime[order_index_value];
     if (!runtime.live || order_terminal(orders[order_index_value].disposition)) {
-      return;
+      return Ok();
+    }
+    if (session_enabled) {
+      const std::size_t contract = contract_index(orders[order_index_value].request.contract_id);
+      OptionContractExposureSnapshot &exposure = exposures[contract];
+      const std::int64_t leaves = orders[order_index_value].remaining_contracts;
+      ATX_TRY(exposure.working_contracts,
+              atx::core::checked_sub(exposure.working_contracts, leaves));
+      ATX_TRY(exposure.projected_contracts,
+              atx::core::checked_sub(exposure.projected_contracts, leaves));
+      if (runtime.cancel_pending) {
+        ATX_TRY(exposure.pending_cancel_contracts,
+                atx::core::checked_sub(exposure.pending_cancel_contracts, leaves));
+      }
     }
     runtime.live = false;
     orders[order_index_value].disposition = disposition;
+    if (summary.open_orders > 0U) {
+      --summary.open_orders;
+    }
+    if (disposition == OptionOrderDisposition::Canceled) {
+      ++summary.canceled_orders;
+    } else if (disposition == OptionOrderDisposition::Expired) {
+      ++summary.expired_orders;
+    }
+    BookState &book = books[contract_index(orders[order_index_value].request.contract_id)];
+    remove_live_order(book, order_index_value);
     if (working_orders > 0U) {
       --working_orders;
     }
+    sync_order_state(order_index_value);
+    return Ok();
   }
 
   [[nodiscard]] Result<void> update_side(SideState &side, Decimal price, std::int64_t observed_size,
@@ -1100,7 +1381,24 @@ struct OptionExecutionReplay::Impl {
     if (fills.size() >= limits.max_fills) {
       return Err(ErrorCode::OutOfRange, "option replay fill-record limit exceeded");
     }
+    if (session_enabled && transitions.size() >= max_transitions) {
+      return Err(ErrorCode::OutOfRange, "option execution transition limit exceeded");
+    }
 
+    std::int64_t new_working_contracts = 0;
+    std::int64_t new_pending_cancel_contracts = 0;
+    if (session_enabled) {
+      const OptionContractExposureSnapshot &exposure = exposures[contract_index_value];
+      ATX_TRY(new_working_contracts,
+              atx::core::checked_sub(exposure.working_contracts, signed_fill));
+      new_pending_cancel_contracts = exposure.pending_cancel_contracts;
+      if (runtime.cancel_pending) {
+        ATX_TRY(new_pending_cancel_contracts,
+                atx::core::checked_sub(exposure.pending_cancel_contracts, signed_fill));
+      }
+    }
+
+    const OptionOrderLifecycleState state_before = lifecycle_state(order_index_value);
     const std::int64_t displayed_before = side.remaining_size;
     side.remaining_size -= count;
     positions[contract_index_value].contracts = new_position;
@@ -1117,8 +1415,14 @@ struct OptionExecutionReplay::Impl {
     }
     audit.last_fill_ts_ns = fill_ts_ns;
     runtime.first_fill_charged = true;
+    if (session_enabled) {
+      OptionContractExposureSnapshot &exposure = exposures[contract_index_value];
+      exposure.position_contracts = new_position;
+      exposure.working_contracts = new_working_contracts;
+      exposure.pending_cancel_contracts = new_pending_cancel_contracts;
+    }
     if (new_remaining == 0) {
-      terminalize(order_index_value, OptionOrderDisposition::Filled);
+      ATX_TRY_VOID(terminalize(order_index_value, OptionOrderDisposition::Filled));
     }
 
     fills.push_back(OptionFill{request.order_id,
@@ -1147,6 +1451,11 @@ struct OptionExecutionReplay::Impl {
                                quote.source_identity,
                                used_schedule->source_identity,
                                tick->source_identity});
+    sync_order_state(order_index_value);
+    ATX_TRY_VOID(append_transition(quote.quote_event_ts_ns, fill_ts_ns, order_index_value, {},
+                                   new_remaining == 0 ? OptionOrderTransitionKind::Filled
+                                                      : OptionOrderTransitionKind::PartiallyFilled,
+                                   state_before, signed_fill, fills.size()));
     summary.cross_stream_ordering_ambiguous =
         summary.cross_stream_ordering_ambiguous || quote.cross_stream_ordering_ambiguous;
     return Ok(true);
@@ -1155,19 +1464,18 @@ struct OptionExecutionReplay::Impl {
   [[nodiscard]] Result<void> match_side(std::size_t contract_index_value, bool buy,
                                         std::int64_t fill_ts_ns) {
     BookState &book = books[contract_index_value];
-    const std::size_t offset = buy ? book.buy_heap_offset : book.sell_heap_offset;
-    std::size_t &heap_size = buy ? book.buy_heap_size : book.sell_heap_size;
+    std::size_t &root = buy ? book.buy_root : book.sell_root;
     SideState &side = buy ? book.ask : book.bid;
 
-    for (std::size_t bounded = 0U; bounded <= orders.size() && heap_size > 0U; ++bounded) {
-      const std::size_t current = order_heap[offset];
+    for (std::size_t bounded = 0U; bounded <= orders.size() && root != kNoIndex; ++bounded) {
+      const std::size_t current = root;
       if (!order_runtime[current].live) {
-        pop_heap_root(book, buy);
+        pop_order_root(book, buy);
         continue;
       }
       ATX_TRY(bool filled, try_fill(current, contract_index_value, side, fill_ts_ns));
       if (!order_runtime[current].live) {
-        pop_heap_root(book, buy);
+        pop_order_root(book, buy);
         continue;
       }
       if (!filled || side.remaining_size == 0) {
@@ -1177,7 +1485,8 @@ struct OptionExecutionReplay::Impl {
     return Ok();
   }
 
-  void resolve_ioc(std::size_t contract_index_value) noexcept {
+  [[nodiscard]] Result<void> resolve_ioc(std::size_t contract_index_value, std::int64_t event_ts_ns,
+                                         std::int64_t available_ts_ns) {
     BookState &book = books[contract_index_value];
     std::size_t current = book.ioc_head;
     book.ioc_head = kNoIndex;
@@ -1186,16 +1495,21 @@ struct OptionExecutionReplay::Impl {
       const std::size_t next = order_runtime[current].ioc_next;
       order_runtime[current].ioc_next = kNoIndex;
       if (order_runtime[current].live) {
-        terminalize(current, OptionOrderDisposition::Canceled);
+        const OptionOrderLifecycleState before = lifecycle_state(current);
+        ATX_TRY_VOID(terminalize(current, OptionOrderDisposition::Canceled));
+        ATX_TRY_VOID(append_transition(event_ts_ns, available_ts_ns, current, {},
+                                       OptionOrderTransitionKind::Canceled, before));
       }
       current = next;
     }
+    return Ok();
   }
 
   [[nodiscard]] Result<void> process_quote(std::size_t quote_index_value) {
     const OptionTopOfBookEvent &quote = quotes[quote_index_value];
     const std::size_t contract = contract_index(quote.contract_id);
     BookState &book = books[contract];
+    ++summary.quote_events;
     summary.cross_stream_ordering_ambiguous =
         summary.cross_stream_ordering_ambiguous || quote.cross_stream_ordering_ambiguous;
 
@@ -1206,7 +1520,7 @@ struct OptionExecutionReplay::Impl {
       book.ask.valid = false;
       book.bid.remaining_size = 0;
       book.ask.remaining_size = 0;
-      resolve_ioc(contract);
+      ATX_TRY_VOID(resolve_ioc(contract, quote.quote_event_ts_ns, quote.available_ts_ns));
       return Ok();
     }
     ++summary.firm_quote_events;
@@ -1220,22 +1534,28 @@ struct OptionExecutionReplay::Impl {
     if (quote.bid_updated) {
       ATX_TRY_VOID(match_side(contract, false, quote.available_ts_ns));
     }
-    resolve_ioc(contract);
+    ATX_TRY_VOID(resolve_ioc(contract, quote.quote_event_ts_ns, quote.available_ts_ns));
     return Ok();
   }
 
-  void expire_contract(std::size_t contract_index_value) noexcept {
-    const BookState &book = books[contract_index_value];
-    const auto expire_heap = [this](std::size_t offset, std::size_t size) noexcept {
-      for (std::size_t i = 0U; i < size; ++i) {
-        const std::size_t current = order_heap[offset + i];
-        if (current != kNoIndex && order_runtime[current].live) {
-          terminalize(current, OptionOrderDisposition::Expired);
-        }
-      }
-    };
-    expire_heap(book.buy_heap_offset, book.buy_heap_size);
-    expire_heap(book.sell_heap_offset, book.sell_heap_size);
+  [[nodiscard]] Result<void> expire_contract(std::size_t contract_index_value,
+                                             std::int64_t expiry_ts_ns) {
+    if (session_enabled && positions[contract_index_value].contracts != 0) {
+      return Err(ErrorCode::NotImplemented,
+                 "option session requires an authoritative settlement or assignment "
+                 "event for a nonzero position at expiry");
+    }
+    BookState &book = books[contract_index_value];
+    std::size_t current = book.live_head;
+    for (std::size_t bounded = 0U; current != kNoIndex && bounded < orders.size(); ++bounded) {
+      const std::size_t next = order_runtime[current].live_next;
+      const OptionOrderLifecycleState before = lifecycle_state(current);
+      ATX_TRY_VOID(terminalize(current, OptionOrderDisposition::Expired));
+      ATX_TRY_VOID(append_transition(expiry_ts_ns, expiry_ts_ns, current, {},
+                                     OptionOrderTransitionKind::Expired, before));
+      current = next;
+    }
+    return Ok();
   }
 
   void process_event(const ReplayEvent &event, Result<void> &status) {
@@ -1245,22 +1565,45 @@ struct OptionExecutionReplay::Impl {
     switch (event.kind) {
     case ReplayEvent::Kind::Cancel: {
       OptionCancelAudit &audit = cancellations[event.index];
-      const std::size_t target = order_index(audit.request.order_id);
+      const std::size_t target = cancellation_targets[event.index];
       if (target == kNoIndex) {
         audit.disposition = OptionCancelDisposition::UnknownOrder;
+        status = append_cancel_only_transition(audit.request,
+                                               OptionOrderTransitionKind::CancelUnknownOrder);
       } else if (!order_runtime[target].live || order_terminal(orders[target].disposition)) {
         audit.disposition = OptionCancelDisposition::AlreadyTerminal;
+        order_runtime[target].cancel_pending = false;
+        sync_order_state(target);
+        status = append_transition(audit.request.event_ts_ns, audit.request.available_ts_ns, target,
+                                   audit.request.cancel_id,
+                                   OptionOrderTransitionKind::CancelAlreadyTerminal,
+                                   lifecycle_state(target), 0, 0U, true);
       } else {
-        terminalize(target, OptionOrderDisposition::Canceled);
+        const OptionOrderLifecycleState before = lifecycle_state(target);
+        status = terminalize(target, OptionOrderDisposition::Canceled);
+        if (!status) {
+          break;
+        }
+        order_runtime[target].cancel_pending = false;
+        sync_order_state(target);
+        status = append_transition(audit.request.event_ts_ns, audit.request.available_ts_ns, target,
+                                   audit.request.cancel_id, OptionOrderTransitionKind::Canceled,
+                                   before, 0, 0U, true);
         audit.disposition = OptionCancelDisposition::Applied;
       }
       break;
     }
-    case ReplayEvent::Kind::OrderExpiry:
-      terminalize(event.index, OptionOrderDisposition::Expired);
+    case ReplayEvent::Kind::OrderExpiry: {
+      const OptionOrderLifecycleState before = lifecycle_state(event.index);
+      status = terminalize(event.index, OptionOrderDisposition::Expired);
+      if (status && lifecycle_state(event.index) == OptionOrderLifecycleState::Expired) {
+        status = append_transition(event.available_ts_ns, event.available_ts_ns, event.index, {},
+                                   OptionOrderTransitionKind::Expired, before);
+      }
       break;
+    }
     case ReplayEvent::Kind::ContractExpiry:
-      expire_contract(event.index);
+      status = expire_contract(event.index, event.available_ts_ns);
       break;
     case ReplayEvent::Kind::Quote:
       status = process_quote(event.index);
@@ -1271,28 +1614,258 @@ struct OptionExecutionReplay::Impl {
     }
   }
 
-  void finalize() noexcept {
+  [[nodiscard]] Result<void> finalize() {
     for (std::size_t i = 0; i < orders.size(); ++i) {
       if (order_runtime[i].live &&
           orders[i].request.time_in_force == OptionTimeInForce::FirstFutureQuoteOrCancel) {
-        terminalize(i, OptionOrderDisposition::Canceled);
+        const OptionOrderLifecycleState before = lifecycle_state(i);
+        ATX_TRY_VOID(terminalize(i, OptionOrderDisposition::Canceled));
+        ATX_TRY_VOID(append_transition(config.replay_end_ts_ns, config.replay_end_ts_ns, i, {},
+                                       OptionOrderTransitionKind::Canceled, before));
       }
     }
-    for (const OptionOrderAudit &audit : orders) {
-      switch (audit.disposition) {
-      case OptionOrderDisposition::Filled:
-        break;
-      case OptionOrderDisposition::Canceled:
-        ++summary.canceled_orders;
-        break;
-      case OptionOrderDisposition::Expired:
-        ++summary.expired_orders;
-        break;
-      case OptionOrderDisposition::OpenAtEnd:
-        ++summary.open_orders;
-        break;
-      }
+    return Ok();
+  }
+
+  [[nodiscard]] Result<void> initialize(const OptionReplayInputs &inputs,
+                                        const OptionReplayConfig &candidate) {
+    clear();
+    ATX_TRY_VOID(validate_config(candidate));
+    config = candidate;
+    summary.scenario = candidate.scenario;
+    summary.model_version = candidate.model_version;
+    summary.ordering_version = kOptionExecutionReplayOrderingVersion;
+    summary.market_data_identity = candidate.market_data_identity;
+    summary.sequence_validation_identity = candidate.sequence_validation_identity;
+    summary.calibration_identity = candidate.calibration_identity;
+    summary.sequence_continuity_verified = candidate.sequence_continuity_verified;
+    summary.allow_locked_market = candidate.allow_locked_market;
+    summary.displayed_size_fraction = candidate.displayed_size_fraction;
+    summary.adverse_price_bps = candidate.adverse_price_bps;
+    summary.max_quote_age_ns = candidate.max_quote_age_ns;
+    summary.replay_end_ts_ns = candidate.replay_end_ts_ns;
+    summary.initial_cash = inputs.initial_cash;
+    summary.final_cash = inputs.initial_cash;
+
+    ATX_TRY_VOID(load_contracts(inputs.contracts));
+    ATX_TRY_VOID(load_fee_schedules(inputs.fee_schedules));
+    ATX_TRY_VOID(load_tick_schedules(inputs.tick_schedules));
+    ATX_TRY_VOID(load_orders(inputs.orders));
+    ATX_TRY_VOID(load_cancellations(inputs.cancellations));
+    ATX_TRY_VOID(load_quotes(inputs.quotes));
+    add_events();
+    return Ok();
+  }
+
+  [[nodiscard]] Result<void> apply_session_commands(const OptionCommandBatch &commands,
+                                                    std::int64_t frontier_ts_ns,
+                                                    std::uint64_t &last_order_id,
+                                                    std::uint64_t &last_cancel_id) {
+    if (commands.orders.size() > limits.max_orders - orders.size() ||
+        commands.cancellations.size() > limits.max_cancellations - cancellations.size() ||
+        commands.orders.size() > command_orders.capacity() ||
+        commands.cancellations.size() > command_cancellations.capacity()) {
+      return Err(ErrorCode::OutOfRange, "option session command capacity exceeded");
     }
+    ATX_TRY(std::size_t transition_additions,
+            checked_add_size(commands.orders.size(), commands.cancellations.size()));
+    ATX_TRY(std::size_t transition_commitment, checked_mul_size(transition_additions, 2U));
+    if (reserved_transitions > max_transitions ||
+        transitions.size() > max_transitions - reserved_transitions ||
+        transition_commitment > max_transitions - reserved_transitions - transitions.size()) {
+      return Err(ErrorCode::OutOfRange, "option execution transition limit exceeded");
+    }
+
+    command_orders.assign(commands.orders.begin(), commands.orders.end());
+    command_cancellations.assign(commands.cancellations.begin(), commands.cancellations.end());
+    std::sort(command_orders.begin(), command_orders.end(),
+              [](const OptionOrderRequest &left, const OptionOrderRequest &right) noexcept {
+                return std::tie(left.arrival_ts_ns, left.priority_sequence, left.order_id.value) <
+                       std::tie(right.arrival_ts_ns, right.priority_sequence, right.order_id.value);
+              });
+    std::sort(
+        command_cancellations.begin(), command_cancellations.end(),
+        [](const OptionCancelRequest &left, const OptionCancelRequest &right) noexcept {
+          return std::tie(left.available_ts_ns, left.priority_sequence, left.cancel_id.value) <
+                 std::tie(right.available_ts_ns, right.priority_sequence, right.cancel_id.value);
+        });
+
+    command_touched_contracts.clear();
+    ++command_epoch;
+    if (command_epoch == 0U) {
+      std::fill(command_contract_epochs.begin(), command_contract_epochs.end(), 0U);
+      command_epoch = 1U;
+    }
+    const auto touch_contract = [this](std::size_t contract) {
+      if (command_contract_epochs[contract] != command_epoch) {
+        command_contract_epochs[contract] = command_epoch;
+        command_exposure_deltas[contract] = 0;
+        command_pending_cancel_values[contract] = 0;
+        command_touched_contracts.push_back(contract);
+      }
+    };
+    std::size_t requested_addition = 0U;
+    std::size_t pending_event_addition = command_cancellations.size();
+    std::uint64_t previous_order_id = last_order_id;
+    for (const OptionOrderRequest &request : command_orders) {
+      if (request.decision_ts_ns != frontier_ts_ns || request.order_id.value <= previous_order_id) {
+        return Err(ErrorCode::InvalidArgument,
+                   "option session orders must use the current frontier and monotone ids");
+      }
+      ATX_TRY(std::size_t requested, validate_order_request(request));
+      ATX_TRY_VOID(add_size(requested_addition, requested));
+      const std::size_t contract = contract_index(request.contract_id);
+      touch_contract(contract);
+      ATX_TRY(
+          command_exposure_deltas[contract],
+          atx::core::checked_add(command_exposure_deltas[contract], request.quantity_contracts));
+      ATX_TRY(pending_event_addition,
+              checked_add_size(pending_event_addition,
+                               request.time_in_force == OptionTimeInForce::Day ? 2U : 1U));
+      previous_order_id = request.order_id.value;
+    }
+    ATX_TRY(std::size_t new_requested_contracts,
+            checked_add_size(summary.requested_contracts, requested_addition));
+    ATX_TRY(std::size_t new_open_orders,
+            checked_add_size(summary.open_orders, command_orders.size()));
+    if (pending_event_addition > pending_events.capacity() - pending_events.size()) {
+      return Err(ErrorCode::OutOfRange, "option session pending-event capacity exceeded");
+    }
+
+    command_cancel_targets.clear();
+    std::uint64_t previous_cancel_id = last_cancel_id;
+    for (const OptionCancelRequest &request : command_cancellations) {
+      if (request.cancel_id.value == 0U || request.order_id.value == 0U ||
+          request.cancel_id.value <= previous_cancel_id || request.event_ts_ns != frontier_ts_ns ||
+          request.available_ts_ns <= frontier_ts_ns ||
+          request.available_ts_ns > config.replay_end_ts_ns) {
+        return Err(ErrorCode::InvalidArgument,
+                   "option session cancellations must use the current frontier, future "
+                   "availability, and monotone ids");
+      }
+      const auto new_order =
+          std::lower_bound(command_orders.begin(), command_orders.end(), request.order_id.value,
+                           [](const OptionOrderRequest &candidate, std::uint64_t id) noexcept {
+                             return candidate.order_id.value < id;
+                           });
+      if (new_order != command_orders.end() &&
+          new_order->order_id.value == request.order_id.value) {
+        return Err(ErrorCode::InvalidArgument,
+                   "option session cannot submit and cancel one order in the same batch");
+      }
+      const std::size_t target = order_index(request.order_id);
+      if (target != kNoIndex) {
+        if (request.available_ts_ns <= orders[target].request.arrival_ts_ns) {
+          return Err(ErrorCode::InvalidArgument,
+                     "option cancel must become effective after order arrival");
+        }
+        if (order_runtime[target].cancel_pending) {
+          return Err(ErrorCode::AlreadyExists, "option order already has a pending cancellation");
+        }
+        if (!order_terminal(orders[target].disposition)) {
+          const std::size_t contract = contract_index(orders[target].request.contract_id);
+          touch_contract(contract);
+          ATX_TRY(command_pending_cancel_values[contract],
+                  atx::core::checked_add(command_pending_cancel_values[contract],
+                                         orders[target].remaining_contracts));
+        }
+      }
+      command_cancel_targets.push_back(request.order_id.value);
+      previous_cancel_id = request.cancel_id.value;
+    }
+    std::sort(command_cancel_targets.begin(), command_cancel_targets.end());
+    if (std::adjacent_find(command_cancel_targets.begin(), command_cancel_targets.end()) !=
+        command_cancel_targets.end()) {
+      return Err(ErrorCode::AlreadyExists,
+                 "option command batch contains duplicate cancellation targets");
+    }
+    for (const std::size_t contract : command_touched_contracts) {
+      const std::int64_t order_delta = command_exposure_deltas[contract];
+      ATX_TRY(std::int64_t ignored_scheduled,
+              atx::core::checked_add(exposures[contract].scheduled_contracts, order_delta));
+      ATX_TRY(std::int64_t ignored_projected,
+              atx::core::checked_add(exposures[contract].projected_contracts, order_delta));
+      ATX_TRY(command_pending_cancel_values[contract],
+              atx::core::checked_add(exposures[contract].pending_cancel_contracts,
+                                     command_pending_cancel_values[contract]));
+      static_cast<void>(ignored_scheduled);
+      static_cast<void>(ignored_projected);
+    }
+
+    for (const OptionOrderRequest &request : command_orders) {
+      const std::size_t index = orders.size();
+      orders.push_back(OptionOrderAudit{request, 0, request.quantity_contracts, 0U, Decimal{}, 0, 0,
+                                        OptionOrderDisposition::OpenAtEnd});
+      order_runtime.push_back(OrderRuntime{});
+      order_lookup.push_back(OrderLookup{request.order_id, index});
+      order_states.push_back(OptionOrderStateSnapshot{request.order_id, request.contract_id,
+                                                      request.engine_id, request.quantity_contracts,
+                                                      OptionOrderLifecycleState::Scheduled, false});
+      push_pending_event(ReplayEvent{request.arrival_ts_ns, ReplayEvent::Kind::Submit, 0U, 0U, 0U,
+                                     request.priority_sequence, 0U, request.order_id.value,
+                                     request.contract_id, index});
+      if (request.time_in_force == OptionTimeInForce::Day &&
+          request.expire_ts_ns <= config.replay_end_ts_ns) {
+        push_pending_event(ReplayEvent{request.expire_ts_ns, ReplayEvent::Kind::OrderExpiry, 0U, 0U,
+                                       0U, request.priority_sequence, 0U, request.order_id.value,
+                                       request.contract_id, index});
+      }
+      ATX_TRY_VOID(append_transition(frontier_ts_ns, frontier_ts_ns, index, {},
+                                     OptionOrderTransitionKind::Scheduled,
+                                     OptionOrderLifecycleState::Scheduled));
+    }
+    summary.requested_contracts = new_requested_contracts;
+    summary.open_orders = new_open_orders;
+    for (const std::size_t contract : command_touched_contracts) {
+      const std::int64_t delta = command_exposure_deltas[contract];
+      if (delta != 0) {
+        ATX_TRY(exposures[contract].scheduled_contracts,
+                atx::core::checked_add(exposures[contract].scheduled_contracts, delta));
+        ATX_TRY(exposures[contract].projected_contracts,
+                atx::core::checked_add(exposures[contract].projected_contracts, delta));
+      }
+      exposures[contract].pending_cancel_contracts = command_pending_cancel_values[contract];
+    }
+
+    for (const OptionCancelRequest &request : command_cancellations) {
+      const std::size_t index = cancellations.size();
+      cancellations.push_back(OptionCancelAudit{request, OptionCancelDisposition::AlreadyTerminal});
+      const std::size_t target = order_index(request.order_id);
+      cancellation_targets.push_back(target);
+      push_pending_event(ReplayEvent{request.available_ts_ns, ReplayEvent::Kind::Cancel, 0U, 0U, 0U,
+                                     request.priority_sequence, 0U, request.cancel_id.value,
+                                     request.order_id.value, index});
+      if (target == kNoIndex) {
+        ATX_TRY_VOID(
+            append_cancel_only_transition(request, OptionOrderTransitionKind::CancelRequested));
+        continue;
+      }
+      const OptionOrderLifecycleState before = lifecycle_state(target);
+      if (!order_terminal(orders[target].disposition)) {
+        order_runtime[target].cancel_pending = true;
+        sync_order_state(target);
+      }
+      ATX_TRY_VOID(append_transition(request.event_ts_ns, request.event_ts_ns, target,
+                                     request.cancel_id, OptionOrderTransitionKind::CancelRequested,
+                                     before));
+    }
+
+    last_order_id = previous_order_id;
+    last_cancel_id = previous_cancel_id;
+    reserved_transitions += transition_additions;
+    std::uint64_t trace = session_summary.command_trace_hash;
+    trace = fold_i64(trace, frontier_ts_ns);
+    trace = fold_u64(trace, static_cast<std::uint64_t>(command_orders.size()));
+    trace = fold_u64(trace, static_cast<std::uint64_t>(command_cancellations.size()));
+    for (const OptionOrderRequest &request : command_orders) {
+      trace = fold_order_request(trace, request);
+    }
+    for (const OptionCancelRequest &request : command_cancellations) {
+      trace = fold_cancel_request(trace, request);
+    }
+    session_summary.command_trace_hash = trace;
+    ++session_summary.command_batch_count;
+    return Ok();
   }
 
   [[nodiscard]] OptionReplayView view() const noexcept {
@@ -1306,6 +1879,24 @@ struct OptionExecutionReplay::Impl {
   }
 };
 
+struct OptionExecutionReplay::Impl final : ReplayCore {
+  using ReplayCore::ReplayCore;
+};
+
+struct OptionExecutionSession::Impl final : ReplayCore {
+  explicit Impl(OptionExecutionSessionLimits configured_limits)
+      : ReplayCore{configured_limits.replay}, session_limits{configured_limits} {
+    session_enabled = true;
+    max_frontiers = configured_limits.max_frontiers;
+    max_transitions = configured_limits.max_transitions;
+  }
+
+  OptionExecutionSessionLimits session_limits{};
+  OptionExecutionSessionState phase{OptionExecutionSessionState::Empty};
+  std::uint64_t last_order_id{0};
+  std::uint64_t last_cancel_id{0};
+};
+
 Result<std::size_t> option_replay_required_workspace_bytes(const OptionReplayLimits &limits) {
   if (limits.max_contracts == 0U || limits.max_quote_events == 0U || limits.max_orders == 0U ||
       limits.max_cancellations == 0U || limits.max_fee_rows == 0U || limits.max_fills == 0U ||
@@ -1317,6 +1908,35 @@ Result<std::size_t> option_replay_required_workspace_bytes(const OptionReplayLim
   ATX_TRY(event_capacity, checked_add_size(event_capacity, limits.max_cancellations));
   ATX_TRY(event_capacity, checked_add_size(event_capacity, limits.max_contracts));
   return workspace_bytes(limits, event_capacity);
+}
+
+[[nodiscard]] Result<std::size_t>
+option_execution_session_required_workspace_bytes(const OptionExecutionSessionLimits &limits) {
+  if (limits.max_frontiers == 0U || limits.max_transitions == 0U ||
+      limits.max_workspace_bytes == 0U) {
+    return Err(ErrorCode::InvalidArgument, "option session workspace limits must be positive");
+  }
+  ATX_TRY(std::size_t bytes, option_replay_required_workspace_bytes(limits.replay));
+  ATX_TRY(std::size_t twice_orders, checked_mul_size(limits.replay.max_orders, 2U));
+  const auto add_array = [&bytes](std::size_t count, std::size_t element_size) -> Result<void> {
+    ATX_TRY(std::size_t block, checked_mul_size(count, element_size));
+    ATX_TRY(bytes, checked_add_size(bytes, block));
+    return Ok();
+  };
+  ATX_TRY(std::size_t pending_capacity,
+          checked_add_size(twice_orders, limits.replay.max_cancellations));
+  ATX_TRY_VOID(add_array(pending_capacity, sizeof(ReplayEvent)));
+  ATX_TRY_VOID(add_array(limits.replay.max_orders, sizeof(OptionOrderRequest)));
+  ATX_TRY_VOID(add_array(limits.replay.max_cancellations, sizeof(OptionCancelRequest)));
+  ATX_TRY_VOID(add_array(limits.replay.max_cancellations, sizeof(std::uint64_t)));
+  ATX_TRY_VOID(add_array(limits.replay.max_contracts, sizeof(std::int64_t)));
+  ATX_TRY_VOID(add_array(limits.replay.max_contracts, sizeof(std::int64_t)));
+  ATX_TRY_VOID(add_array(limits.replay.max_contracts, sizeof(std::uint64_t)));
+  ATX_TRY_VOID(add_array(limits.replay.max_contracts, sizeof(std::size_t)));
+  ATX_TRY_VOID(add_array(limits.replay.max_orders, sizeof(OptionOrderStateSnapshot)));
+  ATX_TRY_VOID(add_array(limits.replay.max_contracts, sizeof(OptionContractExposureSnapshot)));
+  ATX_TRY_VOID(add_array(limits.max_transitions, sizeof(OptionOrderTransition)));
+  return Ok(bytes);
 }
 
 Result<OptionExecutionReplay> OptionExecutionReplay::create(OptionReplayLimits limits) {
@@ -1335,8 +1955,8 @@ Result<OptionExecutionReplay> OptionExecutionReplay::create(OptionReplayLimits l
     impl->orders.reserve(limits.max_orders);
     impl->order_runtime.reserve(limits.max_orders);
     impl->order_lookup.reserve(limits.max_orders);
-    impl->order_heap.reserve(limits.max_orders);
     impl->cancellations.reserve(limits.max_cancellations);
+    impl->cancellation_targets.reserve(limits.max_cancellations);
     impl->fee_schedules.reserve(limits.max_fee_rows);
     impl->tick_schedules.reserve(limits.max_tick_rows);
     ATX_TRY(std::size_t twice_orders, checked_mul_size(limits.max_orders, 2U));
@@ -1367,31 +1987,7 @@ Result<OptionReplayView> OptionExecutionReplay::run(const OptionReplayInputs &in
     return Err(ErrorCode::InvalidArgument, "moved-from option replay workspace cannot run");
   }
   Impl &state = *impl_;
-  state.clear();
-  ATX_TRY_VOID(state.validate_config(config));
-  state.config = config;
-  state.summary.scenario = config.scenario;
-  state.summary.model_version = config.model_version;
-  state.summary.ordering_version = kOptionExecutionReplayOrderingVersion;
-  state.summary.market_data_identity = config.market_data_identity;
-  state.summary.sequence_validation_identity = config.sequence_validation_identity;
-  state.summary.calibration_identity = config.calibration_identity;
-  state.summary.sequence_continuity_verified = config.sequence_continuity_verified;
-  state.summary.allow_locked_market = config.allow_locked_market;
-  state.summary.displayed_size_fraction = config.displayed_size_fraction;
-  state.summary.adverse_price_bps = config.adverse_price_bps;
-  state.summary.max_quote_age_ns = config.max_quote_age_ns;
-  state.summary.replay_end_ts_ns = config.replay_end_ts_ns;
-  state.summary.initial_cash = inputs.initial_cash;
-  state.summary.final_cash = inputs.initial_cash;
-
-  ATX_TRY_VOID(state.load_contracts(inputs.contracts));
-  ATX_TRY_VOID(state.load_fee_schedules(inputs.fee_schedules));
-  ATX_TRY_VOID(state.load_tick_schedules(inputs.tick_schedules));
-  ATX_TRY_VOID(state.load_orders(inputs.orders));
-  ATX_TRY_VOID(state.load_cancellations(inputs.cancellations));
-  ATX_TRY_VOID(state.load_quotes(inputs.quotes));
-  state.add_events();
+  ATX_TRY_VOID(state.initialize(inputs, config));
 
   Result<void> replay_status = Ok();
   for (const ReplayEvent &event : state.events) {
@@ -1400,8 +1996,194 @@ Result<OptionReplayView> OptionExecutionReplay::run(const OptionReplayInputs &in
       return tl::unexpected<atx::core::Error>(replay_status.error());
     }
   }
-  state.finalize();
+  ATX_TRY_VOID(state.finalize());
   return Ok(state.view());
+}
+
+Result<OptionExecutionSession> OptionExecutionSession::create(OptionExecutionSessionLimits limits) {
+  ATX_TRY(std::size_t required_bytes, option_execution_session_required_workspace_bytes(limits));
+  ATX_TRY(std::size_t replay_bytes, option_replay_required_workspace_bytes(limits.replay));
+  if (required_bytes > limits.max_workspace_bytes ||
+      replay_bytes > limits.replay.max_workspace_bytes) {
+    return Err(ErrorCode::OutOfRange, "option session workspace byte limit exceeded");
+  }
+
+  try {
+    auto impl = std::make_unique<Impl>(limits);
+    const OptionReplayLimits &replay_limits = limits.replay;
+    impl->contracts.reserve(replay_limits.max_contracts);
+    impl->engine_ids.reserve(replay_limits.max_contracts);
+    impl->positions.reserve(replay_limits.max_contracts);
+    impl->books.reserve(replay_limits.max_contracts);
+    impl->quotes.reserve(replay_limits.max_quote_events);
+    impl->orders.reserve(replay_limits.max_orders);
+    impl->order_runtime.reserve(replay_limits.max_orders);
+    impl->order_lookup.reserve(replay_limits.max_orders);
+    impl->cancellations.reserve(replay_limits.max_cancellations);
+    impl->cancellation_targets.reserve(replay_limits.max_cancellations);
+    impl->fee_schedules.reserve(replay_limits.max_fee_rows);
+    impl->tick_schedules.reserve(replay_limits.max_tick_rows);
+    ATX_TRY(std::size_t twice_orders, checked_mul_size(replay_limits.max_orders, 2U));
+    ATX_TRY(std::size_t event_capacity,
+            checked_add_size(replay_limits.max_quote_events, twice_orders));
+    ATX_TRY(event_capacity, checked_add_size(event_capacity, replay_limits.max_cancellations));
+    ATX_TRY(event_capacity, checked_add_size(event_capacity, replay_limits.max_contracts));
+    ATX_TRY(std::size_t pending_capacity,
+            checked_add_size(twice_orders, replay_limits.max_cancellations));
+    impl->events.reserve(event_capacity);
+    impl->pending_events.reserve(pending_capacity);
+    impl->fills.reserve(replay_limits.max_fills);
+    impl->command_orders.reserve(replay_limits.max_orders);
+    impl->command_cancellations.reserve(replay_limits.max_cancellations);
+    impl->command_cancel_targets.reserve(replay_limits.max_cancellations);
+    impl->command_exposure_deltas.reserve(replay_limits.max_contracts);
+    impl->command_pending_cancel_values.reserve(replay_limits.max_contracts);
+    impl->command_contract_epochs.resize(replay_limits.max_contracts);
+    impl->command_touched_contracts.reserve(replay_limits.max_contracts);
+    impl->order_states.reserve(replay_limits.max_orders);
+    impl->exposures.reserve(replay_limits.max_contracts);
+    impl->transitions.reserve(limits.max_transitions);
+    return Ok(OptionExecutionSession{std::move(impl)});
+  } catch (const std::bad_alloc &) {
+    return Err(ErrorCode::Unavailable, "option session workspace allocation failed");
+  } catch (const std::length_error &) {
+    return Err(ErrorCode::OutOfRange, "option session workspace capacity is invalid");
+  }
+}
+
+OptionExecutionSession::OptionExecutionSession(std::unique_ptr<Impl> impl) noexcept
+    : impl_{std::move(impl)} {}
+
+OptionExecutionSession::~OptionExecutionSession() = default;
+OptionExecutionSession::OptionExecutionSession(OptionExecutionSession &&) noexcept = default;
+OptionExecutionSession &
+OptionExecutionSession::operator=(OptionExecutionSession &&) noexcept = default;
+
+Result<void> OptionExecutionSession::start(const OptionReplayInputs &inputs,
+                                           const OptionReplayConfig &config) {
+  if (impl_ == nullptr) {
+    return Err(ErrorCode::InvalidArgument, "moved-from option session cannot start");
+  }
+  Impl &state = *impl_;
+  if (state.phase == OptionExecutionSessionState::ReadyToAdvance ||
+      state.phase == OptionExecutionSessionState::AtFrontier) {
+    return Err(ErrorCode::InvalidArgument, "active option session cannot be restarted");
+  }
+  if (!inputs.orders.empty() || !inputs.cancellations.empty()) {
+    return Err(ErrorCode::InvalidArgument,
+               "option session start accepts market state only; apply commands at a frontier");
+  }
+  state.phase = OptionExecutionSessionState::Empty;
+  const Result<void> initialized = state.initialize(inputs, config);
+  if (!initialized) {
+    return initialized;
+  }
+  state.exposures.reserve(state.limits.max_contracts);
+  for (const OptionPositionSnapshot &position : state.positions) {
+    state.exposures.push_back(OptionContractExposureSnapshot{
+        position.contract_id, position.engine_id, position.contracts, 0, 0, 0, position.contracts});
+  }
+  state.command_exposure_deltas.resize(state.positions.size());
+  state.command_pending_cancel_values.resize(state.positions.size());
+  state.session_summary = {};
+  state.session_summary.command_trace_hash =
+      fold_u64(fold_u64(kFnvOffset, kOptionExecutionSessionModelVersion),
+               kOptionExecutionSessionOrderingVersion);
+  state.last_order_id = 0U;
+  state.last_cancel_id = 0U;
+  state.phase = OptionExecutionSessionState::ReadyToAdvance;
+  return Ok();
+}
+
+Result<OptionExecutionFrontierView>
+OptionExecutionSession::advance_to(std::int64_t frontier_ts_ns) {
+  if (impl_ == nullptr) {
+    return Err(ErrorCode::InvalidArgument, "moved-from option session cannot advance");
+  }
+  Impl &state = *impl_;
+  if (state.phase != OptionExecutionSessionState::ReadyToAdvance) {
+    return Err(ErrorCode::InvalidArgument,
+               "option session must apply exactly one command batch before advancing");
+  }
+  if (frontier_ts_ns < 0 || frontier_ts_ns <= state.session_summary.frontier_ts_ns ||
+      frontier_ts_ns > state.config.replay_end_ts_ns) {
+    return Err(ErrorCode::InvalidArgument,
+               "option session frontier must strictly increase within replay horizon");
+  }
+  if (state.session_summary.frontier_count >= state.max_frontiers) {
+    return Err(ErrorCode::OutOfRange, "option session frontier limit exceeded");
+  }
+
+  const std::size_t delta_fill_begin = state.new_fill_begin;
+  const std::size_t delta_transition_begin = state.new_transition_begin;
+  const Result<void> advanced = state.process_through(frontier_ts_ns);
+  if (!advanced) {
+    state.phase = OptionExecutionSessionState::Failed;
+    return tl::unexpected<atx::core::Error>(advanced.error());
+  }
+  ++state.session_summary.frontier_count;
+  state.session_summary.frontier_ts_ns = frontier_ts_ns;
+  state.phase = OptionExecutionSessionState::AtFrontier;
+  const std::span<const OptionFill> all_fills{state.fills};
+  const std::span<const OptionOrderTransition> all_transitions{state.transitions};
+  state.new_fill_begin = state.fills.size();
+  state.new_transition_begin = state.transitions.size();
+  return Ok(
+      OptionExecutionFrontierView{frontier_ts_ns, all_fills.subspan(delta_fill_begin),
+                                  all_transitions.subspan(delta_transition_begin), all_fills,
+                                  std::span<const OptionOrderAudit>{state.orders},
+                                  std::span<const OptionCancelAudit>{state.cancellations},
+                                  std::span<const OptionPositionSnapshot>{state.positions},
+                                  std::span<const OptionOrderStateSnapshot>{state.order_states},
+                                  std::span<const OptionContractExposureSnapshot>{state.exposures},
+                                  all_transitions, state.summary, state.session_summary});
+}
+
+Result<void> OptionExecutionSession::apply_commands(const OptionCommandBatch &commands) {
+  if (impl_ == nullptr) {
+    return Err(ErrorCode::InvalidArgument, "moved-from option session cannot apply commands");
+  }
+  Impl &state = *impl_;
+  if (state.phase != OptionExecutionSessionState::AtFrontier) {
+    return Err(ErrorCode::InvalidArgument, "option commands require one current observed frontier");
+  }
+  const Result<void> applied = state.apply_session_commands(
+      commands, state.session_summary.frontier_ts_ns, state.last_order_id, state.last_cancel_id);
+  if (!applied) {
+    return applied;
+  }
+  state.phase = OptionExecutionSessionState::ReadyToAdvance;
+  return Ok();
+}
+
+Result<OptionExecutionSessionResult> OptionExecutionSession::finish() {
+  if (impl_ == nullptr) {
+    return Err(ErrorCode::InvalidArgument, "moved-from option session cannot finish");
+  }
+  Impl &state = *impl_;
+  if (state.phase != OptionExecutionSessionState::ReadyToAdvance) {
+    return Err(ErrorCode::InvalidArgument,
+               "option session must acknowledge its frontier before finish");
+  }
+  const Result<void> advanced = state.process_through(state.config.replay_end_ts_ns);
+  if (!advanced) {
+    state.phase = OptionExecutionSessionState::Failed;
+    return tl::unexpected<atx::core::Error>(advanced.error());
+  }
+  const Result<void> finalized = state.finalize();
+  if (!finalized) {
+    state.phase = OptionExecutionSessionState::Failed;
+    return tl::unexpected<atx::core::Error>(finalized.error());
+  }
+  state.phase = OptionExecutionSessionState::Finished;
+  return Ok(OptionExecutionSessionResult{
+      state.view(), std::span<const OptionOrderStateSnapshot>{state.order_states},
+      std::span<const OptionContractExposureSnapshot>{state.exposures},
+      std::span<const OptionOrderTransition>{state.transitions}, state.session_summary});
+}
+
+OptionExecutionSessionState OptionExecutionSession::state() const noexcept {
+  return impl_ == nullptr ? OptionExecutionSessionState::Failed : impl_->phase;
 }
 
 Result<std::vector<OptionOrderRequest>> make_option_order_batch(
