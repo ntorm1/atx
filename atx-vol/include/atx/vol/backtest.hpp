@@ -348,12 +348,16 @@ struct Lot {
   std::int64_t expiry_ts_ns{0};
   std::uint32_t cohort{0};
   double entry_price{0.0};
+
+  [[nodiscard]] bool operator==(const Lot &) const = default;
 };
 
 // The open book across all cohorts. Plain for B0 (no cash/shares ledger yet).
 class PortfolioState {
 public:
   std::vector<Lot> lots;
+
+  [[nodiscard]] bool operator==(const PortfolioState &) const = default;
 };
 
 // ── EXERCISE MODEL: what this engine does and does NOT simulate (WS-F F3) ────
@@ -397,8 +401,8 @@ public:
 struct FrictionModel {
   enum class SpreadKind : std::uint8_t { None = 0, PriceBps = 1, VolTicks = 2 };
   SpreadKind spread_kind{SpreadKind::None};
-  double half_spread_bps{0.0};    // PriceBps: half-spread = mark * bps/1e4 (per share)
-  double vol_tick{0.0};           // VolTicks: half-spread = vega * vol_tick (per share)
+  double half_spread_bps{0.0}; // PriceBps: half-spread = mark * bps/1e4 (per share)
+  double vol_tick{0.0};        // VolTicks: half-spread = vega * vol_tick (per share)
   // REVIEW C-4. A size/participation-driven impact term, as a FRACTION of the
   // mark, charged PER SHARE and IN ADDITION to whichever `spread_kind` lane is
   // selected — including `None`, which is how a pure-impact run is expressed.
@@ -432,9 +436,9 @@ struct FrictionModel {
 // a caller input, and it must be THE SAME schedule that priced the surfaces or
 // the ledger and the marks disagree.
 struct ShareDividend {
-  std::uint32_t uid{0};      // underlier whose shares pay/receive
-  std::int64_t ex_ts_ns{0};  // ex-date instant (epoch ns)
-  double amount{0.0};        // cash per share, >= 0
+  std::uint32_t uid{0};     // underlier whose shares pay/receive
+  std::int64_t ex_ts_ns{0}; // ex-date instant (epoch ns)
+  double amount{0.0};       // cash per share, >= 0
 };
 
 // Engine-internal cash / borrow ledger config. The B2 DEFAULT keeps `finance_premium`
@@ -519,9 +523,9 @@ struct RunConfig {
   // that contract by default; faster cached query tiers are an explicit
   // backtest-level accuracy/latency choice and never alter the archive bytes.
   QueryPricingTier query_pricing_tier{QueryPricingTier::LegacyCompatible};
-  FrictionModel frictions{};          // execution frictions (B2; default: frictionless)
-  FinancingConfig financing{};        // cash/borrow ledger (B2; default: off => B1-identity)
-  unsigned record_every_n{1}; // positive; persist every Nth step (1 = every step)
+  FrictionModel frictions{};   // execution frictions (B2; default: frictionless)
+  FinancingConfig financing{}; // cash/borrow ledger (B2; default: off => B1-identity)
+  unsigned record_every_n{1};  // positive; persist every Nth step (1 = every step)
   // Policy for held P&L/Greek valuation only. Strategy close execution always
   // requires an economically valid mark regardless of this setting.
   //
@@ -726,6 +730,42 @@ struct BacktestResult {
   [[nodiscard]] std::size_t size() const noexcept { return date.size(); }
 };
 
+// One entry in the engine's insertion-ordered delta-hedge share ledger. Order is
+// economically significant: share P&L, financing, and subsequent hedge trades
+// accumulate in this order, so a continuation must preserve it exactly.
+struct HedgeSharePosition {
+  std::uint32_t uid{0};
+  double shares{0.0};
+
+  [[nodiscard]] bool operator==(const HedgeSharePosition &) const = default;
+};
+
+// Complete strategy-aware engine state at one processed clock reference. This is
+// a persistence seam, not a serialized format: database code owns versioning and
+// encoding. A valid checkpoint contains only live lots, monotonically-issued lot
+// identity state, the ordered hedge ledger, and every cumulative accounting term
+// needed to make a resumed step identical to the corresponding one-shot step.
+struct BacktestCheckpoint {
+  std::int64_t base_ts_ns{0};
+  std::size_t completed_step_index{0};
+  std::uint64_t next_lot_id{1};
+  PortfolioState portfolio{};
+  std::vector<HedgeSharePosition> hedge_shares{};
+  double cash{0.0};
+  double nav{0.0};
+  double cumulative_noncash_financing{0.0};
+
+  [[nodiscard]] bool operator==(const BacktestCheckpoint &) const = default;
+};
+
+// Rows produced by this invocation plus the state immediately after its final
+// processed reference. Fresh runs contain the ordinary inception row and all
+// subsequent rows. Resumed runs omit the anchor and contain only refs[1..].
+struct BacktestContinuation {
+  BacktestResult rows{};
+  BacktestCheckpoint checkpoint{};
+};
+
 // B0 driver: MTM a FIXED hand-built book forward across the clock. Canonical
 // loop: base = load(refs[0]); for i in 1..N-1 { shifted = load(refs[i]);
 // pnl_explain(base -> shifted); settle expiries observed exactly at shifted.ts;
@@ -743,5 +783,19 @@ struct BacktestResult {
 // exact-expiry-observation contract.
 [[nodiscard]] Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat,
                                                   const RunConfig &cfg = {});
+
+// Incremental strategy-aware driver. With `resume == nullptr`, behavior and rows
+// match the strategy-aware run_backtest overload and a final checkpoint is
+// returned. With a checkpoint, refs[0] must be its exact base timestamp: that
+// anchor is loaded for forward P&L but inception/on_step is deliberately skipped.
+// Only refs[1..] are processed and returned, while strategy and observer calls
+// receive checkpoint.completed_step_index + their local clock index.
+//
+// Checkpoints and configuration are validated before state is consumed. The API
+// currently accepts only record_every_n == 1 because pending stride-block state
+// is intentionally not part of BacktestCheckpoint.
+[[nodiscard]] Result<BacktestContinuation>
+run_backtest_incremental(const Clock &clock, IStrategy &strat, const RunConfig &cfg = {},
+                         const BacktestCheckpoint *resume = nullptr);
 
 } // namespace atx::vol
