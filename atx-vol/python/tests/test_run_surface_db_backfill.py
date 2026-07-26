@@ -34,6 +34,7 @@ import importlib.util
 import pathlib
 import subprocess
 import sys
+import types
 
 import pytest
 
@@ -47,6 +48,45 @@ sys.modules["run_surface_db_backfill"] = orch
 _spec.loader.exec_module(orch)
 
 RATES_CSV = _ROOT / "data" / "rates" / "us_3m_monthly.csv"
+
+
+# ── shared fakes/helpers for the phase-driver (monkeypatched subprocess.run)
+# tests below (review round 1, Important-5) ─────────────────────────────────
+
+class _FakeCompleted:
+    """Stands in for ``subprocess.CompletedProcess`` -- all ``run_subprocess``
+    reads off it are ``.returncode``/``.stdout``/``.stderr``."""
+
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _pull_args(tmp_path, *, from_date, to_date, dry_run=False, cap=90.0, index="SPY"):
+    return types.SimpleNamespace(
+        from_date=from_date, to_date=to_date, dry_run=dry_run,
+        pull_tool_path=pathlib.Path("FAKE_pull_opra_hive.py"),
+        pull_universe_path=pathlib.Path("FAKE_universe.csv"),
+        hive=tmp_path / "hive", snap_et="15:55", cap=cap,
+        env_file="C:/atx/.env", index=index,
+    )
+
+
+def _verify_args(tmp_path, *, from_date, to_date, hive, dry_run=False, index="SPY"):
+    return types.SimpleNamespace(
+        from_date=from_date, to_date=to_date, snap_et="15:55", hive=hive, dry_run=dry_run,
+        admin_exe="ADMIN.exe", db_prefix=str(tmp_path / "surface-db" / "sp100"), index=index,
+    )
+
+
+def _make_hive_with_sessions(tmp_path, dates, name="hive"):
+    hive = tmp_path / name
+    for d in dates:
+        p = hive / f"date={d}"
+        p.mkdir(parents=True)
+        (p / "data.parquet").write_bytes(b"")
+    return hive
 
 
 # ── rate_for_date / load_rates_csv ──────────────────────────────────────────
@@ -488,3 +528,328 @@ def test_cli_dry_run_never_spawns_a_subprocess(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "atx-vol-surface-db-build" in out
     assert "atx-vol-surface-db.exe" in out
+
+
+# ═════════════════════════════════════════════════════════════════════════
+# Review round 1 fixes: early-close pull windowing, hive-present verify
+# thresholds/key, ledger persistence across invocations, build-report
+# aggregation, and phase-driver behavioral coverage.
+# ═════════════════════════════════════════════════════════════════════════
+
+# ── CRITICAL 1: pull_windows_for_month (early closes excluded from PULL
+# planning, not just build/verify) ──────────────────────────────────────────
+
+def test_pull_windows_for_month_splits_at_early_close():
+    # November 2022: Thanksgiving (Nov 24) is a holiday (not a session at
+    # all); the day after (Nov 25, Black Friday) IS a session but closes
+    # 13:00 ET -- a 15:55 ET snapshot never exists for it, so it must be
+    # dropped entirely and never appear as (or inside) a window endpoint.
+    windows = orch.pull_windows_for_month("2022-11-01", "2022-11-30", "15:55")
+    assert windows == [("2022-11-01", "2022-11-23"), ("2022-11-28", "2022-11-30")]
+    for w0, w1 in windows:
+        assert not (w0 <= "2022-11-25" <= w1)
+
+
+def test_pull_windows_for_month_no_early_close_is_one_contiguous_window():
+    sessions = orch.trading_sessions_excluding_early_close("2022-01-01", "2022-01-31", "15:55")
+    windows = orch.pull_windows_for_month("2022-01-01", "2022-01-31", "15:55")
+    assert windows == [(sessions[0], sessions[-1])]
+
+
+def test_pull_windows_for_month_all_early_close_is_empty():
+    # A degenerate single-day "month" that is itself an early close yields no
+    # window at all (nothing to pull -- the caller must skip it).
+    assert orch.pull_windows_for_month("2022-11-25", "2022-11-25", "15:55") == []
+
+
+# ── phase_pull behavioral coverage (Important 5) ────────────────────────────
+
+def test_phase_pull_splits_at_early_close_and_never_requests_it(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if "--dry-run" in argv:
+            return _FakeCompleted(0, stdout="ESTIMATE (remaining spend): $1.0000 = ...\n")
+        return _FakeCompleted(0, stdout="DONE boards_written=0 dates_written=0\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    args = _pull_args(tmp_path, from_date="2022-11-01", to_date="2022-11-30")
+    ledger = orch.SpendLedger(path=tmp_path / "ledger.csv", abort_threshold=1000.0)
+    code = orch.phase_pull(args, {}, ledger, tmp_path)
+    assert code == 0
+
+    real_calls = [c for c in calls if "--dry-run" not in c]
+    starts_ends = sorted((c[c.index("--start") + 1], c[c.index("--end") + 1]) for c in real_calls)
+    assert starts_ends == [("2022-11-01", "2022-11-23"), ("2022-11-28", "2022-11-30")]
+
+
+def test_phase_pull_blocked_exit_aborts_before_the_next_month(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if "--dry-run" in argv:
+            return _FakeCompleted(0, stdout="ESTIMATE (remaining spend): $1.0000 = ...\n")
+        return _FakeCompleted(3, stderr="BLOCKED: even SPY + 3 names exceed cap $90.00.\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    args = _pull_args(tmp_path, from_date="2022-01-03", to_date="2022-02-28")
+    ledger = orch.SpendLedger(path=tmp_path / "ledger.csv", abort_threshold=1000.0)
+    code = orch.phase_pull(args, {}, ledger, tmp_path)
+    assert code == 3
+    real_calls = [c for c in calls if "--dry-run" not in c]
+    assert len(real_calls) == 1, "must abort before ever attempting the second month"
+
+
+def test_phase_pull_exit_5_accumulates_failures_and_continues_to_the_next_month(tmp_path, monkeypatch):
+    calls = []
+    seen_real = {"n": 0}
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if "--dry-run" in argv:
+            return _FakeCompleted(0, stdout="ESTIMATE (remaining spend): $1.0000 = ...\n")
+        seen_real["n"] += 1
+        if seen_real["n"] == 1:
+            return _FakeCompleted(5, stderr="  2022-01-05: FAILED after retries -- left for a later resume\n")
+        return _FakeCompleted(0, stdout="DONE boards_written=1 dates_written=1\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    args = _pull_args(tmp_path, from_date="2022-01-03", to_date="2022-02-28")
+    ledger = orch.SpendLedger(path=tmp_path / "ledger.csv", abort_threshold=1000.0)
+    code = orch.phase_pull(args, {}, ledger, tmp_path)
+    assert code == 1  # nonzero overall, but the run continued
+    real_calls = [c for c in calls if "--dry-run" not in c]
+    assert len(real_calls) == 2, "exit 5 must not stop the walk over remaining months"
+
+
+def test_phase_pull_records_the_probe_estimate_into_the_ledger(tmp_path, monkeypatch):
+    def fake_run(argv, **kw):
+        if "--dry-run" in argv:
+            return _FakeCompleted(0, stdout="ESTIMATE (remaining spend): $12.5000 = $0.01/sym-day x 10 cells\n")
+        return _FakeCompleted(0, stdout="DONE boards_written=1 dates_written=1\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    args = _pull_args(tmp_path, from_date="2022-01-03", to_date="2022-01-31")
+    ledger = orch.SpendLedger(path=tmp_path / "ledger.csv", abort_threshold=1000.0)
+    code = orch.phase_pull(args, {}, ledger, tmp_path)
+    assert code == 0
+    assert ledger.cumulative == pytest.approx(12.5)
+    with open(tmp_path / "ledger.csv", newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    assert len(rows) == 1
+    assert float(rows[0]["estimate"]) == pytest.approx(12.5)
+
+
+def test_phase_pull_spend_abort_returns_1_before_any_real_pull(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(list(argv))
+        if "--dry-run" in argv:
+            return _FakeCompleted(0, stdout="ESTIMATE (remaining spend): $50.0000 = ...\n")
+        return _FakeCompleted(0, stdout="DONE boards_written=1 dates_written=1\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    args = _pull_args(tmp_path, from_date="2022-01-03", to_date="2022-02-28")
+    ledger = orch.SpendLedger(path=tmp_path / "ledger.csv", abort_threshold=10.0)  # $50 > $10
+    code = orch.phase_pull(args, {}, ledger, tmp_path)
+    assert code == 1
+    real_calls = [c for c in calls if "--dry-run" not in c]
+    assert real_calls == [], "the ledger must abort before the first real pull ever runs"
+
+
+# ── IMPORTANT 3: SpendLedger persists cumulative across process restarts ───
+
+def test_spend_ledger_seeds_cumulative_from_an_existing_file(tmp_path):
+    path = tmp_path / "ledger.csv"
+    first = orch.SpendLedger(path=path, abort_threshold=1000.0)
+    first.record("2022-01-01", "2022-01-31", 40.0)
+    first.record("2022-02-01", "2022-02-28", 10.0)
+    assert first.cumulative == pytest.approx(50.0)
+
+    # A brand-new process (new SpendLedger instance) pointed at the SAME file
+    # must resume from the true running total, not reset to 0.
+    second = orch.SpendLedger(path=path, abort_threshold=1000.0)
+    assert second.cumulative == pytest.approx(50.0)
+    second.record("2022-03-01", "2022-03-31", 5.0)
+    assert second.cumulative == pytest.approx(55.0)
+
+
+def test_spend_ledger_seed_tolerates_a_missing_file(tmp_path):
+    ledger = orch.SpendLedger(path=tmp_path / "does_not_exist.csv", abort_threshold=1000.0)
+    assert ledger.cumulative == 0.0
+
+
+def test_spend_ledger_seed_tolerates_a_corrupt_file(tmp_path):
+    path = tmp_path / "ledger.csv"
+    path.write_text("not,a,valid,ledger\ngarbage\n", encoding="utf-8")
+    ledger = orch.SpendLedger(path=path, abort_threshold=1000.0)
+    assert ledger.cumulative == 0.0
+
+
+# ── IMPORTANT 4: build-report CSV parsing + per-year aggregation ───────────
+
+def test_parse_build_report_csv_reads_only_section_one(tmp_path):
+    path = tmp_path / "report.csv"
+    path.write_text(
+        "key,value\n"
+        "config.n_symbols,3\n"
+        "coverage.cells_ok,10\n"
+        "coverage.cells_failed,2\n"
+        "coverage.cells_refit,4\n"
+        "config_disabled_symbol\n"
+        "AAPL\n",
+        encoding="utf-8",
+    )
+    fields = orch.parse_build_report_csv(path)
+    assert fields == {
+        "config.n_symbols": "3", "coverage.cells_ok": "10",
+        "coverage.cells_failed": "2", "coverage.cells_refit": "4",
+    }
+
+
+def test_aggregate_build_summary_sums_numeric_fields_across_chunks():
+    reports = [
+        {"coverage.cells_ok": "10", "coverage.cells_failed": "2"},
+        {"coverage.cells_ok": "5", "coverage.cells_failed": "0", "n_dates_loaded": "3"},
+    ]
+    summary = orch.aggregate_build_summary(reports)
+    assert summary == {"coverage.cells_ok": 15.0, "coverage.cells_failed": 2.0, "n_dates_loaded": 3.0}
+
+
+def test_write_year_summary_csv_round_trips(tmp_path):
+    path = tmp_path / "year_summary_2022.csv"
+    orch.write_year_summary_csv({"coverage.cells_ok": 15.0, "coverage.cells_failed": 2.0}, path)
+    with open(path, newline="", encoding="utf-8") as f:
+        rows = {r["key"]: r["value"] for r in csv.DictReader(f)}
+    assert rows == {"coverage.cells_ok": "15.0", "coverage.cells_failed": "2.0"}
+
+
+def test_phase_build_writes_a_year_summary_aggregated_from_chunk_reports(tmp_path, monkeypatch):
+    hive = _make_hive_with_sessions(tmp_path, ["2022-07-05", "2022-07-06"])
+
+    def fake_run(argv, **kw):
+        report_path = pathlib.Path(argv[argv.index("--report") + 1])
+        report_path.write_text(
+            "key,value\ncoverage.cells_ok,2\ncoverage.cells_failed,0\nconfig_disabled_symbol\n",
+            encoding="utf-8",
+        )
+        return _FakeCompleted(0, stdout="report ...\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    args = types.SimpleNamespace(
+        from_date="2022-07-05", to_date="2022-07-06", snap_et="15:55", hive=hive,
+        dry_run=False, build_exe="BUILD.exe", db_prefix=str(tmp_path / "surface-db" / "sp100"),
+        index="SPY", chunk_sessions=4, fit_workers=0, max_failed_sessions=10,
+    )
+    code = orch.phase_build(args, ["SPY"], {"2022-07": 0.02}, tmp_path)
+    assert code == 0
+    summary_path = tmp_path / "year_summary_2022.csv"
+    assert summary_path.exists()
+    with open(summary_path, newline="", encoding="utf-8") as f:
+        rows = {r["key"]: r["value"] for r in csv.DictReader(f)}
+    assert rows["coverage.cells_ok"] == "2.0"
+    assert rows["coverage.cells_failed"] == "0.0"
+
+
+# ── IMPORTANT 2: verify uses hive-present sessions (not the requested
+# calendar) for thresholds AND the spot-check key; `info`'s exit code is no
+# longer discarded ─────────────────────────────────────────────────────────
+
+def test_phase_verify_uses_hive_present_sessions_for_thresholds_and_key(tmp_path, monkeypatch):
+    # Requested window spans 3 sessions; only 2 are actually present in the hive.
+    hive = _make_hive_with_sessions(tmp_path, ["2022-07-05", "2022-07-06"])
+    seen = {}
+
+    def fake_run(argv, **kw):
+        if "verify" in argv:
+            seen["min_cells"] = argv[argv.index("--min-cells") + 1]
+            seen["max_absent"] = argv[argv.index("--max-absent") + 1]
+            return _FakeCompleted(0)
+        if "info" in argv:
+            return _FakeCompleted(0)
+        if "query" in argv:
+            seen.setdefault("keys", set()).add(argv[argv.index("--key") + 1])
+            if argv[argv.index("--strike") + 1] == "100":
+                return _FakeCompleted(0, stdout="forward 100.0\n")
+            return _FakeCompleted(0, stdout="iv 0.2\nforward 100.0\n")
+        raise AssertionError(f"unexpected argv: {argv}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    args = _verify_args(tmp_path, from_date="2022-07-05", to_date="2022-07-07", hive=hive)
+    code = orch.phase_verify(args, [("SPY", 100.0)], tmp_path)
+    assert code == 0
+    # n_symbols=1, n_sessions=2 (HIVE-PRESENT, not the 3 requested) ->
+    # expected=2, min_cells=floor(0.7*2)=1, max_absent=1.
+    assert seen["min_cells"] == "1"
+    assert seen["max_absent"] == "1"
+    assert seen["keys"] == {"2022-07-06"}, "key must be the last HIVE-PRESENT session, not 07-07"
+
+
+def test_phase_verify_dry_run_falls_back_to_requested_sessions_needing_no_hive(tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("subprocess.run must not be called under --dry-run")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    args = _verify_args(tmp_path, from_date="2022-07-05", to_date="2022-07-06",
+                        hive=tmp_path / "hive-does-not-exist", dry_run=True)
+    code = orch.phase_verify(args, [("SPY", 100.0)], tmp_path)
+    assert code == 0
+
+
+def test_phase_verify_surfaces_a_nonzero_info_exit_code(tmp_path, monkeypatch):
+    hive = _make_hive_with_sessions(tmp_path, ["2022-07-05"])
+
+    def fake_run(argv, **kw):
+        if "verify" in argv:
+            return _FakeCompleted(0)
+        if "info" in argv:
+            return _FakeCompleted(1, stderr="info: db root not found\n")
+        if "query" in argv:
+            if argv[argv.index("--strike") + 1] == "100":
+                return _FakeCompleted(0, stdout="forward 100.0\n")
+            return _FakeCompleted(0, stdout="iv 0.2\nforward 100.0\n")
+        raise AssertionError(f"unexpected argv: {argv}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    args = _verify_args(tmp_path, from_date="2022-07-05", to_date="2022-07-05", hive=hive)
+    code = orch.phase_verify(args, [("SPY", 100.0)], tmp_path)
+    assert code == 1, "a failed `info` invocation must no longer be silently discarded"
+
+
+def test_phase_verify_finite_spot_check_iv_passes(tmp_path, monkeypatch):
+    hive = _make_hive_with_sessions(tmp_path, ["2022-07-05"])
+
+    def fake_run(argv, **kw):
+        if "verify" in argv or "info" in argv:
+            return _FakeCompleted(0)
+        if "query" in argv:
+            if argv[argv.index("--strike") + 1] == "100":
+                return _FakeCompleted(0, stdout="forward 741.148\n")
+            return _FakeCompleted(0, stdout="iv 0.1525641177446623\nforward 741.148\n")
+        raise AssertionError(f"unexpected argv: {argv}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    args = _verify_args(tmp_path, from_date="2022-07-05", to_date="2022-07-05", hive=hive)
+    code = orch.phase_verify(args, [("SPY", 100.0)], tmp_path)
+    assert code == 0
+
+
+def test_phase_verify_non_finite_spot_check_iv_fails(tmp_path, monkeypatch):
+    hive = _make_hive_with_sessions(tmp_path, ["2022-07-05"])
+
+    def fake_run(argv, **kw):
+        if "verify" in argv or "info" in argv:
+            return _FakeCompleted(0)
+        if "query" in argv:
+            if argv[argv.index("--strike") + 1] == "100":
+                return _FakeCompleted(0, stdout="forward 741.148\n")
+            return _FakeCompleted(0, stdout="iv nan\nforward 741.148\n")
+        raise AssertionError(f"unexpected argv: {argv}")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    args = _verify_args(tmp_path, from_date="2022-07-05", to_date="2022-07-05", hive=hive)
+    code = orch.phase_verify(args, [("SPY", 100.0)], tmp_path)
+    assert code == 1

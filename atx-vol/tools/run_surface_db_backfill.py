@@ -29,11 +29,21 @@ Early-close exclusion (addendum §C). A 15:55 ET snapshot falls AFTER the
 close on an XNYS early-close session (Black Friday, day-before-July-4th,
 Christmas Eve when it is a session), so the pull tool never gets a real
 15:55 snapshot for those dates and logs them loudly instead of sidecar-
-latching them (``pull_opra_hive.py``'s ``EMPTY-SESSION`` path). This
-orchestrator therefore treats "sessions requested" everywhere (pull
-planning, build chunk membership, verify's expected-cell math) as the XNYS
-calendar MINUS early closes (``trading_sessions_excluding_early_close``),
-never the raw session list.
+latching them (``pull_opra_hive.py``'s ``EMPTY-SESSION`` path) -- an
+early-close date that is silently re-requested is silently re-charged
+against the spend ledger too, on every future resume, forever. This
+orchestrator therefore excludes early closes from ALL THREE places that
+count or plan sessions:
+  * pull PLANNING -- ``pull_windows_for_month`` never lets an early-close
+    date fall inside a pull invocation's ``--start``/``--end`` range (a
+    raw month range is not enough: the pull tool re-derives its OWN
+    unfiltered session list from that range internally, so the date has to
+    be kept OUTSIDE every window's endpoints, not merely "known excluded").
+  * build chunk membership -- ``chunk_sessions`` only ever sees
+    ``trading_sessions_excluding_early_close``'s output.
+  * verify's expected-cell math -- sized off sessions present in the hive
+    intersected with the same excluded-early-close set, never the raw
+    requested calendar (review round 1, Important 2).
 
 Usage:
   python atx-vol/tools/run_surface_db_backfill.py \\
@@ -151,6 +161,44 @@ def trading_sessions_excluding_early_close(start: str, end: str, snap_et: str = 
     return out
 
 
+def pull_windows_for_month(m0: str, m1: str, snap_et: str = "15:55") -> list[tuple[str, str]]:
+    """Contiguous-run pull windows for the calendar-month segment ``[m0,
+    m1]`` (review round 1, CRITICAL 1). The pull tool takes a date RANGE
+    (``--start``/``--end``), not an explicit date list, and re-derives its
+    OWN (unfiltered) session set for that range internally
+    (``pull_opra_hive.py``'s ``trading_sessions``) -- so simply narrowing
+    ``[m0, m1]`` is not enough to keep an early-close date out of a pull: if
+    it falls INSIDE the requested range, the pull tool re-includes it and
+    requests a snapshot that never exists (``EMPTY-SESSION``, not
+    sidecar-latched, so it is silently re-requested -- and re-charged against
+    the spend ledger's estimate -- on every future resume, forever).
+
+    This walks the RAW XNYS session list for the segment (unfiltered -- a
+    weekend/holiday gap is NOT a reason to split; the pull tool re-derives
+    that same gap on its own) and cuts a new window every time it crosses an
+    EARLY-CLOSE session, which is dropped entirely rather than becoming a
+    window endpoint. One pull invocation per returned window means an
+    early-close date is NEVER inside any ``--start``/``--end`` pair handed to
+    the pull tool. A segment with no sessions at all (or that IS itself one
+    early close) returns ``[]`` -- the caller skips it, spawning nothing."""
+    xcals = _require_exchange_calendars()
+    cal = xcals.get_calendar("XNYS")
+    raw_sessions = [d.strftime("%Y-%m-%d") for d in cal.sessions_in_range(m0, m1)]
+    included = set(trading_sessions_excluding_early_close(m0, m1, snap_et))
+    windows: list[tuple[str, str]] = []
+    run: list[str] = []
+    for d in raw_sessions:
+        if d not in included:
+            if run:
+                windows.append((run[0], run[-1]))
+                run = []
+            continue
+        run.append(d)
+    if run:
+        windows.append((run[0], run[-1]))
+    return windows
+
+
 # ── year_of / year_roots_partition ──────────────────────────────────────────
 
 def year_of(date_str: str) -> int:
@@ -237,6 +285,39 @@ class SpendLedger:
     path: pathlib.Path
     abort_threshold: float
     cumulative: float = 0.0
+
+    def __post_init__(self) -> None:
+        # IMPORTANT 3 (review round 1). ``cumulative`` used to reset to 0 on
+        # every fresh ``SpendLedger()`` construction -- fine within ONE
+        # process's ``run()`` call (the ledger object is reused for every
+        # month/window in that call), but ``--spend-abort`` is documented as
+        # the circuit breaker over the WHOLE multi-month/multi-year backfill,
+        # which in practice spans many process invocations (a crash, a
+        # deliberate resume days later, ...). Without this, each new process
+        # re-armed the breaker at $0 regardless of what a prior invocation had
+        # already spent, so an N-invocation backfill could spend N x
+        # --spend-abort instead of --spend-abort total, and the persisted
+        # ``cumulative`` column in the CSV was non-monotonic across restarts.
+        # Only seeds when constructed at the dataclass default (0.0) -- an
+        # explicit non-default ``cumulative=`` (tests) is left untouched.
+        if self.cumulative == 0.0:
+            self.cumulative = self._seed_cumulative_from_existing_ledger()
+
+    def _seed_cumulative_from_existing_ledger(self) -> float:
+        """The last row's ``cumulative`` value in an existing ledger CSV, or
+        ``0.0`` if the file is missing, empty, or unreadable/corrupt --
+        never a hard failure at construction time."""
+        try:
+            with open(self.path, newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+        except OSError:
+            return 0.0
+        if not rows:
+            return 0.0
+        try:
+            return float(rows[-1]["cumulative"])
+        except (KeyError, ValueError, TypeError):
+            return 0.0
 
     def record(self, start: str, end: str, estimate: float) -> None:
         path = pathlib.Path(self.path)
@@ -374,6 +455,60 @@ def atm_strike_from_forward(forward: float, step: float = 5.0) -> float:
     query output), needing no external market-data source. Matches Task 1's
     own committed example: forward 741.148... -> strike 740 at step 5."""
     return round(forward / step) * step
+
+
+# ── build-report CSV parsing + per-year aggregation (Important 4) ──────────
+
+def parse_build_report_csv(path) -> dict[str, str]:
+    """Section 1 (the flat ``key,value`` scalar table -- ``n_ok``/
+    ``n_failed``/``cells_refit``/... per the brief) of a build-CLI
+    ``--report`` CSV (``write_build_report_csv``, ``surface_db_build.cpp``),
+    as a ``dict``. The header row (``key,value``) is skipped; parsing STOPS
+    at the first row that is not exactly 2 columns -- section 2's own
+    one-column header, ``config_disabled_symbol`` -- so the later per-symbol
+    (section 3), per-cell (section 4), and regression (section 5) rows,
+    which have different shapes, are never misread as flat scalars."""
+    path = pathlib.Path(path)
+    out: dict[str, str] = {}
+    with open(path, "r", newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    for row in rows[1:]:  # skip the "key,value" header
+        if len(row) != 2:
+            break
+        out[row[0]] = row[1]
+    return out
+
+
+def aggregate_build_summary(chunk_reports: list[dict[str, str]]) -> dict[str, float]:
+    """Sum the numeric scalar fields of ``chunk_reports`` (each one chunk's
+    ``parse_build_report_csv`` output) into one running per-year summary --
+    the brief's Step 4 "parse report CSV scalar section ... into a running
+    year summary". A field that fails to parse as a float is skipped rather
+    than raising -- no build-report field is non-numeric today, but an
+    aggregator over machine-generated CSVs should not crash on the first one
+    that ever is."""
+    summary: dict[str, float] = {}
+    for report in chunk_reports:
+        for key, value in report.items():
+            try:
+                num = float(value)
+            except (TypeError, ValueError):
+                continue
+            summary[key] = summary.get(key, 0.0) + num
+    return summary
+
+
+def write_year_summary_csv(summary: dict[str, float], path) -> None:
+    """Write ``summary`` (``aggregate_build_summary``'s output) as a sorted
+    ``key,value`` CSV -- the run's only structured, file-based record of a
+    year's chunk outcomes (Task 8 reads this)."""
+    path = pathlib.Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["key", "value"])
+        for key in sorted(summary):
+            w.writerow([key, summary[key]])
 
 
 # ── hive_sessions_present (glob date=* dirs) ────────────────────────────────
@@ -550,45 +685,53 @@ def phase_pull(args, rates: dict[str, float], ledger: SpendLedger, log_dir: path
     months = month_bounds(args.from_date, args.to_date)
     failures: list[str] = []
     for m0, m1 in months:
-        tag = f"pull_{m0}_{m1}"
-        real_argv = build_pull_command(
-            python_exe=sys.executable, pull_tool=args.pull_tool_path,
-            universe_path=args.pull_universe_path, start=m0, end=m1, hive=args.hive,
-            snap_et=args.snap_et, cap=args.cap, env_file=args.env_file, index_symbol=args.index,
-        )
-        if args.dry_run:
-            # Global --dry-run: show the plan, spawn NOTHING (not even the free
-            # cost probe below) -- so a pilot dry-run needs neither a
-            # DATABENTO_API_KEY nor an existing hive.
-            run_subprocess(real_argv, log_dir=log_dir, tag=tag, dry_run=True)
-            continue
+        # CRITICAL 1 (review round 1): split each calendar-month segment into
+        # early-close-free contiguous windows BEFORE ever building a pull
+        # command -- a raw [m0, m1] --start/--end pair would let the pull
+        # tool's own unfiltered session enumeration re-include an early
+        # close, which never gets a real snapshot and is silently
+        # re-requested (and re-charged) on every future resume.
+        windows = pull_windows_for_month(m0, m1, args.snap_et)
+        for w0, w1 in windows:
+            tag = f"pull_{w0}_{w1}"
+            real_argv = build_pull_command(
+                python_exe=sys.executable, pull_tool=args.pull_tool_path,
+                universe_path=args.pull_universe_path, start=w0, end=w1, hive=args.hive,
+                snap_et=args.snap_et, cap=args.cap, env_file=args.env_file, index_symbol=args.index,
+            )
+            if args.dry_run:
+                # Global --dry-run: show the plan, spawn NOTHING (not even the
+                # free cost probe below) -- so a pilot dry-run needs neither a
+                # DATABENTO_API_KEY nor an existing hive.
+                run_subprocess(real_argv, log_dir=log_dir, tag=tag, dry_run=True)
+                continue
 
-        probe_argv = build_pull_command(
-            python_exe=sys.executable, pull_tool=args.pull_tool_path,
-            universe_path=args.pull_universe_path, start=m0, end=m1, hive=args.hive,
-            snap_et=args.snap_et, cap=args.cap, env_file=args.env_file, index_symbol=args.index,
-            dry_run=True,
-        )
-        probe = run_subprocess(probe_argv, log_dir=log_dir, tag=f"{tag}_estimate", dry_run=False)
-        estimate = parse_estimate_line(probe.stdout)
-        try:
-            ledger.record(m0, m1, estimate)
-        except SystemExit as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
+            probe_argv = build_pull_command(
+                python_exe=sys.executable, pull_tool=args.pull_tool_path,
+                universe_path=args.pull_universe_path, start=w0, end=w1, hive=args.hive,
+                snap_et=args.snap_et, cap=args.cap, env_file=args.env_file, index_symbol=args.index,
+                dry_run=True,
+            )
+            probe = run_subprocess(probe_argv, log_dir=log_dir, tag=f"{tag}_estimate", dry_run=False)
+            estimate = parse_estimate_line(probe.stdout)
+            try:
+                ledger.record(w0, w1, estimate)
+            except SystemExit as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
 
-        res = run_subprocess(real_argv, log_dir=log_dir, tag=tag, dry_run=False)
-        if res.exit_code == 3:
-            print(f"BLOCKED (pull {m0}..{m1}): {res.stderr.strip()}", file=sys.stderr)
-            return 3
-        if res.exit_code == 5:
-            month_failed = parse_failed_dates(res.stderr)
-            failures.extend(month_failed)
-            print(f"pull {m0}..{m1}: {len(month_failed)} failed date(s): {month_failed}",
-                 file=sys.stderr)
-        elif res.exit_code != 0:
-            failures.append(f"{m0}..{m1} (unexpected exit {res.exit_code})")
-            print(f"pull {m0}..{m1}: unexpected exit {res.exit_code}", file=sys.stderr)
+            res = run_subprocess(real_argv, log_dir=log_dir, tag=tag, dry_run=False)
+            if res.exit_code == 3:
+                print(f"BLOCKED (pull {w0}..{w1}): {res.stderr.strip()}", file=sys.stderr)
+                return 3
+            if res.exit_code == 5:
+                window_failed = parse_failed_dates(res.stderr)
+                failures.extend(window_failed)
+                print(f"pull {w0}..{w1}: {len(window_failed)} failed date(s): {window_failed}",
+                     file=sys.stderr)
+            elif res.exit_code != 0:
+                failures.append(f"{w0}..{w1} (unexpected exit {res.exit_code})")
+                print(f"pull {w0}..{w1}: unexpected exit {res.exit_code}", file=sys.stderr)
 
     if args.dry_run:
         return 0
@@ -618,6 +761,11 @@ def phase_build(args, symbols: list[str], rates: dict[str, float], log_dir: path
 
         chunks = chunk_sessions(present, args.chunk_sessions, snap_et=args.snap_et)
         failed_sessions: list[str] = []
+        # IMPORTANT 4 (review round 1): every chunk invocation's --report CSV
+        # scalar section, read back and folded into a running year summary --
+        # the run's only structured record of chunk outcomes (n_ok/n_failed/
+        # cells_refit/...), which Task 8 depends on being able to read.
+        chunk_reports: list[dict[str, str]] = []
         year_status = "ok"
         for chunk in chunks:
             c0, c1 = chunk[0], chunk[-1]
@@ -642,6 +790,16 @@ def phase_build(args, symbols: list[str], rates: dict[str, float], log_dir: path
                 )
                 sub_res = run_subprocess(sub_argv, log_dir=_log_dir, tag=f"build_{_year}_{sc0}_{sc1}",
                                          dry_run=False)
+                # Read back whatever this invocation reported (even a failed
+                # one may have written partial coverage) -- a build that
+                # crashed before writing the CSV at all is skipped (RSS-safe:
+                # never treated as fatal here, the exit code already carries
+                # that verdict).
+                if sub_report.exists():
+                    try:
+                        chunk_reports.append(parse_build_report_csv(sub_report))
+                    except (OSError, csv.Error):
+                        pass
                 return sub_res.exit_code
 
             try:
@@ -656,6 +814,10 @@ def phase_build(args, symbols: list[str], rates: dict[str, float], log_dir: path
                 year_status = status
                 print(f"BUILD year {year} ABORTED ({status}) on chunk {c0}..{c1}", file=sys.stderr)
                 break
+
+        if not args.dry_run and chunk_reports:
+            summary = aggregate_build_summary(chunk_reports)
+            write_year_summary_csv(summary, pathlib.Path(log_dir) / f"year_summary_{year}.csv")
 
         if failed_sessions:
             print(f"BUILD year {year}: permanently-failed session(s): {failed_sessions}",
@@ -676,8 +838,23 @@ def phase_verify(args, universe_entries: list[tuple[str, float]], log_dir: pathl
     overall = 0
 
     for year in sorted(roots):
-        year_sessions = roots[year]
-        min_cells, max_absent = verify_thresholds(n_symbols, len(year_sessions))
+        year_sessions_requested = roots[year]
+        # IMPORTANT 2 (review round 1): thresholds and the spot-check key must
+        # be sized off sessions ACTUALLY PRESENT IN THE HIVE (the brief's
+        # "n_sessions_in_year_present_in_hive"), not the raw requested
+        # calendar -- a partial backfill (pull/build still in progress, or a
+        # pilot window narrower than --from/--to) would otherwise fail a
+        # perfectly healthy database against an expected-cell count it was
+        # never going to reach, and the spot-check key would usually name a
+        # session the database does not hold yet. Symmetric with phase_build's
+        # own hive_sessions_present fallback: under --dry-run the hive may not
+        # exist yet, so fall back to the requested set (needs no pulled data).
+        if args.dry_run:
+            present_requested = year_sessions_requested
+        else:
+            on_disk = set(hive_sessions_present(args.hive, year))
+            present_requested = [d for d in year_sessions_requested if d in on_disk]
+        min_cells, max_absent = verify_thresholds(n_symbols, len(present_requested))
 
         verify_argv = build_verify_command(admin_exe=args.admin_exe, db_prefix=args.db_prefix,
                                            year=year, min_cells=min_cells, max_absent=max_absent)
@@ -688,9 +865,15 @@ def phase_verify(args, universe_entries: list[tuple[str, float]], log_dir: pathl
             print(f"VERIFY year {year}: verify exited {verify_res.exit_code}", file=sys.stderr)
 
         info_argv = build_info_command(admin_exe=args.admin_exe, db_prefix=args.db_prefix, year=year)
-        run_subprocess(info_argv, log_dir=log_dir, tag=f"info_{year}", dry_run=args.dry_run)
+        info_res = run_subprocess(info_argv, log_dir=log_dir, tag=f"info_{year}", dry_run=args.dry_run)
+        if not args.dry_run and info_res.exit_code != 0:
+            # Was previously discarded entirely (review round 1, Important 2's
+            # one-line rider): an unreadable/missing db root on `info` is a
+            # real signal, not a no-op probe.
+            overall = 1
+            print(f"VERIFY year {year}: info exited {info_res.exit_code}", file=sys.stderr)
 
-        key = year_sessions[-1] if year_sessions else f"{year}-01-03"
+        key = present_requested[-1] if present_requested else f"{year}-01-03"
         for symbol in pick_spot_check_symbols(symbols, args.index, 2):
             probe_argv = build_query_command(admin_exe=args.admin_exe, db_prefix=args.db_prefix,
                                              year=year, key=key, symbol=symbol, strike=100, tenor=0.0833)
