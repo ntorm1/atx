@@ -297,3 +297,69 @@ def test_production_knobs_reach_the_hive_spec(tmp_path) -> None:
             yc_pillar_t=[0.1, 1.0],
             yc_pillar_r=[0.043],
         )
+
+
+def test_non_finite_rate_is_rejected_like_the_cli(tmp_path) -> None:
+    """REV-R5 (review M-3): ``r=nan`` / ``r=inf`` must not start a build.
+
+    ``atx-vol-surface-db-build --r`` parses with a dedicated ``parse_finite_double``
+    under which ``--r nan`` and ``--r inf`` are hard usage errors, because a
+    silently-wrong carry rate is the exact trap that flag exists to close. The
+    binding assigned ``spec.hive.r`` straight through, and ``load_opra_hive``
+    validates the root, the dates and the pillar lengths only -- never finiteness --
+    so a notebook could start a full production build at ``r = nan``.
+
+    Two things are asserted, and the second is the one that matters: the call raises,
+    AND IT CREATES NOTHING. A guard that raised after opening or creating the
+    database would still have touched the artifact it was meant to protect.
+    """
+    date = "2026-07-01"
+    hive_root = tmp_path / "hive"
+    _write_hive(hive_root, ["AAA"], [date])
+
+    for i, bad in enumerate((float("nan"), math.inf, -math.inf)):
+        db_root = tmp_path / f"db_bad_{i}"
+        with pytest.raises(ValueError, match="must be finite"):
+            atxvol.build_surface_db(
+                db_root=str(db_root),
+                hive_root=str(hive_root),
+                date_lo=date,
+                date_hi=date,
+                r=bad,
+            )
+        assert not db_root.exists(), (
+            "the finiteness check must run BEFORE anything is opened or created; "
+            f"{db_root} was left behind"
+        )
+
+    # ...and the neighbouring finite values it must NOT reject, so the guard cannot
+    # be widened into "reject anything unusual". 0.0 is the documented default;
+    # -0.01 is a negative rate, and 1e-12 is a denormal-adjacent one.
+    #
+    # The assertion is that the build RAN (`cells_to_fit == 1`), not that it fitted.
+    # -0.01 against this fixture's r = 0 quotes really does fail its fit, and that
+    # distinction is the point: the guard rejects a rate that is not a NUMBER, never
+    # one the fitter merely disagrees with. Asserting cells_ok here would fail for a
+    # reason that has nothing to do with the check under test.
+    for i, good in enumerate((0.0, -0.01, 0.043, 1e-12)):
+        db_root = tmp_path / f"db_ok_{i}"
+        rep = atxvol.build_surface_db(
+            db_root=str(db_root),
+            hive_root=str(hive_root),
+            date_lo=date,
+            date_hi=date,
+            r=good,
+        )
+        assert rep["coverage"]["cells_to_fit"] == 1, (good, rep["coverage"])
+
+    # The documented default and the production rate both still fit, so "accepted"
+    # is not hiding a build that quietly stopped working.
+    for i, good in enumerate((0.0, 0.043)):
+        rep = atxvol.build_surface_db(
+            db_root=str(tmp_path / f"db_fit_{i}"),
+            hive_root=str(hive_root),
+            date_lo=date,
+            date_hi=date,
+            r=good,
+        )
+        assert rep["coverage"]["cells_ok"] == 1, (good, rep["coverage"])

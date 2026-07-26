@@ -1,3 +1,4 @@
+#include <cmath> // std::isfinite (the --r finiteness guard)
 #include <optional>
 #include <string>
 #include <string_view>
@@ -210,6 +211,33 @@ py_build_surface_db(const std::string &db_root, const std::string &hive_root,
     spec.hive.symbols = std::move(*symbols); // else empty => discover every underlying
   }
   // REV-R4 F-01. The whole point of the fix: the rate REACHES the fitter.
+  //
+  // REV-R5 (review M-3): and it is CHECKED FIRST, the same way `--r` is. The CLI
+  // parses this value with a dedicated `parse_finite_double` under which `--r nan`,
+  // `--r inf` and `--r 0.03x` are hard usage errors (exit 2), with a paragraph
+  // explaining why: every `--r` value is a claim about the market, so a silently
+  // wrong one is the trap the flag exists to close. Python's float literal cannot
+  // produce `0.03x`, but `float("nan")` and `math.inf` are one keystroke away and
+  // `load_opra_hive` validates root, dates and pillar lengths only — never
+  // finiteness. Without this, a notebook could start a full production build at
+  // `r = nan`: every put-call-parity forward is NaN, every fit fails identically,
+  // and on a database that already holds surfaces the whole-file rewrite is the
+  // shape that destroyed 95 of them.
+  //
+  // `py::value_error` is the binding's established analogue of the CLI's exit 2 —
+  // the same choice `parse_preset` makes for an unknown preset name — so the two
+  // front ends reject the same inputs with equivalent verdicts. It is raised BEFORE
+  // the GIL is released and before any db is opened or created, so a rejected call
+  // touches nothing.
+  if (!std::isfinite(r)) {
+    throw py::value_error("build_surface_db: r must be finite (got nan or inf). The carry rate "
+                          "is a claim about the market that every put-call-parity forward "
+                          "depends on; a non-finite one fails every fit identically and, on a "
+                          "database that already holds surfaces, the whole-file rewrite that "
+                          "follows can destroy them. This matches "
+                          "`atx-vol-surface-db-build --r`, which rejects nan/inf as a usage "
+                          "error.");
+  }
   spec.hive.r = r;
   spec.hive.snapshot_suffix = snapshot_suffix;
   // Two or more strictly-ascending pillars build a YieldCurve; empty or one
@@ -280,6 +308,12 @@ r : float
     removed 95 stored surfaces before the guard existed. The default is left at
     the CLI's ``0.0`` rather than at some safer-looking number precisely so the
     two tools cannot disagree -- it is not a recommendation.
+
+    MUST BE FINITE. ``nan`` and ``inf`` raise ``ValueError`` before anything is
+    opened or created, matching ``atx-vol-surface-db-build --r``, which rejects
+    them as a usage error (exit 2) rather than letting a silently-wrong rate reach
+    the fitter. ``load_opra_hive`` does not check this itself -- it validates the
+    root, the dates and the pillar lengths only -- so the guard lives here.
 retry_disabled : bool
     Re-attempt symbols whose STORED config is disabled instead of skipping them.
     Default False: without it a fail-closed disable is permanent for the life of
@@ -350,6 +384,41 @@ dict
 
     ``coverage["dates_written"]`` counts dates that really COMMITTED, so it is the
     other half of the same check.
+
+    NOR DOES IT RAISE WHEN THE BUILD PRODUCED NOTHING AT ALL, AND THAT IS THE
+    OTHER CHECK YOU MUST WRITE YOURSELF. The paragraph above covers the coverage
+    regression only; the CLI has FOUR further verdicts, all of which it reports as
+    exit 3 and all of which are equally invisible here -- a caller who follows the
+    paragraph above exactly still misses every one of them. This binding returns a
+    normal dict for all four. Their conditions, in the CLI's own order (the exact
+    predicates, from surface_db_build.hpp):
+
+    - TOTAL LOAD FAILURE -- ``n_dates_loaded == 0 and n_load_errors > 0``. Every
+      present file in the window was unreadable, so not one board reached the
+      fitter. NOT the same as an empty window: ``n_load_errors == 0`` with nothing
+      present is a healthy no-op (weekends, an un-pulled range) and must stay one.
+    - TOTAL CONFIG FAILURE -- no symbol has an enabled config and nothing was
+      produced: ``config["n_disabled_failed"] + config["n_disabled_existing"] > 0``,
+      ``config["n_configured"] + (config["n_skipped_existing"] -
+      config["n_disabled_existing"]) == 0``, ``coverage["cells_ok"] == 0`` and
+      ``coverage["cells_carried"] == 0``. The database will stay empty.
+    - TOTAL FIT FAILURE -- ``coverage["cells_to_fit"] > 0`` and
+      ``coverage["cells_ok"] == 0`` and ``coverage["cells_carried"] == 0``. Work
+      was scheduled, nothing fitted, nothing was carried. ``r`` is the top suspect.
+    - THE ``--strict`` READING -- ``coverage["cells_to_fit"] > 0`` and
+      ``coverage["cells_ok"] == 0``, carry IGNORED. The CLI applies this one only
+      under ``--strict``, which has no keyword here on purpose: it is a reporting
+      choice, not a build input. If you are an unattended scheduler over a database
+      whose failing-cell set is expected to be EMPTY, this is your check. If your
+      database holds permanently-failing cells -- surfaces that will never fit --
+      it is TRUE ON EVERY RUN of a perfectly healthy database, which is why the CLI
+      does not make it the default either.
+
+    NO RAISE IS ADDED FOR ANY OF THESE, DELIBERATELY. Whether this call should
+    raise on a dead build is an API decision about every existing caller's failure
+    semantics, not a documentation fix; changing it silently would break notebooks
+    that already branch on the dict. What is fixed here is that the docstring no
+    longer warns about one invisible verdict while staying silent about four more.
 )doc";
 
 } // namespace
