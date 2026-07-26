@@ -291,23 +291,16 @@ Status build_schedule_command(const fs::path &run_dir) {
   // The DTE roll-trigger, per-date universe rebind, forward lookup, coverage gate,
   // deferral, cohort numbering, surface fingerprint, roll sizing, the entry/three-roll
   // acceptance gate, and the M1 clock/first-roll coupling check all run inside the call.
-  ListedScheduleSpec sched_spec;
-  sched_spec.target_dte_days = spec.target_dte_days;
-  sched_spec.min_dte_days = spec.min_dte_days;
-  sched_spec.max_dte_days = spec.max_dte_days;
-  sched_spec.roll_dte_days = spec.roll_dte_days;
-  sched_spec.min_names = spec.min_names;
-  sched_spec.min_weight_coverage = spec.min_weight_coverage;
-  sched_spec.gross_index_vega = spec.gross_index_vega;
-  sched_spec.core_mode = spec.core_mode;
-  // REV-FIXTAIL I-A: F6's quote-quality admission, from the strict typed config.
-  // `ListedScheduleSpec::quality` defaults to exactly what the builder's selection
-  // loop default-constructed, so a spec naming none of the three keys is
-  // byte-identical; `ListedDispersionPipeline.DefaultScheduleSpecKeepsTheShipped
-  // SelectionDefaults` pins that, and it was green before this change as well as
-  // after. What changes is that a spec that DOES name them is now honoured here
-  // rather than only echoed into run_config.tsv.
-  sched_spec.quality = run_config.quote_quality;
+  // REV-MTIDY I-1: the nine assignments that used to sit here — including
+  // `sched_spec.quality = run_config.quote_quality`, the ONE line REV-FIXTAIL
+  // I-A added to make the three `quote_*` keys reach a shipped selection — are
+  // now `listed_schedule_spec_from` (dispersion_run.hpp). They were moved for a
+  // measured reason: deleting that assignment from this file left the ENTIRE
+  // gate green (2262/2262, 0 failed), because the gtests I-A shipped call
+  // `listed_selection_config_from` one layer below it and the e2e CLI chain
+  // drives only defaults, which equal the pre-fix behaviour. A knob repaired by
+  // a line no test can observe can go inert again under a green gate.
+  const ListedScheduleSpec sched_spec = listed_schedule_spec_from(spec, run_config);
   ATX_TRY(ListedDispersionSchedule schedule,
           build_listed_dispersion_schedule(clock, sched_spec, method, universe_rows, definitions,
                                            spec, &timer));

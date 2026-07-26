@@ -182,9 +182,17 @@ struct ListedScheduleSpec {
 // The `ListedDispersionSelectionConfig` the schedule builder's selection loop
 // runs under, built from the swept spec. One named function rather than four
 // assignments inline (REV-FIXTAIL I-A) for the reason `make_listed_replay_run_
-// config` is one: a knob that is copied here is provably reachable from the
-// shipped route and one that is not is provably dead, and a test can call THIS
-// instead of restating it under a "verbatim" comment that cannot fail.
+// config` is one: a knob that is copied here is provably reachable and one that
+// is not is provably dead, and a test can call THIS instead of restating it
+// under a "verbatim" comment that cannot fail.
+//
+// REV-MTIDY M-6: that was true of the SHIPPED route only until now — the
+// library twin `dispersion_build_schedule` hand-built the same five assignments
+// itself, so a fifth selection knob still had to be added in two places and only
+// one of them had a test. Both routes now reach this through
+// `listed_schedule_spec_from` (dispersion_run.hpp), so this really is the single
+// construction point the sentence above claims, and `DispersionScheduleSpecFrom.*`
+// (dispersion_run_test.cpp) covers the composition both of them perform.
 [[nodiscard]] ListedDispersionSelectionConfig
 listed_selection_config_from(const ListedScheduleSpec &spec);
 

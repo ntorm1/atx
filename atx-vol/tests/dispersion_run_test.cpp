@@ -660,6 +660,88 @@ TEST(DispersionBacktestConfigFrom, AgreesWithTheEngineRunConfigBuilderOnEveryKno
   EXPECT_EQ(surface.financing.finance_premium, engine.financing.finance_premium);
 }
 
+// ── REV-MTIDY I-1 — the guard the quote-knob repair shipped without ──────────
+//
+// REV-FIXTAIL I-A made the three `quote_*` spec keys reach the SHIPPED
+// `build-schedule` selection with one assignment in the example's `main`.
+// Measured before this test existed: deleting that assignment and running the
+// full label gate gave 2262/2262 passed, 0 failed — byte-identical to the run
+// with it, `atx-vol-python` (the only ctest entry that executes the example
+// binary) included. I-A's own two gtests call `listed_selection_config_from`,
+// one layer BELOW the assignment, and the e2e CLI chain drives only default
+// values, which equal the pre-fix behaviour by construction. The construction
+// now lives in `listed_schedule_spec_from` and these call it, so deleting the
+// `quality` line turns THIS red instead of nothing.
+//
+// The composition through `listed_selection_config_from` is deliberate: what
+// matters economically is not that a POD field was copied but that the declared
+// policy is the one `select_listed_dispersion` runs under, and the composition
+// below is exactly what both `build_schedule_command` and the library
+// `dispersion_build_schedule` now perform.
+TEST(DispersionScheduleSpecFrom, EveryDeclaredScheduleKnobReachesTheSelectionPolicy) {
+  RunSpec spec;
+  spec.target_dte_days = 41.0;
+  spec.min_dte_days = 23.0;
+  spec.max_dte_days = 71.0;
+  spec.roll_dte_days = 9.0;
+  spec.min_names = 17u;
+  spec.min_weight_coverage = 0.63;
+  spec.gross_index_vega = 25000.0;
+  spec.core_mode = true;
+
+  DispersionRunConfig config;
+  config.quote_quality.min_bid = 0.07;
+  config.quote_quality.max_quote_age_ns = 123'456'789;
+  config.quote_quality.reject_locked = true;
+
+  const ListedScheduleSpec sched = listed_schedule_spec_from(spec, config);
+
+  EXPECT_DOUBLE_EQ(sched.target_dte_days, 41.0);
+  EXPECT_DOUBLE_EQ(sched.min_dte_days, 23.0);
+  EXPECT_DOUBLE_EQ(sched.max_dte_days, 71.0);
+  EXPECT_DOUBLE_EQ(sched.roll_dte_days, 9.0);
+  EXPECT_EQ(sched.min_names, 17u);
+  EXPECT_DOUBLE_EQ(sched.min_weight_coverage, 0.63);
+  EXPECT_DOUBLE_EQ(sched.gross_index_vega, 25000.0);
+  EXPECT_TRUE(sched.core_mode);
+
+  // The three that only the STRICT typed read can supply, checked where they
+  // actually bite — on the selection config the builder's loop runs under.
+  const ListedDispersionSelectionConfig selection = listed_selection_config_from(sched);
+  EXPECT_DOUBLE_EQ(selection.quality.min_bid, 0.07)
+      << "spec key `quote_min_bid` was bound, validated, published to run_config.tsv "
+         "as EFFECTIVE, and reached no shipped selection";
+  EXPECT_EQ(selection.quality.max_quote_age_ns, 123'456'789)
+      << "spec key `quote_max_age_ns` was bound and never assigned";
+  EXPECT_TRUE(selection.quality.reject_locked)
+      << "spec key `quote_reject_locked` was bound and never assigned";
+
+  // The four the loose RunSpec supplies must survive the same trip.
+  EXPECT_DOUBLE_EQ(selection.target_dte_days, 41.0);
+  EXPECT_DOUBLE_EQ(selection.min_dte_days, 23.0);
+  EXPECT_DOUBLE_EQ(selection.max_dte_days, 71.0);
+  EXPECT_EQ(selection.min_names, 17u);
+}
+
+// The other half, and the reason the I-A wiring could not move a golden: a spec
+// naming none of the three `quote_*` keys must produce exactly what the
+// selection loop default-constructed before I-A existed. If a default on either
+// side ever diverges, this pins the day it happens.
+TEST(DispersionScheduleSpecFrom, DefaultSpecKeepsTheShippedScheduleDefaults) {
+  const ListedScheduleSpec sched = listed_schedule_spec_from(RunSpec{}, DispersionRunConfig{});
+  const ListedDispersionSelectionConfig selection = listed_selection_config_from(sched);
+  const ListedDispersionSelectionConfig pre_fix_default;
+
+  EXPECT_DOUBLE_EQ(selection.quality.min_bid, pre_fix_default.quality.min_bid);
+  EXPECT_EQ(selection.quality.max_quote_age_ns, pre_fix_default.quality.max_quote_age_ns);
+  EXPECT_EQ(selection.quality.reject_locked, pre_fix_default.quality.reject_locked);
+  EXPECT_DOUBLE_EQ(selection.target_dte_days, pre_fix_default.target_dte_days);
+  EXPECT_DOUBLE_EQ(selection.min_dte_days, pre_fix_default.min_dte_days);
+  EXPECT_DOUBLE_EQ(selection.max_dte_days, pre_fix_default.max_dte_days);
+  EXPECT_EQ(selection.min_names, pre_fix_default.min_names);
+  EXPECT_DOUBLE_EQ(selection.required_multiplier, pre_fix_default.required_multiplier);
+}
+
 TEST(DispersionReferenceReconcile, M10_ContractMarksWithNoStatusColumnIsRejected) {
   const fs::path run = make_run_dir("m10_status");
   write_file(run / "trade_schedule.tsv", schedule_text());

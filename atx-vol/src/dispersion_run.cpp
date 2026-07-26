@@ -1640,6 +1640,29 @@ RunConfig make_listed_replay_run_config(const DispersionRunConfig &config, const
   return run;
 }
 
+ListedScheduleSpec listed_schedule_spec_from(const RunSpec &spec,
+                                             const DispersionRunConfig &config) {
+  // REV-MTIDY I-1. A verbatim lift of the nine assignments `build_schedule_
+  // command` made inline. Everything not assigned keeps `ListedScheduleSpec`'s
+  // own default, so a spec that names nothing reproduces the pre-lift spec field
+  // for field.
+  ListedScheduleSpec sched;
+  sched.target_dte_days = spec.target_dte_days;
+  sched.min_dte_days = spec.min_dte_days;
+  sched.max_dte_days = spec.max_dte_days;
+  sched.roll_dte_days = spec.roll_dte_days;
+  sched.min_names = spec.min_names;
+  sched.min_weight_coverage = spec.min_weight_coverage;
+  sched.gross_index_vega = spec.gross_index_vega;
+  sched.core_mode = spec.core_mode;
+  // The line the whole quote-knob fix rests on, and the only one of the nine the
+  // loose `RunSpec` cannot supply. Delete it and `DispersionScheduleSpecFrom.
+  // EveryDeclaredScheduleKnobReachesTheSelectionPolicy` goes red; before this
+  // function existed, deleting its predecessor turned nothing red at all.
+  sched.quality = config.quote_quality;
+  return sched;
+}
+
 Status persist_typed_spec_keys(const fs::path &source_spec, const fs::path &run_spec) {
   ATX_TRY(KvMap source_values, read_kv_tsv(source_spec));
   // Exactly the vocabulary `write_resolved_spec` emits. Anything else in the
@@ -2093,12 +2116,13 @@ Status dispersion_build_schedule(const fs::path &run_dir) {
             authored, [&](std::string_view symbol) { return snapshot.uid_of(symbol); }, missing));
     ATX_TRY(std::vector<ListedOptionQuote> quotes,
             load_listed_quotes(spec, definitions, symbols, ref.date));
-    ListedDispersionSelectionConfig selection_config;
-    selection_config.target_dte_days = spec.target_dte_days;
-    selection_config.min_dte_days = spec.min_dte_days;
-    selection_config.max_dte_days = spec.max_dte_days;
-    selection_config.min_names = spec.min_names;
-    selection_config.quality = run_config.quote_quality; // F6
+    // REV-MTIDY M-6: this twin used to hand-build the same five assignments the
+    // shipped route made, so `listed_selection_config_from` was a single
+    // construction point for ONE of the two routes and a fifth selection knob
+    // still had to be added in two places. Both routes now compose the same two
+    // named functions. Field for field identical to what stood here.
+    const ListedDispersionSelectionConfig selection_config =
+        listed_selection_config_from(listed_schedule_spec_from(spec, run_config));
     const ListedForwardLookup forward = [&](const DispersionMember &member,
                                             std::int64_t expiry) -> Result<double> {
       const SurfaceRef surface = snapshot.find(member.uid);

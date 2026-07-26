@@ -74,6 +74,7 @@
 #include "atx/vol/dispersion_backtest.hpp"// DispersionBacktestConfig, run_dispersion_backtest
 #include "atx/vol/dispersion_workflow.hpp"// RunSpec
 #include "atx/vol/listed_dispersion.hpp"  // ListedQuoteQualityConfig (F6)
+#include "atx/vol/listed_dispersion_pipeline.hpp" // ListedScheduleSpec (REV-MTIDY I-1)
 #include "atx/vol/listed_dispersion_strategy.hpp" // ScheduleFillPolicy (F2)
 #include "atx/vol/session.hpp"            // FitPreset
 #include "atx/vol/tearsheet.hpp"          // TearSheet
@@ -335,6 +336,35 @@ struct DispersionRunConfig {
                                                       const Clock &clock,
                                                       const ListedDispersionStrategy &strategy);
 
+// REV-MTIDY I-1: the ONE construction of the `ListedScheduleSpec` the shipped
+// `build-schedule` hands `build_listed_dispersion_schedule`.
+//
+// It exists for the reason `make_listed_replay_run_config` above exists, except
+// that here the reason is a MEASURED FACT rather than an argument. REV-FIXTAIL
+// I-A closed "the three `quote_*` keys are published as EFFECTIVE and reach no
+// shipped selection" with a single assignment in the example's `main` —
+// `sched_spec.quality = run_config.quote_quality`. Deleting that assignment and
+// running the whole gate produced 2262/2262 passed, 0 failed: byte-identical to
+// the run with it. The two gtests written for the fix call
+// `listed_selection_config_from`, one layer BELOW the assignment, and the e2e
+// CLI chain drives only DEFAULT values, which equal the pre-fix behaviour by
+// construction. So the repair for a knob that parsed and did nothing was itself
+// protected only by a comment, and could have gone inert again under a green
+// gate. That is the whole reason this function is a function.
+//
+// `DispersionScheduleSpecFrom.*` in dispersion_run_test.cpp calls THIS, so
+// deleting the `quality` assignment in the body turns a test red.
+//
+// The two arguments are the two reads of the SAME `run_spec.tsv`: the loose
+// `RunSpec` carries the eight swept schedule knobs, and the strict
+// `DispersionRunConfig` carries F6's quote-quality admission, which `RunSpec`
+// has no field for. Both `build_schedule_command` (the shipped route) and
+// `dispersion_build_schedule` (the library twin) build their selection policy
+// through this, so the "single construction point" claim on
+// `listed_selection_config_from` is no longer route-local.
+[[nodiscard]] ListedScheduleSpec listed_schedule_spec_from(const RunSpec &spec,
+                                                           const DispersionRunConfig &config);
+
 // F4: emit `run_config.tsv` — the EFFECTIVE value of every execution knob the
 // run actually used, REGIME FIRST (M4's reporting contract). A published NAV
 // that does not say which frictions produced it is not a result, and until F4
@@ -574,6 +604,15 @@ struct DispersionVerifyReport {
 // routes. Golden-neutral by construction — the new default IS what the loop
 // default-constructed (`ListedDispersionPipeline.DefaultScheduleSpecKeepsTheShipped
 // SelectionDefaults`).
+//
+// GATED since REV-MTIDY I-1, and it was NOT gated when it was first called
+// closed. The link between the strict typed config and the shipped selection was
+// one assignment in the example's `main`; deleting it left the whole label gate
+// at 2262/2262 passed, 0 failed. It is now `listed_schedule_spec_from` (declared
+// above), which `DispersionScheduleSpecFrom.*` calls, so the same deletion turns
+// a test red. Read that as the general rule this sprint keeps re-learning: a fix
+// whose load-bearing line no test executes for a NON-DEFAULT value is not closed,
+// it is asserted.
 //
 // WHAT REMAINS, stated so it is not rediscovered as the same defect: only
 // `dispersion_build_schedule` writes the per-date `quote_rejects.tsv` tally. The
