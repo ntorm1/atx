@@ -109,11 +109,22 @@ struct TearSheet {
   double attr_cost{0};
 
   // ── Vega-scaled / per-unit-risk ──
-  double return_on_gross_vega{0};  // total_return / mean(|gross_vega|)
-  double vega_adj_sharpe{0};       // mean(pnl_i / |gross_vega_{i-1}|) / std(...) * sqrt(ppy)
-  double pnl_per_vega_traded{0};   // total_return / Σ turnover_vega
-  double avg_gross_vega{0};        // mean(gross_vega over all rows)
-  double avg_gross_gamma{0};       // mean(gross_gamma over all rows)
+  //
+  // UNIT / SEMANTICS (C-3, pipeline-m production review). "Gross vega" below is
+  // `BacktestResult::gross_vega_abs` — Σ|position-scaled leg vega|, dollars per
+  // UNIT vol — NOT the signed `gross_vega` column, which is NET book vega and
+  // cancels to a residual for any vega-neutral book. A result that carries no
+  // gross series (hand-built, TSV-read or archive-decoded — it is deliberately
+  // not serialized) falls back to |gross_vega| bit-for-bit, i.e. the pre-C-3
+  // values. The NET average is published separately, as `avg_net_vega`, by
+  // `result_summary_metrics` (run_report.hpp).
+  double return_on_gross_vega{0}; // total_return / mean(gross vega)
+  double vega_adj_sharpe{0};      // mean(pnl_i / gross_vega_{i-1}) / std(...) * sqrt(ppy)
+  double pnl_per_vega_traded{0};  // total_return / Σ turnover_vega
+  // mean(gross vega); mean of the SIGNED gross_vega column when no gross series
+  // is present (the pre-C-3 definition, preserved for hand-built results).
+  double avg_gross_vega{0};
+  double avg_gross_gamma{0}; // mean(gross_gamma over all rows)
 
   // ── X5 benchmark-relative block. `has_benchmark` is false unless the sheet was
   // built by `tearsheet_with_benchmark`, so plain `tearsheet()` is unchanged. ──

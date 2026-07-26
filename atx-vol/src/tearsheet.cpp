@@ -237,24 +237,48 @@ TearSheet tearsheet(const BacktestResult& r, double periods_per_year) {
   ts.attr_cost = col_sum(r.cost);
 
   // ── Vega-scaled / per-unit-risk ──
+  //
+  // C-3 (pipeline-m production review). The three statistics below call
+  // themselves GROSS, but `BacktestResult::gross_vega` is the SIGNED aggregate
+  // `PriceTotals::vega` — NET book vega. A vega-neutral book (every dispersion
+  // book) drives that column to a cancellation residual BY CONSTRUCTION, so
+  // dividing a return by it produced an unstable or meaningless number while the
+  // book's actual gross leg exposure was large and unchanged. Observed on a live
+  // three-session dispersion run: mean|net| = 1.8e-12 against a real gross of
+  // 2.0e5, giving return_on_gross_vega = -1.5e13.
+  //
+  // `run_backtest` now publishes the true Σ|position-scaled leg vega| as
+  // `gross_vega_abs`. It is DELIBERATELY not serialized (no schema hash, TSV
+  // header or golden moves), so it is EMPTY on a hand-built result, a TSV read
+  // or an archive decode — and in that case this falls back to the previous
+  // |gross_vega| expressions BIT-FOR-BIT, which is what keeps every hand-built
+  // tearsheet expectation unchanged.
+  const bool have_gross = r.gross_vega_abs.size() == n;
+  const auto row_gross = [&r, have_gross](std::size_t i) noexcept {
+    return have_gross ? r.gross_vega_abs[i] : std::fabs(r.gross_vega[i]);
+  };
   double vega_sum = 0.0;
   double abs_vega_sum = 0.0;
   double gamma_sum = 0.0;
   for (std::size_t i = 0; i < n; ++i) {
     vega_sum += r.gross_vega[i];
-    abs_vega_sum += std::fabs(r.gross_vega[i]);
+    abs_vega_sum += row_gross(i);
     gamma_sum += r.gross_gamma[i];
   }
-  ts.avg_gross_vega = vega_sum / static_cast<double>(n);
-  ts.avg_gross_gamma = gamma_sum / static_cast<double>(n);
   const double mean_abs_vega = abs_vega_sum / static_cast<double>(n);
+  // With a real gross series `avg_gross_vega` is that series' mean (non-negative
+  // and equal to the `return_on_gross_vega` denominator); without one it stays
+  // the signed column's mean, exactly as before. The NET average is separately
+  // published as `avg_net_vega` by `result_summary_metrics` (run_report.cpp).
+  ts.avg_gross_vega = have_gross ? mean_abs_vega : vega_sum / static_cast<double>(n);
+  ts.avg_gross_gamma = gamma_sum / static_cast<double>(n);
   ts.return_on_gross_vega = mean_abs_vega > 0.0 ? ts.total_return / mean_abs_vega : 0.0;
 
-  // vega_adj_sharpe: per-step PnL scaled by the PRIOR row's |gross_vega|.
+  // vega_adj_sharpe: per-step PnL scaled by the PRIOR row's GROSS vega.
   std::vector<double> x;
   x.reserve(n > 0 ? n - 1 : 0);
   for (std::size_t i = 1; i < n; ++i) {
-    const double gv_prev = std::fabs(r.gross_vega[i - 1]);
+    const double gv_prev = row_gross(i - 1);
     if (gv_prev > 0.0) {
       x.push_back(r.pnl_total[i] / gv_prev);
     }

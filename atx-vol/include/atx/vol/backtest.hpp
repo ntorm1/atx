@@ -610,7 +610,34 @@ struct BacktestResult {
   std::vector<double> pnl_shares, financing, cost;
   std::vector<double> nav;  // cumulative from inception = 0 (running Sum step_total)
   std::vector<double> cash; // engine cash ledger balance (B2; 0.0 fixed-book)
-  std::vector<double> gross_delta, gross_gamma, gross_vega, gross_theta; // book greeks on the base
+  // Book greeks on the base. NAME WARNING (C-3, pipeline-m production review):
+  // every one of these is the SIGNED aggregate `PriceTotals::<greek>`, i.e. the
+  // NET book exposure — "gross" here has always meant "whole book" rather than
+  // "sum of absolute leg exposures". The names are frozen: they are the emitted
+  // TSV header and the RunArchive column registry `kBacktestCols` whose fold is
+  // `ra_schema_hash()`, so renaming one would move a schema hash and every
+  // golden. `gross_vega_abs` below carries the genuinely gross vega instead.
+  std::vector<double> gross_delta, gross_gamma, gross_vega, gross_theta;
+  // TRUE GROSS vega: Σ|position-scaled leg vega| over the Ok lanes of the same
+  // book pricing that produced `gross_vega`, in the same per-UNIT-vol,
+  // position-scaled dollars (multiply by `kVegaPerVolPoint` for dollars per vol
+  // point). Non-negative by construction.
+  //
+  // C-3. `gross_vega` is a near-cancelling residual for any vega-neutral book —
+  // a dispersion book drives it to ~0 BY DESIGN — so the risk-normalized
+  // tearsheet statistics that call themselves gross (`avg_gross_vega`,
+  // `return_on_gross_vega`, `vega_adj_sharpe`) were dividing the run's return by
+  // that residual. They consume THIS series now.
+  //
+  // DELIBERATELY NOT SERIALIZED. It is absent from `kBacktestSeriesColumns`
+  // (backtest_series_columns.hpp) and from the frozen RunArchive registry, so
+  // `ra_schema_hash()`, every TSV header and every golden are untouched. It is
+  // therefore EMPTY — not zero-filled — on any result that did not come from
+  // `run_backtest`: a hand-built one, a TSV read, or an archive decode. The
+  // tearsheet fold falls back to |`gross_vega`| in exactly that case, which is
+  // bit-for-bit what it always did. Empty-or-row-parallel, like
+  // `nav_liquidation`.
+  std::vector<double> gross_vega_abs;
   std::vector<double> turnover_notional, turnover_vega; // traded |notional| / |vega| this step
   std::vector<double> n_open_lots;
   // Positions whose surface was absent this step; their PnL and greeks are EXCLUDED

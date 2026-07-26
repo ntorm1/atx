@@ -1001,6 +1001,12 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
   if (!want_greeks) {
     t.delta = t.gamma = t.vega = t.theta = t.rho = kNaN;
     t.vanna = t.volga = t.charm = kNaN;
+  } else {
+    // C-3: `PriceTotals::abs_vega` defaults to NaN ("not computed" — a clean 0.0
+    // would read as a genuinely gross-vega-flat book, the same convention
+    // `dP_dq` uses). This reduction DOES compute it, so open the accumulator
+    // here rather than relying on the caller's zero-initialization.
+    t.abs_vega = 0.0;
   }
   const std::size_t n = positions.size();
   for (std::size_t i = 0; i < n; ++i) {
@@ -1019,7 +1025,13 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
       const double delta_ps = skew_adjusted_delta ? (g.delta + c.vega_slope * g.vega) : g.delta;
       t.delta += w * delta_ps;
       t.gamma += w * g.gamma;
-      t.vega += w * g.vega;
+      const double leg_vega = w * g.vega;
+      t.vega += leg_vega;
+      // C-3: the GROSS companion, accumulated in the same fixed input order so
+      // it is thread-count invariant exactly as the signed sum is. `t.vega` is
+      // still `+= w * g.vega` bit-for-bit (the named temporary is the same
+      // value), so no existing number moves.
+      t.abs_vega += std::fabs(leg_vega);
       t.theta += w * g.theta;
       t.rho += w * g.rho;
       t.vanna += w * g.vanna;

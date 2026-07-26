@@ -447,7 +447,22 @@ struct PriceTotals {
   double pv{0.0};
   double delta{0.0};
   double gamma{0.0};
-  double vega{0.0};
+  double vega{0.0}; // NET (signed) position-scaled dP/dsigma, per UNIT vol
+  // GROSS vega: Σ|position-scaled dP/dsigma| over the SAME Ok lanes, in the same
+  // unit and the same fixed input order as `vega`.
+  //
+  // C-3 (pipeline-m production review). A vega-neutral book — every dispersion
+  // book — drives the SIGNED sum to a cancellation residual BY CONSTRUCTION, so
+  // a statistic that means to normalize a return by "the book's vega exposure"
+  // must divide by THIS, never by |vega|. Carried alongside `vega` rather than
+  // recovered downstream because the totals-only reduction (`price_totals`, the
+  // route `book_greeks` takes) never materializes a per-lane frame to sum.
+  //
+  // NaN unless a Greek-bearing `reduce_price_totals` computed it — never 0.0,
+  // which would read as a genuinely gross-vega-flat book (the same convention
+  // `dP_dq` uses below). In particular `reduce_risk_buckets`' per-bucket totals
+  // do NOT populate it yet and therefore report NaN, not a false zero.
+  double abs_vega{kPriceColumnNaN};
   double theta{0.0};
   double rho{0.0};
   double vanna{0.0};

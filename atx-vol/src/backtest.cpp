@@ -1600,7 +1600,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     out.cash.push_back(0.0);
     out.gross_delta.push_back(g.delta);
     out.gross_gamma.push_back(g.gamma);
-    out.gross_vega.push_back(g.vega);
+    out.gross_vega.push_back(g.vega);         // NET (signed); see backtest.hpp
+    out.gross_vega_abs.push_back(g.abs_vega); // C-3: the genuinely GROSS series
     out.gross_theta.push_back(g.theta);
     out.turnover_notional.push_back(0.0);
     out.turnover_vega.push_back(0.0);
@@ -1859,7 +1860,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     out.cash.push_back(cash_v);
     out.gross_delta.push_back(g_delta); // NET book delta = option delta + hedge shares
     out.gross_gamma.push_back(g.gamma);
-    out.gross_vega.push_back(g.vega);
+    out.gross_vega.push_back(g.vega);         // NET (signed); see backtest.hpp
+    out.gross_vega_abs.push_back(g.abs_vega); // C-3: the genuinely GROSS series
     out.gross_theta.push_back(g.theta);
     out.turnover_notional.push_back(turn_notl);
     out.turnover_vega.push_back(turn_vega);

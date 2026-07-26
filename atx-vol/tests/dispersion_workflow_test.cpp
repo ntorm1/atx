@@ -828,3 +828,83 @@ TEST(DispersionWorkflow, DrawdownStopHaltsTradingAndRecordsTheReason) {
   std::error_code error;
   fs::remove_all(fixture.dir, error);
 }
+
+// ── C-3 (pipeline-m production review) ───────────────────────────────────────
+//
+// The engine's `BacktestResult::gross_vega` column is the SIGNED aggregate
+// `PriceTotals::vega` — it is NET book vega despite its name (which is frozen by
+// the RunArchive column registry and every emitted TSV header). A vega-neutral
+// dispersion book drives that signed aggregate to a cancellation residual BY
+// CONSTRUCTION, so the tearsheet's `avg_gross_vega`, `return_on_gross_vega` and
+// `vega_adj_sharpe` — all documented in tearsheet.hpp as GROSS — were dividing
+// the run's return by ~0 while the book's actual gross leg exposure was
+// unchanged and large.
+//
+// This is a LIVE engine test on purpose: `tearsheet_test.cpp` hand-fills a
+// positive "gross" vector and therefore cannot see the engine's semantics.
+//
+// The oracle is hand-derived from the sizing contract, not from the engine.
+// `gross_index_vega` is dollars per VOL POINT; the index leg carries exactly
+// that and the VegaNeutral basket matches it, so the whole book's GROSS vega is
+// `2 * gross_index_vega` per vol point, i.e.
+// `2 * gross_index_vega / kVegaPerVolPoint` in the per-UNIT-vol, position-scaled
+// unit that `BacktestResult`'s `gross_*` greek columns are denominated in.
+TEST(DispersionWorkflow, TearsheetGrossVegaStatisticsDescribeGrossNotNetBookVega) {
+  const PitFixture fixture = make_pit_fixture("atx-disp-c3-gross-vega");
+  const std::vector<UniverseRow> schedule = static_schedule(fixture.d0);
+  const DispersionBacktestConfig config = pit_backtest_config();
+
+  auto run = run_dispersion_surface_backtest(fixture.clock, schedule, config, "SPY");
+  ASSERT_TRUE(run) << run.error().to_string();
+  const BacktestResult &track = run->track;
+  const std::size_t n = track.size();
+  ASSERT_GT(n, 1u);
+
+  // Hand-derived whole-book gross vega, per unit vol, position-scaled.
+  const double expected_gross = 2.0 * config.gross_index_vega / kVegaPerVolPoint;
+
+  double abs_net_sum = 0.0;
+  for (const double v : track.gross_vega) {
+    abs_net_sum += std::fabs(v);
+  }
+  const double mean_abs_net = abs_net_sum / static_cast<double>(n);
+
+  // PREMISE: the book really is vega-neutral, so the signed column is a residual.
+  // If this ever fails the rest of the test is meaningless rather than wrong.
+  ASSERT_LT(mean_abs_net, 1.0e-2 * expected_gross)
+      << "fixture is not vega-neutral; mean|net| = " << mean_abs_net;
+
+  // THE FIX: a published gross series, and gross-labelled statistics that consume it.
+  ASSERT_EQ(track.gross_vega_abs.size(), n)
+      << "the engine must publish a row-parallel gross (absolute) vega series";
+  double gross_sum = 0.0;
+  for (const double v : track.gross_vega_abs) {
+    ASSERT_GE(v, 0.0) << "a gross series cannot be negative";
+    gross_sum += v;
+  }
+  const double mean_gross = gross_sum / static_cast<double>(n);
+  EXPECT_GT(mean_gross, 0.5 * expected_gross)
+      << "gross vega is not the book the config asked for: " << mean_gross << " vs ~"
+      << expected_gross;
+  EXPECT_LT(mean_gross, 2.0 * expected_gross) << mean_gross;
+
+  // The three gross-labelled tearsheet statistics must be derived from it.
+  const TearSheet &sheet = run->sheet;
+  EXPECT_NEAR(sheet.avg_gross_vega, mean_gross, 1.0e-9 * mean_gross)
+      << "avg_gross_vega is not the mean of the gross series";
+  ASSERT_NE(sheet.return_on_gross_vega, 0.0)
+      << "return_on_gross_vega collapsed — it is dividing by the net residual";
+  EXPECT_NEAR(sheet.return_on_gross_vega, sheet.total_return / mean_gross,
+              1.0e-9 * std::fabs(sheet.total_return / mean_gross));
+  EXPECT_TRUE(std::isfinite(sheet.vega_adj_sharpe));
+
+  // NON-VACUITY: the retired denominator (mean|net|) is smaller by orders of
+  // magnitude, so the assertions above cannot hold under the old wiring.
+  EXPECT_GT(mean_gross, 100.0 * mean_abs_net);
+
+  std::printf("[disp-c3] mean_gross=%.4f mean_abs_net=%.6e expected=%.4f ret_on_vega=%.8f\n",
+              mean_gross, mean_abs_net, expected_gross, sheet.return_on_gross_vega);
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
