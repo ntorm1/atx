@@ -379,6 +379,12 @@ TEST(ListedDefinitionsCache, CacheRejectsTamperedPayload) {
 // edit as above, but both CRCs are restamped so the image is internally
 // self-consistent. Only the fingerprint stamped by the writer can catch it —
 // this is the assertion that fails if the fingerprint verification is removed.
+//
+// The check is now OPT-IN (default Off in Release), so this test FORCES IT ON.
+// That is the point of an explicit flag over a silent weakening: the guarantee
+// is still provable and still proved, it is simply not purchased on every
+// production read. `CacheWithTheFingerprintCheckOffAcceptsWhatOnRejects` below
+// is the other half — it states, on the SAME input, exactly what Off gives up.
 TEST(ListedDefinitionsCache, CacheRejectsTamperedPayloadEvenWithRepairedCrcs) {
   const fs::path dir = scratch_dir("tamper_crcfix");
   const fs::path file = dir / "defs.atxdefs";
@@ -389,8 +395,8 @@ TEST(ListedDefinitionsCache, CacheRejectsTamperedPayloadEvenWithRepairedCrcs) {
   std::vector<std::byte> image = read_all(file);
   const ListedDefinitionsCacheHeader header = header_of(image);
 
-  // NEGATIVE CONTROL 1: the untouched image reads green.
-  ASSERT_TRUE(read_definitions_cache(file.string(), key));
+  // NEGATIVE CONTROL 1: the untouched image reads green, with the check ON.
+  ASSERT_TRUE(read_definitions_cache(file.string(), key, DefinitionsCacheFingerprintCheck::On));
 
   const std::size_t target = static_cast<std::size_t>(header.column_block_offset) +
                              3u * 8u * static_cast<std::size_t>(header.n_rows) + 7u;
@@ -414,9 +420,56 @@ TEST(ListedDefinitionsCache, CacheRejectsTamperedPayloadEvenWithRepairedCrcs) {
                                                  repaired.size() - sizeof fixed))
       << "the test failed to repair payload_crc32c";
 
-  auto tampered = read_definitions_cache(file.string(), key);
+  auto tampered = read_definitions_cache(file.string(), key, DefinitionsCacheFingerprintCheck::On);
   EXPECT_FALSE(tampered) << "a CRC-repaired payload edit was served — the table_fingerprint "
                             "check is not load-bearing";
+}
+
+// The OTHER half of the flag, stated rather than left implicit: with the check
+// Off, the very image the test above rejects IS served. This is a GATE on the
+// flag's semantics — it fails if `Off` silently still runs the check, and it
+// makes the cost of the default visible in the suite instead of in a comment.
+//
+// What Off does NOT give up is asserted on the same object: `create()`'s
+// unconditional semantic re-validation still ran, and the CRCs still hold.
+TEST(ListedDefinitionsCache, CacheWithTheFingerprintCheckOffAcceptsWhatOnRejects) {
+  const fs::path dir = scratch_dir("fp_off");
+  const fs::path file = dir / "defs.atxdefs";
+  const ListedDefinitionTable source = sample_table();
+  const ListedDefinitionsCacheKey key = sample_key();
+  ASSERT_TRUE(write_definitions_cache(file.string(), source, key));
+
+  std::vector<std::byte> image = read_all(file);
+  const ListedDefinitionsCacheHeader header = header_of(image);
+
+  // NEGATIVE CONTROL: the untouched image reads green under BOTH settings.
+  ASSERT_TRUE(read_definitions_cache(file.string(), key, DefinitionsCacheFingerprintCheck::On));
+  ASSERT_TRUE(read_definitions_cache(file.string(), key, DefinitionsCacheFingerprintCheck::Off));
+
+  // Same one-byte edit to source_fingerprint[0], both CRCs restamped.
+  const std::size_t target = static_cast<std::size_t>(header.column_block_offset) +
+                             3u * 8u * static_cast<std::size_t>(header.n_rows) + 7u;
+  ASSERT_LT(target, image.size());
+  image[target] = static_cast<std::byte>(std::to_integer<unsigned>(image[target]) ^ 0x80u);
+  restamp_crcs(image);
+  write_all(file, image);
+
+  EXPECT_FALSE(read_definitions_cache(file.string(), key, DefinitionsCacheFingerprintCheck::On))
+      << "control: On must still reject this image";
+  auto served = read_definitions_cache(file.string(), key, DefinitionsCacheFingerprintCheck::Off);
+  ASSERT_TRUE(served) << "Off is still running the fingerprint check";
+  EXPECT_EQ(served->definitions().size(), source.definitions().size());
+  EXPECT_NE(served->fingerprint(), header.table_fingerprint)
+      << "anti-vacuity: the edit must actually have moved the table's fingerprint, or this "
+         "test would pass on an unperturbed file";
+}
+
+// CONFIGURATION PIN, not coverage. Records which way this build is compiled, so
+// a reader of the suite can tell whether the 1.4-3.8 s per-read fingerprint
+// verification is in the shipped default. Flipping
+// ATX_DEFS_CACHE_VERIFY_FINGERPRINT is a deliberate act and must move this line.
+TEST(ListedDefinitionsCache, FingerprintCheckDefaultsOffInThisBuild) {
+  EXPECT_EQ(kDefinitionsCacheFingerprintDefault, DefinitionsCacheFingerprintCheck::Off);
 }
 
 // GATE: a header byte edit must be rejected by header_crc32c.

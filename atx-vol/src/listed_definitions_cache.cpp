@@ -201,11 +201,16 @@ ListedDefinitionsCacheKey definitions_cache_key(std::string_view source_bytes) {
 }
 
 std::string definitions_cache_filename(const ListedDefinitionsCacheKey &key) {
-  char buffer[96];
-  const int written = std::snprintf(buffer, sizeof buffer, "definitions-%016llx-%llu-%u-%u.atxdefs",
-                                    static_cast<unsigned long long>(key.content_hash),
-                                    static_cast<unsigned long long>(key.source_size),
-                                    key.format_version, key.parser_revision);
+  // `abi_fold` is in the NAME as well as the key (review M1). Correctness never
+  // depended on it — the key rejects a foreign-shaped blob either way — but two
+  // builds with different `ListedContractDefinition` shapes and the same source
+  // otherwise contend for one path and ping-pong a ~300 MB write on every run.
+  char buffer[128];
+  const int written = std::snprintf(
+      buffer, sizeof buffer, "definitions-%016llx-%llu-%u-%u-%016llx.atxdefs",
+      static_cast<unsigned long long>(key.content_hash),
+      static_cast<unsigned long long>(key.source_size), key.format_version, key.parser_revision,
+      static_cast<unsigned long long>(key.abi_fold));
   if (written <= 0) {
     return std::string("definitions.atxdefs");
   }
@@ -372,7 +377,8 @@ Status write_definitions_cache(std::string_view cache_path, const ListedDefiniti
 // ── Reader ──────────────────────────────────────────────────────────────────
 
 Result<ListedDefinitionTable> read_definitions_cache(std::string_view cache_path,
-                                                     const ListedDefinitionsCacheKey &expected) {
+                                                     const ListedDefinitionsCacheKey &expected,
+                                                     DefinitionsCacheFingerprintCheck check) {
   const fs::path src{std::string(cache_path)};
   std::error_code ec;
   const std::uintmax_t on_disk = fs::file_size(src, ec);
@@ -467,6 +473,12 @@ Result<ListedDefinitionTable> read_definitions_cache(std::string_view cache_path
   if (!compute_layout(header.n_rows, n_entries, blob_len, layout)) {
     return Err(ErrorCode::ParseError, "definitions cache: implausible geometry");
   }
+  // NOTE (review M4): of the four comparisons below, `string_table_size` cannot
+  // fail — `compute_layout` derives it from `blob_len`, which was itself derived
+  // by subtracting `index_bytes` from `header.string_table_size`. It is kept for
+  // symmetry with the other three, which are real gates. Do not read it as
+  // evidence that the string table's declared size was independently checked;
+  // that check is the extent test above.
   if (layout.file_size != header.file_size ||
       layout.string_table_size != header.string_table_size ||
       layout.column_block_offset != header.column_block_offset ||
@@ -541,18 +553,22 @@ Result<ListedDefinitionTable> read_definitions_cache(std::string_view cache_path
     return Err(ErrorCode::ParseError, "definitions cache: decoded rows rejected by create()");
   }
 
-  // GUARD 4 — the reconstructed table must hash to the value the writer stamped.
-  // This is the ONE check the CRCs cannot make: the CRCs prove the bytes are the
-  // bytes that were written, this proves those bytes still MEAN the table that
-  // was written. It catches a decoder defect and a self-consistent hand-edit
-  // that a restamped CRC would wave through
-  // (ListedDefinitionsCache.CacheRejectsTamperedPayloadEvenWithRepairedCrcs).
+  // GUARD 4 — OPT-IN. The reconstructed table must hash to the value the writer
+  // stamped. This is the ONE check the CRCs cannot make: the CRCs prove the
+  // bytes are the bytes that were written, this proves those bytes still MEAN
+  // the table that was written. It catches a decoder defect and a
+  // self-consistent hand-edit that a restamped CRC would wave through
+  // (ListedDefinitionsCache.CacheRejectsTamperedPayloadEvenWithRepairedCrcs,
+  // which pins it with `check == On`).
   //
-  // It is also the single most expensive step on this path: `fingerprint()` is
-  // lazy, so on a freshly decoded table this call pays for the full canonical
-  // serialization. See the Wave E T7 report for the measured split — on the
-  // 730 MB fixture it is the majority of the read.
-  if (table->fingerprint() != header.table_fingerprint) {
+  // It is also the single most expensive step on this path by a wide margin:
+  // `fingerprint()` is lazy, so on a freshly decoded table this call pays for a
+  // full `serialize_listed_definitions` — 1.4-3.8 s AND a ~730 MB transient on
+  // the production fixture. `listed_definitions_cache.hpp` states in full why
+  // that is not worth paying on every production read once the encoded struct's
+  // shape is pinned at compile time.
+  if (check == DefinitionsCacheFingerprintCheck::On &&
+      table->fingerprint() != header.table_fingerprint) {
     return Err(ErrorCode::ParseError, "definitions cache: table fingerprint mismatch");
   }
   return table;
@@ -561,7 +577,8 @@ Result<ListedDefinitionTable> read_definitions_cache(std::string_view cache_path
 // ── The seam ────────────────────────────────────────────────────────────────
 
 Result<ListedDefinitionTable> read_listed_definitions_cached(std::string_view tsv_path,
-                                                             std::string_view cache_dir) {
+                                                             std::string_view cache_dir,
+                                                             DefinitionsCacheFingerprintCheck check) {
   // Identical read idiom to `read_listed_definitions_file` so the miss path is
   // exactly today's cost plus the key hash — the cache must not be credited with
   // an unrelated I/O change.
@@ -579,10 +596,20 @@ Result<ListedDefinitionTable> read_listed_definitions_cached(std::string_view ts
 
   const ListedDefinitionsCacheKey key = definitions_cache_key(contents);
   const fs::path cache_file = fs::path{std::string(cache_dir)} / definitions_cache_filename(key);
-  auto hit = read_definitions_cache(cache_file.string(), key);
+  auto hit = read_definitions_cache(cache_file.string(), key, check);
   if (hit) {
+    // OBSERVABILITY, not decoration. `atx::core::hash_bytes` documents itself as
+    // deterministic only WITHIN one process; the whole key rests on it also
+    // being stable ACROSS processes (measured true on this build, but not a
+    // contract). If that property is ever lost — a compiler change, an ankerl
+    // bump, a platform move — this degrades to a permanent 100% miss that still
+    // pays a ~300 MB write on every single run, and without these two lines
+    // nothing but wall time would say so.
+    std::fprintf(stderr, "listed definitions cache: HIT %s\n", cache_file.string().c_str());
     return hit;
   }
+  std::fprintf(stderr, "listed definitions cache: MISS (%s) %s\n",
+               hit.error().to_string().c_str(), cache_file.string().c_str());
 
   auto parsed = parse_listed_definitions(contents);
   if (!parsed) {

@@ -203,6 +203,13 @@ inline void definitions_cache_payload_shape_pin(const ListedContractDefinition &
 inline constexpr char kDefinitionsCacheMagic[8] = {'A', 'T', 'X', 'D', 'E', 'F', 'S', '1'};
 
 inline constexpr std::uint16_t kDefinitionsCacheMajor = 1;
+
+// RESERVED, and deliberately inert (review M3). It is stamped into the header
+// and pinned by `WrittenHeaderCarriesTheDeclaredIdentity`, but the reader does
+// NOT check it and it is NOT folded into the key — a minor bump is by
+// definition backward-compatible, so rejecting on it would turn a compatible
+// blob into a miss. `major` is the field that gates compatibility. If a future
+// minor ever carries meaning, it must be added to the key at the same time.
 inline constexpr std::uint16_t kDefinitionsCacheMinor = 0;
 
 // Wire version, folded into the key. Bump on ANY layout change.
@@ -295,6 +302,51 @@ static_assert(offsetof(ListedDefinitionsCacheHeader, pointer_bits) == 112);
 static_assert(offsetof(ListedDefinitionsCacheHeader, reserved_u16) == 114);
 static_assert(offsetof(ListedDefinitionsCacheHeader, reserved) == 116);
 
+// ── The reconstructed-table fingerprint check ───────────────────────────────
+//
+// GUARD 4 of the reader recomputes `ListedDefinitionTable::fingerprint()` on the
+// decoded table and requires it to equal the value the writer stamped. It is by
+// far the most expensive step on the read path — `fingerprint()` is lazy, so on
+// a freshly decoded table it pays for a full `serialize_listed_definitions`:
+// 1.4-3.8 s AND a ~730 MB transient allocation on the production fixture, on top
+// of the 300 MB image and the ~1 GB row vector.
+//
+// It is DEFAULT OFF in Release and FORCED ON in the tests that isolate it.
+// The three arguments that decide this:
+//
+//  1. The one failure mode it genuinely catches — an encoder that silently drops
+//     a field added to `ListedContractDefinition` — is now a BUILD ERROR (see
+//     the shape pins at the top of this header). Runtime detection of a defect
+//     the compiler refuses to build is the wrong instrument, and it was the only
+//     mode CRC + abi_fold + content-hash + the round-trip test did not already
+//     cover.
+//  2. The anti-tamper argument does not survive contact. `fingerprint()` is a
+//     PUBLIC, UNKEYED, deterministic function, so anyone able to rewrite the
+//     payload and restamp the two CRCs can restamp the fingerprint too. The
+//     threat model it encodes — an adversary who repairs exactly two of three
+//     recomputable hashes — is arbitrary.
+//  3. The reader is not left bare. `ListedDefinitionTable::create` runs
+//     UNCONDITIONALLY on every decoded row set and re-validates non-empty
+//     trade_date, nonzero instrument_id, non-empty raw_symbol,
+//     definition_ts_ns > 0, expiry_ts_ns > definition_ts_ns, finite positive
+//     multiplier, nonzero source_fingerprint, definition_ts_ns <= trade_end and
+//     the absence of duplicate keys — a substantial semantic re-validation,
+//     independent of the CRCs, on every read.
+//
+// The check is NOT deleted, because it remains the strongest available proof
+// that a decoded blob still MEANS the table that was written, and
+// `CacheRejectsTamperedPayloadEvenWithRepairedCrcs` pins it with the flag On.
+// Define `ATX_DEFS_CACHE_VERIFY_FINGERPRINT=1` to make it the build-wide
+// default, or pass `On` explicitly.
+enum class DefinitionsCacheFingerprintCheck : std::uint8_t { Off = 0, On = 1 };
+
+inline constexpr DefinitionsCacheFingerprintCheck kDefinitionsCacheFingerprintDefault =
+#if defined(ATX_DEFS_CACHE_VERIFY_FINGERPRINT) && (ATX_DEFS_CACHE_VERIFY_FINGERPRINT != 0)
+    DefinitionsCacheFingerprintCheck::On;
+#else
+    DefinitionsCacheFingerprintCheck::Off;
+#endif
+
 // ── Writer / reader ─────────────────────────────────────────────────────────
 
 // Build the whole ATXDEFS1 image in memory, write it to `<cache_path>.tmp`,
@@ -322,10 +374,12 @@ static_assert(offsetof(ListedDefinitionsCacheHeader, reserved) == 116);
 //     inside it, with the string offsets non-decreasing and terminated;
 //   * `payload_crc32c` validates over [header_size, file_size);
 //   * the decoded rows survive `ListedDefinitionTable::create`;
-//   * the reconstructed table's own `fingerprint()` equals `table_fingerprint`.
+//   * IF `check == On`, the reconstructed table's own `fingerprint()` equals
+//     `table_fingerprint` (see the note above for why that is not the default).
 // Any failure is an `Err` the caller treats as a miss.
 [[nodiscard]] Result<ListedDefinitionTable>
-read_definitions_cache(std::string_view cache_path, const ListedDefinitionsCacheKey &expected);
+read_definitions_cache(std::string_view cache_path, const ListedDefinitionsCacheKey &expected,
+                       DefinitionsCacheFingerprintCheck check = kDefinitionsCacheFingerprintDefault);
 
 // Cache file name for a key, inside `cache_dir`. Content-addressed, so two
 // different `definitions.tsv` bodies never contend for one path.
@@ -342,7 +396,14 @@ read_definitions_cache(std::string_view cache_path, const ListedDefinitionsCache
 //
 // An EMPTY `cache_dir` disables the cache entirely and this degenerates to
 // `read_listed_definitions_file`.
-[[nodiscard]] Result<ListedDefinitionTable>
-read_listed_definitions_cached(std::string_view tsv_path, std::string_view cache_dir);
+//
+// Every call logs exactly one HIT or MISS line to stderr, with the rejecting
+// guard's message on a miss. Without it a key that stopped matching — the
+// documented consequence of `hash_bytes` not being stable across processes —
+// would be a permanent 100% miss that still writes a ~300 MB blob every run, and
+// nothing but wall time would say so.
+[[nodiscard]] Result<ListedDefinitionTable> read_listed_definitions_cached(
+    std::string_view tsv_path, std::string_view cache_dir,
+    DefinitionsCacheFingerprintCheck check = kDefinitionsCacheFingerprintDefault);
 
 } // namespace atx::vol
