@@ -264,7 +264,8 @@ template <bool Trace>
                                               Side side, int *iters, int *exit_reason) {
   if constexpr (Trace) {
     *iters = 0;
-    *exit_reason = -1; // -1 none, 0 price-residual test, 1 vol-step test
+    // -1 none, 0 price-residual test, 1 vol-step test, 2 IV-below-floor clamp
+    *exit_reason = -1;
   }
   if (!std::isfinite(price) || !std::isfinite(F) || !std::isfinite(K) ||
       !std::isfinite(T) || !std::isfinite(df)) {
@@ -325,6 +326,28 @@ template <bool Trace>
       return Ok(sigma);
     }
 
+    // A true IV below the floor REPORTS the floor (types.hpp: kIvMin is "the
+    // unified IV floor ... BOTH the reported floor of every inverter and the
+    // lower bound of the American IV search bracket, so no representable IV sits
+    // below it and there is no bracket-vs-report discontinuity").
+    //
+    // The Black price is strictly increasing in σ, so a residual still positive
+    // (beyond the noise floor tested just above) with σ pinned at kIvMin proves
+    // the root lies below the floor. Terminating here is not just an early exit,
+    // it is the only correct exit: the clamp below absorbs every further step
+    // while the termination test sees the PRE-clamp `step`, which stays large —
+    // so σ would sit motionless at kIvMin until the loop exhausted kIvMaxIter and
+    // reported a spurious Unavailable, the exact bracket-vs-report discontinuity
+    // the documented floor exists to prevent. σ is clamped into [kIvMin, kIvMax]
+    // at the seed and after every step, so `<=` here is an exact test for "at the
+    // floor" without relying on floating-point equality.
+    if (sigma <= kIvMin && fval > 0.0) {
+      if constexpr (Trace) {
+        *exit_reason = 2;
+      }
+      return Ok(kIvMin);
+    }
+
     const double vega = df * F * phi_d1 * sqrt_t;
     if (vega < 1e-20) {
       // Vega collapse — typical at deep wings near expiry.
@@ -369,7 +392,8 @@ Result<double> implied_vol(double price, double F, double K, double T,
 // Test/measurement seam (not in the public header). Same inversion as
 // implied_vol, additionally reporting the number of Halley steps computed
 // (`iters`) and which termination test fired (`exit_reason`: 0 = price-residual,
-// 1 = vol-step, -1 = none/error). Used by the K1 convergence tests.
+// 1 = vol-step, 2 = IV-below-floor clamp, -1 = none/error). Used by the K1
+// convergence tests.
 Result<double> implied_vol_traced(double price, double F, double K, double T, double df, Side side,
                                   int &iters, int &exit_reason) {
   return implied_vol_impl<true>(price, F, K, T, df, side, &iters, &exit_reason);

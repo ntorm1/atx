@@ -108,6 +108,65 @@ TEST(ImpliedVol, RejectNonPositiveInputs) {
       ErrorCode::InvalidArgument);
 }
 
+// Item 1.5: a true IV below the floor must REPORT the floor, not fail.
+//
+// types.hpp documents kIvMin as "the unified IV floor ... BOTH the reported floor
+// of every inverter and the lower bound of the American IV search bracket, so no
+// representable IV sits below it and there is no bracket-vs-report
+// discontinuity". The Halley loop clamps σ into [kIvMin, kIvMax] after every
+// step but tested the PRE-clamp `step` for termination, so a sub-floor quote
+// pinned σ at kIvMin while `|step|` stayed large: the vol-step test never fired
+// and the loop exhausted kIvMaxIter into a spurious Unavailable — the exact
+// bracket-vs-report discontinuity the floor is documented to prevent.
+//
+// The grid stays at-the-money on purpose: away from ATM a sub-floor quote's time
+// value falls under the no-arb noise floor and is handled earlier by the
+// at-intrinsic clamp (already correct), so only ATM actually drives the solver
+// into the floor.
+TEST(ImpliedVol, TrueVolBelowFloor_ClampsToFloor) {
+  const double df = 0.99;
+  const double sigmas[] = {1.0e-3, 2.0e-3, 4.9e-3}; // all < kIvMin = 0.005
+  for (double F : {100.0, 5000.0})
+    for (double T : {0.05, 0.25, 1.0})
+      for (double sig : sigmas)
+        for (Side side : {Side::Call, Side::Put}) {
+          const double K = F;
+          const double price = black76_price(F, K, T, sig, df, side);
+          const auto iv = implied_vol(price, F, K, T, df, side);
+          ASSERT_TRUE(iv.has_value())
+              << "F=" << F << " T=" << T << " sig=" << sig
+              << " side=" << (side == Side::Call ? "C" : "P") << ": " << iv.error().to_string();
+          EXPECT_DOUBLE_EQ(*iv, atx::vol::kIvMin) << "F=" << F << " T=" << T << " sig=" << sig;
+        }
+}
+
+// Boundary: a quote priced exactly AT the floor inverts to the floor.
+TEST(ImpliedVol, TrueVolAtFloor_ReturnsFloor) {
+  const double F = 100.0, K = 100.0, T = 0.25, df = 0.99;
+  for (Side side : {Side::Call, Side::Put}) {
+    const double price = black76_price(F, K, T, atx::vol::kIvMin, df, side);
+    const auto iv = implied_vol(price, F, K, T, df, side);
+    ASSERT_TRUE(iv.has_value()) << iv.error().to_string();
+    EXPECT_GE(*iv, atx::vol::kIvMin); // the floor is a hard lower bound
+    EXPECT_NEAR(*iv, atx::vol::kIvMin, 1.0e-12);
+  }
+}
+
+// The other side of the boundary must be untouched: a true IV just ABOVE the
+// floor still round-trips to its own value, never collapsing onto the floor.
+TEST(ImpliedVol, TrueVolJustAboveFloor_RoundTripsUnchanged) {
+  const double F = 100.0, K = 100.0, T = 0.25, df = 0.99;
+  const double sigmas[] = {5.001e-3, 6.0e-3, 1.0e-2, 5.0e-2};
+  for (double sig : sigmas)
+    for (Side side : {Side::Call, Side::Put}) {
+      const double price = black76_price(F, K, T, sig, df, side);
+      const auto iv = implied_vol(price, F, K, T, df, side);
+      ASSERT_TRUE(iv.has_value()) << "sig=" << sig << ": " << iv.error().to_string();
+      EXPECT_NEAR(*iv, sig, 1.0e-12) << "sig=" << sig;
+      EXPECT_GT(*iv, atx::vol::kIvMin) << "sig=" << sig;
+    }
+}
+
 TEST(ImpliedVol, Sr2017Seed_ConvergesOnChainGrid) {
   // 5×5×5×5×2 grid over the equity-options envelope; every above-tick quote
   // must converge to high precision. Mirrors the C sr2017 grid test.

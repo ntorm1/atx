@@ -35,6 +35,9 @@ namespace atx::vol {
 //                 Unavailable     — solver did not converge (deep-wing /
 //                                   near-expiry vega collapse)
 //               A price at (or below) intrinsic clamps to kIvMin and succeeds.
+//               Likewise a quote whose true IV lies below kIvMin reports kIvMin
+//               and succeeds: kIvMin is the unified reported floor (types.hpp),
+//               so no result ever sits below it.
 [[nodiscard]] Result<double> implied_vol(double price, double F, double K,
                                          double T, double df, Side side);
 

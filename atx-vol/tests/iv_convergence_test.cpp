@@ -26,12 +26,14 @@
 
 #include "atx/vol/black76.hpp"
 #include "atx/vol/implied_vol.hpp"
+#include "atx/vol/types.hpp" // kIvMin
 
 namespace atx::vol {
 
 // Test/measurement seam defined in src/implied_vol.cpp (not in the public
 // header). Reports the Halley-step count and which termination test fired
-// (exit_reason: 0 = price-residual, 1 = vol-step, -1 = none/error).
+// (exit_reason: 0 = price-residual, 1 = vol-step, 2 = IV-below-floor clamp,
+// -1 = none/error).
 Result<double> implied_vol_traced(double price, double F, double K, double T, double df, Side side,
                                   int &iters, int &exit_reason);
 
@@ -107,6 +109,27 @@ TEST(IvConvergence, RoundTripMachinePrecisionAcrossGrid) {
   EXPECT_LT(max_rel, 1e-11) << "grid points=" << n << " max_rel=" << max_rel;
   // Emit the achieved figure so the ledger can quote the real number.
   std::printf("[IvConvergence] grid points=%d max_rel_err=%.3e\n", n, max_rel);
+}
+
+// Item 1.5 — termination, not exhaustion, below the vol floor.
+//
+// With σ pinned at kIvMin by the post-step clamp, the vol-step test sees the
+// PRE-clamp `step` (still large), so the loop used to run out kIvMaxIter and
+// report Unavailable. It must now exit through the floor clamp (exit_reason == 2)
+// within a couple of Halley steps. Value-level coverage lives in
+// implied_vol_test.cpp; this asserts the termination PATH.
+TEST(IvConvergence, BelowFloorTerminatesOnFloorClamp) {
+  const double F = 100.0, K = 100.0, T = 0.25, df = 0.99;
+  const double sigma = 0.002; // < kIvMin = 0.005
+  const double price = black76_price(F, K, T, sigma, df, Side::Call);
+
+  int iters = -1, exit_reason = -99;
+  const Result<double> iv = implied_vol_traced(price, F, K, T, df, Side::Call, iters, exit_reason);
+  ASSERT_TRUE(iv.has_value()) << iv.error().to_string();
+  EXPECT_DOUBLE_EQ(*iv, kIvMin);
+  EXPECT_EQ(exit_reason, 2) << "expected floor-clamp termination, got reason=" << exit_reason
+                            << " after " << iters << " Halley steps";
+  EXPECT_LE(iters, 2) << "iters=" << iters;
 }
 
 // Low-notional / small-vega quotes keep the historical absolute-1e-12 behaviour
