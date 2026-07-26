@@ -132,8 +132,9 @@ public:
   //
   // B1 subset-deserialize: `referenced_uids`, when non-empty, restricts the
   // deserialize to the archive directory entries whose uid is referenced (dropping
-  // the whole-board `reconstruct_all_with_provenance`); if none match, the whole
-  // board is loaded. Empty (the default) keeps the whole-board load. `uid_of` still
+  // the whole-board `reconstruct_all_with_provenance`); if none match, the snapshot
+  // contains an empty SurfaceSet and reads only timestamp metadata from one mapped
+  // record. Empty (the default) keeps the whole-board load. `uid_of` still
   // resolves every archived name regardless. NB: while the pricer's SurfaceSet takes
   // `const PricedSurface*` (seam §6), the subset is reconstructed owned, not served
   // zero-copy — the win is the reduced surface count, not zero-allocation.

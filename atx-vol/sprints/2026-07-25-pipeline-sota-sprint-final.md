@@ -4,6 +4,14 @@ Plan: `atx-vol/sprints/2026-07-21-atx-vol-pipeline-sota-sprint.md`
 Integration trunk: **`feat/pipeline-m` @ `b056538`**.
 Local `main` is **untouched at `2858cab`** and was verified so after every commit.
 
+> **Post-review addendum (2026-07-26):** this file is the historical sprint-close
+> snapshot at `b056538`. The subsequent production review found additional
+> correctness, recovery, scale, and product-contract defects. Their resolutions and
+> the revised acceptance/defer boundary are authoritative in
+> `atx-vol/docs/reviews/2026-07-26-pipeline-m-code-review-remediation.md`. In
+> particular, the open-item and next-step lists below must not be read as current
+> branch status.
+
 Supersedes `2026-07-25-pipeline-sota-sprint-status-update.md`, which was written at the second stop
 with two agents still running and is stale in its §1, §4, §7 and §8.
 

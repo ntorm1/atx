@@ -25,7 +25,7 @@
 #include "american_boundary_avx2_kernel.hpp"
 
 #include "atx/vol/american.hpp" // AmericanGreeks, classify_regime, ExerciseRegime
-#include "atx/vol/counters.hpp" // ledger::AlBoundarySolves — SIMD-invariant solve ledger
+#include "atx/vol/counters.hpp" // BoundarySolves + always-on SIMD-invariant solve ledger
 
 #include <cstddef>
 #include <cstdint>
@@ -252,6 +252,7 @@ void american_put_greeks_batch_avx2(const double* S, const double* K, const doub
             }
             out_greeks[base + l] = g;
             handled[base + l] = true;
+            ATX_VOL_COUNT_N(BoundarySolves, bundle_solves);
             counters::ledger::bump(counters::ledger::Solve::AlBoundarySolves, bundle_solves);
         }
         (void)kNaN;
@@ -459,6 +460,7 @@ void american_call_greeks_batch_avx2(const double* S, const double* K, const dou
             }
             out_greeks[base + l] = g;
             handled[base + l] = true;
+            ATX_VOL_COUNT_N(BoundarySolves, bundle_solves);
             counters::ledger::bump(counters::ledger::Solve::AlBoundarySolves, bundle_solves);
         }
     }

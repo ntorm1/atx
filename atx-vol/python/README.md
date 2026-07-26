@@ -196,11 +196,22 @@ frame = av.QuoteFrame.from_arrays(
     strike=strike, side=side,              # side: int(av.Side.CALL) / int(av.Side.PUT)
     bid=bid, ask=ask,                      # numpy float64 columns
 )
-chain = av.OptionChain.from_frame(frame, av.MarketEnv.flat(600.0, 0.043, now_ns))
+env = av.MarketEnv.flat(600.0, 0.043, now_ns)
+# Optional validated non-flat zero-rate curve. Empty means env.flat_rate.
+env.yield_curve = av.YieldCurve.create(
+    [0.05, 0.25, 1.0, 2.0],
+    [0.041, 0.042, 0.044, 0.045],
+)
+chain = av.OptionChain.from_frame(frame, env)
 
 cfg = av.PricerConfig()
 cfg.preset = av.FitPreset.ROBUST
-cfg.curve_kind = av.VolCurveKind.CONVEX_DENSE   # None => the policy routes it
+curve = av.CurveConfig()
+curve.kind = av.VolCurveKind.CONVEX_DENSE
+curve.convex.lambda_ = 2.5e-3
+curve.convex.node_cap = 32
+curve.parametric.huber_k = 1.25
+cfg.curve = curve                    # None => the profile policy routes it
 fitter = av.PricerFitter(cfg)
 fitter.fit(chain)
 
@@ -224,6 +235,9 @@ Notes that matter:
   and duplicates — the quote-update path, with work proportional to the selection.
 - `fit`, `value_chain` and `to_priced_surface` all release the GIL.
 - `OutputField` is a bit set: `MODEL_IV | GREEKS` works exactly as in C++.
+- `CurveConfig` exposes its value-owning convex, parametric and spline knobs.
+  `SplineFitOpts.grid` is read-only because the C++ field is a borrowed span
+  over the library's standard grid; the remaining spline knobs are writable.
 
 ## Backtesting
 
@@ -249,6 +263,12 @@ cfg.hedge = av.HedgeSpec(av.HedgeSpec.Kind.DELTA_TO_ZERO, av.HedgeSpec.Cadence.D
 
 run_cfg = av.RunConfig()
 run_cfg.snapshot_cache = av.SnapshotCache()
+run_cfg.reconcile_nav = True
+run_cfg.book_entry_fill_slippage = True
+run_cfg.reconcile_nav_tol = 1.0e-6
+run_cfg.financing.share_dividends = [
+    av.ShareDividend(uid=123, ex_ts_ns=ex_date_ns, amount=0.42)
+]
 
 result = av.run_backtest(
     clock, av.DeclarativeStrategy(av.make_dispersion_strangle_spec(cfg)), run_cfg
@@ -257,6 +277,7 @@ sheet = av.tearsheet(result)
 print(sheet.total_return, sheet.sharpe, sheet.max_drawdown)
 
 series = result.to_dict()          # every column as a NumPy array
+series["nav_liquidation"]          # populated when reconcile_nav is enabled
 av.write_backtest_pnl_tsv(result, {"strategy": "spy_dispersion_vega_flat"}, "pnl_track.tsv")
 ```
 
@@ -271,6 +292,15 @@ the reported count.
 `tests/test_backtest.py::test_run_config_defaults_mirror_the_engine_header` pins
 the current values so an engine-side flip is reviewed, not discovered at a call
 site.
+
+The projection-specific `DispersionBacktestConfig` exposes the same material
+controls as C++: side, multiplier, risk limits, weighting and strike policies,
+hedge kind/cadence/band, and the nested `RunConfig`. Both
+`make_dispersion_backtest_strategy` and `run_dispersion_backtest` accept either
+a frozen `DispersionUniverse` or an effective-dated `list[UniverseRow]`; the
+latter re-resolves membership point-in-time on every step. Listed replay accepts
+explicit `ScheduleMarkPolicy` and `ScheduleFillPolicy` arguments, including
+quote-mid and cross-spread fills.
 
 A corpus can also be authored from Python: build a `CurveSurface` with
 `push_essvi`, seal it via `PricedSurface.create`, and archive a partition with
@@ -295,17 +325,25 @@ report.add(Section("Result", body=[Figure(svg, title="Cumulative P&L")]))
 report.write("report.html")
 ```
 
-To render a `spy_dispersion_backtest` run directory directly:
+To render a shipped `spy_dispersion_backtest` run directory directly:
 
 ```python
 from atxvol.report.dispersion import build_report_from_run
 build_report_from_run("runs/golden-run", "pnl_track.html")
 ```
 
-The renderer looks for `surface_pnl_track.tsv`, `pnl_track.tsv`,
-`surface_backtest.tsv` and `backtest.tsv` in that order, and merges metadata from
-`run_spec.tsv`, `surface_tearsheet.tsv` and the track's own `# key=value` header
-(closest to the numbers wins).
+The renderer first opens `run.atxrun` and reads its `backtest` section. This is
+the output published by the shipped `run-backtest` CLI; no loose result TSV is
+required. For older runs it falls back to `surface_pnl_track.tsv`,
+`pnl_track.tsv`, `surface_backtest.tsv` and `backtest.tsv` in that order. It
+merges metadata from `run_spec.tsv`, the effective `run_config.tsv`,
+`surface_tearsheet.tsv`, and the archive or track metadata (closest to the
+numbers wins).
+
+Legacy loose TSV input is schema-aware: required economics must be present or
+the renderer refuses the run instead of folding binding-created zero
+placeholders. Optional risk/counter omissions are called out as unavailable and
+their panels are omitted.
 
 ### The friction regime is mandatory
 
@@ -380,23 +418,24 @@ A raised exception from a batch function always means the *call* was malformed
 (shape mismatch, wrong rank, or an unrecognised `side` code), never that one lane
 misbehaved.
 
-Two qualifications, because `status == av.STATUS_OK` is not the same predicate
-everywhere:
+Two batch-specific details:
 
-- **`PricedSurface.grid` has one status column over columns that fail
-  independently.** `status[i]` is the *first* failure of (`fair_value`,
-  `greeks`), and `iv` / `total_variance` never feed it at all — out of domain
-  they return a bare NaN, so a NaN `iv` can report `STATUS_OK`. Filtering a grid
-  with `ok = status == av.STATUS_OK` therefore discards valid marks: if
-  `fair_value` failed and `greeks` did not, all eight Greek columns are good. Use
-  `np.isfinite(cols[name])` **per column** as the usability filter, and read
-  `status` for *why* a column failed rather than *which* one did.
-- **`american_price_batch` / `american_greeks_batch` carry a 2-valued channel in
-  an 11-valued type.** Their kernel reports `LaneStatus::Ok | Unsupported`, not an
-  `atx::core::Status`, and `Unsupported` is mapped onto
-  `int(ErrorCode.NOT_IMPLEMENTED)` — "outside this route's supported regime". It
-  cannot be told apart from a genuine `NOT_IMPLEMENTED`. `implied_vol_batch` and
-  `american_implied_vol_batch` do carry the true per-lane code, as does
+- **`PricedSurface.grid` has lossless per-family channels.** Read
+  `iv_status`/`iv_valid`, `total_variance_status`/`total_variance_valid`,
+  `fair_value_status`/`fair_value_valid`, and
+  `greeks_status`/`greeks_valid`; each Greek additionally has its own
+  `<name>_valid` mask. Families fail independently. The compatibility
+  `status` column is retained as the first failure in that order, but new code
+  should not use it to decide which columns are usable. Because the C++ IV and
+  variance queries return bare doubles, a non-finite value maps to
+  `ErrorCode.OUT_OF_RANGE`; the Result-returning families retain their exact
+  codes.
+- **`american_price_batch` / `american_greeks_batch` carry a distinct two-state
+  regime channel.** Their kernel reports `LaneStatus::Ok | Unsupported`, not an
+  `atx::core::Status`; `Unsupported` maps to the dedicated negative
+  `AMERICAN_BATCH_UNSUPPORTED_REGIME`, so it cannot be confused with a genuine
+  `ErrorCode.NOT_IMPLEMENTED`. `implied_vol_batch` and
+  `american_implied_vol_batch` carry the true per-lane code, as does
   `american_price_batch` on its non-default `method` / `opts` route (which runs
   the scalar pricer and therefore has real codes to report).
 

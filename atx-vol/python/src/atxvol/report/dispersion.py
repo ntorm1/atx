@@ -1,9 +1,9 @@
 """Build the SPY listed-options dispersion backtest report.
 
-Renders the output of `examples/spy_dispersion_backtest.cpp`
-(`run_surface_backtest_command` -> `write_backtest_tsv` -> `surface_backtest.tsv`)
-as one self-contained HTML file, and doubles as the worked example for the
-component library.
+Renders the output of `examples/spy_dispersion_backtest.cpp` as one
+self-contained HTML file, preferring the shipped CLI's `run.atxrun` archive and
+falling back to legacy loose TSV tracks. It also doubles as the worked example
+for the component library.
 
 The strategy in that run is the traditional dispersion proxy: a SHORT SPY ATM
 straddle against LONG constituent ATM straddles, sized vega-flat at entry on the
@@ -78,6 +78,25 @@ TRACK_NAMES = (
     "backtest.tsv",
 )
 
+# Columns the dispersion report economically folds. A loose TSV missing any of
+# these is not renderable: BacktestResult must remain row-consistent and
+# therefore has zero-filled placeholders, but omitted economics must never
+# become real zeroes in a headline or attribution closure.
+REQUIRED_REPORT_COLUMNS = frozenset({
+    "date", "ts_ns", "pnl_total", "pnl_delta", "pnl_gamma", "pnl_vega",
+    "pnl_vanna", "pnl_volga", "pnl_theta", "pnl_rho", "pnl_charm",
+    "pnl_unexplained", "pnl_settlement", "pnl_shares", "financing", "cost",
+    "nav", "gross_gamma", "gross_vega", "turnover_notional", "turnover_vega",
+})
+
+# These fields enrich risk/invariant panels but do not enter the economic fold.
+# A legacy TSV may omit them; the report labels them unavailable and omits the
+# corresponding chart instead of presenting resize-created zeroes.
+OPTIONAL_REPORT_COLUMNS = frozenset({
+    "cash", "gross_delta", "gross_theta", "n_open_lots", "n_unpriced_lots",
+    "n_unpriced_greeks",
+})
+
 # Attribution axes. Display order == palette slot order, which is the exact
 # arrangement the palette was validated in: permuting the two only weakens the
 # adjacent-pair CVD separation. Color follows the axis, never its rank, so
@@ -118,58 +137,84 @@ def build_report_from_run(run_dir: str, path: str, *, label: str = "",
                           section: str = "backtest") -> str:
     """Render a `spy_dispersion_backtest` run directory into an HTML report.
 
-    Reads economics from the run's ``run.atxrun`` RunArchive when present. Legacy
-    loose-series names in :data:`TRACK_NAMES` remain a compatibility fallback for
-    callers that produce pre-cutover run directories.
-
-    ``section`` selects which economics to render. The archive carries several
-    backtest-shaped sections — ``backtest`` (the listed run, the default),
-    ``projected_cold``, ``projected_nodiv`` — so the same run directory can produce
-    a report per route instead of only the listed one.
-
-    Authored inputs stayed text through the cutover, so ``run_spec.tsv`` is still
-    read from disk. ``backtest_counters.tsv`` did not survive it and has no archive
-    section, so the counters panel renders from whatever the archive ``meta``
-    carries; the file is still honoured when a pre-cutover run directory has one.
+    ``run.atxrun`` is authoritative when present; ``TRACK_NAMES`` are legacy
+    fallbacks. Raises ``ValueError`` before folding a loose TSV that omits
+    required economics, and ``atxvol.AtxError`` with
+    ``code == ErrorCode.INVALID_ARGUMENT`` if the run carries no
+    ``friction_regime`` — see ``REGIMES``.
     """
-    archive = os.path.join(run_dir, "run.atxrun")
-    if os.path.exists(archive):
-        result, meta, _extra = read_backtest_archive_result(archive, section)
+    archive = run_dir if os.path.isfile(run_dir) else os.path.join(run_dir, "run.atxrun")
+    sidecar_dir = os.path.dirname(archive) if os.path.isfile(run_dir) else run_dir
+    source = ""
+    if os.path.isfile(archive):
+        result, meta, extra = read_backtest_archive_result(archive, section)
+        columns_present = extra.columns_present
+        source = f"run.atxrun · {section} section"
     else:
         if section != "backtest":
             raise FileNotFoundError(
                 f"{archive}: section {section!r} requires a RunArchive"
             )
-        backtest = next(
-            (
-                candidate
-                for name in TRACK_NAMES
-                if os.path.exists(candidate := os.path.join(run_dir, name))
-            ),
-            "",
-        )
+        backtest = ""
+        for name in TRACK_NAMES:
+            candidate = os.path.join(sidecar_dir, name)
+            if os.path.exists(candidate):
+                backtest = candidate
+                break
         if not backtest:
             raise FileNotFoundError(
-                f"{archive}: no RunArchive or legacy backtest series found "
-                f"(looked for {', '.join(TRACK_NAMES)})"
+                f"{run_dir}: no backtest series found (looked for run.atxrun, "
+                + ", ".join(TRACK_NAMES) + ")"
             )
-        result, meta, _extra = read_backtest_tsv(backtest)
+        result, meta, extra = read_backtest_tsv(backtest)
+        columns_present = extra.columns_present
+        source = f"{os.path.basename(backtest)} · legacy loose TSV"
 
-    # Weakest to strongest: authored run spec, legacy tearsheet metrics, then
-    # the economics source's own metadata (archive meta or loose-track header).
+    missing_required = sorted(REQUIRED_REPORT_COLUMNS - columns_present)
+    if missing_required:
+        raise ValueError(
+            f"{source}: missing required dispersion-report columns: "
+            f"{', '.join(missing_required)}. Refusing to treat omitted economics as zero."
+        )
+
+    # Precedence, weakest first: resolved spec, effective config, legacy
+    # tearsheet metadata, then archive/track metadata — closest to the numbers
+    # wins.
     spec: dict[str, str] = {}
-    for name in ("run_spec.tsv", "surface_tearsheet.tsv"):
-        candidate = os.path.join(run_dir, name)
+    for name in ("run_spec.tsv", "run_config.tsv", "surface_tearsheet.tsv"):
+        candidate = os.path.join(sidecar_dir, name)
         if os.path.exists(candidate):
             spec.update(read_kv_tsv(candidate))
     spec.update(meta)
+    # The shipped CLI's effective config spells this key out; legacy report
+    # metadata used the shorter name.
+    if DETAIL_KEY not in spec and "friction_regime_detail" in spec:
+        spec[DETAIL_KEY] = spec["friction_regime_detail"]
 
-    counters_path = os.path.join(run_dir, "backtest_counters.tsv")
+    counters_path = os.path.join(sidecar_dir, "backtest_counters.tsv")
     counters = read_kv_tsv(counters_path) if os.path.exists(counters_path) else {}
 
     # The fold is the library's, not a Python reimplementation.
     sheet = _av.tearsheet(result)
-    return _render(result, sheet, spec, counters, path, label or spec.get("label", ""))
+    return _render(
+        result, sheet, spec, counters, path, label or spec.get("label", ""),
+        columns_present=columns_present, source=source,
+    )
+
+
+def _binding_result(result) -> "_av.BacktestResult":
+    """Materialize a RunArchive section into the binding's foldable result."""
+    if isinstance(result, _av.BacktestResult):
+        return result
+    out = _av.BacktestResult()
+    out.resize(len(result))
+    out.date = list(result.date)
+    out.ts_ns = list(result.ts_ns)
+    for name, values in result.series.items():
+        if hasattr(out, name):
+            setattr(out, name, values)
+    out.validate()
+    return out
 
 
 def _regime(spec: Mapping[str, str], source: str) -> tuple[str, str, str, str]:
@@ -206,7 +251,8 @@ def _regime(spec: Mapping[str, str], source: str) -> tuple[str, str, str, str]:
 
 
 def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
-            path: str, label: str) -> str:
+            path: str, label: str, *, columns_present: frozenset[str] | None = None,
+            source: str = "in-memory BacktestResult") -> str:
     # Before anything is computed, let alone written: no regime, no report.
     regime, regime_tone, regime_badge, regime_gloss = _regime(spec, label or "this run")
     # The short tag repeated on every headline tile, so no number can be read
@@ -215,6 +261,8 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
     tag = f"regime: {regime}"
 
     cols = result.to_dict()
+    present = columns_present if columns_present is not None else frozenset(cols)
+    missing_optional = sorted(OPTIONAL_REPORT_COLUMNS - present)
     dates = list(cols["date"])
     ticks = _short(dates)
     nav = [float(v) for v in cols["nav"]]
@@ -234,6 +282,8 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
             return float(spec[key])
         except (KeyError, ValueError):
             return default
+    delta_band = num("delta_band", 0)
+    delta_band_text = f"{delta_band:.10g}"
 
     report = Report(
         title="SPY Listed-Options Dispersion",
@@ -258,7 +308,7 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
             # is exactly what it meant on this route BEFORE E1, so the ambiguity is a live
             # 100x. E1 landed after this renderer was written and could not reach it.
             ("Index vega", f"{_money(num('gross_index_vega', 10000))}/vol pt"),
-            ("Delta band", f"{num('delta_band', 0):.0f}"),
+            ("Delta band", delta_band_text),
         ),
         colophon=(
             # The colophon is a raw-markup channel by design (components.Report
@@ -266,12 +316,11 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
             # has to be escaped on the way in: a '<' in a path, label or spec value
             # otherwise corrupts — or injects into — the document.
             f"<b>Run</b> {esc(label)}" if label else "<b>Run</b> spy_dispersion_backtest",
-            "<b>Source</b> examples/spy_dispersion_backtest.cpp · "
-            "run_surface_backtest_command → write_backtest_tsv → surface_backtest.tsv",
+            f"<b>Source</b> {esc(source)}",
             f"<b>Data</b> {esc(spec.get('opra_root', 'OPRA'))} · flat rate "
             f"{num('flat_rate', 0.043):.3f} · min names {esc(spec.get('min_names', '?'))} · "
             f"weight coverage ≥ {esc(spec.get('min_weight_coverage', '?'))}",
-            "<b>Report</b> rendered by atxvol.report from the engine's TSV — "
+            "<b>Report</b> rendered by atxvol.report from the engine's persisted series — "
             "metrics folded by atx-vol's own tearsheet",
         ),
     )
@@ -284,6 +333,15 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
         aside=f"cost {_money(cost, 2)}" + (f"  =  {share}" if share else ""),
         tone=regime_tone,
     ))
+    if missing_optional:
+        report.add(Banner(
+            badge="PARTIAL LOOSE TSV",
+            detail=(
+                "Unavailable optional columns: " + ", ".join(missing_optional)
+                + ". Related panels and invariant values are omitted, not treated as zero."
+            ),
+            tone="warn",
+        ))
 
     # ── 01 Headline ─────────────────────────────────────────────────────────
     up = sum(1 for v in daily[1:] if v > 0)
@@ -292,7 +350,8 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
         "Headline",
         lede=(
             "Every figure below is folded by the atx-vol tearsheet from the engine's own "
-            "TSV; the report layer formats, it does not compute. Every tile is captioned "
+            "persisted series; the report layer formats, it does not compute. Every tile "
+            "is captioned "
             "with the execution regime, because on this strategy the headline is "
             "friction-dominated and its sign is a function of the regime."
         ),
@@ -425,7 +484,7 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
                 f"<span class='mono'>{_money(closure, 6)}</span> against a total return of "
                 f"<span class='mono'>{_money(total, 6)}</span> — residual "
                 f"<span class='mono'>{residual:.3e}</span>. This is the same gate the C++ "
-                "tearsheet test asserts, re-evaluated here after a full TSV round-trip."
+                "tearsheet test asserts, re-evaluated after loading the persisted series."
             ),
         ],
     ))
@@ -438,7 +497,7 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
         ("Gross theta", "gross_theta", 0, "Daily carry, dollars"),
         ("Net delta", "gross_delta", 3, "After the daily close hedge"),
     ):
-        if key in cols:
+        if key in present:
             panels.append((
                 name,
                 charts.small_multiple([float(v) for v in cols[key]], ticks,
@@ -446,9 +505,31 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
                 note,
             ))
 
-    max_delta = max((abs(float(v)) for v in cols.get("gross_delta", [0.0])), default=0.0)
-    peak_lots = max((float(v) for v in cols.get("n_open_lots", [0.0])), default=0.0)
-    unpriced = sum(float(v) for v in cols.get("n_unpriced_lots", []))
+    max_delta = (
+        max((abs(float(v)) for v in cols["gross_delta"]), default=0.0)
+        if "gross_delta" in present else None
+    )
+    peak_lots = (
+        max((float(v) for v in cols["n_open_lots"]), default=0.0)
+        if "n_open_lots" in present else None
+    )
+    unpriced = (
+        sum(float(v) for v in cols["n_unpriced_lots"])
+        if "n_unpriced_lots" in present else None
+    )
+
+    if max_delta is None:
+        delta_caption = (
+            f"Net delta is unavailable in this loose TSV. The configured per-underlying "
+            f"close-hedge band is <b>{delta_band_text}</b>; breaches of that band trigger "
+            "a trade back to zero."
+        )
+    else:
+        delta_caption = (
+            f"Peak recorded |net delta| is <b>{max_delta:.1e}</b> under the configured "
+            f"per-underlying close-hedge band of <b>{delta_band_text}</b>; breaches of "
+            "that band trigger a trade back to zero."
+        )
 
     report.add(Section(
         "Book risk",
@@ -461,9 +542,7 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
                 panels, columns=2,
                 title="Book greeks through the run",
                 caption=(
-                    f"Net delta stays within <b>{max_delta:.1e}</b> of zero across the "
-                    "whole track: the daily delta-to-zero hedge with a zero band is doing "
-                    "exactly what it claims. Gross vega is the constrained quantity — the "
+                    delta_caption + " Gross vega is the constrained quantity — the "
                     "index leg is scaled so index and basket vega offset at entry."
                 ),
             ),
@@ -471,11 +550,14 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
             Table(
                 [Column("Invariant"), Column("Observed", mono=True), Column("Source")],
                 [("Attribution closure", f"{residual:.3e}", "tearsheet vs sum of axes"),
-                 ("Peak |net delta|", f"{max_delta:.3e}", "gross_delta"),
-                 ("Peak open lots", f"{peak_lots:.0f}", "n_open_lots"),
-                 ("Unpriced lots", f"{unpriced:.0f}", "n_unpriced_lots"),
+                 ("Peak |net delta|", f"{max_delta:.3e}" if max_delta is not None else "--",
+                  "gross_delta" if max_delta is not None else "unavailable"),
+                 ("Peak open lots", f"{peak_lots:.0f}" if peak_lots is not None else "--",
+                  "n_open_lots" if peak_lots is not None else "unavailable"),
+                 ("Unpriced lots", f"{unpriced:.0f}" if unpriced is not None else "--",
+                  "n_unpriced_lots" if unpriced is not None else "unavailable"),
                  ("Sessions", f"{n}", "recorded rows")],
-                caption="Engine invariants, read back from the TSV.",
+                caption="Engine invariants, read back from the persisted series.",
             ),
         ],
     ))

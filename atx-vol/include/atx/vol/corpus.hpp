@@ -420,6 +420,10 @@ struct CorpusPhaseTimings {
   // Diagnostic only -- never serialized, so they cannot move an output byte.
   std::uint64_t reclaimed_inner_boards{0};
   std::uint64_t inner_worker_slots{0};
+  // Process CPU consumed strictly inside run_bounded_fit_tasks. This is the
+  // occupancy numerator; unlike whole-process CPU it cannot charge parallel
+  // OPRA ingest or serial publication work to fitting.
+  double fit_fanout_process_cpu_s{0.0};
 };
 
 [[nodiscard]] CorpusPhaseTimings corpus_phase_timings() noexcept;
@@ -488,6 +492,10 @@ public:
   // date, but only after the whole batch's fan-out completes.
   [[nodiscard]] Status append_dates(std::span<const DateCells> dates);
 
+  // Publish manifest.tsv + quality.tsv as one recoverable generation. The
+  // durable indexes.commit marker is the commit point; restart discards any
+  // one-file/two-file generation left before that marker and reconstructs it
+  // from the committed per-date checkpoints (which use the same protocol).
   [[nodiscard]] Result<QualifiedCorpusManifest> finish();
 
 private:

@@ -134,6 +134,32 @@ void bind_dispersion(py::module_ &m) {
       py::arg("rows"));
 
   // ── Projection route ──
+  py::enum_<WeightingScheme>(m, "WeightingScheme")
+      .value("VEGA_NEUTRAL", WeightingScheme::VegaNeutral)
+      .value("EQUAL_VEGA", WeightingScheme::EqualVega)
+      .value("GAMMA_NEUTRAL", WeightingScheme::GammaNeutral)
+      .value("THETA_NEUTRAL", WeightingScheme::ThetaNeutral);
+  py::enum_<StrikeRule>(m, "StrikeRule")
+      .value("ATM_FORWARD_STRADDLE", StrikeRule::AtmForwardStraddle)
+      .value("FIXED_MONEYNESS", StrikeRule::FixedMoneyness)
+      .value("DELTA_STRANGLE", StrikeRule::DeltaStrangle);
+  py::class_<StrikePolicy>(m, "StrikePolicy")
+      .def(py::init<>())
+      .def_readwrite("rule", &StrikePolicy::rule)
+      .def_readwrite("log_moneyness", &StrikePolicy::log_moneyness)
+      .def_readwrite("target_abs_delta", &StrikePolicy::target_abs_delta);
+  py::enum_<RiskBreachAction>(m, "RiskBreachAction")
+      .value("CLAMP", RiskBreachAction::Clamp)
+      .value("HALT", RiskBreachAction::Halt);
+  py::class_<DispersionRiskLimits>(m, "DispersionRiskLimits")
+      .def(py::init<>())
+      .def_readwrite("max_gross_vega", &DispersionRiskLimits::max_gross_vega)
+      .def_readwrite("max_gross_notional",
+                     &DispersionRiskLimits::max_gross_notional)
+      .def_readwrite("capital", &DispersionRiskLimits::capital)
+      .def_readwrite("drawdown_stop", &DispersionRiskLimits::drawdown_stop)
+      .def_readwrite("action", &DispersionRiskLimits::action);
+
   py::class_<DispersionBacktestConfig>(m, "DispersionBacktestConfig")
       .def(py::init<>())
       .def_readwrite("target_dte_days", &DispersionBacktestConfig::target_dte_days)
@@ -156,7 +182,14 @@ void bind_dispersion(py::module_ &m) {
       .def_readwrite("project_to_calendar_expiry",
                      &DispersionBacktestConfig::project_to_calendar_expiry)
       .def_readwrite("record_diagnostics", &DispersionBacktestConfig::record_diagnostics)
-      .def_readwrite("run", &DispersionBacktestConfig::run);
+      .def_readwrite("run", &DispersionBacktestConfig::run)
+      .def_readwrite("side", &DispersionBacktestConfig::side)
+      .def_readwrite("multiplier", &DispersionBacktestConfig::multiplier)
+      .def_readwrite("hedge_kind", &DispersionBacktestConfig::hedge_kind)
+      .def_readwrite("hedge_cadence", &DispersionBacktestConfig::hedge_cadence)
+      .def_readwrite("limits", &DispersionBacktestConfig::limits)
+      .def_readwrite("weighting", &DispersionBacktestConfig::weighting)
+      .def_readwrite("strike", &DispersionBacktestConfig::strike);
 
   py::class_<DispersionStrategy, IStrategy>(m, "DispersionStrategy");
 
@@ -170,6 +203,19 @@ void bind_dispersion(py::module_ &m) {
       "straddles, delta-hedged daily).");
 
   m.def(
+      "make_dispersion_backtest_strategy",
+      [](std::vector<UniverseRow> schedule,
+         const DispersionBacktestConfig &config,
+         const std::string &index_symbol) {
+        return make_dispersion_backtest_strategy(
+            std::move(schedule), config, index_symbol);
+      },
+      py::arg("schedule"), py::arg("config") = DispersionBacktestConfig{},
+      py::arg("index_symbol") = "SPY",
+      "Point-in-time projection route: re-resolve membership from the effective-"
+      "dated schedule on every step.");
+
+  m.def(
       "run_dispersion_backtest",
       [](const Clock &clock, const DispersionUniverse &universe,
          const DispersionBacktestConfig &config) {
@@ -180,7 +226,30 @@ void bind_dispersion(py::module_ &m) {
       "Projection route: run the canonical surface-only dispersion strategy "
       "over an already-qualified Clock.");
 
+  m.def(
+      "run_dispersion_backtest",
+      [](const Clock &clock, std::vector<UniverseRow> schedule,
+         const DispersionBacktestConfig &config,
+         const std::string &index_symbol) {
+        py::gil_scoped_release release;
+        return atxvol::python::unwrap(run_dispersion_backtest(
+            clock, std::move(schedule), config, index_symbol));
+      },
+      py::arg("clock"), py::arg("schedule"),
+      py::arg("config") = DispersionBacktestConfig{},
+      py::arg("index_symbol") = "SPY",
+      "Point-in-time projection route: membership is re-resolved from the "
+      "effective-dated schedule at each backtest step.");
+
   // ── Listed route ──
+  py::enum_<ScheduleMarkPolicy>(m, "ScheduleMarkPolicy")
+      .value("EXACT_ARCHIVE", ScheduleMarkPolicy::ExactArchive)
+      .value("RECORD", ScheduleMarkPolicy::Record);
+  py::enum_<ScheduleFillPolicy>(m, "ScheduleFillPolicy")
+      .value("MODEL_MARK", ScheduleFillPolicy::ModelMark)
+      .value("QUOTE_MID", ScheduleFillPolicy::QuoteMid)
+      .value("CROSS_SPREAD", ScheduleFillPolicy::CrossSpread);
+
   py::class_<ListedScheduleLeg>(m, "ListedScheduleLeg")
       .def(py::init<>())
       .def_readwrite("roll_date", &ListedScheduleLeg::roll_date)
@@ -260,14 +329,22 @@ void bind_dispersion(py::module_ &m) {
   py::class_<ListedDispersionStrategy, IStrategy>(m, "ListedDispersionStrategy")
       .def_static(
           "create",
-          [](ListedDispersionSchedule schedule, double delta_band) {
-            return atxvol::python::unwrap(
-                ListedDispersionStrategy::create(std::move(schedule), delta_band));
+          [](ListedDispersionSchedule schedule, double delta_band,
+             ScheduleMarkPolicy mark_policy, ScheduleFillPolicy fill_policy) {
+            return atxvol::python::unwrap(ListedDispersionStrategy::create(
+                std::move(schedule), delta_band, mark_policy, fill_policy));
           },
           py::arg("schedule"), py::arg("delta_band") = 0.0,
-          "Replay a frozen listed schedule. Requires QueryExecution::ColdReference "
-          "and rejects a snapshot whose archive mark differs from the scheduled "
-          "entry mark.")
+          py::arg("mark_policy") = ScheduleMarkPolicy::ExactArchive,
+          py::arg("fill_policy") = ScheduleFillPolicy::ModelMark,
+          "Replay a frozen listed schedule with explicit live-mark reconciliation "
+          "and entry-fill policy. EXACT_ARCHIVE requires ColdReference; RECORD "
+          "accepts the configured query route and records divergence.")
+      .def_property_readonly("fill_policy",
+                             &ListedDispersionStrategy::fill_policy)
+      .def_property("entry_mark_tolerance",
+                    &ListedDispersionStrategy::entry_mark_tolerance,
+                    &ListedDispersionStrategy::set_entry_mark_tolerance)
       .def_property_readonly("schedule", &ListedDispersionStrategy::schedule)
       .def_property_readonly("all_rolls_consumed",
                              &ListedDispersionStrategy::all_rolls_consumed)

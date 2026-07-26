@@ -5,7 +5,7 @@
 // CRC-32C, alignment, and canonical symbol normalization. Moved verbatim from
 // surface_archive.cpp so both formats share ONE bit-identical implementation.
 //
-// Thread-safety: all functions are pure / touch no shared mutable state.
+// Thread-safety: CRC/name helpers are pure; publication helpers are thread-safe.
 
 #include <cstddef>
 #include <cstdint>
@@ -13,7 +13,7 @@
 #include <string_view>
 #include <utility>
 
-#include "atx/core/error.hpp" // Status (durable publish)
+#include "atx/core/error.hpp" // Result / Status (durable publish)
 
 namespace atx::vol::detail {
 
@@ -35,6 +35,13 @@ namespace atx::vol::detail {
 // manifest keys MUST agree.
 [[nodiscard]] std::string canonicalize_symbol(std::string_view s, std::size_t max_len = 32);
 
+// Atomically reserve a unique, empty temporary file in `dst_path`'s directory.
+// Callers overwrite the reserved file, close it, and pass it to
+// flush_and_publish_file. Keeping the temp beside the destination is required
+// for atomic rename. A failed reservation leaves no file behind.
+[[nodiscard]] atx::core::Result<std::string>
+reserve_unique_publish_temp_file(std::string_view dst_path);
+
 // Durable atomic publish of a just-written temp file onto its destination — the
 // shared primitive behind write_surface_archive_v2_file / write_surface_archive_file
 // (v1) / write_manifest_file_atomic. The caller writes the payload to `tmp_path`
@@ -46,6 +53,9 @@ namespace atx::vol::detail {
 //       since on Windows the rename fails while a reader holds `dst_path` open
 //       without FILE_SHARE_DELETE (MSVC ifstream / mmap); a few backed-off retries
 //       let a concurrent reader finish (SE-P2-2).
+// Same-destination calls are serialized within this process. On POSIX the
+// destination's parent directory is fsync'd after rename, making the directory
+// entry durable as well as the file contents.
 // On final failure the temp is PRESERVED (not deleted) so the freshly written
 // bytes are recoverable, and IoError is returned.
 [[nodiscard]] atx::core::Status flush_and_publish_file(std::string_view tmp_path,

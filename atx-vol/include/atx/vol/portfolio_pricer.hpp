@@ -80,12 +80,29 @@
 #include <vector>
 
 #include "atx/vol/adjusted_greeks.hpp"     // StickyParams
+#include "atx/vol/dividend.hpp"            // DividendEvent, HybridDivParams
 #include "atx/vol/priced_surface.hpp"      // PricedSurface, PricingContext
 #include "atx/vol/priced_surface_view.hpp" // PricedSurfaceView (WS-ZC1 borrowed surfaces)
 #include "atx/vol/query_pricing.hpp"       // QueryExecution
 #include "atx/vol/types.hpp"               // Result, Status, Side
 
 namespace atx::vol {
+
+class Portfolio;
+struct PriceFrame;
+struct PriceTotals;
+enum class RiskBucketKey : std::uint8_t;
+struct RiskBucket;
+struct PnlFrame;
+struct PnlTotals;
+struct PnlRiskBucket;
+
+[[nodiscard]] Result<std::vector<RiskBucket>>
+reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf, RiskBucketKey by,
+                    PriceTotals *grand);
+[[nodiscard]] Result<std::vector<PnlRiskBucket>>
+reduce_pnl_risk_buckets(const PnlFrame &frame, const Portfolio &pf, RiskBucketKey by,
+                        PnlTotals *grand);
 
 // Calendar year length in nanoseconds — the library's T convention
 // (data.cpp `year_fraction`: 365.25 * 86400 * 1e9). Used to convert a
@@ -191,6 +208,10 @@ public:
 
 private:
   friend class PortfolioPricer;
+  friend Result<std::vector<RiskBucket>>
+  reduce_risk_buckets(const PriceFrame &, const Portfolio &, RiskBucketKey, PriceTotals *);
+  friend Result<std::vector<PnlRiskBucket>>
+  reduce_pnl_risk_buckets(const PnlFrame &, const Portfolio &, RiskBucketKey, PnlTotals *);
 
   Portfolio() noexcept;
 
@@ -510,6 +531,18 @@ struct PriceFrame {
 
   // True when the GR-F1 carry column is populated (carry_greeks was requested).
   [[nodiscard]] bool carry_materialized() const noexcept { return dP_dq.size() == id.size(); }
+
+private:
+  friend class PortfolioPricer;
+  friend Result<std::vector<RiskBucket>>
+  reduce_risk_buckets(const PriceFrame &, const Portfolio &, RiskBucketKey, PriceTotals *);
+
+  // Opaque provenance for the logical Portfolio generation that produced this
+  // frame. Copies/moves of the frame preserve it; only PortfolioPricer stamps it.
+  // The pair prevents an equal-sized, reordered, unrelated, or stale pre-retime
+  // book from being used to attribute the frame's risk.
+  std::uint64_t book_logical_id_{0};
+  std::uint64_t book_revision_{0};
 };
 
 // ── Bucketed risk (GR-F1) — per-underlier / per-expiry aggregation ─────────
@@ -534,16 +567,18 @@ struct RiskBucket {
 
 // Reduce `frame`'s Ok lanes into per-key buckets, returned sorted ascending by
 // `key`; within each bucket, lanes accumulate in input order. `pf` supplies the
-// per-position contract (uid / T) — it must be the SAME book `frame` was priced
-// from. `grand` (if non-null) receives the sum of the bucket subtotals in that
+// per-position contract (uid / T) and must be the SAME logical book generation
+// `frame` was priced from. A size, provenance, or frame-shape mismatch returns
+// InvalidArgument without modifying `grand`. `grand` (if non-null) receives the
+// sum of the bucket subtotals in that
 // sorted order, so `sum_k bucket[k] == *grand` holds BIT-EXACTLY by construction
 // (it is the bucket-consistent whole-book total; it agrees with PriceFrame::total
 // to floating-point rounding — the two use different summation associations).
 // pv and n_ok are always summed; the eight Greek columns only when the frame
 // materialized them; dP_dq only when the carry column is present.
-[[nodiscard]] std::vector<RiskBucket> reduce_risk_buckets(const PriceFrame &frame,
-                                                          const Portfolio &pf, RiskBucketKey by,
-                                                          PriceTotals *grand = nullptr);
+[[nodiscard]] Result<std::vector<RiskBucket>>
+reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf, RiskBucketKey by,
+                    PriceTotals *grand = nullptr);
 
 // ── In-place price API: caller-owned output view + reusable workspace ──────
 
@@ -672,6 +707,75 @@ struct PnlFrame {
   PnlTotals total{};
 
   [[nodiscard]] std::size_t size() const noexcept { return id.size(); }
+
+private:
+  friend class PortfolioPricer;
+  friend Result<std::vector<PnlRiskBucket>>
+  reduce_pnl_risk_buckets(const PnlFrame &, const Portfolio &, RiskBucketKey, PnlTotals *);
+
+  // Opaque logical-book generation provenance, matching PriceFrame's contract.
+  // It prevents a P&L decomposition from being attributed through a different,
+  // reordered, or stale post-retime Portfolio.
+  std::uint64_t book_logical_id_{0};
+  std::uint64_t book_revision_{0};
+};
+
+// One deterministic per-underlier/per-expiry P&L attribution bucket. Units match
+// PnlTotals: every value is position-scaled cash in the portfolio currency.
+struct PnlRiskBucket {
+  std::uint64_t key{0}; // ByUnderlier: uid; ByExpiry: raw bits of T
+  double T{0.0};        // ByExpiry: residual year-fraction; 0 for ByUnderlier
+  PnlTotals totals{};
+};
+
+// Reduce the Ok lanes of a returning `pnl_explain` frame into deterministic
+// per-underlier or per-expiry PnlTotals. Rows accumulate in portfolio input order
+// and buckets are returned by ascending key. `pf` must be the exact logical book
+// generation that produced `frame`; malformed shape/identity/provenance or an
+// invalid key returns InvalidArgument without modifying `grand`. When provided,
+// `grand` is summed from the sorted bucket subtotals, so it is bit-exact to their
+// ordered sum (and agrees with PnlFrame::total within normal association rounding).
+[[nodiscard]] Result<std::vector<PnlRiskBucket>>
+reduce_pnl_risk_buckets(const PnlFrame &frame, const Portfolio &pf, RiskBucketKey by,
+                        PnlTotals *grand = nullptr);
+
+struct UnderlierDividendScheduleView {
+  std::uint32_t uid{0};
+  std::span<const DividendEvent> events{};
+  // Must match the surface-build cash/proportional convention. The call infers
+  // the remaining continuous borrow from served F for each expiry, then holds
+  // that residual fixed while bumping each cash event.
+  HybridDivParams hybrid{};
+};
+
+enum class DividendSensitivityStatus : std::uint8_t {
+  Ok = 0,               // every portfolio lane for this uid evaluated
+  Partial = 1,          // at least one lane evaluated and at least one failed
+  ModelUnavailable = 2, // all relevant lanes failed because no surface was available
+  NumericError = 3,     // all relevant lanes failed contract/carry/economics validation
+};
+
+// Per-event portfolio cash sensitivity. `schedule_index` preserves duplicate
+// same-date events as distinct inputs; dP_dDiv is cash P&L per cash-unit dividend.
+struct DividendSensitivityRow {
+  std::uint32_t uid{0};
+  std::uint32_t schedule_index{0};
+  std::int64_t ex_date_ns{0};
+  double amount{0.0};
+  double dP_dDiv{0.0};
+  DividendSensitivityStatus status{DividendSensitivityStatus::Ok};
+  std::uint32_t n_ok{0};
+  std::uint32_t n_failed{0};
+  std::uint32_t n_exposed{0};
+};
+
+// Rows preserve schedule/event order. The process-local opaque provenance ids
+// identify the exact logical book generation and SurfaceSet evaluated.
+struct DividendSensitivityFrame {
+  std::vector<DividendSensitivityRow> rows;
+  std::uint64_t book_logical_id{0};
+  std::uint64_t book_revision{0};
+  std::uint64_t surface_logical_id{0};
 };
 
 // ── In-place P&L API: caller-owned output view ─────────────────────────────
@@ -909,6 +1013,20 @@ public:
   [[nodiscard]] Result<PnlTotals> pnl_totals(const SurfaceSet &base, const SurfaceSet &shifted,
                                              PortfolioWorkspace &ws,
                                              const PriceOptions &opts = {}) const;
+
+  // Per-discrete-dividend portfolio sensitivities. This obtains this pricer's
+  // exact position-scaled dP/dq column, then composes each event Jacobian from
+  // the surface's served {F,r,now} and the supplied cash/proportional schedule.
+  // The residual continuous borrow is implied per expiry from served F and held
+  // fixed in the dividend bump. Rows/sums are deterministic across thread counts.
+  //
+  // Schedule uids must be unique; amounts and hybrid parameters must be finite,
+  // with blend in [0,1]. Input errors return InvalidArgument. Per-lane model and
+  // numeric failures are excluded and disclosed by row status/counts.
+  [[nodiscard]] Result<DividendSensitivityFrame>
+  dividend_sensitivities(const SurfaceSet &surfaces,
+                         std::span<const UnderlierDividendScheduleView> schedules,
+                         const PriceOptions &opts = {}) const;
 
   // Totals plus exact per-position shifted marks from the SAME unique-contract
   // solve. The established pnl_totals API and symbol remain unchanged; this

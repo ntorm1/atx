@@ -113,12 +113,20 @@ Result<RunSpec> read_run_spec(const fs::path &path) {
   optional_text("index_symbol", spec.index_symbol);
   std::string definitions;
   std::string occ_ess;
+  std::string dividend_inputs;
+  std::string dividend_ledger;
   optional_text("definitions", definitions);
   optional_text("occ_ess_root", occ_ess);
+  optional_text("dividend_inputs", dividend_inputs);
+  optional_text("dividend_ledger", dividend_ledger);
   if (!definitions.empty())
     spec.definitions_path = resolve_path(base, definitions);
   if (!occ_ess.empty())
     spec.occ_ess_root = resolve_path(base, occ_ess);
+  if (!dividend_inputs.empty())
+    spec.dividend_inputs_path = resolve_path(base, dividend_inputs);
+  if (!dividend_ledger.empty())
+    spec.dividend_ledger_path = resolve_path(base, dividend_ledger);
   const auto number = [&](std::string_view key, auto &value) -> Status {
     const auto found = values.find(std::string(key));
     if (found == values.end())
@@ -176,6 +184,10 @@ Status write_resolved_spec(const fs::path &path, const RunSpec &spec) {
     out << "definitions\t" << spec.definitions_path.string() << '\n';
   if (!spec.occ_ess_root.empty())
     out << "occ_ess_root\t" << spec.occ_ess_root.string() << '\n';
+  if (!spec.dividend_inputs_path.empty())
+    out << "dividend_inputs\t" << spec.dividend_inputs_path.string() << '\n';
+  if (!spec.dividend_ledger_path.empty())
+    out << "dividend_ledger\t" << spec.dividend_ledger_path.string() << '\n';
   out << "flat_rate\t" << spec.flat_rate << '\n'
       << "min_names\t" << spec.min_names << '\n'
       << "min_weight_coverage\t" << spec.min_weight_coverage << '\n'

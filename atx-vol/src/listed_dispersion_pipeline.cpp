@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -208,11 +209,11 @@ ListedDispersionSelectionConfig listed_selection_config_from(const ListedSchedul
 }
 
 Result<ListedDispersionSchedule>
-build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &spec,
-                                 const ListedDispersionMethodology &method,
-                                 std::span<const UniverseRow> universe_rows,
-                                 const ListedDefinitionTable &definitions,
-                                 const RunSpec &quote_source, PhaseTimer *timer) {
+build_listed_dispersion_schedule_audited(
+    const Clock &clock, const ListedScheduleSpec &spec,
+    const ListedDispersionMethodology &method, std::span<const UniverseRow> universe_rows,
+    const ListedDefinitionTable &definitions, const RunSpec &quote_source, PhaseTimer *timer,
+    const ListedQuoteRejectSink &quote_reject_sink) {
   // Verbatim lift of build_schedule_command's selection loop
   // (spy_dispersion_backtest.cpp:446-535). The trade_schedule / section writes stay
   // in the CLI (T9); this function owns the economics that produce the
@@ -261,10 +262,16 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
     const auto eval_start = PhaseTimer::now();
     const ListedDispersionSelectionConfig selection_config = listed_selection_config_from(spec);
     const ListedForwardLookup forward = make_listed_forward_lookup(snapshot);
-    const auto selected = select_listed_dispersion(ref.date, snapshot.ts_ns(), resolved.universe,
-                                                   quotes, forward, selection_config);
+    ListedQuoteRejectCounts attempted_rejects{};
+    const auto selected =
+        select_listed_dispersion(ref.date, snapshot.ts_ns(), resolved.universe, quotes, forward,
+                                 selection_config, &attempted_rejects);
     if (timer) {
       timer->add("selection", eval_start);
+    }
+    if (quote_reject_sink) {
+      quote_reject_sink(ref.date, selected.has_value(),
+                        selected ? selected->quote_rejects : attempted_rejects);
     }
     if (!selected) {
       if (active_expiry == 0) {
@@ -329,6 +336,16 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
                "build_listed_dispersion_schedule: clock does not contain first roll date");
   }
   return Ok(std::move(schedule));
+}
+
+Result<ListedDispersionSchedule>
+build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &spec,
+                                 const ListedDispersionMethodology &method,
+                                 std::span<const UniverseRow> universe_rows,
+                                 const ListedDefinitionTable &definitions,
+                                 const RunSpec &quote_source, PhaseTimer *timer) {
+  return build_listed_dispersion_schedule_audited(clock, spec, method, universe_rows, definitions,
+                                                  quote_source, timer, {});
 }
 
 Result<ListedDispersionSchedule> project_listed_schedule(const ListedDispersionSchedule &listed,
@@ -546,8 +563,9 @@ StepObserver make_mark_divergence_observer(const ListedDispersionSchedule &sched
 
 Result<DispersionBookVar>
 dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &maturity,
-                    std::span<const HistoricalProjectionScenario> scenarios,
-                    std::span<const double> confidences, const HistoricalProjectionConfig &cfg) {
+                    std::size_t n_scenarios, std::span<const double> confidences,
+                    const DispersionProjectionEvaluator &evaluate,
+                    const HistoricalProjectionConfig &cfg) {
   // Verbatim lift of run_projected_var_command's book -> OptionProjectionSpec
   // synthesis + PreparedHistoricalProjection::evaluate_into + projected_historical_var
   // per confidence (spy_dispersion_backtest.cpp:1119-1194), minus the loose-TSV
@@ -574,12 +592,19 @@ dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &mat
 
   DispersionBookVar result;
   result.n_positions = relative_positions.size();
+  if (result.n_positions != 0u &&
+      n_scenarios > std::numeric_limits<std::size_t>::max() / result.n_positions) {
+    return Err(ErrorCode::InvalidArgument, "projected VaR: scenario output size overflows");
+  }
   // Surfaced for the CLI's projected_var.tsv provenance column (prepared_fingerprint),
   // so the caller need not rebuild the projection just to echo its identity hash.
   result.prepared_fingerprint = prepared.fingerprint();
-  result.frames.assign(scenarios.size(), HistoricalProjectionFrame{});
-  result.legs.assign(scenarios.size() * relative_positions.size(), ProjectedOption{});
-  ATX_TRY_VOID(prepared.evaluate_into(scenarios, result.frames, result.legs, cfg));
+  result.frames.assign(n_scenarios, HistoricalProjectionFrame{});
+  result.legs.assign(n_scenarios * relative_positions.size(), ProjectedOption{});
+  if (!evaluate) {
+    return Err(ErrorCode::InvalidArgument, "projected VaR: missing scenario evaluator");
+  }
+  ATX_TRY_VOID(evaluate(prepared, result.frames, result.legs, cfg));
 
   // Post-projection gate (spy_dispersion_backtest.cpp:1175-1178): any incomplete
   // scenario aborts — a VaR over a partially-failed frame set is not meaningful. On
@@ -602,6 +627,20 @@ dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &mat
     result.risks.push_back(risk);
   }
   return Ok(std::move(result));
+}
+
+Result<DispersionBookVar>
+dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &maturity,
+                    std::span<const HistoricalProjectionScenario> scenarios,
+                    std::span<const double> confidences, const HistoricalProjectionConfig &cfg) {
+  return dispersion_book_var(
+      book, maturity, scenarios.size(), confidences,
+      [scenarios](const PreparedHistoricalProjection &prepared,
+                  std::span<HistoricalProjectionFrame> frames, std::span<ProjectedOption> legs,
+                  const HistoricalProjectionConfig &config) {
+        return prepared.evaluate_into(scenarios, frames, legs, config);
+      },
+      cfg);
 }
 
 } // namespace atx::vol

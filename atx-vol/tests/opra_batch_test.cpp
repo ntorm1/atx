@@ -40,6 +40,7 @@ namespace opra_detail = atx::vol::opra_detail; // R1-c: the civil-date kernel
 using atx::i64;
 using atx::vol::CorpusMarketInputCell;
 using atx::vol::CorpusMarketInputTable;
+using atx::vol::load_opra_date_windows;
 using atx::vol::load_opra_daterange;
 using atx::vol::market_env_from_frame;
 using atx::vol::MarketEnv;
@@ -47,6 +48,7 @@ using atx::vol::MissingMarketInputPolicy;
 using atx::vol::OpraBatchEntry;
 using atx::vol::OpraBatchResult;
 using atx::vol::OpraBatchSpec;
+using atx::vol::OpraWindowLoadStats;
 using atx::vol::QuoteFrame;
 using atx::vol::YieldCurve;
 
@@ -295,6 +297,56 @@ TEST(OpraBatch, DateRange_ParallelEqualsSerial) {
 }
 
 // ── Malformed spec -> top-level Err ─────────────────────────────────────────
+
+TEST(OpraBatch, ProductionDateWindowsBoundLoadedPanelWorkingSet) {
+  const fs::path root = fs::temp_directory_path() / "atx_opra_batch_windows";
+  fs::remove_all(root);
+  const std::vector<std::string> dates = {
+      "2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05"};
+  for (const std::string &date : dates) {
+    write_pair(root / "XOM" / (date + ".parquet"), "XOM", "260918", 110.0, kXomFwd);
+    write_pair(root / "AAPL" / (date + ".parquet"), "AAPL", "260918", 110.0, kAaplFwd);
+  }
+
+  OpraBatchSpec spec;
+  spec.symbols = {"XOM", "AAPL"};
+  spec.date_lo = dates.front();
+  spec.date_hi = dates.back();
+  spec.root_dir = root.string();
+  spec.n_threads = 2u;
+
+  OpraWindowLoadStats stats;
+  std::size_t windows_seen = 0u;
+  std::size_t cells_seen = 0u;
+  std::vector<std::string> dates_seen;
+  const atx::vol::Status status = load_opra_date_windows(
+      spec, 2u,
+      [&](OpraBatchResult &&window) -> atx::vol::Status {
+        ++windows_seen;
+        cells_seen += window.entries.size();
+        EXPECT_LE(window.entries.size(), 2u * spec.symbols.size())
+            << "the production driver retained more than one configured date window";
+        for (const OpraBatchEntry &entry : window.entries) {
+          EXPECT_TRUE(entry.panel.has_value())
+              << (entry.panel.has_value() ? std::string{} : entry.panel.error().to_string());
+          if (dates_seen.empty() || dates_seen.back() != entry.date) {
+            dates_seen.push_back(entry.date);
+          }
+        }
+        return atx::core::Ok();
+      },
+      &stats);
+  ASSERT_TRUE(status.has_value()) << status.error().to_string();
+  EXPECT_EQ(windows_seen, 3u);
+  EXPECT_EQ(stats.n_windows, windows_seen);
+  EXPECT_EQ(stats.peak_entries, 4u);
+  EXPECT_EQ(cells_seen, dates.size() * spec.symbols.size());
+  EXPECT_EQ(dates_seen, dates);
+  EXPECT_GT(stats.load_wall_s, 0.0);
+  EXPECT_GE(stats.load_process_cpu_s, 0.0);
+
+  fs::remove_all(root);
+}
 
 TEST(OpraBatch, MalformedSpec_EmptySymbols_Rejected) {
   OpraBatchSpec spec;

@@ -707,11 +707,16 @@ Status write_surface_archive_file(std::string_view path, std::span<const Surface
   const std::vector<std::byte> &buffer = *built;
 
   const std::filesystem::path dst{std::string(path)};
-  std::filesystem::path tmp = dst;
-  tmp += ".tmp";
+  auto reserved = detail::reserve_unique_publish_temp_file(path);
+  if (!reserved) {
+    return tl::unexpected<atx::core::Error>(std::move(reserved).error());
+  }
+  const std::filesystem::path tmp{*reserved};
   {
     std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
     if (!os) {
+      std::error_code ec;
+      std::filesystem::remove(tmp, ec);
       return Err(ErrorCode::IoError, "write_surface_archive_file: cannot open temp file");
     }
     os.write(reinterpret_cast<const char *>(buffer.data()),

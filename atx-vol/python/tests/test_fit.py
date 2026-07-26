@@ -145,6 +145,73 @@ def test_quote_frame_from_arrays_builds_a_fittable_chain():
     assert chain.spot == pytest.approx(spot)
 
 
+def test_term_yield_curve_and_nondefault_curve_config_reach_the_fit(panel):
+    # F-3: this is the C++ MarketEnv/CurveConfig contract, not a Python-side
+    # approximation. Pillars are validated by YieldCurve::create and the exact
+    # nested CurveConfig is handed to PricerFitter.
+    curve = av.YieldCurve.create(
+        [0.05, 0.25, 0.75, 2.0],
+        [0.028, 0.031, 0.034, 0.039],
+    )
+    assert len(curve) == 4
+    assert curve.zero(0.25) == pytest.approx(0.031, abs=1.0e-15)
+    assert curve.zero(0.75) == pytest.approx(0.034, abs=1.0e-15)
+    assert curve.disc(0.75) == pytest.approx(math.exp(-0.034 * 0.75))
+
+    env = av.MarketEnv.flat(
+        panel.env.spot, 0.99, panel.env.now_ns, panel.env.cash_divs
+    )
+    env.yield_curve = curve
+    assert env.rate_at(0.25) == pytest.approx(0.031, abs=1.0e-15)
+    assert env.rate_at(0.75) == pytest.approx(0.034, abs=1.0e-15)
+    assert env.rate_at(0.25) != env.flat_rate
+
+    curve_cfg = av.CurveConfig()
+    curve_cfg.kind = av.VolCurveKind.CONVEX_DENSE
+    curve_cfg.convex.lambda_ = 2.5e-3
+    curve_cfg.convex.node_cap = 32
+    curve_cfg.convex.max_iter = 175
+    curve_cfg.convex.bound_slope_below = True
+    curve_cfg.parametric.huber_k = 1.25
+    curve_cfg.parametric.max_obs_per_slice = 48
+    curve_cfg.parametric.optimization_level = av.OptimizationLevel.REFERENCE
+    curve_cfg.spline.lambda_ = 0.03
+    curve_cfg.spline.mult_ceil = 2.75
+
+    cfg = av.PricerConfig()
+    cfg.preset = av.FitPreset.FAST
+    cfg.curve = curve_cfg
+    cfg.n_threads = 1
+    cfg.fit_workers = 1
+    assert cfg.curve.kind == av.VolCurveKind.CONVEX_DENSE
+    assert cfg.curve.convex.node_cap == 32
+    assert cfg.curve.parametric.max_obs_per_slice == 48
+    assert cfg.curve.spline.mult_ceil == pytest.approx(2.75)
+
+    chain = av.OptionChain.from_frame(panel.frame, env)
+    fitter = av.PricerFitter(cfg)
+    fitter.fit(chain)
+    valued = fitter.value_chain(chain, av.OutputField.MODEL_IV, n_threads=1)
+    assert np.isfinite(valued["model_iv"]).all()
+
+
+@pytest.mark.parametrize(
+    ("pillars", "rates"),
+    [
+        ([], []),
+        ([0.5, 0.25], [0.03, 0.04]),
+        ([0.25], [0.03, 0.04]),
+        ([0.25, float("nan")], [0.03, 0.04]),
+        ([0.25, 0.5], [0.03, float("inf")]),
+        ([0.0, 0.5], [0.03, 0.04]),
+    ],
+)
+def test_yield_curve_rejects_invalid_pillars(pillars, rates):
+    with pytest.raises(av.AtxError) as excinfo:
+        av.YieldCurve.create(pillars, rates)
+    assert excinfo.value.code == av.ErrorCode.INVALID_ARGUMENT
+
+
 def test_quote_frame_from_arrays_rejects_an_unrecognised_side_code():
     # I2 (rev-ws-y), the ingestion copy of the same decode. This one is the worst
     # of the three: a whole board imported with the +1/-1 convention would be
@@ -387,6 +454,148 @@ def test_concurrent_fit_and_value_chain_on_one_fitter_is_safe():
     )
     assert proc.returncode == 0, (
         f"concurrent fit/value_chain on one fitter: exit {proc.returncode}\n"
+        f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr[:4000]}"
+    )
+    assert "SURVIVED" in proc.stdout, proc.stdout
+
+
+def test_concurrent_quote_mutation_is_atomic_for_fit_and_value_chain():
+    # C-7: OptionChain itself has a separate "many readers OR one writer"
+    # contract. The fitter lock above cannot protect it: update_quotes does not
+    # touch the fitter, while fit/value_chain both release the GIL and read the
+    # chain's quote vectors and revision state. Drive both reader paths in a
+    # child process because the pre-fix failure includes native crashes.
+    #
+    # The value phase has a stronger oracle than mere survival. Each update
+    # atomically installs one of two whole-board states, so every valuation must
+    # exactly match one of the two sequential reference valuations. A mixture is
+    # a torn read. The fit phase then overlaps the same batch writer with the
+    # longer chain reader and checks publication remains usable.
+    proc = _in_fresh_interpreter(
+        """
+        import threading
+        import numpy as np
+
+        chain, f = _fitter()
+        snap = chain.snapshot()
+        ids = snap["ids"]
+        bid_a = snap["bid"].copy()
+        ask_a = snap["ask"].copy()
+        spread = ask_a - bid_a
+        bid_b = bid_a + 0.25 * spread
+        ask_b = ask_a - 0.25 * spread
+        assert np.any(bid_a != bid_b)
+
+        fields = av.OutputField.BID_IV | av.OutputField.ASK_IV
+        chain.update_quotes(ids, bid_a, ask_a)
+        expected_a = f.value_chain(chain, fields, n_threads=1)
+        chain.update_quotes(ids, bid_b, ask_b)
+        expected_b = f.value_chain(chain, fields, n_threads=1)
+
+        def matches(actual, expected):
+            return (
+                np.array_equal(actual["bid_iv"], expected["bid_iv"], equal_nan=True)
+                and np.array_equal(actual["ask_iv"], expected["ask_iv"], equal_nan=True)
+            )
+
+        assert not (
+            np.array_equal(
+                expected_a["bid_iv"], expected_b["bid_iv"], equal_nan=True
+            )
+            and np.array_equal(
+                expected_a["ask_iv"], expected_b["ask_iv"], equal_nan=True
+            )
+        ), "the two quote states need distinct valuation signatures"
+
+        value_errors = []
+        value_start = threading.Barrier(4)
+        value_revision = chain.quote_revision
+        update_rounds = 2000
+
+        def update_for_values():
+            try:
+                value_start.wait()
+                for i in range(update_rounds):
+                    state = (bid_a, ask_a) if i % 2 == 0 else (bid_b, ask_b)
+                    chain.update_quotes(ids, *state)
+            except Exception as exc:
+                value_errors.append(("update", repr(exc)))
+
+        def value():
+            try:
+                value_start.wait()
+                for _ in range(20):
+                    actual = f.value_chain(chain, fields, n_threads=1)
+                    if not (matches(actual, expected_a) or matches(actual, expected_b)):
+                        value_errors.append(("torn valuation",))
+                        return
+            except Exception as exc:
+                value_errors.append(("value", repr(exc)))
+
+        writer = threading.Thread(target=update_for_values)
+        readers = [threading.Thread(target=value) for _ in range(3)]
+        writer.start()
+        for thread in readers:
+            thread.start()
+        for thread in [writer, *readers]:
+            thread.join(timeout=180)
+        assert not any(thread.is_alive() for thread in [writer, *readers]), (
+            "value/update lock deadlock"
+        )
+        assert not value_errors, value_errors[:3]
+        assert chain.quote_revision == value_revision + update_rounds
+
+        # Exercise the longer reader independently. Both states are valid
+        # synthetic markets, so no fit exception is expected at either atomic
+        # boundary; a torn state or native race is the only source of failure.
+        chain.update_quotes(ids, bid_a, ask_a)
+        f.fit(chain)
+        chain.update_quotes(ids, bid_b, ask_b)
+        f.fit(chain)
+        fit_errors = []
+        fit_start = threading.Barrier(2)
+        fit_revision = chain.quote_revision
+        fit_update_rounds = 1000
+
+        def update_for_fits():
+            try:
+                fit_start.wait()
+                for i in range(fit_update_rounds):
+                    state = (bid_a, ask_a) if i % 2 == 0 else (bid_b, ask_b)
+                    chain.update_quotes(ids, *state)
+            except Exception as exc:
+                fit_errors.append(("update", repr(exc)))
+
+        def refit():
+            try:
+                fit_start.wait()
+                for _ in range(20):
+                    f.fit(chain)
+            except Exception as exc:
+                fit_errors.append(("fit", repr(exc)))
+
+        fit_writer = threading.Thread(target=update_for_fits)
+        fit_reader = threading.Thread(target=refit)
+        fit_writer.start()
+        fit_reader.start()
+        for thread in (fit_writer, fit_reader):
+            thread.join(timeout=180)
+        assert not fit_writer.is_alive() and not fit_reader.is_alive(), (
+            "fit/update lock deadlock"
+        )
+        assert not fit_errors, fit_errors[:3]
+        assert chain.quote_revision == fit_revision + fit_update_rounds
+
+        chain.update_quotes(ids, bid_a, ask_a)
+        f.fit(chain)
+        final = f.value_chain(chain, av.OutputField.MODEL_IV, n_threads=1)
+        assert len(final["model_iv"]) == len(ids)
+        assert np.any(np.isfinite(final["model_iv"]))
+        print("SURVIVED", update_rounds, fit_update_rounds)
+        """
+    )
+    assert proc.returncode == 0, (
+        f"concurrent update/fit/value_chain: exit {proc.returncode}\n"
         f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr[:4000]}"
     )
     assert "SURVIVED" in proc.stdout, proc.stdout

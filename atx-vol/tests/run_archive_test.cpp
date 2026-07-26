@@ -370,19 +370,29 @@ TEST(RunArchiveWriter, RejectsMalformedSections) {
 
 TEST(RunArchiveWriter, AtomicFileWrite) {
   const std::vector<RaSectionData> sections = make_test_sections();
-  const std::filesystem::path path =
-      std::filesystem::temp_directory_path() / "atx_run_archive_writer_test.runar";
-  std::filesystem::remove(path);
+  const std::filesystem::path dir =
+      std::filesystem::temp_directory_path() / "atx_run_archive_writer_test";
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  const std::filesystem::path path = dir / "archive.runar";
+  const auto temp_count = [&] {
+    std::size_t count = 0u;
+    const std::string prefix = path.filename().string() + ".tmp.";
+    for (const auto &entry : std::filesystem::directory_iterator(dir)) {
+      count += entry.path().filename().string().starts_with(prefix) ? 1u : 0u;
+    }
+    return count;
+  };
 
   auto st = write_run_archive_file(path.string(), sections, 5, 7);
   ASSERT_TRUE(st.has_value()) << st.error().to_string();
   ASSERT_TRUE(std::filesystem::exists(path));
-  EXPECT_FALSE(std::filesystem::exists(path.string() + ".tmp"));
+  EXPECT_EQ(temp_count(), 0u);
 
   // Re-write over the existing destination (Windows: remove-then-rename).
   auto st2 = write_run_archive_file(path.string(), sections, 6, 7);
   ASSERT_TRUE(st2.has_value()) << st2.error().to_string();
-  EXPECT_FALSE(std::filesystem::exists(path.string() + ".tmp"));
+  EXPECT_EQ(temp_count(), 0u);
 
   // The published file leads with the RunArchive magic.
   std::ifstream is(path, std::ios::binary);
@@ -391,7 +401,7 @@ TEST(RunArchiveWriter, AtomicFileWrite) {
   is.read(magic, 8);
   EXPECT_EQ(std::string_view(magic, 8), std::string_view(kRaMagic, 8));
   is.close();
-  std::filesystem::remove(path);
+  std::filesystem::remove_all(dir);
 }
 
 // ── Task 4: reader (RunArchive open/section/validate + mmap) ─────────────────
@@ -1703,6 +1713,30 @@ std::string meta_value_of(RunArchive& archive, std::string_view key) {
   return {};
 }
 
+void write_projected_only(const RunDir& run_dir) {
+  const BacktestResult projected = make_encoder_fixture_result();
+  RunSpec spec;
+  spec.label = "projected-run";
+  spec.date_lo = "2026-07-10";
+  spec.date_hi = "2026-07-10";
+  std::vector<RaSectionData> sections;
+  sections.push_back(encode_backtest_section("projected_cold", projected));
+  sections.push_back(encode_meta_section(spec));
+  const Status status = run_dir.write_run_archive(sections);
+  ASSERT_TRUE(status.has_value()) << status.error().to_string();
+}
+
+void expect_projected_write_started_fresh(const std::filesystem::path& dir) {
+  auto archive = RunDir(dir).archive();
+  ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
+  EXPECT_EQ(archive->count(), 2u);
+  EXPECT_TRUE(archive->section("projected_cold").has_value());
+  EXPECT_TRUE(archive->section("meta").has_value());
+  EXPECT_FALSE(archive->section("backtest").has_value());
+  EXPECT_FALSE(archive->section("reconciliation").has_value());
+  EXPECT_FALSE(archive->section("contract_marks").has_value());
+}
+
 // (a) A projected-style write into a run dir that already holds a listed-style
 // archive (SAME inputs) yields the UNION: the listed sections are carried
 // forward with their values intact, the projected section is added, and the
@@ -1808,6 +1842,92 @@ TEST(RunDir, MergeWriteDropsCarriedSectionsWhenInputsChange) {
   EXPECT_FALSE(archive->section("backtest").has_value());
   EXPECT_FALSE(archive->section("reconciliation").has_value());
   EXPECT_FALSE(archive->section("contract_marks").has_value());
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+TEST(RunDir, MergeWriteDropsCarriedSectionsWhenManifestChanges) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_manifest_dependency_test");
+  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+  write_run_dir_archive(dir);
+
+  ASSERT_TRUE(write_manifest_file((dir / std::string(kSurfaceManifestFile)).string(),
+                                  make_manifest(2))
+                  .has_value());
+  write_projected_only(RunDir(dir));
+  expect_projected_write_started_fresh(dir);
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+TEST(RunDir, MergeWriteDropsCarriedSectionsWhenTradeScheduleChanges) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_schedule_dependency_test");
+  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+  write_run_dir_archive(dir);
+
+  {
+    std::ofstream schedule(dir / std::string(kTradeScheduleFile),
+                           std::ios::binary | std::ios::app);
+    schedule << '\n';
+    ASSERT_TRUE(schedule.good());
+  }
+  write_projected_only(RunDir(dir));
+  expect_projected_write_started_fresh(dir);
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+TEST(RunDir, MergeWriteDropsCarriedSectionsWhenShareDividendsChange) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_dividend_dependency_test");
+  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+  {
+    std::ofstream dividends(dir / std::string(kShareDividendsFile),
+                            std::ios::binary | std::ios::trunc);
+    dividends << "ATX_SHARE_DIVIDENDS\t1\nfirst-generation\n";
+    ASSERT_TRUE(dividends.good());
+  }
+  write_run_dir_archive(dir);
+
+  {
+    std::ofstream dividends(dir / std::string(kShareDividendsFile),
+                            std::ios::binary | std::ios::trunc);
+    dividends << "ATX_SHARE_DIVIDENDS\t1\nsecond-generation\n";
+    ASSERT_TRUE(dividends.good());
+  }
+  write_projected_only(RunDir(dir));
+  expect_projected_write_started_fresh(dir);
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+TEST(RunDir, MergeWriteDropsCarriedSectionsWhenSurfaceArchiveIdentityChanges) {
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_archive_dependency_test");
+  write_run_dir_text_inputs(dir, /*core_mode=*/false, /*n_dates=*/1);
+
+  const std::filesystem::path surface = dir / "2026-07-01.atxvsa";
+  ArchiveV2Header header{};
+  std::memcpy(header.magic, "ATXVSA20", 8);
+  header.file_size = sizeof header;
+  header.header_size = sizeof header;
+  {
+    std::ofstream out(surface, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(&header), sizeof header);
+    ASSERT_TRUE(out.good());
+  }
+  write_run_dir_archive(dir);
+
+  ++header.metadata_crc32c;
+  {
+    std::ofstream out(surface, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(&header), sizeof header);
+    ASSERT_TRUE(out.good());
+  }
+  write_projected_only(RunDir(dir));
+  expect_projected_write_started_fresh(dir);
 
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);

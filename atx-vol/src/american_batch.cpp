@@ -347,74 +347,64 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
   // path is LIVE end to end. (This comment used to say the surface caller "still
   // gates its greeks route on ForceAvx2 for seed-bit-identity (WS-G G4)"; that clause
   // was stale from the P1a gate flip and was corrected by the BENCH G4 pass.)
-  // The analytic PUT lanes go through
-  // the laned bundle (american_put_greeks_batch), which solves the 5 boundaries
-  // 4-wide per pack and
-  // patches any non-early-exercise / non-finite lane through scalar american_greeks_al.
-  // CALL lanes stay on the scalar analytic route. FIX-5/M8: that is this driver's own
-  // choice, not a kernel limitation — simd::american_call_greeks_batch exists and
-  // src/laned_greek_run.hpp uses it; this driver simply never adopted it. (The two
-  // routes' Ok-stamps are shared as of FIX-5/I3, so the split no longer costs status
-  // agreement; adopting the call kernel here remains a follow-up.)
+  // Both sides go through their homogeneous laned bundle. Each solves the needed
+  // boundaries 4-wide per pack and patches any non-early-exercise / non-finite
+  // lane through the exact same-side scalar american_greeks_al oracle. The two
+  // passes retain only one chunk of scratch at a time and scatter by original
+  // index, preserving public input order for mixed books.
   if (analytic && simd::avx2_greeks_selected(kernel.isa)) {
-    // Chunked gather of PUT lanes -> laned dispatch -> scatter (allocation-free).
+    // Chunked gather of one side -> laned dispatch -> scatter (allocation-free).
     constexpr std::size_t kC = 256;
-    double cs[kC], ck[kC], ct[kC], cv[kC], cr[kC], cq[kC];
-    std::size_t oidx[kC];
-    AmericanGreeks gbuf[kC];
-    std::size_t cnt = 0;
-    // (need_vega/need_rho/need_charm hoisted above — the same K4 mask selectors drive
-    // both the scalar analytic route and the laned dispatch.)
-    const auto flush = [&]() noexcept {
-      if (cnt == 0) {
-        return;
-      }
-      const simd::SimdRoute route = simd::american_put_greeks_batch(
-          cs, ck, ct, cv, cr, cq, cnt, std::nullopt, gbuf, kernel.isa, need_vega,
-          need_rho, need_charm);
-      for (std::size_t j = 0; j < cnt; ++j) {
-        const std::size_t oi = oidx[j];
-        // FIX-5/I3: was `isfinite(gbuf[j].price)` — a DIFFERENT predicate from the
-        // scalar stamp the CALL lanes take, so identical inputs modulo `side` could
-        // be demoted as a put and certified as a call in the same call. Both routes
-        // now share one definition, which is what makes the split impossible rather
-        // than merely absent.
-        AmericanGreeks gg = gbuf[j];
-        detail::normalize_unrequested_greeks(gg, needs);
-        const bool ok = detail::requested_greeks_finite(gg, needs);
-        write_masked(greeks, oi, gg, fields);
-        ws.lane_status[oi] = ok ? LaneStatus::Ok : LaneStatus::Unsupported;
-        ws.lane_route[oi] = route;
-      }
-      cnt = 0;
-    };
-    for (std::size_t i = 0; i < n; ++i) {
-      if (in.side[i] != Side::Put) {
-        continue; // calls handled by the scalar analytic fan below
-      }
-      cs[cnt] = in.S[i]; ck[cnt] = in.K[i]; ct[cnt] = in.T[i];
-      cv[cnt] = in.sigma[i]; cr[cnt] = in.r[i]; cq[cnt] = in.q[i];
-      oidx[cnt] = i;
-      if (++cnt == kC) {
-        flush();
-      }
-    }
-    flush();
-    // Scalar analytic route for the remaining CALL lanes only.
-    const auto call_lane = [&](std::size_t i) noexcept {
-      if (in.side[i] == Side::Put) {
-        return;
-      }
-      price_lane(i);
-    };
-    if (kernel.executor != nullptr) {
-      kernel.executor->run_blocks(n, /*n_threads=*/0,
-                                  [&](std::size_t i) { call_lane(i); });
-    } else {
+    const auto run_side = [&](Side batch_side) noexcept {
+      double cs[kC], ck[kC], ct[kC], cv[kC], cr[kC], cq[kC];
+      std::size_t oidx[kC];
+      AmericanGreeks gbuf[kC];
+      std::size_t cnt = 0;
+      // need_vega/need_rho/need_charm are the same K4 mask selectors used by
+      // the scalar analytic route.
+      const auto flush = [&]() noexcept {
+        if (cnt == 0) {
+          return;
+        }
+        const simd::SimdRoute route =
+            (batch_side == Side::Put)
+                ? simd::american_put_greeks_batch(
+                      cs, ck, ct, cv, cr, cq, cnt, std::nullopt, gbuf,
+                      kernel.isa, need_vega, need_rho, need_charm)
+                : simd::american_call_greeks_batch(
+                      cs, ck, ct, cv, cr, cq, cnt, std::nullopt, gbuf,
+                      kernel.isa, need_vega, need_rho, need_charm);
+        for (std::size_t j = 0; j < cnt; ++j) {
+          const std::size_t oi = oidx[j];
+          AmericanGreeks gg = gbuf[j];
+          detail::normalize_unrequested_greeks(gg, needs);
+          const bool ok = detail::requested_greeks_finite(gg, needs);
+          write_masked(greeks, oi, gg, fields);
+          ws.lane_status[oi] =
+              ok ? LaneStatus::Ok : LaneStatus::Unsupported;
+          ws.lane_route[oi] = route;
+        }
+        cnt = 0;
+      };
       for (std::size_t i = 0; i < n; ++i) {
-        call_lane(i);
+        if (in.side[i] != batch_side) {
+          continue;
+        }
+        cs[cnt] = in.S[i];
+        ck[cnt] = in.K[i];
+        ct[cnt] = in.T[i];
+        cv[cnt] = in.sigma[i];
+        cr[cnt] = in.r[i];
+        cq[cnt] = in.q[i];
+        oidx[cnt] = i;
+        if (++cnt == kC) {
+          flush();
+        }
       }
-    }
+      flush();
+    };
+    run_side(Side::Put);
+    run_side(Side::Call);
     return Ok();
   }
 

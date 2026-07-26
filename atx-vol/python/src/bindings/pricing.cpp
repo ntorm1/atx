@@ -145,16 +145,20 @@ std::vector<Side> as_sides(const py::object &raw, std::size_t expected) {
   return out;
 }
 
-// LaneStatus is a two-state Ok/Unsupported flag, not an `atx::core::Status`, so
-// map its failure onto the same int32 channel every other batch uses: the lane
-// was outside the batch route's supported regime.
+// LaneStatus is a two-state Ok/Unsupported BATCH-REGIME flag, not an
+// `atx::core::Status`. F-5: do not collapse Unsupported into
+// ErrorCode::NotImplemented — that made it indistinguishable from a scalar
+// pricer genuinely returning NotImplemented. The negative sentinel is outside
+// ErrorCode's non-negative domain and is published to Python below.
+inline constexpr std::int32_t kAmericanBatchUnsupportedRegime = -1;
+
 py::array_t<std::int32_t> lane_status_array(std::span<const LaneStatus> lanes) {
   py::array_t<std::int32_t> out(static_cast<py::ssize_t>(lanes.size()));
   auto *data = out.mutable_data();
   for (std::size_t i = 0; i < lanes.size(); ++i) {
     data[i] = lanes[i] == LaneStatus::Ok
                   ? atxvol::python::kStatusOk
-                  : static_cast<std::int32_t>(atx::core::ErrorCode::NotImplemented);
+                  : kAmericanBatchUnsupportedRegime;
   }
   return out;
 }
@@ -357,6 +361,11 @@ void bind_pricing(py::module_ &m) {
   // are STATUS_OK or int(ErrorCode). ErrorCode::Unknown is 0, so success needs a
   // value from outside the enum.
   m.attr("STATUS_OK") = atxvol::python::kStatusOk;
+  // The optimized American lane has a distinct two-state regime contract, not
+  // an ErrorCode. This negative sentinel cannot collide with the error enum and
+  // means "unsupported by this batch regime; inspect/route the lane separately".
+  m.attr("AMERICAN_BATCH_UNSUPPORTED_REGIME") =
+      kAmericanBatchUnsupportedRegime;
 
   py::enum_<Side>(m, "Side").value("CALL", Side::Call).value("PUT", Side::Put).export_values();
   py::enum_<ExerciseStyle>(m, "ExerciseStyle")

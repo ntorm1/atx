@@ -112,6 +112,35 @@ void expect_counters_unchanged(const atx::vol::counters::Snapshot &before,
   return std::move(*ps);
 }
 
+[[nodiscard]] PricedSurface
+make_dividend_surface(std::uint32_t uid, std::span<const DividendEvent> events,
+                      const HybridDivParams &hybrid, double borrow, int n = 3) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (int i = 0; i < n; ++i) {
+    const double T = 0.05 + 0.10 * static_cast<double>(i);
+    const std::int64_t expiry_ns =
+        kNow + static_cast<std::int64_t>(std::llround(T * kNsPerYear));
+    const double F = hybrid_forward(kS, kR, borrow, T, events, expiry_ns, kNow, hybrid);
+    const double q_eff = kR - std::log(F / kS) / T;
+    EssviParams e{};
+    e.theta = 0.04 + 0.005 * static_cast<double>(i);
+    e.phi = 0.0; // fixed sigma: a dividend bump moves carry only
+    e.rho = 0.0;
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = F;
+    e.expiry_id = static_cast<std::uint16_t>(i);
+    cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
+    ctx.push_back(SliceContext{T, F, borrow, q_eff, 250, 7});
+  }
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
+  EXPECT_TRUE(ps.has_value());
+  return std::move(*ps);
+}
+
 [[nodiscard]] PricedSurface make_svi(std::uint32_t uid, int n) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
@@ -4115,6 +4144,40 @@ template <class Pred>
   return t;
 }
 
+[[nodiscard]] bool pnl_totals_bits_equal(const PnlTotals &a, const PnlTotals &b) noexcept {
+  return bits_equal(a.pv_base, b.pv_base) && bits_equal(a.pv_target, b.pv_target) &&
+         bits_equal(a.pnl_total, b.pnl_total) && bits_equal(a.pnl_delta, b.pnl_delta) &&
+         bits_equal(a.pnl_gamma, b.pnl_gamma) && bits_equal(a.pnl_vega, b.pnl_vega) &&
+         bits_equal(a.pnl_volga, b.pnl_volga) && bits_equal(a.pnl_vanna, b.pnl_vanna) &&
+         bits_equal(a.pnl_theta, b.pnl_theta) && bits_equal(a.pnl_rho, b.pnl_rho) &&
+         bits_equal(a.pnl_charm, b.pnl_charm) &&
+         bits_equal(a.pnl_unexplained, b.pnl_unexplained) && a.n_ok == b.n_ok;
+}
+
+template <class Pred>
+[[nodiscard]] PnlTotals reconstruct_pnl_bucket(const PnlFrame &f, Pred pred) {
+  PnlTotals t{};
+  for (std::size_t i = 0; i < f.size(); ++i) {
+    if (f.status[i] != PriceStatus::Ok || !pred(i)) {
+      continue;
+    }
+    t.pv_base += f.pv_base[i];
+    t.pv_target += f.pv_target[i];
+    t.pnl_total += f.pnl_total[i];
+    t.pnl_delta += f.pnl_delta[i];
+    t.pnl_gamma += f.pnl_gamma[i];
+    t.pnl_vega += f.pnl_vega[i];
+    t.pnl_volga += f.pnl_volga[i];
+    t.pnl_vanna += f.pnl_vanna[i];
+    t.pnl_theta += f.pnl_theta[i];
+    t.pnl_rho += f.pnl_rho[i];
+    t.pnl_charm += f.pnl_charm[i];
+    t.pnl_unexplained += f.pnl_unexplained[i];
+    ++t.n_ok;
+  }
+  return t;
+}
+
 TEST(PortfolioPricer, G2_RiskBuckets_ByUnderlierAndByExpiry_PartitionTotalsBitExact) {
   const PricedSurface s1 = make_essvi(1, 3);
   const PricedSurface s2 = make_essvi(2, 3);
@@ -4131,8 +4194,10 @@ TEST(PortfolioPricer, G2_RiskBuckets_ByUnderlierAndByExpiry_PartitionTotalsBitEx
 
   // ── ByUnderlier: two buckets {uid 1, uid 2}, sorted ascending by key ──
   PriceTotals grand_u{};
-  const std::vector<RiskBucket> bu = reduce_risk_buckets(f, pricer.portfolio(),
-                                                         RiskBucketKey::ByUnderlier, &grand_u);
+  const auto bu_result =
+      reduce_risk_buckets(f, pricer.portfolio(), RiskBucketKey::ByUnderlier, &grand_u);
+  ASSERT_TRUE(bu_result.has_value()) << bu_result.error().to_string();
+  const std::vector<RiskBucket> &bu = *bu_result;
   ASSERT_EQ(bu.size(), 2u);
   EXPECT_EQ(bu[0].key, 1u);
   EXPECT_EQ(bu[1].key, 2u);
@@ -4165,8 +4230,10 @@ TEST(PortfolioPricer, G2_RiskBuckets_ByUnderlierAndByExpiry_PartitionTotalsBitEx
 
   // ── ByExpiry: three buckets {0.05, 0.15, 0.25}, sorted ascending by T ──
   PriceTotals grand_e{};
-  const std::vector<RiskBucket> be =
+  const auto be_result =
       reduce_risk_buckets(f, pricer.portfolio(), RiskBucketKey::ByExpiry, &grand_e);
+  ASSERT_TRUE(be_result.has_value()) << be_result.error().to_string();
+  const std::vector<RiskBucket> &be = *be_result;
   ASSERT_EQ(be.size(), 3u);
   EXPECT_LT(be[0].T, be[1].T);
   EXPECT_LT(be[1].T, be[2].T);
@@ -4187,6 +4254,230 @@ TEST(PortfolioPricer, G2_RiskBuckets_ByUnderlierAndByExpiry_PartitionTotalsBitEx
   }
   EXPECT_EQ(nu, 6u);
   EXPECT_EQ(ne, 6u);
+}
+
+TEST(PortfolioPricer, G2_PnlRiskBuckets_ByUnderlierAndByExpiry_PartitionAllTotals) {
+  const PricedSurface b1 = make_essvi(1, 3);
+  const PricedSurface b2 = make_essvi(2, 3);
+  const PricedSurface s1 =
+      make_essvi(1, 3, 0.001, kS + 0.4, kR + 0.0005, kNow + 3600'000'000'000LL);
+  const PricedSurface s2 =
+      make_essvi(2, 3, 0.002, kS - 0.3, kR - 0.0002, kNow + 3600'000'000'000LL);
+  const SurfaceSet base = set_of({&b1, &b2});
+  const SurfaceSet shifted = set_of({&s1, &s2});
+  const std::vector<Position> book = two_by_three_book();
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value()) << pf.error().to_string();
+  const PortfolioPricer pricer(std::move(*pf));
+
+  const auto frame = pricer.pnl_explain(base, shifted, PriceOptions{.n_threads = 2});
+  ASSERT_TRUE(frame.has_value()) << frame.error().to_string();
+  ASSERT_EQ(frame->total.n_ok, book.size());
+
+  for (RiskBucketKey by : {RiskBucketKey::ByUnderlier, RiskBucketKey::ByExpiry}) {
+    SCOPED_TRACE(by == RiskBucketKey::ByUnderlier ? "underlier" : "expiry");
+    PnlTotals grand{};
+    const auto result = reduce_pnl_risk_buckets(*frame, pricer.portfolio(), by, &grand);
+    ASSERT_TRUE(result.has_value()) << result.error().to_string();
+    ASSERT_EQ(result->size(), by == RiskBucketKey::ByUnderlier ? 2u : 3u);
+
+    std::uint32_t rows = 0;
+    for (const PnlRiskBucket &bucket : *result) {
+      const PnlTotals expected = reconstruct_pnl_bucket(*frame, [&](std::size_t i) {
+        return by == RiskBucketKey::ByUnderlier
+                   ? book[i].contract.uid == static_cast<std::uint32_t>(bucket.key)
+                   : book[i].contract.T == bucket.T;
+      });
+      EXPECT_TRUE(pnl_totals_bits_equal(bucket.totals, expected));
+      rows += bucket.totals.n_ok;
+    }
+    EXPECT_EQ(rows, book.size());
+    EXPECT_EQ(grand.n_ok, frame->total.n_ok);
+    EXPECT_TRUE(close(grand.pnl_total, frame->total.pnl_total));
+    EXPECT_TRUE(close(grand.pnl_delta, frame->total.pnl_delta));
+
+    // The published grand is exactly the sorted bucket association.
+    PnlTotals expected_grand{};
+    for (const PnlRiskBucket &bucket : *result) {
+      expected_grand.pv_base += bucket.totals.pv_base;
+      expected_grand.pv_target += bucket.totals.pv_target;
+      expected_grand.pnl_total += bucket.totals.pnl_total;
+      expected_grand.pnl_delta += bucket.totals.pnl_delta;
+      expected_grand.pnl_gamma += bucket.totals.pnl_gamma;
+      expected_grand.pnl_vega += bucket.totals.pnl_vega;
+      expected_grand.pnl_volga += bucket.totals.pnl_volga;
+      expected_grand.pnl_vanna += bucket.totals.pnl_vanna;
+      expected_grand.pnl_theta += bucket.totals.pnl_theta;
+      expected_grand.pnl_rho += bucket.totals.pnl_rho;
+      expected_grand.pnl_charm += bucket.totals.pnl_charm;
+      expected_grand.pnl_unexplained += bucket.totals.pnl_unexplained;
+      expected_grand.n_ok += bucket.totals.n_ok;
+    }
+    EXPECT_TRUE(pnl_totals_bits_equal(grand, expected_grand));
+  }
+}
+
+TEST(PortfolioPricer, G2_PnlRiskBuckets_ProvenanceAndThreadInvariance) {
+  const PricedSurface b1 = make_essvi(1, 3);
+  const PricedSurface b2 = make_essvi(2, 3);
+  const PricedSurface s1 = make_essvi(1, 3, 0.001);
+  const PricedSurface s2 = make_essvi(2, 3, 0.0015);
+  const SurfaceSet base = set_of({&b1, &b2});
+  const SurfaceSet shifted = set_of({&s1, &s2});
+  const std::vector<Position> book = two_by_three_book();
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const auto f1 = pricer.pnl_explain(base, shifted, PriceOptions{.n_threads = 1});
+  const auto f4 = pricer.pnl_explain(base, shifted, PriceOptions{.n_threads = 4});
+  ASSERT_TRUE(f1.has_value() && f4.has_value());
+
+  for (RiskBucketKey by : {RiskBucketKey::ByUnderlier, RiskBucketKey::ByExpiry}) {
+    PnlTotals g1{}, g4{};
+    const auto r1 = reduce_pnl_risk_buckets(*f1, pricer.portfolio(), by, &g1);
+    const auto r4 = reduce_pnl_risk_buckets(*f4, pricer.portfolio(), by, &g4);
+    ASSERT_TRUE(r1.has_value() && r4.has_value());
+    ASSERT_EQ(r1->size(), r4->size());
+    EXPECT_TRUE(pnl_totals_bits_equal(g1, g4));
+    for (std::size_t i = 0; i < r1->size(); ++i) {
+      EXPECT_EQ((*r1)[i].key, (*r4)[i].key);
+      EXPECT_TRUE(pnl_totals_bits_equal((*r1)[i].totals, (*r4)[i].totals));
+    }
+  }
+
+  std::vector<Position> reordered = book;
+  std::rotate(reordered.begin(), reordered.begin() + 1, reordered.end());
+  auto wrong = Portfolio::create(reordered);
+  ASSERT_TRUE(wrong.has_value());
+  PnlTotals sentinel{};
+  sentinel.pnl_total = 321.25;
+  sentinel.n_ok = 77;
+  const PnlTotals before = sentinel;
+  const auto rejected =
+      reduce_pnl_risk_buckets(*f1, *wrong, RiskBucketKey::ByExpiry, &sentinel);
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_EQ(rejected.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_TRUE(pnl_totals_bits_equal(sentinel, before));
+}
+
+TEST(PortfolioPricer,
+     G2_RiskBuckets_RejectSmallerLargerReorderedAndUnrelatedPortfoliosWithoutMutation) {
+  const PricedSurface s1 = make_essvi(1, 3);
+  const PricedSurface s2 = make_essvi(2, 3);
+  const SurfaceSet surfaces = set_of({&s1, &s2});
+  const std::vector<Position> book = two_by_three_book();
+  auto source = Portfolio::create(book);
+  ASSERT_TRUE(source.has_value()) << source.error().to_string();
+  const PortfolioPricer pricer(std::move(*source));
+  const auto frame = pricer.price(surfaces);
+  ASSERT_TRUE(frame.has_value()) << frame.error().to_string();
+
+  const auto expect_rejected = [&](const std::vector<Position> &other_book,
+                                   const char *scenario) {
+    SCOPED_TRACE(scenario);
+    auto other = Portfolio::create(other_book);
+    ASSERT_TRUE(other.has_value()) << other.error().to_string();
+
+    PriceTotals grand{};
+    grand.pv = 1234.5;
+    grand.delta = -678.25;
+    grand.dP_dq = 42.0;
+    grand.n_ok = 99;
+    const PriceTotals before = grand;
+    const auto result =
+        reduce_risk_buckets(*frame, *other, RiskBucketKey::ByExpiry, &grand);
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_TRUE(totals_bits_equal(grand, before));
+  };
+
+  std::vector<Position> smaller = book;
+  smaller.pop_back();
+  expect_rejected(smaller, "smaller");
+
+  std::vector<Position> larger = book;
+  larger.push_back({7, {1, 110.0, 0.35, Side::Call}, 1.0, 100.0});
+  expect_rejected(larger, "larger");
+
+  std::vector<Position> reordered = book;
+  std::rotate(reordered.begin(), reordered.begin() + 2, reordered.end());
+  expect_rejected(reordered, "equal-size reordered");
+
+  std::vector<Position> unrelated = book;
+  for (std::size_t i = 0; i < unrelated.size(); ++i) {
+    unrelated[i].id += 10'000;
+    unrelated[i].contract.uid += 100;
+    unrelated[i].contract.T += 0.01 * static_cast<double>(i + 1);
+  }
+  expect_rejected(unrelated, "equal-size unrelated");
+}
+
+TEST(PortfolioPricer, G2_RiskBuckets_OneHundredThousandHighCardinalityIsDeterministic) {
+  constexpr std::size_t kRows = 100'000;
+  std::vector<Position> book;
+  book.reserve(kRows);
+  for (std::size_t i = 0; i < kRows; ++i) {
+    book.push_back(Position{static_cast<std::uint64_t>(i),
+                            {static_cast<std::uint32_t>(i + 1), 100.0, 0.25, Side::Call},
+                            1.0, 100.0});
+  }
+  auto portfolio =
+      Portfolio::create(book, PortfolioBuildOptions{.expected_unique_contracts = kRows});
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const SurfaceSet no_surfaces = set_of(std::vector<const PricedSurface *>{});
+
+  // Missing surfaces stamp a valid frame without running an option solve. Turn
+  // those lanes into deterministic synthetic Ok rows so this test isolates the
+  // reducer at production row and bucket cardinality.
+  auto frame =
+      pricer.price(no_surfaces, PriceOptions{.n_threads = 1, .prices_only = true});
+  ASSERT_TRUE(frame.has_value()) << frame.error().to_string();
+  ASSERT_EQ(frame->size(), kRows);
+  double serial_pv = 0.0;
+  for (std::size_t i = 0; i < kRows; ++i) {
+    frame->status[i] = PriceStatus::Ok;
+    frame->pv[i] = (i % 7u == 0u) ? 0.1 : ((i % 2u == 0u) ? -1.0e12 : 1.0e12);
+    serial_pv += frame->pv[i];
+  }
+
+  PriceTotals high_grand{};
+  const auto high =
+      reduce_risk_buckets(*frame, pricer.portfolio(), RiskBucketKey::ByUnderlier, &high_grand);
+  ASSERT_TRUE(high.has_value()) << high.error().to_string();
+  ASSERT_EQ(high->size(), kRows);
+  EXPECT_EQ(high->front().key, 1u);
+  EXPECT_EQ(high->back().key, kRows);
+  EXPECT_EQ(high_grand.n_ok, kRows);
+  EXPECT_TRUE(bits_equal(high_grand.pv, serial_pv));
+  for (std::size_t i : {std::size_t{0}, kRows / 2u, kRows - 1u}) {
+    EXPECT_EQ((*high)[i].totals.n_ok, 1u);
+    EXPECT_TRUE(bits_equal((*high)[i].totals.pv, frame->pv[i])) << i;
+  }
+
+  // The same 100k rows also exercise the low-cardinality path. Its sole bucket
+  // must retain serial input-order accumulation exactly, and a repeated high-B
+  // run must be bit-stable despite hash-table growth and rehashing.
+  PriceTotals low_grand{};
+  const auto low =
+      reduce_risk_buckets(*frame, pricer.portfolio(), RiskBucketKey::ByExpiry, &low_grand);
+  ASSERT_TRUE(low.has_value()) << low.error().to_string();
+  ASSERT_EQ(low->size(), 1u);
+  EXPECT_EQ(low->front().totals.n_ok, kRows);
+  EXPECT_TRUE(bits_equal(low->front().totals.pv, serial_pv));
+  EXPECT_TRUE(bits_equal(low_grand.pv, serial_pv));
+
+  PriceTotals repeat_grand{};
+  const auto repeat =
+      reduce_risk_buckets(*frame, pricer.portfolio(), RiskBucketKey::ByUnderlier, &repeat_grand);
+  ASSERT_TRUE(repeat.has_value()) << repeat.error().to_string();
+  ASSERT_EQ(repeat->size(), high->size());
+  EXPECT_TRUE(totals_bits_equal(repeat_grand, high_grand));
+  for (std::size_t i : {std::size_t{0}, kRows / 2u, kRows - 1u}) {
+    EXPECT_EQ((*repeat)[i].key, (*high)[i].key);
+    EXPECT_TRUE(totals_bits_equal((*repeat)[i].totals, (*high)[i].totals)) << i;
+  }
 }
 
 TEST(PortfolioPricer, G2_CarryColumn_dP_dq_MatchesDirectKernel) {
@@ -4235,6 +4526,146 @@ TEST(PortfolioPricer, G2_CarryColumn_dP_dq_MatchesDirectKernel) {
   EXPECT_TRUE(bits_equal(f.total.dP_dq, manual_total));
 }
 
+TEST(PortfolioPricer, G2_DiscreteDividendSensitivity_PortfolioEventAxisAndFdParity) {
+  constexpr double kBorrow = 0.013;
+  const std::vector<DividendEvent> events{
+      {kNow + static_cast<std::int64_t>(std::llround(0.10 * kNsPerYear)), 0.85},
+      {kNow + static_cast<std::int64_t>(std::llround(0.20 * kNsPerYear)), 1.10},
+  };
+  const HybridDivParams hybrid{.prop_div_yield = 0.012, .blend = 0.25};
+  const PricedSurface surface = make_dividend_surface(1, events, hybrid, kBorrow);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> book{
+      {1, {1, 95.0, 0.05, Side::Call}, +2.0, 100.0},
+      {2, {1, 100.0, 0.15, Side::Put}, -3.0, 100.0},
+      {3, {1, 105.0, 0.25, Side::Call}, +4.0, 100.0},
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const std::array<UnderlierDividendScheduleView, 1> schedule{
+      UnderlierDividendScheduleView{1, events, hybrid}};
+
+  const auto result =
+      pricer.dividend_sensitivities(surfaces, schedule, PriceOptions{.n_threads = 2});
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  ASSERT_EQ(result->rows.size(), events.size());
+  EXPECT_NE(result->book_logical_id, 0u);
+  EXPECT_NE(result->surface_logical_id, 0u);
+  EXPECT_EQ(result->book_revision, 0u);
+  EXPECT_EQ(result->rows[0].schedule_index, 0u);
+  EXPECT_EQ(result->rows[1].schedule_index, 1u);
+  EXPECT_EQ(result->rows[0].ex_date_ns, events[0].ex_date_ns);
+  EXPECT_TRUE(bits_equal(result->rows[0].amount, events[0].amount));
+  EXPECT_EQ(result->rows[0].status, DividendSensitivityStatus::Ok);
+  EXPECT_EQ(result->rows[1].status, DividendSensitivityStatus::Ok);
+  EXPECT_EQ(result->rows[0].n_ok, book.size());
+  EXPECT_EQ(result->rows[1].n_ok, book.size());
+  EXPECT_EQ(result->rows[0].n_exposed, 2u);
+  EXPECT_EQ(result->rows[1].n_exposed, 1u);
+
+  // Independent portfolio assembly over the public lower-level helper. This also
+  // pins position scaling and fixed input-order accumulation.
+  const auto carry =
+      pricer.price(surfaces, PriceOptions{.n_threads = 1, .carry_greeks = true});
+  ASSERT_TRUE(carry.has_value());
+  std::array<double, 2> direct{0.0, 0.0};
+  for (std::size_t i = 0; i < book.size(); ++i) {
+    const double T = book[i].contract.T;
+    const auto point = surface.resolve(book[i].contract.K, T);
+    const std::int64_t expiry_ns =
+        kNow + static_cast<std::int64_t>(std::llround(T * kNsPerYear));
+    const double base =
+        hybrid_forward_base(kS, point.rate, T, events, expiry_ns, kNow, hybrid);
+    const double implied_borrow = -std::log(point.forward / base) / T;
+    std::array<double, 2> dF{}, dP{};
+    hybrid_forward_div_jacobian(point.rate, implied_borrow, T, events, expiry_ns, kNow,
+                                hybrid, dF);
+    american_dividend_sensitivities(carry->dP_dq[i], point.forward, T, dF, dP);
+    direct[0] += dP[0];
+    direct[1] += dP[1];
+  }
+  EXPECT_TRUE(bits_equal(result->rows[0].dP_dDiv, direct[0]));
+  EXPECT_TRUE(bits_equal(result->rows[1].dP_dDiv, direct[1]));
+
+  // End-to-end dividend-amount bump with a flat smile: only carry moves, so the
+  // event-axis derivative must match the repriced whole-book central difference.
+  constexpr double h = 1.0e-4;
+  for (std::size_t event_ix = 0; event_ix < events.size(); ++event_ix) {
+    std::vector<DividendEvent> up = events;
+    std::vector<DividendEvent> down = events;
+    up[event_ix].amount += h;
+    down[event_ix].amount -= h;
+    const PricedSurface surface_up = make_dividend_surface(1, up, hybrid, kBorrow);
+    const PricedSurface surface_down = make_dividend_surface(1, down, hybrid, kBorrow);
+    const SurfaceSet set_up = set_of({&surface_up});
+    const SurfaceSet set_down = set_of({&surface_down});
+    const auto price_up = pricer.price(set_up, PriceOptions{.prices_only = true});
+    const auto price_down = pricer.price(set_down, PriceOptions{.prices_only = true});
+    ASSERT_TRUE(price_up.has_value() && price_down.has_value());
+    const double fd = (price_up->total.pv - price_down->total.pv) / (2.0 * h);
+    EXPECT_TRUE(close(result->rows[event_ix].dP_dDiv, fd, 2.0e-4))
+        << event_ix << " analytic=" << result->rows[event_ix].dP_dDiv << " fd=" << fd;
+  }
+
+  const auto one_thread =
+      pricer.dividend_sensitivities(surfaces, schedule, PriceOptions{.n_threads = 1});
+  const auto four_threads =
+      pricer.dividend_sensitivities(surfaces, schedule, PriceOptions{.n_threads = 4});
+  ASSERT_TRUE(one_thread.has_value() && four_threads.has_value());
+  for (std::size_t i = 0; i < events.size(); ++i) {
+    EXPECT_TRUE(bits_equal(one_thread->rows[i].dP_dDiv, four_threads->rows[i].dP_dDiv));
+    EXPECT_EQ(one_thread->rows[i].n_ok, four_threads->rows[i].n_ok);
+    EXPECT_EQ(one_thread->rows[i].n_exposed, four_threads->rows[i].n_exposed);
+  }
+}
+
+TEST(PortfolioPricer, G2_DiscreteDividendSensitivity_StatusAndInputValidation) {
+  const std::array<DividendEvent, 1> events{
+      DividendEvent{kNow + static_cast<std::int64_t>(std::llround(0.10 * kNsPerYear)), 1.0}};
+  const HybridDivParams hybrid{};
+  const PricedSurface surface = make_dividend_surface(1, events, hybrid, 0.01);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> book{
+      {1, {1, 100.0, 0.15, Side::Call}, +1.0, 100.0},
+      {2, {1, 100.0, -0.15, Side::Call}, +1.0, 100.0}, // numeric/invalid lane
+      {3, {9, 100.0, 0.15, Side::Put}, +1.0, 100.0},   // missing surface
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const std::array<UnderlierDividendScheduleView, 2> schedules{
+      UnderlierDividendScheduleView{1, events, hybrid},
+      UnderlierDividendScheduleView{9, events, hybrid},
+  };
+
+  const auto result = pricer.dividend_sensitivities(surfaces, schedules);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  ASSERT_EQ(result->rows.size(), 2u);
+  EXPECT_EQ(result->rows[0].status, DividendSensitivityStatus::Partial);
+  EXPECT_EQ(result->rows[0].n_ok, 1u);
+  EXPECT_EQ(result->rows[0].n_failed, 1u);
+  EXPECT_EQ(result->rows[1].status, DividendSensitivityStatus::ModelUnavailable);
+  EXPECT_EQ(result->rows[1].n_ok, 0u);
+  EXPECT_EQ(result->rows[1].n_failed, 1u);
+
+  const std::array<UnderlierDividendScheduleView, 2> duplicate{
+      UnderlierDividendScheduleView{1, events, hybrid},
+      UnderlierDividendScheduleView{1, events, hybrid},
+  };
+  const auto duplicate_result = pricer.dividend_sensitivities(surfaces, duplicate);
+  ASSERT_FALSE(duplicate_result.has_value());
+  EXPECT_EQ(duplicate_result.error().code(), ErrorCode::InvalidArgument);
+
+  const std::array<DividendEvent, 1> invalid_events{
+      DividendEvent{events[0].ex_date_ns, std::numeric_limits<double>::quiet_NaN()}};
+  const std::array<UnderlierDividendScheduleView, 1> invalid_schedule{
+      UnderlierDividendScheduleView{1, invalid_events, hybrid}};
+  const auto invalid_result = pricer.dividend_sensitivities(surfaces, invalid_schedule);
+  ASSERT_FALSE(invalid_result.has_value());
+  EXPECT_EQ(invalid_result.error().code(), ErrorCode::InvalidArgument);
+}
+
 TEST(PortfolioPricer, G2_RiskBuckets_And_Carry_ThreadCountInvariant) {
   const PricedSurface s1 = make_essvi(1, 3);
   const PricedSurface s2 = make_essvi(2, 3);
@@ -4255,8 +4686,12 @@ TEST(PortfolioPricer, G2_RiskBuckets_And_Carry_ThreadCountInvariant) {
   }
   for (RiskBucketKey by : {RiskBucketKey::ByUnderlier, RiskBucketKey::ByExpiry}) {
     PriceTotals g1{}, g4{};
-    const auto b1 = reduce_risk_buckets(*f1, pricer.portfolio(), by, &g1);
-    const auto b4 = reduce_risk_buckets(*f4, pricer.portfolio(), by, &g4);
+    const auto b1_result = reduce_risk_buckets(*f1, pricer.portfolio(), by, &g1);
+    const auto b4_result = reduce_risk_buckets(*f4, pricer.portfolio(), by, &g4);
+    ASSERT_TRUE(b1_result.has_value()) << b1_result.error().to_string();
+    ASSERT_TRUE(b4_result.has_value()) << b4_result.error().to_string();
+    const std::vector<RiskBucket> &b1 = *b1_result;
+    const std::vector<RiskBucket> &b4 = *b4_result;
     ASSERT_EQ(b1.size(), b4.size());
     for (std::size_t k = 0; k < b1.size(); ++k) {
       EXPECT_EQ(b1[k].key, b4[k].key);

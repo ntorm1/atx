@@ -15,13 +15,15 @@
 // `fit` is NOT const, though: `pricer_fitter.hpp` states that it "mutates
 // (stores the surface) and needs exclusive access", while `value_chain` is const
 // and safe to run concurrently. Once `value_chain` runs GIL-free the GIL cannot
-// supply that exclusivity, so `PyPricerFitter` below carries a `shared_mutex`
-// and the binding — not the interpreter — is what serializes the mutator against
-// the readers. `value_chain` is documented bit-identical for any thread count,
-// and `test_fit.py` drives that invariant FROM PYTHON, because a binding that
-// fanned out through its own pool would break it invisibly.
+// supply that exclusivity, so the Python wrappers below carry `shared_mutex`es
+// and the binding — not the interpreter — serializes both fitter mutation and
+// OptionChain's "many readers OR one writer" contract. `value_chain` is
+// documented bit-identical for any thread count, and `test_fit.py` drives that
+// invariant FROM PYTHON, because a binding that fanned out through its own pool
+// would break it invisibly.
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -217,7 +219,7 @@ struct SynthPanelPy {
   std::vector<double> truth_forward;
 };
 
-// ── I1: binding-side reader/writer serialization for PricerFitter ───────────
+// ── Binding-side reader/writer serialization ───────────────────────────────
 //
 // `pricer_fitter.hpp:22-24` is explicit: "`fit` mutates (stores the surface) and
 // needs exclusive access. `value_chain` is const and internally parallel;
@@ -233,19 +235,52 @@ struct SynthPanelPy {
 // a data race whose failure mode is refcount corruption; `test_fit.py` drives it
 // out of process and it dies with an access violation.
 //
-// So the exclusivity lives here: unique lock for the mutators, shared lock for
-// the const readers. Every lock is taken with the GIL ALREADY RELEASED. A thread
-// must never block on this mutex while holding the interpreter — that would
-// stall every unrelated Python thread for the duration of a fit, i.e. reproduce
-// the cost of holding the GIL through `fit` without any of the benefit.
+// `chain.hpp` independently requires many readers OR one writer. `fit` and
+// `value_chain` release the GIL while reading a chain, so a Python thread can
+// otherwise enter `update_quotes` and race the Universe's quote vectors and
+// revision state. PyOptionChain makes the library's external synchronization
+// requirement an invariant of the Python object: every accessor takes shared
+// access and mutation takes exclusive access.
+//
+// LOCK ORDER: a call needing both objects takes PyPricerFitter::mu_ first, then
+// PyOptionChain::mu_. No code may wait for the fitter while holding the chain.
+// Every potentially blocking lock is taken with the GIL ALREADY RELEASED, and
+// every lock is destroyed before `gil_scoped_release`, so the GIL is reacquired
+// last. This prevents both lock-order inversion and an interpreter-wide stall.
+class PyOptionChain {
+public:
+  explicit PyOptionChain(OptionChain chain) : chain_(std::move(chain)) {}
+
+  PyOptionChain(const PyOptionChain &) = delete;
+  PyOptionChain &operator=(const PyOptionChain &) = delete;
+  PyOptionChain(PyOptionChain &&) = delete;
+  PyOptionChain &operator=(PyOptionChain &&) = delete;
+
+  template <class Fn> decltype(auto) with_read(Fn &&fn) const {
+    const std::shared_lock<std::shared_mutex> lock(mu_);
+    return std::forward<Fn>(fn)(chain_);
+  }
+
+  template <class Fn> decltype(auto) with_write(Fn &&fn) {
+    const std::unique_lock<std::shared_mutex> lock(mu_);
+    return std::forward<Fn>(fn)(chain_);
+  }
+
+private:
+  OptionChain chain_;
+  mutable std::shared_mutex mu_;
+};
+
 class PyPricerFitter {
 public:
   explicit PyPricerFitter(PricerConfig cfg) : fitter_(std::move(cfg)) {}
 
-  void fit(const OptionChain &chain) {
+  void fit(const PyOptionChain &chain) {
     py::gil_scoped_release release;
-    const std::unique_lock<std::shared_mutex> lock(mu_);
-    atxvol::python::unwrap(fitter_.fit(chain));
+    const std::unique_lock<std::shared_mutex> fitter_lock(mu_);
+    chain.with_read([this](const OptionChain &locked_chain) {
+      atxvol::python::unwrap(fitter_.fit(locked_chain));
+    });
   }
 
   [[nodiscard]] bool fitted() const {
@@ -297,27 +332,32 @@ public:
     return std::const_pointer_cast<FittedSurface>(owner);
   }
 
-  [[nodiscard]] py::dict value_chain(const OptionChain &chain, OutputField fields,
+  [[nodiscard]] py::dict value_chain(const PyOptionChain &chain, OutputField fields,
                                      unsigned n_threads) const {
     ChainValuation valuation;
     {
       py::gil_scoped_release release;
-      const std::shared_lock<std::shared_mutex> lock(mu_);
-      valuation = atxvol::python::unwrap(fitter_.value_chain(chain, fields, n_threads));
+      const std::shared_lock<std::shared_mutex> fitter_lock(mu_);
+      valuation = chain.with_read([this, fields, n_threads](const OptionChain &locked_chain) {
+        return atxvol::python::unwrap(fitter_.value_chain(locked_chain, fields, n_threads));
+      });
     }
     return valuation_to_dict(valuation);
   }
 
-  [[nodiscard]] py::dict value_chain_ids(const OptionChain &chain, const IdArray &ids,
+  [[nodiscard]] py::dict value_chain_ids(const PyOptionChain &chain, const IdArray &ids,
                                          OutputField fields, unsigned n_threads) const {
     // Decoded with the GIL still held: `as_ids` reads a numpy object.
     const std::vector<OptionId> selected = as_ids(ids);
     ChainValuation valuation;
     {
       py::gil_scoped_release release;
-      const std::shared_lock<std::shared_mutex> lock(mu_);
+      const std::shared_lock<std::shared_mutex> fitter_lock(mu_);
       valuation =
-          atxvol::python::unwrap(fitter_.value_chain(chain, selected, fields, n_threads));
+          chain.with_read([this, &selected, fields, n_threads](const OptionChain &locked_chain) {
+            return atxvol::python::unwrap(
+                fitter_.value_chain(locked_chain, selected, fields, n_threads));
+          });
     }
     return valuation_to_dict(valuation);
   }
@@ -351,6 +391,37 @@ void bind_fit(py::module_ &m) {
       .def_readwrite("ex_date_ns", &DividendEvent::ex_date_ns)
       .def_readwrite("amount", &DividendEvent::amount);
 
+  py::class_<YieldCurve>(m, "YieldCurve")
+      .def(py::init<>(), "An empty curve; MarketEnv falls back to flat_rate.")
+      .def_static(
+          "create",
+          [](const std::vector<double> &t_years,
+             const std::vector<double> &zero_rates) {
+            for (double t : t_years) {
+              if (!std::isfinite(t) || t <= 0.0) {
+                throw atxvol::python::AtxException(atx::core::Error{
+                    atx::core::ErrorCode::InvalidArgument,
+                    "YieldCurve.create: maturities must be finite and positive"});
+              }
+            }
+            for (double rate : zero_rates) {
+              if (!std::isfinite(rate)) {
+                throw atxvol::python::AtxException(atx::core::Error{
+                    atx::core::ErrorCode::InvalidArgument,
+                    "YieldCurve.create: zero rates must be finite"});
+              }
+            }
+            return atxvol::python::unwrap(
+                YieldCurve::create(t_years, zero_rates));
+          },
+          py::arg("t_years"), py::arg("zero_rates"),
+          "Build a validated Fritsch-Carlson term curve. Pillar maturities must "
+          "be finite, non-empty and strictly increasing.")
+      .def("zero", &YieldCurve::zero, py::arg("T"))
+      .def("disc", &YieldCurve::disc, py::arg("T"))
+      .def("__len__", &YieldCurve::size)
+      .def_property_readonly("size", &YieldCurve::size);
+
   py::class_<MarketEnv>(m, "MarketEnv")
       .def(py::init<>())
       .def_static("flat", &MarketEnv::flat, py::arg("spot"), py::arg("r"), py::arg("now_ns"),
@@ -359,6 +430,8 @@ void bind_fit(py::module_ &m) {
       .def_readwrite("spot", &MarketEnv::spot)
       .def_readwrite("now_ns", &MarketEnv::now_ns)
       .def_readwrite("flat_rate", &MarketEnv::flat_rate)
+      .def_readwrite("yield_curve", &MarketEnv::yield,
+                     "Optional validated term curve. An empty curve selects flat_rate.")
       .def_readwrite("cash_divs", &MarketEnv::cash_divs)
       .def("rate_at", &MarketEnv::rate_at, py::arg("T"));
 
@@ -404,11 +477,12 @@ void bind_fit(py::module_ &m) {
       .def_readonly("bid_size", &OptionRef::bid_size)
       .def_readonly("ask_size", &OptionRef::ask_size);
 
-  py::class_<OptionChain>(m, "OptionChain")
+  py::class_<PyOptionChain>(m, "OptionChain")
       .def_static(
           "from_frame",
           [](const QuoteFrame &frame, MarketEnv env) {
-            return atxvol::python::unwrap(OptionChain::from_frame(frame, std::move(env)));
+            return std::make_unique<PyOptionChain>(
+                atxvol::python::unwrap(OptionChain::from_frame(frame, std::move(env))));
           },
           py::arg("frame"), py::arg("env"),
           "Install `frame` and resolve its single underlying, carrying the full\n"
@@ -416,68 +490,120 @@ void bind_fit(py::module_ &m) {
       .def_static(
           "from_frame_flat",
           [](const QuoteFrame &frame, double r, double spot) {
-            return atxvol::python::unwrap(OptionChain::from_frame(frame, r, spot));
+            return std::make_unique<PyOptionChain>(
+                atxvol::python::unwrap(OptionChain::from_frame(frame, r, spot)));
           },
           py::arg("frame"), py::arg("r"), py::arg("spot") = 0.0,
           "Legacy flat-scalar overload; `spot` overrides the frame's when > 0.")
-      .def("__len__", &OptionChain::size)
-      .def("size", &OptionChain::size)
-      .def_property_readonly("spot", &OptionChain::spot)
-      .def_property_readonly("rate", &OptionChain::rate)
-      .def_property_readonly("now_ns", &OptionChain::now_ns)
-      .def_property_readonly("instance_id", &OptionChain::instance_id)
-      .def_property_readonly("quote_revision", &OptionChain::quote_revision)
-      .def("ids",
-           [](const OptionChain &self) {
-             const std::vector<OptionId> ids = self.ids();
-             py::array_t<std::uint64_t> out(static_cast<py::ssize_t>(ids.size()));
-             auto *data = out.mutable_data();
-             for (std::size_t i = 0; i < ids.size(); ++i) {
-               data[i] = static_cast<std::uint64_t>(ids[i]);
-             }
-             return out;
-           },
-           "Every option id, in a stable deterministic order (ascending expiry,\n"
-           "strike, then side) that is independent of quote content.")
-      .def("at",
-           [](const OptionChain &self, std::uint64_t id) {
-             return atxvol::python::unwrap(self.at(static_cast<OptionId>(id)));
-           },
-           py::arg("id"))
-      .def("snapshot",
-           [](const OptionChain &self) {
-             ChainSnapshot snap = self.snapshot();
-             py::dict out;
-             std::vector<std::uint64_t> ids(snap.ids.size());
-             for (std::size_t i = 0; i < snap.ids.size(); ++i) {
-               ids[i] = static_cast<std::uint64_t>(snap.ids[i]);
-             }
-             std::vector<std::int32_t> sides(snap.side.size());
-             for (std::size_t i = 0; i < snap.side.size(); ++i) {
-               sides[i] = static_cast<std::int32_t>(snap.side[i]);
-             }
-             out["ids"] = to_array(ids);
-             out["T"] = to_array(snap.T);
-             out["strike"] = to_array(snap.strike);
-             out["bid"] = to_array(snap.bid);
-             out["ask"] = to_array(snap.ask);
-             out["mid"] = to_array(snap.mid);
-             out["side"] = to_array(sides);
-             return out;
-           },
-           "Flatten every valuation-relevant field into numpy columns aligned\n"
-           "with ids(). Detached from later quote updates.")
-      .def("update_quotes",
-           [](OptionChain &self, const IdArray &ids, const DoubleArray &bids,
-              const DoubleArray &asks) {
-             const std::vector<OptionId> id_vec = as_ids(ids);
-             const auto bid = as_span(bids, "bids");
-             const auto ask = as_span(asks, "asks");
-             atxvol::python::unwrap(self.update_quotes(id_vec, bid, ask));
-           },
-           py::arg("ids"), py::arg("bids"), py::arg("asks"),
-           "Replace bid/ask for a batch of ids (mids recomputed). Ids that do\n"
-           "not decode to a known leg are silently dropped, matching the engine.");
+      .def("__len__",
+           [](const PyOptionChain &self) {
+             py::gil_scoped_release release;
+             return self.with_read([](const OptionChain &chain) { return chain.size(); });
+           })
+      .def("size",
+           [](const PyOptionChain &self) {
+             py::gil_scoped_release release;
+             return self.with_read([](const OptionChain &chain) { return chain.size(); });
+           })
+      .def_property_readonly("spot",
+                             [](const PyOptionChain &self) {
+                               py::gil_scoped_release release;
+                               return self.with_read(
+                                   [](const OptionChain &chain) { return chain.spot(); });
+                             })
+      .def_property_readonly("rate",
+                             [](const PyOptionChain &self) {
+                               py::gil_scoped_release release;
+                               return self.with_read(
+                                   [](const OptionChain &chain) { return chain.rate(); });
+                             })
+      .def_property_readonly("now_ns",
+                             [](const PyOptionChain &self) {
+                               py::gil_scoped_release release;
+                               return self.with_read(
+                                   [](const OptionChain &chain) { return chain.now_ns(); });
+                             })
+      .def_property_readonly("instance_id",
+                             [](const PyOptionChain &self) {
+                               py::gil_scoped_release release;
+                               return self.with_read(
+                                   [](const OptionChain &chain) { return chain.instance_id(); });
+                             })
+      .def_property_readonly("quote_revision",
+                             [](const PyOptionChain &self) {
+                               py::gil_scoped_release release;
+                               return self.with_read(
+                                   [](const OptionChain &chain) { return chain.quote_revision(); });
+                             })
+      .def(
+          "ids",
+          [](const PyOptionChain &self) {
+            std::vector<OptionId> ids;
+            {
+              py::gil_scoped_release release;
+              ids = self.with_read([](const OptionChain &chain) { return chain.ids(); });
+            }
+            py::array_t<std::uint64_t> out(static_cast<py::ssize_t>(ids.size()));
+            auto *data = out.mutable_data();
+            for (std::size_t i = 0; i < ids.size(); ++i) {
+              data[i] = static_cast<std::uint64_t>(ids[i]);
+            }
+            return out;
+          },
+          "Every option id, in a stable deterministic order (ascending expiry,\n"
+          "strike, then side) that is independent of quote content.")
+      .def(
+          "at",
+          [](const PyOptionChain &self, std::uint64_t id) {
+            py::gil_scoped_release release;
+            return self.with_read([id](const OptionChain &chain) {
+              return atxvol::python::unwrap(chain.at(static_cast<OptionId>(id)));
+            });
+          },
+          py::arg("id"))
+      .def(
+          "snapshot",
+          [](const PyOptionChain &self) {
+            ChainSnapshot snap;
+            {
+              py::gil_scoped_release release;
+              snap = self.with_read([](const OptionChain &chain) { return chain.snapshot(); });
+            }
+            py::dict out;
+            std::vector<std::uint64_t> ids(snap.ids.size());
+            for (std::size_t i = 0; i < snap.ids.size(); ++i) {
+              ids[i] = static_cast<std::uint64_t>(snap.ids[i]);
+            }
+            std::vector<std::int32_t> sides(snap.side.size());
+            for (std::size_t i = 0; i < snap.side.size(); ++i) {
+              sides[i] = static_cast<std::int32_t>(snap.side[i]);
+            }
+            out["ids"] = to_array(ids);
+            out["T"] = to_array(snap.T);
+            out["strike"] = to_array(snap.strike);
+            out["bid"] = to_array(snap.bid);
+            out["ask"] = to_array(snap.ask);
+            out["mid"] = to_array(snap.mid);
+            out["side"] = to_array(sides);
+            return out;
+          },
+          "Flatten every valuation-relevant field into numpy columns aligned\n"
+          "with ids(). Detached from later quote updates.")
+      .def(
+          "update_quotes",
+          [](PyOptionChain &self, const IdArray &ids, const DoubleArray &bids,
+             const DoubleArray &asks) {
+            const std::vector<OptionId> id_vec = as_ids(ids);
+            const auto bid = as_span(bids, "bids");
+            const auto ask = as_span(asks, "asks");
+            py::gil_scoped_release release;
+            self.with_write([&](OptionChain &chain) {
+              atxvol::python::unwrap(chain.update_quotes(id_vec, bid, ask));
+            });
+          },
+          py::arg("ids"), py::arg("bids"), py::arg("asks"),
+          "Replace bid/ask for a batch of ids (mids recomputed). Ids that do\n"
+          "not decode to a known leg are silently dropped, matching the engine.");
 
   // OutputField is a bit set; `py::arithmetic()` gives Python the `|` the C++
   // API is driven by, so a caller writes ModelIV | Greeks exactly as in C++.
@@ -517,15 +643,135 @@ void bind_fit(py::module_ &m) {
       .value("MARKET_MARK", SurfacePurpose::MarketMark)
       .value("RISK", SurfacePurpose::Risk);
 
+  // F-3: expose the actual CurveConfig tree, not only its family tag. Every
+  // value-owning production knob is writable; SplineFitOpts::grid remains the
+  // library's fixed standard grid because that C++ member is a borrowed span.
+  py::enum_<EssviRhoMode>(m, "EssviRhoMode")
+      .value("PER_SLICE", EssviRhoMode::PerSlice)
+      .value("SHARED", EssviRhoMode::Shared)
+      .value("TERM_STRUCTURE", EssviRhoMode::TermStructure);
+  py::enum_<OptimizationLevel>(m, "OptimizationLevel")
+      .value("QUICK_MARK", OptimizationLevel::QuickMark)
+      .value("TRADING", OptimizationLevel::Trading)
+      .value("RISK", OptimizationLevel::Risk)
+      .value("REFERENCE", OptimizationLevel::Reference)
+      .value("COLD_FAST", OptimizationLevel::ColdFast);
+  py::enum_<CalibLossKind>(m, "CalibLossKind")
+      .value("MID", CalibLossKind::Mid)
+      .value("INTERVAL", CalibLossKind::Interval);
+  py::enum_<CalibAnchorKind>(m, "CalibAnchorKind")
+      .value("MID", CalibAnchorKind::Mid)
+      .value("BID", CalibAnchorKind::Bid)
+      .value("ASK", CalibAnchorKind::Ask);
+  py::class_<ConvexFitOpts>(m, "ConvexFitOpts")
+      .def(py::init<>())
+      .def_readwrite("lambda_", &ConvexFitOpts::lambda)
+      .def_readwrite("bound_slope_below", &ConvexFitOpts::bound_slope_below)
+      .def_readwrite("node_cap", &ConvexFitOpts::node_cap)
+      .def_readwrite("max_iter", &ConvexFitOpts::max_iter)
+      .def_readwrite("loss", &ConvexFitOpts::loss);
+
+  py::class_<CalibOpts>(m, "CalibOpts")
+      .def(py::init<>())
+      .def_readwrite("max_outer_iter", &CalibOpts::max_outer_iter)
+      .def_readwrite("max_inner_iter", &CalibOpts::max_inner_iter)
+      .def_readwrite("tol_param", &CalibOpts::tol_param)
+      .def_readwrite("tol_residual", &CalibOpts::tol_residual)
+      .def_readwrite("huber_k", &CalibOpts::huber_k)
+      .def_readwrite("min_vega_weight", &CalibOpts::min_vega_weight)
+      .def_readwrite("max_spread_vol", &CalibOpts::max_spread_vol)
+      .def_readwrite("max_weight", &CalibOpts::max_weight)
+      .def_readwrite("max_obs_per_slice", &CalibOpts::max_obs_per_slice)
+      .def_readwrite("warm_start_deam_adjacent_strikes",
+                     &CalibOpts::warm_start_deam_adjacent_strikes)
+      .def_readwrite("use_shared_boundary_deam",
+                     &CalibOpts::use_shared_boundary_deam)
+      .def_readwrite("max_deam_strikes_per_expiry",
+                     &CalibOpts::max_deam_strikes_per_expiry)
+      .def_readwrite("max_otm_shortcut_premium_spread_frac",
+                     &CalibOpts::max_otm_shortcut_premium_spread_frac)
+      .def_readwrite("max_inversion_residual_half_spreads",
+                     &CalibOpts::max_inversion_residual_half_spreads)
+      .def_readwrite("audit_accurate_inversions",
+                     &CalibOpts::audit_accurate_inversions)
+      .def_readwrite("min_otm_shortcut_T", &CalibOpts::min_otm_shortcut_T)
+      .def_readwrite("min_otm_shortcut_vega", &CalibOpts::min_otm_shortcut_vega)
+      .def_readwrite("max_otm_shortcut_abs_k", &CalibOpts::max_otm_shortcut_abs_k)
+      .def_readwrite("max_certified_deam_drop_fraction",
+                     &CalibOpts::max_certified_deam_drop_fraction)
+      .def_readwrite("prior_strength", &CalibOpts::prior_strength)
+      .def_readwrite("essvi_rho_mode", &CalibOpts::essvi_rho_mode)
+      .def_readwrite("optimization_level", &CalibOpts::optimization_level)
+      .def_readwrite("essvi_fallback_rmse_threshold",
+                     &CalibOpts::essvi_fallback_rmse_threshold)
+      .def_readwrite("n_butterfly_grid", &CalibOpts::n_butterfly_grid)
+      .def_readwrite("max_iter_quick_mark", &CalibOpts::max_iter_quick_mark)
+      .def_readwrite("max_iter_trading", &CalibOpts::max_iter_trading)
+      .def_readwrite("max_iter_risk", &CalibOpts::max_iter_risk)
+      .def_readwrite("max_iter_reference", &CalibOpts::max_iter_reference)
+      .def_readwrite("max_iter_cold_fast", &CalibOpts::max_iter_cold_fast)
+      .def_readwrite("wing_floor_alpha", &CalibOpts::wing_floor_alpha)
+      .def_readwrite("lee_bound_project", &CalibOpts::lee_bound_project)
+      .def_readwrite("morozov_stop", &CalibOpts::morozov_stop)
+      .def_readwrite("morozov_tau", &CalibOpts::morozov_tau)
+      .def_readwrite("validate_no_arb", &CalibOpts::validate_no_arb)
+      .def_readwrite("essvi_alt_driver_theta_project",
+                     &CalibOpts::essvi_alt_driver_theta_project)
+      .def_readwrite("residual_disable", &CalibOpts::residual_disable)
+      .def_readwrite("residual_basis_kind", &CalibOpts::residual_basis_kind)
+      .def_readwrite("residual_n_basis_terms", &CalibOpts::residual_n_basis_terms)
+      .def_readwrite("residual_ridge_factor", &CalibOpts::residual_ridge_factor)
+      .def_readwrite("loss_kind", &CalibOpts::loss_kind)
+      .def_readwrite("anchor_kind", &CalibOpts::anchor_kind)
+      .def_readwrite("essvi_asymmetric_rho", &CalibOpts::essvi_asymmetric_rho)
+      .def_readwrite("min_obs_per_slice", &CalibOpts::min_obs_per_slice)
+      .def_readwrite("max_post_fit_sigma", &CalibOpts::max_post_fit_sigma)
+      .def_readwrite("max_spread_to_mid_pct", &CalibOpts::max_spread_to_mid_pct)
+      .def_readwrite("per_slice_linear_fallback",
+                     &CalibOpts::per_slice_linear_fallback);
+
+  py::class_<SplineFitOpts>(m, "SplineFitOpts")
+      .def(py::init<>())
+      .def_readwrite("lambda_", &SplineFitOpts::lambda)
+      .def_readwrite("mult_floor", &SplineFitOpts::mult_floor)
+      .def_readwrite("mult_ceil", &SplineFitOpts::mult_ceil)
+      .def_readwrite("min_obs", &SplineFitOpts::min_obs)
+      .def_property_readonly(
+          "grid",
+          [](const SplineFitOpts &self) {
+            return std::vector<double>{self.grid.begin(), self.grid.end()};
+          },
+          "The fixed standard moneyness grid (read-only: the C++ config borrows it).");
+
+  py::class_<CurveConfig>(m, "CurveConfig")
+      .def(py::init<>())
+      .def_readwrite("kind", &CurveConfig::kind)
+      .def_readwrite("convex", &CurveConfig::convex)
+      .def_readwrite("parametric", &CurveConfig::parametric)
+      .def_readwrite("spline", &CurveConfig::spline);
+
   py::class_<PricerConfig>(m, "PricerConfig")
       .def(py::init<>())
       .def_readwrite("preset", &PricerConfig::preset)
       .def_readwrite("n_threads", &PricerConfig::n_threads)
+      .def_readwrite("fit_workers", &PricerConfig::fit_workers)
+      .def_readwrite("collect_stage_timings", &PricerConfig::collect_stage_timings)
+      .def_readwrite("cash_divs", &PricerConfig::cash_divs)
       .def_readwrite("query_pricing_tier", &PricerConfig::query_pricing_tier)
-      // `curve` is `optional<CurveConfig>`, a deep struct whose knobs are not
-      // (yet) bound. This property is the pin/unpin switch a Python caller
-      // actually needs: assign a VolCurveKind to pin that family with its
-      // defaults, or None to hand the board back to the auto-routing policy.
+      .def_readwrite("curve", &PricerConfig::curve,
+                     "Full optional CurveConfig. None selects profile routing.")
+      .def_readwrite("use_correction_cache", &PricerConfig::use_correction_cache)
+      .def_readwrite("score_parity", &PricerConfig::score_parity)
+      .def_readwrite("enforce_calendar_floor", &PricerConfig::enforce_calendar_floor)
+      .def_readwrite("use_deam_cache_for_fit", &PricerConfig::use_deam_cache_for_fit)
+      .def_readwrite("audit_fit_inversions", &PricerConfig::audit_fit_inversions)
+      .def_readwrite("warm_start_carry", &PricerConfig::warm_start_carry)
+      .def_readwrite("max_obs_per_slice", &PricerConfig::max_obs_per_slice)
+      .def_readwrite("max_deam_strikes_per_expiry",
+                     &PricerConfig::max_deam_strikes_per_expiry)
+      .def_readwrite("max_otm_shortcut_premium_spread_frac",
+                     &PricerConfig::max_otm_shortcut_premium_spread_frac)
+      // Backward-compatible convenience pin/unpin view over the full config.
       .def_property(
           "curve_kind",
           [](const PricerConfig &self) -> std::optional<VolCurveKind> {

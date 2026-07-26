@@ -149,6 +149,22 @@ def test_american_greeks_batch_matches_the_scalar_fd_loop():
         assert got["theta"][i] == ref.theta
 
 
+def test_american_batch_unsupported_regime_is_not_an_error_code():
+    spot, strike, t, sigma, r, q, side = _book(8)
+    t = t.copy()
+    t[3] = -1.0
+
+    prices, status = av.american_price_batch(
+        spot, strike, t, sigma, r, q, side, isa=av.SimdIsa.FORCE_SCALAR
+    )
+
+    assert math.isnan(prices[3])
+    assert int(status[3]) == av.AMERICAN_BATCH_UNSUPPORTED_REGIME
+    assert int(status[3]) < 0
+    assert int(status[3]) != int(av.ErrorCode.NOT_IMPLEMENTED)
+    assert all(int(status[i]) == av.STATUS_OK for i in range(len(t)) if i != 3)
+
+
 def test_american_implied_vol_batch_reports_lane_status():
     # Strike-axis inversion, shared (S, T, r, q, side). One lane is handed a
     # price below intrinsic, which must NaN that lane and leave the rest intact.
@@ -216,6 +232,11 @@ def test_priced_surface_grid_matches_the_scalar_queries(priced):
 
     assert len(got["iv"]) == len(k)
     assert np.all(got["status"] == av.STATUS_OK)
+    for family in ("iv", "total_variance", "fair_value", "greeks"):
+        assert np.all(got[f"{family}_status"] == av.STATUS_OK)
+        assert np.all(got[f"{family}_valid"])
+    for name in ("delta", "gamma", "vega", "theta", "rho", "vanna", "volga", "charm"):
+        assert np.all(got[f"{name}_valid"])
     for i in range(len(k)):
         s = av.Side.CALL if side[i] == int(av.Side.CALL) else av.Side.PUT
         assert got["iv"][i] == priced.iv(float(k[i]), float(t[i]))
@@ -239,14 +260,10 @@ def test_priced_surface_grid_nans_a_failing_point_instead_of_raising(priced):
     assert all(int(got["status"][i]) == av.STATUS_OK for i in range(len(k)) if i != 2)
 
 
-def test_priced_surface_grid_status_is_the_first_failure_of_fair_value_then_greeks(priced):
-    # I3 (rev-ws-y): the columns fail INDEPENDENTLY and each NaNs on its own
-    # failure, but there is ONE status column — so `status != STATUS_OK` does not
-    # mean the row is unusable, and `status == STATUS_OK` does not promise a
-    # finite `iv`. Pin the exact rule the docstring and README now teach, so it
-    # cannot drift back into the vaguer "a point the surface cannot serve records
-    # its ErrorCode". If someone wired `iv` or `total_variance` into `status`,
-    # this fails.
+def test_priced_surface_grid_has_lossless_per_family_status_and_validity(priced):
+    # F-5: independently failing families must not be compressed into one
+    # ambiguous row status. The compatibility status is merely the first family
+    # failure; every family also carries its own code and validity mask.
     k, t, side = _grid_points(priced)
     t = t.copy()
     t[1] = -1.0     # degenerate row
@@ -255,6 +272,8 @@ def test_priced_surface_grid_status_is_the_first_failure_of_fair_value_then_gree
 
     for i in range(len(k)):
         s = av.Side.CALL if side[i] == int(av.Side.CALL) else av.Side.PUT
+        iv_ok = math.isfinite(priced.iv(float(k[i]), float(t[i])))
+        w_ok = math.isfinite(priced.total_variance(float(k[i]), float(t[i])))
         try:
             priced.fair_value(float(k[i]), float(t[i]), s)
             fv_code = av.STATUS_OK
@@ -266,10 +285,27 @@ def test_priced_surface_grid_status_is_the_first_failure_of_fair_value_then_gree
         except av.AtxError as err:
             g_code = int(err.code)
 
-        expected = fv_code if fv_code != av.STATUS_OK else g_code
+        iv_code = av.STATUS_OK if iv_ok else int(av.ErrorCode.OUT_OF_RANGE)
+        w_code = av.STATUS_OK if w_ok else int(av.ErrorCode.OUT_OF_RANGE)
+        assert bool(got["iv_valid"][i]) is iv_ok
+        assert bool(got["total_variance_valid"][i]) is w_ok
+        assert bool(got["fair_value_valid"][i]) is (fv_code == av.STATUS_OK)
+        assert bool(got["greeks_valid"][i]) is (g_code == av.STATUS_OK)
+        for name in ("delta", "gamma", "vega", "theta", "rho", "vanna", "volga", "charm"):
+            assert bool(got[f"{name}_valid"][i]) is math.isfinite(got[name][i])
+        assert int(got["iv_status"][i]) == iv_code
+        assert int(got["total_variance_status"][i]) == w_code
+        assert int(got["fair_value_status"][i]) == fv_code
+        assert int(got["greeks_status"][i]) == g_code
+
+        expected = next(
+            (code for code in (iv_code, w_code, fv_code, g_code)
+             if code != av.STATUS_OK),
+            av.STATUS_OK,
+        )
         assert int(got["status"][i]) == expected, (
-            f"row {i}: status {int(got['status'][i])} is neither fair_value's "
-            f"code ({fv_code}) nor, failing that, greeks' ({g_code})"
+            f"row {i}: compatibility status did not preserve the first "
+            f"family failure"
         )
 
 

@@ -497,7 +497,9 @@ struct PvFixture {
 [[nodiscard]] PvFixture make_pv_fixture(std::string_view leaf,
                                         const std::vector<PvUniverseBlock> &blocks,
                                         const std::string &extra_spec = {},
-                                        std::size_t n_dates = 5) {
+                                        std::size_t n_dates = 5,
+                                        std::size_t n_unused_surfaces = 0,
+                                        bool symbol_derived_uids = false) {
   PvFixture fixture;
   fixture.dir = make_run_dir(leaf);
   const fs::path archive_dir = fixture.dir / "surfaces";
@@ -515,15 +517,38 @@ struct PvFixture {
     // make the VaR itself a vacuous number to compare across the fix.
     const double drift = 1.0 + 0.05 * std::sin(1.7 * static_cast<double>(d));
     const double bump = 0.010 * std::sin(2.3 * static_cast<double>(d) + 0.7);
-    const PricedSurface index = pv_surface(1, 500.0 * drift, now, 0.00 + bump);
-    const PricedSurface aaa = pv_surface(2, 100.0 * drift, now, 0.02 + bump);
-    const PricedSurface bbb = pv_surface(3, 120.0 * drift, now, 0.03 + bump);
-    const PricedSurface ccc = pv_surface(4, 80.0 * drift, now, 0.05 + bump);
+    const auto fixture_uid = [symbol_derived_uids](std::string_view symbol,
+                                                   std::uint32_t legacy) {
+      return symbol_derived_uids ? uid_for_symbol(symbol) : legacy;
+    };
+    const PricedSurface index =
+        pv_surface(fixture_uid("SPY", 1u), 500.0 * drift, now, 0.00 + bump);
+    const PricedSurface aaa =
+        pv_surface(fixture_uid("AAA", 2u), 100.0 * drift, now, 0.02 + bump);
+    const PricedSurface bbb =
+        pv_surface(fixture_uid("BBB", 3u), 120.0 * drift, now, 0.03 + bump);
+    const PricedSurface ccc =
+        pv_surface(fixture_uid("CCC", 4u), 80.0 * drift, now, 0.05 + bump);
     const std::string path = (archive_dir / (date + ".atxvsa")).string();
-    const std::vector<SurfaceArchiveItem> items = {SurfaceArchiveItem{"SPY", &index},
-                                                   SurfaceArchiveItem{"AAA", &aaa},
-                                                   SurfaceArchiveItem{"BBB", &bbb},
-                                                   SurfaceArchiveItem{"CCC", &ccc}};
+    std::vector<std::string> unused_symbols;
+    std::vector<PricedSurface> unused_surfaces;
+    unused_symbols.reserve(n_unused_surfaces);
+    unused_surfaces.reserve(n_unused_surfaces);
+    for (std::size_t i = 0u; i < n_unused_surfaces; ++i) {
+      unused_symbols.push_back("UNUSED" + std::to_string(i));
+      unused_surfaces.push_back(
+          pv_surface(static_cast<std::uint32_t>(100u + i),
+                     (40.0 + static_cast<double>(i)) * drift, now,
+                     0.01 + 0.0001 * static_cast<double>(i) + bump));
+    }
+    std::vector<SurfaceArchiveItem> items = {SurfaceArchiveItem{"SPY", &index},
+                                             SurfaceArchiveItem{"AAA", &aaa},
+                                             SurfaceArchiveItem{"BBB", &bbb},
+                                             SurfaceArchiveItem{"CCC", &ccc}};
+    items.reserve(4u + n_unused_surfaces);
+    for (std::size_t i = 0u; i < n_unused_surfaces; ++i) {
+      items.push_back(SurfaceArchiveItem{unused_symbols[i], &unused_surfaces[i]});
+    }
     const Status written = write_surface_archive_v2_file(path, items);
     EXPECT_TRUE(written.has_value())
         << (written.has_value() ? std::string{} : written.error().to_string());
@@ -628,6 +653,100 @@ struct PvFixture {
 }
 
 } // namespace
+
+TEST(DispersionDividends, ExactCorpusInputsPersistAndReachSurfaceAndListedRunConfigs) {
+  const std::string financing_keys =
+      tsv_row({"financing_shares_carry", "1"});
+  const PvFixture without =
+      make_pv_fixture("f1_without_dividends", pv_reconstituting_blocks(),
+                      financing_keys, 5u, 0u, /*symbol_derived_uids=*/true);
+  const PvFixture with =
+      make_pv_fixture("f1_with_dividends", pv_reconstituting_blocks(),
+                      financing_keys + tsv_row({"dividend_ledger", "share_dividends.tsv"}),
+                      5u, 0u, /*symbol_derived_uids=*/true);
+
+  const std::int64_t ex_ts_ns = kPvBaseNs + kPvDayNs;
+  std::vector<ShareDividendObservation> observations;
+  for (const std::string &symbol : {"SPY", "AAA", "BBB", "CCC"}) {
+    observations.push_back(ShareDividendObservation{
+        with.dates.front(), symbol, uid_for_symbol(symbol), ex_ts_ns, 10.0,
+        "dividend-fixture", with.dates.front() + "T12:00:00Z", 101u, 202u});
+  }
+  ASSERT_TRUE(write_share_dividend_artifact(
+      with.dir / "share_dividends.tsv", observations));
+
+  auto parsed = read_dispersion_run_config(with.dir / "run_spec.tsv");
+  ASSERT_TRUE(parsed.has_value())
+      << (parsed.has_value() ? std::string{} : parsed.error().to_string());
+  ASSERT_EQ(parsed->financing.share_dividends.size(), observations.size());
+  const RunConfig listed_engine = dispersion_engine_run_config_from(*parsed);
+  ASSERT_EQ(listed_engine.financing.share_dividends.size(),
+            parsed->financing.share_dividends.size())
+      << "the listed replay builder dropped the corpus dividend ledger";
+  const DispersionBacktestConfig surface_engine =
+      dispersion_backtest_config_from(*parsed);
+  ASSERT_EQ(surface_engine.run.financing.share_dividends.size(),
+            parsed->financing.share_dividends.size())
+      << "the surface route dropped the corpus dividend ledger";
+  for (std::size_t i = 0u; i < parsed->financing.share_dividends.size(); ++i) {
+    const ShareDividend &expected = parsed->financing.share_dividends[i];
+    const ShareDividend &listed = listed_engine.financing.share_dividends[i];
+    const ShareDividend &surface =
+        surface_engine.run.financing.share_dividends[i];
+    EXPECT_EQ(listed.uid, expected.uid);
+    EXPECT_EQ(listed.ex_ts_ns, expected.ex_ts_ns);
+    EXPECT_DOUBLE_EQ(listed.amount, expected.amount);
+    EXPECT_EQ(surface.uid, expected.uid);
+    EXPECT_EQ(surface.ex_ts_ns, expected.ex_ts_ns);
+    EXPECT_DOUBLE_EQ(surface.amount, expected.amount);
+  }
+
+  const Status without_status = dispersion_run_surface_backtest(without.dir);
+  ASSERT_TRUE(without_status.has_value())
+      << (without_status.has_value() ? std::string{}
+                                     : without_status.error().to_string());
+  const Status with_status = dispersion_run_surface_backtest(with.dir);
+  ASSERT_TRUE(with_status.has_value())
+      << (with_status.has_value() ? std::string{} : with_status.error().to_string());
+
+  const auto without_rows = read_tsv_rows(without.dir / "surface_backtest.tsv");
+  const auto with_rows = read_tsv_rows(with.dir / "surface_backtest.tsv");
+  ASSERT_EQ(without_rows.size(), with_rows.size());
+  ASSERT_GE(with_rows.size(), 3u);
+  const std::size_t financing_col = column_of(with_rows.front(), "financing");
+  ASSERT_NE(financing_col, static_cast<std::size_t>(-1));
+  EXPECT_NE(std::stod(with_rows[2][financing_col]),
+            std::stod(without_rows[2][financing_col]))
+      << "the exact ex-date dividend reached config but did not reach the hedge ledger";
+
+  std::error_code error;
+  fs::remove_all(without.dir, error);
+  fs::remove_all(with.dir, error);
+}
+
+TEST(DispersionDividends, CorpusDividendInputCarriesExactScheduleAndProvenance) {
+  const fs::path dir = make_run_dir("f1_dividend_inputs");
+  const fs::path path = dir / "dividend_inputs.tsv";
+  write_file(path,
+             "ATX_CORPUS_DIVIDENDS\t1\n"
+             "date\tsymbol\tex_ts_ns\tamount\tsource\tas_of\n" +
+                 tsv_row({"2026-10-01", "AAA", "1790971200000000000", "1.25",
+                          "vendor-dividends", "2026-09-30T20:00:00Z"}));
+  auto table = read_corpus_dividend_inputs(path);
+  ASSERT_TRUE(table.has_value())
+      << (table.has_value() ? std::string{} : table.error().to_string());
+  const CorpusMarketInputCell *cell = table->find("2026-10-01", "AAA");
+  ASSERT_NE(cell, nullptr);
+  ASSERT_EQ(cell->cash_divs.size(), 1u);
+  EXPECT_EQ(cell->cash_divs[0].ex_date_ns, 1790971200000000000LL);
+  EXPECT_DOUBLE_EQ(cell->cash_divs[0].amount, 1.25);
+  EXPECT_EQ(cell->provenance.dividends.source, "vendor-dividends");
+  EXPECT_EQ(cell->provenance.dividends.as_of, "2026-09-30T20:00:00Z");
+  EXPECT_NE(cell->provenance.fingerprint, 0u);
+
+  std::error_code error;
+  fs::remove_all(dir, error);
+}
 
 TEST(DispersionReferenceReconcile, M10_ScheduleWithNoRollDateColumnIsRejected) {
   const fs::path run = make_run_dir("m10_roll_date");
@@ -1087,6 +1206,58 @@ TEST(DispersionProjectedVar, C1_BookIsResolvedAndSizedAtTheAsOfSnapshotNotTheFir
 // (that would be tautological once both call the same function): it compares the
 // legs the ROUTE actually published against a book the TEST builds through the
 // surface route's own builder.
+
+TEST(DispersionProjectedVar, P1_LoadsAnchorOnceAndSubsetsHistoricalArchives) {
+  constexpr std::size_t n_dates = 7u;
+  constexpr std::size_t n_unused = 24u;
+  const PvFixture fixture =
+      make_pv_fixture("pv_p1_bounded", pv_reconstituting_blocks(), {}, n_dates, n_unused);
+
+  MarketSnapshot::reset_open_count();
+  MarketSnapshot::reset_deserialized_bytes();
+  const Status ran = dispersion_run_projected_var(fixture.dir);
+  ASSERT_TRUE(ran.has_value()) << (ran.has_value() ? std::string{} : ran.error().to_string());
+  const std::uint64_t route_opens = MarketSnapshot::open_count();
+  const std::uint64_t route_bytes = MarketSnapshot::deserialized_bytes();
+  EXPECT_EQ(route_opens, n_dates)
+      << "the anchor must be reused for its scenario, not loaded a second time";
+  ASSERT_TRUE(verify_projected_var_artifacts(fixture.dir, n_dates));
+
+  MarketSnapshot::reset_open_count();
+  MarketSnapshot::reset_deserialized_bytes();
+  for (const std::string &date : fixture.dates) {
+    auto snapshot = MarketSnapshot::load(
+        (fixture.dir / "surfaces" / (date + ".atxvsa")).string(),
+        QueryPricingTier::LegacyCompatible, {}, ArchiveBacking::Sealed);
+    ASSERT_TRUE(snapshot.has_value())
+        << (snapshot.has_value() ? std::string{} : snapshot.error().to_string());
+  }
+  const std::uint64_t whole_board_bytes = MarketSnapshot::deserialized_bytes();
+  EXPECT_EQ(MarketSnapshot::open_count(), n_dates);
+  EXPECT_LT(route_bytes, whole_board_bytes)
+      << "projected VaR still materialized every unused surface record";
+
+  MarketSnapshot::reset_open_count();
+  MarketSnapshot::reset_deserialized_bytes();
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+TEST(DispersionProjectedVar, C14_FailedRerunInvalidatesThePreviousGeneration) {
+  const PvFixture fixture =
+      make_pv_fixture("pv_c14_failed_rerun", pv_reconstituting_blocks());
+  ASSERT_TRUE(dispersion_run_projected_var(fixture.dir));
+  ASSERT_TRUE(verify_projected_var_artifacts(fixture.dir, fixture.dates.size()));
+
+  write_file(fixture.dir / "run_spec.tsv", "key\tvalue\nunknown_projected_key\t1\n");
+  EXPECT_FALSE(dispersion_run_projected_var(fixture.dir));
+  EXPECT_FALSE(fs::exists(fixture.dir / "projected_var.tsv"));
+  EXPECT_FALSE(verify_projected_var_artifacts(fixture.dir, fixture.dates.size()))
+      << "stale companions from the prior success verified after a failed rerun";
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
 
 // Guard against a vacuous parity gate: if `weighting` and `strike` did not move
 // the book, the comparison below would pass with BOTH routes ignoring them.

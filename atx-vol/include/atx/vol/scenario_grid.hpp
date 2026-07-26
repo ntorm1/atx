@@ -57,6 +57,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "atx/vol/american.hpp"         // AmericanGreeks
@@ -64,6 +65,18 @@
 #include "atx/vol/types.hpp"            // Result
 
 namespace atx::vol {
+
+namespace detail {
+
+// Allocation-free sizing seam used by scenario_grid for every multiplied shape
+// (result cells, compact exact-price lanes, and executor tasks). Public only so
+// overflow boundaries can be pinned without attempting pathological allocations.
+[[nodiscard]] constexpr bool scenario_grid_product_is_representable(std::size_t lhs,
+                                                                    std::size_t rhs) noexcept {
+  return lhs == 0u || rhs <= (std::numeric_limits<std::size_t>::max)() / lhs;
+}
+
+} // namespace detail
 
 // ── Taylor↔Exact routing (C3.2) ──────────────────────────────────────────────
 //
@@ -158,6 +171,10 @@ struct ScenarioGridResult {
   // unique's Taylor leg for that cell (the cell's route stays Exact). Counted once per
   // failing unique per Exact cell; 0 whenever routing is disabled or every solve holds.
   std::size_t n_exact_fallback_lanes{0};
+  // Number of doubles in the compact Exact-price scratch. This is exactly
+  // (Exact cells × Greek-successful unique contracts), not (all cells × all
+  // uniques); exposed as a stable working-set diagnostic for production-sized grids.
+  std::size_t n_exact_price_scratch_slots{0};
 
   [[nodiscard]] std::size_t n_cells() const noexcept { return pnl.size(); }
 };
@@ -188,8 +205,10 @@ struct ScenarioGridResult {
 // (one Greek solve), then reconstruct every (spot_pct[i], vol_bump[j]) cell
 // analytically to second order. `spec.dr` / `spec.dt` are applied to every cell.
 //
-// @return InvalidArgument if either axis is empty, or the propagated dedup/price
-//         error. An empty book yields an all-zero grid (n_ok = n_failed = 0).
+// @return InvalidArgument if either axis is empty or a result/scratch/task shape
+//         overflows size_t (or exceeds a vector's element capacity), otherwise the
+//         propagated dedup/price error. An empty book yields an all-zero grid
+//         (n_ok = n_failed = 0).
 [[nodiscard]] Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book,
                                                        const SurfaceSet &base,
                                                        const ScenarioGridSpec &spec);

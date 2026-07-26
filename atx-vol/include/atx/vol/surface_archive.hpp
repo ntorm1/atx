@@ -368,8 +368,9 @@ struct SurfaceArchiveItem {
 write_surface_archive(std::span<const SurfaceArchiveItem> items,
                       const SurfaceArchiveWriteOpts &opts = {});
 
-// As above, persisted to `path` (written to `path` + ".tmp" then renamed for
-// atomic replacement). Adds IoError on any filesystem failure.
+// As above, persisted to `path` through a unique same-directory temp, with
+// same-destination serialization and durable atomic replacement. Adds IoError
+// on any filesystem failure.
 [[nodiscard]] Status write_surface_archive_file(std::string_view path,
                                                 std::span<const SurfaceArchiveItem> items,
                                                 const SurfaceArchiveWriteOpts &opts = {});
@@ -652,7 +653,8 @@ struct ArchiveV2WriteOpts {
 write_surface_archive_v2(std::span<const SurfaceArchiveItem> items,
                          const ArchiveV2WriteOpts &opts = {});
 
-// As above, persisted atomically (".tmp" + rename).
+// As above, persisted through a unique same-directory temp with serialized,
+// durable atomic replacement.
 [[nodiscard]] Status write_surface_archive_v2_file(std::string_view path,
                                                    std::span<const SurfaceArchiveItem> items,
                                                    const ArchiveV2WriteOpts &opts = {});

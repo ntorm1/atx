@@ -173,6 +173,17 @@ struct OpraBatchResult {
   std::size_t n_coverage_holes = 0;
 };
 
+// Diagnostics for the bounded production-ingest driver below. `peak_entries`
+// is the largest number of OPRA cells retained by one window; because the
+// callback returns before the next window is loaded, it is also the driver's
+// panel working-set bound.
+struct OpraWindowLoadStats {
+  std::size_t n_windows{0};
+  std::size_t peak_entries{0};
+  double load_wall_s{0.0};
+  double load_process_cpu_s{0.0};
+};
+
 // Progress sink: called once per (symbol, date) AFTER its entry is appended, with
 // the running `done` (1..total, monotonic) and a reference to the just-added entry.
 using OpraBatchProgress =
@@ -203,6 +214,17 @@ using OpraBatchProgress =
 //         length mismatch.
 [[nodiscard]] Result<OpraBatchResult>
 load_opra_daterange(const OpraBatchSpec& spec, const OpraBatchProgress& progress = {});
+
+// Load an inclusive OPRA range in bounded date windows. The date-window loop is
+// deliberately OUTSIDE `load_opra_daterange`: one window is loaded, handed by
+// rvalue to `consume`, and destroyed before the next loader call. This is the
+// production seam used by dispersion_build_corpus to make date batching bound
+// OPRA panels as well as fitted surfaces.
+using OpraWindowConsumer = std::function<Status(OpraBatchResult &&batch)>;
+[[nodiscard]] Status load_opra_date_windows(const OpraBatchSpec &spec,
+                                            std::size_t date_window_size,
+                                            const OpraWindowConsumer &consume,
+                                            OpraWindowLoadStats *stats = nullptr);
 
 // Build the `MarketEnv` a fit consumes from a loaded `QuoteFrame` — the bridge that
 // makes the frame's term pillars non-hollow.

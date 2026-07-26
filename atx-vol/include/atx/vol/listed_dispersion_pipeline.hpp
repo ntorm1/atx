@@ -229,6 +229,13 @@ listed_selection_config_from(const ListedScheduleSpec &spec);
                                             const ListedScheduleSpec &spec,
                                             const ListedDispersionMethodology &method);
 
+// Optional audit sink invoked for every date on which quote selection runs,
+// including failed selections. This keeps the production CLI's rejection artifact
+// on the exact same selection path as the schedule economics.
+using ListedQuoteRejectSink =
+    std::function<void(std::string_view date, bool selected,
+                       const ListedQuoteRejectCounts &counts)>;
+
 // Verbatim lift of `build_schedule_command`'s selection loop
 // (spy_dispersion_backtest.cpp:446-535): per-date snapshot load, DTE roll-trigger,
 // per-date universe rebind (`DropRenormalize`, `spec.min_names` floor), forward
@@ -263,6 +270,15 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
                                  std::span<const UniverseRow> universe_rows,
                                  const ListedDefinitionTable &definitions,
                                  const RunSpec &quote_source, PhaseTimer *timer = nullptr);
+
+// Audited production form. Identical economics, plus a callback carrying the
+// per-date rejection tally for publication by the shipped CLI.
+[[nodiscard]] Result<ListedDispersionSchedule>
+build_listed_dispersion_schedule_audited(
+    const Clock &clock, const ListedScheduleSpec &spec,
+    const ListedDispersionMethodology &method, std::span<const UniverseRow> universe_rows,
+    const ListedDefinitionTable &definitions, const RunSpec &quote_source, PhaseTimer *timer,
+    const ListedQuoteRejectSink &quote_reject_sink);
 
 // ── Cold projection (M6, I1) ────────────────────────────────────────────────────
 
@@ -383,6 +399,22 @@ struct DispersionBookVar {
   // the `projected_var.tsv` provenance column without rebuilding the projection.
   std::uint64_t prepared_fingerprint{0};
 };
+
+// Bounded-input form of `dispersion_book_var`. The library still owns book ->
+// relative-template synthesis, output allocation, incomplete-frame rejection and
+// VaR/ES calculation; `evaluate` owns only how scenario SurfaceSets are supplied
+// to the already-prepared projection. File-oriented callers can therefore load
+// sealed, subsetted snapshots in bounded batches instead of retaining every
+// archive to satisfy HistoricalProjectionScenario's borrowed pointer.
+using DispersionProjectionEvaluator = std::function<Status(
+    const PreparedHistoricalProjection &prepared, std::span<HistoricalProjectionFrame> frames,
+    std::span<ProjectedOption> legs, const HistoricalProjectionConfig &config)>;
+
+[[nodiscard]] Result<DispersionBookVar>
+dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &maturity,
+                    std::size_t n_scenarios, std::span<const double> confidences,
+                    const DispersionProjectionEvaluator &evaluate,
+                    const HistoricalProjectionConfig &cfg = {});
 
 // Verbatim lift of run_projected_var_command's book -> OptionProjectionSpec synthesis
 // + PreparedHistoricalProjection::evaluate_into + projected_historical_var per

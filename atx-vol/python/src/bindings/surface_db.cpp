@@ -115,7 +115,16 @@ py::dict priced_surface_grid(const PricedSurface &self, const DoubleArray &k_arr
   const auto n = static_cast<py::ssize_t>(k.size());
   py::array_t<double> iv(n), w(n), value(n), delta(n), gamma(n), vega(n), theta(n), rho(n),
       vanna(n), volga(n), charm(n);
-  py::array_t<std::int32_t> status(n);
+  // F-5: every independently evaluated output family gets its own status and
+  // validity channel. `iv` / `total_variance` expose only a bare-double C++
+  // API, so a non-finite value maps to OutOfRange; fair value and Greeks retain
+  // their exact ErrorCode. The legacy row `status` remains as the first error
+  // in column order, but it is no longer the only diagnostic.
+  py::array_t<std::int32_t> status(n), iv_status(n), w_status(n), value_status(n),
+      greeks_status(n);
+  py::array_t<bool> iv_valid(n), w_valid(n), value_valid(n), greeks_valid(n),
+      delta_valid(n), gamma_valid(n), vega_valid(n), theta_valid(n), rho_valid(n),
+      vanna_valid(n), volga_valid(n), charm_valid(n);
   // Decoded up front, with the GIL still held and before a single point is
   // priced: one shared decoder (I2, `sides.hpp`), and an unrecognised code is a
   // rejected CALL rather than a half-written grid.
@@ -141,27 +150,70 @@ py::dict priced_surface_grid(const PricedSurface &self, const DoubleArray &k_arr
   auto *volga_p = volga.mutable_data();
   auto *charm_p = charm.mutable_data();
   auto *status_p = status.mutable_data();
+  auto *iv_status_p = iv_status.mutable_data();
+  auto *w_status_p = w_status.mutable_data();
+  auto *value_status_p = value_status.mutable_data();
+  auto *greeks_status_p = greeks_status.mutable_data();
+  auto *iv_valid_p = iv_valid.mutable_data();
+  auto *w_valid_p = w_valid.mutable_data();
+  auto *value_valid_p = value_valid.mutable_data();
+  auto *greeks_valid_p = greeks_valid.mutable_data();
+  auto *delta_valid_p = delta_valid.mutable_data();
+  auto *gamma_valid_p = gamma_valid.mutable_data();
+  auto *vega_valid_p = vega_valid.mutable_data();
+  auto *theta_valid_p = theta_valid.mutable_data();
+  auto *rho_valid_p = rho_valid.mutable_data();
+  auto *vanna_valid_p = vanna_valid.mutable_data();
+  auto *volga_valid_p = volga_valid.mutable_data();
+  auto *charm_valid_p = charm_valid.mutable_data();
   {
     py::gil_scoped_release release;
     constexpr double kNan = std::numeric_limits<double>::quiet_NaN();
+    constexpr auto kOutOfRange =
+        static_cast<std::int32_t>(atx::core::ErrorCode::OutOfRange);
     for (std::size_t i = 0; i < k.size(); ++i) {
       const Side side = sides[i];
       iv_p[i] = self.iv(k[i], t[i]);
       w_p[i] = self.total_variance(k[i], t[i]);
-      status_p[i] = atxvol::python::kStatusOk;
+      iv_valid_p[i] = std::isfinite(iv_p[i]);
+      w_valid_p[i] = std::isfinite(w_p[i]);
+      iv_status_p[i] =
+          iv_valid_p[i] ? atxvol::python::kStatusOk : kOutOfRange;
+      w_status_p[i] =
+          w_valid_p[i] ? atxvol::python::kStatusOk : kOutOfRange;
+      status_p[i] = iv_status_p[i] != atxvol::python::kStatusOk
+                        ? iv_status_p[i]
+                        : w_status_p[i];
       auto fv = self.fair_value(k[i], t[i], side, execution);
       if (!fv) {
         value_p[i] = kNan;
-        status_p[i] = static_cast<std::int32_t>(fv.error().code());
+        value_valid_p[i] = false;
+        value_status_p[i] = static_cast<std::int32_t>(fv.error().code());
+        if (status_p[i] == atxvol::python::kStatusOk) {
+          status_p[i] = value_status_p[i];
+        }
       } else {
         value_p[i] = *fv;
+        value_valid_p[i] = std::isfinite(value_p[i]);
+        value_status_p[i] =
+            value_valid_p[i] ? atxvol::python::kStatusOk : kOutOfRange;
+        if (status_p[i] == atxvol::python::kStatusOk &&
+            value_status_p[i] != atxvol::python::kStatusOk) {
+          status_p[i] = value_status_p[i];
+        }
       }
       auto g = self.greeks(k[i], t[i], side, execution);
       if (!g) {
         delta_p[i] = gamma_p[i] = vega_p[i] = theta_p[i] = kNan;
         rho_p[i] = vanna_p[i] = volga_p[i] = charm_p[i] = kNan;
+        greeks_valid_p[i] = false;
+        delta_valid_p[i] = gamma_valid_p[i] = vega_valid_p[i] =
+            theta_valid_p[i] = false;
+        rho_valid_p[i] = vanna_valid_p[i] = volga_valid_p[i] =
+            charm_valid_p[i] = false;
+        greeks_status_p[i] = static_cast<std::int32_t>(g.error().code());
         if (status_p[i] == atxvol::python::kStatusOk) {
-          status_p[i] = static_cast<std::int32_t>(g.error().code());
+          status_p[i] = greeks_status_p[i];
         }
         continue;
       }
@@ -173,6 +225,24 @@ py::dict priced_surface_grid(const PricedSurface &self, const DoubleArray &k_arr
       vanna_p[i] = g->vanna;
       volga_p[i] = g->volga;
       charm_p[i] = g->charm;
+      delta_valid_p[i] = std::isfinite(delta_p[i]);
+      gamma_valid_p[i] = std::isfinite(gamma_p[i]);
+      vega_valid_p[i] = std::isfinite(vega_p[i]);
+      theta_valid_p[i] = std::isfinite(theta_p[i]);
+      rho_valid_p[i] = std::isfinite(rho_p[i]);
+      vanna_valid_p[i] = std::isfinite(vanna_p[i]);
+      volga_valid_p[i] = std::isfinite(volga_p[i]);
+      charm_valid_p[i] = std::isfinite(charm_p[i]);
+      greeks_valid_p[i] =
+          delta_valid_p[i] && gamma_valid_p[i] && vega_valid_p[i] &&
+          theta_valid_p[i] && rho_valid_p[i] && vanna_valid_p[i] &&
+          volga_valid_p[i] && charm_valid_p[i];
+      greeks_status_p[i] =
+          greeks_valid_p[i] ? atxvol::python::kStatusOk : kOutOfRange;
+      if (status_p[i] == atxvol::python::kStatusOk &&
+          greeks_status_p[i] != atxvol::python::kStatusOk) {
+        status_p[i] = greeks_status_p[i];
+      }
     }
   }
   py::dict out;
@@ -188,6 +258,22 @@ py::dict priced_surface_grid(const PricedSurface &self, const DoubleArray &k_arr
   out["volga"] = std::move(volga);
   out["charm"] = std::move(charm);
   out["status"] = std::move(status);
+  out["iv_status"] = std::move(iv_status);
+  out["total_variance_status"] = std::move(w_status);
+  out["fair_value_status"] = std::move(value_status);
+  out["greeks_status"] = std::move(greeks_status);
+  out["iv_valid"] = std::move(iv_valid);
+  out["total_variance_valid"] = std::move(w_valid);
+  out["fair_value_valid"] = std::move(value_valid);
+  out["greeks_valid"] = std::move(greeks_valid);
+  out["delta_valid"] = std::move(delta_valid);
+  out["gamma_valid"] = std::move(gamma_valid);
+  out["vega_valid"] = std::move(vega_valid);
+  out["theta_valid"] = std::move(theta_valid);
+  out["rho_valid"] = std::move(rho_valid);
+  out["vanna_valid"] = std::move(vanna_valid);
+  out["volga_valid"] = std::move(volga_valid);
+  out["charm_valid"] = std::move(charm_valid);
   return out;
 }
 
@@ -290,19 +376,18 @@ void bind_surface_core(py::module_ &m) {
            py::arg("execution") = QueryExecution::Configured,
            "Vectorized query over a (K, T, side) selection.\n\n"
            "Returns a dict of numpy columns — iv, total_variance, fair_value and\n"
-           "every Greek — plus `status`. Only a shape mismatch or an\n"
+           "every Greek — plus lossless per-family status/validity arrays:\n"
+           "`iv_status`/`iv_valid`, `total_variance_status`/\n"
+           "`total_variance_valid`, `fair_value_status`/`fair_value_valid`, and\n"
+           "`greeks_status`/`greeks_valid`; every individual Greek also has a\n"
+           "`<name>_valid` mask. Only a shape mismatch or an\n"
            "unrecognised `side` code raises. Releases the GIL for the whole walk.\n\n"
-           "READ `status` PRECISELY. The columns fail INDEPENDENTLY and each\n"
-           "NaNs on its own failure, but there is one status column:\n"
-           "  * `status[i]` is the FIRST failure of (`fair_value`, `greeks`),\n"
-           "    and STATUS_OK when neither failed;\n"
-           "  * `iv` and `total_variance` never feed it at all — out of domain\n"
-           "    they return a bare NaN, so a NaN `iv` can report STATUS_OK.\n"
-           "So `status != STATUS_OK` does NOT mean the row is unusable: if\n"
-           "`fair_value` failed and `greeks` did not, all eight Greek columns\n"
-           "hold valid numbers. The correct usability filter is per column —\n"
-           "`np.isfinite(cols[name])` — and `status` tells you WHY a column\n"
-           "failed, not WHICH one did.")
+           "`status` is retained for compatibility as the first failure in\n"
+           "(iv, total_variance, fair_value, greeks) order. New code should use\n"
+           "the family-specific channel, since families fail independently.\n"
+           "The bare-double iv/variance API maps a non-finite output to\n"
+           "ErrorCode.OUT_OF_RANGE; Result-returning families retain their exact\n"
+           "ErrorCode.")
       .def(
           "fair_value",
           [](const PricedSurface &self, double k, double t, Side side, QueryExecution execution) {

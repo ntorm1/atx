@@ -14,7 +14,7 @@
 
 #include "atx/vol/listed_definitions_cache.hpp"
 
-#include "atx/core/hash.hpp"              // hash_bytes (independent abi_fold recompute)
+#include "atx/core/hash.hpp"              // hash_bytes (independent wire ABI fold)
 #include "atx/vol/data.hpp"               // iso_to_ns
 #include "atx/vol/detail/archive_util.hpp" // crc32c (independent CRC recompute)
 #include "atx/vol/listed_opra.hpp"
@@ -294,38 +294,38 @@ TEST(ListedDefinitionsCache, CacheKeyIsContentDerived) {
   EXPECT_EQ(ka.source_size, a.size());
 }
 
-// GATE: `abi_fold` must actually depend on the struct's shape. Recomputing the
-// fold over a DELIBERATELY DIFFERENT shape must produce a different value — a
-// fold that ignored its input would return the same number for both.
+// GATE: `abi_fold` must actually depend on the encoded wire schema. Recomputing
+// the fold over a DELIBERATELY DIFFERENT schema must produce a different value —
+// a fold that ignored its input would return the same number for both.
 TEST(ListedDefinitionsCache, AbiFoldMovesWhenTheEncodedShapeMoves) {
   const std::uint64_t live = definitions_cache_abi_fold();
   EXPECT_NE(live, 0u);
   EXPECT_EQ(live, definitions_cache_abi_fold()) << "the fold must be stable within a process";
 
   // Same construction as definitions_cache_abi_fold, with ONE offset perturbed:
-  // this stands in for a field reorder in ListedContractDefinition.
-  using D = ListedContractDefinition;
+  // this stands in for a fixed-width wire-column reorder.
+  using D = ListedDefinitionsCacheWireRowSchema;
   const std::uint64_t perturbed_shape[] = {
       sizeof(D),
       alignof(D),
-      offsetof(D, trade_date),
-      sizeof(D::trade_date),
-      offsetof(D, instrument_id) + 1u, // <- the reorder
-      sizeof(D::instrument_id),
-      offsetof(D, raw_symbol),
-      sizeof(D::raw_symbol),
       offsetof(D, definition_ts_ns),
       sizeof(D::definition_ts_ns),
       offsetof(D, expiry_ts_ns),
       sizeof(D::expiry_ts_ns),
       offsetof(D, multiplier),
       sizeof(D::multiplier),
-      offsetof(D, standard_monthly),
-      sizeof(D::standard_monthly),
-      offsetof(D, standard_deliverable),
-      sizeof(D::standard_deliverable),
       offsetof(D, source_fingerprint),
       sizeof(D::source_fingerprint),
+      offsetof(D, instrument_id) + 1u, // <- the reorder
+      sizeof(D::instrument_id),
+      offsetof(D, trade_date_code),
+      sizeof(D::trade_date_code),
+      offsetof(D, raw_symbol_code),
+      sizeof(D::raw_symbol_code),
+      offsetof(D, flags),
+      sizeof(D::flags),
+      kDefinitionsCacheMonthlyFlag,
+      kDefinitionsCacheDeliverableFlag,
   };
   const std::uint64_t perturbed = atx::core::hash_bytes(
       static_cast<const void *>(perturbed_shape), sizeof perturbed_shape);
@@ -370,8 +370,8 @@ TEST(ListedDefinitionsCache, ContentHashAndAbiFoldAreStableAcrossProcesses) {
 
   EXPECT_EQ(key.content_hash, 0xbe2185a9042c2062ull)
       << "hash_bytes is no longer stable across processes/builds — ATXDEFS1 would miss forever";
-  EXPECT_EQ(key.abi_fold, 0x3ab6dd71e67cd631ull)
-      << "definitions_cache_abi_fold moved: either the struct changed (see the shape pin) or "
+  EXPECT_EQ(key.abi_fold, 0x309f3081df910150ull)
+      << "definitions_cache_abi_fold moved: either the wire schema changed (see the shape pin) or "
          "hash_bytes is no longer stable";
 
   // Negative control: a one-byte difference must move the hash, so the equality
@@ -782,35 +782,27 @@ TEST(ListedDefinitionsCache, CacheHeaderAbiIsPinned) {
   EXPECT_EQ(offsetof(ListedDefinitionsCacheHeader, reserved), 116u);
 }
 
-// POSITIVE CONTROL / regression lock, same class as the one above and NOT
-// counted as coverage. The load-bearing pins for the ENCODED PAYLOAD struct are
-// the `static_assert`s and the structured-binding shape pin in
-// listed_definitions_cache.hpp — a field added to `ListedContractDefinition`
-// stops the build, which no runtime test can do. This echoes the numbers so a
-// failing suite shows them, and it odr-uses the shape pin.
-//
-// The pins were demonstrated to fail, not assumed to (Wave E T7 fix round 1):
-//   * appending `std::int64_t x` to the struct  -> sizeof assert AND the
-//     structured binding both fail to compile;
-//   * inserting `bool x` between `standard_deliverable` and
-//     `source_fingerprint`  -> lands in the six bytes of tail padding, so
-//     `sizeof`, every `offsetof` AND the runtime `abi_fold` are all unchanged
-//     and ONLY the structured binding rejects it.
-TEST(ListedDefinitionsCache, EncodedRowAbiIsPinned) {
+// POSITIVE CONTROL / regression lock. The fixed-width wire projection owns the
+// portable sizeof/offsetof pins. The runtime row remains guarded separately by
+// ordered designated initialization plus structured binding, so adding,
+// removing, reordering or retyping a `ListedContractDefinition` member stops the
+// build even though its std::string-bearing object layout is not an on-disk ABI.
+TEST(ListedDefinitionsCache, WireRowAbiAndRuntimeShapeArePinned) {
   const ListedContractDefinition probe{};
   definitions_cache_payload_shape_pin(probe);
-  const std::size_t s = sizeof(std::string);
-  EXPECT_EQ(sizeof(ListedContractDefinition), 2u * s + 48u);
-  EXPECT_EQ(alignof(ListedContractDefinition), 8u);
-  EXPECT_EQ(offsetof(ListedContractDefinition, trade_date), 0u);
-  EXPECT_EQ(offsetof(ListedContractDefinition, instrument_id), s);
-  EXPECT_EQ(offsetof(ListedContractDefinition, raw_symbol), s + 8u);
-  EXPECT_EQ(offsetof(ListedContractDefinition, definition_ts_ns), 2u * s + 8u);
-  EXPECT_EQ(offsetof(ListedContractDefinition, expiry_ts_ns), 2u * s + 16u);
-  EXPECT_EQ(offsetof(ListedContractDefinition, multiplier), 2u * s + 24u);
-  EXPECT_EQ(offsetof(ListedContractDefinition, standard_monthly), 2u * s + 32u);
-  EXPECT_EQ(offsetof(ListedContractDefinition, standard_deliverable), 2u * s + 33u);
-  EXPECT_EQ(offsetof(ListedContractDefinition, source_fingerprint), 2u * s + 40u);
+  using W = ListedDefinitionsCacheWireRowSchema;
+  EXPECT_EQ(sizeof(W), 48u);
+  EXPECT_EQ(alignof(W), 8u);
+  EXPECT_EQ(offsetof(W, definition_ts_ns), 0u);
+  EXPECT_EQ(offsetof(W, expiry_ts_ns), 8u);
+  EXPECT_EQ(offsetof(W, multiplier), 16u);
+  EXPECT_EQ(offsetof(W, source_fingerprint), 24u);
+  EXPECT_EQ(offsetof(W, instrument_id), 32u);
+  EXPECT_EQ(offsetof(W, trade_date_code), 36u);
+  EXPECT_EQ(offsetof(W, raw_symbol_code), 40u);
+  EXPECT_EQ(offsetof(W, flags), 44u);
+  EXPECT_EQ(kDefinitionsCacheMonthlyFlag, 0x1u);
+  EXPECT_EQ(kDefinitionsCacheDeliverableFlag, 0x2u);
 }
 
 // GATE: the stamped header fields must carry the declared constants, so a

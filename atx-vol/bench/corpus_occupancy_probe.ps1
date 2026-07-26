@@ -33,15 +33,14 @@
   proven-quiet box; if it must be run under load, a reading at or above target is still
   sound while a reading below target is inconclusive.
 
-  PHASE DECOMPOSITION. The run is not all fan-out: parquet ingest, archive write and
-  checkpoint I/O are essentially serial. The PHASE line splits them, so the fan-out's own
-  occupancy is recovered by charging the serial phases one core:
+  PHASE DECOMPOSITION. The run is not all fan-out, and OPRA ingest is itself parallel.
+  The PHASE line therefore carries process CPU sampled directly at the fit-fanout
+  boundaries. Fit occupancy is the phase-local ratio:
 
-      occ_fanout ~= (cpu_total_s - serial_wall_s) / fit_fanout_s
-      serial_wall_s = ingest_s + archive_write_s + checkpoint_s + other_s
+      occ_fanout = fit_fanout_cpu_s / fit_fanout_s
 
-  Both the whole-run occupancy and this fan-out-restricted estimate are reported; they
-  bracket the answer and the gap between them is itself diagnostic.
+  No ingest, archive-write, checkpoint, or other CPU can leak into that numerator.
+  Whole-run occupancy remains diagnostic, but is not used to estimate fit occupancy.
 
 .EXAMPLE
   pwsh atx-vol/bench/corpus_occupancy_probe.ps1 `
@@ -213,9 +212,11 @@ foreach ($rep in 1..$Reps) {
     if ($p.Count -eq 2) { $f[$p[0]] = [double]$p[1] }
   }
 
-  $serialWall = $f['ingest_s'] + $f['archive_write_s'] + $f['checkpoint_s'] + $f['other_s']
   $occWhole   = if ($wall -gt 0) { $cpuTotal / $wall } else { 0 }
-  $occFanout  = if ($f['fit_fanout_s'] -gt 0) { ($cpuTotal - $serialWall) / $f['fit_fanout_s'] } else { 0 }
+  if (-not $f.ContainsKey('fit_fanout_cpu_s')) {
+    throw "PHASE line in rep $rep lacks fit_fanout_cpu_s; rebuild with phase-local CPU instrumentation"
+  }
+  $occFanout  = if ($f['fit_fanout_s'] -gt 0) { $f['fit_fanout_cpu_s'] / $f['fit_fanout_s'] } else { 0 }
 
   $rows += [pscustomobject]@{
     rep                = $rep
@@ -230,6 +231,8 @@ foreach ($rep in 1..$Reps) {
     ingest_s           = $f['ingest_s']
     build_s            = $f['build_s']
     fit_fanout_s       = $f['fit_fanout_s']
+    fit_fanout_cpu_s   = $f['fit_fanout_cpu_s']
+    ingest_cpu_s       = $f['ingest_cpu_s']
     archive_write_s    = $f['archive_write_s']
     checkpoint_s       = $f['checkpoint_s']
     other_s            = $f['other_s']

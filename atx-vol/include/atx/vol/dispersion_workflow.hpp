@@ -25,6 +25,11 @@ struct RunSpec {
   std::filesystem::path universe_path{};
   std::filesystem::path definitions_path{};
   std::filesystem::path occ_ess_root{};
+  // Optional point-in-time dividend schedules consumed by OPRA fitting. The
+  // corpus build replaces this source path with `dividend_ledger_path`, the
+  // authoritative observation artifact used by replay.
+  std::filesystem::path dividend_inputs_path{};
+  std::filesystem::path dividend_ledger_path{};
   double flat_rate{0.0};
   std::size_t min_names{10};
   double min_weight_coverage{0.8};

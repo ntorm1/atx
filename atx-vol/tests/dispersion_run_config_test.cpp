@@ -15,9 +15,12 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <map>
+#include <sstream>
 #include <string>
 
+#include "atx/core/hash.hpp"
 #include "atx/vol/dispersion_backtest.hpp"
 #include "atx/vol/dispersion_run.hpp"
 #include "atx/vol/dispersion_workflow.hpp" // read_run_spec / write_resolved_spec (F4)
@@ -428,7 +431,41 @@ constexpr const char *kPvHeader =
     "book_fingerprint\n";
 
 constexpr const char *kPvRow95 = "0.95\t1\t2\t3\t82\t8\t100\t7\t2026-07-11\t200\t9\n";
-constexpr const char *kPvRow99 = "0.99\t1\t2\t3\t82\t8\t100\t7\t2026-07-11\t200\t9\n";
+
+void write_valid_projected_var(const fs::path &dir) {
+  constexpr std::int64_t ts0 = 1'790'884'800'000'000'000LL;
+  constexpr std::int64_t day = 86'400'000'000'000LL;
+  constexpr std::uint64_t prepared = 7u;
+  constexpr std::uint64_t leg_fp0 = 11u;
+  constexpr std::uint64_t leg_fp1 = 13u;
+  const std::uint64_t frame_fp0 = atx::core::hash_combine(prepared, leg_fp0);
+  const std::uint64_t frame_fp1 = atx::core::hash_combine(prepared, leg_fp1);
+
+  std::ostringstream scenarios;
+  scenarios << std::setprecision(17)
+            << "date\tts_ns\tvalue\tdelta\tgamma\tvega\ttheta\tn_ok\tn_failed\t"
+               "definition_fingerprint\n"
+            << "2026-10-01\t" << ts0 << "\t90\t1\t2\t3\t4\t1\t0\t" << frame_fp0 << '\n'
+            << "2026-10-02\t" << (ts0 + day) << "\t100\t1\t2\t3\t4\t1\t0\t" << frame_fp1
+            << '\n';
+  write_file(dir / "projected_risk_scenarios.tsv", scenarios.str());
+
+  std::ostringstream legs;
+  legs << std::setprecision(17)
+       << "date\tleg\tuid\tside\texpiry_ts_ns\tstrike\tquantity\tmultiplier\tmark\t"
+          "delta\tgamma\tvega\ttheta\tdefinition_fingerprint\tstatus\n"
+       << "2026-10-01\t0\t1\tCall\t" << (ts0 + 30 * day)
+       << "\t100\t2\t100\t0.45\t0.5\t0.01\t0.2\t-0.1\t" << leg_fp0 << "\tOk\n"
+       << "2026-10-02\t0\t1\tCall\t" << (ts0 + 31 * day)
+       << "\t101\t2\t100\t0.5\t0.5\t0.01\t0.2\t-0.1\t" << leg_fp1 << "\tOk\n";
+  write_file(dir / "projected_risk_legs.tsv", legs.str());
+
+  const std::string row =
+      "\t100\t10\t10\t2\t1\t100\t7\t2026-10-02\t" + std::to_string(ts0 + day) +
+      "\t9\n";
+  write_file(dir / "projected_var.tsv",
+             std::string(kPvHeader) + "0.95" + row + "0.99" + row);
+}
 
 // A summary in the pre-C-1 shape: economically well-formed, but silent about
 // which session's book it describes. `verify` must reject it.
@@ -441,13 +478,21 @@ constexpr const char *kPvRow95WithoutAsOf = "0.95\t1\t2\t3\t82\t8\t100\t7\n";
 
 TEST(DispersionProjectedVarGate, AbsentStageIsNotAnError) {
   // The stage is optional: a run that never invoked it must still verify.
-  EXPECT_TRUE(verify_projected_var_artifacts(pv_dir("atx-disp-pv-absent"), 82));
+  const Status status =
+      verify_projected_var_artifacts(pv_dir("atx-disp-pv-absent"), 82);
+  EXPECT_TRUE(status) << status.error().to_string();
 }
 
 TEST(DispersionProjectedVarGate, SummaryWithoutCompanionsIsRejected) {
   const fs::path dir = pv_dir("atx-disp-pv-orphan");
   write_file(dir / "projected_var.tsv", std::string(kPvHeader) + kPvRow95);
   EXPECT_FALSE(verify_projected_var_artifacts(dir, 82)) << "an orphaned summary must not verify";
+}
+
+TEST(DispersionProjectedVarGate, PendingGenerationIsRejectedRatherThanTreatedAsAbsent) {
+  const fs::path dir = pv_dir("atx-disp-pv-pending");
+  write_file(dir / "projected_var.tsv.pending", std::string(kPvHeader) + kPvRow95);
+  EXPECT_FALSE(verify_projected_var_artifacts(dir, 82));
 }
 
 TEST(DispersionProjectedVarGate, TruncatedScenarioCoverageIsRejected) {
@@ -457,7 +502,8 @@ TEST(DispersionProjectedVarGate, TruncatedScenarioCoverageIsRejected) {
   // 40 scenarios recorded for an 82-session run: exactly the stale/truncated
   // case that used to pass verify silently.
   write_file(dir / "projected_var.tsv",
-             std::string(kPvHeader) + "0.95\t1\t2\t3\t40\t8\t100\t7\n");
+             std::string(kPvHeader) +
+                 "0.95\t1\t2\t3\t40\t8\t100\t7\t2026-07-11\t200\t9\n");
   const Status status = verify_projected_var_artifacts(dir, 82);
   ASSERT_FALSE(status);
   EXPECT_NE(status.error().to_string().find("82"), std::string::npos)
@@ -466,11 +512,65 @@ TEST(DispersionProjectedVarGate, TruncatedScenarioCoverageIsRejected) {
 
 TEST(DispersionProjectedVarGate, WellFormedCompleteRunPasses) {
   const fs::path dir = pv_dir("atx-disp-pv-ok");
-  write_file(dir / "projected_risk_scenarios.tsv", "x\n");
-  write_file(dir / "projected_risk_legs.tsv", "x\n");
-  write_file(dir / "projected_var.tsv", std::string(kPvHeader) + kPvRow95 + kPvRow99);
-  const Status status = verify_projected_var_artifacts(dir, 82);
+  write_valid_projected_var(dir);
+  const Status status = verify_projected_var_artifacts(dir, 2);
   EXPECT_TRUE(status) << status.error().to_string();
+}
+
+TEST(DispersionProjectedVarGate, GarbageCompanionAndTrailingNumericInputAreRejected) {
+  const fs::path garbage = pv_dir("atx-disp-pv-garbage");
+  write_valid_projected_var(garbage);
+  write_file(garbage / "projected_risk_legs.tsv", "x\n");
+  EXPECT_FALSE(verify_projected_var_artifacts(garbage, 2));
+
+  const fs::path trailing = pv_dir("atx-disp-pv-trailing");
+  write_valid_projected_var(trailing);
+  std::string summary = std::string(kPvHeader) +
+                        "0.95\t100\t10junk\t10\t2\t1\t100\t7\t2026-10-02\t"
+                        "1790971200000000000\t9\n";
+  write_file(trailing / "projected_var.tsv", summary);
+  EXPECT_FALSE(verify_projected_var_artifacts(trailing, 2));
+}
+
+TEST(DispersionProjectedVarGate, CountsAsOfBookAndFiniteRiskMustStayConsistent) {
+  constexpr const char *row95 =
+      "0.95\t100\t10\t10\t2\t1\t100\t7\t2026-10-02\t1790971200000000000\t9\n";
+  constexpr const char *row99 =
+      "0.99\t100\t10\t10\t2\t1\t100\t7\t2026-10-02\t1790971200000000000\t9\n";
+
+  const fs::path count = pv_dir("atx-disp-pv-leg-count");
+  write_valid_projected_var(count);
+  write_file(count / "projected_risk_legs.tsv",
+             "date\tleg\tuid\tside\texpiry_ts_ns\tstrike\tquantity\tmultiplier\tmark\t"
+             "delta\tgamma\tvega\ttheta\tdefinition_fingerprint\tstatus\n");
+  EXPECT_FALSE(verify_projected_var_artifacts(count, 2));
+
+  const fs::path as_of = pv_dir("atx-disp-pv-asof");
+  write_valid_projected_var(as_of);
+  write_file(as_of / "projected_var.tsv",
+             std::string(kPvHeader) +
+                 "0.95\t100\t10\t10\t2\t1\t100\t7\t2026-10-01\t"
+                 "1790884800000000000\t9\n"
+                 "0.99\t100\t10\t10\t2\t1\t100\t7\t2026-10-01\t"
+                 "1790884800000000000\t9\n");
+  EXPECT_FALSE(verify_projected_var_artifacts(as_of, 2));
+
+  const fs::path identity = pv_dir("atx-disp-pv-book-fp");
+  write_valid_projected_var(identity);
+  write_file(identity / "projected_var.tsv",
+             std::string(kPvHeader) + row95 +
+                 "0.99\t100\t10\t10\t2\t1\t100\t7\t2026-10-02\t"
+                 "1790971200000000000\t10\n");
+  EXPECT_FALSE(verify_projected_var_artifacts(identity, 2));
+
+  const fs::path finite = pv_dir("atx-disp-pv-finite");
+  write_valid_projected_var(finite);
+  write_file(finite / "projected_var.tsv",
+             std::string(kPvHeader) +
+                 "0.95\t100\tnan\t10\t2\t1\t100\t7\t2026-10-02\t"
+                 "1790971200000000000\t9\n" +
+                 row99);
+  EXPECT_FALSE(verify_projected_var_artifacts(finite, 2));
 }
 
 TEST(DispersionProjectedVarGate, WrongHeaderIsRejected) {

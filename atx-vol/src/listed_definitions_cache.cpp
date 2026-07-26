@@ -159,33 +159,30 @@ template <typename T>
 // ── Key ─────────────────────────────────────────────────────────────────────
 
 std::uint64_t definitions_cache_abi_fold() noexcept {
-  // offsetof requires standard layout. `ListedContractDefinition` has only
-  // public non-static data members, no virtuals and no base, so this holds as
-  // long as every member type is itself standard layout.
-  static_assert(std::is_standard_layout_v<ListedContractDefinition>,
-                "abi_fold needs a standard-layout ListedContractDefinition");
-  using D = ListedContractDefinition;
+  // Fold the actual fixed-width column schema, not the nonportable object layout
+  // of the runtime row (which contains std::string and is never copied to disk).
+  using D = ListedDefinitionsCacheWireRowSchema;
   const std::uint64_t shape[] = {
       sizeof(D),
       alignof(D),
-      offsetof(D, trade_date),
-      sizeof(D::trade_date),
-      offsetof(D, instrument_id),
-      sizeof(D::instrument_id),
-      offsetof(D, raw_symbol),
-      sizeof(D::raw_symbol),
       offsetof(D, definition_ts_ns),
       sizeof(D::definition_ts_ns),
       offsetof(D, expiry_ts_ns),
       sizeof(D::expiry_ts_ns),
       offsetof(D, multiplier),
       sizeof(D::multiplier),
-      offsetof(D, standard_monthly),
-      sizeof(D::standard_monthly),
-      offsetof(D, standard_deliverable),
-      sizeof(D::standard_deliverable),
       offsetof(D, source_fingerprint),
       sizeof(D::source_fingerprint),
+      offsetof(D, instrument_id),
+      sizeof(D::instrument_id),
+      offsetof(D, trade_date_code),
+      sizeof(D::trade_date_code),
+      offsetof(D, raw_symbol_code),
+      sizeof(D::raw_symbol_code),
+      offsetof(D, flags),
+      sizeof(D::flags),
+      kDefinitionsCacheMonthlyFlag,
+      kDefinitionsCacheDeliverableFlag,
   };
   const std::uint64_t fold = atx::core::hash_bytes(static_cast<const void *>(shape), sizeof shape);
   return fold == 0u ? 1u : fold; // 0 is reserved as "unset" by convention
@@ -204,7 +201,7 @@ ListedDefinitionsCacheKey definitions_cache_key(std::string_view source_bytes) {
 std::string definitions_cache_filename(const ListedDefinitionsCacheKey &key) {
   // `abi_fold` is in the NAME as well as the key (review M1). Correctness never
   // depended on it — the key rejects a foreign-shaped blob either way — but two
-  // builds with different `ListedContractDefinition` shapes and the same source
+  // builds with different encoded wire schemas and the same source
   // otherwise contend for one path and ping-pong a ~300 MB write on every run.
   char buffer[128];
   const int written = std::snprintf(
@@ -293,8 +290,11 @@ Status write_definitions_cache(std::string_view cache_path, const ListedDefiniti
                             date_codes[static_cast<std::size_t>(i)]);
     store_at<std::uint32_t>(base, layout.raw_symbol_code_at + 4u * i,
                             symbol_codes[static_cast<std::size_t>(i)]);
-    const std::uint8_t flags = static_cast<std::uint8_t>((row.standard_monthly ? 0x1u : 0x0u) |
-                                                         (row.standard_deliverable ? 0x2u : 0x0u));
+    const std::uint8_t flags =
+        static_cast<std::uint8_t>((row.standard_monthly ? kDefinitionsCacheMonthlyFlag : 0u) |
+                                  (row.standard_deliverable
+                                       ? kDefinitionsCacheDeliverableFlag
+                                       : 0u));
     store_at<std::uint8_t>(base, layout.flags_at + i, flags);
   }
 
@@ -435,8 +435,8 @@ Result<ListedDefinitionTable> read_definitions_cache(std::string_view cache_path
 
   // GUARD 2 — identity. All five key fields must match FIELD FOR FIELD. This is
   // the stale-serve gate: a blob written for other source bytes, by another wire
-  // format, by another parser revision, or against another
-  // `ListedContractDefinition` shape is a MISS, never a serve.
+  // format, by another parser revision, or against another encoded wire schema
+  // is a MISS, never a serve.
   const ListedDefinitionsCacheKey stored{header.content_hash, header.source_size,
                                          header.format_version, header.parser_revision,
                                          header.abi_fold};
@@ -534,7 +534,7 @@ Result<ListedDefinitionTable> read_definitions_cache(std::string_view cache_path
       return Err(ErrorCode::ParseError, "definitions cache: string code out of range");
     }
     const std::uint8_t flags = load_at<std::uint8_t>(base, layout.flags_at + i);
-    if ((flags & ~0x3u) != 0u) {
+    if ((flags & ~kDefinitionsCacheKnownFlags) != 0u) {
       return Err(ErrorCode::ParseError, "definitions cache: unknown flag bits");
     }
     ListedContractDefinition &row = rows[i];
@@ -544,8 +544,8 @@ Result<ListedDefinitionTable> read_definitions_cache(std::string_view cache_path
     row.definition_ts_ns = load_at<std::int64_t>(base, layout.definition_ts_at + 8u * i);
     row.expiry_ts_ns = load_at<std::int64_t>(base, layout.expiry_ts_at + 8u * i);
     row.multiplier = load_at<double>(base, layout.multiplier_at + 8u * i);
-    row.standard_monthly = (flags & 0x1u) != 0u;
-    row.standard_deliverable = (flags & 0x2u) != 0u;
+    row.standard_monthly = (flags & kDefinitionsCacheMonthlyFlag) != 0u;
+    row.standard_deliverable = (flags & kDefinitionsCacheDeliverableFlag) != 0u;
     row.source_fingerprint = load_at<std::uint64_t>(base, layout.source_fingerprint_at + 8u * i);
   }
 

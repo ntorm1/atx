@@ -300,6 +300,7 @@ struct DispersionRunConfig {
   std::string path_template{"{symbol}/{date}.parquet"};
   std::filesystem::path definitions{};
   std::filesystem::path occ_ess_root{};
+  std::filesystem::path dividend_ledger{};
   DispersionUniverseSpec universe{};
   DispersionRateSource rate{};
   DispersionSide side{DispersionSide::ShortIndexLongNames};
@@ -354,6 +355,31 @@ struct DispersionRunConfig {
   // binder, which is the authority.)
   ListedQuoteQualityConfig quote_quality{};
 };
+
+// One point-in-time observation of a discrete dividend schedule carried by an
+// OPRA panel into the fitted corpus. Observations (rather than only deduplicated
+// events) are persisted so the economic schedule retains its source/as-of and
+// panel fingerprints. Replay validates stable amounts and reduces observations
+// to FinancingConfig::share_dividends.
+struct ShareDividendObservation {
+  std::string observed_date{};
+  std::string symbol{};
+  std::uint32_t uid{0};
+  std::int64_t ex_ts_ns{0};
+  double amount{0.0};
+  std::string source{};
+  std::string as_of{};
+  std::uint64_t source_fingerprint{0};
+  std::uint64_t market_input_fingerprint{0};
+};
+
+[[nodiscard]] Result<CorpusMarketInputTable>
+read_corpus_dividend_inputs(const std::filesystem::path &path);
+[[nodiscard]] Status write_share_dividend_artifact(
+    const std::filesystem::path &path,
+    std::span<const ShareDividendObservation> observations);
+[[nodiscard]] Result<std::vector<ShareDividend>>
+read_share_dividend_artifact(const std::filesystem::path &path);
 
 // F4: assemble the ENGINE run config the listed replay actually runs under.
 // This is the single place the typed spec becomes engine behaviour, so a knob
@@ -671,7 +697,8 @@ struct DispersionVerifyReport {
 // scripts scrape this line positionally, so neither rule is cosmetic.
 [[nodiscard]] std::string format_corpus_phase_line(double ingest_s, double build_s,
                                                    const CorpusPhaseTimings &phases,
-                                                   std::size_t date_batch);
+                                                   std::size_t date_batch,
+                                                   double ingest_process_cpu_s = 0.0);
 
 // ── File-oriented workflow entry points ─────────────────────────────────────
 //

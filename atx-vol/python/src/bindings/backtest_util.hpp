@@ -64,6 +64,14 @@ inline void require_consistent(const atx::vol::BacktestResult &r, const char *wh
 #undef ATXVOL_CHECK
   // `step_pnl_total` is deliberately NOT row-parallel (its length tracks the
   // clock, not the recorded rows), so it is exempt.
+  // Audit-only columns are empty when their producing gate is disabled, and
+  // row-parallel when present.
+  if (!r.nav_liquidation.empty()) {
+    check(r.nav_liquidation.size(), "nav_liquidation");
+  }
+  if (!r.gross_vega_abs.empty()) {
+    check(r.gross_vega_abs.size(), "gross_vega_abs");
+  }
   for (const auto &[name, series] : r.signals) {
     if (series.size() != n) {
       throw pybind11::value_error(std::string{what} + ": signal '" + name + "' has " +

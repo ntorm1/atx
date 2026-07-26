@@ -45,6 +45,16 @@
       }
     },
     {
+      "name": "dev-counters",
+      "inherits": "dev",
+      "displayName": "dev-counters: debug gate with atx-vol algorithm counters",
+      "description": "Dedicated counters-ON validation lane. Uses its own build-counters directory so a successful default build cannot be mistaken for an instrumented one.",
+      "binaryDir": "${sourceDir}/build-counters",
+      "cacheVariables": {
+        "ATX_VOL_COUNTERS": "ON"
+      }
+    },
+    {
       "name": "dev-shared",
       "inherits": "dev",
       "displayName": "dev-shared: dev + atx libraries as DLLs (smallest artifacts, fastest relinks)",
@@ -99,6 +109,7 @@
   "buildPresets": [
     { "name": "ninja", "configurePreset": "ninja" },
     { "name": "dev", "configurePreset": "dev" },
+    { "name": "dev-counters", "configurePreset": "dev-counters" },
     { "name": "dev-shared", "configurePreset": "dev-shared" },
     { "name": "rel", "configurePreset": "rel" },
     { "name": "rel-avx2", "configurePreset": "rel-avx2" },
@@ -124,6 +135,13 @@
       "configurePreset": "dev",
       "output": { "outputOnFailure": true },
       "execution": { "jobs": 16, "scheduleRandom": false }
+    },
+    {
+      "name": "dev-counters",
+      "configurePreset": "dev-counters",
+      "output": { "outputOnFailure": true },
+      "execution": { "jobs": 1, "scheduleRandom": false },
+      "filter": { "include": { "label": "atx_vol" } }
     },
     {
       "name": "dev-shared",

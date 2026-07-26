@@ -1384,7 +1384,168 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
     }
     f.total.dP_dq = total_dP_dq;
   }
+  f.book_logical_id_ = pf_.logical_id_;
+  f.book_revision_ = pf_.revision_;
   return f;
+}
+
+Result<DividendSensitivityFrame> PortfolioPricer::dividend_sensitivities(
+    const SurfaceSet &surfaces, std::span<const UnderlierDividendScheduleView> schedules,
+    const PriceOptions &opts) const {
+  DividendSensitivityFrame out;
+  out.book_logical_id = pf_.logical_id_;
+  out.book_revision = pf_.revision_;
+  out.surface_logical_id = surfaces.logical_id_;
+
+  std::unordered_map<std::uint32_t, std::size_t> schedule_by_uid;
+  schedule_by_uid.reserve(schedules.size());
+  std::vector<std::size_t> offsets(schedules.size() + 1u, 0u);
+  for (std::size_t s = 0; s < schedules.size(); ++s) {
+    const UnderlierDividendScheduleView &schedule = schedules[s];
+    if (!std::isfinite(schedule.hybrid.prop_div_yield) ||
+        !std::isfinite(schedule.hybrid.blend) || schedule.hybrid.blend < 0.0 ||
+        schedule.hybrid.blend > 1.0) {
+      return Err(ErrorCode::InvalidArgument,
+                 "dividend_sensitivities: invalid hybrid dividend parameters");
+    }
+    if (schedule.events.size() >
+        static_cast<std::size_t>((std::numeric_limits<std::uint32_t>::max)())) {
+      return Err(ErrorCode::InvalidArgument,
+                 "dividend_sensitivities: schedule event count exceeds uint32 range");
+    }
+    if (!schedule_by_uid.emplace(schedule.uid, s).second) {
+      return Err(ErrorCode::InvalidArgument,
+                 "dividend_sensitivities: duplicate underlier schedule");
+    }
+    if (schedule.events.size() > (std::numeric_limits<std::size_t>::max)() - offsets[s]) {
+      return Err(ErrorCode::InvalidArgument,
+                 "dividend_sensitivities: total event count overflow");
+    }
+    offsets[s + 1u] = offsets[s] + schedule.events.size();
+    for (const DividendEvent &event : schedule.events) {
+      if (!std::isfinite(event.amount)) {
+        return Err(ErrorCode::InvalidArgument,
+                   "dividend_sensitivities: non-finite dividend amount");
+      }
+    }
+  }
+
+  out.rows.reserve(offsets.back());
+  for (std::size_t s = 0; s < schedules.size(); ++s) {
+    for (std::size_t e = 0; e < schedules[s].events.size(); ++e) {
+      const DividendEvent &event = schedules[s].events[e];
+      out.rows.push_back(DividendSensitivityRow{
+          schedules[s].uid, static_cast<std::uint32_t>(e), event.ex_date_ns, event.amount});
+    }
+  }
+  if (out.rows.empty() || pf_.positions().empty()) {
+    return out;
+  }
+
+  PriceOptions carry_opts = opts;
+  carry_opts.prices_only = false;
+  carry_opts.carry_greeks = true;
+  Result<PriceFrame> priced = price(surfaces, carry_opts);
+  if (!priced.has_value()) {
+    return Err(priced.error());
+  }
+
+  std::vector<std::uint32_t> numeric_failures(out.rows.size(), 0u);
+  const auto fail_schedule = [&](std::size_t s, bool numeric) noexcept {
+    for (std::size_t row = offsets[s]; row < offsets[s + 1u]; ++row) {
+      ++out.rows[row].n_failed;
+      if (numeric) {
+        ++numeric_failures[row];
+      }
+    }
+  };
+
+  const std::span<const Position> positions = pf_.positions();
+  std::vector<double> dF_dDiv;
+  std::vector<double> dP_dDiv;
+  for (std::size_t i = 0; i < positions.size(); ++i) {
+    const Position &position = positions[i];
+    const auto sit = schedule_by_uid.find(position.contract.uid);
+    if (sit == schedule_by_uid.end()) {
+      continue;
+    }
+    const std::size_t s = sit->second;
+    const UnderlierDividendScheduleView &schedule = schedules[s];
+    if (priced->status[i] != PriceStatus::Ok) {
+      fail_schedule(s, priced->status[i] != PriceStatus::ModelUnavailable);
+      continue;
+    }
+    const SurfaceRef surface = surfaces.find(position.contract.uid);
+    if (surface == nullptr) {
+      fail_schedule(s, false);
+      continue;
+    }
+
+    const double T = position.contract.T;
+    const PricingContext &pricing = surface->pricing();
+    const PricedSurface::ResolvedSurfacePoint point =
+        surface->resolve(position.contract.K, T);
+    const long double expiry_value =
+        static_cast<long double>(pricing.now_ts_ns) +
+        static_cast<long double>(T) * static_cast<long double>(kNsPerYear);
+    if (!point.valid || !std::isfinite(priced->dP_dq[i]) ||
+        expiry_value < static_cast<long double>((std::numeric_limits<std::int64_t>::min)()) ||
+        expiry_value > static_cast<long double>((std::numeric_limits<std::int64_t>::max)())) {
+      fail_schedule(s, true);
+      continue;
+    }
+    const std::int64_t expiry_ns = static_cast<std::int64_t>(std::llround(expiry_value));
+    const double forward_base =
+        hybrid_forward_base(pricing.S, point.rate, T, schedule.events, expiry_ns,
+                            pricing.now_ts_ns, schedule.hybrid);
+    if (!(forward_base > 0.0) || !(point.forward > 0.0) || !std::isfinite(forward_base) ||
+        !std::isfinite(point.forward)) {
+      fail_schedule(s, true);
+      continue;
+    }
+    // F = base*exp(-borrow*T): recover the residual continuous borrow consistent
+    // with the served mark, and hold it fixed in the discrete-dividend bump.
+    const double borrow = -std::log(point.forward / forward_base) / T;
+    if (!std::isfinite(borrow)) {
+      fail_schedule(s, true);
+      continue;
+    }
+
+    dF_dDiv.resize(schedule.events.size());
+    dP_dDiv.resize(schedule.events.size());
+    hybrid_forward_div_jacobian(point.rate, borrow, T, schedule.events, expiry_ns,
+                                pricing.now_ts_ns, schedule.hybrid, dF_dDiv);
+    american_dividend_sensitivities(priced->dP_dq[i], point.forward, T, dF_dDiv,
+                                    dP_dDiv);
+    for (std::size_t e = 0; e < schedule.events.size(); ++e) {
+      const std::size_t row_index = offsets[s] + e;
+      DividendSensitivityRow &row = out.rows[row_index];
+      if (!std::isfinite(dF_dDiv[e]) || !std::isfinite(dP_dDiv[e])) {
+        ++row.n_failed;
+        ++numeric_failures[row_index];
+        continue;
+      }
+      row.dP_dDiv += dP_dDiv[e];
+      ++row.n_ok;
+      if (dF_dDiv[e] != 0.0) {
+        ++row.n_exposed;
+      }
+    }
+  }
+
+  for (std::size_t row = 0; row < out.rows.size(); ++row) {
+    DividendSensitivityRow &result = out.rows[row];
+    if (result.n_failed == 0u) {
+      result.status = DividendSensitivityStatus::Ok;
+    } else if (result.n_ok != 0u) {
+      result.status = DividendSensitivityStatus::Partial;
+    } else if (numeric_failures[row] != 0u) {
+      result.status = DividendSensitivityStatus::NumericError;
+    } else {
+      result.status = DividendSensitivityStatus::ModelUnavailable;
+    }
+  }
+  return out;
 }
 
 // ── PnL explain ───────────────────────────────────────────────────────────
@@ -1998,6 +2159,8 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const Surf
   if (Status s = pnl_explain_into(base, shifted, view, *returning_ws_, opts); !s.has_value()) {
     return Err(s.error());
   }
+  f.book_logical_id_ = pf_.logical_id_;
+  f.book_revision_ = pf_.revision_;
   return f;
 }
 
@@ -2107,13 +2270,40 @@ void PortfolioPricer::retained_marks(const PortfolioWorkspace &ws,
 }
 
 // ── GR-F1: bucketed risk reduction ─────────────────────────────────────────
-std::vector<RiskBucket> reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf,
-                                            RiskBucketKey by, PriceTotals *grand) {
+Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf,
+                                                    RiskBucketKey by, PriceTotals *grand) {
   const std::size_t n = frame.size();
+  const std::span<const Position> positions = pf.positions();
+  if (positions.size() != n || frame.book_logical_id_ != pf.logical_id_ ||
+      frame.book_revision_ != pf.revision_) {
+    return Err(ErrorCode::InvalidArgument,
+               "reduce_risk_buckets: frame and portfolio provenance mismatch");
+  }
+  if (by != RiskBucketKey::ByUnderlier && by != RiskBucketKey::ByExpiry) {
+    return Err(ErrorCode::InvalidArgument, "reduce_risk_buckets: invalid bucket key");
+  }
+
   const bool greeks = frame.greeks_materialized();
   const bool carry = frame.carry_materialized();
-  const std::span<const Position> positions = pf.positions();
-  const bool have_positions = positions.size() == n;
+  const bool marks_shape_ok = frame.uid.size() == n && frame.pv.size() == n &&
+                              frame.price.size() == n && frame.iv.size() == n &&
+                              frame.status.size() == n;
+  const bool greek_shape_ok =
+      greeks ? frame.gamma.size() == n && frame.vega.size() == n && frame.theta.size() == n &&
+                   frame.rho.size() == n && frame.vanna.size() == n && frame.volga.size() == n &&
+                   frame.charm.size() == n
+             : frame.delta.empty() && frame.gamma.empty() && frame.vega.empty() &&
+                   frame.theta.empty() && frame.rho.empty() && frame.vanna.empty() &&
+                   frame.volga.empty() && frame.charm.empty();
+  if (!marks_shape_ok || !greek_shape_ok || (!carry && !frame.dP_dq.empty())) {
+    return Err(ErrorCode::InvalidArgument, "reduce_risk_buckets: malformed price frame");
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    if (frame.id[i] != positions[i].id || frame.uid[i] != positions[i].contract.uid) {
+      return Err(ErrorCode::InvalidArgument,
+                 "reduce_risk_buckets: frame row identity/order mismatch");
+    }
+  }
 
   // A fresh subtotal matched to what the frame materialized: pv/greeks accumulate
   // from 0; unmaterialized Greek columns stay NaN (never a false 0); dP_dq starts
@@ -2148,6 +2338,11 @@ std::vector<RiskBucket> reduce_risk_buckets(const PriceFrame &frame, const Portf
   };
 
   std::vector<RiskBucket> buckets;
+  // key -> stable slot in `buckets`. The map changes only lookup complexity:
+  // rows still visit and accumulate in input order, so every subtotal remains
+  // bit-identical to the former serial find_if reducer. Sorting remains a final
+  // presentation step and cannot change within-bucket association.
+  std::unordered_map<std::uint64_t, std::size_t> bucket_slots;
   for (std::size_t i = 0; i < n; ++i) {
     if (frame.status[i] != PriceStatus::Ok) {
       continue;
@@ -2155,21 +2350,16 @@ std::vector<RiskBucket> reduce_risk_buckets(const PriceFrame &frame, const Portf
     std::uint64_t key = 0;
     double T = 0.0;
     if (by == RiskBucketKey::ByUnderlier) {
-      key = frame.uid[i];
+      key = positions[i].contract.uid;
     } else {
-      T = have_positions ? positions[i].contract.T : 0.0;
+      T = positions[i].contract.T;
       key = std::bit_cast<std::uint64_t>(T); // T > 0 => bit order == value order
     }
-    auto it = std::find_if(buckets.begin(), buckets.end(),
-                           [key](const RiskBucket &b) noexcept { return b.key == key; });
-    PriceTotals *t = nullptr;
-    if (it != buckets.end()) {
-      t = &it->totals;
-    } else {
+    const auto [slot, inserted] = bucket_slots.try_emplace(key, buckets.size());
+    if (inserted) {
       buckets.push_back(RiskBucket{key, T, fresh()});
-      t = &buckets.back().totals;
     }
-    add_row(*t, i);
+    add_row(buckets[slot->second].totals, i);
   }
 
   std::sort(buckets.begin(), buckets.end(),
@@ -2193,6 +2383,96 @@ std::vector<RiskBucket> reduce_risk_buckets(const PriceFrame &frame, const Portf
         g.dP_dq += b.totals.dP_dq;
       }
       g.n_ok += b.totals.n_ok;
+    }
+    *grand = g;
+  }
+  return buckets;
+}
+
+Result<std::vector<PnlRiskBucket>>
+reduce_pnl_risk_buckets(const PnlFrame &frame, const Portfolio &pf, RiskBucketKey by,
+                        PnlTotals *grand) {
+  const std::size_t n = frame.size();
+  const std::span<const Position> positions = pf.positions();
+  if (positions.size() != n || frame.book_logical_id_ != pf.logical_id_ ||
+      frame.book_revision_ != pf.revision_) {
+    return Err(ErrorCode::InvalidArgument,
+               "reduce_pnl_risk_buckets: frame and portfolio provenance mismatch");
+  }
+  if (by != RiskBucketKey::ByUnderlier && by != RiskBucketKey::ByExpiry) {
+    return Err(ErrorCode::InvalidArgument, "reduce_pnl_risk_buckets: invalid bucket key");
+  }
+  const bool shape_ok =
+      frame.uid.size() == n && frame.pv_base.size() == n && frame.pv_target.size() == n &&
+      frame.pnl_total.size() == n && frame.pnl_delta.size() == n && frame.pnl_gamma.size() == n &&
+      frame.pnl_vega.size() == n && frame.pnl_volga.size() == n && frame.pnl_vanna.size() == n &&
+      frame.pnl_theta.size() == n && frame.pnl_rho.size() == n && frame.pnl_charm.size() == n &&
+      frame.pnl_unexplained.size() == n && frame.d_spot.size() == n && frame.d_vol.size() == n &&
+      frame.d_time.size() == n && frame.d_rate.size() == n && frame.status.size() == n;
+  if (!shape_ok) {
+    return Err(ErrorCode::InvalidArgument, "reduce_pnl_risk_buckets: malformed P&L frame");
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    if (frame.id[i] != positions[i].id || frame.uid[i] != positions[i].contract.uid) {
+      return Err(ErrorCode::InvalidArgument,
+                 "reduce_pnl_risk_buckets: frame row identity/order mismatch");
+    }
+  }
+
+  const auto add_row = [&](PnlTotals &t, std::size_t i) noexcept {
+    t.pv_base += frame.pv_base[i];
+    t.pv_target += frame.pv_target[i];
+    t.pnl_total += frame.pnl_total[i];
+    t.pnl_delta += frame.pnl_delta[i];
+    t.pnl_gamma += frame.pnl_gamma[i];
+    t.pnl_vega += frame.pnl_vega[i];
+    t.pnl_volga += frame.pnl_volga[i];
+    t.pnl_vanna += frame.pnl_vanna[i];
+    t.pnl_theta += frame.pnl_theta[i];
+    t.pnl_rho += frame.pnl_rho[i];
+    t.pnl_charm += frame.pnl_charm[i];
+    t.pnl_unexplained += frame.pnl_unexplained[i];
+    ++t.n_ok;
+  };
+  const auto add_totals = [](PnlTotals &dst, const PnlTotals &src) noexcept {
+    dst.pv_base += src.pv_base;
+    dst.pv_target += src.pv_target;
+    dst.pnl_total += src.pnl_total;
+    dst.pnl_delta += src.pnl_delta;
+    dst.pnl_gamma += src.pnl_gamma;
+    dst.pnl_vega += src.pnl_vega;
+    dst.pnl_volga += src.pnl_volga;
+    dst.pnl_vanna += src.pnl_vanna;
+    dst.pnl_theta += src.pnl_theta;
+    dst.pnl_rho += src.pnl_rho;
+    dst.pnl_charm += src.pnl_charm;
+    dst.pnl_unexplained += src.pnl_unexplained;
+    dst.n_ok += src.n_ok;
+  };
+
+  std::vector<PnlRiskBucket> buckets;
+  std::unordered_map<std::uint64_t, std::size_t> bucket_slots;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (frame.status[i] != PriceStatus::Ok) {
+      continue;
+    }
+    const double T = by == RiskBucketKey::ByExpiry ? positions[i].contract.T : 0.0;
+    const std::uint64_t key = by == RiskBucketKey::ByUnderlier
+                                  ? positions[i].contract.uid
+                                  : std::bit_cast<std::uint64_t>(T);
+    const auto [slot, inserted] = bucket_slots.try_emplace(key, buckets.size());
+    if (inserted) {
+      buckets.push_back(PnlRiskBucket{key, T, PnlTotals{}});
+    }
+    add_row(buckets[slot->second].totals, i);
+  }
+  std::sort(buckets.begin(), buckets.end(),
+            [](const PnlRiskBucket &a, const PnlRiskBucket &b) noexcept { return a.key < b.key; });
+
+  if (grand != nullptr) {
+    PnlTotals g{};
+    for (const PnlRiskBucket &bucket : buckets) {
+      add_totals(g, bucket.totals);
     }
     *grand = g;
   }

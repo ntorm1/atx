@@ -371,23 +371,40 @@ void BM_Facade(benchmark::State &state, FixtureBuilder fixture_builder,
   // B7 (FT-P): per-phase FitTimings so the next optimization round is gated on the
   // pipeline the canonical facade actually runs (market-mark build / risk build /
   // risk validation / total), not the alternate essvi_calib_surface driver.
-  FitPhaseTimings timings{};
+  FitPhaseTimings timing_sums{};
+  std::uint64_t admitted_iterations = 0u;
   for (auto _ : state) {
+    // The benchmark's item is one `fit`, not facade construction, admission/report
+    // inspection, or bundle access. Keep those necessary controls outside the timed
+    // region so a setup/report change cannot masquerade as a fitter regression.
+    state.PauseTiming();
     PricerFitter fitter{config_factory()};
+    state.ResumeTiming();
     const Status fitted = fitter.fit(fixture->chain);
-    if (!fitted.has_value() || !admission_check(fitter)) {
+    state.PauseTiming();
+    const bool admitted = fitted.has_value() && admission_check(fitter);
+    if (!admitted) {
+      state.ResumeTiming();
       state.SkipWithError("SPY facade fit was not admitted as configured");
       break;
     }
     const FittedSurface *served = fitter.surface();
     slices = served != nullptr ? served->session().expiries().size() : 0u;
     degraded = fitter.bundle().risk_health.state == SurfaceState::Degraded;
-    timings = fitter.bundle().timings;
+    const FitPhaseTimings timings = fitter.bundle().timings;
+    timing_sums.market_mark_build_ms += timings.market_mark_build_ms;
+    timing_sums.risk_build_ms += timings.risk_build_ms;
+    timing_sums.risk_validation_ms += timings.risk_validation_ms;
+    timing_sums.total_ms += timings.total_ms;
+    ++admitted_iterations;
     benchmark::DoNotOptimize(slices);
     benchmark::ClobberMemory();
+    state.ResumeTiming();
   }
 
   const double iterations = static_cast<double>(state.iterations());
+  const double admitted_count = static_cast<double>(admitted_iterations);
+  const double timing_denominator = admitted_count > 0.0 ? admitted_count : 1.0;
   const double quotes = static_cast<double>(fixture->quotes);
   state.SetItemsProcessed(state.iterations()); // one admitted facade fit per item
   state.counters["quotes"] = quotes;
@@ -398,11 +415,15 @@ void BM_Facade(benchmark::State &state, FixtureBuilder fixture_builder,
       benchmark::Counter(iterations * quotes, benchmark::Counter::kIsRate);
   state.counters["slice_fits_per_s"] =
       benchmark::Counter(iterations * static_cast<double>(slices), benchmark::Counter::kIsRate);
-  // Per-phase wall (ms) of the LAST admitted fit — the FitTimings breakdown.
-  state.counters["phase_market_mark_ms"] = timings.market_mark_build_ms;
-  state.counters["phase_risk_build_ms"] = timings.risk_build_ms;
-  state.counters["phase_risk_validation_ms"] = timings.risk_validation_ms;
-  state.counters["phase_total_ms"] = timings.total_ms;
+  // Mean per-phase wall across every admitted fit, rather than an arbitrary last
+  // iteration that may not represent the benchmark's reported aggregate timing.
+  state.counters["phase_market_mark_ms"] =
+      timing_sums.market_mark_build_ms / timing_denominator;
+  state.counters["phase_risk_build_ms"] = timing_sums.risk_build_ms / timing_denominator;
+  state.counters["phase_risk_validation_ms"] =
+      timing_sums.risk_validation_ms / timing_denominator;
+  state.counters["phase_total_ms"] = timing_sums.total_ms / timing_denominator;
+  state.counters["phase_samples"] = admitted_count;
 }
 
 void BM_FacadeHftMarkSynth(benchmark::State &state) {

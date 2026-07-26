@@ -251,8 +251,9 @@ to a `PricedSurface` reconstructed from the same bytes.
 - **Durable atomic publish (C3 / SE-P2-1, SE-P2-2).** All three writers
   (`write_surface_archive_v2_file`, v1 `write_surface_archive_file`, and the
   SurfaceDb `write_manifest_file_atomic`) publish through the one shared primitive
-  `detail::flush_and_publish_file(tmp, dst)`: write payload → close → **fsync the
-  temp** (`FlushFileBuffers`) → **rename** with **bounded retry + exponential
+  `detail::flush_and_publish_file(tmp, dst)`: exclusively reserve a **unique
+  same-directory temp**, write payload, close, **fsync the temp**
+  (`FlushFileBuffers`), then **rename** with **bounded retry + exponential
   backoff** (8 attempts, ~635 ms cumulative). The fsync-before-rename closes the
   crash-consistency gap: without it, a power loss AFTER the rename but BEFORE the
   OS flushed the data could leave a correctly-named destination with empty/garbage
@@ -265,12 +266,12 @@ to a `PricedSurface` reconstructed from the same bytes.
   backoff instead of failing the publish. On final failure (destination held for
   the whole budget) the temp is **preserved**, not deleted, so the freshly written
   bytes are recoverable and the prior good destination is still intact.
-  - **fsync scope / residual gap.** The fsync covers the temp file's data. The
-    parent-directory entry is not separately fsync'd (a POSIX durability nicety;
-    on Windows `FlushFileBuffers` on the file is the available primitive) — a note
-    for a future POSIX port, not a Windows correctness gap. There is **no
-    automated power-loss test** (a unit test cannot cut power); the fsync
-    *presence* is code-review-verifiable, and the reader-held rename retry /
+  Same-destination publishers are serialized within the process, eliminating
+  local last-step rename races. On POSIX, a successful rename is followed by
+  `fsync` of the parent directory so the new directory entry is durable too;
+  on Windows, `FlushFileBuffers` on the file is the available primitive.
+  - There is **no automated power-loss test** (a unit test cannot cut power);
+    the fsync *presence* is code-review-verifiable, and the reader-held rename retry /
     temp-preservation behavior is covered by `surface_archive_durability_test.cpp`
     via a `FILE_SHARE_READ` holder.
   - **External truncation of a mapped archive** (SE-P2-4) remains a standard mmap

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import math
 import re
+import shutil
+from pathlib import Path
 
 import pytest
 
@@ -287,6 +289,24 @@ def test_ts_ns_round_trips_at_a_real_nanosecond_epoch(tmp_path):
     assert list(back.ts_ns) == stamps
 
 
+def test_partial_tsv_preserves_the_exact_columns_present(tmp_path):
+    path = tmp_path / "partial.tsv"
+    path.write_text(
+        "# friction_regime=frictionless\n"
+        "date\tts_ns\tpnl_total\tnav\n"
+        "2026-07-01\t1753920000000000000\t1.25\t1.25\n",
+        encoding="utf-8",
+    )
+
+    result, meta, extra = read_backtest_tsv(str(path))
+
+    assert meta == {"friction_regime": "frictionless"}
+    assert extra.columns_present == frozenset({"date", "ts_ns", "pnl_total", "nav"})
+    # The binding placeholder remains row-consistent, but provenance prevents a
+    # report from interpreting it as an observed economic zero.
+    assert list(result.pnl_gamma) == [0.0]
+
+
 def test_read_kv_tsv_skips_the_header_after_a_comment(tmp_path):
     # Regression (PY-io): the header skip was pinned to line index 0, so any
     # leading comment let the literal column names enter the spec dict as a
@@ -444,6 +464,95 @@ def test_build_report_from_run_accepts_the_pnl_track_naming(tmp_path):
     out = tmp_path / "out.html"
     assert build_report_from_run(str(run), str(out)) == str(out)
     assert "FRICTIONED + IMPACT" in out.read_text(encoding="utf-8")
+
+
+def test_build_report_from_run_refuses_missing_loose_tsv_economics(tmp_path):
+    from atxvol.report.dispersion import build_report_from_run
+
+    run = tmp_path / "partial-run"
+    run.mkdir()
+    (run / "backtest.tsv").write_text(
+        "# friction_regime=frictionless\n"
+        "date\tts_ns\tpnl_total\tnav\n"
+        "2026-07-01\t1753920000000000000\t1.25\t1.25\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "partial.html"
+
+    with pytest.raises(ValueError, match="missing required dispersion-report columns") as excinfo:
+        build_report_from_run(str(run), str(out))
+    assert "pnl_gamma" in str(excinfo.value)
+    assert "Refusing to treat omitted economics as zero" in str(excinfo.value)
+    assert not out.exists()
+
+
+def _drop_tsv_columns(path: Path, dropped: set[str]) -> None:
+    lines = path.read_text(encoding="utf-8").splitlines()
+    header_index = next(i for i, line in enumerate(lines) if line and not line.startswith("#"))
+    header = lines[header_index].split("\t")
+    keep = [i for i, name in enumerate(header) if name not in dropped]
+    filtered = lines[:header_index]
+    filtered.extend(
+        "\t".join(fields[i] for i in keep)
+        for fields in (line.split("\t") for line in lines[header_index:])
+    )
+    path.write_text("\n".join(filtered) + "\n", encoding="utf-8")
+
+
+def test_optional_loose_tsv_omissions_render_as_unavailable(tmp_path):
+    from atxvol.report.dispersion import build_report_from_run
+
+    run = _write_run_dir(tmp_path, "pnl_track.tsv", meta=_REGIME_META)
+    dropped = {
+        "cash", "gross_delta", "gross_theta", "n_open_lots",
+        "n_unpriced_lots", "n_unpriced_greeks",
+    }
+    _drop_tsv_columns(run / "pnl_track.tsv", dropped)
+    out = tmp_path / "optional-missing.html"
+
+    build_report_from_run(str(run), str(out))
+    html = out.read_text(encoding="utf-8")
+
+    assert "PARTIAL LOOSE TSV" in html
+    assert "Unavailable optional columns:" in html
+    assert "gross_delta" in html
+    assert "omitted, not treated as zero" in html
+    assert "Net delta is unavailable in this loose TSV." in html
+    assert '<td class="sym">--</td><td>unavailable</td>' in html
+
+
+def test_build_report_from_run_prefers_archive_and_renders_configured_band(tmp_path):
+    from atxvol.report.dispersion import build_report_from_run
+
+    fixture = (
+        Path(__file__).parent / "data" / "runarchive" / "wave_a_fixture.atxrun"
+    )
+    run = tmp_path / "archive-run"
+    run.mkdir()
+    shutil.copyfile(fixture, run / "run.atxrun")
+    # This malformed loose fallback proves the archive is authoritative.
+    (run / "backtest.tsv").write_text(
+        "date\tpnl_total\n2026-07-11\t999999\n", encoding="utf-8"
+    )
+    # The shipped build-schedule path records the effective regime and hedge
+    # configuration in this sidecar; the archive carries the resolved run spec.
+    (run / "run_config.tsv").write_text(
+        "key\tvalue\n"
+        "friction_regime\tfrictionless\n"
+        "friction_regime_detail\tmid fills, no commission\n"
+        "delta_band\t37.5\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "archive.html"
+
+    assert build_report_from_run(str(run), str(out)) == str(out)
+    html = out.read_text(encoding="utf-8")
+
+    assert "FRICTIONLESS" in html
+    assert "run.atxrun · backtest section" in html
+    assert "<b>Delta band</b> 37.5" in html
+    assert "configured per-underlying close-hedge band of <b>37.5</b>" in html
+    assert "with a zero band" not in html
 
 
 def test_build_report_from_run_reads_the_regime_from_the_tearsheet_tsv(tmp_path):

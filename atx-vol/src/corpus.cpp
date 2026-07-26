@@ -9,12 +9,14 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <filesystem>
 #include <atomic>  // phase-timing counters
 #include <chrono>  // phase-timing clock
 #include <fstream>
 #include <iterator> // std::make_move_iterator
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -24,6 +26,7 @@
 #include <vector>
 
 #include "atx/core/hash.hpp"
+#include "atx/vol/detail/archive_util.hpp" // durable transactional index publication
 #include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
 #include "atx/vol/dispersion.hpp"           // with_uid
 #include "atx/vol/parallel_for.hpp"         // ScopedElasticWorkerBudget (T1 live inner budget)
@@ -520,6 +523,7 @@ void count_disposition(CorpusQualityReport &report, CorpusDisposition dispositio
 // diagnostics, never read to make a decision, and the only correctness
 // requirement is that concurrent adds do not tear.
 std::atomic<double> g_fit_fanout_s{0.0};
+std::atomic<double> g_fit_fanout_process_cpu_s{0.0};
 std::atomic<double> g_archive_write_s{0.0};
 std::atomic<double> g_checkpoint_s{0.0};
 std::atomic<std::uint64_t> g_fanout_calls{0};
@@ -729,6 +733,7 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
   g_fanout_calls.fetch_add(1u, std::memory_order_relaxed);
   g_boards_fitted.fetch_add(static_cast<std::uint64_t>(n), std::memory_order_relaxed);
   const auto t_fanout_begin = std::chrono::steady_clock::now();
+  const std::clock_t cpu_fanout_begin = std::clock();
   if (cfg.warm_start_chain) {
     // C2 (perf): cross-date warm-start chains. Group boards into per-symbol chains
     // fit in chronological (date-ascending) order; each date carries the prior
@@ -890,6 +895,14 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
   add_seconds(g_fit_fanout_s,
               std::chrono::duration<double>(std::chrono::steady_clock::now() - t_fanout_begin)
                   .count());
+  const std::clock_t cpu_fanout_end = std::clock();
+  if (cpu_fanout_begin != static_cast<std::clock_t>(-1) &&
+      cpu_fanout_end != static_cast<std::clock_t>(-1) &&
+      cpu_fanout_end >= cpu_fanout_begin) {
+    add_seconds(g_fit_fanout_process_cpu_s,
+                static_cast<double>(cpu_fanout_end - cpu_fanout_begin) /
+                    static_cast<double>(CLOCKS_PER_SEC));
+  }
 
   if (!schedule_status) {
     return Err(schedule_status.error());
@@ -1069,12 +1082,179 @@ struct CorpusDateCheckpoint {
          (std::string(date) + std::string(suffix));
 }
 
+inline constexpr std::string_view kCorpusPairCommitMagic = "ATX_CORPUS_PAIR_COMMIT\t1\t";
+
+[[nodiscard]] std::uint64_t corpus_pair_generation(const CorpusManifest &manifest,
+                                                   const CorpusQualityReport &quality) {
+  const std::string manifest_text = serialize_manifest(manifest);
+  const std::string quality_text = serialize_quality_report(quality);
+  std::uint64_t generation =
+      atx::core::hash_bytes(manifest_text.data(), manifest_text.size());
+  generation = atx::core::hash_combine(
+      static_cast<std::size_t>(generation),
+      atx::core::hash_bytes(quality_text.data(), quality_text.size()));
+  return generation == 0u ? 1u : generation;
+}
+
+[[nodiscard]] Result<std::optional<std::uint64_t>>
+read_pair_commit(const std::filesystem::path &path) {
+  std::error_code ec;
+  const bool exists = std::filesystem::exists(path, ec);
+  if (ec) {
+    return Err(ErrorCode::IoError, "CorpusBuildSession: cannot inspect pair commit");
+  }
+  if (!exists) {
+    return Ok(std::optional<std::uint64_t>{});
+  }
+  if (!std::filesystem::is_regular_file(path, ec) || ec) {
+    return Err(ErrorCode::IoError, "CorpusBuildSession: pair commit is not a regular file");
+  }
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream) {
+    return Err(ErrorCode::IoError, "CorpusBuildSession: cannot read pair commit");
+  }
+  const std::string text((std::istreambuf_iterator<char>(stream)),
+                         std::istreambuf_iterator<char>());
+  if (!text.starts_with(kCorpusPairCommitMagic)) {
+    return Err(ErrorCode::ParseError, "CorpusBuildSession: bad pair commit marker");
+  }
+  std::string_view generation_text{text};
+  generation_text.remove_prefix(kCorpusPairCommitMagic.size());
+  if (!generation_text.empty() && generation_text.back() == '\n') {
+    generation_text.remove_suffix(1u);
+  }
+  std::uint64_t generation = 0u;
+  const auto parsed = std::from_chars(generation_text.data(),
+                                      generation_text.data() + generation_text.size(), generation);
+  if (parsed.ec != std::errc{} ||
+      parsed.ptr != generation_text.data() + generation_text.size() || generation == 0u) {
+    return Err(ErrorCode::ParseError, "CorpusBuildSession: bad pair commit generation");
+  }
+  return Ok(std::optional<std::uint64_t>{generation});
+}
+
+void remove_abandoned_pair(const std::filesystem::path &manifest_path,
+                           const std::filesystem::path &quality_path,
+                           const std::filesystem::path &commit_path) {
+  std::error_code ignored;
+  for (const std::filesystem::path &path :
+       {manifest_path, quality_path, commit_path,
+        std::filesystem::path(manifest_path.string() + ".pending"),
+        std::filesystem::path(quality_path.string() + ".pending"),
+        std::filesystem::path(commit_path.string() + ".pending"),
+        std::filesystem::path(manifest_path.string() + ".pending.tmp"),
+        std::filesystem::path(quality_path.string() + ".pending.tmp")}) {
+    ignored.clear();
+    std::filesystem::remove(path, ignored);
+  }
+}
+
+[[nodiscard]] Result<std::array<std::filesystem::path, 3>>
+reserve_corpus_pair_temps(const std::array<std::filesystem::path, 3> &destinations) {
+  std::array<std::filesystem::path, 3> temps;
+  std::size_t reserved_count = 0u;
+  for (; reserved_count < destinations.size(); ++reserved_count) {
+    auto reserved =
+        detail::reserve_unique_publish_temp_file(destinations[reserved_count].generic_string());
+    if (!reserved) {
+      std::error_code ignored;
+      for (std::size_t i = 0; i < reserved_count; ++i) {
+        std::filesystem::remove(temps[i], ignored);
+      }
+      return tl::unexpected<atx::core::Error>(std::move(reserved).error());
+    }
+    temps[reserved_count] = std::filesystem::path{*reserved};
+  }
+  return Ok(std::move(temps));
+}
+
+[[nodiscard]] Status publish_corpus_pair(const std::filesystem::path &manifest_path,
+                                         const std::filesystem::path &quality_path,
+                                         const std::filesystem::path &commit_path,
+                                         const CorpusManifest &manifest,
+                                         const CorpusQualityReport &quality) {
+  static std::mutex pair_publish_mutex;
+  std::scoped_lock pair_lock(pair_publish_mutex);
+  for (const auto &path : {manifest_path, quality_path, commit_path}) {
+    if (path.has_parent_path()) {
+      std::error_code ec;
+      std::filesystem::create_directories(path.parent_path(), ec);
+      if (ec) {
+        return Err(ErrorCode::IoError,
+                   "CorpusBuildSession: cannot create pair publication directory");
+      }
+    }
+  }
+  const std::uint64_t generation = corpus_pair_generation(manifest, quality);
+  auto reserved =
+      reserve_corpus_pair_temps({manifest_path, quality_path, commit_path});
+  if (!reserved) {
+    return tl::unexpected<atx::core::Error>(std::move(reserved).error());
+  }
+  const std::filesystem::path &manifest_pending = (*reserved)[0];
+  const std::filesystem::path &quality_pending = (*reserved)[1];
+  const std::filesystem::path &commit_pending = (*reserved)[2];
+
+  // No authoritative marker exists while a generation is being installed.
+  // Therefore a crash after either data-file rename is distinguishable from a
+  // committed pair and restart can discard/refit it safely.
+  if (Status status = write_manifest_file(manifest_pending.generic_string(), manifest); !status) {
+    std::error_code ignored;
+    for (const auto &temp : *reserved) {
+      std::filesystem::remove(temp, ignored);
+    }
+    return status;
+  }
+  if (Status status = write_quality_report_file(quality_pending.generic_string(), quality);
+      !status) {
+    std::error_code ignored;
+    for (const auto &temp : *reserved) {
+      std::filesystem::remove(temp, ignored);
+    }
+    return status;
+  }
+  if (Status status = detail::flush_and_publish_file(manifest_pending.generic_string(),
+                                                     manifest_path.generic_string());
+      !status) {
+    std::error_code ignored;
+    std::filesystem::remove(commit_pending, ignored);
+    return status;
+  }
+  if (Status status = detail::flush_and_publish_file(quality_pending.generic_string(),
+                                                     quality_path.generic_string());
+      !status) {
+    std::error_code ignored;
+    std::filesystem::remove(commit_pending, ignored);
+    return status;
+  }
+  {
+    std::ofstream marker(commit_pending, std::ios::binary | std::ios::trunc);
+    if (!marker) {
+      std::error_code ignored;
+      std::filesystem::remove(commit_pending, ignored);
+      return Err(ErrorCode::IoError, "CorpusBuildSession: cannot write pair commit");
+    }
+    marker << kCorpusPairCommitMagic << generation << '\n';
+    if (!marker) {
+      marker.close();
+      std::error_code ignored;
+      std::filesystem::remove(commit_pending, ignored);
+      return Err(ErrorCode::IoError, "CorpusBuildSession: pair commit write failed");
+    }
+  }
+  // The one-file marker is the commit point and is published only after both
+  // durable data files. Readers never accept an unmarked/mixed generation.
+  return detail::flush_and_publish_file(commit_pending.generic_string(),
+                                        commit_path.generic_string());
+}
+
 [[nodiscard]] Result<std::optional<CorpusDateCheckpoint>>
 read_date_checkpoint(std::string_view out_dir, std::string_view date,
                      std::span<const std::string> expected_symbols, std::uint64_t input_fingerprint,
                      std::uint64_t policy_fingerprint, bool scrub_payload_crc) {
   const std::filesystem::path manifest_path = checkpoint_path(out_dir, date, ".manifest.tsv");
   const std::filesystem::path quality_path = checkpoint_path(out_dir, date, ".quality.tsv");
+  const std::filesystem::path commit_path = checkpoint_path(out_dir, date, ".commit");
   std::error_code manifest_error;
   std::error_code quality_error;
   const bool manifest_exists = std::filesystem::exists(manifest_path, manifest_error);
@@ -1082,15 +1262,32 @@ read_date_checkpoint(std::string_view out_dir, std::string_view date,
   if (manifest_error || quality_error) {
     return Err(ErrorCode::IoError, "CorpusBuildSession: cannot inspect date checkpoint");
   }
-  if (!manifest_exists && !quality_exists) {
+  ATX_TRY(std::optional<std::uint64_t> committed, read_pair_commit(commit_path));
+  if (!committed && !manifest_exists && !quality_exists) {
     return Ok(std::optional<CorpusDateCheckpoint>{});
   }
-  if (manifest_exists != quality_exists) {
-    return Err(ErrorCode::AlreadyExists, "CorpusBuildSession: incomplete date checkpoint");
+  if (!committed) {
+    // Abandoned pre-commit generation (including a crash between the two
+    // renames). It was never authoritative, so discard both its indexes and
+    // its per-date archive, then refit the date.
+    remove_abandoned_pair(manifest_path, quality_path, commit_path);
+    std::error_code cleanup;
+    std::filesystem::remove(std::filesystem::path(out_dir) /
+                                (std::string(date) + ".atxvsa"),
+                            cleanup);
+    return Ok(std::optional<CorpusDateCheckpoint>{});
+  }
+  if (!manifest_exists || !quality_exists) {
+    return Err(ErrorCode::ParseError,
+               "CorpusBuildSession: committed date checkpoint is incomplete");
   }
 
   ATX_TRY(CorpusManifest manifest, read_manifest_file(manifest_path.generic_string()));
   ATX_TRY(CorpusQualityReport quality, read_quality_report_file(quality_path.generic_string()));
+  if (*committed != corpus_pair_generation(manifest, quality)) {
+    return Err(ErrorCode::ParseError,
+               "CorpusBuildSession: date checkpoint generation mismatch");
+  }
   if (quality.input_fingerprint != input_fingerprint ||
       quality.policy_fingerprint != policy_fingerprint) {
     return Err(ErrorCode::AlreadyExists,
@@ -1136,7 +1333,13 @@ read_date_checkpoint(std::string_view out_dir, std::string_view date,
     return Err(ErrorCode::AlreadyExists, "CorpusBuildSession: date checkpoint archive unavailable");
   }
   if (archive_exists) {
-    ATX_TRY(SurfaceArchiveV2 archive, SurfaceArchiveV2::open_file(expected_archive.generic_string()));
+    // P-5: checkpoint framing is metadata work. `open_file` allocated and read
+    // the complete archive before these O(1) directory checks; a read-only map
+    // faults only header/lookup/directory pages unless the optional payload scrub
+    // below deliberately walks records. The mapping dies before resume can
+    // rewrite anything, so it does not pin a mutable partition.
+    ATX_TRY(SurfaceArchiveV2 archive,
+            SurfaceArchiveV2::open_mapped(expected_archive.generic_string()));
     if (archive.count() != admitted) {
       return Err(ErrorCode::ParseError,
                  "CorpusBuildSession: date checkpoint archive count mismatch");
@@ -1213,32 +1416,8 @@ read_date_checkpoint(std::string_view out_dir, std::string_view date,
 
   const std::filesystem::path manifest_path = checkpoint_path(out_dir, date, ".manifest.tsv");
   const std::filesystem::path quality_path = checkpoint_path(out_dir, date, ".quality.tsv");
-  const std::filesystem::path manifest_pending = manifest_path.string() + ".pending";
-  const std::filesystem::path quality_pending = quality_path.string() + ".pending";
-  ATX_TRY_VOID(write_manifest_file(manifest_pending.generic_string(), manifest));
-  const Status quality_write = write_quality_report_file(quality_pending.generic_string(), quality);
-  if (!quality_write) {
-    std::error_code cleanup;
-    std::filesystem::remove(manifest_pending, cleanup);
-    return Err(quality_write.error());
-  }
-
-  std::error_code rename_error;
-  std::filesystem::rename(manifest_pending, manifest_path, rename_error);
-  if (rename_error) {
-    std::error_code cleanup;
-    std::filesystem::remove(manifest_pending, cleanup);
-    std::filesystem::remove(quality_pending, cleanup);
-    return Err(ErrorCode::IoError, "CorpusBuildSession: manifest checkpoint commit failed");
-  }
-  std::filesystem::rename(quality_pending, quality_path, rename_error);
-  if (rename_error) {
-    std::error_code cleanup;
-    std::filesystem::remove(quality_pending, cleanup);
-    std::filesystem::remove(manifest_path, cleanup);
-    return Err(ErrorCode::IoError, "CorpusBuildSession: quality checkpoint commit failed");
-  }
-  return Ok();
+  const std::filesystem::path commit_path = checkpoint_path(out_dir, date, ".commit");
+  return publish_corpus_pair(manifest_path, quality_path, commit_path, manifest, quality);
 }
 
 } // namespace
@@ -1253,6 +1432,8 @@ CorpusPhaseTimings corpus_phase_timings() noexcept {
   out.boards_fitted = g_boards_fitted.load(std::memory_order_relaxed);
   out.reclaimed_inner_boards = g_reclaimed_inner_boards.load(std::memory_order_relaxed);
   out.inner_worker_slots = g_inner_worker_slots.load(std::memory_order_relaxed);
+  out.fit_fanout_process_cpu_s =
+      g_fit_fanout_process_cpu_s.load(std::memory_order_relaxed);
   return out;
 }
 
@@ -1264,6 +1445,7 @@ void reset_corpus_phase_timings() noexcept {
   g_boards_fitted.store(0u, std::memory_order_relaxed);
   g_reclaimed_inner_boards.store(0u, std::memory_order_relaxed);
   g_inner_worker_slots.store(0u, std::memory_order_relaxed);
+  g_fit_fanout_process_cpu_s.store(0.0, std::memory_order_relaxed);
 }
 
 CorpusBuildSession::CorpusBuildSession(std::string out_dir, QualifiedCorpusConfig cfg)
@@ -1596,6 +1778,8 @@ Result<QualifiedCorpusManifest> CorpusBuildSession::finish() {
       (std::filesystem::path(out_dir_) / "manifest.tsv").generic_string();
   const std::string quality_path =
       (std::filesystem::path(out_dir_) / "quality.tsv").generic_string();
+  const std::filesystem::path commit_path =
+      std::filesystem::path(out_dir_) / "indexes.commit";
   std::error_code manifest_exists_error;
   std::error_code quality_exists_error;
   const bool manifest_exists = std::filesystem::exists(manifest_path, manifest_exists_error);
@@ -1603,13 +1787,21 @@ Result<QualifiedCorpusManifest> CorpusBuildSession::finish() {
   if (manifest_exists_error || quality_exists_error) {
     return Err(ErrorCode::IoError, "CorpusBuildSession::finish: cannot inspect final indexes");
   }
-  if (manifest_exists || quality_exists) {
-    if (manifest_exists != quality_exists) {
-      return Err(ErrorCode::AlreadyExists,
-                 "CorpusBuildSession::finish: incomplete existing final indexes");
-    }
+  ATX_TRY(std::optional<std::uint64_t> committed, read_pair_commit(commit_path));
+  if (committed && (!manifest_exists || !quality_exists)) {
+    // Final indexes are derivable from the per-date checkpoints/session state.
+    // A missing member cannot be served as a committed generation; discard the
+    // marker and any survivor, then republish below.
+    remove_abandoned_pair(manifest_path, quality_path, commit_path);
+    committed.reset();
+  }
+  if (committed) {
     ATX_TRY(CorpusManifest existing_manifest, read_manifest_file(manifest_path));
     ATX_TRY(CorpusQualityReport existing_quality, read_quality_report_file(quality_path));
+    if (*committed != corpus_pair_generation(existing_manifest, existing_quality)) {
+      return Err(ErrorCode::ParseError,
+                 "CorpusBuildSession::finish: final index generation mismatch");
+    }
     if (existing_manifest != manifest_ || existing_quality != quality_) {
       return Err(ErrorCode::AlreadyExists,
                  "CorpusBuildSession::finish: existing final indexes do not match");
@@ -1618,30 +1810,14 @@ Result<QualifiedCorpusManifest> CorpusBuildSession::finish() {
     return Ok(QualifiedCorpusManifest{std::move(manifest_), std::move(quality_),
                                       peak_live_fitted_surfaces_});
   }
-  const std::string manifest_pending = manifest_path + ".pending";
-  const std::string quality_pending = quality_path + ".pending";
-  ATX_TRY_VOID(write_manifest_file(manifest_pending, manifest_));
-  const Status quality_write = write_quality_report_file(quality_pending, quality_);
-  if (!quality_write) {
-    std::error_code cleanup;
-    std::filesystem::remove(manifest_pending, cleanup);
-    return Err(quality_write.error());
+
+  if (manifest_exists || quality_exists) {
+    // No marker means these files belong to a generation that never committed
+    // (or to the pre-transaction format). They are derivable indexes, so recover
+    // by discarding and republishing the in-memory authoritative generation.
+    remove_abandoned_pair(manifest_path, quality_path, commit_path);
   }
-  std::error_code rename_error;
-  std::filesystem::rename(manifest_pending, manifest_path, rename_error);
-  if (rename_error) {
-    std::error_code cleanup;
-    std::filesystem::remove(manifest_pending, cleanup);
-    std::filesystem::remove(quality_pending, cleanup);
-    return Err(ErrorCode::IoError, "CorpusBuildSession::finish: manifest commit failed");
-  }
-  std::filesystem::rename(quality_pending, quality_path, rename_error);
-  if (rename_error) {
-    std::error_code cleanup;
-    std::filesystem::remove(quality_pending, cleanup);
-    std::filesystem::remove(manifest_path, cleanup);
-    return Err(ErrorCode::IoError, "CorpusBuildSession::finish: quality commit failed");
-  }
+  ATX_TRY_VOID(publish_corpus_pair(manifest_path, quality_path, commit_path, manifest_, quality_));
   finished_ = true;
   return Ok(QualifiedCorpusManifest{std::move(manifest_), std::move(quality_),
                                     peak_live_fitted_surfaces_});
@@ -2344,11 +2520,16 @@ Status write_quality_report_file(std::string_view path, const CorpusQualityRepor
   }
 
   const std::string text = serialize_quality_report(report);
-  std::filesystem::path tmp = dst;
-  tmp += ".tmp";
+  auto reserved = detail::reserve_unique_publish_temp_file(path);
+  if (!reserved) {
+    return tl::unexpected<atx::core::Error>(std::move(reserved).error());
+  }
+  const std::filesystem::path tmp{*reserved};
   {
     std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
     if (!os) {
+      std::error_code ec;
+      std::filesystem::remove(tmp, ec);
       return Err(ErrorCode::IoError, "write_quality_report_file: cannot open temp file");
     }
     os.write(text.data(), static_cast<std::streamsize>(text.size()));
@@ -2358,14 +2539,7 @@ Status write_quality_report_file(std::string_view path, const CorpusQualityRepor
       return Err(ErrorCode::IoError, "write_quality_report_file: write failed");
     }
   }
-  std::error_code ec;
-  std::filesystem::rename(tmp, dst, ec);
-  if (ec) {
-    std::error_code ec2;
-    std::filesystem::remove(tmp, ec2);
-    return Err(ErrorCode::IoError, "write_quality_report_file: rename failed");
-  }
-  return Ok();
+  return detail::flush_and_publish_file(tmp.generic_string(), dst.generic_string());
 }
 
 Result<CorpusQualityReport> read_quality_report_file(std::string_view path) {
@@ -2404,11 +2578,16 @@ Status write_manifest_file(std::string_view path, const CorpusManifest &m) {
   }
 
   const std::string text = serialize_manifest(m);
-  std::filesystem::path tmp = dst;
-  tmp += ".tmp";
+  auto reserved = detail::reserve_unique_publish_temp_file(path);
+  if (!reserved) {
+    return tl::unexpected<atx::core::Error>(std::move(reserved).error());
+  }
+  const std::filesystem::path tmp{*reserved};
   {
     std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
     if (!os) {
+      std::error_code ec;
+      std::filesystem::remove(tmp, ec);
       return Err(ErrorCode::IoError, "write_manifest_file: cannot open temp file");
     }
     os.write(text.data(), static_cast<std::streamsize>(text.size()));
@@ -2418,14 +2597,7 @@ Status write_manifest_file(std::string_view path, const CorpusManifest &m) {
       return Err(ErrorCode::IoError, "write_manifest_file: write failed");
     }
   }
-  std::error_code ec;
-  std::filesystem::rename(tmp, dst, ec);
-  if (ec) {
-    std::error_code ec2;
-    std::filesystem::remove(tmp, ec2);
-    return Err(ErrorCode::IoError, "write_manifest_file: rename failed");
-  }
-  return Ok();
+  return detail::flush_and_publish_file(tmp.generic_string(), dst.generic_string());
 }
 
 Result<CorpusManifest> read_manifest_file(std::string_view path) {

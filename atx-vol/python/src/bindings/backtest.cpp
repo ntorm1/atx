@@ -186,12 +186,25 @@ void bind_backtest(py::module_ &m) {
       .def_readwrite("per_contract_cost", &FrictionModel::per_contract_cost)
       .def_readwrite("hedge_slippage_bps", &FrictionModel::hedge_slippage_bps);
 
+  py::class_<ShareDividend>(m, "ShareDividend")
+      .def(py::init<>())
+      .def(py::init([](std::uint32_t uid, std::int64_t ex_ts_ns,
+                       double amount) {
+             return ShareDividend{uid, ex_ts_ns, amount};
+           }),
+           py::arg("uid"), py::arg("ex_ts_ns"), py::arg("amount"))
+      .def_readwrite("uid", &ShareDividend::uid)
+      .def_readwrite("ex_ts_ns", &ShareDividend::ex_ts_ns)
+      .def_readwrite("amount", &ShareDividend::amount);
+
   py::class_<FinancingConfig>(m, "FinancingConfig")
       .def(py::init<>())
       .def_readwrite("borrow_rate", &FinancingConfig::borrow_rate)
       .def_readwrite("finance_premium", &FinancingConfig::finance_premium)
       .def_readwrite("shares_carry", &FinancingConfig::shares_carry)
-      .def_readwrite("initial_cash", &FinancingConfig::initial_cash);
+      .def_readwrite("initial_cash", &FinancingConfig::initial_cash)
+      .def_readwrite("share_dividends", &FinancingConfig::share_dividends,
+                     "Exact per-uid ex-date cash dividends for hedge shares.");
 
   // ── Snapshot cache ──
   py::class_<SnapshotCacheStats>(m, "SnapshotCacheStats")
@@ -223,7 +236,11 @@ void bind_backtest(py::module_ &m) {
       .def_readwrite("prefetch_snapshots", &RunConfig::prefetch_snapshots)
       .def_readwrite("query_cache_build_policy", &RunConfig::query_cache_build_policy)
       .def_readwrite("surface_provenance_policy", &RunConfig::surface_provenance_policy)
-      .def_readwrite("settlement_mark_memo", &RunConfig::settlement_mark_memo);
+      .def_readwrite("settlement_mark_memo", &RunConfig::settlement_mark_memo)
+      .def_readwrite("reconcile_nav", &RunConfig::reconcile_nav)
+      .def_readwrite("book_entry_fill_slippage",
+                     &RunConfig::book_entry_fill_slippage)
+      .def_readwrite("reconcile_nav_tol", &RunConfig::reconcile_nav_tol);
 
   // ── The result series ──
   py::class_<BacktestResult> result(m, "BacktestResult");
@@ -311,6 +328,7 @@ void bind_backtest(py::module_ &m) {
             ATXVOL_COL(gross_delta);
             ATXVOL_COL(gross_gamma);
             ATXVOL_COL(gross_vega);
+            ATXVOL_COL(gross_vega_abs);
             ATXVOL_COL(gross_theta);
             ATXVOL_COL(turnover_notional);
             ATXVOL_COL(turnover_vega);
@@ -318,6 +336,7 @@ void bind_backtest(py::module_ &m) {
             ATXVOL_COL(n_unpriced_lots);
             ATXVOL_COL(n_unpriced_greeks);
             ATXVOL_COL(step_pnl_total);
+            ATXVOL_COL(nav_liquidation);
 #undef ATXVOL_COL
             for (const auto &[name, series] : r.signals) {
               out[py::str(name)] = to_numpy(series);
@@ -345,6 +364,7 @@ void bind_backtest(py::module_ &m) {
   ATXVOL_SERIES(result, gross_delta);
   ATXVOL_SERIES(result, gross_gamma);
   ATXVOL_SERIES(result, gross_vega);
+  ATXVOL_SERIES(result, gross_vega_abs);
   ATXVOL_SERIES(result, gross_theta);
   ATXVOL_SERIES(result, turnover_notional);
   ATXVOL_SERIES(result, turnover_vega);
@@ -352,6 +372,7 @@ void bind_backtest(py::module_ &m) {
   ATXVOL_SERIES(result, n_unpriced_lots);
   ATXVOL_SERIES(result, n_unpriced_greeks);
   ATXVOL_SERIES(result, step_pnl_total);
+  ATXVOL_SERIES(result, nav_liquidation);
 
   m.def(
       "run_backtest",

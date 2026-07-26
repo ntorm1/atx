@@ -2256,9 +2256,11 @@ TEST(CorpusPhaseLine, ReportsTheInnerWorkerReclaimCounters) {
   phases.boards_fitted = 902;
   phases.reclaimed_inner_boards = 137;
   phases.inner_worker_slots = 4242;
+  phases.fit_fanout_process_cpu_s = 150.0;
 
   const std::string line = format_corpus_phase_line(/*ingest_s=*/30.0, /*build_s=*/20.0, phases,
-                                                    /*date_batch=*/8u);
+                                                    /*date_batch=*/8u,
+                                                    /*ingest_process_cpu_s=*/45.0);
   // The pre-existing fields must survive verbatim: this line is parsed by hand
   // and by scripts.
   EXPECT_EQ(line.rfind("PHASE ", 0), 0u) << line;
@@ -2272,6 +2274,10 @@ TEST(CorpusPhaseLine, ReportsTheInnerWorkerReclaimCounters) {
       << "the quiet-window probe cannot see reclaimed_inner_boards: " << line;
   EXPECT_NE(line.find("inner_slots=4242"), std::string::npos)
       << "the quiet-window probe cannot see inner_worker_slots: " << line;
+  EXPECT_NE(line.find("fit_fanout_cpu_s=150.00"), std::string::npos)
+      << "fit occupancy has no phase-local process-CPU numerator: " << line;
+  EXPECT_NE(line.find("ingest_cpu_s=45.00"), std::string::npos)
+      << "parallel OPRA ingest CPU is not separately attributable: " << line;
 }
 
 // MINORS M9: the PHASE line's field LAYOUT is a contract, and the way it stays
@@ -2300,9 +2306,11 @@ TEST(CorpusPhaseLine, FieldLayoutIsAppendOnlyAndEveryFieldIsSelfDescribing) {
   phases.boards_fitted = 902;
   phases.reclaimed_inner_boards = 137;
   phases.inner_worker_slots = 4242;
+  phases.fit_fanout_process_cpu_s = 150.0;
 
   const std::string line = format_corpus_phase_line(/*ingest_s=*/30.0, /*build_s=*/20.0, phases,
-                                                    /*date_batch=*/8u);
+                                                    /*date_batch=*/8u,
+                                                    /*ingest_process_cpu_s=*/45.0);
   std::vector<std::string> fields;
   for (std::size_t cursor = 0; cursor <= line.size();) {
     const std::size_t space = line.find(' ', cursor);
@@ -2318,7 +2326,8 @@ TEST(CorpusPhaseLine, FieldLayoutIsAppendOnlyAndEveryFieldIsSelfDescribing) {
   // (`6fddfba`); the last two are `9cfcbc3`'s counters, appended.
   static constexpr const char *kLayout[] = {
       "ingest_s",     "build_s", "fit_fanout_s", "archive_write_s", "checkpoint_s", "other_s",
-      "fanout_calls", "boards",  "date_batch",   "reclaimed",       "inner_slots"};
+      "fanout_calls", "boards",  "date_batch",   "reclaimed",       "inner_slots",
+      "fit_fanout_cpu_s", "ingest_cpu_s"};
   constexpr std::size_t kFieldCount = sizeof(kLayout) / sizeof(kLayout[0]);
 
   ASSERT_EQ(fields.size(), kFieldCount + 1u) << line;
@@ -2622,6 +2631,7 @@ TEST(CorpusBuildSession, InterruptedBuildLeavesDateArchiveButNoPartialIndexes) {
   EXPECT_TRUE(fs::exists(out / "2026-06-17.atxvsa"));
   EXPECT_TRUE(fs::exists(out / ".checkpoints" / "2026-06-17.manifest.tsv"));
   EXPECT_TRUE(fs::exists(out / ".checkpoints" / "2026-06-17.quality.tsv"));
+  EXPECT_TRUE(fs::exists(out / ".checkpoints" / "2026-06-17.commit"));
   EXPECT_FALSE(fs::exists(out / "manifest.tsv"));
   EXPECT_FALSE(fs::exists(out / "quality.tsv"));
   EXPECT_FALSE(fs::exists(out / "manifest.tsv.pending"));
@@ -2636,6 +2646,7 @@ TEST(CorpusBuildSession, InterruptedBuildLeavesDateArchiveButNoPartialIndexes) {
       << "a matching checkpoint must not refit the date";
   EXPECT_TRUE(fs::exists(out / "manifest.tsv"));
   EXPECT_TRUE(fs::exists(out / "quality.tsv"));
+  EXPECT_TRUE(fs::exists(out / "indexes.commit"));
 
   auto cached = CorpusBuildSession::create(out.string(), cfg);
   ASSERT_TRUE(cached.has_value());
@@ -2662,6 +2673,62 @@ TEST(CorpusBuildSession, InterruptedBuildLeavesDateArchiveButNoPartialIndexes) {
   const Status changed_policy_status = changed_policy->append_date("2026-06-17", cells);
   ASSERT_FALSE(changed_policy_status.has_value());
   EXPECT_EQ(changed_policy_status.error().code(), ErrorCode::AlreadyExists);
+}
+
+TEST(CorpusBuildSession, RecoversAbandonedCheckpointAndFinalIndexGenerations) {
+  const std::vector<std::string> dates = {"2026-06-17"};
+  const fs::path out = fresh_out_dir("streaming-transaction-recovery");
+  const fs::path checkpoints = out / ".checkpoints";
+  const fs::path checkpoint_manifest = checkpoints / "2026-06-17.manifest.tsv";
+  const fs::path checkpoint_quality = checkpoints / "2026-06-17.quality.tsv";
+  const fs::path checkpoint_commit = checkpoints / "2026-06-17.commit";
+
+  auto first = build_batched(out, dates, 1u, 2u);
+  ASSERT_TRUE(first.has_value()) << first.error().to_string();
+  ASSERT_TRUE(fs::exists(checkpoint_manifest));
+  ASSERT_TRUE(fs::exists(checkpoint_quality));
+  ASSERT_TRUE(fs::exists(checkpoint_commit));
+  ASSERT_TRUE(fs::exists(out / "indexes.commit"));
+
+  const auto remove_final_generation = [&] {
+    std::error_code ignored;
+    fs::remove(out / "manifest.tsv", ignored);
+    fs::remove(out / "quality.tsv", ignored);
+    fs::remove(out / "indexes.commit", ignored);
+  };
+
+  // Kill point 1: manifest became visible, quality and the authoritative marker
+  // did not. Restart discards the uncommitted archive/pair and refits.
+  remove_final_generation();
+  fs::remove(checkpoint_quality);
+  fs::remove(checkpoint_commit);
+  auto after_manifest = build_batched(out, dates, 1u, 2u);
+  ASSERT_TRUE(after_manifest.has_value()) << after_manifest.error().to_string();
+  EXPECT_GT(after_manifest->peak_live_fitted_surfaces, 0u);
+  EXPECT_TRUE(fs::exists(checkpoint_manifest));
+  EXPECT_TRUE(fs::exists(checkpoint_quality));
+  EXPECT_TRUE(fs::exists(checkpoint_commit));
+
+  // Kill point 2: both data files became visible but the commit marker did not.
+  // They are still abandoned and must not be accepted as a checkpoint.
+  remove_final_generation();
+  fs::remove(checkpoint_commit);
+  auto before_marker = build_batched(out, dates, 1u, 2u);
+  ASSERT_TRUE(before_marker.has_value()) << before_marker.error().to_string();
+  EXPECT_GT(before_marker->peak_live_fitted_surfaces, 0u);
+  EXPECT_TRUE(fs::exists(checkpoint_commit));
+
+  // Final-index pair uses the same protocol. A one-file final generation is
+  // rebuilt from the committed date checkpoint without refitting the date.
+  fs::remove(out / "quality.tsv");
+  fs::remove(out / "indexes.commit");
+  auto final_partial = build_batched(out, dates, 1u, 2u);
+  ASSERT_TRUE(final_partial.has_value()) << final_partial.error().to_string();
+  EXPECT_EQ(final_partial->peak_live_fitted_surfaces, 0u);
+  EXPECT_TRUE(fs::exists(out / "manifest.tsv"));
+  EXPECT_TRUE(fs::exists(out / "quality.tsv"));
+  EXPECT_TRUE(fs::exists(out / "indexes.commit"));
+  expect_manifests_equivalent(*first, *final_partial);
 }
 
 TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {

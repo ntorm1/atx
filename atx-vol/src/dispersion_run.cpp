@@ -37,6 +37,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"
 #include "atx/vol/counters.hpp"
+#include "atx/vol/detail/archive_util.hpp"
 #include "atx/vol/dispersion.hpp" // contract_vega_per_vol_point (the ONE vol-point conversion)
 #include "atx/vol/historical_projection.hpp"
 #include "atx/vol/listed_dispersion.hpp"
@@ -50,6 +51,7 @@
 #include "atx/vol/phase_profile.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/strategy.hpp"
+#include "atx/vol/universe.hpp"
 
 namespace atx::vol {
 namespace fs = std::filesystem;
@@ -113,13 +115,7 @@ Result<std::uint64_t> hash_file(const fs::path &path) {
   return Ok(dispersion_hash_text(bytes));
 }
 
-Status write_input_inventory(const fs::path &path, const OpraBatchResult &batch) {
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) {
-    return Err(ErrorCode::IoError, "cannot write input inventory");
-  }
-  out << "date\tsymbol\tpath\tstatus\tsource_schema_version\tsource_fingerprint\t"
-         "market_input_fingerprint\n";
+Status append_input_inventory(std::ostream &out, const OpraBatchResult &batch) {
   for (const OpraBatchEntry &entry : batch.entries) {
     out << entry.date << '\t' << entry.symbol << '\t' << entry.path << '\t';
     if (entry.panel) {
@@ -135,30 +131,22 @@ Status write_input_inventory(const fs::path &path, const OpraBatchResult &batch)
   return out ? Ok() : Err(ErrorCode::IoError, "cannot flush input inventory");
 }
 
-Status persist_occ_ess_evidence(const fs::path &run_dir, const RunSpec &spec,
-                                const OpraBatchResult &batch) {
+Status persist_occ_ess_evidence_window(const fs::path &run_dir, const RunSpec &spec,
+                                       const OpraBatchResult &batch,
+                                       std::ostream &inventory,
+                                       std::set<std::string> &persisted_dates) {
   std::set<std::string> loaded_dates;
   for (const OpraBatchEntry &entry : batch.entries) {
     if (entry.panel) {
       loaded_dates.insert(entry.date);
     }
   }
-  if (loaded_dates.empty()) {
-    return Err(ErrorCode::NotFound, "no loaded dates for OCC ESS evidence");
-  }
-
   const fs::path evidence_dir = run_dir / "occ_ess";
   std::error_code error;
-  fs::create_directories(evidence_dir, error);
-  if (error) {
-    return Err(ErrorCode::IoError, "cannot create OCC ESS evidence directory");
-  }
-  std::ofstream inventory(run_dir / "occ_ess_inventory.tsv", std::ios::binary | std::ios::trunc);
-  if (!inventory) {
-    return Err(ErrorCode::IoError, "cannot write OCC ESS inventory");
-  }
-  inventory << "date\tpath\tn_special_symbols\tsource_fingerprint\n";
   for (const std::string &date : loaded_dates) {
+    if (!persisted_dates.emplace(date).second) {
+      continue;
+    }
     const fs::path source = spec.occ_ess_root / (date + ".txt");
     ATX_TRY(OccEssReport report, read_occ_ess_report_file(source.string()));
     if (report.trade_date() != date) {
@@ -815,6 +803,193 @@ Status verify_backtest(const fs::path &backtest_path, const fs::path &reconcilia
 
 } // namespace
 
+Result<CorpusMarketInputTable>
+read_corpus_dividend_inputs(const fs::path &path) {
+  ATX_TRY(std::string text, read_text(path));
+  const std::vector<std::string_view> lines = split(text, '\n');
+  if (lines.size() < 2u) {
+    return Err(ErrorCode::ParseError, "dividend inputs are missing magic/header");
+  }
+  const auto clean = [](std::string_view line) {
+    if (!line.empty() && line.back() == '\r') {
+      line.remove_suffix(1u);
+    }
+    return line;
+  };
+  if (clean(lines[0]) != "ATX_CORPUS_DIVIDENDS\t1" ||
+      clean(lines[1]) != "date\tsymbol\tex_ts_ns\tamount\tsource\tas_of") {
+    return Err(ErrorCode::ParseError, "dividend inputs magic/header mismatch");
+  }
+
+  std::map<std::pair<std::string, std::string>, CorpusMarketInputCell> cells;
+  std::set<std::tuple<std::string, std::string, std::int64_t>> observations;
+  for (std::size_t i = 2u; i < lines.size(); ++i) {
+    const std::string_view line = clean(lines[i]);
+    if (line.empty()) {
+      continue;
+    }
+    const std::vector<std::string_view> fields = split(line, '\t');
+    std::int64_t ex_ts_ns = 0;
+    double amount = 0.0;
+    if (fields.size() != 6u || fields[0].empty() || fields[1].empty() ||
+        !parse_number(fields[2], ex_ts_ns) || !parse_double(fields[3], amount) ||
+        ex_ts_ns <= 0 || amount < 0.0 || fields[4].empty() || fields[5].empty()) {
+      return Err(ErrorCode::ParseError, "malformed dividend input row");
+    }
+    const auto observation =
+        std::tuple{std::string(fields[0]), std::string(fields[1]), ex_ts_ns};
+    if (!observations.emplace(observation).second) {
+      return Err(ErrorCode::AlreadyExists, "duplicate dividend input observation");
+    }
+    const auto key = std::pair{std::string(fields[0]), std::string(fields[1])};
+    auto [it, inserted] = cells.try_emplace(key);
+    CorpusMarketInputCell &cell = it->second;
+    if (inserted) {
+      cell.date = key.first;
+      cell.symbol = key.second;
+      const std::string as_of_date = cell.date + "T00:00:00Z";
+      cell.provenance.spot = {"OPRA put-call parity", as_of_date};
+      cell.provenance.rates = {"run_spec.flat_rate", as_of_date};
+      cell.provenance.fit_context = {"run_spec.default", as_of_date};
+      cell.provenance.dividends = {std::string(fields[4]), std::string(fields[5])};
+    } else if (cell.provenance.dividends.source != fields[4] ||
+               cell.provenance.dividends.as_of != fields[5]) {
+      return Err(ErrorCode::InvalidArgument,
+                 "one dividend input cell has inconsistent source/as_of provenance");
+    }
+    cell.cash_divs.push_back(DividendEvent{ex_ts_ns, amount});
+  }
+  std::vector<CorpusMarketInputCell> rows;
+  rows.reserve(cells.size());
+  for (auto &[key, cell] : cells) {
+    (void)key;
+    rows.push_back(std::move(cell));
+  }
+  return CorpusMarketInputTable::create(std::move(rows));
+}
+
+Status write_share_dividend_artifact(
+    const fs::path &path, std::span<const ShareDividendObservation> observations) {
+  std::vector<ShareDividendObservation> ordered(observations.begin(), observations.end());
+  std::sort(ordered.begin(), ordered.end(),
+            [](const ShareDividendObservation &lhs, const ShareDividendObservation &rhs) {
+              if (lhs.observed_date != rhs.observed_date) {
+                return lhs.observed_date < rhs.observed_date;
+              }
+              if (lhs.symbol != rhs.symbol) {
+                return lhs.symbol < rhs.symbol;
+              }
+              return lhs.ex_ts_ns != rhs.ex_ts_ns ? lhs.ex_ts_ns < rhs.ex_ts_ns
+                                                  : lhs.amount < rhs.amount;
+            });
+  auto reserved = detail::reserve_unique_publish_temp_file(path.generic_string());
+  if (!reserved) {
+    return tl::unexpected<atx::core::Error>(std::move(reserved).error());
+  }
+  const fs::path pending{*reserved};
+  {
+    std::ofstream out(pending, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      std::error_code ignored;
+      fs::remove(pending, ignored);
+      return Err(ErrorCode::IoError, "cannot write share-dividend artifact");
+    }
+    out << "ATX_SHARE_DIVIDENDS\t1\n"
+        << "observed_date\tsymbol\tuid\tex_ts_ns\tamount\tsource\tas_of\t"
+           "source_fingerprint\tmarket_input_fingerprint\n"
+        << std::setprecision(17);
+    std::set<std::tuple<std::string, std::string, std::int64_t>> seen;
+    for (const ShareDividendObservation &row : ordered) {
+      const auto key = std::tuple{row.observed_date, row.symbol, row.ex_ts_ns};
+      if (row.observed_date.empty() || row.symbol.empty() ||
+          row.uid != uid_for_symbol(row.symbol) || row.ex_ts_ns <= 0 ||
+          !std::isfinite(row.amount) || row.amount < 0.0 || row.source.empty() ||
+          row.as_of.empty() || row.source_fingerprint == 0u ||
+          row.market_input_fingerprint == 0u || !seen.emplace(key).second) {
+        out.close();
+        std::error_code ignored;
+        fs::remove(pending, ignored);
+        return Err(ErrorCode::InvalidArgument,
+                   "invalid or duplicate share-dividend observation");
+      }
+      out << row.observed_date << '\t' << row.symbol << '\t' << row.uid << '\t'
+          << row.ex_ts_ns << '\t' << row.amount << '\t' << row.source << '\t'
+          << row.as_of << '\t' << row.source_fingerprint << '\t'
+          << row.market_input_fingerprint << '\n';
+    }
+    if (!out) {
+      out.close();
+      std::error_code ignored;
+      fs::remove(pending, ignored);
+      return Err(ErrorCode::IoError, "cannot flush share-dividend artifact");
+    }
+  }
+  return detail::flush_and_publish_file(pending.generic_string(), path.generic_string());
+}
+
+Result<std::vector<ShareDividend>>
+read_share_dividend_artifact(const fs::path &path) {
+  ATX_TRY(std::string text, read_text(path));
+  const std::vector<std::string_view> lines = split(text, '\n');
+  if (lines.size() < 2u) {
+    return Err(ErrorCode::ParseError, "share-dividend artifact is missing magic/header");
+  }
+  const auto clean = [](std::string_view line) {
+    if (!line.empty() && line.back() == '\r') {
+      line.remove_suffix(1u);
+    }
+    return line;
+  };
+  if (clean(lines[0]) != "ATX_SHARE_DIVIDENDS\t1" ||
+      clean(lines[1]) !=
+          "observed_date\tsymbol\tuid\tex_ts_ns\tamount\tsource\tas_of\t"
+          "source_fingerprint\tmarket_input_fingerprint") {
+    return Err(ErrorCode::ParseError, "share-dividend artifact magic/header mismatch");
+  }
+
+  std::map<std::pair<std::uint32_t, std::int64_t>, double> events;
+  std::set<std::tuple<std::string, std::string, std::int64_t>> observations;
+  for (std::size_t i = 2u; i < lines.size(); ++i) {
+    const std::string_view line = clean(lines[i]);
+    if (line.empty()) {
+      continue;
+    }
+    const std::vector<std::string_view> fields = split(line, '\t');
+    std::uint32_t uid = 0u;
+    std::int64_t ex_ts_ns = 0;
+    double amount = 0.0;
+    std::uint64_t source_fingerprint = 0u;
+    std::uint64_t market_input_fingerprint = 0u;
+    if (fields.size() != 9u || fields[0].empty() || fields[1].empty() ||
+        !parse_number(fields[2], uid) || !parse_number(fields[3], ex_ts_ns) ||
+        !parse_double(fields[4], amount) || fields[5].empty() || fields[6].empty() ||
+        !parse_number(fields[7], source_fingerprint) ||
+        !parse_number(fields[8], market_input_fingerprint) || uid == 0u ||
+        uid != uid_for_symbol(fields[1]) || ex_ts_ns <= 0 || amount < 0.0 ||
+        source_fingerprint == 0u || market_input_fingerprint == 0u) {
+      return Err(ErrorCode::ParseError, "malformed share-dividend artifact row");
+    }
+    const auto observation =
+        std::tuple{std::string(fields[0]), std::string(fields[1]), ex_ts_ns};
+    if (!observations.emplace(observation).second) {
+      return Err(ErrorCode::AlreadyExists,
+                 "duplicate share-dividend artifact observation");
+    }
+    const auto key = std::pair{uid, ex_ts_ns};
+    const auto [it, inserted] = events.emplace(key, amount);
+    if (!inserted && it->second != amount) {
+      return Err(ErrorCode::InvalidArgument,
+                 "share-dividend amount changes across corpus observations");
+    }
+  }
+  std::vector<ShareDividend> schedule;
+  schedule.reserve(events.size());
+  for (const auto &[key, amount] : events) {
+    schedule.push_back(ShareDividend{key.first, key.second, amount});
+  }
+  return Ok(std::move(schedule));
+}
+
 // ── Public: corpus phase-split line (B1 / T1) ───────────────────────────────
 //
 // FIELD LAYOUT — this is a contract. The line goes to stdout under
@@ -851,20 +1026,23 @@ Status verify_backtest(const fs::path &backtest_path, const fs::path &reconcilia
 //     `awk '{print $10}'`. The gate keeps both true at once, so a future field
 //     can neither be inserted nor emitted as a bare positional value.
 std::string format_corpus_phase_line(double ingest_s, double build_s,
-                                     const CorpusPhaseTimings &phases, std::size_t date_batch) {
+                                     const CorpusPhaseTimings &phases, std::size_t date_batch,
+                                     double ingest_process_cpu_s) {
   const double named = phases.fit_fanout_s + phases.archive_write_s + phases.checkpoint_s;
   char buf[512];
   const int written =
       std::snprintf(buf, sizeof buf,
                     "PHASE ingest_s=%.2f build_s=%.2f fit_fanout_s=%.2f archive_write_s=%.2f "
                     "checkpoint_s=%.2f other_s=%.2f fanout_calls=%llu boards=%llu "
-                    "date_batch=%zu reclaimed=%llu inner_slots=%llu",
+                    "date_batch=%zu reclaimed=%llu inner_slots=%llu "
+                    "fit_fanout_cpu_s=%.2f ingest_cpu_s=%.2f",
                     ingest_s, build_s, phases.fit_fanout_s, phases.archive_write_s,
                     phases.checkpoint_s, build_s - named,
                     static_cast<unsigned long long>(phases.fanout_calls),
                     static_cast<unsigned long long>(phases.boards_fitted), date_batch,
                     static_cast<unsigned long long>(phases.reclaimed_inner_boards),
-                    static_cast<unsigned long long>(phases.inner_worker_slots));
+                    static_cast<unsigned long long>(phases.inner_worker_slots),
+                    phases.fit_fanout_process_cpu_s, ingest_process_cpu_s);
   // rev2-ws-t N-M2: `written` is snprintf's UNTRUNCATED length, so it can exceed
   // `sizeof buf`. Sizing the std::string from it read past the end of the buffer
   // whenever the line truncated (measured: 1073 bytes returned from a 512-byte
@@ -1463,6 +1641,7 @@ Result<DispersionRunConfig> read_dispersion_run_config(const fs::path &path) {
   ATX_TRY_VOID(binder.text("path_template", config.path_template));
   ATX_TRY_VOID(binder.path_key("definitions", config.definitions));
   ATX_TRY_VOID(binder.path_key("occ_ess_root", config.occ_ess_root));
+  ATX_TRY_VOID(binder.path_key("dividend_ledger", config.dividend_ledger));
 
   ATX_TRY_VOID(binder.text("index_symbol", config.universe.index_symbol));
   ATX_TRY_VOID(binder.number("min_names", config.universe.min_names));
@@ -1585,6 +1764,10 @@ Result<DispersionRunConfig> read_dispersion_run_config(const fs::path &path) {
 
   // Strictness: everything not bound above is rejected, by name.
   ATX_TRY_VOID(binder.reject_unknown());
+  if (!config.dividend_ledger.empty()) {
+    ATX_TRY(config.financing.share_dividends,
+            read_share_dividend_artifact(config.dividend_ledger));
+  }
 
   // Contract validation — the invariants read_run_spec enforced, plus the ones
   // the new knobs need.
@@ -1673,6 +1856,7 @@ RunSpec run_spec_from(const DispersionRunConfig &config) {
   spec.universe_path = config.universe.schedule_path;
   spec.definitions_path = config.definitions;
   spec.occ_ess_root = config.occ_ess_root;
+  spec.dividend_ledger_path = config.dividend_ledger;
   spec.flat_rate = config.rate.flat_rate;
   spec.min_names = config.universe.min_names;
   spec.min_weight_coverage = config.universe.min_weight_coverage;
@@ -1807,7 +1991,8 @@ Status persist_typed_spec_keys(const fs::path &source_spec, const fs::path &run_
   static constexpr std::string_view kRunSpecKeys[] = {
       "label",           "date_lo",       "date_hi",           "snapshot_suffix",
       "opra_root",       "path_template", "universe_schedule", "definitions",
-      "occ_ess_root",    "flat_rate",     "min_names",         "min_weight_coverage",
+      "occ_ess_root",    "dividend_inputs", "dividend_ledger", "flat_rate",
+      "min_names",       "min_weight_coverage",
       "target_dte_days", "min_dte_days",  "max_dte_days",      "roll_dte_days",
       "gross_index_vega","delta_band",    "fit_workers",       "core_mode"};
   std::ofstream out(run_spec, std::ios::binary | std::ios::app);
@@ -1839,24 +2024,40 @@ Status persist_typed_spec_keys(const fs::path &source_spec, const fs::path &run_
 }
 
 Status write_quote_reject_report(const fs::path &path, std::span<const QuoteRejectRow> rows) {
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) {
-    return Err(ErrorCode::IoError, "cannot write " + path.string());
+  auto reserved = detail::reserve_unique_publish_temp_file(path.generic_string());
+  if (!reserved) {
+    return tl::unexpected<atx::core::Error>(std::move(reserved).error());
   }
-  // FIX-F m5: a version line, so a positional reader written against an older
-  // column order fails loudly instead of silently shifting. Same `#`-metadata
-  // convention `write_backtest_pnl_tsv` uses.
-  out << "# schema=quote_rejects/1\n";
-  out << "date\tselection\tnot_two_sided\tzero_bid\tstale\tstale_unevaluable\tlocked\t"
-         "locked_dropped\tnon_standard\ttotal_dropped\n";
-  for (const QuoteRejectRow &row : rows) {
-    const ListedQuoteRejectCounts &counts = row.counts;
-    out << row.date << '\t' << (row.selected ? "ok" : "no_basket") << '\t' << counts.not_two_sided
-        << '\t' << counts.zero_bid << '\t' << counts.stale << '\t' << counts.stale_unevaluable
-        << '\t' << counts.locked << '\t' << counts.locked_dropped << '\t' << counts.non_standard
-        << '\t' << counts.total_dropped() << '\n';
+  const fs::path pending{*reserved};
+  {
+    std::ofstream out(pending, std::ios::binary | std::ios::trunc);
+    if (!out) {
+      std::error_code ignored;
+      fs::remove(pending, ignored);
+      return Err(ErrorCode::IoError, "cannot write " + path.string());
+    }
+    // FIX-F m5: a version line, so a positional reader written against an older
+    // column order fails loudly instead of silently shifting. Same `#`-metadata
+    // convention `write_backtest_pnl_tsv` uses.
+    out << "# schema=quote_rejects/1\n";
+    out << "date\tselection\tnot_two_sided\tzero_bid\tstale\tstale_unevaluable\tlocked\t"
+           "locked_dropped\tnon_standard\ttotal_dropped\n";
+    for (const QuoteRejectRow &row : rows) {
+      const ListedQuoteRejectCounts &counts = row.counts;
+      out << row.date << '\t' << (row.selected ? "ok" : "no_basket") << '\t'
+          << counts.not_two_sided << '\t' << counts.zero_bid << '\t' << counts.stale
+          << '\t' << counts.stale_unevaluable << '\t' << counts.locked << '\t'
+          << counts.locked_dropped << '\t' << counts.non_standard << '\t'
+          << counts.total_dropped() << '\n';
+    }
+    if (!out) {
+      out.close();
+      std::error_code ignored;
+      fs::remove(pending, ignored);
+      return Err(ErrorCode::IoError, "cannot flush " + path.string());
+    }
   }
-  return out ? Ok() : Err(ErrorCode::IoError, "cannot flush " + path.string());
+  return detail::flush_and_publish_file(pending.generic_string(), path.generic_string());
 }
 
 Status write_dispersion_effective_config(const fs::path &path, const DispersionRunConfig &config) {
@@ -1930,93 +2131,386 @@ Status write_dispersion_effective_config(const fs::path &path, const DispersionR
   return out ? Ok() : Err(ErrorCode::IoError, "cannot flush effective run config");
 }
 
-Status verify_projected_var_artifacts(const fs::path &run_dir, std::size_t n_sessions) {
-  const fs::path summary_path = run_dir / "projected_var.tsv";
-  std::error_code error;
-  if (!fs::is_regular_file(summary_path, error)) {
-    return Ok(); // the stage was not run; nothing to gate
+namespace {
+
+constexpr std::string_view kProjectedVarHeader =
+    "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
+    "n_positions\tprojections_per_second\tprepared_fingerprint\tas_of_date\tas_of_ts_ns\t"
+    "book_fingerprint";
+constexpr std::string_view kProjectedScenarioHeader =
+    "date\tts_ns\tvalue\tdelta\tgamma\tvega\ttheta\tn_ok\tn_failed\tdefinition_fingerprint";
+constexpr std::string_view kProjectedLegHeader =
+    "date\tleg\tuid\tside\texpiry_ts_ns\tstrike\tquantity\tmultiplier\tmark\t"
+    "delta\tgamma\tvega\ttheta\tdefinition_fingerprint\tstatus";
+
+struct ProjectedVarSummaryRow {
+  double confidence{0.0};
+  double reference_value{0.0};
+  double value_at_risk{0.0};
+  double expected_shortfall{0.0};
+  std::size_t n_scenarios{0};
+  std::size_t n_positions{0};
+  double projections_per_second{0.0};
+  std::uint64_t prepared_fingerprint{0};
+  std::string as_of_date;
+  std::int64_t as_of_ts_ns{0};
+  std::uint64_t book_fingerprint{0};
+};
+
+struct ProjectedLegIdentity {
+  std::uint32_t uid{0};
+  std::string side;
+  double quantity{0.0};
+  double multiplier{0.0};
+  std::int64_t relative_expiry_ns{0};
+};
+
+Status projected_tsv_header(std::ifstream &stream, const fs::path &path,
+                            std::string_view expected) {
+  std::string line;
+  if (!std::getline(stream, line)) {
+    return Err(ErrorCode::ParseError, path.filename().string() + " has no header");
   }
-  // Present => the whole triple must be present, non-empty and consistent.
-  for (const char *leaf : {"projected_risk_scenarios.tsv", "projected_risk_legs.tsv"}) {
-    const fs::path companion = run_dir / leaf;
-    if (!fs::is_regular_file(companion, error) || fs::file_size(companion, error) == 0u) {
-      return Err(ErrorCode::NotFound,
-                 "projected VaR summary present but companion missing: " + companion.string());
-    }
+  if (!line.empty() && line.back() == '\r') {
+    line.pop_back();
   }
-  ATX_TRY(std::string summary_text, [&]() -> Result<std::string> {
-    std::ifstream stream(summary_path, std::ios::binary);
-    if (!stream) {
-      return Err(ErrorCode::IoError, "cannot read projected_var.tsv");
-    }
-    return Ok(std::string((std::istreambuf_iterator<char>(stream)),
-                          std::istreambuf_iterator<char>()));
-  }());
-  // REVIEW C-1 appended `as_of_date` / `as_of_ts_ns` / `book_fingerprint`. They
-  // are part of the CONTRACT, not optional decoration: a projected-VaR artifact
-  // that does not say which session its book belongs to cannot be reconciled
-  // against the run, so a summary written by a pre-C-1 binary is rejected here
-  // rather than silently accepted as current.
-  constexpr std::string_view kHeader =
-      "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
-      "n_positions\tprojections_per_second\tprepared_fingerprint\tas_of_date\tas_of_ts_ns\t"
-      "book_fingerprint";
-  std::size_t line_start = 0;
-  std::size_t n_rows = 0;
-  bool header_seen = false;
-  while (line_start < summary_text.size()) {
-    const std::size_t line_end = summary_text.find('\n', line_start);
-    std::string_view line{summary_text.data() + line_start,
-                          (line_end == std::string::npos ? summary_text.size() : line_end) -
-                              line_start};
-    line_start = line_end == std::string::npos ? summary_text.size() : line_end + 1;
-    if (!line.empty() && line.back() == '\r') {
-      line.remove_suffix(1);
-    }
-    if (line.empty()) {
-      continue;
-    }
-    if (!header_seen) {
-      if (line != kHeader) {
-        return Err(ErrorCode::ParseError, "projected_var.tsv header does not match the contract");
-      }
-      header_seen = true;
-      continue;
-    }
-    // Field 5 (0-based 4) is n_scenarios: every confidence row must cover the
-    // whole clock, which is what catches a truncated or stale run.
-    std::size_t field = 0;
-    std::size_t cursor = 0;
-    while (field < 4 && cursor != std::string_view::npos) {
-      cursor = line.find('\t', cursor);
-      if (cursor != std::string_view::npos) {
-        ++cursor;
-      }
-      ++field;
-    }
-    if (cursor == std::string_view::npos) {
-      return Err(ErrorCode::ParseError, "projected_var.tsv row is malformed");
-    }
-    const std::size_t end = line.find('\t', cursor);
-    const std::string_view text =
-        line.substr(cursor, end == std::string_view::npos ? std::string_view::npos : end - cursor);
-    std::size_t n_scenarios = 0;
-    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), n_scenarios);
-    if (parsed.ec != std::errc{}) {
-      return Err(ErrorCode::ParseError, "projected_var.tsv n_scenarios is not a number");
-    }
-    if (n_sessions != 0 && n_scenarios != n_sessions) {
-      return Err(ErrorCode::InvalidArgument,
-                 "projected VaR covers " + std::to_string(n_scenarios) + " scenarios but the run has " +
-                     std::to_string(n_sessions) + " sessions");
-    }
-    ++n_rows;
-  }
-  if (!header_seen || n_rows == 0) {
-    return Err(ErrorCode::InvalidArgument, "projected_var.tsv has no rows");
+  if (line != expected) {
+    return Err(ErrorCode::ParseError,
+               path.filename().string() + " header does not match the contract");
   }
   return Ok();
 }
+
+Result<std::vector<ProjectedVarSummaryRow>>
+read_projected_var_summary(const fs::path &path, std::size_t n_sessions) {
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream) {
+    return Err(ErrorCode::IoError, "cannot read " + path.string());
+  }
+  ATX_TRY_VOID(projected_tsv_header(stream, path, kProjectedVarHeader));
+
+  std::vector<ProjectedVarSummaryRow> rows;
+  std::string line;
+  while (std::getline(stream, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.empty()) {
+      return Err(ErrorCode::ParseError,
+                 path.filename().string() + " contains an empty/trailing row");
+    }
+    const std::vector<std::string_view> fields = split(line, '\t');
+    if (fields.size() != 11u) {
+      return Err(ErrorCode::ParseError,
+                 path.filename().string() + " row does not have 11 fields");
+    }
+    ProjectedVarSummaryRow row;
+    if (!parse_double(fields[0], row.confidence) ||
+        !parse_double(fields[1], row.reference_value) ||
+        !parse_double(fields[2], row.value_at_risk) ||
+        !parse_double(fields[3], row.expected_shortfall) ||
+        !parse_number(fields[4], row.n_scenarios) ||
+        !parse_number(fields[5], row.n_positions) ||
+        !parse_double(fields[6], row.projections_per_second) ||
+        !parse_number(fields[7], row.prepared_fingerprint) || fields[8].empty() ||
+        !parse_number(fields[9], row.as_of_ts_ns) ||
+        !parse_number(fields[10], row.book_fingerprint)) {
+      return Err(ErrorCode::ParseError,
+                 path.filename().string() + " row contains invalid or trailing input");
+    }
+    row.as_of_date = fields[8];
+    if (!(row.confidence > 0.0 && row.confidence < 1.0) ||
+        row.projections_per_second <= 0.0 || row.n_scenarios == 0u ||
+        row.n_positions == 0u || row.prepared_fingerprint == 0u ||
+        row.as_of_ts_ns <= 0 || row.book_fingerprint == 0u) {
+      return Err(ErrorCode::InvalidArgument,
+                 path.filename().string() + " row violates the projected-VaR contract");
+    }
+    if (n_sessions != 0u && row.n_scenarios != n_sessions) {
+      return Err(ErrorCode::InvalidArgument,
+                 "projected VaR covers " + std::to_string(row.n_scenarios) +
+                     " scenarios but the run has " + std::to_string(n_sessions) + " sessions");
+    }
+    if (!rows.empty()) {
+      const ProjectedVarSummaryRow &first = rows.front();
+      if (row.reference_value != first.reference_value ||
+          row.n_scenarios != first.n_scenarios || row.n_positions != first.n_positions ||
+          row.prepared_fingerprint != first.prepared_fingerprint ||
+          row.as_of_date != first.as_of_date || row.as_of_ts_ns != first.as_of_ts_ns ||
+          row.book_fingerprint != first.book_fingerprint ||
+          row.confidence <= rows.back().confidence) {
+        return Err(ErrorCode::InvalidArgument,
+                   path.filename().string() + " rows disagree on run/book identity");
+      }
+    }
+    rows.push_back(std::move(row));
+  }
+  if (!stream.eof()) {
+    return Err(ErrorCode::IoError, "cannot finish reading " + path.string());
+  }
+  if (rows.size() != 2u || rows[0].confidence != 0.95 || rows[1].confidence != 0.99) {
+    return Err(ErrorCode::InvalidArgument,
+               path.filename().string() + " must contain exactly 0.95 and 0.99");
+  }
+  return Ok(std::move(rows));
+}
+
+Status verify_projected_var_artifacts_impl(const fs::path &run_dir, std::size_t n_sessions,
+                                           std::span<const SnapshotRef> expected_sessions);
+
+} // namespace
+
+Status verify_projected_var_artifacts(const fs::path &run_dir, std::size_t n_sessions) {
+  return verify_projected_var_artifacts_impl(run_dir, n_sessions, {});
+}
+
+namespace {
+
+Result<std::vector<HistoricalProjectionFrame>>
+read_projected_scenarios(const fs::path &path, const ProjectedVarSummaryRow &summary,
+                         std::span<const SnapshotRef> expected_sessions) {
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream) {
+    return Err(ErrorCode::IoError, "cannot read " + path.string());
+  }
+  ATX_TRY_VOID(projected_tsv_header(stream, path, kProjectedScenarioHeader));
+
+  std::vector<HistoricalProjectionFrame> frames;
+  frames.reserve(summary.n_scenarios);
+  std::string line;
+  std::string previous_date;
+  while (std::getline(stream, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.empty()) {
+      return Err(ErrorCode::ParseError,
+                 path.filename().string() + " contains an empty/trailing row");
+    }
+    const std::vector<std::string_view> fields = split(line, '\t');
+    if (fields.size() != 10u) {
+      return Err(ErrorCode::ParseError,
+                 path.filename().string() + " row does not have 10 fields");
+    }
+    HistoricalProjectionFrame frame;
+    std::string date{fields[0]};
+    if (date.empty() || !parse_number(fields[1], frame.ts_ns) ||
+        !parse_double(fields[2], frame.value) || !parse_double(fields[3], frame.delta) ||
+        !parse_double(fields[4], frame.gamma) || !parse_double(fields[5], frame.vega) ||
+        !parse_double(fields[6], frame.theta) || !parse_number(fields[7], frame.n_ok) ||
+        !parse_number(fields[8], frame.n_failed) ||
+        !parse_number(fields[9], frame.definition_fingerprint)) {
+      return Err(ErrorCode::ParseError,
+                 path.filename().string() + " row contains invalid or trailing input");
+    }
+    if (frame.ts_ns <= 0 || frame.n_ok != summary.n_positions || frame.n_failed != 0u ||
+        frame.definition_fingerprint == 0u || utc_date_from_ns(frame.ts_ns) != date ||
+        (!previous_date.empty() && date <= previous_date)) {
+      return Err(ErrorCode::InvalidArgument,
+                 path.filename().string() + " row violates date/position/risk invariants");
+    }
+    if (!expected_sessions.empty() &&
+        (frames.size() >= expected_sessions.size() ||
+         date != expected_sessions[frames.size()].date)) {
+      return Err(ErrorCode::InvalidArgument,
+                 path.filename().string() + " dates do not match the qualified clock");
+    }
+    previous_date = std::move(date);
+    frames.push_back(frame);
+  }
+  if (!stream.eof()) {
+    return Err(ErrorCode::IoError, "cannot finish reading " + path.string());
+  }
+  if (frames.size() != summary.n_scenarios ||
+      (!expected_sessions.empty() && frames.size() != expected_sessions.size())) {
+    return Err(ErrorCode::InvalidArgument,
+               path.filename().string() + " row count does not match n_scenarios");
+  }
+  return Ok(std::move(frames));
+}
+
+Status verify_projected_legs(const fs::path &path, const ProjectedVarSummaryRow &summary,
+                             std::span<const HistoricalProjectionFrame> frames) {
+  if (summary.n_positions > std::numeric_limits<std::size_t>::max() / summary.n_scenarios) {
+    return Err(ErrorCode::InvalidArgument, "projected risk leg row count overflows");
+  }
+  const std::size_t expected_rows = summary.n_positions * summary.n_scenarios;
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream) {
+    return Err(ErrorCode::IoError, "cannot read " + path.string());
+  }
+  ATX_TRY_VOID(projected_tsv_header(stream, path, kProjectedLegHeader));
+
+  std::vector<ProjectedLegIdentity> identities(summary.n_positions);
+  std::vector<std::size_t> aggregate_fingerprints(
+      summary.n_scenarios, static_cast<std::size_t>(summary.prepared_fingerprint));
+  std::string line;
+  std::size_t row_index = 0u;
+  while (std::getline(stream, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.empty()) {
+      return Err(ErrorCode::ParseError,
+                 path.filename().string() + " contains an empty/trailing row");
+    }
+    if (row_index >= expected_rows) {
+      return Err(ErrorCode::InvalidArgument,
+                 path.filename().string() + " has more rows than the summary permits");
+    }
+    const std::vector<std::string_view> fields = split(line, '\t');
+    if (fields.size() != 15u) {
+      return Err(ErrorCode::ParseError,
+                 path.filename().string() + " row does not have 15 fields");
+    }
+    const std::size_t scenario_index = row_index / summary.n_positions;
+    const std::size_t expected_leg = row_index % summary.n_positions;
+    std::size_t leg = 0u;
+    std::uint32_t uid = 0u;
+    std::int64_t expiry_ts_ns = 0;
+    double strike = 0.0;
+    double quantity = 0.0;
+    double multiplier = 0.0;
+    double mark = 0.0;
+    double delta = 0.0;
+    double gamma = 0.0;
+    double vega = 0.0;
+    double theta = 0.0;
+    std::uint64_t definition_fingerprint = 0u;
+    if (fields[0] != utc_date_from_ns(frames[scenario_index].ts_ns) ||
+        !parse_number(fields[1], leg) || !parse_number(fields[2], uid) ||
+        (fields[3] != "Call" && fields[3] != "Put") ||
+        !parse_number(fields[4], expiry_ts_ns) || !parse_double(fields[5], strike) ||
+        !parse_double(fields[6], quantity) || !parse_double(fields[7], multiplier) ||
+        !parse_double(fields[8], mark) || !parse_double(fields[9], delta) ||
+        !parse_double(fields[10], gamma) || !parse_double(fields[11], vega) ||
+        !parse_double(fields[12], theta) ||
+        !parse_number(fields[13], definition_fingerprint) || fields[14] != "Ok") {
+      return Err(ErrorCode::ParseError,
+                 path.filename().string() + " row contains invalid or trailing input");
+    }
+    if (leg != expected_leg || uid == 0u || expiry_ts_ns <= frames[scenario_index].ts_ns ||
+        strike <= 0.0 || quantity == 0.0 || multiplier <= 0.0 || mark < 0.0 ||
+        definition_fingerprint == 0u) {
+      return Err(ErrorCode::InvalidArgument,
+                 path.filename().string() + " row violates leg identity/risk invariants");
+    }
+    const ProjectedLegIdentity identity{uid, std::string(fields[3]), quantity, multiplier,
+                                        expiry_ts_ns - frames[scenario_index].ts_ns};
+    if (scenario_index == 0u) {
+      identities[leg] = identity;
+    } else {
+      const ProjectedLegIdentity &first = identities[leg];
+      if (identity.uid != first.uid || identity.side != first.side ||
+          identity.quantity != first.quantity || identity.multiplier != first.multiplier ||
+          identity.relative_expiry_ns != first.relative_expiry_ns) {
+        return Err(ErrorCode::InvalidArgument,
+                   path.filename().string() + " position identity changes between scenarios");
+      }
+    }
+    aggregate_fingerprints[scenario_index] =
+        atx::core::hash_combine(aggregate_fingerprints[scenario_index],
+                               definition_fingerprint);
+    ++row_index;
+  }
+  if (!stream.eof()) {
+    return Err(ErrorCode::IoError, "cannot finish reading " + path.string());
+  }
+  if (row_index != expected_rows) {
+    return Err(ErrorCode::InvalidArgument,
+               path.filename().string() + " row count does not match scenarios * positions");
+  }
+  for (std::size_t scenario = 0u; scenario < frames.size(); ++scenario) {
+    std::uint64_t fingerprint =
+        static_cast<std::uint64_t>(aggregate_fingerprints[scenario]);
+    if (fingerprint == 0u) {
+      fingerprint = 1u;
+    }
+    if (fingerprint != frames[scenario].definition_fingerprint) {
+      return Err(ErrorCode::InvalidArgument,
+                 path.filename().string() +
+                     " definition fingerprints disagree with the scenario table");
+    }
+  }
+  return Ok();
+}
+
+Status verify_projected_var_artifacts_impl(const fs::path &run_dir, std::size_t n_sessions,
+                                           std::span<const SnapshotRef> expected_sessions) {
+  const std::array<fs::path, 3> paths = {
+      run_dir / "projected_var.tsv", run_dir / "projected_risk_scenarios.tsv",
+      run_dir / "projected_risk_legs.tsv"};
+  const std::array<fs::path, 3> pending = {
+      run_dir / "projected_var.tsv.pending", run_dir / "projected_risk_scenarios.tsv.pending",
+      run_dir / "projected_risk_legs.tsv.pending"};
+  std::error_code error;
+  const auto clear_not_found = [&error]() {
+    if (error == std::errc::no_such_file_or_directory) {
+      error.clear();
+    }
+  };
+  bool any_present = false;
+  bool all_present = true;
+  for (const fs::path &path : paths) {
+    const bool present = fs::is_regular_file(path, error);
+    clear_not_found();
+    if (error) {
+      return Err(ErrorCode::IoError, "cannot inspect " + path.string());
+    }
+    any_present = any_present || present;
+    all_present = all_present && present;
+  }
+  for (const fs::path &path : pending) {
+    const bool present = fs::exists(path, error);
+    clear_not_found();
+    if (present) {
+      return Err(ErrorCode::Unavailable,
+                 "projected VaR has an unpublished generation: " + path.string());
+    }
+    if (error) {
+      return Err(ErrorCode::IoError, "cannot inspect " + path.string());
+    }
+  }
+  if (!any_present) {
+    return Ok();
+  }
+  if (!all_present) {
+    return Err(ErrorCode::NotFound, "projected VaR artifact generation is incomplete");
+  }
+  for (const fs::path &path : paths) {
+    if (fs::file_size(path, error) == 0u || error) {
+      return Err(ErrorCode::InvalidArgument,
+                 "projected VaR artifact is empty/unreadable: " + path.string());
+    }
+  }
+
+  ATX_TRY(std::vector<ProjectedVarSummaryRow> summaries,
+          read_projected_var_summary(paths[0], n_sessions));
+  const ProjectedVarSummaryRow &summary = summaries.front();
+  ATX_TRY(std::vector<HistoricalProjectionFrame> frames,
+          read_projected_scenarios(paths[1], summary, expected_sessions));
+  ATX_TRY_VOID(verify_projected_legs(paths[2], summary, frames));
+  if (summary.as_of_date != utc_date_from_ns(frames.back().ts_ns) ||
+      summary.as_of_ts_ns != frames.back().ts_ns ||
+      summary.reference_value != frames.back().value) {
+    return Err(ErrorCode::InvalidArgument,
+               "projected VaR summary does not identify the final scenario/as-of book");
+  }
+  for (const ProjectedVarSummaryRow &row : summaries) {
+    ATX_TRY(ProjectedHistoricalVar expected,
+            projected_historical_var(frames, frames.back().value, row.confidence));
+    if (row.reference_value != expected.reference_value ||
+        row.value_at_risk != expected.value_at_risk ||
+        row.expected_shortfall != expected.expected_shortfall ||
+        row.n_scenarios != expected.n_scenarios) {
+      return Err(ErrorCode::InvalidArgument,
+                 "projected VaR risk summary does not recompute from scenario rows");
+    }
+  }
+  return Ok();
+}
+
+} // namespace
 
 // ── Public: native reference reconciliation (M1) ────────────────────────────
 
@@ -2086,29 +2580,34 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
   if (spec.core_mode && symbols.size() < methodology.min_names_entry) {
     return Err(ErrorCode::InvalidArgument, "core mode requires SPY plus at least 50 names");
   }
-  // B1: time the up-front ingest separately from everything after it. This is
-  // the measurement that decides whether cross-date batching is worth anything
-  // END-TO-END: `load_opra_daterange` reads the whole date range (thousands of
-  // parquet files) BEFORE any fitting starts, and bulk file reads bank very few
-  // CPU-seconds per wall-second. A whole-process parallelism average blends that
-  // with the CPU-bound fan-out and can look low for reasons no scheduler change
-  // can fix.
   reset_corpus_phase_timings();
-  const auto t_ingest_begin = std::chrono::steady_clock::now();
-  ATX_TRY(OpraBatchResult batch,
-          load_opra_daterange(batch_spec(spec, symbols, spec.date_lo, spec.date_hi)));
-  const double ingest_s =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_ingest_begin).count();
-  const auto t_build_begin = std::chrono::steady_clock::now();
-
   std::error_code fs_error;
   fs::create_directories(run_dir / "archives", fs_error);
   if (fs_error) {
     return Err(ErrorCode::IoError, "cannot create run directory");
   }
-  ATX_TRY_VOID(write_input_inventory(run_dir / "input_inventory.tsv", batch));
-  if (!spec.occ_ess_root.empty())
-    ATX_TRY_VOID(persist_occ_ess_evidence(run_dir, spec, batch));
+  std::ofstream input_inventory(run_dir / "input_inventory.tsv",
+                                std::ios::binary | std::ios::trunc);
+  if (!input_inventory) {
+    return Err(ErrorCode::IoError, "cannot write input inventory");
+  }
+  input_inventory
+      << "date\tsymbol\tpath\tstatus\tsource_schema_version\tsource_fingerprint\t"
+         "market_input_fingerprint\n";
+  std::ofstream occ_inventory;
+  std::set<std::string> occ_dates;
+  if (!spec.occ_ess_root.empty()) {
+    fs::create_directories(run_dir / "occ_ess", fs_error);
+    if (fs_error) {
+      return Err(ErrorCode::IoError, "cannot create OCC ESS evidence directory");
+    }
+    occ_inventory.open(run_dir / "occ_ess_inventory.tsv",
+                       std::ios::binary | std::ios::trunc);
+    if (!occ_inventory) {
+      return Err(ErrorCode::IoError, "cannot write OCC ESS inventory");
+    }
+    occ_inventory << "date\tpath\tn_special_symbols\tsource_fingerprint\n";
+  }
   ATX_TRY_VOID(write_methodology_map(run_dir / "methodology_map.tsv"));
   const std::uint64_t input_fingerprint =
       dispersion_input_fingerprint(spec.date_lo, spec.date_hi, symbols.size());
@@ -2116,83 +2615,99 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
       dispersion_corpus_config(policy, spec.fit_workers, input_fingerprint);
   ATX_TRY(CorpusBuildSession session,
           CorpusBuildSession::create((run_dir / "archives").string(), config));
-  // B1 (perf): fit several dates per fan-out instead of one.
+  // P-2/B1: load, fit, checkpoint, and release one bounded DATE window.
   //
-  // `append_date` spawns and joins a worker pool per date, so the pool drains at
-  // every date boundary: once fewer tasks remain than there are workers, the
-  // tail of the date runs with idle cores, and no intra-date scheduling can fix
-  // that because within a date there is no work left to hand them. Batching
-  // `date_batch` dates into ONE fan-out is the only way to give those workers
-  // independent work -- boards from a LATER date, which this path is free to
-  // start early precisely because no warm-start chain couples the dates.
-  //
-  // Sizing the win needs the per-board cost distribution and the split between
-  // this fan-out and the serial phases around it (parquet ingest, archive write,
-  // checkpoint I/O); see the sprint report for the measured figures. Note the
-  // board-size skew is milder than a "one dominant board" story suggests: the
-  // index board is ~6x the median single name by input bytes but still only
-  // ~9% of a date's total, so the drain is the shape of the tail, not one
-  // board setting the makespan.
-  //
-  // Bit-identity is preserved, not assumed: the fit of a board depends only on
-  // that board and the config (`fit_board` is pure w.r.t. shared state and this
-  // path sets no warm-start chain), and output order is re-established by an
-  // explicit (date asc, symbol asc) sort rather than by completion order.
-  //
-  // The window is bounded rather than "all dates" so peak live fitted surfaces
-  // (and the work a crash discards) stay bounded; checkpoints still commit per
-  // date. Override with ATX_VOL_CORPUS_DATE_BATCH for measurement.
+  // Before P-2, `date_batch` bounded fitted surfaces only: the full
+  // date_lo..date_hi OpraBatchResult (and every panel/quote) was resident before
+  // the first fit. `load_opra_date_windows` owns the outer date loop and does not
+  // start the next load until this consumer has completed `append_dates`.
+  // Therefore peak panels are <= date_batch * symbols, and checkpointed panels
+  // are destroyed before the next window is read.
   const std::size_t date_batch = corpus_date_batch_size();
-  std::vector<std::string> window_dates;
-  std::vector<std::vector<CorpusCellInput>> window_cells;
-  window_dates.reserve(date_batch);
-  window_cells.reserve(date_batch);
-
-  const auto flush_window = [&]() -> Status {
-    if (window_dates.empty()) {
-      return Ok();
-    }
-    std::vector<CorpusBuildSession::DateCells> batched;
-    batched.reserve(window_dates.size());
-    for (std::size_t i = 0; i < window_dates.size(); ++i) {
-      batched.push_back(CorpusBuildSession::DateCells{window_dates[i], window_cells[i]});
-    }
-    ATX_TRY_VOID(session.append_dates(batched));
-    window_dates.clear();
-    window_cells.clear();
-    return Ok();
-  };
-
-  std::size_t cursor = 0;
-  while (cursor < batch.entries.size()) {
-    const std::string date = batch.entries[cursor].date;
-    std::vector<CorpusCellInput> cells;
-    while (cursor < batch.entries.size() && batch.entries[cursor].date == date) {
-      OpraBatchEntry &entry = batch.entries[cursor++];
-      if (entry.panel) {
-        cells.emplace_back(
-            corpus_board_from_opra(entry.date, entry.symbol, std::move(*entry.panel)));
-      } else {
-        CorpusSourceFailure failure;
-        failure.date = entry.date;
-        failure.symbol = entry.symbol;
-        failure.reason = entry.panel.error().code() == ErrorCode::NotFound
-                             ? CorpusAdmissionReason::MissingSource
-                             : CorpusAdmissionReason::InvalidSourceSchema;
-        failure.error_code = entry.panel.error().code();
-        cells.emplace_back(std::move(failure));
-      }
-    }
-    window_dates.push_back(date);
-    window_cells.push_back(std::move(cells));
-    if (window_dates.size() >= date_batch) {
-      ATX_TRY_VOID(flush_window());
-    }
+  OpraBatchSpec opra_spec = batch_spec(spec, symbols, spec.date_lo, spec.date_hi);
+  if (!spec.dividend_inputs_path.empty()) {
+    ATX_TRY(opra_spec.market_inputs,
+            read_corpus_dividend_inputs(spec.dividend_inputs_path));
   }
-  ATX_TRY_VOID(flush_window());
+  std::vector<ShareDividendObservation> dividend_observations;
+  OpraWindowLoadStats load_stats;
+  const auto pipeline_begin = std::chrono::steady_clock::now();
+  ATX_TRY_VOID(load_opra_date_windows(
+      opra_spec, date_batch,
+      [&](OpraBatchResult &&batch) -> Status {
+        ATX_TRY_VOID(append_input_inventory(input_inventory, batch));
+        if (!spec.occ_ess_root.empty()) {
+          ATX_TRY_VOID(persist_occ_ess_evidence_window(
+              run_dir, spec, batch, occ_inventory, occ_dates));
+        }
+        std::vector<std::string> window_dates;
+        std::vector<std::vector<CorpusCellInput>> window_cells;
+        std::size_t cursor = 0u;
+        while (cursor < batch.entries.size()) {
+          const std::string date = batch.entries[cursor].date;
+          std::vector<CorpusCellInput> cells;
+          while (cursor < batch.entries.size() &&
+                 batch.entries[cursor].date == date) {
+            OpraBatchEntry &entry = batch.entries[cursor++];
+            if (entry.panel) {
+              if (!entry.panel->frame.divs.empty()) {
+                const OpraMarketInputProvenance &provenance =
+                    entry.panel->market_input_provenance;
+                if (provenance.dividends.source.empty() ||
+                    provenance.dividends.as_of.empty() ||
+                    entry.panel->source_fingerprint == 0u ||
+                    provenance.fingerprint == 0u) {
+                  return Err(ErrorCode::InvalidArgument,
+                             "cash-dividend panel lacks authoritative provenance");
+                }
+                for (const DividendEvent &event : entry.panel->frame.divs) {
+                  dividend_observations.push_back(
+                      ShareDividendObservation{
+                          entry.date, entry.symbol, uid_for_symbol(entry.symbol),
+                          event.ex_date_ns, event.amount,
+                          provenance.dividends.source, provenance.dividends.as_of,
+                          entry.panel->source_fingerprint, provenance.fingerprint});
+                }
+              }
+              cells.emplace_back(corpus_board_from_opra(
+                  entry.date, entry.symbol, std::move(*entry.panel)));
+            } else {
+              CorpusSourceFailure failure;
+              failure.date = entry.date;
+              failure.symbol = entry.symbol;
+              failure.reason =
+                  entry.panel.error().code() == ErrorCode::NotFound
+                      ? CorpusAdmissionReason::MissingSource
+                      : CorpusAdmissionReason::InvalidSourceSchema;
+              failure.error_code = entry.panel.error().code();
+              cells.emplace_back(std::move(failure));
+            }
+          }
+          window_dates.push_back(date);
+          window_cells.push_back(std::move(cells));
+        }
+        std::vector<CorpusBuildSession::DateCells> batched;
+        batched.reserve(window_dates.size());
+        for (std::size_t i = 0u; i < window_dates.size(); ++i) {
+          batched.push_back(
+              CorpusBuildSession::DateCells{window_dates[i], window_cells[i]});
+        }
+        return session.append_dates(batched);
+      },
+      &load_stats));
+  if (!input_inventory || (!spec.occ_ess_root.empty() && !occ_inventory)) {
+    return Err(ErrorCode::IoError, "cannot flush corpus input evidence");
+  }
+  if (!spec.occ_ess_root.empty() && occ_dates.empty()) {
+    return Err(ErrorCode::NotFound, "no loaded dates for OCC ESS evidence");
+  }
   ATX_TRY(QualifiedCorpusManifest built, session.finish());
-  const double build_s =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - t_build_begin).count();
+  const double pipeline_s =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - pipeline_begin).count();
+  const double ingest_s = load_stats.load_wall_s;
+  const double build_s = std::max(0.0, pipeline_s - ingest_s);
+  ATX_TRY_VOID(write_share_dividend_artifact(
+      run_dir / "share_dividends.tsv", dividend_observations));
   ATX_TRY_VOID(write_manifest_file((run_dir / "surface_manifest.tsv").string(), built.manifest));
   ATX_TRY_VOID(write_quality_report_file((run_dir / "quality.tsv").string(), built.quality));
   fs::copy_file(spec.universe_path, run_dir / "universe_schedule.tsv",
@@ -2202,6 +2717,8 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
   }
   RunSpec persisted_spec = spec;
   persisted_spec.universe_path = "universe_schedule.tsv";
+  persisted_spec.dividend_inputs_path.clear();
+  persisted_spec.dividend_ledger_path = "share_dividends.tsv";
   if (!spec.definitions_path.empty()) {
     fs_error.clear();
     fs::copy_file(spec.definitions_path, run_dir / "definitions.tsv",
@@ -2218,7 +2735,8 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
               built.quality.n_admitted, built.quality.n_quarantined, built.quality.n_source_failed);
   if (corpus_phase_timing_enabled()) {
     std::printf("%s\n",
-                format_corpus_phase_line(ingest_s, build_s, corpus_phase_timings(), date_batch)
+                format_corpus_phase_line(ingest_s, build_s, corpus_phase_timings(), date_batch,
+                                         load_stats.load_process_cpu_s)
                     .c_str());
   }
   return Ok();
@@ -2681,9 +3199,51 @@ namespace {
   return digest == 0u ? 1u : digest; // 0 is reserved for "absent"
 }
 
+Status invalidate_projected_var_generation(const fs::path &run_dir) {
+  // projected_var.tsv is the commit record and is published LAST. Removing it
+  // first makes every earlier generation unverifiable before any fallible input
+  // read or projection begins; stale companions can never bless a failed rerun.
+  const std::array<fs::path, 4> stale = {
+      run_dir / "projected_var.tsv", run_dir / "projected_var.tsv.pending",
+      run_dir / "projected_risk_scenarios.tsv.pending",
+      run_dir / "projected_risk_legs.tsv.pending"};
+  for (const fs::path &path : stale) {
+    std::error_code error;
+    fs::remove(path, error);
+    if (error) {
+      return Err(ErrorCode::IoError,
+                 "projected VaR: cannot invalidate stale generation " + path.string());
+    }
+  }
+  return Ok();
+}
+
+Status publish_projected_var_generation(const fs::path &run_dir) {
+  // All three files are already closed and complete at this point. Publish the
+  // two data tables first and the summary commit record last. verify rejects
+  // both pending files and any strict subset of the canonical triple, so every
+  // interruption is recoverable by the next rerun and cannot verify as current.
+  for (const char *leaf :
+       {"projected_risk_scenarios.tsv", "projected_risk_legs.tsv", "projected_var.tsv"}) {
+    const fs::path target = run_dir / leaf;
+    const fs::path pending = target.string() + ".pending";
+    std::error_code error;
+    fs::remove(target, error);
+    if (error) {
+      return Err(ErrorCode::IoError, "projected VaR: cannot replace " + target.string());
+    }
+    fs::rename(pending, target, error);
+    if (error) {
+      return Err(ErrorCode::IoError, "projected VaR: cannot publish " + target.string());
+    }
+  }
+  return Ok();
+}
+
 } // namespace
 
 Status dispersion_run_projected_var(const fs::path &run_dir) {
+  ATX_TRY_VOID(invalidate_projected_var_generation(run_dir));
   // REVIEW C-15. This used to be the LOOSE `read_run_spec`, on the stated
   // grounds that "a projected-VaR run consumes no execution knobs". True, and
   // beside the point: it consumes CONSTRUCTION knobs — side, weighting, strike
@@ -2701,15 +3261,14 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
   if (clock.size() == 0u)
     return Err(ErrorCode::Unavailable, "projected VaR: empty qualified clock");
 
-  std::vector<std::unique_ptr<MarketSnapshot>> snapshots;
-  std::vector<HistoricalProjectionScenario> scenarios;
-  snapshots.reserve(clock.size());
-  scenarios.reserve(clock.size());
-  for (const SnapshotRef &ref : clock.refs()) {
-    ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(ref.archive_path));
-    snapshots.push_back(std::make_unique<MarketSnapshot>(std::move(snapshot)));
-    scenarios.push_back({snapshots.back()->ts_ns(), &snapshots.back()->set()});
-  }
+  // P-1: open the current anchor FIRST and keep only this one whole-board
+  // snapshot. It supplies both PIT symbol resolution and book construction.
+  // Historical snapshots are loaded later, after the book tells us its required
+  // uids, under sealed read-only backing and in bounded batches.
+  ATX_TRY(MarketSnapshot as_of_snapshot,
+          MarketSnapshot::load(clock.refs().back().archive_path,
+                               QueryPricingTier::LegacyCompatible, {},
+                               ArchiveBacking::Sealed));
 
   // C1-ACTIVATE (projected VaR). The book this VaR is measured on is built from
   // ONE anchor snapshot, so "point-in-time" here means resolving the basket from
@@ -2742,7 +3301,7 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
   // Both the as-of timestamp and a fingerprint of the resulting book are written
   // into `projected_var.tsv` below, so a reader is told which session the number
   // belongs to instead of having to infer it from the manifest.
-  const MarketSnapshot &as_of = *snapshots.back();
+  const MarketSnapshot &as_of = as_of_snapshot;
   // REVIEW C-15: `index_symbol` was hardcoded to the resolver's "SPY" default,
   // so a run whose index leg is anything else could not resolve its own basket.
   const auto pit = make_pit_universe_resolver(universe_rows, run_config.universe.index_symbol);
@@ -2799,17 +3358,68 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
   const std::vector<double> confidences = {0.95, 0.99};
   HistoricalProjectionConfig config;
   config.n_threads = run_config.fit.workers;
+  std::vector<std::uint32_t> required_uids;
+  required_uids.reserve(initial.positions.size());
+  for (const Position &position : initial.positions) {
+    required_uids.push_back(position.contract.uid);
+  }
+  std::sort(required_uids.begin(), required_uids.end());
+  required_uids.erase(std::unique(required_uids.begin(), required_uids.end()),
+                      required_uids.end());
+
+  constexpr std::size_t kSnapshotBatch = 16u;
   const auto started = std::chrono::steady_clock::now();
-  ATX_TRY(DispersionBookVar var, dispersion_book_var(initial, *dispersion.projected_maturity,
-                                                     scenarios, confidences, config));
-  const double elapsed_seconds =
-      std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+  ATX_TRY(
+      DispersionBookVar var,
+      dispersion_book_var(
+          initial, *dispersion.projected_maturity, clock.size(), confidences,
+          [&](const PreparedHistoricalProjection &prepared,
+              std::span<HistoricalProjectionFrame> output_frames,
+              std::span<ProjectedOption> output_legs,
+              const HistoricalProjectionConfig &evaluation_config) -> Status {
+            for (std::size_t batch_start = 0u; batch_start < clock.size();
+                 batch_start += kSnapshotBatch) {
+              const std::size_t batch_size =
+                  std::min(kSnapshotBatch, clock.size() - batch_start);
+              std::vector<std::unique_ptr<MarketSnapshot>> owners;
+              std::vector<HistoricalProjectionScenario> scenarios;
+              owners.reserve(batch_size);
+              scenarios.reserve(batch_size);
+              for (std::size_t offset = 0u; offset < batch_size; ++offset) {
+                const std::size_t scenario_index = batch_start + offset;
+                if (scenario_index + 1u == clock.size()) {
+                  scenarios.push_back({as_of.ts_ns(), &as_of.set()});
+                  continue;
+                }
+                ATX_TRY(MarketSnapshot snapshot,
+                        MarketSnapshot::load(
+                            clock.refs()[scenario_index].archive_path,
+                            QueryPricingTier::LegacyCompatible, required_uids,
+                            ArchiveBacking::Sealed));
+                owners.push_back(
+                    std::make_unique<MarketSnapshot>(std::move(snapshot)));
+                scenarios.push_back(
+                    {owners.back()->ts_ns(), &owners.back()->set()});
+              }
+              ATX_TRY_VOID(prepared.evaluate_into(
+                  scenarios, output_frames.subspan(batch_start, batch_size),
+                  output_legs.subspan(batch_start * prepared.n_positions(),
+                                      batch_size * prepared.n_positions()),
+                  evaluation_config));
+            }
+            return Ok();
+          },
+          config));
+  const double elapsed_seconds = std::max(
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(),
+      std::numeric_limits<double>::min());
   const std::vector<HistoricalProjectionFrame> &frames = var.frames;
   const std::vector<ProjectedOption> &legs = var.legs;
 
-  std::ofstream frame_out(run_dir / "projected_risk_scenarios.tsv",
+  std::ofstream frame_out(run_dir / "projected_risk_scenarios.tsv.pending",
                           std::ios::binary | std::ios::trunc);
-  std::ofstream leg_out(run_dir / "projected_risk_legs.tsv", std::ios::binary | std::ios::trunc);
+  std::ofstream leg_out(run_dir / "projected_risk_legs.tsv.pending",
+                        std::ios::binary | std::ios::trunc);
   if (!frame_out || !leg_out)
     return Err(ErrorCode::IoError, "projected VaR: cannot open output");
   frame_out << std::setprecision(17)
@@ -2848,7 +3458,8 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
   // The incomplete-frame gate that used to sit here now fires inside
   // `dispersion_book_var`, before these writes — see the ordering note above.
 
-  std::ofstream summary(run_dir / "projected_var.tsv", std::ios::binary | std::ios::trunc);
+  std::ofstream summary(run_dir / "projected_var.tsv.pending",
+                        std::ios::binary | std::ios::trunc);
   if (!summary)
     return Err(ErrorCode::IoError, "projected VaR: cannot open summary");
   // The three trailing columns are REVIEW C-1's provenance: which session the
@@ -2865,8 +3476,10 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
             << var.prepared_fingerprint << '\t' << as_of_date << '\t' << as_of_ts_ns << '\t'
             << book_fingerprint << '\n';
   }
+  summary.close();
   if (!summary)
     return Err(ErrorCode::IoError, "projected VaR: summary write failed");
+  ATX_TRY_VOID(publish_projected_var_generation(run_dir));
   // The as-of is on the console line for the same reason it is in the artifact:
   // the number is meaningless without the session whose book it describes.
   std::printf("projected relative-template VaR complete: scenarios=%zu positions=%zu "
@@ -2902,7 +3515,7 @@ Result<DispersionVerifyReport> dispersion_verify(const fs::path &run_dir) {
   // `run-projected-var` is an OPTIONAL stage, so its artifacts are gated only
   // when present — but they ARE now gated. Previously the command could emit a
   // truncated or stale projected_var.tsv and `verify` would pass it silently.
-  ATX_TRY_VOID(verify_projected_var_artifacts(run_dir, clock.size()));
+  ATX_TRY_VOID(verify_projected_var_artifacts_impl(run_dir, clock.size(), clock.refs()));
   if (spec.core_mode) {
     if (clock.size() < 60u || schedule.rolls.size() < 3u) {
       return Err(ErrorCode::Unavailable, "core date/roll acceptance gate failed");

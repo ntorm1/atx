@@ -33,18 +33,12 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-// Durable atomic publish (T7 / Minor #16): fsync the temp file to stable storage
-// BEFORE the rename so a crash after the rename can never expose a correctly-
-// named but unflushed run.atxrun. _commit / fsync operate on the stream's
-// underlying file descriptor. Mirrors commit 86f2210's fsync-before-rename
-// pattern for the surface archives (kept self-contained here — the shared
-// detail::flush_and_publish_file primitive lives on a separate branch and this
-// task's scope is the run-archive files only).
+// Flush the CRT stream before handing the uniquely reserved temp to the shared
+// durable publication primitive.
 #if defined(_WIN32)
 #include <io.h>     // _commit, _fileno
 #else
@@ -62,6 +56,7 @@
 #include "atx/vol/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/surface_archive.hpp" // ArchiveContentIdentity (F6 identity)
+#include "atx/vol/version.hpp"         // semantic producer version dependency
 
 namespace atx::vol {
 
@@ -485,10 +480,13 @@ Status write_run_archive_file(std::string_view path, std::span<const RaSectionDa
   }
   const std::vector<std::byte> &buffer = *built;
   const std::filesystem::path dst{std::string(path)};
-  std::filesystem::path tmp = dst;
-  tmp += ".tmp";
+  auto reserved = detail::reserve_unique_publish_temp_file(path);
+  if (!reserved) {
+    return tl::unexpected<atx::core::Error>(std::move(reserved).error());
+  }
+  const std::filesystem::path tmp{*reserved};
 
-  // 1. Write the whole buffer to <path>.tmp and fsync it to stable storage
+  // 1. Write the whole buffer to the unique same-directory temp and fsync it
   //    BEFORE the rename. Without the fsync a machine crash after the rename but
   //    before the OS flushed the temp could leave a correctly-named run.atxrun
   //    with empty/garbage content while the rename had already destroyed the
@@ -497,6 +495,8 @@ Status write_run_archive_file(std::string_view path, std::span<const RaSectionDa
   {
     std::FILE *fp = ra_fopen_write_binary(tmp);
     if (fp == nullptr) {
+      std::error_code ec;
+      std::filesystem::remove(tmp, ec);
       return Err(ErrorCode::IoError, "write_run_archive_file: cannot open temp file");
     }
     const bool wrote =
@@ -510,30 +510,9 @@ Status write_run_archive_file(std::string_view path, std::span<const RaSectionDa
     }
   }
 
-  // 2. Atomic publish: rename the fsync'd temp over `path` with bounded retry +
-  //    exponential backoff. std::filesystem::rename lowers to
-  //    MoveFileEx(REPLACE_EXISTING) on Windows — it replaces an existing regular
-  //    file but FAILS while a reader holds the destination open without
-  //    FILE_SHARE_DELETE (MSVC ifstream / open_mapped); a brief hold is ridden
-  //    out by the backoff (~635 ms across 8 attempts). On FINAL failure the temp
-  //    is PRESERVED (not deleted) so the freshly written bytes are recoverable
-  //    and the prior good destination stays intact. Mirrors commit 86f2210.
-  constexpr int kMaxAttempts = 8;
-  std::chrono::milliseconds delay{5};
-  std::error_code ec;
-  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-    ec.clear();
-    std::filesystem::rename(tmp, dst, ec);
-    if (!ec) {
-      return Ok();
-    }
-    if (attempt + 1 < kMaxAttempts) {
-      std::this_thread::sleep_for(delay);
-      delay *= 2;
-    }
-  }
-  return Err(ErrorCode::IoError,
-             "write_run_archive_file: cannot publish file (rename failed after retries)");
+  // 2. Publish under the shared same-destination lock. This also retries a
+  // reader-blocked Windows rename and fsyncs the POSIX parent directory.
+  return detail::flush_and_publish_file(tmp.string(), dst.string());
 }
 
 // ── Section encoders (Task 5): library type → staged RaSectionData ───────────
@@ -1510,18 +1489,22 @@ Result<std::uint64_t> RunDir::run_identity_hash() const {
   // a rebuilt corpus or a rebuilt schedule did not invalidate the merge).
   //
   // FOLD ORDER — part of the contract. hash_combine is order-sensitive, so
-  // reordering these silently changes every identity:
+  // reordering these dependencies silently changes every identity:
   //   1. run_spec.tsv           REQUIRED — a directory without it is not a run.
   //   2. universe_schedule.tsv  the authored universe.
   //   3. surface_manifest.tsv   per-date corpus identity (the fitted surfaces).
   //   4. input_inventory.tsv    per-cell source_fingerprint /
   //                             market_input_fingerprint for every OPRA input.
   //   5. trade_schedule.tsv     the immutable schedule both backtest routes read.
-  // Files 2-5 are SKIPPED WHEN ABSENT, so a partially-populated run dir (e.g.
-  // after build-corpus but before build-schedule) still yields an identity.
+  //   6. share_dividends.tsv    split-adjusted dividend inputs.
+  //   7. referenced surface archive paths and their content-identity headers.
+  //   8. RunArchive schema hash and atx-vol producer version.
+  // Files 2-6 and referenced archives receive deterministic missing sentinels,
+  // so a partially-populated run dir still yields an identity and a dependency's
+  // later appearance invalidates it.
   //
   // ORDERING INVARIANT — cross-file and load-bearing. A command that writes one
-  // of files 2-5 into the run dir MUST write it BEFORE its own write_run_archive
+  // of files 2-6 into the run dir MUST write it BEFORE its own write_run_archive
   // call. A folded input that appears (or changes) after an archive was stamped
   // makes the next route recompute a DIFFERENT identity, so the merge-write below
   // starts FRESH and silently drops the earlier route's sections, with no error.
@@ -1536,8 +1519,8 @@ Result<std::uint64_t> RunDir::run_identity_hash() const {
   //
   // It is NOT covered transitively by (3) or (4). An earlier version of this
   // comment claimed that it was; the claim was FALSE and was falsified on the real
-  // driver (Wave E T6 review): definitions.tsv was changed, all five folded inputs
-  // stayed byte-identical, the identity did not move, and a six-section
+  // driver (Wave E T6 review): definitions.tsv was changed, all retained inputs
+  // and referenced archive identities stayed byte-identical, and a six-section
   // run-backtest write produced a NINE-section archive — three sections computed
   // against the OLD definitions were carried forward. (3) surface_manifest.tsv and
   // (4) input_inventory.tsv are NOT derived from the definitions bytes at all:
@@ -1566,28 +1549,106 @@ Result<std::uint64_t> RunDir::run_identity_hash() const {
   // Wave E's definitions-cache task computes atx::core::hash_bytes over the FULL
   // content of definitions.tsv on the READ path, where read_listed_definitions_
   // file already holds those bytes resident — so folding that already-computed
-  // digest in here (as a sixth input, or via a small run-dir file recording it)
+  // digest in here (as another input, or via a small run-dir file recording it)
   // would close the gap at NO extra I/O. Until that value exists, do NOT "fix"
   // this by hashing the definitions bytes here.
   //
-  // hash_bytes is the same wyhash the orchestrator fingerprints inputs with
-  // (hash_file), so a RunDir identity is comparable to those fingerprints;
-  // deterministic for identical input bytes on one platform/binary. 0 is reserved
-  // for "unset" in the header, so the result is forced nonzero.
+  // hash_bytes is the same wyhash primitive the orchestrator uses for input
+  // fingerprints. The complete fold is deterministic for identical dependencies
+  // on one platform/binary. 0 is reserved for "unset", so the result is nonzero.
   ATX_TRY(std::string spec_bytes, read_run_dir_file(dir_ / std::string(kRunSpecFile)));
   std::uint64_t identity = atx::core::hash_bytes(spec_bytes.data(), spec_bytes.size());
-  for (const std::string_view name : {kUniverseScheduleFile, kSurfaceManifestFile,
-                                      kInputInventoryFile, kTradeScheduleFile}) {
-    const std::filesystem::path input = dir_ / std::string(name);
-    std::error_code ec;
-    if (!std::filesystem::exists(input, ec) || ec) {
-      continue; // skip-if-absent (see contract above)
-    }
-    ATX_TRY(std::string input_bytes, read_run_dir_file(input));
+
+  // This is the dependency fingerprint for merge-write carry-forward. It must
+  // cover every retained input that can change an economic result, not merely
+  // run_spec.tsv. Hash exact authored bytes and each referenced surface
+  // archive's content-identity header. A missing archive gets a deterministic
+  // sentinel, so its later appearance also invalidates carry-forward.
+  const auto fold_bytes = [&](std::string_view tag, std::string_view bytes) {
     identity = atx::core::hash_combine(
-        static_cast<std::size_t>(identity),
-        atx::core::hash_bytes(input_bytes.data(), input_bytes.size()));
+        static_cast<std::size_t>(identity), atx::core::hash_bytes(tag.data(), tag.size()));
+    identity = atx::core::hash_combine(
+        static_cast<std::size_t>(identity), atx::core::hash_bytes(bytes.data(), bytes.size()));
+  };
+
+  std::string manifest_bytes;
+  for (const std::string_view input :
+       {kUniverseScheduleFile, kSurfaceManifestFile, kInputInventoryFile,
+        kTradeScheduleFile, kShareDividendsFile}) {
+    const std::filesystem::path path = dir_ / std::string(input);
+    std::error_code ec;
+    const bool present = std::filesystem::is_regular_file(path, ec) && !ec;
+    fold_bytes(input, present ? "present" : "missing");
+    if (!present) {
+      continue;
+    }
+    ATX_TRY(std::string bytes, read_run_dir_file(path));
+    fold_bytes(input, bytes);
+    if (input == kSurfaceManifestFile) {
+      manifest_bytes = std::move(bytes);
+    }
   }
+
+  if (!manifest_bytes.empty()) {
+    ATX_TRY(CorpusManifest manifest, parse_manifest(manifest_bytes));
+    std::vector<std::filesystem::path> archives;
+    archives.reserve(manifest.entries.size());
+    for (const CorpusEntry &entry : manifest.entries) {
+      if (entry.archive_path.empty()) {
+        continue;
+      }
+      std::filesystem::path path(entry.archive_path);
+      if (path.is_relative()) {
+        path = dir_ / path;
+      }
+      archives.push_back(path.lexically_normal());
+    }
+    std::sort(archives.begin(), archives.end());
+    archives.erase(std::unique(archives.begin(), archives.end()), archives.end());
+
+    for (const std::filesystem::path &path : archives) {
+      fold_bytes("surface_archive_path", path.generic_string());
+      std::error_code ec;
+      if (!std::filesystem::is_regular_file(path, ec) || ec) {
+        fold_bytes("surface_archive_identity", "missing");
+        continue;
+      }
+
+      std::ifstream stream(path, std::ios::binary);
+      if (!stream) {
+        return Err(ErrorCode::IoError,
+                   "RunDir::run_identity_hash: cannot open manifest archive");
+      }
+      std::array<char, sizeof(ArchiveHeader)> header_bytes{};
+      stream.read(header_bytes.data(), 8);
+      if (stream.gcount() != 8) {
+        return Err(ErrorCode::IoError,
+                   "RunDir::run_identity_hash: truncated manifest archive header");
+      }
+      std::size_t header_size = 0;
+      if (std::memcmp(header_bytes.data(), "ATXVSA20", 8) == 0) {
+        header_size = sizeof(ArchiveV2Header);
+      } else if (std::memcmp(header_bytes.data(), "ATXVSA03", 8) == 0) {
+        header_size = sizeof(ArchiveHeader);
+      } else {
+        return Err(ErrorCode::ParseError,
+                   "RunDir::run_identity_hash: bad manifest archive magic");
+      }
+      stream.seekg(0);
+      stream.read(header_bytes.data(), static_cast<std::streamsize>(header_size));
+      if (stream.gcount() != static_cast<std::streamsize>(header_size)) {
+        return Err(ErrorCode::IoError,
+                   "RunDir::run_identity_hash: truncated manifest archive header");
+      }
+      fold_bytes("surface_archive_identity",
+                 std::string_view(header_bytes.data(), header_size));
+    }
+  }
+
+  // Schema drift is a binary dependency even when authored inputs are unchanged.
+  identity =
+      atx::core::hash_combine(static_cast<std::size_t>(identity), ra_schema_hash());
+  fold_bytes("atx_vol_version", version());
   return Ok(identity == 0 ? std::uint64_t{1} : identity);
 }
 

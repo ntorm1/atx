@@ -45,7 +45,11 @@ param(
   [string[]] $Args,
   [switch] $Ctest,
   [switch] $Bench,
-  [string] $Groups = ""
+  [string] $Groups = "",
+  [string] $Preset = "dev",
+  [ValidateRange(1, 256)]
+  [int] $Jobs = 1,
+  [switch] $DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -98,39 +102,127 @@ $verb = if ($Args.Count -gt 0) { $Args[0] } else { "" }
 $rest = if ($Args.Count -gt 1) { $Args[1..($Args.Count - 1)] } else { @() }
 
 if ($Ctest) {
-  # ctest only runs the built exes (DLLs are applocal-staged beside them), so it
-  # needs neither vcvars nor Ninja — invoke it directly to avoid cmd.exe parsing
-  # of regex metacharacters like '|' in -R patterns.
-  $ctestArgs = @("--test-dir", "$RepoRoot\build", "--output-on-failure", "-j", "16") + $Args
-  Write-Host "[atx-build] ctest $($ctestArgs -join ' ')" -ForegroundColor Cyan
-  & ctest @ctestArgs
-  exit $LASTEXITCODE
+  # Serial is the evidence default. Parallelism is an explicit operator choice
+  # (`-Jobs N`) so a supposedly serial attribution gate cannot silently run 16
+  # tests at once.
+  $innerExe = "ctest"
+  $innerArgs = @("--test-dir", "$RepoRoot\build", "--output-on-failure", "-j", "$Jobs") + $Args
+  $requiresMsvc = $false
 }
 elseif ($verb -eq "configure") {
   # `dev` is the canonical iterate preset (same binaryDir build/ as `ninja`).
   # Using it here keeps configure consistent with scripts\new-worktree.ps1 —
   # previously this line said `ninja`, silently dropping the shared-deps setup.
-  $cfg = "cmake --preset dev"
-  if ($Groups) { $cfg += " -DATX_TEST_GROUPS=$Groups" }
-  if ($Bench)  { $cfg += " -DATX_BUILD_BENCH=ON" }
-  $inner = $cfg
+  # -Preset dev-shared flips to the DLL build (same build/ dir).
+  $innerExe = "cmake"
+  $innerArgs = @("--preset", $Preset)
+  if ($Groups) { $innerArgs += "-DATX_TEST_GROUPS=$Groups" }
+  if ($Bench)  { $innerArgs += "-DATX_BUILD_BENCH=ON" }
+  # F-7: configure's caller-supplied -D arguments are part of the argv. The old
+  # string builder computed `$rest` and then silently discarded it here.
+  $innerArgs += $rest
+  $requiresMsvc = $true
 }
 elseif ($verb -eq "build") {
-  $inner = "cmake --build `"$RepoRoot\build`" --target " + ($rest -join " ")
+  $innerExe = "cmake"
+  $innerArgs = @("--build", "$RepoRoot\build", "--target") + $rest
+  $requiresMsvc = $true
+}
+elseif ($verb -eq "check") {
+  # Single-TU type-check loop: compile ONLY the named source's object (no link,
+  # no downstream targets) — seconds per iteration instead of a target build.
+  # Resolves each source to its .obj via ninja's target list, so it works for any
+  # first-party TU without knowing the owning CMake target.
+  if ($rest.Count -eq 0) { throw "usage: atx-build.ps1 check <source.cpp> [more.cpp ...]" }
+  $buildDir = Join-Path $RepoRoot "build"
+  if (-not (Test-Path (Join-Path $buildDir "build.ninja"))) {
+    throw "no build/build.ninja - run: atx-build.ps1 configure"
+  }
+  $ninjaExe = Join-Path $NinjaDir "ninja.exe"
+  # `-t targets all` needs no MSVC env; lines look like "path/to/foo.cpp.obj: CXX_COMPILER__..."
+  $targetLines = & $ninjaExe -C $buildDir -t targets all
+  $objs = @()
+  foreach ($src in $rest) {
+    # Normalize to a repo-relative path fragment. The full source path is not
+    # contiguous in the obj path (CMakeFiles/<tgt>.dir is inserted), so match on
+    # "<parentDir>/<basename>.obj" — the source path relative to its CMakeLists.
+    $rel = ($src -replace '/', '\') -replace '^\.\\', ''
+    $rootPrefix = ([System.IO.Path]::GetFullPath($RepoRoot)).TrimEnd('\') + '\'
+    $abs = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot $rel))
+    if ($abs.StartsWith($rootPrefix)) { $rel = $abs.Substring($rootPrefix.Length) }
+    $leaf = Split-Path $rel -Leaf
+    $parent = Split-Path (Split-Path $rel -Parent) -Leaf
+    $needle = if ($parent) { "\$parent\$leaf.obj" } else { "\$leaf.obj" }
+    $hits = @($targetLines | ForEach-Object { ($_ -split ': ')[0] } |
+      Where-Object { ('\' + ($_ -replace '/', '\')) -like ('*' + $needle) })
+    if ($hits.Count -eq 0) {
+      # Fall back to basename-only (source may sit directly beside its CMakeLists).
+      $hits = @($targetLines | ForEach-Object { ($_ -split ': ')[0] } |
+        Where-Object { ('\' + ($_ -replace '/', '\')) -like ('*\' + $leaf + '.obj') })
+    }
+    if ($hits.Count -eq 0) { throw "check: no object target found for '$src' (is its target configured?)" }
+    if ($hits.Count -gt 1) {
+      Write-Host ("[atx-build] check: '" + $src + "' matches " + $hits.Count + " objects (building all):") -ForegroundColor Yellow
+      $hits | ForEach-Object { Write-Host ("  " + $_) }
+    }
+    $objs += $hits
+  }
+  $innerExe = "ninja"
+  $innerArgs = @("-C", "$buildDir") + $objs
+  $requiresMsvc = $true
 }
 else {
   # Pass through raw cmake args.
-  $inner = "cmake " + ($Args -join " ")
+  $innerExe = "cmake"
+  $innerArgs = @($Args)
+  $requiresMsvc = $true
+}
+
+if ($DryRun) {
+  # Machine-readable argv pin for script tests and operator inspection. JSON
+  # preserves argument boundaries that a display string cannot.
+  [ordered]@{
+    executable = $innerExe
+    arguments = @($innerArgs)
+    ctest_jobs = if ($Ctest) { $Jobs } else { $null }
+    requires_msvc = $requiresMsvc
+  } | ConvertTo-Json -Depth 3
+  exit 0
+}
+
+Write-Host ("[atx-build] " + $innerExe + " " + ($innerArgs -join " ")) -ForegroundColor Cyan
+if (-not $requiresMsvc) {
+  & $innerExe @innerArgs
+  exit $LASTEXITCODE
+}
+
+# Import vcvars into THIS PowerShell process, then invoke the executable with a
+# real argument array. This avoids reparsing a composed shell string and
+# preserves spaces/metacharacters in -D values and test regexes.
+$vcvarsCommand = "`"$VcVars`" >nul 2>&1 && set"
+$vcvarsEnvironment = & cmd.exe /d /s /c $vcvarsCommand
+if ($LASTEXITCODE -ne 0) {
+  throw "vcvars64.bat failed with exit code $LASTEXITCODE"
+}
+foreach ($line in $vcvarsEnvironment) {
+  $separator = $line.IndexOf("=")
+  if ($separator -le 0) { continue }
+  $name = $line.Substring(0, $separator)
+  $value = $line.Substring($separator + 1)
+  [Environment]::SetEnvironmentVariable($name, $value, "Process")
 }
 
 $PathPrefix = if ($MtDir) { "$NinjaDir;$MtDir" } else { $NinjaDir }
-# CCACHE_BASEDIR is the one per-worktree ccache key (relativizes this tree's paths in
-# the hash -> cross-worktree cache hits). The preset `environment` block only applies
-# to `cmake --preset`/`cmake --build --preset` invocations, and the build verb below
-# calls `cmake --build <dir>` directly - so export it here. The worktree-invariant
-# keys (hash_dir/sloppiness/ignore_options) live in the global ccache config
-# (scripts/dev-setup.ps1).
-$full = "`"$VcVars`" >nul 2>&1 && set `"PATH=$PathPrefix;%PATH%`" && set `"CCACHE_BASEDIR=$RepoRoot`" && cd /d `"$RepoRoot`" && $inner"
-Write-Host "[atx-build] $inner" -ForegroundColor Cyan
-& cmd.exe /c $full
-exit $LASTEXITCODE
+$env:PATH = "$PathPrefix;$env:PATH"
+# CCACHE_BASEDIR is the one per-worktree ccache key (relativizes this tree's
+# paths in the hash -> cross-worktree cache hits).
+$env:CCACHE_BASEDIR = $RepoRoot
+Push-Location $RepoRoot
+try {
+  & $innerExe @innerArgs
+  $exitCode = $LASTEXITCODE
+}
+finally {
+  Pop-Location
+}
+exit $exitCode

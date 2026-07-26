@@ -666,20 +666,27 @@ TEST(ListedDispersionPipeline, BuildScheduleSymbolIsDeclared) {
       std::span<const UniverseRow>, const ListedDefinitionTable &, const RunSpec &, PhaseTimer *);
   const BuilderFn fn = &build_listed_dispersion_schedule;
   EXPECT_NE(reinterpret_cast<const void *>(fn), nullptr);
+
+  // F-6: the shipped CLI calls this audited form, whose mandatory sink receives
+  // every attempted selection (including no-basket dates) for artifact publication.
+  using AuditedBuilderFn = Result<ListedDispersionSchedule> (*)(
+      const Clock &, const ListedScheduleSpec &, const ListedDispersionMethodology &,
+      std::span<const UniverseRow>, const ListedDefinitionTable &, const RunSpec &, PhaseTimer *,
+      const ListedQuoteRejectSink &);
+  const AuditedBuilderFn audited = &build_listed_dispersion_schedule_audited;
+  EXPECT_NE(reinterpret_cast<const void *>(audited), nullptr);
 }
 
 // ── REV-FIXTAIL I-A — the three F6 quote-quality keys reach the SHIPPED route ──
 //
-// `quote_min_bid`, `quote_max_age_ns` and `quote_reject_locked` bound by name in
+// `quote_min_bid`, `quote_max_age_ns` and `quote_reject_locked` bind by name in
 // the strict typed reader (dispersion_run.cpp), passed `reject_unknown()`, and
 // were then written into `run_config.tsv` — an artifact dispersion_run.hpp
 // documents as "the EFFECTIVE value of every execution knob the run actually
 // used". Their only consumer was `dispersion_build_schedule`, a LIBRARY-ONLY
-// entry point with no shipped caller: the shipped `build-schedule` builds a
-// `ListedScheduleSpec`, which carried no quality member, so the declared policy
-// never reached `select_listed_dispersion` and the effective-config record
-// asserted a filter that never ran. Fourth instance of the sprint's knob class,
-// and the first to publish the ignored value as provenance.
+// entry point with no shipped caller. The shipped `build-schedule` now constructs
+// the same `ListedScheduleSpec`, routes its quality policy through selection, and
+// uses the audited builder's rejection sink to publish `quote_rejects.tsv`.
 //
 // The wiring is gated HERE rather than by a comment because the selection config
 // the builder runs under is now built by one named function that both the loop

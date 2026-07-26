@@ -2569,6 +2569,45 @@ TEST(Backtest, SubsetDeserializeLoadsOnlyReferencedUids) {
   std::printf("[b1] subset-deser: 2 of 4 surfaces loaded; uid_of resolves all; marks bit-identical\n");
 }
 
+// P-9: a requested subset with no matching uid is a normal missing-name date,
+// not a reason to materialize every unrelated surface. The snapshot must retain
+// timestamp and symbol-directory metadata while its pricing set remains empty.
+TEST(Backtest, MissingSubsetRetainsMetadataWithoutLoadingFullBoard) {
+  const fs::path dir = fresh_dir("p9-missing-subset");
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  const std::string path = (dir / "2026-08-02.atxvsa").string();
+
+  std::vector<PricedSurface> surfaces;
+  surfaces.reserve(4);
+  for (std::uint32_t i = 0; i < 4; ++i) {
+    const double S = 100.0 + 5.0 * static_cast<double>(i);
+    surfaces.push_back(make_surface(kUid + i, S, S, kBaseNow, 0.002 * static_cast<double>(i)));
+  }
+  static const char *kNames[] = {"AAA", "BBB", "CCC", "DDD"};
+  std::vector<SurfaceArchiveItem> items;
+  for (std::uint32_t i = 0; i < 4; ++i) {
+    items.push_back(SurfaceArchiveItem{kNames[i], &surfaces[i]});
+  }
+  ASSERT_TRUE(write_surface_archive_v2_file(path, items).has_value());
+
+  const std::uint32_t missing_uid = kUid + 1000u;
+  MarketSnapshot::reset_deserialized_bytes();
+  auto missing = MarketSnapshot::load(path, QueryPricingTier::LegacyCompatible,
+                                      std::span<const std::uint32_t>{&missing_uid, 1u});
+  ASSERT_TRUE(missing.has_value()) << missing.error().to_string();
+  EXPECT_EQ(missing->n_surfaces(), 0u);
+  EXPECT_EQ(missing->ts_ns(), kBaseNow);
+  EXPECT_EQ(missing->find(missing_uid), nullptr);
+  EXPECT_EQ(MarketSnapshot::deserialized_bytes(), 0u)
+      << "a subset miss must not materialize unrelated record bodies";
+
+  auto archived_uid = missing->uid_of("ccc");
+  ASSERT_TRUE(archived_uid.has_value());
+  EXPECT_EQ(*archived_uid, kUid + 2u)
+      << "metadata-only snapshots still expose the complete symbol directory";
+}
+
 // The fixed-book overload's private cache subset-deserializes the book's uids; the
 // run is bit-identical to the whole-board path (a supplied shared cache), proving
 // the subset load is economically exact while touching fewer surfaces.

@@ -362,9 +362,20 @@ Status build_schedule_command(const fs::path &run_dir, const fs::path &cache_dir
   // drives only defaults, which equal the pre-fix behaviour. A knob repaired by
   // a line no test can observe can go inert again under a green gate.
   const ListedScheduleSpec sched_spec = listed_schedule_spec_from(spec, run_config);
-  ATX_TRY(ListedDispersionSchedule schedule,
-          build_listed_dispersion_schedule(clock, sched_spec, method, universe_rows, definitions,
-                                           spec, &timer));
+  std::vector<QuoteRejectRow> quote_reject_rows;
+  const ListedQuoteRejectSink quote_reject_sink =
+      [&](std::string_view date, bool selected, const ListedQuoteRejectCounts &counts) {
+        quote_reject_rows.push_back(QuoteRejectRow{std::string(date), selected, counts});
+      };
+  auto schedule_result = build_listed_dispersion_schedule_audited(
+      clock, sched_spec, method, universe_rows, definitions, spec, &timer, quote_reject_sink);
+  // Publish the audit artifact before propagating the acceptance error: failed
+  // entry/roll selection is precisely when rejection counts are most useful.
+  ATX_TRY_VOID(write_quote_reject_report(run_dir / "quote_rejects.tsv", quote_reject_rows));
+  if (!schedule_result) {
+    return Err(schedule_result.error());
+  }
+  ListedDispersionSchedule schedule = std::move(*schedule_result);
 
   const auto write_start = PhaseTimer::now();
   // trade_schedule.tsv stays a text INPUT: run-backtest / project-schedule /

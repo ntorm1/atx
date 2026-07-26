@@ -1303,8 +1303,9 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // `reconstruct_all_with_provenance`. An empty referenced set (the strategy
   // overload — its touched names are not known before on_step — and any shared-cache
   // caller) keeps the whole-board load. If the subset matches no directory entry
-  // (e.g. a book naming only names absent from this partition) fall back to the
-  // whole board so the valuation timestamp and unpriced-lot handling are unchanged.
+  // (e.g. a book naming only names absent from this partition), keep an empty
+  // SurfaceSet and read only one mapped record for the valuation timestamp. Loading
+  // the full board on a miss turns the cheapest missing-name case into worst-case I/O.
   //
   // WS-ZC1 lands the seam §6 note that used to sit here: `SurfaceSet` now holds
   // `SurfaceRef`, so on the two cache-free tiers the subset AND the whole board are
@@ -1312,8 +1313,9 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // reconstruction that dominated replay (`archive_map`, ~49% of wall) disappears on
   // those tiers; a fast tier still reconstructs owned surfaces below.
   const auto n_surfaces = [&]() { return borrow ? views.size() : surfaces.size(); };
+  const bool subset_requested = !referenced_uids.empty();
   bool loaded_subset = false;
-  if (!referenced_uids.empty()) {
+  if (subset_requested) {
     ATX_VOL_PROFILE_SCOPE(ArchiveMap);
     // O(dir) match via a hash set of the referenced uids (built once) instead of an
     // O(dir x subset) nested scan.
@@ -1347,15 +1349,15 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     }
     loaded_subset = n_surfaces() != 0u;
   }
-  if (!loaded_subset) {
+  const bool subset_missed = subset_requested && !loaded_subset;
+  if (!subset_requested) {
     ATX_VOL_PROFILE_SCOPE(ArchiveMap);
     surfaces.clear();
     views.clear();
     provenance.clear();
     // F5: the whole-board load materializes every directory entry. Counted here
     // (rather than inside the archive) so the subset and whole-board paths are
-    // measured by the same rule and are directly comparable. A failed subset
-    // that falls back therefore counts BOTH — which is honest: it did both.
+    // measured by the same rule and are directly comparable.
     for (const ArchiveV2DirEntry &e : dir) {
       g_deserialized_bytes.fetch_add(e.surface_size, std::memory_order_relaxed);
     }
@@ -1383,20 +1385,34 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
       }
     }
   }
-  if (n_surfaces() == 0u) {
+  if (n_surfaces() == 0u && !subset_missed) {
     return Err(ErrorCode::InvalidArgument, "MarketSnapshot::load: archive holds no surfaces");
   }
 
   // Valuation timestamp: the surfaces of one date agree on now_ts_ns. Read through
-  // whichever backing was populated.
+  // whichever backing was populated. A requested subset that matched no uid
+  // intentionally owns no surface; map only the first record to recover its timestamp
+  // without reconstructing/materializing the full board.
   const auto pricing_at = [&](std::size_t i) -> const PricingContext & {
     return borrow ? views[i].pricing() : surfaces[i].pricing();
   };
-  const std::int64_t ts = pricing_at(0).now_ts_ns;
-  for (std::size_t i = 0; i < n_surfaces(); ++i) {
-    if (pricing_at(i).now_ts_ns != ts) {
-      return Err(ErrorCode::InvalidArgument,
-                 "MarketSnapshot::load: surfaces disagree on now_ts_ns within a date");
+  std::int64_t ts = 0;
+  if (subset_missed) {
+    if (dir.empty()) {
+      return Err(ErrorCode::InvalidArgument, "MarketSnapshot::load: archive holds no surfaces");
+    }
+    auto metadata_record = archive->map_entry(dir.front());
+    if (!metadata_record) {
+      return Err(metadata_record.error());
+    }
+    ts = metadata_record->view.pricing().now_ts_ns;
+  } else {
+    ts = pricing_at(0).now_ts_ns;
+    for (std::size_t i = 0; i < n_surfaces(); ++i) {
+      if (pricing_at(i).now_ts_ns != ts) {
+        return Err(ErrorCode::InvalidArgument,
+                   "MarketSnapshot::load: surfaces disagree on now_ts_ns within a date");
+      }
     }
   }
 

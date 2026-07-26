@@ -328,6 +328,18 @@ TEST(ScenarioGrid, EmptyAxisRejected) {
   EXPECT_FALSE(r.has_value());
 }
 
+// Checked-shape arithmetic is pinned without asking the allocator for an
+// impossible vector. scenario_grid uses this seam for cells, Exact-price slots,
+// and executor tasks before evaluating each multiplication.
+TEST(ScenarioGrid, ShapeProductsRejectOverflowWithoutAllocation) {
+  constexpr std::size_t max = (std::numeric_limits<std::size_t>::max)();
+  EXPECT_TRUE(detail::scenario_grid_product_is_representable(0u, max));
+  EXPECT_TRUE(detail::scenario_grid_product_is_representable(max, 1u));
+  EXPECT_TRUE(detail::scenario_grid_product_is_representable(max / 2u, 2u));
+  EXPECT_FALSE(detail::scenario_grid_product_is_representable(max, 2u));
+  EXPECT_FALSE(detail::scenario_grid_product_is_representable(max / 2u + 1u, 2u));
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // C3.2 — Exact re-solve routing for large bumps.
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -362,6 +374,90 @@ constexpr double kMinT = 1.0e-6;
 }
 
 } // namespace
+
+// A production-shaped sparse-Exact regression. The legacy dense scratch allocated
+// all 100x100 cells x all 10,000 uniques = 100,000,000 doubles (~800 MB), even
+// though only the final vol column routes Exact and only one unique priced Ok. The
+// compact index owes 100 Exact rows x one successful-unique column = 100 doubles.
+//
+// The diagnostic is stronger and less flaky than process RSS sampling: it pins the
+// exact allocation element count, while the full call proves the large shape
+// completes. Serial/parallel and independent-oracle checks also pin that compact
+// row/column remapping does not move a bit.
+TEST(ScenarioGrid, SparseExactLargeShapeBoundsScratchAndPreservesBits) {
+  constexpr std::size_t kAxis = 100;
+  constexpr std::size_t kUnique = 10'000;
+  constexpr std::size_t kExactCells = kAxis; // one Exact vol column x every spot row
+  constexpr std::size_t kLegacyDenseSlots = kAxis * kAxis * kUnique;
+
+  const PricedSurface base = make_essvi(1, 5);
+  const SurfaceSet bset = set_of({&base});
+
+  std::vector<Position> book;
+  book.reserve(kUnique);
+  book.push_back({0, {1, 100.0, 0.25, Side::Put}, 2.0, 100.0});
+  for (std::size_t u = 1; u < kUnique; ++u) {
+    // Missing uid 7 makes these unique lanes fail cheaply. Distinct strikes keep
+    // them distinct contracts, reproducing the 10,000-unique allocation shape.
+    book.push_back({static_cast<std::uint64_t>(u),
+                    {7, 80.0 + 0.001 * static_cast<double>(u), 0.25, Side::Put},
+                    1.0,
+                    100.0});
+  }
+
+  ScenarioGridSpec spec;
+  spec.spot_pct.reserve(kAxis);
+  for (std::size_t i = 0; i < kAxis; ++i) {
+    spec.spot_pct.push_back(-0.02 + 0.0004 * static_cast<double>(i));
+  }
+  spec.vol_bump.assign(kAxis, 0.0);
+  spec.vol_bump.back() = 0.04;
+  spec.taylor_radius_spot = 0.03; // every spot row remains inside
+  spec.taylor_radius_vol = 0.03;  // only the final vol column exceeds
+
+  spec.n_threads = 1;
+  auto r1 = scenario_grid(book, bset, spec);
+  spec.n_threads = 4;
+  auto r4 = scenario_grid(book, bset, spec);
+  ASSERT_TRUE(r1.has_value()) << r1.error().to_string();
+  ASSERT_TRUE(r4.has_value()) << r4.error().to_string();
+
+  ASSERT_EQ(r1->n_cells(), kAxis * kAxis);
+  EXPECT_EQ(r1->n_ok, 1u);
+  EXPECT_EQ(r1->n_failed, kUnique - 1u);
+  EXPECT_EQ(r1->n_exact_price_scratch_slots, kExactCells);
+  EXPECT_EQ(r4->n_exact_price_scratch_slots, kExactCells);
+  EXPECT_EQ(kLegacyDenseSlots * sizeof(double), 800'000'000u);
+  EXPECT_LT(r1->n_exact_price_scratch_slots, kLegacyDenseSlots / 100'000u);
+
+  const AmericanGreeks g = scaled_greeks(base, book.front());
+  const double weight = book.front().qty * eff_mult(book.front().multiplier);
+  std::size_t exact_cells = 0;
+  for (std::size_t i = 0; i < kAxis; ++i) {
+    for (std::size_t j = 0; j < kAxis; ++j) {
+      const std::size_t c = i * kAxis + j;
+      const bool exact = j + 1u == kAxis;
+      exact_cells += exact ? 1u : 0u;
+      EXPECT_EQ(r1->route[c],
+                static_cast<std::uint8_t>(exact ? ScenarioRoute::Exact : ScenarioRoute::Taylor));
+      EXPECT_EQ(r1->route[c], r4->route[c]);
+      EXPECT_TRUE(bits_equal(r1->pnl[c], r4->pnl[c])) << "cell " << c;
+
+      double expected = 0.0;
+      if (exact) {
+        const auto d = exact_pershare(base, 100.0, 0.25, Side::Put, spec.spot_pct[i],
+                                      spec.vol_bump[j], spec.dt, spec.dr);
+        ASSERT_TRUE(d.has_value());
+        expected = *d * weight;
+      } else {
+        expected = scenario_taylor_leg(g, spec.spot_pct[i] * base.pricing().S, spec.vol_bump[j],
+                                       spec.dt, spec.dr);
+      }
+      EXPECT_TRUE(bits_equal(r1->pnl[c], expected)) << "cell " << c;
+    }
+  }
+  EXPECT_EQ(exact_cells, kExactCells);
+}
 
 // ── C3.2-1. radius=inf reproduces the C3.1 all-Taylor grid byte-for-byte. ─────
 TEST(ScenarioGrid, InfiniteRadiusIsByteIdenticalToTaylorOnly) {
@@ -411,11 +507,10 @@ TEST(ScenarioGrid, RouteFlipsExactlyAtRadius) {
   ASSERT_TRUE(r.has_value()) << r.error().to_string();
   for (std::size_t i = 0; i < spec.spot_pct.size(); ++i) {
     for (std::size_t j = 0; j < spec.vol_bump.size(); ++j) {
-      const bool exact =
-          std::abs(spec.spot_pct[i]) > 0.05 || std::abs(spec.vol_bump[j]) > 0.03;
+      const bool exact = std::abs(spec.spot_pct[i]) > 0.05 || std::abs(spec.vol_bump[j]) > 0.03;
       const std::size_t c = i * r->n_vol + j;
-      EXPECT_EQ(r->route[c], static_cast<std::uint8_t>(exact ? ScenarioRoute::Exact
-                                                             : ScenarioRoute::Taylor))
+      EXPECT_EQ(r->route[c],
+                static_cast<std::uint8_t>(exact ? ScenarioRoute::Exact : ScenarioRoute::Taylor))
           << "cell (" << i << "," << j << ")";
     }
   }
@@ -614,7 +709,8 @@ TEST(ScenarioGrid, DtClampAndFallbackCounted) {
     ASSERT_TRUE(std::isfinite(r->pnl[0]));
     // The fallback cell equals the unique's Taylor leg.
     const double dS = 0.20 * s.pricing().S;
-    const double expected = scenario_taylor_leg(scaled_greeks(s, book.front()), dS, 0.0, 0.0, -0.05);
+    const double expected =
+        scenario_taylor_leg(scaled_greeks(s, book.front()), dS, 0.0, 0.0, -0.05);
     EXPECT_TRUE(bits_equal(r->pnl[0], expected));
   }
   // (b) dt clamp: dt >> shortest T clamps T' to kMinT; the reprice collapses to a
@@ -835,8 +931,7 @@ TEST(ScenarioGrid, ExactArmWhollyTaylorVolColumnCostsNoSolve) {
   const std::uint64_t solves = exact_arm_solves(book, bset, spec, n_unique);
   std::printf("[A7-1c] taylor-spot-axis exact-arm solves = %llu (per-column-blind would be %zu, "
               "pre-A7 per-cell would be %zu)\n",
-              static_cast<unsigned long long>(solves), n_vol * n_unique,
-              n_exact_cells * n_unique);
+              static_cast<unsigned long long>(solves), n_vol * n_unique, n_exact_cells * n_unique);
   EXPECT_LE(solves, static_cast<std::uint64_t>(n_exact_cells * n_unique));
   EXPECT_EQ(solves, static_cast<std::uint64_t>(n_exact_cols * n_unique));
 }

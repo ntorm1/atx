@@ -844,17 +844,23 @@ const DbPartitionRecord *DbManifest::find_partition(std::string_view key) const 
 
 namespace {
 
-// Atomic manifest write: serialize to `dst.tmp`, then rename over `dst`.
+// Atomic manifest write: serialize to an exclusively reserved unique
+// same-directory temp, then durably rename over `dst`.
 // Mirrors write_surface_archive_file's discipline (surface_archive.cpp) --
 // including tmp cleanup on failure -- so both binary formats fail the same
 // way under a crash mid-write.
 [[nodiscard]] Status write_manifest_file_atomic(const std::filesystem::path &dst,
                                                 const std::vector<std::byte> &bytes) {
-  std::filesystem::path tmp = dst;
-  tmp += ".tmp";
+  auto reserved = detail::reserve_unique_publish_temp_file(dst.string());
+  if (!reserved) {
+    return tl::unexpected<atx::core::Error>(std::move(reserved).error());
+  }
+  const std::filesystem::path tmp{*reserved};
   {
     std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
     if (!os) {
+      std::error_code ec;
+      std::filesystem::remove(tmp, ec);
       return Err(ErrorCode::IoError, "SurfaceDb: cannot open manifest temp file");
     }
     os.write(reinterpret_cast<const char *>(bytes.data()),

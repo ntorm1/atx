@@ -156,6 +156,33 @@ constexpr const char *kDate1 = "2026-03-03";
   return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 }
 
+[[nodiscard]] std::string read_surface_record_bytes(SurfaceDb &db,
+                                                    const std::filesystem::path &root,
+                                                    std::string_view date,
+                                                    std::string_view symbol) {
+  auto archive = db.open_partition(date);
+  if (!archive.has_value()) {
+    ADD_FAILURE() << archive.error().to_string();
+    return {};
+  }
+  auto entry = archive->find(symbol);
+  if (!entry.has_value()) {
+    ADD_FAILURE() << entry.error().to_string();
+    return {};
+  }
+  const std::filesystem::path path =
+      root / std::string(kSurfaceDbPartitionDir) /
+      (std::string(date) + std::string(kSurfaceDbPartitionExt));
+  const std::string bytes = read_file(path);
+  const std::uint64_t end = entry->surface_offset + entry->surface_size;
+  if (end > bytes.size()) {
+    ADD_FAILURE() << "surface record extends past partition EOF";
+    return {};
+  }
+  return bytes.substr(static_cast<std::size_t>(entry->surface_offset),
+                      static_cast<std::size_t>(entry->surface_size));
+}
+
 void expect_surface_bits_equal(const PricedSurface &actual, const PricedSurface &expected) {
   const auto expect_double_bits = [](double lhs, double rhs) {
     EXPECT_EQ(std::bit_cast<std::uint64_t>(lhs), std::bit_cast<std::uint64_t>(rhs));
@@ -338,6 +365,69 @@ TEST(SurfaceDbPopulate, UniverseStreamingIdempotentSynthetic) {
     ++n_checked;
   }
   EXPECT_EQ(n_checked, 4u);
+}
+
+// REVIEW C-10: a transient refit failure must not turn an incremental date
+// rewrite into deletion of the last valid cell. The safe path retains the exact
+// prior serialized record; the legacy replacement semantics remain available
+// only through the explicit destructive flag.
+TEST(SurfaceDbPopulate, IncrementalRewriteRetainsFailedExistingCellByteIdentically) {
+  const auto root = test_root("incremental_failed_refit_merge");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  UniversePopulateSpec spec;
+  spec.fit_workers = 1u;
+
+  const std::vector<CorpusBoard> initial = {make_board(kDate0, "BBB", 60.0, 0.34)};
+  auto cold = populate_universe_streaming(*db, initial, spec);
+  ASSERT_TRUE(cold.has_value()) << (cold ? "" : cold.error().to_string());
+  ASSERT_EQ(cold->cells_ok, 1u);
+  ASSERT_EQ(cold->cells_failed, 0u);
+
+  const std::string bbb_before = read_surface_record_bytes(*db, root, kDate0, "BBB");
+  ASSERT_FALSE(bbb_before.empty());
+
+  std::vector<CorpusBoard> resume;
+  resume.push_back(make_board(kDate0, "BBB", 60.0, 0.34));
+  resume.back().frame = QuoteFrame{}; // deterministic transient refit failure
+  resume.push_back(make_board(kDate0, "CCC", 75.0, 0.30)); // forces date rewrite
+
+  auto merged = populate_universe_streaming(*db, resume, spec);
+  ASSERT_TRUE(merged.has_value()) << (merged ? "" : merged.error().to_string());
+  EXPECT_EQ(merged->cells_to_fit, 1u); // CCC is new
+  EXPECT_EQ(merged->cells_refit, 1u);  // BBB is retried and fails
+  EXPECT_EQ(merged->cells_ok, 1u);
+  EXPECT_EQ(merged->cells_failed, 1u);
+  EXPECT_EQ(merged->dates_written, 1u);
+
+  auto partition = db->open_partition(kDate0);
+  ASSERT_TRUE(partition.has_value()) << (partition ? "" : partition.error().to_string());
+  EXPECT_EQ(partition->count(), 2u);
+  EXPECT_TRUE(partition->find("BBB").has_value());
+  EXPECT_TRUE(partition->find("CCC").has_value());
+  const std::string bbb_after = read_surface_record_bytes(*db, root, kDate0, "BBB");
+  EXPECT_EQ(bbb_after, bbb_before)
+      << "failed BBB refit did not preserve its prior serialized record byte-for-byte";
+
+  // Destructive replacement is deliberately noisy and explicit. With the same
+  // mixed result it publishes only successful incoming fits, so BBB is removed.
+  SurfaceDbPopulateConfig destructive;
+  destructive.n_threads = 1u;
+  destructive.skip_existing = false;
+  destructive.destructive_rewrite = true;
+  destructive.allow_coverage_regression = true;
+  auto replaced = populate_surface_db(*db, resume, destructive);
+  ASSERT_TRUE(replaced.has_value()) << (replaced ? "" : replaced.error().to_string());
+  EXPECT_EQ(replaced->n_ok, 1u);
+  EXPECT_EQ(replaced->n_failed, 1u);
+  EXPECT_EQ(replaced->n_dates_written, 1u);
+  auto removed = db->load_surface(kDate0, "BBB");
+  ASSERT_FALSE(removed.has_value());
+  EXPECT_EQ(removed.error().code(), ErrorCode::NotFound);
+  EXPECT_TRUE(db->load_surface(kDate0, "CCC").has_value());
+
+  std::filesystem::remove_all(root);
 }
 
 // Main F-c gate: fit the universe into a SurfaceDb, prove idempotent resume (second
@@ -777,6 +867,45 @@ TEST(SurfaceDbPopulate, StreamsPartitionsBeforeGlobalJoin) {
   EXPECT_TRUE(date0_written_before_date1_finished.load())
       << "kDate0 partition was not written until kDate1 fits finished -- populate "
          "deferred all writes to a single global join (peak RSS O(all dates))";
+
+  std::filesystem::remove_all(root);
+}
+
+// REVIEW C-9: the scheduler's transactional launch failure happens before any
+// fit task enters MarkDone. Every date counter therefore remains at its initial
+// non-zero value; scheduler completion itself must wake the drain and return the
+// scheduler's Internal error instead of waiting forever.
+TEST(SurfaceDbPopulate, SchedulerLaunchFailureWakesDrainAndReturnsBoundedError) {
+  const auto root = test_root("scheduler_launch_failure");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const std::vector<CorpusBoard> boards = make_boards(); // two non-empty date counters
+  std::atomic<std::size_t> visits{0u};
+  PopulateTestHooks hooks;
+  hooks.before_board_fit = [&](const std::string &, const std::string &) {
+    visits.fetch_add(1u, std::memory_order_relaxed);
+  };
+  hooks.before_fit_worker_launch = [](std::size_t worker_ordinal) {
+    if (worker_ordinal == 1u) {
+      throw std::runtime_error("injected populate scheduler launch failure");
+    }
+  };
+
+  SurfaceDbPopulateConfig cfg;
+  cfg.n_threads = 4u;
+  cfg.pin_outer_workers = false; // keep four launch contexts on every host
+  const auto started = std::chrono::steady_clock::now();
+  auto result = populate_surface_db(*db, boards, cfg, &hooks);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::Internal);
+  EXPECT_EQ(visits.load(std::memory_order_relaxed), 0u)
+      << "transactional launch abort must not execute a fit task";
+  EXPECT_LT(elapsed, std::chrono::seconds(5))
+      << "scheduler failure did not bound populate completion";
+  EXPECT_TRUE(db->partitions().empty());
 
   std::filesystem::remove_all(root);
 }
@@ -2464,16 +2593,13 @@ TEST(SurfaceDbPopulate, PreservedDisabledSymbolSurvivesRepeatedRewrites) {
   std::filesystem::remove_all(root);
 }
 
-// The safety guard this defect defeated, tested DIRECTLY for the first time.
-// `dates_skipped_would_drop` had ZERO coverage anywhere in the repo: the counter
-// that refuses a rewrite which would drop a stored surface had never been
-// exercised in either direction.
+// The write-path safety guard, exercised with an explicitly destructive
+// candidate. Safe merge would retain BBB by construction; destructive mode
+// makes its absence visible to the independently controlled coverage guard.
 //
-// This is the RESIDUAL case FIX-E deliberately does not change: BBB is present in
-// the partition but absent from this run's LOADED BOARDS entirely, so it is in
-// neither `present` nor any carry list, and the only thing that can save it is
-// `present < part->count()`. That path must keep working after the fix -- a fix
-// that widened the carry set must not also have widened `present`.
+// BBB is present in the partition but absent from this run's LOADED BOARDS
+// entirely. The destructive candidate therefore omits it, and the post-fit set
+// comparison must refuse the date without weakening any preservation assertion.
 TEST(SurfaceDbPopulate, NarrowerRerunSkipsTheDateRatherThanDroppingAnAbsentSymbol) {
   const auto root = test_root("would_drop_guard");
   auto db = SurfaceDb::create(root.string());
@@ -2487,14 +2613,22 @@ TEST(SurfaceDbPopulate, NarrowerRerunSkipsTheDateRatherThanDroppingAnAbsentSymbo
   // whole-partition rewrite from these boards alone would drop BBB.
   const std::vector<CorpusBoard> narrower = {make_board(kDate0, "AAA", 100.0, 0.28),
                                              make_board(kDate0, "CCC", 80.0, 0.30)};
-  auto cov2 = populate_universe_streaming(*db, narrower, carry_spec());
+  UniversePopulateSpec destructive = carry_spec();
+  destructive.destructive_rewrite = true;
+  auto cov2 = populate_universe_streaming(*db, narrower, destructive);
   ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
 
-  EXPECT_EQ(cov2->dates_skipped_would_drop, 1u) << "the guard must have refused the rewrite";
+  EXPECT_EQ(cov2->dates_skipped_would_drop, 0u);
+  EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u)
+      << "the write-path guard must have refused the explicitly destructive rewrite";
   EXPECT_EQ(cov2->dates_written, 0u) << "nothing may be written when the guard fires";
-  EXPECT_EQ(cov2->cells_already_present, 1u) << "only AAA was both loaded and present";
-  EXPECT_EQ(cov2->cells_carried, 0u);
+  EXPECT_EQ(cov2->cells_already_present, 0u)
+      << "the date was processed rather than skipped by the retired pre-fit guard";
+  EXPECT_EQ(cov2->cells_carried, 1u) << "AAA was loaded, present, and safely carried";
   EXPECT_EQ(cov2->cells_carried_disabled, 0u);
+  ASSERT_EQ(cov2->coverage_regression_cells.size(), std::size_t{1});
+  EXPECT_EQ(cov2->coverage_regression_cells[0].date, kDate0);
+  EXPECT_EQ(cov2->coverage_regression_cells[0].symbol, "BBB");
 
   // Both stored surfaces survive, including the one this run never mentioned.
   EXPECT_TRUE(db->load_surface(kDate0, "AAA").has_value());
@@ -2548,14 +2682,13 @@ TEST(SurfaceDbPopulate, NarrowerRerunSkipsTheDateRatherThanDroppingAnAbsentSymbo
 //
 // Everything above still holds and every assertion below is unchanged, but the
 // behaviour it pins is now reachable ONLY when the operator explicitly asks for
-// it. By default `populate_surface_db` REFUSES to commit a partition whose symbol
-// set is not a superset of the stored one, so leg 2 below leaves the date
-// untouched instead of destroying AAA — see
+// destructive candidate construction AND authorizes the detected regression.
+// Without both, leg 2 below leaves the date untouched — see
 // `RefusedRewriteLeavesTheDegradedCellsStoredSurfaceByteIdentical`, the
 // regression test for the 95-surface incident.
 //
-// So leg 2 runs with `allow_coverage_regression = true`: the destructive
-// behaviour, on demand, for a run that intends retirement. That is exactly what
+// So leg 2 runs with both flags: destructive replacement plus the coverage
+// opt-out, on demand, for a run that intends retirement. That is exactly what
 // this test has always pinned — a whole-file rewrite assembled from what the run
 // has — and pinning it is still worth doing, because the retirement path must
 // keep working and FACT 2 is still the reason the bytes are not simply preserved.
@@ -2588,6 +2721,7 @@ TEST(SurfaceDbPopulate, DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrives
   // and is asserted directly by the REV-R3 tests below.
   UniversePopulateSpec retiring = carry_spec();
   retiring.allow_coverage_regression = true;
+  retiring.destructive_rewrite = true;
   auto cov2 = populate_universe_streaming(*db, full, retiring);
   ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
 
@@ -2699,9 +2833,9 @@ namespace {
 
 } // namespace
 
-// TEST 1 -- the regression test for the 95-surface incident. The assertion that
-// matters is not a count: it is that the surface which was there is STILL THERE
-// and is byte-identical.
+// TEST 1 -- the regression test for the 95-surface incident. Destructive candidate
+// construction is explicit; coverage authorization remains off. The assertion
+// that matters is not a count: the prior surface is STILL THERE and byte-identical.
 TEST(SurfaceDbPopulate, RefusedRewriteLeavesTheDegradedCellsStoredSurfaceByteIdentical) {
   const auto root = test_root("coverage_regression_refused");
   auto db = SurfaceDb::create(root.string());
@@ -2723,7 +2857,9 @@ TEST(SurfaceDbPopulate, RefusedRewriteLeavesTheDegradedCellsStoredSurfaceByteIde
   ASSERT_TRUE(db->upsert_symbol("AAA", rejected_risk_config()).has_value());
   std::vector<CorpusBoard> full = carry_seed_boards();
   full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
-  auto cov2 = populate_universe_streaming(*db, full, carry_spec()); // guard ON by default
+  UniversePopulateSpec destructive = carry_spec();
+  destructive.destructive_rewrite = true;
+  auto cov2 = populate_universe_streaming(*db, full, destructive); // guard ON
   ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
 
   EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u)
@@ -2774,7 +2910,8 @@ TEST(SurfaceDbPopulate, RefusedRewriteLeavesTheDegradedCellsStoredSurfaceByteIde
   std::filesystem::remove_all(root);
 }
 
-// TEST 2 -- the opt-out really does the destructive thing, and says what it did.
+// TEST 2 -- the same destructive candidate with the independent coverage opt-out
+// really commits the deletion, and says what it did.
 // (The full behavioural pin lives in
 // `DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrivesTheRetry`, which now
 // runs its destructive leg through this flag. This test is the direct A/B against
@@ -2794,6 +2931,7 @@ TEST(SurfaceDbPopulate, AllowCoverageRegressionWritesTheDateAndNamesWhatItDestro
   full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
   UniversePopulateSpec retiring = carry_spec();
   retiring.allow_coverage_regression = true;
+  retiring.destructive_rewrite = true;
   auto cov2 = populate_universe_streaming(*db, full, retiring);
   ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
 
@@ -2935,7 +3073,9 @@ TEST(SurfaceDbPopulate, RefusingOneDateDoesNotStopTheOtherDatesInTheSameRun) {
   std::vector<CorpusBoard> full = seed;
   full.push_back(make_board(kDate0, "EEE", 80.0, 0.30));
   full.push_back(make_board(kDate1, "FFF", 85.0, 0.29));
-  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  UniversePopulateSpec destructive = carry_spec();
+  destructive.destructive_rewrite = true;
+  auto cov2 = populate_universe_streaming(*db, full, destructive);
   ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
 
   EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u);
@@ -2994,7 +3134,9 @@ TEST(SurfaceDbPopulate, DroppedSymbolListIsCorrectAndOrderedIndependentlyOfWorke
     EXPECT_TRUE(db->upsert_symbol("DDD", rejected_risk_config()).has_value());
     std::vector<CorpusBoard> full = seed;
     full.push_back(make_board(kDate0, "EEE", 80.0, 0.30)); // forces the rewrite
-    auto cov2 = populate_universe_streaming(*db, full, carry_spec(workers));
+    UniversePopulateSpec destructive = carry_spec(workers);
+    destructive.destructive_rewrite = true;
+    auto cov2 = populate_universe_streaming(*db, full, destructive);
     EXPECT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
     if (!cov2.has_value()) {
       return {};
@@ -3104,7 +3246,9 @@ TEST(SurfaceDbPopulate, PartitionOnDiskButMissingFromTheManifestIsNotOverwritten
   // and nothing fails -- the candidate is simply smaller than what is stored,
   // which is all a whole-file write needs to destroy a surface.
   const std::vector<CorpusBoard> narrower = {make_board(kDate0, "CCC", 90.0, 0.26)};
-  auto cov2 = populate_universe_streaming(*reopened, narrower, carry_spec());
+  UniversePopulateSpec destructive = carry_spec();
+  destructive.destructive_rewrite = true;
+  auto cov2 = populate_universe_streaming(*reopened, narrower, destructive);
   ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
 
   EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u)
