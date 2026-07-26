@@ -81,6 +81,23 @@ std::vector<double> backtest_return_series(const BacktestResult& r) {
   return returns;
 }
 
+Result<std::vector<std::string>> backtest_return_dates(const BacktestResult& r) {
+  // Deliberately re-derives the count through `backtest_return_series`' OWN rule
+  // rather than restating it, so the two can never diverge.
+  const std::size_t returns = backtest_return_series(r).size();
+  if (r.date.size() != returns + 1u) {
+    return Err(ErrorCode::InvalidArgument,
+               "backtest_return_dates: the return series is not date-addressable — " +
+                   std::to_string(returns) + " return observations against " +
+                   std::to_string(r.date.size()) +
+                   " recorded dates (expected " + std::to_string(returns + 1u) +
+                   "). `step_pnl_total` is full-resolution while `date` is downsampled by "
+                   "RunConfig::record_every_n, so no per-observation date exists at a stride "
+                   "greater than 1.");
+  }
+  return Ok(std::vector<std::string>(r.date.begin() + 1, r.date.end()));
+}
+
 BenchmarkStats benchmark_stats(std::span<const double> strategy,
                                std::span<const double> benchmark, double periods_per_year) {
   BenchmarkStats out;

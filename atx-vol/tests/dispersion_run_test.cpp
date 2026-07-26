@@ -21,7 +21,9 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -1256,6 +1258,95 @@ TEST(DispersionProjectedVar, C15_RouteHonorsTheTypedIndexSymbol) {
   std::sort(uids.begin(), uids.end());
   EXPECT_EQ(uids, (std::vector<std::string>{"2", "3", "4"}))
       << "the projected book is not {AAA index, BBB, CCC}";
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+// ── REVIEW C-6: benchmark rows are parsed WITH dates and then joined BY date ──
+//
+// `read_dispersion_benchmark_series` used to parse `date<TAB>pnl` and throw the
+// date away; `benchmark_stats` then aligned by vector POSITION over
+// `min(strategy.size(), benchmark.size())`. A shifted, reversed, duplicated,
+// missing-date or short benchmark therefore produced entirely plausible
+// alpha/beta/IR/tracking-error numbers for the WRONG observations, and the short
+// case silently dropped the strategy tail.
+//
+// The shifted-equal-length case below is the one that matters: every other shape
+// error is at least visible as a wrong count, while this one is confidently wrong
+// and looks right.
+
+namespace {
+
+// A `date<TAB>pnl` benchmark file over `dates`, with a deterministic non-constant
+// P&L so beta/IR are well defined.
+[[nodiscard]] std::string pv_benchmark_body(std::span<const std::string> dates) {
+  std::string body = "date\tpnl\n";
+  for (std::size_t i = 0; i < dates.size(); ++i) {
+    char cell[64];
+    std::snprintf(cell, sizeof cell, "%.17g", 10.0 * std::sin(1.3 * static_cast<double>(i)) + 1.0);
+    body += tsv_row({dates[i], cell});
+  }
+  return body;
+}
+
+// key -> value over a `metric<TAB>value` / `key<TAB>value` TSV.
+[[nodiscard]] std::map<std::string, std::string> pv_read_kv(const fs::path &path) {
+  std::map<std::string, std::string> out;
+  const std::vector<std::vector<std::string>> rows = read_tsv_rows(path);
+  for (std::size_t i = 1; i < rows.size(); ++i) {
+    if (rows[i].size() >= 2) {
+      out.emplace(rows[i][0], rows[i][1]);
+    }
+  }
+  return out;
+}
+
+} // namespace
+
+TEST(DispersionBenchmarkJoin, C6_AMatchingBenchmarkJoinsOnDateAndReportsEveryObservation) {
+  // The strategy's return observations are steps 1..N-1 — `date[1..]` — so a
+  // benchmark that covers exactly those sessions must be accepted whole.
+  PvFixture fixture = make_pv_fixture("c6_exact", pv_reconstituting_blocks(),
+                                      tsv_row({"benchmark_series", "benchmark.tsv"}));
+  ASSERT_EQ(fixture.dates.size(), 5u);
+  const std::vector<std::string> return_dates(fixture.dates.begin() + 1, fixture.dates.end());
+  write_file(fixture.dir / "benchmark.tsv", pv_benchmark_body(return_dates));
+
+  const Status ran = dispersion_run_surface_backtest(fixture.dir);
+  ASSERT_TRUE(ran.has_value()) << (ran.has_value() ? std::string{} : ran.error().to_string());
+
+  const std::map<std::string, std::string> sheet =
+      pv_read_kv(fixture.dir / "surface_tearsheet.tsv");
+  ASSERT_NE(sheet.find("benchmark_n_obs"), sheet.end()) << "no benchmark block was published";
+  EXPECT_EQ(sheet.at("benchmark_n_obs"), "4")
+      << "every strategy observation must be paired, not truncated";
+  ASSERT_NE(sheet.find("benchmark_join"), sheet.end())
+      << "the report must name the join that produced the benchmark block";
+  EXPECT_EQ(sheet.at("benchmark_join"), "exact_dates");
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+TEST(DispersionBenchmarkJoin, C6_AShiftedEqualLengthBenchmarkIsRejectedNotSilentlyMisaligned) {
+  // Same LENGTH as the strategy return series, same values, dates shifted back by
+  // one session. Positional alignment accepts this happily and reports
+  // alpha/beta/IR for observations that are off by a day.
+  PvFixture fixture = make_pv_fixture("c6_shifted", pv_reconstituting_blocks(),
+                                      tsv_row({"benchmark_series", "benchmark.tsv"}));
+  ASSERT_EQ(fixture.dates.size(), 5u);
+  const std::vector<std::string> shifted(fixture.dates.begin(), fixture.dates.end() - 1);
+  write_file(fixture.dir / "benchmark.tsv", pv_benchmark_body(shifted));
+
+  const Status ran = dispersion_run_surface_backtest(fixture.dir);
+  ASSERT_FALSE(ran.has_value())
+      << "a benchmark whose dates are shifted off the strategy's was accepted and reported";
+  const std::string message = ran.error().to_string();
+  // The error must name BOTH sides of the first disagreement, or an operator
+  // cannot tell which file to fix.
+  EXPECT_NE(message.find(fixture.dates[1]), std::string::npos) << message;
+  EXPECT_NE(message.find(fixture.dates[0]), std::string::npos) << message;
 
   std::error_code error;
   fs::remove_all(fixture.dir, error);

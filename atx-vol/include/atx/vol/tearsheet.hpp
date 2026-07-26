@@ -69,11 +69,21 @@ struct BenchmarkStats {
   double correlation{0}; // corr(rs, rb); 0 when either series is constant
 };
 
-// Pure, allocation-light fold over two paired series. Uses the common prefix
-// length min(strategy.size(), benchmark.size()); fewer than 2 paired
+// Pure, allocation-light fold over two ALREADY-PAIRED series. Uses the common
+// prefix length min(strategy.size(), benchmark.size()); fewer than 2 paired
 // observations, or a benchmark with zero variance, yields `has_benchmark = true`
 // with the undefined ratios left at 0 (every divide is guarded). Deterministic:
 // all accumulation is in element order.
+//
+// HAZARD (REVIEW C-6). Pairing is POSITIONAL and this function has no way to
+// check it — the two spans carry no dates. A benchmark that is shifted,
+// reversed, duplicated, missing a session or simply shorter yields entirely
+// plausible alpha/beta/IR/tracking-error numbers for the WRONG observations, and
+// the `min` silently drops the strategy tail. Establishing the pairing is the
+// CALLER's job. Production callers must join by DATE: see
+// `backtest_return_dates` below and `pair_dispersion_benchmark` /
+// `dispersion_tearsheet_with_benchmark` in dispersion_run.hpp, which is the one
+// route a spec's `benchmark_series` may reach this function through.
 [[nodiscard]] BenchmarkStats benchmark_stats(std::span<const double> strategy,
                                              std::span<const double> benchmark,
                                              double periods_per_year = 252.0);
@@ -148,9 +158,29 @@ struct TearSheet {
                                                  std::span<const double> benchmark,
                                                  double periods_per_year = 252.0);
 
+// `tearsheet_with_benchmark(r, benchmark, ppy)` pairs POSITIONALLY — see the
+// hazard note on `benchmark_stats`. It is retained for hand-paired callers and
+// for tests; a series read from a file must be joined by date instead.
+
 // The per-step return series `tearsheet` folds, exposed so a caller can align a
 // benchmark to it without duplicating the `step_pnl_total` fallback rule.
 [[nodiscard]] std::vector<double> backtest_return_series(const BacktestResult& r);
+
+// REVIEW C-6. The DATES of the `backtest_return_series` observations, so a
+// benchmark can be joined to the strategy BY DATE rather than by position.
+//
+// The strategy series is NOT unconditionally date-addressable, and that is a
+// property of `BacktestResult`, not of this function: `step_pnl_total` is
+// FULL-RESOLUTION (one entry per priced step, length refs-1) while `date` is
+// DOWNSAMPLED by `RunConfig::record_every_n`. At any stride > 1 there is simply
+// no date for most return observations, and no join is possible — so this fails
+// loudly rather than inventing an alignment. At the shipped stride of 1 (and for
+// the `pnl_total` fallback, which is parallel to `date` by construction) the
+// answer is exactly `date[1..n-1]`: row 0 is inception and carries no return.
+//
+// Err(InvalidArgument) when the two are not in that relationship, naming both
+// counts.
+[[nodiscard]] Result<std::vector<std::string>> backtest_return_dates(const BacktestResult& r);
 
 // Write `r` to `path` as a deterministic, tab-separated file: one header row
 // naming every column, then one data row per recorded step. Doubles are written

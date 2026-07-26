@@ -1237,12 +1237,23 @@ std::string dispersion_regime_detail(const FrictionModel &frictions,
   return detail;
 }
 
-Result<std::vector<double>> read_dispersion_benchmark_series(const fs::path &path) {
+std::string_view to_string(DispersionBenchmarkJoin join) noexcept {
+  switch (join) {
+  case DispersionBenchmarkJoin::ExactDates:
+    return "exact_dates";
+  case DispersionBenchmarkJoin::InnerJoinOnDates:
+    return "inner_join_on_dates";
+  }
+  return "unknown";
+}
+
+Result<std::vector<DispersionBenchmarkRow>>
+read_dispersion_benchmark_series(const fs::path &path) {
   std::ifstream stream(path, std::ios::binary);
   if (!stream) {
     return Err(ErrorCode::NotFound, "cannot open benchmark series " + path.string());
   }
-  std::vector<double> series;
+  std::vector<DispersionBenchmarkRow> series;
   std::string line;
   std::size_t row = 0;
   while (std::getline(stream, line)) {
@@ -1274,9 +1285,119 @@ Result<std::vector<double>> read_dispersion_benchmark_series(const fs::path &pat
       return Err(ErrorCode::ParseError, "benchmark series row " + std::to_string(row) +
                                             " has a non-numeric value: '" + value + "'");
     }
-    series.push_back(parsed);
+    // REVIEW C-6. The date is the JOIN KEY, not decoration — it used to be parsed
+    // and thrown away, which is what let a misaligned file produce confident
+    // numbers for the wrong observations.
+    std::string date = line.substr(0, tab);
+    if (date.empty()) {
+      return Err(ErrorCode::ParseError,
+                 "benchmark series row " + std::to_string(row) + " has an empty date");
+    }
+    if (!std::isfinite(parsed)) {
+      return Err(ErrorCode::ParseError, "benchmark series row " + std::to_string(row) + " (" +
+                                            date + ") has a non-finite value: '" + value + "'");
+    }
+    if (!series.empty() && date <= series.back().date) {
+      // Catches duplicates, reversed files and unordered files in one check. A
+      // benchmark whose dates do not advance cannot be joined, and the failure
+      // must land HERE rather than as a plausible misalignment downstream.
+      return Err(ErrorCode::ParseError,
+                 "benchmark series row " + std::to_string(row) + " date '" + date +
+                     "' does not advance on the previous row's '" + series.back().date +
+                     "' — benchmark dates must be unique and ascending");
+    }
+    series.push_back(DispersionBenchmarkRow{std::move(date), parsed});
   }
   return Ok(std::move(series));
+}
+
+Result<DispersionBenchmarkPairing>
+pair_dispersion_benchmark(std::span<const std::string> strategy_dates,
+                          std::span<const double> strategy_pnl,
+                          std::span<const DispersionBenchmarkRow> benchmark,
+                          DispersionBenchmarkJoin policy) {
+  if (strategy_dates.size() != strategy_pnl.size()) {
+    return Err(ErrorCode::InvalidArgument,
+               "benchmark join: " + std::to_string(strategy_dates.size()) +
+                   " strategy dates against " + std::to_string(strategy_pnl.size()) +
+                   " strategy observations");
+  }
+  for (std::size_t i = 1; i < strategy_dates.size(); ++i) {
+    if (strategy_dates[i] <= strategy_dates[i - 1]) {
+      return Err(ErrorCode::InvalidArgument,
+                 "benchmark join: strategy date '" + strategy_dates[i] +
+                     "' does not advance on '" + strategy_dates[i - 1] + "'");
+    }
+  }
+
+  DispersionBenchmarkPairing out;
+  if (policy == DispersionBenchmarkJoin::ExactDates) {
+    if (benchmark.size() != strategy_dates.size()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "benchmark join (exact_dates): the series covers " +
+                     std::to_string(benchmark.size()) + " sessions but the strategy has " +
+                     std::to_string(strategy_dates.size()) +
+                     " return observations. Supply a benchmark over exactly the strategy's "
+                     "dates, or set benchmark_join=inner to compare over the intersection.");
+    }
+    for (std::size_t i = 0; i < strategy_dates.size(); ++i) {
+      if (benchmark[i].date != strategy_dates[i]) {
+        return Err(ErrorCode::InvalidArgument,
+                   "benchmark join (exact_dates): observation " + std::to_string(i) +
+                       " is strategy date '" + strategy_dates[i] + "' but benchmark date '" +
+                       benchmark[i].date +
+                       "'. The two series describe different sessions; set "
+                       "benchmark_join=inner to compare over the intersection instead.");
+      }
+    }
+    out.strategy.assign(strategy_pnl.begin(), strategy_pnl.end());
+    out.benchmark.reserve(benchmark.size());
+    for (const DispersionBenchmarkRow &r : benchmark) {
+      out.benchmark.push_back(r.pnl);
+    }
+  } else {
+    // Both sides are strictly ascending (the reader and the check above enforce
+    // it), so the intersection is one linear merge.
+    std::size_t b = 0;
+    for (std::size_t s = 0; s < strategy_dates.size(); ++s) {
+      while (b < benchmark.size() && benchmark[b].date < strategy_dates[s]) {
+        ++b;
+      }
+      if (b < benchmark.size() && benchmark[b].date == strategy_dates[s]) {
+        out.strategy.push_back(strategy_pnl[s]);
+        out.benchmark.push_back(benchmark[b].pnl);
+        ++b;
+      } else {
+        ++out.n_unmatched;
+      }
+    }
+  }
+
+  if (out.strategy.size() < 2u) {
+    return Err(ErrorCode::InvalidArgument,
+               "benchmark join (" + std::string(to_string(policy)) + "): only " +
+                   std::to_string(out.strategy.size()) +
+                   " paired observation(s); every benchmark-relative ratio needs a sample "
+                   "variance, so this is not a benchmark comparison");
+  }
+  return Ok(std::move(out));
+}
+
+Result<TearSheet> dispersion_tearsheet_with_benchmark(const BacktestResult &track,
+                                                      const DispersionRunConfig &config) {
+  TearSheet sheet = tearsheet(track, config.periods_per_year);
+  if (config.benchmark_series.empty()) {
+    return Ok(std::move(sheet)); // absent => absolute statistics only, nothing claimed
+  }
+  ATX_TRY(std::vector<DispersionBenchmarkRow> rows,
+          read_dispersion_benchmark_series(config.benchmark_series));
+  ATX_TRY(std::vector<std::string> dates, backtest_return_dates(track));
+  const std::vector<double> returns = backtest_return_series(track);
+  ATX_TRY(DispersionBenchmarkPairing paired,
+          pair_dispersion_benchmark(dates, returns, rows, config.benchmark_join));
+  sheet.benchmark =
+      benchmark_stats(paired.strategy, paired.benchmark, config.periods_per_year);
+  return Ok(std::move(sheet));
 }
 
 FrictionModel dispersion_friction_preset(DispersionFrictionPreset preset) {
@@ -1369,6 +1490,12 @@ Result<DispersionRunConfig> read_dispersion_run_config(const fs::path &path) {
 
   // X5 reporting.
   ATX_TRY_VOID(binder.path_key("benchmark_series", config.benchmark_series));
+  // C-6. A NAMED join policy, not a bool and not a default that silently restores
+  // positional alignment: `exact` demands the two series describe the same
+  // sessions, `inner` opts into a comparison over their intersection.
+  ATX_TRY_VOID(binder.enumerated("benchmark_join", config.benchmark_join,
+                                 {{"exact", DispersionBenchmarkJoin::ExactDates},
+                                  {"inner", DispersionBenchmarkJoin::InnerJoinOnDates}}));
   ATX_TRY_VOID(binder.number("periods_per_year", config.periods_per_year));
 
   ATX_TRY_VOID(binder.number("target_dte_days", config.dte.target_days));
@@ -1787,6 +1914,9 @@ Status write_dispersion_effective_config(const fs::path &path, const DispersionR
       << "quote_min_bid\t" << num(config.quote_quality.min_bid) << '\n'
       << "quote_max_age_ns\t" << config.quote_quality.max_quote_age_ns << '\n'
       << "quote_reject_locked\t" << (config.quote_quality.reject_locked ? 1 : 0) << '\n'
+      // C-6: the benchmark join policy is an assumption behind every published
+      // alpha/beta/IR, so it belongs in the effective config beside the regime.
+      << "benchmark_join\t" << to_string(config.benchmark_join) << '\n'
       << "delta_band\t" << num(config.hedge.band) << '\n'
       << "gross_index_vega\t" << num(config.gross_index_vega) << '\n';
   return out ? Ok() : Err(ErrorCode::IoError, "cannot flush effective run config");
@@ -2356,6 +2486,10 @@ dispersion_report_metadata(const DispersionRunConfig &config, const TearSheet &s
   // Benchmark-relative keys appear ONLY when a benchmark was actually supplied,
   // so an absent benchmark cannot be misread as a zero alpha / zero beta.
   if (sheet.benchmark.has_benchmark) {
+    // C-6: WHICH join produced these numbers. `exact_dates` means every strategy
+    // observation is paired; `inner_join_on_dates` means the block covers the
+    // intersection only, and `benchmark_n_obs` below is how much of it survived.
+    meta.emplace_back("benchmark_join", std::string(to_string(config.benchmark_join)));
     meta.emplace_back("benchmark_n_obs", std::to_string(sheet.benchmark.n_obs));
     meta.emplace_back("benchmark_beta", metric_text(sheet.benchmark.beta));
     meta.emplace_back("benchmark_alpha", metric_text(sheet.benchmark.alpha));
@@ -2445,10 +2579,10 @@ Status dispersion_run_surface_backtest(const fs::path &run_dir) {
   // supplied a benchmark. Absent (the default) this is skipped entirely and the
   // sheet stays exactly the absolute one `run_dispersion_surface_backtest` built.
   if (!run_config.benchmark_series.empty()) {
-    ATX_TRY(std::vector<double> benchmark,
-            read_dispersion_benchmark_series(run_config.benchmark_series));
-    outcome.sheet =
-        tearsheet_with_benchmark(outcome.track, benchmark, run_config.periods_per_year);
+    // C-6: joined BY DATE under the spec's named policy. A benchmark that does
+    // not describe the strategy's own sessions fails the run instead of being
+    // reported against the wrong observations.
+    ATX_TRY(outcome.sheet, dispersion_tearsheet_with_benchmark(outcome.track, run_config));
   } else if (run_config.periods_per_year != 252.0) {
     outcome.sheet = tearsheet(outcome.track, run_config.periods_per_year);
   }

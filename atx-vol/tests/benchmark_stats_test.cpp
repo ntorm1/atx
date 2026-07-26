@@ -248,3 +248,39 @@ TEST(BenchmarkStats, BenchmarkAlignsToTheTearsheetReturnSeries) {
   EXPECT_NEAR(sheet.benchmark.beta, 1.8, 1e-14); // the hand-computed value
   EXPECT_NEAR(sheet.benchmark.information_ratio, direct.information_ratio, 1e-15);
 }
+
+// ── REVIEW C-6: the strategy series' own dates ──────────────────────────────
+//
+// `benchmark_stats` pairs by POSITION and has no way to check that pairing, so
+// the join has to happen upstream — which requires the strategy observations to
+// be date-addressable. They are, but ONLY conditionally: `step_pnl_total` is
+// full-resolution (one entry per priced step) while `date` is downsampled by
+// `RunConfig::record_every_n`, so at any stride > 1 most return observations
+// have no date at all. `backtest_return_dates` answers exactly when they do, and
+// refuses loudly when they do not, instead of inventing an alignment.
+TEST(BenchmarkStats, C6_ReturnDatesAreTheRecordedDatesFromRowOne) {
+  const BacktestResult r = make_track();
+  const std::vector<double> returns = backtest_return_series(r);
+  const auto dates = backtest_return_dates(r);
+  ASSERT_TRUE(dates.has_value()) << dates.error().to_string();
+  ASSERT_EQ(dates->size(), returns.size());
+  // Row 0 is inception and carries no return, so the observations start at date[1].
+  EXPECT_EQ(dates->front(), "2026-01-02");
+  EXPECT_EQ(dates->back(), "2026-01-06");
+  for (std::size_t i = 0; i < dates->size(); ++i) {
+    EXPECT_EQ((*dates)[i], r.date[i + 1]);
+  }
+}
+
+TEST(BenchmarkStats, C6_ADownsampledResultHasNoPerObservationDateAndSaysSo) {
+  // What `record_every_n > 1` produces: a full-resolution `step_pnl_total`
+  // alongside a `date` column that recorded only some of those steps. There is no
+  // honest join here, and pretending otherwise is exactly the C-6 defect.
+  BacktestResult r = make_track();
+  r.step_pnl_total = {4.0, -2.0, 6.0, 0.0, 2.0, 1.0, -1.0, 3.0, 0.5, -0.5};
+  const auto dates = backtest_return_dates(r);
+  ASSERT_FALSE(dates.has_value()) << "a stride-downsampled result claimed a date per observation";
+  const std::string message = dates.error().to_string();
+  EXPECT_NE(message.find("10"), std::string::npos) << message;
+  EXPECT_NE(message.find("record_every_n"), std::string::npos) << message;
+}

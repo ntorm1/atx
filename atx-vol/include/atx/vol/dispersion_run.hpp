@@ -234,6 +234,37 @@ struct DispersionFitConfig {
   bool core_mode{false};
 };
 
+// ── REVIEW C-6: dated benchmark rows, joined to the strategy BY DATE ─────────
+//
+// The benchmark reader used to return the P&L column alone and `benchmark_stats`
+// aligned by vector POSITION over `min(strategy.size(), benchmark.size())`. A
+// shifted, reversed, duplicated, missing-date or short benchmark therefore
+// produced entirely plausible alpha/beta/IR/tracking-error values for the WRONG
+// observations, and the short case silently dropped the strategy's tail. The date
+// was in the file the whole time; it was parsed and discarded.
+struct DispersionBenchmarkRow {
+  std::string date; // the file's own date key, verbatim
+  double pnl{0.0};  // validated finite
+};
+
+// How a benchmark series is joined to the strategy's own return dates. Spec key
+// `benchmark_join`.
+enum class DispersionBenchmarkJoin : std::uint8_t {
+  // DEFAULT (`exact`), and the only policy that claims a COMPLETE comparison:
+  // the benchmark's dates must equal the strategy's return dates, one for one,
+  // in order. Anything else is an error naming the first disagreement.
+  ExactDates = 0,
+  // OPT-IN (`inner`): keep only the sessions present in BOTH series and compare
+  // over those. This is a real statistic over a REDUCED sample, not a repair — it
+  // is named in the spec and echoed in the published report (`benchmark_join`,
+  // alongside `benchmark_n_obs`) so a reader can see that the block does not
+  // cover every strategy observation. It is deliberately NOT the default: silently
+  // restoring a partial comparison is the behaviour C-6 is about.
+  InnerJoinOnDates = 1,
+};
+
+[[nodiscard]] std::string_view to_string(DispersionBenchmarkJoin join) noexcept;
+
 // ── X5: the friction/impact regime, as a first-class reported dimension ─────
 //
 // THIS IS NOT COSMETIC. Measured on the pinned 82-session run, the SAME strategy
@@ -292,6 +323,10 @@ struct DispersionRunConfig {
   // absent => the tearsheet reports absolute statistics only and claims no
   // alpha/beta/IR/TE. Spec key `benchmark_series`.
   std::filesystem::path benchmark_series{};
+  // C-6. How that series is joined to the strategy's return dates. Spec key
+  // `benchmark_join` (`exact` | `inner`); the default demands an exact date
+  // match and refuses anything else.
+  DispersionBenchmarkJoin benchmark_join{DispersionBenchmarkJoin::ExactDates};
   // Periods per year for annualizing. 252 is the shipped convention.
   double periods_per_year{252.0};
 
@@ -474,13 +509,50 @@ struct QuoteRejectRow {
 [[nodiscard]] DispersionFrictionRegime
 dispersion_friction_regime(const DispersionRunConfig &config) noexcept;
 
-// Read a `date<TAB>pnl` benchmark series, returning the P&L column in file
-// order. Header row optional (a first row whose second field does not parse as a
-// number is treated as a header). `NotFound` if the file is absent, `ParseError`
-// on a malformed row — a benchmark that silently half-loads would corrupt every
-// statistic derived from it.
-[[nodiscard]] Result<std::vector<double>>
+// Two series of EQUAL length, paired observation for observation.
+struct DispersionBenchmarkPairing {
+  std::vector<double> strategy;
+  std::vector<double> benchmark;
+  // Inner join only: strategy observations with no benchmark row. Always 0 under
+  // ExactDates, which refuses rather than dropping.
+  std::size_t n_unmatched{0};
+};
+
+// Join `benchmark` onto the strategy's dated returns under `policy`.
+//
+// Errors (InvalidArgument), never silent truncation: mismatched strategy
+// date/value counts, non-ascending strategy dates, a length or date disagreement
+// under `ExactDates`, or fewer than two paired observations under either policy —
+// every ratio in `BenchmarkStats` needs a sample variance, so a one-observation
+// join is not a benchmark comparison and must not be reported as one.
+[[nodiscard]] Result<DispersionBenchmarkPairing>
+pair_dispersion_benchmark(std::span<const std::string> strategy_dates,
+                          std::span<const double> strategy_pnl,
+                          std::span<const DispersionBenchmarkRow> benchmark,
+                          DispersionBenchmarkJoin policy);
+
+// Read a `date<TAB>pnl` benchmark series as DATED rows, in file order. Header row
+// optional (a first row whose second field does not parse as a number is treated
+// as a header). `NotFound` if the file is absent, `ParseError` on a malformed
+// row — a benchmark that silently half-loads would corrupt every statistic
+// derived from it.
+//
+// C-6 validation, all `ParseError`: the date field must be non-empty, the P&L
+// must be FINITE (a NaN or an infinity used to flow straight into the published
+// alpha/beta), and the dates must be STRICTLY INCREASING — which is what rejects
+// duplicates, reversed files and unordered files at the source rather than
+// letting them become a plausible-looking misalignment downstream.
+[[nodiscard]] Result<std::vector<DispersionBenchmarkRow>>
 read_dispersion_benchmark_series(const std::filesystem::path &path);
+
+// THE one place a spec's `benchmark_series` becomes a benchmark-relative
+// tearsheet block. Reads the file, derives the strategy's own return dates
+// (`backtest_return_dates`), joins under `config.benchmark_join`, and folds the
+// paired series with `benchmark_stats`. An empty `benchmark_series` returns
+// exactly `tearsheet(track, config.periods_per_year)` and claims nothing.
+[[nodiscard]] Result<TearSheet>
+dispersion_tearsheet_with_benchmark(const BacktestResult &track,
+                                    const DispersionRunConfig &config);
 
 // Named friction presets selectable from the spec via `friction_preset`. `None`
 // is the default and is exactly the frictionless golden; `RetailListedOptions`

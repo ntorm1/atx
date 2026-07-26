@@ -880,9 +880,14 @@ TEST(DispersionRunConfigXB, BenchmarkSeriesReader_ParsesAndRefusesMalformedRows)
     auto series = read_dispersion_benchmark_series(path);
     ASSERT_TRUE(series.has_value()) << series.error().to_string();
     ASSERT_EQ(series->size(), 3u);
-    EXPECT_EQ((*series)[0], 4.0);
-    EXPECT_EQ((*series)[1], -2.0);
-    EXPECT_EQ((*series)[2], 6.0);
+    // REVIEW C-6: the DATE is retained. It used to be parsed and discarded, which
+    // is what made every downstream alignment positional.
+    EXPECT_EQ((*series)[0].date, "2026-01-02");
+    EXPECT_EQ((*series)[0].pnl, 4.0);
+    EXPECT_EQ((*series)[1].date, "2026-01-05");
+    EXPECT_EQ((*series)[1].pnl, -2.0);
+    EXPECT_EQ((*series)[2].date, "2026-01-06");
+    EXPECT_EQ((*series)[2].pnl, 6.0);
   }
   // A malformed row mid-file is an ERROR: a benchmark that silently half-loads
   // would corrupt every statistic derived from it.
@@ -899,6 +904,189 @@ TEST(DispersionRunConfigXB, BenchmarkSeriesReader_ParsesAndRefusesMalformedRows)
     auto series = read_dispersion_benchmark_series(dir / "missing.tsv");
     ASSERT_FALSE(series.has_value());
     EXPECT_EQ(series.error().code(), ErrorCode::NotFound);
+  }
+}
+
+// ── REVIEW C-6: the reader's own validation ─────────────────────────────────
+//
+// Every shape below used to load cleanly and then be aligned by POSITION, so it
+// reached the published report as a confident number over the wrong observations.
+TEST(DispersionRunConfigXB, C6_BenchmarkReaderRefusesUnusableDateColumns) {
+  const fs::path dir = fs::temp_directory_path() / "atx_c6_bench_reader";
+  std::error_code error;
+  fs::remove_all(dir, error);
+  fs::create_directories(dir, error);
+
+  const auto read_body = [&](const char *leaf, const std::string &body) {
+    const fs::path path = dir / leaf;
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out << body;
+    out.close();
+    return read_dispersion_benchmark_series(path);
+  };
+
+  // Duplicated date.
+  {
+    const auto series =
+        read_body("dup.tsv", "date\tpnl\n2026-01-02\t4\n2026-01-02\t-2\n2026-01-06\t6\n");
+    ASSERT_FALSE(series.has_value()) << "a duplicated benchmark date was accepted";
+    EXPECT_NE(series.error().to_string().find("2026-01-02"), std::string::npos)
+        << series.error().to_string();
+  }
+  // Reverse order.
+  {
+    const auto series =
+        read_body("rev.tsv", "date\tpnl\n2026-01-06\t6\n2026-01-05\t-2\n2026-01-02\t4\n");
+    ASSERT_FALSE(series.has_value()) << "a reversed benchmark series was accepted";
+    EXPECT_NE(series.error().to_string().find("ascending"), std::string::npos)
+        << series.error().to_string();
+  }
+  // Non-finite values. `from_chars` parses "nan"/"inf", so these are real rows,
+  // not parse failures — they used to flow straight into alpha/beta.
+  for (const char *token : {"nan", "inf", "-inf"}) {
+    const std::string body =
+        "date\tpnl\n2026-01-02\t4\n2026-01-05\t" + std::string(token) + "\n2026-01-06\t6\n";
+    const auto series = read_body("nonfinite.tsv", body);
+    ASSERT_FALSE(series.has_value()) << "a non-finite benchmark value '" << token
+                                     << "' reached the report";
+    EXPECT_NE(series.error().to_string().find("non-finite"), std::string::npos)
+        << series.error().to_string();
+  }
+  // Empty date field.
+  {
+    const auto series = read_body("nodate.tsv", "date\tpnl\n2026-01-02\t4\n\t-2\n");
+    ASSERT_FALSE(series.has_value()) << "a benchmark row with no date was accepted";
+    EXPECT_NE(series.error().to_string().find("empty date"), std::string::npos)
+        << series.error().to_string();
+  }
+
+  fs::remove_all(dir, error);
+}
+
+// ── REVIEW C-6: the join itself ─────────────────────────────────────────────
+namespace {
+
+[[nodiscard]] std::vector<DispersionBenchmarkRow> bench_rows(
+    std::initializer_list<std::pair<const char *, double>> rows) {
+  std::vector<DispersionBenchmarkRow> out;
+  for (const auto &[date, pnl] : rows) {
+    out.push_back(DispersionBenchmarkRow{std::string(date), pnl});
+  }
+  return out;
+}
+
+const std::vector<std::string> kStrategyDates = {"2026-01-02", "2026-01-05", "2026-01-06",
+                                                 "2026-01-07"};
+const std::vector<double> kStrategyPnl = {1.0, -2.0, 3.0, -4.0};
+
+} // namespace
+
+TEST(DispersionBenchmarkJoinUnit, C6_ExactDatesPairsEveryObservationAndNothingElse) {
+  const std::vector<DispersionBenchmarkRow> rows = bench_rows(
+      {{"2026-01-02", 10.0}, {"2026-01-05", 20.0}, {"2026-01-06", 30.0}, {"2026-01-07", 40.0}});
+  const auto paired = pair_dispersion_benchmark(kStrategyDates, kStrategyPnl, rows,
+                                                DispersionBenchmarkJoin::ExactDates);
+  ASSERT_TRUE(paired.has_value()) << paired.error().to_string();
+  EXPECT_EQ(paired->strategy, kStrategyPnl);
+  EXPECT_EQ(paired->benchmark, (std::vector<double>{10.0, 20.0, 30.0, 40.0}));
+  EXPECT_EQ(paired->n_unmatched, 0u);
+}
+
+// THE case. Equal length, ascending, well-formed — and off by one session. This
+// is the only shape that produces a confidently wrong number rather than an
+// obviously wrong one, so it must be an error and not a silent pairing.
+TEST(DispersionBenchmarkJoinUnit, C6_AShiftedEqualLengthSeriesIsRefusedUnderExactDates) {
+  const std::vector<DispersionBenchmarkRow> rows = bench_rows(
+      {{"2026-01-05", 20.0}, {"2026-01-06", 30.0}, {"2026-01-07", 40.0}, {"2026-01-08", 50.0}});
+  const auto paired = pair_dispersion_benchmark(kStrategyDates, kStrategyPnl, rows,
+                                                DispersionBenchmarkJoin::ExactDates);
+  ASSERT_FALSE(paired.has_value()) << "a shifted equal-length benchmark was paired positionally";
+  const std::string message = paired.error().to_string();
+  // Both sides of the first disagreement, so an operator knows which file is wrong.
+  EXPECT_NE(message.find("2026-01-02"), std::string::npos) << message;
+  EXPECT_NE(message.find("2026-01-05"), std::string::npos) << message;
+}
+
+TEST(DispersionBenchmarkJoinUnit, C6_AMissingSessionIsRefusedUnderExactDatesAndDroppedUnderInner) {
+  const std::vector<DispersionBenchmarkRow> rows =
+      bench_rows({{"2026-01-02", 10.0}, {"2026-01-06", 30.0}, {"2026-01-07", 40.0}});
+  const auto exact = pair_dispersion_benchmark(kStrategyDates, kStrategyPnl, rows,
+                                               DispersionBenchmarkJoin::ExactDates);
+  ASSERT_FALSE(exact.has_value()) << "a benchmark missing a session was accepted as complete";
+
+  // The named opt-in compares over the intersection and REPORTS what it dropped.
+  const auto inner = pair_dispersion_benchmark(kStrategyDates, kStrategyPnl, rows,
+                                               DispersionBenchmarkJoin::InnerJoinOnDates);
+  ASSERT_TRUE(inner.has_value()) << inner.error().to_string();
+  EXPECT_EQ(inner->strategy, (std::vector<double>{1.0, 3.0, -4.0}));
+  EXPECT_EQ(inner->benchmark, (std::vector<double>{10.0, 30.0, 40.0}));
+  EXPECT_EQ(inner->n_unmatched, 1u) << "the dropped 2026-01-05 observation was not reported";
+}
+
+TEST(DispersionBenchmarkJoinUnit, C6_ALengthMismatchNeverTruncatesTheStrategyTail) {
+  // Short benchmark: positional alignment used to silently drop the strategy's
+  // last two observations and publish the ratios as if the sample were complete.
+  const std::vector<DispersionBenchmarkRow> shorter =
+      bench_rows({{"2026-01-02", 10.0}, {"2026-01-05", 20.0}});
+  const auto exact = pair_dispersion_benchmark(kStrategyDates, kStrategyPnl, shorter,
+                                               DispersionBenchmarkJoin::ExactDates);
+  ASSERT_FALSE(exact.has_value()) << "a short benchmark was silently truncated against";
+  EXPECT_NE(exact.error().to_string().find("2 sessions"), std::string::npos)
+      << exact.error().to_string();
+
+  // Longer than the strategy is equally an error under exact dates.
+  const std::vector<DispersionBenchmarkRow> longer =
+      bench_rows({{"2026-01-02", 10.0},
+                  {"2026-01-05", 20.0},
+                  {"2026-01-06", 30.0},
+                  {"2026-01-07", 40.0},
+                  {"2026-01-08", 50.0}});
+  EXPECT_FALSE(pair_dispersion_benchmark(kStrategyDates, kStrategyPnl, longer,
+                                         DispersionBenchmarkJoin::ExactDates)
+                   .has_value());
+
+  // Under inner join, a longer benchmark is fine — the extra session has no
+  // strategy observation to pair with and simply does not appear.
+  const auto inner = pair_dispersion_benchmark(kStrategyDates, kStrategyPnl, longer,
+                                               DispersionBenchmarkJoin::InnerJoinOnDates);
+  ASSERT_TRUE(inner.has_value()) << inner.error().to_string();
+  EXPECT_EQ(inner->strategy.size(), 4u);
+  EXPECT_EQ(inner->n_unmatched, 0u);
+}
+
+TEST(DispersionBenchmarkJoinUnit, C6_FewerThanTwoPairedObservationsIsNotABenchmark) {
+  const std::vector<DispersionBenchmarkRow> rows = bench_rows({{"2026-01-06", 30.0}});
+  const auto inner = pair_dispersion_benchmark(kStrategyDates, kStrategyPnl, rows,
+                                               DispersionBenchmarkJoin::InnerJoinOnDates);
+  ASSERT_FALSE(inner.has_value())
+      << "a single paired observation was reported as a benchmark comparison";
+  EXPECT_NE(inner.error().to_string().find("sample variance"), std::string::npos)
+      << inner.error().to_string();
+}
+
+// The join policy is a NAMED spec value, not a bool and not an implicit default.
+TEST(DispersionRunConfigXB, C6_BenchmarkJoinPolicyIsANamedSpecKeyDefaultingToExact) {
+  {
+    const fs::path path = write_spec("atx_c6_join_default", kBaselineSpec);
+    const auto config = read_dispersion_run_config(path);
+    ASSERT_TRUE(config.has_value()) << config.error().to_string();
+    EXPECT_EQ(config->benchmark_join, DispersionBenchmarkJoin::ExactDates)
+        << "the default must not silently restore a partial comparison";
+    EXPECT_EQ(to_string(config->benchmark_join), "exact_dates");
+  }
+  {
+    const fs::path path =
+        write_spec("atx_c6_join_inner", std::string(kBaselineSpec) + "benchmark_join\tinner\n");
+    const auto config = read_dispersion_run_config(path);
+    ASSERT_TRUE(config.has_value()) << config.error().to_string();
+    EXPECT_EQ(config->benchmark_join, DispersionBenchmarkJoin::InnerJoinOnDates);
+    EXPECT_EQ(to_string(config->benchmark_join), "inner_join_on_dates");
+  }
+  {
+    const fs::path path = write_spec("atx_c6_join_bad",
+                                     std::string(kBaselineSpec) + "benchmark_join\tpositional\n");
+    EXPECT_FALSE(read_dispersion_run_config(path).has_value())
+        << "an unknown join policy must be refused by name, not defaulted";
   }
 }
 
