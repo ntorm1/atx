@@ -82,6 +82,28 @@ struct DateRange {
   bool skip{false};
 };
 
+// ── R1-a (review C-06): the drain's "the scheduler is gone" sentinel ─────────
+//
+// `remaining[r]` normally holds the number of enabled fits still in flight for
+// date-range r, and 0 means "this date is complete, drain it". This third value
+// means "the fit scheduler TERMINATED while this date still had fits outstanding
+// — they will never run and nothing will ever decrement this counter again".
+//
+// It is a value of `remaining[r]` itself, not a separate flag, and that is the
+// whole point. The drain sleeps in `remaining[r].wait(left)`, which wakes on a
+// change to THAT object; a separate `std::atomic<bool> scheduler_finished` could
+// be set and notified in the window between the drain's last check of it and its
+// entry into `wait`, and the drain would then sleep forever on a counter nobody
+// will touch again — the classic lost wakeup, reintroduced by the fix. Folding
+// termination into the waited-on object closes that window by construction: see
+// the drain loop for the full argument.
+//
+// SIZE_MAX is safe as the sentinel because the counter counts boards, which are
+// bounded by `boards.size()`, and because it is only ever STORED after
+// `run_bounded_fit_tasks` has returned — which joins every worker it started, so
+// no `MarkDone` destructor can be racing a `fetch_sub` against it.
+constexpr std::size_t kSchedulerAborted = std::numeric_limits<std::size_t>::max();
+
 // ── Stats CSV formatting (mirrors run_report.cpp's meta+header+rows shape;
 // that helper is TU-private there, so this is an independent small twin, not
 // a shared function) ─────────────────────────────────────────────────────
@@ -375,12 +397,57 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   // waits on the drain (workers only fit + decrement), so the join at block
   // exit cannot deadlock even when the drain returns early on a write error.
   Status fit_status = Ok();
+  // R1-a: fault-injection seam forwarded from the populate's own hooks (see
+  // PopulateTestHooks). Declared OUTSIDE the block so it outlives `fit_runner`,
+  // which captures a pointer to it. nullptr — the production shape — whenever no
+  // scheduler hook is set, so the scheduler's hot path is untouched.
+  detail::FitSchedulerTestHooks sched_hooks;
+  if (test_hooks != nullptr) {
+    sched_hooks.before_worker_launch = test_hooks->before_worker_launch;
+    sched_hooks.before_setup = test_hooks->before_scheduler_setup;
+  }
+  const detail::FitSchedulerTestHooks *sched_hooks_ptr =
+      (sched_hooks.before_worker_launch || sched_hooks.before_setup) ? &sched_hooks : nullptr;
   {
     std::jthread fit_runner([&] {
       // C4 wave-2: pin outer workers to the discovered P-cores (byte-identical to
       // the unpinned path — pinning only steers WHICH logical CPU a worker runs on).
-      fit_status =
-          detail::run_bounded_fit_tasks(fit_positions.size(), worker_budget, fit_task, outer_affinity);
+      fit_status = detail::run_bounded_fit_tasks(fit_positions.size(), worker_budget, fit_task,
+                                                 outer_affinity, sched_hooks_ptr);
+
+      // ── R1-a (review C-06): publish scheduler TERMINATION to the drain ───────
+      // `run_bounded_fit_tasks` has two PRE-TASK failure returns (a background
+      // worker-launch failure and a scratch-allocation failure). On both, not one
+      // task ran, so not one `MarkDone` destructor fired and every non-zero
+      // `remaining[r]` is frozen at its initial value. The drain used to sleep on
+      // exactly those counters forever — the process hung with no output and never
+      // reached the join below that would have let it observe `fit_status`.
+      //
+      // MEMORY ORDER. `fit_status` is written by THIS thread and read by the drain,
+      // so the sentinel store below is the RELEASE that publishes it and the drain's
+      // acquire load of the same counter is the matching ACQUIRE. The assignment
+      // above is sequenced before the store, so a drain that sees the sentinel sees
+      // the Status.
+      //
+      // SAFETY OF MUTATING `remaining` HERE. `run_bounded_fit_tasks` joins every
+      // worker it started before returning on EVERY path (the launch-abort path
+      // clears the vector, which joins; the normal path joins at block exit; the
+      // outer catch is reached only with no worker alive). So by this line no
+      // `MarkDone` destructor exists to race a `fetch_sub` against these stores,
+      // and `remaining` is touched only by this thread and the drain.
+      //
+      // A counter already at 0 is LEFT ALONE: that date completed and must still
+      // drain and write normally. On a successful run every counter is 0 here and
+      // this loop stores nothing at all — the success path is bit-for-bit
+      // unchanged, which is what keeps the byte-identical-for-any-thread-count
+      // invariant intact.
+      for (std::atomic<std::size_t> &counter : remaining) {
+        if (counter.load(std::memory_order_relaxed) == 0u) {
+          continue;
+        }
+        counter.store(kSchedulerAborted, std::memory_order_release);
+        counter.notify_all();
+      }
     });
 
     for (std::size_t r = 0; r < date_ranges.size(); ++r) {
@@ -388,11 +455,57 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       if (range.skip) {
         continue;
       }
-      // Block until every enabled fit in this date has completed. A range with
-      // no enabled boards starts at zero and proceeds immediately.
-      for (std::size_t left = remaining[r].load(std::memory_order_acquire); left != 0u;
-           left = remaining[r].load(std::memory_order_acquire)) {
+      // Block until every enabled fit in this date has completed, OR the fit
+      // scheduler terminated with fits still outstanding. A range with no enabled
+      // boards starts at zero and proceeds immediately.
+      //
+      // ── R1-a (review C-06): why this cannot miss a wakeup ────────────────────
+      // The loop sleeps ONLY in `remaining[r].wait(left)` with `left` a value it
+      // has just loaded from `remaining[r]` that is neither of the two exit values
+      // (0 = date complete, kSchedulerAborted = scheduler gone). Every state change
+      // that could release this date CHANGES THE VALUE OF THIS VERY OBJECT and then
+      // notifies it: the last `MarkDone` fetch_sub reaching 0, or the fit runner's
+      // sentinel store. `std::atomic<T>::wait(old)` is specified to return
+      // immediately when the object's value differs from `old`, so:
+      //   - if the change lands BEFORE the wait, the value comparison fails and
+      //     the wait does not block;
+      //   - if it lands AFTER, the notify wakes it.
+      // There is no third window, and therefore no lost wakeup. A separate
+      // `std::atomic<bool>` flag would NOT have this property — it can be set and
+      // notified between the drain's last read of it and its entry into a wait
+      // keyed on a different object — which is exactly why the termination signal
+      // is folded into the counter instead of living beside it.
+      std::size_t left = remaining[r].load(std::memory_order_acquire);
+      while (left != 0u && left != kSchedulerAborted) {
         remaining[r].wait(left, std::memory_order_acquire);
+        left = remaining[r].load(std::memory_order_acquire);
+      }
+      if (left == kSchedulerAborted) {
+        // The scheduler died before this date's fits could run. STOP: do not write
+        // a partition from a date whose cells were never fitted, and do not walk
+        // on to later dates whose counters are frozen for the same reason.
+        //
+        // Propagate the SCHEDULER'S OWN Status — its message already names the
+        // cause ("worker launch failed" / "scheduler setup failed") — rather than
+        // inventing a code that would tell the operator less. The acquire load
+        // that produced the sentinel synchronizes-with the runner's release store,
+        // so `fit_status` is fully published here even though the runner thread is
+        // not yet joined.
+        //
+        // Dates already drained AND written above are already durable (each
+        // `write_partition` is an atomic tmp+rename plus a generation-bumped
+        // manifest) and are NOT rolled back: the date is the resume unit, and a
+        // re-run's cell-aware filter skips them. See the U3 note below.
+        //
+        // The `fit_status` fallback is unreachable by construction — an Ok return
+        // from `run_bounded_fit_tasks` means every index ran, hence every counter
+        // reached 0 and no sentinel was stored — and exists so that a future
+        // scheduler change which broke that property would surface as a loud error
+        // rather than silently reinstating the hang.
+        return fit_status ? Err(ErrorCode::Internal,
+                                "populate_surface_db: fit scheduler terminated with date '" +
+                                    boards[order[range.begin]].date + "' incomplete")
+                          : Err(fit_status.error());
       }
 
       const std::size_t range_n = range.end - range.begin;

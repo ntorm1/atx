@@ -15,6 +15,8 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <future>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <fstream>
@@ -2474,6 +2476,219 @@ TEST(SurfaceDbPopulate, DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrives
                                        "to the fitter again -- which is why preserving a FAILED "
                                        "cell's bytes would silence its failure forever";
   EXPECT_EQ(cov5->cells_already_present, 3u);
+
+  std::filesystem::remove_all(root);
+}
+
+// ── R1-a (review C-06): a PRE-TASK fit-scheduler failure must TERMINATE the
+// populate, never wedge the per-date drain ──────────────────────────────────
+//
+// `populate_surface_db` initialises `remaining[date]` to a positive count and
+// drains each date by sleeping on that counter. The counter is decremented by a
+// scope guard INSIDE the fit task, so it only ever moves for a task that actually
+// STARTED. `run_bounded_fit_tasks` has two failure returns that happen before any
+// task starts -- a background worker-launch failure and a scratch-allocation
+// failure (the std::bad_alloc that killed this project's production run twice) --
+// and on both, every counter stayed frozen, nothing ever notified, and the main
+// thread slept forever without ever reaching the point where it could observe the
+// scheduler's Status. The process hung with no output.
+namespace {
+
+// The populate call under test runs on its OWN thread and is waited for with a
+// BOUNDED timeout, because the defect is a HANG: on a regression the call never
+// returns, and a test that simply called it inline would wedge the entire ctest
+// run instead of failing. 10s is ~100x these synthetic boards' runtime.
+//
+// On timeout the thread is deliberately LEAKED rather than joined -- it is stuck
+// in the very deadlock under test, so joining would reproduce the hang inside the
+// harness. Everything it touches lives in a shared_ptr it holds BY VALUE, so the
+// leak cannot dangle after the test body returns.
+struct StreamingRun {
+  std::optional<SurfaceDb> db;
+  std::vector<CorpusBoard> boards;
+  UniversePopulateSpec spec;
+  PopulateTestHooks hooks;
+  std::optional<Result<UniversePopulateCoverage>> cov;
+};
+
+[[nodiscard]] bool run_streaming_bounded(const std::shared_ptr<StreamingRun> &run,
+                                         std::chrono::seconds timeout) {
+  auto finished = std::make_shared<std::promise<void>>();
+  std::future<void> done = finished->get_future();
+  std::thread([run, finished] {
+    run->cov = populate_universe_streaming(*run->db, run->boards, run->spec, &run->hooks);
+    finished->set_value();
+  }).detach();
+  // `done` dies with this frame; the promise outlives it via the captured
+  // shared_ptr, and setting a value on a state with no reader is well-defined.
+  return done.wait_for(timeout) == std::future_status::ready;
+}
+
+constexpr std::chrono::seconds kDrainDeadlockTimeout{10};
+
+} // namespace
+
+// Path 1: the background-worker LAUNCH failure (fit_scheduler.cpp's inner
+// catch(...) -> "worker launch failed"). Injected through the full
+// populate_universe_streaming path. Asserts three things: the call TERMINATES
+// inside the bounded wait, it returns the SCHEDULER'S OWN non-Ok Status rather
+// than a fresh code, and the date it could not fit is absent from disk.
+TEST(SurfaceDbPopulate, SchedulerWorkerLaunchFailureTerminatesTheDrainInsteadOfHanging) {
+  const auto root = test_root("sched_launch_abort");
+
+  auto run = std::make_shared<StreamingRun>();
+  {
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+    run->db.emplace(std::move(*db));
+  }
+  run->boards = make_boards(); // AAA,BBB x kDate0,kDate1 = 4 enabled fits
+  run->spec.index_symbol = "";
+  run->spec.preset = FitPreset::Fast;
+  run->spec.fit_workers = 4u; // >= 2 so the scheduler launches background workers
+
+  std::atomic<bool> hook_fired{false};
+  run->hooks.before_worker_launch = [&hook_fired](std::size_t /*ordinal*/) {
+    hook_fired.store(true, std::memory_order_release);
+    throw std::runtime_error("injected worker-launch failure");
+  };
+
+  ASSERT_TRUE(run_streaming_bounded(run, kDrainDeadlockTimeout))
+      << "populate_universe_streaming did not return within " << kDrainDeadlockTimeout.count()
+      << "s after a pre-task scheduler failure -- the per-date drain is deadlocked on a "
+         "counter no task will ever decrement (review C-06)";
+  ASSERT_TRUE(hook_fired.load(std::memory_order_acquire))
+      << "the scheduler launched no background worker, so nothing was injected and this "
+         "run proves nothing (worker_budget collapsed to 1?)";
+
+  ASSERT_TRUE(run->cov.has_value());
+  ASSERT_FALSE(run->cov->has_value()) << "a scheduler that fitted NOTHING must not report success";
+  EXPECT_EQ(run->cov->error().code(), ErrorCode::Internal);
+  EXPECT_NE(run->cov->error().to_string().find("worker launch failed"), std::string::npos)
+      << "the scheduler's own message must be propagated, not replaced: "
+      << run->cov->error().to_string();
+
+  // Nothing was fitted, so no partition may exist -- in particular the drain must
+  // not have written a partition for a date whose cells never ran.
+  run->db.reset();
+  auto reopened = SurfaceDb::open(root.string());
+  ASSERT_TRUE(reopened.has_value()) << (reopened ? "" : reopened.error().to_string());
+  EXPECT_EQ(reopened->open_partition(kDate0).error().code(), ErrorCode::NotFound);
+  EXPECT_EQ(reopened->open_partition(kDate1).error().code(), ErrorCode::NotFound);
+
+  std::filesystem::remove_all(root);
+}
+
+// Path 2: the pre-launch SCRATCH-ALLOCATION failure (fit_scheduler.cpp's outer
+// catch(...) -> "scheduler setup failed"). This is the std::bad_alloc path the
+// production run actually took. A real bad_alloc is not injectable on demand, so
+// the throw comes from a hook placed at the top of the same try block; it reaches
+// the identical catch and the identical return, with no worker ever created --
+// which makes it a STRICTLY earlier pre-task failure than path 1.
+TEST(SurfaceDbPopulate, SchedulerSetupFailureTerminatesTheDrainInsteadOfHanging) {
+  const auto root = test_root("sched_setup_abort");
+
+  auto run = std::make_shared<StreamingRun>();
+  {
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+    run->db.emplace(std::move(*db));
+  }
+  run->boards = make_boards();
+  run->spec.index_symbol = "";
+  run->spec.preset = FitPreset::Fast;
+  run->spec.fit_workers = 1u; // even outer-SERIAL must not hang: no worker is launched
+
+  std::atomic<bool> hook_fired{false};
+  run->hooks.before_scheduler_setup = [&hook_fired]() {
+    hook_fired.store(true, std::memory_order_release);
+    throw std::bad_alloc();
+  };
+
+  ASSERT_TRUE(run_streaming_bounded(run, kDrainDeadlockTimeout))
+      << "populate_universe_streaming did not return within " << kDrainDeadlockTimeout.count()
+      << "s after a scheduler setup failure -- the per-date drain is deadlocked (review C-06)";
+  ASSERT_TRUE(hook_fired.load(std::memory_order_acquire));
+
+  ASSERT_TRUE(run->cov.has_value());
+  ASSERT_FALSE(run->cov->has_value());
+  EXPECT_EQ(run->cov->error().code(), ErrorCode::Internal);
+  EXPECT_NE(run->cov->error().to_string().find("scheduler setup failed"), std::string::npos)
+      << run->cov->error().to_string();
+
+  run->db.reset();
+  auto reopened = SurfaceDb::open(root.string());
+  ASSERT_TRUE(reopened.has_value()) << (reopened ? "" : reopened.error().to_string());
+  EXPECT_EQ(reopened->open_partition(kDate0).error().code(), ErrorCode::NotFound);
+
+  std::filesystem::remove_all(root);
+}
+
+// The durability half of R1-a: a date already fitted and WRITTEN before the
+// scheduler failure is still on disk afterwards, and the aborted run neither
+// rewrote it partially nor deleted it.
+//
+// The DATE is the resume unit, so the proof is staged across two runs, which is
+// also the only shape a PRE-TASK failure can produce (no task runs, so no date
+// can complete inside the failing run itself): run 1 fits kDate0 clean; run 2
+// adds a new symbol CCC to kDate0 -- which puts kDate0 back in the rewrite set,
+// so its whole partition is due to be rebuilt -- plus a new kDate1, and fails the
+// scheduler. Afterwards kDate0 must still serve AAA and BBB from a FRESH open
+// (crash-resume: only committed on-disk state), CCC must be absent (never
+// fitted), and kDate1 must not exist.
+TEST(SurfaceDbPopulate, DatesWrittenBeforeASchedulerFailureStayOnDisk) {
+  const auto root = test_root("sched_abort_durability");
+
+  // ── Run 1: kDate0 populated cleanly. ──
+  {
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+    const std::vector<CorpusBoard> first = {make_board(kDate0, "AAA", 100.0, 0.28),
+                                            make_board(kDate0, "BBB", 60.0, 0.34)};
+    UniversePopulateSpec spec;
+    spec.index_symbol = "";
+    spec.preset = FitPreset::Fast;
+    spec.fit_workers = 2u;
+    auto cov = populate_universe_streaming(*db, first, spec);
+    ASSERT_TRUE(cov.has_value()) << (cov ? "" : cov.error().to_string());
+    ASSERT_EQ(cov->cells_ok, 2u);
+    ASSERT_EQ(cov->dates_written, 1u);
+  }
+
+  // ── Run 2: kDate0 gains CCC (so the date is rewritten) and kDate1 arrives;
+  //    the scheduler dies before either can be fitted. ──
+  auto run = std::make_shared<StreamingRun>();
+  {
+    auto db = SurfaceDb::open(root.string());
+    ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+    run->db.emplace(std::move(*db));
+  }
+  run->boards = {make_board(kDate0, "AAA", 100.0, 0.28), make_board(kDate0, "BBB", 60.0, 0.34),
+                 make_board(kDate0, "CCC", 80.0, 0.31), make_board(kDate1, "AAA", 101.0, 0.27)};
+  run->spec.index_symbol = "";
+  run->spec.preset = FitPreset::Fast;
+  run->spec.fit_workers = 4u;
+  run->hooks.before_worker_launch = [](std::size_t /*ordinal*/) {
+    throw std::runtime_error("injected worker-launch failure");
+  };
+
+  ASSERT_TRUE(run_streaming_bounded(run, kDrainDeadlockTimeout))
+      << "the drain deadlocked (review C-06)";
+  ASSERT_TRUE(run->cov.has_value());
+  ASSERT_FALSE(run->cov->has_value());
+
+  run->db.reset(); // drop the in-process handle: only on-disk state is asserted below
+  auto reopened = SurfaceDb::open(root.string());
+  ASSERT_TRUE(reopened.has_value()) << (reopened ? "" : reopened.error().to_string());
+  for (const char *symbol : {"AAA", "BBB"}) {
+    EXPECT_TRUE(reopened->load_surface(kDate0, symbol).has_value())
+        << kDate0 << "/" << symbol
+        << " was lost by an aborted rewrite -- a scheduler failure must not destroy an "
+           "already-committed date";
+  }
+  EXPECT_EQ(reopened->load_surface(kDate0, "CCC").error().code(), ErrorCode::NotFound)
+      << "CCC was never fitted, so it must not appear in the partition";
+  EXPECT_EQ(reopened->open_partition(kDate1).error().code(), ErrorCode::NotFound);
 
   std::filesystem::remove_all(root);
 }

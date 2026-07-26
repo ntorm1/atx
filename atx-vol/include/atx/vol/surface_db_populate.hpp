@@ -164,6 +164,18 @@ struct PopulateTestHooks {
   // shared-worker-budget test asserting a small book splits the pool across
   // boards instead of pinning each board to one worker.
   std::function<void(unsigned inner_fit_workers)> on_inner_fit_workers{};
+  // R1-a (review C-06): forwarded verbatim to the fit scheduler's own
+  // `FitSchedulerTestHooks` so a PRE-TASK scheduler failure can be injected
+  // through the FULL populate path rather than only in a scheduler-local unit
+  // test. Both run on the fit-runner thread before any board is claimed; a throw
+  // from either makes `run_bounded_fit_tasks` return a non-Ok Status with not one
+  // `MarkDone` having fired, which is the exact shape that used to deadlock the
+  // per-date drain. Declared as bare std::function rather than by embedding
+  // `detail::FitSchedulerTestHooks` so this public header keeps no dependency on
+  // the detail/ scheduler header. Empty in production (the whole struct is
+  // nullptr there).
+  std::function<void(std::size_t worker_ordinal)> before_worker_launch{};
+  std::function<void()> before_scheduler_setup{};
 };
 
 // Fit every board and store one partition per distinct board date (key =
@@ -184,7 +196,23 @@ struct PopulateTestHooks {
 // config fingerprint and a later resume re-fits them rather than reusing them
 // (fail closed; see `SurfaceDbPopulateConfig::attest`).
 // Top-level Err only on: empty boards span, db write errors, a date key
-// the db rejects, or a CARRY READ-BACK failure.
+// the db rejects, a CARRY READ-BACK failure, or a FIT-SCHEDULER TERMINATION that
+// left a date's fits unstarted.
+//
+// THE FIT-SCHEDULER TERMINATION (R1-a, review C-06). `run_bounded_fit_tasks` has
+// two PRE-TASK failure returns — a background-worker launch failure and a
+// scratch-allocation failure — on which NOT ONE board is fitted and therefore not
+// one per-date completion counter is ever decremented. The per-date drain used to
+// sleep on those counters forever: the process hung with no output, and never
+// reached the point where it could observe the scheduler's Status. It now wakes on
+// scheduler termination as well, and returns the SCHEDULER'S OWN Status (never a
+// newly invented code — the scheduler's message already names the cause) for the
+// first date left incomplete. No partition is written from a partially-fitted
+// date. Dates already fully drained AND written before the failure stay on disk:
+// each `write_partition` is an atomic tmp+rename plus a generation-bumped
+// manifest, committed by the drain before the scheduler's Status is ever read, and
+// a re-run's cell-aware filter skips them. The date is the resume unit and that is
+// correct.
 //
 // THE CARRY READ-BACK FAILURE (FIX-F, M-6). A cell named in `carry_over` whose
 // stored record cannot be opened, found, or reconstructed is a hard Err that
