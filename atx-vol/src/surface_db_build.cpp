@@ -593,6 +593,30 @@ int build_exit_code(const SurfaceDbBuildReport &r, bool report_write_failed, boo
   return report_write_failed ? kSurfaceDbBuildExitReportWriteFailed : kSurfaceDbBuildExitOk;
 }
 
+bool refusal_advice_names_the_carry_rate(const SurfaceDbBuildReport &r) {
+  // REV-R5 (review I-3). Two conjuncts; the header carries the argument for both.
+  //
+  // Saturating, for the reason recorded there: `dates_refused_partition_unlisted`
+  // is a documented SUBSET of `dates_refused_coverage_regression`, guaranteed by
+  // the populate that fills them, and a diagnostic is not the place to discover
+  // that a hand-built report disagrees.
+  const std::uint32_t unlisted = r.coverage.dates_refused_partition_unlisted <
+                                         r.coverage.dates_refused_coverage_regression
+                                     ? r.coverage.dates_refused_partition_unlisted
+                                     : r.coverage.dates_refused_coverage_regression;
+  const std::uint32_t listed = r.coverage.dates_refused_coverage_regression - unlisted;
+
+  // (a) at least one refusal whose partition the manifest LISTS -- the only shape
+  //     for which a failed re-fit, and therefore the carry rate, is the suspect.
+  // (b) NOTHING was carried. A run that carried stored surfaces is a run whose
+  //     stored records validated for reuse, so its rate is not what is wrong, and
+  //     the escape this advice offers would delete exactly those surfaces. This
+  //     is also what makes the advice mutually exclusive with the `--strict`
+  //     block's "Do NOT reach for --r", which is reachable only when something
+  //     WAS carried.
+  return listed > 0u && r.coverage.cells_carried == 0u;
+}
+
 Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view path) {
   std::string out;
   out.reserve(1024 + r.coverage.per_symbol.size() * 48);

@@ -475,7 +475,20 @@ struct UniversePopulateCoverage {
   // Every cell behind the two counters above, ascending by (date, canonical
   // symbol), complete and uncapped. Carried straight through from the populate.
   std::vector<CoverageRegressionCell> coverage_regression_cells;
-  std::vector<PopulateSymbolStats> per_symbol; // from the underlying populate (written dates only)
+  // Per-symbol dispositions from the underlying populate — over every date this
+  // run PROCESSED, which since REV-R3 is NOT the same set as the dates it WROTE.
+  // A date the coverage guard REFUSED ran its fits in full and withheld only the
+  // commit: every counter here (`n_attempted`, `n_ok`, `n_failed`, `n_disabled`,
+  // `n_carried`) is accumulated in the drain's per-cell walk, which completes
+  // before the write decision is taken, so a refused date contributes rows while
+  // `dates_written` never counts it. This line said "written dates only" — the
+  // same staleness the two comments above were corrected for ("they count FIT
+  // outcomes, not commits") and this one was missed (REV-R5, review M-2).
+  //
+  // Dates the resume filter SKIPPED (`dates_skipped_complete`) contribute nothing:
+  // they never enter the walk at all. So the set is "processed", not "written" and
+  // not "all requested".
+  std::vector<PopulateSymbolStats> per_symbol;
   // WHY each of `cells_failed` failed, ascending by (date, symbol) — the fit
   // stage's answer to `AutoConfigReport::failed_symbols`, which names the symbols
   // the CONFIG stage is not serving (as of FIX-C-2 that is the STANDING disabled

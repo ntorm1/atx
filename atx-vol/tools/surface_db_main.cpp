@@ -137,28 +137,30 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/session.hpp"          // FitPreset
-#include "atx/vol/surface_db.hpp"       // SurfaceDb
-#include "atx/vol/surface_db_admin.hpp" // describe_*, query_surface, verify_db
-#include "atx/vol/surface_policy.hpp"   // to_string(SurfacePurpose/FitQualityMode/SurfaceState)
-#include "atx/vol/types.hpp"            // Result, Status
-#include "atx/vol/vol_curve.hpp"        // to_string(VolCurveKind)
+#include "atx/vol/session.hpp"               // FitPreset
+#include "atx/vol/surface_db.hpp"            // SurfaceDb
+#include "atx/vol/surface_db_admin.hpp"      // describe_*, query_surface, verify_db
+#include "atx/vol/surface_db_exit_codes.hpp" // kSurfaceDbVerifyExit* (shared with the build CLI)
+#include "atx/vol/surface_policy.hpp"        // to_string(SurfacePurpose/FitQualityMode/SurfaceState)
+#include "atx/vol/types.hpp"                 // Result, Status
+#include "atx/vol/vol_curve.hpp"             // to_string(VolCurveKind)
 
 using namespace atx::vol;
 
 namespace {
 
-// `verify` found more ABSENT cells than `--max-absent` allows. Its own code, and
-// deliberately not 1: absence is a coverage answer over an otherwise intact
-// database, and a script that treats "the database is damaged" and "the database
-// is missing two more cells than last month" identically will act wrongly on one
-// of them. Never reached without the flag — a converged production database is
-// permanently non-zero on `cells_absent`, so an unconditional non-zero here would
-// rebuild the permanently-red verdict this whole change removes (the same
-// argument `is_carry_masked_fit_failure` records for keeping the build CLI at
-// exit 0 — surface_db_build.hpp). 3 belongs to atx-vol-surface-db-build's
-// total-failure code; the two tools share one exit vocabulary, so it is skipped.
-constexpr int kExitAbsentOverLimit = 4;
+// REV-R5 (review I-4). This was a FILE-LOCAL `constexpr int kExitAbsentOverLimit
+// = 4` whose comment asserted that the two surface-db CLIs share one exit
+// vocabulary — the invariant that makes the build CLI skip 4 and use 5 — while
+// living in a translation unit that never saw the build CLI's constants. Three
+// comments claimed the contract and nothing enforced it: either tool could have
+// renumbered onto the other with a green build and a green test run.
+//
+// Both vocabularies now live in `atx/vol/surface_db_exit_codes.hpp`, which
+// `static_assert`s that 3 and 5 (the build CLI's) never collide with 4 (this
+// one's) and that 0/1/2 agree. NOTHING IS RESTATED HERE — not even an alias — so
+// that the shared header is the only place either number can be changed; the call
+// sites below spell `kSurfaceDbVerifyExitAbsentOverLimit` in full.
 
 void print_usage(std::FILE *out) {
   std::fprintf(
@@ -593,7 +595,7 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
         "have on it. Wire the expected count into the script with `--max-absent N` so a "
         "growth exits %d instead of needing a human to notice — WITHOUT it, a run that "
         "destroyed stored surfaces exits 0.\n",
-        kExitAbsentOverLimit);
+        kSurfaceDbVerifyExitAbsentOverLimit);
   }
   // EVERY cell the walk read is a hole. `ok()` is true (nothing failed a gate),
   // `--min-cells` is satisfied (it counts the grid, and a grid of pure holes is
@@ -625,7 +627,7 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
         "you did not narrow it deliberately, read (b). If this database is supposed to have "
         "NO absent cells, run it with `--max-absent 0` so this exits %d instead of 0.\n",
         rep->cells_checked, rep->n_symbols, rep->n_partitions, rep->n_partitions_in_db,
-        kExitAbsentOverLimit);
+        kSurfaceDbVerifyExitAbsentOverLimit);
   }
   std::printf("min_cells %zu\n", min_cells);
   if (absent.set) {
@@ -679,7 +681,7 @@ int run_verify(const SurfaceDb &db, const DbVerifySpec &spec, std::size_t min_ce
   }
   if (!within_absent_ceiling) {
     std::printf("verdict ABSENT\n");
-    return kExitAbsentOverLimit;
+    return kSurfaceDbVerifyExitAbsentOverLimit;
   }
   std::printf("verdict ok\n");
   return 0;

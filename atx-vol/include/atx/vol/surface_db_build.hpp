@@ -41,11 +41,12 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/corpus.hpp"             // CorpusBoard
-#include "atx/vol/opra_hive.hpp"          // OpraHiveSpec
-#include "atx/vol/surface_db.hpp"         // SurfaceDb, SymbolFitConfig, FitPreset
-#include "atx/vol/surface_db_populate.hpp" // UniversePopulateCoverage, PopulateSymbolStats
-#include "atx/vol/types.hpp"             // Result, Status
+#include "atx/vol/corpus.hpp"                // CorpusBoard
+#include "atx/vol/opra_hive.hpp"             // OpraHiveSpec
+#include "atx/vol/surface_db.hpp"            // SurfaceDb, SymbolFitConfig, FitPreset
+#include "atx/vol/surface_db_exit_codes.hpp" // kSurfaceDbBuildExit* (shared with the admin CLI)
+#include "atx/vol/surface_db_populate.hpp"   // UniversePopulateCoverage, PopulateSymbolStats
+#include "atx/vol/types.hpp"                 // Result, Status
 
 namespace atx::vol {
 
@@ -351,21 +352,33 @@ coverage_regression_display_cap(const SurfaceDbBuildReport &r,
 //     that produced real surfaces is not a dead build and a scheduler must not
 //     retry it as one.
 //
-// DISJOINT FROM BOTH EXIT-3 PREDICATES BELOW, and from the carry-masked warning,
-// by a single REACHABILITY fact rather than by an algebraic conjunct (the same
-// style of argument `is_total_config_failure` uses for its own carry clause):
+// DISJOINT FROM EVERY OTHER PREDICATE IN THIS HEADER — ON REPORTS
+// `build_surface_db` PRODUCES — by a single REACHABILITY fact rather than by an
+// algebraic conjunct (the same style of argument `is_total_config_failure` uses
+// for its own carry clause). Say the scope out loud, because it is the weaker of
+// the two kinds of disjointness this header states: on a HAND-BUILT report the
+// conjuncts do not exclude each other and nothing here claims they do.
+//
 // `n_dates_loaded == 0` holds exactly when the loaded board span is EMPTY —
 // `build_surface_db` inserts a date into `loaded_dates` and pushes a board on the
 // very same branch — and an empty span is handed to BOTH later stages. So
 // `generate_symbol_configs` sees zero symbols (`n_disabled_failed`,
 // `n_disabled_existing`, `n_configured`, `n_skipped_existing` all 0) and
 // `populate_universe_streaming` returns its all-zero coverage before doing
-// anything. Each of the other three predicates requires a STRICTLY POSITIVE term
+// anything. Each of the other FOUR predicates requires a STRICTLY POSITIVE term
 // from those zeroed counters — `is_total_config_failure` needs `disabled > 0`,
-// `is_total_fit_failure` needs `cells_to_fit > 0`, `is_carry_masked_fit_failure`
-// needs `cells_carried > 0` — so none of them can fire on any report this one
-// fires on. `SurfaceDbTotalLoadFailure.NeverOverlapsAnotherVerdict` pins the
-// reachability link on a REAL corrupt-window build rather than asserting it.
+// `is_total_fit_failure` and `is_strict_total_fit_failure` need
+// `cells_to_fit > 0`, `is_carry_masked_fit_failure` needs `cells_carried > 0` —
+// so none of them can fire on any report this one fires on.
+// `SurfaceDbTotalLoadFailure.NeverOverlapsAnotherVerdict` pins the reachability
+// link on a REAL corrupt-window build rather than asserting it, and asserts all
+// four are silent there.
+//
+// THE ENUMERATION IS EXHAUSTIVE OVER THIS HEADER AND MUST BE KEPT SO. REV-R4
+// added `is_strict_total_fit_failure` and this paragraph — written as a proof —
+// went on claiming to enumerate "the other three" (REV-R5, review M-8). A new
+// predicate belongs in the list and in that test's assertions, or this stops
+// being a proof and becomes the thing it looks like.
 //
 // IF THEY EVER DID CO-FIRE, THIS ONE WINS, and the CLI tests it FIRST for that
 // reason: it is the most upstream cause. A config stage that disabled everything
@@ -544,15 +557,55 @@ coverage_regression_display_cap(const SurfaceDbBuildReport &r,
 // read by neither exit-code predicate, so a run carrying only those is NOT exempt
 // — it still exits 3, and warning on it would duplicate that verdict.
 //
-// Disjoint from BOTH exit-3 predicates by construction, not just the one this
-// warning was carved out of (M-A): `is_total_fit_failure` requires
-// `cells_carried == 0` and so does `is_total_config_failure`, while this requires
-// `> 0`, so all three are pairwise disjoint on that single term. The CLI can
-// never emit a verdict and this hedge for one run, and that is a property of the
-// predicates rather than of the order `main` tests them in.
-// `SurfaceDbCarryMaskedFitFailure.NeverOverlapsEitherExitCode` proves it over the
-// whole small-counter space rather than sampling one point, so dropping the
-// `cells_carried` conjunct from EITHER exit predicate fails there.
+// WHAT THIS IS DISJOINT FROM, EXACTLY — and what it is NOT (REV-R5, review I-1).
+//
+// This paragraph used to say the CLI "can never emit a verdict and this hedge for
+// one run, and that is a property of the predicates rather than of the order
+// `main` tests them in". That was true when written, over three predicates and
+// the exit set {0,1,2,3}. REV-R3's exit 5 and REV-R4's `is_strict_total_fit_
+// failure` each falsified it WITHOUT TOUCHING THIS SENTENCE, so neither task's
+// diff contained it. It is now stated as three separate claims, each scoped to
+// what a test actually checks.
+//
+//  1. DISJOINT, ALGEBRAICALLY, from the two exit-3 predicates that read the same
+//     term (M-A): `is_total_fit_failure` requires `cells_carried == 0` and so does
+//     `is_total_config_failure`, while this requires `> 0`. All three are
+//     pairwise disjoint on that single term, for ANY report — hand-built ones
+//     included. `SurfaceDbCarryMaskedFitFailure.NeverOverlapsEitherExitCode`
+//     proves it over the whole small-counter space rather than sampling one
+//     point, so dropping the `cells_carried` conjunct from EITHER exit predicate
+//     fails there. This is the claim the test's name is about, and it is the only
+//     one of the three that is a property of the predicates.
+//
+//  2. NOT DISJOINT from `is_strict_total_fit_failure`. That predicate is
+//     `is_total_fit_failure` MINUS the carry clause, so the region where it fires
+//     and the plain one does not is exactly `cells_carried > 0` — this
+//     predicate's own region. Under `--strict` both are true of the same report,
+//     and the CLI prints only one because `main`'s strict block `return`s BEFORE
+//     reaching the hedge. ORDERING IS LOAD-BEARING HERE; the comment above that
+//     block says so, and any edit that reorders them prints a verdict and a hedge
+//     together. `SurfaceDbCarryMaskedFitFailure.OverlapsTheStrictVerdictByDesign`
+//     pins the overlap as a fact rather than leaving it as an absence.
+//
+//  3. INDEPENDENT of the exit-5 refusal, which co-occurs with this warning BY
+//     DESIGN. `build_exit_code`'s refusal branch reads
+//     `coverage.dates_refused_coverage_regression`; no predicate in this header
+//     reads that counter, so a refusal is orthogonal to all four. A run that
+//     carries surfaces, fits nothing, and has one date refused fires this warning
+//     AND returns 5 — the refusal banner is printed unconditionally precisely so
+//     it can never be swallowed. (Within one DATE the two cannot both happen —
+//     when the carry fingerprint is valid every present enabled cell is carried,
+//     so none can be missing from the candidate — which is why the interaction is
+//     cross-date only and was never seen in testing.)
+//     `SurfaceDbCarryMaskedFitFailure.CoexistsWithTheRefusalExitCode` pins it.
+//
+// The consequence for the CLI, stated once: a report that satisfies this
+// predicate can exit 0, 3 (under `--strict`, from the block above the hedge) or 5
+// (a refusal). NO BANNER MAY ASSERT AN EXIT CODE IT DOES NOT DECIDE — the hedge's
+// text in surface_db_build_main.cpp was headed `WARNING (exit 0)` on all three and
+// now names none. (The destructive coverage-regression banner's "exit 0 unless
+// another verdict fires" is the HEDGED form of the same thing and is accurate;
+// what is banned is the bare assertion.)
 [[nodiscard]] bool is_carry_masked_fit_failure(const SurfaceDbBuildReport &r);
 
 // The SAME silent-green trap, one stage earlier — and invisible to the predicate
@@ -606,8 +659,8 @@ coverage_regression_display_cap(const SurfaceDbBuildReport &r,
 
 // ── The build CLI's exit vocabulary, and the one decision that reads it ──────
 //
-// REV-R3 fix-1 (review I-2). These constants and `build_exit_code` below used to
-// live inside `atx-vol-surface-db-build`'s `main()` — the codes as file-local
+// REV-R3 fix-1 (review I-2). The exit constants and `build_exit_code` below used
+// to live inside `atx-vol-surface-db-build`'s `main()` — the codes as file-local
 // `constexpr`s and the decision as a lambda — which put the tool's most
 // operator-visible contract out of reach of every test, in a header whose two
 // SIBLING contracts (`is_total_fit_failure`, `reported_failed_cells`) are unit-
@@ -615,41 +668,18 @@ coverage_regression_display_cap(const SurfaceDbBuildReport &r,
 // 1 rested on a single manual CLI run. Now the decision is a pure function of the
 // report and `SurfaceDbBuildExitMatrix` pins the matrix.
 //
+// REV-R5 (review I-4) finished the job for the CODES: they now live in
+// `atx/vol/surface_db_exit_codes.hpp`, included above, ALONGSIDE
+// `atx-vol-surface-db`'s — because the "one number means one thing across both
+// binaries" invariant (the reason 5 skips 4) had the two halves in different
+// translation units with nothing but a comment between them. That header
+// `static_assert`s the relation, so a collision is a build failure. The names
+// (`kSurfaceDbBuildExit*`) are unchanged.
+//
 // `main()` still owns every DIAGNOSTIC: which banner prints, in what order, and
 // with what advice. It calls this only for the number. The two are deliberately
 // separable — a refusal and a total fit failure can co-occur, and BOTH messages
 // must print even though only one code can be returned.
-//
-// The vocabulary is SHARED WITH `atx-vol-surface-db` (documented in
-// atx-vol/docs/surface-db-build.md's two exit tables): one number means one thing
-// across both binaries so a wrapper script can read either without a lookup
-// table. That is why 4 is skipped below rather than reused.
-inline constexpr int kSurfaceDbBuildExitOk = 0;
-// The tool or the db broke and there is no report to read — OR (the only shape
-// this function can return it for) the run was otherwise fine and the single
-// thing that failed is the `--report` CSV the operator asked for. It is the
-// LOWEST-priority verdict: `main` has already printed the full report to stdout.
-inline constexpr int kSurfaceDbBuildExitReportWriteFailed = 1;
-// 2 is a usage error. It is decided before the db is opened, so no report exists
-// and `build_exit_code` can never return it; named here only so the vocabulary
-// reads as a whole.
-inline constexpr int kSurfaceDbBuildExitUsage = 2;
-// The build ran to completion and produced NOTHING — at INGEST (every present
-// file in the window unreadable), at CONFIG SELECTION, or at the FIT. ONE code
-// for all three stages: a script asks "did this run produce anything?", and the
-// stderr diagnostic names which stage swallowed it.
-inline constexpr int kSurfaceDbBuildExitTotalFitFailure = 3;
-// REV-R3 (review C-02/F-02). At least one date was REFUSED because committing its
-// rewrite would have destroyed a stored surface. Not exit 3: the refusal is the
-// tool WORKING, other dates were built normally, and nothing was lost. The
-// operator's next action differs in kind — 3 says "fix your inputs and re-run",
-// this says "your inputs would have deleted data; decide first".
-//
-// 4 IS DELIBERATELY SKIPPED. `atx-vol-surface-db` already uses 4 for `verify`'s
-// ABSENT-cell verdict, and the two CLIs are run back to back by the same scripts;
-// one number meaning two things across a build/verify pair costs more than a gap
-// in the sequence.
-inline constexpr int kSurfaceDbBuildExitCoverageRegression = 5;
 
 // The build CLI's exit code for `r`, given whether the `--report` CSV write
 // failed and whether `--strict` was passed. Pure; reads nothing but its
@@ -675,6 +705,44 @@ inline constexpr int kSurfaceDbBuildExitCoverageRegression = 5;
 [[nodiscard]] int build_exit_code(const SurfaceDbBuildReport &r, bool report_write_failed,
                                   bool strict);
 
+// May the coverage-refusal banner name `--r` as the suspect? (REV-R5, review I-3.)
+//
+// The refusal banner and the `--strict` banner were written independently, each
+// argued at length that its own advice was the safe one for its own shape, and
+// neither anticipated printing beside the other. On a `--strict` run with a
+// refusal on a LISTED partition both did, and the combined stderr told the
+// operator to suspect `--r` and re-run with `--allow-coverage-regression` in one
+// paragraph and, in the next, that reaching for `--r` would DELETE the surfaces
+// this run carried. Following the first destroys data.
+//
+// True iff (a) at least one refused date is one the manifest LISTS — the shape
+// where a failed re-fit really is the cause, as opposed to
+// `dates_refused_partition_unlisted`, whose remedy is the opposite one (REV-R3
+// fix-2 / review N-3) — AND (b) `coverage.cells_carried == 0`.
+//
+// (b) is the new conjunct and it is the `--strict` block's own argument, applied
+// one banner earlier: a run that CARRIED stored surfaces is a run whose stored
+// records validated for reuse, so the rate this build used is not the thing that
+// is wrong. Naming `--r` there is not merely unhelpful; the escape it offers
+// (`--allow-coverage-regression`) is exactly what deletes the carried surfaces.
+// The rule the arc has now applied three times: ON A STATE WHERE A PIECE OF
+// ADVICE IS NOT THE RIGHT ADVICE, DO NOT PRINT IT.
+//
+// It lives here rather than in `main()` for the same reason `build_exit_code`
+// and `coverage_regression_display_cap` do — a contract in `main()` cannot be
+// tested, and this one is a contract about advice that can destroy data.
+// `SurfaceDbRefusalRateAdvice.NeverCoexistsWithTheStrictDoNotReachForR` pins the
+// mutual exclusion over the whole small-counter space; without it the two blocks
+// are once again two independently-argued texts that have never met.
+//
+// The unlisted subtraction is SATURATING, matching the banner:
+// `dates_refused_partition_unlisted` is a documented SUBSET of
+// `dates_refused_coverage_regression`, guaranteed by the populate that fills
+// both, and a diagnostic is not the place to find out that a hand-built report
+// disagrees. `main` computes the same two counts for the numbers it PRINTS; this
+// function owns only the DECISION, which is the half a test can hold.
+[[nodiscard]] bool refusal_advice_names_the_carry_rate(const SurfaceDbBuildReport &r);
+
 // Run the whole build (see `SurfaceDbBuildSpec`). Idempotent/resumable: re-running
 // over an unchanged hive re-fits ZERO (configs skip-existing, the populate's
 // cell-aware filter writes no date) ONCE every loaded cell has either fitted
@@ -688,7 +756,7 @@ inline constexpr int kSurfaceDbBuildExitCoverageRegression = 5;
 // aborts the build (it is tallied and, for config, stored disabled).
 [[nodiscard]] Result<SurfaceDbBuildReport> build_surface_db(const SurfaceDbBuildSpec &spec);
 
-// Write `r` as a four-section CSV (reuses `write_populate_stats_csv`'s formatting
+// Write `r` as a FIVE-section CSV (reuses `write_populate_stats_csv`'s formatting
 // discipline: an owned buffer flushed to a binary/truncating stream, IoError on
 // open/write failure). Section 1 is a `key,value` table of every scalar counter
 // (config.*, coverage.*, and the ingest counters n_dates_loaded / n_dates_missing
@@ -697,8 +765,19 @@ inline constexpr int kSurfaceDbBuildExitCoverageRegression = 5;
 // `symbol,n_attempted,n_ok,n_failed,n_disabled,n_carried` row per
 // `coverage.per_symbol` entry; section 4 is a `date,symbol,code,detail` row per
 // `coverage.failed_cells` entry — the WHOLE list, never the printed cap, because
-// this file is where an operator goes to root-cause the lost cells. The first
-// line is always the pinned header `key,value`.
+// this file is where an operator goes to root-cause the lost cells; section 5 is
+// a `regression_date,regression_symbol` row per `coverage.coverage_regression_
+// cells` entry, likewise uncapped. The first line is always the pinned header
+// `key,value`.
+//
+// SECTION 5 IS REV-R3's AND THIS CONTRACT MISSED IT (REV-R5, review M-1). The
+// code has written five sections since REV-R3, the CLI's own `--report` help says
+// "five-section", the manual says five, and the destructive banner tells the
+// operator that section 5 is the ONLY durable record that the surfaces it just
+// destroyed ever existed — the archive format keeps no tombstone. A public
+// contract that stops one section short of the one an incident is reconstructed
+// from is the worst place for this class of staleness, so it is called out here:
+// a new section goes in this paragraph in the same commit that writes it.
 //
 // `coverage.cells_carried` (section 1) and `n_carried` (section 3) are FIX-D
 // fix-1's: with `is_total_fit_failure` widened for the carried-only resume, these

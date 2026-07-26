@@ -327,7 +327,11 @@ void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
   }
   std::printf("\n");
 
-  // Per-symbol populate coverage (written dates only), sorted by symbol.
+  // Per-symbol populate coverage over the dates this run PROCESSED, sorted by
+  // symbol. NOT "written dates only" — a date the coverage guard refused ran its
+  // fits and withheld only the commit, so its cells are in these rows while
+  // `coverage.dates_written` never counted the date (REV-R5, review M-2; the
+  // counter's own contract is in surface_db_populate.hpp).
   for (const PopulateSymbolStats &s : r.coverage.per_symbol) {
     std::printf("symbol.%s attempted=%u ok=%u failed=%u disabled=%u carried=%u\n", s.symbol.c_str(),
                 s.n_attempted, s.n_ok, s.n_failed, s.n_disabled, s.n_carried);
@@ -628,7 +632,23 @@ int main(int argc, char **argv) {
             "and re-run -- that turns the date into a first write.\n",
             n_unlisted);
       }
-      if (n_listed > 0) {
+      // ── REV-R5 (review I-3): the SECOND state on which --r is the wrong advice ──
+      //
+      // The rule above was applied once, to the unlisted-partition cause. It has a
+      // second instance the block never saw: a run that CARRIED stored surfaces.
+      // Under --strict such a run also prints the strict banner below, whose text
+      // is "Do NOT reach for --r ... re-running at a 'corrected' --r would ...
+      // DELETE those surfaces" -- so one stderr stream told the operator to
+      // suspect --r and re-run with --allow-coverage-regression, and then that
+      // doing so destroys data. Following the first paragraph is the destructive
+      // action; the two blocks had each argued their own advice was safe and
+      // neither had anticipated printing beside the other.
+      //
+      // The gate is `refusal_advice_names_the_carry_rate` (surface_db_build.hpp),
+      // a pure predicate rather than an `if` here, so the mutual exclusion with
+      // the strict banner is PINNED by a test instead of by these two comments
+      // agreeing. It folds in the `n_listed > 0` condition this block already had.
+      if (refusal_advice_names_the_carry_rate(*report)) {
         std::fprintf(stderr,
                      "  Most likely cause for the remaining %u date(s): --r does not match the "
                      "hive. This build used --r %.17g. "
@@ -641,6 +661,23 @@ int main(int argc, char **argv) {
                      "re-run with --allow-coverage-regression; the run will then delete them and "
                      "list exactly what it deleted. Do not pass it to silence this line.\n",
                      n_listed, spec.hive.r);
+      } else if (n_listed > 0) {
+        // Same refusals, and they still need an explanation -- the count must not
+        // vanish just because the --r paragraph is suppressed. What is withheld is
+        // the SUSPECT and the escape hatch, not the fact.
+        std::fprintf(stderr,
+                     "  The remaining %u date(s) were refused because stored cells did not re-fit "
+                     "on this run. --r IS NOT THE SUSPECT HERE and is deliberately not named: this "
+                     "run CARRIED %u stored surface(s), which means those records validated for "
+                     "reuse, so the rate this build used is not the thing that is wrong. Re-running "
+                     "at a 'corrected' --r would fail every re-fit and be refused date by date -- "
+                     "or, with --allow-coverage-regression, DELETE the carried surfaces.\n"
+                     "  What to compare instead: this run's failed-cell list against the previous "
+                     "run's. The same cells failing the same way is the converged steady state; a "
+                     "cell that is NEW, or an old cell with a NEW reason, is a real regression. The "
+                     "failed_cell lines on stdout carry each cell's own reason and --report writes "
+                     "every one of them.\n",
+                     n_listed, report->coverage.cells_carried);
       }
     }
   }
@@ -695,12 +732,21 @@ int main(int argc, char **argv) {
   // Some dates loaded and some did not. NOT a failure — the readable dates were
   // built and the database really did gain surfaces — but it must not be silent
   // either: an unattended run that quietly ingests 12 of 17 dates produces a
-  // database with holes nobody asked for. Exit stays 0; the operator watches the
-  // count. Unreachable when the block above fired (that one requires
-  // `n_dates_loaded == 0` and returns).
+  // database with holes nobody asked for. This condition contributes nothing to
+  // the exit code; the operator watches the count. Unreachable when the block
+  // above fired (that one requires `n_dates_loaded == 0` and returns).
+  //
+  // NO EXIT CODE IN THE BANNER (REV-R5, review I-2). This line used to read
+  // `WARNING (exit 0)`, which was a hardcoded literal on a path that does not
+  // decide the exit: partial load corruption composes with a total CONFIG failure
+  // (3), a total FIT failure (3), a --strict verdict (3) and a coverage-regression
+  // refusal (5), all of which are still ahead of or below this line. The tool
+  // printed `exit 0` and returned 5. The fix is structural rather than a corrected
+  // literal: a banner that names no code cannot contradict one, and this banner
+  // never owned the code to begin with.
   if (report->n_load_errors > 0) {
     std::fprintf(stderr,
-                 "atx-vol-surface-db-build: WARNING (exit 0): %zu cell(s) failed to LOAD "
+                 "atx-vol-surface-db-build: WARNING: %zu cell(s) failed to LOAD "
                  "(%zu date(s) loaded, %zu produced no board).\n"
                  "  These cells never reached the fitter, so they are in neither cells_ok nor "
                  "cells_failed and no failed_cell line names them. A present file that is "
@@ -708,7 +754,10 @@ int main(int argc, char **argv) {
                  "a date that simply does not carry a symbol does NOT (that is "
                  "n_coverage_holes %zu, which every sparse universe produces). The dates that "
                  "did load were built normally, and a re-run after fixing or re-pulling the "
-                 "bad files fills the gaps.\n",
+                 "bad files fills the gaps.\n"
+                 "  This WARNING is not a verdict and does not set the exit code: partial load "
+                 "corruption is not a failure on its own. Read the process's exit status, and any "
+                 "banner above or below this one, for what this run is being judged as.\n",
                  report->n_load_errors, report->n_dates_loaded, report->n_dates_missing,
                  report->n_coverage_holes);
   }
@@ -775,10 +824,23 @@ int main(int argc, char **argv) {
   // Placed BEFORE the warning below rather than after it because the two are
   // alternatives, not layers: the warning's whole text is "the tool is not
   // judging this, here is why it can't". Under --strict the operator has already
-  // told the tool to judge it, so printing the hedge as well -- headed
-  // "WARNING (exit 0)" -- would contradict the exit code this block returns. The
-  // failed-cell list the warning exists to show is reproduced here, from the same
-  // helper under the same --max-failures cap.
+  // told the tool to judge it, so printing the hedge as well would contradict the
+  // exit code this block returns. The failed-cell list the warning exists to show
+  // is reproduced here, from the same helper under the same --max-failures cap.
+  //
+  // THIS ORDERING IS THE ONLY THING SEPARATING THE TWO (REV-R5, review I-1).
+  // `is_strict_total_fit_failure` is true on exactly the region
+  // `is_carry_masked_fit_failure` occupies — the hedge's comment below claimed for
+  // two releases that no verdict could accompany it "independently of the order
+  // they are tested in here", which was never true of this block. Reorder these
+  // two and the CLI prints a verdict and a hedge that says it is not judging, in
+  // one stream. `SurfaceDbCarryMaskedFitFailure.OverlapsTheStrictVerdictByDesign`
+  // asserts the overlap so it cannot be forgotten again.
+  //
+  // The hedge below used to be headed "WARNING (exit 0)", which is why this
+  // ordering mattered doubly. That literal is gone (review I-2) — it was wrong on
+  // exit 5 as well — but the ordering requirement is unchanged and independent of
+  // it: the two TEXTS contradict each other, not just the number.
   //
   // SAME EXIT CODE, 3. No new number. A script's question is unchanged ("did this
   // run produce anything?"), the answer under --strict is just stricter about
@@ -848,12 +910,41 @@ int main(int argc, char **argv) {
   // it is indistinguishable from the converged steady state, which is a healthy
   // production database, and failing it is precisely the defect the carry clause
   // fixed. So the tool says the two are different instead of judging between them.
-  // Disjoint from BOTH exit-3 blocks above by construction — each requires
-  // `cells_carried == 0` and this requires `> 0` — so it never doubles up with
-  // either, independently of the order they are tested in here.
+  //
+  // WHAT THIS BLOCK IS AND IS NOT DISJOINT FROM (REV-R5, review I-1). It used to
+  // say "disjoint from BOTH exit-3 blocks above by construction ... independently
+  // of the order they are tested in here", and named two blocks when four now sit
+  // above it. Three separate facts, each pinned by a test named at the predicate's
+  // declaration in surface_db_build.hpp:
+  //
+  //   - The unconditional TOTAL FIT FAILURE and TOTAL CONFIG FAILURE blocks really
+  //     are disjoint from this one, algebraically: both need `cells_carried == 0`
+  //     and this needs `> 0`. Order does not matter between those three.
+  //   - The TOTAL LOAD FAILURE block is disjoint only on reports the build
+  //     actually produces (an empty board span zeroes every counter this reads) —
+  //     a reachability fact, not an algebraic one.
+  //   - THE --strict BLOCK IS NOT DISJOINT FROM THIS ONE AT ALL. It fires on
+  //     exactly this region, and the ONLY thing that stops the CLI printing a
+  //     verdict and this hedge together is that it `return`s above. ORDER IS
+  //     LOAD-BEARING; the comment on that block already said so, directly above a
+  //     comment here that said the opposite for two releases.
+  //
+  // And the exit code is independent of all of it: a refusal (5) is orthogonal to
+  // every predicate here and co-occurs with this warning by design, which is why
+  // the banner below no longer names a number.
   if (is_carry_masked_fit_failure(*report)) {
+    // NO EXIT CODE IN THE BANNER (REV-R5, review I-2). This read
+    // `WARNING (exit 0)`. Reaching this line says the three unconditional exit-3
+    // predicates are false and (under --strict) the strict one too — it says
+    // NOTHING about `dates_refused_coverage_regression`, so a run that carries
+    // surfaces, fits nothing, and has one date refused printed `exit 0` here and
+    // then returned 5. Two dates are enough to build it and the shape is ordinary.
+    // The parenthetical is removed rather than corrected: this block does not
+    // decide the exit code (`build_exit_code` never reads this predicate), so it
+    // must not name one — a banner that cannot state a code cannot state a wrong
+    // one, which is a stronger guarantee than two sites edited to agree today.
     std::fprintf(stderr,
-                 "atx-vol-surface-db-build: WARNING (exit 0): 0 cells fitted, %u failed, "
+                 "atx-vol-surface-db-build: WARNING: 0 cells fitted, %u failed, "
                  "%u carried.\n",
                  report->coverage.cells_failed, report->coverage.cells_carried);
 
@@ -907,6 +998,18 @@ int main(int argc, char **argv) {
                 "that is healthy everywhere else it trades many good surfaces for one silenced "
                 "line — usually a bad deal. If neither applies, this line is EXPECTED on every "
                 "run and is not a defect on its own; what you watch is the list above CHANGING.\n");
+
+    // What replaced the `(exit 0)` the header line used to carry: the SET of codes
+    // this run can still return, rather than a single number this block does not
+    // own. Every verdict block above returned instead of falling through to here,
+    // so the three "produced nothing" predicates and the --strict one are all
+    // false — which leaves exactly `build_exit_code`'s remaining branches, each
+    // pinned by a SurfaceDbBuildExitCode test on a carry-masked report.
+    std::fprintf(stderr,
+                 "  This WARNING does not set the exit code: build_exit_code never reads this "
+                 "predicate. Reaching it means no verdict block fired, so this run exits 0, or 5 "
+                 "if a coverage regression was REFUSED (its banner is above), or 1 if --report "
+                 "could not be written (its message is above).\n");
   }
 
   // No predicate fired, so the only thing that can still be wrong is the CSV the

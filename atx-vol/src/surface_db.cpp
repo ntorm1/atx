@@ -1034,7 +1034,28 @@ std::uint64_t SurfaceDb::config_fingerprint(std::span<const std::string> symbols
 }
 
 std::uint64_t SurfaceDb::partition_config_fingerprint(std::string_view key) const {
-  const DbPartitionRecord *rec = manifest()->find_partition(key);
+  // ONE FULL-EXPRESSION, deliberately (REV-R5, review M-9). `manifest()` returns a
+  // `shared_ptr<const DbManifest>` BY VALUE; written as two statements
+  //
+  //     const DbPartitionRecord *rec = manifest()->find_partition(key);
+  //     return rec != nullptr ? rec->reserved0 : 0u;
+  //
+  // the temporary shared_ptr is destroyed at the semicolon of the FIRST line and
+  // `rec` — which points into the manifest's mapped bytes — is dereferenced on the
+  // second with no owner held. It survives today only because `snapshot_` holds a
+  // second reference and this path is single-threaded through the build; a
+  // concurrent `refresh`/`persist` swapping `snapshot_` between the two lines
+  // would drop the last owner and leave `rec` dangling.
+  //
+  // The fix is a NAMED OWNER spanning both the lookup and the load — the same
+  // shape `SurfaceDb::symbols()` above already uses, and this file's idiom for any
+  // query that touches manifest bytes across a statement boundary.
+  // `partition_listed` below solves it the other way and is equally correct: it
+  // consumes the pointer (`!= nullptr`) inside the very full-expression that
+  // produced the owner, so the temporary outlives the use. This one DEREFERENCES,
+  // so it needs the owner past the semicolon.
+  const std::shared_ptr<const DbManifest> m = manifest();
+  const DbPartitionRecord *rec = m->find_partition(key);
   return rec != nullptr ? rec->reserved0 : 0u;
 }
 
