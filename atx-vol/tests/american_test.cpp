@@ -2452,6 +2452,68 @@ TEST(BoundaryHoist, SpecializedMatchesGeneric) {
   EXPECT_GT(checked, 200); // the grid actually exercised the specialized kernels
 }
 
+// ── A6 (PR-P2): the sweep-invariant BARYCENTRIC hoist ─────────────────────────
+//
+// WHICH TEST CARRIES THE BIT-IDENTITY CLAIM — NOT THIS ONE (REVWSA finding 2).
+// SpecializedMatchesGeneric above is the load-bearing proof, and it is PRE-EXISTING,
+// not added by A6: it compares end PRICES out of the hoisted kernel and the untouched
+// generic kernel over 5*4*3*3*3*2*3 combinations across all three specialized
+// schemes, with EXPECT_GT(checked, 200) as its anti-vacuity guard. That makes it the
+// only test here that can catch a wrong READ stride or a reordered `num` accumulation
+// inside al_cheb_eval_hoisted, because those change the price.
+//
+// What THIS test adds is narrower and orthogonal. Neither SpecializedMatchesGeneric
+// nor PriceBitIdenticalToPrechange can tell whether the barycentric denominator was
+// actually hoisted out of the sweep or is still recomputed inside it — both worlds
+// price identically. `entries` counts the (collocation node, quad node) pairs the
+// per-solve table binds and is 0 in a tree with no hoist; `mismatches` proves the
+// STORED quotients / sums / exact-node hits are bit-for-bit what the inline
+// al_cheb_eval_t computed, judged against an independently written reference
+// expression. Its limits, stated plainly so the next reader does not over-credit it:
+// it recomputes using the BIND's own index arithmetic and never calls
+// al_cheb_eval_hoisted, so it cannot catch a stride or read-order error in the
+// kernel. "99144 entries, 0 mismatches" is a real result about the bind, not the
+// whole proof of the hoist.
+//
+// AND ITS RED IS SELF-REFERENTIAL (REVWSA finding 3). A6's recorded absence signal —
+// `entries == 0` at the parent commit 9940182 — holds there because
+// al_bary_hoist_audit does not exist at that commit, which is trivially true of any
+// newly added data structure. It was taken from history rather than by reverting the
+// tree, which was the right call; it is still not an independent pre-existing
+// observable and must not be read as one.
+TEST(BoundaryHoist, HoistedBaryTableMatchesInlineFormula) {
+  using atx::vol::detail::al_bary_hoist_audit;
+  const std::optional<AlOpts> fast = al_fast_opts();          // {7,16}
+  const std::optional<AlOpts> accurate = std::nullopt;        // {12,24}
+  const std::optional<AlOpts> qlfast = AlOpts{7, 8, 2, 1.0e-8, 32}; // {7,8}
+
+  std::size_t total_entries = 0;
+  int audited = 0;
+  for (const std::optional<AlOpts> &opts : {fast, accurate, qlfast}) {
+    for (const double K : {80.0, 100.0, 125.0}) {
+      for (const double T : {1.0 / 252.0, 0.5, 2.0}) {
+        for (const double sigma : {0.10, 0.30, 0.75}) {
+          for (const double r : {0.01, 0.043, 0.08}) {
+            for (const double q : {0.0, 0.02, 0.06}) {
+              const auto a = al_bary_hoist_audit(K, T, sigma, r, q, opts);
+              ASSERT_TRUE(a.specialized)
+                  << "K=" << K << " T=" << T << " s=" << sigma << " r=" << r << " q=" << q;
+              EXPECT_GT(a.entries, 0u) << "the sweep-invariant barycentric table is never bound";
+              EXPECT_EQ(a.mismatches, 0u) << "hoisted table differs from the inline formula";
+              total_entries += a.entries;
+              ++audited;
+            }
+          }
+        }
+      }
+    }
+  }
+  EXPECT_EQ(audited, 3 * 3 * 3 * 3 * 3 * 3);
+  EXPECT_GT(total_entries, 10000u);
+  std::printf("[A6] audited %d bound workspaces, %zu (node, quad) entries, 0 mismatches\n", audited,
+              total_entries);
+}
+
 // Cold andersen_lake price pins, fast {7,16} and accurate {12,24} schemes. The
 // hoisted specialized kernel must reproduce the generic runtime path exactly.
 // A1 REPIN (core-review finding 1): the values moved ~2e-8..3e-7 abs when the BAW

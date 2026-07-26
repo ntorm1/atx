@@ -42,6 +42,12 @@
 // fixed-position-order reduction inside each cell (mirroring `reduce_pnl_totals`),
 // so every cell — and thus the whole matrix — is bit-identical at any `n_threads`.
 //
+// The Exact route's shocked reprices (C3.2) run in a preceding pass fanned over
+// (unique × vol column) rather than over cells (A7): a PUT's exercise boundary does
+// not depend on the spot shock, so one solve serves a whole column. Each task writes
+// a disjoint set of (cell, unique) slots, so both the values AND the number of
+// boundary solves are properties of the grid shape, not of the thread partition.
+//
 // ## Failed lanes
 //
 // A unique contract whose Greek solve fails (uid missing from `base`, degenerate

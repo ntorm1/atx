@@ -28,9 +28,84 @@ namespace atx::vol::amer {
 inline constexpr std::uint16_t kAlMaxNodes = 32;
 
 // P2.2 sweep-invariant geometry precompute sizing (mirrors american.cpp).
+// BOTH bounds are load-bearing for memory safety, not just capacity: geo_zc /
+// geo_weru / geo_wequ are addressed as [j*kGeoQuadStride + i] for j < n_boundary,
+// i < n_quad_fp, so n_quad_fp > kGeoQuadStride overlaps adjacent rows and
+// n_boundary > kGeoNodeMax runs off the end. Enforced at compile time for every
+// scheme al_fp_specialized admits — see the COUPLING note below.
 inline constexpr unsigned kGeoNodeMax = 16;     // >= max specialized n_boundary (12)
 inline constexpr unsigned kGeoQuadStride = 32;  // >= max specialized n_quad_fp (24)
 inline constexpr unsigned kGeoSize = kGeoNodeMax * kGeoQuadStride;  // 512 doubles
+
+// ── A6 (PR-P2) sweep-invariant BARYCENTRIC precompute sizing ──────────────
+//
+// al_cheb_eval_t's inner loop recomputes, on EVERY Jacobi-Newton and fixed-point
+// sweep, the quotients wbary[k] / (zc_ji - z[k]) and their running sum `den`, for
+// every (collocation node j, fixed-point quad node i) pair. zc_ji, wbary[] and z[]
+// are ALL fixed for the whole solve — only bnd.y[] moves between sweeps — so the
+// entire denominator half of the barycentric formula is sweep-invariant. Hoisting it
+// removes nb divisions + nb subtractions + nb adds per (j, i) per sweep and leaves
+// only the sweep-VARYING dot product num = sum_k qq[k] * y[k].
+//
+// The hoist is BIT-IDENTICAL, not merely close: qq[k] is formed from the same two
+// doubles by the same operator, `den` is summed left to right over the same values,
+// and `num` accumulates left to right over the same products, so num/den reproduces
+// al_cheb_eval_t's result exactly. The inline `dz == 0` early return is preserved as
+// an explicit hit index rather than dropped.
+//
+// Layout is PACKED and in the kernel's own access order: bidx = (j-1)*nq + i indexes
+// den/hit, and bidx*nb + k indexes the quotients. Only the SPECIALIZED schemes
+// {(7,8), (7,16), (12,24)} take the hoisted kernel, so the table needs the max over
+// those of (nb-1)*nq*nb = 11*24*12 = 3168 doubles. Total workspace growth ~27 KB.
+//
+// WHICH TEST PROVES THE BIT-IDENTITY (REVWSA finding 2). The LOAD-BEARING one is the
+// PRE-EXISTING BoundaryHoist.SpecializedMatchesGeneric (american_test.cpp): bits_equal
+// between the hoisted kernel and the untouched generic kernel over 5*4*3*3*3*2*3
+// parameter combinations across all three specialized schemes. Because it compares end
+// PRICES it is what covers the kernel's read stride and `num` order. A6's own
+// BoundaryHoist.HoistedBaryTableMatchesInlineFormula (via al_bary_hoist_audit) is
+// narrower: it proves the BIND stored bit-exactly what the inline formula produced,
+// and detects absence via `entries > 0`, but it recomputes with the bind's own
+// indexing and never calls al_cheb_eval_hoisted. Its "99144 entries, 0 mismatches" is
+// not, on its own, the proof of the hoist — and its RED (`entries == 0` at the parent)
+// is self-referential, since the audit function does not exist there.
+//
+// THROUGHPUT GATE, RE-SPECIFIED. A6's plan text gates this hoist on ">= 8% on the
+// bench sweep row". No such row exists: no name registered in atx-vol/bench/*.cpp
+// contains "sweep" (the only "sweep" artifact in the tree is an unrelated
+// fit-worker-count baseline FILE, i7-1260p-clang18-avx2-e2e-fitworkers-sweep.json),
+// so the gate as written is unfalsifiable. The rows that actually measure the
+// quantity this hoist changes — a cold AL boundary solve, which is all JN+FP sweep
+// and nothing else — already exist in american_shootout_bench.cpp:
+//
+//   american/boundary_batch/scalar          {12,24}, ForceScalar  <- PRIMARY
+//   american/boundary_batch/scalar_qlfast   {7,8},   ForceScalar
+//
+// 4096 puts, every lane taking the full sweep budget, no premium quadrature to
+// dilute the signal and ForceScalar so no AVX2 lane confounds it. Both names are
+// machine-pinned by the atx-vol-american-shootout-name-coverage CTest, so this
+// re-specification cannot rot the way the original did. Corroborating (whole cold
+// price, so the sweep win arrives diluted): american/price/accurate, american/price/fast.
+//
+// NOT MEASURED HERE. This host is shared with other build/test sessions for the
+// whole of this sprint; every throughput figure taken on it is non-citable, so the
+// >= 8% half of the gate is deferred to a quiet-window re-run against the rows
+// above. What IS proved is the half that makes the hoist legitimate at all:
+// bit-identity, by BoundaryHoist.HoistedBaryTableMatchesInlineFormula.
+// COUPLING (REVWSA finding 4). These two bounds are the largest (n_boundary,
+// n_quad_fp) that `al_fp_specialized` (american.cpp) admits — today (12,24). They are
+// NOT independent knobs: adding a scheme there without raising them here would size
+// geo_bary too small. That coupling is enforced from the other side, at compile time,
+// by `al_geometry_tables_fit_every_specialized_scheme()`, which evaluates the predicate
+// itself over the whole reachable (nb,nq) domain. If that static_assert ever fires,
+// raise these two — OR kGeoNodeMax / kGeoQuadStride above, which the SAME sweep also
+// covers (REVA7FIX Minor 3): those two size the row-addressed geo_zc / geo_weru /
+// geo_wequ triple, and a scheme can fit geo_bary while overflowing or overlapping
+// that one. Read the assert's message to see which sizing the new scheme broke.
+inline constexpr unsigned kGeoBaryNodeMax = 12;  // max specialized n_boundary
+inline constexpr unsigned kGeoBaryQuadMax = 24;  // max specialized n_quad_fp
+inline constexpr unsigned kGeoBaryPairs = (kGeoBaryNodeMax - 1u) * kGeoBaryQuadMax;  // 264
+inline constexpr unsigned kGeoBarySize = kGeoBaryPairs * kGeoBaryNodeMax;            // 3168
 
 // ── AL boundary state + scheme ──────────────────────────────────────────
 
@@ -86,6 +161,12 @@ struct AlWorkspace {
   std::array<double, kGeoSize> geo_v;     // sigma * sqrt(t_u_ji)
   std::array<double, kGeoSize> geo_weru;  // qw_fp[i] * exp(r * u_ji)
   std::array<double, kGeoSize> geo_wequ;  // qw_fp[i] * exp(q * u_ji)
+  // A6: the sweep-invariant barycentric table (see kGeoBarySize above). Bound by the
+  // SAME static bind as geo_zc — it depends only on (T, tau_j, xs_i, node grid) —
+  // so a retained workspace carries it across a sigma sweep exactly as it does zc.
+  std::array<double, kGeoBarySize> geo_bary;      // wbary[k] / (zc_ji - z[k])
+  std::array<double, kGeoBaryPairs> geo_bary_den; // sum_k of the above, same order
+  std::array<std::int8_t, kGeoBaryPairs> geo_bary_hit;  // exact-node index; -1 = none
 #ifndef NDEBUG
   // R-30: Debug-only bind key naming the contract the sweep-invariant static
   // geometry above (geo_zc/geo_weru/geo_wequ) was bound for. Written when

@@ -706,6 +706,42 @@ struct GaussLegendre {
 andersen_lake_generic_kernel(double S, double K, double T, double sigma, double r, double q,
                              Side side, const std::optional<AlOpts> &opts = std::nullopt);
 
+// A6 (PR-P2) test seam. Bind a workspace for the internal-put contract
+// (K, T, sigma, r, q, opts) and audit the HOISTED sweep-invariant barycentric table
+// entry by entry against the inline formula al_cheb_eval_t evaluated on every sweep
+// before the hoist.
+//
+//   `specialized` — the scheme takes the hoisted kernel at all (a generic AlOpts
+//                   does not, and then nothing is bound and nothing is audited).
+//   `entries`     — (collocation node, quad node) pairs the bind populated. ZERO is
+//                   how A6's absence is detectable: no table, no hoist. Note that at
+//                   A6's parent commit `entries` is 0 because THIS FUNCTION does not
+//                   exist there, so that RED is a self-referential absence signal
+//                   rather than an independent observable (REVWSA finding 3).
+//   `mismatches`  — entries where any stored quotient, the stored denominator sum, or
+//                   the stored exact-node hit differs from the inline computation by
+//                   a single bit. Must be 0, which is what makes the BIND a hoist.
+//
+// SCOPE — what this audit does NOT prove (REVWSA finding 2). It recomputes using the
+// BIND's own index arithmetic, in the same TU, with the same nb, duplicating the
+// bind's own skip conditions, and it never calls al_cheb_eval_hoisted. So it cannot
+// catch an index or stride disagreement, and it says nothing about the KERNEL's read
+// stride or its `num` accumulation order. Those are covered — and the bit-identity
+// claim is actually carried — by the PRE-EXISTING
+// BoundaryHoist.SpecializedMatchesGeneric, which compares end prices out of the
+// hoisted and generic kernels across all three specialized schemes. Cite that test,
+// not this one's entry count, when the hoist's bit-identity is the question.
+//
+// Not a production entry point.
+struct AlBaryHoistAudit {
+  std::size_t entries = 0;
+  std::size_t mismatches = 0;
+  bool specialized = false;
+};
+[[nodiscard]] AlBaryHoistAudit al_bary_hoist_audit(double K, double T, double sigma, double r,
+                                                   double q,
+                                                   const std::optional<AlOpts> &opts) noexcept;
+
 // P2.2b spike seed for al_boundary_jn_sweeps_to_converge.
 enum class AlSeedMode : std::uint8_t { Baw = 0, QdPlus = 1, Oracle = 2 };
 

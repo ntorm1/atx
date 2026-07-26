@@ -131,6 +131,17 @@ Status american_price_batch(const AmericanBatchInput& in, PriceBatchOutput& out,
     const simd::SimdRoute pack_route = simd::american_put_boundary_batch(
         ws.ps_S.data(), ws.ps_K.data(), ws.ps_T.data(), ws.ps_sigma.data(),
         ws.ps_r.data(), ws.ps_q.data(), ws.ps_price.data(), m, kernel.isa);
+    // This is the SECOND AVX2 dispatch site in this TU, and until REVWSA finding 6
+    // it was the uncounted one: `AmericanAvxPackDispatches` was bumped only inside
+    // american_price_batch_resolved, so complete packs dispatched from HERE were
+    // invisible and a reading of 0 meant "not observed on the entries that count",
+    // never "the pack path is dead". The AVX2 driver runs floor(m/4) complete 4-lane
+    // packs and prices the m % 4 tail scalar (american_boundary_avx2.cpp:53,:104), so
+    // `m / 4` is exactly the quantity the resolved entry accumulates one pack at a
+    // time. See the counter's definition in counters.hpp for what it still excludes.
+    if (pack_route == simd::SimdRoute::Avx2) {
+      ATX_VOL_COUNT_N(AmericanAvxPackDispatches, m / 4);
+    }
     for (std::size_t j = 0; j < m; ++j) {
       const std::uint32_t i = ws.perm[j];
       const double v = ws.ps_price[j];

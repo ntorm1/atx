@@ -25,6 +25,8 @@
 #include <barrier>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <optional>
 #include <thread>
@@ -291,6 +293,60 @@ TEST(AmericanPriceBatch, DefaultKernelRoutesShipGatedAvx2Lanes) {
   EXPECT_GT(n_avx2, 0u);                          // genuine American lanes exercised the vector kernel
   EXPECT_LT(out.scalar_fallback_rate(), 1.0);
   EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceScalar);  // untouched
+}
+
+// ── The pack-dispatch counter observes THIS entry too (REVWSA finding 6). ────
+// `AmericanAvxPackDispatches` used to be bumped only inside
+// american_price_batch_resolved, so the complete AVX2 packs dispatched from
+// american_price_batch — the laned flagship, and the entry the Python binding calls
+// — were invisible to it. The counter's name promises "packs actually dispatched to
+// AVX2"; it delivered "packs dispatched by one of the two entries". The routing half
+// of this test runs in every build; the count half needs ATX_VOL_COUNTERS=ON.
+TEST(AmericanPriceBatch, AvxPackDispatchesAreCountedOnThisEntryToo) {
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on this host";
+  }
+  IsaGuard g;
+  // 14 genuine American put lanes (r > q > 0, T > 0, sigma > 0 -> is_kernel_lane) =>
+  // floor(14/4) = 3 complete 4-lane packs, and a 2-lane tail the AVX2 driver prices
+  // scalar itself (american_boundary_avx2.cpp:104) without dispatching.
+  Book b;
+  for (double m : {0.8, 0.9, 0.95, 1.0, 1.05, 1.1, 1.25}) {
+    for (double t : {0.25, 0.75}) {
+      b.push(100.0, 100.0 * m, t, 0.25, 0.05, 0.01, Side::Put);
+    }
+  }
+  ASSERT_EQ(b.size(), 14u);
+
+  PricingKernel kernel;
+  kernel.isa = simd::SimdIsa::ForceAvx2;
+  PricingWorkspace ws;
+  PriceBatchOutput out;
+  if constexpr (counters::counters_enabled()) {
+    counters::reset();
+  }
+  ASSERT_TRUE(american_price_batch(b.view(), out, kernel, ws).has_value());
+
+  // Anti-vacuity: all 14 must be kernel lanes, else m — and therefore m/4 — is not
+  // the number this test claims to pin.
+  std::size_t n_pack_lanes = 0;
+  for (std::size_t i = 0; i < b.size(); ++i) {
+    n_pack_lanes += (out.route[i] == simd::SimdRoute::Avx2) ? 1u : 0u;
+  }
+  ASSERT_EQ(n_pack_lanes, 14u) << "every lane must reach the pack for the count below";
+
+  if constexpr (counters::counters_enabled()) {
+    // Printed, not merely asserted: under the gate's counters-OFF build this whole
+    // block vanishes, so a counters-ON run is the ONLY thing that ever observes the
+    // bump (REVA7FIX §7). Emitting the value makes such a run self-documenting
+    // instead of leaving "the assertion did not fail" as the only evidence.
+    const std::uint64_t packs =
+        counters::snapshot().get(counters::Counter::AmericanAvxPackDispatches);
+    std::printf("[REVA7FIX] american_price_batch AVX2 pack dispatches = %llu "
+                "(expected floor(14/4) = 3)\n",
+                static_cast<unsigned long long>(packs));
+    EXPECT_EQ(packs, 3u);
+  }
 }
 
 // ── ForceAvx2: Scalar lanes bit-exact, Avx2 lanes within T13's stress gate ─
