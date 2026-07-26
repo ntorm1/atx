@@ -23,18 +23,29 @@ What changed from v1 (per design §3 / §7)
     the UNION (atomic tmp + rename) via ``merge_date_file``.
   * ``--force`` re-pulls and rewrites the requested symbols (other underlyings
     already in the file are preserved).
-Everything else is carried over verbatim: key handling, XNYS calendar, the fixed
-19:55:00Z snapshot minute, the FREE ``get_cost`` preflight + retry/sampling, the
-$-cap degrade (index leg + top-N by weight, BLOCK below floor), the DBN cache +
-quarantine, and spend accounting.
+Everything else is carried over verbatim: key handling, XNYS calendar, the FREE
+``get_cost`` preflight + retry/sampling, the $-cap degrade (index leg + top-N by
+weight, BLOCK below floor), the DBN cache + quarantine, and spend accounting.
 
 Snapshot minute / DST note
 --------------------------
-The window is a FIXED UTC minute (default 19:55:00Z) for the whole run, matching
-the existing hive and the atx-core databento_bulk_opra C++ precedent. 19:55Z ==
-15:55 America/New_York during EDT and == 14:55 ET during EST; a fixed UTC minute
-keeps the hive uniform across the DST boundary (see the v1 tool for the full
-rationale).
+``--snap-utc`` (default, unchanged from v1) is a FIXED UTC minute (default
+19:55:00Z) for the whole run, matching the existing hive and the atx-core
+databento_bulk_opra C++ precedent. 19:55Z == 15:55 America/New_York during EDT
+and == 14:55 ET during EST -- a fixed UTC minute keeps the file-naming/manifest
+scheme uniform, but the ET *market-clock* time it lands on DRIFTS an hour across
+the DST boundary.
+
+``--snap-et HH:MM`` (opt-in, mutually exclusive with ``--snap-utc``) instead
+fixes the ET market-clock time and lets the UTC minute vary per session via
+``zoneinfo`` (e.g. 15:55 ET == 19:55Z in EDT, 20:55Z in EST) -- the correct
+choice for a multi-year backfill (2022-2026 crosses many DST transitions) where
+staying anchored to the same point in the trading session matters more than a
+uniform UTC clock minute. The per-date resolved minute still flows into the DBN
+cache name and the date file's stamped ``ts``; a resume additionally checks that
+stamp against the expected instant for that date and re-pulls (replacing, not
+unioning) on a mismatch (e.g. a DST-boundary re-run, or switching snapshot
+conventions between runs).
 
 Cost discipline (hard cap — design §7 guardrail)
 ------------------------------------------------
@@ -58,21 +69,25 @@ Usage:
   python pull_opra_hive.py \
       --universe atx-vol/data/universe/spy_top50_2026-01-01.csv \
       --start 2026-07-20 --end 2026-07-21 \
-      --out C:/atx-data/opra-hive [--snap-utc 19:55] [--cap 100] [--dry-run]
+      --out C:/atx-data/opra-hive [--snap-utc 19:55 | --snap-et 15:55] \
+      [--cap 100] [--dry-run]
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import datetime as dt
 import hashlib
 import io
+import json
 import os
 import pathlib
 import sys
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -180,8 +195,35 @@ def to_parent(sym: str) -> str:
     return sym.replace(".", "") + ".OPT"
 
 
-def snap_window(date: str, snap_hm: str) -> tuple[str, str]:
-    hh, mm = snap_hm.split(":")
+# ── ET-anchored snapshot minute (DST-aware) ─────────────────────────────────────
+# ``--snap-et`` (opt-in, mutually exclusive with the legacy ``--snap-utc``) fixes
+# the snapshot to a market-clock time (e.g. 15:55 America/New_York) instead of a
+# fixed UTC minute. The UTC instant that maps to then varies with DST across a
+# multi-year backfill (2022-2026 crosses many transitions) -- a fixed-UTC-minute
+# hive would otherwise anchor to a DRIFTING ET time across the DST boundary,
+# which is the actual correctness bug this flag exists to fix.
+ET = ZoneInfo("America/New_York")
+
+
+def snapshot_minute_utc(date_str: str, et_hhmm: str) -> str:
+    """UTC HH:MM of `et_hhmm` America/New_York on `date_str` (DST-aware)."""
+    h, mnt = (int(x) for x in et_hhmm.split(":"))
+    d = dt.date.fromisoformat(date_str)
+    local = dt.datetime(d.year, d.month, d.day, h, mnt, tzinfo=ET)
+    u = local.astimezone(dt.timezone.utc)
+    return f"{u.hour:02d}:{u.minute:02d}"
+
+
+def snap_window(date: str, snap_hm: "str | dict[str, str]") -> tuple[str, str]:
+    """Build the one-minute [start, end) window for ``date``.
+
+    ``snap_hm`` is either a single "HH:MM" (legacy: one fixed UTC minute for the
+    whole run) or a ``{date: "HH:MM"}`` map (per-date minute, e.g. from
+    ``--snap-et``); resolved here so every call site (``get_cost_retry`` via
+    ``preflight``, and ``pull``'s ``get_range``) gets the right per-date window
+    without having to know which mode is active."""
+    hm = snap_hm[date] if isinstance(snap_hm, dict) else snap_hm
+    hh, mm = hm.split(":")
     start = f"{date}T{hh}:{mm}:00"
     end_minute = int(hh) * 60 + int(mm) + 1
     end = f"{date}T{end_minute // 60:02d}:{end_minute % 60:02d}:00"
@@ -189,7 +231,7 @@ def snap_window(date: str, snap_hm: str) -> tuple[str, str]:
 
 
 def get_cost_retry(client, parents: list[str], date: str,
-                   snap_hm: str, attempts: int = 4) -> float:
+                   snap_hm: "str | dict[str, str]", attempts: int = 4) -> float:
     start, end = snap_window(date, snap_hm)
     for attempt in range(attempts):
         try:
@@ -246,22 +288,144 @@ def date_file_underlyings(path: pathlib.Path) -> set[str]:
     return syms
 
 
+def _date_file_snap_ts(path: pathlib.Path) -> Optional[pd.Timestamp]:
+    """Cheaply read the single constant ``ts`` a date file was stamped with (one
+    snapshot instant per session, per ``decode_date_frame``), from row-group 0's
+    footer statistics -- never materializes the whole file. Falls back to a
+    single-row-group column read if stats are unavailable (still no full scan)."""
+    pf = pq.ParquetFile(path)
+    md = pf.metadata
+    if md.num_row_groups == 0:
+        return None
+    idx = pf.schema_arrow.get_field_index("ts")
+    if idx < 0:
+        return None
+    st = md.row_group(0).column(idx).statistics
+    if st is not None and st.has_min_max:
+        return pd.Timestamp(st.min)
+    tbl = pf.read_row_group(0, columns=["ts"])
+    if tbl.num_rows == 0:
+        return None
+    return pd.Timestamp(tbl.column(0)[0].as_py())
+
+
+# ── Absent-symbol sidecar (<out>/_absent/<date>.json) ───────────────────────────
+# Remembers, per date and snapshot minute, which requested underlyings came back
+# with zero rows (e.g. genuinely no listed options that session) so a resume
+# doesn't re-queue -- and re-bill -- the same permanently-absent name forever.
+# Read/write are best-effort and atomic: a missing or corrupt sidecar is treated
+# as "no record" (never crashes a resume; the next pull rewrites it).
+def _absent_sidecar_path(out_root: pathlib.Path, date: str) -> pathlib.Path:
+    return out_root / "_absent" / f"{date}.json"
+
+
+def _load_absent_sidecar(out_root: pathlib.Path, date: str) -> Optional[dict]:
+    path = _absent_sidecar_path(out_root, date)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or "minute_utc" not in data or "symbols" not in data:
+        return None
+    return data
+
+
+def _write_absent_sidecar(out_root: pathlib.Path, date: str, minute_utc: str,
+                          symbols: list[str]) -> None:
+    """Atomic tmp + ``os.replace``, matching ``_write_date_file``'s pattern."""
+    path = _absent_sidecar_path(out_root, date)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "minute_utc": minute_utc,
+        "symbols": sorted(symbols),
+        "asof": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _merge_absent_sidecar(out_root: pathlib.Path, date: str, minute_utc: str,
+                          zero_row_symbols: list[str], force: bool) -> None:
+    """Record this pull's zero-row requested symbols for ``date``.
+
+    ``force`` rewrites the sidecar from scratch (only THIS call's findings --
+    ``--force`` ignores whatever a prior sidecar claimed). Otherwise, merge with
+    any prior record for the SAME minute (a stale record from a different
+    minute, e.g. a pre-DST-transition entry, is dropped, not merged); with
+    nothing new and no force, the existing sidecar is left untouched."""
+    if force:
+        _write_absent_sidecar(out_root, date, minute_utc, zero_row_symbols)
+        return
+    if not zero_row_symbols:
+        return
+    prior = _load_absent_sidecar(out_root, date)
+    prior_syms = set(prior["symbols"]) if prior and prior.get("minute_utc") == minute_utc else set()
+    _write_absent_sidecar(out_root, date, minute_utc,
+                          sorted(prior_syms | set(zero_row_symbols)))
+
+
+class MissingPlan(dict):
+    """``plan_missing``'s return value: a plain ``dict[str, list[str]]`` (date ->
+    missing symbols) for full backward compatibility with existing equality
+    assertions (``dict.__eq__`` ignores subclass/extra attributes), PLUS
+    ``repull_dates``: the subset of keys whose on-disk file failed the minute
+    check and must be REPLACED, not unioned, when pulled (see ``pull``'s
+    ``date_force``)."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.repull_dates: set[str] = set()
+
+
 def plan_missing(out_root, symbols: list[str], dates: list[str],
-                 force: bool = False) -> dict[str, list[str]]:
+                 force: bool = False,
+                 expected_minute: Optional[dict[str, str]] = None) -> MissingPlan:
     """Map each date to the requested symbols not yet on disk (universe order).
 
     Empty/absent date file -> all requested symbols. Partial file -> only the
     underlyings missing from its footer. Complete file -> date omitted. With
-    ``force`` every requested symbol is (re)planned for every date."""
+    ``force`` every requested symbol is (re)planned for every date.
+
+    ``expected_minute`` (optional, ``{date: "HH:MM"}`` UTC) opts a caller into
+    two DST-correctness features, both no-ops when omitted (so existing direct
+    callers/tests that don't pass it see byte-identical behavior):
+      * Resume minute check: if the on-disk file's stamped ``ts`` does not equal
+        `date + expected_minute[date]`, the date is fully re-planned (all
+        requested symbols) and added to ``repull_dates`` -- pull() replaces
+        rather than unions that date's file.
+      * Absent-symbol sidecar subtraction: for a date that DOES match, symbols
+        recorded absent in ``<out>/_absent/<date>.json`` for that SAME minute
+        are dropped from the missing set (never re-queued/re-billed)."""
     out_root = pathlib.Path(out_root)
-    plan: dict[str, list[str]] = {}
+    plan = MissingPlan()
     for date in dates:
         target = out_root / f"date={date}" / DATE_FILE
+        want_hm = expected_minute.get(date) if expected_minute else None
         if force or not target.exists():
             plan[date] = list(symbols)
             continue
+        if want_hm is not None:
+            have_ts = _date_file_snap_ts(target)
+            want_ts = pd.Timestamp(f"{date}T{want_hm}:00")
+            if have_ts is not None and have_ts != want_ts:
+                have_hm = f"{have_ts.hour:02d}:{have_ts.minute:02d}"
+                print(f"MINUTE-MISMATCH {date} have={have_hm} want={want_hm} — repull",
+                      file=sys.stderr)
+                plan[date] = list(symbols)
+                plan.repull_dates.add(date)
+                continue
         have = date_file_underlyings(target)
         miss = [s for s in symbols if s not in have]
+        if want_hm is not None and miss:
+            absent = _load_absent_sidecar(out_root, date)
+            if absent is not None and absent.get("minute_utc") == want_hm:
+                absent_syms = set(absent.get("symbols", []))
+                miss = [s for s in miss if s not in absent_syms]
         if miss:
             plan[date] = miss
     return plan
@@ -385,7 +549,7 @@ class Preflight:
 
 
 def preflight(client, plan: dict[str, list[str]], symbols: list[str],
-              weight: dict[str, float], *, snap_hm: str, cap: float,
+              weight: dict[str, float], *, snap_hm: "str | dict[str, str]", cap: float,
               sample_days: int, index_symbol: str,
               min_degrade_names: int) -> Preflight:
     """FREE cost estimate for the missing cells, degrading the kept set under the
@@ -455,13 +619,24 @@ class PullResult:
     rows_returned: int = 0    # raw decoded rows, pre-mapping/want filters (row-level)
 
 
-def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: str,
+def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: "str | dict[str, str]",
          root_to_sym: dict[str, str], unit_cost: float = 0.0, force: bool = False,
-         store_loader: Optional[Callable] = None) -> PullResult:
+         store_loader: Optional[Callable] = None,
+         repull_dates: Optional[set] = None) -> PullResult:
     """Pull every planned date: one ``get_range`` over the union of its missing
     parents, decode to one frame, merge into the date file. Resumable: a cached
     DBN is decoded without an API call; a present date file's symbols are already
-    excluded upstream by ``plan_missing``."""
+    excluded upstream by ``plan_missing``.
+
+    ``snap_hm`` is either one fixed "HH:MM" (legacy, applied to every date) or a
+    ``{date: "HH:MM"}`` map (``--snap-et``'s per-date, DST-aware minute); either
+    way the RESOLVED per-date minute flows into the DBN cache name, the
+    ``get_range`` window, and the frame's stamped ``ts``.
+
+    ``repull_dates`` (from ``plan_missing``'s minute-mismatch check) marks dates
+    whose on-disk file must be REPLACED rather than unioned, even when the
+    global ``force`` flag is False -- omitted/None for callers that don't opt
+    into the minute check (byte-identical to the old force-only behavior)."""
     store_loader = store_loader or _default_store_loader
     out_root = pathlib.Path(out_root)
     dbn_dir = out_root / "_dbn"
@@ -471,17 +646,19 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: str,
     realized_estimate = 0.0
     cells_requested = cells_failed = rows_returned = 0
     failed: list[str] = []
+    repull_dates = repull_dates or set()
     ordered = sorted(plan)
 
     for i, date in enumerate(ordered):
         miss = list(plan[date])
         if not miss:
             continue
+        hm = snap_hm[date] if isinstance(snap_hm, dict) else snap_hm
         cells_requested += len(miss)
         want = set(miss)
         parents = [to_parent(s) for s in miss]
         digest = hashlib.sha256((date + "|" + ",".join(sorted(miss))).encode()).hexdigest()[:12]
-        dbn_path = dbn_dir / f"{date}_{snap_hm.replace(':', '')}_{digest}.dbn.zst"
+        dbn_path = dbn_dir / f"{date}_{hm.replace(':', '')}_{digest}.dbn.zst"
         store = None
         tag = ""
         if dbn_path.exists():
@@ -504,7 +681,7 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: str,
         if store is None:
             for attempt in range(6):
                 try:
-                    start, end = snap_window(date, snap_hm)
+                    start, end = snap_window(date, hm)
                     store = client.timeseries.get_range(
                         dataset=DATASET, symbols=parents, schema=SCHEMA,
                         start=start, end=end, stype_in="parent")
@@ -524,14 +701,17 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: str,
             os.replace(dbn_tmp, dbn_path)
             tag = "pulled"
 
-        frame, nu, nr = decode_date_frame(store, date, snap_hm, root_to_sym, want)
+        frame, nu, nr = decode_date_frame(store, date, hm, root_to_sym, want)
         unmapped += nu
         rows_returned += nr
         target = out_root / f"date={date}" / DATE_FILE
         existing = target if target.exists() else None
-        merge_date_file(existing, frame, target, force=force)
+        date_force = force or (date in repull_dates)
+        merge_date_file(existing, frame, target, force=date_force)
 
         written = set(frame["underlying"].unique().tolist())
+        zero_row_syms = [s for s in miss if s not in written]
+        _merge_absent_sidecar(out_root, date, hm, zero_row_syms, force)
         for s in miss:
             if s in written:
                 recs = int((frame["underlying"] == s).sum())
@@ -567,7 +747,15 @@ def build_parser() -> argparse.ArgumentParser:
                      help="plain one-symbol-per-line list (weights unknown -> no degrade ranking)")
     ap.add_argument("--start", default="2026-07-01")
     ap.add_argument("--end", default="2026-07-31")
-    ap.add_argument("--snap-utc", default="19:55", help="HH:MM UTC snapshot minute (default 19:55)")
+    snap = ap.add_mutually_exclusive_group()
+    snap.add_argument("--snap-utc", default="19:55",
+                      help="HH:MM UTC snapshot minute (default 19:55; FIXED for the whole run "
+                      "-- drifts against market-clock time across a DST boundary)")
+    snap.add_argument("--snap-et", default=None,
+                      help="HH:MM America/New_York snapshot time (mutually exclusive with "
+                      "--snap-utc); DST-aware -- the UTC minute is computed per session via "
+                      "zoneinfo, so it stays anchored to the same market-clock time across DST "
+                      "transitions (e.g. 15:55 ET == 19:55Z in EDT, 20:55Z in EST)")
     ap.add_argument("--out", type=pathlib.Path, default=pathlib.Path("C:/atx-data/opra-hive"))
     ap.add_argument("--cap", type=float, default=100.0, help="hard $ cap (design §7)")
     ap.add_argument("--sample-days", type=int, default=3,
@@ -593,10 +781,30 @@ def run(args, client=None, store_loader: Optional[Callable] = None) -> int:
     if not dates:
         raise SystemExit(f"no trading sessions in [{args.start}, {args.end}]")
 
-    print(f"universe={len(symbols)} sessions={len(dates)} [{dates[0]}..{dates[-1]}] "
-          f"dataset={DATASET} schema={SCHEMA} snap={args.snap_utc}Z out={args.out}")
+    # ``--snap-et`` opts into a per-date, DST-aware UTC minute; the legacy
+    # ``--snap-utc`` path passes ``args.snap_utc`` straight through as a plain
+    # string everywhere pull()/preflight() take ``snap_hm``, exactly as before
+    # this feature existed (byte-identical for existing callers). Either way,
+    # `minute_for_date` is threaded into ``plan_missing`` so the resume minute
+    # check + absent-symbol sidecar are active for both modes -- a no-op for a
+    # well-behaved existing caller (same minute every run, no sidecar yet).
+    if args.snap_et:
+        minute_for_date = {d: snapshot_minute_utc(d, args.snap_et) for d in dates}
+        snap_arg = minute_for_date
+        snap_label = args.snap_et
+        snap_desc = f"{args.snap_et} ET (DST-aware)"
+    else:
+        minute_for_date = {d: args.snap_utc for d in dates}
+        snap_arg = args.snap_utc
+        snap_label = args.snap_utc
+        snap_desc = f"{args.snap_utc}Z"
 
-    plan = plan_missing(args.out, symbols, dates, force=args.force)
+    print(f"universe={len(symbols)} sessions={len(dates)} [{dates[0]}..{dates[-1]}] "
+          f"dataset={DATASET} schema={SCHEMA} snap={snap_desc} out={args.out}")
+
+    plan = plan_missing(args.out, symbols, dates, force=args.force,
+                        expected_minute=minute_for_date)
+    repull_dates = getattr(plan, "repull_dates", set())
     n_missing = sum(len(v) for v in plan.values())
     print(f"cells: total={len(symbols) * len(dates)} to_pull={n_missing} "
           f"(over {len(plan)} sessions){' [FORCE]' if args.force else ''}")
@@ -611,7 +819,7 @@ def run(args, client=None, store_loader: Optional[Callable] = None) -> int:
         client = db.Historical(key=key)
 
     print("\nFREE preflight (metadata.get_cost — no egress):")
-    pf = preflight(client, plan, symbols, weight, snap_hm=args.snap_utc, cap=args.cap,
+    pf = preflight(client, plan, symbols, weight, snap_hm=snap_arg, cap=args.cap,
                    sample_days=args.sample_days, index_symbol=args.index_symbol,
                    min_degrade_names=args.min_degrade_names)
     print(f"\nESTIMATE (remaining spend): ${pf.total_cost:.4f} = "
@@ -630,12 +838,14 @@ def run(args, client=None, store_loader: Optional[Callable] = None) -> int:
     keepset = set(pf.keep)
     pull_plan = {d: [s for s in plan[d] if s in keepset] for d in plan}
     pull_plan = {d: v for d, v in pull_plan.items() if v}
+    pull_repull_dates = repull_dates & set(pull_plan)
 
-    res = pull(client, pull_plan, args.out, snap_hm=args.snap_utc, root_to_sym=root_to_sym,
-               unit_cost=pf.unit_cost, force=args.force, store_loader=store_loader)
+    res = pull(client, pull_plan, args.out, snap_hm=snap_arg, root_to_sym=root_to_sym,
+               unit_cost=pf.unit_cost, force=args.force, store_loader=store_loader,
+               repull_dates=pull_repull_dates)
 
     args.out.mkdir(parents=True, exist_ok=True)
-    mpath = args.out / f"manifest_hive_{args.start}_{args.end}_{args.snap_utc.replace(':', '')}.csv"
+    mpath = args.out / f"manifest_hive_{args.start}_{args.end}_{snap_label.replace(':', '')}.csv"
     pd.DataFrame(res.manifest).to_csv(mpath, index=False)
     print(f"\nDONE boards_written={res.boards_written} dates_written={res.dates_written} "
           f"unmapped_rows={res.unmapped_rows} failed_sessions={len(res.failed_dates)}")

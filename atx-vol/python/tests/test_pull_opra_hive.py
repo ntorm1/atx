@@ -21,6 +21,7 @@ Cases (per the task brief):
 from __future__ import annotations
 
 import importlib.util
+import json
 import pathlib
 import sys
 from unittest import mock
@@ -114,10 +115,13 @@ class FakeHistorical:
         return [c for c in self.calls if c[0] == "get_range"]
 
 
-def _decoded(underlyings, *, bid_px=100) -> pd.DataFrame:
+def _decoded(underlyings, *, bid_px=100, ts="2026-07-20T19:55:00") -> pd.DataFrame:
     """A decoded 8-column frame (post-DBN) for merge/plan helpers.
 
-    ``underlyings`` may be an iterable of names or a ``{name: bid_px}`` map."""
+    ``underlyings`` may be an iterable of names or a ``{name: bid_px}`` map.
+    ``ts`` is the constant snapshot stamp the whole date file is written with
+    (default matches the fixed 19:55Z minute used throughout this file's other
+    fixtures); override it to simulate a file written at a different minute."""
     if isinstance(underlyings, dict):
         items = list(underlyings.items())
     else:
@@ -126,7 +130,7 @@ def _decoded(underlyings, *, bid_px=100) -> pd.DataFrame:
     for u, bp in items:
         rows.append(
             {
-                "ts": pd.Timestamp("2026-07-20T19:55:00"),
+                "ts": pd.Timestamp(ts),
                 "underlying": u,
                 "symbol": _osi(u),
                 "instrument_id": 1,
@@ -397,3 +401,117 @@ def test_pull_result_realized_estimate_and_cell_counts(tmp_path):
     assert res.unmapped_rows == 0
     no_options = [m for m in res.manifest if m["status"] == "no_options"]
     assert [m["symbol"] for m in no_options] == ["AAPL"]
+
+
+# ── ET-anchored snapshot minute (DST-aware) ────────────────────────────────────
+
+def test_snap_et_maps_est_and_edt_correctly():
+    # 2022-01-03 is EST: 15:55 ET == 20:55 UTC. 2022-07-01 is EDT: 15:55 ET == 19:55 UTC.
+    assert ph.snapshot_minute_utc("2022-01-03", "15:55") == "20:55"
+    assert ph.snapshot_minute_utc("2022-07-01", "15:55") == "19:55"
+
+
+def test_snap_and_snap_et_mutually_exclusive():
+    # The tool's flag is --snap-utc (the brief's "--snap" shorthand); --snap-et
+    # must be mutually exclusive with it and exit 2 (argparse's usual error) when
+    # both are given.
+    with pytest.raises(SystemExit) as exc:
+        ph.build_parser().parse_args(
+            ["--symbols-file", "x.txt", "--start", "2026-07-20", "--end", "2026-07-21",
+             "--snap-utc", "19:55", "--snap-et", "15:55"]
+        )
+    assert exc.value.code == 2
+
+
+# ── Resume minute check (plan_missing) ─────────────────────────────────────────
+
+def test_plan_missing_repulls_on_minute_mismatch(tmp_path):
+    # Existing date file stamped at 19:55Z; the plan expects 20:55Z for that date
+    # (e.g. an EST session under --snap-et) -> the whole date is "missing" again,
+    # with its full symbol set, and flagged for a full replace (not a union).
+    tgt = tmp_path / "date=2026-07-20" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["SPY", "AAPL"], ts="2026-07-20T19:55:00"), tgt)
+
+    plan = ph.plan_missing(tmp_path, ["SPY", "AAPL"], ["2026-07-20"],
+                           expected_minute={"2026-07-20": "20:55"})
+    assert plan == {"2026-07-20": ["SPY", "AAPL"]}
+    assert plan.repull_dates == {"2026-07-20"}
+
+
+def test_plan_missing_subtracts_absent_sidecar(tmp_path):
+    # Date file holds {A} only; the sidecar (for the SAME expected minute) says B
+    # is a known-absent underlying (e.g. no listed options that day) -> the
+    # request for {A, B} has nothing left missing.
+    tgt = tmp_path / "date=2026-07-20" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["A"]), tgt)
+    absent_dir = tmp_path / "_absent"
+    absent_dir.mkdir()
+    (absent_dir / "2026-07-20.json").write_text(json.dumps(
+        {"minute_utc": "19:55", "symbols": ["B"], "asof": "2026-07-20T00:00:00+00:00"}
+    ))
+
+    plan = ph.plan_missing(tmp_path, ["A", "B"], ["2026-07-20"],
+                           expected_minute={"2026-07-20": "19:55"})
+    assert plan == {}
+
+
+def test_sidecar_ignored_when_minute_differs(tmp_path):
+    # The on-disk file's ts (20:55) matches the expected minute (no repull), but
+    # the sidecar was recorded at a DIFFERENT minute (19:55, e.g. a stale EDT-era
+    # entry) -> it must NOT mask B for a 20:55 request.
+    tgt = tmp_path / "date=2026-07-20" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["A"], ts="2026-07-20T20:55:00"), tgt)
+    absent_dir = tmp_path / "_absent"
+    absent_dir.mkdir()
+    (absent_dir / "2026-07-20.json").write_text(json.dumps(
+        {"minute_utc": "19:55", "symbols": ["B"], "asof": "2026-07-20T00:00:00+00:00"}
+    ))
+
+    plan = ph.plan_missing(tmp_path, ["A", "B"], ["2026-07-20"],
+                           expected_minute={"2026-07-20": "20:55"})
+    assert plan == {"2026-07-20": ["B"]}
+
+
+# ── Absent-symbol sidecar (write side, through pull()) ─────────────────────────
+
+def test_absent_sidecar_written_after_pull(tmp_path):
+    out = tmp_path / "hive"
+    plan = {"2026-07-20": ["SPY", "AAPL"]}
+    frames = {"2026-07-20": _raw_df(["SPY"])}  # AAPL comes back with zero rows
+    root_to_sym = {"SPY": "SPY", "AAPL": "AAPL"}
+    fake = FakeHistorical(frames=frames)
+
+    ph.pull(fake, plan, out, snap_hm="19:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader)
+
+    sidecar = out / "_absent" / "2026-07-20.json"
+    assert sidecar.exists()
+    data = json.loads(sidecar.read_text())
+    assert data["symbols"] == ["AAPL"]
+    assert data["minute_utc"] == "19:55"
+    assert "asof" in data
+
+
+def test_force_clears_sidecar(tmp_path):
+    # A prior sidecar claims {B, C} absent. --force repulls A/B/C fresh; the
+    # fake provider now has data for C (the old record was stale) but still none
+    # for B -> the rewritten sidecar reflects ONLY this run's findings ({B}), not
+    # a merge with the stale prior entry.
+    out = tmp_path / "hive"
+    absent_dir = out / "_absent"
+    absent_dir.mkdir(parents=True)
+    (absent_dir / "2026-07-20.json").write_text(json.dumps(
+        {"minute_utc": "19:55", "symbols": ["B", "C"], "asof": "2026-07-20T00:00:00+00:00"}
+    ))
+    plan = {"2026-07-20": ["A", "B", "C"]}
+    frames = {"2026-07-20": _raw_df(["A", "C"])}  # B still absent; C now has data
+    root_to_sym = {"A": "A", "B": "B", "C": "C"}
+    fake = FakeHistorical(frames=frames)
+
+    ph.pull(fake, plan, out, snap_hm="19:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, force=True)
+
+    sidecar = out / "_absent" / "2026-07-20.json"
+    data = json.loads(sidecar.read_text())
+    assert data["symbols"] == ["B"]
+    assert data["minute_utc"] == "19:55"
