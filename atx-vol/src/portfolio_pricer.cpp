@@ -705,15 +705,17 @@ stage_full_greek_seeds(const SurfaceSet &surfaces, std::span<const OptionContrac
     // ordinary solve and is re-guarded at that stamp — the same treatment this
     // stage already gives a seed with a non-finite Greek. `seed_route_matches`
     // already required a registered surface for every candidate that reaches here.
-    std::optional<double> seed_vega_slope{0.0};
+    double seed_vega_slope = 0.0; // a no-op multiplier when the flag is off
     if (skew_adjusted_delta) {
       const SurfaceRef surface = surfaces.find(contract.uid);
-      seed_vega_slope = surface != nullptr
-                            ? finite_vega_slope(*surface, contract.K, contract.T, sticky)
-                            : std::optional<double>{0.0};
-      if (!seed_vega_slope.has_value()) {
-        counts.rejected_candidates += static_cast<std::uint64_t>(std::distance(first, last));
-        continue;
+      if (surface != nullptr) {
+        const std::optional<double> slope =
+            finite_vega_slope(*surface, contract.K, contract.T, sticky);
+        if (!slope.has_value()) {
+          counts.rejected_candidates += static_cast<std::uint64_t>(std::distance(first, last));
+          continue;
+        }
+        seed_vega_slope = *slope;
       }
     }
 
@@ -723,7 +725,7 @@ stage_full_greek_seeds(const SurfaceSet &surfaces, std::span<const OptionContrac
     out.g = seed_g;
     out.iv = representative.iv();
     out.status = PriceStatus::Ok;
-    out.vega_slope = *seed_vega_slope;
+    out.vega_slope = seed_vega_slope;
     accepted[contract_index] = std::uint8_t{1};
     ++counts.accepted_unique;
   }
@@ -904,18 +906,19 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
         // skew_adjusted_delta, so it is swept finite BEFORE the Ok-stamp exactly
         // like the Greek columns above — a NaN slope demotes the lane instead of
         // riding an Ok status into the book's delta total.
-        std::optional<double> adjoint_vega_slope{0.0};
+        double adjoint_vega_slope = 0.0; // a no-op multiplier when the flag is off
         if (skew_adjusted_delta) {
-          adjoint_vega_slope = finite_vega_slope(*surf, kcol[p], tcol[p], sticky);
-          if (!adjoint_vega_slope.has_value()) {
+          const std::optional<double> slope = finite_vega_slope(*surf, kcol[p], tcol[p], sticky);
+          if (!slope.has_value()) {
             out.status = PriceStatus::NumericError;
             continue;
           }
+          adjoint_vega_slope = *slope;
         }
         b_greeks[p] = gg;
         out.fair_value = gg.price;
         out.g = gg;
-        out.vega_slope = *adjoint_vega_slope;
+        out.vega_slope = adjoint_vega_slope;
         out.status = PriceStatus::Ok;
         continue;
       }
@@ -927,18 +930,19 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
       // arm above) — under skew_adjusted_delta it is a REQUESTED input to the
       // published delta, so a non-finite one must quarantine its lane, not poison
       // the book.
-      std::optional<double> lane_vega_slope{0.0};
+      double lane_vega_slope = 0.0; // a no-op multiplier when the flag is off
       if (skew_adjusted_delta) {
-        lane_vega_slope = finite_vega_slope(*surf, kcol[p], tcol[p], sticky);
-        if (!lane_vega_slope.has_value()) {
+        const std::optional<double> slope = finite_vega_slope(*surf, kcol[p], tcol[p], sticky);
+        if (!slope.has_value()) {
           out.status = PriceStatus::NumericError;
           continue;
         }
+        lane_vega_slope = *slope;
       }
       // greeks().price IS the American fair_value (bit-identical, cold-FD invariant).
       out.fair_value = b_greeks[p].price;
       out.g = b_greeks[p];
-      out.vega_slope = *lane_vega_slope;
+      out.vega_slope = lane_vega_slope;
       out.status = PriceStatus::Ok;
     }
   };
