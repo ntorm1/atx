@@ -141,11 +141,12 @@ enum class MissingDefinitionPolicy : std::uint8_t { Error = 0, SkipUnlisted = 1 
 
 // Join one single-symbol OPRA panel to the point-in-time definition table.
 // Exact OSI economics must agree with the definition, every aligned instrument
-// id must resolve on the same trade date, and neither quote nor definition may
-// be later than valuation_ts_ns. No default multiplier or synthetic expiry is
-// introduced on this path. `policy` governs only the missing-definition
-// fall-through (see MissingDefinitionPolicy); it defaults to the strict Error
-// behavior so existing callers are unaffected.
+// id must resolve on the same trade date, all source liquidity counts must be
+// nonnegative, and neither quote nor definition may be later than
+// valuation_ts_ns. No default multiplier or synthetic expiry is introduced on
+// this path. `policy` governs only the missing-definition fall-through (see
+// MissingDefinitionPolicy); it defaults to the strict Error behavior so
+// existing callers are unaffected.
 //
 // ── `wanted`: the leg-key filter, and the validation it NARROWS ──────────────
 //
@@ -163,44 +164,45 @@ enum class MissingDefinitionPolicy : std::uint8_t { Error = 0, SkipUnlisted = 1 
 // order — a row whose `quote_key_of` is not in `wanted` is never emitted.
 //
 // The filter is applied in two stages. A cheap `raw_symbol` membership test runs
-// AFTER the aligned-source-identity lookup and its fatal gate, and BEFORE
+// AFTER the liquidity and aligned-source-identity fatal gates, and BEFORE
 // `definitions.find`, the OSI parse and quote construction — that is where the
 // cost is, and skipping it is the entire point. The exact key (which needs the
 // definition's `expiry_ts_ns`, and so cannot be known before the lookup) is
 // re-checked immediately before the quote is emitted.
 //
-// THIS NARROWS VALIDATION, DELIBERATELY. The loop body has SEVEN fatal exits for
+// THIS NARROWS VALIDATION, DELIBERATELY. The loop body has EIGHT fatal exits for
 // a panel row under an empty `wanted`, listed here in the order they are reached.
-// Exactly ONE stays panel-wide; the other six are narrowed to rows whose
+// Exactly TWO stay panel-wide; the other six are narrowed to rows whose
 // raw_symbol appears in `wanted`:
 //
 //   PANEL-WIDE — precedes the raw_symbol stage, so it is still fatal for a row
 //   no consumer wants:
-//     1. aligned source identity missing              NotFound
+//     1. negative source liquidity count              InvalidArgument
+//     2. aligned source identity missing              NotFound
 //
 //   NARROWED to the wanted raw_symbol set — all six sit after that stage:
-//     2. OSI parse of raw_symbol, definition absent   parse_osi_symbol's error
-//     3. contract definition missing                  NotFound
-//     4. definition look-ahead / expiry               InvalidArgument
-//     5. OSI parse of raw_symbol, definition found    parse_osi_symbol's error
-//     6. quote/OSI/definition economics disagree      InvalidArgument
-//     7. future quote                                 InvalidArgument
+//     3. OSI parse of raw_symbol, definition absent   parse_osi_symbol's error
+//     4. contract definition missing                  NotFound
+//     5. definition look-ahead / expiry               InvalidArgument
+//     6. OSI parse of raw_symbol, definition found    parse_osi_symbol's error
+//     7. quote/OSI/definition economics disagree      InvalidArgument
+//     8. future quote                                 InvalidArgument
 //
-// On the narrowed six: (2) and (5) are the SAME condition — raw_symbol is not a
+// On the narrowed six: (3) and (6) are the SAME condition — raw_symbol is not a
 // well-formed OSI symbol — reached on the two mutually exclusive branches of the
-// definition lookup, and (2) is the one exit on the missing-definition path that
-// `MissingDefinitionPolicy::SkipUnlisted` does not disarm. (3) is inert for a
+// definition lookup, and (3) is the one exit on the missing-definition path that
+// `MissingDefinitionPolicy::SkipUnlisted` does not disarm. (4) is inert for a
 // caller passing SkipUnlisted (as the listed-dispersion workflow does) and live
-// under the default Error policy. (4)-(7) are the definition-exists gates.
+// under the default Error policy. (5)-(8) are the definition-exists gates.
 //
-// Checks 2-7 therefore stop being a panel-wide audit of the definition table and
+// Checks 3-8 therefore stop being a panel-wide audit of the definition table and
 // become an audit of the contracts the caller consumes. That is the accepted
 // trade: validating definitions for the ~100k contracts a reconciliation never
 // reads is not the reconciliation's job, and the exporter that produced the
 // definitions owns that audit. What must NOT happen is a fail-closed gate going
 // quiet for a contract the caller DOES read, so the raw_symbol stage is
 // deliberately coarser than the full key: a row whose economics DISAGREE (check
-// 6) still carries the wanted raw_symbol and still trips the gate, rather than
+// 7) still carries the wanted raw_symbol and still trips the gate, rather than
 // being filtered out on the strike/side it is lying about. Each of the six has a
 // test asserting it still fires for a wanted key, and five of them assert on the
 // SAME input that it is tolerated when the contract is NOT wanted.

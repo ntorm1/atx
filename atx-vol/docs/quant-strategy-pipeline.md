@@ -241,6 +241,37 @@ risk decision and a dry-run basket/hedge intent. Existing
 `dispersion_named_positions`; the dispersion engine remains authoritative for
 its vega/gamma/theta-matched quantities.
 
+## Cross-sectional listed-options bridge
+
+The first executable cross-sectional slice now lives in
+`atx-options-engine`. It bridges `ResearchObservation` and actual listed
+contracts into the mature `atx-engine` cross-sectional stack instead of
+reimplementing rank transforms, neutralization, optimization, execution, and
+ledger accounting inside `atx-vol`.
+
+The bridge adds the contracts that a scalar research row cannot express:
+permanent contract identity, definition and quote clocks, multiplier, bid/ask
+and displayed sizes, interval volume, lagged open interest, ADV, vega, return
+volatility, initial/maintenance margin, explicit tradability status, and
+separate definition/feature/execution/outcome lineage. It materializes a
+canonical bounded date-by-contract `Dataset`; non-tradable cells are masked and
+their engine signal is `NaN`. Ex-post forward-P&L labels are excluded from that
+decision dataset and available only through a separately typed outcome view.
+
+`make_option_target_book` then maps engine weights into whole listed contracts
+using either premium-notional or per-contract-vega units. A lagged-ADV position
+fraction and per-name limits apply before a documented conservative
+independent-contract margin gate. This is research margin, not order
+participation, SPAN, STANS, or broker portfolio margin.
+
+The generic stock `WeightPolicy::reconcile` is intentionally not reused for
+option sizing because it assumes one share per price unit. The next replay
+stage will reconcile these option-aware contract targets into next-slice
+orders, consume shared observed L1 liquidity, and commit partial fills through
+the existing portfolio ledger. Full contracts, fidelity limits, and primary
+research sources are documented in
+[`atx-options-engine/README.md`](../../atx-options-engine/README.md).
+
 ## Extension rules
 
 - New feature producers must declare observation and availability time, warmup,

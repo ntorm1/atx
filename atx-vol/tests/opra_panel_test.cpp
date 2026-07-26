@@ -66,6 +66,8 @@ struct RawRow {
   std::string symbol;
   double bid;
   double ask;
+  i64 bid_size{10};
+  i64 ask_size{12};
 };
 
 // Compose an OSI/OCC 21-char symbol: 6-char space-padded root + YYMMDD + C/P +
@@ -94,8 +96,8 @@ struct RawRow {
     sym_col.push_back(rr.symbol);
     bidpx.push_back(to_px(rr.bid));
     askpx.push_back(to_px(rr.ask));
-    bidsz.push_back(10);
-    asksz.push_back(12);
+    bidsz.push_back(rr.bid_size);
+    asksz.push_back(rr.ask_size);
   }
   std::vector<io::WriteColumn> cols;
   cols.push_back({"ts", std::span<const i64>(ts_col)});
@@ -358,6 +360,10 @@ TEST(OpraPanel, Load_SyntheticXomSlice_CountsAndImpliedSpot) {
   EXPECT_EQ(loaded->n_dropped, std::size_t{2});
   EXPECT_EQ(loaded->frame.uid, "XOM");
   EXPECT_EQ(loaded->frame.rows.size(), std::size_t{12});
+  EXPECT_TRUE(loaded->bid_size_available);
+  EXPECT_TRUE(loaded->ask_size_available);
+  EXPECT_FALSE(loaded->volume_available);
+  EXPECT_FALSE(loaded->open_interest_available);
 
   // The dropped strike (120) must not have entered the frame.
   for (const auto& row : loaded->frame.rows) {
@@ -372,6 +378,24 @@ TEST(OpraPanel, Load_SyntheticXomSlice_CountsAndImpliedSpot) {
   EXPECT_DOUBLE_EQ(loaded->frame.spot, loaded->implied_spot);
 
   fs::remove_all(dir);
+}
+
+TEST(OpraPanel, Load_RejectsDisplayedSizeBeforeInt32Narrowing) {
+  const i64 too_large =
+      static_cast<i64>((std::numeric_limits<std::int32_t>::max)()) + 1;
+  const std::vector<RawRow> rows{RawRow{
+      "XOM", "XOM   260619C00110000", 2.0, 2.2, too_large, 12}};
+  const std::string path = write_slice("oversized_quote_size.parquet", rows);
+  OpraLoadSpec spec;
+  spec.path = path;
+  spec.underlying = "XOM";
+  spec.snapshot_iso = "2026-05-01";
+  spec.spot_override = 100.0;
+
+  const auto loaded = load_opra_cbbo_parquet(spec);
+
+  ASSERT_FALSE(loaded);
+  EXPECT_EQ(loaded.error().code(), atx::core::ErrorCode::OutOfRange);
 }
 
 TEST(OpraPanel, Load_SpotOverride_UsesOverrideNotPcp) {
