@@ -117,6 +117,10 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/backtest_template.cpp
     src/backtest_db.cpp
     src/backtest_db_build.cpp
+    src/research_db.cpp
+    src/research_validation.cpp
+    src/strategy_pipeline.cpp
+    src/quant_pipeline.cpp
     src/snapshot_cache.cpp
     src/strategy.cpp
     src/dispersion_strategy.cpp
@@ -443,6 +447,11 @@ if(ATX_BUILD_EXAMPLES)
     # and delta-hedged at every stored close. Re-runs resume logical histories.
     add_executable(atx-vol-backtest-db-build tools/backtest_db_build_main.cpp)
     target_link_libraries(atx-vol-backtest-db-build PRIVATE atx::vol atx::core atx_warnings)
+
+    # Point-in-time signal miner: BacktestDb diagnostics -> next-observation
+    # outcomes -> purged walk-forward validation -> immutable ResearchDb Trial.
+    add_executable(atx-vol-quant-research tools/quant_research_main.cpp)
+    target_link_libraries(atx-vol-quant-research PRIVATE atx::vol atx::core atx_warnings)
 
     # Surface-db MANAGEMENT/INSPECTION CLI: info / partitions / symbols / config
     # / query / verify over a built database, so verifying one needs no Python

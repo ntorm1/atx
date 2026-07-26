@@ -108,6 +108,10 @@ add_executable(atx-vol-tests
     backtest_template_test.cpp
     backtest_db_test.cpp
     backtest_db_build_test.cpp
+    research_db_test.cpp
+    research_validation_test.cpp
+    strategy_pipeline_test.cpp
+    quant_pipeline_test.cpp
     strategy_test.cpp
     dispersion_strangle_test.cpp
     backtest_exec_test.cpp
