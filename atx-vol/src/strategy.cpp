@@ -902,8 +902,10 @@ Status DeclarativeStrategy::on_step(const MarketSnapshot &base, std::size_t step
   bool effective_book_empty = book.lots.empty();
   if (close_at_horizon) {
     // Identify every horizon close without mutating the live book. If this step
-    // also enters, the closes commit only after the new cohort is fully prepared.
-    // The engine's before/after
+    // also enters, the closes commit only after the new cohort is fully prepared;
+    // if the entry side finds nothing to open they still commit (see the no-trade
+    // branch below) — the close is an unconditional risk rule, not a leg of the
+    // entry. The engine's before/after
     // `book.lots` diff (src/backtest.cpp `execute`) books these as roll-closes
     // at today's marks — never settlement (the engine's own expiry settle runs
     // earlier in its loop, strictly before on_step, so a lot closed here never
@@ -923,9 +925,22 @@ Status DeclarativeStrategy::on_step(const MarketSnapshot &base, std::size_t step
   }
   Result<std::optional<PendingCohort>> prepared = prepare_cohort(base, next_lot_id, price_options);
   if (!prepared) {
+    // FATAL entry error: leave the book exactly as the step found it. A non-Ok
+    // on_step aborts the whole run (`run_backtest`, src/backtest.cpp), so no lot
+    // can be carried past its horizon through this path, and an untouched book is
+    // the one the failing step is diagnosed against.
     return Err(prepared.error());
   }
   if (!prepared->has_value()) {
+    // NO-TRADE is not NO-CLOSE. The entry side found nothing to open today (a
+    // DropRenormalize/Unavailable step, or an empty sizing) but the run CONTINUES,
+    // so a lot left here rides past its close horizon to expiry and settles at
+    // intrinsic — precisely the economics CloseAtHorizon exists to avoid. Commit
+    // the staged closes; `d.clear` is unreachable in this mode (lifecycle_decide
+    // never returns clear=true for CloseAtHorizon), so this is the whole close.
+    if (close_at_horizon) {
+      std::erase_if(book.lots, closes_at_horizon);
+    }
     return Ok();
   }
   PendingCohort &pending = **prepared;

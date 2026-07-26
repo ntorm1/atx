@@ -755,6 +755,41 @@ TEST(Strategy, CloseAtHorizonFailedReopenDoesNotCommitStagedCloses) {
   EXPECT_EQ(book.lots.front().cohort, original.cohort + 1u);
 }
 
+TEST(Strategy, CloseAtHorizonNoTradeStillClosesLotsAtTheHorizon) {
+  // A no-trade step is NOT a no-close step. Under DropRenormalize an unbuildable
+  // entry is an Ok/no-trade step and the RUN CONTINUES, so a lot left in the book
+  // here rides past its close horizon all the way to expiry and settles
+  // intrinsically -- the exact economics CloseAtHorizon exists to avoid. The
+  // horizon close is an unconditional risk rule, not a leg of the entry.
+  const PricedSurface valid_surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const PricedSurface unrelated_surface = make_surface(kUid + 1, 100.0, 100.0, kBaseNow);
+  auto valid = snapshot_of({{"SPY", &valid_surface}}, "close-horizon-no-trade-valid");
+  auto missing = snapshot_of({{"OTHER", &unrelated_surface}}, "close-horizon-no-trade-missing");
+  ASSERT_TRUE(valid.has_value()) << valid.error().to_string();
+  ASSERT_TRUE(missing.has_value()) << missing.error().to_string();
+
+  StrategySpec spec;
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::CloseAtHorizon;
+  spec.lifecycle.roll_at_T = 0.30; // the 0.25y lot entered below sits AT its horizon
+  spec.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, 1};
+  spec.legs.push_back(fixed_call(kUid));
+  DeclarativeStrategy strategy{spec};
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+  ASSERT_TRUE(strategy.on_step(*valid, 0, book, next_lot_id).has_value());
+  ASSERT_EQ(book.lots.size(), 1u);
+  const std::uint64_t next_id_after_entry = next_lot_id;
+
+  // Step 1: the only leg's uid is absent, so under DropRenormalize the cohort
+  // build yields a NO-TRADE (Ok) step rather than an error.
+  const Status no_trade = strategy.on_step(*missing, 1, book, next_lot_id);
+  ASSERT_TRUE(no_trade.has_value()) << no_trade.error().to_string();
+  EXPECT_TRUE(book.lots.empty());              // the horizon close must still have committed
+  EXPECT_EQ(next_lot_id, next_id_after_entry); // no entry => no lot ids consumed
+  EXPECT_TRUE(strategy.entry_risk_seeds().empty());
+}
+
 TEST(Strategy, DropRenormalizePropagatesInvalidAndOverflowingTenors) {
   constexpr std::int64_t kNearMaxTs = std::numeric_limits<std::int64_t>::max() - 100 * kDayNs;
   const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kNearMaxTs);
