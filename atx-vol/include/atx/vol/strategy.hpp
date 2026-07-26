@@ -493,7 +493,13 @@ enum class RiskBreachReason : std::uint8_t {
 [[nodiscard]] std::string_view to_string(RiskBreachReason reason) noexcept;
 
 struct DispersionRiskLimits {
-  double max_gross_vega{0.0};     // book gross vega cap; 0 => unlimited
+  // Book GROSS vega cap, in DOLLARS PER VOL POINT — the same unit as
+  // `DispersionConfig::target_vega`, so a vega-neutral book sized to
+  // `target_vega` measures 2 × target_vega here (index leg + matched basket).
+  // The gate converts per-share, per-unit-vol leg vegas with
+  // `contract_vega_per_vol_point` (dispersion.hpp); it is NOT multiplier-
+  // dependent. 0 => unlimited.
+  double max_gross_vega{0.0};
   double max_gross_notional{0.0}; // gross premium notional cap; 0 => unlimited
   double capital{0.0};            // net premium outlay cap; 0 => unlimited
   // Fraction of CAPITAL (0.2 == halt after losing 20% of capital), so it requires

@@ -243,6 +243,29 @@ struct StrikePolicy {
 // dollar vega per unit vol for the correlation telemetry (FIX-E C-1).
 inline constexpr double kVegaPerVolPoint = 0.01;
 
+// The ONE per-contract conversion. `vega_per_unit_vol` is a PER-SHARE dP/dsigma
+// (per 1.00 of sigma); the result is the DOLLARS of vega ONE CONTRACT carries
+// per VOL POINT.
+//
+// C-2 (pipeline-m production review). Three places denominate in this unit —
+// projected sizing (`build_dispersion_book`), the listed schedule's
+// `vega_per_contract_per_vol_point` column and its round-trip validator
+// (listed_dispersion_schedule.cpp), and the X3 risk probe (`measure_book`,
+// dispersion_strategy.cpp) — and they were three independent copies of the
+// expression. The risk probe's copy had dropped BOTH `multiplier` and
+// `kVegaPerVolPoint`, so `DispersionRiskLimits::max_gross_vega` was compared in
+// the advertised dollars-per-vol-point unit only at the historical
+// multiplier == 100 (it was off by 100/multiplier everywhere else). All three
+// now call this function, so the unit cannot drift again in one of them.
+//
+// Left-associative `(v * m) * kVegaPerVolPoint` — the exact association the
+// sizing and listed-schedule sites already used, so adopting it is bit-identical
+// for them.
+[[nodiscard]] constexpr double contract_vega_per_vol_point(double vega_per_unit_vol,
+                                                           double multiplier) noexcept {
+  return vega_per_unit_vol * multiplier * kVegaPerVolPoint;
+}
+
 // Sizing / construction policy for a dispersion book.
 struct DispersionConfig {
   double target_T{30.0 / 365.25}; // straddle tenor (year-fraction), > 0

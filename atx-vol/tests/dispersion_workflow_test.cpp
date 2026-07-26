@@ -582,8 +582,16 @@ namespace {
 }
 
 // The quantity `DispersionRiskLimits::max_gross_vega` is actually compared
-// against: the risk probe's GROSS vega, Σ|straddle_vega × straddle_qty| over the
-// index leg AND every basket leg (`dispersion_strategy.cpp`, `risk_probe`).
+// against: the risk probe's GROSS vega in DOLLARS PER VOL POINT, i.e.
+// Σ|contract_vega_per_vol_point(straddle_vega, multiplier) × straddle_qty| over
+// the index leg AND every basket leg (`dispersion_strategy.cpp`, `measure_book`).
+//
+// This helper deliberately RE-EVALUATES the production quantity so these tests
+// can pick a limit that provably binds; it is NOT a unit oracle and never was.
+// The independent hand-derived oracle for the unit itself (2 × target_vega at a
+// non-100 multiplier, derived from the contract rather than from the code) is
+// `Strategy.DispersionGrossVegaLimitIsDollarsPerVolPointAtNonHistoricalMultiplier`
+// in strategy_test.cpp — it is what caught C-2, which this helper could not.
 //
 // The X3 limit tests used to read `track.gross_vega.front()` instead, which is
 // the NET book vega — a vega-neutral dispersion book drives that to zero by
@@ -607,9 +615,13 @@ namespace {
   if (!book.has_value()) {
     return 0.0;
   }
-  double gross = std::fabs(book->index_leg.straddle_vega * book->index_leg.straddle_qty);
+  double gross =
+      std::fabs(contract_vega_per_vol_point(book->index_leg.straddle_vega, config.multiplier) *
+                book->index_leg.straddle_qty);
   for (const DispersionLeg &leg : book->name_legs) {
-    gross += std::fabs(leg.straddle_vega * leg.straddle_qty);
+    gross +=
+        std::fabs(contract_vega_per_vol_point(leg.straddle_vega, config.multiplier) *
+                  leg.straddle_qty);
   }
   return gross;
 }

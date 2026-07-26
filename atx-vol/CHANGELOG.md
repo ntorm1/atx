@@ -75,3 +75,30 @@ builds both routes over the SAME three `PricedSurface`s at the same tenor,
 multiplier and target, and asserts the two index-leg dollar-vega-per-vol-point
 figures agree to 5%. Before this change it failed by exactly 100x (projected
 100 vs listed 10000).
+
+### FOLLOW-UP — the X3 gross-vega limit now honours the multiplier (C-2)
+
+E1 above migrated the SIZING to dollars per vol point but left the X3 risk probe
+(`measure_book`, `dispersion_strategy.cpp`) summing a bare
+`|straddle_vega * straddle_qty|`. That expression discards the `multiplier` the
+function is handed AND the per-vol-point scale, so
+`DispersionRiskLimits::max_gross_vega` was compared in the advertised unit only
+at the historical `multiplier == 100`; elsewhere the measured exposure was off by
+exactly `100 / multiplier` (10x under-reported at 1,000, 10x over-clamped at 10).
+`multiplier` is a real typed run-spec key on this branch, so non-100 books are
+reachable from production.
+
+**Effect.** `max_gross_vega`, and the `risk_clamp_scale` / `risk_breach_reason`
+telemetry it drives, are UNCHANGED at `multiplier == 100` (the default, and the
+82-session golden's value — which also configures no limits at all, so the golden
+path never measures). At any other multiplier the measured gross vega changes by
+`multiplier / 100`; a spec that pins both a non-100 multiplier and a
+`max_gross_vega` must restate the cap in dollars per vol point.
+
+The conversion now lives once, in `contract_vega_per_vol_point` (dispersion.hpp).
+Projected sizing, the listed schedule's `vega_per_contract_per_vol_point` column
+and its round-trip validator all adopt it with the same operand association, so
+those three are bit-identical. Guarded by
+`Strategy.DispersionGrossVegaLimitIsDollarsPerVolPointAtNonHistoricalMultiplier`,
+whose oracle (`2 * target_vega`, for any multiplier) is hand-derived from the
+sizing contract rather than re-evaluated from the code.

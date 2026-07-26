@@ -628,7 +628,7 @@ namespace {
   // per UNIT vol for the correlation telemetry (FIX-E C-1).
   index_leg->leg.straddle_qty =
       index_sign * cfg.target_vega /
-      (index_leg->leg.straddle_vega * cfg.multiplier * kVegaPerVolPoint);
+      contract_vega_per_vol_point(index_leg->leg.straddle_vega, cfg.multiplier);
 
   // ── X4 WEIGHTING POLICY ───────────────────────────────────────────────────
   //
@@ -643,7 +643,7 @@ namespace {
       const double normalized_weight = universe.names[used_names[k]].weight / sum_w;
       name_legs[k].straddle_qty =
           name_sign * normalized_weight * cfg.target_vega /
-          (name_legs[k].straddle_vega * cfg.multiplier * kVegaPerVolPoint);
+          contract_vega_per_vol_point(name_legs[k].straddle_vega, cfg.multiplier);
     }
   } else {
     // Every non-default scheme matches the basket to the INDEX leg on the

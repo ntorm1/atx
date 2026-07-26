@@ -1336,6 +1336,92 @@ TEST(Strategy, DispersionCorrelationTelemetryMatchesTheBuiltBook) {
               row("corr_gamma"), book_index_signed_vega);
 }
 
+// ── C-2 (pipeline-m production review): the X3 gross-vega LIMIT is DOLLARS PER
+//    VOL POINT, at every multiplier — not just at the historical 100 ──────────
+//
+// `DispersionRiskLimits::max_gross_vega` is documented in strategy.hpp as a
+// dollar cap denominated per VOL POINT. The quantity it is compared against is
+// the X3 risk probe's gross vega, and `DispersionLeg::straddle_vega` is a
+// PER-SHARE dP/dsigma per UNIT vol (dispersion.hpp), so a leg's contribution is
+//
+//     |straddle_vega * straddle_qty| * multiplier * kVegaPerVolPoint
+//
+// `multiplier` became a real typed run-spec field in this branch
+// (dispersion_run.cpp binds `multiplier`; dispersion_backtest.cpp routes it into
+// `DispersionConfig::multiplier`), so a spec at 250 or 1000 is now reachable
+// from production.
+//
+// THE ORACLE IS HAND-DERIVED FROM THE CONTRACT, NOT FROM THE CODE. Under the
+// default VegaNeutral scheme the index leg is sized to carry exactly
+// `target_vega` dollars per vol point, and the basket is sized to match it leg
+// by normalized weight — Σ ŵ_k = 1 — so the whole book's GROSS vega is exactly
+//
+//     2 * target_vega     dollars per vol point, for ANY multiplier.
+//
+// That is why this test is an independent oracle where `natural_gross_vega`
+// (dispersion_workflow_test.cpp) is not: that helper re-evaluates the production
+// expression and therefore cannot detect a wrong one.
+TEST(Strategy, DispersionGrossVegaLimitIsDollarsPerVolPointAtNonHistoricalMultiplier) {
+  const fs::path dir = fresh_dir("dispersion-gross-vega-unit");
+  const PricedSurface idx = make_surface(1, 500.0, 500.0, kBaseNow, 0.00);
+  const PricedSurface n0 = make_surface(2, 100.0, 100.0, kBaseNow, 0.02);
+  const PricedSurface n1 = make_surface(3, 120.0, 120.0, kBaseNow, 0.03);
+  const std::string path =
+      write_archive(dir, "2026-10-01", {{"IDX", &idx}, {"NM0", &n0}, {"NM1", &n1}});
+  auto snap = MarketSnapshot::load(path);
+  ASSERT_TRUE(snap.has_value()) << snap.error().to_string();
+
+  DispersionUniverse u;
+  u.index = DispersionMember{"IDX", 1, 0.0};
+  u.names.push_back(DispersionMember{"NM0", 2, 0.6});
+  u.names.push_back(DispersionMember{"NM1", 3, 0.4});
+
+  constexpr double kMultiplier = 250.0;   // deliberately NOT the historical 100
+  constexpr double kTargetVega = 10000.0; // $ of index-leg vega per ONE vol point
+
+  DispersionConfig cfg;
+  cfg.target_vega = kTargetVega;
+  cfg.multiplier = kMultiplier;
+
+  DispersionStrategy strategy{u, cfg};
+  DispersionRiskLimits limits;
+  // Any binding cap will do: the assertion reads the RECORDED `requested`, which
+  // is the probe's own measurement of the book it was handed.
+  limits.max_gross_vega = 1.0;
+  limits.action = RiskBreachAction::Clamp;
+  strategy.set_risk_limits(limits);
+
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1u;
+  ASSERT_TRUE(strategy.on_step(*snap, 0u, book, next_lot_id).has_value());
+  ASSERT_EQ(strategy.risk_events().size(), 1u) << "the tight cap must bind and be recorded";
+  ASSERT_EQ(strategy.risk_events().front().reason, RiskBreachReason::GrossVega);
+  const double measured = strategy.risk_events().front().requested;
+
+  const double expected_usd_per_vol_point = 2.0 * kTargetVega;
+  EXPECT_NEAR(measured, expected_usd_per_vol_point, 1.0e-9 * expected_usd_per_vol_point)
+      << "the gross-vega limit is not being compared in dollars per vol point";
+
+  // NON-VACUITY. The retired expression `Σ|straddle_vega × straddle_qty|` drops
+  // BOTH the multiplier and the vol-point scale, so it equals the correct
+  // quantity times 100/multiplier — 0.4x here. Pin that gap so the assertion
+  // above cannot be satisfied by the expression it replaced.
+  const auto built = strategy.build_book(*snap);
+  ASSERT_TRUE(built.has_value()) << built.error().to_string();
+  double retired = std::fabs(built->index_leg.straddle_vega * built->index_leg.straddle_qty);
+  for (const DispersionLeg &leg : built->name_legs) {
+    retired += std::fabs(leg.straddle_vega * leg.straddle_qty);
+  }
+  EXPECT_NEAR(retired, expected_usd_per_vol_point * 100.0 / kMultiplier,
+              1.0e-9 * expected_usd_per_vol_point)
+      << "the retired expression's known 100/multiplier error is not reproduced";
+  EXPECT_LT(retired, 0.5 * expected_usd_per_vol_point)
+      << "at multiplier 250 the two quantities must be far apart, else this is vacuous";
+
+  std::printf("[strategy] gross_vega_per_vol_point=%.6f retired=%.6f multiplier=%.0f\n", measured,
+              retired, kMultiplier);
+}
+
 TEST(Strategy, DispersionHonorsPriceOptionsAndPublishesExactEntrySeeds) {
   const fs::path dir = fresh_dir("dispersion-price-options-seeds");
   const PricedSurface idx = make_surface(1, 500.0, 500.0, kBaseNow, 0.00);

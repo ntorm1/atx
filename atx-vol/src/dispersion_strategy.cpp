@@ -90,19 +90,33 @@ struct RiskProbe {
   double net_outlay{0.0};
 };
 
+// C-2 (pipeline-m production review). `gross_vega` is DOLLARS PER VOL POINT —
+// the unit `DispersionRiskLimits::max_gross_vega` is documented in (strategy.hpp)
+// and the unit `DispersionConfig::target_vega` is sized in. `straddle_vega` is a
+// PER-SHARE dP/dsigma per UNIT vol (dispersion.hpp), so the per-contract
+// conversion `contract_vega_per_vol_point` is mandatory here; this used to sum a
+// bare `straddle_vega * straddle_qty`, which discarded the `multiplier` argument
+// it was handed AND the vol-point scale. That product happens to equal the
+// correct quantity at multiplier == 100 and is off by exactly 100/multiplier
+// everywhere else, so the cap under-reported exposure 10x at a multiplier of
+// 1000 and over-clamped 10x at 10. `multiplier` is now a real typed run-spec
+// field (dispersion_run.cpp binds it; dispersion_backtest.cpp routes it), so
+// non-100 books are reachable from production.
 [[nodiscard]] RiskProbe measure_book(const DispersionBook &book,
                                      std::span<const double> entry_marks, double multiplier) {
   RiskProbe probe;
-  probe.gross_vega = std::fabs(book.index_leg.straddle_vega * book.index_leg.straddle_qty);
+  probe.gross_vega = std::fabs(
+      contract_vega_per_vol_point(book.index_leg.straddle_vega, multiplier) *
+      book.index_leg.straddle_qty);
   for (const DispersionLeg &leg : book.name_legs) {
-    probe.gross_vega += std::fabs(leg.straddle_vega * leg.straddle_qty);
+    probe.gross_vega +=
+        std::fabs(contract_vega_per_vol_point(leg.straddle_vega, multiplier) * leg.straddle_qty);
   }
   for (std::size_t i = 0; i < book.positions.size() && i < entry_marks.size(); ++i) {
     const double notional = book.positions[i].qty * multiplier * entry_marks[i];
     probe.gross_notional += std::fabs(notional);
     probe.net_outlay += notional;
   }
-  (void)multiplier;
   return probe;
 }
 
