@@ -74,12 +74,6 @@ namespace {
   return b.data() + static_cast<std::size_t>(off);
 }
 
-[[nodiscard]] std::int64_t wall_clock_ns() noexcept {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(
-             std::chrono::system_clock::now().time_since_epoch())
-      .count();
-}
-
 // Bits 0..11 — includes ValidationFailure::CarryGap (1u << 11), the
 // publish-with-Degraded reason: a Degraded+CarryGap provenance is a routinely
 // SERVED state and must round-trip the archive, not be refused as unknown.
@@ -167,13 +161,9 @@ constexpr char kSurfaceRecordMagicBytes[8] = {'A', 'T', 'X', 'V', 'S', 'R', '2',
 // POD slice structs + a v2-specific salt so a v1 file, a drifted-struct v2 file,
 // and a different-build v2 file are all rejected (FlatBuffers-style hard schema
 // pin; we pay no vtable indirection because the schema is fixed).
-[[nodiscard]] std::uint64_t schema_hash_v2() noexcept {
+[[nodiscard]] std::uint64_t schema_hash_v2_salted(std::uint64_t salt) noexcept {
   constexpr std::uint64_t kFnvPrime = 0x100000001b3ull;
-  // Salt 0101 (was 0100): the SplineVol payload gained mult_cap + w_offset. That
-  // layout is not captured by the sizeof-fold (SplineVol has no fixed serialized
-  // POD struct), so bump the salt to reject any older v2 file. Pre-release (§0).
-  constexpr std::uint64_t kV2Salt = 0xA7C3'5F04'2E1F'0101ull;
-  std::uint64_t h = 0x9e3779b97f4a7c15ull ^ kV2Salt;
+  std::uint64_t h = 0x9e3779b97f4a7c15ull ^ salt;
   h ^= static_cast<std::uint64_t>(sizeof(ArchiveV2Header)) * kFnvPrime;
   h ^= static_cast<std::uint64_t>(sizeof(ArchiveV2LookupSlot)) * kFnvPrime;
   h ^= static_cast<std::uint64_t>(sizeof(ArchiveV2DirEntry)) * kFnvPrime;
@@ -181,6 +171,26 @@ constexpr char kSurfaceRecordMagicBytes[8] = {'A', 'T', 'X', 'V', 'S', 'R', '2',
   h ^= static_cast<std::uint64_t>(sizeof(EssviParams)) * kFnvPrime;
   h ^= static_cast<std::uint64_t>(sizeof(SviParams)) * kFnvPrime;
   return h;
+}
+
+// Salt history (low 16 bits): 0100 initial; 0101 SplineVol payload gained
+// mult_cap + w_offset (that layout is not captured by the sizeof-fold); 0102
+// AlOpts::n_quad_price now persists in the reused reserved u16 (C2 / SE-P1-2).
+// The 0100->0101 bump had to reject older files (the SplineVol payload actually
+// changed shape). The 0101->0102 bump is DIFFERENT: the record bytes are
+// UNCHANGED for the common tied case (n_quad_price==0 == the old reserved u16),
+// so a 0101 file is fully serviceable by this reader — it just reads tied. We
+// therefore bump the salt (so a PRE-C2 reader rejects a NEW archive that sets a
+// genuinely decoupled premium order, instead of silently mispricing it) AND
+// accept the immediately-prior 0101 salt here (open_impl) so every existing
+// archive still opens. Older salts (<=0100) stay rejected — their payloads really
+// are incompatible. See docs/atxvsa2-format.md §5.
+constexpr std::uint64_t kV2Salt = 0xA7C3'5F04'2E1F'0102ull;
+constexpr std::uint64_t kV2SaltPrev = 0xA7C3'5F04'2E1F'0101ull;
+
+[[nodiscard]] std::uint64_t schema_hash_v2() noexcept { return schema_hash_v2_salted(kV2Salt); }
+[[nodiscard]] std::uint64_t schema_hash_v2_prev() noexcept {
+  return schema_hash_v2_salted(kV2SaltPrev);
 }
 
 [[nodiscard]] std::uint32_t header_crc_v2(ArchiveV2Header h) noexcept {
@@ -483,6 +493,7 @@ write_surface_archive_v2(std::span<const SurfaceArchiveItem> items,
     sh.al_n_collocation = pc.al_opts.n_collocation;
     sh.al_n_quadrature = pc.al_opts.n_quadrature;
     sh.al_max_newton_iter = pc.al_opts.max_newton_iter;
+    sh.al_n_quad_price = pc.al_opts.n_quad_price; // C2 (SE-P1-2): decoupled premium order
     if (plan.provenance.has_value()) {
       const ArchiveSurfaceProvenanceRecord rec = to_provenance_record(*plan.provenance);
       sh.prov_marker = rec.marker;
@@ -610,8 +621,27 @@ write_surface_archive_v2(std::span<const SurfaceArchiveItem> items,
   ArchiveV2Header hdr{};
   std::memcpy(hdr.magic, kArchiveV2MagicBytes, 8);
   hdr.file_size = file_size;
-  hdr.created_ts_ns = opts.created_ts_ns != 0 ? static_cast<std::uint64_t>(opts.created_ts_ns)
-                                              : static_cast<std::uint64_t>(wall_clock_ns());
+  // created_ts_ns: an explicit nonzero stamp is honored verbatim (unit tests pin
+  // it). The 0 sentinel is filled from a DETERMINISTIC CRC-32C of the archive
+  // CONTENT — the whole payload span [header, EOF): data ‖ lookup ‖ directory
+  // (every per-record payload_crc32c is mirrored into the directory, so any
+  // same-length rewrite changes this hash too) — folded with file_size. Two
+  // identical builds therefore produce byte-identical containers (run-to-run
+  // reproducibility), while two DIFFERENT builds still get distinct stamps, which
+  // preserves the (file_size, created_ts_ns, header_crc32c, metadata_crc32c)
+  // content-identity the SnapshotCache keys on for staleness. (A wall-clock read
+  // broke the former; a constant would break the latter.) The span excludes the
+  // header, so header_crc32c/created_ts_ns are not inputs to their own hash.
+  if (opts.created_ts_ns != 0) {
+    hdr.created_ts_ns = static_cast<std::uint64_t>(opts.created_ts_ns);
+  } else {
+    const std::uint32_t content_crc =
+        crc32c(buf_at(buffer, sizeof(ArchiveV2Header)),
+               static_cast<std::size_t>(file_size - sizeof(ArchiveV2Header)));
+    const std::uint64_t derived =
+        (static_cast<std::uint64_t>(content_crc) << 32) ^ static_cast<std::uint64_t>(file_size);
+    hdr.created_ts_ns = derived != 0 ? derived : 1u; // never re-hit the 0 sentinel
+  }
   hdr.schema_hash = schema_hash_v2();
   hdr.writer_version_hash = 0;
   hdr.lookup_offset = lookup_offset;
@@ -644,11 +674,16 @@ Status write_surface_archive_v2_file(std::string_view path,
   }
   const std::vector<std::byte> &buffer = *built;
   const std::filesystem::path dst{std::string(path)};
-  std::filesystem::path tmp = dst;
-  tmp += ".tmp";
+  auto reserved = detail::reserve_unique_publish_temp_file(path);
+  if (!reserved) {
+    return tl::unexpected<atx::core::Error>(std::move(reserved).error());
+  }
+  const std::filesystem::path tmp{*reserved};
   {
     std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
     if (!os) {
+      std::error_code ec;
+      std::filesystem::remove(tmp, ec);
       return Err(ErrorCode::IoError, "write_surface_archive_v2_file: cannot open temp file");
     }
     os.write(reinterpret_cast<const char *>(buffer.data()),
@@ -659,14 +694,10 @@ Status write_surface_archive_v2_file(std::string_view path,
       return Err(ErrorCode::IoError, "write_surface_archive_v2_file: write failed");
     }
   }
-  std::error_code ec;
-  std::filesystem::rename(tmp, dst, ec);
-  if (ec) {
-    std::error_code ec2;
-    std::filesystem::remove(tmp, ec2);
-    return Err(ErrorCode::IoError, "write_surface_archive_v2_file: rename failed");
-  }
-  return Ok();
+  // Durable atomic publish: fsync the temp before the rename, retry the rename
+  // under a reader-held destination, preserve the temp on final failure (C3 /
+  // SE-P2-1, SE-P2-2). Shared with the v1 + manifest writers.
+  return detail::flush_and_publish_file(tmp.string(), dst.string());
 }
 
 // ── v2 reader ────────────────────────────────────────────────────────────────
@@ -696,7 +727,12 @@ Result<SurfaceArchiveV2> SurfaceArchiveV2::open_impl(std::span<const std::byte> 
       h.surface_header_size != sizeof(ArchiveV2SurfaceHeader)) {
     return Err(ErrorCode::ParseError, "SurfaceArchiveV2::open: record size mismatch");
   }
-  if (h.schema_hash != schema_hash_v2()) {
+  // Accept the current schema salt OR the immediately-prior one (C2 back-compat):
+  // 0101 and 0102 differ only in the SEMANTIC salt — the on-disk record layout is
+  // byte-identical (n_quad_price reuses a formerly-zero reserved u16), so a 0101
+  // archive is fully serviceable and reads n_quad_price back as 0 (tied). Older
+  // salts stay rejected.
+  if (h.schema_hash != schema_hash_v2() && h.schema_hash != schema_hash_v2_prev()) {
     return Err(ErrorCode::ParseError, "SurfaceArchiveV2::open: schema hash mismatch");
   }
   if (h.file_size != bytes.size()) {
@@ -778,6 +814,59 @@ Result<SurfaceArchiveV2> SurfaceArchiveV2::open_impl(std::span<const std::byte> 
       return Err(ErrorCode::ParseError, "SurfaceArchiveV2::open: record offset misaligned");
     }
   }
+
+  // SE-P2-7: cross-check the lookup table against the directory. v2 previously
+  // validated directory entries + lookup symbol_len only — never that an OCCUPIED
+  // lookup slot AGREES with a directory entry. So a slot whose (offset,size) was
+  // tampered to point at another valid record served the WRONG symbol's surface
+  // with no error (v1's map_all cross-checks find_directory_slot per entry). Verify
+  // (a) directory symbols are STRICTLY ascending, hence unique; (b) every slot carries
+  // a known flag and the occupied count equals surface_count; and (c) every directory
+  // entry resolves through the lookup to a slot with identical
+  // (offset,size,uid,symbol_hash). O(surface_count) hash probes at open, off the hot
+  // path.
+  //
+  // Why all three are needed for the bijection (FIX-1/F4, rev-ws-c I-1): (c) alone maps
+  // directory -> slots but never shows the map is ONTO, and (b) alone counts. It is
+  // uniqueness from (a) that makes (c) injective; injective + equal cardinality from (b)
+  // gives surjective. Without (a) a forged file could duplicate a directory symbol so two
+  // entries resolve to the SAME slot — satisfying (b) and (c) — while a second occupied
+  // slot goes unreferenced and completely unvalidated, free to be cross-linked to an
+  // arbitrary record. The directory is written sorted by canonical symbol, so the
+  // ordering check is free; it mirrors the writer's v2_plan_less comparator exactly.
+  for (std::size_t i = 1; i < a.directory_.size(); ++i) {
+    const ArchiveV2DirEntry &prev = a.directory_[i - 1];
+    const ArchiveV2DirEntry &cur = a.directory_[i];
+    const std::uint16_t n = std::min(prev.symbol_len, cur.symbol_len);
+    const int cmp = std::memcmp(prev.symbol, cur.symbol, n);
+    // Strictly ascending iff cmp < 0, or equal prefix and prev is the shorter symbol.
+    if (cmp > 0 || (cmp == 0 && prev.symbol_len >= cur.symbol_len)) {
+      return Err(ErrorCode::ParseError,
+                 "SurfaceArchiveV2::open: directory symbols not strictly ascending");
+    }
+  }
+  std::uint32_t occupied = 0;
+  for (const ArchiveV2LookupSlot &slot : a.lookup_) {
+    if (slot.flags == kArchiveV2SlotOccupied) {
+      ++occupied;
+    } else if (slot.flags != kArchiveV2SlotEmpty) {
+      return Err(ErrorCode::ParseError, "SurfaceArchiveV2::open: lookup slot has unknown flags");
+    }
+  }
+  if (occupied != h.surface_count) {
+    return Err(ErrorCode::ParseError,
+               "SurfaceArchiveV2::open: occupied lookup slots != surface count");
+  }
+  for (const ArchiveV2DirEntry &de : a.directory_) {
+    const ArchiveV2LookupSlot *s =
+        a.find_slot(std::string_view(de.symbol, static_cast<std::size_t>(de.symbol_len)));
+    if (s == nullptr || s->surface_offset != de.surface_offset ||
+        s->surface_size != de.surface_size || s->uid != de.uid ||
+        s->symbol_hash != de.symbol_hash) {
+      return Err(ErrorCode::ParseError,
+                 "SurfaceArchiveV2::open: lookup/directory disagreement");
+    }
+  }
   return Ok(std::move(a));
 }
 
@@ -812,6 +901,33 @@ Result<SurfaceArchiveV2> SurfaceArchiveV2::open_file(std::string_view path) {
   if (is.gcount() != size) {
     return Err(ErrorCode::IoError, "SurfaceArchiveV2::open_file: short read");
   }
+  return open(std::move(bytes));
+}
+
+Result<SurfaceArchiveV2> SurfaceArchiveV2::open_copied(std::string_view path) {
+  // WS-ZC1: the backing for readers that BORROW records (PricedSurfaceView) for longer
+  // than the open call. They cannot hold the mapping — on Windows a file with a live
+  // mapped section cannot be replaced, which would break atomic partition republish —
+  // but they also must not pay `open_file`'s stream read, which measured ~210 ms over
+  // the 82-session replay (~585 MB/s through ifstream) versus ~8 ms to map.
+  //
+  // So: MAP, one memcpy into an owned buffer, then DROP the mapping. The copy runs at
+  // memory bandwidth out of pages the OS cache already holds, so this keeps nearly all
+  // of the mapped open's speed while leaving no section open against the file.
+  auto mapping = atx::tsdb::Mapping::map_file_ro(std::string(path));
+  if (!mapping) {
+    return tl::unexpected<atx::core::Error>(std::move(mapping).error());
+  }
+  const auto *base = reinterpret_cast<const std::byte *>(mapping->base());
+  const auto size = static_cast<std::size_t>(mapping->size());
+  // reserve + insert, NOT `vector<std::byte> bytes(size)`: the sized constructor
+  // VALUE-INITIALIZES (zeroes) the whole buffer and the memcpy then overwrites it, so
+  // the archive is walked twice. Inserting a contiguous range is a single memcpy into
+  // uninitialized storage.
+  std::vector<std::byte> bytes;
+  bytes.reserve(size);
+  bytes.insert(bytes.end(), base, base + size);
+  // `mapping` is destroyed here, before `open` — the archive owns only `bytes` now.
   return open(std::move(bytes));
 }
 
@@ -932,6 +1048,14 @@ Result<std::vector<PricedSurfaceView>> SurfaceArchiveV2::map_all() const {
     if (de.surface_offset > bytes_.size() || de.surface_size > bytes_.size() - de.surface_offset) {
       return Err(ErrorCode::ParseError, "SurfaceArchiveV2::map_all: record out of bounds");
     }
+    // Directory n_slices (u16) must agree with the record header n_slices (u32) —
+    // v1 checks the analogous pair; a mismatch means a corrupt/aliased directory
+    // entry (SE-P2-7, P3 note). surface_size >= sizeof(header) was pinned at open.
+    ArchiveV2SurfaceHeader hh;
+    std::memcpy(&hh, bytes_.data() + de.surface_offset, sizeof hh);
+    if (hh.n_slices != de.n_slices) {
+      return Err(ErrorCode::ParseError, "SurfaceArchiveV2::map_all: directory/record n_slices mismatch");
+    }
     auto v = PricedSurfaceView::create_over_record(
         bytes_.subspan(static_cast<std::size_t>(de.surface_offset),
                        static_cast<std::size_t>(de.surface_size)));
@@ -941,6 +1065,28 @@ Result<std::vector<PricedSurfaceView>> SurfaceArchiveV2::map_all() const {
     out.push_back(std::move(*v));
   }
   return Ok(std::move(out));
+}
+
+Result<ArchivedSurfaceView> SurfaceArchiveV2::map_entry(const ArchiveV2DirEntry &e) const {
+  // Exactly `reconstruct_entry`'s bounds contract, but building a BORROWED view over
+  // the record extent instead of an owned PricedSurface (WS-ZC1).
+  if (e.surface_size < sizeof(ArchiveV2SurfaceHeader) || e.surface_offset > bytes_.size() ||
+      e.surface_size > bytes_.size() - e.surface_offset) {
+    return Err(ErrorCode::ParseError, "SurfaceArchiveV2::map_entry: record out of bounds");
+  }
+  const std::span<const std::byte> rec = bytes_.subspan(
+      static_cast<std::size_t>(e.surface_offset), static_cast<std::size_t>(e.surface_size));
+  ArchiveV2SurfaceHeader h;
+  std::memcpy(&h, rec.data(), sizeof h);
+  auto prov = provenance_from_v2_header(h);
+  if (!prov) {
+    return tl::unexpected<atx::core::Error>(std::move(prov).error());
+  }
+  auto v = PricedSurfaceView::create_over_record(rec);
+  if (!v) {
+    return tl::unexpected<atx::core::Error>(std::move(v).error());
+  }
+  return Ok(ArchivedSurfaceView{std::move(*v), std::move(*prov)});
 }
 
 Result<std::vector<ArchivedSurfaceView>> SurfaceArchiveV2::map_all_with_provenance() const {
@@ -953,6 +1099,10 @@ Result<std::vector<ArchivedSurfaceView>> SurfaceArchiveV2::map_all_with_provenan
     const std::byte *rec = bytes_.data() + de.surface_offset;
     ArchiveV2SurfaceHeader h;
     std::memcpy(&h, rec, sizeof h);
+    if (h.n_slices != de.n_slices) {
+      return Err(ErrorCode::ParseError,
+                 "SurfaceArchiveV2::map_all_with_provenance: directory/record n_slices mismatch");
+    }
     auto prov = provenance_from_v2_header(h);
     if (!prov) {
       return tl::unexpected<atx::core::Error>(std::move(prov).error());
@@ -1036,6 +1186,7 @@ namespace {
   pc.al_opts.n_collocation = h.al_n_collocation;
   pc.al_opts.n_quadrature = h.al_n_quadrature;
   pc.al_opts.max_newton_iter = h.al_max_newton_iter;
+  pc.al_opts.n_quad_price = h.al_n_quad_price; // C2 (SE-P1-2); 0 on pre-C2 archives -> tied
   pc.al_opts.tol = h.al_tol;
 
   CurveSurface surface;

@@ -365,8 +365,12 @@ Result<PortfolioValuation> price_portfolio(std::span<const PortfolioLeg> book,
       }
     }
 
-    // Fused aggregation (only finite-priced lanes contribute).
-    if (std::isfinite(lv.price)) {
+    // GR-P2-5: status-gate the aggregation (the canonical PortfolioPricer path
+    // does). `isfinite(lv.price)` used to admit a NumericError/ModelUnavailable
+    // lane that still carried a finite price (e.g. a finite-but-negative overlay
+    // price, or a sigma<=0 intrinsic marked ModelUnavailable), polluting the
+    // buckets. Stock/cash Ok lanes are unaffected (they set status Ok above).
+    if (lv.status == LaneStatus::Ok) {
       PortfolioAggregate& a = bucket(group_key_for_leg(leg, agg_mode));
       if (leg.kind == LegKind::Option) {
         const double qxm = leg.qty * mult;

@@ -7,7 +7,9 @@
 
 #include "atx/vol/curve.hpp"
 #include "atx/vol/derivatives.hpp"
+#include "atx/vol/priced_surface.hpp"  // E6: PricedSurface-native overloads
 #include "atx/vol/surface.hpp"
+#include "support/analytics_fixture.hpp" // E6: testkit::make_flat_surface
 
 // Vol-derivatives coverage, ported from the C ats-vol Sprint-22 tests:
 //   test_vol_deriv_var_strip.c    -> VarStrip (flat-vol strip recovers sigma^2)
@@ -106,6 +108,144 @@ TEST(VarStrip, FlatVol_HighQuality_RecoversSigmaSquaredTighter) {
   const auto q = var_swap_fair_strike(surf, cs, T_test, cfg);
   ASSERT_TRUE(q.has_value());
   EXPECT_LT(std::fabs(q->fair_strike_dec - sigma_atm * sigma_atm), 1.0e-5);
+}
+
+// ── E2 / AN-P1-2: adaptive var-strip wings ───────────────────────────────
+//
+// The quality tier fixed the log-strike span (Standard ±1.5) with no reference
+// to σ√T. A σ = 60%, T = 1y name needs ±3.6 to reach 6σ√T, so the Standard
+// strip integrated only the middle ~2.5σ of the distribution and reported
+// K_var biased LOW — and, because a parametric eSSVI surface returns a finite
+// IV at every k, the StripTruncated* flags never fired. Silently wrong.
+//
+// Truth for a flat-vol lognormal surface is K_var == σ² exactly.
+TEST(VarStrip, HighVolLongTenor_AdaptiveWingsRecoverSigmaSquared) {
+  const double spot = 100.0;
+  const double sigma_atm = 0.60;
+  const double T_test = 1.00; // 6σ√T = 3.6, far outside the Standard ±1.5
+  const EssviSurface surf = make_flat_surface(sigma_atm, 0.01, 2.00);
+  const CurveSet cs = make_flat_curves(spot, 0.01, 2.00);
+
+  ASSERT_LT(std::fabs(surf.iv(0.0, T_test) - sigma_atm), 1.0e-7);
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = DerivQuality::Standard;
+
+  const auto q = var_swap_fair_strike(surf, cs, T_test, cfg);
+  ASSERT_TRUE(q.has_value());
+
+  const double truth = sigma_atm * sigma_atm; // 0.36
+  // Gate: within 0.5 VARIANCE POINT of the closed form (1 var pt = 1e-4 in
+  // decimal variance).
+  EXPECT_NEAR(q->fair_strike_dec, truth, 0.5e-4)
+      << "K_var=" << q->fair_strike_dec << " truth=" << truth
+      << " bias=" << 1.0e4 * (q->fair_strike_dec - truth) << " var pts";
+
+  // With the adaptive span the strip is complete, so neither wing is truncated.
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::StripTruncatedLeft));
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::StripTruncatedRight));
+}
+
+// E2 / AN-P1-2 second half: truncation must be reported from SPAN COVERAGE, not
+// from IV finiteness. A caller that pins a deliberately narrow span on the same
+// high-vol tenor gets a biased K_var — that is its right — but it must be told.
+TEST(VarStrip, PinnedNarrowSpanOnHighVolTenorFlagsBothWings) {
+  const double sigma_atm = 0.60;
+  const double T_test = 1.00;
+  const EssviSurface surf = make_flat_surface(sigma_atm, 0.01, 2.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 2.00);
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = DerivQuality::Standard;
+  cfg.k_min_log = -0.60; // explicit span, far inside 6σ√T = 3.6
+  cfg.k_max_log = 0.60;
+
+  const auto q = var_swap_fair_strike(surf, cs, T_test, cfg);
+  ASSERT_TRUE(q.has_value());
+
+  // The IV is finite at both boundaries — the pre-E2 condition — so this can
+  // only pass if truncation is decided by coverage.
+  EXPECT_TRUE(std::isfinite(surf.iv(-0.60, T_test)));
+  EXPECT_TRUE(std::isfinite(surf.iv(0.60, T_test)));
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::StripTruncatedLeft));
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::StripTruncatedRight));
+
+  // And the pinned span really is biased low, which is what the flag warns of.
+  EXPECT_LT(q->fair_strike_dec, sigma_atm * sigma_atm);
+}
+
+// ── E6 / AN-W: var swap reachable from a PricedSurface ───────────────────
+//
+// `derivatives.hpp` was templated on the LEGACY calibration-grade surface types
+// (EssviSurface / SviSurface), so the modern fitted pipeline — which produces a
+// PricedSurface — could not call `var_swap_fair_strike` without hand-converting
+// slices. The module was consequently reachable only from this test file.
+//
+// The PricedSurface overload takes NO CurveSet: the surface's own fitted
+// pillars supply forward and discount. On a flat-vol surface the var strike is
+// still exactly sigma^2, which is what makes this an end-to-end check of the
+// carry extraction and not just of the plumbing.
+TEST(VarStrip, PricedSurfaceOverloadRecoversSigmaSquaredEndToEnd) {
+  constexpr double kSigma = 0.30;
+  const atx::vol::PricedSurface ps =
+      atx::vol::testkit::make_flat_surface(7, 100.0, 100.0, kSigma);
+  const double T = 0.35; // a fitted pillar of the shared fixture grid
+
+  const auto q = atx::vol::var_swap_fair_strike(ps, T);
+  ASSERT_TRUE(q.has_value()) << q.error().to_string();
+
+  const double truth = kSigma * kSigma;
+  EXPECT_NEAR(q->fair_strike_dec, truth, 0.5e-4)
+      << "K_var=" << q->fair_strike_dec << " truth=" << truth
+      << " bias=" << 1.0e4 * (q->fair_strike_dec - truth) << " var pts";
+  // 6*sigma*sqrt(T) = 1.065 < the Standard tier's 1.5 floor, so the adaptive
+  // span leaves the tier span in place and neither wing is truncated.
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::StripTruncatedLeft));
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::StripTruncatedRight));
+
+  // The vol-swap and unified-price entry points are reachable the same way.
+  const auto v = atx::vol::vol_swap_fair_strike(ps, T);
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_NEAR(v->fair_strike_dec, kSigma, 5.0e-3) << "K_vol=" << v->fair_strike_dec;
+
+  atx::vol::DerivContract c{};
+  c.kind = DerivKind::VarSwap;
+  c.maturity_t = T;
+  c.notional = 1.0e6;
+  c.strike_dec = q->fair_strike_dec; // struck fair => PV 0
+  c.marking = DerivMarkingConvention::Otc;
+  const auto priced = atx::vol::deriv_price(ps, c);
+  ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
+  EXPECT_NEAR(priced->fair_strike_dec, q->fair_strike_dec, 1e-12);
+  EXPECT_LT(std::fabs(priced->pv), 1.0e-6 * c.notional * q->fair_strike_dec);
+}
+
+// E6 fitted-range gate. Outside the fitted pillars the strip's forward clamps
+// flat while `PricedSurface::forward_at` keeps extrapolating economically, so
+// the strip's k = 0 would stop being the surface's ATM and K_var would be biased
+// with no signal. These overloads refuse rather than serve that quietly; the
+// templated CurveSet overload remains available for a caller that wants an
+// extrapolated tenor and will own the choice.
+TEST(VarStrip, PricedSurfaceOverloadRefusesTenorsOutsideTheFittedPillars) {
+  const atx::vol::PricedSurface ps =
+      atx::vol::testkit::make_flat_surface(8, 100.0, 100.0, 0.30);
+  const auto ctx = ps.context();
+  ASSERT_FALSE(ctx.empty());
+  const double below = 0.5 * ctx.front().T;
+  const double above = 2.0 * ctx.back().T;
+
+  const auto lo = atx::vol::var_swap_fair_strike(ps, below);
+  ASSERT_FALSE(lo.has_value()) << "below-range tenor must be refused, got "
+                               << (lo.has_value() ? lo->fair_strike_dec : 0.0);
+  EXPECT_EQ(lo.error().code(), ErrorCode::OutOfRange);
+
+  const auto hi = atx::vol::var_swap_fair_strike(ps, above);
+  ASSERT_FALSE(hi.has_value());
+  EXPECT_EQ(hi.error().code(), ErrorCode::OutOfRange);
+
+  // The in-range endpoints themselves are accepted (the gate is inclusive).
+  EXPECT_TRUE(atx::vol::var_swap_fair_strike(ps, ctx.front().T).has_value());
+  EXPECT_TRUE(atx::vol::var_swap_fair_strike(ps, ctx.back().T).has_value());
 }
 
 // ── Aged dispatch (test_vol_deriv_aged.c) ────────────────────────────────

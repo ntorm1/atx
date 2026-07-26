@@ -88,6 +88,7 @@ SymbolFitConfig make_full_config() {
   p.max_spread_to_mid_pct = 0.4;
   c.al_override = true;
   c.al = AlOpts{9, 20, 6, 1e-9};
+  c.al.n_quad_price = 32; // C2 (SE-P1-2): decoupled premium order must round-trip
   c.band_k = 1.25;
   c.calendar_repair = CalendarRepair::Project;
   c.use_correction_cache = false;
@@ -152,6 +153,7 @@ void expect_config_eq(const SymbolFitConfig &a, const SymbolFitConfig &b) {
   EXPECT_EQ(a.al.n_collocation, b.al.n_collocation);
   EXPECT_EQ(a.al.n_quadrature, b.al.n_quadrature);
   EXPECT_EQ(a.al.max_newton_iter, b.al.max_newton_iter);
+  EXPECT_EQ(a.al.n_quad_price, b.al.n_quad_price); // C2 (SE-P1-2)
   EXPECT_EQ(a.al.tol, b.al.tol);
   EXPECT_EQ(a.band_k, b.band_k);
   EXPECT_EQ(a.calendar_repair, b.calendar_repair);

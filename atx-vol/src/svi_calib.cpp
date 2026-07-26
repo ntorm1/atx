@@ -66,8 +66,15 @@ constexpr double kMmSigmaFloor = 0.05;  // physical sigma floor (1 vol point ban
 // back to a degenerate handling exactly as the C did).
 [[nodiscard]] bool solve_spd_dense(const double *H, const double *rhs, int n,
                                    double *out) {
-  atx::core::linalg::MatX A(n, n);
-  atx::core::linalg::VecX b(n);
+  // FT-P: reuse the small dense system storage across LM steps instead of
+  // allocating MatX(n,n)/VecX(n) every call. thread_local => race-free under the
+  // parallel per-slice fit fan-out; Eigen::resize is a no-op when the size is
+  // unchanged (n is constant within a given LM loop), and every entry is
+  // overwritten below, so the atx-core solve is bit-identical.
+  thread_local atx::core::linalg::MatX A;
+  thread_local atx::core::linalg::VecX b;
+  A.resize(n, n);
+  b.resize(n);
   for (int i = 0; i < n; ++i) {
     b(i) = rhs[i];
     for (int j = 0; j < n; ++j) {
@@ -427,8 +434,30 @@ void nm_search(const NmCtx &c, double &m, double &sigma, QeBasisScratch &sc,
     best = 2;
   }
   const auto ub = static_cast<std::size_t>(best);
-  m = v[ub][0];
-  sigma = v[ub][1];
+  // FT-C1: clamp the winning vertex into the (m, sigma) box before writing it
+  // back. `nm_eval` clamps (m, sigma) BY VALUE before the inner BLLS solve, so
+  // `lin[ub]` (the linear optimum) belongs to the CLAMPED point. Writing the raw,
+  // possibly out-of-box vertex would pair that clamped linear solution with an
+  // out-of-box sigma; the downstream (u,v)->(a,b,rho) map (b = c_raw / sigma)
+  // then flips b's sign or blows it up when a reflection/expansion step drove
+  // sigma below sigma_min (or negative). Store the clamped coordinates so the
+  // map is consistent with the objective actually minimized.
+  double best_m = v[ub][0];
+  double best_sigma = v[ub][1];
+  if (best_sigma < c.sigma_min) {
+    best_sigma = c.sigma_min;
+  }
+  if (best_sigma > c.sigma_max) {
+    best_sigma = c.sigma_max;
+  }
+  if (best_m < c.m_min) {
+    best_m = c.m_min;
+  }
+  if (best_m > c.m_max) {
+    best_m = c.m_max;
+  }
+  m = best_m;
+  sigma = best_sigma;
   linear = lin[ub];
   out_iters_used = iters_used;
 }
@@ -467,9 +496,13 @@ bool mm_project_admissible(double T, double &a, double &b, double &rho,
     rho = -1.0 + edge_rho;
     touched = true;
   }
-  // Lee: shrink b if b*(1+|rho|) exceeds 4/T - edge_lee.
+  // Lee: shrink b if b*(1+|rho|) exceeds the T-free bound 4 - edge_lee.
+  // FT-C3: with w = TOTAL variance the wing-slope bound is T-FREE (b*(1+|rho|) <=
+  // 4), matching the eSSVI/Mingone-cube convention. The old 4/T form was a no-op
+  // for T>1 and vacuous for short T (T=1wk => bound ~208), so moment-exploding
+  // short-dated wings passed the "Lee" gate untouched.
   {
-    const double lee_max = (4.0 / T - edge_lee) / (1.0 + std::fabs(rho));
+    const double lee_max = (4.0 - edge_lee) / (1.0 + std::fabs(rho));
     if (lee_max > 0.0 && b > lee_max) {
       b = lee_max;
       touched = true;
@@ -1262,6 +1295,13 @@ Result<SviParams> svi_jw_to_raw(const SviJwParams &jw) {
   if (std::fabs(beta) < 1.0e-12) {
     const double sigma =
         (v - v_min) * T / (b * (1.0 - std::sqrt(1.0 - rho * rho)) + 1.0e-18);
+    // FT-C5: reject sigma <= 0 (matches the asymmetric branch). With v == v_min
+    // the numerator is zero => sigma == 0, a total-variance kink at k=m with
+    // infinite density; the pre-fix symmetric branch laundered it out as Ok.
+    if (!(sigma > 0.0)) {
+      return Err(ErrorCode::OutOfRange,
+                 "svi_jw_to_raw: non-positive sigma (symmetric branch)");
+    }
     out.a = v_min * T - b * sigma * std::sqrt(1.0 - rho * rho);
     out.b = b;
     out.rho = rho;

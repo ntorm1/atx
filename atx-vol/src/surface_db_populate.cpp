@@ -3,12 +3,16 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdio>
 #include <fstream>
 #include <iterator> // make_move_iterator (FIX-E disabled-carry append)
 #include <limits>
 #include <map>
+#include <mutex>
+#include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <utility>
@@ -81,28 +85,6 @@ struct DateRange {
   std::size_t end{0u};
   bool skip{false};
 };
-
-// ── R1-a (review C-06): the drain's "the scheduler is gone" sentinel ─────────
-//
-// `remaining[r]` normally holds the number of enabled fits still in flight for
-// date-range r, and 0 means "this date is complete, drain it". This third value
-// means "the fit scheduler TERMINATED while this date still had fits outstanding
-// — they will never run and nothing will ever decrement this counter again".
-//
-// It is a value of `remaining[r]` itself, not a separate flag, and that is the
-// whole point. The drain sleeps in `remaining[r].wait(left)`, which wakes on a
-// change to THAT object; a separate `std::atomic<bool> scheduler_finished` could
-// be set and notified in the window between the drain's last check of it and its
-// entry into `wait`, and the drain would then sleep forever on a counter nobody
-// will touch again — the classic lost wakeup, reintroduced by the fix. Folding
-// termination into the waited-on object closes that window by construction: see
-// the drain loop for the full argument.
-//
-// SIZE_MAX is safe as the sentinel because the counter counts boards, which are
-// bounded by `boards.size()`, and because it is only ever STORED after
-// `run_bounded_fit_tasks` has returned — which joins every worker it started, so
-// no `MarkDone` destructor can be racing a `fetch_sub` against it.
-constexpr std::size_t kSchedulerAborted = std::numeric_limits<std::size_t>::max();
 
 // ── Stats CSV formatting (mirrors run_report.cpp's meta+header+rows shape;
 // that helper is TU-private there, so this is an independent small twin, not
@@ -230,7 +212,7 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   std::vector<std::size_t> fit_task_range; // parallel to fit_positions
   fit_positions.reserve(n);
   fit_task_range.reserve(n);
-  std::vector<std::atomic<std::size_t>> remaining(date_ranges.size()); // value-init to 0
+  std::vector<std::size_t> remaining(date_ranges.size(), 0u);
   for (std::size_t r = 0; r < date_ranges.size(); ++r) {
     const DateRange &range = date_ranges[r];
     if (range.skip) {
@@ -249,7 +231,7 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
         ++enabled_in_range;
       }
     }
-    remaining[r].store(enabled_in_range, std::memory_order_relaxed);
+    remaining[r] = enabled_in_range;
   }
 
   // ── U2 (R-13) [pure-refactor]: Longest-Processing-Time claim order ──────────
@@ -303,11 +285,23 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   // byte-identical across the cap AND across worker counts (the existing
   // SharedWorkerBudgetKeepsOutputByteIdentical gate still holds).
   const unsigned p_cores = cfg.pin_outer_workers ? detail::performance_core_count() : 0u;
+  // P3.1 (perf): when the opt-in E-core tier is armed, the scaling knee moves from
+  // "the P-cores" to "the P-cores plus the E-cores", because the second tier gives
+  // each spilled worker its OWN E-core logical CPU instead of double-booking a
+  // P-core. Raise the cap accordingly so the budget can actually reach the E-tier;
+  // with the flag unset `e_cores` is 0 and both the cap and the affinity collapse
+  // to the exact C4 wave-2 behaviour above.
+  const unsigned e_cores = (cfg.pin_outer_workers && detail::efficiency_core_tier_enabled())
+                               ? detail::efficiency_core_count()
+                               : 0u;
+  const unsigned core_cap = p_cores + e_cores;
   const unsigned worker_budget =
-      (p_cores > 0u && requested_budget > p_cores) ? p_cores : requested_budget;
+      (core_cap > 0u && requested_budget > core_cap) ? core_cap : requested_budget;
   const detail::FitAffinity outer_affinity =
-      (cfg.pin_outer_workers && p_cores > 0u) ? detail::FitAffinity::PerformanceCores
-                                              : detail::FitAffinity::None;
+      (cfg.pin_outer_workers && p_cores > 0u)
+          ? (e_cores > 0u ? detail::FitAffinity::PerformanceThenEfficiencyCores
+                          : detail::FitAffinity::PerformanceCores)
+          : detail::FitAffinity::None;
   const std::size_t n_fit_boards = fit_positions.size();
 
   // ── U4 (R-14) [pure-refactor]: shared worker budget for small books ─────────
@@ -315,7 +309,9 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   // That is right once the book is at least as large as the budget, but strands
   // cores on a SMALL book: 2 boards on a 12-wide pool used 2 cores and left 10
   // idle. Instead, SPLIT the shared budget across the boards -- each board's
-  // inner fit gets budget / min(budget, n_boards) workers (>= 1). A 1-board run
+  // inner fit gets budget / min(budget, n_boards) workers (>= 1). [FIX-4 made
+  // `n_boards` here the LIVE outstanding count rather than the whole book; the
+  // sizing rule below is otherwise unchanged.] A 1-board run
   // claims the whole budget; a 4-board run on a 12-wide pool gets 3 each (12
   // cores busy, not 4); a book at or above the budget still gets 1 each -- so the
   // slices sum to the budget and never nest-oversubscribe. The per-board fan-out
@@ -328,41 +324,122 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   // SurfaceDbPopulate.SharedWorkerBudgetKeepsOutputByteIdentical and the existing
   // GlobalParallelQueuePreservesDeterministicPartitions. worker_budget <= 1 is
   // the documented outer-serial mode: inner fits keep auto sizing (0).
-  const unsigned inner_fit_workers =
-      (worker_budget > 1u && n_fit_boards > 0u)
-          ? std::max<unsigned>(1u, worker_budget / static_cast<unsigned>(std::min<std::size_t>(
-                                                       worker_budget, n_fit_boards)))
-          : 0u;
-  if (test_hooks != nullptr && test_hooks->on_inner_fit_workers) {
-    test_hooks->on_inner_fit_workers(inner_fit_workers);
-  }
+  //
+  // P3.1: the inner slice is deliberately derived from `inner_budget` -- the
+  // OUTER budget MINUS the E-core tier -- not from `worker_budget`. Inner fan-out
+  // is dispatched to the shared pricing executor, which is itself pinned to the
+  // P-cores (configure_pricing_executor / Topology::PerformanceCores). Sizing the
+  // inner slice off an E-core-widened outer budget would hand a small book more
+  // inner workers than there are P-cores to run them on and re-create exactly the
+  // nested oversubscription this block exists to prevent. The E-tier widens
+  // across-board concurrency only; per-board inner concurrency is unchanged, so
+  // this stays a pure no-op whenever the tier is disarmed.
+  const unsigned inner_budget = (e_cores > 0u && worker_budget > e_cores)
+                                    ? worker_budget - e_cores
+                                    : worker_budget;
+  // ── FIX-4: the inner budget is LIVE, not a constant of the whole call ───────
+  // Before FIX-4 the slice above was computed ONCE, from `n_fit_boards` (the
+  // TOTAL enabled book), and the same value was handed to every board. That is
+  // strictly weaker than a claim-time resolution: a 500-board populate on an
+  // 8-wide pool offered `8/8 = 1` inner worker to EVERY board, including the last
+  // board of the last date, running alone while seven outer workers sat idle at
+  // the join barrier. "A pool sized for the fan-out stays sized for the fan-out
+  // long after the fan-out is over."
+  //
+  // `boards_outstanding` is the number of enabled fits that have NOT completed —
+  // unclaimed plus claimed-and-still-running. It starts at the enabled count and
+  // only falls (`MarkDone`, below). Every offer is resolved against its live
+  // value, so the slice widens as the queue drains.
+  //
+  // NON-OVERSUBSCRIPTION (why the slices still sum to the budget). Fix an instant
+  // t with k boards running. Board i's most recent resolution happened at some
+  // t_i <= t; every board unfinished at t was also unfinished at t_i, so the
+  // `left` it read satisfies left_i >= k, hence
+  //   width_i = inner_budget / min(inner_budget, left_i)
+  //          <= inner_budget / min(inner_budget, k).
+  // Summing over the k running boards gives at most `inner_budget` whenever
+  // k <= inner_budget, and at most `inner_budget` again when k > inner_budget
+  // (each width is then 1). The monotone-decrease of `boards_outstanding` is the
+  // whole proof; it is why the counter must be decremented only on completion.
+  //
+  // This is a PERF knob only: `fit_workers` selects how many workers a fan-out
+  // that writes disjoint per-index slots uses, and every atx-vol fan-out is
+  // documented bit-identical for any worker count (parallel_for.hpp's contract).
+  // The gate is SurfaceDbPopulate.StragglerReclaimsInnerWorkersWhileStillRunning,
+  // which fits one board at width 1 and another at the full budget IN THE SAME
+  // RUN and byte-compares every surface against the serial reference.
+  std::atomic<std::size_t> boards_outstanding{n_fit_boards};
+  // One wait domain covers BOTH kinds of progress that can unblock the
+  // date-ordered drain: a board completes, or the scheduler returns before
+  // completing every board. Keeping counter mutation under the same mutex as
+  // the wait predicate prevents a notification from being lost between
+  // predicate evaluation and sleeping.
+  std::mutex progress_mu;
+  std::condition_variable progress_cv;
+  bool scheduler_complete = false;
+  const auto offer_inner_fit_workers = [&](const std::string &symbol) -> unsigned {
+    const std::size_t left = boards_outstanding.load(std::memory_order_acquire);
+    unsigned inner = 0u; // 0 = auto sizing, the documented outer-serial mode
+    if (inner_budget > 1u && n_fit_boards > 0u) {
+      const std::size_t share = std::max<std::size_t>(
+          1u, std::min<std::size_t>(inner_budget, std::max<std::size_t>(1u, left)));
+      inner = std::max<unsigned>(1u, inner_budget / static_cast<unsigned>(share));
+    }
+    if (test_hooks != nullptr && test_hooks->on_inner_fit_workers) {
+      test_hooks->on_inner_fit_workers(symbol, inner, left);
+    }
+    return inner;
+  };
 
   const auto fit_task = [&](std::size_t task_index) -> Status {
     const std::size_t pos = fit_positions[task_index];
-    std::atomic<std::size_t> &date_remaining = remaining[fit_task_range[task_index]];
+    std::size_t &date_remaining = remaining[fit_task_range[task_index]];
     // Mark this board done -- and wake the drain when its date's last board
     // finishes -- on scope exit, so a completed date drains and releases even
     // if fit_board throws (a default FitSlot then reads as a failed fit). The
-    // decrement runs after the slot write, so a drain that observes zero sees
-    // every completed slot for the date (acq_rel/acquire pair). This is what
-    // streams writes and bounds peak RSS.
+    // decrement runs after the slot write under `progress_mu`, so a drain that
+    // observes zero under the same mutex sees every completed slot for the date.
+    // This is what streams writes and bounds peak RSS.
+    //
+    // FIX-4: the same scope exit retires this board from `boards_outstanding`,
+    // which is what makes a still-running straggler's next offer wider. The
+    // outstanding decrement happens BEFORE the per-date one so that a test woken
+    // by `on_board_fit_done` already observes the reclaimed count. The hook is
+    // called inside try/catch: this runs from a destructor, and an escaping
+    // exception would std::terminate.
     struct MarkDone {
-      std::atomic<std::size_t> &counter;
+      std::size_t &counter;
+      std::atomic<std::size_t> &outstanding;
+      std::mutex &progress_mu;
+      std::condition_variable &progress_cv;
+      const PopulateTestHooks *hooks;
       ~MarkDone() {
-        if (counter.fetch_sub(1u, std::memory_order_acq_rel) == 1u) {
-          counter.notify_all();
+        const std::size_t left = outstanding.fetch_sub(1u, std::memory_order_acq_rel) - 1u;
+        if (hooks != nullptr && hooks->on_board_fit_done) {
+          try {
+            hooks->on_board_fit_done(left);
+          } catch (...) { // NOLINT: a throwing test hook must not terminate
+          }
         }
+        {
+          std::lock_guard<std::mutex> lock(progress_mu);
+          --counter;
+        }
+        progress_cv.notify_all();
       }
-    } mark_done{date_remaining};
+    } mark_done{date_remaining, boards_outstanding, progress_mu, progress_cv, test_hooks};
 
     const CorpusBoard &board = boards[order[pos]];
+    const SymbolFitConfig &resolved = resolved_cfgs[pos];
+    PricerConfig pc = pricer_config_for_symbol(resolved);
+    // Decision point 1 of 2 -- CLAIM. Per-board slice of the shared budget
+    // resolved against the live outstanding count (0 = auto, outer-serial mode).
+    // This one sizes the pre-build phases the fitter runs off `PricerConfig`:
+    // notably the held-out curve selection (pricer_fitter.cpp's `select_curve`).
+    pc.fit_workers = offer_inner_fit_workers(board.symbol);
     if (test_hooks != nullptr && test_hooks->before_board_fit) {
       test_hooks->before_board_fit(board.date, board.symbol);
     }
-    const SymbolFitConfig &resolved = resolved_cfgs[pos];
-    PricerConfig pc = pricer_config_for_symbol(resolved);
-    // Per-board slice of the shared budget (0 = auto, the outer-serial mode).
-    pc.fit_workers = inner_fit_workers;
     // F4 (C2 warm-start chain — deliberately OFF for populate). fit_board's
     // `out_caches` is left nullptr here (no cross-date correction-cache carry),
     // unlike build_corpus's per-symbol chain (corpus.cpp). This is NOT an
@@ -379,9 +456,60 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
     // preserved trivially: nullptr caches => byte-identical across worker budgets.
     // Re-engaging it is only worthwhile if a future mark-grade populate tier turns
     // `use_correction_cache` back on for the SERVED surface (report M1/F4).
-    slots[pos] = fit_board(board, pc, /*admission=*/nullptr, [&resolved](SessionInputs &in) {
-      apply_symbol_config(resolved, in);
-    });
+    // Decision point 2 of 2 -- DRAIN-TIME, for a board ALREADY CLAIMED and STILL
+    // RUNNING. `session_overlay` is invoked by PricerFitter::fit on the fitting
+    // thread immediately before each `VolaSession::build` REQUEST it issues — the
+    // mark build and the risk build on populate's v2 dual path
+    // (pricer_fitter.cpp: the mark overlay before the async mark launch, then the
+    // risk overlay after `apply_risk_policy`/`select_curve`) — and `in.fit_workers`
+    // is what every fan-out inside that build reads (`run_deam_prepass` and the
+    // calendar-repair fan-out in curve_fit.cpp, the slice fan-out in session.cpp,
+    // the per-chain prepass in surface_parity.cpp). Re-asking here is what lets a
+    // board that was claimed while the pool was saturated widen to the whole
+    // budget once its siblings have retired. `apply_symbol_config` is applied
+    // FIRST so the live budget wins over anything the per-symbol preset sets, and
+    // `apply_risk_policy` (which pricer_fitter re-asserts after this overlay) does
+    // not touch `fit_workers`, so the value survives to the build.
+    //
+    // ── THE TRIGGER, stated plainly ─────────────────────────────────────────
+    // The trigger is the STRAGGLER BOARD'S OWN fitting thread reaching the next
+    // surface-build request of the fit it is already inside. Nothing else: not a
+    // sibling completing, not the drain thread, not a timer. Inner fan-out workers
+    // never re-offer — only the board's own thread does.
+    //
+    // WHEN THE TRIGGER DOES NOT FIRE, the width does not move. Three cases, all
+    // bounded and all real:
+    //   (a) the board is already past its last overlay — i.e. inside the risk
+    //       `VolaSession::build`. Trunk's `parallel_for`/`parallel_for_dynamic`
+    //       resolve their width ONCE at entry and never re-ask, so a build that
+    //       started at width 1 stays at width 1 for its whole duration however
+    //       long the pool has been idle. Finer (per-inner-task) reclaim needs an
+    //       ELASTIC fan-out primitive, which does not exist on this trunk; the
+    //       one that does exist lives on the unmerged `feat/pipeline-t` branch,
+    //       and duplicating it here would collide with that branch on a shared
+    //       concurrency primitive. That is the reason the granularity here is a
+    //       build request rather than an inner task.
+    //   (b) the fallback ladder retries a build: the overlay is contractually
+    //       applied once per request and a ladder rung does not re-invoke it, so
+    //       a rung inherits the width its request resolved.
+    //   (c) `inner_budget <= 1` (the documented outer-serial mode): every offer
+    //       is 0 = auto and the reclaim is a no-op by construction.
+    //
+    // ── RESIDUAL, documented where the reclaim code is read ─────────────────
+    // The U2 LPT claim order sorts boards by frame rows DESCENDING, so the single
+    // most expensive board is claimed FIRST — while the pool is maximally
+    // saturated. Its claim offer, and usually both of its overlay offers, are
+    // therefore resolved against a full pool and it commonly runs its ENTIRE fit
+    // at width 1. This is the same residual WS-T recorded for the corpus arm
+    // (there: the straggler's largest expiry always runs at width 1), one level
+    // coarser. It is accepted, not hidden: the reclaim's real yield is the drain
+    // tail — every board whose build request lands after the queue has emptied —
+    // not the LPT head. Do not read the gate below as a claim about the head.
+    slots[pos] = fit_board(board, pc, /*admission=*/nullptr,
+                           [&resolved, &board, &offer_inner_fit_workers](SessionInputs &in) {
+                             apply_symbol_config(resolved, in);
+                             in.fit_workers = offer_inner_fit_workers(board.symbol);
+                           });
     return Ok();
   };
 
@@ -397,115 +525,72 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   // waits on the drain (workers only fit + decrement), so the join at block
   // exit cannot deadlock even when the drain returns early on a write error.
   Status fit_status = Ok();
-  // R1-a: fault-injection seam forwarded from the populate's own hooks (see
-  // PopulateTestHooks). Declared OUTSIDE the block so it outlives `fit_runner`,
-  // which captures a pointer to it. nullptr — the production shape — whenever no
-  // scheduler hook is set, so the scheduler's hot path is untouched.
-  detail::FitSchedulerTestHooks sched_hooks;
-  if (test_hooks != nullptr) {
-    sched_hooks.before_worker_launch = test_hooks->before_worker_launch;
-    sched_hooks.before_setup = test_hooks->before_scheduler_setup;
-  }
-  const detail::FitSchedulerTestHooks *sched_hooks_ptr =
-      (sched_hooks.before_worker_launch || sched_hooks.before_setup) ? &sched_hooks : nullptr;
+  bool scheduler_ended_with_unfinished_tasks = false;
   {
-    std::jthread fit_runner([&] {
-      // C4 wave-2: pin outer workers to the discovered P-cores (byte-identical to
-      // the unpinned path — pinning only steers WHICH logical CPU a worker runs on).
-      fit_status = detail::run_bounded_fit_tasks(fit_positions.size(), worker_budget, fit_task,
-                                                 outer_affinity, sched_hooks_ptr);
-
-      // ── R1-a (review C-06): publish scheduler TERMINATION to the drain ───────
-      // `run_bounded_fit_tasks` has two PRE-TASK failure returns (a background
-      // worker-launch failure and a scratch-allocation failure). On both, not one
-      // task ran, so not one `MarkDone` destructor fired and every non-zero
-      // `remaining[r]` is frozen at its initial value. The drain used to sleep on
-      // exactly those counters forever — the process hung with no output and never
-      // reached the join below that would have let it observe `fit_status`.
-      //
-      // MEMORY ORDER. `fit_status` is written by THIS thread and read by the drain,
-      // so the sentinel store below is the RELEASE that publishes it and the drain's
-      // acquire load of the same counter is the matching ACQUIRE. The assignment
-      // above is sequenced before the store, so a drain that sees the sentinel sees
-      // the Status.
-      //
-      // SAFETY OF MUTATING `remaining` HERE. `run_bounded_fit_tasks` joins every
-      // worker it started before returning on EVERY path (the launch-abort path
-      // clears the vector, which joins; the normal path joins at block exit; the
-      // outer catch is reached only with no worker alive). So by this line no
-      // `MarkDone` destructor exists to race a `fetch_sub` against these stores,
-      // and `remaining` is touched only by this thread and the drain.
-      //
-      // A counter already at 0 is LEFT ALONE: that date completed and must still
-      // drain and write normally. On a successful run every counter is 0 here and
-      // this loop stores nothing at all — the success path is bit-for-bit
-      // unchanged, which is what keeps the byte-identical-for-any-thread-count
-      // invariant intact.
-      for (std::atomic<std::size_t> &counter : remaining) {
-        if (counter.load(std::memory_order_relaxed) == 0u) {
-          continue;
+    detail::FitSchedulerTestHooks scheduler_hooks;
+    const detail::FitSchedulerTestHooks *scheduler_hooks_ptr = nullptr;
+    try {
+      if (test_hooks != nullptr) {
+        const auto before_launch = test_hooks->before_worker_launch;
+        const auto before_fit_launch = test_hooks->before_fit_worker_launch;
+        if (before_launch || before_fit_launch) {
+          scheduler_hooks.before_worker_launch =
+              [before_launch, before_fit_launch](std::size_t worker_ordinal) {
+                if (before_launch) {
+                  before_launch(worker_ordinal);
+                }
+                if (before_fit_launch) {
+                  before_fit_launch(worker_ordinal);
+                }
+              };
         }
-        counter.store(kSchedulerAborted, std::memory_order_release);
-        counter.notify_all();
+        scheduler_hooks.before_setup = test_hooks->before_scheduler_setup;
+        if (scheduler_hooks.before_worker_launch || scheduler_hooks.before_setup) {
+          scheduler_hooks_ptr = &scheduler_hooks;
+        }
       }
-    });
+    } catch (...) {
+      return Err(ErrorCode::Internal, "populate_surface_db: scheduler hook setup failed");
+    }
+
+    std::jthread fit_runner;
+    try {
+      fit_runner = std::jthread([&] {
+        // C4 wave-2: pin outer workers to the discovered P-cores
+        // (byte-identical to the unpinned path — pinning only steers WHICH
+        // logical CPU a worker runs on).
+        Status completed = detail::run_bounded_fit_tasks(
+            fit_positions.size(), worker_budget, fit_task, outer_affinity, scheduler_hooks_ptr);
+        {
+          std::lock_guard<std::mutex> lock(progress_mu);
+          fit_status = std::move(completed);
+          scheduler_complete = true;
+        }
+        // Wake every date waiter even when allocation/setup/transactional
+        // worker launch failed before a single fit_task entered MarkDone.
+        progress_cv.notify_all();
+      });
+    } catch (...) {
+      return Err(ErrorCode::Internal, "populate_surface_db: fit-runner launch failed");
+    }
 
     for (std::size_t r = 0; r < date_ranges.size(); ++r) {
       const DateRange &range = date_ranges[r];
       if (range.skip) {
         continue;
       }
-      // Block until every enabled fit in this date has completed, OR the fit
-      // scheduler terminated with fits still outstanding. A range with no enabled
-      // boards starts at zero and proceeds immediately.
-      //
-      // ── R1-a (review C-06): why this cannot miss a wakeup ────────────────────
-      // The loop sleeps ONLY in `remaining[r].wait(left)` with `left` a value it
-      // has just loaded from `remaining[r]` that is neither of the two exit values
-      // (0 = date complete, kSchedulerAborted = scheduler gone). Every state change
-      // that could release this date CHANGES THE VALUE OF THIS VERY OBJECT and then
-      // notifies it: the last `MarkDone` fetch_sub reaching 0, or the fit runner's
-      // sentinel store. `std::atomic<T>::wait(old)` is specified to return
-      // immediately when the object's value differs from `old`, so:
-      //   - if the change lands BEFORE the wait, the value comparison fails and
-      //     the wait does not block;
-      //   - if it lands AFTER, the notify wakes it.
-      // There is no third window, and therefore no lost wakeup. A separate
-      // `std::atomic<bool>` flag would NOT have this property — it can be set and
-      // notified between the drain's last read of it and its entry into a wait
-      // keyed on a different object — which is exactly why the termination signal
-      // is folded into the counter instead of living beside it.
-      std::size_t left = remaining[r].load(std::memory_order_acquire);
-      while (left != 0u && left != kSchedulerAborted) {
-        remaining[r].wait(left, std::memory_order_acquire);
-        left = remaining[r].load(std::memory_order_acquire);
-      }
-      if (left == kSchedulerAborted) {
-        // The scheduler died before this date's fits could run. STOP: do not write
-        // a partition from a date whose cells were never fitted, and do not walk
-        // on to later dates whose counters are frozen for the same reason.
-        //
-        // Propagate the SCHEDULER'S OWN Status — its message already names the
-        // cause ("worker launch failed" / "scheduler setup failed") — rather than
-        // inventing a code that would tell the operator less. The acquire load
-        // that produced the sentinel synchronizes-with the runner's release store,
-        // so `fit_status` is fully published here even though the runner thread is
-        // not yet joined.
-        //
-        // Dates already drained AND written above are already durable (each
-        // `write_partition` is an atomic tmp+rename plus a generation-bumped
-        // manifest) and are NOT rolled back: the date is the resume unit, and a
-        // re-run's cell-aware filter skips them. See the U3 note below.
-        //
-        // The `fit_status` fallback is unreachable by construction — an Ok return
-        // from `run_bounded_fit_tasks` means every index ran, hence every counter
-        // reached 0 and no sentinel was stored — and exists so that a future
-        // scheduler change which broke that property would surface as a loud error
-        // rather than silently reinstating the hang.
-        return fit_status ? Err(ErrorCode::Internal,
-                                "populate_surface_db: fit scheduler terminated with date '" +
-                                    boards[order[range.begin]].date + "' incomplete")
-                          : Err(fit_status.error());
+      // Block until every enabled fit in this date completes OR the scheduler
+      // returns. The second condition is essential: setup/launch failure can
+      // return without invoking any task, so no MarkDone exists to retire the
+      // pre-counted work. In that case stop draining and surface the bounded
+      // scheduler error after the fit-runner joins.
+      {
+        std::unique_lock<std::mutex> lock(progress_mu);
+        progress_cv.wait(lock, [&] { return remaining[r] == 0u || scheduler_complete; });
+        if (remaining[r] != 0u) {
+          scheduler_ended_with_unfinished_tasks = true;
+          break;
+        }
       }
 
       const std::size_t range_n = range.end - range.begin;
@@ -520,12 +605,35 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       const auto carry_it = cfg.carry_over.find(date);
       const std::size_t carry_n =
           carry_it != cfg.carry_over.end() ? carry_it->second.size() : 0u;
+
+      // Safe rewrites are a record merge. Open by FILE (not manifest) so an
+      // unlisted-but-present partition is retained rather than overwritten. A
+      // requested carry also needs the old generation even in destructive mode.
+      // The archive is opened only when this date reaches the drain, preserving
+      // the one-old-partition-at-a-time streaming RSS bound.
+      std::optional<SurfaceArchiveV2> existing;
+      if (!cfg.destructive_rewrite || carry_n > 0u) {
+        Result<SurfaceArchiveV2> opened = db.open_partition_file(date);
+        if (opened.has_value()) {
+          existing.emplace(std::move(*opened));
+        } else if (opened.error().code() != ErrorCode::NotFound || carry_n > 0u) {
+          return Err(opened.error());
+        }
+      }
+
       std::vector<std::string> names;     // owning symbol storage (kept alive
       std::vector<PricedSurface> stamped; // across write_partition below)
-      names.reserve(range_n + carry_n);
-      stamped.reserve(range_n + carry_n);
+      const std::size_t output_cap =
+          range_n + carry_n + (existing.has_value() ? existing->count() : 0u);
+      names.reserve(output_cap);
+      stamped.reserve(output_cap);
       std::vector<SurfaceArchiveItem> items;
-      items.reserve(range_n + carry_n);
+      items.reserve(output_cap);
+      // Every symbol already appended to `items`: successful replacements and
+      // explicit carries. The safe merge uses this set to append each remaining
+      // old record exactly once.
+      std::set<std::string, std::less<>> emitted_symbols;
+      bool retained_unreplaced = false;
 
       // ── FIX-D: read the carried cells back BEFORE the write ─────────────────
       // db.write_partition replaces the partition file (tmp+rename) and evicts
@@ -565,22 +673,19 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       // the operator manual's resume-semantics section. Do not "scope" this to a
       // skip without re-arguing the three points above.
       if (carry_n > 0u) {
-        const Result<SurfaceArchiveV2> part = db.open_partition(date);
-        if (!part) {
-          return Err(part.error());
-        }
         for (const std::string &sym : carry_it->second) {
-          const Result<ArchiveV2DirEntry> entry = part->find(sym);
+          const Result<ArchiveV2DirEntry> entry = existing->find(sym);
           if (!entry) {
             return Err(entry.error());
           }
-          Result<ArchivedSurface> got = part->reconstruct_entry(*entry);
+          Result<ArchivedSurface> got = existing->reconstruct_entry(*entry);
           if (!got) {
             return Err(got.error());
           }
           names.push_back(sym);
           stamped.push_back(std::move(got->surface));
           items.push_back(SurfaceArchiveItem{names.back(), &stamped.back(), got->provenance});
+          emitted_symbols.insert(detail::canonicalize_symbol(sym, kArchiveSymbolMax));
         }
       }
 
@@ -635,44 +740,14 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
           names.push_back(board.symbol);
           stamped.push_back(std::move(*stamped_surface));
           items.push_back(SurfaceArchiveItem{names.back(), &stamped.back(), slot.provenance});
+          emitted_symbols.insert(
+              detail::canonicalize_symbol(board.symbol, kArchiveSymbolMax));
         } else {
           ++acc.stats.n_failed;
           ++stats.n_failed;
-          // ── FIX-F (FIX-E review I-2): the stored record is NOT preserved here,
-          // and that is a KNOWN, ARGUED limit rather than an oversight ─────────
-          // A cell that fitted once and later degraded is `present`, ENABLED, and
-          // fails its re-fit; nothing is appended to `items`, so the
-          // whole-partition rewrite below drops the surface it had. The
-          // would-drop guard cannot help — the cell was counted into `present`
-          // before its outcome was known, the same structural cause FIX-E fixed
-          // for the disabled case. Preserving the bytes is a ~10-line change
-          // right here (read the record back beside the disabled carry above),
-          // and it is deliberately NOT made, because presence is load-bearing
-          // one frame up:
-          //
-          //   `populate_universe_streaming` counts a cell into `to_add` only when
-          //   it is ABSENT from the partition, and a date with `to_add == 0` is
-          //   `dates_skipped_complete` — never rewritten again. So a preserved
-          //   failed cell retires its own date from the rewrite set: the cell is
-          //   never re-attempted, the failure never re-reported, and a surface
-          //   the fitter has just REJECTED is served indefinitely with nothing on
-          //   disk recording that. Withholding the fingerprint attestation does
-          //   not rescue this — the skip happens before `carry_valid` is ever
-          //   consulted. It would also contradict the "a failing cell is retried
-          //   forever; there is no persisted known-failed state" contract that
-          //   `is_total_fit_failure`, `is_carry_masked_fit_failure` and
-          //   `build_surface_db` all document and depend on.
-          //
-          // Trading a one-shot data loss for permanent silent staleness is the
-          // worse of the two. The fix needs PERSISTED per-cell state — "these
-          // bytes are a preserved failure: re-attempt this cell, never carry it"
-          // — which neither the manifest nor the archive record today; see
-          // `.superpowers/sdd/surface-db-prod/fixF-report.md` for the format
-          // change that would carry it. Pinned by
-          // SurfaceDbPopulate.DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrivesTheRetry,
-          // which asserts BOTH halves so a future preserve cannot land without
-          // confronting the second one.
-          //
+          // C-10: the failed replacement is reported, but safe mode appends the
+          // old byte-identical record during the merge below. Destructive mode
+          // intentionally omits it and the coverage audit records the deletion.
           // Record WHY, not merely that it happened: `slot.error_message` is the
           // fitter's own rejection text (corpus_board_fit.cpp), which used to die
           // here alongside the code. DETERMINISM: this push_back runs on the
@@ -682,6 +757,29 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
           // slot is const here and is recycled below.
           stats.failed_cells.push_back(
               FailedCell{board.date, board.symbol, slot.error_code, slot.error_message});
+        }
+      }
+
+      // C-10 safe default: merge every prior record that did not get a
+      // successful replacement (or an explicit carry already appended above).
+      // Failed/disabled refits and symbols absent from the incoming board set
+      // therefore retain their exact serialized surface and provenance.
+      if (!cfg.destructive_rewrite && existing.has_value() && !items.empty()) {
+        for (const ArchiveV2DirEntry &entry : existing->entries()) {
+          const std::string symbol(entry.symbol, static_cast<std::size_t>(entry.symbol_len));
+          if (emitted_symbols.contains(symbol)) {
+            continue;
+          }
+          Result<ArchivedSurface> retained = existing->reconstruct_entry(entry);
+          if (!retained) {
+            return Err(retained.error());
+          }
+          names.push_back(symbol);
+          stamped.push_back(std::move(retained->surface));
+          items.push_back(
+              SurfaceArchiveItem{names.back(), &stamped.back(), retained->provenance});
+          emitted_symbols.insert(symbol);
+          retained_unreplaced = true;
         }
       }
 
@@ -854,11 +952,15 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       // Detection runs on BOTH sides of the opt-out on purpose. A retirement run
       // still gets a complete, ordered record of every surface it destroyed --
       // which is the one thing the 95-surface incident had no way to produce.
+      // `destructive_rewrite` defines the candidate shape; it does not by
+      // itself authorize destroying stored coverage. Authorization remains the
+      // separate, auditable `allow_coverage_regression` decision.
+      const bool destructive_authorized = cfg.allow_coverage_regression;
       if (!lost_symbols.empty()) {
         for (const std::string &sym : lost_symbols) {
           stats.coverage_regression_cells.push_back(CoverageRegressionCell{date, sym});
         }
-        if (cfg.allow_coverage_regression) {
+        if (destructive_authorized) {
           ++stats.n_dates_dropped_coverage_regression;
         } else {
           ++stats.n_dates_refused_coverage_regression;
@@ -886,7 +988,7 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
           }
         }
       }
-      const bool refuse_write = !lost_symbols.empty() && !cfg.allow_coverage_regression;
+      const bool refuse_write = !lost_symbols.empty() && !destructive_authorized;
 
       if (!items.empty() && !refuse_write) {
         // FIX-D fix-2 (I-3): the attestation is the CALLER'S, forwarded, not this
@@ -915,7 +1017,12 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
         // disabled symbol -- would permanently un-carry that date's healthy
         // siblings and re-fit them on every run forever, which is the cost FIX-D
         // exists to remove.
-        const Status w = db.write_partition(date, items, {}, cfg.attest);
+        // A failed/absent replacement retained from the old generation was not
+        // produced or fingerprint-gated by this run. Do not re-bless it under the
+        // current config: the zero/unknown fold forces a later resume to retry it.
+        const DbConfigAttestation date_attest =
+            retained_unreplaced ? DbConfigAttestation::None : cfg.attest;
+        const Status w = db.write_partition(date, items, {}, date_attest);
         if (!w) {
           return Err(w.error());
         }
@@ -932,6 +1039,10 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
         slots[pos] = FitSlot{};
       }
     }
+  }
+  if (scheduler_ended_with_unfinished_tasks && fit_status) {
+    return Err(ErrorCode::Internal,
+               "populate_surface_db: scheduler returned before completing every fit task");
   }
   // ── U3 (R-12) [correctness]: durability across a fit-worker exception ───────
   // By the time control reaches here, EVERY completed date has already been
@@ -1062,9 +1173,10 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
   }
 
   // 2. Cell-aware resume: group by date, and (re)write a date only when a loaded
-  //    board adds a symbol the partition does not already carry. A whole-date rewrite
-  //    re-fits the already-present cells (the price of date-keyed partitions), so it
-  //    is guarded to never DROP an existing symbol absent from this run's loaded set.
+  //    board adds a symbol the partition does not already carry. A same-date
+  //    rewrite re-fits already-present incoming cells; populate_surface_db merges
+  //    successful fits with the old partition, so a failed refit or a symbol
+  //    absent from this run remains intact unless destructive mode was explicit.
   std::map<std::string, std::vector<std::size_t>> by_date;
   for (std::size_t i = 0; i < boards.size(); ++i) {
     by_date[boards[i].date].push_back(i);
@@ -1139,7 +1251,10 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
         if (!resolve_symbol_config(db, boards[i].symbol, fallback_cfg).enabled) {
           disabled_carry_syms.push_back(
               detail::canonicalize_symbol(boards[i].symbol, kSurfaceDbKeyMax));
-        } else if (carry_valid) {
+        } else if (carry_valid && !boards[i].frame.rows.empty()) {
+          // A structurally empty incoming board is an explicit failed-refit
+          // shape, not a healthy resume candidate. Let it reach the fitter so
+          // C-10's safe merge can report the failure and retain the old record.
           carry_syms.push_back(
               detail::canonicalize_symbol(boards[i].symbol, kSurfaceDbKeyMax));
         }
@@ -1162,22 +1277,6 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
       // gap is disabled symbols is COMPLETE, not pending — that is what makes a
       // rebuild converge). `cells_already_present` counts only the present ones.
       ++cov.dates_skipped_complete;
-      cov.cells_already_present += present;
-      continue;
-    }
-    // Guard: the partition holds a symbol not in this run's loaded set (present <
-    // total) — a whole-partition rewrite from `idxs` alone would drop it. Skip.
-    //
-    // It compares a COUNT, so it assumes `idxs` holds at most one board per
-    // symbol. A duplicate (date, symbol) board would double-count `present` and
-    // could push it up to `part->count()` while a stored symbol really is missing
-    // from the loaded set. That fails safe TODAY only by accident of a downstream
-    // check: `write_surface_archive_v2_file` rejects a duplicate canonical symbol
-    // with AlreadyExists (surface_archive.cpp), so the build aborts loudly instead
-    // of dropping the surface. Do not remove that rejection without making this a
-    // set comparison — it is the only thing standing behind this line.
-    if (part.has_value() && present < part->count()) {
-      ++cov.dates_skipped_would_drop;
       cov.cells_already_present += present;
       continue;
     }
@@ -1225,10 +1324,9 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
     // to `write_partition` by the populate rather than asserted by it. Everything
     // else in the write is this run's own fit under the configs seeded above.
     pcfg.attest = DbConfigAttestation::FitterProduced;
-    // REV-R3: the operator's retirement opt-out, forwarded verbatim. The filter
-    // above deliberately does NOT consult it -- `dates_skipped_would_drop` guards a
-    // different, pre-fit question and its skip is not destructive either way.
+    // REV-R3: the operator's retirement opt-out, forwarded verbatim.
     pcfg.allow_coverage_regression = spec.allow_coverage_regression;
+    pcfg.destructive_rewrite = spec.destructive_rewrite;
     const Result<SurfaceDbPopulateStats> st = populate_surface_db(db, kept, pcfg, test_hooks);
     if (!st) {
       return Err(st.error());

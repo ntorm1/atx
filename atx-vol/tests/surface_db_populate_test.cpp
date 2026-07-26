@@ -11,6 +11,8 @@
 #include <bit>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -152,6 +154,33 @@ constexpr const char *kDate1 = "2026-03-03";
 [[nodiscard]] std::string read_file(const std::filesystem::path &p) {
   std::ifstream in(p, std::ios::binary);
   return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+[[nodiscard]] std::string read_surface_record_bytes(SurfaceDb &db,
+                                                    const std::filesystem::path &root,
+                                                    std::string_view date,
+                                                    std::string_view symbol) {
+  auto archive = db.open_partition(date);
+  if (!archive.has_value()) {
+    ADD_FAILURE() << archive.error().to_string();
+    return {};
+  }
+  auto entry = archive->find(symbol);
+  if (!entry.has_value()) {
+    ADD_FAILURE() << entry.error().to_string();
+    return {};
+  }
+  const std::filesystem::path path =
+      root / std::string(kSurfaceDbPartitionDir) /
+      (std::string(date) + std::string(kSurfaceDbPartitionExt));
+  const std::string bytes = read_file(path);
+  const std::uint64_t end = entry->surface_offset + entry->surface_size;
+  if (end > bytes.size()) {
+    ADD_FAILURE() << "surface record extends past partition EOF";
+    return {};
+  }
+  return bytes.substr(static_cast<std::size_t>(entry->surface_offset),
+                      static_cast<std::size_t>(entry->surface_size));
 }
 
 void expect_surface_bits_equal(const PricedSurface &actual, const PricedSurface &expected) {
@@ -336,6 +365,69 @@ TEST(SurfaceDbPopulate, UniverseStreamingIdempotentSynthetic) {
     ++n_checked;
   }
   EXPECT_EQ(n_checked, 4u);
+}
+
+// REVIEW C-10: a transient refit failure must not turn an incremental date
+// rewrite into deletion of the last valid cell. The safe path retains the exact
+// prior serialized record; the legacy replacement semantics remain available
+// only through the explicit destructive flag.
+TEST(SurfaceDbPopulate, IncrementalRewriteRetainsFailedExistingCellByteIdentically) {
+  const auto root = test_root("incremental_failed_refit_merge");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  UniversePopulateSpec spec;
+  spec.fit_workers = 1u;
+
+  const std::vector<CorpusBoard> initial = {make_board(kDate0, "BBB", 60.0, 0.34)};
+  auto cold = populate_universe_streaming(*db, initial, spec);
+  ASSERT_TRUE(cold.has_value()) << (cold ? "" : cold.error().to_string());
+  ASSERT_EQ(cold->cells_ok, 1u);
+  ASSERT_EQ(cold->cells_failed, 0u);
+
+  const std::string bbb_before = read_surface_record_bytes(*db, root, kDate0, "BBB");
+  ASSERT_FALSE(bbb_before.empty());
+
+  std::vector<CorpusBoard> resume;
+  resume.push_back(make_board(kDate0, "BBB", 60.0, 0.34));
+  resume.back().frame = QuoteFrame{}; // deterministic transient refit failure
+  resume.push_back(make_board(kDate0, "CCC", 75.0, 0.30)); // forces date rewrite
+
+  auto merged = populate_universe_streaming(*db, resume, spec);
+  ASSERT_TRUE(merged.has_value()) << (merged ? "" : merged.error().to_string());
+  EXPECT_EQ(merged->cells_to_fit, 1u); // CCC is new
+  EXPECT_EQ(merged->cells_refit, 1u);  // BBB is retried and fails
+  EXPECT_EQ(merged->cells_ok, 1u);
+  EXPECT_EQ(merged->cells_failed, 1u);
+  EXPECT_EQ(merged->dates_written, 1u);
+
+  auto partition = db->open_partition(kDate0);
+  ASSERT_TRUE(partition.has_value()) << (partition ? "" : partition.error().to_string());
+  EXPECT_EQ(partition->count(), 2u);
+  EXPECT_TRUE(partition->find("BBB").has_value());
+  EXPECT_TRUE(partition->find("CCC").has_value());
+  const std::string bbb_after = read_surface_record_bytes(*db, root, kDate0, "BBB");
+  EXPECT_EQ(bbb_after, bbb_before)
+      << "failed BBB refit did not preserve its prior serialized record byte-for-byte";
+
+  // Destructive replacement is deliberately noisy and explicit. With the same
+  // mixed result it publishes only successful incoming fits, so BBB is removed.
+  SurfaceDbPopulateConfig destructive;
+  destructive.n_threads = 1u;
+  destructive.skip_existing = false;
+  destructive.destructive_rewrite = true;
+  destructive.allow_coverage_regression = true;
+  auto replaced = populate_surface_db(*db, resume, destructive);
+  ASSERT_TRUE(replaced.has_value()) << (replaced ? "" : replaced.error().to_string());
+  EXPECT_EQ(replaced->n_ok, 1u);
+  EXPECT_EQ(replaced->n_failed, 1u);
+  EXPECT_EQ(replaced->n_dates_written, 1u);
+  auto removed = db->load_surface(kDate0, "BBB");
+  ASSERT_FALSE(removed.has_value());
+  EXPECT_EQ(removed.error().code(), ErrorCode::NotFound);
+  EXPECT_TRUE(db->load_surface(kDate0, "CCC").has_value());
+
+  std::filesystem::remove_all(root);
 }
 
 // Main F-c gate: fit the universe into a SurfaceDb, prove idempotent resume (second
@@ -775,6 +867,45 @@ TEST(SurfaceDbPopulate, StreamsPartitionsBeforeGlobalJoin) {
   EXPECT_TRUE(date0_written_before_date1_finished.load())
       << "kDate0 partition was not written until kDate1 fits finished -- populate "
          "deferred all writes to a single global join (peak RSS O(all dates))";
+
+  std::filesystem::remove_all(root);
+}
+
+// REVIEW C-9: the scheduler's transactional launch failure happens before any
+// fit task enters MarkDone. Every date counter therefore remains at its initial
+// non-zero value; scheduler completion itself must wake the drain and return the
+// scheduler's Internal error instead of waiting forever.
+TEST(SurfaceDbPopulate, SchedulerLaunchFailureWakesDrainAndReturnsBoundedError) {
+  const auto root = test_root("scheduler_launch_failure");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const std::vector<CorpusBoard> boards = make_boards(); // two non-empty date counters
+  std::atomic<std::size_t> visits{0u};
+  PopulateTestHooks hooks;
+  hooks.before_board_fit = [&](const std::string &, const std::string &) {
+    visits.fetch_add(1u, std::memory_order_relaxed);
+  };
+  hooks.before_fit_worker_launch = [](std::size_t worker_ordinal) {
+    if (worker_ordinal == 1u) {
+      throw std::runtime_error("injected populate scheduler launch failure");
+    }
+  };
+
+  SurfaceDbPopulateConfig cfg;
+  cfg.n_threads = 4u;
+  cfg.pin_outer_workers = false; // keep four launch contexts on every host
+  const auto started = std::chrono::steady_clock::now();
+  auto result = populate_surface_db(*db, boards, cfg, &hooks);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::Internal);
+  EXPECT_EQ(visits.load(std::memory_order_relaxed), 0u)
+      << "transactional launch abort must not execute a fit task";
+  EXPECT_LT(elapsed, std::chrono::seconds(5))
+      << "scheduler failure did not bound populate completion";
+  EXPECT_TRUE(db->partitions().empty());
 
   std::filesystem::remove_all(root);
 }
@@ -1356,12 +1487,21 @@ TEST(SurfaceDbPopulate, SharedWorkerBudgetSizesInnerFromSharedPool) {
       boards.push_back(make_board(kDate0, specs[b].symbol, specs[b].spot, specs[b].sigma0));
     }
 
-    unsigned captured_inner = 0u; // hook fires once on the caller thread
+    // FIX-4: the budget is live, so the hook fires once per board CLAIM plus once
+    // per surface-build request, from the fit worker threads. The offer resolved
+    // against the FULL book (outstanding == n) is the deterministic one: nothing
+    // can have completed before the first claim, so such an offer always exists
+    // and always equals the U4 sizing rule for this book size.
+    unsigned captured_inner = 0u;
     bool hook_seen = false;
+    std::mutex hook_mu;
     PopulateTestHooks hooks;
-    hooks.on_inner_fit_workers = [&](unsigned inner) {
-      captured_inner = inner;
-      hook_seen = true;
+    hooks.on_inner_fit_workers = [&](const std::string &, unsigned inner, std::size_t left) {
+      const std::lock_guard<std::mutex> lock(hook_mu);
+      if (left == n) {
+        captured_inner = inner;
+        hook_seen = true;
+      }
     };
 
     SurfaceDbPopulateConfig cfg;
@@ -1419,8 +1559,17 @@ TEST(SurfaceDbPopulate, SharedWorkerBudgetKeepsOutputByteIdentical) {
   auto split_db = SurfaceDb::create(split_root.string());
   ASSERT_TRUE(split_db.has_value());
   unsigned captured_inner = 0u;
+  std::mutex captured_mu;
   PopulateTestHooks hooks;
-  hooks.on_inner_fit_workers = [&](unsigned inner) { captured_inner = inner; };
+  // FIX-4: pin the offer resolved against the full 2-board book (the first claim
+  // always sees outstanding == 2); later offers legitimately widen as the book
+  // drains, and that widening is exactly what this byte-identity gate now covers.
+  hooks.on_inner_fit_workers = [&](const std::string &, unsigned inner, std::size_t left) {
+    const std::lock_guard<std::mutex> lock(captured_mu);
+    if (left == 2u) {
+      captured_inner = inner;
+    }
+  };
   SurfaceDbPopulateConfig split_cfg;
   split_cfg.n_threads = 8u;
   auto split = populate_surface_db(*split_db, boards, split_cfg, &hooks);
@@ -1439,6 +1588,146 @@ TEST(SurfaceDbPopulate, SharedWorkerBudgetKeepsOutputByteIdentical) {
 
   std::filesystem::remove_all(ref_root);
   std::filesystem::remove_all(split_root);
+}
+
+// ── FIX-4 gate: the inner budget must be reclaimed for a board that is ALREADY
+// CLAIMED and STILL RUNNING, not merely at claim time ───────────────────────
+//
+// The defect this pins: `inner_fit_workers` used to be ONE constant for the whole
+// populate call, derived from the TOTAL enabled book. The straggler — the last
+// board still fitting while every other outer worker sits idle at the join
+// barrier — was never re-offered a wider slice, because after the claim there was
+// no further decision point at all.
+//
+// The gate holds ONE board inside its fit — deterministically, on a condition
+// variable released by `on_board_fit_done`; no sleeps, no wall-clock assertion —
+// until every other board has retired, then asserts that board's offers move from
+// 1 (claimed while the pool was saturated) to the WHOLE budget (re-offered while
+// it is still running). Non-vacuous by construction:
+//   * saturation is OBSERVED, not assumed: every offer resolved against
+//     `left >= kBudget` is asserted == 1 INDIVIDUALLY, and `saturated_offers > 0`
+//     fails outright if no offer ever saw a full pool;
+//   * `held.back() == kBudget` is unreachable without a post-claim re-offer. With
+//     the production change reverted the held board gets exactly ONE offer whose
+//     value is 1, so `held.size() > 1u`, `held.back() == kBudget` and
+//     `reclaimed_offers > 0` all fail together.
+// Byte-identity rides along in the same run: the held board is fitted at width
+// kBudget while its siblings ran at width 1, and every surface must still match
+// the serial reference bit-for-bit — worker count is a perf knob, never a value.
+TEST(SurfaceDbPopulate, StragglerReclaimsInnerWorkersWhileStillRunning) {
+  constexpr unsigned kBudget = 4u;
+  const char *const kSymbols[] = {"AAA", "BBB", "CCC", "DDD", "EEE"};
+  constexpr std::size_t kBoards = std::size(kSymbols); // > kBudget: claims saturate
+
+  std::vector<CorpusBoard> boards;
+  boards.reserve(kBoards);
+  for (std::size_t b = 0; b < kBoards; ++b) {
+    boards.push_back(make_board(kDate0, kSymbols[b], 100.0 + 10.0 * static_cast<double>(b),
+                                0.26 + 0.02 * static_cast<double>(b)));
+  }
+
+  struct Offer {
+    std::string symbol;
+    unsigned workers;
+    std::size_t left;
+  };
+  std::mutex mu;
+  std::condition_variable cv;
+  std::vector<Offer> offers;
+  std::string held_symbol;     // the board we pin inside its fit
+  bool drained = false;        // every OTHER board has retired
+  bool released_by_drain = false;
+
+  PopulateTestHooks hooks;
+  hooks.on_inner_fit_workers = [&](const std::string &symbol, unsigned workers, std::size_t left) {
+    const std::lock_guard<std::mutex> lock(mu);
+    offers.push_back(Offer{symbol, workers, left});
+  };
+  hooks.on_board_fit_done = [&](std::size_t left) {
+    const std::lock_guard<std::mutex> lock(mu);
+    if (left <= 1u) {
+      drained = true;
+      cv.notify_all();
+    }
+  };
+  hooks.before_board_fit = [&](const std::string &, const std::string &symbol) {
+    std::unique_lock<std::mutex> lock(mu);
+    if (!held_symbol.empty()) {
+      return; // one straggler is enough; everyone else fits normally
+    }
+    held_symbol = symbol;
+    // Hang guard only — NOT a timing assertion. The pass condition is `drained`,
+    // which `released_by_drain` records; a timeout releases the board so the test
+    // fails on its assertions instead of hanging the suite.
+    released_by_drain = cv.wait_for(lock, std::chrono::seconds(300), [&] { return drained; });
+  };
+
+  const auto root = test_root("straggler_reclaim");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  SurfaceDbPopulateConfig cfg;
+  cfg.n_threads = kBudget;
+  cfg.pin_outer_workers = false; // keep worker_budget == kBudget (no P-core cap)
+  auto populated = populate_surface_db(*db, boards, cfg, &hooks);
+  ASSERT_TRUE(populated.has_value()) << (populated ? "" : populated.error().to_string());
+  ASSERT_EQ(populated->n_ok, static_cast<std::uint32_t>(kBoards));
+
+  ASSERT_FALSE(held_symbol.empty()) << "before_board_fit never fired";
+  EXPECT_TRUE(released_by_drain)
+      << "the straggler was released by the hang guard, not by the drain — the "
+         "on_board_fit_done release seam did not fire";
+
+  // Per-offer saturation observation: while at least kBudget boards are
+  // outstanding the pool is full and NO board may be offered more than one worker.
+  std::size_t saturated_offers = 0u;
+  std::size_t reclaimed_offers = 0u;
+  std::vector<unsigned> held;
+  for (const Offer &o : offers) {
+    if (o.left >= kBudget) {
+      ++saturated_offers;
+      EXPECT_EQ(o.workers, 1u) << "offer to " << o.symbol << " with " << o.left
+                               << " boards outstanding oversubscribed the pool";
+    } else if (o.workers > 1u) {
+      ++reclaimed_offers;
+    }
+    if (o.symbol == held_symbol) {
+      held.push_back(o.workers);
+    }
+  }
+  EXPECT_GT(saturated_offers, 0u) << "no offer was ever resolved against a full pool — the test "
+                                     "did not observe saturation and proves nothing";
+  EXPECT_GT(reclaimed_offers, 0u) << "no board was ever offered more than one worker after the "
+                                     "pool drained — nothing was reclaimed";
+
+  // The straggler itself: claimed while saturated, re-offered the whole budget
+  // while STILL RUNNING. This is the pair the fix exists to produce.
+  ASSERT_GT(held.size(), 1u) << held_symbol
+                             << " was offered a budget exactly once — the reclaim is claim-time "
+                                "only, which is the defect";
+  EXPECT_EQ(held.front(), 1u) << held_symbol << " was not claimed against a saturated pool";
+  EXPECT_EQ(held.back(), kBudget)
+      << held_symbol << " never reclaimed the drained pool while still running";
+
+  // Determinism: the widths above varied WITHIN one run, so every surface must
+  // still be byte-identical to the serial reference.
+  const auto ref_root = test_root("straggler_reclaim_ref");
+  auto ref_db = SurfaceDb::create(ref_root.string());
+  ASSERT_TRUE(ref_db.has_value());
+  SurfaceDbPopulateConfig ref_cfg;
+  ref_cfg.n_threads = 1u;
+  auto ref = populate_surface_db(*ref_db, boards, ref_cfg);
+  ASSERT_TRUE(ref.has_value()) << (ref ? "" : ref.error().to_string());
+  ASSERT_EQ(ref->n_ok, static_cast<std::uint32_t>(kBoards));
+  for (const char *symbol : kSymbols) {
+    const auto got = db->load_surface(kDate0, symbol);
+    const auto want = ref_db->load_surface(kDate0, symbol);
+    ASSERT_TRUE(got.has_value()) << symbol;
+    ASSERT_TRUE(want.has_value()) << symbol;
+    expect_surface_bits_equal(*got, *want);
+  }
+
+  std::filesystem::remove_all(root);
+  std::filesystem::remove_all(ref_root);
 }
 
 // F1 (WS-F): the bulk `Populate` preset must honor the cheaper Andersen-Lake
@@ -2304,16 +2593,13 @@ TEST(SurfaceDbPopulate, PreservedDisabledSymbolSurvivesRepeatedRewrites) {
   std::filesystem::remove_all(root);
 }
 
-// The safety guard this defect defeated, tested DIRECTLY for the first time.
-// `dates_skipped_would_drop` had ZERO coverage anywhere in the repo: the counter
-// that refuses a rewrite which would drop a stored surface had never been
-// exercised in either direction.
+// The write-path safety guard, exercised with an explicitly destructive
+// candidate. Safe merge would retain BBB by construction; destructive mode
+// makes its absence visible to the independently controlled coverage guard.
 //
-// This is the RESIDUAL case FIX-E deliberately does not change: BBB is present in
-// the partition but absent from this run's LOADED BOARDS entirely, so it is in
-// neither `present` nor any carry list, and the only thing that can save it is
-// `present < part->count()`. That path must keep working after the fix -- a fix
-// that widened the carry set must not also have widened `present`.
+// BBB is present in the partition but absent from this run's LOADED BOARDS
+// entirely. The destructive candidate therefore omits it, and the post-fit set
+// comparison must refuse the date without weakening any preservation assertion.
 TEST(SurfaceDbPopulate, NarrowerRerunSkipsTheDateRatherThanDroppingAnAbsentSymbol) {
   const auto root = test_root("would_drop_guard");
   auto db = SurfaceDb::create(root.string());
@@ -2327,14 +2613,22 @@ TEST(SurfaceDbPopulate, NarrowerRerunSkipsTheDateRatherThanDroppingAnAbsentSymbo
   // whole-partition rewrite from these boards alone would drop BBB.
   const std::vector<CorpusBoard> narrower = {make_board(kDate0, "AAA", 100.0, 0.28),
                                              make_board(kDate0, "CCC", 80.0, 0.30)};
-  auto cov2 = populate_universe_streaming(*db, narrower, carry_spec());
+  UniversePopulateSpec destructive = carry_spec();
+  destructive.destructive_rewrite = true;
+  auto cov2 = populate_universe_streaming(*db, narrower, destructive);
   ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
 
-  EXPECT_EQ(cov2->dates_skipped_would_drop, 1u) << "the guard must have refused the rewrite";
+  EXPECT_EQ(cov2->dates_skipped_would_drop, 0u);
+  EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u)
+      << "the write-path guard must have refused the explicitly destructive rewrite";
   EXPECT_EQ(cov2->dates_written, 0u) << "nothing may be written when the guard fires";
-  EXPECT_EQ(cov2->cells_already_present, 1u) << "only AAA was both loaded and present";
-  EXPECT_EQ(cov2->cells_carried, 0u);
+  EXPECT_EQ(cov2->cells_already_present, 0u)
+      << "the date was processed rather than skipped by the retired pre-fit guard";
+  EXPECT_EQ(cov2->cells_carried, 1u) << "AAA was loaded, present, and safely carried";
   EXPECT_EQ(cov2->cells_carried_disabled, 0u);
+  ASSERT_EQ(cov2->coverage_regression_cells.size(), std::size_t{1});
+  EXPECT_EQ(cov2->coverage_regression_cells[0].date, kDate0);
+  EXPECT_EQ(cov2->coverage_regression_cells[0].symbol, "BBB");
 
   // Both stored surfaces survive, including the one this run never mentioned.
   EXPECT_TRUE(db->load_surface(kDate0, "AAA").has_value());
@@ -2388,14 +2682,13 @@ TEST(SurfaceDbPopulate, NarrowerRerunSkipsTheDateRatherThanDroppingAnAbsentSymbo
 //
 // Everything above still holds and every assertion below is unchanged, but the
 // behaviour it pins is now reachable ONLY when the operator explicitly asks for
-// it. By default `populate_surface_db` REFUSES to commit a partition whose symbol
-// set is not a superset of the stored one, so leg 2 below leaves the date
-// untouched instead of destroying AAA — see
+// destructive candidate construction AND authorizes the detected regression.
+// Without both, leg 2 below leaves the date untouched — see
 // `RefusedRewriteLeavesTheDegradedCellsStoredSurfaceByteIdentical`, the
 // regression test for the 95-surface incident.
 //
-// So leg 2 runs with `allow_coverage_regression = true`: the destructive
-// behaviour, on demand, for a run that intends retirement. That is exactly what
+// So leg 2 runs with both flags: destructive replacement plus the coverage
+// opt-out, on demand, for a run that intends retirement. That is exactly what
 // this test has always pinned — a whole-file rewrite assembled from what the run
 // has — and pinning it is still worth doing, because the retirement path must
 // keep working and FACT 2 is still the reason the bytes are not simply preserved.
@@ -2428,6 +2721,7 @@ TEST(SurfaceDbPopulate, DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrives
   // and is asserted directly by the REV-R3 tests below.
   UniversePopulateSpec retiring = carry_spec();
   retiring.allow_coverage_regression = true;
+  retiring.destructive_rewrite = true;
   auto cov2 = populate_universe_streaming(*db, full, retiring);
   ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
 
@@ -2539,9 +2833,9 @@ namespace {
 
 } // namespace
 
-// TEST 1 -- the regression test for the 95-surface incident. The assertion that
-// matters is not a count: it is that the surface which was there is STILL THERE
-// and is byte-identical.
+// TEST 1 -- the regression test for the 95-surface incident. Destructive candidate
+// construction is explicit; coverage authorization remains off. The assertion
+// that matters is not a count: the prior surface is STILL THERE and byte-identical.
 TEST(SurfaceDbPopulate, RefusedRewriteLeavesTheDegradedCellsStoredSurfaceByteIdentical) {
   const auto root = test_root("coverage_regression_refused");
   auto db = SurfaceDb::create(root.string());
@@ -2563,7 +2857,9 @@ TEST(SurfaceDbPopulate, RefusedRewriteLeavesTheDegradedCellsStoredSurfaceByteIde
   ASSERT_TRUE(db->upsert_symbol("AAA", rejected_risk_config()).has_value());
   std::vector<CorpusBoard> full = carry_seed_boards();
   full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
-  auto cov2 = populate_universe_streaming(*db, full, carry_spec()); // guard ON by default
+  UniversePopulateSpec destructive = carry_spec();
+  destructive.destructive_rewrite = true;
+  auto cov2 = populate_universe_streaming(*db, full, destructive); // guard ON
   ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
 
   EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u)
@@ -2614,7 +2910,8 @@ TEST(SurfaceDbPopulate, RefusedRewriteLeavesTheDegradedCellsStoredSurfaceByteIde
   std::filesystem::remove_all(root);
 }
 
-// TEST 2 -- the opt-out really does the destructive thing, and says what it did.
+// TEST 2 -- the same destructive candidate with the independent coverage opt-out
+// really commits the deletion, and says what it did.
 // (The full behavioural pin lives in
 // `DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrivesTheRetry`, which now
 // runs its destructive leg through this flag. This test is the direct A/B against
@@ -2634,6 +2931,7 @@ TEST(SurfaceDbPopulate, AllowCoverageRegressionWritesTheDateAndNamesWhatItDestro
   full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
   UniversePopulateSpec retiring = carry_spec();
   retiring.allow_coverage_regression = true;
+  retiring.destructive_rewrite = true;
   auto cov2 = populate_universe_streaming(*db, full, retiring);
   ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
 
@@ -2775,7 +3073,9 @@ TEST(SurfaceDbPopulate, RefusingOneDateDoesNotStopTheOtherDatesInTheSameRun) {
   std::vector<CorpusBoard> full = seed;
   full.push_back(make_board(kDate0, "EEE", 80.0, 0.30));
   full.push_back(make_board(kDate1, "FFF", 85.0, 0.29));
-  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  UniversePopulateSpec destructive = carry_spec();
+  destructive.destructive_rewrite = true;
+  auto cov2 = populate_universe_streaming(*db, full, destructive);
   ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
 
   EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u);
@@ -2834,7 +3134,9 @@ TEST(SurfaceDbPopulate, DroppedSymbolListIsCorrectAndOrderedIndependentlyOfWorke
     EXPECT_TRUE(db->upsert_symbol("DDD", rejected_risk_config()).has_value());
     std::vector<CorpusBoard> full = seed;
     full.push_back(make_board(kDate0, "EEE", 80.0, 0.30)); // forces the rewrite
-    auto cov2 = populate_universe_streaming(*db, full, carry_spec(workers));
+    UniversePopulateSpec destructive = carry_spec(workers);
+    destructive.destructive_rewrite = true;
+    auto cov2 = populate_universe_streaming(*db, full, destructive);
     EXPECT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
     if (!cov2.has_value()) {
       return {};
@@ -2944,7 +3246,9 @@ TEST(SurfaceDbPopulate, PartitionOnDiskButMissingFromTheManifestIsNotOverwritten
   // and nothing fails -- the candidate is simply smaller than what is stored,
   // which is all a whole-file write needs to destroy a surface.
   const std::vector<CorpusBoard> narrower = {make_board(kDate0, "CCC", 90.0, 0.26)};
-  auto cov2 = populate_universe_streaming(*reopened, narrower, carry_spec());
+  UniversePopulateSpec destructive = carry_spec();
+  destructive.destructive_rewrite = true;
+  auto cov2 = populate_universe_streaming(*reopened, narrower, destructive);
   ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
 
   EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u)

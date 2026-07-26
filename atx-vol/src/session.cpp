@@ -261,7 +261,9 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
 }
 
 [[nodiscard]] double solve_implied_emove(const EventSchedule *events, std::int64_t now_ts_ns,
-                                         std::span<const EssviParams> slices) noexcept {
+                                         std::span<const EssviParams> slices,
+                                         EmoveMethod *out_method = nullptr,
+                                         EmoveFitCode *out_fit_code = nullptr) noexcept {
   if (events == nullptr || slices.size() < 2) {
     return kNaN;
   }
@@ -285,19 +287,61 @@ void retain_fitted_term_rates(SessionInputs &in, std::span<const SliceContext> c
   if (hi == 0 || hi >= slices.size()) {
     return kNaN; // event at/before the first fitted expiry -- no low bracket
   }
-  const std::size_t lo = hi - 1;
 
-  const EssviParams &s_lo = slices[lo];
-  const EssviParams &s_hi = slices[hi];
-  const double w1 = essvi_total_w(s_lo, 0.0);
-  const double w2 = essvi_total_w(s_hi, 0.0);
-  const std::size_t n1 = s_lo.expiry_ns != 0 ? events->count_between(now_ts_ns, s_lo.expiry_ns)
-                                             : count_events_at(*events, now_ts_ns, s_lo.T);
-  const std::size_t n2 = s_hi.expiry_ns != 0 ? events->count_between(now_ts_ns, s_hi.expiry_ns)
-                                             : count_events_at(*events, now_ts_ns, s_hi.T);
+  // ── E3b / AN-P1-3 ────────────────────────────────────────────────────────
+  //
+  // This used to hand the single (hi-1, hi) bracket found above to
+  // `implied_emove`. That two-pillar solve forces ONE flat censored
+  // instantaneous variance across the bracket, so the censored term structure
+  // inside it aliases straight into eMove² — and the bracket is widest, hence
+  // the bias worst, in exactly the case that matters: when no near expiry spans
+  // the event (the sweep's AAPL case).
+  //
+  // Every fitted slice is now offered to `implied_emove_joint` (event_vol.hpp),
+  // which runs the identified joint {eMove, st, lt, decay} fit when the slice
+  // set supports it and otherwise falls back to exactly the two-pillar bracket
+  // this code used to compute: `two_pillar_over` selects the same first
+  // ascending-T pair whose event count rises. A 2-slice session is therefore
+  // unchanged; a rich board gets the identified answer.
+  //
+  // The bracketing search above is RETAINED as the precondition gate — it is
+  // what preserves the NaN-on-no-bracket contract that `event_aware_active()`
+  // (session.hpp) depends on, without asking the joint fit to express those
+  // cases.
+  //
+  // Event counts still prefer each slice's STAMPED `expiry_ns` (the real listed
+  // expiry, convention-agnostic) over the Calendar365 synthesis from T — the
+  // Seam-S1 property `VolTimeConventionSolvesEmoveViaStampedExpiry` pins.
+  //
+  // noexcept: `implied_emove_joint` allocates (the usable-observation vector),
+  // which is the same treat-allocation-failure-as-fatal convention this
+  // function's doc already records for `implied_emove`'s Err-string
+  // construction and the serve path's `surface_insert_vol_slice`.
+  std::vector<CensorObsInput> obs;
+  obs.reserve(slices.size());
+  for (const EssviParams &s : slices) {
+    CensorObsInput o;
+    o.T = s.T;
+    o.w_dirty = essvi_total_w(s, 0.0);
+    o.n = s.expiry_ns != 0 ? events->count_between(now_ts_ns, s.expiry_ns)
+                           : count_events_at(*events, now_ts_ns, s.T);
+    obs.push_back(o);
+  }
 
-  auto e = implied_emove(w1, s_lo.T, n1, w2, s_hi.T, n2);
-  return e.has_value() ? *e : kNaN;
+  const auto solved = implied_emove_joint(obs);
+  if (!solved.has_value() || !std::isfinite(solved->emove)) {
+    return kNaN;
+  }
+  if (out_method != nullptr) {
+    *out_method = solved->method;
+  }
+  // FIX-E I-2: the joint fit's outcome code travels with the method, so the
+  // session boundary can tell a converged joint answer from a fallback and say
+  // which failure caused the fallback.
+  if (out_fit_code != nullptr) {
+    *out_fit_code = solved->fit_code;
+  }
+  return solved->emove;
 }
 
 [[nodiscard]] SessionCarryDiagnostics compact_carry(const CarryDiagnostics &carry) noexcept {
@@ -667,6 +711,16 @@ struct FixedCacheCarry {
   const double T_max =
       chain ? ((T_hi > T_lo) ? (1.25 * T_hi) : (1.6 * T_lo)) : ((T_hi > T_lo) ? (1.1 * T_hi) : (1.5 * T_lo));
   constexpr double kSigMin = 0.05;
+  // PR-C1: the sigma ceiling stays 1.5. Widening it to cover a high-vol board
+  // (earnings / meme / 0DTE panic) was implemented and MEASURED to be net-negative:
+  // spreading the fixed 16x8x12 Chebyshev nodes over a wider sigma box (e.g. up to
+  // 1.25*ATM ~ 2.4) degraded the deep-ITM-wing cached mark to ~1.9e-3/share vs cold
+  // — 100x the ~1e-5/share the tight-box cached serve holds and past the economic
+  // vega gate — i.e. it trades an EXACT cold value for a gate-violating cached one.
+  // Correctness is instead delivered by the serve path's contains()-gated cold
+  // fallback (cache_serves): any query above this ceiling (or below the T box / off
+  // the moneyness box) is priced by the exact cold Andersen-Lake pricer and flagged
+  // ColdFallback, rather than served a box-edge-clamped correction.
   constexpr double kSigMax = 1.5;
 
   // Representative carry q_rep from the mid expiry's zero-borrow hybrid forward
@@ -812,6 +866,19 @@ struct SessionCacheGeom {
     any_side = true;
   }
   return any_side;
+}
+
+// PR-C1: the fast cached serve is admissible only when the blend is usable for
+// this side AND the query point (k_log, T, sigma) lies inside the correction box.
+// CorrectionCache::eval CLAMPS an out-of-box query to the box edge, so serving it
+// prints a silently wrong early-exercise premium (over-stated below the T box,
+// vol-degraded above the sigma box). An out-of-box query instead falls back to the
+// cold Andersen-Lake pricer — mirroring the archived PricedSurface certified-box
+// ColdFallback route (query_pricing.hpp). Single source of truth for every serve
+// site and for VolaSession::query_route.
+[[nodiscard]] inline bool cache_serves(const CorrectionBlend &correction, Side side, double k_log,
+                                       double T, double sigma) noexcept {
+  return correction.usable(side) && correction.contains(k_log, T, sigma);
 }
 
 } // namespace
@@ -1344,8 +1411,18 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   // `event_aware_active()` (session.hpp) already treats as "serve exactly
   // as if events were null", so no separate gate is needed on the serve
   // side either.
+  // E3b: `emove_method` records WHICH solve produced the value — the identified
+  // joint fit over all fitted slices, or the two-pillar bracket fallback. It is
+  // only meaningful when `implied_emove` is finite.
+  // FIX-E I-2: `emove_fit_code` completes the status channel — see
+  // SessionDiagnostics for how the (method, code) pair reads.
+  EmoveMethod emove_method = EmoveMethod::TwoPillar;
+  EmoveFitCode emove_fit_code = EmoveFitCode::Ok;
   diag.implied_emove =
-      solve_implied_emove(eff.events.get(), eff.now_ts_ns, rep.surface.essvi_slices());
+      solve_implied_emove(eff.events.get(), eff.now_ts_ns, rep.surface.essvi_slices(),
+                          &emove_method, &emove_fit_code);
+  diag.emove_method = emove_method;
+  diag.emove_fit_code = emove_fit_code;
 
   std::vector<std::vector<FitObs>> incremental_obs;
   std::vector<std::vector<double>> incremental_mids;
@@ -1744,9 +1821,10 @@ Result<double> VolaSession::fair_value(double K, double T, Side side) const {
   const double sigma = model_iv(k, T);
 
   // Resolve the explicit query tier: cached/blended correction for a fast tier,
-  // or cold Andersen-Lake when the tier/session policy requires it.
+  // or cold Andersen-Lake when the tier/session policy requires it OR the query
+  // is out of the correction box (PR-C1: out-of-box would clamp to the box edge).
   const CorrectionBlend correction = correction_blend_at(T, side);
-  if (correction.usable(side)) {
+  if (cache_serves(correction, side, k, T, sigma)) {
     const double fv =
         american_price_cached(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction);
     if (!std::isfinite(fv)) {
@@ -1768,15 +1846,35 @@ Result<AmericanGreeks> VolaSession::greeks(double K, double T, Side side) const 
   const double sigma = model_iv(k, T);
 
   // Cached hot path for the eSSVI default: differentiate the cached graph. A null
-  // cache (override surface, or a side on the cold path) uses American finite
-  // differences on the SAME cold american_price the fair_value branch prices with,
-  // so greeks().price == fair_value() bit-identical (American, not Black-76).
+  // cache (override surface, or a side on the cold path) OR an out-of-box query
+  // (PR-C1) uses American finite differences on the SAME cold american_price the
+  // fair_value branch prices with, so greeks().price == fair_value() bit-identical
+  // (American, not Black-76).
   const CorrectionBlend correction = correction_blend_at(T, side);
-  if (correction.usable(side)) {
+  if (cache_serves(correction, side, k, T, sigma)) {
     return american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction);
   }
   return american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
                             in_.deam.al_opts);
+}
+
+QueryPricingRoute VolaSession::query_route(double K, double T, Side side) const noexcept {
+  if (!valid_query(K, T)) {
+    return QueryPricingRoute::ColdReference;
+  }
+  const ForwardCarry fc = interp_forward(T);
+  const double k = std::log(K / fc.forward);
+  const double sigma = model_iv(k, T);
+  const CorrectionBlend correction = correction_blend_at(T, side);
+  if (!correction.usable(side)) {
+    return QueryPricingRoute::ColdReference;
+  }
+  if (!correction.contains(k, T, sigma)) {
+    return QueryPricingRoute::ColdFallback;
+  }
+  return (in_.query_pricing_tier == QueryPricingTier::CarryBank)
+             ? QueryPricingRoute::CarryBank
+             : QueryPricingRoute::RepresentativeFast;
 }
 
 Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
@@ -1821,7 +1919,7 @@ Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
     const double k = std::log(K / fc.forward);
     const double sigma = model_iv(k, T);
     const CorrectionBlend &correction = side == Side::Call ? call_correction : put_correction;
-    if (correction.usable(side)) {
+    if (cache_serves(correction, side, k, T, sigma)) {
       queue_cached(i, side, sigma);
     } else {
       const auto p = american_price(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
@@ -1860,9 +1958,10 @@ Status VolaSession::greeks_ladder(double T, std::span<const double> strikes,
     const double k = std::log(K / fc.forward);
     const double sigma = model_iv(k, T);
     const CorrectionBlend &correction = side == Side::Call ? call_correction : put_correction;
-    // Cached hot path differentiates the cached graph; the null-cache cold path
-    // finite-differences american_price so greeks.price == the cold fair_value.
-    const auto g = correction.usable(side)
+    // Cached hot path differentiates the cached graph; the null-cache OR out-of-box
+    // (PR-C1) cold path finite-differences american_price so greeks.price == the
+    // cold fair_value.
+    const auto g = cache_serves(correction, side, k, T, sigma)
                        ? american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction)
                        : american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side,
                                             in_.deam.method, in_.deam.al_opts);
@@ -1963,9 +2062,10 @@ Status VolaSession::evaluate_ladder(double T, std::span<const double> strikes,
       iv_out[i] = sigma;
     }
     const CorrectionBlend &correction = side == Side::Call ? call_correction : put_correction;
+    const bool serve_cached = cache_serves(correction, side, k, T, sigma);
     if (!greeks_out.empty()) {
       const auto result =
-          correction.usable(side)
+          serve_cached
               ? american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction)
               : american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
                                    in_.deam.al_opts);
@@ -1987,7 +2087,7 @@ Status VolaSession::evaluate_ladder(double T, std::span<const double> strikes,
       continue;
     }
 
-    if (correction.usable(side)) {
+    if (serve_cached) {
       queue_cached(i, side, sigma);
     } else if (in_.deam.method == AmericanMethod::AndersenLake && std::isfinite(sigma) &&
                sigma >= 0.0) {

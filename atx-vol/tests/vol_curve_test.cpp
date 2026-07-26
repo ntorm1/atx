@@ -2,12 +2,15 @@
 
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <functional>
+#include <span>
 #include <vector>
 
 #include "atx/vol/arb.hpp"          // arb_check_butterfly_svi_mm, arb_check_butterfly_slice
 #include "atx/vol/black76.hpp"      // black76_value_and_vega
 #include "atx/vol/calib.hpp"        // CalibOpts, FitObs
+#include "atx/vol/spline_curve.hpp" // fit_spline_vol_slice
 #include "atx/vol/svi_calib.hpp"    // svi_project_mm
 #include "atx/vol/types.hpp"        // Side
 #include "atx/vol/vol_curve.hpp"    // fit_slice_curve, CurveConfig, SviCurve, C8Curve
@@ -96,11 +99,12 @@ TEST(VolCurve, SviServedSliceIsButterflyAdmissible) {
 
 TEST(VolCurve, SviProjectMmRepairsLeeViolation) {
   // The gate PROJECTS an inadmissible fit before rejecting; verify that repair
-  // primitive directly. A steep-wing slice (b*(1+|rho|) far past 4/T) is Lee-
-  // inadmissible; svi_project_mm must move it back into the polytope.
+  // primitive directly. A steep-wing slice (b*(1+|rho|) past the T-free Lee bound
+  // of 4) is Lee-inadmissible; svi_project_mm must move it back into the polytope.
+  // FT-C3: the bound is T-free, so b*(1+|rho|)=6 > 4 is inadmissible at any T.
   SviParams s{};
   s.a = 0.04;
-  s.b = 4.0;  // b*(1+|rho|) = 4 >> 4/T = 2  (T = 2)
+  s.b = 6.0;  // b*(1+|rho|) = 6 > 4 (T-free Lee bound)
   s.rho = 0.0;
   s.m = 0.0;
   s.sigma = 0.1;
@@ -110,6 +114,121 @@ TEST(VolCurve, SviProjectMmRepairsLeeViolation) {
   const bool moved = svi_project_mm(s, s.T);
   EXPECT_TRUE(moved);
   EXPECT_EQ(arb_check_butterfly_svi_mm(s, s.T).n_violations, 0u);
+}
+
+// A permissive CalibOpts that disables the observation-builder spread filters and
+// the post-fit sigma clamp so a butterfly-arb slice reaches the admission gate
+// rather than being dropped for an unrelated reason.
+[[nodiscard]] CalibOpts vc_permissive_opts() {
+  CalibOpts o = atx::vol::calib_default_opts();
+  o.max_spread_vol = 1.0e9;
+  o.min_vega_weight = 0.0;
+  o.max_spread_to_mid_pct = 0.0;
+  o.max_post_fit_sigma = 0.0;
+  return o;
+}
+
+// FT-C2 (B2a): the SVI served-path butterfly admission is necessary-conditions-
+// only (the Martini-Mingone 5-condition polytope) plus a density scan restricted
+// to |k| <= 0.6. A raw-SVI slice can pass BOTH while carrying Durrleman g<0 in a
+// wing at |k| > 0.6 (the canonical Vogt counterexample sits there; g<0 on
+// [0.64, 0.79] and clean on [-0.6, 0.6]). This fixture is a positive-skew,
+// right-shifted slice (a=0, b=0.13, rho=0.50, m=0.50, sigma=0.30) with exactly
+// that shape and, unlike Vogt (a<0, unreachable by the a>=0 quasi-explicit
+// fitter), it is fit-reproduced from |k|<=0.6 quotes. The served path must scan
+// the FULL quoted range +/- 0.5 (parametric closed form, cost nil) and refuse it.
+TEST(VolCurve, SviServedSliceRejectsWingButterflyArb) {
+  const double a = 0.0, b = 0.13, rho = 0.50, m = 0.50, sigma = 0.30;
+  const double T = 1.0, F = 100.0, df = 1.0;
+  auto wt = [&](double k) {
+    const double dk = k - m;
+    return a + b * (rho * dk + std::sqrt(dk * dk + sigma * sigma));
+  };
+  std::vector<FitObs> obs;
+  const int n = 41;
+  for (int i = 0; i < n; ++i) {
+    const double k = -0.6 + 1.2 * i / (n - 1);
+    const double w = wt(k);
+    const double sig = std::sqrt(w / T);
+    const double K = F * std::exp(k);
+    const Side side = (k >= 0.0) ? Side::Call : Side::Put;
+    const auto vv = black76_value_and_vega(F, K, T, sig, df, side);
+    FitObs o{};
+    o.k = k; o.sigma_mkt = sig; o.w_mkt = w; o.K = K; o.F = F; o.df = df;
+    o.mid = vv.price; o.spread = std::max(0.001, 0.01 * vv.price); o.vega = vv.vega;
+    o.side = side; o.weight_w = 1.0; o.active_weight_w = 1.0;
+    obs.push_back(o);
+  }
+
+  const CalibOpts po = vc_permissive_opts();
+
+  // Non-vacuity: the RAW fit passes the 5-condition mm gate and is clean on the
+  // old [-0.6, 0.6] scan, yet carries genuine wing butterfly arb over the quoted
+  // range +/- 0.5. So a range-complete gate has something real to catch.
+  const auto raw = atx::vol::svi_fit_slice(std::span<const FitObs>(obs), T, F, po);
+  ASSERT_TRUE(raw.has_value());
+  const SviParams sp = raw.value();
+  auto wf = [&](double k) {
+    return sp.a + sp.b * (sp.rho * (k - sp.m) +
+                          std::sqrt((k - sp.m) * (k - sp.m) + sp.sigma * sp.sigma));
+  };
+  EXPECT_EQ(arb_check_butterfly_svi_mm(sp, T).n_violations, 0u)
+      << "fixture must PASS the necessary-conditions gate";
+  const auto narrow = arb_check_butterfly_slice(wf, T, -0.6, 0.6, 256u);
+  ASSERT_TRUE(narrow.has_value());
+  EXPECT_TRUE(narrow->empty()) << "fixture must be clean on the old [-0.6,0.6] scan";
+  const auto wide = arb_check_butterfly_slice(wf, T, -1.1, 1.1, 512u);
+  ASSERT_TRUE(wide.has_value());
+  EXPECT_FALSE(wide->empty()) << "fixture must carry real wing arb over quoted+/-0.5";
+
+  // Served path: must REFUSE. Pre-fix serves it (RED); post-fix rejects (GREEN).
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::Svi;
+  cfg.parametric = po;
+  const auto served = fit_slice_curve(cfg, obs, F, T, df);
+  EXPECT_FALSE(served.has_value())
+      << "served-path admitted a raw-SVI slice with wing butterfly arb over the "
+         "quoted range +/- 0.5";
+}
+
+// FT-C7 (B2b): a caller-pinned SplineVol bypasses the selector, and the spline
+// fit computes its butterfly-violation count as a DIAGNOSTIC only (never rejects
+// or projects). A sharp ATM vol bump fits a spline whose total variance is non-
+// convex on the bump flanks (negative risk-neutral density). The pinned path must
+// gate on the served shape and fail admission.
+TEST(VolCurve, PinnedSplineVolRejectsButterflyArb) {
+  const double T = 0.5, F = 100.0, df = 1.0;
+  std::vector<FitObs> obs;
+  const int n = 31;
+  for (int i = 0; i < n; ++i) {
+    const double k = -0.5 + 1.0 * i / (n - 1);
+    const double sig = 0.25 + 0.35 * std::exp(-150.0 * k * k);  // sharp ATM bump
+    const double K = F * std::exp(k);
+    const Side side = (k >= 0.0) ? Side::Call : Side::Put;
+    const auto vv = black76_value_and_vega(F, K, T, sig, df, side);
+    FitObs o{};
+    o.k = k; o.sigma_mkt = sig; o.w_mkt = sig * sig * T; o.K = K; o.F = F; o.df = df;
+    o.mid = vv.price; o.spread = std::max(0.001, 0.01 * vv.price); o.vega = vv.vega;
+    o.side = side; o.weight_w = 1.0; o.active_weight_w = 1.0;
+    obs.push_back(o);
+  }
+
+  // Non-vacuity: the raw spline fit (bypassing the new gate) carries real
+  // butterfly arb over its data range +/- 0.5.
+  const auto raw = atx::vol::fit_spline_vol_slice(std::span<const FitObs>(obs), F, T, df);
+  ASSERT_TRUE(raw.has_value()) << raw.error().to_string();
+  const IVolCurve* const rc = raw->get();
+  const auto bf = arb_check_butterfly_slice(
+      [rc](double k) { return rc->w(k); }, T, -1.0, 1.0, 256u);
+  ASSERT_TRUE(bf.has_value());
+  EXPECT_FALSE(bf->empty()) << "fixture spline must carry real butterfly arb";
+
+  // Pinned served path must REFUSE. Pre-fix serves it (RED); post-fix rejects.
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::SplineVol;
+  const auto served = fit_slice_curve(cfg, obs, F, T, df);
+  EXPECT_FALSE(served.has_value())
+      << "pinned SplineVol path served a butterfly-arbitrageable slice";
 }
 
 TEST(VolCurve, C8ServedSlicePassesGridButterflyCheck) {

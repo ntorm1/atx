@@ -187,6 +187,131 @@ TEST(SurfaceParity, FourExpiryPanel_Essvi_InterpolatesAndCalendarArbFree) {
   }
 }
 
+// FT-C8 (B4): the served eSSVI path (`run_surface_parity`) historically prepared
+// its observation population under the permissive LegacyEssviCompatibility
+// predicate (strike>0 + quote_valid only), ignoring the configured CalibOpts
+// filter cascade — so a stale/flagged quote entered the DEFAULT-family fit while
+// every other family filtered it. The flag-guarded rollout
+// (`essvi_serve_configured_prep`) routes the served eSSVI path through the
+// configured `fit_prep_policy`. A quote flagged Stale must be EXCLUDED under
+// Configured prep and KEPT under the (default) Legacy prep.
+TEST(SurfaceParity, ConfiguredPrepExcludesFlaggedQuote_LegacyKeepsIt) {
+  const PanelBuild pb = make_panel_build();
+  const auto panel = make_synthetic_american_panel(pb.spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+
+  Universe u;
+  const auto uid = atx::vol::data_install(u, panel->frame);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+  ASSERT_EQ((*under)->chains.size(), std::size_t{4});
+
+  // Flag one mid-OTM strike's BOTH legs Stale on the front chain, so that strike
+  // contributes no usable OTM leg under a flag-aware (Configured) filter.
+  auto& chain0 = (*under)->chains[0];
+  const std::uint16_t flagged_strike = 2u;  // K = 78, OTM put vs spot 100
+  ASSERT_GT(chain0.strikes.size(), flagged_strike);
+  for (const atx::vol::Side side : {atx::vol::Side::Call, atx::vol::Side::Put}) {
+    const std::size_t qi = atx::vol::chain_index(flagged_strike, side);
+    chain0.flags[qi] = static_cast<std::uint8_t>(atx::vol::QuoteFlag::Stale);
+  }
+
+  SurfaceParityInputs base;
+  base.S = pb.spec.spot;
+  base.r = pb.spec.r;
+  base.cash_divs = pb.spec.cash_divs;
+  base.now_ts_ns = iso_to_ns(pb.snapshot);
+  base.deam.hyb = pb.spec.hyb;
+  base.deam.imply_borrow = true;
+  base.deam.n_atm = 3;
+
+  // (1) Default (Legacy prep): the stale flag is IGNORED, the quote is kept.
+  SurfaceParityInputs legacy_in = base;
+  legacy_in.essvi_serve_configured_prep = false;
+  const auto legacy = run_surface_parity(**under, legacy_in);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  ASSERT_GT(legacy->context.size(), 0u);
+  const std::size_t legacy_n_used = legacy->context.front().n_used;
+
+  // (2) Configured prep (flag on): the stale quote is EXCLUDED by the cascade.
+  SurfaceParityInputs configured_in = base;
+  configured_in.essvi_serve_configured_prep = true;
+  configured_in.fit_prep_policy = atx::vol::PreparedObservationPolicy::Configured;
+  const auto configured = run_surface_parity(**under, configured_in);
+  ASSERT_TRUE(configured.has_value()) << configured.error().to_string();
+  ASSERT_GT(configured->context.size(), 0u);
+  const std::size_t configured_n_used = configured->context.front().n_used;
+
+  EXPECT_LT(configured_n_used, legacy_n_used)
+      << "Configured prep must exclude the flagged quote the Legacy prep keeps "
+         "(legacy n_used=" << legacy_n_used << " configured n_used="
+      << configured_n_used << ")";
+}
+
+// FT-P (B4): the per-expiry preparation prepass fans out over `fit_workers` while
+// the fit/scoring pass stays sequential, so the assembled surface must be
+// BIT-IDENTICAL for any worker count. Determinism gate: 1 vs 8 workers must
+// produce byte-for-byte identical eSSVI slices and per-expiry metrics.
+TEST(SurfaceParity, PrepassParallelIsBitIdenticalAcrossWorkers) {
+  const PanelBuild pb = make_panel_build();
+  const auto panel = make_synthetic_american_panel(pb.spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().to_string();
+
+  Universe u;
+  const auto uid = atx::vol::data_install(u, panel->frame);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+
+  const auto run_with = [&](unsigned workers) {
+    SurfaceParityInputs in;
+    in.S = pb.spec.spot;
+    in.r = pb.spec.r;
+    in.cash_divs = pb.spec.cash_divs;
+    in.now_ts_ns = iso_to_ns(pb.snapshot);
+    in.deam.hyb = pb.spec.hyb;
+    in.deam.imply_borrow = true;
+    in.deam.n_atm = 3;
+    in.fit_workers = workers;
+    return run_surface_parity(**under, in);
+  };
+
+  const auto r1 = run_with(1u);
+  const auto r8 = run_with(8u);
+  ASSERT_TRUE(r1.has_value()) << r1.error().to_string();
+  ASSERT_TRUE(r8.has_value()) << r8.error().to_string();
+
+  ASSERT_EQ(r1->n_slices, r8->n_slices);
+  ASSERT_EQ(r1->expiry_T.size(), r8->expiry_T.size());
+  EXPECT_EQ(r1->calendar_arb_free, r8->calendar_arb_free);
+  // Byte-for-byte on the reported worst-case bid-ask fraction.
+  EXPECT_EQ(r1->worst_frac_within_bidask, r8->worst_frac_within_bidask);
+
+  const auto s1 = r1->surface.essvi_slices();
+  const auto s8 = r8->surface.essvi_slices();
+  ASSERT_EQ(s1.size(), s8.size());
+  for (std::size_t i = 0; i < s1.size(); ++i) {
+    EXPECT_EQ(r1->expiry_T[i], r8->expiry_T[i]) << "expiry_T slice " << i;
+    // Raw eSSVI parameters must match bit-for-bit (==, not NEAR).
+    EXPECT_EQ(s1[i].theta, s8[i].theta) << "theta slice " << i;
+    EXPECT_EQ(s1[i].phi, s8[i].phi) << "phi slice " << i;
+    EXPECT_EQ(s1[i].rho, s8[i].rho) << "rho slice " << i;
+    EXPECT_EQ(s1[i].T, s8[i].T) << "T slice " << i;
+    // The served surface at a k-grid must be bit-identical too.
+    for (double k = -0.30; k <= 0.30 + 1e-9; k += 0.05) {
+      const double iv1 = r1->surface.iv_on_slice(static_cast<std::uint16_t>(i), k);
+      const double iv8 = r8->surface.iv_on_slice(static_cast<std::uint16_t>(i), k);
+      EXPECT_EQ(iv1, iv8) << "iv_on_slice mismatch slice " << i << " k=" << k;
+    }
+  }
+  // Per-slice used-observation counts identical.
+  ASSERT_EQ(r1->context.size(), r8->context.size());
+  for (std::size_t i = 0; i < r1->context.size(); ++i) {
+    EXPECT_EQ(r1->context[i].n_used, r8->context[i].n_used) << "n_used slice " << i;
+  }
+}
+
 TEST(SurfaceParity, CalendarRepair_HoldsQualityAndDefersScoring) {
   const PanelBuild pb = make_panel_build();
   const auto panel = make_synthetic_american_panel(pb.spec);

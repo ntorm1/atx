@@ -258,14 +258,32 @@ void expect_result_bit_identical(const BacktestResult &a, const BacktestResult &
                   X(return_on_gross_vega) X(vega_adj_sharpe) X(pnl_per_vega_traded)                \
                       X(avg_gross_vega) X(avg_gross_gamma)
 
-static_assert(sizeof(TearSheet) == 27 * sizeof(double),
-              "TearSheet gained/lost a field — update ATX_TEARSHEET_FIELDS or this gate stops "
-              "covering the whole struct");
+// The trunk's WS-X5 added a nested benchmark-relative block to TearSheet, which
+// this guard correctly caught at the main->pipeline-m merge (it fired as
+// "expression evaluates to '280 == 216'"). Its six doubles are enumerated
+// separately because the two macros above are double-only: `has_benchmark`
+// (bool) and `n_obs` (size_t) are compared explicitly in the comparator below
+// rather than being folded in and silently converted.
+#define ATX_TEARSHEET_BENCHMARK_FIELDS(X)                                                          \
+  X(benchmark.beta) X(benchmark.alpha) X(benchmark.active_return)                                  \
+      X(benchmark.tracking_error) X(benchmark.information_ratio) X(benchmark.correlation)
+
+// 27 plain doubles (216 B) + BenchmarkStats (bool + pad + size_t + 6 doubles =
+// 64 B) = 280 B = 35 doubles. Update BOTH field lists, not just this number, or
+// the gate stops covering the whole struct.
+static_assert(sizeof(TearSheet) == 35 * sizeof(double),
+              "TearSheet gained/lost a field — update ATX_TEARSHEET_FIELDS / "
+              "ATX_TEARSHEET_BENCHMARK_FIELDS or this gate stops covering the whole struct");
+static_assert(sizeof(BenchmarkStats) == 8 * sizeof(double),
+              "BenchmarkStats gained/lost a field — update ATX_TEARSHEET_BENCHMARK_FIELDS");
 
 void expect_sheet_bit_identical(const TearSheet &a, const TearSheet &b) {
 #define ATX_TEARSHEET_EXPECT(f) EXPECT_TRUE(bits_equal(a.f, b.f)) << #f;
   ATX_TEARSHEET_FIELDS(ATX_TEARSHEET_EXPECT)
+  ATX_TEARSHEET_BENCHMARK_FIELDS(ATX_TEARSHEET_EXPECT)
 #undef ATX_TEARSHEET_EXPECT
+  EXPECT_EQ(a.benchmark.has_benchmark, b.benchmark.has_benchmark) << "benchmark.has_benchmark";
+  EXPECT_EQ(a.benchmark.n_obs, b.benchmark.n_obs) << "benchmark.n_obs";
 }
 
 // Guards against a 0 == 0 pass: at least one field must be a real number.

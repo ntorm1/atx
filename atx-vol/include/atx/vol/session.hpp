@@ -314,6 +314,26 @@ struct SessionDiagnostics {
   // finite value here is the ONLY condition under which queries route
   // through the event-aware blend (see SessionInputs::events).
   double implied_emove{std::numeric_limits<double>::quiet_NaN()};
+  // E3b / AN-P1-3. WHICH solve produced `implied_emove`: `Joint` when the
+  // identified {eMove, st, lt, decay} fit over ALL fitted slices ran
+  // (`implied_emove_joint`, event_vol.hpp), `TwoPillar` when the slice set did
+  // not support it and the pre-E3b bracketing solve was used instead. Only
+  // meaningful when `implied_emove` is finite; on a declined solve it keeps its
+  // `TwoPillar` default and means nothing.
+  EmoveMethod emove_method{EmoveMethod::TwoPillar};
+  // FIX-E I-2. The joint fit's OUTCOME CODE. Without it the status channel at
+  // the session boundary is incomplete: `emove_method` alone cannot distinguish
+  // a converged joint answer from a fallback, nor say WHY the fallback
+  // happened. Read it together with `emove_method`:
+  //   * `Joint` + `Ok`/`Minimum`    — the identified joint fit converged;
+  //   * `TwoPillar` + `Ok`          — the joint fit was never attempted (the
+  //                                   slice set does not identify it);
+  //   * `TwoPillar` + anything else — the joint fit RAN and was REJECTED, and
+  //                                   this names the failure (`MaxSteps` /
+  //                                   `LeftBound` / `RightBound` /
+  //                                   `CenterFlat` / `Degenerate`).
+  // Only meaningful when `implied_emove` is finite.
+  EmoveFitCode emove_fit_code{EmoveFitCode::Ok};
   std::size_t n_carry_slices{0};    // slices with a resolved carry diagnostic
   std::size_t n_carry_confident{0}; // carry slices clearing confidence gates
   // Expiries the fit DROPPED because carry could not be resolved (confidence
@@ -441,6 +461,21 @@ public:
   // leg path). InvalidArgument if K/T are non-finite or non-positive; any pricer
   // error is propagated.
   [[nodiscard]] Result<AmericanGreeks> greeks(double K, double T, Side side) const;
+
+  // Per-query route introspection for the serve path (PR-C1), mirroring the
+  // archived PricedSurface's QueryPricingRoute. Reports, WITHOUT pricing, which
+  // route fair_value/greeks would take at (K, T, side):
+  //   ColdReference    — no usable correction (cold-configured tier, override
+  //                      surface, or a side with no built cache): the cold pricer.
+  //   RepresentativeFast / CarryBank — the query is inside the correction box and
+  //                      is served from the (single / carry-bank) cached graph.
+  //   ColdFallback     — a usable cache exists but the query is OUTSIDE its box
+  //                      (fitted vol above the sigma ceiling, or T/moneyness past
+  //                      the padded box): the serve path falls back to the cold
+  //                      Andersen-Lake pricer instead of a box-edge-clamped mark.
+  // Returns ColdReference for an invalid (non-finite / non-positive) K or T (the
+  // domain on which fair_value itself returns InvalidArgument).
+  [[nodiscard]] QueryPricingRoute query_route(double K, double T, Side side) const noexcept;
 
   // ── Strike-ladder queries (SoA; reprice a whole expiry in one call) ────────
   //

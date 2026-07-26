@@ -17,6 +17,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/american.hpp"         // AmericanGreeks
+#include "atx/vol/dispersion.hpp"       // contract_vega_per_vol_point (the ONE vol-point conversion)
 #include "atx/vol/portfolio_pricer.hpp" // kNsPerYear
 #include "atx/vol/priced_surface.hpp"   // PricedSurface
 
@@ -96,7 +97,7 @@ template <class T> [[nodiscard]] bool parse_integer(std::string_view text, T &ou
 [[nodiscard]] Result<ListedOptionRisk> surface_risk(const ListedDispersionSelection &selection,
                                                     const SurfaceSet &surfaces, std::uint32_t uid,
                                                     const ListedOptionQuote &quote) {
-  const PricedSurface *surface = surfaces.find(uid);
+  const SurfaceRef surface = surfaces.find(uid);
   if (surface == nullptr) {
     return Err(ErrorCode::NotFound,
                "build_listed_dispersion_roll: selected surface is unavailable");
@@ -136,8 +137,8 @@ struct StraddleRisk {
     return Err(ErrorCode::InvalidArgument,
                "build_listed_dispersion_roll: straddle multiplier mismatch");
   }
-  const double vega =
-      (call.vega_per_unit_vol + put.vega_per_unit_vol) * straddle.call.multiplier * 0.01;
+  const double vega = contract_vega_per_vol_point(
+      call.vega_per_unit_vol + put.vega_per_unit_vol, straddle.call.multiplier);
   if (!finite_positive(vega)) {
     return Err(ErrorCode::Unavailable, "build_listed_dispersion_roll: nonpositive straddle vega");
   }
@@ -166,7 +167,8 @@ void append_leg(ListedScheduleRoll &roll, const ListedStraddle &straddle, const 
     leg.model_mark = option.model_mark;
     leg.delta_per_share = option.delta_per_share;
     leg.vega_per_unit_vol = option.vega_per_unit_vol;
-    leg.vega_per_contract_per_vol_point = option.vega_per_unit_vol * quote.multiplier * 0.01;
+    leg.vega_per_contract_per_vol_point =
+        contract_vega_per_vol_point(option.vega_per_unit_vol, quote.multiplier);
     leg.normalized_weight = straddle.normalized_weight;
     leg.target_straddle_vega_per_vol_point = target;
     leg.achieved_leg_vega_per_vol_point = quantity * leg.vega_per_contract_per_vol_point;
@@ -200,7 +202,8 @@ void append_leg(ListedScheduleRoll &roll, const ListedStraddle &straddle, const 
         !finite(leg.model_mark) || leg.model_mark < 0.0 || !finite(leg.delta_per_share) ||
         !finite_positive(leg.vega_per_unit_vol) ||
         !finite_positive(leg.vega_per_contract_per_vol_point) ||
-        leg.vega_per_contract_per_vol_point != leg.vega_per_unit_vol * leg.multiplier * 0.01 ||
+        leg.vega_per_contract_per_vol_point !=
+            contract_vega_per_vol_point(leg.vega_per_unit_vol, leg.multiplier) ||
         !finite(leg.normalized_weight) || !finite(leg.target_straddle_vega_per_vol_point) ||
         !finite(leg.achieved_leg_vega_per_vol_point) ||
         leg.achieved_leg_vega_per_vol_point != leg.quantity * leg.vega_per_contract_per_vol_point) {

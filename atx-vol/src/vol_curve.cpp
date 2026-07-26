@@ -25,15 +25,40 @@ constexpr double kRiskCalendarMax = 0.60;
 constexpr std::uint32_t kRiskCalendarIntervals = 64;
 constexpr std::uint32_t kRiskShapeIntervals = 256;
 
-[[nodiscard]] Status validate_parametric_risk_shape(const IVolCurve &curve) {
+[[nodiscard]] Status validate_parametric_risk_shape(const IVolCurve &curve,
+                                                    double k_min, double k_max) {
   ATX_TRY(const std::vector<ArbViolation> violations,
-          arb_check_butterfly(curve, kRiskCalendarMin, kRiskCalendarMax,
-                              kRiskShapeIntervals));
+          arb_check_butterfly(curve, k_min, k_max, kRiskShapeIntervals));
   if (!violations.empty()) {
     return Err(ErrorCode::Unavailable,
                "fit_slice_curve: post-calendar strike-shape admission failed");
   }
   return Ok();
+}
+
+[[nodiscard]] Status validate_parametric_risk_shape(const IVolCurve &curve) {
+  return validate_parametric_risk_shape(curve, kRiskCalendarMin, kRiskCalendarMax);
+}
+
+// FT-C2/FT-C7: the strike-shape density scan for a closed-form parametric (SVI)
+// or a pinned SplineVol slice must cover the FULL quoted range padded by 0.5 in
+// log-moneyness (the C8/CStar policy), NOT just the fixed tradeable [-0.6, 0.6]
+// band — a slice that passes the necessary-conditions gate and is clean on
+// |k|<=0.6 can still carry Durrleman g<0 in a wing the closed form extrapolates
+// past the band. The scan window is the UNION of the padded quoted range and the
+// historical band, so coverage is never reduced for a tightly-quoted slice.
+[[nodiscard]] Status validate_served_shape_over_quotes(const IVolCurve &curve,
+                                                       std::span<const FitObs> obs) {
+  double k_lo = kRiskCalendarMin;
+  double k_hi = kRiskCalendarMax;
+  for (const FitObs &o : obs) {
+    if (!std::isfinite(o.k)) {
+      continue;
+    }
+    k_lo = std::min(k_lo, o.k - 0.5);
+    k_hi = std::max(k_hi, o.k + 0.5);
+  }
+  return validate_parametric_risk_shape(curve, k_lo, k_hi);
 }
 } // namespace
 
@@ -419,7 +444,10 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       (void)projection;
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<SviCurve>(slice, df);
-    ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
+    // FT-C2: scan the full quoted range +/- 0.5, not the fixed [-0.6, 0.6] band —
+    // the raw-SVI closed form can extrapolate wing butterfly arb past the band
+    // that the necessary-conditions Mingone gate above does not see.
+    ATX_TRY_VOID(validate_served_shape_over_quotes(*curve, obs_eu));
     return Ok(std::move(curve));
   }
   case VolCurveKind::LinearVariance: {
@@ -584,6 +612,16 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
                                             kRiskCalendarMax, kRiskCalendarIntervals,
                                             prev_data_k_range.first,
                                             prev_data_k_range.second));
+    }
+    // FT-C7: a caller-pinned SplineVol bypasses the selector's butterfly
+    // disqualification, and fit_spline_vol_slice records n_butterfly_viol as a
+    // DIAGNOSTIC only (never rejects). Turn that same count — computed over the
+    // spline's own data range, the exact quantity the selector disqualifies on —
+    // into a hard admission rejection so a pinned butterfly-arbitrageable spline
+    // is dropped (the fallback ladder handles it) instead of served.
+    if (static_cast<const SplineVolCurve *>(curve.get())->params().n_butterfly_viol > 0) {
+      return Err(ErrorCode::Unavailable,
+                 "fit_slice_curve: pinned SplineVol slice butterfly-inadmissible");
     }
     return Ok(std::move(curve));
   }

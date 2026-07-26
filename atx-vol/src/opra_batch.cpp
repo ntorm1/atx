@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <bit>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <limits>
 #include <string>
@@ -378,6 +380,65 @@ Result<OpraBatchResult> load_opra_daterange(const OpraBatchSpec& spec,
   }
 
   return Ok(std::move(result));
+}
+
+Status load_opra_date_windows(const OpraBatchSpec &spec, std::size_t date_window_size,
+                              const OpraWindowConsumer &consume,
+                              OpraWindowLoadStats *stats) {
+  if (date_window_size == 0u) {
+    return Err(ErrorCode::InvalidArgument, "OPRA date window size must be positive");
+  }
+  if (!consume) {
+    return Err(ErrorCode::InvalidArgument, "OPRA date window consumer is empty");
+  }
+  obd::Civil lo;
+  obd::Civil hi;
+  if (!obd::parse_civil(spec.date_lo, lo)) {
+    return Err(ErrorCode::InvalidArgument, "unparseable date_lo '" + spec.date_lo + "'");
+  }
+  if (!obd::parse_civil(spec.date_hi, hi)) {
+    return Err(ErrorCode::InvalidArgument, "unparseable date_hi '" + spec.date_hi + "'");
+  }
+  const std::int64_t serial_lo = obd::days_from_civil(lo.y, lo.m, lo.d);
+  const std::int64_t serial_hi = obd::days_from_civil(hi.y, hi.m, hi.d);
+  if (serial_hi < serial_lo) {
+    return Err(ErrorCode::InvalidArgument,
+               "date_hi '" + spec.date_hi + "' precedes date_lo '" + spec.date_lo + "'");
+  }
+
+  OpraWindowLoadStats measured;
+  std::int64_t window_lo = serial_lo;
+  while (window_lo <= serial_hi) {
+    const std::uint64_t dates_remaining =
+        static_cast<std::uint64_t>(serial_hi - window_lo) + 1u;
+    const std::uint64_t window_width =
+        std::min(dates_remaining, static_cast<std::uint64_t>(date_window_size));
+    const std::int64_t window_hi =
+        window_lo + static_cast<std::int64_t>(window_width) - 1;
+    OpraBatchSpec window = spec;
+    window.date_lo = obd::format_civil(obd::civil_from_days(window_lo));
+    window.date_hi = obd::format_civil(obd::civil_from_days(window_hi));
+
+    const std::clock_t cpu_begin = std::clock();
+    const auto wall_begin = std::chrono::steady_clock::now();
+    ATX_TRY(OpraBatchResult batch, load_opra_daterange(window));
+    measured.load_wall_s +=
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_begin).count();
+    const std::clock_t cpu_end = std::clock();
+    if (cpu_begin != static_cast<std::clock_t>(-1) &&
+        cpu_end != static_cast<std::clock_t>(-1) && cpu_end >= cpu_begin) {
+      measured.load_process_cpu_s +=
+          static_cast<double>(cpu_end - cpu_begin) / static_cast<double>(CLOCKS_PER_SEC);
+    }
+    ++measured.n_windows;
+    measured.peak_entries = std::max(measured.peak_entries, batch.entries.size());
+    ATX_TRY_VOID(consume(std::move(batch)));
+    window_lo = window_hi + 1;
+  }
+  if (stats != nullptr) {
+    *stats = measured;
+  }
+  return Ok();
 }
 
 MarketEnv market_env_from_frame(const QuoteFrame& frame) {

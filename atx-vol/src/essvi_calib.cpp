@@ -308,9 +308,14 @@ void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
     g2 += s * (lambda - prior->lambda);
   }
 
+  // FT-P: reuse the 3x3 damped-normal-matrix / rhs storage across damping trials
+  // (and across lm_step calls) instead of allocating MatX(3,3)/VecX(3) every
+  // trial. thread_local => race-free under the parallel per-slice fit fan-out;
+  // both are fully overwritten each trial, so the solve is bit-identical.
+  thread_local MatX hd(3, 3);
+  thread_local VecX ng(3);
   for (int trial = 0; trial < kLmTrialCap; ++trial) {
     const double d = 1.0 + lambda_lm;
-    MatX hd(3, 3);
     hd(0, 0) = h00 * d;
     hd(0, 1) = h01;
     hd(0, 2) = h02;
@@ -320,7 +325,6 @@ void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
     hd(2, 0) = h02;
     hd(2, 1) = h12;
     hd(2, 2) = h22 * d;
-    VecX ng(3);
     ng(0) = -g0;
     ng(1) = -g1;
     ng(2) = -g2;
@@ -359,17 +363,21 @@ void residuals_and_jac(std::span<const FitObs> obs, const ThetaBand& band,
   return prev_sse;
 }
 
-// Lee (2004) wing-slope projection: if θ·φ·(1+|ρ|) > 4/T shrink `p` (which
-// scales φ) by bisection to the largest admissible value. Returns true if it
-// fired. The Mingone cube already enforces the (T-free) butterfly bound; this
-// adds Lee's tighter short-dated bound.
+// Lee (2004) wing-slope projection: if θ·φ·(1+|ρ|) > 4 shrink `p` (which scales
+// φ) by bisection to the largest admissible value. Returns true if it fired.
+// FT-C3: with θ = TOTAL variance the Lee/Gatheral wing-slope constraint is T-FREE
+// — θ·φ·(1+|ρ|) ≤ 4 — exactly the bound the Mingone cube's essvi_phi_max already
+// enforces (b1 = 4/(θ(1+|ρ|))). The previous 4/T form was a no-op for T<1 and
+// over-tight for T>1: a 2y high-vol steep-skew slice with θφ(1+|ρ|)≈2.7 ≤ 4 was
+// silently flattened to 4/T = 2. This projection is now redundant with the cube
+// clamp but harmless — kept as an explicit belt-and-braces wing gate.
 bool lee_project(double& psi, double& p, double& lambda, const ThetaBand& band,
                  double T) noexcept {
   const EssviNatural n = cube_to_natural(psi, p, lambda, band);
   if (!(T > 0.0) || !(n.theta > 0.0) || !(n.phi > 0.0)) {
     return false;
   }
-  const double rhs = 4.0 / T;
+  const double rhs = 4.0;
   if (n.theta * n.phi * (1.0 + std::fabs(n.rho)) <= rhs) {
     return false;
   }
@@ -1208,11 +1216,12 @@ struct ChainFitResult {
     }
   }
 
-  // Backbone calendar projection (no-op on an already-monotone surface). The
-  // sequential driver produces a theta-monotone term structure by construction,
-  // but the wing (φ, ρ) coupling can still induce small calendar crossings, so
-  // the projection is run for both drivers when validation is on.
-  if (n_fit_ok >= 2 && opts.validate_no_arb) {
+  // Backbone calendar projection (theta-scale "Project"-style bump). FT-C9a: this
+  // moves the ATM total-variance level to remove calendar crossings — the
+  // quality-destroying repair the README warns about. It is now an EXPLICIT
+  // opt-in (essvi_alt_driver_theta_project), NOT folded into validate_no_arb, so
+  // the default alternate-driver path leaves the fitted term structure untouched.
+  if (n_fit_ok >= 2 && opts.essvi_alt_driver_theta_project) {
     (void)arb_project_calendar_essvi(surface, -1.5, 1.5, 64u);
   }
 

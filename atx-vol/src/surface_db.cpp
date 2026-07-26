@@ -278,6 +278,7 @@ inline constexpr std::uint64_t kFnv1a64OffsetBasis = 0xcbf29ce484222325ull;
   rec.al_n_collocation = cfg.al.n_collocation;
   rec.al_n_quadrature = cfg.al.n_quadrature;
   rec.al_max_newton_iter = cfg.al.max_newton_iter;
+  rec.al_n_quad_price = cfg.al.n_quad_price; // C2 (SE-P1-2): decoupled premium order
 
   rec.convex_node_cap = static_cast<std::int32_t>(cfg.curve.convex.node_cap);
   rec.convex_max_iter = static_cast<std::int32_t>(cfg.curve.convex.max_iter);
@@ -411,6 +412,7 @@ SymbolFitConfig decode_symbol_record(const DbSymbolRecord &rec) {
   cfg.al.n_collocation = rec.al_n_collocation;
   cfg.al.n_quadrature = rec.al_n_quadrature;
   cfg.al.max_newton_iter = rec.al_max_newton_iter;
+  cfg.al.n_quad_price = rec.al_n_quad_price; // C2 (SE-P1-2); 0 on pre-C2 manifests -> tied
   cfg.al.tol = rec.al_tol;
   cfg.band_k = rec.band_k;
   cfg.surface_policy = decode_surface_policy(rec);
@@ -842,17 +844,23 @@ const DbPartitionRecord *DbManifest::find_partition(std::string_view key) const 
 
 namespace {
 
-// Atomic manifest write: serialize to `dst.tmp`, then rename over `dst`.
+// Atomic manifest write: serialize to an exclusively reserved unique
+// same-directory temp, then durably rename over `dst`.
 // Mirrors write_surface_archive_file's discipline (surface_archive.cpp) --
 // including tmp cleanup on failure -- so both binary formats fail the same
 // way under a crash mid-write.
 [[nodiscard]] Status write_manifest_file_atomic(const std::filesystem::path &dst,
                                                 const std::vector<std::byte> &bytes) {
-  std::filesystem::path tmp = dst;
-  tmp += ".tmp";
+  auto reserved = detail::reserve_unique_publish_temp_file(dst.string());
+  if (!reserved) {
+    return tl::unexpected<atx::core::Error>(std::move(reserved).error());
+  }
+  const std::filesystem::path tmp{*reserved};
   {
     std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
     if (!os) {
+      std::error_code ec;
+      std::filesystem::remove(tmp, ec);
       return Err(ErrorCode::IoError, "SurfaceDb: cannot open manifest temp file");
     }
     os.write(reinterpret_cast<const char *>(bytes.data()),
@@ -863,14 +871,10 @@ namespace {
       return Err(ErrorCode::IoError, "SurfaceDb: manifest write failed");
     }
   }
-  std::error_code ec;
-  std::filesystem::rename(tmp, dst, ec);
-  if (ec) {
-    std::error_code ec2;
-    std::filesystem::remove(tmp, ec2);
-    return Err(ErrorCode::IoError, "SurfaceDb: manifest rename failed");
-  }
-  return Ok();
+  // Durable atomic publish: fsync the temp before the rename, retry under a
+  // reader-held manifest, preserve the temp on final failure (C3 / SE-P2-1,
+  // SE-P2-2). Shared primitive with the v1 + v2 archive writers.
+  return detail::flush_and_publish_file(tmp.string(), dst.string());
 }
 
 // Read a file fully into memory. NotFound if missing, IoError on any stream

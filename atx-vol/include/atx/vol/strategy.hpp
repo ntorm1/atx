@@ -19,9 +19,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -210,14 +213,14 @@ struct SizedLeg {
 // (fixed bracket, fixed iteration cap). Widens the bracket [-1.5,1.5] -> [-3,3] ->
 // [-5,5] to catch extreme deltas; validates the repriced delta at the root.
 // @return InvalidArgument if the target is outside (0,1) or unreachable.
-[[nodiscard]] Result<double> resolve_strike_by_delta(const PricedSurface &s, double T, Side side,
+[[nodiscard]] Result<double> resolve_strike_by_delta(const SurfaceRef &s, double T, Side side,
                                                      double target_abs_delta);
 
 // Adaptive overload. When enabled, every successful return has been validated
 // by `PricedSurface::delta(..., QueryExecution::ColdReference)` within
 // `cold_delta_tolerance`; local refinement is bounded and exhaustion falls back
 // to the robust solver running entirely ColdReference.
-[[nodiscard]] Result<double> resolve_strike_by_delta(const PricedSurface &s, double T, Side side,
+[[nodiscard]] Result<double> resolve_strike_by_delta(const SurfaceRef &s, double T, Side side,
                                                      double target_abs_delta,
                                                      const ResolutionOptions &options);
 
@@ -256,12 +259,12 @@ resolve_strikes_by_delta_batched(std::span<const DeltaResolveLane> lanes, unsign
 // F(target_T); Delta = the solver; Moneyness = F * exp(value); AbsStrike = value).
 // NotImplemented when `tenor.snap_to_listed` is true; this API has no listed
 // contract or quote provenance and never pretends a model strike is tradeable.
-[[nodiscard]] Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor,
+[[nodiscard]] Result<double> resolve_strike(const SurfaceRef &s, const TenorSpec &tenor,
                                             Side side, const StrikeSelector &sel);
-[[nodiscard]] Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor,
+[[nodiscard]] Result<double> resolve_strike(const SurfaceRef &s, const TenorSpec &tenor,
                                             Side side, const StrikeSelector &sel,
                                             const ResolutionOptions &options);
-[[nodiscard]] Result<double> resolve_strike(const PricedSurface &s, const TenorSpec &tenor,
+[[nodiscard]] Result<double> resolve_strike(const SurfaceRef &s, const TenorSpec &tenor,
                                             Side side, const StrikeSelector &sel,
                                             const ResolutionOptions &options,
                                             const PriceOptions &price_options);
@@ -386,6 +389,26 @@ public:
   [[nodiscard]] virtual QueryExecution required_economic_execution() const noexcept {
     return QueryExecution::Configured;
   }
+  // WS-F F5 (BT-T2): the COMPLETE set of underlier uids this strategy will ever
+  // touch, if it can be enumerated before the run. The engine uses it to build
+  // its PRIVATE snapshot cache with a subset-deserialize, so a replay against a
+  // wide archive reconstructs only the names the strategy references instead of
+  // the whole board on every date.
+  //
+  // The default is EMPTY, which means "not known up front" and keeps the
+  // whole-board load — the correct answer for any strategy that discovers names
+  // inside `on_step` (a point-in-time universe, a signal-driven basket). A
+  // schedule-driven strategy knows the answer exactly.
+  //
+  // CONTRACT — an INCOMPLETE set is a silent wrong number, not a slow run: a uid
+  // omitted here is simply absent from every snapshot, so its lots go unpriced
+  // and its hedge shares unmarked (both now fail closed under F1, but only under
+  // the Error policy). Return everything or return nothing. The engine ignores
+  // this entirely when the caller supplies its own snapshot cache, since a
+  // shared cache may serve other books with different referenced sets.
+  [[nodiscard]] virtual std::span<const std::uint32_t> referenced_uids() const noexcept {
+    return {};
+  }
 };
 
 // Interprets a `StrategySpec` against each snapshot. Holds the lifecycle state:
@@ -440,6 +463,73 @@ private:
   std::vector<FullGreekSeed> last_entry_seeds_;
 };
 
+// ── X3: risk limits / capital / drawdown stop ────────────────────────────────
+//
+// Before this there was NO capital, gross exposure or drawdown control anywhere
+// in the dispersion loop: the book sized to `gross_index_vega` unconditionally,
+// every step, forever. These limits are checked on the ENTRY path before the
+// sized book is committed, and every clamp or halt is recorded so it can never be
+// silent.
+//
+// ALL DEFAULTS ARE UNLIMITED (0 == no limit), so a default config reproduces the
+// pinned 82-session golden bit-for-bit. That golden is
+// `final_nav = 24740.624124981368` since the E1 unit migration (2026-07-25):
+// `target_vega` and these limits are denominated per VOL POINT, so the default
+// book -- and every $-denominated figure below -- is 100x its pre-E1 value.
+
+enum class RiskBreachAction : std::uint8_t {
+  Clamp = 0, // scale the entry down to the binding limit and keep trading
+  Halt = 1,  // open no further risk for the remainder of the run
+};
+
+enum class RiskBreachReason : std::uint8_t {
+  None = 0,
+  GrossVega = 1,
+  GrossNotional = 2,
+  Capital = 3,
+  DrawdownStop = 4,
+};
+
+[[nodiscard]] std::string_view to_string(RiskBreachReason reason) noexcept;
+
+struct DispersionRiskLimits {
+  // Book GROSS vega cap, in DOLLARS PER VOL POINT — the same unit as
+  // `DispersionConfig::target_vega`, so a vega-neutral book sized to
+  // `target_vega` measures 2 × target_vega here (index leg + matched basket).
+  // The gate converts per-share, per-unit-vol leg vegas with
+  // `contract_vega_per_vol_point` (dispersion.hpp); it is NOT multiplier-
+  // dependent. 0 => unlimited.
+  double max_gross_vega{0.0};
+  double max_gross_notional{0.0}; // gross premium notional cap; 0 => unlimited
+  double capital{0.0};            // net premium outlay cap; 0 => unlimited
+  // Fraction of CAPITAL (0.2 == halt after losing 20% of capital), so it requires
+  // `capital` to be set. Deliberately not a fraction of peak NAV: the track's NAV
+  // is cumulative P&L from an inception of zero, not an equity curve, which makes
+  // a peak-relative ratio degenerate. 0 => no stop. This limit is NOT enforceable
+  // inside on_step — the engine never shows a strategy its NAV — so it is enforced
+  // at the run seam; see `halt_from_step`.
+  double drawdown_stop{0.0};
+  RiskBreachAction action{RiskBreachAction::Clamp};
+
+  [[nodiscard]] bool any_sizing_limit() const noexcept {
+    return max_gross_vega > 0.0 || max_gross_notional > 0.0 || capital > 0.0;
+  }
+  [[nodiscard]] bool any() const noexcept {
+    return any_sizing_limit() || drawdown_stop > 0.0;
+  }
+};
+
+// One recorded breach. `scale` is the factor actually applied to the entry
+// (1.0 == untouched, 0.0 == the entry was suppressed entirely).
+struct RiskEvent {
+  std::size_t step_index{0};
+  RiskBreachReason reason{RiskBreachReason::None};
+  RiskBreachAction action{RiskBreachAction::Clamp};
+  double limit{0.0};
+  double requested{0.0};
+  double scale{1.0};
+};
+
 // ── DispersionStrategy (adapter over build_dispersion_book) ──────────────────
 
 // An IStrategy over a dispersion universe. On entry it calls the existing
@@ -459,9 +549,21 @@ private:
 // bit-identical to pre-S1-3.
 class DispersionStrategy : public IStrategy {
 public:
+  // C1 POINT-IN-TIME UNIVERSE. `pit_resolver`, when set, is invoked at the top of
+  // every `on_step` with the step snapshot's `ts_ns()` and must return the
+  // constituent basket effective on THAT date; the strategy adopts it before the
+  // build so a mid-backtest reconstitution (membership add/drop/reweight) is
+  // honored at the next roll instead of freezing day-1 membership for the whole
+  // run. `universe` is the seed/fallback used before the first successful resolve
+  // and whenever a resolve fails (e.g. a date before the first effective block).
+  // The DEFAULT (empty resolver) leaves the universe frozen — behaviour, and the
+  // dispersion golden, are byte-identical to pre-C1. Typically built from a
+  // schedule via `make_pit_universe_resolver` (dispersion_workflow.hpp).
   DispersionStrategy(DispersionUniverse universe, DispersionConfig cfg,
-                     LifecycleSpec lifecycle = {}, HedgeSpec hedge = {})
-      : universe_{std::move(universe)}, cfg_{cfg}, lifecycle_{lifecycle}, hedge_{hedge} {}
+                     LifecycleSpec lifecycle = {}, HedgeSpec hedge = {},
+                     std::function<Result<DispersionUniverse>(std::int64_t)> pit_resolver = {})
+      : universe_{std::move(universe)}, cfg_{cfg}, lifecycle_{lifecycle}, hedge_{hedge},
+        pit_resolver_{std::move(pit_resolver)} {}
 
   Status on_step(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
                  std::uint64_t &next_lot_id) override;
@@ -483,6 +585,21 @@ public:
   [[nodiscard]] std::vector<DroppedName> dropped_on(const MarketSnapshot &base) const;
   [[nodiscard]] HedgeSpec hedge_spec() const override { return hedge_; }
 
+  // X3. Install the pre-sizing risk gate. Default-constructed limits (all zero =
+  // unlimited) leave on_step bit-identical to the ungated path.
+  void set_risk_limits(DispersionRiskLimits limits) noexcept { limits_ = limits; }
+  [[nodiscard]] const DispersionRiskLimits &risk_limits() const noexcept { return limits_; }
+
+  // Suppress every entry from `step` onward. This is how the seam enforces a
+  // drawdown stop: the engine never shows a strategy its NAV, so the seam runs
+  // the track, finds the first breaching step, and replays with the halt armed.
+  // NAV before the breach is unaffected by the halt, so one replay is exact.
+  void halt_from_step(std::size_t step) noexcept { halt_from_step_ = step; }
+
+  // Every clamp/halt applied, in step order. Empty when no limit was configured
+  // or none bound — so a halt is never silent, and neither is a clamp.
+  [[nodiscard]] std::span<const RiskEvent> risk_events() const noexcept { return risk_events_; }
+
 private:
   // `price_options == nullptr` preserves the documented legacy 4-arg/build_book
   // construction exactly. A non-null route is the engine seed-producing path.
@@ -493,10 +610,21 @@ private:
   DispersionConfig cfg_;
   LifecycleSpec lifecycle_;
   HedgeSpec hedge_{};
+  // C1: point-in-time basket resolver keyed on the step snapshot's ts_ns. Empty =>
+  // frozen universe (pre-C1 behaviour, bit-identical golden).
+  std::function<Result<DispersionUniverse>(std::int64_t)> pit_resolver_{};
   std::uint32_t cohort_counter_{0};
   std::int64_t front_expiry_{0};
   bool have_front_{false};
   std::vector<FullGreekSeed> last_entry_seeds_;
+  // X3 risk gate. All-zero limits => the gate is inert and never allocates.
+  DispersionRiskLimits limits_{};
+  std::size_t halt_from_step_{std::numeric_limits<std::size_t>::max()};
+  bool halted_{false};
+  std::vector<RiskEvent> risk_events_;
+  // Per-step telemetry mirrored into `signals()` (which does not see step_index).
+  double last_risk_scale_{1.0};
+  RiskBreachReason last_risk_reason_{RiskBreachReason::None};
 };
 
 } // namespace atx::vol

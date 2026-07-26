@@ -3,6 +3,7 @@
 #include "atx/vol/american_batch.hpp" // exact resolved price-only batch
 #include "atx/vol/correction.hpp"
 #include "atx/vol/counters.hpp"
+#include "laned_greek_run.hpp" // WS-P1v: the shared laned analytic-Greek batch driver
 #include "term_carry.hpp"
 
 #include <algorithm>
@@ -753,13 +754,37 @@ Result<AmericanGreeks> PricedSurface::greeks_analytic(double K, double T, Side s
 Result<FullGreekSeed> PricedSurface::full_greek_seed(double K, double T, Side side, bool analytic,
                                                      QueryExecution execution) const {
   using EF = EvalField;
-  const FusedResult evaluated = evaluate(
-      K, T, side, EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic, execution);
-  if (!evaluated.status.has_value()) {
-    return Err(evaluated.status.error());
+  constexpr EF kSeedFields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder;
+  // WS-P1: produce the seed through the ONE-ELEMENT evaluate_batch rather than the scalar
+  // per-contract evaluate(). A seed's entire contract is to reproduce what the batch would
+  // have solved, and since P1a the batch dispatches LANED (AVX2) analytic greeks under
+  // Auto. The laned kernels are pack-composition invariant — a 1-lane pack returns exactly
+  // what a 4-lane pack returns, proved bit-for-bit by
+  // PricedSurface.EvaluateBatchLanedGreeksPackCompositionInvariant — so seeding through the
+  // same route keeps `seeded == fresh` BIT-identical instead of degrading that contract to
+  // a tolerance. Threads the same default ISA (Auto) evaluate_batch itself defaults to;
+  // FullGreekSeed carries no ISA, so acceptance is unaffected. On a non-AVX2 host (or a
+  // warm/accelerated tier) the gate falls back to the scalar loop and this is byte-for-byte
+  // the pre-P1 seed.
+  const std::array<double, 1> Ks{K};
+  const std::array<double, 1> Ts{T};
+  const std::array<Side, 1> sides{side};
+  std::array<double, 1> seed_iv{};
+  std::array<double, 1> seed_px{};
+  std::array<AmericanGreeks, 1> seed_gk{};
+  std::array<Status, 1> seed_st{};
+  const Status rc =
+      evaluate_batch(Ks, Ts, sides, kSeedFields, analytic,
+                     EvaluationSoA{seed_iv, seed_px, seed_gk, seed_st, {}, {}},
+                     simd::SimdIsa::Auto, execution);
+  if (!rc.has_value()) {
+    return Err(rc.error());
   }
-  return FullGreekSeed{uid(),           K, T, side, instance_id_, analytic, execution, evaluated.iv,
-                       evaluated.greeks};
+  if (!seed_st[0].has_value()) {
+    return Err(seed_st[0].error());
+  }
+  return FullGreekSeed{uid(),     K,          T,         side, instance_id_,
+                       analytic,  execution,  seed_iv[0], seed_gk[0]};
 }
 
 Result<double> PricedSurface::delta(double K, double T, Side side, QueryExecution execution) const {
@@ -845,8 +870,33 @@ PricedSurface::FusedResult PricedSurface::evaluate_resolved(const ResolvedSurfac
       r.status = Err(g.error());
       return r;
     }
-    r.greeks = *g;
-    r.price = g->price;
+    // FIX-3/F3-A: stamp with the SAME semantics the laned driver uses (FIX-2/F2-B
+    // c601504, itself matching FIX-1's 740b040 / 9c3e1d0). Before this the stamp here
+    // was an unconditional default-constructed Ok, so one identical lane came back Ok
+    // on ForceScalar / a non-AVX2 host / the FD route and DEMOTED under the laned
+    // route — an ISA-dependent status on a live pricing input, the same defect shape
+    // rev-ws-g found in the put/call unrequested-Greek asymmetry.
+    //
+    // Reachability, which is why BOTH halves are needed here: the FD route
+    // (american_greeks_fd takes no mask) and the cached-correction route both IGNORE
+    // `needs` and return the full oracle bundle, and the cold AL route leaves an
+    // unrequested slot NON-finite rather than 0. So an unrequested column really can
+    // arrive here non-finite — guarding the full bundle would veto a lane on a column
+    // the caller never asked for (FIX-1/F3's over-guard defect), and merely widening
+    // the mask without normalizing would hand a NaN to a consumer whose `g.rho * dr`
+    // is NaN even at dr == 0.0. Normalization is restricted to the non-finite case, so
+    // every lane admitted today is bit-for-bit unchanged.
+    AmericanGreeks gg = *g;
+    detail::normalize_unrequested_greeks(gg, needs);
+    r.greeks = gg;
+    r.price = gg.price;
+    if (!detail::requested_greeks_finite(gg, needs)) {
+      // NaN-isolated by STATUS, exactly as the laned stamp and FIX-1's portfolio
+      // stamps do; the computed columns are left in place for diagnosis because every
+      // consumer gates on status.
+      r.status = Err(ErrorCode::Internal,
+                     "PricedSurface::evaluate: non-finite price or requested Greek");
+    }
     return r;
   }
   if (has_field(fields, EvalField::Price)) {
@@ -1047,94 +1097,58 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
       i = j;
       continue;
     }
-    // H1 (WS-H): laned ANALYTIC American-PUT Greeks. Under an EXPLICIT ForceAvx2
-    // request, dispatch this run's valid PUT lanes through the 4-wide
-    // simd::american_put_greeks_batch bundle instead of the per-contract scalar
-    // american_greeks_al fan. THIS surface's al_opts is threaded through — the
-    // higher-level american_greeks_batch cannot (it forces std::nullopt, which
-    // resolves to a DIFFERENT, more expensive AlScheme than the reloaded surfaces'
-    // al_fast_opts, so it is NOT a byte-identical drop-in). The kernel patches every
-    // non-early-exercise / non-finite lane through the exact scalar
-    // american_greeks_al(...,al_opts) — byte-identical to greeks_resolved's cold
-    // put branch; genuine early-exercise put lanes ride the 4-wide vector bundle,
-    // matching scalar within the same economic gate the marks AVX2 flip uses.
-    // IMPORTANT — the gate is ForceAvx2 ONLY, NOT Auto: unlike marks, the greeks
-    // path carries pervasive BIT-IDENTITY contracts (evaluate_batch == per-entry
-    // evaluate; a single-contract FullGreekSeed produced via evaluate() must equal
-    // the batch solve). A single-contract seed can never match a 4-wide AVX2 pack,
-    // so Auto→AVX2 greeks would silently break seed reuse and the batch==scalar
-    // invariant. Auto/ForceScalar therefore keep the established scalar loop
-    // (production dispersion path stays byte-identical); ForceAvx2 opts a caller
-    // (bench / A-B) into the laned bundle. Cold path only (mirror the marks arm's
-    // accelerator guard).
-    if (want_greeks && !selective_only && !want_delta && !want_vega && analytic && t_valid &&
-        pricing_.method == AmericanMethod::AndersenLake &&
-        resolved_price_isa == simd::SimdIsa::ForceAvx2 &&
-        simd::avx2_greeks_selected(resolved_price_isa) &&
+    // WS-P1 (P1a+P1b): laned ANALYTIC American Greeks under production Auto ISA, BOTH
+    // sides. Dispatch this run's valid PUT lanes through simd::american_put_greeks_batch
+    // and valid CALL lanes through simd::american_call_greeks_batch (the P1b call-native
+    // mirror), instead of the per-contract scalar american_greeks_al fan. THIS surface's
+    // al_opts is threaded through — the higher-level american_greeks_batch forces
+    // std::nullopt (a DIFFERENT, more expensive AlScheme than the reloaded surfaces'
+    // al_fast_opts), so it is NOT a byte-identical drop-in. Each kernel patches every
+    // non-early-exercise / non-finite lane through the exact scalar american_greeks_al
+    // (...,al_opts) — byte-identical to greeks_resolved's cold branch; genuine early-
+    // exercise lanes ride the 4-wide vector bundle.
+    //
+    // P1a GATE FLIP (PM-locked, economic-parity decision): the dispatch predicate is now
+    // simd::avx2_greeks_selected(isa), NOT the old resolved_price_isa == ForceAvx2. Under
+    // production Auto on an AVX2 host kShipAvx2Greeks is true, so this run's base-greek
+    // bundles (≈83% of dispersion solve volume — 1 straddle/name) now RIDE the laned
+    // kernel instead of silently falling to the scalar per-contract loop. The cost: the
+    // laned greeks differ from scalar by ~1e-13/greek (the AVX2 transcendentals in the
+    // stencil prices amplified by the FD denominators), so the historical evaluate_batch
+    // == per-entry-evaluate BIT-identity is RELAXED to a documented numeric tolerance
+    // (greeks are consumed at ~1e-6 economic precision; the shift is 10+ orders below a
+    // tick — sub-economic). The batch==scalar parity tests were re-gated to that
+    // tolerance. ForceScalar (and non-AVX2 hosts) keep the exact scalar loop; a single-
+    // contract evaluate() still uses scalar american_greeks_al, so per-entry vs batch now
+    // agree only within the gate, by design. Determinism: pack membership is fixed by the
+    // strike order within a single-thread [i,j) run, independent of any pricing-executor
+    // thread partition. Cold path only (mirror the marks arm's accelerator guard).
+    //
+    // WS-P1v: the pack/flush/scatter body now lives in ONE place —
+    // detail::laned_greek_run (src/laned_greek_run.hpp) — shared verbatim with
+    // PricedSurfaceView::evaluate_batch, which was a pure scalar per-entry Greek loop
+    // until this change. Only the resolution and the scalar-fallback routing differ
+    // between the two types; both are passed in as lambdas below.
+    if (detail::laned_greek_route_selected(want_greeks, selective_only, want_delta, want_vega,
+                                           analytic, t_valid, pricing_.method,
+                                           resolved_price_isa) &&
         (execution == QueryExecution::ColdReference || query_accelerator_ == nullptr)) {
-      constexpr std::size_t kGreekChunk = 256;
-      double gs[kGreekChunk], gk[kGreekChunk], gt[kGreekChunk];
-      double gsig[kGreekChunk], gr[kGreekChunk], gq[kGreekChunk];
-      AmericanGreeks gg[kGreekChunk];
-      std::size_t gidx[kGreekChunk];
-      std::size_t cnt = 0;
-      const std::optional<AlOpts> al{pricing_.al_opts};
-      const auto scatter_put = [&](std::size_t e, const AmericanGreeks &g) {
-        if (std::isfinite(g.price)) {
-          // american_greeks_al().price IS the American mark (cold-FD invariant),
-          // exactly as evaluate_resolved returns g->price for a want_greeks lane.
-          out.greeks[e] = g;
-          out.price[e] = g.price;
-          out.status[e] = Ok();
-          return;
-        }
-        // Byte-identical failure fallback: reproduce evaluate_resolved's exact
-        // Err + poison (the kernel exposes no per-lane ErrorCode).
-        const ResolvedSurfacePoint p = resolve_with_carry_and_bracket(K[e], t, fc, surface_bracket);
-        const FusedResult fr = evaluate_resolved(p, Side::Put, fields, analytic, execution);
-        out.iv[e] = fr.iv;
-        out.price[e] = fr.price;
-        out.greeks[e] = fr.greeks;
-        out.status[e] = fr.status;
-      };
-      const auto flush = [&]() {
-        if (cnt == 0) {
-          return;
-        }
-        (void)simd::american_put_greeks_batch(gs, gk, gt, gsig, gr, gq, cnt, al, gg,
-                                              resolved_price_isa, /*need_vega=*/true,
-                                              /*need_rho=*/true, /*need_charm=*/true);
-        for (std::size_t m = 0; m < cnt; ++m) {
-          scatter_put(gidx[m], gg[m]);
-        }
-        cnt = 0;
-      };
-      for (std::size_t e = i; e < j; ++e) {
-        const ResolvedSurfacePoint p = resolve_with_carry_and_bracket(K[e], t, fc, surface_bracket);
-        if (p.valid && side[e] == Side::Put) {
-          ATX_VOL_COUNT(SurfaceFullGreekRoutes); // one greek bundle, laned or patched
-          gs[cnt] = pricing_.S;
-          gk[cnt] = p.K;
-          gt[cnt] = p.T;
-          gsig[cnt] = p.sigma;
-          gr[cnt] = p.rate;
-          gq[cnt] = p.q_eff;
-          gidx[cnt] = e;
-          out.iv[e] = p.sigma; // IV is free from the resolution (matches evaluate_resolved)
-          if (++cnt == kGreekChunk) {
-            flush();
-          }
-        } else {
-          // CALL lanes (put-native kernel) and invalid resolutions: exact scalar
-          // routing, byte-identical to the unlanced path.
-          const FusedResult fr = evaluate_resolved(p, side[e], fields, analytic, execution);
-          out.iv[e] = fr.iv;
-          out.price[e] = fr.price;
-          out.greeks[e] = fr.greeks;
-          out.status[e] = fr.status;
-        }
-      }
-      flush();
+      detail::laned_greek_run(
+          pricing_.S, i, j, side, std::optional<AlOpts>{pricing_.al_opts}, resolved_price_isa,
+          needs, out,
+          [&](std::size_t e) {
+            return resolve_with_carry_and_bracket(K[e], t, fc, surface_bracket);
+          },
+          [&](std::size_t e, Side sd) {
+            // FIX-3/F3-A: `needs` MUST be threaded. Without it the fallback recomputed
+            // the full default bundle and was then judged under full-bundle finiteness,
+            // i.e. a narrowed caller's lane could be vetoed on a column it never
+            // requested — FIX-1/F3's over-guard defect, reintroduced on the fallback
+            // path. It also restores surface/view parity: the view's identical lambda
+            // (priced_surface_view.cpp) has always passed `needs`.
+            return evaluate_resolved(resolve_with_carry_and_bracket(K[e], t, fc, surface_bracket),
+                                     sd, fields, analytic, execution, needs);
+          });
       i = j;
       continue;
     }

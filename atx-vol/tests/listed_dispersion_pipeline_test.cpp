@@ -156,7 +156,9 @@ std::vector<ListedOptionQuote> quotes_for(const ListedScheduleRoll &roll,
                                           std::int64_t now, std::uint32_t id_offset) {
   std::vector<ListedOptionQuote> quotes;
   for (const ListedScheduleLeg &leg : roll.legs) {
-    const PricedSurface *surface = surfaces.find(leg.uid);
+    // WS-ZC1: SurfaceSet::find resolves to a `SurfaceRef` handle, not a
+    // `const PricedSurface *`. Declared type only; `->` and nullptr compare unchanged.
+    const SurfaceRef surface = surfaces.find(leg.uid);
     EXPECT_NE(surface, nullptr);
     const double term = static_cast<double>(leg.expiry_ts_ns - now) / kNsPerYear;
     auto mark = surface->fair_value(leg.strike, term, leg.side);
@@ -239,13 +241,15 @@ public:
 
 } // namespace
 
-// ── (a) kVegaVolPointToUnitVol (M9 / I4) ──────────────────────────────────────
-static_assert(kVegaVolPointToUnitVol == 100.0,
-              "vega per-vol-point to per-unit-vol factor must be exactly 100");
-
-TEST(ListedDispersionPipeline, VegaVolPointConstantIs100) {
-  EXPECT_EQ(kVegaVolPointToUnitVol, 100.0);
-}
+// ── (a) REMOVED (C-2 follow-up) ──────────────────────────────────────────────
+// A `static_assert(kVegaVolPointToUnitVol == 100.0)` and a
+// `TEST(..., VegaVolPointConstantIs100) { EXPECT_EQ(kVegaVolPointToUnitVol, 100.0); }`
+// stood here. Both asserted a constant against its own literal — `x == x` — so
+// neither could ever fail for any reason a reader would care about, and their
+// presence made a DEAD constant look load-bearing. The constant had no call site
+// at this tip (E1 abolished the boundary it served) and was deleted; see the note
+// at the top of listed_dispersion_pipeline.hpp. The live unit contract is pinned
+// by `contract_vega_per_vol_point`'s callers, not by restating 100.0.
 
 // ── (b) ListedDispersionMethodology::policy_fingerprint (L9) ──────────────────
 TEST(ListedDispersionPipeline, PolicyFingerprintStableAndSensitive) {
@@ -339,12 +343,33 @@ TEST(ListedDispersionPipeline, ForwardAndRiskLookupsOverSyntheticSnapshot) {
 // warm-up / low-coverage session on day0 (2026-07-10), strictly before the first
 // roll — exactly what run-backtest hands the reconciler from clock.refs().
 
-// RED anchor (documents the defect; stays green forever as the defensive
-// invariant): feeding the FULL warm-up-led timeline straight into the low-level
-// reconciler aborts. The front-date hard-require at
-// listed_dispersion_reconciliation.cpp:240 fires before any pricing, so no
-// surfaces are dereferenced on this path.
-TEST(ListedDispersionPipeline, ReconcileClockCoupling_AbortsOnWarmupLeadIn) {
+// PREMISE SUPERSEDED at the main -> feat/pipeline-m merge; rewritten to assert the
+// contract that actually holds.
+//
+// This was main's RED anchor: it asserted that feeding the FULL warm-up-led timeline
+// straight into the low-level reconciler ABORTS on the front-date hard-require
+// ("first snapshot must be first entry date"). The trunk fixed the SAME underlying
+// defect independently and at a lower layer — `276239d fix(vol): point-in-time
+// dispersion universe + removals + reconcile deferral (C1-C4)`, change C2:
+//
+//   "reconcile_listed_dispersion no longer requires the first snapshot to be the
+//    first entry date. The schedule builder legitimately defers the first roll
+//    (coverage gate); pre-entry dates now emit flat position-free rows, so
+//    row-count alignment with the canonical backtest is preserved. A genuinely
+//    missing first-roll date is still a hard error."
+//
+// So main's M1 (trim the lead-in in a wrapping seam) and the trunk's C2 (tolerate
+// the lead-in in the reconciler itself) are CONVERGENT fixes for one defect. Both
+// survive the merge and both work; only this negative control became false, because
+// the guard it pinned no longer exists.
+//
+// Rewritten rather than deleted, and deliberately NOT a duplicate of the trunk's
+// `ListedDispersionReconciliation.ToleratesDeferredFirstRollWithLeadingFlatDates`
+// (which already covers the flat-leading-row shape in detail). What that test does
+// NOT cover, and what this one now pins, is the guard's SURVIVING teeth: a timeline
+// with no snapshot on/after the first scheduled roll date is still a hard error.
+// Without this, C2's relaxation could silently widen into "any timeline is fine".
+TEST(ListedDispersionPipeline, ReconcileClockCoupling_ToleratesWarmupLeadInButNotAMissingEntry) {
   const std::vector<PricedSurface> day0 = surfaces(kNow0, 0.0);
   const std::vector<PricedSurface> day1 = surfaces(kNow1, 2.0);
   const std::vector<PricedSurface> day2 = surfaces(kNow2, -1.0);
@@ -368,15 +393,27 @@ TEST(ListedDispersionPipeline, ReconcileClockCoupling_AbortsOnWarmupLeadIn) {
       {"2026-07-12", kNow2, &*set2, quotes2}, // held
   };
 
-  const auto aborted = reconcile_listed_dispersion(schedule, full);
-  ASSERT_FALSE(aborted);
-  EXPECT_EQ(aborted.error().code(), ErrorCode::InvalidArgument);
-  // Nail the SPECIFIC guard: InvalidArgument has three sources in this function
-  // (empty timeline, bad tolerance, front-date mismatch), so matching the code
-  // alone would keep passing if the abort moved to a different one.
-  EXPECT_NE(aborted.error().to_string().find("first snapshot must be first entry date"),
-            std::string::npos)
-      << aborted.error().to_string();
+  // C2: the warm-up lead-in is now TOLERATED at the low level. One row per snapshot
+  // is emitted throughout (so the timeline stays aligned with the canonical
+  // backtest), and the pre-entry date is flat and position-free.
+  const auto tolerated = reconcile_listed_dispersion(schedule, full);
+  ASSERT_TRUE(tolerated) << tolerated.error().to_string();
+  ASSERT_EQ(tolerated->rows.size(), full.size());
+  EXPECT_EQ(tolerated->rows[0].date, "2026-07-10");
+  EXPECT_EQ(tolerated->rows[0].n_held_lots, 0u);
+
+  // The surviving hard error: drop every snapshot on/after the first roll date and
+  // the reconciler must still refuse. Nail the SPECIFIC guard — InvalidArgument has
+  // several sources in this function, so matching the code alone would keep passing
+  // if the abort moved to a different one.
+  const std::vector<ListedReconciliationSnapshot> lead_in_only = {full[0]};
+  const auto missing_entry = reconcile_listed_dispersion(schedule, lead_in_only);
+  ASSERT_FALSE(missing_entry);
+  EXPECT_EQ(missing_entry.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(
+      missing_entry.error().to_string().find("no snapshot on/after the first scheduled roll date"),
+      std::string::npos)
+      << missing_entry.error().to_string();
 }
 
 // GREEN target: the new seam trims the warm-up lead-in so reconciliation starts at
@@ -407,10 +444,18 @@ TEST(ListedDispersionPipeline, ReconcileListedSchedule_TrimsWarmupLeadIn) {
   };
   const std::size_t first_roll_index = 1u; // day1 is the first roll date in `full`
 
-  // The production pattern (full clock timeline) still aborts at the low level ...
-  EXPECT_FALSE(reconcile_listed_dispersion(schedule, full));
+  // The production pattern (full clock timeline) is now ACCEPTED at the low level
+  // too, since the trunk's C2 (276239d) relaxed the front-date hard-require — see
+  // the note on ReconcileClockCoupling_ToleratesWarmupLeadInButNotAMissingEntry.
+  // The two routes differ in SHAPE, not in success: C2 keeps the pre-entry session
+  // as a flat position-free row (one row per snapshot, aligned with the canonical
+  // backtest), whereas the M1 seam TRIMS it, so the seam emits one row fewer. That
+  // difference is asserted directly below.
+  const auto untrimmed = reconcile_listed_dispersion(schedule, full);
+  ASSERT_TRUE(untrimmed) << untrimmed.error().to_string();
+  EXPECT_EQ(untrimmed->rows.size(), full.size());
 
-  // ... but the seam trims the lead-in and succeeds.
+  // ... and the seam trims the lead-in and succeeds.
   auto trimmed = reconcile_listed_schedule(schedule, full);
   ASSERT_TRUE(trimmed) << (trimmed ? std::string{} : trimmed.error().to_string());
 
@@ -621,6 +666,78 @@ TEST(ListedDispersionPipeline, BuildScheduleSymbolIsDeclared) {
       std::span<const UniverseRow>, const ListedDefinitionTable &, const RunSpec &, PhaseTimer *);
   const BuilderFn fn = &build_listed_dispersion_schedule;
   EXPECT_NE(reinterpret_cast<const void *>(fn), nullptr);
+
+  // F-6: the shipped CLI calls this audited form, whose mandatory sink receives
+  // every attempted selection (including no-basket dates) for artifact publication.
+  using AuditedBuilderFn = Result<ListedDispersionSchedule> (*)(
+      const Clock &, const ListedScheduleSpec &, const ListedDispersionMethodology &,
+      std::span<const UniverseRow>, const ListedDefinitionTable &, const RunSpec &, PhaseTimer *,
+      const ListedQuoteRejectSink &);
+  const AuditedBuilderFn audited = &build_listed_dispersion_schedule_audited;
+  EXPECT_NE(reinterpret_cast<const void *>(audited), nullptr);
+}
+
+// ── REV-FIXTAIL I-A — the three F6 quote-quality keys reach the SHIPPED route ──
+//
+// `quote_min_bid`, `quote_max_age_ns` and `quote_reject_locked` bind by name in
+// the strict typed reader (dispersion_run.cpp), passed `reject_unknown()`, and
+// were then written into `run_config.tsv` — an artifact dispersion_run.hpp
+// documents as "the EFFECTIVE value of every execution knob the run actually
+// used". Their only consumer was `dispersion_build_schedule`, a LIBRARY-ONLY
+// entry point with no shipped caller. The shipped `build-schedule` now constructs
+// the same `ListedScheduleSpec`, routes its quality policy through selection, and
+// uses the audited builder's rejection sink to publish `quote_rejects.tsv`.
+//
+// The wiring is gated HERE rather than by a comment because the selection config
+// the builder runs under is now built by one named function that both the loop
+// and this test call — the same reason F5's `make_listed_replay_run_config`
+// exists. A "verbatim" comment cannot fail; this can.
+TEST(ListedDispersionPipeline, ScheduleSpecQualityPolicyReachesSelection) {
+  ListedScheduleSpec spec{};
+  spec.target_dte_days = 45.0;
+  spec.min_dte_days = 20.0;
+  spec.max_dte_days = 70.0;
+  spec.min_names = 12u;
+  spec.quality.min_bid = 0.05;
+  spec.quality.max_quote_age_ns = 300'000'000'000LL;
+  spec.quality.reject_locked = true;
+
+  const ListedDispersionSelectionConfig selection = listed_selection_config_from(spec);
+
+  // The four the loop already carried, so the lift stays verbatim.
+  EXPECT_DOUBLE_EQ(selection.target_dte_days, 45.0);
+  EXPECT_DOUBLE_EQ(selection.min_dte_days, 20.0);
+  EXPECT_DOUBLE_EQ(selection.max_dte_days, 70.0);
+  EXPECT_EQ(selection.min_names, 12u);
+  // The three that did not.
+  EXPECT_DOUBLE_EQ(selection.quality.min_bid, 0.05)
+      << "spec key `quote_min_bid` is published as effective and never reached selection";
+  EXPECT_EQ(selection.quality.max_quote_age_ns, 300'000'000'000LL)
+      << "spec key `quote_max_age_ns` is published as effective and never reached selection";
+  EXPECT_TRUE(selection.quality.reject_locked)
+      << "spec key `quote_reject_locked` is published as effective and never reached selection";
+}
+
+// The other half: wiring the three cannot move a golden. Every quality default on
+// `ListedScheduleSpec` is exactly the value `ListedDispersionSelectionConfig`
+// already default-constructed inside the selection loop, so a spec naming none of
+// the three produces a byte-identical selection config before and after. (Measured
+// alongside: no run_spec.tsv under the published corpus root names any of the
+// three keys, so no pinned run changes.) If a default here ever diverges, this
+// pins the day it happens.
+TEST(ListedDispersionPipeline, DefaultScheduleSpecKeepsTheShippedSelectionDefaults) {
+  const ListedDispersionSelectionConfig selection =
+      listed_selection_config_from(ListedScheduleSpec{});
+  const ListedDispersionSelectionConfig pinned{}; // what the loop built before
+
+  EXPECT_DOUBLE_EQ(selection.target_dte_days, pinned.target_dte_days);
+  EXPECT_DOUBLE_EQ(selection.min_dte_days, pinned.min_dte_days);
+  EXPECT_DOUBLE_EQ(selection.max_dte_days, pinned.max_dte_days);
+  EXPECT_EQ(selection.min_names, pinned.min_names);
+  EXPECT_DOUBLE_EQ(selection.required_multiplier, pinned.required_multiplier);
+  EXPECT_DOUBLE_EQ(selection.quality.min_bid, pinned.quality.min_bid);
+  EXPECT_EQ(selection.quality.max_quote_age_ns, pinned.quality.max_quote_age_ns);
+  EXPECT_EQ(selection.quality.reject_locked, pinned.quality.reject_locked);
 }
 
 // ── Task 4 — project_listed_schedule + I1 two-route cold parity (M6, I1) ──────
@@ -721,19 +838,27 @@ TEST(ListedDispersionPipeline, TwoRouteColdParity_LegMarksEqual) {
   fs::remove_all(dir, error);
 }
 
-// ── Task 5 — dispersion_book_var + kVegaVolPointToUnitVol routing (M8) ─────────
+// ── Task 5 — dispersion_book_var (M8) ─────────────────────────────────────────
 //
 // dispersion_book_var lifts run_projected_var_command's book -> OptionProjectionSpec
 // synthesis + PreparedHistoricalProjection::evaluate_into + projected_historical_var
-// per confidence (spy_dispersion_backtest.cpp:1119-1194). The book is pre-built by
-// the caller: the per-vol-point vega * kVegaVolPointToUnitVol scaling lives in the
-// DispersionConfig builder (a CLI boundary wired at T9), so the lift itself carries
-// no vega x100. The library re-projects the book positions across historical
-// scenarios and splits the loss quantile per requested confidence; the CLI keeps the
-// three bespoke TSV emissions (out-of-archive per the partition rule).
+// per confidence. The book is pre-built by the caller, so the lift itself applies no
+// vega scaling of any kind. The library re-projects the book positions across
+// historical scenarios and splits the loss quantile per requested confidence; the
+// CLI keeps the three bespoke TSV emissions (out-of-archive per the partition rule).
 //
-// The lift reads dispersion.projected_maturity (:1124), defined at :1114 OUTSIDE the
-// :1119-1194 range, so the relative-template maturity is a required input here (the
+// REV-TAIL M-5 / I-2, two corrections to what this block used to say. (1) The
+// "per-vol-point vega * 100 scaling in the DispersionConfig
+// builder (a CLI boundary wired at T9)" no longer exists: E1 redefined
+// `DispersionConfig::target_vega` as dollars per VOL POINT, and there is now no
+// scaling anywhere on this route. (2) The `spy_dispersion_backtest.cpp:1119-1194`
+// line references described a CLI body that no longer exists -- `run-projected-var`
+// is a dispatch into `dispersion_run_projected_var`, which since REV-TAIL I-2 calls
+// THIS function, so this test now gates the shipped route rather than a duplicate
+// of it.
+//
+// The lift reads `dispersion.projected_maturity`, which was defined OUTSIDE the
+// lifted range, so the relative-template maturity is a required input here (the
 // plan's book-only signature omits it; days(N) is a relative template that MUST NOT
 // be reconstructed to an absolute expiry, or per-scenario aging would change).
 TEST(ListedDispersionPipeline, DispersionBookVar_SplitsConfidences) {
@@ -754,11 +879,21 @@ TEST(ListedDispersionPipeline, DispersionBookVar_SplitsConfidences) {
 
   DispersionConfig dispersion;
   dispersion.target_T = kTargetDteDays / 365.25;
-  // Mirror the CLI boundary (spy_dispersion_backtest.cpp:1110): per-vol-point gross
-  // vega scaled to per-unit-vol via the T1 constant that replaces the hand-applied
-  // * 100.0 (M9). The scaling is upstream of dispersion_book_var (which takes the
-  // built book), so the constant is exercised here, at the book-build boundary.
-  dispersion.target_vega = 100.0 * kVegaVolPointToUnitVol;
+  // UNITS (E1 / AN-P1-1). `DispersionConfig::target_vega` is DOLLARS OF VEGA PER
+  // VOL POINT (dispersion.hpp:249-262), so a $100/vol-point index leg is written
+  // as `100.0` and scaled by nothing.
+  //
+  // REV-TAIL M-5: this line read `100.0 * kVegaVolPointToUnitVol`, under a comment
+  // claiming to "mirror the CLI boundary (spy_dispersion_backtest.cpp:1110)". E1
+  // abolished that boundary -- the constant had no call site left at all and was
+  // deleted in the C-2 follow-up -- so the line denoted $10,000/vol-point where $100 was
+  // intended, a 100x book. Every assertion in this test is structural (counts,
+  // n_failed, ES >= VaR, VaR(99) >= VaR(95), reference == frames.back().value) and
+  // therefore SCALE-INVARIANT: it passed either way and could never self-correct,
+  // which made it the most misleading text in the tree about the exact unit hazard
+  // that produced the 100x bug this sprint fixed. Do not reintroduce a scaling
+  // here without changing what `target_vega` means.
+  dispersion.target_vega = 100.0;
   dispersion.side = DispersionSide::ShortIndexLongNames;
   dispersion.multiplier = 100.0;
   dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, 2u};

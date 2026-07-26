@@ -15,6 +15,7 @@
 #include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/calib.hpp" // FitObs
+#include "atx/vol/detail/archive_util.hpp" // crc32c (C2 prior-salt fixture)
 #include "atx/vol/dense_slice.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/priced_surface_view.hpp"
@@ -343,6 +344,16 @@ void expect_batch_bit_identical(const PricedSurface &a, const PricedSurfaceView 
   const auto sa = a.evaluate_batch(K, T, side, fields, analytic, out_a);
   const auto sv = v.evaluate_batch(K, T, side, fields, analytic, out_v);
   ASSERT_EQ(sa.has_value(), sv.has_value());
+  // WS-P1v GOLDEN RESTORED (relaxed by WS-P1a, re-tightened here): PricedSurface and
+  // PricedSurfaceView now drive the SAME laned analytic-Greek kernel through the one
+  // shared driver (src/laned_greek_run.hpp). WS-P1a had to re-gate the ANALYTIC route
+  // from bit-identity to an economic tolerance for exactly one reason — the surface had
+  // a laned path and the view did not, so the two ran different kernels and drifted by
+  // the ~1e-13/greek AVX2-vs-scalar delta. With the seam unified there is no second
+  // implementation left to drift against, so the FULL bit-identity contract is reinstated
+  // on BOTH routes (analytic and FD). That is what actually proves the archive round-trip
+  // is exact: a mapped view and its source surface must be the same pricer, not merely
+  // two pricers that agree to a tolerance.
   for (std::size_t i = 0; i < n; ++i) {
     EXPECT_EQ(st_a[i].has_value(), st_v[i].has_value()) << "batch i=" << i;
     EXPECT_TRUE(bits_equal(iv_a[i], iv_v[i])) << "batch iv i=" << i;
@@ -622,6 +633,192 @@ TEST(SurfaceArchiveV2, InstanceIdSemantics) {
   const std::uint64_t id = a->instance_id();
   PricedSurfaceView moved = std::move(*a);
   EXPECT_EQ(moved.instance_id(), id); // move transfers identity
+}
+
+// ── Corpus reproducibility: content-derived created_ts_ns ─────────────────────
+// The production corpus path leaves ArchiveV2WriteOpts::created_ts_ns == 0. That 0
+// sentinel used to be filled from the WALL CLOCK, so two identical builds produced
+// containers differing only in the header timestamp -> corpus builds were not
+// byte-reproducible run-to-run. The writer now fills the sentinel from a
+// deterministic CRC-32C of the archive CONTENT. This gate observes all three
+// required properties at once.
+TEST(SurfaceArchiveV2, ContentDerivedCreatedTsIsReproducible) {
+  const PricedSurface a = make_essvi(42, 5);
+  const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &a, std::nullopt}};
+
+  // Default opts => created_ts_ns left at the 0 sentinel (the production path).
+  auto first = write_surface_archive_v2(items);
+  auto second = write_surface_archive_v2(items);
+  ASSERT_TRUE(first.has_value() && second.has_value());
+
+  // (1) Determinism: two identical builds are byte-identical containers, header
+  //     timestamp included. Under the old wall-clock fill this diverged.
+  EXPECT_EQ(*first, *second);
+
+  auto arch1 = SurfaceArchiveV2::open(std::vector<std::byte>(*first));
+  ASSERT_TRUE(arch1.has_value()) << arch1.error().to_string();
+  const std::uint64_t ts1 = arch1->header().created_ts_ns;
+
+  // (2) Non-vacuous: the sentinel was actually filled (not left at 0), so (1) is
+  //     not passing trivially over two zero-stamped headers.
+  EXPECT_NE(ts1, 0u);
+
+  // (3) Content-sensitivity (staleness property): a DIFFERENT surface must get a
+  //     DIFFERENT stamp, else two distinct builds at one path would share an
+  //     ArchiveContentIdentity and SnapshotCache would serve a stale surface --
+  //     exactly why a constant stamp is wrong.
+  const PricedSurface b = make_essvi(42, 6); // one more slice => different content
+  const std::array<SurfaceArchiveItem, 1> items_b{SurfaceArchiveItem{"SPY", &b, std::nullopt}};
+  auto third = write_surface_archive_v2(items_b);
+  ASSERT_TRUE(third.has_value());
+  EXPECT_NE(*first, *third);
+  auto arch3 = SurfaceArchiveV2::open(std::vector<std::byte>(*third));
+  ASSERT_TRUE(arch3.has_value()) << arch3.error().to_string();
+  EXPECT_NE(ts1, arch3->header().created_ts_ns);
+
+  // (4) The explicit-nonzero path is UNCHANGED: a caller-supplied stamp is honored
+  //     verbatim (unit tests pin created_ts_ns and must keep working).
+  ArchiveV2WriteOpts pinned;
+  pinned.created_ts_ns = 12345;
+  auto fixed = write_surface_archive_v2(items, pinned);
+  ASSERT_TRUE(fixed.has_value());
+  auto archf = SurfaceArchiveV2::open(std::vector<std::byte>(*fixed));
+  ASSERT_TRUE(archf.has_value()) << archf.error().to_string();
+  EXPECT_EQ(archf->header().created_ts_ns, 12345u);
+}
+
+// ── C2 (SE-P1-2): AlOpts::n_quad_price persists across the v2 round-trip ───────
+
+namespace {
+[[nodiscard]] PricedSurface make_essvi_alopts(std::uint32_t uid, int n, const AlOpts &al) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (int i = 0; i < n; ++i) {
+    const double T = 0.05 + 0.10 * static_cast<double>(i);
+    EssviParams e{};
+    e.theta = 0.04 + 0.005 * static_cast<double>(i);
+    e.phi = 1.5 - 0.05 * static_cast<double>(i);
+    e.rho = -0.4 + 0.02 * static_cast<double>(i);
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = kS;
+    e.expiry_id = static_cast<std::uint16_t>(i);
+    cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
+    ctx.push_back(SliceContext{T, kS, 0.0, 0.02, 250, 7});
+  }
+  PricingContext pc = make_pricing(uid);
+  pc.al_opts = al;
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), pc);
+  EXPECT_TRUE(ps.has_value());
+  return std::move(*ps);
+}
+} // namespace
+
+// A surface priced under the "ql_fast" rung DECOUPLES the premium quadrature
+// (n_quad_price=32) from the fixed-point order (n_quadrature=8). Before this
+// change the archive dropped n_quad_price, so the round-tripped view/reconstruct
+// read it back as 0 (tied) and repriced with premium order 8 — a different theo,
+// violating the format's "round-trips with IDENTICAL theo values" contract
+// (SE-P1-2). scheme_from_opts honors n_quad_price>=8 on the live pricing path, so
+// the bit-identity check below is non-vacuous.
+TEST(SurfaceArchiveV2, RoundTripsNQuadPrice) {
+  AlOpts al;
+  al.n_collocation = 12;
+  al.n_quadrature = 8;
+  al.n_quad_price = 32;
+  const PricedSurface orig = make_essvi_alopts(77, 5, al);
+  auto arch = SurfaceArchiveV2::open(build_v2(orig, "nqp"));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+
+  auto v = arch->map_symbol("nqp");
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_EQ(v->pricing().al_opts.n_quad_price, 32u); // RED: reads back 0 today
+  expect_view_bit_identical(orig, *v);               // RED: view reprices tied (8)
+
+  auto rec = arch->reconstruct_symbol("nqp");
+  ASSERT_TRUE(rec.has_value()) << rec.error().to_string();
+  EXPECT_EQ(rec->pricing().al_opts.n_quad_price, 32u); // owned path persists too
+}
+
+// C2 back-compat: an archive written under the PRIOR schema salt (before
+// n_quad_price occupied the reserved u16) must still open under the new reader
+// and reprice with the tied premium order. The reserved_u16 reuse is
+// layout-invariant, so a default-AlOpts (n_quad_price==0) record is byte-identical
+// to what an old writer produced; we re-stamp its header to the prior salt fold
+// (recomputing only the header CRC — the two bytes a salt bump touches) to obtain
+// a faithful pre-bump fixture. This guards the reader's prior-salt accept-list.
+TEST(SurfaceArchiveV2, OpensPriorSaltArchiveAsTiedNQuadPrice) {
+  using atx::vol::ArchiveV2DirEntry;
+  using atx::vol::ArchiveV2Header;
+  using atx::vol::ArchiveV2LookupSlot;
+  using atx::vol::ArchiveV2SurfaceHeader;
+  const PricedSurface orig = make_essvi(88, 4); // default AlOpts -> n_quad_price==0
+  std::vector<std::byte> bytes = build_v2(orig, "old");
+
+  // Prior schema salt fold (…0101) — the identical sizeof-fold, one older salt.
+  constexpr std::uint64_t kFnvPrime = 0x100000001b3ull;
+  constexpr std::uint64_t kV2SaltPrev = 0xA7C3'5F04'2E1F'0101ull;
+  std::uint64_t prev = 0x9e3779b97f4a7c15ull ^ kV2SaltPrev;
+  prev ^= static_cast<std::uint64_t>(sizeof(ArchiveV2Header)) * kFnvPrime;
+  prev ^= static_cast<std::uint64_t>(sizeof(ArchiveV2LookupSlot)) * kFnvPrime;
+  prev ^= static_cast<std::uint64_t>(sizeof(ArchiveV2DirEntry)) * kFnvPrime;
+  prev ^= static_cast<std::uint64_t>(sizeof(ArchiveV2SurfaceHeader)) * kFnvPrime;
+  prev ^= static_cast<std::uint64_t>(sizeof(EssviParams)) * kFnvPrime;
+  prev ^= static_cast<std::uint64_t>(sizeof(SviParams)) * kFnvPrime;
+
+  ArchiveV2Header h;
+  std::memcpy(&h, bytes.data(), sizeof h);
+  h.schema_hash = prev;
+  h.header_crc32c = 0;
+  std::array<std::byte, sizeof(ArchiveV2Header)> hb{};
+  std::memcpy(hb.data(), &h, sizeof h);
+  h.header_crc32c = atx::vol::detail::crc32c(hb.data(), hb.size());
+  std::memcpy(bytes.data(), &h, sizeof h);
+
+  auto arch = SurfaceArchiveV2::open(std::move(bytes));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  auto v = arch->map_symbol("old");
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_EQ(v->pricing().al_opts.n_quad_price, 0u); // prior-salt file reads tied
+  expect_view_bit_identical(orig, *v);
+}
+
+// ── C6 (SE-P2-6): entries()/entry_count() are a FRAMING-ONLY enumeration ───────
+// The checkpoint/resume counter must not pay map_all()'s eager ConvexDense/
+// SplineVol materialization just to count surfaces. entries()/entry_count() read
+// ONLY the directory (parsed at open from the metadata section) and touch no
+// surface record body. Proof of non-materialization: poison every record body,
+// then entries()/entry_count() still enumerate correctly while map_all() (which
+// builds a PricedSurfaceView per record) fails. WS-T (corpus.cpp) consumes these.
+TEST(SurfaceArchiveV2, EntriesEnumerateWithoutMaterializingViews) {
+  auto arch = SurfaceArchiveV2::open(build_multi()); // 6 mixed-kind surfaces
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+
+  auto all = arch->map_all();
+  ASSERT_TRUE(all.has_value());
+  EXPECT_EQ(arch->entry_count(), all->size());
+  EXPECT_EQ(arch->entries().size(), all->size());
+  EXPECT_EQ(arch->entry_count(), static_cast<std::size_t>(arch->count()));
+  for (const auto &e : arch->entries()) {
+    EXPECT_GT(e.n_slices, 0u); // framing (uid/n_slices/kind_bits) with no view built
+  }
+
+  // Poison the whole data section (every record body). open stays lazy, so the
+  // directory (metadata section) is intact: framing enumeration keeps working,
+  // but map_all() — which materializes each record — now fails.
+  std::vector<std::byte> bytes = build_multi();
+  const std::size_t data_off = static_cast<std::size_t>(arch->header().data_offset);
+  ASSERT_LT(data_off, bytes.size());
+  for (std::size_t i = data_off; i < bytes.size(); ++i) {
+    bytes[i] = std::byte{0xFF};
+  }
+  auto poisoned = SurfaceArchiveV2::open(std::move(bytes));
+  ASSERT_TRUE(poisoned.has_value()) << poisoned.error().to_string(); // lazy CRC -> opens
+  EXPECT_EQ(poisoned->entry_count(), arch->entry_count());
+  EXPECT_EQ(poisoned->entries().size(), arch->entry_count());
+  EXPECT_FALSE(poisoned->map_all().has_value()); // materialization hits the poison
 }
 
 // ── FIX-D gate: reconstruct -> re-emit is BYTE-lossless ──────────────────────

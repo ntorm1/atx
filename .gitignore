@@ -5,8 +5,15 @@ build-ninja/
 build-vs/
 build-bench/
 build-rel-avx2/
+# Catch-all so a new preset's binaryDir (build-rel-avx2, build-hygiene, ...) is
+# never swept into a commit by `git add -A`.
+build-*/
 out/
 cmake-build-*/
+
+# Per-worktree FetchContent deps (-DFETCHCONTENT_BASE_DIR=<wt>/deps/<preset>),
+# the parallel-worktree isolation convention. Reproducible from configure.
+/deps/
 
 # Git worktrees (isolated workspaces)
 .worktrees/
@@ -101,3 +108,4 @@ atx-vol/tests/data/**/*.parquet
 atx-vol/tests/data/**/*.dbn.zst
 # Generated report artifacts (figures/html) — reproducible from the tool + script.
 atx-vol/python/report_out_real/
+.replay-xb/

@@ -108,6 +108,7 @@ add_executable(atx-vol-tests
     dispersion_strangle_test.cpp
     backtest_exec_test.cpp
     tearsheet_test.cpp
+    benchmark_stats_test.cpp         # X5 IR / alpha / beta / tracking error
     run_report_test.cpp
     backtest_driver_test.cpp
     backtest_real_test.cpp
@@ -118,6 +119,7 @@ add_executable(atx-vol-tests
     surface_db_admin_test.cpp
     mag7_dispersion_backtest_test.cpp
     spy_dispersion_pnl_test.cpp
+    dispersion_run_test.cpp
     analytics_primitives_test.cpp
     analytics_density_test.cpp
     analytics_aggregate_test.cpp
@@ -131,6 +133,10 @@ add_executable(atx-vol-tests
     iv_seed_test.cpp                 # K2: Choi-2023 tighter seed accuracy + Halley-step gate
     # bt-hotpath WS-S (format agent) — appended targets:
     surface_archive_v2_test.cpp      # S1-S3: ATXVSA2 zero-copy view parity + subset-map isolation
+    zc_view_parity_diag_test.cpp     # WS-ZC1: owned-reconstruct vs borrowed-view parity on a real archive
+    # Pipeline-SOTA WS-C (storage hardening) — appended target:
+    surface_archive_v2_adversarial_test.cpp # C1/C4: view semantic+bounds validation, corruption corpus, x-check
+    surface_archive_durability_test.cpp      # C3: fsync-before-rename + reader-held rename retry / preserve-temp
     # Wave-P AAD greeks (Agent greeks) — appended target:
     adjoint_greeks_test.cpp          # P2: adjoint/IFT American greeks parity vs central-diff FD
     # solve-wall SOTA WS-V (verify agent) — appended target:
@@ -147,6 +153,19 @@ add_executable(atx-vol-tests
     amzn_earnings_test.cpp           # real OPRA board -> two-pass C8 fit: front c2_eff<-1, arb-free
     # pricing-greeks SOTA (Agent G4) — appended target:
     american_exercise_boundary_test.cpp # G4: public exercise_boundary + assignment_risk screen
+    # SPY-dispersion hot-path WS-C (correctness cluster) — appended target:
+    dispersion_workflow_test.cpp     # C1 point-in-time universe, C3 removals, M2 dup keys, M4 index symbol
+    # SPY-dispersion hot-path WS-X (config + execution realism) — appended target:
+    dispersion_run_config_test.cpp   # X1 strict typed run config, X2 frictions/financing, X6 cost model
+    # Pipeline-SOTA WS-F (backtest economic realism) — appended target:
+    backtest_leak_test.cpp           # F1 accounting-leak family, F2 quote-side fills, F5 subset-deser
+    # Pipeline-SOTA FIX-2 (F2-A) — appended targets:
+    # (support/process_scratch.cpp moved to //tests/support in FIX-3/F3-B and is now
+    #  linked as the repo-wide atx-test-scratch OBJECT library, see below.)
+    process_scratch_test.cpp         # F2-A: two live processes must not share a scratch root
+    laned_greek_ok_stamp_test.cpp    # F2-B: laned Ok-stamp guards the REQUESTED greek set
+    # Pipeline-SOTA FIX-3 (F3-A) — appended target:
+    evaluate_resolved_ok_stamp_test.cpp # F3-A: the Ok-stamp agrees on the laned and scalar routes
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
@@ -164,6 +183,7 @@ target_link_libraries(atx-vol-tests
         atx-vol-archive-v1  # WS-G G2: v1 archive read/write pulled from the isolated TU
         GTest::gtest_main
         atx_warnings
+        atx-test-scratch    # FIX-3/F3-B: per-process temp root (was a listed source in F2-A)
 )
 
 # Wave E T7 fix round 1, I5: listed_definitions_cache_test.cpp's peak-RSS
@@ -261,4 +281,42 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/spy_dispersion_pnl_report_test.py
     )
     set_tests_properties(SpyDispersionPnlReport PROPERTIES LABELS atx_vol)
+    # FIX-5/I6: the atx-vol Python suite — eight test_*.py modules that, before
+    # this line, were registered with ZERO ctest tests. `grep -rn "pytest"
+    # --include=CMakeLists.txt .` returned nothing repo-wide and a grep for any
+    # pytest test name in the whole-repo gate log returned 0, so an entire
+    # workstream's output was gated by nothing. The driver explains why this is a
+    # script and not a bare `-m pytest` (extension guard, source pinning, and two
+    # host stalls that hang pytest); it exits SKIP_RETURN_CODE when the compiled
+    # extension is absent, so the lane shows as Skipped-with-a-reason in the gate
+    # log rather than vanishing. atx-vol/python is a STANDALONE scikit-build-core
+    # project, not an add_subdirectory of this build, so there is no _core target
+    # here to guard on at configure time — hence the run-time guard.
+    add_test(
+        NAME atx-vol-python
+        COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/../python/tests/_ctest_pytest_driver.py
+    )
+    set_tests_properties(atx-vol-python PROPERTIES
+        LABELS atx_vol
+        SKIP_RETURN_CODE 77
+        TIMEOUT 900)
 endif()
+
+# PR-C2 non-AVX2 CI leg: run the pricing correctness suites with the whole process
+# pinned to the scalar ISA (ATX_SIMD_ISA=ForceScalar), keeping the scalar
+# patch-paths honest against the Auto-ON AVX2 marks. The filter runs only scalar
+# VALUE suites plus the ScalarLegEnv self-check that PROVES the env diverted the
+# process onto scalar (use_avx2()==false on an AVX2 host). It EXCLUDES the *Batch*
+# suites (american_batch_test) — those install their own SIMD ISA override and
+# restore it to Auto, which would clobber the env-seeded ForceScalar for later
+# tests in this process. Under a normal run these tests run Auto via the
+# gtest_discover labels above; here they re-run under ForceScalar.
+add_test(
+    NAME atx-vol-pricing-forcescalar
+    COMMAND atx-vol-tests
+        --gtest_filter=ScalarLegEnv.*:American*:AmericanIv*:CorrectionCache*:Bulk*:VolaSession*:*Deam*:*Parity*:-*Batch*:AvxBoundary*:VectorMath*:Simd*
+)
+set_tests_properties(atx-vol-pricing-forcescalar PROPERTIES
+    ENVIRONMENT "ATX_SIMD_ISA=ForceScalar"
+    LABELS atx_vol)

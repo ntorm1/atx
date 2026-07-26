@@ -1860,12 +1860,21 @@ TEST(AloPricer, StaticGeometryExpCallsArePaidOncePerReset) {
 // r <= 0) collapses to the European price — mirroring andersen_lake's guards.
 TEST(AloPricer, DegenerateAndEuropeanBranches) {
   {
+    // Put r>0: exercise-now (K-S=10) beats holding (df*(K-F)+ ~ 4.6), so the
+    // A4/PR-C4 sigma->0 limit max(df*(K-F)+, (K-S)+) is still the spot intrinsic.
     AloPricer pr(100.0, 110.0, 1.0, 0.05, 0.0, Side::Put);
-    EXPECT_NEAR(pr.price(1.0e-12), 10.0, 1.0e-9); // intrinsic K - S
+    EXPECT_NEAR(pr.price(1.0e-12), 10.0, 1.0e-9);
   }
   {
-    AloPricer pr(100.0, 90.0, 1.0, 0.05, 0.0, Side::Call);
-    EXPECT_NEAR(pr.price(1.0e-12), 10.0, 1.0e-9); // intrinsic S - K
+    // Call q=0: holding (df*(F-K)+ ~ 14.39) beats exercising (S-K=10), so the
+    // A4/PR-C4 sigma->0 limit lifts ABOVE the old spot intrinsic (10.0). This
+    // pinned the pre-fix bug.
+    const double S = 100.0, K = 90.0, T = 1.0, r = 0.05, q = 0.0;
+    AloPricer pr(S, K, T, r, q, Side::Call);
+    const double F = S * std::exp((r - q) * T);
+    const double df = std::exp(-r * T);
+    const double lim = std::max(df * std::max(F - K, 0.0), std::max(S - K, 0.0));
+    EXPECT_NEAR(pr.price(1.0e-12), lim, 1.0e-9);
   }
   {
     // Put with r < 0: no early exercise -> European put.
@@ -1975,13 +1984,21 @@ TEST(AndersenLakeCallSlice, FastPresetDegenerateEuroAndValidation) {
     EXPECT_EQ(px[i], value_or_fail(andersen_lake(S, strikes[i], T, 0.2, r, q, Side::Call, fast)));
   }
 
-  // Degenerate sigma -> intrinsic per strike.
+  // Degenerate sigma -> the European sigma->0 limit df*(F-K)+ floored at the spot
+  // intrinsic per strike (A4/PR-C4), NOT the spot intrinsic alone. Here q>0 (call
+  // American regime) and holding beats exercising, so the ITM strikes lift above
+  // their spot intrinsic (e.g. K=540: df*(F-540) ~ 62.07 > 60).
   ASSERT_TRUE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.0, r, q,
                                        std::span<double>(px), std::nullopt)
                   .has_value());
-  EXPECT_DOUBLE_EQ(px[0], 60.0); // 600 - 540
-  EXPECT_DOUBLE_EQ(px[1], 0.0);  // 600 - 600
-  EXPECT_DOUBLE_EQ(px[2], 0.0);  // max(600 - 660, 0)
+  const double F_deg = S * std::exp((r - q) * T);
+  const double df_deg = std::exp(-r * T);
+  const auto call_lim = [&](double K) {
+    return std::max(df_deg * std::max(F_deg - K, 0.0), std::max(S - K, 0.0));
+  };
+  EXPECT_NEAR(px[0], call_lim(540.0), 1.0e-9);
+  EXPECT_NEAR(px[1], call_lim(600.0), 1.0e-9);
+  EXPECT_NEAR(px[2], call_lim(660.0), 1.0e-9); // deep OTM -> 0
 
   // q <= 0: European call per strike (matches the andersen_lake short-circuit).
   ASSERT_TRUE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, 0.2, r, 0.0,
@@ -2433,6 +2450,68 @@ TEST(BoundaryHoist, SpecializedMatchesGeneric) {
     }
   }
   EXPECT_GT(checked, 200); // the grid actually exercised the specialized kernels
+}
+
+// ── A6 (PR-P2): the sweep-invariant BARYCENTRIC hoist ─────────────────────────
+//
+// WHICH TEST CARRIES THE BIT-IDENTITY CLAIM — NOT THIS ONE (REVWSA finding 2).
+// SpecializedMatchesGeneric above is the load-bearing proof, and it is PRE-EXISTING,
+// not added by A6: it compares end PRICES out of the hoisted kernel and the untouched
+// generic kernel over 5*4*3*3*3*2*3 combinations across all three specialized
+// schemes, with EXPECT_GT(checked, 200) as its anti-vacuity guard. That makes it the
+// only test here that can catch a wrong READ stride or a reordered `num` accumulation
+// inside al_cheb_eval_hoisted, because those change the price.
+//
+// What THIS test adds is narrower and orthogonal. Neither SpecializedMatchesGeneric
+// nor PriceBitIdenticalToPrechange can tell whether the barycentric denominator was
+// actually hoisted out of the sweep or is still recomputed inside it — both worlds
+// price identically. `entries` counts the (collocation node, quad node) pairs the
+// per-solve table binds and is 0 in a tree with no hoist; `mismatches` proves the
+// STORED quotients / sums / exact-node hits are bit-for-bit what the inline
+// al_cheb_eval_t computed, judged against an independently written reference
+// expression. Its limits, stated plainly so the next reader does not over-credit it:
+// it recomputes using the BIND's own index arithmetic and never calls
+// al_cheb_eval_hoisted, so it cannot catch a stride or read-order error in the
+// kernel. "99144 entries, 0 mismatches" is a real result about the bind, not the
+// whole proof of the hoist.
+//
+// AND ITS RED IS SELF-REFERENTIAL (REVWSA finding 3). A6's recorded absence signal —
+// `entries == 0` at the parent commit 9940182 — holds there because
+// al_bary_hoist_audit does not exist at that commit, which is trivially true of any
+// newly added data structure. It was taken from history rather than by reverting the
+// tree, which was the right call; it is still not an independent pre-existing
+// observable and must not be read as one.
+TEST(BoundaryHoist, HoistedBaryTableMatchesInlineFormula) {
+  using atx::vol::detail::al_bary_hoist_audit;
+  const std::optional<AlOpts> fast = al_fast_opts();          // {7,16}
+  const std::optional<AlOpts> accurate = std::nullopt;        // {12,24}
+  const std::optional<AlOpts> qlfast = AlOpts{7, 8, 2, 1.0e-8, 32}; // {7,8}
+
+  std::size_t total_entries = 0;
+  int audited = 0;
+  for (const std::optional<AlOpts> &opts : {fast, accurate, qlfast}) {
+    for (const double K : {80.0, 100.0, 125.0}) {
+      for (const double T : {1.0 / 252.0, 0.5, 2.0}) {
+        for (const double sigma : {0.10, 0.30, 0.75}) {
+          for (const double r : {0.01, 0.043, 0.08}) {
+            for (const double q : {0.0, 0.02, 0.06}) {
+              const auto a = al_bary_hoist_audit(K, T, sigma, r, q, opts);
+              ASSERT_TRUE(a.specialized)
+                  << "K=" << K << " T=" << T << " s=" << sigma << " r=" << r << " q=" << q;
+              EXPECT_GT(a.entries, 0u) << "the sweep-invariant barycentric table is never bound";
+              EXPECT_EQ(a.mismatches, 0u) << "hoisted table differs from the inline formula";
+              total_entries += a.entries;
+              ++audited;
+            }
+          }
+        }
+      }
+    }
+  }
+  EXPECT_EQ(audited, 3 * 3 * 3 * 3 * 3 * 3);
+  EXPECT_GT(total_entries, 10000u);
+  std::printf("[A6] audited %d bound workspaces, %zu (node, quad) entries, 0 mismatches\n", audited,
+              total_entries);
 }
 
 // Cold andersen_lake price pins, fast {7,16} and accurate {12,24} schemes. The
@@ -3590,6 +3669,90 @@ TEST(CarryGreeks, DividendSensitivityEndToEndFdParity) {
     std::printf("[G2 dDiv] side=%d q_eff=%.5f dPdDiv=[%.5f, %.5f]\n", static_cast<int>(side), q_eff,
                 dPdDiv[0], dPdDiv[1]);
   }
+}
+
+// ── A3 (GR-P2-3): baked-carry staleness tripwire ─────────────────────────────
+//
+// The cached first-order jet (american_greeks_first_order / american_price_cached)
+// evaluates a correction baked at (r0, q0) with the query's (r, q). A query rate
+// that has drifted from the baked rate by more than the C2 stale-gate (25 bps) —
+// an intraday-rate move, or a stale market cache — silently mixes old-carry early-
+// exercise sensitivities into fresh-carry Black-76 legs. The always-on solve
+// ledger now counts exactly this. RATE-ONLY: per-tenor q_eff drift from the
+// mid-expiry representative carry is a legitimate in-fit artifact and is not
+// counted (an assert on baked_q at 25 bps aborted the suite — american.cpp A9).
+TEST(AmericanCachedCarryDrift, CountsQueryVsBakedRateDriftOnly) {
+  namespace L = atx::vol::counters::ledger;
+  const double r0 = 0.05;
+  const double q0 = 0.02;
+  const CorrectionCache cache = make_correction(Side::Put, r0, q0);
+  ASSERT_TRUE(cache.populated());
+  const double S = 100.0;
+  const double K = 100.0;
+  const double T = 0.5;
+  const double sigma = 0.30;
+
+  // (a) query at the baked rate -> no drift counted.
+  L::reset();
+  const auto g0 = american_greeks(S, K, T, sigma, r0, q0, Side::Put, &cache);
+  ASSERT_TRUE(g0.has_value());
+  EXPECT_EQ(L::snapshot().get(L::Solve::CacheCarryDrift), std::uint64_t{0});
+
+  // (b) query rate drifted +100 bps (> the 25 bps stale-gate) -> counted.
+  L::reset();
+  const auto g1 = american_greeks(S, K, T, sigma, r0 + 0.01, q0, Side::Put, &cache);
+  ASSERT_TRUE(g1.has_value());
+  EXPECT_GT(L::snapshot().get(L::Solve::CacheCarryDrift), std::uint64_t{0})
+      << "a >25 bps query-vs-baked rate move through a fixed-carry cache must be flagged";
+
+  // (c) q_eff drifted +500 bps but the rate matches -> NOT counted (the per-tenor
+  // q_eff drift from the representative carry is a legitimate in-fit artifact).
+  L::reset();
+  const auto g2 = american_greeks(S, K, T, sigma, r0, q0 + 0.05, Side::Put, &cache);
+  ASSERT_TRUE(g2.has_value());
+  EXPECT_EQ(L::snapshot().get(L::Solve::CacheCarryDrift), std::uint64_t{0})
+      << "per-tenor q_eff drift is legitimate in-fit usage and must not be flagged";
+}
+
+// ── A4 (PR-C4): sigma->0 regime-correct European limit ───────────────────────
+//
+// The degenerate sigma-guard returned SPOT intrinsic ahead of regime
+// classification, so a carry-dominant European-regime case collapsed to 0 at
+// sigma->0 instead of the correct European limit df*(forward intrinsic) floored at
+// the spot intrinsic. Put r=0, q=5%, T=1, S=K=100 has forward F=95.12 and a
+// sigma->0 limit df*(K-F)+ = 4.877, discontinuous with the sigma=1.1e-8 Black-76
+// branch that returned ~4.877 while sigma=0.9e-8 returned 0.
+TEST(AmericanSigmaZeroLimit, CarryDominantPut_TendsToDiscountedForwardIntrinsic) {
+  const double S = 100.0;
+  const double K = 100.0;
+  const double T = 1.0;
+  const double r = 0.0;
+  const double q = 0.05;
+  const double F = S * std::exp((r - q) * T);
+  const double df = std::exp(-r * T);
+  const double euro_limit = df * std::max(K - F, 0.0); // ~4.877
+  ASSERT_GT(euro_limit, 4.0);
+
+  const auto p = american_price(S, K, T, /*sigma=*/1.0e-9, r, q, Side::Put);
+  ASSERT_TRUE(p.has_value()) << p.error().to_string();
+  EXPECT_NEAR(*p, euro_limit, 1.0e-6)
+      << "sigma->0 put must tend to df*(K-F)+ (carry-dominant European limit), not 0";
+
+  // Continuity across the guard: sigma just ABOVE the guard prices the same limit.
+  const auto p_above = american_price(S, K, T, /*sigma=*/2.0e-8, r, q, Side::Put);
+  ASSERT_TRUE(p_above.has_value()) << p_above.error().to_string();
+  EXPECT_NEAR(*p, *p_above, 1.0e-4) << "sigma->0 limit must be continuous across the guard";
+
+  // The AloPricer sigma-sweep object shares the transformed-put degenerate guard.
+  atx::vol::AloPricer alo(S, K, T, r, q, Side::Put);
+  EXPECT_NEAR(alo.price(1.0e-9), euro_limit, 1.0e-6)
+      << "AloPricer sigma->0 must match the carry-dominant European limit";
+
+  // BAW shares the same guard and must give the same limit (no split-brain).
+  const auto pbaw = american_price(S, K, T, /*sigma=*/1.0e-9, r, q, Side::Put,
+                                   atx::vol::AmericanMethod::Baw);
+  ASSERT_TRUE(pbaw.has_value()) << pbaw.error().to_string();
+  EXPECT_NEAR(*pbaw, euro_limit, 1.0e-6) << "BAW sigma->0 must match the AL limit";
 }
 
 } // namespace

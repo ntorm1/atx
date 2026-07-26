@@ -30,7 +30,7 @@ from . import theme
 
 __all__ = [
     "Report", "Section", "Stat", "StatRow", "Figure", "Table", "Column",
-    "Note", "Prose", "Subhead", "Raw", "FacetGrid",
+    "Note", "Banner", "Prose", "Subhead", "Raw", "FacetGrid",
 ]
 
 
@@ -104,6 +104,36 @@ class Note(_Node):
 
     def render(self, ctx: _Ctx) -> str:
         return f'<div class="note{" flat" if self.flat else ""}">{self.text}</div>'
+
+
+@dataclass
+class Banner(_Node):
+    """A full-width status band, placed before any number it qualifies.
+
+    For a state that the reader must not be able to miss and must not be able to
+    read a figure without — an execution regime, a data-quality caveat, a
+    provenance downgrade. Every field is ESCAPED: unlike `Note`, this component
+    carries machine-supplied labels, so it is not a raw-markup channel.
+
+    `tone` selects one of `theme.STATUS`'s validated states
+    ("ok" | "warn" | "alert"), defaulting to the neutral "unknown". Colour is
+    never the only channel: `badge` is rendered as text inside the band, so the
+    state survives greyscale printing and every form of colour-vision deficiency.
+    """
+
+    badge: str
+    detail: str = ""
+    aside: str = ""
+    tone: str = "unknown"
+
+    def render(self, ctx: _Ctx) -> str:
+        tone = self.tone if self.tone in theme.STATUS else "unknown"
+        detail = f'<p class="detail">{esc(self.detail)}</p>' if self.detail else ""
+        aside = f'<p class="aside">{esc(self.aside)}</p>' if self.aside else ""
+        return (
+            f'<div class="banner {tone}" role="note">'
+            f'<p class="badge">{esc(self.badge)}</p>{detail}{aside}</div>'
+        )
 
 
 # ── Stats ───────────────────────────────────────────────────────────────────

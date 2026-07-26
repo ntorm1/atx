@@ -39,6 +39,17 @@ namespace {
 // Process-wide archive-open counter (test seam). Loads increment it exactly once.
 std::atomic<std::uint64_t> g_open_count{0};
 
+// WS-F F5 (BT-T2). Process-wide count of SURFACE-RECORD BYTES actually
+// materialized by snapshot loads — the sum of `ArchiveV2DirEntry::surface_size`
+// over every directory entry a load turns into a surface or a view.
+//
+// This is deliberately a DETERMINISTIC counter, not a timing number: it is the
+// same value on a busy host as on a quiet one, so a subset-vs-whole-board claim
+// is a fact rather than a measurement. It counts record bytes, not resident
+// pages: on the borrowed (mapped) tiers the OS faults in only what is read, so
+// this is the upper bound the subset actually shrinks.
+std::atomic<std::uint64_t> g_deserialized_bytes{0};
+
 // A forward-only run owns base, shifted, and at most one prefetched future.
 // Retaining three cache entries covers that working set without accumulating one
 // mapped archive per date. Caller-supplied caches remain reusable and unbounded.
@@ -163,7 +174,7 @@ public:
       if (m.status != PriceStatus::Ok) {
         continue; // only Ok marks are servable; a failed one must re-solve / fail closed
       }
-      const PricedSurface *s = snap.find(m.uid);
+      const SurfaceRef s = snap.find(m.uid);
       const std::uint64_t inst = s != nullptr ? s->instance_id() : 0u;
       entries_[key_of(m.uid, m.K, m.T, m.side)] = Val{inst, m.mark};
     }
@@ -336,6 +347,7 @@ private:
   };
   if (!finite_nonnegative(cfg.frictions.half_spread_bps) ||
       !finite_nonnegative(cfg.frictions.vol_tick) ||
+      !finite_nonnegative(cfg.frictions.impact_fraction) ||
       !finite_nonnegative(cfg.frictions.per_contract_cost) ||
       !finite_nonnegative(cfg.frictions.hedge_slippage_bps)) {
     return Err(ErrorCode::InvalidArgument,
@@ -347,6 +359,17 @@ private:
   if (!finite_nonnegative(cfg.financing.borrow_rate)) {
     return Err(ErrorCode::InvalidArgument,
                "run_backtest: borrow_rate must be finite and nonnegative");
+  }
+  for (const ShareDividend &div : cfg.financing.share_dividends) {
+    if (div.uid == 0u || div.ex_ts_ns <= 0 || !finite_nonnegative(div.amount)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest: share dividend needs a real uid, a positive ex-date and a "
+                 "finite nonnegative amount");
+    }
+  }
+  if (cfg.reconcile_nav && !(std::isfinite(cfg.reconcile_nav_tol) && cfg.reconcile_nav_tol > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: reconcile_nav_tol must be finite and positive");
   }
   return Ok();
 }
@@ -532,14 +555,21 @@ public:
   // the pre-B3 overlay (same uid order, same per-uid frame-order delta sum, same
   // cash accumulation order).
   //
+  // WS-F F1(a) (BT-P1-3): `spot_of` returns Result<double> and this pass returns
+  // Status, so a uid with no base surface FAILS CLOSED instead of trading at spot
+  // 0.0. The old signature returned a bare double whose missing-surface value was
+  // 0.0, which made `cash -= shares_to_trade * 0.0` flatten a residual share
+  // position for FREE and left the ledger at zero with no error and no flag.
+  //
   // Steady-state allocation-free: the per-uid delta aggregate and the dedup set are
   // held as DENSE, generation-STAMPED vectors (not node-based unordered_map/set that
   // reallocate a node per key on every clear()+reinsert). A per-pass `generation_`
   // bump invalidates last pass's stamps in O(1) with no clears, so after warm-up
   // (every uid resident in `scratch_index_`) the pass performs no heap allocation.
   template <typename SpotOf>
-  void hedge_daily(const std::vector<Lot> &lots, const PriceFrame &frame, double band,
-                   double hedge_slippage_bps, SpotOf &&spot_of, double &cash, double &cost) {
+  [[nodiscard]] Status hedge_daily(const std::vector<Lot> &lots, const PriceFrame &frame,
+                                   double band, double hedge_slippage_bps, SpotOf &&spot_of,
+                                   double &cash, double &cost) {
     ++generation_;
     order_.clear(); // vector clear keeps capacity (no per-element deallocation)
     // 1. Aggregate Ok option delta per uid in ONE frame pass (frame order per uid).
@@ -576,12 +606,17 @@ public:
       const double net = option_delta + get(uid);
       if (std::fabs(net) > band) {
         const double shares_to_trade = -net;
-        const double spot = spot_of(uid);
+        const Result<double> spot_res = spot_of(uid);
+        if (!spot_res) {
+          return Err(spot_res.error());
+        }
+        const double spot = *spot_res;
         cost += std::fabs(shares_to_trade) * spot * (hedge_slippage_bps / 1.0e4);
         cash -= shares_to_trade * spot;
         add(uid, shares_to_trade);
       }
     }
+    return Ok();
   }
 
 private:
@@ -816,8 +851,8 @@ struct StepPnl {
                 " (expiry_ts_ns=" + std::to_string(lot.expiry_ts_ns) +
                 ", next_snapshot_ts_ns=" + std::to_string(shifted.ts_ns()) + ")");
       }
-      const PricedSurface *bs = base.find(lot.contract.uid);
-      const PricedSurface *ss = shifted.find(lot.contract.uid);
+      const SurfaceRef bs = base.find(lot.contract.uid);
+      const SurfaceRef ss = shifted.find(lot.contract.uid);
       if (bs == nullptr || ss == nullptr) {
         return Err(ErrorCode::NotFound, "run_backtest: no surface for settling lot");
       }
@@ -874,7 +909,7 @@ struct StepPnl {
                      "run_backtest: no valid base mark for settling lot id=" +
                          std::to_string(lot.id));
         }
-        const PricedSurface *ss = shifted.find(lot.contract.uid);
+        const SurfaceRef ss = shifted.find(lot.contract.uid);
         const double S = ss->pricing().S;
         const double K = lot.contract.K;
         const double intrinsic =
@@ -888,7 +923,7 @@ struct StepPnl {
       for (std::size_t i = 0; i < n_exp; ++i) {
         const Lot &lot = (*expiring)[i];
         const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
-        const PricedSurface *bs = base.find(lot.contract.uid); // non-null (partition loop)
+        const SurfaceRef bs = base.find(lot.contract.uid); // non-null (partition loop)
         const std::uint64_t inst = bs->instance_id();
         const std::optional<double> mm =
             mark_memo->find(lot.contract.uid, lot.contract.K, T_base, lot.contract.side, inst);
@@ -931,7 +966,7 @@ struct StepPnl {
           mark = sf.price[solve_ix];
           ++solve_ix;
         }
-        const PricedSurface *ss = shifted.find(lot.contract.uid);
+        const SurfaceRef ss = shifted.find(lot.contract.uid);
         const double S = ss->pricing().S;
         const double K = lot.contract.K;
         const double intrinsic =
@@ -1043,21 +1078,22 @@ struct StepPnl {
     return Ok();
   }
 
-  const std::span<const PricedSurface> surfaces = snapshot.surfaces();
+  // Backing-agnostic (WS-ZC1): a borrowed snapshot exposes the same uid per index.
+  const std::size_t n_surfaces = snapshot.n_surfaces();
   const std::span<const SurfaceProvenance> provenances = snapshot.provenances();
-  if (provenances.size() != surfaces.size()) {
+  if (provenances.size() != n_surfaces) {
     return Err(ErrorCode::InvalidArgument,
                "run_backtest: snapshot provenance is not aligned with surfaces");
   }
-  for (std::size_t index = 0; index < surfaces.size(); ++index) {
-    const PricedSurface &surface = surfaces[index];
+  for (std::size_t index = 0; index < n_surfaces; ++index) {
+    const SurfaceRef surface = snapshot.surface_at(index);
     const SurfaceProvenance &provenance = provenances[index];
     const bool admitted =
         !provenance.legacy_format && provenance.purpose == SurfacePurpose::Risk &&
         provenance.served_generation != 0u &&
         (provenance.state == SurfaceState::Healthy || provenance.state == SurfaceState::Degraded);
     if (!admitted) {
-      const std::string uid = std::to_string(surface.uid());
+      const std::string uid = std::to_string(surface->uid());
       const std::string purpose{purpose_name(provenance.purpose)};
       const std::string state{state_name(provenance.state)};
       const std::string legacy = provenance.legacy_format ? "true" : "false";
@@ -1128,29 +1164,121 @@ Result<Clock> Clock::from_surface_db(const SurfaceDb &db) {
 
 // ── MarketSnapshot ──────────────────────────────────────────────────────────
 
-MarketSnapshot::MarketSnapshot(std::vector<PricedSurface> &&surfaces,
+MarketSnapshot::MarketSnapshot(std::shared_ptr<const SurfaceArchiveV2> archive,
+                               std::vector<PricedSurface> &&surfaces,
+                               std::vector<PricedSurfaceView> &&views,
                                std::vector<SurfaceProvenance> &&provenance, SurfaceSet &&set,
                                std::int64_t ts,
                                std::vector<std::pair<std::string, std::uint32_t>> &&syms) noexcept
-    : surfaces_{std::move(surfaces)}, provenance_{std::move(provenance)}, set_{std::move(set)},
-      ts_ns_{ts}, syms_{std::move(syms)} {}
+    : archive_{std::move(archive)}, surfaces_{std::move(surfaces)}, views_{std::move(views)},
+      provenance_{std::move(provenance)}, set_{std::move(set)}, ts_ns_{ts},
+      syms_{std::move(syms)} {}
 
 std::uint64_t MarketSnapshot::open_count() noexcept { return g_open_count.load(); }
 void MarketSnapshot::reset_open_count() noexcept { g_open_count.store(0); }
 
+std::uint64_t MarketSnapshot::deserialized_bytes() noexcept {
+  return g_deserialized_bytes.load();
+}
+void MarketSnapshot::reset_deserialized_bytes() noexcept { g_deserialized_bytes.store(0); }
+
 Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
                                             QueryPricingTier query_pricing_tier,
-                                            std::span<const std::uint32_t> referenced_uids) {
+                                            std::span<const std::uint32_t> referenced_uids,
+                                            ArchiveBacking backing) {
   ATX_VOL_PROFILE_SCOPE(SnapshotLoad);
+  // WS-ZC1: which BACKING the borrowed views read from. `open_mapped` is demand-paged
+  // and copy-free, but on Windows a file with an active mapped section CANNOT be
+  // deleted or replaced (ERROR_USER_MAPPED_FILE) regardless of share mode — and a
+  // borrowed snapshot holds its archive for its whole lifetime. That would break
+  // atomic republish of a partition (write .tmp + rename) while any reader is live,
+  // which `Backtest.SnapshotCacheEvictsStaleEntryWhenArchiveRewrittenSameLength`
+  // pins as a supported workflow.
+  //
+  // So a BORROWING load uses `open_copied`: map, ONE memcpy into an owned buffer, drop
+  // the mapping. Views then borrow that buffer (kept alive by the same archive
+  // shared_ptr), no section stays open against the file, and republish keeps working.
+  // The copy runs at memory bandwidth out of pages the OS cache already holds, so it
+  // keeps nearly all of the mapped open's speed — `open_file`'s stream read, the
+  // obvious alternative, measured ~210 ms over this replay versus ~8 ms to map. A
+  // whole-board borrow touches every record anyway, so the demand-paging that motivated
+  // `open_mapped` (WS-S S2) has nothing left to skip here.
+  //
+  // The owned (non-borrowing) path keeps `open_mapped`: it reconstructs and then drops
+  // the archive inside this function, so it never holds a mapping past the load and
+  // still benefits from faulting in only the subset it reconstructs.
+  // ESCAPE HATCH / MEASUREMENT LEVER: `ATX_VOL_ZC_BORROW=0` forces the owned
+  // reconstruct path. It exists so the two backings can be A/B'd inside ONE binary on
+  // ONE host — which is how the WS-ZC1 numbers were taken, and how they should be
+  // re-taken — and so a borrow-specific regression can be bisected without a rebuild.
+  // Read once; it cannot change mid-run, so it cannot make a run non-deterministic.
+  static const bool borrow_allowed = []() {
+#if defined(_WIN32)
+    std::size_t sz = 0;
+    char buf[8] = {};
+    if (getenv_s(&sz, buf, sizeof(buf), "ATX_VOL_ZC_BORROW") != 0 || sz == 0) {
+      return true;
+    }
+    return std::string_view{buf} != "0";
+#else
+    const char *e = std::getenv("ATX_VOL_ZC_BORROW");
+    return e == nullptr || std::string_view{e} != "0";
+#endif
+  }();
+  // BORROW INSTEAD OF RECONSTRUCT. `PricedSurfaceView` carries no query accelerator: it
+  // IS the cold reference route. So it can serve the two cache-free tiers
+  // (LegacyCompatible, ColdReference) bit-for-bit, and only those — a fast tier must
+  // still reconstruct owned surfaces because `with_query_pricing` has to build a real
+  // accelerator. Since WS-P1v, both forms drive the same laned analytic-Greek kernels,
+  // so borrowing costs no pricing performance on the tiers it serves.
+  const bool borrow = borrow_allowed && (query_pricing_tier == QueryPricingTier::LegacyCompatible ||
+                                         query_pricing_tier == QueryPricingTier::ColdReference);
+
   auto arch = [&]() {
     ATX_VOL_PROFILE_SCOPE(ArchiveOpen);
+    if (borrow) {
+      // The CALLER declares the archive's lifecycle; the loader never guesses.
+      // `ATX_VOL_ZC_BACKING=map|copy` is an override/escape hatch for measurement and
+      // for forcing either backing without a rebuild. Read once, so it cannot make a
+      // run non-deterministic.
+      static const std::optional<ArchiveBacking> backing_override = []() {
+        auto parse = [](std::string_view v) -> std::optional<ArchiveBacking> {
+          if (v == "map") {
+            return ArchiveBacking::Sealed;
+          }
+          if (v == "copy") {
+            return ArchiveBacking::Mutable;
+          }
+          return std::nullopt;
+        };
+#if defined(_WIN32)
+        std::size_t sz = 0;
+        char buf[8] = {};
+        if (getenv_s(&sz, buf, sizeof(buf), "ATX_VOL_ZC_BACKING") != 0 || sz == 0) {
+          return std::optional<ArchiveBacking>{};
+        }
+        return parse(std::string_view{buf});
+#else
+        const char *e = std::getenv("ATX_VOL_ZC_BACKING");
+        return e != nullptr ? parse(std::string_view{e}) : std::optional<ArchiveBacking>{};
+#endif
+      }();
+      const ArchiveBacking effective = backing_override.value_or(backing);
+      if (effective == ArchiveBacking::Sealed) {
+        // Read-only corpus: keep the mapping, copy nothing. No section is ever closed,
+        // so this must not be used for a partition the store may rewrite or delete.
+        return SurfaceArchiveV2::open_mapped(archive_path);
+      }
+      // Map + one memcpy into an owned buffer, mapping dropped (see the note above).
+      return SurfaceArchiveV2::open_copied(archive_path);
+    }
     // S2 (WS-S): mmap the partition instead of reading the whole file into an owned
     // heap buffer. open_impl CRC-validates only the header/lookup/directory (small),
     // so this open faults in only metadata pages; a subset load (below) then faults
     // in only the referenced records' pages via the OS page cache — the whole-file
     // read amplification (67% of backtest wall in the profile) is eliminated. The
-    // archive co-owns the Mapping, and this snapshot owns the archive-derived
-    // surfaces, so the mapped pages outlive every reader.
+    // owned path reconstructs and drops this archive before returning, so it never
+    // holds a mapping past the load.
     return SurfaceArchiveV2::open_mapped(archive_path);
   }();
   if (!arch) {
@@ -1159,8 +1287,14 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // One archive-open event (the load-once gate asserts N loads => N opens).
   g_open_count.fetch_add(1, std::memory_order_relaxed);
 
-  const std::span<const ArchiveV2DirEntry> dir = arch->directory();
+  // WS-ZC1: the snapshot co-owns the archive — and therefore the buffer every borrowed
+  // view reads — for its whole lifetime. See the lifetime note on MarketSnapshot's
+  // members.
+  auto archive = std::make_shared<const SurfaceArchiveV2>(std::move(*arch));
+
+  const std::span<const ArchiveV2DirEntry> dir = archive->directory();
   std::vector<PricedSurface> surfaces;
+  std::vector<PricedSurfaceView> views;
   std::vector<SurfaceProvenance> provenance;
 
   // B1 subset-deserialize (bottleneck #1 at the reader): when the caller names the
@@ -1169,71 +1303,124 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // `reconstruct_all_with_provenance`. An empty referenced set (the strategy
   // overload — its touched names are not known before on_step — and any shared-cache
   // caller) keeps the whole-board load. If the subset matches no directory entry
-  // (e.g. a book naming only names absent from this partition) fall back to the
-  // whole board so the valuation timestamp and unpriced-lot handling are unchanged.
+  // (e.g. a book naming only names absent from this partition), keep an empty
+  // SurfaceSet and read only one mapped record for the valuation timestamp. Loading
+  // the full board on a miss turns the cheapest missing-name case into worst-case I/O.
   //
-  // Seam note (§6, out of WS-B lane): the PortfolioPricer's SurfaceSet still takes
-  // `const PricedSurface*`, so the subset is reconstructed (owned) rather than served
-  // as zero-copy PricedSurfaceViews. Re-pointing SurfaceSet/PortfolioPricer at views
-  // is a greeks-owned change (portfolio_pricer.{hpp,cpp}); until it lands the
-  // deserialize win here is the subset (fewer surfaces reconstructed), not zero-copy.
+  // WS-ZC1 lands the seam §6 note that used to sit here: `SurfaceSet` now holds
+  // `SurfaceRef`, so on the two cache-free tiers the subset AND the whole board are
+  // served as zero-copy `PricedSurfaceView`s over the mapped records. The archive
+  // reconstruction that dominated replay (`archive_map`, ~49% of wall) disappears on
+  // those tiers; a fast tier still reconstructs owned surfaces below.
+  const auto n_surfaces = [&]() { return borrow ? views.size() : surfaces.size(); };
+  const bool subset_requested = !referenced_uids.empty();
   bool loaded_subset = false;
-  if (!referenced_uids.empty()) {
+  if (subset_requested) {
     ATX_VOL_PROFILE_SCOPE(ArchiveMap);
     // O(dir) match via a hash set of the referenced uids (built once) instead of an
     // O(dir x subset) nested scan.
     const std::unordered_set<std::uint32_t> wanted_uids(referenced_uids.begin(),
                                                         referenced_uids.end());
-    surfaces.reserve(referenced_uids.size());
+    surfaces.reserve(borrow ? 0u : referenced_uids.size());
+    views.reserve(borrow ? referenced_uids.size() : 0u);
     provenance.reserve(referenced_uids.size());
     for (const ArchiveV2DirEntry &e : dir) {
       if (wanted_uids.find(e.uid) == wanted_uids.end()) {
         continue;
       }
-      // S3 (WS-S): reconstruct the surface AND its provenance from the directory
-      // entry `e` already in hand — ONE pass over the record extent, no hash
-      // re-probe. (Previously reconstruct_symbol(sym) + provenance(sym) each
-      // re-ran find_slot: two redundant probes + canonicalize_symbol allocs.)
-      auto rec = arch->reconstruct_entry(e);
-      if (!rec) {
-        return Err(rec.error());
+      g_deserialized_bytes.fetch_add(e.surface_size, std::memory_order_relaxed); // F5
+      // S3 (WS-S): build the surface AND its provenance from the directory entry `e`
+      // already in hand — ONE pass over the record extent, no hash re-probe.
+      if (borrow) {
+        auto rec = archive->map_entry(e);
+        if (!rec) {
+          return Err(rec.error());
+        }
+        views.push_back(std::move(rec->view));
+        provenance.push_back(std::move(rec->provenance));
+      } else {
+        auto rec = archive->reconstruct_entry(e);
+        if (!rec) {
+          return Err(rec.error());
+        }
+        surfaces.push_back(std::move(rec->surface));
+        provenance.push_back(std::move(rec->provenance));
       }
-      surfaces.push_back(std::move(rec->surface));
-      provenance.push_back(std::move(rec->provenance));
     }
-    loaded_subset = !surfaces.empty();
+    loaded_subset = n_surfaces() != 0u;
   }
-  if (!loaded_subset) {
+  const bool subset_missed = subset_requested && !loaded_subset;
+  if (!subset_requested) {
     ATX_VOL_PROFILE_SCOPE(ArchiveMap);
-    auto mapped = arch->reconstruct_all_with_provenance();
-    if (!mapped) {
-      return Err(mapped.error());
-    }
     surfaces.clear();
+    views.clear();
     provenance.clear();
-    surfaces.reserve(mapped->size());
-    provenance.reserve(mapped->size());
-    for (ArchivedSurface &record : *mapped) {
-      surfaces.push_back(std::move(record.surface));
-      provenance.push_back(std::move(record.provenance));
+    // F5: the whole-board load materializes every directory entry. Counted here
+    // (rather than inside the archive) so the subset and whole-board paths are
+    // measured by the same rule and are directly comparable.
+    for (const ArchiveV2DirEntry &e : dir) {
+      g_deserialized_bytes.fetch_add(e.surface_size, std::memory_order_relaxed);
+    }
+    if (borrow) {
+      auto mapped = archive->map_all_with_provenance();
+      if (!mapped) {
+        return Err(mapped.error());
+      }
+      views.reserve(mapped->size());
+      provenance.reserve(mapped->size());
+      for (ArchivedSurfaceView &record : *mapped) {
+        views.push_back(std::move(record.view));
+        provenance.push_back(std::move(record.provenance));
+      }
+    } else {
+      auto mapped = archive->reconstruct_all_with_provenance();
+      if (!mapped) {
+        return Err(mapped.error());
+      }
+      surfaces.reserve(mapped->size());
+      provenance.reserve(mapped->size());
+      for (ArchivedSurface &record : *mapped) {
+        surfaces.push_back(std::move(record.surface));
+        provenance.push_back(std::move(record.provenance));
+      }
     }
   }
-  if (surfaces.empty()) {
+  if (n_surfaces() == 0u && !subset_missed) {
     return Err(ErrorCode::InvalidArgument, "MarketSnapshot::load: archive holds no surfaces");
   }
 
-  // Valuation timestamp: the surfaces of one date agree on now_ts_ns.
-  const std::int64_t ts = surfaces.front().pricing().now_ts_ns;
-  for (const PricedSurface &s : surfaces) {
-    if (s.pricing().now_ts_ns != ts) {
-      return Err(ErrorCode::InvalidArgument,
-                 "MarketSnapshot::load: surfaces disagree on now_ts_ns within a date");
+  // Valuation timestamp: the surfaces of one date agree on now_ts_ns. Read through
+  // whichever backing was populated. A requested subset that matched no uid
+  // intentionally owns no surface; map only the first record to recover its timestamp
+  // without reconstructing/materializing the full board.
+  const auto pricing_at = [&](std::size_t i) -> const PricingContext & {
+    return borrow ? views[i].pricing() : surfaces[i].pricing();
+  };
+  std::int64_t ts = 0;
+  if (subset_missed) {
+    if (dir.empty()) {
+      return Err(ErrorCode::InvalidArgument, "MarketSnapshot::load: archive holds no surfaces");
+    }
+    auto metadata_record = archive->map_entry(dir.front());
+    if (!metadata_record) {
+      return Err(metadata_record.error());
+    }
+    ts = metadata_record->view.pricing().now_ts_ns;
+  } else {
+    ts = pricing_at(0).now_ts_ns;
+    for (std::size_t i = 0; i < n_surfaces(); ++i) {
+      if (pricing_at(i).now_ts_ns != ts) {
+        return Err(ErrorCode::InvalidArgument,
+                   "MarketSnapshot::load: surfaces disagree on now_ts_ns within a date");
+      }
     }
   }
 
   // Query caches are runtime accelerators, not archive state. Prepare every
   // mapped surface under the caller's tier before building the pointer set, so
-  // no partially-prepared snapshot can become observable.
+  // no partially-prepared snapshot can become observable. A borrowed view carries no
+  // accelerator by construction (it IS the cold route), so this is the owned path
+  // only — and `borrow` is false for exactly the tiers that need one.
   for (PricedSurface &surface : surfaces) {
     auto prepared = std::move(surface).with_query_pricing(query_pricing_tier);
     if (!prepared) {
@@ -1241,14 +1428,34 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     }
     surface = std::move(*prepared);
   }
-
-  // Non-owning resolver over the owned surfaces' stable addresses.
-  std::vector<const PricedSurface *> ptrs;
-  ptrs.reserve(surfaces.size());
-  for (const PricedSurface &s : surfaces) {
-    ptrs.push_back(&s);
+  // A borrowed view has nothing to prepare (it IS the cold route), but it still
+  // records WHICH cold tier it is serving so a borrowed snapshot reports the same
+  // tier an owned one prepared at would.
+  for (PricedSurfaceView &v : views) {
+    if (Status s = v.set_cold_query_pricing_tier(query_pricing_tier); !s.has_value()) {
+      return Err(s.error());
+    }
   }
-  auto set = SurfaceSet::create(ptrs);
+
+  // Non-owning resolver over the surfaces' stable addresses. Neither vector is
+  // mutated after this point, so the refs stay valid for the snapshot's lifetime
+  // (and across a move, which preserves element addresses).
+  auto set = [&]() {
+    if (borrow) {
+      std::vector<const PricedSurfaceView *> ptrs;
+      ptrs.reserve(views.size());
+      for (const PricedSurfaceView &v : views) {
+        ptrs.push_back(&v);
+      }
+      return SurfaceSet::create_from_views(ptrs);
+    }
+    std::vector<const PricedSurface *> ptrs;
+    ptrs.reserve(surfaces.size());
+    for (const PricedSurface &s : surfaces) {
+      ptrs.push_back(&s);
+    }
+    return SurfaceSet::create(ptrs);
+  }();
   if (!set) {
     return Err(set.error());
   }
@@ -1262,16 +1469,20 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     syms.emplace_back(std::string(e.symbol, e.symbol_len), e.uid);
   }
 
-  return MarketSnapshot{std::move(surfaces), std::move(provenance), std::move(*set), ts,
+  // The snapshot co-owns `archive` — the Mapping every borrowed view reads — so the
+  // mapping outlives the views, which outlive nothing else. See MarketSnapshot's
+  // member lifetime note.
+  return MarketSnapshot{std::move(archive),   std::move(surfaces), std::move(views),
+                        std::move(provenance), std::move(*set),    ts,
                         std::move(syms)};
 }
 
 const SurfaceProvenance *MarketSnapshot::provenance(std::uint32_t uid) const noexcept {
-  if (provenance_.size() != surfaces_.size()) {
+  if (provenance_.size() != n_surfaces()) {
     return nullptr;
   }
-  for (std::size_t i = 0; i < surfaces_.size(); ++i) {
-    if (surfaces_[i].uid() == uid) {
+  for (std::size_t i = 0; i < n_surfaces(); ++i) {
+    if (surface_at(i).uid() == uid) {
       return &provenance_[i];
     }
   }
@@ -1414,7 +1625,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     out.cash.push_back(0.0);
     out.gross_delta.push_back(g.delta);
     out.gross_gamma.push_back(g.gamma);
-    out.gross_vega.push_back(g.vega);
+    out.gross_vega.push_back(g.vega);         // NET (signed); see backtest.hpp
+    out.gross_vega_abs.push_back(g.abs_vega); // C-3: the genuinely GROSS series
     out.gross_theta.push_back(g.theta);
     out.turnover_notional.push_back(0.0);
     out.turnover_vega.push_back(0.0);
@@ -1436,10 +1648,25 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
       book_uids.push_back(lot.contract.uid);
     }
   }
+  // WS-ZC1: a backtest replays a SEALED corpus — the clock's partitions are historical
+  // and nothing in a run rewrites, evicts, or deletes them — so its snapshots may keep
+  // the archive mapped and skip the whole-archive copy entirely. This is the explicit
+  // caller declaration ArchiveBacking documents; the store path never makes it, so the
+  // SurfaceDb write -> reopen -> rewrite/delete cycle keeps its buffered backing.
+  //
+  // ONLY THE PRIVATE CACHE MAY BE SEALED (WS-ZC regression fix). The backing is part
+  // of the snapshot-cache key, so declaring Sealed on a cache we did not create does
+  // not merely re-tune it — it orphans every entry the CALLER preloaded under the
+  // default Mutable backing, silently re-loading them and silently downgrading a
+  // ReuseOnly fast request to ColdReference. A caller-supplied cache is therefore
+  // used exactly as the caller configured it; the Sealed win is taken on the cache
+  // this function constructs and exclusively owns, which is the replay path the
+  // optimization was built for and the one no caller can observe.
   const std::shared_ptr<SnapshotCache> snapshot_cache =
-      cfg.snapshot_cache
-          ? cfg.snapshot_cache
-          : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity, std::move(book_uids));
+      cfg.snapshot_cache ? cfg.snapshot_cache
+                         : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity,
+                                                           std::move(book_uids),
+                                                           ArchiveBacking::Sealed);
   auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
                                        cfg.query_cache_build_policy);
   if (!base_res) {
@@ -1618,17 +1845,25 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   // `shares` vector + a per-uid whole-frame delta rescan). Bit-identical output.
   HedgeLedger hedge_ledger;
 
-  // Per-share half-spread under the friction model (0 when SpreadKind::None).
+  // Per-share execution half-spread under the friction model: the selected
+  // `spread_kind` lane (0 when None) PLUS the C-4 impact lane. The two are
+  // separate components because they scale on different quantities — the
+  // vol-tick lane on vega, the impact on the mark — so neither is expressible
+  // inside the other. `impact_fraction == 0.0` (the default) adds exactly 0.0
+  // and is therefore bit-identical to the pre-C-4 engine.
   const auto half_spread = [&cfg](double mark, double vega) -> double {
-    switch (cfg.frictions.spread_kind) {
-    case FrictionModel::SpreadKind::None:
+    const auto spread = [&]() -> double {
+      switch (cfg.frictions.spread_kind) {
+      case FrictionModel::SpreadKind::None:
+        return 0.0;
+      case FrictionModel::SpreadKind::PriceBps:
+        return mark * (cfg.frictions.half_spread_bps / 1.0e4);
+      case FrictionModel::SpreadKind::VolTicks:
+        return vega * cfg.frictions.vol_tick;
+      }
       return 0.0;
-    case FrictionModel::SpreadKind::PriceBps:
-      return mark * (cfg.frictions.half_spread_bps / 1.0e4);
-    case FrictionModel::SpreadKind::VolTicks:
-      return vega * cfg.frictions.vol_tick;
-    }
-    return 0.0;
+    }();
+    return spread + mark * cfg.frictions.impact_fraction;
   };
 
   const auto push_row = [&out](const std::string &date, std::int64_t ts, double p_total,
@@ -1658,13 +1893,63 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     out.cash.push_back(cash_v);
     out.gross_delta.push_back(g_delta); // NET book delta = option delta + hedge shares
     out.gross_gamma.push_back(g.gamma);
-    out.gross_vega.push_back(g.vega);
+    out.gross_vega.push_back(g.vega);         // NET (signed); see backtest.hpp
+    out.gross_vega_abs.push_back(g.abs_vega); // C-3: the genuinely GROSS series
     out.gross_theta.push_back(g.theta);
     out.turnover_notional.push_back(turn_notl);
     out.turnover_vega.push_back(turn_vega);
     out.n_open_lots.push_back(static_cast<double>(n_lots));
     out.n_unpriced_lots.push_back(n_unpriced);
     out.n_unpriced_greeks.push_back(n_unpriced_greeks);
+  };
+
+  // ── F1(d) NAV-vs-liquidation reconciliation (RunConfig::reconcile_nav) ──────
+  //
+  // NAV is a cumulative flow sum. This recomputes the book's liquidation value
+  // from an INDEPENDENT set of inputs — the cash ledger, the row's repriced book
+  // PV, the share ledger marked at this row's spots — and anchors it so it is
+  // directly comparable to NAV (which starts at 0 while liquidation starts at
+  // `initial_cash`). The only term that is not directly observable in cash or a
+  // mark is financing that accrued to NAV without moving cash (borrow + shares
+  // carry), so it is carried as a running total.
+  //
+  // Every trade the engine books is liquidation-NEUTRAL by construction (a hedge
+  // moves cash and share MTM by the same notional; a roll-close moves cash and
+  // book PV by the same mark; an entry at its own model mark likewise), so any
+  // deviation is a genuine accounting leak: excluded held-lot PnL, a share
+  // position that went unmarked, a settlement whose surface vanished, or a fill
+  // priced away from the mark the book is carried at.
+  double financing_noncash_total = 0.0;
+  const auto liquidation_value = [&](const MarketSnapshot &snap,
+                                     const PriceTotals &book_totals) -> double {
+    double shares_mtm = 0.0;
+    for (const auto &[uid, n] : hedge_ledger.entries()) {
+      const SurfaceRef s = snap.find(uid);
+      if (s == nullptr) {
+        continue; // unvaluable; shows up as drift, which is the point
+      }
+      shares_mtm += n * s->pricing().S;
+    }
+    return (cash - cfg.financing.initial_cash) + book_totals.pv + shares_mtm +
+           financing_noncash_total;
+  };
+  const auto reconcile_row = [&](const std::string &date, double nav_v,
+                                 const PriceTotals &book_totals,
+                                 const MarketSnapshot &snap) -> Status {
+    if (!cfg.reconcile_nav) {
+      return Ok();
+    }
+    const double liq = liquidation_value(snap, book_totals);
+    out.nav_liquidation.push_back(liq);
+    const double drift = liq - nav_v;
+    if (!(std::fabs(drift) <= cfg.reconcile_nav_tol)) {
+      return Err(ErrorCode::Internal,
+                 "run_backtest: NAV reconciliation failed on " + date + " (nav=" +
+                     std::to_string(nav_v) + ", liquidation=" + std::to_string(liq) +
+                     ", drift=" + std::to_string(drift) +
+                     ", tol=" + std::to_string(cfg.reconcile_nav_tol) + ")");
+    }
+    return Ok();
   };
 
   // Signal series: names captured on the first recorded row, then one value per
@@ -1748,12 +2033,30 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
           vega = current_risk->vega[lot_index] / weight;
         }
       }
-      const double mark = lot.entry_price; // entry_mark (fill at mid)
+      const double mark = lot.entry_price; // the FILL price the strategy chose
+      // F2: the price the BOOK is carried at this row. Identical to the fill
+      // unless the caller opted into fill-slippage accounting, which makes the
+      // (fill - mark) gap a realized cost instead of an invisible one.
+      double model_mark = mark;
+      if (cfg.book_entry_fill_slippage) {
+        if (current_risk == nullptr || current_risk->status[lot_index] != PriceStatus::Ok) {
+          return Err(ErrorCode::NotFound,
+                     "run_backtest: no model mark to price entry fill slippage against for lot id=" +
+                         std::to_string(lot.id) + " uid=" + std::to_string(lot.contract.uid));
+        }
+        model_mark = current_risk->price[lot_index];
+      }
       const double hs = half_spread(mark, vega);
+      // Signed: positive whenever the fill is worse than the mark (buying above
+      // it, selling below it), negative on genuine price improvement.
+      const double fill_slippage = lot.qty * lot.multiplier * (mark - model_mark);
       const double leg_cost = std::fabs(lot.qty) * lot.multiplier * hs +
-                              cfg.frictions.per_contract_cost * std::fabs(lot.qty);
+                              cfg.frictions.per_contract_cost * std::fabs(lot.qty) + fill_slippage;
       ex.cost += leg_cost;
-      cash -= lot.qty * lot.multiplier * mark; // premium paid (long) / received (short)
+      // Premium at the CARRY mark; the fill/mark gap rides in `leg_cost`, and
+      // `cash -= ex.cost` below completes it — so cash still moves by exactly
+      // qty*multiplier*fill, and NAV now sees the gap too.
+      cash -= lot.qty * lot.multiplier * model_mark;
       ex.turnover_notional += std::fabs(lot.qty * lot.multiplier * mark);
       ex.turnover_vega += std::fabs(lot.qty * lot.multiplier * vega);
     }
@@ -1765,7 +2068,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
         continue;
       }
       const double T_res = residual_T(lot.expiry_ts_ns, base_snap.ts_ns());
-      const PricedSurface *s = base_snap.find(lot.contract.uid);
+      const SurfaceRef s = base_snap.find(lot.contract.uid);
       const std::optional<ReusableTargetMarkFrame::Match> exact_mark =
           close_marks != nullptr ? close_marks->find_ok(lot.id) : std::nullopt;
       double mark = exact_mark.has_value() ? exact_mark->raw_mark : 0.0;
@@ -1828,22 +2131,48 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     // per-uid whole-frame rescan (see HedgeLedger::hedge_daily).
     if (hedge_fires && current_risk != nullptr) {
       ATX_VOL_PROFILE_SCOPE(HedgeRisk);
-      hedge_ledger.hedge_daily(
+      // F1(a): no surface for a uid the hedge wants to trade => hard error. The
+      // pre-F1 lambda returned 0.0 here and the pass filled at spot 0.0.
+      ATX_TRY_VOID(hedge_ledger.hedge_daily(
           book.lots, *current_risk, hedge_spec.band, cfg.frictions.hedge_slippage_bps,
-          [&base_snap](std::uint32_t uid) -> double {
-            const PricedSurface *surface = base_snap.find(uid);
-            return surface != nullptr ? surface->pricing().S : 0.0;
+          [&base_snap](std::uint32_t uid) -> Result<double> {
+            const SurfaceRef surface = base_snap.find(uid);
+            if (surface == nullptr) {
+              return Err(ErrorCode::NotFound,
+                         "run_backtest: no surface for delta hedge on uid=" + std::to_string(uid) +
+                             " (share fill would price at spot 0.0)");
+            }
+            return Ok(surface->pricing().S);
           },
-          cash, ex.cost);
+          cash, ex.cost));
     }
 
     cash -= ex.cost; // realized frictions hit cash at fill
     return Ok(ex);
   };
 
+  // WS-ZC1: a backtest replays a SEALED corpus, and only the PRIVATE cache may be
+  // sealed — see the note on the fixed-book overload above.
+  //
+  // WS-F F5 (BT-T2): the strategy overload used to build its private cache with
+  // NO referenced set, on the reasoning that "on_step names are not known up
+  // front". That is false for a schedule-driven strategy — the schedule
+  // enumerates every uid it will ever touch — so a replay against a wide archive
+  // reconstructed the whole board on every date to price ~11 names.
+  // `IStrategy::referenced_uids()` lets a strategy that CAN answer say so; the
+  // empty default keeps the whole-board load for every strategy that cannot.
+  // Only the PRIVATE cache may be subsetted: a caller-supplied cache can be
+  // reused across books whose referenced sets differ, and a subset snapshot
+  // cached under one book would be missing another's uids.
+  const std::span<const std::uint32_t> strategy_uids = strat.referenced_uids();
   const std::shared_ptr<SnapshotCache> snapshot_cache =
       cfg.snapshot_cache ? cfg.snapshot_cache
-                         : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity);
+      : strategy_uids.empty()
+          ? std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity, ArchiveBacking::Sealed)
+          : std::make_shared<SnapshotCache>(
+                kPrivateSnapshotCacheCapacity,
+                std::vector<std::uint32_t>(strategy_uids.begin(), strategy_uids.end()),
+                ArchiveBacking::Sealed);
   auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
                                        cfg.query_cache_build_policy);
   if (!base_res) {
@@ -1909,6 +2238,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     push_row(refs[0].date, base->ts_ns(), nav, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
              0.0, 0.0, ex->cost, nav, cash, g_delta, g->total, ex->turnover_notional,
              ex->turnover_vega, book.lots.size(), 0.0, static_cast<double>(g->n_unpriced));
+    ATX_TRY_VOID(reconcile_row(refs[0].date, nav, g->total, *base));
     record_signals(*base);
   }
 
@@ -1961,29 +2291,79 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
         (static_cast<double>(shifted->ts_ns()) - static_cast<double>(base->ts_ns())) / kNsPerYear;
     double shares_pnl = 0.0;
     double financing = 0.0;
+    // F1(d): financing credited to NAV but NOT to the cash ledger (borrow + shares
+    // carry). The cash-carry leg below grows `cash` itself, so it must NOT be
+    // accumulated here or the reconciliation would double-count it.
+    double financing_noncash_step = 0.0;
+    // F1(b): hedge-share ledger entries this step could not value (base or shifted
+    // surface absent with a non-zero position).
+    std::uint32_t n_unpriced_shares = 0;
     if (cfg.financing.finance_premium) {
-      const double r = base->surfaces().front().pricing().r; // base-date rate
+      // Backing-agnostic (WS-ZC1): index 0 is the first archive-order surface whether
+      // this snapshot owns its surfaces or borrows mapped views.
+      const double r = base->surface_at(0).pricing().r; // base-date rate
       const double growth = std::exp(r * dt);
       financing += cash * (growth - 1.0); // cash carry on the pre-step balance
       cash *= growth;                     // apply to the ledger
     }
     for (const auto &[uid, n] : hedge_ledger.entries()) {
-      const PricedSurface *bs = base->find(uid);
-      const PricedSurface *ss = shifted->find(uid);
+      const SurfaceRef bs = base->find(uid);
+      const SurfaceRef ss = shifted->find(uid);
       if (bs == nullptr || ss == nullptr) {
+        // F1(b) (BT-P1-3): shares held across a surface gap used to be skipped in
+        // SILENCE — the position's move over the step vanished from NAV with no
+        // count, no flag and no error, and reappeared as an unexplained level
+        // shift when the surface came back. A flat (n == 0) ledger slot carries no
+        // economics, so only a live position is a valuation failure.
+        if (n != 0.0) {
+          if (cfg.unpriced == UnpricedLotPolicy::Error) {
+            return Err(ErrorCode::NotFound,
+                       "run_backtest: hedge share position on uid=" + std::to_string(uid) +
+                           " has no surface this step (shares=" + std::to_string(n) + ")");
+          }
+          ++n_unpriced_shares;
+        }
         continue;
       }
       const double Sb = bs->pricing().S;
       shares_pnl += n * (ss->pricing().S - Sb);                      // shares held over the step
       const double short_amt = std::max(0.0, -n);                    // |min(shares,0)|
-      financing += -cfg.financing.borrow_rate * short_amt * Sb * dt; // borrow (0 when rate 0)
+      const double borrow = -cfg.financing.borrow_rate * short_amt * Sb * dt; // 0 when rate 0
+      financing += borrow;
+      financing_noncash_step += borrow;
+      // F3(b): discrete dividend cash on every ex-date inside this step's
+      // (base, shifted] window. Long shares receive it, short shares pay it.
+      // This is a CASH event, not a modelled accrual, so it moves the ledger and
+      // is deliberately NOT part of `financing_noncash_step`.
+      bool uid_has_dividend_schedule = false;
+      double dividend_cash = 0.0;
+      for (const ShareDividend &div : cfg.financing.share_dividends) {
+        if (div.uid != uid) {
+          continue;
+        }
+        uid_has_dividend_schedule = true;
+        if (div.ex_ts_ns > base->ts_ns() && div.ex_ts_ns <= shifted->ts_ns()) {
+          dividend_cash += n * div.amount;
+        }
+      }
+      if (dividend_cash != 0.0) {
+        financing += dividend_cash;
+        cash += dividend_cash;
+      }
       if (cfg.financing.shares_carry) {
         // Buying shares has already reduced the financed cash balance, so cash
         // carry owns the funding cost when enabled. Charging r here too would
         // count it twice. Without cash financing, retain the standalone (q-r)
         // total-carry shortcut.
         const double funding_rate = cfg.financing.finance_premium ? 0.0 : bs->pricing().r;
-        financing += n * (bs->q_eff_at(0.25) - funding_rate) * Sb * dt;
+        // F3(b): a uid with a real dividend schedule books the CASH above, so its
+        // continuous yield proxy drops out (charging both double-counts). The
+        // funding leg is unaffected. uids with no schedule keep the pre-F3
+        // expression bit-for-bit.
+        const double q_proxy = uid_has_dividend_schedule ? 0.0 : bs->q_eff_at(0.25);
+        const double carry = n * (q_proxy - funding_rate) * Sb * dt;
+        financing += carry;
+        financing_noncash_step += carry;
       }
     }
 
@@ -1993,7 +2373,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       if (lot.expiry_ts_ns > base->ts_ns()) {
         continue;
       }
-      const PricedSurface *bs = base->find(lot.contract.uid);
+      const SurfaceRef bs = base->find(lot.contract.uid);
       if (bs == nullptr) {
         continue;
       }
@@ -2057,7 +2437,9 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     b_cost += ex->cost;
     b_turn_notl += ex->turnover_notional;
     b_turn_vega += ex->turnover_vega;
-    b_nunpriced += static_cast<double>(step->n_unpriced);
+    // F1(b): unpriced hedge-share positions join the row's exclusion count.
+    b_nunpriced += static_cast<double>(step->n_unpriced) + static_cast<double>(n_unpriced_shares);
+    financing_noncash_total += financing_noncash_step;
 
     // 7. Record @ granularity: book greeks (net delta incl. shares) + B2 columns.
     const bool is_last = (i + 1 == refs.size());
@@ -2082,6 +2464,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
                b_theta, b_rho, b_charm, b_unexpl, b_settle, b_shares, b_fin, b_cost, nav, cash,
                g_delta, g->total, b_turn_notl, b_turn_vega, book.lots.size(), b_nunpriced,
                static_cast<double>(g->n_unpriced));
+      ATX_TRY_VOID(reconcile_row(refs[i].date, nav, g->total, *base));
       record_signals(*base);
       b_total = b_delta = b_gamma = b_vega = b_vanna = b_volga = 0.0;
       b_theta = b_rho = b_charm = b_unexpl = b_settle = 0.0;

@@ -10,10 +10,9 @@
 //     lanes match the reference to T13's stress gate, fallback rate < 100%;
 //   * per-lane status/route + preserved output order + tail residues + empty no-op.
 //
-// american_greeks_batch is the SoA surface over the EXISTING scalar T9 Greek route
-// (american_greeks_fd), so the batch is bit-identical to a per-contract loop; the
-// GreekFieldMask writes only the requested columns; every lane's route is Scalar
-// (there is no vectorized Greek stencil — documented in the header).
+// american_greeks_batch keeps the scalar T9 FD route bit-identical to a
+// per-contract loop. Its analytic route groups both puts and calls into their
+// side-native SIMD bundles while preserving public order and per-lane status.
 
 #include "atx/vol/american_batch.hpp"
 
@@ -25,6 +24,9 @@
 #include <barrier>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <thread>
@@ -291,6 +293,60 @@ TEST(AmericanPriceBatch, DefaultKernelRoutesShipGatedAvx2Lanes) {
   EXPECT_GT(n_avx2, 0u);                          // genuine American lanes exercised the vector kernel
   EXPECT_LT(out.scalar_fallback_rate(), 1.0);
   EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceScalar);  // untouched
+}
+
+// ── The pack-dispatch counter observes THIS entry too (REVWSA finding 6). ────
+// `AmericanAvxPackDispatches` used to be bumped only inside
+// american_price_batch_resolved, so the complete AVX2 packs dispatched from
+// american_price_batch — the laned flagship, and the entry the Python binding calls
+// — were invisible to it. The counter's name promises "packs actually dispatched to
+// AVX2"; it delivered "packs dispatched by one of the two entries". The routing half
+// of this test runs in every build; the count half needs ATX_VOL_COUNTERS=ON.
+TEST(AmericanPriceBatch, AvxPackDispatchesAreCountedOnThisEntryToo) {
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on this host";
+  }
+  IsaGuard g;
+  // 14 genuine American put lanes (r > q > 0, T > 0, sigma > 0 -> is_kernel_lane) =>
+  // floor(14/4) = 3 complete 4-lane packs, and a 2-lane tail the AVX2 driver prices
+  // scalar itself (american_boundary_avx2.cpp:104) without dispatching.
+  Book b;
+  for (double m : {0.8, 0.9, 0.95, 1.0, 1.05, 1.1, 1.25}) {
+    for (double t : {0.25, 0.75}) {
+      b.push(100.0, 100.0 * m, t, 0.25, 0.05, 0.01, Side::Put);
+    }
+  }
+  ASSERT_EQ(b.size(), 14u);
+
+  PricingKernel kernel;
+  kernel.isa = simd::SimdIsa::ForceAvx2;
+  PricingWorkspace ws;
+  PriceBatchOutput out;
+  if constexpr (counters::counters_enabled()) {
+    counters::reset();
+  }
+  ASSERT_TRUE(american_price_batch(b.view(), out, kernel, ws).has_value());
+
+  // Anti-vacuity: all 14 must be kernel lanes, else m — and therefore m/4 — is not
+  // the number this test claims to pin.
+  std::size_t n_pack_lanes = 0;
+  for (std::size_t i = 0; i < b.size(); ++i) {
+    n_pack_lanes += (out.route[i] == simd::SimdRoute::Avx2) ? 1u : 0u;
+  }
+  ASSERT_EQ(n_pack_lanes, 14u) << "every lane must reach the pack for the count below";
+
+  if constexpr (counters::counters_enabled()) {
+    // Printed, not merely asserted: under the gate's counters-OFF build this whole
+    // block vanishes, so a counters-ON run is the ONLY thing that ever observes the
+    // bump (REVA7FIX §7). Emitting the value makes such a run self-documenting
+    // instead of leaving "the assertion did not fail" as the only evidence.
+    const std::uint64_t packs =
+        counters::snapshot().get(counters::Counter::AmericanAvxPackDispatches);
+    std::printf("[REVA7FIX] american_price_batch AVX2 pack dispatches = %llu "
+                "(expected floor(14/4) = 3)\n",
+                static_cast<unsigned long long>(packs));
+    EXPECT_EQ(packs, 3u);
+  }
 }
 
 // ── ForceAvx2: Scalar lanes bit-exact, Avx2 lanes within T13's stress gate ─
@@ -1225,6 +1281,170 @@ TEST(AmericanPutGreeksBatchAvx2, DeltaOnlyZeroesUnrequestedAcrossHandledAndPatch
   EXPECT_NEAR(g[1].delta, ref->delta, 1e-6);
 }
 
+// ── P1b: laned analytic CALL Greeks bundle (american_call_greeks_batch, AVX2) ──
+//
+// Call-native mirror of the K3 put parity gate. Under McDonald-Schroder C(S,K,r,q)=
+// P(K,S,q,r) the kernel solves the internal put (rate=q, yield=r, internal-strike=S) and
+// prices the call spot stencils by strike homogeneity. Parity:
+//  * ForceScalar route == american_greeks_al(Side::Call), BIT-identical (it IS the oracle);
+//  * ForceAvx2 route == american_greeks_al(Side::Call) within the economic gate — the AVX2
+//    transcendentals in the stencil prices + the ~1 ULP xmax strike-rescale, amplified by
+//    the FD denominators (documented per-greek below).
+TEST(AmericanCallGreeksBatchAvx2, MatchesScalarAl) {
+  // Genuine early-exercise American CALLS (q>0 drives early exercise), moneyness x
+  // maturity x vol x yield grid.
+  struct C { double S, K, T, sigma, r, q; };
+  std::vector<C> g;
+  const double S = 100.0;
+  for (double m : {0.80, 0.90, 0.95, 1.00, 1.05, 1.10, 1.20}) {
+    for (double t : {0.08, 0.25, 0.75, 2.0}) {
+      for (double v : {0.15, 0.25, 0.40}) {
+        for (double qy : {0.03, 0.06}) {
+          g.push_back(C{S, S / m, t, v, 0.01, qy});
+        }
+      }
+    }
+  }
+  const std::size_t n = g.size();
+  std::vector<double> vS(n), vK(n), vT(n), vsig(n), vr(n), vq(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    vS[i] = g[i].S; vK[i] = g[i].K; vT[i] = g[i].T;
+    vsig[i] = g[i].sigma; vr[i] = g[i].r; vq[i] = g[i].q;
+  }
+
+  // ForceScalar route == american_greeks_al(Side::Call), bit-identical.
+  std::vector<AmericanGreeks> scl(n);
+  const simd::SimdRoute sroute = simd::american_call_greeks_batch(
+      vS.data(), vK.data(), vT.data(), vsig.data(), vr.data(), vq.data(), n,
+      std::nullopt, scl.data(), simd::SimdIsa::ForceScalar);
+  EXPECT_EQ(sroute, simd::SimdRoute::Scalar);
+  for (std::size_t i = 0; i < n; ++i) {
+    const auto al = american_greeks_al(vS[i], vK[i], vT[i], vsig[i], vr[i], vq[i], Side::Call);
+    ASSERT_TRUE(al.has_value()) << "i=" << i;
+    EXPECT_EQ(scl[i], *al) << "ForceScalar must equal american_greeks_al(Call) bit-for-bit, i=" << i;
+  }
+
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on host (scalar parity checked above)";
+  }
+
+  // ForceAvx2 route == american_greeks_al(Side::Call) within the economic gate.
+  std::vector<AmericanGreeks> avx(n);
+  const simd::SimdRoute aroute = simd::american_call_greeks_batch(
+      vS.data(), vK.data(), vT.data(), vsig.data(), vr.data(), vq.data(), n,
+      std::nullopt, avx.data(), simd::SimdIsa::ForceAvx2);
+  EXPECT_EQ(aroute, simd::SimdRoute::Avx2);
+
+  auto reld = [](double a, double b, double floor) {
+    return std::abs(a - b) / std::max({std::abs(a), std::abs(b), floor});
+  };
+  double mp = 0, md = 0, mg = 0, mv = 0, mvl = 0, mr = 0, mvn = 0, mt = 0, mc = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const AmericanGreeks a = avx[i], s = scl[i];
+    mp = std::max(mp, reld(a.price, s.price, 1e-6));
+    md = std::max(md, reld(a.delta, s.delta, 1e-6));
+    mg = std::max(mg, reld(a.gamma, s.gamma, 1e-6));
+    mv = std::max(mv, reld(a.vega, s.vega, 1e-4));
+    mvl = std::max(mvl, reld(a.volga, s.volga, 1e-3));
+    mr = std::max(mr, reld(a.rho, s.rho, 1e-4));
+    mvn = std::max(mvn, reld(a.vanna, s.vanna, 1e-5));
+    mt = std::max(mt, reld(a.theta, s.theta, 1e-4));
+    mc = std::max(mc, reld(a.charm, s.charm, 1e-4));
+  }
+  std::printf("[P1b laned-call-greeks parity] rel-dev vs american_greeks_al(Call) (n=%zu): "
+              "price=%.2e delta=%.2e gamma=%.2e vega=%.2e volga=%.2e rho=%.2e "
+              "vanna=%.2e theta=%.2e charm=%.2e\n",
+              n, mp, md, mg, mv, mvl, mr, mvn, mt, mc);
+  // Economic gate. Measured on this dev box (n=168): price 3.5e-9, delta 7.9e-8,
+  // gamma 2.0e-6, vega 7.1e-8, volga 4.7e-6, rho 6.0e-7, vanna 1.4e-6, theta 2.2e-6,
+  // charm 1.3e-5 — all RELATIVE. These sit ~1 order above the put kernel's (price 1.6e-10,
+  // delta 5.7e-9) because the call path carries the McDonald-Schroder strike-homogeneity
+  // rescale (xmax(S2)=XMAX·S2/S, ~1 ULP) and prices at spot=K/strike=S2 rather than the
+  // scalar's operand ordering — on top of the shared AVX2 stencil transcendentals, all
+  // amplified by the FD denominators. Economically nil: the worst column is a 1.3e-5
+  // RELATIVE charm move and price agrees to 3.5e-9 relative, 10+ orders below a tick.
+  // Gates set with headroom over measured for cross-host robustness, still orders under
+  // any order-1 formula/sign bug.
+  EXPECT_LT(mp, 5e-8) << "price";
+  EXPECT_LT(md, 1e-6) << "delta";
+  EXPECT_LT(mg, 1e-5) << "gamma";
+  EXPECT_LT(mv, 1e-6) << "vega";
+  EXPECT_LT(mvl, 1e-4) << "volga";
+  EXPECT_LT(mr, 1e-5) << "rho";
+  EXPECT_LT(mvn, 1e-5) << "vanna";
+  EXPECT_LT(mt, 5e-5) << "theta";
+  EXPECT_LT(mc, 2e-4) << "charm";
+}
+
+// FIX-1 / F1 (rev-ws-g M1-1): the A9 unrequested-column zeroing must apply to the CALL
+// batch's scalar-patch path exactly as it does to the put batch's.
+//
+// The merge that produced this file's trunk took the A9 zeroing from one parent (which had
+// only the put wrapper) and the call wrapper from the other (which had no zeroing), so the
+// union lost the pairing. Consequence on a live path: solve_pnl_uniques sets
+// base_needs.rho = (dr != 0.0), so on an ordinary no-rate-shift P&L step an AVX2-handled
+// call lane returns rho == 0 while a scalar-patched call lane returns the FD oracle's fully
+// populated rho — the same output column carrying an ISA- and lane-dependent value.
+//
+// The batch below straddles the patch boundary deliberately: n=3 is not a multiple of the
+// 4-wide pack, and lane 1 carries q <= 0, which fails the call kernel's American-regime
+// eligibility (classify_regime(q, r)) and is therefore serviced by the scalar oracle while
+// lanes 0 and 2 are vector-handled.
+TEST(AmericanCallGreeksBatchAvx2, DeltaOnlyZeroesUnrequestedAcrossHandledAndPatchedLanes) {
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on host";
+  }
+  // Lane 0: q=0.06 > 0 -> American call, vector-handled.
+  // Lane 1: q=-0.01 <= 0 -> not American -> scalar patch (the RED-before lane).
+  // Lane 2: q=0.03 > 0 -> American call, vector-handled.
+  const std::vector<double> S = {100, 100, 100};
+  const std::vector<double> K = {100, 100, 100};
+  const std::vector<double> T = {0.5, 0.5, 0.5};
+  const std::vector<double> sig = {0.25, 0.25, 0.25};
+  const std::vector<double> r = {0.01, 0.02, 0.01};
+  const std::vector<double> q = {0.06, -0.01, 0.03};
+  const std::size_t n = S.size();
+
+  // Anti-vacuity: request the FULL bundle first and prove the patched lane genuinely
+  // carries nonzero vega/rho/charm. Without this the "== 0.0" assertions below could pass
+  // simply because the lane's greeks happen to vanish.
+  std::vector<AmericanGreeks> full(n);
+  const simd::SimdRoute froute = simd::american_call_greeks_batch(
+      S.data(), K.data(), T.data(), sig.data(), r.data(), q.data(), n, std::nullopt,
+      full.data(), simd::SimdIsa::ForceAvx2, /*need_vega=*/true, /*need_rho=*/true,
+      /*need_charm=*/true);
+  EXPECT_EQ(froute, simd::SimdRoute::Avx2);
+  EXPECT_NE(full[1].vega, 0.0) << "patched lane must have a nonzero vega when requested";
+  EXPECT_NE(full[1].rho, 0.0) << "patched lane must have a nonzero rho when requested";
+  EXPECT_NE(full[1].charm, 0.0) << "patched lane must have a nonzero charm when requested";
+
+  // Delta-only request: no vega, no rho, no charm.
+  std::vector<AmericanGreeks> g(n);
+  const simd::SimdRoute route = simd::american_call_greeks_batch(
+      S.data(), K.data(), T.data(), sig.data(), r.data(), q.data(), n, std::nullopt, g.data(),
+      simd::SimdIsa::ForceAvx2, /*need_vega=*/false, /*need_rho=*/false, /*need_charm=*/false);
+  EXPECT_EQ(route, simd::SimdRoute::Avx2);
+  for (std::size_t i = 0; i < n; ++i) {
+    // Requested columns finite in every lane (all three are priceable at their base).
+    EXPECT_TRUE(std::isfinite(g[i].price)) << "i=" << i;
+    EXPECT_TRUE(std::isfinite(g[i].delta)) << "i=" << i;
+    EXPECT_TRUE(std::isfinite(g[i].gamma)) << "i=" << i;
+    EXPECT_TRUE(std::isfinite(g[i].theta)) << "i=" << i;
+    // Unrequested columns are exactly 0 in EVERY lane (vector-handled AND scalar-patched).
+    EXPECT_EQ(g[i].vega, 0.0) << "i=" << i;
+    EXPECT_EQ(g[i].volga, 0.0) << "i=" << i;
+    EXPECT_EQ(g[i].vanna, 0.0) << "i=" << i;
+    EXPECT_EQ(g[i].rho, 0.0) << "i=" << i;
+    EXPECT_EQ(g[i].charm, 0.0) << "i=" << i;
+  }
+  // The scalar-patched lane still serves the REQUESTED columns from the scalar oracle.
+  const auto ref = american_greeks_al(S[1], K[1], T[1], sig[1], r[1], q[1], Side::Call,
+                                      std::nullopt);
+  ASSERT_TRUE(ref.has_value());
+  EXPECT_NEAR(g[1].delta, ref->delta, 1e-12);
+  EXPECT_NEAR(g[1].price, ref->price, 1e-12);
+}
+
 // Greeks batch: bit-identical to per-contract american_greeks_fd.
 Book make_american_greeks_book() {
   Book b;
@@ -1240,9 +1460,10 @@ Book make_american_greeks_book() {
   return b;
 }
 
-// american_greeks_batch SoA surface routes analytic PUT lanes through the K3 laned
-// bundle when AVX2 is selected; CALL lanes + FD route stay scalar. ForceAvx2(analytic)
-// must match ForceScalar(analytic) within the economic gate (puts) / bit (calls).
+// american_greeks_batch SoA surface routes both analytic sides through their K3
+// laned bundles when AVX2 is selected. ForceAvx2(analytic) must match
+// ForceScalar(analytic) within each kernel's documented economic gate, retain
+// mixed-book order, and report the selected route/status for both sides.
 TEST(AmericanGreeksBatchLaned, AnalyticAvx2MatchesScalar) {
   if (!simd::have_avx2()) {
     GTEST_SKIP() << "no AVX2 on host";
@@ -1252,7 +1473,8 @@ TEST(AmericanGreeksBatchLaned, AnalyticAvx2MatchesScalar) {
   auto run = [&](simd::SimdIsa isa, std::vector<double>& dl, std::vector<double>& gm,
                  std::vector<double>& vg, std::vector<double>& th, std::vector<double>& rh,
                  std::vector<double>& vn, std::vector<double>& vl, std::vector<double>& cm,
-                 std::vector<double>& px) {
+                 std::vector<double>& px, std::vector<LaneStatus>& status,
+                 std::vector<simd::SimdRoute>& route) {
     dl.assign(n, 0); gm.assign(n, 0); vg.assign(n, 0); th.assign(n, 0); rh.assign(n, 0);
     vn.assign(n, 0); vl.assign(n, 0); cm.assign(n, 0); px.assign(n, 0);
     simd::GreeksBatchSoA out{dl.data(), gm.data(), vg.data(), th.data(), rh.data(),
@@ -1262,24 +1484,95 @@ TEST(AmericanGreeksBatchLaned, AnalyticAvx2MatchesScalar) {
     kernel.isa = isa;
     PricingWorkspace ws;
     ASSERT_TRUE(american_greeks_batch(b.view(), GreekFieldMask::All, out, kernel, ws).has_value());
+    status.assign(ws.lane_status_view().begin(), ws.lane_status_view().end());
+    route.assign(ws.lane_route_view().begin(), ws.lane_route_view().end());
   };
   std::vector<double> ad, ag, av_, at, ar, avn, avl, ac, ap;
   std::vector<double> sd, sg, sv, st, sr, svn, svl, sc, sp;
-  run(simd::SimdIsa::ForceAvx2, ad, ag, av_, at, ar, avn, avl, ac, ap);
-  run(simd::SimdIsa::ForceScalar, sd, sg, sv, st, sr, svn, svl, sc, sp);
+  std::vector<LaneStatus> ast, sst;
+  std::vector<simd::SimdRoute> art, srt;
+  run(simd::SimdIsa::ForceAvx2, ad, ag, av_, at, ar, avn, avl, ac, ap, ast, art);
+  run(simd::SimdIsa::ForceScalar, sd, sg, sv, st, sr, svn, svl, sc, sp, sst, srt);
   auto reld = [](double a, double c, double floor) {
     return std::abs(a - c) / std::max({std::abs(a), std::abs(c), floor});
   };
   for (std::size_t i = 0; i < n; ++i) {
-    EXPECT_LT(reld(ap[i], sp[i], 1e-6), 1e-9) << "price i=" << i;
-    EXPECT_LT(reld(ad[i], sd[i], 1e-6), 1e-8) << "delta i=" << i;
+    const bool call = b.side[i] == Side::Call;
+    EXPECT_EQ(ast[i], sst[i]) << "status i=" << i;
+    EXPECT_EQ(ast[i], LaneStatus::Ok) << "status i=" << i;
+    EXPECT_EQ(art[i], simd::SimdRoute::Avx2) << "AVX route i=" << i;
+    EXPECT_EQ(srt[i], simd::SimdRoute::Scalar) << "scalar route i=" << i;
+    EXPECT_LT(reld(ap[i], sp[i], 1e-6), call ? 5e-8 : 1e-9)
+        << "price i=" << i;
+    EXPECT_LT(reld(ad[i], sd[i], 1e-6), call ? 1e-6 : 1e-8)
+        << "delta i=" << i;
     EXPECT_LT(reld(ag[i], sg[i], 1e-6), 1e-5) << "gamma i=" << i;
-    EXPECT_LT(reld(av_[i], sv[i], 1e-4), 1e-7) << "vega i=" << i;
-    EXPECT_LT(reld(ar[i], sr[i], 1e-4), 1e-6) << "rho i=" << i;
+    EXPECT_LT(reld(av_[i], sv[i], 1e-4), call ? 1e-6 : 1e-7)
+        << "vega i=" << i;
+    EXPECT_LT(reld(ar[i], sr[i], 1e-4), call ? 1e-5 : 1e-6)
+        << "rho i=" << i;
     EXPECT_LT(reld(avn[i], svn[i], 1e-5), 1e-5) << "vanna i=" << i;
     EXPECT_LT(reld(avl[i], svl[i], 1e-3), 1e-4) << "volga i=" << i;
-    EXPECT_LT(reld(at[i], st[i], 1e-4), 1e-5) << "theta i=" << i;
-    EXPECT_LT(reld(ac[i], sc[i], 1e-4), 1e-4) << "charm i=" << i;
+    EXPECT_LT(reld(at[i], st[i], 1e-4), call ? 5e-5 : 1e-5)
+        << "theta i=" << i;
+    EXPECT_LT(reld(ac[i], sc[i], 1e-4), call ? 2e-4 : 1e-4)
+        << "charm i=" << i;
+  }
+}
+
+// A call-only book larger than the generic driver's fixed 256-lane scratch
+// chunk proves that calls are submitted to the laned kernel (including the
+// second-chunk tail), then scattered back to their original positions. This is
+// a non-timing throughput gate: a regression to the old scalar call fan changes
+// every route below back to Scalar without relying on noisy wall-clock ratios.
+TEST(AmericanGreeksBatchLaned, CallHeavyCrossChunkRoutesAndPreservesOrder) {
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on host";
+  }
+  Book b;
+  constexpr std::size_t n = 257;
+  constexpr double strikes[] = {72.0, 88.0, 97.0, 103.0, 119.0, 137.0};
+  constexpr double tenors[] = {0.08, 0.25, 0.75, 1.5};
+  constexpr double vols[] = {0.16, 0.24, 0.39};
+  constexpr double yields[] = {0.03, 0.055, 0.08};
+  for (std::size_t i = 0; i < n; ++i) {
+    b.push(100.0, strikes[(i * 5) % std::size(strikes)],
+           tenors[(i * 3) % std::size(tenors)],
+           vols[(i * 7) % std::size(vols)], 0.01,
+           yields[(i * 11) % std::size(yields)], Side::Call);
+  }
+
+  std::vector<double> delta(n, 0.0), price(n, 0.0);
+  simd::GreeksBatchSoA out;
+  out.delta = delta.data();
+  out.price = price.data();
+  PricingKernel kernel;
+  kernel.analytic_greeks = true;
+  kernel.isa = simd::SimdIsa::Auto; // production default; ship gate is ON
+  PricingWorkspace ws;
+  ASSERT_TRUE(american_greeks_batch(
+                  b.view(), GreekFieldMask::Delta | GreekFieldMask::Price,
+                  out, kernel, ws)
+                  .has_value());
+
+  const auto reld = [](double a, double c, double floor) {
+    return std::abs(a - c) / std::max({std::abs(a), std::abs(c), floor});
+  };
+  ASSERT_EQ(ws.lane_route_view().size(), n);
+  ASSERT_EQ(ws.lane_status_view().size(), n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const auto ref = american_greeks_al(
+        b.S[i], b.K[i], b.T[i], b.sigma[i], b.r[i], b.q[i],
+        Side::Call, std::nullopt, /*need_vega=*/false,
+        /*need_rho=*/false, /*need_charm=*/false);
+    ASSERT_TRUE(ref.has_value()) << "i=" << i;
+    EXPECT_EQ(ws.lane_route_view()[i], simd::SimdRoute::Avx2)
+        << "call lane missed laned dispatch i=" << i;
+    EXPECT_EQ(ws.lane_status_view()[i], LaneStatus::Ok) << "i=" << i;
+    EXPECT_LT(reld(price[i], ref->price, 1e-6), 5e-8)
+        << "price/order i=" << i;
+    EXPECT_LT(reld(delta[i], ref->delta, 1e-6), 1e-6)
+        << "delta/order i=" << i;
   }
 }
 
@@ -1310,9 +1603,6 @@ TEST(AmericanGreeksBatchLaned, FirstOrderMaskBitMatchesFullBundle) {
       fd, fg, ft, fp);
   run(GreekFieldMask::All, ad, ag, at, ap);
   for (std::size_t i = 0; i < n; ++i) {
-    if (b.side[i] != Side::Put) {
-      continue; // calls go through the scalar fan either way
-    }
     EXPECT_EQ(fp[i], ap[i]) << "price i=" << i;
     EXPECT_EQ(fd[i], ad[i]) << "delta i=" << i;
     EXPECT_EQ(fg[i], ag[i]) << "gamma i=" << i;
@@ -1412,6 +1702,100 @@ TEST(AmericanGreeksBatch, EmptyIsNoOp) {
   ASSERT_TRUE(
       american_greeks_batch(in, GreekFieldMask::All, out, kernel, ws)
           .has_value());
+}
+
+// ── FIX-5 / I3 — the SECOND laned-Greek driver: american_greeks_batch's two
+//    Ok-stamps must guard the REQUESTED set, and must agree across sides. ─────
+//
+// american_greeks_batch historically stamped LaneStatus from two different places:
+// scalar `price_lane` and the put-only laned `flush`. Neither consulted GreekNeeds,
+// so a bundle with a finite mark and a NaN in a REQUESTED column was certified Ok.
+// Both side-native laned routes now share the same requested-field predicate; the
+// tests remain a cross-side guard on that contract.
+//
+// The defect is pre-existing, but WS-Y made this function public Python API
+// (python/src/bindings/pricing.cpp, called with GreekFieldMask::All — every Greek
+// requested and, pre-fix, none guarded), so the sprint changed its exposure.
+//
+// Trigger is G1's: at S = 1e-160 the FD gamma denominator hS*hS = (1e-3*S)^2
+// underflows to 0.0 while the mark stays finite, so gamma = 0/0 = NaN on a
+// SUCCESSFUL bundle. Both sides are driven in ONE call.
+constexpr double kI3TinyS = 1.0e-160;
+
+TEST(AmericanGreeksBatch, I3_OkStampGuardsTheRequestedGreekSetOnBothSides) {
+  // Kernel-level precondition, asserted for BOTH sides: a SUCCESSFUL differenced
+  // bundle with a finite mark and a non-finite gamma.
+  for (const Side sd : {Side::Put, Side::Call}) {
+    const auto probe =
+        american_greeks_fd(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, sd);
+    ASSERT_TRUE(probe.has_value()) << "side " << static_cast<int>(sd);
+    EXPECT_TRUE(std::isfinite(probe->price)) << "side " << static_cast<int>(sd);
+    EXPECT_FALSE(std::isfinite(probe->gamma)) << "side " << static_cast<int>(sd);
+  }
+
+  // Identical inputs modulo `side`, in the SAME call — the asymmetry's own shape.
+  Book b;
+  b.push(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, Side::Put);
+  b.push(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, Side::Call);
+  const std::size_t n = b.size();
+  std::vector<double> px(n, 0.0), gm(n, 0.0), dl(n, 0.0);
+  simd::GreeksBatchSoA out;
+  out.price = px.data();
+  out.gamma = gm.data();
+  out.delta = dl.data();
+  PricingKernel kernel; // FD route (analytic_greeks defaults false)
+  PricingWorkspace ws;
+  // GreekFieldMask::All is exactly what the Python binding passes.
+  ASSERT_TRUE(american_greeks_batch(b.view(), GreekFieldMask::All, out, kernel, ws)
+                  .has_value());
+
+  // Half 1 — a NaN in a REQUESTED column may not be certified Ok. Pre-fix both
+  // lanes were LaneStatus::Ok carrying a NaN gamma.
+  EXPECT_EQ(ws.lane_status_view()[0], LaneStatus::Unsupported) << "put lane";
+  EXPECT_EQ(ws.lane_status_view()[1], LaneStatus::Unsupported) << "call lane";
+
+  // Half 2 — and the two sides agree, which is the property that makes the
+  // put/call split structurally impossible rather than merely absent today.
+  EXPECT_EQ(ws.lane_status_view()[0], ws.lane_status_view()[1])
+      << "same input modulo side, different status";
+}
+
+TEST(AmericanGreeksBatch, I3_AnalyticRoutePutAndCallStampsAgree) {
+  // Both sides now go through side-native laned bundles. Same input modulo side,
+  // same call, so whatever either stamp decides, both must decide it — and an Ok
+  // lane must carry finite requested Greeks.
+  if (!simd::have_avx2()) {
+    GTEST_SKIP() << "analytic laned put route needs an AVX2 host";
+  }
+  Book b;
+  b.push(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, Side::Put);
+  b.push(kI3TinyS, 100.0, 0.05, 0.9, 0.043, 0.02, Side::Call);
+  const std::size_t n = b.size();
+  std::vector<double> px(n, 0.0), gm(n, 0.0), dl(n, 0.0), th(n, 0.0);
+  simd::GreeksBatchSoA out;
+  out.price = px.data();
+  out.gamma = gm.data();
+  out.delta = dl.data();
+  out.theta = th.data();
+  PricingKernel kernel;
+  kernel.analytic_greeks = true;
+  kernel.isa = simd::SimdIsa::Auto;
+  PricingWorkspace ws;
+  ASSERT_TRUE(american_greeks_batch(b.view(), GreekFieldMask::All, out, kernel, ws)
+                  .has_value());
+
+  EXPECT_EQ(ws.lane_status_view()[0], ws.lane_status_view()[1])
+      << "analytic put (laned) and call (scalar) stamps disagree on the same input";
+  for (std::size_t i = 0; i < n; ++i) {
+    if (ws.lane_status_view()[i] != LaneStatus::Ok) {
+      continue;
+    }
+    // An Ok lane's REQUESTED columns are finite — the whole point of the stamp.
+    EXPECT_TRUE(std::isfinite(px[i])) << "lane " << i << " price";
+    EXPECT_TRUE(std::isfinite(dl[i])) << "lane " << i << " delta";
+    EXPECT_TRUE(std::isfinite(gm[i])) << "lane " << i << " gamma";
+    EXPECT_TRUE(std::isfinite(th[i])) << "lane " << i << " theta";
+  }
 }
 
 } // namespace

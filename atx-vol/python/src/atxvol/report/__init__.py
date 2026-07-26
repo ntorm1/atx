@@ -20,6 +20,7 @@ from __future__ import annotations
 from . import charts, theme
 from .charts import Series, bar_chart, line_chart, small_multiple
 from .components import (
+    Banner,
     Column,
     FacetGrid,
     Figure,
@@ -43,7 +44,7 @@ from .parity import (
 __all__ = [
     "charts", "theme",
     "Series", "line_chart", "bar_chart", "small_multiple",
-    "Report", "Section", "Prose", "Subhead", "Raw", "Note",
+    "Report", "Section", "Prose", "Subhead", "Raw", "Note", "Banner",
     "Stat", "StatRow", "Table", "Column", "Figure", "FacetGrid",
     "ParityStats", "build_parity_report", "build_parity_report_from_archive",
     "compute_parity_stats",

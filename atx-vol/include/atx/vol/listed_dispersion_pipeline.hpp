@@ -42,12 +42,16 @@ namespace atx::vol {
 // atx/vol/run_diagnostics.hpp; the .cpp includes it for the definition.
 class PhaseTimer;
 
-// Per-vol-point → per-unit-vol factor (M9 / I4). `spec.gross_index_vega` is dollars
-// vega per VOL POINT per side; the library dispersion configs take dollars vega per
-// UNIT vol (a unit vol is 100 vol points), so the boundary that hands the library a
-// target vega scales by exactly this. Replaces the hand-applied literal `* 100.0`
-// scattered at two boundaries in the example. The extraction must be sizing-exact.
-inline constexpr double kVegaVolPointToUnitVol = 100.0;
+// DELETED (C-2 follow-up): `kVegaVolPointToUnitVol = 100.0`, the per-vol-point →
+// per-unit-vol factor (M9 / I4). It was a FIFTH spelling of the vol-point
+// conversion, and by this tip it was DEAD: E1 redefined
+// `DispersionConfig::target_vega` as dollars per VOL POINT, which abolished the
+// boundary the constant existed to serve, and the only remaining references were
+// this declaration, four comments describing a boundary that no longer exists,
+// and two tests asserting `kVegaVolPointToUnitVol == 100.0` — i.e. `x == x`. A
+// spare, unused spelling of a unit constant is exactly how a unit drifts back
+// apart; the ONE per-contract conversion is `contract_vega_per_vol_point`
+// (dispersion.hpp), and the ONE per-unit-vol scale is `kVegaPerVolPoint` beside it.
 
 // The versioned authority for the listed route's ENTRY AND ACCEPTANCE FLOORS,
 // replacing the loose inline literals that were scattered across build-corpus and
@@ -175,9 +179,41 @@ struct ListedScheduleSpec {
   double roll_dte_days{7.0};
   std::size_t min_names{10};
   double min_weight_coverage{0.8};
+  // UNIT: DOLLARS OF VEGA PER VOL POINT. Assigned straight through to
+  // `ListedScheduleBuildConfig::gross_index_vega_target_per_vol_point`
+  // (in `build_listed_dispersion_schedule`, listed_dispersion_pipeline.cpp:294),
+  // whose name states the unit this bare
+  // `double` does not. Since E1 this is ALSO the unit of
+  // `DispersionConfig::target_vega` and `DispersionBacktestConfig::
+  // gross_index_vega`, which is the point of E1: handed the same number, the
+  // listed and projected routes now build the same-sized book (REV-TAIL M-6).
   double gross_index_vega{10000.0};
   bool core_mode{false};
+  // F6 quote-quality admission (REV-FIXTAIL I-A). This member is why the three
+  // `quote_*` spec keys are now honoured on the SHIPPED `build-schedule` and not
+  // only on the library-only `dispersion_build_schedule`. Before it existed the
+  // keys parsed, validated, were echoed into `run_config.tsv` as EFFECTIVE, and
+  // reached no shipped selection. The default is exactly what the selection loop
+  // default-constructed, so wiring it moves nothing.
+  ListedQuoteQualityConfig quality{};
 };
+
+// The `ListedDispersionSelectionConfig` the schedule builder's selection loop
+// runs under, built from the swept spec. One named function rather than four
+// assignments inline (REV-FIXTAIL I-A) for the reason `make_listed_replay_run_
+// config` is one: a knob that is copied here is provably reachable and one that
+// is not is provably dead, and a test can call THIS instead of restating it
+// under a "verbatim" comment that cannot fail.
+//
+// REV-MTIDY M-6: that was true of the SHIPPED route only until now — the
+// library twin `dispersion_build_schedule` hand-built the same five assignments
+// itself, so a fifth selection knob still had to be added in two places and only
+// one of them had a test. Both routes now reach this through
+// `listed_schedule_spec_from` (dispersion_run.hpp), so this really is the single
+// construction point the sentence above claims, and `DispersionScheduleSpecFrom.*`
+// (dispersion_run_test.cpp) covers the composition both of them perform.
+[[nodiscard]] ListedDispersionSelectionConfig
+listed_selection_config_from(const ListedScheduleSpec &spec);
 
 // The entry/three-roll acceptance gate, factored out of the schedule builder so it
 // is unit-testable without live parquet. Verbatim behavior of the example's final
@@ -192,6 +228,13 @@ struct ListedScheduleSpec {
 [[nodiscard]] Status accept_listed_schedule(const ListedDispersionSchedule &schedule,
                                             const ListedScheduleSpec &spec,
                                             const ListedDispersionMethodology &method);
+
+// Optional audit sink invoked for every date on which quote selection runs,
+// including failed selections. This keeps the production CLI's rejection artifact
+// on the exact same selection path as the schedule economics.
+using ListedQuoteRejectSink =
+    std::function<void(std::string_view date, bool selected,
+                       const ListedQuoteRejectCounts &counts)>;
 
 // Verbatim lift of `build_schedule_command`'s selection loop
 // (spy_dispersion_backtest.cpp:446-535): per-date snapshot load, DTE roll-trigger,
@@ -227,6 +270,15 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
                                  std::span<const UniverseRow> universe_rows,
                                  const ListedDefinitionTable &definitions,
                                  const RunSpec &quote_source, PhaseTimer *timer = nullptr);
+
+// Audited production form. Identical economics, plus a callback carrying the
+// per-date rejection tally for publication by the shipped CLI.
+[[nodiscard]] Result<ListedDispersionSchedule>
+build_listed_dispersion_schedule_audited(
+    const Clock &clock, const ListedScheduleSpec &spec,
+    const ListedDispersionMethodology &method, std::span<const UniverseRow> universe_rows,
+    const ListedDefinitionTable &definitions, const RunSpec &quote_source, PhaseTimer *timer,
+    const ListedQuoteRejectSink &quote_reject_sink);
 
 // ── Cold projection (M6, I1) ────────────────────────────────────────────────────
 
@@ -348,6 +400,22 @@ struct DispersionBookVar {
   std::uint64_t prepared_fingerprint{0};
 };
 
+// Bounded-input form of `dispersion_book_var`. The library still owns book ->
+// relative-template synthesis, output allocation, incomplete-frame rejection and
+// VaR/ES calculation; `evaluate` owns only how scenario SurfaceSets are supplied
+// to the already-prepared projection. File-oriented callers can therefore load
+// sealed, subsetted snapshots in bounded batches instead of retaining every
+// archive to satisfy HistoricalProjectionScenario's borrowed pointer.
+using DispersionProjectionEvaluator = std::function<Status(
+    const PreparedHistoricalProjection &prepared, std::span<HistoricalProjectionFrame> frames,
+    std::span<ProjectedOption> legs, const HistoricalProjectionConfig &config)>;
+
+[[nodiscard]] Result<DispersionBookVar>
+dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &maturity,
+                    std::size_t n_scenarios, std::span<const double> confidences,
+                    const DispersionProjectionEvaluator &evaluate,
+                    const HistoricalProjectionConfig &cfg = {});
+
 // Verbatim lift of run_projected_var_command's book -> OptionProjectionSpec synthesis
 // + PreparedHistoricalProjection::evaluate_into + projected_historical_var per
 // confidence (spy_dispersion_backtest.cpp:1119-1194). Each book position becomes a
@@ -363,11 +431,11 @@ struct DispersionBookVar {
 // to `scenario_valuation + maturity`; substituting the book's absolute projected
 // expiry would freeze the tenor and change every non-entry scenario's risk.
 //
-// M9 note: the per-vol-point gross vega * kVegaVolPointToUnitVol scaling lives in the
-// DispersionConfig builder that produces `book` (spy_dispersion_backtest.cpp:1110),
-// upstream of this lift — so this function applies no vega x100; the book handed in is
-// already sized. That boundary's `* 100.0 -> kVegaVolPointToUnitVol` replacement is a
-// CLI line-item wired at T9.
+// UNITS: this function applies NO vega scaling — the book handed in is already
+// sized. (It never should again: E1 redefined `DispersionConfig::target_vega` as
+// dollars per VOL POINT, which abolished the CLI's `* 100.0` per-vol-point →
+// per-unit-vol boundary entirely. The `kVegaVolPointToUnitVol` constant this note
+// used to name was deleted as dead in the C-2 follow-up; see the top of this file.)
 //
 // Returns Err(Unavailable) if any scenario projected an incomplete frame
 // (n_failed != 0), matching the CLI's post-projection gate (:1175-1178); on that path

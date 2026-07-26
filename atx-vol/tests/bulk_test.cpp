@@ -9,7 +9,9 @@
 #include <utility>
 #include <vector>
 
+#include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
+#include "atx/vol/correction.hpp"
 #include "atx/vol/greeks.hpp"
 #include "atx/vol/portfolio.hpp"
 
@@ -412,4 +414,119 @@ TEST(Bulk, AmericanFirstOrderNoCorrectionScaling) {
     // rho picks up the American forward-carry term T * F * delta.
     EXPECT_NEAR(out.rho[i], bg.rho + T * F * bg.delta, 1.0e-8);
   }
+}
+
+// ── A2 (PR-C3): legacy bulk cached routes — intrinsic floor + greek units ────
+//
+// bulk_price's cached routes (B76AlCache) served raw euro + F*correction with no
+// intrinsic floor (a deep-ITM put out of the correction box can print below
+// intrinsic — arbitrageable), and the AmericanFirstOrder corr branch left gamma
+// as raw FORWARD-space B76 gamma while the no-corr branch converted to SPOT gamma,
+// so the two branches' gamma differed by ~m^2 = e^{2(r-q)T} (review-pricing-iv C3).
+// The fix floors the cached price and routes AmericanFirstOrder through
+// american_greeks (spot-consistent greeks, floored price).
+
+using atx::vol::CorrectionCache;
+
+TEST(BulkCachedRoute, DeepItmPutPriceOnly_FlooredAtIntrinsic) {
+  Universe u;
+  const double T = 1.0;
+  const double r = 0.10; // high rate -> deep-ITM European put well below intrinsic
+  const std::array<double, 3> strikes{100.0, 140.0, 180.0};
+  ExpiryId eid = 0;
+  const Uid uid = add_underlying(u, "BULK", 100.0, strikes, T, eid);
+  CurveSet cs = make_curves(100.0, r, T);
+  const double F = 100.0 * std::exp(r * T);
+  VolSurface surf = make_surface(uid, T, F, eid, 0.30 * 0.30 * T, 0.45, -0.20);
+
+  // Correction cache over a MODERATE k box that excludes the deep-ITM put strike,
+  // so the deep-ITM query clamps to the box edge (understated EEP). q == 0 because
+  // make_curves sets F = spot*e^{rT}.
+  auto cc = CorrectionCache::build(8, 4, 6, r, 0.0, -0.2, 0.2, 0.9 * T, 1.1 * T, 0.05, 3.0,
+                                   Side::Put, std::nullopt);
+  ASSERT_TRUE(cc.has_value()) << cc.error().to_string();
+  CorrectionCache put_cache = std::move(cc).value();
+
+  MarketBinding b;
+  b.universe = &u;
+  b.set_market(uid, UnderlyingMarket{&surf, &cs, nullptr, &put_cache});
+
+  const std::vector<ContractId> ids{make_contract_id(uid, eid, 2, Side::Put)}; // K = 180
+  BulkRequest req;
+  req.select_kind = BulkSelectKind::ContractList;
+  req.uid = uid;
+  req.contract_ids = ids;
+  req.risk_mode = BulkRiskMode::PriceOnly;
+
+  auto res = bulk_price(req, b, AggMode::Total);
+  ASSERT_TRUE(res.has_value());
+  const auto& out = res.value().out;
+  ASSERT_EQ(out.size(), 1u);
+  ASSERT_EQ(out.status[0], LaneStatus::Ok);
+  ASSERT_EQ(out.route[0], static_cast<std::uint8_t>(PricingRoute::B76AlCache));
+
+  const double intrinsic = 180.0 - 100.0; // K - S
+  EXPECT_GE(out.price[0], intrinsic - 1.0e-9)
+      << "cached deep-ITM put mark must not print below intrinsic (price=" << out.price[0]
+      << " intrinsic=" << intrinsic << ")";
+}
+
+TEST(BulkCachedRoute, AmericanFirstOrderGreeks_MatchAnalyticJetInSpotUnits) {
+  Universe u;
+  const double T = 1.0;
+  const double r = 0.10;
+  const std::array<double, 3> strikes{90.0, 100.0, 110.0};
+  ExpiryId eid = 0;
+  const Uid uid = add_underlying(u, "BULK", 100.0, strikes, T, eid);
+  CurveSet cs = make_curves(100.0, r, T);
+  const double F = 100.0 * std::exp(r * T);
+  VolSurface surf = make_surface(uid, T, F, eid, 0.30 * 0.30 * T, 0.45, -0.20);
+
+  // In-box cache covering the ATM put (k = log(100/F) ~ -0.10). q == 0 because
+  // make_curves sets F = spot*e^{rT}.
+  auto cc = CorrectionCache::build(8, 4, 6, r, 0.0, -0.3, 0.3, 0.9 * T, 1.1 * T, 0.05, 1.0,
+                                   Side::Put, std::nullopt);
+  ASSERT_TRUE(cc.has_value()) << cc.error().to_string();
+  CorrectionCache put_cache = std::move(cc).value();
+
+  const std::vector<ContractId> ids{make_contract_id(uid, eid, 1, Side::Put)}; // K = 100
+  BulkRequest req;
+  req.select_kind = BulkSelectKind::ContractList;
+  req.uid = uid;
+  req.contract_ids = ids;
+  req.risk_mode = BulkRiskMode::AmericanFirstOrder;
+
+  MarketBinding b;
+  b.universe = &u;
+  b.set_market(uid, UnderlyingMarket{&surf, &cs, nullptr, &put_cache});
+  auto rc = bulk_price(req, b, AggMode::Total);
+  ASSERT_TRUE(rc.has_value());
+  const auto& out = rc.value().out;
+  ASSERT_EQ(out.status[0], LaneStatus::Ok);
+  ASSERT_EQ(out.route[0], static_cast<std::uint8_t>(PricingRoute::B76AlCache));
+
+  const double sigma = surf.iv(std::log(100.0 / F), T);
+  const auto ref =
+      atx::vol::american_greeks(100.0, 100.0, T, sigma, r, 0.0, Side::Put, &put_cache);
+  ASSERT_TRUE(ref.has_value()) << ref.error().to_string();
+
+  // The old bug served the raw FORWARD-space B76 gamma (no m^2 spot conversion, no
+  // correction term). Confirm the correct SPOT gamma differs materially from that
+  // forward value, so matching the analytic jet is a genuine fix, not a no-op.
+  const double fwd_gamma =
+      black76_greeks(F, 100.0, T, sigma, r, std::exp(-r * T), Side::Put).greeks.gamma;
+  EXPECT_GT(std::abs(ref->gamma - fwd_gamma), 0.2 * std::abs(ref->gamma))
+      << "spot gamma must differ materially from the old forward-space value";
+
+  // bulk's AmericanFirstOrder cached greeks now equal the unit-consistent analytic
+  // jet (spot delta/gamma/vanna, floored price) rather than the split-unit block.
+  EXPECT_NEAR(out.delta[0], ref->delta, 1.0e-9);
+  EXPECT_NEAR(out.gamma[0], ref->gamma, 1.0e-9);
+  EXPECT_NEAR(out.vega[0], ref->vega, 1.0e-9);
+  EXPECT_NEAR(out.theta[0], ref->theta, 1.0e-9);
+  EXPECT_NEAR(out.rho[0], ref->rho, 1.0e-9);
+  EXPECT_NEAR(out.vanna[0], ref->vanna, 1.0e-9);
+  EXPECT_NEAR(out.volga[0], ref->volga, 1.0e-9);
+  EXPECT_NEAR(out.charm[0], ref->charm, 1.0e-9);
+  EXPECT_NEAR(out.price[0], ref->price, 1.0e-9);
 }

@@ -1,3 +1,11 @@
+# UNIT NOTE (E1 / AN-P1-1, FIX-E M-11). `gross_index_vega` below is DOLLARS OF
+# INDEX-LEG GROSS VEGA PER ONE VOL POINT (a 0.01 move in sigma). Before E1 the
+# surface/projected route read the same key as dollars per UNIT vol, so the
+# value 10000 built a book 100x SMALLER on that route than on the listed one.
+# The value here is DELIBERATELY LEFT at 10000: it is the number the coordinated
+# golden re-pin is being taken at. A run from this spec therefore produces a book
+# 100x larger than any output archived before E1 — treat pre-E1 artifacts from
+# this spec as stale rather than comparable. See atx-vol/CHANGELOG.md.
 key	value
 label	SPY listed-options dispersion SEC top-50 core gate
 date_lo	2026-01-02

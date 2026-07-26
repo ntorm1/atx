@@ -55,6 +55,10 @@
 
 namespace atx::vol {
 
+// E6: used only by const-reference in the PricedSurface-native overloads below,
+// so the heavy definition stays out of this header.
+class PricedSurface;
+
 // ── Enums ────────────────────────────────────────────────────────────────
 
 // Product kind. Capped variants are reserved (dispatch returns NotImplemented).
@@ -209,6 +213,21 @@ struct DerivConfig {
   double k_min_log = 0.0;         // log-strike grid lower (0 -> quality default)
   double k_max_log = 0.0;         // log-strike grid upper (0 -> quality default)
   std::uint32_t strip_nodes = 0;  // 0 -> quality default
+  // E2 / AN-P1-2 adaptive wing width, in σ√T units — the same policy knob
+  // `RndConfig::width_sigmas` has always had on the density route (FIX-E M-6:
+  // E2 changed THIS route's span policy without giving it the knob).
+  //
+  //   0        -> the shared default, strip::kDefaultWidthSigmas = 6.
+  //   > 0      -> span floor widened to `width_sigmas·σ_atm·√T`, and the
+  //               truncation flags measure against that same requirement.
+  //   < 0      -> vol scaling OFF. The span stays exactly at the tier default
+  //               (or at an explicit [k_min_log, k_max_log]) AND the wings are
+  //               no longer judged against a vol-scaled requirement. This is the
+  //               escape hatch for a caller who genuinely wants an
+  //               exactly-specified strip: before it existed, pinning the bounds
+  //               got you the strip you asked for but permanently flagged it
+  //               truncated.
+  double width_sigmas = 0.0;
   // Reserved — must be left at 0.
   double abs_price_tol = 0.0;
   double rel_price_tol = 0.0;
@@ -309,5 +328,44 @@ extern template Result<DerivQuote> deriv_price<EssviSurface>(
     const EssviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&);
 extern template Result<DerivQuote> deriv_price<SviSurface>(
     const SviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&);
+
+// ── E6 / AN-W: PricedSurface-native entry points ────────────────────────────
+//
+// The templates above are stranded on the LEGACY calibration-grade surface types
+// (`EssviSurface` / `SviSurface`, surface.hpp). The modern fitted pipeline
+// produces a `PricedSurface`, so reaching `var_swap_fair_strike` from it meant
+// hand-converting slices — which is why this whole module was reachable only
+// from its own unit test.
+//
+// These overloads take a `PricedSurface` and NO `CurveSet`: the surface already
+// carries its own per-expiry forwards and discount factors, and using them is
+// the only way the strip's k = 0 is the surface's OWN ATM forward. The carry is
+// read off the fitted pillars (`context()` forwards, `rate_at`) and interpolated
+// between them by the same shared convention the strip integrates under
+// (`strip_grid.hpp`, E2).
+//
+// FITTED-RANGE ONLY. `T` must lie within `[context().front().T,
+// context().back().T]`; outside it these return `OutOfRange`. This is a real
+// restriction and it is deliberate: past the end pillars the strip's forward
+// clamps flat while `PricedSurface::forward_at` keeps extrapolating
+// economically, so the two would disagree and bias K_var with no signal. A
+// caller who genuinely wants an extrapolated tenor supplies its own `CurveSet`
+// through the templated overload above and owns that choice explicitly.
+//
+// Numeric behaviour is otherwise unchanged: identical grid, identical adaptive
+// span, identical Simpson quadrature, identical flags.
+//
+// @return the same error contract as the templated overloads, plus
+//         InvalidArgument when the surface carries no usable fitted pillar and
+//         OutOfRange when `T` falls outside the fitted pillar range.
+[[nodiscard]] Result<DerivQuote> var_swap_fair_strike(const PricedSurface& surface, double T,
+                                                      const DerivConfig& cfg = DerivConfig{});
+
+[[nodiscard]] Result<DerivQuote> vol_swap_fair_strike(const PricedSurface& surface, double T,
+                                                      const DerivConfig& cfg = DerivConfig{});
+
+[[nodiscard]] Result<DerivQuote> deriv_price(const PricedSurface& surface,
+                                             const DerivContract& contract,
+                                             const DerivConfig& cfg = DerivConfig{});
 
 }  // namespace atx::vol

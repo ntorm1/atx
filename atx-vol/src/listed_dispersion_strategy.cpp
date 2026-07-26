@@ -1,5 +1,6 @@
 #include "atx/vol/listed_dispersion_strategy.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -33,11 +34,48 @@ namespace {
   return Ok(T);
 }
 
+[[nodiscard]] bool valid_fill_policy(ScheduleFillPolicy p) noexcept {
+  switch (p) {
+  case ScheduleFillPolicy::ModelMark:
+  case ScheduleFillPolicy::QuoteMid:
+  case ScheduleFillPolicy::CrossSpread:
+    return true;
+  }
+  return false;
+}
+
 } // namespace
+
+Result<double> listed_leg_fill_price(const ListedScheduleLeg &leg, ScheduleFillPolicy policy) {
+  if (policy == ScheduleFillPolicy::ModelMark) {
+    return Ok(leg.model_mark);
+  }
+  if (!valid_fill_policy(policy)) {
+    return Err(ErrorCode::InvalidArgument, "listed_leg_fill_price: invalid fill policy");
+  }
+  // Quote-side fills need a real, usable two-sided market. A zero bid makes the
+  // mid a fiction (ask/2) and there is nobody to sell to at all — fail closed
+  // rather than fabricate a fill (the same judgement F6 applies at selection).
+  if (!std::isfinite(leg.raw_bid) || !std::isfinite(leg.raw_ask) || leg.raw_bid <= 0.0 ||
+      leg.raw_ask < leg.raw_bid) {
+    return Err(ErrorCode::NotFound,
+               "listed_leg_fill_price: leg uid=" + std::to_string(leg.uid) +
+                   " has no usable two-sided quote for a quote-side fill (bid=" +
+                   std::to_string(leg.raw_bid) + ", ask=" + std::to_string(leg.raw_ask) + ")");
+  }
+  if (policy == ScheduleFillPolicy::QuoteMid) {
+    return Ok(0.5 * (leg.raw_bid + leg.raw_ask));
+  }
+  // CrossSpread: a buy lifts the offer, a sell hits the bid. `quantity` carries
+  // the direction (positive long, negative short); a zero-quantity leg trades
+  // nothing, so either side is economically the same and the ask is arbitrary.
+  return Ok(leg.quantity >= 0.0 ? leg.raw_ask : leg.raw_bid);
+}
 
 Result<std::vector<Lot>> materialize_listed_dispersion_roll(const ListedScheduleRoll &roll,
                                                             std::int64_t valuation_ts_ns,
-                                                            std::uint64_t first_lot_id) {
+                                                            std::uint64_t first_lot_id,
+                                                            ScheduleFillPolicy fill) {
   ListedDispersionSchedule one;
   one.rolls.push_back(roll);
   ATX_TRY_VOID(validate_listed_dispersion_schedule(one));
@@ -59,7 +97,8 @@ Result<std::vector<Lot>> materialize_listed_dispersion_roll(const ListedSchedule
     lot.multiplier = leg.multiplier;
     lot.expiry_ts_ns = leg.expiry_ts_ns;
     lot.cohort = roll.cohort;
-    lot.entry_price = leg.model_mark;
+    ATX_TRY(const double fill_price, listed_leg_fill_price(leg, fill));
+    lot.entry_price = fill_price;
     lots.push_back(lot);
   }
   return Ok(std::move(lots));
@@ -67,16 +106,43 @@ Result<std::vector<Lot>> materialize_listed_dispersion_roll(const ListedSchedule
 
 Result<ListedDispersionStrategy> ListedDispersionStrategy::create(ListedDispersionSchedule schedule,
                                                                   double delta_band,
-                                                                  ScheduleMarkPolicy policy) {
+                                                                  ScheduleMarkPolicy policy,
+                                                                  ScheduleFillPolicy fill) {
   if (!std::isfinite(delta_band) || delta_band < 0.0) {
     return Err(ErrorCode::InvalidArgument, "ListedDispersionStrategy::create: invalid delta band");
   }
+  if (!valid_fill_policy(fill)) {
+    return Err(ErrorCode::InvalidArgument, "ListedDispersionStrategy::create: invalid fill policy");
+  }
   ATX_TRY_VOID(validate_listed_dispersion_schedule(schedule));
+  // F2: a quote-side policy must be satisfiable on EVERY leg of EVERY roll before
+  // the run starts. Discovering an unquotable leg 40 dates in is a wasted replay.
+  if (fill != ScheduleFillPolicy::ModelMark) {
+    for (const ListedScheduleRoll &roll : schedule.rolls) {
+      for (const ListedScheduleLeg &leg : roll.legs) {
+        ATX_TRY_VOID(listed_leg_fill_price(leg, fill));
+      }
+    }
+  }
+  // F5 (BT-T2): the schedule is the COMPLETE set of names this strategy can ever
+  // touch, so the engine can subset-deserialize. Sorted + deduped for a
+  // deterministic set that does not depend on roll/leg order in the artifact.
+  std::vector<std::uint32_t> referenced_uids;
+  for (const ListedScheduleRoll &roll : schedule.rolls) {
+    for (const ListedScheduleLeg &leg : roll.legs) {
+      referenced_uids.push_back(leg.uid);
+    }
+  }
+  std::sort(referenced_uids.begin(), referenced_uids.end());
+  referenced_uids.erase(std::unique(referenced_uids.begin(), referenced_uids.end()),
+                        referenced_uids.end());
+
   HedgeSpec hedge;
   hedge.kind = HedgeSpec::Kind::DeltaToZero;
   hedge.cadence = HedgeSpec::Cadence::Daily;
   hedge.band = delta_band;
-  return Ok(ListedDispersionStrategy{std::move(schedule), hedge, policy});
+  return Ok(ListedDispersionStrategy{std::move(schedule), hedge, policy, fill,
+                                     std::move(referenced_uids)});
 }
 
 Status ListedDispersionStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,
@@ -107,7 +173,7 @@ Status ListedDispersionStrategy::on_step(const MarketSnapshot &base, std::size_t
   std::vector<FullGreekSeed> seeds;
   seeds.reserve(roll.legs.size());
   for (const ListedScheduleLeg &leg : roll.legs) {
-    const PricedSurface *surface = base.find(leg.uid);
+    const SurfaceRef surface = base.find(leg.uid);
     if (surface == nullptr) {
       return Err(ErrorCode::NotFound, "ListedDispersionStrategy: scheduled surface is unavailable");
     }
@@ -115,7 +181,11 @@ Status ListedDispersionStrategy::on_step(const MarketSnapshot &base, std::size_t
     ATX_TRY(FullGreekSeed seed,
             surface->full_greek_seed(leg.strike, T, leg.side, price_options.analytic_greeks,
                                      price_options.query_execution));
-    if (seed.greeks().price != leg.model_mark) {
+    // Same cross-check, same tolerance, same scale as the reconciliation guard
+    // (listed_dispersion_reconciliation.cpp). This was a bit-exact `!=`, which
+    // fails CLOSED — Unavailable on the happy path — as soon as the seed route
+    // and the build route disagree by even one ULP. NaN still hard-rejects.
+    if (!listed_entry_mark_agrees(seed.greeks().price, leg.model_mark, entry_mark_tolerance_)) {
       if (policy_ == ScheduleMarkPolicy::ExactArchive) {
         return Err(ErrorCode::Unavailable,
                    "ListedDispersionStrategy: archive mark differs from schedule");
@@ -127,13 +197,18 @@ Status ListedDispersionStrategy::on_step(const MarketSnapshot &base, std::size_t
     }
     seeds.push_back(std::move(seed));
   }
-  ATX_TRY(auto replacement, materialize_listed_dispersion_roll(roll, base.ts_ns(), next_lot_id));
+  ATX_TRY(auto replacement,
+          materialize_listed_dispersion_roll(roll, base.ts_ns(), next_lot_id, fill_));
 
   // ExactArchive keeps the bit-identical entry_price = leg.model_mark set by
   // materialize. Record reprices under its own route, so pin each entry to the
   // live seed price (schedule order is 1:1 with the seeds and the lots) to keep
   // the replay self-consistent.
-  if (policy_ == ScheduleMarkPolicy::Record) {
+  //
+  // F2: Record's re-pin is a MARK correction, so it applies only when the fill
+  // IS the mark. Under a quote-side policy the fill came from the recorded NBBO
+  // and must survive the re-pin untouched.
+  if (policy_ == ScheduleMarkPolicy::Record && fill_ == ScheduleFillPolicy::ModelMark) {
     for (std::size_t i = 0; i < replacement.size(); ++i) {
       replacement[i].entry_price = seeds[i].greeks().price;
     }

@@ -96,9 +96,14 @@ public:
   [[nodiscard]] Result<AmericanGreeks>
   greeks(double K, double T, Side side,
          QueryExecution execution = QueryExecution::Configured) const;
+  // `needs` mirrors PricedSurface::greeks_analytic's K4 first-order tier so ONE
+  // `SurfaceRef` call signature forwards to either type (WS-ZC1). The view is always
+  // the cold analytic route, where a reduced bundle skips whole boundary solves and
+  // leaves the unrequested Greeks 0 — bit-identical to PricedSurface's cold AL lane.
   [[nodiscard]] Result<AmericanGreeks>
   greeks_analytic(double K, double T, Side side,
-                  QueryExecution execution = QueryExecution::Configured) const;
+                  QueryExecution execution = QueryExecution::Configured,
+                  GreekNeeds needs = {}) const;
   [[nodiscard]] Result<double> delta(double K, double T, Side side,
                                      QueryExecution execution = QueryExecution::Configured) const;
   [[nodiscard]] Result<double> vega(double K, double T, Side side,
@@ -109,13 +114,15 @@ public:
                   QueryExecution execution = QueryExecution::Configured) const;
 
   [[nodiscard]] FusedResult evaluate(double K, double T, Side side, EvalField fields, bool analytic,
-                                     QueryExecution execution = QueryExecution::Configured) const;
+                                     QueryExecution execution = QueryExecution::Configured,
+                                     GreekNeeds needs = {}) const;
 
   [[nodiscard]] Status evaluate_batch(std::span<const double> K, std::span<const double> T,
                                       std::span<const Side> side, EvalField fields, bool analytic,
                                       EvaluationSoA out,
                                       simd::SimdIsa resolved_price_isa = simd::SimdIsa::Auto,
-                                      QueryExecution execution = QueryExecution::Configured) const;
+                                      QueryExecution execution = QueryExecution::Configured,
+                                      GreekNeeds needs = {}) const;
 
   // ── Introspection (mirrors PricedSurface) ────────────────────────────────────
 
@@ -124,10 +131,17 @@ public:
   [[nodiscard]] std::uint32_t uid() const noexcept { return pricing_.uid; }
   [[nodiscard]] std::uint64_t instance_id() const noexcept { return instance_id_; }
   [[nodiscard]] VolCurveKind kind_at(std::size_t i) const noexcept;
-  // The view is always the cold reference tier (no accelerator).
+  // A view carries no accelerator, so it can only ever BE a cold tier. Both cache-free
+  // tiers (LegacyCompatible, ColdReference) are served identically; this reports WHICH
+  // of the two the loader asked for so a borrowed snapshot is indistinguishable from an
+  // owned one prepared at the same tier (WS-ZC1).
   [[nodiscard]] QueryPricingTier query_pricing_tier() const noexcept {
-    return QueryPricingTier::LegacyCompatible;
+    return query_pricing_tier_;
   }
+  // Record the cold tier this view is serving. InvalidArgument for a FAST tier: those
+  // require a real QueryAccelerator, which a view cannot have — such a caller must
+  // reconstruct an owned surface instead.
+  [[nodiscard]] Status set_cold_query_pricing_tier(QueryPricingTier tier) noexcept;
 
 private:
   PricedSurfaceView() = default;
@@ -153,11 +167,12 @@ private:
 
   [[nodiscard]] Result<double> price_resolved(const ResolvedSurfacePoint &p, Side side) const;
   [[nodiscard]] Result<AmericanGreeks> greeks_resolved(const ResolvedSurfacePoint &p, Side side,
-                                                       bool analytic) const;
+                                                       bool analytic, GreekNeeds needs = {}) const;
   [[nodiscard]] Result<double> delta_resolved(const ResolvedSurfacePoint &p, Side side) const;
   [[nodiscard]] Result<double> vega_resolved(const ResolvedSurfacePoint &p, Side side) const;
   [[nodiscard]] FusedResult evaluate_resolved(const ResolvedSurfacePoint &p, Side side,
-                                              EvalField fields, bool analytic) const;
+                                              EvalField fields, bool analytic,
+                                              GreekNeeds needs = {}) const;
 
   // ── Borrowed columnar views into the mapped record (non-owning) ──────────────
   std::span<const std::byte> record_{};        // the whole surface record extent
@@ -173,6 +188,7 @@ private:
   std::size_t n_slices_{0};
   PricingContext pricing_{};
   bool term_rates_{false};
+  QueryPricingTier query_pricing_tier_{QueryPricingTier::LegacyCompatible};
 
   // Materialized concrete curves for the two derived-state kinds (ConvexDense,
   // SplineVol). Empty (no heap) for parametric-only surfaces; otherwise sized

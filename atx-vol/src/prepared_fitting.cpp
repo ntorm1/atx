@@ -520,7 +520,14 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
         fit.mid = chain.mids[quote_index];
         fit.spread = spread;
         fit.vega = vega;
-        fit.noise_sigma = (vega > 0.0) ? spread / vega : 0.0;
+        // FT-C6: unify the vega-underflow fallback with the Configured builder
+        // (calib.cpp build_one_observation): a vega <= floor row uses
+        // noise_sigma = 1.0, NOT 0.0. A 0.0 noise makes the C8 spread_w
+        // (2*sigma*T*max(noise_sigma,1e-7)) ~1e4x smaller than a normal row's,
+        // i.e. ~1e8x the LM weight — one dead deep-wing quote could own the
+        // objective. Threshold + fallback now match the configured builder.
+        constexpr double kVegaFloor = 1.0e-12;
+        fit.noise_sigma = (vega > kVegaFloor) ? spread / vega : 1.0;
         fit.side = side;
         fit.source_strike_index = static_cast<std::uint32_t>(index);
         fit.score_sigma_mkt = *market_iv;

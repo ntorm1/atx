@@ -33,7 +33,9 @@
 // aggregates (Rule of Zero); serialize / parse are pure functions of their input.
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -296,6 +298,36 @@ struct CorpusManifest {
   [[nodiscard]] bool operator==(const CorpusManifest &) const = default;
 };
 
+// ── Test-only observation seam for the T1 inner-worker reclaim ──────────────
+//
+// The reclaim's whole point is WHEN a board's inner fit-worker budget is
+// resolved, and the process-global `CorpusPhaseTimings` counters are sums — they
+// cannot tell "one board offered 4 once" from "one board offered 1 four times".
+// A gate for the drain regime has to see the individual offers, in order, with
+// the live unfinished-task count each was resolved against.
+//
+// Same shape and same contract as `PopulateTestHooks`
+// (surface_db_populate.hpp): a raw, defaulted-null pointer on the config, never
+// dereferenced unless a test installs it, and never consulted on any path that
+// can reach an output byte. Production leaves it null.
+struct CorpusFitTestHooks {
+  // Once per INNER FAN-OUT of `boards[board_index]` on the across-board parallel
+  // arm — i.e. every time that board's inner fit-worker budget is resolved, not
+  // once per board. `unfinished` is the live outer unfinished-task count the
+  // budget was resolved against; `workers` is the budget offered.
+  //
+  // Called ON THE BOARD'S OWN FIT THREAD, so a test may block here to hold a
+  // board in flight while its siblings drain.
+  std::function<void(std::size_t board_index, std::size_t unfinished, unsigned workers)>
+      on_inner_fit_workers{};
+  // After `boards[board_index]`'s fit has completed and the outer unfinished
+  // counter has been decremented; `unfinished` is the post-decrement value, so
+  // `unfinished == 1` means this board's completion left exactly one task
+  // standing. Lets a test wait for a deterministic drain state instead of
+  // sleeping.
+  std::function<void(std::size_t board_index, std::size_t unfinished)> on_board_fit_done{};
+};
+
 // ── Build policy ────────────────────────────────────────────────────────────
 struct CorpusConfig {
   // The per-board fit template. `fit_template.curve` left std::nullopt (the
@@ -319,6 +351,9 @@ struct CorpusConfig {
   bool warm_start_chain{false};
   // Options forwarded verbatim to every per-date archive write (ATXVSA2, S4).
   ArchiveV2WriteOpts write_opts{};
+  // Test-only; null in production. Non-owning — the pointee must outlive the
+  // build call. See CorpusFitTestHooks.
+  const CorpusFitTestHooks *test_hooks{nullptr};
 };
 
 struct QualifiedCorpusConfig {
@@ -326,7 +361,73 @@ struct QualifiedCorpusConfig {
   CorpusAdmissionPolicy admission{};
   std::uint64_t input_fingerprint{0};
   std::uint64_t policy_fingerprint{0};
+  // T2 (SE-P2-3): scrub a resumed date's archive against its per-record payload
+  // CRCs before serving the checkpoint.
+  //
+  // The v2 per-record CRC is LAZY by design — never checked on the price path —
+  // and until this flag existed it had no production verifier anywhere:
+  // `validate_symbol`/`validate_all` had zero non-test callers, `open` checks
+  // only header + metadata, and neither `MarketSnapshot::load` nor
+  // `SurfaceDb::load_surface` validates. Media bit-rot inside a record therefore
+  // flowed straight into prices undetected. Checkpoint verification is the one
+  // natural scheduling point: it is already re-opening the archive, it happens
+  // once per resumed date rather than per query, and a corrupt payload found
+  // here costs a refit instead of a wrong price.
+  //
+  // Default ON — this config is the `--qualify` path's config, and the qualified
+  // corpus is exactly the artifact whose integrity claim has to hold. Cleared
+  // only by a caller that has its own scrub schedule (or a test asserting
+  // framing-only resume, which must not read record bodies at all).
+  bool verify_checkpoint_payload_crc{true};
 };
+
+// B1 (perf): cumulative wall time spent inside the corpus build, split by phase,
+// so a speedup can be attributed instead of guessed.
+//
+// This exists because the sprint's "3.4 of 16 average parallelism" is a
+// WHOLE-PROCESS figure covering an up-front 1.15 GB parquet ingest as well as the
+// fit fan-out. Those have opposite profiles -- bulk file reads bank almost no
+// CPU-seconds per wall-second, a CPU-bound fan-out banks many -- so a single
+// blended average cannot tell you which one to fix, and improving the fan-out can
+// move the blended number very little if ingest dominates the wall clock.
+//
+// Wall time per phase, summed across threads only where noted. Process-global and
+// monotonic; call `reset_corpus_phase_timings` to zero between measured regions.
+// Collected unconditionally (a handful of clock reads against multi-second
+// phases) but never printed unless a caller asks, and it cannot affect output
+// bytes.
+struct CorpusPhaseTimings {
+  double fit_fanout_s{0.0};    // run_bounded_fit_tasks, wall (not thread-summed)
+  double archive_write_s{0.0}; // uid restamp + write_surface_archive_v2_file
+  double checkpoint_s{0.0};    // per-date checkpoint read + write
+  std::uint64_t fanout_calls{0};   // pools spawned == date-boundary drains
+  std::uint64_t boards_fitted{0};  // boards handed to those pools
+  // T1 (perf, BT-T1): inner-fit-worker reclaim by a DRAINING across-board pool.
+  // Counted only on the across-board parallel arm (n > 1 boards and a non-serial
+  // `CorpusConfig::n_threads`) -- the arm that keeps each board's inner fit
+  // serial while the pool is saturated.
+  //
+  // A board's inner budget is a LIVE quantity, re-resolved for as long as the
+  // board runs (not frozen when it was claimed), so the two counters have
+  // different denominators on purpose:
+  //   - `reclaimed_inner_boards` counts distinct BOARDS that were offered more
+  //     than one inner worker at least once, i.e. boards that picked up outer
+  //     workers the draining pool could no longer place. This is the number to
+  //     read as "did the reclaim fire, and for how many boards".
+  //   - `inner_worker_slots` sums the budget offered at EVERY resolution, of
+  //     which there are many per board. It is a raw sum, NOT a per-board mean;
+  //     dividing it by `boards_fitted` does not give a mean inner width.
+  // Diagnostic only -- never serialized, so they cannot move an output byte.
+  std::uint64_t reclaimed_inner_boards{0};
+  std::uint64_t inner_worker_slots{0};
+  // Process CPU consumed strictly inside run_bounded_fit_tasks. This is the
+  // occupancy numerator; unlike whole-process CPU it cannot charge parallel
+  // OPRA ingest or serial publication work to fitting.
+  double fit_fanout_process_cpu_s{0.0};
+};
+
+[[nodiscard]] CorpusPhaseTimings corpus_phase_timings() noexcept;
+void reset_corpus_phase_timings() noexcept;
 
 struct QualifiedCorpusManifest {
   CorpusManifest manifest{};
@@ -360,6 +461,41 @@ public:
   // canonical symbols must be unique within the batch.
   [[nodiscard]] Status append_date(std::string_view date, std::span<const CorpusCellInput> cells);
 
+  // One date's cells, for the batched `append_dates` entry point below.
+  struct DateCells {
+    std::string_view date{};
+    std::span<const CorpusCellInput> cells{};
+  };
+
+  // B1 (perf): append SEVERAL dates in ONE fit fan-out.
+  //
+  // Semantically identical to calling `append_date` once per element in order --
+  // same archives, same manifest/quality entries in the same order, same
+  // per-date checkpoints -- but the boards of every not-yet-checkpointed date in
+  // the batch are fitted by a SINGLE `run_bounded_fit_tasks` pool instead of one
+  // pool per date. `append_date` drains its pool at every date boundary, so once
+  // a date has fewer tasks left than workers its tail runs with idle cores, and
+  // no intra-date scheduling can fill them because within a date there is no
+  // work left. Batching supplies that work from a LATER date -- which is only
+  // legal because no warm-start chain couples the dates on this path.
+  //
+  // Byte-identity: `fit_board` is pure w.r.t. shared state (see
+  // corpus_board_fit.hpp) and this session's fit path sets no warm-start chain
+  // (`CorpusConfig::warm_start_chain` is false here), so a board's fitted bytes
+  // depend only on the board and the config -- never on which other boards share
+  // its pool, nor on worker count or completion order. Output ordering is
+  // re-established by an explicit (date asc, symbol asc) sort downstream, not by
+  // the order tasks happen to finish.
+  //
+  // Batch size trades pool saturation against peak live fitted surfaces (memory)
+  // and against how much work a crash discards -- checkpoints still commit per
+  // date, but only after the whole batch's fan-out completes.
+  [[nodiscard]] Status append_dates(std::span<const DateCells> dates);
+
+  // Publish manifest.tsv + quality.tsv as one recoverable generation. The
+  // durable indexes.commit marker is the commit point; restart discards any
+  // one-file/two-file generation left before that marker and reconstructs it
+  // from the committed per-date checkpoints (which use the same protocol).
   [[nodiscard]] Result<QualifiedCorpusManifest> finish();
 
 private:

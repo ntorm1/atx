@@ -490,7 +490,14 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   // thread-invariance gates above stayed green through the re-pin — only the hash of
   // the (legitimately shifted) marks moved. Values measured on the merged tree:
   // SSE2 on `rel` preset, FMA on `rel-avx2`.
-  constexpr std::uint64_t kGoldenFingerprintSse2 = 17305682487856730537ULL;
+  // PIPELINE-M RE-PIN (feat/disp-hotpath -> feat/pipeline-m, 2026-07-21): the M1
+  // keystone merge folded disp-hotpath's auto-merged pricing changes onto main's A9
+  // greeks kernel, moving the whole-frame FNV hash on the SSE2/dev route wholesale
+  // 17305682487856730537 -> 718570745730299145. The grouped==independent-oracle
+  // economic-parity and thread-invariance gates above stayed green (differences are
+  // inside the documented tolerance), so only the hash of the legitimately-shifted
+  // marks moved. The FMA/rel-avx2 pin was RE-VERIFIED unchanged on the merged tree.
+  constexpr std::uint64_t kGoldenFingerprintSse2 = 718570745730299145ULL;
   constexpr std::uint64_t kGoldenFingerprintFma = 8754310291975640041ULL;
   constexpr std::uint64_t kGoldenFingerprint =
       atx::vol::test::kFmaContraction ? kGoldenFingerprintFma : kGoldenFingerprintSse2;

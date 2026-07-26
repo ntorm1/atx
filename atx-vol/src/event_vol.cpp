@@ -127,4 +127,110 @@ double event_aware_w(double w_lo, double T_lo, std::size_t n_lo, double w_hi, do
   return w_cen_query + static_cast<double>(n_query) * emove * emove;
 }
 
+// ── implied_emove_joint (E3a / AN-P1-3) ──────────────────────────────────
+
+namespace {
+
+// The pre-E3a solve, expressed over a usable/sorted observation set: the first
+// ascending-T adjacent pair whose event count RISES brackets the next event.
+[[nodiscard]] Result<double> two_pillar_over(std::span<const CensorObsInput> sorted) {
+  for (std::size_t i = 0; i + 1 < sorted.size(); ++i) {
+    if (sorted[i + 1].n > sorted[i].n) {
+      return implied_emove(sorted[i].w_dirty, sorted[i].T, sorted[i].n, sorted[i + 1].w_dirty,
+                           sorted[i + 1].T, sorted[i + 1].n);
+    }
+  }
+  return Err(ErrorCode::NotFound, "implied_emove_joint: no adjacent pair brackets an event");
+}
+
+} // namespace
+
+Result<EmoveSolution> implied_emove_joint(std::span<const CensorObsInput> obs,
+                                          const EarningsFitConfig &cfg) {
+  // Drop unusable pillars rather than failing the whole solve: `fit_earnings_term`
+  // rejects the ENTIRE span on the first bad observation, so this filter is what
+  // keeps one dead expiry from costing the underlying its eMove.
+  std::vector<CensorObsInput> usable;
+  usable.reserve(obs.size());
+  for (const CensorObsInput &o : obs) {
+    if (std::isfinite(o.T) && o.T > 0.0 && std::isfinite(o.w_dirty) && o.w_dirty > 0.0) {
+      usable.push_back(o);
+    }
+  }
+  if (usable.size() < 2) {
+    return Err(ErrorCode::InvalidArgument,
+               "implied_emove_joint: need at least two usable expiries");
+  }
+  std::sort(usable.begin(), usable.end(),
+            [](const CensorObsInput &a, const CensorObsInput &b) { return a.T < b.T; });
+
+  // Identification check — see the header. A constant event count carries no
+  // information about eMove, and four free parameters interpolate four points.
+  std::size_t event_bearing = 0;
+  bool n_varies = false;
+  for (const CensorObsInput &o : usable) {
+    if (o.n > 0) {
+      ++event_bearing;
+    }
+    if (o.n != usable.front().n) {
+      n_varies = true;
+    }
+  }
+  const bool identified = usable.size() >= kJointMinPillars && n_varies && event_bearing >= 2;
+
+  // FIX-E I-2. ONLY a code that represents an ANSWER is accepted. `MaxSteps`,
+  // `LeftBound` and `RightBound` are the search's last/clamped iterate, not a
+  // solved optimum — `LeftBound` in particular pins at `emove_lo`, whose default
+  // is 0.0 ("no event move"), which is exactly the kind of plausible-looking
+  // wrong number this sprint exists to remove. See the header for the full
+  // table. The fix is the STATUS CHANNEL, not a wider iteration budget.
+  const auto joint_code_is_an_answer = [event_bearing](EmoveFitCode code) noexcept {
+    switch (code) {
+    case EmoveFitCode::Ok:
+    case EmoveFitCode::Minimum:
+      return true;
+    case EmoveFitCode::CenterFlat:
+      // With no events there is nothing to identify and flat IS the answer.
+      return event_bearing == 0;
+    case EmoveFitCode::MaxSteps:
+    case EmoveFitCode::LeftBound:
+    case EmoveFitCode::RightBound:
+    case EmoveFitCode::Degenerate:
+      return false;
+    }
+    return false;
+  };
+
+  EmoveFitCode joint_code = EmoveFitCode::Ok;
+  if (identified) {
+    const Result<EarningsTermFit> fit = fit_earnings_term(usable, cfg);
+    if (fit.has_value()) {
+      joint_code = fit->fit_code;
+      if (std::isfinite(fit->emove) && fit->emove >= 0.0 &&
+          joint_code_is_an_answer(fit->fit_code)) {
+        EmoveSolution out;
+        out.emove = fit->emove;
+        out.method = EmoveMethod::Joint;
+        out.fit_code = fit->fit_code;
+        out.fit_error = fit->fit_error;
+        out.expiry_count = fit->expiry_count;
+        return Ok(out);
+      }
+    }
+    // Fall through to the two-pillar solve on any joint failure: a degenerate,
+    // non-converged, bound-pinned or non-finite joint answer is worse than the
+    // biased-but-bounded one.
+  }
+
+  ATX_TRY(const double emove, two_pillar_over(usable));
+  EmoveSolution out;
+  out.emove = emove;
+  out.method = EmoveMethod::TwoPillar;
+  // Carry the REJECTED joint code out so a caller can tell WHY it got the
+  // fallback, not merely THAT it did. `Ok` here means the joint path never ran.
+  out.fit_code = joint_code;
+  out.expiry_count = usable.size();
+  return Ok(out);
+}
+
 }  // namespace atx::vol

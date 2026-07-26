@@ -202,7 +202,7 @@ TEST(SpyStrangleBacktest, RestrikeSingleCohortStrikesMove) {
   const auto strike_on = [&](const std::string& path, Side side) -> double {
     auto snap = MarketSnapshot::load(path);
     EXPECT_TRUE(snap.has_value()) << (snap.has_value() ? std::string{} : snap.error().to_string());
-    const PricedSurface* surf = snap->find(kSpy);
+    const SurfaceRef surf = snap->find(kSpy);
     EXPECT_NE(surf, nullptr);
     const Result<double> K = resolve_strike_by_delta(*surf, kTenorT, side, 0.40);
     EXPECT_TRUE(K.has_value()) << (K.has_value() ? std::string{} : K.error().to_string());
@@ -228,7 +228,7 @@ TEST(SpyStrangleBacktest, FortyDeltaEntry) {
   const Corpus c = make_corpus(dir, 3);
   auto snap = MarketSnapshot::load(c.dp.front().second);
   ASSERT_TRUE(snap.has_value()) << snap.error().to_string();
-  const PricedSurface* surf = snap->find(kSpy);
+  const SurfaceRef surf = snap->find(kSpy);
   ASSERT_NE(surf, nullptr);
 
   for (const Side side : {Side::Call, Side::Put}) {

@@ -79,12 +79,30 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/adjusted_greeks.hpp" // StickyParams
-#include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
-#include "atx/vol/query_pricing.hpp"   // QueryExecution
-#include "atx/vol/types.hpp"           // Result, Status, Side
+#include "atx/vol/adjusted_greeks.hpp"     // StickyParams
+#include "atx/vol/dividend.hpp"            // DividendEvent, HybridDivParams
+#include "atx/vol/priced_surface.hpp"      // PricedSurface, PricingContext
+#include "atx/vol/priced_surface_view.hpp" // PricedSurfaceView (WS-ZC1 borrowed surfaces)
+#include "atx/vol/query_pricing.hpp"       // QueryExecution
+#include "atx/vol/types.hpp"               // Result, Status, Side
 
 namespace atx::vol {
+
+class Portfolio;
+struct PriceFrame;
+struct PriceTotals;
+enum class RiskBucketKey : std::uint8_t;
+struct RiskBucket;
+struct PnlFrame;
+struct PnlTotals;
+struct PnlRiskBucket;
+
+[[nodiscard]] Result<std::vector<RiskBucket>>
+reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf, RiskBucketKey by,
+                    PriceTotals *grand);
+[[nodiscard]] Result<std::vector<PnlRiskBucket>>
+reduce_pnl_risk_buckets(const PnlFrame &frame, const Portfolio &pf, RiskBucketKey by,
+                        PnlTotals *grand);
 
 // Calendar year length in nanoseconds — the library's T convention
 // (data.cpp `year_fraction`: 365.25 * 86400 * 1e9). Used to convert a
@@ -190,6 +208,10 @@ public:
 
 private:
   friend class PortfolioPricer;
+  friend Result<std::vector<RiskBucket>>
+  reduce_risk_buckets(const PriceFrame &, const Portfolio &, RiskBucketKey, PriceTotals *);
+  friend Result<std::vector<PnlRiskBucket>>
+  reduce_pnl_risk_buckets(const PnlFrame &, const Portfolio &, RiskBucketKey, PnlTotals *);
 
   Portfolio() noexcept;
 
@@ -202,7 +224,163 @@ private:
   std::uint64_t revision_{0};                  // advances after each successful retime commit
 };
 
-// ── SurfaceSet (uid -> PricedSurface, non-owning) ────────────────────────
+// ── SurfaceRef (a borrowed OWNED-or-VIEW surface handle) ──────────────────
+//
+// WS-ZC1. `SurfaceSet` used to resolve a uid to a `const PricedSurface *`, so the
+// replay path had to RECONSTRUCT owned `PricedSurface` objects out of the mapped
+// `.atxvsa` bytes on every step even though `SurfaceArchiveV2`/`SurfaceDb` already
+// serve zero-copy `PricedSurfaceView`s over those same bytes. That reconstruction
+// was ~49% of replay wall-clock (`archive_map`). `SurfaceRef` is the seam that lets
+// the resolver hold EITHER form.
+//
+// It is a two-pointer (16 B) tagged handle, NOT a virtual base: every accessor is a
+// non-virtual inline that branches on which pointer is set, so the hot loop stays
+// devirtualized and inlinable. Nothing in the pricer resolves a surface per CONTRACT
+// — resolution is per unique-uid GROUP (`solve_span`) or per unique uid — so the
+// branch is amortized over a whole batch and is perfectly predicted besides.
+//
+// `operator->` returns `this` (the self-proxy idiom), so existing call sites that
+// were written against a raw pointer (`surf->iv(K, T)`, `surf != nullptr`) keep
+// their exact syntax and only their DECLARED TYPE changes.
+//
+// LIFETIME. A view-backed `SurfaceRef` borrows into a memory mapping. It is only
+// valid while the mapping that backs it is alive. `SurfaceSet` never owns either
+// form; the owner (`MarketSnapshot`) is what keeps the archive — and therefore the
+// mapping — alive for at least as long as the set. See `MarketSnapshot` in
+// backtest.hpp for the enforced ordering.
+class SurfaceRef {
+public:
+  SurfaceRef() noexcept = default;
+  // Implicit on purpose: every existing `SurfaceSet::create(ptrs)` caller and every
+  // `const PricedSurface *` still converts with no source change.
+  SurfaceRef(const PricedSurface *owned) noexcept : owned_{owned} {}       // NOLINT
+  SurfaceRef(const PricedSurfaceView *view) noexcept : view_{view} {}      // NOLINT
+  SurfaceRef(std::nullptr_t) noexcept {}                                   // NOLINT
+  // Reference forms so a function taking `const SurfaceRef &` still accepts a plain
+  // `PricedSurface` / `PricedSurfaceView` lvalue with no call-site change. Binding a
+  // temporary is rejected: the handle would outlive what it borrows.
+  SurfaceRef(const PricedSurface &owned) noexcept : owned_{&owned} {}      // NOLINT
+  SurfaceRef(const PricedSurfaceView &view) noexcept : view_{&view} {}     // NOLINT
+  SurfaceRef(const PricedSurface &&) = delete;
+  SurfaceRef(const PricedSurfaceView &&) = delete;
+
+  [[nodiscard]] bool valid() const noexcept { return owned_ != nullptr || view_ != nullptr; }
+  explicit operator bool() const noexcept { return valid(); }
+  [[nodiscard]] bool operator==(std::nullptr_t) const noexcept { return !valid(); }
+  [[nodiscard]] bool operator!=(std::nullptr_t) const noexcept { return valid(); }
+  [[nodiscard]] bool operator==(const SurfaceRef &other) const noexcept {
+    return owned_ == other.owned_ && view_ == other.view_;
+  }
+
+  // Self-proxy: `ref->method(...)` and `(*ref).method(...)` both land on SurfaceRef's
+  // own forwarding methods below, so pointer-style call sites need no rewrite.
+  [[nodiscard]] const SurfaceRef *operator->() const noexcept { return this; }
+  [[nodiscard]] const SurfaceRef &operator*() const noexcept { return *this; }
+
+  // True when this handle borrows a mapped record rather than owning storage.
+  [[nodiscard]] bool is_view() const noexcept { return view_ != nullptr; }
+  // The owned surface, or nullptr when this handle is view-backed. Only for the few
+  // call sites that genuinely need `PricedSurface`-only state (e.g. `surface()`,
+  // `context()`); prefer the forwarding accessors.
+  [[nodiscard]] const PricedSurface *owned() const noexcept { return owned_; }
+  [[nodiscard]] const PricedSurfaceView *view() const noexcept { return view_; }
+
+  // ── Forwarding accessors (identical contract on either form) ──────────────
+#define ATX_VOL_SURFACE_REF_FWD(expr) return owned_ != nullptr ? owned_->expr : view_->expr
+
+  [[nodiscard]] const PricingContext &pricing() const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(pricing());
+  }
+  [[nodiscard]] std::uint32_t uid() const noexcept { ATX_VOL_SURFACE_REF_FWD(uid()); }
+  [[nodiscard]] std::uint64_t instance_id() const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(instance_id());
+  }
+  [[nodiscard]] std::size_t n_slices() const noexcept { ATX_VOL_SURFACE_REF_FWD(n_slices()); }
+  [[nodiscard]] QueryPricingTier query_pricing_tier() const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(query_pricing_tier());
+  }
+  // Prepared query-accelerator size. A borrowed view carries NO accelerator by
+  // construction (it is the cold route), so its pair count is structurally 0.
+  [[nodiscard]] std::size_t query_cache_pair_count() const noexcept {
+    return owned_ != nullptr ? owned_->query_cache_pair_count() : std::size_t{0};
+  }
+
+  [[nodiscard]] double iv(double K, double T) const noexcept { ATX_VOL_SURFACE_REF_FWD(iv(K, T)); }
+  [[nodiscard]] double total_variance(double K, double T) const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(total_variance(K, T));
+  }
+  [[nodiscard]] double forward_at(double T) const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(forward_at(T));
+  }
+  [[nodiscard]] double q_eff_at(double T) const noexcept { ATX_VOL_SURFACE_REF_FWD(q_eff_at(T)); }
+  [[nodiscard]] double rate_at(double T) const noexcept { ATX_VOL_SURFACE_REF_FWD(rate_at(T)); }
+
+  [[nodiscard]] PricedSurface::ResolvedSurfacePoint resolve(double K, double T) const noexcept {
+    ATX_VOL_SURFACE_REF_FWD(resolve(K, T));
+  }
+
+  [[nodiscard]] Result<double>
+  fair_value(double K, double T, Side side,
+             QueryExecution execution = QueryExecution::Configured) const {
+    ATX_VOL_SURFACE_REF_FWD(fair_value(K, T, side, execution));
+  }
+  [[nodiscard]] Result<AmericanGreeks>
+  greeks(double K, double T, Side side,
+         QueryExecution execution = QueryExecution::Configured) const {
+    ATX_VOL_SURFACE_REF_FWD(greeks(K, T, side, execution));
+  }
+  [[nodiscard]] Result<AmericanGreeks>
+  greeks_analytic(double K, double T, Side side,
+                  QueryExecution execution = QueryExecution::Configured,
+                  GreekNeeds needs = {}) const {
+    ATX_VOL_SURFACE_REF_FWD(greeks_analytic(K, T, side, execution, needs));
+  }
+  [[nodiscard]] Result<double> delta(double K, double T, Side side,
+                                     QueryExecution execution = QueryExecution::Configured) const {
+    ATX_VOL_SURFACE_REF_FWD(delta(K, T, side, execution));
+  }
+  [[nodiscard]] Result<double> vega(double K, double T, Side side,
+                                    QueryExecution execution = QueryExecution::Configured) const {
+    ATX_VOL_SURFACE_REF_FWD(vega(K, T, side, execution));
+  }
+  [[nodiscard]] Result<FullGreekSeed>
+  full_greek_seed(double K, double T, Side side, bool analytic,
+                  QueryExecution execution = QueryExecution::Configured) const {
+    ATX_VOL_SURFACE_REF_FWD(full_greek_seed(K, T, side, analytic, execution));
+  }
+  [[nodiscard]] PricedSurface::FusedResult
+  evaluate(double K, double T, Side side, PricedSurface::EvalField fields, bool analytic,
+           QueryExecution execution = QueryExecution::Configured, GreekNeeds needs = {}) const {
+    ATX_VOL_SURFACE_REF_FWD(evaluate(K, T, side, fields, analytic, execution, needs));
+  }
+  // The hot batch seam. Both forms route the SAME laned analytic-Greek kernels
+  // (src/laned_greek_run.hpp, WS-P1v), so borrowing costs no pricing performance and
+  // is bit-identical to the owned form.
+  [[nodiscard]] Status evaluate_batch(std::span<const double> K, std::span<const double> T,
+                                      std::span<const Side> side, PricedSurface::EvalField fields,
+                                      bool analytic, PricedSurface::EvaluationSoA out,
+                                      simd::SimdIsa resolved_price_isa = simd::SimdIsa::Auto,
+                                      QueryExecution execution = QueryExecution::Configured,
+                                      GreekNeeds needs = {}) const {
+    ATX_VOL_SURFACE_REF_FWD(
+        evaluate_batch(K, T, side, fields, analytic, out, resolved_price_isa, execution, needs));
+  }
+
+#undef ATX_VOL_SURFACE_REF_FWD
+
+private:
+  const PricedSurface *owned_{nullptr};
+  const PricedSurfaceView *view_{nullptr};
+};
+
+[[nodiscard]] inline bool operator==(std::nullptr_t, const SurfaceRef &ref) noexcept {
+  return !ref.valid();
+}
+[[nodiscard]] inline bool operator!=(std::nullptr_t, const SurfaceRef &ref) noexcept {
+  return ref.valid();
+}
+
+// ── SurfaceSet (uid -> surface, non-owning) ──────────────────────────────
 
 class SurfaceSet {
 public:
@@ -215,21 +393,37 @@ public:
   // @return InvalidArgument on a null pointer or a duplicate uid.
   [[nodiscard]] static Result<SurfaceSet> create(std::span<const PricedSurface *const> surfaces);
 
-  // The surface for `uid`, or nullptr if none was registered.
-  [[nodiscard]] const PricedSurface *find(std::uint32_t uid) const noexcept;
+  // WS-ZC1: the zero-copy form. Identical contract, but each entry BORROWS a mapped
+  // archive record. The caller must keep the backing mapping alive for at least as
+  // long as this set and everything derived from it.
+  [[nodiscard]] static Result<SurfaceSet>
+  create_from_views(std::span<const PricedSurfaceView *const> views);
+
+  // The surface for `uid`, or a null handle if none was registered. Compare against
+  // `nullptr` exactly as before.
+  [[nodiscard]] SurfaceRef find(std::uint32_t uid) const noexcept;
 
   [[nodiscard]] std::size_t size() const noexcept { return by_uid_.size(); }
+
+  // True when every registered entry borrows a mapped record (WS-ZC1 replay path).
+  [[nodiscard]] bool borrows_views() const noexcept { return borrows_views_; }
 
 private:
   friend class PortfolioPricer;
 
   SurfaceSet() noexcept;
-  std::vector<std::pair<std::uint32_t, const PricedSurface *>> by_uid_; // sorted by uid
+  // One shared builder for both `create` overloads: sorts, rejects null handles and
+  // duplicate uids, and stamps a fresh logical id.
+  [[nodiscard]] static Result<SurfaceSet>
+  create_from_refs(std::vector<std::pair<std::uint32_t, SurfaceRef>> &&entries, bool borrows_views);
+
+  std::vector<std::pair<std::uint32_t, SurfaceRef>> by_uid_; // sorted by uid
   // Process-unique identity for exact retained-valuation provenance. Copies keep
   // the identity because they resolve the same immutable surface objects; moves
   // transfer it, empty the moved-from resolver, and refresh its identity to
   // close same-address ABA.
   std::uint64_t logical_id_{0};
+  bool borrows_views_{false};
 };
 
 // ── Price field mask (which PriceFrame columns to materialize) ─────────────
@@ -266,17 +460,40 @@ enum class PriceFieldMask : std::uint32_t {
 
 // ── Output frames (SoA, input order) ──────────────────────────────────────
 
+// "No value" sentinel for a column a request did not compute (GR-F1 carry axis).
+inline constexpr double kPriceColumnNaN = std::numeric_limits<double>::quiet_NaN();
+
 // Portfolio-level column sums over the Ok lanes of a price frame.
 struct PriceTotals {
   double pv{0.0};
   double delta{0.0};
   double gamma{0.0};
-  double vega{0.0};
+  double vega{0.0}; // NET (signed) position-scaled dP/dsigma, per UNIT vol
+  // GROSS vega: Σ|position-scaled dP/dsigma| over the SAME Ok lanes, in the same
+  // unit and the same fixed input order as `vega`.
+  //
+  // C-3 (pipeline-m production review). A vega-neutral book — every dispersion
+  // book — drives the SIGNED sum to a cancellation residual BY CONSTRUCTION, so
+  // a statistic that means to normalize a return by "the book's vega exposure"
+  // must divide by THIS, never by |vega|. Carried alongside `vega` rather than
+  // recovered downstream because the totals-only reduction (`price_totals`, the
+  // route `book_greeks` takes) never materializes a per-lane frame to sum.
+  //
+  // NaN unless a Greek-bearing `reduce_price_totals` computed it — never 0.0,
+  // which would read as a genuinely gross-vega-flat book (the same convention
+  // `dP_dq` uses below). In particular `reduce_risk_buckets`' per-bucket totals
+  // do NOT populate it yet and therefore report NaN, not a false zero.
+  double abs_vega{kPriceColumnNaN};
   double theta{0.0};
   double rho{0.0};
   double vanna{0.0};
   double volga{0.0};
   double charm{0.0};
+  // GR-F1 carry/borrow axis: sum of position-scaled ∂P/∂q (continuous-yield
+  // sensitivity, "q-rho"). Populated ONLY when PriceOptions::carry_greeks is set
+  // on the returning `price()`; otherwise NaN (never 0.0 — a 0 would read as a
+  // genuinely carry-flat book). See PriceFrame::dP_dq.
+  double dP_dq{kPriceColumnNaN};
   std::uint32_t n_ok{0};
 };
 
@@ -296,6 +513,12 @@ struct PriceFrame {
   std::vector<double> vanna;
   std::vector<double> volga;
   std::vector<double> charm;
+  // GR-F1: position-scaled ∂P/∂q (continuous carry/borrow sensitivity). EMPTY
+  // unless PriceOptions::carry_greeks was set on `price()`; when present it is
+  // sized to the position count (NaN on non-Ok lanes). Kept off the PriceFrameView
+  // in-place API for now (additive on the returning path only), so no existing
+  // caller-owned view or backtest frame changes shape.
+  std::vector<double> dP_dq;
   std::vector<PriceStatus> status;
   PriceTotals total{};
 
@@ -305,7 +528,57 @@ struct PriceFrame {
   // the Marks mask they are left EMPTY, so a marks-only caller must gate any
   // Greek-column read on this. (Vacuously true for an empty frame — no rows.)
   [[nodiscard]] bool greeks_materialized() const noexcept { return delta.size() == id.size(); }
+
+  // True when the GR-F1 carry column is populated (carry_greeks was requested).
+  [[nodiscard]] bool carry_materialized() const noexcept { return dP_dq.size() == id.size(); }
+
+private:
+  friend class PortfolioPricer;
+  friend Result<std::vector<RiskBucket>>
+  reduce_risk_buckets(const PriceFrame &, const Portfolio &, RiskBucketKey, PriceTotals *);
+
+  // Opaque provenance for the logical Portfolio generation that produced this
+  // frame. Copies/moves of the frame preserve it; only PortfolioPricer stamps it.
+  // The pair prevents an equal-sized, reordered, unrelated, or stale pre-retime
+  // book from being used to attribute the frame's risk.
+  std::uint64_t book_logical_id_{0};
+  std::uint64_t book_revision_{0};
 };
+
+// ── Bucketed risk (GR-F1) — per-underlier / per-expiry aggregation ─────────
+//
+// The canonical PriceTotals is a single whole-book bucket. Desks need risk sliced
+// per underlier and per expiry. `reduce_risk_buckets` is a deterministic, serial
+// post-process over an Ok-lane price frame: no hot-path cost for callers that do
+// not ask, and — because the source frame is bit-identical across thread counts —
+// the buckets are thread-count invariant too.
+enum class RiskBucketKey : std::uint8_t {
+  ByUnderlier, // key = contract uid
+  ByExpiry,    // key = the contract T (year-fraction), see RiskBucket::T
+};
+
+// One aggregation bucket: the per-key PriceTotals column sums over that bucket's
+// Ok lanes, accumulated in input order.
+struct RiskBucket {
+  std::uint64_t key{0}; // ByUnderlier: uid; ByExpiry: raw bits of T (monotone for T>0)
+  double T{0.0};        // ByExpiry: the expiry year-fraction (0 for ByUnderlier)
+  PriceTotals totals{};
+};
+
+// Reduce `frame`'s Ok lanes into per-key buckets, returned sorted ascending by
+// `key`; within each bucket, lanes accumulate in input order. `pf` supplies the
+// per-position contract (uid / T) and must be the SAME logical book generation
+// `frame` was priced from. A size, provenance, or frame-shape mismatch returns
+// InvalidArgument without modifying `grand`. `grand` (if non-null) receives the
+// sum of the bucket subtotals in that
+// sorted order, so `sum_k bucket[k] == *grand` holds BIT-EXACTLY by construction
+// (it is the bucket-consistent whole-book total; it agrees with PriceFrame::total
+// to floating-point rounding — the two use different summation associations).
+// pv and n_ok are always summed; the eight Greek columns only when the frame
+// materialized them; dP_dq only when the carry column is present.
+[[nodiscard]] Result<std::vector<RiskBucket>>
+reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf, RiskBucketKey by,
+                    PriceTotals *grand = nullptr);
 
 // ── In-place price API: caller-owned output view + reusable workspace ──────
 
@@ -434,6 +707,75 @@ struct PnlFrame {
   PnlTotals total{};
 
   [[nodiscard]] std::size_t size() const noexcept { return id.size(); }
+
+private:
+  friend class PortfolioPricer;
+  friend Result<std::vector<PnlRiskBucket>>
+  reduce_pnl_risk_buckets(const PnlFrame &, const Portfolio &, RiskBucketKey, PnlTotals *);
+
+  // Opaque logical-book generation provenance, matching PriceFrame's contract.
+  // It prevents a P&L decomposition from being attributed through a different,
+  // reordered, or stale post-retime Portfolio.
+  std::uint64_t book_logical_id_{0};
+  std::uint64_t book_revision_{0};
+};
+
+// One deterministic per-underlier/per-expiry P&L attribution bucket. Units match
+// PnlTotals: every value is position-scaled cash in the portfolio currency.
+struct PnlRiskBucket {
+  std::uint64_t key{0}; // ByUnderlier: uid; ByExpiry: raw bits of T
+  double T{0.0};        // ByExpiry: residual year-fraction; 0 for ByUnderlier
+  PnlTotals totals{};
+};
+
+// Reduce the Ok lanes of a returning `pnl_explain` frame into deterministic
+// per-underlier or per-expiry PnlTotals. Rows accumulate in portfolio input order
+// and buckets are returned by ascending key. `pf` must be the exact logical book
+// generation that produced `frame`; malformed shape/identity/provenance or an
+// invalid key returns InvalidArgument without modifying `grand`. When provided,
+// `grand` is summed from the sorted bucket subtotals, so it is bit-exact to their
+// ordered sum (and agrees with PnlFrame::total within normal association rounding).
+[[nodiscard]] Result<std::vector<PnlRiskBucket>>
+reduce_pnl_risk_buckets(const PnlFrame &frame, const Portfolio &pf, RiskBucketKey by,
+                        PnlTotals *grand = nullptr);
+
+struct UnderlierDividendScheduleView {
+  std::uint32_t uid{0};
+  std::span<const DividendEvent> events{};
+  // Must match the surface-build cash/proportional convention. The call infers
+  // the remaining continuous borrow from served F for each expiry, then holds
+  // that residual fixed while bumping each cash event.
+  HybridDivParams hybrid{};
+};
+
+enum class DividendSensitivityStatus : std::uint8_t {
+  Ok = 0,               // every portfolio lane for this uid evaluated
+  Partial = 1,          // at least one lane evaluated and at least one failed
+  ModelUnavailable = 2, // all relevant lanes failed because no surface was available
+  NumericError = 3,     // all relevant lanes failed contract/carry/economics validation
+};
+
+// Per-event portfolio cash sensitivity. `schedule_index` preserves duplicate
+// same-date events as distinct inputs; dP_dDiv is cash P&L per cash-unit dividend.
+struct DividendSensitivityRow {
+  std::uint32_t uid{0};
+  std::uint32_t schedule_index{0};
+  std::int64_t ex_date_ns{0};
+  double amount{0.0};
+  double dP_dDiv{0.0};
+  DividendSensitivityStatus status{DividendSensitivityStatus::Ok};
+  std::uint32_t n_ok{0};
+  std::uint32_t n_failed{0};
+  std::uint32_t n_exposed{0};
+};
+
+// Rows preserve schedule/event order. The process-local opaque provenance ids
+// identify the exact logical book generation and SurfaceSet evaluated.
+struct DividendSensitivityFrame {
+  std::vector<DividendSensitivityRow> rows;
+  std::uint64_t book_logical_id{0};
+  std::uint64_t book_revision{0};
+  std::uint64_t surface_logical_id{0};
 };
 
 // ── In-place P&L API: caller-owned output view ─────────────────────────────
@@ -526,6 +868,15 @@ struct PriceOptions {
   // base-risk stamp, so a later pnl_totals cannot reuse adjoint base risk under an FD
   // assumption (it recomputes, fail-safe). Supersedes analytic_greeks when both set.
   bool adjoint_greeks{false};
+  // GR-F1: also compute the carry/borrow axis ∂P/∂q per contract (via
+  // american_carry_greeks_al, the analytic-AL tier) and surface it as the
+  // returning `price()` frame's `dP_dq` column + `PriceTotals::dP_dq`. Off by
+  // default (every existing frame byte-unchanged; the column stays EMPTY / the
+  // total stays NaN). Currently honored on the returning `price()` path only —
+  // the caller-owned `price_into`/`price_totals` views carry no dP_dq span yet.
+  // Requires the FullGreeks mask (ignored under prices_only). The per-share axis
+  // is position-scaled (qty*multiplier) exactly like the other frame columns.
+  bool carry_greeks{false};
   // Quote-refresh mode: compute IV + American mark only (one solve per unique
   // contract) and leave risk columns NaN. Full Greeks remain the default for
   // backward compatibility; market-making quote loops should enable this and
@@ -662,6 +1013,20 @@ public:
   [[nodiscard]] Result<PnlTotals> pnl_totals(const SurfaceSet &base, const SurfaceSet &shifted,
                                              PortfolioWorkspace &ws,
                                              const PriceOptions &opts = {}) const;
+
+  // Per-discrete-dividend portfolio sensitivities. This obtains this pricer's
+  // exact position-scaled dP/dq column, then composes each event Jacobian from
+  // the surface's served {F,r,now} and the supplied cash/proportional schedule.
+  // The residual continuous borrow is implied per expiry from served F and held
+  // fixed in the dividend bump. Rows/sums are deterministic across thread counts.
+  //
+  // Schedule uids must be unique; amounts and hybrid parameters must be finite,
+  // with blend in [0,1]. Input errors return InvalidArgument. Per-lane model and
+  // numeric failures are excluded and disclosed by row status/counts.
+  [[nodiscard]] Result<DividendSensitivityFrame>
+  dividend_sensitivities(const SurfaceSet &surfaces,
+                         std::span<const UnderlierDividendScheduleView> schedules,
+                         const PriceOptions &opts = {}) const;
 
   // Totals plus exact per-position shifted marks from the SAME unique-contract
   // solve. The established pnl_totals API and symbol remain unchanged; this

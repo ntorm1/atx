@@ -419,6 +419,9 @@ target_link_libraries(atx-vol-fit-serialize-bench
 #                                    solves/slice, 474->139)
 #   correction/cache/build/{put,call} — per-side correction-cache build (96 AL
 #                                    boundary solves + DCT, perf gap 4)
+#   scenario/grid/exact_solve_ledger — A7 (GR-P3-S): cold shocked solves the
+#                                    scenario grid's Exact arm pays per grid, the
+#                                    deterministic count A7's warm-start would cut
 # Emits the always-on solve-ledger sl_* columns in every build (rel/rel-avx2) and
 # the gated cnt_* columns under -DATX_VOL_COUNTERS=ON. Own target (one owner per TU).
 add_executable(atx-vol-pg-observability-bench
@@ -450,6 +453,7 @@ if(Python3_Interpreter_FOUND)
             --required deam/carry/resolve/warm
             --required correction/cache/build/put
             --required correction/cache/build/call
+            --required scenario/grid/exact_solve_ledger
     )
     set_tests_properties(atx-vol-pg-observability-name-coverage PROPERTIES LABELS atx_vol)
 endif()

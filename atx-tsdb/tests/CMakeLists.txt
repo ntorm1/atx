@@ -8,6 +8,11 @@ target_link_libraries(atx-tsdb-tests
         atx::tsdb
         GTest::gtest_main
         atx_warnings
+        # FIX-3/F3-B: per-process temp root. load_parquet_test.cpp's axis1.seg /
+        # atx_dated_root / atx_dated_segs are fixed names under the machine-wide temp
+        # dir that remove_all on entry, so two concurrent runs of this binary delete
+        # each other's fixtures mid-test. See //tests/CMakeLists.txt.
+        atx-test-scratch
 )
 
 find_package(Threads REQUIRED)

@@ -292,6 +292,26 @@ struct FacadeRealFixture {
   return FacadeRealFixture{std::move(*chain), quotes};
 }
 
+// B7 (FT-P): the SYNTHETIC canonical-facade fixture — the SAME PricerFitter::fit
+// timed target as the real-OPRA rows, but on the synthetic SPY panel so the
+// served pipeline (policy resolution -> surface build -> admission -> publication)
+// is benched on EVERY machine, not only where the Databento parquet is present.
+[[nodiscard]] std::optional<FacadeRealFixture> build_facade_synth_fixture() {
+  const SynthPanelSpec spec = make_spy_synthetic_spec();
+  const auto panel = make_synthetic_american_panel(spec);
+  if (!panel.has_value()) {
+    return std::nullopt;
+  }
+  const MarketEnv env =
+      MarketEnv::flat(spec.spot, spec.r, iso_to_ns(spec.snapshot_iso), spec.cash_divs);
+  Result<OptionChain> chain = OptionChain::from_frame(panel->frame, env);
+  if (!chain.has_value()) {
+    return std::nullopt;
+  }
+  const std::size_t quotes = chain->size();
+  return FacadeRealFixture{std::move(*chain), quotes};
+}
+
 [[nodiscard]] PricerConfig hft_mark_config() {
   PricerConfig config;
   config.preset = FitPreset::Hft;
@@ -337,32 +357,54 @@ struct FacadeRealFixture {
          report->published && report->published_curve.kind == VolCurveKind::ConvexDense;
 }
 
-template <class ConfigFactory, class AdmissionCheck>
-void BM_FacadeReal(benchmark::State &state, ConfigFactory config_factory,
-                   AdmissionCheck admission_check) {
-  std::optional<FacadeRealFixture> fixture = build_facade_real_fixture();
+template <class FixtureBuilder, class ConfigFactory, class AdmissionCheck>
+void BM_Facade(benchmark::State &state, FixtureBuilder fixture_builder,
+               ConfigFactory config_factory, AdmissionCheck admission_check) {
+  std::optional<FacadeRealFixture> fixture = fixture_builder();
   if (!fixture.has_value()) {
-    state.SkipWithError("real SPY facade fixture build failed");
+    state.SkipWithError("SPY facade fixture build failed");
     return;
   }
 
   std::size_t slices = 0u;
   bool degraded = false;
+  // B7 (FT-P): per-phase FitTimings so the next optimization round is gated on the
+  // pipeline the canonical facade actually runs (market-mark build / risk build /
+  // risk validation / total), not the alternate essvi_calib_surface driver.
+  FitPhaseTimings timing_sums{};
+  std::uint64_t admitted_iterations = 0u;
   for (auto _ : state) {
+    // The benchmark's item is one `fit`, not facade construction, admission/report
+    // inspection, or bundle access. Keep those necessary controls outside the timed
+    // region so a setup/report change cannot masquerade as a fitter regression.
+    state.PauseTiming();
     PricerFitter fitter{config_factory()};
+    state.ResumeTiming();
     const Status fitted = fitter.fit(fixture->chain);
-    if (!fitted.has_value() || !admission_check(fitter)) {
-      state.SkipWithError("real SPY facade fit was not admitted as configured");
+    state.PauseTiming();
+    const bool admitted = fitted.has_value() && admission_check(fitter);
+    if (!admitted) {
+      state.ResumeTiming();
+      state.SkipWithError("SPY facade fit was not admitted as configured");
       break;
     }
     const FittedSurface *served = fitter.surface();
     slices = served != nullptr ? served->session().expiries().size() : 0u;
     degraded = fitter.bundle().risk_health.state == SurfaceState::Degraded;
+    const FitPhaseTimings timings = fitter.bundle().timings;
+    timing_sums.market_mark_build_ms += timings.market_mark_build_ms;
+    timing_sums.risk_build_ms += timings.risk_build_ms;
+    timing_sums.risk_validation_ms += timings.risk_validation_ms;
+    timing_sums.total_ms += timings.total_ms;
+    ++admitted_iterations;
     benchmark::DoNotOptimize(slices);
     benchmark::ClobberMemory();
+    state.ResumeTiming();
   }
 
   const double iterations = static_cast<double>(state.iterations());
+  const double admitted_count = static_cast<double>(admitted_iterations);
+  const double timing_denominator = admitted_count > 0.0 ? admitted_count : 1.0;
   const double quotes = static_cast<double>(fixture->quotes);
   state.SetItemsProcessed(state.iterations()); // one admitted facade fit per item
   state.counters["quotes"] = quotes;
@@ -373,14 +415,27 @@ void BM_FacadeReal(benchmark::State &state, ConfigFactory config_factory,
       benchmark::Counter(iterations * quotes, benchmark::Counter::kIsRate);
   state.counters["slice_fits_per_s"] =
       benchmark::Counter(iterations * static_cast<double>(slices), benchmark::Counter::kIsRate);
+  // Mean per-phase wall across every admitted fit, rather than an arbitrary last
+  // iteration that may not represent the benchmark's reported aggregate timing.
+  state.counters["phase_market_mark_ms"] =
+      timing_sums.market_mark_build_ms / timing_denominator;
+  state.counters["phase_risk_build_ms"] = timing_sums.risk_build_ms / timing_denominator;
+  state.counters["phase_risk_validation_ms"] =
+      timing_sums.risk_validation_ms / timing_denominator;
+  state.counters["phase_total_ms"] = timing_sums.total_ms / timing_denominator;
+  state.counters["phase_samples"] = admitted_count;
+}
+
+void BM_FacadeHftMarkSynth(benchmark::State &state) {
+  BM_Facade(state, build_facade_synth_fixture, hft_mark_config, admitted_hft_mark);
 }
 
 void BM_FacadeHftMarkReal(benchmark::State &state) {
-  BM_FacadeReal(state, hft_mark_config, admitted_hft_mark);
+  BM_Facade(state, build_facade_real_fixture, hft_mark_config, admitted_hft_mark);
 }
 
 void BM_FacadeV2LatencyDualReal(benchmark::State &state) {
-  BM_FacadeReal(state, v2_latency_dual_config, admitted_v2_latency_dual);
+  BM_Facade(state, build_facade_real_fixture, v2_latency_dual_config, admitted_v2_latency_dual);
 }
 
 struct BoardCaches {
@@ -822,7 +877,19 @@ void BM_SharedBoundaryDeam(benchmark::State &state) {
 }
 
 const int kRegistered = [] {
-  apply_common(benchmark::RegisterBenchmark("fit/surface_cold/spy_synth", BM_SurfaceCold))
+  // B7 (FT-P): the CANONICAL fitting-throughput row is the served facade
+  // (PricerFitter::fit: policy resolution -> surface build -> admission ->
+  // publication), benched on the synthetic SPY board so it runs on EVERY machine
+  // and emits per-phase FitTimings counters. The next fit-perf optimization round
+  // gates on THIS row, not the alternate essvi_calib_surface driver below.
+  apply_common(benchmark::RegisterBenchmark("fit/facade/hft_mark/spy_synth", BM_FacadeHftMarkSynth))
+      ->Unit(benchmark::kMillisecond)
+      ->UseRealTime();
+  // DEMOTED (FT-P / F-10): fit/surface_cold times the ALTERNATE eSSVI driver
+  // `essvi_calib_surface`, which NO production path calls (the served path is the
+  // facade above -> VolaSession -> run_surface_parity). Kept as a low-level
+  // per-driver reference / regression guard only; do NOT gate fit-perf work on it.
+  apply_common(benchmark::RegisterBenchmark("fit/surface_cold_altdriver/spy_synth", BM_SurfaceCold))
       ->Unit(benchmark::kMicrosecond);
   // Register the real-OPRA case only when the pinned fixture's parquet is
   // actually present (source-only checkouts / CI without data/ skip cleanly
@@ -833,7 +900,11 @@ const int kRegistered = [] {
   // MinTime(2s) so Repetitions(5) still lands dozens of iterations per
   // repetition instead of just a handful.
   if (!atx::vol::testkit::find_spy_fit_parquet(atx::vol::testkit::kSpyFitFixtures[0]).empty()) {
-    apply_common(benchmark::RegisterBenchmark("fit/surface_cold/spy_real", BM_SurfaceColdReal))
+    // DEMOTED (FT-P): alternate-driver reference on a real board — see the
+    // fit/surface_cold_altdriver/spy_synth note. The canonical real-board row is
+    // fit/facade/hft_mark/spy_real just below.
+    apply_common(
+        benchmark::RegisterBenchmark("fit/surface_cold_altdriver/spy_real", BM_SurfaceColdReal))
         ->Unit(benchmark::kMicrosecond)
         ->MinTime(2.0);
     apply_common(benchmark::RegisterBenchmark("fit/facade/hft_mark/spy_real", BM_FacadeHftMarkReal))

@@ -9,19 +9,27 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <ctime>
 #include <filesystem>
+#include <atomic>  // phase-timing counters
+#include <chrono>  // phase-timing clock
 #include <fstream>
+#include <iterator> // std::make_move_iterator
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error> // std::error_code
+#include <thread>       // std::thread::hardware_concurrency (T1 outer-budget mirror)
 #include <utility>      // std::move
 #include <vector>
 
 #include "atx/core/hash.hpp"
+#include "atx/vol/detail/archive_util.hpp" // durable transactional index publication
 #include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
 #include "atx/vol/dispersion.hpp"           // with_uid
+#include "atx/vol/parallel_for.hpp"         // ScopedElasticWorkerBudget (T1 live inner budget)
 #include "atx/vol/priced_surface.hpp"       // PricedSurface
 #include "atx/vol/session.hpp"              // VolaSession::to_priced_surface
 #include "atx/vol/universe.hpp"             // uid_for_symbol
@@ -510,9 +518,91 @@ struct CorpusBuildArtifacts {
 
 void count_disposition(CorpusQualityReport &report, CorpusDisposition disposition) noexcept;
 
+
+// B1: process-global phase accumulators. Relaxed ordering throughout -- these are
+// diagnostics, never read to make a decision, and the only correctness
+// requirement is that concurrent adds do not tear.
+std::atomic<double> g_fit_fanout_s{0.0};
+std::atomic<double> g_fit_fanout_process_cpu_s{0.0};
+std::atomic<double> g_archive_write_s{0.0};
+std::atomic<double> g_checkpoint_s{0.0};
+std::atomic<std::uint64_t> g_fanout_calls{0};
+std::atomic<std::uint64_t> g_boards_fitted{0};
+// T1: inner-fit-worker budgets offered on the across-board parallel arm.
+std::atomic<std::uint64_t> g_reclaimed_inner_boards{0};
+std::atomic<std::uint64_t> g_inner_worker_slots{0};
+
+void add_seconds(std::atomic<double> &sink, double value) noexcept {
+  double expected = sink.load(std::memory_order_relaxed);
+  while (!sink.compare_exchange_weak(expected, expected + value, std::memory_order_relaxed)) {
+  }
+}
+
+// Scoped wall-clock accumulator.
+class PhaseTimer {
+public:
+  explicit PhaseTimer(std::atomic<double> &sink) noexcept
+      : sink_(sink), start_(std::chrono::steady_clock::now()) {}
+  ~PhaseTimer() {
+    const std::chrono::duration<double> elapsed = std::chrono::steady_clock::now() - start_;
+    add_seconds(sink_, elapsed.count());
+  }
+  PhaseTimer(const PhaseTimer &) = delete;
+  PhaseTimer &operator=(const PhaseTimer &) = delete;
+
+private:
+  std::atomic<double> &sink_;
+  std::chrono::steady_clock::time_point start_;
+};
+
 [[nodiscard]] bool admitted_surface(const FitSlot &slot, bool qualified) noexcept {
   return slot.status == CorpusFitStatus::Ok &&
          (!qualified || slot.admission.disposition == CorpusDisposition::Admitted);
+}
+
+// ── T1 (perf, BT-T1): the LIVE inner fit-worker budget of one in-flight board ─
+//
+// One of these is stack-allocated per board fit and installed as that thread's
+// elastic AUTO resolver (parallel_for.hpp) for the duration of the fit, so every
+// inner fan-out the fit reaches re-asks how much of the outer pool is idle
+// instead of inheriting a width frozen when the board was claimed. See the long
+// note at the install site in `build_corpus_core`.
+struct InnerBudgetTicket {
+  const std::atomic<std::size_t> *unfinished{nullptr}; // outer tasks still running
+  unsigned outer_budget{1};
+  std::size_t board_index{0};
+  const CorpusFitTestHooks *hooks{nullptr};
+  std::atomic<bool> reclaimed{false}; // this board was offered > 1 at least once
+};
+
+// The elastic AUTO resolver itself. noexcept (it is called from
+// `atx_resolve_fanout_workers`), lock-free apart from an optional test hook.
+unsigned resolve_inner_budget(void *ctx) noexcept {
+  InnerBudgetTicket &t = *static_cast<InnerBudgetTicket *>(ctx);
+  std::size_t left = 1u;
+  unsigned workers = 1u;
+  if (t.outer_budget > 1u) {
+    left = t.unfinished->load(std::memory_order_acquire);
+    const std::size_t sharers =
+        std::min<std::size_t>(t.outer_budget, std::max<std::size_t>(left, 1u));
+    workers = std::max(1u, static_cast<unsigned>(t.outer_budget / sharers));
+  }
+  // Diagnostic only (relaxed, process-global, never serialized). `inner_worker_slots`
+  // sums every budget OFFERED; `reclaimed_inner_boards` counts distinct BOARDS that
+  // were offered more than one at least once, so the name keeps meaning boards even
+  // though a board is now re-resolved many times.
+  g_inner_worker_slots.fetch_add(workers, std::memory_order_relaxed);
+  if (workers > 1u && !t.reclaimed.exchange(true, std::memory_order_relaxed)) {
+    g_reclaimed_inner_boards.fetch_add(1u, std::memory_order_relaxed);
+  }
+  if (t.hooks != nullptr && t.hooks->on_inner_fit_workers) {
+    // This function is noexcept; a throwing test hook must not std::terminate.
+    try {
+      t.hooks->on_inner_fit_workers(t.board_index, left, workers);
+    } catch (...) {
+    }
+  }
+  return workers;
 }
 
 [[nodiscard]] Result<CorpusBuildArtifacts>
@@ -541,9 +631,109 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
   }
   const bool qualified = admission != nullptr;
 
+  // ── T1 (perf, BT-T1): the LAST BOARD STANDING reclaims inner fit workers ───
+  //
+  // Two rules used to compose into the ~9/16 worker cap. `run_bounded_fit_tasks`
+  // clamps its worker count at the TASK count, so an across-board pool wider than
+  // the task list cannot use the surplus at all; and the arm below pins every
+  // board's INNER fit to one worker whenever the outer arm is parallel — the guard
+  // that stops the two levels multiplying into H^2 runnable threads. Together they
+  // mean the boards still standing as the pool drains hold the whole machine and
+  // use one core each. (The other half of BT-T1 — one fan-out per DATE — is
+  // already gone: `append_dates` pools every un-checkpointed date's boards into a
+  // single fan-out, so what remains is the drain of that one pool.)
+  //
+  // The fix hands the idle share of the outer budget to whoever is still running:
+  // while `left` tasks are unfinished, a running board is offered
+  // `outer_budget / min(outer_budget, left)` inner workers. The numerator is the
+  // BUDGET, not the pool's clamped worker count — the clamp is precisely what
+  // strands the surplus (a 2-task pool on an 8-wide budget runs 2 workers and
+  // leaves 6 unplaced), so measuring against the clamped width would report the
+  // pool as perfectly busy and reclaim nothing.
+  //
+  // ## Why this is re-resolved DURING the fit, not once at claim
+  //
+  // Evaluating it once, when the task is claimed, does not address BT-T1 at all —
+  // and on a saturated pool it is provably INERT. A dynamic pool with budget `B`
+  // only ever claims a task while at least `B` tasks are unfinished (the `B-1`
+  // tasks in flight plus the one being claimed), so `left >= B` at every claim and
+  // `B / min(B, left)` is always exactly 1. Measured on an 8-board / 4-wide
+  // fixture: 8 claim-time resolutions, ALL of them 1, zero reclaimed. The only
+  // boards a claim-time reclaim can ever widen are those claimed after the pool
+  // has stopped being full — i.e. the short tail, never the straggler that sets
+  // the makespan. BT-T1's symptom is the opposite one: the SPY board is claimed
+  // EARLY and is still running, alone, at the end.
+  //
+  // So the budget is a LIVE quantity for the board's whole life. Each board
+  // installs an `InnerBudgetTicket` as its thread's elastic AUTO resolver
+  // (parallel_for.hpp) and hands its fit `fit_workers = 0` (AUTO); every inner
+  // fan-out the fit reaches then re-resolves against the current `left`. A board
+  // that starts while the pool is full runs its first fan-outs serially and widens
+  // as its siblings drain.
+  //
+  // This CANNOT oversubscribe — and the proof is now stronger than the claim-time
+  // one, because it no longer has to reason about when a task was claimed. Take
+  // any instant with `m` tasks running. Each one's CURRENTLY ACTIVE inner fan-out
+  // was sized at some earlier moment, and `unfinished_tasks` only falls, so `left`
+  // was >= m then; each therefore holds at most `outer_budget / min(outer_budget, m)`
+  // workers, and the m slices sum to at most `outer_budget`. Inner fan-outs are
+  // sequential within a board (the jthread join is a barrier), so a board never
+  // holds two at once. The saturated regime is unchanged by construction: while
+  // `left >= outer_budget` every resolution returns exactly 1, which is the
+  // historical schedule — asserted per-offer by
+  // `SaturatedFanOutOffersOneWorkerUntilItDrains`, not argued.
+  //
+  // Determinism is NOT weakened. `left` is scheduling-dependent, so the inner
+  // budget a given board receives varies run to run — but the inner budget has
+  // never been allowed to change a fitted value: it fans expiry preparation into
+  // disjoint per-chain slots (session.cpp / surface_parity.cpp), which is exactly
+  // what the existing 1-vs-8-worker byte gates already exercise (an outer-serial
+  // build keeps the caller's inner budget while a parallel one pins 1, and their
+  // archives are asserted byte-identical). `InnerWorkerReclaimIsByteIdenticalToSerial`
+  // gates the maximally-reclaimed case specifically.
+  //
+  // Nesting stays bounded: `parallel_for*` installs a serial AUTO resolver on the
+  // workers it spawns beneath an elastic budget, so a fan-out reached from inside
+  // an inner fan-out resolves AUTO to 1 exactly as the old `fit_workers = 1` pin
+  // did. `outer_budget` mirrors run_bounded_fit_tasks' own resolution (0 => machine
+  // width) so the two never disagree about how wide the pool actually is.
+  const unsigned outer_budget = cfg.n_threads != 0u
+                                    ? cfg.n_threads
+                                    : std::max(1u, std::thread::hardware_concurrency());
+  std::atomic<std::size_t> unfinished_tasks{0};
+  // Decrements `unfinished_tasks` on scope exit — after the task's fit has been
+  // written to its slot, and even if that fit throws.
+  const CorpusFitTestHooks *const hooks = cfg.test_hooks; // null in production
+  struct TaskDone {
+    std::atomic<std::size_t> &counter;
+    const CorpusFitTestHooks *hooks;
+    std::size_t task_index;
+    ~TaskDone() {
+      const std::size_t left = counter.fetch_sub(1u, std::memory_order_acq_rel) - 1u;
+      if (hooks == nullptr || !hooks->on_board_fit_done) {
+        return;
+      }
+      // A destructor is implicitly noexcept: a throwing test hook would
+      // std::terminate the whole process instead of failing the test.
+      try {
+        hooks->on_board_fit_done(task_index, left);
+      } catch (...) {
+      }
+    }
+  };
+
   // ── Fan out board fits; each worker writes its own disjoint slot ───────────
   std::vector<FitSlot> slots(n);
   Status schedule_status = Ok();
+  // B1: time BOTH scheduler arms as one span -- this is the pool whose per-date
+  // draining the batching change exists to eliminate, and `fanout_calls` counts
+  // exactly those drains, so the number of drains is an OBSERVED quantity rather
+  // than something inferred from the shape of the code. Explicit timestamps
+  // rather than a scoped guard, so the fan-out below keeps its indentation.
+  g_fanout_calls.fetch_add(1u, std::memory_order_relaxed);
+  g_boards_fitted.fetch_add(static_cast<std::uint64_t>(n), std::memory_order_relaxed);
+  const auto t_fanout_begin = std::chrono::steady_clock::now();
+  const std::clock_t cpu_fanout_begin = std::clock();
   if (cfg.warm_start_chain) {
     // C2 (perf): cross-date warm-start chains. Group boards into per-symbol chains
     // fit in chronological (date-ascending) order; each date carries the prior
@@ -574,16 +764,45 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
       chains.emplace_back(s, e);
       s = e;
     }
+    // T1: the chain arm's tasks are CHAINS, so the reclaim's `left` counts chains
+    // still running, not boards.
+    unfinished_tasks.store(chains.size(), std::memory_order_release);
     schedule_status = detail::run_bounded_fit_tasks(
         chains.size(), cfg.n_threads,
-        [&boards, &slots, &cfg, admission, n, &order_sd, &chains](std::size_t chain_idx) -> Status {
+        [&boards, &slots, &cfg, admission, n, &order_sd, &chains, outer_budget, &unfinished_tasks,
+         hooks](std::size_t chain_idx) -> Status {
+          const TaskDone chain_done{unfinished_tasks, hooks, chain_idx};
           WarmCacheExport carried; // prior-date caches carried down this symbol's chain
           const std::pair<std::size_t, std::size_t> range = chains[chain_idx];
           for (std::size_t p = range.first; p < range.second; ++p) {
             const std::size_t board_idx = order_sd[p];
             PricerConfig fit_config = cfg.fit_template;
+            // Outer parallelism is ACROSS chains; a chain running while the pool
+            // drains reclaims the workers the pool can no longer place. The
+            // budget is re-resolved at every inner fan-out for as long as this
+            // board is in flight, not frozen when the chain was claimed.
+            //
+            // UNTESTED, and deliberately so (rev2-ws-t N-M3): this install
+            // mirrors the board arm below exactly, but NOTHING reaches it. No
+            // fixture does -- `build_batched` never sets `warm_start_chain` --
+            // and production does not either, for the reason spelled out at the
+            // FitAffinity comment on the board arm below: `CorpusConfig`'s
+            // `warm_start_chain` defaults to false and `dispersion_corpus_config`
+            // never sets it. The drain-regime gates
+            // (CorpusBuildSession.SaturatedFanOutOffersOneWorkerUntilItDrains,
+            // .StragglerReclaimsInnerWorkersWhileStillRunning) therefore cover
+            // the board arm only. If this branch is ever made reachable, extend
+            // one of those fixtures to `warm_start_chain = true` FIRST -- do not
+            // rely on the board arm's coverage to speak for it.
+            InnerBudgetTicket ticket;
+            std::optional<ScopedElasticWorkerBudget> elastic;
             if (n > 1u && cfg.n_threads != 1u) {
-              fit_config.fit_workers = 1u; // outer parallelism is ACROSS chains
+              ticket.unfinished = &unfinished_tasks;
+              ticket.outer_budget = outer_budget;
+              ticket.board_index = board_idx;
+              ticket.hooks = hooks;
+              fit_config.fit_workers = 0u; // AUTO == the live ticket below
+              elastic.emplace(&resolve_inner_budget, &ticket);
             }
             // Every chain board builds/uses a WIDE (chain-cache-mode) cache so it
             // stays reusable across forward dates; when a prior date's cache is in
@@ -610,21 +829,79 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
         // C4 wave-2 (perf, finding 13): pin the per-symbol chains to discovered
         // P-cores. Byte-identical to the unpinned path (pinning only steers WHICH
         // logical CPU runs a chain); composes with C2's symbol-shard determinism.
-        detail::FitAffinity::PerformanceCores);
+        //
+        // P3.1 (perf): upgraded to the two-tier P-then-E affinity. This is the
+        // build-corpus fan-out that dispersion_build_corpus drives one date at a
+        // time, so `chains.size()` is ~the symbol count (~60) while the auto budget
+        // (cfg.n_threads == 0 -> hardware_concurrency()) is 16 on the reference
+        // i7-1260P. The C4 pin therefore wrapped all 16 chain workers onto the 8
+        // P-core logical CPUs and left the 8 E-cores idle for the entire build; the
+        // two-tier value spills ordinals 8..15 onto the E-cores at below-normal
+        // priority instead. OPT-IN via ATX_VOL_FIT_ECORE_TIER (see FitAffinity):
+        // unset, this is schedule-identical to PerformanceCores, so benches holding
+        // the P-core lease are unaffected. Determinism is unchanged either way --
+        // each chain writes only its own boards' slots and carries only its own
+        // warm cache, so which core runs a chain cannot change a fitted surface.
+        detail::FitAffinity::PerformanceThenEfficiencyCores);
   } else {
+    unfinished_tasks.store(n, std::memory_order_release);
     schedule_status = detail::run_bounded_fit_tasks(
-        n, cfg.n_threads, [&boards, &slots, &cfg, admission, n](std::size_t index) -> Status {
+        n, cfg.n_threads,
+        [&boards, &slots, &cfg, admission, n, outer_budget, &unfinished_tasks,
+         hooks](std::size_t index) -> Status {
+          const TaskDone board_done{unfinished_tasks, hooks, index};
           PricerConfig fit_config = cfg.fit_template;
           // Auto or explicit multi-worker outer scheduling owns the machine
           // budget. Keep each non-eSSVI board's expiry preparation serial so the
-          // two levels cannot multiply into H^2 runnable threads. An explicitly
-          // serial outer scheduler retains the caller's inner budget.
+          // two levels cannot multiply into H^2 runnable threads -- but only for
+          // as long as the pool is actually saturated (T1): once fewer tasks are
+          // unfinished than the pool is wide, the boards STILL STANDING take the
+          // idle share instead of leaving it on the floor, re-checked at every
+          // inner fan-out for as long as the board runs. An explicitly serial
+          // outer scheduler retains the caller's inner budget.
+          InnerBudgetTicket ticket;
+          std::optional<ScopedElasticWorkerBudget> elastic;
           if (n > 1u && cfg.n_threads != 1u) {
-            fit_config.fit_workers = 1u;
+            ticket.unfinished = &unfinished_tasks;
+            ticket.outer_budget = outer_budget;
+            ticket.board_index = index;
+            ticket.hooks = hooks;
+            fit_config.fit_workers = 0u; // AUTO == the live ticket below
+            elastic.emplace(&resolve_inner_budget, &ticket);
           }
           slots[index] = fit_board(boards[index], fit_config, admission);
           return Ok();
-        });
+        },
+        // P3.1 (perf): this -- NOT the warm_start_chain branch above -- is the
+        // branch `dispersion_build_corpus` actually drives: CorpusConfig's
+        // `warm_start_chain` defaults to false and dispersion_corpus_config never
+        // sets it. It has always run with the DEFAULT FitAffinity::None, so the C4
+        // wave-2 P-core pin never applied here and the fan-out was already free to
+        // use every logical CPU including the E-cores. The E-tier's value on this
+        // path is therefore not "wake the idle E-cores" (they were never idle) but
+        // "stop the 16 unpinned workers migrating": with the flag armed each worker
+        // gets ONE dedicated logical CPU -- 8 on P-cores, 8 on E-cores at
+        // below-normal priority -- instead of being shuffled by the OS scheduler.
+        //
+        // Selected at the CALL SITE rather than inside the scheduler so the
+        // disarmed default stays exactly FitAffinity::None. Naming the two-tier
+        // value unconditionally would silently convert this path to the P-core-only
+        // wrap (16 workers folded onto 8 P-core CPUs) whenever the flag was unset --
+        // a real, unmeasured behaviour change on the default build path. Off is off.
+        detail::efficiency_core_tier_enabled() ? detail::FitAffinity::PerformanceThenEfficiencyCores
+                                               : detail::FitAffinity::None);
+  }
+
+  add_seconds(g_fit_fanout_s,
+              std::chrono::duration<double>(std::chrono::steady_clock::now() - t_fanout_begin)
+                  .count());
+  const std::clock_t cpu_fanout_end = std::clock();
+  if (cpu_fanout_begin != static_cast<std::clock_t>(-1) &&
+      cpu_fanout_end != static_cast<std::clock_t>(-1) &&
+      cpu_fanout_end >= cpu_fanout_begin) {
+    add_seconds(g_fit_fanout_process_cpu_s,
+                static_cast<double>(cpu_fanout_end - cpu_fanout_begin) /
+                    static_cast<double>(CLOCKS_PER_SEC));
   }
 
   if (!schedule_status) {
@@ -765,6 +1042,7 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
                                              slots[idx].provenance});
         }
       }
+      PhaseTimer write_timer(g_archive_write_s);
       const Status w = write_surface_archive_v2_file(apath, items, cfg.write_opts);
       if (!w) {
         return Err(w.error()); // propagate IoError / AlreadyExists
@@ -804,12 +1082,179 @@ struct CorpusDateCheckpoint {
          (std::string(date) + std::string(suffix));
 }
 
+inline constexpr std::string_view kCorpusPairCommitMagic = "ATX_CORPUS_PAIR_COMMIT\t1\t";
+
+[[nodiscard]] std::uint64_t corpus_pair_generation(const CorpusManifest &manifest,
+                                                   const CorpusQualityReport &quality) {
+  const std::string manifest_text = serialize_manifest(manifest);
+  const std::string quality_text = serialize_quality_report(quality);
+  std::uint64_t generation =
+      atx::core::hash_bytes(manifest_text.data(), manifest_text.size());
+  generation = atx::core::hash_combine(
+      static_cast<std::size_t>(generation),
+      atx::core::hash_bytes(quality_text.data(), quality_text.size()));
+  return generation == 0u ? 1u : generation;
+}
+
+[[nodiscard]] Result<std::optional<std::uint64_t>>
+read_pair_commit(const std::filesystem::path &path) {
+  std::error_code ec;
+  const bool exists = std::filesystem::exists(path, ec);
+  if (ec) {
+    return Err(ErrorCode::IoError, "CorpusBuildSession: cannot inspect pair commit");
+  }
+  if (!exists) {
+    return Ok(std::optional<std::uint64_t>{});
+  }
+  if (!std::filesystem::is_regular_file(path, ec) || ec) {
+    return Err(ErrorCode::IoError, "CorpusBuildSession: pair commit is not a regular file");
+  }
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream) {
+    return Err(ErrorCode::IoError, "CorpusBuildSession: cannot read pair commit");
+  }
+  const std::string text((std::istreambuf_iterator<char>(stream)),
+                         std::istreambuf_iterator<char>());
+  if (!text.starts_with(kCorpusPairCommitMagic)) {
+    return Err(ErrorCode::ParseError, "CorpusBuildSession: bad pair commit marker");
+  }
+  std::string_view generation_text{text};
+  generation_text.remove_prefix(kCorpusPairCommitMagic.size());
+  if (!generation_text.empty() && generation_text.back() == '\n') {
+    generation_text.remove_suffix(1u);
+  }
+  std::uint64_t generation = 0u;
+  const auto parsed = std::from_chars(generation_text.data(),
+                                      generation_text.data() + generation_text.size(), generation);
+  if (parsed.ec != std::errc{} ||
+      parsed.ptr != generation_text.data() + generation_text.size() || generation == 0u) {
+    return Err(ErrorCode::ParseError, "CorpusBuildSession: bad pair commit generation");
+  }
+  return Ok(std::optional<std::uint64_t>{generation});
+}
+
+void remove_abandoned_pair(const std::filesystem::path &manifest_path,
+                           const std::filesystem::path &quality_path,
+                           const std::filesystem::path &commit_path) {
+  std::error_code ignored;
+  for (const std::filesystem::path &path :
+       {manifest_path, quality_path, commit_path,
+        std::filesystem::path(manifest_path.string() + ".pending"),
+        std::filesystem::path(quality_path.string() + ".pending"),
+        std::filesystem::path(commit_path.string() + ".pending"),
+        std::filesystem::path(manifest_path.string() + ".pending.tmp"),
+        std::filesystem::path(quality_path.string() + ".pending.tmp")}) {
+    ignored.clear();
+    std::filesystem::remove(path, ignored);
+  }
+}
+
+[[nodiscard]] Result<std::array<std::filesystem::path, 3>>
+reserve_corpus_pair_temps(const std::array<std::filesystem::path, 3> &destinations) {
+  std::array<std::filesystem::path, 3> temps;
+  std::size_t reserved_count = 0u;
+  for (; reserved_count < destinations.size(); ++reserved_count) {
+    auto reserved =
+        detail::reserve_unique_publish_temp_file(destinations[reserved_count].generic_string());
+    if (!reserved) {
+      std::error_code ignored;
+      for (std::size_t i = 0; i < reserved_count; ++i) {
+        std::filesystem::remove(temps[i], ignored);
+      }
+      return tl::unexpected<atx::core::Error>(std::move(reserved).error());
+    }
+    temps[reserved_count] = std::filesystem::path{*reserved};
+  }
+  return Ok(std::move(temps));
+}
+
+[[nodiscard]] Status publish_corpus_pair(const std::filesystem::path &manifest_path,
+                                         const std::filesystem::path &quality_path,
+                                         const std::filesystem::path &commit_path,
+                                         const CorpusManifest &manifest,
+                                         const CorpusQualityReport &quality) {
+  static std::mutex pair_publish_mutex;
+  std::scoped_lock pair_lock(pair_publish_mutex);
+  for (const auto &path : {manifest_path, quality_path, commit_path}) {
+    if (path.has_parent_path()) {
+      std::error_code ec;
+      std::filesystem::create_directories(path.parent_path(), ec);
+      if (ec) {
+        return Err(ErrorCode::IoError,
+                   "CorpusBuildSession: cannot create pair publication directory");
+      }
+    }
+  }
+  const std::uint64_t generation = corpus_pair_generation(manifest, quality);
+  auto reserved =
+      reserve_corpus_pair_temps({manifest_path, quality_path, commit_path});
+  if (!reserved) {
+    return tl::unexpected<atx::core::Error>(std::move(reserved).error());
+  }
+  const std::filesystem::path &manifest_pending = (*reserved)[0];
+  const std::filesystem::path &quality_pending = (*reserved)[1];
+  const std::filesystem::path &commit_pending = (*reserved)[2];
+
+  // No authoritative marker exists while a generation is being installed.
+  // Therefore a crash after either data-file rename is distinguishable from a
+  // committed pair and restart can discard/refit it safely.
+  if (Status status = write_manifest_file(manifest_pending.generic_string(), manifest); !status) {
+    std::error_code ignored;
+    for (const auto &temp : *reserved) {
+      std::filesystem::remove(temp, ignored);
+    }
+    return status;
+  }
+  if (Status status = write_quality_report_file(quality_pending.generic_string(), quality);
+      !status) {
+    std::error_code ignored;
+    for (const auto &temp : *reserved) {
+      std::filesystem::remove(temp, ignored);
+    }
+    return status;
+  }
+  if (Status status = detail::flush_and_publish_file(manifest_pending.generic_string(),
+                                                     manifest_path.generic_string());
+      !status) {
+    std::error_code ignored;
+    std::filesystem::remove(commit_pending, ignored);
+    return status;
+  }
+  if (Status status = detail::flush_and_publish_file(quality_pending.generic_string(),
+                                                     quality_path.generic_string());
+      !status) {
+    std::error_code ignored;
+    std::filesystem::remove(commit_pending, ignored);
+    return status;
+  }
+  {
+    std::ofstream marker(commit_pending, std::ios::binary | std::ios::trunc);
+    if (!marker) {
+      std::error_code ignored;
+      std::filesystem::remove(commit_pending, ignored);
+      return Err(ErrorCode::IoError, "CorpusBuildSession: cannot write pair commit");
+    }
+    marker << kCorpusPairCommitMagic << generation << '\n';
+    if (!marker) {
+      marker.close();
+      std::error_code ignored;
+      std::filesystem::remove(commit_pending, ignored);
+      return Err(ErrorCode::IoError, "CorpusBuildSession: pair commit write failed");
+    }
+  }
+  // The one-file marker is the commit point and is published only after both
+  // durable data files. Readers never accept an unmarked/mixed generation.
+  return detail::flush_and_publish_file(commit_pending.generic_string(),
+                                        commit_path.generic_string());
+}
+
 [[nodiscard]] Result<std::optional<CorpusDateCheckpoint>>
 read_date_checkpoint(std::string_view out_dir, std::string_view date,
                      std::span<const std::string> expected_symbols, std::uint64_t input_fingerprint,
-                     std::uint64_t policy_fingerprint) {
+                     std::uint64_t policy_fingerprint, bool scrub_payload_crc) {
   const std::filesystem::path manifest_path = checkpoint_path(out_dir, date, ".manifest.tsv");
   const std::filesystem::path quality_path = checkpoint_path(out_dir, date, ".quality.tsv");
+  const std::filesystem::path commit_path = checkpoint_path(out_dir, date, ".commit");
   std::error_code manifest_error;
   std::error_code quality_error;
   const bool manifest_exists = std::filesystem::exists(manifest_path, manifest_error);
@@ -817,15 +1262,32 @@ read_date_checkpoint(std::string_view out_dir, std::string_view date,
   if (manifest_error || quality_error) {
     return Err(ErrorCode::IoError, "CorpusBuildSession: cannot inspect date checkpoint");
   }
-  if (!manifest_exists && !quality_exists) {
+  ATX_TRY(std::optional<std::uint64_t> committed, read_pair_commit(commit_path));
+  if (!committed && !manifest_exists && !quality_exists) {
     return Ok(std::optional<CorpusDateCheckpoint>{});
   }
-  if (manifest_exists != quality_exists) {
-    return Err(ErrorCode::AlreadyExists, "CorpusBuildSession: incomplete date checkpoint");
+  if (!committed) {
+    // Abandoned pre-commit generation (including a crash between the two
+    // renames). It was never authoritative, so discard both its indexes and
+    // its per-date archive, then refit the date.
+    remove_abandoned_pair(manifest_path, quality_path, commit_path);
+    std::error_code cleanup;
+    std::filesystem::remove(std::filesystem::path(out_dir) /
+                                (std::string(date) + ".atxvsa"),
+                            cleanup);
+    return Ok(std::optional<CorpusDateCheckpoint>{});
+  }
+  if (!manifest_exists || !quality_exists) {
+    return Err(ErrorCode::ParseError,
+               "CorpusBuildSession: committed date checkpoint is incomplete");
   }
 
   ATX_TRY(CorpusManifest manifest, read_manifest_file(manifest_path.generic_string()));
   ATX_TRY(CorpusQualityReport quality, read_quality_report_file(quality_path.generic_string()));
+  if (*committed != corpus_pair_generation(manifest, quality)) {
+    return Err(ErrorCode::ParseError,
+               "CorpusBuildSession: date checkpoint generation mismatch");
+  }
   if (quality.input_fingerprint != input_fingerprint ||
       quality.policy_fingerprint != policy_fingerprint) {
     return Err(ErrorCode::AlreadyExists,
@@ -871,21 +1333,47 @@ read_date_checkpoint(std::string_view out_dir, std::string_view date,
     return Err(ErrorCode::AlreadyExists, "CorpusBuildSession: date checkpoint archive unavailable");
   }
   if (archive_exists) {
-    ATX_TRY(SurfaceArchiveV2 archive, SurfaceArchiveV2::open_file(expected_archive.generic_string()));
+    // P-5: checkpoint framing is metadata work. `open_file` allocated and read
+    // the complete archive before these O(1) directory checks; a read-only map
+    // faults only header/lookup/directory pages unless the optional payload scrub
+    // below deliberately walks records. The mapping dies before resume can
+    // rewrite anything, so it does not pin a mutable partition.
+    ATX_TRY(SurfaceArchiveV2 archive,
+            SurfaceArchiveV2::open_mapped(expected_archive.generic_string()));
     if (archive.count() != admitted) {
       return Err(ErrorCode::ParseError,
                  "CorpusBuildSession: date checkpoint archive count mismatch");
     }
-    // Only the surface COUNT is cross-checked here, so map zero-copy views (no
-    // per-surface reconstruct); the v2 subset-map touches nothing but framing.
-    ATX_TRY(std::vector<PricedSurfaceView> mapped, archive.map_all());
-    if (mapped.size() != admitted) {
+    // T2 / SE-P2-6: framing-ONLY enumeration. This used to call `map_all()` on
+    // the strength of a comment claiming "the v2 subset-map touches nothing but
+    // framing" — false for the heavy kinds: `map_all` builds a
+    // `PricedSurfaceView` per record, which eagerly materializes
+    // ConvexDense/SplineVol curves (allocations, node-array copies, spline
+    // second-derivative solves), making resume O(heavy payload) for a dense
+    // SPY-style date when all this check wants is a count. WS-C's C6 accessors
+    // (`entries()`/`entry_count()`) are the seam: O(1), read only the directory
+    // parsed at open, and touch no record body at all.
+    if (archive.entry_count() != static_cast<std::size_t>(admitted)) {
       return Err(ErrorCode::ParseError, "CorpusBuildSession: date checkpoint archive map mismatch");
     }
     for (const CorpusEntry &entry : manifest.entries) {
       if (entry.status == CorpusFitStatus::Ok && !archive.find(entry.symbol)) {
         return Err(ErrorCode::ParseError,
                    "CorpusBuildSession: date checkpoint archive symbol mismatch");
+      }
+    }
+    // T2 / SE-P2-3: the ONE scheduled verification point for the lazy per-record
+    // CRC. Everything above this line is framing; this is the only place the
+    // pipeline reads a record body on purpose, and it does so to reject
+    // corruption rather than to serve it. Opt-out (`verify_checkpoint_payload_crc
+    // = false`) exists for callers with their own scrub schedule; the qualified
+    // corpus path defaults it ON. Re-wrapped with a corpus-level message so the
+    // failure names the site as well as the cause.
+    if (scrub_payload_crc) {
+      const Status scrubbed = archive.validate_all();
+      if (!scrubbed) {
+        return Err(scrubbed.error().code(),
+                   "CorpusBuildSession: date checkpoint archive failed payload CRC scrub");
       }
     }
   }
@@ -928,35 +1416,37 @@ read_date_checkpoint(std::string_view out_dir, std::string_view date,
 
   const std::filesystem::path manifest_path = checkpoint_path(out_dir, date, ".manifest.tsv");
   const std::filesystem::path quality_path = checkpoint_path(out_dir, date, ".quality.tsv");
-  const std::filesystem::path manifest_pending = manifest_path.string() + ".pending";
-  const std::filesystem::path quality_pending = quality_path.string() + ".pending";
-  ATX_TRY_VOID(write_manifest_file(manifest_pending.generic_string(), manifest));
-  const Status quality_write = write_quality_report_file(quality_pending.generic_string(), quality);
-  if (!quality_write) {
-    std::error_code cleanup;
-    std::filesystem::remove(manifest_pending, cleanup);
-    return Err(quality_write.error());
-  }
-
-  std::error_code rename_error;
-  std::filesystem::rename(manifest_pending, manifest_path, rename_error);
-  if (rename_error) {
-    std::error_code cleanup;
-    std::filesystem::remove(manifest_pending, cleanup);
-    std::filesystem::remove(quality_pending, cleanup);
-    return Err(ErrorCode::IoError, "CorpusBuildSession: manifest checkpoint commit failed");
-  }
-  std::filesystem::rename(quality_pending, quality_path, rename_error);
-  if (rename_error) {
-    std::error_code cleanup;
-    std::filesystem::remove(quality_pending, cleanup);
-    std::filesystem::remove(manifest_path, cleanup);
-    return Err(ErrorCode::IoError, "CorpusBuildSession: quality checkpoint commit failed");
-  }
-  return Ok();
+  const std::filesystem::path commit_path = checkpoint_path(out_dir, date, ".commit");
+  return publish_corpus_pair(manifest_path, quality_path, commit_path, manifest, quality);
 }
 
 } // namespace
+
+
+CorpusPhaseTimings corpus_phase_timings() noexcept {
+  CorpusPhaseTimings out;
+  out.fit_fanout_s = g_fit_fanout_s.load(std::memory_order_relaxed);
+  out.archive_write_s = g_archive_write_s.load(std::memory_order_relaxed);
+  out.checkpoint_s = g_checkpoint_s.load(std::memory_order_relaxed);
+  out.fanout_calls = g_fanout_calls.load(std::memory_order_relaxed);
+  out.boards_fitted = g_boards_fitted.load(std::memory_order_relaxed);
+  out.reclaimed_inner_boards = g_reclaimed_inner_boards.load(std::memory_order_relaxed);
+  out.inner_worker_slots = g_inner_worker_slots.load(std::memory_order_relaxed);
+  out.fit_fanout_process_cpu_s =
+      g_fit_fanout_process_cpu_s.load(std::memory_order_relaxed);
+  return out;
+}
+
+void reset_corpus_phase_timings() noexcept {
+  g_fit_fanout_s.store(0.0, std::memory_order_relaxed);
+  g_archive_write_s.store(0.0, std::memory_order_relaxed);
+  g_checkpoint_s.store(0.0, std::memory_order_relaxed);
+  g_fanout_calls.store(0u, std::memory_order_relaxed);
+  g_boards_fitted.store(0u, std::memory_order_relaxed);
+  g_reclaimed_inner_boards.store(0u, std::memory_order_relaxed);
+  g_inner_worker_slots.store(0u, std::memory_order_relaxed);
+  g_fit_fanout_process_cpu_s.store(0.0, std::memory_order_relaxed);
+}
 
 CorpusBuildSession::CorpusBuildSession(std::string out_dir, QualifiedCorpusConfig cfg)
     : out_dir_{std::move(out_dir)}, cfg_{std::move(cfg)} {
@@ -978,25 +1468,41 @@ Result<CorpusBuildSession> CorpusBuildSession::create(std::string_view out_dir,
   return Ok(CorpusBuildSession{std::string(out_dir), cfg});
 }
 
-Status CorpusBuildSession::append_date(std::string_view date,
-                                       std::span<const CorpusCellInput> cells) {
-  if (finished_) {
-    return Err(ErrorCode::InvalidArgument,
-               "CorpusBuildSession::append_date: session already finished");
-  }
-  if (date.empty() || cells.empty() || (!last_date_.empty() && date <= last_date_)) {
-    return Err(ErrorCode::InvalidArgument,
-               "CorpusBuildSession::append_date: dates must be nonempty and strictly ascending");
-  }
+namespace {
 
-  std::vector<CorpusBoard> boards;
-  std::vector<CorpusSourceFailure> source_failures;
-  std::vector<std::string> symbols;
+// B1 (perf): one date's cells, validated + canonicalized, ready for the shared
+// fit fan-out. Splitting "prepare" from "fit" from "commit" is what lets several
+// dates share ONE worker pool while each date's archive, checkpoint and manifest
+// slice stay exactly what the per-date path produced.
+struct PreparedDate {
+  std::string date{};
+  std::vector<CorpusBoard> boards{};
+  std::vector<CorpusSourceFailure> source_failures{};
+  std::vector<std::string> symbols{};        // canonical, ascending
+  std::string fingerprint_material{};
+  std::uint64_t input_fingerprint{0};
+  std::size_t cell_count{0};
+  // Boards are MOVED into the shared fan-out buffer, so `boards` is emptied and
+  // this is the surviving record of how many entries this date owns.
+  std::size_t board_count{0};
+  std::vector<CorpusEntry> manifest_entries{};
+  std::vector<QualifiedCorpusEntry> quality_entries{};
+  bool from_checkpoint{false};
+};
+
+// Validate + canonicalize one date's cells. Byte-for-byte the same work the
+// per-date path did inline; extracted verbatim so both entry points share it.
+[[nodiscard]] Result<PreparedDate> prepare_date_cells(std::string_view date,
+                                                      std::span<const CorpusCellInput> cells) {
+  PreparedDate prepared;
+  prepared.date = std::string(date);
+  prepared.cell_count = cells.size();
+  prepared.boards.reserve(cells.size());
+  prepared.source_failures.reserve(cells.size());
+  prepared.symbols.reserve(cells.size());
   std::vector<std::pair<std::string, std::string>> fingerprint_cells;
-  std::string date_fingerprint_material;
-  boards.reserve(cells.size());
-  source_failures.reserve(cells.size());
-  symbols.reserve(cells.size());
+  fingerprint_cells.reserve(cells.size());
+
   for (const CorpusCellInput &cell : cells) {
     if (const CorpusBoard *board = std::get_if<CorpusBoard>(&cell)) {
       if (board->date != date) {
@@ -1009,7 +1515,7 @@ Status CorpusBuildSession::append_date(std::string_view date,
         return Err(ErrorCode::InvalidArgument,
                    "CorpusBuildSession::append_date: empty canonical symbol");
       }
-      symbols.push_back(copy.symbol);
+      prepared.symbols.push_back(copy.symbol);
       const std::uint64_t cell_fingerprint =
           fingerprint_corpus_inputs(std::span<const CorpusBoard>(&copy, 1u));
       std::string material;
@@ -1017,7 +1523,7 @@ Status CorpusBuildSession::append_date(std::string_view date,
       fingerprint_append_text(material, copy.symbol);
       fingerprint_append_u64(material, cell_fingerprint);
       fingerprint_cells.emplace_back(copy.symbol, std::move(material));
-      boards.push_back(std::move(copy));
+      prepared.boards.push_back(std::move(copy));
     } else {
       CorpusSourceFailure failure = std::get<CorpusSourceFailure>(cell);
       if (failure.date != date || !valid_source_failure_reason(failure.reason)) {
@@ -1029,7 +1535,7 @@ Status CorpusBuildSession::append_date(std::string_view date,
         return Err(ErrorCode::InvalidArgument,
                    "CorpusBuildSession::append_date: empty canonical symbol");
       }
-      symbols.push_back(failure.symbol);
+      prepared.symbols.push_back(failure.symbol);
       std::string material;
       fingerprint_append_text(material, date);
       fingerprint_append_text(material, failure.symbol);
@@ -1038,11 +1544,13 @@ Status CorpusBuildSession::append_date(std::string_view date,
       fingerprint_append_u64(material, failure.source_fingerprint);
       fingerprint_append_u64(material, failure.market_input_fingerprint);
       fingerprint_cells.emplace_back(failure.symbol, std::move(material));
-      source_failures.push_back(std::move(failure));
+      prepared.source_failures.push_back(std::move(failure));
     }
   }
-  std::sort(symbols.begin(), symbols.end());
-  if (std::adjacent_find(symbols.begin(), symbols.end()) != symbols.end()) {
+
+  std::sort(prepared.symbols.begin(), prepared.symbols.end());
+  if (std::adjacent_find(prepared.symbols.begin(), prepared.symbols.end()) !=
+      prepared.symbols.end()) {
     return Err(ErrorCode::AlreadyExists,
                "CorpusBuildSession::append_date: duplicate canonical symbol");
   }
@@ -1050,47 +1558,152 @@ Status CorpusBuildSession::append_date(std::string_view date,
             [](const auto &lhs, const auto &rhs) { return lhs.first < rhs.first; });
   for (const auto &[symbol, material] : fingerprint_cells) {
     (void)symbol;
-    date_fingerprint_material.append(material);
+    prepared.fingerprint_material.append(material);
   }
-  const std::uint64_t date_input_fingerprint = fingerprint_bytes(date_fingerprint_material);
-  if (cells.size() > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()) ||
-      static_cast<std::uint64_t>(manifest_.n_boards) + cells.size() >
-          std::numeric_limits<std::uint32_t>::max()) {
+  prepared.input_fingerprint = fingerprint_bytes(prepared.fingerprint_material);
+  prepared.board_count = prepared.boards.size();
+  return Ok(std::move(prepared));
+}
+
+} // namespace
+
+Status CorpusBuildSession::append_date(std::string_view date,
+                                       std::span<const CorpusCellInput> cells) {
+  const DateCells one{date, cells};
+  return append_dates(std::span<const DateCells>(&one, 1u));
+}
+
+Status CorpusBuildSession::append_dates(std::span<const DateCells> dates) {
+  if (finished_) {
     return Err(ErrorCode::InvalidArgument,
-               "CorpusBuildSession::append_date: too many planned cells");
+               "CorpusBuildSession::append_date: session already finished");
+  }
+  if (dates.empty()) {
+    return Ok();
   }
 
-  std::vector<CorpusEntry> manifest_entries;
-  std::vector<QualifiedCorpusEntry> quality_entries;
-  manifest_entries.reserve(cells.size());
-  quality_entries.reserve(cells.size());
-  std::uint32_t date_peak = 0u;
-  ATX_TRY(std::optional<CorpusDateCheckpoint> checkpoint,
-          read_date_checkpoint(out_dir_, date, symbols, date_input_fingerprint,
-                               quality_.policy_fingerprint));
-  if (checkpoint.has_value()) {
-    manifest_entries = std::move(checkpoint->manifest.entries);
-    quality_entries = std::move(checkpoint->quality.entries);
-  } else {
-    if (!boards.empty()) {
-      ATX_TRY(CorpusBuildArtifacts artifacts,
-              build_corpus_core(boards, out_dir_, cfg_.build, &cfg_.admission,
-                                quality_.input_fingerprint, quality_.policy_fingerprint, false));
-      date_peak = artifacts.peak_live_fitted_surfaces;
-      manifest_entries = std::move(artifacts.manifest.entries);
-      if (!artifacts.quality.has_value()) {
-        return Err(ErrorCode::Internal, "CorpusBuildSession::append_date: quality unavailable");
-      }
-      quality_entries = std::move(artifacts.quality->entries);
+  // ── Phase 1: validate + canonicalize every date, ascending across the batch ─
+  std::vector<PreparedDate> prepared;
+  prepared.reserve(dates.size());
+  std::string previous_date = last_date_;
+  for (const DateCells &entry : dates) {
+    if (entry.date.empty() || entry.cells.empty() ||
+        (!previous_date.empty() && entry.date <= previous_date)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "CorpusBuildSession::append_date: dates must be nonempty and strictly ascending");
     }
+    ATX_TRY(PreparedDate one, prepare_date_cells(entry.date, entry.cells));
+    previous_date = one.date;
+    prepared.push_back(std::move(one));
+  }
 
-    for (const CorpusSourceFailure &failure : source_failures) {
+  std::uint64_t total_cells = static_cast<std::uint64_t>(manifest_.n_boards);
+  for (const PreparedDate &one : prepared) {
+    if (one.cell_count > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+      return Err(ErrorCode::InvalidArgument,
+                 "CorpusBuildSession::append_date: too many planned cells");
+    }
+    total_cells += one.cell_count;
+    if (total_cells > std::numeric_limits<std::uint32_t>::max()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "CorpusBuildSession::append_date: too many planned cells");
+    }
+  }
+
+  // ── Phase 2: resume from per-date checkpoints (unchanged, still per date) ───
+  for (PreparedDate &one : prepared) {
+    std::optional<CorpusDateCheckpoint> checkpoint;
+    {
+      PhaseTimer ckpt_timer(g_checkpoint_s);
+      ATX_TRY(std::optional<CorpusDateCheckpoint> read,
+              read_date_checkpoint(out_dir_, one.date, one.symbols, one.input_fingerprint,
+                                   quality_.policy_fingerprint,
+                                   cfg_.verify_checkpoint_payload_crc));
+      checkpoint = std::move(read);
+    }
+    if (checkpoint.has_value()) {
+      one.manifest_entries = std::move(checkpoint->manifest.entries);
+      one.quality_entries = std::move(checkpoint->quality.entries);
+      one.from_checkpoint = true;
+    }
+  }
+
+  // ── Phase 3: ONE fit fan-out across every un-checkpointed date's boards ─────
+  //
+  // This is the whole point of the batched path. `build_corpus_core` already
+  // groups its input by date and writes one archive per date, so handing it
+  // several dates at once needs no change there -- it simply gets a task list
+  // long enough to keep every worker busy across date boundaries instead of
+  // draining the pool 60 tasks in.
+  std::uint32_t batch_peak = 0u;
+  std::vector<CorpusBoard> batch_boards;
+  std::size_t batch_board_count = 0u;
+  for (const PreparedDate &one : prepared) {
+    if (!one.from_checkpoint) {
+      batch_board_count += one.board_count;
+    }
+  }
+  batch_boards.reserve(batch_board_count);
+  for (PreparedDate &one : prepared) {
+    if (one.from_checkpoint) {
+      continue;
+    }
+    for (CorpusBoard &board : one.boards) {
+      batch_boards.push_back(std::move(board));
+    }
+    one.boards.clear();
+  }
+
+  if (!batch_boards.empty()) {
+    ATX_TRY(CorpusBuildArtifacts artifacts,
+            build_corpus_core(batch_boards, out_dir_, cfg_.build, &cfg_.admission,
+                              quality_.input_fingerprint, quality_.policy_fingerprint, false));
+    batch_peak = artifacts.peak_live_fitted_surfaces;
+    if (!artifacts.quality.has_value()) {
+      return Err(ErrorCode::Internal, "CorpusBuildSession::append_date: quality unavailable");
+    }
+    // `build_corpus_core` emits entries in (date asc, symbol asc) order, so each
+    // date's slice is contiguous and in the same order the per-date path saw.
+    std::vector<CorpusEntry> &all_manifest = artifacts.manifest.entries;
+    std::vector<QualifiedCorpusEntry> &all_quality = artifacts.quality->entries;
+    if (all_manifest.size() != batch_boards.size() ||
+        all_quality.size() != batch_boards.size()) {
+      return Err(ErrorCode::Internal,
+                 "CorpusBuildSession::append_date: fan-out entry count mismatch");
+    }
+    std::size_t cursor = 0u;
+    for (PreparedDate &one : prepared) {
+      if (one.from_checkpoint) {
+        continue;
+      }
+      const std::size_t count = one.board_count;
+      for (std::size_t k = 0u; k < count; ++k) {
+        if (all_manifest[cursor + k].date != one.date ||
+            all_quality[cursor + k].date != one.date) {
+          return Err(ErrorCode::Internal,
+                     "CorpusBuildSession::append_date: fan-out date slice mismatch");
+        }
+      }
+      one.manifest_entries.assign(std::make_move_iterator(all_manifest.begin() + cursor),
+                                  std::make_move_iterator(all_manifest.begin() + cursor + count));
+      one.quality_entries.assign(std::make_move_iterator(all_quality.begin() + cursor),
+                                 std::make_move_iterator(all_quality.begin() + cursor + count));
+      cursor += count;
+    }
+  }
+
+  // ── Phase 4: per-date source failures, ordering, checkpoint commit ──────────
+  for (PreparedDate &one : prepared) {
+    if (one.from_checkpoint) {
+      continue;
+    }
+    for (const CorpusSourceFailure &failure : one.source_failures) {
       CorpusEntry legacy;
       legacy.date = failure.date;
       legacy.symbol = failure.symbol;
       legacy.status = CorpusFitStatus::Failed;
       legacy.error_code = failure.error_code;
-      manifest_entries.push_back(std::move(legacy));
+      one.manifest_entries.push_back(std::move(legacy));
 
       QualifiedCorpusEntry quality;
       quality.date = failure.date;
@@ -1102,45 +1715,55 @@ Status CorpusBuildSession::append_date(std::string_view date,
       quality.quality.source_schema_version = failure.source_schema_version;
       quality.quality.source_fingerprint = failure.source_fingerprint;
       quality.quality.market_input_fingerprint = failure.market_input_fingerprint;
-      quality_entries.push_back(std::move(quality));
+      one.quality_entries.push_back(std::move(quality));
     }
 
     std::sort(
-        manifest_entries.begin(), manifest_entries.end(),
+        one.manifest_entries.begin(), one.manifest_entries.end(),
         [](const CorpusEntry &lhs, const CorpusEntry &rhs) { return lhs.symbol < rhs.symbol; });
-    std::sort(quality_entries.begin(), quality_entries.end(),
+    std::sort(one.quality_entries.begin(), one.quality_entries.end(),
               [](const QualifiedCorpusEntry &lhs, const QualifiedCorpusEntry &rhs) {
                 return lhs.symbol < rhs.symbol;
               });
-    ATX_TRY_VOID(write_date_checkpoint(out_dir_, date, date_input_fingerprint,
-                                       quality_.policy_fingerprint, manifest_entries,
-                                       quality_entries));
+    {
+      PhaseTimer ckpt_timer(g_checkpoint_s);
+      ATX_TRY_VOID(write_date_checkpoint(out_dir_, one.date, one.input_fingerprint,
+                                         quality_.policy_fingerprint, one.manifest_entries,
+                                         one.quality_entries));
+    }
   }
 
-  manifest_.dates.emplace_back(date);
-  for (CorpusEntry &entry : manifest_entries) {
-    switch (entry.status) {
-    case CorpusFitStatus::Ok:
-      ++manifest_.n_ok;
-      break;
-    case CorpusFitStatus::Failed:
-      ++manifest_.n_failed;
-      break;
-    case CorpusFitStatus::Skipped:
-      ++manifest_.n_skipped;
-      break;
+  // ── Phase 5: fold into session state, strictly in date order ───────────────
+  for (PreparedDate &one : prepared) {
+    manifest_.dates.emplace_back(one.date);
+    for (CorpusEntry &entry : one.manifest_entries) {
+      switch (entry.status) {
+      case CorpusFitStatus::Ok:
+        ++manifest_.n_ok;
+        break;
+      case CorpusFitStatus::Failed:
+        ++manifest_.n_failed;
+        break;
+      case CorpusFitStatus::Skipped:
+        ++manifest_.n_skipped;
+        break;
+      }
+      manifest_.entries.push_back(std::move(entry));
     }
-    manifest_.entries.push_back(std::move(entry));
+    for (QualifiedCorpusEntry &entry : one.quality_entries) {
+      count_disposition(quality_, entry.disposition);
+      quality_.entries.push_back(std::move(entry));
+    }
+    manifest_.n_boards += saturated_u32(one.cell_count);
+    quality_.n_planned += saturated_u32(one.cell_count);
+    input_fingerprint_material_.append(one.fingerprint_material);
+    last_date_ = one.date;
   }
-  for (QualifiedCorpusEntry &entry : quality_entries) {
-    count_disposition(quality_, entry.disposition);
-    quality_.entries.push_back(std::move(entry));
-  }
-  manifest_.n_boards += saturated_u32(cells.size());
-  quality_.n_planned += saturated_u32(cells.size());
-  peak_live_fitted_surfaces_ = std::max(peak_live_fitted_surfaces_, date_peak);
-  input_fingerprint_material_.append(date_fingerprint_material);
-  last_date_ = std::string(date);
+  // Honest peak: a batched fan-out really does hold every date in the batch's
+  // fitted surfaces live at once. Diagnostic only -- never serialized, so it
+  // cannot move output bytes. A single-date batch reports exactly what the
+  // per-date path reported.
+  peak_live_fitted_surfaces_ = std::max(peak_live_fitted_surfaces_, batch_peak);
   return Ok();
 }
 
@@ -1155,6 +1778,8 @@ Result<QualifiedCorpusManifest> CorpusBuildSession::finish() {
       (std::filesystem::path(out_dir_) / "manifest.tsv").generic_string();
   const std::string quality_path =
       (std::filesystem::path(out_dir_) / "quality.tsv").generic_string();
+  const std::filesystem::path commit_path =
+      std::filesystem::path(out_dir_) / "indexes.commit";
   std::error_code manifest_exists_error;
   std::error_code quality_exists_error;
   const bool manifest_exists = std::filesystem::exists(manifest_path, manifest_exists_error);
@@ -1162,13 +1787,21 @@ Result<QualifiedCorpusManifest> CorpusBuildSession::finish() {
   if (manifest_exists_error || quality_exists_error) {
     return Err(ErrorCode::IoError, "CorpusBuildSession::finish: cannot inspect final indexes");
   }
-  if (manifest_exists || quality_exists) {
-    if (manifest_exists != quality_exists) {
-      return Err(ErrorCode::AlreadyExists,
-                 "CorpusBuildSession::finish: incomplete existing final indexes");
-    }
+  ATX_TRY(std::optional<std::uint64_t> committed, read_pair_commit(commit_path));
+  if (committed && (!manifest_exists || !quality_exists)) {
+    // Final indexes are derivable from the per-date checkpoints/session state.
+    // A missing member cannot be served as a committed generation; discard the
+    // marker and any survivor, then republish below.
+    remove_abandoned_pair(manifest_path, quality_path, commit_path);
+    committed.reset();
+  }
+  if (committed) {
     ATX_TRY(CorpusManifest existing_manifest, read_manifest_file(manifest_path));
     ATX_TRY(CorpusQualityReport existing_quality, read_quality_report_file(quality_path));
+    if (*committed != corpus_pair_generation(existing_manifest, existing_quality)) {
+      return Err(ErrorCode::ParseError,
+                 "CorpusBuildSession::finish: final index generation mismatch");
+    }
     if (existing_manifest != manifest_ || existing_quality != quality_) {
       return Err(ErrorCode::AlreadyExists,
                  "CorpusBuildSession::finish: existing final indexes do not match");
@@ -1177,30 +1810,14 @@ Result<QualifiedCorpusManifest> CorpusBuildSession::finish() {
     return Ok(QualifiedCorpusManifest{std::move(manifest_), std::move(quality_),
                                       peak_live_fitted_surfaces_});
   }
-  const std::string manifest_pending = manifest_path + ".pending";
-  const std::string quality_pending = quality_path + ".pending";
-  ATX_TRY_VOID(write_manifest_file(manifest_pending, manifest_));
-  const Status quality_write = write_quality_report_file(quality_pending, quality_);
-  if (!quality_write) {
-    std::error_code cleanup;
-    std::filesystem::remove(manifest_pending, cleanup);
-    return Err(quality_write.error());
+
+  if (manifest_exists || quality_exists) {
+    // No marker means these files belong to a generation that never committed
+    // (or to the pre-transaction format). They are derivable indexes, so recover
+    // by discarding and republishing the in-memory authoritative generation.
+    remove_abandoned_pair(manifest_path, quality_path, commit_path);
   }
-  std::error_code rename_error;
-  std::filesystem::rename(manifest_pending, manifest_path, rename_error);
-  if (rename_error) {
-    std::error_code cleanup;
-    std::filesystem::remove(manifest_pending, cleanup);
-    std::filesystem::remove(quality_pending, cleanup);
-    return Err(ErrorCode::IoError, "CorpusBuildSession::finish: manifest commit failed");
-  }
-  std::filesystem::rename(quality_pending, quality_path, rename_error);
-  if (rename_error) {
-    std::error_code cleanup;
-    std::filesystem::remove(quality_pending, cleanup);
-    std::filesystem::remove(manifest_path, cleanup);
-    return Err(ErrorCode::IoError, "CorpusBuildSession::finish: quality commit failed");
-  }
+  ATX_TRY_VOID(publish_corpus_pair(manifest_path, quality_path, commit_path, manifest_, quality_));
   finished_ = true;
   return Ok(QualifiedCorpusManifest{std::move(manifest_), std::move(quality_),
                                     peak_live_fitted_surfaces_});
@@ -1903,11 +2520,16 @@ Status write_quality_report_file(std::string_view path, const CorpusQualityRepor
   }
 
   const std::string text = serialize_quality_report(report);
-  std::filesystem::path tmp = dst;
-  tmp += ".tmp";
+  auto reserved = detail::reserve_unique_publish_temp_file(path);
+  if (!reserved) {
+    return tl::unexpected<atx::core::Error>(std::move(reserved).error());
+  }
+  const std::filesystem::path tmp{*reserved};
   {
     std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
     if (!os) {
+      std::error_code ec;
+      std::filesystem::remove(tmp, ec);
       return Err(ErrorCode::IoError, "write_quality_report_file: cannot open temp file");
     }
     os.write(text.data(), static_cast<std::streamsize>(text.size()));
@@ -1917,14 +2539,7 @@ Status write_quality_report_file(std::string_view path, const CorpusQualityRepor
       return Err(ErrorCode::IoError, "write_quality_report_file: write failed");
     }
   }
-  std::error_code ec;
-  std::filesystem::rename(tmp, dst, ec);
-  if (ec) {
-    std::error_code ec2;
-    std::filesystem::remove(tmp, ec2);
-    return Err(ErrorCode::IoError, "write_quality_report_file: rename failed");
-  }
-  return Ok();
+  return detail::flush_and_publish_file(tmp.generic_string(), dst.generic_string());
 }
 
 Result<CorpusQualityReport> read_quality_report_file(std::string_view path) {
@@ -1963,11 +2578,16 @@ Status write_manifest_file(std::string_view path, const CorpusManifest &m) {
   }
 
   const std::string text = serialize_manifest(m);
-  std::filesystem::path tmp = dst;
-  tmp += ".tmp";
+  auto reserved = detail::reserve_unique_publish_temp_file(path);
+  if (!reserved) {
+    return tl::unexpected<atx::core::Error>(std::move(reserved).error());
+  }
+  const std::filesystem::path tmp{*reserved};
   {
     std::ofstream os(tmp, std::ios::binary | std::ios::trunc);
     if (!os) {
+      std::error_code ec;
+      std::filesystem::remove(tmp, ec);
       return Err(ErrorCode::IoError, "write_manifest_file: cannot open temp file");
     }
     os.write(text.data(), static_cast<std::streamsize>(text.size()));
@@ -1977,14 +2597,7 @@ Status write_manifest_file(std::string_view path, const CorpusManifest &m) {
       return Err(ErrorCode::IoError, "write_manifest_file: write failed");
     }
   }
-  std::error_code ec;
-  std::filesystem::rename(tmp, dst, ec);
-  if (ec) {
-    std::error_code ec2;
-    std::filesystem::remove(tmp, ec2);
-    return Err(ErrorCode::IoError, "write_manifest_file: rename failed");
-  }
-  return Ok();
+  return detail::flush_and_publish_file(tmp.generic_string(), dst.generic_string());
 }
 
 Result<CorpusManifest> read_manifest_file(std::string_view path) {

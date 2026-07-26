@@ -31,4 +31,57 @@ TEST(VolUmbrella, PublicSurfaceIsReachableAndConsistent) {
   EXPECT_GT(slice.theta, 0.0);
 }
 
+// E5 / AN-W. The analytics flagship and its neighbours were absent from the
+// umbrella, so the one-include public API could not reach
+// `compute_surface_analytics`, the RND/BKM stack, the earnings/event-vol model,
+// the vol-time clock, the SR tenor grid, the tearsheet/run-report writers,
+// dense slices, the strangle DSL or the strategy adapters. Ten headers were
+// added; this test names a symbol from EACH of them, so a future re-ordering of
+// vol.hpp that drops one fails here rather than silently shrinking the public
+// surface again.
+TEST(VolUmbrella, AnalyticsAndReportingSurfaceIsReachable) {
+  using namespace atx::vol;
+
+  // analytics.hpp — the flagship bundle + E5's delta-convention contract.
+  const AnalyticsConfig acfg;
+  EXPECT_EQ(acfg.delta_convention, DeltaConvention::American);
+  EXPECT_FALSE(acfg.tenors.tenors_years.empty());
+
+  // event_vol.hpp — the SpiderRock event decomposition + E3a's joint-solve tag.
+  EXPECT_EQ(static_cast<int>(EmoveMethod::TwoPillar), 0);
+  EXPECT_GT(censored_total_variance(0.04, 1, 0.05), 0.0);
+
+  // earnings_term_fit.hpp — the joint {eMove, st, lt, decay} fit vocabulary.
+  const EarningsFitConfig efc;
+  EXPECT_GT(efc.emove_hi, efc.emove_lo);
+
+  // vol_time.hpp — the hybrid business/vol-time clock.
+  EXPECT_GT(kCalendarYearNs, 0.0);
+
+  // sr_tenor_grid.hpp — SpiderRock's 12-point native tenor grid.
+  EXPECT_EQ(SrTenorGrid::kTradingDays.size(), std::size_t{12});
+  EXPECT_EQ(SrTenorGrid::kTradingDays.front(), 5);
+
+  // tearsheet.hpp — the performance summary.
+  const TearSheet sheet{};
+  EXPECT_DOUBLE_EQ(sheet.sharpe, 0.0);
+
+  // run_report.hpp — the artifact writers (name the type its API is built on).
+  const MetaKv meta = strategy_metrics(sheet);
+  EXPECT_FALSE(meta.empty());
+
+  // dense_slice.hpp — the densified convex slice fit.
+  const ConvexFitOpts dopts;
+  EXPECT_GE(kMaxIntervalSlackRows, 1);
+  EXPECT_GE(sizeof dopts, sizeof(double));
+
+  // dispersion_strangle.hpp — the strangle DSL.
+  const DispersionStrangleConfig strangle;
+  EXPECT_GE(sizeof strangle, sizeof(double));
+
+  // strategy.hpp — the lifecycle/roll vocabulary the dispersion strategies use.
+  const LifecycleSpec lifecycle;
+  EXPECT_GE(sizeof lifecycle, sizeof(double));
+}
+
 }  // namespace

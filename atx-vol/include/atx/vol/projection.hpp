@@ -104,10 +104,20 @@ enum class CoordKind : std::uint8_t {
   Delta = 3,              // x = signed quote-delta target
 };
 
-// Quote-delta convention. v1 ships FORWARD (d N(d1)) only.
-enum class DeltaConvention : std::uint8_t {
-  Forward = 0,
-};
+// ── Quote-delta convention (E5 / AN-P2-6) ───────────────────────────────────
+//
+// `DeltaConvention` NOW LIVES IN `types.hpp` (FIX-E M-9). It was declared here
+// because projection was its first consumer, but calling it "THE library-wide
+// delta vocabulary" while making every consumer include the whole projection
+// spine — `vol_surface.hpp`, `correction.hpp`, `curve.hpp`, `universe.hpp` — to
+// name one enum was a contradiction. It sits with the rest of the shared
+// vocabulary now; `projection.hpp` still includes `types.hpp`, so this header's
+// own `DeltaConvention` uses are unchanged.
+//
+// Not every consumer supports every convention. `projection.cpp`'s coordinate
+// solves accept `Forward` ONLY and return NotImplemented otherwise (unchanged by
+// E5). The analytics wing/RR/BF solves (`analytics.hpp`) accept both and default
+// to `American`, which is their shipped behaviour.
 
 // Maturity interpolation mode for the INSERTED-SLICE path
 // (`surface_insert_vol_slice` / `w_on_inserted_slice` / `iv_on_inserted_slice`

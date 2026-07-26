@@ -14,6 +14,7 @@
 // this header/impl adds only the per-symbol config resolution, date grouping,
 // uid stamping, and SurfaceDb partition writes on top.
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -109,6 +110,15 @@ struct SurfaceDbPopulateConfig {
   // to; the remedy is to delete the file (surface_db.hpp's documented remedy #1),
   // which makes it the ordinary first-write path.
   bool allow_coverage_regression{false};
+  // Safe default for an intentional date rewrite (`skip_existing=false`):
+  // successful fits replace same-symbol records, while every existing record
+  // without a successful replacement is retained. This includes failed and
+  // disabled refits as well as symbols absent from the incoming board set.
+  //
+  // Set true only for an operator-requested destructive replacement. In that
+  // mode the rewritten partition contains successful incoming fits only, so a
+  // failed/disabled/absent existing cell may be removed.
+  bool destructive_rewrite{false};
 };
 
 struct PopulateSymbolStats {
@@ -232,13 +242,28 @@ struct SurfaceDbPopulateStats {
 struct PopulateTestHooks {
   std::function<void(const std::string &date, const std::string &symbol)> before_board_fit{};
   std::function<void(const std::string &date)> after_partition_write{};
-  // U4 (R-14): observe the per-board inner fit-worker budget resolved from the
-  // shared pool (budget / min(budget, n_boards); 0 = auto sizing, the
-  // outer-serial mode). Called once on the caller thread before the fit
-  // fan-out, so the test needs no synchronization. The sole use is the
-  // shared-worker-budget test asserting a small book splits the pool across
-  // boards instead of pinning each board to one worker.
-  std::function<void(unsigned inner_fit_workers)> on_inner_fit_workers{};
+  // U4 (R-14) / FIX-4: observe EVERY inner fit-worker budget OFFER, together with
+  // the live outstanding-board count the offer was resolved against
+  // (`inner_fit_workers == inner_budget / min(inner_budget, boards_outstanding)`;
+  // 0 = auto sizing, the outer-serial mode). FIX-4 made the budget live, so this
+  // fires more than once per board: once at claim and once per surface-build
+  // request the fit issues (see surface_db_populate.cpp's reclaim block).
+  //
+  // THREAD-SAFETY CHANGED WITH FIX-4: this now runs on the fitting WORKER thread
+  // and several boards can resolve concurrently — the callback must synchronize
+  // itself. Carrying `boards_outstanding` is what makes a test able to assert the
+  // offer function per offer instead of racing on "the" resolved value.
+  std::function<void(const std::string &symbol, unsigned inner_fit_workers,
+                     std::size_t boards_outstanding)>
+      on_inner_fit_workers{};
+  // FIX-4: fires immediately after a board's fit slot is complete and the
+  // outstanding-board count has been decremented; receives the POST-decrement
+  // count. This is the deterministic release seam for the straggler gate: a test
+  // holding one board inside `before_board_fit` can wait for
+  // `boards_outstanding == 1` instead of sleeping. Runs on the fit worker thread
+  // (concurrently across boards); a throwing callback is swallowed because this
+  // fires from a destructor.
+  std::function<void(std::size_t boards_outstanding)> on_board_fit_done{};
   // R1-a (review C-06): forwarded verbatim to the fit scheduler's own
   // `FitSchedulerTestHooks` so a PRE-TASK scheduler failure can be injected
   // through the FULL populate path rather than only in a scheduler-local unit
@@ -251,6 +276,9 @@ struct PopulateTestHooks {
   // nullptr there).
   std::function<void(std::size_t worker_ordinal)> before_worker_launch{};
   std::function<void()> before_scheduler_setup{};
+  // Backward-compatible name used by the C-9 remediation tests. When both launch
+  // hooks are populated, both run (the canonical hook above first).
+  std::function<void(std::size_t worker_ordinal)> before_fit_worker_launch{};
 };
 
 // Fit every board and store one partition per distinct board date (key =
@@ -374,11 +402,6 @@ populate_surface_db(SurfaceDb &db, std::span<const CorpusBoard> boards,
 // Determinism: byte-identical across fit_workers (populate_surface_db invariant);
 // the resume filter is a deterministic date/symbol grouping.
 //
-// SAFETY: a date is skipped (never rewritten) if its partition already holds a
-// symbol NOT present in this run's loaded set — a whole-partition rewrite would
-// drop it. This cannot happen on the intended workflow (the pull only grows, the
-// full run has a fixed symbol set) but guards a narrower-symbol re-run from data loss.
-//
 // SAFETY (FIX-E): the other way a rewrite could drop a stored surface is a symbol
 // that IS in this run's loaded set but whose manifest config is DISABLED. That
 // cell is never fitted, so a naive rewrite simply omitted it — and the guard
@@ -398,6 +421,11 @@ populate_surface_db(SurfaceDb &db, std::span<const CorpusBoard> boards,
 // `dates_refused_coverage_regression`, with the at-risk cells named in
 // `coverage_regression_cells`. `UniversePopulateSpec::allow_coverage_regression`
 // opts out for a retirement run.
+//
+// SAFETY: a date rewrite merges successful fits into its existing partition by
+// default. Existing cells whose incoming refit fails (and existing symbols absent
+// from the loaded set) retain their exact serialized record bytes. Destructive
+// replacement is available only through the explicit flag below.
 struct UniversePopulateSpec {
   std::string index_symbol{};        // pinned to the dense index recipe; empty = none
   FitPreset preset{FitPreset::Fast}; // non-index symbols use this preset's auto-selector
@@ -406,6 +434,10 @@ struct UniversePopulateSpec {
   // Default false = the guard is ON = a rewrite that would destroy a stored
   // surface is refused for that date. See that field for the full argument.
   bool allow_coverage_regression{false};
+  // Existing cells without a successful replacement are retained by default.
+  // Opt in only when the rewritten partition should contain successes from the
+  // incoming board set and nothing else.
+  bool destructive_rewrite{false};
 };
 
 struct UniversePopulateCoverage {
@@ -463,7 +495,9 @@ struct UniversePopulateCoverage {
   // partition or config-DISABLED (a disabled cell can never be added, so a date
   // whose only gap is disabled symbols is complete, not pending).
   std::uint32_t dates_skipped_complete{0};
-  std::uint32_t dates_skipped_would_drop{0}; // dates skipped to avoid dropping an existing symbol
+  // Retained for report-schema compatibility. Safe merge makes this zero; an
+  // explicit destructive rewrite is audited by the write-path coverage counters.
+  std::uint32_t dates_skipped_would_drop{0};
   // ── REV-R3: the SECOND would-drop guard, and why there are two ─────────────
   //
   // `dates_skipped_would_drop` above is the FILTER's guard and it fires BEFORE

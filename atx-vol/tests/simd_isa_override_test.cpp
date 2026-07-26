@@ -33,7 +33,9 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdlib> // std::getenv / getenv_s (ForceScalar env leg)
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -531,6 +533,82 @@ TEST(SimdIsaOverride, MathModeReferenceRoutesScalar) {
   ASSERT_TRUE(black76_price_batch(g.F, g.K, g.T, g.sigma, g.df, g.side, std::span<double>(fast))
                   .has_value());
   EXPECT_GT(bit_diffs(fast, ref), 0u) << "FastDeterministic did not take the AVX2 fast path";
+}
+
+// PR-C2 non-AVX2 test leg: proves the ATX_SIMD_ISA env override seeds the
+// process-global scalar ISA at load. Meaningful only under the
+// `atx_vol_pricing_forcescalar` ctest leg (tests/CMakeLists.txt), which launches
+// the binary with ATX_SIMD_ISA=ForceScalar and a filter that runs NO override-
+// mutating suite; a normal run leaves the var unset and skips. On an AVX2 host
+// use_avx2() is TRUE by default, so asserting FALSE here confirms the env actually
+// diverted the whole process onto the scalar path.
+TEST(ScalarLegEnv, ForceScalarEnvSeedsScalarOverride) {
+#if defined(_WIN32)
+  std::size_t sz = 0;
+  char buf[16] = {};
+  const bool set = (getenv_s(&sz, buf, sizeof(buf), "ATX_SIMD_ISA") == 0 && sz != 0);
+  const bool force_scalar = set && std::string_view{buf} == "ForceScalar";
+#else
+  const char *e = std::getenv("ATX_SIMD_ISA");
+  const bool force_scalar = (e != nullptr && std::string_view{e} == "ForceScalar");
+#endif
+  if (!force_scalar) {
+    GTEST_SKIP() << "ATX_SIMD_ISA != ForceScalar; env leg not active";
+  }
+  EXPECT_EQ(simd::simd_isa_override(), simd::SimdIsa::ForceScalar);
+  EXPECT_FALSE(simd::use_avx2());
+}
+
+// ── FIX-5/I2 — ForceAvx2 must not dispatch AVX2 intrinsics onto a host that
+//    cannot execute them. ────────────────────────────────────────────────────
+//
+// ~15 batch dispatchers gate AVX2 intrinsics on use_avx2() ALONE (src/batch.cpp:127,
+// 176,242,269; simd/black76_batch.cpp:38,49; simd/essvi_batch.cpp:74,85,96,105,114;
+// simd/greeks_batch.cpp:57,70; simd/pnl_batch.cpp:52) and, per
+// include/atx/vol/simd/vector_math_probe.hpp:12, SIGILL on a host without AVX2.
+// `use_avx2()` used to answer ForceAvx2 with an unconditional `true`, so
+// `ATX_SIMD_ISA=ForceAvx2` in the environment of a SHIPPING process (the env seam
+// is new this sprint, 371889a) was an illegal instruction rather than a no-op.
+//
+// The defect is NOT observable through use_avx2() on an AVX2 host — there
+// have_avx2() is true and the correct and incorrect answers coincide — which is
+// precisely why it survived review as folklore ("ForceAvx2 is still guarded by
+// have_avx2()", true of avx2_greeks_selected() and false of use_avx2()). The
+// decision is therefore factored into the pure resolve_use_avx2(isa, host), and
+// this test drives the host=false arm directly on any host.
+TEST(SimdIsaResolve, ForceAvx2IsCappedByHostCapability) {
+  // The load-bearing arm: a ForceAvx2 REQUEST on a host without AVX2 must resolve
+  // to the scalar path, not to an illegal instruction. RED before FIX-5/I2.
+  EXPECT_FALSE(simd::resolve_use_avx2(simd::SimdIsa::ForceAvx2, /*host_has_avx2=*/false));
+
+  // ForceAvx2 still selects AVX2 wherever AVX2 exists (the fix is behaviour-
+  // neutral on an AVX2 host, so no existing mark moves).
+  EXPECT_TRUE(simd::resolve_use_avx2(simd::SimdIsa::ForceAvx2, /*host_has_avx2=*/true));
+
+  // The invariant the ~15 dispatch sites actually depend on, stated once over the
+  // whole domain: use_avx2() may never outrun the host's capability.
+  for (const simd::SimdIsa isa :
+       {simd::SimdIsa::Auto, simd::SimdIsa::ForceScalar, simd::SimdIsa::ForceAvx2}) {
+    EXPECT_FALSE(simd::resolve_use_avx2(isa, /*host_has_avx2=*/false))
+        << "ISA " << static_cast<int>(isa) << " dispatches AVX2 on a non-AVX2 host";
+  }
+
+  // ForceScalar is unconditional in the other direction (it is the CI leg's teeth).
+  EXPECT_FALSE(simd::resolve_use_avx2(simd::SimdIsa::ForceScalar, /*host_has_avx2=*/true));
+  EXPECT_TRUE(simd::resolve_use_avx2(simd::SimdIsa::Auto, /*host_has_avx2=*/true));
+}
+
+// use_avx2() is the seam's only production caller; pin that it forwards to the
+// pure function under the live override rather than re-deriving the decision.
+TEST(SimdIsaResolve, UseAvx2AgreesWithTheResolverUnderEveryOverride) {
+  IsaGuard guard;
+  const bool host = simd::have_avx2();
+  for (const simd::SimdIsa isa :
+       {simd::SimdIsa::Auto, simd::SimdIsa::ForceScalar, simd::SimdIsa::ForceAvx2}) {
+    simd::set_simd_isa_override(isa);
+    EXPECT_EQ(simd::use_avx2(), simd::resolve_use_avx2(isa, host))
+        << "ISA " << static_cast<int>(isa);
+  }
 }
 
 } // namespace

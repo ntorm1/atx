@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -145,7 +146,7 @@ std::vector<ListedOptionQuote> quotes_for(const ListedScheduleRoll &roll,
                                           std::int64_t now, std::uint32_t id_offset) {
   std::vector<ListedOptionQuote> quotes;
   for (const ListedScheduleLeg &leg : roll.legs) {
-    const PricedSurface *surface = surfaces.find(leg.uid);
+    const SurfaceRef surface = surfaces.find(leg.uid);
     EXPECT_NE(surface, nullptr);
     const double term = static_cast<double>(leg.expiry_ts_ns - now) / kNsPerYear;
     auto mark = surface->fair_value(leg.strike, term, leg.side);
@@ -323,6 +324,126 @@ TEST(ListedDispersionReconciliation, MissingRawQuoteReducesCoverageWithoutPatchi
   EXPECT_LT(result->rows.back().quote_mid_coverage, 1.0);
   EXPECT_NE(result->rows.back().model_option_pnl, 0.0);
   EXPECT_EQ(result->marks.back().status, ListedMarkStatus::NoRawQuote);
+}
+
+// FIX-F M3. F6 tightened `is_valid_listed_quote` from `bid >= 0` to `bid > 0`.
+// That silently changed a SECOND consumer: this one, which reported every
+// newly-invalid zero-bid quote as `CrossedQuote` — the right drop under the
+// wrong reason, persisted into `contract_marks.tsv` for an operator to read.
+// A zero bid is an absent bid, not an inverted book.
+TEST(ListedDispersionReconciliation, AZeroBidQuoteIsReportedAsSuchNotAsACrossedBook) {
+  const std::vector<PricedSurface> day0 = surfaces(kNow0, 0.0);
+  const std::vector<PricedSurface> day1 = surfaces(kNow1, 2.0);
+  ListedDispersionSchedule schedule;
+  schedule.rolls.push_back(roll(selection("2026-07-10", kNow0, kExpiry0, 1u), day0, 4u));
+  auto set0 = SurfaceSet::create(pointers(day0));
+  auto set1 = SurfaceSet::create(pointers(day1));
+  ASSERT_TRUE(set0 && set1);
+  std::vector<ListedOptionQuote> quotes0 =
+      quotes_for(schedule.rolls[0], *set0, "2026-07-10", kNow0, 0u);
+  std::vector<ListedOptionQuote> quotes1 =
+      quotes_for(schedule.rolls[0], *set1, "2026-07-11", kNow1, 1000u);
+  ASSERT_FALSE(quotes1.empty());
+  quotes1.back().bid = 0.0; // a real, uncrossed, but unhittable market
+  const std::vector<ListedReconciliationSnapshot> snapshots = {
+      {"2026-07-10", kNow0, &*set0, quotes0},
+      {"2026-07-11", kNow1, &*set1, quotes1},
+  };
+  auto result = reconcile_listed_dispersion(schedule, snapshots);
+  ASSERT_TRUE(result) << (result ? std::string{} : result.error().to_string());
+  EXPECT_EQ(result->marks.back().status, ListedMarkStatus::ZeroBidQuote);
+  EXPECT_STREQ(to_string(result->marks.back().status), "ZeroBidQuote");
+  // The DROP is unchanged — only the reason. `has_raw_mid` still keys on `Ok`.
+  EXPECT_LT(result->rows.back().quote_mid_coverage, 1.0);
+}
+
+// C2: the schedule builder legitimately defers the first roll (coverage gate), so
+// the first entry need not land on the first snapshot. Reconcile must NOT abort;
+// it emits a flat leading row so the timeline stays row-aligned with the backtest.
+TEST(ListedDispersionReconciliation, ToleratesDeferredFirstRollWithLeadingFlatDates) {
+  const std::vector<PricedSurface> day0 = surfaces(kNow0, 0.0);
+  const std::vector<PricedSurface> day1 = surfaces(kNow1, 2.0);
+  const std::vector<PricedSurface> day2 = surfaces(kNow2, -1.0);
+
+  // Only one roll, and it is DEFERRED to the second session of the timeline.
+  ListedDispersionSchedule schedule;
+  schedule.rolls.push_back(roll(selection("2026-07-11", kNow1, kExpiry1, 101u), day1, 5u));
+
+  auto set0 = SurfaceSet::create(pointers(day0));
+  auto set1 = SurfaceSet::create(pointers(day1));
+  auto set2 = SurfaceSet::create(pointers(day2));
+  ASSERT_TRUE(set0 && set1 && set2);
+  const std::vector<ListedOptionQuote> no_quotes;
+  std::vector<ListedOptionQuote> entry1 =
+      quotes_for(schedule.rolls[0], *set1, "2026-07-11", kNow1, 2000u);
+  std::vector<ListedOptionQuote> quotes2 =
+      quotes_for(schedule.rolls[0], *set2, "2026-07-12", kNow2, 3000u);
+
+  const std::vector<ListedReconciliationSnapshot> snapshots = {
+      {"2026-07-10", kNow0, &*set0, no_quotes}, // pre-entry: carries no position
+      {"2026-07-11", kNow1, &*set1, entry1},    // the deferred first entry
+      {"2026-07-12", kNow2, &*set2, quotes2},
+  };
+  auto result = reconcile_listed_dispersion(schedule, snapshots);
+  ASSERT_TRUE(result) << (result ? std::string{} : result.error().to_string());
+
+  // Row-count alignment preserved: one row per snapshot (the canonical backtest
+  // likewise emits a flat row for each pre-entry date).
+  ASSERT_EQ(result->rows.size(), snapshots.size());
+  EXPECT_EQ(result->rows[0].date, "2026-07-10");
+  EXPECT_EQ(result->rows[0].n_held_lots, 0u);
+  EXPECT_DOUBLE_EQ(result->rows[0].model_option_pnl, 0.0);
+  EXPECT_DOUBLE_EQ(result->rows[0].quote_mid_pnl, 0.0);
+  EXPECT_DOUBLE_EQ(result->rows[0].model_nav, 0.0);
+
+  // The entry is recorded on its own roll date, and the next session marks P&L.
+  EXPECT_EQ(result->rows[1].date, "2026-07-11");
+  EXPECT_EQ(result->rows[1].n_held_lots,
+            static_cast<std::uint32_t>(schedule.rolls[0].legs.size()));
+  EXPECT_NE(result->rows[2].model_option_pnl, 0.0);
+  ASSERT_FALSE(result->marks.empty());
+  EXPECT_EQ(result->marks.front().role, ListedMarkRole::Entry);
+  EXPECT_EQ(result->marks.front().date, "2026-07-11");
+
+  // A first roll date that never appears in the timeline is still a hard error —
+  // deferral is tolerated, a genuinely missing entry date is not.
+  const std::vector<ListedReconciliationSnapshot> missing_entry_date = {
+      {"2026-07-10", kNow0, &*set0, no_quotes},
+      {"2026-07-12", kNow2, &*set2, quotes2},
+  };
+  EXPECT_FALSE(reconcile_listed_dispersion(schedule, missing_entry_date));
+}
+
+// M3: the entry-mark cross-check is a relative few-ULP tolerance, so a benign
+// build-route (evaluate) vs reconcile-route (fair_value) divergence of a single
+// ULP no longer hard-aborts a valid run.
+TEST(ListedDispersionReconciliation, EntryMarkToleranceAbsorbsOneUlpRouteDivergence) {
+  const std::vector<PricedSurface> day0 = surfaces(kNow0, 0.0);
+  ListedDispersionSchedule schedule;
+  schedule.rolls.push_back(roll(selection("2026-07-10", kNow0, kExpiry0, 1u), day0, 4u));
+  auto set0 = SurfaceSet::create(pointers(day0));
+  ASSERT_TRUE(set0);
+  const std::vector<ListedOptionQuote> quotes0 =
+      quotes_for(schedule.rolls[0], *set0, "2026-07-10", kNow0, 0u);
+  const std::vector<ListedReconciliationSnapshot> snapshots = {
+      {"2026-07-10", kNow0, &*set0, quotes0}};
+
+  double &mark = schedule.rolls.front().legs.front().model_mark;
+  ASSERT_GT(mark, 0.0);
+  mark = std::nextafter(mark, std::numeric_limits<double>::infinity()); // exactly 1 ULP
+
+  // Default (relative) tolerance accepts the 1-ULP route divergence.
+  auto tolerated = reconcile_listed_dispersion(schedule, snapshots);
+  EXPECT_TRUE(tolerated) << (tolerated ? std::string{} : tolerated.error().to_string());
+
+  // Opting back into the float-exact check restores the old strict behaviour.
+  ListedReconciliationConfig strict;
+  strict.entry_mark_tolerance = 0.0;
+  EXPECT_FALSE(reconcile_listed_dispersion(schedule, snapshots, strict));
+
+  // A genuine economic mismatch is still rejected under the default tolerance.
+  mark += 0.01;
+  EXPECT_FALSE(reconcile_listed_dispersion(schedule, snapshots));
 }
 
 TEST(ListedDispersionReconciliation, RejectsMissingSurfaceAndEntryMarkMismatch) {

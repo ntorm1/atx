@@ -200,7 +200,7 @@ struct Corpus {
 }
 
 // Position-scaled option delta of a single (K,T,side) lot on `surf` (qty*mult*delta).
-[[nodiscard]] double lot_delta(const PricedSurface& surf, double K, double T, Side side, double qty,
+[[nodiscard]] double lot_delta(const SurfaceRef& surf, double K, double T, Side side, double qty,
                                double mult) {
   const auto gr = surf.greeks(K, T, side);
   EXPECT_TRUE(gr.has_value()) << (gr.has_value() ? std::string{} : gr.error().to_string());
@@ -214,7 +214,7 @@ struct Corpus {
 // `priced_surface_skew_slope` helper, so this test proves the production
 // seam against a from-scratch re-derivation rather than the implementation
 // under test.
-[[nodiscard]] double adjusted_call_delta(const PricedSurface& surf, double K, double T, Side side,
+[[nodiscard]] double adjusted_call_delta(const SurfaceRef& surf, double K, double T, Side side,
                                          double omega) {
   const auto gr = surf.greeks(K, T, side);
   EXPECT_TRUE(gr.has_value()) << (gr.has_value() ? std::string{} : gr.error().to_string());
@@ -395,7 +395,7 @@ TEST(BacktestExec, NavReconciliation) {
   for (std::size_t i = 0; i < r.size(); ++i) {
     auto snap = MarketSnapshot::load(c.dp[i].second);
     ASSERT_TRUE(snap.has_value()) << snap.error().to_string();
-    const PricedSurface* s = snap->find(kUid);
+    const SurfaceRef s = snap->find(kUid);
     const double T = res_T(expiry, snap->ts_ns());
     const auto fv = s->fair_value(K, T, Side::Put);
     ASSERT_TRUE(fv.has_value()) << fv.error().to_string();
@@ -478,7 +478,7 @@ TEST(BacktestExec, Financing) {
       // shares held over step i were set at the PREVIOUS base (row i-1).
       auto snap_prev = MarketSnapshot::load(c.dp[i - 1].second);
       ASSERT_TRUE(snap_prev.has_value()) << snap_prev.error().to_string();
-      const PricedSurface* sp = snap_prev->find(kUid);
+      const SurfaceRef sp = snap_prev->find(kUid);
       const double T_prev = res_T(expiry, snap_prev->ts_ns());
       const double opt_delta = lot_delta(*sp, K, T_prev, Side::Call, 1.0, 100.0);
       const double shares_prev = r.gross_delta[i - 1] - opt_delta;
@@ -513,7 +513,7 @@ TEST(BacktestExec, ShareCarryAndCashFinancingComposeWithoutDoubleFunding) {
 
   auto snap0 = MarketSnapshot::load(c.dp.front().second);
   ASSERT_TRUE(snap0.has_value()) << snap0.error().to_string();
-  const PricedSurface *surface0 = snap0->find(kUid);
+  const SurfaceRef surface0 = snap0->find(kUid);
   ASSERT_NE(surface0, nullptr);
   const double K = surface0->forward_at(target_T);
   const std::int64_t expiry = snap0->ts_ns() + std::llround(target_T * kNsPerYear);
@@ -534,7 +534,7 @@ TEST(BacktestExec, ShareCarryAndCashFinancingComposeWithoutDoubleFunding) {
       for (std::size_t i = 1; i < r.size(); ++i) {
         auto previous = MarketSnapshot::load(c.dp[i - 1].second);
         ASSERT_TRUE(previous.has_value()) << previous.error().to_string();
-        const PricedSurface *surface = previous->find(kUid);
+        const SurfaceRef surface = previous->find(kUid);
         ASSERT_NE(surface, nullptr);
         const double T = res_T(expiry, previous->ts_ns());
         const double option_delta = lot_delta(*surface, K, T, Side::Call, 1.0, 100.0);
@@ -687,7 +687,7 @@ TEST(Backtest, HedgeTradesOnAdjustedDelta) {
   for (std::size_t i = 0; i < roff.size(); ++i) {
     auto snap = MarketSnapshot::load(c.dp[i].second);
     ASSERT_TRUE(snap.has_value()) << snap.error().to_string();
-    const PricedSurface* s = snap->find(kUid);
+    const SurfaceRef s = snap->find(kUid);
     ASSERT_NE(s, nullptr);
     const double T = res_T(expiry, snap->ts_ns());
 
@@ -1090,7 +1090,7 @@ TEST(BacktestExec, FixedBookComposedSubsetAndSettlement_Deterministic) {
   auto sub = MarketSnapshot::load(dp.front().second, QueryPricingTier::LegacyCompatible,
                                   std::span<const std::uint32_t>{ref_uids});
   ASSERT_TRUE(sub.has_value()) << sub.error().to_string();
-  EXPECT_EQ(sub->surfaces().size(), 2u);
+  EXPECT_EQ(sub->n_surfaces(), 2u);
 
   const auto make_book = [&]() {
     PortfolioState b;

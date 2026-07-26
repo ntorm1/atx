@@ -3,6 +3,10 @@
 
 #include "atx/vol/portfolio_pricer.hpp"
 
+#include "laned_greek_run.hpp" // FIX-5/I1+M3: the SINGLE definition of the Ok-stamp
+                               // sweep (detail::requested_greeks_finite) and of the
+                               // unrequested-slot normalization the adjoint arm needs.
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -359,7 +363,8 @@ SurfaceSet::SurfaceSet() noexcept : logical_id_(allocate_logical_id()) {}
 
 SurfaceSet::SurfaceSet(SurfaceSet &&other) noexcept
     : by_uid_(std::move(other.by_uid_)),
-      logical_id_(std::exchange(other.logical_id_, allocate_logical_id())) {
+      logical_id_(std::exchange(other.logical_id_, allocate_logical_id())),
+      borrows_views_(std::exchange(other.borrows_views_, false)) {
   other.by_uid_.clear();
 }
 
@@ -369,19 +374,17 @@ SurfaceSet &SurfaceSet::operator=(SurfaceSet &&other) noexcept {
   }
   by_uid_ = std::move(other.by_uid_);
   logical_id_ = std::exchange(other.logical_id_, allocate_logical_id());
+  borrows_views_ = std::exchange(other.borrows_views_, false);
   other.by_uid_.clear();
   return *this;
 }
 
-Result<SurfaceSet> SurfaceSet::create(std::span<const PricedSurface *const> surfaces) {
+Result<SurfaceSet>
+SurfaceSet::create_from_refs(std::vector<std::pair<std::uint32_t, SurfaceRef>> &&entries,
+                             bool borrows_views) {
   SurfaceSet ss;
-  ss.by_uid_.reserve(surfaces.size());
-  for (const PricedSurface *s : surfaces) {
-    if (s == nullptr) {
-      return Err(ErrorCode::InvalidArgument, "SurfaceSet: null surface pointer");
-    }
-    ss.by_uid_.emplace_back(s->uid(), s);
-  }
+  ss.by_uid_ = std::move(entries);
+  ss.borrows_views_ = borrows_views;
   std::sort(ss.by_uid_.begin(), ss.by_uid_.end(),
             [](const auto &a, const auto &b) { return a.first < b.first; });
   for (std::size_t i = 1; i < ss.by_uid_.size(); ++i) {
@@ -392,13 +395,37 @@ Result<SurfaceSet> SurfaceSet::create(std::span<const PricedSurface *const> surf
   return ss;
 }
 
-const PricedSurface *SurfaceSet::find(std::uint32_t uid) const noexcept {
+Result<SurfaceSet> SurfaceSet::create(std::span<const PricedSurface *const> surfaces) {
+  std::vector<std::pair<std::uint32_t, SurfaceRef>> entries;
+  entries.reserve(surfaces.size());
+  for (const PricedSurface *s : surfaces) {
+    if (s == nullptr) {
+      return Err(ErrorCode::InvalidArgument, "SurfaceSet: null surface pointer");
+    }
+    entries.emplace_back(s->uid(), SurfaceRef{s});
+  }
+  return create_from_refs(std::move(entries), /*borrows_views=*/false);
+}
+
+Result<SurfaceSet> SurfaceSet::create_from_views(std::span<const PricedSurfaceView *const> views) {
+  std::vector<std::pair<std::uint32_t, SurfaceRef>> entries;
+  entries.reserve(views.size());
+  for (const PricedSurfaceView *v : views) {
+    if (v == nullptr) {
+      return Err(ErrorCode::InvalidArgument, "SurfaceSet: null surface view pointer");
+    }
+    entries.emplace_back(v->uid(), SurfaceRef{v});
+  }
+  return create_from_refs(std::move(entries), /*borrows_views=*/true);
+}
+
+SurfaceRef SurfaceSet::find(std::uint32_t uid) const noexcept {
   auto it = std::lower_bound(by_uid_.begin(), by_uid_.end(), uid,
                              [](const auto &e, std::uint32_t u) { return e.first < u; });
   if (it != by_uid_.end() && it->first == uid) {
     return it->second;
   }
-  return nullptr;
+  return SurfaceRef{};
 }
 
 // ── Pricing ───────────────────────────────────────────────────────────────
@@ -446,6 +473,28 @@ struct ContractPnl {
   return !(std::isfinite(c.K) && c.K > 0.0 && std::isfinite(c.T) && c.T > 0.0);
 }
 
+// G1 (GR-P2-1): a finite mark no longer certifies an Ok Greek lane. The scalar
+// production bundles (american_greeks_fd / american_greeks_al) can return SUCCESS
+// with a NON-finite differenced Greek — e.g. an extreme spot where the FD gamma
+// denominator hS*hS underflows to 0 while the deep-ITM mark stays finite — yet
+// PriceTotals / reduce_pnl_totals gate on STATUS only, so one such lane poisons the
+// whole book's totals (violating the frame's "no NaN enters a total" contract). The
+// AVX2 laned kernel already guards exactly this (simd/american_greeks_avx2.cpp);
+// this sweeps every REQUESTED column finite at the scalar Ok-stamp before Ok:
+// price/delta/gamma/theta always, vega/volga/vanna, rho, charm per GreekNeeds. A
+// non-finite requested column demotes the lane to NumericError (NaN-isolated like
+// every other error lane).
+//
+// FIX-5/M3: this used to be a verbatim copy of `detail::requested_greeks_finite`
+// (src/laned_greek_run.hpp), despite that header's own comment insisting on a
+// SINGLE definition for every Greek route. Two copies of a predicate whose whole
+// job is to make two routes agree is the defect shape one layer up, so the name is
+// kept — it is the one every stamp in this file reads — and the body now delegates.
+[[nodiscard]] bool greeks_all_finite(const AmericanGreeks &g,
+                                     PricedSurface::GreekNeeds needs) noexcept {
+  return detail::requested_greeks_finite(g, needs);
+}
+
 // dSigma/dk at k_log = ln(K / F(T)) off a served `PricedSurface`, central FD
 // (h = 1e-4) -- the same scheme adjusted_greeks.hpp's `surface_skew_slope`
 // applies to a `VolSurface`. Adapted here because `PricedSurface` is
@@ -461,7 +510,9 @@ struct ContractPnl {
 // conditions `surface_skew_slope` documents: T <= 0, non-positive/non-finite
 // sigma at k_log, a non-finite FD stencil point, or (the PricedSurface-
 // specific addition) a non-positive/non-finite forward at T.
-[[nodiscard]] double priced_surface_skew_slope(const PricedSurface &surf, double K,
+// WS-ZC1: takes a `SurfaceRef` so the identical FD stencil serves an owned surface
+// and a borrowed mapped view (both expose `forward_at`/`total_variance`).
+[[nodiscard]] double priced_surface_skew_slope(const SurfaceRef &surf, double K,
                                                double T) noexcept {
   // Source of truth: adjusted_greeks.cpp's TU-local kFdStep -- the h = 1e-4
   // documented on curve_skew_slope/surface_skew_slope in adjusted_greeks.hpp.
@@ -523,7 +574,7 @@ struct ContractPnl {
 [[nodiscard]] bool seed_route_matches(const FullGreekSeed &seed, const OptionContract &contract,
                                       const SurfaceSet &surfaces, bool analytic,
                                       QueryExecution query_execution) noexcept {
-  const PricedSurface *const surface = surfaces.find(contract.uid);
+  const SurfaceRef surface = surfaces.find(contract.uid);
   if (surface == nullptr) {
     return false;
   }
@@ -547,7 +598,8 @@ struct SeedStageCounts {
 
 [[nodiscard]] SeedStageCounts
 stage_full_greek_seeds(const SurfaceSet &surfaces, std::span<const OptionContract> contracts,
-                       bool analytic, QueryExecution query_execution, bool skew_adjusted_delta,
+                       bool analytic, QueryExecution query_execution,
+                       PricedSurface::GreekNeeds greek_needs, bool skew_adjusted_delta,
                        const StickyParams &sticky, std::span<const FullGreekSeed> seeds,
                        std::vector<ContractPx> &staged, std::vector<std::uint8_t> &accepted,
                        std::vector<std::uint32_t> &seed_order,
@@ -597,14 +649,40 @@ stage_full_greek_seeds(const SurfaceSet &surfaces, std::span<const OptionContrac
       continue;
     }
 
+    // FIX-1/F2 (rev-ws-g G1 I-1): the THIRD Ok-stamp. A seed is not validated on mint
+    // -- PricedSurface::full_greek_seed gates on isfinite(price) alone, and neither
+    // seed_route_matches nor same_seed_semantics inspects finiteness -- and an ACCEPTED
+    // seed bypasses the guarded stamp entirely: it is copied straight into the frame,
+    // is_seeded() makes solve_span skip the contract, and an all-accepted batch is
+    // skipped outright. So sweep the REQUESTED columns finite here, with the same
+    // GreekNeeds semantics the price-path and P&L stamps use. A poisoned seed is
+    // rejected as a candidate rather than stamped NumericError, so the contract falls
+    // through to the ordinary solve and is re-guarded at that stamp -- a seed is only a
+    // reuse optimization, so declining to trust it is always safe.
+    //
+    // FIX-5/M1: this was the ONE stamp of the four that guarded the requested set but
+    // did NOT normalize first, so `out.g = representative.greeks()` copied an
+    // UNREQUESTED non-finite slot straight through — and FIX-1/F3's whole point is
+    // that a consumer's `g.rho * dr` is NaN even when dr is 0.0. Dormant today only
+    // because `full_greek_seed` mints under the full default `needs`; it goes live the
+    // moment `full_greek_seed` learns a `needs` parameter. Normalizing here costs
+    // nothing (it only touches non-finite unrequested slots, so every seed accepted
+    // today stays bit-for-bit identical) and removes the dependency on that accident.
+    AmericanGreeks seed_g = representative.greeks();
+    detail::normalize_unrequested_greeks(seed_g, greek_needs);
+    if (!greeks_all_finite(seed_g, greek_needs)) {
+      counts.rejected_candidates += static_cast<std::uint64_t>(std::distance(first, last));
+      continue;
+    }
+
     ContractPx &out = staged[contract_index];
     out = ContractPx{};
-    out.fair_value = representative.greeks().price;
-    out.g = representative.greeks();
+    out.fair_value = seed_g.price;
+    out.g = seed_g;
     out.iv = representative.iv();
     out.status = PriceStatus::Ok;
     if (skew_adjusted_delta) {
-      const PricedSurface *const surface = surfaces.find(contract.uid);
+      const SurfaceRef surface = surfaces.find(contract.uid);
       if (surface != nullptr) {
         const double slope = priced_surface_skew_slope(*surface, contract.K, contract.T);
         out.vega_slope = vega_slope_from_skew_slope(slope, surface->pricing().S, sticky);
@@ -683,7 +761,7 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
 
   const auto solve_span = [&](std::uint32_t uid, std::uint32_t s, std::uint32_t e) {
     const std::size_t gsz = static_cast<std::size_t>(e - s);
-    const PricedSurface *surf = surfaces.find(uid);
+    const SurfaceRef surf = surfaces.find(uid);
     if (surf == nullptr) {
       // Degenerate is checked FIRST (an invalid contract is InvalidContract even
       // when its uid has no surface) — matching the ungrouped precedence.
@@ -765,13 +843,30 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
         const Result<AmericanGreeks> ga = detail::american_greeks_adjoint(
             surf->pricing().S, kcol[p], tcol[p], rp.sigma, rp.rate, rp.q_eff, scol[p],
             std::optional<AlOpts>{surf->pricing().al_opts}, &took);
-        if (!ga.has_value() || !std::isfinite(ga->price)) {
+        // FIX-5/I1: the FOURTH Ok-stamp. This arm used to gate on isfinite(price)
+        // alone — the exact predicate FIX-1/F2, FIX-2/F2-B and FIX-3/F3-A each
+        // replaced — fourteen lines above the correctly guarded stamp below, and it
+        // is the SOLE gate on this route (`fields` is EF::Iv only, so nothing
+        // upstream normalizes). american_greeks_adjoint hands its unclaimed corners
+        // to american_greeks_fd, which returns SUCCESS with a non-finite differenced
+        // Greek at the extreme documented above; PriceTotals sums on STATUS alone,
+        // so such a lane was counted in n_ok and poisoned the book totals. Same
+        // shape as the non-adjoint stamp: normalize the UNREQUESTED slots first
+        // (FIX-1/F3's load-bearing half — a consumer's `g.rho * dr` is NaN even when
+        // dr is 0.0), then sweep the REQUESTED set finite.
+        if (!ga.has_value()) {
           out.status = PriceStatus::NumericError;
           continue;
         }
-        b_greeks[p] = *ga;
-        out.fair_value = ga->price;
-        out.g = *ga;
+        AmericanGreeks gg = *ga;
+        detail::normalize_unrequested_greeks(gg, greek_needs);
+        if (!greeks_all_finite(gg, greek_needs)) {
+          out.status = PriceStatus::NumericError;
+          continue;
+        }
+        b_greeks[p] = gg;
+        out.fair_value = gg.price;
+        out.g = gg;
         out.status = PriceStatus::Ok;
         if (skew_adjusted_delta) {
           const double slope = priced_surface_skew_slope(*surf, kcol[p], tcol[p]);
@@ -779,7 +874,7 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
         }
         continue;
       }
-      if (!b_status[p].has_value() || !std::isfinite(b_greeks[p].price)) {
+      if (!b_status[p].has_value() || !greeks_all_finite(b_greeks[p], greek_needs)) {
         out.status = PriceStatus::NumericError;
         continue;
       }
@@ -906,6 +1001,12 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
   if (!want_greeks) {
     t.delta = t.gamma = t.vega = t.theta = t.rho = kNaN;
     t.vanna = t.volga = t.charm = kNaN;
+  } else {
+    // C-3: `PriceTotals::abs_vega` defaults to NaN ("not computed" — a clean 0.0
+    // would read as a genuinely gross-vega-flat book, the same convention
+    // `dP_dq` uses). This reduction DOES compute it, so open the accumulator
+    // here rather than relying on the caller's zero-initialization.
+    t.abs_vega = 0.0;
   }
   const std::size_t n = positions.size();
   for (std::size_t i = 0; i < n; ++i) {
@@ -924,7 +1025,13 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
       const double delta_ps = skew_adjusted_delta ? (g.delta + c.vega_slope * g.vega) : g.delta;
       t.delta += w * delta_ps;
       t.gamma += w * g.gamma;
-      t.vega += w * g.vega;
+      const double leg_vega = w * g.vega;
+      t.vega += leg_vega;
+      // C-3: the GROSS companion, accumulated in the same fixed input order so
+      // it is thread-count invariant exactly as the signed sum is. `t.vega` is
+      // still `+= w * g.vega` bit-for-bit (the named temporary is the same
+      // value), so no existing number moves.
+      t.abs_vega += std::fabs(leg_vega);
       t.theta += w * g.theta;
       t.rho += w * g.rho;
       t.vanna += w * g.vanna;
@@ -1111,8 +1218,9 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
       ATX_VOL_COUNT_N(FullGreekSeedRejectedCandidates, seeds.size());
     } else {
       const SeedStageCounts counts = stage_full_greek_seeds(
-          surfaces, contracts, analytic, opts.query_execution, opts.skew_adjusted_delta,
-          opts.sticky, seeds, w.seed_px, w.seed_accepted, w.seed_order, w.seed_candidate_matched);
+          surfaces, contracts, analytic, opts.query_execution, opts.greek_needs,
+          opts.skew_adjusted_delta, opts.sticky, seeds, w.seed_px, w.seed_accepted, w.seed_order,
+          w.seed_candidate_matched);
       (void)counts;
       ATX_VOL_COUNT_N(FullGreekSeedReuseLanes, counts.accepted_unique);
       ATX_VOL_COUNT_N(FullGreekSeedRejectedCandidates, counts.rejected_candidates);
@@ -1141,7 +1249,7 @@ Status PortfolioPricer::price_into(const SurfaceSet &surfaces, PriceFieldMask fi
     w.base_surface_logical_id = surfaces.logical_id_;
     w.base_surface_instance_ids.resize(pf_.uids().size());
     for (std::size_t i = 0; i < pf_.uids().size(); ++i) {
-      const PricedSurface *const surface = surfaces.find(pf_.uids()[i]);
+      const SurfaceRef surface = surfaces.find(pf_.uids()[i]);
       w.base_surface_instance_ids[i] = surface != nullptr ? surface->instance_id() : 0u;
     }
     w.base_book_logical_id = pf_.logical_id_;
@@ -1185,7 +1293,7 @@ Result<PriceTotals> PortfolioPricer::price_totals(const SurfaceSet &surfaces, Pr
     w.base_surface_logical_id = surfaces.logical_id_;
     w.base_surface_instance_ids.resize(pf_.uids().size());
     for (std::size_t i = 0; i < pf_.uids().size(); ++i) {
-      const PricedSurface *const surface = surfaces.find(pf_.uids()[i]);
+      const SurfaceRef surface = surfaces.find(pf_.uids()[i]);
       w.base_surface_instance_ids[i] = surface != nullptr ? surface->instance_id() : 0u;
     }
     w.base_book_logical_id = pf_.logical_id_;
@@ -1244,7 +1352,200 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
   if (Status s = price_into(surfaces, fields, view, *returning_ws_, opts); !s.has_value()) {
     return Err(s.error());
   }
+
+  // GR-F1 carry axis: opt-in ∂P/∂q column on the returning frame, computed via the
+  // analytic-AL carry tier (american_carry_greeks_al) at each contract's resolved
+  // (sigma, rate, q_eff). SERIAL per position, so the column and its total are
+  // thread-count invariant by construction; it lives off the caller-owned in-place
+  // path (no PriceFrameView span). Non-Ok / model-missing lanes stay NaN; the total
+  // sums the position-scaled column over Ok lanes in input order. `total.dP_dq`
+  // otherwise stays NaN (from PriceTotals{}), never read as a carry-flat book.
+  if (want_greeks && opts.carry_greeks) {
+    const std::span<const Position> positions = pf_.positions();
+    f.dP_dq.assign(n, kNaN);
+    double total_dP_dq = 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+      if (f.status[i] != PriceStatus::Ok) {
+        continue;
+      }
+      const Position &p = positions[i];
+      const SurfaceRef surf = surfaces.find(p.contract.uid);
+      if (surf == nullptr) {
+        continue; // defensive: an Ok lane always resolved a surface
+      }
+      const PricedSurface::ResolvedSurfacePoint rp = surf->resolve(p.contract.K, p.contract.T);
+      const Result<CarryGreeks> cg = american_carry_greeks_al(
+          surf->pricing().S, p.contract.K, p.contract.T, rp.sigma, rp.rate, rp.q_eff,
+          p.contract.side, std::optional<AlOpts>{surf->pricing().al_opts});
+      const double w = p.qty * eff_multiplier(p.multiplier);
+      const double scaled = cg.has_value() ? w * cg->dP_dq : kNaN;
+      f.dP_dq[i] = scaled;
+      total_dP_dq += scaled; // a NaN lane naturally propagates to the total
+    }
+    f.total.dP_dq = total_dP_dq;
+  }
+  f.book_logical_id_ = pf_.logical_id_;
+  f.book_revision_ = pf_.revision_;
   return f;
+}
+
+Result<DividendSensitivityFrame> PortfolioPricer::dividend_sensitivities(
+    const SurfaceSet &surfaces, std::span<const UnderlierDividendScheduleView> schedules,
+    const PriceOptions &opts) const {
+  DividendSensitivityFrame out;
+  out.book_logical_id = pf_.logical_id_;
+  out.book_revision = pf_.revision_;
+  out.surface_logical_id = surfaces.logical_id_;
+
+  std::unordered_map<std::uint32_t, std::size_t> schedule_by_uid;
+  schedule_by_uid.reserve(schedules.size());
+  std::vector<std::size_t> offsets(schedules.size() + 1u, 0u);
+  for (std::size_t s = 0; s < schedules.size(); ++s) {
+    const UnderlierDividendScheduleView &schedule = schedules[s];
+    if (!std::isfinite(schedule.hybrid.prop_div_yield) ||
+        !std::isfinite(schedule.hybrid.blend) || schedule.hybrid.blend < 0.0 ||
+        schedule.hybrid.blend > 1.0) {
+      return Err(ErrorCode::InvalidArgument,
+                 "dividend_sensitivities: invalid hybrid dividend parameters");
+    }
+    if (schedule.events.size() >
+        static_cast<std::size_t>((std::numeric_limits<std::uint32_t>::max)())) {
+      return Err(ErrorCode::InvalidArgument,
+                 "dividend_sensitivities: schedule event count exceeds uint32 range");
+    }
+    if (!schedule_by_uid.emplace(schedule.uid, s).second) {
+      return Err(ErrorCode::InvalidArgument,
+                 "dividend_sensitivities: duplicate underlier schedule");
+    }
+    if (schedule.events.size() > (std::numeric_limits<std::size_t>::max)() - offsets[s]) {
+      return Err(ErrorCode::InvalidArgument,
+                 "dividend_sensitivities: total event count overflow");
+    }
+    offsets[s + 1u] = offsets[s] + schedule.events.size();
+    for (const DividendEvent &event : schedule.events) {
+      if (!std::isfinite(event.amount)) {
+        return Err(ErrorCode::InvalidArgument,
+                   "dividend_sensitivities: non-finite dividend amount");
+      }
+    }
+  }
+
+  out.rows.reserve(offsets.back());
+  for (std::size_t s = 0; s < schedules.size(); ++s) {
+    for (std::size_t e = 0; e < schedules[s].events.size(); ++e) {
+      const DividendEvent &event = schedules[s].events[e];
+      out.rows.push_back(DividendSensitivityRow{
+          schedules[s].uid, static_cast<std::uint32_t>(e), event.ex_date_ns, event.amount});
+    }
+  }
+  if (out.rows.empty() || pf_.positions().empty()) {
+    return out;
+  }
+
+  PriceOptions carry_opts = opts;
+  carry_opts.prices_only = false;
+  carry_opts.carry_greeks = true;
+  Result<PriceFrame> priced = price(surfaces, carry_opts);
+  if (!priced.has_value()) {
+    return Err(priced.error());
+  }
+
+  std::vector<std::uint32_t> numeric_failures(out.rows.size(), 0u);
+  const auto fail_schedule = [&](std::size_t s, bool numeric) noexcept {
+    for (std::size_t row = offsets[s]; row < offsets[s + 1u]; ++row) {
+      ++out.rows[row].n_failed;
+      if (numeric) {
+        ++numeric_failures[row];
+      }
+    }
+  };
+
+  const std::span<const Position> positions = pf_.positions();
+  std::vector<double> dF_dDiv;
+  std::vector<double> dP_dDiv;
+  for (std::size_t i = 0; i < positions.size(); ++i) {
+    const Position &position = positions[i];
+    const auto sit = schedule_by_uid.find(position.contract.uid);
+    if (sit == schedule_by_uid.end()) {
+      continue;
+    }
+    const std::size_t s = sit->second;
+    const UnderlierDividendScheduleView &schedule = schedules[s];
+    if (priced->status[i] != PriceStatus::Ok) {
+      fail_schedule(s, priced->status[i] != PriceStatus::ModelUnavailable);
+      continue;
+    }
+    const SurfaceRef surface = surfaces.find(position.contract.uid);
+    if (surface == nullptr) {
+      fail_schedule(s, false);
+      continue;
+    }
+
+    const double T = position.contract.T;
+    const PricingContext &pricing = surface->pricing();
+    const PricedSurface::ResolvedSurfacePoint point =
+        surface->resolve(position.contract.K, T);
+    const long double expiry_value =
+        static_cast<long double>(pricing.now_ts_ns) +
+        static_cast<long double>(T) * static_cast<long double>(kNsPerYear);
+    if (!point.valid || !std::isfinite(priced->dP_dq[i]) ||
+        expiry_value < static_cast<long double>((std::numeric_limits<std::int64_t>::min)()) ||
+        expiry_value > static_cast<long double>((std::numeric_limits<std::int64_t>::max)())) {
+      fail_schedule(s, true);
+      continue;
+    }
+    const std::int64_t expiry_ns = static_cast<std::int64_t>(std::llround(expiry_value));
+    const double forward_base =
+        hybrid_forward_base(pricing.S, point.rate, T, schedule.events, expiry_ns,
+                            pricing.now_ts_ns, schedule.hybrid);
+    if (!(forward_base > 0.0) || !(point.forward > 0.0) || !std::isfinite(forward_base) ||
+        !std::isfinite(point.forward)) {
+      fail_schedule(s, true);
+      continue;
+    }
+    // F = base*exp(-borrow*T): recover the residual continuous borrow consistent
+    // with the served mark, and hold it fixed in the discrete-dividend bump.
+    const double borrow = -std::log(point.forward / forward_base) / T;
+    if (!std::isfinite(borrow)) {
+      fail_schedule(s, true);
+      continue;
+    }
+
+    dF_dDiv.resize(schedule.events.size());
+    dP_dDiv.resize(schedule.events.size());
+    hybrid_forward_div_jacobian(point.rate, borrow, T, schedule.events, expiry_ns,
+                                pricing.now_ts_ns, schedule.hybrid, dF_dDiv);
+    american_dividend_sensitivities(priced->dP_dq[i], point.forward, T, dF_dDiv,
+                                    dP_dDiv);
+    for (std::size_t e = 0; e < schedule.events.size(); ++e) {
+      const std::size_t row_index = offsets[s] + e;
+      DividendSensitivityRow &row = out.rows[row_index];
+      if (!std::isfinite(dF_dDiv[e]) || !std::isfinite(dP_dDiv[e])) {
+        ++row.n_failed;
+        ++numeric_failures[row_index];
+        continue;
+      }
+      row.dP_dDiv += dP_dDiv[e];
+      ++row.n_ok;
+      if (dF_dDiv[e] != 0.0) {
+        ++row.n_exposed;
+      }
+    }
+  }
+
+  for (std::size_t row = 0; row < out.rows.size(); ++row) {
+    DividendSensitivityRow &result = out.rows[row];
+    if (result.n_failed == 0u) {
+      result.status = DividendSensitivityStatus::Ok;
+    } else if (result.n_ok != 0u) {
+      result.status = DividendSensitivityStatus::Partial;
+    } else if (numeric_failures[row] != 0u) {
+      result.status = DividendSensitivityStatus::NumericError;
+    } else {
+      result.status = DividendSensitivityStatus::ModelUnavailable;
+    }
+  }
+  return out;
 }
 
 // ── PnL explain ───────────────────────────────────────────────────────────
@@ -1308,8 +1609,8 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
 
   const auto solve_span = [&](std::uint32_t uid, std::uint32_t s, std::uint32_t e) {
     const std::size_t gsz = static_cast<std::size_t>(e - s);
-    const PricedSurface *sb = base.find(uid);    // one base find per (uid,side) span
-    const PricedSurface *st = shifted.find(uid); // one shifted find per (uid,side) span
+    const SurfaceRef sb = base.find(uid);    // one base find per (uid,side) span
+    const SurfaceRef st = shifted.find(uid); // one shifted find per (uid,side) span
     if (sb == nullptr || st == nullptr) {
       // Degenerate is checked FIRST (an invalid contract is InvalidContract even when
       // its uid has no surface) — matching the ungrouped precedence.
@@ -1332,6 +1633,23 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
       s_tt[p] = tcol[p] - dt; // T_t = T_b - dt (bit-identical to the ungrouped subtraction)
     }
 
+    // WS-P2 rho tier: the ONLY consumer of this bundle's `rho` is the Taylor term
+    // `prho = g.rho * c.dr` below (and its pnl_totals twin). `dr` is a per-(uid)
+    // surface-pair constant already in hand here, and when the P&L step carries NO
+    // rate shift it is exactly 0.0 — so every rho the r± boundary solves produce is
+    // multiplied by zero and discarded. Requesting needs.rho = false makes the kernel
+    // skip that solve pair and leave rho at 0, driving the identical `0.0 * 0.0` term:
+    // a 5-solve bundle becomes 3 with no change to any output column. When dr != 0 the
+    // full bundle is requested exactly as before. `dr` depends only on the two
+    // surfaces, never on the thread partition, so the narrowing is deterministic and
+    // pack-composition invariant.
+    //
+    // FIX-1/F3 (rev-ws-g G1 I-2): hoisted out of the `!reuse_base` block because the
+    // Ok-stamp below must guard EXACTLY this set — it previously hard-coded a full
+    // GreekNeeds{} on the false premise that the P&L base solve always requests
+    // everything.
+    PricedSurface::GreekNeeds base_needs{};
+    base_needs.rho = (dr != 0.0);
     if (!reuse_base) {
       // V1 solve ledger: the pnl base solve is a full-Greek bundle per unique. Route by
       // the analytic flag (the pnl path never takes the adjoint route). When the base
@@ -1349,7 +1667,7 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                                             {}};
       (void)sb->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
                                EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic,
-                               base_soa, resolved_price_isa, query_execution);
+                               base_soa, resolved_price_isa, query_execution, base_needs);
     }
     // Shifted surface at the COMMON base maturity T_b: iv only (sig_t).
     PricedSurface::EvaluationSoA sig_soa{std::span<double>(s_iv).subspan(s, gsz),
@@ -1403,6 +1721,33 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
         continue;
       }
       out.gb = cached != nullptr ? cached->g : b_greeks[p];
+      // G1 (GR-P2-1): out.gb are the Taylor coefficients; a non-finite one would
+      // poison PnlTotals (reduce_pnl_totals gates on status only), so sweep them finite
+      // before the Ok-stamp.
+      //
+      // FIX-1/F3 (rev-ws-g G1 I-2): guard EXACTLY the set the solve requested — i.e.
+      // `base_needs`, not a default-constructed GreekNeeds{}. The old comment here
+      // claimed "the P&L base solve always requests the full bundle
+      // (EF::FirstOrder | EF::SecondOrder)", but those flags select which column GROUPS
+      // materialize while `base_needs` selects which boundary SOLVES run — different
+      // axes. `base_needs.rho` is `(dr != 0.0)`, so on an ordinary no-rate-shift step an
+      // unrequested non-finite rho used to veto an otherwise perfectly good lane on a
+      // column that is annihilated by the dr multiplier and cannot reach any output.
+      //
+      // The unrequested slot is normalized to the canonical unmaterialized value (0.0,
+      // exactly what the narrowed kernel leaves there) BEFORE the sweep, because
+      // `prho = g.rho * c.dr` and NaN * 0.0 is NaN, not 0.0 — relaxing the mask alone
+      // would turn a spurious veto into a poisoned pnl_rho/pnl_unexplained. Restricting
+      // the normalization to the non-finite case leaves every currently-admitted lane
+      // bit-for-bit unchanged. (A cached base already passed the price Ok-stamp under
+      // its own mask; re-sweeping under `base_needs` is strictly additional safety.)
+      if (!base_needs.rho && !std::isfinite(out.gb.rho)) {
+        out.gb.rho = 0.0;
+      }
+      if (!greeks_all_finite(out.gb, base_needs)) {
+        out.status = PriceStatus::NumericError;
+        continue;
+      }
       out.price_base = cached != nullptr ? cached->fair_value : b_greeks[p].price;
       out.price_target = s_price[p];
       out.dS = dS;
@@ -1661,7 +2006,7 @@ Status PortfolioPricer::pnl_explain_into(const SurfaceSet &base, const SurfaceSe
       return false;
     }
     for (std::size_t i = 0; i < uids.size(); ++i) {
-      const PricedSurface *const surface = base.find(uids[i]);
+      const SurfaceRef surface = base.find(uids[i]);
       const std::uint64_t instance_id = surface != nullptr ? surface->instance_id() : 0u;
       if (w.base_surface_instance_ids[i] != instance_id) {
         return false;
@@ -1715,7 +2060,7 @@ Result<PnlTotals> PortfolioPricer::pnl_totals(const SurfaceSet &base, const Surf
       return false;
     }
     for (std::size_t i = 0; i < uids.size(); ++i) {
-      const PricedSurface *const surface = base.find(uids[i]);
+      const SurfaceRef surface = base.find(uids[i]);
       const std::uint64_t instance_id = surface != nullptr ? surface->instance_id() : 0u;
       if (w.base_surface_instance_ids[i] != instance_id) {
         return false;
@@ -1814,6 +2159,8 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const Surf
   if (Status s = pnl_explain_into(base, shifted, view, *returning_ws_, opts); !s.has_value()) {
     return Err(s.error());
   }
+  f.book_logical_id_ = pf_.logical_id_;
+  f.book_revision_ = pf_.revision_;
   return f;
 }
 
@@ -1920,6 +2267,216 @@ void PortfolioPricer::retained_marks(const PortfolioWorkspace &ws,
     out.push_back(RetainedMark{cur[i].uid, cur[i].K, cur[i].T, cur[i].side, w.px[i].fair_value,
                                w.px[i].status});
   }
+}
+
+// ── GR-F1: bucketed risk reduction ─────────────────────────────────────────
+Result<std::vector<RiskBucket>> reduce_risk_buckets(const PriceFrame &frame, const Portfolio &pf,
+                                                    RiskBucketKey by, PriceTotals *grand) {
+  const std::size_t n = frame.size();
+  const std::span<const Position> positions = pf.positions();
+  if (positions.size() != n || frame.book_logical_id_ != pf.logical_id_ ||
+      frame.book_revision_ != pf.revision_) {
+    return Err(ErrorCode::InvalidArgument,
+               "reduce_risk_buckets: frame and portfolio provenance mismatch");
+  }
+  if (by != RiskBucketKey::ByUnderlier && by != RiskBucketKey::ByExpiry) {
+    return Err(ErrorCode::InvalidArgument, "reduce_risk_buckets: invalid bucket key");
+  }
+
+  const bool greeks = frame.greeks_materialized();
+  const bool carry = frame.carry_materialized();
+  const bool marks_shape_ok = frame.uid.size() == n && frame.pv.size() == n &&
+                              frame.price.size() == n && frame.iv.size() == n &&
+                              frame.status.size() == n;
+  const bool greek_shape_ok =
+      greeks ? frame.gamma.size() == n && frame.vega.size() == n && frame.theta.size() == n &&
+                   frame.rho.size() == n && frame.vanna.size() == n && frame.volga.size() == n &&
+                   frame.charm.size() == n
+             : frame.delta.empty() && frame.gamma.empty() && frame.vega.empty() &&
+                   frame.theta.empty() && frame.rho.empty() && frame.vanna.empty() &&
+                   frame.volga.empty() && frame.charm.empty();
+  if (!marks_shape_ok || !greek_shape_ok || (!carry && !frame.dP_dq.empty())) {
+    return Err(ErrorCode::InvalidArgument, "reduce_risk_buckets: malformed price frame");
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    if (frame.id[i] != positions[i].id || frame.uid[i] != positions[i].contract.uid) {
+      return Err(ErrorCode::InvalidArgument,
+                 "reduce_risk_buckets: frame row identity/order mismatch");
+    }
+  }
+
+  // A fresh subtotal matched to what the frame materialized: pv/greeks accumulate
+  // from 0; unmaterialized Greek columns stay NaN (never a false 0); dP_dq starts
+  // at 0 when the carry column is present, else stays NaN.
+  const auto fresh = [&]() noexcept {
+    PriceTotals t{}; // pv/greeks 0, dP_dq NaN, n_ok 0
+    if (!greeks) {
+      t.delta = t.gamma = t.vega = t.theta = t.rho = kNaN;
+      t.vanna = t.volga = t.charm = kNaN;
+    }
+    if (carry) {
+      t.dP_dq = 0.0;
+    }
+    return t;
+  };
+  const auto add_row = [&](PriceTotals &t, std::size_t i) noexcept {
+    t.pv += frame.pv[i];
+    if (greeks) {
+      t.delta += frame.delta[i];
+      t.gamma += frame.gamma[i];
+      t.vega += frame.vega[i];
+      t.theta += frame.theta[i];
+      t.rho += frame.rho[i];
+      t.vanna += frame.vanna[i];
+      t.volga += frame.volga[i];
+      t.charm += frame.charm[i];
+    }
+    if (carry) {
+      t.dP_dq += frame.dP_dq[i];
+    }
+    ++t.n_ok;
+  };
+
+  std::vector<RiskBucket> buckets;
+  // key -> stable slot in `buckets`. The map changes only lookup complexity:
+  // rows still visit and accumulate in input order, so every subtotal remains
+  // bit-identical to the former serial find_if reducer. Sorting remains a final
+  // presentation step and cannot change within-bucket association.
+  std::unordered_map<std::uint64_t, std::size_t> bucket_slots;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (frame.status[i] != PriceStatus::Ok) {
+      continue;
+    }
+    std::uint64_t key = 0;
+    double T = 0.0;
+    if (by == RiskBucketKey::ByUnderlier) {
+      key = positions[i].contract.uid;
+    } else {
+      T = positions[i].contract.T;
+      key = std::bit_cast<std::uint64_t>(T); // T > 0 => bit order == value order
+    }
+    const auto [slot, inserted] = bucket_slots.try_emplace(key, buckets.size());
+    if (inserted) {
+      buckets.push_back(RiskBucket{key, T, fresh()});
+    }
+    add_row(buckets[slot->second].totals, i);
+  }
+
+  std::sort(buckets.begin(), buckets.end(),
+            [](const RiskBucket &a, const RiskBucket &b) noexcept { return a.key < b.key; });
+
+  if (grand != nullptr) {
+    PriceTotals g = fresh();
+    for (const RiskBucket &b : buckets) {
+      g.pv += b.totals.pv;
+      if (greeks) {
+        g.delta += b.totals.delta;
+        g.gamma += b.totals.gamma;
+        g.vega += b.totals.vega;
+        g.theta += b.totals.theta;
+        g.rho += b.totals.rho;
+        g.vanna += b.totals.vanna;
+        g.volga += b.totals.volga;
+        g.charm += b.totals.charm;
+      }
+      if (carry) {
+        g.dP_dq += b.totals.dP_dq;
+      }
+      g.n_ok += b.totals.n_ok;
+    }
+    *grand = g;
+  }
+  return buckets;
+}
+
+Result<std::vector<PnlRiskBucket>>
+reduce_pnl_risk_buckets(const PnlFrame &frame, const Portfolio &pf, RiskBucketKey by,
+                        PnlTotals *grand) {
+  const std::size_t n = frame.size();
+  const std::span<const Position> positions = pf.positions();
+  if (positions.size() != n || frame.book_logical_id_ != pf.logical_id_ ||
+      frame.book_revision_ != pf.revision_) {
+    return Err(ErrorCode::InvalidArgument,
+               "reduce_pnl_risk_buckets: frame and portfolio provenance mismatch");
+  }
+  if (by != RiskBucketKey::ByUnderlier && by != RiskBucketKey::ByExpiry) {
+    return Err(ErrorCode::InvalidArgument, "reduce_pnl_risk_buckets: invalid bucket key");
+  }
+  const bool shape_ok =
+      frame.uid.size() == n && frame.pv_base.size() == n && frame.pv_target.size() == n &&
+      frame.pnl_total.size() == n && frame.pnl_delta.size() == n && frame.pnl_gamma.size() == n &&
+      frame.pnl_vega.size() == n && frame.pnl_volga.size() == n && frame.pnl_vanna.size() == n &&
+      frame.pnl_theta.size() == n && frame.pnl_rho.size() == n && frame.pnl_charm.size() == n &&
+      frame.pnl_unexplained.size() == n && frame.d_spot.size() == n && frame.d_vol.size() == n &&
+      frame.d_time.size() == n && frame.d_rate.size() == n && frame.status.size() == n;
+  if (!shape_ok) {
+    return Err(ErrorCode::InvalidArgument, "reduce_pnl_risk_buckets: malformed P&L frame");
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    if (frame.id[i] != positions[i].id || frame.uid[i] != positions[i].contract.uid) {
+      return Err(ErrorCode::InvalidArgument,
+                 "reduce_pnl_risk_buckets: frame row identity/order mismatch");
+    }
+  }
+
+  const auto add_row = [&](PnlTotals &t, std::size_t i) noexcept {
+    t.pv_base += frame.pv_base[i];
+    t.pv_target += frame.pv_target[i];
+    t.pnl_total += frame.pnl_total[i];
+    t.pnl_delta += frame.pnl_delta[i];
+    t.pnl_gamma += frame.pnl_gamma[i];
+    t.pnl_vega += frame.pnl_vega[i];
+    t.pnl_volga += frame.pnl_volga[i];
+    t.pnl_vanna += frame.pnl_vanna[i];
+    t.pnl_theta += frame.pnl_theta[i];
+    t.pnl_rho += frame.pnl_rho[i];
+    t.pnl_charm += frame.pnl_charm[i];
+    t.pnl_unexplained += frame.pnl_unexplained[i];
+    ++t.n_ok;
+  };
+  const auto add_totals = [](PnlTotals &dst, const PnlTotals &src) noexcept {
+    dst.pv_base += src.pv_base;
+    dst.pv_target += src.pv_target;
+    dst.pnl_total += src.pnl_total;
+    dst.pnl_delta += src.pnl_delta;
+    dst.pnl_gamma += src.pnl_gamma;
+    dst.pnl_vega += src.pnl_vega;
+    dst.pnl_volga += src.pnl_volga;
+    dst.pnl_vanna += src.pnl_vanna;
+    dst.pnl_theta += src.pnl_theta;
+    dst.pnl_rho += src.pnl_rho;
+    dst.pnl_charm += src.pnl_charm;
+    dst.pnl_unexplained += src.pnl_unexplained;
+    dst.n_ok += src.n_ok;
+  };
+
+  std::vector<PnlRiskBucket> buckets;
+  std::unordered_map<std::uint64_t, std::size_t> bucket_slots;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (frame.status[i] != PriceStatus::Ok) {
+      continue;
+    }
+    const double T = by == RiskBucketKey::ByExpiry ? positions[i].contract.T : 0.0;
+    const std::uint64_t key = by == RiskBucketKey::ByUnderlier
+                                  ? positions[i].contract.uid
+                                  : std::bit_cast<std::uint64_t>(T);
+    const auto [slot, inserted] = bucket_slots.try_emplace(key, buckets.size());
+    if (inserted) {
+      buckets.push_back(PnlRiskBucket{key, T, PnlTotals{}});
+    }
+    add_row(buckets[slot->second].totals, i);
+  }
+  std::sort(buckets.begin(), buckets.end(),
+            [](const PnlRiskBucket &a, const PnlRiskBucket &b) noexcept { return a.key < b.key; });
+
+  if (grand != nullptr) {
+    PnlTotals g{};
+    for (const PnlRiskBucket &bucket : buckets) {
+      add_totals(g, bucket.totals);
+    }
+    *grand = g;
+  }
+  return buckets;
 }
 
 } // namespace atx::vol

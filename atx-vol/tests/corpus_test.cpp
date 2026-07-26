@@ -31,6 +31,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -39,6 +40,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -54,6 +56,7 @@
 #include "atx/vol/data.hpp"                 // iso_to_ns, year_fraction
 #include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
 #include "atx/vol/dispersion.hpp"           // DispersionUniverse, DroppedName
+#include "atx/vol/dispersion_run.hpp"       // format_corpus_phase_line (T-I4 probe gate)
 #include "atx/vol/market_env.hpp"           // MarketEnv
 #include "atx/vol/panel.hpp"                // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/priced_surface.hpp"       // PricedSurface
@@ -65,6 +68,10 @@
 #include "atx/vol/surface_archive.hpp"      // SurfaceArchive
 #include "atx/vol/types.hpp"                // Side
 #include "atx/vol/vol_curve.hpp"            // CurveConfig, VolCurveKind, to_string
+
+#include "support/isa_golden_tol.hpp" // kLanedGreeksRelBand (WS-P1a route band)
+
+#include <iomanip> // std::setprecision (route-parity failure messages)
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -240,6 +247,60 @@ TEST(FitScheduler, PerformanceCoresAffinityIsAPureSchedulingSteer) {
   ASSERT_TRUE(s_unpinned) << s_unpinned.error().to_string();
   ASSERT_TRUE(s_pinned) << s_pinned.error().to_string();
   EXPECT_EQ(pinned, unpinned); // byte-identical per-index outputs across affinity
+}
+
+// P3.1 regression guard #1 — the DEFAULT-OFF contract for the E-core second tier.
+//
+// This is the gate that keeps the tier from silently appearing underneath a
+// benchmark holding the P-core lease. `efficiency_core_tier_enabled()` must be
+// false unless ATX_VOL_FIT_ECORE_TIER is explicitly armed in the environment, and
+// the test suite never arms it — so on every CI host, hybrid or not, the answer is
+// false and FitAffinity::PerformanceThenEfficiencyCores degrades to exactly
+// FitAffinity::PerformanceCores. efficiency_core_count() must be queryable without
+// crashing; 0 is a valid answer (homogeneous host or discovery unavailable).
+TEST(FitScheduler, EfficiencyCoreTierIsOptInAndOffByDefault) {
+  EXPECT_GE(detail::efficiency_core_count(), 0u);
+  EXPECT_FALSE(detail::efficiency_core_tier_enabled())
+      << "the E-core tier must stay disarmed unless ATX_VOL_FIT_ECORE_TIER is set; "
+         "an armed default would oversubscribe a P-core-pinned benchmark";
+}
+
+// P3.1 regression guard #2 — the two-tier affinity is a pure scheduling steer.
+//
+// Mirrors PerformanceCoresAffinityIsAPureSchedulingSteer for the P-then-E value:
+// every index runs exactly once and yields the SAME per-index output as both the
+// unpinned and the P-core-only paths, at three different worker budgets. Core
+// assignment, worker count, and (when armed) thread priority must never reach a
+// task's value. This holds whether or not the tier is armed on the host running
+// the test, which is what makes it a usable gate on both hybrid and homogeneous CI.
+TEST(FitScheduler, EfficiencyTierAffinityIsAPureSchedulingSteerAcrossWorkerCounts) {
+  constexpr std::size_t kTaskCount = 64u;
+  const auto run = [](detail::FitAffinity affinity, unsigned budget,
+                      std::array<std::size_t, kTaskCount> &output) -> Status {
+    return detail::run_bounded_fit_tasks(
+        kTaskCount, budget,
+        [&output](std::size_t index) -> Status {
+          output[index] = (index * 2654435761u) ^ (index + 1u); // deterministic per-index value
+          return atx::core::Ok();
+        },
+        affinity);
+  };
+
+  std::array<std::size_t, kTaskCount> reference{};
+  const Status s_reference = run(detail::FitAffinity::None, 4u, reference);
+  ASSERT_TRUE(s_reference) << s_reference.error().to_string();
+
+  for (const unsigned budget : {1u, 4u, 16u}) {
+    std::array<std::size_t, kTaskCount> pcore{};
+    std::array<std::size_t, kTaskCount> two_tier{};
+    const Status s_pcore = run(detail::FitAffinity::PerformanceCores, budget, pcore);
+    const Status s_two_tier =
+        run(detail::FitAffinity::PerformanceThenEfficiencyCores, budget, two_tier);
+    ASSERT_TRUE(s_pcore) << s_pcore.error().to_string();
+    ASSERT_TRUE(s_two_tier) << s_two_tier.error().to_string();
+    EXPECT_EQ(pcore, reference) << "P-core affinity changed output at budget " << budget;
+    EXPECT_EQ(two_tier, reference) << "P-then-E affinity changed output at budget " << budget;
+  }
 }
 
 // Bit-for-bit double equality via the raw uint64 pattern (the round-trip gate is
@@ -1745,6 +1806,797 @@ TEST(CorpusBuildSession, StreamsDatesRetainsSourceFailuresAndBoundsLiveSurfaces)
   EXPECT_FALSE(session->append_date("2026-06-19", second).has_value());
 }
 
+// ── B1 (perf): batched multi-date fan-out ───────────────────────────────────
+namespace {
+
+// Whole-file bytes, for archive-level identity assertions. Byte comparison is
+// deliberate: the entries/manifest agreeing is NOT evidence the fitted surface
+// bytes agree, and an iterative solver reaching a value "to tolerance" is
+// exactly the failure this gate exists to catch.
+[[nodiscard]] std::string read_all_bytes(const fs::path &path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+// Drive a session over `dates`, `per_flush` dates per append_dates call.
+// per_flush == 1 is exactly the historical one-pool-per-date path.
+[[nodiscard]] Result<QualifiedCorpusManifest>
+build_batched(const fs::path &out, const std::vector<std::string> &dates, std::size_t per_flush,
+              unsigned n_threads, std::int64_t created_ts = 1, bool scrub = true,
+              const CorpusFitTestHooks *hooks = nullptr) {
+  QualifiedCorpusConfig cfg;
+  cfg.build.n_threads = n_threads;
+  cfg.build.test_hooks = hooks;
+  cfg.verify_checkpoint_payload_crc = scrub;
+  // 1 pins an explicit stamp (the historical byte-identity tests); 0 leaves the
+  // production sentinel, which the writer now fills from an archive-content hash.
+  cfg.build.write_opts.created_ts_ns = created_ts;
+  auto session = CorpusBuildSession::create(out.string(), cfg);
+  if (!session) {
+    return Err(session.error());
+  }
+  const std::vector<CorpusBoard> boards = make_mixed_boards(dates);
+  std::vector<std::vector<CorpusCellInput>> cells_by_date(dates.size());
+  for (const CorpusBoard &board : boards) {
+    const std::size_t d = static_cast<std::size_t>(
+        std::find(dates.begin(), dates.end(), board.date) - dates.begin());
+    cells_by_date[d].emplace_back(board);
+  }
+  for (std::size_t first = 0; first < dates.size(); first += per_flush) {
+    const std::size_t last = std::min(first + per_flush, dates.size());
+    std::vector<CorpusBuildSession::DateCells> window;
+    for (std::size_t i = first; i < last; ++i) {
+      window.push_back(CorpusBuildSession::DateCells{dates[i], cells_by_date[i]});
+    }
+    const Status appended = session->append_dates(window);
+    if (!appended) {
+      return Err(appended.error());
+    }
+  }
+  return session->finish();
+}
+
+// Replace every occurrence of `dir` with a fixed token. The manifest and quality
+// indexes embed each archive's ABSOLUTE path, so two builds of identical content
+// into different out_dirs necessarily differ in those bytes -- a difference that
+// says nothing about the fit. Normalizing the directory (and only the directory)
+// keeps the comparison honest: the archive FILENAME, and every other field, still
+// has to match exactly.
+[[nodiscard]] std::string with_dir_normalized(const std::string &text, const fs::path &dir) {
+  const std::string needle = dir.generic_string();
+  std::string out = text;
+  for (std::size_t at = out.find(needle); at != std::string::npos;
+       at = out.find(needle, at + 5u)) {
+    out.replace(at, needle.size(), "<OUT>");
+  }
+  return out;
+}
+
+void expect_corpora_byte_identical(const fs::path &lhs_dir, const fs::path &rhs_dir,
+                                   const std::vector<std::string> &dates) {
+  // The archives carry the fitted surfaces; these are the bytes that matter and
+  // they are compared raw, with no normalization of any kind.
+  for (const std::string &date : dates) {
+    const fs::path a = lhs_dir / (date + ".atxvsa");
+    const fs::path b = rhs_dir / (date + ".atxvsa");
+    ASSERT_TRUE(fs::exists(a)) << a.string();
+    ASSERT_TRUE(fs::exists(b)) << b.string();
+    const std::string bytes_a = read_all_bytes(a);
+    const std::string bytes_b = read_all_bytes(b);
+    EXPECT_FALSE(bytes_a.empty()) << date;
+    EXPECT_EQ(bytes_a, bytes_b) << "archive bytes diverged on " << date;
+  }
+  for (const char *index : {"manifest.tsv", "quality.tsv"}) {
+    EXPECT_EQ(with_dir_normalized(read_all_bytes(lhs_dir / index), lhs_dir),
+              with_dir_normalized(read_all_bytes(rhs_dir / index), rhs_dir))
+        << index << " diverged beyond its out_dir prefix";
+  }
+}
+
+// In-memory manifest/quality equality with the same out_dir caveat: compare every
+// field, but compare archive paths by FILENAME rather than absolute path.
+void expect_manifests_equivalent(const QualifiedCorpusManifest &lhs,
+                                 const QualifiedCorpusManifest &rhs) {
+  EXPECT_EQ(lhs.manifest.dates, rhs.manifest.dates);
+  EXPECT_EQ(lhs.manifest.n_boards, rhs.manifest.n_boards);
+  EXPECT_EQ(lhs.manifest.n_ok, rhs.manifest.n_ok);
+  EXPECT_EQ(lhs.manifest.n_failed, rhs.manifest.n_failed);
+  EXPECT_EQ(lhs.manifest.n_skipped, rhs.manifest.n_skipped);
+  EXPECT_EQ(lhs.quality.input_fingerprint, rhs.quality.input_fingerprint);
+  EXPECT_EQ(lhs.quality.policy_fingerprint, rhs.quality.policy_fingerprint);
+  EXPECT_EQ(lhs.quality.n_admitted, rhs.quality.n_admitted);
+  EXPECT_EQ(lhs.quality.n_quarantined, rhs.quality.n_quarantined);
+  EXPECT_EQ(lhs.quality.n_source_failed, rhs.quality.n_source_failed);
+
+  ASSERT_EQ(lhs.manifest.entries.size(), rhs.manifest.entries.size());
+  for (std::size_t i = 0; i < lhs.manifest.entries.size(); ++i) {
+    const CorpusEntry &a = lhs.manifest.entries[i];
+    const CorpusEntry &b = rhs.manifest.entries[i];
+    EXPECT_EQ(a.date, b.date) << i;
+    EXPECT_EQ(a.symbol, b.symbol) << i;
+    EXPECT_EQ(a.status, b.status) << i;
+    EXPECT_EQ(a.chosen_kind, b.chosen_kind) << i;
+    EXPECT_EQ(a.n_slices, b.n_slices) << i;
+    EXPECT_EQ(a.error_code, b.error_code) << i;
+    EXPECT_TRUE(bits_equal(a.oos_in_band, b.oos_in_band)) << i;
+    EXPECT_EQ(fs::path(a.archive_path).filename(), fs::path(b.archive_path).filename()) << i;
+  }
+  ASSERT_EQ(lhs.quality.entries.size(), rhs.quality.entries.size());
+  for (std::size_t i = 0; i < lhs.quality.entries.size(); ++i) {
+    const QualifiedCorpusEntry &a = lhs.quality.entries[i];
+    const QualifiedCorpusEntry &b = rhs.quality.entries[i];
+    EXPECT_EQ(a.date, b.date) << i;
+    EXPECT_EQ(a.symbol, b.symbol) << i;
+    EXPECT_EQ(a.disposition, b.disposition) << i;
+    EXPECT_EQ(a.primary_reason, b.primary_reason) << i;
+    EXPECT_EQ(a.failed_checks, b.failed_checks) << i;
+  }
+}
+
+} // namespace
+
+// B1: batching several dates into ONE fit fan-out must not move a single output
+// byte. `fit_board` is pure w.r.t. shared state and this path arms no warm-start
+// chain, so a board's bytes cannot depend on which other boards share its pool --
+// but that is an argument, not a measurement, so assert the archive bytes.
+TEST(CorpusBuildSession, BatchedAppendIsByteIdenticalToPerDate) {
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19", "2026-06-22"};
+  const fs::path per_date = fresh_out_dir("batch-per-date");
+  const fs::path batched = fresh_out_dir("batch-all-dates");
+
+  auto one = build_batched(per_date, dates, 1u, 4u);           // one pool per date
+  auto all = build_batched(batched, dates, dates.size(), 4u);  // one pool, all dates
+  ASSERT_TRUE(one.has_value()) << one.error().to_string();
+  ASSERT_TRUE(all.has_value()) << all.error().to_string();
+
+  expect_manifests_equivalent(*one, *all);
+  expect_corpora_byte_identical(per_date, batched, dates);
+}
+
+// B1: the sprint's headline guarantee -- output is invariant to worker count --
+// must survive the restructuring. With a batched fan-out the pool now interleaves
+// boards from DIFFERENT dates, so if any cross-board state had leaked in, worker
+// count would change completion order and therefore the bytes. 1 vs 8 workers.
+TEST(CorpusBuildSession, BatchedAppendDeterministicAcrossThreadCounts) {
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19", "2026-06-22"};
+  const fs::path serial = fresh_out_dir("batch-serial");
+  const fs::path parallel = fresh_out_dir("batch-parallel");
+
+  auto s = build_batched(serial, dates, dates.size(), 1u);
+  auto p = build_batched(parallel, dates, dates.size(), 8u);
+  ASSERT_TRUE(s.has_value()) << s.error().to_string();
+  ASSERT_TRUE(p.has_value()) << p.error().to_string();
+
+  expect_manifests_equivalent(*s, *p);
+  expect_corpora_byte_identical(serial, parallel, dates);
+}
+
+// Corpus reproducibility on the PRODUCTION path: write_opts.created_ts_ns left at
+// the 0 sentinel. Before the content-derived fill, that sentinel stamped each
+// container from the WALL CLOCK, so two identical builds diverged in the archive
+// header timestamp (and ONLY there) -> corpus builds were not byte-reproducible
+// run-to-run. The writer now fills the sentinel from a deterministic hash of the
+// archive content, so two identical builds are byte-identical AND share a policy
+// fingerprint. This fails on the pre-fix writer and passes on the fixed one.
+TEST(CorpusBuildSession, DefaultStampBuildsAreByteReproducible) {
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19", "2026-06-22"};
+  const fs::path a = fresh_out_dir("repro-default-a");
+  const fs::path b = fresh_out_dir("repro-default-b");
+
+  auto first = build_batched(a, dates, dates.size(), 4u, 0);  // 0 => production sentinel
+  auto second = build_batched(b, dates, dates.size(), 4u, 0);
+  ASSERT_TRUE(first.has_value()) << first.error().to_string();
+  ASSERT_TRUE(second.has_value()) << second.error().to_string();
+
+  // Archive containers (created_ts_ns header field included) are byte-identical.
+  expect_corpora_byte_identical(a, b, dates);
+  // And the corpus policy fingerprint is stable run-to-run (and non-trivial).
+  EXPECT_EQ(first->quality.policy_fingerprint, second->quality.policy_fingerprint);
+  EXPECT_NE(first->quality.policy_fingerprint, 0u);
+}
+
+// B1: a partial window must still resume from per-date checkpoints. Build the
+// first two dates, then re-drive the WHOLE range in one batch: the already-built
+// dates come back from their checkpoints (not refitted) and the result still
+// matches a clean single-pass build byte for byte.
+TEST(CorpusBuildSession, BatchedAppendResumesFromPerDateCheckpoints) {
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18", "2026-06-19", "2026-06-22"};
+  const std::vector<std::string> prefix = {"2026-06-17", "2026-06-18"};
+  const fs::path resumed = fresh_out_dir("batch-resume");
+  const fs::path clean = fresh_out_dir("batch-clean");
+
+  auto partial = build_batched(resumed, prefix, 1u, 4u);
+  ASSERT_TRUE(partial.has_value()) << partial.error().to_string();
+  // A fresh session over the same out_dir picks the checkpoints up.
+  fs::remove(resumed / "manifest.tsv");
+  fs::remove(resumed / "quality.tsv");
+  auto full = build_batched(resumed, dates, dates.size(), 4u);
+  ASSERT_TRUE(full.has_value()) << full.error().to_string();
+
+  auto reference = build_batched(clean, dates, dates.size(), 4u);
+  ASSERT_TRUE(reference.has_value()) << reference.error().to_string();
+  expect_manifests_equivalent(*full, *reference);
+  expect_corpora_byte_identical(resumed, clean, dates);
+}
+
+// ── T1 (BT-T1): the DRAINING fan-out reclaims inner fit workers ─────────────
+//
+// Two rules compose into the BT-T1 worker cap. `run_bounded_fit_tasks` clamps
+// its worker count at the TASK count, so an across-board pool wider than the
+// board list simply cannot use the surplus. And `build_corpus_core` pins every
+// board's INNER fit to a single worker whenever the outer arm is parallel — the
+// guard that stops the two levels multiplying into H^2 runnable threads while
+// the pool IS saturated. Together: the last boards standing hold the whole
+// machine and run on one core each.
+//
+// A 2-board batch on an 8-wide outer budget is that state for its entire life:
+// 2 outer workers busy, 6 idle, both boards pinned to one inner worker. The fix
+// hands the idle share of the outer budget to the boards still in flight.
+//
+// Gated on the phase-timing counters (process-global, never serialized, so they
+// cannot move an output byte) rather than a wall clock — this box is shared, and
+// a throughput assertion here would be noise. The counter statement is exact:
+// every board on the parallel arm reports the inner budget it was offered.
+TEST(CorpusBuildSession, DrainingFanOutReclaimsInnerFitWorkers) {
+  reset_corpus_phase_timings();
+  const std::vector<std::string> dates = {"2026-06-17"}; // make_mixed_boards => 2 boards
+  const fs::path out = fresh_out_dir("t1-inner-reclaim");
+  auto built = build_batched(out, dates, 1u, 8u); // 8-wide outer budget, 2 boards
+  ASSERT_TRUE(built.has_value()) << built.error().to_string();
+
+  const CorpusPhaseTimings t = corpus_phase_timings();
+  ASSERT_EQ(t.boards_fitted, 2u);
+  EXPECT_EQ(t.reclaimed_inner_boards, 2u)
+      << "both boards of a 2-board / 8-worker fan-out must reclaim the 6 outer "
+         "workers the pool cannot use as INNER fit parallelism";
+  EXPECT_GE(t.inner_worker_slots, 8u)
+      << "the reclaimed inner budgets must add up to at least the outer budget";
+}
+
+// T1 companion gate: the reclaim changes only HOW MANY workers a board's inner
+// fit is offered, never a fitted value. Same boards, outer-serial (which keeps
+// the caller's inner budget) vs an 8-wide pool whose surplus the boards reclaim
+// — archive bytes must match exactly. This is the thread-count-invariance gate
+// for the reclaim; `BatchedAppendDeterministicAcrossThreadCounts` covers the
+// saturated-pool case, this one covers the maximally-reclaimed case.
+TEST(CorpusBuildSession, InnerWorkerReclaimIsByteIdenticalToSerial) {
+  const std::vector<std::string> dates = {"2026-06-17"};
+  const fs::path serial = fresh_out_dir("t1-reclaim-serial");
+  const fs::path wide = fresh_out_dir("t1-reclaim-wide");
+
+  auto s = build_batched(serial, dates, 1u, 1u);
+  auto w = build_batched(wide, dates, 1u, 8u);
+  ASSERT_TRUE(s.has_value()) << s.error().to_string();
+  ASSERT_TRUE(w.has_value()) << w.error().to_string();
+
+  expect_manifests_equivalent(*s, *w);
+  expect_corpora_byte_identical(serial, wide, dates);
+}
+
+// ── T-I1 / T-I2 (review rev-ws-t): the DRAIN regime, measured ───────────────
+namespace {
+
+// Four dates x make_mixed_boards => 8 boards in ONE fan-out. Against the 4-wide
+// outer budget below that is a genuinely SATURATED pool (n > budget), which is
+// the regime BT-T1 is about and which no test covered: every gate that existed
+// ran 2 boards against an 8-wide budget, i.e. left <= 2 < 8 from the very first
+// claim, so the pool was never full and never drained.
+const std::vector<std::string> kDrainDates = {"2026-06-17", "2026-06-18", "2026-06-19",
+                                              "2026-06-22"};
+constexpr unsigned kDrainOuterBudget = 4u;
+constexpr std::size_t kDrainBoards = 8u;
+
+} // namespace
+
+// T-I1: "last-board-STANDING", not "last-board-CLAIMED".
+//
+// BT-T1's symptom is a straggler — the SPY index board — holding the machine at
+// low occupancy at the end of a phase. That board is claimed EARLY, while the
+// pool is still saturated, so a reclaim evaluated once at claim time offers it
+// exactly one inner worker and it keeps exactly one for its entire life no
+// matter how empty the machine gets around it. The boards that reclaim anything
+// are the ones claimed DURING the drain — which are, by construction, the short
+// ones that were never the problem.
+//
+// So the gate is not "somebody reclaimed": it is that a board claimed while the
+// pool was saturated is offered MORE inner workers later in its own life, once
+// its siblings have drained. Made deterministic (no sleeps, no timing) with the
+// two test hooks: board 0 — the SPY board, first task claimed — blocks inside
+// its first budget resolution until `on_board_fit_done` reports that exactly one
+// task is left standing (itself), then continues and is re-resolved.
+TEST(CorpusBuildSession, StragglerReclaimsInnerWorkersWhileStillRunning) {
+  const fs::path out = fresh_out_dir("t1-straggler-growth");
+
+  std::mutex mu;
+  std::condition_variable cv;
+  bool siblings_drained = false;
+  std::vector<unsigned> straggler_offers; // guarded by mu
+  std::vector<std::size_t> straggler_left;
+
+  CorpusFitTestHooks hooks;
+  hooks.on_board_fit_done = [&](std::size_t, std::size_t unfinished) {
+    if (unfinished > 1u) {
+      return; // somebody other than the straggler is still running
+    }
+    const std::lock_guard<std::mutex> lk(mu);
+    siblings_drained = true;
+    cv.notify_all();
+  };
+  hooks.on_inner_fit_workers = [&](std::size_t board, std::size_t unfinished, unsigned workers) {
+    if (board != 0u) {
+      return; // only the straggler is instrumented
+    }
+    std::unique_lock<std::mutex> lk(mu);
+    straggler_offers.push_back(workers);
+    straggler_left.push_back(unfinished);
+    if (straggler_offers.size() == 1u) {
+      // Hold this board IN FLIGHT while every sibling finishes. One of the four
+      // outer workers is parked here; the other three drain the remaining seven
+      // boards, so this cannot deadlock.
+      cv.wait(lk, [&] { return siblings_drained; });
+    }
+  };
+
+  auto built = build_batched(out, kDrainDates, kDrainDates.size(), kDrainOuterBudget, 1,
+                             /*scrub=*/true, &hooks);
+  ASSERT_TRUE(built.has_value()) << built.error().to_string();
+
+  const std::lock_guard<std::mutex> lk(mu);
+  ASSERT_GE(straggler_offers.size(), 2u)
+      << "the straggler's inner fit-worker budget was resolved " << straggler_offers.size()
+      << " time(s) for its whole life: it is frozen at CLAIM time, so a board claimed while "
+         "the pool is saturated can never pick up the workers its siblings release";
+  EXPECT_GE(straggler_left.front(), kDrainOuterBudget)
+      << "the straggler must be claimed while the pool is still saturated";
+  EXPECT_EQ(straggler_offers.front(), 1u)
+      << "a saturated pool must still offer exactly one inner worker per board";
+  EXPECT_GT(straggler_offers.back(), straggler_offers.front())
+      << "after every sibling drained, the last board STANDING must be offered more inner "
+         "workers than it was at claim time (front=" << straggler_offers.front()
+      << " back=" << straggler_offers.back() << ")";
+  EXPECT_EQ(straggler_offers.back(), kDrainOuterBudget)
+      << "the last board standing should be offered the whole outer budget";
+}
+
+// T-I2: the drain regime itself, with a pool that genuinely SATURATES.
+//
+// `DrainingFanOutReclaimsInnerFitWorkers` is named for this regime but runs 2
+// boards against an 8-wide budget — `left <= 2 < 8` from the very first claim,
+// so the pool is never full and never drains. That is the small-book case, not
+// BT-T1's. No test anywhere used n > outer_budget, which is why the claim-time
+// reclaim's total inertness on a saturated pool went unnoticed.
+//
+// 8 boards against a 4-wide budget, asserting both halves of the contract per
+// individual offer rather than over process-global sums:
+//
+//   (a) while the pool is SATURATED (`left >= budget`) every board is offered
+//       exactly one inner worker — the "the saturated regime is bit-for-bit
+//       unchanged" claim, previously carried only by argument;
+//   (b) the budget is RE-RESOLVED as the pool drains rather than frozen at
+//       claim, so every board resolves more than once and there are strictly
+//       more offers than boards. This is the half a claim-time-only reclaim
+//       fails, and the gate that would have caught T-I1.
+TEST(CorpusBuildSession, SaturatedFanOutOffersOneWorkerUntilItDrains) {
+  reset_corpus_phase_timings();
+  const fs::path out = fresh_out_dir("t1-saturated-drain");
+
+  std::mutex mu;
+  std::vector<std::pair<std::size_t, unsigned>> offers; // (unfinished, workers)
+  std::map<std::size_t, std::size_t> per_board;         // board -> resolutions
+  CorpusFitTestHooks hooks;
+  hooks.on_inner_fit_workers = [&](std::size_t board, std::size_t unfinished, unsigned workers) {
+    const std::lock_guard<std::mutex> lk(mu);
+    offers.emplace_back(unfinished, workers);
+    ++per_board[board];
+  };
+
+  auto built = build_batched(out, kDrainDates, kDrainDates.size(), kDrainOuterBudget, 1,
+                             /*scrub=*/true, &hooks);
+  ASSERT_TRUE(built.has_value()) << built.error().to_string();
+  ASSERT_EQ(corpus_phase_timings().boards_fitted, kDrainBoards);
+
+  const std::lock_guard<std::mutex> lk(mu);
+  ASSERT_FALSE(offers.empty());
+  ASSERT_EQ(per_board.size(), kDrainBoards);
+  for (const auto &[board, resolutions] : per_board) {
+    EXPECT_GT(resolutions, 1u) << "board " << board
+                               << " resolved its inner budget once for its entire life";
+  }
+  std::size_t saturated = 0;
+  std::size_t reclaimed_while_draining = 0;
+  for (const auto &[left, workers] : offers) {
+    if (left >= kDrainOuterBudget) {
+      ++saturated;
+      EXPECT_EQ(workers, 1u) << "a SATURATED pool (" << left << " tasks left, " << kDrainOuterBudget
+                             << "-wide budget) must keep every board's inner fit serial";
+    } else if (workers > 1u) {
+      ++reclaimed_while_draining;
+    }
+  }
+  EXPECT_GT(saturated, 0u) << "the fixture must actually saturate the pool (" << kDrainBoards
+                           << " boards vs a " << kDrainOuterBudget << "-wide budget)";
+  // This is the only assertion in the fixture that pins the drain-time property
+  // itself. The two around it are necessary but not sufficient: `saturated`
+  // shows the fixture reached saturation, and `offers.size() > kDrainBoards`
+  // shows the budget was re-resolved more than once per board -- but neither
+  // distinguishes a re-resolution that handed back a WIDER budget from one that
+  // returned the same width. Only a width > 1 observed while tasks remain is
+  // evidence that a board which was already claimed and still running actually
+  // reclaimed. Relax this line and the fixture stops testing T-I1 and starts
+  // testing only that the resolver gets called more than once, which is the
+  // shape of the vacuous guard the first review rejected.
+  EXPECT_GT(reclaimed_while_draining, 0u) << "no board reclaimed anything as the pool drained";
+  EXPECT_GT(offers.size(), kDrainBoards)
+      << "only " << offers.size() << " budget resolutions for " << kDrainBoards
+      << " boards: the inner budget is frozen at claim time instead of being re-resolved as "
+         "the fan-out drains";
+}
+
+// T-I4: the reclaim counters must be readable from the probe that is supposed
+// to read them.
+//
+// `reclaimed_inner_boards` / `inner_worker_slots` live on `CorpusPhaseTimings`,
+// but the only production surface that reports phase timings is the one `PHASE`
+// line `dispersion_build_corpus` prints under `ATX_VOL_CORPUS_PHASE_TIMING` —
+// and that line did not carry them. The quiet-window probe recommended for the
+// utilization row was therefore inert: it could not report either counter, so
+// the deterministic substitute offered in place of the "≥ 14/16 mean workers"
+// gate was unobtainable, and no evidence could be captured that the reclaim
+// fired at all during a production run.
+//
+// Gated on the pure formatter rather than by driving a corpus build, so the
+// assertion is about the line's CONTENTS and cannot be satisfied by a value
+// that merely exists in the struct.
+TEST(CorpusPhaseLine, ReportsTheInnerWorkerReclaimCounters) {
+  CorpusPhaseTimings phases;
+  phases.fit_fanout_s = 12.5;
+  phases.archive_write_s = 2.0;
+  phases.checkpoint_s = 0.5;
+  phases.fanout_calls = 11;
+  phases.boards_fitted = 902;
+  phases.reclaimed_inner_boards = 137;
+  phases.inner_worker_slots = 4242;
+  phases.fit_fanout_process_cpu_s = 150.0;
+
+  const std::string line = format_corpus_phase_line(/*ingest_s=*/30.0, /*build_s=*/20.0, phases,
+                                                    /*date_batch=*/8u,
+                                                    /*ingest_process_cpu_s=*/45.0);
+  // The pre-existing fields must survive verbatim: this line is parsed by hand
+  // and by scripts.
+  EXPECT_EQ(line.rfind("PHASE ", 0), 0u) << line;
+  for (const char *field : {"ingest_s=30.00", "build_s=20.00", "fit_fanout_s=12.50",
+                            "archive_write_s=2.00", "checkpoint_s=0.50", "other_s=5.00",
+                            "fanout_calls=11", "boards=902", "date_batch=8"}) {
+    EXPECT_NE(line.find(field), std::string::npos) << field << " missing from: " << line;
+  }
+  // And the two counters the probe exists to report.
+  EXPECT_NE(line.find("reclaimed=137"), std::string::npos)
+      << "the quiet-window probe cannot see reclaimed_inner_boards: " << line;
+  EXPECT_NE(line.find("inner_slots=4242"), std::string::npos)
+      << "the quiet-window probe cannot see inner_worker_slots: " << line;
+  EXPECT_NE(line.find("fit_fanout_cpu_s=150.00"), std::string::npos)
+      << "fit occupancy has no phase-local process-CPU numerator: " << line;
+  EXPECT_NE(line.find("ingest_cpu_s=45.00"), std::string::npos)
+      << "parallel OPRA ingest CPU is not separately attributable: " << line;
+}
+
+// MINORS M9: the PHASE line's field LAYOUT is a contract, and the way it stays
+// one is that new fields are APPENDED.
+//
+// `9cfcbc3` added `reclaimed=` and `inner_slots=` in the middle of the line,
+// between `boards=` and `date_batch=`, which moved `date_batch` from field 10
+// to field 12. Every in-tree consumer keys by name — `CorpusPhaseLine.
+// ReportsTheInnerWorkerReclaimCounters` above is a substring search, and no
+// fixture, golden or `.tsv` in the tree mentions the line at all — so nothing
+// here broke. What broke is out-of-tree: this line is printed to stdout under
+// `ATX_VOL_CORPUS_PHASE_TIMING` and is scraped positionally by operator scripts
+// that no change in this repo can reach.
+//
+// The insertion bought nothing (the two counters read no better beside
+// `boards=` than at the end), so this restores field 10 and states the rule
+// that keeps it stable: NEW FIELDS APPEND. Position is a courtesy for `awk`;
+// the NAME is the contract, and this gate pins both so the next addition
+// cannot silently take the courtesy away.
+TEST(CorpusPhaseLine, FieldLayoutIsAppendOnlyAndEveryFieldIsSelfDescribing) {
+  CorpusPhaseTimings phases;
+  phases.fit_fanout_s = 12.5;
+  phases.archive_write_s = 2.0;
+  phases.checkpoint_s = 0.5;
+  phases.fanout_calls = 11;
+  phases.boards_fitted = 902;
+  phases.reclaimed_inner_boards = 137;
+  phases.inner_worker_slots = 4242;
+  phases.fit_fanout_process_cpu_s = 150.0;
+
+  const std::string line = format_corpus_phase_line(/*ingest_s=*/30.0, /*build_s=*/20.0, phases,
+                                                    /*date_batch=*/8u,
+                                                    /*ingest_process_cpu_s=*/45.0);
+  std::vector<std::string> fields;
+  for (std::size_t cursor = 0; cursor <= line.size();) {
+    const std::size_t space = line.find(' ', cursor);
+    if (space == std::string::npos) {
+      fields.push_back(line.substr(cursor));
+      break;
+    }
+    fields.push_back(line.substr(cursor, space - cursor));
+    cursor = space + 1;
+  }
+
+  // The layout, in order. The first nine entries are the ORIGINAL line
+  // (`6fddfba`); the last two are `9cfcbc3`'s counters, appended.
+  static constexpr const char *kLayout[] = {
+      "ingest_s",     "build_s", "fit_fanout_s", "archive_write_s", "checkpoint_s", "other_s",
+      "fanout_calls", "boards",  "date_batch",   "reclaimed",       "inner_slots",
+      "fit_fanout_cpu_s", "ingest_cpu_s"};
+  constexpr std::size_t kFieldCount = sizeof(kLayout) / sizeof(kLayout[0]);
+
+  ASSERT_EQ(fields.size(), kFieldCount + 1u) << line;
+  EXPECT_EQ(fields[0], "PHASE") << line;
+  for (std::size_t i = 0; i < kFieldCount; ++i) {
+    const std::string &field = fields[i + 1u];
+    const std::size_t equals = field.find('=');
+    ASSERT_NE(equals, std::string::npos)
+        << "field " << (i + 1u) << " is positional, not name=value: '" << field
+        << "' — a bare value makes the ORDER load-bearing for every consumer, which is the "
+           "failure this gate exists to prevent: "
+        << line;
+    EXPECT_EQ(field.substr(0, equals), kLayout[i])
+        << "field " << (i + 1u) << " is '" << field.substr(0, equals) << "', expected '"
+        << kLayout[i] << "'. New PHASE fields APPEND — inserting one shifts every field after "
+        << "it under a positional reader. Line: " << line;
+    EXPECT_FALSE(field.substr(equals + 1u).empty()) << "empty value in field: " << field;
+  }
+  // `date_batch` is field 10 of the record (index 9 counting the PHASE tag as
+  // field 1), which is where `6fddfba` put it and where an `awk '{print $10}'`
+  // still finds it.
+  EXPECT_EQ(fields[9], "date_batch=8") << line;
+}
+
+// rev2-ws-t N-M2: `format_corpus_phase_line` formats into a fixed 512-byte
+// buffer, and `std::snprintf` returns the length it WOULD have written, not the
+// length it did. `std::string(buf, written)` therefore reads `written - 511`
+// bytes PAST the end of `buf` the moment the line truncates — an out-of-bounds
+// read in a public pure function that runs on EVERY corpus build, whose six
+// `double` arguments are all caller-supplied. `/W4 /permissive- /WX` does not
+// diagnose it and no sanitizer runs in this suite, so the observable proxy is
+// the one invariant a correct implementation cannot violate: the returned
+// string can never be longer than the buffer that produced it, and its size
+// must agree with its own NUL terminator.
+//
+// Two `%.2f` conversions of 1e300 are ~304 characters each, so the line
+// truncates on its second field with no help from the counters.
+TEST(CorpusPhaseLine, TruncatedLineDoesNotOverreadTheFormatBuffer) {
+  CorpusPhaseTimings phases;
+  phases.fit_fanout_s = 1.0;
+  phases.archive_write_s = 2.0;
+  phases.checkpoint_s = 3.0;
+  phases.fanout_calls = 11;
+  phases.boards_fitted = 902;
+  phases.reclaimed_inner_boards = 137;
+  phases.inner_worker_slots = 4242;
+
+  constexpr std::size_t kFormatBuffer = 512;  // dispersion_run.cpp: char buf[512]
+  const std::string line = format_corpus_phase_line(/*ingest_s=*/1e300, /*build_s=*/1e300, phases,
+                                                    /*date_batch=*/8u);
+  EXPECT_LE(line.size(), kFormatBuffer - 1u)
+      << "format_corpus_phase_line returned " << line.size()
+      << " bytes from a " << kFormatBuffer
+      << "-byte buffer: snprintf's return value is the UNTRUNCATED length, so the "
+         "std::string ctor read past the end of the buffer";
+  EXPECT_EQ(line.size(), std::strlen(line.c_str()))
+      << "the returned string extends past its own NUL terminator — it carries bytes "
+         "that were never written by snprintf";
+  EXPECT_EQ(line.rfind("PHASE ", 0), 0u) << "truncation must still yield a well-formed prefix";
+}
+
+// ── T2 (SE-P2-6 / SE-P2-3): framing-only checkpoint resume + payload scrub ───
+namespace {
+
+// Overwrite every surface RECORD BODY (the data section) while leaving the
+// header + metadata section (lookup ‖ directory) byte-intact. `open()` is lazy —
+// header CRC and metadata CRC still verify, the directory still parses — so an
+// enumeration that reads ONLY framing keeps working, while anything that
+// materializes a record (map_all's per-record PricedSurfaceView, or a payload
+// CRC check) hits the poison. This is the same discriminator WS-C's C6 unit test
+// uses (SurfaceArchiveV2.EntriesEnumerateWithoutMaterializingViews).
+void poison_archive_record_bodies(const fs::path &archive) {
+  std::uint64_t data_offset = 0;
+  {
+    auto arch = SurfaceArchiveV2::open_file(archive.generic_string());
+    ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+    data_offset = arch->header().data_offset;
+  }
+  std::string bytes = read_all_bytes(archive);
+  ASSERT_LT(static_cast<std::size_t>(data_offset), bytes.size());
+  for (std::size_t i = static_cast<std::size_t>(data_offset); i < bytes.size(); ++i) {
+    bytes[i] = static_cast<char>(0xFF);
+  }
+  std::ofstream out(archive, std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(out.good());
+  out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+// T-I3: media bit-rot INSIDE an otherwise perfectly well-formed record — the
+// scenario SE-P2-3 is actually about, and the one `poison_archive_record_bodies`
+// above cannot express.
+//
+// That poison 0xFF-fills from `header().data_offset` to EOF. Records begin AT
+// `data_offset`, so it destroys each record's own `ArchiveV2SurfaceHeader.magic`
+// too, and `validate_record` rejects on the magic compare BEFORE it ever
+// computes the CRC. A verifier that only walked framing would pass that test.
+//
+// This flips ONE bit deep inside a record's payload instead: the low bit of the
+// first slice's `forward` (a f64 in the columnar section). Everything the
+// structure depends on is byte-intact — magic, `record_size`, `n_slices`, every
+// column offset, the stored `payload_crc32c`, the lookup table and the whole
+// directory (so `metadata_crc32c` still verifies and `open()` still succeeds).
+// A low mantissa bit also keeps the value a finite, sane forward (relative
+// change ~1e-16), so nothing downstream can reject it structurally either. The
+// per-record CRC is the ONLY thing in the format that can see it.
+void bitrot_one_record_payload_bit(const fs::path &archive) {
+  std::uint64_t record_offset = 0;
+  {
+    auto arch = SurfaceArchiveV2::open_file(archive.generic_string());
+    ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+    ASSERT_GT(arch->entry_count(), 0u);
+    record_offset = arch->entries()[0].surface_offset;
+  }
+  std::string bytes = read_all_bytes(archive);
+  ASSERT_LE(static_cast<std::size_t>(record_offset) + sizeof(ArchiveV2SurfaceHeader), bytes.size());
+
+  ArchiveV2SurfaceHeader before{};
+  std::memcpy(&before, bytes.data() + record_offset, sizeof before);
+  ASSERT_EQ(std::memcmp(before.magic, "ATXVSR20", 8), 0);
+  ASSERT_GT(before.n_slices, 0u);
+  ASSERT_GE(before.col_forward_off, sizeof(ArchiveV2SurfaceHeader))
+      << "the forward column must live past the record header, not inside it";
+
+  const std::size_t victim =
+      static_cast<std::size_t>(record_offset) + static_cast<std::size_t>(before.col_forward_off);
+  ASSERT_LT(victim, bytes.size());
+  bytes[victim] = static_cast<char>(static_cast<unsigned char>(bytes[victim]) ^ 0x01u);
+
+  // Prove the poison is payload-only: the record header must come back byte-for
+  // byte identical, or this fixture is testing framing again.
+  ArchiveV2SurfaceHeader after{};
+  std::memcpy(&after, bytes.data() + record_offset, sizeof after);
+  ASSERT_EQ(std::memcmp(&before, &after, sizeof before), 0)
+      << "the record header must be untouched: this poison exists to reach the CRC compare";
+
+  std::ofstream out(archive, std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(out.good());
+  out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+} // namespace
+
+// T2a (SE-P2-6): checkpoint resume must be O(framing), not O(heavy payload).
+//
+// `read_date_checkpoint` cross-checks only the surface COUNT and the admitted
+// symbols, but reached for `map_all()` to do it — which builds a
+// `PricedSurfaceView` per record and EAGERLY materializes ConvexDense/SplineVol
+// curves (allocations, node-array copies, spline second-derivative solves). The
+// in-code comment claiming the v2 subset-map "touches nothing but framing" was
+// simply false for the heavy kinds, and this corpus fixture writes one of each
+// (SPY is pinned to the dense recipe).
+//
+// Observed the way WS-C's own C6 test observes it — by poisoning every record
+// body. A framing-only resume does not read those bytes and succeeds; a resume
+// that materializes views cannot. The scrub added in T2b is switched OFF here
+// precisely so this asserts materialization and nothing else.
+TEST(CorpusBuildSession, CheckpointResumeIsFramingOnly) {
+  const std::vector<std::string> dates = {"2026-06-17"};
+  const fs::path out = fresh_out_dir("t2-framing-resume");
+
+  auto first = build_batched(out, dates, 1u, 4u, 1, /*scrub=*/false);
+  ASSERT_TRUE(first.has_value()) << first.error().to_string();
+  ASSERT_TRUE(fs::exists(out / "2026-06-17.atxvsa"));
+  poison_archive_record_bodies(out / "2026-06-17.atxvsa");
+
+  // A fresh session over the same out_dir resumes from the per-date checkpoint.
+  fs::remove(out / "manifest.tsv");
+  fs::remove(out / "quality.tsv");
+  auto resumed = build_batched(out, dates, 1u, 4u, 1, /*scrub=*/false);
+  ASSERT_TRUE(resumed.has_value())
+      << "checkpoint resume materialized record payloads instead of reading "
+         "framing only: "
+      << resumed.error().to_string();
+  expect_manifests_equivalent(*first, *resumed);
+}
+
+// T2b (SE-P2-3): the lazy per-record CRC finally gets ONE scheduled verifier.
+//
+// `validate_symbol`/`validate_all` had zero non-test callers; `open` checks only
+// header + metadata; neither the snapshot load nor SurfaceDb validates. So a
+// corrupted record body was SERVED — it flowed into prices with nothing in the
+// pipeline able to notice. Checkpoint verification is the natural scheduling
+// point (already re-opening the archive, once per resumed date), and it is where
+// a corrupt payload costs a refit instead of a wrong price.
+//
+// T-I3: the poison here is ONE FLIPPED BIT inside an otherwise well-formed
+// record, not a wiped data section. The wiped-section poison destroys each
+// record's own magic, so `validate_record` rejects at the framing compare
+// (surface_archive.cpp:1398) and never reaches the CRC compare at :1401 — a
+// framing-only walk would have satisfied it, which is not what SE-P2-3 is about.
+//
+// The test discriminates in three steps, so it can only pass because the CRC is
+// actually computed:
+//   (i)   the poisoned archive still OPENS and still MATERIALIZES every record —
+//         header CRC, metadata CRC, directory and framing all verify, so
+//         everything short of the per-record payload CRC is blind to it, while
+//         `validate_all()` (which does compute it) rejects;
+//   (ii)  with the scrub OFF the corrupt checkpoint is SERVED. That is SE-P2-3
+//         as shipped behaviour, observed rather than argued;
+//   (iii) with the scrub ON — the `--qualify` default — the resume FAILS with an
+//         error naming the site.
+TEST(CorpusBuildSession, CheckpointScrubRejectsCorruptedPayload) {
+  const std::vector<std::string> dates = {"2026-06-17"};
+  const fs::path out = fresh_out_dir("t2-scrub-corrupt");
+  const fs::path archive = out / "2026-06-17.atxvsa";
+
+  auto first = build_batched(out, dates, 1u, 4u);
+  ASSERT_TRUE(first.has_value()) << first.error().to_string();
+  bitrot_one_record_payload_bit(archive);
+
+  // (i) Everything except the payload CRC is blind to this poison.
+  {
+    auto arch = SurfaceArchiveV2::open_file(archive.generic_string());
+    ASSERT_TRUE(arch.has_value())
+        << "the poisoned archive must still OPEN (header + metadata CRC intact): "
+        << arch.error().to_string();
+    auto mapped = arch->map_all();
+    EXPECT_TRUE(mapped.has_value())
+        << "the poisoned record must still MATERIALIZE — otherwise this fixture is testing "
+           "framing again, not bit-rot: "
+        << (mapped.has_value() ? std::string{} : mapped.error().to_string());
+    const Status scrub = arch->validate_all();
+    ASSERT_FALSE(scrub.has_value()) << "validate_all must catch a flipped payload bit";
+    EXPECT_NE(scrub.error().to_string().find("checksum"), std::string::npos)
+        << "the rejection must come from the CRC compare, not the framing compare: "
+        << scrub.error().to_string();
+  }
+
+  // (ii) Scrub OFF: the corrupt checkpoint is served. This is the SE-P2-3 defect.
+  fs::remove(out / "manifest.tsv");
+  fs::remove(out / "quality.tsv");
+  auto unverified = build_batched(out, dates, 1u, 4u, 1, /*scrub=*/false);
+  ASSERT_TRUE(unverified.has_value())
+      << "without the scrub the corrupt checkpoint must be SERVED — if it is not, this test "
+         "is not discriminating on the CRC: "
+      << unverified.error().to_string();
+
+  // (iii) Scrub ON (the default): rejected, by name.
+  fs::remove(out / "manifest.tsv");
+  fs::remove(out / "quality.tsv");
+  auto resumed = build_batched(out, dates, 1u, 4u); // scrub defaults ON
+  ASSERT_FALSE(resumed.has_value())
+      << "a checkpoint whose archive payload is corrupt was served unverified";
+  EXPECT_NE(resumed.error().to_string().find("payload CRC scrub"), std::string::npos)
+      << "corruption must be reported at the checkpoint, by name: "
+      << resumed.error().to_string();
+}
+
+// T2b companion: the scrub must not cry wolf. An INTACT archive resumes exactly
+// as before with the scrub on (this is the default every qualified run takes),
+// and the resumed corpus still matches a clean single-pass build byte for byte.
+TEST(CorpusBuildSession, CheckpointScrubAcceptsIntactArchive) {
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18"};
+  const fs::path resumed_dir = fresh_out_dir("t2-scrub-intact");
+  const fs::path clean = fresh_out_dir("t2-scrub-clean");
+
+  auto partial = build_batched(resumed_dir, dates, 1u, 4u);
+  ASSERT_TRUE(partial.has_value()) << partial.error().to_string();
+  fs::remove(resumed_dir / "manifest.tsv");
+  fs::remove(resumed_dir / "quality.tsv");
+  auto again = build_batched(resumed_dir, dates, 1u, 4u);
+  ASSERT_TRUE(again.has_value()) << again.error().to_string();
+
+  auto reference = build_batched(clean, dates, dates.size(), 4u);
+  ASSERT_TRUE(reference.has_value()) << reference.error().to_string();
+  expect_manifests_equivalent(*again, *reference);
+  expect_corpora_byte_identical(resumed_dir, clean, dates);
+}
+
 TEST(CorpusBuildSession, RejectsDuplicateCanonicalSymbolsBeforeFitting) {
   const fs::path out = fresh_out_dir("streaming-duplicate");
   QualifiedCorpusConfig cfg;
@@ -1779,6 +2631,7 @@ TEST(CorpusBuildSession, InterruptedBuildLeavesDateArchiveButNoPartialIndexes) {
   EXPECT_TRUE(fs::exists(out / "2026-06-17.atxvsa"));
   EXPECT_TRUE(fs::exists(out / ".checkpoints" / "2026-06-17.manifest.tsv"));
   EXPECT_TRUE(fs::exists(out / ".checkpoints" / "2026-06-17.quality.tsv"));
+  EXPECT_TRUE(fs::exists(out / ".checkpoints" / "2026-06-17.commit"));
   EXPECT_FALSE(fs::exists(out / "manifest.tsv"));
   EXPECT_FALSE(fs::exists(out / "quality.tsv"));
   EXPECT_FALSE(fs::exists(out / "manifest.tsv.pending"));
@@ -1793,6 +2646,7 @@ TEST(CorpusBuildSession, InterruptedBuildLeavesDateArchiveButNoPartialIndexes) {
       << "a matching checkpoint must not refit the date";
   EXPECT_TRUE(fs::exists(out / "manifest.tsv"));
   EXPECT_TRUE(fs::exists(out / "quality.tsv"));
+  EXPECT_TRUE(fs::exists(out / "indexes.commit"));
 
   auto cached = CorpusBuildSession::create(out.string(), cfg);
   ASSERT_TRUE(cached.has_value());
@@ -1819,6 +2673,62 @@ TEST(CorpusBuildSession, InterruptedBuildLeavesDateArchiveButNoPartialIndexes) {
   const Status changed_policy_status = changed_policy->append_date("2026-06-17", cells);
   ASSERT_FALSE(changed_policy_status.has_value());
   EXPECT_EQ(changed_policy_status.error().code(), ErrorCode::AlreadyExists);
+}
+
+TEST(CorpusBuildSession, RecoversAbandonedCheckpointAndFinalIndexGenerations) {
+  const std::vector<std::string> dates = {"2026-06-17"};
+  const fs::path out = fresh_out_dir("streaming-transaction-recovery");
+  const fs::path checkpoints = out / ".checkpoints";
+  const fs::path checkpoint_manifest = checkpoints / "2026-06-17.manifest.tsv";
+  const fs::path checkpoint_quality = checkpoints / "2026-06-17.quality.tsv";
+  const fs::path checkpoint_commit = checkpoints / "2026-06-17.commit";
+
+  auto first = build_batched(out, dates, 1u, 2u);
+  ASSERT_TRUE(first.has_value()) << first.error().to_string();
+  ASSERT_TRUE(fs::exists(checkpoint_manifest));
+  ASSERT_TRUE(fs::exists(checkpoint_quality));
+  ASSERT_TRUE(fs::exists(checkpoint_commit));
+  ASSERT_TRUE(fs::exists(out / "indexes.commit"));
+
+  const auto remove_final_generation = [&] {
+    std::error_code ignored;
+    fs::remove(out / "manifest.tsv", ignored);
+    fs::remove(out / "quality.tsv", ignored);
+    fs::remove(out / "indexes.commit", ignored);
+  };
+
+  // Kill point 1: manifest became visible, quality and the authoritative marker
+  // did not. Restart discards the uncommitted archive/pair and refits.
+  remove_final_generation();
+  fs::remove(checkpoint_quality);
+  fs::remove(checkpoint_commit);
+  auto after_manifest = build_batched(out, dates, 1u, 2u);
+  ASSERT_TRUE(after_manifest.has_value()) << after_manifest.error().to_string();
+  EXPECT_GT(after_manifest->peak_live_fitted_surfaces, 0u);
+  EXPECT_TRUE(fs::exists(checkpoint_manifest));
+  EXPECT_TRUE(fs::exists(checkpoint_quality));
+  EXPECT_TRUE(fs::exists(checkpoint_commit));
+
+  // Kill point 2: both data files became visible but the commit marker did not.
+  // They are still abandoned and must not be accepted as a checkpoint.
+  remove_final_generation();
+  fs::remove(checkpoint_commit);
+  auto before_marker = build_batched(out, dates, 1u, 2u);
+  ASSERT_TRUE(before_marker.has_value()) << before_marker.error().to_string();
+  EXPECT_GT(before_marker->peak_live_fitted_surfaces, 0u);
+  EXPECT_TRUE(fs::exists(checkpoint_commit));
+
+  // Final-index pair uses the same protocol. A one-file final generation is
+  // rebuilt from the committed date checkpoint without refitting the date.
+  fs::remove(out / "quality.tsv");
+  fs::remove(out / "indexes.commit");
+  auto final_partial = build_batched(out, dates, 1u, 2u);
+  ASSERT_TRUE(final_partial.has_value()) << final_partial.error().to_string();
+  EXPECT_EQ(final_partial->peak_live_fitted_surfaces, 0u);
+  EXPECT_TRUE(fs::exists(out / "manifest.tsv"));
+  EXPECT_TRUE(fs::exists(out / "quality.tsv"));
+  EXPECT_TRUE(fs::exists(out / "indexes.commit"));
+  expect_manifests_equivalent(*first, *final_partial);
 }
 
 TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
@@ -2013,6 +2923,11 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
 
   RunConfig serial_cfg;
   serial_cfg.price.n_threads = 1u;
+  // WS-F F1(c): the RunConfig default is now UnpricedLotPolicy::Error. This
+  // scoreboard deliberately drives the below-minimum-survivor regime (the final
+  // date drops 4 of 5 names) and asserts the EXCLUSION counts below, so it must
+  // opt into the lenient policy explicitly.
+  serial_cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
   DispersionStrategy serial_strategy{universe, dispersion_cfg};
   auto serial = run_backtest(*clock, serial_strategy, serial_cfg);
   ASSERT_TRUE(serial.has_value()) << serial.error().to_string();
@@ -2056,29 +2971,73 @@ TEST(CorpusBuildSession, SyntheticThirteenNameThreeDateBreadthScoreboard) {
   auto parallel = run_backtest(*clock, parallel_strategy, parallel_cfg);
   ASSERT_TRUE(parallel.has_value()) << parallel.error().to_string();
 
-  const auto expect_column_bits_equal = [](const std::vector<double> &lhs,
+  // Labelled so a failure names WHICH claim broke: the two blocks below assert
+  // different things and only one of them may ever be relaxed.
+  const auto expect_column_bits_equal = [](const char *what, const std::vector<double> &lhs,
                                            const std::vector<double> &rhs) {
-    ASSERT_EQ(lhs.size(), rhs.size());
+    ASSERT_EQ(lhs.size(), rhs.size()) << what;
     for (std::size_t i = 0u; i < lhs.size(); ++i) {
-      EXPECT_TRUE(bits_equal(lhs[i], rhs[i])) << "row " << i;
+      EXPECT_TRUE(bits_equal(lhs[i], rhs[i])) << what << " row " << i;
     }
   };
-  expect_column_bits_equal(serial->pnl_total, parallel->pnl_total);
-  expect_column_bits_equal(serial->nav, parallel->nav);
-  expect_column_bits_equal(serial->gross_vega, parallel->gross_vega);
-  expect_column_bits_equal(serial->n_unpriced_lots, parallel->n_unpriced_lots);
-  expect_column_bits_equal(serial->n_unpriced_greeks, parallel->n_unpriced_greeks);
+
+  // (1) THREAD-COUNT DETERMINISM: 1 thread vs 4 threads on the SAME greek route.
+  // Laned greeks cannot move this — both runs take the identical route — so this
+  // stays BIT-EXACT. It is a headline guarantee of the sprint; never relax it.
+  expect_column_bits_equal("serial-vs-parallel pnl_total", serial->pnl_total, parallel->pnl_total);
+  expect_column_bits_equal("serial-vs-parallel nav", serial->nav, parallel->nav);
+  expect_column_bits_equal("serial-vs-parallel gross_vega", serial->gross_vega,
+                           parallel->gross_vega);
+  expect_column_bits_equal("serial-vs-parallel n_unpriced_lots", serial->n_unpriced_lots,
+                           parallel->n_unpriced_lots);
+  expect_column_bits_equal("serial-vs-parallel n_unpriced_greeks", serial->n_unpriced_greeks,
+                           parallel->n_unpriced_greeks);
 
   RunConfig fd_cfg = parallel_cfg;
   fd_cfg.price.analytic_greeks = false;
   DispersionStrategy fd_strategy{universe, dispersion_cfg};
   auto fd = run_backtest(*clock, fd_strategy, fd_cfg);
   ASSERT_TRUE(fd.has_value()) << fd.error().to_string();
-  expect_column_bits_equal(parallel->pnl_total, fd->pnl_total);
-  expect_column_bits_equal(parallel->nav, fd->nav);
-  expect_column_bits_equal(parallel->gross_delta, fd->gross_delta);
-  expect_column_bits_equal(parallel->gross_gamma, fd->gross_gamma);
-  expect_column_bits_equal(parallel->gross_vega, fd->gross_vega);
+  // (2) GREEK-ROUTE PARITY: analytic vs FD. Since WS-P1a the analytic route runs
+  // the laned AVX2 greeks kernel while FD stays scalar, so these agree to the
+  // documented economic band rather than to the bit (support/isa_golden_tol.hpp).
+  // Scaled by the COLUMN's magnitude, not the element's. These columns are
+  // portfolio aggregates: at inception the book is empty, so gross_vega row 0 is
+  // numerically zero (-1.6e-12 vs +1.1e-12 — pure float noise) and an
+  // element-relative test on it is meaningless. The column scale is the honest
+  // denominator for an aggregate.
+  //
+  // KNOWN LIMITATION — this is an AGGREGATE band, NOT an element-wise guarantee.
+  // Because every row is measured against the column's max, a numerically SMALL
+  // row may absorb up to tol * (column scale) in absolute terms, which can be an
+  // arbitrarily large RELATIVE move on that row alone. That is deliberate and is
+  // the price of having a meaningful denominator for a book that starts empty:
+  // the claim being made here is "the two greek routes produce the same portfolio
+  // trajectory to within a band set by the trajectory's own size", not "every
+  // individual cell agrees to 1e-9 relative".
+  //
+  // Consequently: do NOT reuse this column band anywhere the compared values are
+  // not aggregates. For per-contract / per-element quantities use the element-wise
+  // laned_greeks_close(), whose scale is max(|a|,|b|) of the pair being compared.
+  const auto expect_column_route_close = [](const char *what, const std::vector<double> &lhs,
+                                            const std::vector<double> &rhs) {
+    ASSERT_EQ(lhs.size(), rhs.size()) << what;
+    double col = 0.0;
+    for (std::size_t i = 0u; i < lhs.size(); ++i) {
+      col = std::fmax(col, std::fmax(std::fabs(lhs[i]), std::fabs(rhs[i])));
+    }
+    const double tol = atx::vol::test::kLanedGreeksRelBand * std::fmax(col, 1.0);
+    for (std::size_t i = 0u; i < lhs.size(); ++i) {
+      EXPECT_LE(std::fabs(lhs[i] - rhs[i]), tol)
+          << what << " row " << i << ": " << std::setprecision(17) << lhs[i] << " vs " << rhs[i]
+          << " (column scale " << col << ")";
+    }
+  };
+  expect_column_route_close("analytic-vs-fd pnl_total", parallel->pnl_total, fd->pnl_total);
+  expect_column_route_close("analytic-vs-fd nav", parallel->nav, fd->nav);
+  expect_column_route_close("analytic-vs-fd gross_delta", parallel->gross_delta, fd->gross_delta);
+  expect_column_route_close("analytic-vs-fd gross_gamma", parallel->gross_gamma, fd->gross_gamma);
+  expect_column_route_close("analytic-vs-fd gross_vega", parallel->gross_vega, fd->gross_vega);
 }
 
 // Throughput relocated to bench/corpus_build_bench.cpp.

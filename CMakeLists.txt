@@ -268,6 +268,10 @@ if(ATX_BUILD_TESTS)
     # from source — that source build was pure tax on every cold build. CRT linkage
     # follows the active triplet (x64-windows = dynamic /MD), matching the engine.
     find_package(GTest CONFIG REQUIRED)
+
+    # FIX-3/F3-B: repo-wide test support (`atx-test-scratch`). Added BEFORE the
+    # project subdirectories so every test target below can link it.
+    add_subdirectory(tests)
 endif()
 
 add_subdirectory(atx-core)

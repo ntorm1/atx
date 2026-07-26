@@ -3,12 +3,17 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <fstream>
+#include <functional>
 #include <map>
+#include <string>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "atx/core/error.hpp"
 
@@ -108,12 +113,20 @@ Result<RunSpec> read_run_spec(const fs::path &path) {
   optional_text("index_symbol", spec.index_symbol);
   std::string definitions;
   std::string occ_ess;
+  std::string dividend_inputs;
+  std::string dividend_ledger;
   optional_text("definitions", definitions);
   optional_text("occ_ess_root", occ_ess);
+  optional_text("dividend_inputs", dividend_inputs);
+  optional_text("dividend_ledger", dividend_ledger);
   if (!definitions.empty())
     spec.definitions_path = resolve_path(base, definitions);
   if (!occ_ess.empty())
     spec.occ_ess_root = resolve_path(base, occ_ess);
+  if (!dividend_inputs.empty())
+    spec.dividend_inputs_path = resolve_path(base, dividend_inputs);
+  if (!dividend_ledger.empty())
+    spec.dividend_ledger_path = resolve_path(base, dividend_ledger);
   const auto number = [&](std::string_view key, auto &value) -> Status {
     const auto found = values.find(std::string(key));
     if (found == values.end())
@@ -171,6 +184,10 @@ Status write_resolved_spec(const fs::path &path, const RunSpec &spec) {
     out << "definitions\t" << spec.definitions_path.string() << '\n';
   if (!spec.occ_ess_root.empty())
     out << "occ_ess_root\t" << spec.occ_ess_root.string() << '\n';
+  if (!spec.dividend_inputs_path.empty())
+    out << "dividend_inputs\t" << spec.dividend_inputs_path.string() << '\n';
+  if (!spec.dividend_ledger_path.empty())
+    out << "dividend_ledger\t" << spec.dividend_ledger_path.string() << '\n';
   out << "flat_rate\t" << spec.flat_rate << '\n'
       << "min_names\t" << spec.min_names << '\n'
       << "min_weight_coverage\t" << spec.min_weight_coverage << '\n'
@@ -223,9 +240,21 @@ Result<std::vector<UniverseRow>> read_universe(const fs::path &path) {
       return Err(ErrorCode::InvalidArgument, "invalid point-in-time universe row");
     rows.push_back(std::move(row));
   }
-  std::sort(rows.begin(), rows.end(), [](const auto &a, const auto &b) {
+  // M2: stable_sort (not sort) so equal (effective_date, symbol) keys keep input
+  // order — a plain std::sort is unstable, making the retained weight on any
+  // duplicate row nondeterministic (a reproducibility bug). Duplicate keys are
+  // then a hard error rather than a silent last-writer-wins: within one PIT block
+  // a symbol must appear at most once.
+  std::stable_sort(rows.begin(), rows.end(), [](const auto &a, const auto &b) {
     return std::tie(a.effective_date, a.symbol) < std::tie(b.effective_date, b.symbol);
   });
+  for (std::size_t i = 1; i < rows.size(); ++i) {
+    if (rows[i].effective_date == rows[i - 1].effective_date &&
+        rows[i].symbol == rows[i - 1].symbol)
+      return Err(ErrorCode::AlreadyExists,
+                 "duplicate (effective_date, symbol) in universe schedule: " +
+                     rows[i].effective_date + " " + rows[i].symbol);
+  }
   if (rows.empty())
     return Err(ErrorCode::InvalidArgument, "empty universe schedule");
   return Ok(std::move(rows));
@@ -245,18 +274,62 @@ std::vector<std::string> all_symbols(std::span<const UniverseRow> rows,
 
 Result<DispersionUniverse> universe_at(std::span<const UniverseRow> rows, std::string_view date,
                                        std::string_view index_symbol) {
-  std::map<std::string, const UniverseRow *> active;
-  for (const UniverseRow &row : rows)
-    if (row.effective_date <= date)
-      active[row.symbol] = &row;
+  // C3: each `effective_date` block is a FULL point-in-time snapshot (index-vendor
+  // convention). The basket on `date` is EXACTLY the rows carrying the LATEST
+  // effective_date on/before `date` — not the cumulative union of every block
+  // ever seen. This makes removals expressible: a name in an early block but
+  // absent from that latest block has left the basket (the old cumulative
+  // latest-row-per-symbol map could only grow/reweight, never drop a name).
+  std::string_view latest;
+  bool found = false;
+  for (const UniverseRow &row : rows) {
+    if (row.effective_date <= date && (!found || row.effective_date > latest)) {
+      latest = row.effective_date;
+      found = true;
+    }
+  }
+  if (!found)
+    return Err(ErrorCode::Unavailable, "no effective constituent schedule for date");
   DispersionUniverse universe;
   universe.index = DispersionMember{std::string(index_symbol), 0u, 0.0};
-  for (const auto &[symbol, row] : active)
-    if (symbol != index_symbol)
-      universe.names.push_back({symbol, 0u, row->raw_weight});
+  for (const UniverseRow &row : rows)
+    if (row.effective_date == latest && row.symbol != index_symbol)
+      universe.names.push_back({row.symbol, 0u, row.raw_weight});
   if (universe.names.empty())
     return Err(ErrorCode::Unavailable, "no effective constituent schedule for date");
   return Ok(std::move(universe));
+}
+
+std::string utc_date_from_ns(std::int64_t ts_ns) {
+  // Floor-divide to whole days since the Unix epoch (handle pre-epoch ts), then
+  // Howard Hinnant's civil-from-days. Pure integer math: deterministic across
+  // platforms, locales and process restarts (no gmtime / no tz database).
+  constexpr std::int64_t kNsPerDay = 86'400'000'000'000LL;
+  std::int64_t days = ts_ns / kNsPerDay;
+  if (ts_ns % kNsPerDay != 0 && ts_ns < 0)
+    --days; // floor toward -infinity for pre-epoch timestamps
+  std::int64_t z = days + 719'468;
+  const std::int64_t era = (z >= 0 ? z : z - 146'096) / 146'097;
+  const std::int64_t doe = z - era * 146'097;                             // [0, 146096]
+  const std::int64_t yoe = (doe - doe / 1'460 + doe / 36'524 - doe / 146'096) / 365; // [0, 399]
+  const std::int64_t y = yoe + era * 400;
+  const std::int64_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+  const std::int64_t mp = (5 * doy + 2) / 153;                      // [0, 11]
+  const std::int64_t d = doy - (153 * mp + 2) / 5 + 1;             // [1, 31]
+  const std::int64_t m = mp < 10 ? mp + 3 : mp - 9;               // [1, 12]
+  const std::int64_t year = y + (m <= 2 ? 1 : 0);
+  char buffer[16];
+  std::snprintf(buffer, sizeof buffer, "%04lld-%02lld-%02lld", static_cast<long long>(year),
+                static_cast<long long>(m), static_cast<long long>(d));
+  return std::string(buffer);
+}
+
+std::function<Result<DispersionUniverse>(std::int64_t)>
+make_pit_universe_resolver(std::vector<UniverseRow> schedule, std::string index_symbol) {
+  return [rows = std::move(schedule), index = std::move(index_symbol)](
+             std::int64_t ts_ns) -> Result<DispersionUniverse> {
+    return universe_at(rows, utc_date_from_ns(ts_ns), index);
+  };
 }
 
 OpraBatchSpec batch_spec(const RunSpec &spec, std::span<const std::string> symbols,

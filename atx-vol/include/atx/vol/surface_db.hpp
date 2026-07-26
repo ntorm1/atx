@@ -216,7 +216,13 @@ struct DbSymbolRecord {
   std::uint8_t residual_n_basis_terms{};
   std::uint8_t loss_kind{};   // CalibLossKind (calib loss)
   std::uint8_t anchor_kind{}; // CalibAnchorKind
-  std::uint8_t reserved1[2]{};
+  // AlOpts::n_quad_price (C2 / SE-P1-2): the decoupled premium quadrature order
+  // of the symbol's fit config. 0 ties it to al_n_quadrature; pre-C2 manifests
+  // stored 0 here (a zero-filled reserved slot), so 0 -> tied preserves them. The
+  // reuse is layout-invariant (sizeof unchanged), so the DB schema hash is
+  // unchanged and every existing manifest still opens (no salt bump on the DB
+  // side — a fit-config field cannot misprice already-stored surfaces).
+  std::uint16_t al_n_quad_price{};
   // 16-bit knobs
   std::uint16_t max_outer_iter{};
   std::uint16_t max_inner_iter{};

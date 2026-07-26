@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/event_vol.hpp"      // count_events_at, implied_emove
+#include "atx/vol/event_vol.hpp"      // count_events_at, implied_emove_joint
 #include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext
 #include "atx/vol/pricer_fitter.hpp"  // PricerFitter, FittedSurface
 #include "atx/vol/session.hpp"        // VolaSession, SessionInputs, SessionDiagnostics
@@ -36,27 +36,36 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 }
 } // namespace
 
-Result<double> earnings_implied_move(const PricedSurface &ps, const EventContext &ctx) {
+Result<EmoveSolution> earnings_implied_move_ex(const PricedSurface &ps, const EventContext &ctx) {
   if (ctx.schedule == nullptr) {
     return Err(ErrorCode::InvalidArgument, "no event schedule");
   }
   const std::int64_t now = ps.pricing().now_ts_ns;
   const std::span<const SliceContext> pillars = ps.context();
 
-  // Walk ascending-T pillars; the first adjacent pair whose event count rises
-  // (n_{i+1} > n_i) brackets the next earnings date between those two expiries.
-  for (std::size_t i = 0; i + 1 < pillars.size(); ++i) {
-    const double T1 = pillars[i].T;
-    const double T2 = pillars[i + 1].T;
-    const std::size_t n1 = count_events_at(*ctx.schedule, now, T1);
-    const std::size_t n2 = count_events_at(*ctx.schedule, now, T2);
-    if (n2 > n1) {
-      const double w1 = ps.total_variance(ps.forward_at(T1), T1);
-      const double w2 = ps.total_variance(ps.forward_at(T2), T2);
-      return implied_emove(w1, T1, n1, w2, T2, n2);
-    }
+  // E3a / AN-P1-3. This used to scan for the FIRST adjacent pair whose event
+  // count rose and hand that single bracket to `implied_emove` — a two-pillar
+  // solve that forces one flat censored variance across the bracket, so the
+  // censored term structure inside it aliased straight into eMove² (the sweep's
+  // AAPL case: +173% when no near expiry spans the event). Now EVERY fitted
+  // pillar is offered to `implied_emove_joint`, which runs the identified
+  // {eMove, st, lt, decay} fit when the pillar set supports it and falls back to
+  // exactly the old two-pillar bracket when it does not.
+  std::vector<CensorObsInput> obs;
+  obs.reserve(pillars.size());
+  for (const SliceContext &p : pillars) {
+    CensorObsInput o;
+    o.T = p.T;
+    o.w_dirty = ps.total_variance(ps.forward_at(p.T), p.T);
+    o.n = count_events_at(*ctx.schedule, now, p.T);
+    obs.push_back(o);
   }
-  return Err(ErrorCode::NotFound, "no earnings bracket in fitted expiries");
+  return implied_emove_joint(obs);
+}
+
+Result<double> earnings_implied_move(const PricedSurface &ps, const EventContext &ctx) {
+  ATX_TRY(const EmoveSolution sol, earnings_implied_move_ex(ps, ctx));
+  return Ok(sol.emove);
 }
 
 Result<SurfaceAnalytics> compute_surface_analytics(const PricedSurface &ps,
@@ -67,6 +76,8 @@ Result<SurfaceAnalytics> compute_surface_analytics(const PricedSurface &ps,
   out.as_of_ts_ns = ps.pricing().now_ts_ns;
   out.spot = ps.pricing().S;
   out.implied_emove = (ctx != nullptr && ctx->schedule != nullptr) ? ctx->implied_emove : 0.0;
+  // FIX-E M-5: the bundle records the convention that produced its wings.
+  out.delta_convention = cfg.delta_convention;
 
   const std::vector<double> &tenors = cfg.tenors.tenors_years;
   const std::vector<std::string> &labels = cfg.tenors.labels;
@@ -135,8 +146,11 @@ Result<SurfaceAnalytics> compute_surface_analytics(const PricedSurface &ps,
     // Delta wings: a wing strike can be unreachable in the far tail — store NaN
     // for that entry rather than failing the whole bundle.
     for (const double d : cfg.delta_points) {
-      const double pv = value_or_nan(vol_at_delta(ps, T, Side::Put, d));
-      const double cv = value_or_nan(vol_at_delta(ps, T, Side::Call, d));
+      // E5 / AN-P2-6: the wing strikes follow the CONFIGURED convention.
+      // `AnalyticsConfig::delta_convention` defaults to American, which is what
+      // this loop has always used, so the default bundle is unchanged.
+      const double pv = value_or_nan(vol_at_delta(ps, T, Side::Put, d, cfg.delta_convention));
+      const double cv = value_or_nan(vol_at_delta(ps, T, Side::Call, d, cfg.delta_convention));
       t.put_delta_vol.push_back(pv);
       t.call_delta_vol.push_back(cv);
       t.risk_reversal.push_back(pv - cv);
@@ -286,6 +300,8 @@ Result<SurfaceDiff> compute_surface_diff(const PricedSurface &a, const PricedSur
   out.spot2 = b.pricing().S;
   out.d_spot = out.spot2 - out.spot1;
   out.log_return = (out.spot1 > 0.0 && out.spot2 > 0.0) ? std::log(out.spot2 / out.spot1) : kNaN;
+  // FIX-E M-5: the diff records the convention that produced its wing deltas.
+  out.delta_convention = cfg.delta_convention;
 
   const std::vector<double> &tenors = cfg.tenors.tenors_years;
   const std::vector<std::string> &labels = cfg.tenors.labels;
@@ -329,10 +345,18 @@ Result<SurfaceDiff> compute_surface_diff(const PricedSurface &a, const PricedSur
     // Resolve each 25Δ wing ONCE (4 root-finds, not 10) and derive the fixed-delta
     // change, risk-reversal change, and butterfly change from those four vols.
     // Any wing NaN propagates through the arithmetic into the derived field.
-    const double pa = value_or_nan(vol_at_delta(a, T, Side::Put, 0.25));
-    const double ca = value_or_nan(vol_at_delta(a, T, Side::Call, 0.25));
-    const double pb = value_or_nan(vol_at_delta(b, T, Side::Put, 0.25));
-    const double cb = value_or_nan(vol_at_delta(b, T, Side::Call, 0.25));
+    //
+    // FIX-E I-1: the wings honour `cfg.delta_convention`, exactly as
+    // `compute_surface_analytics` does. Ignoring it here (while reading `cfg`
+    // eight lines below for `skew_k_ref`) would let ONE config object produce a
+    // B76-forward analytics bundle and an American diff bundle in the same TU —
+    // a fresh instance of the convention fragmentation AN-P2-6 exists to cure,
+    // and `d_vol_fixed_delta` / `d_risk_reversal_25` / `d_butterfly_25` are all
+    // exported (analytics_io.cpp).
+    const double pa = value_or_nan(vol_at_delta(a, T, Side::Put, 0.25, cfg.delta_convention));
+    const double ca = value_or_nan(vol_at_delta(a, T, Side::Call, 0.25, cfg.delta_convention));
+    const double pb = value_or_nan(vol_at_delta(b, T, Side::Put, 0.25, cfg.delta_convention));
+    const double cb = value_or_nan(vol_at_delta(b, T, Side::Call, 0.25, cfg.delta_convention));
     td.d_vol_fixed_delta = pb - pa;
     td.d_risk_reversal_25 = (pb - cb) - (pa - ca);
     td.d_butterfly_25 = (0.5 * (pb + cb) - vb) - (0.5 * (pa + ca) - va);

@@ -129,7 +129,7 @@ struct DeltaSolution {
   std::uint16_t evaluations{0};
 };
 
-[[nodiscard]] Result<DeltaSolution> solve_american_delta(const PricedSurface &surface, double T,
+[[nodiscard]] Result<DeltaSolution> solve_american_delta(const SurfaceRef &surface, double T,
                                                          Side side, double target_abs_delta,
                                                          double tolerance,
                                                          QueryExecution query_execution) {
@@ -362,7 +362,7 @@ const char *to_string(OptionProjectionStatus status) noexcept {
   return "Unknown";
 }
 
-Result<ProjectedOption> project_option_contract(const PricedSurface &surface,
+Result<ProjectedOption> project_option_contract(const SurfaceRef &surface,
                                                 const OptionProjectionSpec &spec,
                                                 const OptionProjectionConfig &config) {
   if (!valid_spec(spec) || surface.uid() != spec.uid ||
@@ -512,7 +512,7 @@ Status PreparedOptionProjection::project_into(const SurfaceSet &surfaces,
   const auto project_index = [&](std::size_t execution_index) {
     const std::size_t input_index = execution_order_[execution_index];
     const OptionProjectionSpec &spec = specs_[input_index];
-    const PricedSurface *surface = surfaces.find(spec.uid);
+    const SurfaceRef surface = surfaces.find(spec.uid);
     if (surface == nullptr) {
       ProjectedOption missing;
       missing.status = OptionProjectionStatus::SurfaceUnavailable;

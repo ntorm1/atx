@@ -79,7 +79,50 @@ enum class Counter : unsigned {
   PoolDispatches,            // run_blocks/run_ranges/run_dynamic pool wakes (0 inline)
   ResolvedPriceWrapperCalls, // exact wrapper entries reached from PricedSurface
   ResolvedPriceWrapperLanes, // lanes submitted to those wrapper entries
-  AmericanAvxPackDispatches, // complete packs actually dispatched to AVX2
+  // COMPLETE 4-lane packs handed to the AVX2 boundary driver — and nothing else.
+  // Bumped at BOTH dispatch sites in american_batch.cpp: `american_price_batch`
+  // (by m/4, the driver's own complete-pack count) and
+  // `american_price_batch_resolved` (one per full pack, as it fills them).
+  // What it deliberately does NOT count, so no gate mis-reads it (REVWSA finding 6):
+  //   * the n % 4 TAIL. Both entries flush a short pack scalar and the AVX2 driver
+  //     prices its own tail scalar, so a workload of < 4 kernel lanes dispatches
+  //     nothing and reads 0 while being perfectly healthy.
+  //   * lanes patched back to scalar INSIDE a dispatched pack (all-ineligible packs,
+  //     non-finite results). The pack was still dispatched; this counts dispatches,
+  //     not lanes. NOTHING in this codebase gives that lane view — not a counter, and
+  //     not a route output either (REVA7TIDY; an earlier revision of this block named
+  //     the route outputs as the substitute, which they are not):
+  //       - AmericanWrapperKnownScalarLanes is bumped ONLY inside
+  //         american_price_batch_resolved, so it does not exist at
+  //         american_price_batch at all, and at either entry it cannot see lanes the
+  //         AVX2 driver patched to scalar inside a pack it had already dispatched.
+  //       - PriceBatchOutput::route[] and ResolvedAmericanPriceBatchRequest::
+  //         pack_dispatch[] are per-LANE spans but report the containing PACK's
+  //         dispatch, not the driver's per-lane patch — american_batch.cpp assigns
+  //         `out.route[i] = pack_route` uniformly to every packed lane, and both
+  //         members' own docs disclaim exactly this blindness
+  //         (american_batch.hpp, ResolvedAmericanPriceBatchRequest::pack_dispatch and
+  //         PriceBatchOutput::route).
+  //       - The two are not even equivalent to each other on the NON-FINITE half:
+  //         at the resolved entry a non-finite packed lane is re-run through
+  //         scalar_lane, which sets pack_dispatch[i] = Scalar, so pack_dispatch[]
+  //         DOES catch that one case; at american_price_batch the same lane keeps
+  //         route[i] = Avx2 and only its LaneStatus becomes Unsupported.
+  //     So: the in-pack scalar patch is unobservable at either entry, and the
+  //     non-finite patch is observable only at the resolved entry, only through
+  //     pack_dispatch[]. Anything needing the true lane view has to add a counter.
+  //   * AVX2 dispatched from ANYWHERE outside american_batch.cpp's two entries. The
+  //     bumps live in the two CALLERS, not inside simd::american_put_boundary_batch,
+  //     so every OTHER caller of that same function dispatches AVX2 packs and bumps
+  //     nothing: bench/american_shootout_bench.cpp's run_boundary_batch (which backs
+  //     the registered american/boundary_batch/avx2 and .../avx2_qlfast rows) and the
+  //     direct call sites in simd_american_test.cpp, simd_vector_math_test.cpp and
+  //     american_batch_test.cpp. Likewise AVX2 reached by a different route entirely
+  //     (e.g. the laned Greeks kernel in american_greeks_avx2.cpp).
+  // Therefore: NON-ZERO proves complete packs went to AVX2; ZERO does NOT prove the
+  // pack path is dead. It is not a general "the AVX2 path was taken" observable and
+  // must not be re-used as one without a lane-count check alongside it.
+  AmericanAvxPackDispatches,
   // Lower bound within this wrapper only: excludes opaque AVX internal patches
   // and scalar American calls made elsewhere in the library.
   AmericanWrapperKnownScalarLanes,
@@ -697,6 +740,17 @@ enum class Solve : unsigned {
   // in the per-step mark memo. The L2 settlement-mark memo drives this to 0;
   // tapped ONLY from loop-owned backtest.cpp.
   DuplicateMarkSolves,
+  // WS-A A3 (GR-P2-3, append-only). A cached-jet SERVE (american_price_cached /
+  // american_greeks_first_order) whose query risk-free rate has drifted from the
+  // fixed-carry correction cache's baked rate by more than the C2 stale-gate
+  // (25 bps) — an intraday-rate-move or stale-market cache served through a
+  // representative-carry cache, silently mixing old-carry early-exercise
+  // sensitivities into fresh-carry Black-76 legs. RATE-ONLY: the per-tenor q_eff
+  // drift from the mid-expiry representative carry is a legitimate in-fit artifact
+  // (american.cpp american_price_cached note — an assert on baked_q at 25 bps
+  // aborted the suite), so it is deliberately not counted. In-fit de-Am queries at
+  // the session rate == baked rate, so this stays 0 through a normal fit/serve.
+  CacheCarryDrift,
   Count_
 };
 
@@ -707,7 +761,7 @@ inline constexpr unsigned kCount = static_cast<unsigned>(Solve::Count_);
 inline constexpr const char *kNames[kCount] = {
     "sl_al_boundary_solves", "sl_al_premium_evals",     "sl_greeks_fd",
     "sl_greeks_analytic",    "sl_greeks_adjoint",       "sl_iv_newton_iters",
-    "sl_duplicate_mark_solves",
+    "sl_duplicate_mark_solves", "sl_cache_carry_drift",
 };
 
 // A merged, point-in-time copy. Plain values (not atomics) so it is trivially

@@ -193,9 +193,18 @@ constexpr std::uint64_t kAnalyticBundleSolves = 5;
   return c.get(led::Solve::GreeksBundlesFd);
 }
 // Marks/target Price solves implied by the decomposition (each is 1 boundary solve).
-[[nodiscard]] std::uint64_t marks(const led::Counts &c) noexcept {
-  return al(c) - kAnalyticBundleSolves * analytic(c) - 7u * fd(c) -
-         c.get(led::Solve::GreeksBundlesAdjoint);
+//
+// SIGNED on purpose. This is a *residual* of a cost model, so an over-subtraction
+// means the model no longer matches the engine — and that must read as a negative
+// number, not wrap. When the WS-P1a laned-greeks kernel stopped bumping
+// AlBoundarySolves, the unsigned form printed the -4 residual as
+// 18446744073709551612, which reads like a huge POSITIVE mark count and disguised a
+// counter regression as an exotic blow-up. A negative result here is always a bug in
+// the engine or in this model; it must never masquerade as a large positive.
+[[nodiscard]] std::int64_t marks(const led::Counts &c) noexcept {
+  const auto s = [](std::uint64_t v) { return static_cast<std::int64_t>(v); };
+  return s(al(c)) - s(kAnalyticBundleSolves) * s(analytic(c)) - 7 * s(fd(c)) -
+         s(c.get(led::Solve::GreeksBundlesAdjoint));
 }
 
 }  // namespace
@@ -276,7 +285,7 @@ TEST(SolveLedger, NoChurnDayIsSixSolvesPerUnit) {
     EXPECT_EQ(al(step), 6u) << "no-churn step " << k << " should be 6 solves/unit";
     EXPECT_EQ(analytic(step), 1u) << "step " << k << ": pnl-base reused, only the book bundle";
     EXPECT_EQ(fd(step), 0u) << "backtest default is analytic greeks";
-    EXPECT_EQ(marks(step), 1u) << "step " << k << ": exactly one (duplicate) target mark";
+    EXPECT_EQ(marks(step), 1) << "step " << k << ": exactly one (duplicate) target mark";
   }
 }
 
@@ -330,7 +339,7 @@ TEST(SolveLedger, ExpiryDayReSolvesPnlBaseStampElevenPerUnit) {
   // No-churn step for the lone survivor A: 6 = 0 pnl-base + 1 target + 5 bundle.
   EXPECT_EQ(al(nochurn), 6u) << "survivor A, stamp intact => no-churn 6/unit";
   EXPECT_EQ(analytic(nochurn), 1u);
-  EXPECT_EQ(marks(nochurn), 1u);
+  EXPECT_EQ(marks(nochurn), 1);
 
   // Expiry step (POST L1+L2): the alive set is the SAME lone unit A. L1 carries A's
   // base risk across the shrink so its pnl-base bundle is REUSED (0), and L2 serves
@@ -350,8 +359,8 @@ TEST(SolveLedger, ExpiryDayReSolvesPnlBaseStampElevenPerUnit) {
   // Marks: L1 removes A's pnl-base re-solve; L2 removes B's settlement Marks solve.
   // Warm steps still pay their 2 (un-memoized) pnl-target marks; the expiry step now
   // pays just A's 1 target (B's settlement served from the memo, no longer a solve).
-  EXPECT_EQ(marks(warm1), 2u);
-  EXPECT_EQ(marks(expiry), 1u);
+  EXPECT_EQ(marks(warm1), 2);
+  EXPECT_EQ(marks(expiry), 1);
 
   std::printf("[solve-ledger] expiry-day per-step AL solves = [%llu, %llu, %llu, %llu] "
               "(warm,warm,expiry,no-churn); analytic bundles = [%llu, %llu, %llu, %llu]\n",

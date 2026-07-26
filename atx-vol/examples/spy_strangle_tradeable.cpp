@@ -146,7 +146,7 @@ struct DayChain {
 
 // The listed strike at (expiry, side) whose |American delta| on `surf` is closest to
 // `target_abs_delta`. Both a positive mid AND finite model delta are required.
-[[nodiscard]] std::optional<double> nearest_delta_strike(const DayChain& d, const PricedSurface& surf,
+[[nodiscard]] std::optional<double> nearest_delta_strike(const DayChain& d, const SurfaceRef& surf,
                                                          Side side, const std::string& expiry,
                                                          double T, double target_abs_delta) {
   const auto& by_exp = (side == Side::Call) ? d.call_strikes : d.put_strikes;
@@ -309,8 +309,10 @@ int main(int argc, char** argv) {
     if (!s0 || !s1) continue;
     const std::optional<std::uint32_t> uid = s0->uid_of("SPY");
     if (!uid) continue;
-    const PricedSurface* surf0 = s0->find(*uid);
-    const PricedSurface* surf1 = s1->find(*uid);
+    // WS-ZC1: `find` returns a SurfaceRef handle — the surface may be OWNED or a
+    // zero-copy BORROW of the mapped record. Pointer-style use below is unchanged.
+    const SurfaceRef surf0 = s0->find(*uid);
+    const SurfaceRef surf1 = s1->find(*uid);
     if (surf0 == nullptr || surf1 == nullptr) continue;
     const double dt = static_cast<double>(s1->ts_ns() - s0->ts_ns()) / kNsPerYear;
     if (!(dt > 0.0)) continue;

@@ -1,0 +1,206 @@
+# Pipeline SOTA Sprint — status as of 2026-07-24
+
+Plan: `atx-vol/sprints/2026-07-21-atx-vol-pipeline-sota-sprint.md`
+Integration trunk: **`feat/pipeline-m` @ `ed8c751`**. Local `main` has not been touched
+and will not be — the user owns that decision.
+
+This is a checkpoint written at a deliberate stop, not a completion report. Nothing below
+is claimed as finished unless it says so.
+
+---
+
+## 1. Where the work stands
+
+| Workstream | Branch | Tip | Implementation | Review | Merged to trunk |
+|---|---|---|---|---|---|
+| M (keystone) | `feat/pipeline-m` | — | done | approved | gated @ `5e2c31a` |
+| A pricer | `feat/pipeline-a` | `bf6968c` | done | approved-with-minors (0C/0I) | ✅ `e35cddf` |
+| B fitting | `feat/pipeline-b` | `eed7131` | done | approved-with-minors (0C/2I process) | ✅ `264b2fe` |
+| C storage | `feat/pipeline-c` | `07dd317` | done | approved-with-minors (0C/1I) | ✅ `9390a15` |
+| G greeks | `feat/pipeline-g` | `de0101b` | done | **needs-work → fixed** (0C/3I) | ✅ `96172e5` |
+| FIX-1 | `feat/pipeline-fix1` | `36bf7e3` | done | folded into final review | ✅ `09060a2` |
+| FIX-2 | `feat/pipeline-fix2` | `c601504` | done | folded into final review | ✅ `63daffe`, `ed8c751` |
+| E analytics | `feat/pipeline-e` | `81cfc33` | complete; E4 premise-failed, no code | **not reviewed** | ✗ |
+| F backtest | `feat/pipeline-f` | `4e7e04c` | F1–F6 + 3 review follow-ups | approve-with-follow-ups, follow-ups closed but **not re-reviewed** | ✗ |
+| T corpus | `feat/pipeline-t` | `817959a` | T1–T2 + 4 review follow-ups | needs-work → **fixes not re-reviewed** | ✗ |
+| Y python | `feat/pipeline-y` | `cfbcd97` | complete, Y1–Y4 | **not reviewed** | ✗ |
+| FIX-3 | `feat/pipeline-fix3` | `ed8c751` | **in flight, no commits yet** | — | ✗ |
+
+All four wave-2 branches have already merged the trunk into themselves, so they carry
+FIX-1 and FIX-2 and their post-merge test counts are the quotable ones.
+
+## 2. What is genuinely done and verified
+
+- **Wave 1 merged with zero conflicts.** The only shared file between any two wave-1
+  branches was `tests/CMakeLists.txt` (A and C), append-only on both sides.
+- **WS-T's byte gate passed on the real corpus**: golden 82-date rebuild, real OPRA,
+  serial baseline vs production fan-out — 82/82 archives `cmp`- and sha256-identical,
+  both arms admitted=902 / source_failed=407. An independent reviewer re-ran it and
+  reproduced the result including the digest-of-digests.
+- **The pinned 135-session replay does not abort** under WS-F's changed defaults. Verified
+  by running it read-only; nothing was written under `C:\atx-data`.
+- **The suite is now safe to run in two worktrees at once** (FIX-2 F2-A), demonstrated
+  with two concurrent processes of the same binary, distinct temp roots, no leak.
+- **WS-E closed green after merging the trunk**: `ctest -L atx_vol -j 1` = 2121/2121
+  passed, 0 failed. This is the first full-suite count in the sprint taken after both
+  environment defects in §4 were fixed, so it is the first one that can be relied on.
+  It is a branch count, not the trunk gate still owed in §3.1.
+
+### A finding that applies to every workstream
+
+WS-E's per-task gates all passed, and then three real defects surfaced only when the full
+suite was run: a scale drift its own `-R` filters never selected, an **unconverged fixed
+point silently returning a wrong number** in the forward-delta solve, and a forward
+mismatch outside the fitted pillars that contradicted the header claim written directly
+above it. Every workstream in this sprint gated iteratively on `--gtest_filter`. That
+practice is not sufficient on its own, and the final review should assume other branches
+carry similar unswept fallout.
+
+## 3. Open items, by severity
+
+### Must be resolved before the sprint can close
+
+1. **No clean trunk serial gate exists yet.** The only whole-suite run against the merged
+   trunk was cut off at 1467/2104 (zero failures at that point), and it was taken while
+   several agents were building — see §4. Must be re-run end to end at low concurrency.
+2. **Wave 2 is unreviewed.** E and Y have never been reviewed at all. F's and T's review
+   follow-ups were implemented but not re-reviewed. Four reviews are outstanding.
+3. **The golden re-pin is DONE** (2026-07-25, at tip `6b6aa7e`, `build-rel-avx2` rebuilt
+   at that tip, each artifact produced 3× and byte-identical every time):
+   - 82-session `5e7ca065…` → `1b99512ad6c7049aa9e41bd9002ae933c502d9ce4b7d5d58e19b6efdbacad2bd`
+   - 135-session `141173fd…` → `61da2ef78cf0d6de36baf0ac3bbe400eb13ae09cdea0f021a8224e184747f914`
+
+   **Only ONE of the two predicted causes actually moved these two artifacts.**
+   **WS-E's E1** is responsible for the whole move: every $-denominated column is
+   × exactly 100 (residual ≤ 1.43e-13 rel), confirmed by a control run at
+   `gross_index_vega 100` that reproduces the old pins' economics to ≤ 8.02e-14 rel.
+   **Wave 1's pricing/greeks drift does NOT appear in these two pins** — it was already
+   baked into the M2 baseline (2026-07-21) that they were pinned at. It is still visible
+   on the LISTED route (`parity-full`), whose reference `backtest.tsv` predates wave 1;
+   re-measured at this tip, final NAV moves `125026.05919122705 → 125026.05919131792`,
+   i.e. **+7.269e-13** relative (the 2026-07-24 figure of +7.109e-13 was measured before
+   `c601504` and is superseded). See the re-pin report for the full per-column tables.
+4. **The reconciliation blocker is PRE-EXISTING, not a sprint regression.** Re-run against
+   the FULL run directory copied to scratch (not a five-file subset), `run-backtest` still
+   writes `backtest.tsv` and then fails identically with
+   `NotFound: listed OPRA join: contract definition missing` (`listed_opra.cpp:306`), 3/3
+   runs. It also fails identically when `definitions-orig.tsv` is substituted for
+   `definitions.tsv`, and both attempts emit a byte-identical `backtest.tsv`
+   (`6400a682…`), so the incomplete-copy hypothesis is **refuted**. Known-issue row, not a
+   regression. Separately confirmed as a data-hygiene finding: the two definitions files
+   are the same size (730,526,177 B) but **different content**
+   (`abdd613d…` vs `45bce5e2…`), so `parity-full`'s definitions input really was swapped
+   at some point — but that swap is not the cause of this failure.
+5. **FIX-3 is in flight and unfinished** — the Ok-stamp is still ISA-dependent on the
+   scalar path, and the temp-isolation fix does not yet cover `atx-impl`, `atx-engine` or
+   `atx-tsdb` tests.
+
+### Known and accepted, for the record
+
+- `ATX_SIMD_ISA` is new shipping-binary behaviour: it seeds the process-global ISA at
+  static init in production, not only in tests. Defaults are safe (unset → Auto), input is
+  validated, `ForceAvx2` stays guarded by `have_avx2()`, and it is documented.
+- Two ctest runs sharing **one** build dir still share the relative artifact-cache
+  directory (`tests/support/cached_artifacts.cpp`). Cannot arise in the per-worktree model
+  used here; a single-build-dir CI matrix would hit it.
+- F6's quote-staleness gate cannot fire on the current feed. The OPRA panel's `ts` column
+  holds exactly one distinct value per file — a snapshot stamp, not an observation time.
+  Rather than fake a measurement, the counter now reports `stale_unevaluable` separately
+  and does not treat it as a rejection. The machinery goes live when a per-quote-timestamped
+  source is wired.
+- One dispatch assumption of mine was simply wrong, and is corrected here: WS-Y was told
+  `test_dispersion_runarchive_e2e.py` would be environment-blocked on this trunk and to
+  deselect it. It was not blocked — it passes, 5 tests. The end-to-end path works here.
+- `pytest` hangs on this host through a WMI stall reached via `pyreadline3` and
+  `numpy.testing`. WS-Y worked around it; any future python-touching work should be told
+  before it loses time to the same thing.
+- `build_report` now refuses a regime-less run in the in-memory path too, which is one step
+  past the plan's literal wording. Easy to relax — a reviewer should decide it deliberately
+  rather than it being kept or dropped by default.
+- Deferred with confirmed blockers: A5, A6, A7's solve-count half, B4's default flip, B6's
+  selector holdout, B7's baseline JSON. All timing and throughput rows across every
+  workstream are deferred to a quiet-window re-run; **none of the numbers measured during
+  this sprint are citable.**
+
+## 4. Two environment defects that invalidated earlier measurements
+
+Both were misdiagnosed for most of the sprint, and both are now fixed. They matter because
+they mean earlier "green" results were not trustworthy.
+
+**The host is RAM-bound, not core-bound.** 16 logical cores but 15.7 GB of RAM. A heavy
+clang-cl TU holds 1–3 GB, so five agents at `-j 4` is up to twenty compilers against 15.7 GB.
+Every `LLVM ERROR: out of memory` and clang frontend crash reported in this sprint — by four
+separate workstreams, each on files they never touched, each written off as a "transient
+shared-machine artifact" — was the box running out of memory. Build parallelism is now `-j 2`
+while siblings run.
+
+**The test suite corrupted its own results under concurrency.** ~35 fixtures derived scratch
+paths from `fs::temp_directory_path()` with fixed names, and `test_root()` calls `remove_all`
+on entry — so a second process *deleted* the first's tree mid-write. That is why the symptom
+was an `IoError` rather than an assertion. Two independent agents hit it on two branches
+within an hour. **Every full-serial count quoted while siblings were running is superseded**,
+including the partial trunk gate. Fixed by giving each test process its own temp root before
+`main()`.
+
+A third, milder one: builds were being run with raw `cmake --build`, which does not see the
+preset environment and therefore never sets `CCACHE_BASEDIR`. Cross-worktree cache sharing
+was off for most of the sprint; the repo-wide hit rate had fallen to 18%. All builds now go
+through `scripts/atx-build.ps1`, target-scoped. Reclaimed 27.2 GB of dead build directories
+and pruned 11 stale worktree registrations along the way.
+
+## 5. What the reviews actually caught
+
+Worth recording, because it is the argument for keeping independent review in the loop:
+
+- **Merge damage invisible to git.** The keystone merge unioned two AVX2 parents cleanly —
+  zero conflict markers — and silently dropped a pairing: unrequested-greek zeroing survived
+  on the put batch and vanished on the call batch. Live on any no-rate-shift P&L step, where
+  AVX2 call lanes returned `rho = 0` and scalar-patched lanes returned a populated value in
+  the same column. Found only because the WS-G reviewer was explicitly tasked to semantically
+  re-review an auto-merged surface.
+- **A guard that closed two of three sites.** WS-G's finite-greek sweep missed a third
+  Ok-stamp on a live dispersion path, so the finding it was closing stayed open.
+- **Two knobs that could not fire.** F6's staleness bound and F5's subset-deserialize both
+  parsed, reported, and did nothing on the production path — the exact class WS-F's own
+  parse-time rejection was built to kill.
+- **A fix that solved the wrong half.** WS-T's worker reclaim was evaluated at task-claim
+  time only, so the straggler symptom it targeted was untouched; the test that should have
+  caught it never saturated the pool.
+- **A vacuity trap caught by the author.** WS-F found that adding a fill policy alone would
+  have been bit-identical, because NAV measures the first move from the entry mark rather
+  than from what was paid.
+
+## 6. Next steps, in order
+
+0. Two couplings that must be handled *during* the merge, not after:
+   - `implied_vol_batch` now returns `(vols, status)` — an intended API break from Y1(c)
+     that belongs in the sprint report.
+   - `test_run_config_defaults_mirror_the_engine_header` will go RED the moment WS-F
+     merges. That is by design: Python deliberately inherits the engine default rather
+     than being quietly more permissive than it. The WS-F merge commit must update that
+     assertion and the README together.
+1. Finish FIX-3; merge.
+2. Review E and Y; re-review F's and T's follow-ups. Merge wave 2 in order **Y → E → T → F**
+   — Y is provably independent (zero shared files with E, T or F), and F merges last so it
+   absorbs both contact points. A file-level overlap audit corrects what an earlier draft of
+   this document said; the two things to handle at merge are:
+   - **`src/dispersion_run.cpp`, inside `dispersion_build_corpus`.** F inserts
+     `persist_typed_spec_keys(...)` right after `write_resolved_spec`; T replaces the inline
+     PHASE printf block with `format_corpus_phase_line(...)`, four lines below. Likely a
+     conflict, which is the safe outcome. Both sides are wanted — read the merged function and
+     confirm both survived, whether or not git asked. `corpus_test.cpp` and
+     `dispersion_run.hpp` are far enough apart to renumber cleanly.
+   - **`tests/multiname_pipeline_test.cpp`, shared by E and F, and it will auto-merge
+     silently.** Both edit `HeldLotWithoutSurfaceIsCountedNotHidden`, 38 lines apart. More
+     importantly F edits `GrossVegaIsUnderReportedWhenALegIsUnpriced` while E1 rescales vega
+     ×100. If F asserted against a hardcoded vega magnitude, the merge either breaks it or —
+     the worse case — leaves it passing in the wrong unit. Every vega assertion in that file
+     must be read for units after both merges.
+3. Run the whole-repo serial gate on the merged trunk, at low concurrency, end to end.
+4. Quiet-window run: the golden re-pin as a single serialized event covering both causes in
+   §3.3, against the full run dir so §3.4 resolves; then the deferred timing rows (T1
+   utilization, B7 baseline, G4 A/B, A5/A6/A7).
+5. Final whole-branch review — FIX-1's four commits and WS-F's three follow-up commits are
+   mandatory scope, since neither had a standalone review.
+6. Walk the plan's §1 scoreboard line by line, append the sprint report, delete
+   `scratch-m2/` (~260 MB), and trim the remaining build directories.

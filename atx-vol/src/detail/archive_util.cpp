@@ -2,11 +2,31 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <functional>
+#include <mutex>
 #include <new>
+#include <string>
 #include <system_error>
+#include <thread>
+
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #if defined(_M_X64) || defined(__x86_64__) || defined(_M_IX86) || defined(__i386__)
 #define ATX_ARCH_X86 1
@@ -17,7 +37,77 @@
 
 namespace atx::vol::detail {
 
+using atx::core::Err;
+using atx::core::ErrorCode;
+using atx::core::Ok;
+using atx::core::Status;
+
 namespace {
+
+std::atomic<std::uint64_t> g_publish_temp_counter{0u};
+std::array<std::mutex, 64> g_publish_destination_locks;
+
+[[nodiscard]] std::uint64_t process_id() noexcept {
+#if defined(_WIN32)
+  return static_cast<std::uint64_t>(::GetCurrentProcessId());
+#else
+  return static_cast<std::uint64_t>(::getpid());
+#endif
+}
+
+[[nodiscard]] std::string destination_lock_key(const std::filesystem::path &dst) {
+  std::error_code ec;
+  std::filesystem::path normalized = std::filesystem::weakly_canonical(dst, ec);
+  if (ec) {
+    ec.clear();
+    normalized = std::filesystem::absolute(dst, ec);
+    if (ec) {
+      normalized = dst;
+    }
+  }
+  std::string key = normalized.lexically_normal().generic_string();
+#if defined(_WIN32)
+  std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
+    return static_cast<char>((c >= 'A' && c <= 'Z') ? (c - 'A' + 'a') : c);
+  });
+#endif
+  return key;
+}
+
+[[nodiscard]] std::mutex &destination_lock(const std::filesystem::path &dst) {
+  const std::size_t slot =
+      std::hash<std::string>{}(destination_lock_key(dst)) % g_publish_destination_locks.size();
+  return g_publish_destination_locks[slot];
+}
+
+[[nodiscard]] Status fsync_parent_directory(const std::filesystem::path &dst) {
+#if defined(_WIN32)
+  (void)dst;
+  return Ok();
+#else
+  std::filesystem::path parent = dst.parent_path();
+  if (parent.empty()) {
+    parent = ".";
+  }
+  const std::string path = parent.string();
+  int flags = O_RDONLY;
+#if defined(O_DIRECTORY)
+  flags |= O_DIRECTORY;
+#endif
+  const int fd = ::open(path.c_str(), flags);
+  if (fd < 0) {
+    return Err(ErrorCode::IoError,
+               "flush_and_publish_file: published but cannot open parent directory for fsync");
+  }
+  const int rc = ::fsync(fd);
+  const int close_rc = ::close(fd);
+  if (rc != 0 || close_rc != 0) {
+    return Err(ErrorCode::IoError,
+               "flush_and_publish_file: published but parent directory fsync failed");
+  }
+  return Ok();
+#endif
+}
 
 // ── CRC-32C (Castagnoli, reflected poly 0x82F63B78) ──────────────────────
 //
@@ -118,6 +208,141 @@ crc32c_update_hw(std::uint32_t crc, const std::byte *p, std::size_t n) noexcept 
     dst[i] = c;
   }
   return dst;
+}
+
+atx::core::Result<std::string> reserve_unique_publish_temp_file(std::string_view dst_path) {
+  namespace fs = std::filesystem;
+  const fs::path dst{std::string(dst_path)};
+  if (dst.empty() || dst.filename().empty()) {
+    return Err(ErrorCode::InvalidArgument,
+               "reserve_unique_publish_temp_file: destination must name a file");
+  }
+  const fs::path parent = dst.has_parent_path() ? dst.parent_path() : fs::path{"."};
+  const std::string prefix =
+      dst.filename().string() + ".tmp." + std::to_string(process_id()) + ".";
+
+  constexpr std::size_t kMaxAttempts = 1024u;
+  for (std::size_t attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    const std::uint64_t sequence =
+        g_publish_temp_counter.fetch_add(1u, std::memory_order_relaxed);
+    const fs::path candidate = parent / (prefix + std::to_string(sequence));
+#if defined(_WIN32)
+    HANDLE h = ::CreateFileW(candidate.wstring().c_str(), GENERIC_READ | GENERIC_WRITE,
+                             FILE_SHARE_READ, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h != INVALID_HANDLE_VALUE) {
+      ::CloseHandle(h);
+      return Ok(candidate.string());
+    }
+    const DWORD error = ::GetLastError();
+    if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) {
+      continue;
+    }
+#else
+    const std::string path = candidate.string();
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd >= 0) {
+      if (::close(fd) != 0) {
+        std::error_code ignored;
+        fs::remove(candidate, ignored);
+        return Err(ErrorCode::IoError,
+                   "reserve_unique_publish_temp_file: cannot close reserved temp");
+      }
+      return Ok(candidate.string());
+    }
+    if (errno == EEXIST) {
+      continue;
+    }
+#endif
+    return Err(ErrorCode::IoError,
+               "reserve_unique_publish_temp_file: cannot create same-directory temp");
+  }
+  return Err(ErrorCode::IoError,
+             "reserve_unique_publish_temp_file: unique temp attempts exhausted");
+}
+
+namespace {
+
+// fsync `p`'s already-written contents to stable storage. The caller wrote and
+// closed the file; we re-open it to flush its cached pages (FlushFileBuffers /
+// fsync operate on the file, not the writing handle).
+[[nodiscard]] Status fsync_file(const std::filesystem::path &p) {
+#if defined(_WIN32)
+  const std::wstring wp = p.wstring();
+  HANDLE h = ::CreateFileW(wp.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    return Err(ErrorCode::IoError, "flush_and_publish_file: cannot open temp for fsync");
+  }
+  const BOOL flushed = ::FlushFileBuffers(h);
+  ::CloseHandle(h);
+  if (flushed == FALSE) {
+    return Err(ErrorCode::IoError, "flush_and_publish_file: FlushFileBuffers failed");
+  }
+  return Ok();
+#else
+  const std::string sp = p.string();
+  const int fd = ::open(sp.c_str(), O_RDONLY);
+  if (fd < 0) {
+    return Err(ErrorCode::IoError, "flush_and_publish_file: cannot open temp for fsync");
+  }
+  const int rc = ::fsync(fd);
+  ::close(fd);
+  if (rc != 0) {
+    return Err(ErrorCode::IoError, "flush_and_publish_file: fsync failed");
+  }
+  return Ok();
+#endif
+}
+
+} // namespace
+
+Status flush_and_publish_file(std::string_view tmp_path, std::string_view dst_path) {
+  namespace fs = std::filesystem;
+  const fs::path tmp{std::string(tmp_path)};
+  const fs::path dst{std::string(dst_path)};
+  const fs::path tmp_parent = tmp.has_parent_path() ? tmp.parent_path() : fs::path{"."};
+  const fs::path dst_parent = dst.has_parent_path() ? dst.parent_path() : fs::path{"."};
+  if (tmp.empty() || dst.empty() || tmp == dst ||
+      destination_lock_key(tmp_parent) != destination_lock_key(dst_parent)) {
+    return Err(ErrorCode::InvalidArgument,
+               "flush_and_publish_file: temp and destination must be distinct siblings");
+  }
+
+  // Serializing this interval prevents local writers from racing replacement of
+  // the same live path. Exclusive unique temp creation covers temp-name safety
+  // across processes; each rename remains atomic.
+  std::scoped_lock publish_lock(destination_lock(dst));
+
+  // (1) Durability: flush the temp to disk BEFORE it becomes the live file, so a
+  // machine crash after the rename can never expose a correctly-named but empty /
+  // garbage file (which the rename would have substituted for the prior good one).
+  if (Status s = fsync_file(tmp); !s) {
+    return s;
+  }
+
+  // (2) Atomic publish with bounded retry + exponential backoff. On Windows the
+  // rename fails while any process holds `dst` open without FILE_SHARE_DELETE
+  // (MSVC ifstream, mmap); the hold is usually brief, so back off and retry.
+  // Cumulative budget ~635 ms across 8 attempts (5,10,20,40,80,160,320 ms gaps).
+  constexpr int kMaxAttempts = 8;
+  std::chrono::milliseconds delay{5};
+  std::error_code ec;
+  for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    ec.clear();
+    fs::rename(tmp, dst, ec);
+    if (!ec) {
+      return fsync_parent_directory(dst);
+    }
+    if (attempt + 1 < kMaxAttempts) {
+      std::this_thread::sleep_for(delay);
+      delay *= 2;
+    }
+  }
+  // Final failure: PRESERVE the temp (do not delete) so the freshly written bytes
+  // survive for recovery; the prior good `dst` is also still intact (rename never
+  // succeeded). Clear IoError.
+  return Err(ErrorCode::IoError,
+             "flush_and_publish_file: rename failed after retries (temp preserved)");
 }
 
 // ── Whole-file slurp ────────────────────────────────────────────────────────

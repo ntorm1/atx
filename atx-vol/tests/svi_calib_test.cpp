@@ -296,6 +296,29 @@ TEST(SviMmCalib, RecoverSyntheticAdmissibleSlice) {
   EXPECT_EQ(adm.n_violations, 0u);
 }
 
+// FT-P (B6b): the SVI-MM LM's solve_spd_dense per-call MatX(5,5)/VecX(5)
+// allocation is replaced with reused thread_local buffers (bit-identical solve —
+// no numerical change). Pin the fitted params on a fixed noiseless fixture so any
+// accidental numeric drift is caught bit-for-bit.
+TEST(SviMmCalib, FixedFixtureFit_IsBitIdentical) {
+  const double T = 0.5;
+  const std::vector<FitObs> obs =
+      build_obs_from_svi(41, -0.40, 0.40, 0.012, 0.060, -0.30, -0.02, 0.18, T);
+  CalibOpts opts = calib_default_opts();
+  opts.morozov_stop = false;
+  opts.wing_floor_alpha = 0.0;
+  const auto res = svi_mm_fit_slice(std::span<const FitObs>(obs), T, 100.0, opts);
+  ASSERT_TRUE(res.has_value());
+  const SviParams f = res.value();
+  // Goldens captured from the pre-refactor build (heap MatX(5,5)/VecX(5) per
+  // solve_spd_dense call); the thread_local-buffer refactor must preserve them.
+  EXPECT_EQ(f.a, 0.01200000000168963);
+  EXPECT_EQ(f.b, 0.059999999997054999);
+  EXPECT_EQ(f.rho, -0.30000000000922628);
+  EXPECT_EQ(f.m, -0.019999999998334177);
+  EXPECT_EQ(f.sigma, 0.17999999997839855);
+}
+
 TEST(SviMmCalib, FittedSlice_IsAlwaysAdmissible_EvenFromWideData) {
   // A steeper / higher-vol smile still projects into the polytope.
   const double T = 0.25;
@@ -375,6 +398,25 @@ TEST(SviJw, JwToRaw_InfeasibleTuple_ReturnsOutOfRange) {
   jw.T = 0.5;
   const auto res = svi_jw_to_raw(jw);
   ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::OutOfRange);
+}
+
+// FT-C5 (B5a): the symmetric-smile branch (beta ~ 0) of svi_jw_to_raw computed
+// sigma = (v - v_min)*T / (...); with v == v_min the numerator is zero so
+// sigma == 0 was returned Ok. A sigma=0 raw-SVI slice has a total-variance kink
+// at k=m (infinite density). The asymmetric branch already rejects sigma <= 0;
+// the symmetric branch must too.
+TEST(SviJw, JwToRaw_SymmetricVEqualsVMin_RejectsZeroSigma) {
+  SviJwParams jw{};
+  jw.v = 0.05;
+  jw.v_min = 0.05;  // v_min == v => numerator zero => sigma == 0
+  jw.psi = 0.0;     // beta = 0 => symmetric branch
+  jw.p = 0.20;
+  jw.c = 0.20;      // p == c => rho = 0
+  jw.T = 0.5;
+  const auto res = svi_jw_to_raw(jw);
+  ASSERT_FALSE(res.has_value())
+      << "symmetric-branch sigma=0 must be rejected (infinite-density kink)";
   EXPECT_EQ(res.error().code(), ErrorCode::OutOfRange);
 }
 
@@ -650,6 +692,99 @@ TEST(SviCalib, WideSkewedSmile_FitsToDepth) {
   // max_rel_w ~ 3.2e-4 (vega-wtd vol RMSE ~ 3.5e-5); at the restored 200-move
   // C-parity budget it fits to ~4e-9 / ~5e-10 — well within this bound.
   EXPECT_LT(max_rel, 0.02);
+}
+
+// FT-C1 (B1): the quasi-explicit Nelder-Mead must return a BOX-CONSISTENT vertex.
+// A short-dated, sharply kinked smile drives the (m, sigma) optimum onto the
+// sigma_min = 1e-3 bound. `nm_eval` clamps (m, sigma) BY VALUE before the inner
+// BLLS solve, but the pre-fix `nm_search` wrote the RAW (unclamped) best vertex
+// back, so a reflection/expansion step that pushed sigma < 0 could win while its
+// recorded SSE belonged to the clamped sigma=1e-3 point. The (u,v)->(a,b,rho) map
+// then paired the clamped linear solution with an out-of-box sigma:
+// b_fit = c_raw / sigma_cur flips sign / blows up, and the downstream butterfly
+// gate launders the b<=0 slice into a near-flat one served Ok. Assert the returned
+// slice is in-box (sigma >= sigma_min, b > 0) and genuinely non-flat (fits the
+// kink far better than the best constant-variance slice).
+TEST(SviCalib, KinkedShortDatedSmile_ReturnsBoxConsistentNonFlatSlice) {
+  // Truth sigma (3e-4) is far BELOW the fitter's sigma_min = 1e-3, so the optimum
+  // saturates the bound — the exact FT-C1 trigger.
+  const double a = 5.0e-4;
+  const double b = 0.12;
+  const double rho = -0.30;
+  const double m = 0.0;
+  const double sigma_true = 3.0e-4;
+  const double T = 0.019;  // ~1 week
+
+  const std::vector<FitObs> obs =
+      build_uniform_obs(41, -0.30, 0.30, a, b, rho, m, sigma_true, T);
+  FitDiag diag{};
+  const auto res =
+      svi_fit_slice(std::span<const FitObs>(obs), T, 100.0, permissive_opts(), &diag);
+  ASSERT_TRUE(res.has_value());
+  const SviParams fit = res.value();
+
+  // (1) Box consistency: sigma must not have escaped the [sigma_min, sigma_max]
+  //     box, and b must keep its sign (b = c_raw / sigma; a negative sigma flips
+  //     it). sigma_min in the fitter is 1e-3.
+  EXPECT_GE(fit.sigma, 1.0e-3 - 1.0e-9)
+      << "returned sigma out of box (FT-C1 negative/under-min vertex won): sigma="
+      << fit.sigma << " b=" << fit.b;
+  EXPECT_GT(fit.b, 0.0)
+      << "returned b non-positive (sign flipped by out-of-box sigma): b=" << fit.b;
+
+  // (2) Non-flat: the fitted slice must track the kink far better than the best
+  //     constant-variance ("flat") slice. Flat baseline = weighted-mean total
+  //     variance, b = 0.
+  double sw = 0.0;
+  double sww = 0.0;
+  for (const FitObs& o : obs) {
+    sw += o.weight_w;
+    sww += o.weight_w * o.w_mkt;
+  }
+  const double w_flat = sww / sw;
+  double rmse_flat = 0.0;
+  double rmse_fit = 0.0;
+  for (const FitObs& o : obs) {
+    const double sig_flat = std::sqrt(std::max(w_flat, 1.0e-12) / T);
+    const double w_fit = svi_w(fit.a, fit.b, fit.rho, fit.m, fit.sigma, o.k);
+    const double sig_fit = std::sqrt(std::max(w_fit, 1.0e-12) / T);
+    rmse_flat += o.weight_w * (sig_flat - o.sigma_mkt) * (sig_flat - o.sigma_mkt);
+    rmse_fit += o.weight_w * (sig_fit - o.sigma_mkt) * (sig_fit - o.sigma_mkt);
+  }
+  rmse_flat = std::sqrt(rmse_flat / sw);
+  rmse_fit = std::sqrt(rmse_fit / sw);
+  EXPECT_LT(rmse_fit, 0.5 * rmse_flat)
+      << "fitted slice is ~flat (FT-C1 launder): rmse_fit=" << rmse_fit
+      << " rmse_flat=" << rmse_flat << " b=" << fit.b;
+}
+
+// FT-C3 (B3b): the SVI-MM "Lee bound" used b*(1+|rho|) <= 4/T with w = TOTAL
+// variance. The correct total-variance wing-slope bound is T-free: b*(1+|rho|)
+// <= 4. At short T the 4/T form is huge (T=1wk -> 4/T ~ 208), so a
+// moment-exploding wing (b*(1+|rho|)=100) passed the "Lee" gate untouched. Both
+// the admissibility check and the projector must use the T-free bound.
+TEST(SviMmCalib, ShortDatedSteepWing_LeeBoundIsTFree) {
+  const double T = 1.0 / 52.0;  // ~1 week
+  // (1) The admissibility CHECK must flag it. Today 4/T ~ 208 >= 100 => 0 viol.
+  {
+    SviParams s{};
+    s.a = 0.01; s.b = 100.0; s.rho = 0.0; s.m = 0.0; s.sigma = 0.05; s.T = T;
+    EXPECT_GT(arb_check_butterfly_svi_mm(s, T).n_violations, 0u)
+        << "moment-exploding short-dated wing must be flagged (T-free Lee bound)";
+  }
+  // (2) The PROJECTOR must pull the wing back under the T-free bound. Today it
+  //     leaves b = 100 (4/T bound never binds), so nothing moves on the Lee axis.
+  {
+    SviParams s{};
+    s.a = 0.01; s.b = 100.0; s.rho = 0.0; s.m = 0.0; s.sigma = 0.05; s.T = T;
+    const bool moved = atx::vol::svi_project_mm(s, T);
+    EXPECT_TRUE(moved) << "steep short-dated wing must be projected";
+    EXPECT_LE(s.b * (1.0 + std::fabs(s.rho)), 4.0 + 1.0e-6)
+        << "projected wing slope still exceeds the T-free Lee bound: "
+        << s.b * (1.0 + std::fabs(s.rho));
+    EXPECT_EQ(arb_check_butterfly_svi_mm(s, T).n_violations, 0u)
+        << "projected slice must be admissible under the T-free bound";
+  }
 }
 
 }  // namespace

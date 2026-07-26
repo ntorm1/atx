@@ -3738,8 +3738,3 @@ Plan complete. Two execution options:
 
 1. **Subagent-Driven (recommended)** — fresh subagent per task, review between tasks (superpowers:subagent-driven-development)
 2. **Inline** — execute in-session with checkpoints (superpowers:executing-plans)
-
-
-
-
-

@@ -46,7 +46,7 @@ struct GroupCoef {
   bool edge{false};
 };
 
-[[nodiscard]] GroupCoef compute_coef(const PricedSurface *sb, const PricedSurface *ss, double T,
+[[nodiscard]] GroupCoef compute_coef(const SurfaceRef sb, const SurfaceRef ss, double T,
                                      double k_ref) noexcept {
   GroupCoef c{};
   if (sb == nullptr || ss == nullptr) {
@@ -147,7 +147,7 @@ Result<AttributionFrame> pnl_attribution(const std::vector<Position> &book, cons
     const double dvol = frame.d_vol[i];
 
     // Contract's log-moneyness against the BASE forward at its maturity.
-    const PricedSurface *sb = base.find(p.contract.uid);
+    const SurfaceRef sb = base.find(p.contract.uid);
     const double F = (sb != nullptr) ? sb->forward_at(p.contract.T) : 0.0;
     const double k_i =
         (std::isfinite(F) && F > 0.0) ? std::log(p.contract.K / F) : 0.0;

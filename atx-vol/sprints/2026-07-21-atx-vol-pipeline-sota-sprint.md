@@ -111,7 +111,7 @@ Task IDs below cite these. Full detail + failure scenarios live in the review fi
 | BT-P1-3 | Hedge trades at spot 0.0 on missing surface; shares silently unmarked | `backtest.cpp:573-585,1823-1829,1956-1961` |
 | BT-P1-4 | No assignment/early-exercise sim; hedge shares use q_eff(0.25y) proxy, no discrete divs | `backtest.cpp:828-841,1966-1973` |
 | BT-P1-5 | PIT universe cannot express removals (survivorship by construction) | `dispersion_workflow.cpp:232-245` |
-| BT-P2-8 | Zero-bid/locked quotes accepted; no staleness check | `listed_dispersion.cpp:198-201` |
+| BT-P2-8 | Zero-bid/locked quotes accepted; no staleness check — **PARTIAL, not met.** The zero-bid half IS met (rejection is admission-changing and production-reachable) and the locked half IS met (flagged always, dropped under `quote_reject_locked`, and — FIX-F M2 — now counted in `total_dropped`). The **staleness half is NOT met**: the gate is production-reachable (`dispersion_build_schedule` → `select_listed_dispersion` → `find_straddle`) and correctly reports `stale_unevaluable`, but it can never FIRE, because the only production quote source carries no per-quote observation time — the OPRA panel is snapshot-stamped (`C:\atx-data\spy-dispersion\opra\AAPL\2026-01-02.parquet`: one time column, 2495 rows, **1 distinct `ts`**; measured by WS-F, independently re-measured by review). Not deleted and not overstated: it reopens the day a per-quote-timestamped feed is wired. | `listed_dispersion.cpp:198-201` |
 | BT-W | Frictions/financing/provenance-gate implemented but wired by zero CLIs; `hedge_slippage_bps` never set | `examples/spy_dispersion_backtest.cpp:482-484` |
 | BT-T1 | Corpus worker cap ~9/16 structural: per-date fan-out boundary + inner workers forced 1 | `corpus.cpp:585-586,1075-1078`, `fit_scheduler.cpp:182` |
 | BT-T2 | Strategy-overload replay loads whole board; schedule enumerates uids (subset unused) | `backtest.cpp:1424-1434,1836-1838` |
@@ -278,6 +278,63 @@ Branch `feat/pipeline-f`, worktree `wt-pipe-f`. Owns: `backtest.{cpp,hpp}`,
 | **F5** | BT-T2 | Subset-deserialize for schedule strategies | Strategy overload: when the strategy can enumerate uids up front (add `IStrategy::referenced_uids()` optional hook; `ListedDispersionStrategy` returns the schedule's set), construct the private snapshot cache with the subset (`backtest.cpp:1424-1434` pattern at `:1836-1838`). | Byte-identity of NAV track vs whole-board load on the golden fixture + measured per-date load-bytes drop (counter). | perf |
 | **F6** | BT-P2-8 | Quote-quality gates | `is_valid_listed_quote`: reject bid == 0 (config floor), flag locked markets, add staleness threshold on `quote_ts_ns` (config, default 10 min) with per-date reject counters in the join report. | Tests: zero-bid quote excluded from selection (fails today); stale-quote fixture rejected with named reason. | fix |
 
+> **F4 CORRECTION (RECONCILE 2, 2026-07-25).** The F4 row above specifies a CLI
+> **flag** surface that does not exist and never did. `git log --all -S` for
+> `--half-spread-bps` and for `--frictions=off` returns exactly one commit —
+> `d4ade5b`, the commit that authored THIS PLAN. No source file in any commit on
+> any branch has ever contained those strings, and `dispersion_run.cpp` contains
+> zero `--flag` string literals, so it is not an argument parser. This is not
+> merge damage; it is an authoring error in F4 that WS-F's two reviews and the
+> final whole-branch review all missed.
+>
+> **F4 nevertheless LANDED, by a different mechanism: typed spec keys.** The
+> execution knobs are set in the run spec TSV, not on argv, and the chain is:
+>
+> ```
+> run_spec.tsv key  ->  read_dispersion_run_config   (STRICT: unknown key fails BY NAME)
+>                   ->  DispersionRunConfig          (typed fields)
+>                   ->  dispersion_engine_run_config_from / dispersion_backtest_config_from
+>                   ->  engine RunConfig             (frictions, financing, provenance, unpriced)
+>                   ->  write_dispersion_effective_config -> run_config.tsv, REGIME FIRST
+> ```
+>
+> Key-for-flag, every item the row names is reachable: `--half-spread-bps` is
+> `friction_half_spread_bps`, `--vol-tick` is `friction_vol_tick`,
+> `--hedge-slippage-bps` is `friction_hedge_slippage_bps`, `--impact` is
+> `cost_impact_k` / `cost_adv_fraction`, the `FinancingConfig` flags are the
+> `financing_*` keys, `--provenance=require-admitted-risk` is
+> `provenance  require_admitted_risk`, and `--unpriced=error|exclude` is
+> `unpriced`. `persist_typed_spec_keys` carries all of them through build-corpus
+> into the run directory, which `write_resolved_spec` alone would have erased.
+>
+> **The gate's round-trip test exists**, spelled in keys rather than flags:
+> `DispersionRunConfigStrict.EffectiveRunConfigArtifactRecordsRegimeFirstAndEveryValue`
+> (spec → RunConfig → artifact TSV keys present WITH values, regime first),
+> `…ListedEngineConfigCarriesEveryDeclaredExecutionKnob`,
+> `…DefaultSpecStillYieldsThePinnedFrictionlessEngineConfig` and
+> `…BuildCorpusPreservesEveryTypedKeyIntoTheRunDirectory`
+> (`atx-vol/tests/dispersion_run_config_test.cpp`).
+>
+> **One clause of the gate is NOT met and will not be met as written:**
+> *"frictionless run now requires explicit `--frictions=off`."* It contradicts
+> the design that shipped. X1 pins every `DispersionRunConfig` default to the
+> value the 82-session golden already used precisely so a spec that omits a knob
+> reproduces byte-for-byte; making frictionless an error would fail every
+> existing spec and fixture and would move the pinned reproduction. §3's
+> no-golden-moves rule governs. The shipped substitute is **mandatory
+> disclosure instead of mandatory opt-out**: every run emits `run_config.tsv`
+> with `friction_regime` as its first data row, and the console line names the
+> regime, so a frictionless run is explicit in the artifact even though it is
+> the default in the spec — e.g. `regime=frictionless (mid fills, no commission,
+> no impact) cost=0`. Recorded as unmet-by-design, not as satisfied.
+>
+> **Reachability from the shipped binary was severed by the merge and is
+> restored by RECONCILE 1.** Between `b48ec35` and `347ad44` the example built
+> `RunConfig config; config.unpriced = Error;` and build-corpus dropped every
+> typed key, so the chain above was live in the library and dead on the command
+> line. Measured on the frictioned 82-session spec: `final_nav 24740.62412`
+> (frictionless, spec ignored) -> `1280.834458`, `cost 23459.78967`.
+
 ### WS-T — Corpus throughput
 
 Branch `feat/pipeline-t`, worktree `wt-pipe-t`. Owns: `corpus.cpp`,
@@ -312,6 +369,7 @@ Branch `feat/pipeline-y`, worktree `wt-pipe-y`. Owns: everything under
 | `analytics_*`, `dispersion.cpp`, `listed_dispersion_schedule.cpp`, `event_vol`, `earnings_term_fit`, `derivatives.*`, `projection.cpp`, `vol.hpp` | **WS-E** |
 | `backtest.*`, `dispersion_workflow`, `listed_dispersion{,_strategy,_reconciliation}`, `examples/{spy,mag7}_dispersion_backtest.cpp` | **WS-F** |
 | `corpus.cpp`, `fit_scheduler.*`, `corpus_board_fit.*` | **WS-T** |
+| `parallel_for.hpp`, `dispersion_run.{hpp,cpp}` | **WS-T** — added post-hoc, see the shared-file rule below (rev2-ws-t N-M6) |
 | `atx-vol/python/**` | **WS-Y** |
 
 Shared-file rules:
@@ -320,6 +378,17 @@ Shared-file rules:
 - `counters.hpp` (solve ledger extensions): WS-A adds counters; others consume read-only.
 - `priced_surface.cpp` greeks routing (`:1061-1074`, G4): **WS-G**, not WS-A (WS-A stays out of priced_surface.cpp).
 - Nobody touches `C:\atx-data\**`. Golden re-pins are WS-M's alone (plus the single coordinated E1 re-pin, executed with the PM).
+- `parallel_for.hpp` and `dispersion_run.{hpp,cpp}` had **no owner** when this table was written, and
+  WS-T edited both under T-I1 / T-I4 (rev2-ws-t N-M6). Recorded here so the next author does not
+  repeat it silently — **controller to confirm the assignment**. `parallel_for.hpp` is the sharper
+  of the two: it is the AUTO-resolution seam for every consumer of `parallel_for` /
+  `parallel_for_dynamic`, including WS-B's `curve_fit.cpp`, `surface_parity.cpp` and
+  `essvi_calib.cpp`. WS-T's change is behaviour-preserving for all of them today because
+  `corpus.cpp` is the only TU that installs a `ScopedElasticWorkerBudget` (2 hits, both there) and
+  an explicit non-zero worker count still bypasses the elastic path entirely — a claim now gated
+  directly by `ParallelForElastic.ExplicitWorkerCountBypassesTheElasticPath`. Any workstream that
+  installs a second resolver, or that resolves AUTO itself and then passes 0, must re-derive the
+  per-worker-scratch bound before doing so.
 
 ## 6. Merge order & gates
 
@@ -330,17 +399,45 @@ Shared-file rules:
 
 ## 7. Tracker
 
+Integration trunk is `feat/pipeline-m` (user directive: nothing merges to local main
+this sprint). Trunk tip after the wave-1 merge train: **264b2fe**.
+
+> **[FINAL, 2026-07-25] Trunk tip is now `b056538`.** Local `main` is untouched at
+> `2858cab` and is **fully contained** in the trunk (`rev-list --count b056538..main`
+> = 0). Gate at the tip: **2279 enumerated / 2272 counted / 2225 passed / 0 failed /
+> 47 skipped / 7 disabled**, `-L atx_vol -j 1`, full label, with the `atx-vol-python`
+> lane **live and Passed** — the first time any gate in this sprint has observed that
+> lane at a commit carrying both the RunArchive cutover and a built `_core`.
+> Full account: `sprints/2026-07-25-pipeline-sota-sprint-final.md`.
+>
+> **A6 and A7 landed** (`b625416`, `9940182`) with review follow-ups; A6's bit-identity
+> audited at 99144 entries / 0 mismatches. **A7's own gate quantity was moving the wrong
+> way** on a wholly-Taylor vol column — measured 35 solves against a 20 ceiling — fixed
+> at `311d073`. **A5 is NOT landed**, and the refusal is itself two findings about this
+> plan: A5's half 2 was specified against code `c84ecfc` superseded on 2026-07-11, ten
+> days before `d4ade5b` authored this document; and A5's deterministic gate is
+> unfalsifiable, because `AmericanAvxPackDispatches` fires at one site neither A5 call
+> site reaches. That is the second unfalsifiable gate in WS-A's spec — A6's named bench
+> row was the first, and no registered benchmark ever matched it.
+>
+> **A5's rows in §4 and the A-row below are corrected from "deferred with confirmed
+> blockers" to "never attempted".** All three sat at that status through a workstream
+> review returning 0 Critical / 0 Important. Two landed without difficulty once
+> attempted.
+
 | WS | Branch | Worktree | Status | Tip SHA | Gate log |
 |---|---|---|---|---|---|
-| M | feat/pipeline-m | wt-pipe-m | NOT STARTED | — | — |
-| A | feat/pipeline-a | wt-pipe-a | blocked on M | — | — |
-| B | feat/pipeline-b | wt-pipe-b | blocked on M | — | — |
-| C | feat/pipeline-c | wt-pipe-c | blocked on M | — | — |
-| G | feat/pipeline-g | wt-pipe-g | blocked on M | — | — |
-| E | feat/pipeline-e | wt-pipe-e | blocked on M | — | — |
-| F | feat/pipeline-f | wt-pipe-f | blocked on M | — | — |
-| T | feat/pipeline-t | wt-pipe-t | blocked on M | — | — |
-| Y | feat/pipeline-y | wt-pipe-y | blocked on M (Y1-Y3 could pre-fork; Y4 post-M) | — | — |
+| M | feat/pipeline-m | wt-pipe-m | GATED, then wave-1 merge train | 264b2fe | M gate @5e2c31a: serial 2048/2048, 0 unexplained; goldens 3×-stable (82s `5e7ca065…`, 135s `141173fd…`); both presets clean; M1 reconcile→M2 re-pin→M3 known-reds→M4 regime pin→M5 doc sync. Merges: 9390a15 C, e35cddf A, 96172e5 G, 264b2fe B — all `--no-ff`, zero conflicts (only A∩C overlap = tests/CMakeLists.txt, append-only both sides) |
+| A | feat/pipeline-a | wt-pipe-a | MERGED (e35cddf) | bf6968c | 7 commits; serial 2057/2057; review Approved-with-minors (0 Critical, 0 Important, 3 Minor, 3 Nit) — reviewer re-ran the failing-first tests, the ForceScalar leg and ScenarioGrid. ~~A5/A6 + A7's solve-count half deferred with confirmed blockers~~ **[CORRECTED 2026-07-25] That status was false. A5, A6 and A7 were never attempted — a later bench pass measured the shipped tree and found all three simply absent (`avx_pack_dispatches` = 0, no `geo_bary` symbol, solve ledger unchanged at 896 with zero spread across three reps), and this row's own review returned 0 Critical / 0 Important without noticing. See the A-PERF row below** |
+| **A-PERF** | feat/pipeline-a-perf | wt-pipe-e | **MERGED into the trunk (`b056538`)** | 8337838 | 9 commits. **A7** `9940182` scenario-grid Exact arm reuses one boundary per vol column; **A6** `b625416` sweep-invariant barycentric hoist, **bit-identical — 99144 audited entries, 0 mismatches, three specialized schemes × 729 workspaces**; A6's phantom "sweep" bench row resolved by *identifying* `american/boundary_batch/scalar` and `…/scalar_qlfast`, both already pinned by `atx-vol-american-shootout-name-coverage`. Review follow-ups: `311d073` A7 solved a boundary for wholly-Taylor vol columns, so its own gate quantity ROSE on a legal input no A7 test could reach (every one used `all_exact_spec()` with both radii 0.0) — measured RED **35 solves against a 20 ceiling**, GREEN 20, hoisted predicate independently ruled *equivalent* not merely sufficient; `108aa55` `AmericanAvxPackDispatches` bumped at one of two AVX2 dispatch sites, so it had been under-reporting library-wide — both sites now bump and the definition states what it excludes; `6a0e835`/`3ee08b1` the geometry-fit guard derived from `al_fp_specialized` instead of hand-copied; `31cce3a` `geo_bary_den`/`geo_bary_hit` had **no term in that guard** — five schemes passed and wrote OOB, `(10,32)` writing `geo_bary_den[264..287]` past the last `AlWorkspace` member, and the omission was *explicitly justified* by a comment bounding 264-element arrays by 3168. Enumeration after the fix: **0 unsafe admitted, 0 safe rejected, 3/3 live schemes kept**. **A5 NOT landed** — see the FINAL note above. **`AmericanAvxPackDispatches` observed = 3 under a counters-ON build, the first executed build in which that bump has ever incremented.** That run also surfaced **12 pre-existing counters-ON failures** (`Counter::BoundarySolves` vs the always-on `AlBoundarySolves` ledger, 29 vs 4) — attributed pre-existing by blob identity plus three structural checks, ruled bookkeeping with **29 faithful and 4 the miss**, left unfixed: the deliverable is a counters-ON CI lane. Branch gate 2269/2262/2214/**0 failed**/48/7, `did not run` block byte-identical to baseline by SHA-256. No golden moved; 10 files, all `M`, zero deletions, zero renames |
+| B | feat/pipeline-b | wt-pipe-b | MERGED (264b2fe) | eed7131 | 8 commits; serial 2011 pass / 43 skip / 0 fail under `-DATX_BUILD_BENCH=ON` (count delta vs the 2048/102 trunk baseline is a config artifact); review Approved-with-minors (0 Critical, 2 Important process-only, 5 Minor). B4 default flip / B6 selector holdout / B7 baseline JSON deferred, blockers confirmed real |
+| C | feat/pipeline-c | wt-pipe-c | MERGED (9390a15) | 07dd317 | 6 commits; owning suites green (adversarial 17/17, writer/archive/db 140, db+populate 66/66, durability 2/2); full-serial verdict folded into the trunk gate; review in flight |
+| G | feat/pipeline-g | wt-pipe-g | MERGED (96172e5) | de0101b | 3 commits + G4 no-code-change (premise overtaken by the WS-M merge: Auto already rides the laned AVX2 greeks via `avx2_greeks_selected`, GreekNeeds threaded); owning suites green (219 pass / 2 skip); full-serial verdict folded into the trunk gate; review in flight, carries the M1 AVX2 auto-merge deep-dive mandate |
+| E | feat/pipeline-e | wt-pipe-e | in flight (wave 2) | 264b2fe | forked from the merged trunk; E3b unblocked by the WS-A merge; E1's golden re-pin is a coordinated PM event, serialized against WS-F |
+| F | feat/pipeline-f | wt-pipe-f | DONE — re-reviewed (0 Critical, 3 Important); N1/N2 closed by FIX-F, **N3 open and owned by the controller** | branch tip | **FIX-F (re-review follow-ups):** N1 — `6142699` did not compile standalone (it wrote `counts.stale_unevaluable` one commit before the member existed), so `git bisect` broke across it and its quoted GREEN cannot have come from that tree; repaired by rewriting the pair, both rewritten commits built and re-measured, bodies re-derived. N2 — the F5 guard rebuilt the production construction instead of calling it; now one named `make_listed_replay_run_config` called by `dispersion_run_backtest` and by the guard, proven by a physical revert (RED) and restore (GREEN). BT-P2-8 corrected to **partial** in §2 (staleness half unevaluable on this feed). **N3 NOT closed here:** the 135-session drift table quoted below (`pnl_charm` 1.87e-05, final `nav` +7.109e-13 rel) was measured at 21:48, BEFORE `c601504` (greek Ok-stamp) and before the merge — it does not describe the branch tip. Re-measurement belongs to the controller's serialized re-pin; WS-F did not re-measure and did not re-pin. — 10 commits. F1 leak family (default `unpriced`=Error; spot-0.0 hedge and unmarked shares fail closed; opt-in NAV-vs-liquidation recon). F2 `ScheduleFillPolicy` + `RunConfig::book_entry_fill_slippage` — crossing the spread on every leg was BIT-IDENTICAL in NAV before, so the policy alone would have been vacuous. **F3(a) PREMISE FAILED** (WS-M's C3 already made PIT removals expressible); F3(b) discrete share dividends; F3(c) assignment deferral documented. F6 quote-quality gates: zero-bid rejection is admission-changing; staleness is **provably INERT** on the snapshot-stamped OPRA panel (measured: one distinct `ts` per file) and now reports `stale_unevaluable` instead of a reassuring 0. F4 listed route honours the typed spec, and build-corpus no longer ERASES every typed key on the way into the run dir. **[RECONCILE 2, 2026-07-25] This row is accurate about the MECHANISM and that is the point: F4 landed as typed SPEC KEYS, never as the CLI flags §4's F4 row specifies — those flag strings exist in no commit on any branch outside this plan document. See the F4 CORRECTION note under §4/WS-F for the key-for-flag mapping, the four round-trip gates that stand in for the plan's named CLI round-trip test, and the one gate clause (`frictionless run now requires explicit --frictions=off`) that is unmet BY DESIGN because it contradicts X1's pinned frictionless defaults. Reachability from the shipped binary was severed by the merge (`b48ec35`) and restored at `347ad44`.** F5 `IStrategy::referenced_uids()` subset-deser: 33.3% record bytes, NAV bit-identical. Pinned 135-session replay run read-only: **does NOT abort** under F1(a)/(b); artifact moves 7.1e-13 rel on final NAV — wave-1 pricing drift, not WS-F |
+| T | feat/pipeline-t | wt-pipe-t | FIX-T + FIX-T2 applied — rev-ws-t Needs-work (narrow) closed: T-I1 lifetime-aware reclaim, T-I2 saturated drain gate, T-I3 payload-bit scrub poison, T-I4 counters on the PHASE line; re-review returned approve-with-follow-ups and those are closed too | see FIX-T2 row | T1/T2 as before, plus 4 review-fix commits (`1a51c37` T-I1, `54e0602` T-I2, `50fa69f` T-I3, `9cfcbc3` T-I4), the trunk merge `817959a`, and 3 FIX-T2 commits. **82-date byte gate (restored inline — this row's cross-reference to a non-existent §7 FIX-T row had lost it, rev2-ws-t N-M4):** parallel (`fit_workers=0`) vs serial (`fit_workers=1`), run specs differing in that one key only — **82/82 archives identical, 0 differ, 0 missing**; digest-of-digests equal across serial / pre-fix parallel / fix-tip parallel; `quality.tsv`, `surface_manifest.tsv`, `archives/manifest.tsv`, `archives/quality.tsv` equal under out_dir normalization, `input_inventory.tsv` / `methodology_map.tsv` equal raw; `counts 1309 902 0 407 0 0` — **admitted=902, source_failed=407** — and identical `fingerprints` rows on both sides; 1313 index rows, 238 checkpoint files. Independently re-verified at tip `817959a` by the second reviewer from the on-disk artifacts. Gates: FIX-T2 row below |
+| Y | feat/pipeline-y | wt-pipe-y | in flight (wave 2) | 10609ee | trunk + one base commit snapshotting the in-flight Python layer the PY-* findings were written against (see 10609ee's message); `test_dispersion_runarchive_e2e.py` is environment-blocked here by design |
+| **FIX-T2** | feat/pipeline-t | wt-pipe-t | re-review (independent second reviewer) returned **approve-with-follow-ups** at `817959a` — 0 Critical, 2 Important, 6 Minor, all four original T-I findings confirmed CLOSED in mechanism. Follow-ups now closed: N-I1, N-I2, N-M1, N-M2, N-M3, N-M4, N-M6. N-M5 left alone by direction (WS-C's `surface_db_populate.cpp:300-307`, controller-tracked) | `cf7a36c` → `a8fc072` → `811ffe1` (+ this doc commit) | **Full serial `ctest -L atx_vol -j 1`, FULL label, no `-R`: 100% tests passed, 0 tests failed out of 2129** (2135 registered, 6 disabled, 47 skipped — data-guarded). Beats the reviewer's independently-observed baseline on the same branch (0 failed of 2123, same 47 skipped / 6 disabled) by exactly the six new gates. All eleven WS-T gates green (#2068-2079 `BatchedAppend*`, `DefaultStampBuildsAreByteReproducible`, `DrainingFanOutReclaimsInnerFitWorkers`, `InnerWorkerReclaimIsByteIdenticalToSerial`, `StragglerReclaimsInnerWorkersWhileStillRunning`, `SaturatedFanOutOffersOneWorkerUntilItDrains`, `CheckpointResumeIsFramingOnly`, `CheckpointScrubRejectsCorruptedPayload`, `CheckpointScrubAcceptsIntactArchive`). New: `ParallelForElastic.*` ×5 (#1101-1105) + `CorpusPhaseLine.TruncatedLineDoesNotOverreadTheFormatBuffer` (#1322), all Passed. **No golden moved.** **PHASE-line probe, run for real** through `dispersion_build_corpus` with `ATX_VOL_CORPUS_PHASE_TIMING=1`: 6-date parallel arm `reclaimed=2 inner_slots=1491 boards=66`, 20-date parallel arm `reclaimed=15 inner_slots=5221 boards=220`, and the serial control (`fit_workers=1`) `reclaimed=0 inner_slots=0` — so the reclaim demonstrably fires in production and the counters are not noise. Fresh 6-date byte gate at this tip: parallel vs serial **6/6 archives identical, 0 differ**, digest-of-digests `6ebd02cc…` equal, all six index files equal under out_dir normalization, `admitted=66 / source_failed=22` both sides. The 82-date arm itself was NOT re-run and no PHASE line exists for it — stated as not measured. **No timing number here is citable**; four agents shared the box (wall 1249 s, recorded only for the record) |
 
 ## 8. Dispatch protocol (per subagent)
 

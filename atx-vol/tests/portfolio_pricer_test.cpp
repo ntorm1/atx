@@ -22,11 +22,15 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <span>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "atx/vol/american.hpp" // american_greeks_fd — G1 kernel-defect probe
 #include "atx/vol/black76.hpp"
+#include "atx/vol/detail/adjoint_greeks.hpp" // american_greeks_adjoint — FIX-5/I1 probe
 #include "atx/vol/counters.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
@@ -104,6 +108,35 @@ void expect_counters_unchanged(const atx::vol::counters::Snapshot &before,
     ctx.push_back(SliceContext{T, F, 0.0, q_eff, 250, 7});
   }
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid, S, r, now));
+  EXPECT_TRUE(ps.has_value());
+  return std::move(*ps);
+}
+
+[[nodiscard]] PricedSurface
+make_dividend_surface(std::uint32_t uid, std::span<const DividendEvent> events,
+                      const HybridDivParams &hybrid, double borrow, int n = 3) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (int i = 0; i < n; ++i) {
+    const double T = 0.05 + 0.10 * static_cast<double>(i);
+    const std::int64_t expiry_ns =
+        kNow + static_cast<std::int64_t>(std::llround(T * kNsPerYear));
+    const double F = hybrid_forward(kS, kR, borrow, T, events, expiry_ns, kNow, hybrid);
+    const double q_eff = kR - std::log(F / kS) / T;
+    EssviParams e{};
+    e.theta = 0.04 + 0.005 * static_cast<double>(i);
+    e.phi = 0.0; // fixed sigma: a dividend bump moves carry only
+    e.rho = 0.0;
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = F;
+    e.expiry_id = static_cast<std::uint16_t>(i);
+    cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
+    ctx.push_back(SliceContext{T, F, borrow, q_eff, 250, 7});
+  }
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
   EXPECT_TRUE(ps.has_value());
   return std::move(*ps);
 }
@@ -2494,8 +2527,8 @@ TEST(PortfolioPricer, PnlExplain_Grouped_BitIdenticalToUngrouped) {
     if (!(std::isfinite(c.K) && c.K > 0.0 && std::isfinite(c.T) && c.T > 0.0)) {
       st_expect = PriceStatus::InvalidContract;
     } else {
-      const PricedSurface *sb = base.find(c.uid);
-      const PricedSurface *sh = shifted.find(c.uid);
+      const SurfaceRef sb = base.find(c.uid);
+      const SurfaceRef sh = shifted.find(c.uid);
       if (sb == nullptr || sh == nullptr) {
         st_expect = PriceStatus::ModelUnavailable;
       } else {
@@ -3421,7 +3454,15 @@ TEST(PortfolioPricerTargetMarks, RawMarksMatchWeightedPnlFrameForLongShortZeroAn
     const auto base_risk =
         base_surface.greeks_analytic(book[i].contract.K, book[i].contract.T, book[i].contract.side);
     ASSERT_TRUE(base_risk.has_value()) << base_risk.error().to_string();
-    EXPECT_TRUE(bits_equal(marks.base_vega_proxy[i], base_risk->vega)) << i;
+    // Route parity, not a value pin: base_vega_proxy comes from the BATCHED
+    // pricing path (laned AVX2 greeks under Auto ISA since WS-P1a) while
+    // base_risk is a single-contract re-query that can land on the scalar
+    // oracle. See support/isa_golden_tol.hpp. The neighbouring price_target
+    // assertions below stay bits_equal on purpose: those compare three elements
+    // produced by the SAME call on the SAME route, where bit-equality IS the
+    // claim being made.
+    EXPECT_TRUE(atx::vol::test::laned_greeks_close(marks.base_vega_proxy[i], base_risk->vega))
+        << i;
   }
   EXPECT_TRUE(bits_equal(marks.price_target[0], marks.price_target[1]));
   EXPECT_TRUE(bits_equal(marks.price_target[0], marks.price_target[2]));
@@ -3646,5 +3687,1016 @@ TEST(PortfolioPricerTargetMarks, WarmPathAddsNoAllocationOrValuationWork) {
       EXPECT_EQ(marks_counts.get(counter), totals_counts.get(counter))
           << atx::vol::counters::kNames[i];
     }
+  }
+}
+
+// ── G1 (GR-P2-1): a non-finite Greek on a FINITE-price lane must not poison totals ──
+//
+// The Ok-stamp used to require only isfinite(price). The scalar production Greek
+// bundle (american_greeks_fd, the default cold route) can return SUCCESS with a
+// non-finite differenced Greek: on an extreme spot the FD gamma denominator
+// hS*hS = (1e-3*S)^2 underflows to 0.0 while the deep-ITM American put mark stays
+// finite, so gamma = 0/0. Before the fix that lane is stamped Ok and its NaN gamma
+// flows into PriceTotals::gamma (reduce_price_totals gates on STATUS only),
+// breaking the frame's "no NaN enters a total" contract. The AVX2 laned kernel
+// already guards exactly this; the fix ports the same finite sweep to the scalar
+// Ok-stamp site so the lane is demoted to NumericError and the book total survives.
+//
+// A flat smile keeps the resolved sigma finite at the extreme (S -> 0 => huge
+// |log-moneyness|) so the ONLY pathology is the gamma-denominator underflow.
+constexpr double kG1TinyS = 1.0e-160; // hS*hS = (1e-3 * S)^2 = 1e-326 -> 0.0
+
+TEST(PortfolioPricer, G1_NonFiniteGreekOnFinitePriceLane_IsIsolatedFromTotals) {
+  // Kernel-level precondition: the differenced bundle SUCCEEDS yet carries a
+  // non-finite Greek at this extreme spot (documents the exact defect trigger and
+  // stays true regardless of the portfolio-layer fix — american.cpp is untouched).
+  const auto probe =
+      american_greeks_fd(kG1TinyS, 100.0, 0.05, 0.9, kR, 0.02, Side::Put);
+  ASSERT_TRUE(probe.has_value());            // a SUCCESSFUL solve ...
+  EXPECT_TRUE(std::isfinite(probe->price));   // ... with a finite mark ...
+  EXPECT_FALSE(std::isfinite(probe->gamma));  // ... but a non-finite gamma.
+
+  // uid 1 normal (S=100, finite Greeks); uid 2 extreme (S=1e-160, non-finite gamma).
+  const PricedSurface s_norm = make_essvi(1, 3);
+  const PricedSurface s_ext = make_essvi(2, 3, /*theta_bump=*/0.0, /*S=*/kG1TinyS, kR,
+                                         kNow, /*q_eff=*/0.02, /*flat_smile=*/true);
+  const SurfaceSet surfaces = set_of({&s_norm, &s_ext});
+
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 100.0, 0.15, Side::Call}, +5.0, 100.0}, // finite Greeks
+      {/*id*/ 2, {2, 100.0, 0.05, Side::Put}, +3.0, 100.0},  // non-finite gamma
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const auto fr = pricer.price(surfaces);
+  ASSERT_TRUE(fr.has_value());
+  const PriceFrame &f = *fr;
+  ASSERT_EQ(f.size(), 2u);
+
+  EXPECT_EQ(f.status[0], PriceStatus::Ok);
+  // The poisoned lane is quarantined (was silently Ok pre-fix).
+  EXPECT_EQ(f.status[1], PriceStatus::NumericError);
+
+  // The book totals stay finite: the NaN Greek is isolated, never summed.
+  EXPECT_TRUE(std::isfinite(f.total.gamma));
+  EXPECT_TRUE(std::isfinite(f.total.delta));
+  EXPECT_TRUE(std::isfinite(f.total.vega));
+  EXPECT_EQ(f.total.n_ok, 1u); // only the normal lane contributes
+}
+
+TEST(PortfolioPricer, G1_NonFiniteBaseGreek_IsIsolatedFromPnlTotals) {
+  // Same defect on the P&L base bundle: b_greeks are the Taylor coefficients, and a
+  // non-finite one would poison PnlTotals via reduce_pnl_totals (status-only gate).
+  const PricedSurface s_norm_b = make_essvi(1, 3);
+  const PricedSurface s_norm_t = make_essvi(1, 3, /*theta_bump=*/0.01); // vol move
+  const PricedSurface s_ext_b = make_essvi(2, 3, 0.0, kG1TinyS, kR, kNow, 0.02, true);
+  const PricedSurface s_ext_t = make_essvi(2, 3, 0.01, kG1TinyS, kR, kNow, 0.02, true);
+  const SurfaceSet base = set_of({&s_norm_b, &s_ext_b});
+  const SurfaceSet shifted = set_of({&s_norm_t, &s_ext_t});
+
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 100.0, 0.15, Side::Call}, +5.0, 100.0},
+      {/*id*/ 2, {2, 100.0, 0.05, Side::Put}, +3.0, 100.0}, // non-finite base gamma
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const auto pr = pricer.pnl_explain(base, shifted);
+  ASSERT_TRUE(pr.has_value());
+  const PnlFrame &f = *pr;
+  ASSERT_EQ(f.size(), 2u);
+
+  EXPECT_EQ(f.status[0], PriceStatus::Ok);
+  EXPECT_EQ(f.status[1], PriceStatus::NumericError);
+  EXPECT_TRUE(std::isfinite(f.total.pnl_gamma));
+  EXPECT_TRUE(std::isfinite(f.total.pnl_total));
+  EXPECT_EQ(f.total.n_ok, 1u);
+}
+
+// ── FIX-1 / F2 (rev-ws-g G1 I-1): the SEED-STAGING Ok-stamp must sweep too ──
+//
+// G1 guarded two PriceStatus::Ok stamp sites, but `stage_full_greek_seeds` stamps a
+// THIRD one with no finite sweep at all, and it is a complete bypass rather than a
+// redundant path: an accepted seed is copied straight into the frame, `is_seeded()`
+// makes solve_span skip the contract so the guarded stamp is never reached, and when
+// every seed is accepted the batch is skipped outright. The seed itself is not
+// validated on mint either -- PricedSurface::full_greek_seed gates only on
+// isfinite(price) -- so a NaN gamma is mintable and carries an Ok status into
+// PriceTotals, which gates on STATUS only.
+//
+// This is a shipped path, not a test seam: dispersion mints seeds, entry_risk_seeds()
+// exposes them and backtest.cpp feeds them to the pricer on every entry, so GR-P2-1
+// remains open exactly where the volume is. Same defect and same trigger as the two G1
+// tests above, driven through the seed-staging entry point instead of the solve.
+//
+// FIX-3/F3-A UPDATE — what this test can and can no longer observe, and why.
+//
+// When FIX-1/F2 was written, the sentence above ("the seed itself is not validated on
+// mint") was true on EVERY route. FIX-2/F2-B (c601504) then guarded the laned analytic
+// driver, and F3-A guards `evaluate_resolved` -- the scalar/FD routing. `full_greek_seed`
+// mints through a one-element `evaluate_batch` and returns `Err` when that lane's status
+// is not Ok, so a bundle with a finite mark and a non-finite REQUESTED greek is now
+// UNMINTABLE on both routes. (It became unmintable on the analytic route at c601504;
+// this test kept passing only because PriceOptions::analytic_greeks defaults to false,
+// so it minted via FD. Route agreement is precisely what F3-A buys, so the FD route now
+// refuses too -- the alternative would have been to leave the mint's answer depending on
+// the host ISA, which is the defect F3-A exists to close.)
+//
+// `FullGreekSeed`'s constructor is private and friended to PricedSurface /
+// PricedSurfaceView only, so with the mint closed there is NO public way to hand
+// `stage_full_greek_seeds` a poisoned seed. Its finite sweep (portfolio_pricer.cpp,
+// "the THIRD Ok-stamp") is therefore KEPT -- a seed is a plain value type that a future
+// caller could obtain from a deserialized run archive or a differently-configured mint,
+// and a guard that costs one predicate call is not worth deleting for coverage tidiness
+// -- but it is now unreachable through the public API and this test can no longer drive
+// it. That loss of coverage is recorded rather than papered over.
+//
+// What the test asserts instead is the STRICTLY STRONGER property F3-A delivers: the
+// poisoned seed is refused at the mint, one layer earlier than the staging sweep, and
+// the same book still quarantines the same lane end-to-end when priced with the seed set
+// a caller is actually left holding (empty).
+TEST(PortfolioPricerSeed, F2_NonFiniteGreekSeedDoesNotBypassTheFiniteSweep) {
+  // Kernel-level precondition (identical to G1's): a SUCCESSFUL differenced bundle
+  // with a finite mark and a non-finite gamma.
+  const auto probe = american_greeks_fd(kG1TinyS, 100.0, 0.05, 0.9, kR, 0.02, Side::Put);
+  ASSERT_TRUE(probe.has_value());
+  EXPECT_TRUE(std::isfinite(probe->price));
+  EXPECT_FALSE(std::isfinite(probe->gamma));
+
+  const PricedSurface s_norm = make_essvi(1, 3);
+  const PricedSurface s_ext = make_essvi(2, 3, /*theta_bump=*/0.0, /*S=*/kG1TinyS, kR, kNow,
+                                         /*q_eff=*/0.02, /*flat_smile=*/true);
+  const SurfaceSet surfaces = set_of({&s_norm, &s_ext});
+
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 100.0, 0.15, Side::Call}, +5.0, 100.0}, // finite Greeks
+      {/*id*/ 2, {2, 100.0, 0.05, Side::Put}, +3.0, 100.0},  // non-finite gamma
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const PriceOptions options{.n_threads = 1};
+
+  // FIX-3/F3-A: the poisoned seed is no longer mintable on EITHER route. Both are
+  // asserted, because a one-route assertion is exactly what let the ISA-dependence hide.
+  for (const bool analytic : {false, true}) {
+    const auto seed =
+        s_ext.full_greek_seed(100.0, 0.05, Side::Put, analytic, options.query_execution);
+    EXPECT_FALSE(seed.has_value())
+        << "analytic=" << analytic
+        << ": full_greek_seed minted a seed whose REQUESTED gamma is non-finite; an accepted "
+           "seed is copied straight into the frame and bypasses every downstream stamp";
+  }
+  // And the caller's default route (analytic_greeks defaults to false) is the FD one
+  // F3-A closed, i.e. the assertion above is not vacuous on the shipped configuration.
+  EXPECT_FALSE(options.analytic_greeks);
+
+  // End-to-end, with the seed set a caller is actually left holding once the mint
+  // refuses: the lane is still quarantined and the book totals still survive.
+  const std::size_t n = pricer.portfolio().n_positions();
+  PortfolioWorkspace ws;
+  ws.reserve(pricer.portfolio().n_contracts(), n);
+  FrameStore seeded(n, /*want_greeks=*/true);
+  ASSERT_TRUE(pricer
+                  .price_into(surfaces, PriceFieldMask::FullGreeks, seeded.view(), ws, options,
+                              std::span<const FullGreekSeed>{})
+                  .has_value());
+
+  EXPECT_EQ(seeded.status[0], PriceStatus::Ok);
+  // The poisoned lane is quarantined (was silently Ok pre-FIX-1): the contract takes the
+  // normal solve and the guarded stamp demotes it exactly as the unseeded G1 lane above.
+  EXPECT_EQ(seeded.status[1], PriceStatus::NumericError);
+
+  // The book totals stay finite: the NaN Greek is isolated, never summed.
+  EXPECT_TRUE(std::isfinite(seeded.total.gamma));
+  EXPECT_TRUE(std::isfinite(seeded.total.delta));
+  EXPECT_TRUE(std::isfinite(seeded.total.vega));
+  EXPECT_EQ(seeded.total.n_ok, 1u); // only the normal lane contributes
+}
+
+// ── FIX-1 / F3 (rev-ws-g G1 I-2): the P&L stamp must guard the REQUESTED set ──
+//
+// The P&L base-solve Ok-stamp passed a default-constructed GreekNeeds{} — i.e. demanded
+// all eight greeks finite — on the stated premise that "the P&L base solve always
+// requests the full bundle". That premise is false and is contradicted ~60 lines above
+// in the same function, where the mask is computed conditionally:
+//     base_needs.rho = (dr != 0.0);
+// EF::FirstOrder|EF::SecondOrder selects which column GROUPS materialize; base_needs
+// selects which boundary SOLVES run. Different axes. So on an ordinary no-rate-shift
+// step (dr == 0.0) rho is NOT requested, yet a lane whose unrequested rho came back
+// non-finite was demoted to NumericError and dropped from PnlTotals — vetoed on a column
+// that is multiplied by dr == 0.0 and cannot reach any output. This is the mirror image
+// of F2: F2 under-guarded, F3 over-guarded.
+//
+// Note the second half of the fix, which a naive relaxation gets wrong: the Taylor term
+// is `prho = g.rho * c.dr`, and NaN * 0.0 is NaN, not 0.0. Merely widening the mask would
+// convert the spurious veto into a poisoned pnl_rho / pnl_unexplained. The unrequested
+// slot is therefore normalized to its canonical unmaterialized value (0.0, exactly what
+// the narrowed kernel leaves there) before the guard runs. This test pins BOTH halves.
+//
+// The trigger is a long-dated deep-ITM put: at T = 1e7 the r+/r- differenced rho is
+// non-finite while price/delta/gamma/theta/vega/volga/vanna/charm are all finite — the
+// finite-everything-but-rho bundle the defect needs, and the only shape that exercises
+// it (a dense scan over S, sigma, r, q and both sides at ordinary maturities produced no
+// such bundle on either the FD or the analytic route).
+[[nodiscard]] PricedSurface make_long_dated(std::uint32_t uid, double theta_bump = 0.0) {
+  constexpr double kLongS = 1.0e-8;  // deep ITM vs the K = 100 contract
+  constexpr double kLongT = 1.0e7;   // long enough that the rho stencil goes non-finite
+  constexpr double kLongR = 0.0;     // r == q_eff keeps F == S and the discount at 1.0
+  constexpr double kLongQ = 0.0;
+  constexpr double kLongSigma = 0.2;
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  const double F = kLongS * std::exp((kLongR - kLongQ) * kLongT); // == kLongS
+  EssviParams e{};
+  // Flat smile (phi = rho = 0) => total variance w == theta, so sigma == sqrt(theta / T).
+  e.theta = kLongSigma * kLongSigma * kLongT + theta_bump;
+  e.phi = 0.0;
+  e.rho = 0.0;
+  e.psi = 0.5;
+  e.p = 0.5;
+  e.lambda = 0.5;
+  e.T = kLongT;
+  e.F = F;
+  e.expiry_id = 0;
+  cs.push(std::make_unique<EssviCurve>(e, std::exp(-kLongR * kLongT)));
+  ctx.push_back(SliceContext{kLongT, F, 0.0, kLongQ, 250, 7});
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx),
+                                  make_pricing(uid, kLongS, kLongR, kNow));
+  EXPECT_TRUE(ps.has_value());
+  return std::move(*ps);
+}
+
+TEST(PortfolioPricer, F3_UnrequestedNonFiniteRhoKeepsTheLaneAndTheTotalsFinite) {
+  // Kernel-level precondition: the bundle this lane resolves to has a non-finite rho and
+  // a finite EVERYTHING else, so the only column that can veto it is one the no-rate-shift
+  // P&L step never requests.
+  const PricedSurface probe_surface = make_long_dated(2);
+  // FIX-3/F3-A: this probe used to go through full_greek_seed. That path now REFUSES to
+  // mint a bundle carrying a non-finite REQUESTED greek (the mint gates on the
+  // evaluate_batch status, and that status finally means something on the scalar/FD
+  // route too), so the probe reads the bundle directly instead. greeks(...) is the same
+  // FD oracle the seed's one-element evaluate_batch resolved to for analytic=false, so
+  // the precondition being asserted is unchanged.
+  auto probe = probe_surface.greeks(100.0, 1.0e7, Side::Put, QueryExecution::Configured);
+  ASSERT_TRUE(probe.has_value()) << probe.error().to_string();
+  const AmericanGreeks &pg = *probe;
+  EXPECT_TRUE(std::isfinite(pg.price));
+  EXPECT_TRUE(std::isfinite(pg.delta));
+  EXPECT_TRUE(std::isfinite(pg.gamma));
+  EXPECT_TRUE(std::isfinite(pg.theta));
+  EXPECT_TRUE(std::isfinite(pg.vega));
+  EXPECT_TRUE(std::isfinite(pg.volga));
+  EXPECT_TRUE(std::isfinite(pg.vanna));
+  EXPECT_TRUE(std::isfinite(pg.charm));
+  EXPECT_FALSE(std::isfinite(pg.rho)); // the UNrequested column, and only it
+
+  // Base/target pairs. Every surface keeps its own r across the pair, so dr == 0.0 for
+  // BOTH uids — the ordinary no-rate-shift step, which is exactly when base_needs.rho is
+  // false. The vol axis moves so the step is not degenerate.
+  const PricedSurface s_norm_b = make_essvi(1, 3);
+  const PricedSurface s_norm_t = make_essvi(1, 3, /*theta_bump=*/0.01);
+  const PricedSurface s_long_b = make_long_dated(2);
+  const PricedSurface s_long_t = make_long_dated(2, /*theta_bump=*/1.0e5);
+  const SurfaceSet base = set_of({&s_norm_b, &s_long_b});
+  const SurfaceSet shifted = set_of({&s_norm_t, &s_long_t});
+
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 100.0, 0.15, Side::Call}, +5.0, 100.0}, // ordinary lane
+      {/*id*/ 2, {2, 100.0, 1.0e7, Side::Put}, +3.0, 100.0}, // unrequested rho non-finite
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const auto pr = pricer.pnl_explain(base, shifted);
+  ASSERT_TRUE(pr.has_value()) << pr.error().to_string();
+  const PnlFrame &f = *pr;
+  ASSERT_EQ(f.size(), 2u);
+
+  EXPECT_EQ(f.status[0], PriceStatus::Ok);
+  // Half 1 — the lane is NOT vetoed: its non-finite column was never requested (dr == 0)
+  // and is annihilated by the dr multiplier regardless. Pre-fix this was NumericError.
+  EXPECT_EQ(f.status[1], PriceStatus::Ok);
+  EXPECT_EQ(f.total.n_ok, 2u); // the good lane stays IN the totals
+
+  // Half 2 — and the totals are still finite: the unrequested slot is normalized to 0.0
+  // so `prho = 0.0 * 0.0`, not `NaN * 0.0 == NaN`.
+  EXPECT_TRUE(std::isfinite(f.total.pnl_rho));
+  EXPECT_TRUE(std::isfinite(f.total.pnl_total));
+  EXPECT_TRUE(std::isfinite(f.total.pnl_unexplained));
+  EXPECT_TRUE(std::isfinite(f.total.pnl_delta));
+  EXPECT_TRUE(std::isfinite(f.total.pnl_gamma));
+  EXPECT_TRUE(std::isfinite(f.total.pnl_vega));
+}
+
+// ── FIX-5 / I1: the FOURTH portfolio Ok-stamp — the ADJOINT-greeks route ──────
+//
+// FIX-1/F2, FIX-2/F2-B and FIX-3/F3-A each replaced an `isfinite(price)`-only
+// Ok-stamp with the GreekNeeds sweep. `solve_span`'s adjoint arm
+// (portfolio_pricer.cpp, the `if (adjoint_greeks)` block) kept the OLD predicate,
+// fourteen lines above the correctly-guarded non-adjoint stamp in the same loop:
+// it never consulted `greek_needs`, never called normalize_unrequested_greeks, and
+// then wrote `out.g` and stamped `Ok`.
+//
+// The trigger is the SAME one G1 pins, reached through a different door:
+// `american_greeks_adjoint` claims only genuine early-exercise puts in the American
+// regime and hands every corner it cannot claim to `american_greeks_fd`
+// (detail/adjoint_greeks.cpp, its final `return`) — the bundle that returns SUCCESS
+// with a finite deep-ITM mark and a gamma of 0/0 once the FD denominator
+// hS*hS = (1e-3*S)^2 underflows. This route requests EF::Iv only, so nothing
+// upstream normalizes or guards: this stamp is the sole gate.
+//
+// PriceTotals sums on STATUS alone (reduce_price_totals: `t.gamma += ...; ++t.n_ok`),
+// so pre-fix the lane is certified Ok, counted in n_ok, and its NaN gamma lands in
+// the book total — the exact GR-P2-1 breach the whole FIX-1 chain exists to prevent.
+// `PriceOptions::adjoint_greeks` defaults false, but it is public and Python-bound
+// (python/src/bindings/backtest.cpp), so a caller who turns it on hits this.
+TEST(PortfolioPricer, I1_AdjointRouteNonFiniteGreekIsIsolatedFromTotals) {
+  // Kernel-level precondition, asserted on the ADJOINT entry point rather than on
+  // american_greeks_fd: at this extreme the adjoint declines and falls through to
+  // the differenced bundle, which SUCCEEDS with a finite mark and a NaN gamma.
+  bool took_adjoint = true;
+  const auto probe = detail::american_greeks_adjoint(kG1TinyS, 100.0, 0.05, 0.9, kR, 0.02,
+                                                     Side::Put, std::nullopt, &took_adjoint);
+  ASSERT_TRUE(probe.has_value());            // a SUCCESSFUL call ...
+  EXPECT_FALSE(took_adjoint);                // ... that fell through to american_greeks_fd ...
+  EXPECT_TRUE(std::isfinite(probe->price));  // ... with a finite mark ...
+  EXPECT_FALSE(std::isfinite(probe->gamma)); // ... but a non-finite gamma.
+
+  // Identical book and surfaces to G1_NonFiniteGreekOnFinitePriceLane, so the ONLY
+  // difference between the two tests is which route the Ok-stamp sits on.
+  const PricedSurface s_norm = make_essvi(1, 3);
+  const PricedSurface s_ext = make_essvi(2, 3, /*theta_bump=*/0.0, /*S=*/kG1TinyS, kR, kNow,
+                                         /*q_eff=*/0.02, /*flat_smile=*/true);
+  const SurfaceSet surfaces = set_of({&s_norm, &s_ext});
+
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 100.0, 0.15, Side::Put}, +5.0, 100.0}, // finite Greeks
+      {/*id*/ 2, {2, 100.0, 0.05, Side::Put}, +3.0, 100.0}, // non-finite gamma
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const auto fr = pricer.price(surfaces, PriceOptions{.adjoint_greeks = true});
+  ASSERT_TRUE(fr.has_value()) << fr.error().to_string();
+  const PriceFrame &f = *fr;
+  ASSERT_EQ(f.size(), 2u);
+
+  EXPECT_EQ(f.status[0], PriceStatus::Ok);
+  // The poisoned lane is quarantined. Pre-FIX-5 this was Ok — the adjoint stamp
+  // checked only isfinite(price), which is TRUE here.
+  EXPECT_EQ(f.status[1], PriceStatus::NumericError);
+
+  // ... so the book totals stay finite and the lane is not counted.
+  EXPECT_TRUE(std::isfinite(f.total.gamma));
+  EXPECT_TRUE(std::isfinite(f.total.delta));
+  EXPECT_TRUE(std::isfinite(f.total.vega));
+  EXPECT_TRUE(std::isfinite(f.total.theta));
+  EXPECT_EQ(f.total.n_ok, 1u);
+}
+
+TEST(PortfolioPricer, I1_AdjointRouteAgreesWithTheFdRouteOnTheStamp) {
+  // The route-agreement half: FIX-3/F3-A's whole point is that a lane's STATUS may
+  // not depend on which route computed it. Same book, same surfaces, adjoint on and
+  // off — the status column must be identical. Pre-fix the adjoint frame stamped Ok
+  // where the FD frame stamped NumericError.
+  const PricedSurface s_norm = make_essvi(1, 3);
+  const PricedSurface s_ext = make_essvi(2, 3, /*theta_bump=*/0.0, /*S=*/kG1TinyS, kR, kNow,
+                                         /*q_eff=*/0.02, /*flat_smile=*/true);
+  const SurfaceSet surfaces = set_of({&s_norm, &s_ext});
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 100.0, 0.15, Side::Put}, +5.0, 100.0},
+      {/*id*/ 2, {2, 100.0, 0.05, Side::Put}, +3.0, 100.0},
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+
+  const auto fd = pricer.price(surfaces, PriceOptions{});
+  const auto ad = pricer.price(surfaces, PriceOptions{.adjoint_greeks = true});
+  ASSERT_TRUE(fd.has_value());
+  ASSERT_TRUE(ad.has_value());
+  ASSERT_EQ(fd->size(), ad->size());
+  for (std::size_t i = 0; i < fd->size(); ++i) {
+    EXPECT_EQ(fd->status[i], ad->status[i]) << "lane " << i << " — route-dependent Ok-stamp";
+  }
+  EXPECT_EQ(fd->total.n_ok, ad->total.n_ok);
+}
+
+// ── G2 (GR-F1): bucketed risk + carry column ───────────────────────────────
+
+// All-column bit-exact equality of two PriceTotals (incl. the GR-F1 dP_dq axis).
+[[nodiscard]] bool totals_bits_equal(const PriceTotals &a, const PriceTotals &b) noexcept {
+  return bits_equal(a.pv, b.pv) && bits_equal(a.delta, b.delta) && bits_equal(a.gamma, b.gamma) &&
+         bits_equal(a.vega, b.vega) && bits_equal(a.theta, b.theta) && bits_equal(a.rho, b.rho) &&
+         bits_equal(a.vanna, b.vanna) && bits_equal(a.volga, b.volga) &&
+         bits_equal(a.charm, b.charm) && bits_equal(a.dP_dq, b.dP_dq) && a.n_ok == b.n_ok;
+}
+
+// A two-underlier, three-expiry book (uid {1,2} x T {0.05,0.15,0.25}).
+[[nodiscard]] std::vector<Position> two_by_three_book() {
+  return {
+      {/*id*/ 1, {1, 100.0, 0.05, Side::Call}, +4.0, 100.0},
+      {/*id*/ 2, {1, 98.0, 0.15, Side::Put}, -3.0, 100.0},
+      {/*id*/ 3, {1, 105.0, 0.25, Side::Call}, +2.0, 100.0},
+      {/*id*/ 4, {2, 100.0, 0.05, Side::Put}, +5.0, 100.0},
+      {/*id*/ 5, {2, 102.0, 0.15, Side::Call}, -1.0, 100.0},
+      {/*id*/ 6, {2, 97.0, 0.25, Side::Put}, +3.0, 100.0},
+  };
+}
+
+// Independent reconstruction of a bucket subtotal over `pred` rows, mirroring
+// reduce_risk_buckets' fresh()+add_row (same input order, same init) so a correct
+// bucketing is bit-for-bit reproducible.
+template <class Pred>
+[[nodiscard]] PriceTotals reconstruct_bucket(const PriceFrame &f, Pred pred) {
+  const bool greeks = f.greeks_materialized();
+  const bool carry = f.carry_materialized();
+  PriceTotals t{};
+  if (!greeks) {
+    t.delta = t.gamma = t.vega = t.theta = t.rho = t.vanna = t.volga = t.charm =
+        std::numeric_limits<double>::quiet_NaN();
+  }
+  if (carry) {
+    t.dP_dq = 0.0;
+  }
+  for (std::size_t i = 0; i < f.size(); ++i) {
+    if (f.status[i] != PriceStatus::Ok || !pred(i)) {
+      continue;
+    }
+    t.pv += f.pv[i];
+    if (greeks) {
+      t.delta += f.delta[i];
+      t.gamma += f.gamma[i];
+      t.vega += f.vega[i];
+      t.theta += f.theta[i];
+      t.rho += f.rho[i];
+      t.vanna += f.vanna[i];
+      t.volga += f.volga[i];
+      t.charm += f.charm[i];
+    }
+    if (carry) {
+      t.dP_dq += f.dP_dq[i];
+    }
+    ++t.n_ok;
+  }
+  return t;
+}
+
+[[nodiscard]] bool pnl_totals_bits_equal(const PnlTotals &a, const PnlTotals &b) noexcept {
+  return bits_equal(a.pv_base, b.pv_base) && bits_equal(a.pv_target, b.pv_target) &&
+         bits_equal(a.pnl_total, b.pnl_total) && bits_equal(a.pnl_delta, b.pnl_delta) &&
+         bits_equal(a.pnl_gamma, b.pnl_gamma) && bits_equal(a.pnl_vega, b.pnl_vega) &&
+         bits_equal(a.pnl_volga, b.pnl_volga) && bits_equal(a.pnl_vanna, b.pnl_vanna) &&
+         bits_equal(a.pnl_theta, b.pnl_theta) && bits_equal(a.pnl_rho, b.pnl_rho) &&
+         bits_equal(a.pnl_charm, b.pnl_charm) &&
+         bits_equal(a.pnl_unexplained, b.pnl_unexplained) && a.n_ok == b.n_ok;
+}
+
+template <class Pred>
+[[nodiscard]] PnlTotals reconstruct_pnl_bucket(const PnlFrame &f, Pred pred) {
+  PnlTotals t{};
+  for (std::size_t i = 0; i < f.size(); ++i) {
+    if (f.status[i] != PriceStatus::Ok || !pred(i)) {
+      continue;
+    }
+    t.pv_base += f.pv_base[i];
+    t.pv_target += f.pv_target[i];
+    t.pnl_total += f.pnl_total[i];
+    t.pnl_delta += f.pnl_delta[i];
+    t.pnl_gamma += f.pnl_gamma[i];
+    t.pnl_vega += f.pnl_vega[i];
+    t.pnl_volga += f.pnl_volga[i];
+    t.pnl_vanna += f.pnl_vanna[i];
+    t.pnl_theta += f.pnl_theta[i];
+    t.pnl_rho += f.pnl_rho[i];
+    t.pnl_charm += f.pnl_charm[i];
+    t.pnl_unexplained += f.pnl_unexplained[i];
+    ++t.n_ok;
+  }
+  return t;
+}
+
+TEST(PortfolioPricer, G2_RiskBuckets_ByUnderlierAndByExpiry_PartitionTotalsBitExact) {
+  const PricedSurface s1 = make_essvi(1, 3);
+  const PricedSurface s2 = make_essvi(2, 3);
+  const SurfaceSet surfaces = set_of({&s1, &s2});
+  const std::vector<Position> book = two_by_three_book();
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const auto fr = pricer.price(surfaces);
+  ASSERT_TRUE(fr.has_value());
+  const PriceFrame &f = *fr;
+  ASSERT_EQ(f.size(), 6u);
+  ASSERT_EQ(f.total.n_ok, 6u);
+
+  // ── ByUnderlier: two buckets {uid 1, uid 2}, sorted ascending by key ──
+  PriceTotals grand_u{};
+  const auto bu_result =
+      reduce_risk_buckets(f, pricer.portfolio(), RiskBucketKey::ByUnderlier, &grand_u);
+  ASSERT_TRUE(bu_result.has_value()) << bu_result.error().to_string();
+  const std::vector<RiskBucket> &bu = *bu_result;
+  ASSERT_EQ(bu.size(), 2u);
+  EXPECT_EQ(bu[0].key, 1u);
+  EXPECT_EQ(bu[1].key, 2u);
+  for (const RiskBucket &b : bu) {
+    const std::uint32_t want_uid = static_cast<std::uint32_t>(b.key);
+    const PriceTotals rec = reconstruct_bucket(f, [&](std::size_t i) { return f.uid[i] == want_uid; });
+    EXPECT_TRUE(totals_bits_equal(b.totals, rec)) << "uid " << b.key;
+  }
+  // Sum the buckets in returned order and compare to the grand total: bit-exact
+  // by construction (grand == sum of buckets), and it partitions the whole book.
+  {
+    PriceTotals sum = reconstruct_bucket(f, [&](std::size_t) { return false; }); // fresh init
+    for (const RiskBucket &b : bu) {
+      sum.pv += b.totals.pv;
+      sum.delta += b.totals.delta;
+      sum.gamma += b.totals.gamma;
+      sum.vega += b.totals.vega;
+      sum.theta += b.totals.theta;
+      sum.rho += b.totals.rho;
+      sum.vanna += b.totals.vanna;
+      sum.volga += b.totals.volga;
+      sum.charm += b.totals.charm;
+      sum.n_ok += b.totals.n_ok;
+    }
+    EXPECT_TRUE(totals_bits_equal(sum, grand_u));
+  }
+  EXPECT_EQ(grand_u.n_ok, f.total.n_ok);
+  EXPECT_TRUE(close(grand_u.pv, f.total.pv));       // coverage (assoc differs)
+  EXPECT_TRUE(close(grand_u.delta, f.total.delta));
+
+  // ── ByExpiry: three buckets {0.05, 0.15, 0.25}, sorted ascending by T ──
+  PriceTotals grand_e{};
+  const auto be_result =
+      reduce_risk_buckets(f, pricer.portfolio(), RiskBucketKey::ByExpiry, &grand_e);
+  ASSERT_TRUE(be_result.has_value()) << be_result.error().to_string();
+  const std::vector<RiskBucket> &be = *be_result;
+  ASSERT_EQ(be.size(), 3u);
+  EXPECT_LT(be[0].T, be[1].T);
+  EXPECT_LT(be[1].T, be[2].T);
+  for (const RiskBucket &b : be) {
+    const double want_T = b.T;
+    const PriceTotals rec =
+        reconstruct_bucket(f, [&](std::size_t i) { return book[i].contract.T == want_T; });
+    EXPECT_TRUE(totals_bits_equal(b.totals, rec)) << "T " << b.T;
+  }
+  EXPECT_EQ(grand_e.n_ok, f.total.n_ok);
+  // Every Ok lane lands in exactly one bucket of each dimension.
+  std::uint32_t nu = 0, ne = 0;
+  for (const RiskBucket &b : bu) {
+    nu += b.totals.n_ok;
+  }
+  for (const RiskBucket &b : be) {
+    ne += b.totals.n_ok;
+  }
+  EXPECT_EQ(nu, 6u);
+  EXPECT_EQ(ne, 6u);
+}
+
+TEST(PortfolioPricer, G2_PnlRiskBuckets_ByUnderlierAndByExpiry_PartitionAllTotals) {
+  const PricedSurface b1 = make_essvi(1, 3);
+  const PricedSurface b2 = make_essvi(2, 3);
+  const PricedSurface s1 =
+      make_essvi(1, 3, 0.001, kS + 0.4, kR + 0.0005, kNow + 3600'000'000'000LL);
+  const PricedSurface s2 =
+      make_essvi(2, 3, 0.002, kS - 0.3, kR - 0.0002, kNow + 3600'000'000'000LL);
+  const SurfaceSet base = set_of({&b1, &b2});
+  const SurfaceSet shifted = set_of({&s1, &s2});
+  const std::vector<Position> book = two_by_three_book();
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value()) << pf.error().to_string();
+  const PortfolioPricer pricer(std::move(*pf));
+
+  const auto frame = pricer.pnl_explain(base, shifted, PriceOptions{.n_threads = 2});
+  ASSERT_TRUE(frame.has_value()) << frame.error().to_string();
+  ASSERT_EQ(frame->total.n_ok, book.size());
+
+  for (RiskBucketKey by : {RiskBucketKey::ByUnderlier, RiskBucketKey::ByExpiry}) {
+    SCOPED_TRACE(by == RiskBucketKey::ByUnderlier ? "underlier" : "expiry");
+    PnlTotals grand{};
+    const auto result = reduce_pnl_risk_buckets(*frame, pricer.portfolio(), by, &grand);
+    ASSERT_TRUE(result.has_value()) << result.error().to_string();
+    ASSERT_EQ(result->size(), by == RiskBucketKey::ByUnderlier ? 2u : 3u);
+
+    std::uint32_t rows = 0;
+    for (const PnlRiskBucket &bucket : *result) {
+      const PnlTotals expected = reconstruct_pnl_bucket(*frame, [&](std::size_t i) {
+        return by == RiskBucketKey::ByUnderlier
+                   ? book[i].contract.uid == static_cast<std::uint32_t>(bucket.key)
+                   : book[i].contract.T == bucket.T;
+      });
+      EXPECT_TRUE(pnl_totals_bits_equal(bucket.totals, expected));
+      rows += bucket.totals.n_ok;
+    }
+    EXPECT_EQ(rows, book.size());
+    EXPECT_EQ(grand.n_ok, frame->total.n_ok);
+    EXPECT_TRUE(close(grand.pnl_total, frame->total.pnl_total));
+    EXPECT_TRUE(close(grand.pnl_delta, frame->total.pnl_delta));
+
+    // The published grand is exactly the sorted bucket association.
+    PnlTotals expected_grand{};
+    for (const PnlRiskBucket &bucket : *result) {
+      expected_grand.pv_base += bucket.totals.pv_base;
+      expected_grand.pv_target += bucket.totals.pv_target;
+      expected_grand.pnl_total += bucket.totals.pnl_total;
+      expected_grand.pnl_delta += bucket.totals.pnl_delta;
+      expected_grand.pnl_gamma += bucket.totals.pnl_gamma;
+      expected_grand.pnl_vega += bucket.totals.pnl_vega;
+      expected_grand.pnl_volga += bucket.totals.pnl_volga;
+      expected_grand.pnl_vanna += bucket.totals.pnl_vanna;
+      expected_grand.pnl_theta += bucket.totals.pnl_theta;
+      expected_grand.pnl_rho += bucket.totals.pnl_rho;
+      expected_grand.pnl_charm += bucket.totals.pnl_charm;
+      expected_grand.pnl_unexplained += bucket.totals.pnl_unexplained;
+      expected_grand.n_ok += bucket.totals.n_ok;
+    }
+    EXPECT_TRUE(pnl_totals_bits_equal(grand, expected_grand));
+  }
+}
+
+TEST(PortfolioPricer, G2_PnlRiskBuckets_ProvenanceAndThreadInvariance) {
+  const PricedSurface b1 = make_essvi(1, 3);
+  const PricedSurface b2 = make_essvi(2, 3);
+  const PricedSurface s1 = make_essvi(1, 3, 0.001);
+  const PricedSurface s2 = make_essvi(2, 3, 0.0015);
+  const SurfaceSet base = set_of({&b1, &b2});
+  const SurfaceSet shifted = set_of({&s1, &s2});
+  const std::vector<Position> book = two_by_three_book();
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const auto f1 = pricer.pnl_explain(base, shifted, PriceOptions{.n_threads = 1});
+  const auto f4 = pricer.pnl_explain(base, shifted, PriceOptions{.n_threads = 4});
+  ASSERT_TRUE(f1.has_value() && f4.has_value());
+
+  for (RiskBucketKey by : {RiskBucketKey::ByUnderlier, RiskBucketKey::ByExpiry}) {
+    PnlTotals g1{}, g4{};
+    const auto r1 = reduce_pnl_risk_buckets(*f1, pricer.portfolio(), by, &g1);
+    const auto r4 = reduce_pnl_risk_buckets(*f4, pricer.portfolio(), by, &g4);
+    ASSERT_TRUE(r1.has_value() && r4.has_value());
+    ASSERT_EQ(r1->size(), r4->size());
+    EXPECT_TRUE(pnl_totals_bits_equal(g1, g4));
+    for (std::size_t i = 0; i < r1->size(); ++i) {
+      EXPECT_EQ((*r1)[i].key, (*r4)[i].key);
+      EXPECT_TRUE(pnl_totals_bits_equal((*r1)[i].totals, (*r4)[i].totals));
+    }
+  }
+
+  std::vector<Position> reordered = book;
+  std::rotate(reordered.begin(), reordered.begin() + 1, reordered.end());
+  auto wrong = Portfolio::create(reordered);
+  ASSERT_TRUE(wrong.has_value());
+  PnlTotals sentinel{};
+  sentinel.pnl_total = 321.25;
+  sentinel.n_ok = 77;
+  const PnlTotals before = sentinel;
+  const auto rejected =
+      reduce_pnl_risk_buckets(*f1, *wrong, RiskBucketKey::ByExpiry, &sentinel);
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_EQ(rejected.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_TRUE(pnl_totals_bits_equal(sentinel, before));
+}
+
+TEST(PortfolioPricer,
+     G2_RiskBuckets_RejectSmallerLargerReorderedAndUnrelatedPortfoliosWithoutMutation) {
+  const PricedSurface s1 = make_essvi(1, 3);
+  const PricedSurface s2 = make_essvi(2, 3);
+  const SurfaceSet surfaces = set_of({&s1, &s2});
+  const std::vector<Position> book = two_by_three_book();
+  auto source = Portfolio::create(book);
+  ASSERT_TRUE(source.has_value()) << source.error().to_string();
+  const PortfolioPricer pricer(std::move(*source));
+  const auto frame = pricer.price(surfaces);
+  ASSERT_TRUE(frame.has_value()) << frame.error().to_string();
+
+  const auto expect_rejected = [&](const std::vector<Position> &other_book,
+                                   const char *scenario) {
+    SCOPED_TRACE(scenario);
+    auto other = Portfolio::create(other_book);
+    ASSERT_TRUE(other.has_value()) << other.error().to_string();
+
+    PriceTotals grand{};
+    grand.pv = 1234.5;
+    grand.delta = -678.25;
+    grand.dP_dq = 42.0;
+    grand.n_ok = 99;
+    const PriceTotals before = grand;
+    const auto result =
+        reduce_risk_buckets(*frame, *other, RiskBucketKey::ByExpiry, &grand);
+
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_TRUE(totals_bits_equal(grand, before));
+  };
+
+  std::vector<Position> smaller = book;
+  smaller.pop_back();
+  expect_rejected(smaller, "smaller");
+
+  std::vector<Position> larger = book;
+  larger.push_back({7, {1, 110.0, 0.35, Side::Call}, 1.0, 100.0});
+  expect_rejected(larger, "larger");
+
+  std::vector<Position> reordered = book;
+  std::rotate(reordered.begin(), reordered.begin() + 2, reordered.end());
+  expect_rejected(reordered, "equal-size reordered");
+
+  std::vector<Position> unrelated = book;
+  for (std::size_t i = 0; i < unrelated.size(); ++i) {
+    unrelated[i].id += 10'000;
+    unrelated[i].contract.uid += 100;
+    unrelated[i].contract.T += 0.01 * static_cast<double>(i + 1);
+  }
+  expect_rejected(unrelated, "equal-size unrelated");
+}
+
+TEST(PortfolioPricer, G2_RiskBuckets_OneHundredThousandHighCardinalityIsDeterministic) {
+  constexpr std::size_t kRows = 100'000;
+  std::vector<Position> book;
+  book.reserve(kRows);
+  for (std::size_t i = 0; i < kRows; ++i) {
+    book.push_back(Position{static_cast<std::uint64_t>(i),
+                            {static_cast<std::uint32_t>(i + 1), 100.0, 0.25, Side::Call},
+                            1.0, 100.0});
+  }
+  auto portfolio =
+      Portfolio::create(book, PortfolioBuildOptions{.expected_unique_contracts = kRows});
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const SurfaceSet no_surfaces = set_of(std::vector<const PricedSurface *>{});
+
+  // Missing surfaces stamp a valid frame without running an option solve. Turn
+  // those lanes into deterministic synthetic Ok rows so this test isolates the
+  // reducer at production row and bucket cardinality.
+  auto frame =
+      pricer.price(no_surfaces, PriceOptions{.n_threads = 1, .prices_only = true});
+  ASSERT_TRUE(frame.has_value()) << frame.error().to_string();
+  ASSERT_EQ(frame->size(), kRows);
+  double serial_pv = 0.0;
+  for (std::size_t i = 0; i < kRows; ++i) {
+    frame->status[i] = PriceStatus::Ok;
+    frame->pv[i] = (i % 7u == 0u) ? 0.1 : ((i % 2u == 0u) ? -1.0e12 : 1.0e12);
+    serial_pv += frame->pv[i];
+  }
+
+  PriceTotals high_grand{};
+  const auto high =
+      reduce_risk_buckets(*frame, pricer.portfolio(), RiskBucketKey::ByUnderlier, &high_grand);
+  ASSERT_TRUE(high.has_value()) << high.error().to_string();
+  ASSERT_EQ(high->size(), kRows);
+  EXPECT_EQ(high->front().key, 1u);
+  EXPECT_EQ(high->back().key, kRows);
+  EXPECT_EQ(high_grand.n_ok, kRows);
+  EXPECT_TRUE(bits_equal(high_grand.pv, serial_pv));
+  for (std::size_t i : {std::size_t{0}, kRows / 2u, kRows - 1u}) {
+    EXPECT_EQ((*high)[i].totals.n_ok, 1u);
+    EXPECT_TRUE(bits_equal((*high)[i].totals.pv, frame->pv[i])) << i;
+  }
+
+  // The same 100k rows also exercise the low-cardinality path. Its sole bucket
+  // must retain serial input-order accumulation exactly, and a repeated high-B
+  // run must be bit-stable despite hash-table growth and rehashing.
+  PriceTotals low_grand{};
+  const auto low =
+      reduce_risk_buckets(*frame, pricer.portfolio(), RiskBucketKey::ByExpiry, &low_grand);
+  ASSERT_TRUE(low.has_value()) << low.error().to_string();
+  ASSERT_EQ(low->size(), 1u);
+  EXPECT_EQ(low->front().totals.n_ok, kRows);
+  EXPECT_TRUE(bits_equal(low->front().totals.pv, serial_pv));
+  EXPECT_TRUE(bits_equal(low_grand.pv, serial_pv));
+
+  PriceTotals repeat_grand{};
+  const auto repeat =
+      reduce_risk_buckets(*frame, pricer.portfolio(), RiskBucketKey::ByUnderlier, &repeat_grand);
+  ASSERT_TRUE(repeat.has_value()) << repeat.error().to_string();
+  ASSERT_EQ(repeat->size(), high->size());
+  EXPECT_TRUE(totals_bits_equal(repeat_grand, high_grand));
+  for (std::size_t i : {std::size_t{0}, kRows / 2u, kRows - 1u}) {
+    EXPECT_EQ((*repeat)[i].key, (*high)[i].key);
+    EXPECT_TRUE(totals_bits_equal((*repeat)[i].totals, (*high)[i].totals)) << i;
+  }
+}
+
+TEST(PortfolioPricer, G2_CarryColumn_dP_dq_MatchesDirectKernel) {
+  const PricedSurface s1 = make_essvi(1, 3);
+  const PricedSurface s2 = make_essvi(2, 3);
+  const SurfaceSet surfaces = set_of({&s1, &s2});
+  const std::vector<Position> book = two_by_three_book();
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+
+  // Without carry_greeks the column is EMPTY and the total NaN (opt-in gate).
+  {
+    const auto plain = pricer.price(surfaces);
+    ASSERT_TRUE(plain.has_value());
+    EXPECT_FALSE(plain->carry_materialized());
+    EXPECT_TRUE(plain->dP_dq.empty());
+    EXPECT_TRUE(std::isnan(plain->total.dP_dq));
+  }
+
+  const auto fr = pricer.price(surfaces, PriceOptions{.carry_greeks = true});
+  ASSERT_TRUE(fr.has_value());
+  const PriceFrame &f = *fr;
+  ASSERT_TRUE(f.carry_materialized());
+  ASSERT_EQ(f.dP_dq.size(), 6u);
+
+  const std::array<const PricedSurface *, 3> by_uid{nullptr, &s1, &s2};
+  double manual_total = 0.0;
+  bool any_nonzero = false;
+  for (std::size_t i = 0; i < book.size(); ++i) {
+    ASSERT_EQ(f.status[i], PriceStatus::Ok);
+    const Position &p = book[i];
+    const PricedSurface &s = *by_uid[p.contract.uid];
+    const auto rp = s.resolve(p.contract.K, p.contract.T);
+    const auto cg = american_carry_greeks_al(s.pricing().S, p.contract.K, p.contract.T, rp.sigma,
+                                             rp.rate, rp.q_eff, p.contract.side,
+                                             std::optional<AlOpts>{s.pricing().al_opts});
+    ASSERT_TRUE(cg.has_value());
+    const double w = p.qty * p.multiplier;
+    // The column is the position-scaled kernel value, BIT-for-BIT.
+    EXPECT_TRUE(bits_equal(f.dP_dq[i], w * cg->dP_dq)) << i;
+    any_nonzero = any_nonzero || (cg->dP_dq != 0.0);
+    manual_total += f.dP_dq[i];
+  }
+  EXPECT_TRUE(any_nonzero); // non-vacuous: the axis is actually computed
+  EXPECT_TRUE(bits_equal(f.total.dP_dq, manual_total));
+}
+
+TEST(PortfolioPricer, G2_DiscreteDividendSensitivity_PortfolioEventAxisAndFdParity) {
+  constexpr double kBorrow = 0.013;
+  const std::vector<DividendEvent> events{
+      {kNow + static_cast<std::int64_t>(std::llround(0.10 * kNsPerYear)), 0.85},
+      {kNow + static_cast<std::int64_t>(std::llround(0.20 * kNsPerYear)), 1.10},
+  };
+  const HybridDivParams hybrid{.prop_div_yield = 0.012, .blend = 0.25};
+  const PricedSurface surface = make_dividend_surface(1, events, hybrid, kBorrow);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> book{
+      {1, {1, 95.0, 0.05, Side::Call}, +2.0, 100.0},
+      {2, {1, 100.0, 0.15, Side::Put}, -3.0, 100.0},
+      {3, {1, 105.0, 0.25, Side::Call}, +4.0, 100.0},
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const std::array<UnderlierDividendScheduleView, 1> schedule{
+      UnderlierDividendScheduleView{1, events, hybrid}};
+
+  const auto result =
+      pricer.dividend_sensitivities(surfaces, schedule, PriceOptions{.n_threads = 2});
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  ASSERT_EQ(result->rows.size(), events.size());
+  EXPECT_NE(result->book_logical_id, 0u);
+  EXPECT_NE(result->surface_logical_id, 0u);
+  EXPECT_EQ(result->book_revision, 0u);
+  EXPECT_EQ(result->rows[0].schedule_index, 0u);
+  EXPECT_EQ(result->rows[1].schedule_index, 1u);
+  EXPECT_EQ(result->rows[0].ex_date_ns, events[0].ex_date_ns);
+  EXPECT_TRUE(bits_equal(result->rows[0].amount, events[0].amount));
+  EXPECT_EQ(result->rows[0].status, DividendSensitivityStatus::Ok);
+  EXPECT_EQ(result->rows[1].status, DividendSensitivityStatus::Ok);
+  EXPECT_EQ(result->rows[0].n_ok, book.size());
+  EXPECT_EQ(result->rows[1].n_ok, book.size());
+  EXPECT_EQ(result->rows[0].n_exposed, 2u);
+  EXPECT_EQ(result->rows[1].n_exposed, 1u);
+
+  // Independent portfolio assembly over the public lower-level helper. This also
+  // pins position scaling and fixed input-order accumulation.
+  const auto carry =
+      pricer.price(surfaces, PriceOptions{.n_threads = 1, .carry_greeks = true});
+  ASSERT_TRUE(carry.has_value());
+  std::array<double, 2> direct{0.0, 0.0};
+  for (std::size_t i = 0; i < book.size(); ++i) {
+    const double T = book[i].contract.T;
+    const auto point = surface.resolve(book[i].contract.K, T);
+    const std::int64_t expiry_ns =
+        kNow + static_cast<std::int64_t>(std::llround(T * kNsPerYear));
+    const double base =
+        hybrid_forward_base(kS, point.rate, T, events, expiry_ns, kNow, hybrid);
+    const double implied_borrow = -std::log(point.forward / base) / T;
+    std::array<double, 2> dF{}, dP{};
+    hybrid_forward_div_jacobian(point.rate, implied_borrow, T, events, expiry_ns, kNow,
+                                hybrid, dF);
+    american_dividend_sensitivities(carry->dP_dq[i], point.forward, T, dF, dP);
+    direct[0] += dP[0];
+    direct[1] += dP[1];
+  }
+  EXPECT_TRUE(bits_equal(result->rows[0].dP_dDiv, direct[0]));
+  EXPECT_TRUE(bits_equal(result->rows[1].dP_dDiv, direct[1]));
+
+  // End-to-end dividend-amount bump with a flat smile: only carry moves, so the
+  // event-axis derivative must match the repriced whole-book central difference.
+  constexpr double h = 1.0e-4;
+  for (std::size_t event_ix = 0; event_ix < events.size(); ++event_ix) {
+    std::vector<DividendEvent> up = events;
+    std::vector<DividendEvent> down = events;
+    up[event_ix].amount += h;
+    down[event_ix].amount -= h;
+    const PricedSurface surface_up = make_dividend_surface(1, up, hybrid, kBorrow);
+    const PricedSurface surface_down = make_dividend_surface(1, down, hybrid, kBorrow);
+    const SurfaceSet set_up = set_of({&surface_up});
+    const SurfaceSet set_down = set_of({&surface_down});
+    const auto price_up = pricer.price(set_up, PriceOptions{.prices_only = true});
+    const auto price_down = pricer.price(set_down, PriceOptions{.prices_only = true});
+    ASSERT_TRUE(price_up.has_value() && price_down.has_value());
+    const double fd = (price_up->total.pv - price_down->total.pv) / (2.0 * h);
+    EXPECT_TRUE(close(result->rows[event_ix].dP_dDiv, fd, 2.0e-4))
+        << event_ix << " analytic=" << result->rows[event_ix].dP_dDiv << " fd=" << fd;
+  }
+
+  const auto one_thread =
+      pricer.dividend_sensitivities(surfaces, schedule, PriceOptions{.n_threads = 1});
+  const auto four_threads =
+      pricer.dividend_sensitivities(surfaces, schedule, PriceOptions{.n_threads = 4});
+  ASSERT_TRUE(one_thread.has_value() && four_threads.has_value());
+  for (std::size_t i = 0; i < events.size(); ++i) {
+    EXPECT_TRUE(bits_equal(one_thread->rows[i].dP_dDiv, four_threads->rows[i].dP_dDiv));
+    EXPECT_EQ(one_thread->rows[i].n_ok, four_threads->rows[i].n_ok);
+    EXPECT_EQ(one_thread->rows[i].n_exposed, four_threads->rows[i].n_exposed);
+  }
+}
+
+TEST(PortfolioPricer, G2_DiscreteDividendSensitivity_StatusAndInputValidation) {
+  const std::array<DividendEvent, 1> events{
+      DividendEvent{kNow + static_cast<std::int64_t>(std::llround(0.10 * kNsPerYear)), 1.0}};
+  const HybridDivParams hybrid{};
+  const PricedSurface surface = make_dividend_surface(1, events, hybrid, 0.01);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> book{
+      {1, {1, 100.0, 0.15, Side::Call}, +1.0, 100.0},
+      {2, {1, 100.0, -0.15, Side::Call}, +1.0, 100.0}, // numeric/invalid lane
+      {3, {9, 100.0, 0.15, Side::Put}, +1.0, 100.0},   // missing surface
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+  const std::array<UnderlierDividendScheduleView, 2> schedules{
+      UnderlierDividendScheduleView{1, events, hybrid},
+      UnderlierDividendScheduleView{9, events, hybrid},
+  };
+
+  const auto result = pricer.dividend_sensitivities(surfaces, schedules);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  ASSERT_EQ(result->rows.size(), 2u);
+  EXPECT_EQ(result->rows[0].status, DividendSensitivityStatus::Partial);
+  EXPECT_EQ(result->rows[0].n_ok, 1u);
+  EXPECT_EQ(result->rows[0].n_failed, 1u);
+  EXPECT_EQ(result->rows[1].status, DividendSensitivityStatus::ModelUnavailable);
+  EXPECT_EQ(result->rows[1].n_ok, 0u);
+  EXPECT_EQ(result->rows[1].n_failed, 1u);
+
+  const std::array<UnderlierDividendScheduleView, 2> duplicate{
+      UnderlierDividendScheduleView{1, events, hybrid},
+      UnderlierDividendScheduleView{1, events, hybrid},
+  };
+  const auto duplicate_result = pricer.dividend_sensitivities(surfaces, duplicate);
+  ASSERT_FALSE(duplicate_result.has_value());
+  EXPECT_EQ(duplicate_result.error().code(), ErrorCode::InvalidArgument);
+
+  const std::array<DividendEvent, 1> invalid_events{
+      DividendEvent{events[0].ex_date_ns, std::numeric_limits<double>::quiet_NaN()}};
+  const std::array<UnderlierDividendScheduleView, 1> invalid_schedule{
+      UnderlierDividendScheduleView{1, invalid_events, hybrid}};
+  const auto invalid_result = pricer.dividend_sensitivities(surfaces, invalid_schedule);
+  ASSERT_FALSE(invalid_result.has_value());
+  EXPECT_EQ(invalid_result.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(PortfolioPricer, G2_RiskBuckets_And_Carry_ThreadCountInvariant) {
+  const PricedSurface s1 = make_essvi(1, 3);
+  const PricedSurface s2 = make_essvi(2, 3);
+  const SurfaceSet surfaces = set_of({&s1, &s2});
+  const std::vector<Position> book = two_by_three_book();
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  const PortfolioPricer pricer(std::move(*pf));
+
+  const auto f1 = pricer.price(surfaces, PriceOptions{.n_threads = 1, .carry_greeks = true});
+  const auto f4 = pricer.price(surfaces, PriceOptions{.n_threads = 4, .carry_greeks = true});
+  ASSERT_TRUE(f1.has_value() && f4.has_value());
+  ASSERT_EQ(f1->size(), f4->size());
+
+  // The whole frame (incl. the serial carry column) is bit-identical across threads.
+  for (std::size_t i = 0; i < f1->size(); ++i) {
+    EXPECT_TRUE(bits_equal(f1->dP_dq[i], f4->dP_dq[i])) << i;
+  }
+  for (RiskBucketKey by : {RiskBucketKey::ByUnderlier, RiskBucketKey::ByExpiry}) {
+    PriceTotals g1{}, g4{};
+    const auto b1_result = reduce_risk_buckets(*f1, pricer.portfolio(), by, &g1);
+    const auto b4_result = reduce_risk_buckets(*f4, pricer.portfolio(), by, &g4);
+    ASSERT_TRUE(b1_result.has_value()) << b1_result.error().to_string();
+    ASSERT_TRUE(b4_result.has_value()) << b4_result.error().to_string();
+    const std::vector<RiskBucket> &b1 = *b1_result;
+    const std::vector<RiskBucket> &b4 = *b4_result;
+    ASSERT_EQ(b1.size(), b4.size());
+    for (std::size_t k = 0; k < b1.size(); ++k) {
+      EXPECT_EQ(b1[k].key, b4[k].key);
+      EXPECT_TRUE(totals_bits_equal(b1[k].totals, b4[k].totals)) << k;
+    }
+    EXPECT_TRUE(totals_bits_equal(g1, g4));
   }
 }

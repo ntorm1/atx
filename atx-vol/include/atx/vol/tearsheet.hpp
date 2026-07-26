@@ -24,15 +24,69 @@
 // (because `pnl_total = axes + unexplained + settlement + shares + financing -
 // cost` per step, so its running sum equals the attribution sum).
 
+#include <cstddef>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "atx/vol/backtest.hpp"  // BacktestResult
 #include "atx/vol/types.hpp"     // Status
 
 namespace atx::vol {
+
+// ── X5: benchmark-relative statistics (Goodwin FAJ 1998 / Grinold-Kahn) ─────
+//
+// All four are computed over two PAIRED per-step series — the strategy's and the
+// benchmark's — truncated to their common length. Definitions, with `rs`/`rb` the
+// two series, `ra = rs - rb` the ACTIVE series, and `ppy` the periods per year:
+//
+//   beta              = cov(rs, rb) / var(rb)                 [sample, n-1]
+//   alpha             = (mean(rs) - beta * mean(rb)) * ppy    [ANNUALIZED]
+//   active_return     = mean(ra) * ppy                        [ANNUALIZED]
+//   tracking_error    = samplestd(ra) * sqrt(ppy)             [ANNUALIZED]
+//   information_ratio = active_return / tracking_error
+//
+// IR is the DIFFERENCE form (active return over tracking error), which is
+// Goodwin's standard and the one Grinold-Kahn's IR = IC * sqrt(breadth) targets —
+// NOT the regression-residual form. They differ whenever beta != 1; the choice is
+// recorded here because the two are routinely conflated.
+//
+// UNITS ARE THE CALLER'S RESPONSIBILITY. `BacktestResult` carries $ PnL, not
+// fractional returns, so a benchmark series must be supplied in the SAME units
+// ($ PnL of the benchmark at a comparable risk scale) for beta to be meaningful.
+// Feeding a fractional-return benchmark against a $ strategy yields a beta off by
+// the notional — arithmetically valid, economically nonsense.
+struct BenchmarkStats {
+  bool has_benchmark{false}; // false => every field below is 0 and must not be reported
+  std::size_t n_obs{0};      // paired observations actually used
+  double beta{0};
+  double alpha{0};
+  double active_return{0};
+  double tracking_error{0};
+  double information_ratio{0};
+  double correlation{0}; // corr(rs, rb); 0 when either series is constant
+};
+
+// Pure, allocation-light fold over two ALREADY-PAIRED series. Uses the common
+// prefix length min(strategy.size(), benchmark.size()); fewer than 2 paired
+// observations, or a benchmark with zero variance, yields `has_benchmark = true`
+// with the undefined ratios left at 0 (every divide is guarded). Deterministic:
+// all accumulation is in element order.
+//
+// HAZARD (REVIEW C-6). Pairing is POSITIONAL and this function has no way to
+// check it — the two spans carry no dates. A benchmark that is shifted,
+// reversed, duplicated, missing a session or simply shorter yields entirely
+// plausible alpha/beta/IR/tracking-error numbers for the WRONG observations, and
+// the `min` silently drops the strategy tail. Establishing the pairing is the
+// CALLER's job. Production callers must join by DATE: see
+// `backtest_return_dates` below and `pair_dispersion_benchmark` /
+// `dispersion_tearsheet_with_benchmark` in dispersion_run.hpp, which is the one
+// route a spec's `benchmark_series` may reach this function through.
+[[nodiscard]] BenchmarkStats benchmark_stats(std::span<const double> strategy,
+                                             std::span<const double> benchmark,
+                                             double periods_per_year = 252.0);
 
 // Headline analytics for a completed backtest. All fields default to 0 so an
 // empty or degenerate run yields a well-defined (all-zero) sheet. Every divide
@@ -65,11 +119,26 @@ struct TearSheet {
   double attr_cost{0};
 
   // ── Vega-scaled / per-unit-risk ──
-  double return_on_gross_vega{0};  // total_return / mean(|gross_vega|)
-  double vega_adj_sharpe{0};       // mean(pnl_i / |gross_vega_{i-1}|) / std(...) * sqrt(ppy)
-  double pnl_per_vega_traded{0};   // total_return / Σ turnover_vega
-  double avg_gross_vega{0};        // mean(gross_vega over all rows)
-  double avg_gross_gamma{0};       // mean(gross_gamma over all rows)
+  //
+  // UNIT / SEMANTICS (C-3, pipeline-m production review). "Gross vega" below is
+  // `BacktestResult::gross_vega_abs` — Σ|position-scaled leg vega|, dollars per
+  // UNIT vol — NOT the signed `gross_vega` column, which is NET book vega and
+  // cancels to a residual for any vega-neutral book. A result that carries no
+  // gross series (hand-built, TSV-read or archive-decoded — it is deliberately
+  // not serialized) falls back to |gross_vega| bit-for-bit, i.e. the pre-C-3
+  // values. The NET average is published separately, as `avg_net_vega`, by
+  // `result_summary_metrics` (run_report.hpp).
+  double return_on_gross_vega{0}; // total_return / mean(gross vega)
+  double vega_adj_sharpe{0};      // mean(pnl_i / gross_vega_{i-1}) / std(...) * sqrt(ppy)
+  double pnl_per_vega_traded{0};  // total_return / Σ turnover_vega
+  // mean(gross vega); mean of the SIGNED gross_vega column when no gross series
+  // is present (the pre-C-3 definition, preserved for hand-built results).
+  double avg_gross_vega{0};
+  double avg_gross_gamma{0}; // mean(gross_gamma over all rows)
+
+  // ── X5 benchmark-relative block. `has_benchmark` is false unless the sheet was
+  // built by `tearsheet_with_benchmark`, so plain `tearsheet()` is unchanged. ──
+  BenchmarkStats benchmark{};
 };
 
 // Fold a `BacktestResult` into a `TearSheet`. Statistics over the return series
@@ -78,6 +147,40 @@ struct TearSheet {
 // 0 when fewer than 2 observations). Every divide is guarded. Deterministic:
 // all accumulation is in row order.
 [[nodiscard]] TearSheet tearsheet(const BacktestResult& r, double periods_per_year = 252.0);
+
+// `tearsheet(r, ppy)` with the benchmark-relative block filled in against
+// `benchmark`, a per-step series ALIGNED to the same return series `tearsheet`
+// folds (i.e. `r.step_pnl_total` when present, else `pnl_total` rows 1..n-1 —
+// row 0 is inception and carries no return). An empty `benchmark` returns
+// exactly `tearsheet(r, ppy)`, so this is a strict superset and never perturbs
+// the absolute statistics.
+[[nodiscard]] TearSheet tearsheet_with_benchmark(const BacktestResult& r,
+                                                 std::span<const double> benchmark,
+                                                 double periods_per_year = 252.0);
+
+// `tearsheet_with_benchmark(r, benchmark, ppy)` pairs POSITIONALLY — see the
+// hazard note on `benchmark_stats`. It is retained for hand-paired callers and
+// for tests; a series read from a file must be joined by date instead.
+
+// The per-step return series `tearsheet` folds, exposed so a caller can align a
+// benchmark to it without duplicating the `step_pnl_total` fallback rule.
+[[nodiscard]] std::vector<double> backtest_return_series(const BacktestResult& r);
+
+// REVIEW C-6. The DATES of the `backtest_return_series` observations, so a
+// benchmark can be joined to the strategy BY DATE rather than by position.
+//
+// The strategy series is NOT unconditionally date-addressable, and that is a
+// property of `BacktestResult`, not of this function: `step_pnl_total` is
+// FULL-RESOLUTION (one entry per priced step, length refs-1) while `date` is
+// DOWNSAMPLED by `RunConfig::record_every_n`. At any stride > 1 there is simply
+// no date for most return observations, and no join is possible — so this fails
+// loudly rather than inventing an alignment. At the shipped stride of 1 (and for
+// the `pnl_total` fallback, which is parallel to `date` by construction) the
+// answer is exactly `date[1..n-1]`: row 0 is inception and carries no return.
+//
+// Err(InvalidArgument) when the two are not in that relationship, naming both
+// counts.
+[[nodiscard]] Result<std::vector<std::string>> backtest_return_dates(const BacktestResult& r);
 
 // Write `r` to `path` as a deterministic, tab-separated file: one header row
 // naming every column, then one data row per recorded step. Doubles are written

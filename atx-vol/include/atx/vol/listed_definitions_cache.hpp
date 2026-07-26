@@ -27,8 +27,8 @@
 //   (b) source_size     — that content's byte length.
 //   (c) format_version  — `kDefinitionsCacheFormat`, the ATXDEFS1 wire version.
 //   (d) parser_revision — `kDefinitionsParserRevision` (see below).
-//   (e) abi_fold        — a sizeof/offsetof fold over `ListedContractDefinition`,
-//                         the struct the blob encodes, so a field addition or
+//   (e) abi_fold        — a sizeof/offsetof fold over the fixed-width encoded
+//                         wire-row schema, so a column addition, type change or
 //                         reorder can never be misread. This is the same
 //                         protection `RunArchiveHeader::schema_hash` gives the
 //                         RunArchive.
@@ -129,66 +129,68 @@ namespace atx::vol {
 // convention as `build_listed_dispersion_schedule`'s optional `PhaseTimer *`.
 class PhaseTimer;
 
-// ── The encoded payload struct's ABI ────────────────────────────────────────
+// ── Encoded payload ABI ──────────────────────────────────────────────────────
 //
-// `ListedContractDefinition` is what ATXDEFS1 encodes, field for field, so it is
-// an ON-DISK ABI and the sprint constraint ("On-disk structs are an ABI:
-// `static_assert` on `sizeof` AND `offsetof`") binds it exactly as it binds
-// `ListedDefinitionsCacheHeader` below. The header was pinned; this struct was
-// not, which is Wave E T7 review finding I1.
+// ATXDEFS1 is column-major. Runtime `ListedContractDefinition` rows contain
+// `std::string` objects and are never copied to disk; their object layout is
+// therefore neither the wire schema nor a portable target for `offsetof`.
+// `ListedDefinitionsCacheWireRowSchema` is the fixed-width, schema-only row
+// projection of the encoded columns in their exact on-disk order. No instance of
+// it is serialized. Its standard-layout offsets provide a compact ABI
+// description for static assertions and `definitions_cache_abi_fold`.
 //
-// WHAT THESE PINS EXIST TO CATCH, concretely. A field is added to
-// `ListedContractDefinition`. `parse_listed_definitions` and
-// `serialize_listed_definitions` are updated, because the TSV round trip forces
-// it. The ATXDEFS1 encoder in `listed_definitions_cache.cpp` is NOT. The new
-// writer then emits a blob that silently drops the field and the new reader
-// default-initialises it: both CRCs pass (the bytes are the bytes written), the
-// content hash passes (the source file did not change), and
-// `CacheRoundTripReconstructsTableExactly` passes too, because its fixture uses
-// positional aggregate initialisation and the field is default on BOTH sides.
-// These asserts turn that whole scenario into a BUILD ERROR at zero runtime
-// cost. That is what makes the runtime fingerprint guard below safe to leave
-// opt-in.
-//
-// WHEN ONE OF THESE FIRES the fix is NOT to update the number. It is to teach
-// the ATXDEFS1 encoder AND decoder about the new shape, bump
-// `kDefinitionsParserRevision` (and `kDefinitionsCacheFormat` if the wire layout
-// moved), and only then re-pin.
-//
-// Offsets are written relative to `sizeof(std::string)` so the pin is exact on
-// any LP64 host rather than only on the one whose `std::string` happens to be 40
-// bytes. On MSVC (`sizeof(std::string) == 40`) they evaluate to
-//     0, 40, 48, 88, 96, 104, 112, 113, 120   with `sizeof` == 128.
-namespace detail {
-inline constexpr std::size_t kDefsStrSize = sizeof(std::string);
-} // namespace detail
+// String fields are represented by u32 dictionary codes. The two runtime bools
+// are represented by bits in `flags`. The physical file stores one array per
+// field below, in this order, with each array 8-byte aligned.
+struct ListedDefinitionsCacheWireRowSchema {
+  std::int64_t definition_ts_ns{};
+  std::int64_t expiry_ts_ns{};
+  double multiplier{};
+  std::uint64_t source_fingerprint{};
+  std::uint32_t instrument_id{};
+  std::uint32_t trade_date_code{};
+  std::uint32_t raw_symbol_code{};
+  std::uint8_t flags{};
+};
 
-static_assert(std::is_standard_layout_v<ListedContractDefinition>,
-              "ATXDEFS1 pins ListedContractDefinition's offsets; it must be standard layout");
-static_assert(alignof(ListedContractDefinition) == 8);
-static_assert(sizeof(ListedContractDefinition) == 2 * detail::kDefsStrSize + 48,
-              "ListedContractDefinition layout drift — read the note above before touching this");
-static_assert(offsetof(ListedContractDefinition, trade_date) == 0);
-static_assert(offsetof(ListedContractDefinition, instrument_id) == detail::kDefsStrSize);
-static_assert(offsetof(ListedContractDefinition, raw_symbol) == detail::kDefsStrSize + 8);
-static_assert(offsetof(ListedContractDefinition, definition_ts_ns) == 2 * detail::kDefsStrSize + 8);
-static_assert(offsetof(ListedContractDefinition, expiry_ts_ns) == 2 * detail::kDefsStrSize + 16);
-static_assert(offsetof(ListedContractDefinition, multiplier) == 2 * detail::kDefsStrSize + 24);
-static_assert(offsetof(ListedContractDefinition, standard_monthly) ==
-              2 * detail::kDefsStrSize + 32);
-static_assert(offsetof(ListedContractDefinition, standard_deliverable) ==
-              2 * detail::kDefsStrSize + 33);
-static_assert(offsetof(ListedContractDefinition, source_fingerprint) ==
-              2 * detail::kDefsStrSize + 40);
+inline constexpr std::uint8_t kDefinitionsCacheMonthlyFlag = 0x1u;
+inline constexpr std::uint8_t kDefinitionsCacheDeliverableFlag = 0x2u;
+inline constexpr std::uint8_t kDefinitionsCacheKnownFlags =
+    kDefinitionsCacheMonthlyFlag | kDefinitionsCacheDeliverableFlag;
 
-// `sizeof` + `offsetof` alone are NOT sufficient, and neither is the runtime
-// `abi_fold`, which folds exactly the same twenty numbers: a `bool` inserted
-// between `standard_deliverable` and `source_fingerprint` lands in the six bytes
-// of existing tail padding, so every assert above still holds, `sizeof` is still
-// 128 and the fold does not move. That is a real hole in both, and this is what
-// closes it — a structured binding NAMES every member, so a field added,
-// removed, reordered or retyped stops this translation unit compiling.
+static_assert(std::is_trivially_copyable_v<ListedDefinitionsCacheWireRowSchema>);
+static_assert(std::is_standard_layout_v<ListedDefinitionsCacheWireRowSchema>);
+static_assert(alignof(ListedDefinitionsCacheWireRowSchema) == 8);
+static_assert(sizeof(ListedDefinitionsCacheWireRowSchema) == 48);
+static_assert(offsetof(ListedDefinitionsCacheWireRowSchema, definition_ts_ns) == 0);
+static_assert(offsetof(ListedDefinitionsCacheWireRowSchema, expiry_ts_ns) == 8);
+static_assert(offsetof(ListedDefinitionsCacheWireRowSchema, multiplier) == 16);
+static_assert(offsetof(ListedDefinitionsCacheWireRowSchema, source_fingerprint) == 24);
+static_assert(offsetof(ListedDefinitionsCacheWireRowSchema, instrument_id) == 32);
+static_assert(offsetof(ListedDefinitionsCacheWireRowSchema, trade_date_code) == 36);
+static_assert(offsetof(ListedDefinitionsCacheWireRowSchema, raw_symbol_code) == 40);
+static_assert(offsetof(ListedDefinitionsCacheWireRowSchema, flags) == 44);
+
+// The wire pins alone cannot detect a runtime field that the encoder forgot to
+// model. Keep a separate aggregate-shape pin for `ListedContractDefinition`.
+// The designated initializer pins member names and declaration order (including
+// swaps between same-typed fields); the structured binding pins the member count,
+// and the type assertions pin every member type. Together they turn any runtime
+// shape drift into a build error without relying on `std::string` object layout.
 inline void definitions_cache_payload_shape_pin(const ListedContractDefinition &row) noexcept {
+  using OrderedRuntimeShape = decltype(ListedContractDefinition{
+      .trade_date = std::string{},
+      .instrument_id = std::uint32_t{},
+      .raw_symbol = std::string{},
+      .definition_ts_ns = std::int64_t{},
+      .expiry_ts_ns = std::int64_t{},
+      .multiplier = double{},
+      .standard_monthly = bool{},
+      .standard_deliverable = bool{},
+      .source_fingerprint = std::uint64_t{},
+  });
+  static_assert(std::is_same_v<OrderedRuntimeShape, ListedContractDefinition>);
+
   const auto &[trade_date, instrument_id, raw_symbol, definition_ts_ns, expiry_ts_ns, multiplier,
                standard_monthly, standard_deliverable, source_fingerprint] = row;
   static_assert(std::is_same_v<std::remove_cvref_t<decltype(trade_date)>, std::string>);
@@ -239,10 +241,11 @@ struct ListedDefinitionsCacheKey {
   [[nodiscard]] bool operator==(const ListedDefinitionsCacheKey &) const = default;
 };
 
-// sizeof/offsetof fold over `ListedContractDefinition`. Deterministic for a
-// given build; a field addition, removal, reorder or type change moves it, so a
-// blob written by a differently-shaped build can never be decoded as the current
-// shape. Not constexpr only because `hash_bytes` is not.
+// sizeof/offsetof fold over `ListedDefinitionsCacheWireRowSchema`, including the
+// two flag assignments. Deterministic for a given wire schema; a column addition,
+// removal, reorder or type change moves it, so a blob written for a different
+// encoded shape can never be decoded as the current shape. Not constexpr only
+// because `hash_bytes` is not.
 [[nodiscard]] std::uint64_t definitions_cache_abi_fold() noexcept;
 
 // The key for a source `definitions.tsv` whose full byte content is

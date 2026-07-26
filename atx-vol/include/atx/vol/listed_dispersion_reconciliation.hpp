@@ -18,9 +18,16 @@ enum class ListedMarkRole : std::uint8_t { Entry = 0, Held = 1 };
 enum class ListedMarkStatus : std::uint8_t {
   Ok = 0,
   NoRawQuote = 1,
-  CrossedQuote = 2,
+  CrossedQuote = 2, // ask < bid, or a non-finite / non-positive ask
   NoSurface = 3,
   PricingError = 4,
+  // FIX-F M3. F6 tightened `is_valid_listed_quote` from `bid >= 0` to `bid > 0`,
+  // which silently re-labelled every zero-bid quote here as `CrossedQuote` — the
+  // right DROP with the wrong REASON, in a persisted artifact. A zero bid is not
+  // a crossed book; it is an absent bid. Dropping behaviour is unchanged
+  // (`has_raw_mid` still keys on `Ok` alone), so no NAV or mark moves — only the
+  // reason an operator reads.
+  ZeroBidQuote = 5,
 };
 
 [[nodiscard]] const char *to_string(ListedMarkRole role) noexcept;
@@ -84,7 +91,18 @@ struct ListedReconciliationSnapshot {
 
 struct ListedReconciliationConfig {
   bool strict_model{true};
-  double entry_mark_tolerance{0.0};
+  // M3: RELATIVE tolerance for the entry-mark cross-check. On a roll date the
+  // reconcile route reprices the entry with `PricedSurface::fair_value`, while the
+  // schedule stored `leg.model_mark` from the build route `PricedSurface::evaluate`
+  // — two American-pricing entry points that can differ by a few ULPs on a real
+  // board. The check now allows |fair_value - evaluate| <= tol * max(|a|, |b|, 1),
+  // so a benign 1-ULP route divergence no longer hard-aborts a valid run, while a
+  // genuine economic mismatch (schedule vs archive disagree) is still caught. The
+  // previous float-exact `0.0` was an absolute tolerance; set this to 0.0 to
+  // restore that strict bit-for-bit check. Shared with the strategy's identical
+  // guard via kListedEntryMarkTolerance / listed_entry_mark_agrees — the two must
+  // never diverge (listed_dispersion_schedule.hpp).
+  double entry_mark_tolerance{kListedEntryMarkTolerance};
 };
 
 // Reprice the exact scheduled contracts, independently join daily raw quotes,

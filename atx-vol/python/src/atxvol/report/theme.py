@@ -49,8 +49,76 @@ RULE: Final = "#dcd9d1"
 GRID: Final = "#e7e4dc"
 ACCENT: Final = "#8a5a13"
 
+# ── Status band, for a Banner ───────────────────────────────────────────────
+# A 3-state ordinal set (benign -> caution -> severe), ported verbatim from
+# `tools/spy_dispersion_tearsheet_report.py`, where it was validated as a set:
+#
+#     CVD separation    dE 12.5 (protan), 13.0 (tritan)
+#     normal vision     floor 21.2
+#     chroma / contrast all above the chroma floor and >= 3:1 on the surface
+#
+# `unknown` is deliberately the neutral muted ink rather than a fourth hue: an
+# unclassified state must not read like one of the three real ones. Colour is
+# never the only channel — `Banner` always prints the state's text label, so the
+# band survives greyscale printing and every form of CVD.
+STATUS: Final[dict[str, str]] = {
+    "ok": "#0d9488",
+    "warn": "#d97706",
+    "alert": "#c2185b",
+    "unknown": MUTED,
+}
+
 SANS: Final = 'system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif'
 MONO: Final = 'ui-monospace,"SF Mono","Cascadia Mono","JetBrains Mono",Consolas,monospace'
+
+
+# ── Contrast, computed rather than asserted ─────────────────────────────────
+# WCAG 2.x relative luminance and contrast ratio. Exposed because this module
+# makes accessibility CLAIMS, and a claim a caller cannot check is a comment.
+
+def _rgb(color: str) -> tuple[float, float, float]:
+    v = color.lstrip("#")
+    if len(v) != 6:
+        raise ValueError(f"expected a #rrggbb colour, got {color!r}")
+    return tuple(int(v[i:i + 2], 16) / 255.0 for i in (0, 2, 4))  # type: ignore[return-value]
+
+
+def relative_luminance(color: str) -> float:
+    """WCAG 2.x relative luminance of an sRGB `#rrggbb` colour."""
+    def linear(c: float) -> float:
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (linear(c) for c in _rgb(color))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast_ratio(a: str, b: str) -> float:
+    """WCAG 2.x contrast ratio between two `#rrggbb` colours (1.0 … 21.0)."""
+    la, lb = relative_luminance(a), relative_luminance(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def _mix(fg: str, bg: str, frac: float) -> str:
+    f, b = _rgb(fg), _rgb(bg)
+    return "#" + "".join(
+        f"{round(255.0 * (f[i] * frac + b[i] * (1.0 - frac))):02x}" for i in range(3)
+    )
+
+
+# The banner band. Body text on a SATURATED status colour is the one place this
+# theme's own accessibility claim did not hold: white on `ok` measures 3.74:1,
+# `warn` 3.19:1 and `unknown` 3.87:1, and the band's `.detail` / `.aside` are
+# 13px, so the bar is 4.5:1 — three of four tones failed. The palette itself is
+# fine and is NOT changed here (it is validated as a set, and shared by value
+# with `tools/spy_dispersion_tearsheet_report.py`); what changes is how the band
+# uses it. Ink on a light tint of the status colour, with the full-strength
+# colour carried by a thick rule, keeps the hue as the recognition channel while
+# the text clears AA comfortably. The rule is a non-text graphic, held to 3:1
+# against the page surface — which is exactly the check the palette already
+# passed.
+BANNER_TINT: Final[dict[str, str]] = {
+    name: _mix(color, PAPER, 0.14) for name, color in STATUS.items()
+}
 
 
 def series_color(index: int) -> str:
@@ -75,6 +143,10 @@ def stylesheet() -> str:
   --paper:{PAPER}; --surface:{SURFACE}; --ink:{INK}; --ink-2:{INK_2};
   --muted:{MUTED}; --rule:{RULE}; --grid:{GRID}; --accent:{ACCENT};
   --pos:{POSITIVE}; --neg:{NEGATIVE};
+  --ok:{STATUS["ok"]}; --warn:{STATUS["warn"]}; --alert:{STATUS["alert"]};
+  --unknown:{STATUS["unknown"]};
+  --ok-tint:{BANNER_TINT["ok"]}; --warn-tint:{BANNER_TINT["warn"]};
+  --alert-tint:{BANNER_TINT["alert"]}; --unknown-tint:{BANNER_TINT["unknown"]};
   --sans:{SANS}; --mono:{MONO};
   --measure:74ch;
 }}
@@ -195,6 +267,32 @@ details.tableview>summary::before{{content:"+ ";font-weight:700}}
 details.tableview[open]>summary::before{{content:"\\2212 "}}
 details.tableview>summary:hover{{color:var(--ink)}}
 details.tableview .table-wrap{{margin-top:6px;max-height:340px;overflow-y:auto}}
+
+/* ── Status banner ────────────────────────────────────────────────────────
+   Full width, directly under the masthead, BEFORE any number. The state's text
+   label is inside the band, so colour is a reinforcement and never the carrier.
+   INK on a light TINT of the status colour, with the full-strength colour in the
+   leading rule: white body text on the saturated colour failed WCAG AA on three
+   of the four tones (`ok` 3.74:1, `warn` 3.19:1, `unknown` 3.87:1, against a
+   4.5:1 bar for the 13px rows). `theme.contrast_ratio` measures both channels
+   and `test_report.py` pins them. */
+.banner{{
+  margin:26px 0 0;padding:13px 18px 14px;color:var(--ink);
+  display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 22px;
+  background:var(--unknown-tint);border-left:5px solid var(--unknown);
+}}
+.banner.ok{{background:var(--ok-tint);border-left-color:var(--ok)}}
+.banner.warn{{background:var(--warn-tint);border-left-color:var(--warn)}}
+.banner.alert{{background:var(--alert-tint);border-left-color:var(--alert)}}
+.banner .badge{{
+  font-family:var(--mono);font-size:13px;font-weight:700;letter-spacing:.1em;
+  text-transform:uppercase;margin:0;flex:none;color:var(--ink);
+}}
+.banner .detail{{font-size:13px;margin:0;color:var(--ink-2);flex:1 1 22ch;min-width:0}}
+.banner .aside{{
+  font-size:13px;font-weight:640;margin:0;color:var(--ink-2);flex:none;
+  font-variant-numeric:tabular-nums;
+}}
 
 /* ── Notes ────────────────────────────────────────────────────────────── */
 .note{{

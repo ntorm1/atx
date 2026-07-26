@@ -36,7 +36,8 @@
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp" // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/counters.hpp"
-#include "atx/vol/portfolio_pricer.hpp" // OptionContract
+#include "atx/vol/dispersion_backtest.hpp" // DispersionCostModel, dispersion_effective_frictions
+#include "atx/vol/portfolio_pricer.hpp"    // OptionContract
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"         // IStrategy
 #include "atx/vol/surface_archive.hpp"  // write_surface_archive_file, SurfaceArchiveItem
@@ -899,18 +900,40 @@ TEST(Backtest, ArchivedSnapshotDefaultsColdAndPreparesEverySurfaceForRequestedTi
 
   auto legacy = MarketSnapshot::load(path);
   ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
-  ASSERT_EQ(legacy->surfaces().size(), items.size());
-  for (const PricedSurface &surface : legacy->surfaces()) {
-    EXPECT_EQ(surface.query_pricing_tier(), QueryPricingTier::LegacyCompatible);
-    EXPECT_EQ(surface.query_pricing_route(100.0, 0.25, Side::Put),
-              QueryPricingRoute::ColdReference);
+  ASSERT_EQ(legacy->n_surfaces(), items.size());
+  // WS-ZC1: a cache-free tier is served by BORROWED views, so assert through the
+  // backing-agnostic accessor. `query_pricing_route` is a PricedSurface-only
+  // introspection hook, so it is checked on whichever backing owns surfaces.
+  for (std::size_t i = 0; i < legacy->n_surfaces(); ++i) {
+    EXPECT_EQ(legacy->surface_at(i).query_pricing_tier(), QueryPricingTier::LegacyCompatible);
+  }
+  // WS-ZC1 made this cache-free tier BORROW its surfaces, which left `surfaces()`
+  // EMPTY — so the `query_pricing_route` loop that used to stand here iterated zero
+  // times and asserted nothing while still reading as protection. "Defaults cold" is
+  // asserted through the backing-agnostic handle instead: a cold tier is exactly a
+  // surface with no query accelerator, which is what makes its route ColdReference.
+  EXPECT_TRUE(legacy->borrows_views());
+  for (std::size_t i = 0; i < legacy->n_surfaces(); ++i) {
+    EXPECT_EQ(legacy->surface_at(i).query_cache_pair_count(), 0u);
   }
 
   auto fast = MarketSnapshot::load(path, QueryPricingTier::RepresentativeFast);
   ASSERT_TRUE(fast.has_value()) << fast.error().to_string();
+  ASSERT_EQ(fast->n_surfaces(), items.size());
+  // A fast tier cannot be served by a view (a view carries no accelerator), so it
+  // reconstructs OWNED surfaces and `surfaces()` is genuinely populated here. Assert
+  // that explicitly: it is what keeps this `PricedSurface`-only loop from silently
+  // going vacuous the way the cold one above did.
+  EXPECT_FALSE(fast->borrows_views());
   ASSERT_EQ(fast->surfaces().size(), items.size());
   for (const PricedSurface &surface : fast->surfaces()) {
     EXPECT_EQ(surface.query_pricing_tier(), QueryPricingTier::RepresentativeFast);
+    EXPECT_GT(surface.query_cache_pair_count(), 0u);
+    // Real route introspection, on the owned path that actually exercises it. Query
+    // at each surface's OWN spot so the resolved point is inside its certified
+    // correction box (the two archived surfaces sit at S=100 and S=25).
+    EXPECT_EQ(surface.query_pricing_route(surface.pricing().S, 0.25, Side::Put),
+              QueryPricingRoute::RepresentativeFast);
   }
 }
 
@@ -934,10 +957,10 @@ TEST(Backtest, MarketSnapshotPreservesSameBlobProvenanceByDirectoryUid) {
 
   auto snapshot = MarketSnapshot::load(path);
   ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
-  ASSERT_EQ(snapshot->surfaces().size(), 2u);
-  ASSERT_EQ(snapshot->provenances().size(), snapshot->surfaces().size());
-  EXPECT_EQ(snapshot->surfaces()[0].uid(), 7u);
-  EXPECT_EQ(snapshot->surfaces()[1].uid(), 42u);
+  ASSERT_EQ(snapshot->n_surfaces(), 2u);
+  ASSERT_EQ(snapshot->provenances().size(), snapshot->n_surfaces());
+  EXPECT_EQ(snapshot->surface_at(0).uid(), 7u);
+  EXPECT_EQ(snapshot->surface_at(1).uid(), 42u);
   EXPECT_EQ(snapshot->provenances()[0].validation.validation_id, 70u);
   EXPECT_EQ(snapshot->provenances()[1].validation.validation_id, 420u);
   const SurfaceProvenance *aaa_got = snapshot->provenance(7u);
@@ -1156,9 +1179,9 @@ TEST(Backtest, SnapshotCacheIdentityIncludesNormalizedPathAndQueryTier) {
   EXPECT_EQ(legacy->get(), same_legacy->get());
   EXPECT_NE(legacy->get(), cold->get());
   EXPECT_NE(cold->get(), fast->get());
-  EXPECT_EQ((*legacy)->surfaces().front().query_pricing_tier(), QueryPricingTier::LegacyCompatible);
-  EXPECT_EQ((*cold)->surfaces().front().query_pricing_tier(), QueryPricingTier::ColdReference);
-  EXPECT_EQ((*fast)->surfaces().front().query_pricing_tier(), QueryPricingTier::RepresentativeFast);
+  EXPECT_EQ((*legacy)->surface_at(0).query_pricing_tier(), QueryPricingTier::LegacyCompatible);
+  EXPECT_EQ((*cold)->surface_at(0).query_pricing_tier(), QueryPricingTier::ColdReference);
+  EXPECT_EQ((*fast)->surface_at(0).query_pricing_tier(), QueryPricingTier::RepresentativeFast);
   EXPECT_EQ(MarketSnapshot::open_count(), 3u);
   const SnapshotCacheStats stats = cache.stats();
   EXPECT_EQ(stats.loads, 3u);
@@ -1232,10 +1255,10 @@ TEST(Backtest, ReuseOnlyFastMissLoadsColdAndLaterReusesEagerFastSnapshot) {
   auto cold_on_miss =
       cache.load(path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
   ASSERT_TRUE(cold_on_miss.has_value()) << cold_on_miss.error().to_string();
-  ASSERT_EQ((*cold_on_miss)->surfaces().size(), 1u);
-  EXPECT_EQ((*cold_on_miss)->surfaces().front().query_pricing_tier(),
+  ASSERT_EQ((*cold_on_miss)->n_surfaces(), 1u);
+  EXPECT_EQ((*cold_on_miss)->surface_at(0).query_pricing_tier(),
             QueryPricingTier::ColdReference);
-  EXPECT_EQ((*cold_on_miss)->surfaces().front().query_cache_pair_count(), 0u);
+  EXPECT_EQ((*cold_on_miss)->surface_at(0).query_cache_pair_count(), 0u);
   EXPECT_EQ(MarketSnapshot::open_count(), 1u);
 
   auto same_cold =
@@ -1247,10 +1270,10 @@ TEST(Backtest, ReuseOnlyFastMissLoadsColdAndLaterReusesEagerFastSnapshot) {
   auto eager_fast =
       cache.load(path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::Eager);
   ASSERT_TRUE(eager_fast.has_value()) << eager_fast.error().to_string();
-  ASSERT_EQ((*eager_fast)->surfaces().size(), 1u);
-  EXPECT_EQ((*eager_fast)->surfaces().front().query_pricing_tier(),
+  ASSERT_EQ((*eager_fast)->n_surfaces(), 1u);
+  EXPECT_EQ((*eager_fast)->surface_at(0).query_pricing_tier(),
             QueryPricingTier::RepresentativeFast);
-  EXPECT_EQ((*eager_fast)->surfaces().front().query_cache_pair_count(), 1u);
+  EXPECT_EQ((*eager_fast)->surface_at(0).query_cache_pair_count(), 1u);
   EXPECT_NE(eager_fast->get(), cold_on_miss->get());
   EXPECT_EQ(MarketSnapshot::open_count(), 2u);
 
@@ -1286,7 +1309,7 @@ TEST(Backtest, ConcurrentReuseOnlyFastMissesCoalesceOnOneColdSnapshot) {
     ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
     first = first == nullptr ? snapshot->get() : first;
     EXPECT_EQ(snapshot->get(), first);
-    EXPECT_EQ((*snapshot)->surfaces().front().query_pricing_tier(),
+    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(),
               QueryPricingTier::ColdReference);
   }
   EXPECT_EQ(MarketSnapshot::open_count(), 1u);
@@ -1314,8 +1337,8 @@ TEST(Backtest, ReuseOnlyFailedFastEntryFallsBackToColdRegardlessOfCacheHistory) 
   const auto reuse =
       cache.load(path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
   ASSERT_TRUE(reuse.has_value()) << reuse.error().to_string();
-  EXPECT_EQ((*reuse)->surfaces().front().query_pricing_tier(), QueryPricingTier::ColdReference);
-  EXPECT_EQ((*reuse)->surfaces().front().query_cache_pair_count(), 0u);
+  EXPECT_EQ((*reuse)->surface_at(0).query_pricing_tier(), QueryPricingTier::ColdReference);
+  EXPECT_EQ((*reuse)->surface_at(0).query_cache_pair_count(), 0u);
   EXPECT_EQ(MarketSnapshot::open_count(), 2u);
 
   // Eager retains its original requested-tier error contract even after a cold
@@ -1366,14 +1389,14 @@ TEST(Backtest, RunConfigPropagatesQueryTierThroughPrefetchAndLoad) {
   for (const SnapshotRef &ref : clock->refs()) {
     auto snapshot = config.snapshot_cache->load(ref.archive_path, config.query_pricing_tier);
     ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
-    EXPECT_EQ((*snapshot)->surfaces().front().query_pricing_tier(),
+    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(),
               QueryPricingTier::RepresentativeFast);
   }
   EXPECT_EQ(config.snapshot_cache->stats().loads, after_run.loads);
 
   auto legacy = config.snapshot_cache->load(clock->refs().front().archive_path);
   ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
-  EXPECT_EQ((*legacy)->surfaces().front().query_pricing_tier(), QueryPricingTier::LegacyCompatible);
+  EXPECT_EQ((*legacy)->surface_at(0).query_pricing_tier(), QueryPricingTier::LegacyCompatible);
   EXPECT_EQ(config.snapshot_cache->stats().loads, after_run.loads + 1u);
 }
 
@@ -1397,9 +1420,9 @@ TEST(Backtest, ReuseOnlyRunUsesColdOnMissAndPreparedFastAfterExplicitPreload) {
     auto snapshot = fresh_config.snapshot_cache->load(
         ref.archive_path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
     ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
-    EXPECT_EQ((*snapshot)->surfaces().front().query_pricing_tier(),
+    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(),
               QueryPricingTier::ColdReference);
-    EXPECT_EQ((*snapshot)->surfaces().front().query_cache_pair_count(), 0u);
+    EXPECT_EQ((*snapshot)->surface_at(0).query_cache_pair_count(), 0u);
   }
   EXPECT_EQ(fresh_config.snapshot_cache->stats().loads, fresh_stats.loads);
 
@@ -1418,12 +1441,112 @@ TEST(Backtest, ReuseOnlyRunUsesColdOnMissAndPreparedFastAfterExplicitPreload) {
     auto snapshot = preloaded_config.snapshot_cache->load(
         ref.archive_path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
     ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
-    EXPECT_EQ((*snapshot)->surfaces().front().query_pricing_tier(),
+    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(),
               QueryPricingTier::RepresentativeFast);
-    EXPECT_EQ((*snapshot)->surfaces().front().query_cache_pair_count(), 1u);
+    EXPECT_EQ((*snapshot)->surface_at(0).query_cache_pair_count(), 1u);
   }
   EXPECT_EQ(preloaded_config.snapshot_cache->stats().loads, preload_stats.loads);
   expect_result_bit_identical(*fresh, *preloaded);
+}
+
+// WS-ZC regression (the test whose absence let this ship). `run_backtest` used to
+// call `snapshot_cache->set_archive_backing(ArchiveBacking::Sealed)` UNCONDITIONALLY,
+// including on a cache the CALLER supplied and owns. WS-ZC1 correctly made the
+// backing part of the snapshot-cache key, so flipping a live cache to Sealed does not
+// re-tune it — it ORPHANS every entry the caller preloaded under the default Mutable
+// backing. The run then silently re-loaded all of them, and the follow-up ReuseOnly
+// fast request missed and silently resolved down to ColdReference: a quieter pricing
+// tier with no error anywhere.
+//
+// THE INVARIANT: a caller who warms a cache and then runs a backtest keeps BOTH its
+// preload (no new loads) and its pricing tier. Note that saving and restoring the
+// caller's backing around the run does NOT satisfy this — the run's own loads would
+// still be keyed Sealed and would still miss the Mutable preload. Only leaving a
+// caller-owned cache alone does. The Sealed win is retained on the cache
+// `run_backtest` privately owns, which is asserted separately below.
+TEST(Backtest, RunBacktestLeavesCallerOwnedCachePreloadAndBackingIntact) {
+  const fs::path dir = fresh_dir("caller-cache-backing-preserved");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 3);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;
+
+  auto cache = std::make_shared<SnapshotCache>();
+  ASSERT_EQ(cache->archive_backing(), ArchiveBacking::Mutable);
+
+  // Warm every session at the FAST tier, under the cache's own default backing.
+  for (const SnapshotRef &ref : clock->refs()) {
+    auto snapshot = cache->load(ref.archive_path, QueryPricingTier::RepresentativeFast,
+                                QueryCacheBuildPolicy::Eager);
+    ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+  }
+  const std::uint64_t preload_loads = cache->stats().loads;
+  ASSERT_EQ(preload_loads, static_cast<std::uint64_t>(clock->size()));
+
+  RunConfig config;
+  config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
+  config.query_cache_build_policy = QueryCacheBuildPolicy::ReuseOnly;
+  config.price.query_execution = QueryExecution::ColdReference;
+  config.snapshot_cache = cache;
+
+  // BOTH overloads set the backing, so both must leave the caller's cache alone.
+  const auto fixed = run_backtest(*clock, survivor_book(expiry), config);
+  ASSERT_TRUE(fixed.has_value()) << fixed.error().to_string();
+  const auto after_fixed_loads = cache->stats().loads;
+  PriceOptionsSpyStrategy strategy;
+  const auto declarative = run_backtest(*clock, strategy, config);
+  ASSERT_TRUE(declarative.has_value()) << declarative.error().to_string();
+
+  // 1. The runs CONSUMED the preload rather than orphaning it: no new loads at all.
+  //    Pre-fix this went 3 -> 6 on the first overload alone.
+  EXPECT_EQ(after_fixed_loads, preload_loads);
+  EXPECT_EQ(cache->stats().loads, preload_loads);
+  // 2. Neither run retargeted the caller's cache.
+  EXPECT_EQ(cache->archive_backing(), ArchiveBacking::Mutable);
+  // 3. The preloaded FAST tier is still what the cache serves — no silent
+  //    RepresentativeFast(02) -> ColdReference(01) downgrade, and the query
+  //    accelerator that makes it the fast tier is still attached (pair count 1 -> 0
+  //    was the pre-fix symptom).
+  for (const SnapshotRef &ref : clock->refs()) {
+    auto snapshot = cache->load(ref.archive_path, QueryPricingTier::RepresentativeFast,
+                                QueryCacheBuildPolicy::ReuseOnly);
+    ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(),
+              QueryPricingTier::RepresentativeFast);
+    EXPECT_GT((*snapshot)->surface_at(0).query_cache_pair_count(), 0u);
+    // A fast tier reconstructs OWNED surfaces; a Sealed-orphaned reload would have
+    // come back as a borrowed cold view instead.
+    EXPECT_FALSE((*snapshot)->borrows_views());
+  }
+  EXPECT_EQ(cache->stats().loads, preload_loads);
+}
+
+// The other half of the contract: when NO cache is supplied, `run_backtest` builds a
+// private one and DOES seal it — that private replay path is the entire point of
+// WS-ZC1 (snapshot_load ~1008 -> ~44 ms). Fixing the caller-owned-cache bug must not
+// be done by abandoning the optimization, so pin that the sealed private path still
+// produces bit-identical results to an explicitly Mutable caller-supplied cache.
+TEST(Backtest, PrivateSnapshotCacheStillSealsAndMatchesMutableCallerCacheBitForBit) {
+  const fs::path dir = fresh_dir("private-cache-sealed");
+  const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 3);
+  auto clock = Clock::from_manifest(manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;
+
+  // No snapshot_cache => private, sealed.
+  RunConfig private_config;
+  const auto sealed_run = run_backtest(*clock, survivor_book(expiry), private_config);
+  ASSERT_TRUE(sealed_run.has_value()) << sealed_run.error().to_string();
+
+  // An explicitly Mutable caller-supplied cache takes the copied backing instead.
+  RunConfig mutable_config;
+  mutable_config.snapshot_cache = std::make_shared<SnapshotCache>(ArchiveBacking::Mutable);
+  const auto mutable_run = run_backtest(*clock, survivor_book(expiry), mutable_config);
+  ASSERT_TRUE(mutable_run.has_value()) << mutable_run.error().to_string();
+  EXPECT_EQ(mutable_config.snapshot_cache->archive_backing(), ArchiveBacking::Mutable);
+
+  // The backing changes only HOW the borrowed bytes are obtained, never the numbers.
+  expect_result_bit_identical(*sealed_run, *mutable_run);
 }
 
 TEST(Backtest, ReuseOnlyFastConfiguredEconomicsRejectsAllResidencyBeforeIoInBothOverloads) {
@@ -1533,8 +1656,8 @@ TEST(Backtest, AdaptiveStrategyRejectsFastEconomicsUnlessColdIsExplicit) {
       config.snapshot_cache->load(clock->refs().front().archive_path, config.query_pricing_tier,
                                   QueryCacheBuildPolicy::ReuseOnly);
   ASSERT_TRUE(actual.has_value()) << actual.error().to_string();
-  EXPECT_EQ((*actual)->surfaces().front().query_pricing_tier(), QueryPricingTier::ColdReference);
-  EXPECT_EQ((*actual)->surfaces().front().query_cache_pair_count(), 0u);
+  EXPECT_EQ((*actual)->surface_at(0).query_pricing_tier(), QueryPricingTier::ColdReference);
+  EXPECT_EQ((*actual)->surface_at(0).query_cache_pair_count(), 0u);
 }
 
 TEST(Backtest, AdaptiveStrategyHandlesFreshFullAndPartialFastResidency) {
@@ -1623,7 +1746,7 @@ TEST(Backtest, AdaptiveStrategyHandlesFreshFullAndPartialFastResidency) {
       const auto resolved = resolve_spec(**snapshot, spec);
       ASSERT_TRUE(resolved.has_value()) << resolved.error().to_string();
       for (const SizedLeg &resolved_leg : *resolved) {
-        const PricedSurface *surface = (*snapshot)->find(resolved_leg.leg.uid);
+        const SurfaceRef surface = (*snapshot)->find(resolved_leg.leg.uid);
         ASSERT_NE(surface, nullptr);
         const auto delta = surface->delta(resolved_leg.leg.K, resolved_leg.leg.T,
                                           resolved_leg.leg.side, QueryExecution::ColdReference);
@@ -2013,17 +2136,14 @@ TEST(Backtest, DailyTwoLegRollReusesExactPnlTargetMarksWithoutChangingEconomics)
   EXPECT_EQ(result->n_open_lots, (std::vector<double>{2.0, 2.0, 2.0, 2.0}));
   // Bit pins captured before the target-mark handoff. Close cash and notional
   // remain numerically identical while their redundant Greek solves disappear.
-  // infra / test-tolerance (WS-0): the running `cash` accumulator sums ~1-ULP
-  // FMA-contraction drift over the run's surface solves, landing ~2.4e-12 (rel
-  // ~5e-13) off the SSE2-captured pin under rel-avx2 (/arch:AVX2) — an accumulated
-  // contraction telltale, not an economics change. golden_isa_accum_tol keeps the
-  // 4-ULP EXPECT_DOUBLE_EQ gate on the SSE2 reference ISA and opens a relative
-  // economic band under FMA. See support/isa_golden_tol.hpp.
-  // A1 REPIN (core-review finding 1): the backtest reprices through the cold
-  // andersen_lake path whose BAW critical-price seed sign was fixed; every close
-  // mark shifted deterministically ~1e-6 (cash) / ~1e-6 (turnover). Recaptured on
-  // the dev (Debug, reference-ISA) build — golden_isa_accum_tol keeps the 4-ULP
-  // gate here and the relative economic band under rel-avx2/FMA.
+  // infra / test-tolerance: the running `cash` accumulator sums sub-ULP drift over the
+  // run's surface solves. Gate is golden_isa_accum_tol — one unconditional 1e-11
+  // relative band (WS-P1a re-band; no __FMA__ branch; see support/isa_golden_tol.hpp).
+  // [WS-M M1] These pins are MAIN's (pricing-greeks SOTA) captured values: the merged
+  // American greeks kernel is main's rewrite (incl. the A1 BAW critical-price seed-sign
+  // fix), so the marks reproduce main's numbers, not feat/disp-hotpath's pre-rewrite
+  // pins (which miss by ~3.6e-6). Observed merged-engine drift vs pin ~2.3e-13 rel
+  // (cost bit-identical), ~40x inside the band. (M2 owns any formal quiet-window re-pin.)
   constexpr std::array<double, 4> expected_cash{-3.0734592640139908, -3.5489832955311158,
                                                 -4.0009154520034826, -4.4307759090513628};
   constexpr std::array<double, 4> expected_turnover{2200.5417344553625, 4444.318791516017,
@@ -2068,11 +2188,9 @@ TEST(Backtest, PriceBpsRollCloseReusesPnlMarkWithoutASecondSurfaceSolve) {
   const auto result = run_backtest(*clock, strategy, config);
   ASSERT_TRUE(result.has_value()) << result.error().to_string();
   ASSERT_EQ(result->size(), 2u);
-  // infra / test-tolerance (WS-0): same accumulated-FMA-contraction telltale as
-  // above — `cash` drifts ~1.9e-12 off the SSE2 pin under rel-avx2. SSE2 keeps its
-  // 4-ULP EXPECT_DOUBLE_EQ gate; FMA gets the relative economic band.
-  // A1 REPIN (core-review finding 1): same deterministic ~1e-6 close-mark shift from
-  // the corrected BAW seed. Recaptured on dev (Debug, reference ISA).
+  // infra / test-tolerance: same unconditional 1e-11 relative band as the sibling
+  // above. [WS-M M1] MAIN's captured values (merged greeks kernel = main's rewrite):
+  // cost[1] and turnover_notional[1] reproduce bit-identically, cash[1] ~2e-13 rel.
   EXPECT_NEAR(result->cost[1], 44.443187915160173,
               atx::vol::test::golden_isa_accum_tol(44.443187915160173));
   EXPECT_NEAR(result->cash[1], -69.997588555245017,
@@ -2124,10 +2242,17 @@ TEST(Backtest, VolTicksRollCloseUsesConfiguredFdOrAnalyticGreekRoute) {
   auto [analytic, analytic_counts] = run(true);
   ASSERT_TRUE(fd.has_value()) << fd.error().to_string();
   ASSERT_TRUE(analytic.has_value()) << analytic.error().to_string();
-  EXPECT_TRUE(bits_equal(fd->cost[1], analytic->cost[1]));
-  EXPECT_TRUE(bits_equal(fd->cash[1], analytic->cash[1]));
-  EXPECT_TRUE(bits_equal(fd->turnover_notional[1], analytic->turnover_notional[1]));
-  EXPECT_TRUE(bits_equal(fd->turnover_vega[1], analytic->turnover_vega[1]));
+  // Route parity, not a value pin: the configured greek route must not change the
+  // economics. Since WS-P1a the ANALYTIC route runs the laned AVX2 greeks kernel
+  // while the FD route stays scalar, so the two now agree to the documented
+  // economic band rather than to the bit. Measured here (dev preset): cost and
+  // turnover_notional are exactly equal, cash differs by 6.3664629124104977e-12
+  // on -69.36 (9.18e-14 relative). See support/isa_golden_tol.hpp.
+  using atx::vol::test::laned_greeks_close;
+  EXPECT_TRUE(laned_greeks_close(fd->cost[1], analytic->cost[1]));
+  EXPECT_TRUE(laned_greeks_close(fd->cash[1], analytic->cash[1]));
+  EXPECT_TRUE(laned_greeks_close(fd->turnover_notional[1], analytic->turnover_notional[1]));
+  EXPECT_TRUE(laned_greeks_close(fd->turnover_vega[1], analytic->turnover_vega[1]));
   if constexpr (counters_enabled()) {
     // FD: 14 inception + (2 target + 14 close + 14 new-entry) = 44.
     EXPECT_EQ(fd_counts.get(Counter::BoundarySolves), 44u);
@@ -2136,6 +2261,74 @@ TEST(Backtest, VolTicksRollCloseUsesConfiguredFdOrAnalyticGreekRoute) {
     EXPECT_EQ(fd_counts.get(Counter::SurfaceFullGreekRoutes), 4u);
     EXPECT_EQ(analytic_counts.get(Counter::SurfaceFullGreekRoutes), 4u);
   }
+}
+
+// REVIEW C-4 — a configured vol-tick spread must SURVIVE an active impact model.
+//
+// The contract this pins is the one the headers already state:
+//   * dispersion_backtest.hpp:40-45 — "signed half-spread PLUS square-root impact,
+//     both per share", i.e. `mid + direction * (half_spread + impact)`;
+//   * dispersion_run.hpp:250-254 — FrictionedWithImpact is "THE ABOVE PLUS impact".
+//
+// The oracle is ADDITIVITY OF THE CHARGED COST, not the shape of the folded
+// `FrictionModel`: every friction here is charged on the same |qty| * multiplier,
+// and all three runs take the identical VolTicks execution path, so
+//
+//     cost(spread + impact) == cost(spread only) + cost(impact only)
+//
+// exactly, up to the reassociation of a single add. That makes this an
+// independent oracle — it never repeats the production expression.
+//
+// Before the fix `dispersion_effective_frictions` rewrote ANY active-impact
+// configuration to `SpreadKind::PriceBps`, so the third run charged impact ONLY
+// and this failed by exactly `spread_only->cost[1]` (the whole vol-tick spread).
+TEST(Backtest, C4_ImpactIsChargedOnTopOfAVolTickSpreadNotInsteadOfIt) {
+  const fs::path dir = fresh_dir("c4-vol-ticks-plus-impact");
+  auto clock = Clock::from_manifest(make_evolving_corpus(dir, "SPX", 2));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  DispersionCostModel costs;
+  costs.k = 0.02;
+  costs.beta = 0.6;
+  costs.adv_fraction = 0.04;
+  ASSERT_TRUE(costs.active());
+  const DispersionCostModel inert; // k == 0 => inactive, the identity fold
+
+  const auto run_with = [&](double vol_tick, const DispersionCostModel &model) {
+    DeclarativeStrategy strategy{daily_two_leg_roll_spec()};
+    RunConfig config;
+    config.price.n_threads = 1u;
+    config.price.analytic_greeks = true;
+    config.prefetch_snapshots = false;
+    FrictionModel base;
+    base.spread_kind = FrictionModel::SpreadKind::VolTicks;
+    base.vol_tick = vol_tick;
+    config.frictions = dispersion_effective_frictions(base, model);
+    return run_backtest(*clock, strategy, config);
+  };
+
+  // vol_tick == 0 isolates the impact term while keeping the VolTicks lane (and
+  // therefore the identical marks/vegas) selected in all three runs.
+  const auto spread_only = run_with(0.01, inert);
+  const auto impact_only = run_with(0.0, costs);
+  const auto both = run_with(0.01, costs);
+  ASSERT_TRUE(spread_only.has_value()) << spread_only.error().to_string();
+  ASSERT_TRUE(impact_only.has_value()) << impact_only.error().to_string();
+  ASSERT_TRUE(both.has_value()) << both.error().to_string();
+  ASSERT_EQ(both->size(), 2u);
+
+  // Both components must actually bite, or the additive identity is vacuous.
+  ASSERT_GT(spread_only->cost[1], 0.0);
+  ASSERT_GT(impact_only->cost[1], 0.0);
+
+  const double expected = spread_only->cost[1] + impact_only->cost[1];
+  EXPECT_NEAR(both->cost[1], expected, 1.0e-9 * expected)
+      << "vol-tick spread " << spread_only->cost[1] << " + impact " << impact_only->cost[1]
+      << " != charged " << both->cost[1];
+  // The composed run is strictly more expensive than either component alone —
+  // the economic statement C-4 is about (a spec charging impact only overstates NAV).
+  EXPECT_GT(both->cost[1], impact_only->cost[1]);
+  EXPECT_GT(both->cost[1], spread_only->cost[1]);
 }
 
 TEST(Backtest, DuplicateOpenLotIdsFailClosedBeforePricingOrPartialClose) {
@@ -2240,6 +2433,12 @@ TEST(Backtest, BadTargetMarkWithoutFallbackSurfaceNeverBooksAZeroClose) {
   config.frictions.spread_kind = FrictionModel::SpreadKind::PriceBps;
   config.frictions.half_spread_bps = 100.0;
   config.prefetch_snapshots = false;
+  // WS-F F1(c): the default is now UnpricedLotPolicy::Error, whose step-level
+  // held-lot guard would fire FIRST on this corpus (the SPX board is absent on
+  // date 2) and mask the guarantee under test. The subject here is the EXECUTOR's
+  // roll-close guard — it must fail closed regardless of the held-valuation
+  // policy — so pin the lenient policy to let the close path be reached.
+  config.unpriced = UnpricedLotPolicy::ExcludeAndReport;
 
   const auto result = run_backtest(*clock, strategy, config);
   ASSERT_FALSE(result.has_value());
@@ -2285,7 +2484,9 @@ TEST(Backtest, DefaultPolicyIsBitIdenticalToBaseline) {
   auto clock = Clock::from_manifest(man);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
   const std::int64_t expiry = kBaseNow + 120 * kDayNs;    // survives every date
-  auto res = run_backtest(*clock, survivor_book(expiry)); // default: ExcludeAndReport
+  // WS-F F1(c) flipped the default to Error; this corpus never loses a surface,
+  // so the default and the explicit lenient policy must still agree bit-for-bit.
+  auto res = run_backtest(*clock, survivor_book(expiry)); // default: Error (post-F1c)
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   ASSERT_EQ(res->size(), 5u);
 
@@ -2335,13 +2536,13 @@ TEST(Backtest, SubsetDeserializeLoadsOnlyReferencedUids) {
 
   auto whole = MarketSnapshot::load(path);
   ASSERT_TRUE(whole.has_value()) << whole.error().to_string();
-  EXPECT_EQ(whole->surfaces().size(), 4u);
+  EXPECT_EQ(whole->n_surfaces(), 4u);
 
   const std::uint32_t subset_uids[] = {kUid, kUid + 2};
   auto subset = MarketSnapshot::load(path, QueryPricingTier::LegacyCompatible,
                                      std::span<const std::uint32_t>{subset_uids});
   ASSERT_TRUE(subset.has_value()) << subset.error().to_string();
-  EXPECT_EQ(subset->surfaces().size(), 2u) << "whole-board reconstruct was not dropped";
+  EXPECT_EQ(subset->n_surfaces(), 2u) << "whole-board reconstruct was not dropped";
   EXPECT_NE(subset->find(kUid), nullptr);
   EXPECT_NE(subset->find(kUid + 2), nullptr);
   EXPECT_EQ(subset->find(kUid + 1), nullptr) << "unreferenced uid must not be deserialized";
@@ -2356,8 +2557,8 @@ TEST(Backtest, SubsetDeserializeLoadsOnlyReferencedUids) {
   EXPECT_EQ(*u3, kUid + 3);
 
   // A subset-reconstructed surface prices bit-identically to the whole-board one.
-  const PricedSurface *ws = whole->find(kUid);
-  const PricedSurface *ss = subset->find(kUid);
+  const SurfaceRef ws = whole->find(kUid);
+  const SurfaceRef ss = subset->find(kUid);
   ASSERT_NE(ws, nullptr);
   ASSERT_NE(ss, nullptr);
   auto wv = ws->fair_value(100.0, 0.25, Side::Call);
@@ -2366,6 +2567,45 @@ TEST(Backtest, SubsetDeserializeLoadsOnlyReferencedUids) {
   ASSERT_TRUE(sv.has_value());
   EXPECT_TRUE(bits_equal(*wv, *sv)) << "subset reconstruct must match whole-board bit-for-bit";
   std::printf("[b1] subset-deser: 2 of 4 surfaces loaded; uid_of resolves all; marks bit-identical\n");
+}
+
+// P-9: a requested subset with no matching uid is a normal missing-name date,
+// not a reason to materialize every unrelated surface. The snapshot must retain
+// timestamp and symbol-directory metadata while its pricing set remains empty.
+TEST(Backtest, MissingSubsetRetainsMetadataWithoutLoadingFullBoard) {
+  const fs::path dir = fresh_dir("p9-missing-subset");
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  const std::string path = (dir / "2026-08-02.atxvsa").string();
+
+  std::vector<PricedSurface> surfaces;
+  surfaces.reserve(4);
+  for (std::uint32_t i = 0; i < 4; ++i) {
+    const double S = 100.0 + 5.0 * static_cast<double>(i);
+    surfaces.push_back(make_surface(kUid + i, S, S, kBaseNow, 0.002 * static_cast<double>(i)));
+  }
+  static const char *kNames[] = {"AAA", "BBB", "CCC", "DDD"};
+  std::vector<SurfaceArchiveItem> items;
+  for (std::uint32_t i = 0; i < 4; ++i) {
+    items.push_back(SurfaceArchiveItem{kNames[i], &surfaces[i]});
+  }
+  ASSERT_TRUE(write_surface_archive_v2_file(path, items).has_value());
+
+  const std::uint32_t missing_uid = kUid + 1000u;
+  MarketSnapshot::reset_deserialized_bytes();
+  auto missing = MarketSnapshot::load(path, QueryPricingTier::LegacyCompatible,
+                                      std::span<const std::uint32_t>{&missing_uid, 1u});
+  ASSERT_TRUE(missing.has_value()) << missing.error().to_string();
+  EXPECT_EQ(missing->n_surfaces(), 0u);
+  EXPECT_EQ(missing->ts_ns(), kBaseNow);
+  EXPECT_EQ(missing->find(missing_uid), nullptr);
+  EXPECT_EQ(MarketSnapshot::deserialized_bytes(), 0u)
+      << "a subset miss must not materialize unrelated record bodies";
+
+  auto archived_uid = missing->uid_of("ccc");
+  ASSERT_TRUE(archived_uid.has_value());
+  EXPECT_EQ(*archived_uid, kUid + 2u)
+      << "metadata-only snapshots still expose the complete symbol directory";
 }
 
 // The fixed-book overload's private cache subset-deserializes the book's uids; the

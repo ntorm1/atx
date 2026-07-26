@@ -80,6 +80,24 @@ constexpr double kDeltaTolerance = 0.001;
 constexpr double kGammaTolerance = 0.002;
 constexpr double kAnnualThetaTolerance = 1.0;
 
+// ── E1 / AN-P1-1 DOCUMENTED DRIFT ──────────────────────────────────────────
+//
+// `DispersionConfig::target_vega` is now dollars of index gross vega per VOL
+// POINT rather than per UNIT vol (the canonical convention, shared with the
+// listed route). A default-configured dispersion book therefore carries exactly
+// 1/0.01 = 100x the contracts it used to, and every $-denominated and
+// risk-denominated series a backtest over that book emits scales by that same
+// factor. Nothing else about these runs changed: same strikes, same expiries,
+// same fitted vols, same per-share marks, same lot cardinality.
+//
+// The captured baselines below are LEFT EXACTLY AS CAPTURED and scaled at the
+// comparison site, so "the 100x is the only thing that moved" stays a property
+// of the test rather than a claim in a comment. The tolerances scale with them,
+// which keeps every assertion exactly as economically strict as it was — an
+// unscaled tolerance against a 100x book would silently become a 100x TIGHTER
+// relative gate and go flaky.
+constexpr double kE1BookScale = 100.0;
+
 [[nodiscard]] fs::path fresh_out_dir(const char *tag) {
   const fs::path dir = fs::temp_directory_path() / (std::string("atx-multiname-") + tag);
   std::error_code ec;
@@ -691,7 +709,12 @@ TEST(MultinamePipeline, HeldNameGoesMissingMidRunAndRunCompletes) {
   DispersionStrategy strat{u, cfg}; // default lifecycle: RollAtHorizon
 
   // THE gate: the run completes with a full-length result (one row per date).
-  auto res = run_backtest(*clock, strat);
+  // WS-F F1(c): the RunConfig default is now UnpricedLotPolicy::Error, and this
+  // gate is precisely about SURVIVING a mid-run surface gap, so it opts into the
+  // lenient policy explicitly.
+  RunConfig rc_lenient;
+  rc_lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  auto res = run_backtest(*clock, strat, rc_lenient);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   ASSERT_EQ(res->size(), dates.size());
 
@@ -874,7 +897,10 @@ TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
   cfg.missing.policy = MissingNamePolicy::DropRenormalize;
   DispersionStrategy strat{u, cfg};
 
-  auto res = run_backtest(*clock, strat); // default RunConfig: ExcludeAndReport
+  // WS-F F1(c): ExcludeAndReport is now an explicit opt-in (the default is Error).
+  RunConfig rc_lenient;
+  rc_lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  auto res = run_backtest(*clock, strat, rc_lenient);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   ASSERT_EQ(res->size(), dates.size());
 
@@ -912,13 +938,24 @@ TEST(MultinamePipeline, HeldLotWithoutSurfaceIsCountedNotHidden) {
   const double base_gtheta[3] = {-15152.172705632258, -8707.6189957418119, -15696.856655668571};
 #endif
   for (std::size_t i = 0; i < dates.size(); ++i) {
-    EXPECT_NEAR(res->pnl_total[i], base_pnl[i], kMoneyTolerance) << "pnl_total row " << i;
+    EXPECT_NEAR(res->pnl_total[i], base_pnl[i] * kE1BookScale,
+                kMoneyTolerance * kE1BookScale)
+        << "pnl_total row " << i;
     EXPECT_TRUE(bits_equal(res->pnl_settlement[i], base_settle[i])) << "settle row " << i;
-    EXPECT_NEAR(res->nav[i], base_nav[i], kMoneyTolerance) << "nav row " << i;
-    EXPECT_NEAR(res->gross_vega[i], base_gvega[i], kVegaTolerance) << "gvega row " << i;
-    EXPECT_NEAR(res->gross_delta[i], base_gdelta[i], kDeltaTolerance) << "gdelta row " << i;
-    EXPECT_NEAR(res->gross_gamma[i], base_ggamma[i], kGammaTolerance) << "ggamma row " << i;
-    EXPECT_NEAR(res->gross_theta[i], base_gtheta[i], kAnnualThetaTolerance) << "gtheta row " << i;
+    EXPECT_NEAR(res->nav[i], base_nav[i] * kE1BookScale, kMoneyTolerance * kE1BookScale)
+        << "nav row " << i;
+    EXPECT_NEAR(res->gross_vega[i], base_gvega[i] * kE1BookScale,
+                kVegaTolerance * kE1BookScale)
+        << "gvega row " << i;
+    EXPECT_NEAR(res->gross_delta[i], base_gdelta[i] * kE1BookScale,
+                kDeltaTolerance * kE1BookScale)
+        << "gdelta row " << i;
+    EXPECT_NEAR(res->gross_gamma[i], base_ggamma[i] * kE1BookScale,
+                kGammaTolerance * kE1BookScale)
+        << "ggamma row " << i;
+    EXPECT_NEAR(res->gross_theta[i], base_gtheta[i] * kE1BookScale,
+                kAnnualThetaTolerance * kE1BookScale)
+        << "gtheta row " << i;
     EXPECT_EQ(res->n_open_lots[i], 8.0) << "nlots row " << i;
   }
 
@@ -1008,9 +1045,14 @@ TEST(MultinamePipeline, DefaultPolicyFullBasketBitIdentical) {
   // band from the corrected BAW seed (net-cancelling aggregate); both ISA variants
   // recaptured. pnl/nav stayed inside kMoneyTolerance.
   for (std::size_t i = 0; i < dates.size(); ++i) {
-    EXPECT_NEAR(res->pnl_total[i], base_pnl[i], kMoneyTolerance) << "pnl_total row " << i;
-    EXPECT_NEAR(res->nav[i], base_nav[i], kMoneyTolerance) << "nav row " << i;
-    EXPECT_NEAR(res->gross_vega[i], base_gvega[i], kVegaTolerance) << "gvega row " << i;
+    EXPECT_NEAR(res->pnl_total[i], base_pnl[i] * kE1BookScale,
+                kMoneyTolerance * kE1BookScale)
+        << "pnl_total row " << i;
+    EXPECT_NEAR(res->nav[i], base_nav[i] * kE1BookScale, kMoneyTolerance * kE1BookScale)
+        << "nav row " << i;
+    EXPECT_NEAR(res->gross_vega[i], base_gvega[i] * kE1BookScale,
+                kVegaTolerance * kE1BookScale)
+        << "gvega row " << i;
   }
 
   // Error policy must NOT abort a clean corpus (nothing unpriced on any step).
@@ -1056,7 +1098,10 @@ TEST(MultinamePipeline, BookGreeksUnderCountIsReported) {
   cfg.missing.policy = MissingNamePolicy::DropRenormalize;
   DispersionStrategy strat{u, cfg};
 
-  auto res = run_backtest(*clock, strat); // default RunConfig: ExcludeAndReport
+  // WS-F F1(c): ExcludeAndReport is now an explicit opt-in (the default is Error).
+  RunConfig rc_lenient;
+  rc_lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  auto res = run_backtest(*clock, strat, rc_lenient);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   ASSERT_EQ(res->size(), dates.size());
 
@@ -1121,7 +1166,11 @@ TEST(MultinamePipeline, GrossVegaIsUnderReportedWhenALegIsUnpriced) {
   auto clock_m = Clock::from_manifest(*man_m);
   ASSERT_TRUE(clock_m.has_value()) << clock_m.error().to_string();
   DispersionStrategy strat_m{u, cfg};
-  auto res_m = run_backtest(*clock_m, strat_m);
+  // WS-F F1(c): ExcludeAndReport is now an explicit opt-in (the default is Error);
+  // the whole point of this gate is the truncated (lenient) reading.
+  RunConfig rc_lenient;
+  rc_lenient.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  auto res_m = run_backtest(*clock_m, strat_m, rc_lenient);
   ASSERT_TRUE(res_m.has_value()) << res_m.error().to_string();
 
   // Full basket (BBB present on every date), same universe + strategy.
@@ -1132,7 +1181,7 @@ TEST(MultinamePipeline, GrossVegaIsUnderReportedWhenALegIsUnpriced) {
   auto clock_f = Clock::from_manifest(*man_f);
   ASSERT_TRUE(clock_f.has_value()) << clock_f.error().to_string();
   DispersionStrategy strat_f{u, cfg};
-  auto res_f = run_backtest(*clock_f, strat_f);
+  auto res_f = run_backtest(*clock_f, strat_f, rc_lenient);
   ASSERT_TRUE(res_f.has_value()) << res_f.error().to_string();
 
   ASSERT_EQ(res_m->size(), dates.size());
@@ -1280,9 +1329,14 @@ TEST(MultinamePipeline, DefaultPolicyStillBitIdentical) {
   // A1 REPIN (core-review finding 1): same net-dispersion gross_vega[2] band clear
   // as the full-basket test above; both ISA variants recaptured.
   for (std::size_t i = 0; i < dates.size(); ++i) {
-    EXPECT_NEAR(res->pnl_total[i], base_pnl[i], kMoneyTolerance) << "pnl_total row " << i;
-    EXPECT_NEAR(res->nav[i], base_nav[i], kMoneyTolerance) << "nav row " << i;
-    EXPECT_NEAR(res->gross_vega[i], base_gvega[i], kVegaTolerance) << "gvega row " << i;
+    EXPECT_NEAR(res->pnl_total[i], base_pnl[i] * kE1BookScale,
+                kMoneyTolerance * kE1BookScale)
+        << "pnl_total row " << i;
+    EXPECT_NEAR(res->nav[i], base_nav[i] * kE1BookScale, kMoneyTolerance * kE1BookScale)
+        << "nav row " << i;
+    EXPECT_NEAR(res->gross_vega[i], base_gvega[i] * kE1BookScale,
+                kVegaTolerance * kE1BookScale)
+        << "gvega row " << i;
   }
 
   // Both new columns round-trip through the TSV export as all-zero. Written

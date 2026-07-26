@@ -24,6 +24,13 @@
 //       sl_al_boundary_solves (always-on, ~96) + cnt_boundary_solves / cnt_cheb_diff_coefs
 //       (gated).
 //
+//   scenario/grid/exact_solve_ledger — the scenario grid's Exact re-solve arm (A7 /
+//       GR-P3-S). A 56-unique book over a 3x3 all-Exact grid. The plan gates A7 on a
+//       solve-ledger COUNT DROP PER GRID rather than on wall time, so this row exists
+//       to make that count re-runnable. Emits sl_al_boundary_solves (always-on) plus
+//       exact_cells / n_unique_ok / expected_exact_resolves and the normalised
+//       solves_per_exact_cell_per_unique.
+//
 // COUNTERS ARE THE CITABLE EVIDENCE, NOT WALL TIME. Per the M3 quiet-window
 // protocol + the sprint's bench-lease discipline: this host has no CPU-frequency
 // pinning and several agents build concurrently, so the ns/op figures these rows
@@ -49,10 +56,13 @@
 #include "atx/vol/curve.hpp"        // DividendEvent
 #include "atx/vol/deamer.hpp"       // resolve_chain_forward, DeAmOptions
 #include "atx/vol/dividend.hpp"     // HybridDivParams, hybrid_forward
+#include "atx/vol/portfolio_pricer.hpp" // Position
+#include "atx/vol/scenario_grid.hpp"    // scenario_grid, ScenarioGridSpec, ScenarioRoute (A7)
 #include "atx/vol/types.hpp"        // Side
 #include "atx/vol/universe.hpp"     // Chain, chain_index
 
-#include "bench_util.hpp" // apply_common, dump_counters
+#include "bench_util.hpp"        // apply_common, dump_counters
+#include "support/synth_book.hpp" // build_market, make_book (A7 scenario-grid fixture)
 
 namespace atx::vol::bench {
 namespace {
@@ -68,7 +78,11 @@ using atx::vol::DeAmOptions;
 using atx::vol::DividendEvent;
 using atx::vol::HybridDivParams;
 using atx::vol::hybrid_forward;
+using atx::vol::Position;
 using atx::vol::resolve_chain_forward;
+using atx::vol::scenario_grid;
+using atx::vol::ScenarioGridSpec;
+using atx::vol::ScenarioRoute;
 using atx::vol::Side;
 
 // Dump the ALWAYS-ON solve-ledger counters as sl_* columns, measured over ONE
@@ -348,6 +362,88 @@ void BM_CorrectionCacheBuild(benchmark::State &state, Side side) {
   dump_counters(state, build_once);
 }
 
+// ── scenario/grid/exact_solve_ledger ──────────────────────────────────────
+//
+// A7 (GR-P3-S) — the DETERMINISTIC half of the scenario-grid gate. The plan gates
+// A7 on a "solve-ledger count drop per grid", explicitly NOT on wall time, because
+// a count is immune to whatever else the host is doing. This row makes that count
+// a first-class, re-runnable number instead of something reconstructed by reading
+// the source.
+//
+// Shape: a 56-unique book (4 underlyings x 2 slices x 7 strikes) over a 3x3
+// spot/vol grid with BOTH Taylor radii set to 0, so every one of the 9 cells routes
+// Exact and the grid pays its full re-solve cost. n_threads = 1: the ledger merges
+// per-thread blocks at read so a fan-out would still total correctly, but a serial
+// fill makes the number reproducible offer-for-offer and keeps the row honest on a
+// box that is not quiet.
+//
+// WHAT THE NUMBER MEANS. `scenario_grid`'s Exact arm (scenario_grid.cpp:246-266)
+// calls plain `american_price(...)` once per (cell x Ok unique), with no pricer or
+// warm-state carried between cells. So the expected ledger reading is
+// `n_exact_cells * n_unique_ok` shocked solves ON TOP OF the base Greek solve --
+// i.e. every cell re-solves every unique COLD. A7's warm-start half is exactly the
+// change that would make this number fall; `sl_al_boundary_solves` is where the
+// drop would show up, and `solves_per_exact_cell_per_unique` normalises it so the
+// reading is comparable across grid shapes.
+constexpr int kScenUnderlyings = 4;
+constexpr int kScenSlices = 2;
+constexpr std::size_t kScenUniques = 56; // 4 x 2 x 7 strikes
+
+void BM_ScenarioGridExactLedger(benchmark::State &state) {
+  const SynthMarket market = build_market(kScenUnderlyings, kScenSlices, /*convex_nodes=*/48);
+  const std::vector<Position> book =
+      make_book(kScenUnderlyings, kScenSlices, kScenUniques, /*positions_per_unique=*/1);
+
+  ScenarioGridSpec spec;
+  spec.n_threads = 1;
+  for (int i = 0; i < 3; ++i) {
+    spec.spot_pct.push_back(-0.10 + 0.10 * static_cast<double>(i));
+    spec.vol_bump.push_back(-0.05 + 0.05 * static_cast<double>(i));
+  }
+  spec.dr = 5e-4;
+  spec.dt = 3.0 / 365.0;
+  // Force every cell Exact: a zero radius means no |shock| is small enough to Taylor.
+  spec.taylor_radius_spot = 0.0;
+  spec.taylor_radius_vol = 0.0;
+
+  const auto grid_once = [&]() {
+    auto g = scenario_grid(book, market.base_set(), spec);
+    benchmark::DoNotOptimize(g.has_value() ? g->pnl.data() : nullptr);
+  };
+
+  // Viability guard: a grid that cannot build would otherwise report a zero count
+  // as if it were a win.
+  auto probe = scenario_grid(book, market.base_set(), spec);
+  if (!probe) {
+    state.SkipWithError("scenario grid build rejected");
+    return;
+  }
+  double n_exact = 0.0;
+  for (const std::uint8_t rv : probe->route) {
+    n_exact += (rv == static_cast<std::uint8_t>(ScenarioRoute::Exact)) ? 1.0 : 0.0;
+  }
+
+  for (auto _ : state) {
+    grid_once();
+    benchmark::ClobberMemory();
+  }
+  state.SetItemsProcessed(state.iterations());
+  state.counters["cells"] = static_cast<double>(probe->n_cells());
+  state.counters["exact_cells"] = n_exact;
+  state.counters["n_unique_ok"] = static_cast<double>(probe->n_ok);
+  state.counters["n_unique_failed"] = static_cast<double>(probe->n_failed);
+  state.counters["exact_fallback_lanes"] = static_cast<double>(probe->n_exact_fallback_lanes);
+  // The A7 gate quantity: cold shocked solves the Exact arm pays per grid.
+  state.counters["expected_exact_resolves"] = n_exact * static_cast<double>(probe->n_ok);
+
+  // sl_al_boundary_solves — always-on, the number A7's warm-start would cut.
+  dump_ledger(state, grid_once);
+  const double solves = state.counters["sl_al_boundary_solves"];
+  const double denom = n_exact * static_cast<double>(probe->n_ok);
+  state.counters["solves_per_exact_cell_per_unique"] = (denom > 0.0) ? solves / denom : 0.0;
+  dump_counters(state, grid_once);
+}
+
 const int kRegistered = [] {
   apply_common(benchmark::RegisterBenchmark("fit/american_iv/cached_newton", BM_CachedIvNewton))
       ->Unit(benchmark::kMicrosecond);
@@ -368,6 +464,9 @@ const int kRegistered = [] {
   apply_common(benchmark::RegisterBenchmark(
                    "correction/cache/build/call",
                    [](benchmark::State &s) { BM_CorrectionCacheBuild(s, Side::Call); }))
+      ->Unit(benchmark::kMicrosecond);
+  apply_common(
+      benchmark::RegisterBenchmark("scenario/grid/exact_solve_ledger", BM_ScenarioGridExactLedger))
       ->Unit(benchmark::kMicrosecond);
   return 0;
 }();

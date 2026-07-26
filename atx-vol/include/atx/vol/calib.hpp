@@ -251,6 +251,17 @@ struct CalibOpts {
   // Run the static-arb validators at the end and bail on a violation.
   bool validate_no_arb{true};
 
+  // FT-C9a: EXPLICIT opt-in for the alternate eSSVI surface drivers
+  // (essvi_calib_surface[_sequential]) to run the surface-level theta-scale
+  // calendar projection (arb_project_calendar_essvi) as a post-assembly repair.
+  // This is the quality-destroying "Project"-style theta bump the README warns
+  // about — it moves the ATM total-variance level to remove calendar crossings.
+  // It was previously folded into `validate_no_arb` (default true) and ran
+  // silently. DEFAULT FALSE => the alternate driver leaves the fitted ATM term
+  // structure untouched (the canonical PricerFitter/run_surface_parity path uses
+  // its own MonotoneFit/Project policy and is unaffected by this flag).
+  bool essvi_alt_driver_theta_project{false};
+
   // Wing-residual layer (Sprint 11). Disabled by default; a strict superset of
   // backbone-only when enabled.
   bool residual_disable{true};

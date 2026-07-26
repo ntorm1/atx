@@ -46,7 +46,10 @@ param(
   [switch] $Ctest,
   [switch] $Bench,
   [string] $Groups = "",
-  [string] $Preset = "dev"
+  [string] $Preset = "dev",
+  [ValidateRange(1, 256)]
+  [int] $Jobs = 1,
+  [switch] $DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -93,32 +96,37 @@ $MtDir = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\10.*\x64\mt
   Sort-Object { [version]($_.Directory.Parent.Name) } | Select-Object -Last 1 | ForEach-Object { $_.DirectoryName }
 if (-not $MtDir) { Write-Warning "mt.exe not found under Windows Kits; relying on vcvars64 PATH" }
 
-# Build the inner command. Everything runs inside one cmd.exe session so the env
-# vcvars64 sets (INCLUDE/LIB/PATH) is live for the cmake/ctest invocation.
+# Build the executable and argument array. Commands that need the compiler run
+# after vcvars64's environment has been imported into this PowerShell process.
 $verb = if ($Args.Count -gt 0) { $Args[0] } else { "" }
 $rest = if ($Args.Count -gt 1) { $Args[1..($Args.Count - 1)] } else { @() }
 
 if ($Ctest) {
-  # ctest only runs the built exes (DLLs are applocal-staged beside them), so it
-  # needs neither vcvars nor Ninja — invoke it directly to avoid cmd.exe parsing
-  # of regex metacharacters like '|' in -R patterns.
-  $ctestArgs = @("--test-dir", "$RepoRoot\build", "--output-on-failure", "-j", "16") + $Args
-  Write-Host "[atx-build] ctest $($ctestArgs -join ' ')" -ForegroundColor Cyan
-  & ctest @ctestArgs
-  exit $LASTEXITCODE
+  # Serial is the evidence default. Parallelism is an explicit operator choice
+  # (`-Jobs N`) so a supposedly serial attribution gate cannot silently run 16
+  # tests at once.
+  $innerExe = "ctest"
+  $innerArgs = @("--test-dir", "$RepoRoot\build", "--output-on-failure", "-j", "$Jobs") + $Args
+  $requiresMsvc = $false
 }
 elseif ($verb -eq "configure") {
   # `dev` is the canonical iterate preset (same binaryDir build/ as `ninja`).
   # Using it here keeps configure consistent with scripts\new-worktree.ps1 —
   # previously this line said `ninja`, silently dropping the shared-deps setup.
   # -Preset dev-shared flips to the DLL build (same build/ dir).
-  $cfg = "cmake --preset $Preset"
-  if ($Groups) { $cfg += " -DATX_TEST_GROUPS=$Groups" }
-  if ($Bench)  { $cfg += " -DATX_BUILD_BENCH=ON" }
-  $inner = $cfg
+  $innerExe = "cmake"
+  $innerArgs = @("--preset", $Preset)
+  if ($Groups) { $innerArgs += "-DATX_TEST_GROUPS=$Groups" }
+  if ($Bench)  { $innerArgs += "-DATX_BUILD_BENCH=ON" }
+  # F-7: configure's caller-supplied -D arguments are part of the argv. The old
+  # string builder computed `$rest` and then silently discarded it here.
+  $innerArgs += $rest
+  $requiresMsvc = $true
 }
 elseif ($verb -eq "build") {
-  $inner = "cmake --build `"$RepoRoot\build`" --target " + ($rest -join " ")
+  $innerExe = "cmake"
+  $innerArgs = @("--build", "$RepoRoot\build", "--target") + $rest
+  $requiresMsvc = $true
 }
 elseif ($verb -eq "check") {
   # Single-TU type-check loop: compile ONLY the named source's object (no link,
@@ -159,21 +167,62 @@ elseif ($verb -eq "check") {
     }
     $objs += $hits
   }
-  $inner = "ninja -C `"$buildDir`" " + (($objs | ForEach-Object { '"' + $_ + '"' }) -join " ")
+  $innerExe = "ninja"
+  $innerArgs = @("-C", "$buildDir") + $objs
+  $requiresMsvc = $true
 }
 else {
   # Pass through raw cmake args.
-  $inner = "cmake " + ($Args -join " ")
+  $innerExe = "cmake"
+  $innerArgs = @($Args)
+  $requiresMsvc = $true
+}
+
+if ($DryRun) {
+  # Machine-readable argv pin for script tests and operator inspection. JSON
+  # preserves argument boundaries that a display string cannot.
+  [ordered]@{
+    executable = $innerExe
+    arguments = @($innerArgs)
+    ctest_jobs = if ($Ctest) { $Jobs } else { $null }
+    requires_msvc = $requiresMsvc
+  } | ConvertTo-Json -Depth 3
+  exit 0
+}
+
+Write-Host ("[atx-build] " + $innerExe + " " + ($innerArgs -join " ")) -ForegroundColor Cyan
+if (-not $requiresMsvc) {
+  & $innerExe @innerArgs
+  exit $LASTEXITCODE
+}
+
+# Import vcvars into THIS PowerShell process, then invoke the executable with a
+# real argument array. This avoids reparsing a composed shell string and
+# preserves spaces/metacharacters in -D values and test regexes.
+$vcvarsCommand = "`"$VcVars`" >nul 2>&1 && set"
+$vcvarsEnvironment = & cmd.exe /d /s /c $vcvarsCommand
+if ($LASTEXITCODE -ne 0) {
+  throw "vcvars64.bat failed with exit code $LASTEXITCODE"
+}
+foreach ($line in $vcvarsEnvironment) {
+  $separator = $line.IndexOf("=")
+  if ($separator -le 0) { continue }
+  $name = $line.Substring(0, $separator)
+  $value = $line.Substring($separator + 1)
+  [Environment]::SetEnvironmentVariable($name, $value, "Process")
 }
 
 $PathPrefix = if ($MtDir) { "$NinjaDir;$MtDir" } else { $NinjaDir }
-# CCACHE_BASEDIR is the one per-worktree ccache key (relativizes this tree's paths in
-# the hash -> cross-worktree cache hits). The preset `environment` block only applies
-# to `cmake --preset`/`cmake --build --preset` invocations, and the build verb below
-# calls `cmake --build <dir>` directly - so export it here. The worktree-invariant
-# keys (hash_dir/sloppiness/ignore_options) live in the global ccache config
-# (scripts/dev-setup.ps1).
-$full = "`"$VcVars`" >nul 2>&1 && set `"PATH=$PathPrefix;%PATH%`" && set `"CCACHE_BASEDIR=$RepoRoot`" && cd /d `"$RepoRoot`" && $inner"
-Write-Host "[atx-build] $inner" -ForegroundColor Cyan
-& cmd.exe /c $full
-exit $LASTEXITCODE
+$env:PATH = "$PathPrefix;$env:PATH"
+# CCACHE_BASEDIR is the one per-worktree ccache key (relativizes this tree's
+# paths in the hash -> cross-worktree cache hits).
+$env:CCACHE_BASEDIR = $RepoRoot
+Push-Location $RepoRoot
+try {
+  & $innerExe @innerArgs
+  $exitCode = $LASTEXITCODE
+}
+finally {
+  Pop-Location
+}
+exit $exitCode

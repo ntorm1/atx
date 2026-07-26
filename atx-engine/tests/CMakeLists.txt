@@ -65,7 +65,13 @@ foreach(grp IN LISTS _atx_groups)
             atx::engine
             GTest::gtest_main
             atx_warnings
-            Threads::Threads)
+            Threads::Threads
+            # FIX-3/F3-B: per-process temp root, on EVERY group (48 files in this
+            # suite build fixed-name scratch paths under the machine-wide temp dir and
+            # remove_all them on entry -- canonically store/store_db_test.cpp's
+            # tmp_dir()). Linked as an OBJECT library, so it is never folded into a
+            # group's UNITY_BUILD batch. See //tests/CMakeLists.txt.
+            atx-test-scratch)
 
     # tests root: "fixtures/..." is referenced relative to it (e.g. the alpha
     # kalman reference), so it must resolve from any group subdir.

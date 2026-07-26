@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -107,7 +108,10 @@ listed_quotes_for_date(const RunSpec &spec, const ListedDefinitionTable &definit
 
 ListedForwardLookup make_listed_forward_lookup(const MarketSnapshot &snapshot) {
   return [&snapshot](const DispersionMember &member, std::int64_t expiry) -> Result<double> {
-    const PricedSurface *surface = snapshot.find(member.uid);
+    // WS-ZC1: SurfaceSet::find resolves to a `SurfaceRef` handle (owned OR mapped-view
+    // backed), not a `const PricedSurface *`. Only the DECLARED TYPE changes — the
+    // self-proxy `operator->` and the nullptr comparison keep their exact syntax.
+    const SurfaceRef surface = snapshot.find(member.uid);
     if (surface == nullptr) {
       return Err(ErrorCode::NotFound, "surface missing");
     }
@@ -122,7 +126,7 @@ ListedRiskLookup make_listed_risk_lookup(const MarketSnapshot &snapshot, double 
                                          bool analytic, QueryExecution execution) {
   return [&snapshot, residual_T, analytic, execution](
              std::uint32_t uid, const ListedOptionQuote &quote) -> Result<ListedOptionRisk> {
-    const PricedSurface *surface = snapshot.find(uid);
+    const SurfaceRef surface = snapshot.find(uid); // WS-ZC1 handle, see above
     if (surface == nullptr) {
       return Err(ErrorCode::NotFound, "project-schedule: projected surface unavailable");
     }
@@ -190,12 +194,26 @@ Status accept_listed_schedule(const ListedDispersionSchedule &schedule,
   return Ok();
 }
 
+ListedDispersionSelectionConfig listed_selection_config_from(const ListedScheduleSpec &spec) {
+  // REV-FIXTAIL I-A. The first four are the verbatim assignments the selection
+  // loop made inline; `quality` is the fix. Everything not assigned keeps
+  // `ListedDispersionSelectionConfig`'s own default (`required_multiplier`), so
+  // a default spec reproduces the pre-fix config field for field.
+  ListedDispersionSelectionConfig selection_config;
+  selection_config.target_dte_days = spec.target_dte_days;
+  selection_config.min_dte_days = spec.min_dte_days;
+  selection_config.max_dte_days = spec.max_dte_days;
+  selection_config.min_names = spec.min_names;
+  selection_config.quality = spec.quality;
+  return selection_config;
+}
+
 Result<ListedDispersionSchedule>
-build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &spec,
-                                 const ListedDispersionMethodology &method,
-                                 std::span<const UniverseRow> universe_rows,
-                                 const ListedDefinitionTable &definitions,
-                                 const RunSpec &quote_source, PhaseTimer *timer) {
+build_listed_dispersion_schedule_audited(
+    const Clock &clock, const ListedScheduleSpec &spec,
+    const ListedDispersionMethodology &method, std::span<const UniverseRow> universe_rows,
+    const ListedDefinitionTable &definitions, const RunSpec &quote_source, PhaseTimer *timer,
+    const ListedQuoteRejectSink &quote_reject_sink) {
   // Verbatim lift of build_schedule_command's selection loop
   // (spy_dispersion_backtest.cpp:446-535). The trade_schedule / section writes stay
   // in the CLI (T9); this function owns the economics that produce the
@@ -242,16 +260,18 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
     }
 
     const auto eval_start = PhaseTimer::now();
-    ListedDispersionSelectionConfig selection_config;
-    selection_config.target_dte_days = spec.target_dte_days;
-    selection_config.min_dte_days = spec.min_dte_days;
-    selection_config.max_dte_days = spec.max_dte_days;
-    selection_config.min_names = spec.min_names;
+    const ListedDispersionSelectionConfig selection_config = listed_selection_config_from(spec);
     const ListedForwardLookup forward = make_listed_forward_lookup(snapshot);
-    const auto selected = select_listed_dispersion(ref.date, snapshot.ts_ns(), resolved.universe,
-                                                   quotes, forward, selection_config);
+    ListedQuoteRejectCounts attempted_rejects{};
+    const auto selected =
+        select_listed_dispersion(ref.date, snapshot.ts_ns(), resolved.universe, quotes, forward,
+                                 selection_config, &attempted_rejects);
     if (timer) {
       timer->add("selection", eval_start);
+    }
+    if (quote_reject_sink) {
+      quote_reject_sink(ref.date, selected.has_value(),
+                        selected ? selected->quote_rejects : attempted_rejects);
     }
     if (!selected) {
       if (active_expiry == 0) {
@@ -318,6 +338,16 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
   return Ok(std::move(schedule));
 }
 
+Result<ListedDispersionSchedule>
+build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &spec,
+                                 const ListedDispersionMethodology &method,
+                                 std::span<const UniverseRow> universe_rows,
+                                 const ListedDefinitionTable &definitions,
+                                 const RunSpec &quote_source, PhaseTimer *timer) {
+  return build_listed_dispersion_schedule_audited(clock, spec, method, universe_rows, definitions,
+                                                  quote_source, timer, {});
+}
+
 Result<ListedDispersionSchedule> project_listed_schedule(const ListedDispersionSchedule &listed,
                                                          const ListedArchiveLookup &archives,
                                                          const ProjectionConfig &cfg) {
@@ -373,7 +403,7 @@ Result<ListedDispersionSchedule> project_listed_schedule(const ListedDispersionS
     const auto make_straddle =
         [&](const ListedScheduleLeg &call_leg,
             const ListedScheduleLeg &put_leg) -> Result<ListedStraddle> {
-      const PricedSurface *surface = snapshot->find(call_leg.uid);
+      const SurfaceRef surface = snapshot->find(call_leg.uid); // WS-ZC1 handle, see above
       if (surface == nullptr) {
         return Err(ErrorCode::NotFound, "project-schedule: projected surface unavailable");
       }
@@ -533,8 +563,9 @@ StepObserver make_mark_divergence_observer(const ListedDispersionSchedule &sched
 
 Result<DispersionBookVar>
 dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &maturity,
-                    std::span<const HistoricalProjectionScenario> scenarios,
-                    std::span<const double> confidences, const HistoricalProjectionConfig &cfg) {
+                    std::size_t n_scenarios, std::span<const double> confidences,
+                    const DispersionProjectionEvaluator &evaluate,
+                    const HistoricalProjectionConfig &cfg) {
   // Verbatim lift of run_projected_var_command's book -> OptionProjectionSpec
   // synthesis + PreparedHistoricalProjection::evaluate_into + projected_historical_var
   // per confidence (spy_dispersion_backtest.cpp:1119-1194), minus the loose-TSV
@@ -542,7 +573,8 @@ dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &mat
   // the same uid / side / multiplier / qty, an ATM-forward strike, and the caller's
   // relative `maturity`; the templates re-project onto every scenario, then the loss
   // quantile splits per requested confidence. No vega x100 here: the book handed in
-  // is already sized (the * kVegaVolPointToUnitVol boundary is upstream, at :1110).
+  // is already sized. (E1 abolished the upstream per-vol-point -> per-unit-vol
+  // boundary outright; its constant was deleted as dead in the C-2 follow-up.)
   std::vector<RelativeOptionPosition> relative_positions;
   relative_positions.reserve(book.positions.size());
   for (const Position &position : book.positions) {
@@ -560,12 +592,19 @@ dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &mat
 
   DispersionBookVar result;
   result.n_positions = relative_positions.size();
+  if (result.n_positions != 0u &&
+      n_scenarios > std::numeric_limits<std::size_t>::max() / result.n_positions) {
+    return Err(ErrorCode::InvalidArgument, "projected VaR: scenario output size overflows");
+  }
   // Surfaced for the CLI's projected_var.tsv provenance column (prepared_fingerprint),
   // so the caller need not rebuild the projection just to echo its identity hash.
   result.prepared_fingerprint = prepared.fingerprint();
-  result.frames.assign(scenarios.size(), HistoricalProjectionFrame{});
-  result.legs.assign(scenarios.size() * relative_positions.size(), ProjectedOption{});
-  ATX_TRY_VOID(prepared.evaluate_into(scenarios, result.frames, result.legs, cfg));
+  result.frames.assign(n_scenarios, HistoricalProjectionFrame{});
+  result.legs.assign(n_scenarios * relative_positions.size(), ProjectedOption{});
+  if (!evaluate) {
+    return Err(ErrorCode::InvalidArgument, "projected VaR: missing scenario evaluator");
+  }
+  ATX_TRY_VOID(evaluate(prepared, result.frames, result.legs, cfg));
 
   // Post-projection gate (spy_dispersion_backtest.cpp:1175-1178): any incomplete
   // scenario aborts — a VaR over a partially-failed frame set is not meaningful. On
@@ -588,6 +627,20 @@ dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &mat
     result.risks.push_back(risk);
   }
   return Ok(std::move(result));
+}
+
+Result<DispersionBookVar>
+dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &maturity,
+                    std::span<const HistoricalProjectionScenario> scenarios,
+                    std::span<const double> confidences, const HistoricalProjectionConfig &cfg) {
+  return dispersion_book_var(
+      book, maturity, scenarios.size(), confidences,
+      [scenarios](const PreparedHistoricalProjection &prepared,
+                  std::span<HistoricalProjectionFrame> frames, std::span<ProjectedOption> legs,
+                  const HistoricalProjectionConfig &config) {
+        return prepared.evaluate_into(scenarios, frames, legs, config);
+      },
+      cfg);
 }
 
 } // namespace atx::vol

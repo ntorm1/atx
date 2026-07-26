@@ -43,6 +43,8 @@
 #include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
 #include "atx/vol/vol_surface.hpp"      // EssviParams
 
+#include "support/isa_golden_tol.hpp" // laned_greeks_close (WS-P1a route band)
+
 using namespace atx::vol;
 namespace fs = std::filesystem;
 
@@ -376,7 +378,7 @@ TEST(Strategy, AdaptiveResolutionColdSizesEverySelectorAndStoresColdEntryMark) {
         << i;
     EXPECT_NEAR(actual.qty, expected.qty, 1.0e-3 * (1.0 + std::fabs(expected.qty))) << i;
 
-    const PricedSurface *surface = fast_snapshot->find(actual.leg.uid);
+    const SurfaceRef surface = fast_snapshot->find(actual.leg.uid);
     ASSERT_NE(surface, nullptr);
     const auto cold_greeks =
         surface->greeks(actual.leg.K, actual.leg.T, actual.leg.side, QueryExecution::ColdReference);
@@ -393,7 +395,7 @@ TEST(Strategy, AdaptiveResolutionColdSizesEverySelectorAndStoresColdEntryMark) {
   ASSERT_TRUE(opened.has_value()) << opened.error().to_string();
   ASSERT_EQ(book.lots.size(), adaptive->size());
   for (const Lot &lot : book.lots) {
-    const PricedSurface *surface = fast_snapshot->find(lot.contract.uid);
+    const SurfaceRef surface = fast_snapshot->find(lot.contract.uid);
     ASSERT_NE(surface, nullptr);
     const auto cold_mark = surface->fair_value(lot.contract.K, lot.contract.T, lot.contract.side,
                                                QueryExecution::ColdReference);
@@ -460,7 +462,7 @@ TEST(Strategy, PriceOptionsAnalyticGreeksDriveTargetThetaSizing) {
   ASSERT_TRUE(sized.has_value()) << sized.error().to_string();
   ASSERT_EQ(sized->size(), 2u);
 
-  const PricedSurface *resolved_surface = snapshot->find(kUid);
+  const SurfaceRef resolved_surface = snapshot->find(kUid);
   ASSERT_NE(resolved_surface, nullptr);
   double book_theta = 0.0;
   double structure_theta = 0.0;
@@ -478,10 +480,17 @@ TEST(Strategy, PriceOptionsAnalyticGreeksDriveTargetThetaSizing) {
     const auto expected = resolved_surface->greeks_analytic(sl.leg.K, sl.leg.T, sl.leg.side,
                                                             QueryExecution::ColdReference);
     ASSERT_TRUE(expected.has_value()) << expected.error().to_string();
-    EXPECT_EQ(sl.leg.model_price, expected->price);
-    EXPECT_EQ(sl.leg.vega, expected->vega);
-    EXPECT_EQ(sl.leg.theta, expected->theta);
-    EXPECT_EQ(sl.leg.gamma, expected->gamma);
+    // Route parity, not a value pin: sl.leg.* comes from resolve_spec's BATCHED
+    // path (laned AVX2 greeks under Auto ISA since WS-P1a) while `expected` is a
+    // single-contract re-query that can land on the scalar oracle. Relative
+    // agreement is the invariant; see support/isa_golden_tol.hpp. These are the
+    // call sites carrying the band's measured worst cases (gamma 1.34e-10,
+    // theta 1.23e-10 relative).
+    using atx::vol::test::laned_greeks_close;
+    EXPECT_TRUE(laned_greeks_close(sl.leg.model_price, expected->price));
+    EXPECT_TRUE(laned_greeks_close(sl.leg.vega, expected->vega));
+    EXPECT_TRUE(laned_greeks_close(sl.leg.theta, expected->theta));
+    EXPECT_TRUE(laned_greeks_close(sl.leg.gamma, expected->gamma));
     structure_theta += seed.greeks().theta;
     book_theta += sl.qty * sl.multiplier * sl.leg.theta;
   }
@@ -809,15 +818,17 @@ TEST(Strategy, AdaptivePriceOptionsKeepFinalAnalyticSizingCold) {
   ASSERT_TRUE(sized.has_value()) << sized.error().to_string();
   ASSERT_EQ(sized->size(), 1u);
   const SizedLeg &sl = sized->front();
-  const PricedSurface *resolved_surface = snapshot->find(kUid);
+  const SurfaceRef resolved_surface = snapshot->find(kUid);
   ASSERT_NE(resolved_surface, nullptr);
   const auto expected = resolved_surface->greeks_analytic(sl.leg.K, sl.leg.T, sl.leg.side,
                                                           QueryExecution::ColdReference);
   ASSERT_TRUE(expected.has_value()) << expected.error().to_string();
-  EXPECT_EQ(sl.leg.model_price, expected->price);
-  EXPECT_EQ(sl.leg.vega, expected->vega);
-  EXPECT_EQ(sl.leg.theta, expected->theta);
-  EXPECT_EQ(sl.leg.gamma, expected->gamma);
+  // Route parity (batched laned-AVX2 vs single-contract re-query) — see above.
+  using atx::vol::test::laned_greeks_close;
+  EXPECT_TRUE(laned_greeks_close(sl.leg.model_price, expected->price));
+  EXPECT_TRUE(laned_greeks_close(sl.leg.vega, expected->vega));
+  EXPECT_TRUE(laned_greeks_close(sl.leg.theta, expected->theta));
+  EXPECT_TRUE(laned_greeks_close(sl.leg.gamma, expected->gamma));
 }
 
 TEST(Strategy, AdaptiveColdSeedReusesUnderConfiguredLegacyAndColdSurfaceTiers) {
@@ -1215,6 +1226,200 @@ TEST(Strategy, DispersionParity) {
 
   std::printf("[strategy] dispersion implied_corr=%.6f book_vega_idx=%.2f book_vega_names=%.2f\n",
               sig->implied_corr, v_index, v_names);
+}
+
+// ── FIX-E C-1: the correlation telemetry must describe the book actually built
+//
+// `corr_vega` / `corr_gamma` are PERSISTED track columns (they become series in
+// the run artifact), so a unit error in them outlives the run. Both are
+// `correlation_{vega,gamma}(signal, index_signed_vega)`, and the derivative they
+// multiply — `d sigma_idx / d rho` — is per UNIT vol, so `index_signed_vega`
+// must be the index leg's dollar vega per UNIT vol.
+//
+// Since E1 `DispersionConfig::target_vega` is read as dollars per VOL POINT, so
+// the leg the sizing builds carries `target_vega / kVegaPerVolPoint` = 100x that
+// number. `signals()` passed `target_vega` RAW, understating both columns by
+// exactly 100x, and nothing asserted the wiring.
+//
+// This test closes that: the expectation is derived from the BUILT BOOK
+// (`straddle_vega * straddle_qty * multiplier`, cross-checked against the priced
+// portfolio's own vega column) and the signal's own derivative fields — never
+// from the expression under test. It therefore asserts the WIRING, not the
+// arithmetic, which `DispersionX4.CorrelationGamma_MatchesHandComputedDerivatives`
+// already covers.
+TEST(Strategy, DispersionCorrelationTelemetryMatchesTheBuiltBook) {
+  const fs::path dir = fresh_dir("dispersion-corr-telemetry");
+  const PricedSurface idx = make_surface(1, 500.0, 500.0, kBaseNow, 0.00);
+  const PricedSurface n0 = make_surface(2, 100.0, 100.0, kBaseNow, 0.02);
+  const PricedSurface n1 = make_surface(3, 120.0, 120.0, kBaseNow, 0.03);
+  const std::string path =
+      write_archive(dir, "2026-10-01", {{"IDX", &idx}, {"NM0", &n0}, {"NM1", &n1}});
+  auto snap = MarketSnapshot::load(path);
+  ASSERT_TRUE(snap.has_value()) << snap.error().to_string();
+
+  DispersionUniverse u;
+  u.index = DispersionMember{"IDX", 1, 0.0};
+  u.names.push_back(DispersionMember{"NM0", 2, 0.6});
+  u.names.push_back(DispersionMember{"NM1", 3, 0.4});
+  DispersionConfig cfg; // ShortIndexLongNames, target_vega = 10000 $/vol-pt, mult 100
+  cfg.record_diagnostics = true;
+  const DispersionStrategy strat{u, cfg};
+
+  // ── what the strategy actually emitted ───────────────────────────────────
+  const std::vector<std::pair<std::string, double>> rows = strat.signals(*snap);
+  const auto row = [&rows](const char *key) -> double {
+    for (const auto &kv : rows) {
+      if (kv.first == key) {
+        return kv.second;
+      }
+    }
+    ADD_FAILURE() << "signal row '" << key << "' was not emitted";
+    return std::numeric_limits<double>::quiet_NaN();
+  };
+
+  // ── the expectation, DERIVED FROM THE BOOK ───────────────────────────────
+  auto book = strat.build_book(*snap);
+  ASSERT_TRUE(book.has_value()) << book.error().to_string();
+  // `straddle_qty` already carries the side's sign, so this product is the index
+  // leg's SIGNED dollar vega per unit vol.
+  const double book_index_signed_vega =
+      book->index_leg.straddle_vega * book->index_leg.straddle_qty * cfg.multiplier;
+  ASSERT_LT(book_index_signed_vega, 0.0) << "a short-index book must carry negative index vega";
+
+  // Tie that leg quantity to the PRICED book, so the derivation is anchored on
+  // the portfolio the strategy opens rather than on the sizing struct alone.
+  {
+    auto pf = Portfolio::create(book->positions);
+    ASSERT_TRUE(pf.has_value());
+    const PortfolioPricer pricer{std::move(*pf)};
+    auto frame = pricer.price(snap->set());
+    ASSERT_TRUE(frame.has_value()) << frame.error().to_string();
+    double priced_index_vega = 0.0;
+    for (std::size_t i = 0; i < frame->size(); ++i) {
+      if (frame->uid[i] == 1) {
+        priced_index_vega += frame->vega[i];
+      }
+    }
+    EXPECT_NEAR(priced_index_vega, book_index_signed_vega,
+                5.0e-3 * std::fabs(book_index_signed_vega))
+        << "the leg's straddle_vega*qty*mult is not the book's priced index vega";
+  }
+
+  auto sig = dispersion_signal(u, snap->set(), cfg.target_T);
+  ASSERT_TRUE(sig.has_value()) << sig.error().to_string();
+  ASSERT_GT(std::fabs(sig->d_sigma_d_rho), 0.0); // else both assertions are vacuous
+
+  //   dP/drho   = v * dsigma/drho
+  //   d2P/drho2 = v * [ (-sigma*T/4)*(dsigma/drho)^2 + d2sigma/drho2 ]
+  const double expect_corr_vega = book_index_signed_vega * sig->d_sigma_d_rho;
+  const double expect_corr_gamma =
+      book_index_signed_vega *
+      (-0.25 * sig->sigma_index * sig->T_used * sig->d_sigma_d_rho * sig->d_sigma_d_rho +
+       sig->d2_sigma_d_rho2);
+
+  EXPECT_NEAR(row("corr_vega"), expect_corr_vega, 1.0e-9 * std::fabs(expect_corr_vega))
+      << "corr_vega does not describe the index leg the strategy builds";
+  EXPECT_NEAR(row("corr_gamma"), expect_corr_gamma, 1.0e-9 * std::fabs(expect_corr_gamma))
+      << "corr_gamma does not describe the index leg the strategy builds";
+
+  // ── NON-VACUITY ──────────────────────────────────────────────────────────
+  // The retired expression passed `-target_vega` ($ per VOL POINT). Pin that it
+  // is exactly 1/kVegaPerVolPoint = 100x away from the book's per-unit-vol vega,
+  // so the assertions above cannot both hold under the old wiring.
+  const double retired_index_signed_vega = -cfg.target_vega;
+  EXPECT_NEAR(book_index_signed_vega, retired_index_signed_vega / kVegaPerVolPoint,
+              1.0e-9 * std::fabs(book_index_signed_vega));
+  EXPECT_GT(std::fabs(row("corr_vega")),
+            50.0 * std::fabs(correlation_vega(*sig, retired_index_signed_vega)));
+
+  std::printf("[strategy] corr_vega=%.6f corr_gamma=%.6f book_index_vega=%.2f\n", row("corr_vega"),
+              row("corr_gamma"), book_index_signed_vega);
+}
+
+// ── C-2 (pipeline-m production review): the X3 gross-vega LIMIT is DOLLARS PER
+//    VOL POINT, at every multiplier — not just at the historical 100 ──────────
+//
+// `DispersionRiskLimits::max_gross_vega` is documented in strategy.hpp as a
+// dollar cap denominated per VOL POINT. The quantity it is compared against is
+// the X3 risk probe's gross vega, and `DispersionLeg::straddle_vega` is a
+// PER-SHARE dP/dsigma per UNIT vol (dispersion.hpp), so a leg's contribution is
+//
+//     |straddle_vega * straddle_qty| * multiplier * kVegaPerVolPoint
+//
+// `multiplier` became a real typed run-spec field in this branch
+// (dispersion_run.cpp binds `multiplier`; dispersion_backtest.cpp routes it into
+// `DispersionConfig::multiplier`), so a spec at 250 or 1000 is now reachable
+// from production.
+//
+// THE ORACLE IS HAND-DERIVED FROM THE CONTRACT, NOT FROM THE CODE. Under the
+// default VegaNeutral scheme the index leg is sized to carry exactly
+// `target_vega` dollars per vol point, and the basket is sized to match it leg
+// by normalized weight — Σ ŵ_k = 1 — so the whole book's GROSS vega is exactly
+//
+//     2 * target_vega     dollars per vol point, for ANY multiplier.
+//
+// That is why this test is an independent oracle where `natural_gross_vega`
+// (dispersion_workflow_test.cpp) is not: that helper re-evaluates the production
+// expression and therefore cannot detect a wrong one.
+TEST(Strategy, DispersionGrossVegaLimitIsDollarsPerVolPointAtNonHistoricalMultiplier) {
+  const fs::path dir = fresh_dir("dispersion-gross-vega-unit");
+  const PricedSurface idx = make_surface(1, 500.0, 500.0, kBaseNow, 0.00);
+  const PricedSurface n0 = make_surface(2, 100.0, 100.0, kBaseNow, 0.02);
+  const PricedSurface n1 = make_surface(3, 120.0, 120.0, kBaseNow, 0.03);
+  const std::string path =
+      write_archive(dir, "2026-10-01", {{"IDX", &idx}, {"NM0", &n0}, {"NM1", &n1}});
+  auto snap = MarketSnapshot::load(path);
+  ASSERT_TRUE(snap.has_value()) << snap.error().to_string();
+
+  DispersionUniverse u;
+  u.index = DispersionMember{"IDX", 1, 0.0};
+  u.names.push_back(DispersionMember{"NM0", 2, 0.6});
+  u.names.push_back(DispersionMember{"NM1", 3, 0.4});
+
+  constexpr double kMultiplier = 250.0;   // deliberately NOT the historical 100
+  constexpr double kTargetVega = 10000.0; // $ of index-leg vega per ONE vol point
+
+  DispersionConfig cfg;
+  cfg.target_vega = kTargetVega;
+  cfg.multiplier = kMultiplier;
+
+  DispersionStrategy strategy{u, cfg};
+  DispersionRiskLimits limits;
+  // Any binding cap will do: the assertion reads the RECORDED `requested`, which
+  // is the probe's own measurement of the book it was handed.
+  limits.max_gross_vega = 1.0;
+  limits.action = RiskBreachAction::Clamp;
+  strategy.set_risk_limits(limits);
+
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1u;
+  ASSERT_TRUE(strategy.on_step(*snap, 0u, book, next_lot_id).has_value());
+  ASSERT_EQ(strategy.risk_events().size(), 1u) << "the tight cap must bind and be recorded";
+  ASSERT_EQ(strategy.risk_events().front().reason, RiskBreachReason::GrossVega);
+  const double measured = strategy.risk_events().front().requested;
+
+  const double expected_usd_per_vol_point = 2.0 * kTargetVega;
+  EXPECT_NEAR(measured, expected_usd_per_vol_point, 1.0e-9 * expected_usd_per_vol_point)
+      << "the gross-vega limit is not being compared in dollars per vol point";
+
+  // NON-VACUITY. The retired expression `Σ|straddle_vega × straddle_qty|` drops
+  // BOTH the multiplier and the vol-point scale, so it equals the correct
+  // quantity times 100/multiplier — 0.4x here. Pin that gap so the assertion
+  // above cannot be satisfied by the expression it replaced.
+  const auto built = strategy.build_book(*snap);
+  ASSERT_TRUE(built.has_value()) << built.error().to_string();
+  double retired = std::fabs(built->index_leg.straddle_vega * built->index_leg.straddle_qty);
+  for (const DispersionLeg &leg : built->name_legs) {
+    retired += std::fabs(leg.straddle_vega * leg.straddle_qty);
+  }
+  EXPECT_NEAR(retired, expected_usd_per_vol_point * 100.0 / kMultiplier,
+              1.0e-9 * expected_usd_per_vol_point)
+      << "the retired expression's known 100/multiplier error is not reproduced";
+  EXPECT_LT(retired, 0.5 * expected_usd_per_vol_point)
+      << "at multiplier 250 the two quantities must be far apart, else this is vacuous";
+
+  std::printf("[strategy] gross_vega_per_vol_point=%.6f retired=%.6f multiplier=%.0f\n", measured,
+              retired, kMultiplier);
 }
 
 TEST(Strategy, DispersionHonorsPriceOptionsAndPublishesExactEntrySeeds) {
