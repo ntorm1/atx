@@ -13,11 +13,16 @@
 #   atx-vol-fitting-bench    <- fitting_throughput_bench.cpp + corpus_build_bench.cpp
 #   atx-vol-e2e-hotpath-bench <- canonical real OPRA fit/value/backtest pipeline
 #                                (C0.3: calibration throughput as a first-class number)
+#   atx-vol-dispersion-bench <- dispersion_ladder_bench.cpp (overlapping-clip ladder:
+#                                how per-step cost scales with a GROWING open book,
+#                                the question the fixed-book backtest rows cannot ask)
 #
 # Shared, header-only helpers live beside them:
 #   bench_util.hpp           — common per-registration knobs (warm-up, repetitions,
 #                              p95 + CV custom statistics) and the opt-in counter dump
 #   support/synth_book.hpp   — the data-free synthetic surfaces + 64-underlying book
+#   support/synth_corpus.hpp — the data-free per-date ATXVSA2 archive corpus + Clock
+#                              the BACKTEST engine needs (synth_book is in-memory only)
 #
 # When ATX_VOL_COUNTERS=ON the atx-vol PUBLIC compile definition flows here, so
 # bench_util.hpp's counter dump lights up and all targets emit cnt_* columns.
@@ -96,6 +101,24 @@ add_executable(atx-vol-reloc-bench
     strangle_solver_bench.cpp
 )
 target_link_libraries(atx-vol-reloc-bench
+    PRIVATE
+        atx::vol
+        atx::core
+        benchmark::benchmark
+        atx_warnings
+        Threads::Threads
+)
+
+# Dispersion ladder (overlapping clips): a fresh 3M dispersion clip entered EVERY
+# step and held to its own expiry, so the open book — and therefore the per-step
+# pricing and daily delta-hedge cost — grows with the run. Driven through the
+# LIBRARY dispersion path (make_dispersion_backtest_strategy), so it exercises the
+# authoritative build_dispersion_book sizing rather than a look-alike StrategySpec.
+add_executable(atx-vol-dispersion-bench
+    bench_main.cpp
+    dispersion_ladder_bench.cpp
+)
+target_link_libraries(atx-vol-dispersion-bench
     PRIVATE
         atx::vol
         atx::core

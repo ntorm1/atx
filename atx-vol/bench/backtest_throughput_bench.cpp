@@ -17,39 +17,25 @@
 // case runs `->UseRealTime()` — the reported time (and hence items/s = steps/s) is
 // wall-clock, matching the test's original steady_clock measurement.
 
-#include <cmath>
+// The surface/archive/curve headers this file used to name went out with the corpus
+// fixture — support/synth_corpus.hpp owns them now. What remains here is the
+// strategy + engine surface plus what bench_fatal needs.
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <filesystem>
-#include <memory>
 #include <string>
 #include <utility>
-#include <vector>
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/american.hpp"         // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest.hpp"         // Clock, run_backtest, BacktestResult
-#include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
-#include "atx/vol/strategy.hpp"         // DeclarativeStrategy, StrategySpec
-#include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file, SurfaceArchiveItem
-#include "atx/vol/surface_parity.hpp"   // SliceContext
-#include "atx/vol/types.hpp"            // Side, Status
-#include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"      // EssviParams
+#include "atx/vol/backtest.hpp" // Clock, MarketSnapshot, run_backtest, BacktestResult
+#include "atx/vol/strategy.hpp" // DeclarativeStrategy, StrategySpec
 
 #include "bench_util.hpp"
+#include "support/synth_corpus.hpp" // build_synth_corpus — the per-date archive Clock
 
 namespace atx::vol::bench {
 namespace {
-
-namespace fs = std::filesystem;
-
-constexpr double kR = 0.043;
-constexpr std::int64_t kBaseNow = 1700000000000000000LL;
-constexpr std::int64_t kDayNs = 86400LL * 1000000000LL;
 
 // Bench dimensions. D dates x U underliers. A straddle clip (2 legs per underlier)
 // is opened EVERY step and held to expiry, so the book grows to D*U*2 lots — a
@@ -89,138 +75,16 @@ constexpr std::uint32_t kEntryUidBase = 400;
   std::abort();
 }
 
-// A synthetic eSSVI PricedSurface (flat forward, genuine American premium via
-// q_eff=0.02), slices T in [0.05, 1.0]. Mirrors backtest_test's make_surface.
-[[nodiscard]] PricedSurface make_surface(std::uint32_t uid, double S, double fwd,
-                                         std::int64_t now_ts, double vol_bump = 0.0) {
-  CurveSurface cs;
-  std::vector<SliceContext> ctx;
-  const double Ts[] = {0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.00};
-  int i = 0;
-  for (const double T : Ts) {
-    EssviParams e{};
-    e.theta = 0.04 + 0.005 * static_cast<double>(i) + vol_bump;
-    e.phi = 1.5 - 0.05 * static_cast<double>(i);
-    e.rho = -0.4 + 0.02 * static_cast<double>(i);
-    e.psi = 0.5;
-    e.p = 0.5;
-    e.lambda = 0.5;
-    e.T = T;
-    e.F = fwd;
-    e.expiry_id = static_cast<std::uint16_t>(i);
-    cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
-    ctx.push_back(SliceContext{T, fwd, 0.0, 0.02, 250, 7});
-    ++i;
-  }
-  PricingContext pc;
-  pc.S = S;
-  pc.r = kR;
-  pc.now_ts_ns = now_ts;
-  pc.method = AmericanMethod::AndersenLake;
-  pc.al_opts = al_fast_opts();
-  pc.uid = uid;
-  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), pc);
-  if (!ps.has_value()) {
-    bench_fatal(ps.error().to_string());
-  }
-  return std::move(*ps);
-}
-
-// Write `items` (symbol -> surface) as one date's archive; return its path.
-[[nodiscard]] std::string write_archive(
-    const fs::path& dir, const std::string& date,
-    const std::vector<std::pair<std::string, const PricedSurface*>>& items) {
-  std::error_code ec;
-  fs::create_directories(dir, ec);
-  const std::string path = (dir / (date + ".atxvsa")).string();
-  std::vector<SurfaceArchiveItem> its;
-  its.reserve(items.size());
-  for (const auto& [sym, ps] : items) {
-    its.push_back(SurfaceArchiveItem{sym, ps});
-  }
-  // ATXVSA2 (v2) writer: MarketSnapshot::load is v2-only (SurfaceArchiveV2::
-  // open_file) after the WS-S S4 clean-break cutover, so the backtest under test
-  // only accepts a v2 archive. Inputs (SurfaceArchiveItem) are unchanged from v1.
-  const Status st = write_surface_archive_v2_file(path, its);
-  if (!st.has_value()) {
-    bench_fatal(st.error().to_string());
-  }
-  return path;
-}
-
-// Hand-build an Ok-only manifest over (date, archive_path) rows.
-[[nodiscard]] CorpusManifest make_manifest(
-    const std::vector<std::pair<std::string, std::string>>& date_paths) {
-  CorpusManifest m;
-  for (const auto& [date, path] : date_paths) {
-    m.dates.push_back(date);
-    CorpusEntry e;
-    e.date = date;
-    e.symbol = "U0";  // first-Ok archive per date is all the clock needs
-    e.status = CorpusFitStatus::Ok;
-    e.archive_path = path;
-    m.entries.push_back(std::move(e));
-  }
-  return m;
-}
-
-// Build `n_dates` per-date archives (each holding `n_u` distinct-uid synthetic
-// surfaces) and return the Clock over them. Run ONCE (static fixture) — the archives
-// are written to a process-lifetime temp dir and read from disk by each
-// `run_backtest`. Shared by the straddle and universe cases (distinct uid_base +
-// dir so their fixtures never collide).
-[[nodiscard]] Clock build_corpus_impl(int n_dates, int n_u, std::uint32_t uid_base,
-                                      const char* dir_name) {
-  const fs::path dir = fs::temp_directory_path() / dir_name;
-  std::error_code ec;
-  fs::remove_all(dir, ec);
-
-  std::vector<std::pair<std::string, std::string>> dp;
-  dp.reserve(static_cast<std::size_t>(n_dates));
-  for (int d = 0; d < n_dates; ++d) {
-    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
-    // Surfaces are kept alive in `owned` for the duration of the archive write.
-    std::vector<PricedSurface> owned;
-    owned.reserve(static_cast<std::size_t>(n_u));
-    std::vector<std::pair<std::string, const PricedSurface*>> items;
-    items.reserve(static_cast<std::size_t>(n_u));
-    for (int u = 0; u < n_u; ++u) {
-      const double S = (100.0 + 10.0 * static_cast<double>(u)) *
-                       (1.0 + 0.003 * static_cast<double>(d));
-      const double vb = 0.001 * static_cast<double>(d) + 0.002 * static_cast<double>(u);
-      owned.push_back(make_surface(uid_base + static_cast<std::uint32_t>(u), S, S, now, vb));
-    }
-    std::vector<std::string> syms;
-    syms.reserve(static_cast<std::size_t>(n_u));
-    for (int u = 0; u < n_u; ++u) {
-      syms.push_back("U" + std::to_string(u));
-      items.emplace_back(syms.back(), &owned[static_cast<std::size_t>(u)]);
-    }
-    char buf[16];
-    std::snprintf(buf, sizeof buf, "2027-%02d-%02d", 1 + d / 28, 1 + d % 28);
-    dp.emplace_back(buf, write_archive(dir, buf, items));
-  }
-
-  auto clock = Clock::from_manifest(make_manifest(dp));
-  if (!clock.has_value()) {
-    bench_fatal(clock.error().to_string());
-  }
-  if (clock->size() != static_cast<std::size_t>(n_dates)) {
-    bench_fatal("clock size mismatch");
-  }
-  return std::move(*clock);
-}
-
 // Process-lifetime Clock fixtures (built once on first use).
 [[nodiscard]] const Clock& corpus_clock() {
   static const Clock clock =
-      build_corpus_impl(kD, kU, kUidBase, "atx-backtest-throughput-bench");
+      build_synth_corpus(kD, kU, kUidBase, "atx-backtest-throughput-bench");
   return clock;
 }
 
 [[nodiscard]] const Clock& universe_clock() {
   static const Clock clock =
-      build_corpus_impl(kUnivD, kUnivN, kUnivUidBase, "atx-backtest-universe-bench");
+      build_synth_corpus(kUnivD, kUnivN, kUnivUidBase, "atx-backtest-universe-bench");
   return clock;
 }
 
@@ -390,7 +254,7 @@ void BM_UniverseStrangleHedged(benchmark::State& state) {
 // One loaded kEntryN-name snapshot (built once; a 2-date corpus, date 0 loaded).
 [[nodiscard]] const MarketSnapshot& entry_snapshot() {
   static const MarketSnapshot snap = [] {
-    const Clock clock = build_corpus_impl(2, kEntryN, kEntryUidBase, "atx-l3-entry-resolve-bench");
+    const Clock clock = build_synth_corpus(2, kEntryN, kEntryUidBase, "atx-l3-entry-resolve-bench");
     auto s = MarketSnapshot::load(clock.refs()[0].archive_path);
     if (!s.has_value()) {
       bench_fatal(s.error().to_string());
