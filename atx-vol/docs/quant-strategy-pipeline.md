@@ -272,11 +272,24 @@ the existing portfolio ledger. Full contracts, fidelity limits, and primary
 research sources are documented in
 [`atx-options-engine/README.md`](../../atx-options-engine/README.md).
 
-The XS-2 `OptionExecutionReplay` kernel now provides deterministic
-Consolidated-L1 partial fills, shared selected-participant liquidity, exact
-multiplier-aware cash, and effective-dated fee ledgers. It remains an
-evidence-bounded batch kernel: adaptive research must settle prior fills and
-working leaves before constructing the next target.
+The XS-2 `OptionExecutionReplay` kernel provides deterministic Consolidated-L1
+partial fills, shared selected-participant liquidity, internally exact
+multiplier-aware modeled cash, and effective-dated fee ledgers.
+
+XS-3A adds `OptionExecutionSession`, a bounded persistent state machine that
+preloads immutable market evidence once and merges future-effective dynamic
+orders and cancellations across decision frontiers. Every frontier exposes
+realized positions, scheduled/working/pending-cancel leaves, projected
+exposure, new fills, and an append-only lifecycle transition ledger. Commands
+cannot consume the same-timestamp quote that produced them, invalid baskets
+reject atomically, and successful lifecycle calls allocate no memory after
+workspace creation.
+
+This closes the execution-state seam for adaptive research. The next
+date-major coordinator must run the point-in-time signal and option target
+policy after each observation and reconcile against position plus live leaves,
+not position alone. The design contract and primary sources are in the
+[`adaptive execution-session research note`](../../atx-options-engine/docs/adaptive-execution-session-research-2026-07-26.md).
 
 ## Extension rules
 

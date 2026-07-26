@@ -26,6 +26,9 @@ namespace atx::options::execution {
 inline constexpr std::uint64_t kOptionExecutionReplayModelVersion =
     0x4154584F45520001ULL; // "ATXOER", revision 1
 inline constexpr std::uint64_t kOptionExecutionReplayOrderingVersion = 1U;
+inline constexpr std::uint64_t kOptionExecutionSessionModelVersion =
+    0x4154584F45530001ULL; // "ATXOES", revision 1
+inline constexpr std::uint64_t kOptionExecutionSessionOrderingVersion = 1U;
 
 struct OptionOrderId {
   std::uint64_t value{0};
@@ -334,6 +337,120 @@ struct OptionReplayView {
   OptionReplaySummary summary{};
 };
 
+enum class OptionExecutionSessionState : std::uint8_t {
+  Empty = 0,
+  ReadyToAdvance = 1,
+  AtFrontier = 2,
+  Finished = 3,
+  Failed = 4,
+};
+
+enum class OptionOrderLifecycleState : std::uint8_t {
+  Scheduled = 0,
+  Working = 1,
+  PartiallyFilled = 2,
+  PendingCancel = 3,
+  Filled = 4,
+  Canceled = 5,
+  Expired = 6,
+  // Used only by cancel-ledger records that never resolved to an order.
+  NotApplicable = 7,
+};
+
+enum class OptionOrderTransitionKind : std::uint8_t {
+  Scheduled = 0,
+  Submitted = 1,
+  PartiallyFilled = 2,
+  Filled = 3,
+  CancelRequested = 4,
+  Canceled = 5,
+  Expired = 6,
+  CancelAlreadyTerminal = 7,
+  CancelUnknownOrder = 8,
+};
+
+// Current execution state aligned one-to-one with the cumulative order audit.
+// A pending cancel remains economically exposed until its availability event.
+struct OptionOrderStateSnapshot {
+  OptionOrderId order_id{};
+  std::uint64_t contract_id{0};
+  atx::engine::InstrumentId engine_id{};
+  std::int64_t remaining_contracts{0};
+  OptionOrderLifecycleState state{OptionOrderLifecycleState::Scheduled};
+  bool cancel_pending{false};
+
+  [[nodiscard]] bool operator==(const OptionOrderStateSnapshot &) const noexcept = default;
+};
+
+// Signed net account projection aligned one-to-one with the canonical contract
+// catalog. pending_cancel_contracts is a subset of scheduled + working
+// contracts; projected_contracts therefore counts it only once. Inspect the
+// aligned orders/order_states to measure gross or opposing working leaves.
+struct OptionContractExposureSnapshot {
+  std::uint64_t contract_id{0};
+  atx::engine::InstrumentId engine_id{};
+  std::int64_t position_contracts{0};
+  std::int64_t scheduled_contracts{0};
+  std::int64_t working_contracts{0};
+  std::int64_t pending_cancel_contracts{0};
+  std::int64_t projected_contracts{0};
+
+  [[nodiscard]] bool operator==(const OptionContractExposureSnapshot &) const noexcept = default;
+};
+
+// Immutable append-only lifecycle record. sequence is session-local and starts
+// at one. fill_index is one-based for fill transitions and zero otherwise.
+struct OptionOrderTransition {
+  std::uint64_t sequence{0};
+  std::int64_t event_ts_ns{0};
+  std::int64_t available_ts_ns{0};
+  OptionOrderId order_id{};
+  OptionCancelId cancel_id{};
+  OptionOrderTransitionKind kind{OptionOrderTransitionKind::Scheduled};
+  OptionOrderLifecycleState state_before{OptionOrderLifecycleState::Scheduled};
+  OptionOrderLifecycleState state_after{OptionOrderLifecycleState::Scheduled};
+  std::int64_t last_fill_contracts{0};
+  std::int64_t cumulative_fill_contracts{0};
+  std::int64_t remaining_contracts{0};
+  std::size_t fill_index{0};
+
+  [[nodiscard]] bool operator==(const OptionOrderTransition &) const noexcept = default;
+};
+
+struct OptionExecutionSessionSummary {
+  std::uint64_t model_version{kOptionExecutionSessionModelVersion};
+  std::uint64_t ordering_version{kOptionExecutionSessionOrderingVersion};
+  std::uint64_t command_trace_hash{0};
+  std::size_t frontier_count{0};
+  std::size_t command_batch_count{0};
+  std::size_t transition_count{0};
+  std::int64_t frontier_ts_ns{-1};
+
+  [[nodiscard]] bool operator==(const OptionExecutionSessionSummary &) const noexcept = default;
+};
+
+struct OptionExecutionFrontierView {
+  std::int64_t frontier_ts_ns{0};
+  // Deltas since the previously returned frontier. new_transitions includes
+  // command-acceptance transitions appended after that prior observation.
+  std::span<const OptionFill> new_fills;
+  std::span<const OptionOrderTransition> new_transitions;
+  std::span<const OptionFill> fills;
+  std::span<const OptionOrderAudit> orders;
+  std::span<const OptionCancelAudit> cancellations;
+  std::span<const OptionPositionSnapshot> positions;
+  std::span<const OptionOrderStateSnapshot> order_states;
+  std::span<const OptionContractExposureSnapshot> exposures;
+  std::span<const OptionOrderTransition> transitions;
+  OptionReplaySummary replay_summary{};
+  OptionExecutionSessionSummary session_summary{};
+};
+
+struct OptionCommandBatch {
+  std::span<const OptionOrderRequest> orders;
+  std::span<const OptionCancelRequest> cancellations;
+};
+
 struct OptionReplayLimits {
   std::size_t max_contracts{100'000};
   std::size_t max_quote_events{1'000'000};
@@ -344,6 +461,18 @@ struct OptionReplayLimits {
   std::size_t max_fills{1'000'000};
   std::size_t max_workspace_bytes{1'073'741'824}; // 1 GiB
 };
+
+struct OptionExecutionSessionLimits {
+  OptionReplayLimits replay{};
+  std::size_t max_frontiers{100'000};
+  std::size_t max_transitions{2'000'000};
+  std::size_t max_workspace_bytes{1'073'741'824}; // 1 GiB
+};
+
+// Exact reserved payload bytes required by OptionExecutionSession::create().
+// Container objects and allocator metadata are excluded.
+[[nodiscard]] atx::core::Result<std::size_t>
+option_execution_session_required_workspace_bytes(const OptionExecutionSessionLimits &limits);
 
 struct OptionReplayConfig {
   OptionReplayScenario scenario{OptionReplayScenario::Strict};
@@ -410,6 +539,67 @@ public:
 private:
   struct Impl;
   explicit OptionExecutionReplay(std::unique_ptr<Impl> impl) noexcept;
+  std::unique_ptr<Impl> impl_;
+};
+
+struct OptionExecutionSessionResult {
+  OptionReplayView replay{};
+  std::span<const OptionOrderStateSnapshot> order_states;
+  std::span<const OptionContractExposureSnapshot> exposures;
+  std::span<const OptionOrderTransition> transitions;
+  OptionExecutionSessionSummary session_summary{};
+};
+
+// Persistent deterministic replay session for adaptive strategies.
+//
+// start() accepts immutable market/catalog inputs and requires empty initial
+// order/cancel spans. advance_to() settles all evidence available at or before
+// one strictly increasing frontier. The caller must acknowledge that frontier
+// exactly once with apply_commands(), including an empty batch, before the next
+// advance. Every submitted command must be decided at the current frontier and
+// become effective strictly later. Nonzero order and cancellation identifiers
+// must each increase globally across accepted command batches. Within a batch,
+// identifiers must also increase in canonical availability/priority order.
+//
+// apply_commands() validates and canonicalizes the complete basket before
+// mutating session state. A validation failure is retryable. A failure while
+// advancing poisons the session because prior borrowed views are invalidated at
+// mutation entry and a partial event cycle is not exposed as a sealed frontier.
+// Unknown cancellation targets are pinned when the batch is accepted and
+// cannot attach to an order created later with the same identifier.
+// Admission reserves transition capacity for immediate acceptance plus the
+// mandatory future submit/cancel outcome. Data-dependent fill/expiry
+// transitions can still exhaust the configured limit and poison the session.
+//
+// All returned spans borrow from the session and are invalidated by the next
+// start, advance_to, apply_commands, finish, move, or destruction. create()
+// performs every capacity allocation; successful lifecycle calls do not
+// allocate. At a frontier, replay_summary, order_states, and exposures reflect
+// only events processed through that frontier. One instance is not thread-safe.
+// Final order and cancellation audit spans retain canonical command-acceptance
+// order across frontiers; they are not globally resorted by later availability.
+class OptionExecutionSession {
+public:
+  [[nodiscard]] static atx::core::Result<OptionExecutionSession>
+  create(OptionExecutionSessionLimits limits = {});
+
+  ~OptionExecutionSession();
+  OptionExecutionSession(OptionExecutionSession &&) noexcept;
+  OptionExecutionSession &operator=(OptionExecutionSession &&) noexcept;
+  OptionExecutionSession(const OptionExecutionSession &) = delete;
+  OptionExecutionSession &operator=(const OptionExecutionSession &) = delete;
+
+  [[nodiscard]] atx::core::Result<void> start(const OptionReplayInputs &inputs,
+                                              const OptionReplayConfig &config);
+  [[nodiscard]] atx::core::Result<OptionExecutionFrontierView>
+  advance_to(std::int64_t frontier_ts_ns);
+  [[nodiscard]] atx::core::Result<void> apply_commands(const OptionCommandBatch &commands);
+  [[nodiscard]] atx::core::Result<OptionExecutionSessionResult> finish();
+  [[nodiscard]] OptionExecutionSessionState state() const noexcept;
+
+private:
+  struct Impl;
+  explicit OptionExecutionSession(std::unique_ptr<Impl> impl) noexcept;
   std::unique_ptr<Impl> impl_;
 };
 

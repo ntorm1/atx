@@ -109,11 +109,14 @@ The kernel enforces:
 - explicit per-side update evidence, so a bid-only update cannot replenish a
   consumed ask;
 - whole-contract partial fills, explicit `FirstFutureQuoteOrCancel`, DAY, and
-  GTC leaves, cancel/replace ordering, and expiry-before-quote ordering;
-- strict quote status, staleness, locked-market, definition-clock, contract
-  expiry, source-lineage, and duplicate-key validation;
-- exact `Decimal` cash, premium, slippage, adverse-basis-point, and component
-  fee accounting with checked multiplier and quantity arithmetic;
+  synthetic GTC leaves, cancel-plus-new ordering, and a conservative
+  cutoff-before-quote tie-break;
+- strict quote status, staleness, locked-market, definition-clock,
+  caller-supplied contract-cutoff, source-lineage, and duplicate-key
+  validation;
+- internally exact `Decimal` cash, premium, slippage, adverse-basis-point, and
+  component fee accounting for the configured counterfactual fills, with
+  checked multiplier and quantity arithmetic;
 - effective-dated, lineage-bearing simple-order tick schedules. Quotes and
   limits must be on their active grid; adverse buys round up and sells round
   down without a floating-point money seam. An order's rule must be known at
@@ -128,8 +131,9 @@ The kernel enforces:
   `create`; the replay path performs no dynamic allocation after workspace
   initialization. A global-allocation-instrumented contract test pins this
   property;
-- preallocated per-contract order heaps and logarithmic effective-row lookup,
-  avoiding quadratic same-contract insertion and fee-revision scans.
+- a preallocated intrusive pairing heap and logarithmic effective-row lookup,
+  avoiding quadratic same-contract insertion and fee-revision scans without
+  partitioning capacity per contract.
 
 `option_replay_required_workspace_bytes` exposes the exact reserved payload
 budget used by `create`. A successful `run` returns spans borrowed from that
@@ -172,8 +176,62 @@ infer an execution venue from OPRA.
 
 The focused Debug benchmark includes a 100,000-order single-contract book in
 addition to wide and repeated-partial-fill cases. The concentrated case
-completes in about one second on the development host (about 110,000 fills per
-second); this is a regression baseline, not a production Release claim.
+currently completes in about one second on the development host (about
+100,000 fills per second); this is a regression baseline, not a production
+Release claim.
+
+## Implemented XS-3A persistent execution session
+
+`OptionExecutionSession` carries execution and account state across decision
+frontiers. It preloads the immutable market stream once, then merges it with a
+bounded dynamic event heap for future-effective orders, cancellations, and DAY
+expiries. This prevents prefix replay from resetting working leaves or
+replenishing already consumed historical liquidity.
+
+The session protocol is:
+
+```text
+start -> advance_to -> observe -> apply_commands -> ... -> finish
+```
+
+`advance_to` settles all loaded, sequence-attested evidence available at or
+before a strictly increasing frontier. This does not prove independent channel
+completeness without source watermarks. The caller must acknowledge every
+frontier exactly once, including with an empty command batch. Commands are
+decided at the observed frontier and become effective strictly later, so a new
+order cannot backfill the quote that caused its decision.
+
+Frontier views expose cumulative and new fills, an append-only lifecycle
+transition ledger, current order state, internally exact modeled
+positions/cash, and per-contract scheduled, working, pending-cancel, and
+projected exposure. Pending-cancel leaves remain exposed and can receive
+eligible modeled fills until the cancel becomes available. This is a synthetic
+deterministic lifecycle informed by FIX's pending-cancel distinction; it does
+not model venue acknowledgments, rejects, native replace, or transport state.
+
+Command baskets are canonicalized and validated atomically. Validation errors
+are retryable. Processing failures poison the session rather than expose a
+partially advanced frontier. Nonzero positions at contract expiry fail closed
+until authoritative settlement and exercise/assignment modeling is added.
+Here `expiry_ts_ns` is a caller-supplied synthetic trading cutoff, not a claim
+about product-specific last trading, expiration, or settlement.
+
+Current GTC means only that an order remains open until explicit cancel, replay
+end, or the synthetic contract cutoff inside one replay. Exchange session
+calendars, carried-order restatements, Done-for-Day, disconnect policies, and
+cross-session GTC/GTD behavior are deferred.
+
+`option_execution_session_required_workspace_bytes` exposes the bounded payload
+budget. Successful lifecycle calls allocate no memory after `create`. Dynamic
+order storage uses the same intrusive global pairing heap as batch replay, so
+all configured orders may concentrate in one contract. Epoch-stamped
+touched-contract staging avoids a full catalog scan for every command batch.
+Admission reserves ledger capacity for acceptance and mandatory submit/cancel
+outcomes. A 10,000-frontier, 10,000-command Debug benchmark currently processes
+more than 20,000 frontiers per second on the development host; this is a
+regression baseline, not a Release capacity claim. A separate 10,000-contract,
+10,000-empty-frontier case guards against accidentally restoring a full catalog
+scan per command batch.
 
 ## Intended pipeline
 
@@ -188,8 +246,8 @@ For each decision timestamp:
    `make_option_target_book`.
 4. Convert the target book with `make_option_order_batch`. Decision-time
    bid/ask sets a marketable limit, never a fill.
-5. Feed future `OptionTopOfBookEvent` rows and the orders into a preallocated
-   `OptionExecutionReplay`.
+5. Advance a preallocated `OptionExecutionSession`, observe realized position
+   and live leaves, and apply the future-effective order/cancel batch.
 6. Consume `OptionFill`, `OptionOrderAudit`, `OptionCancelAudit`,
    `OptionPositionSnapshot`, and `OptionReplaySummary` before reusing the
    workspace.
@@ -198,13 +256,11 @@ The engine's generic stock `WeightPolicy::reconcile` must not be used directly
 for options: it divides equity by the mark as if the instrument were one share
 and does not know the contract multiplier, vega, or margin.
 
-The batch replay kernel is suitable for a fixed historical order schedule and
-for one decision frontier at a time. A complete adaptive backtest coordinator
-must settle the prior frontier, expose realized positions and live leaves,
-then build the next target. Precomputing every future order would ignore partial
-fills and is not an acceptable substitute. That incremental
-`advance -> observe account -> target -> apply commands` coordinator is the next
-layer.
+The persistent session now provides the correct incremental execution boundary.
+The next coordinator layer must invoke the point-in-time weight policy and
+option-aware sizing at each observation, then reconcile its target against
+filled position plus signed working leaves. Precomputing every future order
+would still ignore partial fills and is not an acceptable substitute.
 
 ## Research basis
 
@@ -235,13 +291,15 @@ market sources:
 - [Execution replay research note](docs/execution-replay-research-2026-07-26.md)
   defines the evidence grades, OPRA/venue fidelity boundary, fee lanes,
   calibration gates, and claims this engine must reject.
+- [Adaptive execution-session research note](docs/adaptive-execution-session-research-2026-07-26.md)
+  pins the incremental state machine, pending-cancel exposure, command barrier,
+  allocation contract, and next coordinator boundary.
 
 ## Explicitly deferred
 
-The next milestone is the adaptive date-major coordinator described above,
-including working-leaf-aware target reconciliation and an immutable lifecycle
-transition ledger. Production completeness also requires adjusted
-deliverables, official settlement, exercise/assignment, stock/futures hedge
-replay, borrow/locates, venue-native simple and complex books, auction
-participation, calibrated cross-impact, and a broker- or clearing-calibrated
-margin model.
+The next milestone is the adaptive date-major target coordinator, including
+no-allocation weight/target adapters and working-leaf-aware reconciliation.
+Production completeness also requires adjusted deliverables, official
+settlement, exercise/assignment, stock/futures hedge replay, borrow/locates,
+venue-native simple and complex books, auction participation, calibrated
+cross-impact, and a broker- or clearing-calibrated margin model.
