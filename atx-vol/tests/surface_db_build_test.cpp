@@ -1085,6 +1085,10 @@ TEST(SurfaceDbBuildRegressionCellCap, ReportCsvKeepsEveryRegressionCell) {
   // report CSVs sees a regression APPEAR rather than a line materialise.
   EXPECT_NE(text.find("coverage.dates_refused_coverage_regression,1\n"), std::string::npos);
   EXPECT_NE(text.find("coverage.dates_dropped_coverage_regression,0\n"), std::string::npos);
+  // REV-R3 fix-2 (review N-3): the cause discriminator is a scalar on the same
+  // terms — always emitted, so a reader can tell WHY a refusal happened from the
+  // CSV alone and not only from the stderr banner it never saw.
+  EXPECT_NE(text.find("coverage.dates_refused_partition_unlisted,0\n"), std::string::npos);
 }
 
 // The constant-shape promise: both new headers are present even on a report with
@@ -1098,6 +1102,7 @@ TEST(SurfaceDbBuildRegressionCellCap, ReportCsvSectionHeaderIsEmittedWhenEmpty) 
   const std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
   EXPECT_NE(text.find("regression_date,regression_symbol\n"), std::string::npos);
   EXPECT_NE(text.find("coverage.dates_refused_coverage_regression,0\n"), std::string::npos);
+  EXPECT_NE(text.find("coverage.dates_refused_partition_unlisted,0\n"), std::string::npos);
 }
 
 // ── is_total_fit_failure — the CLI's exit-code decision ─────────────────────

@@ -2568,6 +2568,13 @@ TEST(SurfaceDbPopulate, RefusedRewriteLeavesTheDegradedCellsStoredSurfaceByteIde
 
   EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u)
       << "the write path must have refused this date";
+  // REV-R3 fix-2 (review N-3). The NEGATIVE half of the cause discriminator, and
+  // the half a test is likelier to get wrong: this refusal is a genuine fit
+  // failure on a partition the manifest DOES list, so the CLI must print its
+  // --r advice for it. A discriminator that reported "unlisted" here would
+  // suppress the one diagnosis that is correct.
+  EXPECT_EQ(cov2->dates_refused_partition_unlisted, 0u)
+      << "the manifest lists this partition -- this refusal IS the wrong-rate shape";
   EXPECT_EQ(cov2->dates_dropped_coverage_regression, 0u);
   EXPECT_EQ(cov2->dates_written, 0u)
       << "dates_written must report the COMMIT, not the filter's intention";
@@ -2942,6 +2949,16 @@ TEST(SurfaceDbPopulate, PartitionOnDiskButMissingFromTheManifestIsNotOverwritten
 
   EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u)
       << "an UNLISTED partition file was treated as no coverage and overwritten";
+  // REV-R3 fix-2 (review N-3). The POSITIVE half of the cause discriminator. The
+  // CLI keys its advice on this counter, and it must be able to tell this state
+  // apart from a wrong-rate refusal: here NOTHING failed to fit (cells_failed is
+  // 0 below), so "check --r" is the wrong instruction and the escape it offers
+  // -- --allow-coverage-regression -- would delete AAA and BBB, the two surfaces
+  // this run just saved.
+  EXPECT_EQ(cov2->dates_refused_partition_unlisted, 1u)
+      << "the refusal was on a partition the manifest does not list";
+  EXPECT_EQ(cov2->cells_failed, 0u)
+      << "no cell failed here: a wrong-rate diagnosis would be false on its face";
   EXPECT_EQ(cov2->dates_written, 0u);
   ASSERT_EQ(cov2->coverage_regression_cells.size(), std::size_t{2});
   EXPECT_EQ(cov2->coverage_regression_cells[0].symbol, "AAA");

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <span>
 #include <string>
@@ -1066,6 +1067,225 @@ TEST(SurfaceDbPartition, RewriteReplaces_DropRemoves) {
   // file physically gone:
   EXPECT_FALSE(
       std::filesystem::exists(std::filesystem::path(root) / "partitions" / "2026-07-10.atxvsa"));
+  std::filesystem::remove_all(root);
+}
+
+// ── REV-R3 fix-2 (review N-1): what `open_partition_file`'s error CODE means ────
+//
+// This accessor exists to keep "there is no file" apart from "there is a file I
+// could not use", because the coverage guard in `populate_surface_db` turns the
+// first into a whole-file overwrite. Three of its four outcomes are pinned here;
+// the fourth — the filesystem declining to answer at all — needs a denied ACL to
+// arm and is pinned separately by
+// `OpenPartitionFileDoesNotReportAnUnanswerableProbeAsAbsent` below.
+TEST(SurfaceDbPartition, OpenPartitionFileSeparatesAbsentFromUnanswerable) {
+  const auto root = test_root("open_partition_file_codes");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  const auto s1 = make_essvi(/*uid=*/7, /*n_slices=*/2);
+  const std::vector<SurfaceArchiveItem> one{{"AAPL", &s1}};
+
+  // (1) FILE ABSENT -> NotFound. This is the only code on which the guard may
+  // conclude "nothing here to lose" and proceed to overwrite.
+  EXPECT_EQ(db->open_partition_file("2026-07-10").error().code(), ErrorCode::NotFound);
+
+  // (2) FILE PRESENT and readable -> Ok, and its DIRECTORY is the authority on
+  // what it holds. Also armed WITHOUT the manifest, which is the whole point:
+  // `partition_listed` is asked separately and answers the other half.
+  ASSERT_TRUE(db->write_partition("2026-07-10", one).has_value());
+  auto opened = db->open_partition_file("2026-07-10");
+  ASSERT_TRUE(opened.has_value()) << (opened ? "" : opened.error().to_string());
+  EXPECT_EQ(opened->directory().size(), std::size_t{1});
+  EXPECT_TRUE(db->partition_listed("2026-07-10"));
+  EXPECT_FALSE(db->partition_listed("2026-07-11")) << "no partition was ever written for it";
+  EXPECT_FALSE(db->partition_listed("not a valid key"))
+      << "an unrepresentable key cannot be listed under any spelling";
+
+  // (3) FILE PRESENT and not an archive -> NOT NotFound. The exact code is the
+  // archive's business; what this pins is that it never collapses into the
+  // proceed-and-overwrite branch.
+  const std::filesystem::path part =
+      std::filesystem::path(root) / "partitions" / "2026-07-10.atxvsa";
+  {
+    std::ofstream os(part, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(os.good());
+    os << "this is not an ATXVSA archive";
+  }
+  auto garbage = db->open_partition_file("2026-07-10");
+  ASSERT_FALSE(garbage.has_value()) << "a garbage partition must not open";
+  EXPECT_NE(garbage.error().code(), ErrorCode::NotFound)
+      << "a file that IS there must never report as absent -- that is the fail-open";
+
+  std::filesystem::remove_all(root);
+}
+
+// ARMING ROUTES THAT DO NOT WORK, recorded so the next person does not spend the
+// afternoon rediscovering them. Each was run against `std::filesystem::exists`
+// under this toolchain (clang-cl + MSVC STL, Windows 11) and each returned false
+// with the `error_code` CLEAR — i.e. each lands on the NotFound branch and would
+// have made a test that passes while proving nothing:
+//
+//   - a path longer than MAX_PATH                    exists=0 ec=0
+//   - a path whose parent component is a FILE        exists=0 ec=0
+//   - a reserved device name (`CON`) as a directory  exists=0 ec=0
+//
+// An open handle without FILE_SHARE_DELETE never reaches this probe either:
+// `exists` goes through GetFileAttributesExW, which opens no handle, so a sharing
+// violation cannot arise here at all. (It DOES arm a failed unlink, which is what
+// `DropPartitionReportsAFailedUnlink` below uses.) The route that works is a
+// denied ACL on the parent directory — exists=0, ec=5, "Access is denied" — and
+// that is what the test below arms.
+
+#if defined(_WIN32)
+namespace {
+
+// Deny this user every access to `dir`, so that a stat of anything INSIDE it
+// fails with ERROR_ACCESS_DENIED — which is what makes `std::filesystem::exists`
+// return false with `ec` SET rather than false with `ec` clear. RAII because an
+// un-restored deny ACE leaves a directory the harness cannot delete.
+class DeniedDirectory {
+public:
+  explicit DeniedDirectory(std::filesystem::path dir) : dir_(std::move(dir)) {
+    armed_ = run(" /inheritance:r /deny \"%USERNAME%\":(OI)(CI)(F)") == 0;
+  }
+  ~DeniedDirectory() {
+    if (armed_) {
+      (void)run(" /remove:d \"%USERNAME%\" /grant \"%USERNAME%\":(OI)(CI)(F)");
+    }
+  }
+  DeniedDirectory(const DeniedDirectory &) = delete;
+  DeniedDirectory &operator=(const DeniedDirectory &) = delete;
+  DeniedDirectory(DeniedDirectory &&) = delete;
+  DeniedDirectory &operator=(DeniedDirectory &&) = delete;
+
+private:
+  [[nodiscard]] int run(const char *args) const {
+    const std::string cmd = "icacls \"" + dir_.string() + "\"" + args + " >nul 2>&1";
+    return std::system(cmd.c_str());
+  }
+  std::filesystem::path dir_;
+  bool armed_{false};
+};
+
+} // namespace
+
+// ── REV-R3 fix-2 (review N-1): THE branch, armed with a real `std::error_code` ──
+//
+// `std::filesystem::exists` reports "absent" and "I could not tell you" through
+// the SAME return value and separates them only through its `error_code`.
+// `SurfaceArchiveV2::open_file` folds both into `NotFound`, and `NotFound` is the
+// coverage guard's "nothing on disk, proceed and overwrite" branch — so before
+// this fix a filesystem that could not answer routed a whole-file overwrite over
+// a partition whose existence was never established. That is the third instance
+// of one defect class in this guard, so the branch that closes it gets a test
+// that arms the real condition rather than a mock.
+//
+// Arming is Windows-specific because the portable routes do not work — verified,
+// not assumed. A path over MAX_PATH, a path whose parent component is a FILE, and
+// a reserved device name all leave `ec` CLEAR here: the MSVC STL classifies
+// ERROR_FILENAME_EXCED_RANGE / ERROR_PATH_NOT_FOUND / ERROR_INVALID_NAME with the
+// file-not-found family, so they land on the `NotFound` branch and would test
+// nothing. A denied ACL on the parent directory is the one route that sets `ec`
+// (ERROR_ACCESS_DENIED == 5), and it needs no elevation.
+TEST(SurfaceDbPartition, OpenPartitionFileDoesNotReportAnUnanswerableProbeAsAbsent) {
+  const auto root = test_root("open_partition_file_denied");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  const auto s1 = make_essvi(/*uid=*/13, /*n_slices=*/2);
+  const std::vector<SurfaceArchiveItem> one{{"AAPL", &s1}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", one).has_value());
+  const std::filesystem::path parts = std::filesystem::path(root) / "partitions";
+  const std::filesystem::path part = parts / "2026-07-10.atxvsa";
+  ASSERT_TRUE(std::filesystem::exists(part));
+
+  {
+    const DeniedDirectory denied(parts);
+
+    // ARMING CHECK, and the reason this test cannot pass vacuously: unless the
+    // probe really comes back "false with ec set", there is nothing here to
+    // assert and the test says so instead of reporting a pass.
+    std::error_code ec;
+    const bool present = std::filesystem::exists(part, ec);
+    if (!ec) {
+      GTEST_SKIP() << "could not arm a failed existence probe (exists returned " << present
+                   << " with a clear error_code); the IoError branch of open_partition_file is "
+                      "NOT covered on this host";
+    }
+    EXPECT_FALSE(present) << "exists() must report false on a failed query -- that is the whole "
+                             "reason the error_code has to be read";
+
+    auto opened = db->open_partition_file("2026-07-10");
+    ASSERT_FALSE(opened.has_value()) << "the partition is unreadable; it must not open";
+    EXPECT_EQ(opened.error().code(), ErrorCode::IoError)
+        << "THE FAIL-OPEN: NotFound here is the coverage guard's proceed-and-overwrite "
+           "branch, and nothing has established that the file is absent -- the filesystem "
+           "declined to say";
+    EXPECT_NE(opened.error().code(), ErrorCode::NotFound);
+
+    // The manifest is unaffected: it still lists the partition, because the
+    // manifest is a different question and lives outside the denied directory.
+    // This is what keeps the fix from being mistaken for a manifest change.
+    EXPECT_TRUE(db->partition_listed("2026-07-10"));
+  }
+
+  std::filesystem::remove_all(root);
+}
+#endif // _WIN32
+
+// ── REV-R3 fix-2 (review N-2): a failed unlink is reported, not swallowed ───────
+//
+// `drop_partition` commits the manifest FIRST and unlinks SECOND (deliberately —
+// see the ordering argument at the unlink). It used to discard the unlink's
+// `error_code` and return Ok regardless, which left an orphaned `.atxvsa` with no
+// crash at all and told the caller the drop had fully succeeded. Since the
+// coverage guard reads partition FILES without asking the manifest, that orphan
+// is no longer inert: it makes the guard refuse every later narrower rewrite of
+// that date.
+//
+// Armed with a real failure rather than a simulated one: on Windows an open
+// `ifstream` holds the file without FILE_SHARE_DELETE, so DeleteFileW fails with
+// a sharing violation. POSIX unlinks an open file happily, so there the drop
+// really does succeed and the test asserts THAT instead — either way it asserts
+// what the platform actually did, and neither leg passes vacuously.
+TEST(SurfaceDbPartition, DropPartitionReportsAFailedUnlink) {
+  const auto root = test_root("drop_partition_unlink_fails");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  const auto s1 = make_essvi(/*uid=*/11, /*n_slices=*/2);
+  const std::vector<SurfaceArchiveItem> one{{"AAPL", &s1}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", one).has_value());
+  const std::filesystem::path part =
+      std::filesystem::path(root) / "partitions" / "2026-07-10.atxvsa";
+  ASSERT_TRUE(std::filesystem::exists(part));
+
+  {
+    std::ifstream hold(part, std::ios::binary);
+    ASSERT_TRUE(hold.good()) << "the scenario is not armed: the file must be open";
+
+    const Status dropped = db->drop_partition("2026-07-10");
+#ifdef _WIN32
+    // ARMED, and asserted as armed: if the open handle ever stops blocking the
+    // unlink this test must FAIL rather than quietly start passing for the wrong
+    // reason.
+    ASSERT_TRUE(std::filesystem::exists(part))
+        << "the scenario is not armed: the open handle did not block the unlink";
+    ASSERT_FALSE(dropped.has_value())
+        << "a failed unlink left an orphan the coverage guard will defend, and the "
+           "caller was told the drop succeeded";
+    EXPECT_EQ(dropped.error().code(), ErrorCode::IoError);
+#else
+    // POSIX unlinks an open file happily, so the drop really does fully succeed
+    // and must say so. Nothing about the new branch is exercised here.
+    ASSERT_FALSE(std::filesystem::exists(part));
+    EXPECT_TRUE(dropped.has_value()) << (dropped ? "" : dropped.error().to_string());
+#endif
+    // Either way the MANIFEST half committed and is not rolled back: that is what
+    // makes a reported failure a PARTIAL success rather than a no-op, and it is
+    // the part of the contract a caller has to know.
+    EXPECT_TRUE(db->partitions().empty()) << "the manifest commit happens first and stands";
+    EXPECT_EQ(db->open_partition("2026-07-10").error().code(), ErrorCode::NotFound);
+  }
+
   std::filesystem::remove_all(root);
 }
 
