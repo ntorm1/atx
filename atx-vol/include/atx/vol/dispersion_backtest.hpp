@@ -89,6 +89,25 @@ struct DispersionBacktestConfig {
   StrikePolicy strike{};
 };
 
+// REVIEW C-15: THE ONE place a `DispersionBacktestConfig` becomes the sizing /
+// construction policy a dispersion book is built under — side, weighting, strike
+// policy, contract multiplier, target vega, tenor and missing-name policy.
+//
+// It is a named function rather than a block inside `make_specs` because it had
+// TWO callers with different answers. `dispersion_run_projected_var` read the
+// loose `RunSpec` and then hardcoded `side = ShortIndexLongNames` and
+// `multiplier = 100.0`, and never saw `weighting` or `strike` at all — so one
+// production spec built one book in the surface/listed backtest and a different
+// book in projected VaR, silently, with no error and no diagnostic. Both routes
+// now come through here, so a knob that reaches the surface book provably
+// reaches the VaR book. `DispersionProjectedVar.C15_*` in dispersion_run_test.cpp
+// compares the route's PUBLISHED legs against a book built through this function,
+// so re-hardcoding either field turns a test red.
+//
+// `projected_maturity` is set iff `project_to_calendar_expiry`; the relative-
+// template VaR route requires one unconditionally and says so at its call site.
+[[nodiscard]] DispersionConfig dispersion_config_from(const DispersionBacktestConfig &config);
+
 // Construct the canonical surface-only dispersion strategy used by research
 // and production backtests. The authored universe is rebound by symbol on each
 // snapshot by DispersionStrategy. This overload FREEZES the passed membership for

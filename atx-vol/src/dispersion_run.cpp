@@ -2542,7 +2542,17 @@ namespace {
 } // namespace
 
 Status dispersion_run_projected_var(const fs::path &run_dir) {
-  ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
+  // REVIEW C-15. This used to be the LOOSE `read_run_spec`, on the stated
+  // grounds that "a projected-VaR run consumes no execution knobs". True, and
+  // beside the point: it consumes CONSTRUCTION knobs — side, weighting, strike
+  // policy and contract multiplier — and the loose reader has no field for any
+  // of them, so the route hardcoded two and ignored two. One spec therefore
+  // built one book in `run-surface-backtest` and a different book here, with no
+  // error and no diagnostic. The same run directory's `run_spec.tsv` is already
+  // read strictly by `dispersion_run_surface_backtest`, so this is the reader it
+  // always should have used; it also means a misspelled key now fails BY NAME
+  // instead of being silently dropped.
+  ATX_TRY(DispersionRunConfig run_config, read_dispersion_run_config(run_dir / "run_spec.tsv"));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
   ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
   ATX_TRY(Clock clock, Clock::from_manifest(manifest));
@@ -2591,20 +2601,25 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
   // into `projected_var.tsv` below, so a reader is told which session the number
   // belongs to instead of having to infer it from the manifest.
   const MarketSnapshot &as_of = *snapshots.back();
-  const auto pit = make_pit_universe_resolver(universe_rows);
+  // REVIEW C-15: `index_symbol` was hardcoded to the resolver's "SPY" default,
+  // so a run whose index leg is anything else could not resolve its own basket.
+  const auto pit = make_pit_universe_resolver(universe_rows, run_config.universe.index_symbol);
   ATX_TRY(DispersionUniverse authored, pit(as_of.ts_ns()));
   ATX_TRY(ResolvedUniverse resolved,
           resolve_universe_uids(
               authored, [&](std::string_view symbol) { return as_of.uid_of(symbol); },
-              MissingNameSpec{MissingNamePolicy::DropRenormalize, spec.min_names}));
-  DispersionConfig dispersion;
-  dispersion.target_T = spec.target_dte_days / 365.25;
-  dispersion.target_vega = spec.gross_index_vega;
-  dispersion.side = DispersionSide::ShortIndexLongNames;
-  dispersion.multiplier = 100.0;
-  dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, spec.min_names};
-  dispersion.projected_maturity =
-      ProjectedMaturitySpec::days(static_cast<std::int32_t>(std::llround(spec.target_dte_days)));
+              MissingNameSpec{MissingNamePolicy::DropRenormalize, run_config.universe.min_names}));
+  // REVIEW C-15: ONE builder, shared with the surface route
+  // (`dispersion_backtest.cpp:make_specs`), so side / weighting / strike /
+  // multiplier / target vega / tenor cannot drift between the two.
+  DispersionConfig dispersion = dispersion_config_from(dispersion_backtest_config_from(run_config));
+  // The one field this route sets itself, and why: relative-template VaR re-ages
+  // every leg to `scenario_valuation + maturity`, so a RELATIVE maturity is
+  // required unconditionally here. The shared builder keys `projected_maturity`
+  // off `project_to_calendar_expiry`, which is a surface-replay knob; leaving it
+  // unset would drop this route onto the legacy single-strike `target_T` path.
+  dispersion.projected_maturity = ProjectedMaturitySpec::days(
+      static_cast<std::int32_t>(std::llround(run_config.dte.target_days)));
   ATX_TRY(DispersionBook initial, build_dispersion_book(resolved.universe, as_of.set(), dispersion));
   const std::int64_t as_of_ts_ns = as_of.ts_ns();
   const std::string &as_of_date = clock.refs().back().date;
@@ -2628,7 +2643,9 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
   // genuinely ADDED C1-ACTIVATE point-in-time universe resolution above, replacing
   // `universe_at(universe_rows, clock.refs().front().date)`. So the correct repair
   // is to keep the PIT resolution and give the synthesis back to the seam, which
-  // is what this call does.
+  // is what this call does. (REVIEW C-15 has since closed the loose-spec half of
+  // that history: the route reads the STRICT typed config above and builds its
+  // book through the shared builder, so the two routes cannot disagree.)
   //
   // ORDERING, stated because it is the one behavioural delta: the incomplete-frame
   // gate now fires INSIDE `dispersion_book_var`, i.e. BEFORE the loose TSVs are
@@ -2639,7 +2656,7 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
   // only `projections_per_second`, non-deterministic wall-clock telemetry.
   const std::vector<double> confidences = {0.95, 0.99};
   HistoricalProjectionConfig config;
-  config.n_threads = spec.fit_workers;
+  config.n_threads = run_config.fit.workers;
   const auto started = std::chrono::steady_clock::now();
   ATX_TRY(DispersionBookVar var, dispersion_book_var(initial, *dispersion.projected_maturity,
                                                      scenarios, confidences, config));

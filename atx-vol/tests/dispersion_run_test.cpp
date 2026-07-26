@@ -616,6 +616,15 @@ struct PvFixture {
           PvUniverseBlock{"2026-10-03", {{"AAA", 0.5}, {"CCC", 0.5}}}};
 }
 
+// The same reconstitution, but with UNEQUAL as-of weights. On a 50/50 basket
+// vega-neutral and equal-vega sizing coincide exactly, which would make any gate
+// on the `weighting` knob vacuous — it would pass whether or not the knob was
+// read. Used by the C-15 gates, which are about knobs reaching the book.
+[[nodiscard]] std::vector<PvUniverseBlock> pv_unequal_weight_blocks() {
+  return {PvUniverseBlock{"2026-10-01", {{"AAA", 0.6}, {"BBB", 0.4}}},
+          PvUniverseBlock{"2026-10-03", {{"AAA", 0.75}, {"CCC", 0.25}}}};
+}
+
 } // namespace
 
 TEST(DispersionReferenceReconcile, M10_ScheduleWithNoRollDateColumnIsRejected) {
@@ -1060,6 +1069,193 @@ TEST(DispersionProjectedVar, C1_BookIsResolvedAndSizedAtTheAsOfSnapshotNotTheFir
   ASSERT_NE(frame_value_col, static_cast<std::size_t>(-1));
   ASSERT_NE(ref_col, static_cast<std::size_t>(-1));
   EXPECT_EQ(summary[1][ref_col], frames.back()[frame_value_col]);
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+// ── REVIEW C-15: the route must build the book the SPEC describes ───────────
+//
+// `dispersion_run_projected_var` read the loose `RunSpec` and then hardcoded
+// `side = ShortIndexLongNames` and `multiplier = 100.0`, and never saw
+// `weighting` or `strike` at all — while the strict typed configuration exposes
+// all four. One production spec therefore built one book in the surface/listed
+// backtest and a DIFFERENT book in projected VaR, with no error and no
+// diagnostic. The gate below is deliberately NOT a builder-to-builder identity
+// (that would be tautological once both call the same function): it compares the
+// legs the ROUTE actually published against a book the TEST builds through the
+// surface route's own builder.
+
+// Guard against a vacuous parity gate: if `weighting` and `strike` did not move
+// the book, the comparison below would pass with BOTH routes ignoring them.
+TEST(DispersionProjectedVar, C15_WeightingAndStrikePolicyDoMoveTheBook) {
+  const PvFixture fixture = make_pv_fixture("pv_c15_knobs_bite", pv_unequal_weight_blocks());
+  auto config = read_dispersion_run_config(fixture.dir / "run_spec.tsv");
+  ASSERT_TRUE(config.has_value())
+      << (config.has_value() ? std::string{} : config.error().to_string());
+  const std::string archive =
+      (fixture.dir / "surfaces" / (fixture.dates.back() + ".atxvsa")).string();
+  auto snapshot = MarketSnapshot::load(archive);
+  ASSERT_TRUE(snapshot.has_value())
+      << (snapshot.has_value() ? std::string{} : snapshot.error().to_string());
+  auto rows = read_universe(fixture.dir / "universe_schedule.tsv");
+  ASSERT_TRUE(rows.has_value());
+  auto authored = universe_at(*rows, fixture.dates.back(), config->universe.index_symbol);
+  ASSERT_TRUE(authored.has_value());
+  auto resolved = resolve_universe_uids(
+      *authored, [&](std::string_view symbol) { return snapshot->uid_of(symbol); },
+      MissingNameSpec{MissingNamePolicy::DropRenormalize, config->universe.min_names});
+  ASSERT_TRUE(resolved.has_value());
+
+  const auto quantities = [&](WeightingScheme weighting, StrikePolicy strike) {
+    DispersionBacktestConfig backtest = dispersion_backtest_config_from(*config);
+    backtest.weighting = weighting;
+    backtest.strike = strike;
+    DispersionConfig dispersion = dispersion_config_from(backtest);
+    dispersion.projected_maturity = ProjectedMaturitySpec::days(30);
+    auto book = build_dispersion_book(resolved->universe, snapshot->set(), dispersion);
+    EXPECT_TRUE(book.has_value()) << (book.has_value() ? std::string{} : book.error().to_string());
+    std::vector<double> out;
+    if (book.has_value()) {
+      for (const Position &position : book->positions) {
+        out.push_back(position.qty);
+      }
+    }
+    return out;
+  };
+
+  StrikePolicy atm;
+  StrikePolicy moneyness;
+  moneyness.rule = StrikeRule::FixedMoneyness;
+  moneyness.log_moneyness = -0.05;
+
+  const std::vector<double> vega_neutral = quantities(WeightingScheme::VegaNeutral, atm);
+  ASSERT_FALSE(vega_neutral.empty());
+  EXPECT_NE(vega_neutral, quantities(WeightingScheme::EqualVega, atm))
+      << "`weighting` does not change the book, so a parity gate on it proves nothing";
+  EXPECT_NE(vega_neutral, quantities(WeightingScheme::VegaNeutral, moneyness))
+      << "`strike` does not change the book, so a parity gate on it proves nothing";
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+TEST(DispersionProjectedVar, C15_RouteHonorsTheTypedSideMultiplierWeightingAndStrike) {
+  // Every construction knob NON-DEFAULT: the point is that the two routes agree
+  // on values neither would fall back to anyway.
+  std::string knobs;
+  knobs += tsv_row({"side", "long_index_short_names"});
+  knobs += tsv_row({"multiplier", "50"});
+  knobs += tsv_row({"weighting", "equal_vega"});
+  knobs += tsv_row({"strike", "fixed_moneyness"});
+  knobs += tsv_row({"strike_log_moneyness", "-0.05"});
+  const PvFixture fixture = make_pv_fixture("pv_c15_parity", pv_unequal_weight_blocks(), knobs);
+
+  const Status ran = dispersion_run_projected_var(fixture.dir);
+  ASSERT_TRUE(ran.has_value()) << (ran.has_value() ? std::string{} : ran.error().to_string());
+
+  // The book the SURFACE route's builder produces from the same spec at the same
+  // as-of session. Nothing here is transcribed out of dispersion_run.cpp.
+  auto config = read_dispersion_run_config(fixture.dir / "run_spec.tsv");
+  ASSERT_TRUE(config.has_value())
+      << (config.has_value() ? std::string{} : config.error().to_string());
+  const std::string archive =
+      (fixture.dir / "surfaces" / (fixture.dates.back() + ".atxvsa")).string();
+  auto snapshot = MarketSnapshot::load(archive);
+  ASSERT_TRUE(snapshot.has_value());
+  auto rows = read_universe(fixture.dir / "universe_schedule.tsv");
+  ASSERT_TRUE(rows.has_value());
+  auto authored = universe_at(*rows, fixture.dates.back(), config->universe.index_symbol);
+  ASSERT_TRUE(authored.has_value());
+  auto resolved = resolve_universe_uids(
+      *authored, [&](std::string_view symbol) { return snapshot->uid_of(symbol); },
+      MissingNameSpec{MissingNamePolicy::DropRenormalize, config->universe.min_names});
+  ASSERT_TRUE(resolved.has_value());
+  DispersionConfig dispersion = dispersion_config_from(dispersion_backtest_config_from(*config));
+  dispersion.projected_maturity = ProjectedMaturitySpec::days(30);
+  auto expected = build_dispersion_book(resolved->universe, snapshot->set(), dispersion);
+  ASSERT_TRUE(expected.has_value())
+      << (expected.has_value() ? std::string{} : expected.error().to_string());
+  ASSERT_FALSE(expected->positions.empty());
+
+  const std::vector<std::vector<std::string>> legs =
+      read_tsv_rows(fixture.dir / "projected_risk_legs.tsv");
+  ASSERT_GE(legs.size(), 2u);
+  const std::size_t date_col = column_of(legs.front(), "date");
+  const std::size_t uid_col = column_of(legs.front(), "uid");
+  const std::size_t qty_col = column_of(legs.front(), "quantity");
+  const std::size_t mult_col = column_of(legs.front(), "multiplier");
+  ASSERT_NE(date_col, static_cast<std::size_t>(-1));
+  ASSERT_NE(uid_col, static_cast<std::size_t>(-1));
+  ASSERT_NE(qty_col, static_cast<std::size_t>(-1));
+  ASSERT_NE(mult_col, static_cast<std::size_t>(-1));
+
+  std::vector<std::vector<std::string>> first_date_legs;
+  for (std::size_t row = 1; row < legs.size(); ++row) {
+    if (legs[row][date_col] == fixture.dates.front()) {
+      first_date_legs.push_back(legs[row]);
+    }
+  }
+  ASSERT_EQ(first_date_legs.size(), expected->positions.size())
+      << "the route published a different number of legs than the shared builder sizes";
+  for (std::size_t leg = 0; leg < first_date_legs.size(); ++leg) {
+    const Position &position = expected->positions[leg];
+    EXPECT_EQ(first_date_legs[leg][uid_col], std::to_string(position.contract.uid)) << "leg " << leg;
+    EXPECT_DOUBLE_EQ(std::stod(first_date_legs[leg][qty_col]), position.qty)
+        << "leg " << leg
+        << ": the route sized this leg differently from the surface route's builder — `side`, "
+           "`weighting` or `strike` did not reach the projected book";
+    EXPECT_DOUBLE_EQ(std::stod(first_date_legs[leg][mult_col]), position.multiplier)
+        << "leg " << leg << ": spec `multiplier` did not reach the projected book";
+  }
+
+  // `side` is directly readable off the artifact: under LongIndexShortNames the
+  // index leg (uid 1) is LONG. Asserted separately from the parity loop so a
+  // regression names the knob instead of a leg index.
+  bool saw_index_leg = false;
+  for (const std::vector<std::string> &row : first_date_legs) {
+    if (row[uid_col] == "1") {
+      saw_index_leg = true;
+      EXPECT_GT(std::stod(row[qty_col]), 0.0)
+          << "spec `side = long_index_short_names` did not reach the projected book: the index "
+             "leg is still SHORT";
+    }
+  }
+  EXPECT_TRUE(saw_index_leg);
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+// The spec's `index_symbol` was hardcoded to the "SPY" default at
+// `make_pit_universe_resolver`, so a run whose index leg is anything else could
+// not resolve its own basket at all.
+TEST(DispersionProjectedVar, C15_RouteHonorsTheTypedIndexSymbol) {
+  // AAA is the index leg here; SPY is a member of nothing.
+  const std::vector<PvUniverseBlock> blocks = {
+      PvUniverseBlock{"2026-10-01", {{"BBB", 0.5}, {"CCC", 0.5}}}};
+  const PvFixture fixture =
+      make_pv_fixture("pv_c15_index_symbol", blocks, tsv_row({"index_symbol", "AAA"}));
+
+  const Status ran = dispersion_run_projected_var(fixture.dir);
+  ASSERT_TRUE(ran.has_value())
+      << "spec `index_symbol` did not reach the projected-VaR universe resolution: "
+      << (ran.has_value() ? std::string{} : ran.error().to_string());
+
+  const std::vector<std::vector<std::string>> legs =
+      read_tsv_rows(fixture.dir / "projected_risk_legs.tsv");
+  ASSERT_GE(legs.size(), 2u);
+  const std::size_t uid_col = column_of(legs.front(), "uid");
+  ASSERT_NE(uid_col, static_cast<std::size_t>(-1));
+  std::vector<std::string> uids;
+  for (std::size_t row = 1; row < legs.size(); ++row) {
+    if (std::find(uids.begin(), uids.end(), legs[row][uid_col]) == uids.end()) {
+      uids.push_back(legs[row][uid_col]);
+    }
+  }
+  std::sort(uids.begin(), uids.end());
+  EXPECT_EQ(uids, (std::vector<std::string>{"2", "3", "4"}))
+      << "the projected book is not {AAA index, BBB, CCC}";
 
   std::error_code error;
   fs::remove_all(fixture.dir, error);

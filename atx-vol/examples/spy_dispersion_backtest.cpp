@@ -801,14 +801,20 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
 //     oldest session published the risk of a portfolio nobody holds. The as-of
 //     session, its timestamp and a book fingerprint are now columns of
 //     `projected_var.tsv` and are part of the verified header contract.
-//   NOT X1: the library route reads the same loose `read_run_spec` (in
-//   `dispersion_run_projected_var`, dispersion_run.cpp:2499), because a
-//   projected-VaR run consumes no execution knobs. NOT X4: that same function
-//   still hardcodes `dispersion.side = ShortIndexLongNames` and
-//   `dispersion.multiplier = 100.0` (:2535-2536). Neither is a REGRESSION -- the copy this
-//   dispatch replaced hardcoded both identically -- but neither was recovered, and
-//   claiming otherwise is how a knob gets believed to be wired. X2/X3/X5/X6 do not
-//   apply to this route at all: it runs no engine and writes no tearsheet.
+//   * X1 strict typed spec, and X4 weighting / strike / side / multiplier.
+//     REVIEW C-15 (2026-07-26). This block used to say NOT X1 and NOT X4, on the
+//     grounds that "a projected-VaR run consumes no execution knobs". That was
+//     true and beside the point: the route consumes CONSTRUCTION knobs, and the
+//     loose `read_run_spec` has no field for any of them, so it hardcoded
+//     `side = ShortIndexLongNames` and `multiplier = 100.0` and never saw
+//     `weighting` or `strike` at all. Neither was a REGRESSION -- the copy this
+//     dispatch replaced hardcoded both identically -- but the consequence was
+//     that ONE spec built one book in `run-surface-backtest` and a DIFFERENT
+//     book here, silently. The route now reads the strict typed config and
+//     builds its book through `dispersion_config_from`, the same builder the
+//     surface route uses; `index_symbol` reaches the universe resolver too.
+//   X2/X3/X5/X6 still do not apply to this route at all: it runs no engine and
+//   writes no tearsheet.
 //
 // The E1 unit resolution the merge recorded at these two call sites is preserved,
 // not lost: `dispersion_backtest_config_from` and `dispersion_run_projected_var`

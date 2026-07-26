@@ -22,20 +22,7 @@ struct DispersionSpecs {
 
 [[nodiscard]] DispersionSpecs make_specs(const DispersionBacktestConfig &config) {
   DispersionSpecs specs;
-  specs.dispersion.target_T = config.target_dte_days / 365.25;
-  specs.dispersion.target_vega = config.gross_index_vega;
-  specs.dispersion.side = config.side;
-  specs.dispersion.multiplier = config.multiplier;
-  specs.dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, config.min_names};
-  specs.dispersion.record_diagnostics = config.record_diagnostics;
-  // X4 policies. Both default to the shipped construction, so a spec that names
-  // neither builds exactly the book it always did.
-  specs.dispersion.weighting = config.weighting;
-  specs.dispersion.strike = config.strike;
-  if (config.project_to_calendar_expiry) {
-    specs.dispersion.projected_maturity = ProjectedMaturitySpec::days(
-        static_cast<std::int32_t>(std::llround(config.target_dte_days)));
-  }
+  specs.dispersion = dispersion_config_from(config);
   specs.lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
   specs.lifecycle.holding = LifecycleSpec::Holding::RollAtHorizon;
   specs.lifecycle.entry_every_n = config.entry_every_n;
@@ -47,6 +34,25 @@ struct DispersionSpecs {
 }
 
 } // namespace
+
+DispersionConfig dispersion_config_from(const DispersionBacktestConfig &config) {
+  DispersionConfig dispersion;
+  dispersion.target_T = config.target_dte_days / 365.25;
+  dispersion.target_vega = config.gross_index_vega;
+  dispersion.side = config.side;
+  dispersion.multiplier = config.multiplier;
+  dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, config.min_names};
+  dispersion.record_diagnostics = config.record_diagnostics;
+  // X4 policies. Both default to the shipped construction, so a spec that names
+  // neither builds exactly the book it always did.
+  dispersion.weighting = config.weighting;
+  dispersion.strike = config.strike;
+  if (config.project_to_calendar_expiry) {
+    dispersion.projected_maturity =
+        ProjectedMaturitySpec::days(static_cast<std::int32_t>(std::llround(config.target_dte_days)));
+  }
+  return dispersion;
+}
 
 double fill_price(double signed_qty, double mid, double half_spread, double adv_frac,
                   const DispersionCostModel &m) noexcept {
