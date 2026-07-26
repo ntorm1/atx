@@ -379,12 +379,23 @@ void write_file(const fs::path &path, const std::string &body) {
   out << body;
 }
 
+// REVIEW C-1: the last three columns are the as-of provenance the route now
+// publishes (which session the immutable book was resolved and sized on, and
+// that book's identity).
 constexpr const char *kPvHeader =
     "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
-    "n_positions\tprojections_per_second\tprepared_fingerprint\n";
+    "n_positions\tprojections_per_second\tprepared_fingerprint\tas_of_date\tas_of_ts_ns\t"
+    "book_fingerprint\n";
 
-constexpr const char *kPvRow95 = "0.95\t1\t2\t3\t82\t8\t100\t7\n";
-constexpr const char *kPvRow99 = "0.99\t1\t2\t3\t82\t8\t100\t7\n";
+constexpr const char *kPvRow95 = "0.95\t1\t2\t3\t82\t8\t100\t7\t2026-07-11\t200\t9\n";
+constexpr const char *kPvRow99 = "0.99\t1\t2\t3\t82\t8\t100\t7\t2026-07-11\t200\t9\n";
+
+// A summary in the pre-C-1 shape: economically well-formed, but silent about
+// which session's book it describes. `verify` must reject it.
+constexpr const char *kPvHeaderWithoutAsOf =
+    "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
+    "n_positions\tprojections_per_second\tprepared_fingerprint\n";
+constexpr const char *kPvRow95WithoutAsOf = "0.95\t1\t2\t3\t82\t8\t100\t7\n";
 
 } // namespace
 
@@ -428,6 +439,21 @@ TEST(DispersionProjectedVarGate, WrongHeaderIsRejected) {
   write_file(dir / "projected_risk_legs.tsv", "x\n");
   write_file(dir / "projected_var.tsv", "confidence\tvar\n0.95\t1\n");
   EXPECT_FALSE(verify_projected_var_artifacts(dir, 82));
+}
+
+// REVIEW C-1. The economics parse, the scenario count matches, and every field
+// the pre-C-1 contract named is present and well formed — the ONLY thing wrong
+// is that the summary does not say which session's book it measures. That has to
+// be a verify failure, otherwise a stale artifact left by an earlier binary
+// passes `verify` and gets read as current.
+TEST(DispersionProjectedVarGate, C1_SummaryWithoutTheAsOfProvenanceIsRejected) {
+  const fs::path dir = pv_dir("atx-disp-pv-no-asof");
+  write_file(dir / "projected_risk_scenarios.tsv", "x\n");
+  write_file(dir / "projected_risk_legs.tsv", "x\n");
+  write_file(dir / "projected_var.tsv",
+             std::string(kPvHeaderWithoutAsOf) + kPvRow95WithoutAsOf);
+  EXPECT_FALSE(verify_projected_var_artifacts(dir, 82))
+      << "a projected-VaR summary silent about its as-of session verified clean";
 }
 
 // ── Small items: knobs that existed in the code but not in the spec ──────────

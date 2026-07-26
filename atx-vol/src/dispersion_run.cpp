@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cerrno>
 #include <charconv>
 #include <chrono>
@@ -1813,9 +1814,15 @@ Status verify_projected_var_artifacts(const fs::path &run_dir, std::size_t n_ses
     return Ok(std::string((std::istreambuf_iterator<char>(stream)),
                           std::istreambuf_iterator<char>()));
   }());
+  // REVIEW C-1 appended `as_of_date` / `as_of_ts_ns` / `book_fingerprint`. They
+  // are part of the CONTRACT, not optional decoration: a projected-VaR artifact
+  // that does not say which session its book belongs to cannot be reconciled
+  // against the run, so a summary written by a pre-C-1 binary is rejected here
+  // rather than silently accepted as current.
   constexpr std::string_view kHeader =
       "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
-      "n_positions\tprojections_per_second\tprepared_fingerprint";
+      "n_positions\tprojections_per_second\tprepared_fingerprint\tas_of_date\tas_of_ts_ns\t"
+      "book_fingerprint";
   std::size_t line_start = 0;
   std::size_t n_rows = 0;
   bool header_seen = false;
@@ -2495,6 +2502,45 @@ Status dispersion_run_surface_backtest(const fs::path &run_dir) {
   return Ok();
 }
 
+namespace {
+
+// REVIEW C-1. Identity of the AS-OF BOOK, published beside the VaR so a run's
+// number can be tied to the exact portfolio it describes.
+//
+// It is NOT the same thing as `prepared_fingerprint`, which the summary already
+// carries: that one hashes the RELATIVE templates the projection re-ages (uid,
+// side, multiplier, an ATM-forward strike and a relative maturity) plus their
+// quantities. The absolute strikes and expiries the book was actually sized at
+// never enter it, so two books struck at different levels on different sessions
+// can share a prepared fingerprint. This hashes the book itself.
+[[nodiscard]] std::uint64_t dispersion_book_fingerprint(const DispersionBook &book) {
+  std::string material;
+  material.reserve(book.positions.size() * 6u * sizeof(std::uint64_t));
+  const auto append = [&material](const void *bytes, std::size_t n) {
+    material.append(static_cast<const char *>(bytes), n);
+  };
+  const std::uint64_t count = book.positions.size();
+  append(&count, sizeof count);
+  for (const Position &position : book.positions) {
+    const std::uint32_t uid = position.contract.uid;
+    const std::uint8_t side = position.contract.side == Side::Call ? 0u : 1u;
+    const std::uint64_t strike_bits = std::bit_cast<std::uint64_t>(position.contract.K);
+    const std::uint64_t tenor_bits = std::bit_cast<std::uint64_t>(position.contract.T);
+    const std::uint64_t qty_bits = std::bit_cast<std::uint64_t>(position.qty);
+    const std::uint64_t multiplier_bits = std::bit_cast<std::uint64_t>(position.multiplier);
+    append(&uid, sizeof uid);
+    append(&side, sizeof side);
+    append(&strike_bits, sizeof strike_bits);
+    append(&tenor_bits, sizeof tenor_bits);
+    append(&qty_bits, sizeof qty_bits);
+    append(&multiplier_bits, sizeof multiplier_bits);
+  }
+  const std::uint64_t digest = atx::core::hash_bytes(material.data(), material.size());
+  return digest == 0u ? 1u : digest; // 0 is reserved for "absent"
+}
+
+} // namespace
+
 Status dispersion_run_projected_var(const fs::path &run_dir) {
   ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
@@ -2520,14 +2566,36 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
   // removes the day-1 freeze and the manifest-string coupling in one move; with a
   // single-block schedule the resolved basket is identical to before.
   //
-  // NOTE for the PM: the anchor remains the FIRST session while the VaR reference
-  // value is `frames.back().value` (the LAST session). That first/last mismatch is
-  // a separate modeling question from PIT membership and is left as-is here.
+  // ── REVIEW C-1: THE AS-OF IS THE LAST QUALIFIED SNAPSHOT ──────────────────
+  //
+  // The anchor used to be `snapshots.front()` — the OLDEST session — while
+  // `dispersion_book_var` fixes the VaR reference at `frames.back().value`, the
+  // LAST session (listed_dispersion_pipeline.cpp:508-516), and every loss is
+  // `reference_value - frame.value` (historical_projection.cpp:118-147). That is
+  // historical-simulation VaR, and it is only VaR if the book being re-valued is
+  // the book actually HELD at the reference date. It was not: a name
+  // reconstituted out of the basket mid-window was still in it, a name
+  // reconstituted in was missing from it, and every quantity was sized on the
+  // oldest session's spot and vol. The output stayed finite and plausible while
+  // describing a portfolio nobody holds.
+  //
+  // AS-OF SEMANTICS, chosen deliberately: the as-of is THE LAST QUALIFIED
+  // SNAPSHOT IN THE MANIFEST CLOCK. It is not a caller-supplied parameter,
+  // because the reference value is not one either — the seam fixes it at
+  // `frames.back()`, so any anchor other than the last session simply re-opens
+  // the mismatch this closes. A caller who wants a different as-of moves
+  // `date_hi`, which already bounds which sessions qualify. The book is then
+  // IMMUTABLE and is projected back over every prior surface.
+  //
+  // Both the as-of timestamp and a fingerprint of the resulting book are written
+  // into `projected_var.tsv` below, so a reader is told which session the number
+  // belongs to instead of having to infer it from the manifest.
+  const MarketSnapshot &as_of = *snapshots.back();
   const auto pit = make_pit_universe_resolver(universe_rows);
-  ATX_TRY(DispersionUniverse authored, pit(snapshots.front()->ts_ns()));
+  ATX_TRY(DispersionUniverse authored, pit(as_of.ts_ns()));
   ATX_TRY(ResolvedUniverse resolved,
           resolve_universe_uids(
-              authored, [&](std::string_view symbol) { return snapshots.front()->uid_of(symbol); },
+              authored, [&](std::string_view symbol) { return as_of.uid_of(symbol); },
               MissingNameSpec{MissingNamePolicy::DropRenormalize, spec.min_names}));
   DispersionConfig dispersion;
   dispersion.target_T = spec.target_dte_days / 365.25;
@@ -2537,8 +2605,10 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
   dispersion.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, spec.min_names};
   dispersion.projected_maturity =
       ProjectedMaturitySpec::days(static_cast<std::int32_t>(std::llround(spec.target_dte_days)));
-  ATX_TRY(DispersionBook initial,
-          build_dispersion_book(resolved.universe, snapshots.front()->set(), dispersion));
+  ATX_TRY(DispersionBook initial, build_dispersion_book(resolved.universe, as_of.set(), dispersion));
+  const std::int64_t as_of_ts_ns = as_of.ts_ns();
+  const std::string &as_of_date = clock.refs().back().date;
+  const std::uint64_t book_fingerprint = dispersion_book_fingerprint(initial);
 
   // REV-TAIL I-2. The book -> OptionProjectionSpec synthesis + prepare +
   // evaluate_into + per-confidence VaR split USED to be hand-rolled inline here,
@@ -2622,19 +2692,28 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
   std::ofstream summary(run_dir / "projected_var.tsv", std::ios::binary | std::ios::trunc);
   if (!summary)
     return Err(ErrorCode::IoError, "projected VaR: cannot open summary");
+  // The three trailing columns are REVIEW C-1's provenance: which session the
+  // immutable book was resolved and sized on, and that book's identity. They are
+  // APPENDED so `n_scenarios` stays field 5 for `verify_projected_var_artifacts`.
   summary << std::setprecision(17)
           << "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
-             "n_positions\tprojections_per_second\tprepared_fingerprint\n";
+             "n_positions\tprojections_per_second\tprepared_fingerprint\tas_of_date\t"
+             "as_of_ts_ns\tbook_fingerprint\n";
   for (const ProjectedHistoricalVar &risk : var.risks) {
     summary << risk.confidence << '\t' << risk.reference_value << '\t' << risk.value_at_risk << '\t'
             << risk.expected_shortfall << '\t' << risk.n_scenarios << '\t' << var.n_positions
             << '\t' << (static_cast<double>(legs.size()) / elapsed_seconds) << '\t'
-            << var.prepared_fingerprint << '\n';
+            << var.prepared_fingerprint << '\t' << as_of_date << '\t' << as_of_ts_ns << '\t'
+            << book_fingerprint << '\n';
   }
   if (!summary)
     return Err(ErrorCode::IoError, "projected VaR: summary write failed");
-  std::printf("projected relative-template VaR complete: scenarios=%zu positions=%zu rate=%.1f/s\n",
-              frames.size(), var.n_positions,
+  // The as-of is on the console line for the same reason it is in the artifact:
+  // the number is meaningless without the session whose book it describes.
+  std::printf("projected relative-template VaR complete: scenarios=%zu positions=%zu "
+              "as_of=%s book_fingerprint=%llu rate=%.1f/s\n",
+              frames.size(), var.n_positions, as_of_date.c_str(),
+              static_cast<unsigned long long>(book_fingerprint),
               static_cast<double>(legs.size()) / elapsed_seconds);
   return Ok();
 }

@@ -795,6 +795,12 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
 //   * C1-ACTIVATE point-in-time universe resolution -- this copy froze the basket at
 //     the first session date (`universe_at(universe_rows, clock.refs().front()
 //     .date)`), so a mid-window reconstitution was silently ignored.
+//   * REVIEW C-1 (2026-07-26): the ANCHOR is now the LAST qualified snapshot, not
+//     the first. The VaR reference is `frames.back().value`, so the book being
+//     re-valued has to be the book held at THAT session; anchoring it on the
+//     oldest session published the risk of a portfolio nobody holds. The as-of
+//     session, its timestamp and a book fingerprint are now columns of
+//     `projected_var.tsv` and are part of the verified header contract.
 //   NOT X1: the library route reads the same loose `read_run_spec` (in
 //   `dispersion_run_projected_var`, dispersion_run.cpp:2499), because a
 //   projected-VaR run consumes no execution knobs. NOT X4: that same function

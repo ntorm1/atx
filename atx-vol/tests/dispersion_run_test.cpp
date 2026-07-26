@@ -14,14 +14,31 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
+#include "atx/vol/american.hpp"            // al_fast_opts, AmericanMethod
+#include "atx/vol/backtest.hpp"            // Clock, MarketSnapshot
+#include "atx/vol/corpus.hpp"              // CorpusManifest, CorpusEntry, write_manifest_file
+#include "atx/vol/dispersion.hpp"          // DispersionConfig, build_dispersion_book
+#include "atx/vol/dispersion_backtest.hpp" // DispersionBacktestConfig, dispersion_config_from
 #include "atx/vol/dispersion_run.hpp"
+#include "atx/vol/dispersion_workflow.hpp" // universe_at, utc_date_from_ns
+#include "atx/vol/priced_surface.hpp"      // PricedSurface, PricingContext
+#include "atx/vol/surface_archive.hpp"     // write_surface_archive_v2_file
+#include "atx/vol/surface_parity.hpp"      // SliceContext
+#include "atx/vol/vol_curve.hpp"           // CurveSurface, EssviCurve
+#include "atx/vol/vol_surface.hpp"         // EssviParams
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -409,6 +426,196 @@ std::string reconciliation_text_zero_quote_coverage() {
   return text;
 }
 
+// ── Projected-VaR route fixture (REVIEW C-1 / C-15) ─────────────────────────
+//
+// `dispersion_run_projected_var` had NO test at all, which is how a book anchored
+// on the FIRST session while its VaR reference is the LAST session survived
+// review. Driving the real entry point needs a real run directory: a run spec
+// both readers accept, a multi-block point-in-time universe schedule, a manifest,
+// and on-disk ATXVSA archives. Everything below is synthetic eSSVI (the
+// `backtest_driver_test.cpp` pattern) — no fitting, no external data.
+
+constexpr double kPvR = 0.043;
+// 2026-10-01T20:00:00Z. This constant is load-bearing: the point-in-time resolver
+// keys off the SNAPSHOT's own `ts_ns` through `utc_date_from_ns`, NOT the
+// manifest's date string, so the archives must genuinely land on the dates the
+// universe blocks name. `PvFixture.AnchorTimestampsLandOnTheNamedDates` pins it.
+constexpr std::int64_t kPvBaseNs = 1'790'884'800'000'000'000LL;
+constexpr std::int64_t kPvDayNs = 86'400LL * 1'000'000'000LL;
+// Symbol -> uid, identical on every fixture date so `uid_of` is deterministic:
+//   SPY = 1 (the index leg), AAA = 2, BBB = 3, CCC = 4.
+
+[[nodiscard]] PricedSurface pv_surface(std::uint32_t uid, double spot, std::int64_t now_ts,
+                                       double vol_bump) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  const double Ts[] = {0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.00};
+  int i = 0;
+  for (const double T : Ts) {
+    EssviParams e{};
+    e.theta = 0.04 + 0.005 * static_cast<double>(i) + vol_bump;
+    e.phi = 1.5 - 0.05 * static_cast<double>(i);
+    e.rho = -0.4 + 0.02 * static_cast<double>(i);
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = spot;
+    e.expiry_id = static_cast<std::uint16_t>(i);
+    cs.push(std::make_unique<EssviCurve>(e, std::exp(-kPvR * T)));
+    ctx.push_back(SliceContext{T, spot, 0.0, 0.02, 250, 7});
+    ++i;
+  }
+  PricingContext pc;
+  pc.S = spot;
+  pc.r = kPvR;
+  pc.now_ts_ns = now_ts;
+  pc.method = AmericanMethod::AndersenLake;
+  pc.al_opts = al_fast_opts();
+  pc.uid = uid;
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), pc);
+  EXPECT_TRUE(ps.has_value()) << (ps.has_value() ? std::string{} : ps.error().to_string());
+  return std::move(*ps);
+}
+
+struct PvUniverseBlock {
+  std::string effective_date;
+  std::vector<std::pair<std::string, double>> names; // symbol, raw weight
+};
+
+struct PvFixture {
+  fs::path dir;
+  std::vector<std::string> dates;
+};
+
+// `n_dates` consecutive UTC sessions from kPvBaseNs. Every archive carries EVERY
+// symbol in `pv_symbols()`, so both the first-session basket and the last-session
+// basket resolve against every date — which is what makes the anchor choice show
+// up as a different BOOK rather than as an error.
+[[nodiscard]] PvFixture make_pv_fixture(std::string_view leaf,
+                                        const std::vector<PvUniverseBlock> &blocks,
+                                        const std::string &extra_spec = {},
+                                        std::size_t n_dates = 5) {
+  PvFixture fixture;
+  fixture.dir = make_run_dir(leaf);
+  const fs::path archive_dir = fixture.dir / "surfaces";
+  std::error_code error;
+  fs::create_directories(archive_dir, error);
+
+  CorpusManifest manifest;
+  for (std::size_t d = 0; d < n_dates; ++d) {
+    const std::int64_t now = kPvBaseNs + static_cast<std::int64_t>(d) * kPvDayNs;
+    const std::string date = utc_date_from_ns(now);
+    // Spot AND vol move materially per session, so a book sized on the first
+    // session carries different quantities from one sized on the last. The path
+    // is deliberately NON-MONOTONE: under a monotone path every historical loss
+    // has the same sign and the tail quantile collapses to zero, which would
+    // make the VaR itself a vacuous number to compare across the fix.
+    const double drift = 1.0 + 0.05 * std::sin(1.7 * static_cast<double>(d));
+    const double bump = 0.010 * std::sin(2.3 * static_cast<double>(d) + 0.7);
+    const PricedSurface index = pv_surface(1, 500.0 * drift, now, 0.00 + bump);
+    const PricedSurface aaa = pv_surface(2, 100.0 * drift, now, 0.02 + bump);
+    const PricedSurface bbb = pv_surface(3, 120.0 * drift, now, 0.03 + bump);
+    const PricedSurface ccc = pv_surface(4, 80.0 * drift, now, 0.05 + bump);
+    const std::string path = (archive_dir / (date + ".atxvsa")).string();
+    const std::vector<SurfaceArchiveItem> items = {SurfaceArchiveItem{"SPY", &index},
+                                                   SurfaceArchiveItem{"AAA", &aaa},
+                                                   SurfaceArchiveItem{"BBB", &bbb},
+                                                   SurfaceArchiveItem{"CCC", &ccc}};
+    const Status written = write_surface_archive_v2_file(path, items);
+    EXPECT_TRUE(written.has_value())
+        << (written.has_value() ? std::string{} : written.error().to_string());
+    manifest.dates.push_back(date);
+    CorpusEntry entry;
+    entry.date = date;
+    entry.symbol = "SPY";
+    entry.status = CorpusFitStatus::Ok;
+    entry.archive_path = path;
+    manifest.entries.push_back(std::move(entry));
+    fixture.dates.push_back(date);
+  }
+  manifest.n_boards = static_cast<std::uint32_t>(n_dates);
+  manifest.n_ok = static_cast<std::uint32_t>(n_dates);
+  const Status manifest_written =
+      write_manifest_file((fixture.dir / "surface_manifest.tsv").string(), manifest);
+  EXPECT_TRUE(manifest_written.has_value())
+      << (manifest_written.has_value() ? std::string{} : manifest_written.error().to_string());
+
+  std::string universe = "effective_date\tsymbol\traw_weight\tsource\tas_of\n";
+  for (const PvUniverseBlock &block : blocks) {
+    for (const auto &[symbol, weight] : block.names) {
+      char cell[64];
+      std::snprintf(cell, sizeof cell, "%.17g", weight);
+      universe += tsv_row({block.effective_date, symbol, cell, "test", block.effective_date});
+    }
+  }
+  write_file(fixture.dir / "universe_schedule.tsv", universe);
+
+  // Keys both `read_run_spec` (loose) and `read_dispersion_run_config` (strict)
+  // accept, so the SAME file drives the route before and after the C-15 cutover.
+  std::string spec;
+  spec += tsv_row({"date_lo", fixture.dates.front()});
+  spec += tsv_row({"date_hi", fixture.dates.back()});
+  spec += tsv_row({"opra_root", "."});
+  spec += tsv_row({"universe_schedule", "universe_schedule.tsv"});
+  spec += tsv_row({"min_names", "2"});
+  spec += tsv_row({"target_dte_days", "30"});
+  spec += tsv_row({"min_dte_days", "21"});
+  spec += tsv_row({"max_dte_days", "60"});
+  spec += tsv_row({"gross_index_vega", "10000"});
+  spec += extra_spec;
+  write_file(fixture.dir / "run_spec.tsv", spec);
+  return fixture;
+}
+
+// Header + rows of a TSV, split on '\t'. Empty vector if the file is unreadable.
+[[nodiscard]] std::vector<std::vector<std::string>> read_tsv_rows(const fs::path &path) {
+  std::vector<std::vector<std::string>> rows;
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream) {
+    return rows;
+  }
+  std::string line;
+  while (std::getline(stream, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (line.empty()) {
+      continue;
+    }
+    std::vector<std::string> cells;
+    std::size_t start = 0;
+    while (true) {
+      const std::size_t tab = line.find('\t', start);
+      cells.push_back(line.substr(start, tab == std::string::npos ? std::string::npos : tab - start));
+      if (tab == std::string::npos) {
+        break;
+      }
+      start = tab + 1;
+    }
+    rows.push_back(std::move(cells));
+  }
+  return rows;
+}
+
+// Index of `name` in a header row, or SIZE_MAX.
+[[nodiscard]] std::size_t column_of(const std::vector<std::string> &header, std::string_view name) {
+  for (std::size_t i = 0; i < header.size(); ++i) {
+    if (header[i] == name) {
+      return i;
+    }
+  }
+  return static_cast<std::size_t>(-1);
+}
+
+// The two point-in-time blocks used by the C-1 gate: the second REMOVES BBB,
+// ADDS CCC and reweights, so the first-session basket and the last-session
+// basket share exactly one name.
+[[nodiscard]] std::vector<PvUniverseBlock> pv_reconstituting_blocks() {
+  return {PvUniverseBlock{"2026-10-01", {{"AAA", 0.6}, {"BBB", 0.4}}},
+          PvUniverseBlock{"2026-10-03", {{"AAA", 0.5}, {"CCC", 0.5}}}};
+}
+
 } // namespace
 
 TEST(DispersionReferenceReconcile, M10_ScheduleWithNoRollDateColumnIsRejected) {
@@ -766,4 +973,94 @@ TEST(DispersionReferenceReconcile, M10_ContractMarksWithNoStatusColumnIsRejected
 
   std::error_code error;
   fs::remove_all(run, error);
+}
+
+// ── REVIEW C-1: the projected-VaR book must be the AS-OF book ───────────────
+//
+// `dispersion_book_var` defines the VaR reference as the LAST frame's value
+// (listed_dispersion_pipeline.cpp:508-516) and every loss as
+// `reference_value - frame.value` (historical_projection.cpp:118-147). That is
+// historical-simulation VaR, and it is only VaR if the book being re-valued is
+// the book held AT the reference date. The route used to resolve membership and
+// size quantities on `snapshots.front()` — the OLDEST session — so the published
+// number was the risk of a book nobody holds: a reconstituted-away name still in
+// it, a current name missing from it, and quantities sized on stale spot/vol.
+//
+// AS-OF SEMANTICS (recorded deliberately, per the brief): the as-of is the LAST
+// QUALIFIED SNAPSHOT IN THE MANIFEST CLOCK. Chosen over a caller-supplied as-of
+// because the reference value is not a free parameter — it is `frames.back()`,
+// fixed by the seam — so any anchor other than the last session re-opens exactly
+// the mismatch this closes. A caller who wants a different as-of moves `date_hi`,
+// which already bounds the manifest. The artifact records which session was used
+// so no reader has to infer it.
+
+// The fixture's own contract. `make_pit_universe_resolver` resolves on
+// `utc_date_from_ns(snapshot.ts_ns())`, so if this drifts the universe blocks
+// below stop meaning what they say and both gates go quietly vacuous.
+TEST(DispersionProjectedVarFixture, AnchorTimestampsLandOnTheNamedDates) {
+  EXPECT_EQ(utc_date_from_ns(kPvBaseNs), "2026-10-01");
+  EXPECT_EQ(utc_date_from_ns(kPvBaseNs + 2 * kPvDayNs), "2026-10-03");
+  EXPECT_EQ(utc_date_from_ns(kPvBaseNs + 4 * kPvDayNs), "2026-10-05");
+}
+
+TEST(DispersionProjectedVar, C1_BookIsResolvedAndSizedAtTheAsOfSnapshotNotTheFirst) {
+  const PvFixture fixture = make_pv_fixture("pv_c1_asof", pv_reconstituting_blocks());
+  ASSERT_EQ(fixture.dates.size(), 5u);
+
+  const Status ran = dispersion_run_projected_var(fixture.dir);
+  ASSERT_TRUE(ran.has_value()) << (ran.has_value() ? std::string{} : ran.error().to_string());
+
+  const std::vector<std::vector<std::string>> legs =
+      read_tsv_rows(fixture.dir / "projected_risk_legs.tsv");
+  ASSERT_GE(legs.size(), 2u);
+  const std::size_t uid_col = column_of(legs.front(), "uid");
+  ASSERT_NE(uid_col, static_cast<std::size_t>(-1));
+  std::vector<std::string> uids;
+  for (std::size_t row = 1; row < legs.size(); ++row) {
+    ASSERT_GT(legs[row].size(), uid_col);
+    if (std::find(uids.begin(), uids.end(), legs[row][uid_col]) == uids.end()) {
+      uids.push_back(legs[row][uid_col]);
+    }
+  }
+  std::sort(uids.begin(), uids.end());
+
+  // Block 1 (2026-10-01) is {AAA=2, BBB=3}; block 2 (2026-10-03, and therefore
+  // the 2026-10-05 as-of) is {AAA=2, CCC=4}. A book anchored on the FIRST
+  // session prices BBB and never sees CCC.
+  const std::vector<std::string> as_of_basket = {"1", "2", "4"};
+  EXPECT_EQ(uids, as_of_basket)
+      << "the projected book's uids are not the as-of basket: a first-anchored book still "
+         "holds the reconstituted-away name (uid 3 = BBB) and is missing the current one "
+         "(uid 4 = CCC)";
+
+  const std::vector<std::vector<std::string>> summary =
+      read_tsv_rows(fixture.dir / "projected_var.tsv");
+  ASSERT_GE(summary.size(), 2u);
+  const std::size_t as_of_date_col = column_of(summary.front(), "as_of_date");
+  const std::size_t as_of_ts_col = column_of(summary.front(), "as_of_ts_ns");
+  const std::size_t book_fp_col = column_of(summary.front(), "book_fingerprint");
+  ASSERT_NE(as_of_date_col, static_cast<std::size_t>(-1))
+      << "projected_var.tsv does not record WHICH session the book was built on";
+  ASSERT_NE(as_of_ts_col, static_cast<std::size_t>(-1));
+  ASSERT_NE(book_fp_col, static_cast<std::size_t>(-1))
+      << "projected_var.tsv does not record a book fingerprint";
+  for (std::size_t row = 1; row < summary.size(); ++row) {
+    EXPECT_EQ(summary[row][as_of_date_col], fixture.dates.back());
+    EXPECT_EQ(summary[row][as_of_ts_col], std::to_string(kPvBaseNs + 4 * kPvDayNs));
+    EXPECT_NE(summary[row][book_fp_col], "0");
+  }
+
+  // The reference the losses are measured from is the as-of session's own value,
+  // which is what makes the number VaR rather than a drift between two books.
+  const std::vector<std::vector<std::string>> frames =
+      read_tsv_rows(fixture.dir / "projected_risk_scenarios.tsv");
+  ASSERT_EQ(frames.size(), fixture.dates.size() + 1u);
+  const std::size_t frame_value_col = column_of(frames.front(), "value");
+  const std::size_t ref_col = column_of(summary.front(), "reference_value");
+  ASSERT_NE(frame_value_col, static_cast<std::size_t>(-1));
+  ASSERT_NE(ref_col, static_cast<std::size_t>(-1));
+  EXPECT_EQ(summary[1][ref_col], frames.back()[frame_value_col]);
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
 }
