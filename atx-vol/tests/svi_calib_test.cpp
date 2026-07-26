@@ -319,6 +319,53 @@ TEST(SviMmCalib, FixedFixtureFit_IsBitIdentical) {
   EXPECT_EQ(f.sigma, 0.17999999997839855);
 }
 
+// Plan item 1.8(a) — a candidate parameter step whose model prices are not
+// finite must poison the SSE, not have those rows silently dropped.
+//
+// `svi_mm_sse` skipped every observation whose Black-76 price came back
+// non-finite. A Black-76 price is non-finite only when sigma_pred is — i.e. only
+// when the candidate's total variance has overflowed — so the rows that got
+// skipped were exactly the evidence that the candidate is garbage. With ALL rows
+// skipped the accumulator stays at its 0.0 seed, the diverging step scores a
+// perfect SSE of zero, and the LM accepts it.
+//
+// An SSE that drops rows is also not comparable across candidates: two
+// candidates that drop different rows are being scored on different data sets.
+//
+// Fixture: a clean synthetic price-domain smile with one overflowing quote mid.
+// The weighted normal-equation gradient J^T W r then overflows to -inf, the
+// damped solve returns a non-finite step, and the projected iterate has
+// non-finite total variance.
+TEST(SviMmCalib, DivergingStepWithNonFinitePrices_IsRejected) {
+  const double T = 0.5;
+  std::vector<FitObs> obs =
+      build_obs_from_svi(41, -0.40, 0.40, 0.012, 0.060, -0.30, -0.02, 0.18, T);
+  obs[20].mid = 1.0e306;  // overflows J^T W r -> non-finite LM step
+
+  CalibOpts opts = calib_default_opts();
+  opts.morozov_stop = false;
+  opts.wing_floor_alpha = 0.0;
+
+  const auto res = svi_mm_fit_slice(std::span<const FitObs>(obs), T, 100.0, opts);
+  ASSERT_TRUE(res.has_value());
+  const SviParams f = res.value();
+
+  // The diverging step must have been rejected and the fit left on a finite
+  // candidate (here the quasi-explicit seed).
+  EXPECT_TRUE(std::isfinite(f.a)) << "a = " << f.a;
+  EXPECT_TRUE(std::isfinite(f.b)) << "b = " << f.b;
+  EXPECT_TRUE(std::isfinite(f.rho)) << "rho = " << f.rho;
+  EXPECT_TRUE(std::isfinite(f.m)) << "m = " << f.m;
+  EXPECT_TRUE(std::isfinite(f.sigma)) << "sigma = " << f.sigma;
+  // ...and it must still price to finite, strictly positive total variance.
+  for (int i = -40; i <= 40; ++i) {
+    const double k = 0.01 * static_cast<double>(i);
+    const double w = svi_w(f.a, f.b, f.rho, f.m, f.sigma, k);
+    ASSERT_TRUE(std::isfinite(w)) << "w(" << k << ") = " << w;
+    EXPECT_GT(w, 0.0) << "k = " << k;
+  }
+}
+
 TEST(SviMmCalib, FittedSlice_IsAlwaysAdmissible_EvenFromWideData) {
   // A steeper / higher-vol smile still projects into the polytope.
   const double T = 0.25;

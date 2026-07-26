@@ -562,6 +562,18 @@ struct LmWorkspaceMm {
 // NOTE on the American-correction cache). Mirrors `svi_mm_sse`. The w_pred sweep
 // is one `simd::svi_total_w_batch` call into `ws.w_pred` (svi_total_w is
 // op-for-op svi_w_raw); the floor + Black-76 price loop stays scalar per strike.
+//
+// A candidate whose model price is non-finite ANYWHERE is POISONED — the whole
+// objective returns +inf, and every caller's accept test (`isfinite(new_sse) &&
+// new_sse < prev_sse`) then rejects it. Given finite quote geometry (F, K, df),
+// `black76_price` is non-finite only when sig_pred is, i.e. only when the
+// candidate's own total variance has overflowed, so a non-finite price is direct
+// evidence that the parameter step diverged. Skipping those rows instead (the
+// previous behavior) left the accumulator at its 0.0 seed once EVERY row was
+// poisoned, handing a diverging Inf/NaN step a perfect SSE of zero that beat the
+// finite incumbent and was accepted. Skipping also makes the objective
+// incomparable across candidates: two candidates that drop different rows are
+// scored on different data.
 [[nodiscard]] double svi_mm_sse(std::span<const FitObs> obs, double T, double a,
                                 double b, double rho, double m, double sigma,
                                 LmWorkspaceMm &ws) {
@@ -583,7 +595,7 @@ struct LmWorkspaceMm {
     const double sig_pred = std::sqrt(w_pred / T);
     const double p_pred = black76_price(o.F, o.K, T, sig_pred, o.df, o.side);
     if (!std::isfinite(p_pred)) {
-      continue;
+      return std::numeric_limits<double>::infinity();  // poisoned candidate
     }
     const double r = p_pred - o.mid;
     s += o.active_weight_w * r * r;
