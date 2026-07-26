@@ -4,6 +4,13 @@ build-rel/
 build-ninja/
 build-vs/
 build-bench/
+# Remaining preset binaryDirs (CMakePresets.json): `hygiene` and `rel-avx2` are
+# documented presets, and build-relprof is the conventional out-of-tree dir for a
+# -DATX_VOL_PROFILE=ON / -DATX_VOL_COUNTERS=ON instrumented build. Without these,
+# using a preset the repo documents leaves `git status` dirty.
+build-hygiene/
+build-rel-avx2/
+build-relprof/
 out/
 cmake-build-*/
 
