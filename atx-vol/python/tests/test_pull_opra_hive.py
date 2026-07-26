@@ -326,3 +326,32 @@ def test_resume_dbn_cache_hit_rewrites_boards_without_get_range(tmp_path):
     assert date_file.exists()                      # boards still written
     unds = set(pq.read_table(date_file).column("underlying").to_pylist())
     assert unds == {"SPY", "AAPL"}
+
+
+# ── R2-b: "ACTUAL SPEND" -> "REALIZED ESTIMATE", with interpretable cell counts ─
+
+def test_pull_result_realized_estimate_and_cell_counts(tmp_path):
+    """The old ``actual_spend`` field/label is gone (F-06: it was never an
+    actual charge). ``PullResult`` now exposes ``realized_estimate`` plus the
+    cell-level counts that make it interpretable: a requested cell that comes
+    back with no matching rows is ``no_options``, not silently absorbed into
+    the estimate."""
+    plan = {"2026-07-20": ["SPY", "AAPL"]}
+    # AAPL has no matching rows this session -> must show up as "no_options",
+    # not be silently counted as written or folded into the estimate.
+    frames = {"2026-07-20": _raw_df(["SPY"])}
+    root_to_sym = {"SPY": "SPY", "AAPL": "AAPL"}
+    fake = FakeHistorical(unit=0.01, frames=frames)
+
+    res = ph.pull(fake, plan, tmp_path, snap_hm="19:55", root_to_sym=root_to_sym,
+                  unit_cost=0.01, store_loader=_fake_loader)
+
+    assert not hasattr(res, "actual_spend")
+    assert res.realized_estimate == pytest.approx(0.01 * 1)  # 1 board actually written
+    assert res.cells_requested == 2       # SPY + AAPL requested
+    assert res.boards_written == 1        # only SPY had data
+    assert res.cells_failed == 0
+    assert res.rows_returned == 1         # raw decoded rows for the date (SPY only)
+    assert res.unmapped_rows == 0
+    no_options = [m for m in res.manifest if m["status"] == "no_options"]
+    assert [m["symbol"] for m in no_options] == ["AAPL"]

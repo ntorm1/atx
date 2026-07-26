@@ -270,13 +270,19 @@ def plan_missing(out_root, symbols: list[str], dates: list[str],
 # ── Decode one day's DBN into a single 8-column frame ──────────────────────────
 def decode_date_frame(store, date: str, snap_hm: str,
                       root_to_sym: dict[str, str],
-                      want_syms: Optional[set[str]]) -> tuple[pd.DataFrame, int]:
+                      want_syms: Optional[set[str]]) -> tuple[pd.DataFrame, int, int]:
     """Decode a day's DBN to the canonical 8-column frame, restricted to
-    ``want_syms``. Returns (frame, n_unmapped_rows)."""
+    ``want_syms``. Returns (frame, n_unmapped_rows, n_returned_rows) --
+    ``n_returned_rows`` is the RAW decoded row count before the underlying
+    mapping and ``want_syms`` filters (row-level, not cell-level: this call
+    already scopes the API request to the requested parents, so it is the
+    honest "how much did the provider actually send back" figure, distinct
+    from "how many of the cells we asked for came back written")."""
     df = store.to_df(price_type="fixed", pretty_ts=False, map_symbols=True)
     if df is None or df.empty:
-        return _empty_decoded(), 0
+        return _empty_decoded(), 0, 0
     df = df.reset_index()
+    n_returned = len(df)
     snap_ts = pd.Timestamp(f"{date}T{snap_hm}:00")  # constant snapshot stamp (naive UTC)
     frame = pd.DataFrame({
         "ts": pd.Series([snap_ts] * len(df), dtype="datetime64[ns]"),
@@ -298,7 +304,7 @@ def decode_date_frame(store, date: str, snap_hm: str,
     frame = frame[~unmapped]
     if want_syms is not None:
         frame = frame[frame["underlying"].isin(want_syms)]
-    return frame[COLUMNS].reset_index(drop=True), n_unmapped
+    return frame[COLUMNS].reset_index(drop=True), n_unmapped, n_returned
 
 
 # ── Atomic write + merge of a date file ────────────────────────────────────────
@@ -431,9 +437,15 @@ class PullResult:
     boards_written: int
     dates_written: int
     unmapped_rows: int
-    actual_spend: float
+    # NOTE: this is a sampled preflight unit cost x cells actually pulled this
+    # session -- a modeled ESTIMATE, not an invoice or an exact post-call
+    # charge (see F-06 / R2-b: it used to be printed and named as if it were).
+    realized_estimate: float
     manifest: list[dict]
     failed_dates: list[str]
+    cells_requested: int = 0  # every (date, symbol) cell handed to this call
+    cells_failed: int = 0     # cells whose date failed get_range after retries
+    rows_returned: int = 0    # raw decoded rows, pre-mapping/want filters (row-level)
 
 
 def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: str,
@@ -449,7 +461,8 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: str,
     dbn_dir.mkdir(parents=True, exist_ok=True)
     manifest: list[dict] = []
     boards = dates_written = unmapped = 0
-    actual_spend = 0.0
+    realized_estimate = 0.0
+    cells_requested = cells_failed = rows_returned = 0
     failed: list[str] = []
     ordered = sorted(plan)
 
@@ -457,6 +470,7 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: str,
         miss = list(plan[date])
         if not miss:
             continue
+        cells_requested += len(miss)
         want = set(miss)
         parents = [to_parent(s) for s in miss]
         digest = hashlib.sha256((date + "|" + ",".join(sorted(miss))).encode()).hexdigest()[:12]
@@ -494,6 +508,7 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: str,
             if store is None:
                 print(f"  {date}: FAILED after retries — left for a later resume", file=sys.stderr)
                 failed.append(date)
+                cells_failed += len(miss)
                 continue
             # Atomic cache write (same-fs tmp -> os.replace), so a crash during
             # the write never leaves a torn .dbn.zst that wedges the next resume.
@@ -502,8 +517,9 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: str,
             os.replace(dbn_tmp, dbn_path)
             tag = "pulled"
 
-        frame, nu = decode_date_frame(store, date, snap_hm, root_to_sym, want)
+        frame, nu, nr = decode_date_frame(store, date, snap_hm, root_to_sym, want)
         unmapped += nu
+        rows_returned += nr
         target = out_root / f"date={date}" / DATE_FILE
         existing = target if target.exists() else None
         merge_date_file(existing, frame, target, force=force)
@@ -517,15 +533,20 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: str,
                 manifest.append({"date": date, "symbol": s, "records": 0, "status": "no_options"})
         boards += len(written)
         dates_written += 1
-        # Realized spend estimate = sampled unit cost x boards actually pulled
-        # this session (cached/skipped boards were already paid or never billable).
+        # Realized ESTIMATE = sampled unit cost x boards actually pulled this
+        # session (cached/skipped boards were already paid or never billable).
+        # This is still the free preflight estimator pricing them after the
+        # fact -- never an invoice or an exact post-call charge (F-06).
         if tag == "pulled":
-            actual_spend += unit_cost * len(written)
+            realized_estimate += unit_cost * len(written)
         if i % 10 == 0 or tag == "cached":
             print(f"  [{i + 1}/{len(ordered)}] {date} {tag}: {len(written)} boards "
-                  f"(running_spend=${actual_spend:.4f})", flush=True)
+                  f"(running_estimate=${realized_estimate:.4f})", flush=True)
 
-    return PullResult(boards, dates_written, unmapped, actual_spend, manifest, failed)
+    return PullResult(
+        boards, dates_written, unmapped, realized_estimate, manifest, failed,
+        cells_requested=cells_requested, cells_failed=cells_failed, rows_returned=rows_returned,
+    )
 
 
 # ── CLI ────────────────────────────────────────────────────────────────────────
@@ -611,7 +632,17 @@ def run(args, client=None, store_loader: Optional[Callable] = None) -> int:
     pd.DataFrame(res.manifest).to_csv(mpath, index=False)
     print(f"\nDONE boards_written={res.boards_written} dates_written={res.dates_written} "
           f"unmapped_rows={res.unmapped_rows} failed_sessions={len(res.failed_dates)}")
-    print(f"ACTUAL SPEND (realized preflight of pulled cells): ${res.actual_spend:.4f}")
+    no_options = res.cells_requested - res.boards_written - res.cells_failed
+    print(f"cells: requested={res.cells_requested} written={res.boards_written} "
+          f"no_options={no_options} failed={res.cells_failed}  "
+          f"|  rows: returned={res.rows_returned} unmapped={res.unmapped_rows}")
+    print(f"REALIZED ESTIMATE (sampled preflight unit cost x cells actually pulled this "
+          f"session): ${res.realized_estimate:.4f}")
+    print("  NOTE: this is a modeled cost ESTIMATE re-pricing the cells this session "
+          "actually pulled with the free preflight sampler -- it is NOT an invoice, NOT "
+          "an exact post-call charge from Databento, and it excludes requested cells "
+          "that never became a written board (no_options/failed above). Reconcile "
+          "against provider billing before treating it as settled spend.")
     print(f"kept N={len(pf.keep)} dropped={len(pf.dropped)} manifest={mpath}")
     return 0 if not res.failed_dates else 5
 
