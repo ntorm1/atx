@@ -732,7 +732,11 @@ public:
                                   header_.metadata_crc32c};
   }
 
-  // Resolve `symbol` (case-insensitive) to its directory entry. NotFound if absent.
+  // Resolve `symbol` (case-insensitive) to its directory entry. The returned
+  // value is the STORED entry — byte-identical to the matching `directory()` /
+  // `entries()` element, so `n_slices`/`kind_bits`/`payload_crc32c` are the real
+  // ones and the result is interchangeable with a directory element (e.g. as
+  // `map_entry` / `reconstruct_entry` input). NotFound if absent.
   [[nodiscard]] Result<ArchiveV2DirEntry> find(std::string_view symbol) const;
 
   // Provenance from a symbol's record header (no payload CRC). NotFound if absent.

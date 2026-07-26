@@ -977,19 +977,47 @@ const ArchiveV2LookupSlot *SurfaceArchiveV2::find_slot(std::string_view symbol) 
   return nullptr;
 }
 
+namespace {
+// Strict order the writer sorts the directory in (`v2_plan_less`) and that
+// `open_impl` PROVES holds on every opened archive: memcmp over the shared
+// prefix, shorter symbol first on a tie. Heterogeneous so `std::lower_bound`
+// can probe the directory with a bare canonical symbol.
+[[nodiscard]] bool dir_symbol_less(const ArchiveV2DirEntry &e, std::string_view sym) noexcept {
+  const std::size_t n = std::min(static_cast<std::size_t>(e.symbol_len), sym.size());
+  if (n != 0) {
+    const int c = std::memcmp(e.symbol, sym.data(), n);
+    if (c != 0) {
+      return c < 0;
+    }
+  }
+  return static_cast<std::size_t>(e.symbol_len) < sym.size();
+}
+} // namespace
+
 Result<ArchiveV2DirEntry> SurfaceArchiveV2::find(std::string_view symbol) const {
   const ArchiveV2LookupSlot *s = find_slot(symbol);
   if (s == nullptr) {
     return Err(ErrorCode::NotFound, "SurfaceArchiveV2::find: symbol not present");
   }
-  ArchiveV2DirEntry de;
-  de.surface_offset = s->surface_offset;
-  de.surface_size = s->surface_size;
-  de.symbol_hash = s->symbol_hash;
-  de.uid = s->uid;
-  de.symbol_len = s->symbol_len;
-  std::memcpy(de.symbol, s->symbol, s->symbol_len);
-  return de;
+  // Return the STORED entry, never one assembled from the lookup slot: the slot
+  // carries no n_slices / kind_bits / payload_crc32c, so a hand-built entry reads
+  // back zeros for exactly the fields a framing-only consumer and the R-19 (F6)
+  // content-identity check depend on, while still comparing unequal to the
+  // `directory()` element it claims to be.
+  //
+  // The slot's symbol is already canonical and the directory is sorted by that
+  // same key, so one binary search resolves it (O(log n) on metadata parsed at
+  // open — no record body is touched).
+  const std::string_view canon(s->symbol, static_cast<std::size_t>(s->symbol_len));
+  const auto it = std::lower_bound(directory_.begin(), directory_.end(), canon, dir_symbol_less);
+  if (it == directory_.end() ||
+      std::string_view(it->symbol, static_cast<std::size_t>(it->symbol_len)) != canon) {
+    // Unreachable on an opened archive: `open_impl` verifies the lookup <-> directory
+    // bijection (strictly ascending symbols, occupied count == surface_count, and every
+    // directory entry resolving to a slot with identical offset/size/uid/hash).
+    return Err(ErrorCode::Internal, "SurfaceArchiveV2::find: lookup slot has no directory entry");
+  }
+  return *it;
 }
 
 namespace {

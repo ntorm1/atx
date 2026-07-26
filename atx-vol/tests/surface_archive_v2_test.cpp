@@ -541,6 +541,50 @@ TEST(SurfaceArchiveV2, MapAllAndProvenance) {
   EXPECT_EQ(arch->find("ZZZ").has_value(), false);
 }
 
+// ── find() must hand back the archive's REAL directory entry ──────────────────
+//
+// `find` is documented as "resolve `symbol` to its directory entry", and callers
+// may legitimately feed the result straight into `map_entry`/`reconstruct_entry`
+// or compare it against `directory()`. Anything less than the stored entry is a
+// silent lie: the lookup slot carries no n_slices/kind_bits/payload_crc32c, so a
+// hand-assembled entry reads back zeros for exactly the fields a framing-only
+// consumer (and the F6 content-identity check) depends on.
+TEST(SurfaceArchiveV2, FindReturnsTheStoredDirectoryEntry) {
+  auto arch = SurfaceArchiveV2::open(build_multi()); // 6 mixed-kind surfaces
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  const std::span<const atx::vol::ArchiveV2DirEntry> dir = arch->directory();
+  ASSERT_EQ(dir.size(), 6u);
+
+  for (const atx::vol::ArchiveV2DirEntry &want : dir) {
+    const std::string sym(want.symbol, want.symbol_len);
+    auto got = arch->find(sym);
+    ASSERT_TRUE(got.has_value()) << sym << ": " << got.error().to_string();
+    // Field-wise first so a failure names what was dropped, then the whole
+    // 80-byte record (no padding: 8+8+8+4+2+2+2+2+4+32+8) for completeness.
+    EXPECT_EQ(got->surface_offset, want.surface_offset) << sym;
+    EXPECT_EQ(got->surface_size, want.surface_size) << sym;
+    EXPECT_EQ(got->symbol_hash, want.symbol_hash) << sym;
+    EXPECT_EQ(got->uid, want.uid) << sym;
+    EXPECT_EQ(got->n_slices, want.n_slices) << sym;
+    EXPECT_EQ(got->kind_bits, want.kind_bits) << sym;
+    EXPECT_EQ(got->payload_crc32c, want.payload_crc32c) << sym;
+    EXPECT_EQ(got->symbol_len, want.symbol_len) << sym;
+    EXPECT_EQ(0, std::memcmp(&*got, &want, sizeof(atx::vol::ArchiveV2DirEntry))) << sym;
+    // The entry is usable exactly like a `directory()` one.
+    EXPECT_TRUE(arch->map_entry(*got).has_value()) << sym;
+  }
+
+  // Case-insensitive probe resolves to the same stored entry, and an absent
+  // symbol is still NotFound.
+  auto lower = arch->find("bbb");
+  ASSERT_TRUE(lower.has_value()) << lower.error().to_string();
+  EXPECT_GT(lower->n_slices, 0u);
+  EXPECT_EQ(lower->uid, 102u);
+  auto absent = arch->find("ZZZ");
+  ASSERT_FALSE(absent.has_value());
+  EXPECT_EQ(absent.error().code(), ErrorCode::NotFound);
+}
+
 // ── Subset-map isolation: mapping one symbol must not read another's bytes ─────
 
 TEST(SurfaceArchiveV2, SubsetMapIsolation) {
