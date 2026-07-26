@@ -35,10 +35,26 @@
 #include <utility>
 #include <vector>
 
+#if defined(_WIN32)
+// clang-format off
+#include <windows.h> // GetCurrentProcessId — scratch dirs must be per-process
+// clang-format on
+#else
+#include <unistd.h> // getpid
+#endif
+
 namespace atx::vol {
 namespace {
 
 namespace fs = std::filesystem;
+
+[[nodiscard]] unsigned long current_process_id() noexcept {
+#if defined(_WIN32)
+  return static_cast<unsigned long>(::GetCurrentProcessId());
+#else
+  return static_cast<unsigned long>(::getpid());
+#endif
+}
 
 // ── Fixture ─────────────────────────────────────────────────────────────────
 
@@ -77,9 +93,15 @@ ListedDefinitionsCacheKey sample_key() {
   return definitions_cache_key("ATX_LISTED_DEFINITIONS\t1\nheader...\nrow...\n");
 }
 
-// Per-test private directory so a concurrent suite run cannot collide.
+// Per-test, per-PROCESS private directory. The pid is load-bearing, not
+// decoration: this function opens with `remove_all`, so without it two
+// concurrent `atx-vol-tests.exe` runs of the same test would delete each other's
+// fixture mid-test (Wave E T7 review M2 — the original comment claimed collision
+// safety the path did not have).
 fs::path scratch_dir(std::string_view name) {
-  const fs::path dir = fs::temp_directory_path() / ("atx_defs_cache_" + std::string(name));
+  const fs::path dir =
+      fs::temp_directory_path() /
+      ("atx_defs_cache_" + std::string(name) + "_" + std::to_string(current_process_id()));
   std::error_code ec;
   fs::remove_all(dir, ec);
   ec.clear();
@@ -128,12 +150,24 @@ void restamp_crcs(std::vector<std::byte> &image) {
   std::memcpy(image.data(), &header, sizeof header);
 }
 
+// The per-field enumeration below is for DIAGNOSABILITY — it names the field
+// that moved. It is deliberately NOT the assertion of record, because an
+// enumeration by name is structurally blind to a field that is later added to
+// `ListedContractDefinition`: it would simply not be compared. The assertion of
+// record is the whole-struct `operator==`, which is `= default`ed and therefore
+// covers EVERY member, including one added after this line was written.
+//
+// (The primary defence against that scenario is the compile-time shape pin in
+// listed_definitions_cache.hpp — an added field stops the build. This is the
+// belt to that pin's braces, and it costs one line.)
 void expect_rows_bit_identical(const ListedDefinitionTable &lhs, const ListedDefinitionTable &rhs) {
   ASSERT_EQ(lhs.definitions().size(), rhs.definitions().size());
   ASSERT_GT(lhs.definitions().size(), 0u) << "anti-vacuity: an empty table proves nothing";
   for (std::size_t i = 0; i < lhs.definitions().size(); ++i) {
     const ListedContractDefinition &a = lhs.definitions()[i];
     const ListedContractDefinition &b = rhs.definitions()[i];
+    EXPECT_TRUE(a == b) << "row " << i
+                        << ": whole-struct equality (covers members not enumerated below)";
     EXPECT_EQ(a.trade_date, b.trade_date) << "row " << i;
     EXPECT_EQ(a.instrument_id, b.instrument_id) << "row " << i;
     EXPECT_EQ(a.raw_symbol, b.raw_symbol) << "row " << i;
@@ -492,6 +526,37 @@ TEST(ListedDefinitionsCache, CacheHeaderAbiIsPinned) {
   EXPECT_EQ(offsetof(ListedDefinitionsCacheHeader, pointer_bits), 112u);
   EXPECT_EQ(offsetof(ListedDefinitionsCacheHeader, reserved_u16), 114u);
   EXPECT_EQ(offsetof(ListedDefinitionsCacheHeader, reserved), 116u);
+}
+
+// POSITIVE CONTROL / regression lock, same class as the one above and NOT
+// counted as coverage. The load-bearing pins for the ENCODED PAYLOAD struct are
+// the `static_assert`s and the structured-binding shape pin in
+// listed_definitions_cache.hpp — a field added to `ListedContractDefinition`
+// stops the build, which no runtime test can do. This echoes the numbers so a
+// failing suite shows them, and it odr-uses the shape pin.
+//
+// The pins were demonstrated to fail, not assumed to (Wave E T7 fix round 1):
+//   * appending `std::int64_t x` to the struct  -> sizeof assert AND the
+//     structured binding both fail to compile;
+//   * inserting `bool x` between `standard_deliverable` and
+//     `source_fingerprint`  -> lands in the six bytes of tail padding, so
+//     `sizeof`, every `offsetof` AND the runtime `abi_fold` are all unchanged
+//     and ONLY the structured binding rejects it.
+TEST(ListedDefinitionsCache, EncodedRowAbiIsPinned) {
+  const ListedContractDefinition probe{};
+  definitions_cache_payload_shape_pin(probe);
+  const std::size_t s = sizeof(std::string);
+  EXPECT_EQ(sizeof(ListedContractDefinition), 2u * s + 48u);
+  EXPECT_EQ(alignof(ListedContractDefinition), 8u);
+  EXPECT_EQ(offsetof(ListedContractDefinition, trade_date), 0u);
+  EXPECT_EQ(offsetof(ListedContractDefinition, instrument_id), s);
+  EXPECT_EQ(offsetof(ListedContractDefinition, raw_symbol), s + 8u);
+  EXPECT_EQ(offsetof(ListedContractDefinition, definition_ts_ns), 2u * s + 8u);
+  EXPECT_EQ(offsetof(ListedContractDefinition, expiry_ts_ns), 2u * s + 16u);
+  EXPECT_EQ(offsetof(ListedContractDefinition, multiplier), 2u * s + 24u);
+  EXPECT_EQ(offsetof(ListedContractDefinition, standard_monthly), 2u * s + 32u);
+  EXPECT_EQ(offsetof(ListedContractDefinition, standard_deliverable), 2u * s + 33u);
+  EXPECT_EQ(offsetof(ListedContractDefinition, source_fingerprint), 2u * s + 40u);
 }
 
 // GATE: the stamped header fields must carry the declared constants, so a

@@ -118,9 +118,86 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <type_traits>
 
 namespace atx::vol {
+
+// ── The encoded payload struct's ABI ────────────────────────────────────────
+//
+// `ListedContractDefinition` is what ATXDEFS1 encodes, field for field, so it is
+// an ON-DISK ABI and the sprint constraint ("On-disk structs are an ABI:
+// `static_assert` on `sizeof` AND `offsetof`") binds it exactly as it binds
+// `ListedDefinitionsCacheHeader` below. The header was pinned; this struct was
+// not, which is Wave E T7 review finding I1.
+//
+// WHAT THESE PINS EXIST TO CATCH, concretely. A field is added to
+// `ListedContractDefinition`. `parse_listed_definitions` and
+// `serialize_listed_definitions` are updated, because the TSV round trip forces
+// it. The ATXDEFS1 encoder in `listed_definitions_cache.cpp` is NOT. The new
+// writer then emits a blob that silently drops the field and the new reader
+// default-initialises it: both CRCs pass (the bytes are the bytes written), the
+// content hash passes (the source file did not change), and
+// `CacheRoundTripReconstructsTableExactly` passes too, because its fixture uses
+// positional aggregate initialisation and the field is default on BOTH sides.
+// These asserts turn that whole scenario into a BUILD ERROR at zero runtime
+// cost. That is what makes the runtime fingerprint guard below safe to leave
+// opt-in.
+//
+// WHEN ONE OF THESE FIRES the fix is NOT to update the number. It is to teach
+// the ATXDEFS1 encoder AND decoder about the new shape, bump
+// `kDefinitionsParserRevision` (and `kDefinitionsCacheFormat` if the wire layout
+// moved), and only then re-pin.
+//
+// Offsets are written relative to `sizeof(std::string)` so the pin is exact on
+// any LP64 host rather than only on the one whose `std::string` happens to be 40
+// bytes. On MSVC (`sizeof(std::string) == 40`) they evaluate to
+//     0, 40, 48, 88, 96, 104, 112, 113, 120   with `sizeof` == 128.
+namespace detail {
+inline constexpr std::size_t kDefsStrSize = sizeof(std::string);
+} // namespace detail
+
+static_assert(std::is_standard_layout_v<ListedContractDefinition>,
+              "ATXDEFS1 pins ListedContractDefinition's offsets; it must be standard layout");
+static_assert(alignof(ListedContractDefinition) == 8);
+static_assert(sizeof(ListedContractDefinition) == 2 * detail::kDefsStrSize + 48,
+              "ListedContractDefinition layout drift — read the note above before touching this");
+static_assert(offsetof(ListedContractDefinition, trade_date) == 0);
+static_assert(offsetof(ListedContractDefinition, instrument_id) == detail::kDefsStrSize);
+static_assert(offsetof(ListedContractDefinition, raw_symbol) == detail::kDefsStrSize + 8);
+static_assert(offsetof(ListedContractDefinition, definition_ts_ns) == 2 * detail::kDefsStrSize + 8);
+static_assert(offsetof(ListedContractDefinition, expiry_ts_ns) == 2 * detail::kDefsStrSize + 16);
+static_assert(offsetof(ListedContractDefinition, multiplier) == 2 * detail::kDefsStrSize + 24);
+static_assert(offsetof(ListedContractDefinition, standard_monthly) ==
+              2 * detail::kDefsStrSize + 32);
+static_assert(offsetof(ListedContractDefinition, standard_deliverable) ==
+              2 * detail::kDefsStrSize + 33);
+static_assert(offsetof(ListedContractDefinition, source_fingerprint) ==
+              2 * detail::kDefsStrSize + 40);
+
+// `sizeof` + `offsetof` alone are NOT sufficient, and neither is the runtime
+// `abi_fold`, which folds exactly the same twenty numbers: a `bool` inserted
+// between `standard_deliverable` and `source_fingerprint` lands in the six bytes
+// of existing tail padding, so every assert above still holds, `sizeof` is still
+// 128 and the fold does not move. That is a real hole in both, and this is what
+// closes it — a structured binding NAMES every member, so a field added,
+// removed, reordered or retyped stops this translation unit compiling.
+inline void definitions_cache_payload_shape_pin(const ListedContractDefinition &row) noexcept {
+  const auto &[trade_date, instrument_id, raw_symbol, definition_ts_ns, expiry_ts_ns, multiplier,
+               standard_monthly, standard_deliverable, source_fingerprint] = row;
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(trade_date)>, std::string>);
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(instrument_id)>, std::uint32_t>);
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(raw_symbol)>, std::string>);
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(definition_ts_ns)>, std::int64_t>);
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(expiry_ts_ns)>, std::int64_t>);
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(multiplier)>, double>);
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(standard_monthly)>, bool>);
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(standard_deliverable)>, bool>);
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(source_fingerprint)>, std::uint64_t>);
+  static_cast<void>(std::tie(trade_date, instrument_id, raw_symbol, definition_ts_ns, expiry_ts_ns,
+                             multiplier, standard_monthly, standard_deliverable,
+                             source_fingerprint));
+}
 
 // File magic, no NUL.
 inline constexpr char kDefinitionsCacheMagic[8] = {'A', 'T', 'X', 'D', 'E', 'F', 'S', '1'};
