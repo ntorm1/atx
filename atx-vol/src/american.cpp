@@ -618,14 +618,27 @@ template <unsigned NB>
 // al_bind_geometry_static — losing the hoist with no diagnostic anywhere. Letting
 // the predicate itself decide membership makes that a BUILD failure.
 //
-// Does (nb, nq) fit EVERY table al_bind_geometry_static writes? There are TWO
-// independent sizings and BOTH are required (REVA7FIX Minor 3 — the shipped guard
-// covered only the first, which left a real out-of-bounds write expressible with no
-// diagnostic anywhere):
+// Does (nb, nq) fit EVERY table al_bind_geometry_static writes? There are THREE
+// independent sizings and ALL THREE are required. Each was found the same way, by
+// someone enumerating what the bind actually writes rather than trusting the prose
+// beside it: REVA7FIX Minor 3 found the guard covered only the first, REVA7TIDY
+// found the corrected guard still did not cover the second and that the comment
+// here asserted otherwise. State the index and the cap for each, and do not claim
+// one bound implies another without checking the CONSTANT, not just the exponent:
 //
-//   * geo_bary — PACKED at (bpair + i)*nb, so it needs (nb-1)*nq*nb <= kGeoBarySize.
-//     geo_bary_den / geo_bary_hit are indexed by bpair + i <= (nb-1)*nq, which this
-//     same bound covers since nb >= 1.
+//   * geo_bary — PACKED at (bpair + i)*nb with k < nb, so its largest written index
+//     is (nb-1)*nq*nb - 1 and it needs (nb-1)*nq*nb <= kGeoBarySize (3168).
+//   * geo_bary_den / geo_bary_hit — packed at bpair + i, so their largest written
+//     index is (nb-1)*nq - 1 and they need (nb-1)*nq <= kGeoBaryPairs (264). This is
+//     a SEPARATE term. kGeoBaryPairs is kGeoBarySize / kGeoBaryNodeMax — a factor of
+//     kGeoBaryNodeMax smaller — so the geo_bary bound above does NOT imply it, and
+//     the smaller index is written into a proportionally smaller array. (A previous
+//     revision of this comment claimed the geo_bary bound covered these two "since
+//     nb >= 1". It does bound the index by 3168; these arrays hold 264. (10,32) is
+//     the counterexample: it passes the geo_bary bound at 9*32*10 = 2880 <= 3168 and
+//     then writes geo_bary_den[264..287] / geo_bary_hit[264..287], 24 elements past
+//     the end — and in a Release build geo_bary_hit is the LAST AlWorkspace member,
+//     so that write leaves the object. Pinned as a compiled counterexample below.)
 //   * geo_zc / geo_weru / geo_wequ — ROW-ADDRESSED at gbase + i with
 //     gbase = j*kGeoQuadStride, j < nb, i < nq, into kGeoSize = kGeoNodeMax *
 //     kGeoQuadStride doubles. That needs BOTH bounds separately, and the packed bary
@@ -640,17 +653,21 @@ template <unsigned NB>
 [[nodiscard]] constexpr bool al_scheme_fits_geometry_tables(unsigned nb,
                                                             unsigned nq) noexcept {
   return nb >= 1u && nb <= kGeoNodeMax && nq <= kGeoQuadStride &&
+         (nb - 1u) * nq <= kGeoBaryPairs &&
          (nb - 1u) * nq * nb <= kGeoBarySize;
 }
 
-// The three live schemes fit; the three ways to break it do not. These pin the
-// per-scheme predicate directly, so the sweep below cannot go vacuously true.
+// The three live schemes fit; the four ways to break it do not. These pin the
+// per-scheme predicate directly, in both directions: one negative per conjunct that
+// can reject (nb >= 1u only guards the nb - 1u wrap and short-circuits ahead of it),
+// so a predicate that degenerated to `true` or to `false` fails to compile.
 static_assert(al_scheme_fits_geometry_tables(7, 8));
 static_assert(al_scheme_fits_geometry_tables(7, 16));
 static_assert(al_scheme_fits_geometry_tables(12, 24));
 static_assert(!al_scheme_fits_geometry_tables(13, 24));  // 12*24*13 = 3744 > geo_bary
 static_assert(!al_scheme_fits_geometry_tables(17, 8));   // geo_zc[512..519], OOB
 static_assert(!al_scheme_fits_geometry_tables(7, 40));   // nq > row stride, rows overlap
+static_assert(!al_scheme_fits_geometry_tables(10, 32));  // geo_bary_den/hit[264..287], OOB
 
 // The sweep bound is DERIVED, not chosen (REVA7FIX Minor 4). It is exactly the
 // domain in which al_bind_geometry_static can ever be REACHED, so a scheme outside
@@ -674,10 +691,12 @@ static_assert(!al_scheme_fits_geometry_tables(7, 40));   // nq > row stride, row
 }
 static_assert(al_geometry_tables_fit_every_specialized_scheme(),
               "a scheme al_fp_specialized() admits does not fit the per-solve geometry "
-              "tables: grow kGeoBaryNodeMax / kGeoBaryQuadMax (geo_bary) and/or "
-              "kGeoNodeMax / kGeoQuadStride (geo_zc / geo_weru / geo_wequ) in "
-              "american_boundary.hpp, or the new scheme silently loses the barycentric "
-              "hoist at runtime — or, for the geo_zc triple, writes out of bounds");
+              "tables: grow kGeoBaryNodeMax / kGeoBaryQuadMax (which size BOTH "
+              "kGeoBarySize for geo_bary and kGeoBaryPairs for geo_bary_den / "
+              "geo_bary_hit) and/or kGeoNodeMax / kGeoQuadStride (geo_zc / geo_weru / "
+              "geo_wequ) in american_boundary.hpp, or the new scheme silently loses the "
+              "barycentric hoist at runtime — or, for the geo_zc triple and for "
+              "geo_bary_den / geo_bary_hit, writes out of bounds");
 
 // AlWorkspace now lives in namespace amer (american_boundary.hpp).
 
@@ -975,7 +994,8 @@ void al_bind_geometry_static(const AlBoundary &bnd, AlWorkspace &ws, double r,
   // static_assert sweeps rather than re-stating its arithmetic, so the two cannot
   // drift — and so it now also covers the geo_zc / geo_weru / geo_wequ row addressing
   // below, which the hand-copied geo_bary-only expression here did not (REVA7FIX
-  // Minor 3).
+  // Minor 3), and the geo_bary_den / geo_bary_hit writes below, which the
+  // predicate itself did not until REVA7TIDY (see its third bullet above).
   if (!al_scheme_fits_geometry_tables(nb, nq)) {
     ws.specialize = false;
     ws.geo_static_bound = false;
