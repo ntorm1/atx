@@ -88,7 +88,28 @@ struct Civil {
 }
 
 // Parse exactly "YYYY-MM-DD". Rejects wrong length, missing dashes, non-numeric
-// fields, or an out-of-range month/day.
+// fields, an out-of-range month/day, and — R1-c (review C-07) — a day that does
+// not EXIST in that month of that year.
+//
+// The range check alone accepted `2026-02-31`. `days_from_civil` then silently
+// NORMALIZED it (its `doy` arithmetic simply runs off the end of February into
+// March), so a range walk enumerated `2026-03-03` onwards and the build proceeded
+// against a DIFFERENT date than the operator typed — with nothing anywhere saying
+// so. An impossible date is an operator error and must be refused at the gate,
+// where both loaders already return `Err(InvalidArgument, "unparseable date_lo
+// ...")`.
+//
+// The check is a ROUND TRIP rather than a leap-aware days-in-month table: it has
+// fewer moving parts, both halves are right here in this header, and — decisively
+// — it validates against the EXACT function whose normalisation is the defect,
+// so it cannot drift from it the way a hand-written February rule could. A date
+// survives iff `days_from_civil` maps it to a serial day that maps back to the
+// same (y, m, d); a normalised date lands on some other civil date by
+// construction and fails.
+//
+// THE RANGE CHECK STAYS, and is not merely an early-out: `days_from_civil` is
+// documented valid only for m in [1,12] and d in [1,31], so it must not be handed
+// `m = 99` at all. Ordering here is load-bearing.
 [[nodiscard]] inline bool parse_civil(std::string_view s, Civil& out) noexcept {
   if (s.size() != 10 || s[4] != '-' || s[7] != '-') {
     return false;
@@ -103,7 +124,12 @@ struct Civil {
   if (m < 1 || m > 12 || d < 1 || d > 31) {
     return false;
   }
-  out = Civil{y, static_cast<unsigned>(m), static_cast<unsigned>(d)};
+  const Civil c{y, static_cast<unsigned>(m), static_cast<unsigned>(d)};
+  const Civil round_trip = civil_from_days(days_from_civil(c.y, c.m, c.d));
+  if (round_trip.y != c.y || round_trip.m != c.m || round_trip.d != c.d) {
+    return false;
+  }
+  out = c;
   return true;
 }
 

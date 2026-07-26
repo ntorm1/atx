@@ -20,8 +20,14 @@
 #include "atx/vol/market_env.hpp"   // MarketEnv
 #include "atx/vol/panel.hpp"        // make_synthetic_american_panel
 #include "atx/vol/pricer_fitter.hpp"   // PricerFitter
+#include "atx/vol/opra_hive.hpp"       // OpraHiveSpec, load_opra_hive (shared date gate)
 #include "atx/vol/spy_fixture.hpp"     // make_spy_synthetic_spec
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive
+
+// R1-c (review C-07): `parse_civil` is the src-private civil-date kernel BOTH
+// loaders gate their date range on, and it had no test of its own. Everything in
+// the header is `inline`, so including it costs no TU and no link surface.
+#include "../src/opra_batch_detail.hpp"
 
 // Coverage for the P2-4 date-range batch loader (`load_opra_daterange`) and the
 // term-curve -> MarketEnv bridge (`market_env_from_frame`).
@@ -30,6 +36,7 @@ namespace {
 
 namespace io = atx::core::io;
 namespace fs = std::filesystem;
+namespace opra_detail = atx::vol::opra_detail; // R1-c: the civil-date kernel
 using atx::i64;
 using atx::vol::CorpusMarketInputCell;
 using atx::vol::CorpusMarketInputTable;
@@ -319,6 +326,110 @@ TEST(OpraBatch, MalformedSpec_UnparseableDate_Rejected) {
   const auto res = load_opra_daterange(spec);
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), atx::vol::ErrorCode::InvalidArgument);
+}
+
+// ── R1-c (review C-07): impossible calendar dates must be REFUSED, not
+// silently normalised ────────────────────────────────────────────────────────
+//
+// `parse_civil` validated only m in [1,12] and d in [1,31], so `2026-02-31`
+// parsed. `days_from_civil` then normalised it -- its day-of-year arithmetic runs
+// straight off the end of February -- and the range walk enumerated dates from
+// `2026-03-03` onwards, i.e. a DIFFERENT window than the operator typed, with
+// nothing anywhere saying so. It is now validated by round-tripping through
+// `civil_from_days(days_from_civil(...))`.
+//
+// Tested directly against the src-private header because that is where the kernel
+// lives (it is `inline`, so including it here costs nothing and adds no TU) --
+// `parse_civil` had NO test of its own before this. The end-to-end consequence,
+// which is what an operator sees, is pinned separately below through the real
+// spec gate of both loaders.
+TEST(OpraCivilDate, ImpossibleDatesAreRejected) {
+  atx::vol::opra_detail::Civil c;
+
+  // February past its end, in a non-leap year.
+  EXPECT_FALSE(opra_detail::parse_civil("2026-02-29", c));
+  EXPECT_FALSE(opra_detail::parse_civil("2026-02-30", c));
+  EXPECT_FALSE(opra_detail::parse_civil("2026-02-31", c)); // the reviewer's case
+
+  // A 30-day month's 31st.
+  EXPECT_FALSE(opra_detail::parse_civil("2026-04-31", c));
+  EXPECT_FALSE(opra_detail::parse_civil("2026-06-31", c));
+  EXPECT_FALSE(opra_detail::parse_civil("2026-09-31", c));
+  EXPECT_FALSE(opra_detail::parse_civil("2026-11-31", c));
+
+  // Leap rules, all three branches: divisible by 4 (leap), by 100 (not), by 400
+  // (leap). A days-in-month table gets these wrong far more easily than the
+  // round trip does, which is the reason the round trip was chosen.
+  EXPECT_TRUE(opra_detail::parse_civil("2024-02-29", c)); // 2024 is a leap year
+  EXPECT_EQ(c.y, 2024);
+  EXPECT_EQ(c.m, 2u);
+  EXPECT_EQ(c.d, 29u);
+  EXPECT_FALSE(opra_detail::parse_civil("1900-02-29", c)); // century, not a leap year
+  EXPECT_TRUE(opra_detail::parse_civil("2000-02-29", c));  // divisible by 400, leap
+
+  // The pre-existing rejections must still hold -- the range check has to run
+  // BEFORE the round trip, because days_from_civil is only defined for
+  // m in [1,12], d in [1,31].
+  EXPECT_FALSE(opra_detail::parse_civil("2026-13-01", c));
+  EXPECT_FALSE(opra_detail::parse_civil("2026-00-01", c));
+  EXPECT_FALSE(opra_detail::parse_civil("2026-01-00", c));
+  EXPECT_FALSE(opra_detail::parse_civil("2026-01-32", c));
+  EXPECT_FALSE(opra_detail::parse_civil("2026/01/01", c));
+  EXPECT_FALSE(opra_detail::parse_civil("2026-1-1", c));
+}
+
+// Every ordinary date the loaders are given must still parse, and to the same
+// value: the fix must not have narrowed anything real. Walks a whole year --
+// every valid (month, day) of 2026 plus the leap day of 2024 -- and asserts both
+// acceptance and the round-tripped fields.
+TEST(OpraCivilDate, EveryRealDateStillParses) {
+  const unsigned days_in_month[12] = {31u, 28u, 31u, 30u, 31u, 30u,
+                                      31u, 31u, 30u, 31u, 30u, 31u};
+  std::size_t accepted = 0;
+  for (unsigned m = 1; m <= 12u; ++m) {
+    for (unsigned d = 1; d <= days_in_month[m - 1u]; ++d) {
+      char buf[11];
+      std::snprintf(buf, sizeof buf, "2026-%02u-%02u", m, d);
+      atx::vol::opra_detail::Civil c;
+      ASSERT_TRUE(opra_detail::parse_civil(buf, c)) << buf;
+      EXPECT_EQ(c.y, 2026);
+      EXPECT_EQ(c.m, m);
+      EXPECT_EQ(c.d, d);
+      ++accepted;
+    }
+  }
+  EXPECT_EQ(accepted, std::size_t{365});
+}
+
+// The operator-visible consequence, through the real spec gate of BOTH loaders:
+// an impossible date is a top-level InvalidArgument, exactly like a malformed
+// one, instead of quietly becoming a different window.
+TEST(OpraBatch, MalformedSpec_ImpossibleCalendarDate_Rejected) {
+  OpraBatchSpec spec;
+  spec.symbols = {"XOM"};
+  spec.root_dir = fs::temp_directory_path().string();
+
+  spec.date_lo = "2026-02-31"; // does not exist; used to normalise to 2026-03-03
+  spec.date_hi = "2026-03-05";
+  const auto lo_bad = load_opra_daterange(spec);
+  ASSERT_FALSE(lo_bad.has_value());
+  EXPECT_EQ(lo_bad.error().code(), atx::vol::ErrorCode::InvalidArgument);
+
+  spec.date_lo = "2026-03-01";
+  spec.date_hi = "2026-04-31"; // April has 30 days
+  const auto hi_bad = load_opra_daterange(spec);
+  ASSERT_FALSE(hi_bad.has_value());
+  EXPECT_EQ(hi_bad.error().code(), atx::vol::ErrorCode::InvalidArgument);
+
+  // The hive loader shares the same kernel and the same gate.
+  atx::vol::OpraHiveSpec hive;
+  hive.root_dir = fs::temp_directory_path().string();
+  hive.symbols = {"XOM"};
+  hive.date_lo = "2026-02-30";
+  hive.date_hi = "2026-03-05";
+  const auto hive_bad = atx::vol::load_opra_hive(hive);
+  ASSERT_FALSE(hive_bad.has_value());
+  EXPECT_EQ(hive_bad.error().code(), atx::vol::ErrorCode::InvalidArgument);
 }
 
 TEST(OpraBatch, MarketInputTableCanonicalizesSortsAndRejectsLookahead) {
