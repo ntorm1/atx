@@ -481,6 +481,22 @@ listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_n
   }
 
   const bool filtering = !wanted.empty();
+  // ENFORCE the SORTED+DEDUPED precondition rather than trusting the caller.
+  // Stage 1 below locates each raw_symbol run by binary search, so an unsorted
+  // `wanted` returns a wrong — usually empty — run: rows are dropped, NO gate
+  // fires, and the caller receives a quietly under-joined result. Downstream
+  // that surfaces only as NoRawQuote marks and moved coverage, i.e. a wrong
+  // answer with no error anywhere, which is precisely what this function exists
+  // to prevent. The dedupe half is checked in the same pass because a duplicate
+  // means `wanted` was not built as the contract says (and mis-sizes the reserve
+  // below). One O(n) pass over ~10^2 keys, once per ~10^5-row panel.
+  if (filtering && std::adjacent_find(wanted.begin(), wanted.end(),
+                                      [](const ListedQuoteKey &lhs, const ListedQuoteKey &rhs) {
+                                        return !(lhs < rhs);
+                                      }) != wanted.end()) {
+    return Err(ErrorCode::InvalidArgument,
+               "listed OPRA join: wanted keys must be sorted and deduped");
+  }
   std::vector<ListedOptionQuote> quotes;
   // When filtering, the panel is (by construction) far wider than the consumed
   // key set, so sizing to the panel would reserve two orders of magnitude more

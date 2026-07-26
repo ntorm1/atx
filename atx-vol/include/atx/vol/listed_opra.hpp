@@ -125,6 +125,9 @@ standard_monthly_sessions(std::span<const std::int64_t> expiry_ts_ns);
 //
 // SkipUnlisted narrows ONLY the definition==nullptr fall-through. It does NOT
 // weaken any authority guarantee:
+//   - the OSI parse of raw_symbol at the head of the nullptr branch stays FATAL
+//     under BOTH policies — a symbol that is not a well-formed OSI symbol is a
+//     malformed panel, never an unlisted contract, so no policy softens it;
 //   - the structural numeric-root skip and the same-session (0DTE) skip in the
 //     nullptr branch already fire unconditionally under BOTH policies;
 //   - once a definition IS found, the look-ahead/expiry guard and the
@@ -147,10 +150,14 @@ enum class MissingDefinitionPolicy : std::uint8_t { Error = 0, SkipUnlisted = 1 
 // is joined and every check below fires for every row.
 //
 // A NON-EMPTY `wanted` is a consumer declaring the exact contract set it will
-// read. It must be SORTED and DEDUPED in `ListedQuoteKey` order. The result is
-// then exactly the unfiltered result INTERSECTED with `wanted`, element for
-// element and in the same panel order — a row whose `quote_key_of` is not in
-// `wanted` is never emitted.
+// read. It MUST be SORTED and DEDUPED in `ListedQuoteKey` order, and that is
+// ENFORCED, not merely documented: a `wanted` that is not strictly increasing is
+// rejected with InvalidArgument before any row is joined. The filter binary-
+// searches `wanted`, so an unsorted span would locate a wrong (usually empty)
+// run and silently drop legs — no gate would fire, and the miss would surface
+// only as degraded marks downstream. The result is then exactly the unfiltered
+// result INTERSECTED with `wanted`, element for element and in the same panel
+// order — a row whose `quote_key_of` is not in `wanted` is never emitted.
 //
 // The filter is applied in two stages. A cheap `raw_symbol` membership test runs
 // AFTER the aligned-source-identity lookup and its fatal gate, and BEFORE
@@ -159,25 +166,41 @@ enum class MissingDefinitionPolicy : std::uint8_t { Error = 0, SkipUnlisted = 1 
 // definition's `expiry_ts_ns`, and so cannot be known before the lookup) is
 // re-checked immediately before the quote is emitted.
 //
-// THIS NARROWS VALIDATION, DELIBERATELY. Four checks are fatal for any panel row
-// under an empty `wanted`:
+// THIS NARROWS VALIDATION, DELIBERATELY. The loop body has SEVEN fatal exits for
+// a panel row under an empty `wanted`, listed here in the order they are reached.
+// Exactly ONE stays panel-wide; the other six are narrowed to rows whose
+// raw_symbol appears in `wanted`:
 //
-//   1. aligned source identity missing  — PRESERVED panel-wide. It precedes the
-//      filter, so an unresolvable instrument id is still fatal even for a row no
-//      consumer wants.
-//   2. definition look-ahead / expiry   — NARROWED to rows whose raw_symbol is
-//   3. quote/OSI/definition economics      in `wanted`.
-//   4. future quote
+//   PANEL-WIDE — precedes the raw_symbol stage, so it is still fatal for a row
+//   no consumer wants:
+//     1. aligned source identity missing              NotFound
 //
-// Checks 2-4 therefore stop being a panel-wide audit of the definition table and
+//   NARROWED to the wanted raw_symbol set — all six sit after that stage:
+//     2. OSI parse of raw_symbol, definition absent   parse_osi_symbol's error
+//     3. contract definition missing                  NotFound
+//     4. definition look-ahead / expiry               InvalidArgument
+//     5. OSI parse of raw_symbol, definition found    parse_osi_symbol's error
+//     6. quote/OSI/definition economics disagree      InvalidArgument
+//     7. future quote                                 InvalidArgument
+//
+// On the narrowed six: (2) and (5) are the SAME condition — raw_symbol is not a
+// well-formed OSI symbol — reached on the two mutually exclusive branches of the
+// definition lookup, and (2) is the one exit on the missing-definition path that
+// `MissingDefinitionPolicy::SkipUnlisted` does not disarm. (3) is inert for a
+// caller passing SkipUnlisted (as the listed-dispersion workflow does) and live
+// under the default Error policy. (4)-(7) are the definition-exists gates.
+//
+// Checks 2-7 therefore stop being a panel-wide audit of the definition table and
 // become an audit of the contracts the caller consumes. That is the accepted
 // trade: validating definitions for the ~100k contracts a reconciliation never
 // reads is not the reconciliation's job, and the exporter that produced the
 // definitions owns that audit. What must NOT happen is a fail-closed gate going
 // quiet for a contract the caller DOES read, so the raw_symbol stage is
 // deliberately coarser than the full key: a row whose economics DISAGREE (check
-// 3) still carries the wanted raw_symbol and still trips the gate, rather than
-// being filtered out on the strike/side it is lying about.
+// 6) still carries the wanted raw_symbol and still trips the gate, rather than
+// being filtered out on the strike/side it is lying about. Each of the six has a
+// test asserting it still fires for a wanted key, and five of them assert on the
+// SAME input that it is tolerated when the contract is NOT wanted.
 [[nodiscard]] Result<std::vector<ListedOptionQuote>>
 listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_ns,
                         const OpraPanel &panel, const ListedDefinitionTable &definitions,

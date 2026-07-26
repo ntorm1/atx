@@ -95,8 +95,9 @@ struct ListedDispersionMethodology {
 //
 // `wanted` is forwarded verbatim to `listed_quotes_from_opra` for every panel in
 // the batch; read that function's contract (listed_opra.hpp) before passing a
-// non-empty set, because it NARROWS three of the join's fatal checks to the keys
-// named. Empty (the default) is today's behaviour, bit for bit.
+// non-empty set, because it NARROWS six of the join's seven fatal exits to the
+// keys named and REQUIRES a strictly increasing span (rejected otherwise). Empty
+// (the default) is today's behaviour, bit for bit.
 //
 // Only the reconciliation caller filters. The build-schedule caller
 // (`build_listed_dispersion_schedule`) passes nothing and must: it is SELECTING

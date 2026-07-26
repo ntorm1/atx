@@ -582,8 +582,10 @@ Status run_backtest_command(const fs::path &run_dir) {
   // Wave E fixture the unfiltered join emitted 41k quotes per session against a
   // schedule of 66 legs — so handing the join the key set lets it skip the
   // definition lookup, the OSI parse and quote construction for everything else.
-  // Read the `wanted` contract in listed_opra.hpp first: it also NARROWS three of
-  // the join's four fatal checks to these keys.
+  // Read the `wanted` contract in listed_opra.hpp first: it also NARROWS six of
+  // the join's seven fatal exits to these keys, and it REQUIRES a strictly
+  // increasing span — hence the sort + unique below, which is enforced, not
+  // advisory.
   //
   // The UNION over ALL rolls, not the active cohort. A roll date marks both the
   // held and the entering cohort (listed_dispersion_reconciliation.cpp), so a

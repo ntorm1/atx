@@ -320,19 +320,24 @@ TEST(ListedOpra, RejectsDailyIdentityAndAlignmentViolations) {
 //   that under-drops changes nothing observable but buys nothing; one that
 //   over-drops silently loses a leg the reconciliation then cannot mark.
 //
-//   THE NARROWED GATES STILL FIRE — three of the join's four fatal checks
-//   (definition look-ahead/expiry, quote/OSI/definition economics, future
-//   quote) now run only for the consumed keys. That narrowing is deliberate and
-//   documented in the header, but each gate MUST still be fatal when the
-//   offending row is one the caller asked for. The fourth (aligned source
-//   identity missing) is panel-wide and must stay fatal even for a row nobody
-//   wants, because it precedes the filter.
+//   THE NARROWED GATES STILL FIRE — SIX of the join's SEVEN fatal exits (both
+//   OSI parses, contract definition missing, definition look-ahead/expiry,
+//   quote/OSI/definition economics, future quote) now run only for the consumed
+//   keys. That narrowing is deliberate and enumerated in the header, but each
+//   gate MUST still be fatal when the offending row is one the caller asked for.
+//   The seventh (aligned source identity missing) is panel-wide and must stay
+//   fatal even for a row nobody wants, because it precedes the filter.
+//
+//   THE PRECONDITION IS ENFORCED — `wanted` must be strictly increasing, and an
+//   unsorted span is rejected rather than silently under-joining.
 //
 // Both directions were observed RED: with the filter ignored (a `wanted` the
-// implementation accepted and did not apply) the equality tests failed; with the
-// filter applied unconditionally to every row, the three narrowed-gate tests
-// failed while the panel-wide identity test still passed. The output of both is
-// in the task report.
+// implementation accepted and did not apply) the equality tests and every
+// narrowing control failed; with the filter applied unconditionally to every
+// row, the narrowed-gate tests failed while the panel-wide identity test still
+// passed. The precondition tests were observed RED against the unguarded code —
+// the unsorted span returned Ok with one of two legs missing. All of it is in
+// the task report.
 
 using atx::vol::ListedOptionQuote;
 using atx::vol::ListedQuoteKey;
@@ -636,6 +641,218 @@ TEST(ListedOpra, FilteredJoinStillFatalOnMissingIdentity) {
   zeroed.source_instrument_ids[5] = 0u;
   EXPECT_FALSE(atx::vol::listed_quotes_from_opra(kDate, zeroed.frame.snapshot_ts_ns, zeroed, *table,
                                                  MissingDefinitionPolicy::Error, wanted));
+}
+
+// ── The three narrowed fatal exits the first contract statement missed ───────
+//
+// The loop has SEVEN fatal exits, not four. Three of them — the OSI parse in the
+// missing-definition branch, the missing-definition NotFound under
+// MissingDefinitionPolicy::Error, and the OSI parse in the definition-found
+// branch — sit after the raw_symbol stage and are therefore narrowed by it, and
+// none had a test. Each test below asserts BOTH halves against the SAME panel
+// and the SAME definition table: fatal when the broken contract is in `wanted`,
+// tolerated when it is not. That is the in-test two-way control gates
+// look-ahead and future-quote already carry — the outcome is decided by
+// `wanted` alone, so neither half can pass by accident.
+
+// 15 chars from the right, so the length check passes and the DATE field is what
+// fails: `parse_osi_symbol` returns ParseError "OSI date field not numeric".
+constexpr const char *kUnparsableRawSymbol = "SPY   26XX17C00600000";
+
+// Row `index`'s raw_symbol replaced. Instrument ids are untouched, so
+// source_identities stays sorted as the join's lower_bound requires.
+OpraPanel wide_panel_with_raw_symbol(std::size_t index, const char *raw_symbol) {
+  OpraPanel out = wide_panel();
+  out.source_identities[index].raw_symbol = raw_symbol;
+  return out;
+}
+
+// `raw_symbol == nullptr` DELETES definition row `index` (so `find` returns
+// nullptr); otherwise it replaces that row's raw_symbol so `find` still resolves
+// the panel's edited identity. create() re-sorts, so input order is irrelevant.
+std::vector<ListedContractDefinition> wide_definitions_edit(std::size_t index,
+                                                            const char *raw_symbol) {
+  std::vector<ListedContractDefinition> rows = wide_definitions_for_panel();
+  if (raw_symbol == nullptr) {
+    rows.erase(rows.begin() + static_cast<std::ptrdiff_t>(index));
+  } else {
+    rows[index].raw_symbol = raw_symbol;
+  }
+  return rows;
+}
+
+ListedQuoteKey key_with_raw_symbol(std::size_t index, const char *raw_symbol) {
+  ListedQuoteKey key = wide_key(index);
+  key.raw_symbol = raw_symbol;
+  return key;
+}
+
+TEST(ListedOpra, FilteredJoinStillFatalOnWantedUnparsableSymbolWithDefinition) {
+  using atx::vol::MissingDefinitionPolicy;
+  // NARROWED GATE 5 — the OSI parse on the definition-FOUND path. The definition
+  // resolves (same instrument id, same edited raw_symbol), the look-ahead guard
+  // passes, and the parse is the next thing that runs.
+  const OpraPanel source = wide_panel_with_raw_symbol(2, kUnparsableRawSymbol);
+  auto table = ListedDefinitionTable::create(wide_definitions_edit(2, kUnparsableRawSymbol));
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  // Anti-vacuity: the fixture really is fatal with no filter at all.
+  auto unfiltered =
+      atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table);
+  ASSERT_FALSE(unfiltered) << "fixture is not broken; the test would prove nothing";
+  EXPECT_EQ(unfiltered.error().message(), "OSI date field not numeric");
+
+  const ListedQuoteKey broken = key_with_raw_symbol(2, kUnparsableRawSymbol);
+  const std::vector<ListedQuoteKey> wanted = sorted_wanted({broken, wide_key(5)});
+  ASSERT_TRUE(std::binary_search(wanted.begin(), wanted.end(), broken));
+
+  auto filtered = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, wanted);
+  ASSERT_FALSE(filtered) << "an unparsable wanted raw_symbol must stay fatal";
+  EXPECT_EQ(filtered.error().code(), atx::core::ErrorCode::ParseError);
+  EXPECT_EQ(filtered.error().message(), "OSI date field not numeric");
+
+  // Control: SAME panel, SAME table — tolerated once the broken contract is not
+  // wanted. This is the narrowing, asserted rather than assumed.
+  const std::vector<ListedQuoteKey> elsewhere = sorted_wanted({wide_key(0), wide_key(5)});
+  auto narrowed = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, elsewhere);
+  ASSERT_TRUE(narrowed) << (narrowed ? std::string{} : narrowed.error().to_string());
+  EXPECT_EQ(narrowed->size(), 2u);
+}
+
+TEST(ListedOpra, FilteredJoinStillFatalOnWantedUnparsableSymbolWithoutDefinition) {
+  using atx::vol::MissingDefinitionPolicy;
+  // NARROWED GATE 2 — the OSI parse inside the definition==nullptr branch. It
+  // precedes the numeric-root skip, the 0DTE skip and the policy check, so it is
+  // fatal under SkipUnlisted as well: this is the ONE fatal exit on the
+  // missing-definition path that the production policy does not disarm.
+  const OpraPanel source = wide_panel_with_raw_symbol(2, kUnparsableRawSymbol);
+  auto table = ListedDefinitionTable::create(wide_definitions_edit(2, nullptr));
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  ASSERT_EQ(table->definitions().size(), 5u); // the row really is gone
+
+  const ListedQuoteKey broken = key_with_raw_symbol(2, kUnparsableRawSymbol);
+  const std::vector<ListedQuoteKey> wanted = sorted_wanted({broken, wide_key(5)});
+  ASSERT_TRUE(std::binary_search(wanted.begin(), wanted.end(), broken));
+
+  for (const MissingDefinitionPolicy policy :
+       {MissingDefinitionPolicy::Error, MissingDefinitionPolicy::SkipUnlisted}) {
+    auto filtered = atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source,
+                                                      *table, policy, wanted);
+    ASSERT_FALSE(filtered) << "an unparsable wanted raw_symbol must stay fatal under both policies";
+    EXPECT_EQ(filtered.error().code(), atx::core::ErrorCode::ParseError);
+    EXPECT_EQ(filtered.error().message(), "OSI date field not numeric");
+  }
+
+  // Control: same panel, same table, tolerated when not wanted.
+  const std::vector<ListedQuoteKey> elsewhere = sorted_wanted({wide_key(0), wide_key(5)});
+  auto narrowed = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, elsewhere);
+  ASSERT_TRUE(narrowed) << (narrowed ? std::string{} : narrowed.error().to_string());
+  EXPECT_EQ(narrowed->size(), 2u);
+}
+
+TEST(ListedOpra, FilteredJoinStillFatalOnWantedMissingDefinition) {
+  using atx::vol::MissingDefinitionPolicy;
+  // NARROWED GATE 3 — "contract definition missing". Inert for the production
+  // caller (listed_quotes_for_date passes SkipUnlisted, which turns this exit
+  // into a `continue`), but live and narrowed for the default Error policy, so
+  // both are pinned here. The panel row is untouched: its raw_symbol parses, its
+  // root has no digits and its expiry is not the trade date, so the two earlier
+  // skips do not fire and the policy check is what decides.
+  const OpraPanel source = wide_panel();
+  auto table = ListedDefinitionTable::create(wide_definitions_edit(2, nullptr));
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  ASSERT_EQ(table->definitions().size(), 5u);
+
+  const std::vector<ListedQuoteKey> wanted = sorted_wanted({wide_key(2), wide_key(5)});
+  ASSERT_TRUE(std::binary_search(wanted.begin(), wanted.end(), wide_key(2)));
+
+  auto filtered = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, wanted);
+  ASSERT_FALSE(filtered) << "a missing definition for a wanted key must stay fatal under Error";
+  EXPECT_EQ(filtered.error().code(), atx::core::ErrorCode::NotFound);
+  EXPECT_EQ(filtered.error().message(), "listed OPRA join: contract definition missing");
+
+  // The policy, not the filter, is what softens this one — and only this one.
+  auto skipped = atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source,
+                                                   *table, MissingDefinitionPolicy::SkipUnlisted,
+                                                   wanted);
+  ASSERT_TRUE(skipped) << (skipped ? std::string{} : skipped.error().to_string());
+  EXPECT_EQ(skipped->size(), 1u) << "only the wanted contract that still has a definition";
+
+  // Control: same table, tolerated under Error once row 2 is not wanted.
+  const std::vector<ListedQuoteKey> elsewhere = sorted_wanted({wide_key(0), wide_key(5)});
+  auto narrowed = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, elsewhere);
+  ASSERT_TRUE(narrowed) << (narrowed ? std::string{} : narrowed.error().to_string());
+  EXPECT_EQ(narrowed->size(), 2u);
+}
+
+// ── The SORTED+DEDUPED precondition, enforced rather than trusted ────────────
+
+TEST(ListedOpra, FilteredJoinRejectsUnsortedWanted) {
+  using atx::vol::MissingDefinitionPolicy;
+  // `wanted` is searched with lower_bound/upper_bound. An unsorted span returns
+  // a wrong — usually empty — run, so legs vanish at stage 1, no gate fires, and
+  // the caller gets a quietly under-joined result. In the reconciliation that
+  // surfaces only as NoRawQuote marks and moved quote_mid_coverage, i.e. a wrong
+  // answer with no error anywhere. Fail closed instead.
+  auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  const OpraPanel source = wide_panel();
+
+  const std::vector<ListedQuoteKey> unsorted = {wide_key(4), wide_key(0)}; // descending
+  ASSERT_FALSE(std::is_sorted(unsorted.begin(), unsorted.end()));
+
+  auto rejected = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, unsorted);
+  ASSERT_FALSE(rejected) << "an unsorted wanted must be rejected, not silently under-joined; got Ok "
+                            "with "
+                         << rejected->size() << " quotes";
+  EXPECT_EQ(rejected.error().code(), atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(rejected.error().message(),
+            "listed OPRA join: wanted keys must be sorted and deduped");
+
+  // What the rejection stands in for: the SAME two keys, sorted, join two rows.
+  const std::vector<ListedQuoteKey> sorted = sorted_wanted(unsorted);
+  auto joined = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, sorted);
+  ASSERT_TRUE(joined) << (joined ? std::string{} : joined.error().to_string());
+  EXPECT_EQ(joined->size(), 2u);
+}
+
+TEST(ListedOpra, FilteredJoinRejectsDuplicateWanted) {
+  using atx::vol::MissingDefinitionPolicy;
+  // The other half of the documented precondition. A duplicate does not lose a
+  // leg today — it breaks the `quotes.reserve` sizing and, more to the point,
+  // means the caller did not build `wanted` the way the contract says. One
+  // adjacent_find pass enforces sorted AND deduped together, so neither half of
+  // the documented precondition is enforced while the other is only a comment.
+  auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  const OpraPanel source = wide_panel();
+
+  const std::vector<ListedQuoteKey> duped = {wide_key(0), wide_key(0), wide_key(4)};
+  ASSERT_TRUE(std::is_sorted(duped.begin(), duped.end())) << "sorted but NOT deduped";
+
+  auto rejected = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, duped);
+  ASSERT_FALSE(rejected) << "a duplicated wanted must be rejected; got Ok with " << rejected->size()
+                         << " quotes";
+  EXPECT_EQ(rejected.error().code(), atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(rejected.error().message(),
+            "listed OPRA join: wanted keys must be sorted and deduped");
+
+  // Deduped, the same key set is accepted — so the rejection is about the
+  // duplicate and not about these keys.
+  const std::vector<ListedQuoteKey> deduped = sorted_wanted(duped);
+  ASSERT_EQ(deduped.size(), 2u);
+  auto joined = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, deduped);
+  ASSERT_TRUE(joined) << (joined ? std::string{} : joined.error().to_string());
+  EXPECT_EQ(joined->size(), 2u);
 }
 
 // --- Calendar-free standard-monthly classifier ---------------------------
