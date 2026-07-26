@@ -77,10 +77,15 @@ struct SviJwParams {
 // running the IRLS-Huber reweight. `diag` (when non-null) receives the
 // vega-weighted RMSE, max residual, iteration counts, and quote count.
 //
-// @return InvalidArgument if `obs` is empty or `T <= 0`; otherwise Ok with the
-//         fitted slice (a, b, rho, m, sigma, T, F). The quasi-explicit method
-//         always terminates at a feasible optimum, so there is no NoConverge
-//         path (matching the C, which only fails on invalid input).
+// @return InvalidArgument if `obs` is empty or `T <= 0`; Unavailable if the
+//         observation set is rank-deficient (fewer usable design directions than
+//         the three linear coefficients — e.g. a single quote, coincident
+//         strikes, or all-zero weights), in which case there is no
+//         least-squares solution to return and the caller must NOT substitute
+//         one; otherwise Ok with the fitted slice (a, b, rho, m, sigma, T, F).
+//         Given a full-rank observation set the quasi-explicit method always
+//         terminates at a feasible optimum, so there is no NoConverge path
+//         (matching the C, which only fails on invalid input).
 [[nodiscard]] Result<SviParams> svi_fit_slice(std::span<const FitObs> obs,
                                               double T, double F,
                                               const CalibOpts &opts,

@@ -158,7 +158,9 @@ struct QeBasisScratch {
 // Build the weighted normal equations A^T W A x = A^T W w for the free
 // variables (`free_mask[i]` == true) at fixed (m, sigma), solve, and write the
 // free entries of `x` (pinned entries are read for the reduced rhs). Returns
-// the SSE at the resulting x. Mirrors `build_and_solve_normal`. The basis
+// the SSE at the resulting x, or +inf when the full 3x3 system is not
+// positive-definite — see the note on that branch. Mirrors
+// `build_and_solve_normal`. The basis
 // `ai = {1, u_i, v_i}` is READ from the pre-computed `sc` (see QeBasisScratch);
 // the H/g accumulation below is UNCHANGED — a scalar loop over i in the original
 // order, so the fit's summation is bit-for-bit what it was (values-only rule).
@@ -230,13 +232,21 @@ struct QeBasisScratch {
     }
   } else {
     // Full 3x3: back the Cholesky solve with atx-core (rhs == g here, since no
-    // variable is pinned). Degenerate matrix -> zero everything (matches the C).
+    // variable is pinned). A non positive-definite matrix means this (m, sigma)
+    // has NO linear least-squares solution — the design rows do not span the
+    // three coefficients (a single usable quote, coincident strikes, or an
+    // all-zero weight vector). Report it as an UNUSABLE candidate (+inf) and
+    // leave `x` alone. The C zeroed the coordinates and returned the ordinary
+    // finite SSE at that all-zero point; since every Nelder-Mead vertex is
+    // rank-deficient in the same way, that let the degenerate a = b = rho = 0
+    // point win the search and be returned Ok as a slice with identically zero
+    // total variance — which then displaced the SVI-MM fitter's healthy
+    // hardcoded seed.
     std::array<double, 3> sol{};
-    if (solve_spd_dense(H.data(), g.data(), 3, sol.data())) {
-      x = sol;
-    } else {
-      x = {0.0, 0.0, 0.0};
+    if (!solve_spd_dense(H.data(), g.data(), 3, sol.data())) {
+      return std::numeric_limits<double>::infinity();
     }
+    x = sol;
   }
 
   return svi_qe_sse(obs, sc, x);
@@ -244,6 +254,13 @@ struct QeBasisScratch {
 
 // Active-set bounded LSQ for (a, d_uv, c_uv) at fixed (m, sigma). Box:
 // 0 <= a <= a_max, 0 <= d_uv, c_uv <= duvc_max. Returns SSE; writes `out`.
+//
+// Returns +inf (and leaves `out` at the last iterate, which the caller MUST NOT
+// use) when the normal equations have no positive-definite solution at this
+// (m, sigma) — the objective is not a comparable number there, so the caller
+// must treat the vertex as unusable rather than score it. The final SSE
+// recompute below would otherwise launder the fallback point into an ordinary
+// finite score.
 // Mirrors `svi_blls_inner`. The rotated basis (u, v) depends only on (m, sigma,
 // k) — LOOP-INVARIANT across the ≤7 active-set passes below (the active set
 // only pins x entries / flips free_mask; it never touches the basis) — so it is
@@ -261,6 +278,10 @@ struct QeBasisScratch {
   const std::array<double, 3> lower{0.0, 0.0, 0.0};
 
   double sse = build_and_solve_normal(obs, sc, free_mask, x);
+  if (!std::isfinite(sse)) {
+    out = x;
+    return sse;
+  }
 
   for (int it = 0; it < 6; ++it) {
     int worst_idx = -1;
@@ -291,6 +312,10 @@ struct QeBasisScratch {
     x[uw] = worst_at_upper ? upper[uw] : lower[uw];
     free_mask[uw] = false;
     sse = build_and_solve_normal(obs, sc, free_mask, x);
+    if (!std::isfinite(sse)) {
+      out = x;
+      return sse;
+    }
   }
 
   // Final clamp + SSE recompute (the last solve may not have reached feasibility).
@@ -339,9 +364,13 @@ struct NmCtx {
 
 // Nelder-Mead simplex search over (m, sigma). Writes the best vertex back into
 // (*m, *sigma) and its inner linear optimum into `linear`. Mirrors `nm_search`.
+//
+// `out_best_sse` receives the winning vertex's objective. It is non-finite iff
+// EVERY vertex the simplex visited was unusable (see `svi_blls_inner`), in which
+// case `linear` is meaningless and the caller must not fit from it.
 void nm_search(const NmCtx &c, double &m, double &sigma, QeBasisScratch &sc,
                std::array<double, 3> &linear, std::uint16_t max_iter, double tol,
-               std::uint16_t &out_iters_used) {
+               std::uint16_t &out_iters_used, double &out_best_sse) {
   std::array<std::array<double, 2>, 3> v{};
   std::array<double, 3> f{};
   std::array<std::array<double, 3>, 3> lin{};
@@ -460,6 +489,7 @@ void nm_search(const NmCtx &c, double &m, double &sigma, QeBasisScratch &sc,
   sigma = best_sigma;
   linear = lin[ub];
   out_iters_used = iters_used;
+  out_best_sse = f[ub];
 }
 
 // ── Mingone admissible-polytope projector ────────────────────────────────
@@ -825,6 +855,7 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
   nm.m_max = k_max + 0.5 * (kspan + 0.1);
 
   std::array<double, 3> linear{};
+  double nm_best_sse = std::numeric_limits<double>::infinity();
   std::uint16_t outer_total_iters = 0;
   std::uint16_t inner_total_iters = 0;
 
@@ -863,10 +894,13 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
 
     std::uint16_t nm_iters_this_pass = 0;
     nm_search(nm, m_cur, sigma_cur, qe_scratch, linear, max_inner, tol,
-              nm_iters_this_pass);
+              nm_iters_this_pass, nm_best_sse);
     ++outer_total_iters;
     inner_total_iters =
         static_cast<std::uint16_t>(inner_total_iters + nm_iters_this_pass);
+    if (!std::isfinite(nm_best_sse)) {
+      break;  // nothing to refine: no vertex had a usable objective
+    }
 
     // Sigma-space residuals for this IRLS pass.
     for (std::size_t i = 0; i < n; ++i) {
@@ -920,6 +954,18 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
                                       : work[i].weight_w * (huber / r_norm);
       }
     }
+  }
+
+  // Reject rather than launder a rank-deficient fit. A non-finite winning
+  // objective means every (m, sigma) the simplex visited had unusable normal
+  // equations (see `svi_blls_inner`), so `linear` is the all-zero fallback, not
+  // a least-squares solution — mapping it yields a = b = rho = 0, a slice with
+  // identically zero total variance. Returning that as Ok let it displace the
+  // healthy hardcoded seed in `svi_mm_fit_slice`.
+  if (!std::isfinite(nm_best_sse)) {
+    return Err(ErrorCode::Unavailable,
+               "svi_fit_slice: no usable linear least-squares solution at any "
+               "(m, sigma) — rank-deficient observation set");
   }
 
   // Map (a, d_uv, c_uv) -> (a, b, rho).
@@ -989,6 +1035,12 @@ Result<SviParams> svi_mm_fit_slice(std::span<const FitObs> obs, double T,
   // Seed from the quasi-explicit fit on the ORIGINAL IV-domain weights (before
   // the price-domain weight overwrite below). svi_fit_slice copies the span, so
   // the caller's observations are untouched.
+  //
+  // The hardcoded values below are the FALLBACK seed and are only displaced by a
+  // seed the quasi-explicit fitter vouches for: on a rank-deficient observation
+  // set that fitter now returns Err rather than an a = b = rho = 0 slice, so the
+  // degenerate point can no longer outrank this one (the admissibility projector
+  // would otherwise pin b at its 1e-8 edge pad and start the LM on a flat smile).
   double a = 0.0;
   double b = 0.1;
   double rho = -0.20;

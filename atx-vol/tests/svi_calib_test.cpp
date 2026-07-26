@@ -366,6 +366,96 @@ TEST(SviMmCalib, DivergingStepWithNonFinitePrices_IsRejected) {
   }
 }
 
+// Plan item 1.8(b) — a rank-deficient (non positive-definite) quasi-explicit
+// normal matrix must not be laundered into an Ok(a = b = rho = 0) slice.
+//
+// `build_and_solve_normal` zeroed the free coordinates when the 3x3 Cholesky
+// reported a non-PD matrix, and `svi_blls_inner` then recomputed a perfectly
+// ordinary finite SSE at that all-zero point. Every Nelder-Mead vertex scored
+// the same way, so the degenerate point won the search and `svi_fit_slice`
+// returned Ok with a = b = rho = 0 — a slice with identically zero total
+// variance.
+//
+// Fixture: every quote on the same strike. The design rows (1, u_i, v_i) are
+// then identical, so the weighted normal matrix is rank 1 at every (m, sigma).
+[[nodiscard]] std::vector<FitObs> build_single_strike_obs(std::size_t n, double k,
+                                                          double w, double T) {
+  std::vector<FitObs> obs(n);
+  const double F = 100.0;
+  const double K = F * std::exp(k);
+  const double sig = std::sqrt(w / T);
+  const Side side = (K >= F) ? Side::Call : Side::Put;
+  for (FitObs& o : obs) {
+    o.k = k;
+    o.sigma_mkt = sig;
+    o.w_mkt = w;
+    o.K = K;
+    o.F = F;
+    o.df = 1.0;
+    o.mid = black76_price(F, K, T, sig, 1.0, side);
+    o.spread = 0.01 * o.mid;
+    o.vega = black76_value_and_vega(F, K, T, sig, 1.0, side).vega;
+    o.side = side;
+    o.weight_w = 1.0;
+    o.active_weight_w = 1.0;
+  }
+  return obs;
+}
+
+TEST(SviCalib, RankDeficientNormalMatrix_DoesNotReturnDegenerateSlice) {
+  const double T = 0.5;
+  // One usable quote: the design rows cannot determine three linear
+  // coefficients, so the weighted 3x3 normal matrix is rank 1 at every
+  // (m, sigma) the Nelder-Mead visits.
+  const std::vector<FitObs> obs = build_single_strike_obs(1, 0.05, 0.02, T);
+
+  const auto res =
+      svi_fit_slice(std::span<const FitObs>(obs), T, 100.0, calib_default_opts());
+  if (res.has_value()) {
+    const SviParams f = res.value();
+    ADD_FAILURE() << "returned Ok on a rank-deficient fit: a=" << f.a
+                  << " b=" << f.b << " rho=" << f.rho << " m=" << f.m
+                  << " sigma=" << f.sigma;
+  } else {
+    EXPECT_EQ(res.error().code(), ErrorCode::Unavailable);
+  }
+
+  // Same defect via zeroed weights: every design row drops out of the
+  // accumulation, so the normal matrix is identically zero.
+  std::vector<FitObs> zero_weight =
+      build_obs_from_svi(11, -0.20, 0.20, 0.012, 0.060, -0.30, -0.02, 0.18, T);
+  for (FitObs& o : zero_weight) {
+    o.weight_w = 0.0;
+    o.active_weight_w = 0.0;
+  }
+  const auto zres = svi_fit_slice(std::span<const FitObs>(zero_weight), T, 100.0,
+                                  calib_default_opts());
+  if (zres.has_value()) {
+    const SviParams f = zres.value();
+    ADD_FAILURE() << "returned Ok on a zero normal matrix: a=" << f.a
+                  << " b=" << f.b << " rho=" << f.rho;
+  }
+}
+
+// ...and the SVI-MM fitter, which seeds from `svi_fit_slice`, must fall back to
+// its hardcoded seed rather than start the LM from the degenerate a=b=rho=0
+// point (which the admissibility projector then pins at the b = 1e-8 edge).
+TEST(SviMmCalib, RankDeficientSeed_FallsBackToHealthySeed) {
+  const double T = 0.5;
+  const std::vector<FitObs> obs = build_single_strike_obs(1, 0.05, 0.02, T);
+
+  const auto res = svi_mm_fit_slice(std::span<const FitObs>(obs), T, 100.0,
+                                    calib_default_opts());
+  ASSERT_TRUE(res.has_value());
+  const SviParams f = res.value();
+
+  // The healthy fallback seed is b = 0.1 / rho = -0.20 / sigma = 0.10; the
+  // degenerate a=b=rho=0 seed collapses b onto the projector's 1e-8 edge pad,
+  // leaving a flat slice with no smile at all.
+  EXPECT_GT(f.b, 1.0e-4) << "b collapsed onto the admissibility edge pad";
+  EXPECT_GT(svi_w(f.a, f.b, f.rho, f.m, f.sigma, obs[0].k), 0.0);
+}
+
 TEST(SviMmCalib, FittedSlice_IsAlwaysAdmissible_EvenFromWideData) {
   // A steeper / higher-vol smile still projects into the polytope.
   const double T = 0.25;
