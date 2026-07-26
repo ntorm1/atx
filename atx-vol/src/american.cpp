@@ -661,6 +661,16 @@ template <unsigned NB>
 // per-scheme predicate directly, in both directions: one negative per conjunct that
 // can reject (nb >= 1u only guards the nb - 1u wrap and short-circuits ahead of it),
 // so a predicate that degenerated to `true` or to `false` fails to compile.
+//
+// What they do NOT pin, so nobody reads more into them than is there (REVA7TIDY):
+// they say nothing about the SWEEP below, which still returns true VACUOUSLY if
+// al_fp_specialized is ever narrowed to admit nothing. That is harmless — a scheme
+// set admitting nothing makes al_bind_geometry_static return before it writes — but
+// it is not a property these asserts establish. Nor is anything here tied to
+// al_fp_specialized still ADMITTING (7,8) / (7,16) / (12,24): all three positives are
+// on this predicate alone, so narrowing the scheme list silently loses hoists without
+// tripping any of them. `static_assert(al_fp_specialized(12, 24));` (x3) would close
+// that; left for a separate pass rather than smuggled into a wording fix.
 static_assert(al_scheme_fits_geometry_tables(7, 8));
 static_assert(al_scheme_fits_geometry_tables(7, 16));
 static_assert(al_scheme_fits_geometry_tables(12, 24));
@@ -674,7 +684,9 @@ static_assert(!al_scheme_fits_geometry_tables(10, 32));  // geo_bary_den/hit[264
 // it cannot corrupt anything and needs no assert:
 //   * nb <= kAlMaxNodes — AlBoundary's z/wbary/x/tau/y are std::array<double,
 //     kAlMaxNodes> and al_init_nodes writes b.z[i] for i < n, so a larger
-//     n_boundary is already unrepresentable; scheme_from_opts clamps to it too.
+//     n_boundary is already unrepresentable; scheme_from_opts does not even let an
+//     out-of-range n_collocation through — it IGNORES it and keeps the default 12
+//     (it does NOT clamp; the safety property is the same, the verb is not).
 //   * nq <= kAlMaxQuad — n_quad_fp is only ever one of the six Gauss-Legendre
 //     orders {8,16,24,32,48,64} that gl_tables() builds and gl_find() resolves;
 //     al_gauss_legendre rejects n > kAlMaxQuad outright, so there is no table to

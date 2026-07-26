@@ -89,13 +89,28 @@ enum class Counter : unsigned {
   //     nothing and reads 0 while being perfectly healthy.
   //   * lanes patched back to scalar INSIDE a dispatched pack (all-ineligible packs,
   //     non-finite results). The pack was still dispatched; this counts dispatches,
-  //     not lanes. There is NO counter that gives the lane view alongside it:
-  //     AmericanWrapperKnownScalarLanes is bumped ONLY inside
-  //     american_price_batch_resolved, so it does not exist at american_price_batch
-  //     at all, and at either entry it cannot see lanes the AVX2 driver patched to
-  //     scalar inside a pack it had already dispatched. The per-lane view is the
-  //     ROUTE output, not a counter: PriceBatchOutput::route[] at american_price_batch
-  //     and ResolvedAmericanPriceBatchRequest::pack_dispatch[] at the resolved entry.
+  //     not lanes. NOTHING in this codebase gives that lane view — not a counter, and
+  //     not a route output either (REVA7TIDY; an earlier revision of this block named
+  //     the route outputs as the substitute, which they are not):
+  //       - AmericanWrapperKnownScalarLanes is bumped ONLY inside
+  //         american_price_batch_resolved, so it does not exist at
+  //         american_price_batch at all, and at either entry it cannot see lanes the
+  //         AVX2 driver patched to scalar inside a pack it had already dispatched.
+  //       - PriceBatchOutput::route[] and ResolvedAmericanPriceBatchRequest::
+  //         pack_dispatch[] are per-LANE spans but report the containing PACK's
+  //         dispatch, not the driver's per-lane patch — american_batch.cpp assigns
+  //         `out.route[i] = pack_route` uniformly to every packed lane, and both
+  //         members' own docs disclaim exactly this blindness
+  //         (american_batch.hpp, ResolvedAmericanPriceBatchRequest::pack_dispatch and
+  //         PriceBatchOutput::route).
+  //       - The two are not even equivalent to each other on the NON-FINITE half:
+  //         at the resolved entry a non-finite packed lane is re-run through
+  //         scalar_lane, which sets pack_dispatch[i] = Scalar, so pack_dispatch[]
+  //         DOES catch that one case; at american_price_batch the same lane keeps
+  //         route[i] = Avx2 and only its LaneStatus becomes Unsupported.
+  //     So: the in-pack scalar patch is unobservable at either entry, and the
+  //     non-finite patch is observable only at the resolved entry, only through
+  //     pack_dispatch[]. Anything needing the true lane view has to add a counter.
   //   * AVX2 dispatched from ANYWHERE outside american_batch.cpp's two entries. The
   //     bumps live in the two CALLERS, not inside simd::american_put_boundary_batch,
   //     so every OTHER caller of that same function dispatches AVX2 packs and bumps
