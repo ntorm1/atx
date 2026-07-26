@@ -51,6 +51,8 @@
 #include "atx/vol/vol_curve.hpp"         // CurveSurface, EssviCurve
 #include "atx/vol/vol_surface.hpp"       // EssviParams
 
+#include "../src/step_mark_memo.hpp"  // detail::StepMarkMemo — L2 memo admission gate
+
 using namespace atx::vol;
 namespace fs = std::filesystem;
 
@@ -1578,6 +1580,57 @@ TEST(BacktestExec, L2SettlementMarkMemoDropsExpirySolve) {
   std::printf("[btexec] L2 settlement memo: expiry al 7->6, dup=%llu (on)/%llu (off), memo on==off\n",
               static_cast<unsigned long long>(dup(total_on)),
               static_cast<unsigned long long>(dup(total_off)));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// L2 memo admission gate (plan 1.11) — NaN is the settlement path's IN-BAND
+// "must solve" sentinel, so a NaN mark must never be admitted to the memo.
+//
+// compute_step's L2 settlement branch seeds `served[i]` with NaN, serves a memo
+// hit into it, and then treats `std::isnan(served[i])` as "this lot was a memo
+// MISS, take its mark from the batched solve frame". A memo that admitted a
+// non-finite Ok-status mark collides with that sentinel: the lot is served (so it
+// is NEVER pushed into `to_solve`) yet reads as a miss, which dereferences the
+// null `sf_ptr` when it is the only expiring lot, and desyncs `solve_ix` against
+// the solve frame when it is not.
+//
+// The marks that trip this cannot be produced through the public pricing stack —
+// every Ok-stamp in portfolio_pricer.cpp sweeps `isfinite(price)` first — so the
+// gate is driven directly through `populate_from_marks` (see step_mark_memo.hpp).
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(BacktestExec, L2MarkMemoNonFiniteOkMarkIsNotServed) {
+  const PricedSurface s = make_surface(kUid, 100.0, 100.0, kBaseNow, 0.0);
+  const PricedSurface* ptrs[] = {&s};
+  auto set = SurfaceSet::create(std::span<const PricedSurface* const>{ptrs});
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+  const std::uint64_t inst = set->find(kUid)->instance_id();
+
+  constexpr double kQNaN = std::numeric_limits<double>::quiet_NaN();
+  constexpr double kInf = std::numeric_limits<double>::infinity();
+  const std::vector<RetainedMark> marks{
+      // A finite Ok mark — the positive control: still served.
+      RetainedMark{kUid, 100.0, 0.25, Side::Call, 3.25, PriceStatus::Ok},
+      // Ok-status but non-finite: must be a memo MISS, not a served NaN/Inf.
+      RetainedMark{kUid, 95.0, 0.25, Side::Put, kQNaN, PriceStatus::Ok},
+      RetainedMark{kUid, 90.0, 0.25, Side::Put, kInf, PriceStatus::Ok},
+      RetainedMark{kUid, 85.0, 0.25, Side::Put, -kInf, PriceStatus::Ok},
+      // Already excluded by status; pinned so the new filter did not replace it.
+      RetainedMark{kUid, 105.0, 0.25, Side::Call, 4.0, PriceStatus::NumericError},
+  };
+
+  detail::StepMarkMemo memo;
+  memo.populate_from_marks(marks, *set);
+
+  const auto served = [&](double K, Side side) { return memo.find(kUid, K, 0.25, side, inst); };
+  ASSERT_TRUE(served(100.0, Side::Call).has_value())
+      << "positive control: a finite Ok mark must still be served from the memo";
+  EXPECT_TRUE(bits_equal(*served(100.0, Side::Call), 3.25));
+  EXPECT_FALSE(served(95.0, Side::Put).has_value())
+      << "a NaN Ok mark was admitted — it collides with the settlement miss sentinel "
+         "(null sf_ptr deref / desynced solve_ix)";
+  EXPECT_FALSE(served(90.0, Side::Put).has_value()) << "+Inf Ok mark admitted";
+  EXPECT_FALSE(served(85.0, Side::Put).has_value()) << "-Inf Ok mark admitted";
+  EXPECT_FALSE(served(105.0, Side::Call).has_value()) << "non-Ok mark admitted";
 }
 
 // L2 strategy-path bit-identity: over a daily-cohort strangle that settles cohorts

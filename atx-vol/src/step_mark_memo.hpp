@@ -53,6 +53,17 @@ public:
       if (m.status != PriceStatus::Ok) {
         continue; // only Ok marks are servable; a failed one must re-solve / fail closed
       }
+      // Plan 1.11: NaN is the settlement path's IN-BAND "this lot must be solved"
+      // sentinel (`served_scratch` seeds it, `!isnan(served[i])` reads it), so a
+      // non-finite mark admitted here is served AND reads back as a miss — a null
+      // solve-frame dereference when it is the only expiring lot, a desynced
+      // `solve_ix` when it is not. Admit only finite marks: a non-finite Ok mark
+      // becomes an ordinary memo MISS and falls through to the normal solve, which
+      // re-derives it under the pricer's own finite Ok-stamp. Costs nothing on the
+      // healthy path — every mark a live solve stamps Ok is already finite.
+      if (!std::isfinite(m.mark)) {
+        continue;
+      }
       const SurfaceRef s = surfaces.find(m.uid);
       const std::uint64_t inst = s != nullptr ? s->instance_id() : 0u;
       entries_[key_of(m.uid, m.K, m.T, m.side)] = Val{inst, m.mark};
