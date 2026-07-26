@@ -1236,6 +1236,82 @@ TEST(SurfaceDbAdmin, VerifyDbFlagsNonFiniteAtmProbe) {
   EXPECT_TRUE(aaa.has_value()) << (aaa ? "" : aaa.error().to_string());
 }
 
+// The OTHER half of the same branch (surface_db_admin.cpp's
+// `!std::isfinite(forward) || forward <= 0.0 || !usable_iv(iv)`): a cell whose
+// EVALUATED forward itself is non-finite, not just its smile. Post-cb7fe2e every
+// per-slice forward is validated at map time (S>0, forward[i]>0, both finite —
+// see the test above), so this cannot be reached by corrupting a column value
+// directly; it has to come from something reconstruct-equivalence does NOT
+// bound: the effective yield `qeff[i]`, required only to be FINITE
+// (priced_surface_view.cpp's semantic-validation loop), never magnitude-checked.
+//
+// `qeff` only feeds `forward` through interp_forward's EXTRAPOLATION branches
+// (`forward = S * exp((rate - qeff) * T)`, priced_surface_view.cpp). The
+// INTERIOR branch (what the test above's probe_T lands in) computes forward as
+// `interpolate_positive_log(fwd_lo, fwd_hi, alpha)` — a convex combination of
+// two already-bounded logs (term_carry.hpp) that can never overflow — so this
+// case deliberately probes OUTSIDE the fitted tenor bracket to reach the
+// exp()-based formula the interior path never uses.
+TEST(SurfaceDbAdmin, VerifyDbFlagsNonFiniteExtrapolatedForward) {
+  const AdminFixture f = make_fixture("verify_nonfinite_fwd");
+  build_healthy_db(f);
+  double front_T = 0.0;
+  edit_record(f, "2026-07-06", "BBB", [&front_T](std::span<std::byte> rec) {
+    ArchiveV2SurfaceHeader h{};
+    std::memcpy(&h, rec.data(), sizeof h);
+    ASSERT_GT(h.n_slices, 0u);
+    std::memcpy(&front_T, rec.data() + h.col_T_off, sizeof front_T);
+    // Blow up the FRONT slice's qeff. exp((rate - qeff) * T) overflows to +inf
+    // for any T bounded away from 0 once `qeff` is this large — no need to know
+    // the fitted rate/qeff/T values, they are swamped either way.
+    const double bogus_qeff = -1.0e10;
+    std::memcpy(rec.data() + h.col_qeff_off, &bogus_qeff, sizeof bogus_qeff);
+    repair_record_crc(rec);
+  });
+  const SurfaceDb db = open_db(f);
+
+  // BYTE-VALID and MAPS cleanly — qeff's magnitude is invisible to both the
+  // checksum and the reconstruct-equivalence parse check.
+  const auto archive = db.open_partition("2026-07-06");
+  ASSERT_TRUE(archive.has_value()) << (archive ? "" : archive.error().to_string());
+  const Status crc = archive->validate_symbol("BBB");
+  EXPECT_TRUE(crc.has_value()) << (crc ? "" : crc.error().to_string());
+  const auto mapped = db.map_surface("2026-07-06", "BBB");
+  ASSERT_TRUE(mapped.has_value()) << (mapped ? "" : mapped.error().to_string());
+
+  // Probing EXACTLY the front slice's own T takes interp_forward's exact-match
+  // return (the stored, untouched forward column — no exp() involved) and stays
+  // healthy...
+  const double fwd_at_node = mapped->view.forward_at(front_T);
+  EXPECT_TRUE(std::isfinite(fwd_at_node) && fwd_at_node > 0.0) << "fwd_at_node=" << fwd_at_node;
+  // ...but anything SHORTER than the front slice extrapolates through the
+  // corrupted qeff and overflows.
+  const double probe_T = front_T / 2.0;
+  const double fwd = mapped->view.forward_at(probe_T);
+  EXPECT_FALSE(std::isfinite(fwd) && fwd > 0.0) << "fwd=" << fwd;
+
+  DbVerifySpec spec;
+  spec.probe_T = probe_T; // steer verify_db's own ATM probe into the same extrapolation
+  const auto rep = verify_db(db, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_FALSE(rep->ok());
+  EXPECT_EQ(rep->cells_checked, std::size_t{9});
+  EXPECT_EQ(rep->cells_ok, std::size_t{8});
+  EXPECT_EQ(rep->cells_unmappable, std::size_t{0});
+  EXPECT_EQ(rep->cells_non_finite, std::size_t{1});
+  EXPECT_EQ(rep->cells_checksum, std::size_t{0}); // the bytes are fine; the FORWARD is not
+  ASSERT_EQ(rep->failures.size(), std::size_t{1});
+  EXPECT_EQ(rep->failures.front().key, "2026-07-06");
+  EXPECT_EQ(rep->failures.front().symbol, "BBB");
+  EXPECT_EQ(rep->failures.front().kind, DbCellFailure::NonFinite);
+  EXPECT_FALSE(rep->failures.front().detail.empty());
+
+  // query_surface agrees: it must not print a number for what verify_db rejects.
+  const auto q = query_surface(db, "2026-07-06", "BBB", 100.0, probe_T);
+  ASSERT_FALSE(q.has_value()) << "query_surface must reject what verify_db rejects";
+  EXPECT_EQ(q.error().code(), ErrorCode::Internal);
+}
+
 // A genuinely FRESH database (no partitions at all) verifies vacuously ok — the
 // one zero-cell shape that stays green. A verifier that failed on "there is
 // nothing here yet" would block a newly created root, and the operator's real
