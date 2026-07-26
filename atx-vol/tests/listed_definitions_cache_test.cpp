@@ -40,6 +40,7 @@
 #if defined(_WIN32)
 // clang-format off
 #include <windows.h> // GetCurrentProcessId — scratch dirs must be per-process
+#include <psapi.h>   // GetProcessMemoryInfo / EmptyWorkingSet (T7 fix round 1, I5 peak-RSS harness)
 // clang-format on
 #else
 #include <unistd.h> // getpid
@@ -57,6 +58,31 @@ namespace fs = std::filesystem;
   return static_cast<unsigned long>(::getpid());
 #endif
 }
+
+// ── Peak resident-memory measurement (T7 fix round 1, I5) ──────────────────
+//
+// `EmptyWorkingSet` trims the calling process's resident set to (near) zero;
+// Windows then re-establishes `PeakWorkingSetSize` from whatever residency
+// accumulates AFTER that trim. Calling it immediately before a step and
+// reading `PeakWorkingSetSize` immediately after therefore gives an ISOLATED
+// high-water mark for that step alone, not a process-lifetime maximum
+// contaminated by everything measured earlier in the same test binary. Both
+// calls resolve against kernel32 (PSAPI_VERSION 2 on this SDK), but the test
+// target links `psapi` explicitly so this does not depend on that macro.
+#if defined(_WIN32)
+[[nodiscard]] std::uint64_t peak_working_set_bytes() noexcept {
+  PROCESS_MEMORY_COUNTERS pmc{};
+  pmc.cb = sizeof(pmc);
+  if (::GetProcessMemoryInfo(::GetCurrentProcess(), &pmc, sizeof(pmc)) != 0) {
+    return static_cast<std::uint64_t>(pmc.PeakWorkingSetSize);
+  }
+  return 0u;
+}
+void trim_working_set_and_reset_peak() noexcept { ::EmptyWorkingSet(::GetCurrentProcess()); }
+#else
+[[nodiscard]] std::uint64_t peak_working_set_bytes() noexcept { return 0u; }
+void trim_working_set_and_reset_peak() noexcept {}
+#endif
 
 // ── Fixture ─────────────────────────────────────────────────────────────────
 
@@ -991,14 +1017,38 @@ TEST(ListedDefinitionsCache, CachedSeamChargesADefinitionsCachePhaseWithHitMissC
   ASSERT_TRUE(no_timer);
 }
 
-// ── Measurement harness (NOT a gate) ────────────────────────────────────────
+// ── Measurement harnesses (NOT gates) ───────────────────────────────────────
 //
-// Skipped unless ATX_T7_DEFINITIONS_TSV names a real definitions.tsv. It exists
-// so the load path can be measured on a PRODUCTION-SIZED file — the committed
-// fixtures are five rows and say nothing about the economics of the format.
-// It asserts correctness (the cached table must equal the parsed one) but its
-// output, not its verdict, is the point.
-TEST(ListedDefinitionsCache, MeasureLoadPathOnARealDefinitionsFile) {
+// All three below are skipped unless ATX_T7_DEFINITIONS_TSV names a real
+// definitions.tsv — the committed fixtures are five rows and say nothing
+// about the format's economics. Each asserts basic correctness but its
+// PRINTED output, not its verdict, is the point.
+//
+// This section REPLACES the retired `MeasureLoadPathOnARealDefinitionsFile`,
+// whose `net_ratio = parse_ms / (key_ms + read_ms)` put the ~730 MB source
+// slurp in the numerator only (`parse_ms` = `read_listed_definitions_file`,
+// slurp + parse) while the denominator's `key_ms`/`read_ms` ran over bytes
+// ALREADY held resident — excluding the slurp the seam can never skip, since
+// the key is content-derived and a hit must read the source before the cache
+// can be consulted (Wave E T7 review, Critical C1). That test also computed
+// `parse_ms / (key_ms + read_ms - fingerprint_ms)`, a ratio of two
+// independently noisy small terms after subtraction; the reviewer's own rep 2
+// printed 28.028x from that exact formula (review I4). Both defects are FIXED
+// HERE by construction, not patched: the estimator is deleted, and every
+// ratio below is timed end-to-end through the public seam a caller actually
+// invokes, with the slurp inside every timed span that can reach it.
+//
+// Measurement protocol applied to all three tests (sprint fix-round 1, I3/I4):
+//   * variants are INTERLEAVED within each rep — never all-of-A then all-of-B;
+//   * a DISCARDED warm-up rep runs first and its numbers are PRINTED, not
+//     hidden (I3 found a discarded, most-favourable rep folded silently into
+//     a reported interval);
+//   * sign counts and a distribution-free (min, max) interval are reported
+//     over the RECORDED reps only;
+//   * a +/-5% noise floor is applied SYMMETRICALLY to every ratio, tagging it
+//     "no measurable difference" regardless of which direction it favours.
+
+[[nodiscard]] std::string definitions_tsv_path_from_env() {
   std::string path;
 #if defined(_WIN32)
   char *raw = nullptr;
@@ -1012,8 +1062,27 @@ TEST(ListedDefinitionsCache, MeasureLoadPathOnARealDefinitionsFile) {
     path.assign(raw);
   }
 #endif
+  return path;
+}
+
+// C1-corrected seam measurement. Measures the THREE quantities the fix-round
+// worklist specifies, end to end, through the public functions a caller
+// actually calls — not through internals timed in isolation:
+//
+//   t_direct = read_listed_definitions_file(path)                 (today's cost: slurp + parse)
+//   t_hit    = read_listed_definitions_cached(path, published_dir) (slurp + key hash + cache read)
+//   t_miss   = read_listed_definitions_cached(path, EMPTY dir)      (slurp + key hash + parse + publish)
+//
+// Both functions call `detail::read_whole_file` (item 1's `fread`), so neither
+// side is credited an I/O win the other does not also get. Reported:
+// `seam_ratio = t_direct / t_hit` and `cold_penalty = t_miss / t_direct`. Both
+// are ratios of two multi-second, page-cache-warm quantities — no term here
+// is small enough for the ratio to be noise-dominated the way the retired
+// subtraction-based estimator was.
+TEST(ListedDefinitionsCache, MeasureSeamEndToEndDirectHitAndMissOnARealDefinitionsFile) {
+  const std::string path = definitions_tsv_path_from_env();
   if (path.empty()) {
-    GTEST_SKIP() << "set ATX_T7_DEFINITIONS_TSV to a definitions.tsv to measure the load path";
+    GTEST_SKIP() << "set ATX_T7_DEFINITIONS_TSV to a definitions.tsv to measure the seam";
   }
   std::error_code ec;
   ASSERT_TRUE(fs::is_regular_file(fs::path{path}, ec)) << path << " is not a file";
@@ -1023,76 +1092,374 @@ TEST(ListedDefinitionsCache, MeasureLoadPathOnARealDefinitionsFile) {
     return std::chrono::duration<double, std::milli>(b - a).count();
   };
 
-  // 1. Today's path: whole-file read + parse.
-  const auto t0 = Clock::now();
-  auto parsed = read_listed_definitions_file(path);
-  const auto t1 = Clock::now();
-  ASSERT_TRUE(parsed) << (parsed ? std::string{} : parsed.error().to_string());
-  ASSERT_GT(parsed->definitions().size(), 0u);
+  const fs::path hit_dir = scratch_dir("seam_hit");
+  const fs::path miss_dir = scratch_dir("seam_miss");
 
-  // 2. The key's own price over the same bytes, held resident as the parse path
-  //    already holds them.
-  std::string bytes;
-  {
-    std::ifstream in(fs::path{path}, std::ios::binary);
-    ASSERT_TRUE(in);
-    bytes.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  // Untimed setup: publish `hit_dir` ONCE, before any measured rep, so every
+  // `t_hit` measurement below reads a cache that is genuinely already
+  // published — never the call that publishes it. This number is printed for
+  // transparency even though it is not one of the three measured quantities.
+  const auto setup_t0 = Clock::now();
+  auto setup = read_listed_definitions_cached(path, hit_dir.string());
+  const auto setup_t1 = Clock::now();
+  ASSERT_TRUE(setup) << (setup ? std::string{} : setup.error().to_string());
+  const std::size_t total_rows = setup->definitions().size();
+  ASSERT_GT(total_rows, 0u);
+
+  constexpr int kRecordedReps = 3;
+  constexpr int kTotalReps = kRecordedReps + 1; // rep 0 is the discarded warm-up
+  std::vector<double> t_direct;
+  std::vector<double> t_hit;
+  std::vector<double> t_miss;
+
+  std::printf("\n[T7 seam] source                                = %s\n", path.c_str());
+  std::printf("[T7 seam] rows                                   = %zu\n", total_rows);
+  std::printf("[T7 seam] hit_dir prepublish (untimed setup) ms  = %.3f\n", ms(setup_t0, setup_t1));
+
+  for (int rep = 0; rep < kTotalReps; ++rep) {
+    // Rotate the order every rep so no variant is systematically first or
+    // last within the sequence of reps (I3/I4: interleave, never
+    // all-of-A-then-all-of-B).
+    const int rot = rep % 3;
+    const char *order_label = rot == 0 ? "direct,hit,miss" : rot == 1 ? "hit,miss,direct" : "miss,direct,hit";
+
+    double d_ms = 0.0;
+    double h_ms = 0.0;
+    double m_ms = 0.0;
+    for (int slot = 0; slot < 3; ++slot) {
+      const int which = (rot + slot) % 3; // 0=direct 1=hit 2=miss
+      if (which == 0) {
+        const auto a = Clock::now();
+        auto r = read_listed_definitions_file(path);
+        const auto b = Clock::now();
+        ASSERT_TRUE(r) << (r ? std::string{} : r.error().to_string());
+        ASSERT_EQ(r->definitions().size(), total_rows);
+        d_ms = ms(a, b);
+      } else if (which == 1) {
+        const auto a = Clock::now();
+        auto r = read_listed_definitions_cached(path, hit_dir.string());
+        const auto b = Clock::now();
+        ASSERT_TRUE(r) << (r ? std::string{} : r.error().to_string());
+        ASSERT_EQ(r->definitions().size(), total_rows);
+        h_ms = ms(a, b);
+      } else {
+        // Force a MISS: wipe miss_dir's published cache immediately before
+        // the timed call, so the timed call always sees an EMPTY cache dir
+        // regardless of what a previous rep left behind. The wipe itself is
+        // untimed — it is not part of the miss cost being measured.
+        std::error_code rm_ec;
+        fs::remove_all(miss_dir, rm_ec);
+        fs::create_directories(miss_dir, rm_ec);
+        const auto a = Clock::now();
+        auto r = read_listed_definitions_cached(path, miss_dir.string());
+        const auto b = Clock::now();
+        ASSERT_TRUE(r) << (r ? std::string{} : r.error().to_string());
+        ASSERT_EQ(r->definitions().size(), total_rows);
+        m_ms = ms(a, b);
+      }
+    }
+
+    const char *tag = rep == 0 ? "DISCARDED warm-up" : "recorded";
+    std::printf("[T7 seam] rep%d (%-17s) order=%-15s  t_direct=%9.3f  t_hit=%9.3f  t_miss=%9.3f\n", rep,
+               tag, order_label, d_ms, h_ms, m_ms);
+    if (rep > 0) {
+      t_direct.push_back(d_ms);
+      t_hit.push_back(h_ms);
+      t_miss.push_back(m_ms);
+    }
   }
-  const auto t2 = Clock::now();
-  const ListedDefinitionsCacheKey key = definitions_cache_key(bytes);
-  const auto t3 = Clock::now();
-
-  // 3. fingerprint() in isolation: LAZY, so this call is what pays for the
-  //    canonical serialization the writer stamps and the reader verifies.
-  const auto t4 = Clock::now();
-  const std::uint64_t fp = parsed->fingerprint();
-  const auto t5 = Clock::now();
-  EXPECT_NE(fp, 0u);
-
-  const fs::path dir = scratch_dir("measure");
-  const fs::path file = dir / definitions_cache_filename(key);
-
-  // 4. Write.
-  const auto t6 = Clock::now();
-  const Status wrote = write_definitions_cache(file.string(), *parsed, key);
-  const auto t7 = Clock::now();
-  ASSERT_TRUE(wrote) << wrote.error().to_string();
-
-  // 5. Read back (cold-ish first, then a warmed repeat).
-  const auto t8 = Clock::now();
-  auto loaded1 = read_definitions_cache(file.string(), key);
-  const auto t9 = Clock::now();
-  ASSERT_TRUE(loaded1) << (loaded1 ? std::string{} : loaded1.error().to_string());
-  const auto t10 = Clock::now();
-  auto loaded2 = read_definitions_cache(file.string(), key);
-  const auto t11 = Clock::now();
-  ASSERT_TRUE(loaded2) << (loaded2 ? std::string{} : loaded2.error().to_string());
-
-  ASSERT_EQ(loaded2->definitions().size(), parsed->definitions().size());
-  EXPECT_EQ(loaded2->fingerprint(), fp);
-
-  const double parse_ms = ms(t0, t1);
-  const double key_ms = ms(t2, t3);
-  const double fingerprint_ms = ms(t4, t5);
-  const double write_ms = ms(t6, t7);
-  const double read_cold_ms = ms(t8, t9);
-  const double read_warm_ms = ms(t10, t11);
-  std::printf("\n[T7 measure] source            = %s\n", path.c_str());
-  std::printf("[T7 measure] source_bytes      = %zu\n", bytes.size());
-  std::printf("[T7 measure] rows              = %zu\n", parsed->definitions().size());
-  std::printf("[T7 measure] cache_bytes       = %llu\n",
-              static_cast<unsigned long long>(fs::file_size(file, ec)));
-  std::printf("[T7 measure] parse_ms          = %.3f\n", parse_ms);
-  std::printf("[T7 measure] key_hash_ms       = %.3f\n", key_ms);
-  std::printf("[T7 measure] fingerprint_ms    = %.3f\n", fingerprint_ms);
-  std::printf("[T7 measure] cache_write_ms    = %.3f\n", write_ms);
-  std::printf("[T7 measure] cache_read_ms(1)  = %.3f\n", read_cold_ms);
-  std::printf("[T7 measure] cache_read_ms(2)  = %.3f\n", read_warm_ms);
-  std::printf("[T7 measure] net_ratio(1)      = %.3fx\n", parse_ms / (key_ms + read_cold_ms));
-  std::printf("[T7 measure] net_ratio(2)      = %.3fx\n", parse_ms / (key_ms + read_warm_ms));
-  std::printf("[T7 measure] net_ratio_no_fp(2)= %.3fx\n",
-              parse_ms / (key_ms + read_warm_ms - fingerprint_ms));
   std::fflush(stdout);
+
+  ASSERT_EQ(t_direct.size(), static_cast<std::size_t>(kRecordedReps));
+
+  // +/-5% applied SYMMETRICALLY: Step 1 of the original report found its own
+  // within-run ratio agreeing to within 3.5 percentage points across reps it
+  // called real, so a difference smaller than that either side of 1.0x is
+  // flagged as noise for BOTH seam_ratio and cold_penalty — not just
+  // whichever direction would flatter the format.
+  constexpr double kNoiseFloor = 0.05;
+  const auto floor_tag = [&](double ratio) {
+    return (std::fabs(ratio - 1.0) < kNoiseFloor) ? " [within +/-5% noise floor]" : "";
+  };
+
+  std::vector<double> seam_ratio;
+  std::vector<double> cold_penalty;
+  int seam_sign_above_one = 0;
+  int cold_sign_above_one = 0;
+  for (int i = 0; i < kRecordedReps; ++i) {
+    const double sr = t_direct[static_cast<std::size_t>(i)] / t_hit[static_cast<std::size_t>(i)];
+    const double cp = t_miss[static_cast<std::size_t>(i)] / t_direct[static_cast<std::size_t>(i)];
+    seam_ratio.push_back(sr);
+    cold_penalty.push_back(cp);
+    if (sr > 1.0) {
+      ++seam_sign_above_one;
+    }
+    if (cp > 1.0) {
+      ++cold_sign_above_one;
+    }
+    std::printf(
+        "[T7 seam] rep%d  seam_ratio(t_direct/t_hit)=%.3fx%s   cold_penalty(t_miss/t_direct)=%.3fx%s\n",
+        i + 1, sr, floor_tag(sr), cp, floor_tag(cp));
+  }
+  const auto [sr_min_it, sr_max_it] = std::minmax_element(seam_ratio.begin(), seam_ratio.end());
+  const auto [cp_min_it, cp_max_it] = std::minmax_element(cold_penalty.begin(), cold_penalty.end());
+  std::printf("[T7 seam] seam_ratio   sign %d/%d above 1.0x   distribution-free interval [%.3fx, %.3fx]\n",
+             seam_sign_above_one, kRecordedReps, *sr_min_it, *sr_max_it);
+  std::printf(
+      "[T7 seam] cold_penalty sign %d/%d above 1.0x   distribution-free interval [%.3fx, %.3fx]\n",
+      cold_sign_above_one, kRecordedReps, *cp_min_it, *cp_max_it);
+  std::fflush(stdout);
+}
+
+// Item 3, "separately": what `fread` alone is worth, measured IN-PROCESS and
+// INTERLEAVED against the `istreambuf_iterator` form it replaced — same file,
+// both variants warm. This is the alternative P1 competes against (Wave E T7
+// review Concern 3 / Critical C1): a one-function change with no new on-disk
+// format and no stale-serve surface.
+TEST(ListedDefinitionsCache, MeasureFreadVsIteratorThroughputOnARealDefinitionsFile) {
+  const std::string path = definitions_tsv_path_from_env();
+  if (path.empty()) {
+    GTEST_SKIP() << "set ATX_T7_DEFINITIONS_TSV to a definitions.tsv to measure fread vs iterator";
+  }
+  std::error_code ec;
+  ASSERT_TRUE(fs::is_regular_file(fs::path{path}, ec)) << path << " is not a file";
+
+  using Clock = std::chrono::steady_clock;
+  const auto ms = [](Clock::time_point a, Clock::time_point b) {
+    return std::chrono::duration<double, std::milli>(b - a).count();
+  };
+  const auto mb_per_s = [](std::size_t bytes, double milliseconds) {
+    return milliseconds > 0.0 ? (static_cast<double>(bytes) / (1024.0 * 1024.0)) / (milliseconds / 1000.0)
+                              : 0.0;
+  };
+
+  constexpr int kRecordedReps = 3;
+  constexpr int kTotalReps = kRecordedReps + 1;
+  std::vector<double> t_fread;
+  std::vector<double> t_iter;
+  std::size_t reference_size = 0;
+
+  for (int rep = 0; rep < kTotalReps; ++rep) {
+    const bool fread_first = (rep % 2) == 0; // alternate order every rep
+    double fr_ms = 0.0;
+    double it_ms = 0.0;
+    std::size_t fr_bytes = 0;
+    std::size_t it_bytes = 0;
+
+    const auto do_fread = [&] {
+      std::string out;
+      const auto a = Clock::now();
+      const detail::FileReadStatus st = detail::read_whole_file(path, out);
+      const auto b = Clock::now();
+      ASSERT_EQ(st, detail::FileReadStatus::Ok);
+      fr_ms = ms(a, b);
+      fr_bytes = out.size();
+    };
+    const auto do_iter = [&] {
+      const auto a = Clock::now();
+      std::ifstream in(fs::path{path}, std::ios::binary);
+      ASSERT_TRUE(in);
+      const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      const auto b = Clock::now();
+      it_ms = ms(a, b);
+      it_bytes = bytes.size();
+    };
+
+    if (fread_first) {
+      do_fread();
+      do_iter();
+    } else {
+      do_iter();
+      do_fread();
+    }
+
+    ASSERT_EQ(fr_bytes, it_bytes) << "the two slurps disagree on size";
+    if (reference_size == 0u) {
+      reference_size = fr_bytes;
+    } else {
+      ASSERT_EQ(fr_bytes, reference_size) << "the source file changed size mid-measurement";
+    }
+
+    const char *tag = rep == 0 ? "DISCARDED warm-up" : "recorded";
+    std::printf(
+        "[T7 throughput] rep%d (%-17s) order=%-10s  fread_ms=%8.3f (%7.1f MB/s)  iter_ms=%8.3f (%7.1f MB/s)\n",
+        rep, tag, fread_first ? "fread,iter" : "iter,fread", fr_ms, mb_per_s(fr_bytes, fr_ms), it_ms,
+        mb_per_s(it_bytes, it_ms));
+    if (rep > 0) {
+      t_fread.push_back(fr_ms);
+      t_iter.push_back(it_ms);
+    }
+  }
+  std::fflush(stdout);
+
+  ASSERT_EQ(t_fread.size(), static_cast<std::size_t>(kRecordedReps));
+  int fread_faster_count = 0;
+  std::vector<double> ratio; // iter_ms / fread_ms — "fread is worth Nx"
+  for (int i = 0; i < kRecordedReps; ++i) {
+    const double r = t_iter[static_cast<std::size_t>(i)] / t_fread[static_cast<std::size_t>(i)];
+    ratio.push_back(r);
+    if (t_fread[static_cast<std::size_t>(i)] < t_iter[static_cast<std::size_t>(i)]) {
+      ++fread_faster_count;
+    }
+  }
+  const auto [r_min_it, r_max_it] = std::minmax_element(ratio.begin(), ratio.end());
+  std::printf("[T7 throughput] fread-faster sign %d/%d   (iter_ms/fread_ms) distribution-free interval "
+             "[%.2fx, %.2fx]\n",
+             fread_faster_count, kRecordedReps, *r_min_it, *r_max_it);
+  std::fflush(stdout);
+}
+
+// I5: write, and a fingerprint-VERIFIED read, each force the full
+// `serialize_listed_definitions` transient Wave E T4 deliberately made lazy.
+// `ca74f68` made GUARD 4 opt-in and OFF by default in Release, which removed
+// the READ-side instance of this transient from the default path (confirmed
+// below). The WRITE side is UNCONDITIONAL: `write_definitions_cache` always
+// stamps a real `table.fingerprint()`, never a placeholder, because a header
+// that did not carry a correct one would make GUARD 4 permanently unusable on
+// that specific blob even for a caller who later turns the check on — the
+// format's opt-in design depends on every blob being ready to be verified.
+// That is a correctness requirement, not an oversight, so this harness does
+// not attempt to remove the transient; it measures and reports the peak, per
+// the fix-round worklist's explicit fallback ("say so plainly and report the
+// measured peak").
+//
+// Fixed (NOT per-process) scratch path, deliberately NOT `scratch_dir()`:
+// that helper suffixes the path with the calling PID specifically so
+// concurrent runs cannot collide (review M2), but the three tests below need
+// the OPPOSITE property — a cache PUBLISHED by one process invocation must be
+// found by a SEPARATE, later invocation. That is required because of what a
+// first attempt at this harness found empirically: Windows' `PeakWorkingSetSize`
+// is a PROCESS-LIFETIME high-water mark, and `EmptyWorkingSet` trims CURRENT
+// residency but does not reset it. Measuring three scenarios back to back in
+// one process (write, then read/Off, then read/On) printed
+// `before=after=3.955 GB, delta=0.000 GB` for ALL THREE, because the first
+// scenario alone had already saturated the process's lifetime peak and
+// nothing later in that same process needed more. That is reported in the fix
+// round as raw evidence, not silently discarded, and is WHY each of the three
+// tests below must be run ALONE, in its OWN process, in the stated order.
+fs::path t7_transient_shared_cache_dir() {
+  return fs::temp_directory_path() / "atx_t7_i5_transient_shared_cache";
+}
+
+// I5, scenario 1/3 — the WRITE side, through the REAL seam (a genuine MISS,
+// exactly the path production takes on a sweep's first point). The review
+// estimated seam peak ~2.8 GB on this 696 MB input by summing concurrently-
+// resident buffers (source contents, parsed rows, the ~300 MB image, the
+// fingerprint's ~730 MB serialize transient); this measures the process's
+// actual peak WORKING SET directly. MUST be run ALONE
+// (`--gtest_filter=ListedDefinitionsCache.MeasureSeamMissPeakTransient`) and
+// FIRST of the three — it both measures the write-side peak and leaves a
+// published cache on disk for the two HIT scenarios below.
+TEST(ListedDefinitionsCache, MeasureSeamMissPeakTransient) {
+  const std::string path = definitions_tsv_path_from_env();
+  if (path.empty()) {
+    GTEST_SKIP() << "set ATX_T7_DEFINITIONS_TSV to a definitions.tsv to measure the write-side transient";
+  }
+#if !defined(_WIN32)
+  GTEST_SKIP() << "peak-working-set measurement is implemented for Windows only in this harness";
+#else
+  std::error_code ec;
+  ASSERT_TRUE(fs::is_regular_file(fs::path{path}, ec)) << path << " is not a file";
+  const fs::path dir = t7_transient_shared_cache_dir();
+  fs::remove_all(dir, ec);
+
+  trim_working_set_and_reset_peak();
+  const std::uint64_t before = peak_working_set_bytes();
+  PhaseTimer timer{"definitions_cache"};
+  auto miss =
+      read_listed_definitions_cached(path, dir.string(), kDefinitionsCacheFingerprintDefault, &timer);
+  const std::uint64_t after = peak_working_set_bytes();
+  ASSERT_TRUE(miss) << (miss ? std::string{} : miss.error().to_string());
+  ASSERT_EQ(timer.phases().front().count, 0u) << "precondition broken: this call was not a MISS";
+
+  const auto gb = [](std::uint64_t bytes) {
+    return static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
+  };
+  std::printf("\n[T7 transient] MISS (write side, real seam)  rows=%zu\n", miss->definitions().size());
+  std::printf("[T7 transient] peak_working_set: before=%.3f GB  after=%.3f GB  delta=%.3f GB\n", gb(before),
+             gb(after), gb(after - before));
+  std::fflush(stdout);
+#endif
+}
+
+// I5, scenario 2/3 — a HIT with the fingerprint check OFF (this build's
+// default, per `ca74f68`). Requires `MeasureSeamMissPeakTransient` to have
+// already published the cache this reads (skips with a clear message
+// otherwise) — run ALONE, in its OWN process, SECOND.
+TEST(ListedDefinitionsCache, MeasureSeamHitPeakTransientCheckOff) {
+  const std::string path = definitions_tsv_path_from_env();
+  if (path.empty()) {
+    GTEST_SKIP() << "set ATX_T7_DEFINITIONS_TSV to a definitions.tsv to measure the read-side transient";
+  }
+#if !defined(_WIN32)
+  GTEST_SKIP() << "peak-working-set measurement is implemented for Windows only in this harness";
+#else
+  const fs::path dir = t7_transient_shared_cache_dir();
+  std::error_code ec;
+  if (!fs::is_directory(dir, ec) || fs::is_empty(dir, ec)) {
+    GTEST_SKIP() << "run MeasureSeamMissPeakTransient first (alone) to publish " << dir.string();
+  }
+  ASSERT_TRUE(fs::is_regular_file(fs::path{path}, ec)) << path << " is not a file";
+
+  trim_working_set_and_reset_peak();
+  const std::uint64_t before = peak_working_set_bytes();
+  PhaseTimer timer{"definitions_cache"};
+  auto hit =
+      read_listed_definitions_cached(path, dir.string(), DefinitionsCacheFingerprintCheck::Off, &timer);
+  const std::uint64_t after = peak_working_set_bytes();
+  ASSERT_TRUE(hit) << (hit ? std::string{} : hit.error().to_string());
+  ASSERT_EQ(timer.phases().front().count, 1u)
+      << "precondition broken: this call was not a HIT — run MeasureSeamMissPeakTransient first";
+
+  const auto gb = [](std::uint64_t bytes) {
+    return static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
+  };
+  std::printf("\n[T7 transient] HIT check=Off (this build's default)  rows=%zu\n",
+             hit->definitions().size());
+  std::printf("[T7 transient] peak_working_set: before=%.3f GB  after=%.3f GB  delta=%.3f GB\n", gb(before),
+             gb(after), gb(after - before));
+  std::fflush(stdout);
+#endif
+}
+
+// I5, scenario 3/3 — a HIT with the fingerprint check explicitly ON, i.e.
+// what the read side costs if `ATX_DEFS_CACHE_VERIFY_FINGERPRINT` (or an
+// explicit `check = On`) is used. Same precondition as scenario 2 — run
+// ALONE, in its OWN process, AFTER scenario 1 (order relative to scenario 2
+// does not matter).
+TEST(ListedDefinitionsCache, MeasureSeamHitPeakTransientCheckOn) {
+  const std::string path = definitions_tsv_path_from_env();
+  if (path.empty()) {
+    GTEST_SKIP() << "set ATX_T7_DEFINITIONS_TSV to a definitions.tsv to measure the read-side transient";
+  }
+#if !defined(_WIN32)
+  GTEST_SKIP() << "peak-working-set measurement is implemented for Windows only in this harness";
+#else
+  const fs::path dir = t7_transient_shared_cache_dir();
+  std::error_code ec;
+  if (!fs::is_directory(dir, ec) || fs::is_empty(dir, ec)) {
+    GTEST_SKIP() << "run MeasureSeamMissPeakTransient first (alone) to publish " << dir.string();
+  }
+  ASSERT_TRUE(fs::is_regular_file(fs::path{path}, ec)) << path << " is not a file";
+
+  trim_working_set_and_reset_peak();
+  const std::uint64_t before = peak_working_set_bytes();
+  PhaseTimer timer{"definitions_cache"};
+  auto hit =
+      read_listed_definitions_cached(path, dir.string(), DefinitionsCacheFingerprintCheck::On, &timer);
+  const std::uint64_t after = peak_working_set_bytes();
+  ASSERT_TRUE(hit) << (hit ? std::string{} : hit.error().to_string());
+  ASSERT_EQ(timer.phases().front().count, 1u)
+      << "precondition broken: this call was not a HIT — run MeasureSeamMissPeakTransient first";
+
+  const auto gb = [](std::uint64_t bytes) {
+    return static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
+  };
+  std::printf("\n[T7 transient] HIT check=On (fingerprint-verified)  rows=%zu\n", hit->definitions().size());
+  std::printf("[T7 transient] peak_working_set: before=%.3f GB  after=%.3f GB  delta=%.3f GB\n", gb(before),
+             gb(after), gb(after - before));
+  std::fflush(stdout);
+#endif
 }
 
 } // namespace

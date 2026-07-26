@@ -163,6 +163,14 @@ target_link_libraries(atx-vol-tests
         atx_warnings
 )
 
+# Wave E T7 fix round 1, I5: listed_definitions_cache_test.cpp's peak-RSS
+# harness calls GetProcessMemoryInfo/EmptyWorkingSet (psapi.h). Linked
+# explicitly rather than relying on the PSAPI_VERSION=2 kernel32-forwarding
+# macro trick, so this does not depend on that SDK default.
+if(WIN32)
+    target_link_libraries(atx-vol-tests PRIVATE psapi)
+endif()
+
 # F2 quarantine: unlocks atx/vol/calib_pool.hpp (test-only guard) for both the
 # relocated ../src/calib_pool.cpp TU and calib_pool_test.cpp. Any production TU
 # that includes the header without this define is a hard compile error, so the
