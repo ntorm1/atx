@@ -22,6 +22,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"
 #include "atx/vol/data.hpp"
+#include "atx/vol/detail/archive_util.hpp" // read_whole_file (the shared slurp)
 
 namespace atx::vol {
 namespace {
@@ -392,13 +393,21 @@ Status write_listed_definitions_file(std::string_view path, const ListedDefiniti
 }
 
 Result<ListedDefinitionTable> read_listed_definitions_file(std::string_view path) {
-  std::ifstream stream(std::filesystem::path{path}, std::ios::binary);
-  if (!stream) {
+  // The slurp used to be `std::string(istreambuf_iterator, istreambuf_iterator)`
+  // over a `std::ios::binary` ifstream, duplicated verbatim in
+  // read_listed_definitions_cached. It is now ONE `fread` in
+  // detail::read_whole_file — byte-identical (the stream was already binary) and
+  // measurably faster: the iterator form ran at ~197 MB/s and was 3.6-3.9 s of a
+  // 7.1-9.8 s "parse" on the 730 MB production definitions file. The error
+  // strings are unchanged; Wave E Task 4's tests pin them exactly.
+  std::string contents;
+  switch (detail::read_whole_file(path, contents)) {
+  case detail::FileReadStatus::NotFound:
     return Err(ErrorCode::NotFound, "listed definitions: file not found");
-  }
-  std::string contents((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
-  if (!stream.good() && !stream.eof()) {
+  case detail::FileReadStatus::IoError:
     return Err(ErrorCode::IoError, "listed definitions: read failed");
+  case detail::FileReadStatus::Ok:
+    break;
   }
   return parse_listed_definitions(contents);
 }

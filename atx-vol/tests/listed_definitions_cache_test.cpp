@@ -21,6 +21,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -302,6 +303,130 @@ TEST(ListedDefinitionsCache, AbiFoldMovesWhenTheEncodedShapeMoves) {
   const std::uint64_t perturbed = atx::core::hash_bytes(
       static_cast<const void *>(perturbed_shape), sizeof perturbed_shape);
   EXPECT_NE(live, perturbed) << "abi_fold does not depend on the field offsets it claims to pin";
+}
+
+// ── detail::read_whole_file — the shared slurp (review I2) ──────────────────
+//
+// `read_listed_definitions_file` and `read_listed_definitions_cached` carried
+// the same eight-line `istreambuf_iterator` slurp verbatim; both now call this
+// one `fread`-based helper. The two properties that must hold for that swap to
+// be safe are that the BYTES are identical to what the iterator form produced,
+// and that the three failure statuses map onto the same caller messages the
+// ifstream form produced. Both are gated here directly, on the helper, rather
+// than only through its two callers.
+
+// GATE (the byte-identity gate — this is the one that matters). The comparison
+// target is an INDEPENDENT `istreambuf_iterator` slurp of the same file taken in
+// this same test, i.e. literally the code path `read_whole_file` replaced, so
+// the assertion is "the new form produces the old form's bytes" and not "the new
+// form agrees with a constant somebody typed".
+TEST(ListedDefinitionsCache, ReadWholeFileIsByteIdenticalToTheIteratorSlurp) {
+  const fs::path dir = scratch_dir("readwholefile_bytes");
+  const fs::path file = dir / "payload.bin";
+
+  // Deliberately hostile to a text-mode read and larger than the helper's 64 KiB
+  // drain chunk: embedded NULs, 0xFF, a bare CR, a CRLF and a lone LF. If the
+  // helper ever opened in text mode, the CRLF would collapse and this fails.
+  std::string expected;
+  expected.reserve(200u * 1024u);
+  for (int i = 0; i < 4096; ++i) {
+    expected.append("row\t", 4);
+    expected.push_back(static_cast<char>(i & 0xff));
+    expected.append("\0\xff\r\n", 4);
+    expected.append("\rmid\n", 5);
+    expected.append("SPY   260717C00600000\t100.0\n", 28);
+  }
+  ASSERT_EQ(expected.size(), 4096u * 42u);
+  ASSERT_GT(expected.size(), 64u * 1024u) << "anti-vacuity: must exceed the helper's chunk size";
+  {
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(out);
+    out.write(expected.data(), static_cast<std::streamsize>(expected.size()));
+    ASSERT_TRUE(out.good());
+  }
+
+  // The independent reference: the exact idiom that used to live in both
+  // callers, run here against the same file.
+  std::ifstream ref_stream(file, std::ios::binary);
+  ASSERT_TRUE(ref_stream);
+  const std::string reference((std::istreambuf_iterator<char>(ref_stream)),
+                              std::istreambuf_iterator<char>());
+  ASSERT_EQ(reference.size(), expected.size()) << "anti-vacuity: the reference slurp read nothing";
+
+  std::string got = "STALE CONTENT THAT MUST BE CLEARED";
+  ASSERT_EQ(detail::read_whole_file(file.string(), got), detail::FileReadStatus::Ok);
+
+  EXPECT_EQ(got.size(), reference.size());
+  EXPECT_TRUE(got == reference) << "read_whole_file's bytes differ from the iterator slurp's";
+  // Report the first divergence rather than dumping 168 KB into the log.
+  // Parenthesised so <windows.h>'s `min` macro cannot capture the call.
+  const std::size_t n = (std::min)(got.size(), reference.size());
+  std::size_t first_diff = n;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (got[i] != reference[i]) {
+      first_diff = i;
+      break;
+    }
+  }
+  EXPECT_EQ(first_diff, n) << "first differing byte at offset " << first_diff;
+
+  // NEGATIVE CONTROL: the comparator above must be able to say False. Perturb one
+  // byte of the reference and show the same comparison fails.
+  std::string perturbed = reference;
+  perturbed[perturbed.size() / 2] = static_cast<char>(perturbed[perturbed.size() / 2] ^ 0x01);
+  EXPECT_FALSE(got == perturbed) << "the byte comparison cannot fail and therefore gates nothing";
+}
+
+// GATE. An empty file is `Ok` with an empty result, not a failure. The helper
+// skips the sized read entirely when `file_size` is 0, so this exercises the
+// drain loop as the only reader.
+TEST(ListedDefinitionsCache, ReadWholeFileHandlesAnEmptyFile) {
+  const fs::path dir = scratch_dir("readwholefile_empty");
+  const fs::path file = dir / "empty.bin";
+  { std::ofstream out(file, std::ios::binary | std::ios::trunc); }
+  std::error_code ec;
+  ASSERT_TRUE(fs::exists(file, ec));
+  ASSERT_EQ(fs::file_size(file, ec), 0u) << "anti-vacuity: the fixture is not empty";
+
+  std::string got = "STALE";
+  EXPECT_EQ(detail::read_whole_file(file.string(), got), detail::FileReadStatus::Ok);
+  EXPECT_TRUE(got.empty()) << "out was not cleared, size=" << got.size();
+}
+
+// GATE. An absent path is `NotFound` — which is what makes
+// `read_listed_definitions_file` still say "listed definitions: file not found".
+TEST(ListedDefinitionsCache, ReadWholeFileReportsNotFoundForAnAbsentPath) {
+  const fs::path dir = scratch_dir("readwholefile_absent");
+  const fs::path file = dir / "no_such_file.bin";
+  std::error_code ec;
+  ASSERT_FALSE(fs::exists(file, ec)) << "anti-vacuity: the fixture path exists";
+
+  std::string got = "STALE";
+  EXPECT_EQ(detail::read_whole_file(file.string(), got), detail::FileReadStatus::NotFound);
+  EXPECT_TRUE(got.empty()) << "out was not cleared on failure, size=" << got.size();
+}
+
+// GATE. A DIRECTORY must be `NotFound`, not `IoError`. The helper special-cases
+// it (an `fopen` of a directory succeeds on POSIX and would then fail the read,
+// which would report IoError where the replaced `ifstream` form reported
+// NotFound) and that special case had no coverage. Getting this wrong changes
+// `read_listed_definitions_file`'s message from "file not found" to "read
+// failed" — a string pinned by ~40 of Wave E Task 4's assertions.
+TEST(ListedDefinitionsCache, ReadWholeFileReportsNotFoundForADirectory) {
+  const fs::path dir = scratch_dir("readwholefile_dir");
+  std::error_code ec;
+  ASSERT_TRUE(fs::is_directory(dir, ec)) << "anti-vacuity: the fixture is not a directory";
+
+  std::string got = "STALE";
+  EXPECT_EQ(detail::read_whole_file(dir.string(), got), detail::FileReadStatus::NotFound)
+      << "a directory must report NotFound, not IoError";
+  EXPECT_TRUE(got.empty()) << "out was not cleared on failure, size=" << got.size();
+
+  // And the caller-visible consequence, end to end: the pinned message.
+  const auto res = read_listed_definitions_file(dir.string());
+  ASSERT_FALSE(res);
+  EXPECT_EQ(res.error().code(), atx::core::ErrorCode::NotFound);
+  EXPECT_EQ(res.error().message(), "listed definitions: file not found");
 }
 
 // ── Rejection paths ─────────────────────────────────────────────────────────

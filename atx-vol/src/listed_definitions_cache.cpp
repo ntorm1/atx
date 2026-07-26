@@ -579,16 +579,24 @@ Result<ListedDefinitionTable> read_definitions_cache(std::string_view cache_path
 Result<ListedDefinitionTable> read_listed_definitions_cached(std::string_view tsv_path,
                                                              std::string_view cache_dir,
                                                              DefinitionsCacheFingerprintCheck check) {
-  // Identical read idiom to `read_listed_definitions_file` so the miss path is
-  // exactly today's cost plus the key hash — the cache must not be credited with
-  // an unrelated I/O change.
-  std::ifstream stream(fs::path{std::string(tsv_path)}, std::ios::binary);
-  if (!stream) {
+  // The SAME function `read_listed_definitions_file` uses — not a copy of it
+  // (review I2: these eight lines were duplicated verbatim, error strings and
+  // all, so the `fread` change would otherwise have had to be made twice and
+  // fixing only one would silently make the seam and the direct path diverge in
+  // cost). The miss path stays exactly the direct path's cost plus the key hash.
+  //
+  // NOTE this slurp is UNAVOIDABLE on the HIT path too: the key is content-
+  // derived, so the source bytes must be read before the cache can be consulted.
+  // A hit can never avoid READING 730 MB; it can only avoid PARSING what it
+  // read. That is the ceiling on what this format can be worth at the seam.
+  std::string contents;
+  switch (detail::read_whole_file(tsv_path, contents)) {
+  case detail::FileReadStatus::NotFound:
     return Err(ErrorCode::NotFound, "listed definitions: file not found");
-  }
-  std::string contents((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
-  if (!stream.good() && !stream.eof()) {
+  case detail::FileReadStatus::IoError:
     return Err(ErrorCode::IoError, "listed definitions: read failed");
+  case detail::FileReadStatus::Ok:
+    break;
   }
   if (cache_dir.empty()) {
     return parse_listed_definitions(contents);
