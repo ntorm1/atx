@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -36,6 +37,7 @@
 #include "atx/vol/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/listed_dispersion_strategy.hpp"
+#include "atx/vol/listed_definitions_cache.hpp"
 #include "atx/vol/listed_opra.hpp"
 #include "atx/vol/occ_ess.hpp"
 #include "atx/vol/opra_batch.hpp"
@@ -95,6 +97,30 @@ Result<std::string> read_text(const fs::path &path) {
 std::uint64_t hash_text(std::string_view text) {
   const std::uint64_t hash = atx::core::hash_bytes(text.data(), text.size());
   return hash == 0u ? 1u : hash;
+}
+
+// ATX_VOL_CACHE: the default source for `--cache DIR` when the flag is not
+// given explicitly. `std::getenv` trips this build's /WX
+// (unused-result-adjacent MSVC deprecation), so `_dupenv_s` is used on
+// Windows, matching the existing pattern in
+// listed_definitions_cache_test.cpp's `definitions_tsv_path_from_env`. An
+// EMPTY return (unset or explicitly empty) means "disabled" — the same
+// sentinel `read_listed_definitions_cached` already uses for "no cache".
+std::string cache_dir_from_env() {
+  std::string path;
+#if defined(_WIN32)
+  char *raw = nullptr;
+  std::size_t len = 0;
+  if (_dupenv_s(&raw, &len, "ATX_VOL_CACHE") == 0 && raw != nullptr) {
+    path.assign(raw);
+    std::free(raw);
+  }
+#else
+  if (const char *raw = std::getenv("ATX_VOL_CACHE")) {
+    path.assign(raw);
+  }
+#endif
+  return path;
 }
 
 // The archive-file fingerprint that build-schedule stamped as `surface_fingerprint`
@@ -410,7 +436,7 @@ Status build_corpus_command(const fs::path &source_spec_path, const fs::path &ru
 // consumers — build-schedule (via build_listed_dispersion_schedule) and run-backtest
 // reconciliation — call the library seam, so the example's duplicate was removed (T9).
 
-Status build_schedule_command(const fs::path &run_dir) {
+Status build_schedule_command(const fs::path &run_dir, const fs::path &cache_dir) {
   const auto cmd_start = PhaseTimer::now();
   PhaseTimer timer(kBuildSchedulePhases);
 
@@ -423,9 +449,17 @@ Status build_schedule_command(const fs::path &run_dir) {
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
   timer.add("setup_read", phase);
 
+  // Task 8: `--cache DIR` / `ATX_VOL_CACHE` (default DISABLED, i.e. `cache_dir`
+  // empty) opts into the ATXDEFS1 pre-parsed cache. Disabled, this is
+  // byte-for-byte `read_listed_definitions_file` — see that seam's costs
+  // disclosure in listed_definitions_cache.hpp before enabling it. `&timer`
+  // charges the `definitions_cache` hit/miss phase ONLY when the cache is
+  // consulted (`cache_dir` non-empty); a disabled run charges nothing extra,
+  // so its `diagnostics` row set is identical to today's.
   const auto definitions_start = PhaseTimer::now();
   ATX_TRY(ListedDefinitionTable definitions,
-          read_listed_definitions_file((run_dir / "definitions.tsv").string()));
+          read_listed_definitions_cached((run_dir / "definitions.tsv").string(), cache_dir.string(),
+                                         kDefinitionsCacheFingerprintDefault, &timer));
   timer.add("definitions_parse", definitions_start, 1u);
 
   phase = PhaseTimer::now();
@@ -527,7 +561,7 @@ Status verify_command(const fs::path &run_dir) {
   return Ok();
 }
 
-Status run_backtest_command(const fs::path &run_dir) {
+Status run_backtest_command(const fs::path &run_dir, const fs::path &cache_dir) {
   const auto cmd_start = PhaseTimer::now();
   PhaseTimer timer(kRunBacktestPhases);
 
@@ -539,9 +573,11 @@ Status run_backtest_command(const fs::path &run_dir) {
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
   timer.add("setup_read", phase);
 
+  // Task 8: see build_schedule_command's comment on `--cache`/`ATX_VOL_CACHE`.
   const auto definitions_start = PhaseTimer::now();
   ATX_TRY(ListedDefinitionTable definitions,
-          read_listed_definitions_file((run_dir / "definitions.tsv").string()));
+          read_listed_definitions_cached((run_dir / "definitions.tsv").string(), cache_dir.string(),
+                                         kDefinitionsCacheFingerprintDefault, &timer));
   timer.add("definitions_parse", definitions_start, 1u);
 
   phase = PhaseTimer::now();
@@ -1274,18 +1310,34 @@ Status runarchive_dump_command(const fs::path &run_dir, const std::string &secti
 }
 
 void usage() {
-  std::fprintf(stderr, "usage:\n"
-                       "  atxvol_spy_dispersion_backtest build-corpus --spec FILE --out DIR\n"
-                       "  atxvol_spy_dispersion_backtest build-schedule --run DIR\n"
-                       "  atxvol_spy_dispersion_backtest run-backtest --run DIR\n"
-                       "  atxvol_spy_dispersion_backtest project-schedule --run DIR\n"
-                       "  atxvol_spy_dispersion_backtest run-projected-backtest --run DIR "
-                       "[--schedule FILE] [--execution cold|configured] [--out FILE] "
-                       "[--no-divergence]\n"
-                       "  atxvol_spy_dispersion_backtest run-surface-backtest --run DIR\n"
-                       "  atxvol_spy_dispersion_backtest run-projected-var --run DIR\n"
-                       "  atxvol_spy_dispersion_backtest verify --run DIR\n"
-                       "  atxvol_spy_dispersion_backtest runarchive dump DIR SECTION [--tsv]\n");
+  std::fprintf(
+      stderr, "usage:\n"
+              "  atxvol_spy_dispersion_backtest build-corpus --spec FILE --out DIR\n"
+              "  atxvol_spy_dispersion_backtest build-schedule --run DIR [--cache DIR]\n"
+              "  atxvol_spy_dispersion_backtest run-backtest --run DIR [--cache DIR]\n"
+              "  atxvol_spy_dispersion_backtest project-schedule --run DIR\n"
+              "  atxvol_spy_dispersion_backtest run-projected-backtest --run DIR "
+              "[--schedule FILE] [--execution cold|configured] [--out FILE] "
+              "[--no-divergence]\n"
+              "  atxvol_spy_dispersion_backtest run-surface-backtest --run DIR\n"
+              "  atxvol_spy_dispersion_backtest run-projected-var --run DIR\n"
+              "  atxvol_spy_dispersion_backtest verify --run DIR\n"
+              "  atxvol_spy_dispersion_backtest runarchive dump DIR SECTION [--tsv]\n"
+              "\n"
+              "--cache DIR (build-schedule, run-backtest only): opt into the ATXDEFS1\n"
+              "  pre-parsed definitions.tsv cache. Defaults to the ATX_VOL_CACHE\n"
+              "  environment variable; DISABLED (today's behaviour, byte-for-byte) if\n"
+              "  neither is set. Read this before turning it on:\n"
+              "    * a HIT is a median 1.274x faster than not caching (n=3, sign 3/3,\n"
+              "      p=0.125 on a one-sided sign test — WEAK, not a strong claim);\n"
+              "    * the run that POPULATES the cache is a median 1.856x SLOWER than not\n"
+              "      caching at all;\n"
+              "    * peak working set on that populating run is roughly 3 GB against a\n"
+              "      730 MB definitions.tsv;\n"
+              "    * the cache directory has NO EVICTION POLICY and grows WITHOUT BOUND,\n"
+              "      roughly 300 MB per distinct definitions.tsv ever seen.\n"
+              "  See read_listed_definitions_cached's header comment (listed_definitions_"
+              "cache.hpp) for the full disclosure.\n");
 }
 
 } // namespace
@@ -1319,6 +1371,12 @@ int main(int argc, char **argv) {
   fs::path schedule;
   std::string execution;
   bool no_divergence = false;
+  // `--cache` default: the ATX_VOL_CACHE environment variable, itself
+  // defaulting to empty (disabled). An explicit `--cache` below overrides
+  // either. Cache-disabled-by-default is load-bearing (Task 8 ruling): no
+  // existing invocation of this binary — including the controller's
+  // parity_full_run.ps1, which never passes --cache — may change behaviour.
+  fs::path cache = cache_dir_from_env();
   for (int i = 2; i < argc; ++i) {
     const std::string_view argument = argv[i];
     if (argument == "--no-divergence") {  // value-less flag, checked before the value guard
@@ -1339,6 +1397,8 @@ int main(int argc, char **argv) {
       schedule = argv[++i];
     } else if (argument == "--execution") {
       execution = argv[++i];
+    } else if (argument == "--cache") {
+      cache = argv[++i];
     } else {
       usage();
       return 2;
@@ -1348,9 +1408,9 @@ int main(int argc, char **argv) {
   if (command == "build-corpus" && !spec.empty() && !out.empty()) {
     status = build_corpus_command(spec, out);
   } else if (command == "build-schedule" && !run.empty()) {
-    status = build_schedule_command(run);
+    status = build_schedule_command(run, cache);
   } else if (command == "run-backtest" && !run.empty()) {
-    status = run_backtest_command(run);
+    status = run_backtest_command(run, cache);
   } else if (command == "project-schedule" && !run.empty()) {
     status = project_schedule_command(run);
   } else if (command == "run-projected-backtest" && !run.empty()) {

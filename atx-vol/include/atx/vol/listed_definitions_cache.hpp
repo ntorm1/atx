@@ -395,6 +395,31 @@ read_definitions_cache(std::string_view cache_path, const ListedDefinitionsCache
 // cache in `cache_dir`, and on any miss parse those same bytes and (best-effort)
 // publish the result.
 //
+// ── Task 8 disclosure: the costs of opting in (controller ruling) ───────────
+//
+// Wired into the CLI as an OPT-IN, OFF BY DEFAULT flag (`--cache DIR` /
+// `ATX_VOL_CACHE`, see `examples/spy_dispersion_backtest.cpp`). Two independent
+// measurements (the implementer and a re-reviewer, on different machines)
+// recommended AGAINST enabling this cache "as currently built" — read the
+// numbers before turning it on:
+//
+//   * a HIT is a median 1.274x faster than not caching (n=3, sign 3/3,
+//     one-sided sign test p=0.125 — WEAK, not a strong claim);
+//   * the run that POPULATES the cache (a MISS that publishes) is a median
+//     1.856x SLOWER than not caching at all — the cache is not free to warm;
+//   * peak working set on that populating run is roughly 3 GB against a
+//     730 MB `definitions.tsv` (vs. ~1.9-2.9 GB for a HIT depending on
+//     `DefinitionsCacheFingerprintCheck`);
+//   * the cache directory has NO EVICTION POLICY and grows WITHOUT BOUND,
+//     roughly 300 MB per distinct `definitions.tsv` ever seen (review finding
+//     M5, deliberately left open — out of scope for this cache).
+//
+// `detail::read_whole_file` (the shared `fread` slurp both this seam and
+// `read_listed_definitions_file` use) is separately worth a measured ~17x over
+// the `istreambuf_iterator` form it replaced, with NO new on-disk format and NO
+// stale-serve surface — that is the cheaper alternative this cache competes
+// against. Do not cite a number from here without its paired cost.
+//
 // A PUBLISH FAILURE IS NEVER AN ERROR — a read-only or full cache directory is a
 // logged miss, not a failed run. The returned table is byte-for-byte the table
 // `read_listed_definitions_file(tsv_path)` would have returned, on both the hit
