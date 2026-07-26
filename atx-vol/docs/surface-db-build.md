@@ -101,7 +101,7 @@ atx-vol-surface-db-build --db <root> --hive <root>
 | `--strict` | no | Off by default. Make **"scheduled work, fitted nothing" a non-zero exit (`3`) even when the run CARRIED stored surfaces** — the reading the FIX-D carry exemption gave up. **Who should turn it on:** an *unattended scheduler* over a database whose failing-cell set is expected to be **empty** (a fresh build, a CI fixture, a universe with no known-bad names) — for that caller, "I scheduled 250 cells and fitted 0 beside 257k carried" must wake someone up, and nothing else in the tool will. **Who should not:** an *interactive operator* on a database with standing failures; they get the carry-masked **warning** instead, which names the failing cells and says the run is ambiguous rather than judging it. **Why it is opt-in and not the default** — see [Why `--strict` is not the default](#why---strict-is-not-the-default). It never turns a green run non-zero unless work was **scheduled**: a converged resume, a carried-everything rewrite and an empty window all schedule zero cells and stay `0` in strict mode. Its diagnostic deliberately **omits** the `--r` advice the unconditional exit `3` gives. |
 | `--report out.csv` | no | Also write the five-section CSV report to this path. A write failure is reported on stderr and makes the run exit `1` — but it never masks exit `3` or `5`; see the exit table. |
 | `--help` / `-h` | no | Print usage to stdout and exit `0`. Ignores everything else on the line. |
-| `--max-failures N` | no | `32`. Cap on the printed `failed_cell` lines. Overflow is counted in `coverage.failed_cells_elided`, never dropped silently, and the `--report` CSV always carries the **full** list. `0` prints no per-cell detail at all. Same flag name, parsing and semantics as `atx-vol-surface-db verify`. |
+| `--max-failures N` | no | `32`. Cap on the printed `failed_cell` **and `coverage_regression_cell`** lines. Overflow is counted in `coverage.failed_cells_elided` / `coverage.coverage_regression_cells_elided`, never dropped silently, and the `--report` CSV always carries the **full** list of both. `0` prints no per-cell detail at all. **One exemption:** on the destructive `--allow-coverage-regression` branch the cap does *not* apply to the regression cells — every destroyed cell is printed, because there the list and the CSV are the only record those surfaces existed (see [Refusing a rewrite that would destroy stored surfaces](#refusing-a-rewrite-that-would-destroy-stored-surfaces)). Same flag name, parsing and semantics as `atx-vol-surface-db verify`. |
 
 **Discover-all vs explicit `--symbols`.** With an explicit list, exactly those
 underliers are loaded for every date (a date whose file lacks a requested symbol
@@ -266,7 +266,13 @@ your surfaces — but it still costs you the run.
 Before committing a date's partition the build compares two symbol **sets**:
 
 - what the **existing** partition holds, read from the partition file's own
-  directory (never inferred from the manifest);
+  directory — **never** inferred from the manifest, and that includes the question
+  of whether a partition exists at all. The lookup goes straight to
+  `<db-root>/partitions/<KEY>.atxvsa`, so a partition file that is on disk but
+  **missing from the manifest** is read and compared rather than mistaken for a
+  first write. That state is reachable: a partition's archive is renamed into
+  place *before* the manifest records it, so a crash between the two leaves it, as
+  do a manifest restored from an older copy and a hand-assembled db root;
 - what the **candidate** partition would hold — this run's fitted cells plus its
   carried and preserved-disabled ones.
 
@@ -278,8 +284,10 @@ rewritten to equivalent bytes — and:
 - `coverage.dates_refused_coverage_regression` counts the date;
 - `coverage.dates_written` does **not** (it counts commits, not intentions);
 - `coverage_regression_cell <date> <symbol>` names every at-risk cell on stdout,
-  bounded by `--max-failures` with a counted `coverage.coverage_regression_cells_elided`,
-  and the `--report` CSV's fifth section carries all of them uncapped;
+  bounded by `--max-failures` with a counted `coverage.coverage_regression_cells_elided`
+  (the cap is **not** applied on the destructive `--allow-coverage-regression`
+  branch — see the opt-out below), and the `--report` CSV's fifth section carries
+  all of them uncapped;
 - the exit code is **`5`**.
 
 A refusal is **per-date**. Every other date in the run is built normally, including
@@ -296,15 +304,30 @@ The one other thing it refuses: an existing partition file that **will not open*
 Its contents are unknown, so whether the write destroys anything is unanswerable,
 and overwriting it is the one action that makes the answer unrecoverable. That
 aborts the build with the archive's own error (the same posture as an unreadable
-carry record). Delete the partition file if you mean to rebuild the date from
-scratch.
+carry record), exit `1`. **`--allow-coverage-regression` does not waive it** —
+that flag authorises destroying a *named* list, and an unreadable file has no
+named list to authorise. Delete the partition file if you mean to rebuild the date
+from scratch.
 
 **The opt-out.** `--allow-coverage-regression` waives the refusal for a run that
-*intends* retirement. The regression is still **detected and reported** —
-`coverage.dates_dropped_coverage_regression` plus the same named cell list — so a
-destructive run leaves an audit trail of exactly which surfaces it removed, which
-is the thing the 95-surface incident had no way to produce. Do not pass it to
-silence the line; pass it when you have read the list and want those cells gone.
+*intends* retirement, and nothing else. The regression is still **detected and
+reported** — `coverage.dates_dropped_coverage_regression` plus the same named cell
+list — so a destructive run leaves an audit trail of exactly which surfaces it
+removed, which is the thing the 95-surface incident had no way to produce. Do not
+pass it to silence the line; pass it when you have read the list and want those
+cells gone. Note the destructive run's cell list is **not** subject to
+`--max-failures`: every destroyed cell is printed, because on that branch the
+printed list and the `--report` CSV are the only record those surfaces existed.
+
+**If the run also errors, you lose the report.** A refusal is not an error, but any
+*later* hard failure in the same run — an unreadable carry record, a partition
+write failure, a fit-scheduler termination — aborts the whole build and discards
+the report, so you get exit `1` with a message and **no** `coverage_regression_cell`
+lines, no counters and no `--report` CSV. Nothing was written and nothing was lost;
+what you lose is the *record* of what the guard caught. Do not read the silence as
+the guard having stayed quiet: fix the reported error and re-run, and the refusal
+will be named. (This is the pre-existing "an `Err` discards the report" shape, not
+specific to the guard.)
 
 #### Re-running at the corrected `--r` does NOT repair the database
 
@@ -702,6 +725,10 @@ always equals `coverage.cells_failed`, and the `--report` CSV carries every entr
 regardless of the cap. This is the same contract `verify`'s `failures_reported` /
 `failures_elided` pair already uses.
 
+The same flag and the same discipline bound the `coverage_regression_cell` lines,
+with one exemption on the destructive branch — see
+[Refusing a rewrite that would destroy stored surfaces](#refusing-a-rewrite-that-would-destroy-stored-surfaces).
+
 **This is diagnosis, not memory.** Listing a failed cell does **not** mark it
 known-failed: there is deliberately no persisted failure state, so the cell is
 retried on the next run exactly as before (see [Resume semantics](#resume-semantics)).
@@ -711,9 +738,9 @@ retried on the next run exactly as before (see [Resume semantics](#resume-semant
 | `0` | Build succeeded — including **partial** coverage, a no-op **resume**, and a graceful empty-window no-op. Also two shapes that print a stderr WARNING and still exit `0`: the **carry-masked** shape (`cells_ok == 0`, `cells_failed > 0`, `cells_carried > 0` — see [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing); **`--strict` turns this one into `3`**, and is the only flag that changes any exit code here), and **partial load corruption** (`n_dates_loaded > 0` with `n_load_errors > 0`: some dates were unreadable, the rest were built). |
 | `1` | A build error — malformed hive spec, or a db config/write failure. Message on stderr, **no report printed**. **One exception, and it is the only way `1` arrives with a report on stdout:** `--report` was given and the CSV could not be written. The build itself succeeded, the full report printed, and stderr names the write failure. It never masks `3` — see below. |
 | `2` | A usage error — unknown flag, a missing required flag, **a value-taking flag left at the end of the argv** (see below), an unknown `--preset`, or a malformed `--r` / `--pin-curve-family` / `--max-failures`. Usage on stderr. |
-| `5` | **At least one date was REFUSED because committing its rewrite would have destroyed a stored surface** (`coverage.dates_refused_coverage_regression > 0`). Nothing was lost: those dates are exactly as they were, and every other date in the run was built normally. Deliberately **not** `3` — the tool worked and the database is intact; what failed is the *request*. It **preempts** `3` and `1` when both apply, because "your inputs would have deleted data" must not be reported as "your inputs produced nothing" — the latter invites the re-run that does the deleting. The exit-3 diagnostics (including the `--r` advice, which is the top suspect for both shapes) still print in full. See [Refusing a rewrite that would destroy stored surfaces](#refusing-a-rewrite-that-would-destroy-stored-surfaces). |
 | `3` | **The build ran to completion and produced NOTHING** — one of **total load failure** (`n_dates_loaded == 0`, `n_load_errors > 0`: files were present in the window and *every one* was unreadable, so not a board reached the fitter), **total config failure** (`disabled > 0`, `enabled == 0`, `cells_ok == 0`, `cells_carried == 0`: every symbol was disabled by a selection failure, so nothing was ever scheduled), or **total fit failure** (`cells_to_fit > 0`, `cells_ok == 0`, `cells_carried == 0`: work was scheduled, no cell fitted, and nothing was carried either). One code for all three — the script's question is "did this run produce anything?" and the stderr diagnostic names the stage. They are tested most-upstream-first, so a corrupt ingest reports as a load failure rather than as the config failure it causes. The full report still prints and `--report` is still written. See [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing). |
 | `3`, **with `--strict` only** | **Strict total fit failure** (`cells_to_fit > 0`, `cells_ok == 0`, *carry ignored*) — the same "scheduled work, fitted nothing" question with the carry exemption removed. Without `--strict` this run exits `0` with the carry-masked warning. **The same code, not a new one:** a script's question is unchanged, `--strict` only makes the answer stricter about what counts as producing something, and a fourth number would force every existing consumer to learn it to keep the behaviour it already has. `5` still preempts it. Its diagnostic **omits the `--r` advice** on purpose — a run that carried surfaces is a run whose stored records validated for reuse, so its rate is not what is wrong, and re-running at a "corrected" `--r` would fail every re-fit (refused date by date, or *destructive* with `--allow-coverage-regression`). It says to compare **this run's failed-cell list against the previous run's** instead. Still `0` under `--strict` when nothing was **scheduled**. |
+| `5` | **At least one date was REFUSED because committing its rewrite would have destroyed a stored surface** (`coverage.dates_refused_coverage_regression > 0`). Nothing was lost: those dates are exactly as they were, and every other date in the run was built normally. Deliberately **not** `3` — the tool worked and the database is intact; what failed is the *request*. It **preempts** `3` and `1` when both apply, because "your inputs would have deleted data" must not be reported as "your inputs produced nothing" — the latter invites the re-run that does the deleting. The exit-3 diagnostics (including the `--r` advice, which is the top suspect for both shapes) still print in full. See [Refusing a rewrite that would destroy stored surfaces](#refusing-a-rewrite-that-would-destroy-stored-surfaces). |
 
 <a id="why---strict-is-not-the-default"></a>
 **Why `--strict` is not the default.** The review that asked for the strict mode
@@ -798,12 +825,12 @@ disposition counters partition the distinct symbols seen:
 | `coverage.cells_already_present` | Skipped: symbol already in its date partition. |
 | `coverage.cells_ok` / `cells_failed` | Fit outcomes over the (re)written dates. |
 | `coverage.dates_total` | Distinct dates among the loaded boards. |
-| `coverage.dates_written` | Dates that needed a (re)write this run. |
+| `coverage.dates_written` | Dates this run really **committed** — taken from the write site itself, so it counts commits and never intentions. A date the write path refused is not here, and neither is one whose candidate ended up empty (no partition is written for an empty candidate). It is therefore **not** the count of dates chosen for rewrite; nothing promises `dates_written + dates_refused_coverage_regression` equals that. |
 | `coverage.dates_skipped_complete` | Dates with **nothing left to add**: every loaded cell is either already present or config-disabled. |
 | `coverage.dates_skipped_would_drop` | Dates skipped **before any fit** to avoid dropping a stored symbol this run's loaded board set does not mention at all (the *filter's* safety guard). A **count** comparison, and structurally blind to a cell that *is* loaded and whose re-fit fails — which is what the next two rows exist for. |
-| `coverage.dates_refused_coverage_regression` | Dates the **write path** refused because the candidate partition was not a **superset** of the stored one — committing it would have deleted a stored surface. The existing partition is untouched; `dates_written` excludes these; the run exits `5`. See [Refusing a rewrite that would destroy stored surfaces](#refusing-a-rewrite-that-would-destroy-stored-surfaces). |
+| `coverage.dates_refused_coverage_regression` | Dates the **write path** refused because the candidate partition was not a **superset** of the stored one — committing it would have deleted a stored surface. The existing partition is untouched; `dates_written` never counted these; the run exits `5`. If a *later* hard error aborts the run, the report — and with it these counters and the cell list — is discarded and you get exit `1` instead; nothing was lost, but the record of what the guard caught is. See [Refusing a rewrite that would destroy stored surfaces](#refusing-a-rewrite-that-would-destroy-stored-surfaces). |
 | `coverage.dates_dropped_coverage_regression` | The same detection on a run that passed `--allow-coverage-regression`: the date **was** written and the surfaces named below for it are **gone**. Non-zero here is a permanent, unrecoverable change to the database. |
-| `coverage.coverage_regression_cells_reported` / `_elided` | How many `coverage_regression_cell` lines were printed and how many the `--max-failures` cap left out. The two always sum to the full list; the `--report` CSV's fifth section is never capped. |
+| `coverage.coverage_regression_cells_reported` / `_elided` | How many `coverage_regression_cell` lines were printed and how many the `--max-failures` cap left out. The two always sum to the full list; the `--report` CSV's fifth section is never capped. On the destructive `--allow-coverage-regression` branch the cap is **not** applied, so `_elided` is always `0` there and every destroyed cell is named. |
 | `coverage_regression_cell <date> <symbol>` | One line per stored surface the refused (or allowed) rewrite would have destroyed, ascending by (date, canonical symbol) and byte-identical for any `--fit-workers`. |
 | `symbol.<S> ...` | Per-symbol populate stats over the written dates. |
 | `coverage.failed_cells_reported` / `_elided` | How many `failed_cell` lines were printed, and how many the `--max-failures` cap left out. The two always sum to `cells_failed`; the `--report` CSV is never capped. |

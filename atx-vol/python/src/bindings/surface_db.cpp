@@ -297,6 +297,12 @@ allow_coverage_regression : bool
     equivalent exits 5. Pass True only for a run that INTENDS retirement; the
     destroyed cells are named in ``coverage["coverage_regression_cells"]``.
 
+    IT WAIVES THE REFUSAL AND NOTHING ELSE. A date whose existing partition FILE
+    is present and will not OPEN still aborts the whole build with ``AtxError``,
+    with or without this flag: a caller who authorised destroying a NAMED list has
+    not answered a question about contents nobody could read. The remedy for a
+    genuinely corrupt partition is to delete the file and re-run.
+
 Returns
 -------
 dict
@@ -306,6 +312,30 @@ dict
     ``{date, symbol, code, detail}`` each, where ``detail`` is the fitter's own
     message -- in the C++ side's deterministic (date, symbol) order, never
     truncated and never re-sorted.
+
+    THIS CALL DOES NOT RAISE ON A COVERAGE REGRESSION, AND YOU MUST CHECK FOR ONE
+    YOURSELF. The CLI turns a refusal into exit 5; this binding has no exit code
+    and deliberately does not invent an exception for it, so a run in which the
+    guard refused EVERY date returns successfully and looks like any other result
+    dict. ``coverage["cells_ok"]`` counts FITS, not commits, so it can be large on
+    a run that wrote nothing at all. The three keys that carry the verdict:
+
+    - ``coverage["dates_refused_coverage_regression"]`` -- dates NOT written
+      because the rewrite would have destroyed a stored surface. Non-zero means
+      the run did not do what you asked; the existing partitions are intact and
+      nothing was lost. This is the key to branch on for the CLI's exit-5
+      behaviour.
+    - ``coverage["dates_dropped_coverage_regression"]`` -- dates written ANYWAY
+      under ``allow_coverage_regression=True``. Non-zero means the surfaces named
+      below are GONE.
+    - ``coverage["coverage_regression_cells"]`` -- the COMPLETE, uncapped
+      ``{date, symbol}`` list behind those two counters, ascending. On the
+      destructive path this list is the ONLY record those surfaces ever existed:
+      the archive format keeps no tombstone, so a destroyed cell is byte-for-byte
+      a cell that was never fitted. Persist it.
+
+    ``coverage["dates_written"]`` counts dates that really COMMITTED, so it is the
+    other half of the same check.
 )doc";
 
 } // namespace
