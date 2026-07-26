@@ -30,7 +30,7 @@ from .components import (
     Banner, Column, FacetGrid, Figure, Note, Prose, Report, Section, Stat, StatRow, Subhead,
     Table, esc,
 )
-from .io import read_backtest_tsv, read_kv_tsv
+from .io import read_backtest_archive_result, read_backtest_tsv, read_kv_tsv
 
 # ── The friction regime is a first-class dimension, not a footnote ──────────
 #
@@ -114,28 +114,49 @@ def _short(dates: Sequence[str]) -> list[str]:
     return [d[5:] if len(d) == 10 else d for d in dates]
 
 
-def build_report_from_run(run_dir: str, path: str, *, label: str = "") -> str:
+def build_report_from_run(run_dir: str, path: str, *, label: str = "",
+                          section: str = "backtest") -> str:
     """Render a `spy_dispersion_backtest` run directory into an HTML report.
 
-    Raises `FileNotFoundError` if the directory carries none of `TRACK_NAMES`,
-    and `atxvol.AtxError` with `code == ErrorCode.INVALID_ARGUMENT` if the run
-    carries no `friction_regime` — see `REGIMES`.
-    """
-    backtest = ""
-    for name in TRACK_NAMES:
-        candidate = os.path.join(run_dir, name)
-        if os.path.exists(candidate):
-            backtest = candidate
-            break
-    if not backtest:
-        raise FileNotFoundError(
-            f"{run_dir}: no backtest series found (looked for "
-            + ", ".join(TRACK_NAMES) + ")"
-        )
-    result, meta, _extra = read_backtest_tsv(backtest)
+    Reads economics from the run's ``run.atxrun`` RunArchive when present. Legacy
+    loose-series names in :data:`TRACK_NAMES` remain a compatibility fallback for
+    callers that produce pre-cutover run directories.
 
-    # Precedence, weakest first: the run spec, then the tearsheet metric table,
-    # then the track's own `# key=value` header — closest to the numbers wins.
+    ``section`` selects which economics to render. The archive carries several
+    backtest-shaped sections — ``backtest`` (the listed run, the default),
+    ``projected_cold``, ``projected_nodiv`` — so the same run directory can produce
+    a report per route instead of only the listed one.
+
+    Authored inputs stayed text through the cutover, so ``run_spec.tsv`` is still
+    read from disk. ``backtest_counters.tsv`` did not survive it and has no archive
+    section, so the counters panel renders from whatever the archive ``meta``
+    carries; the file is still honoured when a pre-cutover run directory has one.
+    """
+    archive = os.path.join(run_dir, "run.atxrun")
+    if os.path.exists(archive):
+        result, meta, _extra = read_backtest_archive_result(archive, section)
+    else:
+        if section != "backtest":
+            raise FileNotFoundError(
+                f"{archive}: section {section!r} requires a RunArchive"
+            )
+        backtest = next(
+            (
+                candidate
+                for name in TRACK_NAMES
+                if os.path.exists(candidate := os.path.join(run_dir, name))
+            ),
+            "",
+        )
+        if not backtest:
+            raise FileNotFoundError(
+                f"{archive}: no RunArchive or legacy backtest series found "
+                f"(looked for {', '.join(TRACK_NAMES)})"
+            )
+        result, meta, _extra = read_backtest_tsv(backtest)
+
+    # Weakest to strongest: authored run spec, legacy tearsheet metrics, then
+    # the economics source's own metadata (archive meta or loose-track header).
     spec: dict[str, str] = {}
     for name in ("run_spec.tsv", "surface_tearsheet.tsv"):
         candidate = os.path.join(run_dir, name)
