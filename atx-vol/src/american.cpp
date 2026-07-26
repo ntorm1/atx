@@ -3015,9 +3015,18 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
     const double r2 = r + dr;
     const double T2 = T + dT;
     // andersen_lake guards, replicated so each stencil matches a full cold call.
-    if (T2 <= 1.0e-12 || sig2 <= 1.0e-8) {
+    // Both arms mirror andersen_lake_core in ITS order: T ~ 0 first (no time left
+    // -> spot intrinsic), then sigma ~ 0 -> sigma_zero_american_limit. The sigma
+    // arm used to return the bare spot intrinsic, which disagrees with the pricer
+    // by the whole discounted-forward intrinsic on a carry-dominant contract
+    // (r = 0, q > 0 put: df*(K - F) > 0 with the spot intrinsic at 0) — the FD
+    // bundle then served a price american_price never quotes on the same inputs.
+    if (T2 <= 1.0e-12) {
       const double intr = K - S2;
       return (intr > 0.0) ? intr : 0.0;
+    }
+    if (sig2 <= 1.0e-8) {
+      return sigma_zero_american_limit(S2, K, T2, r2, q, Side::Put);
     }
     // Put no-early-exercise regime is American == European (Black-76). The
     // double-continuation corner (yield q < rate r2 <= 0) is unpriceable — defer
@@ -3084,10 +3093,16 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
     const double sig2 = sigma + dsig;
     const double r2 = r + dr;
     const double T2 = T + dT;
-    // andersen_lake guards, replicated so each stencil matches a full cold call.
-    if (T2 <= 1.0e-12 || sig2 <= 1.0e-8) {
+    // andersen_lake guards, replicated so each stencil matches a full cold call
+    // (same split and order as Pput above; the sigma limit is taken in the CALL's
+    // own (S,K,r,q) — sigma_zero_american_limit is side-parameterised, so no
+    // McDonald-Schroder swap belongs here).
+    if (T2 <= 1.0e-12) {
       const double intr = S2 - K; // call intrinsic
       return (intr > 0.0) ? intr : 0.0;
+    }
+    if (sig2 <= 1.0e-8) {
+      return sigma_zero_american_limit(S2, K, T2, r2, q, Side::Call);
     }
     // Regime in the call's internal-put terms (rate = q, yield = r2 — the same
     // order andersen_lake_call_slice uses). European short-circuits to the Black-76
@@ -3801,9 +3816,15 @@ Result<double> american_delta(double S, double K, double T, double sigma, double
       if (failed) {
         return std::numeric_limits<double>::quiet_NaN();
       }
-      if (T <= 1.0e-12 || sigma <= 1.0e-8) {
+      if (T <= 1.0e-12) {
         const double intr = K - S2;
         return (intr > 0.0) ? intr : 0.0;
+      }
+      if (sigma <= 1.0e-8) {
+        // Same split as american_greeks_fd's Pput — this lane claims to be
+        // bit-identical to that bundle's put delta, so its degenerate-sigma
+        // stencil value must be the pricer's limit, not the spot intrinsic.
+        return sigma_zero_american_limit(S2, K, T, r, q, Side::Put);
       }
       // European put -> Black-76; the double-continuation corner (q < r <= 0) is
       // unpriceable -> surface andersen_lake's NotImplemented via american_price.

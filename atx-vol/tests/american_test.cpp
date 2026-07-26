@@ -219,6 +219,65 @@ TEST(AmericanDegenerateContract, GreeksErrorButVegaReturnsZeroSentinel) {
   }
 }
 
+// ── Degenerate-sigma agreement: FD bundle vs the pricer (plan 1.17) ────────
+//
+// andersen_lake_core answers the sigma <= 1e-8 corner with
+// sigma_zero_american_limit = max(df*(forward intrinsic), spot intrinsic), while
+// american_greeks_fd's fast-lane stencil evaluators (Pput/Pcall) and
+// american_delta's put_px answered the SAME corner with the bare spot intrinsic.
+// On a carry-dominant contract those differ by the whole discounted-forward
+// intrinsic, so the FD bundle's price silently disagreed with american_price on
+// identical inputs. Every route must serve the pricer's value, bit-for-bit.
+TEST(AmericanDegenerateSigma, GreeksFdPriceEqualsAmericanPrice_Put) {
+  // r = 0, q > 0: df*(K - F) = 9.5 while the spot intrinsic is 0 (S == K).
+  const double S = 100.0, K = 100.0, T = 1.0, sigma = 1.0e-9, r = 0.0, q = 0.10;
+  const double px = value_or_fail(
+      american_price(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake, std::nullopt));
+  EXPECT_GT(px, 9.0) << "test point must have a non-trivial discounted-forward intrinsic";
+  const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Put,
+                                    AmericanMethod::AndersenLake, std::nullopt,
+                                    /*warm_start=*/false);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  EXPECT_TRUE(bits_equal(g->price, px)) << "fd " << g->price << " vs price " << px;
+  // Warm-start path shares the same stencil evaluator; pin it too.
+  const auto gw = american_greeks_fd(S, K, T, sigma, r, q, Side::Put,
+                                     AmericanMethod::AndersenLake, std::nullopt,
+                                     /*warm_start=*/true);
+  ASSERT_TRUE(gw.has_value()) << gw.error().to_string();
+  EXPECT_TRUE(bits_equal(gw->price, px));
+}
+
+TEST(AmericanDegenerateSigma, GreeksFdPriceEqualsAmericanPrice_Call) {
+  // q = 0, r > 0: df*(F - K) = 9.5 while the spot intrinsic is 0 (S == K).
+  const double S = 100.0, K = 100.0, T = 1.0, sigma = 1.0e-9, r = 0.10, q = 0.0;
+  const double px = value_or_fail(
+      american_price(S, K, T, sigma, r, q, Side::Call, AmericanMethod::AndersenLake, std::nullopt));
+  EXPECT_GT(px, 9.0) << "test point must have a non-trivial discounted-forward intrinsic";
+  const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Call,
+                                    AmericanMethod::AndersenLake, std::nullopt,
+                                    /*warm_start=*/false);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  EXPECT_TRUE(bits_equal(g->price, px)) << "fd " << g->price << " vs price " << px;
+}
+
+// american_delta's put fast lane documents itself as BIT-IDENTICAL to
+// american_greeks_fd's put delta ("identical stencil, step, and guard chain"), so
+// its degenerate-sigma guard has to move with the bundle's.
+TEST(AmericanDegenerateSigma, DeltaMatchesGreeksFdDelta_Put) {
+  const double S = 100.0, K = 100.0, T = 1.0, sigma = 1.0e-9, r = 0.0, q = 0.10;
+  const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Put,
+                                    AmericanMethod::AndersenLake, std::nullopt,
+                                    /*warm_start=*/false);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  const double d = value_or_fail(
+      american_delta(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake, std::nullopt));
+  EXPECT_TRUE(bits_equal(d, g->delta)) << "delta " << d << " vs fd delta " << g->delta;
+  // The sigma->0 put value is smooth in S here (df*(K-F) dominates the spot
+  // intrinsic on both spot stencils), so the delta is the carry-discounted -e^{-qT},
+  // NOT the exercise-region -1 the bare-intrinsic guard produced.
+  EXPECT_NEAR(d, -std::exp(-q * T), 1.0e-9);
+}
+
 // ── McDonald-Schroder put-call symmetry ─────────────────────────────────
 
 TEST(AndersenLake, McDonaldSchroderSymmetry_CallEqualsSwappedPut) {
