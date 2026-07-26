@@ -1260,11 +1260,30 @@ void eqn_b_NDd(const AlBoundary &bnd, double tau, double b_val, double sigma, do
   Dd_out = norm_pdf(dpv) / (b_val * v);
 }
 
+// One sweep's outcome. `max_dy` is the collocation residual max|Δy| — but ONLY over
+// the nodes that actually moved: a node whose fixed-point denominator D has
+// collapsed is frozen at its current value and skips the |Δy| update, so it cannot
+// raise the residual. `all_frozen` reports the pathological case where EVERY
+// movable node (tau > 0) froze: the sweep moved nothing, so max_dy == 0 means "no
+// progress is possible", NOT "converged". Without this flag a wholly frozen sweep
+// looks like an immediate tol hit and the solve returns its raw seed as a solved
+// boundary. The two are genuinely different states and the caller must be able to
+// tell them apart, which is why this is a flag and not a sentinel residual: a
+// residual big enough to defeat the tol test would only spend the rest of the
+// sweep budget re-deriving the same frozen state, and would still leave the solve
+// returning Ok with an unsolved boundary.
+struct AlSweepResult {
+  double max_dy = 0.0;
+  bool all_frozen = false;
+};
+
 template <unsigned NB, unsigned NQ>
-[[nodiscard]] double al_jn_sweep_impl(AlBoundary &b, AlWorkspace &ws, double sigma, double r,
-                                      double q) noexcept {
+[[nodiscard]] AlSweepResult al_jn_sweep_impl(AlBoundary &b, AlWorkspace &ws, double sigma, double r,
+                                             double q) noexcept {
   const unsigned n = (NB != 0) ? NB : b.n;
   double max_dy = 0.0;
+  unsigned n_movable = 0;
+  unsigned n_frozen = 0;
   ws.next_y[0] = 0.0;
   for (unsigned i = 1; i < n; ++i) {
     const double tau = b.tau[i];
@@ -1272,12 +1291,14 @@ template <unsigned NB, unsigned NQ>
       ws.next_y[i] = 0.0;
       continue;
     }
+    ++n_movable;
     const double b_val = b_from_y(b.y[i], b.xmax);
     double Nv = 0.0;
     double Dv = 0.0;
     eqn_b_ND_impl<NB, NQ>(b, ws, i, tau, b_val, sigma, r, q, Nv, Dv);
     if (!(Dv > 1.0e-300)) {
       ws.next_y[i] = b.y[i];
+      ++n_frozen;
       continue;
     }
     const double alpha = b.K * std::exp(-(r - q) * tau);
@@ -1306,13 +1327,13 @@ template <unsigned NB, unsigned NQ>
   for (unsigned i = 0; i < n; ++i) {
     b.y[i] = ws.next_y[i];
   }
-  return max_dy;
+  return AlSweepResult{max_dy, n_movable > 0 && n_frozen == n_movable};
 }
 
 // Dispatch to a compile-time-trip-count instantiation for the production fixed
 // schemes; the generic <0,0> is both the arbitrary-AlOpts path and the reference.
-[[nodiscard]] double al_jacobi_newton_sweep(AlBoundary &b, AlWorkspace &ws, double sigma, double r,
-                                            double q) noexcept {
+[[nodiscard]] AlSweepResult al_jacobi_newton_sweep(AlBoundary &b, AlWorkspace &ws, double sigma,
+                                                   double r, double q) noexcept {
   ATX_VOL_COUNT(JacobiNewtonSweeps);
   if (ws.specialize) {
     if (b.n == 7 && ws.n_quad_fp == 8) {
@@ -1329,10 +1350,12 @@ template <unsigned NB, unsigned NQ>
 }
 
 template <unsigned NB, unsigned NQ>
-[[nodiscard]] double al_fp_sweep_impl(AlBoundary &b, AlWorkspace &ws, double sigma, double r,
-                                      double q) noexcept {
+[[nodiscard]] AlSweepResult al_fp_sweep_impl(AlBoundary &b, AlWorkspace &ws, double sigma, double r,
+                                             double q) noexcept {
   const unsigned n = (NB != 0) ? NB : b.n;
   double max_dy = 0.0;
+  unsigned n_movable = 0;
+  unsigned n_frozen = 0;
   ws.next_y[0] = 0.0;
   for (unsigned i = 1; i < n; ++i) {
     const double tau = b.tau[i];
@@ -1340,12 +1363,14 @@ template <unsigned NB, unsigned NQ>
       ws.next_y[i] = 0.0;
       continue;
     }
+    ++n_movable;
     const double b_val = b_from_y(b.y[i], b.xmax);
     double Nv = 0.0;
     double Dv = 0.0;
     eqn_b_ND_impl<NB, NQ>(b, ws, i, tau, b_val, sigma, r, q, Nv, Dv);
     if (!(Dv > 1.0e-300)) {
       ws.next_y[i] = b.y[i];
+      ++n_frozen;
       continue;
     }
     const double alpha = b.K * std::exp(-(r - q) * tau);
@@ -1366,11 +1391,11 @@ template <unsigned NB, unsigned NQ>
   for (unsigned i = 0; i < n; ++i) {
     b.y[i] = ws.next_y[i];
   }
-  return max_dy;
+  return AlSweepResult{max_dy, n_movable > 0 && n_frozen == n_movable};
 }
 
-[[nodiscard]] double al_fixed_point_sweep(AlBoundary &b, AlWorkspace &ws, double sigma, double r,
-                                          double q) noexcept {
+[[nodiscard]] AlSweepResult al_fixed_point_sweep(AlBoundary &b, AlWorkspace &ws, double sigma,
+                                                 double r, double q) noexcept {
   ATX_VOL_COUNT(FixedPointSweeps);
   if (ws.specialize) {
     if (b.n == 7 && ws.n_quad_fp == 8) {
@@ -1598,9 +1623,18 @@ namespace amer {
     al_seed_boundary(bnd, sigma, r, q);
   }
 
+  // A frozen sweep (below) is DETERMINISTIC: nothing moved, so the next sweep sees
+  // the identical (bnd.y, geometry) and freezes identically. Bailing out on the
+  // first one is therefore not an early heuristic — it is the whole remaining
+  // budget's answer, reported as a status the callers already branch on rather
+  // than as a seed-valued price nothing downstream can recognise as unsolved.
   double resid = 1.0;
   for (std::uint16_t k = 0; k < sch.n_iter_jn; ++k) {
-    resid = al_jacobi_newton_sweep(bnd, ws, sigma, r, q);
+    const AlSweepResult s = al_jacobi_newton_sweep(bnd, ws, sigma, r, q);
+    if (s.all_frozen) {
+      return AlSolveStatus::NotConverged;
+    }
+    resid = s.max_dy;
     if (resid <= sch.tol) {
       ATX_VOL_COUNT(EarlyResidualExits);
       break;
@@ -1608,7 +1642,11 @@ namespace amer {
   }
   if (resid > sch.tol) {
     for (std::uint16_t k = 0; k < sch.n_iter_fp; ++k) {
-      resid = al_fixed_point_sweep(bnd, ws, sigma, r, q);
+      const AlSweepResult s = al_fixed_point_sweep(bnd, ws, sigma, r, q);
+      if (s.all_frozen) {
+        return AlSolveStatus::NotConverged;
+      }
+      resid = s.max_dy;
       if (resid <= sch.tol) {
         ATX_VOL_COUNT(EarlyResidualExits);
         break;
@@ -1698,14 +1736,22 @@ namespace amer {
 
   double resid = 1.0;
   for (std::uint16_t k = 0; k < sch.n_iter_jn; ++k) {
-    resid = al_jacobi_newton_sweep(bnd, ws, sigma, r, q);
+    const AlSweepResult s = al_jacobi_newton_sweep(bnd, ws, sigma, r, q);
+    if (s.all_frozen) {
+      return AlSolveStatus::NotConverged; // see al_solve_put_boundary
+    }
+    resid = s.max_dy;
     if (resid <= sch.tol) {
       break;
     }
   }
   if (resid > sch.tol) {
     for (std::uint16_t k = 0; k < sch.n_iter_fp; ++k) {
-      resid = al_fixed_point_sweep(bnd, ws, sigma, r, q);
+      const AlSweepResult s = al_fixed_point_sweep(bnd, ws, sigma, r, q);
+      if (s.all_frozen) {
+        return AlSolveStatus::NotConverged;
+      }
+      resid = s.max_dy;
       if (resid <= sch.tol) {
         break;
       }
@@ -1824,7 +1870,13 @@ AlSolveStatus al_solve_put_boundary_tape(double K, double T, double sigma, doubl
   std::uint16_t step = 0;
   double resid = 1.0;
   for (std::uint16_t k = 0; k < sch.n_iter_jn; ++k) {
-    resid = al_jacobi_newton_sweep(bnd, ws, sigma, r, q);
+    const AlSweepResult s = al_jacobi_newton_sweep(bnd, ws, sigma, r, q);
+    if (s.all_frozen) {
+      // Unsolvable boundary (see al_solve_put_boundary). tape.n_steps stays 0, so
+      // no caller can replay a tangent through a tape this returned non-Ok on.
+      return AlSolveStatus::NotConverged;
+    }
+    resid = s.max_dy;
     tape.is_jn[step] = true;
     for (std::uint16_t i = 0; i < bnd.n; ++i) {
       tape.y_iter[step + 1][i] = bnd.y[i];
@@ -1837,7 +1889,11 @@ AlSolveStatus al_solve_put_boundary_tape(double K, double T, double sigma, doubl
   }
   if (resid > sch.tol) {
     for (std::uint16_t k = 0; k < sch.n_iter_fp; ++k) {
-      resid = al_fixed_point_sweep(bnd, ws, sigma, r, q);
+      const AlSweepResult s = al_fixed_point_sweep(bnd, ws, sigma, r, q);
+      if (s.all_frozen) {
+        return AlSolveStatus::NotConverged;
+      }
+      resid = s.max_dy;
       tape.is_jn[step] = false;
       for (std::uint16_t i = 0; i < bnd.n; ++i) {
         tape.y_iter[step + 1][i] = bnd.y[i];
@@ -1894,6 +1950,16 @@ namespace { // reopen the file's anonymous namespace
 // (rate=q, yield=r), so passing (r,q) for a put and (q,r) for a call covers both
 // sides through one classifier.
 
+// Shared message for the boundary the collocation sweep cannot move at all: every
+// node's fixed-point denominator D underflows, so the scheme has no equation to
+// solve and the boundary would otherwise be served at its analytic seed. Reachable
+// in the heavy-carry, near-zero-sigma corner (xmax = K*min(1,r/q) far below K with
+// sigma just above the degenerate floor), where every d_plus underflows norm_cdf.
+constexpr const char *kUnsolvableBoundaryMsg =
+    "andersen_lake: exercise-boundary sweep froze at every collocation node "
+    "(collapsed fixed-point denominator) — the boundary is unsolvable at this "
+    "(sigma, r, q, T); no price is served off the unconverged seed";
+
 // Shared message for the double-continuation corner the ALO scheme cannot price.
 constexpr const char *kDoubleContinuationMsg =
     "double-continuation regime (put q < r <= 0 / call r < q <= 0): the "
@@ -1927,6 +1993,8 @@ constexpr const char *kDoubleContinuationMsg =
                "andersen_lake: asymptotic boundary collapsed (xmax <= 0)");
   case AlSolveStatus::TableMissing:
     return Err(ErrorCode::Internal, "andersen_lake: Gauss-Legendre table unavailable");
+  case AlSolveStatus::NotConverged:
+    return Err(ErrorCode::NotImplemented, kUnsolvableBoundaryMsg);
   case AlSolveStatus::Ok:
     break;
   }
@@ -2291,14 +2359,25 @@ double AloPricer::price(double sigma) noexcept {
   // reconverges.
   double resid = 1.0;
   for (std::uint16_t k = 0; k < s.sch.n_iter_jn; ++k) {
-    resid = al_jacobi_newton_sweep(s.bnd, s.ws, sigma, s.rp, s.qp);
+    const AlSweepResult sw = al_jacobi_newton_sweep(s.bnd, s.ws, sigma, s.rp, s.qp);
+    if (sw.all_frozen) {
+      // Unsolvable boundary (al_solve_put_boundary's NotConverged corner) surfaced
+      // through this pricer's NaN failure channel. s.seeded is left FALSE so the
+      // next call re-seeds cold rather than warm-starting from the frozen state.
+      return std::numeric_limits<double>::quiet_NaN();
+    }
+    resid = sw.max_dy;
     if (resid <= s.sch.tol) {
       break;
     }
   }
   if (resid > s.sch.tol) {
     for (std::uint16_t k = 0; k < s.sch.n_iter_fp; ++k) {
-      resid = al_fixed_point_sweep(s.bnd, s.ws, sigma, s.rp, s.qp);
+      const AlSweepResult sw = al_fixed_point_sweep(s.bnd, s.ws, sigma, s.rp, s.qp);
+      if (sw.all_frozen) {
+        return std::numeric_limits<double>::quiet_NaN();
+      }
+      resid = sw.max_dy;
       if (resid <= s.sch.tol) {
         break;
       }
@@ -2428,14 +2507,24 @@ Status andersen_lake_call_slice(double S, std::span<const double> strikes, doubl
   al_seed_boundary(bnd, sigma, rp, qp);
   double resid = 1.0;
   for (std::uint16_t k = 0; k < sch.n_iter_jn; ++k) {
-    resid = al_jacobi_newton_sweep(bnd, ws, sigma, rp, qp);
+    const AlSweepResult s = al_jacobi_newton_sweep(bnd, ws, sigma, rp, qp);
+    if (s.all_frozen) {
+      // Same unsolvable-boundary corner al_solve_put_boundary reports as
+      // NotConverged; this slice runs its own copy of that sweep schedule.
+      return Err(ErrorCode::NotImplemented, kUnsolvableBoundaryMsg);
+    }
+    resid = s.max_dy;
     if (resid <= sch.tol) {
       break;
     }
   }
   if (resid > sch.tol) {
     for (std::uint16_t k = 0; k < sch.n_iter_fp; ++k) {
-      resid = al_fixed_point_sweep(bnd, ws, sigma, rp, qp);
+      const AlSweepResult s = al_fixed_point_sweep(bnd, ws, sigma, rp, qp);
+      if (s.all_frozen) {
+        return Err(ErrorCode::NotImplemented, kUnsolvableBoundaryMsg);
+      }
+      resid = s.max_dy;
       if (resid <= sch.tol) {
         break;
       }
@@ -2565,6 +2654,8 @@ Status andersen_lake_put_slice(double S, std::span<const double> strikes, double
                "andersen_lake_put_slice: asymptotic boundary collapsed (xmax <= 0)");
   case AlSolveStatus::TableMissing:
     return Err(ErrorCode::Internal, "andersen_lake_put_slice: Gauss-Legendre table unavailable");
+  case AlSolveStatus::NotConverged:
+    return Err(ErrorCode::NotImplemented, kUnsolvableBoundaryMsg);
   case AlSolveStatus::Ok:
     break;
   }
@@ -3671,6 +3762,8 @@ Result<double> exercise_boundary(double K, double T, double sigma, double r, dou
                "exercise_boundary: asymptotic boundary collapsed (xmax <= 0)");
   case AlSolveStatus::TableMissing:
     return Err(ErrorCode::Internal, "exercise_boundary: Gauss-Legendre table unavailable");
+  case AlSolveStatus::NotConverged:
+    return Err(ErrorCode::NotImplemented, kUnsolvableBoundaryMsg);
   case AlSolveStatus::Ok:
     break;
   }
@@ -4125,7 +4218,10 @@ int al_boundary_jn_sweeps_to_converge(double K, double T, double sigma, double r
     // best any analytic seed could do (the lower bound on sweeps-to-converge).
     al_seed_boundary(bnd, sigma, r, q);
     for (int k = 0; k < 80; ++k) {
-      if (al_jacobi_newton_sweep(bnd, ws, sigma, r, q) <= 1.0e-15) {
+      const AlSweepResult s = al_jacobi_newton_sweep(bnd, ws, sigma, r, q);
+      // A frozen sweep reproduces itself exactly, so there is nothing left to
+      // pre-converge; stop and let the counting loop below report non-convergence.
+      if (s.all_frozen || s.max_dy <= 1.0e-15) {
         break;
       }
     }
@@ -4134,7 +4230,13 @@ int al_boundary_jn_sweeps_to_converge(double K, double T, double sigma, double r
   }
 
   for (int k = 0; k < max_sweeps; ++k) {
-    if (al_jacobi_newton_sweep(bnd, ws, sigma, r, q) <= tol) {
+    const AlSweepResult s = al_jacobi_newton_sweep(bnd, ws, sigma, r, q);
+    if (s.all_frozen) {
+      // max_dy == 0 because NOTHING moved, not because the boundary converged —
+      // this seam measures sweeps-to-converge, so that must not read as 1 sweep.
+      break;
+    }
+    if (s.max_dy <= tol) {
       return k + 1;
     }
   }

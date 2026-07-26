@@ -412,8 +412,9 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
             }
             return;
           }
-          // Collapsed / table-missing: fall through so the lane takes american_price's
-          // own error handling (Err -> NaN -> fallback), unchanged.
+          // Collapsed / table-missing / frozen-sweep NotConverged: fall through so the
+          // lane takes american_price's own error handling (Err -> NaN -> fallback),
+          // unchanged.
         }
 
         // Cold arm: the pre-A7 path, one `american_price` per Exact cell of this column.

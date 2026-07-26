@@ -278,6 +278,72 @@ TEST(AmericanDegenerateSigma, DeltaMatchesGreeksFdDelta_Put) {
   EXPECT_NEAR(d, -std::exp(-q * T), 1.0e-9);
 }
 
+// ── Wholly frozen boundary sweep (plan 1.7) ────────────────────────────────
+//
+// A collocation node whose fixed-point denominator D collapses is FROZEN at its
+// seed value, and the freeze skips the |Δy| update — so it contributes nothing to
+// the sweep's residual. A sweep that freezes EVERY node therefore reports
+// max|Δy| == 0 ("converged") after moving nothing, and the solve used to return
+// Ok carrying the raw Barone-Adesi-Whaley seed, i.e. a silently unsolved boundary.
+//
+// Reachable with a heavy-carry contract at a sigma just above the degenerate
+// short-circuit: xmax = K*min(1, r/q) pins the whole boundary an order below K,
+// and with sigma ~ 1e-7 every d_plus argument (tip and quadrature) underflows
+// norm_cdf to exactly zero, collapsing D at every node.
+TEST(AndersenLakeFrozenSweep, AllNodesFrozen_IsNotReportedAsConverged) {
+  using atx::vol::detail::al_boundary_jn_sweeps_to_converge;
+  using atx::vol::detail::AlSeedMode;
+  const double S = 100.0, K = 100.0, T = 1.0, sigma = 1.0e-7, r = 0.05, q = 0.50;
+  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::American);
+  ASSERT_GT(sigma, 1.0e-8); // above the degenerate guard: a real boundary solve runs
+
+  // Residual view: at tol == 0 a genuine sweep off a BAW seed can never report
+  // "converged", so a count of 1 is the frozen-node residual lie itself.
+  const int sweeps =
+      al_boundary_jn_sweeps_to_converge(K, T, sigma, r, q, std::nullopt, AlSeedMode::Baw, 0.0, 8);
+  EXPECT_EQ(sweeps, 8) << "a wholly frozen sweep must never be counted as converged";
+
+  // Every route that runs the boundary solve must report the failure, not a price
+  // off the seed.
+  const auto p = andersen_lake(S, K, T, sigma, r, q, Side::Put);
+  ASSERT_FALSE(p.has_value()) << "priced " << (p ? *p : 0.0) << " from an unsolved boundary";
+  EXPECT_EQ(p.error().code(), atx::core::ErrorCode::NotImplemented);
+
+  const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Put,
+                                    AmericanMethod::AndersenLake, std::nullopt,
+                                    /*warm_start=*/false);
+  EXPECT_FALSE(g.has_value());
+
+  const double strikes[] = {100.0};
+  std::vector<double> px(1, 0.0);
+  EXPECT_FALSE(andersen_lake_put_slice(S, std::span<const double>(strikes), T, sigma, r, q,
+                                       std::span<double>(px), std::nullopt)
+                   .has_value());
+
+  // The retained pricer's failure channel is NaN, not an error code.
+  AloPricer pr(S, K, T, r, q, Side::Put);
+  EXPECT_TRUE(std::isnan(pr.price(sigma)));
+
+  // A call with the carry swapped freezes the same internal-put boundary.
+  const auto c = andersen_lake(S, K, T, sigma, /*r=*/0.50, /*q=*/0.05, Side::Call);
+  ASSERT_FALSE(c.has_value());
+  EXPECT_EQ(c.error().code(), atx::core::ErrorCode::NotImplemented);
+  EXPECT_FALSE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, sigma,
+                                        /*r=*/0.50, /*q=*/0.05, std::span<double>(px), std::nullopt)
+                   .has_value());
+}
+
+// The frozen-sweep failure is confined to the degenerate-sigma corner: a normal
+// contract at the same carry still solves and prices.
+TEST(AndersenLakeFrozenSweep, HeavyCarryAtNormalSigma_StillPrices) {
+  const double S = 100.0, K = 100.0, T = 1.0, r = 0.05, q = 0.50;
+  for (double sigma : {0.005, 0.05, 0.20, 0.80}) {
+    const auto p = andersen_lake(S, K, T, sigma, r, q, Side::Put);
+    ASSERT_TRUE(p.has_value()) << "sigma=" << sigma << " : " << p.error().to_string();
+    EXPECT_GE(*p, std::max(K - S, 0.0));
+  }
+}
+
 // ── McDonald-Schroder put-call symmetry ─────────────────────────────────
 
 TEST(AndersenLake, McDonaldSchroderSymmetry_CallEqualsSwappedPut) {
