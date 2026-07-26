@@ -370,7 +370,18 @@ Result<std::string> str(const DictTsv &tsv, std::size_t row, std::string_view na
   return Ok(*value);
 }
 
+// Every comparison involving a NaN is false, so `|actual - expected| > tolerance`
+// used to PASS whenever either side had gone non-finite — this validator agreed
+// with the artifact it exists to check, and the caller published the NaN. An Inf
+// TOLERANCE is the same failure from the other side: it admits every value.
+// `dec()` already refuses a literal "nan"/"inf" cell, so a non-finite number
+// reaches here only by arithmetic (an overflowing quantity x multiplier, a
+// division by a zero pair vega), which is exactly when the recomputation is
+// worthless and must be reported rather than accepted.
 Status close_to(double actual, double expected, double tolerance, const char *label) {
+  if (!std::isfinite(actual) || !std::isfinite(expected) || !std::isfinite(tolerance)) {
+    return recon_fail(std::string(label) + " is not a finite number");
+  }
   if (std::abs(actual - expected) > tolerance) {
     return recon_fail(std::string(label) + " out of tolerance");
   }

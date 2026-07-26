@@ -182,7 +182,10 @@ std::string reconciliation_text() {
   return text;
 }
 
-std::string backtest_text() {
+// `second_total` is the second session's P&L (and therefore its NAV): the
+// default reproduces the reconciliation the marks fixture above implies, and
+// "0" gives the flat run a no-move marks fixture implies.
+std::string backtest_text(std::string_view second_total = "200") {
   const std::vector<std::string_view> fields = {
       "date",         "ts_ns",           "pnl_total",     "pnl_delta",      "pnl_gamma",
       "pnl_vega",     "pnl_vanna",       "pnl_volga",     "pnl_theta",      "pnl_rho",
@@ -219,7 +222,7 @@ std::string backtest_text() {
     line.push_back('\n');
     return line;
   };
-  return header + row("2026-07-10", "100", "0") + row("2026-07-11", "200", "200");
+  return header + row("2026-07-10", "100", "0") + row("2026-07-11", "200", second_total);
 }
 
 } // namespace
@@ -1679,6 +1682,83 @@ TEST(DispersionIndexRouting, CorpusBuildWithASpyIndexIsUnchanged) {
 
   std::error_code error;
   fs::remove_all(fixture.root, error);
+}
+
+// ── The reconciliation tolerance gates reject a non-finite side ──────────────
+//
+// `close_to` was `if (std::abs(actual - expected) > tolerance) fail;`. Every
+// comparison against a NaN is false, so a gate whose recomputed side had gone
+// non-finite PASSED — the reconciler agreed with the artifact it exists to
+// check, and published the NaN. `dec()` already refuses a literal "nan"/"inf"
+// cell, so the way a non-finite number actually reaches a gate is arithmetic:
+// below, one lot's `quantity * multiplier` overflows to +Inf and its mark does
+// not move, and `Inf * 0.0` is NaN.
+
+namespace {
+
+// Four legs, entry and held marks IDENTICAL on every one, so every P&L is
+// exactly zero — except SPY2, whose quantity x multiplier is 1e307 * 100 and
+// therefore +Inf. Every cell is individually well-formed and finite.
+[[nodiscard]] std::string overflowing_marks_text() {
+  std::string text =
+      tsv_row({"date", "valuation_ts_ns", "role", "cohort", "symbol", "uid", "instrument_id",
+               "raw_symbol", "expiry_ts_ns", "strike", "side", "quantity", "multiplier", "status",
+               "raw_bid", "raw_ask", "raw_mid", "model_mark", "model_in_spread"});
+  struct Leg {
+    std::string_view raw, symbol, uid, iid, side, quantity, mark;
+  };
+  const Leg legs[] = {
+      {"AAPL3", "AAPL", "2", "3", "C", "1", "5"},
+      {"AAPL4", "AAPL", "2", "4", "P", "1", "5"},
+      {"SPY1", "SPY", "1", "1", "C", "-1", "10"},
+      {"SPY2", "SPY", "1", "2", "P", "1e307", "9"},
+  };
+  for (const std::string_view role : {"Entry", "Held"}) {
+    const std::string_view date = role == "Entry" ? "2026-07-10" : "2026-07-11";
+    const std::string_view ts = role == "Entry" ? "100" : "200";
+    for (const Leg &leg : legs) {
+      text += tsv_row({date, ts, role, "1", leg.symbol, leg.uid, leg.iid, leg.raw, "100000", "100",
+                       leg.side, leg.quantity, "100", "Ok", leg.mark, leg.mark, leg.mark, leg.mark,
+                       "1"});
+    }
+  }
+  return text;
+}
+
+// What a run of `overflowing_marks_text()` reconciles to if the arithmetic is
+// taken at face value: nothing moved, so every P&L and NAV is zero on both
+// dates and all four lots are quoted.
+[[nodiscard]] std::string flat_reconciliation_text() {
+  std::string text =
+      tsv_row({"date", "valuation_ts_ns", "held_cohort", "model_option_pnl", "quote_mid_pnl",
+               "model_minus_quote_pnl", "model_nav", "quote_mid_nav", "quote_mid_coverage",
+               "n_held_lots", "n_quote_mid_lots"});
+  text += tsv_row({"2026-07-10", "100", "1", "0", "0", "0", "0", "0", "1", "4", "4"});
+  text += tsv_row({"2026-07-11", "200", "1", "0", "0", "0", "0", "0", "1", "4", "4"});
+  return text;
+}
+
+} // namespace
+
+TEST(DispersionReferenceReconcile, ANonFiniteRecomputedPnlFailsTheToleranceGate) {
+  const fs::path run = make_run_dir("recon_nan_gate");
+  write_file(run / "trade_schedule.tsv", schedule_text());
+  write_file(run / "contract_marks.tsv", overflowing_marks_text());
+  write_file(run / "reconciliation.tsv", flat_reconciliation_text());
+  write_file(run / "backtest.tsv", backtest_text(/*second_total=*/"0"));
+
+  const auto records = reconcile_dispersion_reference(run, /*schedule_only=*/false);
+
+  ASSERT_FALSE(records)
+      << "a reconciliation whose recomputed model P&L is NaN was accepted: every tolerance gate "
+         "compares with `>`, which is false against a NaN, so the reconciler agreed with the "
+         "artifact it exists to check and published "
+      << records->size() << " record(s)";
+  EXPECT_NE(records.error().to_string().find("model option P&L"), std::string::npos)
+      << "the failure must name the gate that caught it: " << records.error().to_string();
+
+  std::error_code error;
+  fs::remove_all(run, error);
 }
 
 TEST(DispersionIndexRouting, ScheduleBuildResolvesTheConfiguredIndexLeg) {
