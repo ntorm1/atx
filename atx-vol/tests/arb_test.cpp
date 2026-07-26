@@ -38,6 +38,7 @@ using atx::vol::arb_project_calendar_essvi_pair;
 using atx::vol::arb_project_calendar_svi;
 using atx::vol::arb_project_calendar_svi_pair;
 using atx::vol::arb_project_calendar_c8_pair;
+using atx::vol::arb_repair_calendar_residual;
 using atx::vol::black76_price;
 using atx::vol::c8_slice_w;
 using atx::vol::C8Curve;
@@ -57,6 +58,7 @@ using atx::vol::Parametrization;
 using atx::vol::prefit_filter_underlier;
 using atx::vol::QuoteBatch;
 using atx::vol::QuoteFlag;
+using atx::vol::ResidualBasisKind;
 using atx::vol::Side;
 using atx::vol::svi_total_w;
 using atx::vol::SviParams;
@@ -86,6 +88,22 @@ using atx::vol::VolSurface;
   s1.T = T1;
   (void)surf.set_slice_essvi(0, s0);
   (void)surf.set_slice_essvi(1, s1);
+  return surf;
+}
+
+// The same two-slice eSSVI stack with a POSITIVE right-wing HINGE_QUAD residual
+// on the shorter-dated slice (`resid_scale` 0.1 puts k >= 0.04 outside the dead
+// band). `th0` vs `th1` therefore decides whether the crossing survives the
+// residual damper: th0 < th1 is repairable (only the residual crosses), th0 >
+// th1 is not (the backbones themselves cross, which alpha = 0 cannot fix).
+[[nodiscard]] VolSurface make_essvi_2slice_resid(double th0, double th1, double wing_coef) {
+  VolSurface surf = make_essvi_2slice(th0, 0.25, th1, 1.0);
+  EssviParams s0 = surf.essvi_slices()[0];
+  s0.resid_scale = 0.1;
+  s0.resid_basis_kind = ResidualBasisKind::HingeQuad;
+  s0.resid_n_basis = 5;
+  s0.resid_coef[3] = wing_coef; // right-wing hinge
+  (void)surf.set_slice_essvi(0, s0);
   return surf;
 }
 
@@ -606,6 +624,49 @@ TEST(ArbProjectCalendarEssvi, IdempotentOnAlreadyMonotone) {
   const double theta_before = surf.essvi_slices()[1].theta;
   ASSERT_TRUE(arb_project_calendar_essvi(surf, -0.3, 0.3, 32).has_value());
   EXPECT_NEAR(surf.essvi_slices()[1].theta, theta_before, 1.0e-15);
+}
+
+TEST(ArbRepairCalendarResidual, FeasibleAtAlphaZero_DampsResidualToMonotone) {
+  // Backbones are monotone (0.04 -> 0.05); only slice0's wing residual crosses.
+  // The damper must scale it down, NOT erase it, and must land monotone.
+  VolSurface surf = make_essvi_2slice_resid(0.04, 0.05, 0.05);
+  const EssviParams before = surf.essvi_slices()[0];
+  const EssviParams hi = surf.essvi_slices()[1];
+  ASSERT_GT(essvi_total_w(before, 0.2), essvi_total_w(hi, 0.2)); // crossing exists
+
+  ASSERT_TRUE(arb_repair_calendar_residual(surf, -0.2, 0.2, 32).has_value());
+
+  const EssviParams after = surf.essvi_slices()[0];
+  EXPECT_GT(after.resid_scale, 0.0); // damped, not collapsed to backbone
+  EXPECT_EQ(after.resid_basis_kind, before.resid_basis_kind);
+  EXPECT_GT(after.resid_coef[3], 0.0);
+  EXPECT_LT(after.resid_coef[3], before.resid_coef[3]);
+  for (int i = 0; i <= 32; ++i) {
+    const double k = -0.2 + 0.4 * static_cast<double>(i) / 32.0;
+    EXPECT_LE(essvi_total_w(after, k), essvi_total_w(hi, k) + 1.0e-12) << "k=" << k;
+  }
+}
+
+TEST(ArbRepairCalendarResidual, InfeasibleAtAlphaZero_ErrsAndKeepsResidualIntact) {
+  // slice0's BACKBONE alone (theta 0.16) already exceeds slice1's (0.04), so
+  // alpha = 0 -- the endpoint the bisection ASSUMES feasible -- does not repair
+  // the crossing. Committing it would zero slice0's residual layer and report
+  // success on a surface that is still calendar-arbitrageable.
+  VolSurface surf = make_essvi_2slice_resid(0.16, 0.04, 0.02);
+  const EssviParams before = surf.essvi_slices()[0];
+
+  const auto st = arb_repair_calendar_residual(surf, -0.2, 0.2, 32);
+  ASSERT_FALSE(st.has_value()) << "unrepairable calendar arb reported as repaired";
+  EXPECT_EQ(st.error().code(), ErrorCode::Unavailable);
+
+  // Transactional: the input surface is byte-for-byte what the caller passed in.
+  const EssviParams after = surf.essvi_slices()[0];
+  EXPECT_EQ(after.resid_scale, before.resid_scale);
+  EXPECT_EQ(after.resid_basis_kind, before.resid_basis_kind);
+  EXPECT_EQ(after.resid_n_basis, before.resid_n_basis);
+  for (std::size_t j = 0; j < before.resid_coef.size(); ++j) {
+    EXPECT_EQ(after.resid_coef[j], before.resid_coef[j]) << "coef " << j;
+  }
 }
 
 TEST(ArbProjectCalendarPair, EssviClosesSharedGridAndPreservesButterfly) {

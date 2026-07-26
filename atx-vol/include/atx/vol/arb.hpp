@@ -304,7 +304,13 @@ struct CalendarPairProjection {
 // monotonicity holds (alpha = 0 collapses it to backbone, always monotone with
 // the next backbone once `arb_project_calendar_essvi` has run). Up to 5 outer
 // sweeps. No-op for a non-eSSVI surface.
+//
+// TRANSACTIONAL: the sweeps run on a private copy of the slices, so on ANY
+// non-Ok return `s` is exactly what was passed in.
 // @return InvalidArgument if `k_max <= k_min` (after the no-op guards).
+// @return Unavailable if the alpha = 0 endpoint does not repair some pair — the
+//         backbones themselves cross, which no amount of residual damping fixes.
+//         Run `arb_project_calendar_essvi` over the same grid first.
 [[nodiscard]] Status arb_repair_calendar_residual(VolSurface &s, double k_min,
                                                   double k_max,
                                                   std::uint32_t n_grid);

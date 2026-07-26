@@ -871,10 +871,24 @@ Status arb_repair_calendar_residual(VolSurface &s, double k_min, double k_max,
           0.0) {
         continue;
       }
-      // Bisect the residual damper: alpha = 0 (backbone-only) is always
-      // feasible once arb_project_calendar_essvi has enforced backbone
-      // monotonicity.
-      double a_lo = 0.0;  // feasible
+      // VERIFY the bisection's lower endpoint instead of assuming it. alpha = 0
+      // collapses `lo` to its backbone, which is monotone against `hi` only once
+      // arb_project_calendar_essvi has run (the documented precondition). When it
+      // has not — or the projection could not close the pair — alpha = 0 does not
+      // repair the crossing, and the bisection below would converge on a_lo = 0,
+      // commit it (erasing `lo`'s whole residual layer) and report Ok on a surface
+      // that is still calendar-arbitrageable. Damping can only pull `lo` DOWN
+      // toward that backbone, so no larger alpha helps either: the pair is
+      // unrepairable by this operator. Fail before touching anything.
+      if (total_calendar_deficit_with_alpha(lo, hi, 0.0, k_min, k_max, n_grid) > 0.0) {
+        // TRANSACTIONAL, like every repair in this file: the sweeps mutate the
+        // local `slices` copy and only `write_back_essvi` commits, so returning
+        // here leaves the caller's surface exactly as it was passed in.
+        return Err(ErrorCode::Unavailable,
+                   "arb_repair_calendar_residual: backbone crossing survives full "
+                   "residual damping (run arb_project_calendar_essvi first)");
+      }
+      double a_lo = 0.0;  // feasible (verified above)
       double a_hi = 1.0;  // infeasible
       for (int it = 0; it < 20; ++it) {
         const double a_mid = 0.5 * (a_lo + a_hi);
