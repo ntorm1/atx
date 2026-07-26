@@ -263,10 +263,14 @@ struct SnapshotCacheStats {
 // accuracy contract share one archive open/map. Distinct tiers never alias.
 // The default constructor is unbounded for deliberate reuse across repeated
 // backtest/reconciliation sweeps. Passing a positive capacity selects a
-// deterministic least-recently-used mode for one-pass pipelines. Automatic
-// eviction never removes an in-flight future; bounded mode can therefore exceed
-// its target temporarily while every candidate is loading, then trims on the
-// next cache operation. Copies share both entries and the configured mode.
+// deterministic INSERTION-ORDER (FIFO) eviction mode for one-pass pipelines —
+// deliberately not least-recently-used: a forward-only sweep never revisits a
+// date, so recency ranks the dates it has already passed above the read-ahead
+// entries it is about to need (sequential flooding), and the cache then evicts
+// completed prefetches and reloads them. Automatic eviction never removes an
+// in-flight future; bounded mode can therefore exceed its target temporarily
+// while every candidate is loading, then trims on the next cache operation.
+// Copies share both entries and the configured mode.
 class SnapshotCache {
 public:
   // Reusable/unbounded mode.
@@ -597,6 +601,27 @@ struct RunConfig {
   // Ignored by no overload: the fixed-book (B0) overload has no strategy, so
   // setting this there is a fail-closed InvalidArgument, never a silent drop.
   StepObserver step_observer{};
+  // Snapshot look-ahead DEPTH: how many future steps' snapshots may be in flight
+  // at once. 1 is the historical single-step look-ahead — at step i exactly one
+  // load (i+1) overlaps step i's economics, so if a load costs more than a step's
+  // economics the run is load-bound and the loads are effectively serialized.
+  // A depth of D keeps D loads in flight, so an independent-and-parallel load
+  // stage pipelines against the strictly sequential economics; the run then costs
+  // about max(economics, total_load / D) instead of economics + total_load.
+  //
+  // OUTPUT IS UNAFFECTED AT ANY DEPTH. Depth changes only WHEN a snapshot is
+  // deserialized, never which bytes it deserializes from nor the order the
+  // economics consume them: the loop still loads refs[i] at step i, and every
+  // load is a pure function of one archive's bytes. `BacktestPrefetchDepth`
+  // pins that bit-identity.
+  //
+  // A depth of D needs a snapshot cache retaining at least D+2 entries (base +
+  // shifted + D in flight) or the LRU drops a completed prefetch before its step
+  // reaches it, converting look-ahead into wasted work. `run_backtest`'s private
+  // cache is sized from this field; a CALLER-SUPPLIED cache is the caller's to
+  // size, and an undersized one costs throughput but never correctness.
+  // 0 is normalized to 1 (no look-ahead is expressed by prefetch_snapshots=false).
+  std::size_t prefetch_depth{1};
 };
 
 // Reusable caller-owned handoff from a step's P&L target solve to the strategy

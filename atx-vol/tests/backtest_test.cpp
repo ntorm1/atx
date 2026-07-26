@@ -2664,3 +2664,96 @@ TEST(Backtest, SubsetDeserializeFixedBookParity) {
   std::printf("[b1] fixed-book subset-deser bit-identical to whole-board over %zu rows\n",
               subset_res->size());
 }
+
+// ── Look-ahead DEPTH is a scheduling knob, never an economic one ──────────────
+//
+// `RunConfig::prefetch_depth` exists so the independent, parallelizable snapshot
+// loads can pipeline against the strictly sequential economics. That is only worth
+// having if a deeper window cannot move a number, so this is the gate the speedup
+// rests on: every depth must reproduce the single-step look-ahead BIT-FOR-BIT.
+//
+// The open count is asserted alongside the values, and it is the half that would
+// catch a silently WASTED window. A run whose cache is too small for its depth
+// still produces identical numbers — it just evicts each completed prefetch before
+// its own step arrives and reloads the archive, which is a pure pessimization that
+// a values-only assertion cannot see. Pinning `open_count == refs.size()` at every
+// depth says each archive was opened exactly once, so the look-ahead was actually
+// consumed rather than thrown away and redone.
+//
+// THE CLOCK MUST BE LONG ENOUGH TO FORCE EVICTION, and this is the trap an earlier
+// version of this test fell into: with 9 dates the deepest windows here have a
+// capacity (depth + 2) LARGER than the whole corpus, so nothing is ever evicted, no
+// reload is possible, and the open-count assertion passes no matter what the
+// eviction order is. Verified by negative control — reintroducing the promote-on-use
+// that caused the reloads left the 9-date version GREEN. The corpus is therefore
+// sized well past the largest capacity under test (24 > 12 + 2) so every depth here
+// actually evicts, and the deepest depth still runs its window past the end of the
+// clock so the clamp is exercised too.
+TEST(Backtest, PrefetchDepthIsBitIdenticalToSingleStepLookAhead) {
+  const fs::path dir = fresh_dir("prefetch-depth");
+  const std::size_t kDates = 24u;
+  const CorpusManifest man = make_evolving_corpus(dir, "SPX", static_cast<int>(kDates));
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  ASSERT_EQ(clock->refs().size(), kDates);
+
+  // 4 is included on purpose: it is the depth at which the reload defect was first
+  // measured on the production replay, and the depth whose LRU arithmetic happened
+  // to be safe at some other capacities. 30 exceeds the clock.
+  const std::size_t depths[] = {1u, 2u, 3u, 4u, 8u, 12u, 30u};
+
+  // ── Strategy overload: whole-board loads (its private cache carries no uid
+  // subset, because a strategy's touched names are not known before on_step).
+  const auto run_strategy = [&](std::size_t depth) -> BacktestResult {
+    DeclarativeStrategy strategy{daily_two_leg_roll_spec()};
+    RunConfig config;
+    config.price.n_threads = 1u; // isolate the load pipeline from pricer fan-out
+    config.prefetch_depth = depth;
+    MarketSnapshot::reset_open_count();
+    auto result = run_backtest(*clock, strategy, config);
+    EXPECT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+    EXPECT_EQ(MarketSnapshot::open_count(), kDates)
+        << "depth " << depth << ": each archive must open exactly once";
+    return result.has_value() ? std::move(*result) : BacktestResult{};
+  };
+  const BacktestResult strategy_reference = run_strategy(1u);
+  ASSERT_EQ(strategy_reference.size(), kDates);
+  for (const std::size_t depth : depths) {
+    const BacktestResult deep = run_strategy(depth);
+    SCOPED_TRACE("strategy overload, prefetch_depth=" + std::to_string(depth));
+    expect_result_bit_identical(strategy_reference, deep);
+  }
+
+  // ── Fixed-book overload: subset-deserialize (its private cache DOES carry the
+  // book's uids), so its loader is a different one and needs its own coverage.
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs; // survives the whole clock
+  const auto run_fixed = [&](std::size_t depth) -> BacktestResult {
+    RunConfig config;
+    config.price.n_threads = 1u;
+    config.prefetch_depth = depth;
+    MarketSnapshot::reset_open_count();
+    auto result = run_backtest(*clock, survivor_book(expiry), config);
+    EXPECT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+    EXPECT_EQ(MarketSnapshot::open_count(), kDates)
+        << "depth " << depth << ": each archive must open exactly once";
+    return result.has_value() ? std::move(*result) : BacktestResult{};
+  };
+  const BacktestResult fixed_reference = run_fixed(1u);
+  ASSERT_EQ(fixed_reference.size(), kDates);
+  for (const std::size_t depth : depths) {
+    const BacktestResult deep = run_fixed(depth);
+    SCOPED_TRACE("fixed-book overload, prefetch_depth=" + std::to_string(depth));
+    expect_result_bit_identical(fixed_reference, deep);
+  }
+
+  // A zero depth is normalized to the single-step look-ahead rather than
+  // disabling look-ahead: "none" is spelled prefetch_snapshots=false.
+  RunConfig zero;
+  zero.price.n_threads = 1u;
+  zero.prefetch_depth = 0u;
+  MarketSnapshot::reset_open_count();
+  auto zero_res = run_backtest(*clock, survivor_book(expiry), zero);
+  ASSERT_TRUE(zero_res.has_value()) << zero_res.error().to_string();
+  EXPECT_EQ(MarketSnapshot::open_count(), kDates);
+  expect_result_bit_identical(fixed_reference, *zero_res);
+}
