@@ -299,13 +299,24 @@ larger) and it says which situation you are in:
 
 | `..._partition_unlisted` | what happened | what to do |
 | --- | --- | --- |
-| `0` | Cells that **were** stored failed to fit on this run, so the candidate lost them. | Suspect `--r` first (see the section below). Read the `failed_cell` lines for each cell's own reason. If the failures are genuine and you mean to retire those cells, re-run with `--allow-coverage-regression`. |
+| `0` | Cells that **were** stored failed to fit on this run, so the candidate lost them. | Suspect `--r` first (see the section below) — **but only if `coverage.cells_carried` is `0`**; see the third row. Read the `failed_cell` lines for each cell's own reason. If the failures are genuine and you mean to retire those cells, re-run with `--allow-coverage-regression`. |
 | `> 0` | That many refused dates have a partition **file on disk that the manifest does not list**. Nothing had to fail to fit: this run's board set was simply narrower than a file the index lost track of. | Re-run those dates over the **full board set** — that rewrites the file with everything it already holds and re-lists it. Or, if you have confirmed the file is stale, delete `<db-root>/partitions/<DATE>.atxvsa` by hand and re-run, which turns the date into a first write. **Do not** reach for `--allow-coverage-regression` here: it would delete exactly the surfaces that survived. |
+| `0`, **but `coverage.cells_carried > 0`** | A listed refusal on a run that also **carried** stored surfaces. The carry means those records validated for reuse, so the rate this build used is **not** the thing that is wrong. | **`--r` is not the suspect and the banner does not name it.** Re-running at a "corrected" `--r` would fail every re-fit and be refused date by date — or, with `--allow-coverage-regression`, **delete the carried surfaces**. Compare this run's failed-cell list against the previous run's instead: the same cells failing the same way is the converged steady state; a new cell, or an old cell with a new reason, is a real regression. |
 
 The stderr banner prints only the paragraph that applies, and a run holding both
-shapes gets both, each scoped to its own date count. The `--r` advice is deliberately
-**not** printed when every refusal is an unlisted partition — following it there
-wastes a rebuild at best, and reaching for the flag it offers destroys surfaces.
+of the first two shapes gets both, each scoped to its own date count.
+
+**The `--r` advice is suppressed on two states, for the same reason.** It is not
+printed when every refusal is an unlisted partition (row 2) — following it there
+wastes a rebuild at best, and reaching for the flag it offers destroys surfaces —
+and, since the third row, it is not printed when the run **carried** anything
+either. That second suppression exists because one `--strict` run could otherwise
+print both this paragraph and the strict banner's "**Do NOT** reach for `--r` …
+re-running would DELETE those surfaces", in one stderr stream, a few lines apart.
+The rule behind both: **on a state where a piece of advice is not the right advice,
+do not print it.** The decision is a single predicate
+(`refusal_advice_names_the_carry_rate`) so the two banners cannot drift apart
+again.
 
 **It is a superset test, not an equality test**, so a growing database is never
 blocked. And it fires only when a cell that **was stored** is missing from the
@@ -465,7 +476,7 @@ cells):
 $ atx-vol-surface-db-build --db /db --hive C:/atx-data/opra-hive \
       --from 2026-07-01 --to 2026-07-01 --r 0.043 --index SPY
 ... (the full report still prints to stdout, and --report is still written) ...
-atx-vol-surface-db-build: WARNING (exit 0): 0 cells fitted, 1 failed, 50 carried.
+atx-vol-surface-db-build: WARNING: 0 cells fitted, 1 failed, 50 carried.
   Cells that failed (1 shown, 0 elided): 2026-07-01/MCD
   This run produced no NEW surface. Two very different runs look like this and the
   counters cannot tell them apart:
@@ -485,9 +496,22 @@ atx-vol-surface-db-build: WARNING (exit 0): 0 cells fitted, 1 failed, 50 carried
   everywhere else it trades many good surfaces for one silenced line — usually a bad
   deal. If neither applies, this line is EXPECTED on every run and is not a defect on
   its own; what you watch is the list above CHANGING.
+  This WARNING does not set the exit code: build_exit_code never reads this predicate.
+  Reaching it means no verdict block fired, so this run exits 0, or 5 if a coverage
+  regression was REFUSED (its banner is above), or 1 if --report could not be written
+  (its message is above).
 $ echo $?
 0
 ```
+
+The banner used to be headed `WARNING (exit 0)`. It is not, and the last paragraph
+above is what replaced it. The parenthetical was a **hardcoded literal on a path
+that does not decide the exit**: a run that carries surfaces, fits nothing, and has
+one date **refused** by the coverage guard prints this warning and returns `5`. The
+tool said `exit 0` and exited `5`. Two ordinary dates are enough to build that run —
+one gaining a new symbol that fails to fit, one whose refusal comes from an
+unrelated lost cell — so it is a shape a production scheduler can meet. No banner in
+this tool now asserts an exit code it does not own.
 
 The `Cells that failed` list is what makes (a) and (b) separable at a glance: it is
 the only thing that distinguishes them, so it is on the warning rather than left
@@ -503,8 +527,9 @@ else. Three consequences worth knowing:
   *by default* for it is exactly the destructive false verdict the carry clause
   removed. The warning exists because the exit code cannot come back **on its
   own**. It can come back on your instruction: **`--strict`** turns this shape
-  into exit `3` (and suppresses this warning, which would otherwise print
-  "WARNING (exit 0)" beside a non-zero exit). Pass it only when you know your
+  into exit `3` (and suppresses this warning, whose whole text is "the tool is not
+  judging this run, here is why it can't" — the opposite of the verdict `--strict`
+  just returned). Pass it only when you know your
   database is not shape (a) — an unattended scheduler over a universe with no
   known-bad names. See [Why `--strict` is not the default](#why---strict-is-not-the-default).
 - **A FULLY converged database is silent.** Once no date has anything left to
@@ -749,12 +774,12 @@ retried on the next run exactly as before (see [Resume semantics](#resume-semant
 
 | Exit | When |
 | --- | --- |
-| `0` | Build succeeded — including **partial** coverage, a no-op **resume**, and a graceful empty-window no-op. Also two shapes that print a stderr WARNING and still exit `0`: the **carry-masked** shape (`cells_ok == 0`, `cells_failed > 0`, `cells_carried > 0` — see [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing); **`--strict` turns this one into `3`**, and is the only flag that changes any exit code here), and **partial load corruption** (`n_dates_loaded > 0` with `n_load_errors > 0`: some dates were unreadable, the rest were built). |
+| `0` | Build succeeded — including **partial** coverage, a no-op **resume**, and a graceful empty-window no-op. Also two shapes that print a stderr WARNING and, *on their own*, still exit `0`: the **carry-masked** shape (`cells_ok == 0`, `cells_failed > 0`, `cells_carried > 0` — see [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing)) and **partial load corruption** (`n_dates_loaded > 0` with `n_load_errors > 0`: some dates were unreadable, the rest were built). **Neither warning names an exit code, and neither owns one:** either can accompany a `5` from a coverage-regression refusal, and the carry-masked shape becomes `3` under `--strict`. Read the process's status, not the banner. **Two flags move a run into or out of this row:** `--strict` turns the carry-masked shape into `3`, and `--allow-coverage-regression` moves a refused run *out of* `5` and into `0` (the destruction is the operator's instruction, so it is not a verdict — the banner and the `--report` CSV's section 5 carry the record instead). |
 | `1` | A build error — malformed hive spec, or a db config/write failure. Message on stderr, **no report printed**. **One exception, and it is the only way `1` arrives with a report on stdout:** `--report` was given and the CSV could not be written. The build itself succeeded, the full report printed, and stderr names the write failure. It never masks `3` — see below. |
 | `2` | A usage error — unknown flag, a missing required flag, **a value-taking flag left at the end of the argv** (see below), an unknown `--preset`, or a malformed `--r` / `--pin-curve-family` / `--max-failures`. Usage on stderr. |
 | `3` | **The build ran to completion and produced NOTHING** — one of **total load failure** (`n_dates_loaded == 0`, `n_load_errors > 0`: files were present in the window and *every one* was unreadable, so not a board reached the fitter), **total config failure** (`disabled > 0`, `enabled == 0`, `cells_ok == 0`, `cells_carried == 0`: every symbol was disabled by a selection failure, so nothing was ever scheduled), or **total fit failure** (`cells_to_fit > 0`, `cells_ok == 0`, `cells_carried == 0`: work was scheduled, no cell fitted, and nothing was carried either). One code for all three — the script's question is "did this run produce anything?" and the stderr diagnostic names the stage. They are tested most-upstream-first, so a corrupt ingest reports as a load failure rather than as the config failure it causes. The full report still prints and `--report` is still written. See [Interest rate / carry](#interest-rate--carry--the-single-most-likely-way-a-build-produces-nothing). |
 | `3`, **with `--strict` only** | **Strict total fit failure** (`cells_to_fit > 0`, `cells_ok == 0`, *carry ignored*) — the same "scheduled work, fitted nothing" question with the carry exemption removed. Without `--strict` this run exits `0` with the carry-masked warning. **The same code, not a new one:** a script's question is unchanged, `--strict` only makes the answer stricter about what counts as producing something, and a fourth number would force every existing consumer to learn it to keep the behaviour it already has. `5` still preempts it. Its diagnostic **omits the `--r` advice** on purpose — a run that carried surfaces is a run whose stored records validated for reuse, so its rate is not what is wrong, and re-running at a "corrected" `--r` would fail every re-fit (refused date by date, or *destructive* with `--allow-coverage-regression`). It says to compare **this run's failed-cell list against the previous run's** instead. Still `0` under `--strict` when nothing was **scheduled**. |
-| `5` | **At least one date was REFUSED because committing its rewrite would have destroyed a stored surface** (`coverage.dates_refused_coverage_regression > 0`). Nothing was lost: those dates are exactly as they were, and every other date in the run was built normally. Deliberately **not** `3` — the tool worked and the database is intact; what failed is the *request*. It **preempts** `3` and `1` when both apply, because "your inputs would have deleted data" must not be reported as "your inputs produced nothing" — the latter invites the re-run that does the deleting. The exit-3 diagnostics still print in full alongside it, including their `--r` advice, which is the top suspect for a run that fitted nothing. The **refusal banner's own** `--r` advice is separate and conditional: it is printed only for refusals on a *listed* partition, and suppressed when `coverage.dates_refused_partition_unlisted` accounts for them all — see the two-causes table in [Refusing a rewrite that would destroy stored surfaces](#refusing-a-rewrite-that-would-destroy-stored-surfaces). |
+| `5` | **At least one date was REFUSED because committing its rewrite would have destroyed a stored surface** (`coverage.dates_refused_coverage_regression > 0`). Nothing was lost: those dates are exactly as they were, and every other date in the run was built normally. Deliberately **not** `3` — the tool worked and the database is intact; what failed is the *request*. It **preempts** `3` and `1` when both apply, because "your inputs would have deleted data" must not be reported as "your inputs produced nothing" — the latter invites the re-run that does the deleting. The exit-3 diagnostics still print in full alongside it, including their `--r` advice, which is the top suspect for a run that fitted nothing. The **refusal banner's own** `--r` advice is separate and conditional: it is printed only for refusals on a *listed* partition **and only when `coverage.cells_carried` is `0`** — suppressed when `coverage.dates_refused_partition_unlisted` accounts for them all, and suppressed on a run that carried surfaces (whose rate is demonstrably not the problem, and where the flag the advice offers would delete what it carried). See the three-row table in [Refusing a rewrite that would destroy stored surfaces](#refusing-a-rewrite-that-would-destroy-stored-surfaces). |
 
 <a id="why---strict-is-not-the-default"></a>
 **Why `--strict` is not the default.** The review that asked for the strict mode
@@ -847,7 +872,7 @@ disposition counters partition the distinct symbols seen:
 | `coverage.dates_dropped_coverage_regression` | The same detection on a run that passed `--allow-coverage-regression`: the date **was** written and the surfaces named below for it are **gone**. Non-zero here is a permanent, unrecoverable change to the database. |
 | `coverage.coverage_regression_cells_reported` / `_elided` | How many `coverage_regression_cell` lines were printed and how many the `--max-failures` cap left out. The two always sum to the full list; the `--report` CSV's fifth section is never capped. On the destructive `--allow-coverage-regression` branch the cap is **not** applied, so `_elided` is always `0` there and every destroyed cell is named. |
 | `coverage_regression_cell <date> <symbol>` | One line per stored surface the refused (or allowed) rewrite would have destroyed, ascending by (date, canonical symbol) and byte-identical for any `--fit-workers`. |
-| `symbol.<S> ...` | Per-symbol populate stats over the written dates. |
+| `symbol.<S> ...` | Per-symbol populate stats over the dates this run **processed** — **not** "written dates only". A date the coverage guard **refused** ran its fits in full and withheld only the commit, so its cells appear in these rows while `coverage.dates_written` never counted the date. Dates the resume filter skipped as already complete contribute nothing. |
 | `coverage.failed_cells_reported` / `_elided` | How many `failed_cell` lines were printed, and how many the `--max-failures` cap left out. The two always sum to `cells_failed`; the `--report` CSV is never capped. |
 | `failed_cell <date> <symbol> code=.. detail=..` | One line per failed cell, ascending by (date, symbol) — the fitter's own reason. See [Why each cell failed](#why-each-cell-failed--the-failed_cell-lines). |
 
