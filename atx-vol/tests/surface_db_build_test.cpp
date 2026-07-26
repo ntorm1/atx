@@ -1247,9 +1247,18 @@ TEST(SurfaceDbCarryMaskedFitFailure, SilentWhenAnythingFitted) {
   EXPECT_FALSE(is_carry_masked_fit_failure(partial));
 }
 
-// The warning and the exit codes are DISJOINT: BOTH exit-3 predicates need
-// `cells_carried == 0`, this one needs `> 0`. The CLI can never emit a verdict
-// and the hedge for one run, so a dead build gets the verdict and never both.
+// The warning and the two UNCONDITIONAL exit-3 predicates are DISJOINT: both of
+// those need `cells_carried == 0`, this one needs `> 0`.
+//
+// SCOPE, STATED EXACTLY, BECAUSE THE OLD VERSION OF THIS COMMENT DID NOT
+// (REV-R5, review I-1). It said "the CLI can never emit a verdict and the hedge
+// for one run", which is a claim about the CLI and is FALSE at HEAD — exit 5 and
+// `--strict` both co-occur with the hedge. This test only ever swept the two
+// predicates its name mentions, and that narrow property is still true and still
+// worth pinning; the claim above it was wider than the sweep. The two neighbours
+// that are NOT disjoint from the hedge are pinned as overlaps by the two tests
+// immediately below, so the CLI-level picture is complete and no comment has to
+// carry it.
 //
 // M-A. This used to assert the property at ONE point (a single dead report) and
 // against ONE of the two exit-3 predicates, while being named for the general
@@ -1299,6 +1308,109 @@ TEST(SurfaceDbCarryMaskedFitFailure, NeverOverlapsEitherExitCode) {
   EXPECT_GT(warned, 0u);
   EXPECT_GT(fit_failed, 0u);
   EXPECT_GT(config_failed, 0u);
+}
+
+// ── The two OVERLAPS the disjointness comment used to deny (REV-R5, review I-1) ─
+//
+// A comment above `is_carry_masked_fit_failure` asserted that the CLI "can never
+// emit a verdict and this hedge for one run, and that is a property of the
+// predicates rather than of the order `main` tests them in". It was true when
+// written, over three predicates and the exit set {0,1,2,3}. REV-R3's exit 5 and
+// REV-R4's `is_strict_total_fit_failure` each falsified it without touching the
+// sentence, so neither task's diff contained it and neither task's review saw it.
+// Its downstream cost was real: nobody checked the banner interactions, because
+// the comment said the interaction could not exist.
+//
+// So the overlaps are now pinned as FACTS, in the same file as the disjointness
+// they contradict. An absence cannot rot quietly; an assertion can only be
+// removed on purpose.
+
+// OVERLAP 1: `--strict`. `is_strict_total_fit_failure` is `is_total_fit_failure`
+// MINUS the carry clause, so the region where it fires and the plain predicate
+// does not is exactly `cells_carried > 0` — this warning's own region. On every
+// report where the hedge fires and work was scheduled, BOTH are true. The CLI
+// prints one because `main`'s strict block `return`s before reaching the hedge:
+// ORDERING, not a property of the predicates.
+TEST(SurfaceDbCarryMaskedFitFailure, OverlapsTheStrictVerdictByDesign) {
+  std::size_t both = 0;
+  for (std::uint32_t to_fit = 0; to_fit <= 2; ++to_fit) {
+    for (std::uint32_t ok = 0; ok <= 2; ++ok) {
+      for (std::uint32_t failed = 0; failed <= 2; ++failed) {
+        for (std::uint32_t carried = 0; carried <= 2; ++carried) {
+          SurfaceDbBuildReport r = coverage_report(to_fit, ok, failed);
+          r.coverage.cells_carried = carried;
+          const bool warn = is_carry_masked_fit_failure(r);
+          const bool strict = is_strict_total_fit_failure(r);
+          if (warn && to_fit > 0u) {
+            // `cells_carried > 0` already implies `cells_to_fit > 0` on any report
+            // the populate produces (the counter pair moves in one frame — see
+            // is_carry_masked_fit_failure in surface_db_build.cpp), so this
+            // condition is the whole of the reachable region.
+            ++both;
+            EXPECT_TRUE(strict) << "the strict verdict must cover the hedge's reachable region, "
+                                   "at to_fit="
+                                << to_fit << " ok=" << ok << " failed=" << failed
+                                << " carried=" << carried;
+          }
+        }
+      }
+    }
+  }
+  EXPECT_GT(both, 0u) << "the sweep must actually reach the overlap";
+
+  // The production-shaped report, at the scale the review argued from: one ticker
+  // added to a converged 1030-name universe. BOTH fire on the same report. This is
+  // the assertion the old comment said could not exist.
+  SurfaceDbBuildReport systematic = coverage_report(250u, 0u, 250u);
+  systematic.coverage.cells_carried = 257'000u;
+  ASSERT_TRUE(is_carry_masked_fit_failure(systematic));
+  ASSERT_TRUE(is_strict_total_fit_failure(systematic));
+
+  // ...and only the FLAG separates the two exits. Under --strict this report is a
+  // verdict; without it, it is the hedge. `main` must therefore keep the strict
+  // block ABOVE the hedge and keep its `return` — the two texts contradict each
+  // other by design (one judges, one says it cannot).
+  EXPECT_EQ(build_exit_code(systematic, false, /*strict=*/true), kSurfaceDbBuildExitTotalFitFailure);
+  EXPECT_EQ(build_exit_code(systematic, false, /*strict=*/false), kSurfaceDbBuildExitOk);
+}
+
+// OVERLAP 2: the exit-5 refusal, which is ORTHOGONAL to every predicate in the
+// header — `build_exit_code`'s refusal branch reads
+// `dates_refused_coverage_regression`, a counter none of them touch. A run that
+// carries surfaces, fits nothing, and has ONE date refused fires the hedge and
+// returns 5. That combination is what made the hedge's `WARNING (exit 0)` banner
+// an operator-facing lie (review I-2), and it is reachable with two ordinary
+// dates.
+//
+// This test also pins the exact SET of codes the hedge's banner now names in
+// place of the removed literal: reaching that block means no verdict fired, so
+// the run exits 0, 5 (a refusal) or 1 (a --report write failure) — nothing else.
+TEST(SurfaceDbCarryMaskedFitFailure, CoexistsWithTheRefusalExitCode) {
+  SurfaceDbBuildReport masked = coverage_report(250u, 0u, 250u);
+  masked.coverage.cells_carried = 257'000u;
+  ASSERT_TRUE(is_carry_masked_fit_failure(masked)) << "the scenario must really arm the hedge";
+
+  // No refusal: the hedge accompanies exit 0, which is what the banner used to
+  // assert unconditionally.
+  EXPECT_EQ(build_exit_code(masked, /*report_write_failed=*/false, /*strict=*/false),
+            kSurfaceDbBuildExitOk);
+
+  // One date refused, hedge unchanged: exit 5, printed beside the hedge. Both
+  // banners are emitted — the refusal banner is unconditional so it can never be
+  // swallowed — and the hedge no longer claims a number it does not own.
+  SurfaceDbBuildReport refused = masked;
+  refused.coverage.dates_refused_coverage_regression = 1u;
+  refused.coverage.coverage_regression_cells.push_back(
+      CoverageRegressionCell{"2026-07-02", "BBB"});
+  EXPECT_TRUE(is_carry_masked_fit_failure(refused))
+      << "a refusal must not change whether the hedge fires -- they read disjoint counters";
+  EXPECT_EQ(build_exit_code(refused, false, /*strict=*/false),
+            kSurfaceDbBuildExitCoverageRegression);
+
+  // The third and last code reachable under the hedge: the --report CSV failed and
+  // nothing else did.
+  EXPECT_EQ(build_exit_code(masked, /*report_write_failed=*/true, /*strict=*/false),
+            kSurfaceDbBuildExitReportWriteFailed);
 }
 
 // COUNTER CHOICE, pinned. `cells_carried` is what grants the exit-3 exemption, so
@@ -1642,6 +1754,156 @@ TEST(SurfaceDbBuildExitCode, TheCodesThemselvesAreAContract) {
   EXPECT_EQ(kSurfaceDbBuildExitTotalFitFailure, 3);
   EXPECT_EQ(kSurfaceDbBuildExitCoverageRegression, 5)
       << "4 belongs to atx-vol-surface-db verify; the two tools share one vocabulary";
+}
+
+// ── The CROSS-BINARY half of that contract (REV-R5, review I-4) ──────────────
+//
+// The test above pins the build CLI's five constants and its message names the
+// invariant — "the two tools share one vocabulary" — but `verify`'s 4 was a
+// file-local `constexpr` in `tools/surface_db_main.cpp`, a different TU with no
+// shared header. The two halves of a cross-binary invariant were never in scope
+// together, so nothing failed if EITHER tool renumbered onto the other. Three
+// comments asserted the contract; the same class of defect as I-1, one layer out.
+//
+// `atx/vol/surface_db_exit_codes.hpp` now holds both vocabularies and
+// `static_assert`s the relations, so a collision is a BUILD failure in both CLIs
+// and here — strictly stronger than a test, because it cannot be skipped or
+// filtered out. This test is the readable statement of the same thing, and it
+// fails with a message rather than a template error.
+TEST(SurfaceDbExitVocabulary, TheTwoCLIsDoNotCollide) {
+  // The three codes that mean the SAME thing in both tools.
+  EXPECT_EQ(kSurfaceDbBuildExitOk, kSurfaceDbVerifyExitOk);
+  EXPECT_EQ(kSurfaceDbBuildExitReportWriteFailed, kSurfaceDbVerifyExitFailed);
+  EXPECT_EQ(kSurfaceDbBuildExitUsage, kSurfaceDbVerifyExitUsage);
+
+  // The admin CLI's own code, which is the entire reason 4 is a gap in the build
+  // CLI's sequence.
+  EXPECT_EQ(kSurfaceDbVerifyExitAbsentOverLimit, 4);
+
+  // THE COLLISION ITSELF. Every tool-specific code is distinct from every other
+  // and from the three common ones. Enumerated rather than asserted pairwise by
+  // hand so a new code added to either tool has one obvious place to appear.
+  const std::vector<int> tool_specific{kSurfaceDbBuildExitTotalFitFailure,
+                                       kSurfaceDbBuildExitCoverageRegression,
+                                       kSurfaceDbVerifyExitAbsentOverLimit};
+  for (std::size_t i = 0; i < tool_specific.size(); ++i) {
+    EXPECT_GT(tool_specific[i], kSurfaceDbBuildExitUsage)
+        << "a tool-specific verdict must not reuse one of the three common codes";
+    for (std::size_t j = i + 1; j < tool_specific.size(); ++j) {
+      EXPECT_NE(tool_specific[i], tool_specific[j])
+          << "two surface-db verdicts share one number: a wrapper script running a "
+             "build/verify pair now reads one status as two different outcomes";
+    }
+  }
+}
+
+// ── refusal_advice_names_the_carry_rate — two banners that must never disagree ──
+//
+// REV-R5 (review I-3). The coverage-refusal banner and the `--strict` banner were
+// written by different tasks, each argued at length that its own `--r` advice was
+// the safe one for its own shape, and neither anticipated printing beside the
+// other. Under `--strict`, on a run with a refusal on a LISTED partition, both
+// did: one paragraph said to suspect `--r` and re-run with
+// `--allow-coverage-regression`, and the next said reaching for `--r` would
+// DELETE the surfaces this run carried. Following the first is the destructive
+// action.
+//
+// The gate was lifted out of `main()` for exactly the reason `build_exit_code`
+// was: two texts that must not co-occur cannot be kept apart by two comments.
+
+// The advice is for the shape it was written for: a LISTED refusal on a run that
+// carried NOTHING, where a failed re-fit really is the cause and the rate really
+// is the first suspect.
+TEST(SurfaceDbRefusalRateAdvice, NamesTheRateOnlyForAListedRefusalThatCarriedNothing) {
+  SurfaceDbBuildReport listed = refused_report(2);
+  listed.coverage.cells_to_fit = 9u;
+  listed.coverage.cells_failed = 9u;
+  EXPECT_TRUE(refusal_advice_names_the_carry_rate(listed));
+
+  // No refusal at all: nothing to advise about.
+  EXPECT_FALSE(refusal_advice_names_the_carry_rate(coverage_report(9u, 0u, 9u)));
+
+  // Every refusal is an UNLISTED partition — REV-R3 fix-2's state, whose remedy is
+  // the opposite one and where `--allow-coverage-regression` deletes the surfaces
+  // that survived. Already suppressed before this fix; pinned so the new conjunct
+  // cannot be mistaken for the whole condition.
+  SurfaceDbBuildReport unlisted = refused_report(2);
+  unlisted.coverage.dates_refused_partition_unlisted = 2u;
+  EXPECT_FALSE(refusal_advice_names_the_carry_rate(unlisted));
+
+  // A MIXED run still gets it, scoped to the listed remainder.
+  SurfaceDbBuildReport mixed = refused_report(3);
+  mixed.coverage.dates_refused_partition_unlisted = 1u;
+  EXPECT_TRUE(refusal_advice_names_the_carry_rate(mixed));
+
+  // The subset relation is guaranteed by the populate; the subtraction saturates
+  // rather than wrapping if a hand-built report disagrees.
+  SurfaceDbBuildReport impossible = refused_report(1);
+  impossible.coverage.dates_refused_partition_unlisted = 5u;
+  EXPECT_FALSE(refusal_advice_names_the_carry_rate(impossible))
+      << "a saturating subtraction must yield 0 listed, never a wrapped huge count";
+}
+
+// THE FINDING ITSELF: the new conjunct. A run that CARRIED stored surfaces is a
+// run whose stored records validated for reuse, so its rate is not the suspect —
+// and the escape the advice offers would delete exactly those surfaces.
+TEST(SurfaceDbRefusalRateAdvice, SuppressedOnARunThatCarriedSurfaces) {
+  SurfaceDbBuildReport carried = refused_report(2);
+  carried.coverage.cells_to_fit = 9u;
+  carried.coverage.cells_failed = 9u;
+  carried.coverage.cells_carried = 147u;
+  ASSERT_GT(carried.coverage.dates_refused_coverage_regression,
+            carried.coverage.dates_refused_partition_unlisted)
+      << "the scenario must really be a LISTED refusal, or the old condition suppresses it "
+         "for the wrong reason and this test proves nothing";
+  EXPECT_FALSE(refusal_advice_names_the_carry_rate(carried));
+}
+
+// THE INVARIANT THE FIX EXISTS FOR, over the whole small-counter space: the
+// refusal banner's `--r` advice and the `--strict` banner's "Do NOT reach for
+// --r" can never both print. The strict banner is reached only when the plain
+// exit-3 block did NOT fire, which under `--strict` means something was carried;
+// the advice requires nothing was. Disjoint on `cells_carried`, algebraically,
+// for any report.
+TEST(SurfaceDbRefusalRateAdvice, NeverCoexistsWithTheStrictDoNotReachForR) {
+  std::size_t advice = 0;
+  std::size_t strict_banner = 0;
+  for (std::uint32_t to_fit = 0; to_fit <= 2; ++to_fit) {
+    for (std::uint32_t ok = 0; ok <= 2; ++ok) {
+      for (std::uint32_t failed = 0; failed <= 2; ++failed) {
+        for (std::uint32_t carried = 0; carried <= 2; ++carried) {
+          for (std::uint32_t refused = 0; refused <= 2; ++refused) {
+            for (std::uint32_t unlisted = 0; unlisted <= 2; ++unlisted) {
+              SurfaceDbBuildReport r = coverage_report(to_fit, ok, failed);
+              r.coverage.cells_carried = carried;
+              r.coverage.dates_refused_coverage_regression = refused;
+              r.coverage.dates_refused_partition_unlisted = unlisted;
+
+              const bool names_r = refusal_advice_names_the_carry_rate(r);
+              // `main`'s reachability for the strict banner, reproduced: the
+              // unconditional exit-3 block returns first, so the strict block
+              // prints only when the strict predicate fires and the plain one
+              // does not.
+              const bool prints_strict_banner =
+                  is_strict_total_fit_failure(r) && !is_total_fit_failure(r);
+              advice += names_r ? 1u : 0u;
+              strict_banner += prints_strict_banner ? 1u : 0u;
+
+              EXPECT_FALSE(names_r && prints_strict_banner)
+                  << "one stderr stream would say 'suspect --r, re-run with "
+                     "--allow-coverage-regression' AND 'do NOT reach for --r, it would DELETE "
+                     "those surfaces', at to_fit="
+                  << to_fit << " ok=" << ok << " failed=" << failed << " carried=" << carried
+                  << " refused=" << refused << " unlisted=" << unlisted;
+            }
+          }
+        }
+      }
+    }
+  }
+  // Neither side may be vacuous, or the disjointness holds over an empty space.
+  EXPECT_GT(advice, 0u);
+  EXPECT_GT(strict_banner, 0u);
 }
 
 // ── is_total_config_failure — the SAME trap one stage earlier ───────────────
@@ -2204,9 +2466,16 @@ TEST(SurfaceDbTotalLoadFailure, NeverOverlapsAnotherVerdict) {
   // The verdict that used to be a silent exit 0.
   EXPECT_TRUE(is_total_load_failure(*rep));
 
-  // ... and it is the ONLY verdict on this report.
+  // ... and it is the ONLY verdict on this report. The list is EXHAUSTIVE over the
+  // predicates in surface_db_build.hpp and must stay so: the header's disjointness
+  // paragraph is written as a proof that enumerates them, and REV-R4 added
+  // `is_strict_total_fit_failure` without either the paragraph or this test
+  // noticing (REV-R5, review M-8).
   EXPECT_FALSE(is_total_config_failure(*rep));
   EXPECT_FALSE(is_total_fit_failure(*rep));
+  EXPECT_FALSE(is_strict_total_fit_failure(*rep))
+      << "an empty board span schedules nothing, so even the carry-blind strict reading "
+         "must stay silent -- otherwise --strict reports a corrupt ingest as a fit failure";
   EXPECT_FALSE(is_carry_masked_fit_failure(*rep));
   EXPECT_EQ(rep->config.n_symbols, 0u)
       << "the config stage must have been handed an empty board span -- the whole "

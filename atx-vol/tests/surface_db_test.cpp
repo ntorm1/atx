@@ -1145,12 +1145,27 @@ namespace {
 // un-restored deny ACE leaves a directory the harness cannot delete.
 class DeniedDirectory {
 public:
-  explicit DeniedDirectory(std::filesystem::path dir) : dir_(std::move(dir)) {
+  // `restore_rc_out` is owned by the CALLER and outlives this object, which is the
+  // whole point — see the destructor.
+  DeniedDirectory(std::filesystem::path dir, int *restore_rc_out)
+      : dir_(std::move(dir)), restore_rc_out_(restore_rc_out) {
     armed_ = run(" /inheritance:r /deny \"%USERNAME%\":(OI)(CI)(F)") == 0;
   }
+  // REV-R5 (review M-6). The restore's exit status used to be DISCARDED. A failed
+  // restore does not go unnoticed — it surfaces as a `std::filesystem_error`
+  // thrown out of `remove_all` two scopes later — but it surfaces at the WRONG
+  // LINE, blaming the cleanup for a destructor's failure, and it leaves behind a
+  // temp directory the harness cannot delete. A destructor is the one place that
+  // cannot report, so it writes the status to a caller-owned int that outlives it
+  // and the test asserts on that once the scope has closed.
+  //
+  // Not armed => nothing to undo => 0. The two cases must not be distinguishable
+  // by the assertion, because "the deny never applied" is already handled by the
+  // arming check, which SKIPs.
   ~DeniedDirectory() {
-    if (armed_) {
-      (void)run(" /remove:d \"%USERNAME%\" /grant \"%USERNAME%\":(OI)(CI)(F)");
+    if (restore_rc_out_ != nullptr) {
+      *restore_rc_out_ = armed_ ? run(" /remove:d \"%USERNAME%\" /grant \"%USERNAME%\":(OI)(CI)(F)")
+                                : 0;
     }
   }
   DeniedDirectory(const DeniedDirectory &) = delete;
@@ -1164,6 +1179,7 @@ private:
     return std::system(cmd.c_str());
   }
   std::filesystem::path dir_;
+  int *restore_rc_out_{nullptr};
   bool armed_{false};
 };
 
@@ -1180,13 +1196,30 @@ private:
 // of one defect class in this guard, so the branch that closes it gets a test
 // that arms the real condition rather than a mock.
 //
-// Arming is Windows-specific because the portable routes do not work — verified,
-// not assumed. A path over MAX_PATH, a path whose parent component is a FILE, and
-// a reserved device name all leave `ec` CLEAR here: the MSVC STL classifies
-// ERROR_FILENAME_EXCED_RANGE / ERROR_PATH_NOT_FOUND / ERROR_INVALID_NAME with the
-// file-not-found family, so they land on the `NotFound` branch and would test
-// nothing. A denied ACL on the parent directory is the one route that sets `ec`
-// (ERROR_ACCESS_DENIED == 5), and it needs no elevation.
+// WHY THIS IS WINDOWS-ONLY, AND WHAT THAT ACTUALLY RULES OUT (REV-R5, review M-5).
+//
+// Three PATH-SHAPE routes were tried and do not work: a path over MAX_PATH, a
+// path whose parent component is a FILE, and a reserved device name all leave
+// `ec` CLEAR here, because the MSVC STL classifies ERROR_FILENAME_EXCED_RANGE /
+// ERROR_PATH_NOT_FOUND / ERROR_INVALID_NAME with the file-not-found family, so
+// they land on the `NotFound` branch and would test nothing. A denied ACL on the
+// parent directory is the one route that sets `ec` (ERROR_ACCESS_DENIED == 5),
+// and it needs no elevation.
+//
+// That list is about PATH SHAPES, and it was previously written as if it settled
+// portability, which it does not. THE DIRECT POSIX ANALOGUE — `chmod 0000` on the
+// parent directory as a non-root user — was never tried and would very likely
+// work (`stat(2)` returns EACCES, which `std::filesystem::exists` reports as
+// false with `ec` set, exactly as the ACL route does here). It is not implemented
+// because this branch has no POSIX CI runner to exercise it and an untested
+// portable arming routine is a worse artifact than an honest gap.
+//
+// So state the gap rather than imply it away: on a POSIX host the `IoError` branch
+// of `open_partition_file` has ZERO coverage, and — because this is `#if
+// defined(_WIN32)` rather than a runtime skip — the test does not even exist
+// there, so the run says nothing about it. A POSIX runner arriving in this repo
+// should add the `chmod 0000` sibling under `#else` with the same arming check
+// below; the assertions transfer unchanged.
 TEST(SurfaceDbPartition, OpenPartitionFileDoesNotReportAnUnanswerableProbeAsAbsent) {
   const auto root = test_root("open_partition_file_denied");
   auto db = SurfaceDb::create(root.string());
@@ -1198,8 +1231,11 @@ TEST(SurfaceDbPartition, OpenPartitionFileDoesNotReportAnUnanswerableProbeAsAbse
   const std::filesystem::path part = parts / "2026-07-10.atxvsa";
   ASSERT_TRUE(std::filesystem::exists(part));
 
+  // Written by `denied`'s destructor and asserted after the scope closes; -1 is a
+  // sentinel that fails the assertion if the destructor never ran at all.
+  int restore_rc = -1;
   {
-    const DeniedDirectory denied(parts);
+    const DeniedDirectory denied(parts, &restore_rc);
 
     // ARMING CHECK, and the reason this test cannot pass vacuously: unless the
     // probe really comes back "false with ec set", there is nothing here to
@@ -1227,6 +1263,15 @@ TEST(SurfaceDbPartition, OpenPartitionFileDoesNotReportAnUnanswerableProbeAsAbse
     // This is what keeps the fix from being mistaken for a manifest change.
     EXPECT_TRUE(db->partition_listed("2026-07-10"));
   }
+
+  // REV-R5 (review M-6). Assert the RESTORE, before `remove_all` gets the chance
+  // to fail for a reason this line explains better. A non-zero icacls here means
+  // the deny ACE is still on `parts` and the cleanup below will throw a
+  // `filesystem_error` naming the wrong line; saying so here keeps the cause
+  // attached to the effect.
+  EXPECT_EQ(restore_rc, 0) << "icacls failed to restore access to " << parts.string()
+                           << "; the deny ACE is still in place and this temp directory "
+                              "cannot be deleted";
 
   std::filesystem::remove_all(root);
 }
