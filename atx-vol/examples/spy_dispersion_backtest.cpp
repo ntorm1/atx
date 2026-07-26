@@ -792,12 +792,29 @@ Status project_schedule_command(const fs::path &run_dir) {
   return Ok();
 }
 
-// Projected replay of a listed-format schedule. `--execution configured` (default) is
-// the Task 2 diagnostic: reprice through the fast cached-surrogate tier under
-// QueryExecution::Configured (genuine interpolation) — its fast-tier accuracy gap is
-// under separate investigation. `--execution cold` is route P canonical: no fast tier,
-// QueryExecution::ColdReference with ScheduleMarkPolicy::Record (Configured-required
-// economics permitted with a cold price execution while no fast tier is prepared).
+// Projected replay of a listed-format schedule. `--execution cold` (DEFAULT) is route P
+// canonical: no fast tier, QueryExecution::ColdReference with ScheduleMarkPolicy::Record
+// (Configured-required economics permitted with a cold price execution while no fast tier
+// is prepared). `--execution configured` is the Task 2 diagnostic: reprice through the
+// fast cached-surrogate tier under QueryExecution::Configured (genuine interpolation).
+//
+// COLD IS THE DEFAULT BECAUSE CONFIGURED IS KNOWN TO BE WRONG ON THIS BOOK, not merely
+// slower. `dispersion-parity` Task 2 diagnosed the fast tier's residual: with an
+// identical book (22 lots, n_unpriced = 0) and the name legs interpolating cleanly under
+// ~50 bps, the whole deviation came from the SPY index American PUT — fast mark 13.797
+// vs cold 12.775, an 800 bps error — while the SPY CALL at the same strike and expiry
+// matched cold to under 0.1 bps. A put-only error at the same node is the early-exercise
+// boundary, which only binds for the put; CarryBank was cross-checked and is worse
+// (~1054 bps). On a 49-session dispersion corpus that shows up as final_nav 25013.36865
+// under configured against 18528.61666 under cold — a 35% overstatement on a book that
+// is short index puts. Configured also costs ~21x more wall time (~4.3 s vs ~0.20 s),
+// so the previous default was both the wrong number AND the slow one.
+//
+// The default was flipped only after confirming nothing in the repo depended on it: every
+// in-tree invocation passes --execution explicitly, and the one test naming
+// `projected_execution` (run_archive_test.cpp) writes "cold" into a synthetic archive
+// rather than exercising this default. The chosen route is still recorded in the
+// run.atxrun `meta` section, so provenance of which route produced a run is unchanged.
 // Records per-roll mark divergence between the frozen schedule marks and the live seed
 // marks. `--schedule` selects the input schedule (default trade_schedule.tsv);
 // `--out` is a provenance label only — no file is written under it; the name is
@@ -878,6 +895,15 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
     // archive marks.
     config.query_pricing_tier = QueryPricingTier::RepresentativeFast;
     config.price.query_execution = QueryExecution::Configured;
+    // Say so, every time. This route has a diagnosed accuracy gap (see the doc block),
+    // and it used to be the silent default — a caller could take its nav for the
+    // canonical one with nothing in the output to suggest otherwise. The printed
+    // `[configured]` tag alone did not carry that meaning to anyone who had not read
+    // the source.
+    std::fprintf(stderr,
+                 "warning: --execution configured is a DIAGNOSTIC route with a known "
+                 "fast-tier American-put accuracy gap; its nav is not the canonical "
+                 "figure. Use --execution cold (the default) for route P economics.\n");
   }
   timer.add("setup_read", phase);
 
@@ -1319,6 +1345,8 @@ void usage() {
               "  atxvol_spy_dispersion_backtest run-projected-backtest --run DIR "
               "[--schedule FILE] [--execution cold|configured] [--out FILE] "
               "[--no-divergence]\n"
+              "      --execution defaults to 'cold' (route P canonical). 'configured' is\n"
+              "      a diagnostic with a known American-put accuracy gap; see below.\n"
               "  atxvol_spy_dispersion_backtest run-surface-backtest --run DIR\n"
               "  atxvol_spy_dispersion_backtest run-projected-var --run DIR\n"
               "  atxvol_spy_dispersion_backtest verify --run DIR\n"
@@ -1337,7 +1365,23 @@ void usage() {
               "    * the cache directory has NO EVICTION POLICY and grows WITHOUT BOUND,\n"
               "      roughly 300 MB per distinct definitions.tsv ever seen.\n"
               "  See read_listed_definitions_cached's header comment (listed_definitions_"
-              "cache.hpp) for the full disclosure.\n");
+              "cache.hpp) for the full disclosure.\n"
+              "\n"
+              "--execution cold|configured (run-projected-backtest): DEFAULTS TO 'cold',\n"
+              "  route P canonical -- QueryExecution::ColdReference, no fast tier.\n"
+              "  'configured' reprices through the fast cached-surrogate tier and is a\n"
+              "  DIAGNOSTIC, not an alternative:\n"
+              "    * it carries a diagnosed American-put accuracy gap. With an identical\n"
+              "      book and the name legs clean under ~50 bps, the SPY index PUT marked\n"
+              "      800 bps off cold while the CALL at the same strike/expiry matched to\n"
+              "      under 0.1 bps -- the early-exercise boundary, which only binds for\n"
+              "      the put. CarryBank is worse (~1054 bps);\n"
+              "    * on a 49-session dispersion corpus that is final_nav 25013.36865\n"
+              "      against cold's 18528.61666 -- a 35%% overstatement on a book that is\n"
+              "      short index puts;\n"
+              "    * it also costs ~21x the wall time (~4.3 s vs ~0.20 s).\n"
+              "  It warns on stderr when selected. The route used is recorded in the\n"
+              "  run.atxrun 'meta' section as projected_execution.\n");
 }
 
 } // namespace
@@ -1416,7 +1460,9 @@ int main(int argc, char **argv) {
   } else if (command == "run-projected-backtest" && !run.empty()) {
     status = run_projected_backtest_command(
         run, schedule.empty() ? fs::path("trade_schedule.tsv") : schedule,
-        execution.empty() ? std::string("configured") : execution,
+        // Default `cold`, not `configured` — the diagnostic route is both wrong on this
+        // book and ~21x slower. Rationale in run_projected_backtest_command's doc block.
+        execution.empty() ? std::string("cold") : execution,
         out.empty() ? fs::path("projected_backtest.tsv") : out, no_divergence);
   } else if (command == "run-surface-backtest" && !run.empty()) {
     status = run_surface_backtest_command(run);
