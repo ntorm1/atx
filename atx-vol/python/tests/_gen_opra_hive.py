@@ -11,8 +11,16 @@ Mirrors the C++ Task-2 synthetic generator
 (``tests/support/synthetic_opra_hive.hpp``): N symbols x N dates, 9 strikes
 80..120, +28/+56d expiries, put-call-parity C/P pairs so the loader can imply
 the spot. Prices are Black-European mids under a quadratic vol smile, computed
-at r = 0 because the build driver has no rate knob (``OpraHiveSpec.r``
-defaults to 0.0) -- a nonzero-r fixture would break the fits.
+at ``_R = 0.0``.
+
+REV-R4 (review F-01): this used to say r = 0 was chosen "because the build
+driver has no rate knob (``OpraHiveSpec.r`` defaults to 0.0)". The driver has
+always had that knob -- it was ``atxvol.build_surface_db`` that never assigned
+it, so every Python build ran at 0.0 whatever the caller meant. The binding now
+takes ``r=`` and the tests exercise it. The rate here stays 0.0 as the CONTROL:
+a build at ``r=0.0`` matches this hive, a build at any other rate does not, and
+``test_surface_db_build.py`` asserts both halves of that (different surfaces at
+a small mismatch, failed cells with the fitter's own reason at a large one).
 
 Invocation: ``python _gen_opra_hive.py '<json payload>'`` where payload is
 ``{"root": str, "symbols": [str, ...], "dates": ["YYYY-MM-DD", ...]}``.
