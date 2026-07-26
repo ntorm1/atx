@@ -2362,8 +2362,9 @@ double AloPricer::price(double sigma) noexcept {
     const AlSweepResult sw = al_jacobi_newton_sweep(s.bnd, s.ws, sigma, s.rp, s.qp);
     if (sw.all_frozen) {
       // Unsolvable boundary (al_solve_put_boundary's NotConverged corner) surfaced
-      // through this pricer's NaN failure channel. s.seeded is left FALSE so the
-      // next call re-seeds cold rather than warm-starting from the frozen state.
+      // through this pricer's NaN failure channel. s.seeded / s.last_sigma are left
+      // untouched, so the next call's warm/cold decision still refers to the last
+      // SOLVED sigma and never records this frozen state as a converged one.
       return std::numeric_limits<double>::quiet_NaN();
     }
     resid = sw.max_dy;

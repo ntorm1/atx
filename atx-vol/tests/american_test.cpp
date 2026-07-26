@@ -234,14 +234,14 @@ TEST(AmericanDegenerateSigma, GreeksFdPriceEqualsAmericanPrice_Put) {
   const double px = value_or_fail(
       american_price(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake, std::nullopt));
   EXPECT_GT(px, 9.0) << "test point must have a non-trivial discounted-forward intrinsic";
-  const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Put,
-                                    AmericanMethod::AndersenLake, std::nullopt,
+  const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake,
+                                    std::nullopt,
                                     /*warm_start=*/false);
   ASSERT_TRUE(g.has_value()) << g.error().to_string();
   EXPECT_TRUE(bits_equal(g->price, px)) << "fd " << g->price << " vs price " << px;
   // Warm-start path shares the same stencil evaluator; pin it too.
-  const auto gw = american_greeks_fd(S, K, T, sigma, r, q, Side::Put,
-                                     AmericanMethod::AndersenLake, std::nullopt,
+  const auto gw = american_greeks_fd(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake,
+                                     std::nullopt,
                                      /*warm_start=*/true);
   ASSERT_TRUE(gw.has_value()) << gw.error().to_string();
   EXPECT_TRUE(bits_equal(gw->price, px));
@@ -253,8 +253,8 @@ TEST(AmericanDegenerateSigma, GreeksFdPriceEqualsAmericanPrice_Call) {
   const double px = value_or_fail(
       american_price(S, K, T, sigma, r, q, Side::Call, AmericanMethod::AndersenLake, std::nullopt));
   EXPECT_GT(px, 9.0) << "test point must have a non-trivial discounted-forward intrinsic";
-  const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Call,
-                                    AmericanMethod::AndersenLake, std::nullopt,
+  const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Call, AmericanMethod::AndersenLake,
+                                    std::nullopt,
                                     /*warm_start=*/false);
   ASSERT_TRUE(g.has_value()) << g.error().to_string();
   EXPECT_TRUE(bits_equal(g->price, px)) << "fd " << g->price << " vs price " << px;
@@ -265,8 +265,8 @@ TEST(AmericanDegenerateSigma, GreeksFdPriceEqualsAmericanPrice_Call) {
 // its degenerate-sigma guard has to move with the bundle's.
 TEST(AmericanDegenerateSigma, DeltaMatchesGreeksFdDelta_Put) {
   const double S = 100.0, K = 100.0, T = 1.0, sigma = 1.0e-9, r = 0.0, q = 0.10;
-  const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Put,
-                                    AmericanMethod::AndersenLake, std::nullopt,
+  const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake,
+                                    std::nullopt,
                                     /*warm_start=*/false);
   ASSERT_TRUE(g.has_value()) << g.error().to_string();
   const double d = value_or_fail(
@@ -309,8 +309,8 @@ TEST(AndersenLakeFrozenSweep, AllNodesFrozen_IsNotReportedAsConverged) {
   ASSERT_FALSE(p.has_value()) << "priced " << (p ? *p : 0.0) << " from an unsolved boundary";
   EXPECT_EQ(p.error().code(), atx::core::ErrorCode::NotImplemented);
 
-  const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Put,
-                                    AmericanMethod::AndersenLake, std::nullopt,
+  const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake,
+                                    std::nullopt,
                                     /*warm_start=*/false);
   EXPECT_FALSE(g.has_value());
 
@@ -2426,7 +2426,8 @@ TEST(AndersenLakePutSlice, EmptyStrikes_ReturnsOkWithoutReadingReferenceStrike) 
   // Degenerate / European short-circuits already handled n == 0; keep them pinned.
   EXPECT_TRUE(andersen_lake_put_slice(100.0, no_strikes, 0.0, 0.2, 0.03, 0.0, no_out).has_value());
   EXPECT_TRUE(andersen_lake_put_slice(100.0, no_strikes, 0.5, 0.0, 0.03, 0.0, no_out).has_value());
-  EXPECT_TRUE(andersen_lake_put_slice(100.0, no_strikes, 0.5, 0.2, -0.01, 0.02, no_out).has_value());
+  EXPECT_TRUE(
+      andersen_lake_put_slice(100.0, no_strikes, 0.5, 0.2, -0.01, 0.02, no_out).has_value());
 }
 
 // ── Negative-rate regime classification (Task 1, P0.5) ──────────────────────
