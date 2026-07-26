@@ -95,6 +95,7 @@ add_executable(atx-vol-tests
     dispersion_test.cpp
     listed_dispersion_test.cpp
     listed_opra_test.cpp
+    listed_definitions_cache_test.cpp
     occ_ess_test.cpp
     listed_dispersion_schedule_test.cpp
     listed_dispersion_reconciliation_test.cpp
