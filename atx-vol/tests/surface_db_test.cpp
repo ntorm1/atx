@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <span>
 #include <string>
@@ -1071,6 +1072,270 @@ TEST(SurfaceDbPartition, RewriteReplaces_DropRemoves) {
   std::filesystem::remove_all(root);
 }
 
+// ── REV-R3 fix-2 (review N-1): what `open_partition_file`'s error CODE means ────
+//
+// This accessor exists to keep "there is no file" apart from "there is a file I
+// could not use", because the coverage guard in `populate_surface_db` turns the
+// first into a whole-file overwrite. Three of its four outcomes are pinned here;
+// the fourth — the filesystem declining to answer at all — needs a denied ACL to
+// arm and is pinned separately by
+// `OpenPartitionFileDoesNotReportAnUnanswerableProbeAsAbsent` below.
+TEST(SurfaceDbPartition, OpenPartitionFileSeparatesAbsentFromUnanswerable) {
+  const auto root = test_root("open_partition_file_codes");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  const auto s1 = make_essvi(/*uid=*/7, /*n_slices=*/2);
+  const std::vector<SurfaceArchiveItem> one{{"AAPL", &s1}};
+
+  // (1) FILE ABSENT -> NotFound. This is the only code on which the guard may
+  // conclude "nothing here to lose" and proceed to overwrite.
+  EXPECT_EQ(db->open_partition_file("2026-07-10").error().code(), ErrorCode::NotFound);
+
+  // (2) FILE PRESENT and readable -> Ok, and its DIRECTORY is the authority on
+  // what it holds. Also armed WITHOUT the manifest, which is the whole point:
+  // `partition_listed` is asked separately and answers the other half.
+  ASSERT_TRUE(db->write_partition("2026-07-10", one).has_value());
+  auto opened = db->open_partition_file("2026-07-10");
+  ASSERT_TRUE(opened.has_value()) << (opened ? "" : opened.error().to_string());
+  EXPECT_EQ(opened->directory().size(), std::size_t{1});
+  EXPECT_TRUE(db->partition_listed("2026-07-10"));
+  EXPECT_FALSE(db->partition_listed("2026-07-11")) << "no partition was ever written for it";
+  EXPECT_FALSE(db->partition_listed("not a valid key"))
+      << "an unrepresentable key cannot be listed under any spelling";
+
+  // (3) FILE PRESENT and not an archive -> NOT NotFound. The exact code is the
+  // archive's business; what this pins is that it never collapses into the
+  // proceed-and-overwrite branch.
+  const std::filesystem::path part =
+      std::filesystem::path(root) / "partitions" / "2026-07-10.atxvsa";
+  {
+    std::ofstream os(part, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(os.good());
+    os << "this is not an ATXVSA archive";
+  }
+  auto garbage = db->open_partition_file("2026-07-10");
+  ASSERT_FALSE(garbage.has_value()) << "a garbage partition must not open";
+  EXPECT_NE(garbage.error().code(), ErrorCode::NotFound)
+      << "a file that IS there must never report as absent -- that is the fail-open";
+
+  std::filesystem::remove_all(root);
+}
+
+// ARMING ROUTES THAT DO NOT WORK, recorded so the next person does not spend the
+// afternoon rediscovering them. Each was run against `std::filesystem::exists`
+// under this toolchain (clang-cl + MSVC STL, Windows 11) and each returned false
+// with the `error_code` CLEAR — i.e. each lands on the NotFound branch and would
+// have made a test that passes while proving nothing:
+//
+//   - a path longer than MAX_PATH                    exists=0 ec=0
+//   - a path whose parent component is a FILE        exists=0 ec=0
+//   - a reserved device name (`CON`) as a directory  exists=0 ec=0
+//
+// An open handle without FILE_SHARE_DELETE never reaches this probe either:
+// `exists` goes through GetFileAttributesExW, which opens no handle, so a sharing
+// violation cannot arise here at all. (It DOES arm a failed unlink, which is what
+// `DropPartitionReportsAFailedUnlink` below uses.) The route that works is a
+// denied ACL on the parent directory — exists=0, ec=5, "Access is denied" — and
+// that is what the test below arms.
+
+#if defined(_WIN32)
+namespace {
+
+// Deny this user every access to `dir`, so that a stat of anything INSIDE it
+// fails with ERROR_ACCESS_DENIED — which is what makes `std::filesystem::exists`
+// return false with `ec` SET rather than false with `ec` clear. RAII because an
+// un-restored deny ACE leaves a directory the harness cannot delete.
+class DeniedDirectory {
+public:
+  // `restore_rc_out` is owned by the CALLER and outlives this object, which is the
+  // whole point — see the destructor.
+  DeniedDirectory(std::filesystem::path dir, int *restore_rc_out)
+      : dir_(std::move(dir)), restore_rc_out_(restore_rc_out) {
+    armed_ = run(" /inheritance:r /deny \"%USERNAME%\":(OI)(CI)(F)") == 0;
+  }
+  // REV-R5 (review M-6). The restore's exit status used to be DISCARDED. A failed
+  // restore does not go unnoticed — it surfaces as a `std::filesystem_error`
+  // thrown out of `remove_all` two scopes later — but it surfaces at the WRONG
+  // LINE, blaming the cleanup for a destructor's failure, and it leaves behind a
+  // temp directory the harness cannot delete. A destructor is the one place that
+  // cannot report, so it writes the status to a caller-owned int that outlives it
+  // and the test asserts on that once the scope has closed.
+  //
+  // Not armed => nothing to undo => 0. The two cases must not be distinguishable
+  // by the assertion, because "the deny never applied" is already handled by the
+  // arming check, which SKIPs.
+  ~DeniedDirectory() {
+    if (restore_rc_out_ != nullptr) {
+      *restore_rc_out_ = armed_ ? run(" /remove:d \"%USERNAME%\" /grant \"%USERNAME%\":(OI)(CI)(F)")
+                                : 0;
+    }
+  }
+  DeniedDirectory(const DeniedDirectory &) = delete;
+  DeniedDirectory &operator=(const DeniedDirectory &) = delete;
+  DeniedDirectory(DeniedDirectory &&) = delete;
+  DeniedDirectory &operator=(DeniedDirectory &&) = delete;
+
+private:
+  [[nodiscard]] int run(const char *args) const {
+    const std::string cmd = "icacls \"" + dir_.string() + "\"" + args + " >nul 2>&1";
+    return std::system(cmd.c_str());
+  }
+  std::filesystem::path dir_;
+  int *restore_rc_out_{nullptr};
+  bool armed_{false};
+};
+
+} // namespace
+
+// ── REV-R3 fix-2 (review N-1): THE branch, armed with a real `std::error_code` ──
+//
+// `std::filesystem::exists` reports "absent" and "I could not tell you" through
+// the SAME return value and separates them only through its `error_code`.
+// `SurfaceArchiveV2::open_file` folds both into `NotFound`, and `NotFound` is the
+// coverage guard's "nothing on disk, proceed and overwrite" branch — so before
+// this fix a filesystem that could not answer routed a whole-file overwrite over
+// a partition whose existence was never established. That is the third instance
+// of one defect class in this guard, so the branch that closes it gets a test
+// that arms the real condition rather than a mock.
+//
+// WHY THIS IS WINDOWS-ONLY, AND WHAT THAT ACTUALLY RULES OUT (REV-R5, review M-5).
+//
+// Three PATH-SHAPE routes were tried and do not work: a path over MAX_PATH, a
+// path whose parent component is a FILE, and a reserved device name all leave
+// `ec` CLEAR here, because the MSVC STL classifies ERROR_FILENAME_EXCED_RANGE /
+// ERROR_PATH_NOT_FOUND / ERROR_INVALID_NAME with the file-not-found family, so
+// they land on the `NotFound` branch and would test nothing. A denied ACL on the
+// parent directory is the one route that sets `ec` (ERROR_ACCESS_DENIED == 5),
+// and it needs no elevation.
+//
+// That list is about PATH SHAPES, and it was previously written as if it settled
+// portability, which it does not. THE DIRECT POSIX ANALOGUE — `chmod 0000` on the
+// parent directory as a non-root user — was never tried and would very likely
+// work (`stat(2)` returns EACCES, which `std::filesystem::exists` reports as
+// false with `ec` set, exactly as the ACL route does here). It is not implemented
+// because this branch has no POSIX CI runner to exercise it and an untested
+// portable arming routine is a worse artifact than an honest gap.
+//
+// So state the gap rather than imply it away: on a POSIX host the `IoError` branch
+// of `open_partition_file` has ZERO coverage, and — because this is `#if
+// defined(_WIN32)` rather than a runtime skip — the test does not even exist
+// there, so the run says nothing about it. A POSIX runner arriving in this repo
+// should add the `chmod 0000` sibling under `#else` with the same arming check
+// below; the assertions transfer unchanged.
+TEST(SurfaceDbPartition, OpenPartitionFileDoesNotReportAnUnanswerableProbeAsAbsent) {
+  const auto root = test_root("open_partition_file_denied");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  const auto s1 = make_essvi(/*uid=*/13, /*n_slices=*/2);
+  const std::vector<SurfaceArchiveItem> one{{"AAPL", &s1}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", one).has_value());
+  const std::filesystem::path parts = std::filesystem::path(root) / "partitions";
+  const std::filesystem::path part = parts / "2026-07-10.atxvsa";
+  ASSERT_TRUE(std::filesystem::exists(part));
+
+  // Written by `denied`'s destructor and asserted after the scope closes; -1 is a
+  // sentinel that fails the assertion if the destructor never ran at all.
+  int restore_rc = -1;
+  {
+    const DeniedDirectory denied(parts, &restore_rc);
+
+    // ARMING CHECK, and the reason this test cannot pass vacuously: unless the
+    // probe really comes back "false with ec set", there is nothing here to
+    // assert and the test says so instead of reporting a pass.
+    std::error_code ec;
+    const bool present = std::filesystem::exists(part, ec);
+    if (!ec) {
+      GTEST_SKIP() << "could not arm a failed existence probe (exists returned " << present
+                   << " with a clear error_code); the IoError branch of open_partition_file is "
+                      "NOT covered on this host";
+    }
+    EXPECT_FALSE(present) << "exists() must report false on a failed query -- that is the whole "
+                             "reason the error_code has to be read";
+
+    auto opened = db->open_partition_file("2026-07-10");
+    ASSERT_FALSE(opened.has_value()) << "the partition is unreadable; it must not open";
+    EXPECT_EQ(opened.error().code(), ErrorCode::IoError)
+        << "THE FAIL-OPEN: NotFound here is the coverage guard's proceed-and-overwrite "
+           "branch, and nothing has established that the file is absent -- the filesystem "
+           "declined to say";
+    EXPECT_NE(opened.error().code(), ErrorCode::NotFound);
+
+    // The manifest is unaffected: it still lists the partition, because the
+    // manifest is a different question and lives outside the denied directory.
+    // This is what keeps the fix from being mistaken for a manifest change.
+    EXPECT_TRUE(db->partition_listed("2026-07-10"));
+  }
+
+  // REV-R5 (review M-6). Assert the RESTORE, before `remove_all` gets the chance
+  // to fail for a reason this line explains better. A non-zero icacls here means
+  // the deny ACE is still on `parts` and the cleanup below will throw a
+  // `filesystem_error` naming the wrong line; saying so here keeps the cause
+  // attached to the effect.
+  EXPECT_EQ(restore_rc, 0) << "icacls failed to restore access to " << parts.string()
+                           << "; the deny ACE is still in place and this temp directory "
+                              "cannot be deleted";
+
+  std::filesystem::remove_all(root);
+}
+#endif // _WIN32
+
+// ── REV-R3 fix-2 (review N-2): a failed unlink is reported, not swallowed ───────
+//
+// `drop_partition` commits the manifest FIRST and unlinks SECOND (deliberately —
+// see the ordering argument at the unlink). It used to discard the unlink's
+// `error_code` and return Ok regardless, which left an orphaned `.atxvsa` with no
+// crash at all and told the caller the drop had fully succeeded. Since the
+// coverage guard reads partition FILES without asking the manifest, that orphan
+// is no longer inert: it makes the guard refuse every later narrower rewrite of
+// that date.
+//
+// Armed with a real failure rather than a simulated one: on Windows an open
+// `ifstream` holds the file without FILE_SHARE_DELETE, so DeleteFileW fails with
+// a sharing violation. POSIX unlinks an open file happily, so there the drop
+// really does succeed and the test asserts THAT instead — either way it asserts
+// what the platform actually did, and neither leg passes vacuously.
+TEST(SurfaceDbPartition, DropPartitionReportsAFailedUnlink) {
+  const auto root = test_root("drop_partition_unlink_fails");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  const auto s1 = make_essvi(/*uid=*/11, /*n_slices=*/2);
+  const std::vector<SurfaceArchiveItem> one{{"AAPL", &s1}};
+  ASSERT_TRUE(db->write_partition("2026-07-10", one).has_value());
+  const std::filesystem::path part =
+      std::filesystem::path(root) / "partitions" / "2026-07-10.atxvsa";
+  ASSERT_TRUE(std::filesystem::exists(part));
+
+  {
+    std::ifstream hold(part, std::ios::binary);
+    ASSERT_TRUE(hold.good()) << "the scenario is not armed: the file must be open";
+
+    const Status dropped = db->drop_partition("2026-07-10");
+#ifdef _WIN32
+    // ARMED, and asserted as armed: if the open handle ever stops blocking the
+    // unlink this test must FAIL rather than quietly start passing for the wrong
+    // reason.
+    ASSERT_TRUE(std::filesystem::exists(part))
+        << "the scenario is not armed: the open handle did not block the unlink";
+    ASSERT_FALSE(dropped.has_value())
+        << "a failed unlink left an orphan the coverage guard will defend, and the "
+           "caller was told the drop succeeded";
+    EXPECT_EQ(dropped.error().code(), ErrorCode::IoError);
+#else
+    // POSIX unlinks an open file happily, so the drop really does fully succeed
+    // and must say so. Nothing about the new branch is exercised here.
+    ASSERT_FALSE(std::filesystem::exists(part));
+    EXPECT_TRUE(dropped.has_value()) << (dropped ? "" : dropped.error().to_string());
+#endif
+    // Either way the MANIFEST half committed and is not rolled back: that is what
+    // makes a reported failure a PARTIAL success rather than a no-op, and it is
+    // the part of the contract a caller has to know.
+    EXPECT_TRUE(db->partitions().empty()) << "the manifest commit happens first and stands";
+    EXPECT_EQ(db->open_partition("2026-07-10").error().code(), ErrorCode::NotFound);
+  }
+
+  std::filesystem::remove_all(root);
+}
+
 TEST(SurfaceDbPartition, ManySymbols_ManyPartitions_SingleSurfaceLookup) {
   const auto root = test_root("part_scale");
   auto db = SurfaceDb::create(root.string());
@@ -1114,6 +1379,175 @@ TEST(SurfaceDbPartition, BadKey_Rejected) {
   for (const char *bad : {"", "a/b", "a\\b", "..", "x..y", "0123456789012345678901234567890123"}) {
     EXPECT_EQ(db->write_partition(bad, items).error().code(), ErrorCode::InvalidArgument) << bad;
   }
+  std::filesystem::remove_all(root);
+}
+
+// ── FIX-D carry-over fingerprint (config_fingerprint / write_partition) ──────
+
+namespace {
+
+// Symbols chosen to stress `cmp_key`'s ordering rule (memcmp of the shorter
+// prefix, THEN length): every prefix relationship appears, so a bisect that used
+// plain lexicographic-with-different-tiebreak, or that mishandled the
+// prefix-equal case, lands on the wrong record instead of failing to find one.
+[[nodiscard]] std::vector<std::string> fingerprint_symbols() {
+  return {"A",  "AA", "AAA", "AAAA", "AB", "ABC", "B",  "BA", "BB", "M",
+          "MS", "MSFT", "S",  "SP",  "SPY", "Z",  "Z0", "Z9", "ZZ", "ZZZ"};
+}
+
+// A config unique to `i`, spread across several fields so a fold that read the
+// neighbouring record cannot coincide.
+[[nodiscard]] SymbolFitConfig fingerprint_config(std::size_t i) {
+  SymbolFitConfig c;
+  c.band_k = 1.0 + 0.125 * static_cast<double>(i);
+  c.curve.convex.node_cap = 16 + static_cast<int>(i);
+  c.al.tol = 1e-8 * (1.0 + static_cast<double>(i));
+  return c;
+}
+
+// The REFERENCE LINEAR SCAN (M-3). Structurally unlike the bisect it checks: no
+// ordering assumption, no `cmp_key`, no early exit -- it compares every record's
+// symbol bytes and returns the index of the match (npos if absent). This is the
+// oracle the test below is named for, and the one thing a `std::lower_bound`
+// oracle cannot be: it does not share the comparator whose correctness is the
+// question.
+[[nodiscard]] std::size_t scan_for_symbol(const DbManifest &m, std::string_view sym) {
+  const std::span<const DbSymbolRecord> recs = m.symbols();
+  std::size_t found = static_cast<std::size_t>(-1);
+  for (std::size_t i = 0; i < recs.size(); ++i) {
+    if (std::string_view(recs[i].symbol, recs[i].symbol_len) == sym) {
+      found = i; // keep going: a duplicate would be a manifest defect, not a hit
+    }
+  }
+  return found;
+}
+
+} // namespace
+
+// FIX-D fix-1. `fold_symbol_configs` bisects the manifest's symbol table instead
+// of scanning it. The bisect is only equivalent to the scan it replaced under the
+// sorted-manifest invariant `DbManifest::open` enforces, so prove the equivalence
+// rather than assert it -- on exactly the prefix/length shapes where `cmp_key`'s
+// ordering is load-bearing.
+//
+// TWO oracles, because one of them alone was circular (M-3):
+//
+//   1. A manifest holding ONE symbol. There, "find the record for S" is trivially
+//      the same answer for any search algorithm, so the fold value it produces is
+//      the value the bisect must reproduce. The fold covers the record's 256
+//      encoded bytes and every config here is unique, so a bisect landing on a
+//      neighbour cannot collide by accident -- but this oracle runs the SAME
+//      `std::lower_bound` under the same `cmp_key`, so it cannot by itself
+//      witness a disagreement between `cmp_key`'s order and the table's actual
+//      order.
+//   2. `scan_for_symbol` -- a real linear scan over the manifest's records that
+//      shares no code with the bisect and assumes no ordering. It establishes
+//      INDEPENDENTLY which physical record belongs to each symbol, so the record
+//      the bisect is required to land on is ground truth rather than a second
+//      opinion from the same comparator.
+TEST(SurfaceDbConfigFingerprint, FoldFindsTheSameRecordAsALinearScan) {
+  const auto many_root = test_root("fp_fold_many");
+  const auto one_root = test_root("fp_fold_one");
+  auto many = SurfaceDb::create(many_root.string());
+  ASSERT_TRUE(many.has_value());
+  auto one = SurfaceDb::create(one_root.string());
+  ASSERT_TRUE(one.has_value());
+
+  const std::vector<std::string> syms = fingerprint_symbols();
+  for (std::size_t i = 0; i < syms.size(); ++i) {
+    ASSERT_TRUE(many->upsert_symbol(syms[i], fingerprint_config(i)).has_value()) << syms[i];
+  }
+  // The manifest really is the sorted, prefix-dense table this is meant to probe.
+  ASSERT_EQ(many->symbols().size(), syms.size());
+
+  // Oracle 2: the linear scan pins WHICH physical record each symbol owns, with
+  // no help from `cmp_key`. `convex_node_cap` is `16 + i`, unique per symbol, so
+  // this fails loudly if the table's order is not the one the bisect assumes.
+  const std::shared_ptr<const DbManifest> man = many->manifest();
+  ASSERT_TRUE(man != nullptr);
+  ASSERT_EQ(man->symbols().size(), syms.size());
+  for (std::size_t i = 0; i < syms.size(); ++i) {
+    const std::size_t at = scan_for_symbol(*man, syms[i]);
+    ASSERT_NE(at, static_cast<std::size_t>(-1)) << syms[i] << ": absent from the symbol table";
+    EXPECT_EQ(man->symbols()[at].convex_node_cap, 16 + static_cast<int>(i))
+        << syms[i] << ": the record a linear scan finds is not this symbol's config";
+  }
+
+  for (std::size_t i = 0; i < syms.size(); ++i) {
+    ASSERT_TRUE(one->upsert_symbol(syms[i], fingerprint_config(i)).has_value()) << syms[i];
+    const std::vector<std::string> just_this{syms[i]};
+    const std::uint64_t bisected = many->config_fingerprint(just_this);
+    const std::uint64_t scanned = one->config_fingerprint(just_this);
+    EXPECT_NE(bisected, 0u) << syms[i] << ": a present symbol must fold, not read as unknown";
+    EXPECT_EQ(bisected, scanned)
+        << syms[i] << ": the bisect over " << syms.size()
+        << " records disagrees with the single-record lookup";
+    ASSERT_TRUE(one->remove_symbol(syms[i]).has_value()) << syms[i];
+  }
+
+  // Caller order cannot move the fold (it sorts internally), and a symbol with no
+  // manifest entry still collapses the whole fold to the 0 "unknown" sentinel --
+  // both properties the scan had and the bisect must keep.
+  const std::vector<std::string> shuffled(syms.rbegin(), syms.rend());
+  EXPECT_EQ(many->config_fingerprint(syms), many->config_fingerprint(shuffled));
+  EXPECT_NE(many->config_fingerprint(syms), 0u);
+  std::vector<std::string> with_absent = syms;
+  with_absent.emplace_back("NOSUCH");
+  EXPECT_EQ(many->config_fingerprint(with_absent), 0u);
+
+  // Sensitivity: changing ONE symbol's config must move exactly that symbol's
+  // fold. A bisect landing on a neighbour would move the wrong one.
+  const std::vector<std::string> target{syms[7]}; // "BA" -- prefix-adjacent to "B"
+  const std::vector<std::string> other{syms[2]};  // "AAA"
+  const std::uint64_t target_before = many->config_fingerprint(target);
+  const std::uint64_t other_before = many->config_fingerprint(other);
+  SymbolFitConfig bumped = fingerprint_config(7);
+  bumped.band_k += 0.5;
+  ASSERT_TRUE(many->upsert_symbol(target[0], bumped).has_value());
+  EXPECT_NE(many->config_fingerprint(target), target_before);
+  EXPECT_EQ(many->config_fingerprint(other), other_before);
+
+  std::filesystem::remove_all(many_root);
+  std::filesystem::remove_all(one_root);
+}
+
+// FIX-D fix-1 (I5). `write_partition` is public API documented to accept
+// arbitrary symbols, and the carry-over fingerprint is a claim it cannot verify.
+// So it is not made by default: an unattested write leaves the partition's
+// fingerprint at the 0 "unknown" sentinel, which never carries. Only a caller
+// that says it fitted these surfaces under the manifest's current configs gets
+// the stamp.
+TEST(SurfaceDbConfigFingerprint, WritePartitionStampsOnlyWhenTheCallerAttests) {
+  const auto root = test_root("fp_attest");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  ASSERT_TRUE(db->upsert_symbol("AAPL", fingerprint_config(1)).has_value());
+  ASSERT_TRUE(db->upsert_symbol("MSFT", fingerprint_config(2)).has_value());
+
+  const auto s1 = make_essvi(/*uid=*/1, /*n_slices=*/2);
+  const auto s2 = make_essvi(/*uid=*/2, /*n_slices=*/2);
+  const std::vector<SurfaceArchiveItem> items{{"AAPL", &s1}, {"MSFT", &s2}};
+
+  // Default: a surface produced who-knows-where. No claim, no stamp.
+  ASSERT_TRUE(db->write_partition("2026-07-10", items).has_value());
+  EXPECT_EQ(db->partition_config_fingerprint("2026-07-10"), 0u)
+      << "an unattested write must not bless its surfaces for carry-over";
+
+  // Explicit attestation: stamped, and stamped with exactly the fold over the
+  // symbols written (which is what the resume compares against).
+  ASSERT_TRUE(
+      db->write_partition("2026-07-10", items, {}, DbConfigAttestation::FitterProduced).has_value());
+  const std::vector<std::string> written{"AAPL", "MSFT"};
+  const std::uint64_t stamped = db->partition_config_fingerprint("2026-07-10");
+  EXPECT_NE(stamped, 0u);
+  EXPECT_EQ(stamped, db->config_fingerprint(written));
+
+  // A rewrite WITHOUT the attestation must clear the claim, not inherit it: the
+  // stored bytes came from somewhere else now.
+  ASSERT_TRUE(db->write_partition("2026-07-10", items).has_value());
+  EXPECT_EQ(db->partition_config_fingerprint("2026-07-10"), 0u)
+      << "an unattested rewrite must retract the previous stamp";
+
   std::filesystem::remove_all(root);
 }
 

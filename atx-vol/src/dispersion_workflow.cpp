@@ -110,6 +110,7 @@ Result<RunSpec> read_run_spec(const fs::path &path) {
   optional_text("label", spec.label);
   optional_text("snapshot_suffix", spec.snapshot_suffix);
   optional_text("path_template", spec.path_template);
+  optional_text("index_symbol", spec.index_symbol);
   std::string definitions;
   std::string occ_ess;
   optional_text("definitions", definitions);
@@ -150,6 +151,12 @@ Result<RunSpec> read_run_spec(const fs::path &path) {
     return Err(ErrorCode::InvalidArgument, "invalid run spec contract");
   if (spec.core_mode && (spec.min_names < 40 || spec.min_weight_coverage < 0.8))
     return Err(ErrorCode::InvalidArgument, "core mode requires >=40 names and >=80% weight");
+  // Present-but-empty is an authoring error, not "use the default": an empty
+  // index leg would poison universe_at's index member and all_symbols' seed.
+  // Safe by construction — the key did not exist before L12, so no spec already
+  // on disk can reach this rejection.
+  if (spec.index_symbol.empty())
+    return Err(ErrorCode::InvalidArgument, "run spec index_symbol must be non-empty");
   return spec;
 }
 
@@ -179,7 +186,11 @@ Status write_resolved_spec(const fs::path &path, const RunSpec &spec) {
       << "gross_index_vega\t" << spec.gross_index_vega << '\n'
       << "delta_band\t" << spec.delta_band << '\n'
       << "fit_workers\t" << spec.fit_workers << '\n'
-      << "core_mode\t" << (spec.core_mode ? 1 : 0) << '\n';
+      << "core_mode\t" << (spec.core_mode ? 1 : 0) << '\n'
+      // Appended LAST, after core_mode: an old-vs-new resolved spec then differs
+      // by exactly one trailing line, which is trivially auditable.
+      // encode_meta_section mirrors this key vocabulary and order.
+      << "index_symbol\t" << spec.index_symbol << '\n';
   return out ? Ok() : Err(ErrorCode::IoError, "cannot flush resolved run spec");
 }
 
@@ -239,6 +250,8 @@ Result<std::vector<UniverseRow>> read_universe(const fs::path &path) {
 
 std::vector<std::string> all_symbols(std::span<const UniverseRow> rows,
                                      std::string_view index_symbol) {
+  // The index leg is always fetched, whether or not it is also a constituent
+  // row; the dedup below keeps it single.
   std::vector<std::string> symbols{std::string(index_symbol)};
   for (const UniverseRow &row : rows)
     if (std::find(symbols.begin(), symbols.end(), row.symbol) == symbols.end())

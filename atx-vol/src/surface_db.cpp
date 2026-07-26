@@ -130,11 +130,26 @@ decode_surface_policy_record(const DbSymbolRecord &record) noexcept {
   return b.data() + static_cast<std::size_t>(off);
 }
 
+// The FNV-1a/64 prime, shared by every FNV fold in this TU.
+//
+// FIX-D fix-1 (I4). It lives here, once, because it did NOT used to: db_schema_hash
+// below spelled it correctly while `fnv1a_fold` (the carry-over fingerprint) had a
+// literal with one hex digit too many -- 0x1000'0000'01b3, which is not FNV's prime
+// and whose avalanche nobody had analysed. Any odd multiplier is deterministic, so
+// the bug was invisible; the failure it risks is a fingerprint COLLISION, i.e.
+// silently carrying a stale surface, the outcome this design ranks worst. One named
+// constant plus the identity check below makes the same typo impossible to repeat.
+inline constexpr std::uint64_t kFnv1a64Prime = 0x100000001b3ull;
+static_assert(kFnv1a64Prime == (1ull << 40) + (1ull << 8) + 0xb3ull,
+              "kFnv1a64Prime is not FNV-1a/64's prime (2^40 + 2^8 + 0xb3)");
+// The matching offset basis, used to seed a fold that starts from nothing.
+inline constexpr std::uint64_t kFnv1a64OffsetBasis = 0xcbf29ce484222325ull;
+
 // Compile-time fingerprint of the on-disk layout. Folds the sizeof of every
 // serialized record + a v1 format salt so a reader built against a different
 // struct shape rejects the file instead of mis-reading bytes.
 [[nodiscard]] std::uint64_t db_schema_hash() noexcept {
-  constexpr std::uint64_t kFnvPrime = 0x100000001b3ull;
+  constexpr std::uint64_t kFnvPrime = kFnv1a64Prime;
   // Salt derived from "atx-vol-surface-db-v1" -- distinct from the archive's
   // kV3Salt so a manifest never aliases into an archive schema hash (or vice
   // versa) even though both fold sizeof()s with the same FNV pattern.
@@ -297,6 +312,22 @@ decode_surface_policy_record(const DbSymbolRecord &record) noexcept {
   return rec;
 }
 
+// FNV-1a/64 over raw bytes. Deliberately NOT atx::core::hash_bytes (wyhash):
+// that is documented as "not stable across process restarts or platforms", and
+// this digest is PERSISTED and compared across runs. FNV-1a is fixed arithmetic,
+// so the same bytes fold to the same value on every process and host.
+[[nodiscard]] std::uint64_t fnv1a_fold(std::uint64_t h, const void *data,
+                                       std::size_t len) noexcept {
+  // FIX-D fix-1 (I4): the shared, identity-checked prime above. This line used to
+  // carry its own literal, and that literal was wrong (see kFnv1a64Prime).
+  const auto *p = static_cast<const std::uint8_t *>(data);
+  for (std::size_t i = 0; i < len; ++i) {
+    h ^= static_cast<std::uint64_t>(p[i]);
+    h *= kFnv1a64Prime;
+  }
+  return h;
+}
+
 // Wire-range validation for every enum stored as uint8. A manifest written by
 // a future writer (wider enum) must be rejected here, not aliased into a
 // different-but-valid-looking enumerator.
@@ -387,6 +418,49 @@ SymbolFitConfig decode_symbol_record(const DbSymbolRecord &rec) {
   cfg.surface_policy = decode_surface_policy(rec);
 
   return cfg;
+}
+
+// Fold the fit CONFIG of each named symbol into one stable digest. `canon` must
+// already be canonicalized; it is sorted here so caller order cannot change the
+// result. Each symbol contributes the 256 bytes of its record re-encoded with
+// provenance = nullopt: that strips the provenance half of the embedded
+// DbSurfacePolicyRecord (which `write_partition` rewrites on every write, and
+// which is not part of the config) while keeping every genuine config field,
+// surface_policy included. Returns 0 — the "unknown, never reuse" sentinel — if
+// any symbol has no manifest entry.
+[[nodiscard]] std::uint64_t fold_symbol_configs(std::span<const DbSymbolRecord> recs,
+                                                std::vector<std::string> canon) {
+  std::sort(canon.begin(), canon.end());
+  std::uint64_t h =
+      fnv1a_fold(kFnv1a64OffsetBasis, &kSurfaceDbCarryOverFitSalt, sizeof kSurfaceDbCarryOverFitSalt);
+  for (const std::string &sym : canon) {
+    // PRECONDITION: `recs` is sorted strictly ascending by `cmp_key` on the
+    // canonical symbol. Every DbManifest comes from `DbManifest::open`, which
+    // REJECTS a manifest that is not (see the "symbols not strictly ascending"
+    // check), so this is enforced, not assumed -- and the writer sorts with the
+    // same comparator. Given that, bisect exactly as `DbManifest::find_symbol`
+    // does: a linear scan here is O(partition symbols x manifest symbols) per
+    // date -- ~1M string compares on a 1030-name universe, in a fix whose entire
+    // premise is that the cost multiplier is the universe width. That the bisect
+    // agrees with the scan it replaced is pinned by
+    // SurfaceDbConfigFingerprint.FoldFindsTheSameRecordAsALinearScan, which
+    // includes the prefix/length cases where `cmp_key`'s ordering is the only
+    // thing keeping the two the same.
+    const auto len = static_cast<std::uint16_t>(sym.size());
+    const auto it = std::lower_bound(recs.begin(), recs.end(), sym,
+                                     [len](const DbSymbolRecord &rec, const std::string &key) {
+                                       return cmp_key(rec.symbol, rec.symbol_len, key.data(),
+                                                      len) < 0;
+                                     });
+    if (it == recs.end() || cmp_key(it->symbol, it->symbol_len, sym.data(), len) != 0) {
+      return 0u; // a symbol we have no config for -> unknown -> never reuse
+    }
+    const DbSymbolRecord clean =
+        encode_symbol_record(sym, decode_symbol_record(*it), std::nullopt);
+    h = fnv1a_fold(h, &clean, sizeof clean);
+  }
+  // Never hand back the sentinel for a successful fold.
+  return h == 0u ? 1u : h;
 }
 
 // ── Fitting-pipeline binding ────────────────────────────────────────────────
@@ -533,6 +607,12 @@ Result<std::vector<std::byte>> write_db_manifest(std::span<const DbSymbolEntry> 
     p.rec.surface_count = info.surface_count;
     p.rec.file_size = info.file_size;
     p.rec.created_ts_ns = info.created_ts_ns;
+    // FIX-D: previously-unused reserved field. Symmetric with decode_partitions
+    // below -- the decode half is NOT optional, because every manifest mutation
+    // round-trips the untouched partitions through DbPartitionInfo, so a
+    // write-only field would be wiped from every other partition on the next
+    // upsert_symbol.
+    p.rec.reserved0 = info.config_fingerprint;
     part_plans.push_back(p);
   }
 
@@ -828,6 +908,7 @@ decode_partitions(std::span<const DbPartitionRecord> recs) {
     info.surface_count = rec.surface_count;
     info.file_size = rec.file_size;
     info.created_ts_ns = rec.created_ts_ns;
+    info.config_fingerprint = rec.reserved0; // FIX-D; 0 on a pre-FIX-D manifest
     out.push_back(std::move(info));
   }
   return out;
@@ -939,6 +1020,41 @@ SurfaceDb::surface_provenance(std::string_view symbol) const {
 
 std::vector<DbPartitionInfo> SurfaceDb::partitions() const {
   return decode_partitions(manifest()->partitions());
+}
+
+std::uint64_t SurfaceDb::config_fingerprint(std::span<const std::string> symbols) const {
+  std::vector<std::string> canon;
+  canon.reserve(symbols.size());
+  for (const std::string &sym : symbols) {
+    canon.push_back(detail::canonicalize_symbol(sym, kSurfaceDbKeyMax));
+  }
+  return fold_symbol_configs(manifest()->symbols(), std::move(canon));
+}
+
+std::uint64_t SurfaceDb::partition_config_fingerprint(std::string_view key) const {
+  // ONE FULL-EXPRESSION, deliberately (REV-R5, review M-9). `manifest()` returns a
+  // `shared_ptr<const DbManifest>` BY VALUE; written as two statements
+  //
+  //     const DbPartitionRecord *rec = manifest()->find_partition(key);
+  //     return rec != nullptr ? rec->reserved0 : 0u;
+  //
+  // the temporary shared_ptr is destroyed at the semicolon of the FIRST line and
+  // `rec` — which points into the manifest's mapped bytes — is dereferenced on the
+  // second with no owner held. It survives today only because `snapshot_` holds a
+  // second reference and this path is single-threaded through the build; a
+  // concurrent `refresh`/`persist` swapping `snapshot_` between the two lines
+  // would drop the last owner and leave `rec` dangling.
+  //
+  // The fix is a NAMED OWNER spanning both the lookup and the load — the same
+  // shape `SurfaceDb::symbols()` above already uses, and this file's idiom for any
+  // query that touches manifest bytes across a statement boundary.
+  // `partition_listed` below solves it the other way and is equally correct: it
+  // consumes the pointer (`!= nullptr`) inside the very full-expression that
+  // produced the owner, so the temporary outlives the use. This one DEREFERENCES,
+  // so it needs the owner past the semicolon.
+  const std::shared_ptr<const DbManifest> m = manifest();
+  const DbPartitionRecord *rec = m->find_partition(key);
+  return rec != nullptr ? rec->reserved0 : 0u;
 }
 
 // ── SurfaceDb: manifest mutation ──────────────────────────────────────────
@@ -1078,7 +1194,7 @@ std::string SurfaceDb::partition_path(std::string_view canonical_key) const {
 }
 
 Status SurfaceDb::write_partition(std::string_view key, std::span<const SurfaceArchiveItem> items,
-                                  const ArchiveV2WriteOpts &opts) {
+                                  const ArchiveV2WriteOpts &opts, DbConfigAttestation attest) {
   auto canon = canonicalize_key(key);
   if (!canon) {
     return Err(canon.error());
@@ -1109,8 +1225,30 @@ Status SurfaceDb::write_partition(std::string_view key, std::span<const SurfaceA
   std::vector<DbPartitionInfo> parts = decode_partitions(snap->partitions());
   const auto it = std::find_if(parts.begin(), parts.end(),
                                [&](const DbPartitionInfo &p) { return p.key == *canon; });
+  // FIX-D: record the configs these surfaces were produced under, so a later
+  // resume can tell whether reusing them is still sound. Computed from the
+  // manifest snapshot (which already reflects any upsert_symbol) over exactly the
+  // symbols going into this partition; the provenance this call is about to write
+  // back is excluded from the fold, so the value is stable across rewrites that
+  // change nothing but provenance.
+  //
+  // FIX-D fix-1 (I5): only when the caller ATTESTS that it produced these
+  // surfaces under those configs. Without the attestation the fingerprint stays 0
+  // -- "unknown", never carried -- because this function cannot check the claim
+  // and a wrong one silently reuses a stale surface. Note the fold is skipped
+  // entirely, not computed and discarded: an unattested write must not pay the
+  // manifest walk either.
+  std::uint64_t fingerprint = 0u;
+  if (attest == DbConfigAttestation::FitterProduced) {
+    std::vector<std::string> written_symbols;
+    written_symbols.reserve(items.size());
+    for (const SurfaceArchiveItem &item : items) {
+      written_symbols.push_back(detail::canonicalize_symbol(item.symbol, kSurfaceDbKeyMax));
+    }
+    fingerprint = fold_symbol_configs(snap->symbols(), std::move(written_symbols));
+  }
   DbPartitionInfo info{*canon, static_cast<std::uint32_t>(items.size()),
-                       static_cast<std::uint64_t>(file_size), wall_clock_ns()};
+                       static_cast<std::uint64_t>(file_size), wall_clock_ns(), fingerprint};
   if (it != parts.end()) {
     *it = info; // rewrite: overwriting an existing key is allowed.
   } else {
@@ -1145,6 +1283,74 @@ Result<SurfaceArchiveV2> SurfaceDb::open_partition(std::string_view key) const {
     return Err(ErrorCode::NotFound, "SurfaceDb::open_partition: partition not present");
   }
   return SurfaceArchiveV2::open_file(partition_path(*canon));
+}
+
+// REV-R3 fix-1 (review I-1). The same open with the manifest gate REMOVED — see
+// the header for why this is a separate entry point rather than a widening of
+// `open_partition`. The one thing this function is for is keeping "there is no
+// file" apart from "there is a file I could not use", because its caller turns
+// the first into a whole-file overwrite.
+//
+// REV-R3 fix-2 (review N-1). WHAT THE PROBE BELOW CHECKS, stated as a check and
+// not as a guarantee — the previous version of this comment claimed the split
+// was already delivered by `SurfaceArchiveV2::open_file`, and it was not:
+//
+//   `std::filesystem::exists(p, ec)` returns false for BOTH "the path is not
+//   there" and "the query itself failed" (access denied on the file or on
+//   `partitions/`, a sharing violation, a transient volume or SMB fault, handle
+//   exhaustion). It distinguishes the two only through `ec`, which it CLEARS for
+//   a merely-absent path and SETS for a failed query. `open_file` folds both
+//   into one `NotFound` (`surface_archive.cpp`), and `NotFound` is the coverage
+//   guard's "nothing on disk, proceed and overwrite" branch — so a filesystem
+//   that could not answer read as a filesystem that answered "empty".
+//
+// So the existence question is asked HERE, where `ec` is looked at, and a failed
+// query becomes `IoError` — which the guard treats as an abort like any other
+// non-`NotFound` code. `open_file` itself is deliberately NOT changed: it has
+// other callers and widening its error contract underneath them is a separate
+// change with a separate blast radius.
+//
+// RESIDUAL, because this file has already had three comments that promised more
+// than the code did: `open_file` re-probes the path itself, so if the filesystem
+// starts failing in the window BETWEEN these two adjacent stats, this still
+// returns `open_file`'s `NotFound`. That window is two syscalls wide on one
+// thread and is the same window a real delete would race; it is narrowed here,
+// not eliminated. Eliminating it means changing `open_file`.
+Result<SurfaceArchiveV2> SurfaceDb::open_partition_file(std::string_view key) const {
+  auto canon = canonicalize_key(key);
+  if (!canon) {
+    return Err(canon.error());
+  }
+  const std::string path = partition_path(*canon);
+  std::error_code ec;
+  const bool present = std::filesystem::exists(std::filesystem::path(path), ec);
+  if (ec) {
+    // NOT `NotFound`: the filesystem declined to answer, so "absent" is not
+    // something anyone here knows. Armed with a real ERROR_ACCESS_DENIED by
+    // `SurfaceDbPartition.OpenPartitionFileDoesNotReportAnUnanswerableProbeAsAbsent`
+    // (Windows-only — that test records which arming routes do NOT work and why).
+    return Err(ErrorCode::IoError,
+               "SurfaceDb::open_partition_file: cannot determine whether the partition file "
+               "exists");
+  }
+  if (!present) {
+    return Err(ErrorCode::NotFound, "SurfaceDb::open_partition_file: no partition file");
+  }
+  return SurfaceArchiveV2::open_file(path);
+}
+
+// REV-R3 fix-2 (review N-3). Does the MANIFEST list `key`? Pure snapshot lookup:
+// no file I/O, no partition cache, no archive open. It is the other half of the
+// question `open_partition` fuses — `open_partition` = listed AND openable — and
+// the coverage guard needs the halves separately so its refusal banner can say
+// WHICH disagreement it hit. `false` for a key that will not canonicalize: an
+// unrepresentable key cannot be listed under any spelling.
+bool SurfaceDb::partition_listed(std::string_view key) const {
+  auto canon = canonicalize_key(key);
+  if (!canon) {
+    return false;
+  }
+  return manifest()->find_partition(*canon) != nullptr;
 }
 
 namespace {
@@ -1310,23 +1516,50 @@ Status SurfaceDb::drop_partition(std::string_view key) {
 
   // Manifest-first ordering is deliberate, not incidental: the index entry is
   // already gone (and generation already bumped) by the time we get here, so
-  // a crash right at this line leaves only an orphaned .atxvsa file under
-  // partitions/ -- harmless garbage that a future write_partition for the
-  // same key silently overwrites, and that no reader ever sees (the manifest
-  // no longer lists it, so open_partition/load_surface correctly report
-  // NotFound). The reverse order -- unlink the file, then edit the manifest
-  // -- would risk a crash between the two steps that leaves a manifest entry
-  // pointing at a now-missing file: every later open_partition/load_surface
-  // for that key would then surface a confusing IoError/NotFound-on-open
-  // instead of a clean "no such partition." The unlink stays under `*mu_`
-  // (rather than after releasing it) so an in-process write_partition on the
-  // SAME key racing on another thread cannot land its archive write and
-  // manifest entry inside the gap between this manifest commit and the
-  // unlink; see surface_db.hpp's thread-safety note for the residual
-  // ordering this narrows but does not fully close (write_partition's own
-  // archive write still happens before it takes the lock).
+  // a crash right at this line leaves an orphaned .atxvsa file under
+  // partitions/ that no READER ever sees (the manifest no longer lists it, so
+  // open_partition/load_surface correctly report NotFound). The reverse order
+  // -- unlink the file, then edit the manifest -- would risk a crash between
+  // the two steps that leaves a manifest entry pointing at a now-missing file:
+  // every later open_partition/load_surface for that key would then surface a
+  // confusing IoError/NotFound-on-open instead of a clean "no such partition."
+  // The unlink stays under `*mu_` (rather than after releasing it) so an
+  // in-process write_partition on the SAME key racing on another thread cannot
+  // land its archive write and manifest entry inside the gap between this
+  // manifest commit and the unlink; see surface_db.hpp's thread-safety note for
+  // the residual ordering this narrows but does not fully close
+  // (write_partition's own archive write still happens before it takes the
+  // lock).
+  //
+  // REV-R3 fix-2 (review N-2). THE ORPHAN IS NO LONGER HARMLESS, which is what
+  // this comment used to say. It is still invisible to readers and a direct
+  // `write_partition` for the same key still overwrites it silently -- but the
+  // BUILD path, which is the only thing that writes partitions in production,
+  // now runs a coverage guard that opens the partition FILE without asking the
+  // manifest (`open_partition_file`, added for exactly this class of
+  // manifest/file disagreement). That guard reads the orphan, sees symbols the
+  // new candidate lacks, and REFUSES to rewrite the date -- on every run, until
+  // someone deletes the file or rebuilds over the full board set. So an
+  // interrupted drop no longer costs nothing; it costs that date's rebuilds.
+  //
+  // Which is why the unlink error is now returned instead of discarded: a
+  // failed unlink produces the same orphan with no crash at all, and on Windows
+  // it is not exotic (a live mapping in another process blocks it). Reporting
+  // it is a PARTIAL SUCCESS -- the manifest commit above already happened and
+  // is not rolled back, the key really is dropped from the index, and a caller
+  // that retries gets `NotFound`. The message says so, because "drop_partition
+  // failed" would otherwise read as "nothing happened". `remove` on an already
+  // absent path returns false with `ec` CLEARED, so a double-unlink is not an
+  // error here.
   std::error_code ec;
   std::filesystem::remove(path, ec);
+  if (ec) {
+    return Err(ErrorCode::IoError,
+               "SurfaceDb::drop_partition: the manifest entry for '" + *canon +
+                   "' was removed, but its partition file could not be unlinked (" + ec.message() +
+                   "); the file is now an orphan that the build's coverage guard will read and "
+                   "defend -- delete " + path + " by hand");
+  }
   return Ok();
 }
 

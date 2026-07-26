@@ -338,6 +338,13 @@ int main(int argc, char **argv) {
     using Key = std::tuple<std::string, std::uint32_t, std::string>;
     std::map<Key, atx::vol::ListedContractDefinition> latest;
     std::size_t rejected = 0u;
+    // FIX-E (E2-a). `rejected` alone hid two unrelated outcomes behind one
+    // number: a record that is malformed or out of window, and a record whose
+    // root is not in the requested universe at all. That is what let the BRK.B
+    // defect below stay invisible — every BRK.B definition this tool PAID for was
+    // discarded, and the only trace was a larger `rejected`.
+    std::size_t unknown_root_rejected = 0u;
+    std::size_t malformed_rejected = 0u;
     std::size_t sourced_standard_fallbacks = 0u;
     std::size_t occ_special_rejected = 0u;
     std::size_t missing_occ_authority = 0u;
@@ -352,11 +359,43 @@ int main(int argc, char **argv) {
       const std::int64_t expiry_ts = source.expiration.time_since_epoch().count();
       const std::string raw_symbol = source.RawSymbol();
       const auto osi = atx::vol::parse_osi_symbol(raw_symbol);
-      const bool exact_underlying_root =
-          osi && std::find(config.symbols.begin(), config.symbols.end(), osi->root) !=
-                     config.symbols.end();
-      if (definition_ts <= 0 || expiry_ts <= definition_ts || raw_symbol.empty() ||
-          !exact_underlying_root) {
+      // FIX-E (E2-a). This was a byte-exact `std::find` of `osi->root` in
+      // `config.symbols`, and it made this tool self-inconsistent: `parent_symbol`
+      // above STRIPS DOTS to build the Databento request, so a `BRK.B` universe
+      // entry is requested as `BRKB.OPT` and every returned record carries the
+      // root `BRKB` — which then failed an exact compare against `BRK.B` and was
+      // thrown away. One file asked for the data correctly and discarded all of
+      // it, silently, into an undifferentiated `rejected` tally; the downstream
+      // effect is that BRK.B is absent from every dispersion basket, because
+      // `listed_quotes_from_opra` can only emit a contract it has a definition
+      // for.
+      //
+      // The shared predicate is the right relaxation and the ONLY one: it accepts
+      // a difference of punctuation and nothing else, so an adjusted-deliverable
+      // root (`AAPL1`) is still rejected here. That matters because this tool is
+      // the sole producer of the definitions table — accepting more definitions
+      // must not smuggle a non-comparable contract into the join. (Belt and
+      // braces: `listed_opra.cpp` also skips digit-bearing roots downstream.)
+      if (definition_ts <= 0 || expiry_ts <= definition_ts || raw_symbol.empty() || !osi) {
+        ++malformed_rejected;
+        ++rejected;
+        return;
+      }
+      // The exact compare is KEPT as the first disjunct so this change can only
+      // ever accept MORE, never less: the shared predicate skips dots in the
+      // TICKER only, so it would answer false for the (unobserved, but not
+      // structurally impossible) case of a root that itself carries a dot and
+      // equals a universe symbol byte-for-byte -- which the old `std::find`
+      // accepted. This tool's output is a paid artifact; a relaxation that
+      // silently dropped something is exactly the failure being repaired.
+      const bool matches_universe_root =
+          std::any_of(config.symbols.begin(), config.symbols.end(),
+                      [&](const std::string &symbol) {
+                        return symbol == osi->root ||
+                               atx::vol::osi_root_matches_ticker(osi->root, symbol);
+                      });
+      if (!matches_universe_root) {
+        ++unknown_root_rejected;
         ++rejected;
         return;
       }
@@ -533,11 +572,17 @@ int main(int argc, char **argv) {
       std::fprintf(stderr, "definition write failed: %s\n", write.error().to_string().c_str());
       return 1;
     }
+    // `rejected` is the TOTAL and stays first for continuity; the two FIX-E
+    // sub-counts break out the halves that used to be indistinguishable. A large
+    // `unknown_root_rejected` against a small universe is the signature of a
+    // symbol whose spelling does not reach the matcher — the shape of the BRK.B
+    // defect this counter exists to make visible.
     std::printf("wrote %zu point-in-time definitions to %s "
-                "(rejected=%zu occ_special_rejected=%zu sourced_standard_fallbacks=%zu "
+                "(rejected=%zu unknown_root_rejected=%zu malformed_rejected=%zu "
+                "occ_special_rejected=%zu sourced_standard_fallbacks=%zu "
                 "fingerprint=%llu)\n",
-                table->definitions().size(), config.out.c_str(), rejected,
-                occ_special_rejected, sourced_standard_fallbacks,
+                table->definitions().size(), config.out.c_str(), rejected, unknown_root_rejected,
+                malformed_rejected, occ_special_rejected, sourced_standard_fallbacks,
                 static_cast<unsigned long long>(table->fingerprint()));
     return 0;
   } catch (const std::exception &error) {

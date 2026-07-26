@@ -183,7 +183,14 @@ def main() -> int:
         # UNDEF -> loader sentinel
         out.loc[out["bid_px"] == DBN_UNDEF, "bid_px"] = INT64_MIN
         out.loc[out["ask_px"] == DBN_UNDEF, "ask_px"] = INT64_MIN
-        # OSI root = first 6 chars (space padded); map back to the universe symbol.
+        # OSI root = first 6 chars (space padded); STRIP TRAILING DIGITS; map back
+        # to the universe symbol. The digit strip was missing from this comment
+        # while the line below has always performed it, which is how the adjusted-
+        # deliverable merge stayed invisible here: it folds an `AAPL1` (post
+        # corporate action, non-standard deliverable) root onto `AAPL`, so such a
+        # row reaches disk under `underlying = "AAPL"`. The C++ consumers refuse
+        # that pair on purpose (`osi_root_matches_ticker`, opra_panel.hpp) and fail
+        # the cell loud rather than merge two different instruments.
         roots = out["symbol"].str[:6].str.strip()
         base = roots.str.replace(r"\d+$", "", regex=True)
         out["underlying"] = base.map(root_to_sym)

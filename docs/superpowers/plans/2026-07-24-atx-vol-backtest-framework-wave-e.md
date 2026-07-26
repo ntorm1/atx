@@ -135,18 +135,35 @@ And **P2's outputs are not byte-pinned**: the four sprint goldens are `backtest`
 
 **Notes:** This is a **diagnostics row-set change** — the `diagnostics` section gains rows and one phase name disappears. That is a *data* change, not a schema change: `kDiagnosticsCols` is `(subcommand, phase, wall_ms, count)` and is untouched, so `schema_hash` cannot move. **Before editing, grep for anything that pins the diagnostics row set or phase names** (`atx-vol/tests/`, and `print_diag_summary` at `:119-125` which uses an independent whole-command total). If a test pins the row count, update that test in this task and say so. Python is out of scope — if a Python assertion pins phase names, STOP and escalate.
 
-- [ ] **Step 1: Capture the pre-change baseline** — per §Measurement protocol on a private fixture: `build-schedule`, `run-backtest`, `project-schedule`, `run-projected-backtest --execution cold`, min-of-3 each, full phase tables. This is the wave's reference baseline; record the exact invocations including all flags.
-- [ ] **Step 2: Capture the fixture section goldens (the RED that protects everything after)** — for each of the seven sections above, `runarchive dump <FIXTURE> <section> --tsv | sha256`. Record all seven hashes plus row counts in the task report. **A task later in this wave that cannot reproduce these hashes has failed.**
-- [ ] **Step 3: Write the failing assertion** — extend the diagnostics test (or add one) asserting that a `run_backtest` diagnostics section contains rows named `definitions_parse`, `snapshot_load`, `quote_join`, `reconcile` and does NOT contain `reconciliation`; and that a `build_schedule` section contains `definitions_parse`. Build → FAIL (phases do not exist).
-- [ ] **Step 4: Implement the phase splits** — edit both `PhaseTimer timer({...})` initializers and add the disjoint `now()`/`add()` pairs. **No economics may be touched**: this task changes only timer bookkeeping.
-- [ ] **Step 5: Run to verify it passes** — `cmake --build C:\atx\build-rel --target atx-vol-tests` then the diagnostics filter → PASS.
-- [ ] **Step 6: Re-measure and prove the split is a partition** — rerun `build-schedule` + `run-backtest` on the fixture; assert `definitions_parse + setup_read ≈ old setup_read` and `snapshot_load + quote_join + reconcile ≈ old reconciliation` (within run-to-run noise), and record the **new, decomposed baseline** — this is the number Tasks 3, 4, 5 and 7 are measured against.
-- [ ] **Step 7: Byte-stability gate** — fixture `final_nav=-456.5769067`; all seven section hashes from Step 2 unchanged (the diagnostics section is deliberately excluded — it is what changed).
-- [ ] **Step 8: Commit** (`git add atx-vol/examples/spy_dispersion_backtest.cpp atx-vol/tests/run_archive_test.cpp`).
+- [x] **Step 1: Capture the pre-change baseline** — per §Measurement protocol on a private fixture: `build-schedule`, `run-backtest`, `project-schedule`, `run-projected-backtest --execution cold`, min-of-3 each, full phase tables. This is the wave's reference baseline; record the exact invocations including all flags.
+- [x] **Step 2: Capture the fixture section goldens (the RED that protects everything after)** — for each of the seven sections above, `runarchive dump <FIXTURE> <section> --tsv | sha256`. Record all seven hashes plus row counts in the task report. **A task later in this wave that cannot reproduce these hashes has failed.**
+- [x] **Step 3: Write the failing assertion** — extend the diagnostics test (or add one) asserting that a `run_backtest` diagnostics section contains rows named `definitions_parse`, `snapshot_load`, `quote_join`, `reconcile` and does NOT contain `reconciliation`; and that a `build_schedule` section contains `definitions_parse`. Build → FAIL (phases do not exist).
+- [x] **Step 4: Implement the phase splits** — edit both `PhaseTimer timer({...})` initializers and add the disjoint `now()`/`add()` pairs. **No economics may be touched**: this task changes only timer bookkeeping.
+- [x] **Step 5: Run to verify it passes** — `cmake --build C:\atx\build-rel --target atx-vol-tests` then the diagnostics filter → PASS.
+- [x] **Step 6: Re-measure and prove the split is a partition** — rerun `build-schedule` + `run-backtest` on the fixture; assert `definitions_parse + setup_read ≈ old setup_read` and `snapshot_load + quote_join + reconcile ≈ old reconciliation` (within run-to-run noise), and record the **new, decomposed baseline** — this is the number Tasks 3, 4, 5 and 7 are measured against.
+- [x] **Step 7: Byte-stability gate** — fixture `final_nav=-456.5769067`; all seven section hashes from Step 2 unchanged (the diagnostics section is deliberately excluded — it is what changed).
+- [x] **Step 8: Commit** (`git add atx-vol/examples/spy_dispersion_backtest.cpp atx-vol/tests/run_archive_test.cpp`).
 
 ---
 
-## Task 2: P5 — route the mark-divergence replay through the shared `SnapshotCache`
+## Task 2: P5 — ~~route the mark-divergence replay through the shared `SnapshotCache`~~
+
+> **[DROPPED by controller decision — ALREADY DELIVERED by Wave D T5, not skipped.]**
+> P5 exists to eliminate a duplicate per-session `MarketSnapshot::load` performed by the
+> mark-divergence replay in addition to the priced run's own loads. **That replay no longer
+> exists.** Wave D T5 (`d955e93`) deleted `collect_mark_divergence_replay` entirely — the
+> `StepObserver` now collects divergence from the single priced run — so the second pass
+> over the clock, and with it every duplicate load, is gone. `collect_mark_divergence_replay`
+> greps to zero tree-wide.
+> **Decisive evidence:** `run-projected-backtest`'s `archive_load` phase now measures
+> **exactly 0 ms / count 0** — the subcommand P5 targeted performs no archive loads at all.
+> (Corroborating, from Wave E T1's split: `snapshot_load` is 0.23% of the old
+> `reconciliation` aggregate — though note that is `run_backtest`, a *different* subcommand,
+> so it supports rather than establishes the conclusion.)
+> Boxes below are deliberately left unchecked. The whole task text is retained rather than
+> deleted so the drop is auditable.
+
+**[ORIGINAL TASK TEXT FOLLOWS — NOT EXECUTED]**
 
 **Files:**
 - Modify: `atx-vol/examples/spy_dispersion_backtest.cpp` (`collect_mark_divergence_replay` `:698-757`; the cache construction at `:795`)

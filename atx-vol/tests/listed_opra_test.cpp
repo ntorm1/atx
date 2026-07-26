@@ -1,11 +1,15 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "atx/core/error.hpp"
 #include "atx/vol/data.hpp"
 #include "atx/vol/listed_opra.hpp"
 
@@ -120,6 +124,57 @@ TEST(ListedOpra, RejectsMissingLookAheadAndContradictoryDefinitions) {
   ASSERT_TRUE(wrong_table);
   EXPECT_FALSE(
       atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *wrong_table));
+}
+
+// FIX-C-1 regression. The panel keys its rows by the hive's `underlying` column —
+// the universe spelling — while `raw_symbol` carries the OSI wire encoding, which
+// cannot express punctuation. For a class share those are two spellings of ONE
+// identity (`BRK.B` / `BRKB`), and the economics guard must accept them.
+//
+// This is the exact shape the C-1 loader change produces, and a `!=` compare here
+// would hard-Err it. The blast radius is not one contract:
+// `listed_dispersion_pipeline.cpp` calls this under ATX_TRY, so the whole date's
+// join dies for EVERY name, and `MissingDefinitionPolicy::SkipUnlisted` cannot
+// rescue it because the economics check is deliberately fatal. It is reachable
+// with committed data — `atx-vol/data/universe/spy_top50_2026-01-01.csv` lists
+// BRK.B and `spy_dispersion_backtest.cpp` feeds that universe through this join.
+TEST(ListedOpra, PunctuatedTickerJoinsAgainstItsDotStrippedOsiRoot) {
+  OpraPanel source = panel();
+  source.frame.uid = "BRK.B";
+  for (QuoteRow &row : source.frame.rows) {
+    row.uid = "BRK.B"; // the loader's row uid: the universe/`underlying` spelling
+  }
+  source.source_identities = {
+      OpraInstrumentIdentity{101, "BRKB  260717C00600000"}, // ...and the OSI wire root
+      OpraInstrumentIdentity{102, "BRKB  260717P00600000"},
+  };
+  auto defs = definitions();
+  defs[0].raw_symbol = "BRKB  260717C00600000";
+  defs[1].raw_symbol = "BRKB  260717P00600000";
+  auto table = ListedDefinitionTable::create(std::move(defs));
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  const auto quotes =
+      atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table);
+  ASSERT_TRUE(quotes) << (quotes ? std::string{} : quotes.error().to_string());
+  ASSERT_EQ(quotes->size(), 2u);
+  // The emitted symbol must be the UNIVERSE spelling: `listed_dispersion.cpp`'s
+  // candidate scan compares it against `DispersionMember::symbol`, which comes
+  // from the dotted universe file. Emitting the root here is how this name used
+  // to be dropped from every dispersion basket.
+  EXPECT_EQ((*quotes)[0].symbol, "BRK.B");
+  EXPECT_EQ((*quotes)[1].symbol, "BRK.B");
+  // ...while provenance keeps the exact wire identity, unnormalized.
+  EXPECT_EQ((*quotes)[0].raw_symbol, "BRKB  260717C00600000");
+
+  // The relaxation is punctuation-only, not a general fuzzy match: a root that
+  // differs by anything else is still a hard economics disagreement.
+  OpraPanel mismatched = source;
+  for (QuoteRow &row : mismatched.frame.rows) {
+    row.uid = "BRK.C"; // dot-stripped: "BRKC" != "BRKB"
+  }
+  EXPECT_FALSE(atx::vol::listed_quotes_from_opra(kDate, mismatched.frame.snapshot_ts_ns, mismatched,
+                                                 *table));
 }
 
 TEST(ListedOpra, MissingNumericRootAdjustmentsAreExcluded) {
@@ -305,6 +360,552 @@ TEST(ListedOpra, RejectsDailyIdentityAndAlignmentViolations) {
       atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table));
 }
 
+// --- The leg-key filter (`wanted`) ---------------------------------------
+//
+// A non-empty `wanted` declares the exact contract set the caller will read, so
+// the join can skip the definition lookup, the OSI parse and quote construction
+// for every other panel row. Two properties have to hold at once:
+//
+//   RESULT EQUALITY — the filtered result is exactly the unfiltered result
+//   intersected with `wanted`, element for element and in panel order. A filter
+//   that under-drops changes nothing observable but buys nothing; one that
+//   over-drops silently loses a leg the reconciliation then cannot mark.
+//
+//   THE NARROWED GATES STILL FIRE — SIX of the join's SEVEN fatal exits (both
+//   OSI parses, contract definition missing, definition look-ahead/expiry,
+//   quote/OSI/definition economics, future quote) now run only for the consumed
+//   keys. That narrowing is deliberate and enumerated in the header, but each
+//   gate MUST still be fatal when the offending row is one the caller asked for.
+//   The seventh (aligned source identity missing) is panel-wide and must stay
+//   fatal even for a row nobody wants, because it precedes the filter.
+//
+//   THE PRECONDITION IS ENFORCED — `wanted` must be strictly increasing, and an
+//   unsorted span is rejected rather than silently under-joining.
+//
+// Both directions were observed RED: with the filter ignored (a `wanted` the
+// implementation accepted and did not apply) the equality tests and every
+// narrowing control failed; with the filter applied unconditionally to every
+// row, the narrowed-gate tests failed while the panel-wide identity test still
+// passed. The precondition tests were observed RED against the unguarded code —
+// the unsorted span returned Ok with one of two legs missing. All of it is in
+// the task report.
+
+using atx::vol::ListedOptionQuote;
+using atx::vol::ListedQuoteKey;
+
+constexpr const char *kWideExpiryIso = "2026-07-17";
+constexpr const char *kWideExpiryStamp = "2026-07-17T20:00:00Z";
+
+struct WideRow {
+  std::uint32_t id;
+  const char *raw_symbol;
+  double strike;
+  Side side;
+};
+
+// Six defined contracts: three strikes x two sides, one expiry. Instrument ids
+// ascend so `source_identities` is sorted, as the join's lower_bound requires.
+const std::vector<WideRow> &wide_rows() {
+  static const std::vector<WideRow> rows = {
+      {101u, "SPY   260717C00590000", 590.0, Side::Call},
+      {102u, "SPY   260717P00590000", 590.0, Side::Put},
+      {103u, "SPY   260717C00600000", 600.0, Side::Call},
+      {104u, "SPY   260717P00600000", 600.0, Side::Put},
+      {105u, "SPY   260717C00610000", 610.0, Side::Call},
+      {106u, "SPY   260717P00610000", 610.0, Side::Put},
+  };
+  return rows;
+}
+
+OpraPanel wide_panel() {
+  OpraPanel out;
+  out.frame.uid = "SPY";
+  out.frame.snapshot_iso = "2026-06-05T19:55:00Z";
+  out.frame.snapshot_ts_ns = iso_to_ns(out.frame.snapshot_iso);
+  out.source_schema_version = 2;
+  out.source_fingerprint = 991;
+  out.provenance_complete = true;
+  double bid = 10.0;
+  for (const WideRow &row : wide_rows()) {
+    // Distinct bid/ask per row so an element-wise comparison has something to
+    // discriminate beyond the key fields.
+    out.frame.rows.push_back(QuoteRow{.uid = "SPY",
+                                      .expiry_iso = kWideExpiryIso,
+                                      .strike = row.strike,
+                                      .side = row.side,
+                                      .bid = bid,
+                                      .ask = bid + 0.25});
+    out.source_instrument_ids.push_back(row.id);
+    out.source_identities.push_back(OpraInstrumentIdentity{row.id, row.raw_symbol});
+    bid += 1.0;
+  }
+  return out;
+}
+
+std::vector<ListedContractDefinition> wide_definitions_for_panel() {
+  const std::int64_t definition_ts = iso_to_ns("2026-06-05T12:00:00Z");
+  const std::int64_t expiry_ts = iso_to_ns(kWideExpiryStamp);
+  std::vector<ListedContractDefinition> out;
+  std::uint64_t print = 501;
+  for (const WideRow &row : wide_rows()) {
+    out.push_back(ListedContractDefinition{kDate, row.id, row.raw_symbol, definition_ts, expiry_ts,
+                                           100.0, true, true, print++});
+  }
+  return out;
+}
+
+ListedQuoteKey wide_key(std::size_t index) {
+  const WideRow &row = wide_rows()[index];
+  return ListedQuoteKey{row.raw_symbol, iso_to_ns(kWideExpiryStamp), row.strike, row.side};
+}
+
+// `wanted` is contractually sorted + deduped, exactly as the run-backtest caller
+// builds it.
+std::vector<ListedQuoteKey> sorted_wanted(std::vector<ListedQuoteKey> keys) {
+  std::sort(keys.begin(), keys.end());
+  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+  return keys;
+}
+
+// Every field, on raw doubles — not a key-only comparison, which would pass on a
+// filter that rebuilt the quote from the wanted key instead of from the panel.
+void expect_quote_eq(const ListedOptionQuote &got, const ListedOptionQuote &want,
+                     const char *where) {
+  EXPECT_EQ(got.trade_date, want.trade_date) << where;
+  EXPECT_EQ(got.symbol, want.symbol) << where;
+  EXPECT_EQ(got.instrument_id, want.instrument_id) << where;
+  EXPECT_EQ(got.raw_symbol, want.raw_symbol) << where;
+  EXPECT_EQ(got.expiry_ts_ns, want.expiry_ts_ns) << where;
+  EXPECT_EQ(got.strike, want.strike) << where;
+  EXPECT_EQ(got.side, want.side) << where;
+  EXPECT_EQ(got.bid, want.bid) << where;
+  EXPECT_EQ(got.ask, want.ask) << where;
+  EXPECT_EQ(got.quote_ts_ns, want.quote_ts_ns) << where;
+  EXPECT_EQ(got.multiplier, want.multiplier) << where;
+  EXPECT_EQ(got.standard_monthly, want.standard_monthly) << where;
+  EXPECT_EQ(got.standard_deliverable, want.standard_deliverable) << where;
+  EXPECT_EQ(got.source_fingerprint, want.source_fingerprint) << where;
+}
+
+TEST(ListedOpra, FilteredJoinEqualsUnfilteredOnWantedKeys) {
+  using atx::vol::MissingDefinitionPolicy;
+  auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  const OpraPanel source = wide_panel();
+
+  auto full = atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table);
+  ASSERT_TRUE(full) << (full ? std::string{} : full.error().to_string());
+  ASSERT_EQ(full->size(), 6u); // anti-vacuity: the unfiltered join really is wide
+
+  // Three keys, chosen NON-CONTIGUOUSLY in panel order (rows 0, 3, 4) so the
+  // expected subset is not a prefix or a run.
+  const std::vector<ListedQuoteKey> wanted =
+      sorted_wanted({wide_key(0), wide_key(3), wide_key(4)});
+  ASSERT_EQ(wanted.size(), 3u);
+
+  std::vector<ListedOptionQuote> expected;
+  for (const ListedOptionQuote &quote : *full) {
+    if (std::binary_search(wanted.begin(), wanted.end(), atx::vol::quote_key_of(quote))) {
+      expected.push_back(quote);
+    }
+  }
+  // Anti-vacuity: the filter must actually remove rows, and keep some.
+  ASSERT_EQ(expected.size(), 3u);
+  ASSERT_LT(expected.size(), full->size());
+
+  auto filtered = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, wanted);
+  ASSERT_TRUE(filtered) << (filtered ? std::string{} : filtered.error().to_string());
+  ASSERT_EQ(filtered->size(), expected.size());
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    expect_quote_eq((*filtered)[i], expected[i], "filtered vs unfiltered subset");
+  }
+  // ...and the surviving order is panel order (590C, 600P, 610C), not wanted order.
+  EXPECT_EQ((*filtered)[0].instrument_id, 101u);
+  EXPECT_EQ((*filtered)[1].instrument_id, 104u);
+  EXPECT_EQ((*filtered)[2].instrument_id, 105u);
+}
+
+TEST(ListedOpra, FilteredJoinEmptyWantedIsUnfiltered) {
+  using atx::vol::MissingDefinitionPolicy;
+  // POSITIVE CONTROL, not a gate: an empty `wanted` is the parameter's default,
+  // so this passes by construction against both the pre-change code and any
+  // implementation of the filter. It pins the default-argument contract (adding
+  // a parameter must not move an existing caller) and nothing more.
+  auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  const OpraPanel source = wide_panel();
+
+  auto full = atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table);
+  ASSERT_TRUE(full) << (full ? std::string{} : full.error().to_string());
+  ASSERT_EQ(full->size(), 6u);
+
+  auto empty_span = atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source,
+                                                      *table, MissingDefinitionPolicy::Error,
+                                                      std::span<const ListedQuoteKey>{});
+  ASSERT_TRUE(empty_span) << (empty_span ? std::string{} : empty_span.error().to_string());
+  ASSERT_EQ(empty_span->size(), full->size());
+  for (std::size_t i = 0; i < full->size(); ++i) {
+    expect_quote_eq((*empty_span)[i], (*full)[i], "empty wanted vs default");
+  }
+}
+
+TEST(ListedOpra, FilteredJoinExcludesWantedRawSymbolWithDifferentExpiry) {
+  using atx::vol::MissingDefinitionPolicy;
+  // The pre-lookup stage keys on raw_symbol alone (the definition's
+  // expiry_ts_ns is not known until after the lookup), so the EXACT key has to
+  // be re-checked before the quote is emitted. A `wanted` entry carrying the
+  // right raw_symbol but a different expiry instant must not admit the row.
+  auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  const OpraPanel source = wide_panel();
+
+  ListedQuoteKey skewed = wide_key(2);
+  skewed.expiry_ts_ns += 1; // same raw_symbol, one nanosecond off
+  ASSERT_NE(skewed.expiry_ts_ns, wide_key(2).expiry_ts_ns);
+
+  const std::vector<ListedQuoteKey> wanted = sorted_wanted({wide_key(0), skewed});
+  ASSERT_EQ(wanted.size(), 2u);
+
+  auto filtered = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, wanted);
+  ASSERT_TRUE(filtered) << (filtered ? std::string{} : filtered.error().to_string());
+  ASSERT_EQ(filtered->size(), 1u) << "only the exactly-matching key may survive";
+  EXPECT_EQ((*filtered)[0].instrument_id, 101u);
+}
+
+TEST(ListedOpra, FilteredJoinStillFatalOnWantedLookAhead) {
+  using atx::vol::MissingDefinitionPolicy;
+  // NARROWED GATE 4. The definition for a WANTED contract post-dates the
+  // valuation instant: corrupted authority, and still fatal under the filter.
+  const OpraPanel source = wide_panel();
+  auto rows = wide_definitions_for_panel();
+  rows[2].definition_ts_ns = source.frame.snapshot_ts_ns + 1; // row 2 == wide_key(2)
+  auto table = ListedDefinitionTable::create(std::move(rows));
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  const std::vector<ListedQuoteKey> wanted = sorted_wanted({wide_key(2), wide_key(5)});
+  // Anti-vacuity: the perturbed contract IS in the wanted set.
+  ASSERT_TRUE(std::binary_search(wanted.begin(), wanted.end(), wide_key(2)));
+
+  auto filtered = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, wanted);
+  ASSERT_FALSE(filtered) << "look-ahead must stay fatal for a wanted key";
+  EXPECT_EQ(filtered.error().code(), atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(filtered.error().message(), "listed OPRA join: definition look-ahead or expiry");
+
+  // ...and it is fatal under SkipUnlisted too, exactly as it is unfiltered.
+  EXPECT_FALSE(atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table,
+                                                 MissingDefinitionPolicy::SkipUnlisted, wanted));
+
+  // Control: the SAME corrupted table is silently tolerated when that contract
+  // is NOT wanted — this is the narrowing, asserted rather than assumed.
+  const std::vector<ListedQuoteKey> elsewhere = sorted_wanted({wide_key(0), wide_key(5)});
+  auto narrowed = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, elsewhere);
+  ASSERT_TRUE(narrowed) << (narrowed ? std::string{} : narrowed.error().to_string());
+  EXPECT_EQ(narrowed->size(), 2u);
+}
+
+TEST(ListedOpra, FilteredJoinStillFatalOnWantedEconomicsMismatch) {
+  using atx::vol::MissingDefinitionPolicy;
+  // NARROWED GATE 6. The panel row's expiry disagrees with its own OSI symbol.
+  // raw_symbol, strike and side are untouched, so the row's wanted key is exactly
+  // wide_key(2) — there is no ambiguity about whether the caller asked for it.
+  OpraPanel source = wide_panel();
+  source.frame.rows[2].expiry_iso = "2026-07-18"; // OSI says 260717
+  auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  const std::vector<ListedQuoteKey> wanted = sorted_wanted({wide_key(2), wide_key(5)});
+  ASSERT_TRUE(std::binary_search(wanted.begin(), wanted.end(), wide_key(2)));
+
+  auto filtered = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, wanted);
+  ASSERT_FALSE(filtered) << "economics disagreement must stay fatal for a wanted key";
+  EXPECT_EQ(filtered.error().code(), atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(filtered.error().message(),
+            "listed OPRA join: quote, OSI, and definition economics disagree");
+
+  // A row that LIES about its strike must also still trip the gate rather than
+  // be filtered out on the strike it is lying about — this is why the pre-lookup
+  // stage keys on raw_symbol alone and not on (raw_symbol, strike, side).
+  OpraPanel skewed_strike = wide_panel();
+  skewed_strike.frame.rows[2].strike = 601.0; // OSI says 00600000
+  auto by_strike = atx::vol::listed_quotes_from_opra(kDate, skewed_strike.frame.snapshot_ts_ns,
+                                                     skewed_strike, *table,
+                                                     MissingDefinitionPolicy::Error, wanted);
+  ASSERT_FALSE(by_strike) << "a mis-struck wanted row must not be filtered past the gate";
+  EXPECT_EQ(by_strike.error().message(),
+            "listed OPRA join: quote, OSI, and definition economics disagree");
+}
+
+TEST(ListedOpra, FilteredJoinStillFatalOnWantedFutureQuote) {
+  using atx::vol::MissingDefinitionPolicy;
+  // NARROWED GATE 7. A WANTED row stamped after the valuation instant.
+  OpraPanel source = wide_panel();
+  source.frame.rows[2].ts_ns = source.frame.snapshot_ts_ns + 1;
+  auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  const std::vector<ListedQuoteKey> wanted = sorted_wanted({wide_key(2), wide_key(5)});
+  ASSERT_TRUE(std::binary_search(wanted.begin(), wanted.end(), wide_key(2)));
+
+  auto filtered = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, wanted);
+  ASSERT_FALSE(filtered) << "a future quote must stay fatal for a wanted key";
+  EXPECT_EQ(filtered.error().code(), atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(filtered.error().message(), "listed OPRA join: future quote");
+
+  // Control: the same future-stamped row is tolerated when it is not wanted.
+  const std::vector<ListedQuoteKey> elsewhere = sorted_wanted({wide_key(0), wide_key(5)});
+  auto narrowed = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, elsewhere);
+  ASSERT_TRUE(narrowed) << (narrowed ? std::string{} : narrowed.error().to_string());
+  EXPECT_EQ(narrowed->size(), 2u);
+}
+
+TEST(ListedOpra, FilteredJoinStillFatalOnMissingIdentity) {
+  using atx::vol::MissingDefinitionPolicy;
+  // PRESERVED PANEL-WIDE GATE 1. The identity lookup precedes the filter, so an
+  // instrument id with no aligned source identity is fatal even though nothing
+  // in `wanted` names that row. This is the partition boundary: the three gates
+  // above narrow, this one does not.
+  OpraPanel source = wide_panel();
+  source.source_instrument_ids[5] = 999u; // no identity row for 999
+  ASSERT_EQ(source.source_instrument_ids.size(), source.frame.rows.size());
+  auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  // Wanted names rows 0 and 2 only — never the broken row 5.
+  const std::vector<ListedQuoteKey> wanted = sorted_wanted({wide_key(0), wide_key(2)});
+  ASSERT_FALSE(std::binary_search(wanted.begin(), wanted.end(), wide_key(5)));
+
+  auto filtered = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, wanted);
+  ASSERT_FALSE(filtered) << "the panel-wide identity gate must not be narrowed";
+  EXPECT_EQ(filtered.error().code(), atx::core::ErrorCode::NotFound);
+  EXPECT_EQ(filtered.error().message(), "listed OPRA join: aligned source identity missing");
+
+  // A zero instrument id on an unwanted row is equally fatal.
+  OpraPanel zeroed = wide_panel();
+  zeroed.source_instrument_ids[5] = 0u;
+  EXPECT_FALSE(atx::vol::listed_quotes_from_opra(kDate, zeroed.frame.snapshot_ts_ns, zeroed, *table,
+                                                 MissingDefinitionPolicy::Error, wanted));
+}
+
+// ── The three narrowed fatal exits the first contract statement missed ───────
+//
+// The loop has SEVEN fatal exits, not four. Three of them — the OSI parse in the
+// missing-definition branch, the missing-definition NotFound under
+// MissingDefinitionPolicy::Error, and the OSI parse in the definition-found
+// branch — sit after the raw_symbol stage and are therefore narrowed by it, and
+// none had a test. Each test below asserts BOTH halves against the SAME panel
+// and the SAME definition table: fatal when the broken contract is in `wanted`,
+// tolerated when it is not. That is the in-test two-way control gates
+// look-ahead and future-quote already carry — the outcome is decided by
+// `wanted` alone, so neither half can pass by accident.
+
+// 15 chars from the right, so the length check passes and the DATE field is what
+// fails: `parse_osi_symbol` returns ParseError "OSI date field not numeric".
+constexpr const char *kUnparsableRawSymbol = "SPY   26XX17C00600000";
+
+// Row `index`'s raw_symbol replaced. Instrument ids are untouched, so
+// source_identities stays sorted as the join's lower_bound requires.
+OpraPanel wide_panel_with_raw_symbol(std::size_t index, const char *raw_symbol) {
+  OpraPanel out = wide_panel();
+  out.source_identities[index].raw_symbol = raw_symbol;
+  return out;
+}
+
+// `raw_symbol == nullptr` DELETES definition row `index` (so `find` returns
+// nullptr); otherwise it replaces that row's raw_symbol so `find` still resolves
+// the panel's edited identity. create() re-sorts, so input order is irrelevant.
+std::vector<ListedContractDefinition> wide_definitions_edit(std::size_t index,
+                                                            const char *raw_symbol) {
+  std::vector<ListedContractDefinition> rows = wide_definitions_for_panel();
+  if (raw_symbol == nullptr) {
+    rows.erase(rows.begin() + static_cast<std::ptrdiff_t>(index));
+  } else {
+    rows[index].raw_symbol = raw_symbol;
+  }
+  return rows;
+}
+
+ListedQuoteKey key_with_raw_symbol(std::size_t index, const char *raw_symbol) {
+  ListedQuoteKey key = wide_key(index);
+  key.raw_symbol = raw_symbol;
+  return key;
+}
+
+TEST(ListedOpra, FilteredJoinStillFatalOnWantedUnparsableSymbolWithDefinition) {
+  using atx::vol::MissingDefinitionPolicy;
+  // NARROWED GATE 5 — the OSI parse on the definition-FOUND path. The definition
+  // resolves (same instrument id, same edited raw_symbol), the look-ahead guard
+  // passes, and the parse is the next thing that runs.
+  const OpraPanel source = wide_panel_with_raw_symbol(2, kUnparsableRawSymbol);
+  auto table = ListedDefinitionTable::create(wide_definitions_edit(2, kUnparsableRawSymbol));
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  // Anti-vacuity: the fixture really is fatal with no filter at all.
+  auto unfiltered =
+      atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table);
+  ASSERT_FALSE(unfiltered) << "fixture is not broken; the test would prove nothing";
+  EXPECT_EQ(unfiltered.error().message(), "OSI date field not numeric");
+
+  const ListedQuoteKey broken = key_with_raw_symbol(2, kUnparsableRawSymbol);
+  const std::vector<ListedQuoteKey> wanted = sorted_wanted({broken, wide_key(5)});
+  ASSERT_TRUE(std::binary_search(wanted.begin(), wanted.end(), broken));
+
+  auto filtered = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, wanted);
+  ASSERT_FALSE(filtered) << "an unparsable wanted raw_symbol must stay fatal";
+  EXPECT_EQ(filtered.error().code(), atx::core::ErrorCode::ParseError);
+  EXPECT_EQ(filtered.error().message(), "OSI date field not numeric");
+
+  // Control: SAME panel, SAME table — tolerated once the broken contract is not
+  // wanted. This is the narrowing, asserted rather than assumed.
+  const std::vector<ListedQuoteKey> elsewhere = sorted_wanted({wide_key(0), wide_key(5)});
+  auto narrowed = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, elsewhere);
+  ASSERT_TRUE(narrowed) << (narrowed ? std::string{} : narrowed.error().to_string());
+  EXPECT_EQ(narrowed->size(), 2u);
+}
+
+TEST(ListedOpra, FilteredJoinStillFatalOnWantedUnparsableSymbolWithoutDefinition) {
+  using atx::vol::MissingDefinitionPolicy;
+  // NARROWED GATE 2 — the OSI parse inside the definition==nullptr branch. It
+  // precedes the numeric-root skip, the 0DTE skip and the policy check, so it is
+  // fatal under SkipUnlisted as well: this is the ONE fatal exit on the
+  // missing-definition path that the production policy does not disarm.
+  const OpraPanel source = wide_panel_with_raw_symbol(2, kUnparsableRawSymbol);
+  auto table = ListedDefinitionTable::create(wide_definitions_edit(2, nullptr));
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  ASSERT_EQ(table->definitions().size(), 5u); // the row really is gone
+
+  const ListedQuoteKey broken = key_with_raw_symbol(2, kUnparsableRawSymbol);
+  const std::vector<ListedQuoteKey> wanted = sorted_wanted({broken, wide_key(5)});
+  ASSERT_TRUE(std::binary_search(wanted.begin(), wanted.end(), broken));
+
+  for (const MissingDefinitionPolicy policy :
+       {MissingDefinitionPolicy::Error, MissingDefinitionPolicy::SkipUnlisted}) {
+    auto filtered = atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source,
+                                                      *table, policy, wanted);
+    ASSERT_FALSE(filtered) << "an unparsable wanted raw_symbol must stay fatal under both policies";
+    EXPECT_EQ(filtered.error().code(), atx::core::ErrorCode::ParseError);
+    EXPECT_EQ(filtered.error().message(), "OSI date field not numeric");
+  }
+
+  // Control: same panel, same table, tolerated when not wanted.
+  const std::vector<ListedQuoteKey> elsewhere = sorted_wanted({wide_key(0), wide_key(5)});
+  auto narrowed = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, elsewhere);
+  ASSERT_TRUE(narrowed) << (narrowed ? std::string{} : narrowed.error().to_string());
+  EXPECT_EQ(narrowed->size(), 2u);
+}
+
+TEST(ListedOpra, FilteredJoinStillFatalOnWantedMissingDefinition) {
+  using atx::vol::MissingDefinitionPolicy;
+  // NARROWED GATE 3 — "contract definition missing". Inert for the production
+  // caller (listed_quotes_for_date passes SkipUnlisted, which turns this exit
+  // into a `continue`), but live and narrowed for the default Error policy, so
+  // both are pinned here. The panel row is untouched: its raw_symbol parses, its
+  // root has no digits and its expiry is not the trade date, so the two earlier
+  // skips do not fire and the policy check is what decides.
+  const OpraPanel source = wide_panel();
+  auto table = ListedDefinitionTable::create(wide_definitions_edit(2, nullptr));
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  ASSERT_EQ(table->definitions().size(), 5u);
+
+  const std::vector<ListedQuoteKey> wanted = sorted_wanted({wide_key(2), wide_key(5)});
+  ASSERT_TRUE(std::binary_search(wanted.begin(), wanted.end(), wide_key(2)));
+
+  auto filtered = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, wanted);
+  ASSERT_FALSE(filtered) << "a missing definition for a wanted key must stay fatal under Error";
+  EXPECT_EQ(filtered.error().code(), atx::core::ErrorCode::NotFound);
+  EXPECT_EQ(filtered.error().message(), "listed OPRA join: contract definition missing");
+
+  // The policy, not the filter, is what softens this one — and only this one.
+  auto skipped = atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source,
+                                                   *table, MissingDefinitionPolicy::SkipUnlisted,
+                                                   wanted);
+  ASSERT_TRUE(skipped) << (skipped ? std::string{} : skipped.error().to_string());
+  EXPECT_EQ(skipped->size(), 1u) << "only the wanted contract that still has a definition";
+
+  // Control: same table, tolerated under Error once row 2 is not wanted.
+  const std::vector<ListedQuoteKey> elsewhere = sorted_wanted({wide_key(0), wide_key(5)});
+  auto narrowed = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, elsewhere);
+  ASSERT_TRUE(narrowed) << (narrowed ? std::string{} : narrowed.error().to_string());
+  EXPECT_EQ(narrowed->size(), 2u);
+}
+
+// ── The SORTED+DEDUPED precondition, enforced rather than trusted ────────────
+
+TEST(ListedOpra, FilteredJoinRejectsUnsortedWanted) {
+  using atx::vol::MissingDefinitionPolicy;
+  // `wanted` is searched with lower_bound/upper_bound. An unsorted span returns
+  // a wrong — usually empty — run, so legs vanish at stage 1, no gate fires, and
+  // the caller gets a quietly under-joined result. In the reconciliation that
+  // surfaces only as NoRawQuote marks and moved quote_mid_coverage, i.e. a wrong
+  // answer with no error anywhere. Fail closed instead.
+  auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  const OpraPanel source = wide_panel();
+
+  const std::vector<ListedQuoteKey> unsorted = {wide_key(4), wide_key(0)}; // descending
+  ASSERT_FALSE(std::is_sorted(unsorted.begin(), unsorted.end()));
+
+  auto rejected = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, unsorted);
+  ASSERT_FALSE(rejected) << "an unsorted wanted must be rejected, not silently under-joined; got Ok "
+                            "with "
+                         << rejected->size() << " quotes";
+  EXPECT_EQ(rejected.error().code(), atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(rejected.error().message(),
+            "listed OPRA join: wanted keys must be sorted and deduped");
+
+  // What the rejection stands in for: the SAME two keys, sorted, join two rows.
+  const std::vector<ListedQuoteKey> sorted = sorted_wanted(unsorted);
+  auto joined = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, sorted);
+  ASSERT_TRUE(joined) << (joined ? std::string{} : joined.error().to_string());
+  EXPECT_EQ(joined->size(), 2u);
+}
+
+TEST(ListedOpra, FilteredJoinRejectsDuplicateWanted) {
+  using atx::vol::MissingDefinitionPolicy;
+  // The other half of the documented precondition. A duplicate does not lose a
+  // leg today — it breaks the `quotes.reserve` sizing and, more to the point,
+  // means the caller did not build `wanted` the way the contract says. One
+  // adjacent_find pass enforces sorted AND deduped together, so neither half of
+  // the documented precondition is enforced while the other is only a comment.
+  auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  const OpraPanel source = wide_panel();
+
+  const std::vector<ListedQuoteKey> duped = {wide_key(0), wide_key(0), wide_key(4)};
+  ASSERT_TRUE(std::is_sorted(duped.begin(), duped.end())) << "sorted but NOT deduped";
+
+  auto rejected = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, duped);
+  ASSERT_FALSE(rejected) << "a duplicated wanted must be rejected; got Ok with " << rejected->size()
+                         << " quotes";
+  EXPECT_EQ(rejected.error().code(), atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(rejected.error().message(),
+            "listed OPRA join: wanted keys must be sorted and deduped");
+
+  // Deduped, the same key set is accepted — so the rejection is about the
+  // duplicate and not about these keys.
+  const std::vector<ListedQuoteKey> deduped = sorted_wanted(duped);
+  ASSERT_EQ(deduped.size(), 2u);
+  auto joined = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, deduped);
+  ASSERT_TRUE(joined) << (joined ? std::string{} : joined.error().to_string());
+  EXPECT_EQ(joined->size(), 2u);
+}
+
 // --- Calendar-free standard-monthly classifier ---------------------------
 //
 // standard_monthly_sessions derives each month's monthly settlement date from
@@ -435,6 +1036,627 @@ TEST(ListedOpra, DefinitionTableRejectsDuplicateAndFutureDateScopedRows) {
   auto future = definitions();
   future[0].definition_ts_ns = iso_to_ns("2026-06-06T00:00:00Z");
   EXPECT_FALSE(ListedDefinitionTable::create(std::move(future)));
+}
+
+// --- create()'s per-row end-of-day bound ---------------------------------
+//
+// create() admits a row only if its definition_ts_ns is at or before the LAST
+// nanosecond of its own trade_date. The bound is derived per row from that row's
+// date. These tests pin the bound's exact value and its per-date freshness, so a
+// memoized or reformatted derivation has to reproduce the byte-for-byte same
+// admit/reject decision as the plain per-row computation.
+
+// The bound computed the long way: heap concatenation + iso_to_ns, exactly the
+// expression create() used before any memoization.
+std::int64_t reference_trade_end(const std::string &trade_date) {
+  return iso_to_ns(trade_date + "T23:59:59.999999999Z");
+}
+
+ListedContractDefinition dated_definition(const std::string &trade_date, std::uint32_t id,
+                                          const std::string &raw_symbol,
+                                          std::int64_t definition_ts_ns) {
+  ListedContractDefinition out;
+  out.trade_date = trade_date;
+  out.instrument_id = id;
+  out.raw_symbol = raw_symbol;
+  out.definition_ts_ns = definition_ts_ns;
+  out.expiry_ts_ns = iso_to_ns("2026-09-18T20:00:00Z");
+  out.multiplier = 100.0;
+  out.standard_monthly = true;
+  out.standard_deliverable = true;
+  out.source_fingerprint = 4242;
+  return out;
+}
+
+TEST(ListedOpra, DefinitionTableTradeEndMemoMatchesPerRowCompute) {
+  const std::vector<std::string> dates = {"2026-06-03", "2026-06-04", "2026-06-05"};
+  // The three bounds are DISTINCT and strictly increasing. Without this the test
+  // could not tell a per-date bound from a stale one.
+  ASSERT_LT(reference_trade_end(dates[0]), reference_trade_end(dates[1]));
+  ASSERT_LT(reference_trade_end(dates[1]), reference_trade_end(dates[2]));
+
+  // Three rows per date, each stamped AT its own date's exact bound — the
+  // tightest admissible value. A bound that failed to refresh on a date change
+  // would judge every row after the first date against a smaller bound and
+  // reject it.
+  std::vector<ListedContractDefinition> rows;
+  for (const std::string &date : dates) {
+    for (std::uint32_t k = 0; k < 3u; ++k) {
+      rows.push_back(dated_definition(date, 100u + k,
+                                      "SPY   260918C0060000" + std::to_string(k),
+                                      reference_trade_end(date)));
+    }
+  }
+  // Hand them in DESCENDING date order. create() sorts by (trade_date,
+  // instrument_id, raw_symbol) before it walks the rows, and the sort is what
+  // makes a SINGLE memo slot cheap — it is NOT what makes it correct. The memo
+  // compares before it refreshes, so it is exact under any permutation; moving
+  // the sort would cost refreshes, not correctness, and this test would still
+  // pass. Reversing the input therefore proves the sort ran (asserted below),
+  // not that the memo needs it.
+  std::reverse(rows.begin(), rows.end());
+
+  auto table = ListedDefinitionTable::create(rows);
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  ASSERT_EQ(table->definitions().size(), 9u);
+  for (const ListedContractDefinition &kept : table->definitions()) {
+    EXPECT_EQ(kept.definition_ts_ns, reference_trade_end(kept.trade_date)) << kept.trade_date;
+  }
+  // The sort really did run, and it really is date-major.
+  EXPECT_EQ(table->definitions().front().trade_date, dates.front());
+  EXPECT_EQ(table->definitions().back().trade_date, dates.back());
+
+  // One nanosecond past its OWN date's bound is rejected — checked for every
+  // date, so both a bound that never refreshes (breaks on date 2 and 3) and one
+  // that refreshes to the wrong value are caught.
+  for (const std::string &date : dates) {
+    std::vector<ListedContractDefinition> late = rows;
+    std::size_t bumped = 0u;
+    for (ListedContractDefinition &row : late) {
+      if (row.trade_date == date) {
+        row.definition_ts_ns = reference_trade_end(date) + 1;
+        ++bumped;
+      }
+    }
+    ASSERT_EQ(bumped, 3u) << date; // anti-vacuity: the perturbation landed
+    EXPECT_FALSE(ListedDefinitionTable::create(late)) << "date " << date;
+  }
+}
+
+TEST(ListedOpra, DefinitionTableRejectsTradeDateTooLongForTheEndOfDayStamp) {
+  // create() builds "<trade_date>T23:59:59.999999999Z" into a FIXED stack
+  // buffer. Any trade_date too long to fit must still be rejected, exactly as
+  // the old heap concatenation was: iso_to_ns refuses a stamp whose 11th
+  // character is not 'T'/' ', so every over-long date produced 0 before and
+  // must produce 0 now. This pins the buffer guard to the pre-existing
+  // rejection branch rather than to a truncation or an overflow.
+  const std::int64_t valid_ts = iso_to_ns("2026-06-05T12:00:00Z");
+  ASSERT_GT(valid_ts, 0);
+
+  std::vector<ListedContractDefinition> rows = {
+      dated_definition("2026-06-05", 101u, "SPY   260918C00600000", valid_ts)};
+  ASSERT_TRUE(ListedDefinitionTable::create(rows)); // anti-vacuity: the base admits
+
+  for (const char *bad_date : {"2026-06-05X", "2026-06-0", "2026-06-05T00:00:00.000000000Z",
+                               "2026-06-05-padded-well-past-thirty-two-bytes-wide"}) {
+    rows[0].trade_date = bad_date;
+    EXPECT_EQ(reference_trade_end(rows[0].trade_date), 0) << bad_date;
+    EXPECT_FALSE(ListedDefinitionTable::create(rows)) << bad_date;
+  }
+}
+
+TEST(ListedOpra, DefinitionFingerprintIsLazyStableAndSurvivesValueSemantics) {
+  auto table = ListedDefinitionTable::create(definitions());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  // Copied BEFORE the fingerprint is ever demanded. A lazily computed
+  // fingerprint must not depend on WHEN it was first asked for, and the class
+  // must stay copyable and movable — a std::once_flag member would delete both
+  // the copy and the move constructor, and every read path moves this table out
+  // of a Result.
+  ListedDefinitionTable copy_before = *table;
+
+  const std::uint64_t first = table->fingerprint();
+  EXPECT_NE(first, 0u);
+  EXPECT_EQ(table->fingerprint(), first); // idempotent across repeated calls
+  EXPECT_EQ(table->fingerprint(), first);
+  EXPECT_EQ(copy_before.fingerprint(), first);
+
+  ListedDefinitionTable copy_after = *table; // copied with the memo already warm
+  EXPECT_EQ(copy_after.fingerprint(), first);
+  const ListedDefinitionTable moved = std::move(copy_after);
+  EXPECT_EQ(moved.fingerprint(), first); // const-callable
+
+  // Still the serialize/parse round-trip invariant.
+  auto parsed = atx::vol::parse_listed_definitions(atx::vol::serialize_listed_definitions(*table));
+  ASSERT_TRUE(parsed) << (parsed ? std::string{} : parsed.error().to_string());
+  EXPECT_EQ(parsed->fingerprint(), first);
+
+  // Negative control: the fingerprint is content-derived, not a constant.
+  auto other = definitions();
+  other[0].source_fingerprint = 999;
+  auto other_table = ListedDefinitionTable::create(std::move(other));
+  ASSERT_TRUE(other_table) << (other_table ? std::string{} : other_table.error().to_string());
+  EXPECT_NE(other_table->fingerprint(), first);
+
+  // A default-constructed table IS the empty table, and reports the empty
+  // table's fingerprint. Pinned deliberately: while the fingerprint was set
+  // eagerly by create(), a default-constructed table reported 0 because nothing
+  // had ever run. Lazy computation makes the two agree, which is the correct
+  // reading of an empty definitions_ — but it is a behaviour change, so it is
+  // asserted rather than left to chance.
+  auto empty = ListedDefinitionTable::create({});
+  ASSERT_TRUE(empty) << (empty ? std::string{} : empty.error().to_string());
+  const ListedDefinitionTable default_constructed;
+  EXPECT_NE(empty->fingerprint(), 0u);
+  EXPECT_EQ(default_constructed.fingerprint(), empty->fingerprint());
+  EXPECT_NE(default_constructed.fingerprint(), first);
+}
+
+// --- parse_listed_definitions negative surface ---------------------------
+//
+// The magic/header equality gate and the per-row field-count + numeric parses
+// had no direct coverage at all. These are regression LOCKS on current
+// behaviour, not REDs: they must pass against the parser as it stands today, so
+// that a later rewrite of exactly those lines has something to fail against.
+
+std::vector<std::string> split_on(const std::string &text, char delimiter) {
+  std::vector<std::string> parts;
+  std::size_t start = 0;
+  while (start <= text.size()) {
+    const std::size_t end = text.find(delimiter, start);
+    parts.push_back(text.substr(start, end == std::string::npos ? std::string::npos : end - start));
+    if (end == std::string::npos) {
+      break;
+    }
+    start = end + 1;
+  }
+  return parts;
+}
+
+std::string join_on(const std::vector<std::string> &parts, char delimiter) {
+  std::string out;
+  for (std::size_t i = 0; i < parts.size(); ++i) {
+    if (i != 0) {
+      out.push_back(delimiter);
+    }
+    out += parts[i];
+  }
+  return out;
+}
+
+// A known-good serialized table: magic, header, two rows, trailing '\n'.
+std::string good_tsv() {
+  auto table = ListedDefinitionTable::create(definitions());
+  return table ? atx::vol::serialize_listed_definitions(*table) : std::string{};
+}
+
+std::string line_at(const std::string &tsv, std::size_t index) {
+  const std::vector<std::string> lines = split_on(tsv, '\n');
+  return index < lines.size() ? lines[index] : std::string{};
+}
+
+std::string with_line(const std::string &tsv, std::size_t index, const std::string &replacement) {
+  std::vector<std::string> lines = split_on(tsv, '\n');
+  EXPECT_LT(index, lines.size());
+  if (index < lines.size()) {
+    lines[index] = replacement;
+  }
+  return join_on(lines, '\n');
+}
+
+// Replace field `field` of data row `row` (0-based over data rows).
+std::string with_field(const std::string &tsv, std::size_t row, std::size_t field,
+                       const std::string &value) {
+  std::vector<std::string> fields = split_on(line_at(tsv, row + 2u), '\t');
+  EXPECT_EQ(fields.size(), 9u);
+  if (field < fields.size()) {
+    fields[field] = value;
+  }
+  return with_line(tsv, row + 2u, join_on(fields, '\t'));
+}
+
+bool parses(const std::string &tsv) { return atx::vol::parse_listed_definitions(tsv).has_value(); }
+
+// WHICH GATE REJECTED `tsv`, not merely THAT something did.
+//
+// `parse_listed_definitions` re-wraps every create()-level Error as
+// `ErrorCode::ParseError` (listed_opra.cpp, the `return Err(ErrorCode::ParseError,
+// table.error().to_string())` at the tail), so the error CODE is `ParseError` for
+// both layers and cannot discriminate. The wrapped MESSAGE can: the parser's own
+// two rejections carry their message verbatim, whereas a create()-level rejection
+// carries create()'s own `"<Code>: <message>"` rendering as the wrapped text.
+//
+// This matters because a later rewrite of the parser could drop its numeric and
+// field-count validation entirely and still leave a bare `has_value()` assertion
+// green — create()'s structural gate would catch most of these inputs downstream.
+// Pinning the layer turns the whole set into a lock on the PARSER.
+std::string rejection(const std::string &tsv) {
+  auto table = atx::vol::parse_listed_definitions(tsv);
+  if (table) {
+    return "ACCEPTED";
+  }
+  EXPECT_EQ(table.error().code(), atx::core::ErrorCode::ParseError);
+  return table.error().message();
+}
+
+// The parser's own two rejections (the magic/header equality gate and the per-row
+// field-count + numeric gate).
+constexpr const char *kByParserHeader = "listed definitions: bad header";
+constexpr const char *kByParserRow = "listed definitions: malformed row";
+// create()'s rejections, as the parser re-renders them.
+constexpr const char *kByCreateMalformed =
+    "InvalidArgument: listed definitions: malformed definition";
+constexpr const char *kByCreateDuplicate =
+    "AlreadyExists: listed definitions: duplicate definition key";
+
+TEST(ListedOpra, ParseRejectsMagicAndHeaderCorruption) {
+  const std::string good = good_tsv();
+  ASSERT_FALSE(good.empty());
+  // Anti-vacuity: the unmutated input really does parse, and to two rows.
+  auto base = atx::vol::parse_listed_definitions(good);
+  ASSERT_TRUE(base) << (base ? std::string{} : base.error().to_string());
+  ASSERT_EQ(base->definitions().size(), 2u);
+
+  const std::string magic = line_at(good, 0);
+  const std::string header = line_at(good, 1);
+  ASSERT_EQ(magic, "ATX_LISTED_DEFINITIONS\t1");
+  ASSERT_FALSE(header.empty());
+
+  // Every case below must be rejected by the PARSER's magic/header equality gate
+  // specifically (kByParserHeader), never by create() downstream — see
+  // `rejection` above for why the error code alone cannot say that.
+
+  // Too few lines to carry a magic + header at all.
+  EXPECT_EQ(rejection(""), kByParserHeader);
+  EXPECT_EQ(rejection(magic), kByParserHeader);
+  EXPECT_EQ(rejection(magic + "\n"), kByParserHeader);
+
+  // Magic: version, separator, case, padding, truncation.
+  EXPECT_EQ(rejection(with_line(good, 0, "ATX_LISTED_DEFINITIONS\t2")), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 0, "ATX_LISTED_DEFINITIONS 1")), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 0, "atx_listed_definitions\t1")), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 0, "ATX_LISTED_DEFINITIONS\t1 ")), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 0, " ATX_LISTED_DEFINITIONS\t1")), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 0, "ATX_LISTED_DEFINITIONS")), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 0, "")), kByParserHeader);
+  // A '\r' before the '\n' is NOT tolerated on the magic line — the equality is
+  // exact, and this file format is LF-only by contract.
+  EXPECT_EQ(rejection(with_line(good, 0, magic + "\r")), kByParserHeader);
+
+  // Header: an extra column, a dropped column, a renamed column, a reordering.
+  EXPECT_EQ(rejection(with_line(good, 1, header + "\textra")), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 1, header.substr(0, header.rfind('\t')))), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 1, "TRADE_DATE" + header.substr(header.find('\t')))),
+            kByParserHeader);
+  {
+    std::vector<std::string> columns = split_on(header, '\t');
+    ASSERT_EQ(columns.size(), 9u);
+    std::swap(columns[0], columns[1]);
+    EXPECT_EQ(rejection(with_line(good, 1, join_on(columns, '\t'))), kByParserHeader);
+  }
+  EXPECT_EQ(rejection(with_line(good, 1, "")), kByParserHeader);
+  EXPECT_EQ(rejection(with_line(good, 1, header + "\r")), kByParserHeader);
+  // Magic and header transposed.
+  EXPECT_EQ(rejection(with_line(with_line(good, 0, header), 1, magic)), kByParserHeader);
+}
+
+// Regression test for the `definitions.reserve(...)` guard in
+// `parse_listed_definitions`: on an input with ZERO '\n' bytes,
+// `count_newlines(tsv)` is 0, and an unguarded `reserve(count_newlines(tsv) -
+// 1u)` would be `reserve(SIZE_MAX)`, throwing `std::length_error` out of a
+// function whose entire contract is to report errors as an `Err(...)` value.
+// The header gate rejects a zero-newline input before the reserve is ever
+// reached, so today this can only surface as `kByParserHeader` — but if a
+// future rewrite ever let such an input past that gate without the guard,
+// the process would abort instead of returning an `Err`, which would fail
+// this test far louder than a mismatched expectation.
+TEST(ListedOpra, ParseRejectsZeroNewlineInputWithoutThrowing) {
+  EXPECT_EQ(rejection(""), kByParserHeader);
+  EXPECT_EQ(rejection("no newline anywhere in this input at all"), kByParserHeader);
+  EXPECT_EQ(rejection("ATX_LISTED_DEFINITIONS\t1"), kByParserHeader);
+}
+
+TEST(ListedOpra, ParseRejectsMalformedRowFieldCountsAndNumerics) {
+  const std::string good = good_tsv();
+  ASSERT_FALSE(good.empty());
+  ASSERT_TRUE(parses(good)); // anti-vacuity
+
+  const std::string row = line_at(good, 2);
+  const std::vector<std::string> fields = split_on(row, '\t');
+  ASSERT_EQ(fields.size(), 9u);
+
+  // Every assertion below pins the LAYER that rejected, not merely that something
+  // did — see `rejection` above. Cases marked kByParserRow are locks on the
+  // parser's own gate and would go RED if a rewrite dropped that validation and
+  // let create() catch the input instead.
+
+  // Field count: 8 and 10. Parser gate.
+  EXPECT_EQ(rejection(with_line(good, 2,
+                                join_on(std::vector<std::string>(fields.begin(), fields.end() - 1),
+                                        '\t'))),
+            kByParserRow);
+  EXPECT_EQ(rejection(with_line(good, 2, row + "\textra")), kByParserRow);
+  // A tab-free row is one field, not nine.
+  EXPECT_EQ(rejection(with_line(good, 2, "not-a-row")), kByParserRow);
+
+  // instrument_id (field 1): non-numeric, empty, trailing garbage, negative,
+  // and one past the uint32 ceiling the parser enforces. All parser gate.
+  for (const char *bad : {"abc", "", " 101", "101 ", "101x", "-1", "1.0", "0x65", "+101",
+                          "4294967296", "18446744073709551616"}) {
+    EXPECT_EQ(rejection(with_field(good, 0, 1, bad)), kByParserRow) << "instrument_id=" << bad;
+  }
+  EXPECT_TRUE(parses(with_field(good, 0, 1, "4294967295"))) << "uint32 ceiling must still parse";
+
+  // definition_ts_ns (3) and expiry_ts_ns (4): int64, no fractional part. Parser gate.
+  for (const char *bad : {"abc", "", "1.5", "1e9", "12345678901234567890123"}) {
+    EXPECT_EQ(rejection(with_field(good, 0, 3, bad)), kByParserRow) << "definition_ts_ns=" << bad;
+    EXPECT_EQ(rejection(with_field(good, 0, 4, bad)), kByParserRow) << "expiry_ts_ns=" << bad;
+  }
+
+  // multiplier (5): the parser rejects non-numeric / trailing-garbage / non-finite
+  // forms (parse_double demands full consumption and isfinite)...
+  for (const char *bad : {"abc", "", "100x", "inf", "-inf", "nan"}) {
+    EXPECT_EQ(rejection(with_field(good, 0, 5, bad)), kByParserRow) << "multiplier=" << bad;
+  }
+  // ...but "0" and "-100" are VALID doubles, so they pass the parser and are
+  // rejected one layer down by create()'s positivity gate. Pinning that split is
+  // the point: it says exactly which code owns each rule.
+  for (const char *bad : {"0", "-100"}) {
+    EXPECT_EQ(rejection(with_field(good, 0, 5, bad)), kByCreateMalformed) << "multiplier=" << bad;
+  }
+
+  // standard_monthly (6) / standard_deliverable (7): strictly 0 or 1. Parser gate.
+  for (const char *bad : {"2", "-1", "x", "", "01x"}) {
+    EXPECT_EQ(rejection(with_field(good, 0, 6, bad)), kByParserRow) << "standard_monthly=" << bad;
+    EXPECT_EQ(rejection(with_field(good, 0, 7, bad)), kByParserRow)
+        << "standard_deliverable=" << bad;
+  }
+
+  // source_fingerprint (8): non-numeric, empty, negative and overflowing forms are
+  // the parser's; a well-formed "0" is create()'s non-zero gate.
+  for (const char *bad : {"abc", "", "-1", "1.0", "18446744073709551616"}) {
+    EXPECT_EQ(rejection(with_field(good, 0, 8, bad)), kByParserRow) << "source_fingerprint=" << bad;
+  }
+  EXPECT_EQ(rejection(with_field(good, 0, 8, "0")), kByCreateMalformed) << "source_fingerprint=0";
+
+  // Fields the parser does not validate at all reach create()'s structural gates.
+  EXPECT_EQ(rejection(with_field(good, 0, 0, "")), kByCreateMalformed) << "empty trade_date";
+  EXPECT_EQ(rejection(with_field(good, 0, 2, "")), kByCreateMalformed) << "empty raw_symbol";
+  EXPECT_EQ(rejection(with_field(good, 0, 1, "0")), kByCreateMalformed) << "instrument_id 0";
+  // Duplicate key: row 1 made identical to row 0. create()'s AlreadyExists gate —
+  // a DIFFERENT create() gate from the malformed one, and the message pins which.
+  EXPECT_EQ(rejection(with_line(good, 3, row)), kByCreateDuplicate) << "duplicate definition key";
+}
+
+TEST(ListedOpra, ParseAcceptsEmptyLinesExactlyAsItDoesToday) {
+  const std::string good = good_tsv();
+  ASSERT_FALSE(good.empty());
+  ASSERT_EQ(good.back(), '\n');
+
+  // The shipped serialization ends with '\n', so split() emits a trailing empty
+  // element that the empty-line skip absorbs. This is load-bearing: the writer's
+  // own output must round-trip.
+  auto trailing = atx::vol::parse_listed_definitions(good);
+  ASSERT_TRUE(trailing) << (trailing ? std::string{} : trailing.error().to_string());
+  EXPECT_EQ(trailing->definitions().size(), 2u);
+
+  // No trailing newline at all: also accepted, same two rows.
+  auto unterminated = atx::vol::parse_listed_definitions(good.substr(0, good.size() - 1));
+  ASSERT_TRUE(unterminated) << (unterminated ? std::string{} : unterminated.error().to_string());
+  EXPECT_EQ(unterminated->definitions().size(), 2u);
+
+  // Interior and repeated blank lines are skipped, not treated as short rows.
+  auto interior = atx::vol::parse_listed_definitions(good + "\n\n\n");
+  ASSERT_TRUE(interior) << (interior ? std::string{} : interior.error().to_string());
+  EXPECT_EQ(interior->definitions().size(), 2u);
+
+  std::vector<std::string> lines = split_on(good, '\n');
+  ASSERT_EQ(lines.size(), 5u); // magic, header, row, row, trailing empty
+  lines.insert(lines.begin() + 3, std::string{});
+  auto between = atx::vol::parse_listed_definitions(join_on(lines, '\n'));
+  ASSERT_TRUE(between) << (between ? std::string{} : between.error().to_string());
+  EXPECT_EQ(between->definitions().size(), 2u);
+
+  // Negative control for this whole test: a blank line is skipped, but a line
+  // that merely LOOKS blank (a single space) is a one-field row and is rejected
+  // by the PARSER's field-count gate — not swallowed by the skip and not deferred
+  // to create(). Pinning the layer is what makes this a control on the skip.
+  EXPECT_EQ(rejection(with_line(good, 2, " ")), kByParserRow);
+}
+
+// --- the single-pass field-boundary scan ---------------------------------
+//
+// The per-row `std::vector<std::string_view>` from `split` was replaced by a
+// forward scan into a stack `std::string_view fields[9]`. Two properties that
+// `split(...).size() != 9` gave for free now have to be re-established by hand,
+// and each is RED-provable against the naive scan the rewrite invites:
+//
+//   (1) NO NINTH TAB. A scan that locates the first eight tabs and lets field 8
+//       stop at the NEXT tab silently DROPS everything past it: the row then
+//       parses exactly as if it had nine fields. Task 4's single 10-field case
+//       (`row + "\textra"`) does fire against that scan — it was observed
+//       ACCEPTED — but a row whose ninth tab is TRAILING is the sharper
+//       discriminator, because then fields 0-8 are byte-identical to a row that
+//       parses and no numeric gate can fire for an unrelated reason. The
+//       interior cases below additionally pin that the assertion is on the tab
+//       COUNT and not on the tail content.
+//   (2) NO STALE FIELD. A `fields[9]` array hoisted out of the row loop — the
+//       obvious way to write it — is only PARTIALLY overwritten by a short row,
+//       so the missing trailing fields keep the PREVIOUS row's values and an
+//       eight-field row parses using its predecessor's tail. This is invisible
+//       on the first data row (the array is still empty there), which is why
+//       these cases mutate the SECOND one.
+//
+// Both were observed RED against exactly that naive scan before the correct
+// scan was written; the failure output is in the task report.
+
+TEST(ListedOpra, ParseRejectsRowsWithMoreThanNineFields) {
+  const std::string good = good_tsv();
+  ASSERT_FALSE(good.empty());
+  const std::string row0 = line_at(good, 2);
+  const std::string row1 = line_at(good, 3);
+  const std::vector<std::string> parts1 = split_on(row1, '\t');
+  ASSERT_EQ(split_on(row0, '\t').size(), 9u);
+  ASSERT_EQ(parts1.size(), 9u);
+  // Anti-vacuity: unmutated, both data rows really do parse.
+  auto base = atx::vol::parse_listed_definitions(good);
+  ASSERT_TRUE(base) << (base ? std::string{} : base.error().to_string());
+  ASSERT_EQ(base->definitions().size(), 2u);
+
+  // A ninth tab with NOTHING after it. Every field, including the complete
+  // source_fingerprint in field 8, is byte-identical to the accepted row, so no
+  // numeric gate can fire — only the tab count distinguishes this input.
+  EXPECT_EQ(rejection(with_line(good, 2, row0 + "\t")), kByParserRow) << "trailing tab on row 0";
+  EXPECT_EQ(rejection(with_line(good, 3, row1 + "\t")), kByParserRow) << "trailing tab on row 1";
+
+  // A ninth tab with content after it, and an eleventh field.
+  EXPECT_EQ(rejection(with_line(good, 3, row1 + "\textra")), kByParserRow) << "ten fields";
+  EXPECT_EQ(rejection(with_line(good, 3, row1 + "\t7\t8")), kByParserRow) << "eleven fields";
+
+  // An extra EMPTY field inserted at each position in turn: ten fields, with the
+  // ninth tab in the interior rather than at the tail.
+  for (std::size_t at = 0; at <= parts1.size(); ++at) {
+    std::vector<std::string> widened = parts1;
+    widened.insert(widened.begin() + static_cast<std::ptrdiff_t>(at), std::string{});
+    ASSERT_EQ(widened.size(), 10u) << at;
+    EXPECT_EQ(rejection(with_line(good, 3, join_on(widened, '\t'))), kByParserRow)
+        << "empty field inserted at " << at;
+  }
+}
+
+TEST(ListedOpra, ParseRejectsRowsWithFewerThanNineFields) {
+  const std::string good = good_tsv();
+  ASSERT_FALSE(good.empty());
+  const std::string row0 = line_at(good, 2);
+  const std::string row1 = line_at(good, 3);
+  const std::vector<std::string> parts0 = split_on(row0, '\t');
+  const std::vector<std::string> parts1 = split_on(row1, '\t');
+  ASSERT_EQ(parts0.size(), 9u);
+  ASSERT_EQ(parts1.size(), 9u);
+  // Anti-vacuity for the stale-field cases: the two rows DIFFER in the columns a
+  // leak would supply, so a leaked value is observable rather than accidentally
+  // right. (They share trade_date, expiry and multiplier by construction.)
+  ASSERT_NE(parts0[1], parts1[1]); // instrument_id
+  ASSERT_NE(parts0[2], parts1[2]); // raw_symbol
+  ASSERT_NE(parts0[8], parts1[8]); // source_fingerprint
+  auto base = atx::vol::parse_listed_definitions(good);
+  ASSERT_TRUE(base) << (base ? std::string{} : base.error().to_string());
+  ASSERT_EQ(base->definitions().size(), 2u);
+
+  // Drop each field in turn from the SECOND data row — the row a hoisted
+  // `fields[9]` would fill from its predecessor.
+  for (std::size_t drop = 0; drop < parts1.size(); ++drop) {
+    std::vector<std::string> shortened = parts1;
+    shortened.erase(shortened.begin() + static_cast<std::ptrdiff_t>(drop));
+    ASSERT_EQ(shortened.size(), 8u) << drop;
+    EXPECT_EQ(rejection(with_line(good, 3, join_on(shortened, '\t'))), kByParserRow)
+        << "field " << drop << " dropped from row 1";
+  }
+  // ...and from the FIRST, where there is no predecessor to leak from.
+  for (std::size_t drop = 0; drop < parts0.size(); ++drop) {
+    std::vector<std::string> shortened = parts0;
+    shortened.erase(shortened.begin() + static_cast<std::ptrdiff_t>(drop));
+    ASSERT_EQ(shortened.size(), 8u) << drop;
+    EXPECT_EQ(rejection(with_line(good, 2, join_on(shortened, '\t'))), kByParserRow)
+        << "field " << drop << " dropped from row 0";
+  }
+
+  // Every separator count from 0 to 7. `keep == 1` is a tab-free row; the all-
+  // empty case has the right number of separators for eight fields and none of
+  // the content.
+  for (std::size_t keep = 1; keep < parts1.size(); ++keep) {
+    const std::vector<std::string> prefix(parts1.begin(),
+                                          parts1.begin() + static_cast<std::ptrdiff_t>(keep));
+    EXPECT_EQ(rejection(with_line(good, 3, join_on(prefix, '\t'))), kByParserRow)
+        << "first " << keep << " fields only";
+  }
+  EXPECT_EQ(rejection(with_line(good, 3, "\t\t\t\t\t\t\t")), kByParserRow) << "eight empty fields";
+}
+
+// A wide, multi-date fixture. Field widths vary in every column (1-to-10-digit
+// instrument ids, 1-to-20-digit fingerprints, four raw_symbol roots, five
+// multiplier spellings), all four flag combinations occur, and the rows span
+// three trade dates so the row loop crosses date boundaries. 60 rows.
+std::vector<ListedContractDefinition> wide_definitions() {
+  const std::vector<std::string> dates = {"2026-06-01", "2026-06-02", "2026-06-03"};
+  const std::vector<std::uint32_t> ids = {1u, 42u, 65535u, 1000000u, 4294967295u};
+  const std::vector<double> multipliers = {1.0, 10.0, 100.0, 0.5, 1234.5678};
+  const std::vector<std::uint64_t> prints = {1u, 4242u, 18446744073709551615ull};
+  const std::vector<std::string> roots = {"A", "SPY", "BRKB", "NDXP"};
+  std::vector<ListedContractDefinition> rows;
+  std::size_t k = 0;
+  for (const std::string &date : dates) {
+    for (const std::uint32_t id : ids) {
+      for (const std::string &root : roots) {
+        ListedContractDefinition row;
+        row.trade_date = date;
+        row.instrument_id = id;
+        row.raw_symbol =
+            root + std::string(6u - root.size(), ' ') + "260918C0060000" + std::to_string(k % 10u);
+        row.definition_ts_ns = iso_to_ns(date + "T09:30:00Z") + static_cast<std::int64_t>(k);
+        row.expiry_ts_ns = iso_to_ns("2026-09-18T20:00:00Z");
+        row.multiplier = multipliers[k % multipliers.size()];
+        row.standard_monthly = (k % 2u) == 0u;
+        row.standard_deliverable = (k % 3u) == 0u;
+        row.source_fingerprint = prints[k % prints.size()];
+        rows.push_back(row);
+        ++k;
+      }
+    }
+  }
+  return rows;
+}
+
+TEST(ListedOpra, ParseIsByteIdenticalToPriorImplementation) {
+  // The round-trip invariant is the PRIMARY correctness oracle for the scan
+  // rewrite: it asserts every one of the nine field boundaries on every row, not
+  // just the ones a hand-written negative case happens to name.
+  auto table = ListedDefinitionTable::create(wide_definitions());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  ASSERT_EQ(table->definitions().size(), 60u);
+  const std::string text = atx::vol::serialize_listed_definitions(*table);
+  ASSERT_FALSE(text.empty());
+
+  // Anti-vacuity: the fixture really is ragged. If every row were the same width
+  // an off-by-one in the scan could survive.
+  {
+    const std::vector<std::string> lines = split_on(text, '\n');
+    ASSERT_EQ(lines.size(), 63u); // magic, header, 60 rows, trailing empty
+    std::vector<std::size_t> widths;
+    for (std::size_t i = 2; i + 1 < lines.size(); ++i) {
+      ASSERT_EQ(split_on(lines[i], '\t').size(), 9u) << i;
+      widths.push_back(lines[i].size());
+    }
+    std::sort(widths.begin(), widths.end());
+    widths.erase(std::unique(widths.begin(), widths.end()), widths.end());
+    ASSERT_GE(widths.size(), 6u) << "fixture rows are not ragged enough to pin boundaries";
+  }
+
+  auto parsed = atx::vol::parse_listed_definitions(text);
+  ASSERT_TRUE(parsed) << (parsed ? std::string{} : parsed.error().to_string());
+  EXPECT_EQ(parsed->definitions().size(), 60u);
+  EXPECT_TRUE(std::ranges::equal(parsed->definitions(), table->definitions()));
+  EXPECT_EQ(atx::vol::serialize_listed_definitions(*parsed), text);
+  EXPECT_EQ(parsed->fingerprint(), table->fingerprint());
+
+  // Unterminated input: identical rows, so the final row's field 8 is bounded by
+  // end-of-input rather than by a '\n'.
+  auto unterminated = atx::vol::parse_listed_definitions(text.substr(0, text.size() - 1));
+  ASSERT_TRUE(unterminated) << (unterminated ? std::string{} : unterminated.error().to_string());
+  EXPECT_TRUE(std::ranges::equal(unterminated->definitions(), table->definitions()));
+
+  // Negative control: the comparison above can say False. One byte of one field
+  // is changed and the re-serialized text must differ from the original.
+  const std::size_t last_tab = text.rfind('\t');
+  ASSERT_NE(last_tab, std::string::npos);
+  std::string mutated = text;
+  mutated[last_tab + 1u] = (mutated[last_tab + 1u] == '9') ? '8' : '9';
+  ASSERT_NE(mutated, text); // the perturbation landed
+  auto reparsed = atx::vol::parse_listed_definitions(mutated);
+  ASSERT_TRUE(reparsed) << (reparsed ? std::string{} : reparsed.error().to_string());
+  EXPECT_NE(atx::vol::serialize_listed_definitions(*reparsed), text);
+  EXPECT_NE(reparsed->fingerprint(), table->fingerprint());
 }
 
 } // namespace

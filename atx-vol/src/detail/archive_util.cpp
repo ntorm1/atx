@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <new>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -210,6 +212,85 @@ Status flush_and_publish_file(std::string_view tmp_path, std::string_view dst_pa
   // succeeded). Clear IoError.
   return Err(ErrorCode::IoError,
              "flush_and_publish_file: rename failed after retries (temp preserved)");
+}
+
+// ── Whole-file slurp ────────────────────────────────────────────────────────
+// See the header for why this exists and why it is `fread` rather than
+// `istreambuf_iterator`. Byte-identical to the form it replaces.
+[[nodiscard]] FileReadStatus read_whole_file(std::string_view path, std::string &out) {
+  out.clear();
+  const std::filesystem::path p{std::string(path)};
+
+  // A directory opens successfully under `fopen` on POSIX and would then fail
+  // the read, reporting IoError where the `ifstream` form reported NotFound.
+  // Checked explicitly so the two forms are indistinguishable to callers.
+  std::error_code ec;
+  if (std::filesystem::is_directory(p, ec)) {
+    return FileReadStatus::NotFound;
+  }
+
+  std::FILE *fp = nullptr;
+#if defined(_WIN32)
+  if (::_wfopen_s(&fp, p.wstring().c_str(), L"rb") != 0 || fp == nullptr) {
+    return FileReadStatus::NotFound;
+  }
+#else
+  fp = std::fopen(p.c_str(), "rb");
+  if (fp == nullptr) {
+    return FileReadStatus::NotFound;
+  }
+#endif
+
+  const auto fail = [&](FileReadStatus s) {
+    std::fclose(fp);
+    out.clear();
+    return s;
+  };
+
+  ec.clear();
+  const std::uintmax_t hinted = std::filesystem::file_size(p, ec);
+  if (!ec && hinted > 0u) {
+    if (hinted > static_cast<std::uintmax_t>(out.max_size())) {
+      return fail(FileReadStatus::IoError);
+    }
+    try {
+      out.resize(static_cast<std::size_t>(hinted));
+    } catch (const std::bad_alloc &) {
+      return fail(FileReadStatus::IoError);
+    }
+    const std::size_t got = std::fread(out.data(), 1, out.size(), fp);
+    if (got != out.size()) {
+      if (std::ferror(fp) != 0) {
+        return fail(FileReadStatus::IoError);
+      }
+      out.resize(got); // the file shrank between the stat and the read
+    }
+  }
+
+  // Drain anything past the hinted size (the file grew, or `file_size` failed
+  // and nothing has been read yet). Normally this is a single zero-length read.
+  char chunk[64 * 1024];
+  for (;;) {
+    const std::size_t n = std::fread(chunk, 1, sizeof chunk, fp);
+    if (n > 0u) {
+      try {
+        out.append(chunk, n);
+      } catch (const std::bad_alloc &) {
+        return fail(FileReadStatus::IoError);
+      }
+    }
+    if (n < sizeof chunk) {
+      break;
+    }
+  }
+  if (std::ferror(fp) != 0) {
+    return fail(FileReadStatus::IoError);
+  }
+  if (std::fclose(fp) != 0) {
+    out.clear();
+    return FileReadStatus::IoError;
+  }
+  return FileReadStatus::Ok;
 }
 
 } // namespace atx::vol::detail

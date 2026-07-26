@@ -12,17 +12,20 @@
 //   * `RunOutcome::result` is the engine's return value MOVED, with NO
 //     transformation of any kind — same rows, same columns, same signals, same
 //     bits. Every driver's emitted series is written from it.
-//   * The timed interval brackets ONLY the engine call, matching what the four
-//     timing drivers measure today (`mag7:201-203`, `spy_dispersion_pnl:459-461`,
-//     `spy_strangle_backtest:457-459`, `dispersion_backtest:155-159`). It does
-//     NOT include the tearsheet fold — widening it would silently change the
-//     `wall_clock_ms` (and derived `steps_per_s`) semantics of
-//     `engine_metrics.csv` and of the drivers' meta headers.
+//   * The timed interval brackets ONLY the engine call. It was calibrated against
+//     the `steady_clock` bracket each of the four timing drivers
+//     (`mag7_dispersion_backtest`, `spy_dispersion_pnl`, `spy_strangle_backtest`,
+//     `dispersion_backtest`) measured BEFORE Wave C migrated them onto this seam;
+//     all four of those brackets are gone now, and their byte goldens are what
+//     pins the interval. It does NOT include the tearsheet fold — widening it
+//     would silently change the `wall_clock_ms` (and derived `steps_per_s`)
+//     semantics of `engine_metrics.csv` and of the drivers' meta headers.
 //   * `stats.n_steps == result.size()`; `stats.cache` is
 //     `cfg.snapshot_cache->stats()` when a cache was supplied and a zeroed
-//     `SnapshotCacheStats{}` otherwise (mirroring
-//     `spy_strangle_backtest.cpp:468-469`'s ternary — two of the five drivers run
-//     with no shared cache, so the null path is a supported, non-crashing route).
+//     `SnapshotCacheStats{}` otherwise (mirroring the pre-Wave-C ternary
+//     `spy_strangle_backtest` applied to its own cache — two of the five drivers
+//     run with no shared cache, so the null path is a supported, non-crashing
+//     route).
 //   * On engine `Err` the error propagates VERBATIM: each driver keeps its own
 //     `fprintf` text and exit code, so no console output moves.
 //

@@ -289,11 +289,149 @@ struct DbSymbolEntry {
   std::optional<SurfaceProvenance> provenance{};
 };
 
+// ── Carry-over fit salt (FIX-D) ──────────────────────────────────────────────
+//
+// Mixed into `surface_db_config_fingerprint`. Bumping it invalidates every
+// stored fingerprint, so every partition re-fits once instead of reusing its
+// stored surfaces.
+//
+// WHAT THIS IS NOT: it is **not** a build fingerprint, and it does **not**
+// detect a changed fitter. Nothing in either on-disk format records which binary
+// produced a surface — `ArchiveV2Header::writer_version_hash` exists but the
+// writer hard-codes it to 0 (surface_archive.cpp). So a change to
+// `pricer_fitter.cpp`, `curve_fit.cpp`, `essvi_calib.cpp`, `surface_parity.cpp`
+// or any curve fitter alters fitted surface bytes with NO config change and NO
+// automatic invalidation. Whoever makes such a change must bump this BY HAND,
+// the same discipline `kV2Salt` / `kV3Salt` already rely on in
+// surface_archive.cpp.
+//
+// WHY THAT IS ACCEPTABLE HERE: the same exposure already exists, entirely
+// unguarded, on the path this one mirrors. A date with no failing cell is
+// `dates_skipped_complete` and its stored surfaces are never refreshed under ANY
+// predicate — not config, not hive contents, not fitter version (3 of the 6
+// dates in the measured production run). Carry-over extends that existing,
+// accepted contract to the remaining dates and puts a STRICTER gate on it than
+// the skip path has, which is none. Do not read it as a guarantee that a stale
+// fit will be noticed.
+//
+// BUT THE TWO ARE NOT THE SAME SHAPE, and the earlier framing of this argument
+// ("carry-over only makes an existing exposure uniform") elided the difference.
+// A SKIPPED date leaves its partition byte-for-byte as some single earlier
+// binary wrote it: stale, perhaps, but SELF-CONSISTENT. A CARRIED REWRITE
+// produces a partition whose records come from two different binaries — the
+// carried ones re-emitted verbatim from the old write, the newly-fitted ones
+// produced by the current fitter — inside one file, under one header. That is a
+// shape the skip path can never produce, and it is strictly newer exposure, not
+// merely the old one spread wider. It is judged acceptable because a partition
+// is a directory of independent per-symbol records with no cross-record
+// invariant (the archive's CRCs are per record; `reconstruct_entry` is
+// byte-lossless, gated by SurfaceArchiveV2.Reemit*), so mixing provenances
+// cannot corrupt the file — but a consumer that assumed one partition means one
+// fitter version would be wrong, and nothing on disk records which records came
+// from where.
+//
+// IT ALSO DOES NOT COVER THE MARKET INPUTS — READ THIS BEFORE TRUSTING A CARRY.
+// `fold_symbol_configs` folds the manifest's per-symbol `DbSymbolRecord`, i.e. the
+// FIT CONFIGS, and nothing else. `OpraHiveSpec::r` — the carry rate, which the
+// build CLI's `--r` sets — is not in `SymbolFitConfig` and is NOT folded. Neither
+// is the snapshot minute nor the hive's contents. That is the more likely change
+// of the two documented here: a changed fitter takes a source edit, a wrong `--r`
+// takes one CLI flag, and a wrong `--r` is this tool's headline hazard
+// (atx-vol/docs/surface-db-build.md, "Interest rate / carry").
+//
+// THE CONSEQUENCE IS OPERATIONAL, AND IT HAS BEEN MEASURED. A build at the wrong
+// `--r` partly succeeds — on a production-shaped copy, `cells_ok 55 /
+// cells_failed 98`, and a wrong-`--r` run of that class DESTROYED 95 already-
+// stored surfaces on the dates it rewrote (a present, enabled cell whose re-fit
+// fails loses its stored surface; see surface_db_populate.cpp's degraded-cell
+// block). The operator notices and re-runs at the CORRECTED rate. Nothing is
+// re-fitted:
+//   - a date with nothing left to add is `dates_skipped_complete` and is not
+//     touched at all (pre-existing, unchanged by carry-over);
+//   - a date that IS rewritten carries its wrong-rate surfaces forward VERBATIM,
+//     because their configs did not change and so this fingerprint still matches.
+//     Before carry-over those siblings were re-fit and the corrected rate did
+//     reach them. This is the part carry-over made worse.
+// `cells_carried` is the only trace, and `verify` reports the database green —
+// every byte checksums, because the bytes are exactly the ones the wrong rate
+// produced. A poisoned database CANNOT be repaired by re-running it.
+//
+// WHAT AN OPERATOR MUST ACTUALLY DO. There is no `--force-refit` flag; a re-run is
+// not a repair. Two remedies, both blunt, and they are the whole list:
+//   1. DELETE the affected partition files (`<db-root>/partitions/<KEY>.atxvsa`)
+//      and re-run the build over those dates. `open_partition` then fails, the
+//      date is treated as never written, every loaded cell is re-fit at the new
+//      rate, and `write_partition` overwrites the stale manifest record. The
+//      REV-R3 coverage guard does not stand in the way of this, and that is a
+//      deliberate property rather than a coincidence: it probes for the FILE
+//      (`open_partition_file`), and this remedy's whole point is that there is no
+//      file, so there is nothing on disk it could destroy. Do not "improve" that
+//      probe into a manifest lookup — it would both re-open the fail-open this
+//      guard closed and break this instruction. Between
+//      the delete and the rebuild `verify` reports those cells `unmappable` and
+//      `verdict FAILED` — correct, the bytes really are gone. A symbol stored on
+//      that date but NOT in the rebuild's loaded set is not restored: deleting a
+//      partition deletes it.
+//   2. Or build into a FRESH `--db` root and swap the roots when it finishes.
+//      Slower, and the only option that never leaves a half-state on disk.
+// Bumping this salt is NOT a third remedy: it forces a re-fit only of the dates a
+// run REWRITES, leaves every `dates_skipped_complete` date exactly as it was, and
+// needs a rebuilt binary.
+inline constexpr std::uint64_t kSurfaceDbCarryOverFitSalt = 0x5CA1'AB1E'F17D'0001ull;
+
+// Does the caller of `write_partition` ATTEST that the surfaces it is handing
+// over came out of the fitter under the manifest's CURRENT configs?
+//
+// FIX-D fix-1 (I5). The fingerprint stamped on a partition is a claim that a
+// later resume trusts well enough to re-emit the stored surfaces instead of
+// re-fitting them, and nothing in `write_partition` can verify it: a
+// `PricedSurface` carries no record of the config that produced it. Stamping
+// unconditionally made every caller assert it silently — and `write_partition`
+// is public API documented to accept arbitrary symbols, so a caller storing
+// surfaces produced elsewhere (a different config, a different fitter, a
+// hand-built or migrated surface) for symbols that happen to be in the manifest
+// permanently blessed them for carry-over without ever saying so.
+//
+// So the attestation is EXPLICIT and the default is `None`, which fails CLOSED:
+// an unstamped partition folds to the 0 "unknown" sentinel and is re-fit rather
+// than reused. Forgetting to attest costs one wasted re-fit; the opposite default
+// costs a silently carried stale surface, which is the outcome this whole design
+// ranks worst.
+//
+// WHO MAY MAKE THE CLAIM (FIX-D fix-2, I-3). `populate_surface_db` fits its own
+// items, but it also re-emits whatever `SurfaceDbPopulateConfig::carry_over` names
+// — a set that struct explicitly carries no predicate for — so it cannot vouch for
+// the whole write either. It therefore FORWARDS its caller's
+// `SurfaceDbPopulateConfig::attest` instead of asserting one, and
+// `populate_universe_streaming` — the frame that actually runs the carry gate
+// (`carry_valid`) — is the one that sets `FitterProduced`. The claim travels with
+// the decision, so the fail-closed chain reaches the gate instead of stopping one
+// frame short of it.
+//
+// WHEN THE CLAIM IS EVALUATED (M-4): the fold is taken at WRITE time, over the
+// manifest snapshot held at that instant — not at the instant the caller resolved
+// the configs it fitted under. `populate_surface_db` resolves its configs once at
+// entry, so an in-process `upsert_symbol` racing a populate would stamp a
+// fingerprint over configs the surfaces were NOT fitted under. Do not mutate the
+// manifest concurrently with a populate. (`build_surface_db` serialises the config
+// and populate stages, so the CLI cannot reach this.)
+enum class DbConfigAttestation : std::uint8_t {
+  None = 0,      // do not stamp; this partition will never be carried over
+  FitterProduced // these surfaces came out of the fitter under the current configs
+};
+
 struct DbPartitionInfo {
   std::string key{}; // canonical
   std::uint32_t surface_count{};
   std::uint64_t file_size{};
   std::int64_t created_ts_ns{};
+  // FIX-D: fingerprint of the per-symbol fit CONFIGS this partition was written
+  // under (computed by `SurfaceDb::config_fingerprint`). Stored in the record's
+  // previously-unused `reserved0`, so no on-disk struct changes size and no
+  // existing manifest is rejected. 0 means UNKNOWN — either a manifest written
+  // before this field existed, or a symbol whose config is no longer in the
+  // manifest — and unknown always means "do not reuse the stored surfaces".
+  std::uint64_t config_fingerprint{0};
 };
 
 struct SurfaceDbManifestWriteOpts {
@@ -442,6 +580,26 @@ public:
   surface_provenance(std::string_view symbol) const;
   [[nodiscard]] std::vector<DbPartitionInfo> partitions() const;
 
+  // ── Fit-config fingerprint (FIX-D carry-over predicate) ──
+  //
+  // Fold the CURRENT manifest fit-config of each named symbol into one stable
+  // u64. Symbols are canonicalized and sorted internally, so caller order is
+  // irrelevant; the fold is over `encode_symbol_record(.., provenance=nullopt)`,
+  // the exact fixed-width mirror of `SymbolFitConfig` (INCLUDING surface_policy),
+  // with the provenance half zeroed so that `write_partition`'s own provenance
+  // write-back does not move the value. Returns 0 if ANY named symbol has no
+  // manifest entry — 0 is the "unknown, never reuse" sentinel and is never
+  // returned for a successful fold.
+  //
+  // A caller compares this against the fingerprint stored on the partition
+  // (`partition_config_fingerprint`) to answer "were these surfaces produced by
+  // the configs currently in the manifest?".
+  [[nodiscard]] std::uint64_t config_fingerprint(std::span<const std::string> symbols) const;
+
+  // The fingerprint recorded when `key`'s partition was last written. 0 if the
+  // partition is absent, or was written before this field existed.
+  [[nodiscard]] std::uint64_t partition_config_fingerprint(std::string_view key) const;
+
   // ── Manifest mutation (serialized; atomic rewrite; generation++) ──
   [[nodiscard]] Status upsert_symbol(
       std::string_view symbol, const SymbolFitConfig &cfg,
@@ -463,10 +621,88 @@ public:
   // written into any number of partitions without ever being registered in
   // the symbol table, and the symbol table may hold config for symbols that
   // never appear in a partition.
+  //
+  // CALLER OBLIGATION (FIX-D). `attest` decides whether this write stamps the
+  // partition with a fingerprint of the manifest's CURRENT fit configs for the
+  // symbols in `items` — a claim, which a later resume trusts by re-emitting the
+  // stored surfaces instead of re-fitting them, that these surfaces came out of
+  // those configs. Nothing here can verify it, so it is not assumed: the default
+  // `DbConfigAttestation::None` stamps nothing, the partition keeps the 0
+  // "unknown" fingerprint, and it is re-fit rather than carried. Pass
+  // `FitterProduced` only if you fitted these surfaces yourself under the configs
+  // currently in this manifest. See `DbConfigAttestation` for the full argument.
+  //
+  // The partition's ARCHIVE and the manifest's provenance write-back are
+  // unaffected by `attest`; it governs the carry-over fingerprint alone.
   [[nodiscard]] Status write_partition(std::string_view key,
                                        std::span<const SurfaceArchiveItem> items,
-                                       const ArchiveV2WriteOpts &opts = {});
+                                       const ArchiveV2WriteOpts &opts = {},
+                                       DbConfigAttestation attest = DbConfigAttestation::None);
   [[nodiscard]] Result<SurfaceArchiveV2> open_partition(std::string_view key) const;
+
+  // Open the partition FILE for `key` directly, WITHOUT the manifest lookup
+  // `open_partition` performs first. So a `NotFound` here is never merely
+  // "unlisted" — see the error contract at the bottom of this block for what it
+  // does and does not establish.
+  //
+  // REV-R3 fix-1 (review I-1). `open_partition` above answers "does this
+  // database SERVE this key", and it must keep doing exactly that — its callers
+  // read the manifest as the index of what the db offers, and widening it
+  // underneath them would silently change what a `NotFound` from it means. This
+  // accessor answers the different question "is there a FILE here, and what does
+  // it hold", and it exists for the one caller that must not let the manifest
+  // decide: the coverage guard in `populate_surface_db`, which is about to
+  // commit a WHOLE-FILE rewrite and therefore needs the file's own directory,
+  // not the index's opinion of it. A partition file present on disk but absent
+  // from the manifest — a crash between `write_partition`'s archive rename and
+  // its manifest persist, a manifest restored from an older copy, a
+  // hand-assembled or partially-copied root, or `drop_partition` interrupted
+  // after its manifest commit — is exactly the disagreement that guard exists to
+  // resolve in the FILE's favour. Through `open_partition` it resolved the other
+  // way and the rewrite overwrote the file.
+  //
+  // ERROR CONTRACT — written as what is CHECKED, because the two previous
+  // versions of this paragraph were written as what is guaranteed and both were
+  // false (REV-R3 fix-2, review N-1):
+  //
+  //   `NotFound`     the existence probe was asked with an `std::error_code`,
+  //                  reported no error, and reported the path absent. This is
+  //                  the only code on which a caller may conclude "there is
+  //                  nothing here to lose".
+  //   `IoError`      either the existence probe FAILED (the filesystem declined
+  //                  to answer: denied ACL on the file or on `partitions/`, a
+  //                  sharing violation, a transient volume or SMB fault) or the
+  //                  file is there and would not read.
+  //   `ParseError`   the file is there, read, and is not a valid archive.
+  //   `InvalidArgument`  `key` is not a representable partition key.
+  //
+  // Callers MUST keep `NotFound` apart from the rest — conflating them is the
+  // fail-open this was added to close, and folding a failed probe INTO
+  // `NotFound` is how that fail-open came back a second time.
+  //
+  // What this does NOT establish: `SurfaceArchiveV2::open_file` re-probes the
+  // path internally and still collapses a failed probe into `NotFound`, so a
+  // filesystem that starts failing between the two adjacent stats yields
+  // `NotFound` from here. The window is two syscalls on one thread.
+  //
+  // NO CACHING, deliberately: this bypasses the S5 partition view cache as well
+  // as the manifest, so it always reads what is on disk right now. It is a
+  // once-per-written-date call on the drain thread, not a hot path.
+  [[nodiscard]] Result<SurfaceArchiveV2> open_partition_file(std::string_view key) const;
+
+  // Does the MANIFEST list a partition for `key`? Snapshot lookup only — no file
+  // I/O, no view cache, nothing on disk is consulted, so this answers ONLY "is
+  // this key in the index", never "is there a file".
+  //
+  // REV-R3 fix-2 (review N-3). `open_partition` asks listed-AND-openable in one
+  // call and returns one `NotFound` for either half. Pairing this with
+  // `open_partition_file` splits it: file present + listed is the ordinary
+  // rewrite, file present + UNLISTED is the manifest/file disagreement the
+  // coverage guard resolves in the file's favour, and the two need different
+  // operator advice — telling someone whose manifest disagrees with the disk to
+  // go check `--r` sends them at the wrong problem. `false` for a key that will
+  // not canonicalize: it cannot be listed under any spelling.
+  [[nodiscard]] bool partition_listed(std::string_view key) const;
 
   // Reconstruct an OWNED surface for `symbol` in partition `key`. S5: reads the
   // partition through a shared, per-partition MMAP CACHE (keyed by canonical key,
@@ -484,6 +720,13 @@ public:
   // per-surface allocation for parametric kinds.
   [[nodiscard]] Result<LoadedSurface> map_surface(std::string_view key,
                                                   std::string_view symbol) const;
+  // Remove `key` from the manifest, then unlink its archive file. Errors:
+  // `InvalidArgument` (unrepresentable key), `NotFound` (the manifest does not
+  // list `key`), `IoError`/`ParseError` from the manifest persist, and — since
+  // REV-R3 fix-2 (review N-2) — `IoError` when the manifest commit SUCCEEDED but
+  // the unlink did not. That last one is a partial success and it is reported
+  // rather than swallowed for a reason the guard created: the leftover `.atxvsa`
+  // is no longer inert (see the ordering note at the unlink in `surface_db.cpp`).
   [[nodiscard]] Status drop_partition(std::string_view key);
 
 private:

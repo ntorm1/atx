@@ -1,5 +1,6 @@
 #include "atx/vol/opra_panel.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -7,10 +8,12 @@
 #include <limits>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include "atx/core/io/parquet.hpp"
 #include "atx/core/io/parquet_writer.hpp"
 #include "atx/vol/curve.hpp"     // YieldCurve
 #include "atx/vol/data.hpp"      // year_fraction, find_expiry_inputs, ExpiryInputs
@@ -27,6 +30,7 @@ namespace io = atx::core::io;
 namespace fs = std::filesystem;
 using atx::i64;
 using atx::vol::iso_to_ns;
+using atx::vol::load_opra_cbbo_from_table;
 using atx::vol::load_opra_cbbo_parquet;
 using atx::vol::OpraLoadSpec;
 using atx::vol::parse_osi_symbol;
@@ -138,6 +142,114 @@ TEST(OpraPanel, ParseOsi_AaplPut_ParsesFractionalStrike) {
 TEST(OpraPanel, ParseOsi_TooShort_Rejected) {
   const auto r = parse_osi_symbol("XOM");
   EXPECT_FALSE(r.has_value());
+}
+
+// ── osi_root_matches_ticker: the ONE ticker <-> OSI-root identity rule ───────
+//
+// FIX-E (E2-b) collapsed two byte-identical copies of this predicate (this file's
+// TU and listed_opra.cpp) into one shared function. The table below is the whole
+// acceptance contract; it is here rather than in listed_opra_test.cpp because the
+// declaration lives in opra_panel.hpp. The two existing behavioural pins in
+// listed_opra_test.cpp (PunctuatedTickerJoinsAgainstItsDotStrippedOsiRoot,
+// MissingNumericRootAdjustmentsAreExcluded) are the end-to-end regression gate
+// for the same rule and must keep passing UNCHANGED.
+TEST(OpraPanel, OsiRootMatchesTicker_ToleratesDotsAndNothingElse) {
+  using atx::vol::osi_root_matches_ticker;
+
+  // Identity: no punctuation to reconcile.
+  EXPECT_TRUE(osi_root_matches_ticker("AAPL", "AAPL"));
+  EXPECT_TRUE(osi_root_matches_ticker("SPY", "SPY"));
+  // The encoding artifact this relaxation exists for. The OSI root namespace
+  // cannot express '.', so these are two spellings of ONE identity.
+  EXPECT_TRUE(osi_root_matches_ticker("BRKB", "BRK.B"));
+  EXPECT_TRUE(osi_root_matches_ticker("BFB", "BF.B"));
+
+  // ASYMMETRY, pinned deliberately rather than fixed: dots are skipped in the
+  // TICKER only, never in the ROOT. So a root that itself carries a dot does NOT
+  // match its identically-spelled ticker -- this predicate is not reflexive over
+  // dotted strings. That is the behaviour both merged copies always had, and it
+  // is sound because the premise of the whole rule is that the OSI root namespace
+  // CANNOT express punctuation: a dotted root is not a thing OPRA emits. It is
+  // pinned here so a future reader meets the sharp edge in a test rather than in
+  // production, and so a change to it has to be deliberate.
+  EXPECT_FALSE(osi_root_matches_ticker("BRK.B", "BRK.B"));
+
+  // Anything OTHER than punctuation is two different underliers.
+  EXPECT_FALSE(osi_root_matches_ticker("BRKC", "BRK.B"));
+  EXPECT_FALSE(osi_root_matches_ticker("GEX", "GE"));
+  EXPECT_FALSE(osi_root_matches_ticker("GE", "GEX"));
+  EXPECT_FALSE(osi_root_matches_ticker("AAPL", "MSFT"));
+  // Prefix relationships are not matches in either direction: the walk must
+  // CONSUME the root exactly, not merely start it.
+  EXPECT_FALSE(osi_root_matches_ticker("AAP", "AAPL"));
+  EXPECT_FALSE(osi_root_matches_ticker("AAPLX", "AAPL"));
+
+  // Empty inputs: an empty ticker consumes nothing, so only an empty root
+  // matches. (Both callers guard emptiness before asking, but the predicate must
+  // still be total.)
+  EXPECT_TRUE(osi_root_matches_ticker("", ""));
+  EXPECT_FALSE(osi_root_matches_ticker("AAPL", ""));
+  EXPECT_FALSE(osi_root_matches_ticker("", "AAPL"));
+}
+
+// THE NEGATIVE GATE. Do not delete this test, and do not "fix" it by widening the
+// predicate.
+//
+// `pull_opra_hive.py` strips a TRAILING DIGIT from the OSI root before mapping it
+// to a universe symbol, so an adjusted `AAPL1` row can reach disk carrying
+// `underlying = "AAPL"`. The C++ rule refuses that pair on purpose: after a
+// corporate action an `AAPL1` contract's deliverable is not 100 shares of AAPL,
+// so its options are not comparable to the vanilla chain at the same strike, and
+// the fitter has no deliverable model with which to tell them apart. Accepting it
+// would silently MERGE two instruments into one chain — a mispricing, not a lost
+// symbol — instead of failing loud in opra_panel.cpp's per-row identity guard.
+//
+// The strict-consumer / loose-producer asymmetry is therefore DELIBERATE. A
+// future cleanup that unifies the C++ predicate onto the Python producers' looser
+// rule reintroduces that defect, and this assertion is what stops it.
+TEST(OpraPanel, OsiRootMatchesTicker_TrailingDigitIsADifferentInstrumentNotPunctuation) {
+  using atx::vol::osi_root_matches_ticker;
+
+  EXPECT_FALSE(osi_root_matches_ticker("AAPL1", "AAPL"))
+      << "an adjusted deliverable must never normalise onto its vanilla ticker";
+  EXPECT_FALSE(osi_root_matches_ticker("SPY1", "SPY"));
+  EXPECT_FALSE(osi_root_matches_ticker("BRKB1", "BRK.B"))
+      << "the dot relaxation must not also swallow a trailing digit";
+  // ...and the adjusted root is still a perfectly good identity for ITSELF.
+  EXPECT_TRUE(osi_root_matches_ticker("AAPL1", "AAPL1"));
+  // Digits are not special-cased away anywhere else either: a ticker that
+  // genuinely ends in a digit still has to match exactly.
+  EXPECT_FALSE(osi_root_matches_ticker("AAPL", "AAPL1"));
+}
+
+// The definitions exporter's universe filter (FIX-E, E2-a), exercised through the
+// shared predicate rather than the example TU — which is gated behind
+// ATX_BUILD_EXAMPLES=OFF and has no test target.
+//
+// The exporter used to compare `osi->root` against `config.symbols` with a
+// byte-exact `std::find`, while its own `parent_symbol` strips dots to build the
+// Databento request. So it asked for `BRKB.OPT`, got back roots spelled `BRKB`,
+// and rejected every one of them against the universe's `BRK.B` — paying for data
+// it then discarded, which is why BRK.B was silently absent from every dispersion
+// basket. This is that filter's acceptance table.
+TEST(OpraPanel, OsiRootMatchesTicker_DefinitionsUniverseFilterAcceptsPunctuatedTickers) {
+  using atx::vol::osi_root_matches_ticker;
+  const std::vector<std::string> universe = {"SPY", "AAPL", "BRK.B"};
+  // Mirrors the exporter's filter exactly, including the retained exact compare
+  // that keeps the change a STRICT relaxation of the old byte-exact `std::find`.
+  const auto in_universe = [&universe](std::string_view root) {
+    return std::any_of(universe.begin(), universe.end(), [root](const std::string &symbol) {
+      return symbol == root || osi_root_matches_ticker(root, symbol);
+    });
+  };
+
+  EXPECT_TRUE(in_universe("BRKB")) << "the defect: every BRK.B definition was rejected";
+  EXPECT_TRUE(in_universe("SPY"));
+  EXPECT_TRUE(in_universe("AAPL"));
+  EXPECT_FALSE(in_universe("MSFT")) << "an out-of-universe root is still rejected";
+  EXPECT_FALSE(in_universe("AAPL1"))
+      << "the relaxation is punctuation-only: an adjusted deliverable stays out";
+  EXPECT_FALSE(in_universe("BRKA")) << "the sibling class share is a different name";
 }
 
 // ── Loader round-trip ───────────────────────────────────────────────────────
@@ -545,6 +657,68 @@ TEST(OpraPanel, FilterSymbolNotFound_Rejected) {
       {"XOM", osi_sym("XOM", "271101", 'C', 110.0), 8.00, 8.10}, // long  (~1.50y)
       {"XOM", osi_sym("XOM", "271101", 'P', 110.0), 7.00, 7.10},
   };
+}
+
+// ── Task 1: in-memory table seam ────────────────────────────────────────────
+//
+// load_opra_cbbo_from_table must produce a BYTE-IDENTICAL panel to
+// load_opra_cbbo_parquet when handed a table holding the same rows the file
+// path would read. The fixture carries the full 8-column OPRA schema the seam
+// requires; the file loader reads it via projection, the seam reads the same
+// file fully — same rows in, identical panel out.
+TEST(OpraPanelTable, TableSeamMatchesFileLoad) {
+  const std::vector<i64> ids = {201, 202, 203, 204};
+  const std::string path = write_slice("table_seam.parquet", xom_two_expiry_rows(),
+                                        /*with_underlying=*/true, ids);
+
+  OpraLoadSpec spec;
+  spec.path = path;
+  spec.underlying = "XOM";
+  spec.snapshot_iso = "2026-05-01";
+  spec.r = 0.04;
+
+  const auto file_panel = load_opra_cbbo_parquet(spec);
+  ASSERT_TRUE(file_panel.has_value()) << file_panel.error().to_string();
+
+  const auto table = io::read_parquet(spec.path);
+  ASSERT_TRUE(table.has_value()) << table.error().to_string();
+
+  const auto tbl_panel = load_opra_cbbo_from_table(*table, spec);
+  ASSERT_TRUE(tbl_panel.has_value()) << tbl_panel.error().to_string();
+
+  // Cheap identities: counts, spot, snapshot stamp, uid, fingerprint, provenance.
+  EXPECT_EQ(tbl_panel->frame.rows.size(), file_panel->frame.rows.size());
+  EXPECT_EQ(tbl_panel->n_contracts, file_panel->n_contracts);
+  EXPECT_EQ(tbl_panel->n_expiries, file_panel->n_expiries);
+  EXPECT_EQ(tbl_panel->n_dropped, file_panel->n_dropped);
+  EXPECT_DOUBLE_EQ(tbl_panel->implied_spot, file_panel->implied_spot);
+  EXPECT_DOUBLE_EQ(tbl_panel->frame.spot, file_panel->frame.spot);
+  EXPECT_EQ(tbl_panel->frame.snapshot_ts_ns, file_panel->frame.snapshot_ts_ns);
+  EXPECT_EQ(tbl_panel->snapshot_iso, file_panel->snapshot_iso);
+  EXPECT_EQ(tbl_panel->frame.uid, file_panel->frame.uid);
+  EXPECT_EQ(tbl_panel->source_schema_version, file_panel->source_schema_version);
+  EXPECT_EQ(tbl_panel->source_fingerprint, file_panel->source_fingerprint);
+  EXPECT_EQ(tbl_panel->source_instrument_ids, file_panel->source_instrument_ids);
+
+  // First/last kept-quote fields match position-for-position.
+  ASSERT_FALSE(file_panel->frame.rows.empty());
+  const auto &tf = tbl_panel->frame.rows.front();
+  const auto &ff = file_panel->frame.rows.front();
+  EXPECT_EQ(tf.uid, ff.uid);
+  EXPECT_EQ(tf.expiry_iso, ff.expiry_iso);
+  EXPECT_TRUE(tf.side == ff.side);
+  EXPECT_DOUBLE_EQ(tf.strike, ff.strike);
+  EXPECT_DOUBLE_EQ(tf.bid, ff.bid);
+  EXPECT_DOUBLE_EQ(tf.ask, ff.ask);
+  const auto &tl = tbl_panel->frame.rows.back();
+  const auto &fl = file_panel->frame.rows.back();
+  EXPECT_EQ(tl.expiry_iso, fl.expiry_iso);
+  EXPECT_DOUBLE_EQ(tl.strike, fl.strike);
+  EXPECT_DOUBLE_EQ(tl.bid, fl.bid);
+  EXPECT_DOUBLE_EQ(tl.ask, fl.ask);
+
+  const fs::path dir = fs::temp_directory_path() / "atx_opra_p2_test";
+  fs::remove_all(dir);
 }
 
 TEST(OpraPanel, TermCurve_PerExpiryRateInterpolated) {

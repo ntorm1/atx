@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
 
 #include "atx/vol/correction.hpp"      // CorrectionCache (C2 cross-date cache export)
 #include "atx/vol/corpus.hpp"          // CorpusBoard, CorpusFitStatus, CorpusAdmissionPolicy, ...
@@ -51,6 +52,19 @@ struct FitSlot {
                                      // computed (false for a pinned curve —
                                      // it has no held-out selector score)
   ErrorCode error_code{ErrorCode::Unknown};
+  // The failing fit Error's MESSAGE, kept beside its code so the two together
+  // reconstruct the `Error` the fit actually returned instead of collapsing it to
+  // a category. The code alone answers "what class of failure"; the MESSAGE is
+  // where the diagnostic lives -- PricerFitter's risk pipeline formats the failing
+  // gate, the offending slice, the log-moneyness and the slack into it
+  // ("risk surface rejected: model=... mask=... butterfly_slice=... carry=...",
+  // pricer_fitter.cpp), and dropping it here is what left an operator with a bare
+  // `cells_failed` count and no next step. Empty on success, and on a failure
+  // whose Error carried no context.
+  //
+  // Additive: `error_code` keeps its exact meaning and its existing readers
+  // (corpus.cpp's manifest/quality rows) are untouched.
+  std::string error_message{};
   CorpusQualityMetrics quality{};
   CorpusAdmissionDecision admission{CorpusDisposition::Admitted, CorpusAdmissionReason::None, 0u};
   std::optional<PricedSurface> surface{};        // present iff status == Ok

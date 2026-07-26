@@ -345,6 +345,15 @@ template <typename RateFn>
              "no well-conditioned co-terminal expiry to imply spot; pass spot_override");
 }
 
+// The table-driven core shared by the file loader and the in-memory-table seam
+// (load_opra_cbbo_from_table): everything AFTER the OPRA cbbo-1m table is
+// materialized — column extraction, row filtering, OSI parse, PCP spot
+// implication, frame assembly. Both public entry points delegate here, so the
+// two paths are byte-identical on the same rows. `spec.path` is NOT read here
+// (the table is already decoded); it is unused by this core.
+[[nodiscard]] Result<OpraPanel> panel_from_table(const io::ParquetTable& table,
+                                                 const OpraLoadSpec& spec);
+
 } // namespace
 
 Result<OsiSymbol> parse_osi_symbol(std::string_view sym) {
@@ -390,6 +399,27 @@ Result<OsiSymbol> parse_osi_symbol(std::string_view sym) {
   return Ok(std::move(out));
 }
 
+// The one definition of the ticker <-> OSI-root identity rule (FIX-E, E2-b).
+// Was duplicated byte-for-byte here and in `listed_opra.cpp`; the contract, the
+// trailing-digit policy and the reason this is a predicate rather than a
+// normaliser all live on the declaration in `opra_panel.hpp`. Walk `ticker`
+// skipping '.', and require it to consume `root` exactly — so the ONLY tolerated
+// difference is punctuation, and a trailing digit (an adjusted deliverable) never
+// matches.
+bool osi_root_matches_ticker(std::string_view root, std::string_view ticker) noexcept {
+  std::size_t i = 0;
+  for (const char c : ticker) {
+    if (c == '.') {
+      continue;
+    }
+    if (i >= root.size() || root[i] != c) {
+      return false;
+    }
+    ++i;
+  }
+  return i == root.size();
+}
+
 Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
   // ── Projected read (W4.3) ─────────────────────────────────────────────────
   // Decode ONLY the columns panel construction consumes (verified against every
@@ -421,6 +451,12 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
     return Err(ErrorCode::InvalidArgument, table_res.error().to_string());
   }
   const io::ParquetTable table = std::move(table_res.value());
+  return panel_from_table(table, spec);
+}
+
+namespace {
+
+Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoadSpec& spec) {
   const io::Schema& schema = table.schema();
   const std::size_t n_rows =
       static_cast<std::size_t>(std::max<std::int64_t>(0, table.num_rows()));
@@ -590,7 +626,60 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
     }
 
     QuoteRow row;
-    row.uid = !osi->root.empty() ? osi->root : std::string(und);
+    // FIX-C-1. The row's uid is the hive's `underlying` column — the SAME string
+    // the filter above matched, `frame.uid` is set from below, `board.symbol`
+    // carries, and the manifest/archive key on. The OSI root is a FALLBACK, used
+    // only when the file has no `underlying` column at all.
+    //
+    // Read the other way round (root first, column second) this line was the one
+    // place a single underlier acquired TWO names. The two derivations are
+    // byte-identical exactly when a DATA INVARIANT holds — per row, `underlying`
+    // equals the OSI root of that row's own `symbol` — which is a property of the
+    // hive, not of this code; see the guard below, which is what makes it a
+    // checked precondition rather than an assumption. A production
+    // 51-name build lost BRK.B entirely this way: the column said `BRK.B`, every
+    // OSI symbol said `BRKB  260702C00270000`, so `data_install` interned BOTH,
+    // filed all 1,838 quotes under `BRKB`, and handed the caller the handle to an
+    // EMPTY `BRK.B` underlier. `OptionChain::from_frame` then succeeded over a
+    // zero-expiry chain and config selection fail-closed-disabled the symbol.
+    // Nothing compared the two strings, so nothing could report a mismatch.
+    //
+    // The dotted universe spelling is canonical because it is what the REST of
+    // the pipeline already keys on end to end: the operator's `--symbols`, the
+    // hive's discovery/filter (`opra_hive.cpp`), `CorpusBoard::symbol`, the
+    // manifest's symbol table and the archive's `canonical_symbol` (which
+    // preserves dots). The OSI root is a wire encoding of a contract, not the
+    // identity of an underlier. Nothing on disk changes; only which of two
+    // already-present strings the in-memory rows are keyed by.
+    row.uid = !und.empty() ? std::string(und) : osi->root;
+    // FIX-C-1 per-row identity guard — the one that can actually fire.
+    //
+    // Keying rows by the `underlying` column is only correct while that column
+    // really does name the same underlier the row's OSI symbol does. Dots are the
+    // expected, legitimate difference (`BRK.B` / `BRKB`): the OSI root namespace
+    // cannot express punctuation, so those are two spellings of one identity and
+    // the load proceeds. ANY OTHER difference is two different underliers, and
+    // merging them is a silent pricing error rather than a lost symbol — the
+    // adjusted-deliverable class is the live example: `pull_opra_hive.py:293-295`
+    // strips a trailing digit from the root before mapping, so an `AAPL1` (post
+    // corporate action, non-standard deliverable) row can carry
+    // `underlying = "AAPL"`. Before FIX-C-1 such rows keyed to `AAPL1` and were
+    // segregated into their own underlier — accidental, but protective, since an
+    // adjusted deliverable is not comparable to the vanilla chain at the same
+    // strike. Keying by the column alone would silently merge them into it.
+    //
+    // So: fail the cell LOUD (the hive loader tallies it in n_load_errors) rather
+    // than drop the rows, which would silently change chain composition — the very
+    // class of defect this fix exists to close. Verified not to fire on the live
+    // hive: across all 140 date files the only raw divergence is
+    // ('BRK.B','BRKB'), and after dot-stripping there is none at all.
+    if (!und.empty() && !osi->root.empty() && und != osi->root &&
+        !osi_root_matches_ticker(osi->root, und)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "row symbol '" + std::string(symbols[i]) + "' has OSI root '" + osi->root +
+                     "' but its underlying column says '" + std::string(und) +
+                     "': these name two different underliers, not one");
+    }
     row.expiry_iso = std::move(osi->expiry_iso);
     row.strike = osi->strike;
     row.side = osi->side;
@@ -612,6 +701,11 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
     }
   }
 
+  // The frame's default uid, in the SAME namespace every row above was keyed in
+  // (the `underlying` column, OSI root only when that column is absent) — see the
+  // FIX-C-1 note on `row.uid`. `spec.underlying` is both the row filter and this
+  // default, so on a filtered load every kept row carries exactly this string;
+  // the two fallbacks below mirror the row rule for an unfiltered load.
   std::string frame_uid = spec.underlying;
   if (frame_uid.empty()) {
     frame_uid = !first_underlying.empty() ? first_underlying : first_root;
@@ -681,6 +775,32 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
   }
 
   ATX_TRY_VOID(build_uid_list(frame));
+  // FIX-C-1 frame-level tripwire. A FILTERED load addresses exactly ONE underlier,
+  // so its frame must carry exactly ONE uid — `spec.underlying`, seeded first by
+  // build_uid_list and then matched by every kept row. Unfiltered (discover/mixed)
+  // loads are exempt: several uids are their normal shape.
+  //
+  // Be precise about what this is and is not. Given the row-uid rule above it is
+  // UNREACHABLE on today's code — the filter at the top of the row loop drops every
+  // row whose `underlying` differs from `spec.underlying`, so every kept row's uid
+  // IS the frame's uid and build_uid_list dedupes to one. The *reachable* identity
+  // check is the per-row `osi_root_matches_underlying` guard above; this one is a
+  // cheap regression tripwire that fails loudly if a future edit reintroduces a
+  // second derivation of the frame's name, which is exactly how BRK.B was lost.
+  // Kept for that reason, not because it can fire today.
+  if (!filter.empty() && frame.uid_strs.size() > 1u) {
+    std::string list;
+    for (std::size_t j = 0; j < frame.uid_strs.size(); ++j) {
+      if (j != 0) {
+        list.push_back(',');
+      }
+      list.append(frame.uid_strs[j]);
+    }
+    return Err(ErrorCode::InvalidArgument,
+               "underlying '" + std::string(filter) +
+                   "': rows resolved to more than one uid {" + list +
+                   "} (frame uid and row uids disagree)");
+  }
   build_expiry_inputs(frame);
 
   const std::size_t n_contracts = frame.rows.size();
@@ -723,6 +843,29 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
   panel.market_input_provenance = spec.market_input_provenance;
   panel.time = spec.time;
   return Ok(std::move(panel));
+}
+
+} // namespace
+
+Result<OpraPanel> load_opra_cbbo_from_table(const io::ParquetTable& table,
+                                            const OpraLoadSpec& spec) {
+  // The in-memory-table seam requires the full canonical OPRA schema — the 8
+  // columns the hive v2 date partition guarantees. A missing column is a
+  // contract violation reported up front with the column name and spec.path
+  // context, rather than the opaque deep column_view failure the raw core would
+  // otherwise surface to a caller that never touched a file.
+  static constexpr std::array<std::string_view, 8> kRequiredColumns = {
+      "ts",     "underlying", "symbol", "instrument_id",
+      "bid_px", "ask_px",     "bid_sz", "ask_sz"};
+  const io::Schema& schema = table.schema();
+  for (const std::string_view name : kRequiredColumns) {
+    if (schema.find(name) == nullptr) {
+      return Err(ErrorCode::InvalidArgument,
+                 "OPRA table missing required column '" + std::string(name) +
+                     "' (from '" + spec.path + "')");
+    }
+  }
+  return panel_from_table(table, spec);
 }
 
 } // namespace atx::vol

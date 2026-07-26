@@ -1730,3 +1730,282 @@ TEST(Strategy, DeclarativeDroppedOnLastEntryAccessor) {
   ASSERT_EQ(dropped.size(), 1u);
   EXPECT_EQ(dropped[0].symbol, "FAKE");
 }
+
+// ── 6. RunConfig::step_observer — the L10 observation hook ───────────────────
+//
+// The divergence collector Wave D builds on this hook replaces a shadow replay
+// loop that re-walked the clock and re-loaded every archive purely to read
+// strategy state after `on_step`. These gates pin the four properties that
+// substitution rests on: the observer fires once per clock step in order, it
+// fires on EVERY step regardless of `record_every_n`, its `Err` aborts the run
+// verbatim and immediately, and an absent observer leaves the recorded series
+// bit-identical.
+
+namespace {
+
+// The `Strategy.OverlappingClips` corpus: 7 dates, 5 calendar days apart, one
+// "SPX" surface per date at uid kUid, spot drifting +0.2%/day. Returned with the
+// day offsets so a test can predict each step's snapshot timestamp independently
+// of the engine.
+struct ObserverCorpus {
+  std::vector<int> day_off{0, 5, 10, 15, 20, 25, 30};
+  std::vector<std::pair<std::string, std::string>> date_paths;
+};
+
+[[nodiscard]] ObserverCorpus make_observer_corpus(const char *tag) {
+  ObserverCorpus c;
+  const fs::path dir = fresh_dir(tag);
+  for (std::size_t d = 0; d < c.day_off.size(); ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(c.day_off[d]) * kDayNs;
+    const double S = 100.0 * (1.0 + 0.002 * static_cast<double>(c.day_off[d]));
+    const PricedSurface s = make_surface(kUid, S, S, now);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-09-%02d", static_cast<int>(d + 1));
+    const std::string date = buf;
+    c.date_paths.emplace_back(date, write_archive(dir, date, {{"SPX", &s}}));
+  }
+  return c;
+}
+
+// The OverlappingClips spec: a daily ATM-forward put clip held to expiry, whose
+// 20-day tenor lands every cohort's settlement on an exact snapshot observation.
+[[nodiscard]] StrategySpec observer_spec() {
+  StrategySpec spec;
+  spec.name = "spy-25d-put-daily-clip";
+  LegSpec leg;
+  leg.uid = kUid;
+  leg.tenor.target_T = (20.0 * static_cast<double>(kDayNs)) / kNsPerYear;
+  leg.structure.kind = StructureSpec::Kind::Single;
+  leg.structure.single_side = Side::Put;
+  leg.strike = StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0};
+  leg.size = SizeSpec{SizeSpec::Kind::FixedContracts, 1.0, +1.0};
+  spec.legs.push_back(leg);
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+  return spec;
+}
+
+} // namespace
+
+TEST(Strategy, StepObserverFiresOncePerStepInOrder) {
+  const ObserverCorpus corpus = make_observer_corpus("observer-order");
+  auto clock = Clock::from_manifest(make_manifest(corpus.date_paths));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  struct Seen {
+    std::size_t step_index;
+    std::string date;
+    std::int64_t ts_ns;
+    const IStrategy *strategy;
+  };
+  std::vector<Seen> seen;
+
+  DeclarativeStrategy strat{observer_spec()};
+  RunConfig cfg;
+  cfg.step_observer = [&](const StepEvent &e) {
+    seen.push_back(Seen{e.step_index, e.ref.date, e.snapshot.ts_ns(), &e.strategy});
+    return atx::core::Ok();
+  };
+  auto res = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+
+  // One event per clock ref, INCLUDING inception. Asserted before any indexing so
+  // an observer that never fired fails here rather than vacuously passing below.
+  ASSERT_EQ(seen.size(), corpus.day_off.size());
+  std::int64_t prev_ts = std::numeric_limits<std::int64_t>::min();
+  for (std::size_t i = 0; i < seen.size(); ++i) {
+    EXPECT_EQ(seen[i].step_index, i) << "event " << i;
+    // The ref is the RIGHT ref, not merely some ref: its date is the manifest's
+    // date at the same index.
+    EXPECT_EQ(seen[i].date, corpus.date_paths[i].first) << "event " << i;
+    // The snapshot is the base the strategy stepped on: its archived timestamp is
+    // the corpus's own day offset, which the engine had to round-trip through the
+    // archive bytes to reproduce.
+    const std::int64_t want_ts =
+        kBaseNow + static_cast<std::int64_t>(corpus.day_off[i]) * kDayNs;
+    EXPECT_EQ(seen[i].ts_ns, want_ts) << "event " << i;
+    EXPECT_GT(seen[i].ts_ns, prev_ts) << "event " << i; // strictly increasing
+    prev_ts = seen[i].ts_ns;
+    // The observed strategy is the caller's own instance, not a copy.
+    EXPECT_EQ(seen[i].strategy, static_cast<const IStrategy *>(&strat)) << "event " << i;
+  }
+
+  std::printf("[strategy] step_observer fired %zu times, indices 0..%zu, ts %lld..%lld\n",
+              seen.size(), seen.size() - 1, static_cast<long long>(seen.front().ts_ns),
+              static_cast<long long>(seen.back().ts_ns));
+}
+
+TEST(Strategy, StepObserverFiresEveryStepAtStride) {
+  const ObserverCorpus corpus = make_observer_corpus("observer-stride");
+  auto clock = Clock::from_manifest(make_manifest(corpus.date_paths));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  std::vector<std::size_t> indices;
+  DeclarativeStrategy strat{observer_spec()};
+  RunConfig cfg;
+  cfg.record_every_n = 3;
+  cfg.step_observer = [&](const StepEvent &e) {
+    indices.push_back(e.step_index);
+    return atx::core::Ok();
+  };
+  auto res = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+
+  // The stride downsamples RECORDED ROWS, never events. This is what makes
+  // step_index load-bearing: it is the only way to correlate an event with the
+  // (fewer) rows the run persisted.
+  ASSERT_EQ(indices.size(), corpus.day_off.size());
+  for (std::size_t i = 0; i < indices.size(); ++i) {
+    EXPECT_EQ(indices[i], i) << "event " << i;
+  }
+  EXPECT_LT(res->size(), corpus.day_off.size())
+      << "record_every_n=3 must record fewer rows than there are steps";
+
+  std::printf("[strategy] step_observer at stride 3: %zu events vs %zu recorded rows\n",
+              indices.size(), res->size());
+}
+
+TEST(Strategy, StepObserverErrPropagatesAndStopsTheRun) {
+  const ObserverCorpus corpus = make_observer_corpus("observer-err");
+  auto clock = Clock::from_manifest(make_manifest(corpus.date_paths));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  std::size_t fired = 0;
+  DeclarativeStrategy strat{observer_spec()};
+  RunConfig cfg;
+  cfg.step_observer = [&](const StepEvent &e) -> Status {
+    ++fired;
+    if (e.step_index == 2) {
+      return atx::core::Err(ErrorCode::InvalidArgument, "observer stop");
+    }
+    return atx::core::Ok();
+  };
+  auto res = run_backtest(*clock, strat, cfg);
+
+  ASSERT_FALSE(res.has_value()) << "an observer Err must abort the run";
+  EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument);
+  // Verbatim propagation: the engine must not wrap or re-message the observer's
+  // error, or an observer's own invariant failure becomes unattributable.
+  EXPECT_NE(res.error().message().find("observer stop"), std::string::npos)
+      << "message was: " << res.error().message();
+  // The abort is IMMEDIATE, not deferred to the end of the run: steps 0,1,2 only.
+  EXPECT_EQ(fired, 3u);
+
+  std::printf("[strategy] step_observer Err after %zu events: %s\n", fired,
+              res.error().to_string().c_str());
+}
+
+TEST(Strategy, StepObserverAbsentIsBitIdentical) {
+  const ObserverCorpus corpus = make_observer_corpus("observer-identity");
+  auto clock = Clock::from_manifest(make_manifest(corpus.date_paths));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  DeclarativeStrategy bare_strat{observer_spec()};
+  auto bare = run_backtest(*clock, bare_strat, RunConfig{});
+  ASSERT_TRUE(bare.has_value()) << bare.error().to_string();
+
+  std::size_t fired = 0;
+  DeclarativeStrategy observed_strat{observer_spec()}; // fresh lifecycle state
+  RunConfig cfg;
+  cfg.step_observer = [&fired](const StepEvent &) {
+    ++fired;
+    return atx::core::Ok();
+  };
+  auto observed = run_backtest(*clock, observed_strat, cfg);
+  ASSERT_TRUE(observed.has_value()) << observed.error().to_string();
+
+  // Anti-vacuity: both runs must be the real, fully-shaped series before any
+  // column comparison can mean anything, and the observer must actually have run.
+  ASSERT_EQ(bare->size(), corpus.day_off.size());
+  ASSERT_EQ(observed->size(), corpus.day_off.size());
+  ASSERT_EQ(fired, corpus.day_off.size());
+  ASSERT_FALSE(bare->step_pnl_total.empty());
+
+  // EXPECT_EQ on raw doubles == bit equality (no NaN is produced by this corpus,
+  // which the finiteness check below pins).
+  const auto same = [](const char *name, const std::vector<double> &a,
+                       const std::vector<double> &b) {
+    ASSERT_EQ(a.size(), b.size()) << name;
+    for (std::size_t i = 0; i < a.size(); ++i) {
+      ASSERT_TRUE(std::isfinite(a[i])) << name << " row " << i;
+      EXPECT_EQ(a[i], b[i]) << name << " row " << i;
+    }
+  };
+  same("pnl_total", bare->pnl_total, observed->pnl_total);
+  same("pnl_delta", bare->pnl_delta, observed->pnl_delta);
+  same("pnl_gamma", bare->pnl_gamma, observed->pnl_gamma);
+  same("pnl_vega", bare->pnl_vega, observed->pnl_vega);
+  same("pnl_vanna", bare->pnl_vanna, observed->pnl_vanna);
+  same("pnl_volga", bare->pnl_volga, observed->pnl_volga);
+  same("pnl_theta", bare->pnl_theta, observed->pnl_theta);
+  same("pnl_rho", bare->pnl_rho, observed->pnl_rho);
+  same("pnl_charm", bare->pnl_charm, observed->pnl_charm);
+  same("pnl_unexplained", bare->pnl_unexplained, observed->pnl_unexplained);
+  same("pnl_settlement", bare->pnl_settlement, observed->pnl_settlement);
+  same("pnl_shares", bare->pnl_shares, observed->pnl_shares);
+  same("financing", bare->financing, observed->financing);
+  same("cost", bare->cost, observed->cost);
+  same("nav", bare->nav, observed->nav);
+  same("cash", bare->cash, observed->cash);
+  same("gross_delta", bare->gross_delta, observed->gross_delta);
+  same("gross_gamma", bare->gross_gamma, observed->gross_gamma);
+  same("gross_vega", bare->gross_vega, observed->gross_vega);
+  same("gross_theta", bare->gross_theta, observed->gross_theta);
+  same("turnover_notional", bare->turnover_notional, observed->turnover_notional);
+  same("turnover_vega", bare->turnover_vega, observed->turnover_vega);
+  same("n_open_lots", bare->n_open_lots, observed->n_open_lots);
+  same("n_unpriced_lots", bare->n_unpriced_lots, observed->n_unpriced_lots);
+  same("n_unpriced_greeks", bare->n_unpriced_greeks, observed->n_unpriced_greeks);
+  same("step_pnl_total", bare->step_pnl_total, observed->step_pnl_total);
+  EXPECT_EQ(bare->date, observed->date);
+  EXPECT_EQ(bare->ts_ns, observed->ts_ns);
+  ASSERT_EQ(bare->signals.size(), observed->signals.size());
+  for (std::size_t s = 0; s < bare->signals.size(); ++s) {
+    EXPECT_EQ(bare->signals[s].first, observed->signals[s].first);
+    same(bare->signals[s].first.c_str(), bare->signals[s].second, observed->signals[s].second);
+  }
+
+  std::printf("[strategy] observer-absent vs observer-present nav.back() = %.17g vs %.17g\n",
+              bare->nav.back(), observed->nav.back());
+}
+
+TEST(Backtest, FixedBookRejectsStepObserver) {
+  const ObserverCorpus corpus = make_observer_corpus("observer-fixed-book");
+  auto clock = Clock::from_manifest(make_manifest(corpus.date_paths));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  // One held call that never crosses expiry inside the clock, so the fixed-book
+  // run is a genuinely valid run and the rejection below cannot be some other
+  // failure wearing the observer's name.
+  const auto make_book = []() {
+    Lot lot;
+    lot.id = 1;
+    lot.contract = OptionContract{kUid, 100.0, (60.0 * static_cast<double>(kDayNs)) / kNsPerYear,
+                                  Side::Call};
+    lot.qty = 1.0;
+    lot.multiplier = 100.0;
+    lot.expiry_ts_ns = kBaseNow + 60 * kDayNs;
+    PortfolioState book;
+    book.lots.push_back(lot);
+    return book;
+  };
+
+  // Control: without an observer this exact call succeeds. Without this the
+  // rejection assertion below could pass against a run that failed for any reason.
+  auto control = run_backtest(*clock, make_book(), RunConfig{});
+  ASSERT_TRUE(control.has_value()) << control.error().to_string();
+  ASSERT_EQ(control->size(), corpus.day_off.size());
+
+  RunConfig cfg;
+  cfg.step_observer = [](const StepEvent &) { return atx::core::Ok(); };
+  auto res = run_backtest(*clock, make_book(), cfg);
+
+  // Fail closed. A silently dropped observer would mean a silently dropped
+  // divergence capture — precisely the Wave B failure class.
+  ASSERT_FALSE(res.has_value()) << "the fixed-book overload has no on_step to observe";
+  EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(res.error().message().find("step_observer"), std::string::npos)
+      << "message was: " << res.error().message();
+
+  std::printf("[backtest] fixed-book + step_observer -> %s\n", res.error().to_string().c_str());
+}

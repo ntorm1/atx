@@ -255,6 +255,14 @@ Status run_bounded_fit_tasks(std::size_t task_count, unsigned worker_budget,
   }
 
   try {
+    // R1-a (review C-06): deterministic injection point for the PRE-LAUNCH setup
+    // failure the outer catch(...) below reports. Everything from here to the
+    // launch gate is scratch allocation, so the real cause is std::bad_alloc —
+    // which is what killed the production run twice and what a test cannot
+    // provoke on demand.
+    if (test_hooks != nullptr && test_hooks->before_setup) {
+      test_hooks->before_setup();
+    }
     const std::size_t requested =
         worker_budget != 0u ? static_cast<std::size_t>(worker_budget)
                             : std::max<std::size_t>(1u, std::thread::hardware_concurrency());

@@ -15,7 +15,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <future>
+#include <memory>
+#include <optional>
+#include <utility>
 #include <fstream>
 #include <iterator>
 #include <mutex>
@@ -39,6 +44,7 @@
 #include "atx/vol/session.hpp"    // FitPreset
 #include "atx/vol/surface_archive.hpp"
 #include "atx/vol/surface_db.hpp"
+#include "atx/vol/surface_db_build.hpp" // is_total_fit_failure (FIX-D exit-code shape)
 #include "atx/vol/detail/fit_scheduler.hpp" // performance_core_count (C4 wave-2 scaling diagnostic)
 #include "atx/vol/surface_db_populate.hpp"
 #include "atx/vol/types.hpp"
@@ -431,7 +437,13 @@ TEST(SurfaceDbPopulate, UniverseStreamingCellAwareIncrementalResume) {
   auto cov_b = populate_universe_streaming(*db, full, spec);
   ASSERT_TRUE(cov_b.has_value()) << (cov_b ? "" : cov_b.error().to_string());
   EXPECT_EQ(cov_b->cells_to_fit, 1u);        // only GOOGL is new work
-  EXPECT_EQ(cov_b->cells_refit, 2u);         // AAPL/NVDA re-fit by the same-date rewrite
+  // FIX-D: AAPL/NVDA are CARRIED (their stored surfaces re-emitted verbatim),
+  // not dragged back through the fitter. This assertion previously read
+  // `cells_refit == 2` and was the amplification itself: one new symbol forced a
+  // re-fit of every healthy sibling on the date, at 49x the useful work on the
+  // production universe.
+  EXPECT_EQ(cov_b->cells_refit, 0u);
+  EXPECT_EQ(cov_b->cells_carried, 2u);
   EXPECT_EQ(cov_b->dates_written, 1u);       // the one date is rewritten
   EXPECT_EQ(cov_b->dates_skipped_complete, 0u);
 
@@ -973,7 +985,149 @@ TEST(SurfaceDbPopulate, FailedFitRecordedNotFatal) {
   EXPECT_EQ(bbb_it->n_failed, 1u);
   EXPECT_EQ(bbb_it->n_ok, 1u);
 
+  // The counter is not the whole story: the cell must NAME itself. Even this
+  // no-Error path (an empty board is Skipped, which populate counts as failed)
+  // carries a reason rather than contributing an anonymous +1.
+  ASSERT_EQ(result->failed_cells.size(), std::size_t{1});
+  EXPECT_EQ(result->failed_cells[0].date, kDate0);
+  EXPECT_EQ(result->failed_cells[0].symbol, "BBB");
+  EXPECT_NE(result->failed_cells[0].detail.find("empty board"), std::string::npos)
+      << result->failed_cells[0].detail;
+
   std::filesystem::remove_all(root);
+}
+
+// A symbol config the risk pipeline refuses up front: `pin_curve` + a
+// LinearVariance family. PricerFitter::fit rejects that combination in its input
+// validation (pricer_fitter.cpp's correctness-policy guard) with a real
+// Error{InvalidArgument, "invalid correctness policy for requested risk surface"}.
+//
+// The point of this test is the MESSAGE, not the count. `fit_board` used to keep
+// `st.error().code()` and drop `st.error().message()`, and the populate then
+// dropped the code too, so a lost cell reached the operator as nothing but a +1 on
+// `n_failed`. Asserting the fitter's own text (not merely that some string is
+// present) is what makes a future refactor that re-drops the message fail here.
+[[nodiscard]] SymbolFitConfig rejected_risk_config() {
+  SymbolFitConfig cfg = symbol_config_from_preset(FitPreset::Populate);
+  cfg.pin_curve = true;
+  cfg.curve.kind = VolCurveKind::LinearVariance;
+  return cfg;
+}
+
+TEST(SurfaceDbPopulate, FailedCellCarriesTheFittersOwnReason) {
+  const auto root = test_root("failed_reason");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  ASSERT_TRUE(db->upsert_symbol("BBB", rejected_risk_config()).has_value());
+
+  const std::vector<CorpusBoard> boards = make_boards(); // AAA + BBB x 2 dates
+  auto result = populate_surface_db(*db, boards, SurfaceDbPopulateConfig{});
+  ASSERT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+
+  EXPECT_EQ(result->n_ok, 2u);     // AAA on both dates
+  EXPECT_EQ(result->n_failed, 2u); // BBB on both dates
+  ASSERT_EQ(result->failed_cells.size(), std::size_t{2});
+
+  const std::string expected_dates[] = {kDate0, kDate1};
+  for (std::size_t i = 0; i < result->failed_cells.size(); ++i) {
+    const FailedCell &f = result->failed_cells[i];
+    EXPECT_EQ(f.date, expected_dates[i]);
+    EXPECT_EQ(f.symbol, "BBB");
+    // The fit Error's code survived...
+    EXPECT_EQ(f.code, ErrorCode::InvalidArgument);
+    // ...and so did its text, verbatim from pricer_fitter.cpp.
+    EXPECT_EQ(f.detail, "invalid correctness policy for requested risk surface") << f.detail;
+  }
+
+  std::filesystem::remove_all(root);
+}
+
+// The failed-cell list is ordered by (date, symbol) — NOT by the order the boards
+// were handed in, and NOT by the order the fits happened to finish.
+//
+// Structural reason: the list is appended by the SINGLE drain thread as it walks
+// dates ascending and, inside a date, boards in the populate's (date asc, symbol
+// asc) sort order. No fit worker ever touches it, so completion order cannot leak
+// in. The two worker budgets below gate that claim the way this suite's other
+// determinism tests do: identical output for any thread count is a repo invariant.
+//
+// The input order is deliberately scrambled and the failing symbols deliberately
+// interleave with a succeeding one, so an implementation that pushed from the
+// workers (or that appended in input order) produces a visibly different list.
+//
+// The four failing boards (AAA/MMM x kDate0/kDate1) deliberately use DIFFERENT
+// strike counts (make_board_n_strikes), not the identical-size make_board used
+// everywhere else in this suite. With identical sizes the U2 LPT claim-order
+// stable_sort (surface_db_populate.cpp:233, descending frame rows) has nothing
+// to reorder -- all four tie, so the tie-break (original position) happens to
+// preserve (date,symbol) order, and a regression that pushed from fit_task
+// (worker-side) instead of the single drain thread would only be caught
+// *racily*, by concurrently-claimed instant failures under 8 workers. Sizing
+// them 11/13/15/17 (see LptClaimsLargestBoardsFirstDeterministically above for
+// why n_strikes controls frame.rows.size() monotonically) makes the LPT claim
+// order the EXACT REVERSE of (date,symbol) order, so a worker-side push would
+// now produce the wrong sequence DETERMINISTICALLY, at every position, under
+// any worker count -- not just under a race.
+TEST(SurfaceDbPopulate, FailedCellsSortedByDateThenSymbolForAnyWorkerBudget) {
+  const auto run = [](std::string_view name, unsigned threads) {
+    const auto root = test_root(name);
+    auto db = SurfaceDb::create(root.string());
+    EXPECT_TRUE(db.has_value());
+    // AAA and MMM are refused by the risk pipeline (instant failures); ZZZ fits.
+    EXPECT_TRUE(db->upsert_symbol("AAA", rejected_risk_config()).has_value());
+    EXPECT_TRUE(db->upsert_symbol("MMM", rejected_risk_config()).has_value());
+
+    std::vector<CorpusBoard> boards; // scrambled: neither date- nor symbol-sorted
+    boards.push_back(make_board(kDate1, "ZZZ", 70.0, 0.31));
+    boards.push_back(make_board_n_strikes(kDate0, "MMM", 60.0, 0.34, 13));
+    boards.push_back(make_board_n_strikes(kDate1, "AAA", 101.0, 0.27, 15));
+    boards.push_back(make_board(kDate0, "ZZZ", 69.0, 0.32));
+    boards.push_back(make_board_n_strikes(kDate1, "MMM", 61.0, 0.33, 17));
+    boards.push_back(make_board_n_strikes(kDate0, "AAA", 100.0, 0.28, 11));
+
+    // The sizes must be genuinely, strictly ordered (else the LPT-contradiction
+    // claim above is vacuous): descending row count is [MMM/date1, AAA/date1,
+    // MMM/date0, AAA/date0] -- the exact reverse of the pinned (date,symbol)
+    // order asserted below ([AAA/date0, MMM/date0, AAA/date1, MMM/date1]).
+    EXPECT_GT(boards[4].frame.rows.size(), boards[2].frame.rows.size()) << "MMM/date1 > AAA/date1";
+    EXPECT_GT(boards[2].frame.rows.size(), boards[1].frame.rows.size()) << "AAA/date1 > MMM/date0";
+    EXPECT_GT(boards[1].frame.rows.size(), boards[5].frame.rows.size()) << "MMM/date0 > AAA/date0";
+
+    SurfaceDbPopulateConfig cfg;
+    cfg.n_threads = threads;
+    auto result = populate_surface_db(*db, boards, cfg);
+    EXPECT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+    std::vector<FailedCell> failed;
+    if (result.has_value()) {
+      EXPECT_EQ(result->n_failed, 4u);
+      failed = result->failed_cells;
+    }
+    std::filesystem::remove_all(root);
+    return failed;
+  };
+
+  const std::vector<FailedCell> serial = run("failed_order_serial", 1u);
+  const std::vector<FailedCell> parallel = run("failed_order_par", 8u);
+
+  // The pinned order: date-major, then symbol ascending.
+  ASSERT_EQ(serial.size(), std::size_t{4});
+  EXPECT_EQ(serial[0].date, kDate0);
+  EXPECT_EQ(serial[0].symbol, "AAA");
+  EXPECT_EQ(serial[1].date, kDate0);
+  EXPECT_EQ(serial[1].symbol, "MMM");
+  EXPECT_EQ(serial[2].date, kDate1);
+  EXPECT_EQ(serial[2].symbol, "AAA");
+  EXPECT_EQ(serial[3].date, kDate1);
+  EXPECT_EQ(serial[3].symbol, "MMM");
+
+  // ...and a wide worker budget reproduces it entry for entry, reason included.
+  ASSERT_EQ(parallel.size(), serial.size());
+  for (std::size_t i = 0; i < serial.size(); ++i) {
+    EXPECT_EQ(parallel[i].date, serial[i].date) << "entry " << i;
+    EXPECT_EQ(parallel[i].symbol, serial[i].symbol) << "entry " << i;
+    EXPECT_EQ(parallel[i].code, serial[i].code) << "entry " << i;
+    EXPECT_EQ(parallel[i].detail, serial[i].detail) << "entry " << i;
+  }
 }
 
 TEST(SurfaceDbPopulate, DateWithZeroSuccessfulFitsWritesNoPartition) {
@@ -1026,18 +1180,23 @@ TEST(SurfaceDbPopulate, StatsCsvShape) {
 
   const std::string text = read_file(csv_path);
   EXPECT_NE(text.find("# run=test\n"), std::string::npos);
+  // FIX-D fix-1 (I2). The header is a pinned contract and it MOVED: `n_carried`
+  // is APPENDED (so every older column keeps its position) because a carried
+  // symbol's row otherwise names no disposition at all.
   EXPECT_NE(
-      text.find("symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band\n"),
+      text.find(
+          "symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band,n_carried\n"),
       std::string::npos)
       << text;
+  EXPECT_NE(text.find("# n_carried=0\n"), std::string::npos) << text;
   // AAA: n_attempted=2, n_ok=2, n_failed=0, n_disabled=0 -> success_rate=1;
   // pinned curve -> no OOS score -> "nan" (the NaN-when-unavailable rule).
-  EXPECT_NE(text.find("AAA,2,2,0,0,1,nan\n"), std::string::npos) << text;
+  EXPECT_NE(text.find("AAA,2,2,0,0,1,nan,0\n"), std::string::npos) << text;
   // BBB: same counts (a directly-routed, non-ambiguous board also has no
   // selector OOS score even though its curve isn't pinned -- fit_board's
   // `oos_in_band_available` is tied to the selector having run at all, not
   // to pin_curve specifically; mirrors corpus.cpp's CorpusEntry.oos_in_band).
-  EXPECT_NE(text.find("BBB,2,2,0,0,1,nan\n"), std::string::npos) << text;
+  EXPECT_NE(text.find("BBB,2,2,0,0,1,nan,0\n"), std::string::npos) << text;
 
   std::filesystem::remove_all(root);
 }
@@ -1551,6 +1710,1729 @@ TEST(SurfaceDbPopulate, PinnedConfigHonored) {
   auto s = db->load_surface(kDate0, "AAA");
   ASSERT_TRUE(s.has_value()) << (s ? "" : s.error().to_string());
   EXPECT_EQ(s->kind_at(0), VolCurveKind::ConvexDense);
+
+  std::filesystem::remove_all(root);
+}
+
+// ── FIX-D: carry-over instead of re-fit on a whole-partition rewrite ─────────
+//
+// A date-keyed partition must be written whole, so adding one cell rewrites the
+// file. It used to also RE-FIT every cell already in it: on the production
+// universe, 3 permanently-failing cells dragged 147 healthy siblings back through
+// the fitter on every resume. These tests pin the fix and its safety gates.
+
+namespace {
+
+[[nodiscard]] std::vector<std::byte> read_file_bytes(const std::filesystem::path &p) {
+  std::ifstream is(p, std::ios::binary | std::ios::ate);
+  EXPECT_TRUE(is.good()) << p.string();
+  if (!is.good()) {
+    return {};
+  }
+  const auto n = static_cast<std::size_t>(is.tellg());
+  is.seekg(0);
+  std::vector<std::byte> out(n);
+  is.read(reinterpret_cast<char *>(out.data()), static_cast<std::streamsize>(n));
+  EXPECT_TRUE(is.good()) << p.string();
+  return out;
+}
+
+[[nodiscard]] std::filesystem::path partition_file(const std::filesystem::path &root,
+                                                   std::string_view key) {
+  return root / std::string(kSurfaceDbPartitionDir) /
+         (std::string(key) + std::string(kSurfaceDbPartitionExt));
+}
+
+// The ACTUAL stored bytes of one symbol's record, sliced straight out of the
+// partition file at the offset/size the archive directory reports. Deliberately
+// not a checksum or a summary: a carried record could round-trip a stale CRC
+// field unchanged and still have lost a payload byte.
+[[nodiscard]] std::vector<std::byte> stored_record_bytes(const std::filesystem::path &root,
+                                                         std::string_view key,
+                                                         std::string_view symbol) {
+  const std::vector<std::byte> file = read_file_bytes(partition_file(root, key));
+  EXPECT_FALSE(file.empty());
+  auto arch = SurfaceArchiveV2::open(std::vector<std::byte>(file));
+  EXPECT_TRUE(arch.has_value());
+  if (!arch.has_value()) {
+    return {};
+  }
+  auto entry = arch->find(symbol);
+  EXPECT_TRUE(entry.has_value()) << symbol;
+  if (!entry.has_value()) {
+    return {};
+  }
+  const auto off = static_cast<std::size_t>(entry->surface_offset);
+  const auto size = static_cast<std::size_t>(entry->surface_size);
+  EXPECT_LE(off + size, file.size());
+  return std::vector<std::byte>(file.begin() + static_cast<std::ptrdiff_t>(off),
+                                file.begin() + static_cast<std::ptrdiff_t>(off + size));
+}
+
+[[nodiscard]] UniversePopulateSpec carry_spec(unsigned workers = 0u) {
+  UniversePopulateSpec spec;
+  spec.index_symbol = ""; // no index pin -- let the auto-selector fit
+  spec.preset = FitPreset::Fast;
+  spec.fit_workers = workers;
+  return spec;
+}
+
+// Two healthy symbols on one date; the partition they produce is the thing a
+// later rewrite must not disturb.
+[[nodiscard]] std::vector<CorpusBoard> carry_seed_boards() {
+  return {make_board(kDate0, "AAA", 100.0, 0.28), make_board(kDate0, "BBB", 60.0, 0.34)};
+}
+
+} // namespace
+
+// FIX-D fix-1 (I3), on a REAL stats struct rather than a hand-built one: a
+// carried symbol must not report a 0% fit success rate.
+//
+// `success_rate` is a FIT rate. A carried cell was never offered to the fitter,
+// so it belongs in neither half of it. Left in the denominator it read
+// n_ok=0 / n_attempted=1 = 0 on every healthy symbol of a converged resume --
+// i.e. the report said the database had totally failed while it was working
+// perfectly, the same false verdict as C1 in a different column. Excluding it
+// EMPTIES the denominator, and an empty denominator means the rate is undefined,
+// not zero: the row now says "nan", the same convention it already uses for an
+// unavailable mean_oos_in_band.
+TEST(SurfaceDbPopulate, CarriedCellsLeaveTheFitSuccessRateUndefinedNotZero) {
+  const auto root = test_root("carry_stats_rate");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+
+  // CCC fails forever, so kDate0 is rewritten on every run and AAA/BBB are
+  // carried: the production shape, in miniature.
+  ASSERT_TRUE(db->upsert_symbol("CCC", rejected_risk_config()).has_value());
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+  ASSERT_EQ(cov2->cells_carried, 2u) << "the carry must actually have engaged";
+  ASSERT_EQ(cov2->cells_ok, 0u);
+
+  SurfaceDbPopulateStats stats;
+  stats.n_boards = cov2->cells_loaded;
+  stats.n_ok = cov2->cells_ok;
+  stats.n_failed = cov2->cells_failed;
+  stats.n_carried = cov2->cells_carried;
+  stats.n_dates_written = cov2->dates_written;
+  stats.per_symbol = cov2->per_symbol;
+
+  const auto csv_path = root / "stats.csv";
+  const Status w = write_populate_stats_csv(stats, MetaKv{}, csv_path.string());
+  ASSERT_TRUE(w.has_value()) << (w ? "" : w.error().to_string());
+  const std::string text = read_file(csv_path);
+
+  // AAA and BBB: attempted=1, ok=0, failed=0, disabled=0, carried=1 -> the fit
+  // denominator is empty -> nan, NOT 0.
+  for (const char *symbol : {"AAA", "BBB"}) {
+    const std::string row = std::string(symbol) + ",1,0,0,0,nan,nan,1\n";
+    EXPECT_NE(text.find(row), std::string::npos)
+        << symbol << " must report an UNDEFINED fit rate and a carried count\n"
+        << text;
+    EXPECT_EQ(text.find(std::string(symbol) + ",1,0,0,0,0,"), std::string::npos)
+        << symbol << " still reports a 0% fit success rate\n"
+        << text;
+  }
+  // CCC genuinely failed its one fit: a real 0% over a non-empty denominator,
+  // which must stay 0 and must be distinguishable from the carried rows above.
+  EXPECT_NE(text.find("CCC,1,0,1,0,0,nan,0\n"), std::string::npos) << text;
+  // The run-level counter reaches the meta block too.
+  EXPECT_NE(text.find("# n_carried=2\n"), std::string::npos) << text;
+
+  std::filesystem::remove_all(root);
+}
+
+// FIX-D newly COUPLES the carry set to the inner worker count, and carry-over's
+// whole premise ("a resume equals a fresh build for the cells it does re-fit")
+// therefore now rests on the byte-identity-across-worker-counts invariant.
+//
+// The mechanism: carried cells are excluded from `fit_positions`, which shrinks
+// `n_fit_boards`, which is what the shared budget is divided by. A date whose 3
+// boards are all fit at budget 8 gives each board's inner fit 8/3; on a resume
+// where 2 of the 3 are carried, the ONE refit board is fit with the whole 8. Same
+// cell, different inner allocation, and nothing but that invariant says the bytes
+// come out the same.
+//
+// The invariant IS tested directly (SharedWorkerBudgetKeepsOutputByteIdentical),
+// but never THROUGH the carry path -- every FIX-D/E/F test runs at `carry_spec()`,
+// i.e. fit_workers 0. This closes that gap: same symbol, same board, reached once
+// as one of three fresh fits and once as the sole survivor of a carry, and the
+// surfaces must be bit-identical.
+TEST(SurfaceDbPopulate, CarryPathKeepsTheRefitCellBitIdenticalAcrossWorkerBudgets) {
+  std::vector<CorpusBoard> all = carry_seed_boards();
+  all.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+
+  // Reference: one fresh pass, all three boards offered to the fitter together.
+  const auto ref_root = test_root("carry_worker_identity_ref");
+  auto ref_db = SurfaceDb::create(ref_root.string());
+  ASSERT_TRUE(ref_db.has_value());
+  auto ref = populate_universe_streaming(*ref_db, all, carry_spec(8u));
+  ASSERT_TRUE(ref.has_value()) << (ref ? "" : ref.error().to_string());
+  ASSERT_EQ(ref->cells_ok, 3u);
+  ASSERT_EQ(ref->cells_carried, 0u) << "the reference must be a FRESH fit, not a carry";
+
+  // Resume: AAA/BBB are seeded first, so the second pass carries them and CCC is
+  // the only board the fitter ever sees on the rewrite.
+  const auto res_root = test_root("carry_worker_identity_resume");
+  auto res_db = SurfaceDb::create(res_root.string());
+  ASSERT_TRUE(res_db.has_value());
+  auto seed = populate_universe_streaming(*res_db, carry_seed_boards(), carry_spec(8u));
+  ASSERT_TRUE(seed.has_value()) << (seed ? "" : seed.error().to_string());
+  ASSERT_EQ(seed->cells_ok, 2u);
+  auto resume = populate_universe_streaming(*res_db, all, carry_spec(8u));
+  ASSERT_TRUE(resume.has_value()) << (resume ? "" : resume.error().to_string());
+  ASSERT_EQ(resume->cells_carried, 2u) << "the carry must actually have engaged";
+  ASSERT_EQ(resume->cells_ok, 1u) << "CCC must be the only cell fit on the rewrite";
+  ASSERT_EQ(resume->cells_refit, 0u);
+
+  // The cell that was FIT under two different inner allocations.
+  const auto ref_ccc = ref_db->load_surface(kDate0, "CCC");
+  const auto res_ccc = res_db->load_surface(kDate0, "CCC");
+  ASSERT_TRUE(ref_ccc.has_value()) << (ref_ccc ? "" : ref_ccc.error().to_string());
+  ASSERT_TRUE(res_ccc.has_value()) << (res_ccc ? "" : res_ccc.error().to_string());
+  expect_surface_bits_equal(*res_ccc, *ref_ccc);
+
+  // And the carried pair, which the rewrite must have re-emitted rather than
+  // re-fitted -- same comparison, so a silent re-fit at a different budget would
+  // show up here too.
+  for (const char *symbol : {"AAA", "BBB"}) {
+    const auto ref_s = ref_db->load_surface(kDate0, symbol);
+    const auto res_s = res_db->load_surface(kDate0, symbol);
+    ASSERT_TRUE(ref_s.has_value()) << symbol;
+    ASSERT_TRUE(res_s.has_value()) << symbol;
+    expect_surface_bits_equal(*res_s, *ref_s);
+  }
+
+  std::filesystem::remove_all(ref_root);
+  std::filesystem::remove_all(res_root);
+}
+
+
+// THE acceptance gate. A resume over an unchanged database and hive must re-fit
+// NOTHING that already succeeded, while still retrying the cell that failed.
+//
+// `cells_to_fit == 0` is deliberately NOT asserted: it is unachievable by design
+// on data containing permanent failures. There is no persisted known-failed state
+// (surface_db_build.hpp), precisely so a TRANSIENT failure stays retryable, so a
+// permanently-failing cell is re-attempted on every run forever. The honest
+// invariant is `cells_refit == 0`.
+TEST(SurfaceDbPopulate, ResumeCarriesHealthySiblingsAndStillRetriesTheFailingCell) {
+  const auto root = test_root("carry_retry");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u) << "the seed boards must fit for this test to mean anything";
+
+  // CCC is a PERMANENTLY failing cell: the risk pipeline refuses this config in
+  // its input validation, on every run, forever.
+  ASSERT_TRUE(db->upsert_symbol("CCC", rejected_risk_config()).has_value());
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+
+  // Twice: the steady state must be steady, not merely reached once.
+  for (int run = 1; run <= 2; ++run) {
+    auto cov = populate_universe_streaming(*db, full, carry_spec());
+    ASSERT_TRUE(cov.has_value()) << "run " << run << ": " << (cov ? "" : cov.error().to_string());
+    EXPECT_EQ(cov->cells_refit, 0u)
+        << "run " << run << ": a resume must re-fit nothing that already succeeded";
+    EXPECT_EQ(cov->cells_carried, 2u) << "run " << run;
+    EXPECT_EQ(cov->cells_to_fit, 1u)
+        << "run " << run << ": the failing cell is retried forever, by design";
+    EXPECT_EQ(cov->cells_failed, 1u) << "run " << run;
+    EXPECT_EQ(cov->dates_written, 1u) << "run " << run;
+    // The carried cells are not counted as fits: cells_ok keeps meaning "cells
+    // this run FITTED", which is what is_total_fit_failure depends on.
+    EXPECT_EQ(cov->cells_ok, 0u) << "run " << run;
+    // The failing cell still names itself (FIX-A's channel must survive).
+    ASSERT_EQ(cov->failed_cells.size(), std::size_t{1}) << "run " << run;
+    EXPECT_EQ(cov->failed_cells[0].symbol, "CCC") << "run " << run;
+
+    // ── The exit code this shape produces ────────────────────────────────────
+    // END-TO-END, on a REAL coverage struct rather than a hand-built one: this
+    // steady state (cells_to_fit > 0, cells_ok == 0, cells_carried > 0) must NOT
+    // read as a total fit failure. It did before the carry clause was added to
+    // `is_total_fit_failure`, and the CLI's diagnostic for that verdict tells the
+    // operator to re-run with a different --r -- which on this healthy converged
+    // database would invalidate every surface in it. The predicate is unit-tested
+    // on synthetic reports; nothing previously fed it the shape FIX-D creates.
+    SurfaceDbBuildReport report;
+    report.coverage = *cov;
+    EXPECT_FALSE(is_total_fit_failure(report))
+        << "run " << run << ": a converged carry resume must not exit as TOTAL FIT FAILURE";
+  }
+
+  // The carried surfaces are still there and still load.
+  for (const char *symbol : {"AAA", "BBB"}) {
+    EXPECT_TRUE(db->load_surface(kDate0, symbol).has_value()) << symbol;
+  }
+  std::filesystem::remove_all(root);
+}
+
+// The safety gate for the whole change: a carried record is byte-identical to the
+// one it replaced. Compares the stored bytes of the record extent itself, so a
+// dropped payload field cannot hide behind a recomputed CRC or a summary field.
+TEST(SurfaceDbPopulate, CarriedRecordBytesAreIdenticalToWhatTheyReplaced) {
+  const auto root = test_root("carry_bytes");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+
+  const std::vector<std::byte> aaa_before = stored_record_bytes(root, kDate0, "AAA");
+  const std::vector<std::byte> bbb_before = stored_record_bytes(root, kDate0, "BBB");
+  ASSERT_FALSE(aaa_before.empty());
+  ASSERT_FALSE(bbb_before.empty());
+
+  // A new symbol that genuinely FITS forces the whole-partition rewrite, so the
+  // records physically move within the file (the directory grows) -- which is
+  // exactly why this compares extracted extents rather than file offsets.
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+  ASSERT_EQ(cov2->cells_carried, 2u) << "the carry must actually have engaged";
+  ASSERT_EQ(cov2->cells_ok, 1u) << "CCC must have fit, so the partition really was rewritten";
+
+  const std::vector<std::byte> aaa_after = stored_record_bytes(root, kDate0, "AAA");
+  const std::vector<std::byte> bbb_after = stored_record_bytes(root, kDate0, "BBB");
+  ASSERT_EQ(aaa_before.size(), aaa_after.size());
+  ASSERT_EQ(bbb_before.size(), bbb_after.size());
+  EXPECT_EQ(0, std::memcmp(aaa_before.data(), aaa_after.data(), aaa_before.size()))
+      << "carried record for AAA is not byte-identical to the one it replaced";
+  EXPECT_EQ(0, std::memcmp(bbb_before.data(), bbb_after.data(), bbb_before.size()))
+      << "carried record for BBB is not byte-identical to the one it replaced";
+
+  std::filesystem::remove_all(root);
+}
+
+// A changed fit config must INVALIDATE the carry. The predicate is deliberately
+// whole-partition: changing one symbol's config re-fits every cell on the date,
+// because a partition is rewritten whole anyway and per-cell granularity would
+// let one symbol's change hide another's staleness in the same file.
+TEST(SurfaceDbPopulate, ChangedSymbolConfigInvalidatesTheCarryAndForcesRefit) {
+  const auto root = test_root("carry_cfg_change");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+  const std::uint64_t fp_before = db->partition_config_fingerprint(kDate0);
+  ASSERT_NE(fp_before, 0u) << "a partition written by this code must carry a fingerprint";
+
+  // Change exactly ONE field of ONE symbol's config -- the fingerprint must move.
+  auto aaa_cfg = db->symbol_config("AAA");
+  ASSERT_TRUE(aaa_cfg.has_value());
+  SymbolFitConfig changed = *aaa_cfg;
+  changed.band_k += 0.25;
+  ASSERT_TRUE(db->upsert_symbol("AAA", changed).has_value());
+
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+  EXPECT_EQ(cov2->cells_carried, 0u) << "a changed config must not be carried over";
+  EXPECT_EQ(cov2->cells_refit, 2u) << "both present cells must be re-fit, not just the changed one";
+  EXPECT_EQ(cov2->cells_to_fit, 1u);
+
+  std::filesystem::remove_all(root);
+}
+
+// FIX-D fix-2 (I-3). The fail-closed chain must reach the frame that runs the
+// GATE, not stop one frame short of it.
+//
+// `populate_surface_db` used to stamp `FitterProduced` unconditionally, on the
+// strength of a comment asserting that every carried item had already passed a
+// fingerprint check. That check is real but it lives in
+// `populate_universe_streaming`, and `SurfaceDbPopulateConfig::carry_over` says in
+// as many words that the struct carries no predicate -- so a direct caller who
+// filled `carry_over` itself got its stored surfaces re-emitted verbatim AND
+// stamped with a current-config fingerprint, making the staleness STICKY (blessed
+// again by every later resume) instead of one-shot.
+//
+// The claim now travels with the decision: `cfg.attest` defaults to None (no
+// stamp -> fold 0 -> UNKNOWN -> never carried), and only a caller that can vouch
+// for the whole write sets it.
+TEST(SurfaceDbPopulate, AttestationTravelsWithTheCarryDecisionAndDefaultsClosed) {
+  const auto root = test_root("attest_chain_direct");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  // Both symbols configured, so the fold over them is well-defined and non-zero.
+  // (A symbol absent from the manifest collapses the fold to 0 for reasons that
+  // have nothing to do with attesting, which would make this test vacuous.)
+  for (const char *sym : {"AAA", "BBB"}) {
+    ASSERT_TRUE(db->upsert_symbol(sym, symbol_config_from_preset(FitPreset::Fast)).has_value())
+        << sym;
+  }
+
+  SurfaceDbPopulateConfig direct;
+  direct.fallback = symbol_config_from_preset(FitPreset::Fast);
+  direct.skip_existing = false; // rewrite the same date below
+
+  // DEFAULT: no claim, no stamp. A direct caller of this function cannot vouch for
+  // a carry set it may have supplied, so the write is not blessed for reuse.
+  const auto first = populate_surface_db(*db, carry_seed_boards(), direct);
+  ASSERT_TRUE(first.has_value()) << (first ? "" : first.error().to_string());
+  ASSERT_EQ(first->n_ok, 2u);
+  EXPECT_EQ(db->partition_config_fingerprint(kDate0), 0u)
+      << "an unattested populate must not bless its partition for carry-over";
+
+  // The identical call with the caller making the claim stamps exactly the fold
+  // over the symbols written -- which is what a resume compares against.
+  SurfaceDbPopulateConfig attested = direct;
+  attested.attest = DbConfigAttestation::FitterProduced;
+  const auto second = populate_surface_db(*db, carry_seed_boards(), attested);
+  ASSERT_TRUE(second.has_value()) << (second ? "" : second.error().to_string());
+  ASSERT_EQ(second->n_ok, 2u);
+  const std::vector<std::string> written{"AAA", "BBB"};
+  const std::uint64_t stamped = db->partition_config_fingerprint(kDate0);
+  EXPECT_NE(stamped, 0u) << "an attesting caller must be stamped";
+  EXPECT_EQ(stamped, db->config_fingerprint(written));
+
+  std::filesystem::remove_all(root);
+}
+
+// The other end of the same chain: the frame that RUNS the gate (`carry_valid`)
+// is the frame that attests, so a streaming populate is stamped without its
+// caller doing anything -- and the carry it enables on the next run still works.
+// Without this, moving the attestation onto the config would have silently turned
+// carry-over off everywhere.
+TEST(SurfaceDbPopulate, StreamingPopulateAttestsBecauseItRanTheGate) {
+  const auto root = test_root("attest_chain_streaming");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+  EXPECT_NE(db->partition_config_fingerprint(kDate0), 0u)
+      << "the driver that ran the carry gate must stamp what it wrote";
+
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+  EXPECT_EQ(cov2->cells_carried, 2u) << "the stamp must still enable the carry it exists for";
+  EXPECT_EQ(cov2->cells_refit, 0u);
+
+  std::filesystem::remove_all(root);
+}
+
+// The backward-compatibility default, tested rather than asserted: a partition
+// written before the fingerprint existed stores 0, and 0 means UNKNOWN, and
+// unknown must NEVER carry. This is what makes the first resume of the existing
+// production database re-fit once (and only once) instead of silently reusing
+// surfaces whose provenance cannot be established.
+TEST(SurfaceDbPopulate, ZeroConfigFingerprintNeverCarries) {
+  const auto root = test_root("carry_zero_fp");
+  {
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value());
+    auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+    ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+    ASSERT_EQ(cov1->cells_ok, 2u);
+    ASSERT_NE(db->partition_config_fingerprint(kDate0), 0u);
+
+    // Rewrite the manifest exactly as a pre-FIX-D writer would have: same symbols,
+    // same partitions, fingerprint field left 0.
+    const std::vector<std::string> names = db->symbols();
+    std::vector<SymbolFitConfig> cfgs;
+    std::vector<std::optional<SurfaceProvenance>> provs;
+    for (const std::string &sym : names) {
+      auto c = db->symbol_config(sym);
+      ASSERT_TRUE(c.has_value()) << sym;
+      cfgs.push_back(*c);
+      auto p = db->surface_provenance(sym);
+      ASSERT_TRUE(p.has_value()) << sym;
+      provs.push_back(*p);
+    }
+    std::vector<DbSymbolEntry> entries;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+      entries.push_back(DbSymbolEntry{names[i], cfgs[i], provs[i]});
+    }
+    std::vector<DbPartitionInfo> parts = db->partitions();
+    for (DbPartitionInfo &p : parts) {
+      p.config_fingerprint = 0u; // the pre-FIX-D on-disk state
+    }
+    SurfaceDbManifestWriteOpts opts;
+    opts.generation = db->generation() + 1u;
+    auto bytes = write_db_manifest(entries, parts, opts);
+    ASSERT_TRUE(bytes.has_value()) << (bytes ? "" : bytes.error().to_string());
+    std::ofstream os(root / std::string(kSurfaceDbManifestName), std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(os.good());
+    os.write(reinterpret_cast<const char *>(bytes->data()),
+             static_cast<std::streamsize>(bytes->size()));
+    ASSERT_TRUE(os.good());
+  }
+
+  auto db = SurfaceDb::open(root.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  ASSERT_EQ(db->partition_config_fingerprint(kDate0), 0u)
+      << "the pre-FIX-D manifest simulation did not take effect";
+
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov.has_value()) << (cov ? "" : cov.error().to_string());
+  EXPECT_EQ(cov->cells_carried, 0u) << "an unknown (0) fingerprint must never carry";
+  EXPECT_EQ(cov->cells_refit, 2u);
+
+  std::filesystem::remove_all(root);
+}
+
+// Determinism through the carry path: the stored bytes must not depend on the
+// worker count. The carried records are written by the single drain thread while
+// the newly-fitted one comes off the shared pool, so this covers the interleaving
+// the change actually introduces.
+TEST(SurfaceDbPopulate, CarryOverIsByteIdenticalAcrossWorkerCounts) {
+  const auto serial_root = test_root("carry_det_serial");
+  const auto parallel_root = test_root("carry_det_parallel");
+
+  for (const auto &[root, workers] : std::vector<std::pair<std::filesystem::path, unsigned>>{
+           {serial_root, 1u}, {parallel_root, 8u}}) {
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value());
+    auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec(workers));
+    ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+    ASSERT_EQ(cov1->cells_ok, 2u);
+
+    std::vector<CorpusBoard> full = carry_seed_boards();
+    full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+    auto cov2 = populate_universe_streaming(*db, full, carry_spec(workers));
+    ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+    ASSERT_EQ(cov2->cells_carried, 2u) << "workers=" << workers;
+    ASSERT_EQ(cov2->cells_ok, 1u) << "workers=" << workers;
+  }
+
+  for (const char *symbol : {"AAA", "BBB", "CCC"}) {
+    const std::vector<std::byte> a = stored_record_bytes(serial_root, kDate0, symbol);
+    const std::vector<std::byte> b = stored_record_bytes(parallel_root, kDate0, symbol);
+    ASSERT_FALSE(a.empty()) << symbol;
+    ASSERT_EQ(a.size(), b.size()) << symbol;
+    EXPECT_EQ(0, std::memcmp(a.data(), b.data(), a.size()))
+        << "record bytes for " << symbol << " differ between 1 and 8 workers";
+  }
+
+  std::filesystem::remove_all(serial_root);
+  std::filesystem::remove_all(parallel_root);
+}
+
+// ── FIX-E: a present-but-DISABLED symbol survives a rewrite ─────────────────
+//
+// Shared setup for the four tests below: seed {AAA, BBB} on kDate0, then disable
+// BBB in the manifest AFTER it has already fitted and been stored. That is the
+// documented operator remedy for a permanently-failing name
+// (`docs/surface-db-build.md`), and it is the act that used to arm the deletion.
+namespace {
+
+[[nodiscard]] SymbolFitConfig disabled_copy_of(SurfaceDb &db, const char *symbol) {
+  const auto stored = db.symbol_config(symbol);
+  EXPECT_TRUE(stored.has_value()) << symbol;
+  SymbolFitConfig cfg = stored.has_value() ? *stored : symbol_config_from_preset(FitPreset::Fast);
+  cfg.enabled = false;
+  return cfg;
+}
+
+} // namespace
+
+// THE defect gate. A symbol present in a stored partition and DISABLED in the
+// current config was silently DELETED when its date was rewritten -- and the
+// rewrite was triggered by something entirely unrelated (any new enabled symbol
+// arriving on that date).
+//
+// Why the would-drop guard could not save it: the disabled cell was counted into
+// `present` at the top of the filter loop BEFORE `enabled` was consulted, so
+// `present == part->count()` and `present < part->count()` was false. The one
+// guard that exists precisely to refuse a rewrite that drops a stored surface was
+// structurally blind to this case.
+//
+// This test is also the Step-2 gate: disabling BBB CHANGES the manifest config
+// fold, so the stored partition fingerprint no longer matches and `carry_valid`
+// is FALSE on this run (asserted below). If the disabled carry were gated on
+// `carry_valid` -- the obvious way to write this fix -- BBB would still be
+// deleted here, and on the first resume of every pre-FIX-D database, which stores
+// a 0 (unknown) fingerprint. The alternative to carrying a disabled cell is not
+// re-fitting it, it is deleting it, so the fit-config predicate does not apply.
+TEST(SurfaceDbPopulate, DisabledSymbolStoredSurfaceSurvivesARewrite) {
+  const auto root = test_root("disabled_survives_rewrite");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u) << "the seed boards must fit for this test to mean anything";
+  ASSERT_TRUE(db->load_surface(kDate0, "BBB").has_value()) << "BBB must be STORED before it is "
+                                                              "disabled, or nothing is at risk";
+
+  ASSERT_TRUE(db->upsert_symbol("BBB", disabled_copy_of(*db, "BBB")).has_value());
+
+  // The unrelated trigger: a NEW, enabled, genuinely fittable symbol on the same
+  // date. Nothing about it concerns BBB.
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  // The rewrite really happened -- without this the test could pass vacuously
+  // because the date was skipped.
+  ASSERT_EQ(cov2->dates_written, 1u) << "the date must actually have been rewritten";
+  ASSERT_EQ(cov2->dates_skipped_would_drop, 0u) << "the date must not have been skipped";
+  // CCC (new) plus AAA (re-fit, because disabling BBB moved the config fold).
+  ASSERT_EQ(cov2->cells_ok, 2u) << "CCC must have fit, so the partition really was replaced";
+
+  // Step 2, asserted rather than assumed: disabling BBB moved the config fold, so
+  // the enabled carry path is OFF on this run. BBB's survival cannot depend on it.
+  ASSERT_EQ(cov2->cells_carried, 0u)
+      << "disabling BBB must have invalidated the fingerprint; if this is nonzero the test no "
+         "longer exercises the carry_valid == false path it exists to cover";
+  EXPECT_EQ(cov2->cells_refit, 1u) << "AAA is re-fit (invalidated fingerprint); BBB is not";
+  EXPECT_EQ(cov2->cells_carried_disabled, 1u) << "BBB must be counted as PRESERVED, not refit";
+
+  // ── The bite ──────────────────────────────────────────────────────────────
+  EXPECT_TRUE(db->load_surface(kDate0, "BBB").has_value())
+      << "the stored surface of a present-but-disabled symbol was DELETED by an unrelated rewrite";
+  // ...and the rewrite still did its job.
+  EXPECT_TRUE(db->load_surface(kDate0, "CCC").has_value());
+  EXPECT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+
+  // Preserving is not re-enabling: BBB was still not FITTED this run.
+  const auto bbb = std::find_if(cov2->per_symbol.begin(), cov2->per_symbol.end(),
+                                [](const PopulateSymbolStats &s) { return s.symbol == "BBB"; });
+  ASSERT_NE(bbb, cov2->per_symbol.end());
+  EXPECT_EQ(bbb->n_disabled, 1u) << "a preserved cell is still a DISABLED cell";
+  EXPECT_EQ(bbb->n_ok, 0u);
+  EXPECT_EQ(bbb->n_carried, 0u) << "a disabled cell must not read as a healthy carried one";
+
+  std::filesystem::remove_all(root);
+}
+
+// Preservation must be BYTE-preservation, not mere presence: a re-fit under the
+// disabled config (or any lossy re-emit) would satisfy `load_surface` while
+// silently changing the stored values. Mirrors
+// CarriedRecordBytesAreIdenticalToWhatTheyReplaced for the disabled cell.
+TEST(SurfaceDbPopulate, PreservedDisabledRecordBytesAreIdenticalToWhatTheyReplaced) {
+  const auto root = test_root("disabled_bytes");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+
+  const std::vector<std::byte> bbb_before = stored_record_bytes(root, kDate0, "BBB");
+  ASSERT_FALSE(bbb_before.empty());
+
+  ASSERT_TRUE(db->upsert_symbol("BBB", disabled_copy_of(*db, "BBB")).has_value());
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+  ASSERT_EQ(cov2->cells_carried_disabled, 1u);
+  ASSERT_EQ(cov2->cells_ok, 2u) << "the partition really was rewritten (AAA re-fit + CCC new)";
+
+  const std::vector<std::byte> bbb_after = stored_record_bytes(root, kDate0, "BBB");
+  ASSERT_EQ(bbb_before.size(), bbb_after.size());
+  EXPECT_EQ(0, std::memcmp(bbb_before.data(), bbb_after.data(), bbb_before.size()))
+      << "the preserved record for the disabled symbol BBB is not byte-identical";
+
+  std::filesystem::remove_all(root);
+}
+
+// Step 2's other route, and the population most likely to hit this defect: a
+// database written BEFORE the carry-over fingerprint existed stores 0, which means
+// UNKNOWN, which never carries. `ZeroConfigFingerprintNeverCarries` pins that the
+// healthy cells are re-fit here. The disabled cell must STILL survive -- it is not
+// being reused as this run's fitted output, so the fit-config predicate has no say
+// over it. Gating the disabled carry on `carry_valid` leaves the bug fully alive
+// on exactly this database, which is the fix-shaped no-op this test exists to
+// catch.
+TEST(SurfaceDbPopulate, PreFixDDatabaseStillPreservesADisabledSymbolsSurface) {
+  const auto root = test_root("disabled_zero_fp");
+  {
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value());
+    auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+    ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+    ASSERT_EQ(cov1->cells_ok, 2u);
+    ASSERT_TRUE(db->upsert_symbol("BBB", disabled_copy_of(*db, "BBB")).has_value());
+
+    // Rewrite the manifest exactly as a pre-FIX-D writer would have: same symbols
+    // (BBB already disabled), same partitions, fingerprint field left 0.
+    const std::vector<std::string> names = db->symbols();
+    std::vector<DbSymbolEntry> entries;
+    std::vector<SymbolFitConfig> cfgs;
+    std::vector<std::optional<SurfaceProvenance>> provs;
+    cfgs.reserve(names.size());
+    provs.reserve(names.size());
+    for (const std::string &sym : names) {
+      auto c = db->symbol_config(sym);
+      ASSERT_TRUE(c.has_value()) << sym;
+      cfgs.push_back(*c);
+      auto p = db->surface_provenance(sym);
+      ASSERT_TRUE(p.has_value()) << sym;
+      provs.push_back(*p);
+    }
+    for (std::size_t i = 0; i < names.size(); ++i) {
+      entries.push_back(DbSymbolEntry{names[i], cfgs[i], provs[i]});
+    }
+    std::vector<DbPartitionInfo> parts = db->partitions();
+    for (DbPartitionInfo &p : parts) {
+      p.config_fingerprint = 0u; // the pre-FIX-D on-disk state
+    }
+    SurfaceDbManifestWriteOpts opts;
+    opts.generation = db->generation() + 1u;
+    auto bytes = write_db_manifest(entries, parts, opts);
+    ASSERT_TRUE(bytes.has_value()) << (bytes ? "" : bytes.error().to_string());
+    std::ofstream os(root / std::string(kSurfaceDbManifestName), std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(os.good());
+    os.write(reinterpret_cast<const char *>(bytes->data()),
+             static_cast<std::streamsize>(bytes->size()));
+    ASSERT_TRUE(os.good());
+  }
+
+  auto db = SurfaceDb::open(root.string());
+  ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+  ASSERT_EQ(db->partition_config_fingerprint(kDate0), 0u)
+      << "the pre-FIX-D manifest simulation did not take effect";
+
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov.has_value()) << (cov ? "" : cov.error().to_string());
+  ASSERT_EQ(cov->dates_written, 1u);
+  EXPECT_EQ(cov->cells_carried, 0u) << "an unknown (0) fingerprint must never carry a FITTED cell";
+  EXPECT_EQ(cov->cells_refit, 1u) << "AAA is re-fit; the disabled BBB is not";
+  EXPECT_EQ(cov->cells_carried_disabled, 1u);
+  EXPECT_TRUE(db->load_surface(kDate0, "BBB").has_value())
+      << "a disabled symbol was deleted on the first resume of a pre-FIX-D database";
+
+  std::filesystem::remove_all(root);
+}
+
+// Convergence: preserving must be a FIXED POINT, not a one-shot rescue. DDD fails
+// permanently (there is no persisted known-failed state, by design), so kDate0 is
+// rewritten on EVERY run forever -- the shape that turns a one-run bug into
+// unbounded drift. Across three consecutive rewrites the disabled surface must
+// stay present, stay byte-identical, and the counters must not move.
+TEST(SurfaceDbPopulate, PreservedDisabledSymbolSurvivesRepeatedRewrites) {
+  const auto root = test_root("disabled_converges");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+  const std::vector<std::byte> bbb_seed = stored_record_bytes(root, kDate0, "BBB");
+  ASSERT_FALSE(bbb_seed.empty());
+
+  ASSERT_TRUE(db->upsert_symbol("BBB", disabled_copy_of(*db, "BBB")).has_value());
+  // A PERMANENTLY failing cell keeps this date in the rewrite set forever.
+  ASSERT_TRUE(db->upsert_symbol("DDD", rejected_risk_config()).has_value());
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "DDD", 80.0, 0.30));
+
+  for (int run = 1; run <= 3; ++run) {
+    auto cov = populate_universe_streaming(*db, full, carry_spec());
+    ASSERT_TRUE(cov.has_value()) << "run " << run << ": " << (cov ? "" : cov.error().to_string());
+    EXPECT_EQ(cov->dates_written, 1u) << "run " << run << ": the failing cell keeps this date hot";
+    EXPECT_EQ(cov->cells_to_fit, 1u) << "run " << run;
+    EXPECT_EQ(cov->cells_failed, 1u) << "run " << run;
+    EXPECT_EQ(cov->cells_carried_disabled, 1u) << "run " << run << ": BBB preserved, every run";
+    // Run 1 re-fits AAA (disabling BBB moved the fold); runs 2+ carry it, because
+    // run 1 re-stamped the fingerprint. Either way BBB is untouched by that
+    // decision -- which is the whole point.
+    EXPECT_EQ(cov->cells_carried, run == 1 ? 0u : 1u) << "run " << run;
+    EXPECT_EQ(cov->cells_refit, run == 1 ? 1u : 0u) << "run " << run;
+
+    ASSERT_TRUE(db->load_surface(kDate0, "BBB").has_value()) << "run " << run;
+    const std::vector<std::byte> bbb_now = stored_record_bytes(root, kDate0, "BBB");
+    ASSERT_EQ(bbb_seed.size(), bbb_now.size()) << "run " << run;
+    EXPECT_EQ(0, std::memcmp(bbb_seed.data(), bbb_now.data(), bbb_seed.size()))
+        << "run " << run << ": the preserved record drifted across rewrites";
+  }
+
+  std::filesystem::remove_all(root);
+}
+
+// The safety guard this defect defeated, tested DIRECTLY for the first time.
+// `dates_skipped_would_drop` had ZERO coverage anywhere in the repo: the counter
+// that refuses a rewrite which would drop a stored surface had never been
+// exercised in either direction.
+//
+// This is the RESIDUAL case FIX-E deliberately does not change: BBB is present in
+// the partition but absent from this run's LOADED BOARDS entirely, so it is in
+// neither `present` nor any carry list, and the only thing that can save it is
+// `present < part->count()`. That path must keep working after the fix -- a fix
+// that widened the carry set must not also have widened `present`.
+TEST(SurfaceDbPopulate, NarrowerRerunSkipsTheDateRatherThanDroppingAnAbsentSymbol) {
+  const auto root = test_root("would_drop_guard");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+
+  // A NARROWER re-run: BBB is not loaded at all this time, and CCC is new. A
+  // whole-partition rewrite from these boards alone would drop BBB.
+  const std::vector<CorpusBoard> narrower = {make_board(kDate0, "AAA", 100.0, 0.28),
+                                             make_board(kDate0, "CCC", 80.0, 0.30)};
+  auto cov2 = populate_universe_streaming(*db, narrower, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  EXPECT_EQ(cov2->dates_skipped_would_drop, 1u) << "the guard must have refused the rewrite";
+  EXPECT_EQ(cov2->dates_written, 0u) << "nothing may be written when the guard fires";
+  EXPECT_EQ(cov2->cells_already_present, 1u) << "only AAA was both loaded and present";
+  EXPECT_EQ(cov2->cells_carried, 0u);
+  EXPECT_EQ(cov2->cells_carried_disabled, 0u);
+
+  // Both stored surfaces survive, including the one this run never mentioned.
+  EXPECT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+  EXPECT_TRUE(db->load_surface(kDate0, "BBB").has_value())
+      << "the whole point of the guard: a symbol absent from the loaded set is not dropped";
+  // ...and the price of that safety, stated: the new symbol was NOT added.
+  EXPECT_FALSE(db->load_surface(kDate0, "CCC").has_value())
+      << "a skipped date adds nothing; that is the documented cost of the guard";
+
+  std::filesystem::remove_all(root);
+}
+
+// ── FIX-F (FIX-E review I-2): the last member of the data-loss family ────────
+//
+// This test PINS CURRENT BEHAVIOUR, INCLUDING A REAL DEFECT. It is not an
+// aspiration and it must not be "made to pass" by preserving the bytes without
+// first reading the argument below (and `.superpowers/sdd/surface-db-prod/
+// fixF-report.md`). Two facts are asserted, and the second is why the obvious
+// fix is REFUSED rather than merely unwritten.
+//
+// FACT 1 (the defect, legs 1-2). A cell that fitted ONCE and later DEGRADES
+// loses its stored surface. AAA fits and is stored; its config then changes so
+// the fit fails; an unrelated new symbol on the same date forces the rewrite.
+// `items` is appended only for `CorpusFitStatus::Ok`, `write_partition` replaces
+// the whole file, and the would-drop guard cannot fire because AAA was counted
+// into `present` before its fit outcome was known — the identical structural
+// cause FIX-E repaired for the DISABLED case. Note the population: not the cells
+// that always failed (those were never stored, so nothing is at risk), but the
+// ones that worked and stopped.
+//
+// FACT 2 (why preserving the bytes is not a local fix, legs 3-5). PRESENCE, not
+// the config fingerprint, is what keeps a date in the rewrite set:
+// `populate_universe_streaming` counts a cell into `to_add` only when it is NOT
+// in the partition, and a date with `to_add == 0` is `dates_skipped_complete` —
+// never rewritten, so its cells are never offered to the fitter again. Leg 3
+// shows the failing cell being retried and re-reported EXACTLY BECAUSE it is
+// absent; legs 4-5 show that the moment the cell is present the date leaves the
+// rewrite set for good. Preserving a failed cell's bytes therefore does not just
+// risk blessing them via the fingerprint (the attestation could be withheld) — it
+// removes the cell from the retry loop on ANY attestation, silently freezing a
+// surface the fitter has just rejected and retiring the failure from every future
+// report. That trades a one-shot data loss for permanent silent staleness, which
+// is the worse of the two, and it contradicts the "a failing cell is retried
+// forever / there is no persisted known-failed state" contract that
+// `is_total_fit_failure`, `is_carry_masked_fit_failure` and `build_surface_db`
+// all document and depend on. Closing it needs PERSISTED per-cell state saying
+// "these bytes are a preserved failure: re-attempt this cell, never carry it" —
+// a manifest/archive format change, specified in the report.
+//
+// ── REV-R3 UPDATE (review C-02/F-02): THE DEFAULT PATH NO LONGER DOES THIS ───
+//
+// Everything above still holds and every assertion below is unchanged, but the
+// behaviour it pins is now reachable ONLY when the operator explicitly asks for
+// it. By default `populate_surface_db` REFUSES to commit a partition whose symbol
+// set is not a superset of the stored one, so leg 2 below leaves the date
+// untouched instead of destroying AAA — see
+// `RefusedRewriteLeavesTheDegradedCellsStoredSurfaceByteIdentical`, the
+// regression test for the 95-surface incident.
+//
+// So leg 2 runs with `allow_coverage_regression = true`: the destructive
+// behaviour, on demand, for a run that intends retirement. That is exactly what
+// this test has always pinned — a whole-file rewrite assembled from what the run
+// has — and pinning it is still worth doing, because the retirement path must
+// keep working and FACT 2 is still the reason the bytes are not simply preserved.
+// The OTHER legs deliberately keep the default spec: once AAA is absent, the
+// candidate stops losing anything and the guard is silent, which is the converged
+// steady state and is asserted here for free.
+TEST(SurfaceDbPopulate, DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrivesTheRetry) {
+  const auto root = test_root("degraded_cell_loss");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  // ── Leg 1: AAA and BBB fit and are stored. AAA is now a REAL asset. ────────
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u) << "the seed boards must fit or nothing is at risk";
+  ASSERT_TRUE(db->load_surface(kDate0, "AAA").has_value())
+      << "AAA must be STORED before it degrades, or this tests the wrong population";
+  const auto aaa_healthy = db->symbol_config("AAA");
+  ASSERT_TRUE(aaa_healthy.has_value());
+
+  // ── Leg 2: AAA degrades, an unrelated new symbol rewrites the date ────────
+  // The config change is one way in; a thinned board or a fitter regression are
+  // the others. All three land on the same branch: a present, ENABLED cell whose
+  // re-fit fails contributes nothing to `items`.
+  ASSERT_TRUE(db->upsert_symbol("AAA", rejected_risk_config()).has_value());
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30)); // new, enabled, fits
+  // REV-R3: the destructive rewrite is now opt-in. Without this the write path
+  // refuses the date and AAA survives -- which is the whole point of the guard,
+  // and is asserted directly by the REV-R3 tests below.
+  UniversePopulateSpec retiring = carry_spec();
+  retiring.allow_coverage_regression = true;
+  auto cov2 = populate_universe_streaming(*db, full, retiring);
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  // REV-R3: the destruction is now DETECTED and RECORDED even when it is allowed.
+  // The incident this guard exists to prevent was invisible precisely because
+  // nothing counted or named what a run removed.
+  EXPECT_EQ(cov2->dates_refused_coverage_regression, 0u) << "the opt-out was given";
+  EXPECT_EQ(cov2->dates_dropped_coverage_regression, 1u);
+  ASSERT_EQ(cov2->coverage_regression_cells.size(), std::size_t{1});
+  EXPECT_EQ(cov2->coverage_regression_cells[0].date, kDate0);
+  EXPECT_EQ(cov2->coverage_regression_cells[0].symbol, "AAA");
+
+  ASSERT_EQ(cov2->dates_written, 1u) << "the date must really have been rewritten";
+  ASSERT_EQ(cov2->dates_skipped_would_drop, 0u)
+      << "the guard must NOT have fired: AAA was counted into `present` before its fit ran, "
+         "which is exactly why it cannot protect this cell";
+  ASSERT_EQ(cov2->cells_carried, 0u) << "changing AAA's config moved the fold, so nothing carries";
+  EXPECT_EQ(cov2->cells_refit, 2u) << "AAA and BBB were both dragged back through the fitter";
+  EXPECT_EQ(cov2->cells_ok, 2u) << "BBB re-fit and CCC fit";
+  EXPECT_EQ(cov2->cells_failed, 1u);
+
+  // The failure is reported with the fitter's own reason (069669e's channel).
+  ASSERT_EQ(cov2->failed_cells.size(), std::size_t{1});
+  EXPECT_EQ(cov2->failed_cells[0].symbol, "AAA");
+  EXPECT_EQ(cov2->failed_cells[0].code, ErrorCode::InvalidArgument);
+  EXPECT_EQ(cov2->failed_cells[0].detail, "invalid correctness policy for requested risk surface");
+
+  // ── THE BITE ──────────────────────────────────────────────────────────────
+  // A surface that existed, loaded, and was servable is gone, destroyed by a
+  // rewrite triggered by an unrelated symbol.
+  EXPECT_FALSE(db->load_surface(kDate0, "AAA").has_value())
+      << "CURRENT BEHAVIOUR, and the defect: a degraded cell's stored surface is deleted. If this "
+         "now passes, the preserve landed -- re-read FACT 2 above and the FIX-F report before "
+         "deleting this assertion";
+  EXPECT_TRUE(db->load_surface(kDate0, "BBB").has_value());
+  EXPECT_TRUE(db->load_surface(kDate0, "CCC").has_value());
+
+  // ── Leg 3: the retry loop, and what powers it ─────────────────────────────
+  // Same boards, same configs. AAA is retried and re-reported ONLY because it is
+  // ABSENT: `to_add` counts cells that are not in the partition. Its healthy
+  // siblings are carried, so this is the documented converged steady state.
+  auto cov3 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov3.has_value()) << (cov3 ? "" : cov3.error().to_string());
+  EXPECT_EQ(cov3->cells_to_fit, 1u) << "the absent failing cell is what keeps the date pending";
+  EXPECT_EQ(cov3->dates_written, 1u);
+  EXPECT_EQ(cov3->cells_carried, 2u) << "BBB and CCC are carried, not re-fit";
+  EXPECT_EQ(cov3->cells_refit, 0u);
+  EXPECT_EQ(cov3->cells_ok, 0u);
+  EXPECT_EQ(cov3->cells_failed, 1u) << "and the failure is REPORTED AGAIN -- every run, forever";
+  ASSERT_EQ(cov3->failed_cells.size(), std::size_t{1});
+  EXPECT_EQ(cov3->failed_cells[0].symbol, "AAA");
+  {
+    // The shape a74eb92's warning exists to name: nothing fitted, something
+    // failed, something carried. Exit stays 0; the warning does the talking.
+    SurfaceDbBuildReport report;
+    report.coverage = *cov3;
+    EXPECT_FALSE(is_total_fit_failure(report));
+    EXPECT_TRUE(is_carry_masked_fit_failure(report));
+  }
+
+  // ── Legs 4-5: presence ENDS the retry, permanently ────────────────────────
+  // Restore AAA to the config it fitted under; it is added back, and from then
+  // on the date has nothing to add. This is the state a preserved failed cell
+  // would land in -- except the cell would still be failing and its surface
+  // would be the one the fitter just rejected, with no run ever revisiting it.
+  ASSERT_TRUE(db->upsert_symbol("AAA", *aaa_healthy).has_value());
+  auto cov4 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov4.has_value()) << (cov4 ? "" : cov4.error().to_string());
+  ASSERT_EQ(cov4->cells_ok, 1u) << "AAA must fit again for leg 5 to mean anything";
+  ASSERT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+
+  auto cov5 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov5.has_value()) << (cov5 ? "" : cov5.error().to_string());
+  EXPECT_EQ(cov5->cells_to_fit, 0u) << "a PRESENT cell is never counted as pending work";
+  EXPECT_EQ(cov5->dates_skipped_complete, 1u)
+      << "presence alone retires the date from the rewrite set -- no fingerprint involved";
+  EXPECT_EQ(cov5->dates_written, 0u);
+  EXPECT_EQ(cov5->cells_failed, 0u) << "and with the date skipped, no cell on it is ever offered "
+                                       "to the fitter again -- which is why preserving a FAILED "
+                                       "cell's bytes would silence its failure forever";
+  EXPECT_EQ(cov5->cells_already_present, 3u);
+
+  std::filesystem::remove_all(root);
+}
+
+// ── REV-R3 (review C-02 / F-02): the write path refuses to destroy a stored
+// surface ────────────────────────────────────────────────────────────────────
+//
+// The measured incident: a partition rewrite is whole-file, so a present, ENABLED
+// cell whose re-fit fails is simply not in the new file and is deleted by the
+// commit. One production-shaped run at the wrong `--r` destroyed 95 stored
+// surfaces this way and the database reported success. Neither existing guard can
+// see it coming -- the filter's `present < part->count()` compares COUNTS and the
+// cell was counted into `present` before its fit outcome existed, and FIX-E's
+// preserve covers only the DISABLED case.
+//
+// So the question is now asked in the write path, on the real candidate, as a SET
+// comparison against the existing partition's own directory.
+namespace {
+
+// The whole partition file, byte for byte. `stored_record_bytes` proves ONE
+// record survived; this proves the FILE was not touched at all -- no re-pack, no
+// re-CRC, no new `created_ts`. A refusal must leave the commit unattempted, not
+// produce an equivalent file.
+[[nodiscard]] std::vector<std::byte> partition_file_bytes(const std::filesystem::path &root,
+                                                          std::string_view key) {
+  return read_file_bytes(partition_file(root, key));
+}
+
+} // namespace
+
+// TEST 1 -- the regression test for the 95-surface incident. The assertion that
+// matters is not a count: it is that the surface which was there is STILL THERE
+// and is byte-identical.
+TEST(SurfaceDbPopulate, RefusedRewriteLeavesTheDegradedCellsStoredSurfaceByteIdentical) {
+  const auto root = test_root("coverage_regression_refused");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  // Leg 1: AAA and BBB fit and are stored. AAA is the asset at risk.
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u) << "the seed boards must fit or nothing is at risk";
+  ASSERT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+  const std::vector<std::byte> aaa_before = stored_record_bytes(root, kDate0, "AAA");
+  const std::vector<std::byte> bbb_before = stored_record_bytes(root, kDate0, "BBB");
+  const std::vector<std::byte> file_before = partition_file_bytes(root, kDate0);
+  ASSERT_FALSE(aaa_before.empty());
+  ASSERT_FALSE(file_before.empty());
+
+  // Leg 2: AAA degrades and an unrelated NEW symbol forces the rewrite. This is
+  // the exact shape of the incident -- the trigger is never the failing cell.
+  ASSERT_TRUE(db->upsert_symbol("AAA", rejected_risk_config()).has_value());
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec()); // guard ON by default
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u)
+      << "the write path must have refused this date";
+  // REV-R3 fix-2 (review N-3). The NEGATIVE half of the cause discriminator, and
+  // the half a test is likelier to get wrong: this refusal is a genuine fit
+  // failure on a partition the manifest DOES list, so the CLI must print its
+  // --r advice for it. A discriminator that reported "unlisted" here would
+  // suppress the one diagnosis that is correct.
+  EXPECT_EQ(cov2->dates_refused_partition_unlisted, 0u)
+      << "the manifest lists this partition -- this refusal IS the wrong-rate shape";
+  EXPECT_EQ(cov2->dates_dropped_coverage_regression, 0u);
+  EXPECT_EQ(cov2->dates_written, 0u)
+      << "dates_written must report the COMMIT, not the filter's intention";
+  EXPECT_EQ(cov2->dates_skipped_would_drop, 0u)
+      << "the FILTER's guard still cannot see this -- that is why the write guard exists";
+  ASSERT_EQ(cov2->coverage_regression_cells.size(), std::size_t{1});
+  EXPECT_EQ(cov2->coverage_regression_cells[0].date, kDate0);
+  EXPECT_EQ(cov2->coverage_regression_cells[0].symbol, "AAA");
+  // The cell still FAILED and is still reported as a failure; refusing the write
+  // is not the same as pretending the fit worked.
+  EXPECT_EQ(cov2->cells_failed, 1u);
+  ASSERT_EQ(cov2->failed_cells.size(), std::size_t{1});
+  EXPECT_EQ(cov2->failed_cells[0].symbol, "AAA");
+
+  // ── THE ASSERTION THIS WHOLE TASK EXISTS FOR ──────────────────────────────
+  ASSERT_TRUE(db->load_surface(kDate0, "AAA").has_value())
+      << "the degraded cell's stored surface was DESTROYED -- this is the 95-surface incident";
+  const std::vector<std::byte> aaa_after = stored_record_bytes(root, kDate0, "AAA");
+  ASSERT_EQ(aaa_before.size(), aaa_after.size());
+  EXPECT_EQ(0, std::memcmp(aaa_before.data(), aaa_after.data(), aaa_before.size()))
+      << "AAA's stored record survived but its bytes changed";
+  const std::vector<std::byte> bbb_after = stored_record_bytes(root, kDate0, "BBB");
+  ASSERT_EQ(bbb_before.size(), bbb_after.size());
+  EXPECT_EQ(0, std::memcmp(bbb_before.data(), bbb_after.data(), bbb_before.size()));
+  // Stronger still: the file was never rewritten at all.
+  const std::vector<std::byte> file_after = partition_file_bytes(root, kDate0);
+  ASSERT_EQ(file_before.size(), file_after.size()) << "the partition file was rewritten";
+  EXPECT_EQ(0, std::memcmp(file_before.data(), file_after.data(), file_before.size()))
+      << "the partition file was rewritten to equivalent-but-different bytes; a refusal must "
+         "leave the commit unattempted";
+
+  // The price of the refusal, stated: the new symbol did NOT land. That is the
+  // deal -- one run's new work deferred, versus a stored surface destroyed.
+  EXPECT_FALSE(db->load_surface(kDate0, "CCC").has_value())
+      << "a refused date adds nothing; that is the documented cost of the guard";
+
+  std::filesystem::remove_all(root);
+}
+
+// TEST 2 -- the opt-out really does the destructive thing, and says what it did.
+// (The full behavioural pin lives in
+// `DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrivesTheRetry`, which now
+// runs its destructive leg through this flag. This test is the direct A/B against
+// TEST 1: same database, same boards, same everything but the flag.)
+TEST(SurfaceDbPopulate, AllowCoverageRegressionWritesTheDateAndNamesWhatItDestroyed) {
+  const auto root = test_root("coverage_regression_allowed");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+  ASSERT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+
+  ASSERT_TRUE(db->upsert_symbol("AAA", rejected_risk_config()).has_value());
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  UniversePopulateSpec retiring = carry_spec();
+  retiring.allow_coverage_regression = true;
+  auto cov2 = populate_universe_streaming(*db, full, retiring);
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  EXPECT_EQ(cov2->dates_refused_coverage_regression, 0u);
+  EXPECT_EQ(cov2->dates_dropped_coverage_regression, 1u);
+  EXPECT_EQ(cov2->dates_written, 1u);
+  // Detection runs on BOTH sides of the opt-out: a retirement run still produces
+  // the audit trail the incident had no way to produce.
+  ASSERT_EQ(cov2->coverage_regression_cells.size(), std::size_t{1});
+  EXPECT_EQ(cov2->coverage_regression_cells[0].date, kDate0);
+  EXPECT_EQ(cov2->coverage_regression_cells[0].symbol, "AAA");
+
+  EXPECT_FALSE(db->load_surface(kDate0, "AAA").has_value()) << "the opt-out must really destroy it";
+  EXPECT_TRUE(db->load_surface(kDate0, "BBB").has_value());
+  EXPECT_TRUE(db->load_surface(kDate0, "CCC").has_value());
+
+  std::filesystem::remove_all(root);
+}
+
+// TEST 3 -- the guard must be SILENT on the healthy converged production shape,
+// or defaulting it ON would break every real build.
+//
+// `prod-2026-07` reports 9 permanently ABSENT cells of 867 on every run and is
+// completely healthy: those cells never fitted, so nothing was ever stored for
+// them, so a candidate that lacks them loses nothing. Their dates are still
+// rewritten every run (an absent enabled cell keeps its date pending forever),
+// which is exactly why this must be tested over REPEATED runs and not just one.
+// DDD here is that population.
+TEST(SurfaceDbPopulate, ConvergedRunWithPermanentlyAbsentCellsNeverTriggersTheGuard) {
+  const auto root = test_root("coverage_regression_converged");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  // DDD can never fit and is stored disabled-by-nothing: it is simply refused by
+  // the fitter, every run, forever. It is never written, so it is never at risk.
+  ASSERT_TRUE(db->upsert_symbol("DDD", rejected_risk_config()).has_value());
+  std::vector<CorpusBoard> boards = carry_seed_boards();
+  boards.push_back(make_board(kDate0, "DDD", 80.0, 0.30));
+
+  std::vector<std::byte> aaa_seed;
+  std::vector<std::byte> bbb_seed;
+  for (int run = 1; run <= 3; ++run) {
+    auto cov = populate_universe_streaming(*db, boards, carry_spec());
+    ASSERT_TRUE(cov.has_value()) << "run " << run << ": " << (cov ? "" : cov.error().to_string());
+    EXPECT_EQ(cov->dates_refused_coverage_regression, 0u)
+        << "run " << run
+        << ": the guard fired on a HEALTHY converged run -- defaulting it ON would break "
+           "every production build";
+    EXPECT_EQ(cov->dates_dropped_coverage_regression, 0u) << "run " << run;
+    EXPECT_TRUE(cov->coverage_regression_cells.empty()) << "run " << run;
+    EXPECT_EQ(cov->dates_written, 1u)
+        << "run " << run << ": the permanently-absent cell keeps this date in the rewrite set";
+    EXPECT_EQ(cov->cells_failed, 1u) << "run " << run << ": DDD, every run, forever";
+
+    ASSERT_TRUE(db->load_surface(kDate0, "AAA").has_value()) << "run " << run;
+    ASSERT_TRUE(db->load_surface(kDate0, "BBB").has_value()) << "run " << run;
+    if (run == 1) {
+      aaa_seed = stored_record_bytes(root, kDate0, "AAA");
+      bbb_seed = stored_record_bytes(root, kDate0, "BBB");
+      ASSERT_FALSE(aaa_seed.empty());
+      continue;
+    }
+    // Run 2 onward carries them, so they must also be byte-stable: a rewrite that
+    // the guard permits must still not disturb what it re-emits.
+    const std::vector<std::byte> aaa_now = stored_record_bytes(root, kDate0, "AAA");
+    const std::vector<std::byte> bbb_now = stored_record_bytes(root, kDate0, "BBB");
+    ASSERT_EQ(aaa_seed.size(), aaa_now.size()) << "run " << run;
+    EXPECT_EQ(0, std::memcmp(aaa_seed.data(), aaa_now.data(), aaa_seed.size())) << "run " << run;
+    ASSERT_EQ(bbb_seed.size(), bbb_now.size()) << "run " << run;
+    EXPECT_EQ(0, std::memcmp(bbb_seed.data(), bbb_now.data(), bbb_seed.size())) << "run " << run;
+  }
+
+  std::filesystem::remove_all(root);
+}
+
+// TEST 4 -- the ordinary incremental run. A candidate that is a strict SUPERSET
+// of the stored set writes normally: the guard is a superset test, not an
+// equality test, or every growing database would jam.
+//
+// The seeded symbol `bbb` is lower case ON PURPOSE. The partition's directory
+// stores CANONICAL keys, so a guard that compared raw board symbols against
+// stored keys would see "BBB" missing from {"AAA","bbb","CCC"} and refuse every
+// single rewrite of any date holding a non-canonical symbol.
+TEST(SurfaceDbPopulate, AddingCellsWithoutLosingAnyWritesNormally) {
+  const auto root = test_root("coverage_regression_grow");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const std::vector<CorpusBoard> seed = {make_board(kDate0, "AAA", 100.0, 0.28),
+                                         make_board(kDate0, "bbb", 60.0, 0.34)};
+  auto cov1 = populate_universe_streaming(*db, seed, carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+  ASSERT_EQ(cov1->dates_refused_coverage_regression, 0u)
+      << "a FIRST write has no existing partition and can lose nothing";
+
+  std::vector<CorpusBoard> grown = seed;
+  grown.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov2 = populate_universe_streaming(*db, grown, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  EXPECT_EQ(cov2->dates_refused_coverage_regression, 0u)
+      << "a strict superset must write; a lower-case stored symbol must not read as dropped";
+  EXPECT_EQ(cov2->dates_dropped_coverage_regression, 0u);
+  EXPECT_TRUE(cov2->coverage_regression_cells.empty());
+  EXPECT_EQ(cov2->dates_written, 1u);
+  EXPECT_EQ(cov2->cells_ok, 1u) << "only CCC was fitted; the other two were carried";
+
+  EXPECT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+  EXPECT_TRUE(db->load_surface(kDate0, "BBB").has_value()) << "canonical lookup of the seeded bbb";
+  EXPECT_TRUE(db->load_surface(kDate0, "CCC").has_value());
+
+  std::filesystem::remove_all(root);
+}
+
+// TEST 5 -- a refusal is PER-DATE. The run must keep going, including for dates
+// that come AFTER the refused one in the drain's ascending walk, or one bad cell
+// would cost the whole window.
+TEST(SurfaceDbPopulate, RefusingOneDateDoesNotStopTheOtherDatesInTheSameRun) {
+  const auto root = test_root("coverage_regression_per_date");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  // Disjoint symbol sets per date, because a config change is per SYMBOL: this is
+  // how one date is made to lose a cell while the other is untouched.
+  const std::vector<CorpusBoard> seed = {make_board(kDate0, "AAA", 100.0, 0.28),
+                                         make_board(kDate0, "BBB", 60.0, 0.34),
+                                         make_board(kDate1, "CCC", 90.0, 0.26),
+                                         make_board(kDate1, "DDD", 70.0, 0.31)};
+  auto cov1 = populate_universe_streaming(*db, seed, carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 4u);
+  const std::vector<std::byte> aaa_before = stored_record_bytes(root, kDate0, "AAA");
+  const std::vector<std::byte> d0_file_before = partition_file_bytes(root, kDate0);
+  ASSERT_FALSE(aaa_before.empty());
+
+  // AAA degrades (kDate0 only). Both dates get a new symbol so both are rewritten.
+  ASSERT_TRUE(db->upsert_symbol("AAA", rejected_risk_config()).has_value());
+  std::vector<CorpusBoard> full = seed;
+  full.push_back(make_board(kDate0, "EEE", 80.0, 0.30));
+  full.push_back(make_board(kDate1, "FFF", 85.0, 0.29));
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u);
+  EXPECT_EQ(cov2->dates_written, 1u) << "the OTHER date must still have been committed";
+  ASSERT_EQ(cov2->coverage_regression_cells.size(), std::size_t{1});
+  EXPECT_EQ(cov2->coverage_regression_cells[0].date, kDate0);
+  EXPECT_EQ(cov2->coverage_regression_cells[0].symbol, "AAA");
+
+  // kDate0: untouched, down to the file bytes. EEE did not land.
+  ASSERT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+  const std::vector<std::byte> aaa_after = stored_record_bytes(root, kDate0, "AAA");
+  ASSERT_EQ(aaa_before.size(), aaa_after.size());
+  EXPECT_EQ(0, std::memcmp(aaa_before.data(), aaa_after.data(), aaa_before.size()));
+  const std::vector<std::byte> d0_file_after = partition_file_bytes(root, kDate0);
+  ASSERT_EQ(d0_file_before.size(), d0_file_after.size());
+  EXPECT_EQ(0, std::memcmp(d0_file_before.data(), d0_file_after.data(), d0_file_before.size()));
+  EXPECT_FALSE(db->load_surface(kDate0, "EEE").has_value());
+
+  // kDate1 (which the drain reaches AFTER the refusal): fully built.
+  EXPECT_TRUE(db->load_surface(kDate1, "CCC").has_value());
+  EXPECT_TRUE(db->load_surface(kDate1, "DDD").has_value());
+  EXPECT_TRUE(db->load_surface(kDate1, "FFF").has_value())
+      << "a refusal on an EARLIER date stopped a later date from being written";
+
+  std::filesystem::remove_all(root);
+}
+
+// TEST 6 -- the reported list is COMPLETE, CORRECT and DETERMINISTICALLY ORDERED,
+// and the order does not depend on the worker count.
+//
+// The repo's standing invariant is byte-identical results for any thread count.
+// The list is built on the single drain thread, from a `set_difference` of two
+// SORTED ranges (the partition's directory and the candidate item list), so
+// neither fit-completion order nor an unordered container can reach it. This test
+// is what makes that claim falsifiable: the same scenario is run at 1 and 4
+// workers into separate roots and the two lists must match exactly.
+TEST(SurfaceDbPopulate, DroppedSymbolListIsCorrectAndOrderedIndependentlyOfWorkerCount) {
+  const auto scenario = [](const std::filesystem::path &root,
+                           unsigned workers) -> std::vector<CoverageRegressionCell> {
+    auto db = SurfaceDb::create(root.string());
+    EXPECT_TRUE(db.has_value());
+    if (!db.has_value()) {
+      return {};
+    }
+    // Seeded OUT of sorted order so a list that merely echoed insertion order
+    // would come back as DDD-then-BBB and fail the ordering assertion.
+    const std::vector<CorpusBoard> seed = {
+        make_board(kDate0, "DDD", 70.0, 0.31), make_board(kDate0, "CCC", 90.0, 0.26),
+        make_board(kDate0, "BBB", 60.0, 0.34), make_board(kDate0, "AAA", 100.0, 0.28)};
+    auto cov1 = populate_universe_streaming(*db, seed, carry_spec(workers));
+    EXPECT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+    EXPECT_EQ(cov1 ? cov1->cells_ok : 0u, 4u);
+
+    // Two of the four degrade; the other two still fit and are re-emitted.
+    EXPECT_TRUE(db->upsert_symbol("BBB", rejected_risk_config()).has_value());
+    EXPECT_TRUE(db->upsert_symbol("DDD", rejected_risk_config()).has_value());
+    std::vector<CorpusBoard> full = seed;
+    full.push_back(make_board(kDate0, "EEE", 80.0, 0.30)); // forces the rewrite
+    auto cov2 = populate_universe_streaming(*db, full, carry_spec(workers));
+    EXPECT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+    if (!cov2.has_value()) {
+      return {};
+    }
+    EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u);
+    EXPECT_EQ(cov2->dates_written, 0u);
+    // Nothing on the date moved, including the two that would have survived.
+    EXPECT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+    EXPECT_TRUE(db->load_surface(kDate0, "BBB").has_value());
+    EXPECT_TRUE(db->load_surface(kDate0, "CCC").has_value());
+    EXPECT_TRUE(db->load_surface(kDate0, "DDD").has_value());
+    return cov2->coverage_regression_cells;
+  };
+
+  const auto serial_root = test_root("coverage_regression_order_w1");
+  const auto parallel_root = test_root("coverage_regression_order_w4");
+  const std::vector<CoverageRegressionCell> serial = scenario(serial_root, 1u);
+  const std::vector<CoverageRegressionCell> parallel = scenario(parallel_root, 4u);
+
+  ASSERT_EQ(serial.size(), std::size_t{2}) << "exactly the two degraded cells are at risk";
+  EXPECT_EQ(serial[0].date, kDate0);
+  EXPECT_EQ(serial[0].symbol, "BBB");
+  EXPECT_EQ(serial[1].date, kDate0);
+  EXPECT_EQ(serial[1].symbol, "DDD") << "ascending canonical-symbol order, not seed order";
+
+  ASSERT_EQ(parallel.size(), serial.size()) << "the list size depends on the worker count";
+  for (std::size_t i = 0; i < serial.size(); ++i) {
+    EXPECT_EQ(parallel[i].date, serial[i].date) << "entry " << i;
+    EXPECT_EQ(parallel[i].symbol, serial[i].symbol) << "entry " << i;
+  }
+
+  std::filesystem::remove_all(serial_root);
+  std::filesystem::remove_all(parallel_root);
+}
+
+// ── REV-R3 fix-1 (review I-1): the manifest does not get a vote ──────────────
+//
+// The guard's comments claimed the existing set was "never inferred from the
+// manifest", but only the CONTENTS were. The existence decision went through
+// `SurfaceDb::open_partition`, which returns NotFound from the MANIFEST LOOKUP
+// before it ever touches the file -- and NotFound is the guard's "no existing
+// coverage, proceed" branch. So a partition file holding surfaces but absent from
+// the manifest was treated as empty and overwritten: exactly the outcome the
+// guard exists to prevent, on exactly the disagreement its comment named.
+//
+// The window is real. `write_partition` renames the archive first and persists
+// the manifest second (surface_db.cpp), so a crash between the two leaves this
+// state; so does a manifest restored from an older copy, a hand-assembled root,
+// and a `drop_partition` interrupted after its manifest commit. The fix is
+// `SurfaceDb::open_partition_file`, which skips the manifest and asks the
+// filesystem.
+namespace {
+
+// Reproduce the crash window WITHOUT a crash: snapshot the manifest before the
+// write, then restore it afterwards. The partition file stays; the manifest
+// forgets it. Byte-for-byte the state a crash between rename and persist leaves.
+void restore_manifest(const std::filesystem::path &root, const std::vector<std::byte> &saved) {
+  const std::filesystem::path p = root / std::string(kSurfaceDbManifestName);
+  std::ofstream os(p, std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(os.good()) << p.string();
+  os.write(reinterpret_cast<const char *>(saved.data()),
+           static_cast<std::streamsize>(saved.size()));
+  ASSERT_TRUE(os.good()) << p.string();
+}
+
+} // namespace
+
+// TEST 7 -- a partition file present on disk but ABSENT from the manifest must be
+// READ, not overwritten.
+//
+// Before the fix this run destroyed AAA and BBB and reported success: the
+// manifest said the date did not exist, so the filter scheduled every loaded cell
+// as new, the guard's `open_partition` came back NotFound, and the whole-file
+// write committed a partition containing only CCC.
+TEST(SurfaceDbPopulate, PartitionOnDiskButMissingFromTheManifestIsNotOverwritten) {
+  const auto root = test_root("coverage_regression_unlisted_partition");
+  std::vector<std::byte> manifest_before;
+  std::vector<std::byte> file_before;
+  {
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value());
+
+    // The manifest as it is BEFORE kDate0 is ever written -- no partition record.
+    manifest_before = read_file_bytes(root / std::string(kSurfaceDbManifestName));
+    ASSERT_FALSE(manifest_before.empty());
+
+    // Write kDate0 normally: AAA and BBB land, the file exists, the manifest lists it.
+    auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+    ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+    ASSERT_EQ(cov1->cells_ok, 2u);
+    file_before = partition_file_bytes(root, kDate0);
+    ASSERT_FALSE(file_before.empty());
+    // Scoped so this handle -- and its S5 partition mapping -- is gone before the
+    // manifest is rolled back underneath the root.
+  }
+
+  // Roll the manifest back. The .atxvsa is untouched and still holds both cells.
+  restore_manifest(root, manifest_before);
+  auto reopened = SurfaceDb::open(root.string());
+  ASSERT_TRUE(reopened.has_value()) << (reopened ? "" : reopened.error().to_string());
+  ASSERT_FALSE(reopened->open_partition(kDate0).has_value())
+      << "the scenario is not armed: the manifest still lists the partition";
+  ASSERT_TRUE(reopened->open_partition_file(kDate0).has_value())
+      << "the scenario is not armed: the partition FILE must still be on disk";
+
+  // A run over a NARROWER board set for the same date. Nothing here is degraded
+  // and nothing fails -- the candidate is simply smaller than what is stored,
+  // which is all a whole-file write needs to destroy a surface.
+  const std::vector<CorpusBoard> narrower = {make_board(kDate0, "CCC", 90.0, 0.26)};
+  auto cov2 = populate_universe_streaming(*reopened, narrower, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u)
+      << "an UNLISTED partition file was treated as no coverage and overwritten";
+  // REV-R3 fix-2 (review N-3). The POSITIVE half of the cause discriminator. The
+  // CLI keys its advice on this counter, and it must be able to tell this state
+  // apart from a wrong-rate refusal: here NOTHING failed to fit (cells_failed is
+  // 0 below), so "check --r" is the wrong instruction and the escape it offers
+  // -- --allow-coverage-regression -- would delete AAA and BBB, the two surfaces
+  // this run just saved.
+  EXPECT_EQ(cov2->dates_refused_partition_unlisted, 1u)
+      << "the refusal was on a partition the manifest does not list";
+  EXPECT_EQ(cov2->cells_failed, 0u)
+      << "no cell failed here: a wrong-rate diagnosis would be false on its face";
+  EXPECT_EQ(cov2->dates_written, 0u);
+  ASSERT_EQ(cov2->coverage_regression_cells.size(), std::size_t{2});
+  EXPECT_EQ(cov2->coverage_regression_cells[0].symbol, "AAA");
+  EXPECT_EQ(cov2->coverage_regression_cells[1].symbol, "BBB")
+      << "the existing set came from the FILE's directory, not from the manifest";
+
+  // The bytes are the assertion that matters: the file was not touched at all.
+  const std::vector<std::byte> file_after = partition_file_bytes(root, kDate0);
+  ASSERT_EQ(file_before.size(), file_after.size()) << "the unlisted partition was rewritten";
+  EXPECT_EQ(0, std::memcmp(file_before.data(), file_after.data(), file_before.size()))
+      << "the unlisted partition file was rewritten; AAA and BBB are gone";
+
+  std::filesystem::remove_all(root);
+}
+
+// TEST 8 -- and the OTHER half of the same branch: documented remedy #1 still
+// works. `surface_db.hpp` tells an operator whose database was poisoned by a
+// wrong `--r` to DELETE the partition file and re-run, and that instruction must
+// keep working -- it is the only repair the tool offers, and the guard sits
+// directly on its path. A file-EXISTENCE probe is what separates the two cases:
+// remedy #1 has no file, the I-1 window has one.
+TEST(SurfaceDbPopulate, DeletingThePartitionFileStillLetsTheDateBeRebuilt) {
+  const auto root = test_root("coverage_regression_remedy_delete");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+  ASSERT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+
+  // The remedy, verbatim: delete the partition file. The MANIFEST STILL LISTS IT
+  // -- that is the state the instruction produces, and the case the fix must not
+  // confuse with "a file is there and the manifest forgot it".
+  ASSERT_TRUE(std::filesystem::remove(partition_file(root, kDate0)));
+  ASSERT_FALSE(db->open_partition_file(kDate0).has_value())
+      << "the file must really be gone for this to test the remedy";
+
+  // Re-run over a NARROWER set than what used to be stored. Nothing is on disk to
+  // lose, so this must proceed -- refusing here would make the documented repair
+  // impossible and leave a poisoned database unrepairable.
+  const std::vector<CorpusBoard> narrower = {make_board(kDate0, "AAA", 100.0, 0.28)};
+  auto cov2 = populate_universe_streaming(*db, narrower, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+  EXPECT_EQ(cov2->dates_refused_coverage_regression, 0u)
+      << "remedy #1 (delete the partition file and re-run) must still work";
+  EXPECT_EQ(cov2->dates_dropped_coverage_regression, 0u);
+  EXPECT_TRUE(cov2->coverage_regression_cells.empty());
+  EXPECT_EQ(cov2->dates_written, 1u);
+  EXPECT_TRUE(db->load_surface(kDate0, "AAA").has_value()) << "the date was rebuilt";
+  EXPECT_FALSE(db->load_surface(kDate0, "BBB").has_value())
+      << "deleting a partition deletes it: BBB is not restored, exactly as documented";
+
+  std::filesystem::remove_all(root);
+}
+
+// TEST 9 -- an existing partition file that will not OPEN aborts the build, and
+// `--allow-coverage-regression` does NOT waive that (REV-R3 fix-1, review I-3).
+//
+// Two unrelated safety properties used to ride one flag. "I have read the named
+// list and I want those surfaces gone" says nothing about "and please also
+// overwrite any partition you could not parse" -- and the flag is whole-RUN, so
+// an operator retiring one cell was opted into the second waiver for every date.
+TEST(SurfaceDbPopulate, UnreadableExistingPartitionAbortsEvenWithTheOptOut) {
+  // true iff the populate returned Ok.
+  const auto rewrite_succeeded = [](const std::filesystem::path &root, bool allow) -> bool {
+    auto db = SurfaceDb::create(root.string());
+    EXPECT_TRUE(db.has_value());
+    if (!db.has_value()) {
+      return false;
+    }
+    auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+    EXPECT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+
+    // Corrupt the partition in place: keep the file, destroy its bytes. It is
+    // PRESENT (so not the NotFound path) and unreadable (so its contents cannot
+    // be compared), which is the whole point.
+    {
+      std::ofstream os(partition_file(root, kDate0), std::ios::binary | std::ios::trunc);
+      EXPECT_TRUE(os.good());
+      const char junk[] = "this is not an ATXVSA2 archive";
+      os.write(junk, static_cast<std::streamsize>(sizeof junk));
+    }
+    EXPECT_FALSE(db->open_partition_file(kDate0).has_value());
+
+    std::vector<CorpusBoard> full = carry_seed_boards();
+    full.push_back(make_board(kDate0, "CCC", 90.0, 0.26)); // forces the rewrite
+    UniversePopulateSpec spec = carry_spec();
+    spec.allow_coverage_regression = allow;
+    return populate_universe_streaming(*db, full, spec).has_value();
+  };
+
+  const auto guarded_root = test_root("unreadable_partition_guard_on");
+  EXPECT_FALSE(rewrite_succeeded(guarded_root, /*allow=*/false))
+      << "an unreadable existing partition must abort rather than be overwritten";
+
+  const auto opted_out_root = test_root("unreadable_partition_opt_out");
+  EXPECT_FALSE(rewrite_succeeded(opted_out_root, /*allow=*/true))
+      << "--allow-coverage-regression authorises destroying a NAMED list; it cannot "
+         "authorise overwriting contents nobody could read";
+
+  std::filesystem::remove_all(guarded_root);
+  std::filesystem::remove_all(opted_out_root);
+}
+
+// ── R1-a (review C-06): a PRE-TASK fit-scheduler failure must TERMINATE the
+// populate, never wedge the per-date drain ──────────────────────────────────
+//
+// `populate_surface_db` initialises `remaining[date]` to a positive count and
+// drains each date by sleeping on that counter. The counter is decremented by a
+// scope guard INSIDE the fit task, so it only ever moves for a task that actually
+// STARTED. `run_bounded_fit_tasks` has two failure returns that happen before any
+// task starts -- a background worker-launch failure and a scratch-allocation
+// failure (the std::bad_alloc that killed this project's production run twice) --
+// and on both, every counter stayed frozen, nothing ever notified, and the main
+// thread slept forever without ever reaching the point where it could observe the
+// scheduler's Status. The process hung with no output.
+namespace {
+
+// The populate call under test runs on its OWN thread and is waited for with a
+// BOUNDED timeout, because the defect is a HANG: on a regression the call never
+// returns, and a test that simply called it inline would wedge the entire ctest
+// run instead of failing. 10s is ~100x these synthetic boards' runtime.
+//
+// On timeout the thread is deliberately LEAKED rather than joined -- it is stuck
+// in the very deadlock under test, so joining would reproduce the hang inside the
+// harness. Everything it touches lives in a shared_ptr it holds BY VALUE, so the
+// leak cannot dangle after the test body returns.
+struct StreamingRun {
+  std::optional<SurfaceDb> db;
+  std::vector<CorpusBoard> boards;
+  UniversePopulateSpec spec;
+  PopulateTestHooks hooks;
+  std::optional<Result<UniversePopulateCoverage>> cov;
+};
+
+[[nodiscard]] bool run_streaming_bounded(const std::shared_ptr<StreamingRun> &run,
+                                         std::chrono::seconds timeout) {
+  auto finished = std::make_shared<std::promise<void>>();
+  std::future<void> done = finished->get_future();
+  std::thread([run, finished] {
+    run->cov = populate_universe_streaming(*run->db, run->boards, run->spec, &run->hooks);
+    finished->set_value();
+  }).detach();
+  // `done` dies with this frame; the promise outlives it via the captured
+  // shared_ptr, and setting a value on a state with no reader is well-defined.
+  return done.wait_for(timeout) == std::future_status::ready;
+}
+
+constexpr std::chrono::seconds kDrainDeadlockTimeout{10};
+
+} // namespace
+
+// Path 1: the background-worker LAUNCH failure (fit_scheduler.cpp's inner
+// catch(...) -> "worker launch failed"). Injected through the full
+// populate_universe_streaming path. Asserts three things: the call TERMINATES
+// inside the bounded wait, it returns the SCHEDULER'S OWN non-Ok Status rather
+// than a fresh code, and the date it could not fit is absent from disk.
+TEST(SurfaceDbPopulate, SchedulerWorkerLaunchFailureTerminatesTheDrainInsteadOfHanging) {
+  const auto root = test_root("sched_launch_abort");
+
+  auto run = std::make_shared<StreamingRun>();
+  {
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+    run->db.emplace(std::move(*db));
+  }
+  run->boards = make_boards(); // AAA,BBB x kDate0,kDate1 = 4 enabled fits
+  run->spec.index_symbol = "";
+  run->spec.preset = FitPreset::Fast;
+  run->spec.fit_workers = 4u; // >= 2 so the scheduler launches background workers
+
+  std::atomic<bool> hook_fired{false};
+  run->hooks.before_worker_launch = [&hook_fired](std::size_t /*ordinal*/) {
+    hook_fired.store(true, std::memory_order_release);
+    throw std::runtime_error("injected worker-launch failure");
+  };
+
+  ASSERT_TRUE(run_streaming_bounded(run, kDrainDeadlockTimeout))
+      << "populate_universe_streaming did not return within " << kDrainDeadlockTimeout.count()
+      << "s after a pre-task scheduler failure -- the per-date drain is deadlocked on a "
+         "counter no task will ever decrement (review C-06)";
+  ASSERT_TRUE(hook_fired.load(std::memory_order_acquire))
+      << "the scheduler launched no background worker, so nothing was injected and this "
+         "run proves nothing (worker_budget collapsed to 1?)";
+
+  ASSERT_TRUE(run->cov.has_value());
+  ASSERT_FALSE(run->cov->has_value()) << "a scheduler that fitted NOTHING must not report success";
+  EXPECT_EQ(run->cov->error().code(), ErrorCode::Internal);
+  EXPECT_NE(run->cov->error().to_string().find("worker launch failed"), std::string::npos)
+      << "the scheduler's own message must be propagated, not replaced: "
+      << run->cov->error().to_string();
+
+  // Nothing was fitted, so no partition may exist -- in particular the drain must
+  // not have written a partition for a date whose cells never ran.
+  run->db.reset();
+  auto reopened = SurfaceDb::open(root.string());
+  ASSERT_TRUE(reopened.has_value()) << (reopened ? "" : reopened.error().to_string());
+  EXPECT_EQ(reopened->open_partition(kDate0).error().code(), ErrorCode::NotFound);
+  EXPECT_EQ(reopened->open_partition(kDate1).error().code(), ErrorCode::NotFound);
+
+  std::filesystem::remove_all(root);
+}
+
+// Path 2: the pre-launch SCRATCH-ALLOCATION failure (fit_scheduler.cpp's outer
+// catch(...) -> "scheduler setup failed"). This is the std::bad_alloc path the
+// production run actually took. A real bad_alloc is not injectable on demand, so
+// the throw comes from a hook placed at the top of the same try block; it reaches
+// the identical catch and the identical return, with no worker ever created --
+// which makes it a STRICTLY earlier pre-task failure than path 1.
+TEST(SurfaceDbPopulate, SchedulerSetupFailureTerminatesTheDrainInsteadOfHanging) {
+  const auto root = test_root("sched_setup_abort");
+
+  auto run = std::make_shared<StreamingRun>();
+  {
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+    run->db.emplace(std::move(*db));
+  }
+  run->boards = make_boards();
+  run->spec.index_symbol = "";
+  run->spec.preset = FitPreset::Fast;
+  run->spec.fit_workers = 1u; // even outer-SERIAL must not hang: no worker is launched
+
+  std::atomic<bool> hook_fired{false};
+  run->hooks.before_scheduler_setup = [&hook_fired]() {
+    hook_fired.store(true, std::memory_order_release);
+    throw std::bad_alloc();
+  };
+
+  ASSERT_TRUE(run_streaming_bounded(run, kDrainDeadlockTimeout))
+      << "populate_universe_streaming did not return within " << kDrainDeadlockTimeout.count()
+      << "s after a scheduler setup failure -- the per-date drain is deadlocked (review C-06)";
+  ASSERT_TRUE(hook_fired.load(std::memory_order_acquire));
+
+  ASSERT_TRUE(run->cov.has_value());
+  ASSERT_FALSE(run->cov->has_value());
+  EXPECT_EQ(run->cov->error().code(), ErrorCode::Internal);
+  EXPECT_NE(run->cov->error().to_string().find("scheduler setup failed"), std::string::npos)
+      << run->cov->error().to_string();
+
+  run->db.reset();
+  auto reopened = SurfaceDb::open(root.string());
+  ASSERT_TRUE(reopened.has_value()) << (reopened ? "" : reopened.error().to_string());
+  EXPECT_EQ(reopened->open_partition(kDate0).error().code(), ErrorCode::NotFound);
+
+  std::filesystem::remove_all(root);
+}
+
+// The durability half of R1-a: a date already fitted and WRITTEN before the
+// scheduler failure is still on disk afterwards, and the aborted run neither
+// rewrote it partially nor deleted it.
+//
+// The DATE is the resume unit, so the proof is staged across two runs, which is
+// also the only shape a PRE-TASK failure can produce (no task runs, so no date
+// can complete inside the failing run itself): run 1 fits kDate0 clean; run 2
+// adds a new symbol CCC to kDate0 -- which puts kDate0 back in the rewrite set,
+// so its whole partition is due to be rebuilt -- plus a new kDate1, and fails the
+// scheduler. Afterwards kDate0 must still serve AAA and BBB from a FRESH open
+// (crash-resume: only committed on-disk state), CCC must be absent (never
+// fitted), and kDate1 must not exist.
+TEST(SurfaceDbPopulate, DatesWrittenBeforeASchedulerFailureStayOnDisk) {
+  const auto root = test_root("sched_abort_durability");
+
+  // ── Run 1: kDate0 populated cleanly. ──
+  {
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+    const std::vector<CorpusBoard> first = {make_board(kDate0, "AAA", 100.0, 0.28),
+                                            make_board(kDate0, "BBB", 60.0, 0.34)};
+    UniversePopulateSpec spec;
+    spec.index_symbol = "";
+    spec.preset = FitPreset::Fast;
+    spec.fit_workers = 2u;
+    auto cov = populate_universe_streaming(*db, first, spec);
+    ASSERT_TRUE(cov.has_value()) << (cov ? "" : cov.error().to_string());
+    ASSERT_EQ(cov->cells_ok, 2u);
+    ASSERT_EQ(cov->dates_written, 1u);
+  }
+
+  // ── Run 2: kDate0 gains CCC (so the date is rewritten) and kDate1 arrives;
+  //    the scheduler dies before either can be fitted. ──
+  auto run = std::make_shared<StreamingRun>();
+  {
+    auto db = SurfaceDb::open(root.string());
+    ASSERT_TRUE(db.has_value()) << (db ? "" : db.error().to_string());
+    run->db.emplace(std::move(*db));
+  }
+  run->boards = {make_board(kDate0, "AAA", 100.0, 0.28), make_board(kDate0, "BBB", 60.0, 0.34),
+                 make_board(kDate0, "CCC", 80.0, 0.31), make_board(kDate1, "AAA", 101.0, 0.27)};
+  run->spec.index_symbol = "";
+  run->spec.preset = FitPreset::Fast;
+  run->spec.fit_workers = 4u;
+  run->hooks.before_worker_launch = [](std::size_t /*ordinal*/) {
+    throw std::runtime_error("injected worker-launch failure");
+  };
+
+  ASSERT_TRUE(run_streaming_bounded(run, kDrainDeadlockTimeout))
+      << "the drain deadlocked (review C-06)";
+  ASSERT_TRUE(run->cov.has_value());
+  ASSERT_FALSE(run->cov->has_value());
+
+  run->db.reset(); // drop the in-process handle: only on-disk state is asserted below
+  auto reopened = SurfaceDb::open(root.string());
+  ASSERT_TRUE(reopened.has_value()) << (reopened ? "" : reopened.error().to_string());
+  for (const char *symbol : {"AAA", "BBB"}) {
+    EXPECT_TRUE(reopened->load_surface(kDate0, symbol).has_value())
+        << kDate0 << "/" << symbol
+        << " was lost by an aborted rewrite -- a scheduler failure must not destroy an "
+           "already-committed date";
+  }
+  EXPECT_EQ(reopened->load_surface(kDate0, "CCC").error().code(), ErrorCode::NotFound)
+      << "CCC was never fitted, so it must not appear in the partition";
+  EXPECT_EQ(reopened->open_partition(kDate1).error().code(), ErrorCode::NotFound);
 
   std::filesystem::remove_all(root);
 }

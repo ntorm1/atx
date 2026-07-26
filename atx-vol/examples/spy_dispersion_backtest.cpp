@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -37,6 +38,7 @@
 #include "atx/vol/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/listed_dispersion_strategy.hpp"
+#include "atx/vol/listed_definitions_cache.hpp"
 #include "atx/vol/listed_opra.hpp"
 #include "atx/vol/occ_ess.hpp"
 #include "atx/vol/opra_batch.hpp"
@@ -91,6 +93,30 @@ Result<std::string> read_text(const fs::path &path) {
     return Err(ErrorCode::IoError, "cannot read " + path.string());
   }
   return Ok(std::move(text));
+}
+
+// ATX_VOL_CACHE: the default source for `--cache DIR` when the flag is not
+// given explicitly. `std::getenv` trips this build's /WX
+// (unused-result-adjacent MSVC deprecation), so `_dupenv_s` is used on
+// Windows, matching the existing pattern in
+// listed_definitions_cache_test.cpp's `definitions_tsv_path_from_env`. An
+// EMPTY return (unset or explicitly empty) means "disabled" — the same
+// sentinel `read_listed_definitions_cached` already uses for "no cache".
+std::string cache_dir_from_env() {
+  std::string path;
+#if defined(_WIN32)
+  char *raw = nullptr;
+  std::size_t len = 0;
+  if (_dupenv_s(&raw, &len, "ATX_VOL_CACHE") == 0 && raw != nullptr) {
+    path.assign(raw);
+    std::free(raw);
+  }
+#else
+  if (const char *raw = std::getenv("ATX_VOL_CACHE")) {
+    path.assign(raw);
+  }
+#endif
+  return path;
 }
 
 // The archive-file fingerprint that build-schedule stamped as `surface_fingerprint`
@@ -251,10 +277,14 @@ Status verify_occ_ess_evidence(const fs::path &run_dir, const Clock &clock) {
 // consumers — build-schedule (via build_listed_dispersion_schedule) and run-backtest
 // reconciliation — call the library seam, so the example's duplicate was removed (T9).
 
-Status build_schedule_command(const fs::path &run_dir) {
+Status build_schedule_command(const fs::path &run_dir, const fs::path &cache_dir) {
   const auto cmd_start = PhaseTimer::now();
-  PhaseTimer timer({"setup_read", "selection", "quote_join", "write_outputs"});
+  PhaseTimer timer(kBuildSchedulePhases);
 
+  // setup_read is charged in TWO disjoint segments around the definitions read,
+  // which is billed to its own `definitions_parse` phase. The two phases
+  // partition the old single `setup_read` span; nothing between them is
+  // uncharged and nothing is charged twice.
   auto phase = PhaseTimer::now();
   ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
   // REV-FIXTAIL I-A: the SAME run_spec.tsv, also through the STRICT typed reader,
@@ -286,8 +316,22 @@ Status build_schedule_command(const fs::path &run_dir) {
   // merely a duplicate of a read run-backtest already performs.
   ATX_TRY(DispersionRunConfig run_config, read_dispersion_run_config(run_dir / "run_spec.tsv"));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
+  timer.add("setup_read", phase);
+
+  // Task 8: `--cache DIR` / `ATX_VOL_CACHE` (default DISABLED, i.e. `cache_dir`
+  // empty) opts into the ATXDEFS1 pre-parsed cache. Disabled, this is
+  // byte-for-byte `read_listed_definitions_file` — see that seam's costs
+  // disclosure in listed_definitions_cache.hpp before enabling it. `&timer`
+  // charges the `definitions_cache` hit/miss phase ONLY when the cache is
+  // consulted (`cache_dir` non-empty); a disabled run charges nothing extra,
+  // so its `diagnostics` row set is identical to today's.
+  const auto definitions_start = PhaseTimer::now();
   ATX_TRY(ListedDefinitionTable definitions,
-          read_listed_definitions_file((run_dir / "definitions.tsv").string()));
+          read_listed_definitions_cached((run_dir / "definitions.tsv").string(), cache_dir.string(),
+                                         kDefinitionsCacheFingerprintDefault, &timer));
+  timer.add("definitions_parse", definitions_start, 1u);
+
+  phase = PhaseTimer::now();
   ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
   ATX_TRY(Clock clock, Clock::from_manifest(manifest));
   ATX_TRY_VOID(verify_occ_ess_evidence(run_dir, clock));
@@ -328,12 +372,23 @@ Status build_schedule_command(const fs::path &run_dir) {
   // file (the retained input read path). The schedule is ALSO folded into
   // run.atxrun as the trade_schedule section (the result container). run-backtest
   // later republishes run.atxrun with the full economic result set.
+  //
+  // ORDERING IS LOAD-BEARING (Wave E T6): trade_schedule.tsv is one of the five
+  // files RunDir::run_identity_hash folds, and that identity is the merge-write
+  // cache key. This write MUST stay ABOVE the write_run_archive call below. If the
+  // archive were stamped first, trade_schedule.tsv would appear afterwards, the
+  // next route (run-backtest) would recompute a different identity, and its write
+  // would start FRESH — silently dropping this command's trade_schedule section
+  // with no error. Pinned by
+  // RunDir.MergeWriteDropsCarriedSectionsWhenAFoldedInputAppearsLate.
   ATX_TRY_VOID(
       write_listed_dispersion_schedule_file((run_dir / "trade_schedule.tsv").string(), schedule));
   std::vector<RaSectionData> sections;
   sections.push_back(encode_schedule_section("trade_schedule", schedule));
   timer.add("write_outputs", write_start);
   sections.push_back(encode_diagnostics_section(timer, "build_schedule", schedule.rolls.size()));
+  // Must stay BELOW the trade_schedule.tsv write above — see the ordering note
+  // there and the contract on RunDir::run_identity_hash.
   ATX_TRY_VOID(RunDir(run_dir).write_run_archive(sections));
   std::printf("built immutable schedule: rolls=%zu\n", schedule.rolls.size());
   print_diag_summary("build_schedule", PhaseTimer::now() - cmd_start, schedule.rolls.size(), "roll",
@@ -376,15 +431,26 @@ Status verify_command(const fs::path &run_dir) {
   return Ok();
 }
 
-Status run_backtest_command(const fs::path &run_dir) {
+Status run_backtest_command(const fs::path &run_dir, const fs::path &cache_dir) {
   const auto cmd_start = PhaseTimer::now();
-  PhaseTimer timer({"setup_read", "engine_run", "reconciliation", "write_outputs"});
+  PhaseTimer timer(kRunBacktestPhases);
 
+  // Two disjoint setup_read segments around the definitions read (as in
+  // build_schedule_command): definitions_parse + setup_read sum to the old
+  // single setup_read span.
   auto phase = PhaseTimer::now();
   ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
   ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
+  timer.add("setup_read", phase);
+
+  // Task 8: see build_schedule_command's comment on `--cache`/`ATX_VOL_CACHE`.
+  const auto definitions_start = PhaseTimer::now();
   ATX_TRY(ListedDefinitionTable definitions,
-          read_listed_definitions_file((run_dir / "definitions.tsv").string()));
+          read_listed_definitions_cached((run_dir / "definitions.tsv").string(), cache_dir.string(),
+                                         kDefinitionsCacheFingerprintDefault, &timer));
+  timer.add("definitions_parse", definitions_start, 1u);
+
+  phase = PhaseTimer::now();
   ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
   ATX_TRY(Clock clock, Clock::from_manifest(manifest));
   ATX_TRY(ListedDispersionSchedule schedule,
@@ -429,24 +495,61 @@ Status run_backtest_command(const fs::path &run_dir) {
   }
   timer.add("engine_run", phase, backtest.size());
 
-  // reconciliation: the OPRA parquet join re-marking every session against the
-  // exchange tape (load_listed_quotes per date), then folding those marks into
-  // the reconciliation. This phase's cost dominating the subcommand is the claim
-  // the diagnostics prove.
-  phase = PhaseTimer::now();
-  const std::vector<std::string> symbols = all_symbols(universe_rows);
+  // The re-mark pass: per date, load the certified surface snapshot and join the
+  // OPRA parquet tape, then fold both into the reconciliation. These are three
+  // different costs with three different optimisations, so they are charged to
+  // three DISJOINT phases (`snapshot_load` / `quote_join` / `reconcile`) that
+  // together partition what the old aggregate `reconciliation` phase measured.
+  // Each per-date phase counts one unit per session, so ms/unit reads as
+  // ms/session; `reconcile` keeps the old phase's clock.size() count so its
+  // per-session figure stays comparable across the split.
+  //
+  // The symbol list and the owner reserves are quote-join setup (the symbols are
+  // the join's key set), so they are charged to `quote_join` rather than left
+  // uncharged — that keeps the partition exact rather than approximate.
+  const auto join_setup_start = PhaseTimer::now();
+  const std::vector<std::string> symbols = all_symbols(universe_rows, spec.index_symbol);
+  // The exact contract set this re-mark pass will read: every leg of every roll.
+  // The OPRA panels carry the whole listed universe for these symbols — on the
+  // Wave E fixture the unfiltered join emitted 41k quotes per session against a
+  // schedule of 66 legs — so handing the join the key set lets it skip the
+  // definition lookup, the OSI parse and quote construction for everything else.
+  // Read the `wanted` contract in listed_opra.hpp first: it also NARROWS six of
+  // the join's seven fatal exits to these keys, and it REQUIRES a strictly
+  // increasing span — hence the sort + unique below, which is enforced, not
+  // advisory.
+  //
+  // The UNION over ALL rolls, not the active cohort. A roll date marks both the
+  // held and the entering cohort (listed_dispersion_reconciliation.cpp), so a
+  // per-date cohort set would be a cohort-boundary reasoning error waiting to
+  // happen; the union is one key per leg per roll and trivially small.
+  std::vector<ListedQuoteKey> wanted;
+  for (const ListedScheduleRoll &roll : schedule.rolls) {
+    for (const ListedScheduleLeg &leg : roll.legs) {
+      wanted.push_back(quote_key_of(leg));
+    }
+  }
+  std::sort(wanted.begin(), wanted.end());
+  wanted.erase(std::unique(wanted.begin(), wanted.end()), wanted.end());
   std::vector<std::shared_ptr<const MarketSnapshot>> snapshot_owners;
   std::vector<std::vector<ListedOptionQuote>> quote_owners;
   snapshot_owners.reserve(clock.size());
   quote_owners.reserve(clock.size());
+  timer.add("quote_join", join_setup_start);
   for (const SnapshotRef &ref : clock.refs()) {
+    const auto snapshot_start = PhaseTimer::now();
     ATX_TRY(std::shared_ptr<const MarketSnapshot> snapshot,
             config.snapshot_cache->load(ref.archive_path, config.query_pricing_tier));
     snapshot_owners.push_back(std::move(snapshot));
+    timer.add("snapshot_load", snapshot_start, 1u);
+
+    const auto quote_start = PhaseTimer::now();
     ATX_TRY(std::vector<ListedOptionQuote> quotes,
-            listed_quotes_for_date(spec, definitions, symbols, ref.date));
+            listed_quotes_for_date(spec, definitions, symbols, ref.date, wanted));
     quote_owners.push_back(std::move(quotes));
+    timer.add("quote_join", quote_start, 1u);
   }
+  const auto reconcile_start = PhaseTimer::now();
   std::vector<ListedReconciliationSnapshot> reconciliation_snapshots;
   reconciliation_snapshots.reserve(clock.size());
   for (std::size_t i = 0; i < clock.size(); ++i) {
@@ -463,7 +566,7 @@ Status run_backtest_command(const fs::path &run_dir) {
   ATX_TRY(ListedDispersionReconciliation reconciliation,
           reconcile_listed_schedule(schedule, reconciliation_snapshots));
   ATX_TRY_VOID(validate_listed_reconciliation_backtest(reconciliation, backtest));
-  timer.add("reconciliation", phase, clock.size());
+  timer.add("reconcile", reconcile_start, clock.size());
 
   // Hard cutover: the loose backtest.tsv / reconciliation.tsv / contract_marks.tsv
   // result files are replaced by the run.atxrun result container. The economic
@@ -585,73 +688,6 @@ Status project_schedule_command(const fs::path &run_dir) {
   return Ok();
 }
 
-// Drive the separate Record replay that produces the mark_divergence section: the
-// engine's run_backtest loop hides per-step strategy state, so replay here and
-// snapshot last_mark_divergences() after each roll step, collecting the rows into
-// `arena` (the section is hand-built from it — mark_divergence is example-owned,
-// with no library encoder). The per-session MarketSnapshot::load is accumulated
-// into archive_load (count=loads), a measured subset of divergence_replay.
-Status collect_mark_divergence_replay(const ListedDispersionSchedule &schedule, const Clock &clock,
-                                      const RunConfig &config, double delta_band, PhaseTimer &timer,
-                                      MarkDivergenceArena &arena) {
-  const auto div_start = PhaseTimer::now();
-  ATX_TRY(ListedDispersionStrategy divergence_strategy,
-          ListedDispersionStrategy::create(schedule, delta_band, ScheduleMarkPolicy::Record));
-  PortfolioState divergence_book;
-  std::uint64_t divergence_next_id = 1;
-  for (std::size_t i = 0; i < clock.size(); ++i) {
-    const SnapshotRef &ref = clock.refs()[i];
-    const auto load_start = PhaseTimer::now();
-    ATX_TRY(MarketSnapshot snapshot,
-            MarketSnapshot::load(ref.archive_path, config.query_pricing_tier));
-    timer.add("archive_load", load_start, 1u);
-    ATX_TRY_VOID(divergence_strategy.on_step(snapshot, i, divergence_book, divergence_next_id,
-                                             config.price));
-    const std::vector<MarkDivergence> &divergences = divergence_strategy.last_mark_divergences();
-    if (divergences.empty()) {
-      continue;
-    }
-    // Divergences are populated only on a roll step; the roll that just fired owns
-    // the legs carrying each contract's symbol/raw_symbol.
-    const ListedScheduleRoll &roll = schedule.rolls[divergence_strategy.next_roll_index() - 1u];
-    for (const MarkDivergence &divergence : divergences) {
-      const ListedScheduleLeg *matched = nullptr;
-      for (const ListedScheduleLeg &leg : roll.legs) {
-        if (leg.uid == divergence.uid && leg.strike == divergence.strike &&
-            leg.expiry_ts_ns == divergence.expiry_ts_ns && leg.side == divergence.side) {
-          matched = &leg;
-          break;
-        }
-      }
-      if (matched == nullptr) {
-        return Err(ErrorCode::NotFound, "mark divergence leg not found in roll");
-      }
-      const double diff = divergence.live_mark - divergence.schedule_mark;
-      const double denom = std::abs(divergence.schedule_mark);
-      const double abs_diff_bps_of_mark = denom > 0.0 ? std::abs(diff) / denom * 1.0e4 : 0.0;
-      arena.date_codes.push_back(dict_intern(arena.date_dict, ref.date));
-      arena.symbol_codes.push_back(dict_intern(arena.symbol_dict, matched->symbol));
-      arena.raw_symbol_codes.push_back(dict_intern(arena.raw_symbol_dict, matched->raw_symbol));
-      arena.strike.push_back(divergence.strike);
-      arena.expiry_ts_ns.push_back(divergence.expiry_ts_ns);
-      arena.side_codes.push_back(divergence.side == Side::Call ? std::uint8_t{0} : std::uint8_t{1});
-      arena.schedule_mark.push_back(divergence.schedule_mark);
-      arena.live_mark.push_back(divergence.live_mark);
-      arena.diff.push_back(diff);
-      arena.abs_diff_bps_of_mark.push_back(abs_diff_bps_of_mark);
-      ++arena.n_rows;
-    }
-  }
-  // An empty mark_divergence section must mean "every roll fired and none
-  // diverged", never "the replay silently skipped rolls" — it is the evidence
-  // channel for the parity report's zero-divergence claim.
-  if (!divergence_strategy.all_rolls_consumed()) {
-    return Err(ErrorCode::Unavailable, "divergence replay did not consume every scheduled roll");
-  }
-  timer.add("divergence_replay", div_start, clock.size());
-  return Ok();
-}
-
 // Projected replay of a listed-format schedule. `--execution configured` (default) is
 // the Task 2 diagnostic: reprice through the fast cached-surrogate tier under
 // QueryExecution::Configured (genuine interpolation) — its fast-tier accuracy gap is
@@ -662,14 +698,40 @@ Status collect_mark_divergence_replay(const ListedDispersionSchedule &schedule, 
 // marks. `--schedule` selects the input schedule (default trade_schedule.tsv);
 // `--out` is a provenance label only — no file is written under it; the name is
 // recorded in the run.atxrun `meta` section (requested_out) so the request stays
-// visible. `--no-divergence` skips the mark-divergence replay pass (and its
-// `mark_divergence` section), leaving only the priced backtest — the
-// bare-backtest wall-time path. The priced run is independent of the replay, so
-// the backtest output is byte-identical either way.
+// visible.
+//
+// MARK DIVERGENCE HAS EXACTLY ONE SOURCE (L10, Wave D T5): the `StepObserver` that
+// rides the priced run. There is no second pass. The shadow replay that used to
+// re-walk the clock, re-load every archive and re-step a private
+// ListedDispersionStrategy purely to recompute rows the priced run already computed
+// is DELETED — it was proven bit-exactly redundant on a 135-session production
+// corpus (137 rows across 7 rolls and 11 underlyings) before removal, and the
+// library-side observer carries its own fail-closed guards
+// (make_mark_divergence_observer: roll cursor + valuation timestamp).
+// `--no-divergence` therefore now means "do not install the observer", leaving the
+// bare priced backtest — the bare-backtest wall-time path. The priced run never
+// consulted the shadow, and `Strategy.StepObserverAbsentIsBitIdentical` pins that
+// installing the observer does not perturb it, so the backtest output is
+// byte-identical either way.
 Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &schedule_file,
                                       const std::string &execution, const fs::path &out_file,
                                       bool skip_divergence) {
   const auto cmd_start = PhaseTimer::now();
+  // PHASE LIST IS BYTE-STABLE AND STAYS THAT WAY. The `diagnostics` section emits
+  // one row per PRE-DECLARED phase, so adding, removing or renaming a name here
+  // changes that section's row set — a RunArchive-visible artifact change, not a
+  // cosmetic one. It is therefore held at exactly the five names the shadow-replay
+  // era declared, even though T5's deletion changed what two of them measure:
+  //   * `divergence_replay` no longer times a second pass over the clock. It now
+  //     accumulates the per-step observer-callback time charged inside the observer
+  //     wrapper below (count still == sessions, one add per step).
+  //   * `archive_load` legitimately reads 0/0. Its per-load adds lived in the
+  //     deleted shadow loop; the snapshot loads now belong exclusively to the
+  //     priced run and are charged to `priced_run`, exactly as they already were
+  //     under `--no-divergence`. This is the same benign zero-phase pattern Wave B
+  //     accepted for project-schedule's `archive_load` once its loop moved into the
+  //     library. Renaming or dropping the phase to "fix" the zero would break the
+  //     section's row set for no measurement gain.
   PhaseTimer timer(
       {"setup_read", "divergence_replay", "archive_load", "priced_run", "write_outputs"});
 
@@ -685,7 +747,7 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   ATX_TRY(ListedDispersionSchedule schedule,
           read_listed_dispersion_schedule_file((run_dir / schedule_file).string()));
 
-  // Shared query route for the divergence replay and the priced run.
+  // Query route for the priced run — the only run there is.
   RunConfig config;
   config.unpriced = UnpricedLotPolicy::Error;
   config.snapshot_cache = std::make_shared<SnapshotCache>();
@@ -715,15 +777,56 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   }
   timer.add("setup_read", phase);
 
-  // mark_divergence.tsv comes from a separate Record replay (write_mark_divergence_replay):
-  // divergence_replay (count=sessions) times the whole replay and archive_load (count=loads)
-  // is a measured subset of it. --no-divergence skips the replay entirely, leaving only the
-  // priced backtest; the divergence_replay/archive_load phases then read 0 and the priced run
-  // absorbs its own cold snapshot-cache loads.
+  // Staging for the `mark_divergence` section. Filled AFTER the priced run from
+  // `observed` (there is nothing to stage before the run produces the rows); the
+  // section itself is still hand-built from this arena by the unchanged
+  // build_mark_divergence_section, so the emitted artifact's construction is
+  // untouched by T5 — only its upstream row source moved.
   auto divergence_arena = std::make_shared<MarkDivergenceArena>();
+  // The observer's sink — now the SOLE mark-divergence source, filled only by the
+  // priced run's step_observer. Declared out here because both it and `schedule`
+  // are borrowed by the observer and must outlive the run_backtest call that
+  // consumes it.
+  std::vector<ListedMarkDivergenceRow> observed;
+  // Callback count for the observer-coverage gate after the priced run — the half of
+  // the evidence-channel contract that `all_rolls_consumed()` structurally cannot
+  // supply (see the two-gate comment at the priced run). A DEDICATED counter, not a
+  // read-back of the `divergence_replay` phase's count: `PhaseTimer::phases()` does
+  // expose one, but that phase list is held byte-stable for the `diagnostics`
+  // ARTIFACT, so keying a fail-closed correctness gate off a phase NAME would let a
+  // future rename there silently disarm it. Same lifetime story as `observed` — the
+  // wrapper borrows it and both outlive the run_backtest call.
+  std::size_t observer_calls = 0u;
   if (!skip_divergence) {
-    ATX_TRY_VOID(collect_mark_divergence_replay(schedule, clock, config, spec.delta_band, timer,
-                                                *divergence_arena));
+    // `schedule` is the very object ListedDispersionStrategy::create copies below,
+    // so the observer's schedule and the strategy's are value-equal by construction
+    // — which is the invariant make_mark_divergence_observer's two fail-closed
+    // guards (roll cursor, valuation timestamp) rest on.
+    //
+    // Wrapped, not assigned directly, purely to keep the `divergence_replay`
+    // diagnostics phase measuring something real: it now accumulates the
+    // observer-callback time, one add per observed step, so its count still equals
+    // the session count the shadow-replay era recorded. The wrapper is pure
+    // measurement — it forwards the event and the Status unchanged, so a
+    // fail-closed guard inside the observer still aborts the run through
+    // run_backtest's ATX_TRY_VOID exactly as it would unwrapped. The inner
+    // observer is captured BY VALUE so the wrapper owns it; `timer` is a local of
+    // this function and outlives `config`.
+    //
+    // The wrapper is ALSO where collection coverage is witnessed: `observer_calls` is
+    // bumped in lockstep with the phase's unit count, so the two can never disagree.
+    // Counting here rather than inside make_mark_divergence_observer is deliberate —
+    // this is the site that is conditional, so it is the site whose absence has to be
+    // observable.
+    config.step_observer = [&timer, &observer_calls,
+                            inner = make_mark_divergence_observer(schedule, observed)](
+                               const StepEvent &event) -> Status {
+      const auto cb_start = PhaseTimer::now();
+      Status observed_status = inner(event);
+      ++observer_calls;
+      timer.add("divergence_replay", cb_start, 1u);
+      return observed_status;
+    };
   }
 
   // Primary priced run: the same strategy-aware engine as run-backtest, under the
@@ -733,14 +836,87 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   ATX_TRY(ListedDispersionStrategy strategy,
           ListedDispersionStrategy::create(schedule, spec.delta_band, ScheduleMarkPolicy::Record));
   ATX_TRY(BacktestResult backtest, run_backtest(clock, strategy, config));
+  // EVIDENCE CHANNEL FOR THE ZERO-DIVERGENCE CLAIM — TWO GATES, ONE CONTRACT.
+  // An empty `mark_divergence` section must mean "every roll fired and none diverged",
+  // never "nothing was looking". It takes BOTH checks below to say that, and neither
+  // one alone is sufficient:
+  //
+  //   (1) ROLL COVERAGE — `all_rolls_consumed()`, carried from the deleted shadow
+  //       replay's post-loop gate (the message differs because the subject does: one
+  //       run, not a replay). It interrogates the priced STRATEGY: every scheduled
+  //       roll actually fired, so no roll went unexamined by the object the observer
+  //       reads.
+  //   (2) COLLECTION COVERAGE — `observer_calls == clock.size()`. It interrogates the
+  //       observer WRAPPER: the observer was installed and fired on every session.
+  //
+  // (2) exists because (1) structurally cannot supply it. The strategy does not know
+  // whether an observer was ever attached, so on its own (1) cannot distinguish "the
+  // observer ran and legitimately found zero divergences" — the normal, expected cold
+  // outcome — from "the observer was never installed, so of course the section is
+  // empty". The shadow's single gate COULD distinguish them, because the object it
+  // interrogated was the object its own collection loop had just walked; moving
+  // collection into `config.step_observer` split that one guarantee into two, and only
+  // one of the two halves came across with the comment.
+  //
+  // What the pair deliberately does NOT claim: that the observer's detection logic is
+  // itself correct. That is the observer's own contract — its roll-cursor and
+  // valuation-timestamp guards fail CLOSED through run_backtest's ATX_TRY_VOID, so a
+  // fired-but-misaligned observer aborts the run rather than under-reporting, and the
+  // ListedDispersionPipeline observer tests pin the row content.
   if (!strategy.all_rolls_consumed()) {
     return Err(ErrorCode::Unavailable, "projected backtest did not consume every scheduled roll");
   }
+  // Skipped entirely under --no-divergence: no observer is installed there BY DESIGN
+  // and no `mark_divergence` section is written, so there is no empty-section claim to
+  // protect and a zero count is the correct state, not a failure.
+  if (!skip_divergence && observer_calls != clock.size()) {
+    return Err(ErrorCode::Unavailable,
+               "the mark-divergence observer did not fire on every session (" +
+                   std::to_string(observer_calls) + " of " + std::to_string(clock.size()) +
+                   "), so an empty mark_divergence section cannot be read as 'no divergence'");
+  }
   timer.add("priced_run", priced_start, backtest.size());
+
+  // Stage the observer's rows into the arena, in kMarkDivergenceCols REGISTRY
+  // ORDER — the same order, the same dict_intern and the same Side->u8 mapping the
+  // deleted shadow staged with, so build_mark_divergence_section (unchanged) sees a
+  // bit-identical arena and the emitted section is byte-identical to the shadow era's.
+  // Positional and append-only: the observer accumulates in step order and, within a
+  // step, in the strategy's divergence order, and that order IS part of the pinned
+  // artifact, so nothing here sorts, joins or de-duplicates.
+  //
+  // Placed after timer.add("priced_run", ...) on purpose: `observed` only exists once
+  // the run has finished, and charging this staging to no phase keeps every phase's
+  // meaning exactly what the phase list declares.
+  if (!skip_divergence) {
+    MarkDivergenceArena &arena = *divergence_arena;
+    for (const ListedMarkDivergenceRow &row : observed) {
+      arena.date_codes.push_back(dict_intern(arena.date_dict, row.date));
+      arena.symbol_codes.push_back(dict_intern(arena.symbol_dict, row.symbol));
+      arena.raw_symbol_codes.push_back(dict_intern(arena.raw_symbol_dict, row.raw_symbol));
+      arena.strike.push_back(row.strike);
+      arena.expiry_ts_ns.push_back(row.expiry_ts_ns);
+      arena.side_codes.push_back(row.side == Side::Call ? std::uint8_t{0} : std::uint8_t{1});
+      arena.schedule_mark.push_back(row.schedule_mark);
+      arena.live_mark.push_back(row.live_mark);
+      arena.diff.push_back(row.diff);
+      arena.abs_diff_bps_of_mark.push_back(row.abs_diff_bps_of_mark);
+      ++arena.n_rows;
+    }
+    // Evidence line, inherited from the deleted arbiter's verdict line. There is no
+    // longer a second source to compare against, so this reports the one number a
+    // reader of a stdout-only transcript still needs: how many rows the sole source
+    // produced. Zero remains legitimate on either route — a row exists only where
+    // the live seed mark differs from the frozen schedule mark, so a schedule
+    // replayed on the tier that authored it reproduces its own marks — and it is now
+    // exactly as informative as the section it describes, with no equivalence claim
+    // attached to be vacuous about.
+    std::printf("mark divergence rows: %llu\n", static_cast<unsigned long long>(arena.n_rows));
+  }
 
   // Hard cutover: the loose projected_backtest.tsv / mark_divergence.tsv result
   // files are replaced by the run.atxrun result container. The priced backtest is
-  // named for the divergence-pass presence — the registry's two projected
+  // named for the observer's presence — the registry's two projected
   // variants: projected_cold (the canonical cold divergence route) or
   // projected_nodiv (--no-divergence, the bare priced run). The execution tier
   // (cold vs the diagnostic fast tier) and the requested --out name are recorded
@@ -906,18 +1082,34 @@ Status runarchive_dump_command(const fs::path &run_dir, const std::string &secti
 }
 
 void usage() {
-  std::fprintf(stderr, "usage:\n"
-                       "  atxvol_spy_dispersion_backtest build-corpus --spec FILE --out DIR\n"
-                       "  atxvol_spy_dispersion_backtest build-schedule --run DIR\n"
-                       "  atxvol_spy_dispersion_backtest run-backtest --run DIR\n"
-                       "  atxvol_spy_dispersion_backtest project-schedule --run DIR\n"
-                       "  atxvol_spy_dispersion_backtest run-projected-backtest --run DIR "
-                       "[--schedule FILE] [--execution cold|configured] [--out FILE] "
-                       "[--no-divergence]\n"
-                       "  atxvol_spy_dispersion_backtest run-surface-backtest --run DIR\n"
-                       "  atxvol_spy_dispersion_backtest run-projected-var --run DIR\n"
-                       "  atxvol_spy_dispersion_backtest verify --run DIR\n"
-                       "  atxvol_spy_dispersion_backtest runarchive dump DIR SECTION [--tsv]\n");
+  std::fprintf(
+      stderr, "usage:\n"
+              "  atxvol_spy_dispersion_backtest build-corpus --spec FILE --out DIR\n"
+              "  atxvol_spy_dispersion_backtest build-schedule --run DIR [--cache DIR]\n"
+              "  atxvol_spy_dispersion_backtest run-backtest --run DIR [--cache DIR]\n"
+              "  atxvol_spy_dispersion_backtest project-schedule --run DIR\n"
+              "  atxvol_spy_dispersion_backtest run-projected-backtest --run DIR "
+              "[--schedule FILE] [--execution cold|configured] [--out FILE] "
+              "[--no-divergence]\n"
+              "  atxvol_spy_dispersion_backtest run-surface-backtest --run DIR\n"
+              "  atxvol_spy_dispersion_backtest run-projected-var --run DIR\n"
+              "  atxvol_spy_dispersion_backtest verify --run DIR\n"
+              "  atxvol_spy_dispersion_backtest runarchive dump DIR SECTION [--tsv]\n"
+              "\n"
+              "--cache DIR (build-schedule, run-backtest only): opt into the ATXDEFS1\n"
+              "  pre-parsed definitions.tsv cache. Defaults to the ATX_VOL_CACHE\n"
+              "  environment variable; DISABLED (today's behaviour, byte-for-byte) if\n"
+              "  neither is set. Read this before turning it on:\n"
+              "    * a HIT is a median 1.274x faster than not caching (n=3, sign 3/3,\n"
+              "      p=0.125 on a one-sided sign test — WEAK, not a strong claim);\n"
+              "    * the run that POPULATES the cache is a median 1.856x SLOWER than not\n"
+              "      caching at all;\n"
+              "    * peak working set on that populating run is roughly 3 GB against a\n"
+              "      730 MB definitions.tsv;\n"
+              "    * the cache directory has NO EVICTION POLICY and grows WITHOUT BOUND,\n"
+              "      roughly 300 MB per distinct definitions.tsv ever seen.\n"
+              "  See read_listed_definitions_cached's header comment (listed_definitions_"
+              "cache.hpp) for the full disclosure.\n");
 }
 
 } // namespace
@@ -951,6 +1143,12 @@ int main(int argc, char **argv) {
   fs::path schedule;
   std::string execution;
   bool no_divergence = false;
+  // `--cache` default: the ATX_VOL_CACHE environment variable, itself
+  // defaulting to empty (disabled). An explicit `--cache` below overrides
+  // either. Cache-disabled-by-default is load-bearing (Task 8 ruling): no
+  // existing invocation of this binary — including the controller's
+  // parity_full_run.ps1, which never passes --cache — may change behaviour.
+  fs::path cache = cache_dir_from_env();
   for (int i = 2; i < argc; ++i) {
     const std::string_view argument = argv[i];
     if (argument == "--no-divergence") {  // value-less flag, checked before the value guard
@@ -971,6 +1169,8 @@ int main(int argc, char **argv) {
       schedule = argv[++i];
     } else if (argument == "--execution") {
       execution = argv[++i];
+    } else if (argument == "--cache") {
+      cache = argv[++i];
     } else {
       usage();
       return 2;
@@ -1003,9 +1203,9 @@ int main(int argc, char **argv) {
   if (command == "build-corpus" && !spec.empty() && !out.empty()) {
     status = atx::vol::dispersion_build_corpus(spec, out);
   } else if (command == "build-schedule" && !run.empty()) {
-    status = build_schedule_command(run);
+    status = build_schedule_command(run, cache);
   } else if (command == "run-backtest" && !run.empty()) {
-    status = run_backtest_command(run);
+    status = run_backtest_command(run, cache);
   } else if (command == "project-schedule" && !run.empty()) {
     status = project_schedule_command(run);
   } else if (command == "run-projected-backtest" && !run.empty()) {

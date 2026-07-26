@@ -18,12 +18,12 @@
 // (--start/--end); parameterized so the PM runs it on the full YTD pull later.
 // Flow: open db -> windowed Clock -> make_dispersion_strangle_spec
 // {hold_to_expiry, DeltaToZero daily hedge} -> DeclarativeStrategy ->
-// run_backtest (timed) -> tearsheet -> write pnl_track.tsv -> console summary.
+// run_timed (the spine: timed run_backtest + tearsheet + EngineRunStats) ->
+// write pnl_track.tsv -> console summary.
 // Exit codes: 2 bad args, 1 runtime error. OFF by default (ATX_BUILD_EXAMPLES).
 
 #include <algorithm>
 #include <cctype>
-#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -36,13 +36,14 @@
 #include <vector>
 
 #include "atx/core/error.hpp"              // Err, Ok, ATX_TRY
-#include "atx/vol/backtest.hpp"            // Clock, run_backtest, RunConfig, SnapshotCache
+#include "atx/vol/backtest.hpp"            // Clock, RunConfig, SnapshotCache
+#include "atx/vol/backtest_driver.hpp"     // run_timed (the timed-run + tearsheet + stats spine)
 #include "atx/vol/corpus.hpp"              // CorpusManifest, CorpusEntry (windowed clock)
 #include "atx/vol/dispersion.hpp"          // MissingNamePolicy, MissingNameSpec
 #include "atx/vol/dispersion_strangle.hpp" // DispersionStrangleConfig, make_dispersion_strangle_spec
 #include "atx/vol/strategy.hpp"            // DeclarativeStrategy
 #include "atx/vol/surface_db.hpp"          // SurfaceDb
-#include "atx/vol/tearsheet.hpp"           // TearSheet, tearsheet, write_backtest_pnl_tsv
+#include "atx/vol/tearsheet.hpp"           // TearSheet, write_backtest_pnl_tsv
 #include "atx/vol/types.hpp"               // Result, Status
 #include "atx/vol/universe.hpp"            // canonical_symbol
 
@@ -456,16 +457,21 @@ int main(int argc, char **argv) {
     rc.frictions.per_contract_cost = 0.65;
   }
 
-  const auto t0 = std::chrono::steady_clock::now();
-  auto res = run_backtest(*clock, strat, rc);
-  const auto t1 = std::chrono::steady_clock::now();
-  if (!res) {
-    std::fprintf(stderr, "run_backtest: %s\n", res.error().to_string().c_str());
+  // The spine (Wave C): time the engine call, fold the tearsheet, capture the
+  // stats. `wall_clock_ms` still brackets ONLY `run_backtest` — the fold is not
+  // inside the interval — so the meta header's timing keys keep their meaning.
+  auto outcome = run_timed(*clock, strat, rc);
+  if (!outcome) {
+    std::fprintf(stderr, "run_backtest: %s\n", outcome.error().to_string().c_str());
     return 1;
   }
-  const BacktestResult &r = *res;
-  const TearSheet ts = tearsheet(r);
-  const double wall_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+  const BacktestResult &r = outcome->result;
+  const TearSheet ts = outcome->sheet;
+  const double wall_ms = outcome->stats.wall_clock_ms;
+  // Driver-local, and deliberately not `EngineRunStats` fields: `steps_per_s`
+  // carries this driver's own `wall_ms > 0.0` guard, and `peak_open_lots` is not
+  // an engine-stats quantity (`engine_metrics`' key set is pinned by
+  // `run_report_test.cpp`).
   const double steps_per_s = (wall_ms > 0.0) ? 1000.0 * static_cast<double>(r.size()) / wall_ms : 0.0;
   const double peak_lots =
       r.size() ? *std::max_element(r.n_open_lots.begin(), r.n_open_lots.end()) : 0.0;

@@ -422,3 +422,58 @@ Distinct fitters never contend.
 later `fit()` publishes a new generation without invalidating a handle you still
 hold, and the handle outlives the fitter itself.
 
+## Known limitation: `atxvol` and `pyarrow` cannot share a process on Windows
+
+**Symptom** (search-friendly): importing `atxvol` and `pyarrow` in the same
+process — in either order — fails with
+
+```
+ImportError: DLL load failed while importing _core: The specified procedure could not be found.
+```
+
+or, if `pyarrow` happens to import first, the identical failure moves to
+`pyarrow` instead:
+
+```
+ImportError: DLL load failed while importing lib: The specified procedure could not be found.
+```
+
+**Why this happens, and why reordering the imports will not fix it.** `atxvol._core`
+now dynamically links vcpkg's `arrow.dll`/`parquet.dll` (pulled in by the OPRA hive
+loader that backs `atxvol.build_surface_db` — this is new; earlier bindings that
+never touched hive/parquet data did not need these DLLs). Separately, the `pyarrow`
+wheel bundles its **own**, differently-versioned copies of DLLs with the exact same
+base filenames. On Windows, once a DLL of a given name is loaded anywhere in a
+process, the loader resolves any later same-name import to that already-resident
+copy — regardless of search path, `PATH`, or the importing module's own directory.
+So whichever of `atxvol._core` / `pyarrow.lib` imports first claims the process-wide
+`arrow.dll`/`parquet.dll` slot, and the other one fails looking for an exported
+symbol that isn't in that (wrong-version) copy. This has been verified in **both**
+import orders — it is a genuine ABI incompatibility between the two vendored Arrow
+builds, not an import-ordering bug, so swapping which import comes first only moves
+the failure, it does not remove it.
+
+**Why this matters:** design spec §5's stated goal for these bindings is "so a
+notebook can build and query the same db the C++ tools produce." A real analysis
+notebook is very likely to also import `pyarrow` (directly, or transitively via
+`pandas`), so this is a product-level limitation on the intended workflow, not just
+a test-environment quirk.
+
+**Known real fixes (neither implemented yet):**
+- A `delvewheel`-style repair step on the built wheel/extension that renames the
+  vendored DLLs (content-hash suffix) and patches `_core`'s import table to match,
+  so its copies never collide with another package's same-named DLLs. This is the
+  standard fix for this exact class of Windows wheel problem.
+- Statically link Arrow/Parquet into `atx-vol` (a vcpkg triplet change) so `_core`
+  has no runtime dependency on a shared `arrow.dll`/`parquet.dll` at all.
+
+**Workaround available today:** don't import `atxvol` and `pyarrow` in the same
+process. If you need to produce OPRA-hive parquet files and then build/query a
+surface db from them, do the parquet-writing step in a separate Python process
+(e.g. `subprocess.run([sys.executable, "-m", ...])`) that never imports `atxvol`,
+then run `atxvol.build_surface_db(...)` in a process that never imports `pyarrow`.
+`atx-vol/python/tests/test_surface_db_build.py` follows exactly this pattern: its
+synthetic-hive fixture writer lives in the standalone script
+`atx-vol/python/tests/_gen_opra_hive.py`, invoked as a subprocess, specifically so
+the test process itself only ever imports `atxvol`.
+

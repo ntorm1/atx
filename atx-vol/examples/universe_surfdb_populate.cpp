@@ -226,10 +226,17 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  std::printf("[populate] loaded=%u to_fit=%u refit=%u already_present=%u "
-              "ok=%u failed=%u | dates: total=%u written=%u skipped_complete=%u would_drop=%u\n",
-              cov->cells_loaded, cov->cells_to_fit, cov->cells_refit, cov->cells_already_present,
-              cov->cells_ok, cov->cells_failed, cov->dates_total, cov->dates_written,
+  // `carried` sits beside `refit` (FIX-D fix-1, I2): they are the two halves of
+  // what a rewritten date did with its already-present cells, and a converged
+  // carry resume prints refit=0 ok=0 — which without `carried` reads as a no-op.
+  // `carried_disabled` (FIX-E) is the third: stored cells of a switched-off symbol
+  // that a rewrite PRESERVED rather than deleted.
+  std::printf("[populate] loaded=%u to_fit=%u refit=%u carried=%u carried_disabled=%u "
+              "already_present=%u ok=%u failed=%u | dates: total=%u written=%u "
+              "skipped_complete=%u would_drop=%u\n",
+              cov->cells_loaded, cov->cells_to_fit, cov->cells_refit, cov->cells_carried,
+              cov->cells_carried_disabled, cov->cells_already_present, cov->cells_ok,
+              cov->cells_failed, cov->dates_total, cov->dates_written,
               cov->dates_skipped_complete, cov->dates_skipped_would_drop);
   std::printf("[populate] db=%s\n", db_root.c_str());
 
@@ -238,6 +245,7 @@ int main(int argc, char **argv) {
   stats.n_boards = cov->cells_loaded;
   stats.n_ok = cov->cells_ok;
   stats.n_failed = cov->cells_failed;
+  stats.n_carried = cov->cells_carried; // FIX-D fix-1 (I2): reaches the CSV meta block
   stats.n_dates_written = cov->dates_written;
   stats.per_symbol = cov->per_symbol;
   const std::string out_stats = stats_path.empty() ? (db_root + "/populate_stats.csv") : stats_path;

@@ -40,6 +40,13 @@
 #include "atx/vol/types.hpp" // Result, Side
 #include "atx/vol/vol_time.hpp" // TimeSpec
 
+// Forward-declared to keep this public header Arrow-free: the in-memory-table
+// seam (load_opra_cbbo_from_table) takes it by const reference. The full
+// definition lives in atx/core/io/parquet.hpp, included by opra_panel.cpp.
+namespace atx::core::io {
+class ParquetTable;
+} // namespace atx::core::io
+
 namespace atx::vol {
 
 // Parsed OSI/OCC option symbol: ROOT + YYMMDD + {C|P} + STRIKE(8 digits,
@@ -119,11 +126,56 @@ struct OpraMarketInputProvenance {
 //         numeric / out of range.
 [[nodiscard]] Result<OsiSymbol> parse_osi_symbol(std::string_view sym);
 
+// Is `root` (an OSI/OCC option root, as produced by `parse_osi_symbol`) the wire
+// encoding of the equity ticker `ticker` (the universe / `underlying` spelling)?
+//
+// THE POLICY, stated once for the whole repo:
+//
+//   A trailing digit in an OSI root denotes a DIFFERENT DELIVERABLE, therefore a
+//   DIFFERENT INSTRUMENT. It is not punctuation and must never be normalised
+//   away. The only tolerated difference between an equity ticker and its OSI
+//   root is punctuation (`.`).
+//
+// So `("BRKB", "BRK.B")` is true — the OSI root namespace cannot express `.`, so
+// those are two spellings of ONE identity, a pure encoding artifact — while
+// `("AAPL1", "AAPL")` is FALSE. After a corporate action an `AAPL1` contract's
+// deliverable is not 100 shares of AAPL, so its options are not comparable to the
+// vanilla chain at the same strike and the fitter has no deliverable model with
+// which to tell them apart. Merging them is a silent mispricing, not a lost
+// symbol.
+//
+// THIS IS DELIBERATELY NARROWER THAN THE PYTHON PRODUCERS, AND THAT ASYMMETRY IS
+// A SAFETY PROPERTY, NOT DRIFT. `tools/pull_opra_hive.py` strips a trailing digit
+// from the root before mapping it to a universe symbol, so an adjusted `AAPL1`
+// row can reach disk carrying `underlying = "AAPL"`. This predicate refuses that
+// pair, which is exactly what makes `load_opra_cbbo_parquet`'s per-row identity
+// guard fail LOUD on it instead of silently merging an adjusted deliverable into
+// the vanilla chain. Do NOT widen this to match the producers; if the producers
+// are to change, that is its own decision with its own argument.
+//
+// ASYMMETRY, stated because it is sharp: dots are skipped in `ticker` only, never
+// in `root`. `("BRK.B", "BRK.B")` is therefore FALSE — this is not reflexive over
+// dotted strings. That is sound because the premise of the rule is that the root
+// namespace cannot express punctuation, so a dotted root is not a thing OPRA
+// emits; and it is the behaviour of both copies this function replaces, preserved
+// exactly rather than quietly widened. It is pinned by a test.
+//
+// A PREDICATE, deliberately not a normaliser. There is no `osi_root_of(ticker)`
+// counterpart and there must not be: a normaliser invents a third namespace that
+// callers can key by, and it would allocate on a path that runs once per kept
+// quote row (millions per hive load). This is allocation-free.
+[[nodiscard]] bool osi_root_matches_ticker(std::string_view root,
+                                           std::string_view ticker) noexcept;
+
 // Load spec for `load_opra_cbbo_parquet`.
 struct OpraLoadSpec {
   std::string path;        // parquet file to read
   std::string underlying;  // keep rows whose `underlying` equals this
-                           // (empty = keep all, frame uid = first seen)
+                           // (empty = keep all, frame uid = first seen).
+                           // ALSO the loaded frame's identity: on a filtered load
+                           // this exact string becomes `frame.uid` AND every
+                           // `QuoteRow::uid` (see the uid-namespace note on
+                           // load_opra_cbbo_parquet step 4).
   std::string snapshot_iso; // "YYYY-MM-DD" or full datetime; stamped on the frame
   double r = 0.0;           // continuously-compounded rate for the spot implication
   double spot_override = 0.0; // if > 0, use this spot instead of implying from PCP
@@ -208,6 +260,24 @@ struct OpraPanel {
 //      term pillars when supplied, else the flat {T=1, r=spec.r}), the kept
 //      rows, then build_uid_list + build_expiry_inputs. With supplied pillars,
 //      each kept row's source rate is stamped with the curve rate at its expiry.
+//
+//      UID NAMESPACE (one rule, both derivations): a row's uid and the frame's
+//      uid both come from the `underlying` COLUMN — the OSI root is used only as
+//      a fallback when the file carries no such column. The dotted universe
+//      spelling is therefore canonical end to end (`--symbols` -> hive discovery
+//      -> `frame.uid` -> `QuoteRow::uid` -> `Universe::intern_ticker` ->
+//      `CorpusBoard::symbol` -> the manifest/archive's `canonical_symbol`, which
+//      preserves dots). Deriving the two from different sources is what made a
+//      punctuated ticker (`underlying = "BRK.B"`, OSI root `BRKB`) intern as TWO
+//      underliers and lose all of its quotes.
+//
+//      That rule is only sound while the column really does name the same
+//      underlier the row's OSI symbol does, so it is CHECKED per row, not
+//      assumed: a row whose `underlying` and OSI root differ by anything other
+//      than punctuation (dots, which the OSI namespace cannot express) is a hard
+//      InvalidArgument — two underliers, and merging them would be a silent
+//      pricing error rather than a lost symbol. The live case is the
+//      adjusted-deliverable class (`AAPL1` rows whose column says `AAPL`).
 //   5. Spot: spec.spot_override if > 0, else imply from the earliest expiry with
 //      a co-terminal call/put pair (both mids > 0) via imply_forward_atm_pcp at
 //      the curve's rate r(T_front), then implied_spot = F * exp(-r(T_front) *
@@ -218,5 +288,33 @@ struct OpraPanel {
 //         precondition) failure; Unavailable when no co-terminal pair exists to
 //         imply the spot and no override was supplied.
 [[nodiscard]] Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec);
+
+// Load an OPRA cbbo-1m slice from an ALREADY-MATERIALIZED in-memory table.
+//
+// This is the table-driven seam under `load_opra_cbbo_parquet`: both delegate
+// to the identical panel-construction core, so a `table` holding the same rows
+// the file at `spec.path` would decode yields a BYTE-IDENTICAL `OpraPanel`
+// (rows, implied spot, snapshot stamp, source fingerprint, provenance). Use it
+// to feed an in-memory OPRA table — e.g. one date-partition file's rows split
+// by `underlying` — through the same validated path without re-reading parquet.
+// No file is read here: `spec.path` is consulted ONLY for error-message context.
+//
+// Behavior: first validates that `table` carries the 8 canonical OPRA columns
+// (`ts`, `underlying`, `symbol`, `instrument_id`, `bid_px`, `ask_px`, `bid_sz`,
+// `ask_sz` — the hive-v2 schema), then delegates to the shared core. Per-row
+// filtering, put-call-parity spot implication, term-curve rate stamping, and
+// frame assembly are exactly as documented for `load_opra_cbbo_parquet`.
+//
+// @return InvalidArgument if any required column is absent (the message names
+//         the missing column and `spec.path`), on an ambiguous multi-symbol
+//         input, a term-pillar length mismatch, or a frame-assembly failure;
+//         Unavailable when no co-terminal pair implies the spot and no
+//         `spec.spot_override` was supplied.
+//
+// Thread-safety: a pure function over borrowed inputs. It mutates no shared
+// state and returns an owning panel; concurrent calls on distinct arguments are
+// safe, and `table` is only read.
+[[nodiscard]] Result<OpraPanel>
+load_opra_cbbo_from_table(const atx::core::io::ParquetTable& table, const OpraLoadSpec& spec);
 
 } // namespace atx::vol

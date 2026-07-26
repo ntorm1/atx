@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <fstream>
+#include <iterator> // make_move_iterator (FIX-E disabled-carry append)
 #include <limits>
 #include <map>
 #include <string>
@@ -14,13 +15,14 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/detail/archive_util.hpp"  // canonicalize_symbol (carry-over key match)
 #include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
 #include "atx/vol/dispersion.hpp"           // with_uid
 #include "atx/vol/pricer_fitter.hpp"        // PricerConfig
 #include "atx/vol/session.hpp"              // SessionInputs
 #include "atx/vol/universe.hpp"             // uid_for_symbol
-#include "atx/vol/vol_curve.hpp"            // CurveConfig (index dense pin)
 #include "corpus_board_fit.hpp"             // FitSlot, fit_board (shared blessed fit path)
+#include "surface_db_seed.hpp"              // seed_symbol_config (shared index/preset seed recipe)
 
 namespace atx::vol {
 
@@ -57,6 +59,17 @@ namespace {
   return out;
 }
 
+// The ONE place a board's effective fit config is resolved: the symbol's
+// manifest entry when present, else the caller's fallback. Both the population
+// loop's disabled-skip and the cell-aware resume filter's disabled-exclusion go
+// through this, so the two cannot drift out of agreement about which cells will
+// actually be written.
+[[nodiscard]] SymbolFitConfig resolve_symbol_config(SurfaceDb &db, const std::string &symbol,
+                                                    const SymbolFitConfig &fallback) {
+  const Result<SymbolFitConfig> found = db.symbol_config(symbol);
+  return found.has_value() ? *found : fallback;
+}
+
 struct SymbolAccum {
   PopulateSymbolStats stats;
   double oos_sum{0.0};
@@ -68,6 +81,28 @@ struct DateRange {
   std::size_t end{0u};
   bool skip{false};
 };
+
+// ── R1-a (review C-06): the drain's "the scheduler is gone" sentinel ─────────
+//
+// `remaining[r]` normally holds the number of enabled fits still in flight for
+// date-range r, and 0 means "this date is complete, drain it". This third value
+// means "the fit scheduler TERMINATED while this date still had fits outstanding
+// — they will never run and nothing will ever decrement this counter again".
+//
+// It is a value of `remaining[r]` itself, not a separate flag, and that is the
+// whole point. The drain sleeps in `remaining[r].wait(left)`, which wakes on a
+// change to THAT object; a separate `std::atomic<bool> scheduler_finished` could
+// be set and notified in the window between the drain's last check of it and its
+// entry into `wait`, and the drain would then sleep forever on a counter nobody
+// will touch again — the classic lost wakeup, reintroduced by the fix. Folding
+// termination into the waited-on object closes that window by construction: see
+// the drain loop for the full argument.
+//
+// SIZE_MAX is safe as the sentinel because the counter counts boards, which are
+// bounded by `boards.size()`, and because it is only ever STORED after
+// `run_bounded_fit_tasks` has returned — which joins every worker it started, so
+// no `MarkDone` destructor can be racing a `fetch_sub` against it.
+constexpr std::size_t kSchedulerAborted = std::numeric_limits<std::size_t>::max();
 
 // ── Stats CSV formatting (mirrors run_report.cpp's meta+header+rows shape;
 // that helper is TU-private there, so this is an independent small twin, not
@@ -171,6 +206,22 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   std::vector<SymbolFitConfig> resolved_cfgs(n);
   std::vector<FitSlot> slots(n);
 
+  // FIX-D: which positions are CARRIED (re-emitted from the existing partition)
+  // rather than fitted. Resolved once, up front, so the fit scheduling below can
+  // simply skip them -- a carried cell never reaches fit_board.
+  std::vector<bool> carried(n, false);
+  if (!cfg.carry_over.empty()) {
+    for (std::size_t pos = 0; pos < n; ++pos) {
+      const CorpusBoard &board = boards[order[pos]];
+      const auto it = cfg.carry_over.find(board.date);
+      if (it == cfg.carry_over.end()) {
+        continue;
+      }
+      const std::string canon = detail::canonicalize_symbol(board.symbol, kSurfaceDbKeyMax);
+      carried[pos] = std::find(it->second.begin(), it->second.end(), canon) != it->second.end();
+    }
+  }
+
   // Enabled boards to fit, in deterministic (date asc, symbol asc) order, each
   // tagged with its date-range index. `remaining[r]` counts the enabled fits
   // still in flight for range r; a worker decrements it as each board finishes
@@ -188,9 +239,11 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
     std::size_t enabled_in_range = 0u;
     for (std::size_t pos = range.begin; pos < range.end; ++pos) {
       const CorpusBoard &board = boards[order[pos]];
-      const Result<SymbolFitConfig> found = db.symbol_config(board.symbol);
-      resolved_cfgs[pos] = found.has_value() ? *found : cfg.fallback;
-      if (resolved_cfgs[pos].enabled) {
+      resolved_cfgs[pos] = resolve_symbol_config(db, board.symbol, cfg.fallback);
+      // A carried cell is not fit work: it must not be queued and must not be
+      // counted into this range's in-flight total, or the drain would wait on a
+      // decrement that never comes.
+      if (resolved_cfgs[pos].enabled && !carried[pos]) {
         fit_positions.push_back(pos);
         fit_task_range.push_back(r);
         ++enabled_in_range;
@@ -478,12 +531,57 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   // waits on the drain (workers only fit + decrement), so the join at block
   // exit cannot deadlock even when the drain returns early on a write error.
   Status fit_status = Ok();
+  // R1-a: fault-injection seam forwarded from the populate's own hooks (see
+  // PopulateTestHooks). Declared OUTSIDE the block so it outlives `fit_runner`,
+  // which captures a pointer to it. nullptr — the production shape — whenever no
+  // scheduler hook is set, so the scheduler's hot path is untouched.
+  detail::FitSchedulerTestHooks sched_hooks;
+  if (test_hooks != nullptr) {
+    sched_hooks.before_worker_launch = test_hooks->before_worker_launch;
+    sched_hooks.before_setup = test_hooks->before_scheduler_setup;
+  }
+  const detail::FitSchedulerTestHooks *sched_hooks_ptr =
+      (sched_hooks.before_worker_launch || sched_hooks.before_setup) ? &sched_hooks : nullptr;
   {
     std::jthread fit_runner([&] {
       // C4 wave-2: pin outer workers to the discovered P-cores (byte-identical to
       // the unpinned path — pinning only steers WHICH logical CPU a worker runs on).
-      fit_status =
-          detail::run_bounded_fit_tasks(fit_positions.size(), worker_budget, fit_task, outer_affinity);
+      fit_status = detail::run_bounded_fit_tasks(fit_positions.size(), worker_budget, fit_task,
+                                                 outer_affinity, sched_hooks_ptr);
+
+      // ── R1-a (review C-06): publish scheduler TERMINATION to the drain ───────
+      // `run_bounded_fit_tasks` has two PRE-TASK failure returns (a background
+      // worker-launch failure and a scratch-allocation failure). On both, not one
+      // task ran, so not one `MarkDone` destructor fired and every non-zero
+      // `remaining[r]` is frozen at its initial value. The drain used to sleep on
+      // exactly those counters forever — the process hung with no output and never
+      // reached the join below that would have let it observe `fit_status`.
+      //
+      // MEMORY ORDER. `fit_status` is written by THIS thread and read by the drain,
+      // so the sentinel store below is the RELEASE that publishes it and the drain's
+      // acquire load of the same counter is the matching ACQUIRE. The assignment
+      // above is sequenced before the store, so a drain that sees the sentinel sees
+      // the Status.
+      //
+      // SAFETY OF MUTATING `remaining` HERE. `run_bounded_fit_tasks` joins every
+      // worker it started before returning on EVERY path (the launch-abort path
+      // clears the vector, which joins; the normal path joins at block exit; the
+      // outer catch is reached only with no worker alive). So by this line no
+      // `MarkDone` destructor exists to race a `fetch_sub` against these stores,
+      // and `remaining` is touched only by this thread and the drain.
+      //
+      // A counter already at 0 is LEFT ALONE: that date completed and must still
+      // drain and write normally. On a successful run every counter is 0 here and
+      // this loop stores nothing at all — the success path is bit-for-bit
+      // unchanged, which is what keeps the byte-identical-for-any-thread-count
+      // invariant intact.
+      for (std::atomic<std::size_t> &counter : remaining) {
+        if (counter.load(std::memory_order_relaxed) == 0u) {
+          continue;
+        }
+        counter.store(kSchedulerAborted, std::memory_order_release);
+        counter.notify_all();
+      }
     });
 
     for (std::size_t r = 0; r < date_ranges.size(); ++r) {
@@ -491,23 +589,134 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       if (range.skip) {
         continue;
       }
-      // Block until every enabled fit in this date has completed. A range with
-      // no enabled boards starts at zero and proceeds immediately.
-      for (std::size_t left = remaining[r].load(std::memory_order_acquire); left != 0u;
-           left = remaining[r].load(std::memory_order_acquire)) {
+      // Block until every enabled fit in this date has completed, OR the fit
+      // scheduler terminated with fits still outstanding. A range with no enabled
+      // boards starts at zero and proceeds immediately.
+      //
+      // ── R1-a (review C-06): why this cannot miss a wakeup ────────────────────
+      // The loop sleeps ONLY in `remaining[r].wait(left)` with `left` a value it
+      // has just loaded from `remaining[r]` that is neither of the two exit values
+      // (0 = date complete, kSchedulerAborted = scheduler gone). Every state change
+      // that could release this date CHANGES THE VALUE OF THIS VERY OBJECT and then
+      // notifies it: the last `MarkDone` fetch_sub reaching 0, or the fit runner's
+      // sentinel store. `std::atomic<T>::wait(old)` is specified to return
+      // immediately when the object's value differs from `old`, so:
+      //   - if the change lands BEFORE the wait, the value comparison fails and
+      //     the wait does not block;
+      //   - if it lands AFTER, the notify wakes it.
+      // There is no third window, and therefore no lost wakeup. A separate
+      // `std::atomic<bool>` flag would NOT have this property — it can be set and
+      // notified between the drain's last read of it and its entry into a wait
+      // keyed on a different object — which is exactly why the termination signal
+      // is folded into the counter instead of living beside it.
+      std::size_t left = remaining[r].load(std::memory_order_acquire);
+      while (left != 0u && left != kSchedulerAborted) {
         remaining[r].wait(left, std::memory_order_acquire);
+        left = remaining[r].load(std::memory_order_acquire);
+      }
+      if (left == kSchedulerAborted) {
+        // The scheduler died before this date's fits could run. STOP: do not write
+        // a partition from a date whose cells were never fitted, and do not walk
+        // on to later dates whose counters are frozen for the same reason.
+        //
+        // Propagate the SCHEDULER'S OWN Status — its message already names the
+        // cause ("worker launch failed" / "scheduler setup failed") — rather than
+        // inventing a code that would tell the operator less. The acquire load
+        // that produced the sentinel synchronizes-with the runner's release store,
+        // so `fit_status` is fully published here even though the runner thread is
+        // not yet joined.
+        //
+        // Dates already drained AND written above are already durable (each
+        // `write_partition` is an atomic tmp+rename plus a generation-bumped
+        // manifest) and are NOT rolled back: the date is the resume unit, and a
+        // re-run's cell-aware filter skips them. See the U3 note below.
+        //
+        // The `fit_status` fallback is unreachable by construction — an Ok return
+        // from `run_bounded_fit_tasks` means every index ran, hence every counter
+        // reached 0 and no sentinel was stored — and exists so that a future
+        // scheduler change which broke that property would surface as a loud error
+        // rather than silently reinstating the hang.
+        return fit_status ? Err(ErrorCode::Internal,
+                                "populate_surface_db: fit scheduler terminated with date '" +
+                                    boards[order[range.begin]].date + "' incomplete")
+                          : Err(fit_status.error());
       }
 
       const std::size_t range_n = range.end - range.begin;
       const std::string &date = boards[order[range.begin]].date;
 
       // ── Sequential aggregation: stats + owning storage for the write ────────
+      // `items` holds a string_view into `names` and a pointer into `stamped`, so
+      // NEITHER may reallocate while items are live. Carried cells push into the
+      // same two vectors, so the reserve must cover them too -- a carry list is a
+      // subset of this date's boards on the streaming path, but this is a public
+      // config field and must not corrupt memory if a direct caller oversteps.
+      const auto carry_it = cfg.carry_over.find(date);
+      const std::size_t carry_n =
+          carry_it != cfg.carry_over.end() ? carry_it->second.size() : 0u;
       std::vector<std::string> names;     // owning symbol storage (kept alive
       std::vector<PricedSurface> stamped; // across write_partition below)
-      names.reserve(range_n);
-      stamped.reserve(range_n);
+      names.reserve(range_n + carry_n);
+      stamped.reserve(range_n + carry_n);
       std::vector<SurfaceArchiveItem> items;
-      items.reserve(range_n);
+      items.reserve(range_n + carry_n);
+
+      // ── FIX-D: read the carried cells back BEFORE the write ─────────────────
+      // db.write_partition replaces the partition file (tmp+rename) and evicts
+      // its cache, so the existing records must be materialized into OWNED
+      // surfaces first. `reconstruct_entry` (not reconstruct_symbol) is required:
+      // it returns the record's own SurfaceProvenance in the same pass, and
+      // write_partition writes that provenance back into the manifest symbol
+      // entry -- dropping it would silently downgrade every carried symbol's
+      // manifest provenance to legacy. The archive is closed at the end of this
+      // block, before the write.
+      //
+      // ── FIX-F (M-6): a read-back failure here ABORTS THE BUILD, deliberately ──
+      // Before FIX-E only an ENABLED carry reached this loop, and only behind
+      // `carry_valid`; a DISABLED carry now reaches it unconditionally, on the
+      // database class most likely to hold an old or damaged record. So the
+      // blast radius of a `find`/`reconstruct_entry` failure grew from "a carry
+      // the caller opted into" to "any rewrite of a date holding a disabled
+      // symbol", and the decision to fail loud is re-taken here rather than
+      // inherited:
+      //
+      //   - The alternative is to SKIP the unreadable record and write the
+      //     partition without it -- which is the FIX-E defect exactly, executed
+      //     on the one record we already know we cannot reproduce. A corrupt
+      //     record that cannot be re-emitted is a record the rewrite would
+      //     DELETE. Silence here converts "one record is unreadable" into "one
+      //     record no longer exists".
+      //   - Aborting costs nothing already earned. `db.write_partition` for THIS
+      //     date has not run, so the partition file and manifest are untouched;
+      //     every EARLIER date was already committed atomically (see the U3 note
+      //     at the end of this function) and a re-run with the cell-aware filter
+      //     skips them. The operator loses the remainder of one run, not data.
+      //   - It is diagnosable: the archive's own error (NotFound / ParseError /
+      //     checksum) names the partition and the record, and `verify` walks the
+      //     same bytes.
+      //
+      // Documented as a failure mode on `populate_surface_db` (header) and in
+      // the operator manual's resume-semantics section. Do not "scope" this to a
+      // skip without re-arguing the three points above.
+      if (carry_n > 0u) {
+        const Result<SurfaceArchiveV2> part = db.open_partition(date);
+        if (!part) {
+          return Err(part.error());
+        }
+        for (const std::string &sym : carry_it->second) {
+          const Result<ArchiveV2DirEntry> entry = part->find(sym);
+          if (!entry) {
+            return Err(entry.error());
+          }
+          Result<ArchivedSurface> got = part->reconstruct_entry(*entry);
+          if (!got) {
+            return Err(got.error());
+          }
+          names.push_back(sym);
+          stamped.push_back(std::move(got->surface));
+          items.push_back(SurfaceArchiveItem{names.back(), &stamped.back(), got->provenance});
+        }
+      }
 
       for (std::size_t pos = range.begin; pos < range.end; ++pos) {
         const CorpusBoard &board = boards[order[pos]];
@@ -518,6 +727,29 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
         const SymbolFitConfig &resolved = resolved_cfgs[pos];
         if (!resolved.enabled) {
           ++acc.stats.n_disabled;
+          // FIX-E. A disabled cell is still never FITTED -- that policy is
+          // unchanged, and `n_disabled` keeps counting it, which is what the
+          // stats CSV's fit denominator subtracts. What changed is that the
+          // caller may have asked for its ALREADY-STORED record to be re-emitted
+          // rather than dropped; the read-back above has already appended that
+          // item, so it must be tallied here or the caller's cross-check would
+          // describe a write that did not match its request. This branch stays
+          // BEFORE the carried branch on purpose: `n_carried` must not absorb a
+          // disabled cell (see the counter's contract in the header).
+          if (carried[pos]) {
+            ++stats.n_carried_disabled;
+          }
+          continue;
+        }
+
+        // FIX-D: a carried cell was never dispatched, so its slot is empty and
+        // must not be read as a failed fit. Its item was already appended above.
+        // It is counted in n_carried and deliberately NOT in n_ok: n_ok means
+        // "cells this run fitted", which is what `is_total_fit_failure`'s
+        // cells_ok == 0 clause (surface_db_build.cpp) depends on.
+        if (carried[pos]) {
+          ++acc.stats.n_carried;
+          ++stats.n_carried;
           continue;
         }
 
@@ -540,11 +772,284 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
         } else {
           ++acc.stats.n_failed;
           ++stats.n_failed;
+          // ── FIX-F (FIX-E review I-2): the stored record is NOT preserved here,
+          // and that is a KNOWN, ARGUED limit rather than an oversight ─────────
+          // A cell that fitted once and later degraded is `present`, ENABLED, and
+          // fails its re-fit; nothing is appended to `items`, so the
+          // whole-partition rewrite below drops the surface it had. The
+          // would-drop guard cannot help — the cell was counted into `present`
+          // before its outcome was known, the same structural cause FIX-E fixed
+          // for the disabled case. Preserving the bytes is a ~10-line change
+          // right here (read the record back beside the disabled carry above),
+          // and it is deliberately NOT made, because presence is load-bearing
+          // one frame up:
+          //
+          //   `populate_universe_streaming` counts a cell into `to_add` only when
+          //   it is ABSENT from the partition, and a date with `to_add == 0` is
+          //   `dates_skipped_complete` — never rewritten again. So a preserved
+          //   failed cell retires its own date from the rewrite set: the cell is
+          //   never re-attempted, the failure never re-reported, and a surface
+          //   the fitter has just REJECTED is served indefinitely with nothing on
+          //   disk recording that. Withholding the fingerprint attestation does
+          //   not rescue this — the skip happens before `carry_valid` is ever
+          //   consulted. It would also contradict the "a failing cell is retried
+          //   forever; there is no persisted known-failed state" contract that
+          //   `is_total_fit_failure`, `is_carry_masked_fit_failure` and
+          //   `build_surface_db` all document and depend on.
+          //
+          // Trading a one-shot data loss for permanent silent staleness is the
+          // worse of the two. The fix needs PERSISTED per-cell state — "these
+          // bytes are a preserved failure: re-attempt this cell, never carry it"
+          // — which neither the manifest nor the archive record today; see
+          // `.superpowers/sdd/surface-db-prod/fixF-report.md` for the format
+          // change that would carry it. Pinned by
+          // SurfaceDbPopulate.DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrivesTheRetry,
+          // which asserts BOTH halves so a future preserve cannot land without
+          // confronting the second one.
+          //
+          // Record WHY, not merely that it happened: `slot.error_message` is the
+          // fitter's own rejection text (corpus_board_fit.cpp), which used to die
+          // here alongside the code. DETERMINISM: this push_back runs on the
+          // SINGLE drain thread inside the date-ascending / (date,symbol)-ascending
+          // walk, never on a fit worker, so the list order is fixed by the walk and
+          // is byte-identical for any worker budget. Copies (not moves) because the
+          // slot is const here and is recycled below.
+          stats.failed_cells.push_back(
+              FailedCell{board.date, board.symbol, slot.error_code, slot.error_message});
         }
       }
 
+      // ── REV-R3 (review C-02 / F-02): refuse a write that DESTROYS a stored
+      // surface ────────────────────────────────────────────────────────────────
+      //
+      // A partition write is WHOLE-FILE -- tmp + rename, no merge, no soft-delete
+      // -- so the committed file is EXACTLY `items`, and every symbol the existing
+      // partition holds that is missing from `items` is destroyed by the commit.
+      // FIX-E and the filter's `present < part->count()` each closed one route
+      // into that state; the route neither can see is a loaded, ENABLED,
+      // already-stored cell whose RE-FIT FAILS. Nothing is appended for it (the
+      // `n_failed` branch above), the filter had already counted it into `present`
+      // before its outcome existed, and the rewrite simply does not contain it.
+      // One production-shaped run at the wrong `--r` destroyed 95 stored surfaces
+      // exactly this way and reported success; the format keeps no tombstone, so
+      // a destroyed cell is byte-for-byte a cell that was never fitted and nothing
+      // on disk recorded the loss.
+      //
+      // So the question is asked HERE, where the candidate really exists, and as a
+      // SET comparison rather than the filter's count comparison -- counts are
+      // what made the earlier guard blind. The EXISTING side is read from the
+      // partition's own DIRECTORY (FIX-H's precedent: the file is the authority on
+      // what the file holds), never inferred from the manifest, which can disagree
+      // with it and is exactly the disagreement that would matter here. REV-R3
+      // fix-1 (review I-1) made that true of the EXISTENCE decision as well, not
+      // just the contents: `open_partition_file` skips the manifest lookup
+      // entirely, so a partition file that is on disk but unlisted -- a crash
+      // between `write_partition`'s archive rename and its manifest persist, a
+      // restored older manifest, a hand-assembled root -- is read and compared
+      // instead of being mistaken for a first write and overwritten. Until that
+      // fix this comment was a false guarantee: the contents came from the
+      // directory but "is there anything here at all" came from the manifest,
+      // which is the one question the disagreement actually decides.
+      //
+      // WHY IT DOES NOT FIRE ON A HEALTHY RUN. It is a SUPERSET test, not an
+      // equality test, so adding cells is always allowed. A cell that permanently
+      // fails to fit was never stored, so it is not in the existing set and cannot
+      // be missed from the candidate -- the converged production database's
+      // residual failures are precisely that shape (measured: `cells_refit 0`,
+      // `cells_carried 150`, 9 permanently-absent cells, guard silent). It fires
+      // only when a cell that WAS stored is absent from the candidate.
+      //
+      // A refusal is PER-DATE and is NOT an Err: later dates in the same run are
+      // unaffected, and the caller gets counters plus the named cells. It is also
+      // structurally downstream of the scheduler-abort sentinel above -- an aborted
+      // date `return`s before this line, so it can never be misreported as a
+      // coverage regression; that failure is an error and the error path owns it.
+      //
+      // DETERMINISM: this runs on the SINGLE drain thread, inside the
+      // date-ascending walk, over an `items` vector the same walk built in
+      // (date, symbol) order. Both sides are SORTED before the compare and the
+      // difference is a `std::set_difference` of sorted ranges, so the refusal
+      // decision and the reported cell order are byte-identical for any worker
+      // count. No unordered container is involved.
+      //
+      // SCOPE: the check is gated on `!items.empty()` because an EMPTY candidate
+      // writes no partition at all (the pre-existing `if (!items.empty())` below),
+      // so the stored surfaces survive untouched with or without this guard. There
+      // is no commit to refuse. That shape is already non-silent by another route
+      // -- a date that produced nothing has no `cells_ok`, so the CLI's
+      // `is_total_fit_failure` / `is_carry_masked_fit_failure` verdicts speak for
+      // it. Do not "tidy" this by hoisting the check above that condition without
+      // re-deciding what a refusal COUNT would then mean for a date nobody was
+      // going to write.
+      std::vector<std::string> lost_symbols; // stored here, absent from `items`
       if (!items.empty()) {
-        const Status w = db.write_partition(date, items);
+        std::vector<std::string> stored_symbols;
+        {
+          // REV-R3 fix-1 (review I-1): `open_partition_file`, NOT
+          // `open_partition`. The latter consults the manifest FIRST and returns
+          // NotFound when the key is unlisted, without ever touching the file --
+          // so a partition file holding surfaces but missing from the manifest
+          // came back as "no existing coverage" and was overwritten, which is the
+          // exact outcome this guard exists to prevent.
+          //
+          // What the branches below DO, case by case. Only the first proceeds,
+          // and it is the only one on which anything here has been told the file
+          // is absent:
+          //   - NotFound                       -> proceed; the probe was asked
+          //                                       with an error_code, reported no
+          //                                       error, and reported no file.
+          //   - Ok                             -> its directory is the existing
+          //                                       set, whatever the manifest says.
+          //   - IoError / ParseError / anything -> abort (below). This covers BOTH
+          //     else                              "the file is there and will not
+          //                                       read" AND "the filesystem
+          //                                       declined to say whether it is
+          //                                       there at all".
+          //
+          // REV-R3 fix-2 (review N-1) is that last merge. The probe used to fold
+          // a FAILED existence query into NotFound -- a denied ACL on the file or
+          // on partitions/, a transient volume or SMB fault -- so an unanswerable
+          // filesystem took the proceed-and-overwrite branch. The branch below
+          // keys on `!= NotFound` and therefore needed no change; what changed is
+          // that `open_partition_file` no longer reports an unanswered question
+          // as an answer. Do not "simplify" this by going back to
+          // `SurfaceArchiveV2::open_file` directly: that is where the fold is.
+          const Result<SurfaceArchiveV2> part = db.open_partition_file(date);
+          if (part.has_value()) {
+            stored_symbols.reserve(part->directory().size());
+            for (const ArchiveV2DirEntry &e : part->directory()) {
+              stored_symbols.emplace_back(e.symbol, e.symbol_len);
+            }
+          } else if (part.error().code() != ErrorCode::NotFound) {
+            // A date with NO partition FILE cannot lose coverage. That covers the
+            // ordinary first-write path AND documented remedy #1 in
+            // surface_db.hpp ("delete the partition file and re-run"): the
+            // operator removed the file, so there is nothing on disk to destroy
+            // and the rebuild proceeds exactly as before this guard existed.
+            // A partition file that IS there and will not OPEN is different in
+            // kind: its contents are unknown, so whether the write destroys
+            // anything is unanswerable -- and overwriting it is the one action
+            // that makes the answer unrecoverable. Fail loud, for the same reason
+            // FIX-F fails loud on an unreadable carry record.
+            //
+            // REV-R3 fix-1 (review I-3): this abort is UNCONDITIONAL. It used to
+            // be waived by `allow_coverage_regression`, which fused two unrelated
+            // waivers onto one whole-run flag: "I have read the named list and I
+            // want THOSE surfaces gone" says nothing about "and please also
+            // overwrite any partition you could not parse". A caller who
+            // authorised the destruction of a NAMED list has not answered a
+            // question about contents nobody could read, and the realistic user
+            // of the flag -- retiring one cell after a marginal re-fit failure --
+            // would have been silently opted into the second waiver for every
+            // date in the run. The remedy for a genuinely corrupt partition is
+            // the same as it has always been: delete the file (remedy #1), which
+            // turns this into the NotFound path above.
+            return Err(part.error());
+          }
+        }
+        std::sort(stored_symbols.begin(), stored_symbols.end());
+
+        // The candidate side, in the form the archive actually stores: the writer
+        // canonicalizes every item's symbol before hashing/storing it, so an
+        // uncanonicalized compare would report a spurious drop for any item whose
+        // board symbol differs from its stored key by case or length.
+        //
+        // REV-R3 fix-1 (review M-3): canonicalized under `kArchiveSymbolMax`, the
+        // ARCHIVE's bound, because the directory entries being compared against
+        // were written under it (`surface_archive.cpp`'s writer). It was
+        // `kSurfaceDbKeyMax` -- the db's partition-KEY bound -- which is a
+        // different constant that happens to hold the same value. The
+        // static_assert keeps the coincidence honest for the OTHER direction: the
+        // `CoverageRegressionCell::symbol` values produced here are documented as
+        // the canonical db key, and every other symbol canonicalization on this
+        // path (write_partition's fingerprint fold, the carry-over key match)
+        // uses `kSurfaceDbKeyMax`. If the two ever diverge, this line must be
+        // re-decided rather than silently picking a side: too small a bound
+        // misses a real drop, too large a one refuses every rewrite of a date
+        // holding a long symbol.
+        static_assert(kArchiveSymbolMax == kSurfaceDbKeyMax,
+                      "the coverage guard compares CANDIDATE symbols against the ARCHIVE "
+                      "directory's keys; if the archive's and the db's symbol bounds diverge, "
+                      "this comparison and CoverageRegressionCell's documented key form must "
+                      "be re-decided, not silently truncated to one of the two");
+        std::vector<std::string> candidate_symbols;
+        candidate_symbols.reserve(items.size());
+        for (const SurfaceArchiveItem &item : items) {
+          candidate_symbols.push_back(
+              detail::canonicalize_symbol(item.symbol, kArchiveSymbolMax));
+        }
+        std::sort(candidate_symbols.begin(), candidate_symbols.end());
+
+        std::set_difference(stored_symbols.begin(), stored_symbols.end(),
+                            candidate_symbols.begin(), candidate_symbols.end(),
+                            std::back_inserter(lost_symbols));
+      }
+
+      // Detection runs on BOTH sides of the opt-out on purpose. A retirement run
+      // still gets a complete, ordered record of every surface it destroyed --
+      // which is the one thing the 95-surface incident had no way to produce.
+      if (!lost_symbols.empty()) {
+        for (const std::string &sym : lost_symbols) {
+          stats.coverage_regression_cells.push_back(CoverageRegressionCell{date, sym});
+        }
+        if (cfg.allow_coverage_regression) {
+          ++stats.n_dates_dropped_coverage_regression;
+        } else {
+          ++stats.n_dates_refused_coverage_regression;
+          // REV-R3 fix-2 (review N-3). WHY the rewrite would have lost coverage
+          // decides what the operator should do about it, and the two causes want
+          // opposite actions. The wrong-`--r` incident the banner was written for
+          // is a FIT problem: the cells really did fail, the fix is the build
+          // input. A partition that is on disk but UNLISTED is a manifest/file
+          // DISAGREEMENT: nothing failed, the run was simply narrower than a file
+          // the index does not know about, and it will be refused on every run
+          // forever until the file is deleted or the date is rebuilt over the
+          // full board set. Sending that operator to check `--r` sends them at
+          // the wrong problem, and the escape the banner offers for the fit case
+          // (`--allow-coverage-regression`) would delete the surfaces.
+          //
+          // We are in the branch where `open_partition_file` SUCCEEDED (a
+          // non-empty `lost_symbols` requires a non-empty stored set), so the
+          // file is known present; `partition_listed` is a pure manifest
+          // snapshot lookup with no file I/O, and it is asked only on a date that
+          // is already being refused. DETERMINISM: drain thread, same
+          // date-ascending walk, snapshot read, no atomic, no unordered
+          // iteration.
+          if (!db.partition_listed(date)) {
+            ++stats.n_dates_refused_partition_unlisted;
+          }
+        }
+      }
+      const bool refuse_write = !lost_symbols.empty() && !cfg.allow_coverage_regression;
+
+      if (!items.empty() && !refuse_write) {
+        // FIX-D fix-2 (I-3): the attestation is the CALLER'S, forwarded, not this
+        // function's to invent. `items` has two provenances and this frame can
+        // only vouch for one of them: every FITTED item came out of `fit_board`
+        // under the config this loop resolved from THIS manifest moments ago, but
+        // every CARRIED item is re-emitted on the strength of `cfg.carry_over`,
+        // whose validity `SurfaceDbPopulateConfig` explicitly says it carries no
+        // predicate for. Stamping unconditionally asserted a gate that lives one
+        // frame up, so a direct caller supplying its own `carry_over` had its
+        // stale surfaces re-blessed on every resume. `cfg.attest` defaults to
+        // `None`, which fails closed (fingerprint 0 = unknown = re-fit).
+        //
+        // `populate_universe_streaming` is the frame that RUNS the gate
+        // (`carry_valid`), so it is the frame that sets `FitterProduced`.
+        //
+        // FIX-E qualifies the attesting caller's claim for the one item class it
+        // does not cover: a PRESERVED DISABLED record is re-emitted regardless of
+        // the fingerprint, so the stamp does not vouch for it. That is sound
+        // because of what the stamp is USED for -- `populate_universe_streaming`
+        // reads it to decide `carry_valid`, which admits only ENABLED present
+        // cells to the fitted-output carry set. A disabled cell can re-enter that
+        // set only by being re-enabled, and `enabled` is part of the folded
+        // config, so re-enabling necessarily MOVES the fingerprint and forces a
+        // re-fit. The alternative -- attesting `None` on any date holding a
+        // disabled symbol -- would permanently un-carry that date's healthy
+        // siblings and re-fit them on every run forever, which is the cost FIX-D
+        // exists to remove.
+        const Status w = db.write_partition(date, items, {}, cfg.attest);
         if (!w) {
           return Err(w.error());
         }
@@ -596,16 +1101,37 @@ Status write_populate_stats_csv(const SurfaceDbPopulateStats &s, const MetaKv &m
   full_meta.emplace_back("n_boards", fmt_u32(s.n_boards));
   full_meta.emplace_back("n_ok", fmt_u32(s.n_ok));
   full_meta.emplace_back("n_failed", fmt_u32(s.n_failed));
+  // FIX-D fix-1 (I2). Beside n_ok/n_failed because it is the third disposition of
+  // the same cells and the only evidence that carry-over ran: a converged carry
+  // resume writes n_ok=0, n_failed=0 and would otherwise look like a no-op.
+  full_meta.emplace_back("n_carried", fmt_u32(s.n_carried));
   full_meta.emplace_back("n_dates_written", fmt_u32(s.n_dates_written));
 
   std::string body;
   body.reserve(s.per_symbol.size() * 64 + 64);
-  body += "symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band\n";
+  // `n_carried` is APPENDED to the pinned header, not inserted, so a positional
+  // reader of the older columns is unaffected. It goes last rather than beside
+  // n_disabled for that reason, even though it reads better next to it.
+  body += "symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band,n_carried\n";
   for (const PopulateSymbolStats &sym : s.per_symbol) {
-    const std::uint32_t used =
-        sym.n_attempted > sym.n_disabled ? sym.n_attempted - sym.n_disabled : 0u;
-    const std::uint32_t denom = std::max<std::uint32_t>(1u, used);
-    const double success_rate = static_cast<double>(sym.n_ok) / static_cast<double>(denom);
+    // FIX-D fix-1 (I3): a CARRIED cell was never offered to the fitter, so it
+    // belongs in neither half of a FIT success rate. Leaving it in the denominator
+    // reported 0% for every carried symbol (n_ok = 0 over n_attempted = 1) on
+    // exactly the healthy resume this feature produces.
+    //
+    // Excluding it is necessary but NOT sufficient: on a fully-carried symbol the
+    // exclusion empties the denominator, and the old `max(1, used)` floor then
+    // still printed 0/1 = 0 -- the same false 0% by a different route. An empty
+    // denominator means the rate is UNDEFINED (no cell was offered to the fitter),
+    // not zero, so it is emitted as `nan` -- the same "unavailable" convention
+    // this row already uses for mean_oos_in_band, and read as a missing value by
+    // the CSV's pandas consumers. This also corrects the pre-existing all-disabled
+    // row, which reported 0% for the same reason.
+    const std::uint32_t excluded = sym.n_disabled + sym.n_carried;
+    const std::uint32_t used = sym.n_attempted > excluded ? sym.n_attempted - excluded : 0u;
+    const double success_rate = used > 0u ? static_cast<double>(sym.n_ok) /
+                                                static_cast<double>(used)
+                                          : std::numeric_limits<double>::quiet_NaN();
     body += sym.symbol;
     body += ',';
     body += fmt_u32(sym.n_attempted);
@@ -616,9 +1142,11 @@ Status write_populate_stats_csv(const SurfaceDbPopulateStats &s, const MetaKv &m
     body += ',';
     body += fmt_u32(sym.n_disabled);
     body += ',';
-    body += fmt10(success_rate);
+    body += fmt_nan_aware10(success_rate);
     body += ',';
     body += fmt_nan_aware10(sym.mean_oos_in_band);
+    body += ',';
+    body += fmt_u32(sym.n_carried);
     body += '\n';
   }
   return write_meta_body(full_meta, body, path, "write_populate_stats_csv");
@@ -651,11 +1179,16 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
     if (!first || db.symbol_config(sym).has_value()) {
       continue;
     }
-    SymbolFitConfig c = symbol_config_from_preset(spec.preset);
-    if (!spec.index_symbol.empty() && sym == spec.index_symbol) {
-      c.pin_curve = true;
-      c.curve = CurveConfig{}; // default = the dense index recipe (node_cap 40)
-    }
+    // Seeding recipe shared bit-for-bit with generate_symbol_configs (Task 4):
+    // the preset's config, dense-index-pinned for the index leg. The pin stays
+    // TRUE here on purpose: this seeding is a no-op inside `build_surface_db`
+    // (generate_symbol_configs has already configured every symbol, so the
+    // has_value() check above skips them all), and `UniversePopulateSpec` carries
+    // no operator knob — so flipping it would silently change the contract for
+    // direct callers of this driver without any way to opt back. The operator's
+    // choice lives on AutoConfigSpec::pin_curve_family, one stage up.
+    const SymbolFitConfig c = seed_symbol_config(sym, spec.preset, spec.index_symbol,
+                                                 /*pin_curve_family=*/true);
     const Status up = db.upsert_symbol(sym, c);
     if (!up) {
       return Err(up.error());
@@ -672,26 +1205,111 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
   }
   cov.dates_total = static_cast<std::uint32_t>(by_date.size());
 
+  // The fallback the populate below will resolve an unconfigured symbol against;
+  // hoisted so the filter's disabled-check and the fit's are the SAME decision.
+  const SymbolFitConfig fallback_cfg = symbol_config_from_preset(spec.preset);
+
   std::vector<CorpusBoard> kept; // boards on the dates that need a (re)write
+  std::map<std::string, std::vector<std::string>> carry_over;
   for (const auto &[date, idxs] : by_date) {
     const Result<SurfaceArchiveV2> part = db.open_partition(date); // Err(NotFound) if none yet
+
+    // ── FIX-D: is this partition's stored work still valid to reuse? ──────────
+    // The predicate is deliberately WHOLE-PARTITION and conservative: if ANY
+    // symbol in the file has a config that differs from the manifest's current
+    // one, nothing on this date is carried and the date re-fits exactly as
+    // before. A partition is rewritten whole anyway, so per-cell granularity
+    // would buy nothing and would let a config change to one symbol hide another
+    // symbol's staleness in the same file. A 0 stored fingerprint means UNKNOWN
+    // (a manifest written before the field existed) and never carries -- which is
+    // why the first resume of a pre-FIX-D database still re-fits once, then
+    // converges. See kSurfaceDbCarryOverFitSalt for what this does NOT catch.
+    bool carry_valid = false;
+    if (part.has_value()) {
+      std::vector<std::string> part_symbols;
+      part_symbols.reserve(part->directory().size());
+      for (const ArchiveV2DirEntry &e : part->directory()) {
+        part_symbols.emplace_back(e.symbol, e.symbol_len);
+      }
+      const std::uint64_t stored = db.partition_config_fingerprint(date);
+      carry_valid = stored != 0u && stored == db.config_fingerprint(part_symbols);
+    }
+
     std::uint32_t present = 0;
     std::uint32_t to_add = 0;
+    std::vector<std::string> carry_syms;
+    // ── FIX-E: present-but-DISABLED cells, tracked SEPARATELY ────────────────
+    // Kept in their own list because the question that admits them is a DIFFERENT
+    // question. `carry_valid` is the fit-config fingerprint predicate; it asks
+    // "are these stored surfaces still sound to reuse AS THIS RUN'S FITTED
+    // OUTPUT?". That question does not arise for a symbol this run produces no
+    // output for at all: the alternative to carrying a disabled cell is not
+    // re-fitting it, it is DELETING it. So a disabled present cell is carried
+    // UNCONDITIONALLY, and gating it on `carry_valid` would be a fix-shaped
+    // no-op -- disabling a symbol MOVES the config fold, so `carry_valid` is
+    // false on precisely the first run after the disable, and a pre-FIX-D
+    // manifest stores the 0 "unknown" fingerprint, which never carries either.
+    // Both cases are pinned by tests.
+    std::vector<std::string> disabled_carry_syms;
     for (const std::size_t i : idxs) {
       const bool in_db = part.has_value() && part->find(boards[i].symbol).has_value();
       if (in_db) {
         ++present;
-      } else {
-        ++to_add;
+        // `enabled = false` means STOP FITTING this symbol. It does NOT mean
+        // DELETE what is already stored -- and deletion is what happened before
+        // FIX-E: the cell was counted into `present` here, excluded from the
+        // carry set, then skipped by the populate's disabled branch, so the
+        // whole-partition rewrite (tmp+rename, no merge, no soft-delete) simply
+        // dropped it. The would-drop guard below could not save it either,
+        // because it was already counted into the very number that guard
+        // compares against `part->count()`.
+        //
+        // A disabled config is "a standing failure, not a settled state" (FIX-C,
+        // which is why `--retry-disabled` exists): a provisional, reversible
+        // marker must never trigger irreversible destruction. Preserving also
+        // makes the read path honest -- nothing in load_surface/map_surface
+        // gates on `enabled`, so a preserved surface stays servable for the
+        // dates that already worked.
+        if (!resolve_symbol_config(db, boards[i].symbol, fallback_cfg).enabled) {
+          disabled_carry_syms.push_back(
+              detail::canonicalize_symbol(boards[i].symbol, kSurfaceDbKeyMax));
+        } else if (carry_valid) {
+          carry_syms.push_back(
+              detail::canonicalize_symbol(boards[i].symbol, kSurfaceDbKeyMax));
+        }
+        continue;
       }
+      // A cell whose resolved config is DISABLED can never be added: the
+      // population loop skips it (n_disabled) so it never lands in the written
+      // partition. Counting it as "to add" would make EVERY later run see the
+      // same permanent gap and rewrite -- and therefore re-fit -- the whole date,
+      // so the build would never reach a fixed point. Resolved through the same
+      // seam the population loop uses, so the two cannot drift.
+      if (!resolve_symbol_config(db, boards[i].symbol, fallback_cfg).enabled) {
+        continue;
+      }
+      ++to_add;
     }
     if (to_add == 0u) {
-      ++cov.dates_skipped_complete; // every loaded cell already present
+      // Nothing left to add: every loaded cell is either already present or
+      // config-disabled (a disabled cell can never be added, so a date whose only
+      // gap is disabled symbols is COMPLETE, not pending — that is what makes a
+      // rebuild converge). `cells_already_present` counts only the present ones.
+      ++cov.dates_skipped_complete;
       cov.cells_already_present += present;
       continue;
     }
     // Guard: the partition holds a symbol not in this run's loaded set (present <
     // total) — a whole-partition rewrite from `idxs` alone would drop it. Skip.
+    //
+    // It compares a COUNT, so it assumes `idxs` holds at most one board per
+    // symbol. A duplicate (date, symbol) board would double-count `present` and
+    // could push it up to `part->count()` while a stored symbol really is missing
+    // from the loaded set. That fails safe TODAY only by accident of a downstream
+    // check: `write_surface_archive_v2_file` rejects a duplicate canonical symbol
+    // with AlreadyExists (surface_archive.cpp), so the build aborts loudly instead
+    // of dropping the surface. Do not remove that rejection without making this a
+    // set comparison — it is the only thing standing behind this line.
     if (part.has_value() && present < part->count()) {
       ++cov.dates_skipped_would_drop;
       cov.cells_already_present += present;
@@ -699,7 +1317,27 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
     }
     ++cov.dates_written;
     cov.cells_to_fit += to_add;
-    cov.cells_refit += present;
+    // FIX-D: the already-present cells split into carried (re-emitted verbatim)
+    // and refit (everything the predicate could not vouch for). `kept` still gets
+    // ALL of idxs so the per-symbol n_attempted / n_disabled bookkeeping is
+    // unchanged; populate_surface_db skips the fit for the carried ones.
+    const auto carried_here = static_cast<std::uint32_t>(carry_syms.size());
+    // FIX-E: preserved-because-disabled cells are their OWN disposition. They
+    // were never offered to the fitter, so they are not `cells_refit`; and
+    // `cells_carried` must keep meaning "healthy stored surface reused instead of
+    // re-fitted", because `is_total_fit_failure` / `is_total_config_failure` read
+    // it as evidence the run produced a serviceable database -- which a switched-
+    // off config's leftover bytes are not. Every in_db cell lands in exactly one
+    // of the three, so `present - carried_here - disabled_here` cannot underflow.
+    const auto disabled_here = static_cast<std::uint32_t>(disabled_carry_syms.size());
+    cov.cells_carried += carried_here;
+    cov.cells_carried_disabled += disabled_here;
+    cov.cells_refit += present - carried_here - disabled_here;
+    carry_syms.insert(carry_syms.end(), std::make_move_iterator(disabled_carry_syms.begin()),
+                      std::make_move_iterator(disabled_carry_syms.end()));
+    if (!carry_syms.empty()) {
+      carry_over.emplace(date, std::move(carry_syms));
+    }
     for (const std::size_t i : idxs) {
       kept.push_back(boards[i]);
     }
@@ -710,16 +1348,67 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
   //    the cell-aware filter above already chose exactly the dates to rewrite.
   if (!kept.empty()) {
     SurfaceDbPopulateConfig pcfg;
-    pcfg.fallback = symbol_config_from_preset(spec.preset);
+    pcfg.fallback = fallback_cfg;
     pcfg.n_threads = spec.fit_workers;
     pcfg.skip_existing = false;
+    pcfg.carry_over = std::move(carry_over);
+    // FIX-D fix-2 (I-3): the frame that RAN the gate is the frame that attests.
+    // `carry_valid` above is the whole claim -- a non-zero stored fingerprint
+    // equal to a freshly recomputed fold over the partition's symbols -- and it
+    // is evaluated HERE, so the `FitterProduced` stamp is set HERE and forwarded
+    // to `write_partition` by the populate rather than asserted by it. Everything
+    // else in the write is this run's own fit under the configs seeded above.
+    pcfg.attest = DbConfigAttestation::FitterProduced;
+    // REV-R3: the operator's retirement opt-out, forwarded verbatim. The filter
+    // above deliberately does NOT consult it -- `dates_skipped_would_drop` guards a
+    // different, pre-fit question and its skip is not destructive either way.
+    pcfg.allow_coverage_regression = spec.allow_coverage_regression;
     const Result<SurfaceDbPopulateStats> st = populate_surface_db(db, kept, pcfg, test_hooks);
     if (!st) {
       return Err(st.error());
     }
     cov.cells_ok = st->n_ok;
     cov.cells_failed = st->n_failed;
+    // Cross-check the two halves of the carry decision: what the filter above
+    // asked for must equal what the populate actually re-emitted, or the
+    // coverage counters would describe a write that did not happen.
+    if (st->n_carried != cov.cells_carried) {
+      return Err(ErrorCode::Internal,
+                 "populate_universe_streaming: carried-cell count disagrees with populate");
+    }
+    // FIX-E: the same cross-check on the OTHER half of the carry request. A
+    // disabled cell reaches the populate through the same `carry_over` map but is
+    // tallied on a different branch, so a mis-ordered branch there would silently
+    // stop counting preserved cells while still re-emitting them (or, worse, stop
+    // re-emitting them) with nothing to notice.
+    if (st->n_carried_disabled != cov.cells_carried_disabled) {
+      return Err(ErrorCode::Internal, "populate_universe_streaming: preserved-disabled-cell count "
+                                      "disagrees with populate");
+    }
+    // ── REV-R3: what the WRITE path refused, and the correction it forces ──────
+    // `dates_written` was incremented by the filter above, which decides which
+    // dates to REWRITE -- an intention, not a commit. Take the populate's own
+    // count instead: `n_dates_written` is incremented at the write site, after
+    // `write_partition` succeeded, so it is the number of dates that really
+    // landed on disk.
+    //
+    // REV-R3 fix-1 (review M-2). This was a SUBTRACTION of the refusals, which
+    // left a second, older overcount in place: a date whose candidate ended up
+    // EMPTY writes no partition and is not a refusal either (the guard is gated
+    // on `!items.empty()`), so the filter's increment stood for a commit that
+    // never happened. That is the exact class of lie this guard exists to end,
+    // and it contradicted what this comment, the header's `dates_written`, and
+    // the manual's counter table all now claim. Assignment also removes the
+    // underflow question rather than arguing it away.
+    cov.dates_refused_coverage_regression = st->n_dates_refused_coverage_regression;
+    cov.dates_refused_partition_unlisted = st->n_dates_refused_partition_unlisted;
+    cov.dates_dropped_coverage_regression = st->n_dates_dropped_coverage_regression;
+    cov.dates_written = st->n_dates_written;
+    cov.coverage_regression_cells = st->coverage_regression_cells;
     cov.per_symbol = std::move(st->per_symbol);
+    // The per-cell reasons ride along with the count they explain; the populate
+    // already ordered them by (date, symbol), so nothing re-sorts here.
+    cov.failed_cells = st->failed_cells;
   }
 
   return Ok(std::move(cov));

@@ -7,8 +7,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <exception> // std::exception (the fit's what()-bearing catch clause)
 #include <limits>
 #include <optional>
+#include <string>
 #include <utility>
 
 #include "atx/vol/arb.hpp"            // arb_check_calendar
@@ -260,6 +262,11 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
 
   if (board.frame.rows.empty()) {
     slot.status = CorpusFitStatus::Skipped; // nothing fittable
+    // No Error is produced on this path (nothing was attempted), but a caller that
+    // counts Skipped as a failure -- populate_surface_db does -- still needs a
+    // reason to show. `error_code` deliberately stays Unknown so corpus.cpp's
+    // manifest column is byte-unchanged.
+    slot.error_message = "empty board: no quote rows to fit";
     slot.admission = terminal_decision(CorpusDisposition::Empty, CorpusAdmissionReason::EmptyBoard);
     return slot;
   }
@@ -269,6 +276,7 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
     if (!chain) {
       slot.status = CorpusFitStatus::Failed;
       slot.error_code = chain.error().code();
+      slot.error_message = chain.error().message();
       slot.admission =
           terminal_decision(CorpusDisposition::FitFailed, CorpusAdmissionReason::FitError);
       return slot;
@@ -287,6 +295,9 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
     if (!st) {
       slot.status = CorpusFitStatus::Failed;
       slot.error_code = st.error().code();
+      // THE seam this whole diagnostic depends on: PricerFitter's rejection text
+      // is built here and nowhere else, and until now it died on this line.
+      slot.error_message = st.error().message();
       slot.admission =
           terminal_decision(CorpusDisposition::FitFailed, CorpusAdmissionReason::FitError);
       return slot;
@@ -296,6 +307,7 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
     if (fitted == nullptr) { // defensive: a successful fit always stores a surface
       slot.status = CorpusFitStatus::Failed;
       slot.error_code = ErrorCode::Internal;
+      slot.error_message = "fit reported success but stored no surface";
       slot.admission =
           terminal_decision(CorpusDisposition::FitFailed, CorpusAdmissionReason::FitError);
       return slot;
@@ -305,6 +317,7 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
     if (!ps) {
       slot.status = CorpusFitStatus::Failed;
       slot.error_code = ps.error().code();
+      slot.error_message = ps.error().message();
       slot.admission =
           terminal_decision(CorpusDisposition::FitFailed, CorpusAdmissionReason::FitError);
       return slot;
@@ -361,12 +374,41 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
     slot.surface = std::move(*ps);
     slot.status = CorpusFitStatus::Ok;
     return slot;
-  } catch (...) {
+  } catch (const std::exception &ex) {
     // SAFETY: a std::jthread worker must not let an exception escape (e.g.
     // std::bad_alloc from fit scratch) — that would std::terminate the process.
-    // Record it as a Failed board instead.
+    // Record it as a Failed board instead. `what()` is copied into the slot so a
+    // throwing board is as legible in the run report as a returned Error; the
+    // status/error_code disposition is exactly what the bare `catch (...)` below
+    // already produced.
     slot.status = CorpusFitStatus::Failed;
     slot.error_code = ErrorCode::Internal;
+    try {
+      // This concatenation itself allocates. If `ex` IS the std::bad_alloc this
+      // handler exists to catch, the allocator may still be exhausted right here
+      // — capturing the message must not be able to throw a SECOND exception,
+      // because a throw from inside a catch clause is not caught by this
+      // function's own try/catch: it would escape fit_board, be caught by
+      // fit_scheduler.cpp's run_next as FailureKind::Exception, and turn this
+      // single Failed board (partial coverage preserved) into a hard Err out of
+      // populate_surface_db — exit 1 for the whole build. An empty message on a
+      // genuine OOM is strictly better than that.
+      slot.error_message = std::string("exception during fit: ") + ex.what();
+    } catch (...) {
+      slot.error_message.clear();
+    }
+    slot.admission =
+        terminal_decision(CorpusDisposition::FitFailed, CorpusAdmissionReason::FitError);
+    return slot;
+  } catch (...) {
+    // Same contract for a non-std exception, which carries no readable text.
+    slot.status = CorpusFitStatus::Failed;
+    slot.error_code = ErrorCode::Internal;
+    try {
+      slot.error_message = "unknown exception during fit"; // may allocate (SSO-exceeding); see above
+    } catch (...) {
+      slot.error_message.clear();
+    }
     slot.admission =
         terminal_decision(CorpusDisposition::FitFailed, CorpusAdmissionReason::FitError);
     return slot;

@@ -112,10 +112,15 @@ DB_STATS_ROWS = [
     ("2026-01-07", "8", "41500", "1767744000000000000"),
 ]
 
+# Mirrors write_populate_stats_csv's emitted shape (surface_db_populate.cpp).
+# `n_carried` is FIX-D fix-1's appended column; TSLA shows the converged carry
+# row -- nothing offered to the fitter, so success_rate is `nan` (UNDEFINED),
+# not the 0 it used to print. The report renders whatever columns the CSV
+# carries, so this fixture exists to keep the contract it documents current.
 POPULATE_STATS_ROWS = [
-    ("AAPL", "3", "3", "0", "0", "1.0", "0.92"),
-    ("MSFT", "3", "2", "1", "0", "0.6667", "0.88"),
-    ("TSLA", "3", "3", "0", "0", "1.0", "nan"),
+    ("AAPL", "3", "3", "0", "0", "1.0", "0.92", "0"),
+    ("MSFT", "3", "2", "1", "0", "0.6667", "0.88", "0"),
+    ("TSLA", "3", "0", "0", "0", "nan", "nan", "3"),
 ]
 
 
@@ -158,11 +163,12 @@ def write_run_dir(root: pathlib.Path, with_populate: bool = True) -> pathlib.Pat
     )
     if with_populate:
         populate_meta = {
-            "n_boards": "3", "n_ok": "8", "n_failed": "1", "n_dates_written": "3",
+            "n_boards": "3", "n_ok": "5", "n_failed": "1", "n_carried": "3",
+            "n_dates_written": "3",
         }
         _write_rows(
             root / "populate_stats.csv", populate_meta,
-            "symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band",
+            "symbol,n_attempted,n_ok,n_failed,n_disabled,success_rate,mean_oos_in_band,n_carried",
             POPULATE_STATS_ROWS,
         )
     return root

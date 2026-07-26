@@ -93,6 +93,7 @@ FitPreset parse_preset(std::string_view name) {
   if (name == "accurate") return FitPreset::Accurate;
   if (name == "robust") return FitPreset::Robust;
   if (name == "hft") return FitPreset::Hft;
+  if (name == "populate") return FitPreset::Populate;
   return FitPreset::Fast;
 }
 

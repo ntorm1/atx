@@ -74,10 +74,25 @@ enum class FitAffinity : unsigned char {
 [[nodiscard]] bool efficiency_core_tier_enabled() noexcept;
 
 // Deterministic fault-injection seam for scheduler tests. Production callers
-// omit it. The callback runs on the caller immediately before each background
-// jthread construction and receives the zero-based background-worker ordinal.
+// omit it. Both callbacks run on the CALLER thread, before any task has entered
+// `task`, so a throw from either reproduces a PRE-TASK scheduler failure exactly:
+//
+//   * `before_worker_launch` runs immediately before each background jthread
+//     construction and receives the zero-based background-worker ordinal. A throw
+//     lands in the launch-gate abort path -> Err(Internal, "worker launch failed").
+//   * `before_setup` (R1-a / review C-06) runs once, before the scratch vectors
+//     are allocated. A throw lands in the outer catch(...) -> Err(Internal,
+//     "scheduler setup failed"). That return is otherwise reachable only through a
+//     real std::bad_alloc, which a test cannot provoke on demand — and it is the
+//     path the production run actually took twice under memory pressure, so it
+//     needs a deterministic injection point of its own rather than being asserted
+//     by analogy with the launch path.
+//
+// Both are pre-task by construction: NOT ONE index has been claimed when either
+// fires, which is precisely the condition that used to wedge the populate drain.
 struct FitSchedulerTestHooks {
   std::function<void(std::size_t)> before_worker_launch{};
+  std::function<void()> before_setup{};
 };
 
 // Run every index in [0, task_count) exactly once with at most `worker_budget`

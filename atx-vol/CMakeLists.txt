@@ -78,6 +78,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/surface_parity.cpp
     src/opra_panel.cpp
     src/opra_batch.cpp
+    src/opra_hive.cpp
     src/session.cpp
     src/chain.cpp
     src/pricer_fitter.cpp
@@ -96,6 +97,8 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/pnl_attribution.cpp
     src/corpus.cpp
     src/surface_db_populate.cpp
+    src/surface_db_build.cpp
+    src/surface_db_admin.cpp
     src/dispersion.cpp
     src/dispersion_strangle.cpp
     src/dispersion_backtest.cpp
@@ -103,6 +106,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/dispersion_workflow.cpp
     src/listed_dispersion.cpp
     src/listed_opra.cpp
+    src/listed_definitions_cache.cpp
     src/occ_ess.cpp
     src/listed_dispersion_schedule.cpp
     src/listed_dispersion_reconciliation.cpp
@@ -421,6 +425,24 @@ if(ATX_BUILD_EXAMPLES)
     # Wave 2 (S4) runs it over the committed fixtures, then v1 read is deleted.
     add_executable(migrate_atxvsa_v1_to_v2 tools/migrate_atxvsa_v1_to_v2.cpp)
     target_link_libraries(migrate_atxvsa_v1_to_v2 PRIVATE atx::vol atx::core atx-vol-archive-v1 atx_warnings)
+
+    # Surface-db production build CLI (Task 6): the one-call build_surface_db
+    # driver wrapped in a hand-rolled arg loop -- create-or-open a SurfaceDb,
+    # load an OPRA hive v2 window, auto-generate per-symbol fit configs, and
+    # cell-aware-streaming-populate every (symbol, date) surface. Resumable/
+    # idempotent (re-run over an unchanged hive fits zero). See
+    # tools/surface_db_build_main.cpp and docs/surface-db-build.md.
+    add_executable(atx-vol-surface-db-build tools/surface_db_build_main.cpp)
+    target_link_libraries(atx-vol-surface-db-build PRIVATE atx::vol atx::core atx_warnings)
+
+    # Surface-db MANAGEMENT/INSPECTION CLI: info / partitions / symbols / config
+    # / query / verify over a built database, so verifying one needs no Python
+    # binding. Thin shell over the surface_db_admin library
+    # (atx/vol/surface_db_admin.hpp); gate test: SurfaceDbAdmin
+    # (tests/surface_db_admin_test.cpp). Same ATX_BUILD_EXAMPLES gate as the
+    # build CLI above. See tools/surface_db_main.cpp and docs/surface-db-build.md.
+    add_executable(atx-vol-surface-db tools/surface_db_main.cpp)
+    target_link_libraries(atx-vol-surface-db PRIVATE atx::vol atx::core atx_warnings)
 
     # Earnings-censored atmCen reproduction (Task 7): thin CLI over the shared
     # run_earnings_repro library pipeline (atx/vol/earnings_repro.hpp) -- OPRA

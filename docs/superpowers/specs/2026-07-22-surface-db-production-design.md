@@ -56,7 +56,7 @@ Missing (this design):
 ### Layout
 
 ```
-<root>/date=YYYY-MM-DD/part-0.parquet     # ALL symbols for that session
+<root>/date=YYYY-MM-DD/data.parquet     # ALL symbols for that session
 ```
 
 - True hive partitioning (`date=` key) so DuckDB / pyarrow.dataset read the
@@ -66,9 +66,12 @@ Missing (this design):
 - Schema: the existing 8 columns, unchanged
   (`ts, underlying, symbol, instrument_id, bid_px, ask_px, bid_sz, ask_sz`;
   px int64 1e-9 fixed-point, unset side = INT64_MIN).
-- Rows sorted by `underlying`, then `symbol`; **one parquet row group per
-  underlying** (bounded above by row-group max) so a per-symbol read is
-  row-group pruned via column statistics — no full-file scan per name.
+- Rows sorted by `underlying`, then `symbol`, so `underlying` column
+  statistics support predicate pushdown for future selective readers. The
+  v1 C++ loader does **one materialized read per date file** and splits by
+  `underlying` in memory (one IO pass per date regardless of universe size);
+  per-symbol row-group pruning is a documented future optimization, not
+  built now.
 - Snapshot minute stays the fixed **19:55:00Z** hive convention (uniformity
   with the existing corpus; DST rationale documented in the v1 pull tool).
 
@@ -76,7 +79,7 @@ Missing (this design):
 
 The pull unit is (date, symbol-set). On resume:
 
-1. If `date=<d>/part-0.parquet` absent → pull all requested symbols for d.
+1. If `date=<d>/data.parquet` absent → pull all requested symbols for d.
 2. If present → read its parquet footer statistics (distinct `underlying`
    row-group stats — no data scan) to get the on-disk symbol set; pull only
    the missing symbols; rewrite the date file as the **union** (atomic).
@@ -110,7 +113,17 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec &spec,
   underlier per panel, same error taxonomy), producing the same
   `OpraBatchResult` shape — so `corpus_board_from_opra` and everything
   downstream (populate, backtests) work unchanged.
-- Per-symbol subset loads use row-group pruning on `underlying` stats.
+- Per-symbol subset loads read the whole date file and filter in memory.
+  **Erratum (2026-07-25, external review P-04).** This line originally read
+  "use row-group pruning on `underlying` stats", which contradicted §2's
+  statement that "per-symbol row-group pruning is a documented future
+  optimization, not built now". §2 is what shipped: `load_opra_hive` always
+  calls `io::read_parquet` on the full date file and filters afterwards, so
+  a one-symbol repair still materializes the whole 4,000-symbol date. The
+  sorted `underlying` layout that makes pruning possible is real and is
+  still there; the pruning reader is not. Corrected to match the code rather
+  than the code changed to match the line — pruning is a genuine
+  optimization, but it is not what this branch built.
 - Deterministic entry order: date-major then symbol-major, byte-identical
   result for any `n_threads` (same contract as `load_opra_daterange`).
 
@@ -165,7 +178,13 @@ Orchestration: create-or-open db → `load_opra_hive` → boards via
 `corpus_board_from_opra` → `generate_symbol_configs` → 
 `populate_universe_streaming`. Fully resumable at every stage (hive resume,
 config idempotence, cell-aware populate resume): **re-running an unchanged
-build fits zero and spends $0**.
+build RE-FITS zero and spends $0**. The gate is `coverage.cells_refit == 0`,
+**not** `cells_to_fit == 0`: a permanently-failing cell is absent from its
+partition, so it is rescheduled and re-attempted forever and its date is
+rewritten on every run while its healthy siblings are carried. Measured on
+`prod-2026-07`, pass 2: `cells_refit 0`, `cells_carried 150`, `cells_to_fit 3`,
+`cells_ok 0`, `cells_failed 3`, exit 0. Only a database with no permanently-
+failing cell reaches `cells_to_fit == 0`.
 
 Consumers:
 
@@ -175,6 +194,12 @@ Consumers:
   `bindings/surface_db.cpp`) extended with `build_surface_db`,
   `populate` coverage/report structs, and hive load introspection, so a
   notebook can build and query the same db the C++ tools produce.
+  **Shipped with a known limitation:** `import atxvol` and `import pyarrow` in
+  the same interpreter collide over Arrow DLLs, so the notebook route is not
+  usable wherever `pyarrow` is present (loud `ImportError`, never wrong
+  numbers). Building *and verifying* a database needs no Python at all — that is
+  what `atx-vol-surface-db-build` and `atx-vol-surface-db` are for; see
+  `atx-vol/python/README.md` for the exact error text in both directions.
 
 ## 6. Scale posture (millions of surfaces)
 
@@ -191,7 +216,7 @@ in docs — no sharding built now (YAGNI).
 ## 7. Migration + pull tooling (Python)
 
 - `tools/migrate_opra_hive.py`: old `{symbol}/{date}.parquet` tree → new
-  `date=*/part-0.parquet` hive. Pure local IO, $0, atomic per date,
+  `date=*/data.parquet` hive. Pure local IO, $0, atomic per date,
   idempotent (existing complete date files skipped), verifies row counts and
   schema equality per date, writes a migration manifest CSV.
 - `tools/pull_opra_hive.py`: v2 pull targeting the new layout. Reuses the v1

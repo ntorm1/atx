@@ -9,14 +9,14 @@
 //       [--close-dte 10] [--min-names 4] [--frictions] [--threads N]
 //
 // Flow: open db -> Clock::from_surface_db -> make_dispersion_strangle_spec ->
-// DeclarativeStrategy -> run_backtest (timed) -> tearsheet -> emit the five
-// pinned output files under --out -> print a console summary. The Python
-// renderer (a later work item) reads --out verbatim, so the file names, the
-// shared `# key=value` meta block, and the CLI defaults below are a BINDING
-// contract. Exit codes: 2 bad args, 1 runtime error.
+// DeclarativeStrategy -> run_timed (the spine: timed run_backtest + tearsheet +
+// EngineRunStats) -> emit the four pinned CSVs under --out, plus the conditional
+// populate_stats.csv byte copy -> print a console summary. The Python renderer
+// (a later work item) reads --out verbatim, so the file names, the shared
+// `# key=value` meta block, and the CLI defaults below are a BINDING contract.
+// Exit codes: 2 bad args, 1 runtime error.
 
 #include <algorithm>
-#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -25,13 +25,14 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"            // Clock, run_backtest, RunConfig, SnapshotCache
+#include "atx/vol/backtest.hpp"            // Clock, RunConfig, SnapshotCache
+#include "atx/vol/backtest_driver.hpp"     // run_timed (the timed-run + tearsheet + stats spine)
 #include "atx/vol/dispersion.hpp"          // MissingNamePolicy, MissingNameSpec
 #include "atx/vol/dispersion_strangle.hpp" // DispersionStrangleConfig, make_dispersion_strangle_spec
 #include "atx/vol/run_report.hpp"          // MetaKv, write_* emitters, EngineRunStats
 #include "atx/vol/strategy.hpp"            // DeclarativeStrategy
 #include "atx/vol/surface_db.hpp"          // SurfaceDb
-#include "atx/vol/tearsheet.hpp"           // TearSheet, tearsheet
+#include "atx/vol/tearsheet.hpp"           // TearSheet
 #include "atx/vol/types.hpp"               // Result, Status
 
 using namespace atx::vol;
@@ -198,21 +199,21 @@ int main(int argc, char **argv) {
     rc.frictions.per_contract_cost = 0.65;
   }
 
-  const auto t0 = std::chrono::steady_clock::now();
-  auto res = run_backtest(*clock, strat, rc);
-  const auto t1 = std::chrono::steady_clock::now();
-  if (!res) {
-    std::fprintf(stderr, "run_backtest: %s\n", res.error().to_string().c_str());
+  // The spine (Wave C): time the engine call, fold the tearsheet, capture the
+  // stats. `wall_clock_ms` still brackets ONLY `run_backtest` — the fold is not
+  // inside the interval — so `engine_metrics.csv`'s timing rows keep their
+  // meaning. `stats.cache` is the spine reading `rc.snapshot_cache->stats()`;
+  // this driver always supplies a shared cache (:189), so it takes the non-null
+  // branch and the four deterministic `n_steps`/`cache_*` rows do not move.
+  auto outcome = run_timed(*clock, strat, rc);
+  if (!outcome) {
+    std::fprintf(stderr, "run_backtest: %s\n", outcome.error().to_string().c_str());
     return 1;
   }
-  const BacktestResult &r = *res;
-  const TearSheet ts = tearsheet(r);
-  const double wall_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-  EngineRunStats stats;
-  stats.wall_clock_ms = wall_ms;
-  stats.n_steps = r.size();
-  stats.cache = rc.snapshot_cache->stats();
+  const BacktestResult &r = outcome->result;
+  const TearSheet ts = outcome->sheet;
+  const EngineRunStats &stats = outcome->stats;
+  const double wall_ms = stats.wall_clock_ms; // still needed by the console summary
 
   std::error_code ec;
   fs::create_directories(args.out, ec);

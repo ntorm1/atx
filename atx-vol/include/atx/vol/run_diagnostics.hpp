@@ -11,9 +11,11 @@
 
 #include "atx/vol/run_archive.hpp" // RaSectionData (encoder output)
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <initializer_list>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -46,6 +48,16 @@ public:
     }
   }
 
+  // Same contract, from a contiguous range — lets a caller publish its phase
+  // order as a named constant (see kBuildSchedulePhases / kRunBacktestPhases
+  // below) instead of an inline braced list.
+  explicit PhaseTimer(std::span<const std::string_view> order) {
+    phases_.reserve(order.size());
+    for (std::string_view name : order) {
+      phases_.push_back(Phase{std::string(name), Duration::zero(), 0u});
+    }
+  }
+
   static Clock::time_point now() { return Clock::now(); }
 
   // Charge (now - start) wall time and `count` units to `phase` (created if it
@@ -67,6 +79,35 @@ public:
 private:
   std::vector<Phase> phases_;
 };
+
+// ── Published phase order for the instrumented dispersion subcommands ────────
+// These live here, not at the two PhaseTimer construction sites in
+// examples/spy_dispersion_backtest.cpp, because the `diagnostics` ROW SET is a
+// consumed interface (the Python report layer reads phases by name) and a phase
+// list buried in an example binary is untestable: the example is its own
+// executable target and no test links it. Publishing the order as a library
+// constant makes the row set assertable from atx-vol-tests, so a phase
+// rename/drop is caught by the suite instead of by a reader of a report.
+//
+// `build_schedule`'s `selection` / `quote_join` rows are charged by the library
+// builder (build_listed_dispersion_schedule) through the timer the subcommand
+// passes in; every other row is charged by the subcommand itself.
+// `definitions_parse` is split OUT of `setup_read` in both subcommands: the
+// definitions read is the single largest item in either setup and was invisible
+// while blended with the run-spec / universe / manifest / clock / OCC-ESS reads.
+// The two are charged as disjoint segments and sum to the old `setup_read`.
+inline constexpr std::array<std::string_view, 5> kBuildSchedulePhases{
+    "setup_read", "definitions_parse", "selection", "quote_join", "write_outputs"};
+
+// The old aggregate `reconciliation` phase fused three different costs — the
+// per-date snapshot loads, the per-date OPRA quote joins, and the reconcile
+// itself — into one number, so none of them could be attributed or optimised.
+// It is REPLACED by `snapshot_load` / `quote_join` / `reconcile`, which
+// partition the same span. There is deliberately no `reconciliation` row left:
+// keeping it would double count against the encoder's total.
+inline constexpr std::array<std::string_view, 7> kRunBacktestPhases{
+    "setup_read",    "definitions_parse", "engine_run",   "snapshot_load",
+    "quote_join",    "reconcile",         "write_outputs"};
 
 // `diagnostics` SubTable encoder: one row per timed phase in the timer's
 // pre-declared order — (subcommand, phase name, wall_ms, count) — followed by a
