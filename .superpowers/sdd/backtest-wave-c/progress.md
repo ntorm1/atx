@@ -2091,3 +2091,1046 @@ Working tree clean for every sprint source file; the pre-existing unrelated unco
 staged at any point.
 
 Status doc: `docs/superpowers/2026-07-25-atx-vol-backtest-sprint-status-2.md`
+
+---
+
+## RESUMED — 2026-07-25, user instruction "finish implementing this sprint end to end"
+
+Resume point taken verbatim from the STOP POINT above. Order of work:
+T4 review (the unreviewed commit) -> T5 (P3b) -> T3 (P2) -> T6 -> T7/T8 (P1) -> T9 gate -> final A-E review.
+
+**Controller sequencing decision.** T6 touches `run_archive.{hpp,cpp}` + `run_archive_test.cpp`;
+T4/T5 touch `listed_opra.*`. No file overlap, so T6 runs in PARALLEL with T4's review. T5 does
+NOT, because it rewrites the same function region T4 changed and a T4 fix round would collide.
+Build-dir contention resolved the established way: the reviewer gets SNAPSHOTTED binaries
+(`scratchpad/wave-e/snap-79b2fa6/`, both exes + all DLLs, verified 16:37 == T4 source mtime)
+and is forbidden to build; T6 owns `C:\atx\build-rel`. ONE build at a time still holds.
+
+`task-4-report.md` did not exist, so it was seeded with `git log -1 --format=%B 79b2fa6`
+(63 lines). The reviewer is told plainly that this is the commit message and NOT a report,
+that every claim in it is unverified, and that absent evidence is a finding rather than a pass.
+
+### Wave E T4 (P3a+P3c) — review of the orphaned commit `79b2fa6`
+
+**Review: Spec ❌ (evidence-only) / Code quality APPROVED. 0 Critical, 1 Important, 5 Minor.**
+No code change requested. Review file: `…wave-e/task-4-review.md`.
+
+**BYTE GATE PASS** — all seven sections match, `trade_schedule` computed `8d4f223f3b83b8bf`
+(the hash the brief singled out, since it depends on `definitions.find` through the whole
+selection path), 66 rows; `projected_schedule` 26748 bytes. `run-backtest final_nav=22635.66476`,
+`run-projected-backtest [cold] final_nav=18528.61666`, `mark divergence rows: 0`,
+`verify dates=49 admitted=539 rolls=3`, all rolls=3. Captured bash `>`, hashed `Get-FileHash`.
+**Negative control: one byte of `trade_schedule.tsv` flipped -> `7aad139587f9b4d9`, match=False
+(`COMPARATOR_CAN_FAIL = True`).** Suite **2053 ran / 2007 passed / 43 skipped / 3 failed / 7
+disabled** — the 3 are exactly the sanctioned pre-existing REDs, confirmed from the complete
+FAILED block rather than a tail. Targeted `ListedOpra.*:StandardMonthlyClassifier.*` 24/24.
+Suite grew 2047 -> 2053 = T4's six new tests. Provenance established, not assumed:
+`--gtest_list_tests` on the snapshot shows all six new names, `ListedOpra` = 17 (11 + 6).
+
+**CONTROLLER ERROR #5, MINE — a Critical hypothesis that does not exist.** I told the reviewer
+the memo's entire correctness rests on `trade_date` being non-decreasing, and that a one-slot
+memo is "silently wrong under any other order" — Critical if not airtight. It is not a
+hypothesis the code supports. The memo is **compare-then-refresh** (`listed_opra.cpp:184-188`):
+it recomputes whenever the date differs from the memoized one, so `trade_end ==
+end_of_day_ns(trade_date)` for **every row under any input order**. Sortedness buys hit rate,
+not correctness. The reviewer confirmed the ordering claim anyway (`definition_key` =
+`std::tie(trade_date, …)`, sort `:160-161`, loop `:173`, only two declarations between) — but
+the point stands that I specified the wrong failure mode and would have accepted a fix for a
+defect that was never there. Third time this sprint that a plausible mechanism was asserted
+ahead of reading the code.
+
+Also ruled by the reviewer, as delegated: buffer cannot overflow (guard at `total > 32`) and
+un-termination is safe (every `parse_iso_ns` read is length-guarded); the `noexcept` drop is
+safe (sole caller sits inside `try/catch(std::exception)` at
+`databento_spy_dispersion_definitions.cpp:541-543`); and the **default-constructed-table
+fingerprint change is UNREACHABLE in-tree** — the only default construction is inside `create`
+itself. Acceptable.
+
+**IMPORTANT I1 — the perf claim is unsupported, and it is the one thing the page-cache carve-out
+was written to prevent.** No measurement log exists anywhere; the discarded warm-up (cold)
+number is not reported for either side, and no method is stated for the RSS figure. The known
+cold/warm swing on this file is 13.4 s — **~2x the claimed 6.6 s win**, i.e. exactly the regime
+where an uncontrolled measurement can manufacture the result. Direction is mechanically
+credible; magnitude and the (a)/(c) attribution are not established. Fix is a re-run, not a code
+edit — so this is a measurement fix round, and it must own the build dir.
+
+Deferred minors (roll up to the final review):
+- Task 4: minor (deferred): M1 — comments in code, commit message AND test wrongly state that
+  correctness depends on the sort. It depends only on compare-then-refresh. Misleading in the
+  exact direction that invites a future reader to "restore" a guarantee that was never load-
+  bearing. Cheap to correct; folded into T5's dispatch since T5 owns that file next.
+- Task 4: minor (deferred): M2 — a parse test asserts only `has_value()`, so a subset of cases
+  cannot distinguish the parser gate from the `create()` gate. Matters because T5 rewrites
+  exactly the parser those tests are supposed to lock; folded into T5's dispatch.
+- Task 4: minor (deferred): M3 — the over-long-date test cannot distinguish a guard from a
+  truncation, and no case sits at the exact 32-byte boundary.
+- Task 4: minor (deferred): M4 — a moved-from table keeps a warm fingerprint memo (pre-existing).
+- Task 4: minor (deferred): M5 — the `mutable` memo would race if a future caller parallelizes
+  and asks for the fingerprint. Unreachable today.
+
+### Wave E T6 (widen `run_identity_hash`) — implementer DONE, commit `f805655`
+
+3 files (+274/-25), exactly the brief's list. `RunDir.*:RunArchive*:Tearsheet*` 37/37 PASS;
+full suite **2056 ran / 2010 passed / 43 skipped / 3 failed / 7 disabled**, the 3 sanctioned.
+**Byte gate PASS 7/7** with THREE negative controls each returning False (wrong pairing through
+the same comparator, a 1-byte perturbation `f247be14540c390e` vs `5c5cbc8f936e754b`, and the
+helper throwing on a missing file). All controller pins reproduced.
+
+**RED real and observed at runtime**, not assumed: identity `18243837031959336474` on BOTH sides
+of a `surface_manifest.tsv` / `input_inventory.tsv` / `trade_schedule.tsv` mutation, and the merge
+test found **5 sections where 2 were expected** — old-corpus `backtest`/`reconciliation`/
+`contract_marks` survived a corpus change. That is the stale-carry-forward hole, demonstrated.
+The implementer labelled the `run_spec`/`universe_schedule` legs **positive controls** in its own
+report and did not count them as gates — the discipline holding without being asked.
+
+Schema freeze intact: `ra_schema_hash()` still `0xdcce47781ac8390d` (verified as the constant AND
+at offset 24 of a produced archive header), `kRaMinor` 0, `MatchesCommittedPythonFixture` green,
+`wave_a_fixture.atxrun` sha256 unchanged. No bump needed.
+**Union survived** — 9 sections from four route invocations (7 economic + `meta` + `diagnostics`),
+`section_count` 9 before and after, plus a library-level positive-control test.
+Blast radius verified rather than assumed: A/B against the pristine fixture's pre-change
+`run.atxrun` on byte-identical folded inputs moved `run_identity_hash`/`created_ts_ns`
+`17113646873963503754 -> 6795837171609484144` while **all seven economic dumps hashed identically**.
+
+Two implementer concerns delegated to its reviewer: (i) the pre/post identity A/B compares wyhash
+values from two different builds; (ii) the suite is +22 ran vs the Wave D T2 baseline, 3 attributed
+to itself and 19 to intervening tasks without individual attribution.
+
+### Wave E T4 fix round 1/5 — measurement only, no code finding
+
+I1 is the only open finding and it requests a re-run, not an edit, so the fix dispatch is a
+measurement task. Fresh implementer (the original was stopped and is not resumable). It owns the
+build dir; T6's reviewer runs concurrently on snapshot `snap-f805655`. Scope: three build variants
+(BASE `0622d52`, BASE+(a), BASE+(a)+(c)) to attribute the win separately, page-cache carve-out
+enforced (both sides warmed with a discarded run, **the discarded cold number reported** — the
+specific omission I1 names), an explicit peak-RSS method, and a verdict of SUPPORTED /
+UNSUPPORTED / CORRECTED-TO-X on each of the three claimed numbers. It is told that "below the
+noise floor" is a legitimate result and not to manufacture attribution the data cannot support.
+Temporary working-tree edits are expected for the variants; exact restoration is required and must
+be proven. Deferred minors **M1 and M2 folded in** as the only permitted committed-code changes,
+since that file is next rewritten by T5 and M2's tests are T5's net.
+
+### Wave E T6 — review of `f805655`
+
+**Review: Spec ✅ / Code quality REQUEST CHANGES. 0 Critical, 1 Important, 5 Minor.**
+Narrowly scoped: a comment correction, no behaviour change required. File: `…wave-e/task-6-review.md`.
+
+**Byte gate PASS** — own fixture copy (`REPLACED=49`), five pipeline steps EXIT 0, every pin
+reproduced, all seven goldens match with correct row counts, dumps bash `>` (0 CR bytes, no BOM)
+hashed `Get-FileHash`, **four** negative controls all False/throwing (cross-pairing, one flipped
+bit, missing file, empty file).
+**Union SURVIVES** — and the reviewer answered the two-sided question structurally rather than by
+the section count alone: it traced the identity at **all four write points** and established that
+`build_schedule_command` writes `trade_schedule.tsv` at `:471-472`, **five lines before** its own
+`write_run_archive` at `:477`, and that no later route writes a folded input — so the identity is
+constant across all four processes. Empirically `section_count = 9`, `verify` green,
+`created_ts_ns == run_identity_hash`, `schema_hash @24 = 0xdcce47781ac8390d`, `minor @82 = 0`,
+`wave_a_fixture.atxrun` unchanged, and no economic section carries a `created_ts_ns` column
+(checked all seven dump headers).
+Suite **2056/2010/43/3/7**; the +22 vs the Wave D T2 baseline is now **individually attributed** —
+3 T6, 10 Wave D T6, 6 Wave E T4, 3 Wave E T1; 22 `+TEST` lines added, 0 removed, none
+parameterized. That closes the implementer's own second concern.
+Provenance established four ways: HEAD == `f805655` with a clean tree for all three files, snapshot
+exes sha256-identical to `build-rel\bin`, PE link stamps (17:09:31 / 17:11:19) postdating the final
+source writes (17:08:27-17:08:58) and predating the commit, and
+`RunDir.RunIdentityIsSensitiveToEachFoldedInput` passing — which pre-T6 library code cannot do.
+Honest limit stated rather than papered over: the reviewer could not re-observe the RED without a
+rebuild (forbidden), so it verified internal consistency two independent ways instead — an
+identical `18243837031959336474` on both sides of all three legs is exactly what the pre-change
+two-file fold must emit, and the 4+2-1=5 merge count is arithmetically forced.
+
+**IMPORTANT I-1 — the transitive-coverage claim is FALSE, and it was falsified on the real driver,
+not argued.** Changed `definitions.tsv` (730526177 -> 730526178 B) with **all five folded inputs
+byte-identical**: `run_identity_hash` did NOT move (`6795837171609484144` before and after), and a
+6-section `run-backtest` write produced a **9**-section archive — `projected_cold` /
+`projected_schedule` / `mark_divergence` carried forward **across a definitions change**. Root
+cause: neither folded file is derived from definitions at all. `build_corpus_command` **copies**
+`definitions.tsv` at `:396` without reading it, and `write_input_inventory` (`:182-202`) consumes
+only `OpraBatchResult`.
+
+**This finding is PLAN-MANDATED — the false claim is the brief's own premise, faithfully
+transcribed by the implementer.** The brief says definitions is "covered *transitively*" by
+`input_inventory.tsv` and `surface_manifest.tsv` and instructs: "State this reasoning in the header
+comment so the next reader does not 'fix' it." The implementer did exactly as told. Standing
+instruction is not to stop for questions, so I adjudicate:
+
+**RULING — the exclusion stands, the safety claim goes, and the residual hole gets documented and
+pinned by a test.** Excluding definitions from the fold is still right (hashing 696 MB on every
+archive write is a real perf regression inside a perf wave). What is wrong is the *reason* given.
+The honest statement is: definitions is excluded on cost, it is **not** transitively covered, and
+a definitions-only change therefore does **not** invalidate the merge — a known, bounded,
+documented gap. A comment asserting a guarantee the code does not provide is the exact defect the
+Wave D whole-branch review caught, and it must not ship twice in one sprint.
+**Deferred to Wave E T8, conditionally:** T7/T8 compute a content hash of `definitions.tsv` on the
+read path where the bytes are already resident, so folding that already-computed value into
+`run_identity_hash` would close the hole at no extra I/O. That is only available if T7's GO/NO-GO
+returns GO; if it returns NO-GO the gap stays open and documented, and the final review sees it.
+Note T7's own cache key does NOT depend on the false claim — it hashes definitions bytes directly —
+so nothing downstream is built on the falsehood.
+
+Deferred minors (roll up to the final review):
+- Task 6: minor (deferred): M-3 absent-vs-present-but-empty untested (code is correct).
+- Task 6: minor (deferred): M-4 a `filesystem::exists` error is silently treated as "absent", now
+  across 4 files rather than 2.
+- Task 6: minor (deferred): M-5 §6's cross-build A/B is corroboration, not a gate.
+
+### Wave E T4 fix round 1/5 — the measurement, and it overturns the commit message
+
+Fresh implementer, DONE_WITH_CONCERNS — the concern is the RESULT, not the code. **127 pooled
+runs**, three variants **interleaved within each rep** (BASE `0622d52`, BASE+(a), BASE+(a)+(c)).
+Full detail appended to `task-4-report.md` under `## Fix round 1 — measurement`.
+
+    claim 1  build-schedule 20317 -> 17509 (a) -> 13699 ms   UNSUPPORTED
+    claim 2  run-backtest   20560 -> 16892 (a) -> 13776 ms   UNSUPPORTED
+    claim 3  peak WS 2797.5 -> 1806.4 MB, moves only with (c)  SUPPORTED
+
+Claims 1 and 2 are disqualified **by the page-cache carve-out itself** — the discarded warm-up vs
+settled median on that exact side swung `23858 -> 13855 = 10003 ms`, above the 1.5x-of-6618 ms
+threshold of 9927 ms. Independently, a single variant re-run **against itself** spreads 51%
+(build-schedule) and 101% (run-backtest). That is the control doing precisely the job it was added
+for: I1 was raised because the cold number was never reported, and once reported it invalidated
+the headline.
+
+    CORRECTED   build-schedule  +1972 ms (14.2%) settled   / +5719 ms (32.1%) under memory pressure
+    CORRECTED   run-backtest    +2481 ms (18.0%) settled   / +5351 ms (29.5%) under memory pressure
+    (a) IS BELOW THE NOISE FLOOR — median +707 / +651 ms but NEGATIVE in 5/17 and 7/16 paired reps
+
+So the sprint's headline "~33% off the dominant phase" is wrong: it is **14-18% settled**, reaching
+~30% only under memory pressure. Direction is not in doubt — the combined win was positive in
+**31 of 33** paired reps. Magnitude and attribution were.
+**(c), not (a), carries the larger and more consistently-signed share — the REVERSE of the commit
+message.** Claim 3's method is now on record and reproducible: Win32 `GetProcessMemoryInfo`
+`PeakWorkingSetSize` on the **retained handle after `WaitForExit()`** — .NET's `PeakWorkingSet64`
+returns empty post-exit, which is the likely reason no method was ever stated. Only the word
+"deterministic" is corrected to "reproducible in steady state" (the OS trimmed it twice under
+pressure).
+
+**`79b2fa6`'s commit message now contains numbers known to be wrong.** History is not being
+rewritten for it; the corrected figures live in `task-4-report.md`, in this ledger, and must appear
+in the wave-gate commit message and the final status doc. Anyone reading only the git log would
+otherwise carry the overturned claim forward.
+
+M1 and M2 both done, committed **separately** as `ba06428` (+128/-58, explicit paths, exactly
+`atx-vol/src/listed_opra.cpp` + `atx-vol/tests/listed_opra_test.cpp`). M1 comment-only — 0 of 25
+changed diff lines are non-comment. **M2 required correcting the review's own prescription:**
+asserting `ParseError` vs `InvalidArgument` cannot work because the parser **re-wraps `create()`'s
+error as `ParseError`**, so the code is not a discriminator and the wrapped message is; all three
+parse tests now `EXPECT_EQ` the exact gate. Proven non-vacuous with a flipped-assertion negative
+control (observed RED, reverted, re-verified green). Targeted filter on the final build **24/24
+PASSED, EXIT=0**, clean under `/WX`.
+Tree restored exactly: `git status --short -- atx-vol/src atx-vol/include atx-vol/tests` empty,
+`listed_opra.hpp` byte-identical to `79b2fa6`. All 127 runs held their pins (`rolls=3`;
+`dates=49 rolls=3 final_nav=22635.66476`), zero nonzero exits — **21 independent BASE-vs-HEAD
+reproductions of the economics** as a side effect of the measurement.
+
+### Wave E T4 fix round 1 — scoped re-review: I1 / M1 / M2 all ADDRESSED
+
+Not taken on trust: the re-reviewer **recomputed every settled figure from the 127 raw rows**
+(`scratchpad/t4meas/results{,2,3,4}.tsv`) and all match to the decimal — +706.6/+2238.1/+1971.7
+build-schedule, +650.9/+1274.7/+2481.3 run-backtest, sign counts 12/17 14/17 16/17 and 9/16 11/16
+15/16, spreads 7036.7/13932.1. All six discarded cold numbers present and matching rep 0.
+Carve-out arithmetic correct (6618 -> 9927 threshold vs 23857.8-13854.6 = 10003) and applied to the
+right quantity. RSS method verified **in the script**, not from prose: `psapi.dll
+GetProcessMemoryInfo` -> `PeakWorkingSetSize` on the retained handle after `WaitForExit()`, `/1MB`,
+throws on <=0. M2's prescription correction verified against the code: `listed_opra.cpp:291-294`
+re-wraps every `create()` error as `ErrorCode::ParseError`, so the code genuinely cannot
+discriminate; `error.hpp:83-90` renders `"Code: message"` and the four test constants match `:262`,
+`:282`, `:191`, `:205` verbatim. Assertion count preserved 18->18 / 8->6+2 / 6->5+1 — nothing
+weakened. Provenance established rather than assumed: `ba06428`'s two new constants appear in
+`snap-ba06428/atx-vol-tests.exe` (1 each) and are ABSENT from `snap-79b2fa6` (0 each). 24/24 PASS.
+
+**RULING ON THE NOISE BAND — the sign survives decisively, the point estimates do not.**
+Pairing cancels exactly the between-rep drift the 51%/101% self-spreads measure, and combined is
+positive 16/17 (p~2.7e-4) and 15/16 (p~5.2e-4). But the distribution-free 95% CI on the median is
+~[903, 4161] ms = **[6.5%, 30%]** and ~[811, 3508] ms = **[5.9%, 25%]**. So this is NOT the same
+defect with a smaller number — the estimator genuinely changed — but the figure to carry forward is
+**"order 5-30%, median ~15%", NEVER "14.2% / 18.0%"**. Every downstream artifact (wave-gate commit
+message, final status doc, T7's GO/NO-GO input) uses the interval, not the point.
+
+**Three qualifications the fix report got wrong, found by recomputation:**
+1. The PRESSURED table **includes rep 0 — the discarded cold warm-up** — contradicting §5's own
+   claim that it was excluded. Its medians reproduce only with rep 0 in; dropping it takes combined
+   5719 -> 5134. Rep 0's (a) delta of +5222.7 ms is the largest in the entire log: a cache artifact
+   sitting inside the headline pressured number.
+2. `results.tsv` and `results2.tsv` have **no `free_mb` column**, so the "~2.6 GB" that defines the
+   pressured regime is nowhere in the log — the regime label was **necessarily post-hoc**.
+   Mitigated but not erased: nothing was discarded, the post-hoc-ness is self-flagged, and the
+   mechanism was predicted a priori.
+3. **"Below the noise floor" was applied asymmetrically.** (c)/run-backtest sits at 11/16
+   (p~0.21, 31% sign flips) and still gets a headline +1275 ms, while (a) is retired at 29% flips.
+   One rule, two outcomes. (c)'s RSS claim is unaffected and remains SUPPORTED — non-overlapping
+   2797.x vs 1806.x with n>20/cell, established by the three-variant design rather than assumed.
+
+New breakage: none Critical/Important. **One Minor that Wave E T5 MUST be told:** the layer pins are
+exact-message equalities, so a cosmetic reword during T5's parser rewrite turns ~40 assertions RED.
+Mitigated by the four constants being centralized (a one-line update) — but a T5 implementer who
+does not know this will read it as having broken the parser.
+
+**Task 4: complete (commits 0622d52..ba06428, review clean after 1 fix round).**
+Deferred minors carried to the final review: M3, M4, M5 (from the original review) + the
+exact-message-pin brittleness above.
+
+### Wave E T6 fix round 1/5 — DONE, commit `ad3a6b5`
+
+4 files, +264/-64. The 4th (`examples/spy_dispersion_backtest.cpp`) is outside the brief's list and
+was added for M-1's "document at the call site" — comment-only. **No behaviour change:** the fold
+loop is byte-identical to `f805655` and the pipeline stamps the same identity
+`6795837171609484144` the original reviewer measured.
+
+**I-1 FIXED** — transitive-coverage claim gone from both `.hpp` and `.cpp`, replaced with: excluded
+on **cost grounds alone**, **not** transitively covered, so a definitions-only change does **not**
+invalidate the merge-write guard; a known, bounded, documented gap. Mechanism inline
+(`build_corpus_command` `fs::copy_file`s it without reading; `write_input_inventory` consumes only
+`OpraBatchResult`), the reviewer's falsification recorded, and the cheap remedy noted (T7 already
+computes `hash_bytes` over the whole file on the read path). Pinned by
+`RunDir.RunIdentityIsDeliberatelyBlindToDefinitionsContent`, whose **banner and failure message
+both say it records a gap and must be DELETED, not reverted**, when the fold closes — which is the
+right shape for a test that pins a known-bad property.
+
+**M-1 FIXED, test half not dropped.** Invariant documented at three points (fold contract in `.hpp`
+and `.cpp`, generalised past the single call site; the schedule write; the archive write). Pinned by
+`MergeWriteDropsCarriedSectionsWhenAFoldedInputAppearsLate`. **Honest limit volunteered:** the test
+pins the *consequence*, not the statement order — the example driver has no gtest harness, so a
+reorder there is caught by the byte gate (`trade_schedule` golden), not by the suite. Flagged to its
+re-reviewer to rule whether that is adequate or actually Important.
+
+**M-2 FIXED, and the RED is a three-way discrimination rather than a single observation.** Duplicate
+deleted; its one bit of new coverage moved into `MergeWriteCarriesUnsupersededSectionsOnSameInputs`
+in one line, **labelled a POSITIVE CONTROL and not counted as a gate**. Replacement covers
+absent -> present between two writes. RED observed at runtime by **rebuilding the pre-T6 two-file
+fold**: same identity both sides (`16232834906411377749`), then **count 5 where 2 expected** with
+`backtest`/`reconciliation`/`contract_marks` carried. In that same run the definitions test's
+non-vacuity control FAILED (correct for pre-T6) and the union positive control PASSED — three tests,
+three different required outcomes, all observed. Fold restored and verified byte-identical **before**
+any verification number was taken.
+
+**Byte gate PASS** — five pipeline steps exit 0, every pin exact, all seven goldens and row counts
+unmoved, bash `>` (CR=0, no BOM), `Get-FileHash`, four negative controls all False/throwing.
+`schema_hash` on disk `0xdcce47781ac8390d`, `minor` 0, `wave_a_fixture.atxrun` sha256 unchanged,
+`section_count` 9. Filter 38/38 (37 + 2 - 1). Suite **2057 / 2011 / 43 / 3 / 7**, the 3 sanctioned.
+
+### Wave E T5 (P3b) dispatched — carrying the wave's measurement lesson forward
+
+T5's dispatch bakes in what T4 cost to learn, as requirements rather than advice: interleave
+variants **within** each rep (pairing is what cancels the drift behind the 51%/101% self-spreads),
+report the discarded cold number for every side, report a **sign count and a distribution-free
+interval** rather than a median, do not define a regime post-hoc unless the defining variable was
+logged during the run, and apply the noise-floor rule **symmetrically** in both directions.
+Also warned about the exact-message pins: a cosmetic reword of a parser error message turns ~40
+assertions RED without the parser being broken, because `listed_opra.cpp:291-294` re-wraps every
+`create()` error as `ParseError` and the message is the only discriminator.
+
+### Wave E T6 fix round 1 — scoped re-review: I-1 / M-1 / M-2 all ADDRESSED, one new Minor
+
+I-1 verified true against the code, not just read: `build_corpus_command:396` copies definitions via
+`fs::copy_file` without reading and persists the fixed literal at `:400`; `write_input_inventory:182`
+takes only `(path, OpraBatchResult)`. The gap test's banner and failure message both say
+delete-not-revert — ruled "not a trap". M-2's RED confirmed genuine rather than fitted: all four
+cited line numbers land exactly on the claimed assertions (`:2067`, `:2085`, `:2089`, `:2154`), and
+the **non-obvious prediction holds** — the definitions test failed only at its CONTROL leg `:2154`
+while its gap leg `:2147` passed, which is what the pre-T6 fold forces. Restore verified before any
+measurement: zero non-comment changed lines in `run_archive.cpp`. Fourth file confirmed comment-only
+(zero non-comment changed lines across all three non-test files). Arithmetic checked: +2/-1 TEST
+macros => 2056->2057 and 37->38. Targeted 38/38 PASS.
+
+**M-1's RESIDUAL HAZARD RE-RATED IMPORTANT — the compensating control was FALSE.** The fix report
+claimed a reorder of the schedule-write and archive-write statements would be caught by the byte
+gate. It would not. The pristine fixture already contains `trade_schedule.tsv`,
+`relocate-fixture.sh` deleted only `run.atxrun`, and the post-pipeline file is byte-identical to the
+pre-existing one (`4712bfd422285b6a`). So under a reorder the identity never moves, nothing is
+dropped, and all seven goldens reproduce. No gtest executes `build_schedule_command`. **The reorder
+passes BOTH gates.**
+
+**CONTROLLER FIX, MINE — `relocate-fixture.sh` now deletes the pipeline's own text outputs.**
+`run.atxrun` + `trade_schedule.tsv` + `projected_schedule.tsv`. A file present before its producing
+step runs cannot distinguish "the step ran and produced identical bytes" from "the step never ran".
+**Self-tested with `snap-ad3a6b5`** (no build needed, T5 owns the build dir): relocation reports all
+three absent, five pipeline steps EXIT 0, `final_nav=22635.66476` / `18528.61666`,
+`mark divergence rows: 0`, `verify dates=49 admitted=539 rolls=3`, both files regenerate, and
+**ALL SEVEN goldens PASS with byte sizes matching T1's record exactly** (17734 / 6851 / 231971 /
+25569 / 17881 / 26748 / 98). Negative control: one byte of `trade_schedule.tsv` flipped ->
+`c33397790d421759`, match **False**.
+Recorded in SPRINT-CONSTRAINTS as **byte-gate hazard #7**. This is the SEVENTH distinct way a byte
+gate has silently lied in this sprint, and the SECOND time this specific one has been found —
+Wave D T7 hit it and the remedy never made it into the shared helper. It has now.
+
+**TOOLING ALARM INVESTIGATED AND REJECTED — the re-reviewer misdiagnosed it.** It reported bash
+`grep` output being rewritten by the rtk proxy and asked for SPRINT-CONSTRAINTS to be revised.
+Not reproduced: `git diff | wc -l`, the same diff as a file, and `rtk proxy git diff` all return
+**37**. The 8-vs-9 discrepancy is **case sensitivity** — `grep` is case-sensitive, PowerShell
+`Select-String` is case-INSENSITIVE by default, and the extra line was
+`…BlindToDefinitionsContent` with a capital D; `grep -c -i` returns 9. Its own conclusions stand
+(it re-took every diff claim with PowerShell), but the constraints file now records the CASE
+asymmetry as the real hazard and explicitly refuses to record "grep is unreliable" — a false hazard
+would make every future agent distrust a working tool.
+
+Deferred minor (roll up to the final review):
+- Task 6: minor (deferred): the replacement comment over-claims "NO folded input is derived from the
+  definitions bytes" (`run_archive.hpp:616`, `run_archive.cpp` body, `run_archive_test.cpp:2101`).
+  False for folded input (5): `build_schedule_command:427-428` reads definitions and passes them to
+  `build_listed_dispersion_schedule` (`listed_dispersion_pipeline.cpp:192-197`, `:238`), which
+  produces `trade_schedule.tsv`. Safe-direction (the operative "change *confined to* definitions"
+  sentence stays true) and one clause to fix — scope it to inputs (3) and (4). **Queued as T6 fix
+  round 2** rather than parked, because it is the third false comment in this area and the sprint's
+  own rule is that a comment asserting what the code does not provide gets corrected.
+
+### Wave E T5 (P3b — single forward scan) — implementer DONE_WITH_CONCERNS, commit `18ee3cb`
+
+2 files, +295/-18, explicit-path stage only (the tree's 52 unrelated entries untouched).
+Suite **2060 / 2014 / 43 / 3 / 7**, the 3 sanctioned. Targeted **27/27** (20 `ListedOpra` incl. 3
+new + 7 `StandardMonthlyClassifier`).
+
+**RED observed at runtime against a deliberately naive first-8-tabs scan** — 3 tests failed with
+`"ACCEPTED"` where `"listed definitions: malformed row"` was expected, including Task 4's own `:765`
+10-field assertion, and a case where `field 8 dropped from row 1` caused row 1 to parse **carrying
+row 0's `source_fingerprint`**. That is the exact silent-corruption mode invariant 1 exists to
+prevent, demonstrated rather than argued. **No error message was reworded and all four
+expected-message constants are untouched** — the ~40-assertion tripwire I warned it about was
+avoided deliberately.
+
+**Marginal effect on `definitions_parse`** — 8 paired interleaved reps x 2 subcommands, both sides
+warmed by a **reported** discarded rep 0:
+    pooled median  -23.7%, positive 14/16, 92.3% distribution-free interval [6.5%, 29.1%]
+    full range     [-97.6%, +63.8%]
+    build-schedule -28.4% (7/8, [18.3%, 46.4%])
+    run-backtest   -13.6% (7/8, [3.2%, 29.1%])
+    peak WS        -99.9 MB, 16/16, [99.8, 100.0]  <- the clean result
+The memory number matches the removed 104.7 MB line index arithmetically.
+
+**The measurement discipline held, including against its own result.** It applied the noise-floor
+rule symmetrically and that rule **retired its own run-backtest wall (5/8) and CPU (4/8) claims** —
+the failure mode T4's audit caught (one component retired at 29% sign flips while another kept a
+headline at 31%) did not recur. It also flagged, unprompted, that `run-backtest`'s cold/warm swing
+(5747 ms) **exceeds** 1.5x its claimed win (3610 ms) — the carve-out's own disqualification
+threshold — and told the reader to quote build-schedule or the memory number instead. Its reviewer
+is asked to rule whether that leg is defensible in paired both-sides-warm form or must be withdrawn.
+
+**Brief correction, verified arithmetic:** the brief's "~8.7M" residual `raw_symbol` allocations is
+wrong for this fixture — measured **6,545,634** (~210 MB) from 730,526,177 B / 6,545,636 lines. The
+allocation is untouched by this pass, as the brief required it to state.
+**Self-declared positive control:** `ParseIsByteIdenticalToPriorImplementation` **passed against the
+naive scan**, so it is labelled a positive control and not counted as a gate.
+Scope note for the reviewer: one extra sequential `memchr` pass (`count_newlines`) was added to
+preserve the exact `reserve`; it sits inside the measured phase, so the reported win is net of it.
+Harness defect, disclosed: its own `tail -f` locked `results.tsv` mid-run and truncated it; 36/36
+rows were recovered from `measure.log` into `paired.tsv`. **Recovered-after-failure data is exactly
+where a silent selection effect hides**, so its reviewer is told to verify provenance rather than
+accept the recovery.
+
+Byte gate PASS — full pipeline twice on two independent fixture copies, all seven goldens and all
+four pins, `trade_schedule 8d4f223f3b83b8bf`/66 exact, four negative controls False/threw,
+`cr_bytes=0` on all 14 dumps. Note it ran with the OLD helper; its reviewer re-runs with the
+stricter hazard-#7 version.
+
+### Wave E T6 fix round 2/5 dispatched — one-clause comment scope correction (dispatched on sonnet)
+
+Fix round 2 DONE, commit `0939ef7`. Scoped "NO folded input is derived from the definitions bytes"
+down to: (3) and (4) are not definitions-derived at all; **(5) `trade_schedule.tsv` IS derived from
+`definitions.tsv`** — but that does not reopen the gap, because the guard's premise is a change
+CONFINED to definitions, in which case `build-schedule` was not rerun and `trade_schedule.tsv`'s
+bytes do not move either. Applied at all three sites (`run_archive.hpp:613-629`,
+`run_archive.cpp:1537-1550`, `run_archive_test.cpp:2100-2110`). Comment-only proof: `git diff`
+filtered to non-`//` added/removed lines is **empty** for all three files. Targeted 38/38 PASS.
+Scoped re-review dispatched (sonnet — one Minor, one comment-only commit).
+
+### Wave E T3 (P2 — leg-key-filtered reconciliation join) dispatched
+
+Told plainly that the **narrowed fail-closed gates are the deliverable and the speedup is the
+bonus**, not the reverse: filtering preserves the panel-wide missing-identity check (it precedes the
+filter) but NARROWS look-ahead/expiry, economics-disagreement and future-quote to the consumed keys,
+and each must be proven to still fire for a **wanted** key. Silently losing a fail-closed gate is
+this task's failure mode.
+Carries forward: the full measurement protocol (interleaved pairing, discarded cold number per side,
+sign count + interval, no post-hoc regimes, symmetric noise floor — with Task 5's self-retirement
+named as the standard); the exact-message tripwire (~40 assertions); Task 4's memo being exact under
+any order; the frozen schema; and the pre-flagged positive control
+(`FilteredJoinEmptyWantedIsUnfiltered` passes against old and new code by construction).
+It is also the first task to use the **hazard-#7** helper, which now deletes the pipeline's own text
+outputs. Brief's stale `final_nav=-456.5769067` overridden as usual.
+
+Fix round 2 scoped re-review: **ADDRESSED.** Verified rather than read: the fold numbering (1-5) in
+the comment matches the actual order in `run_identity_hash()`; (3) `surface_manifest.tsv` and (4)
+`input_inventory.tsv` confirmed genuinely not definitions-derived (`build_corpus_command` copies
+without reading; `write_input_inventory` has no `definitions` parameter); (5) `trade_schedule.tsv`
+confirmed genuinely definitions-derived (`build_schedule_command` reads it and passes it into
+`build_listed_dispersion_schedule`, used via `listed_quotes_for_date` in the roll loop). Escape
+clause logically sound and explicitly framed as a **gap, not a safety guarantee**. Comment-only
+verified independently (bash `grep`, case-sensitive, non-`//` added/removed lines across all three
+files -> empty; `git show --stat` confirms exactly three files). Old over-claim absent everywhere,
+no contradictions between sites, documented-gap framing untouched. Targeted 38/38.
+It also diagnosed a tooling trap instead of reporting a false RED: **CWD must be `C:\atx` (or
+`C:\atx\build-rel`) for the fixture-comparison test's relative path to resolve — running from
+inside the snapshot directory gives a spurious path-only failure.** Recorded in SPRINT-CONSTRAINTS,
+since every reviewer this wave runs from a snapshot.
+
+**Task 6: complete (commits 7fbe01e..0939ef7, review clean after 2 fix rounds).**
+Deferred minors carried to the final review: M-3 (absent vs present-but-empty untested; code
+correct), M-4 (a `filesystem::exists` error silently treated as "absent", now across 4 files),
+M-5 (§6's cross-build A/B is corroboration, not a gate).
+
+### Wave E T5 — review of `18ee3cb`
+
+**Review: Spec ✅ / Code quality APPROVED. 0 Critical, 1 Important, 8 Minor.**
+
+**IMPORTANT — unsigned underflow.** `listed_opra.cpp:344` `reserve(count_newlines(tsv) - 1u)`:
+on an input with zero newlines this is `reserve(SIZE_MAX)` -> `std::length_error` **thrown out of a
+`Result`-returning parser**. The reviewer proved it unreachable today (`!exhausted()` after the
+first `next_line()` <=> at least one newline) but it is guarded only by a distant header-validation
+gate, in a function the plan slates for further rewriting. One-line fix.
+
+**Both invariants verified from the committed code, not from the report.** Over-count: an explicit
+ninth `memchr` at `:127` rejects a 10-field row. Under-count: `false` before any field is read, plus
+per-row `fields[9]` at `:352` and short-circuit `||` at `:358`. Empty-line `continue` preserved at
+`:349-351`, LF-only intact. The reviewer traced the new cursor walk against the deleted `split`
+through **every** edge — empty input, no-newline, `MAGIC\n`, terminating `\n`, unterminated tail —
+and found them element-for-element equivalent with the reserve exactly preserved (6,545,635 both
+ways). Error strings byte-identical at `:332`, `:336`, `:365`; the test hunk is **+194/-0**, so all
+four message constants and Task 4's ~40 assertions are untouched — the tripwire held.
+
+**RED confirmed genuine and mechanistically inevitable:** `red.log` shows 3 FAILED including Task
+4's `:765`, with `ParseIsByteIdenticalToPriorImplementation` **[OK]** — which independently confirms
+the implementer's own positive-control self-assessment. Exactly one of nine row-1 drop cases fires
+(`field 8`); `dropped from row 0` appears **0** times, as the mechanism requires.
+
+**RULING ON THE run-backtest LEG — do NOT withdraw; demote to directional-only.** The carve-out's
+disqualification rule is scoped to **cross-cache-state A/B**; this measurement is within-rep
+interleaved with both sides warm and rep 0 discarded on both, so that confound is controlled by
+construction. The 5747-vs-3610 ms arithmetic is right and establishes that the **magnitude** is
+unresolvable on this box — not the direction, which holds at 7/8 with interval [729, 5101] ms
+excluding zero and is mechanistically corroborated by peak WS at 16/16. Withdrawing it would falsely
+imply the parse did not improve there. Required: the rule-3 caveat inline wherever 13.6% appears,
+and quote **per-leg, not pooled**.
+
+**The measurement was independently recomputed from `paired.tsv` and every published figure
+reproduces exactly** — medians, order statistics, 14/16 sign count, coverages 92.97%/92.32%. Noise
+floor symmetric with a clean gap: every retained metric <=12.5% sign flips, both retired ones at
+37.5% and 50%. Peak-WS arithmetic confirmed **better than claimed**: 6,545,637 x 16 B = 99.878 MiB
+vs 99.9 measured. Fixture verified `6545636 730526177`, so the brief's "~8.7M" -> 6,545,634
+correction is right. `count_newlines` justified rather than waved through: it materialises nothing,
+the task removed an allocation not a scan, and the exact reserve is precisely what makes -99.9 MiB
+solely attributable to the index.
+
+**Concern 7 (data recovered after the `tail -f` lock) — provenance CLEAN.** All 36 `paired.tsv` rows
+appear verbatim in `measure.log` with none extra, and all 6 surviving `results.tsv` rows are
+byte-identical in `paired.tsv`. Nothing selected, nothing reconstructed. The reviewer's own initial
+one-row mismatch turned out to be `measure.log`'s BOM defeating a `^before` anchor — and it chased
+that to ground rather than reporting it.
+
+**Byte gate PASS, and it validates hazard #7's fix.** Own copy with the stricter helper,
+`REPLACED=49`, **all three deleted artifacts regenerated** (`run.atxrun` 188496 B,
+`trade_schedule.tsv` 23275 B, `projected_schedule.tsv` 25484 B). Five steps EXIT 0, all four pins,
+all seven goldens with correct row AND byte counts, `cr_bytes=0`. **`trade_schedule`
+`8d4f223f3b83b8bf` reproduces from a copy where it was deleted first** — that golden is now a real
+regeneration gate rather than a copy-integrity check. NEG1 False / NEG2 True / NEG3 False
+(`c99160a866698006`) / NEG4 threw. Suite **2060 / 2014 / 43 / 3 / 7**, no fourth failure.
+Provenance: `snap-18ee3cb` carries all three new test strings and `snap-ad3a6b5`/`ba06428`/`79b2fa6`
+carry none (case-sensitive `grep -c`), while all four carry Task 4's test; backtest exe sha16
+`797FC5B1966C965D`, unique per snapshot.
+Honest limits stated: the RED was not re-executed (rebuilding the naive variant is a build, which
+was forbidden), and no `/WX` build log was available.
+
+Deferred minors (roll up to the final review) — the notable ones:
+- Task 5: minor (deferred): M1 — source comments still carry the stale "~8.7M" figure the report
+  corrected to 6,545,634. Folding into the fix round.
+- Task 5: minor (deferred): M6 — only ~14 of ~40 parse assertions actually discriminate; the nine
+  row-0 drop cases and the `"\t"x7` case are non-discriminating and **must not be counted as this
+  task's coverage**. Recorded so the wave gate does not credit them.
+- Task 5: minor (deferred): M8 — quote the run-backtest leg per-leg with the rule-3 caveat inline,
+  never pooled. Folding into the fix round.
+
+### Wave E T3 (P2 — leg-key-filtered join) — implementer DONE_WITH_CONCERNS, commit `cff8f8e`
+
+8 files, exactly the brief's Step 7 paths; the 53 unrelated working-tree entries untouched.
+Suite **2067 / 2021 / 43 / 3 / 7** (+7 ran/+7 passed vs `18ee3cb` — the seven new
+`ListedOpra.Filtered*`), the 3 sanctioned. RED observed at runtime against a stub that accepted
+`wanted` and ignored it (4 of 7 failed).
+
+**NARROWED-GATE VERDICT: PASS, with two-way mutation evidence.** This is the deliverable and it was
+delivered in the right shape. A temporary mutation dropping every filtered row turns all three
+narrowed gates (look-ahead, economics, future quote) RED **and only those**; a second mutation
+letting the identity branch `continue` under a filter turns the panel-wide identity gate RED **and
+only that**. Both reverted, residue grep clean. `FilteredJoinEmptyWantedIsUnfiltered` labelled a
+positive control and not counted as a gate — flagged in advance by the controller and honoured.
+
+**Measured** (5 paired interleaved reps, one fixture, one session; rep 0 discarded warm-up reported
+on both sides: `quote_join` before 6858.7 / after 1742.5 ms):
+    quote_join         2.09x median, 93.75% interval [1.74x, 2.16x], sign 5/5
+    reconcile          12.7x, [9.1x, 18.0x], sign 5/5
+    definitions_parse  sign 2/5   -> BELOW NOISE FLOOR, no effect claimed
+    snapshot_load      sign 1/5   -> BELOW NOISE FLOOR, no effect claimed
+    peak working set   unchanged (1706.5 MB both sides)
+`definitions_parse`'s median actually moved **+137 ms the wrong way** and was correctly NOT reported
+as a regression — the same symmetric discipline Task 5 showed. Peak WS unchanged is explained
+mechanistically: peak is set during `definitions_parse`, before the join loop.
+
+**Concern 2 is the most interesting result of the task and must not be buried.** The predicted
+speedup did NOT materialise at the phase level. A temporary probe (reverted) measured quotes emitted
+falling **741x** (2,021,228 -> 2,727) and the join loop **6.4x**, yet `quote_join` moved only 2.09x
+— because `load_opra_daterange` is ~880 ms and **78% of the filtered side**. **The phase is now
+parquet-load bound.** The brief predicted "quote_join drops by roughly the panel-rows-to-legs ratio";
+it did not, and the reason is now known rather than guessed.
+
+Other concerns raised for its reviewer to rule on:
+1. **The brief's `wanted` spec is not literally implementable** — a panel row's `expiry_ts_ns` comes
+   from `definitions.find`, the very lookup being skipped. Implemented as a two-stage filter
+   (coarse `raw_symbol` pre-lookup, exact key pre-emit). Stage 1 is deliberately coarse **so a row
+   lying about its strike still trips the economics gate**.
+3. Cold/warm swing exceeds the claimed win (6858.7 -> 4048.5 = 2810 ms vs a 2178 ms median). Stated
+   as the protocol requires; the paired interleaved design and 5/5 sign are what carry it.
+4. `ListedQuoteKey` uses the brief's `= default` `<=>` rather than the promoted-verbatim `std::tie`
+   `operator<`; claimed to differ only for a non-finite strike (unreachable, fail-closed there).
+
+Byte gate PASS — all seven goldens MATCH from a fresh relocation with hazard #7 checked and printed
+(all three outputs absent pre-run). `reconciliation 35f0625d917f9dc5` and `contract_marks
+04162f9a4157e03d` reproduce, so `quote_mid_coverage`/`n_quote_mid_lots` did not move. All four pins.
+Negative controls: one-byte perturbation -> `MATCH=False`, helper throws on missing/empty — **plus an
+incidental real one**: a first attempt that omitted `--schedule projected_schedule.tsv` had the gate
+correctly report `projected_cold` DIFFER. Schema untouched, no parser message strings changed, no
+Python touched.
+
+### Wave E T5 fix round 1/5 dispatched (sonnet) — underflow guard + M1 + M8
+
+### Wave E T3 — review of `cff8f8e`
+
+**Review: Spec ✅ (1 ⚠️ — mutations unverifiable without a build) / Code quality REQUEST CHANGES.
+0 Critical, 2 Important, 5 Minor.**
+
+**NARROWED-GATE EVIDENCE: GENUINE, and the reviewer proved it the right way round.** It derived the
+predicted RED partition **from the committed code before reading the mutation output**; Mutation A's
+5-RED/2-green and Mutation B's 1-RED/6-green splits are disjoint, complementary, and exactly what the
+structure predicts, with correct per-assertion texts. Better still, it found gates 2 and 4 carry
+**in-test two-way controls** needing no mutation at all (same corrupted table -> `Err` when wanted,
+`Ok` size=2 when not) — both OK in its own run. Honest limit: gates 1 and 3 have no in-test control,
+so for those it validated the predicted partition but could not observe the RED (builds forbidden).
+Verified from code: the identity gate at `:497-500` precedes the filter at `:515`; gates at
+`:567`/`:573`/`:595` all follow stage 1 and precede stage 2 at `:606`; `wanted`-empty is
+**structurally inert, not merely tested**; the header does document the narrowing.
+
+**IMPORTANT 1 — the contract says FOUR fatal checks; there are SEVEN.** `listed_opra.hpp` asserts
+"Four checks are fatal for any panel row". The loop has seven fatal exits, and three narrowed ones
+are undocumented and untested: `parse_osi_symbol` at `listed_opra.cpp:538` and `:571` — **live gates
+under the production `SkipUnlisted` policy** — and "contract definition missing" at `:565`. The
+*behaviour* is within the accepted trade class; the *mandated contract statement is factually wrong*.
+**PLAN-INHERITED — the brief made the same error.** Standing instruction is not to stop for
+questions, so I adjudicate: **the brief's "four" was wrong and the contract must state all seven,
+with the three newly-identified narrowed gates covered by tests.** The entire point of the brief's
+"(a) stated in the header contract" requirement is accuracy; shipping "four" when there are seven is
+the same false-comment defect this sprint has now hit in three separate files. Fix it.
+
+**IMPORTANT 2 — `wanted`'s SORTED+DEDUPED precondition is documented but unenforced** (`:483`,
+`:516-531`). An unsorted span silently drops legs -> `NoRawQuote` -> moved coverage, **with no
+error**. No live defect (the sole caller sorts at `spy_dispersion_backtest.cpp:51-52`), but this is a
+silent-wrong-answer path guarded only by caller discipline. A `std::is_sorted` guard closes it.
+
+**Concern 1 (two-stage filter): the implementer is RIGHT and the brief was wrong.**
+`quote.expiry_ts_ns = definition->expiry_ts_ns` (`:584`) comes from the lookup at `:532`, so the
+brief's single exact-key pre-lookup filter is impossible. The two-stage version is semantically
+exact: `quote.raw_symbol = identity->raw_symbol` (`:583`) is the same string stage 1 searched,
+`wanted`'s primary sort member is `raw_symbol` so the run is contiguous, and both searches use the
+same `char_traits::compare` relation. Nothing dropped that single-stage would admit; nothing admitted
+that it would drop. **Stage 1 is a SUPERSET of the exact-key set, so gates 2-4 fire for MORE rows
+than the brief specified — the deviation widens gate coverage.** Not Critical.
+
+**Concern 4 (`<=>` vs `std::tie`): claim verified, and the substitution is REQUIRED.** Only
+`double strike` can yield `partial_ordering::unordered`; string/int64/enum are all `strong_ordering`
+and `std::string`'s `<=>` is the same relation as `tie`'s `<`. Non-finite strike unreachable on both
+sides — quotes rejected by the economics gate (`:573-577`, `osi.strike` always finite, `NaN !=
+finite`), legs by `finite_positive(leg.strike)` (`listed_dispersion_schedule.cpp:196`). Membership
+unaffected. The `<=>` version is **more** fail-closed than `tie` (collapses to `Err(AlreadyExists)`
+where `tie` would admit both) and is **required**: it supplies the `operator==` that
+`std::unique(wanted)` needs, which a bare `operator<` never did.
+
+**Concern 3: the implementer OVER-flagged its own result.** Protocol threshold is 1.5 x 2178 =
+**3267 ms**; the observed swing was **2810 ms** — the caveat is not actually triggered. Within-rep
+interleaving eliminates the cross-cache-state confound by construction (same ruling as Task 5).
+Magnitude quotable as **~2x**, not "2.09x" (per-rep ratios 2.06 / 1.74 / 2.09 / 2.16 / 2.16).
+**Concern 2 verified and correctly headlined:** 741.2x, 6.44x, 77.8%, 2.246x all recompute exactly,
+and the probe is absent from both the commit and the working tree (grep rc=1, case-sensitive AND
+case-insensitive).
+
+Byte gate PASS — own copy, `REPLACED=49`, hazard-#7 pre-check showed all three outputs absent, five
+steps EXIT 0, all four pins, all seven sections MATCH with expected `data_rows`, and the
+`reconciliation` header confirmed to carry `quote_mid_coverage`/`n_quote_mid_lots` so no leg key was
+missed. Dumps via bash `>` (0 CR bytes verified), `Get-FileHash`. Three negative controls: appended
+byte -> `88283ca738c49a7a` MATCH=False; helper throws on missing/zero-length; cross-section
+MATCH=False. Suite **2067 / 2021 / 43 / 3 / 7**, the 3 sanctioned only. Provenance by
+`--gtest_list_tests` differential: the +7 are exactly `ListedOpra.Filtered*` (in `snap-cff8f8e`,
+absent from `snap-0939ef7`). Schema untouched, no parser message strings changed, `atx-vol/python/`
+untouched, commit scope exactly the brief's 8 files.
+It also noticed working-tree drift in `listed_opra.cpp`/`listed_opra_test.cpp` and correctly
+identified it as **another agent's in-flight work** (hunks at `:92`/`:308`/`:340`, not touching
+`listed_quotes_from_opra`) rather than reporting it as T3 residue.
+
+### Wave E T5 fix round 1 — DONE, commit `2d5b74f`
+
+Important I1 fixed: `reserve(newlines > 0u ? newlines - 1u : 0u)` replaces the unguarded
+subtraction, with a comment stating why the guard stays despite today's unreachability (so a later
+reader does not delete it as dead code). Reserve value on the real fixture unchanged — 6,545,636
+newlines -> 6,545,635 either way — which matters because the task's -99.9 MB result is only
+attributable to the removed index if the reserve stays exact. Regression test
+`ParseRejectsZeroNewlineInputWithoutThrowing` added. M1 fixed: all three stale "~8.7M" comments
+corrected to the measured 6,545,634 rows / ~104.7 MB index / ~733 MB vector. M8 fixed (report only):
+rule-3 caveat inline at both sites where the 13.6% figure appears, legs quoted separately, pooled
+figure demoted from headline.
+Focused filter **35/35** — the count rose from the dispatch's expected 27/28 because Task 3 landed
+7 `FilteredJoin*` tests after T5's review was written; the implementer noticed and explained the
+discrepancy rather than reporting a mismatch. Full suite **2068 / 2022 / 43 / 3 / 7**, reconciling
+exactly as baseline 2060 + Task 3's 7 + this round's 1.
+
+**Note on agent stops — third of this shape.** The T5 fix agent stopped mid-round waiting on its own
+background test run and returned no status or commit. Its work was intact and uncommitted in the
+tree (guard + comment + test, diff stat 24/8 and 16/0); I verified that from git before assuming
+anything, then resumed it by message to run the suite, commit and report. Same as the earlier T3 and
+T4 stops. **Checking the tree before re-dispatching is what keeps this cheap** — a controller that
+assumed loss would have re-run the whole round.
+
+### Wave E T3 fix round 1/5 dispatched — contract accuracy + an unenforced precondition
+
+Scope: Important 1 (contract says four fatal checks, code has seven — the three undocumented ones
+are `parse_osi_symbol` at `:538` and `:571`, both LIVE under the production `SkipUnlisted` policy,
+plus "contract definition missing" at `:565`), Important 2 (`std::is_sorted`-style fail-closed guard
+on `wanted`'s unenforced SORTED+DEDUPED precondition), and the Concern 3 report correction.
+The implementer is told explicitly that its two-stage filter and its `<=>` substitution were both
+**verified correct and upheld** — do not change them — and to verify the seven-count against the
+code itself rather than trusting my paraphrase.
+
+### Wave E T5 fix round 1 — scoped re-review: all three ADDRESSED, and the new test is a POSITIVE CONTROL
+
+Important ADDRESSED — the ternary reduces algebraically to the identical `newlines - 1u` for all
+`newlines >= 1` (traced, not input-sampled), and `newlines == 0 -> reserve(0)` is **correct** (zero
+data rows are possible there), not merely safe. M1 ADDRESSED — all three sites verified directly in
+source (`:95`, `:311`, `:350-352`), now citing 6,545,634 rows / ~104.7 MB index / ~733 MB vector,
+matching `wc -lc` and the original review's own recomputation. M8 ADDRESSED — caveat inline in §0
+immediately after the 13.6% figure and again directly under the §6.3 table, legs quoted separately,
+pooled figure explicitly demoted rather than relabelled. No new breakage: Task 3's `wanted` filter
+(`listed_quotes_from_opra` at `:469+`) has zero overlap with this diff's hunks, and no parser error
+message string changed. Targeted 35/35 run by the reviewer itself.
+
+**RULING — `ParseRejectsZeroNewlineInputWithoutThrowing` is a POSITIVE CONTROL, not a gate, and it
+cannot be made into one.** The dispatch named this as the most likely way the fix would be weaker
+than it looks, and it was. The reviewer traced `parse_listed_definitions` by hand for all three
+inputs (`""`, a no-newline string, a bare magic line): each hits the pre-existing, unmodified
+"fewer than two lines" gate (`exhausted()` at `:332`) and returns **before** the magic/header check
+and long before `reserve` at `:354`. The reserve line is unreachable for those inputs whether the
+guard is present or reverted — so the test passes identically either way and pins the header gate's
+contract, not the underflow fix.
+This is not a defect in the fix; it is a property of the fix. The guard exists **precisely because**
+the only thing that makes the subtraction safe today is a non-local gate 14 lines away, and it is
+defence against a future reorder of that gate. By construction no reachable input can exercise it,
+so no test can gate it without a mutation harness the suite does not have. The report already
+discloses the limitation. **Parked with this ruling: the guard stands, the test must be LABELLED a
+positive control in the source so a later reader does not count it as coverage, and the final review
+sees both sides.**
+
+**Task 5: complete (commits ad3a6b5..2d5b74f, review clean after 1 fix round, 1 parked).**
+Deferred minors to the final review: the positive-control label above; M6 (only ~14 of ~40 parse
+assertions discriminate — the nine row-0 drop cases and the `"\t"x7` case must NOT be counted as
+this task's coverage); plus the six other minors in `task-5-review.md`.
+
+### Wave E T3 fix round 1 — DONE, commit `fd52934`
+
+5 files, explicit paths, +289/-30. Suite **2073 / 2027 / 43 / 3 / 7** (baseline +5/+5, exactly the
+new tests), the 3 sanctioned only. Targeted filter 56/56. Byte gate re-run: PASS, own copy
+`REPLACED=49`, hazard-#7 pre-check printed clean, all 5 steps EXIT 0 on every pin, all seven hashes
+AND row counts MATCH, 0 CR bytes, **four** negative controls False (appended byte, cross-section,
+throws on missing/zero-length, row-count).
+
+**Important 1 RESOLVED — and it corrected BOTH the brief and the reviewer.** It verified the count
+itself: seven fatal loop exits, but the split is **1 panel-wide / 6 narrowed**, not the reviewer's
+1/3. Pre-fix `:499` panel-wide (precedes stage 1); `:538 :565 :569 :571 :575 :596` all narrowed. It
+excluded the two preamble `Err`s at `:476`/`:480` because they run once before any row, and **said
+so** rather than silently choosing a boundary. It then found the four-vs-seven claim had
+**propagated to three further sites** — `listed_dispersion_pipeline.hpp:98`,
+`spy_dispersion_backtest.cpp:585`, and the test-file preamble — all corrected. The rewritten
+contract enumerates all seven in loop order with error codes and additionally records that (2)/(5)
+are the same condition on mutually exclusive branches, that **(2) is the one missing-definition exit
+`SkipUnlisted` does NOT disarm** — which the policy doc block had also omitted, now fixed — and that
+(3) is inert under `SkipUnlisted`. This is the fourth iteration of this statement; its re-reviewer is
+told an enumeration confidently wrong in a NEW way would be worse than the "four" it replaced.
+Three new tests, each with a **two-way in-test control**. They characterise already-correct
+behaviour so they do NOT redden against unmutated HEAD — **labelled as such rather than counted** —
+and discrimination is proved by two mutations: **A (stage 1 drops all) 10 RED / 2 green**,
+**B (filter never applied) 9 RED / 3 green**. B's surviving gate test is exactly the economics test
+the reviewer had flagged in Minor 1, **reproducing that finding independently**. Residue grep rc=1.
+
+**Important 2 RESOLVED with an observed RED that demonstrates the silent loss.** `std::adjacent_find`
+on `!(lhs < rhs)` before the loop -> `Err(InvalidArgument, "listed OPRA join: wanted keys must be
+sorted and deduped")` — one O(n) pass enforcing BOTH halves, `Err` not `assert` (assert is a no-op
+in Release, the only build that matters here), new string with no existing message touched.
+**Pre-guard, the join returned `Ok with 1 quotes` on a 2-key descending span — one leg silently
+lost, exactly the described defect.** The duplicate case returned `Ok with 2` and is stated plainly
+as contract enforcement rather than a latent wrong answer; its re-reviewer is asked to rule whether
+that framing understates it.
+
+**Concern 3 CORRECTED.** §5.2 retitled "reported, and NOT triggered" with the arithmetic shown
+(1.5 x 2178 = 3267 ms vs observed 2810 ms = 0.86x the win); magnitude requoted **~2x** in the effects
+table, §5.1 and the Concerns entry; per-rep ratios (2.06/1.74/2.09/2.16/2.16) recorded with the
+reason; §2's stale four-check table marked SUPERSEDED.
+
+### Wave E T7 (P1) dispatched — with Step 1 as a REAL exit
+
+The dispatch tells it plainly that I am not signalling which way the GO/NO-GO comes out, that it must
+compute the ratio from its own measurement of current HEAD stating numerator, denominator and ratio
+explicitly, and that **a NO-GO is a completely acceptable and useful outcome** — cheaper to not build
+a cache than to build one nobody needed. Prior measurements are given as context only, explicitly
+"do not substitute for your own", including T4's corrected interval rather than the retracted
+14.2%/18.0% point estimates. The brief's second exit is also flagged: if measured hash + blob-load
+exceeds ~50% of post-T5 parse time, report rather than land.
+It is told NOT to widen `run_identity_hash` (that is T6's documented gap and a possible follow-up,
+not this task) but to state whether its content hash is reusable for closing it.
+
+### Wave E T3 fix round 1 — scoped re-review: Important 1 / Important 2 / Concern 3 all ADDRESSED
+
+**Seven-exit enumeration INDEPENDENTLY CONFIRMED.** The re-reviewer enumerated every
+`return Err`/`ATX_TRY`/`continue`/`return Ok` in `listed_quotes_from_opra` at `fd52934`: the loop
+body (`:505-630`) has exactly seven fatal exits — `:515` `NotFound`, `:554` `ATX_TRY` parse (def
+absent), `:581` `NotFound`, `:585`, `:587` `ATX_TRY` parse (def found), `:591`, `:612` — and **no
+eighth**; the only other exits are five non-fatal `continue`s and the terminal `Ok`, and
+`definitions.find` returns a raw pointer so nothing else propagates. Split confirmed **1 / 6**:
+stage 1 begins `:531`, exit 1 is `:515`, exits 2-7 are `:554`+. It also checked the pre-fix numbers
+the implementer cited and found they are against **`2d5b74f`**, not `cff8f8e` — and match it exactly.
+The two preamble `Err`s sit at function scope above the `for` at `:505`, so excluding them is
+principled rather than convenient. Header text matches the code line-for-line including all seven
+error codes and loop order; **(2) really is the only missing-definition exit `SkipUnlisted` leaves
+fatal** (it precedes the numeric-root, 0DTE and policy checks) and (3) really is inert under it.
+A **case-insensitive** search over `atx-vol/` finds zero surviving four-check claims.
+
+**Mutations: genuine two-way discrimination, derived before comparison.** The re-reviewer derived
+both partitions from the code first: A (stage 1 drops all) must green exactly `EmptyWanted` +
+`MissingIdentity` -> 10 RED / 2 green; B (filter never applied) must additionally green
+`EconomicsMismatch`, the only gate test whose **both** halves assert `Err` -> 9 RED / 3 green. Both
+match test-for-test, **including the non-obvious detail that the precondition tests redden at their
+control half under both**. The Minor-1 reproduction is real: `FilteredJoinStillFatalOnWanted
+EconomicsMismatch` has two `ASSERT_FALSE`s and no `elsewhere` block, so it is structurally the unique
+survivor of B. Honest limit: it could not re-run either mutation (builds forbidden).
+
+**Guard verified stronger than argued.** `adjacent_find` on `!(lhs < rhs)` tests strictly-increasing,
+so one pass enforces both halves (adjacent strict increase => global, `<` transitive). And
+`partial_ordering` unordered pairs make the predicate **true** -> rejected — **fail-closed, so the
+NaN-unreachability argument is not even load-bearing here.** Runs once per call above the loop;
+`filtering &&` short-circuits so the empty path gains one boolean and nothing else (`+16/-0`).
+Duplicate framing ruled **correct, not understated**: the loop iterates panel rows, a duplicate only
+widens `candidates`, and `none_of` short-circuits identically — emitted set unchanged, only `reserve`
+over-sizes.
+30 deletions across 5 files, **0 non-comment**. T5's `newlines > 0u ? newlines - 1u : 0u` guard
+intact at `:353-354`; RunArchive pins intact; `atx-vol/python/` untouched; scope exactly 5 files.
+Targeted **56/56** run by the reviewer. Suite **2073 / 2027 / 43 / 3 / 7**, +5/+5 verified
+independently via `--gtest_list_tests` (2080 vs 2075 on `snap-2d5b74f`, minus 7 disabled each).
+Provenance: `snap-fd52934` lists 12 `ListedOpra.Filtered*` vs `snap-2d5b74f`'s 7.
+
+**TWO NEW MINORS — and they are the same defect class, in the same file, for the FIFTH time.**
+(A) The gate renumbering was applied to the header and the new tests but **not** to three
+pre-existing test comments (`listed_opra_test.cpp:528`, `:561`, `:594`), so the file now carries
+**two "NARROWED GATE 2" and two "NARROWED GATE 3" labels on different gates**. (B) The
+`MissingDefinitionPolicy` block this very diff edited still omits exits 5 and 7 from its
+policy-independent list.
+**RULING — these do NOT get parked, they get a fix round 2.** Normally Minors roll to the final
+review and never enter the loop. These are the exception because they are *newly introduced
+inconsistency created by the fix itself*: two identically-numbered labels on different gates is
+actively misleading, and it undermines the very contract-accuracy finding just closed. This
+statement has now been wrong four times and the fix for it introduced a fifth. Cheap to close, and
+leaving it would hand the final review a contradiction in the file the whole task was about.
+Queued behind T7, which owns the build directory.
+
+### Wave E T7 (P1) — implementer DONE_WITH_CONCERNS, commit `5948772`. **GO/NO-GO = GO.**
+
+**The gate was decided from its own measurement at `fd52934`, as instructed** — 3 warm reps + 1
+discarded cold warm-up, numerator `definitions_parse` wall_ms from both subcommands' `diagnostics`
+sections, denominator the two command wall totals:
+    warm 1  16611.322 / 19455.225 = 85.4%
+    warm 2  21393.419 / 24051.469 = 88.9%
+    warm 3  28162.752 / 32007.421 = 88.0%
+    cold (discarded) 22392.704 / 25181.349 = 88.9%
+Median **88.0%** against the 15% floor. GO, and not close.
+
+Suite **2089 / 2042 / 44 / 3 / 7** vs `fd52934`'s 2073/2027/43/3/7 (+16 ran / +15 passed / +1 skipped
+— the extra skip is an env-gated measurement harness, which its reviewer is told to confirm is
+legitimate rather than a test quietly disabling itself). **Step 3 RED observed at runtime:** a
+guards-absent build served a mismatched key, a tampered payload, a **CRC-repaired payload edit**, a
+tampered header, and a stale table through the seam — 5 failing tests — and the four guards turned
+all five green. The CRC-repaired case is the one that matters: it proves the key catches what the
+CRC structurally cannot.
+
+    Step 6 net ratio  2.183x median, [2.043, 2.540], sign 4/4
+    parse | key-hash | cache-read   7851.6 | 59.4 | 3407.1 ms (medians)
+    hash_bytes micro  58.3 ms over 730,526,177 B (~12 GB/s), 0.7-0.9% of parse
+
+**CONCERN 1 — A LIVE CONTROLLER DECISION, NOT YET MADE.** 2.183x is barely past the brief's 2x bar,
+and the Step-20 cost check hits **48.9%** on one rep against its ~50% abort threshold. Sole cause is
+the brief-mandated `fingerprint()` verification, **1.36-1.98 s per read**, because it re-serialises
+~733 MB. Without it: **~4x** and 21-29%. The implementer implemented it as specified rather than
+weakening a fail-closed check unilaterally — correct call, and it escalated instead.
+My leaning, handed to T7's reviewer **to attack rather than ratify**: the check looks largely
+redundant. Payload CRC covers corruption; `abi_fold` + the `static_assert`s cover layout drift; the
+content hash covers stale input; and `CacheRoundTripReconstructsTableExactly` covers codec
+correctness **at every build** rather than on every production read. If that holds, the runtime check
+is a per-read tax on a property that is deterministic given the code. The reviewer is asked to name a
+concrete failure mode the check catches that those four do not — if it can, the cost stands — and to
+assess an opt-in flag (default off in Release, on in tests) as the middle option.
+
+**CONCERN 3 MAY MATTER MORE THAN THE WHOLE TASK.** `read_listed_definitions_file` slurps via
+`istreambuf_iterator`, costing **3.59-3.86 s of the 7.07-9.75 s parse**. A `fread` would be
+byte-identical — one function, no new format, **no stale-serve failure mode** — for roughly **half
+this task's win at a fraction of the risk**. If that holds it changes P1's whole risk calculus, and
+the reviewer is asked whether the cache is still worth its stale-serve surface once the cheap half is
+taken.
+
+**The brief was wrong about the fixture, in a way that helps.** It says "the fixture's 13.2 MB
+`definitions.tsv`"; the file is **730,526,177 bytes / 6,545,634 rows**. The fixture **IS** the 696 MB
+production case, so the brief's Step 6 instruction that "the 696 MB production case should be
+measured by the controller" is **already satisfied** — nothing was extrapolated.
+Also confirmed: the key's `content_hash` is directly reusable to close `run_identity_hash`'s
+documented `definitions.tsv` gap at no extra I/O (not done here, correctly — that was T6's follow-up
+and outside this task). And a pin note worth keeping: `run-projected-backtest [cold]` yields
+`18528.61666` **only** with `--schedule projected_schedule.tsv`; the default schedule gives
+`22635.66476`.
+Not wired to the CLI — that is T8, so `definitions_parse` in the shipped binaries is unchanged.
+
+Fix round 2 DONE, commit `2fc29fc` (comment-only, 10 changed lines, all comments; `git diff -U0`
+filtered to non-`//` lines empty). Minor A: three stale labels renumbered — `listed_opra_test.cpp:528`
+look-ahead GATE 2->4, `:561` economics GATE 3->6, `:594` future-quote GATE 4->7 — and verified
+file-wide afterwards (`GATE [0-9]` gives 7 matches, gates 1-7 each exactly once). Minor B: exits 5
+(OSI parse, definition-found path) and 7 (future quote) added to the "remains fatal under both
+policies" bullet in `listed_opra.hpp` (~`:133`), which had listed only 4 and 6. Targeted 56/56.
+Its re-reviewer is told the bar is **"is it right NOW, not merely different"** — uniqueness is
+necessary and not sufficient, since a consistent relabelling can be consistently wrong — and is
+asked to identify which fatal exit each of the three tests actually exercises rather than checking
+the numbering is self-consistent.
+
+**CONTROLLER SEQUENCING — T8 is deliberately HELD until T7's review rules on the fingerprint check.**
+T8 wires the cache into the CLI and measures the end-to-end effect (Step 5: cold cache-disabled,
+cold with `--cache`, warm with `--cache`). That measurement is a direct function of the read path's
+cost, and the `fingerprint()` decision changes that cost by 1.36-1.98 s per read — the difference
+between a 2.18x and a ~4x net. Dispatching T8 first would produce a Step 5 table that has to be
+thrown away. The build directory sits idle for one review cycle; that is cheaper than measuring
+twice. The `fread` change (concern 3) is held for the same reason — its byte-identical claim is
+currently being verified by T7's reviewer, and dispatching it before that verdict risks work on a
+refuted premise.
+
+Fix round 2 scoped re-review: **Minor A ADDRESSED, Minor B ADDRESSED, no new breakage.**
+The bar was "right now, not merely different", and it was checked that way — each renumbered label
+verified against **what the test actually exercises**, not against its name:
+    `:528` FilteredJoinStillFatalOnWantedLookAhead      perturbs `definition_ts_ns` -> exit 4 (`:585`)
+    `:561` FilteredJoinStillFatalOnWantedEconomicsMismatch  perturbs expiry/strike vs OSI -> exit 6 (`:591`)
+    `:594` FilteredJoinStillFatalOnWantedFutureQuote     perturbs `ts_ns` -> exit 7 (`:612`)
+all three labels correct. Uniqueness confirmed **twice over**: bash `grep -o 'GATE [0-9]'`
+(case-sensitive) and PowerShell `Select-String` (case-insensitive) both return exactly 7 matches,
+1-7, no repeats, plus a separate case-sensitive sweep for a differently-cased stray label found none.
+Minor B checked against the code rather than the claim: `listed_opra.cpp:548-613` shows exits 4/5/6/7
+contain **no `policy` check anywhere**, so all four really are unconditionally fatal; exit 3 correctly
+stays excluded (gated by `policy == SkipUnlisted`) and exit 2 correctly lives in the other bullet
+(nullptr branch, not the definition-found path). The corrected list matches the header's own
+"(4)-(7) are the definition-exists gates" summary — exhaustive, nothing over- or under-claimed.
+Comment-only re-verified independently: 10/10 changed lines are comments, no assertion or error
+message string touched. Targeted 56/56.
+
+**Task 3: complete (commits 2d5b74f..2fc29fc, review clean after 2 fix rounds).**
+Deferred minors to the final review: the five in `task-3-review.md`, of which Minor 1 (the economics
+gate test asserting `Err` in both halves, making it the unique survivor of mutation B) was
+independently reproduced twice.
+
+### Wave E T7 — review of `5948772`. **Spec ❌ / Needs fixes. 1 Critical, 6 Important, 6 Minor.**
+
+**CRITICAL C1 — the headline is measuring the wrong thing.** The seam
+`read_listed_definitions_cached` (`listed_definitions_cache.cpp:891-895`) **re-slurps the full
+730 MB source on the HIT path**, and the harness put that slurp in the numerator but not the
+denominator. Corrected, the 2.183x headline is really **0.97-1.09x** on the implementer's own reps
+and **1.20-1.45x** on the reviewer's. The cache barely beats parsing.
+And the re-slurp is not a bug to be deleted — it is **inherent to a content-derived key**. The key
+must hash the source bytes, so a hit can never avoid *reading* 730 MB; it can only avoid *parsing*
+what it read. That is P1's premise, and it is much weaker than the plan assumed.
+
+**CONCERN 3 VERIFIED, AND IT BEATS THE CACHE.** `listed_opra.cpp:394-404` is exactly ifstream +
+`istreambuf_iterator` + parse, running at ~197 MB/s. Byte-identical holds — the stream is already
+`ios::binary`, so `fread` loses nothing. **`fread` alone is ~1.5-1.9x on `definitions_parse`: one
+function, no new format, no stale-serve surface — LARGER than what the cache delivers at the seam.**
+Reviewer's verdict: **P1 is not worth its risk as committed.** Do `fread` first, re-measure the seam
+end to end, and only then decide on wiring.
+
+**CONTROLLER ERROR #6, MINE — my fingerprint leaning was WRONG, and the reviewer attacked it as
+instructed.** I argued the check was redundant because CRC covers corruption, `abi_fold` covers
+layout drift, the content hash covers stale input, and the round-trip test covers codec correctness
+at every build. The reviewer named a concrete mode all four miss: `ListedContractDefinition` gains a
+field; `parse`/`serialize` are updated; the ATXDEFS1 encoder is not. `abi_fold` moves so **old** blobs
+miss, but the **new** writer emits a lossy blob and the **new** reader zero-fills. CRC passes.
+Content hash passes. And `CacheRoundTripReconstructsTableExactly` **also passes** — because
+`sample_rows()` (test `:1005`) uses 9-value aggregate init, so a trailing field is default on *both*
+sides, and `expect_rows_bit_identical` enumerates 9 fields by name. Only a production read catches it.
+That is the fourth time this sprint a test was shown blind to the defect it appeared to cover, and
+this time I was the one arguing from the blind test.
+**RULING (the reviewer's, adopted): opt-in BUT ORDERED.** Land the `sizeof`/`offsetof`
+`static_assert` FIRST — it makes that exact drift a **build error for free** — and only then gate the
+runtime check behind a flag, default off in Release, forced on in tests. **Do not make it opt-in
+before the pin.** The tamper argument for keeping it always-on fails independently: `fingerprint()`
+is public and unkeyed, so anyone who can restamp two CRCs can restamp a third. And
+`ListedDefinitionTable::create` (`listed_opra.cpp:234-257`) already re-validates every row
+unconditionally.
+
+Other Importants: **I1** no `static_assert` on `sizeof`/`offsetof` of `ListedContractDefinition`
+(verified absent repo-wide; the sprint constraint mandates it for on-disk structs) — this is the pin
+the ruling above depends on. **I2** 8 lines verbatim-duplicated from `listed_opra.cpp:395-402`
+including both error strings, so the `fread` fix now needs **two** sites. **I3** the headline interval
+`[2.043, 2.540]` and "sign 4/4" **include the discarded warm-up, and it is the most favourable rep**
+— the exact Task-4 pattern, recurring. **I4** "~4x without the check" is
+`parse/(key+read-fingerprint_ms)`, a difference of independently noisy terms; **the reviewer's rep 2
+printed `28.028x` from that formula**. **I5** write and fingerprint-verified read each force the
+~730 MB `serialize_listed_definitions` transient that Task 4 made lazy — seam peak ~2.8 GB on a
+696 MB input. **I6** no hit/miss logging, and `hash.hpp:13-15` **explicitly disclaims cross-process
+hash stability** — so a permanent 100% miss plus a 300 MB write every run would be completely
+invisible.
+
+Verification quality: suite **2089 / 2042 / 44 / 3 / 7** confirmed exactly (2042+44+3 = 2089), 3
+sanctioned REDs only, `ListedDefinitionsCache` 15 OK / 1 skipped. Provenance by construction (16
+tests in `snap-5948772`, 0 in `snap-fd52934`). **The env-gated skip was not taken on trust** — the
+reviewer set `ATX_T7_DEFINITIONS_TSV` and ran it 3x, all PASS with real assertions. Fixture
+independently `stat`-ed at **730,526,177 bytes**, confirming the brief's "13.2 MB" is wrong and the
+implementer right. Byte gate correctly not re-run: a case-sensitive `grep` shows **zero** CLI call
+sites, so the pipeline is unchanged by construction.
+
+---
+
+### STOP POINT — 2026-07-25 (third), user instruction "pause here"
+
+HEAD `ca74f68`, **38 commits ahead of `main`**; `main` untouched at `2858cab`.
+Wave E: **T1, T2 (dropped), T3, T4, T5, T6 CLOSED.** T7 fix round 1 **PARTIAL**. T8 **HELD**.
+T9 and the final whole-sprint A-E review not started.
+
+**T7 fix round 1 got through the first two of its seven ordered items and stopped during the fifth.**
+The order was mandated because it was load-bearing, and the two that landed are the two that had to
+come first:
+    35e8e80  I1 — compile-time ABI pin on ListedContractDefinition (hpp +77, test +69)
+    ca74f68  fingerprint verification made OPT-IN (default off Release, forced on in tests)
+The pin had to precede the flag: it is what makes a flagged-off runtime check safe.
+
+**UNCOMMITTED AND UNVERIFIED — 5 files, +190/-13**, the `fread` + dedupe (I2) work in progress:
+`detail/archive_util.hpp` +35, `detail/archive_util.cpp` +83, `listed_definitions_cache.cpp`,
+`listed_opra.cpp`, `listed_definitions_cache_test.cpp` +43. `fread` now appears in BOTH
+`listed_opra.cpp` and `listed_definitions_cache.cpp` with a shared helper being introduced in
+`detail/archive_util`. **Not built, not tested, not measured**, and `task-7-report.md` has **no
+`## Fix round 1` section** — the report was never written. Fourth agent stop of this shape this
+session; as every previous time, the work is intact in the tree and nothing is lost.
+
+**NOT STARTED:** the C1 harness rebuild (the honest seam measurement), I3/I4 (measurement
+corrections), I5 (the ~730 MB transient), and **I6 — which must come FIRST on resume.**
+
+> **I6 is a possible BLOCKED that can invalidate P1 outright.** `hash.hpp:13-15` explicitly
+> disclaims cross-process hash stability. If `hash_bytes` is not stable across processes the cache
+> misses 100% of the time forever while still writing ~300 MB per run, and with no hit/miss logging
+> that is completely invisible. Resolve it EMPIRICALLY — compute the key in one process, again in a
+> separate invocation, compare — not by reading the header.
+
+**RESUME ORDER:** finish or discard the uncommitted `fread`/dedupe work -> I6 -> C1 -> I3/I4 -> I5
+-> let the resulting number decide T8 -> T9 wave gate -> final whole-sprint A-E review.
+
+**THE DECISION WAITING ON THAT NUMBER.** T7's review established that the cache's seam re-slurps the
+full 730 MB source on the HIT path (inherent to a content-derived key, not a bug), so the reported
+2.183x is really 0.97-1.09x on the implementer's reps and 1.20-1.45x on the reviewer's — while
+`fread` alone is ~1.5-1.9x with no new format and no stale-serve surface. **P1 is not worth its risk
+as committed.** Dropping it on evidence would be the plan working, exactly as P5 was dropped this
+wave when `archive_load` measured 0 ms / count 0.
+
+Working tree clean for all other sprint files; the pre-existing unrelated uncommitted work (Python
+bindings split, `atx-core` sqlite, `atx-db/`, `atx-kb/`, docs) was **never staged at any point** —
+every commit this session used explicit paths.
+
+Status doc: `docs/superpowers/2026-07-25-atx-vol-backtest-sprint-status-3.md`
