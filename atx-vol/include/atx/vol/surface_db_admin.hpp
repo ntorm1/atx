@@ -423,14 +423,20 @@ struct DbVerifyReport {
   // run, forever), so a verdict that read it would be permanently FAILED, which
   // is the defect FIX-H exists to remove.
   //
-  // It is also, today, the ONLY place a DESTROYED surface shows up. A present,
-  // enabled cell whose re-fit fails loses its stored surface, because a partition
-  // rewrite is whole-file — 95 surfaces were lost that way in one measured run on
-  // a production-shaped copy, and that loss is pinned as CURRENT BEHAVIOUR by
+  // It is also the only place a DESTROYED surface shows up AFTER THE FACT. A
+  // present, enabled cell whose re-fit fails would lose its stored surface,
+  // because a partition rewrite is whole-file — 95 surfaces were lost that way in
+  // one measured run on a production-shaped copy. REV-R3 made the BUILD refuse
+  // such a rewrite by default (`coverage.dates_refused_coverage_regression`, exit
+  // 5) and name the cells at risk at the time, so this counter is no longer the
+  // only instrument — but it remains the only one that works retroactively, and
+  // the build's guard can still be waived with `--allow-coverage-regression`.
+  // Preserving the prior surface with a persisted stale marker (rather than
+  // refusing the write) still needs an archive format change; the mechanism is
+  // pinned by
   // `SurfaceDbPopulate.DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrives
-  // TheRetry` (fixing it needs an archive format change). A destroyed cell and a
-  // never-fitted cell are byte-for-byte identical on disk; nothing in the format
-  // records which happened.
+  // TheRetry`. A destroyed cell and a never-fitted cell are byte-for-byte
+  // identical on disk; nothing in the format records which happened.
   //
   // That is why this is a COUNT plus a NAMED, CAPPED LIST rather than a verdict:
   // the discriminator is not the number's existence but whether the SET CHANGED

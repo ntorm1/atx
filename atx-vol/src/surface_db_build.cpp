@@ -349,6 +349,7 @@ Result<SurfaceDbBuildReport> build_surface_db(const SurfaceDbBuildSpec &spec) {
   pspec.index_symbol = spec.auto_config.index_symbol;
   pspec.preset = spec.preset;
   pspec.fit_workers = spec.fit_workers;
+  pspec.allow_coverage_regression = spec.allow_coverage_regression; // REV-R3
   Result<UniversePopulateCoverage> cov = populate_universe_streaming(db, boards, pspec);
   if (!cov) {
     return Err(cov.error());
@@ -382,6 +383,14 @@ ReportedFailedCells reported_failed_cells(const SurfaceDbBuildReport &r,
   const std::span<const FailedCell> all{r.coverage.failed_cells};
   const std::size_t shown = std::min(max_reported, all.size());
   return ReportedFailedCells{all.first(shown), all.size() - shown};
+}
+
+ReportedCoverageRegressionCells
+reported_coverage_regression_cells(const SurfaceDbBuildReport &r,
+                                   std::size_t max_reported) noexcept {
+  const std::span<const CoverageRegressionCell> all{r.coverage.coverage_regression_cells};
+  const std::size_t shown = std::min(max_reported, all.size());
+  return ReportedCoverageRegressionCells{all.first(shown), all.size() - shown};
 }
 
 bool is_total_load_failure(const SurfaceDbBuildReport &r) {
@@ -570,6 +579,15 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
   kv("coverage.dates_written", fmt_u32(r.coverage.dates_written));
   kv("coverage.dates_skipped_complete", fmt_u32(r.coverage.dates_skipped_complete));
   kv("coverage.dates_skipped_would_drop", fmt_u32(r.coverage.dates_skipped_would_drop));
+  // REV-R3. The WRITE path's guard, distinct from the counter above it: dates
+  // whose rewrite would have DESTROYED a stored surface. `refused` = the guard
+  // held and the old partition is intact; `dropped` = --allow-coverage-regression
+  // was given and those surfaces are gone. Both are emitted always, so a
+  // scripted diff of two report CSVs sees a regression appear.
+  kv("coverage.dates_refused_coverage_regression",
+     fmt_u32(r.coverage.dates_refused_coverage_regression));
+  kv("coverage.dates_dropped_coverage_regression",
+     fmt_u32(r.coverage.dates_dropped_coverage_regression));
   kv("n_dates_loaded", fmt_usize(r.n_dates_loaded));
   kv("n_dates_missing", fmt_usize(r.n_dates_missing));
   kv("n_load_errors", fmt_usize(r.n_load_errors));
@@ -631,6 +649,21 @@ Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view pa
       out += c;
     }
     out += '"';
+    out += '\n';
+  }
+
+  // Section 5 (REV-R3): WHICH stored surfaces the write path refused to destroy —
+  // or, under `--allow-coverage-regression`, did destroy. Uncapped for the same
+  // reason section 4 is: this file is the artifact, and on the destructive path
+  // it is the ONLY durable record of what was removed (the archive format keeps
+  // no tombstone, which is why the 95-surface incident left no trace). Column
+  // names deliberately differ from section 4's so a naive parser cannot splice
+  // the two sections together. Header emitted even when empty — constant shape.
+  out += "regression_date,regression_symbol\n";
+  for (const CoverageRegressionCell &c : r.coverage.coverage_regression_cells) {
+    out += c.date;
+    out += ',';
+    out += c.symbol;
     out += '\n';
   }
 

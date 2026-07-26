@@ -16,6 +16,7 @@
 //       [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045]
 //       [--deep-selection] [--retry-disabled] [--pin-curve-family true|false]
 //       [--fit-workers N] [--report out.csv] [--max-failures N]
+//       [--allow-coverage-regression]
 //
 //   --db            SurfaceDb root (created if absent, else opened/resumed).
 //   --hive          OPRA hive v2 root holding date=<YYYY-MM-DD>/data.parquet.
@@ -54,20 +55,32 @@
 //                   --r, where every value is a claim about the market and a
 //                   coerced 0.0 is a WRONG claim. A missing value is still a
 //                   usage error, like every other value-taking flag here.
-//   --report        also write the four-section CSV report to this path. A write
+//   --report        also write the five-section CSV report to this path. A write
 //                   failure is named on stderr and exits 1 -- but it never
-//                   preempts exit 3; see the return at the end of main.
+//                   preempts exit 3 or 5; see the return at the end of main.
 //   --max-failures  cap on the printed `failed_cell` lines (default 32). Overflow
 //                   is counted in coverage.failed_cells_elided, never dropped
 //                   silently; the --report CSV always carries the FULL list.
 //                   Same flag name/semantics as atx-vol-surface-db verify.
+//   --allow-coverage-regression  permit a date's rewrite to DESTROY a stored
+//                   surface. Off by default: a partition write is whole-file, so
+//                   a present, enabled cell whose re-fit FAILS is simply not in
+//                   the new file, and one production-shaped run at the wrong --r
+//                   removed 95 stored surfaces this way while reporting success.
+//                   By default such a date is REFUSED — the existing partition is
+//                   left untouched, the run continues with the other dates, and
+//                   the exit code is 5. Pass this flag only for a run that INTENDS
+//                   retirement; the destroyed cells are still counted and named,
+//                   on stderr and in the --report CSV's section 5.
 //
 // Prints one line per report field to stdout; exits 0 on Ok, 1 on Err (message
 // on stderr), 2 on a usage error (unknown/missing/malformed flag), 3 when the
 // build ran but produced NOTHING — every present input file was unreadable
 // (is_total_load_failure), or every symbol failed CONFIG SELECTION
 // (is_total_config_failure), or work was scheduled and no cell fitted
-// (is_total_fit_failure). See atx-vol/docs/surface-db-build.md.
+// (is_total_fit_failure), and 5 when at least one date was REFUSED because its
+// rewrite would have destroyed a stored surface. See
+// atx-vol/docs/surface-db-build.md.
 //
 // One shape exits 0 with a stderr WARNING instead: nothing fitted, something
 // failed, and something was CARRIED (is_carry_masked_fit_failure). It is exempt
@@ -103,6 +116,20 @@ namespace {
 // and the stderr diagnostic names which stage swallowed it.
 constexpr int kExitTotalFitFailure = 3;
 
+// REV-R3 (review C-02/F-02). At least one date was REFUSED because committing its
+// rewrite would have destroyed a stored surface. The run did not do what was
+// asked, so it must not read as success — but it is categorically NOT exit 3
+// ("produced nothing"): the refusal is the tool working, other dates were built
+// normally, and nothing was lost. A script's response is different too — exit 3
+// says "fix your inputs and re-run", this says "your inputs would have deleted
+// data; decide, then re-run with --allow-coverage-regression or not at all".
+//
+// 4 IS DELIBERATELY SKIPPED. The companion tool `atx-vol-surface-db` already uses
+// 4 for `verify`'s ABSENT-cell verdict, and these two CLIs are run back to back by
+// the same scripts and the same operators. One number meaning two different things
+// across a build/verify pair is a trap that costs more than a gap in the sequence.
+constexpr int kExitCoverageRegression = 5;
+
 void print_usage(std::FILE *out) {
   std::fprintf(out,
                "usage: atx-vol-surface-db-build --db <root> --hive <root> "
@@ -110,7 +137,7 @@ void print_usage(std::FILE *out) {
                "         [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045] "
                "[--deep-selection] [--retry-disabled] [--pin-curve-family true|false] "
                "[--fit-workers N] [--report out.csv] "
-               "[--max-failures N]\n");
+               "[--max-failures N] [--allow-coverage-regression]\n");
 }
 
 // Parse a non-negative count, consuming the whole token. Byte-for-byte the rule
@@ -256,6 +283,15 @@ void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
   std::printf("coverage.dates_written %u\n", r.coverage.dates_written);
   std::printf("coverage.dates_skipped_complete %u\n", r.coverage.dates_skipped_complete);
   std::printf("coverage.dates_skipped_would_drop %u\n", r.coverage.dates_skipped_would_drop);
+  // REV-R3. Distinct from the line above it, which is the PRE-fit filter guard.
+  // These two are the WRITE path's: a date whose candidate partition did not
+  // contain everything the stored one did. `refused` means the guard held and the
+  // stored surfaces are intact; `dropped` means --allow-coverage-regression was
+  // given and they are gone.
+  std::printf("coverage.dates_refused_coverage_regression %u\n",
+              r.coverage.dates_refused_coverage_regression);
+  std::printf("coverage.dates_dropped_coverage_regression %u\n",
+              r.coverage.dates_dropped_coverage_regression);
   std::printf("n_dates_loaded %zu\n", r.n_dates_loaded);
   std::printf("n_dates_missing %zu\n", r.n_dates_missing);
   std::printf("n_load_errors %zu\n", r.n_load_errors);
@@ -291,6 +327,19 @@ void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
     const std::string_view code_name = atx::core::to_string(f.code);
     std::printf("failed_cell %s %s code=%.*s detail=%s\n", f.date.c_str(), f.symbol.c_str(),
                 static_cast<int>(code_name.size()), code_name.data(), f.detail.c_str());
+  }
+
+  // REV-R3: WHICH stored surfaces a refused write would have destroyed (or, under
+  // --allow-coverage-regression, did). Same cap, same never-silent elision count,
+  // same deterministic (date, symbol) order as the block above, and the --report
+  // CSV likewise carries every entry. Two counters are always printed even when
+  // the list is empty, so a scripted diff of two runs sees a regression appear.
+  const ReportedCoverageRegressionCells regressed =
+      reported_coverage_regression_cells(r, max_failed_cells);
+  std::printf("coverage.coverage_regression_cells_reported %zu\n", regressed.reported.size());
+  std::printf("coverage.coverage_regression_cells_elided %zu\n", regressed.n_elided);
+  for (const CoverageRegressionCell &c : regressed.reported) {
+    std::printf("coverage_regression_cell %s %s\n", c.date.c_str(), c.symbol.c_str());
   }
 }
 
@@ -350,6 +399,8 @@ int main(int argc, char **argv) {
       spec.auto_config.deep_selection = true;
     } else if (a == "--retry-disabled") {
       spec.auto_config.retry_disabled = true;
+    } else if (a == "--allow-coverage-regression") {
+      spec.allow_coverage_regression = true;
     } else if (a == "--pin-curve-family") {
       const std::string_view text = nv();
       if (!missing_value && !parse_bool(text, spec.auto_config.pin_curve_family)) {
@@ -452,6 +503,72 @@ int main(int argc, char **argv) {
     }
   }
 
+  // ── REV-R3 (review C-02/F-02): the coverage-regression verdict ──────────────
+  //
+  // Resolved BEFORE the failure predicates, and printed here, for two reasons.
+  // First, this banner must never be swallowed: the predicates below `return`, and
+  // a refusal can legitimately coexist with a total fit failure (a date holding a
+  // preserved-disabled cell can produce a non-empty candidate with zero fitted
+  // cells). Second, it PREEMPTS their exit code — see `verdict` below.
+  //
+  // Which code should win is a real question and this is the answer: 3 says "your
+  // inputs produced nothing, fix them and re-run", which invites exactly the
+  // re-run that would destroy the data if the operator reached for
+  // --allow-coverage-regression to make the tool stop complaining. 5 says "a
+  // rewrite would have deleted stored surfaces and I stopped", which is both more
+  // specific and more urgent. The exit-3 diagnostics (including the --r advice,
+  // which is the top suspect for BOTH shapes) still print in full; only the number
+  // changes.
+  const bool coverage_refused = report->coverage.dates_refused_coverage_regression > 0;
+  const auto verdict = [coverage_refused](int code) noexcept {
+    return coverage_refused ? kExitCoverageRegression : code;
+  };
+  if (coverage_refused || report->coverage.dates_dropped_coverage_regression > 0) {
+    const ReportedCoverageRegressionCells regressed =
+        reported_coverage_regression_cells(*report, max_failed_cells);
+    if (coverage_refused) {
+      std::fprintf(stderr,
+                   "atx-vol-surface-db-build: COVERAGE REGRESSION REFUSED: %u date(s) were NOT "
+                   "written because the rewrite would have DESTROYED %zu stored surface(s).\n"
+                   "  A partition write is whole-file, so a cell that is already stored and does "
+                   "NOT fit this run is simply absent from the new file and is deleted by the "
+                   "commit. Those dates were left exactly as they were; every other date in this "
+                   "run was built normally. NOTHING WAS LOST.\n",
+                   report->coverage.dates_refused_coverage_regression,
+                   report->coverage.coverage_regression_cells.size());
+    } else {
+      std::fprintf(stderr,
+                   "atx-vol-surface-db-build: COVERAGE REGRESSION ALLOWED (exit 0 unless another "
+                   "verdict fires): %u date(s) were rewritten WITHOUT %zu previously stored "
+                   "surface(s), which are now GONE.\n"
+                   "  You passed --allow-coverage-regression, so the guard did not stop this. "
+                   "The archive format keeps no tombstone -- a destroyed cell is byte-for-byte a "
+                   "cell that was never fitted -- so the list below and the --report CSV are the "
+                   "ONLY record that these surfaces existed. Keep them.\n",
+                   report->coverage.dates_dropped_coverage_regression,
+                   report->coverage.coverage_regression_cells.size());
+    }
+    std::fprintf(stderr, "  Cells (%zu shown, %zu elided):", regressed.reported.size(),
+                 regressed.n_elided);
+    for (const CoverageRegressionCell &c : regressed.reported) {
+      std::fprintf(stderr, " %s/%s", c.date.c_str(), c.symbol.c_str());
+    }
+    std::fprintf(stderr, "\n");
+    if (coverage_refused) {
+      std::fprintf(stderr,
+                   "  Most likely cause: --r does not match the hive. This build used --r %.17g. "
+                   "The carry rate is an ordinary build input that is neither stored in nor "
+                   "checked against the database, and a wrong one fails every re-fit at once -- "
+                   "one production-shaped run at the wrong --r destroyed 95 stored surfaces "
+                   "before this guard existed. The failed_cell lines on stdout carry each cell's "
+                   "own reason.\n"
+                   "  If the fit failures are genuine and you INTEND to retire these cells, "
+                   "re-run with --allow-coverage-regression; the run will then delete them and "
+                   "list exactly what it deleted. Do not pass it to silence this line.\n",
+                   spec.hive.r);
+    }
+  }
+
   // A database that is permanently not serving a requested name must not read as
   // a clean run. The counters and the config.failed_symbols line above already
   // carry it, but a resumed build is otherwise ALL GREEN — every date
@@ -496,7 +613,7 @@ int main(int argc, char **argv) {
                  "the window, then re-run. A window with NO files present is a different, quiet "
                  "shape and still exits 0.\n",
                  report->n_dates_missing, report->n_load_errors);
-    return kExitTotalFitFailure;
+    return verdict(kExitTotalFitFailure);
   }
 
   // Some dates loaded and some did not. NOT a failure — the readable dates were
@@ -539,7 +656,7 @@ int main(int argc, char **argv) {
                  "disables still need --retry-disabled to be re-attempted.\n",
                  report->config.n_symbols, report->config.n_disabled_failed,
                  report->config.n_disabled_existing);
-    return kExitTotalFitFailure;
+    return verdict(kExitTotalFitFailure);
   }
 
   // A build that scheduled work and fitted NOTHING used to exit 0, so an operator
@@ -567,7 +684,7 @@ int main(int argc, char **argv) {
                  "  Do not guess: the failed_cell lines above carry each cell's own reason "
                  "straight from the fitter, and --report writes all of them.\n",
                  report->coverage.cells_to_fit, report->coverage.cells_failed, spec.hive.r);
-    return kExitTotalFitFailure;
+    return verdict(kExitTotalFitFailure);
   }
 
   // FIX-D fix-2 (I2). The predicate above is exempt whenever ANYTHING was carried,
@@ -641,5 +758,5 @@ int main(int argc, char **argv) {
   // No predicate fired, so the only thing that can still be wrong is the CSV the
   // operator asked for and did not get. A script that reads the file must not see
   // a green exit for a build whose report never landed.
-  return report_write_failed ? 1 : 0;
+  return verdict(report_write_failed ? 1 : 0);
 }

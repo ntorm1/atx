@@ -2383,6 +2383,25 @@ TEST(SurfaceDbPopulate, NarrowerRerunSkipsTheDateRatherThanDroppingAnAbsentSymbo
 // all document and depend on. Closing it needs PERSISTED per-cell state saying
 // "these bytes are a preserved failure: re-attempt this cell, never carry it" —
 // a manifest/archive format change, specified in the report.
+//
+// ── REV-R3 UPDATE (review C-02/F-02): THE DEFAULT PATH NO LONGER DOES THIS ───
+//
+// Everything above still holds and every assertion below is unchanged, but the
+// behaviour it pins is now reachable ONLY when the operator explicitly asks for
+// it. By default `populate_surface_db` REFUSES to commit a partition whose symbol
+// set is not a superset of the stored one, so leg 2 below leaves the date
+// untouched instead of destroying AAA — see
+// `RefusedRewriteLeavesTheDegradedCellsStoredSurfaceByteIdentical`, the
+// regression test for the 95-surface incident.
+//
+// So leg 2 runs with `allow_coverage_regression = true`: the destructive
+// behaviour, on demand, for a run that intends retirement. That is exactly what
+// this test has always pinned — a whole-file rewrite assembled from what the run
+// has — and pinning it is still worth doing, because the retirement path must
+// keep working and FACT 2 is still the reason the bytes are not simply preserved.
+// The OTHER legs deliberately keep the default spec: once AAA is absent, the
+// candidate stops losing anything and the guard is silent, which is the converged
+// steady state and is asserted here for free.
 TEST(SurfaceDbPopulate, DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrivesTheRetry) {
   const auto root = test_root("degraded_cell_loss");
   auto db = SurfaceDb::create(root.string());
@@ -2404,8 +2423,22 @@ TEST(SurfaceDbPopulate, DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrives
   ASSERT_TRUE(db->upsert_symbol("AAA", rejected_risk_config()).has_value());
   std::vector<CorpusBoard> full = carry_seed_boards();
   full.push_back(make_board(kDate0, "CCC", 80.0, 0.30)); // new, enabled, fits
-  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  // REV-R3: the destructive rewrite is now opt-in. Without this the write path
+  // refuses the date and AAA survives -- which is the whole point of the guard,
+  // and is asserted directly by the REV-R3 tests below.
+  UniversePopulateSpec retiring = carry_spec();
+  retiring.allow_coverage_regression = true;
+  auto cov2 = populate_universe_streaming(*db, full, retiring);
   ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  // REV-R3: the destruction is now DETECTED and RECORDED even when it is allowed.
+  // The incident this guard exists to prevent was invisible precisely because
+  // nothing counted or named what a run removed.
+  EXPECT_EQ(cov2->dates_refused_coverage_regression, 0u) << "the opt-out was given";
+  EXPECT_EQ(cov2->dates_dropped_coverage_regression, 1u);
+  ASSERT_EQ(cov2->coverage_regression_cells.size(), std::size_t{1});
+  EXPECT_EQ(cov2->coverage_regression_cells[0].date, kDate0);
+  EXPECT_EQ(cov2->coverage_regression_cells[0].symbol, "AAA");
 
   ASSERT_EQ(cov2->dates_written, 1u) << "the date must really have been rewritten";
   ASSERT_EQ(cov2->dates_skipped_would_drop, 0u)
@@ -2478,6 +2511,356 @@ TEST(SurfaceDbPopulate, DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrives
   EXPECT_EQ(cov5->cells_already_present, 3u);
 
   std::filesystem::remove_all(root);
+}
+
+// ── REV-R3 (review C-02 / F-02): the write path refuses to destroy a stored
+// surface ────────────────────────────────────────────────────────────────────
+//
+// The measured incident: a partition rewrite is whole-file, so a present, ENABLED
+// cell whose re-fit fails is simply not in the new file and is deleted by the
+// commit. One production-shaped run at the wrong `--r` destroyed 95 stored
+// surfaces this way and the database reported success. Neither existing guard can
+// see it coming -- the filter's `present < part->count()` compares COUNTS and the
+// cell was counted into `present` before its fit outcome existed, and FIX-E's
+// preserve covers only the DISABLED case.
+//
+// So the question is now asked in the write path, on the real candidate, as a SET
+// comparison against the existing partition's own directory.
+namespace {
+
+// The whole partition file, byte for byte. `stored_record_bytes` proves ONE
+// record survived; this proves the FILE was not touched at all -- no re-pack, no
+// re-CRC, no new `created_ts`. A refusal must leave the commit unattempted, not
+// produce an equivalent file.
+[[nodiscard]] std::vector<std::byte> partition_file_bytes(const std::filesystem::path &root,
+                                                          std::string_view key) {
+  return read_file_bytes(partition_file(root, key));
+}
+
+} // namespace
+
+// TEST 1 -- the regression test for the 95-surface incident. The assertion that
+// matters is not a count: it is that the surface which was there is STILL THERE
+// and is byte-identical.
+TEST(SurfaceDbPopulate, RefusedRewriteLeavesTheDegradedCellsStoredSurfaceByteIdentical) {
+  const auto root = test_root("coverage_regression_refused");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  // Leg 1: AAA and BBB fit and are stored. AAA is the asset at risk.
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u) << "the seed boards must fit or nothing is at risk";
+  ASSERT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+  const std::vector<std::byte> aaa_before = stored_record_bytes(root, kDate0, "AAA");
+  const std::vector<std::byte> bbb_before = stored_record_bytes(root, kDate0, "BBB");
+  const std::vector<std::byte> file_before = partition_file_bytes(root, kDate0);
+  ASSERT_FALSE(aaa_before.empty());
+  ASSERT_FALSE(file_before.empty());
+
+  // Leg 2: AAA degrades and an unrelated NEW symbol forces the rewrite. This is
+  // the exact shape of the incident -- the trigger is never the failing cell.
+  ASSERT_TRUE(db->upsert_symbol("AAA", rejected_risk_config()).has_value());
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec()); // guard ON by default
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u)
+      << "the write path must have refused this date";
+  EXPECT_EQ(cov2->dates_dropped_coverage_regression, 0u);
+  EXPECT_EQ(cov2->dates_written, 0u)
+      << "dates_written must report the COMMIT, not the filter's intention";
+  EXPECT_EQ(cov2->dates_skipped_would_drop, 0u)
+      << "the FILTER's guard still cannot see this -- that is why the write guard exists";
+  ASSERT_EQ(cov2->coverage_regression_cells.size(), std::size_t{1});
+  EXPECT_EQ(cov2->coverage_regression_cells[0].date, kDate0);
+  EXPECT_EQ(cov2->coverage_regression_cells[0].symbol, "AAA");
+  // The cell still FAILED and is still reported as a failure; refusing the write
+  // is not the same as pretending the fit worked.
+  EXPECT_EQ(cov2->cells_failed, 1u);
+  ASSERT_EQ(cov2->failed_cells.size(), std::size_t{1});
+  EXPECT_EQ(cov2->failed_cells[0].symbol, "AAA");
+
+  // ── THE ASSERTION THIS WHOLE TASK EXISTS FOR ──────────────────────────────
+  ASSERT_TRUE(db->load_surface(kDate0, "AAA").has_value())
+      << "the degraded cell's stored surface was DESTROYED -- this is the 95-surface incident";
+  const std::vector<std::byte> aaa_after = stored_record_bytes(root, kDate0, "AAA");
+  ASSERT_EQ(aaa_before.size(), aaa_after.size());
+  EXPECT_EQ(0, std::memcmp(aaa_before.data(), aaa_after.data(), aaa_before.size()))
+      << "AAA's stored record survived but its bytes changed";
+  const std::vector<std::byte> bbb_after = stored_record_bytes(root, kDate0, "BBB");
+  ASSERT_EQ(bbb_before.size(), bbb_after.size());
+  EXPECT_EQ(0, std::memcmp(bbb_before.data(), bbb_after.data(), bbb_before.size()));
+  // Stronger still: the file was never rewritten at all.
+  const std::vector<std::byte> file_after = partition_file_bytes(root, kDate0);
+  ASSERT_EQ(file_before.size(), file_after.size()) << "the partition file was rewritten";
+  EXPECT_EQ(0, std::memcmp(file_before.data(), file_after.data(), file_before.size()))
+      << "the partition file was rewritten to equivalent-but-different bytes; a refusal must "
+         "leave the commit unattempted";
+
+  // The price of the refusal, stated: the new symbol did NOT land. That is the
+  // deal -- one run's new work deferred, versus a stored surface destroyed.
+  EXPECT_FALSE(db->load_surface(kDate0, "CCC").has_value())
+      << "a refused date adds nothing; that is the documented cost of the guard";
+
+  std::filesystem::remove_all(root);
+}
+
+// TEST 2 -- the opt-out really does the destructive thing, and says what it did.
+// (The full behavioural pin lives in
+// `DegradedCellLosesItsStoredSurfaceAndPresenceIsWhatDrivesTheRetry`, which now
+// runs its destructive leg through this flag. This test is the direct A/B against
+// TEST 1: same database, same boards, same everything but the flag.)
+TEST(SurfaceDbPopulate, AllowCoverageRegressionWritesTheDateAndNamesWhatItDestroyed) {
+  const auto root = test_root("coverage_regression_allowed");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+  ASSERT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+
+  ASSERT_TRUE(db->upsert_symbol("AAA", rejected_risk_config()).has_value());
+  std::vector<CorpusBoard> full = carry_seed_boards();
+  full.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  UniversePopulateSpec retiring = carry_spec();
+  retiring.allow_coverage_regression = true;
+  auto cov2 = populate_universe_streaming(*db, full, retiring);
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  EXPECT_EQ(cov2->dates_refused_coverage_regression, 0u);
+  EXPECT_EQ(cov2->dates_dropped_coverage_regression, 1u);
+  EXPECT_EQ(cov2->dates_written, 1u);
+  // Detection runs on BOTH sides of the opt-out: a retirement run still produces
+  // the audit trail the incident had no way to produce.
+  ASSERT_EQ(cov2->coverage_regression_cells.size(), std::size_t{1});
+  EXPECT_EQ(cov2->coverage_regression_cells[0].date, kDate0);
+  EXPECT_EQ(cov2->coverage_regression_cells[0].symbol, "AAA");
+
+  EXPECT_FALSE(db->load_surface(kDate0, "AAA").has_value()) << "the opt-out must really destroy it";
+  EXPECT_TRUE(db->load_surface(kDate0, "BBB").has_value());
+  EXPECT_TRUE(db->load_surface(kDate0, "CCC").has_value());
+
+  std::filesystem::remove_all(root);
+}
+
+// TEST 3 -- the guard must be SILENT on the healthy converged production shape,
+// or defaulting it ON would break every real build.
+//
+// `prod-2026-07` reports 9 permanently ABSENT cells of 867 on every run and is
+// completely healthy: those cells never fitted, so nothing was ever stored for
+// them, so a candidate that lacks them loses nothing. Their dates are still
+// rewritten every run (an absent enabled cell keeps its date pending forever),
+// which is exactly why this must be tested over REPEATED runs and not just one.
+// DDD here is that population.
+TEST(SurfaceDbPopulate, ConvergedRunWithPermanentlyAbsentCellsNeverTriggersTheGuard) {
+  const auto root = test_root("coverage_regression_converged");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  // DDD can never fit and is stored disabled-by-nothing: it is simply refused by
+  // the fitter, every run, forever. It is never written, so it is never at risk.
+  ASSERT_TRUE(db->upsert_symbol("DDD", rejected_risk_config()).has_value());
+  std::vector<CorpusBoard> boards = carry_seed_boards();
+  boards.push_back(make_board(kDate0, "DDD", 80.0, 0.30));
+
+  std::vector<std::byte> aaa_seed;
+  std::vector<std::byte> bbb_seed;
+  for (int run = 1; run <= 3; ++run) {
+    auto cov = populate_universe_streaming(*db, boards, carry_spec());
+    ASSERT_TRUE(cov.has_value()) << "run " << run << ": " << (cov ? "" : cov.error().to_string());
+    EXPECT_EQ(cov->dates_refused_coverage_regression, 0u)
+        << "run " << run
+        << ": the guard fired on a HEALTHY converged run -- defaulting it ON would break "
+           "every production build";
+    EXPECT_EQ(cov->dates_dropped_coverage_regression, 0u) << "run " << run;
+    EXPECT_TRUE(cov->coverage_regression_cells.empty()) << "run " << run;
+    EXPECT_EQ(cov->dates_written, 1u)
+        << "run " << run << ": the permanently-absent cell keeps this date in the rewrite set";
+    EXPECT_EQ(cov->cells_failed, 1u) << "run " << run << ": DDD, every run, forever";
+
+    ASSERT_TRUE(db->load_surface(kDate0, "AAA").has_value()) << "run " << run;
+    ASSERT_TRUE(db->load_surface(kDate0, "BBB").has_value()) << "run " << run;
+    if (run == 1) {
+      aaa_seed = stored_record_bytes(root, kDate0, "AAA");
+      bbb_seed = stored_record_bytes(root, kDate0, "BBB");
+      ASSERT_FALSE(aaa_seed.empty());
+      continue;
+    }
+    // Run 2 onward carries them, so they must also be byte-stable: a rewrite that
+    // the guard permits must still not disturb what it re-emits.
+    const std::vector<std::byte> aaa_now = stored_record_bytes(root, kDate0, "AAA");
+    const std::vector<std::byte> bbb_now = stored_record_bytes(root, kDate0, "BBB");
+    ASSERT_EQ(aaa_seed.size(), aaa_now.size()) << "run " << run;
+    EXPECT_EQ(0, std::memcmp(aaa_seed.data(), aaa_now.data(), aaa_seed.size())) << "run " << run;
+    ASSERT_EQ(bbb_seed.size(), bbb_now.size()) << "run " << run;
+    EXPECT_EQ(0, std::memcmp(bbb_seed.data(), bbb_now.data(), bbb_seed.size())) << "run " << run;
+  }
+
+  std::filesystem::remove_all(root);
+}
+
+// TEST 4 -- the ordinary incremental run. A candidate that is a strict SUPERSET
+// of the stored set writes normally: the guard is a superset test, not an
+// equality test, or every growing database would jam.
+//
+// The seeded symbol `bbb` is lower case ON PURPOSE. The partition's directory
+// stores CANONICAL keys, so a guard that compared raw board symbols against
+// stored keys would see "BBB" missing from {"AAA","bbb","CCC"} and refuse every
+// single rewrite of any date holding a non-canonical symbol.
+TEST(SurfaceDbPopulate, AddingCellsWithoutLosingAnyWritesNormally) {
+  const auto root = test_root("coverage_regression_grow");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const std::vector<CorpusBoard> seed = {make_board(kDate0, "AAA", 100.0, 0.28),
+                                         make_board(kDate0, "bbb", 60.0, 0.34)};
+  auto cov1 = populate_universe_streaming(*db, seed, carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+  ASSERT_EQ(cov1->dates_refused_coverage_regression, 0u)
+      << "a FIRST write has no existing partition and can lose nothing";
+
+  std::vector<CorpusBoard> grown = seed;
+  grown.push_back(make_board(kDate0, "CCC", 80.0, 0.30));
+  auto cov2 = populate_universe_streaming(*db, grown, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  EXPECT_EQ(cov2->dates_refused_coverage_regression, 0u)
+      << "a strict superset must write; a lower-case stored symbol must not read as dropped";
+  EXPECT_EQ(cov2->dates_dropped_coverage_regression, 0u);
+  EXPECT_TRUE(cov2->coverage_regression_cells.empty());
+  EXPECT_EQ(cov2->dates_written, 1u);
+  EXPECT_EQ(cov2->cells_ok, 1u) << "only CCC was fitted; the other two were carried";
+
+  EXPECT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+  EXPECT_TRUE(db->load_surface(kDate0, "BBB").has_value()) << "canonical lookup of the seeded bbb";
+  EXPECT_TRUE(db->load_surface(kDate0, "CCC").has_value());
+
+  std::filesystem::remove_all(root);
+}
+
+// TEST 5 -- a refusal is PER-DATE. The run must keep going, including for dates
+// that come AFTER the refused one in the drain's ascending walk, or one bad cell
+// would cost the whole window.
+TEST(SurfaceDbPopulate, RefusingOneDateDoesNotStopTheOtherDatesInTheSameRun) {
+  const auto root = test_root("coverage_regression_per_date");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  // Disjoint symbol sets per date, because a config change is per SYMBOL: this is
+  // how one date is made to lose a cell while the other is untouched.
+  const std::vector<CorpusBoard> seed = {make_board(kDate0, "AAA", 100.0, 0.28),
+                                         make_board(kDate0, "BBB", 60.0, 0.34),
+                                         make_board(kDate1, "CCC", 90.0, 0.26),
+                                         make_board(kDate1, "DDD", 70.0, 0.31)};
+  auto cov1 = populate_universe_streaming(*db, seed, carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 4u);
+  const std::vector<std::byte> aaa_before = stored_record_bytes(root, kDate0, "AAA");
+  const std::vector<std::byte> d0_file_before = partition_file_bytes(root, kDate0);
+  ASSERT_FALSE(aaa_before.empty());
+
+  // AAA degrades (kDate0 only). Both dates get a new symbol so both are rewritten.
+  ASSERT_TRUE(db->upsert_symbol("AAA", rejected_risk_config()).has_value());
+  std::vector<CorpusBoard> full = seed;
+  full.push_back(make_board(kDate0, "EEE", 80.0, 0.30));
+  full.push_back(make_board(kDate1, "FFF", 85.0, 0.29));
+  auto cov2 = populate_universe_streaming(*db, full, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u);
+  EXPECT_EQ(cov2->dates_written, 1u) << "the OTHER date must still have been committed";
+  ASSERT_EQ(cov2->coverage_regression_cells.size(), std::size_t{1});
+  EXPECT_EQ(cov2->coverage_regression_cells[0].date, kDate0);
+  EXPECT_EQ(cov2->coverage_regression_cells[0].symbol, "AAA");
+
+  // kDate0: untouched, down to the file bytes. EEE did not land.
+  ASSERT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+  const std::vector<std::byte> aaa_after = stored_record_bytes(root, kDate0, "AAA");
+  ASSERT_EQ(aaa_before.size(), aaa_after.size());
+  EXPECT_EQ(0, std::memcmp(aaa_before.data(), aaa_after.data(), aaa_before.size()));
+  const std::vector<std::byte> d0_file_after = partition_file_bytes(root, kDate0);
+  ASSERT_EQ(d0_file_before.size(), d0_file_after.size());
+  EXPECT_EQ(0, std::memcmp(d0_file_before.data(), d0_file_after.data(), d0_file_before.size()));
+  EXPECT_FALSE(db->load_surface(kDate0, "EEE").has_value());
+
+  // kDate1 (which the drain reaches AFTER the refusal): fully built.
+  EXPECT_TRUE(db->load_surface(kDate1, "CCC").has_value());
+  EXPECT_TRUE(db->load_surface(kDate1, "DDD").has_value());
+  EXPECT_TRUE(db->load_surface(kDate1, "FFF").has_value())
+      << "a refusal on an EARLIER date stopped a later date from being written";
+
+  std::filesystem::remove_all(root);
+}
+
+// TEST 6 -- the reported list is COMPLETE, CORRECT and DETERMINISTICALLY ORDERED,
+// and the order does not depend on the worker count.
+//
+// The repo's standing invariant is byte-identical results for any thread count.
+// The list is built on the single drain thread, from a `set_difference` of two
+// SORTED ranges (the partition's directory and the candidate item list), so
+// neither fit-completion order nor an unordered container can reach it. This test
+// is what makes that claim falsifiable: the same scenario is run at 1 and 4
+// workers into separate roots and the two lists must match exactly.
+TEST(SurfaceDbPopulate, DroppedSymbolListIsCorrectAndOrderedIndependentlyOfWorkerCount) {
+  const auto scenario = [](const std::filesystem::path &root,
+                           unsigned workers) -> std::vector<CoverageRegressionCell> {
+    auto db = SurfaceDb::create(root.string());
+    EXPECT_TRUE(db.has_value());
+    if (!db.has_value()) {
+      return {};
+    }
+    // Seeded OUT of sorted order so a list that merely echoed insertion order
+    // would come back as DDD-then-BBB and fail the ordering assertion.
+    const std::vector<CorpusBoard> seed = {
+        make_board(kDate0, "DDD", 70.0, 0.31), make_board(kDate0, "CCC", 90.0, 0.26),
+        make_board(kDate0, "BBB", 60.0, 0.34), make_board(kDate0, "AAA", 100.0, 0.28)};
+    auto cov1 = populate_universe_streaming(*db, seed, carry_spec(workers));
+    EXPECT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+    EXPECT_EQ(cov1 ? cov1->cells_ok : 0u, 4u);
+
+    // Two of the four degrade; the other two still fit and are re-emitted.
+    EXPECT_TRUE(db->upsert_symbol("BBB", rejected_risk_config()).has_value());
+    EXPECT_TRUE(db->upsert_symbol("DDD", rejected_risk_config()).has_value());
+    std::vector<CorpusBoard> full = seed;
+    full.push_back(make_board(kDate0, "EEE", 80.0, 0.30)); // forces the rewrite
+    auto cov2 = populate_universe_streaming(*db, full, carry_spec(workers));
+    EXPECT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+    if (!cov2.has_value()) {
+      return {};
+    }
+    EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u);
+    EXPECT_EQ(cov2->dates_written, 0u);
+    // Nothing on the date moved, including the two that would have survived.
+    EXPECT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+    EXPECT_TRUE(db->load_surface(kDate0, "BBB").has_value());
+    EXPECT_TRUE(db->load_surface(kDate0, "CCC").has_value());
+    EXPECT_TRUE(db->load_surface(kDate0, "DDD").has_value());
+    return cov2->coverage_regression_cells;
+  };
+
+  const auto serial_root = test_root("coverage_regression_order_w1");
+  const auto parallel_root = test_root("coverage_regression_order_w4");
+  const std::vector<CoverageRegressionCell> serial = scenario(serial_root, 1u);
+  const std::vector<CoverageRegressionCell> parallel = scenario(parallel_root, 4u);
+
+  ASSERT_EQ(serial.size(), std::size_t{2}) << "exactly the two degraded cells are at risk";
+  EXPECT_EQ(serial[0].date, kDate0);
+  EXPECT_EQ(serial[0].symbol, "BBB");
+  EXPECT_EQ(serial[1].date, kDate0);
+  EXPECT_EQ(serial[1].symbol, "DDD") << "ascending canonical-symbol order, not seed order";
+
+  ASSERT_EQ(parallel.size(), serial.size()) << "the list size depends on the worker count";
+  for (std::size_t i = 0; i < serial.size(); ++i) {
+    EXPECT_EQ(parallel[i].date, serial[i].date) << "entry " << i;
+    EXPECT_EQ(parallel[i].symbol, serial[i].symbol) << "entry " << i;
+  }
+
+  std::filesystem::remove_all(serial_root);
+  std::filesystem::remove_all(parallel_root);
 }
 
 // ── R1-a (review C-06): a PRE-TASK fit-scheduler failure must TERMINATE the

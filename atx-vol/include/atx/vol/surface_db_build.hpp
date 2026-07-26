@@ -205,6 +205,12 @@ struct SurfaceDbBuildSpec {
   // `auto_config.preset` seeds the manifest, this drives the populate fallback.
   FitPreset preset{FitPreset::Populate};
   unsigned fit_workers{0}; // 0 = auto (honors ATX_VOL_FIT_WORKERS); 1 = serial
+  // REV-R3 (review C-02/F-02), the CLI's `--allow-coverage-regression`. Forwarded
+  // to `UniversePopulateSpec::allow_coverage_regression`. FALSE (the guard ON) is
+  // the default: a date whose rewrite would DESTROY a stored surface is refused
+  // and its existing partition left untouched. Set true only for a run that
+  // intends retirement — see the populate field for the whole argument.
+  bool allow_coverage_regression{false};
 };
 
 // The full disposition of a `build_surface_db` call: the stage-1 config report,
@@ -263,6 +269,23 @@ struct ReportedFailedCells {
 [[nodiscard]] ReportedFailedCells
 reported_failed_cells(const SurfaceDbBuildReport &r,
                       std::size_t max_reported = kSurfaceDbBuildMaxReportedFailedCells) noexcept;
+
+// REV-R3: the same presentation bound for `coverage.coverage_regression_cells` —
+// the surfaces a refused write would have destroyed (or, under
+// `--allow-coverage-regression`, did). Same contract as the pair above and for
+// the same reason: the list on the report is COMPLETE (a whole-universe
+// regression is 51 x 17 cells), the terminal gets a deterministic PREFIX, and the
+// elision is COUNTED so a truncated list can never read as the whole set.
+// `reported.size() + n_elided == r.coverage.coverage_regression_cells.size()`
+// always holds. `reported` borrows `r` and must not outlive it.
+struct ReportedCoverageRegressionCells {
+  std::span<const CoverageRegressionCell> reported{};
+  std::size_t n_elided{0};
+};
+
+[[nodiscard]] ReportedCoverageRegressionCells reported_coverage_regression_cells(
+    const SurfaceDbBuildReport &r,
+    std::size_t max_reported = kSurfaceDbBuildMaxReportedFailedCells) noexcept;
 
 // The SAME silent-green trap one stage earlier still — at INGEST, before either
 // predicate below can see anything at all (R1-b, review C-04).

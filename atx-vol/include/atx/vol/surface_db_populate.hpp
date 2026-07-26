@@ -81,6 +81,25 @@ struct SurfaceDbPopulateConfig {
   // may honestly set it too; one that supplies a `carry_over` it has not gated
   // must not.
   DbConfigAttestation attest{DbConfigAttestation::None};
+  // ── REV-R3 (review C-02 / F-02): the coverage-regression opt-out ────────────
+  //
+  // A partition write is WHOLE-FILE (tmp + rename, no merge), so a stored symbol
+  // that is missing from a date's candidate item list is DESTROYED by the commit.
+  // By default `populate_surface_db` REFUSES such a write: it leaves the existing
+  // partition untouched, counts the date in `n_dates_refused_coverage_regression`
+  // and names the at-risk cells in `coverage_regression_cells`. Fail CLOSED —
+  // this defaults to `false` because losing a stored surface is irreversible and
+  // silent (the format keeps no tombstone, so a destroyed cell is byte-for-byte a
+  // cell that was never fitted), while a refusal costs one run.
+  //
+  // Set `true` only for a run that INTENDS retirement — deliberately shrinking a
+  // date's stored coverage. The regression is still DETECTED and still reported
+  // (same counters, in `n_dates_dropped_coverage_regression`), so the run leaves
+  // an audit record of exactly which surfaces it destroyed; only the refusal is
+  // waived. It also waives the abort on an existing partition that will not OPEN
+  // — with the guard on, a partition whose bytes cannot be read cannot be asked
+  // what it holds, so it is not overwritten.
+  bool allow_coverage_regression{false};
 };
 
 struct PopulateSymbolStats {
@@ -121,6 +140,28 @@ struct FailedCell {
   std::string detail;
 };
 
+// REV-R3. One (date, symbol) surface that IS stored in a date's existing
+// partition and is ABSENT from the candidate partition a rewrite would commit —
+// i.e. a surface the write would destroy. `symbol` is the CANONICAL archive key
+// (ASCII-upper, truncated to `kSurfaceDbKeyMax`), because that is the form the
+// partition's directory stores and the form the comparison is made in.
+//
+// Whether the surface actually died depends on the run: with the guard on
+// (default) the date was refused and the surface is still on disk untouched;
+// with `allow_coverage_regression` the write went ahead and this is the record of
+// what it destroyed. The two are told apart by the two date counters, never by
+// this list.
+//
+// DETERMINISM: appended by the single drain thread, dates ascending, and within a
+// date in ascending CANONICAL SYMBOL order (a `set_difference` of two sorted
+// ranges — the partition directory and the candidate item list, both sorted
+// before the compare). No unordered container and no completion order can reach
+// it, so it is byte-identical for any `n_threads`.
+struct CoverageRegressionCell {
+  std::string date;
+  std::string symbol;
+};
+
 struct SurfaceDbPopulateStats {
   std::uint32_t n_boards{0};
   std::uint32_t n_ok{0};
@@ -135,6 +176,21 @@ struct SurfaceDbPopulateStats {
   std::uint32_t n_carried_disabled{0};
   std::uint32_t n_dates_written{0};
   std::uint32_t n_dates_skipped_existing{0};
+  // REV-R3. Dates whose candidate partition was NOT a superset of the stored one
+  // and which were therefore NOT written: the existing partition is untouched and
+  // every surface it held is still on disk. Non-zero means the run did not do
+  // what was asked, which is why the build CLI maps it to a non-zero exit.
+  std::uint32_t n_dates_refused_coverage_regression{0};
+  // REV-R3. The same detection on a run that set `allow_coverage_regression`:
+  // the date WAS written and the stored surfaces named in
+  // `coverage_regression_cells` for it are GONE. This exists so the destructive
+  // mode still leaves a record — the 95-surface incident was invisible precisely
+  // because nothing counted or named what it removed.
+  std::uint32_t n_dates_dropped_coverage_regression{0};
+  // Every cell behind the two counters above, ascending by (date, canonical
+  // symbol). COMPLETE, never capped — display bounding is the CLI's job, the same
+  // split `failed_cells` uses.
+  std::vector<CoverageRegressionCell> coverage_regression_cells;
   std::vector<PopulateSymbolStats> per_symbol; // sorted by symbol
   // One entry per cell counted in `n_failed`, ascending by (date, symbol).
   //
@@ -190,6 +246,18 @@ struct PopulateTestHooks {
 // enabled=false is skipped (n_disabled). A board whose fit fails records
 // n_failed and does NOT abort the date (document per-name failures, don't
 // silently drop). A date with zero successful fits writes NO partition.
+//
+// THE COVERAGE GUARD (REV-R3, review C-02/F-02). A date's write is REFUSED when
+// its candidate item list is not a SUPERSET of the symbols the existing partition
+// already holds — because the write is whole-file, so every stored symbol missing
+// from the candidate would be destroyed by the commit. The existing set is read
+// from the partition's own DIRECTORY (`SurfaceArchiveV2::directory()`, FIX-H's
+// precedent), never inferred from the manifest. A refusal is PER-DATE: the
+// existing partition is left untouched, the date is counted in
+// `n_dates_refused_coverage_regression`, the at-risk cells are named in
+// `coverage_regression_cells`, and every OTHER date in the run proceeds normally.
+// This is not an Err — the run continues and reports. `allow_coverage_regression`
+// opts out for a run that intends retirement; see that field.
 // Partition write uses SurfaceArchiveItem{symbol, &surface} with owning
 // symbol-string storage kept alive across the call, and forwards
 // `cfg.attest` to it — so by DEFAULT the partitions this writes carry NO
@@ -264,10 +332,25 @@ populate_surface_db(SurfaceDb &db, std::span<const CorpusBoard> boards,
 // existing partition (`cells_carried_disabled`), unconditionally and independent
 // of the carry-over fingerprint: `enabled = false` means stop fitting this
 // symbol, never delete what is already stored.
+//
+// SAFETY (REV-R3, review C-02/F-02): the THIRD way — the one both guards above
+// are structurally blind to — is a loaded, ENABLED, already-stored cell whose
+// re-fit FAILS. Nothing is appended for it, and the whole-file rewrite drops it.
+// The filter cannot see this coming (the cell is counted into `present` before it
+// is fitted), so the check now ALSO runs in the WRITE path, on the actual
+// candidate item list, as a SET comparison against the existing partition's own
+// directory. A date whose candidate is not a superset is not written:
+// `dates_refused_coverage_regression`, with the at-risk cells named in
+// `coverage_regression_cells`. `UniversePopulateSpec::allow_coverage_regression`
+// opts out for a retirement run.
 struct UniversePopulateSpec {
   std::string index_symbol{};        // pinned to the dense index recipe; empty = none
   FitPreset preset{FitPreset::Fast}; // non-index symbols use this preset's auto-selector
   unsigned fit_workers{0};           // 0 = auto (honors ATX_VOL_FIT_WORKERS); 1 = serial
+  // REV-R3: forwarded verbatim to `SurfaceDbPopulateConfig::allow_coverage_regression`.
+  // Default false = the guard is ON = a rewrite that would destroy a stored
+  // surface is refused for that date. See that field for the full argument.
+  bool allow_coverage_regression{false};
 };
 
 struct UniversePopulateCoverage {
@@ -305,15 +388,43 @@ struct UniversePopulateCoverage {
   // `cells_ok`.
   std::uint32_t cells_carried_disabled{0};
   std::uint32_t cells_already_present{0};    // skipped: symbol already in its date partition
-  std::uint32_t cells_ok{0};                 // populate n_ok over the (re)written dates
-  std::uint32_t cells_failed{0};             // populate n_failed over the (re)written dates
+  // populate n_ok / n_failed over the dates this run put through the fitter. They
+  // count FIT outcomes, not commits: a cell that fitted on a date the write path
+  // then REFUSED (REV-R3) is still `cells_ok`, because it really did fit — it just
+  // did not land. `dates_refused_coverage_regression` is the authority on what
+  // reached disk, which is why the CLI's verdict reads it separately.
+  std::uint32_t cells_ok{0};
+  std::uint32_t cells_failed{0};
   std::uint32_t dates_total{0};              // distinct dates among the loaded boards
-  std::uint32_t dates_written{0};            // dates that needed a (re)write this run
+  // Dates that needed a (re)write this run, MINUS any the write path then refused
+  // (REV-R3) — so this counts dates the run really committed, not dates it chose.
+  std::uint32_t dates_written{0};
   // Dates with NOTHING left to add: every loaded cell is either already in the
   // partition or config-DISABLED (a disabled cell can never be added, so a date
   // whose only gap is disabled symbols is complete, not pending).
   std::uint32_t dates_skipped_complete{0};
   std::uint32_t dates_skipped_would_drop{0}; // dates skipped to avoid dropping an existing symbol
+  // ── REV-R3: the SECOND would-drop guard, and why there are two ─────────────
+  //
+  // `dates_skipped_would_drop` above is the FILTER's guard and it fires BEFORE
+  // any fit: it catches a stored symbol that this run's loaded board set does not
+  // mention at all. It is a COUNT comparison against `part->count()` and it is
+  // structurally blind to the case that destroyed 95 production surfaces — a cell
+  // that IS loaded, IS enabled, and whose re-fit FAILS. Such a cell is counted
+  // into `present` before its fit outcome is known, so the count still matches
+  // and the filter waves the date through.
+  //
+  // This counter is the WRITE path's guard (`populate_surface_db`), which runs
+  // after the fits with the actual candidate item list in hand and compares SETS,
+  // not counts. Every date it names was NOT written; its stored surfaces are
+  // untouched on disk. `dates_written` below has already had these subtracted.
+  std::uint32_t dates_refused_coverage_regression{0};
+  // Dates written ANYWAY under `allow_coverage_regression`. The surfaces named
+  // for those dates in `coverage_regression_cells` are gone.
+  std::uint32_t dates_dropped_coverage_regression{0};
+  // Every cell behind the two counters above, ascending by (date, canonical
+  // symbol), complete and uncapped. Carried straight through from the populate.
+  std::vector<CoverageRegressionCell> coverage_regression_cells;
   std::vector<PopulateSymbolStats> per_symbol; // from the underlying populate (written dates only)
   // WHY each of `cells_failed` failed, ascending by (date, symbol) — the fit
   // stage's answer to `AutoConfigReport::failed_symbols`, which names the symbols

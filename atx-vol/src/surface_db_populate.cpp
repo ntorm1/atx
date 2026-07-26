@@ -685,7 +685,117 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
         }
       }
 
+      // ── REV-R3 (review C-02 / F-02): refuse a write that DESTROYS a stored
+      // surface ────────────────────────────────────────────────────────────────
+      //
+      // A partition write is WHOLE-FILE -- tmp + rename, no merge, no soft-delete
+      // -- so the committed file is EXACTLY `items`, and every symbol the existing
+      // partition holds that is missing from `items` is destroyed by the commit.
+      // FIX-E and the filter's `present < part->count()` each closed one route
+      // into that state; the route neither can see is a loaded, ENABLED,
+      // already-stored cell whose RE-FIT FAILS. Nothing is appended for it (the
+      // `n_failed` branch above), the filter had already counted it into `present`
+      // before its outcome existed, and the rewrite simply does not contain it.
+      // One production-shaped run at the wrong `--r` destroyed 95 stored surfaces
+      // exactly this way and reported success; the format keeps no tombstone, so
+      // a destroyed cell is byte-for-byte a cell that was never fitted and nothing
+      // on disk recorded the loss.
+      //
+      // So the question is asked HERE, where the candidate really exists, and as a
+      // SET comparison rather than the filter's count comparison -- counts are
+      // what made the earlier guard blind. The EXISTING side is read from the
+      // partition's own DIRECTORY (FIX-H's precedent: the file is the authority on
+      // what the file holds), never inferred from the manifest, which can disagree
+      // with it and is exactly the disagreement that would matter here.
+      //
+      // WHY IT DOES NOT FIRE ON A HEALTHY RUN. It is a SUPERSET test, not an
+      // equality test, so adding cells is always allowed. A cell that permanently
+      // fails to fit was never stored, so it is not in the existing set and cannot
+      // be missed from the candidate -- the converged production database's
+      // residual failures are precisely that shape (measured: `cells_refit 0`,
+      // `cells_carried 150`, 9 permanently-absent cells, guard silent). It fires
+      // only when a cell that WAS stored is absent from the candidate.
+      //
+      // A refusal is PER-DATE and is NOT an Err: later dates in the same run are
+      // unaffected, and the caller gets counters plus the named cells. It is also
+      // structurally downstream of the scheduler-abort sentinel above -- an aborted
+      // date `return`s before this line, so it can never be misreported as a
+      // coverage regression; that failure is an error and the error path owns it.
+      //
+      // DETERMINISM: this runs on the SINGLE drain thread, inside the
+      // date-ascending walk, over an `items` vector the same walk built in
+      // (date, symbol) order. Both sides are SORTED before the compare and the
+      // difference is a `std::set_difference` of sorted ranges, so the refusal
+      // decision and the reported cell order are byte-identical for any worker
+      // count. No unordered container is involved.
+      //
+      // SCOPE: the check is gated on `!items.empty()` because an EMPTY candidate
+      // writes no partition at all (the pre-existing `if (!items.empty())` below),
+      // so the stored surfaces survive untouched with or without this guard. There
+      // is no commit to refuse. That shape is already non-silent by another route
+      // -- a date that produced nothing has no `cells_ok`, so the CLI's
+      // `is_total_fit_failure` / `is_carry_masked_fit_failure` verdicts speak for
+      // it. Do not "tidy" this by hoisting the check above that condition without
+      // re-deciding what a refusal COUNT would then mean for a date nobody was
+      // going to write.
+      std::vector<std::string> lost_symbols; // stored here, absent from `items`
       if (!items.empty()) {
+        std::vector<std::string> stored_symbols;
+        {
+          const Result<SurfaceArchiveV2> part = db.open_partition(date);
+          if (part.has_value()) {
+            stored_symbols.reserve(part->directory().size());
+            for (const ArchiveV2DirEntry &e : part->directory()) {
+              stored_symbols.emplace_back(e.symbol, e.symbol_len);
+            }
+          } else if (part.error().code() != ErrorCode::NotFound &&
+                     !cfg.allow_coverage_regression) {
+            // A date with NO partition yet cannot lose coverage (NotFound is the
+            // ordinary first-write path). An existing partition that will not
+            // OPEN is different in kind: its contents are unknown, so whether the
+            // write destroys anything is unanswerable -- and overwriting it is
+            // the one action that makes the answer unrecoverable. Fail loud, for
+            // the same reason FIX-F fails loud on an unreadable carry record.
+            // `allow_coverage_regression` waives it, because a caller who has
+            // authorised destruction has answered the question.
+            return Err(part.error());
+          }
+        }
+        std::sort(stored_symbols.begin(), stored_symbols.end());
+
+        // The candidate side, in the form the archive actually stores: the writer
+        // canonicalizes every item's symbol before hashing/storing it, so an
+        // uncanonicalized compare would report a spurious drop for any item whose
+        // board symbol differs from its stored key by case or length.
+        std::vector<std::string> candidate_symbols;
+        candidate_symbols.reserve(items.size());
+        for (const SurfaceArchiveItem &item : items) {
+          candidate_symbols.push_back(
+              detail::canonicalize_symbol(item.symbol, kSurfaceDbKeyMax));
+        }
+        std::sort(candidate_symbols.begin(), candidate_symbols.end());
+
+        std::set_difference(stored_symbols.begin(), stored_symbols.end(),
+                            candidate_symbols.begin(), candidate_symbols.end(),
+                            std::back_inserter(lost_symbols));
+      }
+
+      // Detection runs on BOTH sides of the opt-out on purpose. A retirement run
+      // still gets a complete, ordered record of every surface it destroyed --
+      // which is the one thing the 95-surface incident had no way to produce.
+      if (!lost_symbols.empty()) {
+        for (const std::string &sym : lost_symbols) {
+          stats.coverage_regression_cells.push_back(CoverageRegressionCell{date, sym});
+        }
+        if (cfg.allow_coverage_regression) {
+          ++stats.n_dates_dropped_coverage_regression;
+        } else {
+          ++stats.n_dates_refused_coverage_regression;
+        }
+      }
+      const bool refuse_write = !lost_symbols.empty() && !cfg.allow_coverage_regression;
+
+      if (!items.empty() && !refuse_write) {
         // FIX-D fix-2 (I-3): the attestation is the CALLER'S, forwarded, not this
         // function's to invent. `items` has two provenances and this frame can
         // only vouch for one of them: every FITTED item came out of `fit_board`
@@ -1022,6 +1132,10 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
     // to `write_partition` by the populate rather than asserted by it. Everything
     // else in the write is this run's own fit under the configs seeded above.
     pcfg.attest = DbConfigAttestation::FitterProduced;
+    // REV-R3: the operator's retirement opt-out, forwarded verbatim. The filter
+    // above deliberately does NOT consult it -- `dates_skipped_would_drop` guards a
+    // different, pre-fit question and its skip is not destructive either way.
+    pcfg.allow_coverage_regression = spec.allow_coverage_regression;
     const Result<SurfaceDbPopulateStats> st = populate_surface_db(db, kept, pcfg, test_hooks);
     if (!st) {
       return Err(st.error());
@@ -1044,6 +1158,18 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
       return Err(ErrorCode::Internal, "populate_universe_streaming: preserved-disabled-cell count "
                                       "disagrees with populate");
     }
+    // ── REV-R3: what the WRITE path refused, and the correction it forces ──────
+    // `dates_written` was incremented by the filter above, which decides which
+    // dates to REWRITE. A date the write path then refused was not written at
+    // all, so leaving the count would report a commit that never happened -- the
+    // exact class of lie this guard exists to end. Subtract them. The subtraction
+    // cannot underflow: every refusal is a date the filter counted here first
+    // (only `kept` dates reach the populate, and `kept` is filled on the same
+    // branch as the increment).
+    cov.dates_refused_coverage_regression = st->n_dates_refused_coverage_regression;
+    cov.dates_dropped_coverage_regression = st->n_dates_dropped_coverage_regression;
+    cov.dates_written -= cov.dates_refused_coverage_regression;
+    cov.coverage_regression_cells = st->coverage_regression_cells;
     cov.per_symbol = std::move(st->per_symbol);
     // The per-cell reasons ride along with the count they explain; the populate
     // already ordered them by (date, symbol), so nothing re-sorts here.
