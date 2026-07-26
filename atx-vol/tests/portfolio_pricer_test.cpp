@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -24,6 +25,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -4698,5 +4700,101 @@ TEST(PortfolioPricer, G2_RiskBuckets_And_Carry_ThreadCountInvariant) {
       EXPECT_TRUE(totals_bits_equal(b1[k].totals, b4[k].totals)) << k;
     }
     EXPECT_TRUE(totals_bits_equal(g1, g4));
+  }
+}
+
+// ── S1-T1 / 1.1: the RETURNING convenience overloads are concurrent-const-safe ──
+//
+// portfolio_pricer.hpp's thread-safety contract promises "one pricer may be
+// queried from many threads" because `price` / `pnl_explain` are const. H4 then
+// added a lazily-created `mutable unique_ptr<PortfolioWorkspace> returning_ws_`
+// that BOTH const overloads created and mutated, so two concurrent const calls on
+// one pricer raced on the shared scratch (the lazy creation itself, the retained
+// PreparedPortfolio, and every per-unique SoA slot) — a data race, i.e. UB, not a
+// merely stale number. These two tests hammer the returning overloads from several
+// threads and require each thread's result to be BIT-IDENTICAL to the serial one.
+//
+// A race is not deterministically assertable on this platform: pre-fix these fail
+// intermittently (or produce garbage/crash under the sanitizers) rather than every
+// run. The load-bearing, reviewer-verifiable half of the fix is structural — the
+// shared mutable member is GONE and each returning call owns its workspace.
+namespace {
+
+constexpr unsigned kConcurrentQueryThreads = 8;
+constexpr int kConcurrentQueryIters = 24;
+
+} // namespace
+
+TEST(PortfolioPricer, Price_ReturningOverloadQueriedFromManyThreads_MatchesSerialFrame) {
+  const PricedSurface s1 = make_essvi(1, 3);
+  const PricedSurface s2 = make_essvi(2, 3);
+  const SurfaceSet surfaces = set_of({&s1, &s2});
+  auto pf = Portfolio::create(two_by_three_book());
+  ASSERT_TRUE(pf.has_value()) << pf.error().to_string();
+  const PortfolioPricer pricer(std::move(*pf));
+
+  const auto serial = pricer.price(surfaces);
+  ASSERT_TRUE(serial.has_value()) << serial.error().to_string();
+
+  std::vector<PriceFrame> observed(kConcurrentQueryThreads);
+  std::atomic<int> failures{0};
+  {
+    std::vector<std::jthread> workers;
+    workers.reserve(kConcurrentQueryThreads);
+    for (unsigned t = 0; t < kConcurrentQueryThreads; ++t) {
+      workers.emplace_back([&pricer, &surfaces, &observed, &failures, t] {
+        for (int iter = 0; iter < kConcurrentQueryIters; ++iter) {
+          auto frame = pricer.price(surfaces);
+          if (!frame.has_value()) {
+            failures.fetch_add(1, std::memory_order_relaxed);
+            return;
+          }
+          observed[t] = std::move(*frame);
+        }
+      });
+    }
+  }
+
+  ASSERT_EQ(failures.load(std::memory_order_relaxed), 0);
+  for (unsigned t = 0; t < kConcurrentQueryThreads; ++t) {
+    SCOPED_TRACE(t);
+    expect_frame_bit_identical(observed[t], *serial);
+  }
+}
+
+TEST(PortfolioPricer, PnlExplain_ReturningOverloadQueriedFromManyThreads_MatchesSerialFrame) {
+  const PnlSurfaces surf;
+  const SurfaceSet base = surf.base();
+  const SurfaceSet shifted = surf.shifted();
+  auto pf = Portfolio::create(pnl_multi_book());
+  ASSERT_TRUE(pf.has_value()) << pf.error().to_string();
+  const PortfolioPricer pricer(std::move(*pf));
+
+  const auto serial = pricer.pnl_explain(base, shifted);
+  ASSERT_TRUE(serial.has_value()) << serial.error().to_string();
+
+  std::vector<PnlFrame> observed(kConcurrentQueryThreads);
+  std::atomic<int> failures{0};
+  {
+    std::vector<std::jthread> workers;
+    workers.reserve(kConcurrentQueryThreads);
+    for (unsigned t = 0; t < kConcurrentQueryThreads; ++t) {
+      workers.emplace_back([&pricer, &base, &shifted, &observed, &failures, t] {
+        for (int iter = 0; iter < kConcurrentQueryIters; ++iter) {
+          auto frame = pricer.pnl_explain(base, shifted);
+          if (!frame.has_value()) {
+            failures.fetch_add(1, std::memory_order_relaxed);
+            return;
+          }
+          observed[t] = std::move(*frame);
+        }
+      });
+    }
+  }
+
+  ASSERT_EQ(failures.load(std::memory_order_relaxed), 0);
+  for (unsigned t = 0; t < kConcurrentQueryThreads; ++t) {
+    SCOPED_TRACE(t);
+    expect_pnl_frame_bit_identical(observed[t], *serial);
   }
 }

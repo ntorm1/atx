@@ -64,12 +64,14 @@
 //
 // ## Thread-safety
 //
-// Except for `retime`, a `PortfolioPricer` is immutable after construction;
-// `price` / `pnl_explain` are const, and the `PricedSurface` inputs are
-// concurrent-const-safe, so one pricer may be queried from many threads. Every
-// concurrent in-place call must use a distinct PortfolioWorkspace and output
-// view. `retime` requires exclusive access to the pricer and every workspace
-// that has priced it; a later call rebuilds each workspace's retained substrate.
+// Except for `retime`, a `PortfolioPricer` holds NO mutable state: it is
+// immutable after construction, `price` / `pnl_explain` are const AND hold no
+// shared scratch (each call owns its workspace), and the `PricedSurface` inputs
+// are concurrent-const-safe — so one pricer may genuinely be queried from many
+// threads at once, by either API. Every concurrent in-place call must use a
+// distinct PortfolioWorkspace and output view. `retime` requires exclusive
+// access to the pricer and every workspace that has priced it; a later call
+// rebuilds each workspace's retained substrate.
 
 #include <cstddef>
 #include <cstdint>
@@ -940,6 +942,15 @@ public:
   // registered surface are ModelUnavailable; degenerate contracts are
   // InvalidContract/NumericError; the rest are priced. @return the frame (the
   // call itself fails only never — an empty book gives an empty frame).
+  //
+  // CONCURRENCY / COST. This convenience overload owns a PER-CALL workspace, so
+  // any number of threads may call it on one pricer concurrently. The price is
+  // that it retains no substrate between calls: each call rebuilds the
+  // PreparedPortfolio and re-sizes its scratch (negligible next to the ~17
+  // Andersen-Lake boundary solves per unique contract this call already spends,
+  // and next to the output frame it allocates anyway). A caller that wants the
+  // cross-snapshot substrate reuse — a per-bar hot loop — must use `price_into`
+  // with its own retained PortfolioWorkspace.
   [[nodiscard]] Result<PriceFrame> price(const SurfaceSet &surfaces,
                                          const PriceOptions &opts = {}) const;
 
@@ -987,6 +998,9 @@ public:
   // Taylor PnL-explain between a base and a shifted surface per underlying. The
   // time-roll dt is taken from the two surfaces' valuation timestamps; when they
   // match (dt=0) the theta/charm terms vanish (pure vol/spot/rate explain).
+  // Per-call workspace, with the same concurrency/cost contract as `price` above:
+  // safe from many threads at once, retains nothing between calls; a hot loop
+  // belongs on `pnl_explain_into` / `pnl_totals` with a caller-owned workspace.
   [[nodiscard]] Result<PnlFrame> pnl_explain(const SurfaceSet &base, const SurfaceSet &shifted,
                                              const PriceOptions &opts = {}) const;
 
@@ -1076,19 +1090,6 @@ public:
 
 private:
   Portfolio pf_;
-  // H4 (WS-H): retained workspace for the RETURNING convenience API (price() /
-  // pnl_explain()). Without it each returning call built a one-shot local
-  // PortfolioWorkspace, so ensure_prepared re-ran PreparedPortfolio::create (a
-  // stable_sort + tile partition over the uniques) and re-resized the scratch SoA
-  // EVERY call, silently losing the cross-snapshot reuse the _into variants keep.
-  // Reused across calls, ensure_prepared rebuilds only on an actual book change.
-  // NOT for concurrent returning-API calls on the SAME pricer (the shared scratch
-  // would race) — the caller-owned-workspace _into variants remain the
-  // concurrent-safe / allocation-transparent path. A unique_ptr (not a value) so
-  // PortfolioPricer stays trivially/noexcept-movable and a moved-from pricer stays
-  // callable (the returning API lazily re-creates it on next use). mutable: the
-  // returning wrappers are const but legitimately reuse this private scratch.
-  mutable std::unique_ptr<PortfolioWorkspace> returning_ws_;
 };
 
 } // namespace atx::vol

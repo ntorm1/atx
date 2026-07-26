@@ -1342,14 +1342,21 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
 
   PriceFrameView view{f.id,    f.uid, f.pv,    f.price, f.iv,    f.delta,  f.gamma, f.vega,
                       f.theta, f.rho, f.vanna, f.volga, f.charm, f.status, &f.total};
-  // H4: reuse the retained workspace so a per-bar returning-API caller keeps the
-  // PreparedPortfolio + scratch SoA across calls (rebuilt only on a book change),
-  // instead of paying a fresh build + realloc every call. Lazily created (and
-  // re-created after a move leaves it null).
-  if (returning_ws_ == nullptr) {
-    returning_ws_ = std::make_unique<PortfolioWorkspace>();
-  }
-  if (Status s = price_into(surfaces, fields, view, *returning_ws_, opts); !s.has_value()) {
+  // The workspace is PER CALL. H4 hung a `mutable unique_ptr<PortfolioWorkspace>`
+  // off the pricer so a per-bar returning-API caller kept the PreparedPortfolio +
+  // scratch SoA across calls — but BOTH returning overloads are const, and
+  // portfolio_pricer.hpp promises a const pricer may be queried from many threads,
+  // so that shared scratch was a data race (the lazy creation, the retained
+  // substrate, and every per-unique SoA slot) on exactly the API the contract
+  // declared safe. A per-call workspace restores the contract with no
+  // synchronization and no per-thread retention: its construction is negligible
+  // next to the ~17 Andersen-Lake boundary solves per unique contract this call
+  // spends, and this overload already allocates the whole output frame. Hot,
+  // single-threaded, per-bar callers keep the substrate reuse by using
+  // `price_into` with their own workspace — the documented allocation-transparent
+  // path.
+  PortfolioWorkspace call_ws;
+  if (Status s = price_into(surfaces, fields, view, call_ws, opts); !s.has_value()) {
     return Err(s.error());
   }
 
@@ -2152,11 +2159,10 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const Surf
                     f.pnl_delta, f.pnl_gamma, f.pnl_vega,  f.pnl_volga,       f.pnl_vanna,
                     f.pnl_theta, f.pnl_rho,   f.pnl_charm, f.pnl_unexplained, f.d_spot,
                     f.d_vol,     f.d_time,    f.d_rate,    f.status,          &f.total};
-  // H4: reuse the retained workspace (see price()); rebuilt only on a book change.
-  if (returning_ws_ == nullptr) {
-    returning_ws_ = std::make_unique<PortfolioWorkspace>();
-  }
-  if (Status s = pnl_explain_into(base, shifted, view, *returning_ws_, opts); !s.has_value()) {
+  // Per-call workspace — same reasoning as price(): this const overload must be
+  // safe to call concurrently on one pricer, so it may share no scratch.
+  PortfolioWorkspace call_ws;
+  if (Status s = pnl_explain_into(base, shifted, view, call_ws, opts); !s.has_value()) {
     return Err(s.error());
   }
   f.book_logical_id_ = pf_.logical_id_;
