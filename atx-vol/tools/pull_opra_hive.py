@@ -288,11 +288,32 @@ def date_file_underlyings(path: pathlib.Path) -> set[str]:
     return syms
 
 
-def _date_file_snap_ts(path: pathlib.Path) -> Optional[pd.Timestamp]:
-    """Cheaply read the single constant ``ts`` a date file was stamped with (one
-    snapshot instant per session, per ``decode_date_frame``), from row-group 0's
-    footer statistics -- never materializes the whole file. Falls back to a
-    single-row-group column read if stats are unavailable (still no full scan)."""
+# Sentinel: the file holds MORE THAN ONE distinct ``ts`` value across its row
+# groups -- itself a violation of the one-constant-ts-per-date invariant the
+# C++ loader chain (first_ts_ns -> snapshot_ts_ns -> corpus fingerprint) relies
+# on. Distinct from ``None`` ("can't tell" -- no row groups / no ts column,
+# pre-existing fail-open behavior, unchanged) so `plan_missing` can force a
+# mismatch/repull for a mixed file without silently matching an arbitrary row
+# group's value, and without touching the None-fail-open path at all.
+_MIXED_SNAP_TS = object()
+
+
+def _date_file_snap_ts(path: pathlib.Path):
+    """Cheaply read the date file's stamped ``ts`` -- normally one constant
+    instant for the whole session (``decode_date_frame`` stamps every row the
+    same). Scans EVERY row group's footer statistics (min==max means a single
+    value -- no data read needed for a well-formed file); only falls back to
+    reading a row group's own ``ts`` column when its footer stats are absent or
+    span more than one value. Returns:
+      * a ``pd.Timestamp`` when exactly one distinct value is present across
+        the whole file (the healthy case).
+      * ``_MIXED_SNAP_TS`` when MORE THAN ONE distinct value is found anywhere
+        in the file -- always treated as a mismatch by the caller, never
+        silently matched against whichever row group happened to be read
+        first (row groups are NOT guaranteed to be in any particular order
+        relative to "the truth").
+      * ``None`` when nothing can be determined (no row groups, or no ``ts``
+        column) -- unchanged pre-existing fail-open behavior."""
     pf = pq.ParquetFile(path)
     md = pf.metadata
     if md.num_row_groups == 0:
@@ -300,13 +321,19 @@ def _date_file_snap_ts(path: pathlib.Path) -> Optional[pd.Timestamp]:
     idx = pf.schema_arrow.get_field_index("ts")
     if idx < 0:
         return None
-    st = md.row_group(0).column(idx).statistics
-    if st is not None and st.has_min_max:
-        return pd.Timestamp(st.min)
-    tbl = pf.read_row_group(0, columns=["ts"])
-    if tbl.num_rows == 0:
+    seen: set = set()
+    for rg in range(md.num_row_groups):
+        st = md.row_group(rg).column(idx).statistics
+        if st is not None and st.has_min_max and st.min == st.max:
+            seen.add(pd.Timestamp(st.min))
+        else:
+            tbl = pf.read_row_group(rg, columns=["ts"])
+            seen.update(pd.Timestamp(v) for v in tbl.column(0).to_pylist())
+        if len(seen) > 1:
+            return _MIXED_SNAP_TS
+    if len(seen) != 1:
         return None
-    return pd.Timestamp(tbl.column(0)[0].as_py())
+    return next(iter(seen))
 
 
 # ── Absent-symbol sidecar (<out>/_absent/<date>.json) ───────────────────────────
@@ -350,23 +377,35 @@ def _write_absent_sidecar(out_root: pathlib.Path, date: str, minute_utc: str,
 
 
 def _merge_absent_sidecar(out_root: pathlib.Path, date: str, minute_utc: str,
-                          zero_row_symbols: list[str], force: bool) -> None:
+                          requested_symbols: list[str], zero_row_symbols: list[str],
+                          force: bool) -> None:
     """Record this pull's zero-row requested symbols for ``date``.
 
-    ``force`` rewrites the sidecar from scratch (only THIS call's findings --
-    ``--force`` ignores whatever a prior sidecar claimed). Otherwise, merge with
-    any prior record for the SAME minute (a stale record from a different
-    minute, e.g. a pre-DST-transition entry, is dropped, not merged); with
-    nothing new and no force, the existing sidecar is left untouched."""
-    if force:
-        _write_absent_sidecar(out_root, date, minute_utc, zero_row_symbols)
-        return
-    if not zero_row_symbols:
-        return
+    ``force`` (true for an explicit ``--force`` OR a minute-mismatch repull --
+    see ``pull``'s ``sidecar_force``) makes this call authoritative for every
+    symbol in ``requested_symbols`` -- each is either re-confirmed absent (in
+    ``zero_row_symbols``) or dropped from the sidecar (it came back with data
+    this time). Critically, a prior entry for a symbol NOT in
+    ``requested_symbols`` this round (e.g. one the cap-degrade filter dropped
+    before ``pull()`` ever saw it this session) is left untouched: this call
+    never re-checked it, so ``force`` must not erase that memory and cause it
+    to be re-queued -- and re-billed -- on a later run. Without ``force``,
+    entries only accumulate (nothing already recorded is ever dropped this
+    way); a prior record for a DIFFERENT minute (e.g. a pre-DST-transition
+    entry) is discarded rather than merged, since a sidecar holds exactly one
+    minute's data. Nothing is written when there's nothing new to say and no
+    force (existing sidecar, if any, is left completely untouched)."""
     prior = _load_absent_sidecar(out_root, date)
-    prior_syms = set(prior["symbols"]) if prior and prior.get("minute_utc") == minute_utc else set()
-    _write_absent_sidecar(out_root, date, minute_utc,
-                          sorted(prior_syms | set(zero_row_symbols)))
+    prior_syms = (set(prior.get("symbols", []))
+                 if prior and prior.get("minute_utc") == minute_utc else set())
+    if force:
+        untouched = prior_syms - set(requested_symbols)
+        new_syms = untouched | set(zero_row_symbols)
+    else:
+        if not zero_row_symbols:
+            return
+        new_syms = prior_syms | set(zero_row_symbols)
+    _write_absent_sidecar(out_root, date, minute_utc, sorted(new_syms))
 
 
 class MissingPlan(dict):
@@ -395,9 +434,12 @@ def plan_missing(out_root, symbols: list[str], dates: list[str],
     two DST-correctness features, both no-ops when omitted (so existing direct
     callers/tests that don't pass it see byte-identical behavior):
       * Resume minute check: if the on-disk file's stamped ``ts`` does not equal
-        `date + expected_minute[date]`, the date is fully re-planned (all
-        requested symbols) and added to ``repull_dates`` -- pull() replaces
-        rather than unions that date's file.
+        `date + expected_minute[date]` -- OR the file itself holds more than
+        one distinct ``ts`` (``_date_file_snap_ts``'s ``_MIXED_SNAP_TS``, e.g.
+        a prior partial repull that predates this fix) -- the date is fully
+        re-planned (all requested symbols) and added to ``repull_dates`` --
+        pull() replaces (not unions) that date's file, discarding whatever was
+        on disk rather than force-merging into it.
       * Absent-symbol sidecar subtraction: for a date that DOES match, symbols
         recorded absent in ``<out>/_absent/<date>.json`` for that SAME minute
         are dropped from the missing set (never re-queued/re-billed)."""
@@ -412,8 +454,9 @@ def plan_missing(out_root, symbols: list[str], dates: list[str],
         if want_hm is not None:
             have_ts = _date_file_snap_ts(target)
             want_ts = pd.Timestamp(f"{date}T{want_hm}:00")
-            if have_ts is not None and have_ts != want_ts:
-                have_hm = f"{have_ts.hour:02d}:{have_ts.minute:02d}"
+            mixed = have_ts is _MIXED_SNAP_TS
+            if mixed or (have_ts is not None and have_ts != want_ts):
+                have_hm = "mixed" if mixed else f"{have_ts.hour:02d}:{have_ts.minute:02d}"
                 print(f"MINUTE-MISMATCH {date} have={have_hm} want={want_hm} — repull",
                       file=sys.stderr)
                 plan[date] = list(symbols)
@@ -634,9 +677,16 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: "str | dict[s
     ``get_range`` window, and the frame's stamped ``ts``.
 
     ``repull_dates`` (from ``plan_missing``'s minute-mismatch check) marks dates
-    whose on-disk file must be REPLACED rather than unioned, even when the
-    global ``force`` flag is False -- omitted/None for callers that don't opt
-    into the minute check (byte-identical to the old force-only behavior)."""
+    whose on-disk file is stamped with the WRONG snapshot instant for the whole
+    file, not just for the requested symbols. Those dates get a genuine full
+    replacement (``existing=None`` into ``merge_date_file`` -- the file is
+    written from scratch, containing only this call's own frame), never a
+    force-style merge: a force merge only replaces underlyings present in the
+    fresh frame, which would silently leave any OLD-minute row behind for a
+    symbol this call didn't get data for this time (zero rows, a cap-degrade
+    drop, ...), corrupting the one-ts-per-date invariant the C++ loader chain
+    relies on. Omitted/None for callers that don't opt into the minute check
+    (byte-identical to the old force-only behavior)."""
     store_loader = store_loader or _default_store_loader
     out_root = pathlib.Path(out_root)
     dbn_dir = out_root / "_dbn"
@@ -705,13 +755,49 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: "str | dict[s
         unmapped += nu
         rows_returned += nr
         target = out_root / f"date={date}" / DATE_FILE
-        existing = target if target.exists() else None
-        date_force = force or (date in repull_dates)
-        merge_date_file(existing, frame, target, force=date_force)
+        is_repull = date in repull_dates
+        if is_repull:
+            # Minute mismatch: the file's stamped ts is flat-out wrong for the
+            # WHOLE date, not just for the requested symbols. A force-style
+            # merge_date_file call would only replace underlyings present in
+            # `frame` (this pull's actual return), preserving anything ELSE
+            # already on disk -- so a requested-but-zero-row symbol, a
+            # cap-degrade drop, or any name outside the current universe would
+            # silently keep its OLD-minute rows, leaving the file holding two
+            # different snapshot instants at once (violating the
+            # one-constant-ts-per-date invariant the C++ loader chain --
+            # first_ts_ns -> snapshot_ts_ns -> corpus fingerprint -- relies on,
+            # and defeating `_date_file_snap_ts`'s mismatch check forever:
+            # the mismatch branch `continue`s before sidecar subtraction ever
+            # runs, so there is no other path back to a clean file). Treat the
+            # date as if no file existed at all: a genuine full replacement
+            # with only what THIS pull actually returned.
+            existing = None
+        else:
+            existing = target if target.exists() else None
+        merge_date_file(existing, frame, target, force=force)
 
         written = set(frame["underlying"].unique().tolist())
         zero_row_syms = [s for s in miss if s not in written]
-        _merge_absent_sidecar(out_root, date, hm, zero_row_syms, force)
+        sidecar_force = force or is_repull
+        if not written and len(miss) > 1:
+            # A whole-session zero-row response (every requested symbol, not
+            # just one) is a bad-window/holiday signature -- e.g. an XNYS
+            # early close (Jul 3, day after Thanksgiving, Christmas Eve: 13:00
+            # ET close) where a 15:55 ET cbbo-1m window falls after the
+            # session ended -- NOT genuine per-name absence. Recording it
+            # would latch the date "complete" forever (plan_missing would
+            # subtract every symbol via the sidecar on every future resume,
+            # recoverable only via --force). Skip the sidecar write entirely
+            # and log loudly instead so the orchestrator can see the date was
+            # skipped-empty and may need a --snap adjustment or a deliberate
+            # re-check, not silent amnesia.
+            print(f"EMPTY-SESSION {date}: 0/{len(miss)} requested boards returned at "
+                  f"{hm} -- likely an early-close/holiday session outside the snapshot "
+                  f"window, not per-name absence; absent-symbol sidecar NOT recorded "
+                  f"(will re-check next resume)", file=sys.stderr)
+        else:
+            _merge_absent_sidecar(out_root, date, hm, miss, zero_row_syms, sidecar_force)
         for s in miss:
             if s in written:
                 recs = int((frame["underlying"] == s).sum())

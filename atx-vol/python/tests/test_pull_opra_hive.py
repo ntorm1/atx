@@ -515,3 +515,144 @@ def test_force_clears_sidecar(tmp_path):
     data = json.loads(sidecar.read_text())
     assert data["symbols"] == ["B"]
     assert data["minute_utc"] == "19:55"
+
+
+# ── Fix-round regression tests (code review: Critical 1, Important 2/3/4) ──────
+
+def test_pull_replaces_full_file_on_minute_mismatch_not_force_merge(tmp_path):
+    """Critical-1 regression. Existing file holds {AAPL, SPY} stamped at
+    19:55Z. A repull-flagged pull (simulating a detected minute mismatch, e.g.
+    a DST-boundary re-run) requests {AAPL, SPY} at a NEW minute (20:55Z) but
+    the fresh provider response only has SPY (AAPL comes back with zero rows
+    this time). The old bug: a force-style merge only replaces underlyings
+    PRESENT in the new frame, so AAPL@19:55 would survive untouched, leaving
+    the file holding two different snapshot instants at once (AAPL@19:55 +
+    SPY@20:55) -- a corrupted, permanently-mismatching file (the mismatch
+    check would flag it forever, but the sidecar branch is unreachable because
+    the mismatch branch `continue`s first). The fix: a repull-flagged date is
+    a genuine full replacement -- the resulting file must hold ONLY what this
+    pull actually returned (SPY), at the new minute, with AAPL simply absent
+    (correctly re-queued as missing on the next resume, not stale)."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
+
+    plan = {date: ["AAPL", "SPY"]}
+    frames = {date: _raw_df(["SPY"])}  # AAPL: zero rows this time
+    root_to_sym = {"AAPL": "AAPL", "SPY": "SPY"}
+    fake = FakeHistorical(frames=frames)
+
+    ph.pull(fake, plan, out, snap_hm="20:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates={date})
+
+    tbl = pq.read_table(tgt).to_pandas()
+    assert set(tbl["underlying"]) == {"SPY"}  # AAPL@19:55 must NOT survive
+    tss = tbl["ts"].unique()
+    assert len(tss) == 1                      # single constant ts -- no mixed file
+    ts = pd.Timestamp(tss[0])
+    assert (ts.hour, ts.minute) == (20, 55)   # the NEW minute, not the stale 19:55
+
+
+def test_plan_missing_treats_mixed_ts_file_as_mismatch(tmp_path):
+    """Critical-1 belt-and-braces regression. A file whose row groups do NOT
+    all agree on `ts` (e.g. a straggler from before this fix, or any other
+    corruption) must be treated as a mismatch even when the FIRST row group
+    happens to agree with the expected minute -- row group order is not a
+    guarantee of "the truth", so `_date_file_snap_ts` must scan every row
+    group, not just the first."""
+    tgt = tmp_path / "date=2026-07-20" / ph.DATE_FILE
+    tgt.parent.mkdir(parents=True, exist_ok=True)
+    frame_a = _decoded(["AAPL"], ts="2026-07-20T19:55:00")  # row group 0: matches "want"
+    frame_b = _decoded(["SPY"], ts="2026-07-20T20:55:00")   # row group 1: does NOT
+    combined = pd.concat([frame_a, frame_b], ignore_index=True)
+    writer = pq.ParquetWriter(tgt, ph.ARROW_SCHEMA)
+    for _sym, grp in combined.groupby("underlying", sort=True):
+        writer.write_table(pa.Table.from_pandas(grp[ph.COLUMNS], schema=ph.ARROW_SCHEMA,
+                                                 preserve_index=False))
+    writer.close()
+
+    plan = ph.plan_missing(tmp_path, ["AAPL", "SPY"], ["2026-07-20"],
+                           expected_minute={"2026-07-20": "19:55"})
+    assert plan == {"2026-07-20": ["AAPL", "SPY"]}
+    assert plan.repull_dates == {"2026-07-20"}
+
+
+def test_run_with_snap_et_threads_per_date_minute_through_preflight_and_pull(tmp_path):
+    """Important-3(b): a real run()-level test (replacing the earlier ad hoc
+    smoke script) proving --snap-et's per-date {date: "HH:MM"} map threads all
+    the way through preflight() -> pull() -> the stamped ts, the DBN cache
+    name, and the manifest filename."""
+    symfile = tmp_path / "syms.txt"
+    symfile.write_text("SPY\nAAPL\n")
+    out = tmp_path / "hive"
+    date = "2026-01-02"  # EST session: 15:55 ET == 20:55 UTC
+
+    args = ph.build_parser().parse_args([
+        "--symbols-file", str(symfile), "--start", date, "--end", date,
+        "--out", str(out), "--cap", "1000", "--snap-et", "15:55",
+    ])
+    frames = {date: _raw_df(["SPY", "AAPL"])}
+    fake = FakeHistorical(unit=0.001, frames=frames)
+
+    rc = ph.run(args, client=fake, store_loader=_fake_loader)
+    assert rc == 0
+
+    date_file = out / f"date={date}" / ph.DATE_FILE
+    tbl = pq.read_table(date_file).to_pandas()
+    ts = pd.Timestamp(tbl["ts"].iloc[0])
+    assert (ts.hour, ts.minute) == (20, 55)  # EST: 15:55 ET == 20:55Z
+
+    dbn_files = list((out / "_dbn").glob(f"{date}_2055_*.dbn.zst"))
+    assert len(dbn_files) == 1  # resolved per-date minute embedded in the cache name
+
+    manifests = list(out.glob("manifest_hive_*"))
+    assert len(manifests) == 1
+    assert "1555" in manifests[0].name  # labeled by the stable ET time, not the UTC minute
+
+
+def test_empty_session_does_not_record_sidecar(tmp_path):
+    """Important-2 regression. A WHOLE-session zero-row response (every
+    requested symbol, not just one) is a bad-window/holiday signature -- e.g.
+    a real XNYS early close (Jul 3, day after Thanksgiving, Christmas Eve, all
+    13:00 ET closes) where a 15:55 ET snapshot window falls after the session
+    ended -- not genuine per-name absence. It must NOT be recorded in the
+    sidecar (which would permanently latch the date "complete" and silently
+    hide it from every future resume, recoverable only via --force)."""
+    out = tmp_path / "hive"
+    plan = {"2026-07-03": ["SPY", "AAPL"]}
+    frames = {"2026-07-03": _raw_df([])}  # nothing at all in the snapshot window
+    root_to_sym = {"SPY": "SPY", "AAPL": "AAPL"}
+    fake = FakeHistorical(frames=frames)
+
+    ph.pull(fake, plan, out, snap_hm="19:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader)
+
+    sidecar = out / "_absent" / "2026-07-03.json"
+    assert not sidecar.exists()
+
+
+def test_force_sidecar_preserves_entries_for_symbols_not_requested_this_round(tmp_path):
+    """Important-4 regression. A prior sidecar claims {B, C} absent. A --force
+    pull this round requests only {A, B} -- C is NOT part of this invocation
+    (e.g. the cap-degrade filter dropped it before pull() ever saw it). The
+    rewritten sidecar must re-confirm B (still absent) but leave C's record
+    completely untouched: this call never re-checked C, so force must not
+    erase that memory (which would re-queue -- and re-bill -- C later)."""
+    out = tmp_path / "hive"
+    absent_dir = out / "_absent"
+    absent_dir.mkdir(parents=True)
+    (absent_dir / "2026-07-20.json").write_text(json.dumps(
+        {"minute_utc": "19:55", "symbols": ["B", "C"], "asof": "2026-07-20T00:00:00+00:00"}
+    ))
+    plan = {"2026-07-20": ["A", "B"]}  # C is NOT requested this round
+    frames = {"2026-07-20": _raw_df(["A"])}  # B still absent; A has data
+    root_to_sym = {"A": "A", "B": "B", "C": "C"}
+    fake = FakeHistorical(frames=frames)
+
+    ph.pull(fake, plan, out, snap_hm="19:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, force=True)
+
+    sidecar = out / "_absent" / "2026-07-20.json"
+    data = json.loads(sidecar.read_text())
+    assert set(data["symbols"]) == {"B", "C"}  # B re-confirmed; C preserved untouched
