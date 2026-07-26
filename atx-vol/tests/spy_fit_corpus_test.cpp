@@ -357,8 +357,9 @@ TEST(SpyFitCorpus, G1ZeroDteSessionSweepIngestsFitsAndTMonotone) {
       }
     }
     ASSERT_NE(zdte, nullptr) << "0DTE (2026-07-17) expiry not ingested";
-    const double expected_T = time_to_expiry_years(iso_to_ns(s.snapshot), settle, TimeSpec{});
-    EXPECT_DOUBLE_EQ(zdte->T, expected_T);
+    const auto expected_T = time_to_expiry_years(iso_to_ns(s.snapshot), settle, TimeSpec{});
+    ASSERT_TRUE(expected_T.has_value()) << expected_T.error().to_string();
+    EXPECT_DOUBLE_EQ(zdte->T, *expected_T);
     EXPECT_GT(zdte->T, 0.0);
     EXPECT_NEAR(zdte->T, s.manifest_T, 5.0e-6) << "0DTE T vs manifest";
     EXPECT_GT(zdte->strikes.size(), std::size_t{50}) << "front chain should be liquid";

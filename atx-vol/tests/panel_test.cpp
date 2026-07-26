@@ -297,10 +297,11 @@ TEST(Panel, ChainCarriesVolTimeT) {
 
   const std::int64_t now_ns = iso_to_ns(f.snapshot_iso);
   const std::int64_t expiry_ns = iso_to_ns(row.expiry_iso);
-  const double expected_vol_T =
+  const auto expected_vol_T =
       vol_time_years(now_ns, expiry_ns, VolTimeParams{}, VolTimeCalendar::us_default());
-  EXPECT_GT(expected_vol_T, 0.0);
-  EXPECT_DOUBLE_EQ(c.T, expected_vol_T);
+  ASSERT_TRUE(expected_vol_T.has_value()) << expected_vol_T.error().to_string();
+  EXPECT_GT(*expected_vol_T, 0.0);
+  EXPECT_DOUBLE_EQ(c.T, *expected_vol_T);
 
   const double calendar_T = year_fraction(f.snapshot_iso, row.expiry_iso);
   EXPECT_LT(c.T, calendar_T);

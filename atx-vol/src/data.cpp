@@ -253,7 +253,14 @@ double year_fraction(std::string_view from_iso, std::string_view to_iso) noexcep
   // Delegates the actual arithmetic to time_to_expiry_years' default (Calendar365)
   // path so there is exactly one copy of the calendar-year constant/expression in
   // the codebase (vol_time.hpp kCalendarYearNs) -- see that header's doc.
-  return time_to_expiry_years(from_ns, to_ns, TimeSpec{});
+  //
+  // `TimeSpec{}` is Calendar365 STATICALLY, and that branch reads no calendar,
+  // so the vol-time coverage error (vol_time.hpp) is unreachable from here:
+  // `value_or` makes this a total function without discarding any reachable
+  // error. It cannot become reachable silently either -- routing this legacy
+  // ISO entry point through VolTime would mean passing a non-default spec,
+  // which no caller can do (the parameter list is two ISO strings).
+  return time_to_expiry_years(from_ns, to_ns, TimeSpec{}).value_or(kNaN);
 }
 
 std::int64_t expiry_instant_ns(std::string_view expiry_iso, SettlementSession settle) noexcept {
@@ -471,7 +478,10 @@ Result<Uid> data_install(Universe &u, const QuoteFrame &frame) {
     if (!parse_iso_ns(frame.snapshot_iso, snapshot_ns)) {
       return Err(ErrorCode::InvalidArgument, "data_install: bad snapshot timestamp");
     }
-    const double T = time_to_expiry_years(snapshot_ns, expiry_ns, frame.time);
+    // Propagates the VolTime coverage error (vol_time.hpp): a frame whose
+    // snapshot/expiry pair falls outside the calendar's covered window fails
+    // the install rather than installing a silently-wrong Chain::T.
+    ATX_TRY(const double T, time_to_expiry_years(snapshot_ns, expiry_ns, frame.time));
     if (!std::isfinite(T)) {
       return Err(ErrorCode::InvalidArgument, "data_install: bad year-fraction");
     }

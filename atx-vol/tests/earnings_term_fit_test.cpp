@@ -120,9 +120,10 @@ TEST(SrTenorGrid, AdvanceTradingDays_ZeroIsNoOp) {
 
 TEST(SrTenorGrid, TenorYears_252TdApproxOneYear) {
   const std::int64_t now = ns_utc(2026, 2, 13, 16, 0);
-  const double y = tenor_years(now, 252, TimeSpec{}); // Calendar365 default
-  EXPECT_GT(y, 0.95);
-  EXPECT_LT(y, 1.05);
+  const auto y = tenor_years(now, 252, TimeSpec{}); // Calendar365 default
+  ASSERT_TRUE(y.has_value()) << y.error().to_string();
+  EXPECT_GT(*y, 0.95);
+  EXPECT_LT(*y, 1.05);
 }
 
 TEST(SrTenorGrid, TenorYears_ComposesAdvanceAndTimeToExpiry) {
@@ -132,7 +133,11 @@ TEST(SrTenorGrid, TenorYears_ComposesAdvanceAndTimeToExpiry) {
   const std::int64_t now = ns_utc(2026, 2, 13, 16, 0);
   const TimeSpec spec{};
   const std::int64_t expiry = advance_trading_days(now, 21, VolTimeCalendar::us_default());
-  EXPECT_DOUBLE_EQ(tenor_years(now, 21, spec), time_to_expiry_years(now, expiry, spec));
+  const auto composed = tenor_years(now, 21, spec);
+  const auto direct = time_to_expiry_years(now, expiry, spec);
+  ASSERT_TRUE(composed.has_value()) << composed.error().to_string();
+  ASSERT_TRUE(direct.has_value()) << direct.error().to_string();
+  EXPECT_DOUBLE_EQ(*composed, *direct);
 }
 
 // ── fit_term_curve_for_emove / term_curve_value (Task 3) ───────────────────

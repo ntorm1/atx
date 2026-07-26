@@ -86,11 +86,19 @@ struct SrTenorGrid {
 // horizon spans (which varies with how many weekends/holidays it crosses),
 // then whatever convention (Calendar365 or VolTime) `spec` selects.
 //
+// Returns `Result<double>` purely to PROPAGATE `time_to_expiry_years`'s
+// fail-closed coverage error (vol_time.hpp): the long end of the grid is 504
+// trading days (~2 years), so a `VolTime` spec anchored late in the default
+// calendar's 2024-2028 window resolves an expiry beyond it. Swallowing that
+// into a NaN would poison the censored-term fit downstream with no signal.
+//
 // @param now_ns          evaluation instant, epoch nanoseconds (UTC)
 // @param n_trading_days  tenor horizon, NYSE trading days (>= 0)
 // @param spec            governing time convention (default: Calendar365)
-// @return                year-fraction to the tenor's expiry instant
-[[nodiscard]] double tenor_years(std::int64_t now_ns, int n_trading_days,
-                                 const TimeSpec& spec) noexcept;
+// @return                year-fraction to the tenor's expiry instant, or
+//                        `ErrorCode::OutOfRange` when `spec` is `VolTime` and
+//                        the resolved horizon leaves the calendar's window
+[[nodiscard]] Result<double> tenor_years(std::int64_t now_ns, int n_trading_days,
+                                         const TimeSpec& spec);
 
 }  // namespace atx::vol

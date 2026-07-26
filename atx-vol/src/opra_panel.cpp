@@ -300,8 +300,12 @@ template <typename RateFn>
     (void)strikes;
     // TRUE 16:00 ET PM-settled expiry instant (OPRA equity/ETF universe), so the
     // front-expiry PCP back-out discounts at the same intraday T data_install uses.
-    const double t_front =
-        time_to_expiry_years(snapshot_ns, expiry_instant_ns(expiry, SettlementSession::Pm), time);
+    // A VolTime coverage failure (vol_time.hpp) aborts the whole spot
+    // implication -- skipping the expiry instead would quietly pick a different,
+    // farther-dated reference and report a spot the caller never asked for.
+    ATX_TRY(const double t_front,
+            time_to_expiry_years(snapshot_ns, expiry_instant_ns(expiry, SettlementSession::Pm),
+                                 time));
     if (!(t_front > kMinSpotT)) {
       continue;  // 0DTE / same-week: too ill-conditioned for a PCP spot back-out
     }
@@ -326,8 +330,9 @@ template <typename RateFn>
     (void)strikes;
     // TRUE 16:00 ET PM-settled expiry instant (OPRA equity/ETF universe), so the
     // front-expiry PCP back-out discounts at the same intraday T data_install uses.
-    const double t_front =
-        time_to_expiry_years(snapshot_ns, expiry_instant_ns(expiry, SettlementSession::Pm), time);
+    ATX_TRY(const double t_front,
+            time_to_expiry_years(snapshot_ns, expiry_instant_ns(expiry, SettlementSession::Pm),
+                                 time));
     if (!(t_front > kMinSpotTFallback)) {
       continue;  // sub-1-day: PCP forward back-out too ill-conditioned even here
     }
@@ -607,7 +612,12 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
     // which is a tradeable forward node; only after the 16:00 ET settle does T go
     // non-positive and the contract drop. (Previously the midnight-UTC parse made
     // every same-day expiry T <= 0 and hard-dropped the highest-volume segment.)
-    if (!(time_to_expiry_years(snapshot_iso_ns, expiry_instant, spec.time) > 0.0)) {
+    // A VolTime coverage failure (vol_time.hpp) is NOT a row-level drop: it
+    // means the loader cannot decide whether this contract is live, so the load
+    // fails rather than silently shrinking the board.
+    ATX_TRY(const double t_row,
+            time_to_expiry_years(snapshot_iso_ns, expiry_instant, spec.time));
+    if (!(t_row > 0.0)) {
       ++n_dropped;
       continue;
     }
@@ -767,7 +777,7 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
     for (QuoteRow& row : frame.rows) {
       // Use the row's TRUE stamped expiry instant (16:00 ET), so the term-curve
       // rate is queried at the same T `data_install` will assign to Chain::T.
-      const double T = time_to_expiry_years(snapshot_iso_ns, row.expiry_ns, spec.time);
+      ATX_TRY(const double T, time_to_expiry_years(snapshot_iso_ns, row.expiry_ns, spec.time));
       if (std::isfinite(T) && T > 0.0) {
         row.rate_source = rate_at(T);
       }

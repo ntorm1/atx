@@ -53,7 +53,7 @@ std::int64_t advance_trading_days(std::int64_t now_ns, int n,
   return day * kNsPerDay + tod;
 }
 
-double tenor_years(std::int64_t now_ns, int n_trading_days, const TimeSpec& spec) noexcept {
+Result<double> tenor_years(std::int64_t now_ns, int n_trading_days, const TimeSpec& spec) {
   const std::int64_t expiry_ns =
       advance_trading_days(now_ns, n_trading_days, VolTimeCalendar::us_default());
   return time_to_expiry_years(now_ns, expiry_ns, spec);

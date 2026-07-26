@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <limits>
 #include <random>
 #include <string>
 
@@ -56,6 +57,20 @@ std::int64_t ns_utc(int y, unsigned m, unsigned d, int hour, int minute) {
       .unix_nanos();
 }
 
+// Days-since-epoch of a civil date, via the same already-validated atx-core UTC
+// constructor `ns_utc` uses (independent of vol_time's internal civil-date math).
+std::int32_t day_utc(int y, unsigned m, unsigned d) {
+  return static_cast<std::int32_t>(ns_utc(y, m, d, 0, 0) / kDayNs);
+}
+
+// Unwraps a vol-time clock Result in the tests that assert a NUMBER: a
+// fail-closed coverage error here is a test failure, never a silent sentinel.
+double ok(const atx::vol::Result<double>& r) {
+  EXPECT_TRUE(r.has_value()) << "vol-time clock failed: "
+                             << (r.has_value() ? std::string{} : r.error().to_string());
+  return r.has_value() ? *r : std::numeric_limits<double>::quiet_NaN();
+}
+
 // ── vol_time_years ───────────────────────────────────────────────────────
 
 // Anchor: Wed 2026-07-08 (regular trading day, EDT, UTC-4).
@@ -66,7 +81,7 @@ TEST(VolTime, FullTradingDayAtAlphaOne) {
   // Wed 2026-07-08 00:00 ET -> Thu 2026-07-09 00:00 ET covers one full session.
   const auto t0 = ns_utc(2026, 7, 8, 4, 0);  // 00:00 EDT
   const auto t1 = t0 + kDayNs;
-  EXPECT_NEAR(vol_time_years(t0, t1, p, VolTimeCalendar::us_default()), 7.5 / 1890.0,
+  EXPECT_NEAR(ok(vol_time_years(t0, t1, p, VolTimeCalendar::us_default())), 7.5 / 1890.0,
               1e-12);  // == 1/252
 }
 
@@ -74,7 +89,7 @@ TEST(VolTime, WeekendIsPureNonTrading) {
   VolTimeParams p;  // alpha 0.7
   const auto sat0 = ns_utc(2026, 7, 11, 4, 0);  // Sat 00:00 EDT
   const auto mon0 = sat0 + 2 * kDayNs;          // Mon 00:00 EDT
-  EXPECT_NEAR(vol_time_years(sat0, mon0, p, VolTimeCalendar::us_default()),
+  EXPECT_NEAR(ok(vol_time_years(sat0, mon0, p, VolTimeCalendar::us_default())),
               48.0 * 0.3 / 6870.0, 1e-12);
 }
 
@@ -83,7 +98,7 @@ TEST(VolTime, JulyFourthHolidayHasNoTradingHours) {
   VolTimeParams p;
   p.alpha = 1.0;
   const auto t0 = ns_utc(2026, 7, 3, 4, 0);
-  EXPECT_NEAR(vol_time_years(t0, t0 + kDayNs, p, VolTimeCalendar::us_default()), 0.0,
+  EXPECT_NEAR(ok(vol_time_years(t0, t0 + kDayNs, p, VolTimeCalendar::us_default())), 0.0,
               1e-15);
 }
 
@@ -91,7 +106,7 @@ TEST(VolTime, OneYearIsApproximatelyOne) {
   VolTimeParams p;
   const auto t0 = ns_utc(2026, 1, 2, 5, 0);
   const auto t1 = ns_utc(2027, 1, 2, 5, 0);
-  EXPECT_NEAR(vol_time_years(t0, t1, p, VolTimeCalendar::us_default()), 1.0, 0.02);
+  EXPECT_NEAR(ok(vol_time_years(t0, t1, p, VolTimeCalendar::us_default())), 1.0, 0.02);
 }
 
 TEST(VolTime, MonotoneNonIncreasingAsNowAdvances) {
@@ -109,10 +124,10 @@ TEST(VolTime, MonotoneNonIncreasingAsNowAdvances) {
   // continuity check.
   const double step_budget = 2.0 * (p.alpha / p.trading_hours_per_year);
 
-  double prev = vol_time_years(now, expiry, p, cal);
+  double prev = ok(vol_time_years(now, expiry, p, cal));
   for (int i = 0; i < kSteps; ++i) {
     now += kHourNs;
-    const double cur = vol_time_years(now, expiry, p, cal);
+    const double cur = ok(vol_time_years(now, expiry, p, cal));
     EXPECT_LE(cur, prev + 1e-12) << "step " << i << ": T_vol increased as now advanced";
     EXPECT_NEAR(cur, prev, step_budget) << "step " << i << ": discontinuous jump";
     prev = cur;
@@ -124,9 +139,9 @@ TEST(VolTime, IntradayDecayFasterThanOvernight) {
   VolTimeParams p;
   const auto& cal = VolTimeCalendar::us_default();
   const auto mid_session = ns_utc(2026, 7, 8, 16, 0);  // 12:00 ET
-  const auto d_trading = vol_time_years(mid_session, mid_session + kHourNs, p, cal);
+  const auto d_trading = ok(vol_time_years(mid_session, mid_session + kHourNs, p, cal));
   const auto overnight = ns_utc(2026, 7, 9, 2, 0);  // 22:00 ET Wed
-  const auto d_night = vol_time_years(overnight, overnight + kHourNs, p, cal);
+  const auto d_night = ok(vol_time_years(overnight, overnight + kHourNs, p, cal));
   EXPECT_GT(d_trading, d_night);
   EXPECT_NEAR(d_trading, 0.7 / 1890.0, 1e-12);
   EXPECT_NEAR(d_night, 0.3 / 6870.0, 1e-12);
@@ -141,7 +156,7 @@ TEST(VolTime, WinterSessionUsesEstOffset) {
   p.alpha = 1.0;
   const auto t0 = ns_utc(2026, 1, 7, 18, 0);
   const auto t1 = ns_utc(2026, 1, 7, 19, 0);
-  EXPECT_NEAR(vol_time_years(t0, t1, p, VolTimeCalendar::us_default()), 1.0 / 1890.0,
+  EXPECT_NEAR(ok(vol_time_years(t0, t1, p, VolTimeCalendar::us_default())), 1.0 / 1890.0,
               1e-12);
 }
 
@@ -155,9 +170,9 @@ TEST(VolTime, DstSpringForwardWeekSessionsAreExact) {
   p.alpha = 1.0;
   const auto& cal = VolTimeCalendar::us_default();
   const auto fri_est = ns_utc(2026, 3, 6, 4, 0);  // 00:00 EST Fri (winter offset)
-  EXPECT_NEAR(trading_hours_between(fri_est, fri_est + kDayNs, p, cal), 7.5, 1e-9);
+  EXPECT_NEAR(ok(trading_hours_between(fri_est, fri_est + kDayNs, p, cal)), 7.5, 1e-9);
   const auto mon_edt = ns_utc(2026, 3, 9, 4, 0);  // 00:00 EDT Mon (summer offset)
-  EXPECT_NEAR(trading_hours_between(mon_edt, mon_edt + kDayNs, p, cal), 7.5, 1e-9);
+  EXPECT_NEAR(ok(trading_hours_between(mon_edt, mon_edt + kDayNs, p, cal)), 7.5, 1e-9);
 }
 
 TEST(VolTime, DstFallBackWeekSessionsAreExact) {
@@ -167,9 +182,9 @@ TEST(VolTime, DstFallBackWeekSessionsAreExact) {
   p.alpha = 1.0;
   const auto& cal = VolTimeCalendar::us_default();
   const auto fri_edt = ns_utc(2026, 10, 30, 4, 0);  // 00:00 EDT Fri (summer offset)
-  EXPECT_NEAR(trading_hours_between(fri_edt, fri_edt + kDayNs, p, cal), 7.5, 1e-9);
+  EXPECT_NEAR(ok(trading_hours_between(fri_edt, fri_edt + kDayNs, p, cal)), 7.5, 1e-9);
   const auto mon_est = ns_utc(2026, 11, 2, 5, 0);  // 00:00 EST Mon (winter offset)
-  EXPECT_NEAR(trading_hours_between(mon_est, mon_est + kDayNs, p, cal), 7.5, 1e-9);
+  EXPECT_NEAR(ok(trading_hours_between(mon_est, mon_est + kDayNs, p, cal)), 7.5, 1e-9);
 }
 
 // ── expiry-before/at-now (degenerate interval) ────────────────────────────
@@ -178,8 +193,8 @@ TEST(VolTime, VolTimeYearsIsZeroWhenExpiryNotAfterNow) {
   VolTimeParams p;
   const auto& cal = VolTimeCalendar::us_default();
   const auto t0 = ns_utc(2026, 7, 8, 13, 30);  // mid-session Wed
-  EXPECT_EQ(vol_time_years(t0, t0, p, cal), 0.0);       // expiry == now
-  EXPECT_EQ(vol_time_years(t0, t0 - kHourNs, p, cal), 0.0);  // expiry before now
+  EXPECT_EQ(ok(vol_time_years(t0, t0, p, cal)), 0.0);       // expiry == now
+  EXPECT_EQ(ok(vol_time_years(t0, t0 - kHourNs, p, cal)), 0.0);  // expiry before now
 }
 
 // ── trading_hours_between ─────────────────────────────────────────────────
@@ -188,15 +203,15 @@ TEST(VolTime, TradingHoursBetweenIsZeroWhenEndNotAfterStart) {
   VolTimeParams p;
   const auto& cal = VolTimeCalendar::us_default();
   const auto t0 = ns_utc(2026, 7, 8, 13, 30);
-  EXPECT_EQ(trading_hours_between(t0, t0, p, cal), 0.0);
-  EXPECT_EQ(trading_hours_between(t0, t0 - kHourNs, p, cal), 0.0);
+  EXPECT_EQ(ok(trading_hours_between(t0, t0, p, cal)), 0.0);
+  EXPECT_EQ(ok(trading_hours_between(t0, t0 - kHourNs, p, cal)), 0.0);
 }
 
 TEST(VolTime, TradingHoursBetweenFullSessionIsSpanHours) {
   VolTimeParams p;
   const auto& cal = VolTimeCalendar::us_default();
   const auto t0 = ns_utc(2026, 7, 8, 4, 0);  // Wed 00:00 EDT
-  EXPECT_NEAR(trading_hours_between(t0, t0 + kDayNs, p, cal), 7.5, 1e-9);
+  EXPECT_NEAR(ok(trading_hours_between(t0, t0 + kDayNs, p, cal)), 7.5, 1e-9);
 }
 
 // ── VolTimeCalendar ────────────────────────────────────────────────────────
@@ -220,13 +235,159 @@ TEST(VolTime, CalendarUnobservedNewYear2028IsNotAHoliday) {
 
 TEST(VolTime, CalendarConstructorSortsAndDedupes) {
   // Unsorted, duplicated input must still answer correctly.
-  const std::int32_t d1 = static_cast<std::int32_t>(ns_utc(2026, 3, 3, 0, 0) / kDayNs);
-  const std::int32_t d2 = static_cast<std::int32_t>(ns_utc(2026, 1, 1, 0, 0) / kDayNs);
-  VolTimeCalendar cal({d1, d2, d1, d2});
+  const std::int32_t d1 = day_utc(2026, 3, 3);
+  const std::int32_t d2 = day_utc(2026, 1, 1);
+  VolTimeCalendar cal({d1, d2, d1, d2}, day_utc(2026, 1, 1), day_utc(2026, 12, 31));
   EXPECT_TRUE(cal.is_holiday(d1));
   EXPECT_TRUE(cal.is_holiday(d2));
-  const std::int32_t other = static_cast<std::int32_t>(ns_utc(2026, 7, 8, 0, 0) / kDayNs);
+  const std::int32_t other = day_utc(2026, 7, 8);
   EXPECT_FALSE(cal.is_holiday(other));
+}
+
+// ── Coverage window: fail closed outside the table (plan item 1.10) ────────
+//
+// The defect: `us_default()` enumerates NYSE full closures for 2024-2028 ONLY,
+// yet was wired unconditionally into `time_to_expiry_years(VolTime)`. Outside
+// that span every real closure reads as "not in the table" -> a full 7.5h
+// trading session, silently, with no diagnostic — corrupting every vol-time
+// number derived from it. Memorial Day 2020 (Mon 2020-05-25, NYSE fully
+// closed) accrued exactly 7.5 trading hours before this guard existed.
+
+TEST(VolTime, CalendarDeclaresItsUsDefaultCoverageWindow) {
+  const auto& cal = VolTimeCalendar::us_default();
+  EXPECT_EQ(cal.first_covered_day(), day_utc(2024, 1, 1));
+  EXPECT_EQ(cal.last_covered_day(), day_utc(2028, 12, 31));
+  EXPECT_TRUE(cal.covers(day_utc(2024, 1, 1)));
+  EXPECT_TRUE(cal.covers(day_utc(2028, 12, 31)));
+  EXPECT_FALSE(cal.covers(day_utc(2023, 12, 31)));
+  EXPECT_FALSE(cal.covers(day_utc(2029, 1, 1)));
+}
+
+TEST(VolTime, TradingHoursBetweenBeforeWindowFailsClosed) {
+  VolTimeParams p;
+  p.alpha = 1.0;
+  // Mon 2020-05-25 = Memorial Day, a full NYSE closure the 2024-2028 table
+  // cannot see. Pre-fix this returned 7.5 trading hours.
+  const auto t0 = ns_utc(2020, 5, 25, 4, 0);  // 00:00 EDT
+  const auto res = trading_hours_between(t0, t0 + kDayNs, p, VolTimeCalendar::us_default());
+  ASSERT_FALSE(res.has_value()) << "silently accrued " << *res << " trading hours";
+  EXPECT_EQ(res.error().code(), ErrorCode::OutOfRange);
+}
+
+TEST(VolTime, TradingHoursBetweenAfterWindowFailsClosed) {
+  VolTimeParams p;
+  const auto t0 = ns_utc(2029, 1, 2, 4, 0);
+  const auto res = trading_hours_between(t0, t0 + kDayNs, p, VolTimeCalendar::us_default());
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::OutOfRange);
+}
+
+TEST(VolTime, VolTimeYearsStraddlingWindowEndFailsClosed) {
+  // Starts inside the window, ends past it: the uncovered tail is exactly the
+  // part that would be silently credited, so the whole query must fail.
+  VolTimeParams p;
+  const auto now = ns_utc(2028, 12, 20, 15, 0);
+  const auto expiry = ns_utc(2029, 1, 19, 21, 0);
+  const auto res = vol_time_years(now, expiry, p, VolTimeCalendar::us_default());
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::OutOfRange);
+}
+
+TEST(VolTime, VolTimeYearsStraddlingWindowStartFailsClosed) {
+  VolTimeParams p;
+  const auto now = ns_utc(2023, 12, 20, 15, 0);
+  const auto expiry = ns_utc(2024, 1, 19, 21, 0);
+  const auto res = vol_time_years(now, expiry, p, VolTimeCalendar::us_default());
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::OutOfRange);
+}
+
+TEST(VolTime, VolTimeYearsAtWindowBoundaryDaysSucceeds) {
+  // The window is INCLUSIVE on both ends: an interval that stays within
+  // [2024-01-01, 2028-12-31] is answerable and must not be rejected.
+  VolTimeParams p;
+  const auto& cal = VolTimeCalendar::us_default();
+  const auto first_day = ns_utc(2024, 1, 1, 0, 0);
+  const auto res_first = vol_time_years(first_day, first_day + kHourNs, p, cal);
+  ASSERT_TRUE(res_first.has_value()) << res_first.error().to_string();
+
+  // Last covered day, ending just before midnight UTC on 2028-12-31.
+  const auto last_day = ns_utc(2028, 12, 31, 22, 0);
+  const auto res_last = vol_time_years(last_day, last_day + kHourNs, p, cal);
+  ASSERT_TRUE(res_last.has_value()) << res_last.error().to_string();
+
+  // One nanosecond past the last covered day flips it closed.
+  const auto past_end = ns_utc(2029, 1, 1, 0, 0);
+  EXPECT_FALSE(vol_time_years(last_day, past_end + 1, p, cal).has_value());
+}
+
+TEST(VolTime, DegenerateIntervalOutsideWindowStillReturnsZero) {
+  // `end <= start` reads no calendar day at all, so it stays answerable
+  // regardless of coverage — this is what keeps an already-expired contract on
+  // a pre-2024 fixture a plain T <= 0, not a hard error.
+  VolTimeParams p;
+  const auto& cal = VolTimeCalendar::us_default();
+  const auto t0 = ns_utc(2019, 6, 3, 14, 0);
+  EXPECT_EQ(ok(vol_time_years(t0, t0, p, cal)), 0.0);
+  EXPECT_EQ(ok(vol_time_years(t0, t0 - kHourNs, p, cal)), 0.0);
+  EXPECT_EQ(ok(trading_hours_between(t0, t0, p, cal)), 0.0);
+}
+
+TEST(VolTime, TimeToExpiryVolTimeOutsideWindowFailsClosed) {
+  // The production entry point (`time_to_expiry_years`, wired unconditionally
+  // to `us_default()`) propagates the coverage error rather than handing a
+  // caller a silently-wrong T.
+  TimeSpec spec;
+  spec.convention = TimeConvention::VolTime;
+  const auto before = time_to_expiry_years(ns_utc(2021, 3, 1, 15, 0), ns_utc(2021, 4, 1, 20, 0),
+                                           spec);
+  ASSERT_FALSE(before.has_value());
+  EXPECT_EQ(before.error().code(), ErrorCode::OutOfRange);
+
+  const auto after = time_to_expiry_years(ns_utc(2030, 3, 1, 15, 0), ns_utc(2030, 4, 1, 20, 0),
+                                          spec);
+  ASSERT_FALSE(after.has_value());
+  EXPECT_EQ(after.error().code(), ErrorCode::OutOfRange);
+}
+
+TEST(VolTime, TimeToExpiryCalendar365OutsideWindowIsUnaffected) {
+  // Calendar365 reads no calendar, so the coverage guard must not touch it:
+  // the whole historical fit/serve/backtest corpus rides this branch and every
+  // pre-2024 / post-2028 fixture in it must keep working, bit-for-bit.
+  const auto from = ns_utc(1998, 7, 2, 13, 30);
+  const auto to = ns_utc(2031, 9, 19, 20, 0);
+  const auto res = time_to_expiry_years(from, to, TimeSpec{});
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  EXPECT_EQ(*res, static_cast<double>(to - from) / atx::vol::kCalendarYearNs);
+}
+
+TEST(VolTime, InWindowVolTimeTIsUnchangedToTheLastBit) {
+  // The coverage guard is a PRE-LOOP gate: an answerable in-window query must
+  // come back bit-for-bit what it always did. Pinned literal (not a tolerance)
+  // over a 6.5-week span that crosses 6 weekends and no closure: Wed 2026-07-08
+  // 09:30 ET -> Fri 2026-08-21 16:00 ET, alpha = 0.7 default.
+  VolTimeParams p;
+  const auto now = ns_utc(2026, 7, 8, 13, 30);     // 09:30 EDT
+  const auto expiry = ns_utc(2026, 8, 21, 20, 0);  // 16:00 EDT
+  const auto res = vol_time_years(now, expiry, p, VolTimeCalendar::us_default());
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  EXPECT_EQ(*res, 0.12692948406922205);
+}
+
+TEST(VolTime, CustomCalendarWindowIsHonoredIndependentlyOfUsDefault) {
+  // The window travels with the calendar, not with a global constant: a
+  // caller-supplied table declares its own span and is trusted exactly there.
+  VolTimeParams p;
+  p.alpha = 1.0;
+  // 2020 table covering June 2020 only, with Fri 2020-06-19 marked closed.
+  VolTimeCalendar cal({day_utc(2020, 6, 19)}, day_utc(2020, 6, 1), day_utc(2020, 6, 30));
+  const auto closed = ns_utc(2020, 6, 19, 4, 0);
+  EXPECT_NEAR(ok(trading_hours_between(closed, closed + kDayNs, p, cal)), 0.0, 1e-9);
+  const auto open_day = ns_utc(2020, 6, 18, 4, 0);
+  EXPECT_NEAR(ok(trading_hours_between(open_day, open_day + kDayNs, p, cal)), 7.5, 1e-9);
+  // One day past its declared window: unknown, therefore closed to queries.
+  const auto outside = ns_utc(2020, 7, 1, 4, 0);
+  EXPECT_FALSE(trading_hours_between(outside, outside + kDayNs, p, cal).has_value());
 }
 
 // ── time_to_expiry_years / TimeSpec (production T convention, I3) ─────────
@@ -263,8 +424,9 @@ TEST(VolTime, TimeToExpiryDefaultBitIdenticalToYearFraction) {
     ASSERT_NE(to_ns, std::int64_t{0}) << "bad fixture ISO: " << to_iso;
 
     const double expected = year_fraction(from_iso, to_iso);
-    const double actual = time_to_expiry_years(from_ns, to_ns, TimeSpec{});
-    EXPECT_EQ(actual, expected) << "from=" << from_iso << " to=" << to_iso;
+    const auto actual = time_to_expiry_years(from_ns, to_ns, TimeSpec{});
+    ASSERT_TRUE(actual.has_value()) << actual.error().to_string();
+    EXPECT_EQ(*actual, expected) << "from=" << from_iso << " to=" << to_iso;
   }
 }
 
