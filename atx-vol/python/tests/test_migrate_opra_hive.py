@@ -17,6 +17,7 @@ import sys
 
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 import pytest
 
@@ -59,6 +60,15 @@ def _write_v1(root: pathlib.Path, underlying: str, date: str, symbols: list[str]
 
 def _dst_file(dst: pathlib.Path, date: str) -> pathlib.Path:
     return dst / f"date={date}" / "data.parquet"
+
+
+def _rows_for(table: pa.Table, underlying: str) -> set:
+    """All rows for one ``underlying`` as a set of value-tuples, so equality is
+    independent of row order (a global re-sort is expected) but still catches
+    any change to a single cell -- true byte-for-byte content survival."""
+    t = table.filter(pc.equal(table.column("underlying"), underlying))
+    cols = t.column_names
+    return {tuple(t.column(c)[i].as_py() for c in cols) for i in range(t.num_rows)}
 
 
 D1, D2, D3 = "2026-07-01", "2026-07-02", "2026-07-03"
@@ -347,3 +357,191 @@ def test_footer_underlyings_no_stats_falls_back_to_full_read(tmp_path):
     assert st is None or not st.has_min_max  # precondition: no usable stats
 
     assert mig._footer_underlyings(path) == {"AAA", "ZZZ"}
+
+
+# ── R2-a regression: partial-overlap union, not a destructive rebuild ──────────
+def test_partial_overlap_union_preserves_destination_only_underlying(tmp_path):
+    """The bug the reviewer found (C-01): destination holds an underlying the
+    v1 source does NOT have (ZZZ -- e.g. paid Databento data added after
+    migration), and the v1 source separately holds an underlying the
+    destination lacks (MMM). The old code's superset check ({AAA} !>=
+    {AAA, MMM}) fails, so it fell through to ``_merge_date``, which rebuilds
+    the date file from the v1 source ALONE and clobbers the destination --
+    ZZZ vanishes. The fix must produce the UNION {AAA, MMM, ZZZ}, and ZZZ's
+    original rows must survive BYTE-FOR-BYTE (not merely "the underlying
+    name is still present somewhere") -- proving nothing rebuilt ZZZ from
+    scratch."""
+    src, dst = tmp_path / "v1", tmp_path / "v2"
+    _write_v1(src, "AAA", D1, ["AAA_C1"])
+    _write_v1(src, "MMM", D1, ["MMM_C1"])
+    # ZZZ deliberately absent from v1 -- paid-only, must never be rebuilt away.
+
+    dst_f = _dst_file(dst, D1)
+    dest_before = pa.concat_tables(
+        [_v1_table("AAA", ["AAA_C1"]), _v1_table("ZZZ", ["ZZZ_C1", "ZZZ_C2"])]
+    ).cast(mig.CANONICAL_SCHEMA)
+    mig._write_atomic(dest_before, dst_f)
+    zzz_rows_before = _rows_for(pq.read_table(dst_f), "ZZZ")
+
+    stats = mig.migrate(src, dst)
+
+    assert stats.n_merged == 1
+    assert stats.n_written == 0
+    assert stats.n_errors == 0
+    assert stats.results[0].status == "merged"
+
+    result = pq.read_table(dst_f)
+    assert set(result.column("underlying").to_pylist()) == {"AAA", "MMM", "ZZZ"}
+    assert _rows_for(result, "ZZZ") == zzz_rows_before  # byte-for-byte survival
+
+
+def test_overlap_precedence_destination_wins_on_conflicting_content(tmp_path):
+    """When the SAME underlying exists in both, with genuinely different row
+    content, the destination's rows must win -- it may hold newer, paid data;
+    the v1 source is by definition the older tree."""
+    src, dst = tmp_path / "v1", tmp_path / "v2"
+    # AAA in both places but with DIFFERENT symbols, so a pass here can only
+    # mean "destination's content was kept", not a coincidence.
+    _write_v1(src, "AAA", D1, ["AAA_SRC_ONLY"])
+    _write_v1(src, "MMM", D1, ["MMM_C1"])  # forces the union path (not a superset)
+
+    dst_f = _dst_file(dst, D1)
+    dest_before = pa.concat_tables(
+        [_v1_table("AAA", ["AAA_DST_ONLY"]), _v1_table("ZZZ", ["ZZZ_C1"])]
+    ).cast(mig.CANONICAL_SCHEMA)
+    mig._write_atomic(dest_before, dst_f)
+
+    stats = mig.migrate(src, dst)
+
+    assert stats.results[0].status == "merged"
+    result = pq.read_table(dst_f)
+    assert set(result.column("underlying").to_pylist()) == {"AAA", "MMM", "ZZZ"}
+    aaa_syms = result.filter(pc.equal(result.column("underlying"), "AAA")) \
+        .column("symbol").to_pylist()
+    assert aaa_syms == ["AAA_DST_ONLY"]  # destination's row kept, source's dropped
+
+
+def test_unreadable_destination_is_refused_not_rewritten(tmp_path):
+    """'I cannot read the destination' must never be treated as license to
+    overwrite it -- that is the case where overwriting is least defensible."""
+    src, dst = tmp_path / "v1", tmp_path / "v2"
+    _write_v1(src, "AAA", D1, ["AAA_C1"])
+
+    dst_f = _dst_file(dst, D1)
+    dst_f.parent.mkdir(parents=True, exist_ok=True)
+    dst_f.write_bytes(b"not a parquet file at all")
+    before = dst_f.read_bytes()
+
+    stats = mig.migrate(src, dst)
+
+    assert stats.n_errors == 1
+    assert stats.n_written == 0
+    assert stats.n_merged == 0
+    assert stats.results[0].status == "error"
+    assert str(dst_f) in stats.results[0].detail
+    assert dst_f.read_bytes() == before  # byte-for-byte untouched
+
+
+def test_destination_schema_drift_is_error_not_overwrite(tmp_path):
+    """Schema drift confined to a non-``underlying`` column is invisible to the
+    cheap footer-only scan (which only inspects ``underlying``) and is only
+    caught once the union merge fully validates the destination -- and when it
+    is caught, the date must be refused, not silently overwritten."""
+    src, dst = tmp_path / "v1", tmp_path / "v2"
+    _write_v1(src, "AAA", D1, ["AAA_C1"])
+    _write_v1(src, "MMM", D1, ["MMM_C1"])  # forces the union path (not a superset)
+
+    dst_f = _dst_file(dst, D1)
+    dst_f.parent.mkdir(parents=True, exist_ok=True)
+    bad = pa.table(
+        {
+            "ts": pa.array([TS], pa.timestamp("ns")),
+            "underlying": pa.array(["AAA"], pa.string()),
+            "symbol": pa.array(["AAA_C1"], pa.string()),
+            "instrument_id": pa.array([1], pa.int64()),
+            "bid_px": pa.array([1], pa.int32()),  # <- drift (canonical is int64)
+            "ask_px": pa.array([1], pa.int64()),
+            "bid_sz": pa.array([1], pa.int64()),
+            "ask_sz": pa.array([1], pa.int64()),
+        }
+    )
+    pq.write_table(bad, dst_f)
+    before = dst_f.read_bytes()
+
+    stats = mig.migrate(src, dst)
+
+    assert stats.n_errors == 1
+    assert stats.results[0].status == "error"
+    assert "schema" in stats.results[0].detail.lower()
+    assert dst_f.read_bytes() == before
+
+
+def test_dry_run_classifies_without_writing_all_new_shapes(tmp_path):
+    """``--dry-run`` must report the same classification as a real run for
+    every new outcome, and must never write in any of them."""
+    # Shape: partial overlap -> would "merge".
+    src1, dst1 = tmp_path / "v1a", tmp_path / "v2a"
+    _write_v1(src1, "AAA", D1, ["AAA_C1"])
+    _write_v1(src1, "MMM", D1, ["MMM_C1"])
+    dst_f1 = _dst_file(dst1, D1)
+    mig._write_atomic(
+        pa.concat_tables(
+            [_v1_table("AAA", ["AAA_C1"]), _v1_table("ZZZ", ["ZZZ_C1"])]
+        ).cast(mig.CANONICAL_SCHEMA),
+        dst_f1,
+    )
+    before1 = dst_f1.read_bytes()
+    stats1 = mig.migrate(src1, dst1, dry_run=True)
+    assert stats1.results[0].status == "planned_merge"
+    assert stats1.manifest_path is None
+    assert dst_f1.read_bytes() == before1
+
+    # Shape: unreadable destination -> would "error".
+    src2, dst2 = tmp_path / "v1b", tmp_path / "v2b"
+    _write_v1(src2, "AAA", D1, ["AAA_C1"])
+    dst_f2 = _dst_file(dst2, D1)
+    dst_f2.parent.mkdir(parents=True, exist_ok=True)
+    dst_f2.write_bytes(b"garbage, not parquet")
+    before2 = dst_f2.read_bytes()
+    stats2 = mig.migrate(src2, dst2, dry_run=True)
+    assert stats2.results[0].status == "error"
+    assert dst_f2.read_bytes() == before2
+
+    # Shape: destination schema drift -> would "error", not a plan to merge.
+    src3, dst3 = tmp_path / "v1c", tmp_path / "v2c"
+    _write_v1(src3, "AAA", D1, ["AAA_C1"])
+    _write_v1(src3, "MMM", D1, ["MMM_C1"])
+    dst_f3 = _dst_file(dst3, D1)
+    dst_f3.parent.mkdir(parents=True, exist_ok=True)
+    bad = pa.table(
+        {
+            "ts": pa.array([TS], pa.timestamp("ns")),
+            "underlying": pa.array(["AAA"], pa.string()),
+            "symbol": pa.array(["AAA_C1"], pa.string()),
+            "instrument_id": pa.array([1], pa.int64()),
+            "bid_px": pa.array([1], pa.int32()),  # <- drift
+            "ask_px": pa.array([1], pa.int64()),
+            "bid_sz": pa.array([1], pa.int64()),
+            "ask_sz": pa.array([1], pa.int64()),
+        }
+    )
+    pq.write_table(bad, dst_f3)
+    before3 = dst_f3.read_bytes()
+    stats3 = mig.migrate(src3, dst3, dry_run=True)
+    assert stats3.results[0].status == "error"
+    assert dst_f3.read_bytes() == before3
+
+    # Shape: strict superset -> would still "skip" (unchanged behavior).
+    src4, dst4 = tmp_path / "v1d", tmp_path / "v2d"
+    _write_v1(src4, "AAA", D1, ["AAA_C1"])
+    dst_f4 = _dst_file(dst4, D1)
+    mig._write_atomic(
+        pa.concat_tables(
+            [_v1_table("AAA", ["AAA_C1"]), _v1_table("ZZZ", ["ZZZ_C1"])]
+        ).cast(mig.CANONICAL_SCHEMA),
+        dst_f4,
+    )
+    before4 = dst_f4.read_bytes()
+    stats4 = mig.migrate(src4, dst4, dry_run=True)
+    assert stats4.results[0].status == "skipped"
+    assert dst_f4.read_bytes() == before4
