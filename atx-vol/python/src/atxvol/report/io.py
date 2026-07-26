@@ -12,7 +12,12 @@ import numpy as np
 
 from .runarchive import BacktestSection, RunArchive, read_backtest_section
 
-__all__ = ["read_backtest_tsv", "read_backtest_archive", "read_kv_tsv"]
+__all__ = [
+    "read_backtest_tsv",
+    "read_backtest_archive",
+    "read_backtest_archive_result",
+    "read_kv_tsv",
+]
 
 # Columns `write_backtest_tsv` emits, in its order. Anything else in the file
 # (extra signal columns) is returned in the side dict rather than dropped. There
@@ -117,6 +122,45 @@ def read_backtest_archive(
         # no-ops (BufferError) and leaves the small mapping open for the process.
         archive.close()
     return result, meta, owned_extra
+
+
+def read_backtest_archive_result(
+    path: str, section: str = "backtest"
+) -> tuple["_av.BacktestResult", dict[str, str], dict[str, list[float]]]:
+    """Load a backtest section as a library ``BacktestResult``.
+
+    The true drop-in for :func:`read_backtest_tsv`: same ``(result, meta, extra)``
+    shape AND the same ``_av.BacktestResult`` type, so `_av.tearsheet` accepts it.
+    :func:`read_backtest_archive` returns a binding-free
+    :class:`runarchive.BacktestSection` instead, which `tearsheet` rejects — that
+    difference is why this wrapper exists rather than the report layer calling the
+    binding-free reader and folding metrics itself. **The fold stays the
+    library's.**
+
+    Kept separate from :func:`read_backtest_archive` on purpose: that reader's
+    binding-free-ness is a documented property (the archive is pure mmap+struct
+    Python, so it works before the extension is built). Only this function opts
+    into the binding, and only callers that need library metrics pay for it.
+
+    Column construction mirrors :func:`read_backtest_tsv` exactly — ``resize``
+    first so every consumer's row-count indexing holds, then per-series assignment,
+    then ``validate()``.
+    """
+    import atxvol as _av  # lazy, exactly as read_backtest_tsv does.
+
+    section_data, meta, extra = read_backtest_archive(path, section)
+
+    result = _av.BacktestResult()
+    result.resize(len(section_data.date))
+    result.date = list(section_data.date)
+    result.ts_ns = [int(v) for v in section_data.ts_ns]
+    for name in _SERIES:
+        values = section_data.series.get(name)
+        if values is not None:
+            setattr(result, name, [float(v) for v in values])
+    result.validate()
+
+    return result, meta, {name: [float(v) for v in arr] for name, arr in extra.items()}
 
 
 def read_kv_tsv(path: str) -> dict[str, str]:

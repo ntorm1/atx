@@ -29,7 +29,7 @@ from .charts import Series
 from .components import (
     Column, FacetGrid, Figure, Note, Prose, Report, Section, Stat, StatRow, Subhead, Table,
 )
-from .io import read_backtest_tsv, read_kv_tsv
+from .io import read_backtest_archive_result, read_kv_tsv
 
 # Attribution axes. Display order == palette slot order, which is the exact
 # arrangement the palette was validated in: permuting the two only weakens the
@@ -67,16 +67,39 @@ def _short(dates: Sequence[str]) -> list[str]:
     return [d[5:] if len(d) == 10 else d for d in dates]
 
 
-def build_report_from_run(run_dir: str, path: str, *, label: str = "") -> str:
-    """Render a `spy_dispersion_backtest` run directory into an HTML report."""
-    backtest = os.path.join(run_dir, "surface_backtest.tsv")
-    if not os.path.exists(backtest):
-        backtest = os.path.join(run_dir, "backtest.tsv")
-    result, meta, _extra = read_backtest_tsv(backtest)
+def build_report_from_run(run_dir: str, path: str, *, label: str = "",
+                          section: str = "backtest") -> str:
+    """Render a `spy_dispersion_backtest` run directory into an HTML report.
+
+    Reads the economics from the run's ``run.atxrun`` RunArchive. It used to read a
+    loose ``backtest.tsv`` / ``surface_backtest.tsv``, which the hard cutover to the
+    binary container deleted — so this function raised ``FileNotFoundError`` on
+    every post-cutover run directory. The archive counterpart existed and was
+    tested from the day of the cutover; only this wrapper was left pointing at the
+    dead format.
+
+    ``section`` selects which economics to render. The archive carries several
+    backtest-shaped sections — ``backtest`` (the listed run, the default),
+    ``projected_cold``, ``projected_nodiv`` — so the same run directory can produce
+    a report per route instead of only the listed one.
+
+    Authored inputs stayed text through the cutover, so ``run_spec.tsv`` is still
+    read from disk. ``backtest_counters.tsv`` did not survive it and has no archive
+    section, so the counters panel renders from whatever the archive ``meta``
+    carries; the file is still honoured when a pre-cutover run directory has one.
+    """
+    archive = os.path.join(run_dir, "run.atxrun")
+    if not os.path.exists(archive):
+        raise FileNotFoundError(
+            f"{archive}: no RunArchive in the run directory. Economic results live in "
+            "run.atxrun since the binary cutover; a run directory without one has not "
+            "had the backtest step executed."
+        )
+    result, meta, _extra = read_backtest_archive_result(archive, section)
 
     spec_path = os.path.join(run_dir, "run_spec.tsv")
     spec = read_kv_tsv(spec_path) if os.path.exists(spec_path) else {}
-    spec.update(meta)  # a PnL-track meta header wins over the run spec
+    spec.update(meta)  # the archive's meta section wins over the run spec
 
     counters_path = os.path.join(run_dir, "backtest_counters.tsv")
     counters = read_kv_tsv(counters_path) if os.path.exists(counters_path) else {}
