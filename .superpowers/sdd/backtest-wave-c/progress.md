@@ -3134,3 +3134,243 @@ bindings split, `atx-core` sqlite, `atx-db/`, `atx-kb/`, docs) was **never stage
 every commit this session used explicit paths.
 
 Status doc: `docs/superpowers/2026-07-25-atx-vol-backtest-sprint-status-3.md`
+
+---
+
+### RESUMED — 2026-07-26, user instruction "finish implementing this sprint end to end"
+
+HEAD `7bbd1bf`. T7 fix round 1 continuation dispatched (opus, background) against the ordered
+worklist at `task-7-fix1.md`: (1) I2 finish the `fread` dedupe + byte-identity gate + directory case,
+(2) **I6 cross-process hash stability, EMPIRICALLY** — three separate invocations, disagreement is a
+BLOCKED not a workaround — plus the hit/miss logging, (3) C1 the honest seam harness with the 730 MB
+slurp counted on BOTH sides, plus a separate in-process interleaved A/B of `fread` vs
+`istreambuf_iterator`, (4) I3/I4 measurement corrections, (5) I5 the ~730 MB write-side transient.
+Incremental commits mandated, one per item — the two commits that survived the previous stop are why.
+
+**Controller inspection of the in-flight tree before dispatch.** The stopped agent had got further
+than the ledger recorded: the +43 test lines are a written-but-never-compiled I6 test
+(`ContentHashAndAbiFoldAreStableAcrossProcesses`) pinning `content_hash == 0xbe2185a9042c2062` and
+`abi_fold == 0x3ab6dd71e67cd631`. **Its comment claims those values "were recorded from a DIFFERENT
+process invocation than the one that first computed them, then re-checked from a third." The code had
+never been built, so no invocation ever produced them.** Flagged to the fix agent as a claim to verify
+or replace, and the comment to be rewritten to whatever procedure actually gets run. Fifth instance
+this sprint of a written artifact asserting evidence that was never collected.
+
+**T7 fix round 1, items 1-2 CLOSED** (dispatched to sonnet after five consecutive 529s killed three
+opus agents; the mechanical + empirical half does not need the top tier):
+
+    60b4aff  I2 — the fread dedupe finished. detail::read_whole_file is now the ONE slurp, shared by
+             read_listed_definitions_file and read_listed_definitions_cached. Byte-identity gated
+             against an in-test istreambuf_iterator slurp of the same file; the directory ->
+             NotFound special case now exercised; repo swept for a third copy of the idiom.
+             Also fixed a live fixture-arithmetic bug found on the first real test run
+             (4096u*41u -> 4096u*42u).
+    123fb55  I6 — cross-process hash stability EMPIRICALLY CONFIRMED, and the definitions_cache
+             hit/miss phase added (count 1=hit, 0=miss, matching T8's specified shape).
+
+**I6 IS RESOLVED, NOT BLOCKED — P1 survives its worst hazard.** Three separate process invocations
+printed `content_hash = 0xbe2185a9042c2062  abi_fold = 0x3ab6dd71e67cd631` identically. So despite
+`hash.hpp:13-15` disclaiming cross-process stability, wyhash is in practice stable for this build, and
+the pin now makes any future regression a RED rather than an invisible permanent 100% miss. The
+disclaimer was worth taking seriously and is now worth pinning against.
+
+**CONTROLLER ERROR #7, mine.** I recorded that the in-flight I6 test's comment "claims evidence that
+was never collected", reasoning that code which had never been built could not have produced the two
+pinned hash values. The empirical run printed **exactly those two values**, and the sonnet agent's
+first build reported `ninja: no work to do` — so the stopped agent HAD compiled and run it, and simply
+never committed or reported it. My inference was wrong: the artifact was accurate and its evidence
+real, only unrecorded. The ledger entry above it stands as written; this corrects it. The general
+lesson survives (an unreported measurement is unverifiable), but I stated it as fabrication when it
+was not, which is a different and more serious charge.
+
+**A flagged discrepancy that resolved clean.** The agent reported the suite at 2098 ran vs the T7
+report's 2089 baseline, credited only +6 to its own work, and flagged the residual +3 as possibly
+unrelated concurrent work rather than absorbing it silently — correct instinct. Controller checked:
+`TEST(` count in `listed_definitions_cache_test.cpp` goes 5948772 -> **16**, 35e8e80 -> **17**,
+ca74f68 -> **19**, HEAD -> **25**. The +3 is this same fix round's own two earlier commits, which the
+agent had not credited because it compared against the pre-fix baseline. Fully accounted, nothing
+foreign. Suite now **2098 / 2051 / 44 / 3 / 7**, the 3 being the sanctioned REDs.
+
+Items 3-5 (C1 honest seam, I3/I4 corrections, I5 transient) dispatched to opus.
+
+**T7 fix round 1, items 3-5 CLOSED** — `e41525c` (tests + tests/CMakeLists.txt only; no production file
+touched). Dispatched to sonnet after opus 529'd a sixth time.
+
+The flawed `MeasureLoadPathOnARealDefinitionsFile` was DELETED — its `net_ratio` excluded the slurp
+from the denominator (C1) and its `net_ratio_no_fp` subtracted two independently noisy small terms
+(I4, the formula that printed `28.028x`). Three new measurements replace it.
+
+**THE HONEST SEAM NUMBER (C1), raw, 3 recorded reps + 1 printed discarded warm-up, interleaved:**
+
+    rep0 (DISCARDED) order=direct,hit,miss  t_direct=3907.700  t_hit=2940.351  t_miss=7587.929
+    rep1 (recorded)  order=hit,miss,direct  t_direct=3462.993  t_hit=2727.764  t_miss=6428.286
+    rep2 (recorded)  order=miss,direct,hit  t_direct=4554.831  t_hit=2314.432  t_miss=6748.527
+    rep3 (recorded)  order=direct,hit,miss  t_direct=3389.791  t_hit=2661.733  t_miss=6487.748
+
+    seam_ratio   (t_direct/t_hit)  = 1.270 / 1.968 / 1.274   median 1.274, sign 3/3
+    cold_penalty (t_miss/t_direct) = 1.856 / 1.482 / 1.914   median 1.856, sign 3/3
+
+Controller recomputed all six ratios from the raw numbers: every one matches to 3 dp. The discarded
+warm-up is PRINTED with its own ratios (1.329 / 1.942) rather than hidden — the I3 defect is not
+repeated. Note honestly that discarding rep0 did move `cold_penalty`'s upper bound from 1.942 to 1.914,
+i.e. very slightly in the cache's favour; the report discloses this rather than concealing it.
+
+**`fread` vs `istreambuf_iterator`, in-process and interleaved:** fread ~1953-2027 MB/s (median
+~2022) vs iterator ~117-120 MB/s (median ~119). **Sign 3/3, interval [16.69x, 16.95x].** This is the
+wave's real read-path win and it is already shipped in `60b4aff`. It also revises the original
+report's ~197 MB/s estimate for the iterator form downward by ~40%.
+
+**I5, peak working set, one process per scenario:** MISS/write **~2.95 GB**, HIT check=Off **~1.93 GB**,
+HIT check=On **~2.90 GB**. So `ca74f68` genuinely removed the read-side transient by default and the
+write side remains at full size. The agent's first attempt at this measured all three in one process
+and got identical numbers for all three — it caught its own error: `PeakWorkingSetSize` is a
+process-lifetime high-water mark and `EmptyWorkingSet` does not reset it. Recorded because it is the
+right kind of self-catch, and because the invalidated form would have looked like a clean result.
+
+**CONTROLLER OBSERVATION, handed to the re-review to verdict independently.** The report says
+"sign 3/3 above 1.0x" for both seam ratios. **At n=3 a one-sided sign test gives p = 1/8 = 0.125** —
+that is not significant, and the sprint's own rule is that weak gates must be labelled weak, not
+counted. Contrast T4, which reported sign 16/17, p~2.7e-4. The report discloses the rep count and why
+it is small (each rep moves ~1 GB of source plus a ~300 MB image) but does not label the resulting
+evidence as weak. The throughput measurement is different in kind and NOT weak — a 16.9x effect with a
+[16.69, 16.95] spread does not need many reps, because the effect swamps the noise by two orders of
+magnitude. The seam ratio, whose 3 reps span 1.270 to 1.968, is the one that is thin.
+
+T8 ruling deliberately HELD until the re-review confirms the arithmetic the decision rests on.
+
+### Task 7: fix round 1/5 (8 addressed, 0 open; commits 35e8e80..e41525c)
+### Task 7: complete (commits 5948772..e41525c, review clean)
+
+Re-review verdicted **all 8 findings ADDRESSED, no new Critical/Important breakage**: I1, the
+fingerprint ordering, I2, I6, C1, I3, I4, I5 (I5 measured rather than eliminated, which is the
+worklist's own stated fallback). It did not take the report on trust — it re-derived every ratio from
+the raw numbers, read `read_whole_file` line-by-line against the short-read / grew-file / empty /
+directory / `fclose`-failure paths, **independently reran the cross-process hash test in 3 fresh
+processes** and corroborated a third way (the real fixture's content hash matching the original Task 7
+report's separately-derived digest), and **re-ran all five env-gated measurements on a different,
+noisier box** — every sign count and direction reproduced, and the I5 transient deltas matched to ~1%
+including an exact 0.968 GB On-vs-Off match. Suite 2102 / 2051 / 48 / 3 / 7 confirmed exactly.
+
+It also raised the n=3 weakness independently, which is how that should surface — the controller had
+noticed it but handed it over as a neutral "verify the strength claims are labelled at their actual
+strength" rather than as a pre-judged finding. Logged as a labelling nit, not a correctness issue.
+
+---
+
+### TASK 8 / P1 ADOPTION — CONTROLLER RULING: BUILD IT, SHIP IT OFF BY DEFAULT
+
+Ruling recorded in full at `task-8-ruling.md`, handed to the implementer alongside the brief.
+
+**Both the implementer and the re-reviewer recommended against wiring the cache "as currently built."**
+The ruling is not an override of that; it is the work their caveat points at. Reasoning:
+
+*Against adoption as a default* — decisive, and accepted. The justification for P1's existence was
+`2.183x` and "~4x"; honestly measured it is a **median 1.274x on a hit at n=3, p=0.125 (weak)**, bought
+with a **~1.86x penalty on the populating run**, ~1 GB extra peak RSS (partly giving back the 991 MB
+Wave E T4 measured out), and an unbounded cache directory (M5, open). `fread` — no format, no key, no
+stale-serve surface — already shipped **~17x** on the same slurp and captured the recoverable win.
+
+*For building Task 8 anyway* — the brief's own first sentence: *"a cache that cannot be shown to reject
+a stale input is a liability, not an optimization."* The module is committed and tested but has **no
+staleness proof at the seam**, which is precisely that liability state. The five staleness cases are
+cheap unit tests and are worth having whether or not anyone enables the cache. And T8's brief already
+mandates default-disabled, so a correctly-built opt-in changes no existing invocation byte-for-byte —
+which makes the risk the two agents flagged conditional on a user opting in, not borne by everyone.
+
+Three obligations added: costs disclosed at the point of opt-in (`usage()` + header must state the
+slower populating run, the ~3 GB peak, and M5's unbounded growth); **the old headline may not be
+restated anywhere**, and any cited speedup must carry its penalty and its `p=0.125` beside it; Step 5's
+table is reframed as a disclosure rather than a bar to clear. Out of scope: an eviction policy, and
+enabling the cache by default anywhere including `parity_full_run.ps1`.
+
+The step that matters most is Step 2, the deliberately-weakened key — a claimed RED that was never
+observed at runtime does not count, and this sprint has four instances of a test structurally blind to
+the property it appeared to gate.
+
+### Task 8: implemented — commits e41525c..52db5a9, review dispatched
+
+    c0ee36a  five staleness cases + CacheHitEqualsFullParseExactly at the SEAM (Steps 1-2)  [1 file, +287]
+    52db5a9  --cache / ATX_VOL_CACHE wiring, default DISABLED, + cost disclosure in usage()
+             and the seam header (Step 3)  [2 files, +103/-18]
+
+Steps 4-6 needed no source change. Suite **2108 / 2057 / 48 / 3 / 7** — baseline +6 tests, zero
+regressions. Both byte-gate legs (cache-disabled and warm-cache) reproduced all seven T1 section
+hashes and both `final_nav` pins, with a negative control shown failing.
+
+**Step 2's weakened-key RED was genuinely observed at runtime**, which was the step the ruling called
+the one that mattered most. Key collapsed to `(source_size, format_version)`; the same-size mutation
+test FAILED with the stale table served; the cache filename itself showed `content_hash`,
+`parser_revision` and `abi_fold` reading as their zeroed constants — corroboration that makes it an
+observation rather than an assumption. Real key restored and rebuild confirmed clean before commit.
+
+**COMMIT HYGIENE — near-miss, self-caught, independently verified clean.** An unscoped `git commit`
+briefly swept up the controller-staged `progress.md`. The implementer caught it via `git show --stat`
+and repaired it with `git reset --soft` + a re-scoped commit. Controller verified independently:
+`c0ee36a` is 1 file, `52db5a9` is 2 files, and **no unrelated path appears in ANY commit across the
+whole sprint range `2858cab..HEAD`** — no python bindings, no atx-db, no atx-kb, no atx-core, no
+sqlite, no `.env`. `progress.md` remains staged and uncommitted. The self-catch worked.
+
+**CONTROLLER ERROR #7, mine.** My T8 dispatch handed the agent the brief's `final_nav=-456.5769067`
+as the byte-gate pin. **That value is stale for this fixture and this ledger records it as stale four
+separate times** — including, verbatim, "Brief's stale `final_nav=-456.5769067` overridden as usual."
+The correct pins are `22635.66476` (run-backtest) and `18528.61666` (run-projected-backtest, cold,
+only with `--schedule projected_schedule.tsv`). I propagated a value my own ledger had already
+corrected, into the one step whose entire purpose is byte-exactness. The agent overrode it correctly
+and flagged it. Second time this sprint I have handed a subagent a false premise (see error #5, the
+non-existent ordering dependency); the pattern is me quoting brief text without checking it against
+the ledger's own corrections.
+
+### Task 8: complete (commits e41525c..52db5a9, review clean — Spec OK, Approved, 0C/0I/2 Minor)
+
+Task 8: minor (deferred): M1 — `CacheHitEqualsFullParseExactly` (test `:643-665`) substantially
+overlaps T7's pre-existing `CachedSeamAgreesWithTheDirectParseOnMissAndHit` (`:847-882`). It does add
+real marginal coverage (first test to exercise the seam's own `cache_dir=""` disabled branch, plus a
+`fingerprint() != 0` anti-vacuity check) and the brief names it verbatim, so writing it was correct —
+but the report gave the five staleness tests a careful "not a duplicate, here's why" treatment and did
+not extend it to this overlap.
+
+Task 8: minor (deferred): M2 — Leg B's hazard-#7 mitigation was hand-applied rather than by re-running
+`relocate-fixture.sh`. The reviewer verified the hand-applied deletion set exactly matches the helper's
+and was correctly timed, then **re-ran the whole of Leg B using the actual helper and got a
+byte-identical result** — so no defect. Practice is more fragile than re-running the helper; later
+tasks should re-run it. (Carried into the T9 dispatch as an explicit instruction.)
+
+**The review verified rather than read.** It relocated two fresh fixture copies itself, ran the full
+five-step pipeline against each with the snapshot CLI, dumped all seven RunArchive sections and hashed
+them independently — **both legs reproduced all seven T1 hashes and both corrected `final_nav` pins
+(`22635.66476` / `18528.61666`) exactly**, with a negative control demonstrated failing (byte flip ->
+`MATCH=False`). Filtered suite 68/63/5/0 and full suite 2108/2057/48/3/7 both confirmed. It also chased
+the near-miss commit through the reflog: `c0b573a` is a harmless dangling entry, unreachable from any
+branch, **no lost work** — which closes the one loose end the implementer's self-report left open.
+
+---
+
+### STOP POINT — 2026-07-26 (second), user instruction "stop here"
+
+HEAD `52db5a9`. **Wave E T1-T8 ALL CLOSED AND REVIEWED.** Working tree clean for every sprint code path.
+
+**T9 (wave gate) was dispatched and killed mid-run. NOTHING LANDED — no `task-9-report.md` exists.**
+It must be re-run from scratch; it had got as far as dumping diagnostics. No commits, no partial state,
+nothing to salvage or clean up. The T9 dispatch prompt is worth reconstructing rather than reinventing:
+it carried the corrected Wave E claim table (so the gate checks reality rather than the plan's hopes),
+both `final_nav` corrections, the instruction to re-run `relocate-fixture.sh` rather than hand-apply its
+deletions (T8 M2), and the anti-vacuity framing.
+
+**NEW SINCE THE SPRINT STARTED — `main` HAS MOVED, 88 commits.** It was `2858cab`; it is now `05a0efd`.
+Those 88 commits are the surface-db/review sprint from the other worktree (REV-R3/R5/R6 fixes, coverage
+guard, reporting-layer claims, status 5). This branch is **44 ahead / 88 behind**, merge-base still
+`2858cab`. I did not merge anything into `main` at any point — the constraint held. But the integration
+decision at the end of this sprint is now a real one rather than a formality, and some of those 88
+commits touch `atx-vol`, so a rebase or merge could conflict. **This must be settled before the branch
+is integrated, and the final whole-sprint review should be told the branch is 88 behind.**
+
+**REMAINING WORK, in order:**
+  1. T9 wave gate — full re-run, nothing salvageable.
+  2. Final whole-sprint A-E review (most capable model; point it at this ledger's deferred-minor and
+     parked lines so it can triage what must be fixed before merge), then ONE fix wave, one scoped
+     re-review, adjudicate residuals.
+  3. Reconcile with the 88 commits `main` gained, then `superpowers:finishing-a-development-branch`.
+
+Unrelated uncommitted work (Python bindings split, atx-core sqlite, `atx-db/`, `atx-kb/`, docs) was
+**never staged at any point** — verified across the whole range: no commit in `2858cab..HEAD` touches a
+python, atx-db, atx-kb, atx-core, sqlite or `.env` path.
