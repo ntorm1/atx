@@ -1073,6 +1073,22 @@ TEST(ListedOpra, ParseRejectsMagicAndHeaderCorruption) {
   EXPECT_EQ(rejection(with_line(with_line(good, 0, header), 1, magic)), kByParserHeader);
 }
 
+// Regression test for the `definitions.reserve(...)` guard in
+// `parse_listed_definitions`: on an input with ZERO '\n' bytes,
+// `count_newlines(tsv)` is 0, and an unguarded `reserve(count_newlines(tsv) -
+// 1u)` would be `reserve(SIZE_MAX)`, throwing `std::length_error` out of a
+// function whose entire contract is to report errors as an `Err(...)` value.
+// The header gate rejects a zero-newline input before the reserve is ever
+// reached, so today this can only surface as `kByParserHeader` — but if a
+// future rewrite ever let such an input past that gate without the guard,
+// the process would abort instead of returning an `Err`, which would fail
+// this test far louder than a mismatched expectation.
+TEST(ListedOpra, ParseRejectsZeroNewlineInputWithoutThrowing) {
+  EXPECT_EQ(rejection(""), kByParserHeader);
+  EXPECT_EQ(rejection("no newline anywhere in this input at all"), kByParserHeader);
+  EXPECT_EQ(rejection("ATX_LISTED_DEFINITIONS\t1"), kByParserHeader);
+}
+
 TEST(ListedOpra, ParseRejectsMalformedRowFieldCountsAndNumerics) {
   const std::string good = good_tsv();
   ASSERT_FALSE(good.empty());

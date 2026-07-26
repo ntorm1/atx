@@ -92,7 +92,7 @@ void append_double(std::string &out, double value) {
 // Locate the nine tab-separated fields of `line` into `out`, in a single forward
 // pass with no allocation. Replaces a per-row `std::vector<std::string_view>`
 // built by the old `split(line, '\t')` — one heap allocation per row, on a file
-// of ~8.7M rows.
+// of 6,545,634 rows (the production fixture).
 //
 // Returns false unless `line` carries EXACTLY eight separators. `split(...)
 // .size() != 9` gave both directions for free; a scan gives neither, and both
@@ -308,9 +308,9 @@ std::string serialize_listed_definitions(const ListedDefinitionTable &table) {
 
 Result<ListedDefinitionTable> parse_listed_definitions(std::string_view tsv) {
   // Forward line walk, no line index. `split(tsv, '\n')` used to materialise one
-  // `string_view` per line: on the ~8.7M-row production file that is ~140 MB of
-  // index, and its geometric growth peaks at ~2.5x that in transient
-  // reallocation, all on top of the ~700 MB buffer the views point into. Nothing
+  // `string_view` per line: on the 6,545,634-row production file that is ~104.7 MB
+  // of index, and its geometric growth peaks at ~2.5x that in transient
+  // reallocation, all on top of the ~730 MB buffer the views point into. Nothing
   // here needs random access — the rows are consumed strictly in order.
   //
   // `cursor > tsv.size()` is the exhausted state, so a final line with no '\n'
@@ -340,10 +340,18 @@ Result<ListedDefinitionTable> parse_listed_definitions(std::string_view tsv) {
   std::vector<ListedContractDefinition> definitions;
   // `split(tsv, '\n').size()` was `count_newlines(tsv) + 1`, so the old
   // `lines.size() - 2` is `count_newlines(tsv) - 1`. The header gate above has
-  // already established two lines, hence at least one '\n'. Reserving exactly
-  // once still matters: on the production file this vector reaches ~1 GB, and
-  // geometric growth would peak at ~1.5x that while moving 8.7M rows.
-  definitions.reserve(count_newlines(tsv) - 1u);
+  // already established two lines, hence at least one '\n', so `newlines - 1u`
+  // cannot underflow today. The guard below is kept anyway: that guarantee is
+  // supplied 14 lines away by a check whose *stated* purpose is header
+  // validation, not arity, and this function is slated for further rewriting.
+  // Do not delete the guard as "dead code" — it is what keeps a future reorder
+  // from turning `newlines == 0` into `reserve(SIZE_MAX)` (a `std::length_error`
+  // thrown out of a `Result`-returning parser) instead of a caught `ParseError`.
+  // Reserving exactly once still matters: on the production file this vector
+  // reaches ~733 MB, and geometric growth would peak at ~1.5x that while moving
+  // 6,545,634 rows.
+  const std::size_t newlines = count_newlines(tsv);
+  definitions.reserve(newlines > 0u ? newlines - 1u : 0u);
   while (!exhausted()) {
     const std::string_view line = next_line();
     if (line.empty()) {
