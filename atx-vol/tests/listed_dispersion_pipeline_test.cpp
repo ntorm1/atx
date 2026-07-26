@@ -202,13 +202,15 @@ std::string write_archive(const fs::path &dir, const std::string &date,
 
 } // namespace
 
-// ── (a) kVegaVolPointToUnitVol (M9 / I4) ──────────────────────────────────────
-static_assert(kVegaVolPointToUnitVol == 100.0,
-              "vega per-vol-point to per-unit-vol factor must be exactly 100");
-
-TEST(ListedDispersionPipeline, VegaVolPointConstantIs100) {
-  EXPECT_EQ(kVegaVolPointToUnitVol, 100.0);
-}
+// ── (a) REMOVED (C-2 follow-up) ──────────────────────────────────────────────
+// A `static_assert(kVegaVolPointToUnitVol == 100.0)` and a
+// `TEST(..., VegaVolPointConstantIs100) { EXPECT_EQ(kVegaVolPointToUnitVol, 100.0); }`
+// stood here. Both asserted a constant against its own literal — `x == x` — so
+// neither could ever fail for any reason a reader would care about, and their
+// presence made a DEAD constant look load-bearing. The constant had no call site
+// at this tip (E1 abolished the boundary it served) and was deleted; see the note
+// at the top of listed_dispersion_pipeline.hpp. The live unit contract is pinned
+// by `contract_vega_per_vol_point`'s callers, not by restating 100.0.
 
 // ── (b) ListedDispersionMethodology::policy_fingerprint (L9) ──────────────────
 TEST(ListedDispersionPipeline, PolicyFingerprintStableAndSensitive) {
@@ -800,7 +802,7 @@ TEST(ListedDispersionPipeline, TwoRouteColdParity_LegMarksEqual) {
 // CLI keeps the three bespoke TSV emissions (out-of-archive per the partition rule).
 //
 // REV-TAIL M-5 / I-2, two corrections to what this block used to say. (1) The
-// "per-vol-point vega * kVegaVolPointToUnitVol scaling in the DispersionConfig
+// "per-vol-point vega * 100 scaling in the DispersionConfig
 // builder (a CLI boundary wired at T9)" no longer exists: E1 redefined
 // `DispersionConfig::target_vega` as dollars per VOL POINT, and there is now no
 // scaling anywhere on this route. (2) The `spy_dispersion_backtest.cpp:1119-1194`
@@ -837,8 +839,8 @@ TEST(ListedDispersionPipeline, DispersionBookVar_SplitsConfidences) {
   //
   // REV-TAIL M-5: this line read `100.0 * kVegaVolPointToUnitVol`, under a comment
   // claiming to "mirror the CLI boundary (spy_dispersion_backtest.cpp:1110)". E1
-  // abolished that boundary -- the example carries ZERO `kVegaVolPointToUnitVol`
-  // uses at this tip -- so the line denoted $10,000/vol-point where $100 was
+  // abolished that boundary -- the constant had no call site left at all and was
+  // deleted in the C-2 follow-up -- so the line denoted $10,000/vol-point where $100 was
   // intended, a 100x book. Every assertion in this test is structural (counts,
   // n_failed, ES >= VaR, VaR(99) >= VaR(95), reference == frames.back().value) and
   // therefore SCALE-INVARIANT: it passed either way and could never self-correct,

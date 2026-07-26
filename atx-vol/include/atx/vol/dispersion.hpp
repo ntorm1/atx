@@ -247,16 +247,28 @@ inline constexpr double kVegaPerVolPoint = 0.01;
 // (per 1.00 of sigma); the result is the DOLLARS of vega ONE CONTRACT carries
 // per VOL POINT.
 //
-// C-2 (pipeline-m production review). Three places denominate in this unit —
-// projected sizing (`build_dispersion_book`), the listed schedule's
-// `vega_per_contract_per_vol_point` column and its round-trip validator
-// (listed_dispersion_schedule.cpp), and the X3 risk probe (`measure_book`,
-// dispersion_strategy.cpp) — and they were three independent copies of the
-// expression. The risk probe's copy had dropped BOTH `multiplier` and
-// `kVegaPerVolPoint`, so `DispersionRiskLimits::max_gross_vega` was compared in
-// the advertised dollars-per-vol-point unit only at the historical
-// multiplier == 100 (it was off by 100/multiplier everywhere else). All three
-// now call this function, so the unit cannot drift again in one of them.
+// C-2 (pipeline-m production review). FOUR places denominate in this unit, and
+// they were four independent copies of the expression:
+//
+//   1. projected sizing — `build_dispersion_book` (dispersion.cpp);
+//   2. the listed schedule's `vega_per_contract_per_vol_point` column and its
+//      round-trip validator (listed_dispersion_schedule.cpp);
+//   3. the X3 risk probe — `measure_book` (dispersion_strategy.cpp);
+//   4. the native reference-reconciliation validator (dispersion_run.cpp), which
+//      re-derives the persisted per-contract vega to check it.
+//
+// The risk probe's copy had dropped BOTH `multiplier` and `kVegaPerVolPoint`, so
+// `DispersionRiskLimits::max_gross_vega` was compared in the advertised
+// dollars-per-vol-point unit only at the historical multiplier == 100 (it was
+// off by 100/multiplier everywhere else).
+//
+// (4) was missed by the original C-2 fix and this comment claimed "three places"
+// for one commit; an independent review caught it. It is the worst one to leave
+// behind — a private copy inside the validator would have MASKED a later drift
+// in (1)-(3) rather than caught it. All four call this function now.
+//
+// This list is load-bearing: a fifth site must be added here or the claim is
+// false again. `grep -rn "kVegaPerVolPoint\|\* 0\.01" atx-vol/src` is the check.
 //
 // Left-associative `(v * m) * kVegaPerVolPoint` — the exact association the
 // sizing and listed-schedule sites already used, so adopting it is bit-identical

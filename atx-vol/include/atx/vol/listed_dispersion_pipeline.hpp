@@ -40,12 +40,16 @@ namespace atx::vol {
 // atx/vol/run_diagnostics.hpp; the .cpp includes it for the definition.
 class PhaseTimer;
 
-// Per-vol-point → per-unit-vol factor (M9 / I4). `spec.gross_index_vega` is dollars
-// vega per VOL POINT per side; the library dispersion configs take dollars vega per
-// UNIT vol (a unit vol is 100 vol points), so the boundary that hands the library a
-// target vega scales by exactly this. Replaces the hand-applied literal `* 100.0`
-// scattered at two boundaries in the example. The extraction must be sizing-exact.
-inline constexpr double kVegaVolPointToUnitVol = 100.0;
+// DELETED (C-2 follow-up): `kVegaVolPointToUnitVol = 100.0`, the per-vol-point →
+// per-unit-vol factor (M9 / I4). It was a FIFTH spelling of the vol-point
+// conversion, and by this tip it was DEAD: E1 redefined
+// `DispersionConfig::target_vega` as dollars per VOL POINT, which abolished the
+// boundary the constant existed to serve, and the only remaining references were
+// this declaration, four comments describing a boundary that no longer exists,
+// and two tests asserting `kVegaVolPointToUnitVol == 100.0` — i.e. `x == x`. A
+// spare, unused spelling of a unit constant is exactly how a unit drifts back
+// apart; the ONE per-contract conversion is `contract_vega_per_vol_point`
+// (dispersion.hpp), and the ONE per-unit-vol scale is `kVegaPerVolPoint` beside it.
 
 // The versioned authority for the listed route's ENTRY AND ACCEPTANCE FLOORS,
 // replacing the loose inline literals that were scattered across build-corpus and
@@ -330,11 +334,11 @@ struct DispersionBookVar {
 // to `scenario_valuation + maturity`; substituting the book's absolute projected
 // expiry would freeze the tenor and change every non-entry scenario's risk.
 //
-// M9 note: the per-vol-point gross vega * kVegaVolPointToUnitVol scaling lives in the
-// DispersionConfig builder that produces `book` (spy_dispersion_backtest.cpp:1110),
-// upstream of this lift — so this function applies no vega x100; the book handed in is
-// already sized. That boundary's `* 100.0 -> kVegaVolPointToUnitVol` replacement is a
-// CLI line-item wired at T9.
+// UNITS: this function applies NO vega scaling — the book handed in is already
+// sized. (It never should again: E1 redefined `DispersionConfig::target_vega` as
+// dollars per VOL POINT, which abolished the CLI's `* 100.0` per-vol-point →
+// per-unit-vol boundary entirely. The `kVegaVolPointToUnitVol` constant this note
+// used to name was deleted as dead in the C-2 follow-up; see the top of this file.)
 //
 // Returns Err(Unavailable) if any scenario projected an incomplete frame
 // (n_failed != 0), matching the CLI's post-projection gate (:1175-1178); on that path

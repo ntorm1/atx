@@ -37,6 +37,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"
 #include "atx/vol/counters.hpp"
+#include "atx/vol/dispersion.hpp" // contract_vega_per_vol_point (the ONE vol-point conversion)
 #include "atx/vol/historical_projection.hpp"
 #include "atx/vol/listed_dispersion.hpp"
 #include "atx/vol/listed_dispersion_pipeline.hpp" // ListedDispersionMethodology (L9)
@@ -268,7 +269,11 @@ Result<std::vector<ListedOptionQuote>> load_listed_quotes(const RunSpec &spec,
 
 // ── Native reference reconciliation (ported from tools/reference_spy_dispersion.py)
 
-constexpr double kVegaScale = 0.01;
+// REVIEW C-2 follow-up. `kVegaScale = 0.01` used to live here — a FOURTH private
+// copy of the per-contract vol-point conversion, in the one place a drift would
+// be MASKED rather than caught, since this validator is what re-derives the
+// persisted `vega_per_contract_per_vol_point` column. It is gone; the site below
+// calls `contract_vega_per_vol_point` (dispersion.hpp) like the other three.
 constexpr double kVegaRelTol = 1e-10;
 constexpr double kFloatRecomputeTol = 1e-12;
 constexpr double kPnlAbsTol = 1e-7;
@@ -464,7 +469,10 @@ Result<std::vector<ReferenceReconRecord>> verify_schedule(const fs::path &path) 
       for (const std::size_t leg : {call, put}) {
         ATX_TRY(double multiplier, dec(tsv, leg, "multiplier"));
         ATX_TRY(double unit_vega, dec(tsv, leg, "vega_per_unit_vol"));
-        const double contract_vega = unit_vega * multiplier * kVegaScale;
+        // C-2 follow-up: THE one conversion, not a local restatement of it.
+        // `contract_vega_per_vol_point` is `(v * m) * kVegaPerVolPoint`, the exact
+        // association this line already used, so the number is bit-identical.
+        const double contract_vega = contract_vega_per_vol_point(unit_vega, multiplier);
         ATX_TRY(double persisted_contract_vega, dec(tsv, leg, "vega_per_contract_per_vol_point"));
         ATX_TRY_VOID(close_to(persisted_contract_vega, contract_vega,
                               std::max(1.0, std::abs(contract_vega)) * kFloatRecomputeTol,

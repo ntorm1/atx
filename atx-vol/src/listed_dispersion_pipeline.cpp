@@ -471,7 +471,8 @@ dispersion_book_var(const DispersionBook &book, const ProjectedMaturitySpec &mat
   // the same uid / side / multiplier / qty, an ATM-forward strike, and the caller's
   // relative `maturity`; the templates re-project onto every scenario, then the loss
   // quantile splits per requested confidence. No vega x100 here: the book handed in
-  // is already sized (the * kVegaVolPointToUnitVol boundary is upstream, at :1110).
+  // is already sized. (E1 abolished the upstream per-vol-point -> per-unit-vol
+  // boundary outright; its constant was deleted as dead in the C-2 follow-up.)
   std::vector<RelativeOptionPosition> relative_positions;
   relative_positions.reserve(book.positions.size());
   for (const Position &position : book.positions) {

@@ -819,8 +819,10 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
 // The E1 unit resolution the merge recorded at these two call sites is preserved,
 // not lost: `dispersion_backtest_config_from` and `dispersion_run_projected_var`
 // assign `gross_index_vega` / `target_vega` straight from the spec with no
-// `kVegaVolPointToUnitVol` scaling, which is the same post-E1 assignment those
-// comments described, and dispersion_run.hpp's header block states the contract.
+// per-vol-point -> per-unit-vol scaling at all, which is the same post-E1
+// assignment those comments described, and dispersion_run.hpp's header block
+// states the contract. (The `kVegaVolPointToUnitVol` constant this note used to
+// name was deleted as dead in the C-2 follow-up: no call site remained.)
 
 // runarchive dump <run_dir> <section> [--tsv]: the escape hatch. Opens
 // <run_dir>/run.atxrun and either prints a one-line section summary (default) or,
