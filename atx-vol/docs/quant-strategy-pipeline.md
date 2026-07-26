@@ -272,6 +272,12 @@ the existing portfolio ledger. Full contracts, fidelity limits, and primary
 research sources are documented in
 [`atx-options-engine/README.md`](../../atx-options-engine/README.md).
 
+The XS-2 `OptionExecutionReplay` kernel now provides deterministic
+Consolidated-L1 partial fills, shared selected-participant liquidity, exact
+multiplier-aware cash, and effective-dated fee ledgers. It remains an
+evidence-bounded batch kernel: adaptive research must settle prior fills and
+working leaves before constructing the next target.
+
 ## Extension rules
 
 - New feature producers must declare observation and availability time, warmup,
