@@ -5,10 +5,13 @@
 #include <cctype>
 #include <charconv>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -19,6 +22,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"
 #include "atx/vol/data.hpp"
+#include "atx/vol/detail/archive_util.hpp" // read_whole_file (the shared slurp)
 
 namespace atx::vol {
 namespace {
@@ -72,19 +76,90 @@ void append_double(std::string &out, double value) {
   return hash == 0u ? 1u : hash;
 }
 
-[[nodiscard]] std::vector<std::string_view> split(std::string_view text, char delimiter) {
-  std::vector<std::string_view> fields;
-  std::size_t start = 0;
-  while (start <= text.size()) {
-    const std::size_t end = text.find(delimiter, start);
-    fields.push_back(
-        text.substr(start, end == std::string_view::npos ? text.size() - start : end - start));
-    if (end == std::string_view::npos) {
+// Epoch-ns of the LAST nanosecond of `trade_date`, formatted into a stack
+// buffer. Replaces a per-row `trade_date + "T23:59:59.999999999Z"` heap
+// concatenation: the stamp is 30 characters, past MSVC's 15-char small-string
+// capacity, so every row used to allocate and free once.
+//
+// Exactly equivalent to the concatenation it replaces, INCLUDING for a
+// trade_date too long to fit. `iso_to_ns` rejects any stamp whose 11th
+// character is not 'T' or ' ' (data.cpp `parse_iso_ns`), so an over-long date
+// yielded 0 before and yields 0 here; both land on the same `trade_end <= 0`
+// rejection. The buffer holds a 12-character date, two more than a valid one.
+[[nodiscard]] std::int64_t end_of_day_ns(std::string_view trade_date) noexcept {
+  constexpr std::string_view kEndOfDay = "T23:59:59.999999999Z";
+  char buffer[32];
+  const std::size_t total = trade_date.size() + kEndOfDay.size();
+  if (trade_date.empty() || total > sizeof buffer) {
+    return 0;
+  }
+  std::memcpy(buffer, trade_date.data(), trade_date.size());
+  std::memcpy(buffer + trade_date.size(), kEndOfDay.data(), kEndOfDay.size());
+  return iso_to_ns(std::string_view(buffer, total));
+}
+
+// Locate the nine tab-separated fields of `line` into `out`, in a single forward
+// pass with no allocation. Replaces a per-row `std::vector<std::string_view>`
+// built by the old `split(line, '\t')` — one heap allocation per row, on a file
+// of 6,545,634 rows (the production fixture).
+//
+// Returns false unless `line` carries EXACTLY eight separators. `split(...)
+// .size() != 9` gave both directions for free; a scan gives neither, and both
+// are load-bearing:
+//
+//   - FEWER than eight tabs: the scan stops early and leaves `out` PARTIALLY
+//     written, so the caller must treat a false return as "read nothing". `out`
+//     is therefore declared per row by the caller rather than hoisted out of the
+//     row loop: a hoisted buffer would let a short row silently inherit its
+//     predecessor's trailing fields. (Observed: with a hoisted buffer an
+//     eight-field row parses using the previous row's source_fingerprint.)
+//   - A NINTH tab: a scan that stops once it has eight separators leaves the
+//     tenth field unread past the end of `out[8]` and accepts a 10-field row as
+//     if it had nine. The absence of any further tab before end-of-line is
+//     therefore asserted explicitly rather than implied.
+//
+// LF-only, exactly as before: '\r' is not a separator and is not stripped, so a
+// CRLF file still fails the header equality gate.
+[[nodiscard]] bool find_row_fields(std::string_view line, std::string_view (&out)[9]) noexcept {
+  if (line.empty()) {
+    return false;
+  }
+  const char *cursor = line.data();
+  const char *const end = cursor + line.size();
+  for (std::size_t f = 0; f < 8; ++f) {
+    const char *const tab = static_cast<const char *>(
+        std::memchr(cursor, '\t', static_cast<std::size_t>(end - cursor)));
+    if (tab == nullptr) {
+      return false; // fewer than eight separators
+    }
+    out[f] = std::string_view(cursor, static_cast<std::size_t>(tab - cursor));
+    cursor = tab + 1;
+  }
+  if (std::memchr(cursor, '\t', static_cast<std::size_t>(end - cursor)) != nullptr) {
+    return false; // a ninth separator: ten or more fields
+  }
+  out[8] = std::string_view(cursor, static_cast<std::size_t>(end - cursor));
+  return true;
+}
+
+// Number of '\n' bytes in `text`. `split(text, '\n').size()` is exactly this
+// plus one; recovering the count with one sequential memchr pass is what lets
+// `definitions` still be reserved exactly once without materialising the line
+// index (see `parse_listed_definitions`).
+[[nodiscard]] std::size_t count_newlines(std::string_view text) noexcept {
+  std::size_t count = 0;
+  const char *cursor = text.data();
+  const char *const end = cursor + text.size();
+  while (cursor != end) {
+    const char *const found = static_cast<const char *>(
+        std::memchr(cursor, '\n', static_cast<std::size_t>(end - cursor)));
+    if (found == nullptr) {
       break;
     }
-    start = end + 1;
+    ++count;
+    cursor = found + 1;
   }
-  return fields;
+  return count;
 }
 
 template <typename T> [[nodiscard]] bool parse_integer(std::string_view text, T &value) {
@@ -144,6 +219,27 @@ ListedDefinitionTable::create(std::vector<ListedContractDefinition> definitions)
   std::sort(definitions.begin(), definitions.end(),
             [](const auto &a, const auto &b) { return definition_key(a) < definition_key(b); });
 
+  // Single-slot memo for the per-row end-of-day bound.
+  //
+  // CORRECTNESS DOES NOT DEPEND ON THE INPUT ORDER. This is a compare-then-
+  // refresh memo, not a compute-once memo: it recomputes whenever the row's date
+  // differs from the memoized one, so after the `if` below the invariant
+  // `memo_trade_end == end_of_day_ns(definition.trade_date)` holds for EVERY row
+  // under ANY permutation of the input. `end_of_day_ns` is a pure function of its
+  // argument bytes, so a reordering can only change how often it is called.
+  //
+  // What the sort above buys is HIT RATE, not correctness. `definition_key`'s
+  // FIRST field is `trade_date`, so the sort leaves `trade_date` non-decreasing
+  // across this loop and the single slot refreshes once per distinct date (~60)
+  // instead of up to once per row (~8.7M). If the sort ever stopped preceding the
+  // loop the memo would still be exact — just slower — which is why a map keyed
+  // by date is unnecessary here rather than unsafe.
+  //
+  // The memoed view aliases a row of `definitions`, which is only read until it is
+  // moved out below.
+  std::string_view memo_date;
+  std::int64_t memo_trade_end = 0;
+
   for (std::size_t i = 0; i < definitions.size(); ++i) {
     const ListedContractDefinition &definition = definitions[i];
     if (definition.trade_date.empty() || definition.instrument_id == 0 ||
@@ -153,7 +249,13 @@ ListedDefinitionTable::create(std::vector<ListedContractDefinition> definitions)
         definition.source_fingerprint == 0u) {
       return Err(ErrorCode::InvalidArgument, "listed definitions: malformed definition");
     }
-    const std::int64_t trade_end = iso_to_ns(definition.trade_date + "T23:59:59.999999999Z");
+    // The gate above already rejected an empty `trade_date`, so the empty memo
+    // sentinel can never collide with a real date.
+    if (definition.trade_date != memo_date) {
+      memo_date = definition.trade_date;
+      memo_trade_end = end_of_day_ns(memo_date);
+    }
+    const std::int64_t trade_end = memo_trade_end;
     if (trade_end <= 0 || definition.definition_ts_ns > trade_end) {
       return Err(ErrorCode::InvalidArgument,
                  "listed definitions: future or invalid date-scoped definition");
@@ -165,9 +267,17 @@ ListedDefinitionTable::create(std::vector<ListedContractDefinition> definitions)
 
   ListedDefinitionTable table;
   table.definitions_ = std::move(definitions);
-  const std::string serialized = serialize_listed_definitions(table);
-  table.fingerprint_ = fingerprint_text(serialized);
   return Ok(std::move(table));
+}
+
+// Lazy, memoized. See the header for why this is a plain `mutable` memo and not
+// a `std::once_flag`, and why it is not `noexcept`. `serialize_listed_definitions`
+// itself is unchanged — only WHEN it runs moved.
+std::uint64_t ListedDefinitionTable::fingerprint() const {
+  if (fingerprint_ == 0u) {
+    fingerprint_ = fingerprint_text(serialize_listed_definitions(*this));
+  }
+  return fingerprint_;
 }
 
 const ListedContractDefinition *
@@ -206,22 +316,64 @@ std::string serialize_listed_definitions(const ListedDefinitionTable &table) {
 }
 
 Result<ListedDefinitionTable> parse_listed_definitions(std::string_view tsv) {
-  const std::vector<std::string_view> lines = split(tsv, '\n');
-  if (lines.size() < 2 || lines[0] != kMagic || lines[1] != kHeader) {
+  // Forward line walk, no line index. `split(tsv, '\n')` used to materialise one
+  // `string_view` per line: on the 6,545,634-row production file that is ~104.7 MB
+  // of index, and its geometric growth peaks at ~2.5x that in transient
+  // reallocation, all on top of the ~730 MB buffer the views point into. Nothing
+  // here needs random access — the rows are consumed strictly in order.
+  //
+  // `cursor > tsv.size()` is the exhausted state, so a final line with no '\n'
+  // advances the cursor to `tsv.size() + 1`. That reproduces `split`'s element
+  // sequence exactly, INCLUDING the single empty element `split("")` yields and
+  // the trailing empty element after a terminating '\n' (which the empty-line
+  // skip below absorbs, unchanged).
+  std::size_t cursor = 0;
+  const auto exhausted = [&] { return cursor > tsv.size(); };
+  const auto next_line = [&] {
+    const std::size_t newline = tsv.find('\n', cursor);
+    const std::size_t end = newline == std::string_view::npos ? tsv.size() : newline;
+    const std::string_view line = tsv.substr(cursor, end - cursor);
+    cursor = end + 1;
+    return line;
+  };
+
+  const std::string_view magic = next_line(); // cursor starts at 0, so always present
+  if (exhausted()) {                          // fewer than two lines
     return Err(ErrorCode::ParseError, "listed definitions: bad header");
   }
+  const std::string_view header = next_line();
+  if (magic != kMagic || header != kHeader) {
+    return Err(ErrorCode::ParseError, "listed definitions: bad header");
+  }
+
   std::vector<ListedContractDefinition> definitions;
-  definitions.reserve(lines.size() - 2);
-  for (std::size_t i = 2; i < lines.size(); ++i) {
-    if (lines[i].empty()) {
-      continue;
+  // `split(tsv, '\n').size()` was `count_newlines(tsv) + 1`, so the old
+  // `lines.size() - 2` is `count_newlines(tsv) - 1`. The header gate above has
+  // already established two lines, hence at least one '\n', so `newlines - 1u`
+  // cannot underflow today. The guard below is kept anyway: that guarantee is
+  // supplied 14 lines away by a check whose *stated* purpose is header
+  // validation, not arity, and this function is slated for further rewriting.
+  // Do not delete the guard as "dead code" — it is what keeps a future reorder
+  // from turning `newlines == 0` into `reserve(SIZE_MAX)` (a `std::length_error`
+  // thrown out of a `Result`-returning parser) instead of a caught `ParseError`.
+  // Reserving exactly once still matters: on the production file this vector
+  // reaches ~733 MB, and geometric growth would peak at ~1.5x that while moving
+  // 6,545,634 rows.
+  const std::size_t newlines = count_newlines(tsv);
+  definitions.reserve(newlines > 0u ? newlines - 1u : 0u);
+  while (!exhausted()) {
+    const std::string_view line = next_line();
+    if (line.empty()) {
+      continue; // absorbs the trailing element after a final '\n'
     }
-    const std::vector<std::string_view> fields = split(lines[i], '\t');
+    // Declared INSIDE the loop on purpose — see `find_row_fields`: a partial
+    // write from a short row must never be visible to the next row.
+    std::string_view fields[9];
     ListedContractDefinition definition;
     std::uint64_t instrument_id = 0;
     unsigned monthly = 0;
     unsigned deliverable = 0;
-    if (fields.size() != 9 || !parse_integer(fields[1], instrument_id) ||
+    if (!find_row_fields(line, fields) || !parse_integer(fields[1], instrument_id) ||
         instrument_id > std::numeric_limits<std::uint32_t>::max() ||
         !parse_integer(fields[3], definition.definition_ts_ns) ||
         !parse_integer(fields[4], definition.expiry_ts_ns) ||
@@ -249,13 +401,21 @@ Status write_listed_definitions_file(std::string_view path, const ListedDefiniti
 }
 
 Result<ListedDefinitionTable> read_listed_definitions_file(std::string_view path) {
-  std::ifstream stream(std::filesystem::path{path}, std::ios::binary);
-  if (!stream) {
+  // The slurp used to be `std::string(istreambuf_iterator, istreambuf_iterator)`
+  // over a `std::ios::binary` ifstream, duplicated verbatim in
+  // read_listed_definitions_cached. It is now ONE `fread` in
+  // detail::read_whole_file — byte-identical (the stream was already binary) and
+  // measurably faster: the iterator form ran at ~197 MB/s and was 3.6-3.9 s of a
+  // 7.1-9.8 s "parse" on the 730 MB production definitions file. The error
+  // strings are unchanged; Wave E Task 4's tests pin them exactly.
+  std::string contents;
+  switch (detail::read_whole_file(path, contents)) {
+  case detail::FileReadStatus::NotFound:
     return Err(ErrorCode::NotFound, "listed definitions: file not found");
-  }
-  std::string contents((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
-  if (!stream.good() && !stream.eof()) {
+  case detail::FileReadStatus::IoError:
     return Err(ErrorCode::IoError, "listed definitions: read failed");
+  case detail::FileReadStatus::Ok:
+    break;
   }
   return parse_listed_definitions(contents);
 }
@@ -325,7 +485,7 @@ bool is_standard_monthly_expiry(std::span<const std::int64_t> sessions,
 Result<std::vector<ListedOptionQuote>>
 listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_ns,
                         const OpraPanel &panel, const ListedDefinitionTable &definitions,
-                        MissingDefinitionPolicy policy) {
+                        MissingDefinitionPolicy policy, std::span<const ListedQuoteKey> wanted) {
   if (trade_date.empty() || valuation_ts_ns <= 0 || panel.frame.uid.empty() ||
       panel.frame.snapshot_ts_ns != valuation_ts_ns || panel.source_schema_version < 2 ||
       !panel.provenance_complete || panel.source_fingerprint == 0u ||
@@ -337,8 +497,28 @@ listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_n
     return Err(ErrorCode::InvalidArgument, "listed OPRA join: valuation date mismatch");
   }
 
+  const bool filtering = !wanted.empty();
+  // ENFORCE the SORTED+DEDUPED precondition rather than trusting the caller.
+  // Stage 1 below locates each raw_symbol run by binary search, so an unsorted
+  // `wanted` returns a wrong — usually empty — run: rows are dropped, NO gate
+  // fires, and the caller receives a quietly under-joined result. Downstream
+  // that surfaces only as NoRawQuote marks and moved coverage, i.e. a wrong
+  // answer with no error anywhere, which is precisely what this function exists
+  // to prevent. The dedupe half is checked in the same pass because a duplicate
+  // means `wanted` was not built as the contract says (and mis-sizes the reserve
+  // below). One O(n) pass over ~10^2 keys, once per ~10^5-row panel.
+  if (filtering && std::adjacent_find(wanted.begin(), wanted.end(),
+                                      [](const ListedQuoteKey &lhs, const ListedQuoteKey &rhs) {
+                                        return !(lhs < rhs);
+                                      }) != wanted.end()) {
+    return Err(ErrorCode::InvalidArgument,
+               "listed OPRA join: wanted keys must be sorted and deduped");
+  }
   std::vector<ListedOptionQuote> quotes;
-  quotes.reserve(panel.frame.rows.size());
+  // When filtering, the panel is (by construction) far wider than the consumed
+  // key set, so sizing to the panel would reserve two orders of magnitude more
+  // than can ever be emitted.
+  quotes.reserve(filtering ? wanted.size() : panel.frame.rows.size());
   for (std::size_t i = 0; i < panel.frame.rows.size(); ++i) {
     const QuoteRow &row = panel.frame.rows[i];
     const std::uint32_t instrument_id = panel.source_instrument_ids[i];
@@ -350,6 +530,37 @@ listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_n
     if (instrument_id == 0 || identity == panel.source_identities.end() ||
         identity->instrument_id != instrument_id) {
       return Err(ErrorCode::NotFound, "listed OPRA join: aligned source identity missing");
+    }
+    // ── Leg-key filter, stage 1 (see listed_opra.hpp for the full contract) ──
+    //
+    // Placed AFTER the panel-wide identity gate — which therefore stays
+    // panel-wide — and BEFORE definitions.find, the OSI parse and quote
+    // construction, which is the whole cost this skips.
+    //
+    // It keys on raw_symbol only, for two reasons. (1) The full key needs the
+    // definition's expiry_ts_ns, which is exactly what has not been looked up
+    // yet. (2) Deliberately coarse: a row whose strike/side CONTRADICT its own
+    // OSI symbol must reach the economics gate rather than be filtered out on
+    // the value it is contradicting. Stage 2, below, completes the key.
+    //
+    // `wanted` is contractually sorted in ListedQuoteKey order, whose first
+    // member is raw_symbol, so the equal-raw_symbol entries form one run.
+    std::span<const ListedQuoteKey> candidates;
+    if (filtering) {
+      const std::string_view raw_symbol = identity->raw_symbol;
+      const auto low = std::lower_bound(wanted.begin(), wanted.end(), raw_symbol,
+                                        [](const ListedQuoteKey &key, std::string_view value) {
+                                          return std::string_view(key.raw_symbol) < value;
+                                        });
+      const auto high = std::upper_bound(low, wanted.end(), raw_symbol,
+                                         [](std::string_view value, const ListedQuoteKey &key) {
+                                           return value < std::string_view(key.raw_symbol);
+                                         });
+      if (low == high) {
+        continue;
+      }
+      candidates = wanted.subspan(static_cast<std::size_t>(low - wanted.begin()),
+                                  static_cast<std::size_t>(high - low));
     }
     const ListedContractDefinition *definition =
         definitions.find(trade_date, instrument_id, identity->raw_symbol);
@@ -428,6 +639,21 @@ listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_n
         joined_source_fingerprint(panel.source_fingerprint, definition->source_fingerprint);
     if (quote.quote_ts_ns > valuation_ts_ns) {
       return Err(ErrorCode::InvalidArgument, "listed OPRA join: future quote");
+    }
+    // ── Leg-key filter, stage 2 ─────────────────────────────────────────────
+    //
+    // The exact key, now that the definition has supplied expiry_ts_ns. Placed
+    // last on purpose: every gate above then runs for the whole raw_symbol run
+    // rather than for the exact key, so the narrowing is as small as it can be
+    // while still skipping the lookup. `candidates` is the one raw_symbol run
+    // stage 1 already located — in practice a single element — so this costs a
+    // handful of comparisons on the tiny surviving set, never a search.
+    if (filtering &&
+        std::none_of(candidates.begin(), candidates.end(), [&](const ListedQuoteKey &key) {
+          return key.expiry_ts_ns == quote.expiry_ts_ns && key.strike == quote.strike &&
+                 key.side == quote.side;
+        })) {
+      continue;
     }
     quotes.push_back(std::move(quote));
   }

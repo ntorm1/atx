@@ -218,7 +218,7 @@ translation units. **All four `StepEvent` members are read in-tree**: `step_inde
 `StepObserverFiresEveryStepAtStride` (the only way to correlate events with downsampled rows), `ref` by T2's collector
 (`.date`), `snapshot` by T2's collector (a fail-closed `ts_ns()` cross-check), `strategy` by T2's downcast.
 
-- [ ] **Step 1: Write the failing tests** — in `atx-vol/tests/strategy_test.cpp`, reusing that file's existing
+- [x] **Step 1: Write the failing tests** — in `atx-vol/tests/strategy_test.cpp`, reusing that file's existing
       `make_surface` / `write_archive` / `make_manifest` / `Clock::from_manifest` scaffolding and the 7-date
       `Strategy.OverlappingClips` corpus pattern (`:1087-1101`):
   - `TEST(Strategy, StepObserverFiresOncePerStepInOrder)` — `DeclarativeStrategy` over the 7-date clock;
@@ -241,20 +241,20 @@ translation units. **All four `StepEvent` members are read in-tree**: `step_inde
   - `TEST(Backtest, FixedBookRejectsStepObserver)` — B0 overload (`run_backtest(clock, PortfolioState{…}, cfg)`) with
     an observer set → `Err`, `code() == InvalidArgument`, message contains `"step_observer"`. Fail-closed, because a
     silently dropped divergence capture is precisely the Wave B failure class.
-- [ ] **Step 2: Run tests to verify they fail** — `cmake --build C:\atx\build-rel --target atx-vol-tests`
+- [x] **Step 2: Run tests to verify they fail** — `cmake --build C:\atx\build-rel --target atx-vol-tests`
       → expected FAIL, compile error: `'step_observer': is not a member of 'atx::vol::RunConfig'` (and
       `'StepEvent': undeclared identifier`). Record the exact compiler diagnostic in the task report.
-- [ ] **Step 3: Implement** `StepEvent` / `StepObserver` / the appended `RunConfig::step_observer` in `backtest.hpp`
+- [x] **Step 3: Implement** `StepEvent` / `StepObserver` / the appended `RunConfig::step_observer` in `backtest.hpp`
       and the three `backtest.cpp` edits. Do **not** touch `python/src/bindings/backtest.cpp`. Do **not** reorder any
       existing `RunConfig` field.
-- [ ] **Step 4: Run tests to verify they pass** — **full build** (`cmake --build C:\atx\build-rel`, all targets — the
+- [x] **Step 4: Run tests to verify they pass** — **full build** (`cmake --build C:\atx\build-rel`, all targets — the
       struct grew, so the library, all 7 examples, both benches and the python module must rebuild together; a
       `--target atx-vol-tests` build would hide a broken example or bench). Then
       `$env:PATH = "C:\atx\build-rel\bin;$env:PATH"; C:\atx\build-rel\bin\atx-vol-tests.exe
       --gtest_filter=Strategy.StepObserver*:Backtest.FixedBookRejectsStepObserver` → 5/5 PASS. Then the regression
       sweep that proves the header change broke nothing:
       `--gtest_filter=Strategy.*:Backtest*:ListedDispersion*:Tearsheet*:RunDir.*:RunArchive*` → all PASS.
-- [ ] **Step 5: Commit** — `git add atx-vol/include/atx/vol/backtest.hpp atx-vol/src/backtest.cpp atx-vol/tests/strategy_test.cpp`
+- [x] **Step 5: Commit** — `git add atx-vol/include/atx/vol/backtest.hpp atx-vol/src/backtest.cpp atx-vol/tests/strategy_test.cpp`
 
 ---
 
@@ -312,7 +312,7 @@ are in scope; add `#include "atx/vol/listed_dispersion_strategy.hpp"` for `MarkD
 `ListedDispersionStrategy`. **No `run_archive.hpp` dependency** — the library returns rows, the example keeps its
 `MarkDivergenceArena` + `build_mark_divergence_section` encoder untouched, so no format surface moves.
 
-- [ ] **Step 1: Write the failing tests** — in `atx-vol/tests/listed_dispersion_pipeline_test.cpp`:
+- [x] **Step 1: Write the failing tests** — in `atx-vol/tests/listed_dispersion_pipeline_test.cpp`:
   - `BpsMetricMatchesTheFrozenFormula` — pin exact values: `(schedule=2.0, live=2.02)` → `100.0`;
     `(schedule=2.0, live=1.98)` → `100.0` (absolute value); `(schedule=0.0, live=0.5)` → **`0.0`** with a comment
     naming L2; `(schedule=-1.0, live=-1.01)` → `100.0`. `EXPECT_EQ` on raw doubles, not `EXPECT_NEAR`.
@@ -333,15 +333,15 @@ are in scope; add `#include "atx/vol/listed_dispersion_strategy.hpp"` for `MarkD
   - `MarkDivergenceObserverRejectsAnUnmatchableLeg` — mutate the schedule copy the *observer* sees so the roll's leg
     keys no longer match the strategy's recorded divergence → `Err`, `code() == NotFound`, message **exactly**
     `"mark divergence leg not found in roll"` (assert the string, not just the code — Wave B's T2 minor).
-- [ ] **Step 2: Run tests to verify they fail** — `cmake --build C:\atx\build-rel --target atx-vol-tests` → expected
+- [x] **Step 2: Run tests to verify they fail** — `cmake --build C:\atx\build-rel --target atx-vol-tests` → expected
       FAIL: unresolved / undeclared `make_mark_divergence_observer`, `listed_mark_divergence_bps`,
       `ListedMarkDivergenceRow`. Record the diagnostic.
-- [ ] **Step 3: Implement** the three interfaces in the pipeline header + `.cpp`, lifting `:714-747` verbatim
+- [x] **Step 3: Implement** the three interfaces in the pipeline header + `.cpp`, lifting `:714-747` verbatim
       (preserve the comments explaining that divergences populate only on a roll step).
-- [ ] **Step 4: Run tests to verify they pass** — `cmake --build C:\atx\build-rel --target atx-vol-tests`; then
+- [x] **Step 4: Run tests to verify they pass** — `cmake --build C:\atx\build-rel --target atx-vol-tests`; then
       `C:\atx\build-rel\bin\atx-vol-tests.exe --gtest_filter=ListedDispersionPipeline.*:ListedDispersionStrategy.*`
       → all PASS (the 5 new plus every Wave B pipeline test).
-- [ ] **Step 5: Commit** — `git add atx-vol/include/atx/vol/listed_dispersion_pipeline.hpp atx-vol/src/listed_dispersion_pipeline.cpp atx-vol/tests/listed_dispersion_pipeline_test.cpp`
+- [x] **Step 5: Commit** — `git add atx-vol/include/atx/vol/listed_dispersion_pipeline.hpp atx-vol/src/listed_dispersion_pipeline.cpp atx-vol/tests/listed_dispersion_pipeline_test.cpp`
 
 ---
 
@@ -376,17 +376,17 @@ exercised on `--execution configured`, where divergence rows are genuinely nonze
 cached surrogate instead of reproducing the cold archive marks — `:813-819`), **and** the comparator itself must be
 proven able to fail.
 
-- [ ] **Step 1: Write the failing test** — this task's gate is the CLI on a real fixture, not a gtest. Prepare the
+- [x] **Step 1: Write the failing test** — this task's gate is the CLI on a real fixture, not a gtest. Prepare the
       3-session fixture per `.superpowers/sdd/dispersion-parity/task-9-report.md` into a scratch dir (NEVER modify
       `scratchpad\paired`; NEVER touch `C:\atx-data`). The RED is structural: before the change the example has no
       `step_observer` reference at all, so `grep step_observer atx-vol/examples/spy_dispersion_backtest.cpp` is empty
       and no `mark divergence equivalence:` line can be produced. Record that as the pre-state.
-- [ ] **Step 2: Run to verify it fails** — `cmake --build C:\atx\build-rel --target atxvol_spy_dispersion_backtest`
+- [x] **Step 2: Run to verify it fails** — `cmake --build C:\atx\build-rel --target atxvol_spy_dispersion_backtest`
       on the pre-change tree, run `run-projected-backtest --run <fixture> --execution cold`, confirm **no**
       `mark divergence equivalence:` line is emitted. (Pre-state evidence; the comparator does not exist yet.)
-- [ ] **Step 3: Implement** the four edits above. Change **nothing** about the shadow loop, the arena, the section
+- [x] **Step 3: Implement** the four edits above. Change **nothing** about the shadow loop, the arena, the section
       build, the PhaseTimer phase list, or the priced run's config apart from `step_observer`.
-- [ ] **Step 4: Run to verify it passes** — rebuild the example, then on the 3-session fixture:
+- [x] **Step 4: Run to verify it passes** — rebuild the example, then on the 3-session fixture:
   - `run-projected-backtest --run <fixture> --execution cold` → exits 0, prints
     `mark divergence equivalence: observer=0 shadow=0 rows MATCH`, prints `projected backtest complete [cold]: dates=3
     rolls=1 final_nav=…`, and `runarchive dump <fixture> mark_divergence --tsv` is header-only. Capture its sha256 as
@@ -406,7 +406,7 @@ proven able to fail.
     equivalence line, `projected_nodiv` written and no `mark_divergence` section — unchanged behaviour.
   - Regression: `cd C:\atx\build-rel; .\bin\atx-vol-tests.exe --gtest_filter=ListedDispersion*:Strategy.*:RunDir.*:RunArchive*`
     → all PASS.
-- [ ] **Step 5: Commit** — `git add atx-vol/examples/spy_dispersion_backtest.cpp`
+- [x] **Step 5: Commit** — `git add atx-vol/examples/spy_dispersion_backtest.cpp`
 
 ---
 
@@ -419,12 +419,21 @@ divergence **on a real corpus** before the shadow loop is deleted. The comparato
 is the run. The named artifact is the `mark_divergence` section, compared two ways: in-process (observer vs shadow,
 bit-exact, by the T3 comparator) and out-of-process (`runarchive dump mark_divergence --tsv`, sha256, before vs after).
 
-- [ ] **Step 1:** On the idle box, on the parity-full 135-session corpus, run
+**[CONTROLLER ERRATUM — Wave D's 6th plan error, measured.** Steps 1 and 2 omit
+`--schedule projected_schedule.tsv`. Without it the run defaults to `trade_schedule.tsv` and Step 1's own acceptance
+line is unreachable: measured `final_nav=125026.0592`, not `123243.1172`, and its `projected_cold` dump hashed
+`a05470c7a6f6572f` — byte-identical to the sprint's **`backtest`** golden, because replaying the trade schedule cold
+just reproduces the plain listed backtest. The contract is in code at `spy_dispersion_backtest.cpp:677`
+("projected_schedule.tsv stays a text INPUT: run-projected-backtest reads it back via `--schedule`") and the authority
+is `parity_full_run.ps1:30-33`, whose Step 4 passes it. **The same omission is in Task 7 Step 3 and Wave E Task 9
+Step 3.** Both steps below were run WITH the flag; that is what the checked boxes attest.**]**
+
+- [x] **Step 1:** On the idle box, on the parity-full 135-session corpus, run
       `run-projected-backtest --run <parity-full> --execution cold` with the T3 build. Require: exit 0;
       `mark divergence equivalence: observer=0 shadow=0 rows MATCH`; `projected backtest complete [cold]: dates=135
       rolls=7 final_nav=123243.1172`; `dump projected_cold --tsv` sha256 first-16 == `cbabca44`;
       `dump mark_divergence --tsv` is header-only. Record the `mark_divergence` sha256 as golden **`MD-COLD`**.
-- [ ] **Step 2:** **The primary, non-vacuous proof.** Run
+- [x] **Step 2:** **The primary, non-vacuous proof.** Run
       `run-projected-backtest --run <parity-full-copy> --execution configured` with the T3 build. Require: exit 0 and
       `mark divergence equivalence: observer=N shadow=N rows MATCH` with **N > 0**. Record N and the
       `dump mark_divergence --tsv` sha256 as golden **`MD-CFG`**. Use a **copy** of the run dir (or a dedicated
@@ -435,13 +444,16 @@ bit-exact, by the T3 comparator) and out-of-process (`runarchive dump mark_diver
       `model_mark` perturbed in a copied `trade_schedule.tsv`, run cold) OR record explicitly that the only
       falsifiable evidence for L10 is T2's gtest plus T3's RED probe, and decide — on the record — whether that is
       sufficient to authorize the T5 deletion. Silence here is the Wave B failure mode.
-- [ ] **Step 3:** If either comparison reports a MISMATCH, **STOP**. Do not "fix" the observer to match the shadow and
+- [x] **Step 3:** *(No MISMATCH on either route — this step was not triggered. Recorded so its unchecked state is not
+      read as skipped.)* If either comparison reports a MISMATCH, **STOP**. Do not "fix" the observer to match the shadow and
       do not re-pin the golden. Diagnose which side is right: the shadow loads each session with the 2-argument
       `MarketSnapshot::load(path, tier)` while the engine loads through `snapshot_cache->load(path, tier,
       cfg.query_cache_build_policy)`, so a fast-tier / cache-build-policy difference is the most likely cause and the
       **engine's** prices are the economically real ones. Any golden move is an explicit controller economic decision
       recorded in the ledger with the reason, not a task step.
-- [ ] **Step 4:** Record in `.superpowers/sdd/backtest-wave-d/progress.md`: `MD-COLD`, `MD-CFG`, N, both console
+- [x] **Step 4:** *(Recorded in `.superpowers/sdd/backtest-wave-c/progress.md`, the single ledger this sprint uses for
+      Waves C/D/E. `MD-COLD` = `c9a04d1bcf0e3c07`, `MD-CFG` = `9e958a90ae15ac74`, N = 137.)*
+      Record in `.superpowers/sdd/backtest-wave-d/progress.md`: `MD-COLD`, `MD-CFG`, N, both console
       transcripts, and the explicit statement **"observer-derived divergence == shadow-derived divergence, bit-exact,
       on N > 0 real rows — the T5 deletion is authorized."** Commit the ledger.
 
@@ -475,17 +487,17 @@ bit-exact, by the T3 comparator) and out-of-process (`runarchive dump mark_diver
 6. Update the `--no-divergence` and `write_mark_divergence_replay` comments at `:692-697`, `:759-772`, `:822-826` —
    they describe a replay that no longer exists. `--no-divergence` now means "do not install the observer".
 
-- [ ] **Step 1: Write the failing test** — the gate is byte-identity of the pinned artifact against T3's captured
+- [x] **Step 1: Write the failing test** — the gate is byte-identity of the pinned artifact against T3's captured
       hashes. Assert the RED first: on the pre-change tree the shadow is still the source, so
       `grep collect_mark_divergence_replay atx-vol/examples/spy_dispersion_backtest.cpp` matches — that grep going
       empty is the change's signature. Also record the pre-change wall time of `run-projected-backtest --execution
       cold` on the 3-session fixture (the double-pass baseline).
-- [ ] **Step 2: Run to verify it fails** — n/a as a compile failure; the honest RED here is the T3/T4 comparator,
+- [x] **Step 2: Run to verify it fails** — n/a as a compile failure; the honest RED here is the T3/T4 comparator,
       which has ALREADY proven the observer equals the shadow. State in the report that this task's safety comes from
       T4's authorization plus the Step-4 byte-identity gate, and that no new RED test is claimed. **Do not invent a
       tautological test to fill this slot** (Wave B minor: `TwoRouteColdParity_LegMarksEqual` was `f(x) == f(x)`).
-- [ ] **Step 3: Implement** the six changes above.
-- [ ] **Step 4: Run to verify it passes** — rebuild the example; on the 3-session fixture, both routes:
+- [x] **Step 3: Implement** the six changes above.
+- [x] **Step 4: Run to verify it passes** — rebuild the example; on the 3-session fixture, both routes:
   - `--execution cold`: exits 0, `dates=3 rolls=1 final_nav=…` identical to T3's line, `dump mark_divergence --tsv`
     sha256 **== `MD-3S-COLD`**, and `dump projected_cold --tsv` sha256 unchanged from T3 (the priced run must be
     untouched by removing the shadow).
@@ -496,7 +508,7 @@ bit-exact, by the T3 comparator) and out-of-process (`runarchive dump mark_diver
   - Report the wall-time delta vs the Step-1 baseline as an observation (the L4/P5 win), **not** as a gate.
   - Regression: `cd C:\atx\build-rel; .\bin\atx-vol-tests.exe --gtest_filter=ListedDispersion*:Strategy.*:RunDir.*:RunArchive*`
     → all PASS.
-- [ ] **Step 5: Commit** — `git add atx-vol/examples/spy_dispersion_backtest.cpp`
+- [x] **Step 5: Commit** — `git add atx-vol/examples/spy_dispersion_backtest.cpp`
 
 ---
 
@@ -571,7 +583,7 @@ omission in the task report so it is a decision, not drift.
    rows. Confirm both facts in the report.
 4. Nothing else. `batch_spec`, `read_universe`, the `UniverseRow` schema, `universe_schedule.tsv` — all untouched.
 
-- [ ] **Step 1: Write the failing tests** — create `atx-vol/tests/dispersion_workflow_test.cpp` (this closes the
+- [x] **Step 1: Write the failing tests** — create `atx-vol/tests/dispersion_workflow_test.cpp` (this closes the
       module's zero-direct-coverage gap) with, at minimum:
   - `RunSpecIndexSymbolDefaultsToSpy` — `EXPECT_EQ(RunSpec{}.index_symbol, "SPY")`.
   - `AllSymbolsDefaultIsUnchanged` — over a fixture row set `{ "AAPL", "MSFT", "SPY" }`, `all_symbols(rows)` (no
@@ -595,14 +607,14 @@ omission in the task report so it is a decision, not drift.
     value (write→read closure).
   - In `atx-vol/tests/run_archive_test.cpp`, extend `RunArchiveEncoders.MetaSectionEchoesResolvedSpec` (`:1088-1096`)
     with `EXPECT_EQ(value_of("index_symbol"), "SPY")` — the meta echo must not silently omit a resolved knob.
-- [ ] **Step 2: Run tests to verify they fail** — register the new file in `atx-vol/tests/CMakeLists.txt`, then
+- [x] **Step 2: Run tests to verify they fail** — register the new file in `atx-vol/tests/CMakeLists.txt`, then
       `cmake --build C:\atx\build-rel --target atx-vol-tests` → expected FAIL: `'index_symbol': is not a member of
       'atx::vol::RunSpec'`, and `all_symbols`/`universe_at` "does not take 2/3 arguments". Record the diagnostics.
-- [ ] **Step 3: Implement** the header field, the two defaulted signatures, the three literal replacements
+- [x] **Step 3: Implement** the header field, the two defaulted signatures, the three literal replacements
       (`dispersion_workflow.cpp:224,238,240`), the parse + empty-guard, the resolved-spec append, the
       `encode_meta_section` append + `reserve` bump, and the six call-site threads in the table. Touch **no** pybind11
       file.
-- [ ] **Step 4: Run tests to verify they pass** — **full build** (`cmake --build C:\atx\build-rel`, all targets — a
+- [x] **Step 4: Run tests to verify they pass** — **full build** (`cmake --build C:\atx\build-rel`, all targets — a
       public library signature changed and the bindings must be proven to still compile against the default). Then:
   - `C:\atx\build-rel\bin\atx-vol-tests.exe --gtest_filter=DispersionWorkflow.*` → all PASS.
   - `--gtest_filter=RunArchive*:RunDir.*:ListedDispersion*:Tearsheet*` → all PASS, including
@@ -615,7 +627,7 @@ omission in the task report so it is a decision, not drift.
     **byte-identical to their pre-T6 values on that fixture** (capture the four sha256s before the change).
   - Confirm the enumerated deltas and nothing more: `run_spec.tsv` unchanged in a dir whose `build-corpus` was not
     re-run; `dump meta --tsv` gains exactly one row `index_symbol\tSPY`.
-- [ ] **Step 5: Commit** — `git add atx-vol/include/atx/vol/dispersion_workflow.hpp atx-vol/src/dispersion_workflow.cpp atx-vol/src/run_archive.cpp atx-vol/src/listed_dispersion_pipeline.cpp atx-vol/examples/spy_dispersion_backtest.cpp atx-vol/tests/dispersion_workflow_test.cpp atx-vol/tests/run_archive_test.cpp atx-vol/tests/CMakeLists.txt`
+- [x] **Step 5: Commit** — `git add atx-vol/include/atx/vol/dispersion_workflow.hpp atx-vol/src/dispersion_workflow.cpp atx-vol/src/run_archive.cpp atx-vol/src/listed_dispersion_pipeline.cpp atx-vol/examples/spy_dispersion_backtest.cpp atx-vol/tests/dispersion_workflow_test.cpp atx-vol/tests/run_archive_test.cpp atx-vol/tests/CMakeLists.txt`
 
 ---
 
@@ -623,15 +635,15 @@ omission in the task report so it is a decision, not drift.
 
 **Files:** this plan (check boxes); `.superpowers/sdd/backtest-wave-d/progress.md` (controller-owned ledger).
 
-- [ ] **Step 1: Full build.** `cmake --build C:\atx\build-rel` — every target (library, `atx-vol-tests`, all 7
+- [x] **Step 1: Full build.** `cmake --build C:\atx\build-rel` — every target (library, `atx-vol-tests`, all 7
       examples, both benches, the python module). Exit 0, no new warnings-as-errors. A `--target` build does not
       satisfy this step: `sizeof(RunConfig)` changed in T1 and a public `dispersion_workflow` signature changed in T6.
-- [ ] **Step 2: Full gtest from `C:\atx\build-rel` CWD.**
+- [x] **Step 2: Full gtest from `C:\atx\build-rel` CWD.**
       `cd C:\atx\build-rel; $env:PATH = "C:\atx\build-rel\bin;$env:PATH"; .\bin\atx-vol-tests.exe`
       → all green **modulo exactly** the three documented pre-existing reds
       (`BoundaryHoist.PriceBitIdenticalToPrechange`, `SurfaceV2Qualification…/Latency`, `…/Balanced`). Any fourth
       failure blocks the wave. Record the pass/skip/fail counts (Wave B's post-fix baseline: 3 failed).
-- [ ] **Step 3: Parity-full economics — UNCHANGED.** On the 135-session corpus (`C:\atx-data`, controller-only) run
+- [x] **Step 3: Parity-full economics — UNCHANGED.** On the 135-session corpus (`C:\atx-data`, controller-only) run
       `build-schedule → run-backtest → project-schedule → run-projected-backtest --execution cold`, then
       `run-projected-var`. Require:
   - listed `backtest complete: dates=135 rolls=7 final_nav=125026.0592`
@@ -649,12 +661,12 @@ omission in the task report so it is a decision, not drift.
   - `dump mark_divergence --tsv` sha256 == **`MD-COLD`** from T4.
   - `RunDir::verify` / `validate_all()` pass; the merge-write union still holds (9 sections in the shared dir); no new
     loose result TSVs; `kRaMinor` still 0; `schema_hash` still `0xdcce47781ac8390d`.
-- [ ] **Step 4: Configured-route equivalence, post-deletion.** On the configured-route dir from T4 Step 2, re-run
+- [x] **Step 4: Configured-route equivalence, post-deletion.** On the configured-route dir from T4 Step 2, re-run
       `run-projected-backtest --execution configured` with the **T5/T6** build and require
       `dump mark_divergence --tsv` sha256 == **`MD-CFG`** with the same N rows. This is the one gate that proves the
       deletion preserved the *nonzero* divergence channel, not just the empty one. If T4 Step 2 escalated, record
       here what substituted for it.
-- [ ] **Step 5: Fresh-reviewer final whole-branch review**, read-only, over `587ee97..HEAD`, with an explicit charter
+- [x] **Step 5: Fresh-reviewer final whole-branch review**, read-only, over `587ee97..HEAD`, with an explicit charter
       derived from Wave B's miss: **verify the PRODUCTION path, not the seam.** Specifically require the reviewer to
       answer, with file:line evidence: (a) is the observer fired at a point definitionally equivalent to the shadow's
       read (nothing between `on_step` and the read)?; (b) does any consumer downstream of `mark_divergence` still
@@ -663,7 +675,7 @@ omission in the task report so it is a decision, not drift.
       trap Wave B had to undo)?; (e) does the L12 default reproduce the pre-change `all_symbols` / `universe_at`
       outputs element-for-element, argued from the code and not from the goldens alone?; (f) is `record_every_n > 1`
       handled consistently between events and rows?
-- [ ] **Step 6: Commit** the ledger + this checked plan.
+- [x] **Step 6: Commit** the ledger + this checked plan.
 
 ---
 

@@ -106,6 +106,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/dispersion_workflow.cpp
     src/listed_dispersion.cpp
     src/listed_opra.cpp
+    src/listed_definitions_cache.cpp
     src/occ_ess.cpp
     src/listed_dispersion_schedule.cpp
     src/listed_dispersion_reconciliation.cpp

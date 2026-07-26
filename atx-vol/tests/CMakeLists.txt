@@ -96,11 +96,13 @@ add_executable(atx-vol-tests
     dispersion_test.cpp
     listed_dispersion_test.cpp
     listed_opra_test.cpp
+    listed_definitions_cache_test.cpp
     occ_ess_test.cpp
     listed_dispersion_schedule_test.cpp
     listed_dispersion_reconciliation_test.cpp
     listed_dispersion_strategy_test.cpp
     listed_dispersion_pipeline_test.cpp
+    dispersion_workflow_test.cpp
     backtest_test.cpp
     strategy_test.cpp
     dispersion_strangle_test.cpp
@@ -163,6 +165,14 @@ target_link_libraries(atx-vol-tests
         GTest::gtest_main
         atx_warnings
 )
+
+# Wave E T7 fix round 1, I5: listed_definitions_cache_test.cpp's peak-RSS
+# harness calls GetProcessMemoryInfo/EmptyWorkingSet (psapi.h). Linked
+# explicitly rather than relying on the PSAPI_VERSION=2 kernel32-forwarding
+# macro trick, so this does not depend on that SDK default.
+if(WIN32)
+    target_link_libraries(atx-vol-tests PRIVATE psapi)
+endif()
 
 # F2 quarantine: unlocks atx/vol/calib_pool.hpp (test-only guard) for both the
 # relocated ../src/calib_pool.cpp TU and calib_pool_test.cpp. Any production TU

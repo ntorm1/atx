@@ -1363,6 +1363,14 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   ATX_VOL_PROFILE_SCOPE(BacktestTotal);
   ATX_TRY_VOID(validate_run_config(cfg));
   ATX_TRY_VOID(validate_run_query_route(cfg));
+  // Fail closed rather than silently ignore: this overload never calls on_step, so
+  // there is no post-on_step strategy state for a StepEvent to carry. A dropped
+  // observer would be a dropped observation the caller believes it made.
+  if (cfg.step_observer) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: RunConfig::step_observer requires the strategy overload (the "
+               "fixed-book run has no on_step)");
+  }
   ATX_TRY_VOID(validate_lot_economics(initial.lots, "initial fixed book"));
   const std::span<const SnapshotRef> refs = clock.refs();
   if (refs.empty()) {
@@ -1864,6 +1872,12 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     if (!st) {
       return Err(st.error());
     }
+    // L10 observation point: NOTHING may sit between on_step and this call. The
+    // shadow replay loop this hook replaces read strategy state with nothing in
+    // between, so only this position is definitionally equivalent to it.
+    if (cfg.step_observer) {
+      ATX_TRY_VOID(cfg.step_observer(StepEvent{0, refs[0], *base, strat}));
+    }
     before_lots.clear(); // empty => every opened lot is a fresh entry
     ATX_TRY_VOID(validate_strategy_transition(before_lots, book.lots, next_id_before, next_id,
                                               base->ts_ns(), before_lot_index, after_lot_index));
@@ -2000,6 +2014,12 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     }();
     if (!st) {
       return Err(st.error());
+    }
+    // L10 observation point — see the inception call above. Fires on EVERY step,
+    // independent of record_every_n; an Err aborts here, mid-step, so no partial
+    // row is recorded.
+    if (cfg.step_observer) {
+      ATX_TRY_VOID(cfg.step_observer(StepEvent{i, refs[i], *base, strat}));
     }
     ATX_TRY_VOID(validate_strategy_transition(before_lots, book.lots, next_id_before, next_id,
                                               base->ts_ns(), before_lot_index, after_lot_index));

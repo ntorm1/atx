@@ -81,7 +81,8 @@ std::uint64_t ListedDispersionMethodology::policy_fingerprint() const {
 
 Result<std::vector<ListedOptionQuote>>
 listed_quotes_for_date(const RunSpec &spec, const ListedDefinitionTable &definitions,
-                       std::span<const std::string> symbols, std::string_view date) {
+                       std::span<const std::string> symbols, std::string_view date,
+                       std::span<const ListedQuoteKey> wanted) {
   ATX_TRY(OpraBatchResult batch, load_opra_daterange(batch_spec(spec, symbols, date, date)));
   std::vector<ListedOptionQuote> quotes;
   for (const OpraBatchEntry &entry : batch.entries) {
@@ -97,7 +98,7 @@ listed_quotes_for_date(const RunSpec &spec, const ListedDefinitionTable &definit
     // hard-failed), so currently-passing runs stay bit-for-bit unchanged.
     ATX_TRY(std::vector<ListedOptionQuote> joined,
             listed_quotes_from_opra(date, entry.panel->frame.snapshot_ts_ns, *entry.panel,
-                                    definitions, MissingDefinitionPolicy::SkipUnlisted));
+                                    definitions, MissingDefinitionPolicy::SkipUnlisted, wanted));
     quotes.insert(quotes.end(), std::make_move_iterator(joined.begin()),
                   std::make_move_iterator(joined.end()));
   }
@@ -202,7 +203,7 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
   // `quote_join` phases exactly as the example measured them inline, so the CLI's
   // build-schedule diagnostics keep their pre-lift per-phase granularity; a null
   // timer skips the charges and is economically identical.
-  const std::vector<std::string> symbols = all_symbols(universe_rows);
+  const std::vector<std::string> symbols = all_symbols(universe_rows, quote_source.index_symbol);
   ListedDispersionSchedule schedule;
   std::int64_t active_expiry = 0;
   for (const SnapshotRef &ref : clock.refs()) {
@@ -221,7 +222,8 @@ build_listed_dispersion_schedule(const Clock &clock, const ListedScheduleSpec &s
       }
       continue;
     }
-    ATX_TRY(DispersionUniverse authored, universe_at(universe_rows, ref.date));
+    ATX_TRY(DispersionUniverse authored,
+            universe_at(universe_rows, ref.date, quote_source.index_symbol));
     MissingNameSpec missing{MissingNamePolicy::DropRenormalize, spec.min_names};
     ATX_TRY(
         ResolvedUniverse resolved,
@@ -445,6 +447,88 @@ Result<ListedDispersionSchedule> project_listed_schedule(const ListedDispersionS
   // gross = 2x target) the persisted schedule must pass.
   ATX_TRY_VOID(validate_listed_dispersion_schedule(projected));
   return Ok(std::move(projected));
+}
+
+double listed_mark_divergence_bps(const double schedule_mark, const double live_mark) noexcept {
+  // Verbatim arithmetic from the example's `collect_mark_divergence_replay`: the
+  // ratio is taken against |schedule_mark|, and a zero frozen mark collapses the
+  // metric to 0.0 rather than reporting an infinite relative error (finding L2).
+  const double diff = live_mark - schedule_mark;
+  const double denom = std::abs(schedule_mark);
+  return denom > 0.0 ? std::abs(diff) / denom * 1.0e4 : 0.0;
+}
+
+StepObserver make_mark_divergence_observer(const ListedDispersionSchedule &schedule,
+                                           std::vector<ListedMarkDivergenceRow> &out) {
+  // Both captures are borrows, documented at the declaration: the returned observer
+  // is handed to one run_backtest call that both must outlive.
+  return [&schedule, &out](const StepEvent &event) -> Status {
+    // The rows need the listed strategy's per-step divergence record, which is not on
+    // IStrategy. Downcast rather than widen the (documented, ABI-fragile) IStrategy
+    // vtable for a single consumer; a foreign strategy is an InvalidArgument, never a
+    // silent no-op, because a run whose observer quietly observed nothing is exactly
+    // the "dropped observation the caller believes it made" failure class.
+    const auto *strategy = dynamic_cast<const ListedDispersionStrategy *>(&event.strategy);
+    if (strategy == nullptr) {
+      return Err(ErrorCode::InvalidArgument,
+                 "mark divergence observer: strategy is not a ListedDispersionStrategy");
+    }
+    const std::vector<MarkDivergence> &divergences = strategy->last_mark_divergences();
+    if (divergences.empty()) {
+      return Ok();
+    }
+    // Divergences are populated only on a roll step; the roll that just fired owns
+    // the legs carrying each contract's symbol/raw_symbol. A non-empty record implies
+    // on_step returned Ok, so the cursor has already advanced past that roll and is
+    // at least 1 — but `schedule` here is an INDEPENDENT input and is never the
+    // strategy's own object (create() stores a copy), so the bound is checked against
+    // the observed schedule rather than assumed from the cursor. Indexing a schedule
+    // that is not value-equal to the strategy's would be undefined behavior; the shadow
+    // replay this observer replaces could not reach that state, because its strategy
+    // was constructed from the very schedule its loop indexed.
+    const std::size_t roll_index = strategy->next_roll_index();
+    if (roll_index == 0u || roll_index > schedule.rolls.size()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "mark divergence observer: roll cursor outside the observed schedule");
+    }
+    const ListedScheduleRoll &roll = schedule.rolls[roll_index - 1u];
+    // Fail-closed cross-check in the codebase's existing belt-and-braces style:
+    // ListedDispersionStrategy::on_step already errors unless the stepped snapshot's
+    // valuation timestamp equals the roll's, so this can only fire when the observer
+    // was handed a schedule that does not belong to the observed run. It is also what
+    // makes StepEvent::snapshot load-bearing here rather than decorative.
+    if (event.snapshot.ts_ns() != roll.valuation_ts_ns) {
+      return Err(ErrorCode::InvalidArgument,
+                 "mark divergence observer: step snapshot is not the roll valuation date");
+    }
+    for (const MarkDivergence &divergence : divergences) {
+      const ListedScheduleLeg *matched = nullptr;
+      for (const ListedScheduleLeg &leg : roll.legs) {
+        if (leg.uid == divergence.uid && leg.strike == divergence.strike &&
+            leg.expiry_ts_ns == divergence.expiry_ts_ns && leg.side == divergence.side) {
+          matched = &leg;
+          break;
+        }
+      }
+      if (matched == nullptr) {
+        return Err(ErrorCode::NotFound, "mark divergence leg not found in roll");
+      }
+      ListedMarkDivergenceRow row;
+      row.date = event.ref.date;
+      row.symbol = matched->symbol;
+      row.raw_symbol = matched->raw_symbol;
+      row.strike = divergence.strike;
+      row.expiry_ts_ns = divergence.expiry_ts_ns;
+      row.side = divergence.side;
+      row.schedule_mark = divergence.schedule_mark;
+      row.live_mark = divergence.live_mark;
+      row.diff = divergence.live_mark - divergence.schedule_mark;
+      row.abs_diff_bps_of_mark =
+          listed_mark_divergence_bps(divergence.schedule_mark, divergence.live_mark);
+      out.push_back(std::move(row));
+    }
+    return Ok();
+  };
 }
 
 Result<DispersionBookVar>

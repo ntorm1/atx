@@ -11,11 +11,11 @@
 #include <map>
 #include <string>
 #include <string_view>
-#include <tuple>
 #include <utility>
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/listed_quote_key.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
 
@@ -26,25 +26,12 @@ using atx::core::Err;
 using atx::core::ErrorCode;
 using atx::core::Ok;
 
-struct LegKey {
-  std::string raw_symbol{};
-  std::int64_t expiry_ts_ns{0};
-  double strike{0.0};
-  Side side{Side::Call};
-
-  [[nodiscard]] bool operator<(const LegKey &other) const noexcept {
-    return std::tie(raw_symbol, expiry_ts_ns, strike, side) <
-           std::tie(other.raw_symbol, other.expiry_ts_ns, other.strike, other.side);
-  }
-};
-
-[[nodiscard]] LegKey key_of(const ListedScheduleLeg &leg) {
-  return LegKey{leg.raw_symbol, leg.expiry_ts_ns, leg.strike, leg.side};
-}
-
-[[nodiscard]] LegKey key_of(const ListedOptionQuote &quote) {
-  return LegKey{quote.raw_symbol, quote.expiry_ts_ns, quote.strike, quote.side};
-}
+// `LegKey` / `key_of` used to live here, in this anonymous namespace. They are
+// now `ListedQuoteKey` / `quote_key_of` in atx/vol/listed_quote_key.hpp — same four
+// members, same comparison order — because the OPRA join now FILTERS panel rows
+// by the same key this file LOOKS QUOTES UP by. Two private definitions of "same
+// contract" could drift apart, and the filter would then drop a leg this file
+// cannot mark; one public definition makes them agree by construction.
 
 [[nodiscard]] bool finite(double value) noexcept { return std::isfinite(value); }
 
@@ -108,16 +95,16 @@ void append_optional_double(std::string &out, double value, bool present) {
   return Ok();
 }
 
-[[nodiscard]] Result<std::map<LegKey, const ListedOptionQuote *>>
+[[nodiscard]] Result<std::map<ListedQuoteKey, const ListedOptionQuote *>>
 quote_index(const ListedReconciliationSnapshot &snapshot) {
-  std::map<LegKey, const ListedOptionQuote *> out;
+  std::map<ListedQuoteKey, const ListedOptionQuote *> out;
   for (const ListedOptionQuote &quote : snapshot.quotes) {
     if (quote.trade_date != snapshot.date || quote.quote_ts_ns > snapshot.valuation_ts_ns ||
         quote.quote_ts_ns <= 0) {
       return Err(ErrorCode::InvalidArgument,
                  "listed reconciliation: quote date or timestamp mismatch");
     }
-    const auto [position, inserted] = out.emplace(key_of(quote), &quote);
+    const auto [position, inserted] = out.emplace(quote_key_of(quote), &quote);
     (void)position;
     if (!inserted) {
       return Err(ErrorCode::AlreadyExists, "listed reconciliation: duplicate daily contract key");
@@ -128,7 +115,7 @@ quote_index(const ListedReconciliationSnapshot &snapshot) {
 
 [[nodiscard]] Result<ListedContractMark>
 mark_leg(const ListedScheduleLeg &leg, const ListedReconciliationSnapshot &snapshot,
-         ListedMarkRole role, const std::map<LegKey, const ListedOptionQuote *> &quotes,
+         ListedMarkRole role, const std::map<ListedQuoteKey, const ListedOptionQuote *> &quotes,
          const ListedReconciliationConfig &config) {
   ListedContractMark mark;
   mark.date = snapshot.date;
@@ -170,7 +157,7 @@ mark_leg(const ListedScheduleLeg &leg, const ListedReconciliationSnapshot &snaps
     }
   }
 
-  const auto raw = quotes.find(key_of(leg));
+  const auto raw = quotes.find(quote_key_of(leg));
   if (raw == quotes.end()) {
     if (mark.status == ListedMarkStatus::Ok) {
       mark.status = ListedMarkStatus::NoRawQuote;
@@ -244,7 +231,7 @@ reconcile_listed_dispersion(const ListedDispersionSchedule &schedule,
 
   ListedDispersionReconciliation out;
   std::size_t active_roll = 0;
-  std::map<LegKey, ListedContractMark> previous_marks;
+  std::map<ListedQuoteKey, ListedContractMark> previous_marks;
   double model_nav = 0.0;
   double quote_nav = 0.0;
 
@@ -269,7 +256,7 @@ reconcile_listed_dispersion(const ListedDispersionSchedule &schedule,
       for (const ListedScheduleLeg &leg : entry.legs) {
         ATX_TRY(ListedContractMark mark,
                 mark_leg(leg, snapshot, ListedMarkRole::Entry, quotes, config));
-        previous_marks.emplace(key_of(leg), mark);
+        previous_marks.emplace(quote_key_of(leg), mark);
         out.marks.push_back(std::move(mark));
       }
       row.n_held_lots = static_cast<std::uint32_t>(entry.legs.size());
@@ -283,11 +270,11 @@ reconcile_listed_dispersion(const ListedDispersionSchedule &schedule,
     }
 
     const ListedScheduleRoll &held = schedule.rolls[active_roll];
-    std::map<LegKey, ListedContractMark> current_held;
+    std::map<ListedQuoteKey, ListedContractMark> current_held;
     for (const ListedScheduleLeg &leg : held.legs) {
       ATX_TRY(ListedContractMark mark,
               mark_leg(leg, snapshot, ListedMarkRole::Held, quotes, config));
-      const auto previous = previous_marks.find(key_of(leg));
+      const auto previous = previous_marks.find(quote_key_of(leg));
       if (previous == previous_marks.end()) {
         return Err(ErrorCode::InvalidArgument, "listed reconciliation: previous held mark missing");
       }
@@ -298,7 +285,7 @@ reconcile_listed_dispersion(const ListedDispersionSchedule &schedule,
         row.quote_mid_pnl += scale * (mark.raw_mid - previous->second.raw_mid);
         ++row.n_quote_mid_lots;
       }
-      current_held.emplace(key_of(leg), mark);
+      current_held.emplace(quote_key_of(leg), mark);
       out.marks.push_back(std::move(mark));
     }
     row.model_minus_quote_pnl = row.model_option_pnl - row.quote_mid_pnl;
@@ -321,7 +308,7 @@ reconcile_listed_dispersion(const ListedDispersionSchedule &schedule,
       for (const ListedScheduleLeg &leg : entry.legs) {
         ATX_TRY(ListedContractMark mark,
                 mark_leg(leg, snapshot, ListedMarkRole::Entry, quotes, config));
-        previous_marks.emplace(key_of(leg), mark);
+        previous_marks.emplace(quote_key_of(leg), mark);
         out.marks.push_back(std::move(mark));
       }
       active_roll = next_roll;
