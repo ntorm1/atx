@@ -80,7 +80,23 @@ struct Civil {
 }
 
 // Parse a full-width unsigned decimal field, requiring the whole span be digits.
+//
+// REV-R3 (R1-c residual): the digit requirement is ENFORCED here, not merely
+// documented. `std::from_chars` parses into a SIGNED `int` and therefore accepts
+// a leading '-', which let `"-123-01-01"` through `parse_civil` end to end: it is
+// 10 bytes, `s[4]` and `s[7]` are dashes, the year field parses to `-123`, the
+// month/day are in range, and — decisively — a negative year ROUND-TRIPS through
+// `days_from_civil`/`civil_from_days` (the Hinnant algorithm is defined for
+// them), so R1-c's round-trip check cannot see it either. A civil-date field is
+// unsigned by construction, so reject any non-digit byte before `from_chars`
+// gets a say. This also hardens the month/day fields, where a '-' was caught only
+// incidentally by the `m < 1 || d < 1` range test one frame up.
 [[nodiscard]] inline bool parse_uint(std::string_view s, int& out) noexcept {
+  for (const char c : s) {
+    if (c < '0' || c > '9') {
+      return false;
+    }
+  }
   const char* first = s.data();
   const char* last = s.data() + s.size();
   const std::from_chars_result res = std::from_chars(first, last, out);
@@ -110,6 +126,11 @@ struct Civil {
 // THE RANGE CHECK STAYS, and is not merely an early-out: `days_from_civil` is
 // documented valid only for m in [1,12] and d in [1,31], so it must not be handed
 // `m = 99` at all. Ordering here is load-bearing.
+//
+// NEGATIVE YEARS are refused by `parse_uint`, not here — see its comment. The
+// round trip provably cannot catch them (a negative year is a perfectly valid
+// Gregorian date to the Hinnant algorithm and round-trips exactly), so the
+// rejection has to happen at the field parse.
 [[nodiscard]] inline bool parse_civil(std::string_view s, Civil& out) noexcept {
   if (s.size() != 10 || s[4] != '-' || s[7] != '-') {
     return false;

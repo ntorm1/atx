@@ -378,6 +378,46 @@ TEST(OpraCivilDate, ImpossibleDatesAreRejected) {
   EXPECT_FALSE(opra_detail::parse_civil("2026-1-1", c));
 }
 
+// ── REV-R3 (R1-c residual): a NEGATIVE year is not a date ────────────────────
+//
+// The round trip above cannot catch this one, and that is the whole point of
+// testing it separately. `"-123-01-01"` is 10 bytes with dashes at [4] and [7],
+// so it clears the shape gate; `std::from_chars` parses the year field into a
+// SIGNED int as -123; month and day are in range; and `days_from_civil` /
+// `civil_from_days` are defined for negative years, so it round-trips EXACTLY and
+// R1-c's check passes it. The rejection therefore has to happen at the field
+// parse: a civil-date field is unsigned by construction.
+//
+// Without this the loaders accepted a window starting in 124 BC and walked it as
+// a contiguous serial-day interval — `date_lo = "-123-01-01"`, `date_hi =
+// "2026-07-01"` is 784,000 days of directory probing, not an error.
+TEST(OpraCivilDate, NegativeYearsAreRejected) {
+  atx::vol::opra_detail::Civil c;
+
+  EXPECT_FALSE(opra_detail::parse_civil("-123-01-01", c)) << "the reviewer's residual case";
+  EXPECT_FALSE(opra_detail::parse_civil("-999-12-31", c));
+  EXPECT_FALSE(opra_detail::parse_civil("-000-01-01", c)) << "negative zero is still a sign byte";
+
+  // The same signed-parse hole in the month and day fields. These were already
+  // refused, but only INCIDENTALLY, by the `m < 1` / `d < 1` range test — the
+  // fields are now rejected where they are parsed, so the range test is no
+  // longer the only thing standing behind them.
+  EXPECT_FALSE(opra_detail::parse_civil("2026--1-01", c));
+  EXPECT_FALSE(opra_detail::parse_civil("2026-01--1", c));
+
+  // Other non-digit bytes in the year field, which had the same hole: anything
+  // `from_chars` would stop on, or a space it would skip past, must be refused.
+  EXPECT_FALSE(opra_detail::parse_civil("20 6-01-01", c));
+  EXPECT_FALSE(opra_detail::parse_civil("2O26-01-01", c)); // letter O, not zero
+  EXPECT_FALSE(opra_detail::parse_civil("+123-01-01", c));
+
+  // And the ordinary date immediately either side of the change still parses.
+  ASSERT_TRUE(opra_detail::parse_civil("0001-01-01", c));
+  EXPECT_EQ(c.y, 1);
+  EXPECT_EQ(c.m, 1u);
+  EXPECT_EQ(c.d, 1u);
+}
+
 // Every ordinary date the loaders are given must still parse, and to the same
 // value: the fix must not have narrowed anything real. Walks a whole year --
 // every valid (month, day) of 2026 plus the leap day of 2024 -- and asserts both
