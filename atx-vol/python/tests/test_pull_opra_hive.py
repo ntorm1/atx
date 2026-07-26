@@ -23,6 +23,7 @@ from __future__ import annotations
 import importlib.util
 import pathlib
 import sys
+from unittest import mock
 
 import pandas as pd
 import pyarrow as pa
@@ -222,6 +223,47 @@ def test_merge_force_rewrites_requested_and_preserves_others(tmp_path):
     tbl = pq.read_table(tgt).to_pandas()
     assert tbl.loc[tbl["underlying"] == "AAPL", "bid_px"].tolist() == [222]  # rewritten
     assert tbl.loc[tbl["underlying"] == "GOOG", "bid_px"].tolist() == [999]  # preserved
+
+
+def test_merge_existing_file_read_has_no_injected_hive_date_column(tmp_path):
+    """``pq.read_table()`` infers a Hive partition key from a
+    ``date=YYYY-MM-DD/`` path segment and injects a spurious ``date`` column
+    into the result (reproduced against the installed pyarrow 18.0.0). Every
+    date file ``merge_date_file`` merges into lives under exactly such a
+    path, so its read of an EXISTING file must never see that column.
+
+    The final merged output can't be used to prove this: ``merge_date_file``
+    always hard-selects ``COLUMNS`` before writing, which would mask an
+    injected column regardless of which pyarrow entry point did the read.
+    So spy on the two candidate entry points (whichever one the code under
+    test actually calls) and assert on the SCHEMA of what the read itself
+    returned, before any column selection happens."""
+    tgt = tmp_path / "date=2026-07-20" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["SPY"]), tgt)  # real v2 date file on disk
+
+    schemas: list[pa.Schema] = []
+    real_read_table = ph.pq.read_table
+    real_parquet_file = ph.pq.ParquetFile
+
+    def spy_read_table(path, *a, **kw):
+        table = real_read_table(path, *a, **kw)
+        schemas.append(table.schema)
+        return table
+
+    class SpyParquetFile(real_parquet_file):
+        def read(self, *a, **kw):
+            table = super().read(*a, **kw)
+            schemas.append(table.schema)
+            return table
+
+    with mock.patch.object(ph.pq, "read_table", spy_read_table), \
+         mock.patch.object(ph.pq, "ParquetFile", SpyParquetFile):
+        ph.merge_date_file(tgt, _decoded(["AAPL"]), tgt)  # merges into the EXISTING file
+
+    assert schemas, "expected the existing-file read to be observed"
+    schema = schemas[0]
+    assert "date" not in schema.names, f"injected Hive `date` column: {schema.names}"
+    assert list(schema.names) == ph.COLUMNS
 
 
 # ── preflight math + degrade ──────────────────────────────────────────────────

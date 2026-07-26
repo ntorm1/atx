@@ -342,7 +342,14 @@ def merge_date_file(existing_path, new_frame: pd.DataFrame, target_path,
     new_frame = (new_frame[COLUMNS].copy() if len(new_frame) else _empty_decoded())
     existing_path = pathlib.Path(existing_path) if existing_path is not None else None
     if existing_path is not None and existing_path.exists():
-        existing = pq.read_table(existing_path).to_pandas()[COLUMNS]
+        # NOT pq.read_table(): existing_path lives under a `date=YYYY-MM-DD/`
+        # directory, which pyarrow's dataset layer treats as a Hive partition
+        # key and injects as a spurious `date` column into the result
+        # (reproduced against pyarrow 18.0.0). ParquetFile.read() reads the
+        # file's actual on-disk schema only -- same fix already applied in
+        # migrate_opra_hive.py's _merge_union_date for this identical trap.
+        # Do not "simplify" this back to pq.read_table.
+        existing = pq.ParquetFile(existing_path).read().to_pandas()[COLUMNS]
         new_unds = set(new_frame["underlying"].unique().tolist())
         if force:
             kept = existing[~existing["underlying"].isin(new_unds)]
