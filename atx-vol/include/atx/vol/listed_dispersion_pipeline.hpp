@@ -32,6 +32,7 @@
 #include "atx/vol/listed_dispersion_schedule.hpp" // ListedRiskLookup, ListedOptionRisk
 #include "atx/vol/listed_dispersion_strategy.hpp" // ListedDispersionStrategy, MarkDivergence
 #include "atx/vol/listed_opra.hpp"                // ListedDefinitionTable, MissingDefinitionPolicy
+#include "atx/vol/listed_quote_key.hpp"           // ListedQuoteKey
 #include "atx/vol/types.hpp"                      // Result
 
 namespace atx::vol {
@@ -91,9 +92,20 @@ struct ListedDispersionMethodology {
 // panel to `definitions` under MissingDefinitionPolicy::SkipUnlisted. Needs live
 // OPRA parquet, so it is not unit-tested here — its correctness is pinned by the
 // T10 fixture gate.
+//
+// `wanted` is forwarded verbatim to `listed_quotes_from_opra` for every panel in
+// the batch; read that function's contract (listed_opra.hpp) before passing a
+// non-empty set, because it NARROWS three of the join's fatal checks to the keys
+// named. Empty (the default) is today's behaviour, bit for bit.
+//
+// Only the reconciliation caller filters. The build-schedule caller
+// (`build_listed_dispersion_schedule`) passes nothing and must: it is SELECTING
+// contracts, and its consumer `select_listed_dispersion` scans the whole quote
+// set to find them, so it cannot know its key set in advance.
 [[nodiscard]] Result<std::vector<ListedOptionQuote>>
 listed_quotes_for_date(const RunSpec &spec, const ListedDefinitionTable &definitions,
-                       std::span<const std::string> symbols, std::string_view date);
+                       std::span<const std::string> symbols, std::string_view date,
+                       std::span<const ListedQuoteKey> wanted = {});
 
 // Forward-lookup seam for schedule selection (lift of spy_dispersion_backtest.cpp
 // :480-491). Resolves each member's ATM forward at (expiry - snapshot.ts_ns()).

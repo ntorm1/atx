@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "atx/vol/listed_dispersion.hpp"
+#include "atx/vol/listed_quote_key.hpp"
 #include "atx/vol/opra_panel.hpp"
 #include "atx/vol/types.hpp"
 
@@ -139,9 +140,48 @@ enum class MissingDefinitionPolicy : std::uint8_t { Error = 0, SkipUnlisted = 1 
 // introduced on this path. `policy` governs only the missing-definition
 // fall-through (see MissingDefinitionPolicy); it defaults to the strict Error
 // behavior so existing callers are unaffected.
+//
+// ── `wanted`: the leg-key filter, and the validation it NARROWS ──────────────
+//
+// EMPTY `wanted` (the default) is today's behavior, bit for bit: every panel row
+// is joined and every check below fires for every row.
+//
+// A NON-EMPTY `wanted` is a consumer declaring the exact contract set it will
+// read. It must be SORTED and DEDUPED in `ListedQuoteKey` order. The result is
+// then exactly the unfiltered result INTERSECTED with `wanted`, element for
+// element and in the same panel order — a row whose `quote_key_of` is not in
+// `wanted` is never emitted.
+//
+// The filter is applied in two stages. A cheap `raw_symbol` membership test runs
+// AFTER the aligned-source-identity lookup and its fatal gate, and BEFORE
+// `definitions.find`, the OSI parse and quote construction — that is where the
+// cost is, and skipping it is the entire point. The exact key (which needs the
+// definition's `expiry_ts_ns`, and so cannot be known before the lookup) is
+// re-checked immediately before the quote is emitted.
+//
+// THIS NARROWS VALIDATION, DELIBERATELY. Four checks are fatal for any panel row
+// under an empty `wanted`:
+//
+//   1. aligned source identity missing  — PRESERVED panel-wide. It precedes the
+//      filter, so an unresolvable instrument id is still fatal even for a row no
+//      consumer wants.
+//   2. definition look-ahead / expiry   — NARROWED to rows whose raw_symbol is
+//   3. quote/OSI/definition economics      in `wanted`.
+//   4. future quote
+//
+// Checks 2-4 therefore stop being a panel-wide audit of the definition table and
+// become an audit of the contracts the caller consumes. That is the accepted
+// trade: validating definitions for the ~100k contracts a reconciliation never
+// reads is not the reconciliation's job, and the exporter that produced the
+// definitions owns that audit. What must NOT happen is a fail-closed gate going
+// quiet for a contract the caller DOES read, so the raw_symbol stage is
+// deliberately coarser than the full key: a row whose economics DISAGREE (check
+// 3) still carries the wanted raw_symbol and still trips the gate, rather than
+// being filtered out on the strike/side it is lying about.
 [[nodiscard]] Result<std::vector<ListedOptionQuote>>
 listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_ns,
                         const OpraPanel &panel, const ListedDefinitionTable &definitions,
-                        MissingDefinitionPolicy policy = MissingDefinitionPolicy::Error);
+                        MissingDefinitionPolicy policy = MissingDefinitionPolicy::Error,
+                        std::span<const ListedQuoteKey> wanted = {});
 
 } // namespace atx::vol

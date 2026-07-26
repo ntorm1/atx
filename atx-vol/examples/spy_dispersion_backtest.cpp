@@ -577,6 +577,26 @@ Status run_backtest_command(const fs::path &run_dir) {
   // uncharged — that keeps the partition exact rather than approximate.
   const auto join_setup_start = PhaseTimer::now();
   const std::vector<std::string> symbols = all_symbols(universe_rows, spec.index_symbol);
+  // The exact contract set this re-mark pass will read: every leg of every roll.
+  // The OPRA panels carry the whole listed universe for these symbols — on the
+  // Wave E fixture the unfiltered join emitted 41k quotes per session against a
+  // schedule of 66 legs — so handing the join the key set lets it skip the
+  // definition lookup, the OSI parse and quote construction for everything else.
+  // Read the `wanted` contract in listed_opra.hpp first: it also NARROWS three of
+  // the join's four fatal checks to these keys.
+  //
+  // The UNION over ALL rolls, not the active cohort. A roll date marks both the
+  // held and the entering cohort (listed_dispersion_reconciliation.cpp), so a
+  // per-date cohort set would be a cohort-boundary reasoning error waiting to
+  // happen; the union is one key per leg per roll and trivially small.
+  std::vector<ListedQuoteKey> wanted;
+  for (const ListedScheduleRoll &roll : schedule.rolls) {
+    for (const ListedScheduleLeg &leg : roll.legs) {
+      wanted.push_back(quote_key_of(leg));
+    }
+  }
+  std::sort(wanted.begin(), wanted.end());
+  wanted.erase(std::unique(wanted.begin(), wanted.end()), wanted.end());
   std::vector<std::shared_ptr<const MarketSnapshot>> snapshot_owners;
   std::vector<std::vector<ListedOptionQuote>> quote_owners;
   snapshot_owners.reserve(clock.size());
@@ -591,7 +611,7 @@ Status run_backtest_command(const fs::path &run_dir) {
 
     const auto quote_start = PhaseTimer::now();
     ATX_TRY(std::vector<ListedOptionQuote> quotes,
-            listed_quotes_for_date(spec, definitions, symbols, ref.date));
+            listed_quotes_for_date(spec, definitions, symbols, ref.date, wanted));
     quote_owners.push_back(std::move(quotes));
     timer.add("quote_join", quote_start, 1u);
   }

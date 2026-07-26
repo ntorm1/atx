@@ -81,7 +81,8 @@ std::uint64_t ListedDispersionMethodology::policy_fingerprint() const {
 
 Result<std::vector<ListedOptionQuote>>
 listed_quotes_for_date(const RunSpec &spec, const ListedDefinitionTable &definitions,
-                       std::span<const std::string> symbols, std::string_view date) {
+                       std::span<const std::string> symbols, std::string_view date,
+                       std::span<const ListedQuoteKey> wanted) {
   ATX_TRY(OpraBatchResult batch, load_opra_daterange(batch_spec(spec, symbols, date, date)));
   std::vector<ListedOptionQuote> quotes;
   for (const OpraBatchEntry &entry : batch.entries) {
@@ -97,7 +98,7 @@ listed_quotes_for_date(const RunSpec &spec, const ListedDefinitionTable &definit
     // hard-failed), so currently-passing runs stay bit-for-bit unchanged.
     ATX_TRY(std::vector<ListedOptionQuote> joined,
             listed_quotes_from_opra(date, entry.panel->frame.snapshot_ts_ns, *entry.panel,
-                                    definitions, MissingDefinitionPolicy::SkipUnlisted));
+                                    definitions, MissingDefinitionPolicy::SkipUnlisted, wanted));
     quotes.insert(quotes.end(), std::make_move_iterator(joined.begin()),
                   std::make_move_iterator(joined.end()));
   }

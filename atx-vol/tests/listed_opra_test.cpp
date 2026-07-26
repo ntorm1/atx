@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -306,6 +307,335 @@ TEST(ListedOpra, RejectsDailyIdentityAndAlignmentViolations) {
   source.provenance_complete = false;
   EXPECT_FALSE(
       atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table));
+}
+
+// --- The leg-key filter (`wanted`) ---------------------------------------
+//
+// A non-empty `wanted` declares the exact contract set the caller will read, so
+// the join can skip the definition lookup, the OSI parse and quote construction
+// for every other panel row. Two properties have to hold at once:
+//
+//   RESULT EQUALITY — the filtered result is exactly the unfiltered result
+//   intersected with `wanted`, element for element and in panel order. A filter
+//   that under-drops changes nothing observable but buys nothing; one that
+//   over-drops silently loses a leg the reconciliation then cannot mark.
+//
+//   THE NARROWED GATES STILL FIRE — three of the join's four fatal checks
+//   (definition look-ahead/expiry, quote/OSI/definition economics, future
+//   quote) now run only for the consumed keys. That narrowing is deliberate and
+//   documented in the header, but each gate MUST still be fatal when the
+//   offending row is one the caller asked for. The fourth (aligned source
+//   identity missing) is panel-wide and must stay fatal even for a row nobody
+//   wants, because it precedes the filter.
+//
+// Both directions were observed RED: with the filter ignored (a `wanted` the
+// implementation accepted and did not apply) the equality tests failed; with the
+// filter applied unconditionally to every row, the three narrowed-gate tests
+// failed while the panel-wide identity test still passed. The output of both is
+// in the task report.
+
+using atx::vol::ListedOptionQuote;
+using atx::vol::ListedQuoteKey;
+
+constexpr const char *kWideExpiryIso = "2026-07-17";
+constexpr const char *kWideExpiryStamp = "2026-07-17T20:00:00Z";
+
+struct WideRow {
+  std::uint32_t id;
+  const char *raw_symbol;
+  double strike;
+  Side side;
+};
+
+// Six defined contracts: three strikes x two sides, one expiry. Instrument ids
+// ascend so `source_identities` is sorted, as the join's lower_bound requires.
+const std::vector<WideRow> &wide_rows() {
+  static const std::vector<WideRow> rows = {
+      {101u, "SPY   260717C00590000", 590.0, Side::Call},
+      {102u, "SPY   260717P00590000", 590.0, Side::Put},
+      {103u, "SPY   260717C00600000", 600.0, Side::Call},
+      {104u, "SPY   260717P00600000", 600.0, Side::Put},
+      {105u, "SPY   260717C00610000", 610.0, Side::Call},
+      {106u, "SPY   260717P00610000", 610.0, Side::Put},
+  };
+  return rows;
+}
+
+OpraPanel wide_panel() {
+  OpraPanel out;
+  out.frame.uid = "SPY";
+  out.frame.snapshot_iso = "2026-06-05T19:55:00Z";
+  out.frame.snapshot_ts_ns = iso_to_ns(out.frame.snapshot_iso);
+  out.source_schema_version = 2;
+  out.source_fingerprint = 991;
+  out.provenance_complete = true;
+  double bid = 10.0;
+  for (const WideRow &row : wide_rows()) {
+    // Distinct bid/ask per row so an element-wise comparison has something to
+    // discriminate beyond the key fields.
+    out.frame.rows.push_back(QuoteRow{.uid = "SPY",
+                                      .expiry_iso = kWideExpiryIso,
+                                      .strike = row.strike,
+                                      .side = row.side,
+                                      .bid = bid,
+                                      .ask = bid + 0.25});
+    out.source_instrument_ids.push_back(row.id);
+    out.source_identities.push_back(OpraInstrumentIdentity{row.id, row.raw_symbol});
+    bid += 1.0;
+  }
+  return out;
+}
+
+std::vector<ListedContractDefinition> wide_definitions_for_panel() {
+  const std::int64_t definition_ts = iso_to_ns("2026-06-05T12:00:00Z");
+  const std::int64_t expiry_ts = iso_to_ns(kWideExpiryStamp);
+  std::vector<ListedContractDefinition> out;
+  std::uint64_t print = 501;
+  for (const WideRow &row : wide_rows()) {
+    out.push_back(ListedContractDefinition{kDate, row.id, row.raw_symbol, definition_ts, expiry_ts,
+                                           100.0, true, true, print++});
+  }
+  return out;
+}
+
+ListedQuoteKey wide_key(std::size_t index) {
+  const WideRow &row = wide_rows()[index];
+  return ListedQuoteKey{row.raw_symbol, iso_to_ns(kWideExpiryStamp), row.strike, row.side};
+}
+
+// `wanted` is contractually sorted + deduped, exactly as the run-backtest caller
+// builds it.
+std::vector<ListedQuoteKey> sorted_wanted(std::vector<ListedQuoteKey> keys) {
+  std::sort(keys.begin(), keys.end());
+  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+  return keys;
+}
+
+// Every field, on raw doubles — not a key-only comparison, which would pass on a
+// filter that rebuilt the quote from the wanted key instead of from the panel.
+void expect_quote_eq(const ListedOptionQuote &got, const ListedOptionQuote &want,
+                     const char *where) {
+  EXPECT_EQ(got.trade_date, want.trade_date) << where;
+  EXPECT_EQ(got.symbol, want.symbol) << where;
+  EXPECT_EQ(got.instrument_id, want.instrument_id) << where;
+  EXPECT_EQ(got.raw_symbol, want.raw_symbol) << where;
+  EXPECT_EQ(got.expiry_ts_ns, want.expiry_ts_ns) << where;
+  EXPECT_EQ(got.strike, want.strike) << where;
+  EXPECT_EQ(got.side, want.side) << where;
+  EXPECT_EQ(got.bid, want.bid) << where;
+  EXPECT_EQ(got.ask, want.ask) << where;
+  EXPECT_EQ(got.quote_ts_ns, want.quote_ts_ns) << where;
+  EXPECT_EQ(got.multiplier, want.multiplier) << where;
+  EXPECT_EQ(got.standard_monthly, want.standard_monthly) << where;
+  EXPECT_EQ(got.standard_deliverable, want.standard_deliverable) << where;
+  EXPECT_EQ(got.source_fingerprint, want.source_fingerprint) << where;
+}
+
+TEST(ListedOpra, FilteredJoinEqualsUnfilteredOnWantedKeys) {
+  using atx::vol::MissingDefinitionPolicy;
+  auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  const OpraPanel source = wide_panel();
+
+  auto full = atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table);
+  ASSERT_TRUE(full) << (full ? std::string{} : full.error().to_string());
+  ASSERT_EQ(full->size(), 6u); // anti-vacuity: the unfiltered join really is wide
+
+  // Three keys, chosen NON-CONTIGUOUSLY in panel order (rows 0, 3, 4) so the
+  // expected subset is not a prefix or a run.
+  const std::vector<ListedQuoteKey> wanted =
+      sorted_wanted({wide_key(0), wide_key(3), wide_key(4)});
+  ASSERT_EQ(wanted.size(), 3u);
+
+  std::vector<ListedOptionQuote> expected;
+  for (const ListedOptionQuote &quote : *full) {
+    if (std::binary_search(wanted.begin(), wanted.end(), atx::vol::quote_key_of(quote))) {
+      expected.push_back(quote);
+    }
+  }
+  // Anti-vacuity: the filter must actually remove rows, and keep some.
+  ASSERT_EQ(expected.size(), 3u);
+  ASSERT_LT(expected.size(), full->size());
+
+  auto filtered = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, wanted);
+  ASSERT_TRUE(filtered) << (filtered ? std::string{} : filtered.error().to_string());
+  ASSERT_EQ(filtered->size(), expected.size());
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    expect_quote_eq((*filtered)[i], expected[i], "filtered vs unfiltered subset");
+  }
+  // ...and the surviving order is panel order (590C, 600P, 610C), not wanted order.
+  EXPECT_EQ((*filtered)[0].instrument_id, 101u);
+  EXPECT_EQ((*filtered)[1].instrument_id, 104u);
+  EXPECT_EQ((*filtered)[2].instrument_id, 105u);
+}
+
+TEST(ListedOpra, FilteredJoinEmptyWantedIsUnfiltered) {
+  using atx::vol::MissingDefinitionPolicy;
+  // POSITIVE CONTROL, not a gate: an empty `wanted` is the parameter's default,
+  // so this passes by construction against both the pre-change code and any
+  // implementation of the filter. It pins the default-argument contract (adding
+  // a parameter must not move an existing caller) and nothing more.
+  auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  const OpraPanel source = wide_panel();
+
+  auto full = atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table);
+  ASSERT_TRUE(full) << (full ? std::string{} : full.error().to_string());
+  ASSERT_EQ(full->size(), 6u);
+
+  auto empty_span = atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source,
+                                                      *table, MissingDefinitionPolicy::Error,
+                                                      std::span<const ListedQuoteKey>{});
+  ASSERT_TRUE(empty_span) << (empty_span ? std::string{} : empty_span.error().to_string());
+  ASSERT_EQ(empty_span->size(), full->size());
+  for (std::size_t i = 0; i < full->size(); ++i) {
+    expect_quote_eq((*empty_span)[i], (*full)[i], "empty wanted vs default");
+  }
+}
+
+TEST(ListedOpra, FilteredJoinExcludesWantedRawSymbolWithDifferentExpiry) {
+  using atx::vol::MissingDefinitionPolicy;
+  // The pre-lookup stage keys on raw_symbol alone (the definition's
+  // expiry_ts_ns is not known until after the lookup), so the EXACT key has to
+  // be re-checked before the quote is emitted. A `wanted` entry carrying the
+  // right raw_symbol but a different expiry instant must not admit the row.
+  auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+  const OpraPanel source = wide_panel();
+
+  ListedQuoteKey skewed = wide_key(2);
+  skewed.expiry_ts_ns += 1; // same raw_symbol, one nanosecond off
+  ASSERT_NE(skewed.expiry_ts_ns, wide_key(2).expiry_ts_ns);
+
+  const std::vector<ListedQuoteKey> wanted = sorted_wanted({wide_key(0), skewed});
+  ASSERT_EQ(wanted.size(), 2u);
+
+  auto filtered = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, wanted);
+  ASSERT_TRUE(filtered) << (filtered ? std::string{} : filtered.error().to_string());
+  ASSERT_EQ(filtered->size(), 1u) << "only the exactly-matching key may survive";
+  EXPECT_EQ((*filtered)[0].instrument_id, 101u);
+}
+
+TEST(ListedOpra, FilteredJoinStillFatalOnWantedLookAhead) {
+  using atx::vol::MissingDefinitionPolicy;
+  // NARROWED GATE 2. The definition for a WANTED contract post-dates the
+  // valuation instant: corrupted authority, and still fatal under the filter.
+  const OpraPanel source = wide_panel();
+  auto rows = wide_definitions_for_panel();
+  rows[2].definition_ts_ns = source.frame.snapshot_ts_ns + 1; // row 2 == wide_key(2)
+  auto table = ListedDefinitionTable::create(std::move(rows));
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  const std::vector<ListedQuoteKey> wanted = sorted_wanted({wide_key(2), wide_key(5)});
+  // Anti-vacuity: the perturbed contract IS in the wanted set.
+  ASSERT_TRUE(std::binary_search(wanted.begin(), wanted.end(), wide_key(2)));
+
+  auto filtered = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, wanted);
+  ASSERT_FALSE(filtered) << "look-ahead must stay fatal for a wanted key";
+  EXPECT_EQ(filtered.error().code(), atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(filtered.error().message(), "listed OPRA join: definition look-ahead or expiry");
+
+  // ...and it is fatal under SkipUnlisted too, exactly as it is unfiltered.
+  EXPECT_FALSE(atx::vol::listed_quotes_from_opra(kDate, source.frame.snapshot_ts_ns, source, *table,
+                                                 MissingDefinitionPolicy::SkipUnlisted, wanted));
+
+  // Control: the SAME corrupted table is silently tolerated when that contract
+  // is NOT wanted — this is the narrowing, asserted rather than assumed.
+  const std::vector<ListedQuoteKey> elsewhere = sorted_wanted({wide_key(0), wide_key(5)});
+  auto narrowed = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, elsewhere);
+  ASSERT_TRUE(narrowed) << (narrowed ? std::string{} : narrowed.error().to_string());
+  EXPECT_EQ(narrowed->size(), 2u);
+}
+
+TEST(ListedOpra, FilteredJoinStillFatalOnWantedEconomicsMismatch) {
+  using atx::vol::MissingDefinitionPolicy;
+  // NARROWED GATE 3. The panel row's expiry disagrees with its own OSI symbol.
+  // raw_symbol, strike and side are untouched, so the row's wanted key is exactly
+  // wide_key(2) — there is no ambiguity about whether the caller asked for it.
+  OpraPanel source = wide_panel();
+  source.frame.rows[2].expiry_iso = "2026-07-18"; // OSI says 260717
+  auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  const std::vector<ListedQuoteKey> wanted = sorted_wanted({wide_key(2), wide_key(5)});
+  ASSERT_TRUE(std::binary_search(wanted.begin(), wanted.end(), wide_key(2)));
+
+  auto filtered = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, wanted);
+  ASSERT_FALSE(filtered) << "economics disagreement must stay fatal for a wanted key";
+  EXPECT_EQ(filtered.error().code(), atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(filtered.error().message(),
+            "listed OPRA join: quote, OSI, and definition economics disagree");
+
+  // A row that LIES about its strike must also still trip the gate rather than
+  // be filtered out on the strike it is lying about — this is why the pre-lookup
+  // stage keys on raw_symbol alone and not on (raw_symbol, strike, side).
+  OpraPanel skewed_strike = wide_panel();
+  skewed_strike.frame.rows[2].strike = 601.0; // OSI says 00600000
+  auto by_strike = atx::vol::listed_quotes_from_opra(kDate, skewed_strike.frame.snapshot_ts_ns,
+                                                     skewed_strike, *table,
+                                                     MissingDefinitionPolicy::Error, wanted);
+  ASSERT_FALSE(by_strike) << "a mis-struck wanted row must not be filtered past the gate";
+  EXPECT_EQ(by_strike.error().message(),
+            "listed OPRA join: quote, OSI, and definition economics disagree");
+}
+
+TEST(ListedOpra, FilteredJoinStillFatalOnWantedFutureQuote) {
+  using atx::vol::MissingDefinitionPolicy;
+  // NARROWED GATE 4. A WANTED row stamped after the valuation instant.
+  OpraPanel source = wide_panel();
+  source.frame.rows[2].ts_ns = source.frame.snapshot_ts_ns + 1;
+  auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  const std::vector<ListedQuoteKey> wanted = sorted_wanted({wide_key(2), wide_key(5)});
+  ASSERT_TRUE(std::binary_search(wanted.begin(), wanted.end(), wide_key(2)));
+
+  auto filtered = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, wanted);
+  ASSERT_FALSE(filtered) << "a future quote must stay fatal for a wanted key";
+  EXPECT_EQ(filtered.error().code(), atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(filtered.error().message(), "listed OPRA join: future quote");
+
+  // Control: the same future-stamped row is tolerated when it is not wanted.
+  const std::vector<ListedQuoteKey> elsewhere = sorted_wanted({wide_key(0), wide_key(5)});
+  auto narrowed = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, elsewhere);
+  ASSERT_TRUE(narrowed) << (narrowed ? std::string{} : narrowed.error().to_string());
+  EXPECT_EQ(narrowed->size(), 2u);
+}
+
+TEST(ListedOpra, FilteredJoinStillFatalOnMissingIdentity) {
+  using atx::vol::MissingDefinitionPolicy;
+  // PRESERVED PANEL-WIDE GATE 1. The identity lookup precedes the filter, so an
+  // instrument id with no aligned source identity is fatal even though nothing
+  // in `wanted` names that row. This is the partition boundary: the three gates
+  // above narrow, this one does not.
+  OpraPanel source = wide_panel();
+  source.source_instrument_ids[5] = 999u; // no identity row for 999
+  ASSERT_EQ(source.source_instrument_ids.size(), source.frame.rows.size());
+  auto table = ListedDefinitionTable::create(wide_definitions_for_panel());
+  ASSERT_TRUE(table) << (table ? std::string{} : table.error().to_string());
+
+  // Wanted names rows 0 and 2 only — never the broken row 5.
+  const std::vector<ListedQuoteKey> wanted = sorted_wanted({wide_key(0), wide_key(2)});
+  ASSERT_FALSE(std::binary_search(wanted.begin(), wanted.end(), wide_key(5)));
+
+  auto filtered = atx::vol::listed_quotes_from_opra(
+      kDate, source.frame.snapshot_ts_ns, source, *table, MissingDefinitionPolicy::Error, wanted);
+  ASSERT_FALSE(filtered) << "the panel-wide identity gate must not be narrowed";
+  EXPECT_EQ(filtered.error().code(), atx::core::ErrorCode::NotFound);
+  EXPECT_EQ(filtered.error().message(), "listed OPRA join: aligned source identity missing");
+
+  // A zero instrument id on an unwanted row is equally fatal.
+  OpraPanel zeroed = wide_panel();
+  zeroed.source_instrument_ids[5] = 0u;
+  EXPECT_FALSE(atx::vol::listed_quotes_from_opra(kDate, zeroed.frame.snapshot_ts_ns, zeroed, *table,
+                                                 MissingDefinitionPolicy::Error, wanted));
 }
 
 // --- Calendar-free standard-monthly classifier ---------------------------

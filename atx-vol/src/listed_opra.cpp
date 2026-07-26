@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -459,7 +460,7 @@ bool is_standard_monthly_expiry(std::span<const std::int64_t> sessions,
 Result<std::vector<ListedOptionQuote>>
 listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_ns,
                         const OpraPanel &panel, const ListedDefinitionTable &definitions,
-                        MissingDefinitionPolicy policy) {
+                        MissingDefinitionPolicy policy, std::span<const ListedQuoteKey> wanted) {
   if (trade_date.empty() || valuation_ts_ns <= 0 || panel.frame.uid.empty() ||
       panel.frame.snapshot_ts_ns != valuation_ts_ns || panel.source_schema_version < 2 ||
       !panel.provenance_complete || panel.source_fingerprint == 0u ||
@@ -471,8 +472,12 @@ listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_n
     return Err(ErrorCode::InvalidArgument, "listed OPRA join: valuation date mismatch");
   }
 
+  const bool filtering = !wanted.empty();
   std::vector<ListedOptionQuote> quotes;
-  quotes.reserve(panel.frame.rows.size());
+  // When filtering, the panel is (by construction) far wider than the consumed
+  // key set, so sizing to the panel would reserve two orders of magnitude more
+  // than can ever be emitted.
+  quotes.reserve(filtering ? wanted.size() : panel.frame.rows.size());
   for (std::size_t i = 0; i < panel.frame.rows.size(); ++i) {
     const QuoteRow &row = panel.frame.rows[i];
     const std::uint32_t instrument_id = panel.source_instrument_ids[i];
@@ -484,6 +489,37 @@ listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_n
     if (instrument_id == 0 || identity == panel.source_identities.end() ||
         identity->instrument_id != instrument_id) {
       return Err(ErrorCode::NotFound, "listed OPRA join: aligned source identity missing");
+    }
+    // ── Leg-key filter, stage 1 (see listed_opra.hpp for the full contract) ──
+    //
+    // Placed AFTER the panel-wide identity gate — which therefore stays
+    // panel-wide — and BEFORE definitions.find, the OSI parse and quote
+    // construction, which is the whole cost this skips.
+    //
+    // It keys on raw_symbol only, for two reasons. (1) The full key needs the
+    // definition's expiry_ts_ns, which is exactly what has not been looked up
+    // yet. (2) Deliberately coarse: a row whose strike/side CONTRADICT its own
+    // OSI symbol must reach the economics gate rather than be filtered out on
+    // the value it is contradicting. Stage 2, below, completes the key.
+    //
+    // `wanted` is contractually sorted in ListedQuoteKey order, whose first
+    // member is raw_symbol, so the equal-raw_symbol entries form one run.
+    std::span<const ListedQuoteKey> candidates;
+    if (filtering) {
+      const std::string_view raw_symbol = identity->raw_symbol;
+      const auto low = std::lower_bound(wanted.begin(), wanted.end(), raw_symbol,
+                                        [](const ListedQuoteKey &key, std::string_view value) {
+                                          return std::string_view(key.raw_symbol) < value;
+                                        });
+      const auto high = std::upper_bound(low, wanted.end(), raw_symbol,
+                                         [](std::string_view value, const ListedQuoteKey &key) {
+                                           return value < std::string_view(key.raw_symbol);
+                                         });
+      if (low == high) {
+        continue;
+      }
+      candidates = wanted.subspan(static_cast<std::size_t>(low - wanted.begin()),
+                                  static_cast<std::size_t>(high - low));
     }
     const ListedContractDefinition *definition =
         definitions.find(trade_date, instrument_id, identity->raw_symbol);
@@ -550,6 +586,21 @@ listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_n
         joined_source_fingerprint(panel.source_fingerprint, definition->source_fingerprint);
     if (quote.quote_ts_ns > valuation_ts_ns) {
       return Err(ErrorCode::InvalidArgument, "listed OPRA join: future quote");
+    }
+    // ── Leg-key filter, stage 2 ─────────────────────────────────────────────
+    //
+    // The exact key, now that the definition has supplied expiry_ts_ns. Placed
+    // last on purpose: every gate above then runs for the whole raw_symbol run
+    // rather than for the exact key, so the narrowing is as small as it can be
+    // while still skipping the lookup. `candidates` is the one raw_symbol run
+    // stage 1 already located — in practice a single element — so this costs a
+    // handful of comparisons on the tiny surviving set, never a search.
+    if (filtering &&
+        std::none_of(candidates.begin(), candidates.end(), [&](const ListedQuoteKey &key) {
+          return key.expiry_ts_ns == quote.expiry_ts_ns && key.strike == quote.strike &&
+                 key.side == quote.side;
+        })) {
+      continue;
     }
     quotes.push_back(std::move(quote));
   }
