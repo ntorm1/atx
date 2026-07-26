@@ -1,6 +1,7 @@
 # atx-options-engine: typed point-in-time bridge from listed-options research
 # into the generic cross-sectional portfolio and execution stack.
 add_library(atx-options-engine ${ATX_LIB_TYPE}
+    src/option_execution_replay.cpp
     src/option_research_panel.cpp)
 add_library(atx::options-engine ALIAS atx-options-engine)
 
@@ -18,4 +19,8 @@ target_link_libraries(atx-options-engine
 
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
+endif()
+
+if(ATX_BUILD_BENCH)
+    add_subdirectory(bench)
 endif()

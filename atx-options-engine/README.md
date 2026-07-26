@@ -10,7 +10,7 @@ execution simulator, or portfolio ledger. It prepares option-domain inputs for
 the existing engine components and preserves their conservative next-slice
 execution contract.
 
-## Implemented XS-1 slice
+## Implemented XS-1 research slice
 
 `OptionResearchPanel::create` accepts sparse point-in-time observations and
 produces:
@@ -87,6 +87,94 @@ target is an intent, not a fill. The replay stage must consume future observed
 liquidity, prevent two orders from reusing it, and retain or cancel any
 remainder under its time-in-force rules.
 
+## Implemented XS-2 Consolidated-L1 replay kernel
+
+`OptionExecutionReplay` turns whole-contract target orders into an exact cash,
+position, fill, fee, and final-order ledger. It is deliberately labeled
+`ConsolidatedL1`: OPRA/CBBO evidence does not reveal a national queue, hidden
+size, venue allocation, or complex-auction availability.
+
+The kernel enforces:
+
+- `decision < order arrival < fill`, with fills only on a strictly later quote
+  event;
+- one canonical total event order independent of caller input order;
+- price priority followed by arrival, caller priority sequence, and order ID;
+- separate bid and ask liquidity pools;
+- one selected participant's displayed size rather than fictitious aggregate
+  NBBO depth;
+- a counterfactual debit ledger: unchanged size at the same
+  `(participant, price)` cannot be consumed twice, and a displayed-size
+  increase exposes only the increment;
+- explicit per-side update evidence, so a bid-only update cannot replenish a
+  consumed ask;
+- whole-contract partial fills, explicit `FirstFutureQuoteOrCancel`, DAY, and
+  GTC leaves, cancel/replace ordering, and expiry-before-quote ordering;
+- strict quote status, staleness, locked-market, definition-clock, contract
+  expiry, source-lineage, and duplicate-key validation;
+- exact `Decimal` cash, premium, slippage, adverse-basis-point, and component
+  fee accounting with checked multiplier and quantity arithmetic;
+- effective-dated, lineage-bearing simple-order tick schedules. Quotes and
+  limits must be on their active grid; adverse buys round up and sells round
+  down without a floating-point money seam. An order's rule must be known at
+  decision time, and delayed quote evidence that straddles a rule transition
+  fails closed;
+- effective-dated fee rows with knowledge time, non-overlap, per-contract,
+  per-order, clearing, regulatory, commission, rebate, and sell-premium lanes;
+- configured Strict, Calibrated, and Stress scenarios. Calibrated runs require
+  a frozen calibration identity; Strict and Stress cannot consume more than
+  25% of displayed size;
+- a bounded PIMPL workspace. All successful-run vectors are reserved by
+  `create`; the replay path performs no dynamic allocation after workspace
+  initialization. A global-allocation-instrumented contract test pins this
+  property;
+- preallocated per-contract order heaps and logarithmic effective-row lookup,
+  avoiding quadratic same-contract insertion and fee-revision scans.
+
+`option_replay_required_workspace_bytes` exposes the exact reserved payload
+budget used by `create`. A successful `run` returns spans borrowed from that
+workspace; callers must serialize or copy them before the next run.
+
+Every executable run requires a frozen raw-capture sequence-validation
+identity. Native `(source, channel, monotone epoch, sequence, packet)`
+duplicates, epoch re-entry, and availability regressions are rejected. The
+returned summary binds the compiled model and ordering versions, calibration
+and sequence identities, exact liquidity/adverse parameters, quote-age and
+locked-market policies, and replay horizon. The view also exposes the complete
+canonical fee and tick rows, including rows that produced no fill.
+
+The quote update contract is intentionally conservative. At the same selected
+participant and price:
+
+```text
+historical display 4 -> strategy consumes 4 -> historical display remains 4
+modeled remaining  4 ->                    0 ->                         0
+
+historical display later increases to 6 -> modeled increment available is 2
+```
+
+Changing selected participant or price starts a new displayed pool. Non-firm,
+missing, crossed, halted, stale, and disallowed locked states provide no
+executable liquidity. A configured adverse price that breaches the order limit
+produces no fill; it is never clamped to the limit.
+
+A one-sided absolute row is context only for its unchanged side: it cannot
+refresh that side's evidence clock, trigger opposite-side matching, or change
+displayed size. Contradictory price, participant, or raw-size context fails the
+run.
+
+The fee schedule key is an externally governed scenario key. For real invoice
+fidelity it must encode the venue, product/class, penny class, account
+origin/capacity, handling mode, liquidity role, auction/routing flags, premium
+band, quantity tier, and contra category applicable to that execution. The
+current kernel assumes configured taker/removing-liquidity charges; it does not
+infer an execution venue from OPRA.
+
+The focused Debug benchmark includes a 100,000-order single-contract book in
+addition to wide and repeated-partial-fill cases. The concentrated case
+completes in about one second on the development host (about 110,000 fills per
+second); this is a regression baseline, not a production Release claim.
+
 ## Intended pipeline
 
 For each decision timestamp:
@@ -98,15 +186,25 @@ For each decision timestamp:
    neutralization, gross exposure, and name caps.
 3. Pass the resulting weights and current whole-contract holdings to
    `make_option_target_book`.
-4. Reconcile contract targets into option orders.
-5. Queue those orders into a strictly later market slice. Use bid/ask and
-   displayed size for a marketable-L1 model, or the existing
-   `ExecutionSimulator` with option-calibrated per-contract costs and volumes.
-6. Commit fills through the portfolio ledger in stable contract/order order.
+4. Convert the target book with `make_option_order_batch`. Decision-time
+   bid/ask sets a marketable limit, never a fill.
+5. Feed future `OptionTopOfBookEvent` rows and the orders into a preallocated
+   `OptionExecutionReplay`.
+6. Consume `OptionFill`, `OptionOrderAudit`, `OptionCancelAudit`,
+   `OptionPositionSnapshot`, and `OptionReplaySummary` before reusing the
+   workspace.
 
 The engine's generic stock `WeightPolicy::reconcile` must not be used directly
 for options: it divides equity by the mark as if the instrument were one share
 and does not know the contract multiplier, vega, or margin.
+
+The batch replay kernel is suitable for a fixed historical order schedule and
+for one decision frontier at a time. A complete adaptive backtest coordinator
+must settle the prior frontier, expose realized positions and live leaves,
+then build the next target. Precomputing every future order would ignore partial
+fills and is not an acceptable substitute. That incremental
+`advance -> observe account -> target -> apply commands` coordinator is the next
+layer.
 
 ## Research basis
 
@@ -134,11 +232,16 @@ market sources:
 - [Goyal and Saretto](https://www.cis.upenn.edu/~mkearns/finread/CrossOptions.pdf)
   motivates executable cross-sectional option portfolios rather than isolated
   signal returns.
+- [Execution replay research note](docs/execution-replay-research-2026-07-26.md)
+  defines the evidence grades, OPRA/venue fidelity boundary, fee lanes,
+  calibration gates, and claims this engine must reject.
 
 ## Explicitly deferred
 
-The next replay milestone must add a date-major order/fill ledger with shared
-displayed-liquidity consumption, partial fills, effective-dated fee lanes, and
-fill attribution. Production completeness also requires adjusted deliverables,
-corporate actions, official settlement, exercise/assignment, borrow/locates,
-multi-leg atomicity, and a broker- or clearing-calibrated margin model.
+The next milestone is the adaptive date-major coordinator described above,
+including working-leaf-aware target reconciliation and an immutable lifecycle
+transition ledger. Production completeness also requires adjusted
+deliverables, official settlement, exercise/assignment, stock/futures hedge
+replay, borrow/locates, venue-native simple and complex books, auction
+participation, calibrated cross-impact, and a broker- or clearing-calibrated
+margin model.
