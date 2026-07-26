@@ -1266,6 +1266,20 @@ Result<SurfaceArchiveV2> SurfaceDb::open_partition(std::string_view key) const {
   return SurfaceArchiveV2::open_file(partition_path(*canon));
 }
 
+// REV-R3 fix-1 (review I-1). The same open with the manifest gate REMOVED — see
+// the header for why this is a separate entry point rather than a widening of
+// `open_partition`. `SurfaceArchiveV2::open_file` stats the path before reading
+// it, so its `NotFound` is precisely "no such file" and every other code means
+// "the file is there and I could not use it"; that split is the whole contract
+// this function exists to deliver, and nothing here may collapse it.
+Result<SurfaceArchiveV2> SurfaceDb::open_partition_file(std::string_view key) const {
+  auto canon = canonicalize_key(key);
+  if (!canon) {
+    return Err(canon.error());
+  }
+  return SurfaceArchiveV2::open_file(partition_path(*canon));
+}
+
 namespace {
 // F6 content identity of the partition file at `path`, from its 256-byte v2
 // header only (cheap — no full read); mirrors SnapshotCache::current_identity. A

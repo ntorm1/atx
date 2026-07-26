@@ -96,9 +96,18 @@ struct SurfaceDbPopulateConfig {
   // date's stored coverage. The regression is still DETECTED and still reported
   // (same counters, in `n_dates_dropped_coverage_regression`), so the run leaves
   // an audit record of exactly which surfaces it destroyed; only the refusal is
-  // waived. It also waives the abort on an existing partition that will not OPEN
-  // — with the guard on, a partition whose bytes cannot be read cannot be asked
-  // what it holds, so it is not overwritten.
+  // waived.
+  //
+  // WHAT IT DOES NOT WAIVE (REV-R3 fix-1, review I-3): the abort on an existing
+  // partition FILE that will not OPEN. That was fused onto this flag and has been
+  // split off — it is now unconditional. The two are different claims. "I have
+  // read the named list and I want those surfaces gone" does not imply "and
+  // please also overwrite any partition you could not parse", and because this
+  // flag is WHOLE-RUN, the operator retiring one cell would have been opted into
+  // the second waiver for every date in the run. An unreadable partition has no
+  // named list to authorise, so there is nothing here for a caller to consent
+  // to; the remedy is to delete the file (surface_db.hpp's documented remedy #1),
+  // which makes it the ordinary first-write path.
   bool allow_coverage_regression{false};
 };
 
@@ -252,20 +261,36 @@ struct PopulateTestHooks {
 // already holds — because the write is whole-file, so every stored symbol missing
 // from the candidate would be destroyed by the commit. The existing set is read
 // from the partition's own DIRECTORY (`SurfaceArchiveV2::directory()`, FIX-H's
-// precedent), never inferred from the manifest. A refusal is PER-DATE: the
-// existing partition is left untouched, the date is counted in
-// `n_dates_refused_coverage_regression`, the at-risk cells are named in
-// `coverage_regression_cells`, and every OTHER date in the run proceeds normally.
-// This is not an Err — the run continues and reports. `allow_coverage_regression`
-// opts out for a run that intends retirement; see that field.
+// precedent), never inferred from the manifest — and so is the decision that a
+// partition EXISTS at all (REV-R3 fix-1, review I-1): the lookup is
+// `SurfaceDb::open_partition_file`, which skips the manifest, so a partition file
+// present on disk but unlisted is compared against rather than overwritten. A
+// refusal is PER-DATE: the existing partition is left untouched, the date is
+// counted in `n_dates_refused_coverage_regression`, the at-risk cells are named
+// in `coverage_regression_cells`, and every OTHER date in the run proceeds
+// normally. This is not an Err — the run continues and reports.
+// `allow_coverage_regression` opts out for a run that intends retirement; see
+// that field, and note it does NOT waive the unreadable-partition Err below.
 // Partition write uses SurfaceArchiveItem{symbol, &surface} with owning
 // symbol-string storage kept alive across the call, and forwards
 // `cfg.attest` to it — so by DEFAULT the partitions this writes carry NO
 // config fingerprint and a later resume re-fits them rather than reusing them
 // (fail closed; see `SurfaceDbPopulateConfig::attest`).
 // Top-level Err only on: empty boards span, db write errors, a date key
-// the db rejects, a CARRY READ-BACK failure, or a FIT-SCHEDULER TERMINATION that
-// left a date's fits unstarted.
+// the db rejects, a CARRY READ-BACK failure, an UNREADABLE EXISTING PARTITION on
+// a date about to be rewritten, or a FIT-SCHEDULER TERMINATION that left a date's
+// fits unstarted. This list is meant to be exhaustive — keep it so.
+//
+// THE UNREADABLE EXISTING PARTITION (REV-R3, review C-02/F-02 and I-3). A date
+// whose partition FILE exists and will not open (any `SurfaceArchiveV2::open_file`
+// error other than `NotFound`) aborts the whole populate, propagating the archive's
+// own error verbatim. This is a NEW Err on a path that previously could not produce
+// one: such a partition used to be silently overwritten. The reasoning is the
+// coverage guard's: a file whose bytes cannot be read cannot be asked what it
+// holds, so whether the rewrite destroys anything is unanswerable, and the rewrite
+// is the one action that makes it permanently unanswerable. It is UNCONDITIONAL —
+// `allow_coverage_regression` does not waive it (I-3); deleting the unreadable
+// file does, by making the date a first write.
 //
 // THE FIT-SCHEDULER TERMINATION (R1-a, review C-06). `run_bounded_fit_tasks` has
 // two PRE-TASK failure returns — a background-worker launch failure and a
@@ -396,8 +421,13 @@ struct UniversePopulateCoverage {
   std::uint32_t cells_ok{0};
   std::uint32_t cells_failed{0};
   std::uint32_t dates_total{0};              // distinct dates among the loaded boards
-  // Dates that needed a (re)write this run, MINUS any the write path then refused
-  // (REV-R3) — so this counts dates the run really committed, not dates it chose.
+  // Dates this run really COMMITTED — taken from the populate's own write-site
+  // count, not from the filter's "dates I intend to rewrite". REV-R3 fix-1
+  // (review M-2): it was the filter's count minus the write path's refusals,
+  // which still overcounted a date whose candidate ended up EMPTY (no write, and
+  // no refusal either, because the guard is gated on a non-empty candidate).
+  // `dates_written + dates_refused_coverage_regression` is therefore NOT the
+  // number of dates chosen for rewrite; nothing here promises that identity.
   std::uint32_t dates_written{0};
   // Dates with NOTHING left to add: every loaded cell is either already in the
   // partition or config-DISABLED (a disabled cell can never be added, so a date
@@ -417,7 +447,8 @@ struct UniversePopulateCoverage {
   // This counter is the WRITE path's guard (`populate_surface_db`), which runs
   // after the fits with the actual candidate item list in hand and compares SETS,
   // not counts. Every date it names was NOT written; its stored surfaces are
-  // untouched on disk. `dates_written` below has already had these subtracted.
+  // untouched on disk, and `dates_written` above never counted it (it is the
+  // write site's own count).
   std::uint32_t dates_refused_coverage_regression{0};
   // Dates written ANYWAY under `allow_coverage_regression`. The surfaces named
   // for those dates in `coverage_regression_cells` are gone.
@@ -445,7 +476,11 @@ struct UniversePopulateCoverage {
 // Seed per-symbol configs (idempotent) then cell-aware-resume-populate the given
 // boards into `db`. Empty `boards` is a graceful no-op (all-zero coverage), NOT an
 // error — an un-pulled window legitimately yields no boards. Top-level Err only on a
-// db config/write failure.
+// db config/write failure, or on anything `populate_surface_db` itself Errs on —
+// which since REV-R3 includes an UNREADABLE EXISTING PARTITION on a date this run
+// was going to rewrite (see that function's contract above; it is not waived by
+// `allow_coverage_regression`). A coverage REFUSAL is deliberately not an Err: the
+// run completes and reports it in `dates_refused_coverage_regression`.
 [[nodiscard]] Result<UniversePopulateCoverage>
 populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
                             const UniversePopulateSpec &spec,

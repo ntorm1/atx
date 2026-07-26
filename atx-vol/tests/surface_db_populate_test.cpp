@@ -2863,6 +2863,190 @@ TEST(SurfaceDbPopulate, DroppedSymbolListIsCorrectAndOrderedIndependentlyOfWorke
   std::filesystem::remove_all(parallel_root);
 }
 
+// ── REV-R3 fix-1 (review I-1): the manifest does not get a vote ──────────────
+//
+// The guard's comments claimed the existing set was "never inferred from the
+// manifest", but only the CONTENTS were. The existence decision went through
+// `SurfaceDb::open_partition`, which returns NotFound from the MANIFEST LOOKUP
+// before it ever touches the file -- and NotFound is the guard's "no existing
+// coverage, proceed" branch. So a partition file holding surfaces but absent from
+// the manifest was treated as empty and overwritten: exactly the outcome the
+// guard exists to prevent, on exactly the disagreement its comment named.
+//
+// The window is real. `write_partition` renames the archive first and persists
+// the manifest second (surface_db.cpp), so a crash between the two leaves this
+// state; so does a manifest restored from an older copy, a hand-assembled root,
+// and a `drop_partition` interrupted after its manifest commit. The fix is
+// `SurfaceDb::open_partition_file`, which skips the manifest and asks the
+// filesystem.
+namespace {
+
+// Reproduce the crash window WITHOUT a crash: snapshot the manifest before the
+// write, then restore it afterwards. The partition file stays; the manifest
+// forgets it. Byte-for-byte the state a crash between rename and persist leaves.
+void restore_manifest(const std::filesystem::path &root, const std::vector<std::byte> &saved) {
+  const std::filesystem::path p = root / std::string(kSurfaceDbManifestName);
+  std::ofstream os(p, std::ios::binary | std::ios::trunc);
+  ASSERT_TRUE(os.good()) << p.string();
+  os.write(reinterpret_cast<const char *>(saved.data()),
+           static_cast<std::streamsize>(saved.size()));
+  ASSERT_TRUE(os.good()) << p.string();
+}
+
+} // namespace
+
+// TEST 7 -- a partition file present on disk but ABSENT from the manifest must be
+// READ, not overwritten.
+//
+// Before the fix this run destroyed AAA and BBB and reported success: the
+// manifest said the date did not exist, so the filter scheduled every loaded cell
+// as new, the guard's `open_partition` came back NotFound, and the whole-file
+// write committed a partition containing only CCC.
+TEST(SurfaceDbPopulate, PartitionOnDiskButMissingFromTheManifestIsNotOverwritten) {
+  const auto root = test_root("coverage_regression_unlisted_partition");
+  std::vector<std::byte> manifest_before;
+  std::vector<std::byte> file_before;
+  {
+    auto db = SurfaceDb::create(root.string());
+    ASSERT_TRUE(db.has_value());
+
+    // The manifest as it is BEFORE kDate0 is ever written -- no partition record.
+    manifest_before = read_file_bytes(root / std::string(kSurfaceDbManifestName));
+    ASSERT_FALSE(manifest_before.empty());
+
+    // Write kDate0 normally: AAA and BBB land, the file exists, the manifest lists it.
+    auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+    ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+    ASSERT_EQ(cov1->cells_ok, 2u);
+    file_before = partition_file_bytes(root, kDate0);
+    ASSERT_FALSE(file_before.empty());
+    // Scoped so this handle -- and its S5 partition mapping -- is gone before the
+    // manifest is rolled back underneath the root.
+  }
+
+  // Roll the manifest back. The .atxvsa is untouched and still holds both cells.
+  restore_manifest(root, manifest_before);
+  auto reopened = SurfaceDb::open(root.string());
+  ASSERT_TRUE(reopened.has_value()) << (reopened ? "" : reopened.error().to_string());
+  ASSERT_FALSE(reopened->open_partition(kDate0).has_value())
+      << "the scenario is not armed: the manifest still lists the partition";
+  ASSERT_TRUE(reopened->open_partition_file(kDate0).has_value())
+      << "the scenario is not armed: the partition FILE must still be on disk";
+
+  // A run over a NARROWER board set for the same date. Nothing here is degraded
+  // and nothing fails -- the candidate is simply smaller than what is stored,
+  // which is all a whole-file write needs to destroy a surface.
+  const std::vector<CorpusBoard> narrower = {make_board(kDate0, "CCC", 90.0, 0.26)};
+  auto cov2 = populate_universe_streaming(*reopened, narrower, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+
+  EXPECT_EQ(cov2->dates_refused_coverage_regression, 1u)
+      << "an UNLISTED partition file was treated as no coverage and overwritten";
+  EXPECT_EQ(cov2->dates_written, 0u);
+  ASSERT_EQ(cov2->coverage_regression_cells.size(), std::size_t{2});
+  EXPECT_EQ(cov2->coverage_regression_cells[0].symbol, "AAA");
+  EXPECT_EQ(cov2->coverage_regression_cells[1].symbol, "BBB")
+      << "the existing set came from the FILE's directory, not from the manifest";
+
+  // The bytes are the assertion that matters: the file was not touched at all.
+  const std::vector<std::byte> file_after = partition_file_bytes(root, kDate0);
+  ASSERT_EQ(file_before.size(), file_after.size()) << "the unlisted partition was rewritten";
+  EXPECT_EQ(0, std::memcmp(file_before.data(), file_after.data(), file_before.size()))
+      << "the unlisted partition file was rewritten; AAA and BBB are gone";
+
+  std::filesystem::remove_all(root);
+}
+
+// TEST 8 -- and the OTHER half of the same branch: documented remedy #1 still
+// works. `surface_db.hpp` tells an operator whose database was poisoned by a
+// wrong `--r` to DELETE the partition file and re-run, and that instruction must
+// keep working -- it is the only repair the tool offers, and the guard sits
+// directly on its path. A file-EXISTENCE probe is what separates the two cases:
+// remedy #1 has no file, the I-1 window has one.
+TEST(SurfaceDbPopulate, DeletingThePartitionFileStillLetsTheDateBeRebuilt) {
+  const auto root = test_root("coverage_regression_remedy_delete");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+  ASSERT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+  ASSERT_EQ(cov1->cells_ok, 2u);
+  ASSERT_TRUE(db->load_surface(kDate0, "AAA").has_value());
+
+  // The remedy, verbatim: delete the partition file. The MANIFEST STILL LISTS IT
+  // -- that is the state the instruction produces, and the case the fix must not
+  // confuse with "a file is there and the manifest forgot it".
+  ASSERT_TRUE(std::filesystem::remove(partition_file(root, kDate0)));
+  ASSERT_FALSE(db->open_partition_file(kDate0).has_value())
+      << "the file must really be gone for this to test the remedy";
+
+  // Re-run over a NARROWER set than what used to be stored. Nothing is on disk to
+  // lose, so this must proceed -- refusing here would make the documented repair
+  // impossible and leave a poisoned database unrepairable.
+  const std::vector<CorpusBoard> narrower = {make_board(kDate0, "AAA", 100.0, 0.28)};
+  auto cov2 = populate_universe_streaming(*db, narrower, carry_spec());
+  ASSERT_TRUE(cov2.has_value()) << (cov2 ? "" : cov2.error().to_string());
+  EXPECT_EQ(cov2->dates_refused_coverage_regression, 0u)
+      << "remedy #1 (delete the partition file and re-run) must still work";
+  EXPECT_EQ(cov2->dates_dropped_coverage_regression, 0u);
+  EXPECT_TRUE(cov2->coverage_regression_cells.empty());
+  EXPECT_EQ(cov2->dates_written, 1u);
+  EXPECT_TRUE(db->load_surface(kDate0, "AAA").has_value()) << "the date was rebuilt";
+  EXPECT_FALSE(db->load_surface(kDate0, "BBB").has_value())
+      << "deleting a partition deletes it: BBB is not restored, exactly as documented";
+
+  std::filesystem::remove_all(root);
+}
+
+// TEST 9 -- an existing partition file that will not OPEN aborts the build, and
+// `--allow-coverage-regression` does NOT waive that (REV-R3 fix-1, review I-3).
+//
+// Two unrelated safety properties used to ride one flag. "I have read the named
+// list and I want those surfaces gone" says nothing about "and please also
+// overwrite any partition you could not parse" -- and the flag is whole-RUN, so
+// an operator retiring one cell was opted into the second waiver for every date.
+TEST(SurfaceDbPopulate, UnreadableExistingPartitionAbortsEvenWithTheOptOut) {
+  // true iff the populate returned Ok.
+  const auto rewrite_succeeded = [](const std::filesystem::path &root, bool allow) -> bool {
+    auto db = SurfaceDb::create(root.string());
+    EXPECT_TRUE(db.has_value());
+    if (!db.has_value()) {
+      return false;
+    }
+    auto cov1 = populate_universe_streaming(*db, carry_seed_boards(), carry_spec());
+    EXPECT_TRUE(cov1.has_value()) << (cov1 ? "" : cov1.error().to_string());
+
+    // Corrupt the partition in place: keep the file, destroy its bytes. It is
+    // PRESENT (so not the NotFound path) and unreadable (so its contents cannot
+    // be compared), which is the whole point.
+    {
+      std::ofstream os(partition_file(root, kDate0), std::ios::binary | std::ios::trunc);
+      EXPECT_TRUE(os.good());
+      const char junk[] = "this is not an ATXVSA2 archive";
+      os.write(junk, static_cast<std::streamsize>(sizeof junk));
+    }
+    EXPECT_FALSE(db->open_partition_file(kDate0).has_value());
+
+    std::vector<CorpusBoard> full = carry_seed_boards();
+    full.push_back(make_board(kDate0, "CCC", 90.0, 0.26)); // forces the rewrite
+    UniversePopulateSpec spec = carry_spec();
+    spec.allow_coverage_regression = allow;
+    return populate_universe_streaming(*db, full, spec).has_value();
+  };
+
+  const auto guarded_root = test_root("unreadable_partition_guard_on");
+  EXPECT_FALSE(rewrite_succeeded(guarded_root, /*allow=*/false))
+      << "an unreadable existing partition must abort rather than be overwritten";
+
+  const auto opted_out_root = test_root("unreadable_partition_opt_out");
+  EXPECT_FALSE(rewrite_succeeded(opted_out_root, /*allow=*/true))
+      << "--allow-coverage-regression authorises destroying a NAMED list; it cannot "
+         "authorise overwriting contents nobody could read";
+
+  std::filesystem::remove_all(guarded_root);
+  std::filesystem::remove_all(opted_out_root);
+}
+
 // ── R1-a (review C-06): a PRE-TASK fit-scheduler failure must TERMINATE the
 // populate, never wedge the per-date drain ──────────────────────────────────
 //

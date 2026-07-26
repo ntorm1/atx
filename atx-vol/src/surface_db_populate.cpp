@@ -706,7 +706,16 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       // what made the earlier guard blind. The EXISTING side is read from the
       // partition's own DIRECTORY (FIX-H's precedent: the file is the authority on
       // what the file holds), never inferred from the manifest, which can disagree
-      // with it and is exactly the disagreement that would matter here.
+      // with it and is exactly the disagreement that would matter here. REV-R3
+      // fix-1 (review I-1) made that true of the EXISTENCE decision as well, not
+      // just the contents: `open_partition_file` skips the manifest lookup
+      // entirely, so a partition file that is on disk but unlisted -- a crash
+      // between `write_partition`'s archive rename and its manifest persist, a
+      // restored older manifest, a hand-assembled root -- is read and compared
+      // instead of being mistaken for a first write and overwritten. Until that
+      // fix this comment was a false guarantee: the contents came from the
+      // directory but "is there anything here at all" came from the manifest,
+      // which is the one question the disagreement actually decides.
       //
       // WHY IT DOES NOT FIRE ON A HEALTHY RUN. It is a SUPERSET test, not an
       // equality test, so adding cells is always allowed. A cell that permanently
@@ -742,22 +751,48 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       if (!items.empty()) {
         std::vector<std::string> stored_symbols;
         {
-          const Result<SurfaceArchiveV2> part = db.open_partition(date);
+          // REV-R3 fix-1 (review I-1): `open_partition_file`, NOT
+          // `open_partition`. The latter consults the manifest FIRST and returns
+          // NotFound when the key is unlisted, without ever touching the file --
+          // so a partition file holding surfaces but missing from the manifest
+          // came back as "no existing coverage" and was overwritten, which is the
+          // exact outcome this guard exists to prevent. The file-level open makes
+          // the three cases distinguishable, and the branches below MUST keep
+          // them apart:
+          //   - file ABSENT   (NotFound)         -> proceed; nothing to lose.
+          //   - file PRESENT and readable        -> its directory is the existing
+          //                                         set, whatever the manifest says.
+          //   - file PRESENT and unreadable      -> abort (below).
+          const Result<SurfaceArchiveV2> part = db.open_partition_file(date);
           if (part.has_value()) {
             stored_symbols.reserve(part->directory().size());
             for (const ArchiveV2DirEntry &e : part->directory()) {
               stored_symbols.emplace_back(e.symbol, e.symbol_len);
             }
-          } else if (part.error().code() != ErrorCode::NotFound &&
-                     !cfg.allow_coverage_regression) {
-            // A date with NO partition yet cannot lose coverage (NotFound is the
-            // ordinary first-write path). An existing partition that will not
-            // OPEN is different in kind: its contents are unknown, so whether the
-            // write destroys anything is unanswerable -- and overwriting it is
-            // the one action that makes the answer unrecoverable. Fail loud, for
-            // the same reason FIX-F fails loud on an unreadable carry record.
-            // `allow_coverage_regression` waives it, because a caller who has
-            // authorised destruction has answered the question.
+          } else if (part.error().code() != ErrorCode::NotFound) {
+            // A date with NO partition FILE cannot lose coverage. That covers the
+            // ordinary first-write path AND documented remedy #1 in
+            // surface_db.hpp ("delete the partition file and re-run"): the
+            // operator removed the file, so there is nothing on disk to destroy
+            // and the rebuild proceeds exactly as before this guard existed.
+            // A partition file that IS there and will not OPEN is different in
+            // kind: its contents are unknown, so whether the write destroys
+            // anything is unanswerable -- and overwriting it is the one action
+            // that makes the answer unrecoverable. Fail loud, for the same reason
+            // FIX-F fails loud on an unreadable carry record.
+            //
+            // REV-R3 fix-1 (review I-3): this abort is UNCONDITIONAL. It used to
+            // be waived by `allow_coverage_regression`, which fused two unrelated
+            // waivers onto one whole-run flag: "I have read the named list and I
+            // want THOSE surfaces gone" says nothing about "and please also
+            // overwrite any partition you could not parse". A caller who
+            // authorised the destruction of a NAMED list has not answered a
+            // question about contents nobody could read, and the realistic user
+            // of the flag -- retiring one cell after a marginal re-fit failure --
+            // would have been silently opted into the second waiver for every
+            // date in the run. The remedy for a genuinely corrupt partition is
+            // the same as it has always been: delete the file (remedy #1), which
+            // turns this into the NotFound path above.
             return Err(part.error());
           }
         }
@@ -767,11 +802,30 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
         // canonicalizes every item's symbol before hashing/storing it, so an
         // uncanonicalized compare would report a spurious drop for any item whose
         // board symbol differs from its stored key by case or length.
+        //
+        // REV-R3 fix-1 (review M-3): canonicalized under `kArchiveSymbolMax`, the
+        // ARCHIVE's bound, because the directory entries being compared against
+        // were written under it (`surface_archive.cpp`'s writer). It was
+        // `kSurfaceDbKeyMax` -- the db's partition-KEY bound -- which is a
+        // different constant that happens to hold the same value. The
+        // static_assert keeps the coincidence honest for the OTHER direction: the
+        // `CoverageRegressionCell::symbol` values produced here are documented as
+        // the canonical db key, and every other symbol canonicalization on this
+        // path (write_partition's fingerprint fold, the carry-over key match)
+        // uses `kSurfaceDbKeyMax`. If the two ever diverge, this line must be
+        // re-decided rather than silently picking a side: too small a bound
+        // misses a real drop, too large a one refuses every rewrite of a date
+        // holding a long symbol.
+        static_assert(kArchiveSymbolMax == kSurfaceDbKeyMax,
+                      "the coverage guard compares CANDIDATE symbols against the ARCHIVE "
+                      "directory's keys; if the archive's and the db's symbol bounds diverge, "
+                      "this comparison and CoverageRegressionCell's documented key form must "
+                      "be re-decided, not silently truncated to one of the two");
         std::vector<std::string> candidate_symbols;
         candidate_symbols.reserve(items.size());
         for (const SurfaceArchiveItem &item : items) {
           candidate_symbols.push_back(
-              detail::canonicalize_symbol(item.symbol, kSurfaceDbKeyMax));
+              detail::canonicalize_symbol(item.symbol, kArchiveSymbolMax));
         }
         std::sort(candidate_symbols.begin(), candidate_symbols.end());
 
@@ -1160,15 +1214,22 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
     }
     // ── REV-R3: what the WRITE path refused, and the correction it forces ──────
     // `dates_written` was incremented by the filter above, which decides which
-    // dates to REWRITE. A date the write path then refused was not written at
-    // all, so leaving the count would report a commit that never happened -- the
-    // exact class of lie this guard exists to end. Subtract them. The subtraction
-    // cannot underflow: every refusal is a date the filter counted here first
-    // (only `kept` dates reach the populate, and `kept` is filled on the same
-    // branch as the increment).
+    // dates to REWRITE -- an intention, not a commit. Take the populate's own
+    // count instead: `n_dates_written` is incremented at the write site, after
+    // `write_partition` succeeded, so it is the number of dates that really
+    // landed on disk.
+    //
+    // REV-R3 fix-1 (review M-2). This was a SUBTRACTION of the refusals, which
+    // left a second, older overcount in place: a date whose candidate ended up
+    // EMPTY writes no partition and is not a refusal either (the guard is gated
+    // on `!items.empty()`), so the filter's increment stood for a commit that
+    // never happened. That is the exact class of lie this guard exists to end,
+    // and it contradicted what this comment, the header's `dates_written`, and
+    // the manual's counter table all now claim. Assignment also removes the
+    // underflow question rather than arguing it away.
     cov.dates_refused_coverage_regression = st->n_dates_refused_coverage_regression;
     cov.dates_dropped_coverage_regression = st->n_dates_dropped_coverage_regression;
-    cov.dates_written -= cov.dates_refused_coverage_regression;
+    cov.dates_written = st->n_dates_written;
     cov.coverage_regression_cells = st->coverage_regression_cells;
     cov.per_symbol = std::move(st->per_symbol);
     // The per-cell reasons ride along with the count they explain; the populate

@@ -355,7 +355,13 @@ struct DbSymbolEntry {
 //   1. DELETE the affected partition files (`<db-root>/partitions/<KEY>.atxvsa`)
 //      and re-run the build over those dates. `open_partition` then fails, the
 //      date is treated as never written, every loaded cell is re-fit at the new
-//      rate, and `write_partition` overwrites the stale manifest record. Between
+//      rate, and `write_partition` overwrites the stale manifest record. The
+//      REV-R3 coverage guard does not stand in the way of this, and that is a
+//      deliberate property rather than a coincidence: it probes for the FILE
+//      (`open_partition_file`), and this remedy's whole point is that there is no
+//      file, so there is nothing on disk it could destroy. Do not "improve" that
+//      probe into a manifest lookup — it would both re-open the fail-open this
+//      guard closed and break this instruction. Between
 //      the delete and the rebuild `verify` reports those cells `unmappable` and
 //      `verdict FAILED` — correct, the bytes really are gone. A symbol stored on
 //      that date but NOT in the rebuild's loaded set is not restored: deleting a
@@ -627,6 +633,36 @@ public:
                                        const ArchiveV2WriteOpts &opts = {},
                                        DbConfigAttestation attest = DbConfigAttestation::None);
   [[nodiscard]] Result<SurfaceArchiveV2> open_partition(std::string_view key) const;
+
+  // Open the partition FILE for `key` directly, WITHOUT the manifest lookup
+  // `open_partition` performs first. So `NotFound` here means the file is
+  // genuinely ABSENT from `<root>/partitions/`, never merely unlisted.
+  //
+  // REV-R3 fix-1 (review I-1). `open_partition` above answers "does this
+  // database SERVE this key", and it must keep doing exactly that — its callers
+  // read the manifest as the index of what the db offers, and widening it
+  // underneath them would silently change what a `NotFound` from it means. This
+  // accessor answers the different question "is there a FILE here, and what does
+  // it hold", and it exists for the one caller that must not let the manifest
+  // decide: the coverage guard in `populate_surface_db`, which is about to
+  // commit a WHOLE-FILE rewrite and therefore needs the file's own directory,
+  // not the index's opinion of it. A partition file present on disk but absent
+  // from the manifest — a crash between `write_partition`'s archive rename and
+  // its manifest persist, a manifest restored from an older copy, a
+  // hand-assembled or partially-copied root, or `drop_partition` interrupted
+  // after its manifest commit — is exactly the disagreement that guard exists to
+  // resolve in the FILE's favour. Through `open_partition` it resolved the other
+  // way and the rewrite overwrote the file.
+  //
+  // Errors are `SurfaceArchiveV2::open_file`'s, verbatim and undiluted:
+  // `NotFound` iff the path does not exist, `IoError`/`ParseError` for a file
+  // that is present and will not read or parse. Callers MUST keep those apart —
+  // conflating them is the fail-open this was added to close.
+  //
+  // NO CACHING, deliberately: this bypasses the S5 partition view cache as well
+  // as the manifest, so it always reads what is on disk right now. It is a
+  // once-per-written-date call on the drain thread, not a hot path.
+  [[nodiscard]] Result<SurfaceArchiveV2> open_partition_file(std::string_view key) const;
 
   // Reconstruct an OWNED surface for `symbol` in partition `key`. S5: reads the
   // partition through a shared, per-partition MMAP CACHE (keyed by canonical key,
