@@ -402,10 +402,34 @@ Shared-file rules:
 Integration trunk is `feat/pipeline-m` (user directive: nothing merges to local main
 this sprint). Trunk tip after the wave-1 merge train: **264b2fe**.
 
+> **[FINAL, 2026-07-25] Trunk tip is now `b056538`.** Local `main` is untouched at
+> `2858cab` and is **fully contained** in the trunk (`rev-list --count b056538..main`
+> = 0). Gate at the tip: **2279 enumerated / 2272 counted / 2225 passed / 0 failed /
+> 47 skipped / 7 disabled**, `-L atx_vol -j 1`, full label, with the `atx-vol-python`
+> lane **live and Passed** — the first time any gate in this sprint has observed that
+> lane at a commit carrying both the RunArchive cutover and a built `_core`.
+> Full account: `sprints/2026-07-25-pipeline-sota-sprint-final.md`.
+>
+> **A6 and A7 landed** (`b625416`, `9940182`) with review follow-ups; A6's bit-identity
+> audited at 99144 entries / 0 mismatches. **A7's own gate quantity was moving the wrong
+> way** on a wholly-Taylor vol column — measured 35 solves against a 20 ceiling — fixed
+> at `311d073`. **A5 is NOT landed**, and the refusal is itself two findings about this
+> plan: A5's half 2 was specified against code `c84ecfc` superseded on 2026-07-11, ten
+> days before `d4ade5b` authored this document; and A5's deterministic gate is
+> unfalsifiable, because `AmericanAvxPackDispatches` fires at one site neither A5 call
+> site reaches. That is the second unfalsifiable gate in WS-A's spec — A6's named bench
+> row was the first, and no registered benchmark ever matched it.
+>
+> **A5's rows in §4 and the A-row below are corrected from "deferred with confirmed
+> blockers" to "never attempted".** All three sat at that status through a workstream
+> review returning 0 Critical / 0 Important. Two landed without difficulty once
+> attempted.
+
 | WS | Branch | Worktree | Status | Tip SHA | Gate log |
 |---|---|---|---|---|---|
 | M | feat/pipeline-m | wt-pipe-m | GATED, then wave-1 merge train | 264b2fe | M gate @5e2c31a: serial 2048/2048, 0 unexplained; goldens 3×-stable (82s `5e7ca065…`, 135s `141173fd…`); both presets clean; M1 reconcile→M2 re-pin→M3 known-reds→M4 regime pin→M5 doc sync. Merges: 9390a15 C, e35cddf A, 96172e5 G, 264b2fe B — all `--no-ff`, zero conflicts (only A∩C overlap = tests/CMakeLists.txt, append-only both sides) |
-| A | feat/pipeline-a | wt-pipe-a | MERGED (e35cddf) | bf6968c | 7 commits; serial 2057/2057; review Approved-with-minors (0 Critical, 0 Important, 3 Minor, 3 Nit) — reviewer re-ran the failing-first tests, the ForceScalar leg and ScenarioGrid. A5/A6 + A7's solve-count half deferred with confirmed blockers |
+| A | feat/pipeline-a | wt-pipe-a | MERGED (e35cddf) | bf6968c | 7 commits; serial 2057/2057; review Approved-with-minors (0 Critical, 0 Important, 3 Minor, 3 Nit) — reviewer re-ran the failing-first tests, the ForceScalar leg and ScenarioGrid. ~~A5/A6 + A7's solve-count half deferred with confirmed blockers~~ **[CORRECTED 2026-07-25] That status was false. A5, A6 and A7 were never attempted — a later bench pass measured the shipped tree and found all three simply absent (`avx_pack_dispatches` = 0, no `geo_bary` symbol, solve ledger unchanged at 896 with zero spread across three reps), and this row's own review returned 0 Critical / 0 Important without noticing. See the A-PERF row below** |
+| **A-PERF** | feat/pipeline-a-perf | wt-pipe-e | **MERGED into the trunk (`b056538`)** | 8337838 | 9 commits. **A7** `9940182` scenario-grid Exact arm reuses one boundary per vol column; **A6** `b625416` sweep-invariant barycentric hoist, **bit-identical — 99144 audited entries, 0 mismatches, three specialized schemes × 729 workspaces**; A6's phantom "sweep" bench row resolved by *identifying* `american/boundary_batch/scalar` and `…/scalar_qlfast`, both already pinned by `atx-vol-american-shootout-name-coverage`. Review follow-ups: `311d073` A7 solved a boundary for wholly-Taylor vol columns, so its own gate quantity ROSE on a legal input no A7 test could reach (every one used `all_exact_spec()` with both radii 0.0) — measured RED **35 solves against a 20 ceiling**, GREEN 20, hoisted predicate independently ruled *equivalent* not merely sufficient; `108aa55` `AmericanAvxPackDispatches` bumped at one of two AVX2 dispatch sites, so it had been under-reporting library-wide — both sites now bump and the definition states what it excludes; `6a0e835`/`3ee08b1` the geometry-fit guard derived from `al_fp_specialized` instead of hand-copied; `31cce3a` `geo_bary_den`/`geo_bary_hit` had **no term in that guard** — five schemes passed and wrote OOB, `(10,32)` writing `geo_bary_den[264..287]` past the last `AlWorkspace` member, and the omission was *explicitly justified* by a comment bounding 264-element arrays by 3168. Enumeration after the fix: **0 unsafe admitted, 0 safe rejected, 3/3 live schemes kept**. **A5 NOT landed** — see the FINAL note above. **`AmericanAvxPackDispatches` observed = 3 under a counters-ON build, the first executed build in which that bump has ever incremented.** That run also surfaced **12 pre-existing counters-ON failures** (`Counter::BoundarySolves` vs the always-on `AlBoundarySolves` ledger, 29 vs 4) — attributed pre-existing by blob identity plus three structural checks, ruled bookkeeping with **29 faithful and 4 the miss**, left unfixed: the deliverable is a counters-ON CI lane. Branch gate 2269/2262/2214/**0 failed**/48/7, `did not run` block byte-identical to baseline by SHA-256. No golden moved; 10 files, all `M`, zero deletions, zero renames |
 | B | feat/pipeline-b | wt-pipe-b | MERGED (264b2fe) | eed7131 | 8 commits; serial 2011 pass / 43 skip / 0 fail under `-DATX_BUILD_BENCH=ON` (count delta vs the 2048/102 trunk baseline is a config artifact); review Approved-with-minors (0 Critical, 2 Important process-only, 5 Minor). B4 default flip / B6 selector holdout / B7 baseline JSON deferred, blockers confirmed real |
 | C | feat/pipeline-c | wt-pipe-c | MERGED (9390a15) | 07dd317 | 6 commits; owning suites green (adversarial 17/17, writer/archive/db 140, db+populate 66/66, durability 2/2); full-serial verdict folded into the trunk gate; review in flight |
 | G | feat/pipeline-g | wt-pipe-g | MERGED (96172e5) | de0101b | 3 commits + G4 no-code-change (premise overtaken by the WS-M merge: Auto already rides the laned AVX2 greeks via `avx2_greeks_selected`, GreekNeeds threaded); owning suites green (219 pass / 2 skip); full-serial verdict folded into the trunk gate; review in flight, carries the M1 AVX2 auto-merge deep-dive mandate |
