@@ -495,6 +495,16 @@ Result<std::vector<ReferenceReconRecord>> verify_schedule(const fs::path &path) 
       }
 
       ATX_TRY(double pair_target, dec(tsv, call, "target_straddle_vega"));
+      // A straddle pair with no usable vega cannot have been sized vega-flat, and
+      // dividing by it yields an Inf (nonzero target) or NaN (zero target)
+      // expected quantity. `close_to` now refuses a non-finite side, so this
+      // would be caught either way — but as a "vega-flat quantity" tolerance
+      // failure, which names the symptom rather than the unusable divisor the
+      // artifact actually carries. Fail here, the way every other malformed-roll
+      // condition in this validator does.
+      if (!std::isfinite(pair_vega) || pair_vega == 0.0) {
+        return recon_fail("non-finite or zero pair vega for roll");
+      }
       const double expected_quantity = pair_target / pair_vega;
       ATX_TRY_VOID(close_to(quantity, expected_quantity, std::abs(expected_quantity) * kVegaRelTol,
                             "vega-flat quantity"));

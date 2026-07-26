@@ -1738,7 +1738,58 @@ namespace {
   return text;
 }
 
+// `schedule_text()` plus a THIRD straddle pair, ZZZ, carrying zero vega per unit
+// vol on both legs and a zero straddle target. Everything else stays internally
+// consistent — the recomputed per-contract vega, achieved leg vega, weight sum,
+// basket/index target, net and gross vega all still agree with their persisted
+// columns — so the roll passes every other check and the only thing wrong with
+// it is that `pair_target / pair_vega` is 0/0.
+[[nodiscard]] std::string zero_vega_pair_schedule_text() {
+  std::string text = "ATX_LISTED_DISPERSION_SCHEDULE\t1\n";
+  text += tsv_row({"roll_date", "valuation_ts_ns", "cohort", "expiry_ts_ns",
+                   "gross_index_vega_target", "net_vega", "gross_vega", "n_names", "is_index",
+                   "symbol", "uid", "instrument_id", "raw_symbol", "strike", "side", "quantity",
+                   "multiplier", "raw_bid", "raw_ask", "raw_mid", "model_mark", "delta_per_share",
+                   "vega_per_unit_vol", "vega_per_contract_per_vol_point", "normalized_weight",
+                   "target_straddle_vega", "achieved_leg_vega", "source_fingerprint",
+                   "surface_fingerprint"});
+  const auto leg = [&](std::string_view is_index, std::string_view symbol, std::string_view uid,
+                       std::string_view iid, std::string_view raw, std::string_view side,
+                       std::string_view quantity, std::string_view unit_vega,
+                       std::string_view contract_vega, std::string_view weight,
+                       std::string_view target, std::string_view achieved) {
+    text += tsv_row({"2026-07-10", "100", "1", "100000", "100", "0", "200", "2", is_index, symbol,
+                     uid, iid, raw, "100", side, quantity, "100", "9", "11", "10", "10", "0",
+                     unit_vega, contract_vega, weight, target, achieved, iid, "99"});
+  };
+  leg("1", "SPY", "1", "1", "SPY1", "C", "-1", "50", "50", "0", "-100", "-50");
+  leg("1", "SPY", "1", "2", "SPY2", "P", "-1", "50", "50", "0", "-100", "-50");
+  leg("0", "AAPL", "2", "3", "AAPL3", "C", "1", "50", "50", "0.5", "100", "50");
+  leg("0", "AAPL", "2", "4", "AAPL4", "P", "1", "50", "50", "0.5", "100", "50");
+  leg("0", "ZZZ", "5", "5", "ZZZ5", "C", "1", "0", "0", "0.5", "0", "0");
+  leg("0", "ZZZ", "5", "6", "ZZZ6", "P", "1", "0", "0", "0.5", "0", "0");
+  return text;
+}
+
 } // namespace
+
+TEST(DispersionReferenceReconcile, AZeroVegaStraddlePairIsRejectedRatherThanDividedBy) {
+  const fs::path run = make_run_dir("recon_zero_pair_vega");
+  write_file(run / "trade_schedule.tsv", zero_vega_pair_schedule_text());
+
+  const auto records = reconcile_dispersion_reference(run, /*schedule_only=*/true);
+
+  ASSERT_FALSE(records) << "a straddle pair with zero vega was accepted: `expected_quantity = "
+                           "pair_target / pair_vega` is 0/0 there, and the gate it feeds cannot "
+                           "reject the NaN it produces";
+  EXPECT_NE(records.error().to_string().find("pair vega"), std::string::npos)
+      << "the reconciler must name the unusable divisor rather than report the NaN it computed "
+         "from it as a downstream tolerance failure: "
+      << records.error().to_string();
+
+  std::error_code error;
+  fs::remove_all(run, error);
+}
 
 TEST(DispersionReferenceReconcile, ANonFiniteRecomputedPnlFailsTheToleranceGate) {
   const fs::path run = make_run_dir("recon_nan_gate");
