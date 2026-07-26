@@ -969,6 +969,137 @@ TEST(SurfaceDbBuildFailedCellCap, ReportCsvKeepsTheCellsTheTerminalElides) {
   }
 }
 
+// ── REV-R3: the same cap discipline for the coverage-regression cells ───────
+//
+// `reported_coverage_regression_cells` is `reported_failed_cells`' twin and must
+// behave identically, because the CLI applies the SAME `--max-failures` flag to
+// both lists. Mirrors the two tests above deliberately, including the `max == 0`
+// and default-cap edges: this list names surfaces a rewrite would have destroyed
+// (or, under --allow-coverage-regression, did), so a truncation that did not
+// count itself would read as "that was all of them" about DELETED DATA.
+[[nodiscard]] SurfaceDbBuildReport report_with_regression_cells(std::size_t n) {
+  SurfaceDbBuildReport r;
+  r.coverage.dates_refused_coverage_regression = n > 0 ? 1u : 0u;
+  for (std::size_t i = 0; i < n; ++i) {
+    r.coverage.coverage_regression_cells.push_back(
+        CoverageRegressionCell{"2026-07-01", "S" + std::to_string(i)});
+  }
+  return r;
+}
+
+TEST(SurfaceDbBuildRegressionCellCap, CapsTheListAndCountsWhatItLeftOut) {
+  const SurfaceDbBuildReport r = report_with_regression_cells(5);
+
+  const ReportedCoverageRegressionCells all = reported_coverage_regression_cells(r, 5);
+  EXPECT_EQ(all.reported.size(), std::size_t{5});
+  EXPECT_EQ(all.n_elided, std::size_t{0});
+
+  // Over the cap: the PREFIX (not a sample), so the shown rows keep the
+  // populate's deterministic (date, symbol) order, plus an exact remainder.
+  const ReportedCoverageRegressionCells capped = reported_coverage_regression_cells(r, 2);
+  ASSERT_EQ(capped.reported.size(), std::size_t{2});
+  EXPECT_EQ(capped.n_elided, std::size_t{3});
+  EXPECT_EQ(capped.reported.size() + capped.n_elided,
+            r.coverage.coverage_regression_cells.size());
+  EXPECT_EQ(capped.reported[0].symbol, "S0");
+  EXPECT_EQ(capped.reported[1].symbol, "S1");
+  EXPECT_EQ(capped.reported[0].date, "2026-07-01");
+
+  // A cap of 0 shows nothing and elides everything — the counter still tells the
+  // truth. This is the edge M-5 turns on: the CLI must NOT apply this cap on the
+  // destructive branch, where the printed list is the only record of the loss.
+  const ReportedCoverageRegressionCells none = reported_coverage_regression_cells(r, 0);
+  EXPECT_TRUE(none.reported.empty());
+  EXPECT_EQ(none.n_elided, std::size_t{5});
+
+  // An empty list is not a truncation.
+  const SurfaceDbBuildReport clean;
+  const ReportedCoverageRegressionCells nothing = reported_coverage_regression_cells(clean);
+  EXPECT_TRUE(nothing.reported.empty());
+  EXPECT_EQ(nothing.n_elided, std::size_t{0});
+
+  // The default cap is the one the CLI prints without --max-failures, and it is
+  // the SAME constant the failed-cell list uses (one flag, one bound).
+  const SurfaceDbBuildReport big =
+      report_with_regression_cells(kSurfaceDbBuildMaxReportedFailedCells + 7);
+  const ReportedCoverageRegressionCells defaulted = reported_coverage_regression_cells(big);
+  EXPECT_EQ(defaulted.reported.size(), kSurfaceDbBuildMaxReportedFailedCells);
+  EXPECT_EQ(defaulted.n_elided, std::size_t{7});
+}
+
+// REV-R3 fix-1 (review M-5). The cap the CLI actually passes, which is NOT
+// `--max-failures` on the one branch where the list is the only durable record of
+// data being deleted. Lifted out of `main()` for the same reason `build_exit_code`
+// was: it is a contract about an audit record.
+TEST(SurfaceDbBuildRegressionCellCap, TheDestructiveBranchIsExemptFromTheCap) {
+  // Refusal: the cap applies. Nothing was lost, every surface is still on disk,
+  // and the list is an ordinary diagnostic.
+  const SurfaceDbBuildReport refused = report_with_regression_cells(5);
+  ASSERT_EQ(refused.coverage.dates_refused_coverage_regression, 1u);
+  EXPECT_EQ(coverage_regression_display_cap(refused, 2), std::size_t{2});
+  EXPECT_EQ(coverage_regression_display_cap(refused, 0), std::size_t{0})
+      << "a refusal keeps --max-failures 0's silence; nothing was destroyed";
+
+  // Destruction: no cap at all, even at --max-failures 0. The CLI's own banner
+  // calls this list the ONLY record those surfaces existed.
+  SurfaceDbBuildReport dropped = report_with_regression_cells(5);
+  dropped.coverage.dates_refused_coverage_regression = 0u;
+  dropped.coverage.dates_dropped_coverage_regression = 1u;
+  EXPECT_EQ(coverage_regression_display_cap(dropped, 0), std::size_t{5});
+  EXPECT_EQ(coverage_regression_display_cap(dropped, 2), std::size_t{5});
+  const ReportedCoverageRegressionCells shown =
+      reported_coverage_regression_cells(dropped, coverage_regression_display_cap(dropped, 0));
+  EXPECT_EQ(shown.reported.size(), std::size_t{5});
+  EXPECT_EQ(shown.n_elided, std::size_t{0})
+      << "a destructive run must never elide a cell it deleted";
+
+  // A clean run is unaffected either way (its list is empty).
+  const SurfaceDbBuildReport clean;
+  EXPECT_EQ(coverage_regression_display_cap(clean, 7), std::size_t{7});
+}
+
+// Section 5 of the --report CSV, uncapped — the durable half of the guard's
+// record. On a --allow-coverage-regression run this file is the ONLY evidence
+// those surfaces ever existed (the archive keeps no tombstone), so every cell
+// must be here even when the terminal elides most of them.
+TEST(SurfaceDbBuildRegressionCellCap, ReportCsvKeepsEveryRegressionCell) {
+  const SurfaceDbBuildReport r =
+      report_with_regression_cells(kSurfaceDbBuildMaxReportedFailedCells + 3);
+  ASSERT_EQ(reported_coverage_regression_cells(r).n_elided, std::size_t{3});
+
+  const fs::path csv = fresh_dir("regression_cells_csv") / "report.csv";
+  fs::create_directories(csv.parent_path());
+  ASSERT_TRUE(write_build_report_csv(r, csv.string()).has_value());
+  std::ifstream is(csv.string(), std::ios::binary);
+  const std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+
+  // The section header is a pinned contract, and its column names deliberately
+  // DIFFER from section 4's so a naive parser cannot splice the two together.
+  EXPECT_NE(text.find("regression_date,regression_symbol\n"), std::string::npos);
+  EXPECT_NE(text.find("date,symbol,code,detail\n"), std::string::npos);
+  for (std::size_t i = 0; i < r.coverage.coverage_regression_cells.size(); ++i) {
+    EXPECT_NE(text.find("2026-07-01,S" + std::to_string(i) + "\n"), std::string::npos)
+        << "regression row " << i << " missing from the CSV";
+  }
+  // The scalars are emitted ALWAYS, even at zero, so a scripted diff of two
+  // report CSVs sees a regression APPEAR rather than a line materialise.
+  EXPECT_NE(text.find("coverage.dates_refused_coverage_regression,1\n"), std::string::npos);
+  EXPECT_NE(text.find("coverage.dates_dropped_coverage_regression,0\n"), std::string::npos);
+}
+
+// The constant-shape promise: both new headers are present even on a report with
+// nothing to say, so a consumer parses one file layout regardless of outcome.
+TEST(SurfaceDbBuildRegressionCellCap, ReportCsvSectionHeaderIsEmittedWhenEmpty) {
+  const SurfaceDbBuildReport clean;
+  const fs::path csv = fresh_dir("regression_cells_empty_csv") / "report.csv";
+  fs::create_directories(csv.parent_path());
+  ASSERT_TRUE(write_build_report_csv(clean, csv.string()).has_value());
+  std::ifstream is(csv.string(), std::ios::binary);
+  const std::string text((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
+  EXPECT_NE(text.find("regression_date,regression_symbol\n"), std::string::npos);
+  EXPECT_NE(text.find("coverage.dates_refused_coverage_regression,0\n"), std::string::npos);
+}
+
 // ── is_total_fit_failure — the CLI's exit-code decision ─────────────────────
 //
 // The predicate the build CLI uses to turn "the build ran and produced nothing"
@@ -1295,6 +1426,217 @@ TEST(SurfaceDbStrictTotalFitFailure, IsAStrictSupersetOfThePlainPredicate) {
     }
   }
   EXPECT_GT(strict_only, 0u) << "the sweep must actually reach the strict-only region";
+}
+
+// ── build_exit_code — the number the CLI actually returns ───────────────────
+//
+// REV-R3 fix-1 (review I-2). This decision used to be a lambda inside `main()`,
+// so exit 5 and its preemption of 3 and 1 were unreachable from any test and
+// rested on one manual CLI run — in a file that already pins both of its sibling
+// contracts (`is_total_fit_failure` above, `reported_failed_cells`) for exactly
+// the reason that the CLI reads them. A future edit that dropped the refusal
+// clause would silently restore exit 0 on a refusal, which is the incident's
+// defining property ("the database reported success").
+
+// A report carrying a coverage REFUSAL: n dates refused, with the cells named.
+[[nodiscard]] SurfaceDbBuildReport refused_report(std::uint32_t n_dates) {
+  SurfaceDbBuildReport r;
+  r.coverage.dates_refused_coverage_regression = n_dates;
+  for (std::uint32_t i = 0; i < n_dates; ++i) {
+    r.coverage.coverage_regression_cells.push_back(
+        CoverageRegressionCell{"2026-07-0" + std::to_string(i + 1), "AAA"});
+  }
+  return r;
+}
+
+// A refusal ALONE is exit 5. Nothing else about the run is wrong: other dates
+// built fine, nothing was lost, the report printed.
+TEST(SurfaceDbBuildExitCode, RefusalAloneIsFive) {
+  SurfaceDbBuildReport r = refused_report(1);
+  r.coverage.cells_to_fit = 4u;
+  r.coverage.cells_ok = 3u;
+  r.coverage.cells_failed = 1u;
+  r.coverage.dates_written = 2u;
+  EXPECT_EQ(build_exit_code(r, /*report_write_failed=*/false, /*strict=*/false),
+            kSurfaceDbBuildExitCoverageRegression);
+  EXPECT_EQ(build_exit_code(r, false, /*strict=*/true), kSurfaceDbBuildExitCoverageRegression)
+      << "--strict changes nothing about a refusal";
+}
+
+// THE PREEMPTION, and the reason it exists. The two shapes genuinely coexist: a
+// date holding a preserved-disabled cell yields a non-empty candidate with zero
+// FITTED cells, so `is_total_fit_failure` and a refusal both fire on one run. 5
+// must win, because exit 3's diagnostic says "fix your inputs and re-run" and
+// the re-run is the thing that deletes the data.
+TEST(SurfaceDbBuildExitCode, RefusalPreemptsTotalFitFailure) {
+  SurfaceDbBuildReport r = refused_report(2);
+  r.coverage.cells_to_fit = 9u;
+  r.coverage.cells_ok = 0u;
+  r.coverage.cells_failed = 9u;
+  ASSERT_TRUE(is_total_fit_failure(r)) << "the scenario must really arm BOTH verdicts";
+  EXPECT_EQ(build_exit_code(r, false, false), kSurfaceDbBuildExitCoverageRegression);
+
+  // The same, one stage earlier: a total CONFIG failure beside a refusal.
+  SurfaceDbBuildReport cfg = refused_report(1);
+  cfg.config.n_symbols = 2u;
+  cfg.config.n_disabled_failed = 2u;
+  ASSERT_TRUE(is_total_config_failure(cfg));
+  EXPECT_EQ(build_exit_code(cfg, false, false), kSurfaceDbBuildExitCoverageRegression);
+
+  // And the ingest stage: a total LOAD failure beside a refusal.
+  SurfaceDbBuildReport load = refused_report(1);
+  load.n_dates_loaded = 0;
+  load.n_load_errors = 3;
+  ASSERT_TRUE(is_total_load_failure(load));
+  EXPECT_EQ(build_exit_code(load, false, false), kSurfaceDbBuildExitCoverageRegression);
+
+  // And the opt-in strict verdict.
+  SurfaceDbBuildReport strict = refused_report(1);
+  strict.coverage.cells_to_fit = 9u;
+  strict.coverage.cells_ok = 0u;
+  strict.coverage.cells_failed = 9u;
+  strict.coverage.cells_carried = 100u;
+  ASSERT_FALSE(is_total_fit_failure(strict));
+  ASSERT_TRUE(is_strict_total_fit_failure(strict));
+  EXPECT_EQ(build_exit_code(strict, false, /*strict=*/true),
+            kSurfaceDbBuildExitCoverageRegression);
+}
+
+// A --report write failure loses to a refusal for the same reason it already
+// loses to exit 3: the full report IS on stdout, so 1 would bury the urgent
+// verdict behind the least urgent one.
+TEST(SurfaceDbBuildExitCode, RefusalPreemptsReportWriteFailure) {
+  const SurfaceDbBuildReport r = refused_report(1);
+  EXPECT_EQ(build_exit_code(r, /*report_write_failed=*/true, false),
+            kSurfaceDbBuildExitCoverageRegression);
+
+  // All three at once.
+  SurfaceDbBuildReport all = refused_report(1);
+  all.coverage.cells_to_fit = 9u;
+  all.coverage.cells_failed = 9u;
+  EXPECT_EQ(build_exit_code(all, true, true), kSurfaceDbBuildExitCoverageRegression);
+}
+
+// THE DESTRUCTIVE BRANCH IS NOT A VERDICT. `--allow-coverage-regression` means
+// the operator authorised the loss, so a dropped-only run exits 0 — the stderr
+// banner and the CSV carry the record instead. Reading `dates_dropped_*` here
+// would make the documented opt-out impossible to use from a script.
+TEST(SurfaceDbBuildExitCode, DroppedOnlyIsZero) {
+  SurfaceDbBuildReport r;
+  r.coverage.dates_dropped_coverage_regression = 3u;
+  r.coverage.coverage_regression_cells.push_back(CoverageRegressionCell{"2026-07-01", "AAA"});
+  r.coverage.cells_to_fit = 4u;
+  r.coverage.cells_ok = 4u;
+  r.coverage.dates_written = 3u;
+  EXPECT_EQ(build_exit_code(r, false, false), kSurfaceDbBuildExitOk);
+
+  // ...but a dropped run that ALSO produced nothing still exits 3: the drop is
+  // not a verdict, and it does not suppress the ones that are.
+  SurfaceDbBuildReport dead = r;
+  dead.coverage.cells_ok = 0u;
+  dead.coverage.cells_failed = 4u;
+  ASSERT_TRUE(is_total_fit_failure(dead));
+  EXPECT_EQ(build_exit_code(dead, false, false), kSurfaceDbBuildExitTotalFitFailure);
+}
+
+// With no refusal the function reduces EXACTLY to the pre-REV-R3 behaviour, in
+// every branch. This is the "neither fires" row of the matrix and the regression
+// guard for the lift out of main().
+TEST(SurfaceDbBuildExitCode, WithoutARefusalItIsTheExistingBehaviour) {
+  // Healthy run.
+  const SurfaceDbBuildReport healthy = coverage_report(9u, 9u, 0u);
+  EXPECT_EQ(build_exit_code(healthy, false, false), kSurfaceDbBuildExitOk);
+  EXPECT_EQ(build_exit_code(healthy, false, true), kSurfaceDbBuildExitOk);
+
+  // Healthy run whose CSV did not land: 1, and only then.
+  EXPECT_EQ(build_exit_code(healthy, true, false), kSurfaceDbBuildExitReportWriteFailed);
+
+  // Each of the four "produced nothing" shapes maps to 3.
+  EXPECT_EQ(build_exit_code(coverage_report(9u, 0u, 9u), false, false),
+            kSurfaceDbBuildExitTotalFitFailure);
+
+  SurfaceDbBuildReport cfg;
+  cfg.config.n_symbols = 2u;
+  cfg.config.n_disabled_failed = 2u;
+  EXPECT_EQ(build_exit_code(cfg, false, false), kSurfaceDbBuildExitTotalFitFailure);
+
+  SurfaceDbBuildReport load;
+  load.n_dates_loaded = 0;
+  load.n_load_errors = 3;
+  EXPECT_EQ(build_exit_code(load, false, false), kSurfaceDbBuildExitTotalFitFailure);
+
+  // The carry-masked shape: 0 by default (with a warning `main` prints), 3 only
+  // under --strict. This is the one row where the `strict` argument changes the
+  // answer, and it must not change any other.
+  SurfaceDbBuildReport masked = coverage_report(250u, 0u, 250u);
+  masked.coverage.cells_carried = 257'000u;
+  EXPECT_EQ(build_exit_code(masked, false, /*strict=*/false), kSurfaceDbBuildExitOk);
+  EXPECT_EQ(build_exit_code(masked, false, /*strict=*/true), kSurfaceDbBuildExitTotalFitFailure);
+  // A --report failure on the non-strict reading still surfaces as 1.
+  EXPECT_EQ(build_exit_code(masked, true, false), kSurfaceDbBuildExitReportWriteFailed);
+
+  // The empty/no-op window: the build's convergence guarantee depends on 0.
+  EXPECT_EQ(build_exit_code(SurfaceDbBuildReport{}, false, false), kSurfaceDbBuildExitOk);
+  EXPECT_EQ(build_exit_code(SurfaceDbBuildReport{}, false, true), kSurfaceDbBuildExitOk);
+}
+
+// THE STRICT REGRESSION THAT MATTERS, at the EXIT-CODE level rather than the
+// predicate's. `--strict` must mean "this run SCHEDULED work and all of it died",
+// never "nothing happened". A healthy converged resume that carried everything
+// and scheduled NOTHING is exit 0 in BOTH modes — as are the nothing-to-do resume
+// and the un-pulled empty window. Get this wrong and every scheduler running
+// --strict over a converged production database goes permanently red, which is
+// the exact signal the carry exemption was added to remove.
+//
+// Pinned HERE and not only on the predicate because the predicate was already
+// covered and the CLI wiring was not: the `strict &&` conjunct, and where the
+// strict verdict sits relative to 5 and 1, lived in `main()` and were unreachable
+// from any test. Dropping the conjunct made strict the DEFAULT with nothing to
+// catch it.
+TEST(SurfaceDbBuildExitCode, StrictNeverFailsARunThatScheduledNothing) {
+  // Carried everything, scheduled nothing, lost nothing — the converged resume.
+  SurfaceDbBuildReport carried_all = coverage_report(0u, 0u, 0u);
+  carried_all.coverage.cells_loaded = 150u;
+  carried_all.coverage.cells_carried = 150u;
+  carried_all.coverage.dates_written = 3u;
+  EXPECT_EQ(build_exit_code(carried_all, false, /*strict=*/true), kSurfaceDbBuildExitOk)
+      << "--strict must mean 'scheduled work all died', not 'nothing happened'";
+  EXPECT_EQ(build_exit_code(carried_all, false, /*strict=*/false), kSurfaceDbBuildExitOk);
+
+  // Every date already complete: nothing scheduled, nothing carried.
+  SurfaceDbBuildReport resumed = coverage_report(0u, 0u, 0u);
+  resumed.coverage.cells_loaded = 150u;
+  resumed.coverage.cells_already_present = 150u;
+  resumed.coverage.dates_skipped_complete = 3u;
+  EXPECT_EQ(build_exit_code(resumed, false, true), kSurfaceDbBuildExitOk);
+
+  // Partial coverage is ordinary production output in either mode.
+  SurfaceDbBuildReport partial = coverage_report(9u, 1u, 8u);
+  partial.coverage.cells_carried = 147u;
+  EXPECT_EQ(build_exit_code(partial, false, true), kSurfaceDbBuildExitOk);
+
+  // `strict` is LOAD-BEARING and must stay so: this is the one report shape whose
+  // exit code the flag changes. If a future edit drops the strict conjunct from
+  // `build_exit_code`, both lines below return 3 and this fails.
+  SurfaceDbBuildReport masked = coverage_report(250u, 0u, 250u);
+  masked.coverage.cells_carried = 257'000u;
+  ASSERT_NE(build_exit_code(masked, false, /*strict=*/false),
+            build_exit_code(masked, false, /*strict=*/true))
+      << "the strict conjunct is dead: --strict has become the default (or is ignored)";
+}
+
+// The vocabulary itself, pinned. 4 is SKIPPED because `atx-vol-surface-db verify`
+// owns it for the absent-cell verdict and the two CLIs share one exit vocabulary
+// across binaries — a wrapper script reads either without a lookup table. A
+// future edit that "tidied" 5 down to 4 would break that documented invariant,
+// silently, for every script that runs a build/verify pair.
+TEST(SurfaceDbBuildExitCode, TheCodesThemselvesAreAContract) {
+  EXPECT_EQ(kSurfaceDbBuildExitOk, 0);
+  EXPECT_EQ(kSurfaceDbBuildExitReportWriteFailed, 1);
+  EXPECT_EQ(kSurfaceDbBuildExitUsage, 2);
+  EXPECT_EQ(kSurfaceDbBuildExitTotalFitFailure, 3);
+  EXPECT_EQ(kSurfaceDbBuildExitCoverageRegression, 5)
+      << "4 belongs to atx-vol-surface-db verify; the two tools share one vocabulary";
 }
 
 // ── is_total_config_failure — the SAME trap one stage earlier ───────────────

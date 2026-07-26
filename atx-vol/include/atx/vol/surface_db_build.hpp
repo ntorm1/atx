@@ -287,6 +287,34 @@ struct ReportedCoverageRegressionCells {
     const SurfaceDbBuildReport &r,
     std::size_t max_reported = kSurfaceDbBuildMaxReportedFailedCells) noexcept;
 
+// REV-R3 fix-1 (review M-5). The cap the CLI should pass to the function above:
+// `max_reported` normally, and NO cap at all on a run that actually DESTROYED
+// surfaces.
+//
+// The cap exists to keep a DIAGNOSTIC readable — 51 x 17 cells is nobody's
+// terminal. On the destructive `--allow-coverage-regression` branch the list is
+// not a diagnostic: the archive format keeps no tombstone, so a destroyed cell is
+// byte-for-byte a cell that was never fitted, and the printed list plus the
+// `--report` CSV are the ONLY record those surfaces ever existed — which the
+// CLI's own banner tells the operator, in those words. `--max-failures 0` then
+// printed an empty list directly underneath that sentence. On the one branch
+// where the list is the only durable record of data being deleted, readability
+// loses.
+//
+// Keyed on `dates_dropped_coverage_regression > 0` ("this run DELETED something")
+// rather than on the flag: a run that passed the flag and destroyed nothing has
+// an empty list anyway, and keying on the outcome keeps the rule true for any
+// future caller that reaches the destructive path some other way. A REFUSAL is
+// deliberately still capped — nothing was lost there, every surface is still on
+// disk, and the list is an ordinary diagnostic.
+//
+// It lives here rather than in `main()` for the same reason `build_exit_code`
+// does: it is a contract about an audit record, and a contract in `main()` cannot
+// be tested.
+[[nodiscard]] std::size_t
+coverage_regression_display_cap(const SurfaceDbBuildReport &r,
+                                std::size_t max_reported) noexcept;
+
 // The SAME silent-green trap one stage earlier still — at INGEST, before either
 // predicate below can see anything at all (R1-b, review C-04).
 //
@@ -575,6 +603,77 @@ struct ReportedCoverageRegressionCells {
 // the exit does not care which stage swallowed the universe (the stderr
 // diagnostic names the stage).
 [[nodiscard]] bool is_total_config_failure(const SurfaceDbBuildReport &r);
+
+// ── The build CLI's exit vocabulary, and the one decision that reads it ──────
+//
+// REV-R3 fix-1 (review I-2). These constants and `build_exit_code` below used to
+// live inside `atx-vol-surface-db-build`'s `main()` — the codes as file-local
+// `constexpr`s and the decision as a lambda — which put the tool's most
+// operator-visible contract out of reach of every test, in a header whose two
+// SIBLING contracts (`is_total_fit_failure`, `reported_failed_cells`) are unit-
+// pinned precisely because the CLI reads them. Exit 5 and its preemption of 3 and
+// 1 rested on a single manual CLI run. Now the decision is a pure function of the
+// report and `SurfaceDbBuildExitMatrix` pins the matrix.
+//
+// `main()` still owns every DIAGNOSTIC: which banner prints, in what order, and
+// with what advice. It calls this only for the number. The two are deliberately
+// separable — a refusal and a total fit failure can co-occur, and BOTH messages
+// must print even though only one code can be returned.
+//
+// The vocabulary is SHARED WITH `atx-vol-surface-db` (documented in
+// atx-vol/docs/surface-db-build.md's two exit tables): one number means one thing
+// across both binaries so a wrapper script can read either without a lookup
+// table. That is why 4 is skipped below rather than reused.
+inline constexpr int kSurfaceDbBuildExitOk = 0;
+// The tool or the db broke and there is no report to read — OR (the only shape
+// this function can return it for) the run was otherwise fine and the single
+// thing that failed is the `--report` CSV the operator asked for. It is the
+// LOWEST-priority verdict: `main` has already printed the full report to stdout.
+inline constexpr int kSurfaceDbBuildExitReportWriteFailed = 1;
+// 2 is a usage error. It is decided before the db is opened, so no report exists
+// and `build_exit_code` can never return it; named here only so the vocabulary
+// reads as a whole.
+inline constexpr int kSurfaceDbBuildExitUsage = 2;
+// The build ran to completion and produced NOTHING — at INGEST (every present
+// file in the window unreadable), at CONFIG SELECTION, or at the FIT. ONE code
+// for all three stages: a script asks "did this run produce anything?", and the
+// stderr diagnostic names which stage swallowed it.
+inline constexpr int kSurfaceDbBuildExitTotalFitFailure = 3;
+// REV-R3 (review C-02/F-02). At least one date was REFUSED because committing its
+// rewrite would have destroyed a stored surface. Not exit 3: the refusal is the
+// tool WORKING, other dates were built normally, and nothing was lost. The
+// operator's next action differs in kind — 3 says "fix your inputs and re-run",
+// this says "your inputs would have deleted data; decide first".
+//
+// 4 IS DELIBERATELY SKIPPED. `atx-vol-surface-db` already uses 4 for `verify`'s
+// ABSENT-cell verdict, and the two CLIs are run back to back by the same scripts;
+// one number meaning two things across a build/verify pair costs more than a gap
+// in the sequence.
+inline constexpr int kSurfaceDbBuildExitCoverageRegression = 5;
+
+// The build CLI's exit code for `r`, given whether the `--report` CSV write
+// failed and whether `--strict` was passed. Pure; reads nothing but its
+// arguments.
+//
+// PRECEDENCE, highest first — and each step is a decision, not an accident:
+//
+//  1. `coverage.dates_refused_coverage_regression > 0` => 5. It PREEMPTS 3 and 1.
+//     The shapes really do coexist (a date holding a preserved-disabled cell
+//     yields a non-empty candidate with zero fitted cells, so a refusal and
+//     `is_total_fit_failure` both fire). 5 wins because exit 3's advice is "fix
+//     your inputs and re-run" and the re-run is the thing that deletes the data.
+//     `dates_dropped_coverage_regression` — the `--allow-coverage-regression`
+//     path — is deliberately NOT read: the operator authorised that destruction,
+//     so it is not a verdict, and the tool says so on stderr instead.
+//  2. any of the four "produced nothing" predicates => 3. They map to one code
+//     on purpose; `main` picks which diagnostic to print.
+//     `is_strict_total_fit_failure` only counts when `strict`.
+//  3. `report_write_failed` => 1. Lowest priority: the report IS on stdout, so
+//     this never buries a 3 or a 5.
+//  4. otherwise 0. Note `dates_dropped_coverage_regression > 0` alone lands
+//     here — a destructive run the operator asked for exits 0.
+[[nodiscard]] int build_exit_code(const SurfaceDbBuildReport &r, bool report_write_failed,
+                                  bool strict);
 
 // Run the whole build (see `SurfaceDbBuildSpec`). Idempotent/resumable: re-running
 // over an unchanged hive re-fits ZERO (configs skip-existing, the populate's

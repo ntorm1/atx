@@ -57,10 +57,18 @@
 //                   usage error, like every other value-taking flag here.
 //   --report        also write the five-section CSV report to this path. A write
 //                   failure is named on stderr and exits 1 -- but it never
-//                   preempts exit 3 or 5; see the return at the end of main.
-//   --max-failures  cap on the printed `failed_cell` lines (default 32). Overflow
-//                   is counted in coverage.failed_cells_elided, never dropped
-//                   silently; the --report CSV always carries the FULL list.
+//                   preempts exit 3 or 5; see `build_exit_code` in
+//                   atx/vol/surface_db_build.hpp for the whole precedence.
+//   --max-failures  cap on the printed `failed_cell` AND `coverage_regression_cell`
+//                   lines (default 32). Overflow is counted in the matching
+//                   `_elided` scalar, never dropped silently; the --report CSV
+//                   always carries the FULL list of both.
+//                   ONE EXEMPTION (REV-R3 fix-1): on the DESTRUCTIVE
+//                   `--allow-coverage-regression` branch the cap does NOT apply to
+//                   the regression cells -- every destroyed cell is printed. That
+//                   branch's own banner says the printed list and the CSV are the
+//                   only record those surfaces ever existed, and a cap (0 in
+//                   particular) would empty the list under that sentence.
 //                   Same flag name/semantics as atx-vol-surface-db verify.
 //   --allow-coverage-regression  permit a date's rewrite to DESTROY a stored
 //                   surface. Off by default: a partition write is whole-file, so
@@ -121,28 +129,17 @@ using namespace atx::vol;
 
 namespace {
 
-// The build ran to completion and produced NOTHING. Distinct from 1 (the tool or
-// the db broke, no report) and from 2 (the operator's command line was wrong):
-// the inputs parsed and everything died — at INGEST (R1-b: every present file in
-// the window was unreadable), at config selection, or at the fit. A script can
-// therefore tell "atx is broken" from "your data/rate is wrong". ONE code for all
-// three stages: the question a script asks is "did this run produce anything?",
-// and the stderr diagnostic names which stage swallowed it.
-constexpr int kExitTotalFitFailure = 3;
-
-// REV-R3 (review C-02/F-02). At least one date was REFUSED because committing its
-// rewrite would have destroyed a stored surface. The run did not do what was
-// asked, so it must not read as success — but it is categorically NOT exit 3
-// ("produced nothing"): the refusal is the tool working, other dates were built
-// normally, and nothing was lost. A script's response is different too — exit 3
-// says "fix your inputs and re-run", this says "your inputs would have deleted
-// data; decide, then re-run with --allow-coverage-regression or not at all".
+// REV-R3 fix-1 (review I-2). The exit CODES and the decision that picks between
+// them now live in `atx/vol/surface_db_build.hpp` — `kSurfaceDbBuildExit*` and
+// `build_exit_code` — so the tool's most operator-visible contract is reachable
+// from a test, like the predicates it reads already were. They used to be a
+// file-local `constexpr` pair plus a lambda inside `main()`, and exit 5 and its
+// preemption of 3 and 1 rested on one manual CLI run. This file keeps what only
+// it can own: WHICH diagnostic prints, in what order, with what advice.
 //
-// 4 IS DELIBERATELY SKIPPED. The companion tool `atx-vol-surface-db` already uses
-// 4 for `verify`'s ABSENT-cell verdict, and these two CLIs are run back to back by
-// the same scripts and the same operators. One number meaning two different things
-// across a build/verify pair is a trap that costs more than a gap in the sequence.
-constexpr int kExitCoverageRegression = 5;
+// The bare `return 2`s in the arg loop below stay bare: they fire before the db
+// is opened, so there is no report for `build_exit_code` to read
+// (`kSurfaceDbBuildExitUsage` documents the number on the header's side).
 
 void print_usage(std::FILE *out) {
   std::fprintf(out,
@@ -344,12 +341,14 @@ void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
   }
 
   // REV-R3: WHICH stored surfaces a refused write would have destroyed (or, under
-  // --allow-coverage-regression, did). Same cap, same never-silent elision count,
-  // same deterministic (date, symbol) order as the block above, and the --report
-  // CSV likewise carries every entry. Two counters are always printed even when
-  // the list is empty, so a scripted diff of two runs sees a regression appear.
+  // --allow-coverage-regression, did). Same never-silent elision count and same
+  // deterministic (date, symbol) order as the block above, and the --report CSV
+  // likewise carries every entry. Two counters are always printed even when the
+  // list is empty, so a scripted diff of two runs sees a regression appear. The
+  // cap is `regression_cell_cap`'s, not `max_failed_cells` directly -- see there
+  // for why the destructive branch is exempt.
   const ReportedCoverageRegressionCells regressed =
-      reported_coverage_regression_cells(r, max_failed_cells);
+      reported_coverage_regression_cells(r, coverage_regression_display_cap(r, max_failed_cells));
   std::printf("coverage.coverage_regression_cells_reported %zu\n", regressed.reported.size());
   std::printf("coverage.coverage_regression_cells_elided %zu\n", regressed.n_elided);
   for (const CoverageRegressionCell &c : regressed.reported) {
@@ -523,29 +522,33 @@ int main(int argc, char **argv) {
     }
   }
 
-  // ── REV-R3 (review C-02/F-02): the coverage-regression verdict ──────────────
+  // ── REV-R3 (review C-02/F-02): the coverage-regression banner ───────────────
   //
-  // Resolved BEFORE the failure predicates, and printed here, for two reasons.
-  // First, this banner must never be swallowed: the predicates below `return`, and
-  // a refusal can legitimately coexist with a total fit failure (a date holding a
+  // Printed BEFORE the failure predicates, and unconditionally, for one reason:
+  // it must never be swallowed. The predicate blocks below `return`, and a refusal
+  // can legitimately coexist with a total fit failure (a date holding a
   // preserved-disabled cell can produce a non-empty candidate with zero fitted
-  // cells). Second, it PREEMPTS their exit code — see `verdict` below.
+  // cells), so both diagnostics have to print even though only one exit code can
+  // come back.
   //
-  // Which code should win is a real question and this is the answer: 3 says "your
-  // inputs produced nothing, fix them and re-run", which invites exactly the
-  // re-run that would destroy the data if the operator reached for
-  // --allow-coverage-regression to make the tool stop complaining. 5 says "a
-  // rewrite would have deleted stored surfaces and I stopped", which is both more
-  // specific and more urgent. The exit-3 diagnostics (including the --r advice,
-  // which is the top suspect for BOTH shapes) still print in full; only the number
+  // The exit code itself is `build_exit_code`'s (surface_db_build.hpp), where a
+  // refusal PREEMPTS 3 and 1. Which should win is a real question and that is the
+  // answer: 3 says "your inputs produced nothing, fix them and re-run", which
+  // invites exactly the re-run that would destroy the data if the operator
+  // reached for --allow-coverage-regression to make the tool stop complaining. 5
+  // says "a rewrite would have deleted stored surfaces and I stopped", which is
+  // both more specific and more urgent. The exit-3 diagnostics (including the --r
+  // advice, the top suspect for BOTH shapes) still print in full; only the number
   // changes.
   const bool coverage_refused = report->coverage.dates_refused_coverage_regression > 0;
-  const auto verdict = [coverage_refused](int code) noexcept {
-    return coverage_refused ? kExitCoverageRegression : code;
-  };
   if (coverage_refused || report->coverage.dates_dropped_coverage_regression > 0) {
+    // The SAME cap `print_report` used (REV-R3 fix-1, review M-5: exempted on the
+    // destructive branch), taken from the one helper so the stdout scalars and
+    // this banner can never report different "shown / elided" numbers for the
+    // same run.
     const ReportedCoverageRegressionCells regressed =
-        reported_coverage_regression_cells(*report, max_failed_cells);
+        reported_coverage_regression_cells(*report,
+                                           coverage_regression_display_cap(*report, max_failed_cells));
     if (coverage_refused) {
       std::fprintf(stderr,
                    "atx-vol-surface-db-build: COVERAGE REGRESSION REFUSED: %u date(s) were NOT "
@@ -633,7 +636,7 @@ int main(int argc, char **argv) {
                  "the window, then re-run. A window with NO files present is a different, quiet "
                  "shape and still exits 0.\n",
                  report->n_dates_missing, report->n_load_errors);
-    return verdict(kExitTotalFitFailure);
+    return build_exit_code(*report, report_write_failed, strict);
   }
 
   // Some dates loaded and some did not. NOT a failure — the readable dates were
@@ -676,7 +679,7 @@ int main(int argc, char **argv) {
                  "disables still need --retry-disabled to be re-attempted.\n",
                  report->config.n_symbols, report->config.n_disabled_failed,
                  report->config.n_disabled_existing);
-    return verdict(kExitTotalFitFailure);
+    return build_exit_code(*report, report_write_failed, strict);
   }
 
   // A build that scheduled work and fitted NOTHING used to exit 0, so an operator
@@ -704,7 +707,7 @@ int main(int argc, char **argv) {
                  "  Do not guess: the failed_cell lines above carry each cell's own reason "
                  "straight from the fitter, and --report writes all of them.\n",
                  report->coverage.cells_to_fit, report->coverage.cells_failed, spec.hive.r);
-    return verdict(kExitTotalFitFailure);
+    return build_exit_code(*report, report_write_failed, strict);
   }
 
   // ── REV-R4 (review C-05): --strict ──────────────────────────────────────────
@@ -727,9 +730,18 @@ int main(int argc, char **argv) {
   // SAME EXIT CODE, 3. No new number. A script's question is unchanged ("did this
   // run produce anything?"), the answer under --strict is just stricter about
   // what counts as producing something; inventing a code would force every
-  // existing consumer to learn it to keep the behaviour it already has. It goes
-  // through `verdict()` for the same reason the other three do: a refused
-  // coverage regression still preempts it with 5.
+  // existing consumer to learn it to keep the behaviour it already has.
+  //
+  // The CODE comes from `build_exit_code`, which evaluates the SAME `strict &&
+  // is_strict_total_fit_failure` conjunct — so a refused coverage regression
+  // still preempts it with 5, and the strict decision is pinned by
+  // `SurfaceDbBuildExitCode.StrictNeverFailsARunThatScheduledNothing` /
+  // `.WithoutARefusalItIsTheExistingBehaviour` rather than resting on this line.
+  // Before REV-R3 fix-1 (review I-2) this conjunct was the ONLY place the flag
+  // was consulted, in `main()`, unreachable from any test: dropping the `strict
+  // &&` token made strict the DEFAULT — permanently red on every run of the
+  // flagship database — with nothing to catch it. The condition below now gates
+  // only WHICH DIAGNOSTIC prints.
   //
   // NO --r ADVICE HERE, DELIBERATELY. The exit-3 block above names a carry-rate
   // mismatch as the top suspect; on this shape that advice is the dangerous one.
@@ -773,7 +785,7 @@ int main(int argc, char **argv) {
                  "refused date by date (exit 5), or, with --allow-coverage-regression, would "
                  "DELETE those %u surfaces.\n",
                  report->coverage.cells_carried, report->coverage.cells_carried);
-    return verdict(kExitTotalFitFailure);
+    return build_exit_code(*report, report_write_failed, strict);
   }
 
   // FIX-D fix-2 (I2). The predicate above is exempt whenever ANYTHING was carried,
@@ -847,5 +859,5 @@ int main(int argc, char **argv) {
   // No predicate fired, so the only thing that can still be wrong is the CSV the
   // operator asked for and did not get. A script that reads the file must not see
   // a green exit for a build whose report never landed.
-  return verdict(report_write_failed ? 1 : 0);
+  return build_exit_code(*report, report_write_failed, strict);
 }

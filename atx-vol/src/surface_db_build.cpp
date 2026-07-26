@@ -393,6 +393,18 @@ reported_coverage_regression_cells(const SurfaceDbBuildReport &r,
   return ReportedCoverageRegressionCells{all.first(shown), all.size() - shown};
 }
 
+std::size_t coverage_regression_display_cap(const SurfaceDbBuildReport &r,
+                                            std::size_t max_reported) noexcept {
+  // See the header: the presentation cap is waived exactly when this run
+  // DESTROYED stored surfaces, because then the printed list is the only record
+  // that they existed. Returning the full size (rather than a sentinel) keeps
+  // `reported_coverage_regression_cells`' `reported + elided == total` invariant
+  // trivially true with `elided == 0`.
+  return r.coverage.dates_dropped_coverage_regression > 0u
+             ? r.coverage.coverage_regression_cells.size()
+             : max_reported;
+}
+
 bool is_total_load_failure(const SurfaceDbBuildReport &r) {
   // R1-b (review C-04). Two terms, and the header explains why neither may be
   // dropped or widened:
@@ -555,6 +567,30 @@ bool is_total_config_failure(const SurfaceDbBuildReport &r) {
       r.config.n_configured + (r.config.n_skipped_existing - r.config.n_disabled_existing);
   return disabled > 0 && enabled == 0 && r.coverage.cells_ok == 0 &&
          r.coverage.cells_carried == 0;
+}
+
+int build_exit_code(const SurfaceDbBuildReport &r, bool report_write_failed, bool strict) {
+  // REV-R3 fix-1 (review I-2). Lifted verbatim out of `main()`'s `verdict`
+  // lambda + return sites so it can be tested; see the header for the precedence
+  // argument. The ORDER of these three blocks IS the contract.
+  //
+  // 5 first, because it preempts everything below it.
+  if (r.coverage.dates_refused_coverage_regression > 0u) {
+    return kSurfaceDbBuildExitCoverageRegression;
+  }
+  // One code for the four "the build ran and produced nothing" shapes. `main`
+  // tests them in this same order to decide which diagnostic to print (the most
+  // upstream cause first), but for the NUMBER the order is immaterial — they all
+  // map here — so this is a disjunction rather than a chain of returns, and a
+  // future predicate that also means "produced nothing" belongs in it.
+  if (is_total_load_failure(r) || is_total_config_failure(r) || is_total_fit_failure(r) ||
+      (strict && is_strict_total_fit_failure(r))) {
+    return kSurfaceDbBuildExitTotalFitFailure;
+  }
+  // Last, and only when nothing above fired: the run was fine and the one thing
+  // that broke is the file the operator asked for. A --report failure must never
+  // bury a 3 or a 5 — that regression is what put this ordering here.
+  return report_write_failed ? kSurfaceDbBuildExitReportWriteFailed : kSurfaceDbBuildExitOk;
 }
 
 Status write_build_report_csv(const SurfaceDbBuildReport &r, std::string_view path) {
