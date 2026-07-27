@@ -872,21 +872,30 @@ Status arb_repair_calendar_residual(VolSurface &s, double k_min, double k_max,
         continue;
       }
       // VERIFY the bisection's lower endpoint instead of assuming it. alpha = 0
-      // collapses `lo` to its backbone, which is monotone against `hi` only once
-      // arb_project_calendar_essvi has run (the documented precondition). When it
-      // has not — or the projection could not close the pair — alpha = 0 does not
-      // repair the crossing, and the bisection below would converge on a_lo = 0,
-      // commit it (erasing `lo`'s whole residual layer) and report Ok on a surface
-      // that is still calendar-arbitrageable. Damping can only pull `lo` DOWN
-      // toward that backbone, so no larger alpha helps either: the pair is
-      // unrepairable by this operator. Fail before touching anything.
+      // collapses `lo` to its backbone; if that still sits above `hi` the crossing
+      // is not repairable by damping `lo`, yet the bisection below would converge
+      // on a_lo = 0, commit it (erasing `lo`'s whole residual layer) and report Ok
+      // on a surface that is still calendar-arbitrageable.
+      //
+      // Running `arb_project_calendar_essvi` first is NECESSARY BUT NOT SUFFICIENT
+      // to rule this out, and the difference is not academic: that projection
+      // enforces BACKBONE-vs-BACKBONE monotonicity (it evaluates
+      // `essvi_backbone_w` on both slices — see its k-loop), while the test here
+      // is `lo`'s backbone against `hi`'s TOTAL, `essvi_total_w(hi)`. Residual
+      // coefficients are unconstrained in sign, so wherever `hi` carries a
+      // NEGATIVE residual, `w_total(hi) < w_backbone(hi)` and this deficit can be
+      // positive even though the projection ran and succeeded. That makes the
+      // status below reachable on the shipped `run_surface_parity` ordering
+      // (project, then repair) — see arb.hpp and
+      // ArbRepairCalendarResidual.ProjectedBackbonesStillTripTheGuardOnANegativeUpperResidual.
       if (total_calendar_deficit_with_alpha(lo, hi, 0.0, k_min, k_max, n_grid) > 0.0) {
         // TRANSACTIONAL, like every repair in this file: the sweeps mutate the
         // local `slices` copy and only `write_back_essvi` commits, so returning
         // here leaves the caller's surface exactly as it was passed in.
         return Err(ErrorCode::Unavailable,
-                   "arb_repair_calendar_residual: backbone crossing survives full "
-                   "residual damping (run arb_project_calendar_essvi first)");
+                   "arb_repair_calendar_residual: lower slice's backbone still crosses the "
+                   "next slice's total variance at alpha=0 (residual damping cannot repair "
+                   "this pair)");
       }
       double a_lo = 0.0;  // feasible (verified above)
       double a_hi = 1.0;  // infeasible

@@ -301,16 +301,27 @@ struct CalendarPairProjection {
 // Repair total-surface calendar arb by damping residuals on the lower-T slice
 // of any residual-induced crossing: bisect a multiplicative damper
 // alpha in [0, 1] on the lower slice's residual coefficients until
-// monotonicity holds (alpha = 0 collapses it to backbone, always monotone with
-// the next backbone once `arb_project_calendar_essvi` has run). Up to 5 outer
-// sweeps. No-op for a non-eSSVI surface.
+// monotonicity holds (alpha = 0 collapses it to the backbone, which
+// `arb_project_calendar_essvi` makes monotone against the next slice's
+// BACKBONE). Up to 5 outer sweeps. No-op for a non-eSSVI surface.
 //
 // TRANSACTIONAL: the sweeps run on a private copy of the slices, so on ANY
 // non-Ok return `s` is exactly what was passed in.
 // @return InvalidArgument if `k_max <= k_min` (after the no-op guards).
-// @return Unavailable if the alpha = 0 endpoint does not repair some pair — the
-//         backbones themselves cross, which no amount of residual damping fixes.
-//         Run `arb_project_calendar_essvi` over the same grid first.
+// @return Unavailable if the alpha = 0 endpoint does not repair some pair, i.e.
+//         the lower slice's backbone still crosses the next slice's TOTAL
+//         variance. Damping the lower slice cannot fix that pair.
+//
+//         Running `arb_project_calendar_essvi` over the same grid first is
+//         NECESSARY BUT NOT SUFFICIENT to rule this out: that projection compares
+//         backbone against backbone, while this test compares the lower backbone
+//         against the upper TOTAL. Residual coefficients are unconstrained in
+//         sign, so a NEGATIVE residual on the higher-T slice puts its total below
+//         its backbone and can trip this status even after a successful
+//         projection. Callers that must not abort on it (the `run_surface_parity`
+//         repair modes propagate it) have to map it to a counted/reported
+//         outcome — the surface is then honestly un-repaired rather than
+//         silently stripped of the lower slice's residual layer.
 [[nodiscard]] Status arb_repair_calendar_residual(VolSurface &s, double k_min,
                                                   double k_max,
                                                   std::uint32_t n_grid);

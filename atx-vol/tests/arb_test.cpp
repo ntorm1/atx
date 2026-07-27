@@ -50,6 +50,7 @@ using atx::vol::CurveSurface;
 using atx::vol::ErrorCode;
 using atx::vol::EssviParams;
 using atx::vol::EssviCurve;
+using atx::vol::essvi_backbone_w;
 using atx::vol::essvi_total_w;
 using atx::vol::filter_default_opts;
 using atx::vol::FilterOpts;
@@ -666,6 +667,49 @@ TEST(ArbRepairCalendarResidual, InfeasibleAtAlphaZero_ErrsAndKeepsResidualIntact
   EXPECT_EQ(after.resid_n_basis, before.resid_n_basis);
   for (std::size_t j = 0; j < before.resid_coef.size(); ++j) {
     EXPECT_EQ(after.resid_coef[j], before.resid_coef[j]) << "coef " << j;
+  }
+}
+
+// Review fix round 1 (I-2). The Unavailable status is REACHABLE on the shipped
+// `run_surface_parity` ordering (project, then repair), because the two passes
+// compare different quantities: `arb_project_calendar_essvi` enforces backbone
+// vs backbone, while the alpha = 0 guard tests the lower backbone against the
+// upper TOTAL. A negative residual on the higher-T slice separates the two, so a
+// successful projection does not imply a feasible alpha = 0.
+TEST(ArbRepairCalendarResidual, ProjectedBackbonesStillTripTheGuardOnANegativeUpperResidual) {
+  VolSurface surf = make_essvi_2slice_resid(0.04, 0.05, 0.02); // monotone backbones
+  {
+    EssviParams upper = surf.essvi_slices()[1];
+    upper.resid_scale = 0.1;
+    upper.resid_basis_kind = ResidualBasisKind::HingeQuad;
+    upper.resid_n_basis = 5;
+    upper.resid_coef[3] = -0.04; // NEGATIVE right wing: w_total(hi) < w_backbone(hi)
+    ASSERT_TRUE(surf.set_slice_essvi(1, upper).has_value());
+  }
+
+  // Run the projection exactly as run_surface_parity does, and confirm it
+  // delivers what it promises: backbone-vs-backbone monotonicity on this grid.
+  ASSERT_TRUE(arb_project_calendar_essvi(surf, -0.2, 0.2, 32).has_value());
+  const EssviParams lo = surf.essvi_slices()[0];
+  const EssviParams hi = surf.essvi_slices()[1];
+  for (int i = 0; i <= 32; ++i) {
+    const double k = -0.2 + 0.4 * static_cast<double>(i) / 32.0;
+    ASSERT_LE(essvi_backbone_w(lo, k), essvi_backbone_w(hi, k) + 1.0e-12) << "k=" << k;
+  }
+  // ...yet the upper slice's TOTAL dips under the lower slice's BACKBONE, which is
+  // what the alpha = 0 endpoint is measured against.
+  ASSERT_GT(essvi_backbone_w(lo, 0.2), essvi_total_w(hi, 0.2));
+
+  const auto st = arb_repair_calendar_residual(surf, -0.2, 0.2, 32);
+  ASSERT_FALSE(st.has_value()) << "projection ran, so the guard was expected to fire anyway";
+  EXPECT_EQ(st.error().code(), ErrorCode::Unavailable);
+
+  // Still transactional on this path.
+  const EssviParams after = surf.essvi_slices()[0];
+  EXPECT_EQ(after.resid_scale, lo.resid_scale);
+  EXPECT_EQ(after.resid_basis_kind, lo.resid_basis_kind);
+  for (std::size_t j = 0; j < lo.resid_coef.size(); ++j) {
+    EXPECT_EQ(after.resid_coef[j], lo.resid_coef[j]) << "coef " << j;
   }
 }
 
