@@ -2,6 +2,7 @@
 # the repository-wide ATX_BUILD_BENCH option is enabled.
 add_executable(atx-options-engine-bench
     bench_main.cpp
+    option_adaptive_coordinator_bench.cpp
     option_execution_session_bench.cpp
     option_execution_replay_bench.cpp)
 

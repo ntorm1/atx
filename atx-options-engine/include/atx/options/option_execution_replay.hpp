@@ -626,4 +626,13 @@ struct OptionOrderBatchSpec {
     const atx::options::research::OptionResearchPanel &panel, std::size_t date_index,
     const atx::options::research::OptionTargetBook &targets, const OptionOrderBatchSpec &spec);
 
+// Allocation-free compatibility seam. `output.capacity()` must cover every
+// nonzero order intent. Output is invalidated at entry and remains reusable on
+// error. Adaptive callers must first replace the one-shot target delta with a
+// working-leaf-aware residual in a private target-book staging buffer.
+[[nodiscard]] atx::core::Result<void> make_option_order_batch_into(
+    const atx::options::research::OptionResearchPanel &panel, std::size_t date_index,
+    const atx::options::research::OptionTargetBook &targets, const OptionOrderBatchSpec &spec,
+    std::vector<OptionOrderRequest> &output);
+
 } // namespace atx::options::execution

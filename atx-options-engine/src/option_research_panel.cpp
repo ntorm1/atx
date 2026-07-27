@@ -5,6 +5,7 @@
 #include <limits>
 #include <numeric>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 
@@ -238,18 +239,19 @@ void set_cell(std::vector<std::vector<double>> &columns, std::size_t cell,
 }
 
 [[nodiscard]] Result<double> checked_nonnegative_product(double left, double right,
-                                                         std::string message) {
+                                                         std::string_view message) {
   const double product = left * right;
   if (!finite(product) || product < 0.0) {
-    return Err(ErrorCode::OutOfRange, std::move(message));
+    return Err(ErrorCode::OutOfRange, std::string{message});
   }
   return Ok(product);
 }
 
-[[nodiscard]] Result<void> checked_accumulate(double &total, double value, std::string message) {
+[[nodiscard]] Result<void> checked_accumulate(double &total, double value,
+                                              std::string_view message) {
   const double next = total + value;
   if (!finite(next) || next < 0.0) {
-    return Err(ErrorCode::OutOfRange, std::move(message));
+    return Err(ErrorCode::OutOfRange, std::string{message});
   }
   total = next;
   return Ok();
@@ -474,18 +476,27 @@ Result<OptionResearchPanel> OptionResearchPanel::create(std::span<const OptionPa
                                 std::move(instruments), std::move(universe)});
 }
 
-Result<OptionTargetBook> make_option_target_book(const OptionResearchPanel &panel,
-                                                 std::size_t date_index,
-                                                 std::span<const double> weights,
-                                                 std::span<const std::int64_t> current_contracts,
-                                                 const OptionTargetSpec &spec) {
+Result<void> make_option_target_book_into(const OptionResearchPanel &panel, std::size_t date_index,
+                                          std::span<const double> weights,
+                                          std::span<const std::int64_t> current_contracts,
+                                          const OptionTargetSpec &spec, OptionTargetBook &book) {
   const std::size_t instrument_count = panel.instruments().size();
+  book.decision_ts_ns = 0;
+  book.targets.clear();
+  book.requested_gross_exposure = 0.0;
+  book.realized_gross_exposure = 0.0;
+  book.initial_margin = 0.0;
+  book.maintenance_margin = 0.0;
+  book.margin_clamped = false;
   if (date_index >= panel.dataset().num_dates()) {
     return Err(ErrorCode::OutOfRange, "option target date index is out of range");
   }
   if (weights.size() != instrument_count || current_contracts.size() != instrument_count) {
     return Err(ErrorCode::InvalidArgument,
                "option target inputs must align with the contract catalog");
+  }
+  if (book.targets.capacity() < instrument_count) {
+    return Err(ErrorCode::OutOfRange, "option target output capacity is too small");
   }
   constexpr std::int64_t kMaxExactlyRepresentableContracts = 9'007'199'254'740'991LL; // 2^53 - 1
   if (!finite(spec.gross_budget) || spec.gross_budget < 0.0 ||
@@ -533,9 +544,7 @@ Result<OptionTargetBook> make_option_target_book(const OptionResearchPanel &pane
     return Err(ErrorCode::InvalidArgument, "option target weight L1 norm must not exceed one");
   }
 
-  OptionTargetBook book;
   book.decision_ts_ns = panel.dataset().dates()[date_index];
-  book.targets.reserve(instrument_count);
 
   for (std::size_t i = 0; i < instrument_count; ++i) {
     const bool tradable = panel.tradable(date_index, i);
@@ -588,13 +597,32 @@ Result<OptionTargetBook> make_option_target_book(const OptionResearchPanel &pane
     }
     const double scale = spec.available_initial_margin / book.initial_margin;
     for (OptionContractTarget &target : book.targets) {
-      const double scaled = snap_near_integer(static_cast<double>(target.target_contracts) * scale);
+      // Margin is a hard risk bound: scale and convert toward zero without the
+      // general near-integer snap, which can otherwise round back above the
+      // available limit.
+      const double scaled = static_cast<double>(target.target_contracts) * scale;
       ATX_TRY(std::int64_t clamped, whole_contracts(scaled));
       target.target_contracts = clamped;
     }
     book.margin_clamped = true;
     ATX_TRY_VOID(recompute_book_totals(book, panel, row_offset, spec.basis));
+    if (book.initial_margin > spec.available_initial_margin) {
+      return Err(ErrorCode::OutOfRange,
+                 "clamped option target book exceeds available initial margin");
+    }
   }
+  return Ok();
+}
+
+Result<OptionTargetBook> make_option_target_book(const OptionResearchPanel &panel,
+                                                 std::size_t date_index,
+                                                 std::span<const double> weights,
+                                                 std::span<const std::int64_t> current_contracts,
+                                                 const OptionTargetSpec &spec) {
+  OptionTargetBook book;
+  book.targets.reserve(panel.instruments().size());
+  ATX_TRY_VOID(
+      make_option_target_book_into(panel, date_index, weights, current_contracts, spec, book));
   return Ok(std::move(book));
 }
 
