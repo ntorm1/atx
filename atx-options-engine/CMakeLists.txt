@@ -3,6 +3,7 @@
 add_library(atx-options-engine ${ATX_LIB_TYPE}
     src/option_adaptive_coordinator.cpp
     src/option_execution_replay.cpp
+    src/option_pretrade_risk.cpp
     src/option_research_panel.cpp)
 add_library(atx::options-engine ALIAS atx-options-engine)
 

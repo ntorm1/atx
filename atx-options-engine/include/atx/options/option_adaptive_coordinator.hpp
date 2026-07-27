@@ -16,13 +16,14 @@
 #include "atx/core/error.hpp"
 #include "atx/engine/loop/weight_policy.hpp"
 #include "atx/options/option_execution_replay.hpp"
+#include "atx/options/option_pretrade_risk.hpp"
 #include "atx/options/option_research_panel.hpp"
 
 namespace atx::options::adaptive {
 
 inline constexpr std::uint64_t kOptionAdaptiveCoordinatorModelVersion =
-    0x4154584F41430001ULL; // "ATXOAC", revision 1
-inline constexpr std::uint64_t kOptionAdaptiveCoordinatorOrderingVersion = 1U;
+    0x4154584F41430002ULL; // "ATXOAC", revision 2
+inline constexpr std::uint64_t kOptionAdaptiveCoordinatorOrderingVersion = 2U;
 
 enum class OptionAdaptiveCoordinatorState : std::uint8_t {
   Empty = 0,
@@ -54,10 +55,11 @@ enum class OptionMissingSignalPolicy : std::uint8_t {
 
 struct OptionAdaptiveCoordinatorLimits {
   execution::OptionExecutionSessionLimits execution{};
+  risk::OptionRiskEngineLimits pretrade_risk{};
   std::size_t max_decisions{100'000};
   std::size_t max_commands_per_decision{100'000};
   // Exact coordinator-owned vector payload bound. The nested execution session
-  // has its own independently enforced workspace bound.
+  // and pre-trade risk engine have independently enforced workspace bounds.
   std::size_t max_workspace_bytes{1'073'741'824}; // 1 GiB
 };
 
@@ -71,6 +73,7 @@ struct OptionAdaptiveCoordinatorConfig {
       OptionReconciliationScope::WholeBasketCancelBarrier};
   OptionMissingSignalPolicy missing_signal_policy{
       OptionMissingSignalPolicy::HoldPositionAndReduceRisk};
+  risk::OptionRiskHardLimits pretrade_risk_limits{};
 };
 
 // Bounded decision-summary record. Hashes are deterministic, non-cryptographic
@@ -98,6 +101,9 @@ struct OptionAdaptiveDecisionAudit {
   std::size_t missing_signal_count{0};
   bool margin_clamped{false};
   bool cancel_barrier{false};
+  // Full-reprice admission summary over filled, live, and candidate leaves.
+  // This is bounded decision evidence, not a per-contract attribution ledger.
+  risk::OptionPreTradeRiskEvaluation pretrade_risk{};
 
   [[nodiscard]] bool operator==(const OptionAdaptiveDecisionAudit &) const noexcept = default;
 };
@@ -112,8 +118,8 @@ struct OptionAdaptiveRunView {
 };
 
 // Exact reserved payload bytes required by the coordinator itself. Container
-// objects, allocator metadata, and the nested execution-session workspace are
-// excluded.
+// objects, allocator metadata, and the nested execution-session/risk-engine
+// workspaces are excluded.
 [[nodiscard]] atx::core::Result<std::size_t>
 option_adaptive_coordinator_required_workspace_bytes(const OptionAdaptiveCoordinatorLimits &limits);
 
@@ -122,9 +128,10 @@ option_adaptive_coordinator_required_workspace_bytes(const OptionAdaptiveCoordin
 // object and are invalidated by the next run, move, or destruction.
 //
 // Decisions are explicit panel dates. Each date is advanced, observed, sized,
-// reconciled, and acknowledged exactly once. No fill creates a hidden strategy
-// decision. A pending cancel remains economically exposed and cannot be treated
-// as terminal. This revision models synthetic cancel/new only; venue-native
+// reconciled, full-reprice risk-gated, and acknowledged exactly once. No fill
+// creates a hidden strategy decision. A pending cancel remains economically
+// exposed in the risk envelope and cannot be treated as terminal. This revision
+// models synthetic cancel/new only; venue-native
 // replace, acknowledgements/rejections, atomic complex execution, assignment,
 // settlement, and broker/OCC portfolio margin remain outside the fidelity claim.
 class OptionAdaptiveCoordinator {
@@ -139,7 +146,8 @@ public:
   OptionAdaptiveCoordinator &operator=(const OptionAdaptiveCoordinator &) = delete;
 
   [[nodiscard]] atx::core::Result<OptionAdaptiveRunView>
-  run(const research::OptionResearchPanel &panel, const execution::OptionReplayInputs &inputs,
+  run(const research::OptionResearchPanel &panel, const risk::OptionRiskPanel &risk_panel,
+      const execution::OptionReplayInputs &inputs,
       const execution::OptionReplayConfig &replay_config,
       const OptionAdaptiveCoordinatorConfig &config);
 

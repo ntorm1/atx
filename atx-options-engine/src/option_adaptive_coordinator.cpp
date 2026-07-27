@@ -1,6 +1,7 @@
 #include "atx/options/option_adaptive_coordinator.hpp"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -27,6 +28,9 @@ using execution::OptionCancelRequest;
 using execution::OptionExecutionFrontierView;
 using execution::OptionOrderLifecycleState;
 using execution::OptionOrderRequest;
+using risk::OptionPreTradeRiskEvaluation;
+using risk::OptionRiskDisposition;
+using risk::OptionRiskLeaf;
 
 constexpr std::uint64_t kFnvOffset = 14'695'981'039'346'656'037ULL;
 constexpr std::uint64_t kFnvPrime = 1'099'511'628'211ULL;
@@ -130,6 +134,26 @@ fold_identity(std::uint64_t hash, const atx::vol::ArchiveContentIdentity &identi
   return false;
 }
 
+[[nodiscard]] bool valid_pretrade_risk_limits(const risk::OptionRiskHardLimits &limits) noexcept {
+  const std::array values{
+      limits.max_abs_spot_delta_cash,
+      limits.max_abs_spot_gamma_cash,
+      limits.max_abs_vega_cash_per_vol_point,
+      limits.max_abs_theta_cash_per_day,
+      limits.max_abs_vanna_cash_per_return_vol_point,
+      limits.max_abs_volga_cash_per_vol_point_squared,
+      limits.max_gross_spot_gamma_cash,
+      limits.max_gross_vega_cash_per_vol_point,
+      limits.max_gross_vanna_cash_per_return_vol_point,
+      limits.max_gross_volga_cash_per_vol_point_squared,
+      limits.max_gross_premium_cash_notional,
+      limits.max_scenario_loss,
+      limits.max_single_underlier_scenario_loss,
+  };
+  return std::all_of(values.begin(), values.end(),
+                     [](double value) noexcept { return std::isfinite(value) && value >= 0.0; });
+}
+
 [[nodiscard]] Result<void> validate_config(const OptionAdaptiveCoordinatorConfig &config) {
   const auto &policy = config.weight_policy;
   const auto &orders = config.orders;
@@ -146,7 +170,8 @@ fold_identity(std::uint64_t hash, const atx::vol::ArchiveContentIdentity &identi
       orders.limit_offset_bps >= atx::core::Decimal::from_int(10'000) ||
       orders.limit_price_increment.raw() < 0 ||
       (orders.limit_offset_bps.raw() > 0 && orders.limit_price_increment.raw() == 0) ||
-      (orders.time_in_force != execution::OptionTimeInForce::Day && orders.expire_ts_ns != 0)) {
+      (orders.time_in_force != execution::OptionTimeInForce::Day && orders.expire_ts_ns != 0) ||
+      !valid_pretrade_risk_limits(config.pretrade_risk_limits)) {
     return Err(ErrorCode::InvalidArgument, "adaptive coordinator configuration is invalid");
   }
   return Ok();
@@ -226,6 +251,60 @@ hash_commands(std::span<const OptionOrderRequest> orders,
   return hash;
 }
 
+[[nodiscard]] std::uint64_t hash_risk_point(std::uint64_t hash,
+                                            const risk::OptionRiskPointMetrics &value) noexcept {
+  hash = fold_double(hash, value.spot_delta_cash);
+  hash = fold_double(hash, value.spot_gamma_cash);
+  hash = fold_double(hash, value.vega_cash_per_vol_point);
+  hash = fold_double(hash, value.theta_cash_per_day);
+  hash = fold_double(hash, value.vanna_cash_per_return_vol_point);
+  hash = fold_double(hash, value.volga_cash_per_vol_point_squared);
+  hash = fold_double(hash, value.gross_spot_gamma_cash);
+  hash = fold_double(hash, value.gross_vega_cash_per_vol_point);
+  hash = fold_double(hash, value.gross_vanna_cash_per_return_vol_point);
+  hash = fold_double(hash, value.gross_volga_cash_per_vol_point_squared);
+  hash = fold_double(hash, value.gross_premium_cash_notional);
+  hash = fold_double(hash, value.scenario_loss);
+  hash = fold_double(hash, value.max_single_underlier_scenario_loss);
+  hash = fold_u64(hash, value.worst_scenario_id);
+  hash = fold_u64(hash, value.worst_underlier_scenario_id);
+  return fold_u64(hash, value.worst_underlier_uid);
+}
+
+[[nodiscard]] std::uint64_t
+hash_risk_worst(std::uint64_t hash, const risk::OptionRiskWorstFillMetrics &value) noexcept {
+  hash = fold_u64(hash, value.open_order_contracts);
+  hash = fold_double(hash, value.max_abs_spot_delta_cash);
+  hash = fold_double(hash, value.max_abs_spot_gamma_cash);
+  hash = fold_double(hash, value.max_abs_vega_cash_per_vol_point);
+  hash = fold_double(hash, value.max_abs_theta_cash_per_day);
+  hash = fold_double(hash, value.max_abs_vanna_cash_per_return_vol_point);
+  hash = fold_double(hash, value.max_abs_volga_cash_per_vol_point_squared);
+  hash = fold_double(hash, value.max_gross_spot_gamma_cash);
+  hash = fold_double(hash, value.max_gross_vega_cash_per_vol_point);
+  hash = fold_double(hash, value.max_gross_vanna_cash_per_return_vol_point);
+  hash = fold_double(hash, value.max_gross_volga_cash_per_vol_point_squared);
+  hash = fold_double(hash, value.max_gross_premium_cash_notional);
+  hash = fold_double(hash, value.scenario_loss);
+  hash = fold_double(hash, value.max_single_underlier_scenario_loss);
+  hash = fold_u64(hash, value.worst_scenario_id);
+  hash = fold_u64(hash, value.worst_underlier_scenario_id);
+  return fold_u64(hash, value.worst_underlier_uid);
+}
+
+[[nodiscard]] std::uint64_t
+hash_risk_evaluation(const OptionPreTradeRiskEvaluation &value) noexcept {
+  std::uint64_t hash = hash_risk_point(kFnvOffset, value.filled);
+  hash = hash_risk_point(hash, value.baseline_projected);
+  hash = hash_risk_worst(hash, value.baseline_worst_fill);
+  hash = hash_risk_point(hash, value.candidate_projected);
+  hash = hash_risk_worst(hash, value.candidate_worst_fill);
+  hash = fold_u64(hash, static_cast<std::uint64_t>(value.disposition));
+  hash = fold_u64(hash, value.baseline_breach_mask);
+  hash = fold_u64(hash, value.candidate_breach_mask);
+  return fold_u64(hash, value.input_hash);
+}
+
 struct UnorderedFingerprint {
   std::uint64_t sum{0};
   std::uint64_t rotated_xor{0};
@@ -246,8 +325,8 @@ struct UnorderedFingerprint {
 };
 
 [[nodiscard]] std::uint64_t hash_run_definition(
-    const research::OptionResearchPanel &panel, const execution::OptionReplayInputs &inputs,
-    const execution::OptionReplayConfig &replay_config,
+    const research::OptionResearchPanel &panel, const risk::OptionRiskPanel &risk_panel,
+    const execution::OptionReplayInputs &inputs, const execution::OptionReplayConfig &replay_config,
     const OptionAdaptiveCoordinatorConfig &config, const OptionAdaptiveCoordinatorLimits &limits,
     std::span<const std::size_t> replay_contract_indices) noexcept {
   std::uint64_t hash = fold_u64(kFnvOffset, kOptionAdaptiveCoordinatorModelVersion);
@@ -255,6 +334,9 @@ struct UnorderedFingerprint {
   hash = fold_u64(hash, replay_config.model_version);
   hash = fold_u64(hash, execution::kOptionExecutionSessionModelVersion);
   hash = fold_u64(hash, execution::kOptionExecutionSessionOrderingVersion);
+  hash = fold_u64(hash, risk::kOptionPreTradeRiskModelVersion);
+  hash = fold_u64(hash, risk::kOptionPreTradeRiskOrderingVersion);
+  hash = fold_u64(hash, risk_panel.definition_hash());
   hash = fold_identity(hash, replay_config.market_data_identity);
   hash = fold_identity(hash, replay_config.sequence_validation_identity);
   hash = fold_identity(hash, replay_config.calibration_identity);
@@ -291,6 +373,20 @@ struct UnorderedFingerprint {
   hash = fold_i64(hash, config.cancel_latency_ns);
   hash = fold_u64(hash, static_cast<std::uint64_t>(config.reconciliation_scope));
   hash = fold_u64(hash, static_cast<std::uint64_t>(config.missing_signal_policy));
+  hash = fold_u64(hash, config.pretrade_risk_limits.max_open_order_contracts);
+  hash = fold_double(hash, config.pretrade_risk_limits.max_abs_spot_delta_cash);
+  hash = fold_double(hash, config.pretrade_risk_limits.max_abs_spot_gamma_cash);
+  hash = fold_double(hash, config.pretrade_risk_limits.max_abs_vega_cash_per_vol_point);
+  hash = fold_double(hash, config.pretrade_risk_limits.max_abs_theta_cash_per_day);
+  hash = fold_double(hash, config.pretrade_risk_limits.max_abs_vanna_cash_per_return_vol_point);
+  hash = fold_double(hash, config.pretrade_risk_limits.max_abs_volga_cash_per_vol_point_squared);
+  hash = fold_double(hash, config.pretrade_risk_limits.max_gross_spot_gamma_cash);
+  hash = fold_double(hash, config.pretrade_risk_limits.max_gross_vega_cash_per_vol_point);
+  hash = fold_double(hash, config.pretrade_risk_limits.max_gross_vanna_cash_per_return_vol_point);
+  hash = fold_double(hash, config.pretrade_risk_limits.max_gross_volga_cash_per_vol_point_squared);
+  hash = fold_double(hash, config.pretrade_risk_limits.max_gross_premium_cash_notional);
+  hash = fold_double(hash, config.pretrade_risk_limits.max_scenario_loss);
+  hash = fold_double(hash, config.pretrade_risk_limits.max_single_underlier_scenario_loss);
   hash = fold_u64(hash, limits.max_decisions);
   hash = fold_u64(hash, limits.max_commands_per_decision);
   hash = fold_u64(hash, limits.max_workspace_bytes);
@@ -305,6 +401,12 @@ struct UnorderedFingerprint {
   hash = fold_u64(hash, limits.execution.max_frontiers);
   hash = fold_u64(hash, limits.execution.max_transitions);
   hash = fold_u64(hash, limits.execution.max_workspace_bytes);
+  hash = fold_u64(hash, limits.pretrade_risk.max_contracts);
+  hash = fold_u64(hash, limits.pretrade_risk.max_live_leaves);
+  hash = fold_u64(hash, limits.pretrade_risk.max_candidate_leaves);
+  hash = fold_u64(hash, limits.pretrade_risk.max_scenarios);
+  hash = fold_u64(hash, limits.pretrade_risk.max_underliers);
+  hash = fold_u64(hash, limits.pretrade_risk.max_workspace_bytes);
   hash = fold_i64(hash, inputs.initial_cash.raw());
   hash = fold_u64(hash, inputs.contracts.size());
   for (std::size_t input_index : replay_contract_indices) {
@@ -413,11 +515,14 @@ struct UnorderedFingerprint {
 
 struct OptionAdaptiveCoordinator::Impl {
   Impl(OptionAdaptiveCoordinatorLimits configured_limits,
-       execution::OptionExecutionSession &&configured_session) noexcept
-      : limits{configured_limits}, session{std::move(configured_session)} {}
+       execution::OptionExecutionSession &&configured_session,
+       risk::OptionPreTradeRiskEngine &&configured_risk_engine) noexcept
+      : limits{configured_limits}, session{std::move(configured_session)},
+        risk_engine{std::move(configured_risk_engine)} {}
 
   OptionAdaptiveCoordinatorLimits limits{};
   execution::OptionExecutionSession session;
+  risk::OptionPreTradeRiskEngine risk_engine;
   OptionAdaptiveCoordinatorState phase{OptionAdaptiveCoordinatorState::Empty};
   atx::engine::WeightPolicyScratch weight_scratch;
   std::vector<atx::u32> group_map;
@@ -438,6 +543,8 @@ struct OptionAdaptiveCoordinator::Impl {
   std::vector<std::size_t> latest_quote_indices;
   std::vector<std::size_t> order_contract_indices;
   std::vector<std::size_t> active_order_indices;
+  std::vector<OptionRiskLeaf> risk_live_leaves;
+  std::vector<OptionRiskLeaf> risk_candidate_leaves;
   std::vector<OptionAdaptiveDecisionAudit> decisions;
   std::uint64_t run_definition_hash{0};
   std::uint64_t decision_trace_hash{kFnvOffset};
@@ -661,8 +768,8 @@ struct OptionAdaptiveCoordinator::Impl {
   }
 
   [[nodiscard]] Result<OptionAdaptiveDecisionAudit>
-  plan_decision(const research::OptionResearchPanel &panel, std::size_t date_index,
-                const OptionExecutionFrontierView &frontier,
+  plan_decision(const research::OptionResearchPanel &panel, const risk::OptionRiskPanel &risk_panel,
+                std::size_t date_index, const OptionExecutionFrontierView &frontier,
                 const execution::OptionReplayConfig &replay_config,
                 const OptionAdaptiveCoordinatorConfig &config, std::uint64_t next_order_id,
                 std::uint64_t next_cancel_id, std::uint64_t next_priority_sequence) {
@@ -778,6 +885,62 @@ struct OptionAdaptiveCoordinator::Impl {
       }
     }
 
+    const bool whole_basket_blocked =
+        config.reconciliation_scope == OptionReconciliationScope::WholeBasketCancelBarrier &&
+        basket_barrier;
+    for (std::size_t index = 0; index < count; ++index) {
+      command_book.targets[index].order_contracts = 0;
+      const bool contract_blocked = unsafe[index] != 0U || has_pending_cancel[index] != 0U;
+      if (missing_hold_decision || whole_basket_blocked || contract_blocked) {
+        continue;
+      }
+      ATX_TRY(std::int64_t desired,
+              atx::core::checked_sub(command_book.targets[index].target_contracts,
+                                     current_contracts[index]));
+      ATX_TRY(command_book.targets[index].order_contracts,
+              atx::core::checked_sub(desired, leaf_net[index]));
+    }
+
+    risk_live_leaves.clear();
+    for (std::size_t order_index : active_order_indices) {
+      if (risk_live_leaves.size() >= limits.pretrade_risk.max_live_leaves) {
+        return Err(ErrorCode::OutOfRange, "adaptive live-risk leaf capacity is exhausted");
+      }
+      risk_live_leaves.push_back(
+          OptionRiskLeaf{order_contract_indices[order_index],
+                         frontier.order_states[order_index].remaining_contracts});
+    }
+    risk_candidate_leaves.clear();
+    for (std::size_t index = 0; index < count; ++index) {
+      if (command_book.targets[index].order_contracts != 0) {
+        if (risk_candidate_leaves.size() >= limits.pretrade_risk.max_candidate_leaves) {
+          return Err(ErrorCode::OutOfRange, "adaptive candidate-risk leaf capacity is exhausted");
+        }
+        risk_candidate_leaves.push_back(
+            OptionRiskLeaf{index, command_book.targets[index].order_contracts});
+      }
+    }
+    ATX_TRY(OptionPreTradeRiskEvaluation risk_evaluation,
+            risk_engine.evaluate(risk_panel, date_index, panel.instruments(), current_contracts,
+                                 risk_live_leaves, risk_candidate_leaves,
+                                 config.pretrade_risk_limits));
+    if (risk_evaluation.disposition == OptionRiskDisposition::CancelOnly) {
+      retained_leaf_count = 0U;
+      basket_barrier = true;
+      for (std::size_t index = 0; index < count; ++index) {
+        if (leaf_count[index] != 0U && unsafe[index] == 0U) {
+          unsafe[index] = 1U;
+          ++deferred_contract_count;
+        }
+      }
+    }
+    if (risk_evaluation.disposition == OptionRiskDisposition::CancelOnly ||
+        risk_evaluation.disposition == OptionRiskDisposition::RejectNewOrders) {
+      for (research::OptionContractTarget &target : command_book.targets) {
+        target.order_contracts = 0;
+      }
+    }
+
     std::int64_t base_cancel_available = 0;
     bool base_cancel_available_computed = false;
     for (std::size_t order_index : active_order_indices) {
@@ -803,22 +966,6 @@ struct OptionAdaptiveCoordinator::Impl {
       cancel_candidates.push_back(CancelCandidate{order_index, available});
     }
     ATX_TRY_VOID(build_cancellations(frontier, config, next_cancel_id, next_priority_sequence));
-
-    const bool whole_basket_blocked =
-        config.reconciliation_scope == OptionReconciliationScope::WholeBasketCancelBarrier &&
-        basket_barrier;
-    for (std::size_t index = 0; index < count; ++index) {
-      command_book.targets[index].order_contracts = 0;
-      const bool contract_blocked = unsafe[index] != 0U || has_pending_cancel[index] != 0U;
-      if (missing_hold_decision || whole_basket_blocked || contract_blocked) {
-        continue;
-      }
-      ATX_TRY(std::int64_t desired,
-              atx::core::checked_sub(command_book.targets[index].target_contracts,
-                                     current_contracts[index]));
-      ATX_TRY(command_book.targets[index].order_contracts,
-              atx::core::checked_sub(desired, leaf_net[index]));
-    }
 
     if (cancellations.size() >
         (std::numeric_limits<std::uint64_t>::max)() - next_priority_sequence) {
@@ -867,6 +1014,7 @@ struct OptionAdaptiveCoordinator::Impl {
     audit.missing_signal_count = missing_signal_count;
     audit.margin_clamped = target_book.margin_clamped;
     audit.cancel_barrier = basket_barrier;
+    audit.pretrade_risk = risk_evaluation;
     return Ok(audit);
   }
 };
@@ -901,6 +1049,8 @@ Result<std::size_t> option_adaptive_coordinator_required_workspace_bytes(
   ATX_TRY_VOID(add_array(contracts, sizeof(std::size_t)));
   ATX_TRY_VOID(add_array(limits.execution.replay.max_orders, sizeof(std::size_t)));
   ATX_TRY_VOID(add_array(limits.execution.replay.max_orders, sizeof(std::size_t)));
+  ATX_TRY_VOID(add_array(limits.pretrade_risk.max_live_leaves, sizeof(OptionRiskLeaf)));
+  ATX_TRY_VOID(add_array(limits.pretrade_risk.max_candidate_leaves, sizeof(OptionRiskLeaf)));
   ATX_TRY_VOID(add_array(limits.max_decisions, sizeof(OptionAdaptiveDecisionAudit)));
   return Ok(bytes);
 }
@@ -911,14 +1061,19 @@ OptionAdaptiveCoordinator::create(OptionAdaptiveCoordinatorLimits limits) {
   if (required > limits.max_workspace_bytes ||
       limits.max_commands_per_decision > limits.execution.replay.max_orders ||
       limits.max_commands_per_decision > limits.execution.replay.max_cancellations ||
-      limits.max_decisions > limits.execution.max_frontiers) {
+      limits.max_decisions > limits.execution.max_frontiers ||
+      limits.pretrade_risk.max_contracts < limits.execution.replay.max_contracts ||
+      limits.pretrade_risk.max_live_leaves < limits.execution.replay.max_orders ||
+      limits.pretrade_risk.max_candidate_leaves < limits.max_commands_per_decision) {
     return Err(ErrorCode::OutOfRange,
                "adaptive coordinator workspace or command limits are invalid");
   }
   ATX_TRY(execution::OptionExecutionSession session,
           execution::OptionExecutionSession::create(limits.execution));
+  ATX_TRY(risk::OptionPreTradeRiskEngine risk_engine,
+          risk::OptionPreTradeRiskEngine::create(limits.pretrade_risk));
   try {
-    auto impl = std::make_unique<Impl>(limits, std::move(session));
+    auto impl = std::make_unique<Impl>(limits, std::move(session), std::move(risk_engine));
     const std::size_t contracts = limits.execution.replay.max_contracts;
     impl->weight_scratch.reserve(contracts);
     impl->group_map.reserve(contracts);
@@ -939,6 +1094,8 @@ OptionAdaptiveCoordinator::create(OptionAdaptiveCoordinatorLimits limits) {
     impl->latest_quote_indices.reserve(contracts);
     impl->order_contract_indices.reserve(limits.execution.replay.max_orders);
     impl->active_order_indices.reserve(limits.execution.replay.max_orders);
+    impl->risk_live_leaves.reserve(limits.pretrade_risk.max_live_leaves);
+    impl->risk_candidate_leaves.reserve(limits.pretrade_risk.max_candidate_leaves);
     impl->decisions.reserve(limits.max_decisions);
     return Ok(OptionAdaptiveCoordinator{std::move(impl)});
   } catch (const std::bad_alloc &) {
@@ -957,11 +1114,10 @@ OptionAdaptiveCoordinator::OptionAdaptiveCoordinator(OptionAdaptiveCoordinator &
 OptionAdaptiveCoordinator &
 OptionAdaptiveCoordinator::operator=(OptionAdaptiveCoordinator &&) noexcept = default;
 
-Result<OptionAdaptiveRunView>
-OptionAdaptiveCoordinator::run(const research::OptionResearchPanel &panel,
-                               const execution::OptionReplayInputs &inputs,
-                               const execution::OptionReplayConfig &replay_config,
-                               const OptionAdaptiveCoordinatorConfig &config) {
+Result<OptionAdaptiveRunView> OptionAdaptiveCoordinator::run(
+    const research::OptionResearchPanel &panel, const risk::OptionRiskPanel &risk_panel,
+    const execution::OptionReplayInputs &inputs, const execution::OptionReplayConfig &replay_config,
+    const OptionAdaptiveCoordinatorConfig &config) {
   if (impl_ == nullptr) {
     return Err(ErrorCode::Internal, "adaptive coordinator has no implementation");
   }
@@ -980,8 +1136,38 @@ OptionAdaptiveCoordinator::run(const research::OptionResearchPanel &panel,
       inputs.quotes.size() > state.limits.execution.replay.max_quote_events ||
       inputs.fee_schedules.size() > state.limits.execution.replay.max_fee_rows ||
       inputs.tick_schedules.size() > state.limits.execution.replay.max_tick_rows ||
-      replay_config.replay_end_ts_ns < panel.dataset().dates().back()) {
+      replay_config.replay_end_ts_ns < panel.dataset().dates().back() ||
+      risk_panel.contract_count() != contract_count ||
+      risk_panel.dates().size() != decision_count ||
+      risk_panel.scenario_count() > state.limits.pretrade_risk.max_scenarios ||
+      !std::equal(risk_panel.dates().begin(), risk_panel.dates().end(),
+                  panel.dataset().dates().begin())) {
     return Err(ErrorCode::InvalidArgument, "adaptive run inputs exceed limits or are misaligned");
+  }
+  for (std::size_t index = 0; index < contract_count; ++index) {
+    if (risk_panel.contract_ids()[index] != panel.instruments()[index].contract_id ||
+        risk_panel.engine_ids()[index] != panel.instruments()[index].engine_id ||
+        risk_panel.underlier_uids()[index] != panel.instruments()[index].underlier_uid) {
+      return Err(ErrorCode::InvalidArgument,
+                 "adaptive risk panel catalog does not align with the research panel");
+    }
+  }
+  for (std::size_t date_index = 0; date_index < decision_count; ++date_index) {
+    for (std::size_t contract_index = 0; contract_index < contract_count; ++contract_index) {
+      const std::size_t cell = date_index * contract_count + contract_index;
+      const auto &instrument = panel.instruments()[contract_index];
+      const auto &risk_row = risk_panel.contract_row(date_index, contract_index);
+      if (risk_row.expiry_ts_ns != instrument.expiry_ts_ns ||
+          risk_row.strike != instrument.strike || risk_row.side != instrument.side ||
+          risk_row.multiplier != instrument.multiplier ||
+          risk_row.standard_deliverable != instrument.standard_deliverable ||
+          risk_row.status != risk::OptionRiskRowStatus::Ok ||
+          risk_row.definition_source_identity !=
+              panel.decision_audit()[cell].definition_source_identity) {
+        return Err(ErrorCode::InvalidArgument,
+                   "adaptive risk evidence does not bind to the research contract definition");
+      }
+    }
   }
   ATX_TRY_VOID(state.validate_and_index_catalog(panel, inputs));
 
@@ -993,7 +1179,7 @@ OptionAdaptiveCoordinator::run(const research::OptionResearchPanel &panel,
   for (const auto &instrument : panel.instruments()) {
     state.group_map.push_back(instrument.underlier_uid);
   }
-  state.run_definition_hash = hash_run_definition(panel, inputs, replay_config, config,
+  state.run_definition_hash = hash_run_definition(panel, risk_panel, inputs, replay_config, config,
                                                   state.limits, state.replay_contract_indices);
   state.decision_trace_hash = kFnvOffset;
 
@@ -1013,8 +1199,8 @@ OptionAdaptiveCoordinator::run(const research::OptionResearchPanel &panel,
       state.phase = OptionAdaptiveCoordinatorState::Failed;
       return tl::unexpected<atx::core::Error>(std::move(frontier).error());
     }
-    auto audit = state.plan_decision(panel, date_index, *frontier, replay_config, config,
-                                     next_order_id, next_cancel_id, next_priority_sequence);
+    auto audit = state.plan_decision(panel, risk_panel, date_index, *frontier, replay_config,
+                                     config, next_order_id, next_cancel_id, next_priority_sequence);
     if (!audit) {
       state.phase = OptionAdaptiveCoordinatorState::Failed;
       return tl::unexpected<atx::core::Error>(std::move(audit).error());
@@ -1079,6 +1265,7 @@ OptionAdaptiveCoordinator::run(const research::OptionResearchPanel &panel,
     decision_hash = fold_u64(decision_hash, audit->missing_signal_count);
     decision_hash = fold_u64(decision_hash, audit->margin_clamped ? 1U : 0U);
     decision_hash = fold_u64(decision_hash, audit->cancel_barrier ? 1U : 0U);
+    decision_hash = fold_u64(decision_hash, hash_risk_evaluation(audit->pretrade_risk));
     state.decision_trace_hash = fold_u64(state.decision_trace_hash, decision_hash);
     state.decisions.push_back(*audit);
   }
