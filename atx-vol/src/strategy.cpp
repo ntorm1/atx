@@ -938,6 +938,23 @@ Status DeclarativeStrategy::on_step(const MarketSnapshot &base, std::size_t step
     // intrinsic — precisely the economics CloseAtHorizon exists to avoid. Commit
     // the staged closes; `d.clear` is unreachable in this mode (lifecycle_decide
     // never returns clear=true for CloseAtHorizon), so this is the whole close.
+    //
+    // CONSEQUENCE, by design: a committed close is a roll-close in the engine's
+    // before/after diff, and `execute` fails closed when a roll-close lot has no
+    // surface on this step ("run_backtest: no surface for roll-close lot", see
+    // src/backtest.cpp). The no-trade branch is reached exactly when names are
+    // dropping out of the board, so "cannot build the entry AND cannot price a
+    // held lot" is a correlated step, and such a run now returns Err where it
+    // used to complete (visible only under UnpricedLotPolicy::ExcludeAndReport —
+    // the Error policy already aborts on the unpriced held lot earlier in the
+    // same iteration). That is NOT a new class of failure: the !d.open branch
+    // above commits the same closes and has always reached the same engine
+    // contract on such a step. Suppressing it here — closing only lots that
+    // happen to be priceable today — would re-create the ride-to-settlement
+    // defect for precisely the lots whose data is deteriorating, and would make
+    // the close depend on whether the entry side happened to succeed. Pinned by
+    // Strategy.CloseAtHorizonClosingALotWithNoSurfaceFailsClosedInTheEngine,
+    // which asserts the no-trade and off-tick branches fail identically.
     if (close_at_horizon) {
       std::erase_if(book.lots, closes_at_horizon);
     }

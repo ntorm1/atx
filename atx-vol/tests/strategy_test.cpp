@@ -790,6 +790,60 @@ TEST(Strategy, CloseAtHorizonNoTradeStillClosesLotsAtTheHorizon) {
   EXPECT_TRUE(strategy.entry_risk_seeds().empty());
 }
 
+// Review fix round 1 (I-1). Committing the horizon close turns the lot into a
+// roll-close, and `execute` fails closed when a roll-close lot has no surface on
+// the step ("run_backtest: no surface for roll-close lot", src/backtest.cpp). This
+// pins that outcome for the no-trade branch AND shows it is not a new class of
+// failure: the pre-existing !d.open (off-tick) branch commits the same closes and
+// aborts identically on the same corpus. Only observable under
+// UnpricedLotPolicy::ExcludeAndReport — the default Error policy aborts on the
+// unpriced held lot earlier in the same iteration.
+TEST(Strategy, CloseAtHorizonClosingALotWithNoSurfaceFailsClosedInTheEngine) {
+  // Date 0 holds SPY (the entry, hence the lot); date 1 holds only an unrelated
+  // name, so on the step that closes the lot at its horizon it has no surface.
+  const fs::path dir = fresh_dir("close-horizon-no-surface");
+  const PricedSurface spy = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const PricedSurface other = make_surface(kUid + 1, 100.0, 100.0, kBaseNow + kDayNs);
+  const std::string d0 = write_archive(dir, "2026-11-01", {{"SPY", &spy}});
+  const std::string d1 = write_archive(dir, "2026-11-02", {{"OTHER", &other}});
+  auto clock = Clock::from_manifest(make_manifest({{"2026-11-01", d0}, {"2026-11-02", d1}}));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  RunConfig cfg;
+  cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+
+  const auto run = [&](LifecycleSpec::Entry entry, unsigned every_n) {
+    StrategySpec spec;
+    spec.lifecycle.entry = entry;
+    spec.lifecycle.entry_every_n = every_n;
+    spec.lifecycle.holding = LifecycleSpec::Holding::CloseAtHorizon;
+    spec.lifecycle.roll_at_T = 0.30; // the 0.25y lot is at its horizon on date 1
+    spec.missing = MissingNameSpec{MissingNamePolicy::DropRenormalize, 1};
+    spec.legs.push_back(fixed_call(kUid));
+    DeclarativeStrategy strat(spec);
+    return run_backtest(*clock, strat, cfg);
+  };
+
+  // (a) The no-trade branch this task changed: EveryStep ticks on date 1, the
+  //     entry cannot be built (SPY absent + DropRenormalize -> no-trade), and the
+  //     staged close commits.
+  const auto no_trade = run(LifecycleSpec::Entry::EveryStep, 1);
+  ASSERT_FALSE(no_trade.has_value()) << "closing a lot with no surface must fail closed";
+  EXPECT_EQ(no_trade.error().code(), ErrorCode::NotFound);
+  EXPECT_NE(no_trade.error().to_string().find("no surface for roll-close lot"), std::string::npos)
+      << no_trade.error().to_string();
+
+  // (b) The pre-existing off-tick branch, untouched by this task: EveryNDays(2)
+  //     makes date 1 a non-entry step, so `!d.open` commits the very same close and
+  //     meets the very same engine contract. Identical failure => the abort is a
+  //     property of CloseAtHorizon over a dataless day, not of the no-trade fix.
+  const auto off_tick = run(LifecycleSpec::Entry::EveryNDays, 2);
+  ASSERT_FALSE(off_tick.has_value());
+  EXPECT_EQ(off_tick.error().code(), ErrorCode::NotFound);
+  EXPECT_NE(off_tick.error().to_string().find("no surface for roll-close lot"), std::string::npos)
+      << off_tick.error().to_string();
+}
+
 TEST(Strategy, DropRenormalizePropagatesInvalidAndOverflowingTenors) {
   constexpr std::int64_t kNearMaxTs = std::numeric_limits<std::int64_t>::max() - 100 * kDayNs;
   const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kNearMaxTs);
