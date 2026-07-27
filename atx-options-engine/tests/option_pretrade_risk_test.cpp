@@ -65,6 +65,9 @@ using atx::vol::ExerciseStyle;
   out.underlier_uid = underlier_uid;
   out.observed_ts_ns = date - 20;
   out.available_ts_ns = date - 10;
+  out.market_observed_ts_ns = date - 5;
+  out.market_available_ts_ns = date;
+  out.definition_available_ts_ns = date - 10;
   out.expiry_ts_ns = 10'000;
   out.strike = 100.0;
   out.side = atx::vol::Side::Call;
@@ -80,6 +83,7 @@ using atx::vol::ExerciseStyle;
   out.premium_cash_notional_per_contract = 100.0;
   out.risk_source_identity = identity(contract_id + static_cast<std::uint64_t>(date));
   out.surface_source_identity = identity(contract_id + 500U);
+  out.market_source_identity = identity(contract_id + 700U);
   return out;
 }
 
@@ -244,6 +248,43 @@ TEST(OptionRiskPanel, DefinitionHashCoversScenarioAndPnlRowProvenance) {
 
   EXPECT_NE(baseline->definition_hash(), changed_scenario->definition_hash());
   EXPECT_NE(baseline->definition_hash(), changed_pnl->definition_hash());
+}
+
+TEST(OptionRiskPanel, MarketMarkLineageIsValidatedAndCoveredByDefinitionHash) {
+  const std::array scenarios{OptionRiskScenario{1U, identity(701U)}};
+  const std::array pnl_rows{scenario_row(100, 10U, 1U, -10.0)};
+  const std::array baseline_rows{contract_row(100, 10U, 1U)};
+  const auto baseline = OptionRiskPanel::create(baseline_rows, scenarios, pnl_rows, provenance());
+  ASSERT_TRUE(baseline) << baseline.error().to_string();
+
+  auto changed_rows = baseline_rows;
+  changed_rows[0].market_observed_ts_ns -= 1;
+  changed_rows[0].definition_available_ts_ns -= 1;
+  changed_rows[0].market_source_identity = identity(9'001U);
+  const auto changed = OptionRiskPanel::create(changed_rows, scenarios, pnl_rows, provenance());
+  ASSERT_TRUE(changed) << changed.error().to_string();
+  EXPECT_NE(baseline->definition_hash(), changed->definition_hash());
+
+  auto future_rows = baseline_rows;
+  future_rows[0].market_available_ts_ns = future_rows[0].decision_ts_ns + 1;
+  const auto future = OptionRiskPanel::create(future_rows, scenarios, pnl_rows, provenance());
+  ASSERT_FALSE(future);
+  EXPECT_EQ(future.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+  auto future_definition_rows = baseline_rows;
+  future_definition_rows[0].definition_available_ts_ns =
+      future_definition_rows[0].market_observed_ts_ns + 1;
+  const auto future_definition =
+      OptionRiskPanel::create(future_definition_rows, scenarios, pnl_rows, provenance());
+  ASSERT_FALSE(future_definition);
+  EXPECT_EQ(future_definition.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+  auto missing_source_rows = baseline_rows;
+  missing_source_rows[0].market_source_identity = {};
+  const auto missing_source =
+      OptionRiskPanel::create(missing_source_rows, scenarios, pnl_rows, provenance());
+  ASSERT_FALSE(missing_source);
+  EXPECT_EQ(missing_source.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
 TEST(OptionRiskPanel, ExerciseStyleIsValidatedAndCoveredByDefinitionHash) {
@@ -901,6 +942,104 @@ TEST(OptionPreTradeRisk, RootCacheRecoversAfterOverCapacityPanel) {
   ASSERT_TRUE(recovered) << recovered.error().to_string();
   EXPECT_EQ(*recovered, *first);
   EXPECT_EQ(allocations, 0U);
+}
+
+TEST(OptionRiskPanel, GeneratedCanonicalMatchesExpandedPanelAcrossDates) {
+  constexpr std::array<std::int64_t, 2> dates{100, 200};
+  constexpr std::array<std::uint64_t, 2> contract_ids{10U, 20U};
+  constexpr std::array<std::uint32_t, 2> underlier_uids{1U, 2U};
+  constexpr std::array<std::uint64_t, 2> scenario_ids{7U, 9U};
+  constexpr std::array<double, 8> pnl{-11.0, 12.0, 13.0, -14.0, 21.0, -22.0, -23.0, 24.0};
+
+  std::vector<OptionRiskContractRow> contract_rows;
+  contract_rows.reserve(dates.size() * contract_ids.size());
+  for (const std::int64_t date : dates) {
+    for (std::size_t contract = 0U; contract < contract_ids.size(); ++contract) {
+      contract_rows.push_back(contract_row(date, contract_ids[contract], underlier_uids[contract]));
+    }
+  }
+
+  std::vector<OptionRiskScenario> scenarios;
+  scenarios.reserve(scenario_ids.size());
+  for (const std::uint64_t scenario_id : scenario_ids) {
+    scenarios.push_back(OptionRiskScenario{scenario_id, identity(scenario_id + 700U)});
+  }
+
+  std::vector<OptionRiskScenarioPnlRow> expanded_pnl;
+  std::vector<atx::options::risk::OptionRiskGeneratedPnlLineage> generated_lineage;
+  expanded_pnl.reserve(pnl.size());
+  generated_lineage.reserve(dates.size() * scenario_ids.size());
+  std::size_t cell = 0U;
+  for (const std::int64_t date : dates) {
+    for (const std::uint64_t scenario_id : scenario_ids) {
+      const std::int64_t observed_ts_ns = date - 30;
+      const std::int64_t available_ts_ns = date - 15;
+      const ArchiveContentIdentity source_identity =
+          identity(static_cast<std::uint64_t>(date) + scenario_id + 5'000U);
+      generated_lineage.push_back(
+          {date, scenario_id, observed_ts_ns, available_ts_ns, source_identity});
+      for (const std::uint64_t contract_id : contract_ids) {
+        expanded_pnl.push_back({date, contract_id, scenario_id, observed_ts_ns, available_ts_ns,
+                                pnl[cell++], source_identity});
+      }
+    }
+  }
+
+  const auto expanded =
+      OptionRiskPanel::create(contract_rows, scenarios, expanded_pnl, provenance());
+  const auto generated = OptionRiskPanel::create_generated_canonical(
+      contract_rows, scenarios, std::vector<double>{pnl.begin(), pnl.end()},
+      std::move(generated_lineage), provenance());
+  ASSERT_TRUE(expanded) << expanded.error().to_string();
+  ASSERT_TRUE(generated) << generated.error().to_string();
+  EXPECT_EQ(generated->definition_hash(), expanded->definition_hash());
+  EXPECT_EQ(generated->provenance(), expanded->provenance());
+  ASSERT_EQ(generated->dates().size(), expanded->dates().size());
+  ASSERT_EQ(generated->contract_count(), expanded->contract_count());
+  ASSERT_EQ(generated->scenario_count(), expanded->scenario_count());
+  for (std::size_t date = 0U; date < expanded->dates().size(); ++date) {
+    EXPECT_EQ(generated->dates()[date], expanded->dates()[date]);
+    for (std::size_t contract = 0U; contract < expanded->contract_count(); ++contract) {
+      EXPECT_EQ(generated->contract_row(date, contract), expanded->contract_row(date, contract));
+    }
+    for (std::size_t scenario = 0U; scenario < expanded->scenario_count(); ++scenario) {
+      EXPECT_EQ(generated->scenario_ids()[scenario], expanded->scenario_ids()[scenario]);
+      for (std::size_t contract = 0U; contract < expanded->contract_count(); ++contract) {
+        EXPECT_DOUBLE_EQ(generated->scenario_pnl(date, scenario, contract),
+                         expanded->scenario_pnl(date, scenario, contract));
+      }
+    }
+  }
+}
+
+TEST(OptionRiskPanel, GeneratedCanonicalRejectsDuplicateContractRows) {
+  const OptionRiskContractRow row = contract_row(100, 10U, 1U);
+  std::vector<OptionRiskContractRow> rows{row, row};
+  std::vector<OptionRiskScenario> scenarios{OptionRiskScenario{7U, identity(707U)}};
+  std::vector<double> pnl{-1.0, -1.0};
+  std::vector<atx::options::risk::OptionRiskGeneratedPnlLineage> lineage{
+      {100, 7U, 70, 85, identity(5'107U)}};
+
+  const auto result = OptionRiskPanel::create_generated_canonical(
+      std::move(rows), std::move(scenarios), std::move(pnl), std::move(lineage), provenance());
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(OptionRiskPanel, GeneratedCanonicalRejectsDuplicateScenarios) {
+  std::vector<OptionRiskContractRow> rows{contract_row(100, 10U, 1U)};
+  const OptionRiskScenario scenario{7U, identity(707U)};
+  std::vector<OptionRiskScenario> scenarios{scenario, scenario};
+  std::vector<double> pnl{-1.0, -1.0};
+  std::vector<atx::options::risk::OptionRiskGeneratedPnlLineage> lineage{
+      {100, 7U, 70, 85, identity(5'107U)}, {100, 7U, 70, 85, identity(5'107U)}};
+
+  const auto result = OptionRiskPanel::create_generated_canonical(
+      std::move(rows), std::move(scenarios), std::move(pnl), std::move(lineage), provenance());
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
 } // namespace

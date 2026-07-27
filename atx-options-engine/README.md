@@ -278,11 +278,53 @@ build configuration and retain the executable/toolchain/CPU/commit metadata
 with any reported result; no development-host number is presented as portable
 capacity.
 
+## Implemented XS-4 full-reprice pretrade risk and segmented producer
+
+`OptionPreTradeRiskEngine` evaluates filled, projected, and adversarial
+fill-subset exposure using per-contract cash Greeks and authoritative
+full-reprice scenario P&L. Pending cancels remain live. It reports both
+account-wide and single-underlier losses, prevents cross-underlier scenario
+credit, and distinguishes ordinary acceptance, reduce-only acceptance,
+cancel-only state, and rejection of new orders. The reducer allocates only at
+`create`.
+
+`compile_option_scenario_cube` is the first producer of that evidence. It
+accepts a canonical decision-only active catalog whose rows explicitly declare
+candidate, filled-position, working-order, and pending-cancel roles. It
+requires a lifecycle-source attestation whose PIT clocks, identity, and four
+role counts match that catalog. It validates surface, definition, quote, and
+scenario-manifest point-in-time clocks, quote age/status, admitted risk
+provenance, and separate market-mark lineage and value, then emits a dense
+scenario-by-active-contract panel. Every scenario contains an explicit shock
+for every active underlier. American and European exercise styles take
+distinct full-pricing routes, large shocks never use a Taylor substitute, and
+a scenario crossing expiry uses exact intrinsic.
+
+The one-decision contract is intentional: callers include new-trade candidates
+plus every filled, working, or pending-cancel contract, but not the historical
+union of expired/inactive names. This changes scenario storage from a
+horizon-wide `dates x union contracts x scenarios` allocation to
+`active contracts x scenarios` per segment. A move-owned generated-panel
+factory avoids expanding every dense P&L cell into an intermediate row object.
+
+Canonical scenario and risk SHA-256 digests bind manifest semantics, clocks,
+lifecycle roles, surface and quote identities, base Greeks, floor-hit policy,
+and scenario values. The revision-2 surface rule is explicitly
+`FrozenStickyStrike`; floor hits are counted and rejected by default. Shocked
+marks are not represented as independently admitted calibrated surfaces, and
+the producer does not infer betas, correlations, constituents, or regulatory
+margin. See
+[the scenario-cube design note](docs/full-reprice-scenario-cube-design-2026-07-27.md)
+for exact units, methodology boundaries, and limitations.
+
 ## Intended pipeline
 
 For each decision timestamp:
 
-1. Read the signal row from `OptionPanelField::Signal`. Non-tradable and absent
+1. Build the one-decision active catalog from candidates plus all contracts
+   with filled or live-order state, then compile its full-reprice
+   `OptionRiskPanel` from the point-in-time risk-surface snapshot.
+2. Read the signal row from `OptionPanelField::Signal`. Non-tradable and absent
    cells are `NaN`. The coordinator's safe default holds their filled position,
    emits no new orders anywhere in that decision, retains only leaves that
    reduce absolute exposure, and cancels exposure-increasing or mixed leaves.
@@ -290,17 +332,18 @@ For each decision timestamp:
    every active leaf; independent-contract scope can retain already-admitted
    risk-reducing leaves. Liquidation and decision rejection are separate
    explicit policies.
-2. Pass that row and `OptionResearchPanel::universe()` to
+3. Pass that row and `OptionResearchPanel::universe()` to
    `atx::engine::loop::WeightPolicy` for rank/z-score transforms,
    neutralization, gross exposure, and name caps.
-3. Pass the resulting weights and current whole-contract holdings to
+4. Pass the resulting weights and current whole-contract holdings to
    `make_option_target_book`.
-4. Let `OptionAdaptiveCoordinator` inspect signed live leaves and form a
-   cancel-first residual. The one-shot `make_option_order_batch` helper is not
-   working-order-aware and must not be called directly in an adaptive loop.
-5. Apply the coordinator's future-effective order/cancel basket to its
+5. Let `OptionAdaptiveCoordinator` inspect signed live leaves, evaluate
+   full-reprice projected/worst-fill risk, and form a cancel-first residual. The
+   one-shot `make_option_order_batch` helper is not working-order-aware and must
+   not be called directly in an adaptive loop.
+6. Apply the coordinator's future-effective order/cancel basket to its
    preallocated `OptionExecutionSession`.
-6. Consume `OptionFill`, `OptionOrderAudit`, `OptionCancelAudit`,
+7. Consume `OptionFill`, `OptionOrderAudit`, `OptionCancelAudit`,
    `OptionPositionSnapshot`, and `OptionReplaySummary` before reusing the
    workspace.
 
@@ -347,9 +390,13 @@ market sources:
 
 ## Explicitly deferred
 
-The next milestone is projected/worst-fill scenario risk and basket-level
-controls around the adaptive coordinator. Production completeness also requires
-adjusted deliverables, official
+The next evidence-plane milestone is immutable per-session segment persistence
+plus coordinator/session continuation across changing active catalogs. The
+scenario manifest then needs separately versioned sticky-forward-moneyness,
+skew, curvature, term, idiosyncratic-gap, and point-in-time
+dispersion-correlation producers.
+
+Production completeness also requires adjusted deliverables, official
 settlement, exercise/assignment, stock/futures hedge replay, borrow/locates,
 venue-native simple and complex books, auction participation, calibrated
 cross-impact, and a broker- or clearing-calibrated margin model.

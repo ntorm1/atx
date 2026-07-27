@@ -21,7 +21,7 @@
 namespace atx::options::risk {
 
 inline constexpr std::uint64_t kOptionPreTradeRiskModelVersion =
-    0x4154584F50520103ULL; // "ATXOPR", revision 1.3
+    0x4154584F50520105ULL; // "ATXOPR", revision 1.5
 inline constexpr std::uint64_t kOptionPreTradeRiskOrderingVersion = 2U;
 
 // Caller-attested 256-bit artifact digest. OptionRiskPanel::create rejects an
@@ -48,8 +48,16 @@ struct OptionRiskContractRow {
   std::uint64_t contract_id{0};
   atx::engine::InstrumentId engine_id{};
   std::uint32_t underlier_uid{0};
+  // Risk-surface clocks.
   std::int64_t observed_ts_ns{0};
   std::int64_t available_ts_ns{0};
+  // PIT market-mark clocks and lineage used by premium notional. Kept
+  // separate because the theoretical surface and executable quote are
+  // different evidence streams.
+  std::int64_t market_observed_ts_ns{0};
+  std::int64_t market_available_ts_ns{0};
+  // Contract definition must have been available by the quote event.
+  std::int64_t definition_available_ts_ns{0};
   std::int64_t expiry_ts_ns{0};
   double strike{0.0};
   atx::vol::Side side{atx::vol::Side::Call};
@@ -77,6 +85,7 @@ struct OptionRiskContractRow {
   OptionRiskRowStatus status{OptionRiskRowStatus::Ok};
   atx::vol::ArchiveContentIdentity risk_source_identity{};
   atx::vol::ArchiveContentIdentity surface_source_identity{};
+  atx::vol::ArchiveContentIdentity market_source_identity{};
 
   [[nodiscard]] bool operator==(const OptionRiskContractRow &) const noexcept = default;
 };
@@ -100,6 +109,20 @@ struct OptionRiskScenarioPnlRow {
   atx::vol::ArchiveContentIdentity source_identity{};
 
   [[nodiscard]] bool operator==(const OptionRiskScenarioPnlRow &) const noexcept = default;
+};
+
+// Canonical lineage shared by every contract cell in one generated
+// (decision, scenario) row. Trusted producers use this compact shape to avoid
+// materializing a many-gigabyte OptionRiskScenarioPnlRow AoS solely for
+// OptionRiskPanel construction.
+struct OptionRiskGeneratedPnlLineage {
+  std::int64_t decision_ts_ns{0};
+  std::uint64_t scenario_id{0};
+  std::int64_t observed_ts_ns{0};
+  std::int64_t available_ts_ns{0};
+  atx::vol::ArchiveContentIdentity source_identity{};
+
+  [[nodiscard]] bool operator==(const OptionRiskGeneratedPnlLineage &) const noexcept = default;
 };
 
 struct OptionRiskPanelProvenance {
@@ -134,6 +157,18 @@ public:
          std::span<const OptionRiskScenario> scenarios,
          std::span<const OptionRiskScenarioPnlRow> scenario_pnl_rows,
          const OptionRiskPanelProvenance &provenance, OptionRiskPanelLimits limits = {});
+
+  // Move-owned construction seam for a trusted generator that already emits
+  // canonical date-major contract rows, ascending scenarios, and a dense
+  // [date][scenario][contract] P&L cube. `pnl_lineage` is canonical
+  // [date][scenario]. This validates the same row, catalog, clock, provenance,
+  // shape, and byte-budget contracts as create(), and produces the same
+  // definition hash as equivalent expanded P&L rows, without the expanded AoS
+  // allocation or sort.
+  [[nodiscard]] static atx::core::Result<OptionRiskPanel> create_generated_canonical(
+      std::vector<OptionRiskContractRow> contract_rows, std::vector<OptionRiskScenario> scenarios,
+      std::vector<double> scenario_pnl, std::vector<OptionRiskGeneratedPnlLineage> pnl_lineage,
+      const OptionRiskPanelProvenance &provenance, OptionRiskPanelLimits limits = {});
 
   [[nodiscard]] std::span<const std::int64_t> dates() const noexcept { return dates_; }
   [[nodiscard]] std::span<const std::uint64_t> contract_ids() const noexcept {

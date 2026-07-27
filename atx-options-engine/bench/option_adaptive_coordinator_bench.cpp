@@ -265,6 +265,10 @@ struct CoordinatorFixture {
         row.underlier_uid = instrument.underlier_uid;
         row.observed_ts_ns = decision_ts_ns - 20;
         row.available_ts_ns = decision_ts_ns - 10;
+        row.market_observed_ts_ns = research_panel.decision_audit()[cell].quote_event_ts_ns;
+        row.market_available_ts_ns = research_panel.decision_audit()[cell].quote_available_ts_ns;
+        row.definition_available_ts_ns =
+            research_panel.decision_audit()[cell].definition_available_ts_ns;
         row.expiry_ts_ns = instrument.expiry_ts_ns;
         row.strike = instrument.strike;
         row.side = instrument.side;
@@ -282,6 +286,8 @@ struct CoordinatorFixture {
         row.status = OptionRiskRowStatus::Ok;
         row.risk_source_identity = identity(40'000U + instrument.contract_id);
         row.surface_source_identity = identity(50'000U + instrument.contract_id);
+        row.market_source_identity =
+            research_panel.decision_audit()[cell].execution_source_identity;
         rows.push_back(row);
 
         const double pnl = contract_index % 3U == 0U ? -5.0 : 2.0;
