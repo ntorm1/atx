@@ -1268,6 +1268,85 @@ TEST(BacktestExec, ZeroSurfaceSnapshotWithZeroCashAndFinancePremiumCarriesNothin
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Non-monotone snapshot timestamps (plan 2.4).
+//
+// A `Clock` is ordered by DATE STRING, but every economic quantity in a step is
+// driven by `dt = (shifted.ts_ns - base.ts_ns) / kNsPerYear`, and that timestamp
+// comes from the ARCHIVE's `now_ts_ns` — a different thing entirely. A
+// mislabelled or misordered partition therefore hands the step loop a negative
+// dt, and nothing checked it: `exp(r*dt)` shrinks the cash balance instead of
+// growing it, the borrow bleed becomes a rebate, and the shares-carry term flips
+// sign. Every one of those is a plausible number, so the run reports a full set
+// of rows and no error at all.
+//
+// It must fail closed with a clear error instead. Both overloads validate it:
+// the fixed-book run has no financing, but it derives residual T, settlement and
+// expiry drops from the same timestamps.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(BacktestExec, BackwardsSnapshotTimestampsFailClosed) {
+  const fs::path dir = fresh_dir("backwards-ts-strategy");
+  // Date strings ascend (2026-08-01, 2026-08-02); their archives' valuation
+  // stamps do NOT — day 20 then day 0.
+  const Clock clock = offset_clock(dir, "SPX", {20, 0});
+  NoopStrategy strat;
+
+  RunConfig cfg = det_config();
+  cfg.financing.finance_premium = true;
+  cfg.financing.initial_cash = 1.0e6; // a live balance: the accrual has economics
+
+  const auto r = run_backtest(clock, strat, cfg);
+  ASSERT_FALSE(r.has_value()) << "a step whose snapshot timestamps run backwards must fail "
+                                 "closed, not accrue a sign-flipped carry";
+  EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(BacktestExec, BackwardsSnapshotTimestampsFailClosedOnTheFixedBookRun) {
+  const fs::path dir = fresh_dir("backwards-ts-fixed");
+  const Clock clock = offset_clock(dir, "SPX", {20, 0});
+
+  const auto r = run_backtest(clock, PortfolioState{}, det_config());
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+}
+
+// Non-vacuity: the SAME fixture in the right order runs, so the rejections above
+// are attributable to the ordering and not to the corpus.
+TEST(BacktestExec, ForwardSnapshotTimestampsStillRun) {
+  const fs::path dir = fresh_dir("forward-ts");
+  const Clock clock = offset_clock(dir, "SPX", {0, 20});
+  NoopStrategy strat;
+
+  RunConfig cfg = det_config();
+  cfg.financing.finance_premium = true;
+  cfg.financing.initial_cash = 1.0e6;
+
+  const auto r = run_backtest(clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  EXPECT_EQ(r->size(), 2u);
+  EXPECT_GT(r->financing[1], 0.0) << "a forward step accrues a POSITIVE carry on a long balance";
+}
+
+// The boundary is deliberate: only a BACKWARDS step is refused. Two snapshots
+// sharing a timestamp give dt == 0, and every term the step scales by dt is then
+// an exact no-op (`cash * (exp(0) - 1)` is 0.0 for every finite r), so there is
+// no sign to flip and nothing to protect the caller from. Rejecting it would
+// turn a degenerate-but-harmless corpus into a hard failure.
+TEST(BacktestExec, EqualSnapshotTimestampsAreAcceptedAndCarryNothing) {
+  const fs::path dir = fresh_dir("equal-ts");
+  const Clock clock = offset_clock(dir, "SPX", {0, 0});
+  NoopStrategy strat;
+
+  RunConfig cfg = det_config();
+  cfg.financing.finance_premium = true;
+  cfg.financing.initial_cash = 1.0e6;
+
+  const auto r = run_backtest(clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  ASSERT_EQ(r->size(), 2u);
+  EXPECT_TRUE(bits_equal(r->financing[1], 0.0));
+}
+
 // Gate: the survivor's expiry-day cost drops 11 -> 6 s/u; warm and no-churn steps
 // are unchanged. Same fixed book as solve_ledger_test's expiry-day scenario.
 TEST(BacktestExec, L1ExpiryDaySurvivorReusesBaseRiskAcrossSettlement) {

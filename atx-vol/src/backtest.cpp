@@ -996,6 +996,35 @@ struct StepPnl {
   return "Unknown";
 }
 
+// Every economic quantity a step produces is scaled by
+// `dt = (shifted.ts_ns - base.ts_ns) / kNsPerYear`. A `Clock` is ordered by DATE
+// STRING, but that timestamp comes from the ARCHIVE's `now_ts_ns` — a different
+// thing entirely — so a mislabelled or misordered partition hands the loop a
+// NEGATIVE dt. Nothing downstream can tell that apart from a real step:
+// `exp(r*dt)` shrinks the cash balance instead of growing it, the borrow bleed
+// becomes a rebate, the shares-carry term flips sign, and the run still reports
+// a full set of plausible rows and no error. Fail closed on the step that would
+// compute it, naming both dates.
+//
+// EQUAL timestamps are accepted deliberately: dt == 0 makes every dt-scaled term
+// an exact no-op (`cash * (exp(0) - 1)` is 0.0 for every finite r), so there is
+// no sign to flip and nothing to protect the caller from. Refusing a
+// degenerate-but-harmless corpus would be a stricter contract than the defect
+// warrants. Kept next to `validate_snapshot_provenance` so both run_backtest
+// overloads word it the same.
+[[nodiscard]] Status validate_step_ordering(const MarketSnapshot &base,
+                                            const MarketSnapshot &shifted,
+                                            const std::string &base_date,
+                                            const std::string &shifted_date) {
+  if (shifted.ts_ns() < base.ts_ns()) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: snapshot timestamps run backwards over the step " + base_date +
+                   " -> " + shifted_date + " (ts_ns " + std::to_string(base.ts_ns()) + " -> " +
+                   std::to_string(shifted.ts_ns()) + ")");
+  }
+  return Ok();
+}
+
 // Validate after every cache load, not only while constructing a snapshot. That
 // placement means a preloaded or previously cached compatibility snapshot cannot
 // bypass a stricter policy selected by a later backtest run.
@@ -1646,6 +1675,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     }
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
     ATX_TRY_VOID(validate_snapshot_provenance(*shifted, cfg.surface_provenance_policy));
+    ATX_TRY_VOID(validate_step_ordering(*base, *shifted, refs[i - 1].date, refs[i].date));
     if (cfg.prefetch_snapshots && i + 1 < refs.size()) {
       const Status prefetch_status = snapshot_cache->prefetch(
           refs[i + 1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
@@ -2186,6 +2216,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     }
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
     ATX_TRY_VOID(validate_snapshot_provenance(*shifted, cfg.surface_provenance_policy));
+    ATX_TRY_VOID(validate_step_ordering(*base, *shifted, refs[i - 1].date, refs[i].date));
     if (cfg.prefetch_snapshots && i + 1 < refs.size()) {
       const Status prefetch_status = snapshot_cache->prefetch(
           refs[i + 1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
