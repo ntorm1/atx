@@ -111,7 +111,84 @@ constexpr double kR = 0.043;
   return p;
 }
 
-[[nodiscard]] PricedSurface make_essvi(std::uint32_t uid, int n) {
+// ── Padding-controlled copies of the blitted POD slice params ───────────────
+//
+// `EssviParams`/`SviParams`/`C8Params` are serialized as their OBJECT
+// representation, which is WIDER than their members (e.g. the 6 bytes after
+// `SviParams::expiry_id`). Nothing in the fitters ever writes those pad bytes,
+// so they hold whatever the producing thread's stack last left there. These
+// helpers rebuild a params object from a fully dirtied object representation and
+// then assign every VALUE member, so what survives is exactly the padding —
+// which lets a test pin "the record is a function of the values, not of the
+// pad". `pad == 0x00` is the canonical (already-normalized) representation.
+[[nodiscard]] SviParams repad(const SviParams &src, unsigned char pad) noexcept {
+  SviParams out;
+  std::memset(&out, pad, sizeof out);
+  out.a = src.a;
+  out.b = src.b;
+  out.rho = src.rho;
+  out.m = src.m;
+  out.sigma = src.sigma;
+  out.T = src.T;
+  out.F = src.F;
+  out.expiry_ns = src.expiry_ns;
+  out.expiry_id = src.expiry_id;
+  return out;
+}
+
+[[nodiscard]] EssviParams repad(const EssviParams &src, unsigned char pad) noexcept {
+  EssviParams out;
+  std::memset(&out, pad, sizeof out);
+  out.theta = src.theta;
+  out.phi = src.phi;
+  out.rho = src.rho;
+  out.rho_R = src.rho_R;
+  out.rho_scale = src.rho_scale;
+  out.psi = src.psi;
+  out.p = src.p;
+  out.lambda = src.lambda;
+  out.lambda_R = src.lambda_R;
+  out.T = src.T;
+  out.F = src.F;
+  out.expiry_ns = src.expiry_ns;
+  out.expiry_id = src.expiry_id;
+  out.resid_coef = src.resid_coef;
+  out.resid_scale = src.resid_scale;
+  out.resid_basis_kind = src.resid_basis_kind;
+  out.resid_n_basis = src.resid_n_basis;
+  return out;
+}
+
+[[nodiscard]] C8Params repad(const C8Params &src, unsigned char pad) noexcept {
+  C8Params out;
+  std::memset(&out, pad, sizeof out);
+  out.T = src.T;
+  out.F = src.F;
+  out.expiry_ns = src.expiry_ns;
+  out.expiry_id = src.expiry_id;
+  out.v = src.v;
+  out.psi = src.psi;
+  out.p = src.p;
+  out.c = src.c;
+  out.v_min = src.v_min;
+  out.kappa = src.kappa;
+  out.q_L = src.q_L;
+  out.q_R = src.q_R;
+  out.h_atm = src.h_atm;
+  out.k_L = src.k_L;
+  out.h_L = src.h_L;
+  out.k_R = src.k_R;
+  out.h_R = src.h_R;
+  out.arb_damping_factor = src.arb_damping_factor;
+  out.rmse_price = src.rmse_price;
+  out.rmse_vol = src.rmse_vol;
+  out.n_lm_iters = src.n_lm_iters;
+  out.n_irls_iters = src.n_irls_iters;
+  out.bumps_active = src.bumps_active;
+  return out;
+}
+
+[[nodiscard]] PricedSurface make_essvi(std::uint32_t uid, int n, unsigned char pad = 0x00) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   for (int i = 0; i < n; ++i) {
@@ -126,7 +203,7 @@ constexpr double kR = 0.043;
     e.T = T;
     e.F = kS;
     e.expiry_id = static_cast<std::uint16_t>(i);
-    cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
+    cs.push(std::make_unique<EssviCurve>(repad(e, pad), std::exp(-kR * T)));
     ctx.push_back(SliceContext{T, kS, 0.0, 0.02, 250, 7});
   }
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
@@ -134,7 +211,7 @@ constexpr double kR = 0.043;
   return std::move(*ps);
 }
 
-[[nodiscard]] PricedSurface make_svi(std::uint32_t uid, int n) {
+[[nodiscard]] PricedSurface make_svi(std::uint32_t uid, int n, unsigned char pad = 0x00) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   for (int i = 0; i < n; ++i) {
@@ -148,7 +225,7 @@ constexpr double kR = 0.043;
     v.T = T;
     v.F = kS;
     v.expiry_id = static_cast<std::uint16_t>(i);
-    cs.push(std::make_unique<SviCurve>(v, std::exp(-kR * T)));
+    cs.push(std::make_unique<SviCurve>(repad(v, pad), std::exp(-kR * T)));
     ctx.push_back(SliceContext{T, kS, 0.0, 0.02, 180, 4});
   }
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
@@ -207,7 +284,7 @@ constexpr double kR = 0.043;
   return std::move(*ps);
 }
 
-[[nodiscard]] PricedSurface make_c8(std::uint32_t uid, int n) {
+[[nodiscard]] PricedSurface make_c8(std::uint32_t uid, int n, unsigned char pad = 0x00) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   for (int i = 0; i < n; ++i) {
@@ -222,7 +299,7 @@ constexpr double kR = 0.043;
     c8.q_L = 0.0002 * T;
     c8.q_R = -0.0001 * T;
     c8.expiry_id = static_cast<std::uint16_t>(i);
-    cs.push(std::make_unique<C8Curve>(c8, std::exp(-kR * T)));
+    cs.push(std::make_unique<C8Curve>(repad(c8, pad), std::exp(-kR * T)));
     ctx.push_back(SliceContext{T, kS, 0.0, 0.02, 120, 5});
   }
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
@@ -1023,4 +1100,41 @@ TEST(SurfaceArchiveV2, ReemitByteIdenticalIsIdempotent) {
   const std::vector<std::byte> c = reemit_via_reconstruct(b);
   ASSERT_EQ(a.size(), c.size());
   EXPECT_EQ(0, std::memcmp(a.data(), c.data(), a.size()));
+}
+
+// ── The record is a function of the VALUES, never of the struct padding ──────
+//
+// `EssviParams`/`SviParams`/`C8Params` are blitted into the record whole, so the
+// record used to inherit their PADDING as well as their members. No fitter ever
+// writes those pad bytes — a fit builds its result as `SviParams out{}` and
+// assigns members, and clang-cl does not materialize the zero-initialization of
+// padding bits — so the pad carries whatever the producing thread's stack last
+// left at that address. Blitted verbatim it reached the record, `payload_crc32c`
+// and (via the directory mirror) the archive's content identity, which made the
+// stored bytes of an IDENTICAL fitted slice depend on which thread fitted it —
+// i.e. on the fit worker count. That is what
+// `SurfaceDbPopulate.CarryOverIsByteIdenticalAcrossWorkerCounts` observes end to
+// end; this is the same defect pinned at the writer, one kind at a time.
+//
+// Two surfaces that differ ONLY in the padding of their slice params must
+// serialize to identical bytes.
+void expect_padding_blind(const PricedSurface &clean, const PricedSurface &dirty,
+                          const char *what) {
+  const SurfaceProvenance prov = make_provenance();
+  const std::array<SurfaceArchiveItem, 1> clean_items{SurfaceArchiveItem{"SYM", &clean, prov}};
+  const std::array<SurfaceArchiveItem, 1> dirty_items{SurfaceArchiveItem{"SYM", &dirty, prov}};
+  auto a = write_surface_archive_v2(clean_items, pinned_opts());
+  auto b = write_surface_archive_v2(dirty_items, pinned_opts());
+  ASSERT_TRUE(a.has_value()) << what;
+  ASSERT_TRUE(b.has_value()) << what;
+  ASSERT_EQ(a->size(), b->size()) << what;
+  EXPECT_EQ(0, std::memcmp(a->data(), b->data(), a->size()))
+      << what << ": archive bytes depend on the slice params' padding, so the same "
+                 "fitted surface stores differently depending on the producing thread";
+}
+
+TEST(SurfaceArchiveV2, SliceParamPaddingDoesNotReachTheRecord) {
+  expect_padding_blind(make_svi(3, 4, 0x00), make_svi(3, 4, 0xAB), "svi");
+  expect_padding_blind(make_essvi(3, 4, 0x00), make_essvi(3, 4, 0xAB), "essvi");
+  expect_padding_blind(make_c8(3, 4, 0x00), make_c8(3, 4, 0xAB), "c8");
 }

@@ -47,6 +47,8 @@
 #include "atx/vol/vol_curve.hpp"   // IVolCurve, Convex/Essvi/SviCurve, CurveSurface
 #include "atx/vol/vol_surface.hpp" // EssviParams, SviParams
 
+#include "slice_payload_padding.hpp" // normalize_{svi,essvi,c8}_payload_padding
+
 namespace atx::vol {
 
 using atx::core::Err;
@@ -555,14 +557,20 @@ Result<std::vector<std::byte>> write_surface_archive(std::span<const SurfaceArch
         std::memcpy(payload + nb, fit.C.data(), nb);
         break;
       }
+      // Blit + re-zero the struct PADDING, exactly as the v2 writer does: the
+      // pad bytes are never written by any fitter, so a verbatim blit stores the
+      // producing thread's stack residue and makes the record depend on which
+      // thread fitted the slice. See src/slice_payload_padding.hpp.
       case VolCurveKind::Essvi: {
         const EssviParams &e = static_cast<const EssviCurve *>(sp.curve)->slice();
         std::memcpy(payload, &e, sizeof e);
+        detail::normalize_essvi_payload_padding(payload);
         break;
       }
       case VolCurveKind::Svi: {
         const SviParams &v = static_cast<const SviCurve *>(sp.curve)->slice();
         std::memcpy(payload, &v, sizeof v);
+        detail::normalize_svi_payload_padding(payload);
         break;
       }
       case VolCurveKind::LinearVariance: {
@@ -575,6 +583,7 @@ Result<std::vector<std::byte>> write_surface_archive(std::span<const SurfaceArch
       case VolCurveKind::C8: {
         const C8Params &c8 = static_cast<const C8Curve *>(sp.curve)->slice();
         std::memcpy(payload, &c8, sizeof c8);
+        detail::normalize_c8_payload_padding(payload);
         break;
       }
       case VolCurveKind::SplineVol: {

@@ -29,6 +29,8 @@
 #include "atx/vol/vol_curve.hpp"   // IVolCurve, Convex/Essvi/SviCurve, CurveSurface
 #include "atx/vol/vol_surface.hpp" // EssviParams, SviParams
 
+#include "slice_payload_padding.hpp" // normalize_{svi,essvi,c8}_payload_padding
+
 namespace atx::vol {
 
 using atx::core::Err;
@@ -546,14 +548,22 @@ write_surface_archive_v2(std::span<const SurfaceArchiveItem> items,
         std::memcpy(p + 24 + nb, fit.C.data(), nb);
         break;
       }
+      // The three POD payloads are blitted whole and then have their PADDING
+      // re-zeroed: the struct's pad bytes are never written by any fitter, so a
+      // verbatim blit would store the producing thread's stack residue in the
+      // record (and in payload_crc32c / the archive's content identity), making
+      // the bytes of an identical fitted slice depend on the fit worker count.
+      // See src/slice_payload_padding.hpp.
       case VolCurveKind::Essvi: {
         const EssviParams &e = static_cast<const EssviCurve *>(sp.curve)->slice();
         std::memcpy(p, &e, sizeof e);
+        detail::normalize_essvi_payload_padding(p);
         break;
       }
       case VolCurveKind::Svi: {
         const SviParams &vv = static_cast<const SviCurve *>(sp.curve)->slice();
         std::memcpy(p, &vv, sizeof vv);
+        detail::normalize_svi_payload_padding(p);
         break;
       }
       case VolCurveKind::LinearVariance: {
@@ -566,6 +576,7 @@ write_surface_archive_v2(std::span<const SurfaceArchiveItem> items,
       case VolCurveKind::C8: {
         const C8Params &c8 = static_cast<const C8Curve *>(sp.curve)->slice();
         std::memcpy(p, &c8, sizeof c8);
+        detail::normalize_c8_payload_padding(p);
         break;
       }
       case VolCurveKind::SplineVol: {

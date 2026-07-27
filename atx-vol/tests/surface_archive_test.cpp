@@ -23,6 +23,8 @@
 #include "atx/vol/vol_curve.hpp"
 #include "atx/vol/vol_surface.hpp"
 
+#include "../src/slice_payload_padding.hpp" // detail::normalize_c8_payload_padding
+
 // ATXVSA v3 archive suite: full write -> open -> map round-trip with
 // BIT-IDENTICAL served theo (iv / fair_value) across all five curve kinds
 // (ConvexDense / eSSVI / SVI / LinearVariance / C8), symbol lookup, rejection, and
@@ -208,6 +210,21 @@ constexpr double kR = 0.043;
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
   EXPECT_TRUE(ps.has_value());
   return std::move(*ps);
+}
+
+// `C8Params`'s object representation is WIDER than its value: a gap between
+// `expiry_id` and `v`, and a tail gap after `bumps_active`. Padding is not part
+// of the value — nothing ever writes it, so a live in-memory struct carries the
+// producing thread's stack residue there — and the archive writer deliberately
+// canonicalizes it to zero so a record cannot inherit that residue
+// (src/slice_payload_padding.hpp). A round-trip assertion must therefore compare
+// the VALUE representation: blit the struct, canonicalize the pad, compare. Every
+// value byte is still covered, including any field added later.
+[[nodiscard]] std::array<std::byte, sizeof(C8Params)> c8_value_bytes(const C8Params &p) noexcept {
+  std::array<std::byte, sizeof(C8Params)> bytes{};
+  std::memcpy(bytes.data(), &p, sizeof p);
+  atx::vol::detail::normalize_c8_payload_padding(bytes.data());
+  return bytes;
 }
 
 [[nodiscard]] PricedSurface make_c8(std::uint32_t uid, int n) {
@@ -742,7 +759,9 @@ TEST(SurfaceArchive, RoundTrip_C8_TheoAndParamsBitIdentical) {
   for (std::size_t i = 0; i < orig.n_slices(); ++i) {
     const auto *a = static_cast<const C8Curve *>(orig.surface().slices()[i].get());
     const auto *b = static_cast<const C8Curve *>(got->surface().slices()[i].get());
-    EXPECT_EQ(std::memcmp(&a->slice(), &b->slice(), sizeof(C8Params)), 0);
+    const auto a_bytes = c8_value_bytes(a->slice());
+    const auto b_bytes = c8_value_bytes(b->slice());
+    EXPECT_EQ(std::memcmp(a_bytes.data(), b_bytes.data(), sizeof(C8Params)), 0);
   }
 }
 
