@@ -233,21 +233,73 @@ regression baseline, not a Release capacity claim. A separate 10,000-contract,
 10,000-empty-frontier case guards against accidentally restoring a full catalog
 scan per command batch.
 
+## Implemented XS-3B adaptive target coordinator
+
+`OptionAdaptiveCoordinator` runs the point-in-time panel in explicit date
+order. At each date it advances the persistent session, transforms that date's
+signal row with `WeightPolicy`, builds whole-contract option targets, inspects
+every signed nonterminal order leaf, and atomically applies one future-effective
+cancel/order basket.
+
+Targets are absolute and derive from filled positions. Reconciliation then
+accounts for scheduled, working, partially filled, and pending-cancel leaves.
+Compatible same-side leaves are retained and only the residual is submitted.
+Offsetting, opposite, or excess leaves are canceled; replacements wait for a
+later decision frontier. Once any leg is unsafe or pending cancel, the default
+whole-basket barrier cancels every other non-pending active leaf and suppresses
+all new submissions until a later decision observes the outcomes. This reduces
+linked-basket leg drift but is not atomic complex execution. Scheduled orders
+cannot be canceled before modeled arrival.
+
+The coordinator, Rank/winsorization/group-neutralization scratch path, target
+sizer, and order materializer allocate only during `create` on successful runs.
+`option_adaptive_coordinator_required_workspace_bytes` gives the exact
+coordinator-owned payload bound, separate from the execution-session workspace.
+Bounded decision summaries carry deterministic, non-cryptographic regression
+fingerprints for signals, reconciliation state, raw/reconciled targets, and
+commands. The order-independent run fingerprint covers the model,
+configuration, capacities, panel values/lineage, canonical replay catalog,
+replay record selection, and fee/tick definitions. These fingerprints are not
+a cryptographic content attestation, immutable provenance manifest, or
+per-contract audit ledger.
+
+Before replay starts, the coordinator canonicalizes caller-permuted contract
+inputs, reconciles permanent ID, engine ID, multiplier, expiry, standard
+deliverable, and definition lineage. It reconstructs replay quotes in canonical
+availability/order-key order and requires every tradable panel BBO to equal the
+latest state available at that decision by source identity, clocks, prices, and
+displayed sizes. This prevents sizing and limit formation from silently using a
+superseded catalog or quote snapshot.
+
+The focused benchmark contains 128 x 256 and 1,024 x 64 dense stable-target
+fixtures plus a 64 x 128 cancel/replace-churn fixture. Run
+`atx-options-engine-bench --benchmark_filter=AdaptiveCoordinator` in the desired
+build configuration and retain the executable/toolchain/CPU/commit metadata
+with any reported result; no development-host number is presented as portable
+capacity.
+
 ## Intended pipeline
 
 For each decision timestamp:
 
 1. Read the signal row from `OptionPanelField::Signal`. Non-tradable and absent
-   cells are `NaN`.
+   cells are `NaN`. The coordinator's safe default holds their filled position,
+   emits no new orders anywhere in that decision, retains only leaves that
+   reduce absolute exposure, and cancels exposure-increasing or mixed leaves.
+   Missing cells also activate the default linked-basket barrier, which cancels
+   every active leaf; independent-contract scope can retain already-admitted
+   risk-reducing leaves. Liquidation and decision rejection are separate
+   explicit policies.
 2. Pass that row and `OptionResearchPanel::universe()` to
    `atx::engine::loop::WeightPolicy` for rank/z-score transforms,
    neutralization, gross exposure, and name caps.
 3. Pass the resulting weights and current whole-contract holdings to
    `make_option_target_book`.
-4. Convert the target book with `make_option_order_batch`. Decision-time
-   bid/ask sets a marketable limit, never a fill.
-5. Advance a preallocated `OptionExecutionSession`, observe realized position
-   and live leaves, and apply the future-effective order/cancel batch.
+4. Let `OptionAdaptiveCoordinator` inspect signed live leaves and form a
+   cancel-first residual. The one-shot `make_option_order_batch` helper is not
+   working-order-aware and must not be called directly in an adaptive loop.
+5. Apply the coordinator's future-effective order/cancel basket to its
+   preallocated `OptionExecutionSession`.
 6. Consume `OptionFill`, `OptionOrderAudit`, `OptionCancelAudit`,
    `OptionPositionSnapshot`, and `OptionReplaySummary` before reusing the
    workspace.
@@ -256,11 +308,9 @@ The engine's generic stock `WeightPolicy::reconcile` must not be used directly
 for options: it divides equity by the mark as if the instrument were one share
 and does not know the contract multiplier, vega, or margin.
 
-The persistent session now provides the correct incremental execution boundary.
-The next coordinator layer must invoke the point-in-time weight policy and
-option-aware sizing at each observation, then reconcile its target against
-filled position plus signed working leaves. Precomputing every future order
-would still ignore partial fills and is not an acceptable substitute.
+The persistent session and adaptive coordinator now provide the incremental
+execution boundary. Precomputing every future order would still ignore partial
+fills and is not an acceptable substitute.
 
 ## Research basis
 
@@ -297,9 +347,9 @@ market sources:
 
 ## Explicitly deferred
 
-The next milestone is the adaptive date-major target coordinator, including
-no-allocation weight/target adapters and working-leaf-aware reconciliation.
-Production completeness also requires adjusted deliverables, official
+The next milestone is projected/worst-fill scenario risk and basket-level
+controls around the adaptive coordinator. Production completeness also requires
+adjusted deliverables, official
 settlement, exercise/assignment, stock/futures hedge replay, borrow/locates,
 venue-native simple and complex books, auction participation, calibrated
 cross-impact, and a broker- or clearing-calibrated margin model.

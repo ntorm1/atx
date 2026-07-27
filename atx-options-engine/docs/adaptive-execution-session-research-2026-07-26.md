@@ -3,8 +3,8 @@
 **Research date:** 2026-07-26
 **Scope:** deterministic, point-in-time execution state for adaptive US
 listed-options backtests.
-**Status:** implemented XS-3A foundation; target generation and working-leaf
-reconciliation remain the next coordinator layer.
+**Status:** XS-3A persistent session and XS-3B date-major adaptive coordinator
+implemented.
 
 ## Decision
 
@@ -62,10 +62,10 @@ consuming a quote that was already visible to the policy.
 
 The frontier exposes position, scheduled leaves, working leaves,
 pending-cancel leaves, and projected contracts. Pending-cancel leaves are a
-subset of working leaves and are counted only once. A later target reconciler
-must compare its target with projected exposure, not filled position alone.
-These contract aggregates are signed net totals; the reconciler must also
-inspect per-order leaves to detect offsetting buy/sell orders and gross churn.
+subset of working leaves and are counted only once. Absolute targets are sized
+from filled positions, then reconciled against every signed nonterminal leaf.
+The net projected aggregate alone is insufficient because offsetting live buys
+and sells can hide gross churn.
 
 ## Bounded implementation
 
@@ -137,15 +137,21 @@ It has no venue/broker acknowledgments, new/cancel/modify rejects,
 - [NautilusTrader event-driven backtesting](https://nautilustrader.io/docs/latest/concepts/backtesting/)
   is a useful implementation reference for a persistent event-driven
   backtest engine.
+- [LEAN order sizing](https://www.lean.io/docs/v2/lean-engine/class-reference/OrderSizing_8cs_source.html)
+  provides a mature open-source reference for subtracting open order leaves
+  from an absolute portfolio target.
 - [Boyd et al., Multi-Period Trading via Convex Optimization](https://web.stanford.edu/~boyd/papers/cvx_portfolio.html)
   motivates observe-and-replan, receding-horizon portfolio control.
-- [SLSA provenance](https://slsa.dev/spec/v1.0/provenance) and
+- [Cboe US Options Risk Management](https://www.cboe.com/document/tech-spec/document/technical-specifications/cboe-titanium-u.s.-options-risk-management-specification)
+  informs the explicitly deferred risk-root, threshold, cancel, and reset
+  state model.
+- [SLSA Build Provenance v1.2](https://slsa.dev/spec/v1.2/build-provenance) and
   [W3C PROV-DM](https://www.w3.org/TR/prov-dm/) inform the future immutable run
   manifest and derivation graph.
 
-## Next coordinator contract
+## Implemented XS-3B coordinator contract
 
-The next layer is a no-allocation date-major coordinator:
+`OptionAdaptiveCoordinator` now implements the no-allocation date-major loop:
 
 ```text
 frontier observation
@@ -156,9 +162,82 @@ frontier observation
   -> session apply
 ```
 
-Its default retarget policy should cancel conflicting or excess working leaves
-and defer a new independent order until the cancel is effective or a later
-frontier. Unconditional cancel-plus-new can overshoot when the old order fills
-during cancel latency; such behavior must be selected and audited explicitly,
-never silently inferred. Exchange-native replace and its acknowledgment/reject
-semantics remain deferred.
+The default `WholeBasketCancelBarrier` policy is intended as a conservative
+linked-dispersion control. Once any leaf is unsafe or pending cancel, it cancels
+every other non-pending active leaf and emits no new order anywhere in that
+decision basket. A later explicit panel date replans from the fills and cancel
+outcomes actually observed. This reduces asynchronous leg drift; it does not
+provide exchange atomicity, a complex-order guarantee, or hedge balance.
+`IndependentContract` is available for intentionally unrelated contracts.
+
+For a safe contract, the residual is:
+
+```text
+desired leaves = absolute target - filled position
+new order      = desired leaves - signed live leaves
+```
+
+For an unsafe contract, all nonterminal leaves not already pending cancel are
+canceled. A scheduled-order cancel becomes available no earlier than both the
+configured cancel latency and one nanosecond after modeled order arrival. This
+prevents a session-rejected pre-arrival cancel and preserves the rule that the
+old order can fill during cancel latency.
+
+Missing or non-tradable signals do not silently become liquidation instructions.
+The default policy preserves the filled position, retains only live leaves that
+reduce its absolute size without crossing through flat, and cancels
+exposure-increasing or mixed leaves. It emits no new order anywhere in that
+decision, so held positions cannot bypass the target gate and fund additional
+risk. Explicit alternatives liquidate to zero or reject the decision. A missing
+cell activates whole-basket scope, which cancels otherwise retained leaves;
+independent-contract scope may retain only already-admitted risk-reducing
+leaves. The decision summary records the missing-cell count, while its
+exposure/margin values remain explicitly raw pre-reconciliation target metrics.
+
+The cold run boundary accepts caller-permuted replay records but canonicalizes
+the contract catalog before comparison. Permanent/engine IDs, whole multiplier,
+expiry, standard-deliverable status, and definition lineage must agree, and the
+replay definition must be available by the decision. The boundary reconstructs
+quotes in the replay's canonical availability/order-key order; every tradable
+decision BBO must equal the latest state then available on source identity,
+event and availability clocks, bid/ask, and displayed sizes. A stale or
+unrelated sizing snapshot therefore fails before session state is mutated.
+
+`WeightPolicyScratch`, scratch overloads of Rank and winsorization, reusable
+target/order `_into` adapters, and coordinator-owned command buffers make a
+successful run allocation-free after `create`. The exact coordinator payload
+is exposed by
+`option_adaptive_coordinator_required_workspace_bytes`; the nested execution
+session retains its separate exact budget.
+
+Each decision appends a bounded summary with deterministic, non-cryptographic
+regression fingerprints of the signal row, reconciliation-relevant execution
+state, raw/reconciled targets, complete command fields, and summary values. The
+order-independent run fingerprint covers model/ordering versions, all capacity
+limits, strategy/execution parameters, every panel value and lineage row,
+initial cash, the canonical contract catalog, replay records, and effective
+fee/tick rows. These 64-bit fingerprints are not a cryptographic source-content
+digest, SLSA attestation, immutable run manifest, or per-contract explanation
+ledger.
+
+The benchmark target contains stable-target 128 x 256 and 1,024 x 64 dense
+fixtures and a 64 x 128 cancel/replace-churn fixture. The coordinator keeps an
+active-order index, so reconciliation scans current live leaves rather than
+cumulative terminal order history. Dense cross-sectional work remains
+`O(decisions * catalog)` plus active-leaf/event work. Reproducible performance
+reports must retain build type, compiler/toolchain, CPU, command, configuration,
+and commit identity; this note intentionally does not publish an unqualified
+development-host throughput number.
+
+## Remaining coordinator work
+
+The current risk gate is the existing deterministic independent-contract
+initial/maintenance-margin model with reject or proportional-clamp behavior.
+It does not claim OCC STANS, broker portfolio margin, scenario-risk parity, or
+hard venue risk enforcement. A future layer should add explicit
+Active/Reducing/Halted states, filled/projected/worst-fill Greek scenarios,
+risk-root and basket constraints, and whole-basket risk scaling.
+
+Unconditional cancel-plus-new remains prohibited because it can overshoot when
+the old order fills during cancel latency. Exchange-native replace and its
+acknowledgment/reject semantics remain deferred.

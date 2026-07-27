@@ -2186,9 +2186,12 @@ OptionExecutionSessionState OptionExecutionSession::state() const noexcept {
   return impl_ == nullptr ? OptionExecutionSessionState::Failed : impl_->phase;
 }
 
-Result<std::vector<OptionOrderRequest>> make_option_order_batch(
-    const atx::options::research::OptionResearchPanel &panel, std::size_t date_index,
-    const atx::options::research::OptionTargetBook &targets, const OptionOrderBatchSpec &spec) {
+Result<void> make_option_order_batch_into(const atx::options::research::OptionResearchPanel &panel,
+                                          std::size_t date_index,
+                                          const atx::options::research::OptionTargetBook &targets,
+                                          const OptionOrderBatchSpec &spec,
+                                          std::vector<OptionOrderRequest> &orders) {
+  orders.clear();
   if (date_index >= panel.dataset().num_dates() ||
       targets.targets.size() != panel.instruments().size() ||
       targets.decision_ts_ns != panel.dataset().dates()[date_index] || spec.first_order_id == 0U ||
@@ -2201,19 +2204,28 @@ Result<std::vector<OptionOrderRequest>> make_option_order_batch(
   }
   ATX_TRY_VOID(validate_tif(spec.time_in_force));
   const std::int64_t decision_ts_ns = targets.decision_ts_ns;
+
+  std::size_t order_count = 0U;
+  for (std::size_t index = 0; index < targets.targets.size(); ++index) {
+    const auto &target = targets.targets[index];
+    if (target.contract_id != panel.instruments()[index].contract_id ||
+        target.engine_id != panel.instruments()[index].engine_id) {
+      return Err(ErrorCode::InvalidArgument,
+                 "option target book does not align with panel catalog");
+    }
+    if (target.order_contracts != 0) {
+      ++order_count;
+    }
+  }
+  if (order_count == 0U) {
+    return Ok();
+  }
   ATX_TRY(std::int64_t arrival_ts_ns,
           atx::core::checked_add(decision_ts_ns, spec.arrival_latency_ns));
   if ((spec.time_in_force == OptionTimeInForce::Day && spec.expire_ts_ns <= arrival_ts_ns) ||
       (spec.time_in_force != OptionTimeInForce::Day && spec.expire_ts_ns != 0)) {
     return Err(ErrorCode::InvalidArgument,
                "option order-batch expiry is inconsistent with time in force");
-  }
-
-  std::size_t order_count = 0U;
-  for (const auto &target : targets.targets) {
-    if (target.order_contracts != 0) {
-      ++order_count;
-    }
   }
   if (order_count > 0U) {
     const std::uint64_t offset = static_cast<std::uint64_t>(order_count - 1U);
@@ -2222,20 +2234,16 @@ Result<std::vector<OptionOrderRequest>> make_option_order_batch(
       return Err(ErrorCode::OutOfRange, "option order-batch identifiers exceed uint64 range");
     }
   }
+  if (orders.capacity() < order_count) {
+    return Err(ErrorCode::OutOfRange, "option order output capacity is too small");
+  }
 
-  std::vector<OptionOrderRequest> orders;
-  orders.reserve(order_count);
   const std::size_t row_offset = date_index * panel.instruments().size();
   const auto bid = panel.column(atx::options::research::OptionPanelField::Bid);
   const auto ask = panel.column(atx::options::research::OptionPanelField::Ask);
   std::uint64_t ordinal = 0U;
   for (std::size_t i = 0; i < targets.targets.size(); ++i) {
     const auto &target = targets.targets[i];
-    if (target.contract_id != panel.instruments()[i].contract_id ||
-        target.engine_id != panel.instruments()[i].engine_id) {
-      return Err(ErrorCode::InvalidArgument,
-                 "option target book does not align with panel catalog");
-    }
     if (target.order_contracts == 0) {
       continue;
     }
@@ -2259,6 +2267,15 @@ Result<std::vector<OptionOrderRequest>> make_option_order_batch(
         spec.first_priority_sequence + ordinal, spec.fee_schedule_key, spec.time_in_force});
     ++ordinal;
   }
+  return Ok();
+}
+
+Result<std::vector<OptionOrderRequest>> make_option_order_batch(
+    const atx::options::research::OptionResearchPanel &panel, std::size_t date_index,
+    const atx::options::research::OptionTargetBook &targets, const OptionOrderBatchSpec &spec) {
+  std::vector<OptionOrderRequest> orders;
+  orders.reserve(targets.targets.size());
+  ATX_TRY_VOID(make_option_order_batch_into(panel, date_index, targets, spec, orders));
   return Ok(std::move(orders));
 }
 

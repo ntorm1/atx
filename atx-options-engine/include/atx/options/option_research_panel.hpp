@@ -211,6 +211,11 @@ public:
   [[nodiscard]] std::span<const double> column(OptionPanelField field) const noexcept {
     return dataset_.column(static_cast<atx::usize>(field));
   }
+  [[nodiscard]] std::span<const double> row(OptionPanelField field,
+                                            std::size_t date_index) const noexcept {
+    const std::size_t instrument_count = instruments_.size();
+    return column(field).subspan(date_index * instrument_count, instrument_count);
+  }
   [[nodiscard]] bool tradable(std::size_t date_index, std::size_t instrument_index) const noexcept {
     return dataset_.in_universe(date_index, instrument_index);
   }
@@ -228,6 +233,15 @@ public:
       return atx::core::Err(atx::core::ErrorCode::OutOfRange, "option panel cell is out of range");
     }
     return atx::core::Ok(dataset_.in_universe(date_index, instrument_index));
+  }
+  [[nodiscard]] atx::core::Result<std::span<const double>>
+  checked_row(OptionPanelField field, std::size_t date_index) const {
+    const auto index = static_cast<atx::usize>(field);
+    if (index > static_cast<atx::usize>(OptionPanelField::Status) ||
+        date_index >= dataset_.num_dates()) {
+      return atx::core::Err(atx::core::ErrorCode::OutOfRange, "option panel row is out of range");
+    }
+    return atx::core::Ok(row(field, date_index));
   }
 
 private:
@@ -311,5 +325,15 @@ struct OptionTargetBook {
 [[nodiscard]] atx::core::Result<OptionTargetBook> make_option_target_book(
     const OptionResearchPanel &panel, std::size_t date_index, std::span<const double> weights,
     std::span<const std::int64_t> current_contracts, const OptionTargetSpec &spec);
+
+// Allocation-free compatibility seam for reusable date-major coordinators.
+// `output.targets.capacity()` must cover the panel catalog. The output is
+// invalidated at entry and remains reusable after an error; successful calls do
+// not allocate. The owning overload above retains its strong failure guarantee.
+[[nodiscard]] atx::core::Result<void>
+make_option_target_book_into(const OptionResearchPanel &panel, std::size_t date_index,
+                             std::span<const double> weights,
+                             std::span<const std::int64_t> current_contracts,
+                             const OptionTargetSpec &spec, OptionTargetBook &output);
 
 } // namespace atx::options::research

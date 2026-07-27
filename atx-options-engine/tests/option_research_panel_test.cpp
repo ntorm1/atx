@@ -485,6 +485,27 @@ TEST(OptionTargetBook, MarginClampScalesTargetsProportionally) {
   EXPECT_DOUBLE_EQ(book->realized_gross_exposure, 100.0);
 }
 
+TEST(OptionTargetBook, MarginClampNeverSnapsBackAboveHardLimit) {
+  OptionPanelRow input_row = row(10U, 1U, 100);
+  input_row.initial_margin_per_contract = 100.0;
+  const std::array<OptionPanelRow, 1> input{input_row};
+  const auto panel = OptionResearchPanel::create(input);
+  ASSERT_TRUE(panel) << panel.error().to_string();
+  const std::array<double, 1> weights{1.0};
+  const std::array<std::int64_t, 1> current{};
+  OptionTargetSpec spec = target_spec(OptionSizingBasis::Vega, 10.0);
+  spec.available_initial_margin = std::nextafter(100.0, 0.0);
+  spec.margin_policy = MarginLimitPolicy::ProportionalClamp;
+
+  const auto book = make_option_target_book(*panel, 0U, weights, current, spec);
+
+  ASSERT_TRUE(book) << book.error().to_string();
+  EXPECT_TRUE(book->margin_clamped);
+  EXPECT_LE(book->initial_margin, spec.available_initial_margin);
+  ASSERT_EQ(book->targets.size(), 1U);
+  EXPECT_EQ(book->targets.front().target_contracts, 0);
+}
+
 TEST(OptionTargetBook, NonTradableHeldContractProducesCloseIntent) {
   OptionPanelRow unavailable = row(10U, 1U, 100);
   unavailable.status = OptionPanelStatus::StaleQuote;
