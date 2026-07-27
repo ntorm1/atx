@@ -31,6 +31,8 @@
 // subset-map isolation, lazy-CRC validate-on-demand, big-fixture alignment, and
 // clean-break cross-format rejection.
 
+#include "slice_param_padding.hpp" // test::repad — padding-only mutation of the POD slice params
+
 namespace {
 
 using atx::vol::AlOpts;
@@ -111,82 +113,12 @@ constexpr double kR = 0.043;
   return p;
 }
 
-// ── Padding-controlled copies of the blitted POD slice params ───────────────
-//
-// `EssviParams`/`SviParams`/`C8Params` are serialized as their OBJECT
-// representation, which is WIDER than their members (e.g. the 6 bytes after
-// `SviParams::expiry_id`). Nothing in the fitters ever writes those pad bytes,
-// so they hold whatever the producing thread's stack last left there. These
-// helpers rebuild a params object from a fully dirtied object representation and
-// then assign every VALUE member, so what survives is exactly the padding —
-// which lets a test pin "the record is a function of the values, not of the
-// pad". `pad == 0x00` is the canonical (already-normalized) representation.
-[[nodiscard]] SviParams repad(const SviParams &src, unsigned char pad) noexcept {
-  SviParams out;
-  std::memset(&out, pad, sizeof out);
-  out.a = src.a;
-  out.b = src.b;
-  out.rho = src.rho;
-  out.m = src.m;
-  out.sigma = src.sigma;
-  out.T = src.T;
-  out.F = src.F;
-  out.expiry_ns = src.expiry_ns;
-  out.expiry_id = src.expiry_id;
-  return out;
-}
-
-[[nodiscard]] EssviParams repad(const EssviParams &src, unsigned char pad) noexcept {
-  EssviParams out;
-  std::memset(&out, pad, sizeof out);
-  out.theta = src.theta;
-  out.phi = src.phi;
-  out.rho = src.rho;
-  out.rho_R = src.rho_R;
-  out.rho_scale = src.rho_scale;
-  out.psi = src.psi;
-  out.p = src.p;
-  out.lambda = src.lambda;
-  out.lambda_R = src.lambda_R;
-  out.T = src.T;
-  out.F = src.F;
-  out.expiry_ns = src.expiry_ns;
-  out.expiry_id = src.expiry_id;
-  out.resid_coef = src.resid_coef;
-  out.resid_scale = src.resid_scale;
-  out.resid_basis_kind = src.resid_basis_kind;
-  out.resid_n_basis = src.resid_n_basis;
-  return out;
-}
-
-[[nodiscard]] C8Params repad(const C8Params &src, unsigned char pad) noexcept {
-  C8Params out;
-  std::memset(&out, pad, sizeof out);
-  out.T = src.T;
-  out.F = src.F;
-  out.expiry_ns = src.expiry_ns;
-  out.expiry_id = src.expiry_id;
-  out.v = src.v;
-  out.psi = src.psi;
-  out.p = src.p;
-  out.c = src.c;
-  out.v_min = src.v_min;
-  out.kappa = src.kappa;
-  out.q_L = src.q_L;
-  out.q_R = src.q_R;
-  out.h_atm = src.h_atm;
-  out.k_L = src.k_L;
-  out.h_L = src.h_L;
-  out.k_R = src.k_R;
-  out.h_R = src.h_R;
-  out.arb_damping_factor = src.arb_damping_factor;
-  out.rmse_price = src.rmse_price;
-  out.rmse_vol = src.rmse_vol;
-  out.n_lm_iters = src.n_lm_iters;
-  out.n_irls_iters = src.n_irls_iters;
-  out.bumps_active = src.bumps_active;
-  return out;
-}
+// Padding-controlled copies of the blitted POD slice params: `repad(p, byte)`
+// differs from `p` in its PADDING and nowhere else, which is what lets
+// `SliceParamPaddingDoesNotReachTheRecord` below pin "the record is a function
+// of the VALUES, not of the pad". Shared with the v1 writer's analogue test.
+// See tests/slice_param_padding.hpp and src/slice_payload_padding.hpp.
+using atx::vol::test::repad;
 
 [[nodiscard]] PricedSurface make_essvi(std::uint32_t uid, int n, unsigned char pad = 0x00) {
   CurveSurface cs;

@@ -24,6 +24,7 @@
 #include "atx/vol/vol_surface.hpp"
 
 #include "../src/slice_payload_padding.hpp" // detail::normalize_c8_payload_padding
+#include "slice_param_padding.hpp"      // test::repad — padding-only mutation of the POD slice params
 
 // ATXVSA v3 archive suite: full write -> open -> map round-trip with
 // BIT-IDENTICAL served theo (iv / fair_value) across all five curve kinds
@@ -55,6 +56,7 @@ using atx::vol::FitObs;
 using atx::vol::FitQualityMode;
 using atx::vol::LinearVarianceCurve;
 using atx::vol::PricedSurface;
+using atx::vol::test::repad; // padding-only mutation of the POD slice params
 using atx::vol::PricingContext;
 using atx::vol::Side;
 using atx::vol::SliceContext;
@@ -110,7 +112,7 @@ constexpr double kR = 0.043;
 }
 
 // eSSVI priced surface, `n` ascending-T slices with a realistic mild smile.
-[[nodiscard]] PricedSurface make_essvi(std::uint32_t uid, int n) {
+[[nodiscard]] PricedSurface make_essvi(std::uint32_t uid, int n, unsigned char pad = 0x00) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   for (int i = 0; i < n; ++i) {
@@ -126,7 +128,7 @@ constexpr double kR = 0.043;
     e.T = T;
     e.F = F;
     e.expiry_id = static_cast<std::uint16_t>(i);
-    cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
+    cs.push(std::make_unique<EssviCurve>(repad(e, pad), std::exp(-kR * T)));
     ctx.push_back(SliceContext{T, F, 0.0, 0.02, 250, 7});
   }
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
@@ -135,7 +137,7 @@ constexpr double kR = 0.043;
 }
 
 // SVI priced surface, `n` slices.
-[[nodiscard]] PricedSurface make_svi(std::uint32_t uid, int n) {
+[[nodiscard]] PricedSurface make_svi(std::uint32_t uid, int n, unsigned char pad = 0x00) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   for (int i = 0; i < n; ++i) {
@@ -150,7 +152,7 @@ constexpr double kR = 0.043;
     v.T = T;
     v.F = F;
     v.expiry_id = static_cast<std::uint16_t>(i);
-    cs.push(std::make_unique<SviCurve>(v, std::exp(-kR * T)));
+    cs.push(std::make_unique<SviCurve>(repad(v, pad), std::exp(-kR * T)));
     ctx.push_back(SliceContext{T, F, 0.0, 0.02, 180, 4});
   }
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
@@ -227,7 +229,7 @@ constexpr double kR = 0.043;
   return bytes;
 }
 
-[[nodiscard]] PricedSurface make_c8(std::uint32_t uid, int n) {
+[[nodiscard]] PricedSurface make_c8(std::uint32_t uid, int n, unsigned char pad = 0x00) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   for (int i = 0; i < n; ++i) {
@@ -242,7 +244,7 @@ constexpr double kR = 0.043;
     c8.q_L = 0.0002 * T;
     c8.q_R = -0.0001 * T;
     c8.expiry_id = static_cast<std::uint16_t>(i);
-    cs.push(std::make_unique<C8Curve>(c8, std::exp(-kR * T)));
+    cs.push(std::make_unique<C8Curve>(repad(c8, pad), std::exp(-kR * T)));
     ctx.push_back(SliceContext{T, kS, 0.0, 0.02, 120, 5});
   }
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
@@ -1460,4 +1462,42 @@ TEST(SurfaceArchive, ConcurrentReads_ConstArchive_AreSafe) {
   for (int t = 0; t < kThreads; ++t) {
     EXPECT_EQ(ok[static_cast<std::size_t>(t)], kN) << "thread " << t;
   }
+}
+
+// ── The v1 blob is a function of the VALUES, never of the struct padding ─────
+//
+// `write_surface_archive` blits `EssviParams`/`SviParams`/`C8Params` into the
+// blob whole (surface_archive_v1.cpp), exactly as the v2 writer does, so it
+// inherited the same defect: the structs' pad bytes are never written by any
+// fitter, so a verbatim blit stored the producing thread's stack residue and made
+// an identical fitted slice serialize differently depending on which thread fit
+// it. v1 is still exported public API and still writes a persisted format, so its
+// three `detail::normalize_*_payload_padding` calls need their own pin — the v2
+// analogue (`SurfaceArchiveV2.SliceParamPaddingDoesNotReachTheRecord`) exercises
+// `write_surface_archive_v2` only, and this suite's `RoundTrip_*` cases compare
+// served theo values, which padding cannot move.
+//
+// `created_ts_ns` defaults to the content-derived stamp rather than the wall
+// clock, so two builds of the same surface are byte-identical by contract; a pad
+// byte that reached the blob would move both the blob and that stamp.
+namespace {
+
+void expect_v1_padding_blind(const PricedSurface &clean, const PricedSurface &dirty,
+                             const char *what) {
+  const std::vector<std::byte> a = build_one(clean, "SYM");
+  const std::vector<std::byte> b = build_one(dirty, "SYM");
+  ASSERT_FALSE(a.empty()) << what;
+  ASSERT_FALSE(b.empty()) << what;
+  ASSERT_EQ(a.size(), b.size()) << what;
+  EXPECT_EQ(0, std::memcmp(a.data(), b.data(), a.size()))
+      << what << ": v1 blob bytes depend on the slice params' padding, so the same "
+                 "fitted surface stores differently depending on the producing thread";
+}
+
+} // namespace
+
+TEST(SurfaceArchive, SliceParamPaddingDoesNotReachTheBlob) {
+  expect_v1_padding_blind(make_svi(3, 4, 0x00), make_svi(3, 4, 0xAB), "svi");
+  expect_v1_padding_blind(make_essvi(3, 4, 0x00), make_essvi(3, 4, 0xAB), "essvi");
+  expect_v1_padding_blind(make_c8(3, 4, 0x00), make_c8(3, 4, 0xAB), "c8");
 }
