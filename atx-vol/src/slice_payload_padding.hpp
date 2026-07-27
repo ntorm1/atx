@@ -31,11 +31,32 @@
 // struct back and never look at the pad.
 //
 // MAINTENANCE. The gap lists are expressed with `offsetof`/`sizeof` on the
-// members that bound them, so they follow a field's move automatically; what
-// they cannot see is a NEW gap introduced by a new member. `surface_archive.cpp`
-// folds `sizeof(EssviParams)`/`sizeof(SviParams)` into `schema_hash()` and pins
-// `sizeof(C8Params)` with a static_assert, so any layout change already forces a
-// deliberate edit there — revisit this file in the same change.
+// members that bound them, so a field that MOVES is followed automatically. What
+// they cannot see is a member ADDED or REMOVED — and that case is dangerous in
+// exactly one direction: a small member appended into existing tail slack lands
+// INSIDE a zeroed range. `std::uint8_t new_flag` appended to `SviParams` sits at
+// offset 66 and leaves `sizeof` at 72; appended to `C8Params` it sits at 169 and
+// leaves `sizeof` at 176. The writer would then zero that member in every record
+// and compute `payload_crc32c` AFTER zeroing, so the loss is self-consistent and
+// invisible on read-back: the field reads 0 forever, with no diagnostic.
+//
+// Neither of the pre-existing layout guards catches that. `schema_hash()`'s
+// `sizeof(EssviParams)`/`sizeof(SviParams)` fold and
+// `static_assert(sizeof(C8Params) == 176)` only fire on a SIZE change, and they
+// only make older readers reject newer files — they never force anyone back to
+// this gap list. (Even a size-CHANGING addition is silently clobbered: append a
+// `double` to `SviParams` and `sizeof` goes 72 -> 80, after which the tail range
+// `[66, sizeof)` eats it.)
+//
+// The guard that does hold is the structured-binding ARITY TRIPWIRE below: one
+// per struct, naming every member exactly once. Adding or removing ANY member is
+// then a hard compile error in this header, which is the prompt to revisit the
+// gap list in the same change. Known residual hole: a pure REORDER (same member
+// count, same size) still compiles, and `zero_payload_gap` no-ops rather than
+// failing when a gap list is made wrong, so the nondeterminism would return
+// silently. Reordering an on-disk POD is already a format break that the
+// `offsetof` static_asserts in `surface_archive.hpp` police; the tripwire is not
+// a substitute for reading this file when you touch these structs.
 //
 // Private, src/-only header: NOT installed, NOT part of the public atx/vol/ API
 // surface. Both translation units that need it (`surface_archive.cpp`,
@@ -57,6 +78,32 @@ static_assert(std::is_standard_layout_v<SviParams>,
               "SviParams must be standard-layout for offsetof-based padding normalization");
 static_assert(std::is_standard_layout_v<C8Params>,
               "C8Params must be standard-layout for offsetof-based padding normalization");
+
+// ── Layout tripwires ────────────────────────────────────────────────────────
+//
+// A structured binding must name EVERY non-static data member, exactly once, in
+// declaration order. So these three functions are compile-time arity assertions:
+// add or remove a member of any of the three structs and the matching binding
+// stops compiling, right here, next to the gap list that has to be revisited.
+// They are never called — the bodies are checked because the functions are
+// defined, not because anyone uses them. See MAINTENANCE above for the failure
+// they exist to prevent.
+
+inline void svi_layout_tripwire(const SviParams &s) noexcept {
+  [[maybe_unused]] const auto &[a, b, rho, m, sigma, T, F, expiry_ns, expiry_id] = s;
+}
+
+inline void essvi_layout_tripwire(const EssviParams &s) noexcept {
+  [[maybe_unused]] const auto &[theta, phi, rho, rho_R, rho_scale, psi, p, lambda, lambda_R, T, F,
+                                expiry_ns, expiry_id, resid_coef, resid_scale, resid_basis_kind,
+                                resid_n_basis] = s;
+}
+
+inline void c8_layout_tripwire(const C8Params &s) noexcept {
+  [[maybe_unused]] const auto &[T, F, expiry_ns, expiry_id, v, psi, p, c, v_min, kappa, q_L, q_R,
+                                h_atm, k_L, h_L, k_R, h_R, arb_damping_factor, rmse_price, rmse_vol,
+                                n_lm_iters, n_irls_iters, bumps_active] = s;
+}
 
 // Zero the byte range `[from, to)` of the payload at `p`. `to <= from` (a layout
 // with no gap there) is a no-op, so the call sites need no per-platform guards.
