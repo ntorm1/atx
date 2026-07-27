@@ -75,6 +75,15 @@ constexpr std::size_t kScenarioMetricCount = 5U;
   return false;
 }
 
+[[nodiscard]] bool valid_exercise_style(atx::vol::ExerciseStyle style) noexcept {
+  switch (style) {
+  case atx::vol::ExerciseStyle::European:
+  case atx::vol::ExerciseStyle::American:
+    return true;
+  }
+  return false;
+}
+
 [[nodiscard]] std::uint64_t fold_u64(std::uint64_t hash, std::uint64_t value) noexcept {
   for (std::size_t byte = 0U; byte < sizeof(value); ++byte) {
     hash ^= value & 0xFFU;
@@ -114,8 +123,9 @@ fold_identity(std::uint64_t hash, const atx::vol::ArchiveContentIdentity &identi
       row.underlier_uid == 0U || row.observed_ts_ns > row.available_ts_ns ||
       row.available_ts_ns > row.decision_ts_ns || row.expiry_ts_ns <= row.decision_ts_ns ||
       !finite(row.strike) || row.strike <= 0.0 || !valid_side(row.side) ||
-      !finite(row.multiplier) || row.multiplier <= 0.0 ||
-      !populated(row.definition_source_identity) || !valid_status(row.status) ||
+      !valid_exercise_style(row.exercise_style) || !finite(row.multiplier) ||
+      row.multiplier <= 0.0 || !populated(row.definition_source_identity) ||
+      !valid_status(row.status) ||
       (row.status == OptionRiskRowStatus::Ok && !row.standard_deliverable) ||
       !finite(row.spot_delta_cash_per_contract) || !finite(row.spot_gamma_cash_per_contract) ||
       !finite(row.vega_cash_per_vol_point_per_contract) ||
@@ -203,6 +213,7 @@ fold_identity(std::uint64_t hash, const atx::vol::ArchiveContentIdentity &identi
     hash = fold_i64(hash, row.expiry_ts_ns);
     hash = fold_double(hash, row.strike);
     hash = fold_u64(hash, static_cast<std::uint64_t>(row.side));
+    hash = fold_u64(hash, static_cast<std::uint64_t>(row.exercise_style));
     hash = fold_double(hash, row.multiplier);
     hash = fold_u64(hash, row.standard_deliverable ? 1U : 0U);
     hash = fold_identity(hash, row.definition_source_identity);
@@ -424,6 +435,7 @@ OptionRiskPanel::create(std::span<const OptionRiskContractRow> contract_rows,
             row.expiry_ts_ns != canonical_rows[contract_index].expiry_ts_ns ||
             row.strike != canonical_rows[contract_index].strike ||
             row.side != canonical_rows[contract_index].side ||
+            row.exercise_style != canonical_rows[contract_index].exercise_style ||
             row.multiplier != canonical_rows[contract_index].multiplier ||
             row.standard_deliverable != canonical_rows[contract_index].standard_deliverable) {
           return Err(ErrorCode::InvalidArgument,
@@ -891,7 +903,8 @@ Result<OptionPreTradeRiskEvaluation> OptionPreTradeRiskEngine::evaluate(
         instrument.engine_id != risk_panel.engine_ids()[index] ||
         instrument.underlier_uid != risk_panel.underlier_uids()[index] ||
         instrument.expiry_ts_ns != row.expiry_ts_ns || instrument.strike != row.strike ||
-        instrument.side != row.side || instrument.multiplier != row.multiplier ||
+        instrument.side != row.side || instrument.exercise_style != row.exercise_style ||
+        instrument.multiplier != row.multiplier ||
         instrument.standard_deliverable != row.standard_deliverable ||
         row.decision_ts_ns != risk_panel.dates()[date_index] ||
         row.status != OptionRiskRowStatus::Ok) {

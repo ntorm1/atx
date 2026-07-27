@@ -22,7 +22,7 @@
 namespace atx::options::adaptive {
 
 inline constexpr std::uint64_t kOptionAdaptiveCoordinatorModelVersion =
-    0x4154584F41430002ULL; // "ATXOAC", revision 2
+    0x4154584F41430003ULL; // "ATXOAC", revision 3
 inline constexpr std::uint64_t kOptionAdaptiveCoordinatorOrderingVersion = 2U;
 
 enum class OptionAdaptiveCoordinatorState : std::uint8_t {

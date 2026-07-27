@@ -21,7 +21,7 @@
 namespace atx::options::risk {
 
 inline constexpr std::uint64_t kOptionPreTradeRiskModelVersion =
-    0x4154584F50520102ULL; // "ATXOPR", revision 1.2
+    0x4154584F50520103ULL; // "ATXOPR", revision 1.3
 inline constexpr std::uint64_t kOptionPreTradeRiskOrderingVersion = 2U;
 
 // Caller-attested 256-bit artifact digest. OptionRiskPanel::create rejects an
@@ -53,6 +53,7 @@ struct OptionRiskContractRow {
   std::int64_t expiry_ts_ns{0};
   double strike{0.0};
   atx::vol::Side side{atx::vol::Side::Call};
+  atx::vol::ExerciseStyle exercise_style{atx::vol::ExerciseStyle::American};
   double multiplier{0.0};
   bool standard_deliverable{true};
   atx::vol::ArchiveContentIdentity definition_source_identity{};

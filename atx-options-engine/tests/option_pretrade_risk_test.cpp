@@ -36,6 +36,7 @@ using atx::options::risk::OptionRiskRowStatus;
 using atx::options::risk::OptionRiskScenario;
 using atx::options::risk::OptionRiskScenarioPnlRow;
 using atx::vol::ArchiveContentIdentity;
+using atx::vol::ExerciseStyle;
 
 [[nodiscard]] ArchiveContentIdentity identity(std::uint64_t seed) noexcept {
   return ArchiveContentIdentity{10'000U + seed, 20'000U + seed,
@@ -243,6 +244,45 @@ TEST(OptionRiskPanel, DefinitionHashCoversScenarioAndPnlRowProvenance) {
 
   EXPECT_NE(baseline->definition_hash(), changed_scenario->definition_hash());
   EXPECT_NE(baseline->definition_hash(), changed_pnl->definition_hash());
+}
+
+TEST(OptionRiskPanel, ExerciseStyleIsValidatedAndCoveredByDefinitionHash) {
+  const std::array scenarios{OptionRiskScenario{1U, identity(701U)}};
+  const std::array pnl_rows{scenario_row(100, 10U, 1U, -10.0)};
+  const std::array american_rows{contract_row(100, 10U, 1U)};
+  auto european_rows = american_rows;
+  european_rows.front().exercise_style = ExerciseStyle::European;
+
+  const auto american = OptionRiskPanel::create(american_rows, scenarios, pnl_rows, provenance(),
+                                                OptionRiskPanelLimits{});
+  const auto european = OptionRiskPanel::create(european_rows, scenarios, pnl_rows, provenance(),
+                                                OptionRiskPanelLimits{});
+
+  ASSERT_TRUE(american) << american.error().to_string();
+  ASSERT_TRUE(european) << european.error().to_string();
+  EXPECT_NE(american->definition_hash(), european->definition_hash());
+
+  european_rows.front().exercise_style = static_cast<ExerciseStyle>(255U);
+  const auto invalid = OptionRiskPanel::create(european_rows, scenarios, pnl_rows, provenance(),
+                                               OptionRiskPanelLimits{});
+  ASSERT_FALSE(invalid);
+  EXPECT_EQ(invalid.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(OptionRiskPanel, ExerciseStyleCannotChangeAcrossDates) {
+  std::array rows{contract_row(100, 10U, 1U), contract_row(200, 10U, 1U)};
+  rows.back().exercise_style = ExerciseStyle::European;
+  const std::array scenarios{OptionRiskScenario{1U, identity(701U)}};
+  const std::array pnl_rows{
+      scenario_row(100, 10U, 1U, -10.0),
+      scenario_row(200, 10U, 1U, -11.0),
+  };
+
+  const auto result =
+      OptionRiskPanel::create(rows, scenarios, pnl_rows, provenance(), OptionRiskPanelLimits{});
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
 }
 
 TEST(OptionRiskPanel, ScenarioManifestIsBoundedBeforeCanonicalization) {

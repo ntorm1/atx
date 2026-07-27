@@ -30,7 +30,7 @@
 namespace atx::options::research {
 
 inline constexpr std::uint64_t kOptionResearchPanelSchemaSalt =
-    0x4154584F50540001ULL; // "ATXOPT", revision 1
+    0x4154584F50540002ULL; // "ATXOPT", revision 2
 
 // Non-Tradable values are explicit drop reasons, never encoded by a zero price.
 enum class OptionPanelStatus : std::uint8_t {
@@ -72,6 +72,7 @@ struct OptionPanelRow {
   std::int64_t expiry_ts_ns{0};
   double strike{0.0};
   atx::vol::Side side{atx::vol::Side::Call};
+  atx::vol::ExerciseStyle exercise_style{atx::vol::ExerciseStyle::American};
   double multiplier{100.0};
   // XS-1 trades only standard deliverables. A false value must carry
   // UnsupportedContract and is retained only as an explicit drop reason.
@@ -124,6 +125,7 @@ struct OptionInstrument {
   std::int64_t expiry_ts_ns{0};
   double strike{0.0};
   atx::vol::Side side{atx::vol::Side::Call};
+  atx::vol::ExerciseStyle exercise_style{atx::vol::ExerciseStyle::American};
   double multiplier{0.0};
   bool standard_deliverable{true};
   atx::engine::InstrumentId engine_id{};

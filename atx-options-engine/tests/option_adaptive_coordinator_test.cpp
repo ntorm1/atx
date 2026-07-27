@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -49,6 +50,7 @@ using atx::options::risk::OptionRiskPanelProvenance;
 using atx::options::risk::OptionRiskScenario;
 using atx::options::risk::OptionRiskScenarioPnlRow;
 using atx::vol::ArchiveContentIdentity;
+using atx::vol::ExerciseStyle;
 
 [[nodiscard]] ArchiveContentIdentity identity(std::uint64_t seed) noexcept {
   return ArchiveContentIdentity{10'000U + seed, 20'000U + seed,
@@ -293,8 +295,9 @@ replay_quotes(const OptionResearchPanel &panel,
   return out;
 }
 
-[[nodiscard]] OptionRiskPanel risk_panel(const OptionResearchPanel &panel,
-                                         std::span<const double> dense_scenario_pnl = {}) {
+[[nodiscard]] OptionRiskPanel
+risk_panel(const OptionResearchPanel &panel, std::span<const double> dense_scenario_pnl = {},
+           std::optional<ExerciseStyle> exercise_style = std::nullopt) {
   EXPECT_TRUE(dense_scenario_pnl.empty() ||
               dense_scenario_pnl.size() ==
                   panel.dataset().num_dates() * panel.instruments().size());
@@ -316,6 +319,7 @@ replay_quotes(const OptionResearchPanel &panel,
       row.expiry_ts_ns = instrument.expiry_ts_ns;
       row.strike = instrument.strike;
       row.side = instrument.side;
+      row.exercise_style = exercise_style.value_or(instrument.exercise_style);
       row.multiplier = instrument.multiplier;
       row.standard_deliverable = instrument.standard_deliverable;
       row.definition_source_identity = panel.decision_audit()[cell].definition_source_identity;
@@ -663,6 +667,25 @@ TEST(OptionAdaptiveCoordinator, MisalignedRiskCatalogFailsBeforeSessionMutation)
   const auto other_panel = OptionResearchPanel::create(other_rows);
   ASSERT_TRUE(other_panel) << other_panel.error().to_string();
   const OptionRiskPanel risk = risk_panel(*other_panel);
+  const std::array contracts{contract(10U), contract(20U)};
+  const auto quotes = replay_quotes(panel);
+  const std::array fees{fee()};
+  const std::array ticks{tick()};
+  const OptionReplayInputs inputs{contracts, quotes, {}, {}, fees, ticks, Decimal{}};
+  auto coordinator = OptionAdaptiveCoordinator::create(coordinator_limits());
+  ASSERT_TRUE(coordinator);
+
+  const auto result = coordinator->run(panel, risk, inputs, replay_config(), coordinator_config());
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(coordinator->state(), atx::options::adaptive::OptionAdaptiveCoordinatorState::Empty);
+}
+
+TEST(OptionAdaptiveCoordinator, MismatchedRiskExerciseStyleFailsBeforeSessionMutation) {
+  const std::array<std::int64_t, 1> dates{100};
+  const OptionResearchPanel panel = make_panel(dates, false);
+  const OptionRiskPanel risk = risk_panel(panel, {}, ExerciseStyle::European);
   const std::array contracts{contract(10U), contract(20U)};
   const auto quotes = replay_quotes(panel);
   const std::array fees{fee()};

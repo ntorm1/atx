@@ -24,6 +24,7 @@ using atx::options::research::OptionResearchPanel;
 using atx::options::research::OptionSizingBasis;
 using atx::options::research::OptionTargetSpec;
 using atx::vol::ArchiveContentIdentity;
+using atx::vol::ExerciseStyle;
 
 constexpr std::array<OptionPanelField, 17> kPanelFields{
     OptionPanelField::Signal,
@@ -204,6 +205,36 @@ TEST(OptionResearchPanelCreate, MissingAnyRequiredLineageIsRejected) {
     ASSERT_FALSE(result);
     EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
   }
+}
+
+TEST(OptionResearchPanelCreate, ExerciseStyleIsValidatedAndRetained) {
+  OptionPanelRow european = row(10U, 1U, 100);
+  european.exercise_style = ExerciseStyle::European;
+  const std::array valid{european};
+
+  const auto panel = OptionResearchPanel::create(valid);
+
+  ASSERT_TRUE(panel) << panel.error().to_string();
+  ASSERT_EQ(panel->instruments().size(), 1U);
+  EXPECT_EQ(panel->instruments().front().exercise_style, ExerciseStyle::European);
+
+  european.exercise_style = static_cast<ExerciseStyle>(255U);
+  const std::array invalid{european};
+  const auto rejected = OptionResearchPanel::create(invalid);
+  ASSERT_FALSE(rejected);
+  EXPECT_EQ(rejected.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(OptionResearchPanelCreate, ExerciseStyleCannotChangeForStableContractId) {
+  OptionPanelRow first = row(10U, 1U, 100);
+  OptionPanelRow second = row(10U, 1U, 200);
+  second.exercise_style = ExerciseStyle::European;
+  const std::array input{first, second};
+
+  const auto result = OptionResearchPanel::create(input);
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
 }
 
 TEST(OptionResearchPanelCreate, NonTradableCellMasksItsSignal) {

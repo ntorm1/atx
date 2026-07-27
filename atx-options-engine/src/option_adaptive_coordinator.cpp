@@ -482,6 +482,7 @@ struct UnorderedFingerprint {
     hash = fold_i64(hash, instrument.expiry_ts_ns);
     hash = fold_double(hash, instrument.strike);
     hash = fold_u64(hash, static_cast<std::uint64_t>(instrument.side));
+    hash = fold_u64(hash, static_cast<std::uint64_t>(instrument.exercise_style));
     hash = fold_double(hash, instrument.multiplier);
     hash = fold_u64(hash, instrument.standard_deliverable ? 1U : 0U);
     hash = fold_u64(hash, instrument.engine_id.id);
@@ -1159,6 +1160,7 @@ Result<OptionAdaptiveRunView> OptionAdaptiveCoordinator::run(
       const auto &risk_row = risk_panel.contract_row(date_index, contract_index);
       if (risk_row.expiry_ts_ns != instrument.expiry_ts_ns ||
           risk_row.strike != instrument.strike || risk_row.side != instrument.side ||
+          risk_row.exercise_style != instrument.exercise_style ||
           risk_row.multiplier != instrument.multiplier ||
           risk_row.standard_deliverable != instrument.standard_deliverable ||
           risk_row.status != risk::OptionRiskRowStatus::Ok ||
