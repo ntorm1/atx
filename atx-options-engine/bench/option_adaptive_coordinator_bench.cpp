@@ -1,6 +1,7 @@
 // Dense date-major signal -> target -> leaf reconciliation -> replay benchmark.
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -31,12 +32,28 @@ using atx::options::execution::OptionTopOfBookEvent;
 using atx::options::research::OptionPanelRow;
 using atx::options::research::OptionResearchPanel;
 using atx::options::research::OptionSizingBasis;
+using atx::options::risk::OptionRiskContentDigest;
+using atx::options::risk::OptionRiskContractRow;
+using atx::options::risk::OptionRiskPanel;
+using atx::options::risk::OptionRiskPanelLimits;
+using atx::options::risk::OptionRiskPanelProvenance;
+using atx::options::risk::OptionRiskRowStatus;
+using atx::options::risk::OptionRiskScenario;
+using atx::options::risk::OptionRiskScenarioPnlRow;
 using atx::vol::ArchiveContentIdentity;
 
 [[nodiscard]] ArchiveContentIdentity identity(std::uint64_t seed) noexcept {
   return ArchiveContentIdentity{100'000U + seed, 200'000U + seed,
                                 static_cast<std::uint32_t>(300'000U + seed),
                                 static_cast<std::uint32_t>(400'000U + seed)};
+}
+
+[[nodiscard]] OptionRiskContentDigest digest(std::uint8_t seed) noexcept {
+  OptionRiskContentDigest out;
+  for (std::size_t index = 0; index < out.bytes.size(); ++index) {
+    out.bytes[index] = static_cast<std::uint8_t>(seed + static_cast<std::uint8_t>(index));
+  }
+  return out;
 }
 
 [[nodiscard]] Decimal money(const char *text) {
@@ -86,6 +103,7 @@ struct CoordinatorFixture {
   std::size_t contract_count{0};
   std::size_t decision_count{0};
   OptionResearchPanel panel;
+  OptionRiskPanel risk_panel;
   OptionAdaptiveCoordinatorLimits limits{};
   OptionAdaptiveCoordinatorConfig coordinator_config{};
   OptionReplayConfig replay_config{};
@@ -97,7 +115,8 @@ struct CoordinatorFixture {
   CoordinatorFixture(std::size_t configured_contracts, std::size_t configured_decisions,
                      bool churn = false)
       : contract_count{configured_contracts}, decision_count{configured_decisions},
-        panel{make_panel(configured_contracts, configured_decisions, churn)} {
+        panel{make_panel(configured_contracts, configured_decisions, churn)},
+        risk_panel{make_risk_panel(panel)} {
     const std::size_t order_capacity =
         churn ? configured_contracts * ((configured_decisions + 1U) / 2U)
               : configured_contracts + 1U;
@@ -116,6 +135,12 @@ struct CoordinatorFixture {
     limits.execution.max_transitions =
         (order_capacity + cancel_capacity) * 3U + limits.execution.replay.max_fills;
     limits.execution.max_workspace_bytes = 512U * 1024U * 1024U;
+    limits.pretrade_risk.max_contracts = configured_contracts;
+    limits.pretrade_risk.max_live_leaves = order_capacity;
+    limits.pretrade_risk.max_candidate_leaves = command_capacity;
+    limits.pretrade_risk.max_scenarios = 1U;
+    limits.pretrade_risk.max_underliers = (std::min)(configured_contracts, std::size_t{16U});
+    limits.pretrade_risk.max_workspace_bytes = 256U * 1024U * 1024U;
     limits.max_decisions = configured_decisions;
     limits.max_commands_per_decision = command_capacity;
     limits.max_workspace_bytes = 256U * 1024U * 1024U;
@@ -219,6 +244,73 @@ struct CoordinatorFixture {
     return std::move(*created);
   }
 
+  [[nodiscard]] static OptionRiskPanel make_risk_panel(const OptionResearchPanel &research_panel) {
+    const std::size_t contract_rows = research_panel.decision_audit().size();
+    std::vector<OptionRiskContractRow> rows;
+    std::vector<OptionRiskScenarioPnlRow> scenario_pnl;
+    rows.reserve(contract_rows);
+    scenario_pnl.reserve(contract_rows);
+    constexpr std::uint64_t scenario_id = 1'001U;
+    for (std::size_t date_index = 0; date_index < research_panel.dataset().dates().size();
+         ++date_index) {
+      const std::int64_t decision_ts_ns = research_panel.dataset().dates()[date_index];
+      for (std::size_t contract_index = 0; contract_index < research_panel.instruments().size();
+           ++contract_index) {
+        const auto &instrument = research_panel.instruments()[contract_index];
+        const std::size_t cell = date_index * research_panel.instruments().size() + contract_index;
+        OptionRiskContractRow row;
+        row.decision_ts_ns = decision_ts_ns;
+        row.contract_id = instrument.contract_id;
+        row.engine_id = instrument.engine_id;
+        row.underlier_uid = instrument.underlier_uid;
+        row.observed_ts_ns = decision_ts_ns - 20;
+        row.available_ts_ns = decision_ts_ns - 10;
+        row.expiry_ts_ns = instrument.expiry_ts_ns;
+        row.strike = instrument.strike;
+        row.side = instrument.side;
+        row.multiplier = instrument.multiplier;
+        row.standard_deliverable = instrument.standard_deliverable;
+        row.definition_source_identity =
+            research_panel.decision_audit()[cell].definition_source_identity;
+        row.spot_delta_cash_per_contract = contract_index % 2U == 0U ? 1.0 : -1.0;
+        row.spot_gamma_cash_per_contract = 2.0;
+        row.vega_cash_per_vol_point_per_contract = 10.0;
+        row.theta_cash_per_day_per_contract = -1.0;
+        row.vanna_cash_per_return_vol_point_per_contract = contract_index % 2U == 0U ? -1.0 : 1.0;
+        row.volga_cash_per_vol_point_squared_per_contract = 1.0;
+        row.premium_cash_notional_per_contract = 1'000.0;
+        row.status = OptionRiskRowStatus::Ok;
+        row.risk_source_identity = identity(40'000U + instrument.contract_id);
+        row.surface_source_identity = identity(50'000U + instrument.contract_id);
+        rows.push_back(row);
+
+        const double pnl = contract_index % 3U == 0U ? -5.0 : 2.0;
+        scenario_pnl.push_back(OptionRiskScenarioPnlRow{
+            decision_ts_ns, instrument.contract_id, scenario_id, decision_ts_ns - 20,
+            decision_ts_ns - 10, pnl, identity(60'000U + instrument.contract_id)});
+      }
+    }
+
+    const std::array scenarios{
+        OptionRiskScenario{scenario_id, identity(70'000U)},
+    };
+    OptionRiskPanelProvenance provenance;
+    provenance.pricer_model_version = 1U;
+    provenance.greek_convention_version = 1U;
+    provenance.risk_snapshot_digest = digest(1U);
+    provenance.scenario_manifest_digest = digest(101U);
+    OptionRiskPanelLimits limits;
+    limits.max_contract_rows = contract_rows;
+    limits.max_scenarios = scenarios.size();
+    limits.max_scenario_rows = contract_rows;
+    limits.max_workspace_bytes = 256U * 1024U * 1024U;
+    auto created = OptionRiskPanel::create(rows, scenarios, scenario_pnl, provenance, limits);
+    if (!created) {
+      throw std::runtime_error{created.error().to_string()};
+    }
+    return std::move(*created);
+  }
+
   [[nodiscard]] OptionReplayInputs inputs() const noexcept {
     return OptionReplayInputs{contracts, quotes, {}, {}, fees, ticks, Decimal{}};
   }
@@ -235,8 +327,8 @@ void BM_AdaptiveCoordinatorDateMajor(benchmark::State &state) {
   }
   OptionAdaptiveCoordinator coordinator = std::move(*created);
   const auto run_once = [&]() {
-    return coordinator.run(fixture.panel, fixture.inputs(), fixture.replay_config,
-                           fixture.coordinator_config);
+    return coordinator.run(fixture.panel, fixture.risk_panel, fixture.inputs(),
+                           fixture.replay_config, fixture.coordinator_config);
   };
   const auto verified = run_once();
   if (!verified || verified->decisions.size() != decisions ||
@@ -278,8 +370,8 @@ void BM_AdaptiveCoordinatorCancelReplaceChurn(benchmark::State &state) {
   }
   OptionAdaptiveCoordinator coordinator = std::move(*created);
   const auto run_once = [&]() {
-    return coordinator.run(fixture.panel, fixture.inputs(), fixture.replay_config,
-                           fixture.coordinator_config);
+    return coordinator.run(fixture.panel, fixture.risk_panel, fixture.inputs(),
+                           fixture.replay_config, fixture.coordinator_config);
   };
   const auto verified = run_once();
   if (!verified || verified->execution.replay.cancellations.empty()) {

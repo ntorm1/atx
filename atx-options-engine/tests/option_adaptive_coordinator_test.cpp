@@ -41,6 +41,13 @@ using atx::options::research::OptionPanelRow;
 using atx::options::research::OptionPanelStatus;
 using atx::options::research::OptionResearchPanel;
 using atx::options::research::OptionSizingBasis;
+using atx::options::risk::OptionRiskContentDigest;
+using atx::options::risk::OptionRiskContractRow;
+using atx::options::risk::OptionRiskDisposition;
+using atx::options::risk::OptionRiskPanel;
+using atx::options::risk::OptionRiskPanelProvenance;
+using atx::options::risk::OptionRiskScenario;
+using atx::options::risk::OptionRiskScenarioPnlRow;
 using atx::vol::ArchiveContentIdentity;
 
 [[nodiscard]] ArchiveContentIdentity identity(std::uint64_t seed) noexcept {
@@ -171,6 +178,12 @@ using atx::vol::ArchiveContentIdentity;
   out.execution.max_frontiers = 16U;
   out.execution.max_transitions = 256U;
   out.execution.max_workspace_bytes = 8U * 1024U * 1024U;
+  out.pretrade_risk.max_contracts = 4U;
+  out.pretrade_risk.max_scenarios = 4U;
+  out.pretrade_risk.max_underliers = 4U;
+  out.pretrade_risk.max_live_leaves = 32U;
+  out.pretrade_risk.max_candidate_leaves = 16U;
+  out.pretrade_risk.max_workspace_bytes = 1U * 1024U * 1024U;
   out.max_decisions = 8U;
   out.max_commands_per_decision = 16U;
   out.max_workspace_bytes = 1U * 1024U * 1024U;
@@ -272,6 +285,78 @@ replay_quotes(const OptionResearchPanel &panel,
   return out;
 }
 
+[[nodiscard]] OptionRiskContentDigest risk_digest(std::uint8_t seed) noexcept {
+  OptionRiskContentDigest out;
+  for (std::size_t index = 0; index < out.bytes.size(); ++index) {
+    out.bytes[index] = static_cast<std::uint8_t>(seed + static_cast<std::uint8_t>(index));
+  }
+  return out;
+}
+
+[[nodiscard]] OptionRiskPanel risk_panel(const OptionResearchPanel &panel,
+                                         std::span<const double> dense_scenario_pnl = {}) {
+  EXPECT_TRUE(dense_scenario_pnl.empty() ||
+              dense_scenario_pnl.size() ==
+                  panel.dataset().num_dates() * panel.instruments().size());
+  std::vector<OptionRiskContractRow> rows;
+  rows.reserve(panel.dataset().num_dates() * panel.instruments().size());
+  std::vector<OptionRiskScenarioPnlRow> scenario_pnl;
+  scenario_pnl.reserve(rows.capacity());
+  constexpr std::uint64_t kScenarioId = 1U;
+  std::size_t cell = 0U;
+  for (std::int64_t date : panel.dataset().dates()) {
+    for (const auto &instrument : panel.instruments()) {
+      OptionRiskContractRow row;
+      row.decision_ts_ns = date;
+      row.contract_id = instrument.contract_id;
+      row.engine_id = instrument.engine_id;
+      row.underlier_uid = instrument.underlier_uid;
+      row.observed_ts_ns = date - 20;
+      row.available_ts_ns = date - 10;
+      row.expiry_ts_ns = instrument.expiry_ts_ns;
+      row.strike = instrument.strike;
+      row.side = instrument.side;
+      row.multiplier = instrument.multiplier;
+      row.standard_deliverable = instrument.standard_deliverable;
+      row.definition_source_identity = panel.decision_audit()[cell].definition_source_identity;
+      row.spot_delta_cash_per_contract = instrument.contract_id == 10U ? 1.0 : -1.0;
+      row.spot_gamma_cash_per_contract = 2.0;
+      row.vega_cash_per_vol_point_per_contract = instrument.contract_id == 10U ? 3.0 : -3.0;
+      row.theta_cash_per_day_per_contract = -1.0;
+      row.vanna_cash_per_return_vol_point_per_contract = instrument.contract_id == 10U ? 0.5 : -0.5;
+      row.volga_cash_per_vol_point_squared_per_contract = 0.25;
+      row.premium_cash_notional_per_contract = 1'000.0;
+      row.risk_source_identity = identity(instrument.contract_id + 1'000U);
+      row.surface_source_identity = identity(instrument.contract_id + 2'000U);
+      rows.push_back(row);
+      scenario_pnl.push_back(OptionRiskScenarioPnlRow{
+          date,
+          instrument.contract_id,
+          kScenarioId,
+          date - 20,
+          date - 10,
+          dense_scenario_pnl.empty() ? (instrument.contract_id == 10U ? -10.0 : 10.0)
+                                     : dense_scenario_pnl[cell],
+          identity(instrument.contract_id + 3'000U),
+      });
+      ++cell;
+    }
+  }
+  const std::array scenarios{OptionRiskScenario{kScenarioId, identity(4'000U)}};
+  const OptionRiskPanelProvenance provenance{1U, 1U, risk_digest(1U), risk_digest(65U)};
+  const auto created = OptionRiskPanel::create(rows, scenarios, scenario_pnl, provenance);
+  EXPECT_TRUE(created) << created.error().to_string();
+  return std::move(*created);
+}
+
+[[nodiscard]] atx::core::Result<atx::options::adaptive::OptionAdaptiveRunView>
+run_coordinator(OptionAdaptiveCoordinator &coordinator, const OptionResearchPanel &panel,
+                const OptionReplayInputs &inputs, const OptionReplayConfig &replay,
+                const OptionAdaptiveCoordinatorConfig &config) {
+  const OptionRiskPanel risk = risk_panel(panel);
+  return coordinator.run(panel, risk, inputs, replay, config);
+}
+
 TEST(OptionAdaptiveCoordinator, CompatibleWorkingLeavesAreNotSubmittedTwice) {
   const std::array<std::int64_t, 2> dates{100, 400};
   const OptionResearchPanel panel = make_panel(dates, false);
@@ -289,7 +374,8 @@ TEST(OptionAdaptiveCoordinator, CompatibleWorkingLeavesAreNotSubmittedTwice) {
   auto coordinator = OptionAdaptiveCoordinator::create(coordinator_limits());
   ASSERT_TRUE(coordinator) << coordinator.error().to_string();
 
-  const auto result = coordinator->run(panel, inputs, replay_config(), coordinator_config());
+  const auto result =
+      run_coordinator(*coordinator, panel, inputs, replay_config(), coordinator_config());
 
   ASSERT_TRUE(result) << result.error().to_string();
   ASSERT_EQ(result->decisions.size(), 2U);
@@ -320,7 +406,8 @@ TEST(OptionAdaptiveCoordinator, TargetFlipCancelsFirstAndReplansAfterBarrier) {
   auto coordinator = OptionAdaptiveCoordinator::create(coordinator_limits());
   ASSERT_TRUE(coordinator) << coordinator.error().to_string();
 
-  const auto result = coordinator->run(panel, inputs, replay_config(), coordinator_config());
+  const auto result =
+      run_coordinator(*coordinator, panel, inputs, replay_config(), coordinator_config());
 
   ASSERT_TRUE(result) << result.error().to_string();
   ASSERT_EQ(result->decisions.size(), 3U);
@@ -354,7 +441,8 @@ TEST(OptionAdaptiveCoordinator, PendingCancelsAreNotDuplicatedOrTreatedAsTermina
   auto coordinator = OptionAdaptiveCoordinator::create(coordinator_limits());
   ASSERT_TRUE(coordinator) << coordinator.error().to_string();
 
-  const auto result = coordinator->run(panel, inputs, replay_config(), coordinator_config());
+  const auto result =
+      run_coordinator(*coordinator, panel, inputs, replay_config(), coordinator_config());
 
   ASSERT_TRUE(result) << result.error().to_string();
   ASSERT_EQ(result->decisions.size(), 4U);
@@ -380,7 +468,7 @@ TEST(OptionAdaptiveCoordinator, ScheduledCancelWaitsUntilStrictlyAfterArrival) {
   OptionAdaptiveCoordinatorConfig config = coordinator_config();
   config.orders.arrival_latency_ns = 300;
 
-  const auto result = coordinator->run(panel, inputs, replay_config(), config);
+  const auto result = run_coordinator(*coordinator, panel, inputs, replay_config(), config);
 
   ASSERT_TRUE(result) << result.error().to_string();
   ASSERT_EQ(result->execution.replay.cancellations.size(), 2U);
@@ -420,14 +508,195 @@ TEST(OptionAdaptiveCoordinator, SuccessfulRunAllocatesOnlyAtCreate) {
   ASSERT_TRUE(coordinator) << coordinator.error().to_string();
   OptionAdaptiveCoordinatorConfig config = coordinator_config();
   config.weight_policy.industry_neutral = true;
+  const OptionRiskPanel risk = risk_panel(panel);
   option_replay_alloc::g_count.store(0U, std::memory_order_relaxed);
   option_replay_alloc::g_armed.store(true, std::memory_order_relaxed);
 
-  const auto result = coordinator->run(panel, inputs, replay_config(), config);
+  const auto result = coordinator->run(panel, risk, inputs, replay_config(), config);
 
   option_replay_alloc::g_armed.store(false, std::memory_order_relaxed);
   ASSERT_TRUE(result) << result.error().to_string();
   EXPECT_EQ(option_replay_alloc::g_count.load(std::memory_order_relaxed), 0U);
+}
+
+TEST(OptionAdaptiveCoordinator, RejectsProjectedSafeBasketWithUnsafeFillSubset) {
+  const std::array<std::int64_t, 1> dates{100};
+  const OptionResearchPanel panel = make_panel(dates, false);
+  const std::array contracts{contract(10U), contract(20U)};
+  const auto quotes = replay_quotes(panel);
+  const std::array fees{fee()};
+  const std::array ticks{tick()};
+  const OptionReplayInputs inputs{contracts, quotes, {}, {}, fees, ticks, Decimal{}};
+  const std::array<double, 2> pnl{10.0, 10.0};
+  const OptionRiskPanel risk = risk_panel(panel, pnl);
+  auto coordinator = OptionAdaptiveCoordinator::create(coordinator_limits());
+  ASSERT_TRUE(coordinator) << coordinator.error().to_string();
+  OptionAdaptiveCoordinatorConfig config = coordinator_config();
+  config.pretrade_risk_limits.max_scenario_loss = 50.0;
+
+  const auto result = coordinator->run(panel, risk, inputs, replay_config(), config);
+
+  ASSERT_TRUE(result) << result.error().to_string();
+  ASSERT_EQ(result->decisions.size(), 1U);
+  const auto &decision = result->decisions.front();
+  EXPECT_DOUBLE_EQ(decision.pretrade_risk.candidate_projected.scenario_loss, 0.0);
+  EXPECT_DOUBLE_EQ(decision.pretrade_risk.candidate_worst_fill.scenario_loss, 100.0);
+  EXPECT_EQ(decision.pretrade_risk.disposition, OptionRiskDisposition::RejectNewOrders);
+  EXPECT_EQ(decision.submitted_order_count, 0U);
+  EXPECT_EQ(decision.cancellation_count, 0U);
+  EXPECT_TRUE(result->execution.replay.orders.empty());
+}
+
+TEST(OptionAdaptiveCoordinator, BreachedPendingCancelsRemainInRiskEnvelope) {
+  const std::array<std::int64_t, 3> dates{100, 400, 425};
+  const OptionResearchPanel panel = make_panel(dates, false);
+  const std::array contracts{contract(10U), contract(20U)};
+  const std::array additional_quotes{
+      quote(10U, 300, 1U, 4),
+      quote(20U, 300, 2U, 4),
+  };
+  const auto quotes = replay_quotes(panel, additional_quotes);
+  const std::array fees{fee()};
+  const std::array ticks{tick()};
+  const OptionReplayInputs inputs{contracts, quotes, {}, {}, fees, ticks, Decimal{}};
+  const std::array<double, 6> pnl{1.0, 1.0, 10.0, 10.0, 10.0, 10.0};
+  const OptionRiskPanel risk = risk_panel(panel, pnl);
+  auto coordinator = OptionAdaptiveCoordinator::create(coordinator_limits());
+  ASSERT_TRUE(coordinator) << coordinator.error().to_string();
+  OptionAdaptiveCoordinatorConfig config = coordinator_config();
+  config.pretrade_risk_limits.max_scenario_loss = 20.0;
+
+  const auto result = coordinator->run(panel, risk, inputs, replay_config(), config);
+
+  ASSERT_TRUE(result) << result.error().to_string();
+  ASSERT_EQ(result->decisions.size(), 3U);
+  EXPECT_EQ(result->decisions[0].pretrade_risk.disposition, OptionRiskDisposition::Accept);
+  EXPECT_EQ(result->decisions[0].submitted_order_count, 2U);
+  EXPECT_EQ(result->decisions[1].pretrade_risk.disposition, OptionRiskDisposition::CancelOnly);
+  EXPECT_EQ(result->decisions[1].cancellation_count, 2U);
+  EXPECT_EQ(result->decisions[1].submitted_order_count, 0U);
+  EXPECT_EQ(result->decisions[2].pretrade_risk.disposition, OptionRiskDisposition::CancelOnly);
+  EXPECT_GT(result->decisions[2].pretrade_risk.baseline_worst_fill.open_order_contracts, 0U);
+  EXPECT_GT(result->decisions[2].pretrade_risk.baseline_worst_fill.scenario_loss, 20.0);
+  EXPECT_EQ(result->decisions[2].cancellation_count, 0U);
+  EXPECT_EQ(result->execution.replay.cancellations.size(), 2U);
+}
+
+TEST(OptionAdaptiveCoordinator, FailedReductionCancelsBreachingLiveEnvelope) {
+  const std::array<std::int64_t, 2> dates{100, 400};
+  std::vector<OptionPanelRow> rows{
+      panel_row(10U, dates[0], -1.0),
+      panel_row(20U, dates[0], 1.0),
+      panel_row(10U, dates[1], -1.0),
+      panel_row(20U, dates[1], 1.0),
+  };
+  rows[2].vega_per_contract = 5.0;
+  rows[2].bid_size_contracts = 1.0;
+  rows[2].ask_size_contracts = 1.0;
+  rows[3].bid_size_contracts = 1.0;
+  rows[3].ask_size_contracts = 1.0;
+  const auto panel = OptionResearchPanel::create(rows);
+  ASSERT_TRUE(panel) << panel.error().to_string();
+  const std::array contracts{contract(10U), contract(20U)};
+  const std::array additional_quotes{
+      quote(10U, 300, 1U, 20),
+      quote(20U, 300, 2U, 4),
+  };
+  const auto quotes = replay_quotes(*panel, additional_quotes);
+  const std::array fees{fee()};
+  const std::array ticks{tick()};
+  const OptionReplayInputs inputs{contracts, quotes, {}, {}, fees, ticks, Decimal{}};
+  const std::array<double, 4> pnl{-1.0, 1.0, 10.0, 10.0};
+  const OptionRiskPanel risk = risk_panel(*panel, pnl);
+  auto coordinator = OptionAdaptiveCoordinator::create(coordinator_limits());
+  ASSERT_TRUE(coordinator) << coordinator.error().to_string();
+  OptionAdaptiveCoordinatorConfig config = coordinator_config();
+  config.pretrade_risk_limits.max_scenario_loss = 20.0;
+
+  const auto result = coordinator->run(*panel, risk, inputs, replay_config(), config);
+
+  ASSERT_TRUE(result) << result.error().to_string();
+  ASSERT_EQ(result->decisions.size(), 2U);
+  EXPECT_EQ(result->decisions[0].submitted_order_count, 2U);
+  EXPECT_EQ(result->decisions[1].pretrade_risk.disposition, OptionRiskDisposition::CancelOnly);
+  EXPECT_GT(result->decisions[1].pretrade_risk.baseline_worst_fill.scenario_loss, 20.0);
+  EXPECT_GT(result->decisions[1].pretrade_risk.candidate_projected.scenario_loss,
+            result->decisions[1].pretrade_risk.baseline_projected.scenario_loss);
+  EXPECT_EQ(result->decisions[1].submitted_order_count, 0U);
+  EXPECT_EQ(result->decisions[1].cancellation_count, 1U);
+  EXPECT_EQ(result->execution.replay.cancellations.size(), 1U);
+}
+
+TEST(OptionAdaptiveCoordinator, RiskLimitChangesRunDefinitionHash) {
+  const std::array<std::int64_t, 1> dates{100};
+  const OptionResearchPanel panel = make_panel(dates, false);
+  const std::array contracts{contract(10U), contract(20U)};
+  const auto quotes = replay_quotes(panel);
+  const std::array fees{fee()};
+  const std::array ticks{tick()};
+  const OptionReplayInputs inputs{contracts, quotes, {}, {}, fees, ticks, Decimal{}};
+  const OptionRiskPanel risk = risk_panel(panel);
+  auto first = OptionAdaptiveCoordinator::create(coordinator_limits());
+  auto second = OptionAdaptiveCoordinator::create(coordinator_limits());
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  OptionAdaptiveCoordinatorConfig first_config = coordinator_config();
+  first_config.pretrade_risk_limits.max_scenario_loss = 100.0;
+  OptionAdaptiveCoordinatorConfig second_config = first_config;
+  second_config.pretrade_risk_limits.max_scenario_loss = 101.0;
+
+  const auto first_result = first->run(panel, risk, inputs, replay_config(), first_config);
+  const auto second_result = second->run(panel, risk, inputs, replay_config(), second_config);
+
+  ASSERT_TRUE(first_result) << first_result.error().to_string();
+  ASSERT_TRUE(second_result) << second_result.error().to_string();
+  EXPECT_NE(first_result->run_definition_hash, second_result->run_definition_hash);
+}
+
+TEST(OptionAdaptiveCoordinator, MisalignedRiskCatalogFailsBeforeSessionMutation) {
+  const std::array<std::int64_t, 1> dates{100};
+  const OptionResearchPanel panel = make_panel(dates, false);
+  std::vector<OptionPanelRow> other_rows{
+      panel_row(10U, dates[0], -1.0),
+      panel_row(30U, dates[0], 1.0),
+  };
+  const auto other_panel = OptionResearchPanel::create(other_rows);
+  ASSERT_TRUE(other_panel) << other_panel.error().to_string();
+  const OptionRiskPanel risk = risk_panel(*other_panel);
+  const std::array contracts{contract(10U), contract(20U)};
+  const auto quotes = replay_quotes(panel);
+  const std::array fees{fee()};
+  const std::array ticks{tick()};
+  const OptionReplayInputs inputs{contracts, quotes, {}, {}, fees, ticks, Decimal{}};
+  auto coordinator = OptionAdaptiveCoordinator::create(coordinator_limits());
+  ASSERT_TRUE(coordinator);
+
+  const auto result = coordinator->run(panel, risk, inputs, replay_config(), coordinator_config());
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(coordinator->state(), atx::options::adaptive::OptionAdaptiveCoordinatorState::Empty);
+}
+
+TEST(OptionAdaptiveCoordinator, InvalidRiskLimitFailsBeforeSessionMutation) {
+  const std::array<std::int64_t, 1> dates{100};
+  const OptionResearchPanel panel = make_panel(dates, false);
+  const OptionRiskPanel risk = risk_panel(panel);
+  const std::array contracts{contract(10U), contract(20U)};
+  const auto quotes = replay_quotes(panel);
+  const std::array fees{fee()};
+  const std::array ticks{tick()};
+  const OptionReplayInputs inputs{contracts, quotes, {}, {}, fees, ticks, Decimal{}};
+  auto coordinator = OptionAdaptiveCoordinator::create(coordinator_limits());
+  ASSERT_TRUE(coordinator);
+  OptionAdaptiveCoordinatorConfig config = coordinator_config();
+  config.pretrade_risk_limits.max_scenario_loss = -1.0;
+
+  const auto result = coordinator->run(panel, risk, inputs, replay_config(), config);
+
+  ASSERT_FALSE(result);
+  EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
+  EXPECT_EQ(coordinator->state(), atx::options::adaptive::OptionAdaptiveCoordinatorState::Empty);
 }
 
 TEST(OptionAdaptiveCoordinator, ShuffledReplayInputsRetainCanonicalRunFingerprint) {
@@ -455,8 +724,10 @@ TEST(OptionAdaptiveCoordinator, ShuffledReplayInputsRetainCanonicalRunFingerprin
   ASSERT_TRUE(first) << first.error().to_string();
   ASSERT_TRUE(second) << second.error().to_string();
 
-  const auto canonical = first->run(panel, canonical_inputs, replay_config(), coordinator_config());
-  const auto shuffled = second->run(panel, shuffled_inputs, replay_config(), coordinator_config());
+  const auto canonical =
+      run_coordinator(*first, panel, canonical_inputs, replay_config(), coordinator_config());
+  const auto shuffled =
+      run_coordinator(*second, panel, shuffled_inputs, replay_config(), coordinator_config());
 
   ASSERT_TRUE(canonical) << canonical.error().to_string();
   ASSERT_TRUE(shuffled) << shuffled.error().to_string();
@@ -481,7 +752,8 @@ TEST(OptionAdaptiveCoordinator, DecisionQuoteMismatchFailsClosedBeforeReplay) {
   auto coordinator = OptionAdaptiveCoordinator::create(coordinator_limits());
   ASSERT_TRUE(coordinator) << coordinator.error().to_string();
 
-  const auto result = coordinator->run(panel, inputs, replay_config(), coordinator_config());
+  const auto result =
+      run_coordinator(*coordinator, panel, inputs, replay_config(), coordinator_config());
 
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
@@ -508,7 +780,8 @@ TEST(OptionAdaptiveCoordinator, SupersededDecisionQuoteFailsClosed) {
   auto coordinator = OptionAdaptiveCoordinator::create(coordinator_limits());
   ASSERT_TRUE(coordinator) << coordinator.error().to_string();
 
-  const auto result = coordinator->run(panel, inputs, replay_config(), coordinator_config());
+  const auto result =
+      run_coordinator(*coordinator, panel, inputs, replay_config(), coordinator_config());
 
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error().code(), atx::core::ErrorCode::InvalidArgument);
@@ -539,7 +812,7 @@ TEST(OptionAdaptiveCoordinator, MissingSignalHoldsPositionAndCancelsIncreasingLe
   config.orders.arrival_latency_ns = 300;
   config.missing_signal_policy = OptionMissingSignalPolicy::HoldPositionAndReduceRisk;
 
-  const auto result = coordinator->run(*panel, inputs, replay_config(), config);
+  const auto result = run_coordinator(*coordinator, *panel, inputs, replay_config(), config);
 
   ASSERT_TRUE(result) << result.error().to_string();
   ASSERT_EQ(result->decisions.size(), 2U);
@@ -585,7 +858,7 @@ TEST(OptionAdaptiveCoordinator, MissingSignalNeverOffsetsRetainedReducingLeaf) {
   config.orders.arrival_latency_ns = 300;
   config.reconciliation_scope = OptionReconciliationScope::IndependentContract;
 
-  const auto result = coordinator->run(*panel, inputs, replay_config(), config);
+  const auto result = run_coordinator(*coordinator, *panel, inputs, replay_config(), config);
 
   ASSERT_TRUE(result) << result.error().to_string();
   ASSERT_EQ(result->decisions.size(), 2U);
@@ -623,7 +896,7 @@ TEST(OptionAdaptiveCoordinator, MissingSignalCancelsExposureIncreasingLeavesFrom
   config.orders.arrival_latency_ns = 300;
   config.reconciliation_scope = OptionReconciliationScope::IndependentContract;
 
-  const auto result = coordinator->run(*panel, inputs, replay_config(), config);
+  const auto result = run_coordinator(*coordinator, *panel, inputs, replay_config(), config);
 
   ASSERT_TRUE(result) << result.error().to_string();
   ASSERT_EQ(result->decisions.size(), 2U);
@@ -666,7 +939,7 @@ TEST(OptionAdaptiveCoordinator, WholeBasketBarrierCancelsCompatibleLeavesToo) {
   config.orders.arrival_latency_ns = 300;
   config.reconciliation_scope = OptionReconciliationScope::WholeBasketCancelBarrier;
 
-  const auto result = coordinator->run(*panel, inputs, replay_config(), config);
+  const auto result = run_coordinator(*coordinator, *panel, inputs, replay_config(), config);
 
   ASSERT_TRUE(result) << result.error().to_string();
   ASSERT_EQ(result->decisions.size(), 2U);
@@ -698,6 +971,7 @@ TEST(OptionAdaptiveCoordinator, CommandLimitBoundsOrdersAndCancellationsTogether
   const OptionReplayInputs inputs{contracts, quotes, {}, {}, fees, ticks, Decimal{}};
   OptionAdaptiveCoordinatorLimits limits = coordinator_limits();
   limits.execution.replay.max_contracts = 5U;
+  limits.pretrade_risk.max_contracts = 5U;
   limits.max_commands_per_decision = 4U;
   auto coordinator = OptionAdaptiveCoordinator::create(limits);
   ASSERT_TRUE(coordinator) << coordinator.error().to_string();
@@ -707,7 +981,7 @@ TEST(OptionAdaptiveCoordinator, CommandLimitBoundsOrdersAndCancellationsTogether
   config.reconciliation_scope = OptionReconciliationScope::IndependentContract;
   config.missing_signal_policy = OptionMissingSignalPolicy::LiquidateToZero;
 
-  const auto result = coordinator->run(*panel, inputs, replay_config(), config);
+  const auto result = run_coordinator(*coordinator, *panel, inputs, replay_config(), config);
 
   ASSERT_FALSE(result);
   EXPECT_EQ(result.error().code(), atx::core::ErrorCode::OutOfRange);
@@ -745,7 +1019,7 @@ TEST(OptionAdaptiveCoordinator, EmptyDecisionDoesNotEvaluateOverflowingLatencies
   OptionReplayConfig replay = replay_config();
   replay.replay_end_ts_ns = kDecision;
 
-  const auto result = coordinator->run(*panel, inputs, replay, config);
+  const auto result = run_coordinator(*coordinator, *panel, inputs, replay, config);
 
   ASSERT_TRUE(result) << result.error().to_string();
   ASSERT_EQ(result->decisions.size(), 1U);
