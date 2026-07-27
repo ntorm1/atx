@@ -281,7 +281,10 @@ class VolSurface {
   [[nodiscard]] double w(double k_log, double T) const noexcept;
 
   // Implied vol sigma = sqrt(w(k_log, T) / T) — divides by the CALLER's
-  // un-floored T (matches the C). NaN wherever w() is NaN / non-positive.
+  // un-floored T (matches the C). NaN wherever w() is NaN / non-positive, AND
+  // for any T that is not finite and positive: w() floors T to kTMinEval, so a
+  // T <= 0 query against a very short first slice still yields a finite
+  // variance, and dividing it by the raw T would report +inf as an implied vol.
   [[nodiscard]] double iv(double k_log, double T) const noexcept;
 
   // Index of the slice whose T equals `T_query` within a one-second tick

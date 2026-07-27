@@ -3,7 +3,9 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <utility>
+#include <vector>
 
 #include "atx/vol/vol_surface.hpp"
 
@@ -28,6 +30,7 @@ using atx::vol::essvi_rho_from_lambda;
 using atx::vol::essvi_total_w;
 using atx::vol::essvi_w_grad3;
 using atx::vol::essvi_w_grad4;
+using atx::vol::kTMinEval;
 using atx::vol::Parametrization;
 using atx::vol::ResidualBasisKind;
 using atx::vol::svi_total_w;
@@ -404,6 +407,104 @@ TEST(VolSurfaceInterp, ShortTAboveHalfFirstSlice_UsesFirstSlice) {
   const VolSurface surf = make_two_slice_essvi();
   // 0.15 > 0.125: first slice used directly.
   EXPECT_NEAR(surf.w(0.0, 0.15), 0.04, 1.0e-15);
+}
+
+// ── S2-2.3: iv() divides by the CALLER's raw T ───────────────────────────────
+//
+// `w()` FLOORS its argument to kTMinEval before bracketing; `iv()` deliberately
+// does not (it divides by the un-floored T, matching the C's
+// ats_vol_surface_iv). Nothing guarded that divisor. For any surface whose first
+// slice sits at or inside ~2 * kTMinEval — a 0DTE board in its last minutes —
+// the short-T guard (`T_floored < 0.5 * T0`) does NOT fire at T = 0, so `w()`
+// returns a finite positive variance and `sqrt(w / 0.0)` hands the caller +inf
+// as an implied vol. The header already promises NaN wherever the evaluation is
+// refused; +inf is a number a caller will act on.
+namespace {
+// First slice at exactly kTMinEval — the floor w() applies — so a T = 0 query
+// survives the short-T guard and reaches the divide.
+[[nodiscard]] VolSurface make_expiring_essvi() {
+  auto res = VolSurface::create(1u, Parametrization::Essvi, 4);
+  EssviParams s0{};
+  s0.theta = 0.04;
+  s0.phi = 1.0;
+  s0.rho = 0.0;
+  s0.T = kTMinEval;
+  EssviParams s1{};
+  s1.theta = 0.16;
+  s1.phi = 1.0;
+  s1.rho = 0.0;
+  s1.T = 0.25;
+  VolSurface surf = std::move(res).value();
+  (void)surf.set_slice_essvi(0, s0);
+  (void)surf.set_slice_essvi(1, s1);
+  return surf;
+}
+} // namespace
+
+// The companion half of 2.3: `w()` divides by `(T_hi - T_lo)` and the class has
+// no strictly-ascending slice invariant (`set_slice_*` is index-addressed and
+// resizes with default T = 0, so ANY ordering is representable). The divisor is
+// nevertheless positive for every bracket the guards let through — `T <= T0`,
+// `T == T_last` and `T > T_last` all return early, so the search runs only for
+// T0 < T < T_last, and it maintains `slice_T(lo) <= T < slice_T(hi)` whether or
+// not the slices are sorted (lo is only assigned from a probe that compared
+// `<= T`, or stays 0 where T > T0; hi only from a probe that compared `> T`, or
+// stays n-1 where T < T_last). This pins that reasoning against a future edit of
+// the guards: a non-monotone surface may return a MEANINGLESS number, but never
+// an infinity out of a zero-width bracket.
+TEST(VolSurfaceInterp, NonMonotoneSlices_WWeightIsNeverInfinite) {
+  const std::vector<std::vector<double>> term_axes{
+      {0.10, 0.20, 0.20, 0.40},  // duplicate interior pillars
+      {0.10, 0.20, 0.20, 0.20},  // duplicate at the long end
+      {0.10, 0.90, 0.20, 1.00},  // unsorted interior
+      {0.50, 0.10, 0.30, 0.80},  // unsorted at the front
+      {0.20, 0.20, 0.20, 0.20},  // fully degenerate
+  };
+  for (const std::vector<double> &Ts : term_axes) {
+    auto res = VolSurface::create(1u, Parametrization::Essvi, Ts.size());
+    ASSERT_TRUE(res.has_value());
+    VolSurface surf = std::move(res).value();
+    for (std::size_t i = 0; i < Ts.size(); ++i) {
+      EssviParams s{};
+      s.theta = 0.04 + 0.01 * static_cast<double>(i);
+      s.phi = 1.0;
+      s.rho = 0.0;
+      s.T = Ts[i];
+      ASSERT_TRUE(surf.set_slice_essvi(i, s).has_value());
+    }
+    for (const double T : {0.05, 0.15, 0.20, 0.25, 0.30, 0.45, 0.90, 1.00}) {
+      const double w = surf.w(0.0, T);
+      EXPECT_FALSE(std::isinf(w)) << "T = " << T << " w = " << w;
+      const double sigma = surf.iv(0.0, T);
+      EXPECT_FALSE(std::isinf(sigma)) << "T = " << T << " iv = " << sigma;
+    }
+  }
+}
+
+TEST(VolSurfaceInterp, IvAtZeroT_ReturnsNanRatherThanInfinity) {
+  const VolSurface surf = make_expiring_essvi();
+  // Non-vacuity: w() itself still serves this query off the floored T, so the
+  // rejection below is attributable to iv()'s divisor and nothing else.
+  ASSERT_TRUE(std::isfinite(surf.w(0.0, 0.0)));
+  ASSERT_GT(surf.w(0.0, 0.0), 0.0);
+  EXPECT_TRUE(std::isnan(surf.iv(0.0, 0.0))) << "iv = " << surf.iv(0.0, 0.0);
+}
+
+TEST(VolSurfaceInterp, IvAtNonFiniteOrNegativeT_ReturnsNan) {
+  const VolSurface surf = make_expiring_essvi();
+  EXPECT_TRUE(std::isnan(surf.iv(0.0, -1.0)));
+  EXPECT_TRUE(std::isnan(surf.iv(0.0, std::numeric_limits<double>::infinity())));
+  EXPECT_TRUE(std::isnan(surf.iv(0.0, std::numeric_limits<double>::quiet_NaN())));
+}
+
+// The positive-T contract is untouched: a legitimate query still divides by the
+// caller's own T, NOT by the floored one w() bracketed on.
+TEST(VolSurfaceInterp, IvBelowTheEvalFloor_StillDividesByTheCallersT) {
+  const VolSurface surf = make_expiring_essvi();
+  const double T = 0.5 * kTMinEval; // > 0, below the floor w() applies
+  const double w = surf.w(0.0, T);
+  ASSERT_TRUE(std::isfinite(w) && w > 0.0);
+  EXPECT_EQ(surf.iv(0.0, T), std::sqrt(w / T));
 }
 
 TEST(VolSurfaceInterp, FindExactT_MatchesWithinTickTolerance) {

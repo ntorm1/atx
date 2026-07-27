@@ -368,6 +368,16 @@ double VolSurface::w(double k_log, double T) const noexcept {
 }
 
 double VolSurface::iv(double k_log, double T) const noexcept {
+  // The divisor below is the caller's raw T, so it — not just w() — decides
+  // whether this query has an answer. w() FLOORS its argument to kTMinEval, so a
+  // T <= 0 query against a surface whose first slice sits at or inside
+  // 2 * kTMinEval (a 0DTE board in its last minutes) clears w()'s short-T guard
+  // and returns a finite positive variance; sqrt(w / 0.0) then handed back +inf
+  // as an implied vol. There is no vol at zero (or negative, or infinite) time
+  // to expiry: refuse, as everywhere else the evaluation cannot be made.
+  if (!(T > 0.0) || !std::isfinite(T)) {
+    return kNaN;
+  }
   const double wv = w(k_log, T);
   if (!std::isfinite(wv) || wv <= 0.0) {
     return kNaN;
