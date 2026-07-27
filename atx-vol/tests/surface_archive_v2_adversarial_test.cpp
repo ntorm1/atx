@@ -42,6 +42,7 @@ using atx::vol::CurveSurface;
 using atx::vol::ErrorCode;
 using atx::vol::EssviCurve;
 using atx::vol::EssviParams;
+using atx::vol::LinearVarianceCurve;
 using atx::vol::PricedSurface;
 using atx::vol::PricedSurfaceView;
 using atx::vol::PricingContext;
@@ -71,6 +72,37 @@ constexpr double kR = 0.043;
     e.expiry_id = static_cast<std::uint16_t>(i);
     cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
     ctx.push_back(SliceContext{T, kS, 0.0, 0.02, 250, 7});
+  }
+  PricingContext pc;
+  pc.S = kS;
+  pc.r = kR;
+  pc.now_ts_ns = 1700000000000000000LL;
+  pc.method = AmericanMethod::AndersenLake;
+  pc.al_opts = AlOpts{};
+  pc.uid = uid;
+  auto ps = PricedSurface::create(std::move(cs), std::move(ctx), pc);
+  EXPECT_TRUE(ps.has_value());
+  return std::move(*ps);
+}
+
+// A LinearVariance surface: `n` slices, each carrying `nodes` STRICTLY ASCENDING
+// k[] node keys (the layout `PricedSurfaceView::slice_w` binary-searches).
+// Mirrors surface_archive_v2_test.cpp's make_linear.
+[[nodiscard]] PricedSurface make_linear(std::uint32_t uid, int n, int nodes) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  for (int i = 0; i < n; ++i) {
+    const double T = 0.05 + 0.10 * static_cast<double>(i);
+    std::vector<double> k(static_cast<std::size_t>(nodes));
+    std::vector<double> w(static_cast<std::size_t>(nodes));
+    for (int j = 0; j < nodes; ++j) {
+      const double x = -0.4 + 0.8 * static_cast<double>(j) / static_cast<double>(nodes - 1);
+      k[static_cast<std::size_t>(j)] = x;
+      w[static_cast<std::size_t>(j)] = (0.20 * 0.20 + 0.01 * x + 0.02 * x * x) * T;
+    }
+    cs.push(std::make_unique<LinearVarianceCurve>(T, kS, std::exp(-kR * T), std::move(k),
+                                                  std::move(w)));
+    ctx.push_back(SliceContext{T, kS, 0.0, 0.02, static_cast<std::size_t>(nodes), 2});
   }
   PricingContext pc;
   pc.S = kS;
@@ -123,6 +155,12 @@ void poke_f64(std::vector<std::byte> &rec, std::uint64_t off, double v) {
 void poke_u64(std::vector<std::byte> &rec, std::uint64_t off, std::uint64_t v) {
   ASSERT_LE(off + sizeof v, rec.size());
   std::memcpy(rec.data() + off, &v, sizeof v);
+}
+
+[[nodiscard]] std::uint64_t peek_u64(const std::vector<std::byte> &rec, std::uint64_t off) {
+  std::uint64_t v = 0;
+  std::memcpy(&v, rec.data() + off, sizeof v);
+  return v;
 }
 
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
@@ -221,6 +259,99 @@ TEST(SurfaceArchiveV2Adversarial, RejectsMisalignedNusedColumn) {
   // Non-8-aligned offset (col is u64) — natural-alignment half of the conjunction.
   poke_u64(r.bytes, offsetof(ArchiveV2SurfaceHeader, col_nused_off), r.header.col_nused_off + 4u);
   EXPECT_FALSE(PricedSurfaceView::create_over_record(r.bytes).has_value());
+}
+
+// ── S2-2.1: the LinearVariance node axis is a validated binary-search key ─────
+//
+// Both parsers over a v2 record (`PricedSurfaceView::create_over_record`, the
+// zero-copy one, and `reconstruct_v2_record` behind `reconstruct_*`) validated
+// each slice payload's EXTENT but never its CONTENT. The LinearVariance k[] node
+// array is a binary-search key: `PricedSurfaceView::slice_w` /
+// `LinearVarianceCurve::w` locate a bracket with `std::lower_bound` and then
+// index at `lo = hi - 1`, so `hi == 0` makes that subscript `SIZE_MAX`.
+//
+// The two wing guards (`k_log <= k[0]`, `k_log >= k[nc-1]`) pin the returned
+// index into [1, nc-1] for any ORDERED k[] — but a NaN node compares false in
+// every direction, so both guards fall through AND lower_bound walks to the
+// front and returns 0. `k[SIZE_MAX]` / `w[SIZE_MAX]` is then an out-of-bounds
+// read inside a `noexcept` concurrent query. An unordered (finite) k[] is not
+// UB but silently breaks lower_bound's precondition and interpolates across a
+// bracket that does not contain the query.
+//
+// Validation belongs at record/view creation (O(nodes) once, off the hot query
+// path), not per query.
+
+namespace {
+
+// Whole-archive corruption seam for the OWNED reconstruct path. A record BODY is
+// not covered by metadata_crc32c and `open` never reads it (see
+// MapAllRejectsUnknownKindByte), so a poke at a record-relative offset needs no
+// CRC restamp.
+struct ArchiveWithRecord {
+  std::vector<std::byte> bytes;
+  std::uint64_t record_offset{0};
+  ArchiveV2SurfaceHeader header{};
+};
+
+[[nodiscard]] ArchiveWithRecord build_archive_with_record(const PricedSurface &ps,
+                                                          std::string_view sym) {
+  ArchiveWithRecord out;
+  out.bytes = build_v2_single(ps, sym);
+  auto arch = SurfaceArchiveV2::open(std::vector<std::byte>(out.bytes));
+  EXPECT_TRUE(arch.has_value());
+  const std::span<const ArchiveV2DirEntry> dir = arch->directory();
+  EXPECT_EQ(dir.size(), 1u);
+  out.record_offset = dir.empty() ? 0u : dir[0].surface_offset;
+  std::memcpy(&out.header, out.bytes.data() + out.record_offset, sizeof out.header);
+  return out;
+}
+
+} // namespace
+
+// Non-vacuity for every LinearVariance case below: the untouched record parses on
+// BOTH parsers, so each rejection is attributable to the single poked node.
+TEST(SurfaceArchiveV2Adversarial, BaselineLinearVarianceRecordParses) {
+  const ExtractedRecord r = extract_record(make_linear(1, 3, 9), "sym");
+  EXPECT_TRUE(PricedSurfaceView::create_over_record(r.bytes).has_value());
+  auto arch = SurfaceArchiveV2::open(build_v2_single(make_linear(1, 3, 9), "sym"));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  EXPECT_TRUE(arch->reconstruct_all().has_value());
+}
+
+TEST(SurfaceArchiveV2Adversarial, RejectsNonAscendingLinearVarianceNodes) {
+  ExtractedRecord r = extract_record(make_linear(1, 3, 9), "sym");
+  const std::uint64_t payload = peek_u64(r.bytes, r.header.col_payload_off_off);
+  double k0 = 0.0;
+  std::memcpy(&k0, r.bytes.data() + payload, sizeof k0);
+  poke_f64(r.bytes, payload + 8u, k0 - 0.1); // k[1] < k[0]
+  const auto v = PricedSurfaceView::create_over_record(r.bytes);
+  ASSERT_FALSE(v.has_value());
+  EXPECT_EQ(v.error().code(), ErrorCode::ParseError);
+}
+
+// The concrete `lo = hi - 1` underflow: a NaN node compares false in every
+// direction, so both wing guards fall through AND lower_bound returns index 0.
+TEST(SurfaceArchiveV2Adversarial, RejectsNonFiniteLinearVarianceNode) {
+  ExtractedRecord r = extract_record(make_linear(1, 3, 9), "sym");
+  const std::uint64_t payload = peek_u64(r.bytes, r.header.col_payload_off_off);
+  poke_f64(r.bytes, payload, kNaN); // k[0] = NaN
+  const auto v = PricedSurfaceView::create_over_record(r.bytes);
+  ASSERT_FALSE(v.has_value());
+  EXPECT_EQ(v.error().code(), ErrorCode::ParseError);
+}
+
+// The owned parser builds a `LinearVarianceCurve` over the same bytes and its
+// `w()` has the identical `lo = hi - 1` shape, so it must reject the same record.
+TEST(SurfaceArchiveV2Adversarial, ReconstructRejectsNonFiniteLinearVarianceNode) {
+  ArchiveWithRecord a = build_archive_with_record(make_linear(1, 3, 9), "sym");
+  const std::uint64_t payload =
+      peek_u64(a.bytes, a.record_offset + a.header.col_payload_off_off);
+  poke_f64(a.bytes, a.record_offset + payload, kNaN);
+  auto arch = SurfaceArchiveV2::open(std::move(a.bytes));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string(); // lazy: body untouched at open
+  const auto rec = arch->reconstruct_all();
+  ASSERT_FALSE(rec.has_value());
+  EXPECT_EQ(rec.error().code(), ErrorCode::ParseError);
 }
 
 // ── C4 (SE-P2-7): v1 "repaired blob" corruption corpus ported to v2 ────────────

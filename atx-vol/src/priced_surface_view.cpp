@@ -164,6 +164,31 @@ namespace {
   return bytes <= record_size - off;
 }
 
+// Is `k[0..n)` a legal `std::lower_bound` key? The LinearVariance node axis is
+// searched on the `noexcept` query path (`slice_w`, and `LinearVarianceCurve::w`
+// on the owned path) and the bracket it returns is used as `lo = hi - 1`.
+//
+// The two wing guards there (`k_log <= k[0]`, `k_log >= k[n-1]`) already pin the
+// returned index into [1, n-1] for any ORDERED axis: `first` can only reach 0 by
+// probing index 0 and finding `k[0] >= k_log`, and can only reach n by probing
+// index n-1 and finding `k[n-1] < k_log` — both excluded by the guards. A NaN
+// node breaks exactly that: it compares false in every direction, so the guards
+// fall through AND lower_bound walks to the front and returns 0, making
+// `lo = hi - 1` == SIZE_MAX and `k[lo]`/`w[lo]` an out-of-bounds read.
+//
+// Ascendance is required NON-STRICTLY: sorted-with-duplicates is exactly
+// lower_bound's precondition, `w()` already handles a zero-width bracket
+// (`!(span > 0.0)` -> `w[lo]`), and demanding strictness could reject an archive
+// a fitter legitimately wrote with two coincident nodes.
+[[nodiscard]] bool linear_nodes_searchable(const double *k, std::uint64_t n) noexcept {
+  for (std::uint64_t i = 0; i < n; ++i) {
+    if (!std::isfinite(k[i]) || (i > 0 && k[i] < k[i - 1])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 } // namespace
 
 Result<PricedSurfaceView>
@@ -315,6 +340,9 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
       const std::uint64_t need = 2ull * nc * sizeof(double);
       if (nc == 0 || need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: linear payload out of bounds");
+      }
+      if (!linear_nodes_searchable(reinterpret_cast<const double *>(p), nc)) {
+        return Err(ErrorCode::ParseError, "PricedSurfaceView: linear node k's not ascending/finite");
       }
       break;
     }

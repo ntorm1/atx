@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -1169,6 +1170,21 @@ namespace {
   return elem * count <= rs - off; // count bounded by n_slices (u32) -> no overflow
 }
 
+// Is `k` a legal `std::lower_bound` key? Mirrors the view's identical guard in
+// priced_surface_view.cpp (which carries the full argument): `LinearVarianceCurve
+// ::w` brackets the node axis with lower_bound and indexes at `lo = hi - 1`, and
+// a NaN node — which compares false in every direction — is the one input that
+// slips past the wing guards AND drives lower_bound to index 0, underflowing that
+// subscript. Non-strict ascendance is exactly lower_bound's precondition.
+[[nodiscard]] bool linear_nodes_searchable(std::span<const double> k) noexcept {
+  for (std::size_t i = 0; i < k.size(); ++i) {
+    if (!std::isfinite(k[i]) || (i > 0 && k[i] < k[i - 1])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Rebuild an OWNED PricedSurface from one v2 record's byte extent — the inverse of
 // write_surface_archive_v2 and the deleted v1 `reconstruct`. Every field is read
 // via memcpy (never reinterpret_cast) so it is alignment-safe regardless of the
@@ -1290,6 +1306,9 @@ namespace {
       std::vector<double> w(nc);
       std::memcpy(k.data(), p, nb);
       std::memcpy(w.data(), p + nb, nb);
+      if (!linear_nodes_searchable(k)) {
+        return Err(ErrorCode::ParseError, "reconstruct_v2: linear node k's not ascending/finite");
+      }
       curve = std::make_unique<LinearVarianceCurve>(T, fwd, df, std::move(k), std::move(w));
       break;
     }
