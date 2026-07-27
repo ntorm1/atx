@@ -311,6 +311,16 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
   if (any_heavy) {
     v.heavy_curves_.resize(v.n_slices_);
   }
+  // Payload extents must also be MONOTONE and DISJOINT (SE-2.2). Each extent was
+  // only ever bounds-checked in isolation, so aliasing every slice onto ONE
+  // offset passed every check against the same bytes and let an n-slice record
+  // demand n x its own size in node vectors (a ~1 MB record has room for ~19k
+  // slice columns, each able to claim ~1 MB of nodes). The writer lays payloads
+  // out in slice order, each align_up'd past the previous extent, so requiring
+  // `poff >= end(previous)` restores exactly the writer's geometry — and makes
+  // the record's size the allocation bound again. Checked BEFORE this slice's
+  // own materialization, so at most one slice's allocation precedes a rejection.
+  std::uint64_t prev_payload_end = 0;
   for (std::size_t i = 0; i < v.n_slices_; ++i) {
     const auto kind = static_cast<VolCurveKind>(v.col_kind_[i]);
     const std::uint64_t poff = v.col_payload_off_[i];
@@ -318,26 +328,36 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
     if ((poff % kArchiveV2ColumnAlign) != 0u || poff > rs) {
       return Err(ErrorCode::ParseError, "PricedSurfaceView: slice payload misaligned/out of bounds");
     }
+    if (poff < prev_payload_end) {
+      return Err(ErrorCode::ParseError,
+                 "PricedSurfaceView: slice payload extents overlap / not ascending");
+    }
     const std::uint64_t avail = rs - poff;
     const std::byte *p = base + poff;
+    // Payload bytes this slice's kind claims; `need <= avail` is enforced per
+    // case below, so `poff + need <= rs` never overflows.
+    std::uint64_t need = 0;
     switch (kind) {
     case VolCurveKind::Essvi:
-      if (sizeof(EssviParams) > avail) {
+      need = sizeof(EssviParams);
+      if (need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: essvi payload out of bounds");
       }
       break;
     case VolCurveKind::Svi:
-      if (sizeof(SviParams) > avail) {
+      need = sizeof(SviParams);
+      if (need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: svi payload out of bounds");
       }
       break;
     case VolCurveKind::C8:
-      if (sizeof(C8Params) > avail) {
+      need = sizeof(C8Params);
+      if (need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: c8 payload out of bounds");
       }
       break;
     case VolCurveKind::LinearVariance: {
-      const std::uint64_t need = 2ull * nc * sizeof(double);
+      need = 2ull * nc * sizeof(double);
       if (nc == 0 || need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: linear payload out of bounds");
       }
@@ -348,7 +368,7 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
     }
     case VolCurveKind::ConvexDense: {
       // rmse_price f64 | n_obs u64 | n_active u64 | u[n] f64 | C[n] f64.
-      const std::uint64_t need = 24ull + 2ull * nc * sizeof(double);
+      need = 24ull + 2ull * nc * sizeof(double);
       if (nc == 0 || need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: convex payload out of bounds");
       }
@@ -372,7 +392,7 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
       // mult_cap f64 | w_offset f64 | viol u32.  mult_cap (served-multiple clamp)
       // and w_offset (calendar-cone additive lift) are LIVE in SplineVolCurve::w();
       // dropping them silently misprices (review C1).
-      const std::uint64_t need = 52ull + 16ull * nc;
+      need = 52ull + 16ull * nc;
       if (need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: spline payload out of bounds");
       }
@@ -398,6 +418,7 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
     default:
       return Err(ErrorCode::ParseError, "PricedSurfaceView: unknown curve kind");
     }
+    prev_payload_end = poff + need;
   }
 
   v.instance_id_ = allocate_view_instance_id();

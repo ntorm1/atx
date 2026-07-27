@@ -1247,6 +1247,12 @@ namespace {
   CurveSurface surface;
   std::vector<SliceContext> ctx;
   ctx.reserve(static_cast<std::size_t>(n));
+  // Payload extents must be MONOTONE and DISJOINT — see the identical guard in
+  // priced_surface_view.cpp, which carries the full argument. Isolated per-slice
+  // extent checks let every slice alias ONE offset, so a bounded record could
+  // demand n x its own size in node vectors. Checked BEFORE this slice's own
+  // materialization, so at most one slice's allocation precedes a rejection.
+  std::uint64_t prev_payload_end = 0;
   for (std::uint64_t i = 0; i < n; ++i) {
     std::uint8_t kind_byte = 0;
     std::memcpy(&kind_byte, base + h.col_kind_off + i, 1);
@@ -1264,14 +1270,21 @@ namespace {
     if ((poff % kArchiveV2ColumnAlign) != 0u || poff > rs) {
       return Err(ErrorCode::ParseError, "reconstruct_v2: slice payload misaligned/out of bounds");
     }
+    if (poff < prev_payload_end) {
+      return Err(ErrorCode::ParseError, "reconstruct_v2: slice payload extents overlap / not ascending");
+    }
     const std::uint64_t avail = rs - poff;
     const std::byte *p = base + poff;
     const std::size_t nb = static_cast<std::size_t>(nc) * sizeof(double);
 
+    // Payload bytes this slice's kind claims; `need <= avail` is enforced per
+    // case below, so `poff + need <= rs` never overflows.
+    std::uint64_t need = 0;
     std::unique_ptr<IVolCurve> curve;
     switch (kind) {
     case VolCurveKind::Essvi: {
-      if (sizeof(EssviParams) > avail) {
+      need = sizeof(EssviParams);
+      if (need > avail) {
         return Err(ErrorCode::ParseError, "reconstruct_v2: essvi payload out of bounds");
       }
       EssviParams e{};
@@ -1280,7 +1293,8 @@ namespace {
       break;
     }
     case VolCurveKind::Svi: {
-      if (sizeof(SviParams) > avail) {
+      need = sizeof(SviParams);
+      if (need > avail) {
         return Err(ErrorCode::ParseError, "reconstruct_v2: svi payload out of bounds");
       }
       SviParams sv{};
@@ -1289,7 +1303,8 @@ namespace {
       break;
     }
     case VolCurveKind::C8: {
-      if (sizeof(C8Params) > avail) {
+      need = sizeof(C8Params);
+      if (need > avail) {
         return Err(ErrorCode::ParseError, "reconstruct_v2: c8 payload out of bounds");
       }
       C8Params c8{};
@@ -1298,7 +1313,7 @@ namespace {
       break;
     }
     case VolCurveKind::LinearVariance: {
-      const std::uint64_t need = 2ull * static_cast<std::uint64_t>(nc) * sizeof(double);
+      need = 2ull * static_cast<std::uint64_t>(nc) * sizeof(double);
       if (nc == 0 || need > avail) {
         return Err(ErrorCode::ParseError, "reconstruct_v2: linear payload out of bounds");
       }
@@ -1313,7 +1328,7 @@ namespace {
       break;
     }
     case VolCurveKind::ConvexDense: {
-      const std::uint64_t need = 24ull + 2ull * static_cast<std::uint64_t>(nc) * sizeof(double);
+      need = 24ull + 2ull * static_cast<std::uint64_t>(nc) * sizeof(double);
       if (nc == 0 || need > avail) {
         return Err(ErrorCode::ParseError, "reconstruct_v2: convex payload out of bounds");
       }
@@ -1338,7 +1353,7 @@ namespace {
     case VolCurveKind::SplineVol: {
       // atm_vol,z_lo,z_hi f64x3 | n u32 | pad u32 | z[n] | mult[n] | mult_cap f64 |
       // w_offset f64 | viol u32 (mult_cap + w_offset are LIVE in w(); review C1).
-      const std::uint64_t need = 52ull + 16ull * static_cast<std::uint64_t>(nc);
+      need = 52ull + 16ull * static_cast<std::uint64_t>(nc);
       if (need > avail) {
         return Err(ErrorCode::ParseError, "reconstruct_v2: spline payload out of bounds");
       }
@@ -1366,6 +1381,7 @@ namespace {
     default:
       return Err(ErrorCode::ParseError, "reconstruct_v2: unknown curve kind");
     }
+    prev_payload_end = poff + need;
     surface.push(std::move(curve));
 
     SliceContext sc;

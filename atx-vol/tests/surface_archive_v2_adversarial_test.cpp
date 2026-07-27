@@ -354,6 +354,63 @@ TEST(SurfaceArchiveV2Adversarial, ReconstructRejectsNonFiniteLinearVarianceNode)
   EXPECT_EQ(rec.error().code(), ErrorCode::ParseError);
 }
 
+// ── S2-2.2: per-slice payload extents must be monotone and disjoint ───────────
+//
+// Every slice's payload was bounds-checked in ISOLATION — `need <= record_size -
+// payload_off` — and nothing tied the extents to each other. Alias all n slices
+// onto ONE offset and every check still passes, against the SAME bytes, so the
+// record's own size stops bounding what it can demand: each slice may then claim
+// a node count worth the whole remaining record, and the parsers allocate that
+// per slice. A ~1 MB record has room for ~19k slice columns (~53 B of columns
+// per slice), each able to ask for ~1 MB of node vectors — ~19 GB out of 1 MB of
+// input, before any CRC is checked.
+//
+// The writer lays payloads out in slice order, each `align_up`'d past the
+// previous extent's end, so requiring `payload_off[i] >= end(payload[i-1])`
+// re-imposes exactly the writer's own geometry and makes the record size the
+// allocation bound again.
+
+TEST(SurfaceArchiveV2Adversarial, RejectsOverlappingSlicePayloadExtents) {
+  ExtractedRecord r = extract_record(make_essvi(1, 4), "sym");
+  const std::uint64_t p0 = peek_u64(r.bytes, r.header.col_payload_off_off);
+  poke_u64(r.bytes, r.header.col_payload_off_off + 8u, p0); // slice 1 aliases slice 0
+  const auto v = PricedSurfaceView::create_over_record(r.bytes);
+  ASSERT_FALSE(v.has_value());
+  EXPECT_EQ(v.error().code(), ErrorCode::ParseError);
+}
+
+TEST(SurfaceArchiveV2Adversarial, ReconstructRejectsOverlappingSlicePayloadExtents) {
+  ArchiveWithRecord a = build_archive_with_record(make_essvi(1, 4), "sym");
+  const std::uint64_t off = a.record_offset + a.header.col_payload_off_off;
+  const std::uint64_t p0 = peek_u64(a.bytes, off);
+  poke_u64(a.bytes, off + 8u, p0);
+  auto arch = SurfaceArchiveV2::open(std::move(a.bytes));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string(); // lazy: body untouched at open
+  const auto rec = arch->reconstruct_all();
+  ASSERT_FALSE(rec.has_value());
+  EXPECT_EQ(rec.error().code(), ErrorCode::ParseError);
+}
+
+// A DESCENDING pair is the same violation seen from the other side, and equally
+// unreachable from any writer output.
+TEST(SurfaceArchiveV2Adversarial, RejectsDescendingSlicePayloadOffsets) {
+  ExtractedRecord r = extract_record(make_essvi(1, 4), "sym");
+  const std::uint64_t p0 = peek_u64(r.bytes, r.header.col_payload_off_off);
+  const std::uint64_t p1 = peek_u64(r.bytes, r.header.col_payload_off_off + 8u);
+  poke_u64(r.bytes, r.header.col_payload_off_off, p1);
+  poke_u64(r.bytes, r.header.col_payload_off_off + 8u, p0);
+  EXPECT_FALSE(PricedSurfaceView::create_over_record(r.bytes).has_value());
+}
+
+// The variable-length kinds are where the amplification actually bites (a node
+// count, not a fixed sizeof, sets the allocation), so pin one of those too.
+TEST(SurfaceArchiveV2Adversarial, RejectsOverlappingLinearVariancePayloadExtents) {
+  ExtractedRecord r = extract_record(make_linear(1, 3, 9), "sym");
+  const std::uint64_t p0 = peek_u64(r.bytes, r.header.col_payload_off_off);
+  poke_u64(r.bytes, r.header.col_payload_off_off + 8u, p0);
+  EXPECT_FALSE(PricedSurfaceView::create_over_record(r.bytes).has_value());
+}
+
 // ── C4 (SE-P2-7): v1 "repaired blob" corruption corpus ported to v2 ────────────
 // The metadata CRC covers the lookup ‖ directory span, so a metadata tamper that
 // stays undetected (a buggy writer or a deliberate forge) must RECOMPUTE both
