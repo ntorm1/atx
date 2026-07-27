@@ -75,6 +75,15 @@ constexpr std::size_t kScenarioMetricCount = 5U;
   return false;
 }
 
+[[nodiscard]] bool valid_exercise_style(atx::vol::ExerciseStyle style) noexcept {
+  switch (style) {
+  case atx::vol::ExerciseStyle::European:
+  case atx::vol::ExerciseStyle::American:
+    return true;
+  }
+  return false;
+}
+
 [[nodiscard]] std::uint64_t fold_u64(std::uint64_t hash, std::uint64_t value) noexcept {
   for (std::size_t byte = 0U; byte < sizeof(value); ++byte) {
     hash ^= value & 0xFFU;
@@ -112,8 +121,12 @@ fold_identity(std::uint64_t hash, const atx::vol::ArchiveContentIdentity &identi
 [[nodiscard]] Result<void> validate_contract_row(const OptionRiskContractRow &row) {
   if (row.decision_ts_ns == 0 || row.contract_id == 0U || row.engine_id.id == 0U ||
       row.underlier_uid == 0U || row.observed_ts_ns > row.available_ts_ns ||
-      row.available_ts_ns > row.decision_ts_ns || row.expiry_ts_ns <= row.decision_ts_ns ||
-      !finite(row.strike) || row.strike <= 0.0 || !valid_side(row.side) ||
+      row.available_ts_ns > row.decision_ts_ns || row.market_observed_ts_ns <= 0 ||
+      row.market_observed_ts_ns > row.market_available_ts_ns ||
+      row.market_available_ts_ns > row.decision_ts_ns || row.definition_available_ts_ns <= 0 ||
+      row.definition_available_ts_ns > row.market_observed_ts_ns ||
+      row.expiry_ts_ns <= row.decision_ts_ns || !finite(row.strike) || row.strike <= 0.0 ||
+      !valid_side(row.side) || !valid_exercise_style(row.exercise_style) ||
       !finite(row.multiplier) || row.multiplier <= 0.0 ||
       !populated(row.definition_source_identity) || !valid_status(row.status) ||
       (row.status == OptionRiskRowStatus::Ok && !row.standard_deliverable) ||
@@ -124,7 +137,7 @@ fold_identity(std::uint64_t hash, const atx::vol::ArchiveContentIdentity &identi
       !finite(row.volga_cash_per_vol_point_squared_per_contract) ||
       !finite(row.premium_cash_notional_per_contract) ||
       row.premium_cash_notional_per_contract <= 0.0 || !populated(row.risk_source_identity) ||
-      !populated(row.surface_source_identity)) {
+      !populated(row.surface_source_identity) || !populated(row.market_source_identity)) {
     return Err(ErrorCode::InvalidArgument, "option risk contract row is invalid");
   }
   return Ok();
@@ -142,6 +155,16 @@ fold_identity(std::uint64_t hash, const atx::vol::ArchiveContentIdentity &identi
       row.observed_ts_ns > row.available_ts_ns || row.available_ts_ns > row.decision_ts_ns ||
       !finite(row.pnl_per_long_contract) || !populated(row.source_identity)) {
     return Err(ErrorCode::InvalidArgument, "option risk scenario PnL row is invalid");
+  }
+  return Ok();
+}
+
+[[nodiscard]] Result<void>
+validate_generated_lineage(const OptionRiskGeneratedPnlLineage &lineage) {
+  if (lineage.decision_ts_ns == 0 || lineage.scenario_id == 0U ||
+      lineage.observed_ts_ns > lineage.available_ts_ns ||
+      lineage.available_ts_ns > lineage.decision_ts_ns || !populated(lineage.source_identity)) {
+    return Err(ErrorCode::InvalidArgument, "option risk generated PnL lineage is invalid");
   }
   return Ok();
 }
@@ -166,13 +189,12 @@ fold_identity(std::uint64_t hash, const atx::vol::ArchiveContentIdentity &identi
   return Ok(bytes);
 }
 
-[[nodiscard]] std::uint64_t hash_panel(std::span<const std::int64_t> dates,
-                                       std::span<const std::uint64_t> contract_ids,
-                                       std::span<const std::uint32_t> underlier_uids,
-                                       std::span<const OptionRiskScenario> scenarios,
-                                       std::span<const OptionRiskContractRow> rows,
-                                       std::span<const OptionRiskScenarioPnlRow> pnl_rows,
-                                       const OptionRiskPanelProvenance &provenance) noexcept {
+[[nodiscard]] std::uint64_t
+hash_panel_prefix(std::span<const std::int64_t> dates, std::span<const std::uint64_t> contract_ids,
+                  std::span<const std::uint32_t> underlier_uids,
+                  std::span<const OptionRiskScenario> scenarios,
+                  std::span<const OptionRiskContractRow> rows,
+                  const OptionRiskPanelProvenance &provenance) noexcept {
   std::uint64_t hash = fold_u64(kFnvOffset, kOptionPreTradeRiskModelVersion);
   hash = fold_u64(hash, kOptionPreTradeRiskOrderingVersion);
   hash = fold_u64(hash, provenance.pricer_model_version);
@@ -200,9 +222,13 @@ fold_identity(std::uint64_t hash, const atx::vol::ArchiveContentIdentity &identi
     hash = fold_u64(hash, row.underlier_uid);
     hash = fold_i64(hash, row.observed_ts_ns);
     hash = fold_i64(hash, row.available_ts_ns);
+    hash = fold_i64(hash, row.market_observed_ts_ns);
+    hash = fold_i64(hash, row.market_available_ts_ns);
+    hash = fold_i64(hash, row.definition_available_ts_ns);
     hash = fold_i64(hash, row.expiry_ts_ns);
     hash = fold_double(hash, row.strike);
     hash = fold_u64(hash, static_cast<std::uint64_t>(row.side));
+    hash = fold_u64(hash, static_cast<std::uint64_t>(row.exercise_style));
     hash = fold_double(hash, row.multiplier);
     hash = fold_u64(hash, row.standard_deliverable ? 1U : 0U);
     hash = fold_identity(hash, row.definition_source_identity);
@@ -216,15 +242,59 @@ fold_identity(std::uint64_t hash, const atx::vol::ArchiveContentIdentity &identi
     hash = fold_u64(hash, static_cast<std::uint64_t>(row.status));
     hash = fold_identity(hash, row.risk_source_identity);
     hash = fold_identity(hash, row.surface_source_identity);
+    hash = fold_identity(hash, row.market_source_identity);
   }
+  return hash;
+}
+
+[[nodiscard]] std::uint64_t
+fold_pnl_row(std::uint64_t hash, std::int64_t decision_ts_ns, std::uint64_t contract_id,
+             std::uint64_t scenario_id, std::int64_t observed_ts_ns, std::int64_t available_ts_ns,
+             double pnl, const atx::vol::ArchiveContentIdentity &source_identity) noexcept {
+  hash = fold_i64(hash, decision_ts_ns);
+  hash = fold_u64(hash, contract_id);
+  hash = fold_u64(hash, scenario_id);
+  hash = fold_i64(hash, observed_ts_ns);
+  hash = fold_i64(hash, available_ts_ns);
+  hash = fold_double(hash, pnl);
+  return fold_identity(hash, source_identity);
+}
+
+[[nodiscard]] std::uint64_t hash_panel(std::span<const std::int64_t> dates,
+                                       std::span<const std::uint64_t> contract_ids,
+                                       std::span<const std::uint32_t> underlier_uids,
+                                       std::span<const OptionRiskScenario> scenarios,
+                                       std::span<const OptionRiskContractRow> rows,
+                                       std::span<const OptionRiskScenarioPnlRow> pnl_rows,
+                                       const OptionRiskPanelProvenance &provenance) noexcept {
+  std::uint64_t hash =
+      hash_panel_prefix(dates, contract_ids, underlier_uids, scenarios, rows, provenance);
   for (const OptionRiskScenarioPnlRow &row : pnl_rows) {
-    hash = fold_i64(hash, row.decision_ts_ns);
-    hash = fold_u64(hash, row.contract_id);
-    hash = fold_u64(hash, row.scenario_id);
-    hash = fold_i64(hash, row.observed_ts_ns);
-    hash = fold_i64(hash, row.available_ts_ns);
-    hash = fold_double(hash, row.pnl_per_long_contract);
-    hash = fold_identity(hash, row.source_identity);
+    hash =
+        fold_pnl_row(hash, row.decision_ts_ns, row.contract_id, row.scenario_id, row.observed_ts_ns,
+                     row.available_ts_ns, row.pnl_per_long_contract, row.source_identity);
+  }
+  return hash;
+}
+
+[[nodiscard]] std::uint64_t hash_generated_panel(
+    std::span<const std::int64_t> dates, std::span<const std::uint64_t> contract_ids,
+    std::span<const std::uint32_t> underlier_uids, std::span<const OptionRiskScenario> scenarios,
+    std::span<const OptionRiskContractRow> rows, std::span<const double> pnl,
+    std::span<const OptionRiskGeneratedPnlLineage> lineage,
+    const OptionRiskPanelProvenance &provenance) noexcept {
+  std::uint64_t hash =
+      hash_panel_prefix(dates, contract_ids, underlier_uids, scenarios, rows, provenance);
+  std::size_t cell = 0U;
+  std::size_t lineage_index = 0U;
+  for (std::int64_t date : dates) {
+    for (const OptionRiskScenario &scenario : scenarios) {
+      const OptionRiskGeneratedPnlLineage &source = lineage[lineage_index++];
+      for (std::uint64_t contract_id : contract_ids) {
+        hash = fold_pnl_row(hash, date, contract_id, scenario.scenario_id, source.observed_ts_ns,
+                            source.available_ts_ns, pnl[cell++], source.source_identity);
+      }
+    }
   }
   return hash;
 }
@@ -424,6 +494,7 @@ OptionRiskPanel::create(std::span<const OptionRiskContractRow> contract_rows,
             row.expiry_ts_ns != canonical_rows[contract_index].expiry_ts_ns ||
             row.strike != canonical_rows[contract_index].strike ||
             row.side != canonical_rows[contract_index].side ||
+            row.exercise_style != canonical_rows[contract_index].exercise_style ||
             row.multiplier != canonical_rows[contract_index].multiplier ||
             row.standard_deliverable != canonical_rows[contract_index].standard_deliverable) {
           return Err(ErrorCode::InvalidArgument,
@@ -503,6 +574,153 @@ OptionRiskPanel::create(std::span<const OptionRiskContractRow> contract_rows,
     return Err(ErrorCode::Unavailable, "option risk panel allocation failed");
   } catch (const std::length_error &) {
     return Err(ErrorCode::OutOfRange, "option risk panel capacity exceeds vector limits");
+  }
+}
+
+Result<OptionRiskPanel> OptionRiskPanel::create_generated_canonical(
+    std::vector<OptionRiskContractRow> contract_rows, std::vector<OptionRiskScenario> scenarios,
+    std::vector<double> scenario_pnl, std::vector<OptionRiskGeneratedPnlLineage> pnl_lineage,
+    const OptionRiskPanelProvenance &provenance, OptionRiskPanelLimits limits) {
+  if (contract_rows.empty() || scenarios.empty() || limits.max_scenarios == 0U ||
+      contract_rows.size() > limits.max_contract_rows || scenarios.size() > limits.max_scenarios ||
+      provenance.pricer_model_version == 0U || provenance.greek_convention_version == 0U ||
+      !populated(provenance.risk_snapshot_digest) ||
+      !populated(provenance.scenario_manifest_digest)) {
+    return Err(ErrorCode::InvalidArgument,
+               "generated option risk panel inputs or provenance are invalid");
+  }
+  try {
+    for (const OptionRiskContractRow &row : contract_rows) {
+      ATX_TRY_VOID(validate_contract_row(row));
+    }
+    if (!std::is_sorted(
+            contract_rows.begin(), contract_rows.end(),
+            [](const OptionRiskContractRow &left, const OptionRiskContractRow &right) noexcept {
+              return std::tie(left.decision_ts_ns, left.contract_id) <
+                     std::tie(right.decision_ts_ns, right.contract_id);
+            }) ||
+        std::adjacent_find(
+            contract_rows.begin(), contract_rows.end(),
+            [](const OptionRiskContractRow &left, const OptionRiskContractRow &right) noexcept {
+              return left.decision_ts_ns == right.decision_ts_ns &&
+                     left.contract_id == right.contract_id;
+            }) != contract_rows.end()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "generated option risk contract rows are not canonical and unique");
+    }
+
+    std::size_t date_count = 0U;
+    std::int64_t previous_date = 0;
+    for (const OptionRiskContractRow &row : contract_rows) {
+      if (date_count == 0U || row.decision_ts_ns != previous_date) {
+        ++date_count;
+        previous_date = row.decision_ts_ns;
+      }
+    }
+    if (contract_rows.size() % date_count != 0U) {
+      return Err(ErrorCode::InvalidArgument, "generated option risk contract grid is incomplete");
+    }
+    const std::size_t contract_count = contract_rows.size() / date_count;
+    if (contract_count == 0U) {
+      return Err(ErrorCode::InvalidArgument, "generated option risk contract grid is empty");
+    }
+    ATX_TRY(std::size_t contract_cells, checked_mul_size(date_count, contract_count));
+    ATX_TRY(std::size_t expected_pnl, checked_mul_size(contract_cells, scenarios.size()));
+    ATX_TRY(std::size_t expected_lineage, checked_mul_size(date_count, scenarios.size()));
+    if (expected_pnl > limits.max_scenario_rows || scenario_pnl.size() != expected_pnl ||
+        pnl_lineage.size() != expected_lineage) {
+      return Err(ErrorCode::InvalidArgument, "generated option risk scenario grid is incomplete");
+    }
+    ATX_TRY(std::size_t required,
+            panel_required_bytes(date_count, contract_count, scenarios.size()));
+    if (required > limits.max_workspace_bytes) {
+      return Err(ErrorCode::OutOfRange, "generated option risk panel workspace limit is exceeded");
+    }
+
+    std::vector<std::int64_t> dates;
+    dates.reserve(date_count);
+    for (const OptionRiskContractRow &row : contract_rows) {
+      if (dates.empty() || dates.back() != row.decision_ts_ns) {
+        dates.push_back(row.decision_ts_ns);
+      }
+    }
+    std::vector<std::uint64_t> contract_ids;
+    std::vector<atx::engine::InstrumentId> engine_ids;
+    std::vector<std::uint32_t> underlier_uids;
+    contract_ids.reserve(contract_count);
+    engine_ids.reserve(contract_count);
+    underlier_uids.reserve(contract_count);
+    for (std::size_t index = 0; index < contract_count; ++index) {
+      contract_ids.push_back(contract_rows[index].contract_id);
+      engine_ids.push_back(contract_rows[index].engine_id);
+      underlier_uids.push_back(contract_rows[index].underlier_uid);
+    }
+    for (std::size_t date_index = 0; date_index < dates.size(); ++date_index) {
+      for (std::size_t contract_index = 0; contract_index < contract_count; ++contract_index) {
+        const OptionRiskContractRow &row =
+            contract_rows[date_index * contract_count + contract_index];
+        const OptionRiskContractRow &definition = contract_rows[contract_index];
+        if (row.decision_ts_ns != dates[date_index] ||
+            row.contract_id != contract_ids[contract_index] ||
+            row.engine_id != engine_ids[contract_index] ||
+            row.underlier_uid != underlier_uids[contract_index] ||
+            row.expiry_ts_ns != definition.expiry_ts_ns || row.strike != definition.strike ||
+            row.side != definition.side || row.exercise_style != definition.exercise_style ||
+            row.multiplier != definition.multiplier ||
+            row.standard_deliverable != definition.standard_deliverable) {
+          return Err(ErrorCode::InvalidArgument,
+                     "generated option risk catalog changes across dates");
+        }
+      }
+    }
+
+    for (const OptionRiskScenario &scenario : scenarios) {
+      ATX_TRY_VOID(validate_scenario(scenario));
+    }
+    if (!std::is_sorted(
+            scenarios.begin(), scenarios.end(),
+            [](const OptionRiskScenario &left, const OptionRiskScenario &right) noexcept {
+              return left.scenario_id < right.scenario_id;
+            }) ||
+        std::adjacent_find(
+            scenarios.begin(), scenarios.end(),
+            [](const OptionRiskScenario &left, const OptionRiskScenario &right) noexcept {
+              return left.scenario_id == right.scenario_id;
+            }) != scenarios.end()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "generated option risk scenarios are not canonical and unique");
+    }
+    std::vector<std::uint64_t> scenario_ids;
+    scenario_ids.reserve(scenarios.size());
+    for (const OptionRiskScenario &scenario : scenarios) {
+      scenario_ids.push_back(scenario.scenario_id);
+    }
+
+    if (!std::all_of(scenario_pnl.begin(), scenario_pnl.end(), finite)) {
+      return Err(ErrorCode::InvalidArgument, "generated option risk scenario PnL is nonfinite");
+    }
+    std::size_t lineage_index = 0U;
+    for (std::int64_t date : dates) {
+      for (const OptionRiskScenario &scenario : scenarios) {
+        const OptionRiskGeneratedPnlLineage &lineage = pnl_lineage[lineage_index++];
+        ATX_TRY_VOID(validate_generated_lineage(lineage));
+        if (lineage.decision_ts_ns != date || lineage.scenario_id != scenario.scenario_id) {
+          return Err(ErrorCode::InvalidArgument,
+                     "generated option risk PnL lineage is not canonical");
+        }
+      }
+    }
+    const std::uint64_t definition_hash =
+        hash_generated_panel(dates, contract_ids, underlier_uids, scenarios, contract_rows,
+                             scenario_pnl, pnl_lineage, provenance);
+    return Ok(OptionRiskPanel{std::move(dates), std::move(contract_ids), std::move(engine_ids),
+                              std::move(underlier_uids), std::move(scenario_ids),
+                              std::move(contract_rows), std::move(scenario_pnl), provenance,
+                              definition_hash});
+  } catch (const std::bad_alloc &) {
+    return Err(ErrorCode::Unavailable, "generated option risk panel allocation failed");
+  } catch (const std::length_error &) {
+    return Err(ErrorCode::OutOfRange, "generated option risk panel capacity exceeds vector limits");
   }
 }
 
@@ -891,7 +1109,8 @@ Result<OptionPreTradeRiskEvaluation> OptionPreTradeRiskEngine::evaluate(
         instrument.engine_id != risk_panel.engine_ids()[index] ||
         instrument.underlier_uid != risk_panel.underlier_uids()[index] ||
         instrument.expiry_ts_ns != row.expiry_ts_ns || instrument.strike != row.strike ||
-        instrument.side != row.side || instrument.multiplier != row.multiplier ||
+        instrument.side != row.side || instrument.exercise_style != row.exercise_style ||
+        instrument.multiplier != row.multiplier ||
         instrument.standard_deliverable != row.standard_deliverable ||
         row.decision_ts_ns != risk_panel.dates()[date_index] ||
         row.status != OptionRiskRowStatus::Ok) {

@@ -4,7 +4,8 @@ add_executable(atx-options-engine-tests
     option_execution_session_test.cpp
     option_execution_replay_test.cpp
     option_pretrade_risk_test.cpp
-    option_research_panel_test.cpp)
+    option_research_panel_test.cpp
+    option_scenario_cube_test.cpp)
 target_link_libraries(atx-options-engine-tests
     PRIVATE
         atx::options-engine

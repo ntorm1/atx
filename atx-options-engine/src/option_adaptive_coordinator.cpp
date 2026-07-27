@@ -482,6 +482,7 @@ struct UnorderedFingerprint {
     hash = fold_i64(hash, instrument.expiry_ts_ns);
     hash = fold_double(hash, instrument.strike);
     hash = fold_u64(hash, static_cast<std::uint64_t>(instrument.side));
+    hash = fold_u64(hash, static_cast<std::uint64_t>(instrument.exercise_style));
     hash = fold_double(hash, instrument.multiplier);
     hash = fold_u64(hash, instrument.standard_deliverable ? 1U : 0U);
     hash = fold_u64(hash, instrument.engine_id.id);
@@ -1153,17 +1154,26 @@ Result<OptionAdaptiveRunView> OptionAdaptiveCoordinator::run(
     }
   }
   for (std::size_t date_index = 0; date_index < decision_count; ++date_index) {
+    const std::span<const double> marks = panel.row(research::OptionPanelField::Mark, date_index);
     for (std::size_t contract_index = 0; contract_index < contract_count; ++contract_index) {
       const std::size_t cell = date_index * contract_count + contract_index;
       const auto &instrument = panel.instruments()[contract_index];
       const auto &risk_row = risk_panel.contract_row(date_index, contract_index);
+      const auto &decision_audit = panel.decision_audit()[cell];
+      const double expected_premium = std::abs(marks[contract_index]) * instrument.multiplier;
       if (risk_row.expiry_ts_ns != instrument.expiry_ts_ns ||
           risk_row.strike != instrument.strike || risk_row.side != instrument.side ||
+          risk_row.exercise_style != instrument.exercise_style ||
           risk_row.multiplier != instrument.multiplier ||
           risk_row.standard_deliverable != instrument.standard_deliverable ||
           risk_row.status != risk::OptionRiskRowStatus::Ok ||
-          risk_row.definition_source_identity !=
-              panel.decision_audit()[cell].definition_source_identity) {
+          risk_row.definition_source_identity != decision_audit.definition_source_identity ||
+          risk_row.definition_available_ts_ns != decision_audit.definition_available_ts_ns ||
+          risk_row.market_observed_ts_ns != decision_audit.quote_event_ts_ns ||
+          risk_row.market_available_ts_ns != decision_audit.quote_available_ts_ns ||
+          risk_row.market_source_identity != decision_audit.execution_source_identity ||
+          !std::isfinite(expected_premium) ||
+          risk_row.premium_cash_notional_per_contract != expected_premium) {
         return Err(ErrorCode::InvalidArgument,
                    "adaptive risk evidence does not bind to the research contract definition");
       }

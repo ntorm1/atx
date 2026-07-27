@@ -166,6 +166,9 @@ public:
   [[nodiscard]] std::span<const SurfaceProvenance> provenances() const noexcept {
     return provenance_;
   }
+  // Content-derived identity of the archive opened by load(). It is available
+  // for both owned and borrowed surface backings and remains stable across moves.
+  [[nodiscard]] ArchiveContentIdentity source_identity() const noexcept { return source_identity_; }
   // Read-only view of the OWNED surfaces (archive order). EMPTY on a borrowed
   // (zero-copy) load — use `n_surfaces()` / `surface_at()` for backing-agnostic
   // access. Safe across a move (vector move preserves element addresses).
@@ -207,6 +210,7 @@ private:
   MarketSnapshot(std::shared_ptr<const SurfaceArchiveV2> archive,
                  std::vector<PricedSurface> &&surfaces, std::vector<PricedSurfaceView> &&views,
                  std::vector<SurfaceProvenance> &&provenance, SurfaceSet &&set, std::int64_t ts,
+                 ArchiveContentIdentity source_identity,
                  std::vector<std::pair<std::string, std::uint32_t>> &&syms) noexcept;
 
   // ── LIFETIME (WS-ZC1) ──────────────────────────────────────────────────────
@@ -234,6 +238,7 @@ private:
   std::vector<PricedSurfaceView> views_;            // borrowed path (archive directory order)
   std::vector<SurfaceProvenance> provenance_;       // same-blob, parallel to whichever is populated
   SurfaceSet set_;                                  // non-owning over surfaces_ OR views_
+  ArchiveContentIdentity source_identity_{};
   std::int64_t ts_ns_{0};
   std::vector<std::pair<std::string, std::uint32_t>> syms_; // symbol -> uid
 };

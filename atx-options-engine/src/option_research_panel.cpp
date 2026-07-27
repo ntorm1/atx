@@ -37,6 +37,10 @@ constexpr std::size_t kFieldCount = static_cast<std::size_t>(OptionPanelField::S
   return side == atx::vol::Side::Call || side == atx::vol::Side::Put;
 }
 
+[[nodiscard]] bool valid_exercise_style(atx::vol::ExerciseStyle style) noexcept {
+  return style == atx::vol::ExerciseStyle::European || style == atx::vol::ExerciseStyle::American;
+}
+
 [[nodiscard]] bool valid_status(OptionPanelStatus status) noexcept {
   switch (status) {
   case OptionPanelStatus::Tradable:
@@ -87,7 +91,7 @@ constexpr std::size_t kFieldCount = static_cast<std::size_t>(OptionPanelField::S
   }
   if (row.expiry_ts_ns <= row.observation.decision_ts_ns || !finite(row.strike) ||
       row.strike <= 0.0 || !finite(row.multiplier) || row.multiplier <= 0.0 ||
-      !valid_side(row.side)) {
+      !valid_side(row.side) || !valid_exercise_style(row.exercise_style)) {
     return Err(ErrorCode::InvalidArgument, "option panel contract definition is invalid");
   }
   if (!row.standard_deliverable && row.status != OptionPanelStatus::UnsupportedContract) {
@@ -159,7 +163,7 @@ constexpr std::size_t kFieldCount = static_cast<std::size_t>(OptionPanelField::S
                                    const OptionPanelRow &right) noexcept {
   return left.observation.uid == right.observation.uid && left.expiry_ts_ns == right.expiry_ts_ns &&
          left.strike == right.strike && left.side == right.side &&
-         left.multiplier == right.multiplier &&
+         left.exercise_style == right.exercise_style && left.multiplier == right.multiplier &&
          left.standard_deliverable == right.standard_deliverable &&
          left.engine_id == right.engine_id;
 }
@@ -421,9 +425,10 @@ Result<OptionResearchPanel> OptionResearchPanel::create(std::span<const OptionPa
     }
 
     const atx::engine::InstrumentId engine_id = definition.engine_id;
-    instruments.push_back(OptionInstrument{
-        contract_id, definition.observation.uid, definition.expiry_ts_ns, definition.strike,
-        definition.side, definition.multiplier, definition.standard_deliverable, engine_id});
+    instruments.push_back(
+        OptionInstrument{contract_id, definition.observation.uid, definition.expiry_ts_ns,
+                         definition.strike, definition.side, definition.exercise_style,
+                         definition.multiplier, definition.standard_deliverable, engine_id});
     universe.push_back(engine_id);
     dataset_instruments.push_back(engine_id.id);
     contract_begin = contract_end;
@@ -455,7 +460,7 @@ Result<OptionResearchPanel> OptionResearchPanel::create(std::span<const OptionPa
   ATX_TRY(Dataset dataset,
           Dataset::create(schema(), std::move(dates), std::move(dataset_instruments),
                           std::move(columns), std::move(mask),
-                          DatasetProvenance{"atx-options-engine:option-research-panel-v1",
+                          DatasetProvenance{"atx-options-engine:option-research-panel-v2",
                                             "canonical PIT listed-option research panel"}));
   std::vector<OptionDecisionAudit> decision_audit;
   decision_audit.reserve(canonical_rows.size());

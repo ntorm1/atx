@@ -116,6 +116,9 @@ constexpr double kScenarioSweepsPerEvaluation = 1.0;
   row.underlier_uid = underlier_uid(contract_index, underlier_count);
   row.observed_ts_ns = kDecisionTsNs - 20;
   row.available_ts_ns = kDecisionTsNs - 10;
+  row.market_observed_ts_ns = kDecisionTsNs - 5;
+  row.market_available_ts_ns = kDecisionTsNs;
+  row.definition_available_ts_ns = kDecisionTsNs - 10;
   row.expiry_ts_ns = kExpiryTsNs;
   row.strike = strike(contract_index);
   row.side = side(contract_index);
@@ -133,6 +136,7 @@ constexpr double kScenarioSweepsPerEvaluation = 1.0;
   row.status = OptionRiskRowStatus::Ok;
   row.risk_source_identity = identity(10'000U + contract_id);
   row.surface_source_identity = identity(20'000U + contract_id);
+  row.market_source_identity = identity(30'000U + contract_id);
   return row;
 }
 

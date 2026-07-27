@@ -1261,11 +1261,11 @@ MarketSnapshot::MarketSnapshot(std::shared_ptr<const SurfaceArchiveV2> archive,
                                std::vector<PricedSurface> &&surfaces,
                                std::vector<PricedSurfaceView> &&views,
                                std::vector<SurfaceProvenance> &&provenance, SurfaceSet &&set,
-                               std::int64_t ts,
+                               std::int64_t ts, ArchiveContentIdentity source_identity,
                                std::vector<std::pair<std::string, std::uint32_t>> &&syms) noexcept
     : archive_{std::move(archive)}, surfaces_{std::move(surfaces)}, views_{std::move(views)},
-      provenance_{std::move(provenance)}, set_{std::move(set)}, ts_ns_{ts}, syms_{std::move(syms)} {
-}
+      provenance_{std::move(provenance)}, set_{std::move(set)}, source_identity_{source_identity},
+      ts_ns_{ts}, syms_{std::move(syms)} {}
 
 std::uint64_t MarketSnapshot::open_count() noexcept { return g_open_count.load(); }
 void MarketSnapshot::reset_open_count() noexcept { g_open_count.store(0); }
@@ -1395,6 +1395,7 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // view reads — for its whole lifetime. See the lifetime note on MarketSnapshot's
   // members.
   auto archive = std::make_shared<const SurfaceArchiveV2>(std::move(*arch));
+  const ArchiveContentIdentity source_identity = archive->identity();
 
   const std::span<const ArchiveV2DirEntry> dir = archive->directory();
   std::vector<PricedSurface> surfaces;
@@ -1578,7 +1579,7 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // member lifetime note.
   return MarketSnapshot{std::move(archive),    std::move(surfaces), std::move(views),
                         std::move(provenance), std::move(*set),     ts,
-                        std::move(syms)};
+                        source_identity,       std::move(syms)};
 }
 
 const SurfaceProvenance *MarketSnapshot::provenance(std::uint32_t uid) const noexcept {
