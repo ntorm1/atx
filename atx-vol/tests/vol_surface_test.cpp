@@ -454,11 +454,11 @@ namespace {
 // an infinity out of a zero-width bracket.
 TEST(VolSurfaceInterp, NonMonotoneSlices_WWeightIsNeverInfinite) {
   const std::vector<std::vector<double>> term_axes{
-      {0.10, 0.20, 0.20, 0.40},  // duplicate interior pillars
-      {0.10, 0.20, 0.20, 0.20},  // duplicate at the long end
-      {0.10, 0.90, 0.20, 1.00},  // unsorted interior
-      {0.50, 0.10, 0.30, 0.80},  // unsorted at the front
-      {0.20, 0.20, 0.20, 0.20},  // fully degenerate
+      {0.10, 0.20, 0.20, 0.40}, // duplicate interior pillars
+      {0.10, 0.20, 0.20, 0.20}, // duplicate at the long end
+      {0.10, 0.90, 0.20, 1.00}, // unsorted interior
+      {0.50, 0.10, 0.30, 0.80}, // unsorted at the front
+      {0.20, 0.20, 0.20, 0.20}, // fully degenerate
   };
   for (const std::vector<double> &Ts : term_axes) {
     auto res = VolSurface::create(1u, Parametrization::Essvi, Ts.size());

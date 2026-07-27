@@ -180,8 +180,8 @@ namespace {
 // lower_bound's precondition, `w()` already handles a zero-width bracket
 // (`!(span > 0.0)` -> `w[lo]`), and demanding strictness could reject an archive
 // a fitter legitimately wrote with two coincident nodes.
-[[nodiscard]] bool linear_nodes_searchable(const double *k, std::uint64_t n) noexcept {
-  for (std::uint64_t i = 0; i < n; ++i) {
+[[nodiscard]] bool linear_nodes_searchable(std::span<const double> k) noexcept {
+  for (std::size_t i = 0; i < k.size(); ++i) {
     if (!std::isfinite(k[i]) || (i > 0 && k[i] < k[i - 1])) {
       return false;
     }
@@ -361,8 +361,14 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
       if (nc == 0 || need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: linear payload out of bounds");
       }
-      if (!linear_nodes_searchable(reinterpret_cast<const double *>(p), nc)) {
-        return Err(ErrorCode::ParseError, "PricedSurfaceView: linear node k's not ascending/finite");
+      // SAFETY: the same typed view `slice_w` takes over this payload — `poff` was
+      // just checked 8-B aligned and the record base is 8-B aligned, and the k[]
+      // extent is inside `need <= avail`.
+      const std::span<const double> k_nodes{reinterpret_cast<const double *>(p),
+                                            static_cast<std::size_t>(nc)};
+      if (!linear_nodes_searchable(k_nodes)) {
+        return Err(ErrorCode::ParseError,
+                   "PricedSurfaceView: linear node k's not ascending/finite");
       }
       break;
     }

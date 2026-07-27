@@ -344,8 +344,7 @@ TEST(SurfaceArchiveV2Adversarial, RejectsNonFiniteLinearVarianceNode) {
 // `w()` has the identical `lo = hi - 1` shape, so it must reject the same record.
 TEST(SurfaceArchiveV2Adversarial, ReconstructRejectsNonFiniteLinearVarianceNode) {
   ArchiveWithRecord a = build_archive_with_record(make_linear(1, 3, 9), "sym");
-  const std::uint64_t payload =
-      peek_u64(a.bytes, a.record_offset + a.header.col_payload_off_off);
+  const std::uint64_t payload = peek_u64(a.bytes, a.record_offset + a.header.col_payload_off_off);
   poke_f64(a.bytes, a.record_offset + payload, kNaN);
   auto arch = SurfaceArchiveV2::open(std::move(a.bytes));
   ASSERT_TRUE(arch.has_value()) << arch.error().to_string(); // lazy: body untouched at open

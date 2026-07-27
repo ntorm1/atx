@@ -1271,7 +1271,8 @@ namespace {
       return Err(ErrorCode::ParseError, "reconstruct_v2: slice payload misaligned/out of bounds");
     }
     if (poff < prev_payload_end) {
-      return Err(ErrorCode::ParseError, "reconstruct_v2: slice payload extents overlap / not ascending");
+      return Err(ErrorCode::ParseError,
+                 "reconstruct_v2: slice payload extents overlap / not ascending");
     }
     const std::uint64_t avail = rs - poff;
     const std::byte *p = base + poff;
