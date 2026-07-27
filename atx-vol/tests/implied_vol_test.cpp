@@ -1,11 +1,12 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
 #include <string>
 
 #include "atx/vol/black76.hpp"
 #include "atx/vol/implied_vol.hpp"
-#include "atx/vol/types.hpp" // kIvMin
+#include "atx/vol/types.hpp" // kIvMin, kIvResidNoiseFloor
 
 // Implied-vol round-trip coverage, ported from the C ats-vol test_pricer_iv.c:
 // price with B76, invert, expect σ recovered to near-machine precision across
@@ -165,6 +166,54 @@ TEST(ImpliedVol, TrueVolJustAboveFloor_RoundTripsUnchanged) {
       EXPECT_NEAR(*iv, sig, 1.0e-12) << "sig=" << sig;
       EXPECT_GT(*iv, atx::vol::kIvMin) << "sig=" << sig;
     }
+}
+
+// ── Plan item 2.5: the Halley loop prices the put leg with Φ(−d) ──────────
+//
+// The inverter carries its own inlined Black-76 evaluation (it needs d1/d2 and
+// φ(d1) for the Halley derivatives anyway). That evaluation used the 1−Φ(d)
+// complement on the put leg while `black76_price` — the function every caller
+// used to PRODUCE the quote — uses Φ(−d), so the inverter was solving a
+// marginally different model than the one it is documented to invert.
+//
+// This pins the contract that closes the gap: the returned IV must reprice
+// through `black76_price` to within the inverter's own documented residual
+// noise floor, kIvResidNoiseFloor·ε·df·max(F,K). That bound is what the loop's
+// price-residual exit test claims it achieved, and it only holds if the loop's
+// price_model IS `black76_price`. The grid is put-heavy and reaches into the
+// wing, which is where the two forms diverge.
+TEST(ImpliedVol, PutLeg_RepricesToBlack76PriceWithinTheResidualNoiseFloor) {
+  const double Fs[] = {100.0, 5000.0};
+  const double k_logs[] = {-0.5, -0.25, -0.1, 0.0, 0.1, 0.25, 0.5};
+  const double Ts[] = {0.02, 0.1, 0.5, 2.0};
+  const double sigmas[] = {0.08, 0.20, 0.45};
+  const double df = 0.98;
+
+  for (double F : Fs)
+    for (double kl : k_logs)
+      for (double T : Ts)
+        for (double sig : sigmas) {
+          const double K = F * std::exp(kl);
+          for (Side side : {Side::Call, Side::Put}) {
+            const double price = black76_price(F, K, T, sig, df, side);
+            const double intr = (side == Side::Call)
+                                    ? df * std::fmax(F - K, 0.0)
+                                    : df * std::fmax(K - F, 0.0);
+            // Sub-tick quotes clamp to kIvMin rather than solving.
+            if (price - intr < 1.0e-4 * F) continue;
+            const auto iv = implied_vol(price, F, K, T, df, side);
+            ASSERT_TRUE(iv.has_value())
+                << "F=" << F << " K=" << K << " T=" << T << " sig=" << sig
+                << ": " << iv.error().to_string();
+            const double reprice = black76_price(F, K, T, *iv, df, side);
+            const double noise_floor = atx::vol::kIvResidNoiseFloor *
+                                       std::numeric_limits<double>::epsilon() *
+                                       df * std::fmax(F, K);
+            EXPECT_LE(std::fabs(reprice - price), noise_floor)
+                << "F=" << F << " K=" << K << " T=" << T << " sig=" << sig
+                << " put=" << (side == Side::Put);
+          }
+        }
 }
 
 TEST(ImpliedVol, Sr2017Seed_ConvergesOnChainGrid) {

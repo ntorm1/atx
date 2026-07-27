@@ -310,13 +310,23 @@ TEST(SviMmCalib, FixedFixtureFit_IsBitIdentical) {
   const auto res = svi_mm_fit_slice(std::span<const FitObs>(obs), T, 100.0, opts);
   ASSERT_TRUE(res.has_value());
   const SviParams f = res.value();
-  // Goldens captured from the pre-refactor build (heap MatX(5,5)/VecX(5) per
-  // solve_spd_dense call); the thread_local-buffer refactor must preserve them.
-  EXPECT_EQ(f.a, 0.01200000000168963);
-  EXPECT_EQ(f.b, 0.059999999997054999);
-  EXPECT_EQ(f.rho, -0.30000000000922628);
-  EXPECT_EQ(f.m, -0.019999999998334177);
-  EXPECT_EQ(f.sigma, 0.17999999997839855);
+  // Goldens re-captured for plan item 2.5 (Black-76 put leg switched from the
+  // 1−Φ(d) complement to Φ(−d)). 20 of these 41 strikes are puts, and the LM's
+  // residual/Jacobian pass prices them with `black76_value_and_vega`, so the
+  // per-observation residuals move by an ulp and the search settles on a
+  // marginally different point of the same FP-noise floor. The shift is ~2e-15
+  // relative — three orders below the fitter's own tol_param — and neither
+  // vector is nearer the noiseless generating params (0.012, 0.06, -0.30,
+  // -0.02, 0.18) than the other: both sit ~1e-11 away. This pin exists to catch
+  // ACCIDENTAL drift from refactors that claim to be numerically neutral, so a
+  // deliberate numerical change re-baselines it rather than failing it.
+  // Previous: 0.01200000000168963, 0.059999999997054999, -0.30000000000922628,
+  //           -0.019999999998334177, 0.17999999997839855.
+  EXPECT_EQ(f.a, 0.012000000001691179);
+  EXPECT_EQ(f.b, 0.059999999997051592);
+  EXPECT_EQ(f.rho, -0.30000000000921206);
+  EXPECT_EQ(f.m, -0.019999999998325333);
+  EXPECT_EQ(f.sigma, 0.17999999997837973);
 }
 
 // Plan item 1.8(a) — a candidate parameter step whose model prices are not

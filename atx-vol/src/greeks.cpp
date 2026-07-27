@@ -29,16 +29,22 @@ Black76Greeks black76_greeks(double F, double K, double T, double sigma,
   const double d1 = (ln_fk + 0.5 * v * v) * inv_v;
   const double d2 = d1 - v;
   const double n_d1 = norm_cdf(d1);
-  const double n_d2 = norm_cdf(d2);
   const double phi_d1 = norm_pdf(d1); // φ(d1), shared by gamma/vega/vanna/...
 
   Greeks g{};
   double price;
   if (side == Side::Call) {
-    price = df * (F * n_d1 - K * n_d2);
+    price = df * (F * n_d1 - K * norm_cdf(d2));
     g.delta = df * n_d1;
   } else {
-    price = df * (K * (1.0 - n_d2) - F * (1.0 - n_d1));
+    // Put PRICE from Φ(−d), matching black76_price/black76_aux term-for-term:
+    // the 1−Φ(d) complement cancels catastrophically once d1, d2 ≫ 0 (Φ(d)
+    // lands within an ulp of 1, both complements round to the same multiple u
+    // of ε, and the price degenerates to the NEGATIVE df·(K−F)·u for K < F).
+    // Delta deliberately keeps the complement: 1−Φ(d1) is bounded by 1 and
+    // never changes sign, so its cancellation costs at most ~ε absolute and
+    // rewriting it would move a pinned Greek for no correctness gain.
+    price = df * (K * norm_cdf(-d2) - F * norm_cdf(-d1));
     g.delta = -df * (1.0 - n_d1);
   }
   g.rho = -T * price; // ∂P/∂r — same form for call and put

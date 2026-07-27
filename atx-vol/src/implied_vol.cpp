@@ -310,13 +310,17 @@ template <bool Trace>
     const double inv_v = 1.0 / v;
     const double d1 = (ln_fk + 0.5 * v * v) * inv_v;
     const double d2 = d1 - v;
-    const double n_d1 = norm_cdf(d1);
-    const double n_d2 = norm_cdf(d2);
     const double phi_d1 = norm_pdf(d1);
 
+    // The inlined Black-76 evaluation must be the SAME model `black76_price`
+    // is, or the loop converges on a root of a marginally different function
+    // than the one that produced the quote. That means Φ(−d) on the put leg:
+    // the 1−Φ(d) complement it used cancels catastrophically once d1, d2 ≫ 0
+    // and can even go negative (see the note in black76.cpp's black76_aux).
     const double price_model =
-        (side == Side::Call) ? df * (F * n_d1 - K * n_d2)
-                             : df * (K * (1.0 - n_d2) - F * (1.0 - n_d1));
+        (side == Side::Call)
+            ? df * (F * norm_cdf(d1) - K * norm_cdf(d2))
+            : df * (K * norm_cdf(-d2) - F * norm_cdf(-d1));
 
     const double fval = price_model - price;
     if (std::fabs(fval) < price_noise) {

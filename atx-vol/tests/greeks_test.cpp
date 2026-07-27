@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
 
 #include "atx/vol/black76.hpp"
 #include "atx/vol/greeks.hpp"
@@ -128,6 +129,51 @@ TEST(Greeks, SecondOrder_PutCallSymmetry) {
   EXPECT_LT(std::fabs(gc.vanna - gp.vanna), 1.0e-14);
   EXPECT_LT(std::fabs(gc.volga - gp.volga), 1.0e-14);
   EXPECT_LT(std::fabs((gc.delta - gp.delta) - df), 1.0e-14);
+}
+
+// ── Plan item 2.5: the bundle's put price must use Φ(−d), not 1−Φ(d) ──────
+//
+// `black76_greeks` returns a price alongside the sensitivities, and callers
+// (portfolio_price.cpp, bulk.cpp, the AVX2 batch kernels) consume it as THE
+// Black-76 price. It computed the put leg from the 1−Φ(d) complement, which
+// cancels catastrophically once d1, d2 ≫ 0: Φ(d) lands within an ulp of 1, so
+// 1−Φ(d2) and 1−Φ(d1) round to the same multiple u of ε and the price
+// degenerates to df·(K−F)·u — NEGATIVE for K < F, and disagreeing with
+// `black76_price` by 100%+ relative on a genuinely positive premium. See
+// black76_test.cpp for the same pin on the aux / value+vega entries.
+TEST(Greeks, Price_WideGridIncludingDeepWings_MatchesBlack76Price) {
+  constexpr double F = 100.0;
+  constexpr double r = 0.03;
+  constexpr double kFloor = -std::numeric_limits<double>::min();
+  const double Ks[] = {60.0, 62.0, 64.0, 66.0,  68.0,  70.0,  72.0,
+                       74.0, 76.0, 78.0, 80.0,  84.0,  88.0,  92.0,
+                       96.0, 98.0, 100.0, 105.0, 110.0, 140.0, 200.0};
+  const double Ts[] = {0.002, 0.01, 0.05, 0.25, 1.0};
+  const double sigmas[] = {0.02, 0.04, 0.08, 0.12, 0.25};
+
+  for (double K : Ks)
+    for (double T : Ts)
+      for (double sigma : sigmas) {
+        const double df = std::exp(-r * T);
+        for (Side side : {Side::Call, Side::Put}) {
+          const double base = black76_price(F, K, T, sigma, df, side);
+          const double got = black76_greeks(F, K, T, sigma, r, df, side).price;
+          // A few dozen ULP of the base price: post-fix both call sites run the
+          // same operation sequence, while the complement form misses by ≥ 100%
+          // relative in the wing. The additive DBL_MIN absorbs the denormal
+          // floor, where both Φ(−d) products are themselves denormals.
+          const double tol =
+              64.0 * std::numeric_limits<double>::epsilon() * std::fabs(base) +
+              std::numeric_limits<double>::min();
+          EXPECT_NEAR(got, base, tol)
+              << "K=" << K << " T=" << T << " sig=" << sigma
+              << " put=" << (side == Side::Put);
+        }
+        // A premium is never negative (the complement form returns ~-5e-15 in
+        // the wing, 293 orders of magnitude past this floor).
+        EXPECT_GE(black76_greeks(F, K, T, sigma, r, df, Side::Put).price, kFloor)
+            << "K=" << K << " T=" << T << " sig=" << sigma;
+      }
 }
 
 TEST(Greeks, SweepAllGreeksVsFd) {

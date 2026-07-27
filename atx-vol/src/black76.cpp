@@ -63,12 +63,17 @@ Black76Aux black76_aux(double F, double K, double T, double sigma, double df,
   const double ln_fk = std::log(F / K);
   const double d1 = (ln_fk + 0.5 * v * v) * inv_v;
   const double d2 = d1 - v;
-  const double n_d1 = norm_cdf(d1);
-  const double n_d2 = norm_cdf(d2);
-  // Use 1-Φ identities on the put leg to avoid two extra erfc calls.
+  const double n_d1 = norm_cdf(d1);  // reported in the bundle for both sides
+  // The put leg is priced from Φ(−d), matching `black76_price` above
+  // term-for-term. The 1−Φ(d) identity it used to save an erfc call cancels
+  // catastrophically deep in the put wing: d1, d2 ≫ 0 puts Φ(d) within an ulp
+  // of 1, so 1−Φ(d2) and 1−Φ(d1) round to the same multiple u of ε and the
+  // price degenerates to df·(K−F)·u — NEGATIVE for K < F, on a premium that is
+  // genuinely positive. norm_cdf is 0.5·erfc(−x/√2), and erfc resolves the tail
+  // to full RELATIVE precision, so Φ(−d) has no cancellation to suffer.
   const double price = (side == Side::Call)
-                           ? df * (F * n_d1 - K * n_d2)
-                           : df * (K * (1.0 - n_d2) - F * (1.0 - n_d1));
+                           ? df * (F * n_d1 - K * norm_cdf(d2))
+                           : df * (K * norm_cdf(-d2) - F * norm_cdf(-d1));
   return Black76Aux{price, d1, d2, n_d1};
 }
 
@@ -84,14 +89,14 @@ Black76ValueVega black76_value_and_vega(double F, double K, double T,
   const double ln_fk = std::log(F / K);
   const double d1 = (ln_fk + 0.5 * v * v) * inv_v;
   const double d2 = d1 - v;
-  const double n_d1 = norm_cdf(d1);
-  const double n_d2 = norm_cdf(d2);
   // Vega = F·df·φ(d1)·√T, with φ(d1) = (1/√(2π))·exp(-d1²/2).
   const double pdf_d1 = inv_sqrt_2pi<double> * std::exp(-0.5 * d1 * d1);
   const double vega = F * df * pdf_d1 * sqrt_t;
+  // Φ(−d) on the put leg, matching `black76_price` — see the cancellation note
+  // in black76_aux above.
   const double price = (side == Side::Call)
-                           ? df * (F * n_d1 - K * n_d2)
-                           : df * (K * (1.0 - n_d2) - F * (1.0 - n_d1));
+                           ? df * (F * norm_cdf(d1) - K * norm_cdf(d2))
+                           : df * (K * norm_cdf(-d2) - F * norm_cdf(-d1));
   return Black76ValueVega{price, vega};
 }
 
