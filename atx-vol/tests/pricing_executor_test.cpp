@@ -816,4 +816,108 @@ TEST(PricingExecutor, E2_ExternalOuterSlicesRunConcurrentlyAndUseWorkers) {
       << "external-outer slices never reached a pool worker";
 }
 
+// ── P2 2.14: the two-level nesting bound under HELP-FIRST STEALING ────────────
+//
+// The bound the executor advertises is per-THREAD live nesting: a thread may have
+// at most two executor bodies on its stack at once, because a body at depth >= 2
+// gets no nesting budget and every run_* it issues inlines. A helping dispatcher
+// breaks the "depth == the job's level" shortcut: while it drains the shared queue
+// inside its OWN nested dispatch's join, it can run a context of a FOREIGN job
+// whose level is 1 — a third live body on that thread. Publishing the foreign
+// job's own `child_depth` there hands that body a fresh idle-worker budget and
+// lets it open a fourth level, and so on down the stack.
+//
+// This probe measures the TRUE live nesting itself (a test-owned thread_local
+// counter, independent of the executor's bookkeeping) and asserts the contract it
+// implies: a body running inside another body on the same thread must see
+// `nested_budget() == 0`. It cannot fail once the depth published on entry is
+// monotone in the thread's own stack, so a green run is not a timing accident;
+// only the DETECTION of a regression depends on a steal actually happening, which
+// the flooder thread below makes overwhelmingly likely.
+
+// Live executor bodies on THIS thread, maintained by the test bodies themselves.
+thread_local unsigned t_body_nesting = 0;
+
+class BodyNestingProbe {
+public:
+  BodyNestingProbe() noexcept { ++t_body_nesting; }
+  ~BodyNestingProbe() { --t_body_nesting; }
+  BodyNestingProbe(const BodyNestingProbe &) = delete;
+  BodyNestingProbe &operator=(const BodyNestingProbe &) = delete;
+  BodyNestingProbe(BodyNestingProbe &&) = delete;
+  BodyNestingProbe &operator=(BodyNestingProbe &&) = delete;
+
+  [[nodiscard]] static unsigned live() noexcept { return t_body_nesting; }
+};
+
+// A few hundred ns of real work — keeps a body on a thread long enough for the
+// queue to hold foreign contexts when a dispatcher reaches its join. No sleeps.
+void burn(std::uint64_t &sink) noexcept {
+  for (int i = 0; i < 200; ++i) {
+    sink = sink * 6364136223846793005ull + 1442695040888963407ull;
+  }
+}
+
+TEST(PricingExecutor, HelpingDispatcherKeepsNestedBudgetClosedInsideAnotherBody) {
+  PricingExecutor ex;
+  if (ex.size() < 3u) {
+    GTEST_SKIP() << "needs >= 3 pool workers: the flooder's jobs must leave an idle window";
+  }
+  std::atomic<unsigned> violations{0};
+  std::atomic<unsigned> nested_bodies{0};
+  std::atomic<bool> stop{false};
+
+  const auto observe = [&] {
+    if (BodyNestingProbe::live() >= 2u) {
+      nested_bodies.fetch_add(1u, std::memory_order_relaxed);
+      if (ex.nested_budget() > 0u) {
+        violations.fetch_add(1u, std::memory_order_relaxed);
+      }
+    }
+  };
+
+  // Flooder: keeps TOP-LEVEL (level-1) contexts in the shared queue. nt = 3 leaves
+  // P - 2 workers parked, so a level-1 body here has a NON-EMPTY nesting budget —
+  // which is exactly what a third live level must not be handed.
+  constexpr std::size_t kFlood = 512;
+  std::thread flooder([&] {
+    std::vector<int> sink(kFlood, 0);
+    std::uint64_t heat = 1u;
+    while (!stop.load(std::memory_order_relaxed)) {
+      ex.run_blocks(kFlood, 3u, [&](std::size_t i) {
+        const BodyNestingProbe probe;
+        observe();
+        sink[i] += 1;
+        burn(heat);
+      });
+    }
+  });
+
+  constexpr std::size_t kOuter = 8;
+  constexpr std::size_t kInner = 512;
+  for (int iter = 0; iter < 48; ++iter) {
+    ex.run_ranges(kOuter, 2u, [&](std::size_t lo, std::size_t hi) {
+      const BodyNestingProbe probe;
+      observe();
+      std::uint64_t heat = 2u;
+      for (std::size_t r = lo; r < hi; ++r) {
+        // Depth 1: this dispatch reaches the pool and then joins HELP-FIRST, so
+        // the calling thread runs queued contexts — its own, or the flooder's.
+        ex.run_blocks_nested(kInner, 0u, [&](std::size_t) {
+          const BodyNestingProbe inner;
+          observe();
+          burn(heat);
+        });
+      }
+    });
+  }
+  stop.store(true, std::memory_order_relaxed);
+  flooder.join();
+
+  EXPECT_GT(nested_bodies.load(), 0u) << "no body ever ran inside another — probe is vacuous";
+  EXPECT_EQ(violations.load(), 0u)
+      << "a body nested inside another on the same thread was handed a nesting budget: "
+         "the two-level bound is broken";
+}
+
 } // namespace

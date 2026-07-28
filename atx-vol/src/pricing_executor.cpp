@@ -70,15 +70,21 @@ constexpr std::size_t kInlineThreshold = 4;
 // run_* still inline when nested (byte-for-byte the old guard), so no existing call
 // site changes behavior.
 //
+// `depth` counts the executor bodies live on THIS THREAD's stack (saturating at 2),
+// which is NOT always the dispatch level of the job a body belongs to — a helping
+// dispatcher runs foreign contexts from inside its own join. See run_context_body.
+//
 //   depth 0  — not inside a dispatch. A run_* here is a TOP-LEVEL dispatch onto the
 //              whole pool (caller + P workers). Identical to the old `!t_in_executor`.
-//   depth 1  — running a top-level dispatch's body (the caller's block 0, or a pool
-//              worker). A plain run_* here runs INLINE (the deadlock-safe default the
-//              old bool gave); a run_*_nested here may make ONE nested dispatch sized
-//              to `idle_budget` (= H - active_outer, the workers the top-level dispatch
-//              left parked), whose contexts flow through the shared work-stealing queue.
-//   depth>=2 — running a nested dispatch's body. Every run_* runs INLINE. Only ONE
-//              nested level is allowed: this bounds the live nesting to two.
+//   depth 1  — running the FIRST body on this thread, and it belongs to a top-level
+//              job (the caller's block 0, or a pool worker). A plain run_* here runs
+//              INLINE (the deadlock-safe default the old bool gave); a run_*_nested
+//              here may make ONE nested dispatch sized to `idle_budget` (= H -
+//              active_outer, the workers the top-level dispatch left parked), whose
+//              contexts flow through the shared work-stealing queue.
+//   depth>=2 — running a nested dispatch's body, OR any body that already has another
+//              body under it on this thread. Every run_* runs INLINE. Only ONE nested
+//              level is allowed: this bounds the live nesting to two.
 //
 // Deadlock-freedom (E2): a blocked dispatcher drains the shared queue help-first
 // instead of parking on a slot, so no participant can wait on a slot it must itself
@@ -373,8 +379,30 @@ struct PricingExecutor::State {
   // exception. Never rethrows — the dispatcher rethrows after the join barrier.
   void run_context_body(Job &j, unsigned ctx) {
     const NestState prev = t_nest;
-    t_nest.depth = j.child_depth;
-    t_nest.idle_budget = (j.child_depth == 1u) ? (P - j.active_for_child) : 0u;
+    // The published depth is the THREAD's live nesting, not the job's level: it is
+    // the deeper of "one level below whatever body this thread was already running"
+    // (prev.depth + 1) and "the level this job's contexts belong to"
+    // (j.child_depth). The two agree everywhere except one path, and that path is
+    // the whole point of the max:
+    //
+    //   A dispatcher joins HELP-FIRST — it drains the shared queue while sitting
+    //   inside its own dispatch, so it can run a context of a FOREIGN job. A
+    //   thread helping from inside a NESTED (level-1) dispatch that pops a
+    //   TOP-LEVEL job's context already has two bodies on its stack; publishing
+    //   that job's own child_depth (1) would hand the third body a fresh
+    //   idle-worker budget and let it open a fourth level, and so on down the
+    //   stack — unbounded live nesting and an oversubscribed pool, exactly what
+    //   the two-level bound exists to prevent. `prev.depth + 1` saturates that
+    //   case at 2 ("no further nesting"), which is the correct answer for any
+    //   stack deeper than one.
+    //
+    // Everywhere else it is a no-op: a parked worker picking up work has
+    // prev.depth == 0 (max(1, child_depth) == child_depth, which is >= 1), and a
+    // dispatcher's own context 0 has child_depth == prev.depth + 1 by construction.
+    // The idle budget follows the PUBLISHED depth, so a body raised to 2 gets none.
+    const unsigned depth = std::max(prev.depth + 1u, j.child_depth);
+    t_nest.depth = depth;
+    t_nest.idle_budget = (depth == 1u) ? (P - j.active_for_child) : 0u;
     const std::size_t lo = static_cast<std::size_t>(ctx) * j.block;
     const std::size_t hi = (lo + j.block < j.n) ? (lo + j.block) : j.n;
     if (lo < hi) {

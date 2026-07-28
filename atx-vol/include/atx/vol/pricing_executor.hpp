@@ -46,9 +46,12 @@
 // queued tasks instead of parking on a slot — so a nested (or concurrent, or
 // external-outer) dispatch can never wait on a slot a busy worker must first free,
 // and cannot deadlock. A second nested level (depth >= 2) always inlines, bounding
-// the live nesting to two. `nested_budget()` exposes the current window for callers
-// that size their own fan-out (the fit/universe scheduler, WS-5). At top level the
-// `*_nested` variants are identical to their plain counterparts.
+// the live nesting to two. That bound is on the THREAD's stack, not on any one
+// job: a helping dispatcher running a foreign job's context counts it as a level,
+// so such a body inlines its own run_* and reports a 0 `nested_budget()` even when
+// the job it belongs to is top-level. `nested_budget()` exposes the current window
+// for callers that size their own fan-out (the fit/universe scheduler, WS-5). At
+// top level the `*_nested` variants are identical to their plain counterparts.
 //
 // A body exception is captured at its first caller/worker observation. Every
 // participant still reaches the join barrier before that exception is rethrown on
