@@ -881,6 +881,23 @@ struct SessionCacheGeom {
   return correction.usable(side) && correction.contains(k_log, T, sigma);
 }
 
+// `SessionInputs::deam.caches` is a BUILD-TIME BORROW: a non-owning pair of
+// caller-owned CorrectionCache pointers the fit and the certification pass read.
+// A built session never serves through them — every query goes through its own
+// `corr_call_`/`corr_put_`/`query_cache_bank_` — yet build() moved the inputs in
+// verbatim, so the borrow stayed reachable on the public `inputs()` accessor for
+// the session's whole life, with no lifetime contract attached to it. The
+// warm-start chain (corpus.cpp) genuinely outlives it: each date re-anchors its
+// carried caches on the next date's freshly built pair, destroying exactly what
+// the previous date's still-held session points at.
+//
+// build() ALREADY released the borrow when its stale gate rejected the supplied
+// caches; releasing it on every path — after the last build-time reader, before
+// the inputs are stored — is what makes the stored session self-contained.
+void release_build_time_cache_borrow(SessionInputs &in) noexcept {
+  in.deam.caches = AmericanCorrectionCaches{};
+}
+
 } // namespace
 
 void VolaSession::build_fast_query_cache_bank(const Underlying &under) {
@@ -1310,6 +1327,7 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
     aggregate_input_diagnostics(slice_diag, cdiag);
     cdiag.n_carry_skipped_expiries = crep.n_carry_skipped;
     retain_fitted_term_rates(eff, crep.context);
+    release_build_time_cache_borrow(eff);
     VolaSession session{std::move(placeholder),
                         std::move(crep.context),
                         std::move(crep.per_expiry),
@@ -1488,6 +1506,7 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   diag.n_audit_starved_expiries = rep.n_audit_starved;
 
   retain_fitted_term_rates(eff, rep.context);
+  release_build_time_cache_borrow(eff);
   VolaSession session{std::move(rep.surface),
                       std::move(rep.context),
                       std::move(rep.per_expiry),

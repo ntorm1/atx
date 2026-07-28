@@ -631,6 +631,11 @@ public:
   // Effective, fully-resolved fit inputs retained by the session. Quality
   // scoring uses these so a direct/fallback OOS refit sees the same preset,
   // quote filter, dividends, carry, and pricer policy as the shipped surface.
+  //
+  // `deam.caches` is always EMPTY here: those pointers are a build-time borrow of
+  // caller-owned CorrectionCaches with no lifetime contract past `build`, so the
+  // session releases them rather than publishing a pointer it cannot vouch for.
+  // The session's own caches are `correction_caches()` / `correction_caches_at`.
   [[nodiscard]] const SessionInputs &inputs() const noexcept { return in_; }
 
   // ── Term carry accessors (the query re-pricing forward / effective yield) ──

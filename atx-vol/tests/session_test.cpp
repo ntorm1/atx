@@ -6,8 +6,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/american.hpp"
@@ -220,6 +222,64 @@ TEST(VolaSession, Build_KnownTruthPanel_SucceedsWithFourArbFreeSlices) {
   for (std::size_t i = 1; i < exps.size(); ++i) {
     EXPECT_LT(exps[i - 1].T, exps[i].T);
   }
+}
+
+// ── 2.12: a built session must not retain a build-time cache BORROW ──────────
+//
+// SessionInputs::deam.caches is NON-OWNING: a pair of caller-owned
+// CorrectionCache pointers the fit and the certification pass read during
+// `build`. A built session never serves through them — every query goes through
+// its own corr_call_/corr_put_/query cache bank — yet build() moved the whole
+// SessionInputs in verbatim, so the borrow stayed reachable through the public
+// inputs() accessor for the session's entire life with no lifetime contract
+// attached. The warm-start chain (corpus.cpp) genuinely outlives it: each date
+// re-anchors its carried caches on the next date's freshly built pair,
+// destroying exactly what the previous date's still-held session points at.
+// build() already released the borrow when its stale gate REJECTED the supplied
+// caches; it now releases on every path.
+TEST(VolaSession, Build_DoesNotRetainCallerSuppliedCorrectionCacheBorrow) {
+  using atx::vol::AmericanCorrectionCaches;
+  using atx::vol::CorrectionCache;
+
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying *under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  std::optional<VolaSession> session;
+  {
+    // Caller-owned caches whose lifetime ends with this scope — precisely the
+    // shape the warm-start chain has. The box covers the panel; the fit is kept
+    // off them (use_deam_cache_for_fit = false) so this test isolates the
+    // lifetime question from any de-Am routing question.
+    auto call = CorrectionCache::build(/*n_k=*/16, /*n_T=*/8, /*n_s=*/12, spec.r, spec.r,
+                                       /*k_log_min=*/-0.5, /*k_log_max=*/0.5, /*T_min=*/0.05,
+                                       /*T_max=*/1.5, /*sigma_min=*/0.05, /*sigma_max=*/1.0,
+                                       Side::Call);
+    auto put = CorrectionCache::build(16, 8, 12, spec.r, spec.r, -0.5, 0.5, 0.05, 1.5, 0.05, 1.0,
+                                      Side::Put);
+    ASSERT_TRUE(call.has_value()) << call.error().to_string();
+    ASSERT_TRUE(put.has_value()) << put.error().to_string();
+
+    SessionInputs in = make_inputs(spec);
+    in.use_deam_cache_for_fit = false;
+    in.deam.caches = AmericanCorrectionCaches{&*call, &*put};
+
+    auto built = VolaSession::build(*under, in);
+    ASSERT_TRUE(built.has_value()) << built.error().to_string();
+    session.emplace(std::move(*built));
+  } // the supplied caches die here; the session must not still point at them
+
+  EXPECT_EQ(session->inputs().deam.caches.call, nullptr)
+      << "the session retained a borrowed call-side CorrectionCache past build()";
+  EXPECT_EQ(session->inputs().deam.caches.put, nullptr)
+      << "the session retained a borrowed put-side CorrectionCache past build()";
+
+  // And it still serves entirely off its own state.
+  const double T = under->chains.front().T;
+  EXPECT_GT(session->iv(spec.spot, T), 0.0);
+  const auto price = session->fair_value(spec.spot, T, Side::Call);
+  EXPECT_TRUE(price.has_value()) << price.error().to_string();
 }
 
 // C1 (perf, class accuracy-improving): the eSSVI session build must de-Americanize
