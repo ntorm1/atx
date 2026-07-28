@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -124,6 +125,30 @@ using atx::vol::VolSurface;
   return surf;
 }
 
+// Three FLAT (b = 0) SVI slices at T = 0.25 / 0.5 / 1.0, whose total variance is
+// the `a` coefficient verbatim at every k. Passing a NaN for one slice makes
+// `VolSurface::w` non-finite at that maturity while the others stay clean, which
+// is the shape plan item 2.7's calendar-poisoning defect needs. Flat slices also
+// keep the butterfly scan silent (w' = w'' = 0 => g = 1), so the calendar count
+// is the only thing under test.
+[[nodiscard]] VolSurface make_svi_3slice_flat(double w0, double w1, double w2) {
+  auto res = VolSurface::create(1u, Parametrization::Svi, 3);
+  VolSurface surf = std::move(res).value();
+  const double Ts[3] = {0.25, 0.5, 1.0};
+  const double ws[3] = {w0, w1, w2};
+  for (std::size_t i = 0; i < 3; ++i) {
+    SviParams s{};
+    s.a = ws[i];
+    s.b = 0.0;
+    s.rho = 0.0;
+    s.m = 0.0;
+    s.sigma = 0.1;
+    s.T = Ts[i];
+    (void)surf.set_slice_svi(i, s);
+  }
+  return surf;
+}
+
 // A raw-SVI slice with a very steep wing (b well past the Lee bound) — its
 // Roper density goes negative in the wings (butterfly arbitrage).
 [[nodiscard]] SviParams steep_svi_slice() {
@@ -187,6 +212,57 @@ TEST(ArbCalendar, EmptyOrSingleSlice_NoOpEmpty) {
   const auto res = arb_check_calendar(surf, -0.2, 0.2, 8);
   ASSERT_TRUE(res.has_value());
   EXPECT_TRUE(res.value().empty());
+}
+
+// ── Plan item 2.7: a non-finite slice must not hide the crossing it spans ──
+//
+// `w_prev` was updated unconditionally, so a NaN total variance at slice i
+// BECAME the comparison baseline, discarding the last usable one. Slice i+1's
+// `w + 1e-12 < NaN` is then false (NaN compares unordered), so the crossing
+// that SPANS the unusable slice was never tested — here a drop as blatant as
+// w(T=0.25) = 0.16 against w(T=1.0) = 0.04 came back as a clean surface.
+//
+// Contract: a non-finite w is UNCOMPARABLE — not a violation, and not a
+// baseline. The point is skipped and the last FINITE (w, T) stays the baseline,
+// so the spanning crossing is reported and carries the maturities of the two
+// finite slices. That is exactly how the CurveSurface overload already treats
+// it ("wing coverage gap on one side — nothing to compare"), and it reports
+// nothing for the offending slice itself.
+TEST(ArbCalendar, NonFiniteMiddleSlice_StillFlagsTheLaterCrossing) {
+  const VolSurface surf = make_svi_3slice_flat(
+      0.16, std::numeric_limits<double>::quiet_NaN(), 0.04);
+  const auto res = arb_check_calendar(surf, -0.2, 0.2, 8);
+  ASSERT_TRUE(res.has_value());
+  const auto &v = res.value();
+  // Exactly one per sampled k: the poisoned slice contributes none of its own.
+  ASSERT_EQ(v.size(), 8u);
+  for (const ArbViolation &viol : v) {
+    EXPECT_EQ(viol.kind, ArbViolation::Kind::Calendar);
+    EXPECT_EQ(viol.T1, 0.25);  // the last FINITE slice, not the NaN one at 0.5
+    EXPECT_EQ(viol.T2, 1.0);
+    EXPECT_NEAR(viol.slack, 0.12, 1.0e-15);
+  }
+}
+
+// Front-of-stack boundary for the skip above. A NaN FIRST slice was never the
+// bug — there is no earlier finite baseline for it to discard, so the old code
+// found this crossing too. It is pinned because the SKIP is what could break
+// it: leaving w_prev at its -inf seed must not manufacture a violation, and
+// T_prev must not carry the maturity of the slice that was skipped. The
+// reported pair is therefore (0.5, 1.0), never (0.25, 1.0).
+TEST(ArbCalendar, NonFiniteFirstSlice_StillFlagsTheLaterCrossing) {
+  const VolSurface surf = make_svi_3slice_flat(
+      std::numeric_limits<double>::quiet_NaN(), 0.16, 0.04);
+  const auto res = arb_check_calendar(surf, -0.2, 0.2, 8);
+  ASSERT_TRUE(res.has_value());
+  const auto &v = res.value();
+  ASSERT_EQ(v.size(), 8u);
+  for (const ArbViolation &viol : v) {
+    EXPECT_EQ(viol.kind, ArbViolation::Kind::Calendar);
+    EXPECT_EQ(viol.T1, 0.5);
+    EXPECT_EQ(viol.T2, 1.0);
+    EXPECT_NEAR(viol.slack, 0.12, 1.0e-15);
+  }
 }
 
 // ── Calendar check (CurveSurface: ConvexDense/SVI served path) ─────────────
@@ -444,6 +520,17 @@ TEST(ArbCheckAll, PropagatesButterflyInvalidArgument) {
 
 TEST(ArbTotalSurface, CalendarViolationsCounted) {
   const VolSurface surf = make_essvi_2slice(0.16, 0.25, 0.04, 1.0);
+  const auto res = arb_check_total_surface_all(surf, -0.2, 0.2, 8);
+  ASSERT_TRUE(res.has_value());
+  EXPECT_EQ(res.value().n_calendar, 8u);
+  EXPECT_EQ(res.value().n_butterfly, 0u);
+}
+
+// Plan item 2.7, count-only mirror: `arb_check_total_surface_all` carries the
+// same unconditional `w_prev = w` and suffered the same blinding.
+TEST(ArbTotalSurface, NonFiniteMiddleSlice_StillCountsTheLaterCrossing) {
+  const VolSurface surf = make_svi_3slice_flat(
+      0.16, std::numeric_limits<double>::quiet_NaN(), 0.04);
   const auto res = arb_check_total_surface_all(surf, -0.2, 0.2, 8);
   ASSERT_TRUE(res.has_value());
   EXPECT_EQ(res.value().n_calendar, 8u);

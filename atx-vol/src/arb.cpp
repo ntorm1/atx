@@ -209,6 +209,19 @@ Result<std::vector<ArbViolation>> arb_check_calendar(const VolSurface &s,
     for (std::size_t i = 0; i < n; ++i) {
       const double T = slice_T_at(s, i);
       const double w = s.w(k, T);
+      // A non-finite w is UNCOMPARABLE: not a violation, and — the defect this
+      // guards — not a BASELINE either. Assigning it to w_prev DISCARDED the
+      // last usable comparison point: the next slice's `w + 1e-12 < NaN` is
+      // false (NaN compares unordered), so the crossing that SPANS the unusable
+      // slice was never tested and the surface came back clean. Skipping keeps
+      // the last FINITE (w, T) as the baseline, so that crossing is reported
+      // and carries the maturities of the two finite slices it actually spans.
+      // Reporting nothing for the offending slice itself matches the
+      // CurveSurface overload below, which already continues past a non-finite
+      // w on either side ("wing coverage gap — nothing to compare").
+      if (!std::isfinite(w)) {
+        continue;
+      }
       if (w + 1.0e-12 < w_prev) {
         ArbViolation v{};
         v.k_log = k;
@@ -412,6 +425,11 @@ Result<TotalSurfaceArbCounts> arb_check_total_surface_all(const VolSurface &s,
       for (std::size_t i = 0; i < n; ++i) {
         const double T = slice_T_at(s, i);
         const double w = s.w(k, T);
+        // Uncomparable, not a baseline — see arb_check_calendar. Without it a
+        // NaN slice cost the count every crossing that spans it.
+        if (!std::isfinite(w)) {
+          continue;
+        }
         if (w + 1.0e-12 < w_prev) {
           ++counts.n_calendar;
         }

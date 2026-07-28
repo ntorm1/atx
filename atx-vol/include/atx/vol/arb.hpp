@@ -113,6 +113,13 @@ struct ArbViolation {
 // that total variance w(k, T) is monotone non-decreasing in T at each point.
 // An empty result means "no calendar arbitrage". No-op (empty) when the
 // surface carries fewer than two slices or `n_grid == 0`.
+//
+// A grid point where `VolSurface::w` is non-finite is SKIPPED: no violation is
+// recorded for it, and it does not become the baseline the next slice is
+// compared against — the last finite (w, T) does, so a violation straddling
+// the unusable slice is still reported, carrying the maturities of the two
+// FINITE slices it spans. There is no status channel for "this slice was not
+// evaluatable"; callers that need to know must probe `w` themselves.
 [[nodiscard]] Result<std::vector<ArbViolation>>
 arb_check_calendar(const VolSurface &s, double k_min, double k_max,
                    std::uint32_t n_grid);
@@ -194,7 +201,8 @@ struct TotalSurfaceArbCounts {
 // sampling `VolSurface::w` (which includes the wing residual). Unlike the
 // butterfly check this never fails on `k_max <= k_min` — each block is guarded
 // internally and simply contributes zero. Mirrors
-// `ats_arb_check_total_surface_all`.
+// `ats_arb_check_total_surface_all`. Non-finite grid points are skipped on both
+// axes, with the same baseline rule the calendar check documents above.
 [[nodiscard]] Result<TotalSurfaceArbCounts>
 arb_check_total_surface_all(const VolSurface &s, double k_min, double k_max,
                             std::uint32_t n_grid);
