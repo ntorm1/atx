@@ -3089,7 +3089,16 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
     // memo[0] an un-mutated warm seed. Unused by the put path (Pput never rescales).
     double base_K{0.0}, base_xmax{0.0};
   };
-  std::array<BndCache, 7> memo{};
+  // One slot per DISTINCT (dsig, dr, dT) boundary state the 17 stencils below span:
+  // the base, the two vol bumps (+/-hv), the two rate bumps (+/-hr) and the two time
+  // bumps (+/-hT). SPOT bumps open no state — that is the whole point of the fast
+  // paths (the put boundary is spot-independent; the call's internal-put boundary
+  // rescales to the bumped spot by strike homogeneity) — which is why 17 stencils
+  // need only these 7 boundary solves. Written as the sum so a future stencil family
+  // has to restate the count HERE rather than silently outgrow a literal 7; the
+  // insert guards in Pput/Pcall then bound the array access itself.
+  constexpr std::size_t kFdBoundaryStates = 1u /*base*/ + 2u /*vol*/ + 2u /*rate*/ + 2u /*time*/;
+  std::array<BndCache, kFdBoundaryStates> memo{};
   std::size_t n_memo = 0;
   // F5: ONE shared premium precompute for the whole bundle — rebound whenever the
   // active (dsig,dr,dT) boundary changes, reused across a state's spot stencils.
@@ -3141,6 +3150,16 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
       }
     }
     if (c == nullptr) {
+      // Bound the insert instead of trusting the state count: a new stencil family
+      // added above without growing kFdBoundaryStates would otherwise write past the
+      // array. Fail LOUD in debug, and in release fall back to the exact scalar path
+      // (the same escape the boundary-collapse case below takes) rather than
+      // corrupting the stack. Unreachable while the states enumerated at the array's
+      // declaration are the states priced here.
+      assert(n_memo < memo.size());
+      if (n_memo == memo.size()) {
+        return P(dS, dsig, dr, dT);
+      }
       c = &memo[n_memo++];
       c->dsig = dsig;
       c->dr = dr;
@@ -3218,6 +3237,12 @@ Result<AmericanGreeks> american_greeks_fd(double S, double K, double T, double s
       }
     }
     if (c == nullptr) {
+      // Same bound as Pput's insert: see the comment there (and at the array's
+      // declaration) for why the state count and the array size must not drift.
+      assert(n_memo < memo.size());
+      if (n_memo == memo.size()) {
+        return P(dS, dsig, dr, dT);
+      }
       c = &memo[n_memo++];
       c->dsig = dsig;
       c->dr = dr;
