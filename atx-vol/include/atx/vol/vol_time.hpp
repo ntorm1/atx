@@ -142,6 +142,18 @@ class VolTimeCalendar {
   explicit VolTimeCalendar(std::vector<std::int32_t> holiday_days,
                            std::int32_t first_covered_day, std::int32_t last_covered_day);
 
+  // True iff `day_since_epoch` is a LISTED full closure.
+  //
+  // CAVEAT — `false` is NOT "this day is open". It is "this day is not in the
+  // table", which is also the answer for every day OUTSIDE `covers()`, where the
+  // table says nothing at all. Any caller whose result MOVES with that answer
+  // (accruing session time, counting a trading day, stepping a tenor) must gate
+  // it on `covers(day_since_epoch)` first and fail closed when the day is not
+  // covered — see `trading_hours_between` (accrual site) and
+  // `advance_trading_days` (sr_tenor_grid.hpp, counting site). Reading an
+  // out-of-window `false` as "open" is exactly how Memorial Day 2020 accrued a
+  // full 7.5h session (plan item 1.10) and how the trading-day stepper landed
+  // tenors on real NYSE closures.
   [[nodiscard]] bool is_holiday(std::int32_t day_since_epoch) const noexcept;
 
   // Inclusive bounds of the window this calendar's closure set is complete
