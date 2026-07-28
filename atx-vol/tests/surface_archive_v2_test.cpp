@@ -688,6 +688,87 @@ TEST(SurfaceArchiveV2, InstanceIdSemantics) {
   EXPECT_EQ(moved.instance_id(), id); // move transfers identity
 }
 
+// ── Moved-from views are inert (lifetime hardening) ──────────────────────────
+//
+// A move STEALS `heavy_curves_` (the materialized ConvexDense/SplineVol curves)
+// but used to leave `record_` / the column pointers / `n_slices_` intact. The
+// moved-from view therefore still reported n_slices() > 0 and still ANSWERED
+// queries — and on a ConvexDense/SplineVol surface `slice_w` indexed the now
+// EMPTY `heavy_curves_` vector out of bounds (UB), while on a parametric surface
+// it silently served a second, unowned "live" view of the same record. A
+// moved-from view is now structurally empty and every query fails closed.
+namespace {
+// ASSERT (not EXPECT) on the emptiness flag: it is the single gate every query
+// guard reads, so if it does not hold the queries below are exactly the UB this
+// test exists to pin — bail out instead of executing it.
+void expect_moved_from_view_inert(PricedSurfaceView &corpse, double K, double T) {
+  ASSERT_EQ(corpse.n_slices(), 0u);
+  EXPECT_FALSE(corpse.resolve(K, T).valid);
+  EXPECT_TRUE(std::isnan(corpse.iv(K, T)));
+  EXPECT_TRUE(std::isnan(corpse.total_variance(K, T)));
+  EXPECT_EQ(corpse.forward_at(T), 0.0);
+  EXPECT_EQ(corpse.q_eff_at(T), 0.0);
+  EXPECT_EQ(corpse.rate_at(T), 0.0);
+  EXPECT_FALSE(corpse.fair_value(K, T, Side::Call).has_value());
+  EXPECT_FALSE(corpse.greeks(K, T, Side::Call).has_value());
+  EXPECT_FALSE(corpse.delta(K, T, Side::Call).has_value());
+  EXPECT_FALSE(corpse.vega(K, T, Side::Call).has_value());
+  EXPECT_FALSE(corpse.full_greek_seed(K, T, Side::Call, /*analytic=*/true).has_value());
+
+  // The batch seam fails closed per lane rather than reading the released borrow.
+  const std::array<double, 1> Ks{K};
+  const std::array<double, 1> Ts{T};
+  const std::array<Side, 1> sides{Side::Call};
+  std::array<double, 1> iv{};
+  std::array<double, 1> px{};
+  std::array<AmericanGreeks, 1> gk{};
+  std::array<atx::vol::Status, 1> st{};
+  const atx::vol::Status rc = corpse.evaluate_batch(
+      Ks, Ts, sides, PricedSurfaceView::EvalField::Iv | PricedSurfaceView::EvalField::Price,
+      /*analytic=*/false,
+      PricedSurfaceView::EvaluationSoA{iv, px, gk, st, {}, {}});
+  EXPECT_TRUE(rc.has_value()) << rc.error().to_string();
+  EXPECT_FALSE(st[0].has_value());
+}
+} // namespace
+
+TEST(SurfaceArchiveV2, MovedFromView_HeavyCurveSurface_IsInert) {
+  const PricedSurface orig = make_convex(11, 5, 21); // ConvexDense => heavy_curves_
+  auto arch = SurfaceArchiveV2::open(build_v2(orig, "idx"));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  auto v = arch->map_symbol("idx");
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+
+  constexpr double kK = 100.0;
+  constexpr double kT = 0.25;
+  const double live_iv = v->iv(kK, kT);
+  ASSERT_TRUE(std::isfinite(live_iv));
+
+  PricedSurfaceView moved = std::move(*v);
+  expect_moved_from_view_inert(*v, kK, kT);
+  // The destination is fully functional and bit-identical to the pre-move view.
+  EXPECT_TRUE(bits_equal(moved.iv(kK, kT), live_iv));
+  EXPECT_EQ(moved.n_slices(), orig.n_slices());
+}
+
+TEST(SurfaceArchiveV2, MoveAssignedFromView_HeavyCurveSurface_IsInert) {
+  const PricedSurface orig = make_spline(13, 4);
+  auto arch = SurfaceArchiveV2::open(build_v2(orig, "spl"));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  auto src = arch->map_symbol("spl");
+  auto dst = arch->map_symbol("spl");
+  ASSERT_TRUE(src.has_value() && dst.has_value());
+
+  constexpr double kK = 100.0;
+  constexpr double kT = 0.25;
+  const double live_iv = src->iv(kK, kT);
+  ASSERT_TRUE(std::isfinite(live_iv));
+
+  *dst = std::move(*src);
+  expect_moved_from_view_inert(*src, kK, kT);
+  EXPECT_TRUE(bits_equal(dst->iv(kK, kT), live_iv));
+}
+
 // ── Corpus reproducibility: content-derived created_ts_ns ─────────────────────
 // The production corpus path leaves ArchiveV2WriteOpts::created_ts_ns == 0. That 0
 // sentinel used to be filled from the WALL CLOCK, so two identical builds produced

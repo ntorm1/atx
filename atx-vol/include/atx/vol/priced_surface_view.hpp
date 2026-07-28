@@ -34,6 +34,12 @@
 // heavy curves and a never-reused `instance_id`). It is immutable after
 // construction and concurrent-const-safe, exactly like `PricedSurface`.
 //
+// A MOVED-FROM view is left structurally EMPTY: it releases its record/column
+// borrows, reports `n_slices() == 0`, and every query fails closed (`resolve`
+// invalid, `iv`/`total_variance` NaN, the carry accessors 0, the `Result`
+// queries InvalidArgument, `evaluate_batch` an error status per lane). It
+// remains safe to destroy and to move-assign into.
+//
 // ## Reusing PricedSurface's query vocabulary
 //
 // The view intentionally reuses `PricedSurface`'s public nested contract types

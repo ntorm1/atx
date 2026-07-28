@@ -117,14 +117,22 @@ constexpr char kSurfaceRecordMagic[8] = {'A', 'T', 'X', 'V', 'S', 'R', '2', '0'}
 
 PricedSurfaceView::~PricedSurfaceView() = default;
 
-PricedSurfaceView::PricedSurfaceView(PricedSurfaceView &&other) noexcept
-    : record_(other.record_), col_kind_(other.col_kind_), col_T_(other.col_T_),
-      col_forward_(other.col_forward_), col_qeff_(other.col_qeff_), col_df_(other.col_df_),
-      col_borrow_(other.col_borrow_), col_payload_off_(other.col_payload_off_),
-      col_node_count_(other.col_node_count_), n_slices_(other.n_slices_), pricing_(other.pricing_),
-      term_rates_(other.term_rates_), query_pricing_tier_(other.query_pricing_tier_),
-      heavy_curves_(std::move(other.heavy_curves_)),
-      instance_id_(std::exchange(other.instance_id_, allocate_view_instance_id())) {}
+// MOVED-FROM CONTRACT. A move transfers the ONLY owner of the materialized
+// heavy curves, so the source must not keep answering queries off the record it
+// no longer co-owns: `slice_w` would index the emptied `heavy_curves_` out of
+// bounds on a ConvexDense/SplineVol slice, and on a parametric surface the
+// source would silently remain a second live view of the same mapping. Both
+// moves therefore RELEASE the source's borrows (record span + every column
+// pointer) and zero `n_slices_`, which is the one flag the query guards read —
+// a moved-from view is structurally empty and every query fails closed
+// (resolve()/evaluate_batch() below). Destruction and re-assignment stay valid.
+// Every member carries a default member initializer, so the empty body leaves
+// `*this` in exactly the structurally-empty state the assignment below produces
+// for a moved-from source; delegating to the assignment keeps the release list
+// single-sourced (two hand-maintained copies would silently drift).
+PricedSurfaceView::PricedSurfaceView(PricedSurfaceView &&other) noexcept {
+  *this = std::move(other);
+}
 
 PricedSurfaceView &PricedSurfaceView::operator=(PricedSurfaceView &&other) noexcept {
   if (this == &other) {
@@ -145,6 +153,20 @@ PricedSurfaceView &PricedSurfaceView::operator=(PricedSurfaceView &&other) noexc
   query_pricing_tier_ = other.query_pricing_tier_;
   heavy_curves_ = std::move(other.heavy_curves_);
   instance_id_ = std::exchange(other.instance_id_, allocate_view_instance_id());
+  // Release the source's borrows. `n_slices_ = 0` is the flag every query guard
+  // reads; the nulled pointers make any missed guard a loud fault rather than a
+  // silent read of a record this view no longer co-owns.
+  other.record_ = {};
+  other.col_kind_ = nullptr;
+  other.col_T_ = nullptr;
+  other.col_forward_ = nullptr;
+  other.col_qeff_ = nullptr;
+  other.col_df_ = nullptr;
+  other.col_borrow_ = nullptr;
+  other.col_payload_off_ = nullptr;
+  other.col_node_count_ = nullptr;
+  other.n_slices_ = 0;
+  other.heavy_curves_.clear(); // a moved-from vector is only "valid but unspecified"
   return *this;
 }
 
@@ -630,7 +652,9 @@ PricedSurfaceView::ResolvedSurfacePoint PricedSurfaceView::resolve(double K,
   ResolvedSurfacePoint p;
   p.K = K;
   p.T = T;
-  if (!valid_query(K, T)) {
+  // n_slices_ == 0 is the moved-from (released-borrow) state: interp_forward
+  // would dereference the nulled columns, so fail closed instead.
+  if (!valid_query(K, T) || n_slices_ == 0) {
     return p;
   }
   return resolve_with_carry(K, T, interp_forward(T));
@@ -921,6 +945,11 @@ Status PricedSurfaceView::evaluate_batch(std::span<const double> K, std::span<co
                "PricedSurfaceView::evaluate_batch: query/output spans overlap");
   }
 
+  // A moved-from view released its column borrows (n_slices_ == 0). Treat every
+  // maturity as invalid so the batch fails closed lane-by-lane, exactly as the
+  // scalar resolve() guard does, instead of reading the nulled columns.
+  const bool mapped = n_slices_ != 0;
+
   std::size_t i = 0;
   while (i < n) {
     const double t = T[i];
@@ -928,7 +957,7 @@ Status PricedSurfaceView::evaluate_batch(std::span<const double> K, std::span<co
     while (j < n && std::bit_cast<std::uint64_t>(T[j]) == std::bit_cast<std::uint64_t>(t)) {
       ++j;
     }
-    const bool t_valid = std::isfinite(t) && (t > 0.0);
+    const bool t_valid = mapped && std::isfinite(t) && (t > 0.0);
     const ForwardCarry fc = t_valid ? interp_forward(t) : ForwardCarry{};
     // The view is always cold (no accelerator), so the price-only resolved-batch
     // fast path is always eligible — matching PricedSurface's default-tier path.
