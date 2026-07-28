@@ -121,6 +121,7 @@
 #include <string_view>
 #include <vector>
 
+#include "atx/vol/counters.hpp"            // counters::ledger (ATX_VOL_SOLVE_LEDGER dump)
 #include "atx/vol/opra_hive.hpp"           // OpraHiveSpec
 #include "atx/vol/session.hpp"             // FitPreset
 #include "atx/vol/surface_db_build.hpp"    // SurfaceDbBuildSpec, build_surface_db, write_build_report_csv
@@ -511,6 +512,23 @@ int main(int argc, char **argv) {
     std::fprintf(stderr, "atx-vol-surface-db-build: build_surface_db: %s\n",
                  report.error().to_string().c_str());
     return 1;
+  }
+
+  // Perf attribution seam (same env-gated shape as ATX_VOL_PROFILE): dump the
+  // always-on solve ledger so an operator can see where a build's CPU went
+  // (AL boundary solves / premium evals / IV Newton iterations) without a
+  // profiler. stderr, one `ledger.<name> <count>` line per counter — the stdout
+  // report shape is pinned by tests and stays untouched.
+  {
+    char env_buf[8];
+    std::size_t env_sz = 0;
+    if (getenv_s(&env_sz, env_buf, sizeof(env_buf), "ATX_VOL_SOLVE_LEDGER") == 0 && env_sz > 0) {
+      const counters::ledger::Counts c = counters::ledger::snapshot();
+      for (unsigned i = 0; i < counters::ledger::kCount; ++i) {
+        std::fprintf(stderr, "ledger.%s %llu\n", counters::ledger::kNames[i],
+                     static_cast<unsigned long long>(c.v[i]));
+      }
+    }
   }
 
   print_report(*report, max_failed_cells);
