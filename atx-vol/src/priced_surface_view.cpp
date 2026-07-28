@@ -126,6 +126,7 @@ PricedSurfaceView::~PricedSurfaceView() = default;
 // pointer) and zero `n_slices_`, which is the one flag the query guards read —
 // a moved-from view is structurally empty and every query fails closed
 // (resolve()/evaluate_batch() below). Destruction and re-assignment stay valid.
+//
 // Every member carries a default member initializer, so the empty body leaves
 // `*this` in exactly the structurally-empty state the assignment below produces
 // for a moved-from source; delegating to the assignment keeps the release list

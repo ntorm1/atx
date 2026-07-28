@@ -16,10 +16,10 @@
 #include <exception>
 #include <future>
 #include <limits>
-#include <system_error>
 #include <memory>
 #include <optional>
 #include <span>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -186,7 +186,8 @@ struct PricedSurface::QueryAccelerator {
         put_future = std::async(std::launch::async, build_side, Side::Put);
         put_async = true;
       } catch (const std::system_error &) {
-        put_async = false;
+        // No execution agent available; `put_async` stays false and the put side
+        // is built inline below.
       }
     }
     auto call = build_side(Side::Call);
