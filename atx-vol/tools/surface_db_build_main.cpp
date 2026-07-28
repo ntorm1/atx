@@ -346,6 +346,15 @@ void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
   std::printf("n_load_errors %zu\n", r.n_load_errors);
   std::printf("n_coverage_holes %zu\n", r.n_coverage_holes);
 
+  // Coarse phase split, so a slow build says WHICH phase is slow without
+  // attaching a profiler. The three scale on different axes: `load` per date
+  // file, `config` per NEW symbol (serial), `populate` per cell (fanned out over
+  // --fit-workers). A resumed run reports a near-zero config phase because every
+  // symbol is already stored, which is itself the useful signal.
+  std::printf("timing.load_s %.3f\n", r.t_load_s);
+  std::printf("timing.config_s %.3f\n", r.t_config_s);
+  std::printf("timing.populate_s %.3f\n", r.t_populate_s);
+
   // Every symbol the database is currently NOT serving (fail-closed; never
   // silently served) — the ones this run disabled AND the ones it found already
   // stored disabled. Printed on every run, not just the one that first stored the

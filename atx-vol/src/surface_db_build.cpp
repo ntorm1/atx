@@ -1,6 +1,7 @@
 #include "atx/vol/surface_db_build.hpp"
 
 #include <algorithm>
+#include <chrono> // coarse build-phase wall clock (diagnostic only)
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
@@ -46,6 +47,12 @@ SymbolFitConfig seed_symbol_config(std::string_view symbol, FitPreset preset,
 }
 
 namespace {
+
+// Seconds elapsed since `begin` on the steady clock. Used only to fill the
+// diagnostic `SurfaceDbBuildReport::t_*_s` fields.
+[[nodiscard]] double phase_seconds_since(std::chrono::steady_clock::time_point begin) noexcept {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+}
 
 // A board can be selected on only when its underlying carries at least one
 // expiry with >= 2 strikes: a single point cannot pin or select a curve (the
@@ -300,10 +307,12 @@ Result<SurfaceDbBuildReport> build_surface_db(const SurfaceDbBuildSpec &spec) {
 
   // 2. Load the hive window. A missing/un-pulled window is Ok (no boards); the
   //    ONLY top-level Err here is a malformed hive spec (empty root, bad dates).
+  const auto t_load_begin = std::chrono::steady_clock::now();
   Result<OpraBatchResult> loaded = load_opra_hive(spec.hive);
   if (!loaded) {
     return Err(loaded.error());
   }
+  const double t_load_s = phase_seconds_since(t_load_begin);
 
   // 3. One board per SUCCESSFULLY loaded cell; missing/corrupt cells are tallied
   //    and never fit. The date counters are DISTINCT dates (a date is "loaded"
@@ -337,11 +346,13 @@ Result<SurfaceDbBuildReport> build_surface_db(const SurfaceDbBuildSpec &spec) {
   //    BEFORE the populate so its richer per-board family pin is in place; the
   //    populate's own seeding then finds every symbol already configured. An
   //    empty board set is an all-zero report (Ok).
+  const auto t_config_begin = std::chrono::steady_clock::now();
   Result<AutoConfigReport> cfg = generate_symbol_configs(db, boards, spec.auto_config);
   if (!cfg) {
     return Err(cfg.error());
   }
   report.config = std::move(*cfg);
+  const double t_config_s = phase_seconds_since(t_config_begin);
 
   // 5. Cell-aware streaming populate. The index leg / preset / worker budget come
   //    from this spec; an empty board set is a graceful all-zero no-op.
@@ -350,12 +361,16 @@ Result<SurfaceDbBuildReport> build_surface_db(const SurfaceDbBuildSpec &spec) {
   pspec.preset = spec.preset;
   pspec.fit_workers = spec.fit_workers;
   pspec.allow_coverage_regression = spec.allow_coverage_regression; // REV-R3
+  const auto t_populate_begin = std::chrono::steady_clock::now();
   Result<UniversePopulateCoverage> cov = populate_universe_streaming(db, boards, pspec);
   if (!cov) {
     return Err(cov.error());
   }
   report.coverage = std::move(*cov);
 
+  report.t_load_s = t_load_s;
+  report.t_config_s = t_config_s;
+  report.t_populate_s = phase_seconds_since(t_populate_begin);
   return Ok(std::move(report));
 }
 
