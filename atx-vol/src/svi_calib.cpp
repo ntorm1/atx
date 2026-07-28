@@ -1183,6 +1183,30 @@ Result<SviParams> svi_mm_fit_slice(std::span<const FitObs> obs, double T,
       }
       const double sig_pred = std::sqrt(w_pred / T);
       const double p_pred = black76_price(o.F, o.K, T, sig_pred, o.df, o.side);
+      // Scoring a non-finite model price as a ZERO residual is the 1.8(a)
+      // defect class (see the svi_mm_sse note above): an observation the
+      // candidate CANNOT price is recorded as a perfect fit, which both hands
+      // that row full Huber weight and deflates rms_resid_px, shifting the
+      // threshold for every other row. It is left as a mask rather than turned
+      // into a fail-closed guard because the 1.8(a) fix already makes the
+      // damaging state unreachable, and the guard would be untestable:
+      //
+      //  * black76_price is non-finite here only if sig_pred is (F, K, df are
+      //    finite quote geometry and T > 0), i.e. only if w_pred is: v^2 IS
+      //    w_pred, so d1 = (ln(F/K) + w_pred/2)/sqrt(w_pred) stays finite for
+      //    every finite w_pred, and the floor above keeps w_pred positive.
+      //  * svi_w_raw is non-finite for SOME k but not all only if `b` has
+      //    escaped mm_project_default's Lee cap b*(1+|rho|) <= 4/T — which
+      //    every LM-accepted iterate and the projected seed have passed.
+      //  * If it is non-finite for ALL rows, sumwr2 stays 0, rms_resid_px is 0,
+      //    and the `rms_resid_px > 1e-12` gate below skips the whole reweight,
+      //    so the fabricated zeros never reach a Huber weight at all.
+      //
+      // Distorting the reweight therefore requires defeating the projector. If
+      // that cap is ever relaxed, restore fail-closed behaviour by leaving the
+      // outer loop on a non-finite `sse`: svi_mm_sse already returns +inf for
+      // exactly this condition. The final RMSE loop below carries the same mask
+      // and the same reasoning.
       const double r_px = std::isfinite(p_pred) ? (p_pred - o.mid) : 0.0;
       resid_scratch[i] = r_px;
       sumw += o.weight_w;
