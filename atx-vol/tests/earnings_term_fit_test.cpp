@@ -100,8 +100,9 @@ TEST(SrTenorGrid, AdvanceTradingDays_SkipsWeekendAndHoliday) {
   // brief-suggested `EXPECT_GT` would miss.
   const std::int64_t fri = ns_utc(2026, 2, 13, 16, 0);
   const auto& cal = VolTimeCalendar::us_default();
-  const std::int64_t next = advance_trading_days(fri, 1, cal);
-  EXPECT_EQ(next, ns_utc(2026, 2, 17, 16, 0));  // intraday time-of-day preserved
+  const auto next = advance_trading_days(fri, 1, cal);
+  ASSERT_TRUE(next.has_value()) << next.error().to_string();
+  EXPECT_EQ(*next, ns_utc(2026, 2, 17, 16, 0));  // intraday time-of-day preserved
 }
 
 TEST(SrTenorGrid, AdvanceTradingDays_SkipsPlainWeekendNoHoliday) {
@@ -109,13 +110,77 @@ TEST(SrTenorGrid, AdvanceTradingDays_SkipsPlainWeekendNoHoliday) {
   // -> Mon 2026-07-13 (Thu 07-09, Fri 07-10, then Sat/Sun skipped, Mon
   // 07-13 is the 3rd trading day).
   const std::int64_t wed = ns_utc(2026, 7, 8, 20, 30);
-  const std::int64_t next = advance_trading_days(wed, 3, VolTimeCalendar::us_default());
-  EXPECT_EQ(next, ns_utc(2026, 7, 13, 20, 30));
+  const auto next = advance_trading_days(wed, 3, VolTimeCalendar::us_default());
+  ASSERT_TRUE(next.has_value()) << next.error().to_string();
+  EXPECT_EQ(*next, ns_utc(2026, 7, 13, 20, 30));
 }
 
 TEST(SrTenorGrid, AdvanceTradingDays_ZeroIsNoOp) {
   const std::int64_t now = ns_utc(2026, 2, 13, 16, 0);
-  EXPECT_EQ(advance_trading_days(now, 0, VolTimeCalendar::us_default()), now);
+  const auto same = advance_trading_days(now, 0, VolTimeCalendar::us_default());
+  ASSERT_TRUE(same.has_value()) << same.error().to_string();
+  EXPECT_EQ(*same, now);
+}
+
+// Fail-closed (defect 1.10, sr_tenor_grid): a day the calendar does not COVER
+// must never be counted as a trading day. Mon 2026-02-16 is a real NYSE full
+// closure (pinned by PresidentsDay2026_IsNyseHoliday above), but a calendar whose
+// table stops on Fri 2026-02-13 cannot say so -- `is_holiday` answers false for
+// "not a listed closure" and for "outside the table" alike, and the stepper used
+// to read that false as "open", returning Presidents Day itself as the next
+// trading day. Every tenor derived from such a step was wrong with no diagnostic.
+TEST(SrTenorGrid, AdvanceTradingDays_OutsideCalendarWindowFailsClosed) {
+  constexpr std::int64_t kDayNs = 24LL * 3600LL * 1'000'000'000LL;
+  const auto first = static_cast<std::int32_t>(ns_utc(2026, 2, 9, 0, 0) / kDayNs);
+  const auto last = static_cast<std::int32_t>(ns_utc(2026, 2, 13, 0, 0) / kDayNs);
+  const VolTimeCalendar narrow{std::vector<std::int32_t>{}, first, last};
+  const std::int64_t fri = ns_utc(2026, 2, 13, 16, 0);
+  const auto out = advance_trading_days(fri, 1, narrow);
+  ASSERT_FALSE(out.has_value()) << "silently counted the uncovered 2026-02-16 closure";
+  EXPECT_EQ(out.error().code(), atx::vol::ErrorCode::OutOfRange);
+}
+
+// The window gates exactly the days whose closure status can MOVE the answer.
+// Weekends are decided without the table (a Saturday is a Saturday at any date),
+// so a step whose every counted day is covered succeeds even though the stepper
+// walked across an intervening weekend.
+TEST(SrTenorGrid, AdvanceTradingDays_WithinCoveredDaysSucceedsAcrossAWeekend) {
+  constexpr std::int64_t kDayNs = 24LL * 3600LL * 1'000'000'000LL;
+  const auto first = static_cast<std::int32_t>(ns_utc(2026, 7, 6, 0, 0) / kDayNs);  // Mon
+  const auto last = static_cast<std::int32_t>(ns_utc(2026, 7, 13, 0, 0) / kDayNs);  // next Mon
+  const VolTimeCalendar narrow{std::vector<std::int32_t>{}, first, last};
+  const std::int64_t thu = ns_utc(2026, 7, 9, 20, 30);
+  const auto out = advance_trading_days(thu, 2, narrow); // Fri 07-10, [weekend], Mon 07-13
+  ASSERT_TRUE(out.has_value()) << out.error().to_string();
+  EXPECT_EQ(*out, ns_utc(2026, 7, 13, 20, 30));
+}
+
+// The bounded-loop guard reports instead of returning a truncated day: a calendar
+// that closes every day in the stepped window has no n-th trading day at all, and
+// the pre-Result code returned whatever day the bound stopped on (debug-asserted,
+// silent in release).
+TEST(SrTenorGrid, AdvanceTradingDays_NoTradingDayWithinTheStepBoundFailsClosed) {
+  constexpr std::int64_t kDayNs = 24LL * 3600LL * 1'000'000'000LL;
+  const auto start = static_cast<std::int32_t>(ns_utc(2026, 7, 6, 0, 0) / kDayNs);
+  std::vector<std::int32_t> every_day;
+  every_day.reserve(60);
+  for (std::int32_t d = start; d < start + 60; ++d) {
+    every_day.push_back(d);
+  }
+  const VolTimeCalendar shut{std::move(every_day), start, start + 60};
+  const auto out = advance_trading_days(ns_utc(2026, 7, 6, 16, 0), 1, shut);
+  ASSERT_FALSE(out.has_value());
+  EXPECT_EQ(out.error().code(), atx::vol::ErrorCode::OutOfRange);
+}
+
+// A negative horizon is a caller contract violation, not a no-op: it used to
+// degrade to "return now_ns" in release (assert-only in debug), which reads
+// downstream as a legitimate zero-day tenor.
+TEST(SrTenorGrid, AdvanceTradingDays_NegativeHorizonIsRejected) {
+  const auto out =
+      advance_trading_days(ns_utc(2026, 2, 13, 16, 0), -1, VolTimeCalendar::us_default());
+  ASSERT_FALSE(out.has_value());
+  EXPECT_EQ(out.error().code(), atx::vol::ErrorCode::InvalidArgument);
 }
 
 TEST(SrTenorGrid, TenorYears_252TdApproxOneYear) {
@@ -132,12 +197,25 @@ TEST(SrTenorGrid, TenorYears_ComposesAdvanceAndTimeToExpiry) {
   // hidden second calendar or convention path.
   const std::int64_t now = ns_utc(2026, 2, 13, 16, 0);
   const TimeSpec spec{};
-  const std::int64_t expiry = advance_trading_days(now, 21, VolTimeCalendar::us_default());
+  const auto expiry = advance_trading_days(now, 21, VolTimeCalendar::us_default());
+  ASSERT_TRUE(expiry.has_value()) << expiry.error().to_string();
   const auto composed = tenor_years(now, 21, spec);
-  const auto direct = time_to_expiry_years(now, expiry, spec);
+  const auto direct = time_to_expiry_years(now, *expiry, spec);
   ASSERT_TRUE(composed.has_value()) << composed.error().to_string();
   ASSERT_TRUE(direct.has_value()) << direct.error().to_string();
   EXPECT_DOUBLE_EQ(*composed, *direct);
+}
+
+// `tenor_years` propagates the stepper's coverage error rather than folding it
+// into a plausible-looking year-fraction -- including on the DEFAULT Calendar365
+// convention, whose year-fraction reads no calendar but whose EXPIRY INSTANT is
+// still produced by the trading-day walk. 21 trading days from 2028-12-24 leaves
+// us_default()'s 2024-2028 table.
+TEST(SrTenorGrid, TenorYears_StepOutsideTheCalendarWindowFailsClosed) {
+  const std::int64_t now = ns_utc(2028, 12, 24, 16, 0);
+  const auto y = tenor_years(now, 21, TimeSpec{}); // Calendar365 default
+  ASSERT_FALSE(y.has_value());
+  EXPECT_EQ(y.error().code(), atx::vol::ErrorCode::OutOfRange);
 }
 
 // ── fit_term_curve_for_emove / term_curve_value (Task 3) ───────────────────

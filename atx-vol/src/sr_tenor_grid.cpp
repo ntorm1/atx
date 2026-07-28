@@ -1,11 +1,16 @@
 #include "atx/vol/sr_tenor_grid.hpp"
 
-#include <cassert>
 #include <cstdint>
+#include <string>
 
+#include "atx/core/error.hpp"
 #include "atx/vol/vol_time.hpp"
 
 namespace atx::vol {
+
+using atx::core::Err;
+using atx::core::ErrorCode;
+using atx::core::Ok;
 
 namespace {
 
@@ -14,9 +19,11 @@ constexpr std::int64_t kNsPerDay = 24LL * 3600LL * kNsPerSec;
 
 }  // namespace
 
-std::int64_t advance_trading_days(std::int64_t now_ns, int n,
-                                  const VolTimeCalendar& cal) noexcept {
-  assert(n >= 0);  // contract: caller advances forward only
+Result<std::int64_t> advance_trading_days(std::int64_t now_ns, int n, const VolTimeCalendar& cal) {
+  if (n < 0) {
+    return Err(ErrorCode::InvalidArgument,
+               "advance_trading_days: n must be >= 0, got " + std::to_string(n));
+  }
 
   // Split now_ns into a civil day index (days-since-epoch, matching
   // VolTimeCalendar's numbering) + intraday ns-of-day, floor-dividing so
@@ -40,22 +47,49 @@ std::int64_t advance_trading_days(std::int64_t now_ns, int n,
   int remaining = n;
   for (std::int64_t steps = 0; steps < max_steps && remaining > 0; ++steps) {
     ++day;
-    if (is_weekend_day(static_cast<std::int32_t>(day))) {
-      continue;
+    const auto day32 = static_cast<std::int32_t>(day);
+    if (is_weekend_day(day32)) {
+      continue;  // a Saturday is a Saturday at any date, table or no table
     }
-    if (cal.is_holiday(static_cast<std::int32_t>(day))) {
+    // FAIL CLOSED before consulting the table, on every day whose closure status
+    // decides whether this step COUNTS. `is_holiday` cannot distinguish "not a
+    // listed closure" from "outside the range the table was populated for" -- both
+    // answer false -- so reading it beyond `covers()` silently counts real
+    // closures as trading days and lands the tenor one or more days early (plan
+    // item 1.10, the same treatment `trading_hours_between` applies at its accrual
+    // site). Weekend days above are exempt because their status comes from the day
+    // number itself, never from `cal`.
+    if (!cal.covers(day32)) {
+      return Err(ErrorCode::OutOfRange,
+                 "advance_trading_days: day " + std::to_string(day32) +
+                     " would be counted as a trading day but lies outside the calendar's "
+                     "covered window [" +
+                     std::to_string(cal.first_covered_day()) + ", " +
+                     std::to_string(cal.last_covered_day()) + "] (days since 1970-01-01)");
+    }
+    if (cal.is_holiday(day32)) {
       continue;
     }
     --remaining;
   }
-  assert(remaining == 0);  // the max_steps bound above must have been sufficient
+  if (remaining > 0) {
+    // The bound is generous for any real closure calendar (see max_steps above), so
+    // exhausting it means `cal` closes essentially every day in the stepped window
+    // and the n-th trading day does not exist there. Report it: the pre-Result code
+    // asserted in debug and returned the day the bound stopped on in release, which
+    // is an ordinary-looking instant that is simply not the requested tenor.
+    return Err(ErrorCode::OutOfRange,
+               "advance_trading_days: no " + std::to_string(n) +
+                   "-th trading day within " + std::to_string(max_steps) +
+                   " civil days of the start (calendar closes the whole window)");
+  }
 
-  return day * kNsPerDay + tod;
+  return Ok(day * kNsPerDay + tod);
 }
 
 Result<double> tenor_years(std::int64_t now_ns, int n_trading_days, const TimeSpec& spec) {
-  const std::int64_t expiry_ns =
-      advance_trading_days(now_ns, n_trading_days, VolTimeCalendar::us_default());
+  ATX_TRY(const std::int64_t expiry_ns,
+          advance_trading_days(now_ns, n_trading_days, VolTimeCalendar::us_default()));
   return time_to_expiry_years(now_ns, expiry_ns, spec);
 }
 
