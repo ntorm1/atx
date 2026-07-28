@@ -169,6 +169,51 @@ TEST(SimdBlack76GreeksBatch, ExtremeFKRatioMatchesScalarExactly) {
   }
 }
 
+// Plan item 2.5, vector leg. MatchesScalarAcrossGrid bounds price agreement
+// ABSOLUTELY (1e-6), which cannot see a wing premium of ~1e-17 being zeroed or
+// sign-flipped by the 1−Φ(d) complement this kernel used on the put price. Now
+// that the scalar bundle prices puts from Φ(−d), the batch must too — assert
+// RELATIVE agreement plus the premium's sign on wing lanes chosen so the
+// complement form is demonstrably wrong there.
+//
+// Only the put PRICE moved: put DELTA still mirrors the scalar's −df·(1−Φ(d1)),
+// so it is asserted bit-for-bit here to pin that it did NOT change.
+TEST(SimdBlack76GreeksBatch, DeepOtmPutPrice_MatchesScalarRelativelyAndStaysNonNegative) {
+  Batch b;
+  b.push(100.0, 50.0, 0.10, 0.20, 0.03, 0.995, Side::Put);
+  b.push(200.0, 100.0, 0.10, 0.22, 0.03, 0.99, Side::Put);
+  b.push(150.0, 75.0, 0.12, 0.20, 0.03, 0.99, Side::Put);
+  b.push(100.0, 48.0, 0.10, 0.20, 0.03, 0.995, Side::Put);
+  b.push(100.0, 72.0, 0.25, 0.08, 0.03, 1.0, Side::Put);
+  b.push(100.0, 72.0, 1.00, 0.04, 0.03, 1.0, Side::Put);
+  b.push(100.0, 68.0, 0.10, 0.15, 0.03, 1.0, Side::Put);
+  b.push(100.0, 92.0, 0.002, 0.25, 0.03, 1.0, Side::Put);
+  const std::size_t n = b.size();
+  std::vector<Greeks> got(n);
+  std::vector<double> price(n, -1.0);
+  simd::black76_greeks_batch(b.F.data(), b.K.data(), b.T.data(), b.sigma.data(),
+                             b.r.data(), b.df.data(), b.side.data(), got.data(),
+                             price.data(), n);
+  double max_rel = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const Black76Greeks w =
+        black76_greeks(b.F[i], b.K[i], b.T[i], b.sigma[i], b.r[i], b.df[i], b.side[i]);
+    ASSERT_GT(w.price, 0.0) << "i=" << i; // a genuine, tiny wing premium
+    EXPECT_GE(price[i], 0.0) << "i=" << i << " price=" << price[i];
+    const double rel = std::abs(price[i] - w.price) / w.price;
+    max_rel = std::max(max_rel, rel);
+    // 1e-11: lanes 4-7 sit shallower in the wing, where K·Φ(−d2) − F·Φ(−d1)
+    // still cancels ~2 decades and amplifies the vector Cody-erfc Φ's own error
+    // against libm erfc. That is a Φ-accuracy floor, not a formula difference —
+    // the complement form misses by ≥ 100% relative (measured 1.0 and 72.5 on
+    // these lanes), 11 orders outside this bound.
+    EXPECT_LT(rel, 1e-11)
+        << "i=" << i << " got=" << price[i] << " want=" << w.price;
+    EXPECT_EQ(got[i].delta, w.greeks.delta) << "delta i=" << i;
+  }
+  std::printf("[SimdBlack76GreeksBatch] deep-OTM-put price max_rel=%.3e\n", max_rel);
+}
+
 // The five special rows sit at the tail of make_grid(): the first THREE are
 // degenerate (expired / zero-vol), the last TWO are deep-wing. They straddle a
 // full SIMD group and the scalar tail.

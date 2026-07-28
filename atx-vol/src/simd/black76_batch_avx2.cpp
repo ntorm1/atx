@@ -173,14 +173,21 @@ void value_vega_batch_avx2_impl(const double *F, const double *K, const double *
     norm_cdf_erfc_pd2(d1, d2, nd1, nd2); // K2: full-range Cody erfc Φ (see price batch)
     const __m256d call = _mm256_mul_pd(
         safe_df, _mm256_sub_pd(_mm256_mul_pd(safe_f, nd1), _mm256_mul_pd(safe_k, nd2)));
-    // A8 (simd-review finding 1): this value+vega kernel deliberately KEEPS the
-    // 1−Φ(d) complement for the put leg (unlike the price kernel above, which uses
-    // Φ(−d)) to stay bit-consistent with its scalar ref black76_value_and_vega,
-    // which also uses the complement — so batch and scalar agree EXACTLY (both 0.0)
-    // deep in the put wing rather than one being accurate and one not.
-    const __m256d put =
-        _mm256_mul_pd(safe_df, _mm256_sub_pd(_mm256_mul_pd(safe_k, _mm256_sub_pd(one, nd2)),
-                                             _mm256_mul_pd(safe_f, _mm256_sub_pd(one, nd1))));
+    // Plan item 2.5 (supersedes A8): the put leg is computed from Φ(−d1), Φ(−d2)
+    // DIRECTLY — negate the args, the Cody erfc kernel is symmetric and accurate
+    // for negatives — exactly as the price kernel below does. A8 previously kept
+    // the 1−Φ(d) complement here to stay bit-consistent with the scalar
+    // black76_value_and_vega, which also used it; that reference has since moved
+    // to Φ(−d), so the complement would now be BOTH the wrong answer and a
+    // batch/scalar divergence. The complement cancels catastrophically deep in
+    // the put wing (d ≫ 0 ⇒ Φ(d) rounds to exactly 1.0 ⇒ 1−Φ(d) = 0.0), zeroing a
+    // genuine premium or — when the two complements round to the same multiple u
+    // of ε — returning the NEGATIVE df·(K−F)·u. The call leg keeps Φ(d1), Φ(d2)
+    // (no cancellation there).
+    __m256d nm1, nm2;
+    norm_cdf_erfc_pd2(_mm256_sub_pd(zero, d1), _mm256_sub_pd(zero, d2), nm1, nm2);
+    const __m256d put = _mm256_mul_pd(
+        safe_df, _mm256_sub_pd(_mm256_mul_pd(safe_k, nm2), _mm256_mul_pd(safe_f, nm1)));
     __m256d price = _mm256_blendv_pd(call, put, side_blend_mask(side, i));
     __m256d vega =
         _mm256_mul_pd(_mm256_mul_pd(_mm256_mul_pd(safe_f, safe_df), norm_pdf_pd(d1)), sqrt_t);
