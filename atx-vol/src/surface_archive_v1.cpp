@@ -1120,36 +1120,28 @@ Result<ArchivedSurface> SurfaceArchive::reconstruct(const ArchiveIndexSlot &slot
       curve = std::make_unique<C8Curve>(c8, sh.df);
       break;
     }
-    case VolCurveKind::SplineVol: {
-      // Additive ATXVSA payload (Task I5) -- see slice_payload_size's
-      // SplineVol case (surface_archive.cpp) for the full wire-format
-      // description + versioning rationale.
-      constexpr std::uint64_t kFixedBytes = 32; // atm_vol+z_lo+z_hi+n+n_butterfly_viol
-      if (sh.payload_size < kFixedBytes) {
-        return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: spline payload too small");
-      }
-      std::uint32_t n = 0;
-      std::memcpy(&n, payload + 24, sizeof n);
-      const std::uint64_t need = kFixedBytes + 16ull * static_cast<std::uint64_t>(n);
-      if (n != sh.node_count || need != sh.payload_size) {
-        return Err(ErrorCode::ParseError,
-                   "SurfaceArchive::reconstruct: spline node payload size mismatch");
-      }
-      SplineVolParams p;
-      std::memcpy(&p.atm_vol, payload + 0, sizeof(double));
-      std::memcpy(&p.z_lo_valid, payload + 8, sizeof(double));
-      std::memcpy(&p.z_hi_valid, payload + 16, sizeof(double));
-      p.z.resize(n);
-      p.mult.resize(n);
-      const std::size_t nb = static_cast<std::size_t>(n) * sizeof(double);
-      std::memcpy(p.z.data(), payload + 28, nb);
-      std::memcpy(p.mult.data(), payload + 28 + nb, nb);
-      std::uint32_t viol = 0;
-      std::memcpy(&viol, payload + 28 + 2 * nb, sizeof viol);
-      p.n_butterfly_viol = viol;
-      curve = std::make_unique<SplineVolCurve>(std::move(p), sh.T, sh.forward, sh.df);
-      break;
-    }
+    case VolCurveKind::SplineVol:
+      // FAIL CLOSED (plan item 2.15). The v1 payload for this kind carries
+      // atm_vol/z_lo/z_hi, the knot arrays and the butterfly-violation count --
+      // and nothing else. It has no field for `mult_cap` (the served-multiple
+      // clamp) or `w_offset` (the calendar-cone additive lift), yet BOTH are live
+      // eval-time terms of `SplineVolCurve::w()` (see spline_curve.cpp). A reader
+      // can only invent 0 for each, which is ALSO a legitimate value for both, so
+      // the bytes cannot distinguish "no clamp, no lift" from "the writer dropped
+      // them": the reconstructed curve serves unclamped wings and misses the
+      // whole lift, silently. `migrate_atxvsa_v1_to_v2` would then forward those
+      // invented zeros into a v2 record that CAN carry the fields (v2 minor 1),
+      // making the loss permanent and unattributable.
+      //
+      // Nothing is recoverable from the record, so there is no repair to attempt
+      // -- the read is refused. The v1 WRITER is deliberately left able to emit
+      // this kind: no product TU links v1 at all (this whole file is the
+      // migrator/bench/test-only `atx-vol-archive-v1` library, deleted in S3),
+      // and emitting one is how the reject above stays testable.
+      return Err(ErrorCode::ParseError,
+                 "SurfaceArchive::reconstruct: v1 archives cannot represent a SplineVol slice "
+                 "(the payload carries no mult_cap/w_offset, both live terms of w()); "
+                 "re-fit the surface and write it as v2 (.atxvsa2) instead");
     default:
       return Err(ErrorCode::ParseError, "SurfaceArchive::reconstruct: unknown curve kind");
     }

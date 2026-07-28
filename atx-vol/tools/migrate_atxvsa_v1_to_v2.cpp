@@ -14,6 +14,12 @@
 // therefore the schema_hash/validation semantics the readers depend on. A
 // created_ts of 0 lets the v2 writer stamp the wall clock; pass nothing else —
 // this tool is deliberately option-free and disposable.
+//
+// One kind does NOT migrate: a v1 SplineVol record has no `mult_cap`/`w_offset`
+// on the wire, and both are live terms of `SplineVolCurve::w()`, so the v1 reader
+// refuses it (plan item 2.15) rather than let this tool forward invented zeros
+// into a v2 record that can carry them. Such an archive aborts here with that
+// error; the surface has to be re-fitted and written as v2 directly.
 
 #include <cstddef>
 #include <cstdio>

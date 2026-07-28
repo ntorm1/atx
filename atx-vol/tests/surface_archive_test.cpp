@@ -273,7 +273,11 @@ constexpr double kR = 0.043;
 
 // SplineVol priced surface, `n` ascending-T slices, each fit_spline_vol_slice'd
 // from an SVI-generated smile (the exact fixture spline_curve_test.cpp uses for
-// SplineVol, RecoversSviSmile) -- genuine fitted params, not hand-rolled.
+// SplineVol, RecoversSviSmile) -- genuine fitted params, not hand-rolled. Each
+// slice's params then get a LOW `mult_cap` (clamps the fitted wing multiples) and
+// a NONZERO `w_offset` (the calendar-cone additive lift): both are live
+// eval-time terms of `SplineVolCurve::w()`, and neither has a field in the v1
+// payload. Mirrors surface_archive_v2_test's own C1 fixture.
 [[nodiscard]] PricedSurface make_spline(std::uint32_t uid, int n) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
@@ -290,7 +294,11 @@ constexpr double kR = 0.043;
     const std::vector<FitObs> obs = svi_smile_obs(svi, T, 25, 0.6);
     auto fitted = fit_spline_vol_slice(obs, F, T, df);
     EXPECT_TRUE(fitted.has_value()) << (fitted.has_value() ? "" : fitted.error().to_string());
-    cs.push(std::move(*fitted));
+    auto *svc = static_cast<SplineVolCurve *>(fitted->get());
+    SplineVolParams p = svc->params(); // deep copy (owns z/mult vectors)
+    p.mult_cap = 1.1;                  // low: clamps the fitted put/call wing multiples
+    p.w_offset = 0.015 + 0.002 * static_cast<double>(i); // nonzero calendar lift
+    cs.push(std::make_unique<SplineVolCurve>(std::move(p), T, F, df));
     ctx.push_back(SliceContext{T, F, 0.0, 0.02, 25, 0});
   }
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
@@ -767,42 +775,42 @@ TEST(SurfaceArchive, RoundTrip_C8_TheoAndParamsBitIdentical) {
   }
 }
 
-TEST(SurfaceArchive, SplineVolRoundTripBitExact) {
+// P2 2.15: a v1 SplineVol record is UNREADABLE, not merely lossy.
+//
+// The v1 (ATXVSA) SplineVol payload was specified as atm_vol/z_lo/z_hi, the knot
+// arrays, and the butterfly-violation count. It has no field for `mult_cap` (the
+// served-multiple clamp) or `w_offset` (the calendar-cone additive lift), and
+// BOTH are live eval-time terms of `SplineVolCurve::w()`. A reader therefore has
+// to invent 0 for each, which is also a legitimate value for both, so nothing in
+// the bytes distinguishes "the slice had no clamp and no lift" from "the writer
+// dropped them". The reconstructed curve then misprices by the whole lift and
+// serves unclamped wings -- and `migrate_atxvsa_v1_to_v2` would forward exactly
+// those invented zeros into a v2 record that CAN carry the fields, making the
+// loss permanent and invisible.
+//
+// There is nothing to recover, so the read fails closed. This test previously
+// asserted a bit-exact round trip and passed only because its fixture left both
+// fields at 0; the fixture now sets them, which is what a real fitted+projected
+// slice carries.
+TEST(SurfaceArchive, SplineVolRecord_FailsClosedBecauseV1CannotCarryMultCapOrWOffset) {
   const PricedSurface orig = make_spline(21, 4);
-  auto got = round_trip(orig, "SPLN", "spln");
-  ASSERT_TRUE(got.has_value());
-  EXPECT_EQ(got->kind_at(0), VolCurveKind::SplineVol);
-  expect_theo_bit_identical(orig, *got);
+  std::vector<std::byte> buf = build_one(orig, "SPLN");
+  ASSERT_FALSE(buf.empty());
+  auto opened = SurfaceArchive::open(std::move(buf));
+  ASSERT_TRUE(opened.has_value()) << opened.error().to_string();
 
-  for (std::size_t i = 0; i < orig.n_slices(); ++i) {
-    const auto *a = static_cast<const SplineVolCurve *>(orig.surface().slices()[i].get());
-    const auto *b = static_cast<const SplineVolCurve *>(got->surface().slices()[i].get());
-    const SplineVolParams &pa = a->params();
-    const SplineVolParams &pb = b->params();
-    // Byte-equality of the re-serialized payload: every scalar + array field
-    // that write_surface_archive packs into the ATXVSA payload compares
-    // byte-for-byte (memcmp on the arrays, bit-exact on the scalars) --
-    // mirrors RoundTrip_LinearVariance_TheoAndNodesBitIdentical's node-array
-    // memcmp and RoundTrip_C8_TheoAndParamsBitIdentical's whole-struct memcmp.
-    EXPECT_TRUE(bits_equal(pa.atm_vol, pb.atm_vol));
-    EXPECT_TRUE(bits_equal(pa.z_lo_valid, pb.z_lo_valid));
-    EXPECT_TRUE(bits_equal(pa.z_hi_valid, pb.z_hi_valid));
-    ASSERT_EQ(pa.z.size(), pb.z.size());
-    ASSERT_EQ(pa.mult.size(), pb.mult.size());
-    EXPECT_EQ(std::memcmp(pa.z.data(), pb.z.data(), pa.z.size() * sizeof(double)), 0);
-    EXPECT_EQ(std::memcmp(pa.mult.data(), pb.mult.data(), pa.mult.size() * sizeof(double)), 0);
-    EXPECT_EQ(pa.n_butterfly_viol, pb.n_butterfly_viol);
-  }
+  const auto mapped = opened->map_symbol("spln");
+  ASSERT_FALSE(mapped.has_value())
+      << "reconstructed a SplineVol slice with an INVENTED mult_cap/w_offset of 0";
+  EXPECT_EQ(mapped.error().code(), ErrorCode::ParseError);
+  EXPECT_NE(mapped.error().to_string().find("SplineVol"), std::string::npos)
+      << mapped.error().to_string();
 
-  // w() equality on a 64-pt k-grid, bit-exact (==, not NEAR).
-  for (std::size_t i = 0; i < orig.n_slices(); ++i) {
-    const auto *a = orig.surface().slices()[i].get();
-    const auto *b = got->surface().slices()[i].get();
-    for (int g = -32; g <= 31; ++g) {
-      const double k = 0.01 * static_cast<double>(g);
-      EXPECT_TRUE(bits_equal(a->w(k), b->w(k))) << "slice " << i << " k=" << k;
-    }
-  }
+  // Every other kind in the same archive is unaffected: the reject is per-record.
+  const PricedSurface essvi = make_essvi(22, 3);
+  auto other = round_trip(essvi, "SPY", "SPY");
+  ASSERT_TRUE(other.has_value());
+  expect_theo_bit_identical(essvi, *other);
 }
 
 // Per-slice re-pricing context (T / forward / q_eff / borrow / counts) round-trips.
