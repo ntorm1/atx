@@ -3,10 +3,11 @@
 // Built with -mavx2 -mfma (see atx-vol/CMakeLists.txt). Called only when the
 // dispatch layer confirms AVX2+FMA at runtime. Lane-parallel across 4 positions;
 // the n % 4 tail runs the identical scalar decomposition. Pure arithmetic — no
-// transcendentals — so the whole kernel is loads, multiplies, and fused
-// multiply-adds; the eight-term "explained" total is a single FMA chain over the
-// (coefficient, state-move) products, which reproduces the scalar source of truth
-// (pnl_batch.cpp) to ~1e-12.
+// transcendentals, no cross-position reduction — so the kernel is loads,
+// multiplies, and adds in EXACTLY the scalar source of truth's association tree
+// (pnl_batch.cpp), and reproduces it BIT-FOR-BIT. Deliberately no FMA here: fusing
+// would drop the rounding of each product, which is both a route-dependent and a
+// batch-index-dependent answer for the same position.
 //
 // Per 4-lane pass, per share (then weighted by w = qty, or 1.0 when qty is null):
 //   pd = delta·dS   pg = ½gamma·dS²   pv = vega·dSigma   pvol = ½volga·dSigma²
@@ -77,33 +78,36 @@ void pnl_taylor_explain_batch_avx2(const PnlExplainInputs& in,
         const __m256d rho = _mm256_loadu_pd(in.rho + i);
         const __m256d charm = _mm256_loadu_pd(in.charm + i);
 
-        // Shared move products and the ½-scaled second-order coefficients.
-        const __m256d dS2 = _mm256_mul_pd(dS, dS);
-        const __m256d dSig2 = _mm256_mul_pd(dSig, dSig);
-        const __m256d dSdSig = _mm256_mul_pd(dS, dSig);
-        const __m256d dSdt = _mm256_mul_pd(dS, dt);
+        // Per-share components, in the SCALAR kernel's association tree. Every
+        // product is left-to-right — ((½·gamma)·dS)·dS, not (½·gamma)·(dS·dS) —
+        // so each lane rounds exactly where pnl_batch.cpp's scalar loop rounds.
+        // Grouping the shared move products (dS·dS, dS·dSigma, dS·dt) instead was
+        // one multiply cheaper but rounded elsewhere, which made a position's P&L
+        // depend on whether it landed in a vector lane or in the n % 4 scalar tail.
         const __m256d hg = _mm256_mul_pd(half, gamma);
         const __m256d hv = _mm256_mul_pd(half, volga);
-
-        // Per-share components (each a single rounded product).
         const __m256d pd = _mm256_mul_pd(delta, dS);
-        const __m256d pg = _mm256_mul_pd(hg, dS2);
+        const __m256d pg = _mm256_mul_pd(_mm256_mul_pd(hg, dS), dS);
         const __m256d pv = _mm256_mul_pd(vega, dSig);
-        const __m256d pvol = _mm256_mul_pd(hv, dSig2);
-        const __m256d pvanna = _mm256_mul_pd(vanna, dSdSig);
+        const __m256d pvol = _mm256_mul_pd(_mm256_mul_pd(hv, dSig), dSig);
+        const __m256d pvanna = _mm256_mul_pd(_mm256_mul_pd(vanna, dS), dSig);
         const __m256d pth = _mm256_mul_pd(theta, dt);
         const __m256d prho = _mm256_mul_pd(rho, dr);
-        const __m256d pcharm = _mm256_mul_pd(charm, dSdt);
+        const __m256d pcharm = _mm256_mul_pd(_mm256_mul_pd(charm, dS), dt);
 
-        // Explained total as one FMA chain over the (coefficient, move) products.
-        __m256d acc = pd;
-        acc = _mm256_fmadd_pd(hg, dS2, acc);
-        acc = _mm256_fmadd_pd(vega, dSig, acc);
-        acc = _mm256_fmadd_pd(hv, dSig2, acc);
-        acc = _mm256_fmadd_pd(vanna, dSdSig, acc);
-        acc = _mm256_fmadd_pd(theta, dt, acc);
-        acc = _mm256_fmadd_pd(rho, dr, acc);
-        acc = _mm256_fmadd_pd(charm, dSdt, acc);
+        // Explained total: the same left-to-right eight-term sum of the components
+        // stored below, NOT an FMA chain over the (coefficient, move) products. An
+        // FMA feeds each product into the sum UNROUNDED, so `total` stopped being
+        // the sum of the very numbers written to the component columns — breaking
+        // the pnl_batch.hpp contract on the AVX2 route only. Each add is its own
+        // statement so /fp:precise (-ffp-contract=on) cannot re-fuse them.
+        __m256d acc = _mm256_add_pd(pd, pg);
+        acc = _mm256_add_pd(acc, pv);
+        acc = _mm256_add_pd(acc, pvol);
+        acc = _mm256_add_pd(acc, pvanna);
+        acc = _mm256_add_pd(acc, pth);
+        acc = _mm256_add_pd(acc, prho);
+        acc = _mm256_add_pd(acc, pcharm);
 
         _mm256_storeu_pd(out.delta_pnl + i, _mm256_mul_pd(w, pd));
         _mm256_storeu_pd(out.gamma_pnl + i, _mm256_mul_pd(w, pg));

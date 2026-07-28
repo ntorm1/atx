@@ -25,10 +25,12 @@
 // `unexplained = (reprice PnL) - total` at the call site, which owns the reprice.
 //
 // Layout: structure-of-arrays, all columns length n, contiguous doubles, and the
-// output columns must not alias the inputs. Dispatches to a 4-lane AVX2+FMA
-// kernel when the host supports it (atx::vol::simd::have_avx2()) and to a scalar
-// loop — the numerical source of truth — otherwise; the AVX2 path reproduces it
-// to ~1e-12 (pure FMA arithmetic, no transcendentals). Passing n == 0 is a no-op.
+// output columns must not alias the inputs. Dispatches to a 4-lane AVX2 kernel
+// when the host supports it (atx::vol::simd::have_avx2()) and to a scalar loop —
+// the numerical source of truth — otherwise; the AVX2 path evaluates the identical
+// association tree and reproduces the scalar loop BIT-FOR-BIT, so a position's P&L
+// depends on neither the dispatched route nor its index within the batch. Passing
+// n == 0 is a no-op.
 //
 // noexcept and allocation-free — safe to call concurrently from any threads (no
 // shared mutable state; the CPUID cache is init-once).
@@ -58,8 +60,12 @@ struct PnlExplainInputs {
 };
 
 // Non-owning SoA output columns, each length n and distinct from the inputs.
-// The eight component columns sum (per position) to `total` to floating-point
-// tolerance; `total` is the Taylor-explained P&L (position-weighted).
+// The eight component columns sum (per position) to `total`; `total` is the
+// Taylor-explained P&L (position-weighted). `total` is formed as the left-to-right
+// sum of the SAME eight per-share products the columns carry, so with qty ==
+// nullptr (weight exactly 1.0) the identity is BIT-EXACT on either route; with a
+// weight it holds to floating-point tolerance only, because w·Σpₖ and Σ(w·pₖ) are
+// different roundings of the same quantity.
 struct PnlExplainOutputs {
   double* delta_pnl;
   double* gamma_pnl;
