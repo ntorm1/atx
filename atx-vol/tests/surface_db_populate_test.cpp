@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib> // _dupenv_s/free (FitWorkersEnvGuard)
 #include <cstring>
 #include <filesystem>
 #include <future>
@@ -365,6 +366,100 @@ TEST(SurfaceDbPopulate, UniverseStreamingIdempotentSynthetic) {
     ++n_checked;
   }
   EXPECT_EQ(n_checked, 4u);
+}
+
+// Portable ATX_VOL_FIT_WORKERS env set/unset + RAII restore guard (mirrors
+// curve_fit_parallel_test.cpp): the auto-resolution test below must not leak
+// env state into other tests sharing this process.
+#if defined(_MSC_VER)
+void set_fit_workers_env(const char *value) { ::_putenv_s("ATX_VOL_FIT_WORKERS", value); }
+void unset_fit_workers_env() { ::_putenv_s("ATX_VOL_FIT_WORKERS", ""); }
+#else
+void set_fit_workers_env(const char *value) { ::setenv("ATX_VOL_FIT_WORKERS", value, 1); }
+void unset_fit_workers_env() { ::unsetenv("ATX_VOL_FIT_WORKERS"); }
+#endif
+
+class FitWorkersEnvGuard {
+public:
+  FitWorkersEnvGuard() {
+#if defined(_MSC_VER)
+    char *prev = nullptr;
+    std::size_t prev_n = 0;
+    had_prev_ = (::_dupenv_s(&prev, &prev_n, "ATX_VOL_FIT_WORKERS") == 0) && (prev != nullptr);
+    if (prev != nullptr) {
+      prev_val_ = prev;
+      std::free(prev);
+    }
+#else
+    const char *prev = std::getenv("ATX_VOL_FIT_WORKERS");
+    had_prev_ = prev != nullptr;
+    if (prev != nullptr) {
+      prev_val_ = prev;
+    }
+#endif
+  }
+  FitWorkersEnvGuard(const FitWorkersEnvGuard &) = delete;
+  FitWorkersEnvGuard &operator=(const FitWorkersEnvGuard &) = delete;
+  ~FitWorkersEnvGuard() {
+    if (had_prev_) {
+      set_fit_workers_env(prev_val_.c_str());
+    } else {
+      unset_fit_workers_env();
+    }
+  }
+
+private:
+  bool had_prev_ = false;
+  std::string prev_val_;
+};
+
+// UniversePopulateSpec::fit_workers documents `0 = auto (honors
+// ATX_VOL_FIT_WORKERS)`, but the driver forwarded the raw 0 into
+// SurfaceDbPopulateConfig::n_threads, whose 0 means OUTER-SERIAL — so the
+// documented default silently fit whole universes one board at a time
+// (measured: a 102-cell date at 46 s vs 21 s with an explicit worker count).
+// The observable is the inner-worker offer stream: in outer-serial mode every
+// offer is the 0 auto-sentinel; once the outer budget resolves to >= 2, the
+// full-book offer is inner_budget / min(inner_budget, boards) >= 1 (never 0).
+TEST(SurfaceDbPopulate, UniverseStreamingFitWorkersZeroResolvesAutoBudget) {
+  FitWorkersEnvGuard env_guard; // restores ATX_VOL_FIT_WORKERS on scope exit
+  set_fit_workers_env("12");
+  // The populate pins outer workers to P-cores by default, so the resolved
+  // budget is min(12, p_cores); p_cores == 0 means discovery unavailable = no
+  // cap. A host whose cap collapses the budget to 1 resolves to outer-serial
+  // legitimately — nothing to observe there.
+  const unsigned p_cores = detail::performance_core_count();
+  const unsigned resolved_budget = (p_cores > 0u && p_cores < 12u) ? p_cores : 12u;
+  if (resolved_budget < 2u) {
+    GTEST_SKIP() << "single-P-core host: outer-serial is the correct auto resolution";
+  }
+
+  const auto root = test_root("universe_auto_workers");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const std::vector<CorpusBoard> boards = make_boards(); // AAA,BBB x kDate0,kDate1 = 4
+  UniversePopulateSpec spec;
+  spec.index_symbol = "";
+  spec.preset = FitPreset::Fast;
+  spec.fit_workers = 0; // the documented auto default under test
+
+  bool nonzero_offer_seen = false;
+  std::mutex offer_mu;
+  PopulateTestHooks hooks;
+  hooks.on_inner_fit_workers = [&](const std::string &, unsigned inner, std::size_t) {
+    const std::lock_guard<std::mutex> lock(offer_mu);
+    if (inner != 0u) {
+      nonzero_offer_seen = true;
+    }
+  };
+
+  auto cov = populate_universe_streaming(*db, boards, spec, &hooks);
+  ASSERT_TRUE(cov.has_value()) << (cov ? "" : cov.error().to_string());
+  EXPECT_EQ(cov->cells_ok, 4u) << "synthetic boards must all fit";
+  EXPECT_TRUE(nonzero_offer_seen)
+      << "fit_workers=0 must resolve to the auto outer budget "
+         "(ATX_VOL_FIT_WORKERS / hardware), not outer-serial: every inner offer was 0";
 }
 
 // REVIEW C-10: a transient refit failure must not turn an incremental date
