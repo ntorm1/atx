@@ -583,8 +583,7 @@ Status run_backtest_command(const fs::path &run_dir, const fs::path &cache_dir) 
   // result files are replaced by the run.atxrun result container. The economic
   // sections plus the resolved-spec echo (meta) and the schedule (so the report
   // layer reads coverage straight from the archive) are staged and published
-  // atomically via RunDir. `backtest` is spanned in place by
-  // encode_backtest_section, so it must outlive the write — it is local here.
+  // atomically via RunDir.
   phase = PhaseTimer::now();
   std::vector<RaSectionData> sections;
   sections.push_back(encode_schedule_section("trade_schedule", schedule));
@@ -957,8 +956,7 @@ Status run_projected_backtest_command(const fs::path &run_dir, const fs::path &s
   // variants: projected_cold (the canonical cold divergence route) or
   // projected_nodiv (--no-divergence, the bare priced run). The execution tier
   // (cold vs the diagnostic fast tier) and the requested --out name are recorded
-  // in meta so --out/--execution stay provenance-visible. `backtest` is spanned in
-  // place by encode_backtest_section (local, so it outlives the write).
+  // in meta so --out/--execution stay provenance-visible.
   const auto write_start = PhaseTimer::now();
   const std::string projected_section = skip_divergence ? "projected_nodiv" : "projected_cold";
   const std::vector<std::pair<std::string, std::string>> meta_extra = {

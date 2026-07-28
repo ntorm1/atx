@@ -311,11 +311,11 @@ write_run_archive(std::span<const RaSectionData> sections, std::int64_t created_
 //
 // Each encoder mirrors the TSV writer that owns the section's output today,
 // column-for-column in registry order (registry Task 1 is authoritative for
-// name/dtype/order; the writer cross-checks). Synthesized arrays (dict codes,
-// string/label tables, flattened per-leg columns) live in the returned
-// section's `storage`; columns that already exist as columnar vectors on the
-// SOURCE object (the BacktestResult series) are spanned in place, so that
-// source must outlive the write call — the RaColumnData lifetime rule.
+// name/dtype/order; the writer cross-checks). EVERY column's bytes — synthesized
+// (dict codes, string/label tables, flattened per-leg columns) or copied off a
+// source object's columnar vector — live in the returned section's `storage`, so
+// a staged section is a self-contained value: no encoder spans caller memory in
+// place, and the source need not outlive the write call.
 //
 // Enum vocabulary (u8 code == the C++ enum value; labels in enum order):
 //   side            {"C", "P"}                  — the TSV 'C'/'P' convention
@@ -329,7 +329,7 @@ write_run_archive(std::span<const RaSectionData> sections, std::int64_t created_
 
 // `backtest` / `projected_cold` / `projected_nodiv` (pass the section name):
 // the 27 registry columns + one F64 column per r.signals entry, value-equal to
-// append_backtest_series_tsv (tearsheet.cpp). Spans borrow `r`.
+// append_backtest_series_tsv (tearsheet.cpp). Snapshots `r`.
 [[nodiscard]] RaSectionData encode_backtest_section(std::string name, const BacktestResult &r);
 
 // `reconciliation` over rows: serialize_listed_reconciliation column set.

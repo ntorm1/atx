@@ -517,12 +517,14 @@ Status write_run_archive_file(std::string_view path, std::span<const RaSectionDa
 
 // ── Section encoders (Task 5): library type → staged RaSectionData ───────────
 //
-// RaColumnData is non-owning, so every array an encoder SYNTHESIZES (dict
-// codes, string/label tables, flattened per-leg columns, NA-substituted
-// doubles) lives in an EncoderArena parked on the returned section's
-// type-erased `storage`. Columns that already exist as columnar vectors on the
-// source object (the BacktestResult series) are spanned in place instead — the
-// caller keeps that source alive across the write, per the RaColumnData rule.
+// RaColumnData is non-owning, so every array an encoder produces — synthesized
+// (dict codes, string/label tables, flattened per-leg columns, NA-substituted
+// doubles) or copied straight off a source object's columnar vector (the
+// BacktestResult series) — lives in an EncoderArena parked on the returned
+// section's type-erased `storage`. A staged section is therefore a self-
+// contained VALUE: it outlives its source and is immune to source mutation, so
+// the "encode, let the source go out of scope, then write" shape is well
+// defined. No encoder spans caller memory in place.
 
 namespace {
 
@@ -651,19 +653,19 @@ RaSectionData encode_backtest_section(std::string name, const BacktestResult &r)
     dates.add(d);
   }
   sec.columns.emplace_back("date", dates.finish(*arena));
-  sec.columns.emplace_back("ts_ns", RaColumnData::of_i64(r.ts_ns));
+  sec.columns.emplace_back("ts_ns", arena_i64(*arena, r.ts_ns));
 
   // The 25 F64 columns come from the single source of truth shared with the TSV
   // writer (backtest_series_columns.hpp) — pinned by the static_assert above to
   // the frozen kBacktestCols registry order, so value-equality with the TSV is
   // guaranteed and the emitted column set can never drift from the schema hash.
   for (const auto &col : backtest_series_columns()) {
-    sec.columns.emplace_back(std::string(col.name), RaColumnData::of_f64(r.*col.member));
+    sec.columns.emplace_back(std::string(col.name), arena_f64(*arena, r.*col.member));
   }
   // Per-signal series are appended dynamically after the registry columns,
   // exactly like the TSV writer appends them after the fixed header.
   for (const auto &sig : r.signals) {
-    sec.columns.emplace_back(sig.first, RaColumnData::of_f64(sig.second));
+    sec.columns.emplace_back(sig.first, arena_f64(*arena, sig.second));
   }
   sec.storage = std::move(arena);
   return sec;

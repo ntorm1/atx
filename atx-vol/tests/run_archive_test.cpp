@@ -731,6 +731,67 @@ TEST(RunArchiveEncoders, BacktestSectionRoundTripsValueExact) {
   EXPECT_EQ(dates.at(1), "2026-07-12");
 }
 
+// ── 2.9: the backtest encoder SNAPSHOTS its source ───────────────────────────
+//
+// encode_backtest_section used to span the caller's BacktestResult IN PLACE
+// while every sibling encoder parks a copy in the section's arena. A staged
+// section was therefore not a value: it silently aliased memory the caller still
+// owned and could mutate or free, and `write_run_archive` memcpy'd whatever the
+// spans pointed at by then — a dangling read in the common "encode, then let the
+// result go out of scope" shape. The encoder now copies into the arena like the
+// others, so a section owns every byte it will write.
+TEST(RunArchiveEncoders, BacktestSection_SourceMutatedAfterEncode_WritesSnapshot) {
+  BacktestResult r = make_encoder_fixture_result();
+  const RaSectionData sec = encode_backtest_section("backtest", r);
+
+  // One mutation per class of previously-spanned column: the i64 ts_ns axis, two
+  // of the 25 registry F64 members, and a dynamically-appended signal series.
+  r.ts_ns[0] = -999;
+  r.nav[1] = -1.0;
+  r.pnl_vega[0] = -2.0;
+  r.signals[0].second[0] = -3.0;
+
+  auto bytes = write_run_archive(std::span(&sec, 1), 1, 1);
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+  auto ar = RunArchive::open(std::move(*bytes));
+  ASSERT_TRUE(ar.has_value()) << ar.error().to_string();
+  auto v = ar->section("backtest");
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+
+  const auto ts = v->i64_col("ts_ns");
+  ASSERT_EQ(ts.size(), 2u);
+  EXPECT_EQ(ts[0], 10); // the pre-mutation fixture value
+  EXPECT_EQ(v->f64_col("nav")[1], 101.5);
+  EXPECT_EQ(v->f64_col("pnl_vega")[0], 1.25);
+  EXPECT_EQ(v->f64_col("atm_iv")[0], 0.20);
+}
+
+TEST(RunArchiveEncoders, BacktestSection_SourceDestroyedBeforeWrite_WritesSnapshot) {
+  // The source dies with the lambda; the section must still own its bytes.
+  const RaSectionData sec = [] {
+    const BacktestResult r = make_encoder_fixture_result();
+    return encode_backtest_section("backtest", r);
+  }();
+
+  auto bytes = write_run_archive(std::span(&sec, 1), 1, 1);
+  ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
+  auto ar = RunArchive::open(std::move(*bytes));
+  ASSERT_TRUE(ar.has_value()) << ar.error().to_string();
+  auto v = ar->section("backtest");
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+  EXPECT_EQ(v->n_cols(), 28u);
+
+  const auto ts = v->i64_col("ts_ns");
+  ASSERT_EQ(ts.size(), 2u);
+  EXPECT_EQ(ts[0], 10);
+  EXPECT_EQ(ts[1], 20);
+  EXPECT_EQ(v->f64_col("nav")[1], 101.5);
+  EXPECT_EQ(v->f64_col("atm_iv")[1], 0.21);
+  const RaDictColumn dates = v->dict_col("date");
+  ASSERT_EQ(dates.size(), 2u);
+  EXPECT_EQ(dates.at(0), "2026-07-11");
+}
+
 // ── T6: 25-double backtest column single-source-of-truth ─────────────────────
 // backtest_series_columns() is the ONE ordered {name, member-ptr} table that
 // BOTH append_backtest_series_tsv (tearsheet.cpp) and encode_backtest_section
@@ -1429,11 +1490,9 @@ void write_run_dir_folded_inputs(const std::filesystem::path& dir) {
   }
 }
 
-// Write run.atxrun via RunDir. The BacktestResult is spanned in place by
-// encode_backtest_section, so it MUST outlive the write call (RaColumnData rule);
-// keeping it local to this function guarantees that.
+// Write run.atxrun via RunDir.
 void write_run_dir_archive(const std::filesystem::path& dir) {
-  const BacktestResult r = make_encoder_fixture_result();  // 2 rows; outlives write
+  const BacktestResult r = make_encoder_fixture_result();  // 2 rows
   const ListedDispersionReconciliation rec = make_reconciliation(); // 2 rows + 2 marks
   RunSpec spec;
   spec.label = "rundir-test";
@@ -1441,7 +1500,7 @@ void write_run_dir_archive(const std::filesystem::path& dir) {
   spec.date_hi = "2026-07-10";
 
   std::vector<RaSectionData> sections;
-  sections.push_back(encode_backtest_section("backtest", r));  // borrows r
+  sections.push_back(encode_backtest_section("backtest", r));  // arena-owned
   sections.push_back(encode_reconciliation_section(rec));      // arena-owned
   sections.push_back(encode_contract_marks_section(rec));      // arena-owned
   sections.push_back(encode_meta_section(spec));               // arena-owned
@@ -1491,7 +1550,7 @@ void write_run_dir_text_inputs_portable(const std::filesystem::path& dir) {
 // section carries 3 rows while the backtest section carries 2 — so the archive
 // trips verify()'s count gate (backtest.n_rows() != reconciliation.n_rows()).
 void write_run_dir_archive_row_mismatch(const std::filesystem::path& dir) {
-  const BacktestResult r = make_encoder_fixture_result();             // 2 rows; outlives write
+  const BacktestResult r = make_encoder_fixture_result();             // 2 rows
   const ListedDispersionReconciliation rec = make_reconciliation(3);  // 3 rows (!= 2)
   RunSpec spec;
   spec.label = "rundir-test";
@@ -1499,7 +1558,7 @@ void write_run_dir_archive_row_mismatch(const std::filesystem::path& dir) {
   spec.date_hi = "2026-07-10";
 
   std::vector<RaSectionData> sections;
-  sections.push_back(encode_backtest_section("backtest", r));  // borrows r
+  sections.push_back(encode_backtest_section("backtest", r));  // arena-owned
   sections.push_back(encode_reconciliation_section(rec));      // arena-owned
   sections.push_back(encode_contract_marks_section(rec));      // arena-owned
   sections.push_back(encode_meta_section(spec));               // arena-owned
