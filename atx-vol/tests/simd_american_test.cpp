@@ -119,6 +119,32 @@ PutBatch stress_grid() {
     return b;
 }
 
+// Frozen-band grid: heavy negative carry (q >> r) at a degenerate-but-not-rejected
+// sigma. There EVERY movable collocation node's fixed-point denominator D underflows
+// (d_plus ≈ (r−q)·sqrt(tau)/sigma dives far past the erfc underflow edge), the sweep
+// cannot move, and max|Δy| == 0 means "no progress is possible", not "converged".
+// S1-T5 (item 1.7) made the scalar solve fail closed here; the AVX2 pack kernel keeps
+// an independent copy of that sweep and owes the SAME verdict.
+//
+// The existing parity grids are structurally BLIND to this class: their minimum sigma
+// is 0.02, and StressGrid_WithinTol skips any lane whose scalar reference is
+// non-finite. The gates below are POSITIVE — both routes must report the same status.
+//
+// Point selection: the WHOLLY-frozen set is speckled near its edges, so these four
+// were each verified individually against the scalar solve rather than derived from a
+// formula. They sit well inside the measured envelope, sigma <~ 4.0e-5·(q−r)·sqrt(T)
+// for the 12-node accurate scheme, and vary strike (ATM / deep OTM), maturity, and
+// the carry pair so the gate is not one magic input. The first is S1-T5's own point.
+PutBatch frozen_band_grid() {
+    PutBatch b;
+    const double S = 100.0;
+    b.push(S, 100.0, 1.0, 1.0e-7, 0.05, 0.50);
+    b.push(S, 80.0, 1.0, 1.0e-7, 0.05, 0.50);
+    b.push(S, 100.0, 2.0, 1.0e-7, 0.05, 0.50);
+    b.push(S, 100.0, 1.0, 1.0e-7, 0.02, 0.40);
+    return b;
+}
+
 // RAII: restore Auto dispatch after a test twiddles the override.
 struct IsaGuard {
     ~IsaGuard() { simd::set_simd_isa_override(simd::SimdIsa::Auto); }
@@ -204,6 +230,89 @@ TEST(AvxBoundary, StressGrid_WithinTol) {
         ASSERT_TRUE(std::isfinite(pde));
         EXPECT_LE(std::abs(out4[0] - pde), 5e-3)
             << "AVX2 vs PDE K=" << p.K << " got=" << out4[0] << " pde=" << pde;
+    }
+}
+
+// ── Frozen band: the scalar NotConverged corner is not a route split ──────
+TEST(AvxBoundary, FrozenBandPack_BothRoutesReportTheSameStatus) {
+    if (!simd::have_avx2()) {
+        GTEST_SKIP() << "no AVX2 on this host";
+    }
+    IsaGuard g;
+
+    const PutBatch b = frozen_band_grid();
+    // A whole pack: every lane rides the vector kernel, none falls to the n % 4 tail.
+    ASSERT_EQ(b.size(), 4u);
+
+    // POSITIVE precondition: these inputs really ARE the scalar fail-closed corner.
+    // (An assertion, not a skip — if the corner ever moves, this test must say so.)
+    for (std::size_t i = 0; i < b.size(); ++i) {
+        ASSERT_TRUE(std::isnan(ref_put(b.S[i], b.K[i], b.T[i], b.sigma[i], b.r[i], b.q[i])))
+            << "i=" << i << ": scalar andersen_lake no longer errors on the frozen band";
+    }
+
+    simd::set_simd_isa_override(simd::SimdIsa::ForceAvx2);
+    std::vector<double> avx(b.size(), 0.0);
+    const simd::SimdRoute route_v = simd::american_put_boundary_batch(
+        b.S.data(), b.K.data(), b.T.data(), b.sigma.data(), b.r.data(), b.q.data(),
+        avx.data(), b.size());
+    ASSERT_EQ(route_v, simd::SimdRoute::Avx2);
+
+    simd::set_simd_isa_override(simd::SimdIsa::ForceScalar);
+    std::vector<double> sca(b.size(), 0.0);
+    const simd::SimdRoute route_s = simd::american_put_boundary_batch(
+        b.S.data(), b.K.data(), b.T.data(), b.sigma.data(), b.r.data(), b.q.data(),
+        sca.data(), b.size());
+    ASSERT_EQ(route_s, simd::SimdRoute::Scalar);
+
+    for (std::size_t i = 0; i < b.size(); ++i) {
+        EXPECT_TRUE(std::isnan(sca[i])) << "scalar route i=" << i << " got=" << sca[i];
+        EXPECT_TRUE(std::isnan(avx[i]))
+            << "AVX2 route i=" << i << " priced " << avx[i]
+            << " off an unsolved boundary while the scalar route failed closed";
+    }
+}
+
+// The fix is per-LANE: a frozen lane must not disturb the three healthy puts packed
+// beside it, wherever in the pack it sits (including lane 0, the pack's geometry
+// reference lane).
+TEST(AvxBoundary, FrozenLaneInMixedPack_LeavesHealthyLanesUntouched) {
+    if (!simd::have_avx2()) {
+        GTEST_SKIP() << "no AVX2 on this host";
+    }
+    IsaGuard g;
+
+    const PutBatch frozen = frozen_band_grid();
+    struct Healthy { double K, T, sig, r, q; };
+    const Healthy well[3] = {{100.0, 1.0, 0.25, 0.05, 0.0},
+                             {90.0, 0.5, 0.30, 0.06, 0.02},
+                             {110.0, 2.0, 0.20, 0.04, 0.01}};
+
+    for (std::size_t pos = 0; pos < 4; ++pos) {
+        PutBatch b;
+        std::size_t h = 0;
+        for (std::size_t l = 0; l < 4; ++l) {
+            if (l == pos) {
+                b.push(frozen.S[0], frozen.K[0], frozen.T[0], frozen.sigma[0],
+                       frozen.r[0], frozen.q[0]);
+            } else {
+                b.push(100.0, well[h].K, well[h].T, well[h].sig, well[h].r, well[h].q);
+                ++h;
+            }
+        }
+        simd::set_simd_isa_override(simd::SimdIsa::ForceAvx2);
+        const std::vector<double> got = run_batch(b);
+        for (std::size_t l = 0; l < 4; ++l) {
+            const double want = ref_put(b.S[l], b.K[l], b.T[l], b.sigma[l], b.r[l], b.q[l]);
+            if (l == pos) {
+                EXPECT_TRUE(std::isnan(want)) << "pos=" << pos; // the frozen lane
+                EXPECT_TRUE(std::isnan(got[l])) << "pos=" << pos << " got=" << got[l];
+            } else {
+                ASSERT_TRUE(std::isfinite(want)) << "pos=" << pos << " l=" << l;
+                EXPECT_LE(std::abs(got[l] - want), kNormalGate)
+                    << "pos=" << pos << " l=" << l << " got=" << got[l] << " want=" << want;
+            }
+        }
     }
 }
 
