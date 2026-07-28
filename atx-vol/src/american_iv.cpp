@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <limits>
+#include <new> // std::bad_alloc (the noexcept-boundary containment below)
 #include <optional>
 #include <span>
 #include <utility>
@@ -198,12 +199,19 @@ private:
   AloPricer *pricer_{nullptr};
 };
 
+// NOT noexcept, deliberately: this body allocates. A cold Andersen-Lake
+// inversion constructs an AloPricer, whose ~46 KB `State` is a PIMPL behind
+// make_unique, and every `Err(code, "…")` below builds a std::string message
+// longer than any SSO buffer. Both throw std::bad_alloc under memory pressure.
+// The `noexcept` the PUBLIC entry points below must keep (american_iv.hpp) is
+// made TRUE by containing that throw at those boundaries, not by an unprovable
+// claim here.
 template <typename Correction>
 Result<double> american_implied_vol_impl(double price, double S, double K, double T, double r,
                                          double q, Side side, AmericanMethod method, double tol,
                                          std::uint16_t max_iter, const std::optional<AlOpts> &opts,
                                          const Correction *correction, double warm_start,
-                                         PolishTrace *trace = nullptr) noexcept {
+                                         PolishTrace *trace = nullptr) {
   counters::lightweight::AmericanIvSample telemetry_sample;
   // Route price + vega through the cached hot path when the cache matches side.
   const bool use_cache = cache_usable(correction, side);
@@ -557,20 +565,35 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
 
 } // namespace
 
+// SAFETY: `noexcept` is pinned by american_iv.hpp, but the inversion allocates
+// (see american_implied_vol_impl). Contain the resulting std::bad_alloc here so
+// the promise holds and memory pressure degrades to the declared Result error
+// model instead of std::terminate. The Error carries NO message: building one is
+// itself an allocation, which is exactly what just failed. Only bad_alloc is
+// caught — any other exception would mean a contract violation deeper in the
+// call tree, and staying loud (terminate) is the right answer for that.
 Result<double> american_implied_vol(double price, double S, double K, double T, double r, double q,
                                     Side side, AmericanMethod method, double tol,
                                     std::uint16_t max_iter, const std::optional<AlOpts> &opts,
                                     const CorrectionCache *correction, double warm_start) noexcept {
-  return american_implied_vol_impl(price, S, K, T, r, q, side, method, tol, max_iter, opts,
-                                   correction, warm_start);
+  try {
+    return american_implied_vol_impl(price, S, K, T, r, q, side, method, tol, max_iter, opts,
+                                     correction, warm_start);
+  } catch (const std::bad_alloc &) {
+    return Err(ErrorCode::Internal);
+  }
 }
 
 Result<double> american_implied_vol(double price, double S, double K, double T, double r, double q,
                                     Side side, const CorrectionBlend &correction,
                                     AmericanMethod method, double tol, std::uint16_t max_iter,
                                     const std::optional<AlOpts> &opts, double warm_start) noexcept {
-  return american_implied_vol_impl(price, S, K, T, r, q, side, method, tol, max_iter, opts,
-                                   &correction, warm_start);
+  try {
+    return american_implied_vol_impl(price, S, K, T, r, q, side, method, tol, max_iter, opts,
+                                     &correction, warm_start);
+  } catch (const std::bad_alloc &) {
+    return Err(ErrorCode::Internal);
+  }
 }
 
 // Test/measurement seam (declared in american_iv_test.cpp, not the public

@@ -67,6 +67,13 @@ namespace atx::vol {
 //                   OutOfRange      — non-finite input, or price outside the
 //                                     no-arbitrage band [intrinsic, upper]
 //                   Unavailable     — root-find did not converge in max_iter
+//                   Internal        — allocation failure (the message is empty:
+//                                     building one would allocate again). These
+//                                     entry points are noexcept, so the
+//                                     inversion's allocations — the ~46 KB
+//                                     Andersen-Lake pricer state, the Error
+//                                     message strings — are contained here
+//                                     rather than terminating the process.
 //                 Any pricer Error (e.g. Andersen-Lake NotImplemented on the
 //                 negative-rate corner) is propagated unchanged.
 [[nodiscard]] Result<double>

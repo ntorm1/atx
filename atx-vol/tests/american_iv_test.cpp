@@ -56,6 +56,27 @@ using atx::vol::CorrectionBlend;
 using atx::vol::CorrectionCache;
 using atx::vol::Side;
 
+// ── 2.10: the noexcept boundary is a promise, not a hint ─────────────────────
+//
+// american_iv.hpp declares both american_implied_vol overloads noexcept, but the
+// inversion ALLOCATES: the cold Andersen-Lake route constructs an AloPricer,
+// whose ~46 KB `State` is a PIMPL behind make_unique, and every error path
+// composes a std::string message longer than any SSO buffer. Under memory
+// pressure that was an escaping std::bad_alloc — i.e. std::terminate. The
+// allocations now sit behind a bad_alloc catch INSIDE the noexcept boundary, so
+// the declaration is true and OOM degrades to the declared Result error model.
+//
+// Allocation failure is not injectable from a unit test, so this pins the half
+// that IS machine-checkable: the declaration. Silently "fixing" the mismatch by
+// dropping noexcept — an ABI-visible change to a public entry point — breaks the
+// build here rather than passing unnoticed.
+static_assert(noexcept(american_implied_vol(1.0, 100.0, 100.0, 1.0, 0.01, 0.0, Side::Call)),
+              "american_implied_vol's noexcept is a public contract: contain the throw, do not "
+              "drop the specifier");
+static_assert(noexcept(american_implied_vol(1.0, 100.0, 100.0, 1.0, 0.01, 0.0, Side::Call,
+                                            std::declval<const CorrectionBlend &>())),
+              "the blend overload carries the same public noexcept contract");
+
 // Unwrap a Result<double>, flagging (non-fatally) an unexpected error.
 double value_or_fail(const atx::core::Result<double> &r) {
   EXPECT_TRUE(r.has_value()) << (r ? std::string{} : r.error().to_string());

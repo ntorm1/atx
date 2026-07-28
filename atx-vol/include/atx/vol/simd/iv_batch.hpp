@@ -23,7 +23,9 @@
 // noexcept and allocation-free on the fast path — safe to call concurrently from
 // any threads (no shared mutable state; the CPUID cache is init-once). The
 // per-lane scalar patch may allocate an error string on a failing lane, matching
-// the scalar implied_vol.
+// the scalar implied_vol; if that allocation fails the lane is reported (NaN,
+// ok == 0) like any other failure, so the noexcept promise holds under memory
+// pressure instead of terminating the process.
 
 #include <cstddef>
 #include <cstdint>
