@@ -25,6 +25,7 @@
 #include <fstream>
 #include <iterator>
 #include <mutex>
+#include <new> // std::bad_alloc (W-EX worker-exception injection)
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -1019,6 +1020,15 @@ TEST(SurfaceDbPopulate, SchedulerLaunchFailureWakesDrainAndReturnsBoundedError) 
 // dates completed". Durability is asserted from a FRESH SurfaceDb::open of the
 // same root (crash-resume: a new process reads only what was committed to disk,
 // never this run's in-memory state).
+//
+// W-EX UPDATED THE VERDICT, NOT THE DURABILITY CLAIM. A worker exception is now
+// contained on the worker and recorded as a FAILED CELL carrying the exception
+// text (surface_db_populate.cpp's `fit_slot_from_worker_exception`), matching
+// what this file does with every other fit failure, so the populate SUCCEEDS
+// with kDate1's cells in `failed_cells` instead of returning Err(Internal) and
+// abandoning the rest of the run. The durability assertions below are unchanged
+// and are now a weaker statement than what actually holds — the earlier date
+// survives because nothing rolls back, not because the run died after it.
 TEST(SurfaceDbPopulate, CompletedDatesSurviveLaterWorkerThrow) {
   const auto root = test_root("durability_worker_throw");
   {
@@ -1052,17 +1062,28 @@ TEST(SurfaceDbPopulate, CompletedDatesSurviveLaterWorkerThrow) {
     cfg.n_threads = 4u; // >= n_boards so kDate1 boards run alongside kDate0's
     auto result = populate_surface_db(*db, boards, cfg, &hooks);
 
-    // The worker exception surfaces as a top-level Internal error ...
-    ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error().code(), ErrorCode::Internal);
+    // W-EX: the worker exception is CONTAINED — the populate completes, and the
+    // throwing cells are recorded as ordinary fit failures carrying the
+    // exception's own text.
+    ASSERT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+    EXPECT_EQ(result->n_ok, 2u) << "kDate0's two boards must still have fitted";
+    EXPECT_EQ(result->n_failed, 2u) << "kDate1's two boards threw and must be failed cells";
+    ASSERT_EQ(result->failed_cells.size(), 2u);
+    for (const FailedCell &f : result->failed_cells) {
+      EXPECT_EQ(f.date, kDate1);
+      EXPECT_EQ(f.code, ErrorCode::Internal);
+      EXPECT_NE(f.detail.find("injected mid-run worker exception"), std::string::npos)
+          << "the exception message was discarded instead of recorded: " << f.detail;
+    }
     // ... and kDate0 really was written before the throw was allowed to fire.
     EXPECT_TRUE(date0_written.load())
         << "kDate0 never completed before the injected throw -- test would not be "
            "exercising the mid-run durability path";
   } // drop the in-process SurfaceDb handle: only on-disk state remains below
 
-  // Crash-resume: a fresh open sees kDate0 durably committed even though
-  // populate returned an error; kDate1 never completed so it is absent.
+  // Crash-resume: a fresh open sees kDate0 durably committed; kDate1 produced no
+  // successful fit at all, so it is absent (a date with zero successful fits
+  // writes NO partition).
   auto reopened = SurfaceDb::open(root.string());
   ASSERT_TRUE(reopened.has_value()) << (reopened ? "" : reopened.error().to_string());
 
@@ -1077,6 +1098,97 @@ TEST(SurfaceDbPopulate, CompletedDatesSurviveLaterWorkerThrow) {
   }
   // kDate1 never produced a successful fit (both boards threw), so no partition.
   EXPECT_EQ(reopened->open_partition(kDate1).error().code(), ErrorCode::NotFound);
+
+  std::filesystem::remove_all(root);
+}
+
+// ── W-EX: a throwing fit on a worker costs its CELL, not the process ─────────
+//
+// The failure this pins is a process-level one. Before W-EX a C++ exception on a
+// fit worker (std::bad_alloc from a fit under memory pressure is the live case;
+// a 102-symbol production build hit it) travelled to `run_bounded_fit_tasks`'s
+// catch(...), was collapsed to Err(Internal, "task threw an exception") with the
+// message discarded, and sank the WHOLE populate — every other symbol on the
+// same date and every later date included. One shape of it did not even get
+// that far and killed the process outright (exit 0xC000001D / 0xC0000409, no
+// output on either stream), because the destructor and jthread bodies the
+// unwind passes through are implicitly noexcept.
+//
+// The contract asserted here, and the reason it is the right one, is that this
+// is the SAME shape every ordinary fit failure already has: the cell is recorded
+// in `failed_cells` with a code and a reason, its siblings still fit, the date
+// is still written, and the run reports success. So:
+//
+//   * exactly ONE cell fails, and it is the one that threw;
+//   * its recorded `detail` carries the exception's own text (a bare tag would
+//     leave an operator with a `cells_failed` count and no next step);
+//   * every other cell on the same date fits and the partition is written;
+//   * `populate_surface_db` returns Ok, so `is_total_fit_failure` is false and
+//     the CLI exits 0 — the process-level observable;
+//   * and the test process is still alive to make these assertions, which is
+//     the std::terminate half of the claim (a regression here does not fail
+//     this test, it kills the test binary).
+//
+// A `before_board_fit` throw is the injection seam: it runs on the fit worker,
+// inside the same try the fit itself is inside, so it reproduces a throwing fit
+// exactly. `n_threads = 1` makes the whole thing deterministic.
+TEST(SurfaceDbPopulate, WorkerExceptionFailsOnlyItsOwnCellAndTheBuildContinues) {
+  const auto root = test_root("worker_exception_contained");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  std::vector<CorpusBoard> boards;
+  boards.push_back(make_board(kDate0, "AAA", 100.0, 0.28));
+  boards.push_back(make_board(kDate0, "BBB", 60.0, 0.34));
+  boards.push_back(make_board(kDate0, "CCC", 80.0, 0.31));
+
+  std::atomic<std::size_t> throws{0u};
+  PopulateTestHooks hooks;
+  hooks.before_board_fit = [&](const std::string & /*date*/, const std::string &symbol) {
+    if (symbol == "BBB") {
+      throws.fetch_add(1u, std::memory_order_relaxed);
+      throw std::bad_alloc();
+    }
+  };
+
+  SurfaceDbPopulateConfig cfg;
+  cfg.n_threads = 1u; // deterministic: one worker, claim order fixed
+  auto result = populate_surface_db(*db, boards, cfg, &hooks);
+
+  ASSERT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+  EXPECT_EQ(throws.load(), 1u) << "the injection never fired";
+  EXPECT_EQ(result->n_ok, 2u) << "AAA and CCC must be unaffected by BBB's throw";
+  EXPECT_EQ(result->n_failed, 1u);
+  ASSERT_EQ(result->failed_cells.size(), 1u);
+  EXPECT_EQ(result->failed_cells.front().symbol, "BBB");
+  EXPECT_EQ(result->failed_cells.front().date, kDate0);
+  EXPECT_EQ(result->failed_cells.front().code, ErrorCode::Internal);
+  // std::bad_alloc::what() is "bad allocation" on MSVC; assert on the prefix the
+  // populate adds plus the fact that SOMETHING was carried through, rather than
+  // on a libc++/MSVC-specific string.
+  EXPECT_NE(result->failed_cells.front().detail.find("fit worker exception"), std::string::npos)
+      << "detail was: " << result->failed_cells.front().detail;
+  EXPECT_GT(result->failed_cells.front().detail.size(),
+            std::string("fit worker exception: ").size())
+      << "the exception's own text was discarded";
+  EXPECT_EQ(result->n_dates_written, 1u) << "the date must still be committed";
+
+  // The process-level observable: the CLI's verdict predicate does not fire, so
+  // this run exits 0 rather than 3 (and, before W-EX, rather than not exiting).
+  SurfaceDbBuildReport report;
+  report.coverage.cells_to_fit = 3u;
+  report.coverage.cells_ok = result->n_ok;
+  report.coverage.cells_failed = result->n_failed;
+  EXPECT_FALSE(is_total_fit_failure(report));
+  EXPECT_EQ(build_exit_code(report, /*report_write_failed=*/false, /*strict=*/false),
+            kSurfaceDbBuildExitOk);
+
+  // The surviving cells really are on disk; the throwing one really is not.
+  for (const char *symbol : {"AAA", "CCC"}) {
+    auto s = db->load_surface(kDate0, symbol);
+    EXPECT_TRUE(s.has_value()) << symbol << ": " << (s ? "" : s.error().to_string());
+  }
+  EXPECT_FALSE(db->load_surface(kDate0, "BBB").has_value());
 
   std::filesystem::remove_all(root);
 }
