@@ -345,12 +345,25 @@ template <typename RateFn>
              "no well-conditioned co-terminal expiry to imply spot; pass spot_override");
 }
 
-// The table-driven core shared by the file loader and the in-memory-table seam
-// (load_opra_cbbo_from_table): everything AFTER the OPRA cbbo-1m table is
-// materialized — column extraction, row filtering, OSI parse, PCP spot
-// implication, frame assembly. Both public entry points delegate here, so the
-// two paths are byte-identical on the same rows. `spec.path` is NOT read here
+// Materialize every column the panel core reads, once, and index the rows by
+// `underlying` (P-01). Permissive about the OPTIONAL columns in exactly the way
+// `panel_from_scan` is: `symbol`, `bid_px`, `ask_px`, `bid_sz`, `ask_sz` are
+// required (their absence fails at the same ATX_TRY, with the same code and
+// text, that the per-row path used to), while `underlying` and `instrument_id`
+// are optional. The public `scan_opra_cbbo_table` adds the hive-v2 8-column
+// pre-check on top.
+[[nodiscard]] Result<OpraTableScan> scan_table(const io::ParquetTable& table);
+
+// The scan-driven core shared by the file loader and both in-memory-table seams:
+// everything AFTER the OPRA cbbo-1m table is materialized — row filtering, OSI
+// parse, PCP spot implication, frame assembly. Every public entry point delegates
+// here, so they are byte-identical on the same rows. `spec.path` is NOT read here
 // (the table is already decoded); it is unused by this core.
+[[nodiscard]] Result<OpraPanel> panel_from_scan(const OpraTableScan& scan,
+                                                const OpraLoadSpec& spec);
+
+// `scan_table` + `panel_from_scan`, for the entry points that hold a table
+// rather than a scan.
 [[nodiscard]] Result<OpraPanel> panel_from_table(const io::ParquetTable& table,
                                                  const OpraLoadSpec& spec);
 
@@ -456,33 +469,91 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
 
 namespace {
 
-Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoadSpec& spec) {
+Result<OpraTableScan> scan_table(const io::ParquetTable& table) {
   const io::Schema& schema = table.schema();
-  const std::size_t n_rows =
-      static_cast<std::size_t>(std::max<std::int64_t>(0, table.num_rows()));
+  OpraTableScan scan;
+  scan.n_rows = static_cast<std::size_t>(std::max<std::int64_t>(0, table.num_rows()));
 
-  ATX_TRY(const auto symbols, table.strings("symbol"));
+  ATX_TRY(auto symbols, table.strings("symbol"));
+  scan.symbols = std::move(symbols);
   ATX_TRY(const auto bid_px, table.column_view<std::int64_t>("bid_px"));
+  scan.bid_px = bid_px;
   ATX_TRY(const auto ask_px, table.column_view<std::int64_t>("ask_px"));
+  scan.ask_px = ask_px;
   ATX_TRY(const auto bid_sz, table.column_view<std::int64_t>("bid_sz"));
+  scan.bid_sz = bid_sz;
   ATX_TRY(const auto ask_sz, table.column_view<std::int64_t>("ask_sz"));
-  ATX_TRY(const auto bid_null, table.null_mask("bid_px"));
-  ATX_TRY(const auto ask_null, table.null_mask("ask_px"));
+  scan.ask_sz = ask_sz;
+  ATX_TRY(auto bid_null, table.null_mask("bid_px"));
+  scan.bid_null = std::move(bid_null);
+  ATX_TRY(auto ask_null, table.null_mask("ask_px"));
+  scan.ask_null = std::move(ask_null);
 
-  std::span<const std::int64_t> instrument_ids;
-  const bool has_instrument_id = schema.find("instrument_id") != nullptr;
-  if (has_instrument_id) {
-    ATX_TRY(auto ids, table.column_view<std::int64_t>("instrument_id"));
-    instrument_ids = ids;
-  } else if (spec.provenance_mode == OpraProvenanceMode::Strict) {
-    return Err(ErrorCode::InvalidArgument, "strict OPRA provenance requires 'instrument_id'");
+  scan.has_instrument_id = schema.find("instrument_id") != nullptr;
+  if (scan.has_instrument_id) {
+    ATX_TRY(const auto ids, table.column_view<std::int64_t>("instrument_id"));
+    scan.instrument_ids = ids;
   }
 
-  std::vector<std::string_view> underlyings;
-  const bool has_underlying = schema.find("underlying") != nullptr;
-  if (has_underlying) {
+  scan.has_underlying = schema.find("underlying") != nullptr;
+  if (scan.has_underlying) {
     ATX_TRY(auto u, table.strings("underlying"));
-    underlyings = std::move(u);
+    scan.underlyings = std::move(u);
+  }
+  scan.first_ts_ns = first_ts_ns(table);
+
+  // ── The per-underlying row index ─────────────────────────────────────────
+  // One hashed pass assigns each row a group, a prefix sum turns the group
+  // counts into offsets, and a second ASCENDING pass fills the row ids. The
+  // ascending fill is load-bearing: it is what makes a split visit its rows in
+  // the same order a full-table scan would, which is what keeps an indexed panel
+  // byte-identical (row order feeds the frame, and the frame feeds the source
+  // fingerprint). Guarded on a 32-bit row count so `rows` stays 4 bytes/row; a
+  // table past that simply gets no index and takes the full-scan path.
+  if (scan.has_underlying && scan.n_rows <= static_cast<std::size_t>(
+                                                std::numeric_limits<std::uint32_t>::max())) {
+    std::vector<std::uint32_t> slot(scan.n_rows);
+    std::vector<std::uint32_t> counts;
+    scan.slot_of.reserve(128u);
+    for (std::size_t i = 0; i < scan.n_rows; ++i) {
+      const auto [it, inserted] =
+          scan.slot_of.try_emplace(scan.underlyings[i], static_cast<std::uint32_t>(counts.size()));
+      if (inserted) {
+        counts.push_back(0u);
+      }
+      slot[i] = it->second;
+      ++counts[it->second];
+    }
+    scan.offsets.assign(counts.size() + 1u, 0u);
+    for (std::size_t g = 0; g < counts.size(); ++g) {
+      scan.offsets[g + 1u] = scan.offsets[g] + counts[g];
+    }
+    std::vector<std::uint32_t> cursor(scan.offsets.begin(), scan.offsets.end() - 1);
+    scan.rows.resize(scan.n_rows);
+    for (std::size_t i = 0; i < scan.n_rows; ++i) {
+      scan.rows[cursor[slot[i]]++] = static_cast<std::uint32_t>(i);
+    }
+    scan.indexed = true;
+  }
+  return Ok(std::move(scan));
+}
+
+Result<OpraPanel> panel_from_scan(const OpraTableScan& scan, const OpraLoadSpec& spec) {
+  const std::size_t n_rows = scan.n_rows;
+  const std::span<const std::string_view> symbols{scan.symbols};
+  const std::span<const std::int64_t> bid_px = scan.bid_px;
+  const std::span<const std::int64_t> ask_px = scan.ask_px;
+  const std::span<const std::int64_t> bid_sz = scan.bid_sz;
+  const std::span<const std::int64_t> ask_sz = scan.ask_sz;
+  const std::span<const std::uint8_t> bid_null{scan.bid_null};
+  const std::span<const std::uint8_t> ask_null{scan.ask_null};
+  const std::span<const std::int64_t> instrument_ids = scan.instrument_ids;
+  const std::span<const std::string_view> underlyings{scan.underlyings};
+  const bool has_instrument_id = scan.has_instrument_id;
+  const bool has_underlying = scan.has_underlying;
+
+  if (!has_instrument_id && spec.provenance_mode == OpraProvenanceMode::Strict) {
+    return Err(ErrorCode::InvalidArgument, "strict OPRA provenance requires 'instrument_id'");
   }
 
   const std::string_view filter = spec.underlying;
@@ -495,43 +566,68 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
                "underlying filter '" + std::string(filter) +
                    "' requested but parquet has no 'underlying' column");
   }
+
+  // P-01: the rows THIS call visits. With a filter and an index that is the
+  // filter's own group; otherwise it is every row and the loops below are
+  // exactly the pre-index full scan. `selected` is ascending, so both forms
+  // visit rows in the same relative order.
+  const bool indexed = !filter.empty() && scan.indexed;
+  const std::span<const std::uint32_t> selected = indexed ? scan.rows_for(filter)
+                                                          : std::span<const std::uint32_t>{};
+  const std::size_t n_visit = indexed ? selected.size() : n_rows;
+  const auto row_at = [indexed, selected](std::size_t t) noexcept -> std::size_t {
+    return indexed ? static_cast<std::size_t>(selected[t]) : t;
+  };
+
   if (has_underlying) {
-    std::vector<std::string_view> distinct;
-    bool filter_present = false;
-    for (std::size_t i = 0; i < n_rows; ++i) {
-      const std::string_view und = underlyings[i];
-      if (und.empty()) {
-        continue;
+    if (indexed) {
+      // The index answers "is the filter present" in O(1); an empty group is
+      // the zero-match case, reported with the exact text the full scan used.
+      // The mixed-symbol branch below is unreachable here because `indexed`
+      // requires a non-empty filter.
+      if (selected.empty()) {
+        return Err(ErrorCode::InvalidArgument,
+                   "underlying '" + std::string(filter) + "' not found in parquet");
       }
-      if (!filter.empty() && und == filter) {
-        filter_present = true;
-      }
-      if (std::find(distinct.begin(), distinct.end(), und) == distinct.end()) {
-        distinct.push_back(und);
-      }
-    }
-    if (filter.empty() && distinct.size() > 1) {
-      std::string list;
-      for (std::size_t j = 0; j < distinct.size(); ++j) {
-        if (j != 0) {
-          list.push_back(',');
+    } else {
+      std::vector<std::string_view> distinct;
+      bool filter_present = false;
+      for (std::size_t i = 0; i < n_rows; ++i) {
+        const std::string_view und = underlyings[i];
+        if (und.empty()) {
+          continue;
         }
-        list.append(distinct[j]);
+        if (!filter.empty() && und == filter) {
+          filter_present = true;
+        }
+        if (std::find(distinct.begin(), distinct.end(), und) == distinct.end()) {
+          distinct.push_back(und);
+        }
       }
-      return Err(ErrorCode::InvalidArgument,
-                 "mixed-symbol parquet: found {" + list +
-                     "}; set OpraLoadSpec.underlying to select one");
-    }
-    if (!filter.empty() && !filter_present) {
-      return Err(ErrorCode::InvalidArgument,
-                 "underlying '" + std::string(filter) + "' not found in parquet");
+      if (filter.empty() && distinct.size() > 1) {
+        std::string list;
+        for (std::size_t j = 0; j < distinct.size(); ++j) {
+          if (j != 0) {
+            list.push_back(',');
+          }
+          list.append(distinct[j]);
+        }
+        return Err(ErrorCode::InvalidArgument,
+                   "mixed-symbol parquet: found {" + list +
+                       "}; set OpraLoadSpec.underlying to select one");
+      }
+      if (!filter.empty() && !filter_present) {
+        return Err(ErrorCode::InvalidArgument,
+                   "underlying '" + std::string(filter) + "' not found in parquet");
+      }
     }
   }
 
   bool provenance_complete = has_instrument_id;
   std::map<std::uint32_t, std::string> source_mappings;
   if (has_instrument_id) {
-    for (std::size_t i = 0; i < n_rows; ++i) {
+    for (std::size_t t = 0; t < n_visit; ++t) {
+      const std::size_t i = row_at(t);
       const std::string_view und = has_underlying ? underlyings[i] : std::string_view{};
       if (!filter.empty() && und != filter) {
         continue;
@@ -561,23 +657,30 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
   // Snapshot stamp is hoisted above the row loop so the loop can drop expired /
   // same-day contracts by year-fraction. (snapshot_ts_ns / snapshot_iso depend only
   // on the table + spec, never on the kept rows.)
-  const std::int64_t snapshot_ts_ns = first_ts_ns(table);
+  const std::int64_t snapshot_ts_ns = scan.first_ts_ns;
   std::string snapshot_iso = spec.snapshot_iso;
   if (snapshot_iso.empty()) {
     snapshot_iso = ns_to_iso_date(snapshot_ts_ns);
   }
   const std::int64_t snapshot_iso_ns = iso_to_ns(snapshot_iso);
 
+  // P-01: sized for the rows this call VISITS, not for the table. These two
+  // vectors are moved into the returned panel and stay live for the rest of the
+  // build, so an n_rows-sized reservation for a symbol owning ~1% of the rows is
+  // not slack — it is ~47 MB of committed address space per symbol, retained,
+  // and 102 of them is the ~4.8 GB commit spike that made 102-name builds die of
+  // bad_alloc at a 123 MB working set.
   std::vector<QuoteRow> rows;
-  rows.reserve(n_rows);
+  rows.reserve(n_visit);
   std::vector<std::uint32_t> kept_instrument_ids;
-  kept_instrument_ids.reserve(n_rows);
+  kept_instrument_ids.reserve(n_visit);
   std::map<std::uint32_t, std::string> kept_mappings;
   std::size_t n_dropped = 0;
   std::string first_underlying;
   std::string first_root;
 
-  for (std::size_t i = 0; i < n_rows; ++i) {
+  for (std::size_t t = 0; t < n_visit; ++t) {
+    const std::size_t i = row_at(t);
     const std::string_view und = has_underlying ? underlyings[i] : std::string_view{};
     if (!filter.empty() && und != filter) {
       continue; // filtered out (not a drop)
@@ -857,6 +960,28 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
   return Ok(std::move(panel));
 }
 
+Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoadSpec& spec) {
+  ATX_TRY(const OpraTableScan scan, scan_table(table));
+  return panel_from_scan(scan, spec);
+}
+
+// The 8 canonical hive-v2 columns. Shared by the per-symbol table seam and the
+// per-table scan entry point so both reject the same file with the same words.
+[[nodiscard]] Status require_hive_columns(const io::ParquetTable& table, std::string_view path) {
+  static constexpr std::array<std::string_view, 8> kRequiredColumns = {
+      "ts",     "underlying", "symbol", "instrument_id",
+      "bid_px", "ask_px",     "bid_sz", "ask_sz"};
+  const io::Schema& schema = table.schema();
+  for (const std::string_view name : kRequiredColumns) {
+    if (schema.find(name) == nullptr) {
+      return Err(ErrorCode::InvalidArgument,
+                 "OPRA table missing required column '" + std::string(name) + "' (from '" +
+                     std::string(path) + "')");
+    }
+  }
+  return Ok();
+}
+
 } // namespace
 
 Result<OpraPanel> load_opra_cbbo_from_table(const io::ParquetTable& table,
@@ -866,18 +991,26 @@ Result<OpraPanel> load_opra_cbbo_from_table(const io::ParquetTable& table,
   // contract violation reported up front with the column name and spec.path
   // context, rather than the opaque deep column_view failure the raw core would
   // otherwise surface to a caller that never touched a file.
-  static constexpr std::array<std::string_view, 8> kRequiredColumns = {
-      "ts",     "underlying", "symbol", "instrument_id",
-      "bid_px", "ask_px",     "bid_sz", "ask_sz"};
-  const io::Schema& schema = table.schema();
-  for (const std::string_view name : kRequiredColumns) {
-    if (schema.find(name) == nullptr) {
-      return Err(ErrorCode::InvalidArgument,
-                 "OPRA table missing required column '" + std::string(name) +
-                     "' (from '" + spec.path + "')");
-    }
-  }
+  ATX_TRY_VOID(require_hive_columns(table, spec.path));
   return panel_from_table(table, spec);
+}
+
+Result<OpraTableScan> scan_opra_cbbo_table(const io::ParquetTable& table,
+                                           std::string_view path_for_errors) {
+  ATX_TRY_VOID(require_hive_columns(table, path_for_errors));
+  return scan_table(table);
+}
+
+Result<OpraPanel> load_opra_cbbo_from_scan(const OpraTableScan& scan, const OpraLoadSpec& spec) {
+  // An empty filter has no group to look up: `panel_from_scan` would silently
+  // fall back to the full-table path, which is a whole-table load wearing a
+  // per-symbol call's clothes. Reject it here rather than serve it.
+  if (spec.underlying.empty()) {
+    return Err(ErrorCode::InvalidArgument,
+               "load_opra_cbbo_from_scan requires OpraLoadSpec.underlying (from '" + spec.path +
+                   "')");
+  }
+  return panel_from_scan(scan, spec);
 }
 
 } // namespace atx::vol

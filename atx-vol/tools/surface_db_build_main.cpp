@@ -1106,11 +1106,17 @@ int main(int argc, char **argv) {
   } catch (const std::exception &e) {
     std::fprintf(stderr, "FATAL: unhandled exception: %s\n", e.what());
     std::fprintf(stderr,
-                 "  The build did NOT complete and no report was written. A std::bad_alloc here "
-                 "means the process ran out of memory for the requested window: the loader "
-                 "materialises EVERY (symbol, date) panel of the window before any fit starts, "
-                 "so peak memory scales with symbols x sessions. Retry with fewer "
-                 "--chunk-sessions or a smaller --symbols set.\n");
+                 "  The build did NOT complete and no report was written. The loader materialises "
+                 "every (symbol, date) panel of the window before any fit starts, so peak memory "
+                 "scales with symbols x sessions -- retry with fewer --chunk-sessions or a smaller "
+                 "--symbols set.\n"
+                 "  NOTE on std::bad_alloc specifically: this used to fire on a 102-symbol date at "
+                 "a ~123 MB working set with GB of RAM free, because each per-symbol panel "
+                 "RESERVED its row buffer for the whole DATE FILE's row count and kept it -- ~4.8 "
+                 "GB of committed, never-touched address space, so the process hit the system "
+                 "COMMIT limit rather than its own footprint. That is fixed (P-01: the loader "
+                 "scans and indexes each date once and sizes every buffer for the symbol's own "
+                 "rows). A bad_alloc here now means a genuinely too-large window.\n");
     return 3;
   } catch (...) {
     std::fprintf(stderr, "FATAL: unhandled non-std exception; build did not complete\n");

@@ -30,8 +30,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "atx/vol/curve.hpp" // DividendEvent
@@ -322,5 +324,101 @@ struct OpraPanel {
 // safe, and `table` is only read.
 [[nodiscard]] Result<OpraPanel>
 load_opra_cbbo_from_table(const atx::core::io::ParquetTable& table, const OpraLoadSpec& spec);
+
+// ── P-01: one column scan + one row index per TABLE, not per underlying ──────
+//
+// A hive v2 date file is ONE table holding EVERY underlying's rows, and the seam
+// above builds ONE underlying's panel out of it. Called per symbol, that costs
+// O(rows of the TABLE) each time — every column is re-materialized (`strings()`
+// and `null_mask()` each build a fresh n_rows-long vector) and every row of every
+// other underlying is re-visited and skipped. On a 102-name production date that
+// is 102 passes over ~208k rows, and it is why `load` scaled super-linearly in
+// symbol count (0.49 s at 10 names, 4.46 s at 102).
+//
+// The memory shape was worse than the time. Every per-symbol scratch buffer was
+// sized for the WHOLE table — `rows.reserve(n_rows)` on a ~224-byte QuoteRow is
+// a ~47 MB reservation for a symbol that owns ~2k rows — and the over-reserved
+// vector is then MOVED into the returned panel, so it stays live for the rest of
+// the build. 102 names => ~4.8 GB of COMMITTED (untouched, so never resident)
+// address space, which is exactly the intermittent `std::bad_alloc` that killed
+// 102-symbol builds while their working set was 123 MB and the box had GB free:
+// the process hit the system COMMIT limit, not its own RSS.
+//
+// `OpraTableScan` moves that work to once per table. It materializes each column
+// once and builds a per-`underlying` row index, so a split visits only its own
+// rows and sizes every buffer for them. Time becomes O(table) + O(rows of the
+// symbol); the panel costs its own rows and nothing more.
+//
+// LIFETIME: the string/column views BORROW `table`. A scan must not outlive the
+// table it was built from, and the table must not be mutated meanwhile (it
+// cannot be — `ParquetTable` is immutable once read).
+//
+// Thread-safety: building a scan touches only its own storage and reads `table`;
+// scans of DISTINCT tables are independent, and a built scan is immutable, so
+// any number of threads may split off one concurrently.
+struct OpraTableScan {
+  std::size_t n_rows{0};
+  std::int64_t first_ts_ns{0}; // the table's first `ts`, in epoch ns (0 if absent)
+
+  // Column views. `symbols`/`underlyings` borrow the table's string buffers; the
+  // int64 spans alias its numeric buffers; the null masks are owned copies (the
+  // reader has no aliasing accessor for validity).
+  std::vector<std::string_view> symbols;
+  std::vector<std::string_view> underlyings; // empty when `has_underlying` is false
+  std::span<const std::int64_t> bid_px, ask_px, bid_sz, ask_sz;
+  std::span<const std::int64_t> instrument_ids; // empty when !has_instrument_id
+  std::vector<std::uint8_t> bid_null, ask_null;
+  bool has_underlying{false};
+  bool has_instrument_id{false};
+
+  // Per-`underlying` row index, present iff `has_underlying` (and the table fits
+  // a 32-bit row id). `rows` holds every row id grouped by underlying and
+  // ASCENDING within each group, so a split visits its rows in the same order a
+  // full-table scan would — which is what makes an indexed panel byte-identical
+  // to an unindexed one.
+  bool indexed{false};
+  std::unordered_map<std::string_view, std::uint32_t> slot_of; // underlying -> group
+  std::vector<std::uint32_t> offsets;                          // slot_of.size() + 1
+  std::vector<std::uint32_t> rows;
+
+  [[nodiscard]] std::span<const std::uint32_t> rows_for(std::string_view underlying) const noexcept {
+    if (!indexed) {
+      return {};
+    }
+    const auto it = slot_of.find(underlying);
+    if (it == slot_of.end()) {
+      return {};
+    }
+    const std::uint32_t lo = offsets[it->second];
+    const std::uint32_t hi = offsets[it->second + 1u];
+    return std::span<const std::uint32_t>{rows.data() + lo, static_cast<std::size_t>(hi - lo)};
+  }
+};
+
+// Scan an already-materialized hive-v2 OPRA table once: validate the 8 canonical
+// columns, materialize them, and index the rows by `underlying`.
+//
+// `path_for_errors` is used ONLY for message context and matches
+// `load_opra_cbbo_from_table`'s `spec.path` role byte-for-byte, so a caller that
+// scans once per date and reports the scan's error on every cell of that date
+// produces exactly the errors the per-symbol seam would have.
+//
+// @return InvalidArgument if a required column is absent or is not of the
+//         expected type.
+[[nodiscard]] Result<OpraTableScan>
+scan_opra_cbbo_table(const atx::core::io::ParquetTable& table, std::string_view path_for_errors);
+
+// Build ONE underlying's panel from a scan. Byte-identical to
+// `load_opra_cbbo_from_table(table, spec)` over the same table and spec — the
+// index only changes WHICH rows are visited, never their order or contents — but
+// costs O(rows of `spec.underlying`) rather than O(rows of the table).
+//
+// `spec.underlying` must be set: an empty filter has no group to look up and is
+// rejected as InvalidArgument (use the table seam for a whole-table load). A
+// symbol the table does not carry returns the seam's exact zero-match Err,
+// `"underlying '<sym>' not found in parquet"`, so a coverage-hole classifier
+// keyed on that message is unaffected.
+[[nodiscard]] Result<OpraPanel> load_opra_cbbo_from_scan(const OpraTableScan& scan,
+                                                         const OpraLoadSpec& spec);
 
 } // namespace atx::vol
