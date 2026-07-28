@@ -136,6 +136,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception> // std::exception (main's exception boundary)
 #include <string>
 #include <string_view>
 #include <vector>
@@ -408,9 +409,8 @@ void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
   }
 }
 
-} // namespace
-
-int main(int argc, char **argv) {
+// The build body. `main` below is a thin exception boundary over it.
+int run_build_cli(int argc, char **argv) {
   SurfaceDbBuildSpec spec;
   std::string preset_name = "populate"; // matches the SurfaceDbBuildSpec default (Populate)
   std::string report_path;
@@ -1085,4 +1085,35 @@ int main(int argc, char **argv) {
   // operator asked for and did not get. A script that reads the file must not see
   // a green exit for a build whose report never landed.
   return build_exit_code(*report, report_write_failed, strict);
+}
+
+} // namespace
+
+// Exception boundary. The build body returns Result/exit codes rather than
+// throwing, but it calls into Arrow/parquet and the STL, which DO throw — and an
+// exception escaping main is std::terminate, i.e. the process dies on
+// STATUS_STACK_BUFFER_OVERRUN (0xC0000409) having printed NOTHING to either
+// stream. That is exactly how a 102-symbol build failed during this sprint: no
+// message, no report CSV, and an exit code that reads like a corrupted binary
+// rather than "the allocator said no". An operator (or the orchestrator, which
+// only sees the exit code) then has nothing to act on.
+//
+// Catching it costs nothing on the success path and converts that silent death
+// into a named, greppable failure with a distinct exit code (3).
+int main(int argc, char **argv) {
+  try {
+    return run_build_cli(argc, argv);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "FATAL: unhandled exception: %s\n", e.what());
+    std::fprintf(stderr,
+                 "  The build did NOT complete and no report was written. A std::bad_alloc here "
+                 "means the process ran out of memory for the requested window: the loader "
+                 "materialises EVERY (symbol, date) panel of the window before any fit starts, "
+                 "so peak memory scales with symbols x sessions. Retry with fewer "
+                 "--chunk-sessions or a smaller --symbols set.\n");
+    return 3;
+  } catch (...) {
+    std::fprintf(stderr, "FATAL: unhandled non-std exception; build did not complete\n");
+    return 3;
+  }
 }
