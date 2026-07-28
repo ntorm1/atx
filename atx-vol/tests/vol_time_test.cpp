@@ -358,6 +358,32 @@ TEST(VolTime, ExtendedHoursPaddingDayOutsideWindowFailsClosed) {
   EXPECT_NEAR(ok(trading_hours_between(ok_start, ok_end, p, cal)), 1.5, 1e-9);
 }
 
+TEST(VolTime, SpanBeyondTheDayLoopBoundFailsClosed) {
+  // The day loop is bounded to ~20 years (JPL rule 2). It used to CLAMP the loop
+  // to that bound and answer anyway, so an interval longer than the bound
+  // silently stopped accruing at year ~20 and reported the rest of the span as
+  // pure non-trading time -- a T_vol that is wrong by whole years, with a
+  // plausible-looking value and no diagnostic. Only the closure window used to
+  // stand in the way, and a caller-supplied calendar can declare a window wide
+  // enough to clear it, which is exactly the reachable case here: a 25-year
+  // window, a 21-year interval, every day covered.
+  VolTimeParams p;
+  p.alpha = 1.0;
+  const VolTimeCalendar wide({}, day_utc(2000, 1, 1), day_utc(2025, 12, 31));
+  const auto start = ns_utc(2000, 1, 3, 5, 0);
+  const auto end = ns_utc(2021, 1, 4, 5, 0);  // ~21 years: past the loop bound
+  const auto res = trading_hours_between(start, end, p, wide);
+  ASSERT_FALSE(res.has_value()) << "silently reported " << *res
+                                << " trading hours from a truncated day loop";
+  EXPECT_EQ(res.error().code(), ErrorCode::OutOfRange);
+
+  // Just inside the bound the same shape is answerable: 19 years of covered
+  // sessions accrue (a full session is 7.5h at alpha 1, ~252 a year).
+  const auto in_bound_end = ns_utc(2019, 1, 3, 5, 0);
+  const double hours = ok(trading_hours_between(start, in_bound_end, p, wide));
+  EXPECT_GT(hours, 19.0 * 250.0 * 7.5);
+}
+
 TEST(VolTime, DegenerateIntervalOutsideWindowStillReturnsZero) {
   // `end <= start` reads no calendar day at all, so it stays answerable
   // regardless of coverage — this is what keeps an already-expired contract on

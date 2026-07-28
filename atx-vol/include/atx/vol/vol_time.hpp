@@ -228,6 +228,11 @@ enum class SettlementSession : std::uint8_t {
 // contribute nothing (weekends, listed closures, and days the interval simply
 // does not overlap) are never checked: their status cannot move the answer.
 //
+// Also fails closed (`ErrorCode::OutOfRange`) on an interval spanning more than
+// ~20 years — the day loop's static bound. Nothing this clock serves prices a
+// horizon that long, and the loop used to CLAMP there and answer anyway, which
+// reported every session past year ~20 as non-trading time.
+//
 // @param start_ns  interval start, epoch nanoseconds (UTC)
 // @param end_ns    interval end, epoch nanoseconds (UTC), exclusive
 // @param p         session-window parameters (open hour / span, ET)

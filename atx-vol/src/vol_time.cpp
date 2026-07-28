@@ -24,6 +24,15 @@ constexpr std::int64_t kNsPerDay = 24LL * kNsPerHour;
 // handful of years (~1200 days for a 3y LEAPS), so a day-loop bound an order
 // of magnitude above 5 years is generous headroom against a pathological
 // caller-supplied span while never touching legitimate use.
+//
+// A span past the bound is REPORTED, not clamped. Clamping made the loop stop
+// accruing at ~year 20 and answer anyway: the rest of the span was then reported
+// as pure non-trading time, so `vol_time_years` returned a T_vol wrong by whole
+// years -- a plausible number with no diagnostic, the same silent-truncation
+// class this sprint is closing everywhere else. The bound is not widened
+// instead, because nothing this module serves prices a >20y horizon: an option
+// that far out is a caller error, and 7324 iterations of session math per query
+// is already 20x the widest real use.
 constexpr std::int64_t kMaxLoopDays = 20 * 366 + 4;  // ~20 years
 
 struct CivilDate {
@@ -231,10 +240,15 @@ Result<double> trading_hours_between(std::int64_t start_ns, std::int64_t end_ns,
   // inside int32.
   const auto z_first = static_cast<std::int32_t>(day_index(start_ns));
   const auto z_last = static_cast<std::int32_t>(day_index(end_ns));
-  std::int64_t z_lo = static_cast<std::int64_t>(z_first) - 1;
-  std::int64_t z_hi = static_cast<std::int64_t>(z_last) + 1;
+  const std::int64_t z_lo = static_cast<std::int64_t>(z_first) - 1;
+  const std::int64_t z_hi = static_cast<std::int64_t>(z_last) + 1;
   if (z_hi - z_lo > kMaxLoopDays) {
-    z_hi = z_lo + kMaxLoopDays;  // defensive bound; see kMaxLoopDays comment
+    // FAIL CLOSED rather than clamp: see kMaxLoopDays. A truncated loop answers
+    // with a T_vol short by every session past the bound.
+    return Err(ErrorCode::OutOfRange,
+               "trading_hours_between: interval spans " + std::to_string(z_hi - z_lo) +
+                   " days, past the " + std::to_string(kMaxLoopDays) +
+                   "-day (~20 year) bound this clock is defined over");
   }
 
   double trading_ns = 0.0;
