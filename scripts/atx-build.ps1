@@ -59,6 +59,34 @@ $VcVars   = Join-Path $VsRoot "VC\Auxiliary\Build\vcvars64.bat"
 $NinjaDir = Join-Path $VsRoot "Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 
+# Resolve a configure preset's binaryDir the way CMake does: read CMakePresets.json,
+# walk the `inherits` chain until a binaryDir is found, and expand ${sourceDir}.
+# Read rather than hard-coded as a name->dir table so adding a preset to
+# CMakePresets.json cannot silently desync this script (the desync is exactly the
+# bug this function exists to kill -- see the `build` verb below).
+function Get-PresetBinaryDir {
+  param([Parameter(Mandatory = $true)][string] $Name)
+
+  $presetsFile = Join-Path $RepoRoot "CMakePresets.json"
+  if (-not (Test-Path $presetsFile)) { return "build" }
+  $presets = (Get-Content $presetsFile -Raw | ConvertFrom-Json).configurePresets
+
+  # Bound the walk by the preset count so a malformed cyclic `inherits` cannot hang.
+  $current = $Name
+  for ($hop = 0; $hop -lt $presets.Count; $hop++) {
+    $preset = $presets | Where-Object { $_.name -eq $current } | Select-Object -First 1
+    if ($null -eq $preset) { break }
+    if ($preset.binaryDir) {
+      # ${sourceDir} is always $RepoRoot here; caller joins the relative remainder.
+      return ($preset.binaryDir -replace '\$\{sourceDir\}/?', '') -replace '/', '\'
+    }
+    if (-not $preset.inherits) { break }
+    # `inherits` may be a string or an array; the first entry wins, as in CMake.
+    $current = @($preset.inherits)[0]
+  }
+  throw "atx-build: cannot resolve binaryDir for preset '$Name' from CMakePresets.json"
+}
+
 # ── Wrong-tree guard (M6) ──────────────────────────────────────────────────
 # This script builds $RepoRoot — the worktree that physically CONTAINS it (via
 # $PSScriptRoot), NOT your shell's cwd. To keep that honest and kill the cwd-trap
@@ -105,8 +133,12 @@ if ($Ctest) {
   # Serial is the evidence default. Parallelism is an explicit operator choice
   # (`-Jobs N`) so a supposedly serial attribution gate cannot silently run 16
   # tests at once.
+  # Same preset-follows-the-binaryDir rule as `build` (default -Preset dev ->
+  # build\, so the historical default is unchanged); this makes `-Ctest -Preset rel`
+  # actually test build-rel\ instead of silently testing the Debug tree.
   $innerExe = "ctest"
-  $innerArgs = @("--test-dir", "$RepoRoot\build", "--output-on-failure", "-j", "$Jobs") + $Args
+  $innerArgs = @("--test-dir", (Join-Path $RepoRoot (Get-PresetBinaryDir $Preset)),
+                 "--output-on-failure", "-j", "$Jobs") + $Args
   $requiresMsvc = $false
 }
 elseif ($verb -eq "configure") {
@@ -124,8 +156,16 @@ elseif ($verb -eq "configure") {
   $requiresMsvc = $true
 }
 elseif ($verb -eq "build") {
+  # Build the binaryDir that -Preset actually configured. This USED to hard-code
+  # "$RepoRoot\build", so `atx-build.ps1 configure -Preset rel` wrote build-rel/
+  # but `atx-build.ps1 build <tgt>` then rebuilt the DEBUG build/ tree and handed
+  # back a Debug binary -- with no error, because the target exists in both. That
+  # is how the surface-db pilots were benchmarked on a fully unoptimized
+  # (Debug + debug Arrow/Parquet) exe and measured ~15x slow; see
+  # .superpowers/sdd/2026-07-26-sp100-surface-db/perf-investigation-report.md.
+  # Preset name -> binaryDir must stay in sync with CMakePresets.json.
   $innerExe = "cmake"
-  $innerArgs = @("--build", "$RepoRoot\build", "--target") + $rest
+  $innerArgs = @("--build", (Join-Path $RepoRoot (Get-PresetBinaryDir $Preset)), "--target") + $rest
   $requiresMsvc = $true
 }
 elseif ($verb -eq "check") {
