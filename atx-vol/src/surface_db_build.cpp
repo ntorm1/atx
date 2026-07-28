@@ -202,6 +202,14 @@ Result<AutoConfigReport> generate_symbol_configs(SurfaceDb &db, std::span<const 
   }
 
   AutoConfigReport report;
+  // Selected configs accumulate here and land in ONE upsert_symbols batch after
+  // the loop: the per-symbol upsert re-encoded and atomically rewrote the whole
+  // manifest once per symbol — O(N^2) manifest bytes on a fresh N-symbol build.
+  // Each entry's string_view references the `chosen` map key, which outlives the
+  // batch call. The batch is also all-or-nothing, so a failed write no longer
+  // leaves a partially-configured manifest behind.
+  std::vector<DbSymbolEntry> pending;
+  pending.reserve(chosen.size());
   for (const auto &[symbol, board_ptr] : chosen) {
     ++report.n_symbols;
 
@@ -245,11 +253,9 @@ Result<AutoConfigReport> generate_symbol_configs(SurfaceDb &db, std::span<const 
     // recipe is a hard pin is `spec.pin_curve_family` here too — the index leg is
     // exactly where an unrecovered single attempt cost production cells.
     if (!spec.index_symbol.empty() && symbol == spec.index_symbol) {
-      const SymbolFitConfig cfg =
-          seed_symbol_config(symbol, spec.preset, spec.index_symbol, spec.pin_curve_family);
-      if (const Status up = db.upsert_symbol(symbol, cfg); !up.has_value()) {
-        return Err(up.error());
-      }
+      pending.push_back(DbSymbolEntry{
+          symbol, seed_symbol_config(symbol, spec.preset, spec.index_symbol, spec.pin_curve_family),
+          std::nullopt});
       ++report.n_configured;
       continue;
     }
@@ -260,18 +266,18 @@ Result<AutoConfigReport> generate_symbol_configs(SurfaceDb &db, std::span<const 
       // top-level call still succeeds so one bad board never sinks the build.
       cfg = symbol_config_from_preset(spec.preset);
       cfg.enabled = false;
-      if (const Status up = db.upsert_symbol(symbol, cfg); !up.has_value()) {
-        return Err(up.error());
-      }
+      pending.push_back(DbSymbolEntry{symbol, cfg, std::nullopt});
       ++report.n_disabled_failed;
       report.failed_symbols.push_back(symbol);
       continue;
     }
 
-    if (const Status up = db.upsert_symbol(symbol, cfg); !up.has_value()) {
-      return Err(up.error());
-    }
+    pending.push_back(DbSymbolEntry{symbol, cfg, std::nullopt});
     ++report.n_configured;
+  }
+
+  if (const Status up = db.upsert_symbols(pending); !up.has_value()) {
+    return Err(up.error());
   }
 
   std::sort(report.failed_symbols.begin(), report.failed_symbols.end());
