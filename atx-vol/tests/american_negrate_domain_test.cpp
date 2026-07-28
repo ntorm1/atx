@@ -4,6 +4,7 @@
 #include <optional>
 
 #include "atx/vol/american.hpp"
+#include "atx/vol/american_iv.hpp"
 #include "atx/vol/black76.hpp"
 #include "support/oracle_pricer_pde.hpp"
 
@@ -131,6 +132,67 @@ TEST(NegRateDomainMap, EngineBehaviorMatchesCapabilityPredicatePerSide) {
   EXPECT_GE(n_american, 4);
   EXPECT_GE(n_european, 4);
   EXPECT_GE(n_unsupported, 3);
+}
+
+// ── The rate == 0 row of the table ──────────────────────────────────────────
+//
+// Double continuation requires yield < rate < 0 STRICTLY (Battauz-De Donno-
+// Sbuelz 2015; Healy 2021): the second (deep-ITM) exercise boundary exists only
+// because a strictly negative rate makes the early-received strike DECAY, so
+// waiting deep ITM regains value. At rate exactly 0 the strike neither grows nor
+// decays while the negative yield drifts the internal-put spot UP — waiting deep
+// ITM only loses expected payoff, so the exercise region is downward-connected:
+// one boundary, which `al_xmax_put(K, r=0, q<0) == K` already encodes.
+// `classify_regime` nonetheless lumped rate==0 into the negative-rate half and
+// returned Unsupported.
+//
+// That misclassification was load-bearing in production: the surface-db build's
+// `--r` defaults to 0, and the PCP borrow fixed point evaluates q_eff a
+// rounding-error either side of 0 — every put probed with q_eff = -eps was
+// refused as "double continuation", the carry solve lost its ATM pairs, and
+// whole boards died with "no expiry produced a usable eSSVI slice" (35/52 cells
+// on the 2025-09-02 sp100 hive date).
+TEST(NegRateDomainMap, ZeroRateNegativeYield_IsSingleBoundaryAmerican) {
+  const double K = 100.0, T = 1.0, sigma = 0.28;
+
+  // (1) Classification: put (rate=r=0, yield=q<0) and the McDonald-Schroder
+  // mirrored call (rate=q=0, yield=r<0) are American, not Unsupported.
+  ASSERT_EQ(regime_for(0.0, -0.03, Side::Put), ExerciseRegime::American);
+  ASSERT_EQ(regime_for(-0.03, 0.0, Side::Call), ExerciseRegime::American);
+
+  // (2) Behavior at a macro-size yield: AL prices the cell, tracks the FD
+  // oracle, and carries a genuine early-exercise premium deep ITM.
+  const Cell cells[] = {
+      {80.0, 0.0, -0.03, Side::Put, ExerciseRegime::American},
+      {100.0, 0.0, -0.03, Side::Put, ExerciseRegime::American},
+      {125.0, -0.03, 0.0, Side::Call, ExerciseRegime::American},
+  };
+  for (const Cell &c : cells) {
+    const Result<double> al = andersen_lake(c.S, K, T, sigma, c.r, c.q, c.side);
+    ASSERT_TRUE(al.has_value()) << "S=" << c.S << " : " << (al ? "" : al.error().to_string());
+    const double fd = oracle_pde_american(c.S, K, T, sigma, c.r, c.q, c.side);
+    ASSERT_TRUE(std::isfinite(fd));
+    if (fd > 0.05) {
+      EXPECT_LT(std::abs(*al - fd) / fd, 5.0e-3) << "AL vs FD; S=" << c.S;
+    }
+    const double euro = european_price(c.S, K, T, sigma, c.r, c.q, c.side);
+    EXPECT_GE(*al, euro - 1.0e-9) << "premium must be non-negative; S=" << c.S;
+  }
+
+  // (3) The production corner: yield a rounding error below zero. The premium is
+  // ~0 (the price IS the European price to solver tolerance) — what matters is
+  // that pricing and IV inversion SUCCEED instead of dying "boundary collapsed".
+  const double q_eps = -1.0e-12;
+  for (const double S : {80.0, 100.0, 120.0}) {
+    const Result<double> al = andersen_lake(S, K, T, sigma, 0.0, q_eps, Side::Put);
+    ASSERT_TRUE(al.has_value()) << "S=" << S << " : " << (al ? "" : al.error().to_string());
+    const double euro = european_price(S, K, T, sigma, 0.0, q_eps, Side::Put);
+    EXPECT_LT(std::fabs(*al - euro), 1.0e-6 * K) << "eps-yield premium must be ~0; S=" << S;
+
+    const Result<double> iv = american_implied_vol(*al, S, K, T, 0.0, q_eps, Side::Put);
+    ASSERT_TRUE(iv.has_value()) << "S=" << S << " : " << (iv ? "" : iv.error().to_string());
+    EXPECT_NEAR(*iv, sigma, 1.0e-4) << "round-trip IV; S=" << S;
+  }
 }
 
 } // namespace

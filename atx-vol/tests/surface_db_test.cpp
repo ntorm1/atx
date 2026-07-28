@@ -600,6 +600,120 @@ TEST(SurfaceDb, CreateOpenUpsertReopen_ConfigPersists) {
   std::filesystem::remove_all(root);
 }
 
+// Batched manifest seeding. A universe build seeds one SymbolFitConfig per
+// symbol; through upsert_symbol that re-encoded and atomically rewrote the
+// WHOLE manifest once per symbol — O(N^2) bytes and N fsync+rename cycles per
+// build, and the populate re-seeds unconditionally so every RESUME paid the
+// same N rewrites for configs that had not changed. upsert_symbols is the
+// batch twin: one lock, ONE persisted generation for any number of entries,
+// last entry wins on a duplicate canonical name — and a batch whose every
+// entry leaves its stored record byte-identical persists NOTHING (generation
+// unchanged), so a resume's re-seed is a zero-write no-op.
+TEST(SurfaceDb, UpsertSymbolsBatchPersistsOneGeneration) {
+  const auto root = test_root("upsert_batch");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+  EXPECT_EQ(db->generation(), 1u);
+
+  const auto cfg = make_full_config();
+  SurfaceProvenance provenance;
+  provenance.purpose = SurfacePurpose::Risk;
+  provenance.quality_mode = FitQualityMode::Accuracy;
+  provenance.state = SurfaceState::Degraded;
+  provenance.validation.validation_id = 424242;
+
+  SymbolFitConfig spy_v1;
+  spy_v1.enabled = false;
+  const std::vector<DbSymbolEntry> batch = {
+      DbSymbolEntry{"aapl", cfg, provenance},
+      DbSymbolEntry{"spy", spy_v1, std::nullopt},
+      DbSymbolEntry{"SPY", SymbolFitConfig{}, std::nullopt}, // duplicate: last wins
+      DbSymbolEntry{"msft", SymbolFitConfig{}, std::nullopt},
+  };
+  ASSERT_TRUE(db->upsert_symbols(batch).has_value());
+  EXPECT_EQ(db->generation(), 2u) << "one batch = one generation, not one per entry";
+  EXPECT_EQ(db->symbols(), (std::vector<std::string>{"AAPL", "MSFT", "SPY"}));
+
+  auto got = db->symbol_config("AAPL");
+  ASSERT_TRUE(got.has_value());
+  expect_config_eq(*got, cfg);
+  auto got_spy = db->symbol_config("SPY");
+  ASSERT_TRUE(got_spy.has_value());
+  EXPECT_TRUE(got_spy->enabled) << "duplicate canonical name: the LAST entry wins";
+  auto got_provenance = db->surface_provenance("AAPL");
+  ASSERT_TRUE(got_provenance.has_value());
+  ASSERT_TRUE(got_provenance->has_value());
+  EXPECT_EQ((*got_provenance)->validation.validation_id, 424242u);
+
+  // A fresh open sees exactly the one committed generation.
+  auto reopened = SurfaceDb::open(root.string());
+  ASSERT_TRUE(reopened.has_value());
+  EXPECT_EQ(reopened->generation(), 2u);
+  std::filesystem::remove_all(root);
+}
+
+TEST(SurfaceDb, UpsertSymbolsUnchangedBatchIsZeroWrite) {
+  const auto root = test_root("upsert_batch_nowrite");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const auto cfg = make_full_config();
+  const std::vector<DbSymbolEntry> batch = {
+      DbSymbolEntry{"AAPL", cfg, std::nullopt},
+      DbSymbolEntry{"SPY", SymbolFitConfig{}, std::nullopt},
+  };
+  ASSERT_TRUE(db->upsert_symbols(batch).has_value());
+  EXPECT_EQ(db->generation(), 2u);
+
+  // The resume shape: identical re-seed. Nothing may be persisted.
+  ASSERT_TRUE(db->upsert_symbols(batch).has_value());
+  EXPECT_EQ(db->generation(), 2u) << "byte-identical batch must not rewrite the manifest";
+
+  // Provenance nullopt KEEPS the stored provenance (upsert_symbol semantics),
+  // so a re-seed after a provenance write-back is still a zero-write.
+  SurfaceProvenance provenance;
+  provenance.purpose = SurfacePurpose::Risk;
+  provenance.validation.validation_id = 7;
+  ASSERT_TRUE(db->upsert_symbol("AAPL", cfg, provenance).has_value());
+  EXPECT_EQ(db->generation(), 3u);
+  ASSERT_TRUE(db->upsert_symbols(batch).has_value());
+  EXPECT_EQ(db->generation(), 3u) << "config-identical re-seed must keep stored provenance";
+  auto got_provenance = db->surface_provenance("AAPL");
+  ASSERT_TRUE(got_provenance.has_value());
+  ASSERT_TRUE(got_provenance->has_value());
+  EXPECT_EQ((*got_provenance)->validation.validation_id, 7u);
+
+  // One changed entry re-persists — once.
+  SymbolFitConfig changed = cfg;
+  changed.enabled = !changed.enabled;
+  const std::vector<DbSymbolEntry> mixed = {
+      DbSymbolEntry{"AAPL", changed, std::nullopt},
+      DbSymbolEntry{"SPY", SymbolFitConfig{}, std::nullopt},
+  };
+  ASSERT_TRUE(db->upsert_symbols(mixed).has_value());
+  EXPECT_EQ(db->generation(), 4u);
+  std::filesystem::remove_all(root);
+}
+
+TEST(SurfaceDb, UpsertSymbolsBadEnumRejectsWholeBatchAtomically) {
+  const auto root = test_root("upsert_batch_bad");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  SymbolFitConfig bad;
+  bad.preset = static_cast<FitPreset>(250); // outside every enum's wire range
+  const std::vector<DbSymbolEntry> batch = {
+      DbSymbolEntry{"AAPL", SymbolFitConfig{}, std::nullopt},
+      DbSymbolEntry{"SPY", bad, std::nullopt},
+  };
+  const auto result = db->upsert_symbols(batch);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(db->generation(), 1u) << "a rejected batch must not advance the generation";
+  EXPECT_TRUE(db->symbols().empty()) << "no half-applied batch: AAPL must not be stored";
+  std::filesystem::remove_all(root);
+}
+
 TEST(SurfaceDb, UpsertBadEnum_FailsCleanly_DbStillOpens) {
   // Regression for the writer/reader enum-validation asymmetry: a config
   // carrying an out-of-range enum wire value must be rejected by the

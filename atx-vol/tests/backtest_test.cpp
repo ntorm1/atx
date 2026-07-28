@@ -38,14 +38,14 @@
 #include "atx/vol/counters.hpp"
 #include "atx/vol/dispersion_backtest.hpp" // DispersionCostModel, dispersion_effective_frictions
 #include "atx/vol/portfolio_pricer.hpp"    // OptionContract
-#include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
-#include "atx/vol/strategy.hpp"         // IStrategy
-#include "atx/vol/surface_archive.hpp"  // write_surface_archive_file, SurfaceArchiveItem
-#include "atx/vol/surface_parity.hpp"   // SliceContext
-#include "atx/vol/types.hpp"            // Side, Result, Status
-#include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
-#include "support/isa_golden_tol.hpp"   // golden_isa_accum_tol (per-ISA FMA band)
-#include "atx/vol/vol_surface.hpp"      // EssviParams
+#include "atx/vol/priced_surface.hpp"      // PricedSurface, PricingContext
+#include "atx/vol/strategy.hpp"            // IStrategy
+#include "atx/vol/surface_archive.hpp"     // write_surface_archive_file, SurfaceArchiveItem
+#include "atx/vol/surface_parity.hpp"      // SliceContext
+#include "atx/vol/types.hpp"               // Side, Result, Status
+#include "atx/vol/vol_curve.hpp"           // CurveSurface, EssviCurve
+#include "atx/vol/vol_surface.hpp"         // EssviParams
+#include "support/isa_golden_tol.hpp"      // golden_isa_accum_tol (per-ISA FMA band)
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -937,6 +937,29 @@ TEST(Backtest, ArchivedSnapshotDefaultsColdAndPreparesEverySurfaceForRequestedTi
   }
 }
 
+TEST(Backtest, MarketSnapshotRetainsArchiveIdentityAcrossBackingAndMove) {
+  const fs::path dir = fresh_dir("snapshot-source-identity");
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const std::string path = write_one(dir, "2026-08-01", "SPX", surface);
+  const auto archive = SurfaceArchiveV2::open_file(path);
+  ASSERT_TRUE(archive) << archive.error().to_string();
+  const ArchiveContentIdentity expected = archive->identity();
+
+  auto borrowed = MarketSnapshot::load(path);
+  ASSERT_TRUE(borrowed) << borrowed.error().to_string();
+  ASSERT_TRUE(borrowed->borrows_views());
+  EXPECT_EQ(borrowed->source_identity(), expected);
+  MarketSnapshot moved_borrowed = std::move(*borrowed);
+  EXPECT_EQ(moved_borrowed.source_identity(), expected);
+
+  auto owned = MarketSnapshot::load(path, QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(owned) << owned.error().to_string();
+  ASSERT_FALSE(owned->borrows_views());
+  EXPECT_EQ(owned->source_identity(), expected);
+  MarketSnapshot moved_owned = std::move(*owned);
+  EXPECT_EQ(moved_owned.source_identity(), expected);
+}
+
 TEST(Backtest, MarketSnapshotPreservesSameBlobProvenanceByDirectoryUid) {
   const fs::path dir = fresh_dir("snapshot-provenance-pairing");
   std::error_code ec;
@@ -1225,7 +1248,7 @@ TEST(Backtest, SnapshotCacheEvictsStaleEntryWhenArchiveRewrittenSameLength) {
 
   // Rewrite the SAME path with different blob content but identical framing.
   write_forward(101.0);
-  ASSERT_EQ(fs::file_size(path), size_v1);  // same byte length: only the CRC moved
+  ASSERT_EQ(fs::file_size(path), size_v1); // same byte length: only the CRC moved
 
   auto second = cache.load(path);
   ASSERT_TRUE(second.has_value()) << second.error().to_string();
@@ -1256,8 +1279,7 @@ TEST(Backtest, ReuseOnlyFastMissLoadsColdAndLaterReusesEagerFastSnapshot) {
       cache.load(path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
   ASSERT_TRUE(cold_on_miss.has_value()) << cold_on_miss.error().to_string();
   ASSERT_EQ((*cold_on_miss)->n_surfaces(), 1u);
-  EXPECT_EQ((*cold_on_miss)->surface_at(0).query_pricing_tier(),
-            QueryPricingTier::ColdReference);
+  EXPECT_EQ((*cold_on_miss)->surface_at(0).query_pricing_tier(), QueryPricingTier::ColdReference);
   EXPECT_EQ((*cold_on_miss)->surface_at(0).query_cache_pair_count(), 0u);
   EXPECT_EQ(MarketSnapshot::open_count(), 1u);
 
@@ -1309,8 +1331,7 @@ TEST(Backtest, ConcurrentReuseOnlyFastMissesCoalesceOnOneColdSnapshot) {
     ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
     first = first == nullptr ? snapshot->get() : first;
     EXPECT_EQ(snapshot->get(), first);
-    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(),
-              QueryPricingTier::ColdReference);
+    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(), QueryPricingTier::ColdReference);
   }
   EXPECT_EQ(MarketSnapshot::open_count(), 1u);
   EXPECT_EQ(cache.stats().loads, 1u);
@@ -1420,8 +1441,7 @@ TEST(Backtest, ReuseOnlyRunUsesColdOnMissAndPreparedFastAfterExplicitPreload) {
     auto snapshot = fresh_config.snapshot_cache->load(
         ref.archive_path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
     ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
-    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(),
-              QueryPricingTier::ColdReference);
+    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(), QueryPricingTier::ColdReference);
     EXPECT_EQ((*snapshot)->surface_at(0).query_cache_pair_count(), 0u);
   }
   EXPECT_EQ(fresh_config.snapshot_cache->stats().loads, fresh_stats.loads);
@@ -1963,8 +1983,7 @@ TEST(Backtest, Granularity) {
   EXPECT_NEAR(col_sum(rc->pnl_settlement), col_sum(rf->pnl_settlement),
               tol * (std::fabs(col_sum(rf->pnl_settlement)) + 1.0));
   // Σ recorded pnl_total reconstructs the final NAV at either stride.
-  EXPECT_NEAR(col_sum(rc->pnl_total), rf->nav.back(),
-              tol * (std::fabs(rf->nav.back()) + 1.0));
+  EXPECT_NEAR(col_sum(rc->pnl_total), rf->nav.back(), tol * (std::fabs(rf->nav.back()) + 1.0));
 
   // Every coarse row lands on a fine timestamp; its STATE columns match that fine
   // row bit-for-bit, and its block-summed pnl_total equals the fine NAV increment
@@ -1979,7 +1998,7 @@ TEST(Backtest, Granularity) {
       }
     }
     ASSERT_LT(fi, rf->size()) << "no fine row at coarse ts row " << j;
-    EXPECT_TRUE(bits_equal(rc->nav[j], rf->nav[fi])) << j;              // cumulative state
+    EXPECT_TRUE(bits_equal(rc->nav[j], rf->nav[fi])) << j;               // cumulative state
     EXPECT_TRUE(bits_equal(rc->gross_vega[j], rf->gross_vega[fi])) << j; // recorded-row state
     if (j > 0) {
       const double block = rf->nav[fi] - rf->nav[prev_fi];
@@ -2483,7 +2502,7 @@ TEST(Backtest, DefaultPolicyIsBitIdenticalToBaseline) {
   const CorpusManifest man = make_evolving_corpus(dir, "SPX", 5);
   auto clock = Clock::from_manifest(man);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
-  const std::int64_t expiry = kBaseNow + 120 * kDayNs;    // survives every date
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs; // survives every date
   // WS-F F1(c) flipped the default to Error; this corpus never loses a surface,
   // so the default and the explicit lenient policy must still agree bit-for-bit.
   auto res = run_backtest(*clock, survivor_book(expiry)); // default: Error (post-F1c)
@@ -2529,7 +2548,7 @@ TEST(Backtest, SubsetDeserializeLoadsOnlyReferencedUids) {
   }
   std::vector<SurfaceArchiveItem> items;
   for (std::uint32_t i = 0; i < 4; ++i) {
-    static const char* kNames[] = {"AAA", "BBB", "CCC", "DDD"};
+    static const char *kNames[] = {"AAA", "BBB", "CCC", "DDD"};
     items.push_back(SurfaceArchiveItem{kNames[i], &surfaces[i]});
   }
   ASSERT_TRUE(write_surface_archive_v2_file(path, items).has_value());
@@ -2566,7 +2585,8 @@ TEST(Backtest, SubsetDeserializeLoadsOnlyReferencedUids) {
   ASSERT_TRUE(wv.has_value());
   ASSERT_TRUE(sv.has_value());
   EXPECT_TRUE(bits_equal(*wv, *sv)) << "subset reconstruct must match whole-board bit-for-bit";
-  std::printf("[b1] subset-deser: 2 of 4 surfaces loaded; uid_of resolves all; marks bit-identical\n");
+  std::printf(
+      "[b1] subset-deser: 2 of 4 surfaces loaded; uid_of resolves all; marks bit-identical\n");
 }
 
 // P-9: a requested subset with no matching uid is a normal missing-name date,
@@ -2623,16 +2643,16 @@ TEST(Backtest, SubsetDeserializeFixedBookParity) {
     for (std::uint32_t i = 0; i < 4; ++i) {
       const double S =
           (100.0 + 5.0 * static_cast<double>(i)) * (1.0 + 0.003 * static_cast<double>(d));
-      surfaces.push_back(make_surface(kUid + i, S, S, now,
-                                      0.001 * static_cast<double>(d) + 0.002 * static_cast<double>(i)));
+      surfaces.push_back(make_surface(
+          kUid + i, S, S, now, 0.001 * static_cast<double>(d) + 0.002 * static_cast<double>(i)));
     }
     char buf[16];
     std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
     const std::string path = (dir / (std::string(buf) + ".atxvsa")).string();
     std::vector<SurfaceArchiveItem> items;
     for (std::uint32_t i = 0; i < 4; ++i) {
-      static const char* kNames[] = {"AAA", "BBB", "CCC", "DDD"};
-    items.push_back(SurfaceArchiveItem{kNames[i], &surfaces[i]});
+      static const char *kNames[] = {"AAA", "BBB", "CCC", "DDD"};
+      items.push_back(SurfaceArchiveItem{kNames[i], &surfaces[i]});
     }
     ASSERT_TRUE(write_surface_archive_v2_file(path, items).has_value());
     dp.emplace_back(buf, path);
@@ -2663,4 +2683,97 @@ TEST(Backtest, SubsetDeserializeFixedBookParity) {
   expect_result_bit_identical(*subset_res, *whole_res);
   std::printf("[b1] fixed-book subset-deser bit-identical to whole-board over %zu rows\n",
               subset_res->size());
+}
+
+// ── Look-ahead DEPTH is a scheduling knob, never an economic one ──────────────
+//
+// `RunConfig::prefetch_depth` exists so the independent, parallelizable snapshot
+// loads can pipeline against the strictly sequential economics. That is only worth
+// having if a deeper window cannot move a number, so this is the gate the speedup
+// rests on: every depth must reproduce the single-step look-ahead BIT-FOR-BIT.
+//
+// The open count is asserted alongside the values, and it is the half that would
+// catch a silently WASTED window. A run whose cache is too small for its depth
+// still produces identical numbers — it just evicts each completed prefetch before
+// its own step arrives and reloads the archive, which is a pure pessimization that
+// a values-only assertion cannot see. Pinning `open_count == refs.size()` at every
+// depth says each archive was opened exactly once, so the look-ahead was actually
+// consumed rather than thrown away and redone.
+//
+// THE CLOCK MUST BE LONG ENOUGH TO FORCE EVICTION, and this is the trap an earlier
+// version of this test fell into: with 9 dates the deepest windows here have a
+// capacity (depth + 2) LARGER than the whole corpus, so nothing is ever evicted, no
+// reload is possible, and the open-count assertion passes no matter what the
+// eviction order is. Verified by negative control — reintroducing the promote-on-use
+// that caused the reloads left the 9-date version GREEN. The corpus is therefore
+// sized well past the largest capacity under test (24 > 12 + 2) so every depth here
+// actually evicts, and the deepest depth still runs its window past the end of the
+// clock so the clamp is exercised too.
+TEST(Backtest, PrefetchDepthIsBitIdenticalToSingleStepLookAhead) {
+  const fs::path dir = fresh_dir("prefetch-depth");
+  const std::size_t kDates = 24u;
+  const CorpusManifest man = make_evolving_corpus(dir, "SPX", static_cast<int>(kDates));
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  ASSERT_EQ(clock->refs().size(), kDates);
+
+  // 4 is included on purpose: it is the depth at which the reload defect was first
+  // measured on the production replay, and the depth whose LRU arithmetic happened
+  // to be safe at some other capacities. 30 exceeds the clock.
+  const std::size_t depths[] = {1u, 2u, 3u, 4u, 8u, 12u, 30u};
+
+  // ── Strategy overload: whole-board loads (its private cache carries no uid
+  // subset, because a strategy's touched names are not known before on_step).
+  const auto run_strategy = [&](std::size_t depth) -> BacktestResult {
+    DeclarativeStrategy strategy{daily_two_leg_roll_spec()};
+    RunConfig config;
+    config.price.n_threads = 1u; // isolate the load pipeline from pricer fan-out
+    config.prefetch_depth = depth;
+    MarketSnapshot::reset_open_count();
+    auto result = run_backtest(*clock, strategy, config);
+    EXPECT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+    EXPECT_EQ(MarketSnapshot::open_count(), kDates)
+        << "depth " << depth << ": each archive must open exactly once";
+    return result.has_value() ? std::move(*result) : BacktestResult{};
+  };
+  const BacktestResult strategy_reference = run_strategy(1u);
+  ASSERT_EQ(strategy_reference.size(), kDates);
+  for (const std::size_t depth : depths) {
+    const BacktestResult deep = run_strategy(depth);
+    SCOPED_TRACE("strategy overload, prefetch_depth=" + std::to_string(depth));
+    expect_result_bit_identical(strategy_reference, deep);
+  }
+
+  // ── Fixed-book overload: subset-deserialize (its private cache DOES carry the
+  // book's uids), so its loader is a different one and needs its own coverage.
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs; // survives the whole clock
+  const auto run_fixed = [&](std::size_t depth) -> BacktestResult {
+    RunConfig config;
+    config.price.n_threads = 1u;
+    config.prefetch_depth = depth;
+    MarketSnapshot::reset_open_count();
+    auto result = run_backtest(*clock, survivor_book(expiry), config);
+    EXPECT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+    EXPECT_EQ(MarketSnapshot::open_count(), kDates)
+        << "depth " << depth << ": each archive must open exactly once";
+    return result.has_value() ? std::move(*result) : BacktestResult{};
+  };
+  const BacktestResult fixed_reference = run_fixed(1u);
+  ASSERT_EQ(fixed_reference.size(), kDates);
+  for (const std::size_t depth : depths) {
+    const BacktestResult deep = run_fixed(depth);
+    SCOPED_TRACE("fixed-book overload, prefetch_depth=" + std::to_string(depth));
+    expect_result_bit_identical(fixed_reference, deep);
+  }
+
+  // A zero depth is normalized to the single-step look-ahead rather than
+  // disabling look-ahead: "none" is spelled prefetch_snapshots=false.
+  RunConfig zero;
+  zero.price.n_threads = 1u;
+  zero.prefetch_depth = 0u;
+  MarketSnapshot::reset_open_count();
+  auto zero_res = run_backtest(*clock, survivor_book(expiry), zero);
+  ASSERT_TRUE(zero_res.has_value()) << zero_res.error().to_string();
+  EXPECT_EQ(MarketSnapshot::open_count(), kDates);
+  expect_result_bit_identical(fixed_reference, *zero_res);
 }

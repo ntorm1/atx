@@ -2137,23 +2137,37 @@ TEST(BuildSurfaceDb, EverySymbolFailingSelectionIsTotalConfigFailure) {
   EXPECT_FALSE(is_total_config_failure(*good));
 }
 
-// The production trap, end to end at the library level: the synthetic hive is
-// priced at a NON-ZERO rate (SyntheticHiveSpec::r == 0.03), so building it with
-// the CLI's old hard-wired r = 0.0 fails every single fit while the build itself
-// still returns Ok — exactly the silent green exit `--r` and this predicate close.
-// The same build with the MATCHING r fits everything.
-TEST(BuildSurfaceDb, ZeroCarryAgainstNonZeroHiveIsTotalFailure) {
+// The production trap, end to end at the library level — REWRITTEN when the
+// classify_regime rate==0 fix landed. The synthetic hive is priced at a NON-ZERO
+// rate (SyntheticHiveSpec::r == 0.03); building it with r = 0.0 used to fail
+// every single fit, but only by ACCIDENT: at r=0 the PCP borrow iterate lands at
+// q_eff = -eps, and the old regime table lumped (rate==0, yield<0) into the
+// double-continuation Unsupported cell, NaN-killing every carry solve. That cell
+// is really single-boundary American (see american.hpp's classify_regime and
+// NegRateDomainMap.ZeroRateNegativeYield_IsSingleBoundaryAmerican), so a
+// mis-specified carry now CONVERGES — the borrow solve absorbs the wrong r into
+// the implied borrow and the fits land in band.
+//
+// What this test now pins: (1) the wrong-carry build succeeds and is NOT a
+// total fit failure — the old tripwire is gone and nothing may resurrect it by
+// accident; (2) the matching-carry build still fits everything. The RESIDUAL
+// OPERATOR HAZARD is documented here on purpose: a forgotten `--r` no longer
+// announces itself as a dead build — the surfaces store a wrong carry
+// DECOMPOSITION (r=0 with the difference pushed into borrow) even though they
+// reprice the market in band. The guard against that is operational (pass the
+// correct `--r`; it is a claim about the market), not this predicate.
+TEST(BuildSurfaceDb, ZeroCarryAgainstNonZeroHiveConvergesSinceRegimeFix) {
   const tsupport::SyntheticHiveSpec fx; // r = 0.03
   ASSERT_GT(fx.r, 0.0) << "fixture must embed a non-zero carry for this test to mean anything";
   const BuildFixture f = make_build_fixture("carry_mismatch", fx);
 
   SurfaceDbBuildSpec spec = build_spec(f, fx);
-  spec.hive.r = 0.0; // the pre---r CLI default: wrong for this hive
+  spec.hive.r = 0.0; // mis-specified for this hive; converges since the regime fix
   const auto bad = build_surface_db(spec);
-  ASSERT_TRUE(bad.has_value()) << (bad ? "" : bad.error().to_string()); // still Ok — the trap
+  ASSERT_TRUE(bad.has_value()) << (bad ? "" : bad.error().to_string());
   EXPECT_GT(bad->coverage.cells_to_fit, 0u);
-  EXPECT_EQ(bad->coverage.cells_ok, 0u);
-  EXPECT_TRUE(is_total_fit_failure(*bad));
+  EXPECT_GT(bad->coverage.cells_ok, 0u) << "r=0 fits must converge post regime fix";
+  EXPECT_FALSE(is_total_fit_failure(*bad)) << "the accidental r=0 tripwire must stay gone";
 
   // Same hive, same db root, correct carry: the build converges.
   const BuildFixture g = make_build_fixture("carry_match", fx);

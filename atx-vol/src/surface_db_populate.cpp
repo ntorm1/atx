@@ -22,6 +22,7 @@
 #include "atx/vol/detail/archive_util.hpp"  // canonicalize_symbol (carry-over key match)
 #include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
 #include "atx/vol/dispersion.hpp"           // with_uid
+#include "atx/vol/parallel_for.hpp"         // atx_auto_worker_count (fit_workers=0 auto)
 #include "atx/vol/pricer_fitter.hpp"        // PricerConfig
 #include "atx/vol/session.hpp"              // SessionInputs
 #include "atx/vol/universe.hpp"             // uid_for_symbol
@@ -1144,29 +1145,32 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
   //    is left on the preset's auto-selector (pin_curve=false), which picks the
   //    parsimonious backbone the board's microstructure warrants. A symbol already in
   //    the manifest is left untouched (a resumed run / operator override wins).
-  for (std::size_t i = 0; i < boards.size(); ++i) {
-    const std::string &sym = boards[i].symbol;
-    bool first = true;
-    for (std::size_t j = 0; j < i; ++j) {
-      if (boards[j].symbol == sym) {
-        first = false;
-        break;
+  {
+    std::set<std::string_view> seen;
+    std::vector<DbSymbolEntry> seeds;
+    seeds.reserve(boards.size());
+    for (const CorpusBoard &b : boards) {
+      if (!seen.insert(b.symbol).second || db.symbol_config(b.symbol).has_value()) {
+        continue;
       }
+      // Seeding recipe shared bit-for-bit with generate_symbol_configs (Task 4):
+      // the preset's config, dense-index-pinned for the index leg. The pin stays
+      // TRUE here on purpose: this seeding is a no-op inside `build_surface_db`
+      // (generate_symbol_configs has already configured every symbol, so the
+      // has_value() check above skips them all), and `UniversePopulateSpec` carries
+      // no operator knob — so flipping it would silently change the contract for
+      // direct callers of this driver without any way to opt back. The operator's
+      // choice lives on AutoConfigSpec::pin_curve_family, one stage up.
+      seeds.push_back(DbSymbolEntry{b.symbol,
+                                    seed_symbol_config(b.symbol, spec.preset, spec.index_symbol,
+                                                       /*pin_curve_family=*/true),
+                                    std::nullopt});
     }
-    if (!first || db.symbol_config(sym).has_value()) {
-      continue;
-    }
-    // Seeding recipe shared bit-for-bit with generate_symbol_configs (Task 4):
-    // the preset's config, dense-index-pinned for the index leg. The pin stays
-    // TRUE here on purpose: this seeding is a no-op inside `build_surface_db`
-    // (generate_symbol_configs has already configured every symbol, so the
-    // has_value() check above skips them all), and `UniversePopulateSpec` carries
-    // no operator knob — so flipping it would silently change the contract for
-    // direct callers of this driver without any way to opt back. The operator's
-    // choice lives on AutoConfigSpec::pin_curve_family, one stage up.
-    const SymbolFitConfig c = seed_symbol_config(sym, spec.preset, spec.index_symbol,
-                                                 /*pin_curve_family=*/true);
-    const Status up = db.upsert_symbol(sym, c);
+    // ONE manifest rewrite for the whole seed set (upsert_symbols): the per-symbol
+    // upsert loop re-encoded and atomically rewrote the full manifest once per NEW
+    // symbol — O(N^2) manifest bytes and N fsync+rename cycles on a fresh
+    // N-symbol build. Byte-identical seeds persist nothing at all.
+    const Status up = db.upsert_symbols(seeds);
     if (!up) {
       return Err(up.error());
     }
@@ -1314,7 +1318,17 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
   if (!kept.empty()) {
     SurfaceDbPopulateConfig pcfg;
     pcfg.fallback = fallback_cfg;
-    pcfg.n_threads = spec.fit_workers;
+    // `UniversePopulateSpec::fit_workers` documents 0 = AUTO (honors
+    // ATX_VOL_FIT_WORKERS), but `SurfaceDbPopulateConfig::n_threads` defines 0 as
+    // OUTER-SERIAL — forwarding the raw 0 silently fit whole universes one board
+    // at a time (measured: a 102-cell sp100 date at 46 s outer-serial vs 21 s with
+    // an explicit budget; the inner fan-out alone cannot occupy the pool because
+    // each board's slice work is mostly serial). Resolve the auto sentinel HERE,
+    // at the boundary where the two contracts meet. Worker count is a PERF-only
+    // knob: every fit is byte-identical for any budget
+    // (SharedWorkerBudgetKeepsOutputByteIdentical et al.), so this changes wall
+    // time, never bytes. Gate: UniverseStreamingFitWorkersZeroResolvesAutoBudget.
+    pcfg.n_threads = spec.fit_workers != 0u ? spec.fit_workers : atx_auto_worker_count();
     pcfg.skip_existing = false;
     pcfg.carry_over = std::move(carry_over);
     // FIX-D fix-2 (I-3): the frame that RAN the gate is the frame that attests.

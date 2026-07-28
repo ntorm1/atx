@@ -134,12 +134,12 @@
 #include "atx/vol/vola_parity.hpp"    // single-expiry parity harness
 
 // ── Surface queries / projection / derivatives ──────────────────────────────
-#include "atx/vol/contract_projection.hpp" // relative template -> concrete theo option
+#include "atx/vol/contract_projection.hpp"   // relative template -> concrete theo option
+#include "atx/vol/curve.hpp"                 // CurveSet, DividendEvent
+#include "atx/vol/derivatives.hpp"           // vol-derivative analytics
 #include "atx/vol/historical_projection.hpp" // historical relative-template risk / VaR
-#include "atx/vol/phase_profile.hpp" // compile-time opt-in phase timers
-#include "atx/vol/curve.hpp"               // CurveSet, DividendEvent
-#include "atx/vol/derivatives.hpp"         // vol-derivative analytics
-#include "atx/vol/projection.hpp"          // eval at non-listed T/K, delta anchors
+#include "atx/vol/phase_profile.hpp"         // compile-time opt-in phase timers
+#include "atx/vol/projection.hpp"            // eval at non-listed T/K, delta anchors
 
 // ── Data model (universe, panels, real OPRA loader, archive) ─────────────────
 #include "atx/vol/data.hpp"            // QuoteFrame, data_install
@@ -173,6 +173,9 @@
 
 // Traditional listed-options dispersion workflow.
 #include "atx/vol/backtest.hpp"
+#include "atx/vol/backtest_db.hpp"
+#include "atx/vol/backtest_db_build.hpp"
+#include "atx/vol/backtest_template.hpp"
 #include "atx/vol/dispersion.hpp"
 #include "atx/vol/dispersion_backtest.hpp"
 #include "atx/vol/dispersion_strangle.hpp" // strangle DSL over the dispersion book
