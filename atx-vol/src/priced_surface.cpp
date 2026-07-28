@@ -3,6 +3,7 @@
 #include "atx/vol/american_batch.hpp" // exact resolved price-only batch
 #include "atx/vol/correction.hpp"
 #include "atx/vol/counters.hpp"
+#include "atx/vol/pricing_executor.hpp" // the ONE bounded pricing pool (accelerator build)
 #include "laned_greek_run.hpp" // WS-P1v: the shared laned analytic-Greek batch driver
 #include "term_carry.hpp"
 
@@ -15,6 +16,7 @@
 #include <exception>
 #include <future>
 #include <limits>
+#include <system_error>
 #include <memory>
 #include <optional>
 #include <span>
@@ -170,18 +172,31 @@ struct PricedSurface::QueryAccelerator {
                                     domain.sigma_max, side,
                                     std::optional<AlOpts>{surface.pricing_.al_opts});
     };
+    // The single-center (RepresentativeFast) build overlaps its two sides. This
+    // pair stays OFF the pricing pool deliberately: it is 2 units of work, below
+    // the executor's inline threshold, so routing it there would serialize two
+    // multi-millisecond cache builds — a latency regression, not a fix. What IS
+    // fixed is the escape hatch: thread exhaustion used to leave this
+    // Result-returning function as a std::system_error. It now degrades to the
+    // serial build, which produces the identical entry.
     std::future<Result<CorrectionCache>> put_future;
+    bool put_async = false;
     if (parallel_sides) {
-      put_future = std::async(std::launch::async, build_side, Side::Put);
+      try {
+        put_future = std::async(std::launch::async, build_side, Side::Put);
+        put_async = true;
+      } catch (const std::system_error &) {
+        put_async = false;
+      }
     }
     auto call = build_side(Side::Call);
     if (!call.has_value()) {
-      if (parallel_sides) {
+      if (put_async) {
         (void)put_future.get();
       }
       return Err(call.error());
     }
-    auto put = parallel_sides ? put_future.get() : build_side(Side::Put);
+    auto put = put_async ? put_future.get() : build_side(Side::Put);
     if (!put.has_value()) {
       return Err(put.error());
     }
@@ -262,17 +277,26 @@ struct PricedSurface::QueryAccelerator {
       }
       accelerator->entries.push_back(std::move(*entry));
     } else {
-      // Centers are independent immutable derived state. Gather index-stable
-      // futures in order so the bank and first reported error stay deterministic.
-      std::vector<std::future<Result<Entry>>> futures;
-      futures.reserve(indices.size());
-      for (const std::size_t index : indices) {
-        futures.push_back(std::async(std::launch::async, [&surface, domain, index] {
-          return build_entry(surface, domain, index, false);
-        }));
-      }
-      for (std::future<Result<Entry>> &future : futures) {
-        auto entry = future.get();
+      // Centers are independent immutable derived state (build_entry is a pure
+      // function of surface/domain/index — it touches no warm or thread-local
+      // state), so they fan out. They fan out through the ONE process pricing
+      // pool, NOT `std::async`: a `std::async(launch::async)` per center spawned
+      // up to kMaxCarryCenters execution agents outside the executor's core
+      // budget, oversubscribing whatever fit/pricing dispatch enclosed the
+      // build, and a thread-exhaustion std::system_error escaped this
+      // Result-returning function as an exception instead of an Error.
+      //
+      // Determinism is structural, exactly as before: each center writes its OWN
+      // pre-sized slot (disjoint writes over const reads), and the bank plus the
+      // first reported error are read back in index order. The executor's block
+      // partition never moves which index lands in which slot, so the result is
+      // identical for ANY worker count — including the fully inline path taken
+      // when this build is nested inside another dispatch.
+      std::vector<Result<Entry>> built(indices.size());
+      pricing_executor().run_blocks(indices.size(), /*n_threads=*/0, [&](std::size_t slot) {
+        built[slot] = build_entry(surface, domain, indices[slot], false);
+      });
+      for (Result<Entry> &entry : built) {
         if (!entry.has_value()) {
           return Err(entry.error());
         }
