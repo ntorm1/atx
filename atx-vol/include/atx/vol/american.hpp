@@ -664,19 +664,34 @@ namespace detail {
 // the internal put with (rate=q, yield=r), so BOTH sides reduce to an internal
 // put characterized purely by its (rate, yield):
 //   - European    : early exercise is never optimal, so American == European
-//                   EXACTLY (rate <= 0 && rate <= yield).
+//                   EXACTLY (rate < 0 && rate <= yield, or rate == 0 && yield >= 0).
 //   - Unsupported : early exercise IS possible but a double continuation region
-//                   appears (rate <= 0 && rate > yield, i.e. yield < rate <= 0);
+//                   appears (yield < rate < 0 — STRICTLY negative rate);
 //                   the single-boundary ALO scheme cannot represent two exercise
 //                   boundaries (Battauz-De Donno-Sbuelz 2015, Mgmt Sci 61(5);
 //                   Andersen-Lake 2021). Callers return NotImplemented / NaN
 //                   rather than a silently-wrong European price.
-//   - American    : the standard single-boundary early-exercise regime (rate > 0).
+//   - American    : the standard single-boundary early-exercise regime (rate > 0),
+//                   PLUS the rate == 0 && yield < 0 edge. The second boundary
+//                   exists only because a STRICTLY negative rate makes the
+//                   early-received strike decay, so waiting deep ITM regains
+//                   value; at rate exactly 0 the negative yield only drifts the
+//                   internal-put spot UP, the exercise region stays
+//                   downward-connected, and al_xmax_put(K, r=0, q<0) == K
+//                   already encodes the single boundary. This row used to be
+//                   lumped into Unsupported, which NaN-killed every r=0
+//                   de-Americanization whose PCP borrow iterate landed at
+//                   q_eff = -eps (whole boards died "no expiry produced a
+//                   usable eSSVI slice"). Gate:
+//                   NegRateDomainMap.ZeroRateNegativeYield_IsSingleBoundaryAmerican.
 enum class ExerciseRegime : std::uint8_t { European, Unsupported, American };
 
 [[nodiscard]] inline ExerciseRegime classify_regime(double rate, double yield) noexcept {
   if (rate > 0.0) {
     return ExerciseRegime::American;
+  }
+  if (rate == 0.0) {
+    return (yield < 0.0) ? ExerciseRegime::American : ExerciseRegime::European;
   }
   return (rate <= yield) ? ExerciseRegime::European : ExerciseRegime::Unsupported;
 }

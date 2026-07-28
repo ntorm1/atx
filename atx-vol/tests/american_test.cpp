@@ -117,15 +117,21 @@ double euro_call(double S, double K, double T, double sigma, double r, double q)
 
 // Independent statement of the Task-1 spec table (in the ORIGINAL option's own
 // (r, q), NOT delegating to the production classifier). Put never-early <=>
-// r<=0 && r<=q; call never-early <=> q<=0 && q<=r. Outside that but with the
-// short-rate side <=0, a double-continuation region appears the single-boundary
-// ALO scheme cannot price.
+// r<0 && r<=q, or r==0 && q>=0; call by the mirrored map. The double-
+// continuation region the single-boundary ALO scheme cannot price requires a
+// STRICTLY negative internal-put rate (yield < rate < 0): at rate exactly 0 the
+// early-received strike neither grows nor decays, so a negative yield only
+// drifts the internal-put spot up and the exercise region keeps one boundary
+// (NegRateDomainMap.ZeroRateNegativeYield_IsSingleBoundaryAmerican).
 enum class Regime { European, Unsupported, American };
 [[nodiscard]] Regime classify_spec(double r, double q, Side side) {
   const double rate = (side == Side::Put) ? r : q;  // internal-put short rate
   const double yield = (side == Side::Put) ? q : r; // internal-put yield
   if (rate > 0.0) {
     return Regime::American;
+  }
+  if (rate == 0.0) {
+    return (yield < 0.0) ? Regime::American : Regime::European;
   }
   return (rate <= yield) ? Regime::European : Regime::Unsupported;
 }
