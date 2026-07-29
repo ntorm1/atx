@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "al_probe.hpp"        // env-gated shared-boundary engagement events (Perf 2b step 1)
 #include "atx/core/error.hpp"
 #include "atx/vol/american_iv.hpp" // american_implied_vol (de-Americanization)
 #include "atx/vol/arb.hpp"         // QuoteFlag, has_flag (kill-mask filter step)
@@ -590,6 +591,7 @@ void prepare_shared_boundary_side(std::vector<FitObs> &observations,
   //     only tighten that domain, never widen it, which holds or improves the
   //     nine-node density and hence accuracy. The domain is still certified by
   //     the unchanged sentinel block below.
+  alprobe::bump(alprobe::Event::SharedSideConsidered);
   std::size_t side_rows = 0u;
   double min_seed = std::numeric_limits<double>::infinity();
   double max_seed = 0.0;
@@ -607,11 +609,15 @@ void prepare_shared_boundary_side(std::vector<FitObs> &observations,
   const detail::InternalPutRates rates = detail::internal_put_rates(side, r, q_eff);
   const double internal_rate = rates.rp;
   if (side_rows < kSharedMinSideRows || !(T >= kSharedMinT) || !(internal_rate > 0.0)) {
+    alprobe::bump(alprobe::Event::SharedSideGuardSkip);
+    alprobe::bump(alprobe::Event::SharedRowsFallback, side_rows);
     return;
   }
   const double sigma_lo = std::max(kSharedMinSigma, 0.35 * min_seed);
   const double sigma_hi = std::min(kObsIvMax, max_seed * (1.0 + 1.0e-12));
   if (!(sigma_hi > sigma_lo) || sigma_hi / sigma_lo > 20.0) {
+    alprobe::bump(alprobe::Event::SharedSideGuardSkip);
+    alprobe::bump(alprobe::Event::SharedRowsFallback, side_rows);
     return;
   }
   const double internal_yield = rates.qp;
@@ -620,6 +626,8 @@ void prepare_shared_boundary_side(std::vector<FitObs> &observations,
   if (!interp.build(S, T, internal_rate, internal_yield, sigma_lo, sigma_hi, kSharedSigmaNodes,
                     scheme)) {
     diag.n_shared_scalar_fallback_lanes += static_cast<std::uint32_t>(side_rows);
+    alprobe::bump(alprobe::Event::SharedSideBuildFail);
+    alprobe::bump(alprobe::Event::SharedRowsFallback, side_rows);
     return;
   }
   diag.n_shared_boundary_solves += kSharedSigmaNodes;
@@ -635,8 +643,13 @@ void prepare_shared_boundary_side(std::vector<FitObs> &observations,
   if (!certified) {
     invalidate_shared_side(observations, side);
     diag.n_shared_scalar_fallback_lanes += static_cast<std::uint32_t>(side_rows);
+    alprobe::bump(alprobe::Event::SharedSideRejected);
+    alprobe::bump(alprobe::Event::SharedRowsFallback, side_rows);
     return;
   }
+  alprobe::bump(alprobe::Event::SharedSideCertified);
+  alprobe::bump(alprobe::Event::SharedRowsLaned, accepted);
+  alprobe::bump(alprobe::Event::SharedRowsFallback, side_rows - accepted);
   diag.n_shared_boundary_lanes += static_cast<std::uint32_t>(accepted);
   diag.n_shared_scalar_fallback_lanes += static_cast<std::uint32_t>(side_rows - accepted);
   if (side == Side::Call) {

@@ -152,6 +152,14 @@
 
 using namespace atx::vol;
 
+// Perf Phase 2b step-1 characterization plane (atx-vol/src/al_probe.hpp). Forward
+// declared rather than included: the probe is a library-private src/-only header and
+// the tools/ target has no reason to gain src/ on its include path for one symbol.
+// Off unless ATX_VOL_AL_PROBE is set, so this is a no-op on every production run.
+namespace atx::vol::alprobe {
+void dump(std::FILE *out) noexcept;
+} // namespace atx::vol::alprobe
+
 namespace {
 
 // REV-R3 fix-1 (review I-2). The exit CODES and the decision that picks between
@@ -573,6 +581,11 @@ int run_build_cli(int argc, char **argv) {
       }
     }
   }
+
+  // Companion plane to the ledger: the ledger counts EVENTS, this one attributes
+  // CYCLES to the Andersen-Lake zones (and records the normalized state each cold
+  // boundary solve is queried at). No-op unless ATX_VOL_AL_PROBE is set.
+  atx::vol::alprobe::dump(stderr);
 
   print_report(*report, max_failed_cells);
 

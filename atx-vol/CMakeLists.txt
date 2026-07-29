@@ -24,6 +24,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/universe.cpp
     src/derivatives.cpp
     src/vol_surface.cpp
+    src/al_probe.cpp
     src/american.cpp
     src/american_batch.cpp
     src/detail/adjoint_greeks.cpp
