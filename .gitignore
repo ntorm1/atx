@@ -25,9 +25,17 @@ cmake-build-*/
 # so it never shadows source dirs like atx-engine/{include/atx/engine,src}/data/.
 /data/
 
-# Test-cached fitted-surface artifacts (dropped at repo root when running the
-# test exe from there) — see atx-vol/tests/support/cached_artifacts.cpp.
-/artifact-cache/
+# Test-cached fitted-surface artifacts — see atx-vol/tests/support/
+# cached_artifacts.cpp. The path is relative to the process CWD, so the dir
+# appears wherever the test exe is run from (repo root, atx-vol/, the build
+# tree). NOT root-anchored: a committed copy is worse than none, because these
+# artifacts are keyed on a fit-shape revision and a stale one silently changes
+# the numbers a pinned suite reads.
+artifact-cache/
+
+# Sidecar copies of a source file kept "just in case" during a merge/rebase.
+# The file itself is the record; git remembers the rest.
+*.local-preserved
 
 # clangd / tooling
 .cache/
@@ -95,6 +103,7 @@ scratch/
 __pycache__/
 *.pyc
 .pytest_cache/
+.mypy_cache/
 *.egg-info/
 .venv/
 # Parquet lakehouse exports are reproducible from the DuckDB warehouse
