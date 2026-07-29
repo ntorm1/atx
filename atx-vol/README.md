@@ -36,7 +36,6 @@ faithfully and mirror the upstream test tolerances.
 | SVI calibrators | `svi_calib.hpp` | Zeliade quasi-explicit (BLLS + Nelder–Mead), Martini–Mingone constrained LM, raw↔JW |
 | C8 family | `c8.hpp`, `c8_calib.hpp` | SVI-JW backbone + ATM/wing curvature bumps (8p), basis, raw↔JW, Roper arb projection, IRLS-Newton calibrator |
 | CStar family | `cstar.hpp`, `cstar_calib.hpp` | C16M modal parametrization (base + 11 modal coeffs, C5/C8/C12/C16 tiers), block LM, calendar/butterfly arb |
-| Calibration pool | `calib_pool.hpp` | Cadence priority queue + deterministic multi-underlier fan-out (`std::jthread`) |
 | Vol derivatives | `derivatives.hpp` | Variance-swap strip, Carr–Lee vol swap, aged/marquee PnL, realized-vol tracker |
 | Profile registry | `profile.hpp` | Underlier classification, per-profile calib/filter knobs, optimization-level + refit cadence + tier priority |
 | Unified fit policy | `fit_policy.hpp` | Board/profile/session/event routing to an effective preset + curve; direct high-confidence routes and held-out ambiguity fallback |
@@ -185,7 +184,7 @@ fields wanted via `OutputField {ModelPrice, ModelIV, BidIV, AskIV, MidIV, Greeks
 the cold bid/ask/mid American-IV inversions are embarrassingly parallel, fanned
 out across `std::jthread` workers with a static block partition so the result is
 **bit-identical for any thread count** (disjoint output slots, pure const reads —
-the `calibrate_pool` determinism pattern). Model price/IV/Greeks flow through the
+the `parallel_for` determinism pattern). Model price/IV/Greeks flow through the
 fitted surface's cached hot path; every number is bit-consistent with the
 `VolaSession` scalar queries (the facade adds ownership + parallelism, never a
 different number).

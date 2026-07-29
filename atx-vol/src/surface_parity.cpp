@@ -326,8 +326,8 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
                                        in, prep_policy, &slots[i].prep_diag);
     } catch (...) {
       // A worker escape would std::terminate the jthread; record a failed slot
-      // (calib_pool/essvi parallel precedent). prepare_expiry uses Result, so
-      // this is defensive only.
+      // (the essvi parallel precedent). prepare_expiry uses Result, so this is
+      // defensive only.
       slots[i].result.emplace(
           Err(ErrorCode::Internal, "run_surface_parity: prepare_expiry threw"));
     }

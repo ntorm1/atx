@@ -43,11 +43,6 @@ add_executable(atx-vol-tests
     batch_test.cpp
     portfolio_test.cpp
     bulk_test.cpp
-    # F2 quarantine: calib_pool has no production caller, so its TU lives with its
-    # test rather than in the shipped atx::vol library. Both are gated by the
-    # ATX_VOL_CALIB_POOL_TEST_ONLY define below (the header #errors without it).
-    ../src/calib_pool.cpp
-    calib_pool_test.cpp
     projection_test.cpp
     contract_projection_test.cpp
     historical_projection_test.cpp
@@ -193,12 +188,6 @@ target_link_libraries(atx-vol-tests
 if(WIN32)
     target_link_libraries(atx-vol-tests PRIVATE psapi)
 endif()
-
-# F2 quarantine: unlocks atx/vol/calib_pool.hpp (test-only guard) for both the
-# relocated ../src/calib_pool.cpp TU and calib_pool_test.cpp. Any production TU
-# that includes the header without this define is a hard compile error, so the
-# dead driver cannot silently re-enter the shipped library.
-target_compile_definitions(atx-vol-tests PRIVATE ATX_VOL_CALIB_POOL_TEST_ONLY)
 
 # AMZN-earnings correctness gate (amzn_earnings_test.cpp) shares the report's fit
 # via the header-only examples/amzn_earnings_fit.hpp — add examples/ as a PRIVATE

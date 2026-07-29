@@ -81,9 +81,9 @@ enum class CorpusDividendTreatment : std::uint8_t {
   EscrowedForward = 0,
 };
 
-// Per-board fit outcome, mirroring calib_pool.hpp's FitStatus but kept local so
-// this header carries no calibrator-pool dependency (the corpus never drives
-// calibrate_pool — see corpus.cpp for why).
+// Per-board fit outcome. Kept local to this header so it carries no calibrator
+// dependency: the corpus fits one board at a time through the blessed
+// PricerFitter path (see corpus.cpp for why).
 enum class CorpusFitStatus : std::uint8_t {
   Ok = 0,      // fit + snapshot succeeded; the surface is in its date's archive
   Failed = 1,  // chain build / fit / snapshot failed (see `error_code`)

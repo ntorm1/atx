@@ -1214,8 +1214,7 @@ struct ChainFitResult {
     // worker id (race-free). Phase 2 walks the results in original chain order
     // and runs the SAME `consume` reduction, so slice order/count + FitDiag are
     // bit-identical to the serial path. A worker exception is recorded as a
-    // failed slot — an escape would std::terminate the jthread (calib_pool
-    // precedent).
+    // failed slot — an escape would std::terminate the jthread.
     std::vector<ChainFitResult> results(n_chains);
     std::vector<FitScratch> scratch(nt);
     parallel_for_dynamic(n_chains, nt, [&](std::size_t i, unsigned wid) {

@@ -158,8 +158,8 @@ struct DeAmOptions;
 //              0 (default) resolves to `atx_auto_worker_count()` (honors the
 //              ATX_VOL_FIT_WORKERS env cap, else hardware_concurrency); 1 forces
 //              the serial path. Values above the chain count are clamped down.
-//              The calib_pool per-name fan-out passes 1 here to avoid nesting a
-//              second fan-out under it (oversubscription).
+//              A caller that already fans out per name should pass 1 here so a
+//              second fan-out is not nested under it (oversubscription).
 // @param deam  OPT-IN de-Americanization route. Null (default) inverts each
 //              option mid with plain Black-76 (`build_observations`) — today's
 //              path, byte-identical. A non-null `deam` instead routes every

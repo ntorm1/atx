@@ -1547,7 +1547,7 @@ Status svi_calib_surface(VolSurface &surface, const Underlying &under,
     // Butterfly no-arb gate (moved here from the fit_slice_curve serving seam,
     // vol_curve.cpp). The quasi-explicit raw-SVI fit only promises w >= 0, NOT
     // the Martini-Mingone butterfly polytope. This driver writes the slice into a
-    // VolSurface that calib_pool serves DIRECTLY (VolSurface::w evaluates the
+    // VolSurface that a caller can serve DIRECTLY (VolSurface::w evaluates the
     // stored SVI slice via svi_total_w), so a smile stored here reaches
     // pricing/risk without ever passing through fit_slice_curve's gate. Enforce
     // admissibility at the source: on a violation, project onto the polytope (the
@@ -1645,7 +1645,7 @@ Status svi_mm_calib_surface(VolSurface &surface, const Underlying &under,
     // svi_mm_fit_slice projects every LM iterate onto the Mingone polytope, so a
     // converged SVI-MM slice is admissible by construction; this is defense-in-
     // depth making the served VolSurface admissible independent of the fit path
-    // (calib_pool serves it directly). A residual violation is repaired-or-dropped
+    // (a caller can serve it directly). A residual violation is repaired-or-dropped
     // rather than tallied-and-served.
     const auto adm_raw = arb_check_butterfly_svi_mm(slice, T);
     if (adm_raw.n_violations > 0) {

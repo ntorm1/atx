@@ -337,8 +337,8 @@ namespace {
 // -> PricerFitter::fit -> VolaSession::to_priced_surface, incl. uid-eligible
 // curve/quality bookkeeping) moved to corpus_board_fit.{hpp,cpp} (T5) so
 // `populate_surface_db` reuses the EXACT same path instead of duplicating it.
-// See corpus_board_fit.hpp for the extracted contract; NOTE (why not
-// calibrate_pool) lives there too.
+// See corpus_board_fit.hpp for the extracted contract; the NOTE on why the
+// corpus fits one board at a time lives there too.
 
 // The per-date archive file path for `date` under `out_dir` (deterministic,
 // forward-slash normalized).

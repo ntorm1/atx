@@ -760,8 +760,8 @@ TEST(SviMmCalibSurface, FitsSyntheticSlice_Admissible) {
 }
 
 // C-1 regression (WS-C): a butterfly-arbitrage SVI smile must NEVER be served by
-// the surface driver. `calib_pool` builds a Parametrization::Svi VolSurface via
-// this driver and serves it DIRECTLY (VolSurface::w -> svi_total_w), bypassing
+// the surface driver. A caller can build a Parametrization::Svi VolSurface via
+// this driver and serve it DIRECTLY (VolSurface::w -> svi_total_w), bypassing
 // the fit_slice_curve butterfly gate. The driver must therefore repair-or-drop a
 // violating slice at the source, not merely tally it.
 TEST(SviCalibSurface, ButterflyInadmissibleFit_IsRepairedOrDropped_NeverServed) {

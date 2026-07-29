@@ -105,7 +105,7 @@ enum class SlicePrepOutcome : std::uint8_t {
 // AT MOST one worker (its own chain index) and read only after every worker has
 // joined (parallel_for's scope-exit barrier) — no cross-thread reduction, pure
 // const reads of `under`/`in`, disjoint writes into `slot[i]`. Bit-identical for
-// any worker count (the value_chain / calibrate_pool determinism pattern).
+// any worker count (the value_chain / parallel_for determinism pattern).
 struct ChainPrepass {
   bool usable = false;
   // Carry resolution failed (or produced a degenerate forward): the chain is

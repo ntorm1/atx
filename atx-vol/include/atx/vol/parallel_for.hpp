@@ -2,8 +2,8 @@
 
 // Deterministic block-partitioned fan-out over [0, n) — the shared primitive
 // behind every bit-identical-regardless-of-thread-count hot path in this
-// library (the `calibrate_pool` / `PricerFitter::value_chain` determinism
-// pattern, and now `fit_curve_surface`'s per-chain de-Am pre-pass).
+// library (the `PricerFitter::value_chain` determinism pattern, and now
+// `fit_curve_surface`'s per-chain de-Am pre-pass).
 //
 // Hoisted out of `pricer_fitter.cpp` (where it was TU-local) so more than one
 // translation unit can share the single definition instead of hand-copying it.
@@ -95,7 +95,7 @@ namespace atx::vol {
 //   - it is consulted ONLY here, for the `n_threads == 0` case, and only on the
 //     one thread that installed it. `atx_auto_worker_count()` itself is NOT
 //     hooked, so every other auto consumer (pricing_executor pool sizing,
-//     essvi_calib's chain fan-out, calib_pool) resolves exactly as before;
+//     essvi_calib's chain fan-out) resolves exactly as before;
 //   - an EXPLICIT non-zero count is still honored verbatim, so a caller that
 //     pre-sizes `scratch[nt]` and then passes `nt` can never be handed more
 //     workers than it sized for;
