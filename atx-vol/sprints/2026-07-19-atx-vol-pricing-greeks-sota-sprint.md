@@ -1,15 +1,15 @@
 # atx-vol Pricing & Greeks Correctness/Throughput/Buildout Sprint — 2026-07-19
 
-> **For agentic workers:** executed by **implementation subagents dispatched task-by-task by a PM agent, all in ONE worktree `C:/atx-wt/wt-pg-sota` on branch `feat/pg-sota`** (base `main @ 99f332f`). One task = one agent = one commit (or a small commit series). Every subagent reads §2 (global constraints) and §6 (traps) before touching a file, plus the review evidence for its task in `atx-vol/research/pg-review-2026-07-19/`.
+> **For agentic workers:** executed by **implementation subagents dispatched task-by-task by a PM agent, all in ONE worktree `C:/atx-wt/wt-pg-sota` on branch `feat/pg-sota`** (base `main @ 99f332f`). One task = one agent = one commit (or a small commit series). Every subagent reads §2 (global constraints) and §6 (traps) before touching a file, plus the review evidence for its task in `atx-vol/docs/reviews/pg-review-2026-07-19/`.
 
 **North star:** atx-vol fits **any US-listed American equity option surface** robustly and quickly. This sprint executes the 2026-07-19 five-lens review of the pricing/greeks module: fix every verified correctness defect, bank the highest-leverage throughput wins on the fitter's inner loops, wire in or delete dark code, and close the cheapest capability gaps that block "any underlying" (true expiry instants + 0DTE ingest, carry sensitivities, exercise-boundary API).
 
 **Review evidence (read these — they carry file:line and verification detail):**
-- `research/pg-review-2026-07-19/review-correct-core.md` — core math findings 1-11 + architecture note
-- `research/pg-review-2026-07-19/review-correct-simd.md` — SIMD findings 1-10 + coverage map
-- `research/pg-review-2026-07-19/review-perf.md` — perf findings F1-F13 + hot-path map + bench-state
-- `research/pg-review-2026-07-19/review-wiring.md` — wiring findings 1-21
-- `research/pg-review-2026-07-19/review-gaps.md` — capability inventory + gaps 1-10
+- `docs/reviews/pg-review-2026-07-19/review-correct-core.md` — core math findings 1-11 + architecture note
+- `docs/reviews/pg-review-2026-07-19/review-correct-simd.md` — SIMD findings 1-10 + coverage map
+- `docs/reviews/pg-review-2026-07-19/review-perf.md` — perf findings F1-F13 + hot-path map + bench-state
+- `docs/reviews/pg-review-2026-07-19/review-wiring.md` — wiring findings 1-21
+- `docs/reviews/pg-review-2026-07-19/review-gaps.md` — capability inventory + gaps 1-10
 
 ---
 
