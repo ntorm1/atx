@@ -1,13 +1,12 @@
 #pragma once
 
 // MULTI-EXPIRY de-Americanized volatility-SURFACE parity — the calendar +
-// time-interpolation acceptance layer above the single-expiry harness
-// (vola_parity.hpp).
+// time-interpolation acceptance layer.
 //
-// Where `run_expiry_parity` proves the Vola Dynamics workflow for ONE expiry
-// (de-Americanize -> fit a 3-parameter eSSVI slice -> re-Americanize -> score),
-// this module lifts that to a whole `Underlying`: it de-Americanizes and fits
-// EVERY expiry chain, assembles the fitted slices into one ascending-T eSSVI
+// The Vola Dynamics workflow for ONE expiry is de-Americanize -> fit a
+// 3-parameter eSSVI slice -> re-Americanize -> score. This module lifts that to
+// a whole `Underlying`: it de-Americanizes and fits EVERY expiry chain,
+// assembles the fitted slices into one ascending-T eSSVI
 // `VolSurface`, and then proves the two properties a surface (as opposed to a
 // bag of independent slices) must additionally satisfy:
 //
@@ -19,15 +18,13 @@
 //      interpolation. This is the "interpolation parity with Vola" property;
 //      the acceptance test checks it against the s3_iv reference directly.
 //
-// ## Reuse of the single-expiry pattern
+// ## The per-expiry pattern
 //
-// The per-expiry work mirrors `vola_parity.cpp` exactly: de_americanize_chain
-// -> rebuild the aligned observation set on the de-Am forward / q_eff ->
-// essvi_fit_slice -> the natural-form `EssviParams` slice. `run_surface_parity`
-// re-does that per chain (vola_parity returns only metrics, never the slice) so
-// it can WRITE each fitted slice into the surface. The q_eff bridge
-// (q_eff = r - ln(F/S)/T) is used throughout, exactly as in the single-expiry
-// harness.
+// Each expiry runs de_americanize_chain -> rebuild the aligned observation set
+// on the de-Am forward / q_eff -> essvi_fit_slice -> the natural-form
+// `EssviParams` slice. `run_surface_parity` keeps the fitted slice (rather than
+// metrics alone) so it can WRITE each one into the surface. The q_eff bridge
+// (q_eff = r - ln(F/S)/T) is used throughout.
 //
 // Stateless and pure — a single call owns only its local scratch; the returned
 // report OWNS the fitted `VolSurface` by value (move it out). Safe to call

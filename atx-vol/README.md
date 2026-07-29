@@ -53,7 +53,7 @@ faithfully and mirror the upstream test tolerances.
 | Parity metrics | `parity.hpp` | Re-Americanized fair-value-within-bid-ask fraction, mid-RMSE (vol & price), reduced-χ², edge band |
 | S3 / SSVI curve | `s3.hpp` | Exact Vola S3 shape curve in normalized-strike form, wings `C±`, analytic Roper `g`, ATF butterfly bound |
 | Panel fixtures | `panel.hpp` | Known-truth synthetic American-equity chain generator + exception-free CSV chain loader |
-| Parity harness | `vola_parity.hpp`, `surface_parity.hpp` | Single- and multi-expiry de-Am → fit → re-Am → metrics; interpolation + calendar-arb parity |
+| Parity harness | `surface_parity.hpp` | Multi-expiry de-Am → fit → re-Am → metrics; interpolation + calendar-arb parity |
 | Composable session | `session.hpp` | `VolaSession` — build once from a snapshot, then query `iv`/`fair_value`/`greeks`/`diagnostics` at any `(K,T)`; owns a per-side `CorrectionCache` hot path |
 | Unified library layer | `chain.hpp`, `pricer_fitter.hpp` | `OptionChain` (id-addressed board, tick-to-quote update) → `PricerFitter` (fit + owns `unique_ptr<FittedSurface>`) → deterministic multi-threaded `value_chain` with per-field output flags |
 | Real-data loader | `opra_panel.hpp` | Databento OPRA cbbo-1m (NBBO) Parquet → `QuoteFrame`, OSI/OCC symbol parser, front-PCP spot implication |
@@ -113,8 +113,8 @@ American chain → de-Americanize (imply borrow per term via American PCP,
 - **Parity metrics** (`parity.hpp`): fraction of re-Americanized fair values
   inside the bid-ask, mid-RMSE, reduced-χ².
 
-**Acceptance harness** (`vola_parity.hpp`, `surface_parity.hpp`; suites
-`VolaParity`, `SurfaceParity`). On a known-truth synthetic American-equity panel
+**Acceptance harness** (`surface_parity.hpp`; suite
+`SurfaceParity`). On a known-truth synthetic American-equity panel
 (discrete cash dividend + borrow + skewed smile), the full pipeline:
 recovers the injected borrow and forward; fits within bid-ask
 (**fair-value-within-bid-ask ≥ 0.95**, mid-vol-RMSE ≤ 5e-3, reduced-χ² ≤ 2);
@@ -375,11 +375,11 @@ Wired into the top-level atx CMake as `atx-vol` (alias `atx::vol`), linking
 ```powershell
 cmake --preset dev
 cmake --build build --target atx-vol-tests
-ctest --test-dir build -R "Black76|Greeks|ImpliedVol|Surface|Curve|Universe|Arb|Essvi|Svi|C8|CStar|American|Correction|Portfolio|Bulk|Batch|Data|Profile|Cadence|Deriv|Realized|VolProjection|CurveProjection|CalibratePool|SurfaceArchive"
+ctest --test-dir build -R "Black76|Greeks|ImpliedVol|Surface|Curve|Universe|Arb|Essvi|Svi|C8|CStar|American|Correction|Portfolio|Bulk|Batch|Data|Profile|Cadence|Deriv|Realized|VolProjection|CurveProjection|SurfaceArchive"
 ```
 
 Or run the full suite directly: `build/bin/atx-vol-tests.exe` (556 tests). The
-Vola-parity harness alone: `atx-vol-tests.exe --gtest_filter='VolaParity.*:SurfaceParity.*:VolaSession.*:OpraPanel.*:DeAmer.*:Parity.*:AmericanIv.*:HybridDiv.*:S3.*:FitMetrics.*:Panel.*'`.
+Vola-parity harness alone: `atx-vol-tests.exe --gtest_filter='SurfaceParity.*:VolaSession.*:OpraPanel.*:DeAmer.*:Parity.*:AmericanIv.*:HybridDiv.*:S3.*:FitMetrics.*:Panel.*'`.
 
 Real-data OPRA parity + throughput benchmark (opt-in examples):
 

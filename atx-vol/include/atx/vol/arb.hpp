@@ -292,20 +292,6 @@ struct CalendarPairProjection {
                                                 double k_max,
                                                 std::uint32_t n_grid);
 
-// Total-surface eSSVI calendar projection (Sprint 15 Phase C): for each pair
-// where the TOTAL (backbone + residual) curr dips below prev, lift curr by a
-// constant level shift `c = max_k(w_total_prev - w_total_curr)_+` added to
-// every residual coefficient. This is valid only for a partition-of-unity
-// residual basis (C2_BSPLINE); other bases are skipped and left to
-// `arb_repair_calendar_residual`. `max_theta_bump` is reserved (the
-// partition-of-unity path performs no theta bump). No-op for a non-eSSVI
-// surface.
-// @return InvalidArgument if `k_max <= k_min` (after the no-op guards).
-[[nodiscard]] Status arb_project_calendar_essvi_total(VolSurface &s,
-                                                      double k_min, double k_max,
-                                                      std::uint32_t n_grid,
-                                                      double max_theta_bump);
-
 // Repair total-surface calendar arb by damping residuals on the lower-T slice
 // of any residual-induced crossing: bisect a multiplicative damper
 // alpha in [0, 1] on the lower slice's residual coefficients until

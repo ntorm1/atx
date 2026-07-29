@@ -11,7 +11,7 @@
 # American-equity parity layer: de-Americanization (american_iv, deamer), hybrid
 # dividends + borrow (dividend), exact S3 curve (s3), fit metrics / reduced-χ²
 # (fit_metrics), parity metrics (parity), panel fixtures (panel), and the
-# single-/multi-expiry parity harness (vola_parity, surface_parity). See
+# multi-expiry parity harness (surface_parity). See
 # README.md and docs/superpowers/specs/2026-07-04-atx-vol-vola-parity-design.md.
 
 add_library(atx-vol ${ATX_LIB_TYPE}
@@ -67,7 +67,6 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/deamer.cpp
     src/parity.cpp
     src/panel.cpp
-    src/vola_parity.cpp
     src/surface_parity.cpp
     src/opra_panel.cpp
     src/opra_batch.cpp

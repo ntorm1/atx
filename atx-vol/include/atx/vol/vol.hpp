@@ -131,7 +131,6 @@
 #include "atx/vol/pricer_fitter.hpp"  // PricerFitter, FittedSurface, OutputField, ChainValuation
 #include "atx/vol/session.hpp"        // VolaSession, SessionInputs, FitPreset
 #include "atx/vol/surface_parity.hpp" // run_surface_parity, CalendarRepair
-#include "atx/vol/vola_parity.hpp"    // single-expiry parity harness
 
 // ── Surface queries / projection / derivatives ──────────────────────────────
 #include "atx/vol/contract_projection.hpp" // relative template -> concrete theo option

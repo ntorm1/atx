@@ -257,21 +257,6 @@ struct DerivQuote {
   DerivFlags flags = DerivFlags::None;
 };
 
-// ── Unit conversions ─────────────────────────────────────────────────────
-
-[[nodiscard]] constexpr double var_dec_to_points(double var_dec) noexcept {
-  return 1.0e4 * var_dec;
-}
-[[nodiscard]] constexpr double var_points_to_dec(double var_points) noexcept {
-  return 1.0e-4 * var_points;
-}
-[[nodiscard]] constexpr double vol_dec_to_points(double vol_dec) noexcept {
-  return 1.0e2 * vol_dec;
-}
-[[nodiscard]] constexpr double vol_points_to_dec(double vol_points) noexcept {
-  return 1.0e-2 * vol_points;
-}
-
 // ── Fair-strike resolvers ────────────────────────────────────────────────
 
 // Variance-swap fair strike via OTM option-strip integration (engine

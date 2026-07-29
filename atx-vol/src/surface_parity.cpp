@@ -29,7 +29,7 @@
 // -------------------
 // * Per-expiry pattern reuse. The de-Americanize -> prepared-slice -> eSSVI-fit
 //   path uses PreparedObservationPolicy::LegacyEssviCompatibility to preserve
-//   the historical `vola_parity.cpp` row population and arithmetic. The policy
+//   the historical single-expiry row population and arithmetic. The policy
 //   is explicit and isolated; new family-neutral consumers use Configured.
 //
 // * Model-IV read-back. Per-slice re-Am parity reads the model IV from the

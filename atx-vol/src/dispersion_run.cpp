@@ -1866,31 +1866,6 @@ Result<DispersionRunConfig> read_dispersion_run_config(const fs::path &path) {
   return Ok(std::move(config));
 }
 
-RunSpec run_spec_from(const DispersionRunConfig &config) {
-  RunSpec spec;
-  spec.label = config.label;
-  spec.date_lo = config.dates.lo;
-  spec.date_hi = config.dates.hi;
-  spec.snapshot_suffix = config.snapshot_suffix;
-  spec.opra_root = config.opra_root;
-  spec.path_template = config.path_template;
-  spec.universe_path = config.universe.schedule_path;
-  spec.definitions_path = config.definitions;
-  spec.occ_ess_root = config.occ_ess_root;
-  spec.dividend_ledger_path = config.dividend_ledger;
-  spec.flat_rate = config.rate.flat_rate;
-  spec.min_names = config.universe.min_names;
-  spec.min_weight_coverage = config.universe.min_weight_coverage;
-  spec.target_dte_days = config.dte.target_days;
-  spec.min_dte_days = config.dte.min_days;
-  spec.max_dte_days = config.dte.max_days;
-  spec.roll_dte_days = config.roll_dte_days;
-  spec.gross_index_vega = config.gross_index_vega;
-  spec.delta_band = config.hedge.band;
-  spec.fit_workers = config.fit.workers;
-  spec.core_mode = config.fit.core_mode;
-  return spec;
-}
 
 DispersionBacktestConfig dispersion_backtest_config_from(const DispersionRunConfig &config) {
   DispersionBacktestConfig backtest;

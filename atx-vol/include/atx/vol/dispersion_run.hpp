@@ -595,10 +595,6 @@ enum class DispersionFrictionPreset : std::uint8_t { None = 0, RetailListedOptio
 [[nodiscard]] Result<DispersionRunConfig>
 read_dispersion_run_config(const std::filesystem::path &path);
 
-// Legacy view of the typed config for the corpus/batch plumbing that still
-// speaks `RunSpec`. This is the ONE place the two representations meet.
-[[nodiscard]] RunSpec run_spec_from(const DispersionRunConfig &config);
-
 // Assemble the surface-only backtest config from the typed run config. This is
 // where X2 frictions/financing, X3 limits, X6 costs and the previously-hardcoded
 // multiplier actually reach the engine.
@@ -769,12 +765,16 @@ struct DispersionVerifyReport {
 // filesystem by `dispersion_run_test.cpp`". THAT WAS FALSE: that file called none
 // of the six, and `dispersion_build_schedule`, `dispersion_run_backtest` and
 // `dispersion_verify` had zero callers and zero tests — so the instruction not to
-// delete them rested on coverage that did not exist. `run_spec_from` had neither
-// a caller nor a test either. The determination, re-derived from the tree rather
-// than inherited: they are NOT accidentally-unwired code that the CLI seam work
-// (`347ad44`) failed to reach, and they are NOT dead code to delete. They are a
-// deliberate, documented RESERVE — the reason is the cutover argument above, and
-// it holds. What they lacked was any evidence they still work.
+// delete them rested on coverage that did not exist. The determination,
+// re-derived from the tree rather than inherited: they are NOT
+// accidentally-unwired code that the CLI seam work (`347ad44`) failed to reach,
+// and they are NOT dead code to delete. They are a deliberate, documented
+// RESERVE — the reason is the cutover argument above, and it holds. What they
+// lacked was any evidence they still work.
+//
+// `run_spec_from` (the DispersionRunConfig -> RunSpec projection) was in that
+// same zero-caller/zero-test bucket but had NO cutover argument behind it, so
+// it was deleted (S3-T14) rather than kept as reserve.
 //
 // They now have a floor rather than a claim:
 //   `DispersionLibraryOnlyEntryPoints.EachIsReachableAndFailsClosedNamingTheMissing
