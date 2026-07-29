@@ -266,11 +266,11 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(vol_breadth_bench examples/vol_breadth_bench.cpp)
     target_link_libraries(vol_breadth_bench PRIVATE atx::vol atx::core atx_warnings)
 
-    # Surface-archive (v3) deserialization throughput: fit -> serialize -> reload,
-    # reporting ns/surface for single-symbol random access + full map_all, plus the
-    # hardware vs table CRC-32C rate. See examples/surface_archive_bench.cpp.
+    # Surface-archive (ATXVSA2) deserialization throughput: fit -> serialize -> reload,
+    # reporting ns/surface for single-symbol random access + full reconstruct_all.
+    # See examples/surface_archive_bench.cpp.
     add_executable(surface_archive_bench examples/surface_archive_bench.cpp)
-    target_link_libraries(surface_archive_bench PRIVATE atx::vol atx::core atx-vol-archive-v1 atx_warnings)
+    target_link_libraries(surface_archive_bench PRIVATE atx::vol atx::core atx_warnings)
 
     # PricedSurface-native portfolio pricer + Taylor PnL-explain throughput: mixed
     # multi-underlying book, kernel-floor vs price() overhead, thread scaling +

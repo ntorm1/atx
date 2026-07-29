@@ -141,7 +141,6 @@ target_link_libraries(atx-vol-e2e-hotpath-bench
     PRIVATE
         atx::vol
         atx::core
-        atx-vol-archive-v1  # WS-G G2: v1 archive read/write pulled from the isolated TU
         benchmark::benchmark
         atx_warnings
         Threads::Threads
@@ -347,10 +346,10 @@ target_link_libraries(atx-vol-iv-shootout-bench PRIVATE lbr_lets_be_rational)
 # ── WS-M M1 (infra-measure) — surface-archive serialize/deserialize bench ─────
 # The missing ser/deser measurement (backtest hot-path sprint, task M1): serialize
 # µs/surface + partition write MB/s, and deserialize µs-to-ready-to-price across the
-# v1 whole-board reconstruct (open + map_all_with_provenance), a pre-opened
-# reconstruct, and the single-symbol reconstruct (the WS-S subset-map baseline).
-# Count sweep {1,4,16,50,100} × {Essvi, ConvexDense}. v2 zero-copy modes (mmap-open,
-# subset-map) slot in on the format branch via the typed extension seam in the TU.
+# whole-board owned reconstruct (open + reconstruct_all_with_provenance), a
+# pre-opened reconstruct, the single-symbol reconstruct, and the two zero-copy
+# modes (mmap-open, subset-map). Count sweep {1,4,16,50,100} × {Essvi, ConvexDense}.
+# ATXVSA2-only since the v1 format was deleted (release-v1 plan 3.5/3.6).
 add_executable(atx-vol-surface-archive-bench
     bench_main.cpp
     surface_archive_bench.cpp
@@ -359,7 +358,6 @@ target_link_libraries(atx-vol-surface-archive-bench
     PRIVATE
         atx::vol
         atx::core
-        atx-vol-archive-v1  # WS-G G2: v1 archive read/write pulled from the isolated TU
         benchmark::benchmark
         atx_warnings
         Threads::Threads

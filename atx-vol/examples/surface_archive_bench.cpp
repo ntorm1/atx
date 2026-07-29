@@ -1,17 +1,19 @@
-// surface_archive_bench.cpp — deserialization throughput for the ATXVSA v3 priced
+// surface_archive_bench.cpp — deserialization throughput for the ATXVSA2 priced
 // curve-surface archive.
 //
 // The archive is a HOT-PATH artifact: a quoting desk memory-maps a multi-symbol
 // archive and, per incoming request, resolves ONE symbol to a fully-usable priced
 // surface. This bench measures that path end to end:
 //
-//   * open()        — one-shot framing + header/metadata CRC validation.
-//   * map_symbol()  — the hot single-surface path: a hash probe + one blob parse
-//                     (whole-blob + payload CRC verify, then direct curve
-//                     construction). Reported as ns/surface and surfaces/sec, plus
-//                     the effective MB/s (blob bytes / time — CRC-bound, so this is
-//                     the hardware-CRC-32C rate in practice).
-//   * map_all()     — reconstruct every surface (bulk warm-load).
+//   * open()               — one-shot framing + header/metadata CRC validation.
+//   * reconstruct_symbol() — the hot single-surface path: a hash probe + one record
+//                     parse, then direct curve construction into an OWNED
+//                     PricedSurface. Reported as ns/surface and surfaces/sec, plus
+//                     the effective MB/s (record bytes / time).
+//   * reconstruct_all()    — rebuild every surface (bulk warm-load).
+//
+// Owned reconstruct, not the zero-copy `map_*` views: this bench measures the cost
+// of materializing a priced surface, which is what it measured on v1.
 //
 // Data-free: it fabricates a realistic multi-symbol book (parsimonious eSSVI
 // single-name surfaces + dense 40-node convex index surfaces) so it always runs.
@@ -133,7 +135,7 @@ int main() {
                                        &surfaces[static_cast<std::size_t>(i)]});
   }
 
-  auto built = write_surface_archive(items);
+  auto built = write_surface_archive_v2(items);
   if (!built) {
     std::printf("write failed: %s\n", built.error().to_string().c_str());
     return 1;
@@ -142,15 +144,15 @@ int main() {
 
   // Time open() (framing + header/metadata CRC).
   const double t_open0 = now_ns();
-  auto opened = SurfaceArchive::open(std::move(*built));
+  auto opened = SurfaceArchiveV2::open(std::move(*built));
   const double t_open1 = now_ns();
   if (!opened) {
     std::printf("open failed: %s\n", opened.error().to_string().c_str());
     return 1;
   }
-  const SurfaceArchive archive = std::move(*opened);
+  const SurfaceArchiveV2 archive = std::move(*opened);
 
-  std::printf("== ATXVSA v3 archive ==\n");
+  std::printf("== ATXVSA2 archive ==\n");
   std::printf("surfaces           : %d  (eSSVI + dense-convex mix)\n", kSurfaces);
   std::printf("archive size       : %.2f MB\n", static_cast<double>(archive_bytes) / (1024.0 * 1024.0));
   std::printf("open()             : %.1f us\n", (t_open1 - t_open0) / 1000.0);
@@ -164,7 +166,7 @@ int main() {
       const int idx = static_cast<int>((static_cast<std::uint64_t>(i) * 2654435761ull +
                                         static_cast<std::uint64_t>(it) * 40503ull) %
                                        kSurfaces);
-      auto ps = archive.map_symbol(names[static_cast<std::size_t>(idx)]);
+      auto ps = archive.reconstruct_symbol(names[static_cast<std::size_t>(idx)]);
       if (ps) {
         sink += ps->n_slices();
       }
@@ -173,34 +175,34 @@ int main() {
   const double t1b = now_ns();
   const double n_map = static_cast<double>(kIters) * kSurfaces;
   const double ns_per = (t1b - t1a) / n_map;
-  std::printf("\nmap_symbol (random single-surface access):\n");
+  std::printf("\nreconstruct_symbol (random single-surface access):\n");
   std::printf("  ns / surface     : %.1f\n", ns_per);
   std::printf("  surfaces / sec   : %.2f M\n", 1000.0 / ns_per);
 
-  // Bench 2: map_all (bulk warm-load).
+  // Bench 2: reconstruct_all (bulk warm-load).
   const double t2a = now_ns();
   std::uint64_t sink2 = 0;
   for (int it = 0; it < kIters; ++it) {
-    auto all = archive.map_all();
+    auto all = archive.reconstruct_all();
     if (all) {
       sink2 += all->size();
     }
   }
   const double t2b = now_ns();
   const double ns_per_all = (t2b - t2a) / (static_cast<double>(kIters) * kSurfaces);
-  // Honest CRC-bound rate: bytes actually CRC'd/reconstructed (sum of blob sizes),
-  // not the padded file size (4K page-alignment gaps are never read).
+  // Honest rate: bytes actually parsed/reconstructed (sum of record sizes), not the
+  // file size (the inter-record alignment gaps and the page-padded tail are never read).
   std::size_t reconstructed_bytes = 0;
-  for (const ArchiveDirEntry& de : archive.directory()) {
+  for (const ArchiveV2DirEntry& de : archive.directory()) {
     reconstructed_bytes += static_cast<std::size_t>(de.surface_size);
   }
   const double recon_mb = static_cast<double>(reconstructed_bytes) / (1024.0 * 1024.0);
   const double mbps = recon_mb / ((t2b - t2a) / 1e9 / static_cast<double>(kIters));
-  std::printf("\nmap_all (reconstruct every surface):\n");
+  std::printf("\nreconstruct_all (rebuild every surface):\n");
   std::printf("  ns / surface     : %.1f\n", ns_per_all);
-  std::printf("  blob bytes/pass  : %.2f MB (vs %.2f MB padded file)\n", recon_mb,
+  std::printf("  record bytes/pass: %.2f MB (vs %.2f MB file)\n", recon_mb,
               static_cast<double>(archive_bytes) / (1024.0 * 1024.0));
-  std::printf("  effective rate   : %.0f MB/s (CRC-bound; hardware CRC-32C)\n", mbps);
+  std::printf("  effective rate   : %.0f MB/s\n", mbps);
 
   std::printf("\n[sink %llu %llu]\n", static_cast<unsigned long long>(sink),
               static_cast<unsigned long long>(sink2));
