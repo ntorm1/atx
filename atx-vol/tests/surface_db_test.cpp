@@ -943,7 +943,7 @@ TEST(SurfaceDbPartition, ViewCacheEvictedViewStaysValidWhenHeld) {
 
 TEST(SurfaceDb, SplineVolPartitionRoundTrip) {
   // Task I5.2: write_partition/load_surface delegate straight to
-  // write_surface_archive_file / SurfaceArchive::open_file (no per-kind
+  // write_surface_archive_v2_file / SurfaceArchiveV2::open_* (no per-kind
   // switch in the db path -- see write_partition/open_partition in
   // surface_db.cpp), so this is a REGRESSION PIN on that delegation, not new
   // db-path code: it started passing as soon as I5.1's archive payload

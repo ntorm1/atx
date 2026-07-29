@@ -5,7 +5,7 @@
 // 14k-contract SPY board every run; this helper fits it once per build tree
 // (or reuses an already-published archive from a prior run) and hands back the
 // archive file path, which every consumer reloads via
-// `SurfaceArchive::open_file` -> `map_symbol("SPY")` exactly as
+// `SurfaceArchiveV2::open_file` -> `reconstruct_symbol("SPY")` exactly as
 // spy_archive_roundtrip_test.cpp does. That round-trip is itself the proof the
 // reload prices bit-identically to a live session (see that test), so this
 // helper introduces no accuracy gap for consumers that only need the fitted
@@ -57,7 +57,7 @@ cached_corpus(const char *key, const std::function<std::vector<CorpusBoard>()> &
 // "SPY") for one slice of the 10-fixture `kSpyFitFixtures` corpus
 // (support/spy_fit_fixture.hpp). Fits once per build tree keyed on
 // `fixture.id` (the fixture's stable short name, unique across all ten), then
-// reloads via `SurfaceArchive::open_file` -> `map_symbol("SPY")`, same idiom
+// reloads via `SurfaceArchiveV2::open_file` -> `reconstruct_symbol("SPY")`, same idiom
 // as `cached_spy_convex_dense`. Empty path if that fixture's parquet is
 // unavailable (caller should GTEST_SKIP, same as every direct-fit consumer).
 //

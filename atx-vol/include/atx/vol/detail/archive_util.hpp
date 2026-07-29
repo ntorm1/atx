@@ -43,8 +43,8 @@ namespace atx::vol::detail {
 reserve_unique_publish_temp_file(std::string_view dst_path);
 
 // Durable atomic publish of a just-written temp file onto its destination — the
-// shared primitive behind write_surface_archive_v2_file / write_surface_archive_file
-// (v1) / write_manifest_file_atomic. The caller writes the payload to `tmp_path`
+// shared primitive behind write_surface_archive_v2_file and the SurfaceDb
+// write_manifest_file_atomic. The caller writes the payload to `tmp_path`
 // and closes its stream; this then:
 //   (1) fsync's `tmp_path` to stable storage BEFORE the rename, so a power loss
 //       after the rename can never leave a correctly-named file with unflushed

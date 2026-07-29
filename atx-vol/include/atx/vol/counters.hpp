@@ -629,7 +629,7 @@ namespace timing {
 
 enum class Stage : unsigned {
   Fit = 0,     // fit a board (OptionChain -> FittedSurface)
-  Serialize,   // fit output -> on-disk bytes (snapshot + write_surface_archive)
+  Serialize,   // fit output -> on-disk bytes (snapshot + write_surface_archive_v2)
   Deserialize, // bytes -> ready-to-price surfaces (open + reconstruct)
   Price,       // price + greeks over the deserialized surfaces
   Count_

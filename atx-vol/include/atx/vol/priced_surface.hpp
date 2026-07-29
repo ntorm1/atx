@@ -155,7 +155,7 @@ struct GreekNeeds {
 // A fitted, serialization-ready surface with optional transient query caches.
 // Move-only (owns a move-only `CurveSurface`). Construct via `create` (validating)
 // or receive one from `VolaSession::to_priced_surface` /
-// `SurfaceArchive::map_symbol`.
+// `SurfaceArchiveV2::reconstruct_symbol`.
 class PricedSurface {
 public:
   ~PricedSurface();

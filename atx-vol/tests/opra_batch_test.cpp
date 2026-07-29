@@ -739,14 +739,14 @@ TEST(OpraBatch, TermRatesReachFitLiveQueryAndArchivedQuery) {
   auto priced = session.to_priced_surface();
   ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
   atx::vol::SurfaceArchiveItem item{"SPY", &*priced};
-  atx::vol::SurfaceArchiveWriteOpts write;
+  atx::vol::ArchiveV2WriteOpts write;
   write.created_ts_ns = 1;
-  auto bytes = atx::vol::write_surface_archive(
+  auto bytes = atx::vol::write_surface_archive_v2(
       std::span<const atx::vol::SurfaceArchiveItem>(&item, 1u), write);
   ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
-  auto archive = atx::vol::SurfaceArchive::open(std::move(*bytes));
+  auto archive = atx::vol::SurfaceArchiveV2::open(std::move(*bytes));
   ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
-  auto reloaded = archive->map_symbol("SPY");
+  auto reloaded = archive->reconstruct_symbol("SPY");
   ASSERT_TRUE(reloaded.has_value()) << reloaded.error().to_string();
   EXPECT_NEAR(reloaded->rate_at(expiry.T), env.rate_at(expiry.T), 1.0e-14);
   const auto archived = reloaded->fair_value(strike, expiry.T, atx::vol::Side::Call);

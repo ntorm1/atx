@@ -148,11 +148,10 @@ SurfaceProvenance legacy_surface_provenance() noexcept {
 // ATXVSA2 (v2) — zero-copy mmap columnar format. Layout spec + research lineage:
 // atx-vol/docs/atxvsa2-format.md. Primary sources cited there (FlatBuffers
 // natural alignment; Cap'n Proto relative byte-offset segments; Apache Arrow
-// contiguous typed columns + mmap-first alignment). This is a CLEAN-BREAK sibling
-// to the v1 reader/writer (§0): distinct types, no dual-read. The v1 reader/writer
-// was isolated out of this product TU into src/surface_archive_v1.cpp (WS-G G2) so
-// atx::vol no longer links v1; only the shared legacy_surface_provenance() and the
-// internal-linkage provenance/buf helpers are defined in both TUs.
+// contiguous typed columns + mmap-first alignment). It was a CLEAN-BREAK sibling to
+// the v1 (ATXVSA v3) reader/writer (§0): distinct types, no dual-read. v1 is now
+// DELETED (release-v1 plan 3.6) — this is the only surface-archive format left, and
+// the v1 magic/schema salt it rejects is all that remains of the old one.
 // ═══════════════════════════════════════════════════════════════════════════
 
 namespace {

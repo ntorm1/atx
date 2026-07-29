@@ -167,27 +167,6 @@ if(ATX_VOL_PROFILE)
     target_compile_definitions(atx-vol PUBLIC ATX_VOL_PROFILE)
 endif()
 
-# ---- v1 archive read/write — isolated OUT of the product library (WS-G G2) ----
-# The legacy ATXVSA (v1) SurfaceArchive reader + write_surface_archive[_file] writer
-# live in src/surface_archive_v1.cpp, NOT in atx::vol, so the product library links
-# only the v2 (ATXVSA2 zero-copy) format (parent adjudication A). No product src/ TU
-# calls v1 — the sole consumers are the throwaway migrator, a few round-trip/format
-# tests, and two archive benches; each links this small static lib. It links atx::vol
-# for the shared curve / priced-surface / detail symbols + the one shared external
-# symbol legacy_surface_provenance() (dependency direction v1 -> vol, NEVER the
-# reverse — no link cycle, and vol.lib stays provably v1-free). Built only when a
-# dev consumer group is on.
-if(ATX_BUILD_TESTS OR ATX_BUILD_BENCH OR ATX_BUILD_EXAMPLES)
-    add_library(atx-vol-archive-v1 STATIC src/surface_archive_v1.cpp)
-    add_library(atx::vol-archive-v1 ALIAS atx-vol-archive-v1)
-    target_link_libraries(atx-vol-archive-v1
-        PUBLIC
-            atx::vol
-        PRIVATE
-            atx_warnings
-    )
-endif()
-
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
@@ -412,11 +391,6 @@ if(ATX_BUILD_EXAMPLES)
     # (tests/spy_dispersion_pnl_report_test.py). See examples/spy_dispersion_pnl.cpp.
     add_executable(spy_dispersion_pnl examples/spy_dispersion_pnl.cpp)
     target_link_libraries(spy_dispersion_pnl PRIVATE atx::vol atx::core atx_warnings)
-
-    # bt-hotpath WS-S (S3): THROWAWAY one-shot v1 .atxvsa -> v2 .atxvsa2 migrator.
-    # Wave 2 (S4) runs it over the committed fixtures, then v1 read is deleted.
-    add_executable(migrate_atxvsa_v1_to_v2 tools/migrate_atxvsa_v1_to_v2.cpp)
-    target_link_libraries(migrate_atxvsa_v1_to_v2 PRIVATE atx::vol atx::core atx-vol-archive-v1 atx_warnings)
 
     # Surface-db production build CLI (Task 6): the one-call build_surface_db
     # driver wrapped in a hand-rolled arg loop -- create-or-open a SurfaceDb,

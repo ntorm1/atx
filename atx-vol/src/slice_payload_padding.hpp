@@ -59,8 +59,8 @@
 // a substitute for reading this file when you touch these structs.
 //
 // Private, src/-only header: NOT installed, NOT part of the public atx/vol/ API
-// surface. Both translation units that need it (`surface_archive.cpp`,
-// `surface_archive_v1.cpp`) live inside the atx-vol library target.
+// surface. The one translation unit that needs it (`surface_archive.cpp`) lives
+// inside the atx-vol library target.
 
 #include <cstddef>
 #include <cstring>

@@ -38,7 +38,6 @@ add_executable(atx-vol-tests
     data_test.cpp
     run_archive_test.cpp
     run_diagnostics_test.cpp
-    surface_archive_test.cpp
     surface_db_test.cpp
     batch_test.cpp
     portfolio_test.cpp
@@ -174,7 +173,6 @@ target_link_libraries(atx-vol-tests
     PRIVATE
         atx::vol
         atx::core
-        atx-vol-archive-v1  # WS-G G2: v1 archive read/write pulled from the isolated TU
         GTest::gtest_main
         atx_warnings
         atx-test-scratch    # FIX-3/F3-B: per-process temp root (was a listed source in F2-A)

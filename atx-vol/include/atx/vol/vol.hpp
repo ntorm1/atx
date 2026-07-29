@@ -48,10 +48,10 @@
 //   // 3. Snapshot: distil the live fit into a small, cache-free PricedSurface —
 //   //    its cold served theo is bit-identical to the session (override path).
 //   PricedSurface ps = sess.to_priced_surface().value();
-//   // 4. Archive: serialize -> reload with ZERO theo drift (ATXVSA v3 round-trip).
-//   auto bytes = write_surface_archive(std::array{SurfaceArchiveItem{"SPY", &ps}}).value();
-//   PricedSurface reloaded = SurfaceArchive::open(std::move(bytes)).value()
-//                                .map_symbol("SPY").value();
+//   // 4. Archive: serialize -> reload with ZERO theo drift (ATXVSA2 round-trip).
+//   auto bytes = write_surface_archive_v2(std::array{SurfaceArchiveItem{"SPY", &ps}}).value();
+//   PricedSurface reloaded = SurfaceArchiveV2::open(std::move(bytes)).value()
+//                                .reconstruct_symbol("SPY").value();
 //   // 5. Book: dedup contracts, mark the portfolio, and Taylor-explain a reprice.
 //   Portfolio pf = Portfolio::create(positions).value();               // uid == ps.uid()
 //   PortfolioPricer pricer{ std::move(pf) };

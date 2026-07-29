@@ -894,10 +894,10 @@ TEST_F(PricerFitterTest, PinnedConvexMarkDropsUnservedDiagnosticsWithoutMovingAr
       atx::vol::SurfaceArchiveItem{"SPY", &*default_priced}};
   const std::array<atx::vol::SurfaceArchiveItem, 1> scored_items{
       atx::vol::SurfaceArchiveItem{"SPY", &*scored_priced}};
-  atx::vol::SurfaceArchiveWriteOpts archive_opts;
+  atx::vol::ArchiveV2WriteOpts archive_opts;
   archive_opts.created_ts_ns = 42;
-  const auto default_archive = atx::vol::write_surface_archive(default_items, archive_opts);
-  const auto scored_archive = atx::vol::write_surface_archive(scored_items, archive_opts);
+  const auto default_archive = atx::vol::write_surface_archive_v2(default_items, archive_opts);
+  const auto scored_archive = atx::vol::write_surface_archive_v2(scored_items, archive_opts);
   ASSERT_TRUE(default_archive.has_value()) << default_archive.error().to_string();
   ASSERT_TRUE(scored_archive.has_value()) << scored_archive.error().to_string();
   EXPECT_EQ(*default_archive, *scored_archive);

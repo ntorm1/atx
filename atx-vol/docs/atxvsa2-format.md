@@ -248,9 +248,9 @@ to a `PricedSurface` reconstructed from the same bytes.
   **`open` verifies header + metadata + framing bounds only.** Per-record CRC is
   checked **only** by the explicit `validate_symbol` / `validate_all` API — never
   on the price path. This is the lazy-CRC win (#5).
-- **Durable atomic publish (C3 / SE-P2-1, SE-P2-2).** All three writers
-  (`write_surface_archive_v2_file`, v1 `write_surface_archive_file`, and the
-  SurfaceDb `write_manifest_file_atomic`) publish through the one shared primitive
+- **Durable atomic publish (C3 / SE-P2-1, SE-P2-2).** Both writers
+  (`write_surface_archive_v2_file` and the SurfaceDb
+  `write_manifest_file_atomic`) publish through the one shared primitive
   `detail::flush_and_publish_file(tmp, dst)`: exclusively reserve a **unique
   same-directory temp**, write payload, close, **fsync the temp**
   (`FlushFileBuffers`), then **rename** with **bounded retry + exponential

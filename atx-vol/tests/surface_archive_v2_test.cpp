@@ -27,9 +27,8 @@
 // ATXVSA2 (v2) zero-copy suite. The economic-correctness gate: a PricedSurfaceView
 // over the mapped v2 record serves BIT-IDENTICAL theo (iv / total variance /
 // fair_value / greeks / delta / vega / evaluate_batch) to the ORIGINAL
-// PricedSurface (which the v1 reconstruct path also reproduces bit-for-bit). Plus
-// subset-map isolation, lazy-CRC validate-on-demand, big-fixture alignment, and
-// clean-break cross-format rejection.
+// PricedSurface. Plus subset-map isolation, lazy-CRC validate-on-demand,
+// big-fixture alignment, and clean-break rejection of a legacy v1 file.
 
 #include "slice_param_padding.hpp" // test::repad — padding-only mutation of the POD slice params
 
@@ -59,7 +58,6 @@ using atx::vol::PricedSurfaceView;
 using atx::vol::PricingContext;
 using atx::vol::Side;
 using atx::vol::SliceContext;
-using atx::vol::SurfaceArchive;
 using atx::vol::SurfaceArchiveItem;
 using atx::vol::SurfaceArchiveV2;
 using atx::vol::SurfaceProvenance;
@@ -69,7 +67,6 @@ using atx::vol::SviCurve;
 using atx::vol::SviParams;
 using atx::vol::ValidationFailure;
 using atx::vol::VolCurveKind;
-using atx::vol::write_surface_archive;
 using atx::vol::write_surface_archive_v2;
 
 [[nodiscard]] bool bits_equal(double a, double b) noexcept {
@@ -663,15 +660,17 @@ TEST(SurfaceArchiveV2, RejectsHeaderCorruption) {
 }
 
 TEST(SurfaceArchiveV2, CleanBreakCrossFormatRejection) {
-  // v1 bytes are not a v2 archive, and vice versa — no dual read (§0).
-  const PricedSurface ps = make_essvi(1, 3);
-  const std::array<SurfaceArchiveItem, 1> v1_items{SurfaceArchiveItem{"sym", &ps}};
-  auto v1 = write_surface_archive(v1_items);
-  ASSERT_TRUE(v1.has_value());
-  EXPECT_FALSE(SurfaceArchiveV2::open(std::vector<std::byte>(*v1)).has_value());
-
-  std::vector<std::byte> v2 = build_v2(ps, "sym");
-  EXPECT_FALSE(SurfaceArchive::open(std::move(v2)).has_value());
+  // A v1 (ATXVSA03) file is not a v2 archive — no dual read (§0). The v1 writer is
+  // gone (release-v1 plan 3.6), so the fixture is the v1 FRAMING this reader must
+  // still refuse when it meets a legacy file on disk: a v1-sized header block
+  // stamped with the v1 magic. Long enough to clear v2's minimum-size check, so the
+  // rejection is genuinely the magic/version gate and not a short-buffer accident.
+  std::vector<std::byte> v1(sizeof(atx::vol::ArchiveHeader), std::byte{0});
+  static_assert(sizeof(atx::vol::ArchiveHeader) > sizeof(atx::vol::ArchiveV2Header),
+                "the v1 header block must clear v2's minimum-size check");
+  constexpr char kV1Magic[8] = {'A', 'T', 'X', 'V', 'S', 'A', '0', '3'};
+  std::memcpy(v1.data(), kV1Magic, sizeof kV1Magic);
+  EXPECT_FALSE(SurfaceArchiveV2::open(std::move(v1)).has_value());
 }
 
 // ── instance_id: never-reused, move transfers, distinct per view ──────────────

@@ -846,7 +846,7 @@ namespace {
 
 // Atomic manifest write: serialize to an exclusively reserved unique
 // same-directory temp, then durably rename over `dst`.
-// Mirrors write_surface_archive_file's discipline (surface_archive.cpp) --
+// Mirrors write_surface_archive_v2_file's discipline (surface_archive.cpp) --
 // including tmp cleanup on failure -- so both binary formats fail the same
 // way under a crash mid-write.
 [[nodiscard]] Status write_manifest_file_atomic(const std::filesystem::path &dst,
@@ -1207,7 +1207,7 @@ Status SurfaceDb::write_partition(std::string_view key, std::span<const SurfaceA
   }
   const std::string path = partition_path(*canon);
 
-  // The archive write is itself atomic (tmp+rename, see write_surface_archive_file);
+  // The archive write is itself atomic (tmp+rename, see write_surface_archive_v2_file);
   // do it BEFORE touching the manifest so a failed/interrupted archive write
   // (e.g. empty `items` -> InvalidArgument) never advances the partition index.
   auto wrote = write_surface_archive_v2_file(path, items, opts);
