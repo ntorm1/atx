@@ -134,11 +134,5 @@ validate_listed_reconciliation_backtest(const ListedDispersionReconciliation &re
 serialize_listed_contract_marks(const ListedDispersionReconciliation &reconciliation);
 [[nodiscard]] std::string
 serialize_listed_reconciliation(const ListedDispersionReconciliation &reconciliation);
-[[nodiscard]] Status
-write_listed_contract_marks_file(std::string_view path,
-                                 const ListedDispersionReconciliation &reconciliation);
-[[nodiscard]] Status
-write_listed_reconciliation_file(std::string_view path,
-                                 const ListedDispersionReconciliation &reconciliation);
 
 } // namespace atx::vol

@@ -5,8 +5,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
-#include <fstream>
 #include <limits>
 #include <map>
 #include <string>
@@ -64,35 +62,6 @@ void append_optional_double(std::string &out, double value, bool present) {
   } else {
     out.append("NA");
   }
-}
-
-[[nodiscard]] Result<void> write_atomic(std::string_view path, std::string_view contents) {
-  const std::filesystem::path target{path};
-  if (target.empty()) {
-    return Err(ErrorCode::InvalidArgument, "listed reconciliation: empty output path");
-  }
-  std::error_code error;
-  if (!target.parent_path().empty()) {
-    std::filesystem::create_directories(target.parent_path(), error);
-    if (error) {
-      return Err(ErrorCode::IoError, "listed reconciliation: cannot create output directory");
-    }
-  }
-  std::filesystem::path pending = target;
-  pending += ".pending";
-  {
-    std::ofstream stream(pending, std::ios::binary | std::ios::trunc);
-    if (!stream || !stream.write(contents.data(), static_cast<std::streamsize>(contents.size()))) {
-      return Err(ErrorCode::IoError, "listed reconciliation: cannot write pending file");
-    }
-  }
-  std::filesystem::remove(target, error);
-  error.clear();
-  std::filesystem::rename(pending, target, error);
-  if (error) {
-    return Err(ErrorCode::IoError, "listed reconciliation: cannot publish file");
-  }
-  return Ok();
 }
 
 [[nodiscard]] Result<std::map<ListedQuoteKey, const ListedOptionQuote *>>
@@ -493,16 +462,6 @@ std::string serialize_listed_reconciliation(const ListedDispersionReconciliation
     out.push_back('\n');
   }
   return out;
-}
-
-Status write_listed_contract_marks_file(std::string_view path,
-                                        const ListedDispersionReconciliation &reconciliation) {
-  return write_atomic(path, serialize_listed_contract_marks(reconciliation));
-}
-
-Status write_listed_reconciliation_file(std::string_view path,
-                                        const ListedDispersionReconciliation &reconciliation) {
-  return write_atomic(path, serialize_listed_reconciliation(reconciliation));
 }
 
 } // namespace atx::vol
