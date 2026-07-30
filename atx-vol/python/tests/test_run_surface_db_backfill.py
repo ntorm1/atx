@@ -472,6 +472,23 @@ def test_build_verify_command():
     ]
 
 
+def test_build_verify_command_scopes_the_walk_to_the_key_range():
+    """FIX-N-2. The thresholds are sized off a SESSION SET; the C++ walk must be
+    restricted to that same set or the comparison is between two different
+    populations. `verify` takes --from/--to (`surface_db_main.cpp`, setting
+    `verify_spec.key_lo/key_hi`), and the partition loop applies them BEFORE
+    `cells_checked`/`cells_absent` are incremented, so both counters land on the
+    scoped set."""
+    argv = orch.build_verify_command(admin_exe="ADMIN", db_prefix="PREFIX", year=2026,
+                                     min_cells=1646, max_absent=70,
+                                     key_lo="2026-07-01", key_hi="2026-07-24")
+    assert argv == [
+        "ADMIN", "verify", "--db", "PREFIX-2026",
+        "--min-cells", "1646", "--max-absent", "70",
+        "--from", "2026-07-01", "--to", "2026-07-24",
+    ]
+
+
 def test_build_info_command():
     argv = orch.build_info_command(admin_exe="ADMIN", db_prefix="PREFIX", year=2023)
     assert argv == ["ADMIN", "info", "--db", "PREFIX-2023"]
@@ -1052,6 +1069,136 @@ def test_phase_verify_surfaces_the_absent_over_limit_exit_4(tmp_path, monkeypatc
     args = _verify_args(tmp_path, from_date="2022-07-05", to_date="2022-07-05", hive=hive)
     assert orch.phase_verify(args, [("SPY", 100.0)], tmp_path) == 1, \
         "a verify that exits 4 (ABSENT) must fail the phase, not be swallowed"
+
+
+# ── FIX-N-2: the threshold's denominator and the count it is compared against
+# must cover the SAME set of sessions ──────────────────────────────────────
+
+def _fake_verify_over_an_absent_map(sessions, absent_per_session, n_symbols):
+    """A stand-in for the C++ ``verify`` that honours ``--from``/``--to`` the
+    way `surface_db_admin.cpp` does: the partition walk is restricted to the
+    key range FIRST, and only then are ``cells_checked`` / ``cells_absent``
+    incremented -- so both counters describe the scoped set. With no range on
+    the argv it walks the whole database, which is precisely the N-2 bug."""
+
+    def fake_run(argv, **kw):
+        if "verify" in argv:
+            lo = argv[argv.index("--from") + 1] if "--from" in argv else sessions[0]
+            hi = argv[argv.index("--to") + 1] if "--to" in argv else sessions[-1]
+            walked = [d for d in sessions if lo <= d <= hi]
+            cells_absent = sum(absent_per_session[d] for d in walked)
+            cells_checked = n_symbols * len(walked)
+            if cells_absent > int(argv[argv.index("--max-absent") + 1]):
+                return _FakeCompleted(4, stderr=f"verdict ABSENT: cells_absent {cells_absent} > "
+                                                f"--max-absent {argv[argv.index('--max-absent') + 1]}\n")
+            if cells_checked < int(argv[argv.index("--min-cells") + 1]):
+                return _FakeCompleted(1, stderr=f"verdict FAILED: cells_checked {cells_checked}\n")
+            return _FakeCompleted(0)
+        if "info" in argv:
+            return _FakeCompleted(0)
+        if argv[argv.index("--strike") + 1] == "100":
+            return _FakeCompleted(0, stdout="forward 100.0\n")
+        return _FakeCompleted(0, stdout="iv 0.2\nforward 100.0\n")
+
+    return fake_run
+
+
+def _sp100_2026_shaped_fixture(tmp_path, extra_absent=None):
+    """The landed `sp100-2026` root's shape: 102 symbols x the 2026 sessions,
+    358 absent cells spread over the year (provider-absent names plus
+    permanently-failing fits -- a population that scales with the grid).
+    ``extra_absent`` adds destroyed surfaces at named dates."""
+    sessions = orch.trading_sessions_excluding_early_close("2026-01-02", "2026-07-24", "15:55")
+    hive = _make_hive_with_sessions(tmp_path, sessions)
+    n_symbols = 102
+    absent = {d: 0 for d in sessions}
+    for i in range(358):
+        absent[sessions[i % len(sessions)]] += 1
+    for date, extra in (extra_absent or {}).items():
+        absent[date] += extra
+    universe = [(f"S{i:03d}", 100.0) for i in range(n_symbols)]
+    return sessions, hive, absent, n_symbols, universe
+
+
+def test_phase_verify_sub_range_resume_does_not_false_alarm_on_a_healthy_root(tmp_path, monkeypatch):
+    """FIX-N-2, the regression. `verify_thresholds` sizes `max_absent` off the
+    sessions in `--from`/`--to`, but `build_verify_command` passed NO date scope,
+    so the C++ walk counted `cells_absent` over the WHOLE database. The operator
+    guide's own prescribed workflow -- "then --phase verify with the SAME
+    --from/--to" -- therefore returned `verdict ABSENT` / exit 4 on a healthy
+    production root for any resume under ~88 of `sp100-2026`'s 140 sessions:
+
+        max_absent = ceil(0.04 * 102 * 17) = 70   vs   whole-DB cells_absent 358
+
+    Nothing is wrong with the database. It fails CLOSED, so it is not a data
+    risk -- it is worse in a different way: it trains an operator to ignore exit
+    4, the one verdict FIX-I-2 exists to make meaningful."""
+    sessions, hive, absent, n_symbols, universe = _sp100_2026_shaped_fixture(tmp_path)
+    monkeypatch.setattr(subprocess, "run",
+                        _fake_verify_over_an_absent_map(sessions, absent, n_symbols))
+
+    # The whole-year verify was always green and must stay green.
+    whole = _verify_args(tmp_path, from_date="2026-01-02", to_date="2026-07-24", hive=hive)
+    assert orch.phase_verify(whole, universe, tmp_path) == 0, \
+        "the healthy full-year root must verify green"
+
+    # The resume-verify the guide prescribes: 17 sessions of 140.
+    resume = _verify_args(tmp_path, from_date="2026-07-01", to_date="2026-07-24", hive=hive)
+    assert orch.phase_verify(resume, universe, tmp_path) == 0, \
+        "a sub-range resume-verify must size and count over the SAME session set"
+
+    # And the pathological end of the old window: a single-session resume.
+    one = _verify_args(tmp_path, from_date="2026-07-24", to_date="2026-07-24", hive=hive)
+    assert orch.phase_verify(one, universe, tmp_path) == 0, \
+        "even a one-session resume must not be judged against the whole DB's absent count"
+
+
+def test_phase_verify_sub_range_still_fires_on_destroyed_surfaces(tmp_path, monkeypatch):
+    """FIX-N-2 must not re-inert FIX-I-2. Scoping the walk narrows the
+    numerator, so re-state I-2's property against the scoped form: the review's
+    destruction scenario -- 400 surfaces destroyed across 4 dates by a
+    whole-file partition rewrite -- must still turn the verdict ABSENT and exit
+    4, both inside a sub-range resume and over the whole year."""
+    destroyed = {"2026-07-20": 100, "2026-07-21": 100, "2026-07-22": 100, "2026-07-23": 100}
+    sessions, hive, absent, n_symbols, universe = _sp100_2026_shaped_fixture(
+        tmp_path, extra_absent=destroyed)
+    monkeypatch.setattr(subprocess, "run",
+                        _fake_verify_over_an_absent_map(sessions, absent, n_symbols))
+
+    resume = _verify_args(tmp_path, from_date="2026-07-01", to_date="2026-07-24", hive=hive)
+    assert orch.phase_verify(resume, universe, tmp_path) == 1, \
+        "400 destroyed surfaces inside the resumed range must fail the phase"
+
+    whole = _verify_args(tmp_path, from_date="2026-01-02", to_date="2026-07-24", hive=hive)
+    assert orch.phase_verify(whole, universe, tmp_path) == 1, \
+        "and must still fail the whole-year verify (325+400 > ceil(0.04*14280))"
+
+
+def test_phase_verify_scopes_the_verify_walk_to_the_sized_session_set(tmp_path, monkeypatch):
+    """FIX-N-2, directly: the range must reach argv, and it must be the bounds
+    of the population the thresholds were SIZED off (the hive-present sessions),
+    not the raw requested calendar. 2022-07-04 is a holiday and 2022-07-08 is
+    absent from this hive, so the two differ at both ends."""
+    hive = _make_hive_with_sessions(tmp_path, ["2022-07-05", "2022-07-06", "2022-07-07"])
+    seen = {}
+
+    def fake_run(argv, **kw):
+        if "verify" in argv:
+            seen["from"] = argv[argv.index("--from") + 1]
+            seen["to"] = argv[argv.index("--to") + 1]
+            seen["max_absent"] = argv[argv.index("--max-absent") + 1]
+            return _FakeCompleted(0)
+        if "info" in argv:
+            return _FakeCompleted(0)
+        return _FakeCompleted(0, stdout="iv 0.2\nforward 100.0\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    args = _verify_args(tmp_path, from_date="2022-07-01", to_date="2022-07-08", hive=hive)
+    assert orch.phase_verify(args, [("SPY", 100.0)], tmp_path) == 0
+    assert (seen["from"], seen["to"]) == ("2022-07-05", "2022-07-07"), \
+        "the walk must be scoped to the hive-present sessions the thresholds were sized off"
+    # expected = 1 x 3 -> max_absent = ceil(0.04*3) = 1, over exactly those 3 partitions.
+    assert seen["max_absent"] == "1"
 
 
 def test_phase_verify_dry_run_falls_back_to_requested_sessions_needing_no_hive(tmp_path, monkeypatch):

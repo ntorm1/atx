@@ -715,9 +715,41 @@ def build_build_command(*, build_exe, hive, db_prefix: str, year: int, chunk: li
     ]
 
 
-def build_verify_command(*, admin_exe, db_prefix: str, year: int, min_cells: int, max_absent: int) -> list[str]:
-    return [str(admin_exe), "verify", "--db", f"{db_prefix}-{year}",
+def build_verify_command(*, admin_exe, db_prefix: str, year: int, min_cells: int, max_absent: int,
+                         key_lo: Optional[str] = None, key_hi: Optional[str] = None) -> list[str]:
+    """One ``verify`` invocation. ``key_lo``/``key_hi`` scope the partition walk
+    to a date range.
+
+    FIX-N-2. Passing the range is not optional decoration -- it is what makes
+    the verdict mean anything on a resume. ``verify_thresholds`` sizes
+    ``--max-absent`` off ``n_symbols * len(present_requested)``, i.e. off the
+    sessions in the CALLER'S window; without ``--from``/``--to`` the C++ walk
+    counts ``cells_absent`` over every partition in the root. Sizing off a
+    sub-range while counting over the whole database compares two different
+    populations, and the smaller the resume the wider the gap:
+
+        max_absent = ceil(0.04 * 102 * N)  must exceed the whole-DB 358
+          => N >= 88 of sp100-2026's 140 sessions before a HEALTHY root passes
+
+    So the workflow the operator guide prescribes ("then --phase verify with the
+    SAME --from/--to") returned `verdict ABSENT` / exit 4 on known-good
+    production data for any resume under ~88 sessions. It fails closed, so it
+    destroys nothing -- it just teaches the operator that exit 4 is noise, which
+    is exactly the lesson FIX-I-2 exists to prevent.
+
+    The invariant to preserve: the DENOMINATOR the threshold is computed from
+    and the NUMERATOR it is compared against must cover the same set of
+    sessions. `surface_db_admin.cpp` applies ``key_lo``/``key_hi`` to the
+    partition list BEFORE the cell loop, so ``cells_checked`` and
+    ``cells_absent`` both land on the scoped set -- which is what makes this the
+    right handle rather than, say, post-filtering the report."""
+    argv = [str(admin_exe), "verify", "--db", f"{db_prefix}-{year}",
             "--min-cells", str(min_cells), "--max-absent", str(max_absent)]
+    if key_lo is not None:
+        argv += ["--from", key_lo]
+    if key_hi is not None:
+        argv += ["--to", key_hi]
+    return argv
 
 
 def build_info_command(*, admin_exe, db_prefix: str, year: int) -> list[str]:
@@ -1014,8 +1046,19 @@ def phase_verify(args, universe_entries: list[tuple[str, float]], log_dir: pathl
             max_absent=args.max_absent,
         )
 
+        # FIX-N-2. Scope the walk to the population the thresholds were just
+        # sized off -- `present_requested`, NOT `args.from_date`/`args.to_date`.
+        # The two differ whenever the requested window's endpoints are not
+        # themselves hive-present sessions (a holiday endpoint, or a partial
+        # backfill whose hive stops short of `--to`), and it is the SIZED set
+        # that has to be counted. Falls back to the requested year sessions when
+        # nothing is present, which walks zero partitions against a zero
+        # threshold rather than judging the whole root by an empty window.
+        scope = present_requested or year_sessions_requested
         verify_argv = build_verify_command(admin_exe=args.admin_exe, db_prefix=args.db_prefix,
-                                           year=year, min_cells=min_cells, max_absent=max_absent)
+                                           year=year, min_cells=min_cells, max_absent=max_absent,
+                                           key_lo=scope[0] if scope else None,
+                                           key_hi=scope[-1] if scope else None)
         verify_res = run_subprocess(verify_argv, log_dir=log_dir, tag=f"verify_{year}",
                                     dry_run=args.dry_run)
         if not args.dry_run and verify_res.exit_code != 0:
