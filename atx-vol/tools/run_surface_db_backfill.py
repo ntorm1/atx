@@ -259,16 +259,60 @@ def bisect_chunk(chunk: list[str]) -> tuple[list[str], list[str]]:
 
 # ── verify_thresholds ────────────────────────────────────────────────────────
 
-def verify_thresholds(n_symbols: int, n_sessions: int) -> tuple[int, int]:
-    """(min_cells, max_absent) for ``atx-vol-surface-db verify``:
-    ``expected = n_symbols * n_sessions``; ``min_cells = floor(0.7 *
-    expected)``; ``max_absent = expected - min_cells``. ``n_sessions`` MUST
-    already exclude early closes (addendum §C) -- those dates never get a
-    cell, so counting them would make every healthy database look like it
-    is missing coverage it was never going to have."""
+DEFAULT_MIN_CELL_FRACTION = 0.95
+DEFAULT_MAX_ABSENT_FRACTION = 0.04
+
+
+def verify_thresholds(n_symbols: int, n_sessions: int, *,
+                      min_cell_fraction: float = DEFAULT_MIN_CELL_FRACTION,
+                      max_absent: Optional[int] = None,
+                      max_absent_fraction: float = DEFAULT_MAX_ABSENT_FRACTION) -> tuple[int, int]:
+    """(min_cells, max_absent) for ``atx-vol-surface-db verify``, over
+    ``expected = n_symbols * n_sessions``. ``n_sessions`` MUST already exclude
+    early closes (addendum §C) -- those dates never get a cell, so counting
+    them would make every healthy database look like it is missing coverage it
+    was never going to have.
+
+    FIX-I-2. These two numbers used to be ONE number: ``min_cells = floor(0.7 *
+    expected)`` and ``max_absent = expected - min_cells``, i.e. ``max_absent``
+    was the arithmetic COMPLEMENT of a 70% coverage floor rather than an
+    absent-cell budget at all. That made it 3183 for 2025 and 4284 for 2026
+    against observed absent counts of 325 and 358 -- 10-12x too loose, so
+    ~2,850 / ~3,900 stored surfaces could be destroyed and `verify` would still
+    print `verdict ok` and exit 0. It is the ONLY automated detector for that,
+    and it was calibrated to be inert.
+
+    They are separated here because they measure genuinely different things,
+    and tying them together is what produced the useless number:
+
+      * ``--min-cells`` is a floor on ``cells_checked``, and ``cells_checked``
+        COUNTS HOLES (`surface_db_main.cpp`: "--min-cells is BLIND to it").
+        So it is a GRID-SIZE floor -- "did the walk see roughly the database I
+        expected" -- and it moves only when whole partitions are missing.
+        0.95 tolerates ~5% of the hive's sessions having no partition.
+      * ``--max-absent`` is the destroyed-surface detector. An absent cell is
+        byte-for-byte identical whether it was never fitted or was stored and
+        then destroyed by a whole-file partition rewrite -- the format keeps no
+        tombstone -- so a COUNT CEILING is the only handle there is, and it has
+        to sit close enough to the observed baseline to move when a rewrite
+        eats a few hundred surfaces.
+
+    The 0.04 ceiling is calibrated against Task 8's Gate-3 baselines: the
+    landed 2025 root is 325 absent of 10608 expected (3.06%) and 2026 is 358 of
+    14280 (2.51%), both dominated by provider-absent names (PLTR-style
+    pre-listing gaps; the 7 names absent on 2025-11-24) plus permanently-failing
+    fits -- populations that scale with the grid rather than sitting at a fixed
+    count, which is why a fraction is the right shape. 4% gives 425 / 572, i.e.
+    1.31x / 1.60x the observed figures: enough headroom for survivorship drift
+    in a new universe year, and tight enough that the review's failure scenario
+    (400 surfaces destroyed across 4 dates, 325 -> 725) turns the verdict
+    ABSENT and exits 4 in BOTH years instead of exiting 0. An operator who
+    wants the observed number pinned exactly passes an absolute ``--max-absent``
+    (the C++ tool's own advice), which overrides the fraction entirely."""
     expected = n_symbols * n_sessions
-    min_cells = math.floor(0.7 * expected)
-    max_absent = expected - min_cells
+    min_cells = math.floor(min_cell_fraction * expected)
+    if max_absent is None:
+        max_absent = math.ceil(max_absent_fraction * expected)
     return min_cells, max_absent
 
 
@@ -546,17 +590,56 @@ def build_pull_command(*, python_exe: str, pull_tool, universe_path, start: str,
     return argv
 
 
+def assert_snapshot_minute_uniform(chunk: list[str], snap_et: str) -> str:
+    """The single UTC snapshot minute that is correct for every date the build
+    CLI will see for ``chunk`` -- raising ``ValueError`` if there is more than
+    one.
+
+    FIX-I-7. ``build_build_command`` derives ONE ``--snapshot-suffix`` from
+    ``chunk[0]`` and then passes ``--from chunk[0] --to chunk[-1]`` -- a RANGE,
+    not the list. The C++ CLI re-derives its own date list from the hive
+    between those bounds, and the loader applies that single stamp to every one
+    of them, so the set that has to be minute-uniform is not ``chunk`` but the
+    whole closed interval ``[chunk[0], chunk[-1]]``. That is why this checks
+    every CALENDAR day in the range as well as every member of ``chunk``: a
+    calendar sweep is a strict superset of any session set the C++ side could
+    enumerate (including early closes that ``chunk_sessions`` deliberately
+    dropped but that still have hive files), it needs no exchange calendar, and
+    it cannot false-positive, because both endpoints are themselves sessions --
+    a DST transition strictly inside the range always moves one endpoint.
+
+    Until this fix the invariant was prose in ``build_build_command``'s
+    docstring and asserted nowhere, and ``grep snapshot_minute_utc`` over
+    ``atx-vol`` found no check of any kind. It is the orchestrator half of the
+    same hazard FIX-C-1 closes in the loader; either alone leaves a hole."""
+    minutes = {snapshot_minute_utc(d, snap_et) for d in chunk}
+    day = dt.date.fromisoformat(chunk[0])
+    last = dt.date.fromisoformat(chunk[-1])
+    while day <= last:
+        minutes.add(snapshot_minute_utc(day.isoformat(), snap_et))
+        day += dt.timedelta(days=1)
+    if len(minutes) != 1:
+        raise ValueError(
+            f"chunk {chunk[0]}..{chunk[-1]} straddles a DST transition: snapshot minutes "
+            f"{sorted(minutes)} are all in play across --from {chunk[0]} --to {chunk[-1]}, "
+            f"but the build CLI applies exactly ONE --snapshot-suffix to every date in that "
+            f"range, so one side of the boundary would be stamped an hour off"
+        )
+    return minutes.pop()
+
+
 def build_build_command(*, build_exe, hive, db_prefix: str, year: int, chunk: list[str],
                         symbols: list[str], index_symbol: str, rates: dict[str, float],
                         fit_workers: int, report_path, snap_et: str = "15:55") -> list[str]:
     """One build-CLI invocation over ``chunk`` (a uniform-(month, minute)
     session group per ``chunk_sessions``). ``--r`` resolves off the chunk's
-    FIRST session's calendar month; ``--snapshot-suffix`` off that same
-    session's DST-resolved snapshot minute -- valid for the whole chunk by
-    ``chunk_sessions``'s own grouping invariant."""
+    FIRST session's calendar month; ``--snapshot-suffix`` off the one snapshot
+    minute ``assert_snapshot_minute_uniform`` proves is correct for the whole
+    ``--from``/``--to`` RANGE (FIX-I-7 -- previously taken from ``chunk[0]``
+    alone and merely asserted in prose)."""
     c0, c1 = chunk[0], chunk[-1]
     r = rate_for_date(rates, c0)
-    minute = snapshot_minute_utc(c0, snap_et)
+    minute = assert_snapshot_minute_uniform(chunk, snap_et)
     suffix = f"T{minute}:00Z"
     return [
         str(build_exe),
@@ -854,7 +937,11 @@ def phase_verify(args, universe_entries: list[tuple[str, float]], log_dir: pathl
         else:
             on_disk = set(hive_sessions_present(args.hive, year))
             present_requested = [d for d in year_sessions_requested if d in on_disk]
-        min_cells, max_absent = verify_thresholds(n_symbols, len(present_requested))
+        min_cells, max_absent = verify_thresholds(
+            n_symbols, len(present_requested),
+            min_cell_fraction=args.min_cell_fraction,
+            max_absent=args.max_absent,
+        )
 
         verify_argv = build_verify_command(admin_exe=args.admin_exe, db_prefix=args.db_prefix,
                                            year=year, min_cells=min_cells, max_absent=max_absent)
@@ -924,6 +1011,18 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--cap", type=float, default=90.0)
     ap.add_argument("--spend-abort", type=float, default=95.0)
     ap.add_argument("--max-failed-sessions", type=int, default=10)
+    # FIX-I-2: verify's two thresholds are operator-overridable. Before this an
+    # operator could not TIGHTEN them without editing this source, which is why
+    # the only automated destroyed-surface detector shipped inert.
+    ap.add_argument("--min-cell-fraction", type=float, default=DEFAULT_MIN_CELL_FRACTION,
+                    help=f"verify --min-cells floor as a fraction of n_symbols x n_sessions "
+                         f"(default {DEFAULT_MIN_CELL_FRACTION}); a GRID-SIZE floor -- "
+                         f"cells_checked counts holes")
+    ap.add_argument("--max-absent", type=int, default=None,
+                    help=f"absolute verify --max-absent ceiling; overrides the default "
+                         f"{DEFAULT_MAX_ABSENT_FRACTION:g} x expected. Pin the observed absent "
+                         f"count (325 for sp100-2025, 358 for sp100-2026) to make a destroyed "
+                         f"surface turn the verdict ABSENT (exit 4)")
     ap.add_argument("--log-dir", type=pathlib.Path, required=True)
     ap.add_argument("--env-file", default="C:/atx/.env")
     ap.add_argument("--dry-run", action="store_true")

@@ -73,10 +73,12 @@ def _pull_args(tmp_path, *, from_date, to_date, dry_run=False, cap=90.0, index="
     )
 
 
-def _verify_args(tmp_path, *, from_date, to_date, hive, dry_run=False, index="SPY"):
+def _verify_args(tmp_path, *, from_date, to_date, hive, dry_run=False, index="SPY",
+                 min_cell_fraction=orch.DEFAULT_MIN_CELL_FRACTION, max_absent=None):
     return types.SimpleNamespace(
         from_date=from_date, to_date=to_date, snap_et="15:55", hive=hive, dry_run=dry_run,
         admin_exe="ADMIN.exe", db_prefix=str(tmp_path / "surface-db" / "sp100"), index=index,
+        min_cell_fraction=min_cell_fraction, max_absent=max_absent,
     )
 
 
@@ -168,11 +170,60 @@ def test_bisect_chunk():
 # ── verify_thresholds ────────────────────────────────────────────────────────
 
 def test_verify_thresholds():
+    """FIX-I-2, CONTRACT CHANGE (deliberate). This test used to assert
+    ``min_cells == int(0.7 * expected)`` and ``max_absent == expected -
+    min_cells`` -- i.e. it locked in as contract the very thing the review
+    found: ``max_absent`` was not an absent-cell budget at all but the
+    arithmetic COMPLEMENT of a 70% coverage floor, which made it 3183 for the
+    2025 root against an observed 325. The new contract is two INDEPENDENT
+    thresholds, because they detect different things: ``min_cells`` is a
+    grid-size floor (``cells_checked`` counts holes) and ``max_absent`` is the
+    destroyed-surface detector."""
     min_cells, max_absent = orch.verify_thresholds(10, 20)
     expected = 10 * 20
-    assert min_cells == int(0.7 * expected)
-    assert max_absent == expected - min_cells
-    assert (min_cells, max_absent) == (140, 60)
+    assert (min_cells, max_absent) == (190, 8)          # floor(0.95*200), ceil(0.04*200)
+    assert max_absent != expected - min_cells, "must no longer be the floor's complement"
+
+
+def test_verify_thresholds_max_absent_can_actually_fire_on_the_production_baselines():
+    """The point of the finding: the default ceiling must sit ABOVE the two
+    observed baselines (so a healthy re-verify of the landed roots still exits
+    0) and BELOW the review's failure scenario (400 surfaces destroyed across 4
+    dates, 325 -> 725), so that scenario turns the verdict ABSENT / exit 4
+    instead of exiting 0. Task 8 Gate 3: sp100-2025 is 325 absent of 102x104 =
+    10608; sp100-2026 is 358 of 102x140 = 14280."""
+    for n_sessions, observed in ((104, 325), (140, 358)):
+        _min_cells, max_absent = orch.verify_thresholds(102, n_sessions)
+        assert max_absent > observed, "a healthy production root must still verify ok"
+        assert max_absent < observed + 400, "400 destroyed surfaces must turn the verdict"
+    # And the old 0.7-complement values, for the record, could not do either.
+    assert orch.verify_thresholds(102, 104, max_absent_fraction=0.30)[1] == 3183
+    assert orch.verify_thresholds(102, 140, max_absent_fraction=0.30)[1] == 4284
+
+
+def test_verify_thresholds_are_operator_overridable():
+    # An absolute --max-absent wins over the fraction entirely (the C++ tool's
+    # own advice: "wire the expected count into the script with --max-absent N").
+    assert orch.verify_thresholds(102, 104, max_absent=325)[1] == 325
+    # ... and the grid-size floor is a separate knob.
+    assert orch.verify_thresholds(102, 104, min_cell_fraction=0.7)[0] == 7425
+    assert orch.verify_thresholds(102, 104, min_cell_fraction=0.99)[0] == 10501
+
+
+def test_build_parser_exposes_both_verify_thresholds():
+    """Before this fix ``build_parser()`` exposed neither, so an operator could
+    not TIGHTEN the only automated destroyed-surface detector without editing
+    the source -- which is a large part of why it shipped inert."""
+    ap = orch.build_parser()
+    base = ["--universe", "u.csv", "--hive", "H", "--db-prefix", "P",
+            "--from", "2022-01-03", "--to", "2022-01-04",
+            "--build-exe", "B.exe", "--admin-exe", "A.exe", "--log-dir", "L"]
+    defaults = ap.parse_args(base)
+    assert defaults.min_cell_fraction == orch.DEFAULT_MIN_CELL_FRACTION
+    assert defaults.max_absent is None
+    overridden = ap.parse_args(base + ["--max-absent", "325", "--min-cell-fraction", "0.98"])
+    assert overridden.max_absent == 325
+    assert overridden.min_cell_fraction == pytest.approx(0.98)
 
 
 # ── SpendLedger ──────────────────────────────────────────────────────────────
@@ -263,6 +314,74 @@ def test_truncate_universe():
     assert orch.truncate_universe(entries, 2) == [("SPY", 100.0), ("NVDA", 90.0)]
     assert orch.truncate_universe(entries, None) == entries
     assert orch.truncate_universe(entries, 100) == entries
+
+
+# ── FIX-I-7: chunk minute uniformity is ASSERTED, not merely documented ─────
+#
+# ``build_build_command`` derives ``--r`` and ``--snapshot-suffix`` from
+# ``chunk[0]`` alone and then passes ``--from c0 --to c1`` -- a RANGE. The C++
+# CLI re-derives its own date list from the hive between those bounds, so any
+# hive date inside the window that ``chunk_sessions`` excluded is swept in and
+# stamped with the chunk's suffix. Until this fix the invariant that made that
+# safe ("valid for the whole chunk by chunk_sessions's own grouping invariant")
+# was prose in a docstring and checked nowhere -- and it had already leaked
+# once, with 2025-12-24 (an early close, excluded from chunking) falling inside
+# the window 2025-12-23..2025-12-30, benign only because that date has no hive
+# file and December is uniformly EST.
+
+def test_build_build_command_rejects_a_chunk_that_straddles_a_dst_boundary():
+    rates = orch.load_rates_csv(RATES_CSV)
+    # 2022-03-13 is the spring-forward Sunday: 2022-03-11 is EST (20:55Z),
+    # 2022-03-14 is EDT (19:55Z). One suffix cannot be right for both, and
+    # before this fix chunk[0]'s 20:55Z was silently applied to both dates.
+    chunk = ["2022-03-11", "2022-03-14"]
+    with pytest.raises(ValueError) as exc:
+        orch.build_build_command(
+            build_exe="BUILD.exe", hive="H", db_prefix="P", year=2022, chunk=chunk,
+            symbols=["SPY"], index_symbol="SPY", rates=rates, fit_workers=0,
+            report_path="r.csv", snap_et="15:55",
+        )
+    msg = str(exc.value)
+    assert "19:55" in msg and "20:55" in msg
+    assert "2022-03-11" in msg and "2022-03-14" in msg
+
+
+def test_build_build_command_checks_the_whole_range_not_only_the_chunk_list():
+    """The list-vs-range half. ``chunk`` is the session LIST the orchestrator
+    selected; ``--from``/``--to`` is the RANGE the C++ CLI re-enumerates the
+    hive over, and the two are not the same set. This chunk's own two dates
+    agree on the minute (both EST) yet the range between them spans an entire
+    EDT summer, so every hive date in the middle would be stamped an hour
+    wrong. Checking only ``chunk`` misses it; checking the range does not.
+    (``chunk_sessions`` would never emit this chunk -- it groups by calendar
+    month first -- which is precisely why the range check has to stand on its
+    own rather than lean on that invariant.)"""
+    rates = orch.load_rates_csv(RATES_CSV)
+    chunk = ["2022-03-11", "2022-11-07"]  # both EST: 20:55Z. Between them: EDT.
+    assert orch.snapshot_minute_utc(chunk[0], "15:55") == orch.snapshot_minute_utc(chunk[1], "15:55")
+    with pytest.raises(ValueError) as exc:
+        orch.build_build_command(
+            build_exe="BUILD.exe", hive="H", db_prefix="P", year=2022, chunk=chunk,
+            symbols=["SPY"], index_symbol="SPY", rates=rates, fit_workers=0,
+            report_path="r.csv", snap_et="15:55",
+        )
+    assert "19:55" in str(exc.value) and "20:55" in str(exc.value)
+
+
+def test_assert_snapshot_minute_uniform_returns_the_single_minute():
+    assert orch.assert_snapshot_minute_uniform(
+        ["2022-07-05", "2022-07-06", "2022-07-07", "2022-07-08"], "15:55") == "19:55"
+    assert orch.assert_snapshot_minute_uniform(["2022-12-01", "2022-12-02"], "15:55") == "20:55"
+
+
+def test_chunk_sessions_output_always_satisfies_the_uniformity_assertion():
+    """Every chunk the orchestrator actually produces over a DST-crossing
+    window must pass the assertion -- i.e. the new check cannot fire on a
+    legitimate run. Both 2022 transitions plus both surrounding months."""
+    for lo, hi in [("2022-03-01", "2022-03-31"), ("2022-10-25", "2022-11-15")]:
+        sessions = orch.trading_sessions_excluding_early_close(lo, hi, "15:55")
+        for chunk in orch.chunk_sessions(sessions, 4, snap_et="15:55"):
+            orch.assert_snapshot_minute_uniform(chunk, "15:55")  # must not raise
 
 
 # ── command construction: one EDT chunk, one EST chunk ──────────────────────
@@ -782,10 +901,52 @@ def test_phase_verify_uses_hive_present_sessions_for_thresholds_and_key(tmp_path
     code = orch.phase_verify(args, [("SPY", 100.0)], tmp_path)
     assert code == 0
     # n_symbols=1, n_sessions=2 (HIVE-PRESENT, not the 3 requested) ->
-    # expected=2, min_cells=floor(0.7*2)=1, max_absent=1.
+    # expected=2, min_cells=floor(0.95*2)=1, max_absent=ceil(0.04*2)=1 (FIX-I-2).
     assert seen["min_cells"] == "1"
     assert seen["max_absent"] == "1"
     assert seen["keys"] == {"2022-07-06"}, "key must be the last HIVE-PRESENT session, not 07-07"
+
+
+def test_phase_verify_passes_an_operator_supplied_max_absent_through(tmp_path, monkeypatch):
+    """FIX-I-2: the override has to reach the argv, not just the parser."""
+    hive = _make_hive_with_sessions(tmp_path, ["2022-07-05", "2022-07-06"])
+    seen = {}
+
+    def fake_run(argv, **kw):
+        if "verify" in argv:
+            seen["max_absent"] = argv[argv.index("--max-absent") + 1]
+            seen["min_cells"] = argv[argv.index("--min-cells") + 1]
+            return _FakeCompleted(0)
+        if "info" in argv:
+            return _FakeCompleted(0)
+        return _FakeCompleted(0, stdout="iv 0.2\nforward 100.0\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    args = _verify_args(tmp_path, from_date="2022-07-05", to_date="2022-07-06", hive=hive,
+                        max_absent=325, min_cell_fraction=0.5)
+    assert orch.phase_verify(args, [("SPY", 100.0)], tmp_path) == 0
+    assert seen["max_absent"] == "325"
+    assert seen["min_cells"] == "1"
+
+
+def test_phase_verify_surfaces_the_absent_over_limit_exit_4(tmp_path, monkeypatch):
+    """FIX-I-2, the other half: nothing anywhere drove `verdict ABSENT` (exit 4)
+    through the orchestrator, so even a threshold that COULD fire had no test
+    proving the orchestrator notices when it does. Exit 4 is the verdict a
+    destroyed-surface growth produces."""
+    hive = _make_hive_with_sessions(tmp_path, ["2022-07-05"])
+
+    def fake_run(argv, **kw):
+        if "verify" in argv:
+            return _FakeCompleted(4, stderr="verdict ABSENT: cells_absent 725 > --max-absent 425\n")
+        if "info" in argv:
+            return _FakeCompleted(0)
+        return _FakeCompleted(0, stdout="iv 0.2\nforward 100.0\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    args = _verify_args(tmp_path, from_date="2022-07-05", to_date="2022-07-05", hive=hive)
+    assert orch.phase_verify(args, [("SPY", 100.0)], tmp_path) == 1, \
+        "a verify that exits 4 (ABSENT) must fail the phase, not be swallowed"
 
 
 def test_phase_verify_dry_run_falls_back_to_requested_sessions_needing_no_hive(tmp_path, monkeypatch):
