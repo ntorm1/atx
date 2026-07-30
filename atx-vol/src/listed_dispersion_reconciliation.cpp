@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/listed_quote_key.hpp"
+#include "atx/vol/detail/listed_quote_key.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
 
@@ -25,7 +25,7 @@ using atx::core::ErrorCode;
 using atx::core::Ok;
 
 // `LegKey` / `key_of` used to live here, in this anonymous namespace. They are
-// now `ListedQuoteKey` / `quote_key_of` in atx/vol/listed_quote_key.hpp — same four
+// now `ListedQuoteKey` / `quote_key_of` in atx/vol/detail/listed_quote_key.hpp — same four
 // members, same comparison order — because the OPRA join now FILTERS panel rows
 // by the same key this file LOOKS QUOTES UP by. Two private definitions of "same
 // contract" could drift apart, and the filter would then drop a leg this file

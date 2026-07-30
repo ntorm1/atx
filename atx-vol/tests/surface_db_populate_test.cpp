@@ -32,7 +32,7 @@
 
 #include "atx/vol/american.hpp" // AlOpts, al_fast_opts, al_default_opts
 #include "atx/vol/corpus.hpp"
-#include "atx/vol/counters.hpp" // F1: AlBoundarySolves ledger (fast-AL tier quantification)
+#include "atx/vol/detail/counters.hpp" // F1: AlBoundarySolves ledger (fast-AL tier quantification)
 #include "atx/vol/data.hpp" // iso_to_ns, year_fraction
 #include "atx/vol/market_env.hpp"
 #include "atx/vol/opra_batch.hpp" // load_opra_daterange, corpus_board_from_opra (F-c real hive)

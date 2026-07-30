@@ -25,7 +25,7 @@
 
 #include "atx/vol/black76.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
-#include "atx/vol/prepared_portfolio.hpp"
+#include "atx/vol/detail/prepared_portfolio.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "atx/vol/vol_surface.hpp"

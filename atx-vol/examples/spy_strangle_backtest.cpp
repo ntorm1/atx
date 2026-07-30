@@ -61,7 +61,7 @@
 #include "atx/vol/backtest.hpp" // Clock, RunConfig, BacktestResult, MarketSnapshot, SnapshotCache
 #include "atx/vol/backtest_driver.hpp" // run_timed (the timed-engine + tearsheet + stats spine)
 #include "atx/vol/corpus.hpp"          // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/counters.hpp"        // always-on sampled pricing telemetry
+#include "atx/vol/detail/counters.hpp"        // always-on sampled pricing telemetry
 #include "atx/vol/data.hpp"            // iso_to_ns, ns_to_iso_date, year_fraction, QuoteFrame
 #include "atx/vol/panel.hpp" // make_synthetic_american_panel, SynthPanelSpec, load_chain_csv
 #include "atx/vol/priced_surface.hpp" // PricedSurface, PricingContext

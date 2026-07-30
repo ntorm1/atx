@@ -17,7 +17,7 @@
 #include "atx/vol/american.hpp"
 #include "atx/vol/american_iv.hpp"
 #include "atx/vol/correction.hpp"
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/types.hpp"
 
 // American implied-vol inverter coverage.

@@ -23,7 +23,7 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/priced_surface.hpp"
-#include "atx/vol/strip_grid.hpp"
+#include "atx/vol/detail/strip_grid.hpp"
 
 namespace atx::vol {
 

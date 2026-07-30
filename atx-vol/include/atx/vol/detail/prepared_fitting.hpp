@@ -23,7 +23,7 @@
 
 #include "atx/vol/calib.hpp"
 #include "atx/vol/deamer.hpp"
-#include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy (leaf definition)
+#include "atx/vol/detail/prepared_policy.hpp" // PreparedObservationPolicy (leaf definition)
 #include "atx/vol/types.hpp"
 #include "atx/vol/universe.hpp"
 
@@ -60,7 +60,7 @@ struct ObservationKey {
 
 using ObservationRejectionReason = ObsRejectionReason;
 
-// PreparedObservationPolicy is defined in atx/vol/prepared_policy.hpp (included
+// PreparedObservationPolicy is defined in atx/vol/detail/prepared_policy.hpp (included
 // above) — split into a leaf header so structs whose default member initializer
 // names ::Configured (SurfaceParityInputs, SessionInputs, PricerConfig) get the
 // complete enum without the include cycle prepared_fitting.hpp would create.

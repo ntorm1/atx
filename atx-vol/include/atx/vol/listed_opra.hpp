@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "atx/vol/listed_dispersion.hpp"
-#include "atx/vol/listed_quote_key.hpp"
+#include "atx/vol/detail/listed_quote_key.hpp"
 #include "atx/vol/opra_panel.hpp"
 #include "atx/vol/types.hpp"
 

@@ -10,10 +10,10 @@
 // constexpr FNV-1a-64 value so a header can pin the schema at open time.
 
 #include "atx/vol/run_archive.hpp"
-#include "atx/vol/run_archive_schema.hpp"
+#include "atx/vol/detail/run_archive_schema.hpp"
 
 #include "atx/vol/backtest.hpp"            // BacktestResult (Task 5 encoders)
-#include "atx/vol/backtest_series_columns.hpp" // backtest_series_columns() (T6 single source)
+#include "atx/vol/detail/backtest_series_columns.hpp" // backtest_series_columns() (T6 single source)
 #include "atx/vol/corpus.hpp"              // CorpusManifest (RunDir::clock via manifest)
 #include "atx/vol/detail/archive_util.hpp" // crc32c (independent CRC check)
 #include "atx/vol/dispersion_workflow.hpp" // RunSpec (Task 5 meta encoder)

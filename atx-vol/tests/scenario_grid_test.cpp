@@ -31,7 +31,7 @@
 #include <vector>
 
 #include "atx/vol/american.hpp"
-#include "atx/vol/counters.hpp" // A7: the always-on sl_al_boundary_solves ledger
+#include "atx/vol/detail/counters.hpp" // A7: the always-on sl_al_boundary_solves ledger
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/scenario_grid.hpp"

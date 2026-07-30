@@ -29,7 +29,7 @@
 
 #include "atx/vol/chain.hpp"
 #include "atx/vol/opra_panel.hpp"
-#include "atx/vol/parallel_for.hpp"
+#include "atx/vol/detail/parallel_for.hpp"
 #include "atx/vol/pricer_fitter.hpp"
 
 using namespace atx::vol;

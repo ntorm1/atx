@@ -44,7 +44,7 @@
 #include "atx/vol/american.hpp"                // al_fast_opts, AmericanMethod
 #include "atx/vol/backtest.hpp"                // Clock, run_backtest, RunConfig, SnapshotCache
 #include "atx/vol/backtest_driver.hpp"         // RunOutcome, run_timed  (the seam under test)
-#include "atx/vol/backtest_series_columns.hpp" // backtest_series_columns() (all 25 F64 columns)
+#include "atx/vol/detail/backtest_series_columns.hpp" // backtest_series_columns() (all 25 F64 columns)
 #include "atx/vol/corpus.hpp"                  // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/dispersion.hpp"              // DispersionUniverse, DispersionMember
 #include "atx/vol/dispersion_backtest.hpp"     // DispersionBacktestConfig, run_dispersion_backtest

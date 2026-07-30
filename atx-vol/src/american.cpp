@@ -14,7 +14,7 @@
 #include "atx/core/math.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/correction.hpp"
-#include "atx/vol/counters.hpp" // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
+#include "atx/vol/detail/counters.hpp" // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
 #include "atx/vol/greeks.hpp"
 
 namespace atx::vol {

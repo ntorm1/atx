@@ -32,7 +32,7 @@
 #include "atx/vol/listed_dispersion_schedule.hpp" // ListedRiskLookup, ListedOptionRisk
 #include "atx/vol/listed_dispersion_strategy.hpp" // ListedDispersionStrategy, MarkDivergence
 #include "atx/vol/listed_opra.hpp"                // ListedDefinitionTable, MissingDefinitionPolicy
-#include "atx/vol/listed_quote_key.hpp"           // ListedQuoteKey
+#include "atx/vol/detail/listed_quote_key.hpp"           // ListedQuoteKey
 #include "atx/vol/types.hpp"                      // Result
 
 namespace atx::vol {

@@ -21,10 +21,10 @@
 #include "atx/vol/backtest.hpp"        // Clock
 #include "atx/vol/backtest_driver.hpp" // run_timed (the timed engine + tearsheet + stats spine)
 #include "atx/vol/corpus.hpp"          // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/dispersion.hpp" // DispersionUniverse, DispersionConfig, DispersionMember
 #include "atx/vol/dispersion_backtest.hpp"
-#include "atx/vol/phase_profile.hpp"
+#include "atx/vol/detail/phase_profile.hpp"
 #include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"        // DispersionStrategy
 #include "atx/vol/surface_archive.hpp" // write_surface_archive_v2_file, SurfaceArchiveItem

@@ -7,7 +7,7 @@
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/american_batch.hpp"
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/simd/cpu.hpp"
 
 // Sub-Sprint A, Task A2 — batched node-solve entry proof.

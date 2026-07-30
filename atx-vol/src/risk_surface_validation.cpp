@@ -1,4 +1,4 @@
-#include "atx/vol/risk_surface_validation.hpp"
+#include "atx/vol/detail/risk_surface_validation.hpp"
 
 #include <algorithm>
 #include <bit>

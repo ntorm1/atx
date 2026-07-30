@@ -17,7 +17,7 @@
 #include "atx/vol/detail/calib_shared.hpp"  // detail::outer_cap + shared LM constants
 #include "atx/vol/detail/resid_basis.hpp"  // dense C2 residual basis (shared with hot-path eval)
 #include "atx/vol/detail/robust.hpp"   // huber_weights_strided
-#include "atx/vol/parallel_for.hpp"    // parallel_for_dynamic, atx_auto_worker_count
+#include "atx/vol/detail/parallel_for.hpp"    // parallel_for_dynamic, atx_auto_worker_count
 #include "atx/vol/simd/essvi_batch.hpp"  // batched w + w-grad kernels (fit hot path)
 #include "atx/vol/vol_surface.hpp"     // essvi_backbone_w, essvi_w_grad3, essvi_phi_max
 

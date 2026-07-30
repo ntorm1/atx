@@ -16,13 +16,13 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/chain.hpp"
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/data.hpp"
 #include "atx/vol/panel.hpp"
-#include "atx/vol/parallel_for.hpp" // atx_auto_worker_count (ATX_VOL_FIT_WORKERS gate)
+#include "atx/vol/detail/parallel_for.hpp" // atx_auto_worker_count (ATX_VOL_FIT_WORKERS gate)
 #include "atx/vol/pricer_fitter.hpp"
-#include "atx/vol/pricing_executor.hpp"
-#include "atx/vol/risk_surface_validation.hpp"
+#include "atx/vol/detail/pricing_executor.hpp"
+#include "atx/vol/detail/risk_surface_validation.hpp"
 #include "atx/vol/session.hpp"
 #include "atx/vol/spy_fixture.hpp"
 #include "atx/vol/surface_archive.hpp"

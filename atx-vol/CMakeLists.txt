@@ -157,7 +157,7 @@ target_link_libraries(atx-vol
 
 # ---- Algorithm counters (P0.2) ----
 # PUBLIC so the library AND every consumer (bench/tests that include
-# atx/vol/counters.hpp) agree on the macro's value — the header's inline atomic
+# atx/vol/detail/counters.hpp) agree on the macro's value — the header's inline atomic
 # storage is guarded by it, so a split view would be an ODR hazard. OFF by
 # default: the definition is absent and the macros compile to nothing.
 if(ATX_VOL_COUNTERS)

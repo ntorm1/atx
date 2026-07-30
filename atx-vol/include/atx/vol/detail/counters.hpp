@@ -31,7 +31,7 @@
 //
 // ## Usage
 //
-//   #include "atx/vol/counters.hpp"
+//   #include "atx/vol/detail/counters.hpp"
 //   ATX_VOL_COUNT(BoundarySolves);          // += 1
 //   ATX_VOL_COUNT_N(FrameBytes, n_bytes);   // += n
 //   const auto snap = atx::vol::counters::snapshot();

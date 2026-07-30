@@ -37,7 +37,7 @@
 #include "atx/vol/curve.hpp"           // DividendEvent
 #include "atx/vol/curve_selector.hpp"  // SelectorConfig, SelectorResult
 #include "atx/vol/fit_policy.hpp"      // FitContext, FitPolicyConfig, FitDecision
-#include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy
+#include "atx/vol/detail/prepared_policy.hpp" // PreparedObservationPolicy
 #include "atx/vol/session.hpp"         // VolaSession, FitPreset, SessionDiagnostics
 #include "atx/vol/surface_policy.hpp"  // explicit mark/risk purpose and quality policy
 #include "atx/vol/types.hpp"           // Result, Status, Side

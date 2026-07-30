@@ -49,7 +49,7 @@
 #include "atx/core/hash.hpp"               // hash_bytes / hash_combine (RunDir identity)
 #include "atx/tsdb/mapping.hpp"            // tsdb::Mapping (read-only mmap seam)
 #include "atx/vol/backtest.hpp"            // BacktestResult, Clock (Task 5 encoders / RunDir)
-#include "atx/vol/backtest_series_columns.hpp" // backtest_series_columns() (T6 single source)
+#include "atx/vol/detail/backtest_series_columns.hpp" // backtest_series_columns() (T6 single source)
 #include "atx/vol/corpus.hpp"              // CorpusManifest, read_manifest_file (RunDir::clock)
 #include "atx/vol/detail/archive_util.hpp" // crc32c, crc32c_update, align_up
 #include "atx/vol/dispersion_workflow.hpp" // RunSpec, read_run_spec (Task 5 meta / RunDir::spec)

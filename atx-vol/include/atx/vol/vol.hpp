@@ -135,7 +135,6 @@
 // ── Surface queries / projection / derivatives ──────────────────────────────
 #include "atx/vol/contract_projection.hpp" // relative template -> concrete theo option
 #include "atx/vol/historical_projection.hpp" // historical relative-template risk / VaR
-#include "atx/vol/phase_profile.hpp" // compile-time opt-in phase timers
 #include "atx/vol/curve.hpp"               // CurveSet, DividendEvent
 #include "atx/vol/derivatives.hpp"         // vol-derivative analytics
 #include "atx/vol/projection.hpp"          // eval at non-listed T/K, delta anchors

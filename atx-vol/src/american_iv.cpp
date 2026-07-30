@@ -11,7 +11,7 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/american.hpp"
 #include "atx/vol/correction.hpp" // CorrectionCache, american_price_cached hot path
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/implied_vol.hpp"
 #include "atx/vol/types.hpp"
 

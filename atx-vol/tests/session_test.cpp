@@ -15,7 +15,7 @@
 #include "atx/vol/american.hpp"
 #include "atx/vol/arb.hpp" // QuoteFlag (carry-skip diagnostics test)
 #include "atx/vol/calib.hpp"
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/curve.hpp"
 #include "atx/vol/data.hpp"
 #include "atx/vol/detail/deam_pass_counter.hpp" // C1 duplicate-de-Am proof

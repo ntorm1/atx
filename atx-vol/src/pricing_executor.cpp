@@ -1,7 +1,7 @@
 // PricingExecutor — the one process-wide persistent pricing thread pool (P1.4).
 // See pricing_executor.hpp for the model, determinism argument, and sizing story.
 
-#include "atx/vol/pricing_executor.hpp"
+#include "atx/vol/detail/pricing_executor.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -13,8 +13,8 @@
 #include <thread>
 #include <vector>
 
-#include "atx/vol/counters.hpp"     // ATX_VOL_COUNT (opt-in; no-op when OFF)
-#include "atx/vol/parallel_for.hpp" // atx_auto_worker_count (shared core budget)
+#include "atx/vol/detail/counters.hpp"     // ATX_VOL_COUNT (opt-in; no-op when OFF)
+#include "atx/vol/detail/parallel_for.hpp" // atx_auto_worker_count (shared core budget)
 
 #if defined(_MSC_VER)
 #ifndef NOMINMAX

@@ -15,7 +15,7 @@
 #include "atx/vol/american.hpp" // american_price_cached
 #include "atx/vol/black76.hpp"  // black76_price
 #include "atx/vol/event_vol.hpp"  // EventSchedule, count_events_at, event_aware_w
-#include "atx/vol/strip_grid.hpp" // strip::forward_log_blend (E2 shared convention)
+#include "atx/vol/detail/strip_grid.hpp" // strip::forward_log_blend (E2 shared convention)
 
 namespace atx::vol {
 

@@ -26,7 +26,7 @@
 // pinned by PricedSurface.EvaluateBatchLanedGreeksPackCompositionInvariant.
 
 #include "atx/vol/american.hpp"
-#include "atx/vol/counters.hpp" // ATX_VOL_COUNT(SurfaceFullGreekRoutes)
+#include "atx/vol/detail/counters.hpp" // ATX_VOL_COUNT(SurfaceFullGreekRoutes)
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/simd/american_boundary_batch.hpp"
 

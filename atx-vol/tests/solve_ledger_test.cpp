@@ -40,7 +40,7 @@
 #include "atx/vol/american_iv.hpp"      // american_implied_vol (iv-newton tap)
 #include "atx/vol/backtest.hpp"         // Clock, run_backtest, RunConfig, Lot, PortfolioState
 #include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/counters.hpp"         // counters::ledger — the facility under test
+#include "atx/vol/detail/counters.hpp"         // counters::ledger — the facility under test
 #include "atx/vol/portfolio_pricer.hpp" // OptionContract, kNsPerYear
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"         // DeclarativeStrategy, StrategySpec, StrikeSelector

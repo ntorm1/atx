@@ -16,7 +16,7 @@
 // offsetof is pinned by static_assert — this is an on-disk ABI, so a field
 // reorder that preserved sizeof would still silently corrupt readers.
 
-#include "atx/vol/run_archive_schema.hpp"
+#include "atx/vol/detail/run_archive_schema.hpp"
 #include "atx/vol/types.hpp" // Result / Status
 
 // RunDir (below) returns these by value in Result<...>, so their full

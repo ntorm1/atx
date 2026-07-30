@@ -42,7 +42,7 @@
 #include "atx/vol/american.hpp"          // al_fast_opts, AmericanMethod, AmericanGreeks
 #include "atx/vol/backtest.hpp"          // Clock, run_backtest, RunConfig, FrictionModel, ...
 #include "atx/vol/corpus.hpp"            // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/counters.hpp"          // counters::ledger — L1 solve-economy gate
+#include "atx/vol/detail/counters.hpp"          // counters::ledger — L1 solve-economy gate
 #include "atx/vol/portfolio_pricer.hpp"  // OptionContract, kNsPerYear
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"          // DeclarativeStrategy, StrategySpec, HedgeSpec

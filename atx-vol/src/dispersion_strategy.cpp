@@ -19,7 +19,7 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/backtest.hpp"   // MarketSnapshot, Lot, PortfolioState
 #include "atx/vol/dispersion.hpp" // build_dispersion_book, dispersion_signal
-#include "atx/vol/phase_profile.hpp"
+#include "atx/vol/detail/phase_profile.hpp"
 #include "atx/vol/portfolio_pricer.hpp" // OptionContract, kNsPerYear, Position
 #include "atx/vol/priced_surface.hpp"   // PricedSurface
 #include "atx/vol/types.hpp"            // Result, Status

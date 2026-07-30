@@ -21,9 +21,9 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/calib.hpp"  // build_observations_european, ObsSet, FitObs
 #include "atx/vol/deamer.hpp" // resolve_chain_forward, european_equiv_iv, otm_side, DeAmOptions
-#include "atx/vol/parallel_for.hpp"     // parallel_for (block-partition fan-out)
+#include "atx/vol/detail/parallel_for.hpp"     // parallel_for (block-partition fan-out)
 #include "atx/vol/parity.hpp"           // chain_parity, ParityInputs, ParityReport
-#include "atx/vol/prepared_fitting.hpp" // canonical configured preparation
+#include "atx/vol/detail/prepared_fitting.hpp" // canonical configured preparation
 #include "atx/vol/universe.hpp"         // Chain, chain_index
 
 namespace atx::vol {

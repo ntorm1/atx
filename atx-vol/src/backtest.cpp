@@ -23,8 +23,8 @@
 #include "step_mark_memo.hpp" // detail::StepMarkMemo — the L2 settlement mark memo
 
 #include "atx/core/error.hpp"
-#include "atx/vol/counters.hpp"      // counters::ledger — V1 always-on solve ledger (per-step scrape)
-#include "atx/vol/phase_profile.hpp"
+#include "atx/vol/detail/counters.hpp"      // counters::ledger — V1 always-on solve ledger (per-step scrape)
+#include "atx/vol/detail/phase_profile.hpp"
 #include "atx/vol/strategy.hpp"        // IStrategy
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive
 #include "atx/vol/surface_db.hpp"      // SurfaceDb, DbPartitionInfo, kSurfaceDbPartitionDir/Ext

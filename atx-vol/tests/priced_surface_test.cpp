@@ -33,9 +33,9 @@
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/priced_surface.hpp"
-#include "atx/vol/pricing_executor.hpp" // the bank build's dispatch seam (2.11)
+#include "atx/vol/detail/pricing_executor.hpp" // the bank build's dispatch seam (2.11)
 #include "atx/vol/surface_parity.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "support/isa_golden_tol.hpp" // golden_close (per-ISA FMA band)

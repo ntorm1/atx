@@ -13,7 +13,7 @@
 
 #include "atx/core/error.hpp"                   // Err, Ok, ErrorCode
 #include "atx/vol/backtest.hpp"                 // BacktestResult
-#include "atx/vol/backtest_series_columns.hpp"  // backtest_series_columns() (single source)
+#include "atx/vol/detail/backtest_series_columns.hpp"  // backtest_series_columns() (single source)
 
 namespace atx::vol {
 

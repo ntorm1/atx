@@ -2,7 +2,7 @@
 """Generate the GENERATED REGION of ``atxvol/report/_schema.py`` from
 ``run_archive_schema.hpp``.
 
-The C++ header ``atx-vol/include/atx/vol/run_archive_schema.hpp`` is the single
+The C++ header ``atx-vol/include/atx/vol/detail/run_archive_schema.hpp`` is the single
 source of truth for the RunArchive (ATXRUN01) column registry and its
 ``ra_schema_hash()``. The pure-Python reader must recompute the same schema hash
 to reject a drifted archive at open, so this script parses that header and emits
@@ -75,7 +75,7 @@ _KIND = {"ScalarKV": 0, "TimeSeries": 1, "SubTable": 2}
 _GOLDEN_SCHEMA_HASH = 0xDCCE47781AC8390D
 
 _HERE = pathlib.Path(__file__).resolve()
-_HEADER = _HERE.parents[1] / "include" / "atx" / "vol" / "run_archive_schema.hpp"
+_HEADER = _HERE.parents[1] / "include" / "atx" / "vol" / "detail" / "run_archive_schema.hpp"
 _OUT = _HERE.parents[1] / "python" / "src" / "atxvol" / "report" / "_schema.py"
 
 # The region markers. ASCII only and matched on the whole stripped line, so a
@@ -258,7 +258,7 @@ def _default_preamble() -> str:
         "\n"
         "The block between the BEGIN/END GENERATED markers is written by\n"
         "atx-vol/tools/gen_runarchive_schema.py from\n"
-        "atx-vol/include/atx/vol/run_archive_schema.hpp. Everything outside those\n"
+        "atx-vol/include/atx/vol/detail/run_archive_schema.hpp. Everything outside those\n"
         "markers is hand-maintained and survives regeneration.\n"
         '"""\n'
         "\n"

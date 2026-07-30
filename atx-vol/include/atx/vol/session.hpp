@@ -57,7 +57,7 @@
 #include "atx/vol/deamer.hpp"          // DeAmOptions
 #include "atx/vol/event_vol.hpp"       // EventSchedule (SessionInputs::events), implied_emove
 #include "atx/vol/parity.hpp"          // ParityReport
-#include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy
+#include "atx/vol/detail/prepared_policy.hpp" // PreparedObservationPolicy
 #include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext (to_priced_surface)
 #include "atx/vol/projection.hpp"      // InterpMode (SessionInputs::interp, ShapeBlend eval)
 #include "atx/vol/query_pricing.hpp"   // QueryPricingTier

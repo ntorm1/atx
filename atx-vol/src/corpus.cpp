@@ -29,7 +29,7 @@
 #include "atx/vol/detail/archive_util.hpp" // durable transactional index publication
 #include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
 #include "atx/vol/dispersion.hpp"           // with_uid
-#include "atx/vol/parallel_for.hpp"         // ScopedElasticWorkerBudget (T1 live inner budget)
+#include "atx/vol/detail/parallel_for.hpp"         // ScopedElasticWorkerBudget (T1 live inner budget)
 #include "atx/vol/priced_surface.hpp"       // PricedSurface
 #include "atx/vol/session.hpp"              // VolaSession::to_priced_surface
 #include "atx/vol/universe.hpp"             // uid_for_symbol

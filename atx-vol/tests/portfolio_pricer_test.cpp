@@ -33,7 +33,7 @@
 #include "atx/vol/american.hpp" // american_greeks_fd — G1 kernel-defect probe
 #include "atx/vol/black76.hpp"
 #include "atx/vol/detail/adjoint_greeks.hpp" // american_greeks_adjoint — FIX-5/I1 probe
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/simd/cpu.hpp"  // simd::have_avx2 — ship-gate route expectations

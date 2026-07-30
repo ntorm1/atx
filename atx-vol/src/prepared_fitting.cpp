@@ -1,4 +1,4 @@
-#include "atx/vol/prepared_fitting.hpp"
+#include "atx/vol/detail/prepared_fitting.hpp"
 
 #include <algorithm>
 #include <chrono>

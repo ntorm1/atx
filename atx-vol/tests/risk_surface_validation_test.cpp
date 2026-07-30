@@ -9,7 +9,7 @@
 #include <vector>
 
 #include "atx/vol/pricer_fitter.hpp"
-#include "atx/vol/risk_surface_validation.hpp"
+#include "atx/vol/detail/risk_surface_validation.hpp"
 #include "atx/vol/surface_policy.hpp"
 #include "atx/vol/vol_curve.hpp"
 

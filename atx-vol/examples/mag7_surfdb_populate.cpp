@@ -23,7 +23,7 @@
 
 #include "atx/vol/corpus.hpp"              // CorpusBoard
 #include "atx/vol/opra_batch.hpp"          // OpraBatchSpec, load_opra_daterange, corpus_board_from_opra
-#include "atx/vol/parallel_for.hpp"        // atx_auto_worker_count
+#include "atx/vol/detail/parallel_for.hpp"        // atx_auto_worker_count
 #include "atx/vol/run_report.hpp"          // MetaKv
 #include "atx/vol/session.hpp"             // FitPreset
 #include "atx/vol/surface_db.hpp"          // SurfaceDb, symbol_config_from_preset

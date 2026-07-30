@@ -18,9 +18,9 @@
 #include "atx/vol/calib.hpp"            // FitObs, FitDiag, CalibOpts
 #include "atx/vol/deamer.hpp"           // de_americanize_chain, european_equiv_iv, otm_side
 #include "atx/vol/essvi_calib.hpp"      // essvi_fit_slice
-#include "atx/vol/parallel_for.hpp"     // parallel_for_dynamic (per-chain prepass fan-out)
+#include "atx/vol/detail/parallel_for.hpp"     // parallel_for_dynamic (per-chain prepass fan-out)
 #include "atx/vol/parity.hpp"           // chain_parity, ParityInputs, ParityReport
-#include "atx/vol/prepared_fitting.hpp" // PreparedSlice legacy compatibility seam
+#include "atx/vol/detail/prepared_fitting.hpp" // PreparedSlice legacy compatibility seam
 #include "atx/vol/types.hpp"
 #include "atx/vol/universe.hpp"    // Underlying, Chain, chain_index
 #include "atx/vol/vol_surface.hpp" // VolSurface, EssviParams, Parametrization

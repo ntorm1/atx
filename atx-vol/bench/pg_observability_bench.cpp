@@ -52,7 +52,7 @@
 #include "atx/vol/american.hpp"     // american_price, american_price_cached, AlOpts, al_fast_opts
 #include "atx/vol/american_iv.hpp"  // american_implied_vol
 #include "atx/vol/correction.hpp"   // CorrectionCache
-#include "atx/vol/counters.hpp"     // counters::ledger (always-on solve ledger)
+#include "atx/vol/detail/counters.hpp"     // counters::ledger (always-on solve ledger)
 #include "atx/vol/curve.hpp"        // DividendEvent
 #include "atx/vol/deamer.hpp"       // resolve_chain_forward, DeAmOptions
 #include "atx/vol/dividend.hpp"     // HybridDivParams, hybrid_forward

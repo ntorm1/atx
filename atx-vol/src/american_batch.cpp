@@ -4,8 +4,8 @@
                                          // requested_greeks_finite} — the SINGLE Ok-stamp
                                          // definition FIX-1/2/3 established
 #include "atx/vol/american.hpp"          // andersen_lake, american_greeks_fd/al, classify_regime
-#include "atx/vol/counters.hpp"          // exact resolved-route diagnostics
-#include "atx/vol/pricing_executor.hpp"  // PricingExecutor
+#include "atx/vol/detail/counters.hpp"          // exact resolved-route diagnostics
+#include "atx/vol/detail/pricing_executor.hpp"  // PricingExecutor
 #include "atx/vol/simd/american_boundary_batch.hpp"
 #include "atx/vol/simd/cpu.hpp"
 

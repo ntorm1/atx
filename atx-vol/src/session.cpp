@@ -20,16 +20,16 @@
 #include "atx/vol/american.hpp"         // american_price, american_price_cached, american_greeks
 #include "atx/vol/arb.hpp"              // arb_check_calendar (post-refit recheck)
 #include "atx/vol/correction.hpp"       // CorrectionCache, AmericanCorrectionCaches
-#include "atx/vol/counters.hpp"         // counters::ledger — V2 per-board solve attribution
+#include "atx/vol/detail/counters.hpp"         // counters::ledger — V2 per-board solve attribution
 #include "atx/vol/curve_fit.hpp"        // fit_curve_surface (curve-agnostic driver)
 #include "atx/vol/data.hpp"             // data_install
 #include "atx/vol/detail/deam_pass_counter.hpp" // C1 proof: cert de-Am pass tally
 #include "atx/vol/dividend.hpp"         // hybrid_forward (representative carry)
 #include "atx/vol/essvi_calib.hpp"      // essvi_fit_slice (warm-start refit)
 #include "atx/vol/event_vol.hpp"        // EventSchedule, count_events_at, implied_emove
-#include "atx/vol/parallel_for.hpp"     // bounded post-fit cache-bank fan-out
+#include "atx/vol/detail/parallel_for.hpp"     // bounded post-fit cache-bank fan-out
 #include "atx/vol/parity.hpp"           // chain_parity (incremental diagnostic refresh)
-#include "atx/vol/prepared_fitting.hpp" // CanonicalPreparedExpiry
+#include "atx/vol/detail/prepared_fitting.hpp" // CanonicalPreparedExpiry
 #include "atx/vol/projection.hpp"       // InterpMode, surface_insert_vol_slice, w_on_inserted_slice
 #include "atx/vol/surface_parity.hpp"   // run_surface_parity, SurfaceParityInputs/Report
 #include "atx/vol/universe.hpp"         // Universe, Underlying, Uid, Chain

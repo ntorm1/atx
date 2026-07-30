@@ -11,7 +11,7 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/priced_surface.hpp" // E6: PricedSurface-native entry points
-#include "atx/vol/strip_grid.hpp"
+#include "atx/vol/detail/strip_grid.hpp"
 #include "atx/vol/surface_parity.hpp" // SliceContext (E6 carry extraction)
 
 namespace atx::vol {

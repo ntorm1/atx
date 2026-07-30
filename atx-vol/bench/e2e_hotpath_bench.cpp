@@ -29,7 +29,7 @@
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/chain.hpp"
 #include "atx/vol/corpus.hpp"
-#include "atx/vol/counters.hpp"       // counters::timing — stage attribution (M3)
+#include "atx/vol/detail/counters.hpp"       // counters::timing — stage attribution (M3)
 #include "atx/vol/data.hpp"           // year_fraction (synthetic attribution panel)
 #include "atx/vol/panel.hpp"          // SynthPanelSpec, make_synthetic_american_panel
 #include "atx/vol/priced_surface.hpp" // PricedSurface (deserialized price stage)

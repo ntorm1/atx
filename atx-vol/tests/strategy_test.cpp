@@ -31,7 +31,7 @@
 #include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod, AmericanGreeks
 #include "atx/vol/backtest.hpp" // MarketSnapshot, Clock, run_backtest
 #include "atx/vol/corpus.hpp"   // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/dispersion.hpp" // DispersionUniverse, dispersion_signal
 #include "atx/vol/dispersion_backtest.hpp"
 #include "atx/vol/portfolio_pricer.hpp" // Portfolio, SurfaceSet, PortfolioPricer, Position

@@ -13,7 +13,7 @@
 #include <thread>
 #include <vector>
 
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 
 namespace {
 

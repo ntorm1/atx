@@ -24,10 +24,10 @@
 #include <utility>
 
 #include "atx/vol/american.hpp"           // AmericanGreeks
-#include "atx/vol/counters.hpp"           // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
+#include "atx/vol/detail/counters.hpp"           // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
 #include "atx/vol/detail/adjoint_greeks.hpp" // WS-P P3: american_greeks_adjoint A/B route
-#include "atx/vol/prepared_portfolio.hpp" // PreparedPortfolio (grouped exec substrate)
-#include "atx/vol/pricing_executor.hpp"   // pricing_executor(): the persistent P1.4 pool
+#include "atx/vol/detail/prepared_portfolio.hpp" // PreparedPortfolio (grouped exec substrate)
+#include "atx/vol/detail/pricing_executor.hpp"   // pricing_executor(): the persistent P1.4 pool
 #include "atx/vol/simd/american_boundary_batch.hpp" // simd::avx2_boundary_selected (invariant tile-schedule gate)
 #include "atx/vol/simd/pnl_batch.hpp"     // simd::pnl_taylor_explain_batch (wiring finding 1)
 

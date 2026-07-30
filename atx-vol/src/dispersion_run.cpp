@@ -36,7 +36,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/detail/archive_util.hpp"
 #include "atx/vol/dispersion.hpp" // contract_vega_per_vol_point (the ONE vol-point conversion)
 #include "atx/vol/historical_projection.hpp"
@@ -48,7 +48,7 @@
 #include "atx/vol/listed_opra.hpp"
 #include "atx/vol/occ_ess.hpp"
 #include "atx/vol/opra_batch.hpp"
-#include "atx/vol/phase_profile.hpp"
+#include "atx/vol/detail/phase_profile.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/run_archive.hpp" // RunDir, encode_*_section (S3-T16 .atxrun default)
 #include "atx/vol/strategy.hpp"
