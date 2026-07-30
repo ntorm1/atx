@@ -1866,7 +1866,9 @@ $ python atx-vol/tools/run_surface_db_backfill.py \
     --log-dir <log-dir> --index SPY --fit-workers 0
 $ # --dry-run first: prints the resolved --db and every chunk's --r /
 $ # --snapshot-suffix without spawning. Then --phase verify with the SAME
-$ # --from/--to, or verify_thresholds() sizes off the resumed sub-range.
+$ # --from/--to: verify_thresholds() sizes off the sessions in that window,
+$ # and phase_verify passes the window down to `verify` as --from/--to so
+$ # the walk counts the same sessions the thresholds were sized off.
 ```
 
 ### The snapshot instant is ET-anchored; the loader takes ONE per invocation
@@ -1942,6 +1944,15 @@ every expected-session count rather than counting it as a hole.
   surface, so pass an absolute `--max-absent <observed>` when you want it
   pinned exactly, per
   [the operator checklist](#absence-is-not-a-failure--the-cells-the-database-never-stored).
+  **Both thresholds are sized off the sessions in `--from`/`--to`, and
+  `phase_verify` passes that same range down to `verify` as `--from`/`--to`.**
+  That pairing is load-bearing on a resume: `verify` walks every partition in
+  the root unless a range restricts it, so sizing `--max-absent` off a 17-session
+  resume while counting `cells_absent` over all 140 partitions compares two
+  different populations and returns `verdict ABSENT` / exit `4` on a database
+  with nothing wrong with it. If you invoke the admin binary by hand rather than
+  through the orchestrator, **pass `--from`/`--to` whenever your `--max-absent`
+  was computed for a sub-range.**
 - **`year_summary_<year>_<from>_<to>.csv`** is the year summary. It is keyed on
   the range the invocation actually built, because the old year-keyed
   `year_summary_<year>.csv` was truncate-written per process invocation and a

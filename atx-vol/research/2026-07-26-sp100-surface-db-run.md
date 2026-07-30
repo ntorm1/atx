@@ -5,6 +5,17 @@ Plan: `docs/superpowers/plans/2026-07-26-sp100-surface-db.md`. Executed from the
 reports and the sprint ledger live in
 `.superpowers/sdd/2026-07-26-sp100-surface-db/` (`progress.md` is the index).
 
+> **[2026-07-30] This is a point-in-time RUN RECORD, not current guidance.** It
+> describes the branch as it stood at `f7d0aa1`. The review fix rounds that
+> followed closed several defects it lists as open, so passages below that say
+> "still no assertion" / "fails silently" / "(open)" were true when written and
+> are **false at HEAD**. Every such passage now carries its own dated
+> superseded-by note pointing at the commit that closed it; they are annotated
+> rather than rewritten, because what was true during the run is the value of a
+> run record. **For operational guidance use
+> [`docs/surface-db-build.md`](../docs/surface-db-build.md), which is maintained
+> against the code.** Where the two disagree, the operator guide is right.
+
 **Budget: $100 authorized. Realized: $0.1088 — all of it the Pilot B 2022
 validation pull. The entire 244-session production hive cost $0.0000.** Every
 pull was gated on a free `metadata.get_cost` preflight and executed only on an
@@ -213,6 +224,19 @@ Calibration finding carried forward: Pilot B ran **7.46 s/cell against Pilot A's
 low-rate regime. Both numbers were later invalidated as *absolute* figures (see
 the perf interlude); the 1.47x *ratio* between the two regimes was not.
 
+> **[2026-07-30] 7.46 and the 7.60 in the [rate-history table](#rate-history-honestly-attributed)
+> are two different derivations, not a contradiction — but the table did not say
+> so.** Both are on disk. **7.46 s/cell** is Task 6's own measured build
+> sec/cell (`task-6-report.md:278`, the row that also states the 1.47x) and is
+> the planning constant Task 7 sizing used. **7.60 s/cell** is the perf
+> interlude's re-derivation from the orchestrator's total wall
+> (`perf-investigation-report.md:102`: 114 s / 15 cells), which includes
+> orchestrator overhead the build figure excludes — 7.46 × 15 = 111.9 s, so the
+> ~2 s gap is that overhead. The **1.47x ratio claim in this paragraph rests on
+> 7.46** (7.46/5.07 = 1.4714; 7.60/5.07 = 1.4990, which would round to 1.50), so
+> 7.46 is the correct figure to quote against 5.07. Neither number is wrong;
+> quoting them interchangeably was.
+
 ### Stage 7 — production pull, free window only (Task 7 + addendum)
 
 Policy after the Pilot B finding, decided by the user: pull newest-first,
@@ -367,10 +391,20 @@ date), with alternating rep-by-rep interleaving because host drift over a
 6-minute loop is larger than the effect.
 
 Finding the carry rung is what made it work: solving the two sweep counts gave
-**623,627 carry solves against 291,263 de-Am solves — 66% of the fast-plane
+**623,627 carry solves against 291,263 de-Am solves — 68.2% of the fast-plane
 boundary solves are the PCP borrow fixed point**, and `carry_al_opts` is re-pinned
 unconditionally in `apply_risk_policy`, so lowering only the de-Am rung caps the
 win at ~1.1x.
+
+> **[2026-07-30] Corrected from 66% to 68.2%.** The share does not follow from
+> the two counts printed beside it: 623,627 / (623,627 + 291,263) = 623,627 /
+> 914,890 = **68.16%**. The counts themselves are right — they invert
+> `jn = 2·(carry + deam)` and `fp = 2·carry` against the probe's 1,247,254
+> `al_sweep_fp` calls — and the denominator is exactly those two rungs, so there
+> is no wider population that would rescue 66%. The figure was carried verbatim
+> from `perf-phase2b-report.md:208`, which has the same slip; that report is a
+> point-in-time record and is left as written. **The engineering conclusion is
+> unaffected either way**: the carry rung, not the de-Am rung, is the lever.
 
 Knob OFF is **bitwise identical** to the Phase-2a `*-rel` baselines (all 10
 partition files, every SHA-256 matching). Knob ON is out of Phase 1 §7.4's
@@ -381,7 +415,7 @@ tolerance band on Pilot A and is documented as such — see
 
 | Measurement | Value | Cause of the change |
 |---|---|---|
-| Pilot B, original (Debug, orchestrator) | **7.60 s/cell** | — |
+| Pilot B, original (Debug, orchestrator) | **7.60 s/cell** (114 s wall / 15 cells; Task 6's *build* sec/cell for the same pilot is **7.46** — see the note below) | — |
 | Pilot A, original (Debug, orchestrator) | 5.07 s/cell | — |
 | Build-flag A/B, identical source + input | 102.4 s → **6.7 s (15.3x)** | `9457562` — Release actually reachable |
 | Pilot B / Pilot A, Release | 0.30 / 0.34 s/cell | same |
@@ -389,6 +423,13 @@ tolerance band on Pilot A and is documented as such — see
 | 104-symbol date, `populate`, post-P-01 | **14.0 s/date** | `533fd2d` loader |
 | 104-symbol date, `hft`, post-P-01 | **3.6 s/date** | `533fd2d` (loader is ~half of an `hft` build) |
 | 104-symbol date, `bulk` (opt-in) | **8.31 s/date** | `de4ec24` cheaper AL rung, 1.47x |
+
+> **[2026-07-30]** The 7.60 in the first row is the orchestrator's total wall
+> divided by 15 cells; **7.46** (quoted under
+> [The negative control](#the-negative-control--and-the-hazard-it-exposed), and
+> the figure the 1.47x Pilot-B/Pilot-A ratio is computed from) is Task 6's
+> measured *build* sec/cell for the same pilot, excluding orchestrator overhead.
+> Same pilot, two derivations ~2 s apart on a 114 s wall; both are on disk.
 
 The `~7.6 s/cell → 14.0 s/date` jump is **the build-flags fix**, not algorithmic
 work. The brief's original 0.01 s/cell target was never reachable by removing
@@ -597,6 +638,28 @@ bug. **Per-chunk log verification against `snapshot_minute_utc()` is therefore
 mandatory, not advisory**, and there is still no hard assertion inside the
 orchestrator — see [open items](#6-no-hard-suffix-assertion-in-the-orchestrator-open).
 
+> **[2026-07-30] SUPERSEDED — both halves of that paragraph are false at HEAD.**
+> It described the code as it stood during the run; the review fix round closed
+> the hazard from both ends and it is no longer silent, nor unasserted:
+>
+> * **`739154c`** — `panel_from_scan` (`src/opra_panel.cpp`) compares the file's
+>   own `ts` against the `--snapshot-suffix`-derived instant and returns
+>   `InvalidArgument` naming both when they disagree. A wrong suffix is now a
+>   **per-cell load error**; a whole range of them makes `n_dates_loaded == 0`,
+>   which `is_total_load_failure` turns into **exit 3**. Loud, and it destroys
+>   nothing on the way — a date whose every cell load-errors has an empty
+>   candidate set, so `surface_db_populate.cpp` leaves the existing partition
+>   untouched.
+> * **`6a475f2`** — `assert_snapshot_minute_uniform` in the orchestrator raises
+>   before any build subprocess is spawned, checking every session in the chunk
+>   **and every calendar day** in its range.
+>
+> Per-chunk log verification is consequently belt-and-braces now rather than the
+> sole defence. The suffix flag is still load-bearing and the DST-grouping rule
+> above is unchanged — what changed is that violating it is caught by the code
+> instead of by an operator reading logs. Current guidance:
+> [`docs/surface-db-build.md`](../docs/surface-db-build.md).
+
 ## Coverage — the only correct invariant
 
 **`underlyings_on_disk ∪ absent_latched == universe`, the two sets disjoint.**
@@ -732,7 +795,16 @@ years — the count rises but the mode does not change.
 | final slice (17 July sessions, 3 chunks) | — | 342 s wall / 320.1 s CLI = 18.8 s/session |
 | partition bytes + manifest | 72,916,992 + 39,616 | 87,863,296 + 44,224 |
 | per session-partition | ~0.67 MiB | ~0.60 MiB |
-| per stored surface | ~7.1 KiB | ~7.1 KiB |
+| per stored surface | **~6.92 KiB** (7,091 B) | **~6.16 KiB** (6,311 B) |
+
+> **[2026-07-30] Corrected.** This row read `~7.1 KiB` for *both* years. Two
+> errors: the 2026 cell was a copy of the 2025 one (it is ~15% high — the two
+> years genuinely differ, which is the interesting part), and `7.1` was the
+> **KB** value presented as KiB. Recomputed from this table's own inputs:
+> 2025 = 72,916,992 / 10,283 = 7,091 B = **6.92 KiB** (7.09 KB);
+> 2026 = 87,863,296 / 13,922 = 6,311 B = **6.16 KiB** (6.31 KB). The
+> `per session-partition` row above was and is correct, which is what made the
+> error easy to miss. Nothing downstream depends on this figure.
 
 **The 21.6-hour chunk is a measurement artifact, not a performance signal.**
 `build_2026_2026-06-17_2026-06-23` logged `duration_s=77924.172` yet `exit=0`:
@@ -896,6 +968,20 @@ currently describes 17 sessions of a 140-session year. Related log-hygiene item:
 `--dry-run` appends `[DRY-RUN]` lines into the production `orchestrator.log`, so
 a plan and an execution share one evidence file.
 
+> **[2026-07-30] Both `year_summary` defects CLOSED by `009d725`; the log-hygiene
+> item remains open.** The file is now named
+> `year_summary_{year}_{from}_{to}.csv`, matching the per-chunk convention, so a
+> sub-range resume writes its own file instead of overwriting the earlier
+> aggregate; summing is gated on an ALLOWLIST (`coverage.`, `n_`) so `config.*`
+> counters reduce rather than accumulate; and `dedupe_chunk_reports` drops any
+> chunk with a strict subset among those reported, fixing the bisect
+> double-count. The damaged `year_summary_2026.csv` described here was repaired
+> in place-adjacent fashion — regenerated under the new name alongside a
+> `PROVENANCE.txt`, with the original file left untouched. **`--dry-run` still
+> appends `[DRY-RUN]` lines to the production `orchestrator.log`** and is
+> tracked for follow-up; it matters because the operator guide still prescribes
+> the dry run as a mandatory step and then asks you to audit that same log.
+
 ### 4. The `bulk` tier is default-OFF for a reason (open)
 
 Knob OFF is bitwise identical to the baselines. Knob ON is **out of Phase 1
@@ -927,12 +1013,39 @@ verdict to exit 4 instead of needing a human to notice — an absent cell is
 byte-identical whether it never fitted or was wiped by a whole-file partition
 rewrite, and `cells_absent` moves no verdict on its own.
 
+> **[2026-07-30] CLOSED by the fix round — this item is no longer open.**
+> **`6a475f2`** split the one number into two that measure different things:
+> `--min-cells` stays a grid-size floor (`cells_checked` COUNTS holes, so it can
+> never be the destroyed-surface detector) at `floor(0.95 × expected)`, and
+> `--max-absent` becomes an actual absent-cell budget at `ceil(0.04 × expected)`
+> = **425 / 572** against the 325 / 358 this report baselined. The review's
+> scenario — 400 surfaces destroyed across 4 dates, 325 → 725 — now exits 4.
+> **`dda84e6`** then fixed the sizing/counting asymmetry the tightening exposed:
+> the thresholds are sized off the sessions in `--from`/`--to` but `verify` was
+> invoked without a date scope, so a resume compared a sub-range denominator
+> against a whole-database numerator and false-alarmed on a healthy root. Both
+> now cover the same session set.
+
 ### 6. No hard suffix assertion in the orchestrator (open)
 
 Gate 2 is an *audit over the logs after the fact*. The orchestrator still does
 not assert that each chunk's `--snapshot-suffix` equals `snapshot_minute_utc()`
 for every session in the chunk, and the failure mode remains silent. The
 candidate hardening was parked for the whole-branch review.
+
+> **[2026-07-30] CLOSED by the fix round — this item is no longer open.** The
+> whole-branch review it was parked for ruled it Critical, and both ends were
+> hardened: **`6a475f2`** added `assert_snapshot_minute_utc`-backed
+> `assert_snapshot_minute_uniform`, which raises in the orchestrator before a
+> subprocess is spawned and checks the chunk's whole date RANGE (not just its
+> member list, which is what the build CLI actually re-enumerates); and
+> **`739154c`** made the C++ loader reject a disagreeing suffix outright, so the
+> failure mode is a load error and eventually exit 3 rather than silence. See
+> the superseded-by note under [Snapshot policy](#snapshot-policy--the-invariant-the-whole-sprint-turns-on)
+> for the detail. One residual, tracked as a follow-up rather than a regression:
+> a hive date the orchestrator excluded but that carries the correct minute is
+> still swept in by the range check — closing that is a design change (an
+> explicit date list on the build CLI), not an assertion.
 
 ### 7. Data and scope caveats
 
