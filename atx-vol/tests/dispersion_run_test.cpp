@@ -1771,8 +1771,8 @@ TEST(DispersionReferenceReconcile, ANonFiniteRecomputedPnlFailsTheToleranceGate)
 namespace {
 
 // The three loose result tables `dispersion_run_projected_var` gates.
-constexpr const char *kProjectedResultTsvs[] = {
-    "projected_var.tsv", "projected_risk_scenarios.tsv", "projected_risk_legs.tsv"};
+constexpr const char *kProjectedResultTsvs[] = {"projected_var.tsv", "projected_risk_scenarios.tsv",
+                                                "projected_risk_legs.tsv"};
 
 } // namespace
 
