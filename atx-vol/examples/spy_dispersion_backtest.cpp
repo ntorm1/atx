@@ -437,6 +437,42 @@ Status verify_command(const fs::path &run_dir) {
   }
   ATX_TRY(ListedDispersionSchedule schedule,
           read_listed_dispersion_schedule_file((run_dir / "trade_schedule.tsv").string()));
+
+  // S3-T17: the M1 native reference reconciliation, wired into the one shipped
+  // binary that can reach it. `reconcile_dispersion_reference` re-derives the
+  // vega-flat schedule quantities from the persisted artifact and numerically
+  // compares them against the recorded values — an arithmetic check independent
+  // of the engine that produced them, which is a different question from the
+  // structural + envelope one `RunDir::verify()` above answers. Until now its
+  // only caller was the library-only `dispersion_verify`, so it reached no
+  // shipped binary at all (dispersion_run.hpp said so, at length); S3-T17
+  // deleted that caller, and this is the wire-in half of the same disposition.
+  //
+  // SCHEDULE-ONLY, and that is not a shortcut. The full mode additionally parses
+  // `backtest.tsv`, `contract_marks.tsv` and `reconciliation.tsv`, and after
+  // S3-T17 NOTHING writes those three into a run directory — the deleted library
+  // twin was their last writer, and this binary has published its economics as
+  // `run.atxrun` sections since the RunArchive cutover. Asking for the full mode
+  // here would be a call that can only ever fail on a directory this pipeline
+  // produced. `trade_schedule.tsv` is a retained text input and is always
+  // present, so the schedule half is the half that is actually reachable.
+  //
+  // UNDER THE DIAGNOSTICS FLAG, for two reasons. (a) `reference_reconciliation
+  // .tsv` is a loose diagnostic sidecar, the same class of artifact
+  // `emit_tsv_diagnostics` governs everywhere else. (b) A verifier that gains a
+  // new way to fail on every existing run directory is a behaviour change, and
+  // every run directory published before this commit declares the flag nowhere,
+  // so the default path is byte-for-byte what it was. The strict read is free of
+  // new risk on this route: `verify` requires `trade_schedule.tsv`, which only
+  // `build-schedule` writes, and that command already strict-reads this same file.
+  ATX_TRY(DispersionRunConfig run_config, read_dispersion_run_config(run_dir / "run_spec.tsv"));
+  if (run_config.emit_tsv_diagnostics) {
+    ATX_TRY(std::vector<ReferenceReconRecord> records,
+            reconcile_dispersion_reference(run_dir, /*schedule_only=*/true));
+    ATX_TRY_VOID(
+        write_reference_reconciliation_file(run_dir / "reference_reconciliation.tsv", records));
+  }
+
   std::printf("verified artifact envelope: dates=%zu admitted=%u rolls=%zu\n", clock.size(),
               quality.n_admitted, schedule.rolls.size());
   return Ok();
