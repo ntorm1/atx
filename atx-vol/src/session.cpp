@@ -1043,6 +1043,33 @@ void apply_fit_preset(SessionInputs &in, FitPreset preset) noexcept {
     in.use_deam_cache_for_fit = true;
     in.calendar_repair = CalendarRepair::MonotoneFit;
     break;
+  case FitPreset::Bulk:
+    // Perf 2b throughput tier (session.hpp FitPreset::Bulk). Populate's body with
+    // ONE substitution: the fit's own Andersen-Lake rung drops from al_fast_opts
+    // {7,16,4} to the ladder's `ql_fast` al_bulk_opts {7,8,2, premium 32}, which is
+    // 4x less fixed-point sweep work per boundary solve at the same measured price
+    // accuracy class (~1.0e-3 vs 9.7e-4). `serve_al_opts` pins the BAKED pricing
+    // config back to al_fast_opts, because n_quad_price does not survive any of the
+    // three AlOpts record formats (deamer.hpp DeAmOptions::serve_al_opts) — so the
+    // stored surface serves queries exactly as a Populate build's does.
+    in.deam.al_opts = al_bulk_opts();
+    // The CARRY solve too. Phase-2b step-1 measurement: of the ~940k fast-tier AL
+    // boundary solves a 102-symbol `populate` date runs, ~66% are the PCP borrow /
+    // carry fixed point, not the per-strike de-Am inversion — so leaving
+    // `carry_al_opts` at al_fast_opts caps the achievable win at ~1.1x no matter what
+    // the de-Am rung is. Its own contract makes it the safer of the two to lower: the
+    // carry is an aggregate over n_atm co-terminal pairs whose accepted answer is
+    // gated on dispersion + leave-one-out agreement across pairs
+    // (max_carry_dispersion / max_carry_leave_one_out), and it is an economically
+    // ~1e-4 input, so per-leg AL price noise at ~1e-3 is averaged and then
+    // consistency-checked rather than served.
+    in.deam.carry_al_opts = al_bulk_opts();
+    in.deam.serve_al_opts = al_fast_opts();
+    in.deam.iv_tol = 1.0e-5;
+    in.deam.n_atm = 3;
+    in.use_deam_cache_for_fit = true;
+    in.calendar_repair = CalendarRepair::MonotoneFit;
+    break;
   }
 }
 
@@ -1702,7 +1729,9 @@ Result<PricedSurface> VolaSession::to_priced_surface() const {
   pc.r = in_.r;
   pc.now_ts_ns = in_.now_ts_ns;
   pc.method = in_.deam.method;
-  pc.al_opts = in_.deam.al_opts.value_or(al_fast_opts());
+  // Perf 2b: the SERVE rung, which is `al_opts` unless a tier pinned a separate one
+  // (DeAmOptions::serve_al_opts). Empty => historical behaviour, bit-for-bit.
+  pc.al_opts = in_.deam.serve_al_opts.value_or(in_.deam.al_opts.value_or(al_fast_opts()));
   pc.uid = surface_.uid();
 
   CurveSurface cs;

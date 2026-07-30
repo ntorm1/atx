@@ -25,7 +25,9 @@
 //   --symbols       CSV universe; OMIT (or empty) to discover every underlying
 //                   in the window (rectangular date x union grid, visible holes).
 //   --index         designated index leg, pinned to the dense index recipe.
-//   --preset        fast | accurate | robust | hft | populate (default populate).
+//   --preset        fast | accurate | robust | hft | populate | bulk (default
+//                   populate). `bulk` is the Perf-2b opt-in throughput tier: the
+//                   Populate quality contract on the cheaper `ql_fast` AL rung.
 //   --r             flat continuously-compounded carry rate (default 0.0). MUST
 //                   match the rate the hive's quotes were priced under, or every
 //                   put-call-parity forward is wrong and every fit fails.
@@ -290,6 +292,10 @@ bool parse_preset(std::string_view name, FitPreset &out) {
     out = FitPreset::Hft;
   } else if (name == "populate") {
     out = FitPreset::Populate;
+  } else if (name == "bulk") {
+    // Perf Phase 2b opt-in throughput tier (session.hpp FitPreset::Bulk). NOT the
+    // default: `populate` remains the reproducible production tier.
+    out = FitPreset::Bulk;
   } else {
     return false;
   }
@@ -549,7 +555,7 @@ int run_build_cli(int argc, char **argv) {
   if (!parse_preset(preset_name, preset)) {
     std::fprintf(stderr,
                  "atx-vol-surface-db-build: unknown --preset '%s' "
-                 "(fast|accurate|robust|hft|populate)\n",
+                 "(fast|accurate|robust|hft|populate|bulk)\n",
                  preset_name.c_str());
     print_usage(stderr);
     return 2;

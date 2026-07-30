@@ -296,6 +296,26 @@ struct DeAmOptions {
   // per-strike de-Am preset. The fast AL scheme holds that bound without paying
   // accurate-query quadrature for every fixed-point leg.
   std::optional<AlOpts> carry_al_opts = al_fast_opts();
+  // Perf 2b: the AL preset BAKED INTO the fitted surface's pricing config
+  // (VolaSession::to_priced_surface -> PricedSurfacePricing::al_opts), which is what
+  // a QUERY re-prices with. Empty (the default) means "same as `al_opts`" — the
+  // historical behaviour, bit-for-bit.
+  //
+  // WHY IT IS SEPARABLE. `al_opts` above drives the FIT: the de-Am inversion, the
+  // correction-cache sampling, the diagnostic/parity passes. A bulk-populate tier
+  // wants the cheapest Andersen-Lake rung that still clears the inversion's
+  // economic budget there (docs/al-preset-ladder.md §5, fit-de-Am tier), and the
+  // cheapest rung uses the DECOUPLED premium order `n_quad_price` — which the
+  // surface archive, the v1 archive and the surface-db symbol record all decompose
+  // AlOpts field-by-field WITHOUT (see surface_archive.cpp al_n_collocation /
+  // al_n_quadrature / al_max_newton_iter). Baking a decoupled rung would therefore
+  // read back with `n_quad_price = 0` — silently TIED to the cheap fixed-point
+  // order — and serve queries from an 8-node premium quadrature nobody asked for.
+  // Pinning the serve rung separately keeps the stored pricing config inside the
+  // fields that actually round-trip, so the fit gets the cheap rung and the served
+  // surface keeps today's. Which rung FITTED the surface is recorded where it
+  // belongs, in the manifest's per-symbol `preset` byte.
+  std::optional<AlOpts> serve_al_opts = std::nullopt;
   bool imply_borrow = true;         // if false, use borrow_fixed
   double borrow_fixed = 0.0;        // borrow used when imply_borrow == false
   std::size_t n_atm = 3;            // near-ATM co-terminal pairs used for the borrow

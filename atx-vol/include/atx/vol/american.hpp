@@ -89,6 +89,23 @@ struct AlOpts {
 // de-Americanizes and samples its correction cache with it by default.
 [[nodiscard]] AlOpts al_fast_opts() noexcept;
 
+// The `ql_fast` rung of docs/al-preset-ladder.md §4: {7, 8, 2, 1e-8} with the
+// DECOUPLED premium order n_quad_price = 32. A cheap boundary-locating fixed-point
+// quadrature (l = 8, half of al_fast_opts's 16) over only 2 sweeps (vs 4) drops the
+// dominant n_quad_fp x n_boundary x n_sweeps work from 448 node evaluations per
+// solve to 112 (-75%), while the rich decoupled premium (p = 32) holds price
+// accuracy at ~1.0e-3 — statistically the same as al_fast_opts's measured 9.7e-4.
+// The ladder measured it at 25.8 us/op vs al_fast_opts's 46.7 us/op (1.81x) while
+// still paying the generic-kernel tax; (7,8) is specialized in `al_fp_specialized`
+// now, so the realized gap is wider.
+//
+// The ladder's §5 tier policy names this rung for the fit-de-Americanization /
+// IV-inversion tier and for correction-cache sampling. It is NOT a serving or
+// oracle preset, and — because `n_quad_price` is not persisted by any of the three
+// AlOpts record formats — it must never be baked into a stored pricing config; see
+// DeAmOptions::serve_al_opts (deamer.hpp).
+[[nodiscard]] AlOpts al_bulk_opts() noexcept;
+
 // Andersen-Lake American price under Black-76 dynamics with continuous dividend
 // yield q (cash divs folded into the forward beforehand).
 //

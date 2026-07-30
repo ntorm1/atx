@@ -136,6 +136,8 @@ add_executable(atx-vol-tests
     # Sub-Sprint A (Agent A) — appended targets:
     american_bindkey_test.cpp        # A4 (R-30) retained-geometry bind-key guardrail
     american_negrate_domain_test.cpp # A5 negative-rate / double-boundary domain map
+    # Perf Phase 2b (surface-db sprint) — appended target:
+    american_bulk_rung_test.cpp      # al_bulk_opts (ql_fast) rung + FitPreset::Bulk tier
     # Wave-B iv-kernel (Agent K) — appended targets:
     scalar_erfc_test.cpp             # K3-prep: scalar Cody erfc ULP + round-trip gate
     iv_seed_test.cpp                 # K2: Choi-2023 tighter seed accuracy + Halley-step gate

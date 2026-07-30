@@ -242,6 +242,25 @@ enum class FitPreset : std::uint8_t {
   // populate / cache-sampling lane only. Economic parity vs Robust (surface RMSE,
   // arb, served-coverage) is gated on real OPRA boards (C3 characterization).
   Populate = 4,
+  // Perf Phase 2b: the OPT-IN bulk-populate throughput tier. Identical to Populate
+  // in every field that sets the fitted surface's QUALITY (Robust-grade eSSVI,
+  // MonotoneFit calendar repair, 3 ATM carry pairs, parity scored, audited
+  // inversions, correction-cache-served fit) and identical in what it BAKES into
+  // the stored pricing config. It changes exactly one thing: the Andersen-Lake rung
+  // the FIT's de-Americanization / IV inversion / cache sampling run on, from
+  // al_fast_opts {7,16,4} to al_bulk_opts {7,8,2, price 32} — the ladder's `ql_fast`
+  // (docs/al-preset-ladder.md §4-5, which names it for exactly this tier).
+  //
+  // WHY IT EXISTS. Phase-2b step-1 measurement (al_probe.hpp) on two 102-symbol
+  // production dates: the AL boundary solve is ~84% of a `populate` board fit and
+  // its Jacobi-Newton + fixed-point sweeps alone are ~71%, against ~6.7% for the
+  // early-exercise premium quadrature. `ql_fast` cuts the sweep work per solve 4x
+  // on the fit's own de-Am plane, which is where ~49% of the fit sits.
+  //
+  // NOT a default, and never the certification / oracle / serving preset: Populate
+  // stays the reproducible production tier and Robust the oracle. Appended last so
+  // every existing enumerator keeps its persisted value.
+  Bulk = 5,
 };
 
 // Populate the fit-policy fields of `in` for `preset` (Andersen-Lake opts,

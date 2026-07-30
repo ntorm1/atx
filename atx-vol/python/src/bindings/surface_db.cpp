@@ -559,6 +559,9 @@ namespace {
   if (name == "populate") {
     return FitPreset::Populate;
   }
+  if (name == "bulk") {
+    return FitPreset::Bulk; // Perf 2b opt-in throughput tier (session.hpp)
+  }
   if (name == "fast") {
     return FitPreset::Fast;
   }

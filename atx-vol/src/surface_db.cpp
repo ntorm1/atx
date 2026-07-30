@@ -342,7 +342,7 @@ inline constexpr std::uint64_t kFnv1a64OffsetBasis = 0xcbf29ce484222325ull;
 [[nodiscard]] bool symbol_record_enums_valid(const DbSymbolRecord &rec) noexcept {
   DbSurfacePolicyRecord surface_policy{};
   std::memcpy(&surface_policy, rec.reserved, sizeof surface_policy);
-  return rec.preset <= static_cast<std::uint8_t>(FitPreset::Populate) && // C3: Populate=4 is new max
+  return rec.preset <= static_cast<std::uint8_t>(FitPreset::Bulk) && // Perf 2b: Bulk=5 is new max
          rec.curve_kind <= 4 && rec.calendar_repair <= 2 &&
          rec.convex_loss <= 1 && rec.essvi_rho_mode <= 2 && rec.optimization_level <= 4 &&
          rec.residual_basis_kind <= 5 && rec.loss_kind <= 1 && rec.anchor_kind <= 2 &&

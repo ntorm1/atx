@@ -1477,6 +1477,13 @@ template <unsigned NP>
       return al_put_premium_impl<16>(b, ws, S, sigma, r, q, use);
     case 24:
       return al_put_premium_impl<24>(b, ws, S, sigma, r, q, use);
+    case 32:
+      // Perf 2b: 32 was the one Gauss-Legendre order gl_find offers that had no
+      // compile-time trip count here, so every rung using the decoupled `ql_fast` /
+      // `fast_p32` premium order (docs/al-preset-ladder.md §4) silently paid the
+      // generic runtime-trip-count path. Same single body as every other case, so
+      // this is a pure specialization and bit-identical to what it replaces.
+      return al_put_premium_impl<32>(b, ws, S, sigma, r, q, use);
     case 48:
       return al_put_premium_impl<48>(b, ws, S, sigma, r, q, use);
     default:
@@ -2347,6 +2354,9 @@ std::uint64_t al_geometry_specialize_off_fallback_count() noexcept {
 AlOpts al_default_opts() noexcept { return AlOpts{12, 24, 8, 1.0e-10}; }
 
 AlOpts al_fast_opts() noexcept { return AlOpts{7, 16, 4, 1.0e-8}; }
+
+// docs/al-preset-ladder.md §4 `ql_fast`: l = 8 fixed-point, p = 32 premium, 2 sweeps.
+AlOpts al_bulk_opts() noexcept { return AlOpts{7, 8, 2, 1.0e-8, /*n_quad_price=*/32}; }
 
 Result<double> andersen_lake(double S, double K, double T, double sigma, double r, double q,
                              Side side, const std::optional<AlOpts> &opts) {

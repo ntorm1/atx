@@ -637,7 +637,8 @@ void bind_fit(py::module_ &m) {
       .value("ACCURATE", FitPreset::Accurate)
       .value("ROBUST", FitPreset::Robust)
       .value("HFT", FitPreset::Hft)
-      .value("POPULATE", FitPreset::Populate);
+      .value("POPULATE", FitPreset::Populate)
+      .value("BULK", FitPreset::Bulk);
 
   py::enum_<SurfacePurpose>(m, "SurfacePurpose")
       .value("MARKET_MARK", SurfacePurpose::MarketMark)

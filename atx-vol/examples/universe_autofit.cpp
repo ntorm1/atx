@@ -85,6 +85,7 @@ const char *preset_name(FitPreset p) {
   case FitPreset::Robust: return "robust";
   case FitPreset::Hft: return "hft";
   case FitPreset::Populate: return "populate";
+  case FitPreset::Bulk: return "bulk";
   }
   return "?";
 }
@@ -94,6 +95,7 @@ FitPreset parse_preset(std::string_view name) {
   if (name == "robust") return FitPreset::Robust;
   if (name == "hft") return FitPreset::Hft;
   if (name == "populate") return FitPreset::Populate;
+  if (name == "bulk") return FitPreset::Bulk;
   return FitPreset::Fast;
 }
 
