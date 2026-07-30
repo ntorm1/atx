@@ -50,6 +50,7 @@
 #include "atx/vol/opra_batch.hpp"
 #include "atx/vol/phase_profile.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
+#include "atx/vol/run_archive.hpp" // RunDir, encode_*_section (S3-T16 .atxrun default)
 #include "atx/vol/strategy.hpp"
 #include "atx/vol/universe.hpp"
 
@@ -2920,6 +2921,23 @@ Status dispersion_run_backtest(const fs::path &run_dir) {
       write_listed_contract_marks_file((run_dir / "contract_marks.tsv").string(), reconciliation));
   ATX_TRY_VOID(
       write_listed_reconciliation_file((run_dir / "reconciliation.tsv").string(), reconciliation));
+  // S3-T16. THE result envelope, published unconditionally: the same five
+  // sections `run_backtest_command` publishes, so a run directory this function
+  // produces is readable by everything written against the archive (RunDir::
+  // verify, the Python reporting layer) instead of only by a reader of the loose
+  // TSVs above. This is what made the library twin non-dispatchable — the CLI
+  // kept its own body precisely because dispatching here published a run
+  // directory the reporting layer could not read (see dispersion_run.hpp's seam
+  // contract). The CLI's `diagnostics` section is deliberately absent: it carries
+  // the CLI's PhaseTimer, which is not a library concept, and RunDir::verify does
+  // not require it.
+  std::vector<RaSectionData> sections;
+  sections.push_back(encode_schedule_section("trade_schedule", schedule));
+  sections.push_back(encode_backtest_section("backtest", backtest));
+  sections.push_back(encode_reconciliation_section(reconciliation));
+  sections.push_back(encode_contract_marks_section(reconciliation));
+  sections.push_back(encode_meta_section(spec));
+  ATX_TRY_VOID(RunDir(run_dir).write_run_archive(sections));
   std::printf("backtest complete: dates=%zu rolls=%zu final_nav=%.10g\n", backtest.size(),
               schedule.rolls.size(), backtest.nav.back());
   return Ok();

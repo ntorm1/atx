@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <span>
@@ -36,9 +37,11 @@
 #include "atx/vol/dispersion_backtest.hpp" // DispersionBacktestConfig, dispersion_config_from
 #include "atx/vol/dispersion_run.hpp"
 #include "atx/vol/dispersion_workflow.hpp" // universe_at, utc_date_from_ns
+#include "atx/vol/listed_dispersion_schedule.hpp" // build_listed_dispersion_roll (S3-T16 fixture)
 #include "atx/vol/listed_opra.hpp"         // ListedDefinitionTable, write_listed_definitions_file
 #include "atx/vol/occ_ess.hpp"             // read_occ_ess_report_file
 #include "atx/vol/priced_surface.hpp"      // PricedSurface, PricingContext
+#include "atx/vol/run_archive.hpp"         // RunDir, RunArchive (S3-T16 .atxrun default path)
 #include "atx/vol/surface_archive.hpp"     // write_surface_archive_v2_file
 #include "atx/vol/surface_parity.hpp"      // SliceContext
 #include "atx/vol/vol_curve.hpp"           // CurveSurface, EssviCurve
@@ -1841,6 +1844,194 @@ TEST(DispersionIndexRouting, ScheduleBuildResolvesTheConfiguredIndexLeg) {
   EXPECT_TRUE(fs::exists(fixture.dir / "quote_rejects.tsv"))
       << "the build stopped before the end of the per-date loop, i.e. before selection ever ran: "
       << message;
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+// ── S3-T16: `.atxrun` is the library run path's result envelope ──────────────
+//
+// The library twin of the shipped `run-backtest` used to publish its economics
+// as four loose TSVs and nothing else, while the CLI published `run.atxrun` and
+// nothing else — so dispatching the CLI here would have written a run directory
+// the Python reporting layer cannot read (the reason dispersion_run.hpp records
+// for keeping the two bodies apart). `dispersion_run_backtest` now publishes the
+// SAME archive sections the CLI does.
+//
+// Driving that needs a run directory the listed replay can actually complete on.
+// The PV fixture already writes three sessions of synthetic eSSVI boards plus the
+// spec/universe/manifest; the listed route additionally reads a definitions table
+// and a `trade_schedule.tsv`, so both are added here — the schedule is sized off
+// those very boards, which is what lets `ScheduleMarkPolicy::ExactArchive`
+// re-solve every leg to the mark the schedule records. No OPRA parquet exists
+// under the fixture's `opra_root`, so the reconciliation's quote join legitimately
+// yields nothing; these tests are about the model side and the result envelope.
+
+namespace {
+
+constexpr std::int64_t kListedFixtureExpiryNs =
+    kPvBaseNs + static_cast<std::int64_t>(0.10 * kNsPerYear);
+
+// The per-session spot multiplier `make_pv_fixture` prices its boards at. The
+// schedule must be struck against the SAME level the board carries or the legs
+// are far from the money and their vega — the quantity solver's divisor — goes
+// small enough to make the fixture about numerics instead of about I/O.
+[[nodiscard]] double pv_drift(std::size_t date_index) {
+  return 1.0 + 0.05 * std::sin(1.7 * static_cast<double>(date_index));
+}
+
+[[nodiscard]] ListedOptionQuote listed_leg_quote(const std::string &symbol, std::uint32_t id,
+                                                 double strike, Side side,
+                                                 const std::string &trade_date,
+                                                 std::int64_t now_ts) {
+  ListedOptionQuote quote;
+  quote.trade_date = trade_date;
+  quote.symbol = symbol;
+  quote.instrument_id = id;
+  quote.raw_symbol = symbol + std::to_string(id);
+  quote.expiry_ts_ns = kListedFixtureExpiryNs;
+  quote.strike = strike;
+  quote.side = side;
+  // Placeholder NBBO: every built leg's quote is re-centred on its own model
+  // mark below, so the persisted `raw_mid` is the exact half-sum the schedule
+  // parser re-derives.
+  quote.bid = 1.0;
+  quote.ask = 1.2;
+  quote.quote_ts_ns = now_ts;
+  quote.standard_monthly = true;
+  quote.standard_deliverable = true;
+  quote.source_fingerprint = 100u + id;
+  return quote;
+}
+
+[[nodiscard]] ListedStraddle listed_leg_straddle(const std::string &symbol, std::uint32_t uid,
+                                                 std::uint32_t id, double strike, double weight,
+                                                 const std::string &trade_date,
+                                                 std::int64_t now_ts) {
+  ListedStraddle straddle;
+  straddle.symbol = symbol;
+  straddle.uid = uid;
+  straddle.expiry_ts_ns = kListedFixtureExpiryNs;
+  straddle.strike = strike;
+  straddle.call = listed_leg_quote(symbol, id, strike, Side::Call, trade_date, now_ts);
+  straddle.put = listed_leg_quote(symbol, id + 1u, strike, Side::Put, trade_date, now_ts);
+  straddle.raw_weight = weight;
+  straddle.normalized_weight = weight;
+  return straddle;
+}
+
+// A run directory `dispersion_run_backtest` completes on. Rolls open on the
+// first two of the three sessions (cohort 1 then cohort 2), so every scheduled
+// roll is consumed and the third session is a pure hold.
+[[nodiscard]] PvFixture make_listed_run_fixture(std::string_view leaf,
+                                                const std::string &extra_spec = {}) {
+  const PvFixture fixture = make_pv_fixture(
+      leaf, {PvUniverseBlock{"2026-10-01", {{"AAA", 0.5}, {"BBB", 0.5}}}}, extra_spec,
+      /*n_dates=*/3);
+  const Status definitions = write_listed_definitions_file(
+      (fixture.dir / "definitions.tsv").string(), ListedDefinitionTable{});
+  EXPECT_TRUE(definitions.has_value())
+      << (definitions.has_value() ? std::string{} : definitions.error().to_string());
+
+  ListedDispersionSchedule schedule;
+  for (std::size_t d = 0; d + 1u < fixture.dates.size(); ++d) {
+    const std::int64_t now = kPvBaseNs + static_cast<std::int64_t>(d) * kPvDayNs;
+    const double drift = pv_drift(d);
+    const std::string archive = (fixture.dir / "surfaces" / (fixture.dates[d] + ".atxvsa")).string();
+    auto snapshot = MarketSnapshot::load(archive);
+    EXPECT_TRUE(snapshot.has_value())
+        << (snapshot.has_value() ? std::string{} : snapshot.error().to_string());
+    if (!snapshot) {
+      return fixture;
+    }
+    ListedDispersionSelection selection;
+    selection.trade_date = fixture.dates[d];
+    selection.valuation_ts_ns = now;
+    selection.expiry_ts_ns = kListedFixtureExpiryNs;
+    selection.dte_days = static_cast<double>(kListedFixtureExpiryNs - now) / kListedNsPerDay;
+    selection.index = listed_leg_straddle("SPY", 1u, 1u, 500.0 * drift, 0.0, fixture.dates[d], now);
+    selection.names.push_back(
+        listed_leg_straddle("AAA", 2u, 3u, 100.0 * drift, 0.5, fixture.dates[d], now));
+    selection.names.push_back(
+        listed_leg_straddle("BBB", 3u, 5u, 120.0 * drift, 0.5, fixture.dates[d], now));
+
+    ListedScheduleBuildConfig build;
+    build.gross_index_vega_target_per_vol_point = 10'000.0;
+    build.cohort = static_cast<std::uint32_t>(d + 1u);
+    build.surface_fingerprint = 4242u + d;
+    auto roll = build_listed_dispersion_roll(selection, snapshot->set(), build);
+    EXPECT_TRUE(roll.has_value())
+        << (roll.has_value() ? std::string{} : roll.error().to_string());
+    if (!roll) {
+      return fixture;
+    }
+    for (ListedScheduleLeg &leg : roll->legs) {
+      leg.raw_bid = 0.98 * leg.model_mark;
+      leg.raw_ask = 1.02 * leg.model_mark;
+      leg.raw_mid = 0.5 * (leg.raw_bid + leg.raw_ask);
+    }
+    schedule.rolls.push_back(std::move(*roll));
+  }
+  const Status written = write_listed_dispersion_schedule_file(
+      (fixture.dir / "trade_schedule.tsv").string(), schedule);
+  EXPECT_TRUE(written.has_value())
+      << (written.has_value() ? std::string{} : written.error().to_string());
+  return fixture;
+}
+
+[[nodiscard]] std::string slurp_bytes(const fs::path &path) {
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream) {
+    return {};
+  }
+  return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+}
+
+} // namespace
+
+TEST(DispersionRunBacktest, TheDefaultPathPublishesAReadableRunArchive) {
+  const PvFixture fixture = make_listed_run_fixture("s3t16_atxrun_default");
+
+  const Status ran = dispersion_run_backtest(fixture.dir);
+  ASSERT_TRUE(ran.has_value()) << ran.error().to_string();
+
+  const RunDir run_dir(fixture.dir);
+  const Result<RunArchive> archive = run_dir.archive();
+  ASSERT_TRUE(archive.has_value())
+      << "the library run path published no readable run.atxrun, so a run directory it produces is "
+         "unreadable by the Python reporting layer: "
+      << (archive.has_value() ? std::string{} : archive.error().to_string());
+  EXPECT_TRUE(archive->validate_all().has_value());
+  for (const std::string_view name :
+       {"backtest", "reconciliation", "contract_marks", "trade_schedule", "meta"}) {
+    EXPECT_TRUE(archive->section(name).has_value())
+        << "run.atxrun is missing the `" << name
+        << "` section the shipped run-backtest publishes; the library twin must publish the same "
+           "result envelope or the CLI cannot be wired through it";
+  }
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+// The S1 content-derived-timestamp discipline, on the new default path: RunDir
+// derives `created_ts_ns` from the run identity rather than the wall clock, so
+// re-running an unchanged run directory must reproduce the archive BYTE for
+// byte. A wall-clock stamp here would make every published run differ from its
+// own rerun and destroy the reproducibility claim the pipeline rests on.
+TEST(DispersionRunBacktest, TheDefaultRunArchiveIsByteStableAcrossTwoIdenticalRuns) {
+  const PvFixture fixture = make_listed_run_fixture("s3t16_atxrun_stable");
+
+  ASSERT_TRUE(dispersion_run_backtest(fixture.dir).has_value());
+  const std::string first = slurp_bytes(fixture.dir / "run.atxrun");
+  ASSERT_FALSE(first.empty());
+
+  ASSERT_TRUE(dispersion_run_backtest(fixture.dir).has_value());
+  const std::string second = slurp_bytes(fixture.dir / "run.atxrun");
+
+  EXPECT_EQ(first, second)
+      << "two identical runs produced different run.atxrun bytes — the archive is carrying "
+         "wall-clock provenance instead of the content-derived timestamp";
 
   std::error_code error;
   fs::remove_all(fixture.dir, error);
