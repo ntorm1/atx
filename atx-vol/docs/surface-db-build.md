@@ -1825,3 +1825,84 @@ The build CLI only **reads** a hive; two Python tools produce and maintain it:
   degrade-to-top-N-by-weight, `--dry-run`, DBN cache, atomic writes, spend log.
   One `get_range` per date over the union of missing parents; output is the
   merged date file (per the resume/merge rule above).
+
+## Multi-year backfill
+
+The [scale seam](#scale-posture) — **one db root per year** — is what a backfill
+drives, via `atx-vol/tools/run_surface_db_backfill.py`, which partitions the
+window by year and appends `-<year>` to `--db-prefix`. Measured at SP100 scale:
+`sp100-2025` = 104 partitions / 10,283 surfaces / 69.6 MiB, `sp100-2026` = 140 /
+13,922 / 83.8 MiB. **Partition count must equal hive session count per year.**
+
+```bash
+$ python atx-vol/tools/run_surface_db_backfill.py \
+    --universe atx-vol/data/universe/sp100_2026-07.csv \
+    --hive C:/atx-data/opra-hive --db-prefix C:/atx-data/surface-db/sp100 \
+    --from 2026-01-02 --to 2026-07-24 --phase build --chunk-sessions 4 \
+    --build-exe build-rel/bin/atx-vol-surface-db-build.exe \
+    --admin-exe build-rel/bin/atx-vol-surface-db.exe \
+    --log-dir <log-dir> --index SPY --fit-workers 0
+$ # --dry-run first: prints the resolved --db and every chunk's --r /
+$ # --snapshot-suffix without spawning. Then --phase verify with the SAME
+$ # --from/--to, or verify_thresholds() sizes off the resumed sub-range.
+```
+
+### The snapshot instant is ET-anchored; the loader takes ONE per invocation
+
+The policy instant is **15:55 America/New_York** — `T19:55:00Z` under EDT,
+`T20:55:00Z` under EST. The
+[hive-layout note above](#opra-hive-v2--the-on-disk-layout-it-reads) calling
+19:55:00Z a fixed convention describes a single-summer corpus; a hive pulled with
+`--snap-et 15:55` is **not** uniform (a 244-session 2025-08 .. 2026-07 hive is
+161 EDT / 83 EST, the EST run being 2025-11-03 .. 2026-03-06). `OpraHiveSpec`
+carries exactly one `--snapshot-suffix` and applies it across the whole
+`--from`/`--to` range, and that string — not the file's own `ts` — drives the
+time-to-expiry math, **so a chunk may never straddle a DST transition.**
+`chunk_sessions()` enforces it by grouping on `(month, snapshot-minute)`, which is
+also what makes `--r` (resolved from the chunk's first session's month) valid for
+the whole chunk.
+
+**A wrong suffix fails silently.** Measured on a 5-session EST fixture built with
+the EDT default: **exit 0, `n_load_errors 0`, every date written**, and the damage
+is one arbitrage-rejected slice plus ~1e-3 relative IV drift on the survivors —
+an hour is a large fraction of a short tenor's remaining `T`. Exit codes cannot
+catch a DST-grouping bug, so **audit every `cmd=` line of `orchestrator.log`
+against `pull_opra_hive.snapshot_minute_utc()`**: each chunk's XNYS sessions must
+share one expected minute, it must equal the logged suffix, and zero mismatches
+plus zero straddles across all build lines is the gate.
+
+### Coverage is a set identity, not a row-group or symbol count
+
+The completeness invariant for a hive date is
+**`underlyings_on_disk ∪ absent_latched == universe`**, disjoint — `absent_latched`
+being `<hive>/_absent/<date>.json`, which the pull tool writes for requested names
+the provider returned no rows for. A count-based check is wrong: OPRA shards its
+multicast by underlying symbol range, so one line missing for one minute drops an
+**alphabetically contiguous block**. `2025-11-24` at 95 of 102 underlyings with
+`BLK, BMY, BRK.B, BX, C, CAT, CL` latched is legitimately complete (95 + 7 = 102),
+yet a `row_groups >= 100` threshold calls it a defect. Parquet may also split a
+large underlying across row groups, so a complete 102-name date lands in 102–105.
+Likewise an **early close** (13:00 ET, e.g. `2025-11-28`, `2025-12-24`) has no
+15:55 ET snapshot and is correctly absent from hive *and* db — exclude it from
+every expected-session count rather than counting it as a hole.
+
+### Operator notes
+
+- **Use a Release binary** (`scripts/atx-build.ps1 -Preset rel build …`; cap
+  parallelism with `--parallel N`, never `-j`, which binds the wrapper's `-Jobs`).
+  ~14 s per 104-symbol date at `--preset populate` — a 140-session year is
+  ~33 min. A Debug binary is ~15x slower.
+- **`--chunk-sessions` is a batching/RSS knob only**: `--r` resolves per month,
+  config is idempotent, and populate rewrites each date's partition
+  independently, so it cannot perturb a fitted value. Peak commit ~130 MB per
+  process regardless of symbol count.
+- The generated `--max-absent` comes off the 0.7x floor and is ~10x looser than a
+  real absent count (3183 against a true 325) — **pin the observed number**, per
+  [the operator checklist](#absence-is-not-a-failure--the-cells-the-database-never-stored).
+- **`year_summary_<year>.csv` is not a year summary**: it sums non-additive
+  `config.*` counters across chunks, and a resumed sub-range run overwrites it in
+  place with only that sub-range. The per-chunk `--report` CSVs and the database
+  are the authority; its loader counters (`n_coverage_holes`, `n_load_errors`) are
+  trustworthy.
+- Single-writer rule holds: no admin subcommand against a root while a build is
+  writing it. Parallel years into **distinct** roots is fine.
