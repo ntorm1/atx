@@ -190,10 +190,10 @@ struct ListedScheduleSpec {
   double gross_index_vega{10000.0};
   bool core_mode{false};
   // F6 quote-quality admission (REV-FIXTAIL I-A). This member is why the three
-  // `quote_*` spec keys are now honoured on the SHIPPED `build-schedule` and not
-  // only on the library-only `dispersion_build_schedule`. Before it existed the
-  // keys parsed, validated, were echoed into `run_config.tsv` as EFFECTIVE, and
-  // reached no shipped selection. The default is exactly what the selection loop
+  // `quote_*` spec keys are honoured on the SHIPPED `build-schedule` at all.
+  // Before it existed the keys parsed, validated, were echoed into
+  // `run_config.tsv` as EFFECTIVE, and reached selection only on a library-only
+  // twin (deleted at S3-T17). The default is exactly what the selection loop
   // default-constructed, so wiring it moves nothing.
   ListedQuoteQualityConfig quality{};
 };
@@ -205,13 +205,14 @@ struct ListedScheduleSpec {
 // is not is provably dead, and a test can call THIS instead of restating it
 // under a "verbatim" comment that cannot fail.
 //
-// REV-MTIDY M-6: that was true of the SHIPPED route only until now — the
-// library twin `dispersion_build_schedule` hand-built the same five assignments
-// itself, so a fifth selection knob still had to be added in two places and only
-// one of them had a test. Both routes now reach this through
-// `listed_schedule_spec_from` (dispersion_run.hpp), so this really is the single
-// construction point the sentence above claims, and `DispersionScheduleSpecFrom.*`
-// (dispersion_run_test.cpp) covers the composition both of them perform.
+// REV-MTIDY M-6 / S3-T17: that was true of the SHIPPED route only until M-6 —
+// a library twin hand-built the same five assignments itself, so a fifth
+// selection knob had to be added in two places and only one of them had a test.
+// M-6 routed both through `listed_schedule_spec_from` (dispersion_run.hpp) and
+// S3-T17 deleted the twin, so `build_schedule_command` is now the ONLY schedule
+// route and this really is the single construction point the sentence above
+// claims. `DispersionScheduleSpecFrom.*` (dispersion_run_test.cpp) covers the
+// composition it performs.
 [[nodiscard]] ListedDispersionSelectionConfig
 listed_selection_config_from(const ListedScheduleSpec &spec);
 

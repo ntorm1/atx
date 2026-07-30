@@ -6,49 +6,46 @@
 // (~620 LOC of library workflow trapped in an example main) live here so the
 // example is thin CLI glue and every stage is unit-testable off the filesystem.
 //
-// SEAM CONTRACT (RECONCILE 1, 2026-07-25) — READ THIS BEFORE DELETING ANYTHING.
-// This is a PARTIALLY-DISPATCHED seam, on purpose, and the split is stated in full
-// at the "File-oriented workflow entry points" block below.
+// SEAM CONTRACT (S3-T17, 2026-07-29) — READ THIS BEFORE DELETING ANYTHING.
+// This is a FULLY-DISPATCHED seam: every file-oriented entry point declared here
+// backs a shipped `spy_dispersion_backtest` subcommand, and no subcommand keeps a
+// second implementation of one. The per-entry-point half is at the "File-oriented
+// workflow entry points" block below.
 //
-// Background: the main -> feat/pipeline-m merge took main's version of the example
-// wholesale, because main had hard-cut the CLI over to the `run.atxrun` RunArchive
-// result container and the shared Python layer is written against that container.
-// The side effect was that NO shipped binary called into this header, leaving a
+// Background, kept because it explains why the block below is so emphatic: the
+// main -> feat/pipeline-m merge took main's version of the example wholesale,
+// because main had hard-cut the CLI over to the `run.atxrun` RunArchive result
+// container and the shared Python layer is written against that container. The
+// side effect was that NO shipped binary called into this header, leaving a
 // tested library with no production caller — the shape that rots quietly and is
-// then deleted by someone who assumes it was always dead. It was not, and this
-// note exists so nobody has to reconstruct that.
+// then deleted by someone who assumes it was always dead. RECONCILE 1 resolved
+// that as a UNION: the three entry points where both designs wrote only loose
+// TSVs (build-corpus, run-surface-backtest, run-projected-var) became one-line
+// CLI dispatches, recovering X1/X2/X3/X4/X5/X6, C1-ACTIVATE and F4's
+// `persist_typed_spec_keys`. Those three are the three that remain.
 //
-// The resolution is a UNION where the two designs are compatible, not a blanket
-// restore and not a blanket retreat to library-only:
+// The other three (`dispersion_build_schedule`, `dispersion_run_backtest`,
+// `dispersion_verify`) were held as a documented RESERVE on the argument that
+// dispatching into them would publish or verify a run directory the reporting
+// layer cannot read. S3-T17 closed that: the argument was sound and the
+// conclusion was backwards. The CLI bodies are not duplicates of the reserve —
+// they are compositions of the library's own seams (`build_listed_dispersion_
+// schedule_audited`, `make_listed_replay_run_config`, `reconcile_listed_schedule`,
+// `RunDir::write_run_archive`, `RunDir::verify`), and the reserve had drifted
+// away from them. The reserve was deleted, not dispatched into. See the block
+// below for the divergences, and for the two CLI-owned inputs (`--cache`, the
+// `PhaseTimer`) that make a run-dir-only library twin lossy by construction.
 //
-//   * Where BOTH designs write only loose TSVs and neither touches `run.atxrun`
-//     (build-corpus, run-surface-backtest, run-projected-var), the CLI dispatches
-//     here. Those three are exact supersets of the bodies they replaced, so the
-//     union costs nothing and recovers X1/X2/X3/X4/X5/X6, C1-ACTIVATE and F4's
-//     `persist_typed_spec_keys`.
-//   * Where the two designs disagree about the RESULT ENVELOPE — the library
-//     writes loose result TSVs and main's design uses `run.atxrun` (build-schedule,
-//     run-backtest, verify) — the CLI keeps its own body, because dispatching here
-//     would write files the reporting layer cannot read. It still takes the CONFIG
-//     CONSTRUCTION from here, so F4/F5 stay reachable from the command line.
-//     (REV-TAIL M-1: this rule used to read "where main's design PUBLISHES ARCHIVE
-//     SECTIONS". That is wrong for `verify`, which publishes nothing — it READS
-//     (`RunDir(run_dir).verify()`), and it is library-only because its twin reads
-//     LOOSE artifacts the cutover no longer writes. It also omitted
-//     `project-schedule` and `run-projected-backtest`, which do publish sections
-//     and are CLI-bodied. The membership list was right; the rule was not.)
-//
-// Consequence for readers of the tests: WHERE `dispersion_run_test.cpp` covers a
-// DISPATCHED entry point, that coverage is also CLI coverage — but today it
-// covers none of the three directly (measured at this revision: 0 calls to
-// `dispersion_build_corpus`, 0 to `dispersion_run_projected_var`, and for
-// `dispersion_run_surface_backtest` a single mention in a comment). REV-FIXTAIL
-// Minor 4: the previous wording stated the implication as though the coverage
-// existed, which is the same class of claim REV-TAIL I-1 deleted below, surviving
-// in a neighbouring sentence. For the other three — the library-only ones, which
-// that file DOES drive — the coverage is not coverage of a CLI path and, until
-// REV-TAIL I-1, was not coverage at all; see the per-entry-point block further
-// down for exactly what now backs them.
+// Consequence for readers of the tests: WHERE `dispersion_run_test.cpp` covers an
+// entry point declared here, that coverage IS coverage of a shipped CLI path,
+// because every entry point here is dispatched. It drives
+// `dispersion_run_surface_backtest` and `dispersion_run_projected_var` directly
+// (`DispersionDividends.*`, `DispersionProjectedVar.*`, `DispersionBenchmarkJoin
+// .*`) and `dispersion_build_corpus` through `DispersionIndexRouting.CorpusBuild
+// *`. What it does NOT cover is the CLI's own orchestration — the subcommand
+// bodies in examples/spy_dispersion_backtest.cpp have no gtest surface at all;
+// they are exercised by the Python e2e module (atx-vol/python/tests/
+// test_dispersion_runarchive_e2e.py, fixture-gated) and by the sprint gate legs.
 //
 // REPRODUCIBILITY: the pinned admission thresholds / fingerprint material that
 // determine which surfaces are admitted -- and therefore the dispersion golden
@@ -359,11 +356,27 @@ struct DispersionRunConfig {
   //
   // The economic result envelope is `run.atxrun` (RunDir::write_run_archive),
   // which the Python reporting layer reads; the loose per-stage result tables
-  // (`backtest.tsv`, `contract_marks.tsv`, `reconciliation.tsv`,
-  // `surface_backtest.tsv`, the X5 tearsheet pair, the projected-VaR triple, the
-  // F4 `run_config.tsv` echo, F6's `quote_rejects.tsv`, and the
-  // profile/counters probes) duplicate it in a human-readable form. They are a
-  // DIAGNOSTIC now, not a contract, and a default run leaves none of them behind.
+  // duplicate it in a human-readable form. They are a DIAGNOSTIC, not a
+  // contract, and a default run leaves none of them behind.
+  //
+  // EXACTLY WHAT IT GATES (re-derived at S3-T17; four write sites, all on the
+  // two library entry points that still exist, plus one CLI site):
+  //   dispersion_run_surface_backtest -> `surface_backtest.tsv`, the X5 pair
+  //       (`surface_tearsheet.tsv` + `surface_pnl_track.tsv`),
+  //       `backtest_profile.tsv` (ATX_VOL_PROFILE), `backtest_counters.tsv`
+  //       (ATX_VOL_COUNTERS)
+  //   dispersion_run_projected_var    -> `projected_var.tsv`,
+  //       `projected_risk_scenarios.tsv`, `projected_risk_legs.tsv`
+  //   `verify_command`                -> `reference_reconciliation.tsv`, the M1
+  //       schedule-only reference reconciliation sidecar
+  //
+  // What it NO LONGER gates, because S3-T17 deleted the library twins that were
+  // the gated writers: `backtest.tsv`, `contract_marks.tsv` and
+  // `reconciliation.tsv` are not written by any route now. `run_config.tsv` and
+  // `quote_rejects.tsv` are written UNCONDITIONALLY by the shipped
+  // `run_backtest_command` / `build_schedule_command`; that CLI-level
+  // inconsistency is recorded, not fixed, by S3-T17 (the CLI's own TSV policy
+  // was outside its byte-identity bar).
   //
   // What this flag does NOT govern: the run directory's retained TEXT INPUTS and
   // evidence — `run_spec.tsv`, `universe_schedule.tsv`, `definitions.tsv`,
@@ -427,9 +440,9 @@ read_share_dividend_artifact(const std::filesystem::path &path);
 // snapshot cache subsetted to the schedule's referenced uids, which the replay
 // and the reconciliation pass share.
 //
-// It is a named function rather than four lines inside `dispersion_run_backtest`
+// It is a named function rather than four lines inside `run_backtest_command`
 // because the first guard written for F5 rebuilt the construction inside the
-// test, under the comment "verbatim the construction dispersion_run_backtest
+// test, under the comment "verbatim the construction the listed replay
 // performs". A comment cannot fail: reverting the production subsetting left the
 // whole suite green, which is the same blind spot that let F5 ship inert on this
 // path to begin with. The guard now calls THIS function, so "verbatim" becomes
@@ -460,10 +473,10 @@ read_share_dividend_artifact(const std::filesystem::path &path);
 // The two arguments are the two reads of the SAME `run_spec.tsv`: the loose
 // `RunSpec` carries the eight swept schedule knobs, and the strict
 // `DispersionRunConfig` carries F6's quote-quality admission, which `RunSpec`
-// has no field for. Both `build_schedule_command` (the shipped route) and
-// `dispersion_build_schedule` (the library twin) build their selection policy
-// through this, so the "single construction point" claim on
-// `listed_selection_config_from` is no longer route-local.
+// has no field for. `build_schedule_command` — since S3-T17 the ONLY schedule
+// route — builds its selection policy through this, so the "single construction
+// point" claim on `listed_selection_config_from` describes the shipped route
+// itself and not a twin beside it.
 [[nodiscard]] ListedScheduleSpec listed_schedule_spec_from(const RunSpec &spec,
                                                            const DispersionRunConfig &config);
 
@@ -691,12 +704,6 @@ reconcile_dispersion_reference(const std::filesystem::path &run_dir, bool schedu
 [[nodiscard]] Status write_reference_reconciliation_file(
     const std::filesystem::path &path, std::span<const ReferenceReconRecord> records);
 
-struct DispersionVerifyReport {
-  std::size_t n_dates{0};
-  std::uint32_t n_admitted{0};
-  std::size_t n_rolls{0};
-};
-
 // ── Corpus phase-split line (B1 / T1) ───────────────────────────────────────
 //
 // The single line `dispersion_build_corpus` prints under
@@ -722,122 +729,108 @@ struct DispersionVerifyReport {
 
 // ── File-oriented workflow entry points ─────────────────────────────────────
 //
-// WHO CALLS THESE (RECONCILE 1, 2026-07-25). Read the contract at the top of this
-// header first; this is the per-entry-point half of it. There are SIX file-oriented
-// entry points in this block (the five declared immediately below plus
-// `dispersion_verify`). Three DO back a shipped subcommand and three DELIBERATELY
-// do not, and the difference is not an oversight in either direction.
-// (REV-TAIL M-1: this said "three of the five", miscounting both halves.)
+// WHO CALLS THESE (S3-T17, 2026-07-29, plan item 3.7). Read the contract at the
+// top of this header first; this is the per-entry-point half of it. There are
+// now THREE file-oriented entry points, and every one of them backs a shipped
+// subcommand:
 //
 //   dispersion_build_corpus         <- `spy_dispersion_backtest build-corpus`
 //   dispersion_run_surface_backtest <- `spy_dispersion_backtest run-surface-backtest`
 //   dispersion_run_projected_var    <- `spy_dispersion_backtest run-projected-var`
 //
-// dispersion_build_schedule / dispersion_run_backtest — LIBRARY ONLY, and the
-// shipped subcommands of the same name do NOT call them. Both write the loose
-// `backtest.tsv` / `reconciliation.tsv` / `contract_marks.tsv` / `trade_schedule
-// .tsv` result files that the RunArchive cutover REPLACED with `run.atxrun`
-// sections; the Python reporting layer (`atxvol.report`, and the e2e module that
-// executes this binary and reads `run.atxrun` back) is written against the
-// archive. Dispatching them would publish a run directory the reporting layer
-// cannot read, so the CLI keeps its own archive-publishing bodies.
+// The seam is FULLY DISPATCHED. No library-only reserve is left in this block,
+// and no shipped subcommand carries a second implementation of a body declared
+// here. The long "deliberate reserve" argument that used to stand here is gone
+// with the code it defended; what follows is why, so it is not reconstructed.
 //
-// What the CLI DOES take from `dispersion_run_backtest` is its CONFIG
-// CONSTRUCTION, which is the part that carries F4/F5: `run-backtest` calls
-// `read_dispersion_run_config` + `make_listed_replay_run_config` +
-// `write_dispersion_effective_config` exactly as this function does, so the typed
-// spec governs the shipped listed replay and `run_config.tsv` is emitted on it.
-// The two bodies therefore differ ONLY in how they persist results.
+// WHAT WAS DELETED. `dispersion_build_schedule`, `dispersion_run_backtest` and
+// `dispersion_verify`. Re-derived from the tree rather than inherited:
+//
+//   * THE CLI WAS ALREADY THE COLLAPSED FORM. `build_schedule_command` composes
+//     `listed_schedule_spec_from` + `build_listed_dispersion_schedule_audited`
+//     (the library's own selection seam, with a `ListedQuoteRejectSink`) and
+//     publishes through `RunDir::write_run_archive`; `run_backtest_command`
+//     composes `read_dispersion_run_config` + `make_listed_replay_run_config` +
+//     `reconcile_listed_schedule` and publishes the same way. The deleted twins
+//     were SECOND implementations of those two orchestrations — not the seams
+//     the CLI sits on. Deleting them is what makes it one implementation per
+//     concern; dispatching into them would have been the reverse.
+//   * THEY HAD DIVERGED, AND THIS BLOCK SAID OTHERWISE. It asserted the two
+//     run-backtest bodies "differ ONLY in how they persist results". They did
+//     not. The twin called `reconcile_listed_dispersion`, which hard-requires
+//     the front session to BE the first roll date; the CLI calls
+//     `reconcile_listed_schedule`, which trims the warm-up lead-in. The twin
+//     joined the whole OPRA panel; the CLI narrows the join to the schedule's
+//     leg keys, a narrowing that also narrows six of that join's seven fatal
+//     exits (see `listed_quotes_for_date`'s `wanted` contract in
+//     listed_opra.hpp). Dispatching the CLI into the twin would have moved
+//     shipped ERROR PATHS, so "collapse onto the twin" was never available.
+//   * `dispersion_verify` VERIFIED AN ENVELOPE NO ROUTE PRODUCES. It required
+//     the loose `backtest.tsv` / `contract_marks.tsv` / `reconciliation.tsv`
+//     that the RunArchive cutover replaced. `RunDir::verify()` is the
+//     archive-native gate, and the shipped `verify_command` already calls it.
+//     Dispatching into the twin would have REGRESSED verify, not collapsed it.
+//
+// WHY v1 OFFERS NO LIBRARY-LEVEL LISTED-REPLAY ENTRY POINT. The two
+// orchestration concerns the CLI owns are CLI inputs, not run-directory inputs:
+// the `--cache` / `ATX_VOL_CACHE` pre-parsed definitions cache, and the
+// `PhaseTimer` whose phases become the `diagnostics` archive section and the
+// `diag` stderr line. An entry point taking only a run dir cannot carry either,
+// so any such twin is a LOSSY copy of the shipped body by construction — which
+// is exactly how the deleted pair drifted. `spy_dispersion_backtest` is the
+// single listed-replay orchestration; every step inside it is a named library
+// seam with its own tests.
+//
+// CONSEQUENCE FOR THE LOOSE RESULT TABLES, stated so it is not rediscovered as a
+// defect: nothing in this repo writes `backtest.tsv`, `contract_marks.tsv` or
+// `reconciliation.tsv` into a run directory any more — the deleted twin was
+// their last writer, and the shipped `run-backtest` has published its economics
+// as `run.atxrun` sections since the cutover. They survive only in run
+// directories published before it. `reconcile_dispersion_reference` (declared
+// above) therefore reaches a shipped binary in its SCHEDULE-ONLY mode only, from
+// `verify_command` under the run spec's `emit_tsv_diagnostics`; its full mode is
+// covered by `DispersionReferenceReconcile.*` off synthetic input and by
+// `DispersionReferenceReconcileRealData` off the aging published corpus.
 //
 // F6's quote-quality admission (`DispersionRunConfig::quote_quality` ->
-// `select_listed_dispersion`) USED TO reach selection only through
-// `dispersion_build_schedule`, i.e. only on the library-only route. That was worse
-// than a silently-ignored knob, because `write_dispersion_effective_config` echoed
-// all three `quote_*` keys into `run_config.tsv` — an artifact this header
-// documents as the EFFECTIVE value of every knob the run used — so a reader
-// reconciling a shipped run against that record was told a filter applied that
-// never ran. CLOSED (REV-FIXTAIL I-A): `ListedScheduleSpec` gained a `quality`
-// member and `build_listed_dispersion_schedule` builds its selection config
-// through the named `listed_selection_config_from`, so the shipped `build-schedule`
-// honours the declared policy and the effective-config record is true on both
-// routes. Golden-neutral by construction — the new default IS what the loop
-// default-constructed (`ListedDispersionPipeline.DefaultScheduleSpecKeepsTheShipped
-// SelectionDefaults`).
+// `select_listed_dispersion`) reaches selection through `listed_schedule_spec_
+// from` -> `listed_selection_config_from`, which the shipped `build-schedule`
+// composes — so the declared policy governs the shipped route and
+// `write_dispersion_effective_config`'s `run_config.tsv` echo is true of the run
+// that produced it. GATED by `DispersionScheduleSpecFrom.*`, and it was NOT
+// gated when it was first called closed: the link was one assignment in the
+// example's `main`, and deleting that assignment left the whole label gate at
+// 2262/2262 passed, 0 failed. Read it as the rule this sprint keeps re-learning
+// — a fix whose load-bearing line no test executes for a NON-DEFAULT value is
+// not closed, it is asserted.
 //
-// GATED since REV-MTIDY I-1, and it was NOT gated when it was first called
-// closed. The link between the strict typed config and the shipped selection was
-// one assignment in the example's `main`; deleting it left the whole label gate
-// at 2262/2262 passed, 0 failed. It is now `listed_schedule_spec_from` (declared
-// above), which `DispersionScheduleSpecFrom.*` calls, so the same deletion turns
-// a test red. Read that as the general rule this sprint keeps re-learning: a fix
-// whose load-bearing line no test executes for a NON-DEFAULT value is not closed,
-// it is asserted.
-//
-// WHAT REMAINS, stated so it is not rediscovered as the same defect: only
-// `dispersion_build_schedule` writes the per-date `quote_rejects.tsv` tally. The
-// shipped `build-schedule` never wrote it — not before this fix and not after —
-// so on that route the policy now applies but its per-date accounting is not
-// published. That is a missing REPORT, not an unhonoured knob, and no artifact
-// claims otherwise.
-//
-// `dispersion_verify` (below) is likewise LIBRARY ONLY for the same reason: it
-// verifies the loose artifact envelope and folds in the M1 native reference
-// reconciliation, both of which read result files the cutover no longer writes.
-//
-// WHAT ACTUALLY COVERS THE THREE LIBRARY-ONLY ENTRY POINTS (REV-TAIL I-1,
-// 2026-07-25). This block used to claim that "each is covered directly off the
-// filesystem by `dispersion_run_test.cpp`". THAT WAS FALSE: that file called none
-// of the six, and `dispersion_build_schedule`, `dispersion_run_backtest` and
-// `dispersion_verify` had zero callers and zero tests — so the instruction not to
-// delete them rested on coverage that did not exist. The determination,
-// re-derived from the tree rather than inherited: they are NOT
-// accidentally-unwired code that the CLI seam work (`347ad44`) failed to reach,
-// and they are NOT dead code to delete. They are a deliberate, documented
-// RESERVE — the reason is the cutover argument above, and it holds. What they
-// lacked was any evidence they still work.
-//
-// `run_spec_from` (the DispersionRunConfig -> RunSpec projection) was in that
-// same zero-caller/zero-test bucket but had NO cutover argument behind it, so
-// it was deleted (S3-T14) rather than kept as reserve.
-//
-// They now have a floor rather than a claim:
-//   `DispersionLibraryOnlyEntryPoints.EachIsReachableAndFailsClosedNamingTheMissing
-//   Spec` drives all three off `tmp_path` and pins that each is LINKED, REACHABLE
-//   and FAILS CLOSED naming its missing input.
-// That is deliberately modest — it gates reachability and fail-closed behaviour,
-// NOT the economics. Anyone relying on these for economics must build the coverage
-// first. State it as reserve; do not restate it as coverage.
-//
-// CONSEQUENCE FOR M10 (`5d5af01`), stated so the next reader is not misled the way
-// this block previously misled: M10's fail-closed `str()` change is real and is
-// directly tested off `tmp_path` (`DispersionReferenceReconcile.M10_*`), but it
-// reaches NO SHIPPED BINARY. Its only public reach is `reconcile_dispersion_
-// reference` -> `dispersion_verify`, and the shipped `verify` subcommand calls
-// `RunDir(run_dir).verify()` instead (in `verify_command`,
-// spy_dispersion_backtest.cpp:359). The MINORS
-// report's claim that it protects a production path was true at `5d5af01` and is
-// stale now.
+// WHAT REMAINS: the per-date `quote_rejects.tsv` admission tally is written by
+// the shipped `build_schedule_command` off the `ListedQuoteRejectSink` the
+// audited builder drives, so on the one remaining schedule route the policy
+// applies AND its per-date accounting is published. Nothing parses that file
+// back — it is a report ABOUT the run, not an input to it.
 
 [[nodiscard]] Status dispersion_build_corpus(const std::filesystem::path &source_spec_path,
                                              const std::filesystem::path &run_dir,
                                              const DispersionCorpusPolicy &policy = {});
-[[nodiscard]] Status dispersion_build_schedule(const std::filesystem::path &run_dir);
-[[nodiscard]] Status dispersion_run_backtest(const std::filesystem::path &run_dir);
 [[nodiscard]] Status dispersion_run_surface_backtest(const std::filesystem::path &run_dir);
 [[nodiscard]] Status dispersion_run_projected_var(const std::filesystem::path &run_dir);
 
-// Envelope gate for the OPTIONAL projected-VaR stage, folded into
-// `dispersion_verify`. Absent artifacts are fine (the stage need not have run);
-// a PRESENT summary must have its two companions, the contract header, and a
-// scenario count matching the run's session count — so a truncated or stale
-// projected-VaR run can no longer pass verify silently. `n_sessions == 0` skips
-// the count check. Exposed separately so it is testable without a full run dir.
+// Envelope gate for the OPTIONAL projected-VaR stage. Absent artifacts are fine
+// (the stage need not have run); a PRESENT summary must have its two companions,
+// the contract header, and a scenario count matching the run's session count —
+// so a truncated or stale projected-VaR run cannot pass silently. `n_sessions ==
+// 0` skips the count check. Exposed separately so it is testable without a full
+// run dir.
+//
+// REACH (S3-T17): its only production caller was `dispersion_verify`, which is
+// deleted, so this is now a library API exercised by `DispersionProjectedVarGate
+// .*` and `DispersionProjectedVar.*` and by no shipped binary. Stated rather
+// than implied — the shipped `verify` gates the ARCHIVE envelope through
+// `RunDir::verify()`, which does not fold this check in. Wiring it there is a
+// behaviour change and belongs to whoever owns the verify contract, not to the
+// task that deleted its old caller.
 [[nodiscard]] Status verify_projected_var_artifacts(const std::filesystem::path &run_dir,
                                                     std::size_t n_sessions);
-// Verifies the artifact envelope AND folds in the native reference reconciliation
-// (M1): it recomputes + numerically compares the persisted arithmetic and writes
-// run_dir/reference_reconciliation.tsv.
-[[nodiscard]] Result<DispersionVerifyReport>
-dispersion_verify(const std::filesystem::path &run_dir);
 
 } // namespace atx::vol

@@ -291,13 +291,13 @@ Status build_schedule_command(const fs::path &run_dir, const fs::path &cache_dir
   // for the one thing the loose RunSpec cannot carry — F6's quote-quality
   // admission policy. `quote_min_bid` / `quote_max_age_ns` / `quote_reject_locked`
   // bound by name, survived `reject_unknown()` and were published into
-  // `run_config.tsv` as EFFECTIVE, while their only consumer was the library-only
-  // `dispersion_build_schedule`; on this route the declared policy reached no
-  // selection at all. This is the same double read `run-backtest` already performs
-  // (below, at the strict `read_dispersion_run_config`) and the same one the
-  // library twin performs (dispersion_run.cpp's `dispersion_build_schedule`), so
-  // the two bodies now agree on config construction. A malformed spec fails here
-  // by name instead of two subcommands later.
+  // `run_config.tsv` as EFFECTIVE, while their only consumer was a library-only
+  // twin (`dispersion_build_schedule`, deleted at S3-T17); on this route the
+  // declared policy reached no selection at all. This is the same double read
+  // `run-backtest` already performs (below, at the strict
+  // `read_dispersion_run_config`), so both shipped listed routes agree on config
+  // construction. A malformed spec fails here by name instead of two subcommands
+  // later.
   //
   // REV-MTIDY M-2, on the SCOPE of that, because the shorter claim ("it cannot
   // break the pipeline, run-backtest already strict-parses the same file") is
@@ -1248,10 +1248,16 @@ int main(int argc, char **argv) {
   // POSITIONAL arguments and is therefore handled at :889, above the --flag
   // parser, instead of in the dispatch chain below. It is in `usage()` at :875.)
   //
-  // The three that dispatch are the three where BOTH designs write only loose
-  // TSVs, so the union is exact. The rest are on main's RunArchive cutover, whose
-  // library twins still write the loose result files that cutover replaced —
-  // dispatching them would break the archive the Python layer reads.
+  // The three that dispatch are the three where BOTH designs wrote only loose
+  // TSVs, so the union was exact (RECONCILE 1). The rest are RunArchive-era
+  // bodies with NO library twin at all: S3-T17 deleted the three that existed
+  // (`dispersion_build_schedule`, `dispersion_run_backtest`, `dispersion_verify`)
+  // rather than dispatch into them, because these bodies are already the
+  // collapsed form — each is a composition of named library seams
+  // (`build_listed_dispersion_schedule_audited`, `make_listed_replay_run_config`,
+  // `reconcile_listed_schedule`, `RunDir::write_run_archive`, `RunDir::verify`)
+  // and the twins had drifted away from them. See the seam contract at the top of
+  // dispersion_run.hpp, which is the authority.
   Status status = Err(ErrorCode::InvalidArgument, "unknown command");
   if (command == "build-corpus" && !spec.empty() && !out.empty()) {
     status = atx::vol::dispersion_build_corpus(spec, out);

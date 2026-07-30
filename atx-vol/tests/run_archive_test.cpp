@@ -1758,6 +1758,54 @@ TEST(RunDir, WriteIsByteDeterministic) {
   std::filesystem::remove_all(dir_b, ec);
 }
 
+// ── S3-T17: RE-RUNNING a route over its own output is byte-idempotent ────────
+//
+// `WriteIsByteDeterministic` above writes to two DIFFERENT directories, so it
+// proves only that created_ts_ns is content-derived. It says nothing about the
+// case an operator actually hits: re-running a stage on a run directory that
+// ALREADY carries a run.atxrun. That path goes through merge-write, which must
+// REPLACE the same-named sections rather than perturb the archive around them —
+// otherwise every published run differs from its own rerun and the
+// reproducibility claim the pipeline rests on is false in exactly the situation
+// it is invoked.
+//
+// This contract was pinned by `DispersionRunBacktest.TheDefaultRunArchiveIsByte
+// StableAcrossTwoIdenticalRuns` (S3-T16), which drove it through the library
+// twin of the shipped `run-backtest`. S3-T17 deleted that twin, so the contract
+// is re-homed here, at the `RunDir::write_run_archive` seam that actually owns
+// it and where it covers EVERY publishing route rather than one of them.
+TEST(RunDir, RepublishingTheSameSectionsIsByteIdempotent) {
+  const auto slurp = [](const std::filesystem::path& p) {
+    std::ifstream in(p, std::ios::binary | std::ios::ate);
+    EXPECT_TRUE(in.good()) << "cannot open " << p.string();
+    const std::streamsize size = in.tellg();
+    std::vector<char> bytes(static_cast<std::size_t>(size < 0 ? 0 : size));
+    in.seekg(0);
+    in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    return bytes;
+  };
+
+  const std::filesystem::path dir = fresh_run_dir("atx_rundir_republish_idempotent");
+  write_run_dir_text_inputs_portable(dir);
+
+  write_run_dir_archive(dir);
+  const std::vector<char> first = slurp(dir / "run.atxrun");
+  ASSERT_FALSE(first.empty());
+
+  // Same inputs, same sections, same directory — the rerun.
+  write_run_dir_archive(dir);
+  const std::vector<char> second = slurp(dir / "run.atxrun");
+
+  ASSERT_EQ(first.size(), second.size())
+      << "run.atxrun byte-length moved when a route republished its own sections";
+  EXPECT_TRUE(first == second)
+      << "re-running a stage over an existing run.atxrun changed its bytes — merge-write is "
+         "perturbing the archive instead of replacing the same-named sections";
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
 // ── Task 7 / I1: merge-write publish (accumulate the UNION across routes) ─────
 
 // Helper: read one meta value by key out of an opened archive's meta section.

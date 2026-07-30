@@ -111,11 +111,6 @@ Result<std::string> read_text(const fs::path &path) {
   return Ok(std::move(text));
 }
 
-Result<std::uint64_t> hash_file(const fs::path &path) {
-  ATX_TRY(std::string bytes, read_text(path));
-  return Ok(dispersion_hash_text(bytes));
-}
-
 Status append_input_inventory(std::ostream &out, const OpraBatchResult &batch) {
   for (const OpraBatchEntry &entry : batch.entries) {
     out << entry.date << '\t' << entry.symbol << '\t' << entry.path << '\t';
@@ -172,48 +167,6 @@ Status persist_occ_ess_evidence_window(const fs::path &run_dir, const RunSpec &s
   return inventory ? Ok() : Err(ErrorCode::IoError, "cannot flush OCC ESS inventory");
 }
 
-Status verify_occ_ess_evidence(const fs::path &run_dir, const Clock &clock) {
-  ATX_TRY(std::string inventory, read_text(run_dir / "occ_ess_inventory.tsv"));
-  const std::vector<std::string_view> lines = split(inventory, '\n');
-  if (lines.empty() || lines[0] != "date\tpath\tn_special_symbols\tsource_fingerprint") {
-    return Err(ErrorCode::ParseError, "bad OCC ESS inventory header");
-  }
-  std::set<std::string> verified_dates;
-  for (std::size_t i = 1u; i < lines.size(); ++i) {
-    std::string_view line = lines[i];
-    if (!line.empty() && line.back() == '\r') {
-      line.remove_suffix(1u);
-    }
-    if (line.empty()) {
-      continue;
-    }
-    const std::vector<std::string_view> row = split(line, '\t');
-    std::size_t n_special = 0u;
-    std::uint64_t fingerprint = 0u;
-    if (row.size() != 4u || !parse_number(row[2], n_special) ||
-        !parse_number(row[3], fingerprint) || fingerprint == 0u ||
-        !verified_dates.emplace(row[0]).second) {
-      return Err(ErrorCode::ParseError, "malformed OCC ESS inventory row");
-    }
-    const fs::path expected =
-        (run_dir / "occ_ess" / (std::string(row[0]) + ".txt")).lexically_normal();
-    if (fs::path(row[1]).lexically_normal() != expected) {
-      return Err(ErrorCode::InvalidArgument, "OCC ESS inventory path escapes run envelope");
-    }
-    ATX_TRY(OccEssReport report, read_occ_ess_report_file(expected.string()));
-    if (report.trade_date() != row[0] || report.special_symbols().size() != n_special ||
-        report.source_fingerprint() != fingerprint) {
-      return Err(ErrorCode::InvalidArgument, "OCC ESS inventory/report mismatch");
-    }
-  }
-  for (const SnapshotRef &ref : clock.refs()) {
-    if (!verified_dates.contains(ref.date)) {
-      return Err(ErrorCode::NotFound, "qualified date lacks OCC ESS authority");
-    }
-  }
-  return Ok();
-}
-
 Status write_methodology_map(const fs::path &path) {
   std::ofstream out(path, std::ios::binary | std::ios::trunc);
   if (!out) {
@@ -235,25 +188,6 @@ Status write_methodology_map(const fs::path &path) {
          "are undefined\n"
       << "vega_flat\tdirect Greek identity\tcontinuous notional using served American vegas\n";
   return out ? Ok() : Err(ErrorCode::IoError, "cannot flush methodology map");
-}
-
-Result<std::vector<ListedOptionQuote>> load_listed_quotes(const RunSpec &spec,
-                                                          const ListedDefinitionTable &definitions,
-                                                          std::span<const std::string> symbols,
-                                                          std::string_view date) {
-  ATX_TRY(OpraBatchResult batch, load_opra_daterange(batch_spec(spec, symbols, date, date)));
-  std::vector<ListedOptionQuote> quotes;
-  for (const OpraBatchEntry &entry : batch.entries) {
-    if (!entry.panel) {
-      continue;
-    }
-    ATX_TRY(std::vector<ListedOptionQuote> joined,
-            listed_quotes_from_opra(date, entry.panel->frame.snapshot_ts_ns, *entry.panel,
-                                    definitions));
-    quotes.insert(quotes.end(), std::make_move_iterator(joined.begin()),
-                  std::make_move_iterator(joined.end()));
-  }
-  return Ok(std::move(quotes));
 }
 
 // ── Native reference reconciliation (ported from tools/reference_spy_dispersion.py)
@@ -1936,7 +1870,7 @@ RunConfig dispersion_engine_run_config_from(const DispersionRunConfig &config) {
 RunConfig make_listed_replay_run_config(const DispersionRunConfig &config, const Clock &clock,
                                         const ListedDispersionStrategy &strategy) {
   RunConfig run = dispersion_engine_run_config_from(config);
-  // WS-F F5 (BT-T2), review follow-up. `dispersion_run_backtest` supplies its
+  // WS-F F5 (BT-T2), review follow-up. The listed replay supplies its
   // OWN cache — it shares one across the replay and the reconciliation pass —
   // and the engine deliberately never subsets a SUPPLIED cache, because it
   // cannot know what else the caller will serve from it. So F5 was inert on
@@ -2127,10 +2061,12 @@ Status write_dispersion_effective_config(const fs::path &path, const DispersionR
       << "benchmark_join\t" << to_string(config.benchmark_join) << '\n'
       << "delta_band\t" << num(config.hedge.band) << '\n'
       << "gross_index_vega\t" << num(config.gross_index_vega) << '\n'
-      // S3-T16. Self-describing by construction: this file is itself one of the
-      // gated diagnostics, so the row can only ever read 1 — it says WHY the
-      // reader is holding a run_config.tsv at all, not whether some other run
-      // would have produced one.
+      // S3-T16/S3-T17. The declared value of the loose-diagnostics knob, so a
+      // reader holding this file knows whether the run beside it also left the
+      // loose result tables behind. (It reads BOTH values again: S3-T16 wrote
+      // this row under a gate that could only ever emit 1, but the sole
+      // remaining caller of this writer is the shipped `run_backtest_command`,
+      // which publishes `run_config.tsv` unconditionally.)
       << "emit_tsv_diagnostics\t" << (config.emit_tsv_diagnostics ? 1 : 0) << '\n';
   return out ? Ok() : Err(ErrorCode::IoError, "cannot flush effective run config");
 }
@@ -2746,221 +2682,6 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
   return Ok();
 }
 
-Status dispersion_build_schedule(const fs::path &run_dir) {
-  ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
-  // F6 (BT-P2-8): the quote-quality policy that decides which NBBO rows are
-  // admissible has to reach selection, which is here.
-  ATX_TRY(DispersionRunConfig run_config, read_dispersion_run_config(run_dir / "run_spec.tsv"));
-  ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
-  ATX_TRY(ListedDefinitionTable definitions,
-          read_listed_definitions_file((run_dir / "definitions.tsv").string()));
-  ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
-  ATX_TRY(Clock clock, Clock::from_manifest(manifest));
-  ATX_TRY_VOID(verify_occ_ess_evidence(run_dir, clock));
-  if (spec.core_mode && clock.size() < 60u) {
-    return Err(ErrorCode::Unavailable, "core mode requires at least 60 admitted dates");
-  }
-  const std::vector<std::string> symbols =
-      all_symbols(universe_rows, run_config.universe.index_symbol);
-  ListedDispersionSchedule schedule;
-  std::int64_t active_expiry = 0;
-  // F6 (BT-P2-8): per-date quote-admission tally. Persisted below, because a
-  // counter that only exists in memory cannot answer "why did this schedule
-  // change" after the fact — which is exactly the question a moved golden asks.
-  std::vector<QuoteRejectRow> quote_reject_rows;
-  for (const SnapshotRef &ref : clock.refs()) {
-    ATX_TRY(MarketSnapshot snapshot, MarketSnapshot::load(ref.archive_path));
-    const double active_dte =
-        active_expiry == 0
-            ? 0.0
-            : static_cast<double>(active_expiry - snapshot.ts_ns()) / kListedNsPerDay;
-    if (active_expiry != 0 && active_dte > spec.roll_dte_days) {
-      continue;
-    }
-    ATX_TRY(DispersionUniverse authored,
-            universe_at(universe_rows, ref.date, run_config.universe.index_symbol));
-    MissingNameSpec missing{MissingNamePolicy::DropRenormalize, spec.min_names};
-    ATX_TRY(
-        ResolvedUniverse resolved,
-        resolve_universe_uids(
-            authored, [&](std::string_view symbol) { return snapshot.uid_of(symbol); }, missing));
-    ATX_TRY(std::vector<ListedOptionQuote> quotes,
-            load_listed_quotes(spec, definitions, symbols, ref.date));
-    // REV-MTIDY M-6: this twin used to hand-build the same five assignments the
-    // shipped route made, so `listed_selection_config_from` was a single
-    // construction point for ONE of the two routes and a fifth selection knob
-    // still had to be added in two places. Both routes now compose the same two
-    // named functions. Field for field identical to what stood here.
-    const ListedDispersionSelectionConfig selection_config =
-        listed_selection_config_from(listed_schedule_spec_from(spec, run_config));
-    const ListedForwardLookup forward = [&](const DispersionMember &member,
-                                            std::int64_t expiry) -> Result<double> {
-      const SurfaceRef surface = snapshot.find(member.uid);
-      if (surface == nullptr) {
-        return Err(ErrorCode::NotFound, "surface missing");
-      }
-      const double term = static_cast<double>(expiry - snapshot.ts_ns()) / kNsPerYear;
-      const double value = surface->forward_at(term);
-      return std::isfinite(value) && value > 0.0
-                 ? Ok(value)
-                 : Err(ErrorCode::Unavailable, "forward unavailable");
-    };
-    // FIX-F m4: the tally of the first candidate expiry, filled even when
-    // selection fails — the date an operator most wants the tally for is exactly
-    // the date that produced no basket.
-    ListedQuoteRejectCounts attempted_rejects{};
-    const auto selected =
-        select_listed_dispersion(ref.date, snapshot.ts_ns(), resolved.universe, quotes, forward,
-                                 selection_config, &attempted_rejects);
-    // F6: the per-date admission tally, recorded for EVERY date selection ran
-    // on — including dates whose roll is later deferred below, and (FIX-F m4)
-    // dates where selection failed outright — so an operator can see what the
-    // quality gates rejected without re-running selection.
-    quote_reject_rows.push_back(selected ? QuoteRejectRow{ref.date, true, selected->quote_rejects}
-                                         : QuoteRejectRow{ref.date, false, attempted_rejects});
-    if (!selected) {
-      if (active_expiry == 0) {
-        continue;
-      }
-      std::fprintf(stderr, "roll deferred on %s: %s\n", ref.date.c_str(),
-                   selected.error().to_string().c_str());
-      continue;
-    }
-    double requested_weight = 0.0;
-    for (const DispersionMember &name : authored.names) {
-      requested_weight += name.weight;
-    }
-    double traded_weight = 0.0;
-    for (const ListedStraddle &name : selected->names) {
-      traded_weight += name.raw_weight;
-    }
-    const double coverage = traded_weight / requested_weight;
-    if (coverage < spec.min_weight_coverage) {
-      if (active_expiry == 0) {
-        continue;
-      }
-      std::fprintf(stderr, "roll deferred on %s: weight coverage %.6f\n", ref.date.c_str(),
-                   coverage);
-      continue;
-    }
-    ListedScheduleBuildConfig build;
-    build.gross_index_vega_target_per_vol_point = spec.gross_index_vega;
-    build.cohort = static_cast<std::uint32_t>(schedule.rolls.size() + 1u);
-    ATX_TRY(const std::uint64_t archive_fingerprint, hash_file(ref.archive_path));
-    build.surface_fingerprint = archive_fingerprint;
-    ATX_TRY(ListedScheduleRoll roll,
-            build_listed_dispersion_roll(*selected, snapshot.set(), build));
-    active_expiry = roll.expiry_ts_ns;
-    schedule.rolls.push_back(std::move(roll));
-  }
-  // FIX-F m3: BEFORE the acceptance gate. The tally is evidence ABOUT the gates,
-  // and a run that fails the entry/three-roll gate is the case where an operator
-  // most wants to know what the quality gates rejected. F4 writes `run_config.tsv`
-  // before the replay for the same reason; the same principle applies here.
-  // S3-T16: a per-date audit tally, and nothing downstream parses it — the
-  // schedule the next stage consumes is `trade_schedule.tsv`, which stays. So it
-  // is a diagnostic and rides the flag, while the schedule beside it does not.
-  if (run_config.emit_tsv_diagnostics) {
-    ATX_TRY_VOID(write_quote_reject_report(run_dir / "quote_rejects.tsv", quote_reject_rows));
-  }
-  if (schedule.rolls.empty() || (spec.core_mode && schedule.rolls.size() < 3u)) {
-    return Err(ErrorCode::Unavailable,
-               "schedule does not satisfy entry/three-roll acceptance gate");
-  }
-  ATX_TRY_VOID(
-      write_listed_dispersion_schedule_file((run_dir / "trade_schedule.tsv").string(), schedule));
-  std::printf("built immutable schedule: rolls=%zu\n", schedule.rolls.size());
-  return Ok();
-}
-
-Status dispersion_run_backtest(const fs::path &run_dir) {
-  ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
-  // F4 (BT-W): the SAME file, read through the STRICT typed reader, so the
-  // execution knobs actually govern the headline artifact instead of being
-  // accepted and ignored. Every RunSpec key is bound by this reader too, so an
-  // existing run dir reads identically; an unknown key now fails BY NAME.
-  ATX_TRY(DispersionRunConfig run_config, read_dispersion_run_config(run_dir / "run_spec.tsv"));
-  ATX_TRY(std::vector<UniverseRow> universe_rows, read_universe(run_dir / "universe_schedule.tsv"));
-  ATX_TRY(ListedDefinitionTable definitions,
-          read_listed_definitions_file((run_dir / "definitions.tsv").string()));
-  ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
-  ATX_TRY(Clock clock, Clock::from_manifest(manifest));
-  ATX_TRY(ListedDispersionSchedule schedule,
-          read_listed_dispersion_schedule_file((run_dir / "trade_schedule.tsv").string()));
-  ATX_TRY(ListedDispersionStrategy strategy,
-          ListedDispersionStrategy::create(schedule, spec.delta_band,
-                                           ScheduleMarkPolicy::ExactArchive,
-                                           run_config.fill_policy));
-  // FIX-F N2: ONE named construction, shared with the guard test, so the guard
-  // cannot drift from what production actually runs. Everything the replay
-  // needs — the F4 typed-spec engine config AND F5's subsetted snapshot cache —
-  // is assembled there.
-  RunConfig config = make_listed_replay_run_config(run_config, clock, strategy);
-  // The run records WHAT produced its numbers, regime first (M4), before the
-  // replay so a failed run still leaves the evidence of what it attempted.
-  if (run_config.emit_tsv_diagnostics) {
-    ATX_TRY_VOID(write_dispersion_effective_config(run_dir / "run_config.tsv", run_config));
-  }
-  ATX_TRY(BacktestResult backtest, run_backtest(clock, strategy, config));
-  if (!strategy.all_rolls_consumed()) {
-    return Err(ErrorCode::Unavailable, "backtest did not consume every scheduled roll");
-  }
-  if (run_config.emit_tsv_diagnostics) {
-    ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / "backtest.tsv").string()));
-  }
-
-  const std::vector<std::string> symbols =
-      all_symbols(universe_rows, run_config.universe.index_symbol);
-  std::vector<std::shared_ptr<const MarketSnapshot>> snapshot_owners;
-  std::vector<std::vector<ListedOptionQuote>> quote_owners;
-  snapshot_owners.reserve(clock.size());
-  quote_owners.reserve(clock.size());
-  for (const SnapshotRef &ref : clock.refs()) {
-    ATX_TRY(std::shared_ptr<const MarketSnapshot> snapshot,
-            config.snapshot_cache->load(ref.archive_path, config.query_pricing_tier));
-    snapshot_owners.push_back(std::move(snapshot));
-    ATX_TRY(std::vector<ListedOptionQuote> quotes,
-            load_listed_quotes(spec, definitions, symbols, ref.date));
-    quote_owners.push_back(std::move(quotes));
-  }
-  std::vector<ListedReconciliationSnapshot> reconciliation_snapshots;
-  reconciliation_snapshots.reserve(clock.size());
-  for (std::size_t i = 0; i < clock.size(); ++i) {
-    reconciliation_snapshots.push_back(
-        ListedReconciliationSnapshot{clock.refs()[i].date, snapshot_owners[i]->ts_ns(),
-                                     &snapshot_owners[i]->set(), quote_owners[i]});
-  }
-  ATX_TRY(ListedDispersionReconciliation reconciliation,
-          reconcile_listed_dispersion(schedule, reconciliation_snapshots));
-  ATX_TRY_VOID(validate_listed_reconciliation_backtest(reconciliation, backtest));
-  if (run_config.emit_tsv_diagnostics) {
-    ATX_TRY_VOID(
-        write_listed_contract_marks_file((run_dir / "contract_marks.tsv").string(), reconciliation));
-    ATX_TRY_VOID(
-        write_listed_reconciliation_file((run_dir / "reconciliation.tsv").string(), reconciliation));
-  }
-  // S3-T16. THE result envelope, published unconditionally: the same five
-  // sections `run_backtest_command` publishes, so a run directory this function
-  // produces is readable by everything written against the archive (RunDir::
-  // verify, the Python reporting layer) instead of only by a reader of the loose
-  // TSVs above. This is what made the library twin non-dispatchable — the CLI
-  // kept its own body precisely because dispatching here published a run
-  // directory the reporting layer could not read (see dispersion_run.hpp's seam
-  // contract). The CLI's `diagnostics` section is deliberately absent: it carries
-  // the CLI's PhaseTimer, which is not a library concept, and RunDir::verify does
-  // not require it.
-  std::vector<RaSectionData> sections;
-  sections.push_back(encode_schedule_section("trade_schedule", schedule));
-  sections.push_back(encode_backtest_section("backtest", backtest));
-  sections.push_back(encode_reconciliation_section(reconciliation));
-  sections.push_back(encode_contract_marks_section(reconciliation));
-  sections.push_back(encode_meta_section(spec));
-  ATX_TRY_VOID(RunDir(run_dir).write_run_archive(sections));
-  std::printf("backtest complete: dates=%zu rolls=%zu final_nav=%.10g\n", backtest.size(),
-              schedule.rolls.size(), backtest.nav.back());
-  return Ok();
-}
-
 // ── X5: tearsheet emission ──────────────────────────────────────────────────
 
 namespace {
@@ -3539,56 +3260,6 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
               static_cast<unsigned long long>(book_fingerprint),
               static_cast<double>(legs.size()) / elapsed_seconds);
   return Ok();
-}
-
-Result<DispersionVerifyReport> dispersion_verify(const fs::path &run_dir) {
-  ATX_TRY(RunSpec spec, read_run_spec(run_dir / "run_spec.tsv"));
-  ATX_TRY(CorpusManifest manifest, read_manifest_file((run_dir / "surface_manifest.tsv").string()));
-  ATX_TRY(CorpusQualityReport quality,
-          read_quality_report_file((run_dir / "quality.tsv").string()));
-  ATX_TRY(Clock clock, Clock::from_manifest(manifest));
-  ATX_TRY_VOID(verify_occ_ess_evidence(run_dir, clock));
-  ATX_TRY(ListedDispersionSchedule schedule,
-          read_listed_dispersion_schedule_file((run_dir / "trade_schedule.tsv").string()));
-  ATX_TRY_VOID(validate_listed_dispersion_schedule(schedule));
-  for (const fs::path &required :
-       {run_dir / "input_inventory.tsv", run_dir / "methodology_map.tsv", run_dir / "backtest.tsv",
-        run_dir / "occ_ess_inventory.tsv", run_dir / "contract_marks.tsv",
-        run_dir / "reconciliation.tsv"}) {
-    std::error_code error;
-    if (!fs::is_regular_file(required, error) || fs::file_size(required, error) == 0u) {
-      return Err(ErrorCode::NotFound, "missing final artifact " + required.string());
-    }
-  }
-  if (quality.n_admitted != manifest.n_ok) {
-    return Err(ErrorCode::InvalidArgument, "quality/manifest admitted count mismatch");
-  }
-  // `run-projected-var` is an OPTIONAL stage, so its artifacts are gated only
-  // when present — but they ARE now gated. Previously the command could emit a
-  // truncated or stale projected_var.tsv and `verify` would pass it silently.
-  ATX_TRY_VOID(verify_projected_var_artifacts_impl(run_dir, clock.size(), clock.refs()));
-  if (spec.core_mode) {
-    if (clock.size() < 60u || schedule.rolls.size() < 3u) {
-      return Err(ErrorCode::Unavailable, "core date/roll acceptance gate failed");
-    }
-    for (const ListedScheduleRoll &roll : schedule.rolls) {
-      if (roll.n_names < 40u) {
-        return Err(ErrorCode::Unavailable, "core roll breadth acceptance gate failed");
-      }
-    }
-  }
-  // M1: native reference reconciliation — recompute + numerically compare the
-  // persisted arithmetic (independent of the engine), then publish the sidecar.
-  ATX_TRY(std::vector<ReferenceReconRecord> records, reconcile_dispersion_reference(run_dir, false));
-  ATX_TRY_VOID(
-      write_reference_reconciliation_file(run_dir / "reference_reconciliation.tsv", records));
-  std::printf("verified artifact envelope: dates=%zu admitted=%u rolls=%zu\n", clock.size(),
-              quality.n_admitted, schedule.rolls.size());
-  DispersionVerifyReport report;
-  report.n_dates = clock.size();
-  report.n_admitted = quality.n_admitted;
-  report.n_rolls = schedule.rolls.size();
-  return Ok(report);
 }
 
 } // namespace atx::vol
