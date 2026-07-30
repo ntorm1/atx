@@ -41,8 +41,30 @@ and verifies it entirely from the command line — see
   loader does **one materialized read per date file** and splits by `underlying`
   in memory (one IO pass per date regardless of universe size); per-symbol
   row-group pruning is a documented future optimization, not built now.
-- Snapshot minute is the fixed **19:55:00Z** hive convention (uniform with the
-  existing corpus; the DST rationale is documented in the pull tool).
+- Snapshot minute is **whatever that date file's own `ts` column says**, and it
+  is *not* uniform. The production hive is pulled ET-anchored at **15:55
+  America/New_York** (`pull_opra_hive.py --snap-et 15:55`), which is
+  `T19:55:00Z` under EDT and `T20:55:00Z` under EST: of its 244 sessions,
+  **161 are 19:55Z and 83 are 20:55Z** (every session from 2025-11-03 through
+  2026-03-06). `ts` is constant within a date file and is the snapshot instant
+  of record; the build CLI's `--snapshot-suffix` is a *claim* about it, and the
+  loader now compares the two and fails the cell with a load error naming both
+  values rather than silently applying the operator's. A build range must
+  therefore never straddle a DST transition — see
+  [Multi-year backfill](#multi-year-backfill) for the chunking rule, the
+  measured blast radius of a wrong minute, and the orchestrator's own
+  `assert_snapshot_minute_uniform` guard.
+
+  > This line previously read *"the fixed **19:55:00Z** hive convention"*. That
+  > was false for the production hive and it pointed a reader straight at the
+  > silent-suffix failure mode, so it is corrected rather than annotated. **No
+  > landed data is affected**: Task 7 verified every hive file's `ts` sits at
+  > the expected 15:55 ET instant, and Task 8 verified every build invocation's
+  > `--snapshot-suffix` equals the expected minute for every session in its
+  > range (two independent oracles plus a cross-check against the pull-side
+  > `_absent/*.json` minute stamps, 0 mismatches). Those compose to
+  > suffix == file `ts` for all 244 sessions: the loader gap was a **missing
+  > guard, not a realized corruption**.
 
 This replaces the old per-symbol tree `<root>/<symbol>/<date>.parquet` (one file
 per `(symbol, date)`). To convert an existing per-symbol tree, see
@@ -1850,26 +1872,39 @@ $ # --from/--to, or verify_thresholds() sizes off the resumed sub-range.
 ### The snapshot instant is ET-anchored; the loader takes ONE per invocation
 
 The policy instant is **15:55 America/New_York** — `T19:55:00Z` under EDT,
-`T20:55:00Z` under EST. The
-[hive-layout note above](#opra-hive-v2--the-on-disk-layout-it-reads) calling
-19:55:00Z a fixed convention describes a single-summer corpus; a hive pulled with
-`--snap-et 15:55` is **not** uniform (a 244-session 2025-08 .. 2026-07 hive is
-161 EDT / 83 EST, the EST run being 2025-11-03 .. 2026-03-06). `OpraHiveSpec`
-carries exactly one `--snapshot-suffix` and applies it across the whole
-`--from`/`--to` range, and that string — not the file's own `ts` — drives the
-time-to-expiry math, **so a chunk may never straddle a DST transition.**
-`chunk_sessions()` enforces it by grouping on `(month, snapshot-minute)`, which is
-also what makes `--r` (resolved from the chunk's first session's month) valid for
-the whole chunk.
+`T20:55:00Z` under EST. A hive pulled with `--snap-et 15:55` is therefore **not**
+uniform: the 244-session 2025-08 .. 2026-07 hive is 161 EDT / 83 EST, the EST run
+being 2025-11-03 .. 2026-03-06. (The
+[hive-layout note above](#opra-hive-v2--the-on-disk-layout-it-reads) once called
+19:55:00Z a fixed convention — that described a single-summer corpus and has been
+corrected.) `OpraHiveSpec` carries exactly one `--snapshot-suffix` and applies it
+across the whole `--from`/`--to` range, **so a chunk may never straddle a DST
+transition.** `chunk_sessions()` enforces it by grouping on
+`(month, snapshot-minute)`, which is also what makes `--r` (resolved from the
+chunk's first session's month) valid for the whole chunk.
 
-**A wrong suffix fails silently.** Measured on a 5-session EST fixture built with
-the EDT default: **exit 0, `n_load_errors 0`, every date written**, and the damage
-is one arbitrage-rejected slice plus ~1e-3 relative IV drift on the survivors —
-an hour is a large fraction of a short tenor's remaining `T`. Exit codes cannot
-catch a DST-grouping bug, so **audit every `cmd=` line of `orchestrator.log`
-against `pull_opra_hive.snapshot_minute_utc()`**: each chunk's XNYS sessions must
-share one expected minute, it must equal the logged suffix, and zero mismatches
-plus zero straddles across all build lines is the gate.
+**A wrong suffix used to fail silently.** Measured on a 5-session EST fixture
+built with the EDT default: **exit 0, `n_load_errors 0`, every date written**,
+and the damage is one arbitrage-rejected slice plus ~1e-3 relative IV drift on
+the survivors — an hour is a large fraction of a short tenor's remaining `T`.
+That hazard is now closed from **both** ends, and neither guard existed when the
+production roots were built:
+
+- **Loader (C-1).** `panel_from_scan` takes the snapshot instant from the date
+  file's own `ts` column and rejects a `--snapshot-suffix` that disagrees with
+  it, with a per-cell load error naming both instants. A wrong minute is now a
+  loud failure per cell instead of an invisible re-stamping.
+- **Orchestrator (I-7).** `build_build_command` calls
+  `assert_snapshot_minute_uniform(chunk, snap_et)`, which checks every session
+  in the chunk *and every calendar day in the `--from`/`--to` range* — the
+  latter because the C++ CLI re-derives its own date list from the hive between
+  those bounds, so the set that must be minute-uniform is the range, not the
+  list. A straddling range raises before anything is spawned.
+
+The manual procedure those replace — *audit every `cmd=` line of
+`orchestrator.log` against `pull_opra_hive.snapshot_minute_utc()`* — is still a
+good belt-and-braces check on an old log, but it is no longer the only thing
+standing between an operator and a silently mis-stamped year.
 
 ### Coverage is a set identity, not a row-group or symbol count
 
@@ -1896,13 +1931,27 @@ every expected-session count rather than counting it as a hole.
   config is idempotent, and populate rewrites each date's partition
   independently, so it cannot perturb a fitted value. Peak commit ~130 MB per
   process regardless of symbol count.
-- The generated `--max-absent` comes off the 0.7x floor and is ~10x looser than a
-  real absent count (3183 against a true 325) — **pin the observed number**, per
+- **`verify`'s thresholds are now two independent knobs, and both are
+  overridable.** `--min-cell-fraction` (default `0.95`) sizes `--min-cells`,
+  which is a *grid-size* floor — `cells_checked` counts holes, so it moves only
+  when whole partitions are missing. `--max-absent` defaults to `ceil(0.04 x
+  n_symbols x n_sessions)` = 425 for `sp100-2025` / 572 for `sp100-2026`,
+  against observed absent counts of 325 / 358. It used to be generated as the
+  complement of a 0.7 floor — 3183 / 4284, ~10x looser than reality and
+  therefore inert. It is the **only** automated detector for a destroyed
+  surface, so pass an absolute `--max-absent <observed>` when you want it
+  pinned exactly, per
   [the operator checklist](#absence-is-not-a-failure--the-cells-the-database-never-stored).
-- **`year_summary_<year>.csv` is not a year summary**: it sums non-additive
-  `config.*` counters across chunks, and a resumed sub-range run overwrites it in
-  place with only that sub-range. The per-chunk `--report` CSVs and the database
-  are the authority; its loader counters (`n_coverage_holes`, `n_load_errors`) are
-  trustworthy.
+- **`year_summary_<year>_<from>_<to>.csv`** is the year summary. It is keyed on
+  the range the invocation actually built, because the old year-keyed
+  `year_summary_<year>.csv` was truncate-written per process invocation and a
+  resumed sub-range therefore *replaced* the whole-year aggregate with just that
+  sub-range — which is what happened to `year_summary_2026.csv`, now describing
+  17 of 140 sessions. `config.*` counters are no longer summed across chunks
+  (they are a per-invocation snapshot: 102 x 29 chunks read 2958), and a
+  bisected parent's partial report is deduped against its children's.
+  Repaired aggregates regenerated from the per-chunk reports live beside the
+  originals in `t8-2025/` and `t8-2026/` with a `PROVENANCE.txt` each; the
+  per-chunk `--report` CSVs and the database remain the authority.
 - Single-writer rule holds: no admin subcommand against a root while a build is
   writing it. Parallel years into **distinct** roots is fine.

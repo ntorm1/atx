@@ -30,6 +30,7 @@ Cases (brief Step 2, amended by the Task 4 addendum):
 from __future__ import annotations
 
 import csv
+import datetime as dt
 import importlib.util
 import pathlib
 import subprocess
@@ -838,6 +839,63 @@ def test_aggregate_build_summary_sums_numeric_fields_across_chunks():
     assert summary == {"coverage.cells_ok": 15.0, "coverage.cells_failed": 2.0, "n_dates_loaded": 3.0}
 
 
+def test_aggregate_build_summary_does_not_sum_non_additive_config_counters():
+    """FIX-I-3(2), CONTRACT CHANGE (deliberate). The test above asserted that
+    EVERY numeric key is summed, and `config.*` is a per-invocation snapshot of
+    the symbol-config stage -- every invocation re-declares the whole universe
+    -- so a 102-name universe over 29 chunks reported `config.n_symbols` 2958.
+    Non-additive keys now reduce with `max`; `coverage.*` and `n_*` still sum."""
+    reports = [
+        {"config.n_symbols": "102", "config.n_skipped_existing": "102",
+         "coverage.cells_ok": "400", "n_load_errors": "1"},
+        {"config.n_symbols": "102", "config.n_skipped_existing": "100",
+         "coverage.cells_ok": "404", "n_load_errors": "0"},
+    ]
+    summary = orch.aggregate_build_summary(reports)
+    assert summary["config.n_symbols"] == 102.0, "the universe is 102 names, not 204"
+    assert summary["config.n_skipped_existing"] == 102.0
+    assert summary["coverage.cells_ok"] == 804.0
+    assert summary["n_load_errors"] == 1.0
+
+
+def test_dedupe_chunk_reports_drops_a_bisected_parent_in_favour_of_its_children():
+    """FIX-I-3(3). `execute_build_chunk_with_retry` re-runs sub-chunks of a
+    failed parent and a report is recorded for EVERY invocation, so a partial
+    parent report used to be aggregated on top of both children's and every
+    date in the chunk counted twice."""
+    parent = ("d1", "d2", "d3", "d4")
+    reports = {
+        parent: {"coverage.cells_ok": "1"},         # partial, before the failure
+        ("d1", "d2"): {"coverage.cells_ok": "10"},
+        ("d3", "d4"): {"coverage.cells_ok": "20"},
+    }
+    kept = orch.dedupe_chunk_reports(reports)
+    assert orch.aggregate_build_summary(kept) == {"coverage.cells_ok": 30.0}
+
+    # Recursive: a twice-bisected chunk keeps only the quarters.
+    reports2 = dict(reports)
+    reports2[("d1",)] = {"coverage.cells_ok": "4"}
+    reports2[("d2",)] = {"coverage.cells_ok": "5"}
+    assert orch.aggregate_build_summary(orch.dedupe_chunk_reports(reports2)) == \
+        {"coverage.cells_ok": 29.0}
+
+    # No bisect: nothing is dropped.
+    plain = {("a", "b"): {"coverage.cells_ok": "1"}, ("c", "d"): {"coverage.cells_ok": "2"}}
+    assert orch.aggregate_build_summary(orch.dedupe_chunk_reports(plain)) == \
+        {"coverage.cells_ok": 3.0}
+
+
+def test_year_summary_name_is_keyed_on_the_range_not_only_the_year():
+    """FIX-I-3(1). `year_summary_{year}.csv` + open("w") + a per-INVOCATION
+    report list meant any sub-range resume replaced the whole-year aggregate
+    with just that sub-range. It did exactly that to year_summary_2026.csv,
+    which now describes 17 of 140 sessions."""
+    whole = orch.year_summary_name(2026, "2026-01-02", "2026-07-31")
+    resumed = orch.year_summary_name(2026, "2026-07-06", "2026-07-31")
+    assert whole == "year_summary_2026_2026-01-02_2026-07-31.csv"
+    assert whole != resumed, "a sub-range resume must not target the same file"
+
+
 def test_write_year_summary_csv_round_trips(tmp_path):
     path = tmp_path / "year_summary_2022.csv"
     orch.write_year_summary_csv({"coverage.cells_ok": 15.0, "coverage.cells_failed": 2.0}, path)
@@ -865,12 +923,59 @@ def test_phase_build_writes_a_year_summary_aggregated_from_chunk_reports(tmp_pat
     )
     code = orch.phase_build(args, ["SPY"], {"2022-07": 0.02}, tmp_path)
     assert code == 0
-    summary_path = tmp_path / "year_summary_2022.csv"
+    summary_path = tmp_path / "year_summary_2022_2022-07-05_2022-07-06.csv"
     assert summary_path.exists()
+    assert not (tmp_path / "year_summary_2022.csv").exists(), \
+        "FIX-I-3: the year-keyed name is what a sub-range resume destroyed"
     with open(summary_path, newline="", encoding="utf-8") as f:
         rows = {r["key"]: r["value"] for r in csv.DictReader(f)}
     assert rows["coverage.cells_ok"] == "2.0"
     assert rows["coverage.cells_failed"] == "0.0"
+
+
+def test_phase_build_sub_range_resume_does_not_destroy_the_earlier_year_summary(tmp_path,
+                                                                                monkeypatch):
+    """FIX-I-3(1) end to end -- the production accident, reproduced. Build the
+    whole (tiny) year, then resume a strict sub-range of it in a SECOND
+    phase_build call, exactly as a real resume does. The first invocation's
+    aggregate must survive intact."""
+    hive = _make_hive_with_sessions(tmp_path, ["2022-07-05", "2022-07-06", "2022-07-07"])
+
+    def fake_run(argv, **kw):
+        report_path = pathlib.Path(argv[argv.index("--report") + 1])
+        n_dates = 1 + (dt.date.fromisoformat(argv[argv.index("--to") + 1])
+                       - dt.date.fromisoformat(argv[argv.index("--from") + 1])).days
+        report_path.write_text(
+            f"key,value\nconfig.n_symbols,1\ncoverage.cells_ok,{n_dates}\n"
+            "config_disabled_symbol\n", encoding="utf-8")
+        return _FakeCompleted(0, stdout="report ...\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    def _args(from_date, to_date):
+        return types.SimpleNamespace(
+            from_date=from_date, to_date=to_date, snap_et="15:55", hive=hive,
+            dry_run=False, build_exe="BUILD.exe",
+            db_prefix=str(tmp_path / "surface-db" / "sp100"),
+            index="SPY", chunk_sessions=4, fit_workers=0, max_failed_sessions=10)
+
+    assert orch.phase_build(_args("2022-07-05", "2022-07-07"), ["SPY"], {"2022-07": 0.02},
+                            tmp_path) == 0
+    whole = tmp_path / "year_summary_2022_2022-07-05_2022-07-07.csv"
+    assert whole.exists()
+    before = whole.read_text(encoding="utf-8")
+
+    assert orch.phase_build(_args("2022-07-07", "2022-07-07"), ["SPY"], {"2022-07": 0.02},
+                            tmp_path) == 0
+    resumed = tmp_path / "year_summary_2022_2022-07-07_2022-07-07.csv"
+    assert resumed.exists(), "the resume must still record its own summary"
+    assert whole.read_text(encoding="utf-8") == before, \
+        "the whole-year aggregate must survive a sub-range resume"
+
+    with open(whole, newline="", encoding="utf-8") as f:
+        rows = {r["key"]: float(r["value"]) for r in csv.DictReader(f)}
+    assert rows["coverage.cells_ok"] == 3.0     # all three sessions
+    assert rows["config.n_symbols"] == 1.0      # not summed across chunks
 
 
 # ── IMPORTANT 2: verify uses hive-present sessions (not the requested

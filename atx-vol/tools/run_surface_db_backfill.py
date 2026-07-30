@@ -523,14 +523,29 @@ def parse_build_report_csv(path) -> dict[str, str]:
     return out
 
 
+# FIX-I-3(2). Only these key prefixes may be SUMMED across chunks. Everything
+# else is reduced with `max`, because summing it is meaningless: `config.*` is
+# a per-invocation snapshot of the symbol-config stage (every invocation
+# re-declares the whole universe), so summing `config.n_symbols` across 29
+# chunks produced 2958 for a 102-name universe -- and
+# `test_aggregate_build_summary_sums_numeric_fields_across_chunks` asserted
+# that as the contract. `coverage.*` and the `n_*` loader counters ARE additive
+# because chunks cover disjoint date ranges. An allowlist rather than a
+# denylist, so a key nobody has classified yet defaults to the harmless answer.
+ADDITIVE_SUMMARY_PREFIXES = ("coverage.", "n_")
+
+
 def aggregate_build_summary(chunk_reports: list[dict[str, str]]) -> dict[str, float]:
-    """Sum the numeric scalar fields of ``chunk_reports`` (each one chunk's
-    ``parse_build_report_csv`` output) into one running per-year summary --
-    the brief's Step 4 "parse report CSV scalar section ... into a running
-    year summary". A field that fails to parse as a float is skipped rather
-    than raising -- no build-report field is non-numeric today, but an
-    aggregator over machine-generated CSVs should not crash on the first one
-    that ever is."""
+    """Fold ``chunk_reports`` (each one chunk's ``parse_build_report_csv``
+    output) into one per-year summary: additive keys are SUMMED, every other
+    key is reduced with ``max``. A field that fails to parse as a float is
+    skipped rather than raising -- no build-report field is non-numeric today,
+    but an aggregator over machine-generated CSVs should not crash on the first
+    one that ever is.
+
+    Callers must pass ``dedupe_chunk_reports``'s output rather than the raw
+    per-invocation list, or a bisected parent's partial report is counted on
+    top of its children's."""
     summary: dict[str, float] = {}
     for report in chunk_reports:
         for key, value in report.items():
@@ -538,14 +553,58 @@ def aggregate_build_summary(chunk_reports: list[dict[str, str]]) -> dict[str, fl
                 num = float(value)
             except (TypeError, ValueError):
                 continue
-            summary[key] = summary.get(key, 0.0) + num
+            if key not in summary:
+                summary[key] = num
+            elif key.startswith(ADDITIVE_SUMMARY_PREFIXES):
+                summary[key] += num
+            else:
+                summary[key] = max(summary[key], num)
     return summary
+
+
+def dedupe_chunk_reports(reports: dict[tuple[str, ...], dict[str, str]]) -> list[dict[str, str]]:
+    """The reports to aggregate, with any BISECTED PARENT dropped.
+
+    FIX-I-3(3). ``execute_build_chunk_with_retry`` re-runs sub-chunks of a
+    failed parent and the executor records a report for EVERY invocation, so a
+    partial parent report and both children's reports all landed in the list
+    and every date in that chunk was counted twice. Keyed on the chunk's own
+    session tuple the rule is exact and recursive: drop any chunk that has a
+    STRICT SUBSET among the reported chunks, because such a subset is a child
+    that re-covered part of it. A twice-bisected chunk therefore drops the
+    parent and both intermediate halves and keeps the quarters. Never triggered
+    in production (Task 8: no bisect ever fired), and never tested until now."""
+    keys = list(reports)
+    return [reports[key] for key in keys
+            if not any(set(other) < set(key) for other in keys)]
+
+
+def year_summary_name(year: int, date_lo: str, date_hi: str) -> str:
+    """The year-summary filename for the range this invocation actually built.
+
+    FIX-I-3(1). This used to be ``year_summary_{year}.csv`` -- keyed on the
+    YEAR only, opened ``"w"`` (truncate), and fed from a ``chunk_reports``
+    collection initialised fresh per PROCESS INVOCATION. So any sub-range
+    resume of a year replaced the whole-year aggregate with only that
+    sub-range, irrecoverably. That already happened in production:
+    ``year_summary_2026.csv`` describes only 17 of the year's 140 sessions.
+    (Note the inconsistency it lived beside: ``orchestrator.log`` is opened
+    ``"a"``, this file ``"w"``.)
+
+    Keying the NAME on the range -- the same convention the per-chunk
+    ``build_{year}_{c0}_{c1}.csv`` reports already use to avoid exactly this
+    collision -- makes each invocation's summary its own file, so a resume can
+    never destroy an earlier one and every file's name states honestly which
+    sessions it describes."""
+    return f"year_summary_{year}_{date_lo}_{date_hi}.csv"
 
 
 def write_year_summary_csv(summary: dict[str, float], path) -> None:
     """Write ``summary`` (``aggregate_build_summary``'s output) as a sorted
     ``key,value`` CSV -- the run's only structured, file-based record of a
-    year's chunk outcomes (Task 8 reads this)."""
+    year's chunk outcomes (Task 8 reads this). ``path`` should come from
+    ``year_summary_name``, so a sub-range resume cannot truncate an earlier
+    invocation's aggregate."""
     path = pathlib.Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8") as f:
@@ -848,7 +907,11 @@ def phase_build(args, symbols: list[str], rates: dict[str, float], log_dir: path
         # scalar section, read back and folded into a running year summary --
         # the run's only structured record of chunk outcomes (n_ok/n_failed/
         # cells_refit/...), which Task 8 depends on being able to read.
-        chunk_reports: list[dict[str, str]] = []
+        # FIX-I-3(3): keyed on the chunk's own session tuple rather than
+        # appended, so `dedupe_chunk_reports` can drop a bisected parent's
+        # partial report in favour of its children's, and a re-run of the same
+        # sub-chunk replaces its own entry instead of being counted twice.
+        chunk_reports: dict[tuple[str, ...], dict[str, str]] = {}
         year_status = "ok"
         for chunk in chunks:
             c0, c1 = chunk[0], chunk[-1]
@@ -880,7 +943,7 @@ def phase_build(args, symbols: list[str], rates: dict[str, float], log_dir: path
                 # that verdict).
                 if sub_report.exists():
                     try:
-                        chunk_reports.append(parse_build_report_csv(sub_report))
+                        chunk_reports[tuple(sub_chunk)] = parse_build_report_csv(sub_report)
                     except (OSError, csv.Error):
                         pass
                 return sub_res.exit_code
@@ -899,8 +962,16 @@ def phase_build(args, symbols: list[str], rates: dict[str, float], log_dir: path
                 break
 
         if not args.dry_run and chunk_reports:
-            summary = aggregate_build_summary(chunk_reports)
-            write_year_summary_csv(summary, pathlib.Path(log_dir) / f"year_summary_{year}.csv")
+            # FIX-I-3: dedupe bisected parents, then name the file after the
+            # range this invocation actually reported on, so a sub-range resume
+            # writes a NEW file instead of truncating the whole-year aggregate.
+            reported_dates = sorted({d for key in chunk_reports for d in key})
+            summary = aggregate_build_summary(dedupe_chunk_reports(chunk_reports))
+            write_year_summary_csv(
+                summary,
+                pathlib.Path(log_dir) / year_summary_name(
+                    year, reported_dates[0], reported_dates[-1]),
+            )
 
         if failed_sessions:
             print(f"BUILD year {year}: permanently-failed session(s): {failed_sessions}",
