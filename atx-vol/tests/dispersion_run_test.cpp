@@ -666,11 +666,20 @@ struct PvFixture {
           PvUniverseBlock{"2026-10-03", {{"AAA", 0.75}, {"CCC", 0.25}}}};
 }
 
+// S3-T16. The run-spec line every test below adds because it READS a loose
+// result TSV back. The tables are diagnostics now — a run that does not ask for
+// them does not get them — so a fixture that asserts on their CONTENT has to
+// declare that it wants them. Named rather than inlined so the reason is stated
+// once and every consumer points at it.
+const std::string kEmitTsvDiagnostics = tsv_row({"emit_tsv_diagnostics", "true"});
+
 } // namespace
 
 TEST(DispersionDividends, ExactCorpusInputsPersistAndReachSurfaceAndListedRunConfigs) {
+  // The gate below compares the two runs' `surface_backtest.tsv` rows, so both
+  // fixtures declare the diagnostic tables (S3-T16).
   const std::string financing_keys =
-      tsv_row({"financing_shares_carry", "1"});
+      tsv_row({"financing_shares_carry", "1"}) + kEmitTsvDiagnostics;
   const PvFixture without =
       make_pv_fixture("f1_without_dividends", pv_reconstituting_blocks(),
                       financing_keys, 5u, 0u, /*symbol_derived_uids=*/true);
@@ -1148,7 +1157,8 @@ TEST(DispersionProjectedVarFixture, AnchorTimestampsLandOnTheNamedDates) {
 }
 
 TEST(DispersionProjectedVar, C1_BookIsResolvedAndSizedAtTheAsOfSnapshotNotTheFirst) {
-  const PvFixture fixture = make_pv_fixture("pv_c1_asof", pv_reconstituting_blocks());
+  const PvFixture fixture =
+      make_pv_fixture("pv_c1_asof", pv_reconstituting_blocks(), kEmitTsvDiagnostics);
   ASSERT_EQ(fixture.dates.size(), 5u);
 
   const Status ran = dispersion_run_projected_var(fixture.dir);
@@ -1259,7 +1269,7 @@ TEST(DispersionProjectedVar, P1_LoadsAnchorOnceAndSubsetsHistoricalArchives) {
 
 TEST(DispersionProjectedVar, C14_FailedRerunInvalidatesThePreviousGeneration) {
   const PvFixture fixture =
-      make_pv_fixture("pv_c14_failed_rerun", pv_reconstituting_blocks());
+      make_pv_fixture("pv_c14_failed_rerun", pv_reconstituting_blocks(), kEmitTsvDiagnostics);
   ASSERT_TRUE(dispersion_run_projected_var(fixture.dir));
   ASSERT_TRUE(verify_projected_var_artifacts(fixture.dir, fixture.dates.size()));
 
@@ -1336,6 +1346,7 @@ TEST(DispersionProjectedVar, C15_RouteHonorsTheTypedSideMultiplierWeightingAndSt
   knobs += tsv_row({"weighting", "equal_vega"});
   knobs += tsv_row({"strike", "fixed_moneyness"});
   knobs += tsv_row({"strike_log_moneyness", "-0.05"});
+  knobs += kEmitTsvDiagnostics; // the parity check reads projected_risk_legs.tsv
   const PvFixture fixture = make_pv_fixture("pv_c15_parity", pv_unequal_weight_blocks(), knobs);
 
   const Status ran = dispersion_run_projected_var(fixture.dir);
@@ -1421,8 +1432,8 @@ TEST(DispersionProjectedVar, C15_RouteHonorsTheTypedIndexSymbol) {
   // AAA is the index leg here; SPY is a member of nothing.
   const std::vector<PvUniverseBlock> blocks = {
       PvUniverseBlock{"2026-10-01", {{"BBB", 0.5}, {"CCC", 0.5}}}};
-  const PvFixture fixture =
-      make_pv_fixture("pv_c15_index_symbol", blocks, tsv_row({"index_symbol", "AAA"}));
+  const PvFixture fixture = make_pv_fixture(
+      "pv_c15_index_symbol", blocks, tsv_row({"index_symbol", "AAA"}) + kEmitTsvDiagnostics);
 
   const Status ran = dispersion_run_projected_var(fixture.dir);
   ASSERT_TRUE(ran.has_value())
@@ -1492,8 +1503,9 @@ namespace {
 TEST(DispersionBenchmarkJoin, C6_AMatchingBenchmarkJoinsOnDateAndReportsEveryObservation) {
   // The strategy's return observations are steps 1..N-1 — `date[1..]` — so a
   // benchmark that covers exactly those sessions must be accepted whole.
-  PvFixture fixture = make_pv_fixture("c6_exact", pv_reconstituting_blocks(),
-                                      tsv_row({"benchmark_series", "benchmark.tsv"}));
+  PvFixture fixture =
+      make_pv_fixture("c6_exact", pv_reconstituting_blocks(),
+                      tsv_row({"benchmark_series", "benchmark.tsv"}) + kEmitTsvDiagnostics);
   ASSERT_EQ(fixture.dates.size(), 5u);
   const std::vector<std::string> return_dates(fixture.dates.begin() + 1, fixture.dates.end());
   write_file(fixture.dir / "benchmark.tsv", pv_benchmark_body(return_dates));
@@ -1820,10 +1832,10 @@ TEST(DispersionIndexRouting, ScheduleBuildResolvesTheConfiguredIndexLeg) {
   // a silently different surface — it is a uid that cannot be resolved at all.
   const std::vector<PvUniverseBlock> blocks = {
       PvUniverseBlock{"2026-10-01", {{"BBB", 0.5}, {"CCC", 0.5}}}};
-  const PvFixture fixture =
-      make_pv_fixture("index_routing_schedule", blocks, tsv_row({"index_symbol", "AAA"}),
-                      /*n_dates=*/2, /*n_unused_surfaces=*/0, /*symbol_derived_uids=*/false,
-                      /*include_spy=*/false);
+  const PvFixture fixture = make_pv_fixture(
+      "index_routing_schedule", blocks, tsv_row({"index_symbol", "AAA"}) + kEmitTsvDiagnostics,
+      /*n_dates=*/2, /*n_unused_surfaces=*/0, /*symbol_derived_uids=*/false,
+      /*include_spy=*/false);
   ASSERT_TRUE(write_listed_definitions_file((fixture.dir / "definitions.tsv").string(),
                                             ListedDefinitionTable{})
                   .has_value());
@@ -1833,6 +1845,8 @@ TEST(DispersionIndexRouting, ScheduleBuildResolvesTheConfiguredIndexLeg) {
   // build fails EITHER WAY. What the index symbol decides is WHERE it fails:
   // the per-date admission tally is written after the loop that resolves the
   // universe, so its presence is the evidence that the loop ran to completion.
+  // The tally is a gated diagnostic (S3-T16), hence `kEmitTsvDiagnostics` above:
+  // this is the one place the repo genuinely CONSUMES `quote_rejects.tsv`.
   const Status built = dispersion_build_schedule(fixture.dir);
   ASSERT_FALSE(built.has_value()) << "a fixture with no quotes must not produce a schedule";
   const std::string message = built.error().to_string();
@@ -1849,14 +1863,15 @@ TEST(DispersionIndexRouting, ScheduleBuildResolvesTheConfiguredIndexLeg) {
   fs::remove_all(fixture.dir, error);
 }
 
-// ── S3-T16: `.atxrun` is the library run path's result envelope ──────────────
+// ── S3-T16: loose result TSVs are diagnostics; `.atxrun` is the default ──────
 //
 // The library twin of the shipped `run-backtest` used to publish its economics
 // as four loose TSVs and nothing else, while the CLI published `run.atxrun` and
 // nothing else — so dispatching the CLI here would have written a run directory
 // the Python reporting layer cannot read (the reason dispersion_run.hpp records
 // for keeping the two bodies apart). `dispersion_run_backtest` now publishes the
-// SAME archive sections the CLI does.
+// SAME archive sections the CLI does, unconditionally, and the loose TSVs are
+// emitted only when the run spec asks for them via `emit_tsv_diagnostics`.
 //
 // Driving that needs a run directory the listed replay can actually complete on.
 // The PV fixture already writes three sessions of synthetic eSSVI boards plus the
@@ -1979,6 +1994,10 @@ constexpr std::int64_t kListedFixtureExpiryNs =
   return fixture;
 }
 
+// The four loose artifacts the listed replay used to publish unconditionally.
+constexpr const char *kListedResultTsvs[] = {"backtest.tsv", "contract_marks.tsv",
+                                             "reconciliation.tsv", "run_config.tsv"};
+
 [[nodiscard]] std::string slurp_bytes(const fs::path &path) {
   std::ifstream stream(path, std::ios::binary);
   if (!stream) {
@@ -1988,6 +2007,40 @@ constexpr std::int64_t kListedFixtureExpiryNs =
 }
 
 } // namespace
+
+TEST(DispersionDiagnosticsFlag, ADefaultListedRunEmitsNoLooseResultTsvs) {
+  const PvFixture fixture = make_listed_run_fixture("s3t16_default_no_tsv");
+
+  const Status ran = dispersion_run_backtest(fixture.dir);
+  ASSERT_TRUE(ran.has_value()) << ran.error().to_string();
+
+  for (const char *leaf : kListedResultTsvs) {
+    EXPECT_FALSE(fs::exists(fixture.dir / leaf))
+        << leaf
+        << " was written by a run whose spec never asked for it. The loose result TSVs duplicate "
+           "run.atxrun and are diagnostics now: `emit_tsv_diagnostics` defaults OFF";
+  }
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+TEST(DispersionDiagnosticsFlag, TheFlagTurnsTheLooseResultTsvsBackOn) {
+  const PvFixture fixture = make_listed_run_fixture("s3t16_flag_on", kEmitTsvDiagnostics);
+
+  const Status ran = dispersion_run_backtest(fixture.dir);
+  ASSERT_TRUE(ran.has_value()) << ran.error().to_string();
+
+  for (const char *leaf : kListedResultTsvs) {
+    EXPECT_TRUE(fs::exists(fixture.dir / leaf))
+        << leaf
+        << " is missing from a run that DECLARED `emit_tsv_diagnostics true`. A diagnostics knob "
+           "that cannot be turned on is not a knob";
+  }
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
 
 TEST(DispersionRunBacktest, TheDefaultPathPublishesAReadableRunArchive) {
   const PvFixture fixture = make_listed_run_fixture("s3t16_atxrun_default");

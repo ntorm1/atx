@@ -354,6 +354,30 @@ struct DispersionRunConfig {
   // line an operator reads under re-pin pressure; see dispersion_run.cpp's
   // binder, which is the authority.)
   ListedQuoteQualityConfig quote_quality{};
+  // S3-T16. Emit the LOOSE RESULT TSVs alongside the run's real output. Spec key
+  // `emit_tsv_diagnostics`, DEFAULT OFF.
+  //
+  // The economic result envelope is `run.atxrun` (RunDir::write_run_archive),
+  // which the Python reporting layer reads; the loose per-stage result tables
+  // (`backtest.tsv`, `contract_marks.tsv`, `reconciliation.tsv`,
+  // `surface_backtest.tsv`, the X5 tearsheet pair, the projected-VaR triple, the
+  // F4 `run_config.tsv` echo, F6's `quote_rejects.tsv`, and the
+  // profile/counters probes) duplicate it in a human-readable form. They are a
+  // DIAGNOSTIC now, not a contract, and a default run leaves none of them behind.
+  //
+  // What this flag does NOT govern: the run directory's retained TEXT INPUTS and
+  // evidence — `run_spec.tsv`, `universe_schedule.tsv`, `definitions.tsv`,
+  // `surface_manifest.tsv`, `quality.tsv`, `share_dividends.tsv`,
+  // `input_inventory.tsv`, `methodology_map.tsv`, `occ_ess_inventory.tsv` and
+  // `trade_schedule.tsv`. Later stages parse those back, `RunDir::run_identity_
+  // hash` folds five of them, and the shipped `verify` requires them; they are
+  // pipeline structure, not a report about it.
+  //
+  // Appended at the end of the struct per the compatibility convention marked in
+  // backtest.hpp. Unlike the six sites Sprint 4 sweeps, this config is bound BY
+  // KEY (`read_dispersion_run_config`), never positionally, so it needs no S4
+  // migration.
+  bool emit_tsv_diagnostics{false};
 };
 
 // One point-in-time observation of a discrete dividend schedule carried by an

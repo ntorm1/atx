@@ -1715,6 +1715,8 @@ Result<DispersionRunConfig> read_dispersion_run_config(const fs::path &path) {
   ATX_TRY_VOID(binder.number("multiplier", config.multiplier));
   ATX_TRY_VOID(binder.number("entry_every_n", config.entry_every_n));
   ATX_TRY_VOID(binder.boolean("record_diagnostics", config.record_diagnostics));
+  // S3-T16: the loose result TSVs are a diagnostic, off unless the spec asks.
+  ATX_TRY_VOID(binder.boolean("emit_tsv_diagnostics", config.emit_tsv_diagnostics));
 
   ATX_TRY_VOID(binder.enumerated("hedge", config.hedge.kind,
                                  {{"none", HedgeSpec::Kind::None},
@@ -2124,7 +2126,12 @@ Status write_dispersion_effective_config(const fs::path &path, const DispersionR
       // alpha/beta/IR, so it belongs in the effective config beside the regime.
       << "benchmark_join\t" << to_string(config.benchmark_join) << '\n'
       << "delta_band\t" << num(config.hedge.band) << '\n'
-      << "gross_index_vega\t" << num(config.gross_index_vega) << '\n';
+      << "gross_index_vega\t" << num(config.gross_index_vega) << '\n'
+      // S3-T16. Self-describing by construction: this file is itself one of the
+      // gated diagnostics, so the row can only ever read 1 — it says WHY the
+      // reader is holding a run_config.tsv at all, not whether some other run
+      // would have produced one.
+      << "emit_tsv_diagnostics\t" << (config.emit_tsv_diagnostics ? 1 : 0) << '\n';
   return out ? Ok() : Err(ErrorCode::IoError, "cannot flush effective run config");
 }
 
@@ -2850,7 +2857,12 @@ Status dispersion_build_schedule(const fs::path &run_dir) {
   // and a run that fails the entry/three-roll gate is the case where an operator
   // most wants to know what the quality gates rejected. F4 writes `run_config.tsv`
   // before the replay for the same reason; the same principle applies here.
-  ATX_TRY_VOID(write_quote_reject_report(run_dir / "quote_rejects.tsv", quote_reject_rows));
+  // S3-T16: a per-date audit tally, and nothing downstream parses it — the
+  // schedule the next stage consumes is `trade_schedule.tsv`, which stays. So it
+  // is a diagnostic and rides the flag, while the schedule beside it does not.
+  if (run_config.emit_tsv_diagnostics) {
+    ATX_TRY_VOID(write_quote_reject_report(run_dir / "quote_rejects.tsv", quote_reject_rows));
+  }
   if (schedule.rolls.empty() || (spec.core_mode && schedule.rolls.size() < 3u)) {
     return Err(ErrorCode::Unavailable,
                "schedule does not satisfy entry/three-roll acceptance gate");
@@ -2886,12 +2898,16 @@ Status dispersion_run_backtest(const fs::path &run_dir) {
   RunConfig config = make_listed_replay_run_config(run_config, clock, strategy);
   // The run records WHAT produced its numbers, regime first (M4), before the
   // replay so a failed run still leaves the evidence of what it attempted.
-  ATX_TRY_VOID(write_dispersion_effective_config(run_dir / "run_config.tsv", run_config));
+  if (run_config.emit_tsv_diagnostics) {
+    ATX_TRY_VOID(write_dispersion_effective_config(run_dir / "run_config.tsv", run_config));
+  }
   ATX_TRY(BacktestResult backtest, run_backtest(clock, strategy, config));
   if (!strategy.all_rolls_consumed()) {
     return Err(ErrorCode::Unavailable, "backtest did not consume every scheduled roll");
   }
-  ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / "backtest.tsv").string()));
+  if (run_config.emit_tsv_diagnostics) {
+    ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / "backtest.tsv").string()));
+  }
 
   const std::vector<std::string> symbols =
       all_symbols(universe_rows, run_config.universe.index_symbol);
@@ -2917,10 +2933,12 @@ Status dispersion_run_backtest(const fs::path &run_dir) {
   ATX_TRY(ListedDispersionReconciliation reconciliation,
           reconcile_listed_dispersion(schedule, reconciliation_snapshots));
   ATX_TRY_VOID(validate_listed_reconciliation_backtest(reconciliation, backtest));
-  ATX_TRY_VOID(
-      write_listed_contract_marks_file((run_dir / "contract_marks.tsv").string(), reconciliation));
-  ATX_TRY_VOID(
-      write_listed_reconciliation_file((run_dir / "reconciliation.tsv").string(), reconciliation));
+  if (run_config.emit_tsv_diagnostics) {
+    ATX_TRY_VOID(
+        write_listed_contract_marks_file((run_dir / "contract_marks.tsv").string(), reconciliation));
+    ATX_TRY_VOID(
+        write_listed_reconciliation_file((run_dir / "reconciliation.tsv").string(), reconciliation));
+  }
   // S3-T16. THE result envelope, published unconditionally: the same five
   // sections `run_backtest_command` publishes, so a run directory this function
   // produces is readable by everything written against the archive (RunDir::
@@ -3131,7 +3149,7 @@ Status dispersion_run_surface_backtest(const fs::path &run_dir) {
   }
   const BacktestResult &backtest = outcome.track;
 #if defined(ATX_VOL_PROFILE)
-  {
+  if (run_config.emit_tsv_diagnostics) {
     const phase_profile::Snapshot measured = phase_profile::snapshot();
     const double total_ns = static_cast<double>(
         measured.nanoseconds[static_cast<unsigned>(phase_profile::Region::BacktestTotal)]);
@@ -3151,7 +3169,7 @@ Status dispersion_run_surface_backtest(const fs::path &run_dir) {
   }
 #endif
 #if defined(ATX_VOL_COUNTERS)
-  {
+  if (run_config.emit_tsv_diagnostics) {
     const counters::Snapshot measured = counters::snapshot();
     std::ofstream output(run_dir / "backtest_counters.tsv", std::ios::binary | std::ios::trunc);
     if (!output)
@@ -3163,10 +3181,17 @@ Status dispersion_run_surface_backtest(const fs::path &run_dir) {
       return Err(ErrorCode::IoError, "cannot flush backtest counters");
   }
 #endif
-  ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / "surface_backtest.tsv").string()));
-  // X5. Two ADDITIONAL artifacts; `surface_backtest.tsv` above is untouched, so
-  // the reproducibility pin is measured on exactly the bytes it always was.
-  ATX_TRY_VOID(write_dispersion_tearsheet(run_dir, run_config, outcome));
+  // S3-T16. The surface route's three reporting artifacts. Unlike the listed
+  // route there is no archive counterpart to fall back on, so a default run of
+  // this stage publishes nothing and an operator who wants the tables declares
+  // `emit_tsv_diagnostics true`. The economics above are unchanged either way —
+  // the run still computes, and its regime/NAV console line still prints.
+  if (run_config.emit_tsv_diagnostics) {
+    ATX_TRY_VOID(write_backtest_tsv(backtest, (run_dir / "surface_backtest.tsv").string()));
+    // X5. Two ADDITIONAL artifacts; `surface_backtest.tsv` above is untouched, so
+    // the reproducibility pin is measured on exactly the bytes it always was.
+    ATX_TRY_VOID(write_dispersion_tearsheet(run_dir, run_config, outcome));
+  }
   const DispersionFrictionRegime regime = dispersion_friction_regime(run_config);
   // The console line names the regime too: the single most common way to
   // misread this run is to quote its final_nav without knowing which
@@ -3433,70 +3458,79 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
   const std::vector<HistoricalProjectionFrame> &frames = var.frames;
   const std::vector<ProjectedOption> &legs = var.legs;
 
-  std::ofstream frame_out(run_dir / "projected_risk_scenarios.tsv.pending",
+  // S3-T16. The canonical triple is this stage's ONLY output and it has no
+  // archive counterpart, so with the flag off the projection still runs and
+  // still reports on the console, but publishes nothing — and the unconditional
+  // `invalidate_projected_var_generation` above has already removed any earlier
+  // generation, so a run directory is never left claiming a VaR that no longer
+  // matches its inputs. `verify_projected_var_artifacts` treats an absent triple
+  // as "the optional stage did not publish", which is exactly the state here.
+  if (run_config.emit_tsv_diagnostics) {
+    std::ofstream frame_out(run_dir / "projected_risk_scenarios.tsv.pending",
+                            std::ios::binary | std::ios::trunc);
+    std::ofstream leg_out(run_dir / "projected_risk_legs.tsv.pending",
                           std::ios::binary | std::ios::trunc);
-  std::ofstream leg_out(run_dir / "projected_risk_legs.tsv.pending",
-                        std::ios::binary | std::ios::trunc);
-  if (!frame_out || !leg_out)
-    return Err(ErrorCode::IoError, "projected VaR: cannot open output");
-  frame_out << std::setprecision(17)
-            << "date\tts_ns\tvalue\tdelta\tgamma\tvega\ttheta\tn_ok\tn_failed\t"
-               "definition_fingerprint\n";
-  leg_out << std::setprecision(17)
-          << "date\tleg\tuid\tside\texpiry_ts_ns\tstrike\tquantity\tmultiplier\tmark\t"
-             "delta\tgamma\tvega\ttheta\tdefinition_fingerprint\tstatus\n";
-  for (std::size_t scenario = 0; scenario < frames.size(); ++scenario) {
-    const HistoricalProjectionFrame &frame = frames[scenario];
-    frame_out << clock.refs()[scenario].date << '\t' << frame.ts_ns << '\t' << frame.value << '\t'
-              << frame.delta << '\t' << frame.gamma << '\t' << frame.vega << '\t' << frame.theta
-              << '\t' << frame.n_ok << '\t' << frame.n_failed << '\t'
-              << frame.definition_fingerprint << '\n';
-    // `var.n_positions == initial.positions.size()`, and the seam builds one
-    // relative template per book position IN ORDER, so leg `i` is book position
-    // `i` and its quantity is `initial.positions[i].qty` — the same value the
-    // inlined copy read out of its own `relative_positions[leg].quantity`.
-    for (std::size_t leg = 0; leg < var.n_positions; ++leg) {
-      const ProjectedOption &projected = legs[scenario * var.n_positions + leg];
-      leg_out << clock.refs()[scenario].date << '\t' << leg << '\t'
-              << projected.definition.contract.uid << '\t'
-              << (projected.definition.contract.side == Side::Call ? "Call" : "Put") << '\t'
-              << projected.definition.expiry_ts_ns << '\t' << projected.definition.contract.K
-              << '\t' << initial.positions[leg].qty << '\t' << projected.definition.multiplier
-              << '\t' << projected.model_mark << '\t' << projected.greeks.delta << '\t'
-              << projected.greeks.gamma << '\t' << projected.greeks.vega << '\t'
-              << projected.greeks.theta << '\t' << projected.definition.fingerprint << '\t'
-              << to_string(projected.status) << '\n';
+    if (!frame_out || !leg_out)
+      return Err(ErrorCode::IoError, "projected VaR: cannot open output");
+    frame_out << std::setprecision(17)
+              << "date\tts_ns\tvalue\tdelta\tgamma\tvega\ttheta\tn_ok\tn_failed\t"
+                 "definition_fingerprint\n";
+    leg_out << std::setprecision(17)
+            << "date\tleg\tuid\tside\texpiry_ts_ns\tstrike\tquantity\tmultiplier\tmark\t"
+               "delta\tgamma\tvega\ttheta\tdefinition_fingerprint\tstatus\n";
+    for (std::size_t scenario = 0; scenario < frames.size(); ++scenario) {
+      const HistoricalProjectionFrame &frame = frames[scenario];
+      frame_out << clock.refs()[scenario].date << '\t' << frame.ts_ns << '\t' << frame.value << '\t'
+                << frame.delta << '\t' << frame.gamma << '\t' << frame.vega << '\t' << frame.theta
+                << '\t' << frame.n_ok << '\t' << frame.n_failed << '\t'
+                << frame.definition_fingerprint << '\n';
+      // `var.n_positions == initial.positions.size()`, and the seam builds one
+      // relative template per book position IN ORDER, so leg `i` is book position
+      // `i` and its quantity is `initial.positions[i].qty` — the same value the
+      // inlined copy read out of its own `relative_positions[leg].quantity`.
+      for (std::size_t leg = 0; leg < var.n_positions; ++leg) {
+        const ProjectedOption &projected = legs[scenario * var.n_positions + leg];
+        leg_out << clock.refs()[scenario].date << '\t' << leg << '\t'
+                << projected.definition.contract.uid << '\t'
+                << (projected.definition.contract.side == Side::Call ? "Call" : "Put") << '\t'
+                << projected.definition.expiry_ts_ns << '\t' << projected.definition.contract.K
+                << '\t' << initial.positions[leg].qty << '\t' << projected.definition.multiplier
+                << '\t' << projected.model_mark << '\t' << projected.greeks.delta << '\t'
+                << projected.greeks.gamma << '\t' << projected.greeks.vega << '\t'
+                << projected.greeks.theta << '\t' << projected.definition.fingerprint << '\t'
+                << to_string(projected.status) << '\n';
+      }
     }
-  }
-  frame_out.close();
-  leg_out.close();
-  if (!frame_out || !leg_out)
-    return Err(ErrorCode::IoError, "projected VaR: output write failed");
-  // The incomplete-frame gate that used to sit here now fires inside
-  // `dispersion_book_var`, before these writes — see the ordering note above.
+    frame_out.close();
+    leg_out.close();
+    if (!frame_out || !leg_out)
+      return Err(ErrorCode::IoError, "projected VaR: output write failed");
+    // The incomplete-frame gate that used to sit here now fires inside
+    // `dispersion_book_var`, before these writes — see the ordering note above.
 
-  std::ofstream summary(run_dir / "projected_var.tsv.pending",
-                        std::ios::binary | std::ios::trunc);
-  if (!summary)
-    return Err(ErrorCode::IoError, "projected VaR: cannot open summary");
-  // The three trailing columns are REVIEW C-1's provenance: which session the
-  // immutable book was resolved and sized on, and that book's identity. They are
-  // APPENDED so `n_scenarios` stays field 5 for `verify_projected_var_artifacts`.
-  summary << std::setprecision(17)
-          << "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
-             "n_positions\tprojections_per_second\tprepared_fingerprint\tas_of_date\t"
-             "as_of_ts_ns\tbook_fingerprint\n";
-  for (const ProjectedHistoricalVar &risk : var.risks) {
-    summary << risk.confidence << '\t' << risk.reference_value << '\t' << risk.value_at_risk << '\t'
-            << risk.expected_shortfall << '\t' << risk.n_scenarios << '\t' << var.n_positions
-            << '\t' << (static_cast<double>(legs.size()) / elapsed_seconds) << '\t'
-            << var.prepared_fingerprint << '\t' << as_of_date << '\t' << as_of_ts_ns << '\t'
-            << book_fingerprint << '\n';
+    std::ofstream summary(run_dir / "projected_var.tsv.pending",
+                          std::ios::binary | std::ios::trunc);
+    if (!summary)
+      return Err(ErrorCode::IoError, "projected VaR: cannot open summary");
+    // The three trailing columns are REVIEW C-1's provenance: which session the
+    // immutable book was resolved and sized on, and that book's identity. They are
+    // APPENDED so `n_scenarios` stays field 5 for `verify_projected_var_artifacts`.
+    summary << std::setprecision(17)
+            << "confidence\treference_value\tvalue_at_risk\texpected_shortfall\tn_scenarios\t"
+               "n_positions\tprojections_per_second\tprepared_fingerprint\tas_of_date\t"
+               "as_of_ts_ns\tbook_fingerprint\n";
+    for (const ProjectedHistoricalVar &risk : var.risks) {
+      summary << risk.confidence << '\t' << risk.reference_value << '\t' << risk.value_at_risk
+              << '\t' << risk.expected_shortfall << '\t' << risk.n_scenarios << '\t'
+              << var.n_positions << '\t' << (static_cast<double>(legs.size()) / elapsed_seconds)
+              << '\t' << var.prepared_fingerprint << '\t' << as_of_date << '\t' << as_of_ts_ns
+              << '\t' << book_fingerprint << '\n';
+    }
+    summary.close();
+    if (!summary)
+      return Err(ErrorCode::IoError, "projected VaR: summary write failed");
+    ATX_TRY_VOID(publish_projected_var_generation(run_dir));
   }
-  summary.close();
-  if (!summary)
-    return Err(ErrorCode::IoError, "projected VaR: summary write failed");
-  ATX_TRY_VOID(publish_projected_var_generation(run_dir));
   // The as-of is on the console line for the same reason it is in the artifact:
   // the number is meaningless without the session whose book it describes.
   std::printf("projected relative-template VaR complete: scenarios=%zu positions=%zu "
