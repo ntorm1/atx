@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
-#include "atx/vol/run_report.hpp"
+#include "atx/vol/tools/run_report.hpp"
 #include "atx/vol/surface_archive.hpp" // SurfaceArchiveItem
 #include "atx/vol/surface_db.hpp"      // SurfaceDb
 #include "atx/vol/vol_curve.hpp"       // CurveSurface, EssviCurve

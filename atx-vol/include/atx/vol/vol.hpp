@@ -208,7 +208,3 @@
 #include "atx/vol/event_vol.hpp"         // EventSchedule, censoring, implied_emove_joint
 #include "atx/vol/sr_tenor_grid.hpp"     // SpiderRock 12-point native tenor grid
 #include "atx/vol/vol_time.hpp"          // hybrid business/vol-time clock
-
-// ── Reporting artifacts ─────────────────────────────────────────────────────
-#include "atx/vol/run_report.hpp" // run-directory metric / series writers
-#include "atx/vol/tearsheet.hpp"  // TearSheet performance summary (+ benchmark-relative)

@@ -33,7 +33,7 @@
 
 #include "atx/vol/backtest.hpp"   // BacktestResult, SnapshotCacheStats
 #include "atx/vol/surface_db.hpp" // SurfaceDb, DbPartitionInfo
-#include "atx/vol/tearsheet.hpp"  // TearSheet
+#include "atx/vol/tools/tearsheet.hpp"  // TearSheet
 #include "atx/vol/types.hpp"      // Status
 
 namespace atx::vol {

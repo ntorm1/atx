@@ -91,7 +91,7 @@
 #include "atx/vol/listed_dispersion_pipeline.hpp" // ListedScheduleSpec (REV-MTIDY I-1)
 #include "atx/vol/listed_dispersion_strategy.hpp" // ScheduleFillPolicy (F2)
 #include "atx/vol/session.hpp"            // FitPreset
-#include "atx/vol/tearsheet.hpp"          // TearSheet
+#include "atx/vol/tools/tearsheet.hpp"          // TearSheet
 #include "atx/vol/types.hpp"              // Result, Status
 #include "atx/vol/vol_surface.hpp"        // VolCurveKind
 

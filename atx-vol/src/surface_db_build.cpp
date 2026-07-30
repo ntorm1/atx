@@ -1,4 +1,4 @@
-#include "atx/vol/surface_db_build.hpp"
+#include "atx/vol/tools/surface_db_build.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -19,7 +19,7 @@
 #include "atx/vol/opra_batch.hpp"     // corpus_board_from_opra, OpraBatchEntry/Result
 #include "atx/vol/opra_hive.hpp"      // load_opra_hive, OpraHiveSpec
 #include "atx/vol/session.hpp"        // make_session_inputs, SessionInputs
-#include "atx/vol/surface_db_populate.hpp" // populate_universe_streaming, UniversePopulateSpec
+#include "atx/vol/tools/surface_db_populate.hpp" // populate_universe_streaming, UniversePopulateSpec
 #include "atx/vol/surface_parity.hpp" // SurfaceParityInputs
 #include "atx/vol/surface_policy.hpp" // has_output, SurfacePurpose (LinearVariance guard)
 #include "atx/vol/universe.hpp"       // Underlying, Chain

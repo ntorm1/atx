@@ -44,7 +44,7 @@
 #include "atx/vol/priced_surface.hpp"  // PricedSurface
 #include "atx/vol/session.hpp"         // FitPreset
 #include "atx/vol/strategy.hpp"        // DeclarativeStrategy, StrategySpec, resolve_strike_by_delta
-#include "atx/vol/tearsheet.hpp"       // TearSheet, tearsheet, write_backtest_tsv
+#include "atx/vol/tools/tearsheet.hpp"       // TearSheet, tearsheet, write_backtest_tsv
 #include "atx/vol/types.hpp"           // Side, Result, Status
 
 using namespace atx::vol;

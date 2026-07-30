@@ -38,8 +38,8 @@
 #include "atx/vol/profile.hpp"          // ProfileKind (FitContext::profile_override)
 #include "atx/vol/session.hpp"          // FitPreset
 #include "atx/vol/surface_db.hpp"       // SurfaceDb, SymbolFitConfig
-#include "atx/vol/surface_db_build.hpp" // AutoConfigSpec, AutoConfigReport, generate_symbol_configs
-#include "atx/vol/surface_db_populate.hpp" // UniversePopulateSpec, populate_universe_streaming
+#include "atx/vol/tools/surface_db_build.hpp" // AutoConfigSpec, AutoConfigReport, generate_symbol_configs
+#include "atx/vol/tools/surface_db_populate.hpp" // UniversePopulateSpec, populate_universe_streaming
 #include "atx/vol/surface_policy.hpp"      // has_output, SurfacePurpose
 #include "atx/vol/types.hpp"
 #include "atx/vol/vol_curve.hpp" // VolCurveKind
@@ -1765,7 +1765,7 @@ TEST(SurfaceDbBuildExitCode, TheCodesThemselvesAreAContract) {
 // together, so nothing failed if EITHER tool renumbered onto the other. Three
 // comments asserted the contract; the same class of defect as I-1, one layer out.
 //
-// `atx/vol/surface_db_exit_codes.hpp` now holds both vocabularies and
+// `atx/vol/tools/surface_db_exit_codes.hpp` now holds both vocabularies and
 // `static_assert`s the relations, so a collision is a BUILD failure in both CLIs
 // and here — strictly stronger than a test, because it cannot be skipped or
 // filtered out. This test is the readable statement of the same thing, and it

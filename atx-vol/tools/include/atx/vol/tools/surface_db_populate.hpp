@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "atx/vol/corpus.hpp"     // CorpusBoard
-#include "atx/vol/run_report.hpp" // MetaKv
+#include "atx/vol/tools/run_report.hpp" // MetaKv
 #include "atx/vol/surface_db.hpp" // SurfaceDb, SymbolFitConfig
 #include "atx/vol/types.hpp"      // Result, Status
 

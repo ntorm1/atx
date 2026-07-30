@@ -29,7 +29,7 @@
 #include "atx/vol/strategy.hpp"         // DeclarativeStrategy, StrategySpec
 #include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"   // SliceContext
-#include "atx/vol/tearsheet.hpp"        // tearsheet, write_backtest_tsv
+#include "atx/vol/tools/tearsheet.hpp"        // tearsheet, write_backtest_tsv
 #include "atx/vol/types.hpp"            // Side, Result, Status
 #include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
 #include "atx/vol/vol_surface.hpp"      // EssviParams

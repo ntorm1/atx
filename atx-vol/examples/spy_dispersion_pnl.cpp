@@ -43,7 +43,7 @@
 #include "atx/vol/dispersion_strangle.hpp" // DispersionStrangleConfig, make_dispersion_strangle_spec
 #include "atx/vol/strategy.hpp"            // DeclarativeStrategy
 #include "atx/vol/surface_db.hpp"          // SurfaceDb
-#include "atx/vol/tearsheet.hpp"           // TearSheet, write_backtest_pnl_tsv
+#include "atx/vol/tools/tearsheet.hpp"           // TearSheet, write_backtest_pnl_tsv
 #include "atx/vol/types.hpp"               // Result, Status
 #include "atx/vol/universe.hpp"            // canonical_symbol
 

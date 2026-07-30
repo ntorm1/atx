@@ -49,11 +49,11 @@
 #include "atx/vol/dispersion.hpp"              // DispersionUniverse, DispersionMember
 #include "atx/vol/dispersion_backtest.hpp"     // DispersionBacktestConfig, run_dispersion_backtest
 #include "atx/vol/priced_surface.hpp"          // PricedSurface, PricingContext
-#include "atx/vol/run_report.hpp"              // EngineRunStats
+#include "atx/vol/tools/run_report.hpp"              // EngineRunStats
 #include "atx/vol/strategy.hpp"                // DeclarativeStrategy, StrategySpec
 #include "atx/vol/surface_archive.hpp"         // write_surface_archive_v2_file
 #include "atx/vol/surface_parity.hpp"          // SliceContext
-#include "atx/vol/tearsheet.hpp"               // TearSheet, tearsheet
+#include "atx/vol/tools/tearsheet.hpp"               // TearSheet, tearsheet
 #include "atx/vol/types.hpp"                   // Side, Result, Status
 #include "atx/vol/vol_curve.hpp"               // CurveSurface, EssviCurve
 #include "atx/vol/vol_surface.hpp"             // EssviParams

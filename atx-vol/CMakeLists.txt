@@ -147,9 +147,43 @@ target_include_directories(atx-vol
 
 target_compile_features(atx-vol PUBLIC cxx_std_20)
 
+# ---- Public-surface tiering (S4-T18 / plan 4.1) ------------------------------
+# `include/atx/vol/` above is the SHIPPED public surface: Tier-A (the frozen v1
+# API, and exactly what the `atx/vol/vol.hpp` umbrella includes) plus Tier-B
+# (public but advanced — reachable by explicit include, deliberately outside the
+# umbrella). `include/atx/vol/detail/` is internal machinery with no stability
+# promise.
+#
+# Two header homes sit OUTSIDE that surface, each behind its own target so the
+# separation is expressed in the build graph and not only in a directory name:
+#
+#   atx-vol-tools    — CLI-support headers (surface-db build/admin/populate/exit
+#                      codes, the run-report writers, the tearsheet). Consumed by
+#                      tools/*_main.cpp and the acceptance examples, not by a
+#                      library consumer.
+#   atx-vol-research — dispersion RUN ORCHESTRATION (the run/workflow/pipeline
+#                      drivers and the run-archive artifacts they emit). The
+#                      dispersion VOCABULARY (dispersion.hpp, listed_*.hpp)
+#                      stays on the public surface; only the drivers move.
+#
+# MINIMAL SHAPE ON PURPOSE (plan 5.6 finishes the tools story in Sprint 5): both
+# are INTERFACE targets that own an include root only — the implementing
+# translation units still compile into atx-vol, so atx-vol carries the include
+# roots PUBLIC. Splitting the .cpp out into real static libraries, and demoting
+# these to PRIVATE so a plain `atx::vol` consumer can no longer even name them,
+# is 5.6's job. Do not build that here.
+add_library(atx-vol-tools INTERFACE)
+add_library(atx::vol::tools ALIAS atx-vol-tools)
+target_include_directories(atx-vol-tools
+    INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tools/include>
+        $<INSTALL_INTERFACE:include>
+)
+
 target_link_libraries(atx-vol
     PUBLIC
         atx::core
+        atx-vol-tools
     PRIVATE
         atx::tsdb  # read-only mmap (tsdb::Mapping) for the S2 zero-read surface open
         atx_warnings
@@ -404,7 +438,7 @@ if(ATX_BUILD_EXAMPLES)
     # Surface-db MANAGEMENT/INSPECTION CLI: info / partitions / symbols / config
     # / query / verify over a built database, so verifying one needs no Python
     # binding. Thin shell over the surface_db_admin library
-    # (atx/vol/surface_db_admin.hpp); gate test: SurfaceDbAdmin
+    # (atx/vol/tools/surface_db_admin.hpp); gate test: SurfaceDbAdmin
     # (tests/surface_db_admin_test.cpp). Same ATX_BUILD_EXAMPLES gate as the
     # build CLI above. See tools/surface_db_main.cpp and docs/surface-db-build.md.
     add_executable(atx-vol-surface-db tools/surface_db_main.cpp)

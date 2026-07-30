@@ -39,14 +39,14 @@
 #include "atx/vol/panel.hpp" // SynthPanelSpec, make_synthetic_american_panel
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/priced_surface_view.hpp" // PricedSurfaceView (S5 map_surface)
-#include "atx/vol/run_report.hpp" // MetaKv
+#include "atx/vol/tools/run_report.hpp" // MetaKv
 #include "atx/vol/s3.hpp"         // S3Params
 #include "atx/vol/session.hpp"    // FitPreset
 #include "atx/vol/surface_archive.hpp"
 #include "atx/vol/surface_db.hpp"
-#include "atx/vol/surface_db_build.hpp" // is_total_fit_failure (FIX-D exit-code shape)
+#include "atx/vol/tools/surface_db_build.hpp" // is_total_fit_failure (FIX-D exit-code shape)
 #include "atx/vol/detail/fit_scheduler.hpp" // performance_core_count (C4 wave-2 scaling diagnostic)
-#include "atx/vol/surface_db_populate.hpp"
+#include "atx/vol/tools/surface_db_populate.hpp"
 #include "atx/vol/types.hpp"
 #include "atx/vol/vol_curve.hpp"
 

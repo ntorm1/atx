@@ -51,7 +51,7 @@
 #include "atx/vol/surface_archive.hpp"     // SurfaceArchiveItem
 #include "atx/vol/surface_db.hpp"          // SurfaceDb
 #include "atx/vol/surface_parity.hpp"      // SliceContext
-#include "atx/vol/tearsheet.hpp"           // TearSheet, tearsheet
+#include "atx/vol/tools/tearsheet.hpp"           // TearSheet, tearsheet
 #include "atx/vol/types.hpp"               // Result, ErrorCode
 #include "atx/vol/vol_curve.hpp"           // CurveSurface, EssviCurve
 #include "atx/vol/vol_surface.hpp"         // EssviParams

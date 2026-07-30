@@ -46,7 +46,7 @@
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/session.hpp"
 #include "atx/vol/strategy.hpp"
-#include "atx/vol/tearsheet.hpp"
+#include "atx/vol/tools/tearsheet.hpp"
 #include "atx/vol/types.hpp"
 
 #ifdef _WIN32

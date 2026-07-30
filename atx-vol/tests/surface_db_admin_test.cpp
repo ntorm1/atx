@@ -1,5 +1,5 @@
 // SurfaceDbAdmin suite — proves the CLI-native management/inspection layer
-// (atx/vol/surface_db_admin.hpp) answers, from C++ alone, every question the
+// (atx/vol/tools/surface_db_admin.hpp) answers, from C++ alone, every question the
 // retired Python `map_surface` check used to answer:
 //
 //   describe_db        — counts/bytes agree with what build_surface_db reported.
@@ -39,8 +39,8 @@
 #include "atx/vol/session.hpp"               // FitPreset
 #include "atx/vol/surface_archive.hpp"       // ArchiveV2SurfaceHeader, ArchiveV2DirEntry
 #include "atx/vol/surface_db.hpp"            // SurfaceDb
-#include "atx/vol/surface_db_admin.hpp"      // the unit under test
-#include "atx/vol/surface_db_build.hpp"      // build_surface_db, generate_symbol_configs
+#include "atx/vol/tools/surface_db_admin.hpp"      // the unit under test
+#include "atx/vol/tools/surface_db_build.hpp"      // build_surface_db, generate_symbol_configs
 #include "atx/vol/types.hpp"
 
 namespace atx::vol {

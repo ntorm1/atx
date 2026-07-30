@@ -21,7 +21,7 @@
 #include "atx/vol/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/surface_archive.hpp" // ArchiveContentIdentity (identity())
-#include "atx/vol/tearsheet.hpp"       // write_backtest_tsv (T6 TSV/encoder column parity)
+#include "atx/vol/tools/tearsheet.hpp"       // write_backtest_tsv (T6 TSV/encoder column parity)
 
 #include <gtest/gtest.h>
 

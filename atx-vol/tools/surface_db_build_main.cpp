@@ -2,7 +2,7 @@
 // tree and a SurfaceDb root and it create-or-opens the db, loads the date window,
 // auto-generates the per-symbol fit configs, and cell-aware-streaming-populates
 // every (symbol, date) surface — the one-call `build_surface_db` driver
-// (atx/vol/surface_db_build.hpp) wrapped in a hand-rolled arg loop.
+// (atx/vol/tools/surface_db_build.hpp) wrapped in a hand-rolled arg loop.
 //
 // Fully resumable: re-running over an unchanged hive fits ZERO once every cell has
 // either fitted successfully or been config-disabled (configs skip-existing, the
@@ -58,7 +58,7 @@
 //   --report        also write the five-section CSV report to this path. A write
 //                   failure is named on stderr and exits 1 -- but it never
 //                   preempts exit 3 or 5; see `build_exit_code` in
-//                   atx/vol/surface_db_build.hpp for the whole precedence.
+//                   atx/vol/tools/surface_db_build.hpp for the whole precedence.
 //   --max-failures  cap on the printed `failed_cell` AND `coverage_regression_cell`
 //                   lines (default 32). Overflow is counted in the matching
 //                   `_elided` scalar, never dropped silently; the --report CSV
@@ -123,8 +123,8 @@
 
 #include "atx/vol/opra_hive.hpp"           // OpraHiveSpec
 #include "atx/vol/session.hpp"             // FitPreset
-#include "atx/vol/surface_db_build.hpp"    // SurfaceDbBuildSpec, build_surface_db, write_build_report_csv
-#include "atx/vol/surface_db_populate.hpp" // PopulateSymbolStats
+#include "atx/vol/tools/surface_db_build.hpp"    // SurfaceDbBuildSpec, build_surface_db, write_build_report_csv
+#include "atx/vol/tools/surface_db_populate.hpp" // PopulateSymbolStats
 #include "atx/vol/types.hpp"               // Result, Status
 
 using namespace atx::vol;
@@ -132,7 +132,7 @@ using namespace atx::vol;
 namespace {
 
 // REV-R3 fix-1 (review I-2). The exit CODES and the decision that picks between
-// them now live in `atx/vol/surface_db_build.hpp` — `kSurfaceDbBuildExit*` and
+// them now live in `atx/vol/tools/surface_db_build.hpp` — `kSurfaceDbBuildExit*` and
 // `build_exit_code` — so the tool's most operator-visible contract is reachable
 // from a test, like the predicates it reads already were. They used to be a
 // file-local `constexpr` pair plus a lambda inside `main()`, and exit 5 and its

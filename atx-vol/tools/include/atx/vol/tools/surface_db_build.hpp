@@ -44,8 +44,8 @@
 #include "atx/vol/corpus.hpp"                // CorpusBoard
 #include "atx/vol/opra_hive.hpp"             // OpraHiveSpec
 #include "atx/vol/surface_db.hpp"            // SurfaceDb, SymbolFitConfig, FitPreset
-#include "atx/vol/surface_db_exit_codes.hpp" // kSurfaceDbBuildExit* (shared with the admin CLI)
-#include "atx/vol/surface_db_populate.hpp"   // UniversePopulateCoverage, PopulateSymbolStats
+#include "atx/vol/tools/surface_db_exit_codes.hpp" // kSurfaceDbBuildExit* (shared with the admin CLI)
+#include "atx/vol/tools/surface_db_populate.hpp"   // UniversePopulateCoverage, PopulateSymbolStats
 #include "atx/vol/types.hpp"                 // Result, Status
 
 namespace atx::vol {
@@ -681,7 +681,7 @@ coverage_regression_display_cap(const SurfaceDbBuildReport &r,
 // pinned, but the citation sent a reader looking for it nowhere.
 //
 // REV-R5 (review I-4) finished the job for the CODES: they now live in
-// `atx/vol/surface_db_exit_codes.hpp`, included above, ALONGSIDE
+// `atx/vol/tools/surface_db_exit_codes.hpp`, included above, ALONGSIDE
 // `atx-vol-surface-db`'s — because the "one number means one thing across both
 // binaries" invariant (the reason 5 skips 4) had the two halves in different
 // translation units with nothing but a comment between them. That header

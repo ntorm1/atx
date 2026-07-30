@@ -39,6 +39,10 @@ TEST(VolUmbrella, PublicSurfaceIsReachableAndConsistent) {
 // added; this test names a symbol from EACH of them, so a future re-ordering of
 // vol.hpp that drops one fails here rather than silently shrinking the public
 // surface again.
+//
+// S4-T18: the tearsheet / run_report assertions left this test with their
+// headers — those are `atx-vol-tools` CLI-support headers now, outside the
+// frozen umbrella surface.
 TEST(VolUmbrella, AnalyticsAndReportingSurfaceIsReachable) {
   using namespace atx::vol;
 
@@ -61,14 +65,6 @@ TEST(VolUmbrella, AnalyticsAndReportingSurfaceIsReachable) {
   // sr_tenor_grid.hpp — SpiderRock's 12-point native tenor grid.
   EXPECT_EQ(SrTenorGrid::kTradingDays.size(), std::size_t{12});
   EXPECT_EQ(SrTenorGrid::kTradingDays.front(), 5);
-
-  // tearsheet.hpp — the performance summary.
-  const TearSheet sheet{};
-  EXPECT_DOUBLE_EQ(sheet.sharpe, 0.0);
-
-  // run_report.hpp — the artifact writers (name the type its API is built on).
-  const MetaKv meta = strategy_metrics(sheet);
-  EXPECT_FALSE(meta.empty());
 
   // dense_slice.hpp — the densified convex slice fit.
   const ConvexFitOpts dopts;
