@@ -42,8 +42,12 @@
 //                   multi-year backfill (pull_opra_hive.py --snap-et) lands at
 //                   19:55Z on EDT dates and 20:55Z on EST dates, so a build
 //                   whose window sits entirely on the EST side of a DST
-//                   transition must pass --snapshot-suffix T20:55:00Z or every
-//                   cell in it is silently stamped an hour off. Same strict-
+//                   transition must pass --snapshot-suffix T20:55:00Z. Since
+//                   FIX-C-1 that is no longer a SILENT hazard: the loader
+//                   compares this stamp against each hive file's own `ts` column
+//                   (the snapshot instant of record) and fails the cell with a
+//                   load error naming both values, rather than stamping every
+//                   quote an hour off and exiting 0. Same strict-
 //                   parsing discipline as --r: must match `^T\d{2}:\d{2}:\d{2}Z$`
 //                   (is_valid_snapshot_suffix, surface_db_build_cli.hpp) or it
 //                   is a hard usage error (exit 2) -- a silently-accepted
@@ -480,15 +484,14 @@ int run_build_cli(int argc, char **argv) {
       }
     } else if (a == "--snapshot-suffix") {
       const std::string_view text = nv();
-      if (!missing_value && !is_valid_snapshot_suffix(text)) {
+      // Validate AND apply in one seam (surface_db_build_cli.hpp) so the
+      // ASSIGNMENT is unit-testable, not just the format check -- FIX-I-1.
+      if (!missing_value && !apply_snapshot_suffix_flag(text, spec.hive)) {
         std::fprintf(stderr,
                      "atx-vol-surface-db-build: --snapshot-suffix expects 'THH:MM:SSZ', got '%.*s'\n",
                      static_cast<int>(text.size()), text.data());
         print_usage(stderr);
         return 2;
-      }
-      if (!missing_value) {
-        spec.hive.snapshot_suffix = std::string(text);
       }
     } else if (a == "--deep-selection") {
       spec.auto_config.deep_selection = true;

@@ -215,6 +215,25 @@ source_fingerprint(const QuoteFrame &frame, std::span<const std::uint32_t> instr
   return 0;
 }
 
+// Format an epoch-ns instant as `YYYY-MM-DDTHH:MM:SSZ`. Used only to spell BOTH
+// sides of a snapshot-stamp mismatch in the same comparable form (FIX-C-1's
+// error text) -- `ns_to_iso_date` alone drops the time-of-day, which is exactly
+// the field a wrong `--snapshot-suffix` gets wrong.
+[[nodiscard]] std::string ns_to_iso_instant(std::int64_t ns) {
+  constexpr std::int64_t kDayNs = 86400LL * 1000000000LL;
+  std::int64_t rem = ns % kDayNs;
+  if (rem < 0) {
+    rem += kDayNs;
+  }
+  const std::int64_t secs = rem / 1000000000LL;
+  const auto pad2 = [](std::int64_t v) {
+    std::string s = std::to_string(v);
+    return s.size() < 2 ? "0" + s : s;
+  };
+  return ns_to_iso_date(ns) + "T" + pad2(secs / 3600) + ":" + pad2((secs / 60) % 60) + ":" +
+         pad2(secs % 60) + "Z";
+}
+
 // Imply the underlying spot from put-call parity on the earliest expiry that
 // carries at least one co-terminal call/put pair with both mids > 0. `rate_at`
 // yields the continuously-compounded rate at a maturity T (a flat scalar, or a
@@ -662,7 +681,53 @@ Result<OpraPanel> panel_from_scan(const OpraTableScan& scan, const OpraLoadSpec&
   if (snapshot_iso.empty()) {
     snapshot_iso = ns_to_iso_date(snapshot_ts_ns);
   }
-  const std::int64_t snapshot_iso_ns = iso_to_ns(snapshot_iso);
+  const std::int64_t snapshot_spec_ns = iso_to_ns(snapshot_iso);
+  // FIX-C-1 (snapshot stamp). The hive schema stamps ONE `ts` per date file and
+  // that column IS the instant the quotes were snapshotted at -- the ground
+  // truth for every T-to-expiry computation below (the same-day-expiry drop, the
+  // term-curve rate lookup, the PCP forward) and for the panel's source
+  // fingerprint. An operator-supplied `OpraLoadSpec::snapshot_iso` (the build
+  // CLI's `--snapshot-suffix`, applied uniformly across a whole `--from`/`--to`
+  // range) is a CLAIM about that instant, not the instant itself, and an
+  // ET-anchored hive carries two of them: 19:55Z under EDT, 20:55Z under EST.
+  //
+  // Before this guard a valid-but-wrong stamp was silently PREFERRED over the
+  // file: exit 0, `n_load_errors 0`, every date written, ~1e-3 relative IV drift,
+  // a butterfly-arbitrage slice rejection, and `frame.snapshot_ts_ns` still
+  // reading correct in every diagnostic (it is stamped from the file below), so
+  // nothing in the output could show it. The two values were both in scope here
+  // and never compared.
+  //
+  // So: when a stamp NAMES AN INSTANT it must AGREE with the file, and the value
+  // that drives the math is taken from the FILE. Not a behaviour change for a
+  // correct build -- the two are equal by the check, which is what makes this
+  // re-gateable bit-for-bit against the pilot baselines. Two cases cannot
+  // arbitrate and keep their pre-existing behaviour verbatim:
+  //   * a file with no readable `ts` (`first_ts_ns == 0`: no column, empty
+  //     table) -- there is nothing to compare against;
+  //   * a bare `YYYY-MM-DD` stamp, which is NOT a claim about the minute but the
+  //     legacy midnight-UTC valuation convention (a great many synthetic panel
+  //     fixtures pass one against a placeholder `ts`). Every production stamp is
+  //     an instant: `opra_hive.cpp:144` and `opra_batch.cpp:308` both build
+  //     `date + snapshot_suffix`, and `OpraHiveSpec::snapshot_suffix` defaults to
+  //     `T19:55:00Z` -- so the review's own failure scenario (an operator repairs
+  //     three EST dates and OMITS `--snapshot-suffix`, taking the 19:55Z default
+  //     against 20:55Z files) is checked, and so is every wrong-but-well-formed
+  //     value the format validator lets through.
+  const bool stamp_names_an_instant =
+      spec.snapshot_iso.size() > 10 &&
+      (spec.snapshot_iso[10] == 'T' || spec.snapshot_iso[10] == ' ');
+  if (stamp_names_an_instant && snapshot_ts_ns != 0 && snapshot_spec_ns != snapshot_ts_ns) {
+    return Err(ErrorCode::InvalidArgument,
+               "snapshot stamp '" + snapshot_iso + "' (" + std::to_string(snapshot_spec_ns) +
+                   " ns) disagrees with the file's own stamped ts '" +
+                   ns_to_iso_instant(snapshot_ts_ns) + "' (" + std::to_string(snapshot_ts_ns) +
+                   " ns) (from '" + spec.path +
+                   "'): the file's ts is the snapshot instant, so every "
+                   "time-to-expiry would be wrong by their difference");
+  }
+  const std::int64_t snapshot_iso_ns =
+      stamp_names_an_instant && snapshot_ts_ns != 0 ? snapshot_ts_ns : snapshot_spec_ns;
 
   // P-01: sized for the rows this call VISITS, not for the table. These two
   // vectors are moved into the returned panel and stay live for the rest of the

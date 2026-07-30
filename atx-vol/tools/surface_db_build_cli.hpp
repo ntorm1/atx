@@ -16,7 +16,10 @@
 // `--snapshot-suffix T{HH}:{MM}:00Z` per chunk (see run_surface_db_backfill.py).
 
 #include <cstddef>
+#include <string>
 #include <string_view>
+
+#include "atx/vol/opra_hive.hpp" // OpraHiveSpec (apply_snapshot_suffix_flag)
 
 namespace atx::vol {
 
@@ -48,6 +51,28 @@ namespace atx::vol {
       return false;
     }
   }
+  return true;
+}
+
+// Validate `--snapshot-suffix`'s value AND apply it to the spec it governs, in
+// one testable call. Returns false (leaving `hive` untouched) exactly when
+// `is_valid_snapshot_suffix` rejects the text, so the arg loop's behaviour is
+// unchanged: print the usage error and exit 2.
+//
+// FIX-I-1. The assignment used to live inline in `run_build_cli`'s arg loop,
+// where no test could reach it -- deleting `spec.hive.snapshot_suffix =
+// std::string(text);` passed the entire C++ and Python suite while silently
+// pinning every build to the 19:55Z default, which is wrong for all 83 EST
+// sessions of the production hive. The validator was the only tested half of the
+// branch. Moving the mutation into this header puts BOTH halves of the flag's
+// decision behind one unit-testable seam (surface_db_build_test.cpp), which is
+// the regression gate an out-of-repo log audit can never be.
+[[nodiscard]] inline bool apply_snapshot_suffix_flag(std::string_view text,
+                                                     OpraHiveSpec& hive) {
+  if (!is_valid_snapshot_suffix(text)) {
+    return false;
+  }
+  hive.snapshot_suffix = std::string(text);
   return true;
 }
 

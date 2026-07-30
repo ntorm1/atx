@@ -83,15 +83,25 @@ struct RawRow {
 
 // Write a cbbo-1m slice (ts/[underlying]/symbol/bid_px/ask_px/bid_sz/ask_sz)
 // from raw rows and return its path. `with_underlying=false` omits the column.
+//
+// `ts_ns` is the constant snapshot stamp written into the `ts` column. The
+// default is the historical placeholder, which is fine for every case here that
+// passes a bare `YYYY-MM-DD` snapshot_iso (the legacy midnight-UTC valuation
+// convention -- FIX-C-1's guard deliberately does not arbitrate those). A case
+// that passes a full INSTANT must pass the matching `ts_ns`: since FIX-C-1 the
+// loader takes the snapshot instant FROM THE FILE and rejects a stamp that
+// disagrees with it, exactly as a real hive file (one constant `ts` == the
+// snapshot minute) requires.
 [[nodiscard]] std::string write_slice(const std::string &name, const std::vector<RawRow> &rows,
                                       bool with_underlying = true,
-                                      std::span<const i64> instrument_ids = {}) {
+                                      std::span<const i64> instrument_ids = {},
+                                      i64 ts_ns = 1780000000000000000LL) {
   EXPECT_TRUE(instrument_ids.empty() || instrument_ids.size() == rows.size());
   const auto to_px = [](double d) { return static_cast<i64>(std::llround(d * 1e9)); };
   std::vector<i64> ts_col, bidpx, askpx, bidsz, asksz;
   std::vector<std::string> und_col, sym_col;
   for (const RawRow& rr : rows) {
-    ts_col.push_back(1780000000000000000LL);
+    ts_col.push_back(ts_ns);
     und_col.push_back(rr.underlying);
     sym_col.push_back(rr.symbol);
     bidpx.push_back(to_px(rr.bid));
@@ -1024,9 +1034,13 @@ TEST(OpraPanel, Ingest0DTE_SurvivesWithPositiveIntradayT_MonotoneThroughSession)
   }
   rows.push_back({"SPY", osi_sym("SPY", "261218", 'C', 600.0), 20.0, 20.2});
   rows.push_back({"SPY", osi_sym("SPY", "261218", 'P', 600.0), 18.0, 18.2});
-  const std::string path = write_slice("zero_dte_session.parquet", rows);
 
   // Snapshots marching toward the 16:00 ET (20:00Z) settle on the expiry day.
+  // One slice per snapshot, each stamped with ITS OWN `ts` -- three successive
+  // cbbo-1m minutes of the same session, which is what the feed actually
+  // delivers. (Before FIX-C-1 this loop re-read ONE file at three unrelated
+  // instants; the loader now takes the instant from the file, so a shared
+  // fixture would have to lie about two of the three.)
   const std::vector<std::string> snaps = {
       "2026-07-17T13:35:00Z",  // 09:35 ET  (~6.4h to settle)
       "2026-07-17T18:00:00Z",  // 14:00 ET  (~2h)
@@ -1037,6 +1051,9 @@ TEST(OpraPanel, Ingest0DTE_SurvivesWithPositiveIntradayT_MonotoneThroughSession)
   double prev_T = std::numeric_limits<double>::infinity();
   for (const std::string &snap : snaps) {
     SCOPED_TRACE(snap);
+    const std::string path =
+        write_slice("zero_dte_" + snap.substr(11, 2) + snap.substr(14, 2) + ".parquet", rows, true,
+                    {}, iso_to_ns(snap));
     OpraLoadSpec spec;
     spec.path = path;
     spec.underlying = "SPY";
