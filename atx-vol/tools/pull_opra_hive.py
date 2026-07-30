@@ -756,6 +756,32 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: "str | dict[s
         rows_returned += nr
         target = out_root / f"date={date}" / DATE_FILE
         is_repull = date in repull_dates
+        if is_repull and len(frame) == 0:
+            # FIX-C-2. A repull is a genuine FULL replacement (see below), so an
+            # empty fresh response would write a 0-row parquet OVER the existing
+            # file. That destroys paid data -- and it is not even recoverable by
+            # re-running, because a 0-row file makes `_date_file_snap_ts` return
+            # None, `plan_missing` fails OPEN on None (re-planning and re-BILLING
+            # every symbol on every future resume, against dates that are now
+            # metered), and with no readable `ts` the date can never re-enter the
+            # repull path at all -- the minute-mismatch detector goes permanently
+            # blind to it. "Replace with nothing" was never the intent of the
+            # repull exception to merge_date_file's never-overwrite rule.
+            #
+            # An empty response is a provider hiccup / a snapshot minute that
+            # landed after an early close / a symbol set the provider sharded
+            # away -- all transient, none of them evidence that the stored rows
+            # are wrong. So keep the file exactly as it is, say so loudly, and
+            # leave the date planned: its on-disk `ts` is untouched, so the very
+            # next resume re-detects MINUTE-MISMATCH and re-queues the repull.
+            print(f"EMPTY-REPULL {date}: 0/{len(miss)} requested boards returned at {hm} on a "
+                  f"repull-flagged (minute-mismatch) date -- the existing date file is KEPT "
+                  f"rather than replaced by an empty one (writing it would destroy paid data, "
+                  f"blind the mismatch detector, and re-bill this date on every resume). The "
+                  f"date stays planned; re-run once the window/provider is healthy.",
+                  file=sys.stderr)
+            cells_failed += len(miss)
+            continue
         if is_repull:
             # Minute mismatch: the file's stamped ts is flat-out wrong for the
             # WHOLE date, not just for the requested symbols. A force-style

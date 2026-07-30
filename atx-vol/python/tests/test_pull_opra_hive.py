@@ -159,6 +159,15 @@ def test_plan_missing_partial_file_leaves_only_missing_symbol(tmp_path):
     ph.merge_date_file(None, _decoded(["SPY"]), tgt)
     plan = ph.plan_missing(tmp_path, ["SPY", "AAPL"], ["2026-07-20"])
     assert plan == {"2026-07-20": ["AAPL"]}
+    # FIX-I-9. `repull_dates` is the ONLY switch that selects pull()'s one
+    # data-destroying code path (full replace instead of union), and
+    # `MissingPlan` subclasses dict so `plan == {...}` cannot see it. Without
+    # this assertion an unconditional `plan.repull_dates.add(date)` next to
+    # every `plan[date] = miss` passes the whole suite -- and then every
+    # already-paid symbol on every partially-filled hive date is wiped on the
+    # next resume. A partial file at the RIGHT minute is a top-up, never a
+    # replace.
+    assert plan.repull_dates == set()
 
 
 def test_plan_missing_complete_file_drops_the_date(tmp_path):
@@ -173,6 +182,11 @@ def test_plan_missing_force_repulls_every_requested_symbol(tmp_path):
     ph.merge_date_file(None, _decoded(["SPY", "AAPL"]), tgt)
     plan = ph.plan_missing(tmp_path, ["SPY", "AAPL"], ["2026-07-20"], force=True)
     assert plan == {"2026-07-20": ["SPY", "AAPL"]}
+    # FIX-I-9: --force re-requests every symbol but does NOT flag a repull --
+    # pull() honours --force through merge_date_file's `force=` arm, which
+    # preserves untouched underlyings. Flagging it here would silently upgrade
+    # every --force top-up into a whole-file replacement.
+    assert plan.repull_dates == set()
 
 
 def test_plan_missing_handles_multi_underlying_row_group(tmp_path):
@@ -453,6 +467,7 @@ def test_plan_missing_subtracts_absent_sidecar(tmp_path):
     plan = ph.plan_missing(tmp_path, ["A", "B"], ["2026-07-20"],
                            expected_minute={"2026-07-20": "19:55"})
     assert plan == {}
+    assert plan.repull_dates == set()  # FIX-I-9: matching minute -> never a replace
 
 
 def test_sidecar_ignored_when_minute_differs(tmp_path):
@@ -470,6 +485,7 @@ def test_sidecar_ignored_when_minute_differs(tmp_path):
     plan = ph.plan_missing(tmp_path, ["A", "B"], ["2026-07-20"],
                            expected_minute={"2026-07-20": "20:55"})
     assert plan == {"2026-07-20": ["B"]}
+    assert plan.repull_dates == set()  # FIX-I-9: a stale sidecar is not a minute mismatch
 
 
 # ── Absent-symbol sidecar (write side, through pull()) ─────────────────────────
@@ -552,6 +568,55 @@ def test_pull_replaces_full_file_on_minute_mismatch_not_force_merge(tmp_path):
     assert len(tss) == 1                      # single constant ts -- no mixed file
     ts = pd.Timestamp(tss[0])
     assert (ts.hour, ts.minute) == (20, 55)   # the NEW minute, not the stale 19:55
+
+
+def test_repull_with_an_empty_provider_response_keeps_the_existing_date_file(tmp_path):
+    """FIX-C-2 regression. A repull-flagged date is a genuine FULL replacement
+    (``existing=None`` -- see the test above for why a force-merge is wrong
+    here), so an empty fresh response used to write a 0-row parquet OVER the
+    existing file. Three things broke at once and none of them were recoverable:
+
+      1. paid, real (if wrongly stamped) data was destroyed;
+      2. ``_date_file_snap_ts`` on a 0-row file returns ``None``, which
+         ``plan_missing`` fails OPEN on, so every symbol is re-planned -- and
+         re-BILLED -- on every resume from then on, forever;
+      3. with ``have_ts`` gone the date can never re-enter the repull path, so
+         the minute-mismatch detector is permanently blind to it.
+
+    The trigger conjunction is not hypothetical: a minute mismatch (Task 7 hit
+    78 at once) plus a zero-row response (a provider hiccup, a snapshot minute
+    after an early close, a sharded symbol set -- Task 7's 504 workaround was
+    half-universe sequential pulls, which multiplies partial responses).
+
+    An empty response must never destroy existing data: keep the file, log
+    loudly, and leave the date planned for the next resume."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
+
+    plan = {date: ["AAPL", "SPY"]}
+    frames = {date: _raw_df([])}          # provider returns nothing for the date
+    fake = FakeHistorical(frames=frames)
+
+    res = ph.pull(fake, plan, out, snap_hm="20:55", root_to_sym={"AAPL": "AAPL", "SPY": "SPY"},
+                  store_loader=_fake_loader, repull_dates={date})
+
+    tbl = pq.read_table(tgt).to_pandas()
+    assert set(tbl["underlying"]) == {"AAPL", "SPY"}   # (1) paid data survives
+    assert len(tbl["ts"].unique()) == 1
+    assert res.boards_written == 0                     # nothing was actually obtained
+
+    # (2)+(3) the file is still readable as a stamped date file, so the next
+    # resume re-detects the mismatch and re-plans it as a REPULL -- not as a
+    # fail-open "everything is missing" (which is what re-bills forever).
+    assert ph._date_file_snap_ts(tgt) == pd.Timestamp(f"{date}T19:55:00")
+    nxt = ph.plan_missing(out, ["AAPL", "SPY"], [date], expected_minute={date: "20:55"})
+    assert nxt == {date: ["AAPL", "SPY"]}
+    assert nxt.repull_dates == {date}
+
+    # ... and nothing was latched absent on the strength of an empty response.
+    assert not (out / "_absent" / f"{date}.json").exists()
 
 
 def test_plan_missing_treats_mixed_ts_file_as_mismatch(tmp_path):
