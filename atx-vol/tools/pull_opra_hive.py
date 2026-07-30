@@ -774,11 +774,69 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: "str | dict[s
             # are wrong. So keep the file exactly as it is, say so loudly, and
             # leave the date planned: its on-disk `ts` is untouched, so the very
             # next resume re-detects MINUTE-MISMATCH and re-queues the repull.
+            #
+            # FIX-N-1. That last sentence was FALSE until this unlink existed.
+            # The raw response is cached above (`store.to_file` -> os.replace)
+            # BEFORE this guard, under a digest of `date|sorted(miss)`. A resume
+            # re-plans the identical symbol set for the identical date, so it
+            # recomputes the identical digest, hits `dbn_path.exists()`, replays
+            # the EMPTY store from disk, and never calls `get_range` at all. The
+            # date was wedged permanently: every resume printed this same line
+            # and exited 0 (the date is deliberately not in `failed_dates`), the
+            # file stayed stamped at the stale minute, and FIX-C-1 turned it into
+            # a per-cell load error forever after, so the partition was never
+            # built. Nothing upstream could see it either -- `EMPTY-REPULL` is
+            # not parsed by the orchestrator and `parse_minute_mismatch_dates`
+            # is not called by anything.
+            #
+            # An empty response is not a cacheable ANSWER, so it does not get to
+            # occupy the cache slot for a real one. Two properties this must
+            # keep, in tension:
+            #
+            #   * It must NOT re-bill inside this run. The `continue` below is
+            #     the whole guarantee: the date is dropped for this invocation,
+            #     billed exactly once, no automatic retry. Deleting the cache
+            #     only restores the ABILITY of a later, explicitly-invoked run
+            #     to fetch -- it never itself causes a fetch.
+            #   * It must only fire on an EMPTY PROVIDER RESPONSE (`nr == 0`),
+            #     not merely an empty decoded frame. A response that did return
+            #     rows which then all failed the underlying mapping or the
+            #     want-set filter will decode identically every single time, so
+            #     dropping ITS cache would buy a guaranteed re-bill for a
+            #     guaranteed identical outcome on every future resume -- the
+            #     exact forever-re-billing loop FIX-C-2 exists to prevent. That
+            #     case keeps its cache; its problem is the symbol map, not the
+            #     provider.
+            #
+            # The stderr line below is written to be TRUE of whichever branch
+            # ran -- the previous wording promised a recovery the code did not
+            # implement, and an operator who believes a false recovery promise
+            # concludes the tool is broken rather than that a file needs
+            # deleting.
+            dropped_cache = False
+            if nr == 0:
+                try:
+                    dbn_path.unlink(missing_ok=True)
+                    dropped_cache = True
+                except OSError as exc:  # noqa: BLE001
+                    # Never fatal: a cache file we cannot remove costs a wedged
+                    # date, but raising here would abandon the rest of the plan.
+                    print(f"  {date}: could not drop the empty cached DBN "
+                          f"{dbn_path.name} ({str(exc)[:70]})", file=sys.stderr)
+            if dropped_cache:
+                recovery = ("The date stays planned and its empty response was NOT cached, so "
+                            "re-running once the window/provider is healthy will re-pull it.")
+            else:
+                recovery = (f"The date stays planned, but the provider DID return {nr} row(s) "
+                            f"that mapped to none of the requested underlyings, so the response "
+                            f"is kept at _dbn/{dbn_path.name} and a resume will replay it rather "
+                            f"than re-bill for the same answer. Fix the symbol mapping, or "
+                            f"delete that file to force a fresh pull.")
             print(f"EMPTY-REPULL {date}: 0/{len(miss)} requested boards returned at {hm} on a "
                   f"repull-flagged (minute-mismatch) date -- the existing date file is KEPT "
                   f"rather than replaced by an empty one (writing it would destroy paid data, "
-                  f"blind the mismatch detector, and re-bill this date on every resume). The "
-                  f"date stays planned; re-run once the window/provider is healthy.",
+                  f"blind the mismatch detector, and re-bill this date on every resume). "
+                  f"{recovery}",
                   file=sys.stderr)
             cells_failed += len(miss)
             continue

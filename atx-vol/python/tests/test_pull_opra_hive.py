@@ -619,6 +619,106 @@ def test_repull_with_an_empty_provider_response_keeps_the_existing_date_file(tmp
     assert not (out / "_absent" / f"{date}.json").exists()
 
 
+def test_empty_repull_response_is_not_cached_so_the_next_run_can_actually_repull(tmp_path):
+    """FIX-N-1. FIX-C-2 stopped the empty response DESTROYING the date file, and
+    told the operator "the date stays planned; re-run once the window/provider is
+    healthy". That sentence was false. ``pull()`` writes the raw provider
+    response to ``<hive>/_dbn/<date>_<hm>_<digest>.dbn.zst`` BEFORE the guard
+    runs, and the digest is ``sha256(date|sorted(miss))[:12]`` -- so the next
+    resume re-plans the SAME symbol set, computes the SAME digest, finds the
+    cache, replays the EMPTY store, and never contacts the provider at all.
+
+    The date is then wedged forever: every resume prints EMPTY-REPULL and exits
+    0, the file stays stamped at the old minute, and FIX-C-1 turns it into a
+    permanent load error so the partition is never built. Nothing in the
+    orchestrator can see it either (``EMPTY-REPULL`` is not parsed, and
+    ``parse_minute_mismatch_dates`` is dead code).
+
+    This test is the one the fix round did not write: it calls ``pull()`` a
+    SECOND time, which is the only way the cache short-circuit is observable."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
+    root_to_sym = {"AAPL": "AAPL", "SPY": "SPY"}
+
+    # PULL 1 -- provider hiccups and returns nothing for the repull-flagged date.
+    sick = FakeHistorical(frames={date: _raw_df([])})
+    ph.pull(sick, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates={date})
+    assert len(sick.get_range_calls()) == 1, "the empty response cost exactly one call"
+    assert set(pq.read_table(tgt).to_pandas()["underlying"]) == {"AAPL", "SPY"}, \
+        "FIX-C-2: the paid rows still survive"
+
+    # An empty response is not a cacheable answer -- nothing may be left behind
+    # that would let a later run mistake it for a real one.
+    assert sorted(p.name for p in (out / "_dbn").glob("*.dbn.zst")) == [], \
+        "the empty response must not stay in the DBN cache"
+
+    # The date is still planned as a repull, exactly as the stderr line claims.
+    nxt = ph.plan_missing(out, ["AAPL", "SPY"], [date], expected_minute={date: "20:55"})
+    assert nxt == {date: ["AAPL", "SPY"]} and nxt.repull_dates == {date}
+
+    # PULL 2 -- the operator re-runs once the provider is healthy, as instructed.
+    healthy = FakeHistorical(frames={date: _raw_df(["AAPL", "SPY"])})
+    ph.pull(healthy, dict(nxt), out, snap_hm="20:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates=nxt.repull_dates)
+    assert len(healthy.get_range_calls()) == 1, \
+        "the re-run must actually reach the provider -- this is the whole recovery"
+
+    tbl = pq.read_table(tgt).to_pandas()
+    assert set(tbl["underlying"]) == {"AAPL", "SPY"}
+    tss = tbl["ts"].unique()
+    assert len(tss) == 1
+    assert (pd.Timestamp(tss[0]).hour, pd.Timestamp(tss[0]).minute) == (20, 55), \
+        "the date is repaired to the correct minute, not stuck stale at 19:55"
+
+
+def test_empty_repull_does_not_re_bill_inside_the_same_run(tmp_path):
+    """FIX-N-1's spend rider. Dropping the cache entry must make the NEXT
+    explicitly-invoked run able to fetch -- it must NOT trigger an automatic
+    retry inside the current run. The guard `continue`s immediately, so the date
+    is billed exactly once per invocation no matter how many times it has
+    hiccuped before. Two back-to-back sick runs = two calls, not four."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
+    root_to_sym = {"AAPL": "AAPL", "SPY": "SPY"}
+
+    for _ in range(2):
+        sick = FakeHistorical(frames={date: _raw_df([])})
+        res = ph.pull(sick, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55",
+                      root_to_sym=root_to_sym, store_loader=_fake_loader,
+                      repull_dates={date})
+        assert len(sick.get_range_calls()) == 1, "exactly one billed call per invocation"
+        assert res.boards_written == 0
+
+
+def test_a_non_empty_response_that_decodes_to_nothing_stays_cached(tmp_path):
+    """FIX-N-1, the other side of the line. The cache is dropped because an
+    EMPTY PROVIDER RESPONSE is not an answer -- not because the decoded frame
+    came out empty. A response that DID return rows which then all failed the
+    underlying mapping / want-set filter decodes identically every time, so
+    dropping its cache would buy a guaranteed re-bill with a guaranteed
+    identical outcome on every future resume. Keep it cached; the operator's
+    problem there is the symbol mapping, not the provider."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
+
+    # Rows come back, but under a root this run's universe does not map.
+    fake = FakeHistorical(frames={date: _raw_df(["ZZZZ"])})
+    ph.pull(fake, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55",
+            root_to_sym={"AAPL": "AAPL", "SPY": "SPY"}, store_loader=_fake_loader,
+            repull_dates={date})
+
+    assert set(pq.read_table(tgt).to_pandas()["underlying"]) == {"AAPL", "SPY"}
+    assert len(list((out / "_dbn").glob("*.dbn.zst"))) == 1, \
+        "a response with rows in it is a real answer and stays cached"
+
+
 def test_plan_missing_treats_mixed_ts_file_as_mismatch(tmp_path):
     """Critical-1 belt-and-braces regression. A file whose row groups do NOT
     all agree on `ts` (e.g. a straggler from before this fix, or any other
