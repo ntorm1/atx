@@ -3,7 +3,7 @@
 Point it at an OPRA hive-v2 tree and a `SurfaceDb` root; it create-or-opens the
 db, loads the date window, auto-generates the per-symbol fit configs, and
 cell-aware-streaming-populates every `(symbol, date)` vol surface. One call over
-`build_surface_db` (`atx/vol/surface_db_build.hpp`) wrapped in a hand-rolled arg
+`build_surface_db` (`atx/vol/tools/surface_db_build.hpp`) wrapped in a hand-rolled arg
 loop (`tools/surface_db_build_main.cpp`).
 
 It is **fully resumable at every stage**: re-running over an unchanged hive
@@ -409,7 +409,7 @@ $ echo $?
 
 The decision lives in the library as
 `is_total_fit_failure(const SurfaceDbBuildReport&)`
-(`atx/vol/surface_db_build.hpp`), unit-tested in the `SurfaceDbTotalFitFailure`
+(`atx/vol/tools/surface_db_build.hpp`), unit-tested in the `SurfaceDbTotalFitFailure`
 suite — the CLI only maps it to an exit code.
 
 **It is deliberately narrow, and the three neighbouring shapes stay green:**
@@ -1044,7 +1044,7 @@ pybind11 wrapper is not needed, not installed, and not on the verification path
 `atx-vol-surface-db verify`.
 
 The tool is a **thin shell**: every subcommand parses flags, calls exactly one
-function in `atx/vol/surface_db_admin.hpp`, and prints. All logic — and the test
+function in `atx/vol/tools/surface_db_admin.hpp`, and prints. All logic — and the test
 gate (`SurfaceDbAdmin`, `atx-vol/tests/surface_db_admin_test.cpp`) — lives in
 that library, so a service or notebook consumes the same structs without parsing
 this text.

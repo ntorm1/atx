@@ -256,7 +256,7 @@ Two findings the SPY slice forced, both documented rather than papered over:
   event wings, so it stays off (matching the pre-existing `profile.cpp` note). Ultra-short
   (< ~1wk) and the deepest tails (|k| > 1.5) are separate regimes, reported separately.
 
-A deterministic **synthetic** SPY known-truth oracle (`include/atx/vol/spy_fixture.hpp`,
+A deterministic **synthetic** SPY known-truth oracle (`tests/support/spy_fixture.hpp`,
 `examples/spy_surface_bench`) complements the real slice: with no quote noise the fit
 recovers the truth exactly (0.0 bp ATM, 100% in-bid-ask, calendar-arb-free) — a zero-bias
 round-trip check, where the real slice supplies the noisy-data accuracy number above.
