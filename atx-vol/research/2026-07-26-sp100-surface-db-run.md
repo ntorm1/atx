@@ -1035,7 +1035,7 @@ candidate hardening was parked for the whole-branch review.
 
 > **[2026-07-30] CLOSED by the fix round — this item is no longer open.** The
 > whole-branch review it was parked for ruled it Critical, and both ends were
-> hardened: **`6a475f2`** added `assert_snapshot_minute_utc`-backed
+> hardened: **`6a475f2`** added `snapshot_minute_utc`-backed
 > `assert_snapshot_minute_uniform`, which raises in the orchestrator before a
 > subprocess is spawned and checks the chunk's whole date RANGE (not just its
 > member list, which is what the build CLI actually re-enumerates); and

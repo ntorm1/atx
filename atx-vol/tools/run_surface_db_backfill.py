@@ -63,6 +63,7 @@ import argparse
 import csv
 import datetime as dt
 import importlib.util
+import json
 import math
 import pathlib
 import re
@@ -261,12 +262,59 @@ def bisect_chunk(chunk: list[str]) -> tuple[list[str], list[str]]:
 
 DEFAULT_MIN_CELL_FRACTION = 0.95
 DEFAULT_MAX_ABSENT_FRACTION = 0.04
+DEFAULT_ABSENT_SIGMA_Z = 3.0
+
+
+def latched_absent_cells(hive_root, sessions: list[str], symbols: list[str],
+                         snap_et: str) -> int:
+    """How many of ``sessions`` x ``symbols`` cells are KNOWN a priori to be
+    unfillable, read from the pull tool's absent-latch sidecars
+    (``<hive>/_absent/<date>.json``, written by ``pull_opra_hive.py``'s
+    ``_write_absent_sidecar``).
+
+    A latched absence is the provider CONFIRMING that a requested underlying had
+    no data at that snapshot minute. The sprint has treated that as *complete*
+    since Task 7 -- the absent-latch invariant is ``underlyings_on_disk |
+    absent_latched == universe``, and 2025-11-24 is legitimately complete at 95
+    of 102 underlyings. Such a cell can never hold a surface, so it must not be
+    charged against the destroyed-surface budget: it is credited EXACTLY, per
+    session, rather than being absorbed by a modelled rate (see
+    ``verify_thresholds``).
+
+    This is an input to a SAFETY threshold, so every failure mode credits ZERO
+    (tightening the ceiling), never more:
+      * no sidecar / unreadable / corrupt / not the expected shape -> 0, and
+        never an exception (a missing hive under ``--dry-run`` is normal);
+      * a sidecar stamped at a DIFFERENT snapshot minute than ``snap_et``
+        resolves to for that date describes a different pull entirely (e.g. a
+        pre-DST-transition entry) -> 0, mirroring ``plan_missing``'s own
+        ``minute_utc`` check;
+      * symbols outside ``symbols`` are not cells of this database at all
+        (a name dropped from the universe since the pull) -> not counted."""
+    root = pathlib.Path(hive_root)
+    universe = set(symbols)
+    total = 0
+    for date in sessions:
+        try:
+            raw = (root / "_absent" / f"{date}.json").read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict) or data.get("minute_utc") != snapshot_minute_utc(date, snap_et):
+            continue
+        latched = data.get("symbols")
+        if not isinstance(latched, list):
+            continue
+        total += len(universe.intersection(latched))
+    return total
 
 
 def verify_thresholds(n_symbols: int, n_sessions: int, *,
                       min_cell_fraction: float = DEFAULT_MIN_CELL_FRACTION,
                       max_absent: Optional[int] = None,
-                      max_absent_fraction: float = DEFAULT_MAX_ABSENT_FRACTION) -> tuple[int, int]:
+                      max_absent_fraction: float = DEFAULT_MAX_ABSENT_FRACTION,
+                      latched_absent: int = 0,
+                      absent_sigma_z: float = DEFAULT_ABSENT_SIGMA_Z) -> tuple[int, int]:
     """(min_cells, max_absent) for ``atx-vol-surface-db verify``, over
     ``expected = n_symbols * n_sessions``. ``n_sessions`` MUST already exclude
     early closes (addendum §C) -- those dates never get a cell, so counting
@@ -297,22 +345,62 @@ def verify_thresholds(n_symbols: int, n_sessions: int, *,
         to sit close enough to the observed baseline to move when a rewrite
         eats a few hundred surfaces.
 
-    The 0.04 ceiling is calibrated against Task 8's Gate-3 baselines: the
+    The 0.04 rate is calibrated against Task 8's Gate-3 baselines: the
     landed 2025 root is 325 absent of 10608 expected (3.06%) and 2026 is 358 of
     14280 (2.51%), both dominated by provider-absent names (PLTR-style
     pre-listing gaps; the 7 names absent on 2025-11-24) plus permanently-failing
     fits -- populations that scale with the grid rather than sitting at a fixed
-    count, which is why a fraction is the right shape. 4% gives 425 / 572, i.e.
-    1.31x / 1.60x the observed figures: enough headroom for survivorship drift
-    in a new universe year, and tight enough that the review's failure scenario
-    (400 surfaces destroyed across 4 dates, 325 -> 725) turns the verdict
-    ABSENT and exits 4 in BOTH years instead of exiting 0. An operator who
-    wants the observed number pinned exactly passes an absolute ``--max-absent``
-    (the C++ tool's own advice), which overrides the fraction entirely."""
+    count, which is why a rate is the right BASE. An operator who wants the
+    observed number pinned exactly passes an absolute ``--max-absent`` (the C++
+    tool's own advice), which overrides everything below entirely.
+
+    FIX-IMPORTANT-1. ``max_absent`` used to be exactly ``ceil(0.04 * expected)``,
+    and that shape -- not that number -- was the defect. A purely proportional
+    ceiling grants the SAME per-session allowance (4.08 cells) whether the walk
+    covers 1 session or 140, so it sits essentially AT THE MEAN of the absence
+    distribution at every window length. Absences are not uniform across
+    sessions: the landed roots run 0..12 absent per session against a
+    one-session ceiling of ceil(0.04*102) = 5. A short resume-verify therefore
+    returned `verdict ABSENT` / exit 4 on known-good data -- 14 of 104
+    one-session windows and **12 of 101 FOUR-session windows** of `sp100-2025`,
+    where 4 is `--chunk-sessions`' default and the operator guide's own
+    production invocation. That is the same class of defect as N-2: an operator
+    trained to ignore exit 4, the one verdict FIX-I-2 exists to make meaningful.
+
+    Two prior rounds tried to fix this class of problem by moving a constant,
+    and a reviewer found another window each time. So the model changed instead,
+    into the two terms the absences actually have:
+
+      * ``latched_absent`` -- cells the absent-latch sidecars say can NEVER hold
+        a surface (``latched_absent_cells`` above). Known exactly, per session,
+        from disk. Credited one-for-one; nothing is modelled about them. This is
+        what carries 2025-11-24, whose 12 absent cells include 7 latched ones
+        and which is otherwise the single session in either root that a
+        one-session verify still false-alarms on.
+      * everything else -- fit failures, which no sidecar records -- is bounded
+        by an upper TAIL bound on the same 0.04 rate instead of by its mean:
+        ``mu + z*sigma`` for ``Binomial(expected, p)``. The ``sqrt`` term is
+        exactly the fix: the per-session allowance is ~10 cells for a
+        one-session walk (absences cluster, so one session legitimately carries
+        far more than the mean) and converges DOWN toward 4.08 as the window
+        grows and the sum concentrates. One threshold is then honest at both
+        ends, which no proportional constant can be.
+
+    Verified against the REAL per-session counts of both landed roots (see the
+    test module's pinned distributions): ZERO false alarms at every window
+    length on both roots -- against 66 and 7 windows respectively under the old
+    shape -- while the review's destruction scenario (400 surfaces destroyed
+    across 4 dates) still turns the verdict ABSENT at every scope. The cost is
+    whole-year sensitivity: 169 destroyed cells are needed to fire a 2025
+    full-year verify where 101 used to be. That is well inside the 400-cell
+    contract, and it buys a detector that is usable at 1..12 sessions, where the
+    old one could not be trusted at all."""
     expected = n_symbols * n_sessions
     min_cells = math.floor(min_cell_fraction * expected)
     if max_absent is None:
-        max_absent = math.ceil(max_absent_fraction * expected)
+        p = max_absent_fraction
+        sigma = math.sqrt(expected * p * (1.0 - p))
+        max_absent = latched_absent + math.ceil(p * expected + absent_sigma_z * sigma)
     return min_cells, max_absent
 
 
@@ -1040,10 +1128,19 @@ def phase_verify(args, universe_entries: list[tuple[str, float]], log_dir: pathl
         else:
             on_disk = set(hive_sessions_present(args.hive, year))
             present_requested = [d for d in year_sessions_requested if d in on_disk]
+        # FIX-IMPORTANT-1. The destroyed-surface ceiling is sized off the
+        # EXPECTED absences of the sessions actually in scope, and the exactly-
+        # known part of that expectation is on disk: the absent-latch sidecars
+        # for exactly these sessions. Reading them here (rather than modelling
+        # them into a rate) is what makes `--max-absent` mean "surfaces were
+        # destroyed" instead of "this window is unusually sparse". Fails safe to
+        # a 0 credit if the hive/sidecars are unreadable.
+        latched = latched_absent_cells(args.hive, present_requested, symbols, args.snap_et)
         min_cells, max_absent = verify_thresholds(
             n_symbols, len(present_requested),
             min_cell_fraction=args.min_cell_fraction,
             max_absent=args.max_absent,
+            latched_absent=latched,
         )
 
         # FIX-N-2. Scope the walk to the population the thresholds were just
@@ -1051,14 +1148,24 @@ def phase_verify(args, universe_entries: list[tuple[str, float]], log_dir: pathl
         # The two differ whenever the requested window's endpoints are not
         # themselves hive-present sessions (a holiday endpoint, or a partial
         # backfill whose hive stops short of `--to`), and it is the SIZED set
-        # that has to be counted. Falls back to the requested year sessions when
-        # nothing is present, which walks zero partitions against a zero
-        # threshold rather than judging the whole root by an empty window.
+        # that has to be counted.
+        #
+        # MINOR-2. When nothing is hive-present this falls back to the requested
+        # year sessions, and the fallback does NOT "walk zero partitions against
+        # a zero threshold" as this comment used to claim -- the reviewer
+        # reproduced it walking 3 partitions to exit 4. It walks whatever the
+        # database holds inside the REQUESTED range, against a threshold sized
+        # off zero present sessions, i.e. `--min-cells 0 --max-absent 0`. So any
+        # partition in that range fails it. That is the intended direction (fail
+        # closed; never judge the whole root by an empty window) but it is not
+        # a no-op, and an operator reading the old sentence would have expected
+        # exit 0.
         scope = present_requested or year_sessions_requested
+        # MINOR-3. `scope` cannot be empty: `year_sessions_requested` is
+        # `roots[year]`, non-empty by construction of `year_roots_partition`.
         verify_argv = build_verify_command(admin_exe=args.admin_exe, db_prefix=args.db_prefix,
                                            year=year, min_cells=min_cells, max_absent=max_absent,
-                                           key_lo=scope[0] if scope else None,
-                                           key_hi=scope[-1] if scope else None)
+                                           key_lo=scope[0], key_hi=scope[-1])
         verify_res = run_subprocess(verify_argv, log_dir=log_dir, tag=f"verify_{year}",
                                     dry_run=args.dry_run)
         if not args.dry_run and verify_res.exit_code != 0:

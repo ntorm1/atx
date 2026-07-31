@@ -1866,9 +1866,12 @@ $ python atx-vol/tools/run_surface_db_backfill.py \
     --log-dir <log-dir> --index SPY --fit-workers 0
 $ # --dry-run first: prints the resolved --db and every chunk's --r /
 $ # --snapshot-suffix without spawning. Then --phase verify with the SAME
-$ # --from/--to: verify_thresholds() sizes off the sessions in that window,
-$ # and phase_verify passes the window down to `verify` as --from/--to so
-$ # the walk counts the same sessions the thresholds were sized off.
+$ # --from/--to: verify_thresholds() sizes off the sessions in that window
+$ # that are PRESENT IN THE HIVE, and phase_verify passes that subset's
+$ # bounds down to `verify` as --from/--to (not the range you typed -- the
+$ # two differ when an endpoint is a holiday or is not yet pulled), so the
+$ # walk counts the same sessions the thresholds were sized off. Any window
+$ # length is safe, including a single session.
 ```
 
 ### The snapshot instant is ET-anchored; the loader takes ONE per invocation
@@ -1936,23 +1939,42 @@ every expected-session count rather than counting it as a hole.
 - **`verify`'s thresholds are now two independent knobs, and both are
   overridable.** `--min-cell-fraction` (default `0.95`) sizes `--min-cells`,
   which is a *grid-size* floor — `cells_checked` counts holes, so it moves only
-  when whole partitions are missing. `--max-absent` defaults to `ceil(0.04 x
-  n_symbols x n_sessions)` = 425 for `sp100-2025` / 572 for `sp100-2026`,
-  against observed absent counts of 325 / 358. It used to be generated as the
+  when whole partitions are missing. It used to be generated as the
   complement of a 0.7 floor — 3183 / 4284, ~10x looser than reality and
   therefore inert. It is the **only** automated detector for a destroyed
   surface, so pass an absolute `--max-absent <observed>` when you want it
   pinned exactly, per
   [the operator checklist](#absence-is-not-a-failure--the-cells-the-database-never-stored).
-  **Both thresholds are sized off the sessions in `--from`/`--to`, and
-  `phase_verify` passes that same range down to `verify` as `--from`/`--to`.**
-  That pairing is load-bearing on a resume: `verify` walks every partition in
-  the root unless a range restricts it, so sizing `--max-absent` off a 17-session
-  resume while counting `cells_absent` over all 140 partitions compares two
-  different populations and returns `verdict ABSENT` / exit `4` on a database
-  with nothing wrong with it. If you invoke the admin binary by hand rather than
-  through the orchestrator, **pass `--from`/`--to` whenever your `--max-absent`
-  was computed for a sub-range.**
+- **`--max-absent`'s default is a tail bound, not a flat rate — so a short
+  resume-verify is trustworthy.** It is
+  `latched_absent + ceil(mu + 3*sigma)` where `mu = 0.04 x n_symbols x
+  n_sessions` and `sigma = sqrt(mu x 0.96)`, i.e. an upper tail bound on a
+  `Binomial(n_symbols x n_sessions, 0.04)` absence count, plus the cells the
+  hive's own absent-latch sidecars (`<hive>/_absent/<date>.json`) say can never
+  hold a surface for exactly the sessions in scope. That gives 485 for
+  `sp100-2025` / 642 for `sp100-2026` against observed absent counts of 325 /
+  358. It was `ceil(0.04 x n_symbols x n_sessions)` — a **year-averaged rate
+  applied to concentrated absences**, which granted the same 4.08 cells per
+  session at every window length while the landed roots run 0–12 absent per
+  session. A short resume-verify therefore returned `verdict ABSENT` / exit `4`
+  on known-good data: 14 of 104 one-session windows and **12 of 101 four-session
+  windows** of `sp100-2025`, and `--chunk-sessions` defaults to 4. The `sqrt`
+  term is what fixes it — the per-session allowance is ~10 cells at one session
+  and converges toward 4.08 across a year — so **there is no minimum safe
+  resume-verify window**; verify whatever range you resumed.
+- **Both thresholds are sized off the sessions in `--from`/`--to` that are
+  actually present in the hive, and `phase_verify` passes the bounds of THAT
+  subset down to `verify` as `--from`/`--to`** — not the range you typed. The
+  two differ whenever an endpoint is not itself a hive-present session (a
+  holiday `--from`, or a partial backfill whose hive stops short of `--to`), and
+  it is the sized set that has to be counted. That pairing is load-bearing on a
+  resume: `verify` walks every partition in the root unless a range restricts
+  it, so sizing `--max-absent` off a 17-session resume while counting
+  `cells_absent` over all 140 partitions compares two different populations and
+  returns `verdict ABSENT` / exit `4` on a database with nothing wrong with it.
+  If you invoke the admin binary by hand rather than through the orchestrator,
+  **pass `--from`/`--to` whenever your `--max-absent` was computed for a
+  sub-range.**
 - **`year_summary_<year>_<from>_<to>.csv`** is the year summary. It is keyed on
   the range the invocation actually built, because the old year-keyed
   `year_summary_<year>.csv` was truncate-written per process invocation and a

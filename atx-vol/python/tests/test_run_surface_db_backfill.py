@@ -32,6 +32,8 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import importlib.util
+import json
+import math
 import pathlib
 import subprocess
 import sys
@@ -179,11 +181,61 @@ def test_verify_thresholds():
     2025 root against an observed 325. The new contract is two INDEPENDENT
     thresholds, because they detect different things: ``min_cells`` is a
     grid-size floor (``cells_checked`` counts holes) and ``max_absent`` is the
-    destroyed-surface detector."""
+    destroyed-surface detector.
+
+    FIX-IMPORTANT-1, SECOND CONTRACT CHANGE (deliberate). ``max_absent`` used to
+    be ``ceil(0.04 * expected)`` -- purely proportional, so the per-session
+    allowance was the SAME 4.08 cells whether the walk covered 1 session or 104.
+    Absences are not uniform across sessions, so that ceiling sat essentially at
+    the MEAN of a spread distribution and short windows false-alarmed. It is now
+    an upper tail bound on the same rate -- ``mu + z*sigma`` for
+    ``Binomial(expected, 0.04)`` -- plus the exactly-known latched-absent count.
+    The rate is UNCHANGED at 0.04; only the shape of the bound changed."""
     min_cells, max_absent = orch.verify_thresholds(10, 20)
     expected = 10 * 20
-    assert (min_cells, max_absent) == (190, 8)          # floor(0.95*200), ceil(0.04*200)
+    # floor(0.95*200)=190; 0.04*200 = 8 mean, sigma = sqrt(200*.04*.96) = 2.7713,
+    # so ceil(8 + 3*2.7713) = ceil(16.3138) = 17.
+    assert (min_cells, max_absent) == (190, 17)
     assert max_absent != expected - min_cells, "must no longer be the floor's complement"
+    assert max_absent > math.ceil(orch.DEFAULT_MAX_ABSENT_FRACTION * expected), \
+        "the tail bound must sit strictly above the bare mean it replaced"
+
+
+def test_verify_thresholds_per_session_allowance_shrinks_as_the_window_grows():
+    """FIX-IMPORTANT-1, the shape itself, stated as a property rather than as
+    numbers. A purely proportional ceiling has a CONSTANT per-session allowance;
+    that is exactly why it cannot be right at both ends. The tail bound's
+    per-session allowance must be LARGE for a one-session walk (absences cluster,
+    so one session can legitimately carry far more than the mean) and CONVERGE
+    DOWN toward the mean as the window grows (concentration), which is what makes
+    the same threshold usable on a 1-session resume and a 140-session year."""
+    per_session = [orch.verify_thresholds(102, n)[1] / n for n in (1, 2, 4, 10, 40, 140)]
+    assert per_session == sorted(per_session, reverse=True), \
+        "the per-session allowance must be monotonically non-increasing in window length"
+    assert per_session[0] > 2 * per_session[-1], \
+        "a one-session walk must get materially more headroom than a whole year"
+    mean_rate = orch.DEFAULT_MAX_ABSENT_FRACTION * 102
+    assert per_session[-1] > mean_rate, "and must never fall below the mean it is bounding"
+    # The old shape, for the record: essentially the same per-session allowance
+    # at every window length -- which is exactly why it could not be right at
+    # both ends of the range.
+    old = [math.ceil(0.04 * 102 * n) / n for n in (1, 2, 4, 10, 40, 140)]
+    assert max(old) - min(old) < 1.0
+    assert old[0] - old[-1] < per_session[0] - per_session[-1]
+
+
+def test_verify_thresholds_credits_the_latched_absences_exactly():
+    """FIX-IMPORTANT-1's other half. A latched absence is the provider
+    CONFIRMING a symbol had no data that session -- the absent-latch invariant
+    ``underlyings_on_disk | absent_latched == universe`` treats it as complete
+    (2025-11-24 is legitimately complete at 95 of 102). Those cells are known
+    a priori, per session, so they are credited EXACTLY rather than being
+    charged against a modelled budget."""
+    _mc, base = orch.verify_thresholds(102, 1)
+    _mc, credited = orch.verify_thresholds(102, 1, latched_absent=7)
+    assert credited == base + 7, "latched cells are added one-for-one, not modelled"
+    # An operator-supplied absolute --max-absent still wins over everything.
+    assert orch.verify_thresholds(102, 1, max_absent=3, latched_absent=7)[1] == 3
 
 
 def test_verify_thresholds_max_absent_can_actually_fire_on_the_production_baselines():
@@ -198,8 +250,10 @@ def test_verify_thresholds_max_absent_can_actually_fire_on_the_production_baseli
         assert max_absent > observed, "a healthy production root must still verify ok"
         assert max_absent < observed + 400, "400 destroyed surfaces must turn the verdict"
     # And the old 0.7-complement values, for the record, could not do either.
-    assert orch.verify_thresholds(102, 104, max_absent_fraction=0.30)[1] == 3183
-    assert orch.verify_thresholds(102, 140, max_absent_fraction=0.30)[1] == 4284
+    # (`absent_sigma_z=0` recovers the bare-mean shape those numbers came from,
+    # so this historical record survives FIX-IMPORTANT-1's change of shape.)
+    assert orch.verify_thresholds(102, 104, max_absent_fraction=0.30, absent_sigma_z=0.0)[1] == 3183
+    assert orch.verify_thresholds(102, 140, max_absent_fraction=0.30, absent_sigma_z=0.0)[1] == 4284
 
 
 def test_verify_thresholds_are_operator_overridable():
@@ -1103,21 +1157,104 @@ def _fake_verify_over_an_absent_map(sessions, absent_per_session, n_symbols):
     return fake_run
 
 
-def _sp100_2026_shaped_fixture(tmp_path, extra_absent=None):
-    """The landed `sp100-2026` root's shape: 102 symbols x the 2026 sessions,
-    358 absent cells spread over the year (provider-absent names plus
-    permanently-failing fits -- a population that scales with the grid).
+# ── the landed roots' REAL per-session absence distributions ─────────────────
+#
+# FIX-IMPORTANT-1. The fixture these tests used to run on spread `sp100-2026`'s
+# 358 absences with `absent[sessions[i % len(sessions)]] += 1`, i.e. a dead-flat
+# 2-3 per session. That distribution CANNOT exceed a per-session ceiling of 5 at
+# any window length, so the "even a one-session resume must pass" assertion below
+# was true of the fixture and unfalsifiable by it -- the fixture was idealized in
+# precisely the dimension the threshold is sensitive to, which is how a defect
+# that fires on 12 of 101 real four-session windows passed its own gate twice.
+#
+# These are the REAL counts, read off the landed read-only roots under
+# C:\atx-data and pinned here so the distribution cannot silently flatten again:
+#
+#   absent[date]  = 102 - <surfaces>   from `atx-vol-surface-db partitions --db
+#                                      C:\atx-data\surface-db\sp100-<year>`
+#   latched[date] = len(symbols)       from C:\atx-data\opra-hive\_absent\<date>.json
+#
+# sp100-2025: 104 sessions, 325 absent, 0..12 per session, 8 latched.
+# sp100-2026: 140 sessions, 358 absent, 0..7  per session, 48 latched.
+#
+# Both partition lists are date-for-date equal to
+# `trading_sessions_excluding_early_close(<first>, <last>, "15:55")`, which is
+# what lets these counts be attached positionally below.
+
+_REAL_ABSENT_2025 = (
+    "6 3 1 2 4 2 3 8 4 2 3 2 3 4 2 4 5 3 1 3 4 2 7 1 2 6 6 3 4 8 2 3 1 4 2 2 2 "
+    "4 3 1 7 2 2 3 7 3 2 1 2 1 4 4 2 1 5 2 1 2 3 1 1 0 2 4 2 3 3 6 6 3 4 1 5 3 "
+    "4 3 2 1 3 5 12 1 0 2 4 1 2 0 3 1 4 3 4 4 4 2 4 6 6 4 2 6 1 1 "
+)
+_REAL_LATCHED_2025 = {"2025-10-30": 1, "2025-11-24": 7}
+
+_REAL_ABSENT_2026 = (
+    "2 4 3 3 3 1 3 3 4 0 1 1 3 1 1 6 3 0 6 2 4 5 4 1 3 3 2 0 1 3 2 3 1 3 4 2 3 "
+    "4 4 1 4 2 5 3 1 6 5 1 2 0 3 5 1 3 1 5 2 2 1 0 3 0 4 2 2 5 1 3 1 2 2 4 1 3 "
+    "3 3 0 1 1 5 4 1 3 3 3 5 1 1 1 1 2 1 3 1 1 4 2 5 1 7 2 2 4 6 2 3 2 2 3 1 2 "
+    "3 3 2 1 3 3 1 3 3 2 5 1 4 2 2 3 4 2 3 1 3 3 4 3 3 3 3 4 1 "
+)
+_REAL_LATCHED_2026 = {
+    "2026-01-05": 1, "2026-05-21": 1, "2026-05-22": 1, "2026-05-26": 1,
+    "2026-05-27": 1, "2026-05-28": 1, "2026-05-29": 1, "2026-06-01": 2,
+    "2026-06-02": 1, "2026-06-03": 1, "2026-06-04": 1, "2026-06-05": 1,
+    "2026-06-08": 1, "2026-06-09": 1, "2026-06-10": 1, "2026-06-11": 1,
+    "2026-06-12": 1, "2026-06-15": 1, "2026-06-16": 1, "2026-06-17": 1,
+    "2026-06-18": 1, "2026-06-22": 1, "2026-06-23": 1, "2026-06-24": 1,
+    "2026-06-25": 1, "2026-06-26": 1, "2026-06-29": 2, "2026-06-30": 1,
+    "2026-07-01": 2, "2026-07-02": 1, "2026-07-06": 1, "2026-07-07": 1,
+    "2026-07-08": 1, "2026-07-09": 1, "2026-07-10": 1, "2026-07-13": 1,
+    "2026-07-14": 1, "2026-07-15": 1, "2026-07-16": 1, "2026-07-17": 1,
+    "2026-07-20": 1, "2026-07-21": 1, "2026-07-22": 1, "2026-07-23": 1,
+    "2026-07-24": 1,
+}
+
+_LANDED_ROOTS = {
+    2025: ("2025-08-01", "2025-12-31", _REAL_ABSENT_2025, _REAL_LATCHED_2025),
+    2026: ("2026-01-02", "2026-07-24", _REAL_ABSENT_2026, _REAL_LATCHED_2026),
+}
+
+_N_SYMBOLS = 102
+_UNIVERSE = [(f"S{i:03d}", 100.0) for i in range(_N_SYMBOLS)]
+
+
+def _landed_root_fixture(tmp_path, year, extra_absent=None):
+    """A hive + absence map reproducing a landed root's REAL shape: 102 symbols
+    x its real sessions, with each session's real absent-cell count and its real
+    ``_absent/<date>.json`` latch sidecar written to disk (so ``phase_verify``
+    reads the latch the same way it does in production).
+
     ``extra_absent`` adds destroyed surfaces at named dates."""
-    sessions = orch.trading_sessions_excluding_early_close("2026-01-02", "2026-07-24", "15:55")
-    hive = _make_hive_with_sessions(tmp_path, sessions)
-    n_symbols = 102
-    absent = {d: 0 for d in sessions}
-    for i in range(358):
-        absent[sessions[i % len(sessions)]] += 1
+    first, last, absent_str, latched = _LANDED_ROOTS[year]
+    sessions = orch.trading_sessions_excluding_early_close(first, last, "15:55")
+    counts = [int(x) for x in absent_str.split()]
+    assert len(sessions) == len(counts), (
+        f"{year}: the pinned real absent counts ({len(counts)}) no longer line up with "
+        f"the calendar ({len(sessions)}) -- re-derive them from the landed root")
+    absent = dict(zip(sessions, counts))
+
+    hive = _make_hive_with_sessions(tmp_path, sessions, name=f"hive{year}")
+    for date, n_latched in latched.items():
+        assert n_latched <= absent[date], (
+            f"{date}: a latched absence is a cell that can never be filled, so it must "
+            f"be a subset of that session's absent cells")
+        _write_absent_sidecar(hive, date, n_latched)
+
     for date, extra in (extra_absent or {}).items():
         absent[date] += extra
-    universe = [(f"S{i:03d}", 100.0) for i in range(n_symbols)]
-    return sessions, hive, absent, n_symbols, universe
+    return sessions, hive, absent, _N_SYMBOLS, list(_UNIVERSE)
+
+
+def _write_absent_sidecar(hive, date, n_symbols_absent, minute=None):
+    """The exact on-disk shape `pull_opra_hive.py` writes (`_write_absent_sidecar`):
+    one JSON per date holding one snapshot minute's confirmed-absent symbols."""
+    path = hive / "_absent" / f"{date}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "minute_utc": minute or orch.snapshot_minute_utc(date, "15:55"),
+        "symbols": [s for s, _ in _UNIVERSE[:n_symbols_absent]],
+        "asof": "2026-07-28T23:25:51.459675+00:00",
+    }), encoding="utf-8")
 
 
 def test_phase_verify_sub_range_resume_does_not_false_alarm_on_a_healthy_root(tmp_path, monkeypatch):
@@ -1133,7 +1270,7 @@ def test_phase_verify_sub_range_resume_does_not_false_alarm_on_a_healthy_root(tm
     Nothing is wrong with the database. It fails CLOSED, so it is not a data
     risk -- it is worse in a different way: it trains an operator to ignore exit
     4, the one verdict FIX-I-2 exists to make meaningful."""
-    sessions, hive, absent, n_symbols, universe = _sp100_2026_shaped_fixture(tmp_path)
+    sessions, hive, absent, n_symbols, universe = _landed_root_fixture(tmp_path, 2026)
     monkeypatch.setattr(subprocess, "run",
                         _fake_verify_over_an_absent_map(sessions, absent, n_symbols))
 
@@ -1153,25 +1290,128 @@ def test_phase_verify_sub_range_resume_does_not_false_alarm_on_a_healthy_root(tm
         "even a one-session resume must not be judged against the whole DB's absent count"
 
 
-def test_phase_verify_sub_range_still_fires_on_destroyed_surfaces(tmp_path, monkeypatch):
-    """FIX-N-2 must not re-inert FIX-I-2. Scoping the walk narrows the
-    numerator, so re-state I-2's property against the scoped form: the review's
-    destruction scenario -- 400 surfaces destroyed across 4 dates by a
-    whole-file partition rewrite -- must still turn the verdict ABSENT and exit
-    4, both inside a sub-range resume and over the whole year."""
-    destroyed = {"2026-07-20": 100, "2026-07-21": 100, "2026-07-22": 100, "2026-07-23": 100}
-    sessions, hive, absent, n_symbols, universe = _sp100_2026_shaped_fixture(
-        tmp_path, extra_absent=destroyed)
+@pytest.mark.parametrize("year", [2025, 2026])
+def test_phase_verify_every_short_window_of_the_landed_roots_verifies_green(
+        tmp_path, monkeypatch, year):
+    """FIX-IMPORTANT-1, the regression, driven over the REAL per-session absence
+    distributions rather than an invented flat one.
+
+    `--max-absent` was `ceil(0.04 * n_symbols * n_sessions)` -- a YEAR-AVERAGED
+    rate applied to CONCENTRATED absences. Real per-session counts run 0..12 on
+    `sp100-2025` against a one-session ceiling of `ceil(0.04*102) = 5`, so a short
+    resume-verify returned `verdict ABSENT` / exit 4 on a root with nothing wrong
+    with it. Measured on the landed roots at HEAD~:
+
+        sp100-2025:  1 session -> 14 of 104 windows false-alarm
+                     4 sessions -> 12 of 101   <- `--chunk-sessions` DEFAULTS to 4,
+                     5 sessions -> 10 of 100      and the operator guide's own
+                    11 sessions ->  1 of  94      production invocation uses 4
+        sp100-2026:  1 session ->  5 of 140
+                     2 sessions ->  2 of 139
+
+    The guide prescribes exactly this workflow: a build chunk fails, the operator
+    resumes it, then runs `--phase verify` with the SAME `--from`/`--to`. This
+    sweeps EVERY window of every length up to 12 over both landed roots, so it
+    cannot pass by picking a lucky window, and it fails loudly on a flattened
+    fixture (a uniform distribution has no window that stresses the ceiling)."""
+    sessions, hive, absent, n_symbols, universe = _landed_root_fixture(tmp_path, year)
     monkeypatch.setattr(subprocess, "run",
                         _fake_verify_over_an_absent_map(sessions, absent, n_symbols))
 
-    resume = _verify_args(tmp_path, from_date="2026-07-01", to_date="2026-07-24", hive=hive)
-    assert orch.phase_verify(resume, universe, tmp_path) == 1, \
-        "400 destroyed surfaces inside the resumed range must fail the phase"
+    # Guard the fixture itself: a flat distribution makes this test vacuous.
+    counts = [absent[d] for d in sessions]
+    assert max(counts) >= 2 * (sum(counts) / len(counts)), \
+        "the fixture's absences must be CLUSTERED -- a flat one cannot falsify this"
 
-    whole = _verify_args(tmp_path, from_date="2026-01-02", to_date="2026-07-24", hive=hive)
-    assert orch.phase_verify(whole, universe, tmp_path) == 1, \
-        "and must still fail the whole-year verify (325+400 > ceil(0.04*14280))"
+    failures = []
+    for width in (1, 2, 3, 4, 5, 8, 11, 12):
+        for i in range(len(sessions) - width + 1):
+            window = sessions[i:i + width]
+            args = _verify_args(tmp_path, from_date=window[0], to_date=window[-1], hive=hive)
+            if orch.phase_verify(args, universe, tmp_path) != 0:
+                failures.append((width, window[0], window[-1],
+                                 sum(absent[d] for d in window)))
+    assert failures == [], (
+        f"{len(failures)} healthy window(s) of the landed sp100-{year} root were judged "
+        f"ABSENT; worst: {max(failures, key=lambda f: f[3])}")
+
+
+def test_phase_verify_short_windows_still_fire_on_destroyed_surfaces(tmp_path, monkeypatch):
+    """FIX-IMPORTANT-1 must not re-inert FIX-I-2, and I-2's property is now the
+    standing contract: the review's destruction scenario -- 400 surfaces
+    destroyed across 4 dates by a whole-file partition rewrite -- must still turn
+    the verdict ABSENT and exit 4, at EVERY scope the operator might verify at.
+
+    This is the assertion that stops the threshold being "loosened until the
+    false alarms stop", which would re-open I-2."""
+    destroyed = {"2026-07-20": 100, "2026-07-21": 100, "2026-07-22": 100, "2026-07-23": 100}
+    sessions, hive, absent, n_symbols, universe = _landed_root_fixture(
+        tmp_path, 2026, extra_absent=destroyed)
+    monkeypatch.setattr(subprocess, "run",
+                        _fake_verify_over_an_absent_map(sessions, absent, n_symbols))
+
+    for lo, hi, why in (
+        ("2026-07-20", "2026-07-23", "the 4-session chunk that was destroyed"),
+        ("2026-07-01", "2026-07-24", "a 17-session resume containing it"),
+        ("2026-01-02", "2026-07-24", "the whole-year verify"),
+    ):
+        args = _verify_args(tmp_path, from_date=lo, to_date=hi, hive=hive)
+        assert orch.phase_verify(args, universe, tmp_path) == 1, \
+            f"400 destroyed surfaces must fail {why}"
+
+
+def test_phase_verify_credits_the_latched_absences_of_the_sessions_in_scope(
+        tmp_path, monkeypatch):
+    """FIX-IMPORTANT-1's design, at its load-bearing point. 2025-11-24 is
+    legitimately COMPLETE at 95 of 102 underlyings -- the absent-latch invariant
+    `underlyings_on_disk | absent_latched == universe` holds, and its
+    `_absent/2025-11-24.json` names the 7 confirmed-absent symbols. It carries 12
+    absent DB cells, which is the single worst session of either landed root.
+
+    Without the latch credit, that ONE session is the only one in either root that
+    a one-session verify still false-alarms on. Sizing off the latch is what makes
+    the check mean "surfaces were destroyed" rather than "this window is sparse",
+    and this test is what stops the credit being quietly dropped as redundant."""
+    sessions, hive, absent, n_symbols, universe = _landed_root_fixture(tmp_path, 2025)
+    assert absent["2025-11-24"] == 12 and _REAL_LATCHED_2025["2025-11-24"] == 7
+    monkeypatch.setattr(subprocess, "run",
+                        _fake_verify_over_an_absent_map(sessions, absent, n_symbols))
+
+    args = _verify_args(tmp_path, from_date="2025-11-24", to_date="2025-11-24", hive=hive)
+    assert orch.phase_verify(args, universe, tmp_path) == 0
+
+    # Delete the sidecar and the SAME session must now fail: the credit is real,
+    # it comes from disk, and it is what carries this date.
+    (hive / "_absent" / "2025-11-24.json").unlink()
+    assert orch.phase_verify(args, universe, tmp_path) == 1, \
+        "without the latch this session is over the ceiling -- the credit is load-bearing"
+
+
+def test_latched_absent_cells_reads_the_sidecars_and_fails_safe(tmp_path):
+    """The latch reader is the only new input to a SAFETY threshold, so every way
+    it can be wrong must make the ceiling TIGHTER (credit 0), never looser."""
+    hive = tmp_path / "hive"
+    uni = [s for s, _ in _UNIVERSE]
+
+    def latched(dates):
+        return orch.latched_absent_cells(hive, dates, uni, "15:55")
+
+    _write_absent_sidecar(hive, "2025-11-24", 7)                       # EST -> 20:55
+    _write_absent_sidecar(hive, "2025-10-30", 1)                       # EDT -> 19:55
+    assert latched(["2025-11-24", "2025-10-30"]) == 8
+    # A session with no sidecar contributes nothing.
+    assert latched(["2025-11-25"]) == 0
+    # A sidecar stamped at a DIFFERENT snapshot minute describes different data.
+    _write_absent_sidecar(hive, "2025-11-25", 5, minute="19:55")
+    assert latched(["2025-11-25"]) == 0
+    # Symbols outside this run's universe are not cells of this database.
+    (hive / "_absent" / "2025-11-26.json").write_text(json.dumps(
+        {"minute_utc": "20:55", "symbols": ["S000", "NOT_IN_UNIVERSE"]}), encoding="utf-8")
+    assert latched(["2025-11-26"]) == 1
+    # Corrupt / unreadable / missing hive -> no credit, never an exception.
+    (hive / "_absent" / "2025-11-27.json").write_text("{not json", encoding="utf-8")
+    assert latched(["2025-11-27"]) == 0
+    assert orch.latched_absent_cells(tmp_path / "nope", ["2025-11-24"], uni, "15:55") == 0
 
 
 def test_phase_verify_scopes_the_verify_walk_to_the_sized_session_set(tmp_path, monkeypatch):
@@ -1197,8 +1437,10 @@ def test_phase_verify_scopes_the_verify_walk_to_the_sized_session_set(tmp_path, 
     assert orch.phase_verify(args, [("SPY", 100.0)], tmp_path) == 0
     assert (seen["from"], seen["to"]) == ("2022-07-05", "2022-07-07"), \
         "the walk must be scoped to the hive-present sessions the thresholds were sized off"
-    # expected = 1 x 3 -> max_absent = ceil(0.04*3) = 1, over exactly those 3 partitions.
-    assert seen["max_absent"] == "1"
+    # expected = 1 x 3, no latched absences -> max_absent = ceil(0.04*3 + 3*sqrt(3*.04*.96))
+    # = ceil(0.12 + 1.018) = 2, over exactly those 3 partitions. (FIX-IMPORTANT-1
+    # changed this from the bare mean's ceil(0.04*3) = 1.)
+    assert seen["max_absent"] == "2"
 
 
 def test_phase_verify_dry_run_falls_back_to_requested_sessions_needing_no_hive(tmp_path, monkeypatch):
