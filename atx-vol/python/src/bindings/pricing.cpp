@@ -64,7 +64,9 @@ py::array_t<double> price_batch(const DoubleArray &f_array, const DoubleArray &k
   const std::span<double> out{output.mutable_data(), static_cast<std::size_t>(output.size())};
   {
     py::gil_scoped_release release;
-    atxvol::python::unwrap(black76_price_batch(f, k, t, sigma, df, sides, out));
+    // 4.3: the batch reports its lane count through the Result; the binding
+    // already sized `output` from `f`, so only the rejection half is consumed.
+    static_cast<void>(atxvol::python::unwrap(black76_price_batch(f, k, t, sigma, df, sides, out)));
   }
   return output;
 }
@@ -93,7 +95,8 @@ iv_batch(const DoubleArray &price_array, const DoubleArray &f_array, const Doubl
   const std::span<double> out{output.mutable_data(), static_cast<std::size_t>(output.size())};
   {
     py::gil_scoped_release release;
-    atxvol::python::unwrap(implied_vol_batch(price, f, k, t, df, sides, out, statuses));
+    static_cast<void>(
+        atxvol::python::unwrap(implied_vol_batch(price, f, k, t, df, sides, out, statuses)));
   }
   return {std::move(output), atxvol::python::to_status_array(statuses)};
 }

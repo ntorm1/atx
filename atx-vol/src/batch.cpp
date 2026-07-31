@@ -110,10 +110,10 @@ constexpr std::size_t kEssviAvx2MinBatch = 16;
 
 } // namespace
 
-Status black76_price_batch(std::span<const double> F, std::span<const double> K,
-                           std::span<const double> T, std::span<const double> sigma,
-                           std::span<const double> df, std::span<const Side> side,
-                           std::span<double> price_out) {
+Result<std::size_t> black76_price_batch(std::span<const double> F, std::span<const double> K,
+                                        std::span<const double> T, std::span<const double> sigma,
+                                        std::span<const double> df, std::span<const Side> side,
+                                        std::span<double> price_out) {
   if (!sizes_match(
           {F.size(), K.size(), T.size(), sigma.size(), df.size(), side.size(), price_out.size()})) {
     return Err(ErrorCode::InvalidArgument, "black76_price_batch: span length mismatch");
@@ -127,18 +127,20 @@ Status black76_price_batch(std::span<const double> F, std::span<const double> K,
   if (n >= kAvx2LaneWidth && simd::use_avx2()) {
     simd::detail::black76_price_batch_avx2(F.data(), K.data(), T.data(), sigma.data(), df.data(),
                                            side.data(), price_out.data(), n);
-    return Ok();
+    return Ok(n);
   }
   for (std::size_t i = 0; i < n; ++i) {
     price_out[i] = black76_price(F[i], K[i], T[i], sigma[i], df[i], side[i]);
   }
-  return Ok();
+  return Ok(n);
 }
 
-Status black76_price_from_lnfk_batch(std::span<const double> F, std::span<const double> K, double T,
-                                     double sqrt_t, std::span<const double> sigma, double df,
-                                     std::span<const double> ln_fk, std::span<const Side> side,
-                                     std::span<double> price_out) {
+Result<std::size_t> black76_price_from_lnfk_batch(std::span<const double> F,
+                                                  std::span<const double> K, double T, double sqrt_t,
+                                                  std::span<const double> sigma, double df,
+                                                  std::span<const double> ln_fk,
+                                                  std::span<const Side> side,
+                                                  std::span<double> price_out) {
   if (!sizes_match(
           {F.size(), K.size(), sigma.size(), ln_fk.size(), side.size(), price_out.size()})) {
     return Err(ErrorCode::InvalidArgument, "black76_price_from_lnfk_batch: span length mismatch");
@@ -152,13 +154,16 @@ Status black76_price_from_lnfk_batch(std::span<const double> F, std::span<const 
   for (std::size_t i = 0; i < n; ++i) {
     price_out[i] = black76_price_from_lnfk(F[i], K[i], T, sigma[i], df, ln_fk[i], sqrt_t, side[i]);
   }
-  return Ok();
+  return Ok(n);
 }
 
-Status black76_value_and_vega_batch(std::span<const double> F, std::span<const double> K, double T,
-                                    std::span<const double> sigma, std::span<const double> df,
-                                    std::span<const Side> side, std::span<double> value_out,
-                                    std::span<double> vega_out, double sqrt_t_in) {
+Result<std::size_t> black76_value_and_vega_batch(std::span<const double> F,
+                                                 std::span<const double> K, double T,
+                                                 std::span<const double> sigma,
+                                                 std::span<const double> df,
+                                                 std::span<const Side> side,
+                                                 std::span<double> value_out,
+                                                 std::span<double> vega_out, double sqrt_t_in) {
   if (!sizes_match({F.size(), K.size(), sigma.size(), df.size(), side.size(), value_out.size(),
                     vega_out.size()})) {
     return Err(ErrorCode::InvalidArgument, "black76_value_and_vega_batch: span length mismatch");
@@ -177,7 +182,7 @@ Status black76_value_and_vega_batch(std::span<const double> F, std::span<const d
     simd::detail::black76_value_vega_shared_t_batch_avx2(F.data(), K.data(), T, sqrt_t_in,
                                                          sigma.data(), df.data(), side.data(),
                                                          value_out.data(), vega_out.data(), n);
-    return Ok();
+    return Ok(n);
   }
   for (std::size_t i = 0; i < n; ++i) {
     const Black76ValueVega vv =
@@ -185,13 +190,13 @@ Status black76_value_and_vega_batch(std::span<const double> F, std::span<const d
     value_out[i] = vv.price;
     vega_out[i] = vv.vega;
   }
-  return Ok();
+  return Ok(n);
 }
 
-Status implied_vol_batch(std::span<const double> price, std::span<const double> F,
-                         std::span<const double> K, std::span<const double> T,
-                         std::span<const double> df, std::span<const Side> side,
-                         std::span<double> iv_out, std::span<Status> status_out) {
+Result<std::size_t> implied_vol_batch(std::span<const double> price, std::span<const double> F,
+                                      std::span<const double> K, std::span<const double> T,
+                                      std::span<const double> df, std::span<const Side> side,
+                                      std::span<double> iv_out, std::span<Status> status_out) {
   if (!sizes_match({price.size(), F.size(), K.size(), T.size(), df.size(), side.size(),
                     iv_out.size(), status_out.size()})) {
     return Err(ErrorCode::InvalidArgument, "implied_vol_batch: span length mismatch");
@@ -215,14 +220,14 @@ Status implied_vol_batch(std::span<const double> price, std::span<const double> 
       status_out[i] = Err(iv.error());
     }
   }
-  return Ok();
+  return Ok(n);
 }
 
-Status black76_greeks_batch(std::span<const double> F, std::span<const double> K,
-                            std::span<const double> T, std::span<const double> sigma,
-                            std::span<const double> r, std::span<const double> df,
-                            std::span<const Side> side, std::span<Greeks> greeks_out,
-                            std::span<double> price_out) {
+Result<std::size_t> black76_greeks_batch(std::span<const double> F, std::span<const double> K,
+                                         std::span<const double> T, std::span<const double> sigma,
+                                         std::span<const double> r, std::span<const double> df,
+                                         std::span<const Side> side, std::span<Greeks> greeks_out,
+                                         std::span<double> price_out) {
   if (!sizes_match({F.size(), K.size(), T.size(), sigma.size(), r.size(), df.size(), side.size(),
                     greeks_out.size()})) {
     return Err(ErrorCode::InvalidArgument, "black76_greeks_batch: span length mismatch");
@@ -243,7 +248,7 @@ Status black76_greeks_batch(std::span<const double> F, std::span<const double> K
     simd::detail::black76_greeks_batch_avx2(F.data(), K.data(), T.data(), sigma.data(), r.data(),
                                             df.data(), side.data(), greeks_out.data(),
                                             want_price ? price_out.data() : nullptr, n);
-    return Ok();
+    return Ok(n);
   }
   for (std::size_t i = 0; i < n; ++i) {
     const Black76Greeks g = black76_greeks(F[i], K[i], T[i], sigma[i], r[i], df[i], side[i]);
@@ -252,11 +257,11 @@ Status black76_greeks_batch(std::span<const double> F, std::span<const double> K
       price_out[i] = g.price;
     }
   }
-  return Ok();
+  return Ok(n);
 }
 
-Status essvi_w_batch(const EssviSlice &slice, std::span<const double> k_log,
-                     std::span<double> w_out) {
+Result<std::size_t> essvi_w_batch(const EssviSlice &slice, std::span<const double> k_log,
+                                  std::span<double> w_out) {
   if (k_log.size() != w_out.size()) {
     return Err(ErrorCode::InvalidArgument, "essvi_w_batch: span length mismatch");
   }
@@ -274,12 +279,12 @@ Status essvi_w_batch(const EssviSlice &slice, std::span<const double> k_log,
     params.rho_R = slice.rho;
     params.T = slice.T;
     simd::detail::essvi_backbone_w_batch_avx2(params, k_log.data(), w_out.data(), n);
-    return Ok();
+    return Ok(n);
   }
   for (std::size_t i = 0; i < n; ++i) {
     w_out[i] = essvi_w(slice, k_log[i]);
   }
-  return Ok();
+  return Ok(n);
 }
 
 } // namespace atx::vol
