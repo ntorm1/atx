@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <fstream>
 #include <iterator>
+#include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -12,6 +14,7 @@
 #include <utility>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/detail/archive_util.hpp" // canonicalize_symbol (manifest spelling)
 
 namespace atx::vol {
 
@@ -195,6 +198,66 @@ Result<DispersionBacktestConfig> read_dispersion_backtest_config(const fs::path 
       return Err(assigned.error());
   }
   return config;
+}
+
+Result<DispersionUniverse> universe_from_surface_db(const SurfaceDb &db,
+                                                    std::string_view index_symbol) {
+  // ONE manifest snapshot for the whole derivation. The obvious spelling —
+  // `db.symbols()` followed by a `db.symbol_config()` per name — takes a FRESH
+  // snapshot on every call, so a concurrent `upsert_symbol` could leave the name
+  // list and the configs describing different generations of the manifest; a
+  // universe assembled from two generations is one nobody authored, and the
+  // failure would be a silently wrong basket rather than an error. Holding the
+  // snapshot makes the result a consistent view by construction, and collapses
+  // the per-symbol bisect into a single linear pass.
+  const std::shared_ptr<const DbManifest> snapshot = db.manifest();
+  const std::span<const DbSymbolRecord> records = snapshot->symbols();
+
+  // Canonicalize the caller's spelling once, with the SAME transform storage
+  // used, so the comparison below is a plain byte match against the stored name.
+  const std::string index_canon = detail::canonicalize_symbol(index_symbol, kSurfaceDbKeyMax);
+
+  DispersionUniverse universe;
+  universe.names.reserve(records.size());
+  bool index_seen = false;
+  for (const DbSymbolRecord &record : records) {
+    // `kDbSymEnabled` is the public wire encoding of `SymbolFitConfig::enabled`
+    // (surface_db.cpp's encode/decode read exactly this bit). The test asserts
+    // the exclusion alongside `SurfaceDb::symbol_config()->enabled`, so the two
+    // spellings of the flag cannot drift apart unnoticed.
+    if ((record.flags & kDbSymEnabled) == 0)
+      continue;
+    // `DbSymbolRecord::symbol` is a fixed 32-byte field that is NOT
+    // NUL-terminated; `symbol_len` is the only length.
+    const std::string_view name{record.symbol, record.symbol_len};
+    DispersionMember member;
+    member.symbol = std::string(name);
+    if (name == index_canon) {
+      // Records are strictly ascending by canonical symbol (DbManifest::open
+      // enforces it), so at most one record can match and this cannot overwrite
+      // an index already taken.
+      member.weight = 1.0;
+      universe.index = std::move(member);
+      index_seen = true;
+      continue;
+    }
+    universe.names.push_back(std::move(member));
+  }
+
+  if (!index_seen)
+    return Err(ErrorCode::InvalidArgument,
+               "universe_from_surface_db: index symbol '" + std::string(index_symbol) +
+                   "' is not an enabled symbol in the SurfaceDb manifest (" +
+                   std::to_string(records.size()) + " symbols)");
+
+  // Guarded because 1.0 / 0 is inf, not an error: an index-only db must produce
+  // an empty basket, never a basket of infinities for the sizing code to spread.
+  if (!universe.names.empty()) {
+    const double weight = 1.0 / static_cast<double>(universe.names.size());
+    for (DispersionMember &member : universe.names)
+      member.weight = weight;
+  }
+  return Ok(std::move(universe));
 }
 
 } // namespace atx::vol

@@ -10,8 +10,11 @@
 // one file format for both routes.
 
 #include <filesystem>
+#include <string_view>
 
-#include "atx/vol/dispersion_backtest.hpp"
+#include "atx/vol/dispersion.hpp"          // DispersionUniverse / DispersionMember
+#include "atx/vol/dispersion_backtest.hpp" // DispersionBacktestConfig
+#include "atx/vol/surface_db.hpp"          // SurfaceDb (manifest symbol table)
 #include "atx/vol/types.hpp" // Result / Status / ErrorCode (atx-vol's Result include)
 
 namespace atx::vol {
@@ -53,5 +56,55 @@ namespace atx::vol {
 /// `limits`, and the rest of `RunConfig`.
 [[nodiscard]] Result<DispersionBacktestConfig>
 read_dispersion_backtest_config(const std::filesystem::path &path);
+
+/// Derive an equal-weight `DispersionUniverse` from a SurfaceDb: `index_symbol`
+/// becomes the index leg, every OTHER enabled symbol in the db becomes a basket
+/// name at weight 1/n, and the index member carries weight 1.0 (which the engine
+/// ignores — only constituent weights enter the signal and sizing, see
+/// dispersion.hpp). This is the surface-db route's answer to "which names am I
+/// trading", so the operator authors a universe by building a db, not by
+/// maintaining a second symbol list beside it.
+///
+/// THE MANIFEST'S SYMBOL TABLE IS THE UNIVERSE, NOT THE PARTITIONS. The two are
+/// orthogonal namespaces (surface_db.hpp, write_partition): a partition stores
+/// whatever symbols it was handed and registers NONE of them, while the symbol
+/// table is where the operator states which underlyings this db is FOR and which
+/// of them are switched off (`SymbolFitConfig::enabled`). Reading the table
+/// therefore answers "the universe this db was built for"; reading a partition
+/// would instead answer "what happened to be fitted on one particular date",
+/// which would silently resize the basket whenever a single date's fit was thin.
+/// A db whose table was never seeded has no universe at all and every index is
+/// missing — see the error below, which names the count so that reads as the
+/// wrong db rather than as a typo.
+///
+/// `index_symbol` is matched case-insensitively, since the manifest stores
+/// canonical upper-case names, and every returned member carries that CANONICAL
+/// spelling — so a lower-case config key cannot yield a universe whose symbols
+/// then fail to match the snapshot directory.
+///
+/// ORDER IS THE MANIFEST'S AND IS ALREADY SORTED. `SurfaceDb::symbols()` is
+/// strictly ascending by canonical symbol — `DbManifest::open` REJECTS a
+/// manifest whose records are not — so preserving that order is enough to make
+/// the basket sorted and the same db always yield the same universe in the same
+/// order. Nothing here re-sorts; the invariant is the guarantee.
+///
+/// UIDS STAY 0. A `DispersionMember::uid` identifies a surface inside ONE
+/// `MarketSnapshot`, not a symbol across time, so binding one here would be
+/// wrong on every date but the one it came from. The engine rebinds them per
+/// step via `resolve_universe_uids` / `MarketSnapshot::uid_of`; symbols are the
+/// only durable identity a universe can carry.
+///
+/// The enabled filter runs BEFORE the index match, so an index that is present
+/// but disabled is rejected exactly like an absent one — a switched-off symbol
+/// has no surfaces being produced for it, which is precisely the state that must
+/// not silently become an index leg. Either way the result is InvalidArgument
+/// naming the symbol as the caller spelled it plus the manifest's symbol count.
+///
+/// An index whose db holds no OTHER enabled symbol yields an EMPTY basket rather
+/// than an error or an infinite weight (the 1/n division is skipped): how few
+/// names is too few is the caller's policy — `DispersionBacktestConfig::min_names`
+/// — not this function's.
+[[nodiscard]] Result<DispersionUniverse> universe_from_surface_db(const SurfaceDb &db,
+                                                                  std::string_view index_symbol);
 
 } // namespace atx::vol

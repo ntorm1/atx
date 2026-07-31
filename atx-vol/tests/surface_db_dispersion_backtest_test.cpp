@@ -31,17 +31,36 @@
 //                                           missing file are all errors naming the
 //                                           offender.
 //
+// Task 3 adds `universe_from_surface_db`, which reads the db MANIFEST's symbol
+// table (not its partitions) into an equal-weight `DispersionUniverse`:
+//
+//   8. UniverseFromDbEqualWeightsExcludesIndexAndDisabled — the index leaves the
+//                                           basket, a disabled symbol never
+//                                           enters it, every survivor is 1/n, the
+//                                           order is the manifest's sorted one
+//                                           and uids stay 0.
+//   9. UniverseFromDbMissingIndexIsInvalidArgument — an index that is absent, and
+//                                           one that is present but DISABLED, are
+//                                           both InvalidArgument naming it and the
+//                                           manifest size.
+//  10. UniverseFromDbIndexOnlyManifestYieldsEmptyBasket — the 1/n division does
+//                                           not run on an empty basket (no inf
+//                                           weights); how few names is too few is
+//                                           the caller's min_names policy.
+//
 // Fixtures are synthetic eSSVI surfaces written into a fresh SurfaceDb under
 // %TEMP% (make_test_db below), plus config text written to throwaway %TEMP%
 // files (write_temp_file); nothing here reads the real data lake.
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
 #include <string_view>
@@ -121,13 +140,45 @@ constexpr std::int64_t kDayNs = 86'400'000'000'000LL;
 // partition's `now_ts_ns` advances one day per date in `dates` ORDER, so the
 // caller may hand dates out of chronological order to exercise sorting.
 //
+// The manifest's SYMBOL TABLE is seeded too: every `symbols` entry enabled and
+// every `disabled` entry disabled. That is a separate step because the table and
+// the partitions are ORTHOGONAL namespaces (surface_db.hpp, write_partition):
+// writing a partition registers NOTHING, so a db built by partitions alone has
+// an empty `symbols()` and no notion of which underlyings it is "for". Anything
+// that reads the manifest's universe — Task 3's universe_from_surface_db — sees
+// only what is seeded here. `disabled` entries deliberately get NO surface in
+// any partition: a switched-off name is exactly the one the fitter stopped
+// producing, and the table is what still remembers it.
+//
+// Seeding goes through the BATCH upsert so the whole table costs one atomic
+// manifest rewrite rather than one per symbol.
+//
 // Shared fixture builder for this file — later tasks in this sprint extend it.
 [[nodiscard]] Result<SurfaceDb> make_test_db(const fs::path &root,
                                              const std::vector<std::string_view> &dates,
-                                             const std::vector<std::string_view> &symbols) {
+                                             const std::vector<std::string_view> &symbols,
+                                             const std::vector<std::string_view> &disabled = {}) {
   auto db = SurfaceDb::create(root.string());
   if (!db.has_value()) {
     return atx::core::Err(db.error());
+  }
+  // NB: DbSymbolEntry::symbol is a std::string_view, exactly like
+  // SurfaceArchiveItem::symbol below — it must alias `symbols`/`disabled`, which
+  // outlive this call, never a temporary std::string.
+  std::vector<DbSymbolEntry> entries;
+  entries.reserve(symbols.size() + disabled.size());
+  for (const std::string_view s : symbols) {
+    SymbolFitConfig cfg{};
+    cfg.enabled = true;
+    entries.push_back(DbSymbolEntry{s, cfg, std::nullopt});
+  }
+  for (const std::string_view s : disabled) {
+    SymbolFitConfig cfg{};
+    cfg.enabled = false;
+    entries.push_back(DbSymbolEntry{s, cfg, std::nullopt});
+  }
+  if (auto seeded = db->upsert_symbols(entries); !seeded.has_value()) {
+    return atx::core::Err(seeded.error());
   }
   constexpr std::int64_t kBaseTs = 1'700'000'000'000'000'000LL;
   for (std::size_t d = 0; d < dates.size(); ++d) {
@@ -443,4 +494,109 @@ TEST(SurfaceDbDispersionBacktest, ConfigReaderRejectsUnknownKeyAndBadValue) {
 
   for (const auto &p : {key_path, val_path, enum_path, tail_path, neg_path, shape_path, empty_path})
     fs::remove(p);
+}
+
+// ── Task 3: universe_from_surface_db ────────────────────────────────────────
+
+TEST(SurfaceDbDispersionBacktest, UniverseFromDbEqualWeightsExcludesIndexAndDisabled) {
+  const auto root = test_root("universe_equal_weight");
+  // Deliberately NOT in sorted order, so "the basket comes out sorted" is a
+  // claim about the manifest's canonical order and not about the caller's.
+  const std::vector<std::string_view> enabled = {"SPY", "NVDA", "AAPL", "MSFT"};
+  const std::vector<std::string_view> disabled = {"TSLA"};
+  auto db = make_test_db(root, kDates, enabled, disabled);
+  ASSERT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
+  // Fixture precondition, pinned through the PUBLIC config accessor: the
+  // manifest carries all five and TSLA's stored config is the disabled one. This
+  // is what ties the derivation below to `SymbolFitConfig::enabled` rather than
+  // to whatever bit the derivation happens to read.
+  EXPECT_EQ(db->symbols().size(), 5u);
+  const auto tsla = db->symbol_config("TSLA");
+  ASSERT_TRUE(tsla.has_value()) << (tsla.has_value() ? std::string{} : tsla.error().to_string());
+  EXPECT_FALSE(tsla->enabled);
+  const auto spy = db->symbol_config("SPY");
+  ASSERT_TRUE(spy.has_value());
+  EXPECT_TRUE(spy->enabled);
+
+  const auto u = universe_from_surface_db(*db, "SPY");
+  ASSERT_TRUE(u.has_value()) << (u.has_value() ? std::string{} : u.error().to_string());
+  EXPECT_EQ(u->index.symbol, "SPY");
+  EXPECT_DOUBLE_EQ(u->index.weight, 1.0);
+  ASSERT_EQ(u->names.size(), 3u); // AAPL, MSFT, NVDA — no SPY, no TSLA
+  for (const auto &m : u->names) {
+    EXPECT_DOUBLE_EQ(m.weight, 1.0 / 3.0);
+    EXPECT_NE(m.symbol, "SPY");  // the index never doubles as a basket name
+    EXPECT_NE(m.symbol, "TSLA"); // a disabled symbol never enters the basket
+  }
+  // Deterministic order: `SurfaceDb::symbols()` is the manifest's canonical
+  // ascending order (DbManifest::open rejects records that are not strictly
+  // ascending), so the derivation preserves sortedness without sorting.
+  EXPECT_TRUE(std::is_sorted(u->names.begin(), u->names.end(),
+                             [](const DispersionMember &a, const DispersionMember &b) {
+                               return a.symbol < b.symbol;
+                             }));
+  EXPECT_EQ(u->names[0].symbol, "AAPL");
+  EXPECT_EQ(u->names[1].symbol, "MSFT");
+  EXPECT_EQ(u->names[2].symbol, "NVDA");
+
+  // uid fields are 0 here: uids are snapshot-local and rebound per step by
+  // resolve_universe_uids via MarketSnapshot::uid_of — assert that contract.
+  EXPECT_EQ(u->index.uid, 0u);
+  for (const auto &m : u->names) {
+    EXPECT_EQ(m.uid, 0u);
+  }
+
+  // The index is matched case-insensitively (the manifest stores canonical
+  // upper-case), and the members carry the CANONICAL spelling either way, so an
+  // operator's lower-case config key cannot produce a universe whose symbols
+  // fail to match the snapshot directory later.
+  const auto lower = universe_from_surface_db(*db, "spy");
+  ASSERT_TRUE(lower.has_value()) << (lower.has_value() ? std::string{} : lower.error().to_string());
+  EXPECT_EQ(lower->index.symbol, "SPY");
+  EXPECT_EQ(lower->names.size(), 3u);
+  fs::remove_all(root);
+}
+
+TEST(SurfaceDbDispersionBacktest, UniverseFromDbMissingIndexIsInvalidArgument) {
+  const auto root = test_root("universe_missing_index");
+  const std::vector<std::string_view> enabled = {"SPY", "AAPL", "MSFT"};
+  const std::vector<std::string_view> disabled = {"TSLA"};
+  auto db = make_test_db(root, kDates, enabled, disabled);
+  ASSERT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
+
+  const auto u = universe_from_surface_db(*db, "QQQ"); // not in the manifest
+  ASSERT_FALSE(u.has_value());
+  EXPECT_EQ(u.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(u.error().message().find("QQQ"), std::string::npos) << u.error().message();
+  // The manifest's symbol count too: it separates "typo in the index" from
+  // "pointed at the wrong db" without the operator having to dump the manifest.
+  EXPECT_NE(u.error().message().find("4 symbols"), std::string::npos) << u.error().message();
+
+  // A symbol that IS in the manifest but is switched off is not a usable index
+  // leg either — the enabled filter runs before the index match, so a disabled
+  // index reads as absent and is rejected the same way.
+  const auto off = universe_from_surface_db(*db, "TSLA");
+  ASSERT_FALSE(off.has_value());
+  EXPECT_EQ(off.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(off.error().message().find("TSLA"), std::string::npos) << off.error().message();
+  fs::remove_all(root);
+}
+
+TEST(SurfaceDbDispersionBacktest, UniverseFromDbIndexOnlyManifestYieldsEmptyBasket) {
+  // A manifest whose only enabled symbol IS the index: the 1/n division must not
+  // run on an empty basket. An inf/NaN weight here would flow straight into
+  // sizing, so the guard is asserted rather than assumed. Deciding that a basket
+  // is too thin belongs to the caller (DispersionBacktestConfig::min_names), so
+  // this is an empty universe and not an error.
+  const auto root = test_root("universe_index_only");
+  const std::vector<std::string_view> enabled = {"SPY"};
+  const std::vector<std::string_view> disabled = {"AAPL"};
+  auto db = make_test_db(root, kDates, enabled, disabled);
+  ASSERT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
+
+  const auto u = universe_from_surface_db(*db, "SPY");
+  ASSERT_TRUE(u.has_value()) << (u.has_value() ? std::string{} : u.error().to_string());
+  EXPECT_EQ(u->index.symbol, "SPY");
+  EXPECT_TRUE(u->names.empty());
+  fs::remove_all(root);
 }
