@@ -490,6 +490,44 @@ def _clear_empty_latch(out_root: pathlib.Path, date: str) -> None:
         pass
 
 
+def _request_digest(date: str, miss) -> str:
+    """The identity of one (date, requested-set) question: the DBN cache
+    entry's own key, and therefore the settled-empty latch's. Single definition
+    so the planner and ``pull`` cannot drift into asking different questions."""
+    return hashlib.sha256((date + "|" + ",".join(sorted(miss))).encode()).hexdigest()[:12]
+
+
+def settled_empty_dates(out_root, plan: dict[str, list[str]],
+                        minute_for_date: dict[str, str]) -> list[str]:
+    """MINOR-B. The dates of ``plan`` whose exact question -- (snapshot minute,
+    requested set) -- is already latched settled-empty, i.e. the dates ``pull``
+    would skip for $0 without contacting the provider.
+
+    ``_absent`` is applied inside ``plan_missing``, so its cells never reach
+    ``preflight``. ``_empty`` was consulted only inside ``pull``, so a settled
+    date was still in the plan when ``preflight`` ran: priced into
+    ``total_cost``, counted against ``--cap``, and able to move both the
+    degrade decision and the ``blocked`` -> exit 3 floor -- for spend that
+    provably never occurs. The direction was conservative (over-estimate, never
+    overspend, ~$0.001 per date at the observed unit cost), but a near-cap plan
+    could drop real symbols to make room for a date that is then skipped. This
+    is the missing half of "following ``_absent``'s conventions": with it, both
+    latches leave the plan before it is priced.
+
+    Read-only -- it never clears a latch. ``pull``'s own gate stays exactly
+    where it is (above the cache read and ``get_range``), so the $0 guarantee
+    does not depend on this call and direct ``pull`` callers are unaffected."""
+    out_root = pathlib.Path(out_root)
+    out: list[str] = []
+    for date, miss in plan.items():
+        hm = minute_for_date.get(date)
+        if not miss or hm is None:
+            continue
+        if _is_settled_empty(out_root, date, hm, _request_digest(date, list(miss))):
+            out.append(date)
+    return sorted(out)
+
+
 class MissingPlan(dict):
     """``plan_missing``'s return value: a plain ``dict[str, list[str]]`` (date ->
     missing symbols) for full backward compatibility with existing equality
@@ -795,7 +833,7 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: "str | dict[s
         cells_requested += len(miss)
         want = set(miss)
         parents = [to_parent(s) for s in miss]
-        digest = hashlib.sha256((date + "|" + ",".join(sorted(miss))).encode()).hexdigest()[:12]
+        digest = _request_digest(date, miss)
         dbn_path = dbn_dir / f"{date}_{hm.replace(':', '')}_{digest}.dbn.zst"
 
         # FIX-IMPORTANT-2. A settled-empty date is skipped BEFORE any provider
@@ -1143,11 +1181,38 @@ def run(args, client=None, store_loader: Optional[Callable] = None) -> int:
     plan = plan_missing(args.out, symbols, dates, force=args.force,
                         expected_minute=minute_for_date)
     repull_dates = getattr(plan, "repull_dates", set())
+
+    # MINOR-B. Apply the settled-empty latch HERE, where `_absent` is already
+    # applied (inside `plan_missing`), so a date the provider has permanently
+    # answered with nothing is out of the plan BEFORE `preflight` prices it,
+    # counts it against `--cap`, or lets it move the degrade/exit-3 decisions.
+    # `pull`'s own gate is unchanged and still the $0 guarantee; this only
+    # stops a provably-unspendable date from distorting the spend arithmetic.
+    # `--force` / `--retry-empty` are the operator's re-pull routes and must
+    # reach `pull`'s clear-and-re-ask branch, so neither drops anything here.
+    settled: list[str] = []
+    if not (args.force or getattr(args, "retry_empty", False)):
+        settled = settled_empty_dates(args.out, plan, minute_for_date)
+        for date in settled:
+            n_cells = len(plan.pop(date))
+            print(f"EMPTY-LATCHED {date}: settled in _empty/{date}.json for this exact "
+                  f"request (minute {minute_for_date[date]}, {n_cells} boards) -- dropped "
+                  f"from the plan BEFORE preflight, so it is not priced, not counted "
+                  f"against --cap and cannot influence the degrade decision. No provider "
+                  f"call, $0. To re-pull: --retry-empty, delete _empty/{date}.json, or "
+                  f"move the snapshot minute (a latch is one minute's verdict).",
+                  file=sys.stderr)
+
     n_missing = sum(len(v) for v in plan.values())
     print(f"cells: total={len(symbols) * len(dates)} to_pull={n_missing} "
-          f"(over {len(plan)} sessions){' [FORCE]' if args.force else ''}")
+          f"(over {len(plan)} sessions){' [FORCE]' if args.force else ''}"
+          f"{f' [{len(settled)} settled-empty date(s) skipped]' if settled else ''}")
     if n_missing == 0:
-        print("ALL boards already on disk — nothing to pull, $0.00.")
+        # Keep the leading sentence verbatim: `run_surface_db_backfill.
+        # parse_estimate_line` reads "ALL boards already on disk" as its $0.00
+        # short-circuit (no ESTIMATE line is printed on this path).
+        print("ALL boards already on disk — nothing to pull, $0.00."
+              + (f" ({len(settled)} settled-empty date(s) skipped for $0.)" if settled else ""))
         return 0
 
     if client is None:

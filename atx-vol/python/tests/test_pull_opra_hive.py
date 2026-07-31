@@ -20,6 +20,7 @@ Cases (per the task brief):
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import pathlib
@@ -836,6 +837,72 @@ def test_the_empty_latch_does_not_apply_to_a_different_symbol_set(tmp_path):
             repull_dates={date})
     assert len(wider.get_range_calls()) == 1, \
         "a different requested symbol set is a different question"
+
+
+def test_a_settled_empty_date_is_dropped_from_the_plan_before_preflight_prices_it(tmp_path):
+    """MINOR-B. `_absent` is applied inside `plan_missing`, so its cells never
+    reach `preflight`. `_empty` was applied only inside `pull`, so a settled date
+    was STILL in the plan when `preflight` ran: priced into the estimate, counted
+    against `--cap`, and able to move both the degrade decision and the
+    `blocked` -> exit 3 floor -- for spend that provably never occurs.
+
+    The direction is conservative (over-estimate, never overspend), so this is a
+    correctness tidy rather than a spend hazard. But both consequences are real,
+    and they are what this test pins: a near-cap plan dropped a REAL symbol to
+    make room for cells that were then skipped, and a plan that fits once the
+    settled date is removed could still hard-stop at exit 3.
+
+    The first half also pins a consequence that is NOT merely conservative: the
+    latch is keyed on the requested set, and `pull` sees the POST-degrade set, so
+    a degrade triggered partly by the settled date's own cells changes the digest
+    and the latch stops matching -- the date is re-billed. Applying the latch to
+    the pre-degrade plan (where `plan_missing` re-plans a repull date as the whole
+    universe, so the identity is stable) is what keeps the $0 skip intact.
+
+    Both halves seed the latch with its own documented identity --
+    `sha256(date|sorted(miss))[:12]` at the run's snapshot minute -- recomputed
+    here rather than borrowed from the tool. Frames are provided for BOTH dates so
+    that a regression re-pulls (and fails an assertion) instead of retry-laddering.
+    """
+    settled, live = "2026-07-20", "2026-07-21"
+    syms = ["SPY", "AAPL", "MSFT"]
+    frames = {settled: _raw_df(syms), live: _raw_df(syms)}
+
+    def _seed(root: pathlib.Path) -> None:
+        digest = hashlib.sha256(
+            (settled + "|" + ",".join(sorted(syms))).encode()).hexdigest()[:12]
+        ph._write_empty_latch(root, settled, "19:55", digest, len(syms))
+
+    def _args(root: pathlib.Path, cap: float):
+        symfile = root.parent / f"syms_{root.name}.tsv"
+        symfile.write_text("symbol\traw_weight\nSPY\t0.0\nAAPL\t0.5\nMSFT\t0.3\n")
+        return ph.build_parser().parse_args(
+            ["--universe", str(symfile), "--start", settled, "--end", live,
+             "--out", str(root), "--cap", str(cap), "--min-degrade-names", "1"])
+
+    # (1) cap $45. Six cells x $10 = $60 is over cap, so the degrade drops MSFT --
+    # even though half those cells are settled and cost nothing. With the settled
+    # date out of the plan it is three cells = $30, under cap, nothing dropped.
+    root = tmp_path / "a"
+    _seed(root)
+    fake = FakeHistorical(unit=10.0, frames=frames)
+    assert ph.run(_args(root, 45.0), client=fake, store_loader=_fake_loader) == 0
+    assert [c for c in fake.calls if c[0] == "get_cost" and c[2][:10] == settled] == [], \
+        "a settled-empty date must not be priced by the preflight at all"
+    pulled = fake.get_range_calls()
+    assert [c[2][:10] for c in pulled] == [live], \
+        "the $0 guarantee still holds: no provider call for the settled date"
+    assert len(pulled[0][1]) == len(syms), \
+        "unspendable cells must not push a real symbol out of the kept set"
+
+    # (2) cap $25. Unchanged, the settled date's own cells push the plan below the
+    # degrade floor and the run hard-stops at exit 3 -- on a plan that can afford
+    # every cell it will actually pull.
+    root_b = tmp_path / "b"
+    _seed(root_b)
+    fake_b = FakeHistorical(unit=10.0, frames=frames)
+    assert ph.run(_args(root_b, 25.0), client=fake_b, store_loader=_fake_loader) == 0, \
+        "exit 3 on a plan whose only over-cap cells are provably unspendable"
 
 
 def test_a_failed_unlink_prints_its_own_branch_not_the_mapping_branchs_text(tmp_path, capsys):
