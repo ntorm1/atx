@@ -137,10 +137,11 @@ implied_vol_batch(std::span<const double> price, std::span<const double> F,
 //         non-empty `price_out` does not match the input length, or outputs
 //         overlap inputs/each other.
 [[nodiscard]] Result<std::size_t>
-black76_greeks_batch(std::span<const double> F, std::span<const double> K, std::span<const double> T,
-                     std::span<const double> sigma, std::span<const double> r,
-                     std::span<const double> df, std::span<const Side> side,
-                     std::span<Greeks> greeks_out, std::span<double> price_out = {});
+black76_greeks_batch(std::span<const double> F, std::span<const double> K,
+                     std::span<const double> T, std::span<const double> sigma,
+                     std::span<const double> r, std::span<const double> df,
+                     std::span<const Side> side, std::span<Greeks> greeks_out,
+                     std::span<double> price_out = {});
 
 // ── eSSVI total variance over a k-grid (single slice, SoA) ───────────────
 //

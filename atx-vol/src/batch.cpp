@@ -136,9 +136,9 @@ Result<std::size_t> black76_price_batch(std::span<const double> F, std::span<con
 }
 
 Result<std::size_t> black76_price_from_lnfk_batch(std::span<const double> F,
-                                                  std::span<const double> K, double T, double sqrt_t,
-                                                  std::span<const double> sigma, double df,
-                                                  std::span<const double> ln_fk,
+                                                  std::span<const double> K, double T,
+                                                  double sqrt_t, std::span<const double> sigma,
+                                                  double df, std::span<const double> ln_fk,
                                                   std::span<const Side> side,
                                                   std::span<double> price_out) {
   if (!sizes_match(
