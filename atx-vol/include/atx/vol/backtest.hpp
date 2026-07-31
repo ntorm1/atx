@@ -42,6 +42,7 @@
 #include <vector>
 
 #include "atx/vol/corpus.hpp"           // CorpusManifest
+#include "atx/vol/detail/aggregate_arity.hpp" // RunConfig field-count drift pin
 #include "atx/vol/portfolio_pricer.hpp" // OptionContract, SurfaceSet, PriceOptions, PriceTotals
 #include "atx/vol/priced_surface.hpp"   // PricedSurface
 #include "atx/vol/query_pricing.hpp"    // QueryPricingTier
@@ -517,6 +518,18 @@ struct StepEvent {
 // the Python surface stays unchanged. The omission is a decision, not drift.
 using StepObserver = std::function<Status(const StepEvent &)>;
 
+// CONSTRUCTION CONTRACT (v1, plan item 4.2) — DESIGNATED INITIALIZERS ONLY.
+// Set fields by name (`RunConfig cfg{}; cfg.unpriced = ...;` or a designated
+// initializer); never `RunConfig{a, b, c, ...}`. Three fields here used to carry
+// an "appended for positional aggregate source compatibility" note, meaning they
+// were parked at the end of the struct — away from the knob each belongs with —
+// solely so positional initializers kept compiling. They now live in their
+// natural groups, and the field-count `static_assert` below makes a silent
+// re-append a compile error.
+//
+// backtest.hpp is Tier-A (frozen v1 surface): this reorder is the LAST layout
+// change allowed here. After v1 the order is fixed and new knobs append at the
+// end WITHOUT any positional-compatibility promise.
 struct RunConfig {
   // Pricer thread fan-out. Default 0 => use all hardware cores (clamped to the
   // book's unique-contract count). Output is bit-identical to any thread count
@@ -531,9 +544,20 @@ struct RunConfig {
   // that contract by default; faster cached query tiers are an explicit
   // backtest-level accuracy/latency choice and never alter the archive bytes.
   QueryPricingTier query_pricing_tier{QueryPricingTier::LegacyCompatible};
+  // How the tier above is materialized. ReuseOnly consumes a prepared fast
+  // snapshot but loads a separately-keyed cold snapshot on a fast miss. Eager
+  // preserves the historical requested-tier behavior.
+  QueryCacheBuildPolicy query_cache_build_policy{QueryCacheBuildPolicy::Eager};
   FrictionModel frictions{};          // execution frictions (B2; default: frictionless)
   FinancingConfig financing{};        // cash/borrow ledger (B2; default: off => B1-identity)
   unsigned record_every_n{1}; // positive; persist every Nth step (1 = every step)
+  // Per-step observation hook. Empty by default => zero cost beyond one
+  // predictable branch per step and byte-identical output. Fires on EVERY step
+  // regardless of `record_every_n` above (recorded rows are downsampled; these
+  // events are not). Ignored by no overload: the fixed-book (B0) overload has no
+  // strategy, so setting this there is a fail-closed InvalidArgument, never a
+  // silent drop.
+  StepObserver step_observer{};
   // Policy for held P&L/Greek valuation only. Strategy close execution always
   // requires an economically valid mark regardless of this setting.
   //
@@ -544,19 +568,15 @@ struct RunConfig {
   // only as a count in `n_unpriced_lots`). A production QIS default must fail
   // closed; callers that genuinely want the lenient arithmetic now opt in.
   UnpricedLotPolicy unpriced{UnpricedLotPolicy::Error};
+  // The admission half of the same fail-closed story. Strict production backtests
+  // opt in; the default deliberately preserves legacy archives.
+  SurfaceProvenancePolicy surface_provenance_policy{SurfaceProvenancePolicy::Compatibility};
   // A null cache creates a private per-run cache. Supplying one permits archive
   // reuse across backtest and reconciliation passes. Private one-pass caches retain
   // at most the current/base/look-ahead working set. Look-ahead overlaps the next
   // archive open/map with pricing and strategy work on the current step.
   std::shared_ptr<SnapshotCache> snapshot_cache{};
   bool prefetch_snapshots{true};
-  // Appended for positional aggregate source compatibility. ReuseOnly consumes
-  // a prepared fast snapshot but loads a separately-keyed cold snapshot on a
-  // fast miss. Eager preserves the historical requested-tier behavior.
-  QueryCacheBuildPolicy query_cache_build_policy{QueryCacheBuildPolicy::Eager};
-  // Appended for positional aggregate source compatibility. Strict production
-  // backtests opt in; the default deliberately preserves legacy archives.
-  SurfaceProvenancePolicy surface_provenance_policy{SurfaceProvenancePolicy::Compatibility};
   // L2 (AL-solve-wall sprint, fewer-solves): serve an expiring lot's base
   // settlement mark from the per-step mark memo (populated by the prior step's
   // book-greeks pass at the SAME base date) instead of re-solving it. The memo'd
@@ -600,12 +620,16 @@ struct RunConfig {
   // flows summed in different orders, so the honest floor is rounding
   // (~|cash|*eps per row), not zero. Must be finite and positive.
   double reconcile_nav_tol{1.0e-6};
-  // Appended for positional aggregate source compatibility. Empty by default =>
-  // zero cost beyond one predictable branch per step and byte-identical output.
-  // Ignored by no overload: the fixed-book (B0) overload has no strategy, so
-  // setting this there is a fail-closed InvalidArgument, never a silent drop.
-  StepObserver step_observer{};
 };
+
+// Drift pin (plan item 4.2). RunConfig has exactly FIFTEEN fields. Adding,
+// removing or splitting one breaks this line, which is the point: it forces
+// whoever changes the struct to read the construction contract above instead of
+// appending a knob "for compatibility" with positional initializers that are no
+// longer part of the API.
+static_assert(detail::aggregate_arity_is_v<RunConfig, 15>,
+              "RunConfig field count changed: update this pin, and confirm every "
+              "construction site still initializes by field name.");
 
 // Reusable caller-owned handoff from a step's P&L target solve to the strategy
 // execution ledger. Storage grows to the largest observed book and never

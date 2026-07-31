@@ -451,6 +451,47 @@ void expect_result_bit_identical(const BacktestResult &a, const BacktestResult &
 
 } // namespace
 
+// ── 0. The RunConfig construction contract (S4-T19, plan item 4.2) ──────────
+
+// RunConfig is a designated-init-only aggregate. The compile-time half of that
+// contract is the field-count pin in backtest.hpp; this is the runtime half. It
+// asserts the two properties positional init could never give: a named
+// initializer lands on the field its name says regardless of declaration order,
+// and an OMITTED field takes its own default member initializer rather than a
+// neighbour's value. The default assertions double as the determinism gate for
+// the three fields this task moved (query_cache_build_policy, step_observer,
+// surface_provenance_policy) — a default-constructed RunConfig must still be the
+// exact policy bundle it was before the reorder.
+TEST(RunConfigContract, DesignatedInitBindsByName) {
+  const RunConfig defaults{};
+  EXPECT_EQ(defaults.price.n_threads, 0u);
+  EXPECT_TRUE(defaults.price.analytic_greeks);
+  EXPECT_EQ(defaults.query_pricing_tier, QueryPricingTier::LegacyCompatible);
+  EXPECT_EQ(defaults.query_cache_build_policy, QueryCacheBuildPolicy::Eager);
+  EXPECT_EQ(defaults.record_every_n, 1u);
+  EXPECT_FALSE(static_cast<bool>(defaults.step_observer));
+  EXPECT_EQ(defaults.unpriced, UnpricedLotPolicy::Error);
+  EXPECT_EQ(defaults.surface_provenance_policy, SurfaceProvenancePolicy::Compatibility);
+  EXPECT_EQ(defaults.snapshot_cache, nullptr);
+  EXPECT_TRUE(defaults.prefetch_snapshots);
+  EXPECT_TRUE(defaults.settlement_mark_memo);
+  EXPECT_FALSE(defaults.reconcile_nav);
+  EXPECT_FALSE(defaults.book_entry_fill_slippage);
+  EXPECT_DOUBLE_EQ(defaults.reconcile_nav_tol, 1.0e-6);
+
+  // Naming the three formerly-appended fields binds them, and only them.
+  const RunConfig named{
+      .query_cache_build_policy = QueryCacheBuildPolicy::ReuseOnly,
+      .surface_provenance_policy = SurfaceProvenancePolicy::RequireAdmittedRisk,
+  };
+  EXPECT_EQ(named.query_cache_build_policy, QueryCacheBuildPolicy::ReuseOnly);
+  EXPECT_EQ(named.surface_provenance_policy, SurfaceProvenancePolicy::RequireAdmittedRisk);
+  EXPECT_EQ(named.query_pricing_tier, QueryPricingTier::LegacyCompatible);
+  EXPECT_EQ(named.unpriced, UnpricedLotPolicy::Error);
+  EXPECT_EQ(named.record_every_n, 1u);
+  EXPECT_DOUBLE_EQ(named.reconcile_nav_tol, 1.0e-6);
+}
+
 // ── 1. Load-once ────────────────────────────────────────────────────────────
 TEST(Backtest, LoadOnce) {
   const fs::path dir = fresh_dir("loadonce");
