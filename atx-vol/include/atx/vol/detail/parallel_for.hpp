@@ -33,9 +33,10 @@
 //
 //   * NOT `noexcept`. `parallel_for`, both `parallel_for_dynamic` overloads and
 //     `detail::run_elastic_dynamic` can all exit by throwing.
-//   * SERIAL widths (n == 0, or a resolved width of 1) propagate DIRECTLY out of
-//     the loop — no capture, no barrier. A caller cannot tell the width apart
-//     from the observable outcome, which is the point.
+//   * A SERIAL width (a resolved `nt <= 1`) propagates DIRECTLY out of the loop —
+//     no capture, no barrier — so a caller cannot tell the width apart from the
+//     observable outcome, which is the point. (`n == 0` returns before `fn` is
+//     ever called, so there is nothing to propagate.)
 //   * MULTITHREADED widths capture the FIRST exception any participant observes
 //     (an `exception_ptr` guarded by an `atomic_flag`), let EVERY participant
 //     reach the join barrier, and then rethrow it on the CALLING thread. The
@@ -45,13 +46,22 @@
 //     `std::terminate`, so the alternative to catching is killing the process.
 //   * ONLY THE FIRST is retained. Exceptions thrown concurrently by other
 //     workers are swallowed; the caller sees exactly one.
-//   * WORK IS LEFT UNDONE, and the partition decides how much. In the STATIC
-//     `parallel_for` a throwing worker abandons the rest of ITS OWN contiguous
-//     block; every other worker still completes its whole block. In the DYNAMIC
-//     fan-outs the throwing worker stops claiming, so an unbounded tail of
-//     unclaimed indices may never run while other workers drain what they can.
+//   * WORK IS LEFT UNDONE, and the PARTITION decides how much — the two
+//     schedulers differ and the difference is observable:
+//       - STATIC `parallel_for`: blocks are OWNED, and the catch sits outside the
+//         block loop, so a throwing worker abandons the whole remainder of ITS
+//         OWN contiguous block. No one else can pick those indices up. Every
+//         other worker still completes its block in full.
+//       - DYNAMIC `parallel_for_dynamic` / `run_elastic_dynamic`: the catch sits
+//         INSIDE the claim loop and leaves it (a spawned worker `return`s, the
+//         elastic path's calling thread `break`s), so the thrower abandons only
+//         the SINGLE index it had claimed and stops claiming. Surviving
+//         participants keep draining the shared counter, so the rest of [0, n)
+//         IS still processed — unless every participant has thrown, in which case
+//         the unclaimed tail is dropped too.
 //     EITHER WAY THE OUTPUT IS PARTIALLY WRITTEN — a caller that catches must
-//     treat the whole output as indeterminate, not as "all but one slot".
+//     treat the whole output as indeterminate rather than reason about which
+//     slots survived.
 //   * The HAPPY PATH is untouched by any of this: `fn(i)` runs identically, the
 //     catch is never taken, no `exception_ptr` is set, and results stay
 //     bit-identical for any worker count.
