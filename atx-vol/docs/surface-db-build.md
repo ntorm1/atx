@@ -1926,6 +1926,40 @@ Likewise an **early close** (13:00 ET, e.g. `2025-11-28`, `2025-12-24`) has no
 15:55 ET snapshot and is correctly absent from hive *and* db — exclude it from
 every expected-session count rather than counting it as a hole.
 
+`verify`'s `--max-absent` reads those same sidecars: a latched cell can never
+hold a surface, so it is credited against the ceiling rather than charged to it
+(see [Operator notes](#operator-notes)).
+
+#### The settled-empty latch — `<hive>/_empty/<date>.json`
+
+A second, date-level latch with the same shape and the same purpose: *do not pay
+twice for an answer you already have.* When a minute-mismatch repull gets a
+**zero-row response** for a whole date, `pull_opra_hive.py` keeps the existing
+date file (it must never be replaced by nothing), drops the empty response from
+the DBN cache — an empty response is not a cacheable *answer* — and records
+`{minute_utc, digest}` in `<hive>/_empty/<date>.json`. Later resumes see the
+latch and **skip the date without contacting the provider, for $0**.
+
+That matters because "the provider returned nothing" is not the same as
+"transient". The documented cause is a **snapshot minute that landed after an
+early close**, and that response is empty *forever* — without the latch every
+resume re-bills the same date for the same nothing.
+
+Recovery is deliberately operator-initiated, never automatic. Any of:
+
+| To do this | Do |
+|---|---|
+| Retry because you believe the provider recovered | `--retry-empty` (**costs money**) |
+| Retry one date | delete `<hive>/_empty/<date>.json` |
+| Fix an early-close cause | change `--snap-et`/`--snap-utc` — a latch covers exactly one snapshot minute, so a different minute re-pulls with no flag |
+
+The latch is keyed on `(minute_utc, digest)` — the same identity as the DBN cache
+entry it stands in for, `sha256(date|sorted(requested))[:12]` — so a different
+snapshot minute or a different requested symbol set is a different question and
+is never answered from it. A pull that returns real rows retires the latch. The
+orchestrator never passes `--retry-empty`: nothing inside an automated run may
+re-bill a settled date.
+
 ### Operator notes
 
 - **Use a Release binary** (`scripts/atx-build.ps1 -Preset rel build …`; cap

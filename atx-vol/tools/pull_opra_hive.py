@@ -61,6 +61,13 @@ Cost discipline (hard cap — design §7 guardrail)
   4. Resumable / idempotent: a present date file's symbols are skipped (no API
      call, no spend); the raw per-day DBN is cached under <root>/_dbn/ so a crash
      after download but before split never re-bills. Running the tool twice costs $0.
+     Two sidecars carry that guarantee where there is no data to cache:
+     <root>/_absent/<date>.json latches SYMBOLS the provider confirmed had no
+     rows, and <root>/_empty/<date>.json latches a whole DATE whose response was
+     empty (the permanent case being a snapshot minute after an early close,
+     which returns nothing forever). Both are skipped on resume for $0; both are
+     cleared explicitly by the operator (--retry-empty / --force / deleting the
+     file), never automatically inside a run.
 
 API key comes from $DATABENTO_API_KEY or a .env file (default search: ./.env then
 C:/atx/.env, or --env-file). The key is never printed or logged.
@@ -408,6 +415,81 @@ def _merge_absent_sidecar(out_root: pathlib.Path, date: str, minute_utc: str,
     _write_absent_sidecar(out_root, date, minute_utc, sorted(new_syms))
 
 
+# ── Settled-empty latch (<out>/_empty/<date>.json) ──────────────────────────────
+# FIX-IMPORTANT-2. Remembers, per date, that the provider answered a specific
+# question -- (snapshot minute, requested symbol set) -- with ZERO rows, so a
+# resume treats it as SETTLED and skips it instead of paying to ask again.
+#
+# This is the absent-latch's shape applied one level up. `_absent` latches "this
+# SYMBOL had no data that session"; this latches "this whole DATE returned
+# nothing at that minute". Same one-JSON-per-date layout, same atomic
+# tmp + os.replace write, same corrupt-tolerant read, same "a sidecar holds
+# exactly one minute's verdict" rule -- deliberately NOT a parallel mechanism.
+#
+# It cannot be folded into `_absent` itself: a settled-empty date is (by
+# construction) a minute-mismatch REPULL date, and `plan_missing` `continue`s out
+# of the repull branch BEFORE sidecar subtraction runs, so an `_absent` entry
+# would never be consulted. It must also stay OUT of `_absent` semantically --
+# recording "every symbol is absent" would latch the date complete forever, which
+# is exactly what the EMPTY-SESSION branch below refuses to do.
+#
+# The identity is the CACHE ENTRY's identity, because this latch is a $0
+# stand-in for the cached empty response that FIX-N-1 deletes: (minute_utc,
+# digest) where digest is `sha256(date|sorted(miss))[:12]`. So a different
+# snapshot minute or a different requested symbol set is a different question and
+# re-pulls automatically -- which matters, because the real-world cause of a
+# permanently-empty answer is a snapshot minute that landed after an early close,
+# and the real-world fix for that is to move the snapshot minute.
+def _empty_latch_path(out_root: pathlib.Path, date: str) -> pathlib.Path:
+    return out_root / "_empty" / f"{date}.json"
+
+
+def _load_empty_latch(out_root: pathlib.Path, date: str) -> Optional[dict]:
+    path = _empty_latch_path(out_root, date)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or "minute_utc" not in data or "digest" not in data:
+        return None
+    return data
+
+
+def _is_settled_empty(out_root: pathlib.Path, date: str, minute_utc: str, digest: str) -> bool:
+    latch = _load_empty_latch(out_root, date)
+    return bool(latch and latch.get("minute_utc") == minute_utc
+                and latch.get("digest") == digest)
+
+
+def _write_empty_latch(out_root: pathlib.Path, date: str, minute_utc: str,
+                       digest: str, n_requested: int) -> None:
+    """Atomic tmp + ``os.replace``, matching ``_write_absent_sidecar``."""
+    path = _empty_latch_path(out_root, date)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "minute_utc": minute_utc,
+        "digest": digest,
+        "n_requested": n_requested,
+        "asof": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _clear_empty_latch(out_root: pathlib.Path, date: str) -> None:
+    """Best-effort: a latch we cannot remove is never worth failing a pull for
+    (worst case the operator deletes it by hand, which is a documented step)."""
+    try:
+        _empty_latch_path(out_root, date).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 class MissingPlan(dict):
     """``plan_missing``'s return value: a plain ``dict[str, list[str]]`` (date ->
     missing symbols) for full backward compatibility with existing equality
@@ -665,7 +747,8 @@ class PullResult:
 def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: "str | dict[str, str]",
          root_to_sym: dict[str, str], unit_cost: float = 0.0, force: bool = False,
          store_loader: Optional[Callable] = None,
-         repull_dates: Optional[set] = None) -> PullResult:
+         repull_dates: Optional[set] = None,
+         retry_empty: bool = False) -> PullResult:
     """Pull every planned date: one ``get_range`` over the union of its missing
     parents, decode to one frame, merge into the date file. Resumable: a cached
     DBN is decoded without an API call; a present date file's symbols are already
@@ -686,7 +769,12 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: "str | dict[s
     symbol this call didn't get data for this time (zero rows, a cap-degrade
     drop, ...), corrupting the one-ts-per-date invariant the C++ loader chain
     relies on. Omitted/None for callers that don't opt into the minute check
-    (byte-identical to the old force-only behavior)."""
+    (byte-identical to the old force-only behavior).
+
+    ``retry_empty`` (FIX-IMPORTANT-2) is the operator's explicit escape hatch
+    from the settled-empty latch: it clears the latch for any date it covers and
+    re-pulls, which COSTS MONEY. Default False, and nothing inside a run ever
+    sets it -- recovery from a settled-empty date is operator-initiated only."""
     store_loader = store_loader or _default_store_loader
     out_root = pathlib.Path(out_root)
     dbn_dir = out_root / "_dbn"
@@ -709,6 +797,34 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: "str | dict[s
         parents = [to_parent(s) for s in miss]
         digest = hashlib.sha256((date + "|" + ",".join(sorted(miss))).encode()).hexdigest()[:12]
         dbn_path = dbn_dir / f"{date}_{hm.replace(':', '')}_{digest}.dbn.zst"
+
+        # FIX-IMPORTANT-2. A settled-empty date is skipped BEFORE any provider
+        # contact -- this is the $0 guarantee, and it has to sit above both the
+        # cache read and `get_range`.
+        if _is_settled_empty(out_root, date, hm, digest):
+            if not (force or retry_empty):
+                print(f"EMPTY-LATCHED {date}: the provider already answered this exact "
+                      f"request (minute {hm}, {len(miss)} boards) with 0 rows, and that is "
+                      f"recorded as settled in _empty/{date}.json -- SKIPPED, no provider "
+                      f"call, $0. This is the permanent case (e.g. a snapshot minute after "
+                      f"an early close returns 0 rows forever), so retrying it on every "
+                      f"resume would bill the same date again for the same answer. To force "
+                      f"a fresh pull: re-run with --retry-empty, delete "
+                      f"_empty/{date}.json, or move the snapshot minute (a latch is one "
+                      f"minute's verdict and does not apply to another).", file=sys.stderr)
+                cells_failed += len(miss)
+                continue
+            # Operator-initiated recovery only. Drop the latch AND any cached
+            # empty response, so this run genuinely re-asks instead of replaying.
+            _clear_empty_latch(out_root, date)
+            try:
+                dbn_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            print(f"EMPTY-RETRY {date}: clearing the settled-empty latch on operator "
+                  f"request ({'--force' if force else '--retry-empty'}) -- this date WILL "
+                  f"be billed again.", file=sys.stderr)
+
         store = None
         tag = ""
         if dbn_path.exists():
@@ -813,19 +929,58 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: "str | dict[s
             # implement, and an operator who believes a false recovery promise
             # concludes the tool is broken rather than that a file needs
             # deleting.
-            dropped_cache = False
+            # FIX-IMPORTANT-2. `nr == 0` separates "the provider returned
+            # nothing" from "rows came back and were all filtered out", which is
+            # the right axis -- but "returned nothing" is NOT the same as
+            # "transient", and FIX-N-1 treated it as if it were. The comment
+            # above names the counter-example itself: a snapshot minute that
+            # landed after an early close returns 0 rows at that window EVERY
+            # TIME, forever. Unlinking the cache made every subsequent resume
+            # call `get_range` again, so a $0-forever path became pay-per-resume
+            # -- the recurring-charge loop FIX-C-2 exists to prevent, narrowed
+            # rather than removed.
+            #
+            # So: still drop the cache (an empty response is not a cacheable
+            # ANSWER and must not occupy the slot for a real one), but LATCH the
+            # result as settled, exactly as `_absent` latches a confirmed absent
+            # symbol. The gate at the top of this loop then makes every later
+            # resume free, and recovery stays explicitly operator-initiated
+            # (`--retry-empty`, `--force`, deleting the sidecar, or moving the
+            # snapshot minute). Nothing here can cause an automatic re-bill.
+            #
+            # MINOR-1. Three reachable states, three texts. The failed-`unlink`
+            # case used to fall through into the `nr > 0` wording and print "the
+            # provider DID return 0 row(s) that mapped to none of the requested
+            # underlyings" -- self-contradictory, and false. It is reachable on
+            # Windows: `PermissionError` is an `OSError`, and an AV scanner or a
+            # concurrent pull holding the handle is the ordinary way to get one.
+            # N-1's original sin was stderr that was not true of the branch that
+            # actually ran; that must not be re-committed here.
+            unlink_error = None
             if nr == 0:
                 try:
                     dbn_path.unlink(missing_ok=True)
-                    dropped_cache = True
                 except OSError as exc:  # noqa: BLE001
                     # Never fatal: a cache file we cannot remove costs a wedged
                     # date, but raising here would abandon the rest of the plan.
-                    print(f"  {date}: could not drop the empty cached DBN "
-                          f"{dbn_path.name} ({str(exc)[:70]})", file=sys.stderr)
-            if dropped_cache:
-                recovery = ("The date stays planned and its empty response was NOT cached, so "
-                            "re-running once the window/provider is healthy will re-pull it.")
+                    unlink_error = str(exc)[:70]
+                _write_empty_latch(out_root, date, hm, digest, len(miss))
+            if nr == 0 and unlink_error is None:
+                recovery = (f"The date stays planned, its empty response was NOT cached, and "
+                            f"the empty ANSWER is latched as settled in _empty/{date}.json so "
+                            f"every later resume skips it for $0 instead of re-billing the "
+                            f"same date for the same nothing. To force a fresh pull once you "
+                            f"believe the provider has recovered: --retry-empty, or delete "
+                            f"that sidecar. If the cause is an early close, move the snapshot "
+                            f"minute instead -- the latch only covers minute {hm}.")
+            elif nr == 0:
+                recovery = (f"The date stays planned and the empty ANSWER is latched as "
+                            f"settled in _empty/{date}.json, so later resumes are $0. The "
+                            f"empty response itself could NOT be removed from the DBN cache "
+                            f"({unlink_error}) -- it is still at _dbn/{dbn_path.name}, which "
+                            f"is harmless (it only makes the skip doubly free) but means a "
+                            f"--retry-empty must be able to delete it to actually re-pull. "
+                            f"Delete both files by hand if it stays locked.")
             else:
                 recovery = (f"The date stays planned, but the provider DID return {nr} row(s) "
                             f"that mapped to none of the requested underlyings, so the response "
@@ -860,6 +1015,10 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: "str | dict[s
         else:
             existing = target if target.exists() else None
         merge_date_file(existing, frame, target, force=force)
+        # FIX-IMPORTANT-2. This date produced real rows, so any settled-empty
+        # latch it carries is stale and must not be left to suppress a future
+        # legitimate pull of the same question.
+        _clear_empty_latch(out_root, date)
 
         written = set(frame["underlying"].unique().tolist())
         zero_row_syms = [s for s in miss if s not in written]
@@ -937,6 +1096,15 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--env-file", default="", help="path to a .env holding DATABENTO_API_KEY")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true", help="rewrite requested symbols on disk")
+    ap.add_argument("--retry-empty", action="store_true",
+                    help="COSTS MONEY. Clear the settled-empty latches "
+                         "(<out>/_empty/<date>.json) for the dates in range and re-pull them. "
+                         "A date whose provider response was empty is latched as settled so "
+                         "resumes skip it for $0 -- the permanent case (a snapshot minute "
+                         "after an early close) would otherwise re-bill forever. Pass this "
+                         "only when you believe the provider has recovered; if the cause was "
+                         "an early close, change --snap-et/--snap-utc instead (a latch covers "
+                         "exactly one snapshot minute and does not apply to another).")
     return ap
 
 
@@ -1012,7 +1180,8 @@ def run(args, client=None, store_loader: Optional[Callable] = None) -> int:
 
     res = pull(client, pull_plan, args.out, snap_hm=snap_arg, root_to_sym=root_to_sym,
                unit_cost=pf.unit_cost, force=args.force, store_loader=store_loader,
-               repull_dates=pull_repull_dates)
+               repull_dates=pull_repull_dates,
+               retry_empty=getattr(args, "retry_empty", False))
 
     args.out.mkdir(parents=True, exist_ok=True)
     mpath = args.out / f"manifest_hive_{args.start}_{args.end}_{snap_label.replace(':', '')}.csv"

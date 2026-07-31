@@ -660,9 +660,13 @@ def test_empty_repull_response_is_not_cached_so_the_next_run_can_actually_repull
     assert nxt == {date: ["AAPL", "SPY"]} and nxt.repull_dates == {date}
 
     # PULL 2 -- the operator re-runs once the provider is healthy, as instructed.
+    # FIX-IMPORTANT-2: recovery is now explicitly operator-initiated
+    # (`--retry-empty`), because an unconditional re-pull on every resume is a
+    # recurring charge for a date that may be empty FOREVER. See
+    # `test_a_permanently_empty_date_costs_nothing_on_a_resume` below.
     healthy = FakeHistorical(frames={date: _raw_df(["AAPL", "SPY"])})
     ph.pull(healthy, dict(nxt), out, snap_hm="20:55", root_to_sym=root_to_sym,
-            store_loader=_fake_loader, repull_dates=nxt.repull_dates)
+            store_loader=_fake_loader, repull_dates=nxt.repull_dates, retry_empty=True)
     assert len(healthy.get_range_calls()) == 1, \
         "the re-run must actually reach the provider -- this is the whole recovery"
 
@@ -672,27 +676,219 @@ def test_empty_repull_response_is_not_cached_so_the_next_run_can_actually_repull
     assert len(tss) == 1
     assert (pd.Timestamp(tss[0]).hour, pd.Timestamp(tss[0]).minute) == (20, 55), \
         "the date is repaired to the correct minute, not stuck stale at 19:55"
+    # ... and the successful pull retires the latch, so the date is not left
+    # carrying a stale "settled empty" marker it would trip over later.
+    assert not (out / "_empty" / f"{date}.json").exists()
 
 
 def test_empty_repull_does_not_re_bill_inside_the_same_run(tmp_path):
-    """FIX-N-1's spend rider. Dropping the cache entry must make the NEXT
+    """FIX-N-1's spend rider. Dropping the cache entry must make a LATER
     explicitly-invoked run able to fetch -- it must NOT trigger an automatic
     retry inside the current run. The guard `continue`s immediately, so the date
-    is billed exactly once per invocation no matter how many times it has
-    hiccuped before. Two back-to-back sick runs = two calls, not four."""
+    is billed exactly once per invocation no matter what."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
+
+    sick = FakeHistorical(frames={date: _raw_df([])})
+    res = ph.pull(sick, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55",
+                  root_to_sym={"AAPL": "AAPL", "SPY": "SPY"}, store_loader=_fake_loader,
+                  repull_dates={date})
+    assert len(sick.get_range_calls()) == 1, "exactly one billed call per invocation"
+    assert res.boards_written == 0
+
+
+def test_a_permanently_empty_date_costs_nothing_on_a_resume(tmp_path):
+    """FIX-IMPORTANT-2. FIX-N-1 dropped the cached empty DBN so a later run could
+    re-pull -- but `nr == 0` ("the provider returned nothing") is not the same as
+    "transient". FIX-C-2's own comment lists *a snapshot minute that landed after
+    an early close* among the causes of an empty response, and that cause is not
+    transient at all: the provider returns 0 rows at that window every time,
+    forever. Every explicit resume therefore unlinked the cache and called
+    `get_range` again -- a $0-forever path turned into pay-per-resume, which is
+    the recurring-charge loop FIX-C-2 exists to prevent, reintroduced for a
+    narrower input class.
+
+    The system already solved this once: the absent-latch. A confirmed absence is
+    recorded in a sidecar so later runs know it is settled and skip it. Same shape
+    here -- `<out>/_empty/<date>.json` records (minute, digest) as SETTLED, and a
+    resume skips the date without contacting the provider.
+
+    Three sick runs must bill exactly ONE call in total, not three."""
     out = tmp_path / "hive"
     date = "2026-01-02"
     tgt = out / f"date={date}" / ph.DATE_FILE
     ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
     root_to_sym = {"AAPL": "AAPL", "SPY": "SPY"}
 
-    for _ in range(2):
+    billed = []
+    for run_i in range(3):
         sick = FakeHistorical(frames={date: _raw_df([])})
         res = ph.pull(sick, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55",
                       root_to_sym=root_to_sym, store_loader=_fake_loader,
                       repull_dates={date})
-        assert len(sick.get_range_calls()) == 1, "exactly one billed call per invocation"
+        billed.append(len(sick.get_range_calls()))
         assert res.boards_written == 0
+        assert res.cells_failed == 2, "the cells are still reported unfilled, not silently ok"
+        if run_i == 0:
+            assert (out / "_empty" / f"{date}.json").exists(), \
+                "the settled-empty result must be latched, following _absent's conventions"
+
+    assert billed == [1, 0, 0], \
+        f"a permanently-empty date must be billed once, not once per resume (got {billed})"
+
+    # FIX-C-2 still holds throughout: the paid rows were never replaced.
+    assert set(pq.read_table(tgt).to_pandas()["underlying"]) == {"AAPL", "SPY"}
+    # ... and the date is still visibly unrepaired, so nothing has been silently
+    # marked complete: it re-plans as a repull on every future resume.
+    nxt = ph.plan_missing(out, ["AAPL", "SPY"], [date], expected_minute={date: "20:55"})
+    assert nxt == {date: ["AAPL", "SPY"]} and nxt.repull_dates == {date}
+
+
+def test_the_empty_latch_is_operator_clearable_and_never_self_clears(tmp_path):
+    """FIX-IMPORTANT-2's recovery contract. Nothing inside a run may cause an
+    automatic re-bill, so the latch must survive any number of resumes -- but the
+    operator who believes the provider has recovered needs an explicit way to
+    force a fresh pull. Two of them, both explicit: `--retry-empty`, and deleting
+    the sidecar by hand (exactly like `_absent`)."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
+    root_to_sym = {"AAPL": "AAPL", "SPY": "SPY"}
+    plan = {date: ["AAPL", "SPY"]}
+
+    sick = FakeHistorical(frames={date: _raw_df([])})
+    ph.pull(sick, plan, out, snap_hm="20:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates={date})
+    latch = out / "_empty" / f"{date}.json"
+    assert latch.exists()
+
+    # (a) --retry-empty re-pulls, and a still-empty answer re-latches rather than
+    #     leaving the date open to bill again on the next plain resume.
+    still_sick = FakeHistorical(frames={date: _raw_df([])})
+    ph.pull(still_sick, plan, out, snap_hm="20:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates={date}, retry_empty=True)
+    assert len(still_sick.get_range_calls()) == 1, "--retry-empty must reach the provider"
+    assert latch.exists(), "a still-empty answer must stay latched, not re-open the date"
+
+    quiet = FakeHistorical(frames={date: _raw_df([])})
+    ph.pull(quiet, plan, out, snap_hm="20:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates={date})
+    assert quiet.get_range_calls() == [], "and a plain resume after it is still free"
+
+    # (b) deleting the sidecar by hand is the other supported escape hatch.
+    latch.unlink()
+    healthy = FakeHistorical(frames={date: _raw_df(["AAPL", "SPY"])})
+    ph.pull(healthy, plan, out, snap_hm="20:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates={date})
+    assert len(healthy.get_range_calls()) == 1
+    assert not latch.exists(), "a successful pull retires the latch"
+
+
+def test_the_empty_latch_does_not_apply_at_a_different_snapshot_minute(tmp_path):
+    """FIX-IMPORTANT-2, keyed the way `_absent` is keyed. The real-world cause of
+    a permanently-empty response is a snapshot minute that landed after an early
+    close, and the real-world FIX is to move the snapshot minute. So the latch
+    holds exactly one minute's verdict: re-running at a different `--snap`
+    invalidates it automatically and the date re-pulls with no flag at all.
+
+    (This is also what makes a DST-transition minute change safe.)"""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T18:55:00"), tgt)
+    root_to_sym = {"AAPL": "AAPL", "SPY": "SPY"}
+
+    sick = FakeHistorical(frames={date: _raw_df([])})
+    ph.pull(sick, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates={date})
+    assert len(sick.get_range_calls()) == 1
+
+    # Same date, same symbols, EARLIER minute -- a different question entirely.
+    moved = FakeHistorical(frames={date: _raw_df(["AAPL", "SPY"])})
+    ph.pull(moved, {date: ["AAPL", "SPY"]}, out, snap_hm="19:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates={date})
+    assert len(moved.get_range_calls()) == 1, \
+        "a latch is one minute's verdict -- it must not suppress a different minute"
+    assert set(pq.read_table(tgt).to_pandas()["underlying"]) == {"AAPL", "SPY"}
+
+
+def test_the_empty_latch_does_not_apply_to_a_different_symbol_set(tmp_path):
+    """The latch is a $0 stand-in for the cache entry it replaces, so it carries
+    the same identity that entry did: `sha256(date|sorted(miss))[:12]`. A run
+    asking a genuinely different question (a grown universe) must not be answered
+    from a latch recorded for a narrower one."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL"], ts=f"{date}T19:55:00"), tgt)
+
+    sick = FakeHistorical(frames={date: _raw_df([])})
+    ph.pull(sick, {date: ["AAPL"]}, out, snap_hm="20:55", root_to_sym={"AAPL": "AAPL"},
+            store_loader=_fake_loader, repull_dates={date})
+    assert len(sick.get_range_calls()) == 1
+
+    wider = FakeHistorical(frames={date: _raw_df(["AAPL", "SPY"])})
+    ph.pull(wider, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55",
+            root_to_sym={"AAPL": "AAPL", "SPY": "SPY"}, store_loader=_fake_loader,
+            repull_dates={date})
+    assert len(wider.get_range_calls()) == 1, \
+        "a different requested symbol set is a different question"
+
+
+def test_a_failed_unlink_prints_its_own_branch_not_the_mapping_branchs_text(tmp_path, capsys):
+    """MINOR-1. When `nr == 0` AND `unlink` raises `OSError`, `dropped_cache`
+    stayed False and control fell into the `nr > 0` wording, printing "the
+    provider DID return 0 row(s) that mapped to none of the requested
+    underlyings" -- self-contradictory and false. Reachable on Windows:
+    `PermissionError` IS an `OSError`, and a handle held by an AV scanner or a
+    concurrent pull is the ordinary way to get one.
+
+    N-1's original sin was stderr that was not true of the branch that ran, so
+    the failed-unlink case gets its own text."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
+
+    real_unlink = pathlib.Path.unlink
+
+    def refuse(self, *a, **kw):
+        if self.suffix == ".zst":
+            raise PermissionError(13, "held by another process")
+        return real_unlink(self, *a, **kw)
+
+    sick = FakeHistorical(frames={date: _raw_df([])})
+    with mock.patch.object(pathlib.Path, "unlink", refuse):
+        ph.pull(sick, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55",
+                root_to_sym={"AAPL": "AAPL", "SPY": "SPY"}, store_loader=_fake_loader,
+                repull_dates={date})
+
+    err = capsys.readouterr().err
+    assert "mapped to none of the requested underlyings" not in err, \
+        "the failed-unlink case must not borrow the nr > 0 branch's diagnosis"
+    assert "could NOT be removed from the DBN cache" in err, \
+        "it must say what actually happened -- the unlink failed"
+    assert "held by another process" in err, "and carry the OS's own reason"
+    # It is not fatal, and the un-droppable cache is itself the $0 guarantee for
+    # the next resume -- so the guidance must point at the file, not at a re-pull.
+    assert len(list((out / "_dbn").glob("*.dbn.zst"))) == 1
+    quiet = FakeHistorical(frames={date: _raw_df([])})
+    ph.pull(quiet, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55",
+            root_to_sym={"AAPL": "AAPL", "SPY": "SPY"}, store_loader=_fake_loader,
+            repull_dates={date})
+    assert quiet.get_range_calls() == [], "the surviving cache still makes the resume free"
+
+
+def test_retry_empty_is_exposed_on_the_cli_and_defaults_off(tmp_path):
+    """The escape hatch has to be reachable without editing source, and it must
+    never be the default -- a flag that re-bills must be typed."""
+    ap = ph.build_parser()
+    base = ["--universe", "u.csv"]
+    assert ap.parse_args(base).retry_empty is False
+    assert ap.parse_args(base + ["--retry-empty"]).retry_empty is True
 
 
 def test_a_non_empty_response_that_decodes_to_nothing_stays_cached(tmp_path):

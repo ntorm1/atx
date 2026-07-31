@@ -515,6 +515,38 @@ def test_build_pull_command_dry_run_appends_flag():
     assert argv[-1] == "--dry-run"
 
 
+def test_build_pull_command_never_passes_retry_empty(tmp_path, monkeypatch):
+    """FIX-IMPORTANT-2's spend rider, pinned at the orchestrator boundary.
+    `--retry-empty` clears a settled-empty latch and RE-BILLS the date. Recovery
+    from a settled-empty date is operator-initiated only, so no automated
+    orchestrator invocation -- ever, in any phase, dry-run or not -- may carry
+    that flag. This is the assertion that catches someone "helpfully" wiring it
+    into the retry ladder later."""
+    for dry_run in (False, True):
+        argv = orch.build_pull_command(
+            python_exe=sys.executable, pull_tool="p.py", universe_path="U.csv",
+            start="2022-01-01", end="2022-01-31", hive="HIVE", snap_et="15:55",
+            cap=90.0, env_file="C:/atx/.env", index_symbol="SPY", dry_run=dry_run,
+        )
+        assert "--retry-empty" not in argv and "--force" not in argv
+
+    # ... and the same for every command `phase_pull` actually spawns.
+    spawned = []
+
+    def fake_run(argv, **kw):
+        spawned.append(list(argv))
+        if "--dry-run" in argv:
+            return _FakeCompleted(0, stdout="ESTIMATE (remaining spend): $0.0000 = ...\n")
+        return _FakeCompleted(0, stdout="DONE boards_written=0 dates_written=0\n")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    args = _pull_args(tmp_path, from_date="2026-07-01", to_date="2026-07-10")
+    ledger = orch.SpendLedger(path=tmp_path / "ledger.csv", abort_threshold=1000.0)
+    assert orch.phase_pull(args, {}, ledger, tmp_path) == 0
+    assert spawned, "the phase must actually have spawned something to be meaningful"
+    assert not any("--retry-empty" in argv for argv in spawned)
+
+
 def test_build_verify_command():
     argv = orch.build_verify_command(admin_exe="build/bin/atx-vol-surface-db.exe",
                                      db_prefix="C:/atx-data/surface-db/sp100", year=2022,
