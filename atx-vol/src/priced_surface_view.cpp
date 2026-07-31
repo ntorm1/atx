@@ -997,9 +997,9 @@ Status PricedSurfaceView::evaluate_batch(std::span<const double> K, std::span<co
             .status = out.status.subspan(begin, run_size),
             .pack_dispatch = {},
         };
-        const Status batch = american_price_batch_resolved(request);
+        const Result<std::size_t> batch = american_price_batch_resolved(request);
         if (!batch.has_value()) {
-          return batch;
+          return Err(batch.error());
         }
         for (std::size_t e = begin; e < end; ++e) {
           if (!out.status[e].has_value()) {

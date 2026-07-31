@@ -79,8 +79,8 @@ void write_masked(const simd::GreeksBatchSoA& out, std::size_t i,
 
 } // namespace
 
-Status american_price_batch(const AmericanBatchInput& in, PriceBatchOutput& out,
-                            PricingKernel& kernel, PricingWorkspace& ws) {
+Result<std::size_t> american_price_batch(const AmericanBatchInput& in, PriceBatchOutput& out,
+                                         PricingKernel& kernel, PricingWorkspace& ws) {
   if (!in.consistent()) {
     return Err(ErrorCode::InvalidArgument,
                "american_price_batch: input span length mismatch");
@@ -88,7 +88,7 @@ Status american_price_batch(const AmericanBatchInput& in, PriceBatchOutput& out,
   const std::size_t n = in.size();
   out.resize(n);
   if (n == 0) {
-    return Ok();
+    return Ok(n);
   }
 
   ws.reserve_lanes(n);
@@ -153,10 +153,10 @@ Status american_price_batch(const AmericanBatchInput& in, PriceBatchOutput& out,
     }
   }
 
-  return Ok();
+  return Ok(n);
 }
 
-Status american_price_batch_resolved(
+Result<std::size_t> american_price_batch_resolved(
     const ResolvedAmericanPriceBatchRequest& request) {
   if (!request.consistent()) {
     return Err(ErrorCode::InvalidArgument,
@@ -206,7 +206,7 @@ Status american_price_batch_resolved(
     for (std::size_t i = 0; i < n; ++i) {
       scalar_lane(i);
     }
-    return Ok();
+    return Ok(n);
   }
 
   // Compact only genuine single-boundary lanes into complete AVX-width packs;
@@ -266,12 +266,12 @@ Status american_price_batch_resolved(
   for (std::size_t j = 0; j < packed; ++j) {
     scalar_lane(pack_index[j]);
   }
-  return Ok();
+  return Ok(n);
 }
 
-Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields,
-                             simd::GreeksBatchSoA& greeks, PricingKernel& kernel,
-                             PricingWorkspace& ws) {
+Result<std::size_t> american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields,
+                                          simd::GreeksBatchSoA& greeks, PricingKernel& kernel,
+                                          PricingWorkspace& ws) {
   if (!in.consistent()) {
     return Err(ErrorCode::InvalidArgument,
                "american_greeks_batch: input span length mismatch");
@@ -279,7 +279,7 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
   const std::size_t n = in.size();
   ws.reserve_lanes(n);
   if (n == 0) {
-    return Ok();
+    return Ok(n);
   }
 
   // Each lane's Greeks come from the EXISTING scalar T9 route (no vectorized Greek
@@ -422,7 +422,7 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
     };
     run_side(Side::Put);
     run_side(Side::Call);
-    return Ok();
+    return Ok(n);
   }
 
   if (kernel.executor != nullptr) {
@@ -434,7 +434,7 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
     }
   }
 
-  return Ok();
+  return Ok(n);
 }
 
 } // namespace atx::vol

@@ -261,7 +261,7 @@ american_price_batch_py(const DoubleArray &s_array, const DoubleArray &k_array,
     in.side = book.side;
     out.resize(book.n);
     ws.reserve_lanes(book.n);
-    atxvol::python::unwrap(american_price_batch(in, out, kernel, ws));
+    static_cast<void>(atxvol::python::unwrap(american_price_batch(in, out, kernel, ws)));
     if (book.n > 0) {
       std::copy(out.price.begin(), out.price.end(), price_p);
     }
@@ -305,7 +305,8 @@ py::dict american_greeks_batch_py(const DoubleArray &s_array, const DoubleArray 
     in.q = book.q;
     in.side = book.side;
     ws.reserve_lanes(book.n);
-    atxvol::python::unwrap(american_greeks_batch(in, GreekFieldMask::All, soa, kernel, ws));
+    static_cast<void>(
+        atxvol::python::unwrap(american_greeks_batch(in, GreekFieldMask::All, soa, kernel, ws)));
   }
   py::dict out;
   out["delta"] = std::move(delta);

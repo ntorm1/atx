@@ -1081,9 +1081,9 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
             .status = out.status.subspan(begin, run_size),
             .pack_dispatch = {},
         };
-        const Status batch = american_price_batch_resolved(request);
+        const Result<std::size_t> batch = american_price_batch_resolved(request);
         if (!batch.has_value()) {
-          return batch;
+          return Err(batch.error());
         }
         // Mirror the scalar reference path (evaluate_resolved): an american_price
         // failure poisons iv = NaN. The batch pre-filled out.iv[e] = p.sigma for

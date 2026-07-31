@@ -514,7 +514,7 @@ TEST(ResolvedAmericanPriceBatch, ValidatesEveryNonOwningSpan) {
       .status = status,
       .pack_dispatch = {},
   };
-  const Status result = american_price_batch_resolved(request);
+  const Result<std::size_t> result = american_price_batch_resolved(request);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
 }
@@ -547,7 +547,7 @@ TEST(ResolvedAmericanPriceBatch, RejectsShiftedSigmaPriceOverlapBeforeWritesOrCo
   if constexpr (counters::counters_enabled()) {
     counters::reset();
   }
-  const Status result = american_price_batch_resolved(request);
+  const Result<std::size_t> result = american_price_batch_resolved(request);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
   EXPECT_EQ(sigma_and_price, before);
@@ -1829,6 +1829,150 @@ TEST(AmericanGreeksBatch, I3_AnalyticRoutePutAndCallStampsAgree) {
     EXPECT_TRUE(std::isfinite(gm[i])) << "lane " << i << " gamma";
     EXPECT_TRUE(std::isfinite(th[i])) << "lane " << i << " theta";
   }
+}
+
+// ── 4.3 error model: the three entries report through Result<std::size_t> ──
+//
+// All three used to return `Status` beside an out-param (`PriceBatchOutput&`, a
+// request struct's output spans, a `GreeksBatchSoA&`), so the only thing a
+// caller could learn from the return was "not Ok". Nothing read the messages,
+// which is how three distinct boundary rejections could have collapsed into one
+// without a failing test. Pin the exact Error each carries, and the lane count a
+// success carries.
+
+TEST(AmericanBatchErrorModel, EveryEntryCarriesItsExactRejectionThroughResult) {
+  IsaGuard g;
+  const std::vector<double> full(4, 1.0);
+  const std::vector<double> shorter(3, 1.0);
+  const std::vector<Side> sides(4, Side::Put);
+  AmericanBatchInput ragged{full, shorter, full, full, full, full, sides}; // K shorter
+  PricingKernel kernel;
+  PricingWorkspace ws;
+
+  PriceBatchOutput out;
+  const Result<std::size_t> priced = american_price_batch(ragged, out, kernel, ws);
+  ASSERT_FALSE(priced.has_value());
+  EXPECT_EQ(priced.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(priced.error().message(), "american_price_batch: input span length mismatch");
+
+  simd::GreeksBatchSoA soa;
+  const Result<std::size_t> greeked =
+      american_greeks_batch(ragged, GreekFieldMask::All, soa, kernel, ws);
+  ASSERT_FALSE(greeked.has_value());
+  EXPECT_EQ(greeked.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(greeked.error().message(), "american_greeks_batch: input span length mismatch");
+
+  // The resolved entry has TWO distinct rejections; both stay distinguishable.
+  const std::vector<double> strikes{90.0, 100.0};
+  const std::vector<double> one_sigma{0.2};
+  const std::vector<Side> two_sides{Side::Put, Side::Call};
+  std::vector<double> prices(2);
+  std::vector<Status> status(2);
+  const Result<std::size_t> ragged_request =
+      american_price_batch_resolved(ResolvedAmericanPriceBatchRequest{
+          .S = 100.0,
+          .T = 0.5,
+          .r = 0.04,
+          .q = 0.01,
+          .K = strikes,
+          .sigma = one_sigma,
+          .side = two_sides,
+          .method = AmericanMethod::AndersenLake,
+          .al_opts = std::optional<AlOpts>{al_fast_opts()},
+          .isa = simd::SimdIsa::Auto,
+          .price = prices,
+          .status = status,
+          .pack_dispatch = {},
+      });
+  ASSERT_FALSE(ragged_request.has_value());
+  EXPECT_EQ(ragged_request.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(ragged_request.error().message(),
+            "american_price_batch_resolved: input/output span length mismatch");
+
+  std::vector<double> sigma_and_price{0.20, 0.30, 777.0};
+  const Result<std::size_t> overlapping =
+      american_price_batch_resolved(ResolvedAmericanPriceBatchRequest{
+          .S = 100.0,
+          .T = 0.73,
+          .r = 0.04,
+          .q = 0.06,
+          .K = strikes,
+          .sigma = std::span<const double>{sigma_and_price.data(), 2},
+          .side = two_sides,
+          .method = AmericanMethod::AndersenLake,
+          .al_opts = std::optional<AlOpts>{al_fast_opts()},
+          .isa = simd::SimdIsa::Auto,
+          .price = std::span<double>{sigma_and_price.data() + 1, 2},
+          .status = status,
+          .pack_dispatch = {},
+      });
+  ASSERT_FALSE(overlapping.has_value());
+  EXPECT_EQ(overlapping.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(overlapping.error().message(),
+            "american_price_batch_resolved: input/output spans overlap");
+}
+
+TEST(AmericanBatchErrorModel, EveryEntryCarriesTheLaneCountItWrote) {
+  IsaGuard g;
+  const Book b = make_book();
+  const std::size_t n = b.size();
+  PricingKernel kernel;
+  kernel.isa = simd::SimdIsa::ForceScalar;
+  PricingWorkspace ws;
+
+  PriceBatchOutput out;
+  const Result<std::size_t> priced = american_price_batch(b.view(), out, kernel, ws);
+  ASSERT_TRUE(priced.has_value());
+  EXPECT_EQ(*priced, n);
+  EXPECT_EQ(*priced, out.size());
+
+  std::vector<double> dl(n), gm(n), vg(n), th(n), rh(n), vn(n), vl(n), ch(n), px(n);
+  simd::GreeksBatchSoA soa;
+  soa.delta = dl.data();
+  soa.gamma = gm.data();
+  soa.vega = vg.data();
+  soa.theta = th.data();
+  soa.rho = rh.data();
+  soa.vanna = vn.data();
+  soa.volga = vl.data();
+  soa.charm = ch.data();
+  soa.price = px.data();
+  const Result<std::size_t> greeked =
+      american_greeks_batch(b.view(), GreekFieldMask::All, soa, kernel, ws);
+  ASSERT_TRUE(greeked.has_value());
+  EXPECT_EQ(*greeked, n);
+  EXPECT_EQ(*greeked, ws.lane_status_view().size());
+
+  const std::vector<double> strikes{90.0, 100.0, 110.0};
+  const std::vector<double> sigma{0.20, 0.25, 0.30};
+  const std::vector<Side> sides{Side::Put, Side::Put, Side::Call};
+  std::vector<double> prices(3);
+  std::vector<Status> status(3);
+  const Result<std::size_t> resolved =
+      american_price_batch_resolved(ResolvedAmericanPriceBatchRequest{
+          .S = 100.0,
+          .T = 0.5,
+          .r = 0.04,
+          .q = 0.01,
+          .K = strikes,
+          .sigma = sigma,
+          .side = sides,
+          .method = AmericanMethod::AndersenLake,
+          .al_opts = std::optional<AlOpts>{al_fast_opts()},
+          .isa = simd::SimdIsa::ForceScalar,
+          .price = prices,
+          .status = status,
+          .pack_dispatch = {},
+      });
+  ASSERT_TRUE(resolved.has_value());
+  EXPECT_EQ(*resolved, strikes.size());
+
+  // An empty book is a well-formed zero-lane call, not a rejection.
+  AmericanBatchInput empty;
+  PriceBatchOutput empty_out;
+  const Result<std::size_t> none = american_price_batch(empty, empty_out, kernel, ws);
+  ASSERT_TRUE(none.has_value());
+  EXPECT_EQ(*none, 0u);
 }
 
 } // namespace
