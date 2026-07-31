@@ -35,7 +35,7 @@
 
 #include "atx/vol/backtest.hpp"            // Clock, IStrategy, RunConfig, BacktestResult
 #include "atx/vol/dispersion.hpp"          // DispersionUniverse
-#include "atx/vol/dispersion_backtest.hpp" // DispersionBacktestConfig, run_dispersion_backtest
+#include "atx/vol/research/dispersion_backtest.hpp" // DispersionBacktestConfig, run_dispersion_backtest
 #include "atx/vol/tools/run_report.hpp"          // EngineRunStats (NOT relocated — included)
 #include "atx/vol/tools/tearsheet.hpp"           // TearSheet, tearsheet
 #include "atx/vol/types.hpp"               // Result

@@ -24,7 +24,7 @@
 // This is the one place run_archive.hpp is not "light" — the encoders above stay
 // forward-declared; only the run-directory handle pulls the input types in.
 #include "atx/vol/backtest.hpp"                   // Clock (RunDir::clock)
-#include "atx/vol/dispersion_workflow.hpp"        // RunSpec (RunDir::spec)
+#include "atx/vol/research/dispersion_workflow.hpp"        // RunSpec (RunDir::spec)
 #include "atx/vol/listed_dispersion_schedule.hpp" // ListedDispersionSchedule (RunDir::schedule)
 
 #include <cstddef>

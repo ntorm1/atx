@@ -9,16 +9,16 @@
 // write_diagnostics). `ra_schema_hash()` folds the whole registry into one
 // constexpr FNV-1a-64 value so a header can pin the schema at open time.
 
-#include "atx/vol/run_archive.hpp"
+#include "atx/vol/research/run_archive.hpp"
 #include "atx/vol/detail/run_archive_schema.hpp"
 
 #include "atx/vol/backtest.hpp"            // BacktestResult (Task 5 encoders)
 #include "atx/vol/detail/backtest_series_columns.hpp" // backtest_series_columns() (T6 single source)
 #include "atx/vol/corpus.hpp"              // CorpusManifest (RunDir::clock via manifest)
 #include "atx/vol/detail/archive_util.hpp" // crc32c (independent CRC check)
-#include "atx/vol/dispersion_workflow.hpp" // RunSpec (Task 5 meta encoder)
+#include "atx/vol/research/dispersion_workflow.hpp" // RunSpec (Task 5 meta encoder)
 #include "atx/vol/listed_dispersion.hpp"   // ListedDispersionSelection (RunDir schedule fixture)
-#include "atx/vol/listed_dispersion_reconciliation.hpp"
+#include "atx/vol/research/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/surface_archive.hpp" // ArchiveContentIdentity (identity())
 #include "atx/vol/tools/tearsheet.hpp"       // write_backtest_tsv (T6 TSV/encoder column parity)

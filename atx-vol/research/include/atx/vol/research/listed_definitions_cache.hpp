@@ -125,7 +125,7 @@ namespace atx::vol {
 
 // Forward-declared so the seam can accept the CLI's phase timer by pointer
 // without this header pulling in run_diagnostics.hpp. Defined in
-// atx/vol/run_diagnostics.hpp; the .cpp includes it for the definition. Same
+// atx/vol/research/run_diagnostics.hpp; the .cpp includes it for the definition. Same
 // convention as `build_listed_dispersion_schedule`'s optional `PhaseTimer *`.
 class PhaseTimer;
 

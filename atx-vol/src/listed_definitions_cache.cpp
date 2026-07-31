@@ -1,4 +1,4 @@
-#include "atx/vol/listed_definitions_cache.hpp"
+#include "atx/vol/research/listed_definitions_cache.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -23,7 +23,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"
 #include "atx/vol/detail/archive_util.hpp"
-#include "atx/vol/run_diagnostics.hpp" // PhaseTimer (optional definitions_cache hit/miss phase, review I6)
+#include "atx/vol/research/run_diagnostics.hpp" // PhaseTimer (optional definitions_cache hit/miss phase, review I6)
 
 namespace atx::vol {
 namespace {

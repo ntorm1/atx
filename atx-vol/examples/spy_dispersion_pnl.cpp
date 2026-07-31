@@ -37,7 +37,7 @@
 
 #include "atx/core/error.hpp"              // Err, Ok, ATX_TRY
 #include "atx/vol/backtest.hpp"            // Clock, RunConfig, SnapshotCache
-#include "atx/vol/backtest_driver.hpp"     // run_timed (the timed-run + tearsheet + stats spine)
+#include "atx/vol/research/backtest_driver.hpp"     // run_timed (the timed-run + tearsheet + stats spine)
 #include "atx/vol/corpus.hpp"              // CorpusManifest, CorpusEntry (windowed clock)
 #include "atx/vol/dispersion.hpp"          // MissingNamePolicy, MissingNameSpec
 #include "atx/vol/dispersion_strangle.hpp" // DispersionStrangleConfig, make_dispersion_strangle_spec

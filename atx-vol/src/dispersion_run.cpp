@@ -7,7 +7,7 @@
 // extraction: the dispersion golden (final_nav = 24740.624124981368, post-E1) is
 // unchanged by THIS extraction.
 
-#include "atx/vol/dispersion_run.hpp"
+#include "atx/vol/research/dispersion_run.hpp"
 
 #include <algorithm>
 #include <array>
@@ -41,8 +41,8 @@
 #include "atx/vol/dispersion.hpp" // contract_vega_per_vol_point (the ONE vol-point conversion)
 #include "atx/vol/historical_projection.hpp"
 #include "atx/vol/listed_dispersion.hpp"
-#include "atx/vol/listed_dispersion_pipeline.hpp" // ListedDispersionMethodology (L9)
-#include "atx/vol/listed_dispersion_reconciliation.hpp"
+#include "atx/vol/research/listed_dispersion_pipeline.hpp" // ListedDispersionMethodology (L9)
+#include "atx/vol/research/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/listed_dispersion_strategy.hpp"
 #include "atx/vol/listed_opra.hpp"
@@ -50,7 +50,7 @@
 #include "atx/vol/opra_batch.hpp"
 #include "atx/vol/detail/phase_profile.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
-#include "atx/vol/run_archive.hpp" // RunDir, encode_*_section (S3-T16 .atxrun default)
+#include "atx/vol/research/run_archive.hpp" // RunDir, encode_*_section (S3-T16 .atxrun default)
 #include "atx/vol/strategy.hpp"
 #include "atx/vol/universe.hpp"
 

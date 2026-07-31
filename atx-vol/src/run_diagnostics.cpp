@@ -6,7 +6,7 @@
 // every synthesized array is parked in the section's type-erased `storage`, so a
 // returned section's spans stay valid for its lifetime (the Task 5 encoder rule).
 
-#include "atx/vol/run_diagnostics.hpp"
+#include "atx/vol/research/run_diagnostics.hpp"
 
 #include <chrono>
 #include <cstddef>

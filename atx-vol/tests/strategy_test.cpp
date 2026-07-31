@@ -33,7 +33,7 @@
 #include "atx/vol/corpus.hpp"   // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/detail/counters.hpp"
 #include "atx/vol/dispersion.hpp" // DispersionUniverse, dispersion_signal
-#include "atx/vol/dispersion_backtest.hpp"
+#include "atx/vol/research/dispersion_backtest.hpp"
 #include "atx/vol/portfolio_pricer.hpp" // Portfolio, SurfaceSet, PortfolioPricer, Position
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"         // the DSL + DeclarativeStrategy/DispersionStrategy

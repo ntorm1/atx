@@ -180,10 +180,22 @@ target_include_directories(atx-vol-tools
         $<INSTALL_INTERFACE:include>
 )
 
+add_library(atx-vol-research INTERFACE)
+add_library(atx::vol::research ALIAS atx-vol-research)
+target_include_directories(atx-vol-research
+    INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/research/include>
+        $<INSTALL_INTERFACE:include>
+)
+# The run drivers report through the tearsheet / run-report writers, so research
+# sits ABOVE tools in the tier order. Nothing may point the other way.
+target_link_libraries(atx-vol-research INTERFACE atx-vol-tools)
+
 target_link_libraries(atx-vol
     PUBLIC
         atx::core
         atx-vol-tools
+        atx-vol-research
     PRIVATE
         atx::tsdb  # read-only mmap (tsdb::Mapping) for the S2 zero-read surface open
         atx_warnings

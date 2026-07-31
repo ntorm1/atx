@@ -36,7 +36,7 @@
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp" // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/detail/counters.hpp"
-#include "atx/vol/dispersion_backtest.hpp" // DispersionCostModel, dispersion_effective_frictions
+#include "atx/vol/research/dispersion_backtest.hpp" // DispersionCostModel, dispersion_effective_frictions
 #include "atx/vol/portfolio_pricer.hpp"    // OptionContract
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"         // IStrategy

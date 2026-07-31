@@ -31,8 +31,8 @@
 #include "atx/vol/backtest.hpp" // MarketSnapshot, PortfolioState, Lot, Clock
 #include "atx/vol/corpus.hpp"   // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/dispersion.hpp"
-#include "atx/vol/dispersion_run.hpp" // run_dispersion_surface_backtest (the seam)
-#include "atx/vol/dispersion_workflow.hpp"
+#include "atx/vol/research/dispersion_run.hpp" // run_dispersion_surface_backtest (the seam)
+#include "atx/vol/research/dispersion_workflow.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/strategy.hpp" // DispersionStrategy

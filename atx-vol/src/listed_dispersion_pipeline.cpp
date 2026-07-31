@@ -1,4 +1,4 @@
-#include "atx/vol/listed_dispersion_pipeline.hpp"
+#include "atx/vol/research/listed_dispersion_pipeline.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -17,12 +17,12 @@
 #include "atx/core/hash.hpp"  // atx::core::hash_bytes
 #include "atx/vol/contract_projection.hpp" // OptionProjectionSpec, ProjectedStrikeSpec, ProjectedOption
 #include "atx/vol/dispersion.hpp"         // DispersionUniverse, DispersionBook, MissingNameSpec, resolve_universe_uids
-#include "atx/vol/dispersion_workflow.hpp" // all_symbols, universe_at, UniverseRow, RunSpec
+#include "atx/vol/research/dispersion_workflow.hpp" // all_symbols, universe_at, UniverseRow, RunSpec
 #include "atx/vol/historical_projection.hpp" // RelativeOptionPosition, PreparedHistoricalProjection, projected_historical_var
 #include "atx/vol/opra_batch.hpp"        // OpraBatchResult, OpraBatchEntry, load_opra_daterange
 #include "atx/vol/portfolio_pricer.hpp"  // kNsPerYear, Position
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, FullGreekSeed
-#include "atx/vol/run_diagnostics.hpp"   // PhaseTimer (optional build-schedule phase timing, T9/O4)
+#include "atx/vol/research/run_diagnostics.hpp"   // PhaseTimer (optional build-schedule phase timing, T9/O4)
 
 namespace atx::vol {
 

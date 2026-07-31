@@ -15,7 +15,7 @@
 // metadata CRC validate on open, and per-section payload CRC is LAZY
 // (validate_section / validate_all only — never on the read path).
 
-#include "atx/vol/run_archive.hpp"
+#include "atx/vol/research/run_archive.hpp"
 
 #include <algorithm>
 #include <array>
@@ -52,8 +52,8 @@
 #include "atx/vol/detail/backtest_series_columns.hpp" // backtest_series_columns() (T6 single source)
 #include "atx/vol/corpus.hpp"              // CorpusManifest, read_manifest_file (RunDir::clock)
 #include "atx/vol/detail/archive_util.hpp" // crc32c, crc32c_update, align_up
-#include "atx/vol/dispersion_workflow.hpp" // RunSpec, read_run_spec (Task 5 meta / RunDir::spec)
-#include "atx/vol/listed_dispersion_reconciliation.hpp"
+#include "atx/vol/research/dispersion_workflow.hpp" // RunSpec, read_run_spec (Task 5 meta / RunDir::spec)
+#include "atx/vol/research/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/surface_archive.hpp" // ArchiveContentIdentity (F6 identity)
 #include "atx/vol/version.hpp"         // semantic producer version dependency

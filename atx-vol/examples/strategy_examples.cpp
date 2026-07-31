@@ -23,7 +23,7 @@
 
 #include "atx/vol/american.hpp"         // al_fast_opts, AmericanMethod
 #include "atx/vol/backtest.hpp"         // Clock, RunConfig
-#include "atx/vol/backtest_driver.hpp"  // run_timed (timed engine + tearsheet + stats spine)
+#include "atx/vol/research/backtest_driver.hpp"  // run_timed (timed engine + tearsheet + stats spine)
 #include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"         // DeclarativeStrategy, StrategySpec

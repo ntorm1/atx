@@ -1,5 +1,5 @@
 // Unit + end-to-end tests for the listed SPY-dispersion library seam
-// (atx/vol/dispersion_run.hpp) extracted out of examples/spy_dispersion_backtest.cpp.
+// (atx/vol/research/dispersion_run.hpp) extracted out of examples/spy_dispersion_backtest.cpp.
 //
 // Coverage:
 //   1. DispersionCorpusPolicy defaults assemble the byte-identical pinned
@@ -34,14 +34,14 @@
 #include "atx/vol/backtest.hpp"            // Clock, MarketSnapshot
 #include "atx/vol/corpus.hpp"              // CorpusManifest, CorpusEntry, write_manifest_file
 #include "atx/vol/dispersion.hpp"          // DispersionConfig, build_dispersion_book
-#include "atx/vol/dispersion_backtest.hpp" // DispersionBacktestConfig, dispersion_config_from
-#include "atx/vol/dispersion_run.hpp"
-#include "atx/vol/dispersion_workflow.hpp" // universe_at, utc_date_from_ns
+#include "atx/vol/research/dispersion_backtest.hpp" // DispersionBacktestConfig, dispersion_config_from
+#include "atx/vol/research/dispersion_run.hpp"
+#include "atx/vol/research/dispersion_workflow.hpp" // universe_at, utc_date_from_ns
 #include "atx/vol/listed_dispersion_schedule.hpp" // build_listed_dispersion_roll (S3-T16 fixture)
 #include "atx/vol/listed_opra.hpp"         // ListedDefinitionTable, write_listed_definitions_file
 #include "atx/vol/occ_ess.hpp"             // read_occ_ess_report_file
 #include "atx/vol/priced_surface.hpp"      // PricedSurface, PricingContext
-#include "atx/vol/run_archive.hpp"         // RunDir, RunArchive (S3-T16 .atxrun default path)
+#include "atx/vol/research/run_archive.hpp"         // RunDir, RunArchive (S3-T16 .atxrun default path)
 #include "atx/vol/surface_archive.hpp"     // write_surface_archive_v2_file
 #include "atx/vol/surface_parity.hpp"      // SliceContext
 #include "atx/vol/vol_curve.hpp"           // CurveSurface, EssviCurve

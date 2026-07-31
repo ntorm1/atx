@@ -9,7 +9,7 @@
 // kDiagnosticsCols registry order — followed by a `total` row carrying the
 // caller's total_count.
 
-#include "atx/vol/run_archive.hpp" // RaSectionData (encoder output)
+#include "atx/vol/research/run_archive.hpp" // RaSectionData (encoder output)
 
 #include <array>
 #include <chrono>

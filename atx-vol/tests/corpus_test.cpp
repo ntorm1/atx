@@ -56,7 +56,7 @@
 #include "atx/vol/data.hpp"                 // iso_to_ns, year_fraction
 #include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
 #include "atx/vol/dispersion.hpp"           // DispersionUniverse, DroppedName
-#include "atx/vol/dispersion_run.hpp"       // format_corpus_phase_line (T-I4 probe gate)
+#include "atx/vol/research/dispersion_run.hpp"       // format_corpus_phase_line (T-I4 probe gate)
 #include "atx/vol/market_env.hpp"           // MarketEnv
 #include "atx/vol/panel.hpp"                // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/priced_surface.hpp"       // PricedSurface

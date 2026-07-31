@@ -25,10 +25,10 @@
 #include "atx/vol/contract_projection.hpp"        // ProjectedMaturitySpec, ProjectedOption
 #include "atx/vol/corpus.hpp"                     // CorpusAdmissionRule
 #include "atx/vol/dispersion.hpp"                 // DispersionBook
-#include "atx/vol/dispersion_workflow.hpp"        // RunSpec, batch_spec
+#include "atx/vol/research/dispersion_workflow.hpp"        // RunSpec, batch_spec
 #include "atx/vol/historical_projection.hpp"      // HistoricalProjection{Scenario,Frame,Config}, ProjectedHistoricalVar
 #include "atx/vol/listed_dispersion.hpp"          // ListedForwardLookup, DispersionMember, ListedOptionQuote
-#include "atx/vol/listed_dispersion_reconciliation.hpp" // ListedReconciliationSnapshot, reconcile_listed_dispersion
+#include "atx/vol/research/listed_dispersion_reconciliation.hpp" // ListedReconciliationSnapshot, reconcile_listed_dispersion
 #include "atx/vol/listed_dispersion_schedule.hpp" // ListedRiskLookup, ListedOptionRisk
 #include "atx/vol/listed_dispersion_strategy.hpp" // ListedDispersionStrategy, MarkDivergence
 #include "atx/vol/listed_opra.hpp"                // ListedDefinitionTable, MissingDefinitionPolicy
@@ -39,7 +39,7 @@ namespace atx::vol {
 
 // Forward-declared so the schedule builder can accept the CLI's phase timer by
 // pointer without this header pulling in run_diagnostics.hpp. Defined in
-// atx/vol/run_diagnostics.hpp; the .cpp includes it for the definition.
+// atx/vol/research/run_diagnostics.hpp; the .cpp includes it for the definition.
 class PhaseTimer;
 
 // DELETED (C-2 follow-up): `kVegaVolPointToUnitVol = 100.0`, the per-vol-point →

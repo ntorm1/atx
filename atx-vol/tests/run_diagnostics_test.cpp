@@ -6,9 +6,9 @@
 // timed phase names plus the trailing `total` row, and `count` carries the
 // per-phase units and the caller's total_count.
 
-#include "atx/vol/run_diagnostics.hpp"
+#include "atx/vol/research/run_diagnostics.hpp"
 
-#include "atx/vol/run_archive.hpp"
+#include "atx/vol/research/run_archive.hpp"
 #include "atx/vol/detail/run_archive_schema.hpp"
 
 #include <gtest/gtest.h>

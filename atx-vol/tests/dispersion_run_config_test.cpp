@@ -21,9 +21,9 @@
 #include <string>
 
 #include "atx/core/hash.hpp"
-#include "atx/vol/dispersion_backtest.hpp"
-#include "atx/vol/dispersion_run.hpp"
-#include "atx/vol/dispersion_workflow.hpp" // read_run_spec / write_resolved_spec (F4)
+#include "atx/vol/research/dispersion_backtest.hpp"
+#include "atx/vol/research/dispersion_run.hpp"
+#include "atx/vol/research/dispersion_workflow.hpp" // read_run_spec / write_resolved_spec (F4)
 #include "atx/vol/types.hpp"
 
 using namespace atx::vol;
@@ -900,7 +900,7 @@ TEST(DispersionRunConfigXB, ReportMetadata_LeadsWithTheRegime) {
 // pins the ON-DISK contract that the Python renderer actually consumes. The
 // renderer `tools/spy_dispersion_tearsheet_report.py` HARD-REFUSES a track with no
 // `friction_regime` key (see that file, and the "REGIME IS NOT OPTIONAL METADATA"
-// header contract in include/atx/vol/dispersion_run.hpp). So a writer that stopped
+// header contract in include/atx/vol/research/dispersion_run.hpp). So a writer that stopped
 // serializing the key -- e.g. someone deleting the emplace_back in
 // `dispersion_report_metadata`, or a new run path that never routed through
 // `write_dispersion_tearsheet` -- would silently break every downstream tearsheet

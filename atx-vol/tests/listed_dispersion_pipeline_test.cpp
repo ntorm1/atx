@@ -14,8 +14,8 @@
 #include "atx/vol/dispersion.hpp"                 // DispersionMember, DispersionBook, build_dispersion_book
 #include "atx/vol/historical_projection.hpp"      // HistoricalProjectionScenario/Frame/Config, ProjectedHistoricalVar
 #include "atx/vol/listed_dispersion.hpp"          // ListedOptionQuote
-#include "atx/vol/listed_dispersion_pipeline.hpp" // module under test
-#include "atx/vol/listed_dispersion_reconciliation.hpp" // ListedReconciliationSnapshot, reconcile_listed_dispersion
+#include "atx/vol/research/listed_dispersion_pipeline.hpp" // module under test
+#include "atx/vol/research/listed_dispersion_reconciliation.hpp" // ListedReconciliationSnapshot, reconcile_listed_dispersion
 #include "atx/vol/listed_dispersion_schedule.hpp" // ListedRiskLookup, ListedOptionRisk
 #include "atx/vol/listed_dispersion_strategy.hpp" // ListedDispersionStrategy, ScheduleMarkPolicy, MarkDivergence
 #include "atx/vol/portfolio_pricer.hpp"           // SurfaceSet, kNsPerYear

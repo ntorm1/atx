@@ -10,7 +10,7 @@
 
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/dispersion.hpp"
-#include "atx/vol/dispersion_workflow.hpp" // UniverseRow (point-in-time schedule)
+#include "atx/vol/research/dispersion_workflow.hpp" // UniverseRow (point-in-time schedule)
 #include "atx/vol/strategy.hpp"
 
 namespace atx::vol {

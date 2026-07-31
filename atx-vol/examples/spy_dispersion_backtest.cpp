@@ -25,20 +25,20 @@
 #include "atx/core/hash.hpp"
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp"
-#include "atx/vol/run_archive.hpp"
-#include "atx/vol/run_diagnostics.hpp"
+#include "atx/vol/research/run_archive.hpp"
+#include "atx/vol/research/run_diagnostics.hpp"
 #include "atx/vol/detail/counters.hpp"
 #include "atx/vol/dispersion.hpp"
-#include "atx/vol/dispersion_backtest.hpp"
-#include "atx/vol/dispersion_run.hpp"
-#include "atx/vol/dispersion_workflow.hpp"
+#include "atx/vol/research/dispersion_backtest.hpp"
+#include "atx/vol/research/dispersion_run.hpp"
+#include "atx/vol/research/dispersion_workflow.hpp"
 #include "atx/vol/historical_projection.hpp"
 #include "atx/vol/listed_dispersion.hpp"
-#include "atx/vol/listed_dispersion_pipeline.hpp"
-#include "atx/vol/listed_dispersion_reconciliation.hpp"
+#include "atx/vol/research/listed_dispersion_pipeline.hpp"
+#include "atx/vol/research/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/listed_dispersion_strategy.hpp"
-#include "atx/vol/listed_definitions_cache.hpp"
+#include "atx/vol/research/listed_definitions_cache.hpp"
 #include "atx/vol/listed_opra.hpp"
 #include "atx/vol/occ_ess.hpp"
 #include "atx/vol/opra_batch.hpp"
@@ -133,7 +133,7 @@ std::string cache_dir_from_env() {
 
 // ── Runtime diagnostics ──────────────────────────────────────────────────────
 // PhaseTimer + the `diagnostics` section encoder now live in the library
-// (atx/vol/run_diagnostics.hpp), so the binary result container measures phases
+// (atx/vol/research/run_diagnostics.hpp), so the binary result container measures phases
 // exactly as the old loose diagnostics_<subcommand>.tsv did. `PhaseTimer` here
 // resolves to atx::vol::PhaseTimer via the `using namespace atx::vol` above.
 
@@ -269,7 +269,7 @@ Status verify_occ_ess_evidence(const fs::path &run_dir, const Clock &clock) {
 //     `DispersionCorpusPolicy` rather than inline literals, which is what makes the
 //     reproduction knobs greppable from one place.
 //
-// See the seam contract at the top of atx/vol/dispersion_run.hpp for why this
+// See the seam contract at the top of atx/vol/research/dispersion_run.hpp for why this
 // subcommand dispatches and `build-schedule` / `run-backtest` / `verify` do not.
 
 // The per-date OPRA quote join (formerly the example's `load_listed_quotes`) now

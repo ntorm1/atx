@@ -27,8 +27,8 @@
 
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/dispersion.hpp"
-#include "atx/vol/dispersion_backtest.hpp"
-#include "atx/vol/dispersion_workflow.hpp"
+#include "atx/vol/research/dispersion_backtest.hpp"
+#include "atx/vol/research/dispersion_workflow.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/listed_dispersion_strategy.hpp"
 #include "atx/vol/strategy.hpp"
