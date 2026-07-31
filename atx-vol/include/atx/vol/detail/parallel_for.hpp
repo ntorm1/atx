@@ -21,6 +21,51 @@
 // `fn` must be safe to call concurrently over disjoint indices. `std::jthread`
 // joins on scope exit, which is the barrier: every worker has finished before
 // `parallel_for` returns.
+//
+// ## Exceptions — READ THIS (4.3)
+//
+// `vol.hpp` states the library-wide contract as "Result<T>/Status for expected
+// failures, no exceptions". THAT PROMISE IS ABOUT THE PUBLIC API AND ABOUT
+// EXPECTED FAILURES. This is a `detail/` primitive with no error channel of its
+// own — it is a scheduler for a caller-supplied `fn`, not an operation that can
+// itself fail — and it deliberately diverges. Every fan-out in this header
+// PROPAGATES an exception thrown by `fn`. Specifically:
+//
+//   * NOT `noexcept`. `parallel_for`, both `parallel_for_dynamic` overloads and
+//     `detail::run_elastic_dynamic` can all exit by throwing.
+//   * SERIAL widths (n == 0, or a resolved width of 1) propagate DIRECTLY out of
+//     the loop — no capture, no barrier. A caller cannot tell the width apart
+//     from the observable outcome, which is the point.
+//   * MULTITHREADED widths capture the FIRST exception any participant observes
+//     (an `exception_ptr` guarded by an `atomic_flag`), let EVERY participant
+//     reach the join barrier, and then rethrow it on the CALLING thread. The
+//     barrier is what keeps the caller's stack-backed closure and scratch alive
+//     until no worker can touch them again. It is also mandatory, not a
+//     courtesy: an exception escaping a `std::jthread` body calls
+//     `std::terminate`, so the alternative to catching is killing the process.
+//   * ONLY THE FIRST is retained. Exceptions thrown concurrently by other
+//     workers are swallowed; the caller sees exactly one.
+//   * WORK IS LEFT UNDONE, and the partition decides how much. In the STATIC
+//     `parallel_for` a throwing worker abandons the rest of ITS OWN contiguous
+//     block; every other worker still completes its whole block. In the DYNAMIC
+//     fan-outs the throwing worker stops claiming, so an unbounded tail of
+//     unclaimed indices may never run while other workers drain what they can.
+//     EITHER WAY THE OUTPUT IS PARTIALLY WRITTEN — a caller that catches must
+//     treat the whole output as indeterminate, not as "all but one slot".
+//   * The HAPPY PATH is untouched by any of this: `fn(i)` runs identically, the
+//     catch is never taken, no `exception_ptr` is set, and results stay
+//     bit-identical for any worker count.
+//
+// So the rule for callers inside atx-vol is: either supply a `fn` that cannot
+// throw (contain it in the body, as `american_batch.cpp`'s `price_lane` does for
+// `std::bad_alloc`), or catch at your own `Result`-returning boundary and convert
+// there. Do not assume this header will not throw because `vol.hpp` says the
+// library does not.
+//
+// Gated by ParallelFor.{Static,Dynamic,DynamicWorkerId}WorkerExceptionPropagates-
+// ToCaller, ParallelFor.SerialWidthPropagatesTheBodyExceptionDirectly,
+// ParallelFor.StaticThrowAbandonsOnlyTheThrowingWorkersBlockTail and
+// ParallelForElastic.WorkerExceptionPropagatesAfterTheGrownPoolDrains.
 
 #include <atomic>
 #include <charconv>

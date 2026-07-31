@@ -156,6 +156,60 @@ TEST(ParallelFor, DynamicWorkerExceptionPropagatesToCaller) {
   EXPECT_TRUE(threw) << "a throwing worker must propagate, not terminate";
 }
 
+// 4.3: parallel_for.hpp now documents its exception contract explicitly (it
+// diverges from vol.hpp's library-wide "no exceptions" promise, and a detail/
+// header is allowed to — but only if it says so). Two of the claims that
+// documentation makes had no gate. These are those two.
+
+// The SERIAL widths propagate DIRECTLY out of the loop, with no capture and no
+// barrier. That is what makes the width unobservable to a caller: nt<=1 and
+// nt>1 must be indistinguishable from the outside.
+TEST(ParallelFor, SerialWidthPropagatesTheBodyExceptionDirectly) {
+  bool threw = false;
+  try {
+    atx::vol::parallel_for(8, 1, [](std::size_t i) {
+      if (i == 3) {
+        throw std::runtime_error("serial boom");
+      }
+    });
+  } catch (const std::runtime_error& e) {
+    threw = true;
+    EXPECT_STREQ(e.what(), "serial boom");
+  }
+  EXPECT_TRUE(threw) << "the nt<=1 path must propagate exactly like the fan-out";
+}
+
+// "Work is left undone, and the PARTITION decides how much": in the static
+// scheduler a throwing worker abandons the rest of its OWN contiguous block and
+// nothing else — every other worker still completes its whole block before the
+// rethrow. kN=64, nt=4 => chunk 16 and blocks [0,16) [16,32) [32,48) [48,64), so
+// the throw at 17 abandons exactly 18..31.
+TEST(ParallelFor, StaticThrowAbandonsOnlyTheThrowingWorkersBlockTail) {
+  constexpr std::size_t kN = 64;
+  std::vector<int> ran(kN, 0);
+  bool threw = false;
+  try {
+    atx::vol::parallel_for(kN, 4, [&](std::size_t i) {
+      ran[i] = 1;
+      if (i == 17) {
+        throw std::runtime_error("block boom");
+      }
+    });
+  } catch (const std::runtime_error&) {
+    threw = true;
+  }
+  ASSERT_TRUE(threw);
+  for (std::size_t i = 0; i < 18; ++i) {
+    EXPECT_EQ(ran[i], 1) << "slot " << i << " is in a block that must have completed";
+  }
+  for (std::size_t i = 18; i < 32; ++i) {
+    EXPECT_EQ(ran[i], 0) << "slot " << i << " is in the abandoned tail of the throwing block";
+  }
+  for (std::size_t i = 32; i < kN; ++i) {
+    EXPECT_EQ(ran[i], 1) << "slot " << i << " is in a block that must have completed";
+  }
+}
+
 // Same contract for the worker-id overload (fn(index, worker_id)).
 TEST(ParallelFor, DynamicWorkerIdExceptionPropagatesToCaller) {
   constexpr std::size_t kN = 64;
