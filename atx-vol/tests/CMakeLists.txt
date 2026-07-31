@@ -194,6 +194,15 @@ target_include_directories(atx-vol-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../
 target_compile_definitions(atx-vol-tests PRIVATE
     "ATX_AMZN_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/data/amzn_earnings_2018/amzn_opra_cbbo1m_2018-04-26T1945Z.parquet\"")
 
+# S4-T18 (plan 3.8 + 4.1): vol_umbrella_test.cpp is the public-surface tiering
+# CONTRACT test — besides including the umbrella it READS it back off disk and
+# checks that its include list is exactly the Tier-A manifest. Bake the two
+# paths in (same mechanism as ATX_AMZN_FIXTURE above) so the contract holds
+# regardless of the ctest working directory.
+target_compile_definitions(atx-vol-tests PRIVATE
+    "ATX_VOL_INCLUDE_ROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/../include\""
+    "ATX_VOL_UMBRELLA_HPP=\"${CMAKE_CURRENT_SOURCE_DIR}/../include/atx/vol/vol.hpp\"")
+
 # Precompiled header (opt-in: ATX_USE_PCH; ON in the ninja/dev/rel presets, OFF
 # in `hygiene`). GoogleTest is #included by ~79 of the test TUs and is by far the
 # dominant per-TU parse cost; precompiling it (plus the ubiquitous std headers and
