@@ -386,10 +386,11 @@ struct DispersionRunConfig {
   // hash` folds five of them, and the shipped `verify` requires them; they are
   // pipeline structure, not a report about it.
   //
-  // Appended at the end of the struct per the compatibility convention marked in
-  // backtest.hpp. Unlike the six sites Sprint 4 sweeps, this config is bound BY
-  // KEY (`read_dispersion_run_config`), never positionally, so it needs no S4
-  // migration.
+  // Sits at the end of the struct because that is where it was added, NOT for
+  // positional-initializer compatibility: the convention that once justified
+  // that (see backtest.hpp) was retired in S4-T19 / plan item 4.2. This config
+  // is bound BY KEY (`read_dispersion_run_config`) and has no aggregate-init
+  // site at all, so it needed no migration then and needs no parking spot now.
   bool emit_tsv_diagnostics{false};
 };
 
