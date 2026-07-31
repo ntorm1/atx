@@ -543,14 +543,20 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   }
 
   SurfaceParityReport out{
-      std::move(surface),    std::move(expiry_T),
-      std::move(per_expiry), std::move(context),
-      std::move(carry_diag), std::move(input_certs),
-      worst,                 calendar_arb_free,
-      idx,                   n_calendar_viol_pre,
-      n_carry_skipped,       n_audit_starved,
+      .surface = std::move(surface),
+      .expiry_T = std::move(expiry_T),
+      .per_expiry = std::move(per_expiry),
+      .context = std::move(context),
+      .carry = std::move(carry_diag),
+      .input_certification = std::move(input_certs),
+      .expiry_reports = std::move(expiry_reports), // W3.4 (F4): ‖ under.chains, chain order
+      .worst_frac_within_bidask = worst,
+      .calendar_arb_free = calendar_arb_free,
+      .n_slices = idx,
+      .n_calendar_viol_pre = n_calendar_viol_pre,
+      .n_carry_skipped = n_carry_skipped,
+      .n_audit_starved = n_audit_starved,
   };
-  out.expiry_reports = std::move(expiry_reports); // W3.4 (F4): ‖ under.chains, chain order
   if (in.collect_stage_timings) {
     out.fit_timings.carry_solve_ms = ms_carry;
     out.fit_timings.observation_deam_ms = ms_deam;
