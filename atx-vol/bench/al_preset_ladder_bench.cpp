@@ -200,26 +200,35 @@ struct Rung {
   std::uint16_t price; // premium GL override (0 = keep the mapped n_quad_fp)
 };
 
-// AlOpts{n_collocation, n_quadrature, max_newton_iter, tol}. Quadrature is
-// quantized by scheme_from_opts to {8,16,24,32,48,64}; n_collocation -> n_boundary
-// (clamped [6,32]); max_newton_iter -> (jn=min(2,tot), fp=tot-jn).
+// AlOpts is designated-init only (american.hpp construction contract). Each
+// rung's premium GL order rides `Rung::price` (the seeded-call override) rather
+// than AlOpts::n_quad_price, so the ladder sweeps p independently of the opts.
+// Quadrature is quantized by scheme_from_opts to {8,16,24,32,48,64};
+// n_collocation -> n_boundary (clamped [6,32]); max_newton_iter ->
+// (jn=min(2,tot), fp=tot-jn).
 [[nodiscard]] const std::vector<Rung> &rungs() {
   static const std::vector<Rung> r = {
       // richest in-repo scheme; accuracy denominator.
-      {"reference", AlOpts{16, 64, 12, 1.0e-12}, 64},
+      {"reference",
+       AlOpts{.n_collocation = 16, .n_quadrature = 64, .max_newton_iter = 12, .tol = 1.0e-12}, 64},
       // production ACCURATE (nullopt): {12,24,48,2,4,1e-10}.
       {"accurate", std::nullopt, 0},
       // production fast al_fast_opts(): {7,16,16,2,2,1e-8} (price tied to fp=16).
-      {"fast", AlOpts{7, 16, 4, 1.0e-8}, 0},
+      {"fast",
+       AlOpts{.n_collocation = 7, .n_quadrature = 16, .max_newton_iter = 4, .tol = 1.0e-8}, 0},
       // QuantLib fast (l=7,m=2,n=7,p=27): cheap fp=8, DECOUPLED rich premium=32,
       // nb=7, 2 sweeps. The headline "decoupled" rung.
-      {"ql_fast", AlOpts{7, 8, 2, 1.0e-8}, 32},
+      {"ql_fast",
+       AlOpts{.n_collocation = 7, .n_quadrature = 8, .max_newton_iter = 2, .tol = 1.0e-8}, 32},
       // QuantLib accurate (l=25,m=5,n=13,eps1e-8): fp=24, premium=48, nb=13, 5 sweeps.
-      {"ql_accurate", AlOpts{13, 24, 5, 1.0e-8}, 48},
+      {"ql_accurate",
+       AlOpts{.n_collocation = 13, .n_quadrature = 24, .max_newton_iter = 5, .tol = 1.0e-8}, 48},
       // interpolated: current fast boundary/iters, premium DECOUPLED 16->32.
-      {"fast_p32", AlOpts{7, 16, 4, 1.0e-8}, 32},
+      {"fast_p32",
+       AlOpts{.n_collocation = 7, .n_quadrature = 16, .max_newton_iter = 4, .tol = 1.0e-8}, 32},
       // interpolated balance: nb=9, fp=16, premium=24, 6 sweeps.
-      {"mid", AlOpts{9, 16, 6, 1.0e-9}, 24},
+      {"mid",
+       AlOpts{.n_collocation = 9, .n_quadrature = 16, .max_newton_iter = 6, .tol = 1.0e-9}, 24},
   };
   return r;
 }

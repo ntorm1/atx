@@ -360,8 +360,8 @@ TEST(AndersenLake, CanonicalAtmZeroCarry_PremiumMatchesReference) {
   const double S = 100.0, K = 100.0, T = 1.0, sigma = 0.25, r = 0.05, q = 0.05;
   const double expected_premium = 0.1069526779971959;
 
-  const AlOpts opts{/*n_collocation=*/32, /*n_quadrature=*/64,
-                    /*max_newton_iter=*/16, /*tol=*/1.0e-13};
+  const AlOpts opts{
+      .n_collocation = 32, .n_quadrature = 64, .max_newton_iter = 16, .tol = 1.0e-13};
   const double p = value_or_fail(andersen_lake(S, K, T, sigma, r, q, Side::Put, opts));
   const double euro = euro_put(S, K, T, sigma, r, q);
   EXPECT_LT(std::fabs((p - euro) - expected_premium), 1.0e-7);
@@ -2564,7 +2564,11 @@ TEST(BoundaryHoist, SpecializedMatchesGeneric) {
   // K2: (7,8) ql_fast marks rung — now al_fp_specialized. Decoupled premium (32)
   // stays generic; only the (nb=7, n_quad_fp=8) FP block is hoisted, so the
   // specialized kernel must be bit-identical to the generic runtime path here too.
-  const std::optional<AlOpts> qlfast = AlOpts{7, 8, 2, 1.0e-8, 32};
+  const std::optional<AlOpts> qlfast = AlOpts{.n_collocation = 7,
+                                              .n_quadrature = 8,
+                                              .n_quad_price = 32,
+                                              .max_newton_iter = 2,
+                                              .tol = 1.0e-8};
 
   const double S = 100.0;
   int checked = 0;
@@ -2629,7 +2633,12 @@ TEST(BoundaryHoist, HoistedBaryTableMatchesInlineFormula) {
   using atx::vol::detail::al_bary_hoist_audit;
   const std::optional<AlOpts> fast = al_fast_opts();          // {7,16}
   const std::optional<AlOpts> accurate = std::nullopt;        // {12,24}
-  const std::optional<AlOpts> qlfast = AlOpts{7, 8, 2, 1.0e-8, 32}; // {7,8}
+  const std::optional<AlOpts> qlfast = AlOpts{// {7,8}
+                                              .n_collocation = 7,
+                                              .n_quadrature = 8,
+                                              .n_quad_price = 32,
+                                              .max_newton_iter = 2,
+                                              .tol = 1.0e-8};
 
   std::size_t total_entries = 0;
   int audited = 0;
@@ -3499,27 +3508,34 @@ TEST(AlPresetLadder, NQuadPriceDecouple_BackwardCompatAndSeamEquivalent) {
   double max_decoupled_gap = 0.0;
   for (const C& c : grid) {
     // (1) default (tied) == explicit-tied-to-16.
-    const auto p_tied0 =
-        andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 16, 4, 1.0e-8});
-    const auto p_tied16 =
-        andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 16, 4, 1.0e-8, 16});
+    const AlOpts fp16{.n_collocation = 7, .n_quadrature = 16, .max_newton_iter = 4, .tol = 1.0e-8};
+    const AlOpts fp16_p16{.n_collocation = 7,
+                          .n_quadrature = 16,
+                          .n_quad_price = 16,
+                          .max_newton_iter = 4,
+                          .tol = 1.0e-8};
+    const auto p_tied0 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, fp16);
+    const auto p_tied16 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, fp16_p16);
     ASSERT_TRUE(p_tied0.has_value());
     ASSERT_TRUE(p_tied16.has_value());
     EXPECT_EQ(*p_tied0, *p_tied16) << "n_quad_price=0 must tie to n_quad_fp (backward compat)";
 
     // (2) decoupled public field == the A6 premium-override seam (both fp=8, price=32).
-    const auto p_field =
-        andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 8, 2, 1.0e-8, 32});
-    const auto p_seam =
-        andersen_lake_seeded(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 8, 2, 1.0e-8},
-                             Seed::Baw, /*n_quad_price=*/32);
+    const AlOpts fp8{.n_collocation = 7, .n_quadrature = 8, .max_newton_iter = 2, .tol = 1.0e-8};
+    const AlOpts fp8_p32{.n_collocation = 7,
+                         .n_quadrature = 8,
+                         .n_quad_price = 32,
+                         .max_newton_iter = 2,
+                         .tol = 1.0e-8};
+    const auto p_field = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, fp8_p32);
+    const auto p_seam = andersen_lake_seeded(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, fp8,
+                                             Seed::Baw, /*n_quad_price=*/32);
     ASSERT_TRUE(p_field.has_value());
     ASSERT_TRUE(p_seam.has_value());
     EXPECT_EQ(*p_field, *p_seam) << "public n_quad_price must match the andersen_lake_seeded seam";
 
     // (3) accumulate the decoupled-vs-tied gap (price=32 vs tied price=8).
-    const auto p_tied8 =
-        andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 8, 2, 1.0e-8});
+    const auto p_tied8 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, fp8);
     ASSERT_TRUE(p_tied8.has_value());
     max_decoupled_gap = std::max(max_decoupled_gap, std::abs(*p_field - *p_tied8));
   }
@@ -3548,16 +3564,60 @@ TEST(AlPresetLadder, SubMinimumQuadratureFloorsToEight) {
   double max_8_vs_24_gap = 0.0;
   for (const C& c : grid) {
     // n_quadrature 4 (< 8) and explicit 8 must resolve to the SAME scheme.
-    const auto p4 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 4, 6, 1.0e-8});
-    const auto p8 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 8, 6, 1.0e-8});
-    const auto p24 =
-        andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 24, 6, 1.0e-8});
+    const auto with_fp = [](std::uint16_t fp) {
+      return AlOpts{.n_collocation = 7, .n_quadrature = fp, .max_newton_iter = 6, .tol = 1.0e-8};
+    };
+    const auto p4 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, with_fp(4));
+    const auto p8 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, with_fp(8));
+    const auto p24 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, with_fp(24));
     ASSERT_TRUE(p4.has_value() && p8.has_value() && p24.has_value());
     EXPECT_EQ(*p4, *p8) << "n_quadrature=4 must resolve to the 8-node scheme, not the 24 default";
     max_8_vs_24_gap = std::max(max_8_vs_24_gap, std::abs(*p8 - *p24));
   }
   EXPECT_GT(max_8_vs_24_gap, 0.0)
       << "the 8-node and 24-node schemes must genuinely differ (floor has teeth)";
+}
+
+// S4-T19 (plan item 4.2): AlOpts is a designated-init-only aggregate. The
+// compile-time half of that contract is the field-count pin in american.hpp;
+// this is the runtime half. It asserts the two properties positional init could
+// never give: a named initializer lands on the field its name says regardless of
+// declaration order, and an OMITTED field takes its own default member
+// initializer rather than a neighbour's value. The preset assertions are the
+// determinism gate for the `n_quad_price` move — both shipped presets must
+// resolve to exactly the values they carried before the reorder.
+TEST(AlOptsContract, DesignatedInitBindsByName) {
+  const AlOpts explicit_ql{.n_collocation = 7,
+                           .n_quadrature = 8,
+                           .n_quad_price = 32,
+                           .max_newton_iter = 2,
+                           .tol = 1.0e-8};
+  EXPECT_EQ(explicit_ql.n_collocation, 7);
+  EXPECT_EQ(explicit_ql.n_quadrature, 8);
+  EXPECT_EQ(explicit_ql.n_quad_price, 32);
+  EXPECT_EQ(explicit_ql.max_newton_iter, 2);
+  EXPECT_DOUBLE_EQ(explicit_ql.tol, 1.0e-8);
+
+  const AlOpts partial{.n_quadrature = 48};
+  EXPECT_EQ(partial.n_collocation, 12);
+  EXPECT_EQ(partial.n_quadrature, 48);
+  EXPECT_EQ(partial.n_quad_price, 0);
+  EXPECT_EQ(partial.max_newton_iter, 8);
+  EXPECT_DOUBLE_EQ(partial.tol, 1.0e-10);
+
+  const AlOpts def = atx::vol::al_default_opts();
+  EXPECT_EQ(def.n_collocation, 12);
+  EXPECT_EQ(def.n_quadrature, 24);
+  EXPECT_EQ(def.n_quad_price, 0);
+  EXPECT_EQ(def.max_newton_iter, 8);
+  EXPECT_DOUBLE_EQ(def.tol, 1.0e-10);
+
+  const AlOpts fast = al_fast_opts();
+  EXPECT_EQ(fast.n_collocation, 7);
+  EXPECT_EQ(fast.n_quadrature, 16);
+  EXPECT_EQ(fast.n_quad_price, 0);
+  EXPECT_EQ(fast.max_newton_iter, 4);
+  EXPECT_DOUBLE_EQ(fast.tol, 1.0e-8);
 }
 
 // ══ G2: carry sensitivities ∂P/∂q and ∂P/∂Div (gaps-review finding 2) ══════

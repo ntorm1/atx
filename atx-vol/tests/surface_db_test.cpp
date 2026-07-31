@@ -87,8 +87,12 @@ SymbolFitConfig make_full_config() {
   p.max_post_fit_sigma = 3.0;
   p.max_spread_to_mid_pct = 0.4;
   c.al_override = true;
-  c.al = AlOpts{9, 20, 6, 1e-9};
-  c.al.n_quad_price = 32; // C2 (SE-P1-2): decoupled premium order must round-trip
+  // C2 (SE-P1-2): the decoupled premium order must round-trip.
+  c.al = AlOpts{.n_collocation = 9,
+                .n_quadrature = 20,
+                .n_quad_price = 32,
+                .max_newton_iter = 6,
+                .tol = 1e-9};
   c.band_k = 1.25;
   c.calendar_repair = CalendarRepair::Project;
   c.use_correction_cache = false;

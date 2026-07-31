@@ -403,7 +403,18 @@ void bind_pricing(py::module_ &m) {
 
   py::class_<AlOpts>(m, "AlOpts")
       .def(py::init<>())
-      .def(py::init<std::uint16_t, std::uint16_t, std::uint16_t, double>(),
+      // Spelled as a factory lambda, not `py::init<...>`: pybind's variadic init
+      // brace-constructs an aggregate POSITIONALLY, which is exactly the binding
+      // AlOpts no longer offers (american.hpp construction contract). The Python
+      // signature and keyword names are unchanged; only the C++ side now binds by
+      // field name, so a future AlOpts field cannot silently rebind these four.
+      .def(py::init([](std::uint16_t n_collocation, std::uint16_t n_quadrature,
+                       std::uint16_t max_newton_iter, double tol) {
+             return AlOpts{.n_collocation = n_collocation,
+                           .n_quadrature = n_quadrature,
+                           .max_newton_iter = max_newton_iter,
+                           .tol = tol};
+           }),
            py::arg("n_collocation"), py::arg("n_quadrature"), py::arg("max_newton_iter"),
            py::arg("tol"))
       .def_readwrite("n_collocation", &AlOpts::n_collocation)

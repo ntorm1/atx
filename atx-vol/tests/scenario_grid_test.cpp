@@ -614,7 +614,8 @@ TEST(ScenarioGrid, TaylorExactAgreeInsideRadius) {
 TEST(ScenarioGrid, SecondOrderConvergence) {
   // Higher-accuracy AL preset so the exact reprice residual is not solver-noise
   // limited at the smaller step.
-  const AlOpts acc{12, 48, 12, 1.0e-12};
+  const AlOpts acc{
+      .n_collocation = 12, .n_quadrature = 48, .max_newton_iter = 12, .tol = 1.0e-12};
   const PricedSurface base = make_essvi(1, 5, kS, kR, 0.02, acc);
   const SurfaceSet bset = set_of({&base});
   const double K = 100.0; // ATM-ish, away from the exercise boundary (§9.2 caveat)

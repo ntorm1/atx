@@ -2406,9 +2406,13 @@ std::uint64_t al_geometry_specialize_off_fallback_count() noexcept {
   return g_specialize_off_fallbacks.load(std::memory_order_relaxed);
 }
 
-AlOpts al_default_opts() noexcept { return AlOpts{12, 24, 8, 1.0e-10}; }
+AlOpts al_default_opts() noexcept {
+  return AlOpts{.n_collocation = 12, .n_quadrature = 24, .max_newton_iter = 8, .tol = 1.0e-10};
+}
 
-AlOpts al_fast_opts() noexcept { return AlOpts{7, 16, 4, 1.0e-8}; }
+AlOpts al_fast_opts() noexcept {
+  return AlOpts{.n_collocation = 7, .n_quadrature = 16, .max_newton_iter = 4, .tol = 1.0e-8};
+}
 
 Result<double> andersen_lake(double S, double K, double T, double sigma, double r, double q,
                              Side side, const std::optional<AlOpts> &opts) {

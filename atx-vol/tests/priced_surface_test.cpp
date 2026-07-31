@@ -905,8 +905,8 @@ TEST(PricedSurface, EvaluateBatchLanedGreeksPackCompositionInvariant) {
 }
 
 TEST(PricedSurface, PriceOnlyResolvedBatchPreservesMethodPresetAndLaneErrors) {
-  const AlOpts custom{/*n_collocation=*/9, /*n_quadrature=*/32,
-                      /*max_newton_iter=*/6, /*tol=*/3.0e-9};
+  const AlOpts custom{
+      .n_collocation = 9, .n_quadrature = 32, .max_newton_iter = 6, .tol = 3.0e-9};
   const std::array<AmericanMethod, 2> methods{AmericanMethod::AndersenLake, AmericanMethod::Baw};
   for (const AmericanMethod method : methods) {
     const PricedSurface s = make_essvi(2, 6, method, custom);

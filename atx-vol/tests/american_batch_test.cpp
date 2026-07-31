@@ -453,8 +453,10 @@ TEST(ResolvedAmericanPriceBatch, ExactMethodsOptionsMixedSidesAndLaneErrors) {
   const std::vector<Case> cases{
       {AmericanMethod::AndersenLake, std::optional<AlOpts>{al_fast_opts()}},
       {AmericanMethod::AndersenLake,
-       std::optional<AlOpts>{AlOpts{/*n_collocation=*/9, /*n_quadrature=*/32,
-                                    /*max_newton_iter=*/6, /*tol=*/3.0e-9}}},
+       std::optional<AlOpts>{AlOpts{.n_collocation = 9,
+                                    .n_quadrature = 32,
+                                    .max_newton_iter = 6,
+                                    .tol = 3.0e-9}}},
       {AmericanMethod::Baw, std::optional<AlOpts>{al_fast_opts()}},
   };
 
@@ -888,7 +890,10 @@ INSTANTIATE_TEST_SUITE_P(
     Presets, ResolvedAmericanPriceBatchEngagedOpts,
     ::testing::Values(ResolvedAlOptsCase{"explicit_default", al_default_opts()},
                       ResolvedAlOptsCase{"fast", al_fast_opts()},
-                      ResolvedAlOptsCase{"custom", AlOpts{9, 32, 6, 3.0e-9}}),
+                      ResolvedAlOptsCase{"custom", AlOpts{.n_collocation = 9,
+                                                          .n_quadrature = 32,
+                                                          .max_newton_iter = 6,
+                                                          .tol = 3.0e-9}}),
     [](const ::testing::TestParamInfo<ResolvedAlOptsCase>& info) { return info.param.name; });
 
 struct AlSchemeMappingCase {
@@ -1027,23 +1032,51 @@ TEST_P(AmericanBoundaryBatchSchemeMapping, NormalAndStressGridsMatchForceScalar)
 INSTANTIATE_TEST_SUITE_P(
     SchemeBoundaries, AmericanBoundaryBatchSchemeMapping,
     ::testing::Values(
-        AlSchemeMappingCase{"n6_q8_i1_tight", AlOpts{6, 8, 1, 1.0e-14}},
-        AlSchemeMappingCase{"n7_q16_i32_loose", AlOpts{7, 16, 32, 1.0e-4}},
-        AlSchemeMappingCase{"n12_q24_i1_loose", AlOpts{12, 24, 1, 1.0e-4}},
-        AlSchemeMappingCase{"n16_q32_i32_tight", AlOpts{16, 32, 32, 1.0e-14}},
-        AlSchemeMappingCase{"n6_q48_i32_mid", AlOpts{6, 48, 32, 1.0e-9}},
-        AlSchemeMappingCase{"n7_q64_i1_mid", AlOpts{7, 64, 1, 1.0e-9}},
-        AlSchemeMappingCase{"n12_q8_i32_tight", AlOpts{12, 8, 32, 1.0e-14}},
-        AlSchemeMappingCase{"n16_q16_i1_loose", AlOpts{16, 16, 1, 1.0e-4}},
-        AlSchemeMappingCase{"n6_q24_i1_mid", AlOpts{6, 24, 1, 1.0e-9}},
-        AlSchemeMappingCase{"n7_q32_i32_tight", AlOpts{7, 32, 32, 1.0e-14}},
-        AlSchemeMappingCase{"n12_q48_i1_loose", AlOpts{12, 48, 1, 1.0e-4}},
-        AlSchemeMappingCase{"n16_q64_i32_mid", AlOpts{16, 64, 32, 1.0e-9}},
+        AlSchemeMappingCase{
+            "n6_q8_i1_tight",
+            AlOpts{.n_collocation = 6, .n_quadrature = 8, .max_newton_iter = 1, .tol = 1.0e-14}},
+        AlSchemeMappingCase{
+            "n7_q16_i32_loose",
+            AlOpts{.n_collocation = 7, .n_quadrature = 16, .max_newton_iter = 32, .tol = 1.0e-4}},
+        AlSchemeMappingCase{
+            "n12_q24_i1_loose",
+            AlOpts{.n_collocation = 12, .n_quadrature = 24, .max_newton_iter = 1, .tol = 1.0e-4}},
+        AlSchemeMappingCase{
+            "n16_q32_i32_tight",
+            AlOpts{.n_collocation = 16, .n_quadrature = 32, .max_newton_iter = 32, .tol = 1.0e-14}},
+        AlSchemeMappingCase{
+            "n6_q48_i32_mid",
+            AlOpts{.n_collocation = 6, .n_quadrature = 48, .max_newton_iter = 32, .tol = 1.0e-9}},
+        AlSchemeMappingCase{
+            "n7_q64_i1_mid",
+            AlOpts{.n_collocation = 7, .n_quadrature = 64, .max_newton_iter = 1, .tol = 1.0e-9}},
+        AlSchemeMappingCase{
+            "n12_q8_i32_tight",
+            AlOpts{.n_collocation = 12, .n_quadrature = 8, .max_newton_iter = 32, .tol = 1.0e-14}},
+        AlSchemeMappingCase{
+            "n16_q16_i1_loose",
+            AlOpts{.n_collocation = 16, .n_quadrature = 16, .max_newton_iter = 1, .tol = 1.0e-4}},
+        AlSchemeMappingCase{
+            "n6_q24_i1_mid",
+            AlOpts{.n_collocation = 6, .n_quadrature = 24, .max_newton_iter = 1, .tol = 1.0e-9}},
+        AlSchemeMappingCase{
+            "n7_q32_i32_tight",
+            AlOpts{.n_collocation = 7, .n_quadrature = 32, .max_newton_iter = 32, .tol = 1.0e-14}},
+        AlSchemeMappingCase{
+            "n12_q48_i1_loose",
+            AlOpts{.n_collocation = 12, .n_quadrature = 48, .max_newton_iter = 1, .tol = 1.0e-4}},
+        AlSchemeMappingCase{
+            "n16_q64_i32_mid",
+            AlOpts{.n_collocation = 16, .n_quadrature = 64, .max_newton_iter = 32, .tol = 1.0e-9}},
         // K2 ql_fast marks rung: nb=7, fp=8, 2 sweeps, DECOUPLED premium p=32. The
         // AVX2 batch's intended ship tier — a low sweep budget makes it the most
         // seed-sensitive production scheme, so it pins the 4-wide BAW seed's economic
         // parity vs the specialized scalar (7,8) baseline (kernel-stage1.md).
-        AlSchemeMappingCase{"n7_q8_i2_p32_qlfast", AlOpts{7, 8, 2, 1.0e-8, 32}}),
+        AlSchemeMappingCase{"n7_q8_i2_p32_qlfast", AlOpts{.n_collocation = 7,
+                                                         .n_quadrature = 8,
+                                                         .n_quad_price = 32,
+                                                         .max_newton_iter = 2,
+                                                         .tol = 1.0e-8}}),
     [](const ::testing::TestParamInfo<AlSchemeMappingCase>& info) {
       return info.param.name;
     });
