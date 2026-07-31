@@ -103,6 +103,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/dispersion.cpp
     src/dispersion_strangle.cpp
     src/dispersion_backtest.cpp
+    src/dispersion_surface_db.cpp
     src/backtest_driver.cpp
     src/dispersion_workflow.cpp
     src/listed_dispersion.cpp
