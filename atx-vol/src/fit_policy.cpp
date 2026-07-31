@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 namespace atx::vol {
 
@@ -195,16 +196,16 @@ FitDecision select_fit_policy(const Underlying &under, std::string_view ticker,
   }
   out.features.vol_product = context.vol_product;
 
-  ProfileKind seed_kind{};
   if (context.profile_override.has_value()) {
     out.profile = {*context.profile_override, 1.0};
     out.source = FitDecisionSource::ProfileOverride;
-  } else if (ticker_seed_profile(ticker, seed_kind)) {
+  } else if (const std::optional<ProfileKind> seed_kind = ticker_seed_profile(ticker);
+             seed_kind.has_value()) {
     // Ask the seed table directly rather than inferring provenance from the
     // confidence a seeded verdict happens to carry. An unseeded ticker falls
     // through to board voting, which classifies the features we just enriched
     // with the caller's context.
-    out.profile = {seed_kind, kTickerSeedConfidence};
+    out.profile = {*seed_kind, kTickerSeedConfidence};
     out.source = FitDecisionSource::TickerPrior;
   } else {
     out.profile = classify_profile(out.features);

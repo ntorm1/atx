@@ -11,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <optional>
 
 namespace atx::vol {
 
@@ -569,8 +570,12 @@ ProfileVerdict classify_underlier(const Underlying &under) noexcept {
   return classify_profile(classifier_inputs_from_underlier(under));
 }
 
-bool ticker_seed_profile(std::string_view ticker, ProfileKind &out_kind) noexcept {
-  return ticker_seed_lookup(ticker, out_kind);
+std::optional<ProfileKind> ticker_seed_profile(std::string_view ticker) noexcept {
+  ProfileKind kind = ProfileKind::OrdinarySingleName;
+  if (!ticker_seed_lookup(ticker, kind)) {
+    return std::nullopt;
+  }
+  return kind;
 }
 
 ProfileVerdict classify_underlier_with_ticker(const Underlying &under,
