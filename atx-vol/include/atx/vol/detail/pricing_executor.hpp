@@ -76,6 +76,8 @@
 #include <memory>
 #include <type_traits>
 
+#include "atx/vol/types.hpp" // Status, ErrorCode
+
 namespace atx::vol {
 
 // Which cores the pool's workers run on. `Auto` and `AllCores` are the fully
@@ -217,8 +219,16 @@ private:
 [[nodiscard]] PricingExecutor &pricing_executor() noexcept;
 
 // Optional one-time topology configuration. Must be called BEFORE the first
-// `pricing_executor()` use; once the pool is built this is a no-op that returns
-// false. Returns whether the config was applied.
-bool configure_pricing_executor(const ExecutorConfig &cfg) noexcept;
+// `pricing_executor()` use: once the pool is built its topology is fixed for the
+// life of the process and this call applies nothing.
+//
+// 4.3 — this used to answer in a bare `bool` that its one shipped caller
+// discarded, so "your topology was ignored, the pool was already built" was
+// unobservable. It now reports through the library's one error channel; the
+// refusal is AlreadyExists (the pool already exists) and names the ordering
+// constraint it enforces. Not `noexcept`: an Error carries a message string.
+//
+// @return Ok() when `cfg` was recorded for the pool's construction.
+[[nodiscard]] Status configure_pricing_executor(const ExecutorConfig &cfg);
 
 } // namespace atx::vol

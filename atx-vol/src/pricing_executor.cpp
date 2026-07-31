@@ -576,13 +576,17 @@ PricingExecutor &pricing_executor() noexcept {
   return g;
 }
 
-bool configure_pricing_executor(const ExecutorConfig &cfg) noexcept {
+Status configure_pricing_executor(const ExecutorConfig &cfg) {
   std::lock_guard<std::mutex> lk(g_cfg_mtx);
   if (g_built) {
-    return false; // pool already built — too late
+    // Pool already built — too late; its topology is fixed for the process.
+    return atx::core::Err(
+        ErrorCode::AlreadyExists,
+        "configure_pricing_executor: the pricing pool is already built; the topology must be "
+        "configured before the first pricing_executor() use");
   }
   g_pending_cfg = cfg;
-  return true;
+  return atx::core::Ok();
 }
 
 } // namespace atx::vol

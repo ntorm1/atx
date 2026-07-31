@@ -920,4 +920,25 @@ TEST(PricingExecutor, HelpingDispatcherKeepsNestedBudgetClosedInsideAnotherBody)
          "the two-level bound is broken";
 }
 
+// ── 4.3 error model: the one-shot topology hook reports Status, not bool ────
+//
+// `configure_pricing_executor` returned a bare `bool` that its ONE shipped
+// caller (bench_main.cpp's P-core pinning) discarded, so "your topology was
+// silently ignored because the pool was already built" was both unobservable
+// and untested — on a benchmark whose citability depends on that pinning. The
+// refusal now travels in the library's one error channel and says why.
+TEST(ConfigurePricingExecutor, RefusesAfterThePoolIsBuiltAndSaysWhy) {
+  // Force the process singleton into existence. Whether an earlier test in this
+  // binary already built it does not matter — after this line it IS built, so
+  // the refusal below is deterministic and test-order independent.
+  static_cast<void>(pricing_executor().size());
+
+  const Status refused = configure_pricing_executor(ExecutorConfig{Topology::PerformanceCores});
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().code(), ErrorCode::AlreadyExists);
+  EXPECT_EQ(refused.error().message(),
+            "configure_pricing_executor: the pricing pool is already built; the topology must be "
+            "configured before the first pricing_executor() use");
+}
+
 } // namespace
