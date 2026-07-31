@@ -1693,7 +1693,7 @@ Five guards now stack, and they are complementary rather than redundant:
 | zero-cell `FAILED` verdict | "this **run of verify** read nothing" over a database that holds partitions — all symbols disabled, an empty `--symbols`, or a window that matched nothing. Needs no flag. |
 | nothing-stored **warning** | "this run of verify read cells and the database holds **none** of them" — `cells_ok 0` with every cell `absent`. Needs no flag; **stderr only, exit 0**, because a deliberate narrowing onto known-absent cells produces the same shape. See [When the walk finds nothing stored](#when-the-walk-finds-nothing-stored). |
 | `--min-cells N` | "this **database** is smaller than I expected" — including one that was never built. Counts every cell the walk *looked at*, absent ones included, so it is a statement about the **grid** and is fully satisfied by a grid of pure holes. |
-| `--max-absent N` | "this database is **missing more cells** than I expected" — the only guard that can see a stored surface that was destroyed, because nothing on disk records that it ever existed. A statement about the **holes** in that grid, and the only one that turns the two rows above into a non-zero exit. |
+| `--max-absent N` | "this database is **missing more cells** than I expected" — the only guard that can see a stored surface that was destroyed, because nothing on disk records that it ever existed. A statement about the **holes** in that grid, and the only one that turns the two rows above into a non-zero exit. **Its resolution depends on the scope you verify**: the orchestrator's generated default catches a tenth to a quarter of a destroyed partition at chunk scope, but can miss 1–3 whole destroyed partitions across a full year — see [Operator notes](#operator-notes). |
 
 **Keep `--min-cells` in every script**, and `--max-absent` beside it once you know
 your absent count. `--min-cells` is no longer the *only* thing between a broken
@@ -1938,7 +1938,11 @@ twice for an answer you already have.* When a minute-mismatch repull gets a
 date file (it must never be replaced by nothing), drops the empty response from
 the DBN cache — an empty response is not a cacheable *answer* — and records
 `{minute_utc, digest}` in `<hive>/_empty/<date>.json`. Later resumes see the
-latch and **skip the date without contacting the provider, for $0**.
+latch and **skip the date without contacting the provider, for $0**. The skip is
+applied at plan time — the same point `_absent` is applied — so a settled date is
+also out of the free preflight's estimate, out of the `--cap` arithmetic and out
+of the degrade/exit-`3` decision, rather than being priced for spend that will
+never occur.
 
 That matters because "the provider returned nothing" is not the same as
 "transient". The documented cause is a **snapshot minute that landed after an
@@ -1985,9 +1989,10 @@ re-bill a settled date.
   n_sessions` and `sigma = sqrt(mu x 0.96)`, i.e. an upper tail bound on a
   `Binomial(n_symbols x n_sessions, 0.04)` absence count, plus the cells the
   hive's own absent-latch sidecars (`<hive>/_absent/<date>.json`) say can never
-  hold a surface for exactly the sessions in scope. That gives 485 for
-  `sp100-2025` / 642 for `sp100-2026` against observed absent counts of 325 /
-  358. It was `ceil(0.04 x n_symbols x n_sessions)` — a **year-averaged rate
+  hold a surface for exactly the sessions in scope. Whole-year that gives **493**
+  for `sp100-2025` (485 tail + 8 latched) and **690** for `sp100-2026` (642 +
+  48), against observed absent counts of 325 / 358. It was
+  `ceil(0.04 x n_symbols x n_sessions)` — a **year-averaged rate
   applied to concentrated absences**, which granted the same 4.08 cells per
   session at every window length while the landed roots run 0–12 absent per
   session. A short resume-verify therefore returned `verdict ABSENT` / exit `4`
@@ -1996,6 +2001,50 @@ re-bill a settled date.
   term is what fixes it — the per-session allowance is ~10 cells at one session
   and converges toward 4.08 across a year — so **there is no minimum safe
   resume-verify window**; verify whatever range you resumed.
+- **That default is only meaningful on a large universe.** The tail term scales
+  as `sqrt(expected)`, so its share of the grid *grows* as the grid shrinks:
+  7.1 % of the cells at 102 x 4 and 10.8 % at 102 x 1, but 11.2 % at 20 x 4,
+  **20 %** at 5 x 4 and **66.7 %** at 3 x 1. `phase_verify` takes `n_symbols`
+  from whatever `--universe` you pass, so a pilot or a deliberately narrowed run
+  gets a ceiling that tolerates a fifth to two-thirds of its own grid going
+  missing before it says anything — a real destruction there has to take almost
+  everything before it trips.
+  Not reachable on the SP100 path (102 symbols); on a small universe pass an
+  absolute `--max-absent <observed>` and do not rely on the default.
+- **A whole-year `verify` can miss a fully destroyed partition. Verify at the
+  scope you resumed.** The tail bound buys its zero false alarms at short windows
+  by loosening the whole-year ceiling — 425 → **493** on `sp100-2025`, 572 →
+  **690** on `sp100-2026` — and destruction does not arrive one cell at a time. A
+  partition is rewritten as a whole file, so it arrives in units of up to 102
+  cells. Against the landed roots' own absent counts (325 / 358):
+
+  | Scope | Fully destroyed partitions that still exit `0` |
+  | --- | --- |
+  | `sp100-2025`, whole year | **1** (pre-fix: 0 — a single-partition loss used to fire) |
+  | `sp100-2026`, whole year | **3** (pre-fix: 2) |
+  | any 4-session chunk, either root | **0** — the ceiling fires at 9–26 destroyed cells, a tenth to a quarter of one partition |
+
+  The 400-cell destruction contract still holds at every scope on both roots, and
+  the chunk scope — the one `run_surface_db_backfill.py --phase verify` runs by
+  default, at `--chunk-sessions 4` — got **much stronger**, where the old flat
+  ceiling could not be trusted at that scope at all. That is the trade, and it is
+  a good one. But it runs the wrong way for exactly the check an operator is most
+  tempted to run on its own, so: **verify at chunk scope, and treat a clean
+  whole-year `verify` as necessary rather than sufficient.** A whole-year run is
+  the right aggregate health check; it is not a destruction check for a range you
+  did not just build. Re-verify that range in chunks instead.
+
+  The known closure is a **per-partition** absent ceiling inside the C++
+  `verify`: destruction is concentrated per partition by construction, so a
+  per-partition bound catches what a whole-DB bound cannot, at every window
+  length at once. That is a follow-up, not shipped here. Two things to know
+  before starting it — the C++ *already* emits the per-partition data (`absent
+  <KEY> <SYM>` lines on stdout), so an interim Python-side count is reachable
+  without touching C++; but that list is capped at
+  `kSurfaceDbVerifyMaxFailures = 32`
+  (`atx-vol/include/atx/vol/surface_db_admin.hpp:296`) and `build_verify_command`
+  never passes `--max-failures`, so on the landed roots 325 / 358 absences are
+  elided from it today. A stdout parse would need the flag raised first.
 - **Both thresholds are sized off the sessions in `--from`/`--to` that are
   actually present in the hive, and `phase_verify` passes the bounds of THAT
   subset down to `verify` as `--from`/`--to`** — not the range you typed. The

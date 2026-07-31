@@ -390,11 +390,45 @@ def verify_thresholds(n_symbols: int, n_sessions: int, *,
     test module's pinned distributions): ZERO false alarms at every window
     length on both roots -- against 66 and 7 windows respectively under the old
     shape -- while the review's destruction scenario (400 surfaces destroyed
-    across 4 dates) still turns the verdict ABSENT at every scope. The cost is
-    whole-year sensitivity: 169 destroyed cells are needed to fire a 2025
-    full-year verify where 101 used to be. That is well inside the 400-cell
-    contract, and it buys a detector that is usable at 1..12 sessions, where the
-    old one could not be trusted at all."""
+    across 4 dates) still turns the verdict ABSENT at every scope.
+
+    TWO STATED LIMITS. Neither is a defect and both fail closed (a false alarm,
+    never a mask), but both are calibration facts a future round must not
+    rediscover the hard way.
+
+      1. THE ONE-SESSION END HAS A MARGIN OF ONE CELL. The real absence process
+         is OVER-DISPERSED relative to the binomial this bound assumes: the 2025
+         root's per-session variance-to-mean ratio is 1.26, and its observed
+         maximum -- 12 absent on 2025-11-24 -- EXCEEDS the one-session tail bound
+         of 11. That session passes only because the latch credits 7 of those 12
+         (ceiling 18 vs 12 absent). Suppress the latch credit and it is the one
+         and only window that fails, on either root, at any width. So the tail
+         bound alone is already one cell short of the worst real session, and
+         what would erode the remaining margin is a session that is MORE
+         clustered or carries LESS latch credit: 13 absent of which <=1 is
+         latched re-opens FIX-IMPORTANT-1 at w=1. It fails toward a false alarm
+         and the operator still has an absolute ``--max-absent``, but "honest at
+         both ends" is a claim about the shape, not about headroom at w=1.
+      2. THE TAIL TERM IS A LARGE FRACTION OF A SMALL GRID. It scales as
+         sqrt(expected), so its share GROWS as the grid shrinks: 7.1% of the
+         cells at 102x4 and 10.8% at 102x1, but 11.2% at 20x4, 20.0% at 5x4 and
+         66.7% at 3x1. ``phase_verify`` takes ``n_symbols`` from whatever
+         ``--universe`` is passed, so a pilot or narrowed run gets a
+         near-vacuous ceiling. Not reachable on the SP100 path (102 symbols);
+         on a small universe pass an absolute ``--max-absent`` instead. The
+         constant is deliberately NOT clamped here -- clamping is a design
+         change and this bound is calibrated and verified as it stands.
+
+    The cost is whole-year sensitivity: 169 destroyed cells are needed to fire a
+    2025 full-year verify where 101 used to be (333 vs 215 on 2026). That is well
+    inside the 400-cell contract, and it buys a detector that is usable at 1..12
+    sessions, where the old one could not be trusted at all. Measured in the unit
+    destruction actually ARRIVES in -- whole partitions of up to 102 cells -- it
+    means a whole-year verify now passes 1 fully destroyed partition on 2025 and
+    3 on 2026, where a 4-session chunk verify still fires at 9..26 destroyed
+    cells. Verify at chunk scope; a clean whole-year verify is necessary, not
+    sufficient. ``docs/surface-db-build.md`` states this for the operator, and
+    the closure is a per-partition ceiling in the C++ verify (follow-up)."""
     expected = n_symbols * n_sessions
     min_cells = math.floor(min_cell_fraction * expected)
     if max_absent is None:
