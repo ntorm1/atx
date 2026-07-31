@@ -166,6 +166,53 @@ using atx::vol::year_fraction;
 
 } // namespace
 
+// ── The SessionInputs construction contract (S4-T19, plan item 4.2) ─────────
+
+// SessionInputs is a designated-init-only aggregate. The compile-time half of
+// that contract is the field-count pin in session.hpp; this is the runtime half.
+// It asserts the two properties positional init could never give: a named
+// initializer lands on the field its name says regardless of declaration order,
+// and an OMITTED field takes its own default member initializer rather than a
+// neighbour's value. The default assertions double as the determinism gate for
+// `curve_pinned`, the field this task moved out of its append-only parking spot
+// and up beside the `curve` it qualifies.
+TEST(SessionInputsContract, DesignatedInitBindsByName) {
+  const SessionInputs defaults{};
+  EXPECT_DOUBLE_EQ(defaults.S, 0.0);
+  EXPECT_DOUBLE_EQ(defaults.r, 0.0);
+  EXPECT_TRUE(defaults.expiry_rate_T.empty());
+  EXPECT_TRUE(defaults.expiry_rates.empty());
+  EXPECT_TRUE(defaults.cash_divs.empty());
+  EXPECT_EQ(defaults.now_ts_ns, 0);
+  EXPECT_EQ(defaults.curve.kind, VolCurveKind::Essvi);
+  EXPECT_FALSE(defaults.curve_pinned);
+  EXPECT_DOUBLE_EQ(defaults.band_k, 1.0);
+  EXPECT_TRUE(defaults.use_correction_cache);
+  EXPECT_TRUE(defaults.score_parity);
+  EXPECT_TRUE(defaults.enforce_calendar_floor);
+  EXPECT_FALSE(defaults.use_deam_cache_for_fit);
+  EXPECT_EQ(defaults.fit_workers, 0u);
+  EXPECT_FALSE(defaults.collect_stage_timings);
+  EXPECT_EQ(defaults.interp, InterpMode::PiecewiseTotalVariance);
+  EXPECT_EQ(defaults.events, nullptr);
+
+  // `curve_pinned` sits directly beneath `curve` now; naming both binds both and
+  // leaves every neighbour on its own default.
+  const SessionInputs pinned{
+      .S = 100.0,
+      .r = 0.03,
+      .curve = atx::vol::CurveConfig{VolCurveKind::ConvexDense},
+      .curve_pinned = true,
+  };
+  EXPECT_DOUBLE_EQ(pinned.S, 100.0);
+  EXPECT_DOUBLE_EQ(pinned.r, 0.03);
+  EXPECT_EQ(pinned.curve.kind, VolCurveKind::ConvexDense);
+  EXPECT_TRUE(pinned.curve_pinned);
+  EXPECT_DOUBLE_EQ(pinned.band_k, 1.0);
+  EXPECT_TRUE(pinned.use_correction_cache);
+  EXPECT_EQ(pinned.now_ts_ns, 0);
+}
+
 TEST(VolaSession, Build_KnownTruthPanel_SucceedsWithFourArbFreeSlices) {
   const SynthPanelSpec spec = make_spec();
   Universe u;

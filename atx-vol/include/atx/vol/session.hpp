@@ -55,6 +55,7 @@
 #include "atx/vol/curve.hpp"           // DividendEvent
 #include "atx/vol/data.hpp"            // QuoteFrame (from_frame input)
 #include "atx/vol/deamer.hpp"          // DeAmOptions
+#include "atx/vol/detail/aggregate_arity.hpp" // SessionInputs field-count drift pin
 #include "atx/vol/event_vol.hpp"       // EventSchedule (SessionInputs::events), implied_emove
 #include "atx/vol/parity.hpp"          // ParityReport
 #include "atx/vol/detail/prepared_policy.hpp" // PreparedObservationPolicy
@@ -76,13 +77,30 @@ class PricerFitter;
 // Market/pricing snapshot a session is built from. Maps 1:1 onto
 // `SurfaceParityInputs` when driving `run_surface_parity`; the same fields are
 // retained so the const queries can re-price off the fitted surface.
+//
+// CONSTRUCTION CONTRACT (v1, plan item 4.2) — DESIGNATED INITIALIZERS ONLY.
+// Build one with `make_session_inputs` / `apply_fit_preset` or set fields by
+// name; never `SessionInputs{a, b, c, ...}`. `curve_pinned` used to carry an
+// "appended for positional aggregate source compatibility" note, meaning it was
+// parked at the very end — two screens away from the `curve` field it is a
+// qualifier ON — solely so positional initializers kept compiling. It now sits
+// directly beneath `curve`, and the field-count `static_assert` below makes a
+// silent re-append a compile error.
+//
+// session.hpp is Tier-A (frozen v1 surface): this reorder is the LAST layout
+// change allowed here. After v1 the order is fixed and new knobs append at the
+// end WITHOUT any positional-compatibility promise.
 struct SessionInputs {
   double S{0.0}; // spot (> 0); the OpraPanel implied_spot when built from a frame
   double r{0.0}; // continuously-compounded rate (finite)
-  std::vector<double> expiry_rate_T;    // empty => legacy scalar r
-  std::vector<double> expiry_rates;     // aligned with expiry_rate_T
-  std::vector<DividendEvent> cash_divs; // discrete cash-dividend schedule
-  std::int64_t now_ts_ns{0};            // valuation timestamp (epoch ns)
+  // The three vectors carry an explicit `{}` so that EVERY member has a default
+  // member initializer: without one, naming any later field in a designated
+  // initializer trips -Wmissing-field-initializers, and this struct's contract is
+  // designated init. Value-identical to the implicit default construction.
+  std::vector<double> expiry_rate_T{};    // empty => legacy scalar r
+  std::vector<double> expiry_rates{};     // aligned with expiry_rate_T
+  std::vector<DividendEvent> cash_divs{}; // discrete cash-dividend schedule
+  std::int64_t now_ts_ns{0};              // valuation timestamp (epoch ns)
   DeAmOptions deam{};                   // borrow-implication + pricer method / AL opts
   CalibOpts calib{};                    // per-slice curve-fit policy
   // Curve family to fit. Essvi (default) is byte-identical to the historical
@@ -93,6 +111,13 @@ struct SessionInputs {
   // eSSVI/SVI knobs in curve.parametric (calib mirrors curve.parametric for the
   // default path).
   CurveConfig curve{VolCurveKind::Essvi};
+  // Qualifies `curve` above: true only when the caller selected `curve`
+  // explicitly and the fitter will not substitute another family. A pinned
+  // non-eSSVI LegacyCompatible/Cold surface may omit a correction cache when
+  // neither fit nor queries can read it; an auto-routed surface retains the cache
+  // because its fallback ladder can still publish eSSVI. Runtime policy only; not
+  // archived.
+  bool curve_pinned{false};
   double band_k{1.0}; // minimum-edge band multiplier (parity)
   // Build a per-side Chebyshev correction cache over the chain's (k, T, sigma)
   // box and route every American inversion / re-pricing through the fast cached
@@ -195,14 +220,16 @@ struct SessionInputs {
   // still used as a fallback for any slice that was never stamped
   // (`expiry_ns == 0`) -- see `solve_implied_emove`'s doc (session.cpp).
   TimeSpec time{};
-  // Appended for positional aggregate source compatibility. True only when the
-  // caller selected `curve` explicitly and the fitter will not substitute
-  // another family. A pinned non-eSSVI LegacyCompatible/Cold surface may omit a
-  // correction cache when neither fit nor queries can read it; an auto-routed
-  // surface retains the cache because its fallback ladder can still publish
-  // eSSVI. Runtime policy only; not archived.
-  bool curve_pinned{false};
 };
+
+// Drift pin (plan item 4.2). SessionInputs has exactly TWENTY-THREE fields.
+// Adding, removing or splitting one breaks this line, which is the point: it
+// forces whoever changes the struct to read the construction contract above
+// instead of appending a knob "for compatibility" with positional initializers
+// that are no longer part of the API.
+static_assert(detail::aggregate_arity_is_v<SessionInputs, 23>,
+              "SessionInputs field count changed: update this pin, and confirm every "
+              "construction site still initializes by field name.");
 
 // ── Named calibration presets ─────────────────────────────────────────────
 //
