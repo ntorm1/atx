@@ -59,6 +59,15 @@ pybind11_add_module(_core
     src/bindings/fit.cpp
 )
 target_include_directories(_core PRIVATE src/bindings)
+# S4-T18: src/bindings/fit.cpp exposes the deterministic SPY known-truth fixture
+# (`make_spy_synthetic_spec`) to Python. That fixture is a TEST fixture and moved
+# to atx-vol/tests/support/spy_fixture.hpp when the public surface was tiered, so
+# the binding needs tests/ as a quoted-include root. A shipped binding reaching
+# into a test fixture is a smell, not a design: either the synthetic-panel
+# builder is promoted to a real public header or the binding drops it. Flagged
+# for Sprint 5 (5.6); NOT decided here, because deciding it means changing a
+# public declaration, which S4-T18 is not authorized to do.
+target_include_directories(_core PRIVATE "${ATX_ROOT}/atx-vol/tests")
 target_link_libraries(_core PRIVATE atx::vol)
 
 install(TARGETS _core

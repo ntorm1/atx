@@ -20,7 +20,7 @@
 #include "atx/vol/market_env.hpp"     // MarketEnv
 #include "atx/vol/panel.hpp"          // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/s3.hpp"             // s3_iv
-#include "atx/vol/spy_fixture.hpp"    // make_spy_synthetic_spec
+#include "support/spy_fixture.hpp"    // make_spy_synthetic_spec
 #include "atx/vol/universe.hpp"       // Underlying, Chain
 #include "atx/vol/vol_surface.hpp"    // VolSurface, EssviParams, Parametrization
 

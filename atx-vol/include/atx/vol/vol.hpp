@@ -146,7 +146,6 @@
 #include "atx/vol/opra_panel.hpp"      // real Databento OPRA cbbo loader
 #include "atx/vol/panel.hpp"           // synthetic + CSV panels
 #include "atx/vol/priced_surface.hpp"  // PricedSurface (serialization-ready priced surface)
-#include "atx/vol/spy_fixture.hpp"     // deterministic SPY index known-truth fixture
 #include "atx/vol/surface_archive.hpp" // fitted priced-surface archive (v3)
 #include "atx/vol/universe.hpp"        // Universe, Underlying, Chain, Uid
 

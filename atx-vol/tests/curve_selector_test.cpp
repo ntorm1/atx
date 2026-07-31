@@ -14,7 +14,7 @@
 #include "atx/vol/dividend.hpp"       // hybrid_forward, HybridDivParams, DividendEvent
 #include "atx/vol/fit_policy.hpp"
 #include "atx/vol/panel.hpp"
-#include "atx/vol/spy_fixture.hpp"
+#include "support/spy_fixture.hpp"
 #include "atx/vol/vol_curve.hpp" // VolCurveKind, CurveConfig
 
 namespace {

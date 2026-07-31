@@ -20,7 +20,7 @@
 #include "atx/vol/arb.hpp"          // arb_check_calendar
 #include "atx/vol/s3.hpp"           // s3_iv (truth ATM vol)
 #include "atx/vol/session.hpp"
-#include "atx/vol/spy_fixture.hpp"  // make_spy_synthetic_spec, make_spy_session_inputs
+#include "support/spy_fixture.hpp"  // make_spy_synthetic_spec, make_spy_session_inputs
 #include "atx/vol/types.hpp"        // Side
 
 namespace {

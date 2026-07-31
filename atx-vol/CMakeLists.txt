@@ -237,6 +237,12 @@ if(ATX_BUILD_EXAMPLES)
     # dependency; known-truth accuracy oracle). See examples/spy_surface_bench.cpp.
     add_executable(spy_surface_bench examples/spy_surface_bench.cpp)
     target_link_libraries(spy_surface_bench PRIVATE atx::vol atx::core atx_warnings)
+    # S4-T18: the deterministic SPY known-truth fixture is a TEST fixture and now
+    # lives at tests/support/spy_fixture.hpp, not on the shipped public surface.
+    # Reach it the same way bench does — add tests/ as a quoted-include root,
+    # PRIVATE so it does not leak into any other example target.
+    target_include_directories(spy_surface_bench
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 
     add_executable(spy_diag examples/spy_diag.cpp)
     target_link_libraries(spy_diag PRIVATE atx::vol atx::core atx_warnings)

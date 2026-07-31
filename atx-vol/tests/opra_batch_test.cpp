@@ -21,7 +21,7 @@
 #include "atx/vol/panel.hpp"        // make_synthetic_american_panel
 #include "atx/vol/pricer_fitter.hpp"   // PricerFitter
 #include "atx/vol/opra_hive.hpp"       // OpraHiveSpec, load_opra_hive (shared date gate)
-#include "atx/vol/spy_fixture.hpp"     // make_spy_synthetic_spec
+#include "support/spy_fixture.hpp"     // make_spy_synthetic_spec
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive
 
 // R1-c (review C-07): `parse_civil` is the src-private civil-date kernel BOTH

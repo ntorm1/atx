@@ -32,7 +32,7 @@
 #include "atx/vol/market_env.hpp"  // MarketEnv
 #include "atx/vol/panel.hpp"       // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/s3.hpp"          // S3Params
-#include "atx/vol/spy_fixture.hpp" // make_spy_synthetic_spec
+#include "support/spy_fixture.hpp" // make_spy_synthetic_spec
 #include "atx/vol/vol_curve.hpp"   // CurveConfig, VolCurveKind
 
 #include "bench_util.hpp"

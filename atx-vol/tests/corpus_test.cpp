@@ -63,7 +63,7 @@
 #include "atx/vol/priced_surface_view.hpp"  // PricedSurfaceView (v2 zero-copy view)
 #include "atx/vol/pricer_fitter.hpp"        // PricerFitter, PricerConfig
 #include "atx/vol/session.hpp"              // VolaSession::to_priced_surface
-#include "atx/vol/spy_fixture.hpp"          // make_spy_synthetic_spec
+#include "support/spy_fixture.hpp"          // make_spy_synthetic_spec
 #include "atx/vol/strategy.hpp"             // DispersionStrategy
 #include "atx/vol/surface_archive.hpp"      // SurfaceArchive
 #include "atx/vol/types.hpp"                // Side
