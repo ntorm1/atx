@@ -337,9 +337,11 @@ american_iv_batch_py(const DoubleArray &price_array, double spot, const DoubleAr
   const std::span<double> out{ivs.mutable_data(), static_cast<std::size_t>(ivs.size())};
   {
     py::gil_scoped_release release;
-    atxvol::python::unwrap(american_implied_vol_batch(price, spot, k, t, r, q, side, out,
-                                                      statuses, method, tol, max_iter, opts,
-                                                      nullptr, warm_start_chain));
+    // 4.3: the batch reports its lane count through the Result; the binding
+    // already sized `ivs` from `K`, so only the rejection half is consumed.
+    static_cast<void>(atxvol::python::unwrap(american_implied_vol_batch(
+        price, spot, k, t, r, q, side, out, statuses, method, tol, max_iter, opts, nullptr,
+        warm_start_chain)));
   }
   return {std::move(ivs), atxvol::python::to_status_array(statuses)};
 }

@@ -26,6 +26,7 @@
 // Andersen-Lake scratch between calls; no pricing state is shared across threads.
 // This remains a cold-path routine (surface-fit cadence), not a per-tick kernel.
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -112,9 +113,17 @@ american_implied_vol(double price, double S, double K, double T, double r, doubl
 //                 Andersen-Lake map, whose 2-step polish is seed-dependent), far
 //                 below any economic budget. Default false.
 //
-// @return InvalidArgument on a span-length mismatch; otherwise Ok() with every
-//         lane written (a lane's own failure lives in status_out[i]).
-[[nodiscard]] Status american_implied_vol_batch(
+// Error model (4.3): the entry reports through `Result<std::size_t>` — the
+// library's one error channel — carrying the LANE COUNT it wrote on success.
+// The outputs stay caller-owned spans, so the value in the Result is the count,
+// never a freshly allocated container. That count is the length of the parallel
+// `status_out` channel a caller must walk, and it is only defined when the call
+// succeeded — exactly the property the old `Status` shape could not express.
+//
+// @return the number of lanes written (every lane is written; a lane's own
+//         failure lives in status_out[i], not in this return), or
+//         InvalidArgument on a span-length mismatch.
+[[nodiscard]] Result<std::size_t> american_implied_vol_batch(
     std::span<const double> price, double S, std::span<const double> K, double T, double r,
     double q, Side side, std::span<double> iv_out, std::span<Status> status_out,
     AmericanMethod method = AmericanMethod::AndersenLake, double tol = 1.0e-7,

@@ -618,12 +618,14 @@ Result<double> american_implied_vol_polish_traced(double price, double S, double
   return iv;
 }
 
-Status american_implied_vol_batch(std::span<const double> price, double S,
-                                  std::span<const double> K, double T, double r, double q,
-                                  Side side, std::span<double> iv_out, std::span<Status> status_out,
-                                  AmericanMethod method, double tol, std::uint16_t max_iter,
-                                  const std::optional<AlOpts> &opts,
-                                  const CorrectionCache *correction, bool warm_start_chain) {
+Result<std::size_t> american_implied_vol_batch(std::span<const double> price, double S,
+                                               std::span<const double> K, double T, double r,
+                                               double q, Side side, std::span<double> iv_out,
+                                               std::span<Status> status_out, AmericanMethod method,
+                                               double tol, std::uint16_t max_iter,
+                                               const std::optional<AlOpts> &opts,
+                                               const CorrectionCache *correction,
+                                               bool warm_start_chain) {
   const std::size_t n = price.size();
   if (K.size() != n || iv_out.size() != n || status_out.size() != n) {
     return Err(ErrorCode::InvalidArgument, "american_implied_vol_batch: span length mismatch");
@@ -664,7 +666,7 @@ Status american_implied_vol_batch(std::span<const double> price, double S,
       status_out[i] = Err(iv.error());
     }
   }
-  return Ok();
+  return Ok(n);
 }
 
 } // namespace atx::vol

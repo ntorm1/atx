@@ -522,6 +522,84 @@ TEST(AmericanIv, Batch_SpanLengthMismatch_ReturnsInvalidArgument) {
   EXPECT_EQ(s.error().code(), atx::vol::ErrorCode::InvalidArgument);
 }
 
+// ── 4.3 error model: the batch reports through Result<std::size_t> ────────
+//
+// The entry used to return `Status` and leave the caller to recompute "how many
+// lanes did that write" from an input span, while its only rejection was
+// observable as nothing more specific than "not Ok" — so that boundary refusal
+// could have been renamed, or folded into a neighbour's, without anything
+// failing. These two tests pin BOTH halves of the converted shape: the exact
+// Error the span-length refusal carries (reached from each of the three spans
+// that can disagree with `price`), and the lane count a success carries.
+
+TEST(AmericanIvErrorModel, BatchCarriesItsExactRejectionThroughResult) {
+  const std::array<double, 3> price{1.0, 2.0, 3.0};
+  const std::array<double, 3> K{90.0, 100.0, 110.0};
+  std::array<double, 3> iv_out{};
+  std::array<atx::vol::Status, 3> status{};
+
+  const atx::vol::Result<std::size_t> short_k =
+      american_implied_vol_batch(price, 100.0, std::span<const double>(K.data(), 2), 1.0, 0.05, 0.0,
+                                 Side::Call, iv_out, status);
+  ASSERT_FALSE(short_k.has_value());
+  EXPECT_EQ(short_k.error().code(), atx::vol::ErrorCode::InvalidArgument);
+  EXPECT_EQ(short_k.error().message(), "american_implied_vol_batch: span length mismatch");
+
+  const atx::vol::Result<std::size_t> short_iv =
+      american_implied_vol_batch(price, 100.0, K, 1.0, 0.05, 0.0, Side::Call,
+                                 std::span<double>(iv_out.data(), 2), status);
+  ASSERT_FALSE(short_iv.has_value());
+  EXPECT_EQ(short_iv.error().code(), atx::vol::ErrorCode::InvalidArgument);
+  EXPECT_EQ(short_iv.error().message(), "american_implied_vol_batch: span length mismatch");
+
+  const atx::vol::Result<std::size_t> short_status =
+      american_implied_vol_batch(price, 100.0, K, 1.0, 0.05, 0.0, Side::Call, iv_out,
+                                 std::span<atx::vol::Status>(status.data(), 2));
+  ASSERT_FALSE(short_status.has_value());
+  EXPECT_EQ(short_status.error().code(), atx::vol::ErrorCode::InvalidArgument);
+  EXPECT_EQ(short_status.error().message(), "american_implied_vol_batch: span length mismatch");
+}
+
+TEST(AmericanIvErrorModel, BatchCarriesTheLaneCountItWrote) {
+  const double S = 100.0, T = 1.0, r = 0.05, q = 0.0, sigma = 0.25;
+  const Side side = Side::Call;
+  const std::array<double, 3> K{80.0, 95.0, 105.0};
+  std::array<double, 3> price{};
+  for (std::size_t i = 0; i < K.size(); ++i) {
+    price[i] =
+        value_or_fail(american_price(S, K[i], T, sigma, r, q, side, AmericanMethod::AndersenLake));
+  }
+  std::array<double, 3> iv_out{};
+  std::array<atx::vol::Status, 3> status{};
+  const atx::vol::Result<std::size_t> wrote =
+      american_implied_vol_batch(price, S, K, T, r, q, side, iv_out, status);
+  ASSERT_TRUE(wrote.has_value()) << (wrote ? std::string{} : wrote.error().to_string());
+  EXPECT_EQ(*wrote, K.size());
+
+  // A lane that fails is still a lane written: the count is the length of the
+  // parallel per-lane channel the caller must walk, and that channel — not the
+  // return — owns the per-lane verdict.
+  const std::array<double, 2> k_fail{90.0, 90.0}; // intrinsic = 10
+  const double good =
+      value_or_fail(american_price(S, 90.0, T, 0.2, r, q, side, AmericanMethod::AndersenLake));
+  const std::array<double, 2> price_fail{5.0, good}; // lane 0 is sub-intrinsic
+  std::array<double, 2> iv_fail{};
+  std::array<atx::vol::Status, 2> status_fail{};
+  const atx::vol::Result<std::size_t> partial =
+      american_implied_vol_batch(price_fail, S, k_fail, T, r, q, side, iv_fail, status_fail);
+  ASSERT_TRUE(partial.has_value());
+  EXPECT_EQ(*partial, std::size_t{2});
+  EXPECT_FALSE(status_fail[0].has_value());
+  EXPECT_TRUE(status_fail[1].has_value());
+
+  // An empty batch is a well-formed zero-lane call, not a rejection.
+  const atx::vol::Result<std::size_t> empty = american_implied_vol_batch(
+      std::span<const double>{}, S, std::span<const double>{}, T, r, q, side, std::span<double>{},
+      std::span<atx::vol::Status>{});
+  ASSERT_TRUE(empty.has_value());
+  EXPECT_EQ(*empty, std::size_t{0});
+}
+
 // ── P6 (perf F9): warm-start chaining on the public IV batch ──────────────
 //
 // ECONOMIC-PARITY gate (PM ruling, reclassified from bit-identity). Warm chaining
