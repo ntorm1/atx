@@ -749,7 +749,8 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
   b_status.resize(n_unique);
 
   const std::span<const ContractGroup> groups = pp.groups();
-  const std::span<const PreparedPriceTile> tiles = pp.price_tiles();
+  const std::span<const PreparedPriceTile> price_tiles = pp.price_tiles();
+  const std::span<const PreparedGreekTile> greek_tiles = pp.greek_tiles();
   const std::span<const std::uint32_t> oci = pp.original_contract_index();
   const std::span<const double> kcol = pp.k();
   const std::span<const double> tcol = pp.t();
@@ -911,7 +912,20 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
     return;
   }
 
-  if (!want_greeks && simd::avx2_boundary_selected(resolved_price_isa)) {
+  if (want_greeks) {
+    // FullGreeks cost varies sharply by surface and option side. Dynamically
+    // assign immutable, book-determined (uid, side) tiles so worker speed and
+    // solve cost affect only ownership, never tile/pack membership. Each tile
+    // writes disjoint permuted scratch and original-index px slots; scatter and
+    // totals still reduce later in fixed position order.
+    pricing_executor().run_dynamic(greek_tiles.size(), n_threads, [&](std::size_t i, unsigned) {
+      const PreparedGreekTile &tile = greek_tiles[i];
+      solve_unseeded(tile.uid, tile.begin, tile.end);
+    });
+    return;
+  }
+
+  if (simd::avx2_boundary_selected(resolved_price_isa)) {
     // Any AVX2 Marks route (ForceAvx2 OR Auto→AVX2 now that WS-K ships it by
     // default) needs invariant pack membership. Each immutable tile (up to
     // kPreparedPriceTileLanes, a multiple of the four-lane pack) is one work unit;
@@ -919,16 +933,15 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
     // changes only tile ownership, never the packs or final tail. Gating on
     // avx2_boundary_selected (the SAME predicate the boundary dispatch uses) closes
     // the latent Auto→AVX2 thread-count non-determinism the run_ranges split left.
-    pricing_executor().run_blocks(tiles.size(), n_threads, [&](std::size_t i) {
-      const PreparedPriceTile &tile = tiles[i];
+    pricing_executor().run_blocks(price_tiles.size(), n_threads, [&](std::size_t i) {
+      const PreparedPriceTile &tile = price_tiles[i];
       solve_span(tile.uid, tile.begin, tile.end);
     });
     return;
   }
 
-  // Preserve the established flattened-unique schedule for Auto/ForceScalar and
-  // every full-Greek route. This keeps default scalar scheduling and performance
-  // unchanged while still sharing the exact same solve body.
+  // Preserve the established flattened-unique schedule for scalar Marks. FullGreeks
+  // uses the immutable dynamic tile schedule above; P&L owns its separate path.
   pricing_executor().run_ranges(n_unique, n_threads, [&](std::size_t lo, std::size_t hi) {
     const std::uint32_t lo32 = static_cast<std::uint32_t>(lo);
     const std::uint32_t hi32 = static_cast<std::uint32_t>(hi);

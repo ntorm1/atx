@@ -133,7 +133,7 @@ struct ContractGroup {
   GroupRoute route; // deprecated compatibility member; always GroupRoute{}
 };
 
-// Fixed execution tile for price/Greek evaluation. Every tile is homogeneous in
+// Fixed execution tile for resolved-price evaluation. Every tile is homogeneous in
 // `(uid, side, raw T bits)` and tile boundaries are prepared once from the book,
 // never from a requested worker count. A tile spans up to `kPreparedPriceTileLanes`
 // lanes of a raw-T run; the width is a multiple of the four-lane AVX2 kernel so the
@@ -146,6 +146,21 @@ struct PreparedPriceTile {
   std::uint32_t uid;
   Side side;
   std::uint64_t t_bits;
+  std::uint32_t begin;
+  std::uint32_t end;
+};
+
+// Fixed FullGreeks scheduling tile. Unlike PreparedPriceTile this is deliberately
+// NOT subdivided at raw-T boundaries: a maximal `(uid, side)` group is chunked at
+// this fixed width, so the immutable book alone determines work units while each
+// tile remains valid input to evaluate_batch's internal ascending-T runs. Dynamic
+// worker ownership can then balance heterogeneous American solves without changing
+// lane destinations, pack membership between thread counts, or reduction order.
+inline constexpr std::uint32_t kPreparedGreekTileLanes = 64;
+
+struct PreparedGreekTile {
+  std::uint32_t uid;
+  Side side;
   std::uint32_t begin;
   std::uint32_t end;
 };
@@ -184,6 +199,9 @@ class PreparedPortfolio {
   [[nodiscard]] std::span<const PreparedPriceTile> price_tiles() const noexcept {
     return price_tiles_;
   }
+  [[nodiscard]] std::span<const PreparedGreekTile> greek_tiles() const noexcept {
+    return greek_tiles_;
+  }
   [[nodiscard]] std::size_t n_unique() const noexcept { return n_; }
 
  private:
@@ -197,6 +215,7 @@ class PreparedPortfolio {
   std::vector<std::uint32_t> oci_;          // permuted slot -> original contract index
   std::vector<ContractGroup> groups_;       // partition of [0, n_unique)
   std::vector<PreparedPriceTile> price_tiles_; // fixed raw-T execution partition
+  std::vector<PreparedGreekTile> greek_tiles_; // fixed (uid, side) execution partition
 };
 
 }  // namespace atx::vol

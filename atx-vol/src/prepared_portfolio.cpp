@@ -108,6 +108,21 @@ Result<PreparedPortfolio> PreparedPortfolio::create(const Portfolio& pf, const P
     pp.groups_.push_back(ContractGroup{u, s, static_cast<std::uint32_t>(p),
                                        static_cast<std::uint32_t>(q), GroupRoute{}});
 
+    // FullGreeks work is deliberately tiled only by the enclosing (uid, side)
+    // group, not by raw T. The fixed width gives run_dynamic enough immutable
+    // work units to balance heterogeneous solves while every worker still owns
+    // disjoint permuted slots. evaluate_batch retains its internal ascending-T
+    // run handling inside each tile.
+    std::size_t greek_tile_begin = p;
+    while (greek_tile_begin < q) {
+      const std::size_t greek_tile_end =
+          std::min(greek_tile_begin + static_cast<std::size_t>(kPreparedGreekTileLanes), q);
+      pp.greek_tiles_.push_back(PreparedGreekTile{u, s,
+                                                  static_cast<std::uint32_t>(greek_tile_begin),
+                                                  static_cast<std::uint32_t>(greek_tile_end)});
+      greek_tile_begin = greek_tile_end;
+    }
+
     // Subdivide each raw-bit-identical expiry run into fixed, AVX-width-aligned
     // tiles. The immutable book alone determines these boundaries, so changing
     // worker count cannot move a lane between a complete pack and scalar tail.

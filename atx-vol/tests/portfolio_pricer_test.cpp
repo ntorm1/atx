@@ -938,17 +938,13 @@ TEST(PortfolioPricer, Price_ThreadCounts_BitIdentical) {
   auto b = pricer.price(surfaces, PriceOptions{8});
   auto c = pricer.price(surfaces, PriceOptions{0}); // hardware concurrency
   ASSERT_TRUE(a.has_value() && b.has_value() && c.has_value());
-  ASSERT_EQ(a->size(), b->size());
-  for (std::size_t i = 0; i < a->size(); ++i) {
-    EXPECT_TRUE(bits_equal(a->pv[i], b->pv[i])) << i;
-    EXPECT_TRUE(bits_equal(a->delta[i], b->delta[i])) << i;
-    EXPECT_TRUE(bits_equal(a->gamma[i], b->gamma[i])) << i;
-    EXPECT_TRUE(bits_equal(a->vega[i], b->vega[i])) << i;
-    EXPECT_TRUE(bits_equal(a->pv[i], c->pv[i])) << i;
-  }
-  EXPECT_TRUE(bits_equal(a->total.pv, b->total.pv));
-  EXPECT_TRUE(bits_equal(a->total.delta, b->total.delta));
-  EXPECT_TRUE(bits_equal(a->total.vega, b->total.vega));
+  // Mixed calls/puts across twelve (uid, side) Greek tiles. Pin every frame
+  // column and fixed-order total, not only the headline risk subset: dynamic
+  // tile ownership may change execution order but never a lane's destination.
+  // PreparedPortfolio.GroupedPriceEqualsIndependentOracleAndPinnedFingerprint
+  // separately carries the exact pre-change whole-frame golden.
+  expect_frame_bit_identical(*b, *a);
+  expect_frame_bit_identical(*c, *a);
 }
 
 // ── PnL explain: per-axis isolation, coefficient wiring, reconstruction ──────
