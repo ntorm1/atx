@@ -128,8 +128,12 @@ constexpr std::int64_t kBaseTs = 1'700'000'000'000'000'000LL;
 // calendar days from kBaseTs): date "2026-03-<d+1>", snapshot ts
 // kBaseTs + d*kDayNs, all 7 names + SPY (uids 1..8), gentle per-date spot drift
 // so PnL and the delta-hedge are non-degenerate. Returns the db root path.
+// `index_absent_days` (default none) OMITS the SPY board from those days — an
+// arb-violating snapshot minute the fitter rejects, which is what the real 2026
+// corpus does on 18 of 140 sessions. The names are always written.
 [[nodiscard]] fs::path build_fixture_db_days(std::string_view tag,
-                                             const std::vector<int> &day_offsets) {
+                                             const std::vector<int> &day_offsets,
+                                             const std::vector<int> &index_absent_days = {}) {
   const fs::path root = test_root(tag);
   auto db = SurfaceDb::create(root.string());
   EXPECT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
@@ -150,7 +154,10 @@ constexpr std::int64_t kBaseTs = 1'700'000'000'000'000'000LL;
     for (std::size_t i = 0; i < kNames.size(); ++i) {
       items.push_back(SurfaceArchiveItem{kNames[i], &surfaces[i]});
     }
-    items.push_back(SurfaceArchiveItem{kIndexSym, &surfaces.back()});
+    if (std::find(index_absent_days.begin(), index_absent_days.end(), d) ==
+        index_absent_days.end()) {
+      items.push_back(SurfaceArchiveItem{kIndexSym, &surfaces.back()});
+    }
     EXPECT_TRUE(db->write_partition(date, items).has_value());
   }
   return root;
@@ -661,6 +668,84 @@ TEST(SpyDispersionPnl, SnappedExpiriesSettleOnGappedCalendar) {
   auto c = run(4);
   ASSERT_TRUE(c.has_value()) << c.error().to_string();
   expect_result_bit_identical(*r, *c);
+
+  std::error_code ec;
+  fs::remove_all(db_root, ec);
+}
+
+// ── 10. A missing INDEX board is a no-entry day, not a dead run ──────────────
+// The real 2026 corpus has SPY fit-rejected on 18 of 140 sessions (arb-violating
+// quotes at the snapshot minute — unrecoverable by refit). The dispersion trade
+// cannot be expressed without its index leg, so those days must be DROPPED as
+// entry days rather than abort a YTD run. `skip_entry_on_missing_index` is the
+// opt-in; it is keyed strictly on the index symbol being absent from the
+// snapshot, so every other resolution failure still propagates.
+//
+// Two starting points, because the pre-existing behaviour differs by missing-name
+// policy and both must be pinned:
+//   (a) `MissingNamePolicy::Error` — an absent index is FATAL today. This is what
+//       the flag converts into a no-entry day.
+//   (b) `MissingNamePolicy::DropRenormalize` (the dispersion default) — the index
+//       leg is the constraint's un-droppable scaled group, so its NotFound is
+//       already re-coded to Unavailable and `DeclarativeStrategy` already reads
+//       that as a no-trade step. The day is ALREADY skipped there; the gate pins
+//       it so the flag cannot be mistaken for the only thing holding it up, and
+//       pins that turning the flag on does not change the resulting book.
+TEST(SpyDispersionPnl, MissingIndexBoardSkipsEntryWhenOptedIn) {
+  const std::vector<int> days = {0, 1, 2};
+  const fs::path db_root = build_fixture_db_days("index_gap", days, /*index_absent_days=*/{1});
+  auto db = SurfaceDb::open(db_root.string());
+  ASSERT_TRUE(db.has_value()) << db.error().to_string();
+  auto clock = Clock::from_surface_db(*db);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  ASSERT_EQ(clock->refs().size(), days.size());
+
+  DispersionStrangleConfig base_cfg = d4_cfg(/*hold_to_expiry=*/true, /*hedge=*/false);
+  base_cfg.tenor_days = 30.0; // nothing expires inside a 3-session window
+
+  const auto run = [&](bool skip, MissingNamePolicy policy) {
+    DispersionStrangleConfig cfg = base_cfg;
+    cfg.skip_entry_on_missing_index = skip;
+    cfg.missing.policy = policy;
+    auto spec = make_dispersion_strangle_spec(cfg);
+    EXPECT_TRUE(spec.has_value()) << (spec.has_value() ? std::string{} : spec.error().to_string());
+    EXPECT_EQ(spec->skip_entry_on_missing_index, skip);
+    DeclarativeStrategy strat(*spec);
+    RunConfig rc;
+    rc.price.n_threads = 1u;
+    // The session-1 cohort's SPY legs are HELD across the gap, so the run needs
+    // the held-lot tolerance regardless; this gate is about the ENTRY.
+    rc.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+    return run_backtest(*clock, strat, rc);
+  };
+
+  // Session 1 enters one cohort of 8 symbols x {call, put}; the gap session must
+  // enter NOTHING (not a basket-only cohort); session 3 enters normally again.
+  const auto expect_gap_session_skipped = [](const BacktestResult &r) {
+    ASSERT_EQ(r.size(), 3u);
+    EXPECT_DOUBLE_EQ(r.n_open_lots[0], 16.0);
+    EXPECT_DOUBLE_EQ(r.n_open_lots[1], 16.0);
+    EXPECT_DOUBLE_EQ(r.n_open_lots[2], 32.0);
+  };
+
+  // (a) Strict names policy: fatal without the flag, a skipped day with it.
+  auto strict_off = run(false, MissingNamePolicy::Error);
+  ASSERT_FALSE(strict_off.has_value()) << "an absent index must not silently change the trade";
+  EXPECT_EQ(strict_off.error().code(), ErrorCode::NotFound);
+  EXPECT_NE(strict_off.error().message().find(kIndexSym), std::string::npos)
+      << "message was: " << strict_off.error().message();
+
+  auto strict_on = run(true, MissingNamePolicy::Error);
+  ASSERT_TRUE(strict_on.has_value()) << strict_on.error().to_string();
+  expect_gap_session_skipped(*strict_on);
+
+  // (b) DropRenormalize already skips; the flag leaves the book identical.
+  auto drop_off = run(false, MissingNamePolicy::DropRenormalize);
+  ASSERT_TRUE(drop_off.has_value()) << drop_off.error().to_string();
+  expect_gap_session_skipped(*drop_off);
+  auto drop_on = run(true, MissingNamePolicy::DropRenormalize);
+  ASSERT_TRUE(drop_on.has_value()) << drop_on.error().to_string();
+  expect_result_bit_identical(*drop_off, *drop_on);
 
   std::error_code ec;
   fs::remove_all(db_root, ec);

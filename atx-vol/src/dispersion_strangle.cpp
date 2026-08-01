@@ -165,6 +165,9 @@ Result<StrategySpec> make_dispersion_strangle_spec(const DispersionStrangleConfi
 
   spec.missing = cfg.missing;
   spec.hedge = cfg.hedge;
+  // The index leg IS the constraint's scaled group ("index" == group_b above), so
+  // the spec-level flag lands on exactly the leg this config names.
+  spec.skip_entry_on_missing_index = cfg.skip_entry_on_missing_index;
 
   return Ok(std::move(spec));
 }

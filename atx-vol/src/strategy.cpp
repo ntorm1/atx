@@ -780,6 +780,25 @@ expand_and_size_leg(const MarketSnapshot &snap, const LegSpec &ls, const Resolut
     Result<std::vector<SizedLeg>> &leg_sized = per_leg[leg_ix];
     if (!leg_sized) {
       const ErrorCode code = leg_sized.error().code();
+      // SP100 task 2: an opted-in ENTRY SKIP when the scaled hedge group's symbol
+      // (the dispersion index) is simply not in this snapshot. Checked BEFORE the
+      // policy branch below because it is independent of `missing.policy`: it is
+      // about the index leg, not about dropping basket names. Keyed strictly on
+      // NotFound — "no such symbol here" — so a degenerate fit (Unavailable) or a
+      // configuration error on the same leg still propagates verbatim.
+      //
+      // The skip is expressed as an EMPTY sized book, the channel
+      // `DeclarativeStrategy::prepare_cohort` already reads as "open nothing this
+      // step", with the reason recorded in `dropped` so it is never silent.
+      if (spec.skip_entry_on_missing_index && has_constraint && ls.group == gb &&
+          code == ErrorCode::NotFound) {
+        if (dropped != nullptr) {
+          dropped->push_back(ResolveDrop{ls.symbol, "index leg absent from this snapshot; entry "
+                                                    "skipped: " +
+                                                        leg_sized.error().message()});
+        }
+        return Ok(std::vector<SizedLeg>{});
+      }
       const bool droppable_market_failure =
           code == ErrorCode::NotFound || code == ErrorCode::Unavailable;
       if (!drop_policy || !droppable_market_failure) {

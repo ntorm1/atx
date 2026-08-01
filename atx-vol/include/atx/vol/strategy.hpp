@@ -183,6 +183,22 @@ struct StrategySpec {
   // builders are corpus-agnostic, so the CALLER fills this from its `Clock`
   // refs after assembling the spec.
   std::vector<std::int64_t> session_ts;
+  // Treat "the scaled hedge group's symbol is not in this snapshot" as a NO-ENTRY
+  // day instead of a run-ending error. Applies to the leg whose `group` equals
+  // `constraint.group_b` — the index leg of a dispersion spec, the one leg the
+  // structure cannot be built without — and ONLY to `NotFound`, i.e. that symbol
+  // is absent from the snapshot. Every other failure on that leg (a degenerate
+  // fit, a configuration error) still propagates, and basket-name handling under
+  // `missing.policy` is untouched.
+  //
+  // Motivation: a real corpus loses its index board on a handful of sessions (an
+  // arb-violating snapshot minute the fitter must reject), and a year-to-date run
+  // has to drop those entry days rather than abort. `resolve_spec_with_policy`
+  // then returns an EMPTY sized book with the skip recorded in `dropped`, which
+  // `DeclarativeStrategy` already reads as "open nothing this step"; existing
+  // cohorts are untouched. Default false preserves the pre-existing hard error,
+  // and the flag is independent of `missing.policy`.
+  bool skip_entry_on_missing_index{false};
 };
 
 // ── Resolution primitives ───────────────────────────────────────────────────
@@ -332,6 +348,12 @@ struct ResolveDrop {
 //    vegas and the hedge renormalizes automatically.
 // `dropped`, if non-null, is cleared then populated on every call (even one that
 // ultimately errors out, e.g. via the hedge-leg or min_names guard above).
+//
+// Under EITHER policy, `spec.skip_entry_on_missing_index` (default false) turns a
+// NotFound on the `constraint.group_b` leg into an EMPTY result — no legs, no
+// error — with the skip recorded in `*dropped`. Callers that treat a non-error
+// result as "there is a book" must check for empty; `DeclarativeStrategy` already
+// does. Nothing else about either policy changes.
 [[nodiscard]] Result<std::vector<SizedLeg>>
 resolve_spec_with_policy(const MarketSnapshot &snap, const StrategySpec &spec,
                          std::vector<ResolveDrop> *dropped = nullptr);

@@ -48,6 +48,18 @@ struct DispersionStrangleConfig {
   // EMPTY: the caller fills it from its `Clock` refs after building the spec.
   // Default false is bit-identical to the pre-existing raw-offset expiry.
   bool snap_expiry_to_sessions{false};
+  // Enter NO cohort on a step whose snapshot has no board for `index_symbol`,
+  // instead of failing the run. Copied onto `StrategySpec::skip_entry_on_missing_
+  // index`, which keys strictly on NotFound for the index leg — every other
+  // resolution failure still propagates, and `missing` (the basket names'
+  // DropRenormalize policy) is untouched.
+  //
+  // The real 2026 corpus has SPY fit-rejected on 18 of 140 sessions (arb-violating
+  // quotes at the snapshot minute, unrecoverable by refit). The dispersion trade
+  // has no meaning without its index leg, so a year-to-date run must DROP those
+  // entry days rather than abort; existing cohorts are unaffected and keep aging.
+  // Default false preserves today's hard error.
+  bool skip_entry_on_missing_index{false};
 };
 
 // Validated assembly into the declarative DSL:

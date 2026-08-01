@@ -148,7 +148,10 @@ void bind_strategy(py::module_ &m) {
       .def_readwrite("resolution", &StrategySpec::resolution)
       // list[int]: the run clock's snapshot timestamps, ascending. Only legs
       // with tenor.snap_to_sessions read it; the caller fills it from its Clock.
-      .def_readwrite("session_ts", &StrategySpec::session_ts);
+      .def_readwrite("session_ts", &StrategySpec::session_ts)
+      // Skip the whole entry (open nothing) on a step whose snapshot has no board
+      // for the constraint's scaled-group (index) leg, instead of erroring.
+      .def_readwrite("skip_entry_on_missing_index", &StrategySpec::skip_entry_on_missing_index);
 
   // ── Strategies ──
   py::class_<IStrategy>(m, "IStrategy");
@@ -174,7 +177,9 @@ void bind_strategy(py::module_ &m) {
       .def_readwrite("hedge", &DispersionStrangleConfig::hedge)
       .def_readwrite("hold_to_expiry", &DispersionStrangleConfig::hold_to_expiry)
       .def_readwrite("snap_expiry_to_sessions",
-                     &DispersionStrangleConfig::snap_expiry_to_sessions);
+                     &DispersionStrangleConfig::snap_expiry_to_sessions)
+      .def_readwrite("skip_entry_on_missing_index",
+                     &DispersionStrangleConfig::skip_entry_on_missing_index);
 
   m.def(
       "make_dispersion_strangle_spec",

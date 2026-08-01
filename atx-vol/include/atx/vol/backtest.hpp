@@ -488,18 +488,51 @@ struct FinancingConfig {
 
 // ── Run config + result ─────────────────────────────────────────────────────
 
-// What to do when a HELD (non-expiring) lot cannot be valued for step P&L or book
-// Greeks. This policy does not apply to a strategy-driven roll close: omitting a
-// close mark would destroy cash/economic value, so the executor always fails closed.
-// The policy also governs HEDGE SHARES held across a step whose base or shifted
-// surface is absent (WS-F F1(b), BT-P1-3): those shares used to be skipped in
-// silence, so their move vanished from NAV with no count and no flag.
+// What to do when a step cannot value a position because its surface is absent.
+// This policy does not apply to a strategy-driven roll close: omitting a close mark
+// would destroy cash/economic value, so the executor always fails closed.
+//
+// Four distinct lanes are governed, all reported in the same
+// `BacktestResult::n_unpriced_lots` column (one count per excluded lane per step):
+//
+//   1. HELD (non-expiring) lots, for step P&L and book Greeks.
+//   2. HEDGE SHARES held across a step whose base or shifted surface is absent
+//      (WS-F F1(b), BT-P1-3): those shares used to be skipped in silence, so their
+//      move vanished from NAV with no count and no flag.
+//   3. The daily delta hedge's SHARE FILL on a uid with no surface on this base
+//      (WS-F F1(a), BT-P1-3). Before F1 the fill priced at spot 0.0, which flattened
+//      a residual position for free; F1 made it a hard error under both policies.
+//   4. EXPIRY SETTLEMENT at a lot's exact expiry observation whose surface is absent.
+//
+// What this policy does NOT relax, under either setting: a lot whose expiry passed
+// BETWEEN sessions without ever hitting an exact step still errors ("no exact expiry
+// observation"). That is a calendar bug rather than missing market data — see
+// `TenorSpec::snap_to_sessions` — and it stays fail-closed.
 enum class UnpricedLotPolicy : std::uint8_t {
   // Preserve the historical held-valuation arithmetic (skip the unavailable P&L or
   // Greek lane) and report the exclusion in `BacktestResult::n_unpriced_lots`.
+  //
+  // Lane 3: the uid's hedge fill is SKIPPED for that step. Its share position is
+  // left exactly as it was — deliberately NOT flattened, which is the pre-F1 bug —
+  // so it rides the gap unhedged and shows up in lane 2 until the board returns.
+  //
+  // Lane 4: the lot is DEFERRED. It keeps its economic exposure and stays counted in
+  // `n_open_lots`, and on the first later step whose surface is back it settles at
+  // intrinsic against THAT step's spot (counted again on that step). The P&L explain
+  // uses the base mark frozen at the deferral step; when even that board was absent
+  // the settlement contributes cash only, because the intervening move is the
+  // excluded, never-recovered P&L this policy already documents. A board that never
+  // returns leaves the lot open to the end of the run, counted every step.
+  // Deferred settlements cannot cross a `run_backtest_incremental` checkpoint (there
+  // is no slot for them in `BacktestCheckpoint`); capturing one there is an error.
+  // While a lot is deferred it is in neither the cash ledger nor the repriced book,
+  // so `reconcile_nav` (opt-in) sees it as drift — the same ExcludeAndReport drift
+  // `BacktestResult::nav_liquidation` is there to expose, not a new class of leak.
   ExcludeAndReport = 0,
   // Abort the run: any step with an unpriced held lot returns Err(NotFound). The mode
   // a production QIS run uses so a missing board can never silently truncate PnL.
+  // FULLY fail-closed — every one of the four lanes above aborts, exactly as it did
+  // before ExcludeAndReport learned to tolerate lanes 3 and 4.
   Error = 1,
 };
 

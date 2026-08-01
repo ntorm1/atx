@@ -323,3 +323,19 @@ def test_snap_expiry_propagates_onto_every_leg():
     assert all(leg.tenor.snap_to_sessions for leg in on.legs)
     # session_ts is the CALLER's job: the builder never invents a calendar.
     assert list(on.session_ts) == []
+
+
+def test_skip_entry_on_missing_index_round_trips_and_propagates():
+    """The entry-skip opt-in is read/write, defaults off, and reaches the spec."""
+    spec = av.StrategySpec()
+    assert not spec.skip_entry_on_missing_index
+    spec.skip_entry_on_missing_index = True
+    assert spec.skip_entry_on_missing_index
+
+    cfg = d4_config()
+    assert not cfg.skip_entry_on_missing_index
+    assert not av.make_dispersion_strangle_spec(cfg).skip_entry_on_missing_index
+
+    cfg.skip_entry_on_missing_index = True
+    assert cfg.skip_entry_on_missing_index
+    assert av.make_dispersion_strangle_spec(cfg).skip_entry_on_missing_index

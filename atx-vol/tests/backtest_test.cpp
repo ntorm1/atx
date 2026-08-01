@@ -2777,3 +2777,258 @@ TEST(Backtest, PrefetchDepthIsBitIdenticalToSingleStepLookAhead) {
   EXPECT_EQ(MarketSnapshot::open_count(), kDates);
   expect_result_bit_identical(fixed_reference, *zero_res);
 }
+
+// ── WS-F F1 tolerance extension (SP100 sprint task 2) ────────────────────────
+//
+// `UnpricedLotPolicy::ExcludeAndReport` used to cover only HELD valuation (step
+// P&L, book Greeks) and hedge-share MTM. Two fail-closed paths still aborted the
+// whole run on a single absent board — the daily delta hedge's share fill and
+// expiry settlement — which makes a real corpus (SPY fit-rejected on 18 of 140
+// 2026 sessions) unrunnable end-to-end. These gates pin the extended tolerance
+// and, just as importantly, that `Error` stays fully fail-closed.
+namespace {
+
+constexpr std::uint32_t kUidB = 8; // second name; kUid (7) is the always-present one
+
+// A two-name daily corpus: "AAA" (kUid) on every date, "BBB" (kUidB) on every
+// date whose 0-based index is NOT in `absent_b` — the fit-rejected-board shape.
+// Spots drift so hedging and settlement are non-degenerate.
+[[nodiscard]] CorpusManifest make_two_name_corpus(const fs::path &dir, int n_dates,
+                                                  const std::vector<int> &absent_b) {
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < n_dates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    const double sa = 100.0 * (1.0 + 0.004 * static_cast<double>(d));
+    const double sb = 200.0 * (1.0 + 0.006 * static_cast<double>(d));
+    const PricedSurface a = make_surface(kUid, sa, sa, now, 0.001 * static_cast<double>(d));
+    const PricedSurface b = make_surface(kUidB, sb, sb, now, 0.002 * static_cast<double>(d));
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
+    const std::string date = buf;
+    const std::string path = (dir / (date + ".atxvsa")).string();
+    std::vector<SurfaceArchiveItem> items;
+    items.push_back(SurfaceArchiveItem{"AAA", &a});
+    if (std::find(absent_b.begin(), absent_b.end(), d) == absent_b.end()) {
+      items.push_back(SurfaceArchiveItem{"BBB", &b});
+    }
+    const Status st = write_surface_archive_v2_file(path, items);
+    EXPECT_TRUE(st.has_value()) << (st.has_value() ? std::string{} : st.error().to_string());
+    dp.emplace_back(date, path);
+  }
+  return make_manifest(dp, "AAA");
+}
+
+// Opens one long call on each name at step 0 and never trades again; the two
+// lots may carry different expiries so settlement can be exercised on one name
+// while the other keeps the book (and therefore the hedge) alive.
+class TwoNameOpenAndHoldStrategy final : public IStrategy {
+public:
+  TwoNameOpenAndHoldStrategy(std::int64_t expiry_a, std::int64_t expiry_b, HedgeSpec hedge) noexcept
+      : expiry_a_{expiry_a}, expiry_b_{expiry_b}, hedge_{hedge} {}
+
+  Status on_step(const MarketSnapshot & /*base*/, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id) override {
+    if (step_index == 0u) {
+      book.lots.push_back(Lot{next_lot_id++, OptionContract{kUid, 100.0, 0.0, Side::Call}, +5.0,
+                              100.0, expiry_a_, 0u, 1.0});
+      book.lots.push_back(Lot{next_lot_id++, OptionContract{kUidB, 200.0, 0.0, Side::Call}, +5.0,
+                              100.0, expiry_b_, 0u, 1.0});
+    }
+    return atx::core::Ok();
+  }
+
+  [[nodiscard]] HedgeSpec hedge_spec() const override { return hedge_; }
+
+private:
+  std::int64_t expiry_a_{0};
+  std::int64_t expiry_b_{0};
+  HedgeSpec hedge_{};
+};
+
+[[nodiscard]] HedgeSpec daily_delta_to_zero() noexcept {
+  return HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 0.0};
+}
+
+} // namespace
+
+// The delta hedge wants to trade BBB on the date its board is absent. Under
+// ExcludeAndReport the uid's fill is SKIPPED (its ledger position is left
+// untouched) and the skip is counted; AAA hedges normally and the run finishes.
+TEST(UnpricedTolerance, HedgeSkipsAbsentUidAndCountsUnderExcludeAndReport) {
+  const fs::path dir = fresh_dir("unpriced-hedge-skip");
+  const CorpusManifest man = make_two_name_corpus(dir, 4, {2});
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t far = kBaseNow + 120 * kDayNs;
+  TwoNameOpenAndHoldStrategy strat{far, far, daily_delta_to_zero()};
+  RunConfig cfg;
+  cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  cfg.price.n_threads = 1u;
+  auto res = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), 4u);
+
+  // Row 2 is the gap date. Its exclusion tally is exactly three: the held BBB
+  // lot the step P&L could not explain (shifted board absent), the BBB hedge
+  // SHARE position held across the step (F1(b)), and the BBB hedge TRADE the
+  // overlay skipped (this change). Row 3 steps OFF the gap date, so the lot and
+  // the shares are still unpriced (base board absent) but the hedge, which
+  // trades on the NEW base, is fine: two.
+  EXPECT_EQ(res->n_unpriced_lots[0], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[1], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[2], 3.0);
+  EXPECT_EQ(res->n_unpriced_lots[3], 2.0);
+
+  // The skip LEAVES the position: `gross_delta` is the option-book delta plus the
+  // whole share ledger, so on the gap row it is exactly BBB's retained hedge
+  // shares (BBB's option delta is excluded, AAA nets to zero). Had the overlay
+  // flattened BBB at spot 0.0 — the pre-F1 bug this policy must not reintroduce —
+  // the ledger would read zero and this row would net out.
+  EXPECT_NEAR(res->gross_delta[1], 0.0, 1e-6);
+  EXPECT_GT(std::abs(res->gross_delta[2]), 1.0);
+  EXPECT_NEAR(res->gross_delta[3], 0.0, 1e-6);
+}
+
+// Same fixture under the strict policy: the run must still abort. (The abort
+// lands on the step-P&L guard, which is strictly EARLIER in the step than the
+// hedge overlay: for the overlay to want an absent uid at all that uid must
+// carry either an unpriced held lot or a live share position, and both of those
+// fail closed first. The hedge's own guard is therefore unreachable under Error
+// — what matters here is that nothing about this change opened a hole in it.)
+TEST(UnpricedTolerance, HedgeAbsentUidStillAbortsUnderError) {
+  const fs::path dir = fresh_dir("unpriced-hedge-error");
+  const CorpusManifest man = make_two_name_corpus(dir, 4, {2});
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t far = kBaseNow + 120 * kDayNs;
+  TwoNameOpenAndHoldStrategy strat{far, far, daily_delta_to_zero()};
+  RunConfig cfg;
+  cfg.unpriced = UnpricedLotPolicy::Error;
+  cfg.price.n_threads = 1u;
+  auto res = run_backtest(*clock, strat, cfg);
+  ASSERT_FALSE(res.has_value()) << "Error must stay fully fail-closed on an absent board";
+  EXPECT_EQ(res.error().code(), ErrorCode::NotFound);
+  EXPECT_NE(res.error().message().find("no surface"), std::string::npos)
+      << "message was: " << res.error().message();
+}
+
+// A lot whose exact expiry step has no board is DEFERRED, not fatal: it is
+// counted on the gap step, stays open, and settles at intrinsic against the
+// first later step whose board is back.
+TEST(UnpricedTolerance, SettlementDefersAcrossAOneSessionGap) {
+  const fs::path dir = fresh_dir("unpriced-settle-defer");
+  const CorpusManifest man = make_two_name_corpus(dir, 4, {2});
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t far = kBaseNow + 120 * kDayNs;
+  const std::int64_t expiry_b = kBaseNow + 2 * kDayNs; // EXACTLY the gap date
+  TwoNameOpenAndHoldStrategy strat{far, expiry_b, HedgeSpec{}};
+  RunConfig cfg;
+  cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  cfg.price.n_threads = 1u;
+  auto res = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), 4u);
+
+  // The deferred lot is still open (it holds real economic exposure) through the
+  // gap row and leaves the book only when it actually settles.
+  EXPECT_EQ(res->n_open_lots[0], 2.0);
+  EXPECT_EQ(res->n_open_lots[1], 2.0);
+  EXPECT_EQ(res->n_open_lots[2], 2.0);
+  EXPECT_EQ(res->n_open_lots[3], 1.0);
+
+  // Counted on the deferral step AND on the step it finally settles.
+  EXPECT_EQ(res->n_unpriced_lots[0], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[1], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[2], 1.0);
+  EXPECT_EQ(res->n_unpriced_lots[3], 1.0);
+
+  // No settlement on the gap row; the whole settlement lands on the row whose
+  // board came back, priced at THAT row's spot.
+  EXPECT_TRUE(bits_equal(res->pnl_settlement[2], 0.0));
+  EXPECT_NE(res->pnl_settlement[3], 0.0);
+  EXPECT_TRUE(std::isfinite(res->nav[3]));
+}
+
+// Same fixture under the strict policy: an absent board at an exact expiry is
+// still a hard error naming the settling lot.
+TEST(UnpricedTolerance, SettlementAbsentStillAbortsUnderError) {
+  const fs::path dir = fresh_dir("unpriced-settle-error");
+  const CorpusManifest man = make_two_name_corpus(dir, 4, {2});
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t far = kBaseNow + 120 * kDayNs;
+  const std::int64_t expiry_b = kBaseNow + 2 * kDayNs;
+  TwoNameOpenAndHoldStrategy strat{far, expiry_b, HedgeSpec{}};
+  RunConfig cfg;
+  cfg.unpriced = UnpricedLotPolicy::Error;
+  cfg.price.n_threads = 1u;
+  auto res = run_backtest(*clock, strat, cfg);
+  ASSERT_FALSE(res.has_value()) << "Error must stay fully fail-closed at settlement";
+  EXPECT_EQ(res.error().code(), ErrorCode::NotFound);
+  EXPECT_NE(res.error().message().find("no surface for settling lot"), std::string::npos)
+      << "message was: " << res.error().message();
+}
+
+// The board never comes back: the deferred lot never settles, is counted on
+// EVERY step from the gap on, and is still open at the end of the run.
+TEST(UnpricedTolerance, NeverReturningSurfaceStaysOpenAndCounted) {
+  const fs::path dir = fresh_dir("unpriced-settle-never");
+  const CorpusManifest man = make_two_name_corpus(dir, 5, {2, 3, 4});
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t far = kBaseNow + 120 * kDayNs;
+  const std::int64_t expiry_b = kBaseNow + 2 * kDayNs;
+  TwoNameOpenAndHoldStrategy strat{far, expiry_b, HedgeSpec{}};
+  RunConfig cfg;
+  cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  cfg.price.n_threads = 1u;
+  auto res = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), 5u);
+
+  for (std::size_t i = 0; i < res->size(); ++i) {
+    EXPECT_EQ(res->n_open_lots[i], 2.0) << "row " << i;
+    EXPECT_TRUE(bits_equal(res->pnl_settlement[i], 0.0)) << "row " << i;
+  }
+  EXPECT_EQ(res->n_unpriced_lots[0], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[1], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[2], 1.0);
+  EXPECT_EQ(res->n_unpriced_lots[3], 1.0);
+  EXPECT_EQ(res->n_unpriced_lots[4], 1.0);
+}
+
+// Regression guard: on gap-free data the two policies must produce the SAME
+// bits — the deferral machinery may not perturb the clean path — and the run
+// must stay thread-count invariant.
+TEST(UnpricedTolerance, ErrorPolicyPathIsBitIdenticalOnCleanData) {
+  const fs::path dir = fresh_dir("unpriced-clean-parity");
+  const CorpusManifest man = make_two_name_corpus(dir, 4, {});
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t far = kBaseNow + 120 * kDayNs;
+  const std::int64_t expiry_b = kBaseNow + 2 * kDayNs; // settles normally mid-run
+  const auto run = [&](UnpricedLotPolicy policy, unsigned n_threads) -> BacktestResult {
+    TwoNameOpenAndHoldStrategy strat{far, expiry_b, daily_delta_to_zero()};
+    RunConfig cfg;
+    cfg.unpriced = policy;
+    cfg.price.n_threads = n_threads;
+    auto res = run_backtest(*clock, strat, cfg);
+    EXPECT_TRUE(res.has_value()) << (res.has_value() ? std::string{} : res.error().to_string());
+    return res.has_value() ? std::move(*res) : BacktestResult{};
+  };
+  const BacktestResult strict = run(UnpricedLotPolicy::Error, 1u);
+  ASSERT_EQ(strict.size(), 4u);
+  // The fixture must actually exercise settlement, or the guard is vacuous.
+  EXPECT_NE(strict.pnl_settlement[2], 0.0);
+  expect_result_bit_identical(strict, run(UnpricedLotPolicy::ExcludeAndReport, 1u));
+  expect_result_bit_identical(strict, run(UnpricedLotPolicy::Error, 4u));
+}

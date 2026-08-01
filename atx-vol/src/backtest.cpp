@@ -603,6 +603,13 @@ public:
   // 0.0, which made `cash -= shares_to_trade * 0.0` flatten a residual share
   // position for FREE and left the ledger at zero with no error and no flag.
   //
+  // SP100 task 2: `spot_of` now answers Result<optional<double>>. `nullopt` means
+  // "this uid has no board on this base and the caller's policy tolerates it": the
+  // uid's fill is SKIPPED — its ledger position is left exactly as it was, which is
+  // the whole point, since zeroing it at spot 0.0 is the original bug — and
+  // `n_skipped` is bumped so the row can report the exclusion. Err still aborts, so
+  // `UnpricedLotPolicy::Error` keeps the pre-change control flow verbatim.
+  //
   // Steady-state allocation-free: the per-uid delta aggregate and the dedup set are
   // held as DENSE, generation-STAMPED vectors (not node-based unordered_map/set that
   // reallocate a node per key on every clear()+reinsert). A per-pass `generation_`
@@ -611,7 +618,7 @@ public:
   template <typename SpotOf>
   [[nodiscard]] Status hedge_daily(const std::vector<Lot> &lots, const PriceFrame &frame,
                                    double band, double hedge_slippage_bps, SpotOf &&spot_of,
-                                   double &cash, double &cost) {
+                                   double &cash, double &cost, std::uint32_t &n_skipped) {
     ++generation_;
     order_.clear(); // vector clear keeps capacity (no per-element deallocation)
     // 1. Aggregate Ok option delta per uid in ONE frame pass (frame order per uid).
@@ -648,11 +655,15 @@ public:
       const double net = option_delta + get(uid);
       if (std::fabs(net) > band) {
         const double shares_to_trade = -net;
-        const Result<double> spot_res = spot_of(uid);
+        const Result<std::optional<double>> spot_res = spot_of(uid);
         if (!spot_res) {
           return Err(spot_res.error());
         }
-        const double spot = *spot_res;
+        if (!spot_res->has_value()) {
+          ++n_skipped; // no board, tolerated: leave the ledger and cash untouched
+          continue;
+        }
+        const double spot = **spot_res;
         cost += std::fabs(shares_to_trade) * spot * (hedge_slippage_bps / 1.0e4);
         cash -= shares_to_trade * spot;
         add(uid, shares_to_trade);
@@ -915,6 +926,65 @@ struct StepPnl {
   // position (input order) for the Error-policy diagnostic; 0 when none.
   std::uint32_t n_unpriced{0};
   std::uint32_t first_unpriced_uid{0};
+  // ExcludeAndReport only: settlement events this step could not price at their
+  // exact expiry observation — a lot newly deferred, a deferred lot still waiting,
+  // or a deferred lot finally settling. Reported alongside `n_unpriced` in the
+  // row's exclusion tally (the F1(b) hedge-share precedent); never non-zero under
+  // `Error`, which still fails closed at the first absent settlement board.
+  std::uint32_t n_deferred{0};
+  // Intrinsic proceeds of the deferred lots that settled THIS step, for the cash
+  // ledger. The fixed-book overload has no cash ledger and ignores it.
+  double deferred_settle_cash{0.0};
+};
+
+// WS-F F1 tolerance extension (SP100 task 2). One lot whose EXACT expiry step had
+// no shifted-side board under `UnpricedLotPolicy::ExcludeAndReport`: there is no
+// observed spot to settle it against, and dropping it would delete a real
+// position, so the lot leaves `book.lots` and waits here for the first later step
+// whose board is back.
+//
+// `base_mark` freezes the deferral step's base mark — the exact mark the
+// non-deferred settlement would have explained against. When the deferral step's
+// BASE board was absent too there is no such mark (`base_mark_known == false`) and
+// the eventual settlement contributes NOTHING to the P&L explain: that step's move
+// is the excluded, never-recovered P&L this policy already documents. The cash
+// ledger still books the intrinsic either way.
+struct DeferredSettlement {
+  Lot lot{};
+  double base_mark{0.0};
+  bool base_mark_known{false};
+};
+
+// The deferral book, held ACROSS steps by each run loop. Entries are kept sorted
+// by lot id, so every traversal — and therefore the settlement accumulation order
+// and the reported counts — depends only on lot identity, never on insertion
+// order or on any unordered-container layout. Empty and never consulted under
+// `UnpricedLotPolicy::Error` (the run loops pass a null pointer there, which keeps
+// the strict path's control flow bit-identical to the pre-change engine).
+class DeferredSettlementBook {
+public:
+  [[nodiscard]] bool empty() const noexcept { return entries_.empty(); }
+  [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
+  [[nodiscard]] std::span<const DeferredSettlement> entries() const noexcept {
+    return {entries_.data(), entries_.size()};
+  }
+
+  void insert(const Lot &lot, double base_mark, bool base_mark_known) {
+    const auto at = std::lower_bound(entries_.begin(), entries_.end(), lot.id,
+                                     [](const DeferredSettlement &d, std::uint64_t id) {
+                                       return d.lot.id < id;
+                                     });
+    entries_.insert(at, DeferredSettlement{lot, base_mark, base_mark_known});
+  }
+
+  // Scratch for the survivors of one resolution pass; `commit` swaps it in, which
+  // preserves the id ordering because the pass walks `entries_` in that order.
+  [[nodiscard]] std::vector<DeferredSettlement> &retain_scratch() noexcept { return scratch_; }
+  void commit() noexcept { entries_.swap(scratch_); }
+
+private:
+  std::vector<DeferredSettlement> entries_;
+  std::vector<DeferredSettlement> scratch_;
 };
 
 [[nodiscard]] Result<StepPnl>
@@ -922,7 +992,7 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
              const std::vector<Lot> &lots, const PriceOptions &opts, RetainedBookPricer &retained,
              ReusableTargetMarkFrame *target_marks = nullptr, RetainedBookPricer *settle = nullptr,
              ReusablePriceFrame *settle_frame = nullptr, StepMarkMemo *mark_memo = nullptr,
-             bool memo_enabled = false) {
+             bool memo_enabled = false, DeferredSettlementBook *deferrals = nullptr) {
   ATX_VOL_PROFILE_SCOPE(StepPnl);
   std::vector<Lot> &alive = retained.reset_alive_scratch(lots.size());
   // B2: batch the expiry-settlement base marks (bottleneck #3). When a settlement
@@ -936,9 +1006,45 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
   const bool batch_settle = settle != nullptr && settle_frame != nullptr;
   std::vector<Lot> *expiring = batch_settle ? &settle->reset_alive_scratch(lots.size()) : nullptr;
   double settlement = 0.0;
+  std::uint32_t n_deferred = 0;
+  double deferred_settle_cash = 0.0;
+
+  // Deferred settlements carried in from EARLIER steps, walked in LOT-ID order: a
+  // lot settles at intrinsic against THIS step's shifted spot the first time its
+  // board is back, and is otherwise counted and carried forward untouched. Runs
+  // BEFORE the partition loop so a lot deferred on this very step is counted once,
+  // here on the step it settles or waits — never twice on the step it deferred.
+  // On a clean step the book is empty and nothing below changes, bit-for-bit.
+  if (deferrals != nullptr && !deferrals->empty()) {
+    std::vector<DeferredSettlement> &kept = deferrals->retain_scratch();
+    kept.clear();
+    for (const DeferredSettlement &pending : deferrals->entries()) {
+      ++n_deferred;
+      const SurfaceRef ss = shifted.find(pending.lot.contract.uid);
+      if (ss == nullptr) {
+        kept.push_back(pending); // still no board: stays open, counted, unchanged
+        continue;
+      }
+      const double S = ss->pricing().S;
+      const double K = pending.lot.contract.K;
+      const double intrinsic =
+          (pending.lot.contract.side == Side::Call) ? std::max(0.0, S - K) : std::max(0.0, K - S);
+      const double weight = pending.lot.qty * pending.lot.multiplier;
+      if (pending.base_mark_known) {
+        settlement += weight * (intrinsic - pending.base_mark);
+      }
+      deferred_settle_cash += weight * intrinsic;
+    }
+    deferrals->commit();
+  }
+
   for (const Lot &lot : lots) {
     if (lot.expiry_ts_ns <= shifted.ts_ns()) {
       if (lot.expiry_ts_ns != shifted.ts_ns()) {
+        // UNCHANGED under BOTH policies: an expiry that passed between sessions was
+        // never observed at all, so there is no settlement instant to defer TO. That
+        // is a calendar bug (see `TenorSpec::snap_to_sessions`), not missing market
+        // data, and it keeps failing closed.
         return Err(
             ErrorCode::NotFound,
             "run_backtest: no exact expiry observation for lot id=" + std::to_string(lot.id) +
@@ -948,7 +1054,34 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
       const SurfaceRef bs = base.find(lot.contract.uid);
       const SurfaceRef ss = shifted.find(lot.contract.uid);
       if (bs == nullptr || ss == nullptr) {
-        return Err(ErrorCode::NotFound, "run_backtest: no surface for settling lot");
+        if (deferrals == nullptr) {
+          return Err(ErrorCode::NotFound, "run_backtest: no surface for settling lot");
+        }
+        ++n_deferred;
+        if (ss != nullptr) {
+          // The settlement SPOT is observed; only the base mark this step would have
+          // explained against is missing (the lot was already unpriced on the prior
+          // step). Settle here with a ZERO explain contribution — that unrecovered
+          // move is exactly what ExcludeAndReport documents — and fall out of the
+          // partition, so the caller erases the lot as a normal expiry and its cash
+          // ledger books the intrinsic off this same (present) board.
+          continue;
+        }
+        // No settlement spot at all. Freeze the base mark when the base board is
+        // there and carry the lot until some later step's board returns.
+        double frozen_mark = 0.0;
+        bool frozen_known = false;
+        if (bs != nullptr) {
+          const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
+          const Result<double> mark =
+              bs->fair_value(lot.contract.K, T_base, lot.contract.side, opts.query_execution);
+          if (mark) {
+            frozen_mark = *mark;
+            frozen_known = true;
+          }
+        }
+        deferrals->insert(lot, frozen_mark, frozen_known);
+        continue;
       }
       if (expiring != nullptr) {
         expiring->push_back(lot); // base mark supplied by the batched pass below
@@ -1115,7 +1248,7 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
   if (target_marks != nullptr) {
     ATX_TRY_VOID(target_marks->seal());
   }
-  return Ok(StepPnl{t, settlement, n_unpriced, first_unpriced_uid});
+  return Ok(StepPnl{t, settlement, n_unpriced, first_unpriced_uid, n_deferred, deferred_settle_cash});
 }
 
 // The Error-policy message for a step that has `n_unpriced` held lots with no
@@ -1845,6 +1978,12 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   double b_theta = 0.0, b_rho = 0.0, b_charm = 0.0, b_unexpl = 0.0, b_settle = 0.0,
          b_nunpriced = 0.0;
 
+  // Deferred expiry settlements (ExcludeAndReport only). A null pointer under
+  // Error keeps `compute_step` on its pre-change fail-closed path verbatim.
+  DeferredSettlementBook deferrals;
+  DeferredSettlementBook *const deferrals_ptr =
+      cfg.unpriced == UnpricedLotPolicy::ExcludeAndReport ? &deferrals : nullptr;
+
   for (std::size_t i = 1; i < refs.size(); ++i) {
     auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier,
                                             cfg.query_cache_build_policy);
@@ -1868,7 +2007,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     // held lots the pricer could not value this step.
     auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer,
                              /*target_marks=*/nullptr, &settle_pricer, &settle_frame, &mark_memo,
-                             cfg.settlement_mark_memo);
+                             cfg.settlement_mark_memo, deferrals_ptr);
     if (!step) {
       return Err(step.error());
     }
@@ -1895,7 +2034,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     b_charm += t.pnl_charm;
     b_unexpl += t.pnl_unexplained;
     b_settle += settlement;
-    b_nunpriced += static_cast<double>(step->n_unpriced);
+    // Deferred settlement events join the row's exclusion count (F1(b) precedent).
+    b_nunpriced += static_cast<double>(step->n_unpriced) + static_cast<double>(step->n_deferred);
 
     // Adopt the shifted snapshot as the next base (no reload) and drop expiries.
     base = std::move(shifted);
@@ -1915,9 +2055,13 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
         return Err(ErrorCode::NotFound, unpriced_greeks_error_message(
                                             g->n_unpriced, g->first_unpriced_uid, refs[i].date));
       }
+      // A deferred lot is OPEN — it holds real exposure the run never settled — so
+      // it counts toward n_open_lots even though it has left `book.lots` (it is
+      // past its expiry, which every book-facing invariant and pricer forbids).
       push_row(refs[i].date, base->ts_ns(), b_total, b_delta, b_gamma, b_vega, b_vanna, b_volga,
-               b_theta, b_rho, b_charm, b_unexpl, b_settle, nav, g->total, book.lots.size(),
-               b_nunpriced, static_cast<double>(g->n_unpriced));
+               b_theta, b_rho, b_charm, b_unexpl, b_settle, nav, g->total,
+               book.lots.size() + deferrals.size(), b_nunpriced,
+               static_cast<double>(g->n_unpriced));
       b_total = b_delta = b_gamma = b_vega = b_vanna = b_volga = 0.0;
       b_theta = b_rho = b_charm = b_unexpl = b_settle = b_nunpriced = 0.0;
     }
@@ -1933,6 +2077,9 @@ struct ExecResult {
   double turnover_notional{0.0};
   double turnover_vega{0.0};
   std::optional<BookGreeks> book_greeks{};
+  // ExcludeAndReport only: hedge fills the overlay skipped because the uid has no
+  // board on this base. Joins the row's exclusion tally (F1(b) precedent).
+  std::uint32_t n_unpriced_hedges{0};
 };
 
 [[nodiscard]] static Result<BacktestContinuation>
@@ -2278,18 +2425,25 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       ATX_VOL_PROFILE_SCOPE(HedgeRisk);
       // F1(a): no surface for a uid the hedge wants to trade => hard error. The
       // pre-F1 lambda returned 0.0 here and the pass filled at spot 0.0.
+      //
+      // SP100 task 2: under ExcludeAndReport that uid's fill is skipped instead —
+      // its share position is LEFT IN PLACE (unhedged and still marked-to-nothing,
+      // which the row reports) rather than flattened for free. Error is untouched.
       ATX_TRY_VOID(hedge_ledger.hedge_daily(
           book.lots, *current_risk, hedge_spec.band, cfg.frictions.hedge_slippage_bps,
-          [&base_snap](std::uint32_t uid) -> Result<double> {
+          [&base_snap, &cfg](std::uint32_t uid) -> Result<std::optional<double>> {
             const SurfaceRef surface = base_snap.find(uid);
             if (surface == nullptr) {
-              return Err(ErrorCode::NotFound,
-                         "run_backtest: no surface for delta hedge on uid=" + std::to_string(uid) +
-                             " (share fill would price at spot 0.0)");
+              if (cfg.unpriced == UnpricedLotPolicy::Error) {
+                return Err(ErrorCode::NotFound,
+                           "run_backtest: no surface for delta hedge on uid=" +
+                               std::to_string(uid) + " (share fill would price at spot 0.0)");
+              }
+              return Ok(std::optional<double>{});
             }
-            return Ok(surface->pricing().S);
+            return Ok(std::optional<double>{surface->pricing().S});
           },
-          cash, ex.cost));
+          cash, ex.cost, ex.n_unpriced_hedges));
     }
 
     cash -= ex.cost; // realized frictions hit cash at fill
@@ -2389,7 +2543,8 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     nav = -ex->cost;
     push_row(refs[0].date, base->ts_ns(), nav, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
              0.0, 0.0, ex->cost, nav, cash, g_delta, g->total, ex->turnover_notional,
-             ex->turnover_vega, book.lots.size(), 0.0, static_cast<double>(g->n_unpriced));
+             ex->turnover_vega, book.lots.size(), static_cast<double>(ex->n_unpriced_hedges),
+             static_cast<double>(g->n_unpriced));
     ATX_TRY_VOID(reconcile_row(refs[0].date, nav, g->total, *base));
     record_signals(*base);
   }
@@ -2402,6 +2557,11 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   double b_theta = 0.0, b_rho = 0.0, b_charm = 0.0, b_unexpl = 0.0, b_settle = 0.0;
   double b_shares = 0.0, b_fin = 0.0, b_cost = 0.0, b_turn_notl = 0.0, b_turn_vega = 0.0;
   double b_nunpriced = 0.0;
+
+  // Deferred expiry settlements (ExcludeAndReport only); see the fixed-book loop.
+  DeferredSettlementBook deferrals;
+  DeferredSettlementBook *const deferrals_ptr =
+      cfg.unpriced == UnpricedLotPolicy::ExcludeAndReport ? &deferrals : nullptr;
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
     const std::size_t global_step_index = global_step_base + i;
@@ -2426,7 +2586,8 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
 
     // 1. PnL of the current book (resolved on base) forward to shifted (unchanged B1).
     auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer, &target_marks,
-                             &settle_pricer, &settle_frame, &mark_memo, cfg.settlement_mark_memo);
+                             &settle_pricer, &settle_frame, &mark_memo, cfg.settlement_mark_memo,
+                             deferrals_ptr);
     if (!step) {
       return Err(step.error());
     }
@@ -2534,6 +2695,11 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
           (lot.contract.side == Side::Call) ? std::max(0.0, S - K) : std::max(0.0, K - S);
       cash += lot.qty * lot.multiplier * intrinsic; // intrinsic settle proceeds
     }
+    // Deferred lots whose board came back this step settle at THIS step's spot;
+    // `compute_step` summed their intrinsic in lot-id order. Their board was absent
+    // when they expired, so the loop above can never have booked them twice: it
+    // skips exactly the uids the deferral was triggered by.
+    cash += step->deferred_settle_cash;
     std::erase_if(book.lots, [&base](const Lot &l) { return l.expiry_ts_ns <= base->ts_ns(); });
 
     // 4-5. Strategy entries/rolls + hedge overlay on the new base.
@@ -2588,8 +2754,11 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     b_cost += ex->cost;
     b_turn_notl += ex->turnover_notional;
     b_turn_vega += ex->turnover_vega;
-    // F1(b): unpriced hedge-share positions join the row's exclusion count.
-    b_nunpriced += static_cast<double>(step->n_unpriced) + static_cast<double>(n_unpriced_shares);
+    // F1(b): unpriced hedge-share positions join the row's exclusion count, and
+    // (SP100 task 2) so do skipped hedge fills and deferred settlement events.
+    b_nunpriced += static_cast<double>(step->n_unpriced) + static_cast<double>(n_unpriced_shares) +
+                   static_cast<double>(step->n_deferred) +
+                   static_cast<double>(ex->n_unpriced_hedges);
     financing_noncash_total += financing_noncash_step;
 
     // 7. Record @ granularity: book greeks (net delta incl. shares) + B2 columns.
@@ -2611,10 +2780,12 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
                                             g->n_unpriced, g->first_unpriced_uid, refs[i].date));
       }
       const double g_delta = g->total.delta + hedge_ledger.sum();
+      // Deferred lots are open exposure the run never settled; see the fixed-book
+      // loop's note on why they cannot live in `book.lots`.
       push_row(refs[i].date, base->ts_ns(), b_total, b_delta, b_gamma, b_vega, b_vanna, b_volga,
                b_theta, b_rho, b_charm, b_unexpl, b_settle, b_shares, b_fin, b_cost, nav, cash,
-               g_delta, g->total, b_turn_notl, b_turn_vega, book.lots.size(), b_nunpriced,
-               static_cast<double>(g->n_unpriced));
+               g_delta, g->total, b_turn_notl, b_turn_vega, book.lots.size() + deferrals.size(),
+               b_nunpriced, static_cast<double>(g->n_unpriced));
       ATX_TRY_VOID(reconcile_row(refs[i].date, nav, g->total, *base));
       record_signals(*base);
       b_total = b_delta = b_gamma = b_vega = b_vanna = b_volga = 0.0;
@@ -2625,6 +2796,17 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
 
   BacktestCheckpoint checkpoint;
   if (capture_checkpoint) {
+    // `BacktestCheckpoint` carries the book, the share ledger and the cash/NAV
+    // scalars — it has no slot for a deferred settlement, and silently dropping one
+    // would delete a real position's proceeds across the resume boundary. Fail
+    // closed rather than lose it; a caller that hits this can finish the segment on
+    // a clock whose last session has the missing board back.
+    if (!deferrals.empty()) {
+      return Err(ErrorCode::NotImplemented,
+                 "run_backtest_incremental: " + std::to_string(deferrals.size()) +
+                     " settlement(s) deferred by UnpricedLotPolicy::ExcludeAndReport cannot be "
+                     "carried in a checkpoint");
+    }
     checkpoint.base_ts_ns = base->ts_ns();
     checkpoint.completed_step_index = global_step_base + (refs.size() - 1u);
     checkpoint.next_lot_id = next_id;
