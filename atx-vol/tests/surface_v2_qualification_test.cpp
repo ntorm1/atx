@@ -14,7 +14,7 @@
 #include "atx/vol/pricer_fitter.hpp"
 #include "atx/vol/s3.hpp" // S3Params (crossed-wing fixture truth)
 #include "atx/vol/session.hpp"
-#include "support/spy_fixture.hpp"
+#include "atx/vol/spy_fixture.hpp"
 #include "atx/vol/surface_policy.hpp"
 #include "atx/vol/vol_curve.hpp"
 

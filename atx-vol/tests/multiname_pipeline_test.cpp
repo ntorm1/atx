@@ -49,7 +49,7 @@
 #include "atx/vol/panel.hpp"      // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/portfolio_pricer.hpp" // Portfolio, PortfolioPricer, PriceStatus, PnlFrame
 #include "atx/vol/s3.hpp"               // S3Params
-#include "support/spy_fixture.hpp"      // make_spy_synthetic_spec
+#include "atx/vol/spy_fixture.hpp"      // make_spy_synthetic_spec
 #include "atx/vol/strategy.hpp"         // DispersionStrategy
 #include "atx/vol/tools/tearsheet.hpp"        // write_backtest_tsv
 #include "atx/vol/universe.hpp"         // uid_for_symbol

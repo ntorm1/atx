@@ -24,7 +24,7 @@
 #include "atx/vol/detail/pricing_executor.hpp"
 #include "atx/vol/detail/risk_surface_validation.hpp"
 #include "atx/vol/session.hpp"
-#include "support/spy_fixture.hpp"
+#include "atx/vol/spy_fixture.hpp"
 #include "atx/vol/surface_archive.hpp"
 #include "atx/vol/types.hpp"
 #include "atx/vol/vol_curve.hpp"

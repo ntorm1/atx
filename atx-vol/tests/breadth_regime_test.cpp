@@ -21,7 +21,7 @@
 
 #include "atx/vol/panel.hpp"
 #include "atx/vol/pricer_fitter.hpp"
-#include "support/spy_fixture.hpp"
+#include "atx/vol/spy_fixture.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "support/opra_fixture.hpp"
 

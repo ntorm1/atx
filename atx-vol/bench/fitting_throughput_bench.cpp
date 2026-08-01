@@ -63,7 +63,7 @@
 #include "atx/vol/panel.hpp"          // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/pricer_fitter.hpp"  // PricerFitter, PricerConfig
 #include "atx/vol/rates_curve.hpp"    // CurveSet, ForwardPoint
-#include "support/spy_fixture.hpp"    // make_spy_synthetic_spec
+#include "atx/vol/spy_fixture.hpp"    // make_spy_synthetic_spec
 #include "atx/vol/surface_policy.hpp" // explicit v2 purpose/admission policy
 #include "atx/vol/svi_calib.hpp"      // svi_fit_slice (quasi-explicit raw-SVI)
 #include "atx/vol/types.hpp"          // Side

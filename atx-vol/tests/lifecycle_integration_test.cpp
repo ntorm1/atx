@@ -47,7 +47,7 @@
 #include "atx/vol/pricer_fitter.hpp"     // PricerFitter, PricerConfig, FittedSurface
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext, SliceContext
 #include "atx/vol/session.hpp"           // VolaSession, FitPreset
-#include "support/spy_fixture.hpp"       // make_spy_synthetic_spec
+#include "atx/vol/spy_fixture.hpp"       // make_spy_synthetic_spec
 #include "atx/vol/surface_archive.hpp"   // write_surface_archive_v2, SurfaceArchiveV2
 #include "atx/vol/types.hpp"             // Side
 #include "atx/vol/vol_curve.hpp"         // CurveConfig, VolCurveKind, CurveSurface

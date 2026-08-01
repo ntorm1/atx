@@ -20,6 +20,17 @@
 // The numbers are representative of a calm-regime SPY (spot ~600, ATM vol ~10%
 // front rising to ~16% at 1y, quarterly ~$1.8 dividends), NOT a capture of any
 // specific session — this is a fixture, not market data.
+//
+// TIER-B (S5-T24 / plan 5.1). Public and includable, deliberately OUTSIDE the
+// `atx/vol/vol.hpp` umbrella — the same tier as `panel.hpp`, the known-truth
+// generator this file hands a canned spec to. It is on the public surface
+// because SHIPPED artifacts already consume it and an installed tree has no
+// tests/: the Python extension binds it as `make_spy_synthetic_panel` (see
+// python/src/bindings/fit.cpp) and the `spy_surface_bench` example is built on
+// it. A shipped binding reaching into a test-support include root was the
+// defect; promoting the builder — header-only, calling nothing but the public
+// API — is the smallest honest fix. NOT Tier-A: freezing a synthetic fixture's
+// constants into the v1 API would promise the wrong thing.
 
 #include <cmath>
 #include <string>
