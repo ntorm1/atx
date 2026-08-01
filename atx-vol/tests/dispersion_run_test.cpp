@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -1239,6 +1240,107 @@ TEST(DispersionProjectedVar, C14_FailedRerunInvalidatesThePreviousGeneration) {
 
   std::error_code error;
   fs::remove_all(fixture.dir, error);
+}
+
+// ── Cooperative cancellation (plan item 5.5; S5 fix round 1, review B I-3) ──
+//
+// `dispersion_run_projected_var` is the fourth advertised cancellable entry and
+// it shipped with NO cancellation coverage: every other call in this file uses
+// the DEFAULTED token, so a regression that dropped `cancel` from the scenario
+// lambda's captures would have been caught by nothing. The pair below mirrors
+// the one each of the other three entries already carries (BacktestCancellation,
+// CorpusCancellation, SurfaceDbPopulateCancellation).
+
+// GATE. Cancelled specifically, and the run directory is left EXACTLY as it was
+// found — not merely missing the summary. The poll sits at the top of a snapshot
+// BATCH inside the scenario lambda and every artifact is published after that
+// lambda returns, so "never a partial write" means "no new file at all" here.
+TEST(DispersionRunCancellation, CancelledProjectedVarLeavesTheRunDirUntouched) {
+  const PvFixture fixture =
+      make_pv_fixture("pv_cancel_stop", pv_reconstituting_blocks(), kEmitTsvDiagnostics);
+  const auto listing = [](const fs::path &root) {
+    std::vector<std::string> names;
+    std::error_code error;
+    for (const fs::directory_entry &entry : fs::recursive_directory_iterator(root, error)) {
+      names.push_back(fs::relative(entry.path(), root, error).generic_string());
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+  };
+  const std::vector<std::string> before = listing(fixture.dir);
+  ASSERT_FALSE(before.empty()) << "the fixture wrote nothing, so the comparison below is vacuous";
+
+  std::atomic<bool> stop{true}; // requested up front: stops at the first batch
+  const Status ran = dispersion_run_projected_var(fixture.dir, CancelToken{stop});
+  ASSERT_FALSE(ran.has_value()) << "a cancelled projected-VaR run must not report success";
+  EXPECT_EQ(ran.error().code(), ErrorCode::Cancelled);
+
+  for (const char *artifact :
+       {"projected_var.tsv", "projected_risk_scenarios.tsv", "projected_risk_legs.tsv"}) {
+    EXPECT_FALSE(fs::exists(fixture.dir / artifact)) << artifact << " survived a cancelled run";
+  }
+  EXPECT_EQ(listing(fixture.dir), before)
+      << "a cancelled projected-VaR run left something behind in the run directory";
+
+  // And the directory is still usable: a plain re-run publishes the full triple.
+  stop.store(false, std::memory_order_relaxed);
+  const Status resumed = dispersion_run_projected_var(fixture.dir, CancelToken{stop});
+  ASSERT_TRUE(resumed.has_value())
+      << (resumed.has_value() ? std::string{} : resumed.error().to_string());
+  for (const char *artifact :
+       {"projected_var.tsv", "projected_risk_scenarios.tsv", "projected_risk_legs.tsv"}) {
+    EXPECT_TRUE(fs::exists(fixture.dir / artifact)) << artifact << " missing after the re-run";
+  }
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+// GATE, determinism half. A live-but-never-set token must not move a published
+// number. `projections_per_second` is wall-clock telemetry and is excluded by
+// NAME rather than by position, so a column insertion cannot silently widen the
+// exclusion.
+TEST(DispersionRunCancellation, AnUntriggeredTokenChangesNothing) {
+  const PvFixture plain =
+      make_pv_fixture("pv_cancel_plain", pv_reconstituting_blocks(), kEmitTsvDiagnostics);
+  ASSERT_TRUE(dispersion_run_projected_var(plain.dir));
+
+  std::atomic<bool> never{false};
+  const CancelToken token{never};
+  ASSERT_TRUE(token.stop_possible()); // negative control: the token is live
+
+  const PvFixture tokened =
+      make_pv_fixture("pv_cancel_tokened", pv_reconstituting_blocks(), kEmitTsvDiagnostics);
+  const Status ran = dispersion_run_projected_var(tokened.dir, token);
+  ASSERT_TRUE(ran.has_value()) << (ran.has_value() ? std::string{} : ran.error().to_string());
+
+  for (const char *artifact : {"projected_risk_scenarios.tsv", "projected_risk_legs.tsv"}) {
+    EXPECT_EQ(read_tsv_rows(plain.dir / artifact), read_tsv_rows(tokened.dir / artifact))
+        << artifact << " differs between a tokened and an untokened run";
+  }
+
+  const std::vector<std::vector<std::string>> plain_rows =
+      read_tsv_rows(plain.dir / "projected_var.tsv");
+  const std::vector<std::vector<std::string>> tokened_rows =
+      read_tsv_rows(tokened.dir / "projected_var.tsv");
+  ASSERT_GE(plain_rows.size(), 2u);
+  ASSERT_EQ(plain_rows.size(), tokened_rows.size());
+  const std::size_t rate_col = column_of(plain_rows.front(), "projections_per_second");
+  ASSERT_NE(rate_col, static_cast<std::size_t>(-1));
+  for (std::size_t row = 0; row < plain_rows.size(); ++row) {
+    ASSERT_EQ(plain_rows[row].size(), tokened_rows[row].size());
+    for (std::size_t col = 0; col < plain_rows[row].size(); ++col) {
+      if (col == rate_col) {
+        continue; // wall-clock telemetry, non-deterministic by construction
+      }
+      EXPECT_EQ(plain_rows[row][col], tokened_rows[row][col])
+          << "projected_var.tsv row " << row << " column " << plain_rows.front()[col];
+    }
+  }
+
+  std::error_code error;
+  fs::remove_all(plain.dir, error);
+  fs::remove_all(tokened.dir, error);
 }
 
 // Guard against a vacuous parity gate: if `weighting` and `strike` did not move
