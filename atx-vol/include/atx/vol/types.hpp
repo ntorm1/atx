@@ -61,6 +61,13 @@ public:
 
   explicit CancelToken(const std::atomic<bool> &flag) noexcept : flag_{&flag} {}
 
+  // Lifetime is the caller's WHOLE obligation (above), so the one misuse that
+  // can never be right is made uncompilable rather than merely documented:
+  // `CancelToken{std::atomic<bool>{true}}` would otherwise bind the const
+  // lvalue reference to a temporary that dies at the end of the full
+  // expression, leaving `flag_` dangling before the first poll.
+  CancelToken(const std::atomic<bool> &&) = delete;
+
   // False for a default-constructed token: no flag can ever be set. Lets a
   // caller distinguish "not cancellable" from "cancellable but not cancelled".
   [[nodiscard]] bool stop_possible() const noexcept { return flag_ != nullptr; }
