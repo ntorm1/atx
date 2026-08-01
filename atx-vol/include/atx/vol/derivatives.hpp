@@ -52,6 +52,13 @@
 //     explicit RvDistributionProxy on an UNAGED contract runs this same
 //     formula end to end (a = 0, b = 1) instead of Carr-Lee; fully-aged is
 //     unaffected by engine (exact, no model needed).
+//   - Finite-difference greeks for every kind (Task 7, deriv_greeks): delta /
+//     gamma / vega / volga / vanna / theta / rho / charm, each bump repriced
+//     through deriv_price itself so a product's greeks and its mark can never
+//     come from two different engines. Spot bumps are sticky-strike (forwards
+//     scale, the surface is re-read at the original absolute strike); an
+//     auto-calibrated vol-of-vol is resolved once at the center and pinned
+//     into the bumps; fully-aged contracts skip bumping entirely.
 //
 // Reserved for follow-on work (return ErrorCode::NotImplemented, mirroring the
 // C's ATS_VOL_ERR_UNSUPPORTED): the RV distribution-affine / Monte-Carlo QE
@@ -68,8 +75,10 @@
 // retained verbatim so callers can gate on (x == x).
 //
 // Thread-safety: the pricing entries (var_swap_fair_strike,
-// vol_swap_fair_strike, deriv_price) are stateless pure functions of a fixed
-// surface + curve set — safe to call concurrently from any number of threads.
+// vol_swap_fair_strike, deriv_price, deriv_greeks) are stateless pure functions
+// of a fixed surface + curve set — safe to call concurrently from any number of
+// threads. `deriv_greeks` builds its bumped curve sets as function-local copies,
+// so it never writes through the caller's CurveSet.
 // RealizedTracker is "single thread (mutates internal state)": a daily update
 // takes exclusive access.
 
@@ -444,6 +453,103 @@ extern template Result<DerivQuote> deriv_price<EssviSurface>(
 extern template Result<DerivQuote> deriv_price<SviSurface>(
     const SviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&);
 
+// ── Finite-difference greeks ─────────────────────────────────────────────
+
+// Spot-based sensitivity block, same conventions as the option pipeline's
+// AmericanGreeks (portfolio_pricer.hpp): delta = dPV/dS, gamma = d2PV/dS2,
+// vega = dPV/dsigma (parallel surface shift, per 1.00 vol), volga = d2PV/dsigma2,
+// vanna = d2PV/dSdsigma, theta = dPV/dt (calendar, PV units per year, holding
+// the realized accrual fixed), rho = dPV/dr, charm = d2PV/dSdt. NaN = not
+// computed (see DerivGreekBumps::second_order and the theta note below).
+//
+// All sensitivities are NOTIONAL-scaled, because PV is: a var swap's delta is
+// dollars per 1.00 of spot on the whole contract, not per unit of variance.
+struct DerivGreeks {
+  double pv = 0.0;
+  double delta = 0.0, gamma = 0.0, vega = 0.0, volga = 0.0, vanna = 0.0;
+  double theta = 0.0, rho = 0.0, charm = 0.0;
+  DerivQuote quote{};  // the center (unbumped) quote
+};
+
+// Bump sizes for `deriv_greeks`. The defaults are the ones the whole test
+// matrix is calibrated against; they are exposed so a caller pricing a
+// pathologically short tenor can widen them.
+struct DerivGreekBumps {
+  double spot_rel = 1.0e-4;          // relative S bump (central)
+  double vol_abs = 1.0e-4;           // absolute parallel sigma bump (central)
+  double rate_abs = 1.0e-4;          // absolute zero-rate bump (one-sided)
+  double time_years = 1.0 / 365.25;  // theta roll (one-sided, T decreasing)
+  // vanna + charm, the only greeks needing evaluations of their own (4 spot x
+  // vol crosses + 2 rolled spot bumps = 6 extra repricings); both are NaN when
+  // this is off. gamma and volga fall out of the SAME stencils delta and vega
+  // already pay for, so they are always computed and this knob does not gate
+  // them.
+  bool second_order = true;
+};
+
+// Finite-difference greeks for any vol-derivative contract.
+//
+// Every bump reprices through `deriv_price`, so each product / age / cap
+// regime gets its greeks from exactly the path that produced its mark — a
+// capped swap differentiates its own cap model, a mid-life vol swap its own
+// distribution engine, and no greek can silently come from a different pricer
+// than the PV it hedges.
+//
+// Bump mechanics:
+//   - Spot is STICKY-STRIKE: `CurveSet::spot` and every `ForwardPoint::F`
+//     scale by (1 +/- h) while the surface is read at k + ln(1 +/- h), i.e. the
+//     vol is re-read at the ORIGINAL absolute strike. `curves.spot` is the
+//     divisor, so it must be > 0.
+//   - Vol is a PARALLEL additive shift of `iv(k,T)`; the curves are untouched.
+//   - Rate rebuilds the yield curve with every zero rate shifted by dr,
+//     sampled at the forward pillars' Ts plus the contract's own T. The
+//     FORWARD curve is deliberately held fixed: F is fitted independently
+//     upstream, so this reports the pure discounting exposure.
+//   - Theta rolls `contract.maturity_t` down by dt with the realized spec
+//     untouched, i.e. calendar time passes and nothing new is realized.
+//
+// AUTO-CALIBRATED VOL-OF-VOL IS PINNED. When the center quote reports a
+// `vol_of_vol_used` (some distribution model ran), that xi is pinned into an
+// internal config for every bumped evaluation. Otherwise vega would
+// double-count the drift of the calibration itself — the bumped surface would
+// re-calibrate its own xi, and dPV/dsigma would mix the model's response to
+// the vol shift with the model's re-parametrization. One exception is
+// unrepresentable: a calibration that lands on xi == 0 exactly cannot be
+// pinned, because 0 is the config's "auto-calibrate" selector; there the
+// bumped evaluations re-run the auto path, which by construction returns 0 or
+// a value far below the bump's own resolution.
+//
+// FULLY-AGED CONTRACTS SKIP ALL BUMPING. Nothing is left to realize, so the PV
+// is a discounted constant: every market greek is exactly 0 and rho is the
+// analytic -T*PV, which holds because PV carries df = e^{-rT}. The one quote
+// that does not is a DerivFlags::DfFallback one (no discount factor resolved,
+// df = 1 substituted); its rho is then the identity's answer, not the curve's,
+// and the flag on `quote` is how a caller detects that.
+//
+// THETA/CHARM ARE NaN WHEN `maturity_t <= bumps.time_years`. The roll would
+// land at or past expiry, where an un-aged var/vol swap has no future leg left
+// to price (the pricers return InvalidArgument for T <= 0). Reporting "not
+// computed" beats failing the whole greek block over one stencil that cannot
+// exist.
+//
+// @return the error of the first failing evaluation — the center quote's, or a
+//         bumped one's (a bumped failure is a real failure: the same contract
+//         priced under a marginally different market must not be silently
+//         dropped). Plus InvalidArgument when a bump size is non-positive or
+//         `curves.spot` is not > 0.
+template <class SurfaceT>
+[[nodiscard]] Result<DerivGreeks>
+deriv_greeks(const SurfaceT& surface, const CurveSet& curves,
+             const DerivContract& contract, const DerivConfig& cfg = DerivConfig{},
+             const DerivGreekBumps& bumps = DerivGreekBumps{});
+
+extern template Result<DerivGreeks> deriv_greeks<EssviSurface>(
+    const EssviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&,
+    const DerivGreekBumps&);
+extern template Result<DerivGreeks> deriv_greeks<SviSurface>(
+    const SviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&,
+    const DerivGreekBumps&);
+
 // ── E6 / AN-W: PricedSurface-native entry points ────────────────────────────
 //
 // The templates above are stranded on the LEGACY calibration-grade surface types
@@ -482,5 +588,16 @@ extern template Result<DerivQuote> deriv_price<SviSurface>(
 [[nodiscard]] Result<DerivQuote> deriv_price(const PricedSurface& surface,
                                              const DerivContract& contract,
                                              const DerivConfig& cfg = DerivConfig{});
+
+// Same contract as the templated `deriv_greeks` above, differentiating the
+// PricedSurface-native `deriv_price`. The fitted-range gate runs ONCE, on
+// `contract.maturity_t`: the theta roll then reuses that same carry CurveSet
+// with a shorter contract T rather than re-deriving carry, so a contract
+// sitting exactly on the front pillar rolls into the curve's flat-extrapolated
+// tail instead of failing OutOfRange.
+[[nodiscard]] Result<DerivGreeks> deriv_greeks(const PricedSurface& surface,
+                                               const DerivContract& contract,
+                                               const DerivConfig& cfg = DerivConfig{},
+                                               const DerivGreekBumps& bumps = DerivGreekBumps{});
 
 }  // namespace atx::vol

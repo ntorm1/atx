@@ -179,6 +179,7 @@ add_executable(atx-vol-tests
     evaluate_resolved_ok_stamp_test.cpp # F3-A: the Ok-stamp agrees on the laned and scalar routes
     # deriv production sprint
     deriv_distribution_test.cpp
+    deriv_greeks_test.cpp
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

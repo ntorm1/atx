@@ -1,5 +1,6 @@
 #include "atx/vol/derivatives.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <limits>
@@ -1032,6 +1033,209 @@ Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
   return Err(ErrorCode::InvalidArgument, "unknown derivative kind");
 }
 
+// ── Finite-difference greeks ───────────────────────────────────────────────
+
+namespace {
+
+// Sticky-strike respot view. The bumped curves move the forward by e^{k_shift},
+// so reading the base surface at k + k_shift keeps the vol tied to the SAME
+// absolute strike the bumped strip prices at.
+template <class SurfaceT>
+struct RespotView {
+  const SurfaceT* base;  // non-owning, non-null
+  double k_shift;
+
+  [[nodiscard]] double iv(double k_log, double T) const noexcept {
+    return base->iv(k_log + k_shift, T);
+  }
+};
+
+// Parallel additive vol shift. Composed OVER a RespotView for the cross bumps,
+// which is why it is a separate view rather than another field on that one.
+template <class SurfaceT>
+struct VolShiftView {
+  const SurfaceT* base;  // non-owning, non-null
+  double vol_shift;
+
+  [[nodiscard]] double iv(double k_log, double T) const noexcept {
+    return base->iv(k_log, T) + vol_shift;
+  }
+};
+
+// Spot bump: the reference spot and every fitted forward scale together, so the
+// bumped world is the same carry seen from a different spot. Yield and
+// dividends are untouched.
+[[nodiscard]] CurveSet respot_curves(const CurveSet& base, double scale) {
+  CurveSet out = base;
+  out.spot = base.spot * scale;
+  for (ForwardPoint& p : out.forward.points()) {
+    p.F *= scale;
+  }
+  return out;
+}
+
+// Rate bump: rebuild the yield curve with every zero rate shifted by dr.
+// Sampling at the forward pillars' Ts plus the contract's own T guarantees the
+// contract tenor is an exact pillar of the rebuilt curve, so its discount
+// factor is e^{-(r(T)+dr)T} exactly rather than an interpolant of one.
+[[nodiscard]] Result<CurveSet> rate_shift_curves(const CurveSet& base, double dr, double T) {
+  std::vector<double> ts;
+  ts.reserve(base.forward.points().size() + 1u);
+  for (const ForwardPoint& p : base.forward.points()) {
+    if (p.T > 0.0) {
+      ts.push_back(p.T);
+    }
+  }
+  if (T > 0.0) {
+    ts.push_back(T);
+  }
+  std::sort(ts.begin(), ts.end());
+  ts.erase(std::unique(ts.begin(), ts.end()), ts.end());
+  if (ts.empty()) {
+    // No positive tenor anywhere: there is no rate exposure to shift (the only
+    // way here is T <= 0 with no forward pillars, where df == 1 by definition).
+    return Ok(base);
+  }
+
+  std::vector<double> rates;
+  rates.reserve(ts.size());
+  for (const double t : ts) {
+    rates.push_back(base.yield.zero(t) + dr);
+  }
+  CurveSet out = base;
+  ATX_TRY_VOID(out.set_yield(ts, rates));
+  return Ok(std::move(out));
+}
+
+// One bumped repricing, through the SAME deriv_price every mark goes through.
+template <class SurfaceT>
+[[nodiscard]] Result<double> bumped_pv(const SurfaceT& surface, const CurveSet& curves,
+                                       const DerivContract& contract, const DerivConfig& cfg,
+                                       double k_shift, double vol_shift) {
+  const RespotView<SurfaceT> respot{&surface, k_shift};
+  const VolShiftView<RespotView<SurfaceT>> view{&respot, vol_shift};
+  ATX_TRY(const DerivQuote q, deriv_price(view, curves, contract, cfg));
+  return Ok(q.pv);
+}
+
+// The repricings the stencils below difference. Members left at NaN are ones
+// this bump set did not evaluate, and NaN then propagates into exactly the
+// greeks that depend on them -- which is the "NaN = not computed" contract.
+struct BumpPvs {
+  double c = kNaN;                      // center
+  double s_up = kNaN, s_dn = kNaN;      // S(1 +/- h)
+  double v_up = kNaN, v_dn = kNaN;      // sigma +/- dv
+  double r_up = kNaN;                   // r + dr
+  double t_dn = kNaN;                   // T - dt
+  double sv_pp = kNaN, sv_pm = kNaN;    // (S+, sigma+), (S+, sigma-)
+  double sv_mp = kNaN, sv_mm = kNaN;    // (S-, sigma+), (S-, sigma-)
+  double t_s_up = kNaN, t_s_dn = kNaN;  // S(1 +/- h) at T - dt
+};
+
+// Up to 7 evaluations, 13 with second_order (one fewer / three fewer when the
+// contract cannot roll). Every failure propagates: a bumped contract that will
+// not price is a real failure, not a missing greek.
+template <class SurfaceT>
+[[nodiscard]] Result<BumpPvs> eval_bump_table(const SurfaceT& surface, const CurveSet& curves,
+                                              const DerivContract& contract,
+                                              const DerivConfig& cfg,
+                                              const DerivGreekBumps& bumps, double center_pv) {
+  const double h = bumps.spot_rel;
+  const double dv = bumps.vol_abs;
+  const double ks_up = std::log1p(h);
+  const double ks_dn = std::log1p(-h);
+  const CurveSet cs_up = respot_curves(curves, 1.0 + h);
+  const CurveSet cs_dn = respot_curves(curves, 1.0 - h);
+
+  // A roll landing at or past expiry has no future leg to price; theta/charm
+  // stay NaN rather than failing the whole block (see the header).
+  const bool can_roll = contract.maturity_t > bumps.time_years;
+  DerivContract rolled = contract;
+  rolled.maturity_t = contract.maturity_t - bumps.time_years;
+
+  BumpPvs pv{};
+  pv.c = center_pv;
+  ATX_TRY(pv.s_up, bumped_pv(surface, cs_up, contract, cfg, ks_up, 0.0));
+  ATX_TRY(pv.s_dn, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, 0.0));
+  ATX_TRY(pv.v_up, bumped_pv(surface, curves, contract, cfg, 0.0, dv));
+  ATX_TRY(pv.v_dn, bumped_pv(surface, curves, contract, cfg, 0.0, -dv));
+  ATX_TRY(const CurveSet cs_r,
+          rate_shift_curves(curves, bumps.rate_abs, contract.maturity_t));
+  ATX_TRY(pv.r_up, bumped_pv(surface, cs_r, contract, cfg, 0.0, 0.0));
+  if (can_roll) {
+    ATX_TRY(pv.t_dn, bumped_pv(surface, curves, rolled, cfg, 0.0, 0.0));
+  }
+
+  if (bumps.second_order) {
+    ATX_TRY(pv.sv_pp, bumped_pv(surface, cs_up, contract, cfg, ks_up, dv));
+    ATX_TRY(pv.sv_pm, bumped_pv(surface, cs_up, contract, cfg, ks_up, -dv));
+    ATX_TRY(pv.sv_mp, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, dv));
+    ATX_TRY(pv.sv_mm, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, -dv));
+    if (can_roll) {
+      ATX_TRY(pv.t_s_up, bumped_pv(surface, cs_up, rolled, cfg, ks_up, 0.0));
+      ATX_TRY(pv.t_s_dn, bumped_pv(surface, cs_dn, rolled, cfg, ks_dn, 0.0));
+    }
+  }
+  return Ok(pv);
+}
+
+// Bump sizes are a caller input: validate once, at the boundary.
+[[nodiscard]] bool bumps_valid(const DerivGreekBumps& b) noexcept {
+  return b.spot_rel > 0.0 && b.spot_rel < 1.0 && b.vol_abs > 0.0 && b.rate_abs > 0.0 &&
+         b.time_years > 0.0;
+}
+
+}  // namespace
+
+template <class SurfaceT>
+Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves,
+                                 const DerivContract& contract, const DerivConfig& cfg,
+                                 const DerivGreekBumps& bumps) {
+  if (!bumps_valid(bumps)) {
+    return Err(ErrorCode::InvalidArgument, "greek bump sizes must be > 0 (spot_rel < 1)");
+  }
+  if (!(curves.spot > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "greeks need curves.spot > 0 (delta's divisor)");
+  }
+
+  ATX_TRY(const DerivQuote center, deriv_price(surface, curves, contract, cfg));
+  DerivGreeks g{};
+  g.pv = center.pv;
+  g.quote = center;
+
+  // Fully aged: PV is a discounted constant, so every market greek is exactly
+  // zero and rho is analytic (PV carries df = e^{-rT}). No bumping at all.
+  if (has_flag(center.flags, DerivFlags::FullyAged)) {
+    g.rho = -contract.maturity_t * center.pv;
+    return Ok(g);
+  }
+
+  // Pin an auto-calibrated xi so vega measures the model's response to the vol
+  // shift, not the calibration re-fitting itself (see the header).
+  DerivConfig cfg_pinned = cfg;
+  if (std::isfinite(center.vol_of_vol_used)) {
+    cfg_pinned.vol_of_vol = center.vol_of_vol_used;
+  }
+
+  ATX_TRY(const BumpPvs p,
+          eval_bump_table(surface, curves, contract, cfg_pinned, bumps, center.pv));
+
+  const double ds = bumps.spot_rel * curves.spot;  // absolute spot bump
+  const double dv = bumps.vol_abs;
+  g.delta = (p.s_up - p.s_dn) / (2.0 * ds);
+  g.gamma = (p.s_up - 2.0 * p.c + p.s_dn) / (ds * ds);
+  g.vega = (p.v_up - p.v_dn) / (2.0 * dv);
+  g.volga = (p.v_up - 2.0 * p.c + p.v_dn) / (dv * dv);
+  g.vanna = (p.sv_pp - p.sv_pm - p.sv_mp + p.sv_mm) / (4.0 * ds * dv);
+  g.theta = (p.t_dn - p.c) / bumps.time_years;
+  g.rho = (p.r_up - p.c) / bumps.rate_abs;
+  // charm = d(delta)/dt on the SAME calendar-time convention as theta above:
+  // one day of calendar time is one day of maturity gone.
+  const double delta_rolled = (p.t_s_up - p.t_s_dn) / (2.0 * ds);
+  g.charm = (delta_rolled - g.delta) / bumps.time_years;
+  return Ok(g);
+}
+
 // ── RealizedTracker ────────────────────────────────────────────────────────
 
 Result<RealizedTracker> RealizedTracker::create(double annualization,
@@ -1099,6 +1303,12 @@ template Result<DerivQuote> deriv_price<EssviSurface>(
     const EssviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&);
 template Result<DerivQuote> deriv_price<SviSurface>(
     const SviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&);
+template Result<DerivGreeks> deriv_greeks<EssviSurface>(
+    const EssviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&,
+    const DerivGreekBumps&);
+template Result<DerivGreeks> deriv_greeks<SviSurface>(
+    const SviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&,
+    const DerivGreekBumps&);
 
 // ── E6 / AN-W: PricedSurface-native entry points ───────────────────────────
 
@@ -1226,6 +1436,16 @@ Result<DerivQuote> deriv_price(const PricedSurface& surface, const DerivContract
   ATX_TRY(const CurveSet curves, carry_from(surface, contract.maturity_t));
   const PricedSurfaceStripView view{&surface, &curves, contract.maturity_t};
   return deriv_price(view, curves, contract, cfg);
+}
+
+Result<DerivGreeks> deriv_greeks(const PricedSurface& surface, const DerivContract& contract,
+                                 const DerivConfig& cfg, const DerivGreekBumps& bumps) {
+  // The fitted-range gate is paid ONCE here, on the contract's own maturity;
+  // the theta roll below reuses this same carry with a shorter contract T (see
+  // the header) rather than re-deriving it at T - dt.
+  ATX_TRY(const CurveSet curves, carry_from(surface, contract.maturity_t));
+  const PricedSurfaceStripView view{&surface, &curves, contract.maturity_t};
+  return deriv_greeks(view, curves, contract, cfg, bumps);
 }
 
 }  // namespace atx::vol
