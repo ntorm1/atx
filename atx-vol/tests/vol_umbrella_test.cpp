@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <set>
 #include <string>
 #include <string_view>
@@ -285,6 +286,58 @@ TEST(VolUmbrella, TierAIsClosedUnderInclusion) {
           << ", or break the dependency";
     }
   }
+}
+
+// ── The demoted legacy surface containers (S4-T21 / plan 4.4) ───────────────
+//
+// atx-vol grew four hand-duplicated "stack of fitted slices + linear-in-total-
+// variance time interpolation" containers before `CurveSurface` unified them
+// (see the vol_curve.hpp file header). Plan 4.4 keeps ONE canonical pipeline —
+// CurveSurface (fit) -> PricedSurface / PricedSurfaceView (serve) -> SurfaceSet
+// (portfolio) — and demotes the per-family leftovers to `detail/`, where they
+// carry no stability promise.
+//
+// The demotion is at the TYPE level, and this is where it is enforced: a public
+// header under include/atx/vol/ may not NAME them at all, in code or in prose.
+// Internal code (src/, detail/, tests) may keep using them; that is what the
+// demotion means. Naming one in a public header again — even in a comment —
+// re-exposes it to a caller reading the shipped API and fails here.
+constexpr std::string_view kDemotedSurfaceTypes[] = {
+    "Surface<",       // Surface<Slice> + its SviSurface / EssviSurface aliases
+    "SviSurface",     //   (the aliases are also caught on their own names, so a
+    "EssviSurface",   //    using-declaration cannot smuggle one back in)
+    "C8Surface", "CStarSurface",
+};
+
+std::string read_file(const fs::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  EXPECT_TRUE(in.good()) << "cannot open " << path.string();
+  return std::string{std::istreambuf_iterator<char>(in),
+                     std::istreambuf_iterator<char>()};
+}
+
+TEST(VolUmbrella, DemotedSurfaceContainersAreNotNamedInPublicHeaders) {
+  const fs::path public_dir = include_root() / "atx" / "vol";
+  ASSERT_TRUE(fs::is_directory(public_dir)) << public_dir.string();
+
+  // Non-recursive on purpose: detail/ and simd/ are the internal tiers and are
+  // exactly where the demoted containers are allowed to live.
+  std::size_t headers_scanned = 0;
+  for (const fs::directory_entry& entry : fs::directory_iterator(public_dir)) {
+    if (!entry.is_regular_file()) continue;
+    if (entry.path().extension() != ".hpp") continue;
+    ++headers_scanned;
+    const std::string text = read_file(entry.path());
+    for (const std::string_view type : kDemotedSurfaceTypes) {
+      EXPECT_EQ(text.find(type), std::string::npos)
+          << entry.path().filename().string() << " names the demoted container `"
+          << type << "` — plan 4.4 moved it to include/atx/vol/detail/. Use the "
+             "canonical pipeline (CurveSurface -> PricedSurface / "
+             "PricedSurfaceView -> SurfaceSet) in the public API, and reach for "
+             "the demoted type from internal code only.";
+    }
+  }
+  EXPECT_GT(headers_scanned, 50u) << "public header scan found almost nothing";
 }
 
 }  // namespace

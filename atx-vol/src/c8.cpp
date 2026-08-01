@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/detail/legacy_c8_surface.hpp" // C8Surface (demoted, S4-T21)
 
 namespace atx::vol {
 

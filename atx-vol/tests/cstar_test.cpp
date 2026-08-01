@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "atx/vol/cstar.hpp"
+#include "atx/vol/detail/legacy_cstar_surface.hpp" // CStarSurface (demoted, S4-T21)
 
 // Coverage for the CStar (C16M "modal") evaluator, modal basis, block-gradient
 // slicing, and surface-level calendar projection. Mirrors the C ats-vol tests

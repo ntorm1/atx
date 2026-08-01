@@ -8,6 +8,7 @@
 #include <pybind11/stl.h>
 
 #include "atx/vol/batch.hpp"
+#include "atx/vol/detail/legacy_surface.hpp" // Svi/EssviSurface (demoted, S4-T21)
 #include "atx/vol/surface.hpp"
 #include "atx/vol/vol_surface.hpp"
 #include "result.hpp"

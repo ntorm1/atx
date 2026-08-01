@@ -7,7 +7,7 @@
 // contract they read from and write to. It is deliberately distinct from
 // (and complementary to) `surface.hpp`, which carries only the minimal
 // 3-parameter Gatheral-Jacquier evaluator (`SviSlice`/`EssviSlice`,
-// `svi_w`/`essvi_w`, `Surface<>`) used on the pure pricing hot path.
+// `svi_w`/`essvi_w`) used on the pure pricing hot path.
 //
 // Ported from the C `ats-vol` library (ats_vol_svi.c, ats_vol_essvi.c,
 // ats_vol_surface.c/.h). Relative to `surface.hpp`, the eSSVI slice here
@@ -41,8 +41,8 @@
 // ── Time interpolation ───────────────────────────────────────────────────
 // `VolSurface` answers w(k, T) / iv(k, T) by interpolating LINEARLY IN TOTAL
 // VARIANCE across the two bracketing slices by T (never in sigma directly),
-// with the same Sprint-26 no-extrapolation guards as `Surface<>`: a query
-// past the longest slice, or more than 50% below the shortest, returns NaN.
+// with the Sprint-26 no-extrapolation guards: a query past the longest slice,
+// or more than 50% below the shortest, returns NaN.
 //
 // Thread-safety: `VolSurface` is a plain value type with no cross-instance
 // shared state. Concurrent reads (w/iv/find_exact_T/iv_on_slice) against one

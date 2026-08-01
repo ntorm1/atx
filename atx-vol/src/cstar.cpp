@@ -10,6 +10,7 @@
 #include <utility>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/detail/legacy_cstar_surface.hpp" // CStarSurface (demoted, S4-T21)
 
 namespace atx::vol {
 

@@ -10,6 +10,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/black76.hpp"
+#include "atx/vol/detail/legacy_surface.hpp" // Essvi/SviSurface (demoted, S4-T21)
 #include "atx/vol/priced_surface.hpp" // E6: PricedSurface-native entry points
 #include "atx/vol/detail/strip_grid.hpp"
 #include "atx/vol/surface_parity.hpp" // SliceContext (E6 carry extraction)

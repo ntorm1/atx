@@ -7,6 +7,7 @@
 
 #include "atx/vol/curve.hpp"
 #include "atx/vol/derivatives.hpp"
+#include "atx/vol/detail/legacy_surface.hpp"  // EssviSurface (demoted, S4-T21)
 #include "atx/vol/priced_surface.hpp"  // E6: PricedSurface-native overloads
 #include "atx/vol/surface.hpp"
 #include "support/analytics_fixture.hpp" // E6: testkit::make_flat_surface

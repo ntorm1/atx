@@ -314,9 +314,10 @@ private:
 // An ascending-T stack of polymorphic slices with ONE linear-in-total-variance
 // time interpolation. A query at T locates T among the slice T's, interpolates
 // total variance linearly across the two bracketing slices (never in sigma), and
-// applies the same no-extrapolation guards as `VolSurface`/`Surface<>`: a query
-// past the last slice, or more than 50% below the first, returns NaN. Slices must
-// be pushed in ascending T (the fit driver guarantees it).
+// applies the same Sprint-26 no-extrapolation guards `VolSurface` and the demoted
+// per-family containers do: a query past the last slice, or more than 50% below
+// the first, returns NaN. Slices must be pushed in ascending T (the fit driver
+// guarantees it).
 class CurveSurface {
 public:
   CurveSurface() = default;

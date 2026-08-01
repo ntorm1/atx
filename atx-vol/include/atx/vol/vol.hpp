@@ -128,7 +128,7 @@
 #include "atx/vol/correction.hpp"  // Chebyshev CorrectionCache (Black-76 + correction)
 
 // ── Surfaces (hot-path evaluator + calibration-grade slice types) ───────────
-#include "atx/vol/surface.hpp"     // Surface<>, Svi/Essvi slice, svi_w/essvi_w
+#include "atx/vol/surface.hpp"     // Svi/Essvi slice params, svi_w/essvi_w
 #include "atx/vol/vol_surface.hpp" // VolSurface, EssviParams/SviParams, evaluators
 
 // ── Calibration vocabulary ──────────────────────────────────────────────────
