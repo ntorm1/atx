@@ -18,6 +18,8 @@
 #include "atx/vol/detail/log_emit.hpp"
 #include "atx/vol/research/listed_definitions_cache.hpp" // a real routed call site
 
+#include "log_sink_probe.hpp" // CapturingSink / ScopedSink / StreamCapture
+
 #include <gtest/gtest.h>
 
 #include <atomic>
@@ -50,117 +52,13 @@ namespace {
 
 namespace fs = std::filesystem;
 
-// ── Captured records ────────────────────────────────────────────────────────
-
-struct Record {
-  LogLevel level{};
-  LogStream stream{};
-  std::string message;
-};
-
-// A sink whose capture buffer is mutex-guarded, because `log.hpp` says the
-// callback may be invoked concurrently and the callback — not the library —
-// owns that synchronization. This type is the reference implementation of that
-// contract, and `ConcurrentEmissionIsSerializedByTheCallback` exercises it.
-class CapturingSink {
-public:
-  static void callback(LogLevel level, LogStream stream, std::string_view message,
-                       void *user) noexcept {
-    auto *self = static_cast<CapturingSink *>(user);
-    const std::lock_guard<std::mutex> lock{self->mu_};
-    self->records_.push_back(Record{level, stream, std::string{message}});
-  }
-
-  [[nodiscard]] std::vector<Record> snapshot() {
-    const std::lock_guard<std::mutex> lock{mu_};
-    return records_;
-  }
-
-  [[nodiscard]] std::size_t size() {
-    const std::lock_guard<std::mutex> lock{mu_};
-    return records_.size();
-  }
-
-private:
-  std::mutex mu_;
-  std::vector<Record> records_;
-};
-
-// RAII installer: puts back exactly what it displaced, so one test can never
-// leak a sink into the next (gtest shares one process across the whole binary,
-// and a leaked sink would silently swallow another suite's diagnostics).
-class ScopedSink {
-public:
-  explicit ScopedSink(CapturingSink &sink)
-      : prev_{install_log_sink(&CapturingSink::callback, &sink, &prev_user_)} {}
-  ~ScopedSink() { install_log_sink(prev_, prev_user_); }
-
-  ScopedSink(const ScopedSink &) = delete;
-  ScopedSink &operator=(const ScopedSink &) = delete;
-
-private:
-  void *prev_user_{nullptr};
-  LogSink prev_{nullptr};
-};
-
-// ── Process-stream capture ──────────────────────────────────────────────────
-//
-// Redirects a C stdio stream at the FILE DESCRIPTOR level (not by swapping the
-// FILE*), so it captures writes made through the `stderr`/`stdout` macros from
-// inside the library — which is exactly what the default renderer does and
-// exactly what the pre-sink code did. `_dup` of the original fd is what makes
-// the redirect reversible.
-class StreamCapture {
-public:
-  StreamCapture(std::FILE *stream, fs::path path) : stream_{stream}, path_{std::move(path)} {
-    std::fflush(stream_);
-    saved_fd_ = ATX_DUP(ATX_FILENO(stream_));
-#if defined(_WIN32)
-    ::fopen_s(&sink_file_, path_.string().c_str(), "wb");
-#else
-    sink_file_ = std::fopen(path_.string().c_str(), "wb");
-#endif
-    if (sink_file_ != nullptr) {
-      ATX_DUP2(ATX_FILENO(sink_file_), ATX_FILENO(stream_));
-    }
-  }
-
-  // Stop capturing and return every byte the stream received meanwhile.
-  [[nodiscard]] std::string release() {
-    if (saved_fd_ < 0) {
-      return {};
-    }
-    std::fflush(stream_);
-    ATX_DUP2(saved_fd_, ATX_FILENO(stream_));
-    ATX_CLOSE(saved_fd_);
-    saved_fd_ = -1;
-    if (sink_file_ != nullptr) {
-      std::fclose(sink_file_);
-      sink_file_ = nullptr;
-    }
-    std::ifstream in{path_, std::ios::binary};
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    return ss.str();
-  }
-
-  ~StreamCapture() { static_cast<void>(release()); }
-
-  StreamCapture(const StreamCapture &) = delete;
-  StreamCapture &operator=(const StreamCapture &) = delete;
-
-private:
-  std::FILE *stream_{nullptr};
-  fs::path path_;
-  std::FILE *sink_file_{nullptr};
-  int saved_fd_{-1};
-};
+using atx::vol::testing::CapturingSink;
+using atx::vol::testing::Record;
+using atx::vol::testing::ScopedSink;
+using atx::vol::testing::StreamCapture;
 
 [[nodiscard]] fs::path scratch_file(std::string_view stem) {
-  const fs::path dir = fs::temp_directory_path() / "atx-vol-log-sink-test";
-  std::error_code ec;
-  fs::create_directories(dir, ec);
-  return dir / (std::string{stem} + ".txt");
+  return atx::vol::testing::sink_scratch_file(stem);
 }
 
 } // namespace

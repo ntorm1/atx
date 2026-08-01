@@ -13,11 +13,17 @@
 //   5. Granularity      — coarse recorded nav/attribution == fine at samples.
 //   6. ExpirySettlement — exact expiry observation settles at intrinsic and drops.
 
+#include "atx/vol/log.hpp"
+#include "atx/vol/research/listed_definitions_cache.hpp" // host-integration emitting path
+
+#include "log_sink_probe.hpp" // CapturingSink / ScopedSink / StreamCapture
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic> // plan 5.5 cancellation flag
+#include <fstream> // host-integration definitions fixture
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -600,6 +606,93 @@ TEST(BacktestCancellation, AnUntriggeredTokenIsBitIdenticalToNoToken) {
   ASSERT_TRUE(tokened.has_value()) << tokened.error().to_string();
 
   expect_result_bit_identical(*plain, *tokened);
+}
+
+// ── 0c. EXIT CRITERION: a host embedding atx-vol (S5-T26) ──────────────────
+//
+// The sprint's exit criterion for items 5.4 + 5.5 is a single demonstration that
+// a HOST can do both things a host needs: take ownership of every diagnostic the
+// library emits, and stop a running backtest. Testing them separately (as the
+// suites above do) proves each mechanism; this proves they compose, which is the
+// thing an embedder actually depends on.
+//
+// The host below:
+//   1. installs a sink and redirects BOTH process streams, so any library write
+//      that escapes the sink is caught rather than silently scrolling past;
+//   2. drives a real emitting library path and takes delivery of the record;
+//   3. runs a backtest and cancels it from its own step observer;
+//   4. asserts the run stopped with Cancelled, and that across the whole episode
+//      NOTHING reached stdout or stderr.
+TEST(HostIntegration, CapturesAllLibraryOutputAndCancelsARunningBacktest) {
+  const fs::path dir = fresh_dir("host-integration");
+  const int n = 8;
+  const CorpusManifest man = make_evolving_corpus(dir, "SPX", n);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  // A definitions TSV whose cache lookup must MISS — a genuine routed library
+  // diagnostic for the host to capture.
+  const fs::path defs = dir / "definitions.tsv";
+  {
+    std::ofstream out{defs, std::ios::binary};
+    out << "host-integration-probe\n";
+  }
+
+  atx::vol::testing::CapturingSink sink;
+  std::atomic<bool> stop{false};
+  std::size_t steps_seen = 0;
+  Result<BacktestResult> run = Err(ErrorCode::Unknown, "not run");
+
+  std::string leaked_stdout;
+  std::string leaked_stderr;
+  {
+    atx::vol::testing::StreamCapture out_capture{
+        stdout, atx::vol::testing::sink_scratch_file("host-stdout")};
+    atx::vol::testing::StreamCapture err_capture{
+        stderr, atx::vol::testing::sink_scratch_file("host-stderr")};
+    {
+      const atx::vol::testing::ScopedSink installed{sink};
+
+      // (2) a real emitting path
+      static_cast<void>(
+          read_listed_definitions_cached(defs.string(), (dir / "defcache").string()));
+
+      // (3) a running backtest, cancelled by the host mid-flight
+      RunConfig cfg{};
+      cfg.cancel = CancelToken{stop};
+      cfg.step_observer = [&](const StepEvent &) -> Status {
+        ++steps_seen;
+        if (steps_seen == 3u) {
+          stop.store(true, std::memory_order_relaxed);
+        }
+        return atx::core::Ok();
+      };
+      OpenThenCloseStrategy strat{kBaseNow + 120 * kDayNs};
+      run = run_backtest(*clock, strat, cfg);
+    }
+    leaked_stdout = out_capture.release();
+    leaked_stderr = err_capture.release();
+  }
+
+  // (4a) the backtest stopped, and said so precisely.
+  ASSERT_FALSE(run.has_value()) << "the host cancelled the run but got a result back";
+  EXPECT_EQ(run.error().code(), ErrorCode::Cancelled);
+  EXPECT_LT(steps_seen, static_cast<std::size_t>(n)) << "the run did not stop early";
+
+  // (4b) the host received the library's diagnostics...
+  const std::vector<atx::vol::testing::Record> records = sink.snapshot();
+  bool saw_definitions_record = false;
+  for (const atx::vol::testing::Record &r : records) {
+    if (r.message.rfind("listed definitions cache:", 0) == 0) {
+      saw_definitions_record = true;
+    }
+    EXPECT_EQ(r.message.find('\n'), std::string::npos) << "records must be single lines";
+  }
+  EXPECT_TRUE(saw_definitions_record) << "the host did not receive a known library diagnostic";
+
+  // ...and the process streams stayed completely silent throughout.
+  EXPECT_EQ(leaked_stdout, "") << "library output escaped to stdout";
+  EXPECT_EQ(leaked_stderr, "") << "library output escaped to stderr";
 }
 
 // ── 1. Load-once ────────────────────────────────────────────────────────────
