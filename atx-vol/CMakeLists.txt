@@ -136,9 +136,35 @@ file(GLOB ATX_VOL_SIMD_AVX2 CONFIGURE_DEPENDS
 set_source_files_properties(${ATX_VOL_SIMD_AVX2}
     PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma")
 
+# ---- Generated version header (plan 5.3) ------------------------------------
+# `project(atx VERSION ...)` is the single source of truth for the atx-vol
+# version. It reaches C++ through exactly one generated file, which the Tier-A
+# atx/vol/version.hpp includes; no header or .cpp restates the number.
+#
+# Generated into its OWN root (generated-include/) rather than into the source
+# include/ tree, so `git status` stays clean and two build dirs at different
+# versions cannot fight over one file. The install rule that ships it lives with
+# the rest of the packaging in cmake/atx-vol-install.cmake; the INSTALL_INTERFACE
+# include dir below already covers it, because it installs to the same
+# atx/vol/detail/ prefix the source-tree detail headers land in.
+set(ATX_VOL_GENERATED_INCLUDE "${CMAKE_CURRENT_BINARY_DIR}/generated-include")
+# cmake/atx-vol-install.cmake needs this path to ship the generated header, and it
+# is include()d at ROOT scope (after every add_subdirectory, because the export set
+# spans modules), so hand the value up one level explicitly -- a plain set() here
+# is invisible there.
+set(ATX_VOL_GENERATED_INCLUDE "${ATX_VOL_GENERATED_INCLUDE}" PARENT_SCOPE)
+# Relative to THIS directory, not CMAKE_SOURCE_DIR: atx-vol/python/CMakeLists.txt
+# add_subdirectory()s the monorepo from its own project(), so CMAKE_SOURCE_DIR is
+# not always the repo root, but atx-vol/../cmake always is the right place.
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/atx-vol-version.hpp.in"
+    "${ATX_VOL_GENERATED_INCLUDE}/atx/vol/detail/version_generated.hpp"
+    @ONLY)
+
 target_include_directories(atx-vol
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${ATX_VOL_GENERATED_INCLUDE}>
         $<INSTALL_INTERFACE:include>
 )
 

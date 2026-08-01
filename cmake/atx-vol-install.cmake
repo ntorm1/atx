@@ -99,6 +99,14 @@ install(TARGETS
 # targets name. Nothing under tests/ or detail-of-another-module ships.
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/atx-vol/include/"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+# The one atx-vol header that is generated rather than checked in: plan 5.3's
+# version_generated.hpp, configure_file'd from project(VERSION) into atx-vol's
+# binary dir (atx-vol/CMakeLists.txt). It lands in the same atx/vol/detail/
+# prefix as the source-tree detail headers, so the installed include tree is
+# indistinguishable from the in-tree one and atx/vol/version.hpp resolves it with
+# the same quoted include either way.
+install(FILES "${ATX_VOL_GENERATED_INCLUDE}/atx/vol/detail/version_generated.hpp"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/atx/vol/detail")
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/atx-vol/tools/include/"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/atx-vol/research/include/"
@@ -119,12 +127,21 @@ configure_package_config_file(
     "${CMAKE_CURRENT_BINARY_DIR}/atx-volConfig.cmake"
     INSTALL_DESTINATION "${ATX_VOL_INSTALL_CMAKEDIR}")
 
-# Pre-1.0: a minor bump is a breaking bump, so SameMinorVersion is the honest
-# compatibility statement for 0.y.z.
+# At 1.0.0 the tiering IS the compatibility statement (plan 5.3, and see the API
+# stability section of atx-vol/README.md): Tier-A -- the `atx/vol/vol.hpp` set --
+# is frozen for the 1.x line, so a 1.y consumer builds against any 1.z >= y. That
+# is exactly SameMajorVersion. It was SameMinorVersion while the version was 0.y.z,
+# where semver gives a minor bump the meaning a major bump has now; keeping that
+# would refuse a 1.1 package to a `find_package(atx-vol 1.0)` consumer for whom
+# nothing frozen had changed.
+#
+# The version itself comes from PROJECT_VERSION -- `project(atx VERSION ...)` --
+# the same single source of truth atx/vol/version.hpp is generated from, so the
+# package version and the compiled `atx::vol::version()` cannot disagree.
 write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/atx-volConfigVersion.cmake"
     VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMinorVersion)
+    COMPATIBILITY SameMajorVersion)
 
 install(FILES
             "${CMAKE_CURRENT_BINARY_DIR}/atx-volConfig.cmake"

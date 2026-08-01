@@ -1,0 +1,20 @@
+#pragma once
+
+// GENERATED FILE — DO NOT EDIT AND DO NOT COMMIT ITS OUTPUT.
+//
+// configure_file()'d from cmake/atx-vol-version.hpp.in into
+// <build>/atx-vol/generated-include/atx/vol/detail/version_generated.hpp at
+// CMake configure time. The values come from `project(atx VERSION ...)` in the
+// root CMakeLists, which plan 5.3 makes the single source of truth for the
+// atx-vol version.
+//
+// This lives under detail/ because it is a build seam, not API: the stable
+// spelling is `atx/vol/version.hpp`, which is Tier-A and publishes the
+// ATX_VOL_VERSION* macros and atx::vol::kVersion* constants from these four
+// defines. It ships with the package (detail/ is installed) only because
+// version.hpp includes it; nothing else should.
+
+#define ATX_VOL_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define ATX_VOL_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define ATX_VOL_VERSION_PATCH @PROJECT_VERSION_PATCH@
+#define ATX_VOL_VERSION_STRING "@PROJECT_VERSION@"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata
 import math
 import threading
 
@@ -10,7 +11,11 @@ import atxvol
 
 
 def test_version_and_black76_iv_roundtrip() -> None:
-    assert atxvol.__version__ == "0.1.0"
+    # `atxvol.__version__` is the COMPILED `atx::vol::version()`, which plan 5.3
+    # single-sources from `project(atx VERSION ...)`. Assert it against the wheel's
+    # declared metadata rather than a literal, so this line can never become one
+    # more copy of the version that has to be edited by hand.
+    assert atxvol.__version__ == importlib.metadata.version("atxvol")
     f, k, t, sigma, r = 102.0, 100.0, 0.5, 0.27, 0.04
     df = math.exp(-r * t)
     price = atxvol.black76_price(f, k, t, sigma, df, atxvol.Side.CALL)
