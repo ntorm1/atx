@@ -1,5 +1,6 @@
 add_executable(atx-vol-tests
     version_test.cpp
+    log_sink_test.cpp
     black76_test.cpp
     greeks_test.cpp
     implied_vol_test.cpp
