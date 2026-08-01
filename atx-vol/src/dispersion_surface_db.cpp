@@ -14,7 +14,9 @@
 #include <utility>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/backtest.hpp"            // Clock (from_surface_db / between)
 #include "atx/vol/detail/archive_util.hpp" // canonicalize_symbol (manifest spelling)
+#include "atx/vol/dispersion_workflow.hpp" // read_universe (UniverseRow TSV)
 
 namespace atx::vol {
 
@@ -85,6 +87,26 @@ bool parse_enum(std::string_view text, const std::pair<std::string_view, E> (&ta
 [[nodiscard]] std::string at(std::string_view key, std::string_view value, std::size_t line) {
   return "key '" + std::string(key) + "' value '" + std::string(value) + "' (line " +
          std::to_string(line) + ")";
+}
+
+// Re-wrap a stage failure with the entry point and the STAGE that produced it,
+// keeping the original code and message. Five distinct calls can fail inside
+// `run_surface_db_dispersion_backtest`, and several of them (NotFound from a
+// missing db root vs. a missing universe file; InvalidArgument from an empty
+// window vs. an absent index) share a code — without the stage the operator
+// cannot tell which knob to fix. The underlying message is appended rather than
+// replaced so `Clock::between`'s available-range text and
+// `universe_from_surface_db`'s symbol name survive intact.
+[[nodiscard]] atx::core::Error staged(std::string_view stage, const atx::core::Error &error) {
+  std::string text = "run_surface_db_dispersion_backtest: " + std::string(stage);
+  // `Error::message()` is optional (an Error may carry a code alone), so the
+  // separator is conditional rather than unconditional — a dangling ": " would
+  // read as a truncated message.
+  if (!error.message().empty()) {
+    text += ": ";
+    text += error.message();
+  }
+  return atx::core::Error{error.code(), std::move(text)};
 }
 
 } // namespace
@@ -258,6 +280,56 @@ Result<DispersionUniverse> universe_from_surface_db(const SurfaceDb &db,
       member.weight = weight;
   }
   return Ok(std::move(universe));
+}
+
+Result<RunOutcome> run_surface_db_dispersion_backtest(const SurfaceDbDispersionSpec &spec) {
+  // Stage 1. The db. `SurfaceDb::open`'s own message is "SurfaceDb: manifest not
+  // found" — true but unattributable when a driver holds several roots — so the
+  // root is named here.
+  auto db = SurfaceDb::open(spec.db_root);
+  if (!db)
+    return Err(staged("SurfaceDb::open('" + spec.db_root + "')", db.error()));
+
+  // Stage 2. The full timeline: one ref per partition, ascending by ISO key.
+  auto full = Clock::from_surface_db(*db);
+  if (!full)
+    return Err(staged("Clock::from_surface_db", full.error()));
+
+  // Stage 3. The window. Out-of-range ends CLAMP; a window selecting NO partition
+  // is InvalidArgument whose message names the db's available range, and that text
+  // is what makes the failure self-serve, so it is appended, not replaced.
+  auto clock = full->between(spec.date_lo, spec.date_hi);
+  if (!clock)
+    return Err(staged("Clock::between('" + spec.date_lo + "','" + spec.date_hi + "')",
+                      clock.error()));
+
+  // Stage 4. The basket. The two routes are mutually exclusive and are chosen by
+  // `universe_path` ALONE: a failure on the point-in-time route is returned, never
+  // downgraded to the equal-weight route, because silently substituting a basket
+  // the operator did not author is the one failure mode a backtest cannot survive.
+  if (spec.universe_path) {
+    auto rows = read_universe(*spec.universe_path);
+    if (!rows)
+      return Err(staged("read_universe('" + spec.universe_path->string() + "')", rows.error()));
+    // `make_dispersion_backtest_strategy` returns a DispersionStrategy BY VALUE;
+    // it must outlive the run, so it is a named local bound to `run_timed`'s
+    // `IStrategy&` parameter rather than a temporary in the call expression.
+    DispersionStrategy strategy =
+        make_dispersion_backtest_strategy(std::move(*rows), spec.config, spec.index_symbol);
+    // `spec.config.run` (not `spec.config`): this is the IStrategy engine slot,
+    // and the strategy already carries the dispersion sizing/lifecycle/hedge that
+    // the rest of `spec.config` describes.
+    return run_timed(*clock, strategy, spec.config.run);
+  }
+
+  auto universe = universe_from_surface_db(*db, spec.index_symbol);
+  if (!universe)
+    return Err(staged("universe_from_surface_db", universe.error()));
+  // Stage 5. The dispersion engine slot, which composes the strategy itself. NOTE
+  // that no `SnapshotCache` is installed in `spec.config.run`: a null
+  // `snapshot_cache` is what makes the engine build its PRIVATE cache, the only
+  // one permitted to map archives `Sealed` — see the header.
+  return run_timed(*clock, std::move(*universe), spec.config);
 }
 
 } // namespace atx::vol

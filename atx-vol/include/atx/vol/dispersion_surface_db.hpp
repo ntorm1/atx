@@ -10,8 +10,11 @@
 // one file format for both routes.
 
 #include <filesystem>
+#include <optional>
+#include <string>
 #include <string_view>
 
+#include "atx/vol/backtest_driver.hpp"     // RunOutcome (result + tearsheet + EngineRunStats)
 #include "atx/vol/dispersion.hpp"          // DispersionUniverse / DispersionMember
 #include "atx/vol/dispersion_backtest.hpp" // DispersionBacktestConfig
 #include "atx/vol/surface_db.hpp"          // SurfaceDb (manifest symbol table)
@@ -106,5 +109,54 @@ read_dispersion_backtest_config(const std::filesystem::path &path);
 /// — not this function's.
 [[nodiscard]] Result<DispersionUniverse> universe_from_surface_db(const SurfaceDb &db,
                                                                   std::string_view index_symbol);
+
+/// Everything the surface-db route needs to run: WHICH db, WHICH window, WHICH
+/// index, optionally WHICH basket, and the strategy config. There is deliberately
+/// no corpus-build input — the db IS the corpus — and no output path, because
+/// persistence is the caller's (see examples/surface_db_dispersion_backtest.cpp).
+struct SurfaceDbDispersionSpec {
+  std::string db_root;   // required; SurfaceDb::open's root
+  std::string date_lo;   // required; ISO "YYYY-MM-DD", INCLUSIVE
+  std::string date_hi;   // required; ISO "YYYY-MM-DD", INCLUSIVE
+  std::string index_symbol{"SPY"};
+  /// Absent (the default) => the EQUAL-WEIGHT route: the basket is derived from
+  /// the db manifest by `universe_from_surface_db` and frozen for the whole run.
+  /// Present => the POINT-IN-TIME route: a `UniverseRow` TSV read by
+  /// `read_universe`, re-resolved per step, so a mid-window reconstitution (or a
+  /// removal) is honoured. The two routes build DIFFERENT books; which one runs
+  /// is decided by this field alone and never by a fallback.
+  std::optional<std::filesystem::path> universe_path;
+  DispersionBacktestConfig config{}; // from read_dispersion_backtest_config, or defaults
+};
+
+/// The one-call surface-db dispersion backtest: open the db, build its clock,
+/// window it to [date_lo, date_hi], resolve the universe by the route
+/// `spec.universe_path` selects, and hand the whole thing to `run_timed` — so the
+/// caller gets the engine's untouched `BacktestResult`, its `TearSheet` and the
+/// `EngineRunStats` whose `wall_clock_ms` brackets the engine call ALONE.
+///
+/// EVERY stage failure is returned, none is absorbed. In particular an absent
+/// `universe_path` file is an error rather than a silent fall-through to the
+/// equal-weight route: falling through would run a book the operator did not
+/// author and report it as a success. Each error is re-wrapped with the stage
+/// that produced it and this function's name, preserving the underlying
+/// `ErrorCode` and message — so "which of five things went wrong" is answerable
+/// from the message alone.
+///
+/// EMPTY WINDOW IS AN ERROR, not an empty run: `Clock::between` rejects a window
+/// selecting no partition and names the db's available range, which propagates
+/// out of here verbatim. A zero-row tearsheet would otherwise read as "the
+/// strategy did nothing" instead of "this db has no such dates".
+///
+/// NO SHARED SNAPSHOT CACHE IS INSTALLED, and callers should not install one in
+/// `spec.config.run.snapshot_cache`. The engine builds a PRIVATE cache exactly
+/// when that field is null, and only the private cache may map its archives with
+/// `ArchiveBacking::Sealed` (backtest.cpp: a caller-supplied cache can outlive
+/// the run and be shared across books, so it must stay Mutable). A SurfaceDb
+/// replay is a read-only corpus, which is precisely the case Sealed exists for,
+/// so leaving the field null is the perf-correct default here — supplying a cache
+/// costs a whole-archive copy per date and gains nothing on a single-pass run.
+[[nodiscard]] Result<RunOutcome>
+run_surface_db_dispersion_backtest(const SurfaceDbDispersionSpec &spec);
 
 } // namespace atx::vol

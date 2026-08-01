@@ -48,6 +48,25 @@
 //                                           weights); how few names is too few is
 //                                           the caller's min_names policy.
 //
+// Task 4 composes all three into `run_surface_db_dispersion_backtest`, the
+// one-call entry point (db root + date window -> timed RunOutcome):
+//
+//  11. EndToEndOnSyntheticDbWindow       — the equal-weight route runs a real
+//                                          dispersion book over EXACTLY the
+//                                          window's sessions, prices lots, and
+//                                          leaves `run.snapshot_cache` null (the
+//                                          Sealed-mmap perf lock).
+//  12. EndToEndRejectsEmptyWindowWithAvailableRange — a window outside the corpus
+//                                          is InvalidArgument naming the range,
+//                                          propagated from `Clock::between`.
+//  13. EndToEndUniversePathRoutesThroughReadUniverse — a `universe_path` spec
+//                                          takes the point-in-time route and the
+//                                          authored weights actually move the
+//                                          result off the equal-weight one.
+//  14. EndToEndPropagatesStageErrors      — every failing stage (open, between,
+//                                          read_universe, universe derivation)
+//                                          surfaces its code AND the offender.
+//
 // Fixtures are synthetic eSSVI surfaces written into a fresh SurfaceDb under
 // %TEMP% (make_test_db below), plus config text written to throwaway %TEMP%
 // files (write_temp_file); nothing here reads the real data lake.
@@ -232,6 +251,37 @@ constexpr std::int64_t kDayNs = 86'400'000'000'000LL;
 const std::vector<std::string_view> kDates = {"2026-01-05", "2026-01-06", "2026-01-07",
                                               "2026-01-08"};
 const std::vector<std::string_view> kSymbols = {"SPY", "AAPL"};
+
+// Task 4's run corpus: six BUSINESS days, 2026-01-05 (Mon) .. 2026-01-12 (Mon),
+// so the weekend of the 10th/11th is simply absent — a real db's partition set
+// has exactly that shape, and a window whose ends straddle a gap is the case a
+// naive "count the days between lo and hi" would get wrong.
+const std::vector<std::string_view> kRunDates = {"2026-01-05", "2026-01-06", "2026-01-07",
+                                                 "2026-01-08", "2026-01-09", "2026-01-12"};
+// SPY plus four basket names, so `min_names = 2` is genuinely satisfied by a
+// basket the run had to derive rather than by the only name available.
+const std::vector<std::string_view> kRunSymbols = {"SPY", "AAPL", "MSFT", "NVDA", "TSLA"};
+
+// A spec pointed at `root` over the window the E2E tests share. Threads pinned
+// to 1: this is a correctness gate, and the engine's bit-identity-across-threads
+// contract is pinned elsewhere — here it only buys noise.
+[[nodiscard]] SurfaceDbDispersionSpec run_spec(const fs::path &root, std::string_view lo,
+                                               std::string_view hi) {
+  SurfaceDbDispersionSpec spec;
+  spec.db_root = root.string();
+  spec.date_lo = std::string(lo);
+  spec.date_hi = std::string(hi);
+  spec.config.min_names = 2;
+  spec.config.entry_every_n = 1;
+  spec.config.run.price.n_threads = 1;
+  return spec;
+}
+
+[[nodiscard]] double peak_open_lots(const BacktestResult &r) {
+  return r.n_open_lots.empty()
+             ? 0.0
+             : *std::max_element(r.n_open_lots.begin(), r.n_open_lots.end());
+}
 
 } // namespace
 
@@ -598,5 +648,182 @@ TEST(SurfaceDbDispersionBacktest, UniverseFromDbIndexOnlyManifestYieldsEmptyBask
   ASSERT_TRUE(u.has_value()) << (u.has_value() ? std::string{} : u.error().to_string());
   EXPECT_EQ(u->index.symbol, "SPY");
   EXPECT_TRUE(u->names.empty());
+  fs::remove_all(root);
+}
+
+// ── Task 4: run_surface_db_dispersion_backtest ──────────────────────────────
+
+TEST(SurfaceDbDispersionBacktest, EndToEndOnSyntheticDbWindow) {
+  const auto root = test_root("e2e_window");
+  auto db = make_test_db(root, kRunDates, kRunSymbols);
+  ASSERT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
+
+  SurfaceDbDispersionSpec spec = run_spec(root, "2026-01-06", "2026-01-09");
+  const auto out = run_surface_db_dispersion_backtest(spec);
+  ASSERT_TRUE(out.has_value()) << (out.has_value() ? std::string{} : out.error().to_string());
+
+  // EXACTLY the window's sessions: a fresh run records the inception row plus one
+  // per subsequent ref, so the row count is the windowed clock's ref count. The
+  // corpus has six partitions; seeing six here would mean the window was dropped.
+  EXPECT_EQ(out->result.size(), 4u);
+  ASSERT_EQ(out->result.date.size(), 4u);
+  EXPECT_EQ(out->result.date.front(), "2026-01-06");
+  EXPECT_EQ(out->result.date.back(), "2026-01-09");
+  for (const std::string &d : out->result.date) {
+    EXPECT_NE(d, "2026-01-05"); // before the window
+    EXPECT_NE(d, "2026-01-12"); // after it
+  }
+  for (const double nav : out->result.nav) {
+    EXPECT_TRUE(std::isfinite(nav)) << nav;
+  }
+  EXPECT_GT(out->stats.n_steps, 0u);
+  EXPECT_EQ(out->stats.n_steps, static_cast<std::uint64_t>(out->result.size()));
+  EXPECT_GT(out->stats.wall_clock_ms, 0.0);
+  EXPECT_TRUE(std::isfinite(out->sheet.total_return));
+
+  // TEETH. A run that built no book at all would satisfy every assertion above
+  // (four rows of zeros), so the gate that this is a real dispersion backtest is
+  // that lots were opened and the book carried vega.
+  EXPECT_GT(peak_open_lots(out->result), 0.0);
+  // `gross_vega_abs` is populated by `run_backtest` and EMPTY on any result that
+  // did not come from it (backtest.hpp), so the emptiness check is the assertion
+  // that this really is an engine result — and it keeps max_element off end().
+  ASSERT_FALSE(out->result.gross_vega_abs.empty());
+  EXPECT_GT(*std::max_element(out->result.gross_vega_abs.begin(), out->result.gross_vega_abs.end()),
+            0.0);
+
+  // PERF LOCK (the plan's locked decision). The route must NOT install a shared
+  // SnapshotCache: a null `run.snapshot_cache` is what makes the engine build its
+  // PRIVATE cache, and only the private one may mmap `ArchiveBacking::Sealed`
+  // (backtest.cpp). `run_timed` reports `cfg.run.snapshot_cache->stats()` when a
+  // shared cache was supplied and a ZEROED SnapshotCacheStats otherwise, so an
+  // installed cache would show nonzero loads over a four-date run.
+  EXPECT_EQ(spec.config.run.snapshot_cache, nullptr);
+  EXPECT_EQ(out->stats.cache.loads, 0u);
+  EXPECT_EQ(out->stats.cache.hits, 0u);
+
+  // A single-session window is legal and yields exactly the inception row.
+  const auto one = run_surface_db_dispersion_backtest(run_spec(root, "2026-01-07", "2026-01-07"));
+  ASSERT_TRUE(one.has_value()) << (one.has_value() ? std::string{} : one.error().to_string());
+  ASSERT_EQ(one->result.size(), 1u);
+  EXPECT_EQ(one->result.date.front(), "2026-01-07");
+  fs::remove_all(root);
+}
+
+TEST(SurfaceDbDispersionBacktest, EndToEndRejectsEmptyWindowWithAvailableRange) {
+  const auto root = test_root("e2e_empty_window");
+  auto db = make_test_db(root, kRunDates, kRunSymbols);
+  ASSERT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
+
+  // A window the corpus does not cover is an ERROR, not an empty run: a zero-row
+  // tearsheet would read as "the strategy did nothing" rather than "you asked for
+  // dates this db has none of".
+  const auto out = run_surface_db_dispersion_backtest(run_spec(root, "2027-01-01", "2027-02-01"));
+  ASSERT_FALSE(out.has_value());
+  EXPECT_EQ(out.error().code(), ErrorCode::InvalidArgument);
+  // `Clock::between`'s available-range text must survive the composition, so the
+  // operator can correct the window from the message alone.
+  EXPECT_NE(out.error().message().find("2026-01-05"), std::string::npos) << out.error().message();
+  EXPECT_NE(out.error().message().find("2026-01-12"), std::string::npos) << out.error().message();
+  fs::remove_all(root);
+}
+
+TEST(SurfaceDbDispersionBacktest, EndToEndUniversePathRoutesThroughReadUniverse) {
+  const auto root = test_root("e2e_universe_path");
+  auto db = make_test_db(root, kRunDates, kRunSymbols);
+  ASSERT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
+
+  // Two of the four names, deliberately UNEQUALLY weighted and deliberately NOT
+  // the equal-weight basket the manifest would derive.
+  const auto universe = write_temp_file("effective_date\tsymbol\traw_weight\tsource\tas_of\n"
+                                        "2026-01-01\tAAPL\t0.75\ttest\t2026-01-01\n"
+                                        "2026-01-01\tMSFT\t0.25\ttest\t2026-01-01\n");
+  SurfaceDbDispersionSpec spec = run_spec(root, "2026-01-06", "2026-01-09");
+  spec.universe_path = universe;
+  const auto out = run_surface_db_dispersion_backtest(spec);
+  ASSERT_TRUE(out.has_value()) << (out.has_value() ? std::string{} : out.error().to_string());
+  EXPECT_EQ(out->result.size(), 4u);
+  EXPECT_EQ(out->result.date.front(), "2026-01-06");
+  EXPECT_GT(peak_open_lots(out->result), 0.0);
+
+  // TEETH: the file is READ, not merely accepted. A two-name, 75/25 basket cannot
+  // produce the same NAV track as the manifest's four-name equal-weight one, so an
+  // implementation that ignored `universe_path` and fell through to the
+  // equal-weight route would match here.
+  const auto equal = run_surface_db_dispersion_backtest(run_spec(root, "2026-01-06", "2026-01-09"));
+  ASSERT_TRUE(equal.has_value()) << (equal.has_value() ? std::string{} : equal.error().to_string());
+  ASSERT_EQ(equal->result.nav.size(), out->result.nav.size());
+  EXPECT_NE(equal->result.nav.back(), out->result.nav.back());
+
+  fs::remove(universe);
+  fs::remove_all(root);
+}
+
+TEST(SurfaceDbDispersionBacktest, EndToEndPropagatesStageErrors) {
+  const auto root = test_root("e2e_stage_errors");
+  auto db = make_test_db(root, kRunDates, kRunSymbols);
+  ASSERT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
+
+  // Stage 1 — SurfaceDb::open. A db root that does not exist must name itself, so
+  // a typo'd --db is self-diagnosing rather than "NotFound".
+  const auto absent_root = (fs::temp_directory_path() / "atx_surface_db_disp_no_such_db").string();
+  fs::remove_all(absent_root);
+  SurfaceDbDispersionSpec missing_db = run_spec(root, "2026-01-06", "2026-01-09");
+  missing_db.db_root = absent_root;
+  const auto no_db = run_surface_db_dispersion_backtest(missing_db);
+  ASSERT_FALSE(no_db.has_value());
+  EXPECT_NE(no_db.error().message().find("SurfaceDb::open"), std::string::npos)
+      << no_db.error().message();
+  EXPECT_NE(no_db.error().message().find("atx_surface_db_disp_no_such_db"), std::string::npos)
+      << no_db.error().message();
+
+  // Stage 2 — Clock::from_surface_db. A db whose manifest exists but holds NO
+  // partition has no timeline at all. Without the stage label its InvalidArgument
+  // would read like a bad window, sending the operator to fix `--from/--to` on a
+  // db that has no dates whatsoever.
+  const auto bare_root = test_root("e2e_no_partitions");
+  {
+    auto bare = SurfaceDb::create(bare_root.string());
+    ASSERT_TRUE(bare.has_value()) << (bare.has_value() ? std::string{} : bare.error().to_string());
+  }
+  const auto no_clock =
+      run_surface_db_dispersion_backtest(run_spec(bare_root, "2026-01-06", "2026-01-09"));
+  ASSERT_FALSE(no_clock.has_value());
+  EXPECT_NE(no_clock.error().message().find("Clock::from_surface_db"), std::string::npos)
+      << no_clock.error().message();
+  fs::remove_all(bare_root);
+
+  // Stage 4a — read_universe. A universe path that does not exist is an error, not
+  // a silent fallback to the equal-weight route (which would run a DIFFERENT book
+  // than the operator authored and never say so).
+  SurfaceDbDispersionSpec missing_universe = run_spec(root, "2026-01-06", "2026-01-09");
+  missing_universe.universe_path = fs::temp_directory_path() / "atx_disp_universe_absent.tsv";
+  fs::remove(*missing_universe.universe_path);
+  const auto no_universe = run_surface_db_dispersion_backtest(missing_universe);
+  ASSERT_FALSE(no_universe.has_value());
+  EXPECT_NE(no_universe.error().message().find("read_universe"), std::string::npos)
+      << no_universe.error().message();
+  EXPECT_NE(no_universe.error().message().find("atx_disp_universe_absent"), std::string::npos)
+      << no_universe.error().message();
+
+  // Stage 4b — universe_from_surface_db. An index the manifest does not carry is
+  // InvalidArgument naming the caller's spelling.
+  SurfaceDbDispersionSpec bad_index = run_spec(root, "2026-01-06", "2026-01-09");
+  bad_index.index_symbol = "QQQ";
+  const auto no_index = run_surface_db_dispersion_backtest(bad_index);
+  ASSERT_FALSE(no_index.has_value());
+  EXPECT_EQ(no_index.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(no_index.error().message().find("universe_from_surface_db"), std::string::npos)
+      << no_index.error().message();
+  EXPECT_NE(no_index.error().message().find("QQQ"), std::string::npos) << no_index.error().message();
+
+  // Every stage failure names the ENTRY POINT as well as the stage: these errors
+  // reach an operator through a CLI that may have run several things, and "which
+  // call produced this" must be answerable from the message alone.
+  for (const std::string &m : {no_db.error().message(), no_clock.error().message(),
+                               no_universe.error().message(), no_index.error().message()}) {
+    EXPECT_NE(m.find("run_surface_db_dispersion_backtest"), std::string::npos) << m;
+  }
+
   fs::remove_all(root);
 }
