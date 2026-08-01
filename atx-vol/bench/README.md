@@ -67,7 +67,7 @@ rows therefore always emit `unique_contracts_per_s`, `positions_per_s`,
 
 ## Algorithm counters (`ATX_VOL_COUNTERS`, P0.2)
 
-An opt-in, compile-time facility (`atx/vol/counters.hpp`) that counts boundary
+An opt-in, compile-time facility (`atx/vol/detail/counters.hpp`) that counts boundary
 solves, Newton/fixed-point sweeps, premium-quadrature evals, norm_cdf/log/exp
 calls, correction-cache hits/clamps/fallbacks, frame allocations/bytes, and worker
 launches. **Default OFF: `ATX_VOL_COUNT(...)` expands to `((void)0)` — zero runtime

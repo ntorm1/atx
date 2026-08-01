@@ -15,9 +15,12 @@ does NOT edit the kernel TUs; it consumes the entry points below.
 
 ## STATUS — K3 + K4 SHIPPED (dark), what L4 wires against
 
-The seam below is now IMPLEMENTED (SHAs in `.superpowers/sdd/sw-solve-wall/reports/
-kernel-stage2.md`); this section is the authoritative entry-point + mask contract; the
-sections after it are the original design rationale.
+The seam below is now IMPLEMENTED. (The SHAs were recorded in a sprint working
+note, `.superpowers/sdd/sw-solve-wall/reports/kernel-stage2.md`, which is **not in
+this repository** — `.superpowers/` is gitignored and that sprint's reports were
+never committed. Use `git log -- src/simd/american_greeks_avx2.cpp` instead.)
+This section is the authoritative entry-point + mask contract; the sections after
+it are the original design rationale.
 
 - **Laned kernel:** `src/simd/american_greeks_avx2.cpp`
   `detail::american_put_greeks_batch_avx2(...)` — the analytic PUT bundle 4-wide (5
@@ -237,7 +240,8 @@ sound.
 
 ## 5. Cross-references
 
-- K2 marks substrate + ship discipline: `.superpowers/sdd/sw-solve-wall/reports/kernel-stage1.md`.
+- K2 marks substrate + ship discipline: `.superpowers/sdd/sw-solve-wall/reports/kernel-stage1.md`
+  — same caveat as the STATUS section above: not committed, not retrievable here.
 - Preset tiers the greeks bundle rides (`fast_p32` for FD greeks): `docs/al-preset-ladder.md` §5.
 - Sprint tasks: K3 (laned bundle), K4 (first-order + vega guard), L4 (tier wiring) —
   `atx-vol/sprints/2026-07-18-atx-vol-solve-wall-sota-sprint.md` §4.
