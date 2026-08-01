@@ -515,6 +515,25 @@ against the manifest symbol table (`atx-vol-surface-db info` / `partitions
 | longest **index-complete** stretch | **28 sessions**, `2026-06-03..2026-07-14` |
 | longest window this route can actually replay | **17 sessions**, `2026-06-03..2026-06-26` |
 
+> On that "≥ 1 basket name absent" row, the sprint's Task 6 report gives
+> *118 of 140*. The two are counted differently, not measured differently:
+> **131** is a pure **partition census** — a session counts if any of the 101
+> basket names has no stored surface in that partition (the index has its own
+> row above) — and the report's narrower figure uses a different criterion.
+> Every other figure in this table reproduces that report exactly, date for
+> date. Read either as "most sessions in this db are incomplete"; neither
+> contradicts the other.
+
+**`BK` is not scattered — it stops.** It is absent on **every one of the 44
+sessions from 2026-05-21 through the end of the corpus (2026-07-24)**, plus two
+isolated earlier dates (2026-02-23 and 2026-05-05). That is the signature of a
+**systematic fitter failure for that symbol**, not of a random data outage: no
+window overlapping 2026-05-21 or later can carry `BK` at all, which is why the
+quickstart window drops it on all 17 of its sessions. `AMT`'s 47 absences, by
+contrast, are diffuse — scattered from 2026-01-02 to 2026-07-17 with no cutover.
+When choosing a window, check the *shape* of a name's absence, not just its
+count.
+
 Index-absent sessions, in full:
 
 ```
@@ -549,8 +568,17 @@ step but never trades, which keeps the dominant full-book pricing cost intact):
 | `prefetch_depth` | wall (ms) | ms / session | vs depth 1 |
 |---|---|---|---|
 | 1 | 2632 | 155 | 1.00x |
-| 2 (shipped) | **1692** | **100** | 1.51x |
+| 2 (shipped) | **1692** | **100** | 1.56x |
 | 8 | 1029 | 61 | 2.56x |
+
+**Both derived columns are computed from this table's own `wall` column** —
+`ms / session` is `wall / 17`, the ratio is `2632 / wall` — so the three rows
+are internally consistent. Read them as *the three walls Task 6 headlined*, not
+as one continuous sweep: depths 1 and 2 are its recorded baseline run, depth 8
+is the best rep of its separate 2-rep depth sweep. That sweep's own reps are
+noisier and land at different ratios against **its** depth-1 rep (1.51x / 2.09x
+/ 2.78x for depths 2 / 4 / 8). **Do not mix a ms value from one with a ratio
+from the other**; if you need a like-for-like comparison, re-measure.
 
 Archive opens == steps (17) at every depth — no reloads — and the **output is
 bit-identical across depths** (`bit_cast` on `nav` and `pnl_total`).
@@ -563,10 +591,11 @@ shape (`hedge_kind none`) and is a single observation.
 - **`prefetch_depth`** — how many future snapshots may be in flight. Depth `D`
   turns `economics + total_load` into roughly `max(economics, total_load / D)`.
   **It changes only *when* a snapshot is deserialized, never which bytes**, so
-  output is unaffected at any depth. The private cache is sized `depth + 2`, so
-  raising it raises resident whole-board snapshots too (depth 8 ⇒ 10 resident vs
-  3 at depth 2) — **the memory cost of depth 8 was not measured**, which is why
-  the shipped config stays at 2.
+  output is unaffected at any depth. The private cache is sized **`depth + 2`**
+  (`private_snapshot_cache_capacity`, `atx-vol/src/backtest.cpp:67-69`), so
+  raising the depth raises resident whole-board snapshots too — **10** at depth
+  8 against **4** at the shipped depth 2. **The memory cost of depth 8 was not
+  measured**, which is why the shipped config stays at 2.
 - **`n_threads`** — pricer fan-out; `0` = all hardware cores. Output is
   bit-identical at any thread count (`PortfolioPricer`'s serial-scatter
   reduction), so parallel-by-default is free.
