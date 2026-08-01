@@ -22,6 +22,10 @@ and verifies it entirely from the command line — see
 [Managing and verifying a built database](#atx-vol-surface-db--managing-and-verifying-a-built-database).
 **No Python is involved in verification.**
 
+To *consume* a built database — replay an index-vs-names dispersion book straight
+off its stored surfaces — see
+[surface-db-dispersion-backtest.md](surface-db-dispersion-backtest.md).
+
 ## OPRA hive v2 — the on-disk layout it reads
 
 ```
