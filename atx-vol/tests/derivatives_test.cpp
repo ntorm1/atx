@@ -560,7 +560,7 @@ TEST(ReservedValidation, DerivPrice_NonzeroFlagsRequest_ReturnsNotImplemented) {
   EXPECT_EQ(q.error().code(), ErrorCode::NotImplemented);
 }
 
-TEST(ReservedValidation, DerivPrice_NonzeroCapDecOnVarSwap_ReturnsNotImplemented) {
+TEST(ReservedValidation, DerivPrice_NonzeroCapDecOnVarSwap_ReturnsInvalidArgument) {
   const EssviSurface surf = make_flat_surface(0.20, 0.10, 0.50);
   const CurveSet cs = make_flat_curves(100.0, 0.10, 0.50);
   const DerivConfig cfg = deriv_default_config();
@@ -570,11 +570,11 @@ TEST(ReservedValidation, DerivPrice_NonzeroCapDecOnVarSwap_ReturnsNotImplemented
   c.maturity_t = 0.30;
   c.strike_dec = 0.04;
   c.notional = 1.0;
-  c.cap_dec = 0.10;  // reserved
+  c.cap_dec = 0.10;  // cap_dec is capped-kinds-only; VarSwap must reject it
 
   const auto q = deriv_price(surf, cs, c, cfg);
   ASSERT_FALSE(q.has_value());
-  EXPECT_EQ(q.error().code(), ErrorCode::NotImplemented);
+  EXPECT_EQ(q.error().code(), ErrorCode::InvalidArgument);
 }
 
 }  // namespace

@@ -1,5 +1,6 @@
 #include "atx/vol/derivatives.hpp"
 
+#include <cassert>
 #include <cmath>
 #include <limits>
 #include <numbers>
@@ -10,6 +11,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/black76.hpp"
+#include "atx/vol/detail/rv_lognormal.hpp" // lognormal_call (capped var swap, Task 4)
 #include "atx/vol/priced_surface.hpp" // E6: PricedSurface-native entry points
 #include "atx/vol/strip_grid.hpp"
 #include "atx/vol/surface_parity.hpp" // SliceContext (E6 carry extraction)
@@ -374,6 +376,109 @@ template <class SurfaceT>
   return Ok(VolOfVol{xi, true});
 }
 
+// Assembles a DerivQuote for price_capped_var_swap's three exit paths
+// (pinned, fully-aged deterministic, model-based blend) so the shared
+// bookkeeping -- PV, points conversion, component breakdown -- lives in one
+// place instead of being repeated at each exit.
+[[nodiscard]] DerivQuote capped_var_swap_quote(double expectation_dec, double accrued_dec,
+                                               double future_dec, double cap_option_dec,
+                                               double df, const DerivContract& contract,
+                                               DerivFlags flags) noexcept {
+  DerivQuote out{};
+  out.fair_strike_dec = expectation_dec;  // E[min(V,C)]: the strike pricing to PV = 0
+  out.fair_strike_points = 1.0e4 * expectation_dec;
+  out.pv = df * contract.notional * (expectation_dec - contract.strike_dec);
+  out.undiscounted_expectation_dec = expectation_dec;
+  out.accrued_component_dec = accrued_dec;
+  out.future_component_dec = future_dec;
+  out.cap_option_value_dec = cap_option_dec;
+  out.flags = flags;
+  return out;
+}
+
+// Capped variance swap: E[min(V,C)] for the blended variance V = a + b*W (see
+// file header for the model). Mirrors price_var_swap's structure -- blend
+// weights, strip for the future leg, aged-provenance flags -- but the PIN
+// check has to run BEFORE the strip and BEFORE any T > 0 requirement: a
+// contract whose accrued leg alone already reached the cap is a valid quote
+// request at expiry (T == 0), and must not pay for (or fail on) a strip it
+// does not need.
+//
+// Exit paths, in order:
+//   1. PIN: a = w_done*rv_done_dec >= cap_dec -> deterministic, no strip.
+//   2. FULLY AGED (not pinned): min(V,C) = rv_done_dec exactly (w_future ==
+//      0, no future leg to model).
+//   3. Otherwise: strip for K_var_future, resolve vol-of-vol, and the
+//      displaced-lognormal closed form via detail::lognormal_call.
+//
+// Precondition (enforced by deriv_price before this is ever called):
+// contract.cap_dec > 0.
+template <class SurfaceT>
+[[nodiscard]] Result<DerivQuote> price_capped_var_swap(const SurfaceT& surface,
+                                                        const CurveSet& curves,
+                                                        const DerivContract& contract,
+                                                        const DerivConfig& cfg) {
+  assert(contract.cap_dec > 0.0 && "capped var swap: cap_dec validated by the caller");
+  const RealizedVarianceSpec& rv = contract.rv_spec;
+  const double T = contract.maturity_t;
+  const double cap = contract.cap_dec;
+
+  double w_done = 0.0;
+  double w_future = 1.0;
+  if (rv.n_obs_total > 0u) {
+    w_done = static_cast<double>(rv.n_obs_done) / static_cast<double>(rv.n_obs_total);
+    w_future = 1.0 - w_done;
+  }
+  const double accrued = w_done * rv.rv_done_dec;
+
+  DerivFlags flags = DerivFlags::None;
+  if (rv.n_obs_done > 0u) {
+    flags |= DerivFlags::Aged;
+  }
+  if (rv.n_obs_total > 0u && rv.n_obs_done >= rv.n_obs_total) {
+    flags |= DerivFlags::FullyAged;
+  }
+
+  if (accrued >= cap) {
+    flags |= DerivFlags::CapPinned | DerivFlags::CapApplied;
+    const double df = deriv_df_at_T(curves, T, flags);
+    return Ok(capped_var_swap_quote(cap, accrued, 0.0, 0.0, df, contract, flags));
+  }
+
+  if (has_flag(flags, DerivFlags::FullyAged)) {
+    // rv_done_dec < cap here (the pin check above already handled >= cap):
+    // min(V,C) collapses to the realized leg, no model needed.
+    const double df = deriv_df_at_T(curves, T, flags);
+    return Ok(capped_var_swap_quote(accrued, accrued, 0.0, 0.0, df, contract, flags));
+  }
+
+  if (!(T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "capped var swap needs T > 0 to price the future leg");
+  }
+  ATX_TRY(auto sq, var_swap_fair_strike(surface, curves, T, cfg));
+  ATX_TRY(const VolOfVol vv, resolve_vol_of_vol(surface, curves, T, sq.fair_strike_dec, cfg));
+
+  const double m = sq.fair_strike_dec;
+  const double s = vv.xi * std::sqrt(T);
+  const double k_c = (cap - accrued) / w_future;  // w_future > 0: not fully aged (checked above)
+  const double cap_option = w_future * detail::lognormal_call(m, s, k_c);
+  const double expectation = (accrued + w_future * m) - cap_option;
+
+  flags |= DerivFlags::ModelProxy | DerivFlags::CapApplied | sq.flags;
+  if (vv.calibrated) {
+    flags |= DerivFlags::VolOfVolCalibrated;
+  }
+  const double df = deriv_df_at_T(curves, T, flags);
+
+  DerivQuote out =
+      capped_var_swap_quote(expectation, accrued, w_future * m, cap_option, df, contract, flags);
+  out.uncapped_var_dec = sq.uncapped_var_dec;
+  out.integration_error_est = sq.integration_error_est;
+  out.vol_of_vol_used = vv.xi;
+  return Ok(out);
+}
+
 }  // namespace
 
 // ── Variance strip ─────────────────────────────────────────────────────────
@@ -601,9 +706,16 @@ template <class SurfaceT>
 Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
                                const DerivContract& contract,
                                const DerivConfig& cfg) {
-  // Reserved engines fail clean before any work.
+  // Reserved engines fail clean before any work. RvDistributionProxy is the
+  // one exception: Task 4 wires it up (alongside Auto) as the distribution
+  // model's entry point, but ONLY for CappedVarSwap -- every other kind still
+  // sees it as reserved.
   switch (cfg.engine) {
   case DerivEngine::RvDistributionProxy:
+    if (contract.kind != DerivKind::CappedVarSwap) {
+      return Err(ErrorCode::NotImplemented, "reserved pricing engine");
+    }
+    break;
   case DerivEngine::RvDistributionAffine:
   case DerivEngine::McQe:
     return Err(ErrorCode::NotImplemented, "reserved pricing engine");
@@ -620,8 +732,19 @@ Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
   if (!vol_of_vol_valid(cfg)) {
     return Err(ErrorCode::InvalidArgument, "vol_of_vol must be >= 0");
   }
-  if (contract.kind == DerivKind::VarSwap && contract.cap_dec != 0.0) {
-    return Err(ErrorCode::NotImplemented, "cap_dec reserved on var swap");
+
+  // cap_dec validation applies uniformly to both capped kinds (even though
+  // CappedVolSwap still dead-ends in NotImplemented below): a malformed
+  // contract should fail the same way regardless of which capped product it
+  // names. Uncapped kinds (VarSwap/VolSwap) must leave cap_dec at 0.
+  const bool is_capped_kind = contract.kind == DerivKind::CappedVarSwap ||
+                              contract.kind == DerivKind::CappedVolSwap;
+  if (is_capped_kind) {
+    if (!(contract.cap_dec > 0.0)) {
+      return Err(ErrorCode::InvalidArgument, "capped kind needs cap_dec > 0");
+    }
+  } else if (contract.cap_dec != 0.0) {
+    return Err(ErrorCode::InvalidArgument, "cap_dec is only valid on capped kinds");
   }
 
   switch (contract.kind) {
@@ -630,8 +753,12 @@ Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
   case DerivKind::VolSwap:
     return price_vol_swap(surface, curves, contract, cfg);
   case DerivKind::CappedVarSwap:
+    if (cfg.engine == DerivEngine::StripLogContract || cfg.engine == DerivEngine::VolCarrLee) {
+      return Err(ErrorCode::InvalidArgument, "engine cannot price capped kinds");
+    }
+    return price_capped_var_swap(surface, curves, contract, cfg);
   case DerivKind::CappedVolSwap:
-    return Err(ErrorCode::NotImplemented, "capped variants reserved");
+    return Err(ErrorCode::NotImplemented, "capped volatility swap reserved");
   }
   // Defends against an out-of-enum kind (matches the C default's ERR_INVALID).
   return Err(ErrorCode::InvalidArgument, "unknown derivative kind");

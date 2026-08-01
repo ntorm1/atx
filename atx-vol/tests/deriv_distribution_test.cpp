@@ -20,9 +20,14 @@ using atx::vol::detail::norm_cdf;
 // that already exist (var_swap_fair_strike / vol_swap_fair_strike).
 using atx::vol::CurveSet;
 using atx::vol::deriv_default_config;
+using atx::vol::deriv_price;
 using atx::vol::DerivConfig;
+using atx::vol::DerivContract;
+using atx::vol::DerivFlags;
+using atx::vol::DerivKind;
 using atx::vol::ErrorCode;
 using atx::vol::EssviSurface;
+using atx::vol::has_flag;
 using atx::vol::var_swap_fair_strike;
 using atx::vol::vol_swap_fair_strike;
 using atx::vol::testsupport::make_flat_curves;
@@ -134,5 +139,92 @@ TEST(VolOfVol, AutoCalibrationReproducesCarrLee) {
   ASSERT_GT(s2, 0.0);
   const double recon = std::sqrt(kv->fair_strike_dec) * std::exp(-s2 / 8.0);
   EXPECT_NEAR(recon, kl->fair_strike_dec, 1e-14);
+}
+
+// ── Task 4: capped variance swap ──────────────────────────────────────────
+
+// Far-OTM cap: capped == uncapped to quadrature noise; CapApplied still
+// stamped. Uses the DEFAULT config (vol_of_vol == 0), so this is also the
+// direct auto-calibration coverage carried forward from the Task 3 review:
+// on the flat fixture Carr-Lee convexity is always present (see
+// VolOfVol.AutoCalibrationReproducesCarrLee above), so the auto path here is
+// non-degenerate -- vol_of_vol_used must come back finite and > 0, and
+// VolOfVolCalibrated must be stamped.
+TEST(CappedVarSwap, FarOtmCapMatchesUncapped) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const DerivConfig cfg = deriv_default_config();
+  DerivContract c{};
+  c.kind = DerivKind::VarSwap; c.maturity_t = 0.25; c.notional = 1e6;
+  c.rv_spec.annualization = 252.0; c.rv_spec.n_obs_total = 63u;
+  const auto plain = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(plain.has_value());
+  c.kind = DerivKind::CappedVarSwap;
+  c.cap_dec = 25.0;  // absurdly high variance cap
+  const auto capped = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(capped.has_value());
+  EXPECT_NEAR(capped->fair_strike_dec, plain->fair_strike_dec,
+              1e-9 * plain->fair_strike_dec);
+  EXPECT_TRUE(has_flag(capped->flags, DerivFlags::CapApplied));
+  EXPECT_TRUE(has_flag(capped->flags, DerivFlags::ModelProxy));
+  EXPECT_TRUE(has_flag(capped->flags, DerivFlags::VolOfVolCalibrated));
+  EXPECT_TRUE(std::isfinite(capped->vol_of_vol_used));
+  EXPECT_GT(capped->vol_of_vol_used, 0.0);
+}
+
+// Parity: capped expectation + cap option value == uncapped expectation.
+// Explicit cfg.vol_of_vol = 0.80 also covers the explicit-xi resolve_vol_of_vol
+// path end to end: vol_of_vol_used must come back exactly 0.80 (a pass-through,
+// not a computation) and VolOfVolCalibrated must NOT be stamped.
+TEST(CappedVarSwap, CapParityHolds) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivConfig cfg = deriv_default_config();
+  cfg.vol_of_vol = 0.80;
+  DerivContract c{};
+  c.kind = DerivKind::CappedVarSwap; c.maturity_t = 0.25; c.notional = 1e6;
+  c.cap_dec = 0.05;  // near-the-money cap vs K_var ~ 0.04
+  c.rv_spec.annualization = 252.0; c.rv_spec.n_obs_total = 63u;
+  const auto q = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(q.has_value());
+  DerivContract u = c; u.kind = DerivKind::VarSwap; u.cap_dec = 0.0;
+  const auto uq = deriv_price(surf, cs, u, cfg);
+  ASSERT_TRUE(uq.has_value());
+  EXPECT_GT(q->cap_option_value_dec, 0.0);
+  EXPECT_NEAR(q->fair_strike_dec + q->cap_option_value_dec,
+              uq->fair_strike_dec, 1e-12);
+  EXPECT_LT(q->fair_strike_dec, uq->fair_strike_dec);  // cap lowers fair strike
+  EXPECT_EQ(q->vol_of_vol_used, 0.80);
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::VolOfVolCalibrated));
+}
+
+// Accrued already above the cap: PV pinned at df*N*(C-K), CapPinned stamped,
+// and the surface is never needed (mid-life, but the future leg is irrelevant).
+TEST(CappedVarSwap, AccruedAboveCapPinsPv) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const DerivConfig cfg = deriv_default_config();
+  DerivContract c{};
+  c.kind = DerivKind::CappedVarSwap; c.maturity_t = 0.10; c.notional = 1e6;
+  c.strike_dec = 0.04; c.cap_dec = 0.09;
+  c.rv_spec.annualization = 252.0; c.rv_spec.n_obs_total = 63u;
+  c.rv_spec.n_obs_done = 21u;
+  c.rv_spec.rv_done_dec = 0.09 * 3.001;  // w_done*rv_done = (1/3)*0.27 > 0.09 = C
+  const auto q = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(q.has_value());
+  const double df = cs.yield.disc(0.10);
+  EXPECT_NEAR(q->pv, df * 1e6 * (0.09 - 0.04), 1e-6);
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::CapPinned));
+  EXPECT_NEAR(q->fair_strike_dec, 0.09, 1e-15);
+}
+
+TEST(CappedVarSwap, ZeroCapRejected) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivContract c{};
+  c.kind = DerivKind::CappedVarSwap; c.maturity_t = 0.25; c.notional = 1.0;
+  const auto q = deriv_price(surf, cs, c, deriv_default_config());
+  ASSERT_FALSE(q.has_value());
+  EXPECT_EQ(q.error().code(), ErrorCode::InvalidArgument);
 }
 }  // namespace

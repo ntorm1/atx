@@ -24,10 +24,17 @@
 //     (n_done/n_total)*RV_done + (n_future/n_total)*K_var_future convention;
 //     the vol-swap dispatch handles inception (n_done == 0) and at-expiry
 //     (n_done == n_total).
+//   - Capped variance swap (Task 4, engine RvDistributionProxy or Auto):
+//     E[min(V,C)] for the blended variance V = a + b*W, modeling the future
+//     leg W as lognormal with mean K_var_future and log-stdev xi*sqrt(T) (xi
+//     from DerivConfig::vol_of_vol, explicit or auto-calibrated). The cap
+//     option value b*E[(W-K_c)+] comes from the closed-form
+//     atx::vol::detail::lognormal_call. A contract already accrued past the
+//     cap (a >= C) prices deterministically -- pinned, no model, no strip.
 //
 // Reserved for follow-on work (return ErrorCode::NotImplemented, mirroring the
-// C's ATS_VOL_ERR_UNSUPPORTED): capped variance/volatility swaps, the RV
-// distribution / Monte-Carlo QE engines, and mid-life vol-swap dispatch
+// C's ATS_VOL_ERR_UNSUPPORTED): capped volatility swaps, the RV
+// distribution-affine / Monte-Carlo QE engines, and mid-life vol-swap dispatch
 // (intermediate n_done).
 //
 // Conventions (unchanged from the C):
@@ -61,20 +68,24 @@ class PricedSurface;
 
 // ── Enums ────────────────────────────────────────────────────────────────
 
-// Product kind. Capped variants are reserved (dispatch returns NotImplemented).
+// Product kind. CappedVolSwap is reserved (dispatch returns NotImplemented);
+// CappedVarSwap is priced via the lognormal RV distribution model (Task 4).
 enum class DerivKind : std::uint8_t {
   VarSwap = 1,
   VolSwap = 2,
-  CappedVarSwap = 3,  // reserved
+  CappedVarSwap = 3,
   CappedVolSwap = 4,  // reserved
 };
 
-// Pricing engine selector. Values >= RvDistributionProxy are reserved.
+// Pricing engine selector. Values >= RvDistributionAffine are reserved;
+// RvDistributionProxy is also reserved EXCEPT as the distribution-model
+// dispatch target for DerivKind::CappedVarSwap (Task 4), which Auto routes to
+// as well.
 enum class DerivEngine : std::uint8_t {
   Auto = 0,
   StripLogContract = 1,
   VolCarrLee = 2,
-  RvDistributionProxy = 3,   // reserved
+  RvDistributionProxy = 3,   // CappedVarSwap only; reserved for every other kind
   RvDistributionAffine = 4,  // reserved
   McQe = 5,                  // reserved
 };
@@ -122,6 +133,17 @@ enum class DerivFlags : std::uint32_t {
   // and not set when no distribution model ran at all (this task ships the
   // knob + resolver; Tasks 4-6 are the first callers that can raise it).
   VolOfVolCalibrated = 1u << 9,
+  // Set when a capped product's cap option value was actually subtracted
+  // from the uncapped expectation (Task 4: the distribution-model path, or
+  // the pinned deterministic path). NOT set when the cap cannot bind at all
+  // (e.g. the fully-aged deterministic leg with accrued < cap -- there the
+  // capped and uncapped answers are identical by construction).
+  CapApplied = 1u << 10,
+  // Set when the accrued leg alone already reached or exceeded the cap
+  // (w_done*rv_done_dec >= cap_dec): the quote is pinned at
+  // df*N*(cap_dec - strike_dec) with no strip call and no T > 0 requirement
+  // (works at expiry). Always accompanied by CapApplied.
+  CapPinned = 1u << 11,
 };
 
 [[nodiscard]] constexpr DerivFlags operator|(DerivFlags a, DerivFlags b) noexcept {
@@ -196,13 +218,15 @@ private:
 
 // ── Contract / config / quote ────────────────────────────────────────────
 
-// A vol-derivative contract (AtsVolDerivContract). `cap_dec` is reserved; a
-// non-zero value on a VarSwap is rejected by deriv_price.
+// A vol-derivative contract (AtsVolDerivContract). `cap_dec` activates for
+// CappedVarSwap (annualized decimal VARIANCE cap, e.g. (2.5*0.20)^2 = 0.25):
+// deriv_price requires cap_dec > 0 on a capped kind (else InvalidArgument)
+// and rejects a non-zero cap_dec on an uncapped kind (also InvalidArgument).
 struct DerivContract {
   DerivKind kind = DerivKind::VarSwap;
   double maturity_t = 0.0;   // years until expiry
   double strike_dec = 0.0;   // K_var or K_vol
-  double cap_dec = 0.0;      // reserved
+  double cap_dec = 0.0;      // capped kinds only; see above
   double notional = 0.0;     // N_var or N_vol
   RealizedVarianceSpec rv_spec{};
   DerivMarkingConvention marking = DerivMarkingConvention::Otc;
@@ -286,6 +310,12 @@ struct DerivQuote {
   // gate on (x == x) exactly as with integration_error_est above. Tasks 4-6
   // populate a real value once a distribution model actually runs.
   double vol_of_vol_used = kQuietNaN;
+  // Cap option value b*E[(W-K_c)+] subtracted from the uncapped expectation
+  // to get E[min(V,C)] (Task 4). 0.0 for uncapped kinds and for a capped
+  // quote where the cap cannot bind (fully-aged, accrued < cap); NEVER NaN --
+  // unlike vol_of_vol_used, a caller should not have to gate on (x == x) to
+  // read this one.
+  double cap_option_value_dec = 0.0;
   DerivFlags flags = DerivFlags::None;
 };
 
@@ -339,8 +369,11 @@ vol_swap_fair_strike(const SurfaceT& surface, const CurveSet& curves, double T,
 // variance blend. Vol-swap dispatch supports n_done == 0 (pure future leg,
 // Carr-Lee) and n_done == n_total (pure realized leg, sqrt(rv_done_dec));
 // intermediate n_done returns NotImplemented (the unbiased mid-life
-// expectation needs a distribution engine this port does not ship). Capped
-// products return NotImplemented.
+// expectation needs a distribution engine this port does not ship).
+// CappedVarSwap is priced via the lognormal RV distribution model (Task 4,
+// engine Auto or RvDistributionProxy only -- StripLogContract/VolCarrLee on
+// a capped kind return InvalidArgument). CappedVolSwap still returns
+// NotImplemented.
 template <class SurfaceT>
 [[nodiscard]] Result<DerivQuote>
 deriv_price(const SurfaceT& surface, const CurveSet& curves,
