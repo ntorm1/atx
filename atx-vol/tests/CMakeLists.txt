@@ -122,6 +122,7 @@ add_executable(atx-vol-tests
     backtest_real_test.cpp
     spy_strangle_backtest_test.cpp
     surface_db_backtest_test.cpp
+    surface_db_dispersion_backtest_test.cpp
     surface_db_populate_test.cpp
     surface_db_build_test.cpp
     surface_db_admin_test.cpp
@@ -223,6 +224,12 @@ target_include_directories(atx-vol-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../
                                                   ${CMAKE_CURRENT_SOURCE_DIR}/../tools)
 target_compile_definitions(atx-vol-tests PRIVATE
     "ATX_AMZN_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/data/amzn_earnings_2018/amzn_opra_cbbo1m_2018-04-26T1945Z.parquet\"")
+# Same baked-absolute-path trick for the SHIPPED example config that operators
+# copy (examples/sp100_dispersion_config.tsv). surface_db_dispersion_backtest_test
+# parses the REAL file so an edit to it cannot rot unnoticed; the file is not a
+# build input, so nothing else would notice a renamed key or a bad token.
+target_compile_definitions(atx-vol-tests PRIVATE
+    "ATX_SP100_DISPERSION_CONFIG=\"${CMAKE_CURRENT_SOURCE_DIR}/../examples/sp100_dispersion_config.tsv\"")
 
 # Precompiled header (opt-in: ATX_USE_PCH; ON in the ninja/dev/rel presets, OFF
 # in `hygiene`). GoogleTest is #included by ~79 of the test TUs and is by far the

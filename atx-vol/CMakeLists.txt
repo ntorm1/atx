@@ -103,6 +103,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/dispersion.cpp
     src/dispersion_strangle.cpp
     src/dispersion_backtest.cpp
+    src/dispersion_surface_db.cpp
     src/backtest_driver.cpp
     src/dispersion_workflow.cpp
     src/listed_dispersion.cpp
@@ -418,6 +419,17 @@ if(ATX_BUILD_EXAMPLES)
     # examples/mag7_dispersion_backtest.cpp.
     add_executable(mag7_dispersion_backtest examples/mag7_dispersion_backtest.cpp)
     target_link_libraries(mag7_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
+
+    # Surface-db dispersion route example: a SurfaceDb root + a date window ->
+    # run_surface_db_dispersion_backtest (the one-call entry point in
+    # atx/vol/dispersion_surface_db.hpp: open db -> Clock::from_surface_db ->
+    # Clock::between -> universe_from_surface_db or read_universe -> run_timed)
+    # -> series.csv / strategy_metrics.csv / engine_metrics.csv. A thin argv +
+    # artifact shell; every branch of the run itself is gated by
+    # SurfaceDbDispersionBacktest (tests/surface_db_dispersion_backtest_test.cpp).
+    # See examples/surface_db_dispersion_backtest.cpp.
+    add_executable(surface_db_dispersion_backtest examples/surface_db_dispersion_backtest.cpp)
+    target_link_libraries(surface_db_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
 
     # WS-D acceptance driver: the vega-flat SPY dispersion PnL-track backtest
     # (long top-N 40Δ strangles vs a short SPY strangle, net-vega-zero at entry,

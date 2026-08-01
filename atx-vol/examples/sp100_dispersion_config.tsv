@@ -1,0 +1,12 @@
+# atx-vol/examples/sp100_dispersion_config.tsv — worked SP100 config
+target_dte_days	30
+roll_dte_days	7
+gross_index_vega	10000
+min_names	60
+entry_every_n	21
+side	short_index_long_names
+weighting	vega_neutral
+strike_rule	atm_forward_straddle
+record_diagnostics	1
+n_threads	0
+prefetch_depth	2

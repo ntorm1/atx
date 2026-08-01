@@ -1255,6 +1255,35 @@ Result<Clock> Clock::from_surface_db(const SurfaceDb &db) {
   return Ok(std::move(clock));
 }
 
+Result<Clock> Clock::between(std::string_view date_lo, std::string_view date_hi) const {
+  // Rendered once and shared by both failure messages: the window a caller CAN
+  // ask for. An empty clock is unreachable through either factory (both reject
+  // an empty source), but `Clock` is default-constructible, so this stays total
+  // rather than indexing front()/back() on an empty vector.
+  const std::string available =
+      refs_.empty() ? std::string{"<none>"} : (refs_.front().date + ".." + refs_.back().date);
+  if (date_lo > date_hi) {
+    return Err(ErrorCode::InvalidArgument, "Clock::between: date_lo '" + std::string{date_lo} +
+                                               "' > date_hi '" + std::string{date_hi} +
+                                               "' (available " + available + ")");
+  }
+  Clock out;
+  // Lexicographic == chronological for the canonical ISO date keys, and refs_ is
+  // already ascending, so a linear filter preserves the ordering contract.
+  for (const SnapshotRef &r : refs_) {
+    const std::string_view d{r.date};
+    if (d >= date_lo && d <= date_hi) {
+      out.refs_.push_back(r);
+    }
+  }
+  if (out.refs_.empty()) {
+    return Err(ErrorCode::InvalidArgument, "Clock::between: no snapshots in [" +
+                                               std::string{date_lo} + ", " + std::string{date_hi} +
+                                               "] (available " + available + ")");
+  }
+  return Ok(std::move(out));
+}
+
 // ── MarketSnapshot ──────────────────────────────────────────────────────────
 
 MarketSnapshot::MarketSnapshot(std::shared_ptr<const SurfaceArchiveV2> archive,

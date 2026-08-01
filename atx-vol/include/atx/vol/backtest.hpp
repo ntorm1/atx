@@ -79,6 +79,20 @@ public:
   // unchanged.
   [[nodiscard]] static Result<Clock> from_surface_db(const SurfaceDb &db);
 
+  // Subset this clock to the refs whose date lies in [date_lo, date_hi] —
+  // INCLUSIVE on both ends. Dates are compared as plain strings, which is
+  // chronological for the canonical ISO "YYYY-MM-DD" partition keys
+  // `from_surface_db` produces (and for the corpus dates `from_manifest` does).
+  // Refs are copied whole, so the subset keeps each ref's archive_path and its
+  // ascending order; `*this` is unchanged.
+  //
+  // Out-of-range bounds CLAMP: a window wider than the corpus is the whole
+  // corpus, not an error — an operator asking for "2020..2030" wants everything
+  // there is. InvalidArgument when the window selects NO ref (date_lo > date_hi,
+  // or a real gap between two dates the corpus does not cover); the message
+  // names the available range so the caller can self-serve the correction.
+  [[nodiscard]] Result<Clock> between(std::string_view date_lo, std::string_view date_hi) const;
+
   [[nodiscard]] std::span<const SnapshotRef> refs() const noexcept { return refs_; }
   [[nodiscard]] std::size_t size() const noexcept { return refs_.size(); }
 
