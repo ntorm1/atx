@@ -50,6 +50,28 @@
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
+# ---- Static-only distribution (plan 5.2) ------------------------------------
+# The full reasoning is at the ATX_SHARED_LIBS block in the root CMakeLists: a
+# DLL build of the atx libraries links but is not correct, because every
+# instrumentation plane atx-vol carries is a header-inline global and Windows
+# gives those one instance per image. There is no ATX_VOL_API export macro to
+# fix that for v1, so a shared build is a developer link-speed tool and its
+# install output would be a package whose counters and solve ledger silently
+# read zero in the consumer.
+#
+# Refused at INSTALL time, not configure time, on purpose: `dev-shared` must
+# still configure and build. `cmake --install` is where the mistake would
+# actually ship, so that is where it stops.
+if(ATX_SHARED_LIBS)
+    install(CODE "message(FATAL_ERROR
+        \"atx-vol is distributed STATIC-ONLY (plan 5.2). This build has \"
+        \"ATX_SHARED_LIBS=ON, which duplicates the header-inline instrumentation \"
+        \"globals (solve ledger, lightweight sampler, phase timers) per image and \"
+        \"has no ATX_VOL_API export macro to bind them across a DLL boundary -- an \"
+        \"installed consumer would read empty counters with no error. Reconfigure \"
+        \"with -DATX_SHARED_LIBS=OFF and install that build.\")")
+endif()
+
 set(ATX_VOL_INSTALL_CMAKEDIR "${CMAKE_INSTALL_LIBDIR}/cmake/atx-vol")
 
 # ---- Exported target names --------------------------------------------------

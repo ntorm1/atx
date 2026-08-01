@@ -106,8 +106,10 @@ Invoke-Cmake @("--build", $BuildDir) "consumer build"
 $exe = Join-Path $BuildDir "atx-vol-smoke.exe"
 if (-not (Test-Path $exe)) { throw "[test-package] consumer exe not found at $exe" }
 
-# A shared-libs install puts the atx DLLs (and any applocal-deployed vcpkg DLLs)
-# in <prefix>/bin; harmless for the default static build.
+# <prefix>/bin carries the tool exes and any applocal-deployed vcpkg DLLs. It is
+# never an atx DLL: atx-vol is distributed static-only (plan 5.2) and
+# cmake/atx-vol-install.cmake refuses to install an ATX_SHARED_LIBS=ON build, so
+# step 1 above would have failed before reaching here.
 $env:PATH = (Join-Path $Prefix "bin") + ";" + $env:PATH
 
 $run1 = & $exe

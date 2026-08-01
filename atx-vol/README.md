@@ -390,6 +390,44 @@ build/bin/opra_dbn_to_parquet.exe   # cached DBN -> Parquet (no API spend)
 build/bin/opra_parity_bench.exe     # de-Am + fit + parity + cold-vs-cached timing
 ```
 
+## Linkage and distribution policy (v1)
+
+**atx-vol 1.x ships static-only, and there is no `ATX_VOL_API` export macro.**
+That is a decision made on evidence, not an unfinished item.
+
+A DLL build of the atx libraries (`-DATX_SHARED_LIBS=ON`, the `dev-shared`
+preset) links and runs, but it is not *correct* for this library. Every
+instrumentation plane atx-vol carries is a header-inline global — the always-on
+solve ledger and the lightweight sampler in `atx/vol/detail/counters.hpp`, the
+phase timers in `atx/vol/detail/phase_profile.hpp` — and on Windows a C++17
+inline variable gets **one instance per image**. The consumer scrapes its own
+copy while the DLL increments the DLL's. This was measured on 2026-07-22 and is
+why `dev-shared`'s own preset description says it is never the test gate.
+
+`CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS` does not fix it: a **data** symbol still has
+to be declared `__declspec(dllimport)` in the consumer to bind to the exporting
+image rather than to a local copy. Declaring it is precisely the `ATX_VOL_API`
+plumbing, on every such global, forever. v1 does not take that on.
+
+What follows from the policy:
+
+| Configuration | Status |
+|---|---|
+| `ATX_SHARED_LIBS=OFF` (default) | Supported, tested, shipped — static archives |
+| `ATX_SHARED_LIBS=ON` | Developer link-speed convenience only; **not** a gate, **not** distributable |
+| `BUILD_SHARED_LIBS` | Not this project's switch. Configure **fails** with the reason rather than silently handing back static archives |
+| `cmake --install` of a shared build | **Refused** at install time, rather than producing a prefix whose counters read zero |
+
+The consumer-facing consequence is small: `find_package(atx-vol)` gives static
+archives, and the exported targets carry the link interface they need. Nothing
+in the public API depends on the library being shared.
+
+The same reasoning is why the opt-in `ATX_VOL_COUNTERS` / `ATX_VOL_PROFILE`
+instrumentation names its build configuration in an inline namespace: a
+consumer compiled with a different view of those options than the library now
+fails to **link**, naming the mismatch, instead of silently reading a plane
+nobody writes. See the header comments in `atx/vol/detail/counters.hpp`.
+
 ## Conventions
 
 Follows `.agents/cpp/agent.md`: C++20, no UB, `enum class`, `const`/`noexcept`/

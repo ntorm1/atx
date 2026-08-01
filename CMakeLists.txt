@@ -107,13 +107,58 @@ set_property(GLOBAL PROPERTY JOB_POOLS atx_link=4)
 set(CMAKE_JOB_POOL_LINK atx_link)
 
 # ---- First-party library linkage ------------------------------------------
+#
+# ══ THE SHARED-LIBRARY POLICY FOR atx-vol v1 (plan 5.2) ═════════════════════
+#
+# atx-vol 1.x IS DISTRIBUTED STATIC-ONLY, and there is deliberately no
+# `ATX_VOL_API` export macro. That is a decision, not an omission, and it is
+# made on evidence rather than on effort:
+#
+#   * A DLL build of the atx libraries LINKS today (ATX_SHARED_LIBS below), but
+#     it is not CORRECT. Every instrumentation plane atx-vol carries is a
+#     header-inline global -- the always-on solve ledger and lightweight sampler
+#     in atx/vol/detail/counters.hpp, the phase timers in
+#     atx/vol/detail/phase_profile.hpp -- and on Windows a C++17 inline variable
+#     gets ONE INSTANCE PER IMAGE: the test exe scrapes its own copy while the
+#     DLL increments the DLL's. This is not speculative; it was measured on
+#     2026-07-22 and is why the `dev-shared` preset's own description says it is
+#     NEVER THE TEST GATE (SolveLedger / BacktestExec observer suites fail
+#     deterministically there).
+#   * CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS cannot fix that. It auto-exports, but a
+#     DATA symbol still has to be declared __declspec(dllimport) in the CONSUMER
+#     to bind to the exporting image rather than to a local copy -- CMake's own
+#     documentation says so. Declaring it is exactly the ATX_VOL_API plumbing,
+#     across every such global, plus the discipline to keep it right forever.
+#
+# So the honest v1 position is: STATIC is the shipped, supported, tested
+# configuration; the DLL build stays as a developer link-speed convenience and
+# is NOT distributable. `cmake --install` refuses it (cmake/atx-vol-install.cmake)
+# rather than producing a prefix whose counters silently read zero.
+#
+# BUILD_SHARED_LIBS -- the knob a packager reaches for by reflex -- is NOT this
+# project's switch and never was: ATX_LIB_TYPE below is driven only by
+# ATX_SHARED_LIBS. Honouring it silently would hand back static archives while
+# the caller believed it had asked for DLLs, so it is refused with the reason.
+if(BUILD_SHARED_LIBS)
+    message(FATAL_ERROR
+        "BUILD_SHARED_LIBS is not the atx switch and is ignored by these libraries: "
+        "the atx-vol 1.x package is distributed STATIC-ONLY (see the shared-library "
+        "policy above this check, and atx-vol/README.md). If you want the DLL build "
+        "for local link speed, configure -DATX_SHARED_LIBS=ON and understand that it "
+        "is a developer configuration only -- it duplicates the header-inline "
+        "instrumentation globals per image, so it is not a supported gate and "
+        "`cmake --install` will refuse it. Unset BUILD_SHARED_LIBS to continue.")
+endif()
+
 # STATIC by default (canonical/CI, self-contained exes). ATX_SHARED_LIBS=ON (set by
-# the `dev` preset) builds the atx libraries as DLLs: each test exe then links a thin
-# import lib instead of embedding a full copy of the engine -> much faster relinks and
-# far smaller per-worktree build dirs (one engine DLL vs ~14 static copies). clang-cl +
-# WINDOWS_EXPORT_ALL_SYMBOLS auto-exports; the DLLs land in bin/ beside the exes that
-# load them, so ctest/applocal need no extra wiring.
-option(ATX_SHARED_LIBS "Build atx libraries as shared DLLs (dev: faster links, smaller artifacts)" OFF)
+# the `dev-shared` preset) builds the atx libraries as DLLs: each test exe then links
+# a thin import lib instead of embedding a full copy of the engine -> much faster
+# relinks and far smaller per-worktree build dirs (one engine DLL vs ~14 static
+# copies). clang-cl + WINDOWS_EXPORT_ALL_SYMBOLS auto-exports; the DLLs land in bin/
+# beside the exes that load them, so ctest/applocal need no extra wiring. Read the
+# policy block above before reaching for it: it is a link-speed tool, not a build
+# whose test results or install output mean anything.
+option(ATX_SHARED_LIBS "Build atx libraries as shared DLLs (dev-only: faster links, smaller artifacts; NOT distributable)" OFF)
 if(ATX_SHARED_LIBS)
     set(ATX_LIB_TYPE SHARED)
     set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
