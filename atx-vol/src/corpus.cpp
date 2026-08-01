@@ -941,6 +941,16 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
   std::size_t i = 0;
   while (i < n) {
     const std::string &date = boards[order[i]].date;
+    // Plan 5.5 safe point: the TOP of a DATE, before this date's archive is
+    // written. The manifest and quality report are published only after the loop
+    // completes, so returning here leaves per-date archives with no index — the
+    // same state an interrupted build leaves, and one the build path already
+    // overwrites on re-run. Cancelling between dates can never tear a date: each
+    // archive is published tmp+rename, and this check precedes the write.
+    if (cfg.cancel.stop_requested()) {
+      return Err(ErrorCode::Cancelled,
+                 "build_corpus: cancelled before date " + date + " (no manifest written)");
+    }
     std::size_t j = i;
     while (j < n && boards[order[j]].date == date) {
       ++j;

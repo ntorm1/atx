@@ -846,7 +846,20 @@ reconcile_dispersion_reference(const std::filesystem::path &run_dir, bool schedu
                                              const std::filesystem::path &run_dir,
                                              const DispersionCorpusPolicy &policy = {});
 [[nodiscard]] Status dispersion_run_surface_backtest(const std::filesystem::path &run_dir);
-[[nodiscard]] Status dispersion_run_projected_var(const std::filesystem::path &run_dir);
+// Plan 5.5: `cancel` is polled at the top of each snapshot BATCH of the scenario
+// evaluation, which is the whole of this entry's long-running work. It is a
+// PARAMETER rather than a config field only because this entry point takes a run
+// dir and reads its `DispersionRunConfig` off disk — there is no caller-supplied
+// config object to carry a token. Defaulted, so every existing caller compiles
+// and behaves exactly as before.
+//
+// Write safety: every artifact this entry publishes (`projected_var.tsv`, the
+// scenarios/legs pair, the generation marker) is written AFTER the scenario
+// evaluation returns, so a cancellation returns before the first byte is written
+// and leaves the run dir exactly as it was found. That is the same ordering which
+// already keeps a FAILED projection from leaving those files behind.
+[[nodiscard]] Status dispersion_run_projected_var(const std::filesystem::path &run_dir,
+                                                  CancelToken cancel = {});
 
 // Envelope gate for the OPTIONAL projected-VaR stage. Absent artifacts are fine
 // (the stage need not have run); a PRESENT summary must have its two companions,

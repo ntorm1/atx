@@ -3009,7 +3009,7 @@ Status publish_projected_var_generation(const fs::path &run_dir) {
 
 } // namespace
 
-Status dispersion_run_projected_var(const fs::path &run_dir) {
+Status dispersion_run_projected_var(const fs::path &run_dir, CancelToken cancel) {
   ATX_TRY_VOID(invalidate_projected_var_generation(run_dir));
   // REVIEW C-15. This used to be the LOOSE `read_run_spec`, on the stated
   // grounds that "a projected-VaR run consumes no execution knobs". True, and
@@ -3146,6 +3146,17 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
               const HistoricalProjectionConfig &evaluation_config) -> Status {
             for (std::size_t batch_start = 0u; batch_start < clock.size();
                  batch_start += kSnapshotBatch) {
+              // Plan 5.5 safe point: the top of a snapshot batch. This lambda is
+              // the whole of the entry's long-running work, and every artifact
+              // (`projected_var.tsv`, the scenarios/legs pair, the generation
+              // marker) is written only after it returns — so a stop here leaves
+              // the run dir byte-for-byte as it was found. The Status propagates
+              // out through dispersion_book_var's ATX_TRY.
+              if (cancel.stop_requested()) {
+                return Err(ErrorCode::Cancelled,
+                           "dispersion_run_projected_var: cancelled before scenario batch at " +
+                               std::to_string(batch_start) + " (no artifacts written)");
+              }
               const std::size_t batch_size =
                   std::min(kSnapshotBatch, clock.size() - batch_start);
               std::vector<std::unique_ptr<MarketSnapshot>> owners;

@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic> // plan 5.5 cancellation flag
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -470,6 +471,11 @@ TEST(RunConfigContract, DesignatedInitBindsByName) {
   EXPECT_EQ(defaults.query_cache_build_policy, QueryCacheBuildPolicy::Eager);
   EXPECT_EQ(defaults.record_every_n, 1u);
   EXPECT_FALSE(static_cast<bool>(defaults.step_observer));
+  // Plan 5.5: the default token is the NOT-CANCELLABLE one. This is the
+  // determinism assertion for the 15->16 field insertion — a default RunConfig
+  // must still describe a run that cannot stop early.
+  EXPECT_FALSE(defaults.cancel.stop_possible());
+  EXPECT_FALSE(defaults.cancel.stop_requested());
   EXPECT_EQ(defaults.unpriced, UnpricedLotPolicy::Error);
   EXPECT_EQ(defaults.surface_provenance_policy, SurfaceProvenancePolicy::Compatibility);
   EXPECT_EQ(defaults.snapshot_cache, nullptr);
@@ -490,6 +496,110 @@ TEST(RunConfigContract, DesignatedInitBindsByName) {
   EXPECT_EQ(named.unpriced, UnpricedLotPolicy::Error);
   EXPECT_EQ(named.record_every_n, 1u);
   EXPECT_DOUBLE_EQ(named.reconcile_nav_tol, 1.0e-6);
+
+  // Plan 5.5: `cancel` was INSERTED between step_observer and unpriced rather
+  // than appended, so this is the assertion that the insertion did not rebind a
+  // neighbour. Naming only `cancel` must set only `cancel` — its two textual
+  // neighbours keep their own defaults.
+  const std::atomic<bool> flag{false};
+  const RunConfig with_cancel{.cancel = CancelToken{flag}};
+  EXPECT_TRUE(with_cancel.cancel.stop_possible());
+  EXPECT_FALSE(with_cancel.cancel.stop_requested());
+  EXPECT_FALSE(static_cast<bool>(with_cancel.step_observer));
+  EXPECT_EQ(with_cancel.unpriced, UnpricedLotPolicy::Error);
+  EXPECT_EQ(with_cancel.record_every_n, 1u);
+}
+
+// ── 0b. Cooperative cancellation (S5-T26, plan item 5.5) ───────────────────
+//
+// `run_backtest` is the one cancellable entry that touches NO files: it builds a
+// BacktestResult in memory and hands it back. So "no corrupted artifacts" here
+// is proved differently from the corpus/populate entries — there is nothing on
+// disk to inspect, and the property that matters instead is that a cancelled run
+// yields NO result at all (never a short one a caller might mistake for a
+// complete run), and that cancellation leaves no residue that could perturb a
+// later run.
+
+// GATE. A cancelled run must report Cancelled specifically — not Internal, not
+// Unavailable, not a generic failure — because a host has to distinguish "you
+// asked me to stop" from "something broke" by CODE, never by message text.
+TEST(BacktestCancellation, FixedBookRunReturnsCancelledAndNoResult) {
+  const fs::path dir = fresh_dir("cancel-fixed");
+  const int n = 5;
+  const CorpusManifest man = make_evolving_corpus(dir, "SPX", n);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  std::atomic<bool> stop{true}; // already requested: stops before step 1
+  RunConfig cfg{};
+  cfg.cancel = CancelToken{stop};
+
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;
+  auto res = run_backtest(*clock, survivor_book(expiry), cfg);
+
+  ASSERT_FALSE(res.has_value()) << "a cancelled run must not return a BacktestResult";
+  EXPECT_EQ(res.error().code(), ErrorCode::Cancelled);
+  EXPECT_NE(res.error().code(), ErrorCode::Internal);
+}
+
+// GATE. The mid-run case, and the one that would catch a check placed after the
+// row append: cancel from the step observer at step 2 and assert the run is
+// abandoned. The observer also proves the stop is COOPERATIVE — it is honoured at
+// the next step boundary, not by tearing down the current step.
+TEST(BacktestCancellation, StrategyRunStopsAtTheNextStepBoundary) {
+  const fs::path dir = fresh_dir("cancel-strategy");
+  const int n = 6;
+  const CorpusManifest man = make_evolving_corpus(dir, "SPX", n);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  std::atomic<bool> stop{false};
+  std::size_t steps_seen = 0;
+  RunConfig cfg{};
+  cfg.cancel = CancelToken{stop};
+  cfg.step_observer = [&](const StepEvent &) -> Status {
+    ++steps_seen;
+    if (steps_seen == 2u) {
+      stop.store(true, std::memory_order_relaxed);
+    }
+    return atx::core::Ok();
+  };
+
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;
+  OpenThenCloseStrategy strat{expiry};
+  auto res = run_backtest(*clock, strat, cfg);
+
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::Cancelled);
+  // The stop was requested during step 2 and honoured at the top of a later
+  // step, so the run must have ended EARLY — never having observed all n steps.
+  EXPECT_LT(steps_seen, static_cast<std::size_t>(n));
+  EXPECT_GE(steps_seen, 2u);
+}
+
+// GATE, and the determinism half of plan item 5.5. A token that is PRESENT but
+// never set must produce a bit-identical run to one with no token at all. This is
+// what makes "cancellation adds no timing-dependent state to published artifacts"
+// checkable rather than merely asserted: same NAV column, bit for bit.
+TEST(BacktestCancellation, AnUntriggeredTokenIsBitIdenticalToNoToken) {
+  const fs::path dir = fresh_dir("cancel-noop");
+  const int n = 5;
+  const CorpusManifest man = make_evolving_corpus(dir, "SPX", n);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;
+
+  auto plain = run_backtest(*clock, survivor_book(expiry), RunConfig{});
+  ASSERT_TRUE(plain.has_value()) << plain.error().to_string();
+
+  std::atomic<bool> never{false};
+  RunConfig cfg{};
+  cfg.cancel = CancelToken{never};
+  ASSERT_TRUE(cfg.cancel.stop_possible()); // negative control: the token is live
+  auto tokened = run_backtest(*clock, survivor_book(expiry), cfg);
+  ASSERT_TRUE(tokened.has_value()) << tokened.error().to_string();
+
+  expect_result_bit_identical(*plain, *tokened);
 }
 
 // ── 1. Load-once ────────────────────────────────────────────────────────────

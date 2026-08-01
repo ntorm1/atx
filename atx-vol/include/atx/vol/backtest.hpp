@@ -566,6 +566,17 @@ struct RunConfig {
   // strategy, so setting this there is a fail-closed InvalidArgument, never a
   // silent drop.
   StepObserver step_observer{};
+  // Cooperative cancellation, polled at the TOP of each step before any of that
+  // step's work (plan item 5.5). Default-constructed => never cancels, one
+  // predictable branch per step, byte-identical output.
+  //
+  // On a requested stop `run_backtest` returns `ErrorCode::Cancelled` and NO
+  // BacktestResult: the run is abandoned before the result is handed back, so a
+  // partially-filled result can never reach a caller, a writer, or validate().
+  // Nothing on disk is touched either way — `run_backtest` performs no file I/O.
+  // Sits beside `step_observer` because both are per-step run control the caller
+  // owns; the referenced flag must outlive the call.
+  CancelToken cancel{};
   // Policy for held P&L/Greek valuation only. Strategy close execution always
   // requires an economically valid mark regardless of this setting.
   //
@@ -630,12 +641,17 @@ struct RunConfig {
   double reconcile_nav_tol{1.0e-6};
 };
 
-// Drift pin (plan item 4.2). RunConfig has exactly FIFTEEN fields. Adding,
+// Drift pin (plan item 4.2). RunConfig has exactly SIXTEEN fields. Adding,
 // removing or splitting one breaks this line, which is the point: it forces
 // whoever changes the struct to read the construction contract above instead of
 // appending a knob "for compatibility" with positional initializers that are no
 // longer part of the API.
-static_assert(detail::aggregate_arity_is_v<RunConfig, 15>,
+//
+// 15 -> 16 (plan item 5.5): `cancel` was INSERTED beside `step_observer`, its
+// semantic group, not appended at the end. That is exactly the move the old
+// convention forbade and this one requires — and it is safe only because there
+// are no positional initializers left in-tree to rebind.
+static_assert(detail::aggregate_arity_is_v<RunConfig, 16>,
               "RunConfig field count changed: update this pin, and confirm every "
               "construction site still initializes by field name.");
 

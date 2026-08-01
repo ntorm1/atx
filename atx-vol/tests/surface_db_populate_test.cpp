@@ -256,6 +256,102 @@ void expect_view_matches_reconstruct(const PricedSurfaceView &view,
 
 } // namespace
 
+// ── Cooperative cancellation (S5-T26, plan item 5.5) ───────────────────────
+//
+// populate is the entry whose write-safety argument is STRUCTURAL rather than
+// "we stop before writing anything": `write_partition` atomically commits a
+// date's archive (tmp+rename) together with a generation-bumped manifest, so
+// every date that finished is durable and consistent. Cancelling therefore leaves
+// a VALID database holding a PREFIX of the requested dates — and that is the
+// property worth testing, because it is the one an operator relies on when they
+// stop a long backfill and restart it.
+
+// GATE. A genuine MID-RUN cancel: the flag is set from `after_partition_write`,
+// so the stop lands between two dates with one date already committed. Asserts
+// the status, that the committed prefix is intact and loadable, and that a
+// re-run resumes to a complete database.
+TEST(SurfaceDbPopulateCancellation, StopsBetweenDatesLeavingAValidResumableDb) {
+  const auto root = test_root("cancel_midrun");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const std::vector<CorpusBoard> boards = make_boards(); // kDate0 + kDate1, AAA/BBB
+  std::atomic<bool> stop{false};
+  std::vector<std::string> written;
+
+  PopulateTestHooks hooks;
+  hooks.after_partition_write = [&](const std::string &date) {
+    written.push_back(date);
+    stop.store(true, std::memory_order_relaxed); // stop before the NEXT date
+  };
+
+  SurfaceDbPopulateConfig cfg;
+  cfg.cancel = CancelToken{stop};
+
+  auto cancelled = populate_surface_db(*db, boards, cfg, &hooks);
+  ASSERT_FALSE(cancelled.has_value()) << "a cancelled populate must not report success";
+  EXPECT_EQ(cancelled.error().code(), ErrorCode::Cancelled);
+  // Specifically NOT the scheduler-incomplete Internal: a cancelled run leaves
+  // tasks unfinished by construction, and reporting that as a defect would turn
+  // the caller's own request into a spurious bug report.
+  EXPECT_NE(cancelled.error().code(), ErrorCode::Internal);
+
+  ASSERT_EQ(written.size(), 1u) << "the stop should have landed after exactly one date";
+  const std::string committed = written.front();
+
+  // The committed prefix is a REAL, loadable partition — not a torn file.
+  for (const char *sym : {"AAA", "BBB"}) {
+    auto owned = db->load_surface(committed, sym);
+    EXPECT_TRUE(owned.has_value())
+        << "committed date " << committed << "/" << sym << " did not survive the cancel: "
+        << (owned ? std::string{} : owned.error().to_string());
+  }
+
+  // Re-run with the flag clear and no hooks: the database completes.
+  stop.store(false, std::memory_order_relaxed);
+  auto resumed = populate_surface_db(*db, boards, SurfaceDbPopulateConfig{});
+  ASSERT_TRUE(resumed.has_value()) << (resumed ? "" : resumed.error().to_string());
+
+  std::size_t n_loaded = 0;
+  for (const char *date : {kDate0, kDate1}) {
+    for (const char *sym : {"AAA", "BBB"}) {
+      auto owned = db->load_surface(date, sym);
+      EXPECT_TRUE(owned.has_value())
+          << date << "/" << sym << ": " << (owned ? std::string{} : owned.error().to_string());
+      n_loaded += owned.has_value() ? 1u : 0u;
+    }
+  }
+  EXPECT_EQ(n_loaded, 4u) << "the resumed run did not produce a complete database";
+}
+
+// GATE, determinism half. A live-but-never-set token must leave the populate
+// result identical to one built with no token at all.
+TEST(SurfaceDbPopulateCancellation, AnUntriggeredTokenChangesNothing) {
+  const std::vector<CorpusBoard> boards = make_boards();
+
+  const auto plain_root = test_root("cancel_plain");
+  auto plain_db = SurfaceDb::create(plain_root.string());
+  ASSERT_TRUE(plain_db.has_value());
+  auto plain = populate_surface_db(*plain_db, boards, SurfaceDbPopulateConfig{});
+  ASSERT_TRUE(plain.has_value()) << (plain ? "" : plain.error().to_string());
+
+  std::atomic<bool> never{false};
+  SurfaceDbPopulateConfig cfg;
+  cfg.cancel = CancelToken{never};
+  ASSERT_TRUE(cfg.cancel.stop_possible()); // negative control: the token is live
+
+  const auto tokened_root = test_root("cancel_tokened");
+  auto tokened_db = SurfaceDb::create(tokened_root.string());
+  ASSERT_TRUE(tokened_db.has_value());
+  auto tokened = populate_surface_db(*tokened_db, boards, cfg);
+  ASSERT_TRUE(tokened.has_value()) << (tokened ? "" : tokened.error().to_string());
+
+  EXPECT_EQ(tokened->n_ok, plain->n_ok);
+  EXPECT_EQ(tokened->n_failed, plain->n_failed);
+  EXPECT_EQ(tokened->n_boards, plain->n_boards);
+  EXPECT_EQ(tokened->n_dates_written, plain->n_dates_written);
+}
+
 TEST(SurfaceDbPopulate, MapSurfaceViewReproducesReconstructedFitOutput) {
   const auto root = test_root("v2view");
   auto db = SurfaceDb::create(root.string());

@@ -119,6 +119,24 @@ struct SurfaceDbPopulateConfig {
   // mode the rewritten partition contains successful incoming fits only, so a
   // failed/disabled/absent existing cell may be removed.
   bool destructive_rewrite{false};
+  // Cooperative cancellation, polled at the TOP of each DATE in the drain loop,
+  // before that date's partition write (plan item 5.5). Default-constructed =>
+  // never cancels.
+  //
+  // This is the SAFEST of the four cancellable entries, and for a structural
+  // reason: `SurfaceDb::write_partition` atomically commits a date's archive file
+  // (tmp+rename) together with a generation-bumped manifest, so every date the
+  // drain loop already finished is durably and consistently on disk. Cancelling
+  // between dates therefore leaves a VALID database holding a prefix of the
+  // requested dates — not a damaged one — and a re-run resumes from it under the
+  // ordinary `skip_existing` / carry-over path with no special recovery.
+  //
+  // The stop does not abandon in-flight fit workers: it breaks the drain loop by
+  // the same route the scheduler-incomplete path already uses, so the fit-runner
+  // jthread is joined before `populate_surface_db` returns `ErrorCode::Cancelled`.
+  //
+  // The referenced flag must outlive the populate call.
+  CancelToken cancel{};
 };
 
 struct PopulateSymbolStats {

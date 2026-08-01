@@ -1739,6 +1739,15 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   double b_theta = 0.0, b_rho = 0.0, b_charm = 0.0, b_unexpl = 0.0, b_settle = 0.0, b_nunpriced = 0.0;
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
+    // Plan 5.5 safe point: the TOP of the step, before this step's snapshot load
+    // and before any row is appended. `out` is abandoned along with the error, so
+    // no partially-filled result can reach a caller, a writer, or validate() —
+    // the run returns no BacktestResult at all. Neither run_backtest overload
+    // performs any file I/O, so nothing on disk is touched either way.
+    if (cfg.cancel.stop_requested()) {
+      return Err(ErrorCode::Cancelled, "run_backtest: cancelled before step " +
+                                           std::to_string(i) + " (" + refs[i].date + ")");
+    }
     auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier,
                                             cfg.query_cache_build_policy);
     if (!shifted_res) {
@@ -2283,6 +2292,15 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   double b_nunpriced = 0.0;
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
+    // Plan 5.5 safe point: the TOP of the step, before this step's snapshot load
+    // and before any row is appended. `out` is abandoned along with the error, so
+    // no partially-filled result can reach a caller, a writer, or validate() —
+    // the run returns no BacktestResult at all. Neither run_backtest overload
+    // performs any file I/O, so nothing on disk is touched either way.
+    if (cfg.cancel.stop_requested()) {
+      return Err(ErrorCode::Cancelled, "run_backtest: cancelled before step " +
+                                           std::to_string(i) + " (" + refs[i].date + ")");
+    }
     auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier,
                                             cfg.query_cache_build_policy);
     if (!shifted_res) {

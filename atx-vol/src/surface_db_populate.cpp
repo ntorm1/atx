@@ -526,6 +526,10 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   // exit cannot deadlock even when the drain returns early on a write error.
   Status fit_status = Ok();
   bool scheduler_ended_with_unfinished_tasks = false;
+  // Plan 5.5: set by the drain loop's cancellation check. Declared out here, and
+  // acted on only after the enclosing scope below has joined the fit runner, so
+  // the stop can never race the workers it stops.
+  bool cancelled = false;
   {
     detail::FitSchedulerTestHooks scheduler_hooks;
     const detail::FitSchedulerTestHooks *scheduler_hooks_ptr = nullptr;
@@ -578,6 +582,17 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       const DateRange &range = date_ranges[r];
       if (range.skip) {
         continue;
+      }
+      // Plan 5.5 safe point: the TOP of a date, before this date is waited on and
+      // long before its partition is written. BREAK rather than return — the
+      // fit-runner jthread declared above must be joined first, and breaking
+      // takes the exact route the scheduler-incomplete path already uses to
+      // guarantee that. Every earlier date is already atomically committed
+      // (archive tmp+rename + generation-bumped manifest), so the database left
+      // behind is valid and a re-run simply resumes from it.
+      if (cfg.cancel.stop_requested()) {
+        cancelled = true;
+        break;
       }
       // Block until every enabled fit in this date completes OR the scheduler
       // returns. The second condition is essential: setup/launch failure can
@@ -1039,6 +1054,16 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
         slots[pos] = FitSlot{};
       }
     }
+  }
+  // Plan 5.5: the fit runner has been joined by the scope above, so every worker
+  // is stopped and every date that DID complete is already committed. Reported
+  // before the scheduler check below: a cancelled run leaves tasks unfinished BY
+  // CONSTRUCTION, and calling that an Internal scheduler defect would turn the
+  // caller's own request into a spurious bug report.
+  if (cancelled) {
+    return Err(ErrorCode::Cancelled,
+               "populate_surface_db: cancelled between dates (database left consistent; re-run to "
+               "resume)");
   }
   if (scheduler_ended_with_unfinished_tasks && fit_status) {
     return Err(ErrorCode::Internal,

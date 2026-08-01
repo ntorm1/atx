@@ -351,6 +351,19 @@ struct CorpusConfig {
   bool warm_start_chain{false};
   // Options forwarded verbatim to every per-date archive write (ATXVSA2, S4).
   ArchiveV2WriteOpts write_opts{};
+  // Cooperative cancellation, polled at the TOP of each DATE, before that date's
+  // archive is written (plan item 5.5). Default-constructed => never cancels.
+  //
+  // On a requested stop `build_corpus` returns `ErrorCode::Cancelled` and the
+  // manifest and quality report — the corpus's index, written only after every
+  // date completes — are never published. What remains on disk is per-date
+  // archive files with no manifest: byte-for-byte the state an interrupted build
+  // already leaves, which the build path is already required to overwrite. No
+  // date is ever half-written, because the check sits before that date's write
+  // and each archive is published tmp+rename.
+  //
+  // The referenced flag must outlive the build call.
+  CancelToken cancel{};
   // Test-only; null in production. Non-owning — the pointee must outlive the
   // build call. See CorpusFitTestHooks.
   const CorpusFitTestHooks *test_hooks{nullptr};

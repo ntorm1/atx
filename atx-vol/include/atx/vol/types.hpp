@@ -11,6 +11,7 @@
 // Thread-safety: every type in this header is a trivially-copyable value with
 // no shared state — safe to read and copy from any thread.
 
+#include <atomic>
 #include <cstdint>
 
 #include "atx/core/error.hpp"
@@ -23,6 +24,54 @@ using atx::core::Error;
 using atx::core::ErrorCode;
 using atx::core::Result;
 using atx::core::Status;
+
+// ── Cooperative cancellation (v1 plan item 5.5) ─────────────────────────────
+//
+// A `stop_token`-shaped, non-owning view of a caller-owned stop flag. The long-
+// running entry points (`run_backtest`, `build_corpus`, `populate_surface_db`,
+// projected-VaR generation) poll one of these at a declared safe point and, when
+// it is set, return `ErrorCode::Cancelled` instead of finishing.
+//
+// Lives here, with the rest of the shared vocabulary, because FOUR unrelated
+// config aggregates in four different headers need the same field type; giving
+// each its own would be the convention fragmentation `DeltaConvention` above
+// documents as a defect.
+//
+// NOT std::stop_token, deliberately: this is a plain 8-byte non-owning pointer
+// with no stop-state allocation and no condition-variable machinery, so a
+// default-constructed token costs one predictable-not-taken branch per poll and
+// the shipped no-cancellation path is exactly as fast as it was.
+//
+// OWNERSHIP is the caller's, and it is the caller's whole obligation: the
+// referenced atomic must outlive every call it is passed to. The token stores a
+// bare pointer precisely so that this is visible rather than hidden behind a
+// shared_ptr that would silently keep a flag alive past the run.
+//
+// Thread-safety: a token is a trivially-copyable value, safe to copy from any
+// thread. `stop_requested()` is a relaxed atomic load — cancellation carries no
+// payload, so there is nothing for an acquire to order against; the only
+// guarantee needed (and given) is that a store from the requesting thread
+// becomes visible in finite time. Requesting a stop from ANY thread, including a
+// pricing-pool worker or a signal-safe context, is well defined.
+class CancelToken {
+public:
+  // Never cancels. This is the default in every config aggregate, so a caller
+  // who wants no cancellation writes nothing and pays nothing.
+  CancelToken() noexcept = default;
+
+  explicit CancelToken(const std::atomic<bool> &flag) noexcept : flag_{&flag} {}
+
+  // False for a default-constructed token: no flag can ever be set. Lets a
+  // caller distinguish "not cancellable" from "cancellable but not cancelled".
+  [[nodiscard]] bool stop_possible() const noexcept { return flag_ != nullptr; }
+
+  [[nodiscard]] bool stop_requested() const noexcept {
+    return flag_ != nullptr && flag_->load(std::memory_order_relaxed);
+  }
+
+private:
+  const std::atomic<bool> *flag_{nullptr};
+};
 
 // ── Option side ─────────────────────────────────────────────────────────
 enum class Side : std::uint8_t {
