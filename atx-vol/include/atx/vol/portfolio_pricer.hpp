@@ -5,10 +5,11 @@
 // The v3 curve framework's serialization currency is `PricedSurface` (a fitted,
 // cache-free surface of any curve kind whose `greeks(K,T,side)` reproduce a
 // session's cold served theo bit-for-bit — see priced_surface.hpp). This module
-// is the portfolio layer built directly on it, replacing the legacy
-// `portfolio.hpp` (a faithful C `ats-vol` port bound to
-// VolSurface/Universe/MarketBinding/CorrectionCache) for the new-surface world.
-// The two coexist: portfolio.hpp is untouched; nothing here depends on it.
+// is the portfolio layer built directly on it, and since S4-T22 (plan 4.5) it is
+// the library's ONLY portfolio engine: the legacy VolSurface/Universe-bound C
+// `ats-vol` port that used to sit beside it was deleted rather than shipped
+// deprecated in v1. Its scenario and attribution capabilities live on this stack
+// as `scenario_grid.hpp` and `pnl_attribution.hpp`.
 //
 // ## What it does
 //

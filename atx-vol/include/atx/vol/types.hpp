@@ -71,10 +71,10 @@ enum class DeltaConvention : std::uint8_t {
 //
 // Which American pricing route a leg actually took. Ports the C
 // `AtsVolPricingRoute`. Defined here (the shared vocabulary header) because it
-// is BOTH a `profile.hpp` configuration input and a `portfolio.hpp`/`bulk`
-// per-lane diagnostic output — two public headers that must agree on one type
-// (they previously each defined their own, an ODR conflict for any TU that
-// included both, e.g. via the `vol.hpp` umbrella). Numeric slot 3
+// is BOTH a `profile.hpp` configuration input and a per-lane pricing diagnostic
+// output — public headers that must agree on one type (they previously each
+// defined their own, an ODR conflict for any TU that included both, e.g. via
+// the `vol.hpp` umbrella). Numeric slot 3
 // (`DISCRETE_DIV_FD_CACHE`) was removed in the C and stays reserved, so
 // `PriorSurface` keeps its wire value of 4.
 enum class PricingRoute : std::uint8_t {

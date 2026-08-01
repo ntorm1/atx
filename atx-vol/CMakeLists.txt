@@ -7,7 +7,8 @@
 #
 # Scope: the full ats-vol port (Black-76 + Greeks, implied vol, eSSVI/SVI/C8/
 # CStar calibrators, Andersen-Lake/BAW American pricers, curves, universe,
-# portfolio/risk, vol derivatives, surface archive) PLUS a Vola-Dynamics
+# portfolio/risk on the PricedSurface stack, vol derivatives, surface archive)
+# PLUS a Vola-Dynamics
 # American-equity parity layer: de-Americanization (american_iv, deamer), hybrid
 # dividends + borrow (dividend), exact S3 curve (s3), fit metrics / reduced-χ²
 # (fit_metrics), parity metrics (parity), panel fixtures (panel), and the
@@ -50,13 +51,9 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/run_diagnostics.cpp
     src/surface_db.cpp
     src/batch.cpp
-    src/portfolio_price.cpp
-    src/bulk.cpp
-    src/portfolio_greeks.cpp
     src/projection.cpp
     src/contract_projection.cpp
     src/historical_projection.cpp
-    src/portfolio_risk.cpp
     src/american_iv.cpp
     src/dividend.cpp
     src/s3.cpp

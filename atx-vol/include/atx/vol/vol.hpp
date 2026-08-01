@@ -60,11 +60,11 @@
 //   PnlFrame   explain   = pricer.pnl_explain(base, shifted).value();  // delta/gamma/...
 //
 // CANONICAL portfolio engine: portfolio_pricer.hpp (the PricedSurface-native
-// PortfolioPricer above) — and, as of the tiering below, the ONLY portfolio
-// engine on the frozen surface. The DEPRECATED legacy VolSurface/Universe-bound
-// pair (`portfolio.hpp` / `portfolio_risk.hpp`) is Tier-B: still shipped, still
-// includable explicitly, deliberately not part of what v1 freezes. Do not build
-// new features on it.
+// PortfolioPricer above) — and, since S4-T22 (plan 4.5), the library's ONLY
+// portfolio engine. The legacy VolSurface/Universe-bound C-port pair that used
+// to sit beside it was DELETED rather than shipped deprecated: v1 ships nothing
+// deprecated. Its scenario and attribution capabilities are on this stack as
+// `scenario_grid.hpp` and `pnl_attribution.hpp`.
 //
 // ── WHAT THIS FILE IS, EXACTLY (S4-T18 / plan 3.8 + 4.1) ─────────────────────
 //
@@ -87,9 +87,8 @@
 //   Tier-B  include/atx/vol/*.hpp  — public and includable, outside the freeze.
 //           Advanced calibrators (svi/essvi/cstar/c8_calib), the SoA + SIMD
 //           batch kernels (batch.hpp, american_batch.hpp, simd/), the
-//           deprecated legacy portfolio engine, the listed-dispersion domain
-//           vocabulary, OPRA hive/batch loaders, harness panels and fixtures,
-//           and the earnings-reproduction harness.
+//           listed-dispersion domain vocabulary, OPRA hive/batch loaders,
+//           harness panels and fixtures, and the earnings-reproduction harness.
 //   detail  include/atx/vol/detail/ — internal machinery, no stability promise.
 //   tools   tools/include/atx/vol/tools/  (target atx-vol-tools) — surface-db
 //           CLI support, run-report writers, the tearsheet.
@@ -185,12 +184,13 @@
 
 // ── Portfolio / risk analytics ──────────────────────────────────────────────
 //
-// CANONICAL and, on the frozen surface, sole portfolio path: dedup + American
-// mark + American cold-FD Greeks + Taylor PnL-explain over N underlyings. The
-// legacy VolSurface/Universe-bound engine (portfolio.hpp / portfolio_risk.hpp)
-// is DEPRECATED and Tier-B — include it explicitly if you still need stock/cash
-// legs, by-uid/by-expiry aggregation, the multi-shock scenario engine or factor
-// PnL attribution, and migrate off it as the PricedSurface path grows them.
+// The sole portfolio path: dedup + American mark + American cold-FD Greeks +
+// Taylor PnL-explain over N underlyings, with by-underlier / by-expiry
+// aggregation via `reduce_risk_buckets` / `reduce_pnl_risk_buckets`. Its
+// scenario and attribution post-processes are `scenario_grid.hpp` (2-D
+// spot x vol P&L matrix) and `pnl_attribution.hpp` (the level/skew/curvature
+// vol split); relative option templates resolve to concrete contracts through
+// `contract_projection.hpp`.
 #include "atx/vol/adjusted_greeks.hpp" // AdjustedGreeks (named in the pricer's API)
 #include "atx/vol/portfolio_pricer.hpp" // PricedSurface-native pricer + Taylor PnL explain
 

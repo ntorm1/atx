@@ -40,12 +40,9 @@ add_executable(atx-vol-tests
     run_diagnostics_test.cpp
     surface_db_test.cpp
     batch_test.cpp
-    portfolio_test.cpp
-    bulk_test.cpp
     projection_test.cpp
     contract_projection_test.cpp
     historical_projection_test.cpp
-    portfolio_risk_test.cpp
     american_iv_test.cpp
     dividend_test.cpp
     s3_test.cpp

@@ -12,7 +12,7 @@
 // Umbrella compile check: this translation unit includes ONLY the umbrella
 // header. It proves (a) the aggregate public surface is self-consistent — no
 // ODR clashes across the co-included headers (e.g. the PricingRoute enum,
-// formerly duplicated in portfolio.hpp and profile.hpp, now single-sourced from
+// formerly duplicated in the legacy portfolio engine and profile.hpp, now from
 // types.hpp), and (b) the quickstart symbols are reachable through the one
 // include.
 //

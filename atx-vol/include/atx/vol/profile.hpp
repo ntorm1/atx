@@ -93,7 +93,7 @@ inline constexpr std::uint32_t kUflagHtb = 0x01u;
 // ── Pricing route (research §8) ──────────────────────────────────────────
 //
 // `PricingRoute` is defined in types.hpp (the shared vocabulary header) so this
-// config header and portfolio.hpp's per-lane diagnostic agree on one type.
+// config header and every per-lane pricing diagnostic agree on one type.
 
 // ── Profile struct ───────────────────────────────────────────────────────
 //
