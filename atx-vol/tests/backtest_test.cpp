@@ -2912,7 +2912,10 @@ TEST(UnpricedTolerance, HedgeAbsentUidStillAbortsUnderError) {
   auto res = run_backtest(*clock, strat, cfg);
   ASSERT_FALSE(res.has_value()) << "Error must stay fully fail-closed on an absent board";
   EXPECT_EQ(res.error().code(), ErrorCode::NotFound);
-  EXPECT_NE(res.error().message().find("no surface"), std::string::npos)
+  // Pin WHICH guard fires, so the ordering argument above is a property and not
+  // just prose: this test would otherwise still pass if the intended guard were
+  // deleted and some other one happened to catch the same fixture.
+  EXPECT_NE(res.error().message().find("held lot(s) have no surface this step"), std::string::npos)
       << "message was: " << res.error().message();
 }
 
@@ -2953,6 +2956,71 @@ TEST(UnpricedTolerance, SettlementDefersAcrossAOneSessionGap) {
   EXPECT_TRUE(bits_equal(res->pnl_settlement[2], 0.0));
   EXPECT_NE(res->pnl_settlement[3], 0.0);
   EXPECT_TRUE(std::isfinite(res->nav[3]));
+
+  // The deferral path is serial control flow, but the sprint's standing rule is
+  // bit-identity across thread counts and this is the GAPPY path the change
+  // creates — the clean-data parity gate below cannot speak for it.
+  RunConfig wide = cfg;
+  wide.price.n_threads = 4u;
+  TwoNameOpenAndHoldStrategy strat4{far, expiry_b, HedgeSpec{}};
+  auto res4 = run_backtest(*clock, strat4, wide);
+  ASSERT_TRUE(res4.has_value()) << res4.error().to_string();
+  expect_result_bit_identical(*res, *res4);
+}
+
+// The other half of the absent-board settlement case: the expiry step OBSERVES a
+// settlement spot (its board is back) but the step's BASE board is gone, so there
+// is no mark to explain the settlement against. This is the one path in the engine
+// where cash and NAV deliberately disagree — the lot settles into cash at full
+// intrinsic while the explain lane books exactly zero — and it is reachable in the
+// real corpus (index board rejected on session k-1, back on session k, a cohort
+// expiring exactly on k). Pinned here so a regression that dropped the CASH too
+// cannot pass as "the explain was already zero".
+TEST(UnpricedTolerance, SettlementWithoutABaseMarkBooksCashButNoExplain) {
+  const fs::path dir = fresh_dir("unpriced-settle-no-base-mark");
+  const CorpusManifest man = make_two_name_corpus(dir, 4, {1}); // board gone the day BEFORE expiry
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t far = kBaseNow + 120 * kDayNs;
+  const std::int64_t expiry_b = kBaseNow + 2 * kDayNs; // board is BACK on the expiry date
+  TwoNameOpenAndHoldStrategy strat{far, expiry_b, HedgeSpec{}};
+  RunConfig cfg;
+  cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  cfg.price.n_threads = 1u;
+  auto res = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), 4u);
+
+  // The lot settles ON its expiry row — it is never deferred, because the spot it
+  // settles against IS observed — so it leaves the book there and stays gone.
+  EXPECT_EQ(res->n_open_lots[0], 2.0);
+  EXPECT_EQ(res->n_open_lots[1], 2.0);
+  EXPECT_EQ(res->n_open_lots[2], 1.0);
+  EXPECT_EQ(res->n_open_lots[3], 1.0);
+
+  // Row 1: the held lot the step could not explain (shifted board absent).
+  // Row 2: the settlement whose explain lane was dropped. Never silent.
+  EXPECT_EQ(res->n_unpriced_lots[0], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[1], 1.0);
+  EXPECT_EQ(res->n_unpriced_lots[2], 1.0);
+  EXPECT_EQ(res->n_unpriced_lots[3], 0.0);
+
+  // The explain lane is bit-zero on EVERY row: this settlement contributed none,
+  // and nothing else in the fixture expires.
+  for (std::size_t i = 0; i < res->size(); ++i) {
+    EXPECT_TRUE(bits_equal(res->pnl_settlement[i], 0.0)) << "row " << i;
+  }
+
+  // ...but the CASH ledger receives the full intrinsic, computed here from the
+  // fixture's own spot expression rather than from the engine. Nothing else moves
+  // cash on that step: no entries after inception, no hedge, no frictions, no
+  // financing.
+  const double spot_b_at_expiry = 200.0 * (1.0 + 0.006 * 2.0);
+  const double intrinsic = std::max(0.0, spot_b_at_expiry - 200.0); // long 200 call
+  ASSERT_GT(intrinsic, 0.0) << "fixture must settle IN THE MONEY or the gate is vacuous";
+  EXPECT_DOUBLE_EQ(res->cash[2] - res->cash[1], 5.0 * 100.0 * intrinsic);
+  EXPECT_DOUBLE_EQ(res->cash[3], res->cash[2]);
 }
 
 // Same fixture under the strict policy: an absent board at an exact expiry is

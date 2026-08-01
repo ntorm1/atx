@@ -764,14 +764,33 @@ struct BacktestResult {
   // `nav_liquidation`.
   std::vector<double> gross_vega_abs;
   std::vector<double> turnover_notional, turnover_vega; // traded |notional| / |vega| this step
+  // Open lots at this row. USUALLY the size of the engine's book, but not by
+  // definition: under `UnpricedLotPolicy::ExcludeAndReport` a lot whose expiry step
+  // had no board is DEFERRED, and a deferred lot has left the engine's `lots`
+  // vector (it is past its expiry, which every book-facing invariant forbids) while
+  // still holding real exposure the run has not settled. Those lots are counted
+  // here — this column is "positions still open", not "book vector size" — and are
+  // excluded from `gross_*`. Always exactly the book size under `Error`, which
+  // never defers.
   std::vector<double> n_open_lots;
-  // Positions whose surface was absent this step; their PnL and greeks are EXCLUDED
-  // from this row's totals. 0.0 at inception. Under RunConfig::unpriced == Error a
-  // step with a non-zero count aborts the run instead of recording a row.
-  // WS-F F1(b): a HEDGE-SHARE ledger entry whose base or shifted surface is absent
-  // over the step is counted here too (its share MTM and financing are excluded
-  // from this row exactly as an unpriced lot's PnL is), so the column stays the
-  // single honest "positions this row could not value" count.
+  // Positions this row could not value; their PnL and greeks are EXCLUDED from this
+  // row's totals. Under RunConfig::unpriced == Error a step with a non-zero count
+  // aborts the run instead of recording a row, so a non-zero value here only ever
+  // appears under ExcludeAndReport. One count per excluded lane per step, summed
+  // over the four lanes `UnpricedLotPolicy` governs:
+  //   1. a HELD lot whose base or shifted surface is absent over the step;
+  //   2. (WS-F F1(b)) a HEDGE-SHARE ledger entry whose base or shifted surface is
+  //      absent over the step — its share MTM and financing are excluded from this
+  //      row exactly as an unpriced lot's PnL is;
+  //   3. (SP100) a delta-hedge SHARE FILL the overlay skipped because the uid has no
+  //      board on this row's base — the position is left in place, unhedged;
+  //   4. (SP100) a SETTLEMENT event at a lot's exact expiry with no board: the step
+  //      that defers the lot, every later step it spends waiting, and the step it
+  //      finally settles on are each counted once.
+  // So the column stays the single honest "things this row could not value" count.
+  // Row 0 (inception) is 0.0 for lanes 1/2/4, which cannot occur there; lane 3 is
+  // recorded on it like any other row (also 0.0 for a normally-opened book, since
+  // the strategy never opens a lot in an absent name and the share ledger is empty).
   std::vector<double> n_unpriced_lots;
   // Positions whose surface was absent on THIS row's date; their greeks are EXCLUDED
   // from this row's `gross_*`. Distinct from `n_unpriced_lots`, which measures the
@@ -781,6 +800,10 @@ struct BacktestResult {
   // in `n_unpriced_lots` but NOT here). Filled on EVERY row including row 0 —
   // inception computes book greeks, so its count is a real measurement, not 0.0 by
   // convention. Under RunConfig::unpriced == Error a row with a non-zero count aborts.
+  // A DEFERRED lot (see `n_open_lots`) is NOT counted here: it is absent from the
+  // priced book entirely rather than present-and-unpriceable, so a row can show
+  // `n_open_lots` above the greek-covered lot count with this column at 0. The
+  // deferral is reported on the step side, in `n_unpriced_lots`.
   std::vector<double> n_unpriced_greeks;
   // FULL-RESOLUTION per-step total PnL: one entry per priced step (steps 1..N-1),
   // retained regardless of `record_every_n`. This is the TRUE per-step return

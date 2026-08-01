@@ -1079,6 +1079,12 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
             frozen_mark = *mark;
             frozen_known = true;
           }
+          // A present board that fails to SOLVE is a numeric failure, not missing
+          // market data, and the non-deferred settlement path returns that Err under
+          // both policies. Here it is folded into "no mark" instead: a run that has
+          // already opted into the lenient policy for this lot should not be killed
+          // by a solve on a lot it can no longer value anyway. The two cases are
+          // indistinguishable downstream — the count fires either way.
         }
         deferrals->insert(lot, frozen_mark, frozen_known);
         continue;
@@ -2698,8 +2704,12 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     // Deferred lots whose board came back this step settle at THIS step's spot;
     // `compute_step` summed their intrinsic in lot-id order. Their board was absent
     // when they expired, so the loop above can never have booked them twice: it
-    // skips exactly the uids the deferral was triggered by.
-    cash += step->deferred_settle_cash;
+    // skips exactly the uids the deferral was triggered by. Guarded rather than
+    // unconditional so the strict path does not even execute a `+= 0.0`, which
+    // would map a -0.0 balance to +0.0: Error stays bit-identical.
+    if (deferrals_ptr != nullptr) {
+      cash += step->deferred_settle_cash;
+    }
     std::erase_if(book.lots, [&base](const Lot &l) { return l.expiry_ts_ns <= base->ts_ns(); });
 
     // 4-5. Strategy entries/rolls + hedge overlay on the new base.

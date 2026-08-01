@@ -191,6 +191,12 @@ struct StrategySpec {
   // fit, a configuration error) still propagates, and basket-name handling under
   // `missing.policy` is untouched.
   //
+  // READ `constraint.group_b` LITERALLY before setting this. It is "the index" for
+  // `Kind::FlatVega`, which is what `make_dispersion_strangle_spec` builds. For
+  // `Kind::VegaNeutralBasket` the group_b DEFAULT is "basket", so on such a spec
+  // this flag would turn ONE missing basket name into a whole-entry skip — the
+  // opposite of what `MissingNamePolicy::DropRenormalize` is for.
+  //
   // Motivation: a real corpus loses its index board on a handful of sessions (an
   // arb-violating snapshot minute the fitter must reject), and a year-to-date run
   // has to drop those entry days rather than abort. `resolve_spec_with_policy`
@@ -316,7 +322,12 @@ expand_leg(const MarketSnapshot &snap, const LegSpec &leg, const ResolutionOptio
 // `CrossLegConstraint` (FlatVega / VegaNeutralBasket scale one group's gross vega
 // onto another's). Deterministic; emits legs in spec order (call before put).
 // EXACTLY resolve_spec_with_policy under policy Error (any leg failure is fatal,
-// `spec.missing` is ignored).
+// `spec.missing` is ignored) — with ONE exception, and only when the caller has
+// opted into it: `spec.skip_entry_on_missing_index` is honored here too (the
+// resolution body is shared), so a NotFound on the `constraint.group_b` leg yields
+// an EMPTY book rather than an error. This overload has no `dropped` sink, so on
+// this path the skip is SILENT; use `resolve_spec_with_policy` if you need the
+// reason. Default false leaves the "any leg failure is fatal" contract exact.
 [[nodiscard]] Result<std::vector<SizedLeg>> resolve_spec(const MarketSnapshot &snap,
                                                          const StrategySpec &spec);
 [[nodiscard]] Result<std::vector<SizedLeg>> resolve_spec(const MarketSnapshot &snap,
