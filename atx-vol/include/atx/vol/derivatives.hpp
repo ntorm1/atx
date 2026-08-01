@@ -116,6 +116,12 @@ enum class DerivFlags : std::uint32_t {
   // and df = 1.0 was substituted (typical case: T == 0 at expiry). Callers
   // using PV must check for this.
   DfFallback = 1u << 8,
+  // Set when DerivConfig::vol_of_vol == 0 (auto-calibrate) and the auto path
+  // produced xi -- including the degenerate xi = 0 outcome (no Carr-Lee
+  // convexity on this surface/tenor). NOT set on an explicit cfg.vol_of_vol,
+  // and not set when no distribution model ran at all (this task ships the
+  // knob + resolver; Tasks 4-6 are the first callers that can raise it).
+  VolOfVolCalibrated = 1u << 9,
 };
 
 [[nodiscard]] constexpr DerivFlags operator|(DerivFlags a, DerivFlags b) noexcept {
@@ -228,6 +234,20 @@ struct DerivConfig {
   //               got you the strip you asked for but permanently flagged it
   //               truncated.
   double width_sigmas = 0.0;
+  // Annualized lognormal vol of the FUTURE realized-variance leg (the
+  // "vol-of-vol" driving the RV distribution models Tasks 4-6 add: capped
+  // swaps and mid-life vol-swap dispatch need a distribution over the future
+  // variance, not just its mean, and this is the one free parameter of the
+  // lognormal RV model those engines assume).
+  //
+  //   0    -> auto-calibrate from the surface's OWN Carr-Lee convexity at the
+  //           contract tenor: pick xi so the lognormal E[sqrt(W)] reproduces
+  //           the Carr-Lee K_vol exactly (see resolve_vol_of_vol,
+  //           derivatives.cpp anon namespace). No convexity on the surface ->
+  //           xi = 0 (RV collapses to its own mean, i.e. no vol-of-vol).
+  //   > 0  -> used as-is; the caller's own calibration wins.
+  //   < 0  -> InvalidArgument (a vol-of-vol cannot be negative).
+  double vol_of_vol = 0.0;
   // Reserved — must be left at 0.
   double abs_price_tol = 0.0;
   double rel_price_tol = 0.0;
@@ -258,6 +278,14 @@ struct DerivQuote {
   // left at its memset zero (e.g. the standalone vol-swap Carr-Lee entry,
   // which runs no strip).
   double integration_error_est = 0.0;
+  // The vol-of-vol actually used to price this quote (DerivConfig::vol_of_vol
+  // resolved: the explicit value, or the auto-calibrated xi). NaN, not 0 --
+  // this task adds the config knob and the resolver but wires no distribution
+  // model into a pricing path yet, so every quote built by THIS task's code
+  // leaves it at the struct default (kQuietNaN, curve.hpp) and a caller can
+  // gate on (x == x) exactly as with integration_error_est above. Tasks 4-6
+  // populate a real value once a distribution model actually runs.
+  double vol_of_vol_used = kQuietNaN;
   DerivFlags flags = DerivFlags::None;
 };
 

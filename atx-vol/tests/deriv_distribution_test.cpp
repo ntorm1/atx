@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 #include <cmath>
+#include "atx/vol/derivatives.hpp"
 #include "atx/vol/detail/rv_lognormal.hpp"
+#include "support/deriv_test_fixture.hpp"
 
 namespace {
 using atx::vol::detail::gh_rule;
@@ -9,6 +11,22 @@ using atx::vol::detail::lognormal_expect;
 using atx::vol::detail::lognormal_sqrt_moment;
 using atx::vol::detail::lognormal_truncated_expect;
 using atx::vol::detail::norm_cdf;
+
+// Task 3 (vol-of-vol knob + Carr-Lee-consistent auto-calibration): config
+// validation and the closed-form identity resolve_vol_of_vol's auto path
+// relies on. resolve_vol_of_vol itself is internal (derivatives.cpp anon
+// namespace, Tasks 4-6's shared helper) with no public surface to unit-test
+// directly here -- these two tests exercise it through the public entries
+// that already exist (var_swap_fair_strike / vol_swap_fair_strike).
+using atx::vol::CurveSet;
+using atx::vol::deriv_default_config;
+using atx::vol::DerivConfig;
+using atx::vol::ErrorCode;
+using atx::vol::EssviSurface;
+using atx::vol::var_swap_fair_strike;
+using atx::vol::vol_swap_fair_strike;
+using atx::vol::testsupport::make_flat_curves;
+using atx::vol::testsupport::make_flat_surface;
 
 TEST(GhRule, WeightsIntegrateGaussianMoments) {
   const auto& r = gh_rule();
@@ -84,5 +102,37 @@ TEST(RvLognormal, NormCdfKnownValues) {
   EXPECT_NEAR(norm_cdf(0.0), 0.5, 1e-15);
   EXPECT_NEAR(norm_cdf(1.959963984540054), 0.975, 1e-9);
   EXPECT_NEAR(norm_cdf(-1.959963984540054), 0.025, 1e-9);
+}
+
+// ── Vol-of-vol config validation + Carr-Lee closed-form oracle ────────────
+
+TEST(VolOfVol, NegativeConfigRejected) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivConfig cfg = deriv_default_config();
+  cfg.vol_of_vol = -0.5;
+  const auto q = var_swap_fair_strike(surf, cs, 0.10, cfg);
+  ASSERT_FALSE(q.has_value());
+  EXPECT_EQ(q.error().code(), ErrorCode::InvalidArgument);
+}
+
+// On a FLAT surface Carr-Lee K_vol < sqrt(K_var) purely from the ATMF
+// straddle's own lognormal convexity, so auto-calibration must return xi > 0,
+// and the calibrated lognormal must reproduce Carr-Lee exactly by construction:
+// sqrt(K_var) * exp(-s^2/8) == K_vol_CL.
+TEST(VolOfVol, AutoCalibrationReproducesCarrLee) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const DerivConfig cfg = deriv_default_config();
+  const double T = 0.25;
+  const auto kv = var_swap_fair_strike(surf, cs, T, cfg);
+  const auto kl = vol_swap_fair_strike(surf, cs, T, cfg);
+  ASSERT_TRUE(kv.has_value());
+  ASSERT_TRUE(kl.has_value());
+  ASSERT_LT(kl->fair_strike_dec, std::sqrt(kv->fair_strike_dec));  // convexity exists
+  const double s2 = -8.0 * std::log(kl->fair_strike_dec / std::sqrt(kv->fair_strike_dec));
+  ASSERT_GT(s2, 0.0);
+  const double recon = std::sqrt(kv->fair_strike_dec) * std::exp(-s2 / 8.0);
+  EXPECT_NEAR(recon, kl->fair_strike_dec, 1e-14);
 }
 }  // namespace

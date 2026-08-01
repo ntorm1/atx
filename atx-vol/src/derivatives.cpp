@@ -109,6 +109,15 @@ struct StripGrid {
          cfg.flags_request == 0u;
 }
 
+// Reject a negative vol_of_vol (Sprint 29 / Task 3 enforcement): 0 selects
+// auto-calibration, > 0 is used as-is, and a negative vol-of-vol has no
+// meaning. `!(x >= 0.0)` also catches NaN (comparisons with NaN are false),
+// matching this file's existing NaN-safe validation idiom (see the `T > 0.0`
+// guards above).
+[[nodiscard]] bool vol_of_vol_valid(const DerivConfig& cfg) noexcept {
+  return cfg.vol_of_vol >= 0.0;
+}
+
 // Aged variance blend (decimal units). Marked total variance over the original
 // contract horizon; caller guarantees n_done <= n_total (aged_total_variance_dec).
 //   n_total == 0          -> fully unaged (return K_var_future).
@@ -278,6 +287,93 @@ template <class SurfaceT>
   return Ok(out);
 }
 
+// Carr-Lee ATMF-straddle vol-strike, K_vol ~= sqrt(2 pi / T) * C_ATMF(T) /
+// (F * df). Factored out of vol_swap_fair_strike (below) so it and
+// resolve_vol_of_vol's auto-calibration path (also below) share ONE
+// implementation — the brief that introduced vol-of-vol auto-calibration
+// requires the calibrated lognormal to reproduce this number exactly, which
+// is only guaranteed if both callers compute it the same way.
+//
+// @return InvalidArgument for T <= 0; OutOfRange if the forward/discount
+//         cannot be resolved or the ATMF implied vol is non-finite/<= 0.
+template <class SurfaceT>
+[[nodiscard]] Result<double> carr_lee_k_vol(const SurfaceT& surface,
+                                            const CurveSet& curves, double T) {
+  if (!(T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "carr-lee K_vol needs T > 0");
+  }
+
+  const double F = resolve_forward(curves, T);
+  const double df = curves.yield.disc(T);
+  if (!(F > 0.0) || !(df > 0.0)) {
+    return Err(ErrorCode::OutOfRange, "forward/discount unavailable at T");
+  }
+
+  // ATMF implied vol — log-moneyness 0.
+  const double sigma_atmf = surface.iv(0.0, T);
+  if (!std::isfinite(sigma_atmf) || sigma_atmf <= 0.0) {
+    return Err(ErrorCode::OutOfRange, "ATMF implied vol non-finite or <= 0");
+  }
+
+  const double c_atmf = black76_price(F, F, T, sigma_atmf, df, Side::Call);
+  return Ok(std::sqrt(2.0 * std::numbers::pi / T) * c_atmf / (F * df));
+}
+
+// Vol-of-vol resolution result. Internal only (Tasks 4-6's shared helper,
+// same TU) — no header declaration; consumers in later tasks live in this
+// same anonymous namespace.
+struct VolOfVol {
+  double xi;
+  bool calibrated;
+};
+
+// Resolve the vol-of-vol for a contract: explicit cfg wins; otherwise calibrate
+// s.t. the lognormal E[sqrt(W)] reproduces the Carr-Lee K_vol on this surface
+// at this tenor: s^2 = -8 ln(k_vol_cl / sqrt(k_var)), xi = s / sqrt(T).
+// Returns xi and whether it was calibrated (for the flag). k_vol_cl >= sqrt(k_var)
+// (no convexity, or degenerate inputs) yields xi = 0.
+//
+// `calibrated` means "the auto path ran" — set true whenever cfg.vol_of_vol
+// selected auto-calibration, INCLUDING the degenerate xi = 0 outcome (no
+// convexity, or a k_var_future too small/non-finite to calibrate against).
+// The alternative reading — calibrated only when xi > 0 — would make the flag
+// answer "did we compute a value" AND "is that value non-trivial" at once,
+// forcing a caller to inspect xi just to know which config path ran. Only an
+// EXPLICIT cfg.vol_of_vol (the caller's own number, not ours) gets `false`.
+template <class SurfaceT>
+[[nodiscard]] Result<VolOfVol> resolve_vol_of_vol(const SurfaceT& surface,
+                                                  const CurveSet& curves, double T,
+                                                  double k_var_future,
+                                                  const DerivConfig& cfg) {
+  if (cfg.vol_of_vol > 0.0) {
+    return Ok(VolOfVol{cfg.vol_of_vol, false});
+  }
+
+  // Auto-calibrate against THIS surface's own Carr-Lee convexity — the same
+  // helper vol_swap_fair_strike uses, so a caller pricing off this xi never
+  // disagrees with the plain Carr-Lee vol-swap quote by construction.
+  ATX_TRY(const double k_vol_cl, carr_lee_k_vol(surface, curves, T));
+
+  if (!std::isfinite(k_vol_cl) || !std::isfinite(k_var_future) ||
+      !(k_var_future > 0.0)) {
+    return Ok(VolOfVol{0.0, true});  // degenerate input; auto path still "ran"
+  }
+
+  const double sqrt_k_var = std::sqrt(k_var_future);
+  const double ratio = k_vol_cl / sqrt_k_var;
+  // ratio >= 1 (written as !(ratio < 1.0) so a NaN ratio also lands here, not
+  // in the log() below): no convexity, or an inverted/degenerate input. s^2
+  // would be <= 0, not a valid lognormal log-stdev, so xi = 0 (RV collapses
+  // to its own mean).
+  if (!(ratio < 1.0) || !(ratio > 0.0)) {
+    return Ok(VolOfVol{0.0, true});
+  }
+
+  const double s2 = -8.0 * std::log(ratio);
+  const double xi = std::sqrt(s2) / std::sqrt(T);
+  return Ok(VolOfVol{xi, true});
+}
+
 }  // namespace
 
 // ── Variance strip ─────────────────────────────────────────────────────────
@@ -291,6 +387,9 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   }
   if (!reserved_fields_clean(cfg)) {
     return Err(ErrorCode::NotImplemented, "reserved config field is non-zero");
+  }
+  if (!vol_of_vol_valid(cfg)) {
+    return Err(ErrorCode::InvalidArgument, "vol_of_vol must be >= 0");
   }
 
   // Grid bounds and node count: quality default, overridden by the config.
@@ -477,24 +576,13 @@ Result<DerivQuote> vol_swap_fair_strike(const SurfaceT& surface,
   if (!reserved_fields_clean(cfg)) {
     return Err(ErrorCode::NotImplemented, "reserved config field is non-zero");
   }
-
-  const double F = resolve_forward(curves, T);
-  const double df = curves.yield.disc(T);
-  if (!(F > 0.0) || !(df > 0.0)) {
-    return Err(ErrorCode::OutOfRange, "forward/discount unavailable at T");
+  if (!vol_of_vol_valid(cfg)) {
+    return Err(ErrorCode::InvalidArgument, "vol_of_vol must be >= 0");
   }
 
-  // ATMF implied vol — log-moneyness 0.
-  const double sigma_atmf = surface.iv(0.0, T);
-  if (!std::isfinite(sigma_atmf) || sigma_atmf <= 0.0) {
-    return Err(ErrorCode::OutOfRange, "ATMF implied vol non-finite or <= 0");
-  }
-
-  // Black-76 ATMF call, then the Carr-Lee fair vol
-  //   K_vol ~= sqrt(2 pi / T) * C_ATMF / (F * df).
-  const double c_atmf = black76_price(F, F, T, sigma_atmf, df, Side::Call);
-  const double k_vol =
-      std::sqrt(2.0 * std::numbers::pi / T) * c_atmf / (F * df);
+  // K_vol ~= sqrt(2 pi / T) * C_ATMF / (F * df) — shared with
+  // resolve_vol_of_vol's auto-calibration path so the two never drift.
+  ATX_TRY(const double k_vol, carr_lee_k_vol(surface, curves, T));
 
   DerivQuote out{};
   out.fair_strike_dec = k_vol;
@@ -528,6 +616,9 @@ Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
   // Reject any non-zero reserved field before dispatch.
   if (!reserved_fields_clean(cfg)) {
     return Err(ErrorCode::NotImplemented, "reserved config field is non-zero");
+  }
+  if (!vol_of_vol_valid(cfg)) {
+    return Err(ErrorCode::InvalidArgument, "vol_of_vol must be >= 0");
   }
   if (contract.kind == DerivKind::VarSwap && contract.cap_dec != 0.0) {
     return Err(ErrorCode::NotImplemented, "cap_dec reserved on var swap");
