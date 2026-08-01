@@ -22,7 +22,7 @@
 //   contract_marks  <- serialize_listed_contract_marks
 //                      (src/listed_dispersion_reconciliation.cpp).
 //   mark_divergence <- write_mark_divergence_replay header
-//                      (examples/spy_dispersion_backtest.cpp).
+//                      (tools/spy_dispersion_backtest.cpp).
 //   diagnostics     <- write_diagnostics header (examples).
 //   meta            <- ScalarKV: resolved spec echo, window, roll-level
 //                      scalars, input hashes, counts — key/value pairs.

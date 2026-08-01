@@ -1,6 +1,6 @@
 // Library seam for the traditional SPY listed-options dispersion proxy.
 //
-// The command workflow that used to live in examples/spy_dispersion_backtest.cpp
+// The command workflow that used to live in tools/spy_dispersion_backtest.cpp
 // lives here. Each stage is a plain function so it can be driven from a unit test
 // off the filesystem, and the reproduction-critical admission constants are named
 // on DispersionCorpusPolicy (see dispersion_run.hpp). This is a behavior-preserving

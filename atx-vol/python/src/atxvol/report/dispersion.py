@@ -1,6 +1,6 @@
 """Build the SPY listed-options dispersion backtest report.
 
-Renders the output of `examples/spy_dispersion_backtest.cpp` as one
+Renders the output of `tools/spy_dispersion_backtest.cpp` as one
 self-contained HTML file, preferring the shipped CLI's `run.atxrun` archive and
 falling back to legacy loose TSV tracks. It also doubles as the worked example
 for the component library.

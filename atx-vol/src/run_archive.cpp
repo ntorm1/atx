@@ -1511,7 +1511,7 @@ Result<std::uint64_t> RunDir::run_identity_hash() const {
   // makes the next route recompute a DIFFERENT identity, so the merge-write below
   // starts FRESH and silently drops the earlier route's sections, with no error.
   // build_schedule_command writes trade_schedule.tsv five lines before its own
-  // write_run_archive for exactly this reason (examples/spy_dispersion_backtest
+  // write_run_archive for exactly this reason (tools/spy_dispersion_backtest
   // .cpp); moving the archive write above it breaks the pipeline's section union.
   // Pinned by RunDir.MergeWriteDropsCarriedSectionsWhenAFoldedInputAppearsLate.
   //
@@ -1527,7 +1527,7 @@ Result<std::uint64_t> RunDir::run_identity_hash() const {
   // against the OLD definitions were carried forward. (3) surface_manifest.tsv and
   // (4) input_inventory.tsv are NOT derived from the definitions bytes at all:
   // build_corpus_command COPIES definitions.tsv into the run dir without ever
-  // reading it (fs::copy_file, examples/spy_dispersion_backtest.cpp) and persists
+  // reading it (fs::copy_file, tools/spy_dispersion_backtest.cpp) and persists
   // the fixed relative literal "definitions.tsv" into run_spec.tsv; and
   // write_input_inventory (same file) derives every column — source_fingerprint
   // and market_input_fingerprint included — solely from the OpraBatchResult quote

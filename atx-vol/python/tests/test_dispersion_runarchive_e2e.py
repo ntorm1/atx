@@ -267,7 +267,7 @@ def _skip_reason(
         lines.append(f"driver found but unusable: {driver_note}")
         lines.append(
             f"  remedy: build atxvol_spy_dispersion_backtest from a tree whose "
-            f"examples/spy_dispersion_backtest.cpp implements "
+            f"tools/spy_dispersion_backtest.cpp implements "
             f"'{_REQUIRED_SUBCOMMAND}', or point $ATXVOL_BIN at one. Skipping is "
             f"the correct outcome on a tree that predates the cutover -- but it "
             f"is recorded here rather than inferred from a missing file."

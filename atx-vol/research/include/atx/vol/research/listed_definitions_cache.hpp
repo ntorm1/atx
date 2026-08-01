@@ -437,7 +437,7 @@ read_definitions_cache(std::string_view cache_path, const ListedDefinitionsCache
 // ── Task 8 disclosure: the costs of opting in (controller ruling) ───────────
 //
 // Wired into the CLI as an OPT-IN, OFF BY DEFAULT flag (`--cache DIR` /
-// `ATX_VOL_CACHE`, see `examples/spy_dispersion_backtest.cpp`). Two independent
+// `ATX_VOL_CACHE`, see `tools/spy_dispersion_backtest.cpp`). Two independent
 // measurements (the implementer and a re-reviewer, on different machines)
 // recommended AGAINST enabling this cache "as currently built" — read the
 // numbers before turning it on:

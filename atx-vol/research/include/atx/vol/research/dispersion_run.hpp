@@ -2,7 +2,7 @@
 
 // Library seam for the traditional SPY listed-options dispersion proxy.
 //
-// The command bodies that used to live inside examples/spy_dispersion_backtest.cpp
+// The command bodies that used to live inside tools/spy_dispersion_backtest.cpp
 // (~620 LOC of library workflow trapped in an example main) live here so the
 // example is thin CLI glue and every stage is unit-testable off the filesystem.
 //
@@ -43,7 +43,7 @@
 // (`DispersionDividends.*`, `DispersionProjectedVar.*`, `DispersionBenchmarkJoin
 // .*`) and `dispersion_build_corpus` through `DispersionIndexRouting.CorpusBuild
 // *`. What it does NOT cover is the CLI's own orchestration — the subcommand
-// bodies in examples/spy_dispersion_backtest.cpp have no gtest surface at all;
+// bodies in tools/spy_dispersion_backtest.cpp have no gtest surface at all;
 // they are exercised by the Python e2e module (atx-vol/python/tests/
 // test_dispersion_runarchive_e2e.py, fixture-gated) and by the sprint gate legs.
 //

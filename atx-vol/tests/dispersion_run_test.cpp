@@ -1,5 +1,5 @@
 // Unit + end-to-end tests for the listed SPY-dispersion library seam
-// (atx/vol/research/dispersion_run.hpp) extracted out of examples/spy_dispersion_backtest.cpp.
+// (atx/vol/research/dispersion_run.hpp) extracted out of tools/spy_dispersion_backtest.cpp.
 //
 // Coverage:
 //   1. DispersionCorpusPolicy defaults assemble the byte-identical pinned

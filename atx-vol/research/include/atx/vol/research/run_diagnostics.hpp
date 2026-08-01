@@ -2,7 +2,7 @@
 
 // run_diagnostics — PhaseTimer (a steady-clock phase accumulator) plus the
 // `diagnostics` RunArchive section encoder. The timer is lifted VERBATIM from
-// the instrumented dispersion subcommands (examples/spy_dispersion_backtest.cpp),
+// the instrumented dispersion subcommands (tools/spy_dispersion_backtest.cpp),
 // so the binary result container measures phases exactly as the TSV path does.
 // The encoder mirrors write_diagnostics (the TSV writer that owns this output
 // today): one row per timed phase — (subcommand, phase, wall_ms, count) in
@@ -26,7 +26,7 @@ namespace atx::vol {
 // phases (wall time plus a unit count) in a fixed, pre-declared order.
 // steady_clock only; always on, since the overhead is negligible next to the
 // surface solves it measures. (Lifted verbatim from
-// examples/spy_dispersion_backtest.cpp.)
+// tools/spy_dispersion_backtest.cpp.)
 class PhaseTimer {
 public:
   using Clock = std::chrono::steady_clock;
@@ -82,7 +82,7 @@ private:
 
 // ── Published phase order for the instrumented dispersion subcommands ────────
 // These live here, not at the two PhaseTimer construction sites in
-// examples/spy_dispersion_backtest.cpp, because the `diagnostics` ROW SET is a
+// tools/spy_dispersion_backtest.cpp, because the `diagnostics` ROW SET is a
 // consumed interface (the Python report layer reads phases by name) and a phase
 // list buried in an example binary is untestable: the example is its own
 // executable target and no test links it. Publishing the order as a library
