@@ -74,6 +74,7 @@ using atx::vol::PricedSurface;
 using atx::vol::scenario_grid;
 using atx::vol::ScenarioGridSpec;
 using atx::vol::Side;
+using atx::vol::SurfaceRef;
 using atx::vol::SurfaceSet;
 using atx::vol::bench::apply_common;
 using atx::vol::bench::dump_counters;
@@ -487,7 +488,7 @@ void run_scatter(benchmark::State& state, std::size_t n_unique, std::size_t rati
   std::vector<AmericanGreeks> uni(contracts.size());
   for (std::size_t c = 0; c < contracts.size(); ++c) {
     const OptionContract& oc = contracts[c];
-    const PricedSurface* s = surfaces.find(oc.uid);
+    const SurfaceRef s = surfaces.find(oc.uid);
     if (s != nullptr) {
       auto g = s->greeks(oc.K, oc.T, oc.side);
       if (g) {
@@ -547,7 +548,7 @@ void run_floor(benchmark::State& state, std::size_t n_unique, Floor kind) {
   const auto contracts = pr.portfolio().contracts();
   for (auto _ : state) {
     for (const OptionContract& oc : contracts) {
-      const PricedSurface* s = surfaces.find(oc.uid);
+      const SurfaceRef s = surfaces.find(oc.uid);
       if (s == nullptr) {
         continue;
       }
