@@ -2705,3 +2705,115 @@ TEST(Backtest, SubsetDeserializeFixedBookParity) {
   std::printf("[b1] fixed-book subset-deser bit-identical to whole-board over %zu rows\n",
               subset_res->size());
 }
+
+// ── BacktestResult column-shape invariant (S4-T22 / plan item 4.6) ──────────
+//
+// `BacktestResult` is ~30 parallel public columns that nothing checked. A
+// column one row short of `date` used to index OUT OF RANGE inside the
+// tearsheet fold and both serializers instead of reporting a shape error;
+// benchmark_stats_test.cpp's fixture comment documented exactly that hazard.
+// `validate()` is the enforcement point, and these tests are its contract.
+
+namespace {
+
+// An n-row result with every row-parallel column populated — the shape the
+// engine emits.
+[[nodiscard]] BacktestResult make_shape_fixture(std::size_t n) {
+  BacktestResult r;
+  for (std::size_t i = 0; i < n; ++i) {
+    r.date.push_back("d" + std::to_string(i));
+    r.ts_ns.push_back(static_cast<std::int64_t>(i));
+  }
+  const std::vector<double> col(n, 1.0);
+  for (std::vector<double> *c :
+       {&r.pnl_total, &r.pnl_delta, &r.pnl_gamma, &r.pnl_vega, &r.pnl_vanna, &r.pnl_volga,
+        &r.pnl_theta, &r.pnl_rho, &r.pnl_charm, &r.pnl_unexplained, &r.pnl_settlement,
+        &r.pnl_shares, &r.financing, &r.cost, &r.nav, &r.cash, &r.gross_delta, &r.gross_gamma,
+        &r.gross_vega, &r.gross_theta, &r.gross_vega_abs, &r.turnover_notional, &r.turnover_vega,
+        &r.n_open_lots, &r.n_unpriced_lots, &r.n_unpriced_greeks, &r.nav_liquidation}) {
+    *c = col;
+  }
+  r.signals.emplace_back("sig", col);
+  return r;
+}
+
+} // namespace
+
+// THE red test: a result skewed by ONE row in ONE column is caught, and the
+// error names the column and both lengths so the report is actionable.
+TEST(BacktestResultShape, SkewedColumnIsRejected) {
+  BacktestResult r = make_shape_fixture(3);
+  ASSERT_TRUE(r.validate().has_value()) << r.validate().error().to_string();
+
+  r.nav.pop_back(); // 2 rows of nav against 3 rows of date
+  const Status skewed = r.validate();
+  ASSERT_FALSE(skewed.has_value()) << "a skewed column must not validate";
+  EXPECT_EQ(skewed.error().code(), ErrorCode::InvalidArgument);
+  const std::string msg = skewed.error().message();
+  EXPECT_NE(msg.find("nav"), std::string::npos) << msg;
+  EXPECT_NE(msg.find('2'), std::string::npos) << msg;
+  EXPECT_NE(msg.find('3'), std::string::npos) << msg;
+
+  // A column LONGER than `date` is the same defect from the other side.
+  BacktestResult longer = make_shape_fixture(3);
+  longer.cost.push_back(0.0);
+  const Status over = longer.validate();
+  ASSERT_FALSE(over.has_value());
+  EXPECT_NE(over.error().message().find("cost"), std::string::npos) << over.error().message();
+
+  // The int64 column is checked like every other one.
+  BacktestResult ts = make_shape_fixture(3);
+  ts.ts_ns.pop_back();
+  const Status ts_bad = ts.validate();
+  ASSERT_FALSE(ts_bad.has_value());
+  EXPECT_NE(ts_bad.error().message().find("ts_ns"), std::string::npos)
+      << ts_bad.error().message();
+}
+
+// EMPTY-or-row-parallel, not all-or-nothing: a fixture that fills only the
+// columns a fold reads is a legal partial result, and an empty result is legal.
+TEST(BacktestResultShape, EmptyColumnsAreLegalPartialResults) {
+  BacktestResult sparse;
+  for (std::size_t i = 0; i < 4; ++i) {
+    sparse.date.push_back("d" + std::to_string(i));
+    sparse.ts_ns.push_back(static_cast<std::int64_t>(i));
+  }
+  sparse.pnl_total = {0.0, 1.0, 2.0, 3.0};
+  sparse.nav = {0.0, 1.0, 3.0, 6.0};
+  EXPECT_TRUE(sparse.validate().has_value()) << sparse.validate().error().to_string();
+
+  const BacktestResult empty;
+  EXPECT_TRUE(empty.validate().has_value()) << empty.validate().error().to_string();
+
+  // ... but a non-empty column of the WRONG length is still rejected, which is
+  // the whole point of admitting empties.
+  sparse.cost = {0.0, 1.0};
+  EXPECT_FALSE(sparse.validate().has_value());
+}
+
+// `step_pnl_total` is exempt by contract (full-resolution, length == refs-1,
+// deliberately not parallel to the downsampled `date`); signals are not.
+TEST(BacktestResultShape, StepSeriesIsExemptAndSignalsAreChecked) {
+  BacktestResult stride = make_shape_fixture(3);
+  stride.step_pnl_total = std::vector<double>(11, 0.5); // stride-4 run over 12 refs
+  EXPECT_TRUE(stride.validate().has_value()) << stride.validate().error().to_string();
+
+  BacktestResult skewed_signal = make_shape_fixture(3);
+  skewed_signal.signals.emplace_back("short", std::vector<double>(2, 0.0));
+  const Status sig = skewed_signal.validate();
+  ASSERT_FALSE(sig.has_value()) << "a skewed signal series must not validate";
+  EXPECT_EQ(sig.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(sig.error().message().find("short"), std::string::npos) << sig.error().message();
+
+  // Both writers append one dynamic column per signal, so a duplicate name
+  // emits an ambiguous header — reject it here rather than on the wire.
+  BacktestResult dup = make_shape_fixture(3);
+  dup.signals.emplace_back("sig", std::vector<double>(3, 0.0));
+  const Status dup_st = dup.validate();
+  ASSERT_FALSE(dup_st.has_value());
+  EXPECT_NE(dup_st.error().message().find("sig"), std::string::npos) << dup_st.error().message();
+
+  BacktestResult unnamed = make_shape_fixture(3);
+  unnamed.signals.emplace_back("", std::vector<double>(3, 0.0));
+  EXPECT_FALSE(unnamed.validate().has_value());
+}

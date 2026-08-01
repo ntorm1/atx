@@ -760,6 +760,39 @@ struct BacktestResult {
   std::vector<std::pair<std::string, std::vector<double>>> signals;
 
   [[nodiscard]] std::size_t size() const noexcept { return date.size(); }
+
+  // ── Column-shape invariant (plan item 4.6) ────────────────────────────────
+  //
+  // Everything above is a parallel column set over `size()` rows, and nothing
+  // used to enforce that. A result whose `nav` was one row shorter than `date`
+  // indexed OUT OF RANGE inside the tearsheet fold and both serializers rather
+  // than reporting a shape error — benchmark_stats_test.cpp documented the
+  // hazard in a comment and worked around it by filling every column by hand.
+  // `validate` is the enforcement point.
+  //
+  // The invariant is EMPTY-OR-ROW-PARALLEL, per column:
+  //
+  //   * a row-parallel column is either EMPTY (that column was not produced) or
+  //     EXACTLY `size()` long. A different NON-ZERO length is the silent
+  //     misalignment this rejects; it is never a legal partial result.
+  //   * this is already the documented contract of `gross_vega_abs` and
+  //     `nav_liquidation`. 4.6 makes it universal and checked, which also keeps
+  //     legitimately sparse results legal — a fixture that fills the columns a
+  //     fold reads and leaves the rest empty stays valid.
+  //   * every `signals` series is empty-or-row-parallel too, and signal names
+  //     must be non-empty and unique: both serializers append one dynamic
+  //     column per signal, so a duplicate name emits an ambiguous header.
+  //   * `step_pnl_total` is EXEMPT. It is the full-resolution per-step series
+  //     (length == refs-1) and is deliberately NOT parallel to the downsampled
+  //     `date`, exactly as its own comment states.
+  //
+  // Enforcement, not just availability: both `run_backtest` overloads validate
+  // before returning Ok, so no engine-produced result can be skewed; the TSV,
+  // CSV and RunArchive writers validate on entry, so no hand-built or decoded
+  // one reaches the wire. The check is a pure read — it never touches a value.
+  //
+  // @return InvalidArgument naming the first offending column and both lengths.
+  [[nodiscard]] Status validate() const;
 };
 
 // B0 driver: MTM a FIXED hand-built book forward across the clock. Canonical

@@ -23,6 +23,7 @@
 #include "step_mark_memo.hpp" // detail::StepMarkMemo — the L2 settlement mark memo
 
 #include "atx/core/error.hpp"
+#include "atx/vol/detail/backtest_series_columns.hpp" // the 25 {name, member} series columns
 #include "atx/vol/detail/counters.hpp"      // counters::ledger — V1 always-on solve ledger (per-step scrape)
 #include "atx/vol/detail/phase_profile.hpp"
 #include "atx/vol/strategy.hpp"        // IStrategy
@@ -1525,6 +1526,76 @@ ReusableTargetMarkFrame::find_ok(std::uint64_t id) const noexcept {
   return Match{raw_mark, base_vega_proxy};
 }
 
+// ── BacktestResult column-shape invariant (plan item 4.6) ───────────────────
+//
+// See the contract on `BacktestResult::validate`. Pure read: the check never
+// touches a value, so a validated result is bit-identical to an unvalidated one.
+namespace {
+
+[[nodiscard]] Status column_shape_error(std::string_view column, std::size_t got,
+                                        std::size_t rows) {
+  std::string msg{"BacktestResult column '"};
+  msg += column;
+  msg += "' has ";
+  msg += std::to_string(got);
+  msg += " rows but 'date' has ";
+  msg += std::to_string(rows);
+  msg += "; every column is empty or exactly row-parallel";
+  return Err(ErrorCode::InvalidArgument, std::move(msg));
+}
+
+// Empty-or-row-parallel, the invariant every column but `step_pnl_total` obeys.
+template <class T>
+[[nodiscard]] Status check_column(std::string_view name, const std::vector<T> &col,
+                                  std::size_t rows) {
+  if (!col.empty() && col.size() != rows) {
+    return column_shape_error(name, col.size(), rows);
+  }
+  return Ok();
+}
+
+} // namespace
+
+Status BacktestResult::validate() const {
+  const std::size_t rows = date.size();
+
+  ATX_TRY_VOID(check_column("ts_ns", ts_ns, rows));
+
+  // The 25 canonical F64 series columns, driven off the SAME {name, member}
+  // table both serializers iterate. One list: a column cannot reach the wire
+  // without also entering this check.
+  for (const BacktestSeriesColumn &column : backtest_series_columns()) {
+    ATX_TRY_VOID(check_column(column.name, this->*column.member, rows));
+  }
+
+  // The two documented empty-or-row-parallel extras, deliberately absent from
+  // the frozen wire registry (see their member comments).
+  ATX_TRY_VOID(check_column("gross_vega_abs", gross_vega_abs, rows));
+  ATX_TRY_VOID(check_column("nav_liquidation", nav_liquidation, rows));
+
+  // `step_pnl_total` is EXEMPT: length == refs-1 by contract, not parallel to
+  // the downsampled `date`.
+
+  for (std::size_t i = 0; i < signals.size(); ++i) {
+    const std::string &name = signals[i].first;
+    if (name.empty()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "BacktestResult signal " + std::to_string(i) +
+                     " has an empty name; both serializers emit one column per signal");
+    }
+    for (std::size_t j = 0; j < i; ++j) {
+      if (signals[j].first == name) {
+        return Err(ErrorCode::InvalidArgument,
+                   "BacktestResult has duplicate signal name '" + name +
+                       "'; the emitted series header would be ambiguous");
+      }
+    }
+    ATX_TRY_VOID(check_column("signal '" + name + "'", signals[i].second, rows));
+  }
+
+  return Ok();
+}
+
 Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
                                     const RunConfig &cfg) {
   ATX_VOL_PROFILE_SCOPE(BacktestTotal);
@@ -1748,6 +1819,9 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     }
   }
 
+  // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
+  // cannot change a value the run produced.
+  ATX_TRY_VOID(out.validate());
   return Ok(std::move(out));
 }
 
@@ -2449,6 +2523,9 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     }
   }
 
+  // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
+  // cannot change a value the run produced.
+  ATX_TRY_VOID(out.validate());
   return Ok(std::move(out));
 }
 

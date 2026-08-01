@@ -402,6 +402,10 @@ void append_meta_header(std::string& out,
 }  // namespace
 
 Status write_backtest_tsv(const BacktestResult& r, std::string_view path) {
+  // Plan 4.6. `append_backtest_series_tsv` walks every column in row lockstep,
+  // so a skewed result used to read out of range here. It has no error channel
+  // (it appends to a caller's string); its two file-writing callers do.
+  ATX_TRY_VOID(r.validate());
   std::string out;
   append_backtest_series_tsv(out, r);
   return write_payload(path, out, "write_backtest_tsv");
@@ -410,6 +414,7 @@ Status write_backtest_tsv(const BacktestResult& r, std::string_view path) {
 Status write_backtest_pnl_tsv(const BacktestResult& r,
                               std::span<const std::pair<std::string, std::string>> meta,
                               std::string_view path) {
+  ATX_TRY_VOID(r.validate());  // plan 4.6, as in write_backtest_tsv above
   std::string out;
   append_meta_header(out, meta);
   append_backtest_series_tsv(out, r);

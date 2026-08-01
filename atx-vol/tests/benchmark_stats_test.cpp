@@ -63,9 +63,12 @@ constexpr double kBenchmark[] = {2.0, -1.0, 3.0, 1.0, 0.0};
 }
 
 // A 6-row BacktestResult whose return series (rows 1..5) is exactly `kStrategy`.
-// EVERY SoA column `tearsheet` folds is populated -- the struct is a parallel
-// column set with no internal length invariant, so a partially-filled result
-// indexes out of range rather than reporting a shape error.
+// EVERY SoA column `tearsheet` folds is populated. That used to be MANDATORY:
+// the struct was a parallel column set with no length invariant, so a
+// partially-filled result indexed out of range rather than reporting a shape
+// error. S4-T22 (plan 4.6) made the invariant explicit and checked
+// (`BacktestResult::validate`, empty-or-row-parallel per column), so filling
+// every column is now a choice about what the fold reads, not a safety belt.
 [[nodiscard]] BacktestResult make_track() {
   BacktestResult r;
   constexpr std::size_t n = 6;
