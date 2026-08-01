@@ -403,7 +403,9 @@ Three binaries ship with the package and install into `<prefix>/bin`:
 They are ON by default because they are part of what atx-vol *is* at v1 — a
 library plus the binaries that build, inspect and replay its artifacts.
 `-DATX_BUILD_TOOLS=OFF` drops exactly these three executables and their install
-rules; no library, test or example target changes.
+rules; no library, test or example target changes. The default follows
+`PROJECT_IS_TOP_LEVEL`, so a project that `add_subdirectory()`s this repo (the
+Python wheel build does) does not pay to link operator binaries it cannot ship.
 
 Their sources live in `atx-vol/tools/`. That directory is the tools tier, not a
 synonym for "scripts": the acceptance drivers, benchmarks and worked

@@ -334,7 +334,15 @@ option(ATX_VOL_PROFILE "Instrument atx-vol phase wall times with compile-time op
 # OFF must keep the default library build whole: nothing under src/ or include/
 # is conditional on it, so -DATX_BUILD_TOOLS=OFF drops exactly three executables
 # and their install rules, and no library, test or example target changes.
-option(ATX_BUILD_TOOLS "Build the atx-vol operator CLIs (installed with the package)" ON)
+#
+# DEFAULTED OFF WHEN EMBEDDED, exactly like ATX_BUILD_TESTS below and the install
+# block at the bottom of this file. atx-vol/python/CMakeLists.txt builds the wheel
+# by add_subdirectory()ing this repo from its own project(), and a wheel build
+# has no use for three operator binaries it cannot ship -- a plain ON would have
+# made every `pip wheel` compile and link them. Top-level -- every ordinary build
+# of this repo, and every preset -- is ON.
+option(ATX_BUILD_TOOLS "Build the atx-vol operator CLIs (installed with the package)"
+       ${PROJECT_IS_TOP_LEVEL})
 
 # Only configure tests / GoogleTest when this is the top-level project.
 option(ATX_BUILD_TESTS "Build ATX tests" ${PROJECT_IS_TOP_LEVEL})
