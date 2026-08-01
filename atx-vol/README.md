@@ -78,7 +78,7 @@ fourteen-board breadth corpus and million-row quote results are documented in
 A second layer brings the library to feature + fit parity with the Vola Dynamics
 analytics library for **American equity options**, following Klassen's published
 methodology (*Arbitrage-Free Parametric Volatility Surfaces and Real-Time
-Fitting*, 2017). See `docs/superpowers/specs/2026-07-04-atx-vol-vola-parity-design.md`
+Fitting*, 2017). See [the Vola-parity design](../docs/superpowers/specs/2026-07-04-atx-vol-vola-parity-design.md)
 for the full gap analysis.
 
 **The pipeline (Vola's workflow).** American quotes are light exotics, so all
@@ -299,7 +299,7 @@ quality (98.5%→20.4%, χ² →749) — kept opt-in for callers that require th
 wing guarantee. Deep-wing (|k|→3, ~20σ, no quotes) strict no-arb without a θ-bump
 needs a φ-slope term-structure constraint and stays deferred; Vola's
 calendar-coupled joint mode with per-term error bars remains the richer target.
-See `docs/superpowers/specs/2026-07-04-atx-vol-sota-hft-roadmap.md`.
+See [the SOTA/HFT roadmap](../docs/superpowers/specs/2026-07-04-atx-vol-sota-hft-roadmap.md).
 
 **Fixtures.** Beyond the real OPRA path above, the repo commits no vendor
 option-chain data, so the acceptance suites use the known-truth synthetic
