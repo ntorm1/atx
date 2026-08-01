@@ -33,6 +33,20 @@
 // mutex, but interleaved upserts would race the skip-existing/idempotence
 // bookkeeping this stage owns). `build_surface_db` is likewise single-threaded
 // at the driver level (its fits fan out internally); one build per db root.
+//
+// "ITS FITS FAN OUT INTERNALLY" MEANS ONTO A SHARED POOL (plan 4.7, carried here
+// at 5.6). `build_surface_db` reaches the fit path through
+// `populate_universe_streaming`, whose per-board fits dispatch onto the
+// PROCESS-GLOBAL pricing pool (detail/pricing_executor.hpp) instead of creating
+// threads of their own. So `SurfaceDbBuildSpec::fit_workers` below is a request
+// clamped down to that pool, two builds running at once share ONE core budget
+// rather than each claiming the machine, a build issued from inside another pool
+// dispatch runs inline, and the database it writes is byte-identical at any
+// worker count. The caller-facing ordering rule travels with it: set the pool's
+// topology with `configure_pricing_executor` BEFORE the first call that can
+// price, since that call builds the pool and a later configure is refused with
+// AlreadyExists. The full statement is in surface_db_populate.hpp's copy of this
+// section, which is where the fan-out actually lives.
 
 #include <cstddef>
 #include <cstdint>

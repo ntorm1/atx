@@ -13,6 +13,33 @@
 // same blessed path `build_corpus` runs (src/corpus_board_fit.{hpp,cpp});
 // this header/impl adds only the per-symbol config resolution, date grouping,
 // uid stamping, and SurfaceDb partition writes on top.
+//
+// ── The shared resource underneath (plan 4.7, carried here at 5.6) ───────────
+//
+// `SurfaceDbPopulateConfig::n_threads` is a REQUEST AGAINST A POOL, not a count
+// of threads this stage creates for you. The outer board fan-out is capped at
+// the host's core budget, and each board's inner fit dispatches onto the
+// PROCESS-GLOBAL pricing pool (detail/pricing_executor.hpp) rather than spawning
+// its own fan. Three consequences a caller has to know, because no signature
+// here names the pool:
+//
+//   * concurrent populate calls SHARE one core budget instead of oversubscribing
+//     the machine — "safe from many threads" is not "spawns its own threads";
+//   * a populate issued from INSIDE another pool dispatch runs inline rather
+//     than nesting a second fan;
+//   * results do not depend on any of it. Every fit writes disjoint slots, so
+//     the partitions are byte-identical at any worker count (the invariant is
+//     restated at `UniversePopulateCoverage::failed_cells` and pinned by
+//     SurfaceDbPopulate.SharedWorkerBudgetKeepsOutputByteIdentical and
+//     GlobalParallelQueuePreservesDeterministicPartitions).
+//
+// The one ORDERING rule comes from that same header and reaches callers here:
+// choose the pool's topology with `configure_pricing_executor` BEFORE the first
+// call that can price, because that call is what BUILDS the pool and a later
+// configure is refused with AlreadyExists and applies nothing. Configure once,
+// from one thread. Nothing in atx-vol does it for you. `pin_outer_workers`
+// below is a different knob — it steers which cores the OUTER workers land on,
+// it does not configure the pool, and it changes no result either.
 
 #include <cstddef>
 #include <cstdint>
