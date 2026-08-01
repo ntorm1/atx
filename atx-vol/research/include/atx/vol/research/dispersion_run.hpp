@@ -372,11 +372,27 @@ struct DispersionRunConfig {
   //
   // What it NO LONGER gates, because S3-T17 deleted the library twins that were
   // the gated writers: `backtest.tsv`, `contract_marks.tsv` and
-  // `reconciliation.tsv` are not written by any route now. `run_config.tsv` and
-  // `quote_rejects.tsv` are written UNCONDITIONALLY by the shipped
-  // `run_backtest_command` / `build_schedule_command`; that CLI-level
-  // inconsistency is recorded, not fixed, by S3-T17 (the CLI's own TSV policy
-  // was outside its byte-identity bar).
+  // `reconciliation.tsv` are not written by any route now.
+  //
+  // `run_config.tsv` and `quote_rejects.tsv` are written UNCONDITIONALLY, and
+  // that is a RULING rather than an oversight. S5 classified both as
+  // PROVENANCE-class — evidence about what the run WAS, not a report about how
+  // it went — and closed the S3-T17 finding by KEEPING them ungated. Do not
+  // "fix" this by putting them behind the flag.
+  //
+  // ONE WRITER EACH, and no route writes both:
+  //   `run_backtest_command`   -> `run_config.tsv`
+  //                               (tools/spy_dispersion_backtest.cpp:535)
+  //   `build_schedule_command` -> `quote_rejects.tsv`                (:374)
+  //
+  // The render-safety weight attaches to `run_config.tsv` ALONE: it is the sole
+  // carrier of `friction_regime` for a run, and the shipped Python renderer
+  // hard-refuses a run that carries none, so gating it would break report
+  // rendering for the pipeline that produced it. `quote_rejects.tsv` is the
+  // schedule-admission audit trail and has NO programmatic reader anywhere in
+  // the repository today; it is kept because an admission decision nobody
+  // recorded is an admission decision nobody can audit, not because something
+  // downstream parses it.
   //
   // What this flag does NOT govern: the run directory's retained TEXT INPUTS and
   // evidence — `run_spec.tsv`, `universe_schedule.tsv`, `definitions.tsv`,
@@ -768,11 +784,14 @@ reconcile_dispersion_reference(const std::filesystem::path &run_dir, bool schedu
 //     which TRIMS the warm-up lead-in first and only then reconciles. Those are
 //     different reconciliations, not two spellings of one: the untrimmed route
 //     emits a flat, position-free row for every pre-entry date while the trimmed
-//     route emits none, and `validate_listed_reconciliation_backtest` hard-requires
-//     equal row counts (the still-open caution on
-//     `assemble_reconciliation_snapshots`, listed_dispersion_pipeline.hpp). NB the
-//     PREMISE this bullet used to argue from is itself now stale and is corrected
-//     here rather than repeated: `reconcile_listed_dispersion` no longer
+//     route emits none — two different reconciliation TABLES for one run. (The
+//     downstream gate accepts both shapes: `1157a03` date-aligned
+//     `validate_listed_reconciliation_backtest` to require a contiguous suffix
+//     rather than equal row counts, listed_dispersion_reconciliation.cpp:348-373.
+//     The divergence is in what the two routes PUBLISH, not in what the gate
+//     admits.) NB the PREMISE this bullet used to argue from is itself now stale
+//     and is corrected here rather than repeated: `reconcile_listed_dispersion`
+//     no longer
 //     hard-requires the front session to BE the first roll date. Change C2 made it
 //     tolerate a leading pre-roll session, emitting a flat row for it; the
 //     surviving hard error is a timeline with NO snapshot on/after the first

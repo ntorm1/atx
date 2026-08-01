@@ -141,7 +141,10 @@ listed_quotes_for_date(const RunSpec &spec, const ListedDefinitionTable &definit
 // strategy's pre-roll silence. The coupling is made explicit here (an error if the
 // first roll date is absent from the timeline) rather than left emergent. Note it
 // is no longer compensating for a low-level precondition — there is none to
-// compensate for; what the trim still buys is row-count alignment (see CAUTION).
+// compensate for. What the trim buys is that the reconciliation SPEAKS ONLY WHERE
+// THE STRATEGY DOES: no flat, position-free pre-entry rows to read past or explain
+// away. The downstream gate tolerates either shape (see below), so this is a
+// reporting choice, not a requirement.
 //
 // BORROW: the returned elements are copies of the `ListedReconciliationSnapshot`
 // structs, but each one still points at storage owned by the caller — the
@@ -149,11 +152,16 @@ listed_quotes_for_date(const RunSpec &spec, const ListedDefinitionTable &definit
 // `full_timeline`. That storage must outlive the returned vector and every
 // reconcile driven from it.
 //
-// CAUTION (open defect, Wave B final review Important #1): trimming makes the
-// reconciliation shorter than the backtest, and
-// `validate_listed_reconciliation_backtest` still hard-requires equal row
-// counts — so a nonzero lead-in currently aborts one call later instead of
-// here. Do not treat this seam as closing M1 until that gate is date-aligned.
+// DOWNSTREAM, and no longer a defect. Trimming makes the reconciliation shorter
+// than the backtest, which the equal-row-count gate in
+// `validate_listed_reconciliation_backtest` used to reject — a nonzero lead-in
+// aborted one call later instead of here. That gate was DATE-ALIGNED by
+// `1157a03` (2026-07-24): `listed_dispersion_reconciliation.cpp:348-373` now
+// finds the offset of the reconciliation's first date in the backtest and
+// requires `offset + reconciliation.rows.size() == backtest.size()`, i.e. that
+// the reconciliation be a contiguous SUFFIX, and is bit-identical to the old
+// row-for-row comparison when the lead-in is zero. A nonzero lead-in no longer
+// aborts anywhere. The seam pair — this trim plus that gate — is what closes M1.
 [[nodiscard]] Result<std::vector<ListedReconciliationSnapshot>>
 assemble_reconciliation_snapshots(std::span<const ListedReconciliationSnapshot> full_timeline,
                                   const ListedDispersionSchedule &schedule);

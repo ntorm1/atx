@@ -386,13 +386,24 @@ merges metadata from `run_spec.tsv`, the effective `run_config.tsv`,
 `surface_tearsheet.tsv`, and the archive or track metadata (closest to the
 numbers wins).
 
-`run_config.tsv` is not a diagnostic and is not gated by any verbosity flag: the
-shipped `run-backtest` / `build-schedule` CLIs write it — and `quote_rejects.tsv`
-— **unconditionally**, because both are provenance rather than commentary.
-`run_config.tsv` is the sole carrier of `friction_regime` for a run, which is
-exactly why the next section can refuse a run without it; `quote_rejects.tsv` is
-the schedule-admission audit trail. Neither is safe to suppress in a pipeline
-that expects to render a report afterwards.
+`run_config.tsv` is not a diagnostic and is not gated by any verbosity flag.
+Neither is `quote_rejects.tsv`. Both are **provenance rather than commentary** —
+evidence about what the run *was*, not a report about how it went — and that
+classification is a ruling, not an accident: it is why they are written
+unconditionally and why they stay that way.
+
+Each has exactly one writer, and no route writes both. `run-backtest`
+(`run_backtest_command`, `tools/spy_dispersion_backtest.cpp:535`) writes
+`run_config.tsv`; `build-schedule` (`build_schedule_command`, same file, `:374`)
+writes `quote_rejects.tsv`.
+
+The render-safety claim attaches to `run_config.tsv` **alone**: it is the sole
+carrier of `friction_regime` for a run, which is exactly why the next section
+can refuse a run without it — suppress it and a pipeline that expects to render
+a report afterwards will fail. `quote_rejects.tsv` is the schedule-admission
+audit trail and has **no programmatic reader today**; it is kept because an
+admission decision nobody recorded is one nobody can audit, not because anything
+downstream parses it.
 
 Legacy loose TSV input is schema-aware: required economics must be present or
 the renderer refuses the run instead of folding binding-created zero

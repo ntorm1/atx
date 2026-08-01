@@ -565,9 +565,15 @@ statement in CMake: a `find_package(atx-vol 1.0)` consumer accepts any 1.z,
 because Tier-A is what it compiled against and Tier-A does not move in 1.x.
 
 **Known limit, stated rather than implied.** `tools/` and `research/` are
-path- and umbrella-separated but not yet *link*-separated: `atx-vol` links both
+path- and umbrella-separated but not *link*-separated: `atx-vol` links both
 include roots PUBLIC, so a plain `atx::vol` consumer can still include them by
-name. That isolation is plan item 5.6, not done here.
+name. Plan item 5.6 (S5-T27) **evaluated that isolation and declined it** — do
+not read this paragraph as an outstanding task. `atx-vol-research` links
+`atx-vol-tools` INTERFACE, so containing the tools include root means demoting
+the *research* edge as well, and the research headers are shipped: that is a
+distribution-surface decision, not a build tidy, and it is deferred past v1. The
+authority is the note in `atx-vol/CMakeLists.txt` beside the two targets, which
+records both measured reasons.
 
 ## Linkage and distribution policy (v1)
 
