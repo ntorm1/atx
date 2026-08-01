@@ -4,7 +4,7 @@ add_executable(atx-vol-tests
     greeks_test.cpp
     implied_vol_test.cpp
     surface_test.cpp
-    curve_test.cpp
+    rates_curve_test.cpp
     universe_test.cpp
     ingest_scale_test.cpp
     derivatives_test.cpp

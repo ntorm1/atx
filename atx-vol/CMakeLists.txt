@@ -20,7 +20,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/greeks.cpp
     src/implied_vol.cpp
     src/surface.cpp
-    src/curve.cpp
+    src/rates_curve.cpp
     src/universe.cpp
     src/derivatives.cpp
     src/vol_surface.cpp
