@@ -67,6 +67,33 @@
 //                                          read_universe, universe derivation)
 //                                          surfaces its code AND the offender.
 //
+// Task 5 is the correctness-evidence layer: the route on PRODUCTION-SHAPED data,
+// i.e. a db with CLUSTERED absence (one session missing a whole cohort of names,
+// the shape the real 2025-11-24 has — 12 of 102 — and NOT one name per date):
+//
+//  15. ClusteredAbsenceDropsAndRenormalizes — a cohort absent on the entry session
+//                                          is dropped, the basket RENORMALIZES to
+//                                          stay vega-neutral over the survivors,
+//                                          the run continues, and the drop is
+//                                          reported per row on `signals`.
+//  16. ClusteredAbsenceUnderAHeldBookFailsLoudly — the same cohort absent AFTER
+//                                          entry is a hard NotFound: held lots
+//                                          with no surface abort the run rather
+//                                          than truncate NAV in silence.
+//  17. ClusteredAbsenceBelowMinNamesIsADiagnosedNoTradeStep — too few survivors is
+//                                          `Unavailable` at the book builder and
+//                                          the engine's NO-TRADE CONTRACT at the
+//                                          run: no lots, a diagnosed row, and a
+//                                          recovery on the next full session.
+//  18. MissingIndexOnOneDateFailsLoudly   — the index is never droppable: absent
+//                                          at entry it is a resolve NotFound
+//                                          naming it; absent under a held book it
+//                                          is the unpriced-lot abort.
+//  19. BitIdenticalAcrossThreadCounts     — the standing engine contract, bit_cast
+//                                          exact, over an absence-carrying corpus.
+//  20. WindowSubsetMatchesFullRunPrefix   — a sub-window agrees with the full run
+//                                          bit-for-bit on the shared prefix.
+//
 // Fixtures are synthetic eSSVI surfaces written into a fresh SurfaceDb under
 // %TEMP% (make_test_db below), plus config text written to throwaway %TEMP%
 // files (write_temp_file); nothing here reads the real data lake.
@@ -74,6 +101,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
@@ -172,11 +200,28 @@ constexpr std::int64_t kDayNs = 86'400'000'000'000LL;
 // Seeding goes through the BATCH upsert so the whole table costs one atomic
 // manifest rewrite rather than one per symbol.
 //
+// Task 5's per-date absence control: `{date, {symbols}}` means the partition for
+// `date` is written WITHOUT those symbols. Absence is exactly "not in that
+// partition's archive" — there is no tombstone and no null surface — so a reader
+// of that session's snapshot simply cannot resolve the symbol.
+//
+// CLUSTERED, NOT UNIFORM. A real db loses a whole cohort of names in ONE session
+// (2025-11-24 misses 12 of 102) because the loss is a fitter/feed outage, not an
+// independent per-name coin flip. A fixture that sprinkles one absence per date
+// exercises a code path no production date ever takes, and hid two defects in the
+// previous sprint. Every use of this parameter therefore names ONE date and
+// SEVERAL symbols.
+//
+// NB: both the date and the symbol views are non-owning, exactly like
+// `SurfaceArchiveItem::symbol` — they must alias storage that outlives the call.
+using DateAbsence = std::vector<std::pair<std::string_view, std::vector<std::string_view>>>;
+
 // Shared fixture builder for this file — later tasks in this sprint extend it.
 [[nodiscard]] Result<SurfaceDb> make_test_db(const fs::path &root,
                                              const std::vector<std::string_view> &dates,
                                              const std::vector<std::string_view> &symbols,
-                                             const std::vector<std::string_view> &disabled = {}) {
+                                             const std::vector<std::string_view> &disabled = {},
+                                             const DateAbsence &absent = {}) {
   auto db = SurfaceDb::create(root.string());
   if (!db.has_value()) {
     return atx::core::Err(db.error());
@@ -202,9 +247,31 @@ constexpr std::int64_t kDayNs = 86'400'000'000'000LL;
   constexpr std::int64_t kBaseTs = 1'700'000'000'000'000'000LL;
   for (std::size_t d = 0; d < dates.size(); ++d) {
     const std::int64_t ts = kBaseTs + static_cast<std::int64_t>(d) * kDayNs;
-    std::vector<PricedSurface> surfaces;
-    surfaces.reserve(symbols.size());
+    // Which of `symbols` this partition actually carries. The surviving symbols
+    // keep the spot / vol-bump / uid their GLOBAL index `s` gives them, so a
+    // partition written with an absence is bit-identical, for every surviving
+    // name, to the same partition written without one — the absence is the only
+    // difference between the two corpora.
+    std::vector<std::size_t> present;
+    present.reserve(symbols.size());
     for (std::size_t s = 0; s < symbols.size(); ++s) {
+      bool gone = false;
+      for (const auto &[date, missing] : absent) {
+        if (date != dates[d]) {
+          continue;
+        }
+        gone = std::find(missing.begin(), missing.end(), symbols[s]) != missing.end();
+        if (gone) {
+          break;
+        }
+      }
+      if (!gone) {
+        present.push_back(s);
+      }
+    }
+    std::vector<PricedSurface> surfaces;
+    surfaces.reserve(present.size()); // reserved exactly: `&surfaces[k]` below must stay valid
+    for (const std::size_t s : present) {
       const double spot =
           100.0 * static_cast<double>(s + 1) * (1.0 + 0.002 * static_cast<double>(d));
       surfaces.push_back(
@@ -213,9 +280,9 @@ constexpr std::int64_t kDayNs = 86'400'000'000'000LL;
     // NB: SurfaceArchiveItem::symbol is a std::string_view — it must alias
     // `symbols`, which outlives this call, never a temporary std::string.
     std::vector<SurfaceArchiveItem> items;
-    items.reserve(symbols.size());
-    for (std::size_t s = 0; s < symbols.size(); ++s) {
-      items.push_back(SurfaceArchiveItem{symbols[s], &surfaces[s]});
+    items.reserve(present.size());
+    for (std::size_t k = 0; k < present.size(); ++k) {
+      items.push_back(SurfaceArchiveItem{symbols[present[k]], &surfaces[k]});
     }
     auto st = db->write_partition(dates[d], items);
     if (!st.has_value()) {
@@ -281,6 +348,53 @@ const std::vector<std::string_view> kRunSymbols = {"SPY", "AAPL", "MSFT", "NVDA"
   return r.n_open_lots.empty()
              ? 0.0
              : *std::max_element(r.n_open_lots.begin(), r.n_open_lots.end());
+}
+
+// ── Task 5 fixtures: production-shaped (CLUSTERED) absence ──────────────────
+//
+// SPY plus FIVE basket names over four sessions, so one session can lose TWO
+// names at once and still leave three survivors — enough to keep a `min_names=2`
+// run tradeable and to make a `min_names=4` run untradeable on exactly that
+// session. Two of five in one session is the same SHAPE as the real 2025-11-24
+// (12 of 102 in one session): a cohort, not a sprinkle.
+const std::vector<std::string_view> kAbsDates = {"2026-01-05", "2026-01-06", "2026-01-07",
+                                                 "2026-01-08"};
+const std::vector<std::string_view> kAbsSymbols = {"SPY",  "AAPL", "AMZN",
+                                                   "GOOG", "MSFT", "NVDA"};
+// The cohort that goes missing together. Named once so every absence test drops
+// the SAME set and a reader cannot mistake one test's absence for another's.
+const std::vector<std::string_view> kAbsentCohort = {"MSFT", "NVDA"};
+
+// The strategy diagnostics channel is `BacktestResult::signals`: an
+// insertion-ordered (name -> per-recorded-row series) list, parallel to `date`,
+// populated only when `DispersionBacktestConfig::record_diagnostics` is set.
+// `DispersionStrategy::signals` publishes `implied_corr`, `n_names_dropped`,
+// `corr_vega` and `corr_gamma` on that channel.
+[[nodiscard]] const std::vector<double> *signal_series(const BacktestResult &r,
+                                                       std::string_view name) {
+  for (const auto &[key, series] : r.signals) {
+    if (key == name) {
+      return &series;
+    }
+  }
+  return nullptr;
+}
+
+// The archive path of one date in a db, so a test can load exactly that session's
+// snapshot and interrogate the strategy's per-name drop list on it.
+[[nodiscard]] std::string archive_path_of(const SurfaceDb &db, std::string_view date) {
+  const auto clock = Clock::from_surface_db(db);
+  EXPECT_TRUE(clock.has_value());
+  if (!clock.has_value()) {
+    return {};
+  }
+  for (const auto &ref : clock->refs()) {
+    if (ref.date == date) {
+      return ref.archive_path;
+    }
+  }
+  ADD_FAILURE() << "no partition for " << date;
+  return {};
 }
 
 } // namespace
@@ -827,3 +941,358 @@ TEST(SurfaceDbDispersionBacktest, EndToEndPropagatesStageErrors) {
 
   fs::remove_all(root);
 }
+
+// ── Task 5: correctness on production-shaped (CLUSTERED-ABSENCE) data ───────
+//
+// Every test below runs the route over a db in which ONE session is missing a
+// COHORT of names — the shape a real db actually has (2025-11-24 misses 12 of
+// 102 in one session) — because absence is a fitter/feed outage and not an
+// independent per-name coin flip. WHERE in the window that session falls decides
+// which engine contract is under test, and the three answers are genuinely
+// different behaviours:
+//
+//   absence on the ENTRY session   -> the names are dropped before they can be
+//                                     bought, the basket renormalizes over the
+//                                     survivors, the run continues (15/17);
+//   absence UNDER A HELD BOOK      -> the held straddles have no mark, and
+//                                     `UnpricedLotPolicy::Error` (the RunConfig
+//                                     default) ABORTS the run rather than let
+//                                     NAV silently truncate (16);
+//   absence taking survivors below
+//   `min_names` on the entry step  -> the engine's documented NO-TRADE CONTRACT:
+//                                     no lots are opened, the run continues, and
+//                                     the step is DIAGNOSED (18).
+//
+// A uniform "one name missing per date" fixture would exercise none of the three
+// distinctly, which is exactly how two defects survived the previous sprint.
+
+TEST(SurfaceDbDispersionBacktest, ClusteredAbsenceDropsAndRenormalizes) {
+  // The absent cohort goes missing on the window's ENTRY session, so the names
+  // never enter the book and the drop/renormalize path is what runs.
+  const auto root = test_root("t5_clustered_absence");
+  auto db =
+      make_test_db(root, kAbsDates, kAbsSymbols, {}, DateAbsence{{"2026-01-05", kAbsentCohort}});
+  ASSERT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
+
+  const auto u = universe_from_surface_db(*db, "SPY");
+  ASSERT_TRUE(u.has_value()) << (u.has_value() ? std::string{} : u.error().to_string());
+  ASSERT_EQ(u->names.size(), 5u); // the MANIFEST still carries all five: absence is per-PARTITION
+  DispersionBacktestConfig probe_cfg;
+  probe_cfg.min_names = 2;
+  probe_cfg.record_diagnostics = true;
+  const DispersionStrategy probe = make_dispersion_backtest_strategy(*u, probe_cfg);
+  const auto snap = MarketSnapshot::load(archive_path_of(*db, "2026-01-05"));
+  ASSERT_TRUE(snap.has_value());
+
+  // PER-NAME DROP LIST. `DispersionStrategy::dropped_on` is the only accessor that
+  // carries the REASON (the run-level channel carries a count); it is pinned here
+  // so a future refactor cannot reclassify a whole-symbol absence as something
+  // else. The reason is `NotInSnapshot`, NOT `SurfaceNotFound`: the symbol is
+  // absent from the partition's DIRECTORY, so `MarketSnapshot::uid_of` never
+  // returns a uid and the resolve stage drops it. `SurfaceNotFound` is the
+  // strictly later failure — a uid that resolved but has no surface in the
+  // `SurfaceSet` — which a per-partition absence cannot produce.
+  const std::vector<DroppedName> names = probe.dropped_on(*snap);
+  ASSERT_EQ(names.size(), 2u);
+  EXPECT_EQ(names[0].symbol, "MSFT");
+  EXPECT_EQ(names[1].symbol, "NVDA");
+  EXPECT_EQ(names[0].reason, DropReason::NotInSnapshot);
+  EXPECT_EQ(names[1].reason, DropReason::NotInSnapshot);
+  EXPECT_NE(names[0].detail.find("MSFT"), std::string::npos) << names[0].detail;
+
+  // RENORMALIZATION, not merely dropping. The book the strategy builds on that
+  // session must still be VEGA-NEUTRAL: the sizing allocates each survivor
+  // w_i / Σ_survivors w of the index leg's vega, so Σ|q·v| over the three
+  // survivors equals the index leg's |q·v| EXACTLY as it would with all five. An
+  // implementation that dropped the two names but kept the original 1/5 weights
+  // would land at 3/5 of the index vega here — a 40% under-hedged book that every
+  // NAV-level assertion would still accept.
+  const auto book = probe.build_book(*snap);
+  ASSERT_TRUE(book.has_value()) << (book.has_value() ? std::string{} : book.error().to_string());
+  ASSERT_EQ(book->used_names.size(), 3u); // AAPL, AMZN, GOOG
+  ASSERT_EQ(book->name_legs.size(), 3u);
+  double basket_vega = 0.0;
+  for (const DispersionLeg &leg : book->name_legs) {
+    basket_vega += std::fabs(leg.straddle_qty * leg.straddle_vega);
+  }
+  const double index_vega = std::fabs(book->index_leg.straddle_qty * book->index_leg.straddle_vega);
+  ASSERT_GT(index_vega, 0.0);
+  EXPECT_NEAR(basket_vega / index_vega, 1.0, 1e-12) << basket_vega << " vs " << index_vega;
+
+  // THE RUN. The absent session still produces a row, and the drop is reported on
+  // the run's diagnostics channel — `BacktestResult::signals`, the (name -> series
+  // parallel to `date`) list `record_diagnostics` populates.
+  SurfaceDbDispersionSpec spec = run_spec(root, "2026-01-05", "2026-01-08");
+  spec.config.min_names = 2;
+  spec.config.record_diagnostics = true;
+  const auto out = run_surface_db_dispersion_backtest(spec);
+  ASSERT_TRUE(out.has_value()) << (out.has_value() ? std::string{} : out.error().to_string());
+  EXPECT_EQ(out->result.size(), 4u);
+
+  const std::vector<double> *dropped = signal_series(out->result, "n_names_dropped");
+  ASSERT_NE(dropped, nullptr) << "record_diagnostics did not reach the signals channel";
+  ASSERT_EQ(dropped->size(), 4u);
+  // CLUSTERED: the drops land on ONE row, not spread across the window.
+  EXPECT_DOUBLE_EQ((*dropped)[0], 2.0);
+  EXPECT_DOUBLE_EQ((*dropped)[1], 0.0);
+  EXPECT_DOUBLE_EQ((*dropped)[2], 0.0);
+  EXPECT_DOUBLE_EQ((*dropped)[3], 0.0);
+  // The surviving basket still produced a tradeable signal on the absent session.
+  const std::vector<double> *corr = signal_series(out->result, "implied_corr");
+  ASSERT_NE(corr, nullptr);
+  ASSERT_EQ(corr->size(), 4u);
+  EXPECT_TRUE(std::isfinite((*corr)[0])) << (*corr)[0];
+  EXPECT_GT(peak_open_lots(out->result), 0.0);
+  for (const double nav : out->result.nav) {
+    EXPECT_TRUE(std::isfinite(nav)) << nav;
+  }
+
+  // TEETH. The SAME corpus without the absence, over the SAME window: the run
+  // opens the two dropped names' straddles (two lots each) and prints a different
+  // NAV. Without this an implementation that silently ignored the absence — or one
+  // whose fixture never actually omitted anything — would satisfy everything above.
+  const auto full_root = test_root("t5_clustered_absence_full");
+  auto full_db = make_test_db(full_root, kAbsDates, kAbsSymbols);
+  ASSERT_TRUE(full_db.has_value())
+      << (full_db.has_value() ? std::string{} : full_db.error().to_string());
+  SurfaceDbDispersionSpec full_spec = run_spec(full_root, "2026-01-05", "2026-01-08");
+  full_spec.config.min_names = 2;
+  full_spec.config.record_diagnostics = true;
+  const auto full = run_surface_db_dispersion_backtest(full_spec);
+  ASSERT_TRUE(full.has_value()) << (full.has_value() ? std::string{} : full.error().to_string());
+  ASSERT_EQ(full->result.size(), 4u);
+  const std::vector<double> *full_dropped = signal_series(full->result, "n_names_dropped");
+  ASSERT_NE(full_dropped, nullptr);
+  for (const double d : *full_dropped) {
+    EXPECT_DOUBLE_EQ(d, 0.0); // nothing to drop when every partition is complete
+  }
+  ASSERT_FALSE(out->result.n_open_lots.empty());
+  ASSERT_FALSE(full->result.n_open_lots.empty());
+  // Exactly two straddles (call + put each) fewer, and no other difference in book
+  // shape — the drop removed the two names' legs and nothing else.
+  EXPECT_DOUBLE_EQ(out->result.n_open_lots.front(), full->result.n_open_lots.front() - 4.0);
+  EXPECT_NE(out->result.nav.back(), full->result.nav.back());
+  fs::remove_all(full_root);
+  fs::remove_all(root);
+}
+
+TEST(SurfaceDbDispersionBacktest, ClusteredAbsenceUnderAHeldBookFailsLoudly) {
+  // The SAME cohort, now missing MID-window — after the book was opened on
+  // 2026-01-05 holding all five names. Those held straddles have no surface to
+  // mark against on 2026-01-07, and `RunConfig::unpriced` defaults to
+  // `UnpricedLotPolicy::Error`, so the run ABORTS. That default is the reason a
+  // clustered outage cannot silently truncate NAV: under `ExcludeAndReport` the
+  // step's P&L would be dropped from the total, never recovered when the surfaces
+  // reappear, and reported only as a count. Pinned here because it is the single
+  // most consequential thing the surface-db route inherits from `RunConfig` — and
+  // because an operator hitting it must be able to tell it apart from a bad
+  // window or a bad symbol from the message alone.
+  const auto root = test_root("t5_absence_held_book");
+  auto db =
+      make_test_db(root, kAbsDates, kAbsSymbols, {}, DateAbsence{{"2026-01-07", kAbsentCohort}});
+  ASSERT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
+
+  SurfaceDbDispersionSpec spec = run_spec(root, "2026-01-05", "2026-01-08");
+  spec.config.min_names = 2;
+  spec.config.record_diagnostics = true;
+  const auto out = run_surface_db_dispersion_backtest(spec);
+  ASSERT_FALSE(out.has_value()) << "a held lot with no surface must never be valued silently";
+  EXPECT_EQ(out.error().code(), ErrorCode::NotFound) << out.error().to_string();
+  EXPECT_NE(out.error().message().find("held lot"), std::string::npos) << out.error().message();
+  EXPECT_NE(out.error().message().find("no surface this step"), std::string::npos)
+      << out.error().message();
+
+  // TEETH: the abort is caused by the ABSENCE and not by anything else about this
+  // corpus — the identical db with a complete 2026-01-07 runs the same window clean.
+  const auto full_root = test_root("t5_absence_held_book_full");
+  auto full_db = make_test_db(full_root, kAbsDates, kAbsSymbols);
+  ASSERT_TRUE(full_db.has_value())
+      << (full_db.has_value() ? std::string{} : full_db.error().to_string());
+  SurfaceDbDispersionSpec full_spec = run_spec(full_root, "2026-01-05", "2026-01-08");
+  full_spec.config.min_names = 2;
+  const auto full = run_surface_db_dispersion_backtest(full_spec);
+  ASSERT_TRUE(full.has_value()) << (full.has_value() ? std::string{} : full.error().to_string());
+  EXPECT_EQ(full->result.size(), 4u);
+  fs::remove_all(full_root);
+  fs::remove_all(root);
+}
+
+TEST(SurfaceDbDispersionBacktest, ClusteredAbsenceBelowMinNamesIsADiagnosedNoTradeStep) {
+  // Three survivors against `min_names = 4`. `build_dispersion_book` refuses the
+  // date with `Unavailable`, and `DispersionStrategy::on_step_impl` converts that
+  // ONE code — under DropRenormalize only — into the engine's documented NO-TRADE
+  // CONTRACT: open nothing, leave the held book exactly as found, continue. The
+  // step is therefore NOT an error at the run level, and this test pins that it is
+  // also NOT SILENT: the row exists, carries zero open lots, a NaN `implied_corr`
+  // and the drop count, and the very next complete session opens the book. Every
+  // one of those four is asserted, so removing the diagnostic — the thing that
+  // would make the no-trade step invisible — fails here.
+  const auto root = test_root("t5_below_min_names");
+  auto db =
+      make_test_db(root, kAbsDates, kAbsSymbols, {}, DateAbsence{{"2026-01-05", kAbsentCohort}});
+  ASSERT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
+
+  // The refusal, pinned at the layer that produces it: code AND the counts the
+  // operator needs (how many survived, of how many, against what minimum).
+  const auto u = universe_from_surface_db(*db, "SPY");
+  ASSERT_TRUE(u.has_value()) << (u.has_value() ? std::string{} : u.error().to_string());
+  DispersionBacktestConfig probe_cfg;
+  probe_cfg.min_names = 4;
+  const DispersionStrategy probe = make_dispersion_backtest_strategy(*u, probe_cfg);
+  const auto snap = MarketSnapshot::load(archive_path_of(*db, "2026-01-05"));
+  ASSERT_TRUE(snap.has_value());
+  // The counts are POST-RESOLVE: `build_book` hands `build_dispersion_book` the
+  // three names that resolved, so the denominator is 3 and not the manifest's 5 —
+  // the two whole-symbol absences were already spent at the resolve stage and are
+  // reported there (`dropped_on` / the run's `n_names_dropped`), not here. Pinned
+  // verbatim so the wording cannot drift into implying only three were ever asked
+  // for.
+  const auto refused = probe.build_book(*snap);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().code(), ErrorCode::Unavailable) << refused.error().to_string();
+  EXPECT_NE(refused.error().message().find("only 3 of 3 names survived (min 4)"), std::string::npos)
+      << refused.error().message();
+
+  SurfaceDbDispersionSpec spec = run_spec(root, "2026-01-05", "2026-01-08");
+  spec.config.min_names = 4;
+  spec.config.record_diagnostics = true;
+  const auto out = run_surface_db_dispersion_backtest(spec);
+  ASSERT_TRUE(out.has_value()) << (out.has_value() ? std::string{} : out.error().to_string());
+  ASSERT_EQ(out->result.size(), 4u);
+
+  // Row 0 traded NOTHING.
+  ASSERT_EQ(out->result.n_open_lots.size(), 4u);
+  EXPECT_DOUBLE_EQ(out->result.n_open_lots[0], 0.0);
+  // ...and said so, on both diagnostic axes.
+  const std::vector<double> *corr = signal_series(out->result, "implied_corr");
+  ASSERT_NE(corr, nullptr);
+  ASSERT_EQ(corr->size(), 4u);
+  EXPECT_TRUE(std::isnan((*corr)[0])) << (*corr)[0];
+  const std::vector<double> *dropped = signal_series(out->result, "n_names_dropped");
+  ASSERT_NE(dropped, nullptr);
+  ASSERT_EQ(dropped->size(), 4u);
+  EXPECT_DOUBLE_EQ((*dropped)[0], 2.0);
+  // The run RECOVERS on the next complete session rather than staying flat: the
+  // no-trade step is one date's verdict, not the run's.
+  EXPECT_GT(out->result.n_open_lots[1], 0.0);
+  for (std::size_t i = 1; i < 4; ++i) {
+    EXPECT_DOUBLE_EQ((*dropped)[i], 0.0);
+    EXPECT_TRUE(std::isfinite((*corr)[i])) << i << ": " << (*corr)[i];
+  }
+  fs::remove_all(root);
+}
+
+TEST(SurfaceDbDispersionBacktest, MissingIndexOnOneDateFailsLoudly) {
+  // An index-less dispersion step is meaningless — there is nothing to disperse
+  // AGAINST — so unlike a basket name the index is never droppable under any
+  // missing-name policy. Both places a partition can lose it are pinned, because
+  // they fail through DIFFERENT machinery and a refactor could plausibly silence
+  // either one alone.
+  const std::vector<std::string_view> index_only = {"SPY"};
+
+  // (a) The index is missing on the window's ENTRY session: `resolve_universe_uids`
+  //     refuses to bind the universe at all. NotFound naming SPY — never a drop.
+  const auto entry_root = test_root("t5_missing_index_entry");
+  auto entry_db =
+      make_test_db(entry_root, kAbsDates, kAbsSymbols, {}, DateAbsence{{"2026-01-05", index_only}});
+  ASSERT_TRUE(entry_db.has_value())
+      << (entry_db.has_value() ? std::string{} : entry_db.error().to_string());
+  SurfaceDbDispersionSpec entry_spec = run_spec(entry_root, "2026-01-05", "2026-01-08");
+  entry_spec.config.min_names = 2;
+  const auto no_entry_index = run_surface_db_dispersion_backtest(entry_spec);
+  ASSERT_FALSE(no_entry_index.has_value());
+  EXPECT_EQ(no_entry_index.error().code(), ErrorCode::NotFound)
+      << no_entry_index.error().to_string();
+  EXPECT_NE(no_entry_index.error().message().find("SPY"), std::string::npos)
+      << no_entry_index.error().message();
+  EXPECT_NE(no_entry_index.error().message().find("not present in snapshot directory"),
+            std::string::npos)
+      << no_entry_index.error().message();
+  fs::remove_all(entry_root);
+
+  // (b) The index vanishes MID-window, with the index straddle already held: the
+  //     engine's unpriced-lot guard aborts instead of marking the book without it.
+  const auto held_root = test_root("t5_missing_index_held");
+  auto held_db =
+      make_test_db(held_root, kAbsDates, kAbsSymbols, {}, DateAbsence{{"2026-01-07", index_only}});
+  ASSERT_TRUE(held_db.has_value())
+      << (held_db.has_value() ? std::string{} : held_db.error().to_string());
+  SurfaceDbDispersionSpec held_spec = run_spec(held_root, "2026-01-05", "2026-01-08");
+  held_spec.config.min_names = 2;
+  const auto no_held_index = run_surface_db_dispersion_backtest(held_spec);
+  ASSERT_FALSE(no_held_index.has_value());
+  EXPECT_EQ(no_held_index.error().code(), ErrorCode::NotFound) << no_held_index.error().to_string();
+  EXPECT_NE(no_held_index.error().message().find("held lot"), std::string::npos)
+      << no_held_index.error().message();
+  fs::remove_all(held_root);
+}
+
+TEST(SurfaceDbDispersionBacktest, BitIdenticalAcrossThreadCounts) {
+  // The standing engine contract, asserted on a PRODUCTION-SHAPED run: the corpus
+  // carries a clustered absence on its entry session, so the thread-count
+  // invariance covers the drop/renormalize path and not just the clean one.
+  // Comparison is `std::bit_cast<std::uint64_t>` — exact, no tolerance: "close
+  // enough across thread counts" is precisely the regression this must catch.
+  const auto root = test_root("t5_bit_identity");
+  auto db =
+      make_test_db(root, kRunDates, kRunSymbols, {}, DateAbsence{{"2026-01-05", kAbsentCohort}});
+  ASSERT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
+
+  auto one = run_spec(root, "2026-01-05", "2026-01-12");
+  one.config.run.price.n_threads = 1;
+  auto many = run_spec(root, "2026-01-05", "2026-01-12");
+  many.config.run.price.n_threads = 0; // 0 => hardware concurrency (PriceOptions)
+  const auto a = run_surface_db_dispersion_backtest(one);
+  const auto b = run_surface_db_dispersion_backtest(many);
+  ASSERT_TRUE(a.has_value()) << (a.has_value() ? std::string{} : a.error().to_string());
+  ASSERT_TRUE(b.has_value()) << (b.has_value() ? std::string{} : b.error().to_string());
+  ASSERT_EQ(a->result.size(), b->result.size());
+  ASSERT_EQ(a->result.size(), 6u);
+  for (std::size_t i = 0; i < a->result.size(); ++i) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(a->result.pnl_total[i]),
+              std::bit_cast<std::uint64_t>(b->result.pnl_total[i]))
+        << "row " << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(a->result.nav[i]),
+              std::bit_cast<std::uint64_t>(b->result.nav[i]))
+        << "row " << i;
+  }
+  // TEETH: two all-zero tracks are trivially bit-identical, so the run must have
+  // actually traded and moved.
+  EXPECT_GT(peak_open_lots(a->result), 0.0);
+  EXPECT_NE(a->result.nav.back(), 0.0);
+  fs::remove_all(root);
+}
+
+TEST(SurfaceDbDispersionBacktest, WindowSubsetMatchesFullRunPrefix) {
+  // Determinism of WINDOWING itself: [d1..d6] and [d1..d4] must agree bit-for-bit
+  // on the shared prefix. This is what catches window-dependent state leaking
+  // backwards into early steps — a look-ahead that sized off a later date, a
+  // prefetch that mutated the base snapshot, an accumulator seeded from the ref
+  // count. Again over a corpus with a clustered absence on the entry session.
+  const auto root = test_root("t5_window_prefix");
+  auto db =
+      make_test_db(root, kRunDates, kRunSymbols, {}, DateAbsence{{"2026-01-05", kAbsentCohort}});
+  ASSERT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
+
+  const auto a = run_surface_db_dispersion_backtest(run_spec(root, "2026-01-05", "2026-01-12"));
+  const auto b = run_surface_db_dispersion_backtest(run_spec(root, "2026-01-05", "2026-01-08"));
+  ASSERT_TRUE(a.has_value()) << (a.has_value() ? std::string{} : a.error().to_string());
+  ASSERT_TRUE(b.has_value()) << (b.has_value() ? std::string{} : b.error().to_string());
+  ASSERT_EQ(a->result.size(), 6u);
+  ASSERT_EQ(b->result.size(), 4u);
+  for (std::size_t i = 0; i < b->result.size(); ++i) {
+    EXPECT_EQ(a->result.date[i], b->result.date[i]) << "row " << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(a->result.nav[i]),
+              std::bit_cast<std::uint64_t>(b->result.nav[i]))
+        << "row " << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(a->result.pnl_total[i]),
+              std::bit_cast<std::uint64_t>(b->result.pnl_total[i]))
+        << "row " << i;
+  }
+  // TEETH: the prefix must be non-trivial — a NAV track that never moves would
+  // make the comparison above vacuous.
+  EXPECT_GT(peak_open_lots(b->result), 0.0);
+  EXPECT_NE(b->result.nav.back(), 0.0);
+  fs::remove_all(root);
+}
+
