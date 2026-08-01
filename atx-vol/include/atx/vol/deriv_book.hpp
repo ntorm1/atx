@@ -1,0 +1,144 @@
+#pragma once
+
+// DerivBook — portfolio-layer pricing of vol-derivative (swap) books.
+//
+// A book of variance/volatility-swap positions priced against a `SurfaceSet`:
+// the ADDITIVE companion to `PortfolioPricer` for the non-option legs of a
+// desk's risk. It deliberately does NOT touch `Portfolio` / `PreparedPortfolio`
+// — the option pipeline's dedup, bit-identity and SIMD grouping contracts are
+// tuned for listed contracts and stay untouched. An option book and a deriv
+// book are priced SEPARATELY and their `PriceTotals` combined through
+// `combine_totals`, which is the whole integration surface between the two.
+//
+// ## What one call does
+//
+// For each position, in input order:
+//   1. resolve `uid` through `SurfaceSet::find`;
+//   2. snapshot that surface's own carry at the contract tenor as a
+//      single-tenor `CurveSet` (see detail/deriv_ref_bridge.hpp);
+//   3. mark it through `deriv_price` (and, unless `greeks=false`, differentiate
+//      it through `deriv_greeks`) — the same pricers the standalone
+//      derivatives API uses, so a book mark and a single-contract mark of the
+//      same contract are the same number;
+//   4. scale by `qty` and accumulate into the totals block.
+//
+// ## Failure is a ROW property, never the call's
+//
+// A missing surface marks that row `ModelUnavailable`; a malformed contract
+// (the pricers' InvalidArgument) marks it `InvalidContract`; any other pricing
+// failure marks it `NumericError`. A failed row is NaN-filled and EXCLUDED from
+// the totals — excluded, not zeroed, so a book total never quietly absorbs a
+// position nobody could price. `price_deriv_book` itself returns an error only
+// for a structurally impossible request; an empty book is valid and yields an
+// empty frame with zeroed totals.
+//
+// ## NaN = not computed (the PriceTotals convention)
+//
+// Inherited verbatim from `portfolio_pricer.hpp`: a column that a request did
+// not ask for is NaN, never 0.0, because a 0.0 is indistinguishable from a book
+// that is genuinely flat in that greek. So under `greeks=false` every greek
+// field — per row AND in the totals, INCLUDING the gross `abs_vega` companion —
+// is NaN. `dP_dq` is ALWAYS NaN here: the carry axis is defined on the option
+// pipeline's per-contract IV lane, and a swap has no such lane.
+//
+// ## Scaling
+//
+// `DerivContract::notional` already scales the pricers' PV and greeks;
+// `DerivPosition::qty` is the POSITION multiple on top of it. Every numeric
+// output of a row is qty-scaled exactly once, at the row. The one exception is
+// `DerivPriceRow::greeks.quote` — the pricer's own centre quote, kept verbatim
+// as a per-contract diagnostic (fair strike, strip grid, flags, vol-of-vol), so
+// it is UNSCALED by construction. `fair_strike_dec` is likewise a per-contract
+// rate, not a cash amount, and is unscaled.
+//
+// ## Determinism / threading
+//
+// The loop is SERIAL and accumulates in fixed input order, so the totals are
+// bit-reproducible for a given book and surface set (the same convention the
+// option pricer's reduction guarantees across thread counts). No threading in
+// v1: swap books are small (tens of positions) next to the option books the
+// fan-out exists for, and each position already pays a full strip integration.
+//
+// Thread-safety: `price_deriv_book` and `combine_totals` are stateless pure
+// functions of their inputs, safe to call concurrently from any number of
+// threads (the underlying surfaces are concurrent-const-safe).
+
+#include <cstddef>
+#include <cstdint>
+#include <span>
+#include <vector>
+
+#include "atx/vol/derivatives.hpp"      // DerivContract/DerivConfig/DerivGreeks/DerivGreekBumps
+#include "atx/vol/portfolio_pricer.hpp" // SurfaceSet, PriceTotals, PriceStatus, kPriceColumnNaN
+#include "atx/vol/types.hpp"            // Result
+
+namespace atx::vol {
+
+// One held vol-derivative position. `id` is an opaque caller key echoed into
+// every frame row; `uid` is matched against the registered surfaces' uids.
+struct DerivPosition {
+  std::uint64_t id{0};
+  std::uint32_t uid{0};
+  DerivContract contract{};
+  double qty{1.0}; // signed position scale ON TOP OF contract.notional
+};
+
+// One priced position (input order preserved). `pv` and every `greeks` field
+// are qty-scaled; `fair_strike_dec` and `greeks.quote` are per-contract and
+// unscaled. On any non-Ok status every numeric field is NaN.
+struct DerivPriceRow {
+  std::uint64_t id{0};
+  std::uint32_t uid{0};
+  double pv{kPriceColumnNaN};
+  double fair_strike_dec{kPriceColumnNaN};
+  // The centre (unbumped) quote inside `greeks.quote` is populated on every Ok
+  // row — including a marks-only one, where the nine sensitivity fields are all
+  // NaN. It carries the strip diagnostics (resolved grid, flags, vol-of-vol) a
+  // caller needs to reproduce or audit the mark.
+  DerivGreeks greeks{};
+  PriceStatus status{PriceStatus::Ok};
+};
+
+// Rows in input order plus the column sums over the Ok rows.
+struct DerivPriceFrame {
+  std::vector<DerivPriceRow> rows;
+  PriceTotals totals{};
+
+  // Number of rows that priced. Equals `totals.n_ok` by construction; counted
+  // from `rows` so the frame stays self-describing if it is ever rebuilt or
+  // filtered by a caller.
+  [[nodiscard]] std::size_t n_ok() const noexcept;
+};
+
+// Price every position in `book` against its uid's surface.
+//
+// @param surfaces uid -> surface resolver; a uid it does not know marks that
+//                 ROW `ModelUnavailable`.
+// @param book     positions, priced and reported in input order. Empty is
+//                 valid and yields an empty frame with zeroed totals.
+// @param cfg      pricing config, applied to every position.
+// @param greeks   false prices MARKS ONLY: one `deriv_price` per position
+//                 instead of the ~8-14 repricings a greek block costs. Every
+//                 greek field (rows and totals) is then NaN.
+// @param bumps    finite-difference bump sizes; ignored when `greeks` is false.
+//                 A non-positive bump is rejected by the pricer PER POSITION,
+//                 so a malformed `bumps` shows up as every row reporting
+//                 `InvalidContract` rather than as a call-level error.
+// @return the frame. Per-position failures are reported as row status, so this
+//         does not fail on any book the pricers can reject lane-by-lane.
+[[nodiscard]] Result<DerivPriceFrame>
+price_deriv_book(const SurfaceSet &surfaces, std::span<const DerivPosition> book,
+                 const DerivConfig &cfg = DerivConfig{}, bool greeks = true,
+                 const DerivGreekBumps &bumps = DerivGreekBumps{});
+
+// Field-wise sum of two totals blocks — the seam that lets an option book's
+// `PriceTotals` and a deriv book's be reported as one desk-level risk number.
+//
+// NaN PROPAGATES per field, deliberately: if either side did not compute a
+// column, the combined column is "not computed" too. Silently treating a
+// marks-only block's NaN vega as 0 would report the option book's vega as the
+// desk's, which is exactly the false-zero this convention exists to prevent.
+// `n_ok` adds (saturating at UINT32_MAX rather than wrapping).
+[[nodiscard]] PriceTotals combine_totals(const PriceTotals &a, const PriceTotals &b) noexcept;
+
+} // namespace atx::vol

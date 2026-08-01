@@ -180,6 +180,7 @@ add_executable(atx-vol-tests
     # deriv production sprint
     deriv_distribution_test.cpp
     deriv_greeks_test.cpp
+    deriv_book_test.cpp
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

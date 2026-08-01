@@ -12,7 +12,9 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/black76.hpp"
+#include "atx/vol/detail/deriv_ref_bridge.hpp" // Task 9: SurfaceRef-native entry points
 #include "atx/vol/detail/rv_lognormal.hpp" // lognormal_call, truncated_expect, norm_cdf (Tasks 4-5)
+#include "atx/vol/portfolio_pricer.hpp" // Task 9: SurfaceRef (the borrowed-surface handle)
 #include "atx/vol/priced_surface.hpp" // E6: PricedSurface-native entry points
 #include "atx/vol/strip_grid.hpp"
 #include "atx/vol/surface_parity.hpp" // SliceContext (E6 carry extraction)
@@ -1524,5 +1526,123 @@ Result<DerivGreeks> deriv_greeks(const PricedSurface& surface, const DerivContra
   const PricedSurfaceStripView view{&surface, &curves, contract.maturity_t};
   return deriv_greeks(view, curves, contract, cfg, bumps);
 }
+
+// ── Task 9 / DerivBook: SurfaceRef-native bridge ───────────────────────────
+//
+// See include/atx/vol/detail/deriv_ref_bridge.hpp for why these two functions
+// live in THIS translation unit: they instantiate the strip templates over a
+// third surface adapter, and the template bodies are here.
+
+namespace detail {
+namespace {
+
+// Lower yield pillar as a fraction of the contract tenor. TWO pillars carrying
+// the SAME zero rate make the curve genuinely flat in RATE: with exactly two
+// pillars the Fritsch-Carlson tangents both equal the secant, so the Hermite
+// interpolant of log(df) is exactly the straight line -r*t between them and
+// `disc(t) == e^{-r*t}` for every t in [frac*T, T].
+//
+// A SINGLE pillar would not do this. `YieldCurve` extrapolates log(df) FLAT
+// outside its pillar range, so a one-pillar curve returns the SAME discount
+// factor e^{-r*T} at every tenor -- a flat DISCOUNT, not a flat yield. The mark
+// at T is identical either way (T is a pillar in both), but `deriv_greeks`'
+// theta stencil reprices at T - dt, and under a frozen discount that repricing
+// silently drops theta's r*PV discount-roll term. The second pillar costs one
+// vector element and makes the roll exact.
+//
+// 1e-3 is small enough that every roll the greek stencil can take (dt = 1/365.25
+// on a contract with T > dt) lands INSIDE the interpolated range; below the
+// pillar the clamp holds df at e^{-r*1e-3*T}, which differs from 1 by ~1e-5 at
+// equity rates and one-year tenors.
+constexpr double kFlatYieldFloorFrac = 1.0e-3;
+
+// The borrowed surface's OWN carry at ONE tenor, expressed as a CurveSet so the
+// strip resolves forward and discount exactly as it does on every other path.
+//
+// ONE forward pillar is deliberate: `resolve_forward` clamps outside the pillar
+// range, so a single-pillar curve returns `forward_at(T)` for ANY query tenor,
+// and the adapter below therefore reads its vol at the SAME absolute strike the
+// strip prices at, unconditionally. The price paid is that a theta roll holds
+// the forward fixed (only the discount and the surface's own term structure
+// move); `SurfaceRef` exposes no fitted-pillar list to interpolate a rolled
+// forward from, so this is the honest snapshot rather than a guess.
+//
+// UNLIKE the E6 `carry_from`, there is NO fitted-range gate: a `SurfaceRef` has
+// no `context()` to gate against, and `forward_at`/`rate_at` extrapolate
+// economically at any tenor. The caller owns that choice.
+[[nodiscard]] Result<CurveSet> carry_from_ref(const SurfaceRef& ref, double T) {
+  CurveSet cs;
+  cs.spot = ref.pricing().S;
+
+  ForwardPoint fp;
+  fp.T = T;
+  fp.F = ref.forward_at(T);
+  fp.q_eff = ref.q_eff_at(T);
+  const ForwardPoint pts[] = {fp};
+  cs.forward.set(pts);
+
+  // T <= 0 is the at-expiry case: `deriv_df_at_T` short-circuits df = 1 there
+  // and never consults the curve, so a default (empty) YieldCurve -- which
+  // itself returns 1.0 -- is the correct and only representable answer. Feeding
+  // a non-positive pillar to `set_yield` would be a fabricated rate.
+  if (T > 0.0) {
+    const double r = ref.rate_at(T);
+    const double ts[] = {T * kFlatYieldFloorFrac, T};
+    const double rates[] = {r, r};
+    ATX_TRY_VOID(cs.set_yield(ts, rates));
+  }
+  return Ok(std::move(cs));
+}
+
+// Presents a SurfaceRef through the LOG-MONEYNESS `iv(k_log, T)` contract the
+// strip templates require. Mirrors `PricedSurfaceStripView` above -- including
+// the reason it resolves F from the CurveSet rather than from the surface: the
+// vol must be read at the strike the strip is pricing, and the strip's own
+// forward is what makes that true by construction. Same one-tenor cache, for
+// the same reason (the strip calls `iv` once per node, 97-2049 times).
+struct SurfaceRefStripView {
+  const SurfaceRef* ref; // non-owning, non-null, valid()
+  const CurveSet* curves;
+  double T_cached;
+  double F_cached;
+
+  SurfaceRefStripView(const SurfaceRef* handle, const CurveSet* cs, double T) noexcept
+      : ref{handle}, curves{cs}, T_cached{T}, F_cached{resolve_forward(*cs, T)} {}
+
+  [[nodiscard]] double iv(double k_log, double T) const noexcept {
+    const double F = (T == T_cached) ? F_cached : resolve_forward(*curves, T);
+    if (!(F > 0.0) || !std::isfinite(k_log)) {
+      return kNaN;
+    }
+    return ref->iv(F * std::exp(k_log), T);
+  }
+};
+
+}  // namespace
+
+Result<DerivQuote> deriv_price_on_ref(const SurfaceRef& ref, const DerivContract& contract,
+                                      const DerivConfig& cfg) {
+  if (!ref.valid()) {
+    return Err(ErrorCode::InvalidArgument, "deriv: null surface handle");
+  }
+  ATX_TRY(const CurveSet curves, carry_from_ref(ref, contract.maturity_t));
+  const SurfaceRefStripView view{&ref, &curves, contract.maturity_t};
+  return deriv_price(view, curves, contract, cfg);
+}
+
+Result<DerivGreeks> deriv_greeks_on_ref(const SurfaceRef& ref, const DerivContract& contract,
+                                        const DerivConfig& cfg, const DerivGreekBumps& bumps) {
+  if (!ref.valid()) {
+    return Err(ErrorCode::InvalidArgument, "deriv: null surface handle");
+  }
+  // The carry snapshot is taken ONCE, at the contract's own maturity; every
+  // bumped evaluation (including the theta roll) reuses it, so a stencil never
+  // differences two differently-derived carries.
+  ATX_TRY(const CurveSet curves, carry_from_ref(ref, contract.maturity_t));
+  const SurfaceRefStripView view{&ref, &curves, contract.maturity_t};
+  return deriv_greeks(view, curves, contract, cfg, bumps);
+}
+
+}  // namespace detail
 
 }  // namespace atx::vol
