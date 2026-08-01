@@ -22,6 +22,15 @@
 // Thread-safety: `fit` mutates (stores the surface) and needs exclusive access.
 // `value_chain` is const and internally parallel; concurrent `value_chain` calls
 // on one fitter are safe (all state read is immutable after `fit`).
+//
+// "Internally parallel" means it dispatches onto the PROCESS-GLOBAL pricing pool
+// (detail/pricing_executor.hpp), not onto threads the fitter owns: concurrent
+// `value_chain` calls therefore share one core budget rather than each spawning a
+// fan, `cfg.n_threads` is a request clamped down to that pool, and a call issued
+// from inside another pool dispatch runs inline — with the result unchanged in
+// every case. The pool's ordering rule reaches callers here too: set its topology
+// with `configure_pricing_executor` before the first pricing or fitting call
+// builds it, after which configuration is refused with AlreadyExists.
 
 #include <cstddef>
 #include <cstdint>

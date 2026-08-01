@@ -110,6 +110,40 @@
 // layout, and sizeof PLUS every load-bearing offsetof pinned by static_assert.
 // This is an on-disk ABI — a field reorder that preserved sizeof would still
 // silently corrupt readers. Host little-endian LP64 only.
+//
+// ── Thread-safety (plan 4.7) ────────────────────────────────────────────────
+//
+// There is NO in-process cache object here and no shared mutable state: every
+// entry point below is a free function over its arguments plus the filesystem.
+// `definitions_cache_abi_fold` and `definitions_cache_key` are pure recomputations
+// (no memo, no static), so they are safe to call from any number of threads.
+//
+// The SHARED RESOURCE is the cache directory, and the rules follow from the
+// fail-closed reader rather than from any lock:
+//
+//   * CONCURRENT READS are safe. `read_definitions_cache` only opens and reads,
+//     and a file replaced under it fails one of the guards and returns a MISS.
+//   * A READ RACING A PUBLISH is safe for the same reason. Publication is a
+//     rename over the destination, so a reader sees either the whole old file or
+//     the whole new one; anything else trips the header CRC, the payload CRC or a
+//     bounds check and is reported as a miss, never as a partial serve.
+//   * CONCURRENT PUBLISHES OF THE SAME KEY ARE NOT SERIALIZED, and this is the one
+//     sharp edge worth naming. `write_definitions_cache` stages through a FIXED
+//     `<cache_path>.tmp`, so two writers aimed at one cache path interleave into
+//     one temp file. Because the path is content-addressed they are by
+//     construction writing the SAME bytes, and any torn image the race could
+//     publish is rejected by the reader's CRCs as a miss — so the failure mode is
+//     a wasted parse, not a wrong table. It is still not a supported concurrency
+//     pattern: give concurrent producers distinct cache directories, or let one
+//     warm the cache.
+//   * The rename itself already retries with backoff for the Windows case where a
+//     reader holds the destination open; on final failure the temp is preserved
+//     and the previous good file is left intact.
+//
+// `read_listed_definitions_cached` additionally writes one HIT/MISS line to stderr
+// per consulted call and charges the caller's `PhaseTimer`. Neither is
+// synchronized: concurrent calls interleave their stderr lines, and a `PhaseTimer`
+// must not be shared across threads.
 
 #include "atx/vol/listed_opra.hpp" // ListedDefinitionTable, ListedContractDefinition
 #include "atx/vol/types.hpp"       // Result / Status

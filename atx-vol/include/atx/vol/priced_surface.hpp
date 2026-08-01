@@ -49,6 +49,18 @@
 // concurrently on one published PricedSurface from any number of threads (the
 // underlying CurveSurface, transient caches, and cold fallback are
 // concurrent-const-safe).
+//
+// The one entry that reaches SHARED state is `with_query_pricing`: building a
+// multi-center accelerator fans its independent center builds through the
+// PROCESS-GLOBAL pricing pool (detail/pricing_executor.hpp) rather than spawning
+// its own threads. Two caller-facing consequences, both from that header's
+// Thread-safety section. First, that pool's topology must be set with
+// `configure_pricing_executor` BEFORE the first call that builds it — a
+// preparation is exactly such a call, and afterwards configuration is refused with
+// AlreadyExists. Second, a preparation issued from INSIDE another pool dispatch
+// runs fully inline instead of self-oversubscribing, and the result is
+// bit-identical either way. Serving from an already-prepared surface touches no
+// global state.
 
 #include <cstddef>
 #include <cstdint>

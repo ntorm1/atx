@@ -54,6 +54,22 @@
 // contract, or a numeric error) is EXCLUDED from every cell and counted ONCE in
 // `n_failed`; the surviving book is priced exactly as if that contract were absent.
 // No NaN ever enters a cell total.
+//
+// ## Thread-safety (plan 4.7)
+//
+// `scenario_grid` is a pure function of its inputs: it reads the caller's
+// positions and the base `SurfaceSet` (both concurrent-const-safe) and returns a
+// freshly built matrix, holding no state of its own between calls. Two grids may
+// therefore run concurrently over the SAME book and surfaces.
+//
+// The fan-outs described above are dispatched onto the PROCESS-GLOBAL pricing pool
+// (detail/pricing_executor.hpp), not onto threads this entry creates, so two
+// concurrent grids share one core budget rather than oversubscribing — and a grid
+// issued from INSIDE another pool dispatch runs inline. Determinism is unaffected
+// either way, per the section above. The pool's own caller-facing rule applies
+// here as everywhere: choose its topology with `configure_pricing_executor` before
+// the first pricing call builds it, after which configuration is refused with
+// AlreadyExists.
 
 #include <cstddef>
 #include <cstdint>

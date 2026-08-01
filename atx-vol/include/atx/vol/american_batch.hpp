@@ -47,6 +47,26 @@
 // per-lane channel (NaN + `LaneStatus::Unsupported`, or the scalar pricer's own
 // Error in the resolved entry's `status[i]`). Only argument-shape rejections
 // travel through the Result.
+//
+// ## Thread-safety (plan 4.7)
+//
+// The batch entries hold no shared mutable state of their own: each call reads the
+// caller's input columns and writes the caller's output columns plus the
+// `PricingWorkspace` it was handed. So concurrent batch calls are safe PROVIDED
+// each one owns its own workspace and output views — a workspace is single-owner
+// scratch (`reserve_lanes` rewrites it on every call), never a shared buffer.
+//
+// The one piece of shared state a batch call can reach is the PROCESS-GLOBAL
+// pricing pool, and only when the caller opts in by setting
+// `PricingKernel::executor`. That pointer names the persistent pool from
+// `detail/pricing_executor.hpp` (normally the `pricing_executor()` singleton);
+// read that header's Thread-safety section for the pool's own rules. The two that
+// bind a caller here: the pool's topology must be chosen with
+// `configure_pricing_executor` BEFORE any pricing call builds it (afterwards the
+// call is refused with AlreadyExists and changes nothing), and a batch call issued
+// from INSIDE another pool dispatch runs its lanes inline rather than
+// self-oversubscribing. Passing a null executor (the default) keeps the fan
+// serial and touches no global state at all.
 
 #include <cstddef>
 #include <cstdint>

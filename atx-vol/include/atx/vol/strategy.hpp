@@ -16,6 +16,23 @@
 // through `pnl_explain`. `HedgeSpec` is executed by B2. Listed strikes, expiries,
 // quotes, and fills belong to the existing `listed_opra.hpp` workflow (see the
 // `spy_strangle_tradeable` example), not this declarative interpreter.
+//
+// ## Thread-safety (plan 4.7)
+//
+// A `StrategySpec` is inert DATA and is concurrent-const-safe. An `IStrategy`
+// IMPLEMENTATION is not: it carries mutable lifecycle state (cohort counters, the
+// front cohort's expiry, halt/limit state) and per-step diagnostic buffers that
+// `on_step` rewrites, so ONE strategy instance is driven by ONE engine loop on ONE
+// thread. Every accessor here — `entry_risk_seeds`, `dropped_on_last_entry`,
+// `risk_events`, `signals`, and the mutators `set_risk_limits` / `halt_from_step`
+// — is meant for that thread, between steps. Running two independent strategy
+// instances concurrently is fine; sharing one is not.
+//
+// The engine's own fan-out inside a step (leg pricing, dispersion book builds)
+// goes through the PROCESS-GLOBAL pricing pool (detail/pricing_executor.hpp), so
+// concurrent backtests share one core budget rather than each spawning a pool.
+// That header's caller-facing rule holds here too: set the pool's topology with
+// `configure_pricing_executor` before the first pricing call builds it.
 
 #include <cstddef>
 #include <cstdint>

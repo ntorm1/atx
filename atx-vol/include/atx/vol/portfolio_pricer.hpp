@@ -73,6 +73,19 @@
 // distinct PortfolioWorkspace and output view. `retime` requires exclusive
 // access to the pricer and every workspace that has priced it; a later call
 // rebuilds each workspace's retained substrate.
+//
+// THE SHARED RESOURCE UNDERNEATH (plan 4.7). "Many threads at once" does not mean
+// many pools: every internal fan-out here — the tile pass, the per-unique range
+// pass, the scatter, and the same three inside `pnl_explain` — dispatches onto the
+// PROCESS-GLOBAL pricing pool (detail/pricing_executor.hpp) rather than creating
+// threads. So concurrent `price` calls SHARE one core budget instead of
+// oversubscribing the machine, `n_threads` is a request clamped down to that pool,
+// and a call issued from inside another pool dispatch runs inline — none of which
+// changes any result, because the block partition fixes which index lands in which
+// slot at any worker count. The one caller-facing ordering rule comes from that
+// header: choose the pool's topology with `configure_pricing_executor` BEFORE the
+// first pricing call, since that call is what builds the pool and configuration
+// afterwards is refused with AlreadyExists and applies nothing.
 
 #include <cstddef>
 #include <cstdint>

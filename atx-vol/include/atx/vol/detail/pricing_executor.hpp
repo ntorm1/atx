@@ -70,6 +70,52 @@
 // The pool holds `H - 1` workers (the calling thread is the H-th execution
 // context: it runs block 0), so a full-degree dispatch uses caller + (H-1) workers
 // = H threads — exactly the degree the old `n_threads == 0` auto path used.
+//
+// ## Thread-safety (plan 4.7)
+//
+// This header declares the library's ONE piece of process-global mutable state,
+// so its rules are stated rather than inferred.
+//
+// THE SINGLETON. `pricing_executor()` returns a reference to a function-local
+// static, so its construction is thread-safe and happens EXACTLY ONCE: concurrent
+// first callers block until the pool is built, and every later call is a plain
+// reference read. Construction is not free — it creates `size()` OS threads and
+// returns only after a startup barrier sees all of them parked — so the first
+// pricing call on a process pays for the whole pool.
+//
+// THE POOL IS SHARED, AND MEANT TO BE. Every `run_*` from any thread dispatches
+// onto the same workers. Concurrent TOP-LEVEL dispatches are supported: contexts
+// go onto the shared work-stealing queue and a dispatcher blocked on its own
+// fan-out drains that queue help-first, so no dispatch can wait on a slot another
+// dispatch must first free. Each dispatch's own partition is what fixes its
+// results, and that partition does not depend on how many other dispatches are in
+// flight — the bit-identity claim above survives concurrency. What callers still
+// owe is the body contract: disjoint writes per index, and no body that blocks on
+// the pool it is running inside (the plain `run_*` inline when nested precisely so
+// that mistake cannot deadlock; only the `*_nested` variants add one real level).
+//
+// `size()` is fixed for the pool's life and safe to read from anywhere.
+// `nested_budget()` reads PER-THREAD state only, so it answers about the calling
+// thread and never synchronizes with the pool.
+//
+// CONFIGURATION IS ORDER-SENSITIVE, NOT RACE-PRONE. `configure_pricing_executor`
+// and the singleton's builder take the same internal mutex, so calling them
+// concurrently cannot corrupt anything. What concurrency does NOT give you is a
+// deterministic ORDER: whether your topology is recorded in time to be consumed,
+// or refused with AlreadyExists because another thread's pricing call built the
+// pool first, is decided by whichever acquires that mutex first. So configure ONCE,
+// from ONE thread, before any library entry that can price — that is the only
+// usage under which the return value means what it says.
+//
+// SHUTDOWN. The workers are joined by the static's destructor, which runs after
+// `main`. Do not dispatch from a static destructor that may be sequenced after it.
+//
+// KNOWN SHARP EDGE, recorded rather than papered over: `pricing_executor()` is
+// declared `noexcept`, but the construction it performs allocates and spawns
+// threads. If that allocation or a `std::thread` creation fails, the exception
+// escapes a `noexcept` function and the process terminates rather than reporting.
+// That is the CURRENT behaviour; treating pool-construction failure as a reportable
+// error is a signature change, not a comment.
 
 #include <cstddef>
 #include <cstdint>
