@@ -1152,6 +1152,40 @@ Status runarchive_dump_command(const fs::path &run_dir, const std::string &secti
   return Ok();
 }
 
+// S3-T16 CONCERN 1, dispositioned at plan 5.6. `run-surface-backtest` and
+// `run-projected-var` are the two subcommands whose ONLY outputs are loose TSV
+// tables, and S3-T16 put those tables behind `emit_tsv_diagnostics`, which
+// defaults OFF. A default run of either therefore computes, prints its console
+// line, and leaves the run directory unchanged. That quiet default is the
+// intended behaviour — forcing the flag on would re-create the artifact sprawl
+// S3 removed — but at a terminal it is indistinguishable from a run that failed
+// to write something, and the operator has no way to learn the flag's name.
+//
+// So the seam says so, and does nothing else. The note is STDERR-ONLY (every
+// route's result line goes to stdout, and anything parsing that keeps parsing
+// exactly what it did), it is emitted only AFTER the route has already
+// succeeded, and it cannot change an exit code.
+//
+// The flag is re-read here instead of being threaded out of the library because
+// both routes are one-line dispatches that return a Status, not a config. That
+// read introduces no new failure mode: it happens only on the success path, and
+// both entry points strict-read this same file through this same reader before
+// doing any work (the X1 "strict typed spec" property described above), so a
+// spec that got this far parses. A read that somehow fails is swallowed — an
+// advisory note is never worth failing a successful run over.
+void note_if_diagnostics_disabled(const fs::path &run_dir, const char *subcommand) {
+  const fs::path spec_path = run_dir / "run_spec.tsv";
+  const auto run_config = read_dispersion_run_config(spec_path);
+  if (!run_config || run_config->emit_tsv_diagnostics) {
+    return;
+  }
+  std::fprintf(stderr,
+               "note: %s published no loose diagnostic tables -- `emit_tsv_diagnostics` is "
+               "disabled (the default) in %s. Declare `emit_tsv_diagnostics true` there to "
+               "publish them; the run's economics are the same either way.\n",
+               subcommand, spec_path.string().c_str());
+}
+
 void usage() {
   std::fprintf(
       stderr, "usage:\n"
@@ -1312,8 +1346,14 @@ int main(int argc, char **argv) {
         out.empty() ? fs::path("projected_backtest.tsv") : out, no_divergence);
   } else if (command == "run-surface-backtest" && !run.empty()) {
     status = atx::vol::dispersion_run_surface_backtest(run);
+    if (status) {
+      note_if_diagnostics_disabled(run, "run-surface-backtest");
+    }
   } else if (command == "run-projected-var" && !run.empty()) {
     status = atx::vol::dispersion_run_projected_var(run);
+    if (status) {
+      note_if_diagnostics_disabled(run, "run-projected-var");
+    }
   } else if (command == "verify" && !run.empty()) {
     status = verify_command(run);
   } else {
