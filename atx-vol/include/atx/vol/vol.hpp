@@ -94,8 +94,9 @@
 //           CLI support, run-report writers, the tearsheet.
 //   research research/include/atx/vol/research/ (target atx-vol-research) —
 //           dispersion run orchestration and the run artifacts it emits.
-//   tests   tests/support/ — test fixtures (spy_fixture.hpp lived here all
-//           along in spirit; S4-T18 moved it there in fact).
+//   tests   tests/support/ — test fixtures (analytics_fixture, opra_fixture,
+//           spy_fit_fixture, breadth_fit_fixture). spy_fixture.hpp is NOT among
+//           them any more: it was promoted to Tier-B include/atx/vol/.
 //
 // ── Coordinate + pricing conventions (used everywhere in the library) ──────────
 //

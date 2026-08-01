@@ -43,11 +43,11 @@ faithfully and mirror the upstream test tolerances.
 | Vol derivatives | `derivatives.hpp` | Variance-swap strip, Carr–Lee vol swap, aged/marquee PnL, realized-vol tracker |
 | Profile registry | `profile.hpp` | Underlier classification, per-profile calib/filter knobs, optimization-level + refit cadence + tier priority |
 | Unified fit policy | `fit_policy.hpp` | Board/profile/session/event routing to an effective preset + curve; direct high-confidence routes and held-out ambiguity fallback |
-| Portfolio | `portfolio.hpp` | Leg/book/agg types, bulk pricer + select, portfolio pricing + 8-Greek aggregation by agg-mode |
-| Portfolio risk | `portfolio_risk.hpp` | Scenario/shock revaluation, plan/resolve/explain (PnL attribution) |
+| Scenario risk | `scenario_grid.hpp` | 2-D (spot% × vol) second-order Taylor P&L matrix over a `PortfolioPricer` book — one deduped full-Greeks solve, every cell reconstructed analytically |
+| PnL attribution | `pnl_attribution.hpp` | Additive base→shifted decomposition into the Vola vocabulary (spot / ATF / skew / curvature / 2nd-order vol / rates / time / unexplained) |
 | Projection | `projection.hpp` | Projection spine: forward-T interp, coord conversion, inserted-slice eval, delta-solve, project-compare |
 | Contract projection | `contract_projection.hpp` | Relative maturity/strike definitions to absolute-expiry American contracts, marks, and Greeks; prepared deterministic batch API |
-| Surface archive | `surface_archive.hpp` | ATSVSA binary format writer/reader, CRC-32C, schema-hash guard, symbol lookup, concurrent-read-safe |
+| Surface archive | `surface_archive.hpp` | ATXVSA2 (magic `ATXVSA20`) binary format writer/reader, CRC-32C, schema-hash guard, symbol lookup, concurrent-read-safe |
 | Data ingestion | `data.hpp` | SpiderRock quote-frame model, install-into-universe path, ISO/year-fraction kernels |
 | Batch kernels | `batch.hpp` | Scalar-backed batch B76 price/vega/from-lnfk, IV, Greeks, eSSVI-w (batch == scalar, bit-exact) |
 | American IV | `american_iv.hpp` | Invert an American premium → implied vol (safeguarded Newton on the American pricer); the de-Americanization primitive |
@@ -260,8 +260,10 @@ Two findings the SPY slice forced, both documented rather than papered over:
   event wings, so it stays off (matching the pre-existing `profile.cpp` note). Ultra-short
   (< ~1wk) and the deepest tails (|k| > 1.5) are separate regimes, reported separately.
 
-A deterministic **synthetic** SPY known-truth oracle (`tests/support/spy_fixture.hpp`,
-`examples/spy_surface_bench`) complements the real slice: with no quote noise the fit
+A deterministic **synthetic** SPY known-truth oracle (`atx/vol/spy_fixture.hpp` —
+Tier-B and installed, so a consumer can build the same board without vendoring a
+copy of the test tree — plus `examples/spy_surface_bench`) complements the real
+slice: with no quote noise the fit
 recovers the truth exactly (0.0 bp ATM, 100% in-bid-ask, calendar-arb-free) — a zero-bias
 round-trip check, where the real slice supplies the noisy-data accuracy number above.
 
@@ -309,8 +311,13 @@ synthetic numbers falsifiable.
 **Deferred (documented, no impact on the shipped acceptance path).** A native
 discrete-cash-dividend PDE American pricer (the escrowed-forward Andersen-Lake
 path is self-consistent and used for both generation and re-Americanization);
-the eSSVI asymmetric-ρ / Fengler / candidate-selection research knobs; a
-multi-underlier de-Americanized surface driver over the calibration pool.
+the eSSVI asymmetric-ρ / Fengler / candidate-selection research knobs. The
+third item used to read "a multi-underlier de-Americanized surface driver over
+the calibration pool"; the pool it named (`calib_pool.hpp`, `calibrate_pool` /
+`CadenceQueue`) was deleted unbuilt at v1 (CHANGELOG, *REMOVED*). Whole-panel
+multi-underlier work now lands on `corpus.hpp`, which fans fits out across
+(date, symbol) boards — so the deferred item is the *de-Americanized* driver, not
+a missing pool.
 
 ## Folded into atx-core
 
@@ -332,7 +339,7 @@ which change the numerical results of the shipped paths:
 - **SIMD vectorization — batch-across-contracts AVX2 is SHIPPED (Auto-ON marks);
   in-solve vectorization is not.** The American-boundary **marks** batch and the
   laned analytic-greeks bundle ship **AVX2-ON under the default `ATX_SIMD_ISA=Auto`**
-  (`kShipAvx2Boundary` / `kShipAvx2Greeks`, `simd/american_boundary_batch.cpp`): on
+  (`kShipAvx2Boundary` / `kShipAvx2Greeks`, `src/simd/american_boundary_batch.cpp`): on
   an AVX2 host the default marks are the 4-lane boundary pack (≈2.5–3.1× on the dev
   box, quiet-window A/B ratified), **~1e-13 USD** from the scalar oracle
   (economically nil — 10+ orders below a tick) and thread-count-invariant via the
@@ -516,10 +523,20 @@ frozen?" is answered by where the header lives, not by judgement:
 | Tier | Where | Count | Promise |
 |---|---|---|---|
 | **Tier-A** | exactly the headers `atx/vol/vol.hpp` includes | 56 | **Frozen for 1.x.** Closed under inclusion |
-| **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 22 + 9 | Public and supported to include; **not** frozen |
-| `detail/` | `include/atx/vol/detail/` | 24 | **No stability promise.** Installed because Tier-A reaches it |
+| **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 23 + 9 | Public and supported to include; **not** frozen |
+| `detail/` | `include/atx/vol/detail/` | 25 (+1 generated) | **No stability promise.** Installed because Tier-A reaches it |
 | `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
 | `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 9 | Run orchestration. Not part of the shipped library surface |
+
+Only the Tier-A count is machine-checked (below). The other four are prose and
+therefore rot: Tier-B and `detail/` were each one short by the time this table was
+next read, because `log.hpp` and `detail/log_emit.hpp` landed after it was
+written. Re-derive them from the tree rather than editing a digit —
+`grep -c '^#include "atx/vol/' include/atx/vol/vol.hpp` is Tier-A; each remaining
+row is `ls` over the directory the row names, minus (for Tier-B) Tier-A and
+`vol.hpp` itself. The `+1 generated` on `detail/` is
+`detail/version_generated.hpp`, configure_file'd from `project(atx VERSION ...)`,
+so an install prefix carries 26 there and the source tree 25.
 
 *Closed under inclusion* is the load-bearing rule: a header named in a frozen
 signature is frozen whether or not callers reach for it directly, so if a Tier-A
