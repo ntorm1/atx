@@ -324,6 +324,63 @@ TEST(SurfaceDbPopulateCancellation, StopsBetweenDatesLeavingAValidResumableDb) {
   EXPECT_EQ(n_loaded, 4u) << "the resumed run did not produce a complete database";
 }
 
+// GATE, the fan-out half (S5 fix round 1, review B I-2). A stop must reach the
+// fit QUEUE, not only the writer: breaking the drain loop leaves the fit-runner
+// jthread to be joined, and without a poll inside the task every already-queued
+// board still fits to completion — the run costs the same wall time as not
+// stopping it, and each of those fits parks a surface in a slot the stopped
+// drain will never release (the R-03 memory bound, inverted).
+//
+// `before_board_fit` runs on the fit worker immediately before a board's fit
+// begins and AFTER that task's cancellation poll, so counting it counts fits
+// STARTED. `on_board_fit_done` fires from the task's scope exit whether or not it
+// fitted, so counting it counts tasks RETIRED — together they say the queue
+// drained rather than being abandoned. Nothing here reads a clock.
+TEST(SurfaceDbPopulateCancellation, AStopBeforeTheFanOutDrainsTheQueuedFits) {
+  const auto root = test_root("cancel_queue_drain");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const std::vector<CorpusBoard> boards = make_boards(); // kDate0 + kDate1, AAA/BBB
+  std::atomic<std::size_t> fits_started{0};
+  std::atomic<std::size_t> tasks_retired{0};
+  std::vector<std::string> written;
+
+  PopulateTestHooks hooks;
+  hooks.before_board_fit = [&](const std::string &, const std::string &) {
+    fits_started.fetch_add(1u, std::memory_order_relaxed);
+  };
+  hooks.on_board_fit_done = [&](std::size_t) {
+    tasks_retired.fetch_add(1u, std::memory_order_relaxed);
+  };
+  hooks.after_partition_write = [&](const std::string &date) { written.push_back(date); };
+
+  std::atomic<bool> stop{true}; // requested up front: every board is still queued
+  SurfaceDbPopulateConfig cfg;
+  cfg.cancel = CancelToken{stop};
+
+  auto cancelled = populate_surface_db(*db, boards, cfg, &hooks);
+  ASSERT_FALSE(cancelled.has_value()) << "a cancelled populate must not report success";
+  EXPECT_EQ(cancelled.error().code(), ErrorCode::Cancelled);
+
+  EXPECT_EQ(fits_started.load(std::memory_order_relaxed), 0u)
+      << "the queued fits still ran: the stop reaches the writer but not the fan-out";
+  EXPECT_EQ(tasks_retired.load(std::memory_order_relaxed), boards.size())
+      << "the bounded fit queue did not drain";
+  EXPECT_TRUE(written.empty())
+      << "a date whose boards never reached their fit was committed anyway — a resume under "
+         "skip_existing would skip cells that were never attempted";
+
+  // POSITIVE CONTROL for the zero above: same database, same fixture, same hooks,
+  // no stop. Without it a probe that never fires would make this test vacuous.
+  stop.store(false, std::memory_order_relaxed);
+  auto resumed = populate_surface_db(*db, boards, cfg, &hooks);
+  ASSERT_TRUE(resumed.has_value()) << (resumed ? "" : resumed.error().to_string());
+  EXPECT_EQ(fits_started.load(std::memory_order_relaxed), boards.size())
+      << "the fit probe never fired at all, so the zero asserted above proves nothing";
+  EXPECT_EQ(written.size(), 2u) << "the resumed run did not write both dates";
+}
+
 // GATE, determinism half. A live-but-never-set token must leave the populate
 // result identical to one built with no token at all.
 TEST(SurfaceDbPopulateCancellation, AnUntriggeredTokenChangesNothing) {

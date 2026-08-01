@@ -207,7 +207,12 @@ process's streams, and be stoppable.
   a prefix of the dates**, because each date is committed atomically with a
   generation-bumped manifest — stop a long backfill and re-run to resume;
   `dispersion_run_projected_var` writes its artifacts only after the work it
-  cancels, so the run dir is untouched.
+  cancels, so the run dir is untouched. The two fan-out entries (`build_corpus`,
+  `populate_surface_db`) additionally poll at the **top of each fit task**, so a
+  stop drains the queued fits instead of running them to completion — the cancel
+  shortens the run rather than only declining to publish its index. A fit already
+  **in flight** is never abandoned: the call returns once the boards already
+  running finish.
 
 ### Packaging, versioning and ABI
 

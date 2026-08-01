@@ -146,9 +146,15 @@ struct SurfaceDbPopulateConfig {
   // mode the rewritten partition contains successful incoming fits only, so a
   // failed/disabled/absent existing cell may be removed.
   bool destructive_rewrite{false};
-  // Cooperative cancellation, polled at the TOP of each DATE in the drain loop,
-  // before that date's partition write (plan item 5.5). Default-constructed =>
-  // never cancels.
+  // Cooperative cancellation (plan item 5.5). Default-constructed => never
+  // cancels. Polled in TWO places:
+  //   * at the TOP OF EACH QUEUED FIT TASK — the run's dominant cost — so a stop
+  //     drains the fit queue at one relaxed load per board instead of running
+  //     every already-queued fit to completion;
+  //   * in the DRAIN LOOP, at the top of each date and again after that date's
+  //     fits have been waited on, both before its partition write. The second of
+  //     those is what stops a date whose boards skipped their fit from being
+  //     committed with cells that were never attempted.
   //
   // This is the SAFEST of the four cancellable entries, and for a structural
   // reason: `SurfaceDb::write_partition` atomically commits a date's archive file
@@ -158,9 +164,12 @@ struct SurfaceDbPopulateConfig {
   // requested dates — not a damaged one — and a re-run resumes from it under the
   // ordinary `skip_existing` / carry-over path with no special recovery.
   //
-  // The stop does not abandon in-flight fit workers: it breaks the drain loop by
-  // the same route the scheduler-incomplete path already uses, so the fit-runner
-  // jthread is joined before `populate_surface_db` returns `ErrorCode::Cancelled`.
+  // The stop does not abandon in-flight fit workers — a board already inside its
+  // fit runs to the end of that fit — and the drain loop leaves by the same route
+  // the scheduler-incomplete path already uses, so the fit-runner jthread is
+  // joined before `populate_surface_db` returns `ErrorCode::Cancelled`. What the
+  // stop does reach is every board still QUEUED behind those, which is what keeps
+  // the return prompt and keeps peak RSS at O(dates in flight).
   //
   // The referenced flag must outlive the populate call.
   CancelToken cancel{};
