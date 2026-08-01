@@ -179,6 +179,29 @@ def test_report_is_self_contained(tmp_path):
     assert "<title>T &amp; &lt;b&gt;</title>" in html
 
 
+def test_every_masthead_field_is_a_text_channel(tmp_path):
+    """`title`, `eyebrow` and `standfirst` are escaped; only `colophon` is raw.
+
+    `standfirst` was the odd one out — the single masthead field interpolated
+    without `esc`. That was invisible while the two in-repo renderers hard-coded
+    their own prose, and became a live injection the moment `build_report` let a
+    caller supply one. `colophon` stays raw BY DESIGN (its lines carry `<b>` tags
+    and each renderer escapes the run-supplied values it interpolates), so it is
+    pinned here too — the asymmetry is deliberate and should fail loudly if
+    someone "fixes" it.
+    """
+    report = Report(
+        title="t", eyebrow="<i>e</i>", standfirst="<script>alert(1)</script> & more",
+        meta=(("k", "<v>"),), colophon=("<b>Run</b> x",),
+    )
+    html = report.render()
+    assert "<i>e</i>" not in html and "&lt;i&gt;e&lt;/i&gt;" in html
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt; &amp; more" in html
+    assert "<li><b>k</b> &lt;v&gt;</li>" in html
+    assert "<b>Run</b> x" in html   # the raw channel stays raw
+
+
 # ── TSV round-trip ──────────────────────────────────────────────────────────
 
 def test_ragged_result_raises_instead_of_crashing(tmp_path):

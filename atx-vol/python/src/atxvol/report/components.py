@@ -361,7 +361,21 @@ document.querySelectorAll('svg[data-chart]').forEach(function(svg){
 
 @dataclass
 class Report:
-    """The document. Add components in order, then `render()` or `write()`."""
+    """The document. Add components in order, then `render()` or `write()`.
+
+    ``title``, ``eyebrow``, ``standfirst`` and ``meta`` are TEXT channels — they
+    are escaped on the way into the document. ``colophon`` is the one RAW-markup
+    channel (its lines are joined verbatim), which is why every value a caller
+    reads out of a run artifact has to be ``esc()``'d before it goes in there.
+
+    ``standfirst`` used to be raw too, silently: it was the only masthead field
+    interpolated without ``esc``. That was invisible while the two in-repo
+    renderers hard-coded their own prose, and became a live injection the moment
+    a caller could supply it (the SP100 driver's masthead). Escaping it here
+    rather than at each call site means a future caller cannot reintroduce the
+    hole by forgetting; the cost was one pre-escaped ``&amp;`` in
+    ``report/parity.py``, now written as a plain ``&``.
+    """
 
     title: str
     eyebrow: str = ""
@@ -377,7 +391,7 @@ class Report:
     def render(self) -> str:
         ctx = _Ctx()
         eyebrow = f'<p class="eyebrow">{esc(self.eyebrow)}</p>' if self.eyebrow else ""
-        stand = f'<p class="standfirst">{self.standfirst}</p>' if self.standfirst else ""
+        stand = f'<p class="standfirst">{esc(self.standfirst)}</p>' if self.standfirst else ""
         meta = ""
         if self.meta:
             items = "".join(f"<li><b>{esc(k)}</b> {esc(v)}</li>" for k, v in self.meta)

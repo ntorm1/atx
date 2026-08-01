@@ -54,8 +54,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import datetime
 import hashlib
-import math
 import os
 import sys
 from typing import Iterable, Sequence
@@ -132,9 +132,73 @@ REPORT_NAME = "report.html"
 
 EXIT_OK, EXIT_ENGINE, EXIT_USAGE = 0, 1, 2
 
+# ── The report's masthead ───────────────────────────────────────────────────
+#
+# `atxvol.report.dispersion` was written for the SPY listed-options proxy and
+# still DEFAULTS to that masthead, which for this run would be false in three of
+# its four clauses (straddles, a listed monthly expiry, and a roll — against this
+# run's strangles, synthetic snapped expiry and hold-to-expiry), and would
+# contradict the byline two lines below it. That renderer's entire design rule is
+# that a reader must never meet a figure without the assumptions that produced
+# it; a `<title>` is the one line a circulated HTML file is guaranteed to be read
+# by. So the driver supplies its own, and `build_report` escapes all three.
+REPORT_TITLE = "SP100 Projection Strangles vs SPY"
+REPORT_EYEBROW = "atx-vol · surface replay · projection-priced dispersion strangles"
+
 
 class UsageError(Exception):
     """A caller mistake — bad flags, an unreadable or malformed universe."""
+
+
+def _check_iso_date(flag: str, value: str) -> None:
+    """`--from 2026-1-6` is a typo, not an engine refusal.
+
+    Without this the value falls through to ``Clock::between``, whose comparison
+    is LEXICOGRAPHIC — so a malformed date is reported as
+    ``date_lo 'not-a-date' > date_hi '2026-01-14'``, an exit-1 engine error whose
+    message describes an ordering problem rather than the actual mistake.
+    """
+    # The EXTENDED form specifically, not everything `fromisoformat` accepts: on
+    # 3.11+ that also parses the basic `20260106` and ISO week dates, which are
+    # real dates but do not compare against a hyphenated partition key.
+    extended = len(value) == 10 and value[4] == "-" and value[7] == "-"
+    try:
+        if not extended:
+            raise ValueError(value)
+        datetime.date.fromisoformat(value)
+    except ValueError:
+        raise UsageError(
+            f"{flag} {value!r}: not an ISO date. Expected YYYY-MM-DD, zero-padded "
+            "(the partition keys this is matched against are hyphenated ISO dates, "
+            "and the match is a STRING comparison — so an unpadded or basic-format "
+            "date silently orders wrong rather than failing to parse)."
+        ) from None
+
+
+def report_standfirst(cfg: av.DispersionStrangleConfig, n_names: int) -> str:
+    """One paragraph describing THIS run, BUILT FROM the config that ran it.
+
+    Derived rather than written out so it cannot become a second prose constant
+    that drifts from the run the way the renderer's default did — change a knob
+    and the sentence changes with it.
+    """
+    hedge = ("delta-hedged daily at the close"
+             if cfg.hedge.kind == av.HedgeSpec.Kind.DELTA_TO_ZERO
+             and cfg.hedge.cadence == av.HedgeSpec.Cadence.DAILY
+             else f"hedged {cfg.hedge.kind.name.lower()} / {cfg.hedge.cadence.name.lower()}")
+    holding = ("held to expiry, never rolled" if cfg.hold_to_expiry
+               else f"closed {_g(cfg.close_dte_days)} days from expiry")
+    expiry = f"a synthetic {_g(cfg.tenor_days)}-day tenor"
+    if cfg.snap_expiry_to_sessions:
+        expiry += " snapped onto the run's own session grid"
+    return (
+        f"Long {n_names} single-name {_g(cfg.target_abs_delta * 100.0)}-delta strangles "
+        f"against a short {cfg.index_symbol} strangle, sized vega-flat at entry on served "
+        f"American vegas to a ${_g(cfg.theta_per_name_daily)}/day theta budget per name. A "
+        f"fresh clip is opened every session, {hedge}, and {holding}; each cohort expires on "
+        f"{expiry}. Prices and Greeks are projected from cached atx-vol American fitted "
+        "surfaces — no listed quote is read and no re-fit occurs inside the backtest."
+    )
 
 
 # ── Universe ────────────────────────────────────────────────────────────────
@@ -208,42 +272,36 @@ def universe_digest(names: Sequence[str]) -> str:
 
 # ── Session grid ────────────────────────────────────────────────────────────
 
-def session_timestamps(db, clock, probe_symbols: Sequence[str],
-                       rate_at_T: float) -> tuple[list[int], float]:
+def _probe_surface(db, date: str, probe_symbols: Sequence[str]):
+    """The first of `probe_symbols` that this partition actually carries.
+
+    ``MarketSnapshot`` requires every surface in a partition to AGREE on
+    ``now_ts_ns`` and rejects the date otherwise, so any one of them answers the
+    session-instant question — which is why a session missing the index is still
+    readable through a constituent.
+    """
+    for symbol in probe_symbols:
+        try:
+            return db.load_surface(date, symbol)
+        except av.AtxError:
+            continue
+    raise UsageError(
+        f"partition {date}: none of the universe's symbols is in it, so its "
+        "session timestamp cannot be read. The db and the universe do not "
+        "describe the same corpus."
+    )
+
+
+def session_timestamps(db, clock, probe_symbols: Sequence[str]) -> list[int]:
     """The window's snapshot instants, ascending — see the module note (2).
 
-    Probed symbol by symbol so a session where the index is absent still yields
-    its timestamp: ``MarketSnapshot`` requires every surface in a partition to
-    agree on ``now_ts_ns``, so ANY surface in the partition answers the question.
-
-    The first probe that succeeds also yields the corpus's discount rate at the
-    run's tenor. That is a REPORTING value, not an engine input — the engine
-    reads rates off the surfaces themselves — but the renderer's colophon falls
-    back to the SPY run's hard-coded 0.043 when the metadata omits it, and
-    printing another run's rate as this one's is exactly the class of thing the
-    regime banner exists to prevent.
+    One entry per ref of the clock HANDED IN, so the grid is the run's own
+    window; `sorted(set(...))` because `resolve_spec` hard-rejects an unsorted
+    grid and the snap's `upper_bound` would otherwise return a wrong anchor as a
+    success.
     """
-    stamps: list[int] = []
-    rate = float("nan")
-    for ref in clock.refs:
-        stamp = None
-        for symbol in probe_symbols:
-            try:
-                surface = db.load_surface(ref.date, symbol)
-            except av.AtxError:
-                continue
-            stamp = int(surface.pricing.now_ts_ns)
-            if math.isnan(rate):
-                rate = float(surface.rate_at(rate_at_T))
-            break
-        if stamp is None:
-            raise UsageError(
-                f"partition {ref.date}: none of the universe's symbols is in it, so "
-                "its session timestamp cannot be read. The db and the universe do "
-                "not describe the same corpus."
-            )
-        stamps.append(stamp)
-
+    stamps = [int(_probe_surface(db, ref.date, probe_symbols).pricing.now_ts_ns)
+              for ref in clock.refs]
     ordered = sorted(set(stamps))
     if ordered != stamps:
         # Not fatal — resolution only requires ascending — but a corpus whose
@@ -254,7 +312,21 @@ def session_timestamps(db, clock, probe_symbols: Sequence[str],
             "order (or repeat); the snap grid is the sorted, de-duplicated set.",
             file=sys.stderr,
         )
-    return ordered, rate
+    return ordered
+
+
+def corpus_rate(db, clock, probe_symbols: Sequence[str], at_T: float) -> float:
+    """The corpus's own discount rate at the run's tenor — a REPORTING value.
+
+    The engine reads rates off the surfaces itself and never consults this. It
+    exists because the renderer's colophon falls back to the SPY run's
+    hard-coded 0.043 when the metadata omits the key, and printing another run's
+    rate as this one's is the class of thing the regime banner exists to prevent.
+    Kept out of `session_timestamps` (whose name promises one thing) and cheap:
+    it reads the FIRST session only, off the partition cache that function just
+    warmed.
+    """
+    return float(_probe_surface(db, clock.refs[0].date, probe_symbols).rate_at(at_T))
 
 
 # ── The run ─────────────────────────────────────────────────────────────────
@@ -293,6 +365,38 @@ def run_config() -> av.RunConfig:
     return cfg
 
 
+FRICTION_FIELDS = ("half_spread_bps", "vol_tick", "impact_fraction",
+                   "per_contract_cost", "hedge_slippage_bps")
+
+
+def regime_of(frictions: av.FrictionModel) -> tuple[str, str]:
+    """`(friction_regime, friction_detail)` DERIVED from the model that priced.
+
+    This must not be a constant. The regime drives the report's colour-coded
+    banner, the caption on every headline tile and the P&L chart title — it is
+    the repo's designated defence against publishing a number without the
+    execution assumptions that produced it. A hand-written "frictionless" is
+    only as good as the literal: it cannot disagree with the code even when the
+    code changes, so the defence would silently stop defending the day someone
+    configured a spread.
+
+    A NON-zero model is refused rather than guessed at. This driver has no flag
+    for frictions and therefore no vocabulary for describing them; mapping an
+    arbitrary model onto `frictioned` / `frictioned+impact` would be inventing
+    the very label the banner exists to make trustworthy.
+    """
+    nonzero = {name: getattr(frictions, name) for name in FRICTION_FIELDS
+               if float(getattr(frictions, name)) != 0.0}
+    if nonzero or frictions.spread_kind != av.FrictionModel.SpreadKind.NONE:
+        raise UsageError(
+            "the run's FrictionModel is not zero "
+            f"(spread_kind={frictions.spread_kind.name}, {nonzero}), but this driver "
+            f"can only label a {FRICTIONLESS} run. Extend it with the flags and the "
+            "regime mapping for the frictions you want before reporting them."
+        )
+    return FRICTIONLESS, FRICTION_DETAIL
+
+
 # ── Artifacts ───────────────────────────────────────────────────────────────
 
 def _g(value: float) -> str:
@@ -320,7 +424,8 @@ def _mean_abs_net_vega_at_entry(result) -> float:
     return sum(live) / len(live) if live else 0.0
 
 
-def track_meta(args, names, dates, cfg, sheet, result, rate: float) -> dict[str, str]:
+def track_meta(args, names, dates, cfg, run_cfg, sheet, result,
+               rate: float) -> dict[str, str]:
     """The `# key=value` head of `track.tsv`.
 
     Everything needed to reproduce the run is in it — the regime FIRST (the
@@ -330,16 +435,28 @@ def track_meta(args, names, dates, cfg, sheet, result, rate: float) -> dict[str,
     generation timestamp would break that for no benefit the run archive does
     not already provide.
 
+    EVERY VALUE IS AN ECHO OF AN OBJECT THAT RAN — `cfg` for the strategy knobs,
+    `run_cfg` for the run-level ones, `result`/`sheet` for the outcomes. None of
+    them is a literal restating what the code above is supposed to have done. A
+    hand-written constant cannot disagree with the code even when the code
+    changes, so the header — whose whole stated purpose is that the run can be
+    reproduced from it — would keep asserting the old truth and any test reading
+    it would keep passing. That is not hypothetical: `unpriced_policy`,
+    `record_every_n` and `friction_regime` WERE such literals, and mutating the
+    run to `UnpricedLotPolicy.ERROR` left the header still saying
+    `EXCLUDE_AND_REPORT` with the whole suite green.
+
     The keys `date_lo`/`date_hi`/`delta_band`/`min_names`/`target_dte_days`/
-    `roll_dte_days`/`gross_index_vega`/`opra_root` are ALSO read back by
-    `atxvol.report.dispersion._render`, which otherwise falls back to the SPY
-    run's constants. They are supplied so the report's masthead describes THIS
-    run rather than that one.
+    `roll_dte_days`/`gross_index_vega`/`opra_root`/`flat_rate` are ALSO read back
+    by `atxvol.report.dispersion._render`, which otherwise falls back to the SPY
+    run's constants. They are supplied so the report's byline describes THIS run
+    rather than that one.
     """
     hedge = cfg.hedge
+    regime, regime_detail = regime_of(run_cfg.frictions)
     return {
-        "friction_regime": FRICTIONLESS,
-        "friction_detail": FRICTION_DETAIL,
+        "friction_regime": regime,
+        "friction_detail": regime_detail,
         # `build_report` takes the run's label from `strategy`.
         "strategy": args.label,
         "label": args.label,
@@ -379,12 +496,13 @@ def track_meta(args, names, dates, cfg, sheet, result, rate: float) -> dict[str,
         "max_dte_days": _g(cfg.tenor_days),
         "roll_dte_days": "0",
         # The corpus's own rate at the run's tenor, so the colophon does not fall
-        # back to the SPY run's constant. Sizing here is a per-name daily theta
-        # budget, not a weight-coverage rule, so that field has no value to give.
+        # back to the SPY run's constant. `min_weight_coverage` is deliberately
+        # ABSENT: sizing here is a per-name daily theta budget, not a
+        # weight-coverage rule, and the renderer now omits the clause rather than
+        # printing an unfilled "≥ ?".
         "flat_rate": _g(rate),
-        "min_weight_coverage": "n/a",
-        "unpriced_policy": av.UnpricedLotPolicy.EXCLUDE_AND_REPORT.name,
-        "record_every_n": "1",
+        "unpriced_policy": run_cfg.unpriced.name,
+        "record_every_n": str(run_cfg.record_every_n),
         "n_unpriced_lots_max": _g(max(result.n_unpriced_lots, default=0.0)),
         "n_unpriced_greeks_max": _g(max(result.n_unpriced_greeks, default=0.0)),
         "final_nav": _g17(result.nav[-1]) if len(result) else "0",
@@ -457,10 +575,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(exit_request.code or EXIT_OK)
 
     if _CONTAMINATION:
+        # EXIT_USAGE, not EXIT_ENGINE: a wrong-checkout resolution is an
+        # ENVIRONMENT fault, and it is exactly the failure an operator most needs
+        # to tell apart from "the engine said no". Nothing was run, so reporting
+        # it in the engine's bucket would invite reading it as a verdict.
         print(f"error: {_CONTAMINATION}", file=sys.stderr)
-        return EXIT_ENGINE
+        return EXIT_USAGE
 
     try:
+        for flag, value in (("--from", args.date_from), ("--to", args.date_to)):
+            _check_iso_date(flag, value)
         names = read_universe(args.universe, args.index, _split_symbols(args.exclude))
     except UsageError as bad:
         print(f"error: {bad}", file=sys.stderr)
@@ -470,23 +594,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"universe: {len(names)} name(s) against {index}")
 
     try:
-        os.makedirs(args.out, exist_ok=True)
-
         db = av.SurfaceDb.open(args.db)
         clock = av.Clock.from_surface_db(db).between(args.date_from, args.date_to)
-        sessions, rate = session_timestamps(db, clock, [index, *names],
-                                            args.tenor_days / DAYS_PER_YEAR)
+        sessions = session_timestamps(db, clock, [index, *names])
+        rate = corpus_rate(db, clock, [index, *names], args.tenor_days / DAYS_PER_YEAR)
 
         cfg = strangle_config(names, args)
         spec = av.make_dispersion_strangle_spec(cfg)
         spec.session_ts = sessions
         strategy = av.DeclarativeStrategy(spec)
 
-        result = av.run_backtest(clock, strategy, run_config())
+        run_cfg = run_config()
+        result = av.run_backtest(clock, strategy, run_cfg)
         sheet = av.tearsheet(result)
         dates = list(result.date)
+        meta = track_meta(args, names, dates, cfg, run_cfg, sheet, result, rate)
 
-        meta = track_meta(args, names, dates, cfg, sheet, result, rate)
+        # Created only once the run has succeeded, so a failed invocation does not
+        # leave an empty output directory behind to be mistaken for a stale run.
+        os.makedirs(args.out, exist_ok=True)
         track_path = os.path.join(args.out, TRACK_NAME)
         av.write_backtest_pnl_tsv(result, meta, track_path)
 
@@ -494,7 +620,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         n_metrics = write_tearsheet_tsv(tearsheet_path, sheet, result, names, dates)
 
         report_path = os.path.join(args.out, REPORT_NAME)
-        report_dispersion.build_report(result, sheet, meta, report_path)
+        report_dispersion.build_report(
+            result, sheet, meta, report_path,
+            title=REPORT_TITLE, eyebrow=REPORT_EYEBROW,
+            standfirst=report_standfirst(cfg, len(names)),
+        )
     except UsageError as bad:
         print(f"error: {bad}", file=sys.stderr)
         return EXIT_USAGE
@@ -506,7 +636,7 @@ def main(argv: Sequence[str] | None = None) -> int:
           f"{len(meta)} meta keys)")
     print(f"wrote {TEARSHEET_NAME}  {tearsheet_path}  ({n_metrics} metrics)")
     print(f"wrote {REPORT_NAME}    {report_path}  "
-          f"({os.path.getsize(report_path)} bytes, regime {FRICTIONLESS})")
+          f"({os.path.getsize(report_path)} bytes, regime {meta['friction_regime']})")
 
     final_nav = float(result.nav[-1]) if len(result) else 0.0
     print(f"  sessions              {len(dates)}  "
