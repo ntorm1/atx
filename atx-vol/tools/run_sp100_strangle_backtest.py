@@ -511,7 +511,8 @@ def track_meta(args, names, dates, cfg, run_cfg, sheet, result,
     }
 
 
-def write_tearsheet_tsv(path: str, sheet, result, names, dates, timing) -> int:
+def write_tearsheet_tsv(path: str, sheet, result, names, dates, timing,
+                        ledger_delta) -> int:
     """`key<TAB>value`, the TearSheet fold first, then the run-level facts.
 
     ``final_nav`` is NOT a TearSheet field — the fold reports `total_return`,
@@ -535,6 +536,7 @@ def write_tearsheet_tsv(path: str, sheet, result, names, dates, timing) -> int:
         ("backtest_wall_s", _g17(timing["wall_s"])),
         ("backtest_cpu_s", _g17(timing["cpu_s"])),
     ]
+    rows += [(key, str(int(value))) for key, value in ledger_delta.items()]
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         for key, value in rows:
             handle.write(f"{key}\t{value}\n")
@@ -615,12 +617,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         # WHOLE process across all threads — run_backtest releases the GIL and
         # fans out over the pricing executor in-process, so the delta captures
         # the engine's parallel work (cpu/wall ~ effective core count).
+        av.reset_solve_ledger()
         wall_0 = time.perf_counter()
         cpu_0 = time.process_time()
         result = av.run_backtest(clock, strategy, run_cfg)
+        wall_1 = time.perf_counter()
+        cpu_1 = time.process_time()
+        ledger_delta = av.solve_ledger()
         timing = {
-            "wall_s": time.perf_counter() - wall_0,
-            "cpu_s": time.process_time() - cpu_0,
+            "wall_s": wall_1 - wall_0,
+            "cpu_s": cpu_1 - cpu_0,
         }
         sheet = av.tearsheet(result)
         dates = list(result.date)
@@ -634,7 +640,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         tearsheet_path = os.path.join(args.out, TEARSHEET_NAME)
         n_metrics = write_tearsheet_tsv(tearsheet_path, sheet, result, names, dates,
-                                        timing)
+                                        timing, ledger_delta)
 
         report_path = os.path.join(args.out, REPORT_NAME)
         report_dispersion.build_report(
@@ -668,6 +674,9 @@ def main(argv: Sequence[str] | None = None) -> int:
           f"{max(result.n_unpriced_greeks, default=0.0):.0f}")
     print(f"  backtest time         {timing['wall_s']:,.2f} s wall / "
           f"{timing['cpu_s']:,.2f} s cpu")
+    print("  solve ledger")
+    for key, value in ledger_delta.items():
+        print(f"    {key:<30} {value:,}")
     return EXIT_OK
 
 

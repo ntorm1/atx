@@ -19,6 +19,7 @@
 
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp"
+#include "atx/vol/counters.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/query_pricing.hpp"
 #include "atx/vol/strategy.hpp"
@@ -49,6 +50,14 @@ py::array_t<std::int64_t> to_numpy(const std::vector<std::int64_t> &v) {
 
 std::vector<double> from_sequence(const py::object &value) {
   return py::cast<std::vector<double>>(value);
+}
+
+py::dict solve_ledger_dict(const counters::ledger::Counts &counts) {
+  py::dict out;
+  for (unsigned i = 0; i < counters::ledger::kCount; ++i) {
+    out[py::str(counters::ledger::kNames[i])] = py::int_(counts.v[i]);
+  }
+  return out;
 }
 
 // Bind one `std::vector<double>` column as a NumPy property. The setter exists
@@ -398,4 +407,9 @@ void bind_backtest(py::module_ &m) {
       },
       py::arg("clock"), py::arg("strategy"), py::arg("config") = RunConfig{},
       "Run `strategy` over `clock`, returning the per-step BacktestResult series.");
+
+  m.def("solve_ledger", [] { return solve_ledger_dict(counters::ledger::snapshot()); },
+        "Return a merged point-in-time snapshot of the always-on solve counters.");
+  m.def("reset_solve_ledger", &counters::ledger::reset,
+        "Reset every solve counter; no pricing producer may run concurrently.");
 }

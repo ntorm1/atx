@@ -86,6 +86,17 @@ WINDOW_LO, WINDOW_HI = "2026-01-06", "2026-01-14"
 WINDOW_DATES = DATES[1:]
 LABEL = "sp100-strangle-fixture"
 
+SOLVE_LEDGER_KEYS = (
+    "sl_al_boundary_solves",
+    "sl_al_premium_evals",
+    "sl_greeks_fd",
+    "sl_greeks_analytic",
+    "sl_greeks_adjoint",
+    "sl_iv_newton_iters",
+    "sl_duplicate_mark_solves",
+    "sl_cache_carry_drift",
+)
+
 
 def make_surface(spot: float, now_ts: int, vol_bump: float, uid: int) -> av.PricedSurface:
     curves = av.CurveSurface()
@@ -210,7 +221,26 @@ def meta_header(path: Path) -> dict[str, str]:
     return header
 
 
+def tearsheet_pairs(path: Path) -> dict[str, str]:
+    pairs = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, tab, value = line.partition("\t")
+        assert tab, line
+        pairs[key] = value
+    return pairs
+
+
 # ── The contract ────────────────────────────────────────────────────────────
+
+def test_solve_ledger_snapshot_and_reset_contract():
+    snapshot = av.solve_ledger()
+    assert tuple(snapshot) == SOLVE_LEDGER_KEYS
+    assert all(isinstance(value, int) and not isinstance(value, bool)
+               for value in snapshot.values())
+
+    av.reset_solve_ledger()
+    assert av.solve_ledger() == {key: 0 for key in SOLVE_LEDGER_KEYS}
+
 
 def test_run_exits_zero_and_writes_three_artifacts(completed):
     code, out = completed
@@ -272,11 +302,7 @@ def test_the_track_body_is_the_windowed_session_set(completed):
 
 def test_tearsheet_tsv_is_key_value_and_carries_final_nav(completed):
     _, out = completed
-    pairs = {}
-    for line in (out / "tearsheet.tsv").read_text(encoding="utf-8").splitlines():
-        key, tab, value = line.partition("\t")
-        assert tab, line
-        pairs[key] = value
+    pairs = tearsheet_pairs(out / "tearsheet.tsv")
     assert "final_nav" in pairs
     assert math.isfinite(float(pairs["final_nav"]))
     # The library's own fold, not a re-derivation here.
@@ -287,6 +313,9 @@ def test_tearsheet_tsv_is_key_value_and_carries_final_nav(completed):
     # at ~15.6 ms), so only wall is asserted strictly positive.
     assert float(pairs["backtest_wall_s"]) > 0.0
     assert float(pairs["backtest_cpu_s"]) >= 0.0
+    assert int(pairs["sl_al_boundary_solves"]) > 0
+    for key in SOLVE_LEDGER_KEYS:
+        assert int(pairs[key]) >= 0
 
 
 def test_report_html_is_rendered_and_names_the_run(completed):
@@ -362,6 +391,11 @@ def test_two_identical_invocations_write_a_byte_identical_track(corpus, tmp_path
     # Bit-identity, not tolerance: the engine's reproducibility contract reaches
     # the artifact, and nothing wall-clock-derived leaks into the meta header.
     assert (first / "track.tsv").read_bytes() == (second / "track.tsv").read_bytes()
+    first_ledger = tearsheet_pairs(first / "tearsheet.tsv")
+    second_ledger = tearsheet_pairs(second / "tearsheet.tsv")
+    assert {key: first_ledger[key] for key in SOLVE_LEDGER_KEYS} == {
+        key: second_ledger[key] for key in SOLVE_LEDGER_KEYS
+    }
 
 
 def track_columns(out: Path) -> dict[str, list[float]]:
@@ -434,8 +468,10 @@ def test_headline_stats_and_one_line_per_artifact_are_printed(corpus, tmp_path, 
     for artifact in ("track.tsv", "tearsheet.tsv", "report.html"):
         assert artifact in text, artifact
     for stat in ("sessions", "names", "final NAV", "total PnL", "max drawdown",
-                 "mean |net vega|", "unpriced"):
+                 "mean |net vega|", "unpriced", "solve ledger"):
         assert stat in text, stat
+    for key in SOLVE_LEDGER_KEYS:
+        assert key in text
 
 
 def test_exclusion_is_case_insensitive_and_recorded_canonically(corpus, tmp_path):
