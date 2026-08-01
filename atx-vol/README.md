@@ -10,7 +10,11 @@ The upstream `ats-vol` (~65k LOC of C across ~90 translation units) has been
 ported in full to idiomatic, tested C++20, and then extended with a
 Vola-Dynamics American-equity parity layer (see below), a composable
 `VolaSession` handle, and a cached high-performance pricing hot path. It passes
-**584 GoogleTest cases across 118 suites** under `/W4 /permissive- /WX` (clang-cl).
+**2,618 GoogleTest cases across 377 suites** under `/W4 /permissive- /WX`
+(clang-cl). That number is *measured*, not maintained — re-derive it with
+`build/bin/atx-vol-tests.exe --gtest_list_tests` rather than trusting the prose,
+which is how a count in a README stops rotting silently (see *Build & test* for
+the ctest-side number and what the difference is).
 The C library's arena / SoA-slab / thread-local / hand-written-AVX2 machinery is
 re-expressed with `std::vector` + Rule of Zero + `atx::core` (error vocabulary,
 linear algebra, hashing) rather than transliterated; the numerics are ported
@@ -378,8 +382,20 @@ cmake --build build --target atx-vol-tests
 ctest --test-dir build -R "Black76|Greeks|ImpliedVol|Surface|Curve|Universe|Arb|Essvi|Svi|C8|CStar|American|Correction|Portfolio|Bulk|Batch|Data|Profile|Cadence|Deriv|Realized|VolProjection|CurveProjection|SurfaceArchive"
 ```
 
-Or run the full suite directly: `build/bin/atx-vol-tests.exe` (556 tests). The
-Vola-parity harness alone: `atx-vol-tests.exe --gtest_filter='SurfaceParity.*:VolaSession.*:OpraPanel.*:DeAmer.*:Parity.*:AmericanIv.*:HybridDiv.*:S3.*:FitMetrics.*:Panel.*'`.
+Or run the full suite directly: `build/bin/atx-vol-tests.exe`. Two counts are
+published here, each with the command that produces it, because they are not the
+same population and a single hand-written number would hide that:
+
+| Count | Command | What it counts |
+|---|---|---|
+| **2,618** cases / **377** suites | `build/bin/atx-vol-tests.exe --gtest_list_tests` | GoogleTest cases in the atx-vol test binary |
+| **2,625** registered tests | `ctest --test-dir build -N -L atx_vol` | the 2,618 above, discovered by `gtest_discover_tests`, **plus 7** lanes that are not GoogleTest cases: six Python driver/report tests and the `atx-vol-pricing-forcescalar` scalar-ISA leg (`tests/CMakeLists.txt`) |
+
+Both were measured at the commit that wrote this section, against `cmake --preset
+dev`. Re-run the commands rather than trusting the digits: nothing regenerates
+them, so a stale number here is a documentation defect, not a test failure.
+
+The Vola-parity harness alone: `atx-vol-tests.exe --gtest_filter='SurfaceParity.*:VolaSession.*:OpraPanel.*:DeAmer.*:Parity.*:AmericanIv.*:HybridDiv.*:S3.*:FitMetrics.*:Panel.*'`.
 
 Real-data OPRA parity + throughput benchmark (opt-in examples):
 
