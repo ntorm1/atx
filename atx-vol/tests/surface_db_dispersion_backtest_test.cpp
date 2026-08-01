@@ -94,19 +94,48 @@
 //  20. WindowSubsetMatchesFullRunPrefix   — a sub-window agrees with the full run
 //                                          bit-for-bit on the shared prefix.
 //
+// Task 6 is the performance-evidence layer: the two levers this route deliberately
+// leans on are the engine's PRIVATE (Sealed-mmap) snapshot cache and its snapshot
+// look-ahead, and neither is visible in the run's output — only in how many times
+// an archive is opened. It also adds the config reader's `unpriced` key, because
+// the real sp100 window CANNOT run under the engine's fail-closed default and an
+// operator's only other options were to shorten the window or edit code (tests 4-7
+// cover the key; test 22 is what discovered the need).
+//
+//  21. PrivateCachePathIsUsed            — one archive OPEN per session at every
+//                                          look-ahead depth (no reloads), the
+//                                          zeroed `stats.cache` that is the
+//                                          private path's signature, and a
+//                                          shared-cache CONTROL that shows what
+//                                          installing one would cost.
+//  22. RealSp100Baseline                 — env-gated (ATX_SP100_SURFACE_DB), the
+//                                          production sp100 surface db over the
+//                                          longest window that corpus can actually
+//                                          replay (it is missing the INDEX on 18 of
+//                                          its 140 sessions — see the test's own
+//                                          note). READ-ONLY, no hard wall-clock
+//                                          assertion (the number goes in the sprint
+//                                          report); SKIPPED unless the operator
+//                                          points it at a db.
+//
 // Fixtures are synthetic eSSVI surfaces written into a fresh SurfaceDb under
 // %TEMP% (make_test_db below), plus config text written to throwaway %TEMP%
-// files (write_temp_file); nothing here reads the real data lake.
+// files (write_temp_file). Only test 22 reads the real data lake, only when its
+// env var is set, and it opens that tree strictly for READING.
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <cstdlib> // std::getenv / _dupenv_s (the env-gated real-db baseline)
 #include <filesystem>
 #include <fstream>
+#include <iostream> // std::cerr (the baseline's numbers go to the report, not an assert)
 #include <memory>
+#include <numeric> // std::accumulate (the baseline's unpriced-lot total)
 #include <optional>
 #include <random>
 #include <string>
@@ -397,6 +426,43 @@ const std::vector<std::string_view> kAbsentCohort = {"MSFT", "NVDA"};
   return {};
 }
 
+// ── Task 6 helpers ──────────────────────────────────────────────────────────
+
+// `name`'s value, or "" when unset/empty. Read with `_dupenv_s` under
+// MSVC/clang-cl: plain `std::getenv` trips /WX (-Wdeprecated-declarations).
+// Same pattern as mag7_dispersion_backtest_test.cpp:200-214.
+[[nodiscard]] std::string env_or_empty(const char *name) {
+#if defined(_MSC_VER)
+  char *raw = nullptr;
+  std::size_t n = 0;
+  if (::_dupenv_s(&raw, &n, name) != 0 || raw == nullptr) {
+    return {};
+  }
+  std::string out(raw);
+  std::free(raw);
+  return out;
+#else
+  const char *raw = std::getenv(name);
+  return raw == nullptr ? std::string{} : std::string(raw);
+#endif
+}
+
+// Bit-exact agreement of the two series every determinism gate in this file
+// compares. `std::bit_cast<std::uint64_t>` — no tolerance, because "close enough
+// across a perf knob" is precisely the regression these gates exist to catch.
+void expect_bit_identical_track(const BacktestResult &a, const BacktestResult &b) {
+  ASSERT_EQ(a.size(), b.size());
+  ASSERT_EQ(a.nav.size(), b.nav.size());
+  ASSERT_EQ(a.pnl_total.size(), b.pnl_total.size());
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(a.nav[i]), std::bit_cast<std::uint64_t>(b.nav[i]))
+        << "nav row " << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(a.pnl_total[i]),
+              std::bit_cast<std::uint64_t>(b.pnl_total[i]))
+        << "pnl_total row " << i;
+  }
+}
+
 } // namespace
 
 TEST(SurfaceDbDispersionBacktest, BetweenSelectsInclusiveWindow) {
@@ -511,6 +577,12 @@ TEST(SurfaceDbDispersionBacktest, ConfigReaderDefaultsAndOverrides) {
   EXPECT_DOUBLE_EQ(cfg->run.frictions.per_contract_cost, defaults.run.frictions.per_contract_cost);
   EXPECT_EQ(cfg->run.price.n_threads, defaults.run.price.n_threads);
   EXPECT_EQ(cfg->run.prefetch_depth, defaults.run.prefetch_depth);
+  // The unpriced-lot policy is the one key whose default is a SAFETY property: a
+  // config that does not name it must still fail closed, so a corpus that loses a
+  // held name mid-run aborts instead of quietly truncating NAV. Pinned against the
+  // engine's own default AND against the literal, so neither can drift alone.
+  EXPECT_EQ(cfg->run.unpriced, defaults.run.unpriced);
+  EXPECT_EQ(cfg->run.unpriced, UnpricedLotPolicy::Error);
   // Fields the reader deliberately does NOT expose stay untouched too.
   EXPECT_EQ(cfg->project_to_calendar_expiry, defaults.project_to_calendar_expiry);
   EXPECT_EQ(cfg->entry, defaults.entry);
@@ -549,7 +621,8 @@ TEST(SurfaceDbDispersionBacktest, ConfigReaderParsesEveryDocumentedKey) {
                                     "half_spread_bps\t12.5\n"
                                     "per_contract_cost\t0.65\n"
                                     "n_threads\t4\n"
-                                    "prefetch_depth\t3\n");
+                                    "prefetch_depth\t3\n"
+                                    "unpriced\texclude_and_report\n");
   const auto cfg = read_dispersion_backtest_config(path);
   ASSERT_TRUE(cfg.has_value()) << (cfg.has_value() ? std::string{} : cfg.error().to_string());
   EXPECT_DOUBLE_EQ(cfg->target_dte_days, 60.0);
@@ -571,6 +644,10 @@ TEST(SurfaceDbDispersionBacktest, ConfigReaderParsesEveryDocumentedKey) {
   EXPECT_DOUBLE_EQ(cfg->run.frictions.per_contract_cost, 0.65);
   EXPECT_EQ(cfg->run.price.n_threads, 4u);
   EXPECT_EQ(cfg->run.prefetch_depth, 3u);
+  // `exclude_and_report` is the non-default token, so this assertion fails if the
+  // key is dropped from the dispatch chain (which would leave the fail-closed
+  // default in place and silently run a DIFFERENT policy than the file names).
+  EXPECT_EQ(cfg->run.unpriced, UnpricedLotPolicy::ExcludeAndReport);
   // A nonzero half-spread is only CHARGED under the PriceBps lane, so authoring
   // one must arm that lane or the knob is a silent no-op (see the header note).
   EXPECT_EQ(cfg->run.frictions.spread_kind, FrictionModel::SpreadKind::PriceBps);
@@ -597,13 +674,17 @@ TEST(SurfaceDbDispersionBacktest, ConfigReaderMapsRemainingEnumTokens) {
   const auto path = write_temp_file("weighting\tequal_vega\n"
                                     "strike_rule\tfixed_moneyness\n"
                                     "hedge_kind\tdelta_to_zero\n"
-                                    "hedge_cadence\tdaily\n");
+                                    "hedge_cadence\tdaily\n"
+                                    "unpriced\terror\n");
   const auto cfg = read_dispersion_backtest_config(path);
   ASSERT_TRUE(cfg.has_value()) << (cfg.has_value() ? std::string{} : cfg.error().to_string());
   EXPECT_EQ(cfg->weighting, WeightingScheme::EqualVega);
   EXPECT_EQ(cfg->strike.rule, StrikeRule::FixedMoneyness);
   EXPECT_EQ(cfg->hedge_kind, HedgeSpec::Kind::DeltaToZero);
   EXPECT_EQ(cfg->hedge_cadence, HedgeSpec::Cadence::Daily);
+  // `error` is also the default, so this row proves the token is ACCEPTED (an
+  // unrecognized one is InvalidArgument, pinned below) rather than that it landed.
+  EXPECT_EQ(cfg->run.unpriced, UnpricedLotPolicy::Error);
 
   const auto theta = write_temp_file("weighting\ttheta_neutral\n");
   const auto cfg_theta = read_dispersion_backtest_config(theta);
@@ -636,6 +717,20 @@ TEST(SurfaceDbDispersionBacktest, ConfigReaderRejectsUnknownKeyAndBadValue) {
   EXPECT_NE(bad_enum.error().message().find("sideways"), std::string::npos)
       << bad_enum.error().message();
 
+  // The unpriced-lot policy gets its OWN rejection case rather than riding on
+  // `side`'s: it is the one key whose default is a safety property, so a token
+  // this reader does not recognize must NEVER fall through to a default — the
+  // operator would get a fail-closed run while their file said the opposite (or,
+  // worse, the reverse). Both the key and the offending token are named.
+  const auto policy_path = write_temp_file("unpriced\texclude\n");
+  const auto bad_policy = read_dispersion_backtest_config(policy_path);
+  ASSERT_FALSE(bad_policy.has_value());
+  EXPECT_EQ(bad_policy.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(bad_policy.error().message().find("unpriced"), std::string::npos)
+      << bad_policy.error().message();
+  EXPECT_NE(bad_policy.error().message().find("exclude"), std::string::npos)
+      << bad_policy.error().message();
+
   // A trailing-garbage number is NOT a partial parse, and a negative count does
   // not wrap into a huge unsigned.
   const auto tail_path = write_temp_file("target_dte_days\t45x\n");
@@ -656,7 +751,8 @@ TEST(SurfaceDbDispersionBacktest, ConfigReaderRejectsUnknownKeyAndBadValue) {
   fs::remove(absent);
   EXPECT_FALSE(read_dispersion_backtest_config(absent).has_value());
 
-  for (const auto &p : {key_path, val_path, enum_path, tail_path, neg_path, shape_path, empty_path})
+  for (const auto &p : {key_path, val_path, enum_path, policy_path, tail_path, neg_path, shape_path,
+                        empty_path})
     fs::remove(p);
 }
 
@@ -961,7 +1057,7 @@ TEST(SurfaceDbDispersionBacktest, EndToEndPropagatesStageErrors) {
 //   absence taking survivors below
 //   `min_names` on the entry step  -> the engine's documented NO-TRADE CONTRACT:
 //                                     no lots are opened, the run continues, and
-//                                     the step is DIAGNOSED (18).
+//                                     the step is DIAGNOSED (17).
 //
 // A uniform "one name missing per date" fixture would exercise none of the three
 // distinctly, which is exactly how two defects survived the previous sprint.
@@ -1294,5 +1390,236 @@ TEST(SurfaceDbDispersionBacktest, WindowSubsetMatchesFullRunPrefix) {
   EXPECT_GT(peak_open_lots(b->result), 0.0);
   EXPECT_NE(b->result.nav.back(), 0.0);
   fs::remove_all(root);
+}
+
+// ── Task 6: the perf levers ─────────────────────────────────────────────────
+
+TEST(SurfaceDbDispersionBacktest, PrivateCachePathIsUsed) {
+  const auto root = test_root("t6_private_cache");
+  auto db = make_test_db(root, kRunDates, kRunSymbols);
+  ASSERT_TRUE(db.has_value()) << (db.has_value() ? std::string{} : db.error().to_string());
+  constexpr std::uint64_t kSessions = 6u; // == kRunDates.size()
+
+  // WHY NOT `stats.cache`. `run_timed` captures `cfg.run.snapshot_cache->stats()`
+  // when a cache was SUPPLIED and a zeroed `SnapshotCacheStats{}` otherwise
+  // (backtest_driver.cpp:22-29,48) — and this route leaves that handle null ON
+  // PURPOSE, because a null handle is exactly what makes the engine build its
+  // PRIVATE cache (backtest.cpp:2315-2322). The private cache is engine-internal:
+  // no handle to it ever reaches the caller, so every counter on `out->stats.cache`
+  // reads zero on this route and `stats.cache.loads == n_steps` is NOT an
+  // available assertion here. It IS available on the shared-cache control below,
+  // which is where this test pins it.
+  //
+  // The observable that DOES see the private cache is `MarketSnapshot::open_count()`
+  // — the process-wide archive-open counter incremented once per archive open
+  // (backtest.cpp:1420-1421), and the same counter the engine's own prefetch-depth
+  // gate asserts against (backtest.cpp:64-66, `Backtest.PrefetchDepthIsBitIdentical
+  // ToSingleStepLookAhead`). ONE OPEN PER SESSION is the entire perf claim: the
+  // private cache is bounded at depth+2 entries (backtest.cpp:67-69) with
+  // INSERTION-ORDER eviction, so a completed look-ahead is never dropped before
+  // the step that consumes it. A reload does not change the economics by one bit,
+  // so nothing but this counter can catch it.
+  SurfaceDbDispersionSpec base = run_spec(root, "2026-01-05", "2026-01-12");
+  ASSERT_EQ(base.config.run.snapshot_cache, nullptr);
+  ASSERT_TRUE(base.config.run.prefetch_snapshots);
+  ASSERT_EQ(base.config.run.prefetch_depth, 1u); // the RunConfig default this route inherits
+
+  const auto run_at_depth = [&](std::size_t depth) -> Result<RunOutcome> {
+    SurfaceDbDispersionSpec spec = base;
+    spec.config.run.prefetch_depth = depth;
+    // Reset immediately before the run: `SurfaceDb::open` / `Clock::from_surface_db`
+    // / `universe_from_surface_db` read the MANIFEST only and open no archive, so
+    // everything counted between here and the read below is the engine's.
+    MarketSnapshot::reset_open_count();
+    Result<RunOutcome> out = run_surface_db_dispersion_backtest(spec);
+    EXPECT_EQ(MarketSnapshot::open_count(), kSessions)
+        << "prefetch_depth=" << depth << ": every partition must open EXACTLY once";
+    return out;
+  };
+
+  const Result<RunOutcome> d1 = run_at_depth(1u);
+  ASSERT_TRUE(d1.has_value()) << (d1.has_value() ? std::string{} : d1.error().to_string());
+  EXPECT_EQ(d1->stats.n_steps, kSessions);
+  EXPECT_EQ(d1->stats.n_steps, static_cast<std::uint64_t>(d1->result.size()));
+  // The private path's SIGNATURE, and the assertion that no shared cache slipped
+  // in: all-zero cache telemetry. (examples/surface_db_dispersion_backtest.cpp
+  // prints these three and labels the zeros as the by-design private-Sealed case.)
+  EXPECT_EQ(d1->stats.cache.loads, 0u);
+  EXPECT_EQ(d1->stats.cache.hits, 0u);
+  EXPECT_EQ(d1->stats.cache.prefetches, 0u);
+  // TEETH: a run that opened six archives and traded nothing would satisfy the
+  // open-count gate just as well.
+  EXPECT_GT(peak_open_lots(d1->result), 0.0);
+
+  // LOOK-AHEAD DEPTH IS A PERF LEVER AND NOTHING ELSE. Deeper look-ahead must
+  // neither reload (the count inside `run_at_depth`) nor move one bit of the
+  // result. 8 exceeds the clock, so `prefetch_window`'s past-the-end clamp
+  // (backtest.cpp:92) is covered too, and 4 is the depth at which the historical
+  // LRU reload defect was first measured.
+  const std::size_t depths[] = {2u, 4u, 8u};
+  for (const std::size_t depth : depths) {
+    SCOPED_TRACE("prefetch_depth=" + std::to_string(depth));
+    const Result<RunOutcome> deep = run_at_depth(depth);
+    ASSERT_TRUE(deep.has_value()) << (deep.has_value() ? std::string{} : deep.error().to_string());
+    expect_bit_identical_track(d1->result, deep->result);
+  }
+
+  // THE CONTROL — and the teeth for the three zeros above. A caller-supplied
+  // cache is the ONE thing that displaces the private one, and doing so is loudly
+  // observable, which is what makes "all zeros" evidence rather than a dead
+  // counter. It also lands the brief's `loads == n_steps` in the only place the
+  // counter is readable: exactly one COLD load per session (never a reload), the
+  // inception load plus one look-ahead per later step, and every later step served
+  // warm off that look-ahead.
+  SurfaceDbDispersionSpec shared = base;
+  shared.config.run.snapshot_cache = std::make_shared<SnapshotCache>();
+  // ...and what installing one COSTS. A caller-supplied cache may outlive the run
+  // and be shared across books, so it is Mutable — the Sealed mmap is gone
+  // (backtest.hpp:332-349, dispersion_surface_db.hpp:151-158). That is the whole
+  // reason this route leaves the field null.
+  EXPECT_EQ(shared.config.run.snapshot_cache->archive_backing(), ArchiveBacking::Mutable);
+  MarketSnapshot::reset_open_count();
+  const auto with_cache = run_surface_db_dispersion_backtest(shared);
+  ASSERT_TRUE(with_cache.has_value())
+      << (with_cache.has_value() ? std::string{} : with_cache.error().to_string());
+  EXPECT_EQ(MarketSnapshot::open_count(), kSessions);
+  EXPECT_EQ(with_cache->stats.cache.loads, with_cache->stats.n_steps);
+  EXPECT_EQ(with_cache->stats.cache.loads, kSessions);
+  EXPECT_EQ(with_cache->stats.cache.hits, kSessions - 1u);
+  EXPECT_EQ(with_cache->stats.cache.prefetches, kSessions - 1u);
+  // The cache choice is a PERF choice: the economics are bit-identical either way,
+  // so the route's null-cache default costs the operator nothing but the counters.
+  expect_bit_identical_track(d1->result, with_cache->result);
+
+  fs::remove_all(root);
+}
+
+TEST(SurfaceDbDispersionBacktest, RealSp100Baseline) {
+  // ENV-GATED AND READ-ONLY. Unset => skipped, so the suite stays hermetic on a
+  // machine with no data lake. When set, the route only OPENS the manifest and
+  // mmaps partitions, and this test writes no artifact anywhere: the production
+  // db is never mutated, created in, or deleted from.
+  const std::string root = env_or_empty("ATX_SP100_SURFACE_DB");
+  if (root.empty()) {
+    GTEST_SKIP() << "set ATX_SP100_SURFACE_DB (e.g. C:/atx-data/surface-db/sp100-2026) to run";
+  }
+
+  // ── WHY THIS IS NOT THE 140-SESSION WINDOW ────────────────────────────────
+  //
+  // The sprint asked for 2026-01-02..2026-07-24 (140 partitions). That window is
+  // NOT REPLAYABLE by this route, and the reason is the CORPUS, not the code. Two
+  // independent defects, both measured (Task 6 report has the full date lists):
+  //
+  //   1. THE INDEX IS ABSENT ON 18 OF 140 SESSIONS. `MarketSnapshot::uid_of("SPY")`
+  //      fails on 2026-01-22, -01-26, -01-30, -02-24, -03-02, -03-05, -03-06,
+  //      -03-10, -04-07, -04-16, -05-04, -05-05, -05-20, -05-22, -05-27, -06-02,
+  //      -07-15, -07-22. An index-less dispersion step is meaningless, so the
+  //      route refuses it (pinned by `MissingIndexOnOneDateFailsLoudly`), and NO
+  //      policy knob can make it survivable. That alone caps any single run at the
+  //      longest index-complete stretch, which is 28 sessions (2026-06-03..07-14).
+  //   2. BASKET NAMES ARE ABSENT ON 118 OF 140 SESSIONS (1-6 names each). Under a
+  //      held book that costs a mark, and the engine correctly refuses to invent
+  //      one. Three separate guards fire, and only the first has a policy knob:
+  //      the held-lot valuation guard (`UnpricedLotPolicy`), the delta-hedge share
+  //      fill (`spot_of` => NotFound, no knob), and the roll-close execution mark
+  //      (no knob by design — backtest.hpp:552-553, "close execution always
+  //      requires an economically valid mark").
+  //
+  // So this baseline runs the LONGEST WINDOW THE CORPUS CAN ACTUALLY REPLAY —
+  // 2026-06-03..2026-06-26, 17 sessions, found by sweep — under the production
+  // strategy shape with exactly two documented knobs moved, each named below. The
+  // measurement it produces (ms per session over a ~100-name, 200-lot book) is the
+  // number the sprint needs; the window length is not.
+  //
+  // IF THE CORPUS IS REBUILT, re-derive the window: it is data, not policy.
+  const auto baseline_spec = [&](std::size_t prefetch_depth) {
+    SurfaceDbDispersionSpec spec;
+    spec.db_root = root;
+    spec.date_lo = "2026-06-03";
+    spec.date_hi = "2026-06-26";
+    // The production shape from examples/sp100_dispersion_config.tsv: a 60-name
+    // floor and a monthly (21-session) entry cadence.
+    spec.config.min_names = 60;
+    spec.config.entry_every_n = 21;
+    spec.config.run.price.n_threads = 0; // 0 => hardware concurrency (PriceOptions)
+    spec.config.run.prefetch_depth = prefetch_depth;
+    // KNOB 1. Under the engine's fail-closed default (`UnpricedLotPolicy::Error`,
+    // backtest.hpp:561) even this window aborts on its second session, because a
+    // held straddle loses its surface. That abort is CORRECT and is pinned by
+    // `ClusteredAbsenceUnderAHeldBookFailsLoudly`; it is not what this test
+    // measures. The opt-in is made HERE, in the spec, never by weakening the
+    // engine default — and the excluded-lot count is printed below so the cost is
+    // on the record instead of buried in the NAV.
+    spec.config.run.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+    // KNOB 2. A delta band no book breaches, so the daily hedge is EVALUATED but
+    // never trades. This is not cosmetic: with the default band of 0.0 the hedge
+    // unwinds a residual share position on every uid every session, and a name
+    // that vanished has no spot to fill against — `run_backtest: no surface for
+    // delta hedge on uid=...`, which has no policy knob. Raising the band is the
+    // narrowest change that keeps the thing being MEASURED intact: `hedge_fires`
+    // stays true, so the full-book `FullGreeks` pricing pass still runs on every
+    // step (backtest.cpp:2140-2158) — which is the dominant per-step cost. Setting
+    // `hedge_kind = None` would instead SKIP that pass on non-entry steps and
+    // report a materially cheaper run than the production shape.
+    spec.config.delta_band = 1.0e18;
+    return spec;
+  };
+
+  MarketSnapshot::reset_open_count();
+  const auto d2 = run_surface_db_dispersion_backtest(baseline_spec(2u));
+  ASSERT_TRUE(d2.has_value()) << (d2.has_value() ? std::string{} : d2.error().to_string());
+  const std::uint64_t opens_d2 = MarketSnapshot::open_count();
+
+  // 17 sessions is what the window holds; >= 15 leaves room for a corpus rebuild
+  // that shifts a session without silently accepting a two-row run.
+  EXPECT_GE(d2->result.size(), 15u);
+  ASSERT_EQ(d2->result.size(), d2->result.nav.size());
+  for (const double nav : d2->result.nav) {
+    EXPECT_TRUE(std::isfinite(nav)) << nav;
+  }
+  EXPECT_EQ(d2->stats.n_steps, static_cast<std::uint64_t>(d2->result.size()));
+  // The no-reload gate, now on the REAL corpus: one archive open per session.
+  EXPECT_EQ(opens_d2, d2->stats.n_steps);
+  // The private-Sealed signature holds on the production route too.
+  EXPECT_EQ(d2->stats.cache.loads, 0u);
+  // TEETH: a window that never opened a lot would satisfy everything above with a
+  // flat NAV of zeros. A full SP100 straddle book is ~2 legs x ~100 names.
+  EXPECT_GT(peak_open_lots(d2->result), 100.0);
+
+  // The look-ahead comparison the sprint report records. Depth is a perf lever,
+  // so the two tracks must be bit-identical; only the wall clock may differ.
+  MarketSnapshot::reset_open_count();
+  const auto d1 = run_surface_db_dispersion_backtest(baseline_spec(1u));
+  ASSERT_TRUE(d1.has_value()) << (d1.has_value() ? std::string{} : d1.error().to_string());
+  EXPECT_EQ(MarketSnapshot::open_count(), d1->stats.n_steps);
+  expect_bit_identical_track(d2->result, d1->result);
+
+  // NO WALL-CLOCK ASSERTION: it is machine- and page-cache-dependent, and a
+  // threshold here would be a flaky gate rather than a measurement. The NUMBERS
+  // are the deliverable and they go to stderr for the sprint report.
+  std::cerr << "[baseline] db=" << root << " window=" << d2->result.date.front() << ".."
+            << d2->result.date.back() << " steps=" << d2->stats.n_steps
+            << " archive_opens=" << opens_d2 << "\n"
+            << "[baseline] n_threads=0 prefetch_depth=2 wall_ms=" << d2->stats.wall_clock_ms
+            << "\n"
+            << "[baseline] n_threads=0 prefetch_depth=1 wall_ms=" << d1->stats.wall_clock_ms
+            << "\n"
+            << "[baseline] peak_open_lots=" << peak_open_lots(d2->result)
+            << " total_unpriced_lots="
+            << std::accumulate(d2->result.n_unpriced_lots.begin(),
+                               d2->result.n_unpriced_lots.end(), 0.0)
+            << " nav_back=" << (d2->result.nav.empty() ? 0.0 : d2->result.nav.back()) << "\n";
+  // WHICH sessions cost the run a held mark, and how many lots each. Under the
+  // engine's fail-closed default the FIRST of these is where the run aborts, so
+  // this list is what an operator needs to decide between shortening the window
+  // and opting into the lenient arithmetic. Printed, never asserted: it is a
+  // property of the corpus, and pinning it here would turn a db rebuild red.
+  ASSERT_EQ(d2->result.n_unpriced_lots.size(), d2->result.date.size());
+  for (std::size_t i = 0; i < d2->result.date.size(); ++i) {
+    if (d2->result.n_unpriced_lots[i] > 0.0) {
+      std::cerr << "[baseline] unpriced session " << d2->result.date[i] << ": "
+                << d2->result.n_unpriced_lots[i] << " held lot(s) with no surface\n";
+    }
+  }
 }
 

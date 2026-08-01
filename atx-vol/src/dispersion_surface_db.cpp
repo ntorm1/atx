@@ -70,6 +70,13 @@ constexpr std::pair<std::string_view, HedgeSpec::Cadence> kHedgeCadences[] = {
     {"at_entry", HedgeSpec::Cadence::AtEntry},
     {"daily", HedgeSpec::Cadence::Daily},
 };
+// The two spellings of `RunConfig::unpriced`. `error` is the ENGINE default
+// (backtest.hpp:561) and stays the default here: a config that does not mention
+// the key is byte-for-byte the run it was before this key existed.
+constexpr std::pair<std::string_view, UnpricedLotPolicy> kUnpricedPolicies[] = {
+    {"error", UnpricedLotPolicy::Error},
+    {"exclude_and_report", UnpricedLotPolicy::ExcludeAndReport},
+};
 
 template <class E, std::size_t N>
 bool parse_enum(std::string_view text, const std::pair<std::string_view, E> (&table)[N], E &value) {
@@ -212,6 +219,8 @@ Result<DispersionBacktestConfig> read_dispersion_backtest_config(const fs::path 
       assigned = number(config.run.price.n_threads);
     else if (key == "prefetch_depth")
       assigned = number(config.run.prefetch_depth);
+    else if (key == "unpriced")
+      assigned = token(config.run.unpriced, kUnpricedPolicies);
     else
       return Err(ErrorCode::InvalidArgument, "dispersion config: unknown key '" + std::string(key) +
                                                  "' (line " + std::to_string(line_no) + ")");

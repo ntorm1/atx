@@ -34,11 +34,27 @@ namespace atx::vol {
 ///       strike_rule (atm_forward_straddle|fixed_moneyness|delta_strangle),
 ///       log_moneyness, target_abs_delta,
 ///       hedge_kind (none|delta_to_zero), hedge_cadence (at_entry|daily),
-///       half_spread_bps, per_contract_cost, n_threads, prefetch_depth
+///       half_spread_bps, per_contract_cost, n_threads, prefetch_depth,
+///       unpriced (error|exclude_and_report)
 ///
-/// The last four land on NESTED fields: `half_spread_bps`/`per_contract_cost` on
+/// The last five land on NESTED fields: `half_spread_bps`/`per_contract_cost` on
 /// `run.frictions`, `n_threads` on `run.price.n_threads`, `prefetch_depth` on
-/// `run.prefetch_depth`.
+/// `run.prefetch_depth`, `unpriced` on `run.unpriced`.
+///
+/// UNPRICED-LOT POLICY. `run.unpriced` defaults to `UnpricedLotPolicy::Error`
+/// (backtest.hpp:555-561) — a step on which a HELD lot has no surface aborts the
+/// run rather than let NAV silently truncate — and this reader does NOT change
+/// that: a config that never names the key runs exactly as it did before the key
+/// existed. It is exposed because a real surface db DOES contain such sessions —
+/// the sp100-2026 corpus loses basket names on 118 of its 140 sessions, so a run
+/// entered on 2026-01-02 aborts on the very next one (2026-01-05, 8 held lots
+/// across CMCSA/MO/QCOM/WMT); see the sprint's Task 6 report — and an operator's
+/// only alternatives were to shorten the window or edit code.
+/// `exclude_and_report` is the documented opt-in to the lenient arithmetic,
+/// and it is not free: the excluded step's P&L is never recovered when the surface
+/// reappears, so NAV permanently diverges from liquidation value and the only
+/// record of it is the per-row `BacktestResult::n_unpriced_lots` count. Author it
+/// deliberately, and read that column.
 ///
 /// SPREAD LANE. `FrictionModel::half_spread_bps` is read by the engine ONLY under
 /// `SpreadKind::PriceBps`, and the default kind is `None` — so authoring a
