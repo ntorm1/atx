@@ -224,6 +224,38 @@ struct EssviCube {
 //
 // Precondition (documented, not verified — matches the C): slices are
 // written in ascending-T order.
+//
+// ── WHERE THIS TYPE SITS, AND WHERE IT DOES NOT (S4-T21 / plan 4.4) ──────
+//
+// The canonical surface pipeline is CurveSurface (fit) -> PricedSurface /
+// PricedSurfaceView (serve) -> SurfaceSet (portfolio). `VolSurface` is NOT on
+// it, and it is NOT the archive wire type either. What it IS is the LEGACY
+// calibration-grade container, and it is very much alive:
+//
+//   * the eSSVI / raw-SVI calibrators fill it (`essvi_calib.hpp`,
+//     `svi_calib.hpp`);
+//   * `VolaSession` holds one BY VALUE and serves from it on the default eSSVI
+//     route — `session.cpp` says it outright: "the fitted slices live in the
+//     VolSurface, not a CurveSurface";
+//   * `arb.hpp`, `projection.hpp`, `surface_parity.hpp`, `adjusted_greeks.hpp`
+//     and the DEPRECATED portfolio engine all read one.
+//
+// On the archive: the ATXVSA record carries per-slice PARAMS, not this
+// container. `EssviParams` / `SviParams` are written and read back as trivially
+// copyable PODs, with their `sizeof` folded into the archive schema hash
+// (`src/surface_archive.cpp`, `src/priced_surface_view.cpp`); `VolSurface`
+// itself appears on neither the write nor the read side. Reconstructing an
+// archived surface yields a `PricedSurface`, never one of these.
+//
+// So: load-bearing on the legacy route, frozen in scope. Do not build new
+// features on it — new work targets the canonical pipeline, and a fitted
+// `VolaSession` distils into a `PricedSurface` via `to_priced_surface()`.
+//
+// Construction is factory-only: the default constructor is private, so a
+// `VolSurface` member of an aggregate cannot carry a default member
+// initializer and must be named FIRST at every designated-initializer site —
+// see `SurfaceParityReport` (surface_parity.hpp) and its field-count pin in
+// `detail/aggregate_arity.hpp`.
 class VolSurface {
  public:
   // Fit-quality summary the calibrator stamps onto the surface.
