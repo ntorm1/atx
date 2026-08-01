@@ -49,14 +49,17 @@ Nothing was deleted in the tiering itself; every relocation is a `git mv`.
 * **`spy_fixture.hpp`** moved the other way — out of `tests/support/` and onto
   the public surface as Tier-B `atx/vol/spy_fixture.hpp` — because the shipped
   Python module and a bench reached into `tests/` for it.
-* **The umbrella is now exactly Tier-A.** 9 headers joined it (`adjusted_greeks`,
-  `corpus`, `curve_selector`, `priced_surface_view`, `query_pricing`,
-  `spline_curve`, `surface_db`, `surface_policy`, `dense_slice`) and 16 left it
-  for Tier-B (`batch`, `c8_calib`, `cstar`, `cstar_calib`, `essvi_calib`,
-  `svi_calib`, `historical_projection`, `listed_dispersion`,
-  `listed_dispersion_schedule`, `listed_dispersion_strategy`, `listed_opra`,
-  `occ_ess`, `panel`, `portfolio`, `portfolio_risk`, `s3`). Reaching those 16
-  now needs a direct include.
+* **The umbrella is now exactly Tier-A.** 7 headers joined it (`adjusted_greeks`,
+  `corpus`, `priced_surface_view`, `query_pricing`, `spline_curve`, `surface_db`,
+  `surface_policy`) and 14 left it for Tier-B (`batch`, `c8_calib`, `cstar`,
+  `cstar_calib`, `essvi_calib`, `svi_calib`, `historical_projection`,
+  `listed_dispersion`, `listed_dispersion_schedule`,
+  `listed_dispersion_strategy`, `listed_opra`, `occ_ess`, `panel`, `s3`).
+  Reaching those 14 now needs a direct include. `curve_selector` and
+  `dense_slice` are deliberately NOT in the joined set — both were in the
+  umbrella throughout 0.1.0 and describe no change for an upgrading caller — and
+  `portfolio` / `portfolio_risk` are not in the Tier-B set, because they were
+  **removed outright rather than demoted** (see REMOVED below).
 * **`Surface<Slice>`, `SviSurface`, `EssviSurface`, `C8Surface`, `CStarSurface`**
   moved to `detail/legacy_surface.hpp`, `detail/legacy_c8_surface.hpp`,
   `detail/legacy_cstar_surface.hpp`. The **namespace did not change** — they are
