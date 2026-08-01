@@ -28,6 +28,36 @@ using atx::vol::counters::snapshot;
 static_assert(!counters_enabled(), "OFF build must report counters disabled (zero-cost sentinel)");
 #endif
 
+// ── The build-configuration ODR guard (plan 5.2) ────────────────────────────
+//
+// ATX_VOL_COUNTERS changes the DEFINITION of counters_enabled(), snapshot(),
+// reset() and add() — inline entities, all with linkage. A TU compiled without
+// the definition, linked against a library compiled with it, therefore put two
+// DIFFERENT definitions of the same entity into one program: an ODR violation
+// whose symptom is silently whichever one the linker happened to keep.
+//
+// The fix names the configuration in the namespace, so the two views declare
+// different entities and the mismatch becomes an unresolved symbol at link time
+// instead of undefined behaviour at run time. Two things must hold, and both
+// are checked here rather than trusted:
+//
+//   1. the tag matches THIS translation unit's configuration — the alias below
+//      does not compile otherwise;
+//   2. the tag is INLINE, so every existing unqualified spelling
+//      (`atx::vol::counters::snapshot()`, and the ~200 `if constexpr
+//      (counters_enabled())` sites across this suite) still resolves to it.
+#if defined(ATX_VOL_COUNTERS)
+namespace tagged_counters = atx::vol::counters::counters_on;
+static_assert(tagged_counters::counters_enabled());
+#else
+namespace tagged_counters = atx::vol::counters::counters_off;
+static_assert(!tagged_counters::counters_enabled());
+#endif
+static_assert(&atx::vol::counters::reset == &tagged_counters::reset,
+              "the unqualified spelling must resolve INTO the configuration-tagged namespace");
+static_assert(&atx::vol::counters::snapshot == &tagged_counters::snapshot,
+              "the unqualified spelling must resolve INTO the configuration-tagged namespace");
+
 // The macros must be valid statements even in an unbraced `if` — the OFF
 // expansion is `((void)0)`, the ON expansion a function call; both parse here.
 TEST(Counters, MacrosAreStatementSafe) {

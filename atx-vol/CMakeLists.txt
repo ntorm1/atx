@@ -17,6 +17,7 @@
 
 add_library(atx-vol ${ATX_LIB_TYPE}
     src/version.cpp
+    src/instrumentation_abi.cpp
     src/black76.cpp
     src/greeks.cpp
     src/implied_vol.cpp

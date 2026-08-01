@@ -193,6 +193,59 @@ struct Snapshot {
   }
 };
 
+// ── Build-configuration tag: the ODR guard for this plane (plan 5.2) ─────────
+//
+// EVERYTHING BELOW, DOWN TO THE MATCHING `}`, HAS A DEFINITION THAT DEPENDS ON
+// `ATX_VOL_COUNTERS` — `counters_enabled()` returns a different constant, and
+// `snapshot()` / `reset()` either touch `g_counters` or do not. Those are inline
+// entities with linkage, so before this tag a TU compiled WITHOUT the definition
+// and a library compiled WITH it put two different definitions of the same
+// entity into one program. That is an ODR violation (IFNDR): the linker keeps
+// one arbitrarily and the loser's callers silently get the wrong plane, with no
+// diagnostic anywhere.
+//
+// Naming the configuration in the namespace makes the two views declare
+// DIFFERENT entities, so the violation cannot be formed. The namespace is
+// `inline`, so every existing spelling — `atx::vol::counters::snapshot()`, and
+// the `if constexpr (counters_enabled())` blocks across src/, bench/ and the
+// test suite — resolves unchanged; nothing outside this header moves.
+//
+// The mismatch is also made LOUD rather than merely well-defined:
+// `detail::assert_build_configuration_matches()` is declared here, defined in
+// src/instrumentation_abi.cpp (compiled with the LIBRARY's view), and called
+// from `snapshot()`/`reset()` in BOTH configurations. A TU that disagrees with
+// the library references `counters_off::detail::assert_build_...` while the
+// library defines `counters_on::detail::assert_build_...`, so the link fails
+// with a symbol name that says exactly what is wrong. It is never called from
+// `add()` — that is the hot path.
+//
+// What this deliberately does NOT do is share ONE counter plane across a
+// mismatched pair. That would need out-of-line storage, which needs
+// `__declspec(dllimport)` on the consumer side for a DATA symbol, which needs
+// the `ATX_VOL_API` export macro this release does not have (see the shared-libs
+// policy in the root CMakeLists). Under the static-only distribution policy the
+// mismatched pair does not need to work — it needs to be impossible to build,
+// which is what the guard achieves.
+//
+// SCOPE: only this plane is tagged. `lightweight`, `timing` and `ledger` below
+// are compiled identically in every configuration and are deliberately left
+// untagged — tagging them would split the ALWAYS-ON solve ledger into two planes
+// whenever the tag differed, which is the opposite of what they are for.
+#if defined(ATX_VOL_COUNTERS)
+#define ATX_VOL_COUNTERS_ABI_TAG counters_on
+#else
+#define ATX_VOL_COUNTERS_ABI_TAG counters_off
+#endif
+
+inline namespace ATX_VOL_COUNTERS_ABI_TAG {
+
+namespace detail {
+// Link-time half of the guard above. Defined once, in the library, under the
+// tag the LIBRARY was compiled with. Body is empty on purpose: the symbol's
+// existence is the whole assertion.
+void assert_build_configuration_matches() noexcept;
+} // namespace detail
+
 // constexpr build-mode probe — usable in `if constexpr`.
 [[nodiscard]] constexpr bool counters_enabled() noexcept {
 #if defined(ATX_VOL_COUNTERS)
@@ -216,6 +269,7 @@ inline void add(Counter c, std::uint64_t n = 1) noexcept {
 }
 
 [[nodiscard]] inline Snapshot snapshot() noexcept {
+  detail::assert_build_configuration_matches();
   Snapshot s;
   s.enabled = true;
   for (unsigned i = 0; i < kCount; ++i) {
@@ -225,6 +279,7 @@ inline void add(Counter c, std::uint64_t n = 1) noexcept {
 }
 
 inline void reset() noexcept {
+  detail::assert_build_configuration_matches();
   for (unsigned i = 0; i < kCount; ++i) {
     detail::g_counters[i].store(0, std::memory_order_relaxed);
   }
@@ -238,8 +293,14 @@ inline void reset() noexcept {
 #else // !ATX_VOL_COUNTERS — the default. Zero footprint.
 
 // Disabled sentinel: enabled == false, all zero. No global state referenced.
-[[nodiscard]] inline Snapshot snapshot() noexcept { return Snapshot{}; }
-inline void reset() noexcept {}
+// The guard call is the ONE library dependency this configuration takes, and it
+// is on the cold query path only — `ATX_VOL_COUNT*` below still expands to
+// nothing, so the shipping build is unchanged instruction-for-instruction.
+[[nodiscard]] inline Snapshot snapshot() noexcept {
+  detail::assert_build_configuration_matches();
+  return Snapshot{};
+}
+inline void reset() noexcept { detail::assert_build_configuration_matches(); }
 
 // CAUTION: the OFF expansion below drops `n` entirely (never evaluated) — that
 // is required for zero-cost, but it means a future ATX_VOL_COUNT_N call site
@@ -251,6 +312,24 @@ inline void reset() noexcept {}
 #define ATX_VOL_COUNT_N(counter, n) ((void)0)
 
 #endif // ATX_VOL_COUNTERS
+
+} // inline namespace ATX_VOL_COUNTERS_ABI_TAG (counters_on / counters_off)
+
+// The tag itself is an implementation detail of THIS header and is not part of
+// the macro surface below — it is expanded above and undefined here so it cannot
+// collide in a consumer or be used to smuggle the untagged spelling back in.
+#undef ATX_VOL_COUNTERS_ABI_TAG
+
+// ── The macros this header leaves defined, in EVERY configuration ────────────
+//
+//   ATX_VOL_COUNT(counter)      += 1
+//   ATX_VOL_COUNT_N(counter, n) += n
+//
+// That is the complete set (verified by preprocessing the header with and
+// without ATX_VOL_COUNTERS and diffing `-dM` against a baseline TU including the
+// same standard headers). Both are ATX_VOL_-prefixed and both exist in both
+// configurations, so a consumer's preprocessor environment does not change
+// shape when the option is flipped — only what the two macros expand to does.
 
 // Always-on production telemetry. Unlike the exact diagnostic counters above,
 // this plane samples one in every kSamplePeriod root operations. Query outcomes
