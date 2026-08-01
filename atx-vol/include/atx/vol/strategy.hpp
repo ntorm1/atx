@@ -42,9 +42,18 @@ namespace atx::vol {
 // surface. This creates a synthetic model contract, not a listed OPRA contract.
 // `snap_to_listed=true` fails with NotImplemented; use the listed OPRA workflow
 // in `listed_opra.hpp` when contract identity and tradeable quotes are required.
+// `snap_to_sessions` snaps the synthetic expiry onto `StrategySpec::session_ts`
+// instead: the raw `valuation + round(target_T * kNsPerYear)` anchor is pulled
+// back onto the GREATEST session at or before it, and `T` is recomputed from the
+// snapped anchor. A hold-to-expiry cohort then always lands on a timestamp the
+// run actually observes (a raw anchor can fall on a weekend/holiday, which makes
+// settlement unobservable). A raw anchor beyond the last session is left
+// UNSNAPPED — that cohort out-lives the corpus and is liquidation-marked at run
+// end. Requires a non-empty `StrategySpec::session_ts`; never a silent no-op.
 struct TenorSpec {
   double target_T{30.0 / 365.25}; // e.g. 0.25 (3m), 0.75 (9m)
   bool snap_to_listed{false};     // true is rejected; never silently ignored
+  bool snap_to_sessions{false};   // snap the synthetic expiry onto session_ts
 };
 
 // WHICH strike, per leg-side.
@@ -169,6 +178,11 @@ struct StrategySpec {
   // Appended after the original aggregate fields so existing positional
   // StrategySpec initializers keep their pre-adaptive meaning.
   ResolutionOptions resolution{};
+  // The run clock's snapshot timestamps, SORTED ASCENDING. Consumed ONLY by legs
+  // with `tenor.snap_to_sessions` (empty is fine for every other spec). The
+  // builders are corpus-agnostic, so the CALLER fills this from its `Clock`
+  // refs after assembling the spec.
+  std::vector<std::int64_t> session_ts;
 };
 
 // ── Resolution primitives ───────────────────────────────────────────────────

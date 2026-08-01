@@ -2098,3 +2098,144 @@ TEST(Backtest, FixedBookRejectsStepObserver) {
 
   std::printf("[backtest] fixed-book + step_observer -> %s\n", res.error().to_string().c_str());
 }
+
+// ── Session-snapped synthetic expiry (TenorSpec::snap_to_sessions) ──────────
+// The synthetic expiry `valuation + round(T * kNsPerYear)` can land on a day the
+// run's clock never observes (a weekend/holiday), which makes a held-to-expiry
+// cohort unsettleable. With `snap_to_sessions` the canonical expiry is pulled
+// back onto the greatest session at or before the raw expiry, and T is recomputed
+// from the snapped anchor so the contract key and the greeks agree.
+
+namespace {
+
+// A 5-on/2-off weekday-shaped session grid: `n_days` calendar days from `start`,
+// keeping day d only when (d % 7) < 5.
+[[nodiscard]] std::vector<std::int64_t> weekday_sessions(std::int64_t start, int n_days) {
+  std::vector<std::int64_t> out;
+  for (int d = 0; d < n_days; ++d) {
+    if (d % 7 < 5) {
+      out.push_back(start + static_cast<std::int64_t>(d) * kDayNs);
+    }
+  }
+  return out;
+}
+
+// The raw (unsnapped) expiry offset canonicalize_tenor computes for `T`.
+[[nodiscard]] std::int64_t raw_tenor_offset(double T) {
+  return static_cast<std::int64_t>(std::round(T * kNsPerYear));
+}
+
+// A one-leg spec (AbsStrike call at `T`) carrying `sessions` as the run's grid.
+[[nodiscard]] StrategySpec snap_spec(double T, bool snap, std::vector<std::int64_t> sessions) {
+  StrategySpec spec;
+  LegSpec leg = fixed_call(kUid, T);
+  leg.tenor.snap_to_sessions = snap;
+  spec.legs.push_back(std::move(leg));
+  spec.session_ts = std::move(sessions);
+  return spec;
+}
+
+} // namespace
+
+TEST(TenorSnap, SnapsToGreatestSessionAtOrBeforeRawExpiry) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "tenor-snap-gap");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  // 33 calendar days lands in a weekend gap (33 % 7 == 5); the greatest session
+  // at or before it is day 32.
+  constexpr double kT = 33.0 / 365.25;
+  ASSERT_EQ(raw_tenor_offset(kT), 33 * kDayNs) << "fixture assumption: raw expiry is day 33";
+
+  const auto sized = resolve_spec(*snapshot, snap_spec(kT, /*snap=*/true,
+                                                       weekday_sessions(kBaseNow, 60)));
+  ASSERT_TRUE(sized.has_value()) << sized.error().to_string();
+  ASSERT_EQ(sized->size(), 1u);
+  EXPECT_EQ(sized->front().leg.expiry_ts_ns, kBaseNow + 32 * kDayNs);
+  EXPECT_EQ(sized->front().leg.T, static_cast<double>(32 * kDayNs) / kNsPerYear);
+}
+
+TEST(TenorSnap, ExactSessionHitIsUnchanged) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "tenor-snap-exact");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  // 32 calendar days IS a session (32 % 7 == 4): snapping is the identity.
+  constexpr double kT = 32.0 / 365.25;
+  const std::int64_t raw = raw_tenor_offset(kT);
+  ASSERT_EQ(raw, 32 * kDayNs) << "fixture assumption: raw expiry is day 32";
+
+  const auto sized = resolve_spec(*snapshot, snap_spec(kT, /*snap=*/true,
+                                                       weekday_sessions(kBaseNow, 60)));
+  ASSERT_TRUE(sized.has_value()) << sized.error().to_string();
+  ASSERT_EQ(sized->size(), 1u);
+  EXPECT_EQ(sized->front().leg.expiry_ts_ns, kBaseNow + raw);
+  EXPECT_EQ(sized->front().leg.T, static_cast<double>(raw) / kNsPerYear);
+}
+
+TEST(TenorSnap, BeyondCalendarStaysUnsnapped) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "tenor-snap-beyond");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  // The grid ends at day 18; a 90-day tenor out-lives the corpus, so the expiry
+  // stays raw (that cohort is liquidation-marked at run end, never settled).
+  const std::vector<std::int64_t> sessions = weekday_sessions(kBaseNow, 21);
+  ASSERT_EQ(sessions.back(), kBaseNow + 18 * kDayNs);
+  constexpr double kT = 90.0 / 365.25;
+  const std::int64_t raw = raw_tenor_offset(kT);
+
+  const auto sized = resolve_spec(*snapshot, snap_spec(kT, /*snap=*/true, sessions));
+  ASSERT_TRUE(sized.has_value()) << sized.error().to_string();
+  ASSERT_EQ(sized->size(), 1u);
+  EXPECT_EQ(sized->front().leg.expiry_ts_ns, kBaseNow + raw);
+  EXPECT_EQ(sized->front().leg.T, static_cast<double>(raw) / kNsPerYear);
+}
+
+TEST(TenorSnap, SnappedAtOrBeforeValuationIsInvalidArgument) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "tenor-snap-underflow");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  // Raw expiry is day 1, inside the grid's span, but the only session at or
+  // before it is the valuation itself -> there is no future expiry to book.
+  const std::vector<std::int64_t> sessions = {kBaseNow, kBaseNow + 3 * kDayNs};
+  const auto sized = resolve_spec(*snapshot, snap_spec(1.0 / 365.25, /*snap=*/true, sessions));
+  ASSERT_FALSE(sized.has_value());
+  EXPECT_EQ(sized.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(sized.error().message().find("snapped expiry is not after valuation"),
+            std::string::npos)
+      << "message was: " << sized.error().message();
+}
+
+TEST(TenorSnap, SnapWithoutSessionsIsInvalidArgument) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "tenor-snap-no-sessions");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  // Never a silent no-op: an unsatisfiable snap request is a configuration error.
+  const auto sized = resolve_spec(*snapshot, snap_spec(33.0 / 365.25, /*snap=*/true, {}));
+  ASSERT_FALSE(sized.has_value());
+  EXPECT_EQ(sized.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(sized.error().message().find("session_ts"), std::string::npos)
+      << "message was: " << sized.error().message();
+}
+
+TEST(TenorSnap, DefaultOffIsBitIdentical) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "tenor-snap-default-off");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  // snap_to_sessions defaults false: a populated session grid must not move the
+  // expiry off the hand-computed raw offset (day 33, a non-session).
+  constexpr double kT = 33.0 / 365.25;
+  const std::int64_t raw = raw_tenor_offset(kT);
+  ASSERT_FALSE(TenorSpec{}.snap_to_sessions) << "snapping must be opt-in";
+
+  const auto sized =
+      resolve_spec(*snapshot, snap_spec(kT, /*snap=*/false, weekday_sessions(kBaseNow, 60)));
+  ASSERT_TRUE(sized.has_value()) << sized.error().to_string();
+  ASSERT_EQ(sized->size(), 1u);
+  EXPECT_EQ(sized->front().leg.expiry_ts_ns, kBaseNow + raw);
+  EXPECT_EQ(sized->front().leg.T, static_cast<double>(raw) / kNsPerYear);
+}

@@ -41,6 +41,13 @@ struct DispersionStrangleConfig {
   // required). Default false preserves the CloseAtHorizon behaviour exactly, so
   // existing callers/tests are bit-identical.
   bool hold_to_expiry{false};
+  // Set `tenor.snap_to_sessions` on EVERY leg (names and index), so each
+  // cohort's synthetic expiry lands on a session the run actually observes
+  // rather than on a weekend/holiday a hold-to-expiry settlement can never
+  // reach. The builder is corpus-agnostic, so it leaves `spec.session_ts`
+  // EMPTY: the caller fills it from its `Clock` refs after building the spec.
+  // Default false is bit-identical to the pre-existing raw-offset expiry.
+  bool snap_expiry_to_sessions{false};
 };
 
 // Validated assembly into the declarative DSL:

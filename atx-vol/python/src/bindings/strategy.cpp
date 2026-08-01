@@ -42,7 +42,8 @@ void bind_strategy(py::module_ &m) {
   py::class_<TenorSpec>(m, "TenorSpec")
       .def(py::init<>())
       .def_readwrite("target_T", &TenorSpec::target_T)
-      .def_readwrite("snap_to_listed", &TenorSpec::snap_to_listed);
+      .def_readwrite("snap_to_listed", &TenorSpec::snap_to_listed)
+      .def_readwrite("snap_to_sessions", &TenorSpec::snap_to_sessions);
 
   py::class_<StrikeSelector> strike(m, "StrikeSelector");
   py::enum_<StrikeSelector::Kind>(strike, "Kind")
@@ -144,7 +145,10 @@ void bind_strategy(py::module_ &m) {
       .def_readwrite("lifecycle", &StrategySpec::lifecycle)
       .def_readwrite("hedge", &StrategySpec::hedge)
       .def_readwrite("missing", &StrategySpec::missing)
-      .def_readwrite("resolution", &StrategySpec::resolution);
+      .def_readwrite("resolution", &StrategySpec::resolution)
+      // list[int]: the run clock's snapshot timestamps, ascending. Only legs
+      // with tenor.snap_to_sessions read it; the caller fills it from its Clock.
+      .def_readwrite("session_ts", &StrategySpec::session_ts);
 
   // ── Strategies ──
   py::class_<IStrategy>(m, "IStrategy");
@@ -168,7 +172,9 @@ void bind_strategy(py::module_ &m) {
       .def_readwrite("index_base_vega", &DispersionStrangleConfig::index_base_vega)
       .def_readwrite("missing", &DispersionStrangleConfig::missing)
       .def_readwrite("hedge", &DispersionStrangleConfig::hedge)
-      .def_readwrite("hold_to_expiry", &DispersionStrangleConfig::hold_to_expiry);
+      .def_readwrite("hold_to_expiry", &DispersionStrangleConfig::hold_to_expiry)
+      .def_readwrite("snap_expiry_to_sessions",
+                     &DispersionStrangleConfig::snap_expiry_to_sessions);
 
   m.def(
       "make_dispersion_strangle_spec",
