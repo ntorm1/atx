@@ -365,11 +365,29 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
       const double intervals = static_cast<double>(grid.n_nodes - 1) * (kh / floor_half);
       grid.n_nodes = strip::odd_nodes(
           static_cast<std::size_t>(std::ceil(intervals)) + 1u, grid.n_nodes);
+      // Round up to 4m+1: the Richardson half-grid error estimate below needs
+      // the half grid ((n+1)/2 nodes) to be odd again, which plain odd-forcing
+      // does not guarantee (e.g. n=99 halves to 50, even). The tier defaults
+      // are already 4m+1 (97/257/769/2049); only this adaptive rescale can
+      // land off that lattice, so only it needs the correction.
+      if ((grid.n_nodes % 4u) != 1u) {
+        grid.n_nodes += 2u;
+      }
     }
   }
 
   const std::size_t n = grid.n_nodes;
   const double dx = (grid.k_max_log - grid.k_min_log) / static_cast<double>(n - 1);
+
+  // Richardson half-grid quadrature error estimate. Valid only when n is
+  // 4m+1, so the half grid ((n+1)/2 nodes, every other node of the full grid)
+  // is itself an odd count and a valid composite-Simpson grid on its own. The
+  // FIX-E M-7 rounding above guarantees this for the adaptive path; the tier
+  // defaults are 4m+1 already; a caller-pinned `strip_nodes` is a request and
+  // is not rounded, so it may leave `halvable` false.
+  const bool halvable = (n % 4u) == 1u;
+  const std::size_t n_half = (n + 1) / 2;
+  double integral_half = 0.0;
 
   // Composite Simpson on   integral OTM(K) / (df * F * e^x) dx
   //                      == integral OTM(K) / (df * K) dx   since K = F * e^x.
@@ -393,10 +411,27 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
     const double price = bad ? 0.0 : black76_price(F, K, T, sigma, df, side);
     const double integrand = price / (df * K);
     integral += simpson_w(i, n) * integrand;
+    if (halvable && (i % 2u) == 0u) {
+      // Every other node of the full grid, quadratured on its own half-density
+      // grid (spacing 2*dx) with that grid's own Simpson weights.
+      integral_half += simpson_w(i / 2u, n_half) * integrand;
+    }
   }
   integral *= (dx / 3.0);
 
   const double k_var = (2.0 / T) * integral;
+
+  // Composite-Simpson error is O(h^4): halving h (doubling the node density)
+  // shrinks it ~16x, so the difference between the two estimates is ~15/16 of
+  // the coarse grid's own error — a self-contained error bound with no
+  // external reference. Stays NaN (not 0) when the grid is not 4m+1: that is
+  // a caller-pinned exact node count, and NaN says "not estimated" rather
+  // than claiming a zero error the code never checked.
+  double err_est = kNaN;
+  if (halvable) {
+    integral_half *= (2.0 * dx / 3.0);
+    err_est = std::fabs((2.0 / T) * (integral - integral_half)) / 15.0;
+  }
 
   // E2 / AN-P1-2: truncation is a COVERAGE property, not a NaN property. The
   // old code raised these flags only when the surface returned a non-finite IV
@@ -425,7 +460,7 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   out.accrued_component_dec = 0.0;
   out.future_component_dec = k_var;
   out.convexity_adjustment_dec = 0.0;
-  out.integration_error_est = kNaN;  // NaN = not estimated (see header)
+  out.integration_error_est = err_est;
   out.flags = flags;
   return Ok(out);
 }

@@ -250,9 +250,13 @@ struct DerivQuote {
   double accrued_component_dec = 0.0;     // RV_done * n_done/n_total
   double future_component_dec = 0.0;      // K_var_future * n_future/n_total
   double convexity_adjustment_dec = 0.0;  // sqrt(K_var) - K_vol (vol swap only)
-  // Strip-engine error estimate; NaN = not estimated (see file header). This
-  // port does not yet run the Richardson half-step refinement, so it stays NaN
-  // wherever the strip ran and 0.0 on the paths the C left at its memset zero.
+  // Strip-engine error estimate; NaN = not estimated (see file header).
+  // `var_swap_fair_strike` populates it via a Richardson half-grid estimate
+  // (|I_h - I_2h|/15) whenever the strip's node count is 4m+1 — every quality
+  // tier default, and the adaptive-wing rescale, land there; a caller-pinned
+  // `strip_nodes` that isn't 4m+1 leaves it NaN. Stays 0.0 on the paths the C
+  // left at its memset zero (e.g. the standalone vol-swap Carr-Lee entry,
+  // which runs no strip).
   double integration_error_est = 0.0;
   DerivFlags flags = DerivFlags::None;
 };

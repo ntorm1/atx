@@ -248,6 +248,23 @@ TEST(VarStrip, PricedSurfaceOverloadRefusesTenorsOutsideTheFittedPillars) {
   EXPECT_TRUE(atx::vol::var_swap_fair_strike(ps, ctx.back().T).has_value());
 }
 
+// Richardson half-grid estimate: |I_h - I_2h|/15. Finite and small on a smooth
+// flat-vol integrand at every tier whose node count is 4m+1; and the estimate
+// must bound the actual flat-vol truth error at Standard.
+TEST(VarStrip, IntegrationErrorEstimate_FiniteAndBoundsFlatVolError) {
+  const double sigma = 0.20;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = DerivQuality::Standard;  // 257 = 4*64+1 nodes
+  const auto q = var_swap_fair_strike(surf, cs, 0.10, cfg);
+  ASSERT_TRUE(q.has_value());
+  ASSERT_TRUE(std::isfinite(q->integration_error_est)) << "estimate not populated";
+  EXPECT_GE(q->integration_error_est, 0.0);
+  // Estimate is in K_var units and should be tiny on a flat surface.
+  EXPECT_LT(q->integration_error_est, 1.0e-6);
+}
+
 // ── Aged dispatch (test_vol_deriv_aged.c) ────────────────────────────────
 
 // Mid-life variance swap with rv_done == K_var_future: the linear blend must
