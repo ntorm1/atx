@@ -207,6 +207,21 @@ endif()
 
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
+
+    # Focused TDD gate for the bounded SPX/Wilmott research CLI. The example TU
+    # is compiled with its main suppressed so the test exercises the exact
+    # forward-estimation and scoring implementation shipped by the executable.
+    add_executable(spx-wilmott-repro-tests
+        tests/spx_wilmott_repro_test.cpp
+        examples/spx_wilmott_repro.cpp)
+    target_compile_definitions(spx-wilmott-repro-tests PRIVATE
+        ATX_SPX_WILMOTT_REPRO_NO_MAIN)
+    target_include_directories(spx-wilmott-repro-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/examples)
+    target_link_libraries(spx-wilmott-repro-tests PRIVATE
+        atx::vol atx::core GTest::gtest_main atx_warnings)
+    add_test(NAME SpxWilmottReproUnit COMMAND spx-wilmott-repro-tests)
+    set_tests_properties(SpxWilmottReproUnit PROPERTIES LABELS atx_vol_fast)
 endif()
 
 # ---- Benchmarks (Google Benchmark; opt-in via the shared ATX_BUILD_BENCH) ----
@@ -222,6 +237,14 @@ endif()
 # slice, de-Americanizes + fits the surface, and reports fit quality + cold-vs-
 # cached throughput. Links atx::vol (+ atx::core transitively).
 if(ATX_BUILD_EXAMPLES)
+    # Reproduce Vola Dynamics' 2019-08-26 SPX first-monthly smile from a paid
+    # Databento CBBO snapshot. Research comparison only: no proprietary C13pm
+    # compatibility is claimed or persisted.
+    add_executable(spx_wilmott_repro examples/spx_wilmott_repro.cpp)
+    target_include_directories(spx_wilmott_repro PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/examples)
+    target_link_libraries(spx_wilmott_repro PRIVATE atx::vol atx::core atx_warnings)
+
     add_executable(opra_parity_bench examples/opra_parity_bench.cpp)
     target_link_libraries(opra_parity_bench PRIVATE atx::vol atx::core atx_warnings)
 

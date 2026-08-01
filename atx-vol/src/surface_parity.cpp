@@ -173,7 +173,7 @@ constexpr double kMonotoneKMax = 0.7;
 // slice) leaves the obs cache EMPTY, so the consumer's size checks fall back to
 // the full certified path rather than reading out of range.
 [[nodiscard]] EssviInputCertification make_input_certification(const PreparedSlice &prepared,
-                                                              const Chain &chain) {
+                                                               const Chain &chain) {
   EssviInputCertification cert;
   cert.inversion = prepared.deam_audit();
   const std::span<const FitObs> rows = prepared.fit_observations();
@@ -241,10 +241,11 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   // pass moves a slice, the parity number reflects the moved slice, not a stale
   // pre-repair read.
   struct PendingSlice {
-    PreparedSlice prepared;     // keyed fit rows + raw scoring population
-    double T{0.0};              // slice maturity
-    double rate{0.0};           // expiry-specific continuously-compounded rate
-    double q_eff{0.0};          // effective carry for the re-Am scoring
+    PreparedSlice prepared; // keyed fit rows + raw scoring population
+    double T{0.0};          // slice maturity
+    double rate{0.0};       // expiry-specific continuously-compounded rate
+    double q_eff{0.0};      // effective carry for the re-Am scoring
+    ExerciseStyle exercise_style{ExerciseStyle::American};
     std::uint16_t slice_idx{0}; // surface write index for iv_on_slice read-back
   };
   std::vector<PendingSlice> pending;
@@ -322,14 +323,13 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       return; // degenerate maturity: leave nullopt; phase 2 records the skip
     }
     try {
-      slots[i].result = prepare_expiry(under.chains[i], static_cast<std::uint32_t>(i),
-                                       in, prep_policy, &slots[i].prep_diag);
+      slots[i].result = prepare_expiry(under.chains[i], static_cast<std::uint32_t>(i), in,
+                                       prep_policy, &slots[i].prep_diag);
     } catch (...) {
       // A worker escape would std::terminate the jthread; record a failed slot
       // (calib_pool/essvi parallel precedent). prepare_expiry uses Result, so
       // this is defensive only.
-      slots[i].result.emplace(
-          Err(ErrorCode::Internal, "run_surface_parity: prepare_expiry threw"));
+      slots[i].result.emplace(Err(ErrorCode::Internal, "run_surface_parity: prepare_expiry threw"));
     }
   });
 
@@ -357,8 +357,8 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       if (prep_diag.carry_failed) {
         // No slice, but the skip is counted, not hidden (§5.2).
         ++n_carry_skipped;
-        expiry_reports.push_back(ExpiryFitReport{chain_index, T, ExpiryFitOutcome::CarryFailed,
-                                                   0, prep_code});
+        expiry_reports.push_back(
+            ExpiryFitReport{chain_index, T, ExpiryFitOutcome::CarryFailed, 0, prep_code});
       } else if (!slice_error_is_expected(prep_code)) {
         // W3.4 (F4): a HARD preparation defect (not carry, not thin) — surface it
         // and, under the completeness contract, fail the board instead of
@@ -406,18 +406,17 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
       // W3.4 (F4): record the fit failure and, under the completeness contract,
       // propagate a HARD fit error instead of silently dropping the slice.
       const ErrorCode fit_code = slice_res.error().code();
-      expiry_reports.push_back(ExpiryFitReport{
-          chain_index, T, ExpiryFitOutcome::FitFailed, prepared.fit_observations().size(),
-          fit_code});
+      expiry_reports.push_back(ExpiryFitReport{chain_index, T, ExpiryFitOutcome::FitFailed,
+                                               prepared.fit_observations().size(), fit_code});
       if (in.fail_board_on_hard_slice_error && !slice_error_is_expected(fit_code)) {
         return Err(fit_code, "run_surface_parity: expiry slice fit failed (hard): " +
                                  slice_res.error().to_string());
       }
       continue; // a slice that fails to fit contributes no slice
     }
-    expiry_reports.push_back(ExpiryFitReport{
-        chain_index, T, ExpiryFitOutcome::Fitted, prepared.fit_observations().size(),
-        ErrorCode::Unknown});
+    expiry_reports.push_back(ExpiryFitReport{chain_index, T, ExpiryFitOutcome::Fitted,
+                                             prepared.fit_observations().size(),
+                                             ErrorCode::Unknown});
 
     // Stamp this slice's real listed-expiry instant (+ its dense surface
     // write index) so downstream event-bucketing (solve_implied_emove,
@@ -446,8 +445,8 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     // Perf C1: capture the fit's own de-Am certification for this slice BEFORE
     // `prepared` is moved into `pending`, so VolaSession::build reuses it.
     input_certs.push_back(make_input_certification(prepared, chain));
-    pending.push_back(
-        PendingSlice{std::move(prepared), T, rate, q_eff, static_cast<std::uint16_t>(idx)});
+    pending.push_back(PendingSlice{std::move(prepared), T, rate, q_eff, chain.exercise_style,
+                                   static_cast<std::uint16_t>(idx)});
 
     ++idx;
   }
@@ -511,6 +510,7 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     pin.r = ps.rate;
     pin.q_eff = ps.q_eff;
     pin.T = ps.T;
+    pin.exercise_style = ps.exercise_style;
     pin.method = in.deam.method;
     pin.al_opts = in.deam.al_opts;
     pin.band_k = in.band_k;
@@ -543,12 +543,18 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   }
 
   SurfaceParityReport out{
-      std::move(surface),    std::move(expiry_T),
-      std::move(per_expiry), std::move(context),
-      std::move(carry_diag), std::move(input_certs),
-      worst,                 calendar_arb_free,
-      idx,                   n_calendar_viol_pre,
-      n_carry_skipped,       n_audit_starved,
+      std::move(surface),
+      std::move(expiry_T),
+      std::move(per_expiry),
+      std::move(context),
+      std::move(carry_diag),
+      std::move(input_certs),
+      worst,
+      calendar_arb_free,
+      idx,
+      n_calendar_viol_pre,
+      n_carry_skipped,
+      n_audit_starved,
   };
   out.expiry_reports = std::move(expiry_reports); // W3.4 (F4): ‖ under.chains, chain order
   if (in.collect_stage_timings) {

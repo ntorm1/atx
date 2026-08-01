@@ -17,24 +17,24 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/american.hpp"         // american_price, american_price_cached, american_greeks
-#include "atx/vol/arb.hpp"              // arb_check_calendar (post-refit recheck)
-#include "atx/vol/correction.hpp"       // CorrectionCache, AmericanCorrectionCaches
-#include "atx/vol/counters.hpp"         // counters::ledger — V2 per-board solve attribution
-#include "atx/vol/curve_fit.hpp"        // fit_curve_surface (curve-agnostic driver)
-#include "atx/vol/data.hpp"             // data_install
+#include "atx/vol/american.hpp"   // american_price, american_price_cached, american_greeks
+#include "atx/vol/arb.hpp"        // arb_check_calendar (post-refit recheck)
+#include "atx/vol/correction.hpp" // CorrectionCache, AmericanCorrectionCaches
+#include "atx/vol/counters.hpp"   // counters::ledger — V2 per-board solve attribution
+#include "atx/vol/curve_fit.hpp"  // fit_curve_surface (curve-agnostic driver)
+#include "atx/vol/data.hpp"       // data_install
 #include "atx/vol/detail/deam_pass_counter.hpp" // C1 proof: cert de-Am pass tally
-#include "atx/vol/dividend.hpp"         // hybrid_forward (representative carry)
-#include "atx/vol/essvi_calib.hpp"      // essvi_fit_slice (warm-start refit)
-#include "atx/vol/event_vol.hpp"        // EventSchedule, count_events_at, implied_emove
-#include "atx/vol/parallel_for.hpp"     // bounded post-fit cache-bank fan-out
-#include "atx/vol/parity.hpp"           // chain_parity (incremental diagnostic refresh)
-#include "atx/vol/prepared_fitting.hpp" // CanonicalPreparedExpiry
-#include "atx/vol/projection.hpp"       // InterpMode, surface_insert_vol_slice, w_on_inserted_slice
-#include "atx/vol/surface_parity.hpp"   // run_surface_parity, SurfaceParityInputs/Report
-#include "atx/vol/universe.hpp"         // Universe, Underlying, Uid, Chain
-#include "atx/vol/vol_surface.hpp"      // VolSurface
-#include "atx/vol/vol_time.hpp"         // ns_from_year_fraction (eMove solve)
+#include "atx/vol/dividend.hpp"                 // hybrid_forward (representative carry)
+#include "atx/vol/essvi_calib.hpp"              // essvi_fit_slice (warm-start refit)
+#include "atx/vol/event_vol.hpp"                // EventSchedule, count_events_at, implied_emove
+#include "atx/vol/parallel_for.hpp"             // bounded post-fit cache-bank fan-out
+#include "atx/vol/parity.hpp"                   // chain_parity (incremental diagnostic refresh)
+#include "atx/vol/prepared_fitting.hpp"         // CanonicalPreparedExpiry
+#include "atx/vol/projection.hpp"     // InterpMode, surface_insert_vol_slice, w_on_inserted_slice
+#include "atx/vol/surface_parity.hpp" // run_surface_parity, SurfaceParityInputs/Report
+#include "atx/vol/universe.hpp"       // Universe, Underlying, Uid, Chain
+#include "atx/vol/vol_surface.hpp"    // VolSurface
+#include "atx/vol/vol_time.hpp"       // ns_from_year_fraction (eMove solve)
 
 // DESIGN / PARITY NOTES
 // ---------------------
@@ -708,8 +708,8 @@ struct FixedCacheCarry {
   k_min -= chain ? 0.15 : 0.05;
   k_max += chain ? 0.15 : 0.05;
   const double T_min = chain ? std::min(0.9 * T_lo, 0.0055) : (0.9 * T_lo);
-  const double T_max =
-      chain ? ((T_hi > T_lo) ? (1.25 * T_hi) : (1.6 * T_lo)) : ((T_hi > T_lo) ? (1.1 * T_hi) : (1.5 * T_lo));
+  const double T_max = chain ? ((T_hi > T_lo) ? (1.25 * T_hi) : (1.6 * T_lo))
+                             : ((T_hi > T_lo) ? (1.1 * T_hi) : (1.5 * T_lo));
   constexpr double kSigMin = 0.05;
   // PR-C1: the sigma ceiling stays 1.5. Widening it to cover a high-vol board
   // (earnings / meme / 0DTE panic) was implemented and MEASURED to be net-negative:
@@ -1445,9 +1445,8 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   // SessionDiagnostics for how the (method, code) pair reads.
   EmoveMethod emove_method = EmoveMethod::TwoPillar;
   EmoveFitCode emove_fit_code = EmoveFitCode::Ok;
-  diag.implied_emove =
-      solve_implied_emove(eff.events.get(), eff.now_ts_ns, rep.surface.essvi_slices(),
-                          &emove_method, &emove_fit_code);
+  diag.implied_emove = solve_implied_emove(
+      eff.events.get(), eff.now_ts_ns, rep.surface.essvi_slices(), &emove_method, &emove_fit_code);
   diag.emove_method = emove_method;
   diag.emove_fit_code = emove_fit_code;
 
@@ -1958,7 +1957,8 @@ Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
   }
   flush_cached_price_batch(cached_calls, Side::Call, in_.S, T, fc.rate, fc.q_eff, call_correction,
                            out);
-  flush_cached_price_batch(cached_puts, Side::Put, in_.S, T, fc.rate, fc.q_eff, put_correction, out);
+  flush_cached_price_batch(cached_puts, Side::Put, in_.S, T, fc.rate, fc.q_eff, put_correction,
+                           out);
   return Ok();
 }
 
@@ -2094,10 +2094,9 @@ Status VolaSession::evaluate_ladder(double T, std::span<const double> strikes,
     const bool serve_cached = cache_serves(correction, side, k, T, sigma);
     if (!greeks_out.empty()) {
       const auto result =
-          serve_cached
-              ? american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction)
-              : american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
-                                   in_.deam.al_opts);
+          serve_cached ? american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction)
+                       : american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side,
+                                            in_.deam.method, in_.deam.al_opts);
       if (result.has_value()) {
         greeks_out[i] = *result;
         if (!price_out.empty()) {
@@ -2205,6 +2204,7 @@ Result<FitDiag> VolaSession::apply_prepared_essvi_refit(std::size_t slice_idx,
   parity_inputs.r = prepared.rate;
   parity_inputs.q_eff = prepared.q_eff;
   parity_inputs.T = context.T;
+  parity_inputs.exercise_style = prepared.slice.provenance().exercise_style;
   parity_inputs.method = in_.deam.method;
   parity_inputs.al_opts = in_.deam.al_opts;
   parity_inputs.band_k = in_.band_k;

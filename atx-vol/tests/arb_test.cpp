@@ -136,6 +136,35 @@ using atx::vol::VolSurface;
   return s;
 }
 
+// Five samples from the clean, non-flat SPX Figure 1 reproduction.  Mapping
+// normalized strike back to k with its ATF scale and pricing each sample gives
+// strictly convex call-price nodes.  The represented curve is piecewise linear
+// between those nodes, so its density includes atoms at the knots; treating w(k)
+// as C2-smooth and finite-differencing through a knot creates false negative
+// Durrleman density even though the native call-price representation is convex.
+[[nodiscard]] ConvexSliceFit nonflat_spx_like_convex_slice() {
+  constexpr double T = 0.0678;
+  constexpr double F = 100.0;
+  constexpr double df = 0.999;
+  constexpr double sigma_atf = 0.184;
+  const double normalized_strike_scale = sigma_atf * std::sqrt(T);
+  const std::vector<double> normalized_strike = {
+      -10.002540215, -6.441711274, -2.880882333, 0.679946608, 2.863921692};
+  const std::vector<double> sigma = {
+      0.564486700, 0.434483490, 0.289490997, 0.140751183, 0.164676386};
+
+  ConvexSliceFit fit;
+  fit.T = T;
+  fit.F = F;
+  fit.df = df;
+  for (std::size_t i = 0; i < normalized_strike.size(); ++i) {
+    const double K = F * std::exp(normalized_strike[i] * normalized_strike_scale);
+    fit.u.push_back(K);
+    fit.C.push_back(black76_price(F, K, T, sigma[i], df, Side::Call));
+  }
+  return fit;
+}
+
 }  // namespace
 
 // ── Calendar check ────────────────────────────────────────────────────────
@@ -252,6 +281,44 @@ TEST(ArbButterflyCurve, IndependentCheckerFlagsServedSviShape) {
   const auto violations = arb_check_butterfly(curve, -0.5, 0.5, 128);
   ASSERT_TRUE(violations.has_value());
   EXPECT_FALSE(violations->empty());
+}
+
+TEST(ArbButterflyCurve, NonFlatConvexDenseUsesNativePriceConvexity) {
+  const ConvexSliceFit fit = nonflat_spx_like_convex_slice();
+  ASSERT_EQ(fit.u.size(), fit.C.size());
+  ASSERT_GE(fit.u.size(), 3u);
+  double previous_slope =
+      (fit.C[1] - fit.C[0]) / (fit.u[1] - fit.u[0]);
+  for (std::size_t i = 1; i + 1 < fit.u.size(); ++i) {
+    const double slope =
+        (fit.C[i + 1] - fit.C[i]) / (fit.u[i + 1] - fit.u[i]);
+    ASSERT_GE(slope, previous_slope) << "fixture must be convex at node " << i;
+    previous_slope = slope;
+  }
+
+  const ConvexDenseCurve curve(fit);
+  const auto violations = arb_check_butterfly(curve, -0.52, 0.16, 256);
+  ASSERT_TRUE(violations.has_value());
+  EXPECT_TRUE(violations->empty());
+}
+
+TEST(ArbButterflyCurve, NonConvexDenseNativePricesAreFlagged) {
+  ConvexSliceFit fit;
+  fit.T = 0.25;
+  fit.F = 100.0;
+  fit.df = 1.0;
+  fit.u = {80.0, 90.0, 100.0, 110.0, 120.0};
+  // Slopes -0.8, -0.7, -0.8, -0.1: the decrease from -0.7 to -0.8 is a
+  // genuine convexity breach, while every node remains inside its price band.
+  fit.C = {25.0, 17.0, 10.0, 2.0, 1.0};
+
+  const ConvexDenseCurve curve(fit);
+  const auto violations = arb_check_butterfly(
+      curve, std::log(0.80), std::log(1.20), 64);
+  ASSERT_TRUE(violations.has_value());
+  ASSERT_FALSE(violations->empty());
+  EXPECT_EQ(violations->front().kind, ArbViolation::Kind::Butterfly);
+  EXPECT_GT(violations->front().slack, 0.09);
 }
 
 // ── Butterfly check ───────────────────────────────────────────────────────

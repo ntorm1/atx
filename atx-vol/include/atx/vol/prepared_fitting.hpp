@@ -109,6 +109,7 @@ struct PreparedScoreColumns {
 
 struct SlicePreparationProvenance {
   PreparedObservationPolicy policy{PreparedObservationPolicy::Configured};
+  ExerciseStyle exercise_style{ExerciseStyle::American};
   AmericanMethod method{AmericanMethod::AndersenLake};
   std::optional<AlOpts> al_opts{};
   double iv_tolerance{1.0e-7};
@@ -142,8 +143,9 @@ struct PreparedSliceInputs {
   // the cold Andersen-Lake reference; a failed proposal is recomputed
   // accurately and re-audited, and a row that still misses the half-spread
   // budget is DROPPED, never fitted. Default false keeps the historical fit
-  // bit-identical. Configured preparation is always audited inside
-  // build_observations_european and ignores these two knobs.
+  // bit-identical. Configured preparation is always audited inside either
+  // build_observations (direct European) or build_observations_european
+  // (American de-Am) and ignores these two knobs.
   bool audit_fit_inversions{false};
   double max_iv_residual_half_spreads{0.25};
   // OUT (optional): legacy-path preparation tallies, written just before the
