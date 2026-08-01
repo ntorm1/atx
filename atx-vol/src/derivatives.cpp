@@ -497,6 +497,153 @@ template <class SurfaceT>
   return Ok(out);
 }
 
+// Assembles a DerivQuote for price_capped_vol_swap's three exit paths
+// (pinned, fully-aged deterministic, model-based split-domain quadrature).
+// Mirrors capped_var_swap_quote's bookkeeping but in VOL units:
+// fair_strike_points uses the 1e2 vol-points scale (not 1e4 var-points), and
+// accrued_component_dec / future_component_dec deliberately stay
+// VARIANCE-space diagnostics (a and b*m, not their square roots) -- the brief
+// specifies these as the blended-variance decomposition even though the
+// strike itself is vol-space.
+[[nodiscard]] DerivQuote capped_vol_swap_quote(double expectation_dec, double accrued_dec,
+                                               double future_dec, double cap_option_dec,
+                                               double df, const DerivContract& contract,
+                                               DerivFlags flags) noexcept {
+  DerivQuote out{};
+  out.fair_strike_dec = expectation_dec;  // E[min(sqrt V,c)]: strike pricing to PV = 0
+  out.fair_strike_points = 1.0e2 * expectation_dec;  // vol points, NOT var points
+  out.pv = df * contract.notional * (expectation_dec - contract.strike_dec);
+  out.undiscounted_expectation_dec = expectation_dec;
+  out.accrued_component_dec = accrued_dec;
+  out.future_component_dec = future_dec;
+  out.cap_option_value_dec = cap_option_dec;
+  out.flags = flags;
+  return out;
+}
+
+// Capped volatility swap: E[min(sqrt(V), c)] for the blended variance
+// V = a + b*W (see file header / Task 4 for the a/b/W model), c =
+// contract.cap_dec a decimal VOL cap, C = c^2 its variance-units image.
+//
+// Raw Gauss-Hermite on min(sqrt V, c) is NOT used: the payoff is kinked in W
+// (established by Task 2's rv_lognormal.hpp header note -- GH loses spectral
+// accuracy past a kink), so the domain is split instead at the kink's
+// standard-normal coordinate z* solving a + b*w* = C:
+//   z* = (ln(w*/m) + s^2/2) / s
+// Below the kink sqrt(a+b*W) is smooth and integrated by
+// lognormal_truncated_expect (GL-64); above it the payoff is the constant c
+// and the tail probability closes analytically via 1 - Phi(z*). The
+// degenerate s == 0 case (W collapses to a point mass at m) is handled before
+// the quadrature call -- lognormal_truncated_expect asserts s > 0.
+//
+// Exit paths, in order (mirrors price_capped_var_swap):
+//   1. PIN: a = w_done*rv_done_dec >= C -> deterministic df*N*(c-K).
+//   2. FULLY AGED (not pinned): min(sqrt(V),C) collapses to sqrt(rv_done_dec)
+//      exactly (w_future == 0, no future leg to model).
+//   3. Otherwise: strip for K_var_future, resolve vol-of-vol, split-domain
+//      quadrature.
+//
+// Precondition (enforced by deriv_price before this is ever called):
+// contract.cap_dec > 0.
+template <class SurfaceT>
+[[nodiscard]] Result<DerivQuote> price_capped_vol_swap(const SurfaceT& surface,
+                                                        const CurveSet& curves,
+                                                        const DerivContract& contract,
+                                                        const DerivConfig& cfg) {
+  assert(contract.cap_dec > 0.0 && "capped vol swap: cap_dec validated by the caller");
+  const RealizedVarianceSpec& rv = contract.rv_spec;
+  const double T = contract.maturity_t;
+  const double c = contract.cap_dec;
+  const double cap_var = c * c;  // C: the vol cap's variance-units image
+
+  if (cfg.discrete_correction_mode == DerivDiscreteCorrection::FullMc) {
+    return Err(ErrorCode::NotImplemented, "FULL_MC discrete correction reserved");
+  }
+
+  double w_done = 0.0;
+  double w_future = 1.0;
+  if (rv.n_obs_total > 0u) {
+    w_done = static_cast<double>(rv.n_obs_done) / static_cast<double>(rv.n_obs_total);
+    w_future = 1.0 - w_done;
+  }
+  const double a = w_done * rv.rv_done_dec;
+
+  DerivFlags flags = DerivFlags::None;
+  if (rv.n_obs_done > 0u) {
+    flags |= DerivFlags::Aged;
+  }
+  if (rv.n_obs_total > 0u && rv.n_obs_done >= rv.n_obs_total) {
+    flags |= DerivFlags::FullyAged;
+  }
+
+  if (a >= cap_var) {
+    flags |= DerivFlags::CapPinned | DerivFlags::CapApplied;
+    const double df = deriv_df_at_T(curves, T, flags);
+    return Ok(capped_vol_swap_quote(c, a, 0.0, 0.0, df, contract, flags));
+  }
+
+  if (has_flag(flags, DerivFlags::FullyAged)) {
+    // a < C here (the pin check above already handled a >= C): min(V,C)
+    // collapses to the realized leg, no model needed.
+    const double r1 = std::sqrt(std::fmax(a, 0.0));
+    const double df = deriv_df_at_T(curves, T, flags);
+    return Ok(capped_vol_swap_quote(r1, a, 0.0, 0.0, df, contract, flags));
+  }
+
+  if (!(T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "capped vol swap needs T > 0 to price the future leg");
+  }
+  ATX_TRY(auto sq, var_swap_fair_strike(surface, curves, T, cfg));
+
+  // Same Diffusion1OverN correction as price_var_swap / price_capped_var_swap,
+  // applied before the blend and before the lognormal model -- see
+  // price_capped_var_swap's comment for why this has to match exactly.
+  double m = sq.fair_strike_dec;
+  if (cfg.discrete_correction_mode == DerivDiscreteCorrection::Diffusion1OverN &&
+      rv.n_obs_total >= 1u) {
+    m *= (1.0 + 1.0 / static_cast<double>(rv.n_obs_total));
+    flags |= DerivFlags::DiscreteCorrApplied;
+  }
+
+  ATX_TRY(const VolOfVol vv, resolve_vol_of_vol(surface, curves, T, m, cfg));
+  const double s = vv.xi * std::sqrt(T);
+  const double b = w_future;  // > 0: not fully aged (checked above)
+  const auto sqrt_v = [a, b](double w) noexcept { return std::sqrt(a + b * w); };
+
+  // {E[min(sqrt V,c)], E[sqrt V] - E[min(sqrt V,c)]}. s <= 0: W collapses to
+  // a point mass at m, no quadrature, no kink to split. s > 0: split-domain
+  // quadrature at the kink z* solving a + b*w* = C.
+  const auto [expectation, cap_option] = [&]() -> std::pair<double, double> {
+    if (s <= 0.0) {
+      const double sqrt_v_mean = sqrt_v(m);
+      const double capped = std::fmin(sqrt_v_mean, c);
+      return {capped, sqrt_v_mean - capped};
+    }
+    const double w_star = (cap_var - a) / b;  // > 0: a < C (checked above)
+    const double z_star = (std::log(w_star / m) + 0.5 * s * s) / s;
+    const double lower = detail::lognormal_truncated_expect(m, s, -8.0, z_star, sqrt_v);
+    const double tail_prob = 1.0 - detail::norm_cdf(z_star);
+    const double capped = lower + c * tail_prob;
+    const double uncapped_sqrt = detail::lognormal_truncated_expect(m, s, -8.0, 8.0, sqrt_v);
+    return {capped, uncapped_sqrt - capped};
+  }();
+
+  flags |= DerivFlags::ModelProxy | DerivFlags::CapApplied | sq.flags;
+  if (vv.calibrated) {
+    flags |= DerivFlags::VolOfVolCalibrated;
+  }
+  const double df = deriv_df_at_T(curves, T, flags);
+
+  DerivQuote out =
+      capped_vol_swap_quote(expectation, a, b * m, cap_option, df, contract, flags);
+  out.uncapped_var_dec = sq.uncapped_var_dec;
+  out.integration_error_est = sq.integration_error_est;
+  out.vol_of_vol_used = vv.xi;
+  out.convexity_adjustment_dec = sqrt_v(m) - expectation;
+  return Ok(out);
+}
+
 }  // namespace
 
 // ── Variance strip ─────────────────────────────────────────────────────────
@@ -730,7 +877,7 @@ Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
   // sees it as reserved.
   switch (cfg.engine) {
   case DerivEngine::RvDistributionProxy:
-    if (contract.kind != DerivKind::CappedVarSwap) {
+    if (contract.kind != DerivKind::CappedVarSwap && contract.kind != DerivKind::CappedVolSwap) {
       return Err(ErrorCode::NotImplemented, "reserved pricing engine");
     }
     break;
@@ -751,8 +898,7 @@ Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
     return Err(ErrorCode::InvalidArgument, "vol_of_vol must be >= 0");
   }
 
-  // cap_dec validation applies uniformly to both capped kinds (even though
-  // CappedVolSwap still dead-ends in NotImplemented below): a malformed
+  // cap_dec validation applies uniformly to both capped kinds: a malformed
   // contract should fail the same way regardless of which capped product it
   // names. Uncapped kinds (VarSwap/VolSwap) must leave cap_dec at 0.
   const bool is_capped_kind = contract.kind == DerivKind::CappedVarSwap ||
@@ -776,7 +922,10 @@ Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
     }
     return price_capped_var_swap(surface, curves, contract, cfg);
   case DerivKind::CappedVolSwap:
-    return Err(ErrorCode::NotImplemented, "capped volatility swap reserved");
+    if (cfg.engine == DerivEngine::StripLogContract || cfg.engine == DerivEngine::VolCarrLee) {
+      return Err(ErrorCode::InvalidArgument, "engine cannot price capped kinds");
+    }
+    return price_capped_vol_swap(surface, curves, contract, cfg);
   }
   // Defends against an out-of-enum kind (matches the C default's ERR_INVALID).
   return Err(ErrorCode::InvalidArgument, "unknown derivative kind");

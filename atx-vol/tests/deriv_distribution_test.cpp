@@ -270,14 +270,142 @@ TEST(CappedVolSwap, ZeroCapRejected) {
   EXPECT_EQ(q.error().code(), ErrorCode::InvalidArgument);
 }
 
-TEST(CappedVolSwap, ValidCapStillNotImplemented) {
+// ── Task 5: capped volatility swap ────────────────────────────────────────
+//
+// Numerical method note: E[min(sqrt V, c)] is NOT computed via raw
+// Gauss-Hermite on min(sqrt V, c) -- that payoff is kinked in W and GH loses
+// its spectral accuracy on kinked integrands (RvLognormal.CallMatchesQuadratureAndParity
+// above is the same lesson for a call payoff). Instead the pricer splits the
+// domain at the kink's standard-normal coordinate z* and integrates the
+// smooth piece with lognormal_truncated_expect (GL-64), closing the tail
+// analytically via norm_cdf. These tests exercise that split-domain formula.
+
+// Jensen ordering at inception with explicit vol-of-vol:
+//   E[min(sqrt V, c)] <= E[sqrt V] <= sqrt(E[V])   (cap haircut, then concavity)
+TEST(CappedVolSwap, JensenAndCapOrdering) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivConfig cfg = deriv_default_config();
+  cfg.vol_of_vol = 0.80;
+  DerivContract c{};
+  c.kind = DerivKind::CappedVolSwap; c.maturity_t = 0.25; c.notional = 1e5;
+  c.cap_dec = 0.22;  // near-the-money vol cap vs sigma = 0.20
+  c.rv_spec.annualization = 252.0; c.rv_spec.n_obs_total = 63u;
+  const auto q = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(q.has_value());
+  const auto kv = var_swap_fair_strike(surf, cs, 0.25, cfg);
+  ASSERT_TRUE(kv.has_value());
+  EXPECT_LT(q->fair_strike_dec, std::sqrt(kv->fair_strike_dec));
+  EXPECT_GT(q->fair_strike_dec, 0.10);  // sane magnitude
+  // Removing the cap (huge c) must recover the pure E[sqrt V] which exceeds
+  // the capped strike.
+  DerivContract un = c; un.cap_dec = 10.0;
+  const auto uq = deriv_price(surf, cs, un, cfg);
+  ASSERT_TRUE(uq.has_value());
+  EXPECT_GT(uq->fair_strike_dec, q->fair_strike_dec);
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::CapApplied));
+}
+
+// GH consistency: with a far-OTM cap and zero accrual the capped vol swap must
+// equal the exact lognormal sqrt moment.
+TEST(CappedVolSwap, FarOtmCapMatchesLognormalSqrtMoment) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivConfig cfg = deriv_default_config();
+  cfg.vol_of_vol = 0.60;
+  DerivContract c{};
+  c.kind = DerivKind::CappedVolSwap; c.maturity_t = 0.25; c.notional = 1e5;
+  c.cap_dec = 10.0;
+  c.rv_spec.annualization = 252.0; c.rv_spec.n_obs_total = 63u;
+  const auto q = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(q.has_value());
+  const auto kv = var_swap_fair_strike(surf, cs, 0.25, cfg);
+  ASSERT_TRUE(kv.has_value());
+  const double s = 0.60 * std::sqrt(0.25);
+  const double truth =
+      atx::vol::detail::lognormal_sqrt_moment(kv->fair_strike_dec, s);
+  EXPECT_NEAR(q->fair_strike_dec, truth, 1e-8);
+}
+
+// Fully aged: payoff-exact min(sqrt(rv), c). rv_done_dec = 0.09 -> sqrt =
+// 0.30 > cap 0.25, i.e. the accrued leg alone (a == rv_done_dec here) also
+// exceeds C == cap^2 == 0.0625, so this lands on the PIN path -- same PV
+// formula, exercised at full aging (T == 0) rather than mid-life.
+TEST(CappedVolSwap, FullyAgedPaysMinSqrtRvCap) {
   const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
   const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
   DerivContract c{};
-  c.kind = DerivKind::CappedVolSwap; c.maturity_t = 0.25; c.notional = 1.0;
-  c.cap_dec = 0.50;
+  c.kind = DerivKind::CappedVolSwap; c.maturity_t = 0.0; c.notional = 1e5;
+  c.strike_dec = 0.20; c.cap_dec = 0.25;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u; c.rv_spec.n_obs_done = 63u;
+  c.rv_spec.rv_done_dec = 0.09;  // sqrt = 0.30 > cap 0.25
   const auto q = deriv_price(surf, cs, c, deriv_default_config());
-  ASSERT_FALSE(q.has_value());
-  EXPECT_EQ(q.error().code(), ErrorCode::NotImplemented);
+  ASSERT_TRUE(q.has_value());
+  EXPECT_NEAR(q->pv, 1e5 * (0.25 - 0.20), 1e-9);
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::FullyAged));
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::CapPinned));
+}
+
+// Mid-life pin: analogous to Task 4's CappedVarSwap.AccruedAboveCapPinsPv but
+// for the vol cap, in variance-space against C = cap_dec^2. n_done=21/63 ->
+// w_done=1/3; rv_done=0.27 -> a=(1/3)*0.27=0.09 > 0.0625=c^2 (c=0.25): the
+// accrued leg alone already exceeds the cap, so PV pins at df*N*(c-K) with no
+// strip call and the surface is never needed (mid-life, not fully aged).
+TEST(CappedVolSwap, AccruedAboveCapPinsPv) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const DerivConfig cfg = deriv_default_config();
+  DerivContract c{};
+  c.kind = DerivKind::CappedVolSwap; c.maturity_t = 0.10; c.notional = 1e6;
+  c.strike_dec = 0.20; c.cap_dec = 0.25;
+  c.rv_spec.annualization = 252.0; c.rv_spec.n_obs_total = 63u;
+  c.rv_spec.n_obs_done = 21u;
+  c.rv_spec.rv_done_dec = 0.27;  // w_done*rv_done = (1/3)*0.27 = 0.09 > 0.0625 = c^2
+  const auto q = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(q.has_value());
+  const double df = cs.yield.disc(0.10);
+  EXPECT_NEAR(q->pv, df * 1e6 * (0.25 - 0.20), 1e-6);
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::CapPinned));
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::FullyAged));
+  EXPECT_NEAR(q->fair_strike_dec, 0.25, 1e-15);
+}
+
+// Parity: E[min(sqrt V, c)] + cap_option_value_dec == E[sqrt V] (uncapped),
+// cross-checked against an INDEPENDENT smooth-integrand GH-21 oracle (NOT the
+// GL-64 split-domain nodes the pricer itself uses for the capped side) --
+// sqrt(a + b*W) has no kink, so lognormal_expect (GH-21) is spectrally
+// accurate on it and serves as an accuracy oracle exactly the way
+// RvLognormal.ExpectRecoversMeanAndSqrtMoment uses it above. Per the
+// controller amendment this is NOT a same-nodes-exact identity (the capped
+// side's tail term is a closed-form 1-Phi(z*), not a quadrature over the same
+// nodes as the uncapped GH-21 sum), so the tolerance is 1e-9, not machine
+// epsilon. Also covers: cap_option_value_dec > 0 when the cap clearly binds
+// (near-the-money cap_dec == 0.22 vs sigma == 0.20) and ~= 0 far OTM.
+TEST(CappedVolSwap, CapOptionValueParity) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivConfig cfg = deriv_default_config();
+  cfg.vol_of_vol = 0.80;
+  DerivContract c{};
+  c.kind = DerivKind::CappedVolSwap; c.maturity_t = 0.25; c.notional = 1e5;
+  c.cap_dec = 0.22;  // near-the-money -- cap clearly binds
+  c.rv_spec.annualization = 252.0; c.rv_spec.n_obs_total = 63u;
+  const auto q = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(q.has_value());
+  EXPECT_GT(q->cap_option_value_dec, 0.0);
+
+  const auto kv = var_swap_fair_strike(surf, cs, 0.25, cfg);
+  ASSERT_TRUE(kv.has_value());
+  const double m = kv->fair_strike_dec;  // a == 0, b == 1 here (n_obs_done == 0)
+  const double s = 0.80 * std::sqrt(0.25);
+  const double oracle = lognormal_expect(m, s, [](double w) { return std::sqrt(w); });
+  EXPECT_NEAR(q->fair_strike_dec + q->cap_option_value_dec, oracle, 1e-9);
+
+  // Far-OTM cap: the option value collapses to ~0 (payoff never binds).
+  DerivContract un = c; un.cap_dec = 10.0;
+  const auto uq = deriv_price(surf, cs, un, cfg);
+  ASSERT_TRUE(uq.has_value());
+  EXPECT_NEAR(uq->cap_option_value_dec, 0.0, 1e-8);
 }
 }  // namespace
