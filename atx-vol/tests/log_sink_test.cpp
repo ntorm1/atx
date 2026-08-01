@@ -16,6 +16,7 @@
 #include "atx/vol/log.hpp"
 
 #include "atx/vol/detail/log_emit.hpp"
+#include "atx/vol/research/listed_definitions_cache.hpp" // a real routed call site
 
 #include <gtest/gtest.h>
 
@@ -329,6 +330,60 @@ TEST(LogSink, ConcurrentEmissionIsSerializedByTheCallback) {
   for (const Record &r : records) {
     EXPECT_EQ(r.message.rfind("t=", 0), 0u) << "torn or corrupted record: " << r.message;
   }
+}
+
+// ── A real emitting path ────────────────────────────────────────────────────
+
+// GATE, and the exit criterion's first half. Everything above drives the
+// emitter directly, which proves the SEAM works but not that the library
+// actually uses it. This drives a genuine production path —
+// `read_listed_definitions_cached`, whose MISS line is one of the 13 routed
+// sites — and asserts the record reaches the sink and NOT stderr.
+//
+// The fixture is deliberately minimal: the MISS line is emitted after the
+// cache lookup fails but BEFORE the TSV is parsed, so any file contents at all
+// drive the path. Whether the subsequent parse succeeds is irrelevant here and
+// is covered by listed_definitions_cache_test.cpp.
+//
+// RED BEFORE ROUTING: with the seam in place but the site still calling
+// std::fprintf(stderr, ...) directly, `captured` holds the MISS line and the
+// sink holds nothing — both assertions below fail.
+TEST(LogSinkRouting, DefinitionsCacheMissGoesToTheSinkNotStderr) {
+  const fs::path dir = fs::temp_directory_path() / "atx-vol-log-sink-test" / "defs-miss";
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir, ec);
+  const fs::path tsv = dir / "definitions.tsv";
+  const fs::path cache = dir / "cache";
+  {
+    std::ofstream out{tsv, std::ios::binary};
+    out << "not-a-real-definitions-table\n";
+  }
+
+  CapturingSink sink;
+  const fs::path capture_path = scratch_file("defs-miss-stderr");
+  {
+    StreamCapture capture{stderr, capture_path};
+    {
+      const ScopedSink installed{sink};
+      static_cast<void>(read_listed_definitions_cached(tsv.string(), cache.string()));
+    }
+    const std::string captured = capture.release();
+    EXPECT_EQ(captured, "") << "the library wrote to stderr despite an installed sink";
+  }
+
+  const std::vector<Record> records = sink.snapshot();
+  ASSERT_GE(records.size(), 1u) << "no record reached the sink from a known-emitting path";
+
+  bool saw_miss = false;
+  for (const Record &r : records) {
+    if (r.message.rfind("listed definitions cache: MISS", 0) == 0) {
+      saw_miss = true;
+      EXPECT_EQ(r.stream, LogStream::Stderr) << "the MISS line historically went to stderr";
+      EXPECT_EQ(r.message.find('\n'), std::string::npos);
+    }
+  }
+  EXPECT_TRUE(saw_miss) << "the definitions-cache MISS line did not reach the sink";
 }
 
 } // namespace atx::vol

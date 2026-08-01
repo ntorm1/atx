@@ -140,10 +140,12 @@
 //     reader holds the destination open; on final failure the temp is preserved
 //     and the previous good file is left intact.
 //
-// `read_listed_definitions_cached` additionally writes one HIT/MISS line to stderr
-// per consulted call and charges the caller's `PhaseTimer`. Neither is
-// synchronized: concurrent calls interleave their stderr lines, and a `PhaseTimer`
-// must not be shared across threads.
+// `read_listed_definitions_cached` additionally emits one HIT/MISS record per
+// consulted call and charges the caller's `PhaseTimer`. The record travels
+// through the diagnostic sink (`atx/vol/log.hpp`): a host that installs one
+// captures it, and with none installed it lands on stderr exactly as it always
+// did. Neither is synchronized: concurrent calls interleave their records, and a
+// `PhaseTimer` must not be shared across threads.
 
 #include "atx/vol/listed_opra.hpp" // ListedDefinitionTable, ListedContractDefinition
 #include "atx/vol/types.hpp"       // Result / Status

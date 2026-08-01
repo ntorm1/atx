@@ -37,6 +37,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"
 #include "atx/vol/detail/counters.hpp"
+#include "atx/vol/detail/log_emit.hpp"
 #include "atx/vol/detail/archive_util.hpp"
 #include "atx/vol/dispersion.hpp" // contract_vega_per_vol_point (the ONE vol-point conversion)
 #include "atx/vol/historical_projection.hpp"
@@ -2671,13 +2672,15 @@ Status dispersion_build_corpus(const fs::path &source_spec_path, const fs::path 
   // WS-F F4 (BT-W), second half of the wiring gap: the RunSpec writer knows only
   // the RunSpec vocabulary, so every typed knob was dropped here.
   ATX_TRY_VOID(persist_typed_spec_keys(source_spec_path, run_dir / "run_spec.tsv"));
-  std::printf("built qualified corpus: admitted=%u quarantined=%u source_failed=%u\n",
-              built.quality.n_admitted, built.quality.n_quarantined, built.quality.n_source_failed);
+  detail::log_emitf(LogLevel::Info, LogStream::Stdout,
+                    "built qualified corpus: admitted=%u quarantined=%u source_failed=%u",
+                    built.quality.n_admitted, built.quality.n_quarantined,
+                    built.quality.n_source_failed);
   if (corpus_phase_timing_enabled()) {
-    std::printf("%s\n",
-                format_corpus_phase_line(ingest_s, build_s, corpus_phase_timings(), date_batch,
-                                         load_stats.load_process_cpu_s)
-                    .c_str());
+    detail::log_emitf(LogLevel::Info, LogStream::Stdout, "%s",
+                      format_corpus_phase_line(ingest_s, build_s, corpus_phase_timings(),
+                                               date_batch, load_stats.load_process_cpu_s)
+                          .c_str());
   }
   return Ok();
 }
@@ -2917,11 +2920,12 @@ Status dispersion_run_surface_backtest(const fs::path &run_dir) {
   // The console line names the regime too: the single most common way to
   // misread this run is to quote its final_nav without knowing which
   // execution assumptions produced it.
-  std::printf("surface-only projected backtest complete: dates=%zu final_nav=%.10g "
-              "regime=%s (%s) cost=%.10g\n",
-              backtest.size(), backtest.nav.back(), std::string(to_string(regime)).c_str(),
-              dispersion_regime_detail(run_config.frictions, run_config.costs).c_str(),
-              outcome.sheet.total_cost);
+  detail::log_emitf(LogLevel::Info, LogStream::Stdout,
+                    "surface-only projected backtest complete: dates=%zu final_nav=%.10g "
+                    "regime=%s (%s) cost=%.10g",
+                    backtest.size(), backtest.nav.back(), std::string(to_string(regime)).c_str(),
+                    dispersion_regime_detail(run_config.frictions, run_config.costs).c_str(),
+                    outcome.sheet.total_cost);
   return Ok();
 }
 
@@ -3254,11 +3258,12 @@ Status dispersion_run_projected_var(const fs::path &run_dir) {
   }
   // The as-of is on the console line for the same reason it is in the artifact:
   // the number is meaningless without the session whose book it describes.
-  std::printf("projected relative-template VaR complete: scenarios=%zu positions=%zu "
-              "as_of=%s book_fingerprint=%llu rate=%.1f/s\n",
-              frames.size(), var.n_positions, as_of_date.c_str(),
-              static_cast<unsigned long long>(book_fingerprint),
-              static_cast<double>(legs.size()) / elapsed_seconds);
+  detail::log_emitf(LogLevel::Info, LogStream::Stdout,
+                    "projected relative-template VaR complete: scenarios=%zu positions=%zu "
+                    "as_of=%s book_fingerprint=%llu rate=%.1f/s",
+                    frames.size(), var.n_positions, as_of_date.c_str(),
+                    static_cast<unsigned long long>(book_fingerprint),
+                    static_cast<double>(legs.size()) / elapsed_seconds);
   return Ok();
 }
 

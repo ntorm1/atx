@@ -23,6 +23,7 @@
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"
 #include "atx/vol/detail/archive_util.hpp"
+#include "atx/vol/detail/log_emit.hpp"
 #include "atx/vol/research/run_diagnostics.hpp" // PhaseTimer (optional definitions_cache hit/miss phase, review I6)
 
 namespace atx::vol {
@@ -625,11 +626,12 @@ Result<ListedDefinitionTable> read_listed_definitions_cached(std::string_view ts
     // bump, a platform move — this degrades to a permanent 100% miss that still
     // pays a ~300 MB write on every single run, and without these two lines
     // nothing but wall time would say so.
-    std::fprintf(stderr, "listed definitions cache: HIT %s\n", cache_file.string().c_str());
+    detail::log_emitf(LogLevel::Info, LogStream::Stderr, "listed definitions cache: HIT %s",
+                      cache_file.string().c_str());
     return hit;
   }
-  std::fprintf(stderr, "listed definitions cache: MISS (%s) %s\n",
-               hit.error().to_string().c_str(), cache_file.string().c_str());
+  detail::log_emitf(LogLevel::Info, LogStream::Stderr, "listed definitions cache: MISS (%s) %s",
+                    hit.error().to_string().c_str(), cache_file.string().c_str());
 
   auto parsed = parse_listed_definitions(contents);
   if (!parsed) {
@@ -638,8 +640,9 @@ Result<ListedDefinitionTable> read_listed_definitions_cached(std::string_view ts
   // A publish failure is NEVER an error — it is a logged miss.
   const Status published = write_definitions_cache(cache_file.string(), *parsed, key);
   if (!published) {
-    std::fprintf(stderr, "listed definitions cache: publish failed (%s); continuing uncached\n",
-                 published.error().to_string().c_str());
+    detail::log_emitf(LogLevel::Error, LogStream::Stderr,
+                      "listed definitions cache: publish failed (%s); continuing uncached",
+                      published.error().to_string().c_str());
   }
   return parsed;
 }

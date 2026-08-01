@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/detail/log_emit.hpp"
 #include "atx/vol/arb.hpp"              // arb_check_calendar, ArbViolation
 #include "atx/vol/calib.hpp"            // FitObs, FitDiag, CalibOpts
 #include "atx/vol/deamer.hpp"           // de_americanize_chain, european_equiv_iv, otm_side
@@ -533,13 +534,13 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   }
 
   if (profile) {
-    std::fprintf(stderr,
-                 "[ATX_VOL_PROFILE] slices=%zu carry=%.1f deam=%.1f fit=%.1f "
-                 "repair=%.1f parity=%.1f calendar=%.1f ms viol_pre=%zu "
-                 "(carry=forward/borrow solve; deam=per-strike invert; "
-                 "parity=re-Am score)\n",
-                 idx, ms_carry, ms_deam, ms_fit, ms_repair, ms_parity, ms_calendar,
-                 n_calendar_viol_pre);
+    detail::log_emitf(LogLevel::Info, LogStream::Stderr,
+                      "[ATX_VOL_PROFILE] slices=%zu carry=%.1f deam=%.1f fit=%.1f "
+                      "repair=%.1f parity=%.1f calendar=%.1f ms viol_pre=%zu "
+                      "(carry=forward/borrow solve; deam=per-strike invert; "
+                      "parity=re-Am score)",
+                      idx, ms_carry, ms_deam, ms_fit, ms_repair, ms_parity, ms_calendar,
+                      n_calendar_viol_pre);
   }
 
   SurfaceParityReport out{
