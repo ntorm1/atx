@@ -191,12 +191,30 @@ target_compile_features(atx-vol PUBLIC cxx_std_20)
 #                      dispersion VOCABULARY (dispersion.hpp, listed_*.hpp)
 #                      stays on the public surface; only the drivers move.
 #
-# MINIMAL SHAPE ON PURPOSE (plan 5.6 finishes the tools story in Sprint 5): both
-# are INTERFACE targets that own an include root only — the implementing
-# translation units still compile into atx-vol, so atx-vol carries the include
-# roots PUBLIC. Splitting the .cpp out into real static libraries, and demoting
-# these to PRIVATE so a plain `atx::vol` consumer can no longer even name them,
-# is 5.6's job. Do not build that here.
+# MINIMAL SHAPE, AND IT STAYED THAT WAY. Both are INTERFACE targets that own an
+# include root only — the implementing translation units still compile into
+# atx-vol, so atx-vol carries the include roots PUBLIC. S4-T18 left a note here
+# saying plan 5.6 would split those .cpp into real static libraries and demote
+# these two edges to PRIVATE. 5.6 (S5-T27) promoted the tool EXECUTABLES instead
+# (the ATX_BUILD_TOOLS block at the bottom of this file) and deliberately did NOT
+# do the split. Two measured reasons, so the next reader does not re-plan it from
+# the old note:
+#
+#   1. Flipping THIS edge to PRIVATE would change nothing a consumer can observe.
+#      atx-vol links atx-vol-research PUBLIC, and atx-vol-research links
+#      atx-vol-tools INTERFACE (below), so the tools include root reaches every
+#      `atx::vol` consumer through research regardless. Containing the tools
+#      headers means demoting the RESEARCH edge too — and the research headers
+#      are shipped, so that is a distribution-surface decision, not a build tidy.
+#   2. The .cpp cannot simply move down a layer. The research tier's own public
+#      headers include the tools headers (research/dispersion_run.hpp and
+#      research/backtest_driver.hpp both name TearSheet), while the tools sources
+#      call back into the core library — so "tools as a lower static library" is a
+#      two-way edge, not a tier. It needs a real decomposition, not a target move.
+#
+# Both remain open. Neither is a defect in what ships: the reachability is stated
+# here and in cmake/atx-vol-install.cmake, and it is wider-than-ideal rather than
+# wrong.
 add_library(atx-vol-tools INTERFACE)
 add_library(atx::vol::tools ALIAS atx-vol-tools)
 target_include_directories(atx-vol-tools
@@ -368,9 +386,6 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(spy_strangle_tradeable examples/spy_strangle_tradeable.cpp)
     target_link_libraries(spy_strangle_tradeable PRIVATE atx::vol atx::core atx_warnings)
 
-    add_executable(atxvol_spy_dispersion_backtest examples/spy_dispersion_backtest.cpp)
-    target_link_libraries(atxvol_spy_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
-
     # Point-in-time Databento OPRA definition export consumed by the strict
     # listed-dispersion workflow. Network access and cost are explicitly gated.
     add_executable(databento_spy_dispersion_definitions
@@ -466,24 +481,6 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(spy_dispersion_pnl examples/spy_dispersion_pnl.cpp)
     target_link_libraries(spy_dispersion_pnl PRIVATE atx::vol atx::core atx_warnings)
 
-    # Surface-db production build CLI (Task 6): the one-call build_surface_db
-    # driver wrapped in a hand-rolled arg loop -- create-or-open a SurfaceDb,
-    # load an OPRA hive v2 window, auto-generate per-symbol fit configs, and
-    # cell-aware-streaming-populate every (symbol, date) surface. Resumable/
-    # idempotent (re-run over an unchanged hive fits zero). See
-    # tools/surface_db_build_main.cpp and docs/surface-db-build.md.
-    add_executable(atx-vol-surface-db-build tools/surface_db_build_main.cpp)
-    target_link_libraries(atx-vol-surface-db-build PRIVATE atx::vol atx::core atx_warnings)
-
-    # Surface-db MANAGEMENT/INSPECTION CLI: info / partitions / symbols / config
-    # / query / verify over a built database, so verifying one needs no Python
-    # binding. Thin shell over the surface_db_admin library
-    # (atx/vol/tools/surface_db_admin.hpp); gate test: SurfaceDbAdmin
-    # (tests/surface_db_admin_test.cpp). Same ATX_BUILD_EXAMPLES gate as the
-    # build CLI above. See tools/surface_db_main.cpp and docs/surface-db-build.md.
-    add_executable(atx-vol-surface-db tools/surface_db_main.cpp)
-    target_link_libraries(atx-vol-surface-db PRIVATE atx::vol atx::core atx_warnings)
-
     # Earnings-censored atmCen reproduction (Task 7): thin CLI over the shared
     # run_earnings_repro library pipeline (atx/vol/earnings_repro.hpp) -- OPRA
     # parquet -> fitted VolaSession -> Task 5 earnings TSV -> iEMove + the 12
@@ -509,4 +506,57 @@ if(ATX_BUILD_EXAMPLES)
     # tools/earnings_validation.cpp.
     add_executable(earnings-validation tools/earnings_validation.cpp)
     target_link_libraries(earnings-validation PRIVATE atx::vol atx::core atx_warnings)
+endif()
+
+# ---- Shipped operator CLIs (plan 5.6) ---------------------------------------
+# THE TOOLS TIER. These three binaries are part of the v1 distribution: they are
+# installed into <prefix>/bin by cmake/atx-vol-install.cmake and are ON by
+# default (the ATX_BUILD_TOOLS option in the root CMakeLists states why). All
+# three were previously gated behind ATX_BUILD_EXAMPLES, which is OFF by default
+# and describes demonstrations — so the shipped tooling was, until now, built by
+# nothing except an explicitly opted-in developer build.
+#
+# WHAT IS AND IS NOT IN THIS TIER. A tool here is something an OPERATOR runs
+# against real artifacts: build a surface database, inspect one, drive the listed
+# dispersion workflow end to end. The acceptance drivers, benchmarks and worked
+# demonstrations above stay on the examples gate even when their source sits in
+# tools/ (earnings-validation is the one such case: a research cohort harness
+# over a checked-in truth CSV, not an operator binary).
+#
+# EXECUTABLE NAMES ARE DELIBERATELY UNCHANGED by the promotion, including the
+# odd one out (`atxvol_spy_dispersion_backtest`). The name is load-bearing for
+# consumers this build does not compile: bench/corpus_occupancy_probe.ps1 invokes
+# the exe by path, python/tests/test_dispersion_runarchive_e2e.py locates it by
+# filename, and python/tests/test_dispersion_e2e_discovery.py asserts the usage
+# banner text line by line. Renaming is a separable change with its own blast
+# radius; the promotion does not need it.
+if(ATX_BUILD_TOOLS)
+    # Surface-db production build CLI (Task 6): the one-call build_surface_db
+    # driver wrapped in a hand-rolled arg loop -- create-or-open a SurfaceDb,
+    # load an OPRA hive v2 window, auto-generate per-symbol fit configs, and
+    # cell-aware-streaming-populate every (symbol, date) surface. Resumable/
+    # idempotent (re-run over an unchanged hive fits zero). See
+    # tools/surface_db_build_main.cpp and docs/surface-db-build.md.
+    add_executable(atx-vol-surface-db-build tools/surface_db_build_main.cpp)
+    target_link_libraries(atx-vol-surface-db-build PRIVATE atx::vol atx::core atx_warnings)
+
+    # Surface-db MANAGEMENT/INSPECTION CLI: info / partitions / symbols / config
+    # / query / verify over a built database, so verifying one needs no Python
+    # binding. Thin shell over the surface_db_admin library
+    # (atx/vol/tools/surface_db_admin.hpp); gate test: SurfaceDbAdmin
+    # (tests/surface_db_admin_test.cpp). See tools/surface_db_main.cpp and
+    # docs/surface-db-build.md.
+    add_executable(atx-vol-surface-db tools/surface_db_main.cpp)
+    target_link_libraries(atx-vol-surface-db PRIVATE atx::vol atx::core atx_warnings)
+
+    # The listed SPY-dispersion workflow CLI: build-corpus / build-schedule /
+    # run-backtest / project-schedule / run-projected-backtest /
+    # run-surface-backtest / run-projected-var / verify / runarchive dump. Each
+    # subcommand is a process boundary over the run directory; three dispatch
+    # straight into library entry points and the rest compose named library seams
+    # (the split table is in the source, and dispersion_run.hpp is its authority).
+    # This is the binary the RunArchive artifacts and the Python renderer
+    # (python/src/atxvol/report/dispersion.py) are written for.
+    add_executable(atxvol_spy_dispersion_backtest tools/spy_dispersion_backtest.cpp)
+    target_link_libraries(atxvol_spy_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
 endif()

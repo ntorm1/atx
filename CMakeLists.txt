@@ -322,6 +322,20 @@ endif()
 option(ATX_VOL_COUNTERS "Instrument atx-vol pricing hot paths with opt-in algorithm counters" OFF)
 option(ATX_VOL_PROFILE "Instrument atx-vol phase wall times with compile-time opt-in timers" OFF)
 
+# ---- atx-vol operator CLIs (plan 5.6; ON by default) ------------------------
+# The three SHIPPED tools -- atx-vol-surface-db-build, atx-vol-surface-db and the
+# dispersion-backtest CLI -- live in atx-vol/tools/ and install into <prefix>/bin
+# with the package (cmake/atx-vol-install.cmake). ON by default because they are
+# part of what atx-vol IS at v1: a library plus the operator binaries that build,
+# inspect and replay its artifacts. That is the whole difference from
+# ATX_BUILD_EXAMPLES (OFF by default, atx-core/CMakeLists.txt), which gates
+# demonstrations and acceptance drivers that ship nowhere.
+#
+# OFF must keep the default library build whole: nothing under src/ or include/
+# is conditional on it, so -DATX_BUILD_TOOLS=OFF drops exactly three executables
+# and their install rules, and no library, test or example target changes.
+option(ATX_BUILD_TOOLS "Build the atx-vol operator CLIs (installed with the package)" ON)
+
 # Only configure tests / GoogleTest when this is the top-level project.
 option(ATX_BUILD_TESTS "Build ATX tests" ${PROJECT_IS_TOP_LEVEL})
 option(ATX_BUILD_UI "Build the ATX volatility desktop workspace" OFF)
