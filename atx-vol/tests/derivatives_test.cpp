@@ -513,6 +513,42 @@ TEST(RealizedTracker, Observe_RejectsNonPositiveSpot) {
   EXPECT_FALSE(t.observe(-1.0).has_value());
 }
 
+TEST(RealizedTracker, ObserveDated_RefusesReplayAndBackdate) {
+  auto built = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(built.has_value());
+  RealizedTracker t = std::move(*built);
+  EXPECT_TRUE(t.observe_dated(1000, 100.0).has_value());
+  EXPECT_TRUE(t.observe_dated(2000, 101.0).has_value());
+  const auto after_two = t.snapshot();
+  EXPECT_EQ(after_two.n_obs_done, 1u);
+  // exact replay: refused, state untouched
+  EXPECT_FALSE(t.observe_dated(2000, 101.0).has_value());
+  // backdate: refused
+  EXPECT_FALSE(t.observe_dated(1500, 99.0).has_value());
+  const auto still = t.snapshot();
+  EXPECT_EQ(still.n_obs_done, after_two.n_obs_done);
+  EXPECT_EQ(t.last_fixing_ts_ns(), 2000);
+  // forward continues fine
+  EXPECT_TRUE(t.observe_dated(3000, 102.0).has_value());
+  EXPECT_EQ(t.snapshot().n_obs_done, 2u);
+}
+
+TEST(RealizedTracker, ObserveDated_MatchesUndatedArithmetic) {
+  auto a = RealizedTracker::create(252.0, 10u);
+  auto b = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(a.has_value());
+  ASSERT_TRUE(b.has_value());
+  const double spots[] = {100.0, 101.0, 99.0, 102.0};
+  ASSERT_TRUE(a->observe_batch(spots).has_value());
+  std::int64_t ts = 1;
+  for (const double s : spots) {
+    ASSERT_TRUE(b->observe_dated(ts++, s).has_value());
+  }
+  EXPECT_EQ(a->snapshot().n_obs_done, b->snapshot().n_obs_done);
+  EXPECT_DOUBLE_EQ(a->snapshot().sum_sq_log_returns_done,
+                   b->snapshot().sum_sq_log_returns_done);
+}
+
 // ── Reserved-field validation (test_deriv_reserved_validation.c) ─────────
 
 TEST(ReservedValidation, VarStrip_ZeroReserved_Succeeds) {

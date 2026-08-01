@@ -83,6 +83,7 @@
 // takes exclusive access.
 
 #include <cstdint>
+#include <limits>
 #include <span>
 
 #include "atx/vol/curve.hpp"
@@ -231,6 +232,19 @@ public:
   // its error (mirrors ats_vol_realized_tracker_observe_batch).
   [[nodiscard]] Status observe_batch(std::span<const double> spots);
 
+  // Timestamped observe for daily-fixing drivers (the backtest). Same accrual
+  // arithmetic as observe(); additionally enforces STRICTLY ASCENDING fixing
+  // timestamps so a re-delivered snapshot cannot double-count a fixing:
+  // ts_ns <= last_fixing_ts_ns() returns AlreadyExists and mutates nothing.
+  // Ordering is validated FIRST -- a rejected call (stale or replayed ts)
+  // leaves every field (including last_fixing_ts_ns()) untouched, even when
+  // the underlying observe(spot) would itself have failed.
+  [[nodiscard]] Status observe_dated(std::int64_t ts_ns, double spot);
+
+  // Timestamp of the last accepted observe_dated() call, or
+  // numeric_limits<int64_t>::min() before the first one.
+  [[nodiscard]] std::int64_t last_fixing_ts_ns() const noexcept { return last_fixing_ts_ns_; }
+
   // Immutable spec view for use as a contract field (returned by value; the C
   // copied it out).
   [[nodiscard]] RealizedVarianceSpec snapshot() const noexcept { return rv_; }
@@ -246,6 +260,7 @@ private:
   double prev_spot_ = 0.0;
   bool have_prev_ = false;
   RealizedVarianceSpec rv_{};
+  std::int64_t last_fixing_ts_ns_ = std::numeric_limits<std::int64_t>::min();
 };
 
 // ── Contract / config / quote ────────────────────────────────────────────

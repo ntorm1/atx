@@ -1353,6 +1353,19 @@ Status RealizedTracker::observe_batch(std::span<const double> spots) {
   return Ok();
 }
 
+Status RealizedTracker::observe_dated(std::int64_t ts_ns, double spot) {
+  // Ordering validated FIRST and unconditionally: a stale/replayed ts_ns
+  // mutates nothing, even when observe(spot) would itself have rejected the
+  // spot (e.g. non-positive) -- the caller learns "not ascending", not a
+  // spot-validation error that implies the timestamp was otherwise fine.
+  if (ts_ns <= last_fixing_ts_ns_) {
+    return Err(ErrorCode::AlreadyExists, "fixing timestamp not ascending");
+  }
+  ATX_TRY_VOID(observe(spot));
+  last_fixing_ts_ns_ = ts_ns;
+  return Ok();
+}
+
 // ── Explicit instantiations (mirrors surface.cpp) ──────────────────────────
 
 template Result<DerivQuote> var_swap_fair_strike<EssviSurface>(
