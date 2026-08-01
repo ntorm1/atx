@@ -5,6 +5,7 @@
 
 #include "atx/vol/detail/log_emit.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
@@ -89,7 +90,14 @@ void log_emitv(LogLevel level, LogStream stream, const char *fmt, std::va_list a
         std::free(heap);
         return;
       }
-      n = static_cast<std::size_t>(wrote);
+      // CLAMPED, not trusted. `wrote` is the WOULD-HAVE-WRITTEN length of the
+      // SECOND rendering, and the buffer was sized from the first: if a format
+      // argument's target changed between the two calls the second can be
+      // longer, and `buf[n] = '\n'` / `buf[n + 1] = '\0'` below would then write
+      // past the allocation. No current call site can do that (all pass
+      // `.c_str()` of a local), but this is a noexcept variadic path in library
+      // code and the clamp costs one comparison.
+      n = std::min(static_cast<std::size_t>(wrote), cap - 2u);
     } else {
       // Allocation failed. Emit the truncated prefix vsnprintf already produced
       // rather than perturb the run: cap - 1 chars plus the NUL it wrote.
