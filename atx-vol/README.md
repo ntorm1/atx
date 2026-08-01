@@ -390,6 +390,57 @@ build/bin/opra_dbn_to_parquet.exe   # cached DBN -> Parquet (no API spend)
 build/bin/opra_parity_bench.exe     # de-Am + fit + parity + cold-vs-cached timing
 ```
 
+## API stability policy (1.x)
+
+The version is single-sourced from `project(atx VERSION ...)` and reaches C++ as
+`atx::vol::version()`, `atx::vol::kVersion{Major,Minor,Patch,String}` and the
+`ATX_VOL_VERSION*` macros (`atx/vol/version.hpp`). Feature-gate with the numeric
+form, which is preprocessor-usable:
+
+```cpp
+#if ATX_VOL_VERSION >= ATX_VOL_VERSION_NUM(1, 1, 0)
+  // ... 1.1 API ...
+#endif
+```
+
+**What 1.0.0 freezes is a tier, not the whole tree.** The tiers are physical —
+each is a directory and, where it matters, its own CMake target — so "is this
+frozen?" is answered by where the header lives, not by judgement:
+
+| Tier | Where | Count | Promise |
+|---|---|---|---|
+| **Tier-A** | exactly the headers `atx/vol/vol.hpp` includes | 56 | **Frozen for 1.x.** Closed under inclusion |
+| **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 22 + 9 | Public and supported to include; **not** frozen |
+| `detail/` | `include/atx/vol/detail/` | 24 | **No stability promise.** Installed because Tier-A reaches it |
+| `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
+| `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 9 | Run orchestration. Not part of the shipped library surface |
+
+*Closed under inclusion* is the load-bearing rule: a header named in a frozen
+signature is frozen whether or not callers reach for it directly, so if a Tier-A
+header includes another `atx/vol/` header, that header is Tier-A too. The only
+permitted escape is downward into `detail/` or `simd/`, which promise nothing.
+
+Tier-B is where the advanced per-family calibrators, the SoA/SIMD batch kernels,
+the listed-dispersion vocabulary and the harness panels/fixtures live. They are
+public and you may include them; they are simply outside what 1.x will not break.
+
+**The manifest is `kTierA` in `atx-vol/tests/vol_umbrella_test.cpp`**, and it is
+machine-checked, not documentation. Four contract tests fail the build on drift:
+`UmbrellaIsExactlyTierA` (the umbrella's include list *is* the manifest, reported
+as two directed differences so a shrunk API and a widened promise are told
+apart), `UmbrellaAdmitsNoNonShippedTier`, `TierAIsClosedUnderInclusion`, and
+`DemotedSurfaceContainersAreNotNamedInPublicHeaders`. Promoting or demoting a
+header means editing that array in the same commit as the header move.
+
+The package advertises `COMPATIBILITY SameMajorVersion`, which is the same
+statement in CMake: a `find_package(atx-vol 1.0)` consumer accepts any 1.z,
+because Tier-A is what it compiled against and Tier-A does not move in 1.x.
+
+**Known limit, stated rather than implied.** `tools/` and `research/` are
+path- and umbrella-separated but not yet *link*-separated: `atx-vol` links both
+include roots PUBLIC, so a plain `atx::vol` consumer can still include them by
+name. That isolation is plan item 5.6, not done here.
+
 ## Linkage and distribution policy (v1)
 
 **atx-vol 1.x ships static-only, and there is no `ATX_VOL_API` export macro.**
