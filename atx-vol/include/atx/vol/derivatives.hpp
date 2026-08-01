@@ -311,10 +311,13 @@ struct DerivQuote {
   // populate a real value once a distribution model actually runs.
   double vol_of_vol_used = kQuietNaN;
   // Cap option value b*E[(W-K_c)+] subtracted from the uncapped expectation
-  // to get E[min(V,C)] (Task 4). 0.0 for uncapped kinds and for a capped
-  // quote where the cap cannot bind (fully-aged, accrued < cap); NEVER NaN --
-  // unlike vol_of_vol_used, a caller should not have to gate on (x == x) to
-  // read this one.
+  // to get E[min(V,C)] (Task 4). 0.0 for uncapped kinds, for a capped quote
+  // where the cap cannot bind (fully-aged, accrued < cap), AND for a pinned
+  // quote (accrued >= cap) -- the pin path deliberately skips the strip, so
+  // the true haircut against the (unpriced) uncapped expectation is never
+  // computed there; this is "not computed", not "computed and zero". NEVER
+  // NaN -- unlike vol_of_vol_used, a caller should not have to gate on
+  // (x == x) to read this one.
   double cap_option_value_dec = 0.0;
   DerivFlags flags = DerivFlags::None;
 };

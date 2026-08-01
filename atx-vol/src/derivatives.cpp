@@ -423,6 +423,12 @@ template <class SurfaceT>
   const double T = contract.maturity_t;
   const double cap = contract.cap_dec;
 
+  // Discrete-monitoring FULL_MC is rejected up-front (reserved engine),
+  // mirroring price_var_swap's guard.
+  if (cfg.discrete_correction_mode == DerivDiscreteCorrection::FullMc) {
+    return Err(ErrorCode::NotImplemented, "FULL_MC discrete correction reserved");
+  }
+
   double w_done = 0.0;
   double w_future = 1.0;
   if (rv.n_obs_total > 0u) {
@@ -457,9 +463,21 @@ template <class SurfaceT>
                "capped var swap needs T > 0 to price the future leg");
   }
   ATX_TRY(auto sq, var_swap_fair_strike(surface, curves, T, cfg));
-  ATX_TRY(const VolOfVol vv, resolve_vol_of_vol(surface, curves, T, sq.fair_strike_dec, cfg));
 
-  const double m = sq.fair_strike_dec;
+  // Discrete-monitoring correction (Buhler 2006, leading order in 1/n_total) --
+  // same formula and flag as price_var_swap's, applied BEFORE the blend and
+  // BEFORE the lognormal model: the corrected mean is both the blend's future
+  // leg AND resolve_vol_of_vol's calibration target, so a plain VarSwap and a
+  // CappedVarSwap on the same underlying see the same future variance leg
+  // under this config (otherwise CapParityHolds silently breaks under it).
+  double m = sq.fair_strike_dec;
+  if (cfg.discrete_correction_mode == DerivDiscreteCorrection::Diffusion1OverN &&
+      rv.n_obs_total >= 1u) {
+    m *= (1.0 + 1.0 / static_cast<double>(rv.n_obs_total));
+    flags |= DerivFlags::DiscreteCorrApplied;
+  }
+
+  ATX_TRY(const VolOfVol vv, resolve_vol_of_vol(surface, curves, T, m, cfg));
   const double s = vv.xi * std::sqrt(T);
   const double k_c = (cap - accrued) / w_future;  // w_future > 0: not fully aged (checked above)
   const double cap_option = w_future * detail::lognormal_call(m, s, k_c);

@@ -23,6 +23,7 @@ using atx::vol::deriv_default_config;
 using atx::vol::deriv_price;
 using atx::vol::DerivConfig;
 using atx::vol::DerivContract;
+using atx::vol::DerivDiscreteCorrection;
 using atx::vol::DerivFlags;
 using atx::vol::DerivKind;
 using atx::vol::ErrorCode;
@@ -226,5 +227,57 @@ TEST(CappedVarSwap, ZeroCapRejected) {
   const auto q = deriv_price(surf, cs, c, deriv_default_config());
   ASSERT_FALSE(q.has_value());
   EXPECT_EQ(q.error().code(), ErrorCode::InvalidArgument);
+}
+
+// Review finding 1: price_var_swap scales the future leg by
+// (1 + 1/n_obs_total) and stamps DiscreteCorrApplied under
+// Diffusion1OverN; price_capped_var_swap must do the SAME thing to the SAME
+// leg, or a plain VarSwap and a CappedVarSwap on the same underlying would
+// disagree on K_var_future under this config. Far-OTM cap isolates that:
+// with the cap effectively inert, the capped fair strike should equal the
+// plain VarSwap's OWN corrected fair strike, not the uncorrected one.
+TEST(CappedVarSwap, DiscreteCorrectionAppliesToFutureLegConsistently) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivConfig cfg = deriv_default_config();
+  cfg.discrete_correction_mode = DerivDiscreteCorrection::Diffusion1OverN;
+  DerivContract c{};
+  c.kind = DerivKind::VarSwap; c.maturity_t = 0.25; c.notional = 1e6;
+  c.rv_spec.annualization = 252.0; c.rv_spec.n_obs_total = 63u;
+  const auto plain = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(plain.has_value());
+  ASSERT_TRUE(has_flag(plain->flags, DerivFlags::DiscreteCorrApplied));
+
+  c.kind = DerivKind::CappedVarSwap;
+  c.cap_dec = 25.0;  // absurdly high variance cap -- effectively uncapped
+  const auto capped = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(capped.has_value());
+  EXPECT_TRUE(has_flag(capped->flags, DerivFlags::DiscreteCorrApplied));
+  EXPECT_NEAR(capped->fair_strike_dec, plain->fair_strike_dec,
+              1e-9 * plain->fair_strike_dec);
+}
+
+// Review finding 2: CappedVolSwap dispatch precedence was correct but had no
+// direct coverage. Pins today's behavior (Task 5 implements the pricer and
+// updates ValidCapStillNotImplemented then).
+TEST(CappedVolSwap, ZeroCapRejected) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivContract c{};
+  c.kind = DerivKind::CappedVolSwap; c.maturity_t = 0.25; c.notional = 1.0;
+  const auto q = deriv_price(surf, cs, c, deriv_default_config());
+  ASSERT_FALSE(q.has_value());
+  EXPECT_EQ(q.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(CappedVolSwap, ValidCapStillNotImplemented) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivContract c{};
+  c.kind = DerivKind::CappedVolSwap; c.maturity_t = 0.25; c.notional = 1.0;
+  c.cap_dec = 0.50;
+  const auto q = deriv_price(surf, cs, c, deriv_default_config());
+  ASSERT_FALSE(q.has_value());
+  EXPECT_EQ(q.error().code(), ErrorCode::NotImplemented);
 }
 }  // namespace
