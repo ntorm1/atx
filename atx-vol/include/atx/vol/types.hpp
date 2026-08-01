@@ -42,7 +42,7 @@ enum class ExerciseStyle : std::uint8_t {
 // consumer) and moved here by FIX-E M-9: a vocabulary shared by projection,
 // analytics and portfolio risk belongs with the rest of the shared vocabulary,
 // not behind an include that drags in `vol_surface.hpp`, `correction.hpp`,
-// `curve.hpp` and `universe.hpp` to name one enum.
+// `rates_curve.hpp` and `universe.hpp` to name one enum.
 //
 // AN-P2-6 is a convention-FRAGMENTATION defect — analytics solved American
 // |delta|, projection solved European B76 forward delta, and

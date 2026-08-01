@@ -16,9 +16,9 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/american.hpp"
-#include "atx/vol/curve.hpp"
 #include "atx/vol/data.hpp"
 #include "atx/vol/dividend.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/s3.hpp"
 #include "atx/vol/types.hpp"
 

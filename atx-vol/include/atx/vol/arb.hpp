@@ -48,8 +48,8 @@
 #include <span>
 #include <vector>
 
-#include "atx/vol/curve.hpp"
 #include "atx/vol/c8.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/types.hpp"
 #include "atx/vol/universe.hpp"
 #include "atx/vol/vol_curve.hpp"

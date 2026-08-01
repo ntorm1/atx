@@ -1,6 +1,12 @@
 #pragma once
 
-// Yield / forward / dividend / borrow curve set.
+// Yield / forward / dividend / borrow curve set — the RATES side of "curve".
+//
+// Named `rates_curve.hpp` (it was `curve.hpp` through S4-T21 / plan 4.4) so the
+// two unrelated `curve` vocabularies in this library stop colliding on include
+// lines: this header is the discount / forward / dividend term structure, while
+// `vol_curve.hpp` (`IVolCurve`, `CurveSurface`, `CurveConfig`) and
+// `spline_curve.hpp` are the volatility-smile curve family.
 //
 // Ported from the C `ats-vol` library (ats_curve.h / ats_curve.c). A vol
 // surface is meaningless without a clean forward curve; this module owns:

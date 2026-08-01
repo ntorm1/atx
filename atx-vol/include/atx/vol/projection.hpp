@@ -49,7 +49,7 @@
 #include <span>
 
 #include "atx/vol/correction.hpp"  // CorrectionCache
-#include "atx/vol/curve.hpp"       // CurveSet (also brings kQuietNaN)
+#include "atx/vol/rates_curve.hpp" // CurveSet (also brings kQuietNaN)
 #include "atx/vol/types.hpp"       // Side, Result/Status
 #include "atx/vol/universe.hpp"    // Uid, kInvalidUid
 #include "atx/vol/vol_surface.hpp" // VolSurface
@@ -109,10 +109,10 @@ enum class CoordKind : std::uint8_t {
 // `DeltaConvention` NOW LIVES IN `types.hpp` (FIX-E M-9). It was declared here
 // because projection was its first consumer, but calling it "THE library-wide
 // delta vocabulary" while making every consumer include the whole projection
-// spine — `vol_surface.hpp`, `correction.hpp`, `curve.hpp`, `universe.hpp` — to
-// name one enum was a contradiction. It sits with the rest of the shared
-// vocabulary now; `projection.hpp` still includes `types.hpp`, so this header's
-// own `DeltaConvention` uses are unchanged.
+// spine — `vol_surface.hpp`, `correction.hpp`, `rates_curve.hpp`,
+// `universe.hpp` — to name one enum was a contradiction. It sits with the rest
+// of the shared vocabulary now; `projection.hpp` still includes `types.hpp`, so
+// this header's own `DeltaConvention` uses are unchanged.
 //
 // Not every consumer supports every convention. `projection.cpp`'s coordinate
 // solves accept `Forward` ONLY and return NotImplemented otherwise (unchanged by

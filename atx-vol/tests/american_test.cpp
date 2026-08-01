@@ -17,10 +17,10 @@
 #include "atx/vol/black76.hpp"
 #include "atx/vol/correction.hpp"
 #include "atx/vol/detail/counters.hpp"
-#include "atx/vol/curve.hpp"    // DividendEvent, forward_div_corrected (G2 dDiv)
 #include "atx/vol/detail/adjoint_greeks.hpp" // european_greeks_adjoint dP/dq (G2)
 #include "atx/vol/dividend.hpp" // hybrid_forward, hybrid_forward_div_jacobian (G2)
 #include "atx/vol/greeks.hpp"
+#include "atx/vol/rates_curve.hpp"    // DividendEvent, forward_div_corrected (G2 dDiv)
 #include "support/isa_golden_tol.hpp"
 #include "support/oracle_pde_golden.hpp"
 #include "support/oracle_pricer_pde.hpp"

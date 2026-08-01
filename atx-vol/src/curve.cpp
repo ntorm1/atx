@@ -1,4 +1,4 @@
-#include "atx/vol/curve.hpp"
+#include "atx/vol/rates_curve.hpp"
 
 #include <cmath>
 

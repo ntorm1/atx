@@ -60,7 +60,7 @@
 
 #include "atx/vol/arb.hpp"         // FilterOpts (reused, not redefined)
 #include "atx/vol/calib.hpp"       // CalibOpts, OptimizationLevel, CalibLossKind
-#include "atx/vol/curve.hpp"       // kFwdLowTDefaultYears
+#include "atx/vol/rates_curve.hpp" // kFwdLowTDefaultYears
 #include "atx/vol/types.hpp"       // Result, ErrorCode
 #include "atx/vol/universe.hpp"    // Underlying, Chain, chain_index
 #include "atx/vol/vol_surface.hpp" // Parametrization, ResidualBasisKind

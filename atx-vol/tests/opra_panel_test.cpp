@@ -15,8 +15,8 @@
 
 #include "atx/core/io/parquet.hpp"
 #include "atx/core/io/parquet_writer.hpp"
-#include "atx/vol/curve.hpp"     // YieldCurve
 #include "atx/vol/data.hpp"      // year_fraction, find_expiry_inputs, ExpiryInputs
+#include "atx/vol/rates_curve.hpp"     // YieldCurve
 #include "atx/vol/vol_time.hpp"  // TimeSpec, TimeConvention, vol_time_years
 
 // Loader/parser coverage for the OPRA cbbo-1m (NBBO) Parquet ingestion path.

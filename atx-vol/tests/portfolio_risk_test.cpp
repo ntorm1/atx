@@ -9,9 +9,9 @@
 
 #include "atx/vol/black76.hpp"
 #include "atx/vol/correction.hpp"
-#include "atx/vol/curve.hpp"
 #include "atx/vol/portfolio_risk.hpp"
 #include "atx/vol/projection.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/universe.hpp"
 #include "atx/vol/vol_surface.hpp"
 

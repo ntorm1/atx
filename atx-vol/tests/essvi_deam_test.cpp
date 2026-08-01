@@ -13,12 +13,12 @@
 #include "atx/vol/calib.hpp"          // CalibOpts, calib_default_opts
 #include "atx/vol/chain.hpp"          // OptionChain
 #include "atx/vol/correction.hpp"     // CorrectionCache, AmericanCorrectionCaches
-#include "atx/vol/curve.hpp"          // CurveSet, ForwardPoint
 #include "atx/vol/data.hpp"           // iso_to_ns
 #include "atx/vol/deamer.hpp"         // DeAmOptions
 #include "atx/vol/essvi_calib.hpp"    // the unit under test
 #include "atx/vol/market_env.hpp"     // MarketEnv
 #include "atx/vol/panel.hpp"          // make_synthetic_american_panel, SynthPanelSpec
+#include "atx/vol/rates_curve.hpp"    // CurveSet, ForwardPoint
 #include "atx/vol/s3.hpp"             // s3_iv
 #include "support/spy_fixture.hpp"    // make_spy_synthetic_spec
 #include "atx/vol/universe.hpp"       // Underlying, Chain

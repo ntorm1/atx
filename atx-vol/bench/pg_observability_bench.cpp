@@ -53,10 +53,10 @@
 #include "atx/vol/american_iv.hpp"  // american_implied_vol
 #include "atx/vol/correction.hpp"   // CorrectionCache
 #include "atx/vol/detail/counters.hpp"     // counters::ledger (always-on solve ledger)
-#include "atx/vol/curve.hpp"        // DividendEvent
 #include "atx/vol/deamer.hpp"       // resolve_chain_forward, DeAmOptions
 #include "atx/vol/dividend.hpp"     // HybridDivParams, hybrid_forward
 #include "atx/vol/portfolio_pricer.hpp" // Position
+#include "atx/vol/rates_curve.hpp"  // DividendEvent
 #include "atx/vol/scenario_grid.hpp"    // scenario_grid, ScenarioGridSpec, ScenarioRoute (A7)
 #include "atx/vol/types.hpp"        // Side
 #include "atx/vol/universe.hpp"     // Chain, chain_index

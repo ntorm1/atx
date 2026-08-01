@@ -10,7 +10,7 @@
 // geometric Brownian motion and D_t is a deterministic shift equal to the
 // present value of the remaining cash dividends. Discrete *cash* dividends
 // dominate the short end (the escrowed-cash / Battig-Jarrow forward already
-// implemented as `forward_div_corrected` in curve.hpp); a *proportional*
+// implemented as `forward_div_corrected` in rates_curve.hpp); a *proportional*
 // (continuous-yield) treatment dominates the long end, where the escrowed
 // model over-suppresses variance. Klassen's practical construction blends
 // the two with a single dimensionless parameter (the three named variants
@@ -67,7 +67,7 @@
 #include <cstdint>
 #include <span>
 
-#include "atx/vol/curve.hpp" // DividendEvent, forward_div_corrected, kQuietNaN
+#include "atx/vol/rates_curve.hpp" // DividendEvent, forward_div_corrected, kQuietNaN
 #include "atx/vol/types.hpp" // Result / ErrorCode (atx::core, re-exported)
 
 namespace atx::vol {

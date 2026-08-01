@@ -19,9 +19,9 @@
 
 #include "atx/core/error.hpp"       // Ok, Err, ErrorCode
 #include "atx/core/hash.hpp"        // hash_bytes
-#include "atx/vol/curve.hpp"        // YieldCurve
 #include "atx/vol/data.hpp"         // iso_to_ns
 #include "atx/vol/detail/parallel_for.hpp" // parallel_for_dynamic (W4.3 per-file fan-out)
+#include "atx/vol/rates_curve.hpp"  // YieldCurve
 #include "opra_batch_detail.hpp"    // Civil kernel, memo_iso_to_ns, resolve_market_inputs
 
 namespace atx::vol {

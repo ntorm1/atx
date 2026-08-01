@@ -44,7 +44,7 @@
 #include <span>
 
 #include "atx/vol/calib.hpp"        // CalibOpts, FitObs, FitDiag
-#include "atx/vol/curve.hpp"        // CurveSet
+#include "atx/vol/rates_curve.hpp"  // CurveSet
 #include "atx/vol/types.hpp"        // Result, Status
 #include "atx/vol/universe.hpp"     // Underlying
 #include "atx/vol/vol_surface.hpp"  // VolSurface, SviParams, Parametrization

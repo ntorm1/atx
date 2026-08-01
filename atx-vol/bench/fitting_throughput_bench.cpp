@@ -55,7 +55,6 @@
 #include "atx/vol/calib.hpp" // CalibOpts, FitObs, calib_default_opts, build_observations_european
 #include "atx/vol/chain.hpp" // OptionChain
 #include "atx/vol/correction.hpp"     // CorrectionCache, AmericanCorrectionCaches
-#include "atx/vol/curve.hpp"          // CurveSet, ForwardPoint
 #include "atx/vol/data.hpp"           // iso_to_ns
 #include "atx/vol/deamer.hpp"         // DeAmOptions
 #include "atx/vol/dividend.hpp"       // hybrid_forward, HybridDivParams (real-board forward)
@@ -63,6 +62,7 @@
 #include "atx/vol/market_env.hpp"     // MarketEnv
 #include "atx/vol/panel.hpp"          // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/pricer_fitter.hpp"  // PricerFitter, PricerConfig
+#include "atx/vol/rates_curve.hpp"    // CurveSet, ForwardPoint
 #include "support/spy_fixture.hpp"    // make_spy_synthetic_spec
 #include "atx/vol/surface_policy.hpp" // explicit v2 purpose/admission policy
 #include "atx/vol/svi_calib.hpp"      // svi_fit_slice (quasi-explicit raw-SVI)

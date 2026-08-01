@@ -11,7 +11,7 @@
 #include "atx/vol/arb.hpp"          // arb_check_butterfly_svi_mm
 #include "atx/vol/black76.hpp"      // black76_price, black76_value_and_vega
 #include "atx/vol/calib.hpp"        // FitObs, CalibOpts, calib_default_opts
-#include "atx/vol/curve.hpp"        // CurveSet, ForwardPoint
+#include "atx/vol/rates_curve.hpp"  // CurveSet, ForwardPoint
 #include "atx/vol/svi_calib.hpp"    // fitters + JW conversions
 #include "atx/vol/universe.hpp"     // Underlying, Chain, chain_index
 #include "atx/vol/vol_surface.hpp"  // VolSurface, SviParams, Parametrization

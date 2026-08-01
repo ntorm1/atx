@@ -168,10 +168,10 @@
 
 // ── Surface queries / projection / derivatives ──────────────────────────────
 #include "atx/vol/contract_projection.hpp" // relative template -> concrete theo option
-#include "atx/vol/curve.hpp"               // CurveSet, DividendEvent
 #include "atx/vol/derivatives.hpp"         // vol-derivative analytics
 #include "atx/vol/projection.hpp"          // eval at non-listed T/K, delta anchors
 #include "atx/vol/query_pricing.hpp"       // the query knobs every priced path takes
+#include "atx/vol/rates_curve.hpp"         // CurveSet, DividendEvent
 
 // ── Data model (universe, corpus, real OPRA loader, archive, db) ────────────
 #include "atx/vol/corpus.hpp"              // date x symbol fitted-surface corpus

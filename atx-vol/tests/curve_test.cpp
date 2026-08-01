@@ -5,7 +5,7 @@
 #include <iterator>
 #include <vector>
 
-#include "atx/vol/curve.hpp"
+#include "atx/vol/rates_curve.hpp"
 
 // Curve-set coverage, ported from the C ats-vol tests:
 //   test_curve_cubic.c      -> YieldCurve (Fritsch-Carlson cubic Hermite)
@@ -18,7 +18,7 @@
 // `refit_forward_flags_inconsistent_when_schedule_stale` (exercise
 // `ats_vol_curve_refit_forward_ex` against `AtsVolUniverse`/`AtsVolChain` —
 // the live PCP-refit-from-quotes engine and universe types are explicitly
-// out of scope for this port; see atx/vol/curve.hpp's header comment).
+// out of scope for this port; see atx/vol/rates_curve.hpp's header comment).
 
 namespace {
 

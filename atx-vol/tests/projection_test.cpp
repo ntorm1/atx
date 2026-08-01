@@ -7,9 +7,9 @@
 #include <vector>
 
 #include "atx/core/math.hpp"
-#include "atx/vol/curve.hpp"
 #include "atx/vol/event_vol.hpp"
 #include "atx/vol/projection.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/vol_surface.hpp"
 #include "support/isa_golden_tol.hpp"
 

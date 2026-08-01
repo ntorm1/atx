@@ -52,7 +52,6 @@
 #include "atx/vol/american.hpp"        // AmericanGreeks (query return)
 #include "atx/vol/calib.hpp"           // CalibOpts
 #include "atx/vol/correction.hpp"      // CorrectionCache, AmericanCorrectionCaches
-#include "atx/vol/curve.hpp"           // DividendEvent
 #include "atx/vol/data.hpp"            // QuoteFrame (from_frame input)
 #include "atx/vol/deamer.hpp"          // DeAmOptions
 #include "atx/vol/detail/aggregate_arity.hpp" // SessionInputs field-count drift pin
@@ -62,6 +61,7 @@
 #include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext (to_priced_surface)
 #include "atx/vol/projection.hpp"      // InterpMode (SessionInputs::interp, ShapeBlend eval)
 #include "atx/vol/query_pricing.hpp"   // QueryPricingTier
+#include "atx/vol/rates_curve.hpp"     // DividendEvent
 #include "atx/vol/surface_parity.hpp"  // SliceContext, run_surface_parity
 #include "atx/vol/types.hpp"           // Result, Side
 #include "atx/vol/universe.hpp"        // Underlying (build input)

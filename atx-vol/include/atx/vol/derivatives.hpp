@@ -8,7 +8,8 @@
 // ats_vol_var_strip.c, ats_vol_vol_carr_lee.c, ats_vol_realized_tracker.c —
 // Sprint 22). The pricing layer sits on top of a fitted vol surface (any type
 // answering `iv(k_log, T)`, or a `PricedSurface` through the E6 overloads), the
-// curve set (atx/vol/curve.hpp), and the Black-76 kernel (atx/vol/black76.hpp).
+// curve set (atx/vol/rates_curve.hpp), and the Black-76 kernel
+// (atx/vol/black76.hpp).
 //
 // What this port ships (matching the C's v22 first cut):
 //   - Realized-variance tracker (RealizedTracker): a scalar state machine that
@@ -49,7 +50,7 @@
 #include <cstdint>
 #include <span>
 
-#include "atx/vol/curve.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/types.hpp"
 
 namespace atx::vol {

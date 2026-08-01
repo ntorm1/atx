@@ -13,9 +13,9 @@
 #include "atx/vol/arb.hpp"           // arb_check_total_surface_all
 #include "atx/vol/black76.hpp"       // black76_price, black76_value_and_vega
 #include "atx/vol/calib.hpp"         // CalibOpts, FitObs, build_observations
-#include "atx/vol/curve.hpp"         // CurveSet, ForwardPoint
 #include "atx/vol/essvi_calib.hpp"   // the unit under test
 #include "atx/vol/detail/parallel_for.hpp"  // atx_auto_worker_count (env-cap determinism)
+#include "atx/vol/rates_curve.hpp"   // CurveSet, ForwardPoint
 #include "atx/vol/universe.hpp"      // Underlying, Chain, chain_index
 #include "atx/vol/vol_surface.hpp"   // EssviParams, VolSurface, essvi_reparam_to_natural
 

@@ -11,7 +11,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/c8.hpp"
-#include "atx/vol/curve.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/universe.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "atx/vol/vol_surface.hpp"

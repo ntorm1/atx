@@ -64,12 +64,12 @@
 #include <span>
 #include <vector>
 
-#include "atx/vol/american.hpp"   // AmericanMethod, AlOpts
-#include "atx/vol/correction.hpp" // CorrectionCache, AmericanCorrectionCaches
-#include "atx/vol/curve.hpp"      // DividendEvent
-#include "atx/vol/dividend.hpp"   // HybridDivParams, hybrid_forward, PCP borrow
-#include "atx/vol/types.hpp"      // Side, Result / ErrorCode (atx::core)
-#include "atx/vol/universe.hpp"   // Chain, chain_index
+#include "atx/vol/american.hpp"    // AmericanMethod, AlOpts
+#include "atx/vol/correction.hpp"  // CorrectionCache, AmericanCorrectionCaches
+#include "atx/vol/dividend.hpp"    // HybridDivParams, hybrid_forward, PCP borrow
+#include "atx/vol/rates_curve.hpp" // DividendEvent
+#include "atx/vol/types.hpp"       // Side, Result / ErrorCode (atx::core)
+#include "atx/vol/universe.hpp"    // Chain, chain_index
 
 namespace atx::vol {
 

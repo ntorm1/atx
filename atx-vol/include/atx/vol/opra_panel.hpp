@@ -34,9 +34,9 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/curve.hpp" // DividendEvent
 #include "atx/vol/data.hpp"  // QuoteFrame
 #include "atx/vol/fit_policy.hpp" // FitContext
+#include "atx/vol/rates_curve.hpp" // DividendEvent
 #include "atx/vol/types.hpp" // Result, Side
 #include "atx/vol/vol_time.hpp" // TimeSpec
 

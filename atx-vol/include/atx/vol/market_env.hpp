@@ -33,7 +33,7 @@
 #include <cstdint>
 #include <vector>
 
-#include "atx/vol/curve.hpp"  // YieldCurve, DividendEvent
+#include "atx/vol/rates_curve.hpp"  // YieldCurve, DividendEvent
 
 namespace atx::vol {
 

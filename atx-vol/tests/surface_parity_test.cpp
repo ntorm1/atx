@@ -8,9 +8,9 @@
 #include <vector>
 
 #include "atx/vol/arb.hpp"
-#include "atx/vol/curve.hpp"
 #include "atx/vol/data.hpp"
 #include "atx/vol/panel.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/s3.hpp"
 #include "atx/vol/surface_parity.hpp"
 #include "atx/vol/types.hpp"

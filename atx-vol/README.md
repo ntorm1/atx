@@ -25,9 +25,9 @@ faithfully and mirror the upstream test tolerances.
 | Greeks | `greeks.hpp` | Analytic B76 delta/gamma/vega/theta/rho/vanna/volga/charm |
 | Implied vol | `implied_vol.hpp` | Stefanica–Radoicic (2017) seed + Halley inversion → `Result<double>` |
 | American pricers | `american.hpp`, `correction.hpp` | Andersen–Lake (Gauss-Legendre + Chebyshev boundary), BAW, American Greeks, Chebyshev American-minus-European correction cache, Crank–Nicolson PDE oracle |
-| Surface eval | `surface.hpp` | Lightweight SVI / eSSVI per-slice evaluators + total-variance time interpolation |
+| Surface eval | `surface.hpp` | Lightweight SVI / eSSVI per-slice closed-form evaluators |
 | Surface (calibration-grade) | `vol_surface.hpp` | `VolSurface` (tagged eSSVI/SVI + full slice params), backbone/residual/total eval, grad3/grad4, Mingone reparam, φ_max |
-| Curves | `curve.hpp` | Yield (Fritsch–Carlson) / forward / dividend / borrow (HTB) curve set |
+| Rates curves | `rates_curve.hpp` | Yield (Fritsch–Carlson) / forward / dividend / borrow (HTB) curve set |
 | Universe | `universe.hpp` | Ticker↔uid interning, SoA per-(uid,expiry) chain registry, quote ingest, LRU eviction |
 | Arbitrage | `arb.hpp` | Calendar + butterfly (Roper density) checks, SVI-MM admissibility, calendar projection/repair, quote pre-fit filters |
 | Robust math | `detail/robust.hpp` | Huber loss/weight, strided Huber weights, order-statistic quantile |

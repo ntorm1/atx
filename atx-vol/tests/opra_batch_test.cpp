@@ -15,12 +15,12 @@
 #include "atx/core/io/parquet_writer.hpp"
 #include "atx/vol/american.hpp"     // american_price
 #include "atx/vol/chain.hpp"        // OptionChain
-#include "atx/vol/curve.hpp"        // YieldCurve
 #include "atx/vol/data.hpp"         // QuoteFrame
 #include "atx/vol/market_env.hpp"   // MarketEnv
 #include "atx/vol/panel.hpp"        // make_synthetic_american_panel
 #include "atx/vol/pricer_fitter.hpp"   // PricerFitter
 #include "atx/vol/opra_hive.hpp"       // OpraHiveSpec, load_opra_hive (shared date gate)
+#include "atx/vol/rates_curve.hpp"  // YieldCurve
 #include "support/spy_fixture.hpp"     // make_spy_synthetic_spec
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive
 

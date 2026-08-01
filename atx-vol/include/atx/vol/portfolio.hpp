@@ -71,8 +71,8 @@
 
 #include "atx/vol/adjusted_greeks.hpp"
 #include "atx/vol/correction.hpp"
-#include "atx/vol/curve.hpp"
 #include "atx/vol/greeks.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/types.hpp"
 #include "atx/vol/universe.hpp"
 #include "atx/vol/vol_surface.hpp"

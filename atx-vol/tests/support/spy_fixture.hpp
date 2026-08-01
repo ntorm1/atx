@@ -25,9 +25,9 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/curve.hpp"    // DividendEvent
 #include "atx/vol/data.hpp"     // iso_to_ns, year_fraction
 #include "atx/vol/panel.hpp"    // SynthPanelSpec, SynthExpiry
+#include "atx/vol/rates_curve.hpp"    // DividendEvent
 #include "atx/vol/s3.hpp"       // S3Params
 #include "atx/vol/session.hpp"  // SessionInputs, FitPreset, make/apply preset
 

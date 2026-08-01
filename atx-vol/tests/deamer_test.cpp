@@ -10,9 +10,9 @@
 #include "atx/vol/american.hpp"
 #include "atx/vol/american_iv.hpp"
 #include "atx/vol/detail/counters.hpp" // counters::ledger — always-on AL boundary-solve gate
-#include "atx/vol/curve.hpp"
 #include "atx/vol/deamer.hpp"
 #include "atx/vol/dividend.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/types.hpp"
 #include "atx/vol/universe.hpp"
 

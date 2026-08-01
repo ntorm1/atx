@@ -15,8 +15,8 @@
 #include "atx/vol/american_iv.hpp"
 #include "atx/vol/arb.hpp"
 #include "atx/vol/black76.hpp"
-#include "atx/vol/curve.hpp"
 #include "atx/vol/dividend.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/types.hpp"
 #include "atx/vol/universe.hpp"
 

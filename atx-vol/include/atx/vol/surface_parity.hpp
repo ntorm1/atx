@@ -38,11 +38,11 @@
 #include "atx/core/error.hpp"          // ErrorCode (ExpiryFitReport)
 #include "atx/vol/calib.hpp"           // CalibOpts
 #include "atx/vol/correction.hpp"      // AmericanCorrectionCaches (cert-carry resolve)
-#include "atx/vol/curve.hpp"           // DividendEvent
 #include "atx/vol/deamer.hpp"          // DeAmOptions
 #include "atx/vol/detail/aggregate_arity.hpp" // SurfaceParityReport field-count drift pin
 #include "atx/vol/parity.hpp"          // ParityReport
 #include "atx/vol/detail/prepared_policy.hpp" // PreparedObservationPolicy
+#include "atx/vol/rates_curve.hpp"     // DividendEvent
 #include "atx/vol/types.hpp"           // Result
 #include "atx/vol/universe.hpp"        // Underlying
 #include "atx/vol/vol_surface.hpp"     // VolSurface
