@@ -57,7 +57,7 @@ static_assert(std::is_trivially_copyable_v<AlOpts>,
 
 // schema_hash() folds sizeof(EssviParams)/sizeof(SviParams) so a reader built
 // against a different struct shape rejects the file. C8Params cannot join that
-// fold: its kind postdates the v3 fingerprint, and adding it would invalidate
+// fold: its kind postdates the ATXVSA03 fingerprint, and adding it would invalidate
 // every already-written archive that contains no C8 slice at all. Freeze the
 // layout here instead -- same protection, paid at compile time. If you change
 // C8Params, bump kV3Salt in schema_hash() and update this size.
@@ -149,9 +149,9 @@ SurfaceProvenance legacy_surface_provenance() noexcept {
 // atx-vol/docs/atxvsa2-format.md. Primary sources cited there (FlatBuffers
 // natural alignment; Cap'n Proto relative byte-offset segments; Apache Arrow
 // contiguous typed columns + mmap-first alignment). It was a CLEAN-BREAK sibling to
-// the v1 (ATXVSA v3) reader/writer (§0): distinct types, no dual-read. v1 is now
+// the ATXVSA03 reader/writer (§0): distinct types, no dual-read. ATXVSA03 is now
 // DELETED (release-v1 plan 3.6) — this is the only surface-archive format left, and
-// the v1 magic/schema salt it rejects is all that remains of the old one.
+// the ATXVSA03 magic/schema salt it rejects is all that remains of the old one.
 // ═══════════════════════════════════════════════════════════════════════════
 
 namespace {
@@ -160,7 +160,8 @@ constexpr char kArchiveV2MagicBytes[8] = {'A', 'T', 'X', 'V', 'S', 'A', '2', '0'
 constexpr char kSurfaceRecordMagicBytes[8] = {'A', 'T', 'X', 'V', 'S', 'R', '2', '0'};
 
 // v2 schema fingerprint: folds sizeof of every v2 on-disk struct + the serialized
-// POD slice structs + a v2-specific salt so a v1 file, a drifted-struct v2 file,
+// POD slice structs + an ATXVSA2-specific salt so an ATXVSA03 file, a
+// drifted-struct ATXVSA2 file,
 // and a different-build v2 file are all rejected (FlatBuffers-style hard schema
 // pin; we pay no vtable indirection because the schema is fixed).
 [[nodiscard]] std::uint64_t schema_hash_v2_salted(std::uint64_t salt) noexcept {

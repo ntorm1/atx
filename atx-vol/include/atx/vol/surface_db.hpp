@@ -1,7 +1,9 @@
 #pragma once
 
-// surface_db — the on-disk symbol/partition MANIFEST for a directory of ATXVSA
-// v3 surface archives (surface_archive.hpp), plus the per-symbol fit
+// surface_db — the on-disk symbol/partition MANIFEST for a directory of ATXVSA2
+// surface archives (surface_archive.hpp — magic "ATXVSA20"; that header owns the
+// format naming, and this line used to say "ATXVSA v3", which named the RETIRED
+// format), plus the per-symbol fit
 // configuration a production pipeline needs to fit "this underlying, this
 // way" without hand-assembling `SessionInputs` at every call site.
 //
@@ -42,8 +44,9 @@
 // ── Schema hash / endianness ──────────────────────────────────────────────────
 //
 // Same discipline as the archive: the header stores a compile-time
-// fingerprint folded from the `sizeof` of every on-disk record + a v1 format
-// salt, so a reader built against a different struct shape refuses the file
+// fingerprint folded from the `sizeof` of every on-disk record + an ATXVDB01
+// format salt (this manifest's own magic — a third, unrelated "v1"), so a reader
+// built against a different struct shape refuses the file
 // (ParseError) instead of mis-reading it. Records are host byte order; the
 // header stamps endian = 1 (little) / pointer_bits = 64. Little-endian LP64
 // hosts only.

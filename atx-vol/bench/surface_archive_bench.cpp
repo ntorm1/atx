@@ -7,7 +7,7 @@
 // costs. This TU lands that measurement so the scoreboard's Serialize / Deserialize
 // ★ratify rows have a concrete µs/surface baseline (feeds M4).
 //
-// The v1 (ATXVSA v3) rows this file opened with are GONE with the v1 format itself
+// The ATXVSA03 rows this file opened with are GONE with the ATXVSA03 format itself
 // (release-v1 plan 3.5/3.6): the writer/reader they called no longer exists. Every
 // surviving row measures the SAME operation on v2 bytes and carries an explicit
 // `_v2` name, so no row silently reads a v1 baseline number as if it were v2.

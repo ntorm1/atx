@@ -178,7 +178,7 @@
 #include "atx/vol/opra_panel.hpp"          // real Databento OPRA cbbo loader
 #include "atx/vol/priced_surface.hpp"      // PricedSurface (serialization-ready priced surface)
 #include "atx/vol/priced_surface_view.hpp" // zero-copy view over archived bytes
-#include "atx/vol/surface_archive.hpp"     // fitted priced-surface archive (v3)
+#include "atx/vol/surface_archive.hpp"     // fitted priced-surface archive (ATXVSA2)
 #include "atx/vol/surface_db.hpp"          // partitioned surface database
 #include "atx/vol/universe.hpp"            // Universe, Underlying, Chain, Uid
 

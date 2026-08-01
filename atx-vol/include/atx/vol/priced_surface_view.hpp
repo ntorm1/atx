@@ -4,7 +4,7 @@
 // record mapped in place (WS-S / S2 of the backtest hot-path throughput sprint).
 //
 // Where `PricedSurface` OWNS its fitted curves (polymorphic `unique_ptr` slices)
-// and is produced by the v1 archive's `reconstruct` (per-surface whole-blob
+// and is produced by a `reconstruct` (per-surface whole-blob
 // CRC-32C + `make_unique`/vector-copy per slice), a `PricedSurfaceView` answers
 // the SAME queries — resolve / fair_value / greeks / delta / vega / evaluate /
 // evaluate_batch — directly over the mapped columnar bytes, with:

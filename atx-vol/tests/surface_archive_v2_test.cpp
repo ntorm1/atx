@@ -660,7 +660,7 @@ TEST(SurfaceArchiveV2, RejectsHeaderCorruption) {
 }
 
 TEST(SurfaceArchiveV2, CleanBreakCrossFormatRejection) {
-  // A v1 (ATXVSA03) file is not a v2 archive — no dual read (§0). The v1 writer is
+  // An ATXVSA03 file is not an ATXVSA2 archive — no dual read (§0). Its writer is
   // gone (release-v1 plan 3.6), so the fixture is the v1 FRAMING this reader must
   // still refuse when it meets a legacy file on disk: a v1-sized header block
   // stamped with the v1 magic. Long enough to clear v2's minimum-size check, so the
