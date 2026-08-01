@@ -51,8 +51,7 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
   if (s.size() < 10u || s[4] != '-' || s[7] != '-') {
     return false;
   }
-  if (!parse_ndigits(s, 0, 4, yy) || !parse_ndigits(s, 5, 2, mm) ||
-      !parse_ndigits(s, 8, 2, dd)) {
+  if (!parse_ndigits(s, 0, 4, yy) || !parse_ndigits(s, 5, 2, mm) || !parse_ndigits(s, 8, 2, dd)) {
     return false;
   }
   if (yy < 1970 || yy > 2100 || mm < 1 || mm > 12) {
@@ -82,8 +81,8 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 // Parse a time-of-day starting at `pos` into nanoseconds since midnight and the
 // consumed end position (ports `parse_iso_time_len`, incl. fractional seconds
 // truncated/padded to 9 digits).
-[[nodiscard]] bool parse_iso_time(std::string_view s, std::size_t pos,
-                                  std::int64_t &out_ns, std::size_t &out_pos) noexcept {
+[[nodiscard]] bool parse_iso_time(std::string_view s, std::size_t pos, std::int64_t &out_ns,
+                                  std::size_t &out_pos) noexcept {
   int hh = 0;
   int mi = 0;
   int ss = 0;
@@ -261,7 +260,7 @@ std::int64_t expiry_instant_ns(std::string_view expiry_iso, SettlementSession se
   int mm = 0;
   int dd = 0;
   if (!parse_iso_date(expiry_iso, yy, mm, dd)) {
-    return 0;  // unparseable date -> 0, matching iso_to_ns's parse-failure sentinel
+    return 0; // unparseable date -> 0, matching iso_to_ns's parse-failure sentinel
   }
   // `days_since_epoch` yields the plain civil-day index (timezone-agnostic); the
   // OSI expiry date IS the ET calendar expiration day, so hand it straight to the
@@ -408,7 +407,7 @@ Result<Uid> data_install(Universe &u, const QuoteFrame &frame) {
   }
 
   ATX_TRY(const Uid first_uid, u.intern_ticker(default_uid));
-  ATX_TRY(Underlying *first_under, u.get_underlying(first_uid));
+  ATX_TRY(Underlying * first_under, u.get_underlying(first_uid));
   first_under->spot = frame.spot;
   first_under->spot_ts_ns = frame.spot_ts_ns != 0 ? frame.spot_ts_ns : frame.snapshot_ts_ns;
 
@@ -421,8 +420,7 @@ Result<Uid> data_install(Universe &u, const QuoteFrame &frame) {
     const bool side_ok = (row.side == Side::Call || row.side == Side::Put);
     if (!side_ok || !(std::isfinite(row.strike) && row.strike > 0.0) ||
         !(std::isfinite(row.bid) && row.bid >= 0.0) ||
-        !(std::isfinite(row.ask) && row.ask >= 0.0) || row.bid_size < 0 ||
-        row.ask_size < 0) {
+        !(std::isfinite(row.ask) && row.ask >= 0.0) || row.bid_size < 0 || row.ask_size < 0) {
       return Err(ErrorCode::InvalidArgument, "data_install: invalid row");
     }
     const std::string &ru = row_uid(frame, row);
@@ -435,7 +433,7 @@ Result<Uid> data_install(Universe &u, const QuoteFrame &frame) {
       touched.push_back(uid);
     }
 
-    ATX_TRY(Underlying *under, u.get_underlying(uid));
+    ATX_TRY(Underlying * under, u.get_underlying(uid));
     if (row.under_spot > 0.0 && std::isfinite(row.under_spot)) {
       under->spot = row.under_spot;
     } else if (under->spot <= 0.0 && frame.spot > 0.0) {
@@ -467,6 +465,12 @@ Result<Uid> data_install(Universe &u, const QuoteFrame &frame) {
     // `under` is stable across add_expiry (deque element); index the chain now.
     // The T convention is the frame's own (`frame.time`) — see QuoteFrame::time.
     Chain &chain = under->chains[expiry_id];
+    if (chain.strikes.empty()) {
+      chain.exercise_style = row.exercise_style;
+    } else if (chain.exercise_style != row.exercise_style) {
+      return Err(ErrorCode::InvalidArgument,
+                 "data_install: mixed exercise styles in one expiry chain");
+    }
     std::int64_t snapshot_ns = 0;
     if (!parse_iso_ns(frame.snapshot_iso, snapshot_ns)) {
       return Err(ErrorCode::InvalidArgument, "data_install: bad snapshot timestamp");

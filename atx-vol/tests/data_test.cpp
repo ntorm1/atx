@@ -32,6 +32,7 @@ using atx::vol::build_uid_list;
 using atx::vol::Chain;
 using atx::vol::data_install;
 using atx::vol::ErrorCode;
+using atx::vol::ExerciseStyle;
 using atx::vol::ExpiryInputField;
 using atx::vol::ExpiryInputs;
 using atx::vol::find_expiry_inputs;
@@ -92,8 +93,7 @@ TEST(DataYearFraction, KnownOffsets_Match) {
   EXPECT_LT(std::fabs(year_fraction("2026-05-01", "2026-05-01")), 1.0e-12);
   EXPECT_LT(std::fabs(year_fraction("2026-05-01", "2026-06-12") - 42.0 / 365.25), 1.0e-6);
 
-  const double intraday =
-      year_fraction("2026-05-01 12:00:00.000000", "2026-05-01 18:00:00.000000");
+  const double intraday = year_fraction("2026-05-01 12:00:00.000000", "2026-05-01 18:00:00.000000");
   EXPECT_LT(std::fabs(intraday - (6.0 / 24.0) / 365.25), 1.0e-12);
 }
 
@@ -123,8 +123,7 @@ TEST(DataIso, NsToIsoDate_KnownEpochDays_Match) {
 // ── Install: synthetic frame (fixture_loads / install_into_universe) ────────
 
 TEST(DataInstall, SyntheticFrame_PopulatesChainsStrikesQuotes) {
-  const QuoteFrame f =
-      make_synthetic_frame({"2026-06-19", "2026-09-18", "2026-12-18"}, /*n_k=*/11);
+  const QuoteFrame f = make_synthetic_frame({"2026-06-19", "2026-09-18", "2026-12-18"}, /*n_k=*/11);
   ASSERT_EQ(f.rows.size(), std::size_t{66});
 
   Universe u;
@@ -157,11 +156,32 @@ TEST(DataInstall, SyntheticFrame_PopulatesChainsStrikesQuotes) {
   EXPECT_EQ(st.n_strikes, std::uint64_t{33});
 }
 
+TEST(DataInstall, ExerciseStylePropagatesAndMixedStyleChainIsRejected) {
+  QuoteFrame european = make_synthetic_frame({"2026-06-19"}, /*n_k=*/3);
+  for (QuoteRow &row : european.rows) {
+    row.exercise_style = ExerciseStyle::European;
+  }
+
+  Universe u;
+  const auto uid = data_install(u, european);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+  ASSERT_EQ((*under)->chains.size(), std::size_t{1});
+  EXPECT_EQ((*under)->chains.front().exercise_style, ExerciseStyle::European);
+
+  QuoteFrame mixed = european;
+  mixed.rows.back().exercise_style = ExerciseStyle::American;
+  Universe mixed_universe;
+  const auto rejected = data_install(mixed_universe, mixed);
+  ASSERT_FALSE(rejected.has_value());
+  EXPECT_EQ(rejected.error().code(), ErrorCode::InvalidArgument);
+}
+
 TEST(DataInstall, SyntheticFrame_SortsChainsAscendingInT) {
   // Rows arrive with the far expiry first; install must sort chains by T and
   // re-issue expiry_id to the sorted positions.
-  const QuoteFrame f =
-      make_synthetic_frame({"2026-12-18", "2026-06-19", "2026-09-18"}, /*n_k=*/3);
+  const QuoteFrame f = make_synthetic_frame({"2026-12-18", "2026-06-19", "2026-09-18"}, /*n_k=*/3);
 
   Universe u;
   const auto uid = data_install(u, f);

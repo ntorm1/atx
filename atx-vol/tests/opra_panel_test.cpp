@@ -15,9 +15,9 @@
 
 #include "atx/core/io/parquet.hpp"
 #include "atx/core/io/parquet_writer.hpp"
-#include "atx/vol/curve.hpp"     // YieldCurve
-#include "atx/vol/data.hpp"      // year_fraction, find_expiry_inputs, ExpiryInputs
-#include "atx/vol/vol_time.hpp"  // TimeSpec, TimeConvention, vol_time_years
+#include "atx/vol/curve.hpp"    // YieldCurve
+#include "atx/vol/data.hpp"     // year_fraction, find_expiry_inputs, ExpiryInputs
+#include "atx/vol/vol_time.hpp" // TimeSpec, TimeConvention, vol_time_years
 
 // Loader/parser coverage for the OPRA cbbo-1m (NBBO) Parquet ingestion path.
 //
@@ -29,11 +29,16 @@ namespace {
 namespace io = atx::core::io;
 namespace fs = std::filesystem;
 using atx::i64;
+using atx::vol::ExerciseStyle;
+using atx::vol::expiry_instant_ns;
+using atx::vol::ExpiryCloseConvention;
 using atx::vol::iso_to_ns;
 using atx::vol::load_opra_cbbo_from_table;
 using atx::vol::load_opra_cbbo_parquet;
 using atx::vol::OpraLoadSpec;
 using atx::vol::parse_osi_symbol;
+using atx::vol::settlement_instant_ns;
+using atx::vol::SettlementSession;
 using atx::vol::Side;
 using atx::vol::TimeConvention;
 using atx::vol::TimeSpec;
@@ -42,9 +47,6 @@ using atx::vol::VolTimeCalendar;
 using atx::vol::VolTimeParams;
 using atx::vol::year_fraction;
 using atx::vol::YieldCurve;
-using atx::vol::expiry_instant_ns;
-using atx::vol::SettlementSession;
-using atx::vol::settlement_instant_ns;
 
 // Calendar365 year-fraction from a pure-date snapshot to the TRUE PM-settled
 // (16:00 ET) expiry instant — the T the OPRA loader / data_install now compute
@@ -53,9 +55,8 @@ using atx::vol::settlement_instant_ns;
 // THE FIX: it removes the ~0.8-trading-day front-T understatement.
 [[nodiscard]] inline double pm_year_fraction(const std::string &snap_iso,
                                              const std::string &expiry_iso) {
-  return atx::vol::time_to_expiry_years(iso_to_ns(snap_iso),
-                                        expiry_instant_ns(expiry_iso, SettlementSession::Pm),
-                                        TimeSpec{});
+  return atx::vol::time_to_expiry_years(
+      iso_to_ns(snap_iso), expiry_instant_ns(expiry_iso, SettlementSession::Pm), TimeSpec{});
 }
 
 // ── Shared fixture builders (P2-2 / P2-3) ──────────────────────────────────
@@ -72,12 +73,11 @@ struct RawRow {
 
 // Compose an OSI/OCC 21-char symbol: 6-char space-padded root + YYMMDD + C/P +
 // 8-digit strike (price x 1000).
-[[nodiscard]] std::string osi_sym(std::string root, const std::string& yymmdd, char cp,
+[[nodiscard]] std::string osi_sym(std::string root, const std::string &yymmdd, char cp,
                                   double strike) {
   root.resize(6, ' ');
   char buf[9];
-  std::snprintf(buf, sizeof(buf), "%08lld",
-                static_cast<long long>(std::llround(strike * 1000.0)));
+  std::snprintf(buf, sizeof(buf), "%08lld", static_cast<long long>(std::llround(strike * 1000.0)));
   return root + yymmdd + std::string(1, cp) + std::string(buf);
 }
 
@@ -100,7 +100,7 @@ struct RawRow {
   const auto to_px = [](double d) { return static_cast<i64>(std::llround(d * 1e9)); };
   std::vector<i64> ts_col, bidpx, askpx, bidsz, asksz;
   std::vector<std::string> und_col, sym_col;
-  for (const RawRow& rr : rows) {
+  for (const RawRow &rr : rows) {
     ts_col.push_back(ts_ns);
     und_col.push_back(rr.underlying);
     sym_col.push_back(rr.symbol);
@@ -301,16 +301,13 @@ TEST(OpraPanel, Load_SyntheticXomSlice_CountsAndImpliedSpot) {
   };
   const auto strike_field = [](double k) {
     char buf[9];
-    std::snprintf(buf, sizeof(buf), "%08lld",
-                  static_cast<long long>(std::llround(k * 1000.0)));
+    std::snprintf(buf, sizeof(buf), "%08lld", static_cast<long long>(std::llround(k * 1000.0)));
     return std::string(buf);
   };
-  const auto to_px = [](double dollars) {
-    return static_cast<i64>(std::llround(dollars * 1e9));
-  };
+  const auto to_px = [](double dollars) { return static_cast<i64>(std::llround(dollars * 1e9)); };
 
   const i64 ts_val = 1780000000000000000LL;
-  const auto add_row = [&](const std::string& sym, i64 bpx, i64 apx) {
+  const auto add_row = [&](const std::string &sym, i64 bpx, i64 apx) {
     ts_col.push_back(ts_val);
     und_col.emplace_back("XOM");
     sym_col.push_back(sym);
@@ -320,7 +317,7 @@ TEST(OpraPanel, Load_SyntheticXomSlice_CountsAndImpliedSpot) {
     asksz.push_back(12);
   };
 
-  for (const Expiry& e : expiries) {
+  for (const Expiry &e : expiries) {
     // Plant mids under the SAME true-instant T the loader now back-solves at
     // (G1): C - P = e^{-r*T_true}(F - K), so the loader recovers F exactly.
     const double t = pm_year_fraction(snap, e.iso);
@@ -376,7 +373,7 @@ TEST(OpraPanel, Load_SyntheticXomSlice_CountsAndImpliedSpot) {
   EXPECT_FALSE(loaded->open_interest_available);
 
   // The dropped strike (120) must not have entered the frame.
-  for (const auto& row : loaded->frame.rows) {
+  for (const auto &row : loaded->frame.rows) {
     EXPECT_NE(row.strike, 120.0);
   }
 
@@ -391,10 +388,8 @@ TEST(OpraPanel, Load_SyntheticXomSlice_CountsAndImpliedSpot) {
 }
 
 TEST(OpraPanel, Load_RejectsDisplayedSizeBeforeInt32Narrowing) {
-  const i64 too_large =
-      static_cast<i64>((std::numeric_limits<std::int32_t>::max)()) + 1;
-  const std::vector<RawRow> rows{RawRow{
-      "XOM", "XOM   260619C00110000", 2.0, 2.2, too_large, 12}};
+  const i64 too_large = static_cast<i64>((std::numeric_limits<std::int32_t>::max)()) + 1;
+  const std::vector<RawRow> rows{RawRow{"XOM", "XOM   260619C00110000", 2.0, 2.2, too_large, 12}};
   const std::string path = write_slice("oversized_quote_size.parquet", rows);
   OpraLoadSpec spec;
   spec.path = path;
@@ -461,7 +456,7 @@ TEST(OpraPanel, Load_SpotOverride_UsesOverrideNotPcp) {
 // this exercises exactly that path.
 TEST(OpraPanel, Load_TimestampTsColumn_PopulatesSnapshotNs) {
   using atx::core::time::Timestamp;
-  const i64 kSnapNs = 1780000000000000000LL;  // round (ns == us == ms aligned) -> unit-agnostic
+  const i64 kSnapNs = 1780000000000000000LL; // round (ns == us == ms aligned) -> unit-agnostic
   std::vector<Timestamp> ts_col = {Timestamp::from_unix_nanos(kSnapNs),
                                    Timestamp::from_unix_nanos(kSnapNs)};
   std::vector<std::string> und_col = {"XOM", "XOM"};
@@ -493,12 +488,12 @@ TEST(OpraPanel, Load_TimestampTsColumn_PopulatesSnapshotNs) {
   spec.path = path.string();
   spec.underlying = "XOM";
   spec.r = 0.04;
-  spec.spot_override = 123.45;  // one strike/pair -> no PCP needed
+  spec.spot_override = 123.45; // one strike/pair -> no PCP needed
   // NOTE: snapshot_iso intentionally left empty so snapshot_ts_ns comes from `ts`.
 
   const auto loaded = load_opra_cbbo_parquet(spec);
   ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
-  EXPECT_EQ(loaded->frame.snapshot_ts_ns, kSnapNs);  // the bug returned 0 here
+  EXPECT_EQ(loaded->frame.snapshot_ts_ns, kSnapNs); // the bug returned 0 here
 
   fs::remove_all(dir);
 }
@@ -645,7 +640,7 @@ TEST(OpraPanel, MixedSymbol_FilterSelectsOne) {
   EXPECT_EQ(loaded->frame.uid, "XOM");
   EXPECT_EQ(loaded->n_contracts, std::size_t{2}); // only the two XOM legs
   EXPECT_EQ(loaded->n_expiries, std::size_t{1});
-  for (const auto& row : loaded->frame.rows) {
+  for (const auto &row : loaded->frame.rows) {
     EXPECT_EQ(row.uid, "XOM"); // no AAPL leaked through
   }
 }
@@ -703,7 +698,7 @@ TEST(OpraPanel, FilterSymbolNotFound_Rejected) {
 TEST(OpraPanelTable, TableSeamMatchesFileLoad) {
   const std::vector<i64> ids = {201, 202, 203, 204};
   const std::string path = write_slice("table_seam.parquet", xom_two_expiry_rows(),
-                                        /*with_underlying=*/true, ids);
+                                       /*with_underlying=*/true, ids);
 
   OpraLoadSpec spec;
   spec.path = path;
@@ -780,17 +775,14 @@ TEST(OpraPanel, TermCurve_PerExpiryRateInterpolated) {
 
   // Independently-built reference curve: the loader must route each expiry's
   // rate through YieldCurve::zero at that expiry's own year-fraction.
-  const auto yc = YieldCurve::create(std::span<const double>(pt),
-                                     std::span<const double>(pr));
+  const auto yc = YieldCurve::create(std::span<const double>(pt), std::span<const double>(pr));
   ASSERT_TRUE(yc.has_value()) << yc.error().to_string();
   // Per-expiry rate is stamped at the TRUE 16:00 ET expiry instant (G1).
   const double t_short = pm_year_fraction(snap, "2026-08-01");
   const double t_long = pm_year_fraction(snap, "2027-11-01");
 
-  const auto* cell_short =
-      atx::vol::find_expiry_inputs(loaded->frame, "XOM", "2026-08-01");
-  const auto* cell_long =
-      atx::vol::find_expiry_inputs(loaded->frame, "XOM", "2027-11-01");
+  const auto *cell_short = atx::vol::find_expiry_inputs(loaded->frame, "XOM", "2026-08-01");
+  const auto *cell_long = atx::vol::find_expiry_inputs(loaded->frame, "XOM", "2027-11-01");
   ASSERT_NE(cell_short, nullptr);
   ASSERT_NE(cell_long, nullptr);
 
@@ -798,10 +790,8 @@ TEST(OpraPanel, TermCurve_PerExpiryRateInterpolated) {
   // rate at each maturity, bit-for-bit.
   EXPECT_DOUBLE_EQ(cell_short->rate, yc->zero(t_short));
   EXPECT_DOUBLE_EQ(cell_long->rate, yc->zero(t_long));
-  EXPECT_TRUE(atx::vol::has_flag(cell_short->completeness,
-                                 atx::vol::ExpiryInputField::Rate));
-  EXPECT_TRUE(atx::vol::has_flag(cell_long->completeness,
-                                 atx::vol::ExpiryInputField::Rate));
+  EXPECT_TRUE(atx::vol::has_flag(cell_short->completeness, atx::vol::ExpiryInputField::Rate));
+  EXPECT_TRUE(atx::vol::has_flag(cell_long->completeness, atx::vol::ExpiryInputField::Rate));
 
   // The two expiries genuinely see DIFFERENT interpolated rates (term structure
   // is live, not collapsed to a single flat number).
@@ -838,7 +828,7 @@ TEST(OpraPanel, SinglePillar_EqualsFlatRate_BitIdentical) {
   EXPECT_DOUBLE_EQ(a->implied_spot, b->implied_spot);
 
   // (B) stamped the flat rate onto the expiry cell; (A) left it untouched.
-  const auto* cell_b = atx::vol::find_expiry_inputs(b->frame, "XOM", "2026-09-18");
+  const auto *cell_b = atx::vol::find_expiry_inputs(b->frame, "XOM", "2026-09-18");
   ASSERT_NE(cell_b, nullptr);
   EXPECT_DOUBLE_EQ(cell_b->rate, r);
   EXPECT_TRUE(atx::vol::has_flag(cell_b->completeness, atx::vol::ExpiryInputField::Rate));
@@ -847,7 +837,7 @@ TEST(OpraPanel, SinglePillar_EqualsFlatRate_BitIdentical) {
   EXPECT_EQ(b->frame.yc_pillar_t, one_t);
   EXPECT_EQ(b->frame.yc_pillar_r, one_r);
 
-  const auto* cell_a = atx::vol::find_expiry_inputs(a->frame, "XOM", "2026-09-18");
+  const auto *cell_a = atx::vol::find_expiry_inputs(a->frame, "XOM", "2026-09-18");
   ASSERT_NE(cell_a, nullptr);
   EXPECT_FALSE(atx::vol::has_flag(cell_a->completeness, atx::vol::ExpiryInputField::Rate));
 }
@@ -891,14 +881,14 @@ TEST(OpraPanel, VolTimeConvention_ChangesPcpSpotAndTermRateStamping) {
   // The loader routes the TRUE 16:00 ET PM expiry instant (G1) through VolTime.
   const std::int64_t short_ns = expiry_instant_ns("2026-08-01", SettlementSession::Pm);
   const std::int64_t long_ns = expiry_instant_ns("2027-11-01", SettlementSession::Pm);
-  const auto& us_cal = VolTimeCalendar::us_default();
+  const auto &us_cal = VolTimeCalendar::us_default();
   const double vt_short = vol_time_years(now_ns, short_ns, VolTimeParams{}, us_cal);
   const double vt_long = vol_time_years(now_ns, long_ns, VolTimeParams{}, us_cal);
 
-  const auto* vol_short = atx::vol::find_expiry_inputs(vol->frame, "XOM", "2026-08-01");
-  const auto* vol_long = atx::vol::find_expiry_inputs(vol->frame, "XOM", "2027-11-01");
-  const auto* cal_short = atx::vol::find_expiry_inputs(cal->frame, "XOM", "2026-08-01");
-  const auto* cal_long = atx::vol::find_expiry_inputs(cal->frame, "XOM", "2027-11-01");
+  const auto *vol_short = atx::vol::find_expiry_inputs(vol->frame, "XOM", "2026-08-01");
+  const auto *vol_long = atx::vol::find_expiry_inputs(vol->frame, "XOM", "2027-11-01");
+  const auto *cal_short = atx::vol::find_expiry_inputs(cal->frame, "XOM", "2026-08-01");
+  const auto *cal_long = atx::vol::find_expiry_inputs(cal->frame, "XOM", "2027-11-01");
   ASSERT_NE(vol_short, nullptr);
   ASSERT_NE(vol_long, nullptr);
   ASSERT_NE(cal_short, nullptr);
@@ -952,8 +942,8 @@ TEST(OpraPanel, VolTimePanelInstallsConsistentChainT_NoThreadingRequired) {
   // Every installed Chain::T equals the independently-computed vol-time T for
   // its expiry -- the same convention the loader's own PCP/rate math used.
   const std::int64_t now_ns = iso_to_ns(snap);
-  const auto& us_cal = VolTimeCalendar::us_default();
-  const char* expiries[] = {"2026-08-01", "2027-11-01"};
+  const auto &us_cal = VolTimeCalendar::us_default();
+  const char *expiries[] = {"2026-08-01", "2027-11-01"};
   for (std::size_t i = 0; i < 2; ++i) {
     // Chain::T is now the VolTime year-fraction to the TRUE 16:00 ET expiry
     // instant (G1) — the same instant the loader's own PCP/rate math used.
@@ -974,15 +964,16 @@ TEST(OpraPanel, VolTimePanelInstallsConsistentChainT_NoThreadingRequired) {
 // days_since_epoch + settlement_instant_ns.
 TEST(OpraPanel, ExpiryInstant_PmSettle_UtcNsAcrossDstAndSessions) {
   struct Case {
-    const char *date;  // OSI expiry date
-    const char *utc;   // expected 16:00 ET, as an explicit-UTC datetime
+    const char *date; // OSI expiry date
+    const char *utc;  // expected 16:00 ET, as an explicit-UTC datetime
     const char *note;
   };
   const Case cases[] = {
       {"2024-01-19", "2024-01-19T21:00:00Z", "monthly, EST"},
       {"2024-03-15", "2024-03-15T20:00:00Z", "monthly, EDT (DST began 03-10)"},
       {"2024-06-21", "2024-06-21T20:00:00Z", "quarterly, EDT"},
-      {"2024-11-29", "2024-11-29T21:00:00Z", "half-day after Thanksgiving, EST (early close NOT modelled)"},
+      {"2024-11-29", "2024-11-29T21:00:00Z",
+       "half-day after Thanksgiving, EST (early close NOT modelled)"},
       {"2025-03-07", "2025-03-07T21:00:00Z", "weekly, EST (Fri before DST 03-09)"},
       {"2025-03-21", "2025-03-21T20:00:00Z", "weekly, EDT"},
       {"2026-07-17", "2026-07-17T20:00:00Z", "0DTE session fixture, EDT"},
@@ -1004,17 +995,16 @@ TEST(OpraPanel, ExpiryInstant_PmSettle_UtcNsAcrossDstAndSessions) {
             expiry_instant_ns("2026-07-17", SettlementSession::Pm));
   // settlement_instant_ns and expiry_instant_ns agree for the same civil day.
   EXPECT_EQ(expiry_instant_ns("2026-07-17", SettlementSession::Pm),
-            settlement_instant_ns(static_cast<std::int32_t>(iso_to_ns("2026-07-17") /
-                                                            (86400LL * 1000000000LL)),
-                                  SettlementSession::Pm));
+            settlement_instant_ns(
+                static_cast<std::int32_t>(iso_to_ns("2026-07-17") / (86400LL * 1000000000LL)),
+                SettlementSession::Pm));
   // Unparseable date -> 0 sentinel (matches iso_to_ns).
   EXPECT_EQ(expiry_instant_ns("not-a-date"), 0);
   // DST-boundary exactness: the Fri before spring-forward is EST, the Fri after
   // is EDT — the UTC step is one hour LESS than the seven-day calendar gap.
-  const std::int64_t before = expiry_instant_ns("2025-03-07", SettlementSession::Pm);  // 21:00Z
-  const std::int64_t after = expiry_instant_ns("2025-03-14", SettlementSession::Pm);   // 20:00Z
-  EXPECT_EQ(after - before,
-            iso_to_ns("2025-03-14T20:00:00Z") - iso_to_ns("2025-03-07T21:00:00Z"));
+  const std::int64_t before = expiry_instant_ns("2025-03-07", SettlementSession::Pm); // 21:00Z
+  const std::int64_t after = expiry_instant_ns("2025-03-14", SettlementSession::Pm);  // 20:00Z
+  EXPECT_EQ(after - before, iso_to_ns("2025-03-14T20:00:00Z") - iso_to_ns("2025-03-07T21:00:00Z"));
 }
 
 // G1 0DTE ingest: a same-session (0DTE) expiry survives ingest carrying a small
@@ -1042,9 +1032,9 @@ TEST(OpraPanel, Ingest0DTE_SurvivesWithPositiveIntradayT_MonotoneThroughSession)
   // instants; the loader now takes the instant from the file, so a shared
   // fixture would have to lie about two of the three.)
   const std::vector<std::string> snaps = {
-      "2026-07-17T13:35:00Z",  // 09:35 ET  (~6.4h to settle)
-      "2026-07-17T18:00:00Z",  // 14:00 ET  (~2h)
-      "2026-07-17T19:55:00Z",  // 15:55 ET  (~5min)
+      "2026-07-17T13:35:00Z", // 09:35 ET  (~6.4h to settle)
+      "2026-07-17T18:00:00Z", // 14:00 ET  (~2h)
+      "2026-07-17T19:55:00Z", // 15:55 ET  (~5min)
   };
   const std::int64_t zdte_instant = expiry_instant_ns("2026-07-17", SettlementSession::Pm);
 
@@ -1070,7 +1060,7 @@ TEST(OpraPanel, Ingest0DTE_SurvivesWithPositiveIntradayT_MonotoneThroughSession)
     for (const auto &row : loaded->frame.rows) {
       if (row.expiry_iso == "2026-07-17") {
         ++n_zdte;
-        EXPECT_EQ(row.expiry_ns, zdte_instant);  // TRUE 16:00 ET instant stamped
+        EXPECT_EQ(row.expiry_ns, zdte_instant); // TRUE 16:00 ET instant stamped
       }
     }
     EXPECT_EQ(n_zdte, std::size_t{6});
@@ -1090,7 +1080,7 @@ TEST(OpraPanel, Ingest0DTE_SurvivesWithPositiveIntradayT_MonotoneThroughSession)
     }
     ASSERT_NE(zdte, nullptr) << "0DTE chain not installed";
     EXPECT_GT(zdte->T, 0.0);
-    EXPECT_LT(zdte->T, 0.01);  // hours, not days
+    EXPECT_LT(zdte->T, 0.01); // hours, not days
     EXPECT_TRUE(std::isfinite(zdte->T));
     // T strictly shrinks toward 0 as the session advances.
     EXPECT_LT(zdte->T, prev_T);
@@ -1098,6 +1088,46 @@ TEST(OpraPanel, Ingest0DTE_SurvivesWithPositiveIntradayT_MonotoneThroughSession)
   }
   // Final snapshot (15:55 ET) leaves ~5 min: T ≈ 300s / (365.25*86400) ≈ 9.5e-6.
   EXPECT_NEAR(prev_T, 9.5e-6, 2.0e-6);
+
+  const fs::path dir = fs::temp_directory_path() / "atx_opra_p2_test";
+  fs::remove_all(dir);
+}
+
+TEST(OpraPanel, ExplicitIndexSemanticsStampEuropeanAmContracts) {
+  const std::vector<RawRow> rows = {
+      {"SPX", osi_sym("SPX", "190920", 'C', 2870.0), 54.5, 55.0},
+      {"SPX", osi_sym("SPX", "190920", 'P', 2870.0), 55.0, 55.5},
+  };
+  const std::string snapshot = "2019-08-26T19:30:00Z";
+  const std::string path =
+      write_slice("spx_am_european.parquet", rows, true, {}, iso_to_ns(snapshot));
+  OpraLoadSpec spec;
+  spec.path = path;
+  spec.underlying = "SPX";
+  spec.snapshot_iso = snapshot;
+  spec.r = 0.02;
+  spec.spot_override = 2869.0;
+  spec.expiry_close = ExpiryCloseConvention::UsIndexAmOpen;
+  spec.exercise_style = ExerciseStyle::European;
+
+  const auto loaded = load_opra_cbbo_parquet(spec);
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().to_string();
+  ASSERT_EQ(loaded->frame.rows.size(), std::size_t{2});
+  const std::int64_t expected = expiry_instant_ns("2019-09-20", SettlementSession::Am);
+  for (const auto &row : loaded->frame.rows) {
+    EXPECT_EQ(row.expiry_ns, expected);
+    EXPECT_EQ(row.settle, SettlementSession::Am);
+    EXPECT_EQ(row.exercise_style, ExerciseStyle::European);
+  }
+
+  atx::vol::Universe u;
+  const auto uid = atx::vol::data_install(u, loaded->frame);
+  ASSERT_TRUE(uid.has_value()) << uid.error().to_string();
+  const auto under = u.get_underlying(*uid);
+  ASSERT_TRUE(under.has_value());
+  ASSERT_EQ((*under)->chains.size(), std::size_t{1});
+  EXPECT_EQ((*under)->chains.front().exercise_style, ExerciseStyle::European);
+  EXPECT_EQ((*under)->chains.front().expiry_ns, expected);
 
   const fs::path dir = fs::temp_directory_path() / "atx_opra_p2_test";
   fs::remove_all(dir);

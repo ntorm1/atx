@@ -375,6 +375,53 @@ void finalize_route_diag(InversionRouteDiagnostics &diag, std::vector<double> re
   diag.max_residual_half_spreads = residuals.back();
 }
 
+// European contracts need no de-Americanization, but risk admission still
+// requires evidence that every IV carried into the fit reprices its source mid
+// inside the configured economic budget. Record the exact Black-76 inversion
+// and its explicit forward reprice on the accurate route. This deliberately
+// uses the existing audit ledger so downstream certification has one contract
+// for both direct-European and American-to-European observation paths.
+void audit_direct_european_inversions(const Chain &chain, double F, double T, double df,
+                                      const CalibOpts &opts, ObsSet &set) {
+  DeAmAuditDiagnostics audit;
+  InversionRouteDiagnostics &route = audit.accurate;
+  std::vector<double> residuals;
+  residuals.reserve(set.obs.size());
+  std::vector<FitObs> accepted;
+  accepted.reserve(set.obs.size());
+
+  for (const FitObs &row : set.obs) {
+    ++audit.n_deam_rows;
+    ++route.n_proposed;
+    ++route.n_audited;
+    ++route.n_reference_reprices;
+
+    const std::size_t quote_index =
+        chain_index(static_cast<std::uint16_t>(row.source_strike_index), row.side);
+    const double source_mid = chain.mids[quote_index];
+    const double spread = chain.asks[quote_index] - chain.bids[quote_index];
+    const double repriced = black76_price(F, row.K, T, row.sigma_mkt, df, row.side);
+    const double normalized = std::fabs(repriced - source_mid) / (0.5 * spread);
+    if (std::isfinite(normalized)) {
+      residuals.push_back(normalized);
+    }
+    if (std::isfinite(normalized) && normalized <= opts.max_inversion_residual_half_spreads) {
+      ++route.n_accepted;
+      ++audit.n_deam_accepted;
+      accepted.push_back(row);
+      continue;
+    }
+
+    ++audit.n_rejected_residual;
+    ++set.n_dropped;
+    set.provenance[row.source_strike_index].rejection = ObsRejectionReason::RawIvFailure;
+  }
+
+  finalize_route_diag(route, std::move(residuals));
+  set.obs = std::move(accepted);
+  set.deam_audit = std::move(audit);
+}
+
 inline constexpr std::uint16_t kSharedSigmaNodes = 9u;
 inline constexpr std::size_t kSharedMinSideRows = 16u;
 inline constexpr std::size_t kSharedMinAcceptedRows = 12u;
@@ -953,6 +1000,13 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T, double
     return Err(ErrorCode::InvalidArgument,
                "build_observations: max_weight must be finite and positive");
   }
+  if (chain.exercise_style == ExerciseStyle::European &&
+      (!std::isfinite(opts.max_inversion_residual_half_spreads) ||
+       opts.max_inversion_residual_half_spreads < 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "build_observations: European inversion residual budget must be finite and "
+               "non-negative");
+  }
 
   const std::size_t n = chain.n_strikes();
   constexpr std::size_t kMaxIndexedStrikes =
@@ -994,6 +1048,9 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T, double
   out.n_dropped = n_drop;
   if (out.provenance.size() != n) {
     return Err(ErrorCode::Internal, "build_observations: preferred-row provenance is incomplete");
+  }
+  if (chain.exercise_style == ExerciseStyle::European) {
+    audit_direct_european_inversions(chain, F, T, df, opts, out);
   }
   if (out.obs.size() < kMinObs) {
     return Err(ErrorCode::NotFound, "build_observations: fewer than 5 observations survived");

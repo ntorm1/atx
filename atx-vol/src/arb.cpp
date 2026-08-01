@@ -73,6 +73,111 @@ constexpr std::int64_t kNsPerSecond = 1'000'000'000;
   return Ok();
 }
 
+struct DensePricePoint {
+  double strike{};
+  double call{};
+};
+
+[[nodiscard]] std::vector<ArbViolation>
+butterfly_check_convex_dense(const ConvexDenseCurve &curve, double k_min,
+                             double k_max) {
+  std::vector<ArbViolation> out;
+  const ConvexSliceFit &fit = curve.fit();
+  const auto reject_non_finite = [&](double k) {
+    out.push_back(ArbViolation{k, curve.T(), curve.T(),
+                               std::numeric_limits<double>::infinity(),
+                               ArbViolation::Kind::Butterfly});
+  };
+  if (!(fit.F > 0.0) || !(fit.T > 0.0) || !(fit.df > 0.0) ||
+      fit.u.size() < 2u || fit.C.size() != fit.u.size()) {
+    reject_non_finite(k_min);
+    return out;
+  }
+  for (std::size_t i = 0; i < fit.u.size(); ++i) {
+    if (!(fit.u[i] > 0.0) || !std::isfinite(fit.u[i]) ||
+        !std::isfinite(fit.C[i]) ||
+        (i > 0u && !(fit.u[i] > fit.u[i - 1u]))) {
+      reject_non_finite(k_min);
+      return out;
+    }
+  }
+
+  const double strike_min = fit.F * std::exp(k_min);
+  const double strike_max = fit.F * std::exp(k_max);
+  if (!(strike_min > 0.0) || !(strike_max > strike_min) ||
+      !std::isfinite(strike_min) || !std::isfinite(strike_max)) {
+    reject_non_finite(k_min);
+    return out;
+  }
+
+  std::vector<DensePricePoint> points;
+  points.reserve(fit.u.size() + 2u);
+  points.push_back(DensePricePoint{strike_min, fit.call_price(strike_min)});
+  const double endpoint_tol =
+      32.0 * std::numeric_limits<double>::epsilon() *
+      std::max({1.0, std::fabs(strike_min), std::fabs(strike_max)});
+  for (const double strike : fit.u) {
+    if (strike > strike_min + endpoint_tol &&
+        strike < strike_max - endpoint_tol) {
+      points.push_back(DensePricePoint{strike, fit.call_price(strike)});
+    }
+  }
+  points.push_back(DensePricePoint{strike_max, fit.call_price(strike_max)});
+
+  for (const DensePricePoint &point : points) {
+    if (!std::isfinite(point.call)) {
+      reject_non_finite(std::log(point.strike / fit.F));
+      return out;
+    }
+  }
+  if (points.size() < 3u) {
+    return out;
+  }
+
+  double previous_slope =
+      (points[1].call - points[0].call) /
+      (points[1].strike - points[0].strike);
+  if (!std::isfinite(previous_slope)) {
+    reject_non_finite(std::log(points[1].strike / fit.F));
+    return out;
+  }
+  for (std::size_t i = 1u; i + 1u < points.size(); ++i) {
+    const double right_width = points[i + 1u].strike - points[i].strike;
+    const double left_width = points[i].strike - points[i - 1u].strike;
+    const double slope =
+        (points[i + 1u].call - points[i].call) / right_width;
+    if (!(left_width > 0.0) || !(right_width > 0.0) ||
+        !std::isfinite(slope)) {
+      reject_non_finite(std::log(points[i].strike / fit.F));
+      return out;
+    }
+
+    // The first term admits the dense QP's 1e-8 scaled feasibility floor; the
+    // epsilon term scales subtraction roundoff by the local price/strike
+    // resolution. Honest fits therefore clear their own certificate tolerance,
+    // while an economically meaningful fall in the slope sequence remains a
+    // positive convexity breach.
+    const double slope_scale =
+        std::max({1.0, std::fabs(fit.df), std::fabs(previous_slope),
+                  std::fabs(slope)});
+    const double price_scale =
+        std::max({1.0, std::fabs(points[i - 1u].call),
+                  std::fabs(points[i].call), std::fabs(points[i + 1u].call)});
+    const double roundoff_tol =
+        64.0 * std::numeric_limits<double>::epsilon() * price_scale /
+        std::min(left_width, right_width);
+    const double tolerance = 1.0e-8 * slope_scale + roundoff_tol;
+    const double slack = previous_slope - slope;
+    if (slack > tolerance) {
+      out.push_back(ArbViolation{std::log(points[i].strike / fit.F), curve.T(),
+                                 curve.T(), slack,
+                                 ArbViolation::Kind::Butterfly});
+    }
+    previous_slope = slope;
+  }
+  return out;
+}
+
 // Max-over-grid (w_lo - w_hi)_+ on the TOTAL surface for an eSSVI slice pair,
 // with `lo`'s residual coefficients temporarily scaled by `alpha`. Zero means
 // lo <= hi at every grid point. Ports `total_calendar_deficit_with_alpha`
@@ -316,6 +421,10 @@ Result<std::vector<ArbViolation>> arb_check_butterfly(
   if (!(k_max > k_min)) {
     return Err(ErrorCode::InvalidArgument,
                "arb_check_butterfly(curve): require k_max > k_min");
+  }
+  if (const auto *dense = dynamic_cast<const ConvexDenseCurve *>(&curve);
+      dense != nullptr) {
+    return Ok(butterfly_check_convex_dense(*dense, k_min, k_max));
   }
   const double dk = (k_max - k_min) / static_cast<double>(n_grid);
   const double inv_2dk = 0.5 / dk;

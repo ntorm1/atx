@@ -212,10 +212,14 @@ void PreparedSliceBuilder::append_score_row(PreparedSlice &out, ObservationKey k
 
 Result<PreparedSlice> PreparedSliceBuilder::prepare_configured(const Chain &chain,
                                                                const PreparedSliceInputs &inputs) {
-  ATX_TRY(ObsSet fit_set, build_observations_european(
-                              chain, inputs.S, inputs.r, inputs.F, chain.T, inputs.df, inputs.calib,
-                              inputs.caches, inputs.al_opts, inputs.iv_tolerance,
-                              inputs.iv_max_iterations, inputs.method, inputs.prepare_scoring));
+  Result<ObsSet> fit_result =
+      chain.exercise_style == ExerciseStyle::European
+          ? build_observations(chain, inputs.F, chain.T, inputs.df, inputs.calib)
+          : build_observations_european(chain, inputs.S, inputs.r, inputs.F, chain.T, inputs.df,
+                                        inputs.calib, inputs.caches, inputs.al_opts,
+                                        inputs.iv_tolerance, inputs.iv_max_iterations,
+                                        inputs.method, inputs.prepare_scoring);
+  ATX_TRY(ObsSet fit_set, std::move(fit_result));
 
   PreparedSlice out;
   out.expiry_index_ = inputs.expiry_index;
@@ -223,6 +227,7 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_configured(const Chain &chai
   out.forward_ = inputs.F;
   out.n_dropped_ = fit_set.n_dropped;
   out.provenance_ = SlicePreparationProvenance{inputs.policy,
+                                               chain.exercise_style,
                                                inputs.method,
                                                inputs.al_opts,
                                                inputs.iv_tolerance,
@@ -303,6 +308,7 @@ Result<PreparedSlice> PreparedSliceBuilder::prepare_legacy(const Chain &chain,
   out.maturity_ = chain.T;
   out.forward_ = inputs.F;
   out.provenance_ = SlicePreparationProvenance{inputs.policy,
+                                               chain.exercise_style,
                                                inputs.method,
                                                inputs.al_opts,
                                                inputs.iv_tolerance,
@@ -602,6 +608,13 @@ Result<PreparedSlice> PreparedSlice::create(const Chain &chain, const PreparedSl
   case PreparedObservationPolicy::Configured:
     return detail::PreparedSliceBuilder::prepare_configured(chain, normalized);
   case PreparedObservationPolicy::LegacyEssviCompatibility:
+    if (chain.exercise_style == ExerciseStyle::European) {
+      // The legacy policy exists to reproduce the historical American eSSVI
+      // de-Am population. European contracts have no early-exercise premium;
+      // reuse the raw Black-76 builder while retaining the requested policy in
+      // provenance so callers can still audit how the slice was requested.
+      return detail::PreparedSliceBuilder::prepare_configured(chain, normalized);
+    }
     return detail::PreparedSliceBuilder::prepare_legacy(chain, normalized);
   }
   return Err(ErrorCode::Internal, "PreparedSlice::create: unknown observation policy");

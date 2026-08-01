@@ -17,6 +17,7 @@
 #include "atx/vol/black76.hpp"
 #include "atx/vol/curve.hpp"
 #include "atx/vol/dividend.hpp"
+#include "atx/vol/implied_vol.hpp"
 #include "atx/vol/types.hpp"
 #include "atx/vol/universe.hpp"
 
@@ -676,6 +677,129 @@ struct CarryPairSelection {
   return Ok(ChainForward{F, borrow, std::move(diag)});
 }
 
+// European contracts satisfy put-call parity directly. Resolve their carry
+// from the raw co-terminal mids, without invoking an American boundary solver.
+// The same robust borrow-location and confidence diagnostics used by the
+// American route are retained so downstream admission semantics do not fork.
+[[nodiscard]] Result<ChainForward>
+resolve_european_chain_carry(const Chain &chain, double S, double r,
+                             std::span<const DividendEvent> cash_divs, std::int64_t now_ts_ns,
+                             const DeAmOptions &opts) noexcept {
+  if (!opts.imply_borrow) {
+    return resolve_chain_carry(chain, S, r, cash_divs, now_ts_ns, opts);
+  }
+
+  const double T = chain.T;
+  const double forward_base =
+      hybrid_forward_base(S, r, T, cash_divs, chain.expiry_ns, now_ts_ns, opts.hyb);
+  if (!(forward_base > 0.0) || !std::isfinite(forward_base)) {
+    return Err(ErrorCode::Internal, "resolve_chain_forward: invalid hybrid-forward base");
+  }
+  const CarryPairSelection selection = select_carry_pairs(chain, S, opts);
+  if (selection.both_valid.empty()) {
+    return Err(ErrorCode::Unavailable,
+               "resolve_chain_forward: no European co-terminal pair for carry");
+  }
+
+  CarryDiagnostics diag{};
+  diag.n_candidates = selection.both_valid.size();
+  diag.n_attempted = selection.k;
+  diag.pairs.reserve(selection.k);
+  const double undiscount = std::exp(r * T);
+  for (std::size_t j = 0; j < selection.k; ++j) {
+    const std::size_t i = selection.both_valid[j];
+    const double K = chain.strikes[i];
+    const std::size_t ci = chain_index(static_cast<std::uint16_t>(i), Side::Call);
+    const std::size_t pi = chain_index(static_cast<std::uint16_t>(i), Side::Put);
+    const double pair_forward = (chain.mids[ci] - chain.mids[pi]) * undiscount + K;
+    if (!(pair_forward > 0.0) || !std::isfinite(pair_forward)) {
+      continue;
+    }
+    const double pair_borrow = -std::log(pair_forward / forward_base) / T;
+    if (!std::isfinite(pair_borrow)) {
+      continue;
+    }
+    const double relative_spread = quote_relative_spread(chain, ci, pi);
+    const double age = quote_age_seconds(chain, ci, pi, now_ts_ns);
+    const double distance = std::fabs(std::log(K / S));
+    const double distance_weight = 1.0 / (1.0 + std::pow(distance / 0.04, 2.0));
+    const double quality_weight = 1.0 / std::pow(0.0025 + relative_spread, 2.0);
+    const double freshness_weight = 1.0 / (1.0 + age / 5.0);
+    const double base_weight =
+        std::fmin(1.0e8, quality_weight * distance_weight * freshness_weight);
+    diag.pairs.push_back(CarryPairDiagnostic{static_cast<std::uint16_t>(i), K, pair_borrow,
+                                             pair_forward, 0.0, relative_spread, age, base_weight,
+                                             0.0, false});
+  }
+  diag.n_solved = diag.pairs.size();
+  if (diag.pairs.empty()) {
+    return Err(ErrorCode::Unavailable,
+               "resolve_chain_forward: European parity failed on all pairs");
+  }
+
+  std::vector<double> base_weights;
+  base_weights.reserve(diag.pairs.size());
+  for (const CarryPairDiagnostic &pair : diag.pairs) {
+    base_weights.push_back(pair.base_weight);
+  }
+  std::sort(base_weights.begin(), base_weights.end());
+  const double weight_cap = 1.5 * base_weights[base_weights.size() / 2];
+  for (CarryPairDiagnostic &pair : diag.pairs) {
+    pair.base_weight = std::fmin(pair.base_weight, weight_cap);
+  }
+
+  const double borrow = robust_location(diag.pairs, diag.pairs.size(), true);
+  if (!std::isfinite(borrow)) {
+    return Err(ErrorCode::Unavailable,
+               "resolve_chain_forward: robust European carry aggregation failed");
+  }
+  double sum_w = 0.0;
+  double sum_w2 = 0.0;
+  double sum_var = 0.0;
+  for (const CarryPairDiagnostic &pair : diag.pairs) {
+    if (!pair.retained) {
+      continue;
+    }
+    ++diag.n_retained;
+    sum_w += pair.robust_weight;
+    sum_w2 += pair.robust_weight * pair.robust_weight;
+    sum_var += pair.robust_weight * std::pow(pair.borrow - borrow, 2.0);
+  }
+  diag.effective_pair_count = (sum_w2 > 0.0) ? (sum_w * sum_w / sum_w2) : 0.0;
+  diag.dispersion = (sum_w > 0.0) ? std::sqrt(sum_var / sum_w) : 0.0;
+  if (diag.n_retained > 1) {
+    for (std::size_t i = 0; i < diag.pairs.size(); ++i) {
+      if (!diag.pairs[i].retained) {
+        continue;
+      }
+      std::vector<CarryPairDiagnostic> leave_one_out = diag.pairs;
+      const double location = robust_location(leave_one_out, i, false);
+      if (std::isfinite(location)) {
+        diag.max_leave_one_out_shift =
+            std::fmax(diag.max_leave_one_out_shift, std::fabs(location - borrow));
+      }
+    }
+  }
+  const double sampling = diag.effective_pair_count > 0.0
+                              ? 2.576 * diag.dispersion / std::sqrt(diag.effective_pair_count)
+                              : std::numeric_limits<double>::infinity();
+  diag.confidence_half_width = std::fmax(sampling, diag.max_leave_one_out_shift);
+  diag.confident = diag.n_retained >= opts.min_confident_borrow_pairs &&
+                   diag.dispersion <= opts.max_carry_dispersion &&
+                   diag.max_leave_one_out_shift <= opts.max_carry_leave_one_out;
+  if (opts.require_carry_confidence && !diag.confident) {
+    return Err(ErrorCode::Unavailable,
+               "resolve_chain_forward: robust European carry confidence gate failed");
+  }
+
+  const double forward = hybrid_forward_from_base(forward_base, borrow, T);
+  if (!(forward > 0.0) || !std::isfinite(forward)) {
+    return Err(ErrorCode::Internal,
+               "resolve_chain_forward: non-positive or non-finite European forward");
+  }
+  return Ok(ChainForward{forward, borrow, std::move(diag)});
+}
+
 } // namespace
 
 Result<ChainForward> resolve_chain_forward(const Chain &chain, double S, double r,
@@ -687,7 +811,9 @@ Result<ChainForward> resolve_chain_forward(const Chain &chain, double S, double 
     return Err(ErrorCode::InvalidArgument,
                "resolve_chain_forward: non-finite/non-positive input or empty chain");
   }
-  return resolve_chain_carry(chain, S, r, cash_divs, now_ts_ns, opts);
+  return chain.exercise_style == ExerciseStyle::European
+             ? resolve_european_chain_carry(chain, S, r, cash_divs, now_ts_ns, opts)
+             : resolve_chain_carry(chain, S, r, cash_divs, now_ts_ns, opts);
 }
 
 std::vector<std::uint16_t> carry_pair_strikes(const Chain &chain, double S,
@@ -713,7 +839,8 @@ Result<DeAmResult> de_americanize_chain(const Chain &chain, double S, double r,
                "de_americanize_chain: non-finite/non-positive input or empty chain");
   }
 
-  ATX_TRY(ChainForward chain_forward, resolve_chain_carry(chain, S, r, cash_divs, now_ts_ns, opts));
+  ATX_TRY(ChainForward chain_forward,
+          resolve_chain_forward(chain, S, r, cash_divs, now_ts_ns, opts));
   const double borrow = chain_forward.borrow;
   const double F = chain_forward.forward;
 
@@ -773,14 +900,17 @@ Result<DeAmResult> de_americanize_chain(const Chain &chain, double S, double r,
 
     const double spread = chain.asks[idx] - chain.bids[idx];
     const CorrectionCache *cache = opts.caches.for_side(side);
-    const Result<double> iv = european_equiv_iv(chain.mids[idx], S, K, T, r, q_eff, side,
-                                                opts.method, opts.al_opts, cache, opts.iv_tol,
-                                                opts.iv_max_iter);
+    const Result<double> iv =
+        chain.exercise_style == ExerciseStyle::European
+            ? implied_vol(chain.mids[idx], F, K, T, df, side)
+            : european_equiv_iv(chain.mids[idx], S, K, T, r, q_eff, side, opts.method,
+                                opts.al_opts, cache, opts.iv_tol, opts.iv_max_iter);
     if (!iv) {
       ++out.n_dropped;
       continue;
     }
     const bool approximate_proposal =
+        chain.exercise_style == ExerciseStyle::American &&
         opts.method == AmericanMethod::AndersenLake &&
         (opts.al_opts.has_value() ||
          (cache != nullptr && cache->populated() && cache->side() == side));

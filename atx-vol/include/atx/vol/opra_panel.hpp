@@ -36,11 +36,11 @@
 #include <unordered_map>
 #include <vector>
 
-#include "atx/vol/curve.hpp" // DividendEvent
-#include "atx/vol/data.hpp"  // QuoteFrame
+#include "atx/vol/curve.hpp"      // DividendEvent
+#include "atx/vol/data.hpp"       // QuoteFrame
 #include "atx/vol/fit_policy.hpp" // FitContext
-#include "atx/vol/types.hpp" // Result, Side
-#include "atx/vol/vol_time.hpp" // TimeSpec
+#include "atx/vol/types.hpp"      // Result, Side
+#include "atx/vol/vol_time.hpp"   // TimeSpec
 
 // Forward-declared to keep this public header Arrow-free: the in-memory-table
 // seam (load_opra_cbbo_from_table) takes it by const reference. The full
@@ -81,9 +81,13 @@ enum class OpraProvenanceMode : std::uint8_t {
 //                     the correct time-to-expiry for near-dated slices (a 1-DTE
 //                     earnings expiry becomes ~1.0 day out, not ~4 hours). Opt-in
 //                     so existing loads keep their exact expiry instants.
+//   UsIndexAmOpen   â€” standard cash-index monthlies settle at 09:30 ET. This
+//                     requires explicit product policy because historical OPRA
+//                     definitions may carry only an expiry date.
 enum class ExpiryCloseConvention : std::uint8_t {
   MidnightUtc = 0,
   UsEquityPmClose = 1,
+  UsIndexAmOpen = 2,
 };
 
 // One date-scoped Databento source identity. Raw OSI text is dictionary-owned
@@ -166,21 +170,20 @@ struct OpraMarketInputProvenance {
 // counterpart and there must not be: a normaliser invents a third namespace that
 // callers can key by, and it would allocate on a path that runs once per kept
 // quote row (millions per hive load). This is allocation-free.
-[[nodiscard]] bool osi_root_matches_ticker(std::string_view root,
-                                           std::string_view ticker) noexcept;
+[[nodiscard]] bool osi_root_matches_ticker(std::string_view root, std::string_view ticker) noexcept;
 
 // Load spec for `load_opra_cbbo_parquet`.
 struct OpraLoadSpec {
-  std::string path;        // parquet file to read
-  std::string underlying;  // keep rows whose `underlying` equals this
-                           // (empty = keep all, frame uid = first seen).
-                           // ALSO the loaded frame's identity: on a filtered load
-                           // this exact string becomes `frame.uid` AND every
-                           // `QuoteRow::uid` (see the uid-namespace note on
-                           // load_opra_cbbo_parquet step 4).
-  std::string snapshot_iso; // "YYYY-MM-DD" or full datetime; stamped on the frame
-  double r = 0.0;           // continuously-compounded rate for the spot implication
-  double spot_override = 0.0; // if > 0, use this spot instead of implying from PCP
+  std::string path;                     // parquet file to read
+  std::string underlying;               // keep rows whose `underlying` equals this
+                                        // (empty = keep all, frame uid = first seen).
+                                        // ALSO the loaded frame's identity: on a filtered load
+                                        // this exact string becomes `frame.uid` AND every
+                                        // `QuoteRow::uid` (see the uid-namespace note on
+                                        // load_opra_cbbo_parquet step 4).
+  std::string snapshot_iso;             // "YYYY-MM-DD" or full datetime; stamped on the frame
+  double r = 0.0;                       // continuously-compounded rate for the spot implication
+  double spot_override = 0.0;           // if > 0, use this spot instead of implying from PCP
   std::vector<DividendEvent> cash_divs; // optional discrete divs, carried on the frame
 
   // Optional term-structure yield curve (P2-3). When non-empty, these
@@ -200,6 +203,9 @@ struct OpraLoadSpec {
   // DST-correct 16:00-ET close onto each expiry so near-dated slices carry their
   // true (PM-settled) time-to-expiry.
   ExpiryCloseConvention expiry_close{ExpiryCloseConvention::MidnightUtc};
+  // American preserves the historical equity/ETF path. Cash-index loaders
+  // explicitly select European; do not infer it from an absent CFI value.
+  ExerciseStyle exercise_style{ExerciseStyle::American};
   FitContext fit_context{};
   OpraMarketInputProvenance market_input_provenance{};
   // T convention governing every year-fraction this loader computes: the PCP
@@ -219,13 +225,13 @@ struct OpraLoadSpec {
 
 // Result of loading one OPRA cbbo-1m slice.
 struct OpraPanel {
-  QuoteFrame frame;         // ready for data_install (flat r, or the spec's term
-                            // yield-curve pillars when supplied)
-  double implied_spot = 0.0; // spot used (override or PCP-implied)
-  std::string snapshot_iso;  // the stamp applied to the frame
-  std::size_t n_contracts = 0; // rows kept
-  std::size_t n_expiries = 0;  // distinct expiries kept
-  std::size_t n_dropped = 0;   // rows skipped (bad symbol / unset px / crossed)
+  QuoteFrame frame;                       // ready for data_install (flat r, or the spec's term
+                                          // yield-curve pillars when supplied)
+  double implied_spot = 0.0;              // spot used (override or PCP-implied)
+  std::string snapshot_iso;               // the stamp applied to the frame
+  std::size_t n_contracts = 0;            // rows kept
+  std::size_t n_expiries = 0;             // distinct expiries kept
+  std::size_t n_dropped = 0;              // rows skipped (bad symbol / unset px / crossed)
   std::uint32_t source_schema_version{1}; // 1=legacy, 2=instrument_id
   // Content hash of the source rows/identities only; intentionally
   // TimeSpec-independent (see opra_panel.cpp's `source_fingerprint`) -- two
@@ -295,7 +301,7 @@ struct OpraPanel {
 //         term-pillar length mismatch, or a frame-assembly (install
 //         precondition) failure; Unavailable when no co-terminal pair exists to
 //         imply the spot and no override was supplied.
-[[nodiscard]] Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec);
+[[nodiscard]] Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec &spec);
 
 // Load an OPRA cbbo-1m slice from an ALREADY-MATERIALIZED in-memory table.
 //
@@ -322,8 +328,8 @@ struct OpraPanel {
 // Thread-safety: a pure function over borrowed inputs. It mutates no shared
 // state and returns an owning panel; concurrent calls on distinct arguments are
 // safe, and `table` is only read.
-[[nodiscard]] Result<OpraPanel>
-load_opra_cbbo_from_table(const atx::core::io::ParquetTable& table, const OpraLoadSpec& spec);
+[[nodiscard]] Result<OpraPanel> load_opra_cbbo_from_table(const atx::core::io::ParquetTable &table,
+                                                          const OpraLoadSpec &spec);
 
 // ── P-01: one column scan + one row index per TABLE, not per underlying ──────
 //
@@ -381,7 +387,8 @@ struct OpraTableScan {
   std::vector<std::uint32_t> offsets;                          // slot_of.size() + 1
   std::vector<std::uint32_t> rows;
 
-  [[nodiscard]] std::span<const std::uint32_t> rows_for(std::string_view underlying) const noexcept {
+  [[nodiscard]] std::span<const std::uint32_t>
+  rows_for(std::string_view underlying) const noexcept {
     if (!indexed) {
       return {};
     }
@@ -405,8 +412,8 @@ struct OpraTableScan {
 //
 // @return InvalidArgument if a required column is absent or is not of the
 //         expected type.
-[[nodiscard]] Result<OpraTableScan>
-scan_opra_cbbo_table(const atx::core::io::ParquetTable& table, std::string_view path_for_errors);
+[[nodiscard]] Result<OpraTableScan> scan_opra_cbbo_table(const atx::core::io::ParquetTable &table,
+                                                         std::string_view path_for_errors);
 
 // Build ONE underlying's panel from a scan. Byte-identical to
 // `load_opra_cbbo_from_table(table, spec)` over the same table and spec — the
@@ -418,7 +425,7 @@ scan_opra_cbbo_table(const atx::core::io::ParquetTable& table, std::string_view 
 // symbol the table does not carry returns the seam's exact zero-match Err,
 // `"underlying '<sym>' not found in parquet"`, so a coverage-hole classifier
 // keyed on that message is unaffected.
-[[nodiscard]] Result<OpraPanel> load_opra_cbbo_from_scan(const OpraTableScan& scan,
-                                                         const OpraLoadSpec& spec);
+[[nodiscard]] Result<OpraPanel> load_opra_cbbo_from_scan(const OpraTableScan &scan,
+                                                         const OpraLoadSpec &spec);
 
 } // namespace atx::vol
