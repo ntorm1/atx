@@ -145,6 +145,17 @@ struct StripGrid {
   return w_done * rv_done_dec + w_future * k_var_future_dec;
 }
 
+// Carry the strip's resolved grid onto a product quote. Every dispatch path
+// that runs a strip owes its caller this, because reproducing a quote's exact
+// quadrature (deriv_greeks' bump pinning) is only possible if the grid travels
+// with the quote. A default-constructed `strip` carries NaN/0, which is exactly
+// the "no strip ran" encoding, so this is safe to call unconditionally.
+void carry_strip_grid(DerivQuote& out, const DerivQuote& strip) noexcept {
+  out.strip_k_lo_used = strip.strip_k_lo_used;
+  out.strip_k_hi_used = strip.strip_k_hi_used;
+  out.strip_nodes_used = strip.strip_nodes_used;
+}
+
 // ── Dispatch helpers (templated on the surface parametrization) ────────────
 
 template <class SurfaceT>
@@ -217,6 +228,7 @@ template <class SurfaceT>
   out.future_component_dec = w_future * k_var_future_dec;
   out.convexity_adjustment_dec = 0.0;
   out.integration_error_est = strip_quote.integration_error_est;
+  carry_strip_grid(out, strip_quote);
   out.flags = flags;
   return Ok(out);
 }
@@ -367,6 +379,7 @@ template <class SurfaceT>
   out.future_component_dec = b * m;
   out.convexity_adjustment_dec = std::sqrt(a + b * m) - e_sqrt_v;
   out.integration_error_est = sq.integration_error_est;
+  carry_strip_grid(out, sq);
   out.vol_of_vol_used = vv.xi;
   out.flags = flags;
   return Ok(out);
@@ -455,6 +468,7 @@ template <class SurfaceT>
       out.convexity_adjustment_dec =
           std::sqrt(std::fmax(strip->uncapped_var_dec, 0.0)) - k_vol;
       out.integration_error_est = strip->integration_error_est;
+      carry_strip_grid(out, *strip);
     }
     out.accrued_component_dec = 0.0;
     out.future_component_dec = k_vol;
@@ -591,6 +605,7 @@ template <class SurfaceT>
       capped_var_swap_quote(expectation, accrued, w_future * m, cap_option, df, contract, flags);
   out.uncapped_var_dec = sq.uncapped_var_dec;
   out.integration_error_est = sq.integration_error_est;
+  carry_strip_grid(out, sq);
   out.vol_of_vol_used = vv.xi;
   return Ok(out);
 }
@@ -737,6 +752,7 @@ template <class SurfaceT>
       capped_vol_swap_quote(expectation, a, b * m, cap_option, df, contract, flags);
   out.uncapped_var_dec = sq.uncapped_var_dec;
   out.integration_error_est = sq.integration_error_est;
+  carry_strip_grid(out, sq);
   out.vol_of_vol_used = vv.xi;
   out.convexity_adjustment_dec = sqrt_v(m) - expectation;
   return Ok(out);
@@ -928,6 +944,11 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   out.future_component_dec = k_var;
   out.convexity_adjustment_dec = 0.0;
   out.integration_error_est = err_est;
+  // The grid this quote was actually integrated on, so a caller (deriv_greeks)
+  // can pin it back and reproduce this exact quadrature.
+  out.strip_k_lo_used = grid.k_min_log;
+  out.strip_k_hi_used = grid.k_max_log;
+  out.strip_nodes_used = static_cast<std::uint32_t>(n);
   out.flags = flags;
   return Ok(out);
 }
@@ -1132,14 +1153,19 @@ struct BumpPvs {
   double t_s_up = kNaN, t_s_dn = kNaN;  // S(1 +/- h) at T - dt
 };
 
-// Up to 7 evaluations, 13 with second_order (one fewer / three fewer when the
+// Up to 8 evaluations, 14 with second_order (one fewer / three fewer when the
 // contract cannot roll). Every failure propagates: a bumped contract that will
 // not price is a real failure, not a missing greek.
+//
+// The center is repriced HERE, under the same pinned config as the bumps,
+// rather than reusing the caller's center quote: a stencil must difference
+// values from one consistent configuration, and the caller's center was priced
+// before the grid and xi were pinned.
 template <class SurfaceT>
 [[nodiscard]] Result<BumpPvs> eval_bump_table(const SurfaceT& surface, const CurveSet& curves,
                                               const DerivContract& contract,
                                               const DerivConfig& cfg,
-                                              const DerivGreekBumps& bumps, double center_pv) {
+                                              const DerivGreekBumps& bumps) {
   const double h = bumps.spot_rel;
   const double dv = bumps.vol_abs;
   const double ks_up = std::log1p(h);
@@ -1154,7 +1180,7 @@ template <class SurfaceT>
   rolled.maturity_t = contract.maturity_t - bumps.time_years;
 
   BumpPvs pv{};
-  pv.c = center_pv;
+  ATX_TRY(pv.c, bumped_pv(surface, curves, contract, cfg, 0.0, 0.0));
   ATX_TRY(pv.s_up, bumped_pv(surface, cs_up, contract, cfg, ks_up, 0.0));
   ATX_TRY(pv.s_dn, bumped_pv(surface, cs_dn, contract, cfg, ks_dn, 0.0));
   ATX_TRY(pv.v_up, bumped_pv(surface, curves, contract, cfg, 0.0, dv));
@@ -1185,6 +1211,43 @@ template <class SurfaceT>
          b.time_years > 0.0;
 }
 
+// Pin everything about the center quote that a bumped evaluation would
+// otherwise re-derive for itself: the strip's grid and the vol-of-vol. Both are
+// resolved from the SURFACE, so both drift when the surface is bumped, and both
+// would then contaminate the differences with a change in the numerical scheme
+// rather than a change in the price.
+[[nodiscard]] DerivConfig pin_center_scheme(const DerivConfig& cfg, const DerivQuote& center) noexcept {
+  DerivConfig out = cfg;
+
+  // Grid: a bumped surface can cross the adaptive rescale's ceil() boundary and
+  // integrate on a different node count than the center, making the stencils
+  // straddle a step discontinuity.
+  if (center.strip_nodes_used > 0u && std::isfinite(center.strip_k_lo_used) &&
+      std::isfinite(center.strip_k_hi_used) &&
+      center.strip_k_lo_used < center.strip_k_hi_used) {
+    out.k_min_log = center.strip_k_lo_used;
+    out.k_max_log = center.strip_k_hi_used;
+    out.strip_nodes = center.strip_nodes_used;
+  }
+
+  // Vol-of-vol: pin the calibrated xi so vega measures the model's response to
+  // the vol shift, not the calibration re-fitting itself. A calibrated xi of
+  // exactly 0 cannot be written back as 0 (that is the config's
+  // "auto-calibrate" selector), so it is pinned as the smallest positive double
+  // instead. Every consumer of xi reaches the same limit at a denormal as at
+  // zero: `lognormal_expect`'s nodes collapse onto the mean, `lognormal_call`
+  // resolves to max(m-k,0) through Phi(+-inf), and the capped-vol-swap's kink
+  // coordinate z* overflows to +-inf, which `lognormal_truncated_expect` clamps
+  // into its own [-8,8] domain. So this pins the VALUE without selecting the
+  // auto path, which is exactly what is needed.
+  if (std::isfinite(center.vol_of_vol_used)) {
+    out.vol_of_vol = center.vol_of_vol_used > 0.0
+                         ? center.vol_of_vol_used
+                         : std::numeric_limits<double>::denorm_min();
+  }
+  return out;
+}
+
 }  // namespace
 
 template <class SurfaceT>
@@ -1203,22 +1266,23 @@ Result<DerivGreeks> deriv_greeks(const SurfaceT& surface, const CurveSet& curves
   g.pv = center.pv;
   g.quote = center;
 
-  // Fully aged: PV is a discounted constant, so every market greek is exactly
-  // zero and rho is analytic (PV carries df = e^{-rT}). No bumping at all.
+  // Fully aged: nothing is left to realize, so PV is a fixed settlement amount
+  // under a pure discount, PV(t) = e^{-r(T-t)}*X. Both time greeks are then
+  // analytic and must agree with each other -- dPV/dr = -(T-t)*PV and
+  // dPV/dt = +r*PV are the same statement differentiated two ways. No bumping.
+  // At T == 0 the discount is gone and both collapse to 0 (YieldCurve::zero
+  // returns 0 for T <= 0, so theta lands there without a special case).
   if (has_flag(center.flags, DerivFlags::FullyAged)) {
     g.rho = -contract.maturity_t * center.pv;
+    g.theta = curves.yield.zero(contract.maturity_t) * center.pv;
     return Ok(g);
   }
 
-  // Pin an auto-calibrated xi so vega measures the model's response to the vol
-  // shift, not the calibration re-fitting itself (see the header).
-  DerivConfig cfg_pinned = cfg;
-  if (std::isfinite(center.vol_of_vol_used)) {
-    cfg_pinned.vol_of_vol = center.vol_of_vol_used;
-  }
+  // Pin the center's numerical scheme (strip grid + calibrated xi) into every
+  // bumped evaluation; see pin_center_scheme and the header.
+  const DerivConfig cfg_pinned = pin_center_scheme(cfg, center);
 
-  ATX_TRY(const BumpPvs p,
-          eval_bump_table(surface, curves, contract, cfg_pinned, bumps, center.pv));
+  ATX_TRY(const BumpPvs p, eval_bump_table(surface, curves, contract, cfg_pinned, bumps));
 
   const double ds = bumps.spot_rel * curves.spot;  // absolute spot bump
   const double dv = bumps.vol_abs;

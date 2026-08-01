@@ -367,6 +367,25 @@ struct DerivQuote {
   // "computed and zero". NEVER NaN -- unlike vol_of_vol_used, a caller should
   // not have to gate on (x == x) to read this one.
   double cap_option_value_dec = 0.0;
+  // The EXACT log-strike grid the variance strip integrated on, as resolved
+  // after the quality tier, any caller pin, and the E2 adaptive-wing rescale
+  // have all had their say. Populated by `var_swap_fair_strike` whenever the
+  // strip actually runs, and carried through every dispatch path that runs one;
+  // left at NaN / 0 ("no strip ran") on the paths that never integrate --
+  // fully-aged legs, cap pins, and the standalone Carr-Lee vol strike.
+  //
+  // These exist so a caller can REPRODUCE a quote's grid exactly by feeding
+  // them back as DerivConfig::k_min_log / k_max_log / strip_nodes. That is what
+  // `deriv_greeks` does: the adaptive rescale rounds its node count with a
+  // ceil(), so a bumped surface can land on a DIFFERENT node count than the
+  // center, and the finite differences would then straddle a step
+  // discontinuity in the quadrature -- contaminating gamma/volga/vanna with an
+  // artifact of the grid rather than a property of the price. Pinning the
+  // center's grid into every bumped evaluation removes that failure mode by
+  // construction.
+  double strip_k_lo_used = kQuietNaN;
+  double strip_k_hi_used = kQuietNaN;
+  std::uint32_t strip_nodes_used = 0;
   DerivFlags flags = DerivFlags::None;
 };
 
@@ -508,23 +527,43 @@ struct DerivGreekBumps {
 //   - Theta rolls `contract.maturity_t` down by dt with the realized spec
 //     untouched, i.e. calendar time passes and nothing new is realized.
 //
-// AUTO-CALIBRATED VOL-OF-VOL IS PINNED. When the center quote reports a
-// `vol_of_vol_used` (some distribution model ran), that xi is pinned into an
-// internal config for every bumped evaluation. Otherwise vega would
-// double-count the drift of the calibration itself — the bumped surface would
-// re-calibrate its own xi, and dPV/dsigma would mix the model's response to
-// the vol shift with the model's re-parametrization. One exception is
-// unrepresentable: a calibration that lands on xi == 0 exactly cannot be
-// pinned, because 0 is the config's "auto-calibrate" selector; there the
-// bumped evaluations re-run the auto path, which by construction returns 0 or
-// a value far below the bump's own resolution.
+// THE CENTER'S NUMERICAL SCHEME IS PINNED INTO EVERY BUMP. Two things about
+// the pricing are resolved FROM THE SURFACE, so both move when the surface is
+// bumped — and a finite difference that lets them move is measuring a change of
+// scheme, not a derivative:
+//   - The STRIP GRID. The E2 adaptive-wing rescale sizes the span to the
+//     tenor's own sigma*sqrt(T) and rounds the node count with a ceil(), so a
+//     vol bump can push a bumped evaluation onto a different node count than
+//     the center. The differences would then straddle a step discontinuity in
+//     the quadrature and contaminate gamma / volga / vanna. The center's own
+//     resolved grid (DerivQuote::strip_k_lo_used / strip_k_hi_used /
+//     strip_nodes_used) is therefore pinned into all bumped evaluations through
+//     the ordinary explicit-pin config path, so every evaluation integrates the
+//     identical grid. Side effect, deliberate and harmless: with the span
+//     pinned, a vol-UP bump raises the width the truncation test measures
+//     against, so bumped quotes can carry StripTruncated* flags the center does
+//     not. The stencils read only PV, never flags.
+//   - The AUTO-CALIBRATED VOL-OF-VOL. When the center reports a
+//     `vol_of_vol_used`, that xi is pinned too; otherwise vega would
+//     double-count the drift of the calibration itself, mixing the model's
+//     response to the vol shift with the model re-parametrizing itself. A
+//     calibrated xi of exactly 0 is pinned as the smallest positive double
+//     rather than as 0, because 0 is the config's "auto-calibrate" selector —
+//     every consumer of xi reaches the same limit at a denormal as at zero, so
+//     this pins the value without re-selecting the auto path.
+// The center is then REPRICED under that pinned config and it is that value the
+// stencils difference; the `pv` and `quote` reported back are the original
+// center quote, priced exactly as `deriv_price` would have.
 //
-// FULLY-AGED CONTRACTS SKIP ALL BUMPING. Nothing is left to realize, so the PV
-// is a discounted constant: every market greek is exactly 0 and rho is the
-// analytic -T*PV, which holds because PV carries df = e^{-rT}. The one quote
-// that does not is a DerivFlags::DfFallback one (no discount factor resolved,
-// df = 1 substituted); its rho is then the identity's answer, not the curve's,
-// and the flag on `quote` is how a caller detects that.
+// FULLY-AGED CONTRACTS SKIP ALL BUMPING. Nothing is left to realize, so PV is a
+// fixed settlement amount under a pure discount, PV(t) = e^{-r(T-t)}*X. Every
+// market greek is exactly 0, and the two time greeks are analytic and mutually
+// consistent — dPV/dr = -(T-t)*PV and dPV/dt = +r*PV are one statement
+// differentiated two ways, so rho = -T*PV and theta = r*PV (r read off the
+// curve at maturity). At T == 0 the discount is gone and both are 0. The one
+// quote where this identity does not describe the PV is a DerivFlags::DfFallback
+// one (no discount factor resolved, df = 1 substituted); the flag on `quote` is
+// how a caller detects that.
 //
 // THETA/CHARM ARE NaN WHEN `maturity_t <= bumps.time_years`. The roll would
 // land at or past expiry, where an un-aged var/vol swap has no future leg left
@@ -595,6 +634,15 @@ extern template Result<DerivGreeks> deriv_greeks<SviSurface>(
 // with a shorter contract T rather than re-deriving carry, so a contract
 // sitting exactly on the front pillar rolls into the curve's flat-extrapolated
 // tail instead of failing OutOfRange.
+//
+// CAVEAT on a contract at or very near the FRONT fitted pillar: below it the
+// carry CurveSet clamps the forward flat while `PricedSurface::forward_at`
+// would keep extrapolating economically — the very divergence `carry_from`'s
+// range gate exists to refuse. The gate cannot see the rolled T, and theta
+// divides the resulting PV difference by dt (~1/365), so it AMPLIFIES that
+// divergence by ~365x. Theta on a front-pillar contract is therefore the one
+// output here to treat as indicative; price the roll against a surface whose
+// front pillar is genuinely shorter than the contract if it must be traded on.
 [[nodiscard]] Result<DerivGreeks> deriv_greeks(const PricedSurface& surface,
                                                const DerivContract& contract,
                                                const DerivConfig& cfg = DerivConfig{},
