@@ -700,11 +700,27 @@ expand_and_size_leg(const MarketSnapshot &snap, const LegSpec &ls, const Resolut
   // This is a configuration/capability error, never missing market data. Reject
   // the whole spec before DropRenormalize can turn an explicitly requested
   // listed contract into a silent model-contract substitution or name drop.
+  bool any_snaps_to_sessions = false;
   for (const LegSpec &leg : spec.legs) {
     const Status tenor_status = validate_model_tenor(leg.tenor);
     if (!tenor_status) {
       return Err(tenor_status.error());
     }
+    any_snaps_to_sessions = any_snaps_to_sessions || leg.tenor.snap_to_sessions;
+  }
+  // The session grid is consumed by a binary search, which on an unsorted range
+  // still RETURNS an anchor — a wrong expiry, a wrong T and therefore a wrong
+  // strike, reported as success. That is the only silent-wrong-answer path in a
+  // feature whose whole point is fail-closed calendar handling, so an out-of-order
+  // grid is rejected here, in the same configuration pre-pass and with the same
+  // never-droppable status as `snap_to_listed`: `InvalidArgument` is outside
+  // DropRenormalize's {NotFound, Unavailable} set, so a misordered calendar can
+  // never be laundered into a name drop. Checked only when some leg actually reads
+  // the grid (the flag is gathered by the loop above at zero extra cost), so a
+  // spec that carries `session_ts` it never consumes pays nothing.
+  if (any_snaps_to_sessions && !std::is_sorted(spec.session_ts.begin(), spec.session_ts.end())) {
+    return Err(ErrorCode::InvalidArgument,
+               "resolve_spec: session_ts must be sorted ascending for snap_to_sessions legs");
   }
   const bool drop_policy = missing.policy == MissingNamePolicy::DropRenormalize;
 

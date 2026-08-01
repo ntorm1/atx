@@ -2221,6 +2221,39 @@ TEST(TenorSnap, SnapWithoutSessionsIsInvalidArgument) {
       << "message was: " << sized.error().message();
 }
 
+TEST(TenorSnap, UnsortedSessionsIsInvalidArgument) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "tenor-snap-unsorted");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  constexpr double kT = 33.0 / 365.25;
+  std::vector<std::int64_t> sessions = weekday_sessions(kBaseNow, 60);
+  // The RIGHT timestamps in the WRONG order. The binary search would still
+  // return an anchor, silently — a wrong expiry, a wrong T and therefore a wrong
+  // strike, with no error anywhere. That is the one silent-wrong-answer hole in
+  // a fail-closed calendar feature, so it must be rejected up front.
+  std::swap(sessions[3], sessions[9]);
+
+  const auto sized = resolve_spec(*snapshot, snap_spec(kT, /*snap=*/true, sessions));
+  ASSERT_FALSE(sized.has_value()) << "an unsorted grid must never resolve";
+  EXPECT_EQ(sized.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(sized.error().message().find("session_ts"), std::string::npos)
+      << "message was: " << sized.error().message();
+
+  // A leg that never reads the grid is not this guard's business: the same
+  // unsorted vector resolves normally when nothing snaps.
+  const auto not_snapping = resolve_spec(*snapshot, snap_spec(kT, /*snap=*/false, sessions));
+  ASSERT_TRUE(not_snapping.has_value()) << not_snapping.error().to_string();
+
+  // Control: the guard is about ORDER, not contents — sorted, the same grid
+  // resolves to the expected snapped anchor.
+  std::sort(sessions.begin(), sessions.end());
+  const auto ok = resolve_spec(*snapshot, snap_spec(kT, /*snap=*/true, sessions));
+  ASSERT_TRUE(ok.has_value()) << ok.error().to_string();
+  ASSERT_EQ(ok->size(), 1u);
+  EXPECT_EQ(ok->front().leg.expiry_ts_ns, kBaseNow + 32 * kDayNs);
+}
+
 TEST(TenorSnap, DefaultOffIsBitIdentical) {
   const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
   auto snapshot = snapshot_of({{"SPY", &surface}}, "tenor-snap-default-off");
