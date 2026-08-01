@@ -282,6 +282,11 @@ def test_tearsheet_tsv_is_key_value_and_carries_final_nav(completed):
     # The library's own fold, not a re-derivation here.
     for key in ("total_return", "max_drawdown", "sharpe", "avg_gross_vega"):
         assert key in pairs, key
+    # Backtest timing lands here (and stdout), never in the byte-gated track.
+    # cpu_s may quantize to 0.0 on a tiny fixture (Windows process_time ticks
+    # at ~15.6 ms), so only wall is asserted strictly positive.
+    assert float(pairs["backtest_wall_s"]) > 0.0
+    assert float(pairs["backtest_cpu_s"]) >= 0.0
 
 
 def test_report_html_is_rendered_and_names_the_run(completed):

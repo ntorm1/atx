@@ -58,6 +58,7 @@ import datetime
 import hashlib
 import os
 import sys
+import time
 from typing import Iterable, Sequence
 
 # ── Source pinning. Must run before `import atxvol`. ────────────────────────
@@ -510,7 +511,7 @@ def track_meta(args, names, dates, cfg, run_cfg, sheet, result,
     }
 
 
-def write_tearsheet_tsv(path: str, sheet, result, names, dates) -> int:
+def write_tearsheet_tsv(path: str, sheet, result, names, dates, timing) -> int:
     """`key<TAB>value`, the TearSheet fold first, then the run-level facts.
 
     ``final_nav`` is NOT a TearSheet field — the fold reports `total_return`,
@@ -528,6 +529,11 @@ def write_tearsheet_tsv(path: str, sheet, result, names, dates) -> int:
         ("mean_abs_net_vega_at_entry", _g17(_mean_abs_net_vega_at_entry(result))),
         ("n_unpriced_lots_max", _g17(max(result.n_unpriced_lots, default=0.0))),
         ("n_unpriced_greeks_max", _g17(max(result.n_unpriced_greeks, default=0.0))),
+        # Timing lives HERE and in the stdout summary, never in track.tsv: the
+        # track is gated byte-identical across identical invocations, and a
+        # wall-clock stamp would break that contract on every run.
+        ("backtest_wall_s", _g17(timing["wall_s"])),
+        ("backtest_cpu_s", _g17(timing["cpu_s"])),
     ]
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         for key, value in rows:
@@ -605,7 +611,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         strategy = av.DeclarativeStrategy(spec)
 
         run_cfg = run_config()
+        # perf_counter is the wall clock; process_time is user+system CPU of the
+        # WHOLE process across all threads — run_backtest releases the GIL and
+        # fans out over the pricing executor in-process, so the delta captures
+        # the engine's parallel work (cpu/wall ~ effective core count).
+        wall_0 = time.perf_counter()
+        cpu_0 = time.process_time()
         result = av.run_backtest(clock, strategy, run_cfg)
+        timing = {
+            "wall_s": time.perf_counter() - wall_0,
+            "cpu_s": time.process_time() - cpu_0,
+        }
         sheet = av.tearsheet(result)
         dates = list(result.date)
         meta = track_meta(args, names, dates, cfg, run_cfg, sheet, result, rate)
@@ -617,7 +633,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         av.write_backtest_pnl_tsv(result, meta, track_path)
 
         tearsheet_path = os.path.join(args.out, TEARSHEET_NAME)
-        n_metrics = write_tearsheet_tsv(tearsheet_path, sheet, result, names, dates)
+        n_metrics = write_tearsheet_tsv(tearsheet_path, sheet, result, names, dates,
+                                        timing)
 
         report_path = os.path.join(args.out, REPORT_NAME)
         report_dispersion.build_report(
@@ -649,6 +666,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"  unpriced lots (max/step)  {max(result.n_unpriced_lots, default=0.0):.0f}"
           f"   unpriced greeks (max/step) "
           f"{max(result.n_unpriced_greeks, default=0.0):.0f}")
+    print(f"  backtest time         {timing['wall_s']:,.2f} s wall / "
+          f"{timing['cpu_s']:,.2f} s cpu")
     return EXIT_OK
 
 
