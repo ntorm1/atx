@@ -200,6 +200,13 @@ target_compile_definitions(atx-vol-tests PRIVATE
     "ATX_VOL_INCLUDE_ROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/../include\""
     "ATX_VOL_UMBRELLA_HPP=\"${CMAKE_CURRENT_SOURCE_DIR}/../include/atx/vol/vol.hpp\"")
 
+# Plan 5.3: version_test.cpp compares the SHIPPED version against the build
+# system's declaration, so it needs `project(atx VERSION ...)` verbatim. Baked in
+# from ${PROJECT_VERSION} rather than restated, so this line can never become the
+# fourth place the version is written down.
+target_compile_definitions(atx-vol-tests PRIVATE
+    "ATX_VOL_CMAKE_PROJECT_VERSION=\"${PROJECT_VERSION}\"")
+
 # Precompiled header (opt-in: ATX_USE_PCH; ON in the ninja/dev/rel presets, OFF
 # in `hygiene`). GoogleTest is #included by ~79 of the test TUs and is by far the
 # dominant per-TU parse cost; precompiling it (plus the ubiquitous std headers and

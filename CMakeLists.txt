@@ -1,7 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(atx
-    VERSION 0.1.0
+    # THE single source of truth for the atx-vol library version (plan 5.3).
+    # Everything downstream DERIVES from this field and nothing restates it:
+    #   * atx/vol/detail/version_generated.hpp is configure_file'd from
+    #     PROJECT_VERSION_{MAJOR,MINOR,PATCH} / PROJECT_VERSION,
+    #   * atx/vol/version.hpp publishes ATX_VOL_VERSION* + kVersion* from that,
+    #   * atx-vol/src/version.cpp returns it (it used to carry its own literal),
+    #   * the installed atx-volConfigVersion.cmake is written from PROJECT_VERSION.
+    # Version.Query_MatchesTheCMakeProjectVersion fails if any of them drifts.
+    VERSION 1.0.0
     DESCRIPTION "ATX monorepo: core + engine"
     LANGUAGES C CXX
 )
