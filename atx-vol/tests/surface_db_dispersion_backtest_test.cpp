@@ -118,10 +118,22 @@
 //                                          report); SKIPPED unless the operator
 //                                          points it at a db.
 //
+// Post-review closure: the config tests above all parse text this file AUTHORS,
+// which leaves the file operators actually COPY guarded by nothing:
+//
+//  23. ShippedExampleConfigParses        — examples/sp100_dispersion_config.tsv,
+//                                          read off disk via the configure-time
+//                                          ATX_SP100_DISPERSION_CONFIG path: it
+//                                          parses, its documented values land,
+//                                          and it still names NEITHER `unpriced`
+//                                          nor `hedge_kind` (the fail-closed
+//                                          absence the quickstart overlays).
+//
 // Fixtures are synthetic eSSVI surfaces written into a fresh SurfaceDb under
 // %TEMP% (make_test_db below), plus config text written to throwaway %TEMP%
-// files (write_temp_file). Only test 22 reads the real data lake, only when its
-// env var is set, and it opens that tree strictly for READING.
+// files (write_temp_file). Test 23 reads one committed repo file, READ-ONLY.
+// Only test 22 reads the real data lake, only when its env var is set, and it
+// opens that tree strictly for READING.
 
 #include <gtest/gtest.h>
 
@@ -423,6 +435,30 @@ const std::vector<std::string_view> kAbsentCohort = {"MSFT", "NVDA"};
     }
   }
   ADD_FAILURE() << "no partition for " << date;
+  return {};
+}
+
+// The SHIPPED example config's absolute path, or "" when it cannot be found.
+// Prefers the configure-time path baked by tests/CMakeLists.txt
+// (ATX_SP100_DISPERSION_CONFIG), then a few relative roots so the test also runs
+// from a hand-launched exe. Same probe shape as amzn_earnings_test.cpp's
+// find_fixture (ATX_AMZN_FIXTURE).
+constexpr const char *kShippedConfigRel = "atx-vol/examples/sp100_dispersion_config.tsv";
+
+[[nodiscard]] std::string shipped_example_config() {
+  std::vector<std::string> candidates;
+#ifdef ATX_SP100_DISPERSION_CONFIG
+  candidates.emplace_back(ATX_SP100_DISPERSION_CONFIG);
+#endif
+  candidates.emplace_back(kShippedConfigRel);
+  candidates.emplace_back(std::string("../") + kShippedConfigRel);
+  candidates.emplace_back(std::string("../../") + kShippedConfigRel);
+  for (const std::string &c : candidates) {
+    std::error_code ec;
+    if (fs::exists(c, ec) && !ec) {
+      return c;
+    }
+  }
   return {};
 }
 
@@ -754,6 +790,44 @@ TEST(SurfaceDbDispersionBacktest, ConfigReaderRejectsUnknownKeyAndBadValue) {
   for (const auto &p : {key_path, val_path, enum_path, policy_path, tail_path, neg_path, shape_path,
                         empty_path})
     fs::remove(p);
+}
+
+TEST(SurfaceDbDispersionBacktest, ShippedExampleConfigParses) {
+  // The four tests above parse configs this file AUTHORS. This one parses the
+  // file we SHIP — examples/sp100_dispersion_config.tsv, which the operator guide
+  // tells operators to `Copy-Item` and which §4's table reproduces verbatim. It is
+  // not a build input, so before this test a renamed key, a fat-fingered enum
+  // token or a space-instead-of-tab in it would ship broken and only surface in a
+  // hand run.
+  const std::string path = shipped_example_config();
+  ASSERT_FALSE(path.empty()) << "sp100_dispersion_config.tsv not found; expected the "
+                                "ATX_SP100_DISPERSION_CONFIG path baked by tests/CMakeLists.txt";
+  const auto cfg = read_dispersion_backtest_config(path);
+  ASSERT_TRUE(cfg.has_value()) << (cfg.has_value() ? std::string{} : cfg.error().to_string());
+
+  // The production shape, pinned against the doc's §4 table. `min_names` and
+  // `entry_every_n` are additionally what RealSp100Baseline hard-codes to mirror
+  // this file, so a drift here and a drift there cannot cancel out silently.
+  EXPECT_DOUBLE_EQ(cfg->target_dte_days, 30.0);
+  EXPECT_DOUBLE_EQ(cfg->roll_dte_days, 7.0);
+  EXPECT_DOUBLE_EQ(cfg->gross_index_vega, 10000.0);
+  EXPECT_EQ(cfg->min_names, 60u);
+  EXPECT_EQ(cfg->entry_every_n, 21u);
+  EXPECT_EQ(cfg->side, DispersionSide::ShortIndexLongNames);
+  EXPECT_EQ(cfg->weighting, WeightingScheme::VegaNeutral);
+  EXPECT_EQ(cfg->strike.rule, StrikeRule::AtmForwardStraddle);
+  EXPECT_TRUE(cfg->record_diagnostics);
+  EXPECT_EQ(cfg->run.price.n_threads, 0u); // 0 => hardware concurrency
+  EXPECT_EQ(cfg->run.prefetch_depth, 2u);
+
+  // The load-bearing ABSENCES. The shipped file names neither `unpriced` nor
+  // `hedge_kind`, so both must come back as the engine's fail-closed defaults —
+  // which is exactly WHY the quickstart overlays those two keys onto a COPY
+  // instead of editing this file. Adding either key here would silently turn the
+  // documented "deliberately left fail-closed" production shape into something
+  // else, and make the quickstart's two Add-Content lines a no-op.
+  EXPECT_EQ(cfg->run.unpriced, UnpricedLotPolicy::Error);
+  EXPECT_EQ(cfg->hedge_kind, HedgeSpec::Kind::DeltaToZero);
 }
 
 // ── Task 3: universe_from_surface_db ────────────────────────────────────────
