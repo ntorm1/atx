@@ -134,6 +134,13 @@ public:
   // `ats_vol_curve_set_set_dividends`). An empty span clears it.
   void set(std::span<const DividendEvent> evs);
 
+  // BORROW of the event vector this schedule owns; `set` COPIES the caller's span
+  // in, so the caller's storage is never retained. INVALIDATION: `set` replaces
+  // the vector wholesale and therefore invalidates every outstanding span, as do
+  // destroying the schedule and assigning over it (this type is copyable as well
+  // as movable — a span from one schedule never names a copy's storage).
+  // Concurrent readers are safe under the many-readers-or-one-writer contract
+  // above; `set` is the writer. Copy out to survive a `set` or outlive the owner.
   [[nodiscard]] std::span<const DividendEvent> events() const noexcept { return events_; }
   [[nodiscard]] std::size_t size() const noexcept { return events_.size(); }
 
@@ -274,6 +281,14 @@ public:
   // listed expiries. Mirrors `ats_vol_curve_forward`.
   [[nodiscard]] double forward_at(std::size_t expiry_id) const noexcept;
 
+  // Both overloads BORROW the point vector this curve owns — the non-const one is
+  // an IN-PLACE WRITE HANDLE, not a copy: edits through it are immediately visible
+  // to `forward_at`/`detect_htb`, and it is the writer in the many-readers-or-one-
+  // writer contract above. INVALIDATION: `set` replaces the vector wholesale and
+  // invalidates every outstanding span (`detect_htb` does not — it only rewrites
+  // element flags in place), as do destroying the curve and assigning over it
+  // (copyable as well as movable; a span from one curve never names a copy's
+  // storage). Copy out to survive a `set` or outlive the curve.
   [[nodiscard]] std::size_t size() const noexcept { return pts_.size(); }
   [[nodiscard]] std::span<const ForwardPoint> points() const noexcept { return pts_; }
   [[nodiscard]] std::span<ForwardPoint> points() noexcept { return pts_; }

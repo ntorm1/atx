@@ -390,6 +390,14 @@ public:
   // ── Introspection ──────────────────────────────────────────────────────────
 
   [[nodiscard]] const CurveSurface &surface() const noexcept { return surface_; }
+  // BORROW of the per-slice carry vector this surface owns. `ctx_` is built once
+  // by the private constructor and never rewritten — query-tier preparation
+  // touches the transient caches, not the carry — so the span is valid for the
+  // surface's lifetime and is safe for concurrent const readers, exactly like the
+  // query entries above. `PricedSurface` is MOVE-ONLY, so the only invalidations
+  // are destruction and move-assignment (a plain move keeps the elements'
+  // addresses; a moved-from surface's span must not be read). Copy the contexts
+  // out if they must outlive the surface.
   [[nodiscard]] std::span<const SliceContext> context() const noexcept { return ctx_; }
   [[nodiscard]] const PricingContext &pricing() const noexcept { return pricing_; }
   [[nodiscard]] std::size_t n_slices() const noexcept { return surface_.n_slices(); }

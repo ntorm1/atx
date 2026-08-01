@@ -103,6 +103,15 @@ public:
   // chain's many-readers-or-one-writer synchronization contract.
   [[nodiscard]] std::uint64_t instance_id() const noexcept { return instance_id_; }
   [[nodiscard]] std::uint64_t quote_revision() const noexcept { return quote_revision_; }
+  // BORROW of this chain's own per-expiry revision vector — the chain owns the
+  // storage, the span does not. The vector is sized ONCE when the chain installs
+  // its underlying (`from_frame`) and `update_quotes` only INCREMENTS elements in
+  // place, so a live span stays valid across quote updates; its CONTENTS advance
+  // under the writer. Destroying or move-assigning the chain invalidates it, and a
+  // moved-from chain's span must not be read. Concurrent readers are safe under
+  // the many-readers-or-one-writer contract above; a reader that must observe a
+  // stable set of revisions copies them out
+  // (`std::vector<std::uint64_t>{sp.begin(), sp.end()}`) rather than holding this.
   [[nodiscard]] std::span<const std::uint64_t> expiry_quote_revisions() const noexcept {
     return expiry_quote_revisions_;
   }

@@ -237,8 +237,10 @@ struct EssviCube {
 //   * `VolaSession` holds one BY VALUE and serves from it on the default eSSVI
 //     route — `session.cpp` says it outright: "the fitted slices live in the
 //     VolSurface, not a CurveSurface";
-//   * `arb.hpp`, `projection.hpp`, `surface_parity.hpp`, `adjusted_greeks.hpp`
-//     and the DEPRECATED portfolio engine all read one.
+//   * `arb.hpp`, `projection.hpp`, `surface_parity.hpp` and
+//     `adjusted_greeks.hpp` all read one. (This list named the deprecated
+//     VolSurface-bound portfolio engine as a fifth reader; S4-T22 deleted that
+//     engine outright, so the reader set is the four headers above.)
 //
 // On the archive: the ATXVSA record carries per-slice PARAMS, not this
 // container. `EssviParams` / `SviParams` are written and read back as trivially
@@ -293,6 +295,18 @@ class VolSurface {
   [[nodiscard]] std::size_t n_slices() const noexcept;
   [[nodiscard]] std::size_t capacity() const noexcept { return cap_slices_; }
 
+  // Both BORROW a slice vector this surface owns; only the vector matching
+  // `param()` is ever non-empty. INVALIDATION is subtler than "any mutation":
+  // `create` RESERVES `cap_slices` up front and `set_slice_*` refuses an index at
+  // or past that capacity, so the growth `resize` can never reallocate — an
+  // outstanding span keeps a valid data pointer across a `set_slice_*`, but its
+  // EXTENT goes stale the moment the active count grows past it. Re-call the
+  // accessor after any `set_slice_*` rather than reusing a span across one.
+  // Destroying the surface, or assigning over it (this is a plain value type:
+  // copyable and movable — a span from one surface never names a copy's
+  // storage), invalidates the pointer too. Concurrent const readers are safe;
+  // `set_slice_*` is the writer under the many-readers-or-one-writer contract
+  // stated at the top of this header. Copy the slices out to outlive the surface.
   [[nodiscard]] std::span<const EssviParams> essvi_slices() const noexcept {
     return essvi_;
   }

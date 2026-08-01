@@ -188,6 +188,20 @@ public:
   [[nodiscard]] std::size_t n_contracts() const noexcept { return contracts_.size(); }
   [[nodiscard]] std::size_t n_underlyings() const noexcept { return uids_.size(); }
 
+  // These three BORROW vectors the `Portfolio` owns; the book is the owner and the
+  // spans are not. They are built once by `create` and the book never grows or
+  // shrinks afterwards, so a live span keeps its extent for the book's lifetime.
+  // INVALIDATION: destroying the book, or assigning over it (this type is
+  // COPYABLE as well as movable — a span taken from one book never names the
+  // copy's storage). `retime` is the one mutator and it does NOT reallocate (it
+  // is documented allocation-free and preserves the dedup/group mapping), so a
+  // span survives it while its CONTENTS change — which is the reason to hold the
+  // book rather than the span. THREADING: `Portfolio` is not internally
+  // synchronized; `retime` is a writer and needs exclusive access, while the const
+  // accessors are safe for concurrent readers once no writer is active (the
+  // library-wide many-readers-or-one-writer contract, and the same rule the
+  // pricer's Thread-safety section above states for in-place pricing). Copy out
+  // (`std::vector<Position>{sp.begin(), sp.end()}`) to outlive the book.
   [[nodiscard]] std::span<const Position> positions() const noexcept { return positions_; }
   [[nodiscard]] std::span<const OptionContract> contracts() const noexcept { return contracts_; }
   [[nodiscard]] std::span<const std::uint32_t> uids() const noexcept { return uids_; }

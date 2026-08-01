@@ -41,6 +41,18 @@ public:
   [[nodiscard]] static Result<ListedDefinitionTable>
   create(std::vector<ListedContractDefinition> definitions);
 
+  // `find()`'s pointer and `definitions()`'s span BORROW the row vector this table
+  // owns — including the `std::string` bodies inside each row. `create` MOVES the
+  // caller's vector in and the table is immutable afterwards (no member rewrites
+  // the rows; `fingerprint()` touches only a `mutable` memo), so both views are
+  // valid for the table's lifetime and are safe for concurrent readers — with the
+  // one exception the `fingerprint()` note below states for its first call.
+  // INVALIDATION: destroying the table, or assigning over it. The table is
+  // COPYABLE AND MOVABLE ON PURPOSE (see that same note — every read path moves it
+  // out of a `Result`), so a view taken before such a move names the moved-FROM
+  // object and must be re-taken after it; a view from one table never names a
+  // copy's storage. Copy rows out to outlive the table. `find` returns nullptr for
+  // an unknown key.
   [[nodiscard]] const ListedContractDefinition *find(std::string_view trade_date,
                                                      std::uint32_t instrument_id,
                                                      std::string_view raw_symbol) const noexcept;

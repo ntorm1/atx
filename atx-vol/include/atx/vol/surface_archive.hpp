@@ -612,6 +612,15 @@ public:
 
   [[nodiscard]] std::uint32_t count() const noexcept { return header_.surface_count; }
   [[nodiscard]] const ArchiveV2Header &header() const noexcept { return header_; }
+  // `directory()` / `entries()` BORROW the archive's own PARSED-COPY directory
+  // vector — this archive object is the owner, and unlike a `PricedSurfaceView`
+  // the span does NOT point into the mapped bytes, so it stays readable for the
+  // archive's lifetime whatever `bytes_`'s backing is. The directory is built
+  // once at open and never rewritten, so concurrent const readers are safe.
+  // INVALIDATION: destroying the archive, or assigning over it (the type is
+  // copyable as well as movable — a span from one archive never names a copy's
+  // storage). Copy the entries out to outlive the archive; each
+  // `ArchiveV2DirEntry` is a self-contained value, so a copy needs no mapping.
   [[nodiscard]] std::span<const ArchiveV2DirEntry> directory() const noexcept { return directory_; }
 
   // ── Framing-only enumeration seam (C6 / SE-P2-6) ────────────────────────────

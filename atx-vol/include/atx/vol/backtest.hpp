@@ -80,6 +80,14 @@ public:
   // unchanged.
   [[nodiscard]] static Result<Clock> from_surface_db(const SurfaceDb &db);
 
+  // BORROW of the timeline vector this `Clock` owns — including the `date` and
+  // `archive_path` strings inside each `SnapshotRef`. A clock is immutable once a
+  // `from_*` factory has returned it (nothing rewrites `refs_`), so the span is
+  // valid for the clock's lifetime and concurrent const readers are safe.
+  // INVALIDATION: destroying the clock, or assigning over it — the type is
+  // COPYABLE as well as movable, and a span taken from one clock never names the
+  // copy's storage. A step loop that outlives the clock (or that stores refs past
+  // a rebuild) must copy them out, not keep this span.
   [[nodiscard]] std::span<const SnapshotRef> refs() const noexcept { return refs_; }
   [[nodiscard]] std::size_t size() const noexcept { return refs_.size(); }
 

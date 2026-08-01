@@ -462,6 +462,17 @@ public:
 
   [[nodiscard]] const DbManifestHeader &header() const noexcept { return header_; }
   [[nodiscard]] std::uint64_t generation() const noexcept { return header_.generation; }
+  // `symbols()`, `partitions()` and `find_partition()`'s pointer BORROW the two
+  // decoded record vectors this manifest owns (decoded at `open` from the bytes
+  // it took by value; the caller's byte buffer is not retained). A `DbManifest`
+  // is IMMUTABLE — the class declares no mutator and its only constructor is the
+  // private default one `open` fills — so the views are valid for the manifest's
+  // lifetime, nothing invalidates them short of destroying it or assigning over
+  // it, and the "all queries const + thread-safe" claim above extends to holding
+  // these views across concurrent readers. Note that a manifest REFRESH produces
+  // a NEW `DbManifest`: views taken from the previous generation keep pointing at
+  // the old object and must be re-taken, not reused. Copy the records out
+  // (`std::vector<DbSymbolRecord>{sp.begin(), sp.end()}`) to outlive the manifest.
   [[nodiscard]] std::span<const DbSymbolRecord> symbols() const noexcept { return symbols_; }
   [[nodiscard]] std::span<const DbPartitionRecord> partitions() const noexcept {
     return partitions_;

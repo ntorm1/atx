@@ -217,6 +217,17 @@ class PricingWorkspace {
   }
 
   // Per-lane Greek-path diagnostics after american_greeks_batch (length n).
+  //
+  // BORROW of this workspace's own diagnostic vectors — the workspace is the
+  // owner. INVALIDATION: `reserve_lanes` `assign`s both vectors on EVERY call
+  // (not only when it grows the scratch), so it can reallocate and always resets
+  // the contents; a batch call that reserves therefore invalidates any span taken
+  // before it. Re-call the accessor after each batch rather than caching one, and
+  // copy the lane diagnostics out if a report keeps them past the next batch.
+  // Destroying the workspace invalidates them too. THREADING: a workspace is
+  // single-owner scratch — the batch entries write it — so each concurrent batch
+  // call needs its OWN `PricingWorkspace`, and these views are read from the
+  // thread that ran the batch, between calls.
   [[nodiscard]] std::span<const LaneStatus> lane_status_view() const noexcept {
     return lane_status;
   }

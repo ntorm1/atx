@@ -80,6 +80,14 @@ public:
   [[nodiscard]] static Result<CorpusMarketInputTable>
   create(std::vector<CorpusMarketInputCell> cells);
 
+  // `find()`'s pointer and `cells()`'s span BORROW the cell vector this table
+  // owns (`create` canonicalizes and MOVES the caller's vector in, so the
+  // caller's storage is not retained). A table is immutable once `create` has
+  // returned it — no member function rewrites `cells_` — so both stay valid for
+  // the table's lifetime and concurrent const readers are safe. Destroying the
+  // table, or assigning over it (copy or move), invalidates them; a view taken
+  // from one table never names a copy's storage. Copy the cells out if they must
+  // outlive the table. `find` returns nullptr for an absent (date, symbol).
   [[nodiscard]] const CorpusMarketInputCell *find(std::string_view date,
                                                   std::string_view symbol) const;
   [[nodiscard]] std::span<const CorpusMarketInputCell> cells() const noexcept { return cells_; }

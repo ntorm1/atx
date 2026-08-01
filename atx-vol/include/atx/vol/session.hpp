@@ -629,7 +629,22 @@ public:
   [[nodiscard]] Result<PricedSurface> to_priced_surface() const;
 
   // ── Introspection ──────────────────────────────────────────────────────────
-
+  //
+  // BORROW CONTRACT for every view this section hands out — `surface()`,
+  // `curve_override()`, `expiries()`, `parity()`, `slice_diagnostics()`,
+  // `diagnostics()` and `inputs()`. The SESSION owns all of that storage; the
+  // views own none of it, and each is valid exactly as long as this session
+  // object is. INVALIDATION is simple here because the session is immutable after
+  // construction (Thread-safety, above: `build`/`from_frame` are the only
+  // mutating entries and each returns a FRESH session rather than rewriting one),
+  // so nothing short of destroying the session invalidates a view — with one
+  // consequence worth stating: a refit produces a NEW session, so views taken
+  // from the old one keep naming the old object and must be re-taken. The session
+  // is MOVE-ONLY (Ownership, above), so there is no copy whose storage a stale
+  // view could be confused with; a plain move keeps element addresses valid, and
+  // a moved-from session's views must not be read. Because the state is
+  // immutable, holding these views across concurrent const readers is safe.
+  // Anything that must outlive the session gets copied out, not borrowed.
   [[nodiscard]] const VolSurface &surface() const noexcept { return surface_; }
 
   // The optional polymorphic-surface override (ConvexDense / Svi / C8):

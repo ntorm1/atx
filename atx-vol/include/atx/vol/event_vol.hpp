@@ -140,7 +140,13 @@ class EventSchedule {
   [[nodiscard]] std::size_t count_between(std::int64_t now_ns,
                                           std::int64_t expiry_ns) const noexcept;
 
-  // The full sorted event list.
+  // The full sorted event list, as a BORROW of the vector this schedule owns.
+  // Valid for the schedule's lifetime: the schedule is immutable after
+  // construction (the constructor sorts the moved-in vector and nothing else
+  // writes it), so only destroying the schedule or assigning over it invalidates
+  // the span — and a span taken from one schedule never names a copy's storage.
+  // Immutable state means concurrent const readers are safe. Copy out
+  // (`std::vector<std::int64_t>{sp.begin(), sp.end()}`) to outlive the owner.
   [[nodiscard]] std::span<const std::int64_t> events() const noexcept;
 
  private:
