@@ -100,6 +100,12 @@ third. Each of the four headers states that this is the last layout change
 allowed; post-1.0 knobs append at the end with no positional promise. Python is
 unaffected: keyword names, arity and signature are unchanged.
 
+`RunConfig`'s pin moved **15 → 16** later in the same sprint when `cancel` was
+added (see *Embedding* below). It was INSERTED beside `step_observer`, its
+semantic group — not appended — which is precisely the freedom the new convention
+buys and the old one forbade. Named initialisation is unaffected by construction;
+a positional one would have rebound, which is why none is allowed to exist.
+
 ### REMOVED
 
 * **The deprecated `VolSurface`-bound portfolio engine**: `portfolio.hpp`,
@@ -164,6 +170,44 @@ exists for.
 * **Loose dispersion result TSVs are off by default**, behind
   `DispersionRunConfig::emit_tsv_diagnostics` (spec key of the same name,
   default `false`). Retained-input and evidence TSVs are unaffected.
+
+### NEW — embedding: a diagnostic sink and cooperative cancellation
+
+The two things a library has to offer before a host can embed it: give up the
+process's streams, and be stoppable.
+
+* **`atx/vol/log.hpp` (Tier-B) — diagnostic sink.** `install_log_sink(sink, user)`
+  routes every diagnostic atx-vol emits to a callback carrying a `LogLevel`, a
+  `LogStream` and one newline-free line. **All 13 library stream writes across 5
+  source files now go through it**; no `fprintf`/`printf`/`cerr`/`cout` to a
+  process stream remains in library code.
+  **With no sink installed, output is byte-identical to 1.0.0-pre**: the same
+  text on the same stream, so this is not a behavioural change for any existing
+  consumer. The stream is carried on the record rather than derived from the
+  level, precisely so the two Info-level sites that historically wrote to
+  *different* streams both stay unchanged.
+  The callback must not throw (the emit path is `noexcept`), must not re-enter
+  atx-vol, and **must tolerate concurrent invocation** — pricing-pool workers
+  emit, so records arrive on threads the host never created, and record order
+  across threads is not defined. Install once, before the first emitting call.
+* **`ErrorCode::Cancelled` (atx-core)** — appended last, so no existing
+  enumerator's `u16` value moved.
+* **Cooperative cancellation on the four long-running entries.** A `CancelToken`
+  (`atx/vol/types.hpp`) is a non-owning view of a caller-owned
+  `std::atomic<bool>`; a default-constructed one never cancels and costs one
+  branch per poll. Plumbed as `RunConfig::cancel` (**this is the 15 → 16 field
+  above**), `CorpusConfig::cancel`, `SurfaceDbPopulateConfig::cancel`, and — for
+  the run-dir-only entry that has no caller-supplied config — a defaulted
+  trailing parameter on `dispersion_run_projected_var`.
+  Cancellation is a **clean early return with `ErrorCode::Cancelled`, never a
+  partial write**. Each entry polls at the top of a loop iteration, before that
+  iteration writes anything: `run_backtest` returns no result at all (and writes
+  no files in any case); `build_corpus` leaves no manifest, so the corpus never
+  claims to be complete; `populate_surface_db` leaves a **valid database holding
+  a prefix of the dates**, because each date is committed atomically with a
+  generation-bumped manifest — stop a long backfill and re-run to resume;
+  `dispersion_run_projected_var` writes its artifacts only after the work it
+  cancels, so the run dir is untouched.
 
 ### Packaging, versioning and ABI
 
