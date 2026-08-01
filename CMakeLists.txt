@@ -124,6 +124,14 @@ endif()
 include(FetchContent)
 
 # spdlog: logging backend (bundles fmt).
+# SPDLOG_INSTALL defaults to "am I the top-level project", i.e. OFF here, which
+# left spdlog::spdlog unexportable — it is PUBLIC on atx-core (atx/core/log.hpp
+# names it), so the atx-vol package cannot install without it. Turning spdlog's
+# OWN install machinery on is the honest fix: it ships its headers, its static
+# lib and a real spdlogConfig.cmake into the same prefix, which the generated
+# atx-volConfig.cmake then find_dependency()s. Install rules only; no compile or
+# link change to any atx target. See cmake/atx-vol-install.cmake.
+set(SPDLOG_INSTALL ON CACHE BOOL "" FORCE)
 FetchContent_Declare(
     spdlog
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
@@ -163,7 +171,13 @@ FetchContent_GetProperties(Eigen3)
 if(NOT eigen3_POPULATED)
     FetchContent_Populate(Eigen3)
     add_library(eigen INTERFACE)
-    target_include_directories(eigen SYSTEM INTERFACE ${eigen3_SOURCE_DIR})
+    # Both halves are needed: the BUILD_INTERFACE path is where the headers are
+    # while we compile, and the INSTALL_INTERFACE one is where they land in an
+    # install prefix (cmake/atx-vol-install.cmake copies them there). A bare
+    # absolute path here is also what install(EXPORT) refuses outright.
+    target_include_directories(eigen SYSTEM INTERFACE
+        $<BUILD_INTERFACE:${eigen3_SOURCE_DIR}>
+        $<INSTALL_INTERFACE:include>)
     add_library(Eigen3::Eigen ALIAS eigen)
 endif()
 
@@ -283,4 +297,14 @@ add_subdirectory(atx-engine)
 add_subdirectory(atx-impl)
 if(ATX_BUILD_UI)
     add_subdirectory(atx-ui)
+endif()
+
+# ---- Distribution package: install + export the atx-vol tree (plan 5.1) ----
+# LAST, after every add_subdirectory: the export set spans modules (atx-vol,
+# atx-core, atx-tsdb and the vendored header-only deps), and install(TARGETS)
+# needs every one of them to already exist. Gate it off for a consumer that
+# add_subdirectory()s this repo — install rules from an embedded copy would
+# fight the embedding project's own.
+if(PROJECT_IS_TOP_LEVEL)
+    include(cmake/atx-vol-install.cmake)
 endif()

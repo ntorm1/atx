@@ -72,7 +72,6 @@ function Get-CacheVar {
 
 $buildType   = Get-CacheVar "CMAKE_BUILD_TYPE"   "Debug"
 $cxxCompiler = Get-CacheVar "CMAKE_CXX_COMPILER" "clang-cl"
-$cCompiler   = Get-CacheVar "CMAKE_C_COMPILER"   "clang-cl"
 $vcpkgDir    = Get-CacheVar "VCPKG_INSTALLED_DIR"
 $vcpkgTriple = Get-CacheVar "VCPKG_TARGET_TRIPLET" "x64-windows"
 
@@ -90,7 +89,8 @@ $configureArgs = @(
   "-B", $BuildDir,
   "-G", "Ninja",
   "-DCMAKE_BUILD_TYPE=$buildType",
-  "-DCMAKE_C_COMPILER=$cCompiler",
+  # CXX only: the consumer project declares LANGUAGES CXX, so passing
+  # CMAKE_C_COMPILER too would only earn an "unused variable" warning.
   "-DCMAKE_CXX_COMPILER=$cxxCompiler",
   "-DCMAKE_PREFIX_PATH=$Prefix",
   "-DVCPKG_TARGET_TRIPLET=$vcpkgTriple",
