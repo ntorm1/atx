@@ -43,6 +43,7 @@
 #include "atx/vol/american.hpp"            // AlOpts, AmericanMethod
 #include "atx/vol/dense_slice.hpp"         // ConvexSliceFit
 #include "atx/vol/detail/archive_util.hpp" // crc32c, crc32c_update, align_up, canonicalize_symbol
+#include "atx/vol/detail/surface_archive_payload.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/vol_curve.hpp"   // IVolCurve, Convex/Essvi/SviCurve, CurveSurface
 #include "atx/vol/vol_surface.hpp" // EssviParams, SviParams
@@ -59,8 +60,8 @@ using detail::align_up;
 using detail::crc32c;
 using detail::crc32c_update;
 
-// The POD slice structs are serialized verbatim, so they must be trivially
-// copyable for the memcpy round-trip to be well-defined.
+// The native slice layouts remain the archive ABI. Named fields are serialized
+// individually so their padding is canonical zero (surface_archive_payload.hpp).
 static_assert(std::is_trivially_copyable_v<EssviParams>,
               "EssviParams must be trivially copyable for byte serialization");
 static_assert(std::is_trivially_copyable_v<SviParams>,
@@ -77,7 +78,7 @@ static_assert(std::is_trivially_copyable_v<AlOpts>,
 // layout here instead -- same protection, paid at compile time. If you change
 // C8Params, bump kV3Salt in schema_hash() and update this size.
 static_assert(sizeof(C8Params) == 176,
-              "C8Params layout is serialized verbatim; changing it must bump the archive "
+              "C8Params layout is serialized fieldwise; changing it must bump the archive "
               "schema salt (see schema_hash) so stale C8 archives are rejected, not mis-read");
 
 namespace {
@@ -557,12 +558,12 @@ Result<std::vector<std::byte>> write_surface_archive(std::span<const SurfaceArch
       }
       case VolCurveKind::Essvi: {
         const EssviParams &e = static_cast<const EssviCurve *>(sp.curve)->slice();
-        std::memcpy(payload, &e, sizeof e);
+        detail::write_archive_payload(payload, e);
         break;
       }
       case VolCurveKind::Svi: {
         const SviParams &v = static_cast<const SviCurve *>(sp.curve)->slice();
-        std::memcpy(payload, &v, sizeof v);
+        detail::write_archive_payload(payload, v);
         break;
       }
       case VolCurveKind::LinearVariance: {
@@ -574,7 +575,7 @@ Result<std::vector<std::byte>> write_surface_archive(std::span<const SurfaceArch
       }
       case VolCurveKind::C8: {
         const C8Params &c8 = static_cast<const C8Curve *>(sp.curve)->slice();
-        std::memcpy(payload, &c8, sizeof c8);
+        detail::write_archive_payload(payload, c8);
         break;
       }
       case VolCurveKind::SplineVol: {

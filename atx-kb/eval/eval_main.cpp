@@ -259,7 +259,9 @@ void add_expected(QueryFixture &query, std::string key, int relevance = 3) {
   budget_query.request.embedding_model = "disabled";
   budget_query.request.limit = 8;
   budget_query.request.graph_depth = 0;
-  budget_query.context_budget = 512;
+  // Keep this close to the public 512-character floor while admitting one
+  // complete v3 evidence record plus its source ledger.
+  budget_query.context_budget = 640;
   for (std::size_t i = 0; i < 8; ++i) {
     const std::string suffix = numbered("", i);
     const std::string key = "budget-" + suffix;

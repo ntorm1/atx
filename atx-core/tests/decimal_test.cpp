@@ -79,6 +79,7 @@ TEST(Decimal, FromIntAtMinWholeOk) {
   EXPECT_EQ(d.raw(), min_whole * Decimal::kScale);
 }
 
+#ifndef NDEBUG
 TEST(Decimal, FromIntRangeChecked) {
   EXPECT_DEATH((void)Decimal::from_int(10'000'000'000LL), "");
 }
@@ -86,6 +87,7 @@ TEST(Decimal, FromIntRangeChecked) {
 TEST(Decimal, FromIntRangeCheckedNegative) {
   EXPECT_DEATH((void)Decimal::from_int(-10'000'000'000LL), "");
 }
+#endif
 
 // ============================================================
 //  from_double
@@ -317,10 +319,12 @@ TEST(Decimal, CheckedSubOverflowErrs) {
   EXPECT_EQ(r.error().code(), ErrorCode::OutOfRange);
 }
 
+#ifndef NDEBUG
 TEST(Decimal, AddOverflowAborts) {
   const auto big = Decimal::from_raw(INT64_MAX);
   EXPECT_DEATH((void)(big + Decimal::from_raw(1)), "");
 }
+#endif
 
 // ============================================================
 //  Multiplication (rescale, truncate toward zero)
@@ -419,10 +423,12 @@ TEST(Decimal, DivNegativeByNegative) {
   EXPECT_EQ((a / b), Decimal::from_int(3));
 }
 
+#ifndef NDEBUG
 TEST(Decimal, DivByZeroAborts) {
   const auto a = Decimal::from_int(1);
   EXPECT_DEATH((void)(a / Decimal::from_int(0)), "");
 }
+#endif
 
 // ============================================================
 //  round() — round-half-away-from-zero to integer

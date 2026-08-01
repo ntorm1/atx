@@ -4395,7 +4395,7 @@ TEST(AgentDatabase, ConcurrentFactRetriesCommitOneTemporalTransition) {
                                        [](const auto &event) { return event.type == "fact.put"; });
   ASSERT_NE(fact_event, events->end());
   EXPECT_EQ(fact_event->subject, "facts/" + std::to_string(successful.front().id));
-  auto current = reopened->facts_as_of_sequence("2026-07-19T00:00:00.000Z",
+  auto current = reopened->facts_as_of_sequence(successful.front().valid_from,
                                                 successful.front().transaction_from_sequence,
                                                 "atx-db", "release_state");
   ASSERT_TRUE(current);

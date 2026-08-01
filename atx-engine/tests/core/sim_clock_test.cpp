@@ -70,6 +70,7 @@ TEST(SimClock, AdvanceTo_SameTimestamp_Allowed) {
 //  Monotonic precondition — backward advance must abort in debug builds.
 // ============================================================================
 
+#ifndef NDEBUG
 TEST(SimClock, AdvanceTo_BackwardTimestamp_Aborts) {
   SimClock clock;
   clock.advance_to(ts(1'000));
@@ -78,6 +79,7 @@ TEST(SimClock, AdvanceTo_BackwardTimestamp_Aborts) {
   // or may not emit a message to stderr depending on the logging init state).
   EXPECT_DEATH({ clock.advance_to(ts(999)); }, ".*");
 }
+#endif
 
 // ============================================================================
 //  is_visible — the point-in-time look-ahead gate

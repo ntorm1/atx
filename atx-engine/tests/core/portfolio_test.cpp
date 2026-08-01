@@ -423,6 +423,7 @@ TEST(Portfolio, Cash_AfterMixedSequence_BalancesExactly) {
 //  Death tests — invalid input is a programmer error (ATX_ASSERT).
 // =====================================================================
 
+#ifndef NDEBUG
 TEST(PortfolioDeathTest, ApplyFill_ZeroPrice_Aborts) {
   std::array<InstrumentId, 1> uni{inst(10)};
   Portfolio pf{dec(100000), std::span<const InstrumentId>{uni}};
@@ -451,6 +452,7 @@ TEST(PortfolioDeathTest, ApplyFill_ZeroQty_Aborts) {
   // A zero-quantity fill is not a transaction (sign encodes direction).
   EXPECT_DEATH({ pf.apply_fill(fill(10, 0, 50)); }, "");
 }
+#endif
 
 
 }  // namespace atxtest_portfolio_test

@@ -303,12 +303,14 @@ TEST(RegimeCombine, UnderPopulatedRegime_FallsBackToGlobal) {
 
 // ---- 9: death test — misshaped posterior aborts (programmer-error precondition) -
 
+#ifndef NDEBUG
 TEST(RegimeCombineDeathTest, Blend_PosteriorSizeMismatch_Aborts) {
   RegimeCombiner rc;
   rc.per_regime = {combo_with({0.5, 0.5}), combo_with({0.3, 0.7})};
   const std::vector<f64> wrong_size{1.0}; // size 1 != per_regime.size() 2
   EXPECT_DEATH((void)rc.blend(wrong_size), ".*");
 }
+#endif
 
 
 }  // namespace atxtest_combine_regime_combiner_test

@@ -195,6 +195,7 @@ TEST(KellySizing, DeterministicTwoRunsEqual) {
 
 // 7. Fail-closed: a NaN in expected_alpha aborts (the debug finite guard). Cast to
 //    void — the result is [[nodiscard]] and the call aborts before returning.
+#ifndef NDEBUG
 TEST(KellySizingDeathTest, NanAlphaAborts) {
   const VecX d = vec({0.10, 0.20});
   const VecX bad = vec({std::numeric_limits<f64>::quiet_NaN(), 0.01});
@@ -211,5 +212,6 @@ TEST(KellySizingDeathTest, ConvictionAboveOneAborts) {
   const FactorModel m = diag_model(d);
   EXPECT_DEATH((void)kelly_size(mu, m, bad_conv, {}), ".*");
 }
+#endif
 
 } // namespace atxtest_risk_kelly_sizing_test

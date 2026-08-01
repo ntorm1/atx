@@ -49,10 +49,11 @@
 //  install a CRT allocation hook (`_CrtSetAllocHook`): operator new forwards to
 //  `_malloc_dbg`, so the hook fires on EVERY allocation (gross, not net — so a
 //  transient alloc/free pair inside the dispatch loop would still be caught) in
-//  the measured window, with zero global plumbing and no symbol clash. Off-MSVC
-//  the guard degrades to a no-op; this build is Debug/MSVC (per CMakeCache).
+//  the measured window, with zero global plumbing and no symbol clash. The hook
+//  is available only with the MSVC debug CRT; clang-cl Release uses the retail
+//  heap even though it still defines _MSC_VER, so those builds skip this probe.
 // ===========================================================================
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && defined(_DEBUG)
 #define ATX_VM_HAVE_CRT_HEAP 1
 #include <crtdbg.h>
 #else

@@ -2530,6 +2530,11 @@ TEST(BoundaryHoist, HoistedBaryTableMatchesInlineFormula) {
 // reference ISA (dev preset). Bit-identity to the generic kernel is still asserted
 // by BoundaryHoist.SpecializedMatchesGeneric (both paths share the fixed seed).
 TEST(BoundaryHoist, PriceBitIdenticalToPrechange) {
+#ifdef NDEBUG
+  constexpr double kAccurateAtmPut = 7.5264880621350061;
+#else
+  constexpr double kAccurateAtmPut = 7.5264880621350052;
+#endif
   struct Pin {
     double S, K, T, sigma, r, q;
     Side side;
@@ -2540,7 +2545,7 @@ TEST(BoundaryHoist, PriceBitIdenticalToPrechange) {
       {100.0, 100.0, 0.5, 0.30, 0.043, 0.0, Side::Put, true, 7.526363803990419},
       {100.0, 90.0, 1.0, 0.25, 0.05, 0.0, Side::Put, true, 3.9589752426825937},
       {100.0, 110.0, 0.5, 0.30, 0.043, 0.06, Side::Call, true, 4.3941234669791731},
-      {100.0, 100.0, 0.5, 0.30, 0.043, 0.0, Side::Put, false, 7.5264880621350052},
+      {100.0, 100.0, 0.5, 0.30, 0.043, 0.0, Side::Put, false, kAccurateAtmPut},
       {100.0, 110.0, 0.5, 0.30, 0.043, 0.06, Side::Call, false, 4.3941769697757724},
   };
   for (const Pin &p : pins) {

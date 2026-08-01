@@ -203,6 +203,7 @@ TEST(Market, UpdatePrices_RowOutsideUniverse_Ignored) {
 //  Death tests — out-of-universe id is a programmer error (ATX_ASSERT).
 // =====================================================================
 
+#ifndef NDEBUG
 TEST(MarketDeathTest, Mark_IdNotInUniverse_Aborts) {
   std::array<InstrumentId, 1> uni{inst(10)};
   Market mkt{std::span<const InstrumentId>{uni}, std::span<const InstrumentStats>{}};
@@ -225,6 +226,7 @@ TEST(MarketDeathTest, ShiftMark_BeforeAnyPrice_Aborts) {
   // bug (impact applied before any price was seen).
   EXPECT_DEATH({ mkt.shift_mark(inst(10), 1.0); }, "");
 }
+#endif
 
 
 }  // namespace atxtest_market_book_test

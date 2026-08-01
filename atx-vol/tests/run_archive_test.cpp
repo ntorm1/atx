@@ -1400,9 +1400,29 @@ void write_run_dir_text_inputs(const std::filesystem::path& dir, bool core_mode,
 }
 
 // Append one byte to an existing run-dir file — a minimal byte mutation. None of
-// these files is re-parsed by run_identity_hash (it hashes raw bytes), so the
-// appended byte cannot fail a parser instead of moving the hash.
+// Most inputs are hashed as raw bytes. The manifest is also parsed to fold
+// referenced archives, so its special-case mutation below preserves valid TSV.
 void append_identity_probe_byte(const std::filesystem::path& path) {
+  // run_identity_hash parses the manifest to fold referenced archive headers;
+  // mutate its final archive_path field without adding a malformed TSV row.
+  if (path.filename() == std::string(kSurfaceManifestFile)) {
+    std::ifstream in(path, std::ios::binary | std::ios::ate);
+    ASSERT_TRUE(in.good()) << "cannot read " << path.string();
+    const std::streamsize size = in.tellg();
+    ASSERT_GT(size, 0);
+    std::string bytes(static_cast<std::size_t>(size), '\0');
+    in.seekg(0);
+    in.read(bytes.data(), size);
+    ASSERT_TRUE(in.good()) << "cannot read " << path.string();
+    const std::size_t final_newline = bytes.rfind('\n');
+    ASSERT_NE(final_newline, std::string::npos);
+    bytes.insert(final_newline, 1u, '#');
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    ASSERT_TRUE(out.good()) << "cannot rewrite " << path.string();
+    return;
+  }
   std::ofstream out(path, std::ios::binary | std::ios::app);
   out.put('#');
   ASSERT_TRUE(out.good()) << "cannot append to " << path.string();

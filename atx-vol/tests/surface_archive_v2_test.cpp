@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -16,6 +17,7 @@
 #include "atx/vol/black76.hpp"
 #include "atx/vol/calib.hpp" // FitObs
 #include "atx/vol/detail/archive_util.hpp" // crc32c (C2 prior-salt fixture)
+#include "atx/vol/detail/surface_archive_payload.hpp"
 #include "atx/vol/dense_slice.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/priced_surface_view.hpp"
@@ -685,6 +687,56 @@ TEST(SurfaceArchiveV2, ContentDerivedCreatedTsIsReproducible) {
   auto archf = SurfaceArchiveV2::open(std::vector<std::byte>(*fixed));
   ASSERT_TRUE(archf.has_value()) << archf.error().to_string();
   EXPECT_EQ(archf->header().created_ts_ns, 12345u);
+}
+
+// Native curve structs are the historical payload ABI, but their padding is not
+// curve state. Poison local aggregates' padding and prove the shared writer
+// helper emits canonical zero bytes rather than stack/thread-history garbage.
+TEST(SurfaceArchiveV2, NativePayloadPaddingIsCanonicalZero) {
+  const auto expect_zero = [](std::span<const std::byte> bytes, std::size_t begin,
+                              std::size_t end) {
+    ASSERT_LE(end, bytes.size());
+    for (std::size_t i = begin; i < end; ++i) {
+      EXPECT_EQ(bytes[i], std::byte{0}) << "payload byte=" << i;
+    }
+  };
+
+  EssviParams essvi{};
+  constexpr std::size_t kEssviGapBegin = offsetof(EssviParams, expiry_id) + sizeof(std::uint16_t);
+  constexpr std::size_t kEssviGapEnd = offsetof(EssviParams, resid_coef);
+  constexpr std::size_t kEssviTailBegin =
+      offsetof(EssviParams, resid_n_basis) + sizeof(std::uint8_t);
+  std::span<std::byte> essvi_repr = std::as_writable_bytes(std::span{&essvi, std::size_t{1}});
+  std::fill(essvi_repr.begin() + kEssviGapBegin, essvi_repr.begin() + kEssviGapEnd,
+            std::byte{0xA5});
+  std::fill(essvi_repr.begin() + kEssviTailBegin, essvi_repr.end(), std::byte{0xA5});
+  std::array<std::byte, sizeof(EssviParams)> essvi_bytes{};
+  essvi_bytes.fill(std::byte{0xFF});
+  atx::vol::detail::write_archive_payload(essvi_bytes.data(), essvi);
+  expect_zero(essvi_bytes, kEssviGapBegin, kEssviGapEnd);
+  expect_zero(essvi_bytes, kEssviTailBegin, essvi_bytes.size());
+
+  SviParams svi{};
+  constexpr std::size_t kSviTailBegin = offsetof(SviParams, expiry_id) + sizeof(std::uint16_t);
+  std::span<std::byte> svi_repr = std::as_writable_bytes(std::span{&svi, std::size_t{1}});
+  std::fill(svi_repr.begin() + kSviTailBegin, svi_repr.end(), std::byte{0xA5});
+  std::array<std::byte, sizeof(SviParams)> svi_bytes{};
+  svi_bytes.fill(std::byte{0xFF});
+  atx::vol::detail::write_archive_payload(svi_bytes.data(), svi);
+  expect_zero(svi_bytes, kSviTailBegin, svi_bytes.size());
+
+  C8Params c8{};
+  constexpr std::size_t kC8GapBegin = offsetof(C8Params, expiry_id) + sizeof(std::uint16_t);
+  constexpr std::size_t kC8GapEnd = offsetof(C8Params, v);
+  constexpr std::size_t kC8TailBegin = offsetof(C8Params, bumps_active) + sizeof(bool);
+  std::span<std::byte> c8_repr = std::as_writable_bytes(std::span{&c8, std::size_t{1}});
+  std::fill(c8_repr.begin() + kC8GapBegin, c8_repr.begin() + kC8GapEnd, std::byte{0xA5});
+  std::fill(c8_repr.begin() + kC8TailBegin, c8_repr.end(), std::byte{0xA5});
+  std::array<std::byte, sizeof(C8Params)> c8_bytes{};
+  c8_bytes.fill(std::byte{0xFF});
+  atx::vol::detail::write_archive_payload(c8_bytes.data(), c8);
+  expect_zero(c8_bytes, kC8GapBegin, kC8GapEnd);
+  expect_zero(c8_bytes, kC8TailBegin, c8_bytes.size());
 }
 
 // ── C2 (SE-P1-2): AlOpts::n_quad_price persists across the v2 round-trip ───────
