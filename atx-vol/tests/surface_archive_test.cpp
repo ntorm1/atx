@@ -18,6 +18,7 @@
 #include "atx/vol/black76.hpp"
 #include "atx/vol/dense_slice.hpp"
 #include "atx/vol/detail/archive_util.hpp"
+#include "atx/vol/detail/surface_archive_payload.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/surface_archive.hpp"
 #include "atx/vol/vol_curve.hpp"
@@ -742,7 +743,15 @@ TEST(SurfaceArchive, RoundTrip_C8_TheoAndParamsBitIdentical) {
   for (std::size_t i = 0; i < orig.n_slices(); ++i) {
     const auto *a = static_cast<const C8Curve *>(orig.surface().slices()[i].get());
     const auto *b = static_cast<const C8Curve *>(got->surface().slices()[i].get());
-    EXPECT_EQ(std::memcmp(&a->slice(), &b->slice(), sizeof(C8Params)), 0);
+    // The archive writer serializes named fields over canonical-zero padding
+    // (surface_archive_payload.hpp), so a fitter-produced struct and its
+    // round-tripped copy may differ in padding bytes alone. Compare the
+    // canonical payload encodings, not the raw object representations.
+    std::array<std::byte, sizeof(C8Params)> a_bytes{};
+    std::array<std::byte, sizeof(C8Params)> b_bytes{};
+    atx::vol::detail::write_archive_payload(a_bytes.data(), a->slice());
+    atx::vol::detail::write_archive_payload(b_bytes.data(), b->slice());
+    EXPECT_EQ(std::memcmp(a_bytes.data(), b_bytes.data(), a_bytes.size()), 0);
   }
 }
 
