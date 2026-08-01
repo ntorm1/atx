@@ -390,6 +390,94 @@ build/bin/opra_dbn_to_parquet.exe   # cached DBN -> Parquet (no API spend)
 build/bin/opra_parity_bench.exe     # de-Am + fit + parity + cold-vs-cached timing
 ```
 
+### Operator CLIs (`ATX_BUILD_TOOLS`, ON by default)
+
+Three binaries ship with the package and install into `<prefix>/bin`:
+
+| Binary | What it is for |
+|---|---|
+| `atx-vol-surface-db-build` | Build a production SurfaceDb from an OPRA hive window: load, auto-generate per-symbol fit configs, cell-aware streaming populate. Resumable and idempotent. See `docs/surface-db-build.md` |
+| `atx-vol-surface-db` | Inspect and manage a built database: `info` / `partitions` / `symbols` / `config` / `query` / `verify` — no Python binding required |
+| `atxvol_spy_dispersion_backtest` | The listed SPY-dispersion workflow: `build-corpus`, `build-schedule`, `run-backtest`, `project-schedule`, `run-projected-backtest`, `run-surface-backtest`, `run-projected-var`, `verify`, `runarchive dump` |
+
+They are ON by default because they are part of what atx-vol *is* at v1 — a
+library plus the binaries that build, inspect and replay its artifacts.
+`-DATX_BUILD_TOOLS=OFF` drops exactly these three executables and their install
+rules; no library, test or example target changes.
+
+Their sources live in `atx-vol/tools/`. That directory is the tools tier, not a
+synonym for "scripts": the acceptance drivers, benchmarks and worked
+demonstrations stay behind `ATX_BUILD_EXAMPLES` (OFF by default).
+
+## Configuration registry: the `ATX_*` environment variables
+
+atx-vol reads **ten** `ATX_*` environment variables in shipped code — nine from
+the library, one from a tool. None is required, and **none of them changes a
+fitted, priced or archived value.** The ones that touch parallelism select how
+much of the machine is used, and every atx-vol fan-out is documented
+bit-identical for any worker count; the rest decide only whether a diagnostic is
+printed. So an unset environment is a complete, correct configuration, which is
+the property that makes this table short.
+
+| Knob | Effect | Default | Scope | v1 status |
+|---|---|---|---|---|
+| `ATX_VOL_FIT_WORKERS` | Resolves the auto (`0`) worker count for `parallel_for` fan-outs. An explicitly requested non-zero count is honoured as-is and is *not* capped by it | `hardware_concurrency()` (min 1) | library — `detail/parallel_for.hpp` | **keep** |
+| `ATX_SIMD_ISA` | Seeds the process-global SIMD override at load: `Auto`, `ForceScalar` or `ForceAvx2`. An in-process `set_simd_isa_override()` still wins | `Auto` | library — `src/simd/cpu.cpp` | **keep** |
+| `ATX_VOL_FIT_ECORE_TIER` | Arms the E-core second scheduling tier. `2` arms it *without* the below-normal priority drop; any other non-zero value arms it *with* the drop | unset = off | library — `src/fit_scheduler.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_CORPUS_DATE_BATCH` | Dates per corpus fan-out call. Scheduling only — output bytes do not depend on it | `8` | library — `src/dispersion_run.cpp` | **keep**, belongs in a config struct |
+| `ATX_VOL_CORPUS_PHASE_TIMING` | Prints the corpus build's phase split. Collection is unconditional and cheap; only the report is gated | unset = off | library — `src/dispersion_run.cpp` | **keep** |
+| `ATX_VOL_PROFILE` | Prints per-phase fit timings from `curve_fit` and `surface_parity`. **Not** the CMake option of the same name — see the collision note below | unset = off | library — `src/curve_fit.cpp`, `src/surface_parity.cpp` | **keep**, rename candidate |
+| `ATX_SLICE_DEBUG` | Prints `curve_fit`'s per-slice fit-preparation outcome (why a chain did or did not become a fittable slice) | unset = off | library — `src/curve_fit.cpp` | **keep** |
+| `ATX_VOL_ZC_BORROW` | `0` forces the owned-reconstruct archive path instead of the zero-copy borrow. Read once per process, so it cannot make a run non-deterministic | unset = borrow allowed | library — `src/backtest.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_ZC_BACKING` | `map` or `copy` overrides the caller-declared `ArchiveBacking` on the borrow path. Read once per process | unset = the caller's choice stands | library — `src/backtest.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_CACHE` | Default for the dispersion CLI's `--cache DIR`; an explicit `--cache` overrides it. Empty means disabled, which is the default behaviour | unset = disabled | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
+
+**Nothing is deleted at v1, because nothing here is dead.** Every row has a live
+read site and a live effect; the two knobs with real *consumers* outside their
+own source are load-bearing:
+
+- `ATX_SIMD_ISA` is set by a **registered test**: `tests/CMakeLists.txt` runs a
+  scalar leg with `ENVIRONMENT "ATX_SIMD_ISA=ForceScalar"`, which is how the
+  scalar patch-paths stay honest against the AVX2-ON marks. Deleting the env seam
+  would delete that leg.
+- `ATX_VOL_FIT_WORKERS` is the documented answer to nested parallelism —
+  `scripts/atx-build.ps1` and `bench/README.md` both prescribe it, and a bench
+  baseline records `ATX_VOL_FIT_WORKERS=1` as part of its method. A config struct
+  cannot reach a test process that `ctest -jN` spawns, which is the exact problem
+  it exists to solve. This is the case where an environment variable is the right
+  mechanism rather than a shortcut.
+
+The remaining seven library knobs are diagnostics and measurement levers whose
+only documented users are sprint/bench recipes. They are proposed **keep** for
+v1 on the narrow grounds that each is off by default, each is read once, and none
+can change a result — but two follow-ups are worth naming rather than leaving
+implicit:
+
+- `ATX_VOL_CORPUS_DATE_BATCH` is the one knob that is genuinely *library
+  behaviour configured from the environment* rather than a diagnostic. It should
+  become a field on the corpus build config, with the environment read (if kept
+  at all) as a fallback at the CLI seam.
+- `ATX_VOL_ZC_BORROW` / `ATX_VOL_ZC_BACKING` / `ATX_VOL_FIT_ECORE_TIER` exist to
+  A/B a decision inside one binary without a rebuild. That is a legitimate use,
+  but each keeps an alternative code path alive for it; the E-core tier's own
+  measurements are what set its default to off. Whether v1 wants to carry three
+  such paths is a judgement call, not a defect.
+
+**`ATX_VOL_PROFILE` means two unrelated things, and the collision is real.** As a
+**CMake option** (`-DATX_VOL_PROFILE=ON`) it compiles the library with the
+`ATX_VOL_PROFILE` macro defined, arming the compile-time phase-timer plane
+(`detail/phase_profile.hpp`). As an **environment variable** it is read at
+runtime by `curve_fit.cpp` and `surface_parity.cpp` to turn on two unrelated
+timing printouts, and it works whether or not the macro was ever defined. Neither
+mechanism observes the other. Renaming the environment side (say to
+`ATX_VOL_FIT_TIMING`) is the fix; it is a behaviour change for anyone setting the
+current name, so it is recorded here rather than done silently.
+
+Out of scope for this table, deliberately: `DATABENTO_API_KEY`, read by the
+Databento definition-export example and the OPRA puller scripts (not an `ATX_*`
+name, and gated behind a network/cost opt-in), and the 17 further `ATX_*` names
+read only by tests and benchmarks, neither of which ships.
+
 ## API stability policy (1.x)
 
 The version is single-sourced from `project(atx VERSION ...)` and reaches C++ as
