@@ -219,6 +219,31 @@ TEST(CappedVarSwap, AccruedAboveCapPinsPv) {
   EXPECT_NEAR(q->fair_strike_dec, 0.09, 1e-15);
 }
 
+// Code review finding: the fully-aged, NOT-pinned exit (min(V,C) collapses to
+// rv_done_dec because rv_done_dec < C, so no strip/model runs) was never
+// exercised -- every prior fully-aged test also happened to land on the PIN
+// path. rv_done = 0.04 < cap_dec = 0.09 here, so this is genuinely the other
+// branch: fair_strike_dec == rv_done_dec exactly, no ModelProxy, no strip.
+TEST(CappedVarSwap, FullyAgedBelowCapPaysRv) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivContract c{};
+  c.kind = DerivKind::CappedVarSwap; c.maturity_t = 0.0; c.notional = 1e5;
+  c.strike_dec = 0.03; c.cap_dec = 0.09;  // 0.09 > rv_done 0.04 -- NOT pinned
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u; c.rv_spec.n_obs_done = 63u;
+  c.rv_spec.rv_done_dec = 0.04;
+  const auto q = deriv_price(surf, cs, c, deriv_default_config());
+  ASSERT_TRUE(q.has_value());
+  EXPECT_NEAR(q->pv, 1e5 * (0.04 - 0.03), 1e-9);
+  EXPECT_NEAR(q->fair_strike_dec, 0.04, 1e-15);
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::FullyAged));
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::CapPinned));
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::CapApplied));
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::ModelProxy));
+  EXPECT_TRUE(std::isnan(q->vol_of_vol_used));
+}
+
 TEST(CappedVarSwap, ZeroCapRejected) {
   const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
   const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
@@ -369,6 +394,33 @@ TEST(CappedVolSwap, AccruedAboveCapPinsPv) {
   EXPECT_TRUE(has_flag(q->flags, DerivFlags::CapPinned));
   EXPECT_FALSE(has_flag(q->flags, DerivFlags::FullyAged));
   EXPECT_NEAR(q->fair_strike_dec, 0.25, 1e-15);
+}
+
+// Code review finding: the fully-aged, NOT-pinned exit (min(sqrt V,c)
+// collapses to sqrt(rv_done_dec) because rv_done_dec < C == cap_dec^2, so no
+// strip/model runs) was never exercised -- FullyAgedPaysMinSqrtRvCap above
+// lands on the PIN path instead (its accrued a also happens to exceed C).
+// Here rv_done = 0.04 (sqrt = 0.20) and C = 0.30^2 = 0.09 > 0.04, so this is
+// genuinely the other branch: fair_strike_dec == sqrt(rv_done_dec) exactly,
+// no ModelProxy, no strip, vol_of_vol_used left at its NaN default.
+TEST(CappedVolSwap, FullyAgedBelowCapPaysSqrtRv) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivContract c{};
+  c.kind = DerivKind::CappedVolSwap; c.maturity_t = 0.0; c.notional = 1e5;
+  c.strike_dec = 0.18; c.cap_dec = 0.30;  // C = 0.09 > a = 0.04 -- NOT pinned
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u; c.rv_spec.n_obs_done = 63u;
+  c.rv_spec.rv_done_dec = 0.04;  // sqrt = 0.20 < cap 0.30
+  const auto q = deriv_price(surf, cs, c, deriv_default_config());
+  ASSERT_TRUE(q.has_value());
+  EXPECT_NEAR(q->pv, 1e5 * (0.20 - 0.18), 1e-9);
+  EXPECT_NEAR(q->fair_strike_dec, 0.20, 1e-15);
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::FullyAged));
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::CapPinned));
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::CapApplied));
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::ModelProxy));
+  EXPECT_TRUE(std::isnan(q->vol_of_vol_used));
 }
 
 // Parity: E[min(sqrt V, c)] + cap_option_value_dec == E[sqrt V] (uncapped),

@@ -11,7 +11,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/black76.hpp"
-#include "atx/vol/detail/rv_lognormal.hpp" // lognormal_call (capped var swap, Task 4)
+#include "atx/vol/detail/rv_lognormal.hpp" // lognormal_call, truncated_expect, norm_cdf (Tasks 4-5)
 #include "atx/vol/priced_surface.hpp" // E6: PricedSurface-native entry points
 #include "atx/vol/strip_grid.hpp"
 #include "atx/vol/surface_parity.hpp" // SliceContext (E6 carry extraction)

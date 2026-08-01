@@ -307,9 +307,11 @@ struct DerivQuote {
   // sqrt(K_var) - K_vol (uncapped vol swap); sqrt(a+b*m) - fair_strike_dec
   // for a capped vol swap's model path (Task 5) -- the same "sqrt of the
   // blended-variance mean minus the priced vol strike" diagnostic, just with
-  // the capped strike on the right. Left at 0.0 on paths that never build a
-  // sqrt(E[V]) to compare against (the capped-var-swap paths; the capped-vol-
-  // swap pin/fully-aged paths, where it is trivially 0 by construction).
+  // the capped strike on the right. Left at the struct default 0.0 on paths
+  // that never build a sqrt(E[V]) to compare against: the capped-var-swap
+  // paths, and the capped-vol-swap pin/fully-aged paths -- those never form
+  // the a+b*m blend (no strip runs), so sqrt(a+b*m) is simply not computed
+  // there, not "computed and zero".
   double convexity_adjustment_dec = 0.0;
   // Strip-engine error estimate; NaN = not estimated (see file header).
   // `var_swap_fair_strike` populates it via a Richardson half-grid estimate
