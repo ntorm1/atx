@@ -23,7 +23,7 @@
 //                      (src/listed_dispersion_reconciliation.cpp).
 //   mark_divergence <- write_mark_divergence_replay header
 //                      (tools/spy_dispersion_backtest.cpp).
-//   diagnostics     <- write_diagnostics header (examples).
+//   diagnostics     <- write_diagnostics header (tools).
 //   meta            <- ScalarKV: resolved spec echo, window, roll-level
 //                      scalars, input hashes, counts — key/value pairs.
 //
