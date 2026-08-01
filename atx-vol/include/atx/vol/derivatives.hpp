@@ -41,10 +41,21 @@
 //     probability above the kink closed analytically via
 //     atx::vol::detail::norm_cdf. Same pin/fully-aged/model-path structure as
 //     the capped variance swap.
+//   - Mid-life vol-swap dispatch (Task 6, engine Auto or RvDistributionProxy):
+//     E[sqrt(a + b*W)] for the intermediate age regime (0 < n_done <
+//     n_total), a = w_done*rv_done_dec, b = w_future, W lognormal at the
+//     strip's own mean and log-stdev xi*sqrt(T). sqrt(a+b*W) is SMOOTH (no
+//     kink, a/b >= 0), so this is priced by plain Gauss-Hermite
+//     (atx::vol::detail::lognormal_expect), not the capped pricers'
+//     split-domain quadrature. An explicit VolCarrLee engine on a mid-life
+//     contract is InvalidArgument (Carr-Lee cannot blend an accrued leg); an
+//     explicit RvDistributionProxy on an UNAGED contract runs this same
+//     formula end to end (a = 0, b = 1) instead of Carr-Lee; fully-aged is
+//     unaffected by engine (exact, no model needed).
 //
 // Reserved for follow-on work (return ErrorCode::NotImplemented, mirroring the
 // C's ATS_VOL_ERR_UNSUPPORTED): the RV distribution-affine / Monte-Carlo QE
-// engines, and mid-life vol-swap dispatch (intermediate n_done).
+// engines.
 //
 // Conventions (unchanged from the C):
 //   - Decimal variance internally: 0.04 <-> 20 vol <-> 400 variance points.
@@ -89,13 +100,15 @@ enum class DerivKind : std::uint8_t {
 
 // Pricing engine selector. Values >= RvDistributionAffine are reserved;
 // RvDistributionProxy is also reserved EXCEPT as the distribution-model
-// dispatch target for DerivKind::CappedVarSwap (Task 4) and
-// DerivKind::CappedVolSwap (Task 5), which Auto routes to as well.
+// dispatch target for DerivKind::CappedVarSwap (Task 4),
+// DerivKind::CappedVolSwap (Task 5), and DerivKind::VolSwap (Task 6 --
+// mid-life always, plus an unaged contract priced end to end through the
+// model instead of Carr-Lee), all of which Auto also routes to as well.
 enum class DerivEngine : std::uint8_t {
   Auto = 0,
   StripLogContract = 1,
   VolCarrLee = 2,
-  RvDistributionProxy = 3,   // CappedVarSwap/CappedVolSwap only; reserved otherwise
+  RvDistributionProxy = 3,   // CappedVarSwap/CappedVolSwap/VolSwap only; reserved otherwise
   RvDistributionAffine = 4,  // reserved
   McQe = 5,                  // reserved
 };
@@ -395,10 +408,17 @@ vol_swap_fair_strike(const SurfaceT& surface, const CurveSet& curves, double T,
 // the future implied leg under the standard aged convention.
 //
 // Variance-swap dispatch handles all three age regimes through the linear
-// variance blend. Vol-swap dispatch supports n_done == 0 (pure future leg,
-// Carr-Lee) and n_done == n_total (pure realized leg, sqrt(rv_done_dec));
-// intermediate n_done returns NotImplemented (the unbiased mid-life
-// expectation needs a distribution engine this port does not ship).
+// variance blend. Vol-swap dispatch handles all three age regimes too:
+// n_done == 0 (pure future leg, Carr-Lee by default) and n_done == n_total
+// (pure realized leg, sqrt(rv_done_dec)) are exact/closed-form; intermediate
+// n_done (Task 6) prices E[sqrt(a+b*W)] via the same lognormal RV
+// distribution model as the capped swaps (a = w_done*rv_done_dec, b =
+// w_future, W's mean from the strip at the residual maturity). An explicit
+// VolCarrLee engine on a mid-life vol swap is InvalidArgument (Carr-Lee
+// cannot blend an accrued leg); an explicit RvDistributionProxy on an unaged
+// vol swap runs the distribution model end to end (a = 0, b = 1) instead of
+// Carr-Lee, and on a fully-aged one is a no-op (the exact branch already has
+// nothing for the model to add).
 // CappedVarSwap and CappedVolSwap are both priced via the lognormal RV
 // distribution model (Tasks 4/5, engine Auto or RvDistributionProxy only --
 // StripLogContract/VolCarrLee on a capped kind return InvalidArgument):

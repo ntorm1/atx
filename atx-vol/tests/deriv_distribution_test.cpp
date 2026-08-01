@@ -24,6 +24,7 @@ using atx::vol::deriv_price;
 using atx::vol::DerivConfig;
 using atx::vol::DerivContract;
 using atx::vol::DerivDiscreteCorrection;
+using atx::vol::DerivEngine;
 using atx::vol::DerivFlags;
 using atx::vol::DerivKind;
 using atx::vol::ErrorCode;
@@ -459,5 +460,173 @@ TEST(CappedVolSwap, CapOptionValueParity) {
   const auto uq = deriv_price(surf, cs, un, cfg);
   ASSERT_TRUE(uq.has_value());
   EXPECT_NEAR(uq->cap_option_value_dec, 0.0, 1e-8);
+}
+
+// ── Task 6: mid-life vol swap dispatch ────────────────────────────────────
+//
+// V = a + b*W: a = w_done*rv_done_dec, b = w_future, W lognormal at the
+// strip's own mean m (residual maturity_t) and log-stdev xi*sqrt(maturity_t).
+// sqrt(a+b*w) is SMOOTH in w (a, b >= 0), so E[sqrt(V)] is priced by GH-21
+// (detail::lognormal_expect) -- unlike the capped payoffs above, there is no
+// kink to split around.
+
+// Mid-life continuity: as n_done -> 0 the mid-life price approaches the
+// inception Carr-Lee price (auto-calibrated xi makes them agree by construction).
+TEST(MidLifeVolSwap, ContinuousWithInceptionAtZeroAccrual) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const DerivConfig cfg = deriv_default_config();
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap; c.maturity_t = 0.25; c.notional = 1e5;
+  c.rv_spec.annualization = 252.0; c.rv_spec.n_obs_total = 63u;
+  c.rv_spec.n_obs_done = 0u;
+  const auto q0 = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(q0.has_value());
+  // One observation, realized exactly at the implied level: the blend barely moves.
+  c.rv_spec.n_obs_done = 1u;
+  c.rv_spec.rv_done_dec = q0->uncapped_var_dec;
+  const auto q1 = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(q1.has_value()) << q1.error().to_string();
+  EXPECT_NEAR(q1->fair_strike_dec, q0->fair_strike_dec,
+              2e-3 * q0->fair_strike_dec);
+  EXPECT_TRUE(has_flag(q1->flags, DerivFlags::Aged));
+  EXPECT_TRUE(has_flag(q1->flags, DerivFlags::ModelProxy));
+}
+
+// Mid-life monotonicity: higher accrued realized => higher vol-swap mark.
+TEST(MidLifeVolSwap, MonotoneInAccruedRealized) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const DerivConfig cfg = deriv_default_config();
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap; c.maturity_t = 0.10; c.notional = 1e5;
+  c.strike_dec = 0.20;
+  c.rv_spec.annualization = 252.0; c.rv_spec.n_obs_total = 63u;
+  c.rv_spec.n_obs_done = 42u;
+  c.rv_spec.rv_done_dec = 0.02;
+  const auto lo = deriv_price(surf, cs, c, cfg);
+  c.rv_spec.rv_done_dec = 0.09;
+  const auto hi = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(lo.has_value());
+  ASSERT_TRUE(hi.has_value());
+  EXPECT_GT(hi->fair_strike_dec, lo->fair_strike_dec);
+  EXPECT_GT(hi->pv, lo->pv);
+  // Deterministic-floor sanity: strike can never fall below sqrt(a) and never
+  // exceed sqrt(a + b*m) (Jensen).
+  EXPECT_GE(hi->fair_strike_dec, std::sqrt((42.0 / 63.0) * 0.09) - 1e-12);
+}
+
+// At expiry the mid-life path must hand over to the fully-aged branch exactly.
+TEST(MidLifeVolSwap, HandsOverToFullyAgedAtExpiry) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap; c.maturity_t = 0.0; c.notional = 1e5;
+  c.strike_dec = 0.18;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u; c.rv_spec.n_obs_done = 63u;
+  c.rv_spec.rv_done_dec = 0.0441;  // sqrt = 0.21
+  const auto q = deriv_price(surf, cs, c, deriv_default_config());
+  ASSERT_TRUE(q.has_value());
+  EXPECT_NEAR(q->pv, 1e5 * (0.21 - 0.18), 1e-9);
+}
+
+// Engine matrix: an explicit Carr-Lee engine cannot blend an already-accrued
+// leg -- Carr-Lee is a pure inception (unaged) formula with no accrual model.
+TEST(MidLifeVolSwap, ExplicitVolCarrLeeMidLifeRejected) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivConfig cfg = deriv_default_config();
+  cfg.engine = DerivEngine::VolCarrLee;
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap; c.maturity_t = 0.10; c.notional = 1e5;
+  c.rv_spec.annualization = 252.0; c.rv_spec.n_obs_total = 63u;
+  c.rv_spec.n_obs_done = 21u; c.rv_spec.rv_done_dec = 0.03;
+  const auto q = deriv_price(surf, cs, c, cfg);
+  ASSERT_FALSE(q.has_value());
+  EXPECT_EQ(q.error().code(), ErrorCode::InvalidArgument);
+}
+
+// Engine matrix: explicit RvDistributionProxy at inception (n_done == 0)
+// prices the vol swap via the SAME distribution model as mid-life, end to
+// end (a = 0, b = 1 -- E[sqrt(W)] by GH), not Carr-Lee. Auto-calibrated xi
+// makes the lognormal reproduce Carr-Lee's OWN K_vol exactly in closed form
+// (sqrt(m)*exp(-s^2/8) == k_vol_cl, see resolve_vol_of_vol's derivation), so
+// GH-21's numerical E[sqrt(W)] must match that closed form -- and therefore
+// the plain Carr-Lee quote -- to ~1e-9 relative (RvLognormal.
+// ExpectRecoversMeanAndSqrtMoment establishes the same order of GH-21
+// accuracy on this exact smooth integrand). NOT 1e-12: that would claim GH-21
+// is exact, which it is not (see the header's Kernel note / Task 2).
+TEST(MidLifeVolSwap, RvDistributionProxyUnagedMatchesCarrLee) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap; c.maturity_t = 0.25; c.notional = 1e5;
+  c.rv_spec.annualization = 252.0; c.rv_spec.n_obs_total = 63u;
+  c.rv_spec.n_obs_done = 0u;
+
+  const auto cl = deriv_price(surf, cs, c, deriv_default_config());
+  ASSERT_TRUE(cl.has_value());
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.engine = DerivEngine::RvDistributionProxy;
+  const auto q = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(q.has_value()) << q.error().to_string();
+
+  EXPECT_NEAR(q->fair_strike_dec, cl->fair_strike_dec, 1e-9 * cl->fair_strike_dec);
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::ModelProxy));
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::Aged));
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::VolOfVolCalibrated));
+  EXPECT_TRUE(std::isfinite(q->vol_of_vol_used));
+  EXPECT_GT(q->vol_of_vol_used, 0.0);
+}
+
+// Engine matrix: explicit RvDistributionProxy on a FULLY AGED contract has
+// nothing left for the model to do -- keep the exact deterministic branch
+// (same as Auto), not the distribution model.
+TEST(MidLifeVolSwap, RvDistributionProxyFullyAgedKeepsExactBranch) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivConfig cfg = deriv_default_config();
+  cfg.engine = DerivEngine::RvDistributionProxy;
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap; c.maturity_t = 0.0; c.notional = 1e5;
+  c.strike_dec = 0.18;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 63u; c.rv_spec.n_obs_done = 63u;
+  c.rv_spec.rv_done_dec = 0.0441;  // sqrt = 0.21
+  const auto q = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(q.has_value());
+  EXPECT_NEAR(q->pv, 1e5 * (0.21 - 0.18), 1e-9);
+  EXPECT_FALSE(has_flag(q->flags, DerivFlags::ModelProxy));
+  EXPECT_TRUE(std::isnan(q->integration_error_est));
+}
+
+// Carry-forward fix (Task 1 review, ledgered): the standalone Carr-Lee vol
+// strike runs no strip, so integration_error_est must stay NaN ("not
+// estimated"), never the struct's raw 0.0 default.
+TEST(MidLifeVolSwap, StandaloneVolStrikeIntegrationErrorIsNaN) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const auto q = vol_swap_fair_strike(surf, cs, 0.25, deriv_default_config());
+  ASSERT_TRUE(q.has_value());
+  EXPECT_TRUE(std::isnan(q->integration_error_est));
+}
+
+// Carry-forward fix: the new mid-life branch propagates the strip's own
+// Richardson error estimate. Standard quality lands on a 4m+1 node grid (Task
+// 1 guarantees the estimate is finite there), so this must come back finite
+// -- not NaN and not the struct's raw 0.0 default.
+TEST(MidLifeVolSwap, IntegrationErrorEstimateFiniteUnderStandardQuality) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  const DerivConfig cfg = deriv_default_config();  // Standard quality (default)
+  DerivContract c{};
+  c.kind = DerivKind::VolSwap; c.maturity_t = 0.10; c.notional = 1e5;
+  c.rv_spec.annualization = 252.0; c.rv_spec.n_obs_total = 63u;
+  c.rv_spec.n_obs_done = 21u; c.rv_spec.rv_done_dec = 0.03;
+  const auto q = deriv_price(surf, cs, c, cfg);
+  ASSERT_TRUE(q.has_value());
+  EXPECT_TRUE(std::isfinite(q->integration_error_est));
 }
 }  // namespace

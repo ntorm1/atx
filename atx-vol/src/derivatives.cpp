@@ -220,75 +220,6 @@ template <class SurfaceT>
   return Ok(out);
 }
 
-template <class SurfaceT>
-[[nodiscard]] Result<DerivQuote> price_vol_swap(const SurfaceT& surface,
-                                                const CurveSet& curves,
-                                                const DerivContract& contract,
-                                                const DerivConfig& cfg) {
-  const RealizedVarianceSpec& rv = contract.rv_spec;
-  const double T = contract.maturity_t;
-  const bool fully_aged =
-      (rv.n_obs_total > 0u && rv.n_obs_done >= rv.n_obs_total);
-  const bool unaged = (rv.n_obs_done == 0u);
-
-  if (!fully_aged && !unaged) {
-    // Mid-life vol-swap MtM needs E[sqrt((A + n_f*RV_f)/n_t)]; the unbiased
-    // computation requires a distribution engine this port does not ship.
-    return Err(ErrorCode::NotImplemented,
-               "mid-life vol-swap dispatch needs a distribution engine");
-  }
-
-  if (fully_aged) {
-    const double r1 = std::sqrt(std::fmax(rv.rv_done_dec, 0.0));
-    DerivFlags flags = DerivFlags::Aged | DerivFlags::FullyAged;
-    const double df = deriv_df_at_T(curves, T, flags);
-    const double pv = df * contract.notional * (r1 - contract.strike_dec);
-
-    DerivQuote out{};
-    out.fair_strike_dec = r1;
-    out.fair_strike_points = 1.0e2 * r1;
-    out.pv = pv;
-    out.undiscounted_expectation_dec = r1;
-    out.accrued_component_dec = r1;
-    out.future_component_dec = 0.0;
-    out.convexity_adjustment_dec = 0.0;
-    out.integration_error_est = kNaN;  // NaN = not estimated
-    out.flags = flags;
-    return Ok(out);
-  }
-
-  // Unaged vol-swap pricing.
-  if (!(T > 0.0)) {
-    return Err(ErrorCode::InvalidArgument, "unaged vol swap needs T > 0");
-  }
-
-  ATX_TRY(auto vol_q, vol_swap_fair_strike(surface, curves, T, cfg));
-
-  const double k_vol = vol_q.fair_strike_dec;
-  DerivFlags flags = DerivFlags::VolCarrLee;
-  const double df = deriv_df_at_T(curves, T, flags);
-  const double pv = df * contract.notional * (k_vol - contract.strike_dec);
-
-  DerivQuote out{};
-  out.fair_strike_dec = k_vol;
-  out.fair_strike_points = 1.0e2 * k_vol;
-  out.pv = pv;
-  out.undiscounted_expectation_dec = k_vol;
-
-  // Best-effort variance strip to populate the convexity diagnostic; do not
-  // fail the price call if the strip is unavailable.
-  if (const Result<DerivQuote> strip = var_swap_fair_strike(surface, curves, T, cfg);
-      strip.has_value()) {
-    out.uncapped_var_dec = strip->uncapped_var_dec;
-    out.convexity_adjustment_dec =
-        std::sqrt(std::fmax(strip->uncapped_var_dec, 0.0)) - k_vol;
-  }
-  out.accrued_component_dec = 0.0;
-  out.future_component_dec = k_vol;
-  out.flags = flags;
-  return Ok(out);
-}
-
 // Carr-Lee ATMF-straddle vol-strike, K_vol ~= sqrt(2 pi / T) * C_ATMF(T) /
 // (F * df). Factored out of vol_swap_fair_strike (below) so it and
 // resolve_vol_of_vol's auto-calibration path (also below) share ONE
@@ -374,6 +305,172 @@ template <class SurfaceT>
   const double s2 = -8.0 * std::log(ratio);
   const double xi = std::sqrt(s2) / std::sqrt(T);
   return Ok(VolOfVol{xi, true});
+}
+
+// Mid-life vol-swap distribution model (Task 6): E[sqrt(a + b*W)] for the
+// blended variance V = a + b*W (see file header model), W lognormal at the
+// strip's own mean m (residual maturity_t, Diffusion1OverN-corrected when
+// configured) and log-stdev xi*sqrt(T). sqrt(a+b*w) is SMOOTH in w (a, b >=
+// 0), unlike the capped pricers' kinked payoffs above, so plain
+// Gauss-Hermite (detail::lognormal_expect) is the right tool -- no
+// split-domain quadrature needed.
+//
+// Two callers share this: the true mid-life blend (a = w_done*rv_done_dec,
+// b = w_future) and, when the caller explicitly asks for RvDistributionProxy
+// on an unaged contract, the degenerate a = 0 / b = 1 case -- "the
+// distribution engine end to end" per the brief is this same formula with no
+// accrued leg, not a separate code path.
+template <class SurfaceT>
+[[nodiscard]] Result<DerivQuote> price_vol_swap_distribution(
+    const SurfaceT& surface, const CurveSet& curves, const DerivContract& contract,
+    const DerivConfig& cfg, double a, double b) {
+  const double T = contract.maturity_t;
+  if (!(T > 0.0)) {
+    return Err(ErrorCode::InvalidArgument, "vol swap distribution model needs T > 0");
+  }
+  ATX_TRY(auto sq, var_swap_fair_strike(surface, curves, T, cfg));
+
+  // Same Diffusion1OverN correction as price_var_swap / the capped pricers,
+  // applied before the blend and before resolve_vol_of_vol -- see
+  // price_capped_var_swap's comment for why this has to match exactly.
+  double m = sq.fair_strike_dec;
+  DerivFlags flags = DerivFlags::None;
+  const RealizedVarianceSpec& rv = contract.rv_spec;
+  if (cfg.discrete_correction_mode == DerivDiscreteCorrection::Diffusion1OverN &&
+      rv.n_obs_total >= 1u) {
+    m *= (1.0 + 1.0 / static_cast<double>(rv.n_obs_total));
+    flags |= DerivFlags::DiscreteCorrApplied;
+  }
+
+  ATX_TRY(const VolOfVol vv, resolve_vol_of_vol(surface, curves, T, m, cfg));
+  const double s = vv.xi * std::sqrt(T);
+  const double e_sqrt_v =
+      detail::lognormal_expect(m, s, [a, b](double w) { return std::sqrt(a + b * w); });
+
+  flags |= DerivFlags::ModelProxy | sq.flags;
+  if (rv.n_obs_done > 0u) {
+    flags |= DerivFlags::Aged;
+  }
+  if (vv.calibrated) {
+    flags |= DerivFlags::VolOfVolCalibrated;
+  }
+  const double df = deriv_df_at_T(curves, T, flags);
+
+  DerivQuote out{};
+  out.fair_strike_dec = e_sqrt_v;
+  out.fair_strike_points = 1.0e2 * e_sqrt_v;
+  out.pv = df * contract.notional * (e_sqrt_v - contract.strike_dec);
+  out.undiscounted_expectation_dec = e_sqrt_v;
+  out.uncapped_var_dec = a + b * m;
+  out.accrued_component_dec = a;
+  out.future_component_dec = b * m;
+  out.convexity_adjustment_dec = std::sqrt(a + b * m) - e_sqrt_v;
+  out.integration_error_est = sq.integration_error_est;
+  out.vol_of_vol_used = vv.xi;
+  out.flags = flags;
+  return Ok(out);
+}
+
+// Vol-swap dispatch across the three age regimes.
+//   FULLY AGED (n_done >= n_total > 0): exact, sqrt(rv_done_dec), no model --
+//     unaffected by cfg.engine (an explicit RvDistributionProxy here keeps
+//     this same branch; the model has nothing left to add).
+//   UNAGED (n_done == 0): Carr-Lee (engine Auto or explicit VolCarrLee;
+//     Marquee pins this at inception) UNLESS the caller explicitly asks for
+//     RvDistributionProxy, which runs the distribution model end to end
+//     (a = 0, b = 1 -- see price_vol_swap_distribution above).
+//   MID-LIFE (0 < n_done < n_total): always the distribution model (Auto or
+//     RvDistributionProxy). Carr-Lee has no way to blend an already-accrued
+//     leg, so an explicit VolCarrLee here is InvalidArgument rather than
+//     silently pricing the wrong thing.
+template <class SurfaceT>
+[[nodiscard]] Result<DerivQuote> price_vol_swap(const SurfaceT& surface,
+                                                const CurveSet& curves,
+                                                const DerivContract& contract,
+                                                const DerivConfig& cfg) {
+  const RealizedVarianceSpec& rv = contract.rv_spec;
+  const double T = contract.maturity_t;
+  const bool fully_aged =
+      (rv.n_obs_total > 0u && rv.n_obs_done >= rv.n_obs_total);
+  const bool unaged = (rv.n_obs_done == 0u);
+
+  // Discrete-monitoring FULL_MC is rejected up-front (reserved engine),
+  // mirroring price_var_swap and the capped pricers -- even though the
+  // fully-aged and Carr-Lee-unaged paths below never apply the correction, a
+  // reserved-engine request fails the same way regardless of aging state.
+  if (cfg.discrete_correction_mode == DerivDiscreteCorrection::FullMc) {
+    return Err(ErrorCode::NotImplemented, "FULL_MC discrete correction reserved");
+  }
+
+  if (!fully_aged && !unaged && cfg.engine == DerivEngine::VolCarrLee) {
+    return Err(ErrorCode::InvalidArgument,
+               "Carr-Lee cannot blend accrued realized variance");
+  }
+
+  if (fully_aged) {
+    const double r1 = std::sqrt(std::fmax(rv.rv_done_dec, 0.0));
+    DerivFlags flags = DerivFlags::Aged | DerivFlags::FullyAged;
+    const double df = deriv_df_at_T(curves, T, flags);
+    const double pv = df * contract.notional * (r1 - contract.strike_dec);
+
+    DerivQuote out{};
+    out.fair_strike_dec = r1;
+    out.fair_strike_points = 1.0e2 * r1;
+    out.pv = pv;
+    out.undiscounted_expectation_dec = r1;
+    out.accrued_component_dec = r1;
+    out.future_component_dec = 0.0;
+    out.convexity_adjustment_dec = 0.0;
+    out.integration_error_est = kNaN;  // NaN = not estimated
+    out.flags = flags;
+    return Ok(out);
+  }
+
+  if (unaged && cfg.engine != DerivEngine::RvDistributionProxy) {
+    // Unaged vol-swap pricing (Carr-Lee).
+    if (!(T > 0.0)) {
+      return Err(ErrorCode::InvalidArgument, "unaged vol swap needs T > 0");
+    }
+
+    ATX_TRY(auto vol_q, vol_swap_fair_strike(surface, curves, T, cfg));
+
+    const double k_vol = vol_q.fair_strike_dec;
+    DerivFlags flags = DerivFlags::VolCarrLee;
+    const double df = deriv_df_at_T(curves, T, flags);
+    const double pv = df * contract.notional * (k_vol - contract.strike_dec);
+
+    DerivQuote out{};
+    out.fair_strike_dec = k_vol;
+    out.fair_strike_points = 1.0e2 * k_vol;
+    out.pv = pv;
+    out.undiscounted_expectation_dec = k_vol;
+    out.integration_error_est = kNaN;  // carry-forward fix: NaN, not 0.0, unless the strip below runs
+
+    // Best-effort variance strip to populate the convexity diagnostic; do not
+    // fail the price call if the strip is unavailable.
+    if (const Result<DerivQuote> strip = var_swap_fair_strike(surface, curves, T, cfg);
+        strip.has_value()) {
+      out.uncapped_var_dec = strip->uncapped_var_dec;
+      out.convexity_adjustment_dec =
+          std::sqrt(std::fmax(strip->uncapped_var_dec, 0.0)) - k_vol;
+      out.integration_error_est = strip->integration_error_est;
+    }
+    out.accrued_component_dec = 0.0;
+    out.future_component_dec = k_vol;
+    out.flags = flags;
+    return Ok(out);
+  }
+
+  // Distribution model (Task 6): the true mid-life blend, or an explicit
+  // RvDistributionProxy pricing an unaged contract end to end (a = 0, b = 1).
+  double w_done = 0.0;
+  double w_future = 1.0;
+  if (rv.n_obs_total > 0u) {
+    w_done = static_cast<double>(rv.n_obs_done) / static_cast<double>(rv.n_obs_total);
+    w_future = 1.0 - w_done;
+  }
+  return price_vol_swap_distribution(surface, curves, contract, cfg,
+                                     w_done * rv.rv_done_dec, w_future);
 }
 
 // Assembles a DerivQuote for price_capped_var_swap's three exit paths
@@ -861,6 +958,7 @@ Result<DerivQuote> vol_swap_fair_strike(const SurfaceT& surface,
   out.undiscounted_expectation_dec = k_vol;
   out.uncapped_var_dec = 0.0;  // not computed in this entry
   out.convexity_adjustment_dec = 0.0;
+  out.integration_error_est = kNaN;  // no strip runs here; NaN = not estimated
   out.flags = DerivFlags::VolCarrLee;
   return Ok(out);
 }
@@ -873,11 +971,14 @@ Result<DerivQuote> deriv_price(const SurfaceT& surface, const CurveSet& curves,
                                const DerivConfig& cfg) {
   // Reserved engines fail clean before any work. RvDistributionProxy is the
   // one exception: Task 4 wires it up (alongside Auto) as the distribution
-  // model's entry point, but ONLY for CappedVarSwap -- every other kind still
-  // sees it as reserved.
+  // model's entry point for CappedVarSwap, Task 5 adds CappedVolSwap, and
+  // Task 6 adds plain VolSwap (mid-life, and an unaged contract priced end to
+  // end through the model instead of Carr-Lee) -- every other kind still sees
+  // it as reserved.
   switch (cfg.engine) {
   case DerivEngine::RvDistributionProxy:
-    if (contract.kind != DerivKind::CappedVarSwap && contract.kind != DerivKind::CappedVolSwap) {
+    if (contract.kind != DerivKind::CappedVarSwap && contract.kind != DerivKind::CappedVolSwap &&
+        contract.kind != DerivKind::VolSwap) {
       return Err(ErrorCode::NotImplemented, "reserved pricing engine");
     }
     break;
