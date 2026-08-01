@@ -177,6 +177,8 @@ add_executable(atx-vol-tests
     laned_greek_ok_stamp_test.cpp    # F2-B: laned Ok-stamp guards the REQUESTED greek set
     # Pipeline-SOTA FIX-3 (F3-A) — appended target:
     evaluate_resolved_ok_stamp_test.cpp # F3-A: the Ok-stamp agrees on the laned and scalar routes
+    # deriv production sprint
+    deriv_distribution_test.cpp
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
