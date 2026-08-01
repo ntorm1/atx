@@ -612,13 +612,32 @@ TEST(CorpusCancellation, CancelledBuildPublishesNoManifestAndTheRerunSucceeds) {
   const fs::path out = fresh_out_dir("cancel");
   const std::vector<std::string> dates = {"2026-06-17", "2026-06-18"};
 
+  // Counts fits STARTED, deterministically and with no wall-clock in any
+  // assertion: `on_inner_fit_workers` is called from inside a board's own fit
+  // (corpus.cpp `resolve_inner_budget`), so a board whose fit task returned
+  // before reaching `fit_board` contributes nothing to it.
+  std::atomic<std::size_t> fits_started{0};
+  CorpusFitTestHooks hooks;
+  hooks.on_inner_fit_workers = [&fits_started](std::size_t, std::size_t, unsigned) {
+    fits_started.fetch_add(1u, std::memory_order_relaxed);
+  };
+
   std::atomic<bool> stop{true}; // requested up front: stops before the first date
   CorpusConfig cfg;
   cfg.cancel = CancelToken{stop};
+  cfg.test_hooks = &hooks;
 
   auto cancelled = build_corpus(make_mixed_boards(dates), out.string(), cfg);
   ASSERT_FALSE(cancelled.has_value()) << "a cancelled build must not return a manifest";
   EXPECT_EQ(cancelled.error().code(), ErrorCode::Cancelled);
+
+  // The fan-out DRAINS instead of running to completion (review B I-1). When the
+  // only poll sat at the top of a DATE it was strictly downstream of every fit,
+  // so a cancelled build paid 100% of its dominant cost and then declined to
+  // write the manifest. The positive control after the re-run below is what
+  // keeps this zero from being vacuous.
+  EXPECT_EQ(fits_started.load(std::memory_order_relaxed), 0u)
+      << "a cancelled build still fitted boards: the stop is not reaching the fit fan-out";
 
   std::error_code ec;
   EXPECT_FALSE(fs::exists(out / "manifest.tsv", ec))
@@ -628,6 +647,9 @@ TEST(CorpusCancellation, CancelledBuildPublishesNoManifestAndTheRerunSucceeds) {
   stop.store(false, std::memory_order_relaxed);
   auto resumed = build_corpus(make_mixed_boards(dates), out.string(), cfg);
   ASSERT_TRUE(resumed.has_value()) << resumed.error().to_string();
+  // POSITIVE CONTROL for the zero above: same fixture, same hook, no stop.
+  EXPECT_GT(fits_started.load(std::memory_order_relaxed), 0u)
+      << "the fit probe never fired at all, so the zero asserted above proves nothing";
   EXPECT_TRUE(fs::exists(out / "manifest.tsv", ec));
   EXPECT_EQ(resumed->n_boards, 4u);
   EXPECT_EQ(resumed->n_ok, 4u);

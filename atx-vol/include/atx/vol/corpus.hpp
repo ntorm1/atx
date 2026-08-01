@@ -351,8 +351,18 @@ struct CorpusConfig {
   bool warm_start_chain{false};
   // Options forwarded verbatim to every per-date archive write (ATXVSA2, S4).
   ArchiveV2WriteOpts write_opts{};
-  // Cooperative cancellation, polled at the TOP of each DATE, before that date's
-  // archive is written (plan item 5.5). Default-constructed => never cancels.
+  // Cooperative cancellation (plan item 5.5). Default-constructed => never
+  // cancels. Polled in TWO places, which is what makes a stop shorten the build
+  // rather than only change what it publishes:
+  //   * at the TOP OF EACH FIT TASK in the across-board fan-out — the dominant
+  //     cost of a build — so the queued boards drain at one relaxed load each
+  //     instead of fitting to completion;
+  //   * at the TOP OF EACH DATE in the write loop, before that date's archive is
+  //     written — the manifest guard, which also covers a stop requested after
+  //     the fan-out had already finished.
+  //
+  // A fit already IN FLIGHT is not abandoned: the stop is seen when a task is
+  // claimed, so the call returns once the boards already running finish.
   //
   // On a requested stop `build_corpus` returns `ErrorCode::Cancelled` and the
   // manifest and quality report — the corpus's index, written only after every
