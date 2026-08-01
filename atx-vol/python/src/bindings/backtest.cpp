@@ -259,6 +259,7 @@ void bind_backtest(py::module_ &m) {
       .def_readwrite("unpriced", &RunConfig::unpriced)
       .def_readwrite("snapshot_cache", &RunConfig::snapshot_cache)
       .def_readwrite("prefetch_snapshots", &RunConfig::prefetch_snapshots)
+      .def_readwrite("prefetch_depth", &RunConfig::prefetch_depth)
       .def_readwrite("query_cache_build_policy", &RunConfig::query_cache_build_policy)
       .def_readwrite("surface_provenance_policy", &RunConfig::surface_provenance_policy)
       .def_readwrite("settlement_mark_memo", &RunConfig::settlement_mark_memo)

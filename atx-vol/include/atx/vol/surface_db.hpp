@@ -716,6 +716,17 @@ public:
   // not canonicalize: it cannot be listed under any spelling.
   [[nodiscard]] bool partition_listed(std::string_view key) const;
 
+  // Read the market timestamp for partition `key` without opening a full
+  // archive view or reconstructing a surface. This reads only the archive
+  // header, the first directory entry, and that entry's fixed-size surface header. Partition
+  // timestamps are unique by the later MarketSnapshot load contract, which
+  // rejects surfaces in one partition whose PricingContext::now_ts_ns disagree.
+  //
+  // Errors mirror `open_partition`: `InvalidArgument` for an unrepresentable
+  // key, `NotFound` when the manifest or archive file is absent, `IoError` for an
+  // opened file that cannot be read, and `ParseError` for malformed framing.
+  [[nodiscard]] Result<std::int64_t> session_ts(std::string_view key) const;
+
   // Reconstruct an OWNED surface for `symbol` in partition `key`. S5: reads the
   // partition through a shared, per-partition MMAP CACHE (keyed by canonical key,
   // evicted when the file's F6 content identity changes), so repeated loads of the

@@ -525,6 +525,15 @@ void bind_surface_core(py::module_ &m) {
            py::arg("opts") = ArchiveV2WriteOpts{},
            "Archive [(symbol, PricedSurface), ...] under one partition key.")
       .def(
+          "session_ts",
+          [](const SurfaceDb &self, const py::object &key) {
+            const std::string normalized_key = partition_key_from_python(key);
+            py::gil_scoped_release release;
+            return atxvol::python::unwrap(self.session_ts(normalized_key));
+          },
+          py::arg("key"),
+          "Read a partition's market timestamp from its first record header.")
+      .def(
           "load_surface",
           [](const SurfaceDb &self, const py::object &key, const std::string &symbol) {
             const std::string normalized_key = partition_key_from_python(key);
@@ -966,6 +975,8 @@ void bind_surface_db(py::module_ &m) {
           "total_variance",
           [](const LoadedSurface &s, double K, double T) { return s.view.total_variance(K, T); },
           py::arg("K"), py::arg("T"))
+      .def("rate_at", [](const LoadedSurface &s, double T) { return s.view.rate_at(T); },
+           py::arg("T"))
       .def_property_readonly("uid", [](const LoadedSurface &s) { return s.view.uid(); })
       .def_property_readonly("n_slices", [](const LoadedSurface &s) { return s.view.n_slices(); });
 
