@@ -43,9 +43,16 @@
 # atx-vol-tools / atx-vol-research are INTERFACE include roots whose translation
 # units still compile into atx-vol (see atx-vol/CMakeLists.txt); they are linked
 # PUBLIC there, so an installed `atx::vol` consumer can reach the tools and
-# research headers exactly as an in-tree one can. Plan 5.6 owns splitting the
-# .cpp out and demoting them; this file only has to install what the build graph
-# says today, and it does. Do not "fix" the reachability here.
+# research headers exactly as an in-tree one can. Plan 5.6 (S5-T27) deliberately
+# left that shape alone -- the reasons are recorded at the two add_library calls
+# in atx-vol/CMakeLists.txt -- so this file still installs what the build graph
+# says today, and the two atx::vol::tools / atx::vol::research alias shims in
+# cmake/atx-volConfig.cmake.in are still exactly right: they recreate in-tree
+# spellings over unchanged INTERFACE targets. Do not "fix" the reachability here.
+#
+# What 5.6 DID add is the tools tier's executables, below the library block: three
+# operator CLIs that install into <prefix>/bin. They are targets of this package,
+# not part of its export set -- see that block for why.
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
@@ -115,6 +122,29 @@ install(TARGETS
         ARCHIVE  DESTINATION "${CMAKE_INSTALL_LIBDIR}"
         LIBRARY  DESTINATION "${CMAKE_INSTALL_LIBDIR}"
         RUNTIME  DESTINATION "${CMAKE_INSTALL_BINDIR}")
+
+# ---- Operator CLIs (plan 5.6) -----------------------------------------------
+# The three shipped tools, into <prefix>/bin. ATX_BUILD_TOOLS is ON by default
+# (root CMakeLists); with it OFF these targets do not exist and the package
+# installs as a headers-plus-libraries distribution, which is why the guard is
+# here and not a hard dependency.
+#
+# NOT IN THE EXPORT SET, on purpose. `install(TARGETS ... EXPORT atx-volTargets)`
+# on an executable emits an IMPORTED executable into atx-volTargets.cmake, which
+# every `find_package(atx-vol)` consumer then loads whether or not it wants the
+# tools -- and the file would name binaries an ATX_BUILD_TOOLS=OFF prefix never
+# installed. A consumer links this package's LIBRARIES; it runs the tools from
+# PATH like any other program. Keeping them out also means their PRIVATE link to
+# atx::vol / atx::core / atx_warnings creates no export-interface obligation:
+# the $<LINK_ONLY:> rule that forces an exported target's private deps into an
+# export set applies to exported targets, and these are not.
+if(ATX_BUILD_TOOLS)
+    install(TARGETS
+                atx-vol-surface-db-build
+                atx-vol-surface-db
+                atxvol_spy_dispersion_backtest
+            RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
 
 # ---- Public headers ---------------------------------------------------------
 # atx-vol's three include roots plus the two first-party layers its exported
