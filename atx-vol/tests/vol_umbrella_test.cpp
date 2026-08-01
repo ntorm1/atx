@@ -53,8 +53,8 @@ namespace fs = std::filesystem;
 //
 // Everything else under include/atx/vol/ is Tier-B: public and includable, but
 // deliberately OUTSIDE the frozen umbrella (advanced calibrators, the SoA/SIMD
-// batch kernels, the deprecated legacy portfolio engine, the dispersion domain
-// vocabulary, harness-facing panels/fixtures).
+// batch kernels, the dispersion domain vocabulary, harness-facing
+// panels/fixtures).
 constexpr std::string_view kTierA[] = {
     "atx/vol/adjusted_greeks.hpp",
     "atx/vol/american.hpp",
@@ -87,6 +87,7 @@ constexpr std::string_view kTierA[] = {
     "atx/vol/market_env.hpp",
     "atx/vol/opra_panel.hpp",
     "atx/vol/parity.hpp",
+    "atx/vol/pnl_attribution.hpp",
     "atx/vol/portfolio_pricer.hpp",
     "atx/vol/priced_surface.hpp",
     "atx/vol/priced_surface_view.hpp",
@@ -95,6 +96,7 @@ constexpr std::string_view kTierA[] = {
     "atx/vol/projection.hpp",
     "atx/vol/query_pricing.hpp",
     "atx/vol/rates_curve.hpp",
+    "atx/vol/scenario_grid.hpp",
     "atx/vol/session.hpp",
     "atx/vol/spline_curve.hpp",
     "atx/vol/sr_tenor_grid.hpp",
@@ -164,6 +166,16 @@ TEST(VolUmbrella, PublicSurfaceIsReachableAndConsistent) {
   EssviParams slice{};
   slice.theta = 0.04;
   EXPECT_GT(slice.theta, 0.0);
+
+  // S4-T22: the portfolio stack's two risk post-processes are Tier-A, so the
+  // one-include API can reach scenario P&L and P&L attribution. Naming a symbol
+  // from each makes a future demotion fail to COMPILE rather than silently
+  // shrink the frozen risk surface (the same discipline the E5 block uses).
+  const ScenarioGridSpec grid_spec;
+  EXPECT_EQ(grid_spec.taylor_radius_spot, kDefaultTaylorRadiusSpot);
+  EXPECT_EQ(static_cast<int>(ScenarioRoute::Taylor), 0);
+  const AttributionOptions attribution_opts;
+  EXPECT_GT(attribution_opts.k_ref, 0.0);
 }
 
 // E5 / AN-W. The analytics flagship and its neighbours were absent from the

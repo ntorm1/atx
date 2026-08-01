@@ -191,8 +191,17 @@
 // spot x vol P&L matrix) and `pnl_attribution.hpp` (the level/skew/curvature
 // vol split); relative option templates resolve to concrete contracts through
 // `contract_projection.hpp`.
-#include "atx/vol/adjusted_greeks.hpp" // AdjustedGreeks (named in the pricer's API)
+//
+// S4-T22 promoted the two post-processes into Tier-A. They were the Sprint-3
+// "fold-or-keep" leftovers — test/bench-consumed only — but deleting the legacy
+// engine made them the library's ONLY scenario and attribution risk, and a
+// frozen portfolio API that cannot reach either through the one include would
+// be freezing the wrong shape. Both are pure serial post-processes over frozen
+// vocabulary (Position / SurfaceSet / AmericanGreeks) and add no dependency.
+#include "atx/vol/adjusted_greeks.hpp"  // AdjustedGreeks (named in the pricer's API)
+#include "atx/vol/pnl_attribution.hpp"  // spot/vol-axis P&L attribution over the book
 #include "atx/vol/portfolio_pricer.hpp" // PricedSurface-native pricer + Taylor PnL explain
+#include "atx/vol/scenario_grid.hpp"    // 2-D spot x vol scenario P&L matrix
 
 // ── Backtest engine + strategy vocabulary ───────────────────────────────────
 //
