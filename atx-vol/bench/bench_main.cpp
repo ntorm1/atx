@@ -252,7 +252,11 @@ int main(int argc, char **argv) {
       atx::vol::ExecutorConfig{atx::vol::Topology::PerformanceCores});
   b::turbo_warmup();
 
-  // (4) standard Google Benchmark run (mirrors BENCHMARK_MAIN()).
+  // (4) standard Google Benchmark run (mirrors BENCHMARK_MAIN()). Keep the
+  // executable's compile-time ISA in the JSON itself. Filename enforcement
+  // prevents accidental overwrites; this context also catches mislabeled or
+  // hand-moved result files at compare time.
+  ::benchmark::AddCustomContext("atx_build_isa", std::string(b::kBuildIsa));
   ::benchmark::Initialize(&argc, argv);
   if (::benchmark::ReportUnrecognizedArguments(argc, argv)) {
     return 1;
