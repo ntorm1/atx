@@ -32,6 +32,13 @@ include(CMakeFindDependencyMacro)
 
 # Redistributed dependencies live in THIS prefix; look there first so a
 # consumer that only set `atx-vol_DIR` still resolves them.
+#
+# SAVED and RESTORED around the block. CMAKE_PREFIX_PATH is directory-scoped, so
+# a bare `list(APPEND ...)` here permanently changes where the CALLER looks for
+# every subsequent find_package it makes -- including packages that have nothing
+# to do with atx-vol. A package config may widen the search for its OWN
+# dependencies; it must not redirect its caller's.
+set(_atx_vol_saved_prefix_path "${CMAKE_PREFIX_PATH}")
 list(APPEND CMAKE_PREFIX_PATH "${PACKAGE_PREFIX_DIR}")
 
 find_dependency(tl-expected)
@@ -42,7 +49,22 @@ find_dependency(Arrow CONFIG)
 find_dependency(Parquet CONFIG)
 find_dependency(zstd CONFIG)
 
+set(CMAKE_PREFIX_PATH "${_atx_vol_saved_prefix_path}")
+unset(_atx_vol_saved_prefix_path)
+
 include("${CMAKE_CURRENT_LIST_DIR}/atx-volTargets.cmake")
+
+# NOT PART OF THE SUPPORTED SURFACE. The targets file also defines
+# `atx::warnings`, `atx::sqlite3` and `atx::miniz`, because atx::vol and
+# atx::core reach them through `$<LINK_ONLY:>` and an export set must name every
+# target it references. They are INTERNAL build-configuration targets and
+# linking one directly is unsupported: `atx::warnings` carries
+# `/W4 /permissive- /WX` as INTERFACE_COMPILE_OPTIONS, so a consumer who links
+# it inherits -Werror on their own code; `atx::sqlite3` and `atx::miniz` carry
+# vendored-build defines. `$<LINK_ONLY:>` is what keeps those usage requirements
+# off a consumer of atx::vol -- reaching around it re-introduces them. Link
+# `atx::vol` (plus `atx::vol::tools` / `atx::vol::research` for the side include
+# roots) and nothing else.
 
 # In-tree the two side include roots are `atx::vol::tools` / `atx::vol::research`
 # (atx-vol/CMakeLists.txt). An export NAMESPACE cannot produce a third `::`
