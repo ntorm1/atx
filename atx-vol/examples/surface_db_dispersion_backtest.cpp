@@ -192,6 +192,15 @@ int main(int argc, char **argv) {
   std::error_code ec;
   fs::create_directories(args.out, ec);
 
+  // The REQUESTED window clamps to the dates the db actually holds (documented,
+  // encouraged behavior — see the operator guide's §8), so `--from/--to` and the
+  // range the run really covered can differ. Derived once here and used by BOTH
+  // the meta block's `window_resolved` and the headline below, so the two can
+  // never disagree. The empty guard is defensive: an empty window is rejected
+  // upstream by `Clock::between`, so a zero-step run cannot reach this point.
+  const std::string date_lo = r.date.empty() ? std::string("-") : r.date.front();
+  const std::string date_hi = r.date.empty() ? std::string("-") : r.date.back();
+
   // Shared meta block, written verbatim into every emitted file, in this order.
   // `universe` rides along because the two routes build DIFFERENT books and a
   // series.csv read six months from now must say which one produced it.
@@ -200,6 +209,7 @@ int main(int argc, char **argv) {
       {"db_root", db->root()},
       {"db_generation", std::to_string(db->generation())},
       {"window", args.from + ".." + args.to},
+      {"window_resolved", date_lo + ".." + date_hi},
       {"index", spec.index_symbol},
       {"n_names", std::to_string(n_names)},
       {"universe", args.universe.empty() ? std::string("surface_db_manifest") : args.universe},
@@ -243,8 +253,7 @@ int main(int argc, char **argv) {
               "(all-zero == the engine's PRIVATE Sealed cache, by design)\n"
               "[wrote] %s\n[wrote] %s\n[wrote] %s\n",
               db->root().c_str(), static_cast<unsigned long long>(db->generation()),
-              r.date.empty() ? "-" : r.date.front().c_str(),
-              r.date.empty() ? "-" : r.date.back().c_str(), r.size(), spec.index_symbol.c_str(),
+              date_lo.c_str(), date_hi.c_str(), r.size(), spec.index_symbol.c_str(),
               n_names, args.universe.empty() ? "surface_db_manifest" : args.universe.c_str(),
               args.config.empty() ? "(defaults)" : args.config.c_str(), fmt_num(total_pnl).c_str(),
               fmt_num(ts.sharpe).c_str(), fmt_num(ts.max_drawdown).c_str(),

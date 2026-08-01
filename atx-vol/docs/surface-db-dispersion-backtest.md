@@ -153,7 +153,7 @@ repo or inside a data lake.
 
 ### Outputs
 
-Three CSVs in `--out`, each prefixed with the **same 7-key `#` meta block** so a
+Three CSVs in `--out`, each prefixed with the **same 8-key `#` meta block** so a
 file read six months later still says which db, which generation, which window
 and which basket produced it:
 
@@ -162,10 +162,20 @@ and which basket produced it:
 # db_root=C:\atx-data\surface-db\sp100-2026
 # db_generation=225
 # window=2026-06-03..2026-06-26
+# window_resolved=2026-06-03..2026-06-26
 # index=SPY
 # n_names=101
 # universe=surface_db_manifest
 ```
+
+`window` is what you **asked for** — `--from`/`--to` verbatim, unresolved.
+`window_resolved` is what the run **actually covered**: the first and last
+recorded session, the same range the headline prints. The two agree above
+because the quickstart's ends are both real partitions, but a window end outside
+the db's available range **clamps** (§8) rather than erroring, so a request can
+name dates the run never touched. **Read `window_resolved` when you need to know
+what the numbers in the file cover**; read `window` only to recover the command
+that produced it.
 
 `universe` is the literal `surface_db_manifest` on the equal-weight route, or
 the `--universe` path when one was given.
@@ -643,7 +653,8 @@ Errors name the stage, and the stage is the knob to fix.
 
 Out-of-range window **ends clamp** — asking for `2020-01-01..2030-01-01` gives
 you everything there is, which is not an error. Only a window selecting *no*
-partition fails.
+partition fails. When a clamp happens the emitted CSVs still record both ends of
+it: `window` is the request, `window_resolved` is what ran (§3).
 
 ---
 
