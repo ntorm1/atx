@@ -739,10 +739,15 @@ reconcile_dispersion_reference(const std::filesystem::path &run_dir, bool schedu
 //   dispersion_run_surface_backtest <- `spy_dispersion_backtest run-surface-backtest`
 //   dispersion_run_projected_var    <- `spy_dispersion_backtest run-projected-var`
 //
-// The seam is FULLY DISPATCHED. No library-only reserve is left in this block,
-// and no shipped subcommand carries a second implementation of a body declared
-// here. The long "deliberate reserve" argument that used to stand here is gone
-// with the code it defended; what follows is why, so it is not reconstructed.
+// The seam is FULLY DISPATCHED. No library-only reserve is left among these three
+// WORKFLOW entry points, and no shipped subcommand carries a second implementation
+// of a body declared here. The long "deliberate reserve" argument that used to
+// stand here is gone with the code it defended; what follows is why, so it is not
+// reconstructed. (The scope of that claim is the three workflow entries. The
+// projected-VaR ENVELOPE GATE declared at the bottom of this header is a different
+// thing and does not contradict it: it is a checkable predicate, not an
+// orchestration, and its own REACH note states outright that it has no shipped
+// caller since S3-T17 deleted `dispersion_verify`.)
 //
 // WHAT WAS DELETED. `dispersion_build_schedule`, `dispersion_run_backtest` and
 // `dispersion_verify`. Re-derived from the tree rather than inherited:
@@ -758,14 +763,29 @@ reconcile_dispersion_reference(const std::filesystem::path &run_dir, bool schedu
 //     concern; dispatching into them would have been the reverse.
 //   * THEY HAD DIVERGED, AND THIS BLOCK SAID OTHERWISE. It asserted the two
 //     run-backtest bodies "differ ONLY in how they persist results". They did
-//     not. The twin called `reconcile_listed_dispersion`, which hard-requires
-//     the front session to BE the first roll date; the CLI calls
-//     `reconcile_listed_schedule`, which trims the warm-up lead-in. The twin
-//     joined the whole OPRA panel; the CLI narrows the join to the schedule's
-//     leg keys, a narrowing that also narrows six of that join's seven fatal
-//     exits (see `listed_quotes_for_date`'s `wanted` contract in
-//     listed_opra.hpp). Dispatching the CLI into the twin would have moved
-//     shipped ERROR PATHS, so "collapse onto the twin" was never available.
+//     not. The twin fed its FULL timeline straight to
+//     `reconcile_listed_dispersion`; the CLI calls `reconcile_listed_schedule`,
+//     which TRIMS the warm-up lead-in first and only then reconciles. Those are
+//     different reconciliations, not two spellings of one: the untrimmed route
+//     emits a flat, position-free row for every pre-entry date while the trimmed
+//     route emits none, and `validate_listed_reconciliation_backtest` hard-requires
+//     equal row counts (the still-open caution on
+//     `assemble_reconciliation_snapshots`, listed_dispersion_pipeline.hpp). NB the
+//     PREMISE this bullet used to argue from is itself now stale and is corrected
+//     here rather than repeated: `reconcile_listed_dispersion` no longer
+//     hard-requires the front session to BE the first roll date. Change C2 made it
+//     tolerate a leading pre-roll session, emitting a flat row for it; the
+//     surviving hard error is a timeline with NO snapshot on/after the first
+//     scheduled roll date. Pinned by
+//     `ListedDispersionPipeline.ReconcileClockCoupling_ToleratesWarmupLeadInButNotAMissingEntry`.
+//     The divergence conclusion survives the correction; its reason is the trim,
+//     not a precondition. The twin also joined the whole OPRA panel, where the CLI
+//     narrows the join to the schedule's leg keys — a narrowing that also narrows
+//     six of that join's seven fatal exits. That `wanted` contract is documented on
+//     `listed_quotes_from_opra` in listed_opra.hpp, which is what
+//     `listed_quotes_for_date` (listed_dispersion_pipeline.hpp) forwards it to.
+//     Dispatching the CLI into the twin would have moved shipped ERROR PATHS, so
+//     "collapse onto the twin" was never available.
 //   * `dispersion_verify` VERIFIED AN ENVELOPE NO ROUTE PRODUCES. It required
 //     the loose `backtest.tsv` / `contract_marks.tsv` / `reconciliation.tsv`
 //     that the RunArchive cutover replaced. `RunDir::verify()` is the
@@ -783,14 +803,19 @@ reconcile_dispersion_reference(const std::filesystem::path &run_dir, bool schedu
 // seam with its own tests.
 //
 // CONSEQUENCE FOR THE LOOSE RESULT TABLES, stated so it is not rediscovered as a
-// defect: nothing in this repo writes `backtest.tsv`, `contract_marks.tsv` or
+// defect: no SHIPPED ROUTE writes `backtest.tsv`, `contract_marks.tsv` or
 // `reconciliation.tsv` into a run directory any more — the deleted twin was
 // their last writer, and the shipped `run-backtest` has published its economics
-// as `run.atxrun` sections since the cutover. They survive only in run
-// directories published before it. `reconcile_dispersion_reference` (declared
-// above) therefore reaches a shipped binary in its SCHEDULE-ONLY mode only, from
-// `verify_command` under the run spec's `emit_tsv_diagnostics`; its full mode is
-// covered by `DispersionReferenceReconcile.*` off synthetic input and by
+// as `run.atxrun` sections since the cutover. In a directory this pipeline
+// produced they therefore survive only from before that cutover. The qualifier is
+// load-bearing and is not a hedge: the gtests DO still write all three, into
+// synthetic run dirs they build themselves, and that is exactly what "off
+// synthetic input" means below — a reader who takes the unqualified "nothing
+// writes them" literally will read those fixtures as a contradiction.
+// `reconcile_dispersion_reference` (declared above) reaches a shipped binary in
+// its SCHEDULE-ONLY mode only, from `verify_command` under the run spec's
+// `emit_tsv_diagnostics`; its full mode is covered by
+// `DispersionReferenceReconcile.*` off synthetic input and by
 // `DispersionReferenceReconcileRealData` off the aging published corpus.
 //
 // F6's quote-quality admission (`DispersionRunConfig::quote_quality` ->
@@ -800,16 +825,22 @@ reconcile_dispersion_reference(const std::filesystem::path &run_dir, bool schedu
 // `write_dispersion_effective_config`'s `run_config.tsv` echo is true of the run
 // that produced it. GATED by `DispersionScheduleSpecFrom.*`, and it was NOT
 // gated when it was first called closed: the link was one assignment in the
-// example's `main`, and deleting that assignment left the whole label gate at
-// 2262/2262 passed, 0 failed. Read it as the rule this sprint keeps re-learning
-// — a fix whose load-bearing line no test executes for a NON-DEFAULT value is
-// not closed, it is asserted.
+// example's `main`, and deleting that assignment left the whole label gate green
+// — 2262/2262 passed, 0 failed, 2262 being the gate's total AT THAT TIME and not
+// a figure to compare against today's. Read it as the rule this sprint keeps
+// re-learning — a fix whose load-bearing line no test executes for a NON-DEFAULT
+// value is not closed, it is asserted.
 //
 // WHAT REMAINS: the per-date `quote_rejects.tsv` admission tally is written by
 // the shipped `build_schedule_command` off the `ListedQuoteRejectSink` the
-// audited builder drives, so on the one remaining schedule route the policy
-// applies AND its per-date accounting is published. Nothing parses that file
-// back — it is a report ABOUT the run, not an input to it.
+// audited builder drives — unconditionally, and BEFORE a failed acceptance
+// propagates, since a rejected selection is when the counts are worth most. Since
+// `build-schedule` is now the only route that builds a schedule at all, that is
+// the whole story: on it the policy applies AND its per-date accounting is
+// published. No shipped code parses the file back — it is a report ABOUT the run,
+// not an input to it — and the only reader anywhere is
+// `DispersionRunConfig`'s test of the `# schema=quote_rejects/1` header line,
+// which is a pin on the format, not a consumer of the data.
 
 [[nodiscard]] Status dispersion_build_corpus(const std::filesystem::path &source_spec_path,
                                              const std::filesystem::path &run_dir,

@@ -262,8 +262,12 @@ enum class SettlementSession : std::uint8_t {
 
 // Calendar-365 year length in nanoseconds (365.25 * 86400s) — the CANONICAL
 // copy of this constant in atx-vol (`portfolio_pricer.hpp`'s `kNsPerYear` and
-// a literal in curve.cpp mirror the same value; they are not aliased to this
-// one, out of scope here). `data.cpp`'s `year_fraction` delegates to
+// a literal in `forward_div_corrected`, rates_curve.cpp, mirror the same value;
+// they are not aliased to this one, out of scope here). Both mirrors still exist
+// at HEAD: the S4-T22 portfolio-engine deletion left `kNsPerYear` in place (it
+// belongs to the canonical `PortfolioPricer`, not the engine that was removed),
+// and S4-T21's rename carried the rates TU from `curve.cpp` to `rates_curve.cpp`
+// without touching the literal. `data.cpp`'s `year_fraction` delegates to
 // `time_to_expiry_years` (default `TimeSpec`) rather than re-deriving it, so
 // `Calendar365` and the legacy ISO-string `year_fraction` can never drift
 // apart.
@@ -279,7 +283,7 @@ enum class SettlementSession : std::uint8_t {
 // values (earnings-repro ATM vols, surface-archive CRCs, backtest PnL, fitted
 // slices) — far beyond the ~dozen-pin budget the A9 task set for an in-batch
 // change — AND it would desync this copy from the mirrored 365.25 in
-// portfolio_pricer.hpp/curve.cpp (explicitly out of scope), creating a NEW
+// portfolio_pricer.hpp/rates_curve.cpp (explicitly out of scope), creating a NEW
 // internal inconsistency worse than the naming one. A deliberate re-derivation is
 // a standalone coordinated sweep (change all three mirrored constants together,
 // or rename the convention to Julian365, then full-corpus repin), tracked for the
