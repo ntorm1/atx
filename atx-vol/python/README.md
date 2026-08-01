@@ -299,6 +299,23 @@ series["nav_liquidation"]          # populated when reconcile_nav is enabled
 av.write_backtest_pnl_tsv(result, {"strategy": "spy_dispersion_vega_flat"}, "pnl_track.tsv")
 ```
 
+`Clock.between(date_lo, date_hi)` carves a run window out of a db-backed clock.
+Both ends are **inclusive**, bounds outside the corpus **clamp** (asking for
+`"2020-01-01".."2030-01-01"` is the whole corpus, not an error), and the source
+clock is unchanged. A window that selects no partition — an inverted pair, or a
+real gap the corpus does not cover — raises `AtxError` with
+`ErrorCode.INVALID_ARGUMENT` whose message names the **available** range, so the
+window can be corrected without dumping the manifest:
+
+```python
+clock = av.Clock.from_surface_db(db).between("2026-01-06", "2026-01-09")
+result = av.run_dispersion_backtest(clock, universe, cfg)
+```
+
+`tests/test_surface_db_dispersion.py` runs that whole composition —
+`SurfaceDb` -> `Clock.from_surface_db` -> `between` -> `run_dispersion_backtest` —
+over a synthetic db it builds through these bindings.
+
 `RunConfig()` is a passthrough of the engine's `RunConfig{}` — the bindings never
 re-declare a default. Python therefore inherits engine-side policy changes rather
 than being silently more permissive than the C++ library; in particular

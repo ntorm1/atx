@@ -126,6 +126,22 @@ void bind_backtest(py::module_ &m) {
             return atxvol::python::unwrap(Clock::from_manifest(manifest));
           },
           py::arg("manifest"))
+      // The date-window subset every SurfaceDb-driven run carves its window with.
+      // Unwrapped like the factories above, so the empty/inverted-window case
+      // reaches Python as `AtxError` (code INVALID_ARGUMENT) carrying the
+      // engine's message — which NAMES the available range, so a caller who
+      // asked for a window the corpus does not cover can correct it without
+      // dumping the manifest.
+      .def(
+          "between",
+          [](const Clock &self, const std::string &date_lo, const std::string &date_hi) {
+            return atxvol::python::unwrap(self.between(date_lo, date_hi));
+          },
+          py::arg("date_lo"), py::arg("date_hi"),
+          "Subset to the refs whose date lies in [date_lo, date_hi], INCLUSIVE on "
+          "both ends. Bounds outside the corpus clamp; a window selecting no ref "
+          "raises AtxError(INVALID_ARGUMENT) naming the available range. `self` is "
+          "unchanged.")
       .def_property_readonly("refs",
                              [](const Clock &self) {
                                const auto refs = self.refs();
