@@ -423,6 +423,11 @@ Three binaries ship with the package and install into `<prefix>/bin`:
 | `atx-vol-surface-db` | Inspect and manage a built database: `info` / `partitions` / `symbols` / `config` / `query` / `verify` — no Python binding required |
 | `atxvol_spy_dispersion_backtest` | The listed SPY-dispersion workflow: `build-corpus`, `build-schedule`, `run-backtest`, `project-schedule`, `run-projected-backtest`, `run-surface-backtest`, `run-projected-var`, `verify`, `runarchive dump` |
 
+**`atxvol_spy_dispersion_backtest` is spelled deliberately.** It does not match
+its `atx-vol-*` siblings, and that is a decision, not an oversight: external
+operator scripts invoke it by that name, so renaming it at v1 would break callers
+outside this repository to buy consistency inside it. Expect the name to stay.
+
 They are ON by default because they are part of what atx-vol *is* at v1 — a
 library plus the binaries that build, inspect and replay its artifacts.
 `-DATX_BUILD_TOOLS=OFF` drops exactly these three executables and their install

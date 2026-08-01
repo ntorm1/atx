@@ -262,10 +262,13 @@ Three measurement targets landed for the backtest hot-path sprint (the loop
 the quiet-window protocol on `rel-avx2` and named `-avx2-` (enforced).
 
 - **M1 — `atx-vol-surface-archive-bench`** (`surface_archive_bench.cpp`): the
-  previously-missing serialize/deserialize measurement. ATXVSA2-only since the v1
-  format was deleted (release-v1 plan 3.5/3.6); the v1 rows (`serialize`,
-  `open_reconstruct_all`, `reconstruct_all`, `reconstruct_one`) are gone with it, so
-  the v1 numbers in the checked-in baselines below are HISTORY, not a comparand.
+  previously-missing serialize/deserialize measurement. ATXVSA2-only since the
+  retired **ATXVSA03** format's writer/reader were deleted (release-v1 plan
+  3.5/3.6); its rows (`serialize`, `open_reconstruct_all`, `reconstruct_all`,
+  `reconstruct_one`) are gone with them, so those numbers in the checked-in
+  baselines below are HISTORY, not a comparand. (This paragraph used to call
+  ATXVSA03 "v1"; the ordinal spellings are retired — see
+  `atx-vol/include/atx/vol/surface_archive.hpp`.)
   - `surface_archive/serialize_v2/{essvi,convexdense}/count:{1,4,16,50,100}` —
     `write_surface_archive_v2` in memory; `items_per_second` == surfaces/s (µs/surface
     = 1e6 / surfaces_per_s), `bytes_per_second` == partition write MB/s, and
