@@ -795,9 +795,11 @@ struct BacktestResult {
   //     `date`, exactly as its own comment states.
   //
   // Enforcement, not just availability: both `run_backtest` overloads validate
-  // before returning Ok, so no engine-produced result can be skewed; the TSV,
-  // CSV and RunArchive writers validate on entry, so no hand-built or decoded
-  // one reaches the wire. The check is a pure read — it never touches a value.
+  // before returning Ok, so no engine-produced result can be skewed; the TSV and
+  // CSV writers validate on entry, so no hand-built or decoded one reaches those
+  // wires. `encode_backtest_section` (the RunArchive encoder) has no error channel
+  // and is NOT checked; its production callers pass a `run_backtest` result that
+  // already was. The check is a pure read — it never touches a value.
   //
   // @return InvalidArgument naming the first offending column and both lengths.
   [[nodiscard]] Status validate() const;
