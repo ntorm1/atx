@@ -130,16 +130,18 @@ listed_quotes_for_date(const RunSpec &spec, const ListedDefinitionTable &definit
 // zero reconciliation rows until the first roll date, so `run-backtest` feeds the
 // reconciler its FULL `clock.refs()` timeline — every session the clock spans,
 // including any leading warm-up / low-coverage session before the first roll. The
-// low-level `reconcile_listed_dispersion` hard-requires
-// `snapshots.front().date == schedule.rolls.front().roll_date` and aborts an
-// otherwise-valid corpus when a pre-roll session leads the timeline (it only
-// worked historically because `date_lo` happened to coincide with the first roll).
+// low-level `reconcile_listed_dispersion` TOLERATES a leading pre-roll session
+// (trunk change C2): it emits a flat, position-free row for every date before
+// `schedule.rolls.front().roll_date`, and errors only on a date AFTER it — i.e.
+// on a timeline with no snapshot on the first roll date at all. Pinned by
+// `ListedDispersionPipeline.ReconcileClockCoupling_ToleratesWarmupLeadInButNotAMissingEntry`.
 //
 // `assemble_reconciliation_snapshots` trims those leading pre-roll sessions so the
 // returned span starts exactly at `schedule.rolls.front().roll_date`, mirroring the
 // strategy's pre-roll silence. The coupling is made explicit here (an error if the
-// first roll date is absent from the timeline) rather than left emergent; the
-// low-level precondition stays intact as a defensive invariant.
+// first roll date is absent from the timeline) rather than left emergent. Note it
+// is no longer compensating for a low-level precondition — there is none to
+// compensate for; what the trim still buys is row-count alignment (see CAUTION).
 //
 // BORROW: the returned elements are copies of the `ListedReconciliationSnapshot`
 // structs, but each one still points at storage owned by the caller — the
