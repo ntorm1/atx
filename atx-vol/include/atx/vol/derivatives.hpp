@@ -120,6 +120,10 @@
 #include <limits>
 #include <span>
 
+// The legacy calibration-grade surface containers were demoted to detail/
+// (S4-T21), but the deriv_greeks extern templates below still instantiate on
+// them — the vol-derivatives sprint's greeks lane predates the demotion.
+#include "atx/vol/detail/legacy_surface.hpp" // EssviSurface, SviSurface
 #include "atx/vol/rates_curve.hpp"
 #include "atx/vol/types.hpp"
 

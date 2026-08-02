@@ -17,7 +17,7 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/curve.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/surface.hpp"
 
 namespace atx::vol::testsupport {

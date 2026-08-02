@@ -2,7 +2,7 @@
 
 #include <cmath>
 
-#include "atx/vol/curve.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/derivatives.hpp"
 #include "atx/vol/priced_surface.hpp"     // PricedSurface-native greeks overload
 #include "atx/vol/surface.hpp"
