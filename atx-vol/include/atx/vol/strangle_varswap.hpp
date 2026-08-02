@@ -35,7 +35,8 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/backtest.hpp"         // MarketSnapshot, Lot, PortfolioState
+#include "atx/vol/backtest.hpp"         // MarketSnapshot, Lot, PortfolioState, SwapLot
+#include "atx/vol/derivatives.hpp"      // DerivConfig, DerivContract, RealizedVarianceSpec
 #include "atx/vol/portfolio_pricer.hpp" // PriceOptions
 #include "atx/vol/priced_surface.hpp"   // FullGreekSeed
 #include "atx/vol/strategy.hpp"         // IStrategy, HedgeSpec
@@ -54,6 +55,25 @@ struct StrangleVarswapConfig {
   double tenor_years = 0.25;            // ~3M; snapped to the session grid
   double contracts = 100.0;             // strangle qty per wing (fixed)
   std::vector<std::int64_t> session_ts; // snap grid, driver-supplied
+
+  // ── The variance-swap leg ─────────────────────────────────────────────────
+  //
+  // One uncapped variance swap per CYCLE, opened on the step that fixes the
+  // cycle, struck at that cycle's own fair strike and sized so its vega equals
+  // the strangle's ENTRY vega. Equal vega at inception is what makes the two
+  // legs comparable: both start the cycle with the same first-order exposure to
+  // a parallel vol move, so everything the comparison reports afterwards is
+  // second-order — the strangle's local, strike-pinned gamma/vanna against the
+  // swap's uniform variance exposure — rather than a size mismatch.
+  bool enable_swap_leg = true;
+
+  // Pricing config for the ENTRY SOLVE ONLY (fair strike + vega). The engine
+  // marks and settles a live swap under its own hard-coded default DerivConfig
+  // (`swap_price_cfg`, backtest.cpp), which no strategy can reach — so a
+  // non-default config here changes what the swap is STRUCK at, never how it is
+  // subsequently valued. Left at the default the two agree exactly, which is
+  // the only setting that opens the swap at a genuine zero PV.
+  DerivConfig deriv_cfg{};
 };
 
 class StrangleVsVarswapStrategy final : public IStrategy {
@@ -89,6 +109,15 @@ public:
     return unresolved_strike_steps_;
   }
 
+  // Cycles that opened WITHOUT a variance-swap leg while the leg was enabled:
+  // the entry solve could not produce a fair strike and a usable vega, or the
+  // cycle is too short to observe a single return. Those cycles run
+  // options-only rather than booking a fabricated quantity, and this is how the
+  // comparison (Task 3) knows a cycle is one-legged instead of silently
+  // reporting a spread against a swap that was never there. Always 0 when
+  // `enable_swap_leg` is false — a leg nobody asked for is not a skip.
+  [[nodiscard]] std::uint64_t skipped_swap_cycles() const noexcept { return skipped_swap_cycles_; }
+
 private:
   // Wing order, shared by the resolved strikes, the emitted lots and the seeds.
   static constexpr std::array<Side, 2> kWings{Side::Call, Side::Put};
@@ -117,11 +146,43 @@ private:
   [[nodiscard]] std::optional<ResolvedStrangle>
   resolve_wings(const MarketSnapshot &base, const PriceOptions &price_options) const;
 
+  // The listed-equity contract size — `Lot::multiplier`'s default, spelled out
+  // here because the swap leg is sized against the strangle's DOLLAR vega, and
+  // that is per-share vega x contracts x THIS. Dropping it would open a swap
+  // 100x too small and quietly turn the whole comparison into an options study.
+  static constexpr double kMultiplier = 100.0;
+  // Unit variance notional: the leg is sized entirely through `SwapLot::qty`,
+  // so one dimension carries the sizing and the other stays a constant the
+  // reader (and the equal-vega assertion) can check by eye.
+  static constexpr double kSwapNotional = 1.0;
+  static constexpr double kSwapAnnualization = 252.0; // trading-day variance convention
+
+  // The engine's own `SwapLot` -> `DerivContract` construction (`step_swap_lots`,
+  // backtest.cpp), transcribed so the entry solve prices the IDENTICAL contract
+  // the mark lane will price one step later — a residual tenor that divided by a
+  // different year, or an rv_spec staged differently, would strike the swap
+  // against a contract the engine never values. `rv` is the accrual state as of
+  // `base_ts` (all zero at entry: the engine seeds on first sight, one step on).
+  //
+  // Reused by the comparison signals (Task 3), which need the same contract at
+  // an arbitrary snapshot to value a live cycle.
+  [[nodiscard]] static DerivContract swap_contract(const SwapLot &lot, std::int64_t base_ts,
+                                                   const RealizedVarianceSpec &rv) noexcept;
+
+  // Solve and append this cycle's equal-vega variance swap to `book.swap_lots`,
+  // consuming one `next_lot_id` on success. FAIL-SOFT: any step of the solve
+  // that cannot produce a finite fair strike and a usable vega leaves the book
+  // and the id watermark untouched and counts the cycle in
+  // `skipped_swap_cycles_`. Called ONLY on a cycle-open step.
+  void open_cycle_swap(const MarketSnapshot &base, const ResolvedStrangle &wings,
+                       PortfolioState &book, std::uint64_t &next_lot_id);
+
   StrangleVarswapConfig cfg_;
   std::int64_t cycle_expiry_ts_ns_ = 0; // 0 = no live cycle
   std::int64_t tenor_ns_ = 0;           // cfg_.tenor_years in ns, set by validate_config
   std::uint32_t cycle_index_ = 0;       // Lot::cohort — identifies the CYCLE, not the clip
   std::uint64_t unresolved_strike_steps_ = 0;
+  std::uint64_t skipped_swap_cycles_ = 0;
   bool validated_ = false;
   std::vector<FullGreekSeed> last_entry_seeds_;
 };

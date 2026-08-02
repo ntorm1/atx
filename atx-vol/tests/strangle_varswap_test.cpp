@@ -32,6 +32,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -41,19 +42,21 @@
 #include <utility>
 #include <vector>
 
-#include "atx/core/error.hpp"           // Err
-#include "atx/vol/american.hpp"         // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest.hpp"         // Clock, run_backtest_incremental, RunConfig
-#include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/portfolio_pricer.hpp" // kNsPerYear, SurfaceRef
-#include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
-#include "atx/vol/strangle_varswap.hpp" // StrangleVarswapConfig, StrangleVsVarswapStrategy
-#include "atx/vol/strategy.hpp"         // HedgeSpec
-#include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file
-#include "atx/vol/surface_parity.hpp"   // SliceContext
-#include "atx/vol/types.hpp"            // Side, Result, Status
-#include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"      // EssviParams
+#include "atx/core/error.hpp"                  // Err, ErrorCode
+#include "atx/vol/american.hpp"                // al_fast_opts, AmericanMethod
+#include "atx/vol/backtest.hpp"                // Clock, run_backtest_incremental, RunConfig
+#include "atx/vol/corpus.hpp"                  // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/derivatives.hpp"             // DerivContract, DerivConfig, DerivGreeks, DerivKind
+#include "atx/vol/detail/deriv_ref_bridge.hpp" // detail::deriv_greeks_on_ref
+#include "atx/vol/portfolio_pricer.hpp"        // kNsPerYear, SurfaceRef, PriceOptions
+#include "atx/vol/priced_surface.hpp"          // PricedSurface, PricingContext, FullGreekSeed
+#include "atx/vol/strangle_varswap.hpp"        // StrangleVarswapConfig, StrangleVsVarswapStrategy
+#include "atx/vol/strategy.hpp"                // HedgeSpec
+#include "atx/vol/surface_archive.hpp"         // write_surface_archive_v2_file
+#include "atx/vol/surface_parity.hpp"          // SliceContext
+#include "atx/vol/types.hpp"                   // Side, Result, Status
+#include "atx/vol/vol_curve.hpp"               // CurveSurface, EssviCurve
+#include "atx/vol/vol_surface.hpp"             // EssviParams
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -224,6 +227,155 @@ struct Corpus {
   return d.has_value() ? *d : std::numeric_limits<double>::quiet_NaN();
 }
 
+// ── Task 2 oracles: the swap leg, never read off the strategy ───────────────
+
+[[nodiscard]] bool bits_equal(double a, double b) noexcept {
+  std::uint64_t ba = 0;
+  std::uint64_t bb = 0;
+  std::memcpy(&ba, &a, sizeof ba);
+  std::memcpy(&bb, &b, sizeof bb);
+  return ba == bb;
+}
+
+// The `DerivContract` a swap lot IS on its OPEN date, rebuilt from the lot's own
+// terms under the engine's documented conventions: residual tenor over
+// `kNsPerYear`, and an `rv_spec` carrying the lot's schedule with NOTHING
+// realized — which is exactly an entry-day contract's state, because the engine
+// seeds a lot's fixing series on the first step AFTER it was opened. This is
+// backtest_swap_test's `reference_swap_mark` construction; nothing here reads
+// the strategy.
+[[nodiscard]] DerivContract entry_contract(const SwapLot &lot, std::int64_t ts_ns) noexcept {
+  RealizedVarianceSpec rv{};
+  rv.annualization = lot.annualization;
+  rv.n_obs_total = lot.n_obs_total;
+
+  DerivContract c;
+  c.kind = lot.kind;
+  c.maturity_t = static_cast<double>(lot.expiry_ts_ns - ts_ns) / kNsPerYear;
+  c.strike_dec = lot.strike_dec;
+  c.cap_dec = lot.cap_dec;
+  c.notional = lot.notional;
+  c.rv_spec = rv;
+  return c;
+}
+
+// Independent greeks for that contract, against the very archive the engine
+// priced and through the same `SurfaceRef` bridge the engine's mark lane prices
+// through (`step_swap_lots` -> `deriv_price_on_ref`).
+[[nodiscard]] Result<DerivGreeks> entry_swap_greeks(const std::string &archive_path,
+                                                    const SwapLot &lot, std::int64_t ts_ns) {
+  Result<MarketSnapshot> snap = MarketSnapshot::load(archive_path);
+  if (!snap) {
+    return atx::core::Err(snap.error());
+  }
+  const SurfaceRef s = snap->find(lot.uid);
+  if (s == nullptr) {
+    return atx::core::Err(atx::core::ErrorCode::NotFound,
+                          "oracle: the swap lot's uid has no surface on its open date");
+  }
+  return detail::deriv_greeks_on_ref(s, entry_contract(lot, ts_ns), DerivConfig{},
+                                     DerivGreekBumps{});
+}
+
+// The option book's DOLLAR vega per 1.00 of vol: each lot's per-share American
+// vega at its OWN (K, T, side) on that date's surface, scaled by qty x
+// multiplier exactly as the portfolio pricer scales a position's greeks
+// (`out.vega[i] = w * g.vega`, portfolio_pricer.cpp). NaN — never 0.0 — if
+// anything fails to price.
+[[nodiscard]] double book_option_vega(const std::string &archive_path, const PortfolioState &book,
+                                      const PriceOptions &price_options) {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  Result<MarketSnapshot> snap = MarketSnapshot::load(archive_path);
+  EXPECT_TRUE(snap.has_value()) << (snap.has_value() ? std::string{} : snap.error().to_string());
+  if (!snap) {
+    return nan;
+  }
+  double total = 0.0;
+  for (const Lot &lot : book.lots) {
+    const SurfaceRef s = snap->find(lot.contract.uid);
+    EXPECT_NE(s, nullptr);
+    if (s == nullptr) {
+      return nan;
+    }
+    const Result<FullGreekSeed> seed =
+        s->full_greek_seed(lot.contract.K, lot.contract.T, lot.contract.side,
+                           price_options.analytic_greeks, price_options.query_execution);
+    EXPECT_TRUE(seed.has_value()) << (seed.has_value() ? std::string{} : seed.error().to_string());
+    if (!seed) {
+      return nan;
+    }
+    total += seed->greeks().vega * lot.qty * lot.multiplier;
+  }
+  return total;
+}
+
+// Every column the OPTION lane owns, compared bit-for-bit. `pnl_total`, `nav`
+// and `cash` are deliberately NOT here: the swap lane folds its mark-to-market
+// into the step total and its settlement into the ledger, so those three
+// legitimately differ between a one-legged run and a two-legged one — which is
+// the whole point of the lane, not a violation of its additivity.
+void expect_option_columns_equal(const BacktestResult &a, const BacktestResult &b) {
+  ASSERT_EQ(a.size(), b.size());
+  struct Column {
+    const char *name;
+    const std::vector<double> BacktestResult::*member;
+  };
+  static constexpr Column kColumns[] = {
+      {"pnl_delta", &BacktestResult::pnl_delta},
+      {"pnl_gamma", &BacktestResult::pnl_gamma},
+      {"pnl_vega", &BacktestResult::pnl_vega},
+      {"pnl_vanna", &BacktestResult::pnl_vanna},
+      {"pnl_volga", &BacktestResult::pnl_volga},
+      {"pnl_theta", &BacktestResult::pnl_theta},
+      {"pnl_rho", &BacktestResult::pnl_rho},
+      {"pnl_charm", &BacktestResult::pnl_charm},
+      {"pnl_unexplained", &BacktestResult::pnl_unexplained},
+      {"pnl_settlement", &BacktestResult::pnl_settlement},
+      {"pnl_shares", &BacktestResult::pnl_shares},
+      {"financing", &BacktestResult::financing},
+      {"cost", &BacktestResult::cost},
+      {"gross_delta", &BacktestResult::gross_delta},
+      {"gross_gamma", &BacktestResult::gross_gamma},
+      {"gross_vega", &BacktestResult::gross_vega},
+      {"gross_theta", &BacktestResult::gross_theta},
+      {"turnover_notional", &BacktestResult::turnover_notional},
+      {"turnover_vega", &BacktestResult::turnover_vega},
+      {"n_open_lots", &BacktestResult::n_open_lots},
+      {"n_unpriced_lots", &BacktestResult::n_unpriced_lots},
+      {"n_unpriced_greeks", &BacktestResult::n_unpriced_greeks},
+  };
+  for (const Column &col : kColumns) {
+    const std::vector<double> &lhs = a.*(col.member);
+    const std::vector<double> &rhs = b.*(col.member);
+    ASSERT_EQ(lhs.size(), a.size()) << col.name;
+    ASSERT_EQ(rhs.size(), b.size()) << col.name;
+    for (std::size_t i = 0; i < lhs.size(); ++i) {
+      EXPECT_TRUE(bits_equal(lhs[i], rhs[i]))
+          << col.name << " row " << i << ": " << lhs[i] << " vs " << rhs[i];
+    }
+  }
+}
+
+// Two option books hold the same POSITIONS, ignoring lot ids: the swap lane
+// draws from the same monotonic id watermark, so enabling it shifts every
+// subsequent option id without changing a single economic term.
+void expect_same_option_positions(const PortfolioState &a, const PortfolioState &b) {
+  ASSERT_EQ(a.lots.size(), b.lots.size());
+  for (std::size_t i = 0; i < a.lots.size(); ++i) {
+    const Lot &x = a.lots[i];
+    const Lot &y = b.lots[i];
+    EXPECT_EQ(x.contract.uid, y.contract.uid) << i;
+    EXPECT_EQ(x.contract.side, y.contract.side) << i;
+    EXPECT_TRUE(bits_equal(x.contract.K, y.contract.K)) << i;
+    EXPECT_TRUE(bits_equal(x.contract.T, y.contract.T)) << i;
+    EXPECT_TRUE(bits_equal(x.qty, y.qty)) << i;
+    EXPECT_TRUE(bits_equal(x.multiplier, y.multiplier)) << i;
+    EXPECT_TRUE(bits_equal(x.entry_price, y.entry_price)) << i;
+    EXPECT_EQ(x.expiry_ts_ns, y.expiry_ts_ns) << i;
+    EXPECT_EQ(x.cohort, y.cohort) << i;
+  }
+}
+
 } // namespace
 
 // ── 1. Inception: a 40-delta pair on the hand-computed snapped expiry ────────
@@ -246,7 +398,9 @@ TEST(StrangleVarswap, OpensFortyDeltaStrangleAtSnappedFixedExpiry) {
   EXPECT_EQ(strat.cycle_expiry_ts_ns(), expected_expiry);
   const PortfolioState &book = out->checkpoint.portfolio;
   ASSERT_EQ(book.lots.size(), 2u);
-  EXPECT_TRUE(book.swap_lots.empty()); // Task 1 is the options leg only
+  // The swap leg opens on this same step; its terms are gated by
+  // OpensEqualVegaVarSwapAtCycleStart below.
+  EXPECT_EQ(book.swap_lots.size(), 1u);
 
   const Lot *call = find_side(book, Side::Call);
   const Lot *put = find_side(book, Side::Put);
@@ -283,8 +437,10 @@ TEST(StrangleVarswap, RestrikesDailyAtFixedExpiry) {
     const PortfolioState &book = out->checkpoint.portfolio;
     // Exactly two option lots every step: the prior pair was CLOSED, not kept.
     ASSERT_EQ(book.lots.size(), 2u) << "step " << step;
-    // Two fresh lot ids per step, so no id was reused and none was retained.
-    EXPECT_EQ(out->checkpoint.next_lot_id, 1u + 2u * (step + 1u)) << "step " << step;
+    // Two fresh lot ids per step, so no id was reused and none was retained —
+    // plus the ONE the cycle-open step spent on this cycle's swap lot (the
+    // watermark is shared between the two lanes).
+    EXPECT_EQ(out->checkpoint.next_lot_id, 1u + 2u * (step + 1u) + 1u) << "step " << step;
 
     const Lot *call = find_side(book, Side::Call);
     const Lot *put = find_side(book, Side::Put);
@@ -368,7 +524,13 @@ TEST(StrangleVarswap, KeepsStrikesWhenSurfaceCannotServeDelta) {
   const Corpus c = make_corpus(dir, /*dark_at=*/2u);
   auto clock = Clock::from_manifest(c.manifest);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
-  const StrangleVarswapConfig scfg = make_config(c, 0.25);
+  StrangleVarswapConfig scfg = make_config(c, 0.25);
+  // The OPTIONS leg in isolation. The engine's swap lane fails CLOSED on a
+  // missing surface — a live swap lot can neither be marked nor take its fixing,
+  // and the whole run aborts (`step_swap_lots`, backtest.cpp) — so a fixture
+  // whose entire point is a dark session has to run one-legged. The swap leg's
+  // own dark-session behaviour is gated by SkipsSwapWhenVegaUnavailable.
+  scfg.enable_swap_leg = false;
   RunConfig rcfg;
   // The held pair cannot be valued on the dark session either; that is the
   // documented ExcludeAndReport lane, and it is what keeps the run going so the
@@ -452,6 +614,212 @@ TEST(StrangleVarswap, FixesTheLastSessionWhenTheTenorOutrunsTheGrid) {
   auto end = run_prefix(*clock, c, end_strat, /*last_index=*/kSessions - 1u, RunConfig{});
   ASSERT_TRUE(end.has_value()) << end.error().to_string();
   EXPECT_TRUE(end->checkpoint.portfolio.lots.empty());
+  // The final cycle's swap settled on that same session and was erased with it.
+  EXPECT_TRUE(end->checkpoint.portfolio.swap_lots.empty());
   EXPECT_EQ(end_strat.cycle_expiry_ts_ns(), 0);
   EXPECT_EQ(end_strat.unresolved_strike_steps(), 0u);
+  EXPECT_EQ(end_strat.skipped_swap_cycles(), 0u);
+}
+
+// ── 7. The swap leg: ONE equal-vega uncapped var swap per cycle ─────────────
+//
+// Contracts 1-3 of the Task 2 brief in one gate, because they are one behaviour:
+// the swap is a per-CYCLE instrument. It opens on the step that fixes the cycle
+// (never on a restrike), it carries that cycle's own expiry, and it is sized so
+// its vega equals the strangle's at that instant. The vega and fair-strike
+// oracles are independent `deriv_greeks` / `full_greek_seed` calls against the
+// same archives — the strategy's own numbers are never read back.
+TEST(StrangleVarswap, OpensEqualVegaVarSwapAtCycleStart) {
+  const fs::path dir = fresh_dir("swapopen");
+  const Corpus c = make_corpus(dir);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const StrangleVarswapConfig scfg = make_config(c, 0.25); // the swap leg is on by default
+  const std::int64_t cycle1_expiry = kBaseNow + 4LL * kStepNs;
+  const RunConfig rcfg;
+
+  StrangleVsVarswapStrategy strat{scfg};
+  auto out = run_prefix(*clock, c, strat, /*last_index=*/0u, rcfg);
+  ASSERT_TRUE(out.has_value()) << out.error().to_string();
+  EXPECT_EQ(strat.skipped_swap_cycles(), 0u);
+  const PortfolioState &book = out->checkpoint.portfolio;
+  ASSERT_EQ(book.lots.size(), 2u);
+  ASSERT_EQ(book.swap_lots.size(), 1u);
+  const SwapLot swap = book.swap_lots.front();
+
+  // Terms: an UNCAPPED variance swap on the strangle's own name, unit notional
+  // (the leg is sized purely through `qty`), 252-day annualization.
+  EXPECT_EQ(swap.kind, DerivKind::VarSwap);
+  EXPECT_TRUE(bits_equal(swap.cap_dec, 0.0));
+  EXPECT_TRUE(bits_equal(swap.notional, 1.0));
+  EXPECT_TRUE(bits_equal(swap.annualization, 252.0));
+  EXPECT_EQ(swap.uid, book.lots.front().contract.uid);
+  EXPECT_EQ(swap.start_ts_ns, kBaseNow);
+
+  // Contract 3: the SAME snapped expiry as both option wings — the comparison is
+  // about vol path, so a calendar difference between the legs would be a confound.
+  EXPECT_EQ(swap.expiry_ts_ns, cycle1_expiry);
+  for (const Lot &lot : book.lots) {
+    EXPECT_EQ(lot.expiry_ts_ns, swap.expiry_ts_ns);
+  }
+  // The fixing schedule the engine will really observe: sessions in (open,
+  // expiry] are refs 1..4, and the FIRST of those only SEEDS the series (a lot
+  // needs one step to seed and one more per accrued return), so three returns
+  // are actually accrued.
+  EXPECT_EQ(swap.n_obs_total, 3u);
+
+  // The strike is FAIR under the very pricer the engine marks with: priced at
+  // the lot's own terms on its own open date, the contract is worth exactly
+  // nothing. Anything else would be an entry artifact, and the whole of it would
+  // land in the first step's `swap_pnl` (swaps open at zero cost).
+  const Result<DerivGreeks> g = entry_swap_greeks(c.dp[0].second, swap, kBaseNow);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  EXPECT_TRUE(bits_equal(g->pv, 0.0));
+  EXPECT_TRUE(bits_equal(swap.strike_dec, g->quote.fair_strike_dec));
+  EXPECT_GT(swap.strike_dec, 0.0);
+
+  // Contract 2: EQUAL VEGA AT INCEPTION. Both sides are dollars per 1.00 of
+  // parallel vol — the option book's per-share American vega scaled by qty x
+  // multiplier, and the swap's notional-scaled finite-difference vega.
+  const double strangle_vega = book_option_vega(c.dp[0].second, book, rcfg.price);
+  ASSERT_TRUE(std::isfinite(strangle_vega));
+  ASSERT_GT(strangle_vega, 0.0);
+  ASSERT_TRUE(std::isfinite(g->vega));
+  ASSERT_NE(g->vega, 0.0);
+  EXPECT_GT(swap.qty, 0.0); // long swap against a long-vega strangle: both long vol
+  EXPECT_LE(std::fabs(swap.qty * g->vega - strangle_vega), 1.0e-9 * strangle_vega);
+
+  // Contract 1: opened ONCE. Every restrike step inside the cycle carries the
+  // identical lot — same id, same terms, bit for bit (the append-only swap-lot
+  // contract makes any other outcome an engine-level error, so this also pins
+  // that the strategy never re-sizes or re-strikes the leg intra-cycle).
+  for (std::size_t step = 1u; step <= 3u; ++step) {
+    StrangleVsVarswapStrategy held{scfg};
+    auto r = run_prefix(*clock, c, held, step, rcfg);
+    ASSERT_TRUE(r.has_value()) << "step " << step << ": " << r.error().to_string();
+    ASSERT_EQ(r->checkpoint.portfolio.swap_lots.size(), 1u) << "step " << step;
+    EXPECT_TRUE(r->checkpoint.portfolio.swap_lots.front() == swap) << "step " << step;
+    EXPECT_EQ(held.skipped_swap_cycles(), 0u) << "step " << step;
+  }
+
+  // At the cycle's expiry the swap SETTLES (engine-owned) and the NEXT cycle
+  // opens its own on that same step, at the new expiry, with a fresh id.
+  StrangleVsVarswapStrategy roll{scfg};
+  auto rolled = run_prefix(*clock, c, roll, /*last_index=*/4u, rcfg);
+  ASSERT_TRUE(rolled.has_value()) << rolled.error().to_string();
+  ASSERT_EQ(rolled->checkpoint.portfolio.swap_lots.size(), 1u);
+  const SwapLot &next = rolled->checkpoint.portfolio.swap_lots.front();
+  EXPECT_GT(next.id, swap.id);
+  EXPECT_EQ(next.start_ts_ns, kBaseNow + 4LL * kStepNs);
+  EXPECT_EQ(next.expiry_ts_ns, kBaseNow + 6LL * kStepNs); // the short final cycle
+  EXPECT_EQ(next.n_obs_total, 1u);                        // (ref4, ref6] = 2 sessions, one seeds
+  ASSERT_EQ(rolled->checkpoint.portfolio.lots.size(), 2u);
+  for (const Lot &lot : rolled->checkpoint.portfolio.lots) {
+    EXPECT_EQ(lot.expiry_ts_ns, next.expiry_ts_ns);
+  }
+  EXPECT_EQ(roll.skipped_swap_cycles(), 0u);
+}
+
+// ── 8. The swap leg is ADDITIVE: disabling it reproduces the options leg ────
+TEST(StrangleVarswap, SwapLegDisabledMatchesOptionsOnly) {
+  const fs::path dir = fresh_dir("swapoff");
+  const Corpus c = make_corpus(dir);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const RunConfig rcfg;
+
+  const StrangleVarswapConfig on_cfg = make_config(c, 0.25);
+  StrangleVarswapConfig off_cfg = on_cfg;
+  off_cfg.enable_swap_leg = false;
+
+  StrangleVsVarswapStrategy on_strat{on_cfg};
+  auto on = run_backtest_incremental(*clock, on_strat, rcfg, nullptr);
+  ASSERT_TRUE(on.has_value()) << on.error().to_string();
+  StrangleVsVarswapStrategy off_strat{off_cfg};
+  auto off = run_backtest_incremental(*clock, off_strat, rcfg, nullptr);
+  ASSERT_TRUE(off.has_value()) << off.error().to_string();
+  ASSERT_EQ(on->rows.size(), kSessions);
+  ASSERT_EQ(off->rows.size(), kSessions);
+
+  // The disabled run books no swap at all: no lot ever, and both swap columns
+  // exactly +0.0 on every row (the engine early-outs on an empty swap book, so
+  // these are untouched zeros, not marks that rounded to zero).
+  EXPECT_TRUE(off->checkpoint.portfolio.swap_lots.empty());
+  ASSERT_EQ(off->rows.swap_pv.size(), off->rows.size());
+  ASSERT_EQ(off->rows.swap_pnl.size(), off->rows.size());
+  for (std::size_t i = 0; i < off->rows.size(); ++i) {
+    EXPECT_TRUE(bits_equal(off->rows.swap_pv[i], 0.0)) << "row " << i;
+    EXPECT_TRUE(bits_equal(off->rows.swap_pnl[i], 0.0)) << "row " << i;
+  }
+  EXPECT_EQ(off_strat.skipped_swap_cycles(), 0u); // a leg nobody asked for is not a skip
+
+  // ... while the ENABLED run genuinely did, so this A/B is not vacuous.
+  bool any_swap_mark = false;
+  for (const double pv : on->rows.swap_pv) {
+    any_swap_mark = any_swap_mark || pv != 0.0;
+  }
+  EXPECT_TRUE(any_swap_mark);
+
+  // And the option lane is bit-for-bit the same run either way.
+  expect_option_columns_equal(on->rows, off->rows);
+  expect_same_option_positions(on->checkpoint.portfolio, off->checkpoint.portfolio);
+  EXPECT_EQ(on_strat.unresolved_strike_steps(), off_strat.unresolved_strike_steps());
+  EXPECT_EQ(on_strat.cycle_expiry_ts_ns(), off_strat.cycle_expiry_ts_ns());
+}
+
+// ── 9. No vega, no swap — never a fabricated quantity ──────────────────────
+TEST(StrangleVarswap, SkipsSwapWhenVegaUnavailable) {
+  const fs::path dir = fresh_dir("swapskip");
+  const Corpus c = make_corpus(dir);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const RunConfig rcfg;
+
+  // Arm A — the OPTION surface is perfectly usable but the derivative pricer
+  // cannot be reached at all: a reserved `DerivConfig` field is non-zero, which
+  // every derivatives entry rejects with NotImplemented. So the entry solve
+  // fails at each of the two cycle opens, and no vega exists to size against.
+  StrangleVarswapConfig blind_cfg = make_config(c, 0.25);
+  blind_cfg.deriv_cfg.abs_price_tol = 1.0;
+
+  StrangleVsVarswapStrategy blind{blind_cfg};
+  auto out = run_backtest_incremental(*clock, blind, rcfg, nullptr);
+  ASSERT_TRUE(out.has_value()) << out.error().to_string(); // FAIL-SOFT: the run survives
+  EXPECT_EQ(blind.skipped_swap_cycles(), 2u);              // counted, never silent
+  EXPECT_EQ(blind.unresolved_strike_steps(), 0u);          // the OPTION leg was fine throughout
+  EXPECT_TRUE(out->checkpoint.portfolio.swap_lots.empty());
+  for (std::size_t i = 0; i < out->rows.size(); ++i) {
+    EXPECT_TRUE(bits_equal(out->rows.swap_pv[i], 0.0)) << "row " << i;
+    EXPECT_TRUE(bits_equal(out->rows.swap_pnl[i], 0.0)) << "row " << i;
+  }
+
+  // Never a garbage qty: the options leg ran exactly as it does with the swap
+  // leg switched off, so nothing partial was booked and nothing was disturbed.
+  StrangleVarswapConfig off_cfg = make_config(c, 0.25);
+  off_cfg.enable_swap_leg = false;
+  StrangleVsVarswapStrategy off_strat{off_cfg};
+  auto off = run_backtest_incremental(*clock, off_strat, rcfg, nullptr);
+  ASSERT_TRUE(off.has_value()) << off.error().to_string();
+  expect_option_columns_equal(out->rows, off->rows);
+  expect_same_option_positions(out->checkpoint.portfolio, off->checkpoint.portfolio);
+
+  // Arm B — the cycle-open session has no board for the name at all, so there is
+  // no surface to strike or size a swap against either. The cycle is fixed all
+  // the same (its expiry comes off the calendar, not the surface) and runs
+  // one-legged to its end: the swap is a per-cycle instrument, so a later
+  // session getting its board back does NOT retro-open it.
+  const fs::path dark_dir = fresh_dir("swapdark");
+  const Corpus dark_c = make_corpus(dark_dir, /*dark_at=*/0u);
+  auto dark_clock = Clock::from_manifest(dark_c.manifest);
+  ASSERT_TRUE(dark_clock.has_value()) << dark_clock.error().to_string();
+
+  StrangleVsVarswapStrategy dark_strat{make_config(dark_c, 0.25)};
+  auto dark = run_prefix(*dark_clock, dark_c, dark_strat, /*last_index=*/3u, rcfg);
+  ASSERT_TRUE(dark.has_value()) << dark.error().to_string();
+  EXPECT_EQ(dark_strat.unresolved_strike_steps(), 1u); // the dark inception step
+  EXPECT_EQ(dark_strat.skipped_swap_cycles(), 1u);     // and the cycle it left one-legged
+  EXPECT_TRUE(dark->checkpoint.portfolio.swap_lots.empty());
+  // The option leg came back on ref 1 and has been restriking since, so the
+  // fixture is not vacuously green on an empty book.
+  EXPECT_EQ(dark->checkpoint.portfolio.lots.size(), 2u);
 }
