@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -166,6 +167,37 @@ TEST(PreparedPortfolio, ReversePermutationIsBijectionRecoveringContracts) {
   }
 }
 
+TEST(PreparedPortfolio, TenorRefreshRejectsEqualityMergeWithoutMutation) {
+  const std::vector<Position> positions{
+      {1u, {1u, 90.0, 0.10, Side::Call}, +1.0, 100.0},
+      {2u, {1u, 100.0, 0.20, Side::Call}, +1.0, 100.0},
+      {3u, {1u, 110.0, 0.30, Side::Call}, +1.0, 100.0},
+  };
+  auto pf = Portfolio::create(positions);
+  ASSERT_TRUE(pf.has_value()) << pf.error().to_string();
+  auto prepared = PreparedPortfolio::create(*pf, PriceOptions{});
+  ASSERT_TRUE(prepared.has_value()) << prepared.error().to_string();
+  const std::vector<double> original_t(prepared->t().begin(), prepared->t().end());
+  std::vector<std::uint64_t> original_tile_t;
+  original_tile_t.reserve(prepared->price_tiles().size());
+  for (const PreparedPriceTile& tile : prepared->price_tiles()) {
+    original_tile_t.push_back(tile.t_bits);
+  }
+
+  const std::array<double, 3> merged_t{0.10, 0.20, 0.20};
+  ASSERT_TRUE(pf->retime(merged_t).has_value());
+  EXPECT_FALSE(prepared->try_refresh_tenors(*pf));
+
+  ASSERT_EQ(prepared->t().size(), original_t.size());
+  for (std::size_t i = 0; i < original_t.size(); ++i) {
+    EXPECT_TRUE(bits_equal(prepared->t()[i], original_t[i])) << i;
+  }
+  ASSERT_EQ(prepared->price_tiles().size(), original_tile_t.size());
+  for (std::size_t i = 0; i < original_tile_t.size(); ++i) {
+    EXPECT_EQ(prepared->price_tiles()[i].t_bits, original_tile_t[i]) << i;
+  }
+}
+
 TEST(PreparedPortfolio, GroupsPartitionAndAreHomogeneous) {
   auto pf = Portfolio::create(mixed_book());
   ASSERT_TRUE(pf.has_value());
@@ -241,6 +273,69 @@ TEST(PreparedPortfolio, PriceTilesAreDeterministicRawExpiryHomogeneousPartition)
     cursor = tile.end;
   }
   EXPECT_EQ(cursor, a->n_unique());
+}
+
+TEST(PreparedPortfolio, GreekTilesAreBookDeterminedGroupHomogeneousPartition) {
+  std::vector<Position> book;
+  std::uint64_t id = 0;
+  const double T0 = 0.25;
+  const double T1 = std::nextafter(T0, 1.0);
+  const auto add_run = [&](std::uint32_t uid, Side side, double T, int n, double k0) {
+    for (int i = 0; i < n; ++i) {
+      book.push_back({id++, {uid, k0 + 0.125 * static_cast<double>(i), T, side}, 1.0, 100.0});
+    }
+  };
+  add_run(1, Side::Call, T0, 70, 70.0);
+  add_run(1, Side::Call, T1, 5, 90.0);
+  add_run(1, Side::Put, T0, 66, 80.0);
+  add_run(2, Side::Call, T0, 3, 95.0);
+
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value());
+  auto a =
+      PreparedPortfolio::create(*pf, PriceOptions{.n_threads = 8,
+                                                  .analytic_greeks = true,
+                                                  .resolved_price_isa = simd::SimdIsa::ForceAvx2});
+  auto b = PreparedPortfolio::create(
+      *pf, PriceOptions{.n_threads = 1,
+                        .adjoint_greeks = true,
+                        .prices_only = true,
+                        .skew_adjusted_delta = true,
+                        .resolved_price_isa = simd::SimdIsa::ForceScalar,
+                        .query_execution = QueryExecution::ColdReference});
+  ASSERT_TRUE(a.has_value() && b.has_value());
+  const auto at = a->greek_tiles();
+  const auto bt = b->greek_tiles();
+  ASSERT_EQ(at.size(), 5u);
+  ASSERT_EQ(bt.size(), at.size());
+
+  bool saw_mixed_expiry_tile = false;
+  std::uint32_t cursor = 0;
+  for (std::size_t i = 0; i < at.size(); ++i) {
+    const PreparedGreekTile &tile = at[i];
+    EXPECT_EQ(tile.begin, cursor);
+    EXPECT_LT(tile.begin, tile.end);
+    EXPECT_LE(tile.end - tile.begin, kPreparedGreekTileLanes);
+
+    const std::uint64_t first_t_bits = bits(a->t()[tile.begin]);
+    for (std::uint32_t p = tile.begin; p < tile.end; ++p) {
+      EXPECT_EQ(a->uid()[p], tile.uid) << p;
+      EXPECT_EQ(a->side()[p], tile.side) << p;
+      saw_mixed_expiry_tile = saw_mixed_expiry_tile || bits(a->t()[p]) != first_t_bits;
+    }
+    if (i + 1 < at.size() && at[i + 1].uid == tile.uid && at[i + 1].side == tile.side) {
+      EXPECT_EQ(tile.end - tile.begin, kPreparedGreekTileLanes);
+    }
+
+    EXPECT_EQ(bt[i].uid, tile.uid);
+    EXPECT_EQ(bt[i].side, tile.side);
+    EXPECT_EQ(bt[i].begin, tile.begin);
+    EXPECT_EQ(bt[i].end, tile.end);
+    cursor = tile.end;
+  }
+  EXPECT_EQ(cursor, a->n_unique());
+  EXPECT_TRUE(saw_mixed_expiry_tile)
+      << "Greek tiles must not subdivide a (uid, side) group at raw-T boundaries";
 }
 
 TEST(PreparedPortfolio, EqualExpiryRunsWithinGroupAreContiguousAndAscending) {

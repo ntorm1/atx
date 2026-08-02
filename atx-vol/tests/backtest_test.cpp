@@ -1020,6 +1020,24 @@ TEST(Backtest, ReusableTargetMarkFrameKeepsWarmStorageAndActivePrefix) {
   EXPECT_EQ(rewarmed.status.data(), status_data);
 }
 
+TEST(Backtest, ReusableTargetMarkFrameFindsFirstNonOkActiveRow) {
+  ReusableTargetMarkFrame frame;
+  EXPECT_FALSE(frame.first_non_ok_index().has_value());
+
+  frame.prepare(3u);
+  TargetMarkView rows = frame.write_view();
+  rows.status[0] = PriceStatus::Ok;
+  rows.status[1] = PriceStatus::ModelUnavailable;
+  rows.status[2] = PriceStatus::NumericError;
+  ASSERT_EQ(frame.first_non_ok_index(), 1u);
+
+  // Warm storage outside the active prefix must not leak into diagnostics.
+  frame.prepare(1u);
+  rows = frame.write_view();
+  rows.status[0] = PriceStatus::Ok;
+  EXPECT_FALSE(frame.first_non_ok_index().has_value());
+}
+
 TEST(Backtest, ReusableTargetMarkFrameSealsOneThousandUnorderedIdsWithoutRegrowing) {
   constexpr std::size_t n = 1'000u;
   ReusableTargetMarkFrame frame;
@@ -3276,9 +3294,16 @@ TEST(UnpricedTolerance, HedgeSkipsAbsentUidAndCountsUnderExcludeAndReport) {
   RunConfig cfg;
   cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
   cfg.price.n_threads = 1u;
+  atx::vol::counters::ledger::reset();
   auto res = run_backtest(*clock, strat, cfg);
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   ASSERT_EQ(res->size(), 4u);
+  const auto solves = atx::vol::counters::ledger::snapshot();
+  // The target-mark frame already contains the failed-row diagnostics. Repricing
+  // the book only to recover the first failed uid raises these pins to 9 / 47 / 96.
+  EXPECT_EQ(solves.get(atx::vol::counters::ledger::Solve::GreeksBundlesAnalytic), 7u);
+  EXPECT_EQ(solves.get(atx::vol::counters::ledger::Solve::AlBoundarySolves), 39u);
+  EXPECT_EQ(solves.get(atx::vol::counters::ledger::Solve::AlPremiumEvals), 64u);
 
   // Row 2 is the gap date. Its exclusion tally is exactly three: the held BBB
   // lot the step P&L could not explain (shifted board absent), the BBB hedge

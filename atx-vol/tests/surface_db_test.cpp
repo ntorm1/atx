@@ -876,6 +876,61 @@ TEST(SurfaceDbPartition, WriteOpenLoad_TheoBitIdentical) {
   std::filesystem::remove_all(root);
 }
 
+TEST(SurfaceDbPartition, SessionTsFastPathPreservesErrorTaxonomy) {
+  constexpr std::string_view kKey = "2026-07-10";
+  constexpr std::int64_t kExpectedTs = 1700000000000000000LL;
+  const auto root = test_root("part_session_ts");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  EXPECT_EQ(db->session_ts(kKey).error().code(), ErrorCode::NotFound);
+  EXPECT_EQ(db->session_ts("../escape").error().code(), ErrorCode::InvalidArgument);
+
+  const auto surface = make_essvi(/*uid=*/1, /*n_slices=*/2);
+  const std::vector<SurfaceArchiveItem> items{{"SPY", &surface}};
+  ASSERT_TRUE(db->write_partition(kKey, items).has_value());
+  const auto timestamp = db->session_ts(kKey);
+  ASSERT_TRUE(timestamp.has_value());
+  EXPECT_EQ(*timestamp, kExpectedTs);
+
+  const auto partition = root / "partitions" / "2026-07-10.atxvsa";
+  ASSERT_TRUE(std::filesystem::remove(partition));
+  EXPECT_EQ(db->session_ts(kKey).error().code(), ErrorCode::NotFound);
+
+  ASSERT_TRUE(db->write_partition(kKey, items).has_value());
+  {
+    std::fstream io{partition, std::ios::binary | std::ios::in | std::ios::out};
+    ASSERT_TRUE(io.is_open());
+    ArchiveV2Header header{};
+    io.read(reinterpret_cast<char *>(&header), sizeof header);
+    ASSERT_TRUE(io.good());
+    ++header.flags; // Leave header_crc32c stale: checksum corruption must be ParseError.
+    io.seekp(0, std::ios::beg);
+    io.write(reinterpret_cast<const char *>(&header), sizeof header);
+    ASSERT_TRUE(io.good());
+  }
+  EXPECT_EQ(db->session_ts(kKey).error().code(), ErrorCode::ParseError);
+
+  ASSERT_TRUE(db->write_partition(kKey, items).has_value());
+  {
+    std::fstream io{partition, std::ios::binary | std::ios::in | std::ios::out};
+    ASSERT_TRUE(io.is_open());
+    ArchiveV2Header header{};
+    io.read(reinterpret_cast<char *>(&header), sizeof header);
+    ASSERT_TRUE(io.good());
+    ArchiveV2DirEntry entry{};
+    io.seekg(static_cast<std::streamoff>(header.directory_offset), std::ios::beg);
+    io.read(reinterpret_cast<char *>(&entry), sizeof entry);
+    ASSERT_TRUE(io.good());
+    entry.surface_offset = header.file_size;
+    io.seekp(static_cast<std::streamoff>(header.directory_offset), std::ios::beg);
+    io.write(reinterpret_cast<const char *>(&entry), sizeof entry);
+    ASSERT_TRUE(io.good());
+  }
+  EXPECT_EQ(db->session_ts(kKey).error().code(), ErrorCode::ParseError);
+  std::filesystem::remove_all(root);
+}
+
 // S5: map_surface serves a zero-copy view over a SHARED per-partition mapping —
 // two loads of the same partition (even for different symbols) reuse one mapping
 // (cache hit), and the view prices bit-identically to the source surface.

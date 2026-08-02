@@ -30,12 +30,12 @@ carries ``error_occurred`` is treated as no data (→ MISSING → fail).
 
 Absolute nanoseconds are pinned to one host, so only RATIOS are gated. The host
 metadata Google Benchmark records (num_cpus, mhz_per_cpu, library_build_type,
-caches) is printed for both files. On any mismatch, a loud warning is raised and
-ratio-based regressions are downgraded to ADVISORY ONLY (printed, exit 0) —
-comparing ratios across different silicon or a debug-vs-release build is
-invalid, so gating on them would be gating on noise. Missing-benchmark failures
-are NOT downgraded by a host mismatch: whether a benchmark ran at all has
-nothing to do with which host it ran on.
+caches) plus atx-vol's explicit ``atx_build_isa`` context are printed for both
+files. SSE2 and AVX2 measurements are different executable contracts: a missing
+or mismatched build ISA is refused outright. Other host mismatches raise a loud
+warning and downgrade ratio-based regressions to ADVISORY ONLY (printed, exit
+0). Missing-benchmark failures are NOT downgraded by a host mismatch: whether a
+benchmark ran at all has nothing to do with which host it ran on.
 
 stdlib only. Exit code 0 = no gated regression; 1 = at least one regression on a
 matching host, or a missing benchmark (without --allow-missing), or a
@@ -114,6 +114,7 @@ def host_meta(doc: dict) -> dict:
         "num_cpus": ctx.get("num_cpus"),
         "mhz_per_cpu": ctx.get("mhz_per_cpu"),
         "library_build_type": ctx.get("library_build_type"),
+        "atx_build_isa": ctx.get("atx_build_isa"),
         "caches": cache_sig,
     }
 
@@ -121,7 +122,8 @@ def host_meta(doc: dict) -> dict:
 def check_host(base_meta: dict, new_meta: dict) -> bool:
     """Print both hosts; return True if they match on the gate-relevant fields."""
     print("== Host metadata ==")
-    fields = ["host_name", "num_cpus", "mhz_per_cpu", "library_build_type", "caches"]
+    fields = ["host_name", "num_cpus", "mhz_per_cpu", "library_build_type",
+              "atx_build_isa", "caches"]
     ok = True
     for f in fields:
         b, n = base_meta.get(f), new_meta.get(f)
@@ -139,6 +141,21 @@ def check_host(base_meta: dict, new_meta: dict) -> bool:
               "the verdicts below as advisory only.")
     print()
     return ok
+
+
+def check_build_isa(base_meta: dict, new_meta: dict) -> bool:
+    """Require a recognized, identical build ISA before comparing any rows."""
+    baseline = base_meta.get("atx_build_isa")
+    candidate = new_meta.get("atx_build_isa")
+    recognized = {"sse2", "avx2"}
+    if baseline == candidate and baseline in recognized:
+        return True
+    baseline_label = baseline if baseline is not None else "missing"
+    candidate_label = candidate if candidate is not None else "missing"
+    print("ERROR: BUILD ISA MISMATCH - benchmark comparison refused: "
+          f"baseline={baseline_label!r}, new={candidate_label!r}. Regenerate both "
+          "runs with matching atx_build_isa context (sse2 or avx2).")
+    return False
 
 
 def median_cv(rec: Dict[str, float]) -> Tuple[Optional[float], Optional[float]]:
@@ -165,7 +182,11 @@ def main() -> int:
         print(f"ERROR reading input: {exc}", file=sys.stderr)
         return 1
 
-    host_ok = check_host(host_meta(base_doc), host_meta(new_doc))
+    base_meta = host_meta(base_doc)
+    new_meta = host_meta(new_doc)
+    host_ok = check_host(base_meta, new_meta)
+    if not check_build_isa(base_meta, new_meta):
+        return 1
 
     base = collect_rows(base_doc)
     new = collect_rows(new_doc)

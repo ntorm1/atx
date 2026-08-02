@@ -114,6 +114,21 @@ def test_surface_db_roundtrip(db_root):
     assert surface.fair_value(INDEX_SPOT, 0.5, av.Side.CALL) > 0.0
 
 
+def test_surface_db_session_ts_matches_the_partition_surface(db_root):
+    db = av.SurfaceDb.open(str(db_root))
+    for day in (0, NUM_DATES - 1):
+        key = f"2026-03-{day + 1:02d}"
+        surface_ts = db.load_surface(key, INDEX_SYM).pricing.now_ts_ns
+        assert db.session_ts(key) == surface_ts == BASE_TS + day * DAY_NS
+
+
+def test_loaded_surface_exposes_rate_without_owned_reconstruction(db_root):
+    db = av.SurfaceDb.open(str(db_root))
+    mapped = db.map_surface("2026-03-01", INDEX_SYM)
+    owned = db.load_surface("2026-03-01", INDEX_SYM)
+    assert mapped.rate_at(0.5) == owned.rate_at(0.5)
+
+
 def test_clock_spans_every_partition(db_root):
     clock = av.Clock.from_surface_db(av.SurfaceDb.open(str(db_root)))
     assert len(clock) == NUM_DATES
@@ -245,6 +260,13 @@ def test_run_config_defaults_mirror_the_engine_header():
     assert cfg.query_pricing_tier == av.QueryPricingTier.LEGACY_COMPATIBLE
     assert cfg.query_cache_build_policy == av.QueryCacheBuildPolicy.EAGER
     assert cfg.surface_provenance_policy == av.SurfaceProvenancePolicy.COMPATIBILITY
+
+
+def test_run_config_prefetch_depth_round_trips():
+    cfg = av.RunConfig()
+    assert cfg.prefetch_depth == 1
+    cfg.prefetch_depth = 7
+    assert cfg.prefetch_depth == 7
 
 
 # Main's compact binding-plumbing gates remain in addition to the feature

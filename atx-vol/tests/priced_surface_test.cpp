@@ -36,6 +36,7 @@
 #include "atx/vol/detail/counters.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/detail/pricing_executor.hpp" // the bank build's dispatch seam (2.11)
+#include "atx/vol/simd/american_boundary_batch.hpp"
 #include "atx/vol/surface_parity.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "support/isa_golden_tol.hpp" // golden_close (per-ISA FMA band)
@@ -848,8 +849,10 @@ TEST(PricedSurface, EvaluateBatchGreeksForceAvx2MatchesScalarWithinGate) {
 // thread-count-dependent greeks. This is exactly that invariance: evaluating a single-
 // expiry ladder as ONE batch (packs of 4) must be BIT-identical to evaluating the same
 // strikes as singletons (each a pack of 1) — i.e. pack membership does not change any
-// output. Runs under Auto (production ISA); on a non-AVX2 host both routes are scalar and
-// the identity is trivial.
+// output. The direct-kernel half also pins that contract for four genuinely different
+// per-lane surfaces and expiries, before PricedSurface itself is widened across T-runs.
+// Runs under Auto (production ISA) for the surface half and ForceAvx2 for the kernel half;
+// on a non-AVX2 host both routes are scalar and the identity is trivial.
 TEST(PricedSurface, EvaluateBatchLanedGreeksPackCompositionInvariant) {
   const PricedSurface s = make_essvi_varycarry(1);
   const EF fields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder;
@@ -901,6 +904,113 @@ TEST(PricedSurface, EvaluateBatchLanedGreeksPackCompositionInvariant) {
     EXPECT_TRUE(bits_equal(whole_gk[i].vanna, one_gk[0].vanna)) << i;
     EXPECT_TRUE(bits_equal(whole_gk[i].volga, one_gk[0].volga)) << i;
     EXPECT_TRUE(bits_equal(whole_gk[i].charm, one_gk[0].charm)) << i;
+  }
+
+  // The surface dispatcher above deliberately forms packs only inside raw-bit-equal-T
+  // runs today. Exercise the CURRENT side-specific kernel directly so Task 8's widened
+  // dispatcher is gated before any production change: every lane has distinct
+  // (S,K,T,sigma,r,q), including four distinct expiries, and must be unchanged when its
+  // three pack-mates are removed. Both parameter sets stay in their side's genuine
+  // early-exercise regime (r > q for puts, q > r for calls), avoiding a scalar-patch-only
+  // test on AVX2 hosts.
+  const std::array<double AmericanGreeks::*, 9> greek_members{
+      &AmericanGreeks::price, &AmericanGreeks::delta, &AmericanGreeks::gamma,
+      &AmericanGreeks::vega,  &AmericanGreeks::theta, &AmericanGreeks::rho,
+      &AmericanGreeks::vanna, &AmericanGreeks::volga, &AmericanGreeks::charm};
+  const std::array<const char *, 9> greek_names{
+      "price", "delta", "gamma", "vega", "theta", "rho", "vanna", "volga", "charm"};
+  const auto expect_mixed_t_pack_invariant =
+      [&](Side side, const std::array<double, 4> &lane_s, const std::array<double, 4> &lane_k,
+          const std::array<double, 4> &lane_t, const std::array<double, 4> &lane_sigma,
+          const std::array<double, 4> &lane_r, const std::array<double, 4> &lane_q) {
+        const std::optional<AlOpts> al = std::nullopt;
+        const auto evaluate_pack = [&](std::size_t offset, std::size_t count,
+                                       AmericanGreeks *out) {
+          if (side == Side::Put) {
+            return simd::american_put_greeks_batch(
+                lane_s.data() + offset, lane_k.data() + offset, lane_t.data() + offset,
+                lane_sigma.data() + offset, lane_r.data() + offset, lane_q.data() + offset,
+                count, al, out, simd::SimdIsa::ForceAvx2);
+          }
+          return simd::american_call_greeks_batch(
+              lane_s.data() + offset, lane_k.data() + offset, lane_t.data() + offset,
+              lane_sigma.data() + offset, lane_r.data() + offset, lane_q.data() + offset,
+              count, al, out, simd::SimdIsa::ForceAvx2);
+        };
+
+        std::array<AmericanGreeks, 4> packed{};
+        const simd::SimdRoute packed_route = evaluate_pack(0, packed.size(), packed.data());
+        const simd::SimdRoute expected_route =
+            simd::have_avx2() ? simd::SimdRoute::Avx2 : simd::SimdRoute::Scalar;
+        EXPECT_EQ(packed_route, expected_route);
+
+        for (std::size_t lane = 0; lane < packed.size(); ++lane) {
+          AmericanGreeks alone{};
+          EXPECT_EQ(evaluate_pack(lane, 1, &alone), expected_route) << "lane=" << lane;
+          for (std::size_t field = 0; field < greek_members.size(); ++field) {
+            EXPECT_TRUE(bits_equal(packed[lane].*greek_members[field],
+                                   alone.*greek_members[field]))
+                << "side=" << (side == Side::Put ? "put" : "call") << " lane=" << lane
+                << " field=" << greek_names[field];
+          }
+        }
+      };
+
+  expect_mixed_t_pack_invariant(
+      Side::Put, std::array<double, 4>{91.0, 100.0, 113.0, 127.0},
+      std::array<double, 4>{100.0, 108.0, 121.0, 136.0},
+      std::array<double, 4>{0.08, 0.25, 0.75, 2.0},
+      std::array<double, 4>{0.15, 0.22, 0.31, 0.40},
+      std::array<double, 4>{0.03, 0.04, 0.05, 0.06},
+      std::array<double, 4>{0.005, 0.010, 0.015, 0.020});
+  expect_mixed_t_pack_invariant(
+      Side::Call, std::array<double, 4>{91.0, 100.0, 113.0, 127.0},
+      std::array<double, 4>{84.0, 93.0, 105.0, 118.0},
+      std::array<double, 4>{0.10, 0.30, 0.90, 1.80},
+      std::array<double, 4>{0.18, 0.24, 0.32, 0.42},
+      std::array<double, 4>{0.005, 0.010, 0.015, 0.020},
+      std::array<double, 4>{0.03, 0.04, 0.05, 0.06});
+}
+
+TEST(PricedSurface, EvaluateBatchAnalyticGreeksAccumulatesAcrossDistinctT) {
+  if constexpr (!counters::counters_enabled()) {
+    EXPECT_FALSE(counters::snapshot().enabled);
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  } else {
+    if (!simd::have_avx2()) {
+      GTEST_SKIP() << "mixed-T analytic-Greek packing requires AVX2";
+    }
+    const PricedSurface s = make_essvi_varycarry(1);
+    const EF fields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder;
+    constexpr std::size_t kValidLanes = 4;
+    // Deep-enough ITM puts under r > q keep all four lanes in the genuine
+    // early-exercise kernel instead of exercising only its scalar patch seam. The
+    // invalid-T tail must remain an immediate scalar error and stay out of the pack.
+    const std::array<double, 5> strikes{104.0, 108.0, 112.0, 116.0, 110.0};
+    const std::array<double, 5> tenors{0.11, 0.19, 0.31, 0.47, -0.20};
+    const std::array<Side, 5> sides{Side::Put, Side::Put, Side::Put, Side::Put, Side::Put};
+    std::array<double, 5> iv{};
+    std::array<double, 5> price{};
+    std::array<AmericanGreeks, 5> greeks{};
+    std::array<Status, 5> status{};
+
+    counters::reset();
+    ASSERT_TRUE(s.evaluate_batch(strikes, tenors, sides, fields, /*analytic=*/true,
+                                 PricedSurface::EvaluationSoA{iv, price, greeks, status, {}, {}},
+                                 simd::SimdIsa::ForceAvx2)
+                    .has_value());
+    for (std::size_t lane = 0; lane < kValidLanes; ++lane) {
+      ASSERT_TRUE(status[lane].has_value()) << lane;
+    }
+    EXPECT_FALSE(status.back().has_value());
+    EXPECT_TRUE(std::isnan(iv.back()));
+    EXPECT_TRUE(std::isnan(price.back()));
+
+    const counters::Snapshot snapshot = counters::snapshot();
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceFullGreekRoutes), kValidLanes);
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceGreekBatchDispatches), 1u);
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceGreekBatchLanes), kValidLanes);
+    EXPECT_EQ(snapshot.get(counters::Counter::BoundarySolves), 5u * kValidLanes);
   }
 }
 

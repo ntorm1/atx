@@ -1511,14 +1511,26 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
     const std::size_t n_ok = t.n_ok;
     n_unpriced = static_cast<std::uint32_t>((n_pos >= n_ok) ? (n_pos - n_ok) : std::size_t{0});
     if (n_unpriced > 0) {
-      auto fr = pricer->pnl_explain(base.set(), shifted.set(), opts);
-      if (!fr) {
-        return Err(fr.error());
-      }
-      for (std::size_t i = 0; i < fr->size(); ++i) {
-        if (fr->status[i] != PriceStatus::Ok) {
-          first_unpriced_uid = fr->uid[i];
-          break;
+      if (target_marks != nullptr) {
+        // The target-mark scatter already carries the same per-position status
+        // used by the totals reduction. Preserve input order and reuse it for
+        // diagnostics instead of repricing the entire live strategy book.
+        const std::optional<std::size_t> first_bad = target_marks->first_non_ok_index();
+        if (!first_bad.has_value() || *first_bad >= alive.size()) {
+          return Err(ErrorCode::Internal,
+                     "run_backtest: target-mark status disagrees with unpriced count");
+        }
+        first_unpriced_uid = alive[*first_bad].contract.uid;
+      } else {
+        auto fr = pricer->pnl_explain(base.set(), shifted.set(), opts);
+        if (!fr) {
+          return Err(fr.error());
+        }
+        for (std::size_t i = 0; i < fr->size(); ++i) {
+          if (fr->status[i] != PriceStatus::Ok) {
+            first_unpriced_uid = fr->uid[i];
+            break;
+          }
         }
       }
     }
@@ -2098,6 +2110,15 @@ TargetMarkView ReusableTargetMarkFrame::write_view() noexcept {
                         std::span<double>{raw_mark_.data(), active_size_},
                         std::span<PriceStatus>{status_.data(), active_size_},
                         std::span<double>{base_vega_proxy_.data(), active_size_}};
+}
+
+std::optional<std::size_t> ReusableTargetMarkFrame::first_non_ok_index() const noexcept {
+  for (std::size_t i = 0; i < active_size_; ++i) {
+    if (status_[i] != PriceStatus::Ok) {
+      return i;
+    }
+  }
+  return std::nullopt;
 }
 
 Status ReusableTargetMarkFrame::seal() {
