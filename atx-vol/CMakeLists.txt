@@ -132,6 +132,8 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/earnings_repro.cpp
     # strangle-vs-varswap
     src/strangle_varswap.cpp
+    # declarative swap-lane DSL
+    src/swap_leg.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 

@@ -176,6 +176,8 @@ add_executable(atx-vol-tests
     backtest_swap_test.cpp           # Task 10: the engine's variance/vol swap lane
     # strangle-vs-varswap
     strangle_varswap_test.cpp        # Task 1: fixed-expiry daily-restrike strangle leg
+    # declarative swap-lane DSL sprint
+    swap_leg_test.cpp                # Task 1: swap-leg toolkit (contract bridge + signal probe)
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).

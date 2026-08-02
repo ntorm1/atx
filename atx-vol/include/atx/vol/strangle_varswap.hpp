@@ -47,6 +47,7 @@
 #include "atx/vol/portfolio_pricer.hpp" // PriceOptions
 #include "atx/vol/priced_surface.hpp"   // FullGreekSeed
 #include "atx/vol/strategy.hpp"         // IStrategy, HedgeSpec
+#include "atx/vol/swap_leg.hpp"         // SwapSignalProbe, swap_contract_for_lot
 #include "atx/vol/types.hpp"            // Result, Status, Side
 
 namespace atx::vol {
@@ -222,52 +223,6 @@ private:
     std::vector<FullGreekSeed> seeds;
   };
 
-  // The engine's per-lot `SwapAccrual` (backtest.hpp), MIRRORED. The running
-  // fixing state lives in the ENGINE and is exposed to nobody — that is what
-  // keeps a `SwapLot` bit-comparable across a step — so a strategy that wants to
-  // value its own live swap mid-cycle has no choice but to reproduce it. This is
-  // `observe_swap_fixing` (backtest.cpp) transcribed, and it stays in step with
-  // the original for two structural reasons:
-  //
-  //   * SEEDING. A mirror is created on the first `on_step` that SEES the lot in
-  //     the book and takes no fixing on that step, because the engine's swap
-  //     pass first sees it one step later. Seeding at the open date instead
-  //     would shift the whole series by one session and silently mis-age every
-  //     mark after it.
-  //   * PHASE. The swap pass runs on the same snapshot `on_step` is then called
-  //     with, and it runs FIRST — so mirroring one fixing per `on_step` leaves
-  //     the mirror exactly as of the row the engine is about to record.
-  //
-  // `prev_ts_ns` is deliberately absent: the engine's own accrual takes this
-  // snapshot's fixing before `on_step` is reached and fails the run closed on a
-  // duplicate or backdated timestamp, so this can only ever be advanced by a
-  // strictly increasing clock.
-  struct SwapMirror {
-    std::uint64_t lot_id{0};
-    RealizedVarianceSpec rv{};
-    double prev_spot{0.0};
-    bool have_prev{false};
-    // Set when this mirror cannot be trusted to equal the engine's accrual, so
-    // the lot's greeks report NaN forever rather than a confident wrong number.
-    // Two causes:
-    //
-    //   * A RESTORED LOT. `run_backtest_incremental` reloads
-    //     `BacktestCheckpoint::portfolio` AND `::swap_accruals` (backtest.cpp
-    //     :2517, :2544) — but a strategy has no checkpoint of its own, so
-    //     resuming a segment with a freshly-constructed instance hands a
-    //     half-accrued swap to a strategy that has never seen a fixing for it.
-    //     Mirroring from scratch there would report the greeks of a swap with
-    //     ZERO realized variance: finite, plausible, and wrong for the whole
-    //     resumed segment. A lot that was already in the book when a step BEGAN
-    //     and has no mirror is therefore marked here instead — the accrual is
-    //     unreachable, and unreachable is reported as unknown.
-    //   * A fixing that could not be taken (no surface, or a non-positive spot).
-    //     Unreachable while the engine fails the whole run on the same
-    //     condition; it exists so that softening that policy cannot turn into a
-    //     silently wrong number here.
-    bool desynced{false};
-  };
-
   [[nodiscard]] Status validate_config();
 
   // The cycle expiry for a step at `base_ts`: the FIRST session at or after
@@ -293,18 +248,6 @@ private:
   static constexpr double kSwapNotional = 1.0;
   static constexpr double kSwapAnnualization = 252.0; // trading-day variance convention
 
-  // The engine's own `SwapLot` -> `DerivContract` construction (`step_swap_lots`,
-  // backtest.cpp), transcribed so the entry solve prices the IDENTICAL contract
-  // the mark lane will price one step later — a residual tenor that divided by a
-  // different year, or an rv_spec staged differently, would strike the swap
-  // against a contract the engine never values. `rv` is the accrual state as of
-  // `base_ts` (all zero at entry: the engine seeds on first sight, one step on).
-  //
-  // Reused by the comparison signals (Task 3), which need the same contract at
-  // an arbitrary snapshot to value a live cycle.
-  [[nodiscard]] static DerivContract swap_contract(const SwapLot &lot, std::int64_t base_ts,
-                                                   const RealizedVarianceSpec &rv) noexcept;
-
   // The option book's DOLLAR vega per 1.00 of parallel vol for a freshly
   // resolved pair: per-share American vega (positive on BOTH wings) x contracts
   // x contract size, i.e. the very scaling the portfolio pricer applies to a
@@ -321,21 +264,11 @@ private:
   void open_cycle_swap(const MarketSnapshot &base, const ResolvedStrangle &wings,
                        double strangle_vega, PortfolioState &book, std::uint64_t &next_lot_id);
 
-  // The strategy's own `on_step` body. Wrapped so the signal state below is
-  // refreshed on EVERY path out of it — a step that opened nothing must report
+  // The strategy's own `on_step` body. Wrapped so the probe below is refreshed
+  // on EVERY successful path out of it — a step that opened nothing must report
   // that, not the previous step's numbers.
   [[nodiscard]] Status step(const MarketSnapshot &base, PortfolioState &book,
                             std::uint64_t &next_lot_id, const PriceOptions &price_options);
-
-  // Take this snapshot's fixing into the mirrors, adopt lots the engine settled
-  // out of / this step opened into the book, and stamp the snapshot the cached
-  // signal state is as-of. `swap_ids_before_step` decides how a lot with no
-  // mirror is treated: one this step OPENED starts a clean accrual, one that was
-  // already in the book is a checkpoint restore whose accrual is unreachable.
-  void refresh_signal_state(const MarketSnapshot &base, const PortfolioState &book,
-                            std::span<const std::uint64_t> swap_ids_before_step);
-
-  [[nodiscard]] const SwapMirror *find_mirror(std::uint64_t lot_id) const noexcept;
 
   StrangleVarswapConfig cfg_;
   std::int64_t cycle_expiry_ts_ns_ = 0; // 0 = no live cycle
@@ -349,21 +282,16 @@ private:
 
   // ── Signal state, as of the last completed `on_step` ───────────────────────
   //
-  // `signals()` is const and is handed nothing but a snapshot, so everything it
-  // cannot re-derive from one is captured here. The swap GREEKS are deliberately
-  // NOT: they are recomputed inside `signals()`, which the engine calls only on
-  // RECORDED rows, so a run at `record_every_n > 1` pays for the finite
-  // differences on the rows that keep them and not on the rest. The accrual
-  // below still advances every step, because it is path-dependent.
-  std::vector<SwapLot> live_swaps_;      // `book.swap_lots` after the last step
-  std::vector<SwapMirror> swap_mirrors_; // their accruals, keyed by lot id
-  std::int64_t signal_ts_ns_ = 0;        // the snapshot the two above are as-of
-  bool stepped_ = false;                 // ... and whether there has been one
+  // The engine-accrual mirror and the five swap greek columns live in the probe
+  // (swap_leg.hpp) — the greeks are recomputed inside `signals()`, which the
+  // engine calls only on RECORDED rows, so a run at `record_every_n > 1` pays
+  // for the finite differences on the rows that keep them and not on the rest;
+  // the accrual still advances every step, because it is path-dependent. What
+  // remains here is the one signal the probe cannot know (the option book's
+  // dollar vega) and the as-of stamp guarding it.
+  SwapSignalProbe probe_;
+  std::int64_t last_step_ts_ns_ = 0; // the snapshot the last completed step ran on
   double last_strangle_vega_ = std::numeric_limits<double>::quiet_NaN();
-  // Scratch: the swap-lot ids the engine handed this step BEFORE the strategy
-  // touched the book. A member rather than a local so the per-step capture stops
-  // allocating after the first step.
-  std::vector<std::uint64_t> swap_ids_before_step_;
 };
 
 } // namespace atx::vol
