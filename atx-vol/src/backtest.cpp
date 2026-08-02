@@ -100,8 +100,8 @@ constexpr std::size_t kPrivateSnapshotCacheCapacity = kPrefetchLookahead + 2u;
     if (idx >= refs.size()) {
       break;
     }
-    const Status status =
-        cache.prefetch(refs[idx].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
+    const Status status = cache.prefetch(refs[idx].archive_path, cfg.query_pricing_tier,
+                                         cfg.query_cache_build_policy);
     if (!status) {
       return status;
     }
