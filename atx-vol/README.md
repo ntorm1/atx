@@ -429,6 +429,33 @@ Both were measured at the commit that wrote this section, against `cmake --prese
 dev`. Re-run the commands rather than trusting the digits: nothing regenerates
 them, so a stale number here is a documentation defect, not a test failure.
 
+### What "the matrix is green" covers
+
+Green means **every lane that can run, ran and passed**. It does not mean every
+registered lane ran, and the difference is stable, deliberate and enumerated
+below rather than being a backlog.
+
+At the v1 closeout baseline (`cmake --preset dev`, `ctest -L atx_vol`, an AVX2
+host): **2,834 registered / 2,827 executed / 0 failed**, of which **58 executed
+lanes report `SKIPPED`**; the remaining 7 are `DISABLED_` cases ctest never
+starts. Every skip carries a reason string naming exactly what would let it run.
+
+| Gate class | What gates it | Skips at baseline | Provisioning status |
+|---|---|---|---|
+| Host CPU capability | `simd::has_avx2()` at test entry | **0** — this host has AVX2 | Nothing to provision. On a **non**-AVX2 host ~27 more sites skip (`american_batch_test.cpp` 16, `simd_isa_override_test.cpp` 10 + 1 env), so "green" there covers strictly less. The scalar path is separately gated by the `atx-vol-pricing-forcescalar` ctest lane, which runs the pricing suites with `ATX_SIMD_ISA=ForceScalar` and passes on every host. |
+| Opt-in instrumentation build | `counters::counters_enabled()` — `-DATX_VOL_COUNTERS=ON`, i.e. the `dev-counters` preset | **16** | By design. These assert exact algorithm-counter values (solve counts, Clenshaw traversals, allocation-once); the code under test runs in the default build, only the assertion channel is compiled out. Run `cmake --preset dev-counters` to include them. |
+| Cached real-market fixtures | Presence of OPRA `cbbo-1m` parquet boards, the SPY fit corpus, and the shared board cache under `C:/atx-data/spy-dispersion/opra/` | **30** | Permanently unprovisioned in-repo: this is licensed vendor market data, too large to commit and not ours to redistribute. Materialise it with the Databento pull + `opra_dbn_to_parquet` (see the real-data section above) and the whole class runs. |
+| Named external data (env) | `ATX_T7_DEFINITIONS_TSV` (5), `ATX_SP100_SURFACE_DB` (1) | **6** | Same reason as the row above, pointed at by an environment variable instead of a search path. All six are measurement harnesses / a real-database baseline, not correctness gates. |
+| Opt-in long sweep | `ATX_VOL_LONG_CORPUS=1` | **1** | By design — a 250 + 10,000 synthetic-board property sweep, too slow for every run. Deterministic and runnable on any host. |
+| Structurally not a standalone lane | `ProcessScratchChild.*` (3) run only when their driver test re-invokes the binary as a child; `ScalarLegEnv.ForceScalarEnvSeedsScalarOverride` (1) runs inside the `atx-vol-pricing-forcescalar` lane; `atx-vol-python` (1) exits ctest's `SKIP_RETURN_CODE` unless the standalone `atx-vol/python` extension is built | **5** | Four of the five ARE covered — by the lane that drives them. Only `atx-vol-python` is genuinely uncovered by a default build; build the standalone Python project to run it. |
+
+So a green matrix asserts: **every pure-computation, synthetic-fixture and
+in-repo-fixture test passes, on the host's ISA, in the default build, plus the
+forced-scalar pricing leg.** It does not assert the real-market accuracy gates,
+the exact-counter gates, the long corpus sweep, or the Python binding suite —
+each of which is a documented opt-in with a named way to turn it on, not an
+unknown.
+
 The Vola-parity harness alone: `atx-vol-tests.exe --gtest_filter='SurfaceParity.*:VolaSession.*:OpraPanel.*:DeAmer.*:Parity.*:AmericanIv.*:HybridDiv.*:S3.*:FitMetrics.*:Panel.*'`.
 
 Real-data OPRA parity + throughput benchmark (opt-in examples):
