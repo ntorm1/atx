@@ -542,6 +542,16 @@ if(ATX_BUILD_EXAMPLES)
     target_link_libraries(atx-vol-strangle-varswap-driver
         PRIVATE atx::vol atx::core atx_warnings)
 
+    # Long-dated SPY strangle acceptance driver: a 40-delta ~2y strangle rolled
+    # every calendar month (RollAtHorizon at tenor minus one month), delta-hedged
+    # to zero every session, zero frictions, on ONE cross-year clock assembled
+    # from the per-year SPY SurfaceDb roots via CorpusManifest ->
+    # Clock::from_manifest. Emits track.tsv (self-describing PnL track) and
+    # series.tsv. See examples/spy_leaps_strangle_backtest.cpp.
+    add_executable(atx-vol-spy-leaps-strangle examples/spy_leaps_strangle_backtest.cpp)
+    target_link_libraries(atx-vol-spy-leaps-strangle
+        PRIVATE atx::vol atx::core atx_warnings)
+
     # Variance-strip diagnostic: per-session K_var at a constant tenor under the
     # default config and a ladder of pinned log-strike spans, plus the wing IVs
     # the strip reads — the instrument for attributing day-to-day fair-strike
