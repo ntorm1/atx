@@ -49,6 +49,7 @@
 #include "atx/vol/dispersion.hpp"       // DispersionUniverse, DispersionConfig, DispersionBook
 #include "atx/vol/portfolio_pricer.hpp" // OptionContract, kNsPerYear
 #include "atx/vol/priced_surface.hpp"   // PricedSurface
+#include "atx/vol/swap_leg.hpp"         // SwapSignalProbe, solve_cycle_swap (the swap lane)
 #include "atx/vol/types.hpp"            // Result, Status, Side
 
 namespace atx::vol {
@@ -147,6 +148,35 @@ struct LifecycleSpec {
     // The engine books the close at current marks (roll-close diff), never
     // settlement. lifecycle_decide never returns clear=true in this mode.
     CloseAtHorizon = 2,
+    // A CYCLE fixes ONE expiry and holds it: the first session in
+    // `StrategySpec::session_ts` at or after base_ts + tenor (ceil-snap — NOT
+    // `TenorSpec::snap_to_sessions`' floor-snap; see `select_fixed_cycle_expiry`
+    // — or the LAST session when the grid ends before the anchor: a short
+    // final cycle the run still observes settling). Every entry tick inside
+    // the cycle CLOSES the option lots and REOPENS them at freshly resolved
+    // strikes at the SAME expiry (the engine books the diff as a roll-close
+    // plus an entry, both at today's marks); the engine settles the cycle at
+    // its expiry session and the next cycle is fixed on that same step.
+    // `Lot::cohort` counts CYCLES, not clips.
+    //
+    // The cycle TENOR comes from the option legs: every leg must carry the
+    // IDENTICAL finite positive `tenor.target_T` with both snap flags false —
+    // the lifecycle owns expiry snapping in this mode, and a leg requesting
+    // its own snap is InvalidArgument, never silently ignored. Requires a
+    // non-empty sorted `session_ts`; `Entry` gives the RESTRIKE cadence
+    // (EveryStep is the daily restrike; an off-tick step holds the book).
+    //
+    // KEEP-STRIKES POLICY: a step whose strike resolution fails soft (missing
+    // board, unreachable delta, unpriceable wing) KEEPS the live lots and
+    // counts `skipped_restrikes`; the same failure with an EMPTY book counts
+    // `unopened_entry_steps` (nothing was held, and saying otherwise would put
+    // a fictitious hold on the record). Never a fabricated strike, never a
+    // 0.0 mark. Configuration errors stay fatal.
+    //
+    // This is the only holding mode that may carry `StrategySpec::swap_legs`:
+    // a swap lot can never be erased (the engine's lane is held to expiry), so
+    // only a lifecycle whose expiry the engine settles can open one.
+    FixedExpiryRestrike = 3,
   };
   Entry entry{Entry::EveryNDays};
   Holding holding{Holding::RollAtHorizon};
@@ -157,6 +187,61 @@ struct LifecycleSpec {
   // overlapping clips like HoldToExpiry, but each cohort is independently closed
   // (by the strategy, at marks) once ITS OWN residual T falls below `roll_at_T`.
   double roll_at_T{7.0 / 365.25};
+};
+
+// ── The swap-leg lane (FixedExpiryRestrike only) ────────────────────────────
+
+// HOW MUCH swap, resolved on the cycle-open step after the option legs are
+// sized (MatchGroupVega needs their entry greeks).
+struct SwapSizeSpec {
+  enum class Kind : std::uint8_t {
+    FixedQty = 0,   // qty = value (signed); still struck fair
+    TargetVega = 1, // qty = sign * value / (swap entry vega)
+    // qty = (option group's entry DOLLAR vega) / (swap entry vega): per-share
+    // American vega x qty x multiplier summed over the group's freshly opened
+    // lots — the very scaling the portfolio pricer applies — so the leg opens
+    // EQUAL-VEGA against those options and the sign carries (long-vega options
+    // size a long, variance-receiving swap).
+    MatchGroupVega = 2,
+  };
+  Kind kind{Kind::MatchGroupVega};
+  double value{0.0}; // FixedQty: the qty; TargetVega: the target |dollar vega|
+  double sign{+1.0}; // TargetVega only
+  std::string group; // MatchGroupVega: option-leg group to match; empty = ALL option legs
+};
+
+// ONE swap leg per CYCLE on one underlier: opened on the step that fixes the
+// cycle (never on a restrike — the engine's swap lane is append-only and held
+// to expiry, so a per-step reopen would pile up one stale leg per session),
+// expiring at the cycle's own expiry, struck at its own fair strike through
+// the same pricing bridge the engine's mark lane uses (the only construction
+// that opens at genuine zero PV — see `solve_cycle_swap`, swap_leg.hpp).
+//
+// FAIL-SOFT: every entry-solve refusal (dark board, short cycle, failed fair
+// strike, non-finite/zero vega or qty) runs that cycle without this leg and
+// counts one `skipped_swap_cycles` — a one-legged cycle is reported, never a
+// fabricated quantity, and a later session getting its board back does not
+// retro-open a per-cycle instrument.
+struct SwapLegSpec {
+  std::string symbol;   // resolved to uid against the snapshot's SurfaceSet
+  std::uint32_t uid{0}; // preferred if nonzero, else `symbol` lookup
+  DerivKind kind{DerivKind::VarSwap};
+  double cap_dec{0.0};         // > 0 required on a capped kind; must be 0 otherwise
+  double notional{1.0};        // sizing rides on qty; notional stays a readable constant
+  double annualization{252.0}; // trading-day variance convention
+  SwapSizeSpec size{};
+  // ENTRY SOLVE ONLY (fair strike + vega). The engine marks and settles a live
+  // swap under its own hard-coded default DerivConfig (`swap_price_cfg`,
+  // backtest.cpp), which no strategy can reach — so a non-default config here
+  // changes what the swap is STRUCK at, never how it is subsequently valued.
+  // Left at the default the two agree exactly, which is the only setting that
+  // opens the swap at a genuine zero PV. The `swap_*` signal columns follow
+  // the ENGINE's config, so they explain the marks the run is actually paid
+  // on; a non-default value here therefore also breaks the equal-vega identity
+  // between `options_vega` and `swap_vega` on a cycle-open row — the same one
+  // divergence, seen in the signal columns.
+  DerivConfig deriv_cfg{};
+  std::string group; // diagnostic tag
 };
 
 // HEDGE overlay (engine-owned, configurable). Declared for the full grammar; B1
@@ -185,6 +270,12 @@ struct ResolutionOptions {
 struct StrategySpec {
   std::string name;
   std::vector<LegSpec> legs;
+  // The swap-leg lane. Empty (the default) is bit-identical to the pre-lane
+  // grammar — no work, no allocation, no signal columns (the additive-lane
+  // rule the engine's own swap lane follows). Non-empty requires
+  // `lifecycle.holding == FixedExpiryRestrike` (NotImplemented otherwise: a
+  // swap lot cannot be erased, so no other lifecycle can carry one).
+  std::vector<SwapLegSpec> swap_legs;
   CrossLegConstraint constraint{};
   LifecycleSpec lifecycle{};
   HedgeSpec hedge{};
@@ -373,10 +464,24 @@ struct LifecycleDecision {
 // (overlapping cohorts). For RollAtHorizon: a single cohort — open when the book
 // is empty OR the front cohort's residual T = (front_expiry - base_ts)/year has
 // fallen below `roll_at_T`; clear the prior cohort when rolling a non-empty book.
+// FixedExpiryRestrike never reaches this helper — the interpreter's restrike
+// path owns that mode's whole per-step decision.
 [[nodiscard]] LifecycleDecision lifecycle_decide(const LifecycleSpec &lifecycle,
                                                  std::size_t step_index, bool book_empty,
                                                  std::int64_t base_ts, std::int64_t front_expiry,
                                                  bool have_front);
+
+// The FixedExpiryRestrike cycle expiry for a step at `base_ts`: the FIRST
+// session in `sessions` (sorted ascending) at or after `base_ts + tenor_ns`
+// (overflow-guarded), or the LAST session when the grid ends before the anchor
+// (a final, short cycle that still settles inside the run). 0 when no session
+// strictly after `base_ts` remains — the grid is exhausted and no cycle can
+// open. Ceil-snap by design, where `TenorSpec::snap_to_sessions` floor-snaps:
+// a cycle wants AT LEAST its tenor, a synthetic leg wants an expiry the run
+// has already observed.
+[[nodiscard]] std::int64_t select_fixed_cycle_expiry(std::span<const std::int64_t> sessions,
+                                                     std::int64_t base_ts,
+                                                     std::int64_t tenor_ns) noexcept;
 
 // ── Strategy interface + declarative interpreter ────────────────────────────
 
@@ -474,6 +579,18 @@ public:
                                                      : QueryExecution::Configured;
   }
 
+  // Emitted ONLY when the spec carries swap legs (every other spec keeps the
+  // empty default — no new columns on existing runs). Eight columns, always
+  // all eight, per recorded row: the probe's swap_delta/gamma/vega/theta/rho
+  // (swap_leg.hpp owns their NaN discipline), `options_vega` (the option
+  // book's entry dollar vega as of this row's restrike — the number a
+  // MatchGroupVega leg was sized against; NaN on a kept-strikes/held/no-cycle
+  // step), and the CUMULATIVE `skipped_restrikes` / `skipped_swaps` counters
+  // (genuinely 0.0 before the first skip; never NaN — a renderer differences
+  // consecutive rows to find the session a hole opened on).
+  [[nodiscard]] std::vector<std::pair<std::string, double>>
+  signals(const MarketSnapshot &base) const override;
+
   [[nodiscard]] const StrategySpec &spec() const noexcept { return spec_; }
 
   // The per-name drops (`ResolveDrop`) from the most recent entry attempt (an
@@ -488,6 +605,18 @@ public:
     return last_dropped_;
   }
 
+  // ── FixedExpiryRestrike attribution counters ─────────────────────────────
+  //
+  // All three are CUMULATIVE across the run and 0 outside restrike mode. See
+  // the keep-strikes policy on `LifecycleSpec::Holding::FixedExpiryRestrike`
+  // for what distinguishes the first two, and `SwapLegSpec` for the third —
+  // one counter, every "no swap on this cycle" cause, none of them silent.
+  [[nodiscard]] std::uint64_t skipped_restrikes() const noexcept { return skipped_restrikes_; }
+  [[nodiscard]] std::uint64_t unopened_entry_steps() const noexcept {
+    return unopened_entry_steps_;
+  }
+  [[nodiscard]] std::uint64_t skipped_swap_cycles() const noexcept { return skipped_swap_cycles_; }
+
 private:
   struct PendingCohort {
     std::vector<Lot> lots;
@@ -501,12 +630,35 @@ private:
   prepare_cohort(const MarketSnapshot &base, std::uint64_t first_lot_id,
                  const PriceOptions &price_options);
 
+  // The FixedExpiryRestrike per-step body (cycle fix, restrike/keep-strikes,
+  // the swap lane). Dispatched from `on_step` after one-time validation;
+  // existing lifecycles never enter it.
+  [[nodiscard]] Status step_restrike(const MarketSnapshot &base, std::size_t step_index,
+                                     PortfolioState &book, std::uint64_t &next_lot_id,
+                                     const PriceOptions &price_options);
+
   StrategySpec spec_;
   std::uint32_t cohort_counter_{0};
   std::int64_t front_expiry_{0};
   bool have_front_{false};
   std::vector<ResolveDrop> last_dropped_;
   std::vector<FullGreekSeed> last_entry_seeds_;
+  // ── FixedExpiryRestrike state (inert in every other mode) ────────────────
+  // The engine-accrual mirror behind the swap greek signal columns; wired only
+  // when the spec carries swap legs. One probe, one strategy, one thread —
+  // the probe's own rule (swap_leg.hpp).
+  SwapSignalProbe probe_;
+  bool restrike_validated_{false};
+  std::int64_t cycle_tenor_ns_{0};     // the legs' common tenor, set by validation
+  std::int64_t cycle_expiry_ts_ns_{0}; // 0 = no live cycle
+  std::int64_t last_step_ts_ns_{0};    // the snapshot the last completed step ran on
+  // The option book's entry DOLLAR vega as of the last restrike — the number a
+  // MatchGroupVega swap leg is sized against, cached for the signal row. NaN on
+  // a step that kept strikes or held.
+  double last_options_vega_{std::numeric_limits<double>::quiet_NaN()};
+  std::uint64_t skipped_restrikes_{0};
+  std::uint64_t unopened_entry_steps_{0};
+  std::uint64_t skipped_swap_cycles_{0};
 };
 
 // ── X3: risk limits / capital / drawdown stop ────────────────────────────────
