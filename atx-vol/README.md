@@ -10,7 +10,7 @@ The upstream `ats-vol` (~65k LOC of C across ~90 translation units) has been
 ported in full to idiomatic, tested C++20, and then extended with a
 Vola-Dynamics American-equity parity layer (see below), a composable
 `VolaSession` handle, and a cached high-performance pricing hot path. It passes
-**2,618 GoogleTest cases across 377 suites** under `/W4 /permissive- /WX`
+**2,847 GoogleTest cases across 421 suites** under `/W4 /permissive- /WX`
 (clang-cl). That number is *measured*, not maintained — re-derive it with
 `build/bin/atx-vol-tests.exe --gtest_list_tests` rather than trusting the prose,
 which is how a count in a README stops rotting silently (see *Build & test* for
@@ -422,12 +422,14 @@ same population and a single hand-written number would hide that:
 
 | Count | Command | What it counts |
 |---|---|---|
-| **2,618** cases / **377** suites | `build/bin/atx-vol-tests.exe --gtest_list_tests` | GoogleTest cases in the atx-vol test binary |
-| **2,625** registered tests | `ctest --test-dir build -N -L atx_vol` | the 2,618 above, discovered by `gtest_discover_tests`, **plus 7** lanes that are not GoogleTest cases: six Python driver/report tests and the `atx-vol-pricing-forcescalar` scalar-ISA leg (`tests/CMakeLists.txt`) |
+| **2,847** cases / **421** suites | `build/bin/atx-vol-tests.exe --gtest_list_tests` | GoogleTest cases in the atx-vol test binary, including the 7 `DISABLED_` ones |
+| **2,855** registered tests | `ctest --test-dir build -N -L atx_vol` | the 2,847 above, discovered by `gtest_discover_tests`, **plus 8** lanes that are not GoogleTest cases: `SpxWilmottReproUnit`, `atx-vol-reference-spy-dispersion`, `atx-vol-download-occ-ess`, `atx-vol-build-spy-top50-universe`, `Mag7DispersionReport`, `SpyDispersionPnlReport`, `atx-vol-python`, `atx-vol-pricing-forcescalar` (`tests/CMakeLists.txt`) |
 
-Both were measured at the commit that wrote this section, against `cmake --preset
-dev`. Re-run the commands rather than trusting the digits: nothing regenerates
-them, so a stale number here is a documentation defect, not a test failure.
+The two reconcile exactly: 2,847 + 8 = 2,855. Both were measured against `cmake
+--preset dev` at the commit that last touched this section, and so is every
+count in the section below — one measurement, quoted once. Re-run the commands
+rather than trusting the digits: nothing regenerates them, so a stale number
+here is a documentation defect, not a test failure.
 
 ### What "the matrix is green" covers
 
@@ -435,15 +437,16 @@ Green means **every lane that can run, ran and passed**. It does not mean every
 registered lane ran, and the difference is stable, deliberate and enumerated
 below rather than being a backlog.
 
-At the v1 closeout baseline (`cmake --preset dev`, `ctest -L atx_vol`, an AVX2
-host): **2,834 registered / 2,827 executed / 0 failed**, of which **58 executed
-lanes report `SKIPPED`**; the remaining 7 are `DISABLED_` cases ctest never
-starts. Every skip carries a reason string naming exactly what would let it run.
+Of the **2,855** registered above, ctest starts **2,848** — the other 7 are the
+`DISABLED_` cases — and **63** of those report `SKIPPED` on an AVX2 host with
+`cmake --preset dev` and no market-data cache present. Every skip carries a
+reason string naming exactly what would let it run; the six classes below
+account for all 63.
 
-| Gate class | What gates it | Skips at baseline | Provisioning status |
+| Gate class | What gates it | Skips | Provisioning status |
 |---|---|---|---|
 | Host CPU capability | `simd::has_avx2()` at test entry | **0** — this host has AVX2 | Nothing to provision. On a **non**-AVX2 host ~27 more sites skip (`american_batch_test.cpp` 16, `simd_isa_override_test.cpp` 10 + 1 env), so "green" there covers strictly less. The scalar path is separately gated by the `atx-vol-pricing-forcescalar` ctest lane, which runs the pricing suites with `ATX_SIMD_ISA=ForceScalar` and passes on every host. |
-| Opt-in instrumentation build | `counters::counters_enabled()` — `-DATX_VOL_COUNTERS=ON`, i.e. the `dev-counters` preset | **16** | By design. These assert exact algorithm-counter values (solve counts, Clenshaw traversals, allocation-once); the code under test runs in the default build, only the assertion channel is compiled out. Run `cmake --preset dev-counters` to include them. |
+| Opt-in instrumentation build | `counters::counters_enabled()` — `-DATX_VOL_COUNTERS=ON`, i.e. the `dev-counters` preset | **21** | By design. These assert exact algorithm-counter values (solve counts, Clenshaw traversals, allocation-once, lazy-materialisation-once); the code under test runs in the default build, only the assertion channel is compiled out. Run `cmake --preset dev-counters` to include them. |
 | Cached real-market fixtures | Presence of OPRA `cbbo-1m` parquet boards, the SPY fit corpus, and the shared board cache under `C:/atx-data/spy-dispersion/opra/` | **30** | Permanently unprovisioned in-repo: this is licensed vendor market data, too large to commit and not ours to redistribute. Materialise it with the Databento pull + `opra_dbn_to_parquet` (see the real-data section above) and the whole class runs. |
 | Named external data (env) | `ATX_T7_DEFINITIONS_TSV` (5), `ATX_SP100_SURFACE_DB` (1) | **6** | Same reason as the row above, pointed at by an environment variable instead of a search path. All six are measurement harnesses / a real-database baseline, not correctness gates. |
 | Opt-in long sweep | `ATX_VOL_LONG_CORPUS=1` | **1** | By design — a 250 + 10,000 synthetic-board property sweep, too slow for every run. Deterministic and runnable on any host. |
