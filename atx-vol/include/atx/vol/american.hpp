@@ -729,6 +729,25 @@ namespace detail {
 //                   q_eff = -eps (whole boards died "no expiry produced a
 //                   usable eSSVI slice"). Gate:
 //                   NegRateDomainMap.ZeroRateNegativeYield_IsSingleBoundaryAmerican.
+//
+// THE SERVED OUTPUT IS DISCONTINUOUS IN `rate` AT 0 FOR yield < 0, and that is
+// a property of what this library can COMPUTE, not of the option's value. Hold
+// `yield < 0` and sweep `rate` upward through 0: at `yield < rate < 0` the cell
+// is Unsupported and every pricing entry returns NotImplemented / NaN; at
+// `rate == 0` it is American and a price is served; for `rate > 0` it stays
+// American. So an arbitrarily small change in `rate` across 0 flips "no answer"
+// to "an answer" — a jump in SERVABILITY. The true American value is continuous
+// across that boundary; the double-continuation region simply has a second
+// exercise boundary the single-boundary ALO scheme cannot represent, so the
+// library refuses rather than serving a silently-wrong single-boundary number.
+//
+// Consequences for callers, all deliberate: a carry solve or root-find that
+// walks `rate` through 0 with a negative yield sees its objective become
+// undefined on one side of 0 and defined AT 0 (do not assume a continuous
+// objective there); and a sensitivity taken by bumping `rate` around 0 in that
+// corner will bump into the refusal rather than a number. Widening the served
+// set to `rate < 0` needs a two-boundary scheme, not a predicate change — this
+// note documents the edge, it does not propose moving it.
 enum class ExerciseRegime : std::uint8_t { European, Unsupported, American };
 
 [[nodiscard]] inline ExerciseRegime classify_regime(double rate, double yield) noexcept {

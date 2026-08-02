@@ -195,5 +195,58 @@ TEST(NegRateDomainMap, ZeroRateNegativeYield_IsSingleBoundaryAmerican) {
   }
 }
 
+// ── the `benign_flat_corner` exemption's WIDTH (closeout 1.5 / audit C1-c) ──
+//
+// `al_jacobi_newton_sweep` (american.cpp) reports CONVERGED for a fully-frozen
+// sweep at `r == 0 && q < 0` instead of failing closed. The comment at that
+// seam justifies it with a measured claim — the sweep only ever freezes at
+// |q| ~ 1e-12, where the served price IS the European price — while noting the
+// predicate is WIDER than the regime it is safe in (every `q < 0` at `r == 0`,
+// heavy carry included).
+//
+// Nothing pinned either end of that. The gate above asserts only
+// `premium >= -1e-9` at macro carry and `|premium| < 1e-6*K` at the eps corner,
+// so an exemption that widened until it swallowed a `q` where the boundary
+// genuinely matters — collapsing a real early-exercise premium to a frozen-seed
+// number — would pass both. This pins the two ends the justification rests on.
+TEST(NegRateDomainMap, ZeroRateNegativeYieldExemptionWidthIsPinned) {
+  const double K = 100.0, T = 1.0, sigma = 0.28;
+
+  // (a) THE EPS CORNER — where the exemption is genuinely load-bearing. With
+  // r == 0 the put's early-exercise premium integral is
+  //     -q * S * integral_0^T exp(-q u) N(-d_plus) du   <=  S * (exp(|q|T) - 1)
+  // (N(-d_plus) <= 1). That analytic ceiling is the whole argument for calling
+  // the frozen sweep benign, so assert the SERVED number honours it — three
+  // orders tighter than the 1e-6*K the existing gate uses, and it scales with
+  // |q| instead of being a fixed slack.
+  for (const double q : {-1.0e-12, -1.0e-10, -1.0e-8}) {
+    const double ceiling = K * 1.5 * std::expm1(std::fabs(q) * T) + 1.0e-12;
+    for (const double S : {80.0, 100.0, 120.0}) {
+      const Result<double> al = andersen_lake(S, K, T, sigma, 0.0, q, Side::Put);
+      ASSERT_TRUE(al.has_value()) << "q=" << q << " S=" << S;
+      const double euro = european_price(S, K, T, sigma, 0.0, q, Side::Put);
+      const double premium = *al - euro;
+      EXPECT_GE(premium, -1.0e-12) << "q=" << q << " S=" << S;
+      EXPECT_LE(premium, ceiling)
+          << "served premium exceeds the -q*S*integral ceiling the exemption is "
+             "justified by; q=" << q << " S=" << S << " premium=" << premium;
+    }
+  }
+
+  // (b) MACRO CARRY — where the exemption must NOT be what produces the number.
+  // At q = -0.03 the sweep converges normally and this branch is dead code, so
+  // the served price carries a MATERIAL early-exercise premium. `>= euro - 1e-9`
+  // (all the gate above asks) cannot tell that apart from a frozen boundary
+  // collapsing onto European; a strict lower bound can.
+  for (const double S : {80.0, 90.0}) {
+    const Result<double> al = andersen_lake(S, K, T, sigma, 0.0, -0.03, Side::Put);
+    ASSERT_TRUE(al.has_value()) << "S=" << S;
+    const double euro = european_price(S, K, T, sigma, 0.0, -0.03, Side::Put);
+    EXPECT_GT(*al - euro, 1.0e-3)
+        << "macro-carry premium must be material, not exemption-flattened; S=" << S
+        << " al=" << *al << " euro=" << euro;
+  }
+}
+
 } // namespace
 } // namespace atx::vol
