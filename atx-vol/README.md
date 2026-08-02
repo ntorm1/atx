@@ -381,6 +381,47 @@ which change the numerical results of the shipped paths:
   archive's optional curve-set / profile / AL-correction-cache blob sections are
   not emitted (those types are not part of atx-vol's archived surface).
 
+## Historical portfolio VaR
+
+`var.hpp` replays a delta-defined option and stock portfolio through a
+`SurfaceDb`. An option is anchored on the reference date, converted to forward
+log-moneyness and signed dollar delta, then independently restruck at that same
+relative expiry and moneyness on each historical base date. Its resolved units
+are held into the next stored date. Stock shares are likewise resized on the
+base date and held across the transition, so stock hedges retain nonzero P&L.
+
+```cpp
+#include "atx/vol/surface_db.hpp"
+#include "atx/vol/var.hpp"
+
+using namespace atx::vol;
+
+auto db = SurfaceDb::open("surface-db/sp100-2026").value();
+std::vector<VarPosition> book{
+    VarOptionPosition{"SPY", ProjectedMaturitySpec::months(3),
+                      0.40, Side::Call, 25.0, 100.0},
+    VarStockPosition{"SPY", -750.0},
+};
+
+VarRunConfig config;
+config.reference_date = "2026-06-26";
+config.date_begin = "2026-01-02";
+config.date_end = "2026-06-26";
+config.confidence = 0.99;
+config.evaluation.n_threads = 8;
+
+auto result = run_historical_var(db, book, config).value();
+// result.risk.value_at_risk, result.risk.expected_shortfall, result.frames
+```
+
+Dates are sorted ascending and adjacent transitions are split into balanced,
+contiguous ranges on the persistent pricing executor. Each transition is
+independent, output order is deterministic, and exact duplicate contract
+definitions share pricing work while retaining separate position rows and
+dollar-delta targets. The default run fails closed on a missing or non-admitted
+risk surface; `VarScenarioFailurePolicy::ExcludeFromDistribution` records those
+scenarios and excludes them from the nearest-rank VaR/expected-shortfall sample.
+
 ## Backtest database
 
 `BacktestDb` persists projection-backed cookie-cutter strategy histories in

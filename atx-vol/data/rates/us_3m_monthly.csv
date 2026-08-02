@@ -10,12 +10,48 @@
 # fail-closed ValueError, never a silently-coerced default.
 #
 # OPERATOR-REFINABLE: these are hand-set approximate values (a smoothed read of
-# the 2022-2026 3M T-bill path), not a market-data feed. 2026 is anchored to
+# the 2019-2026 3M T-bill path), not a market-data feed. 2026 is anchored to
 # this repo's own production choice, --r 0.043 (see python/tests/
 # test_surface_db_build.py's "production database was built at --r 0.043").
 # Extend this table (new trailing rows) before backfilling a month past its
 # last entry; do not extrapolate.
 month,r
+2019-01,0.0240
+2019-02,0.0240
+2019-03,0.0240
+2019-04,0.0240
+2019-05,0.0235
+2019-06,0.0220
+2019-07,0.0210
+2019-08,0.0195
+2019-09,0.0190
+2019-10,0.0165
+2019-11,0.0155
+2019-12,0.0155
+2020-01,0.0150
+2020-02,0.0150
+2020-03,0.0030
+2020-04,0.0015
+2020-05,0.0015
+2020-06,0.0015
+2020-07,0.0015
+2020-08,0.0010
+2020-09,0.0010
+2020-10,0.0010
+2020-11,0.0010
+2020-12,0.0010
+2021-01,0.0010
+2021-02,0.0005
+2021-03,0.0005
+2021-04,0.0002
+2021-05,0.0002
+2021-06,0.0005
+2021-07,0.0005
+2021-08,0.0005
+2021-09,0.0005
+2021-10,0.0005
+2021-11,0.0005
+2021-12,0.0006
 2022-01,0.0015
 2022-02,0.0030
 2022-03,0.0050
