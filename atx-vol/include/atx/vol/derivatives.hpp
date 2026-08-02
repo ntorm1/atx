@@ -210,6 +210,14 @@ enum class DerivFlags : std::uint32_t {
   // df*N*(cap_dec - strike_dec) with no strip call and no T > 0 requirement
   // (works at expiry). Always accompanied by CapApplied.
   CapPinned = 1u << 11,
+  // Set when the variance strip's resolved span extended beyond the wing trust
+  // band (DerivConfig::wing_clamp_k) so tail nodes were read at the band-edge
+  // vol rather than the surface's extrapolated wing. STRUCTURAL, not numeric:
+  // it says "flat-vol tails were in effect", not "the value moved" — on a flat
+  // smile the clamp moves nothing and the flag still fires. Absent whenever the
+  // clamp is disabled (wing_clamp_k < 0) or the whole span fits inside the
+  // band. atx extension: not mirrored in AtsVolDerivFlags.
+  WingClamped = 1u << 12,
 };
 
 [[nodiscard]] constexpr DerivFlags operator|(DerivFlags a, DerivFlags b) noexcept {
@@ -353,6 +361,27 @@ struct DerivConfig {
   //   > 0  -> used as-is; the caller's own calibration wins.
   //   < 0  -> InvalidArgument (a vol-of-vol cannot be negative).
   double vol_of_vol = 0.0;
+  // Wing trust band for the variance strip's SURFACE READS, in absolute
+  // log-forward-moneyness. The fit pipeline certifies a surface only on
+  // |k| <= 0.5 (RiskSurfaceValidationConfig::k_min/k_max); beyond it a
+  // parametric eSSVI/SVI slice serves an unbounded linear-in-|k| extrapolation
+  // no quote ever disciplined, and the strip's 1/K weighting turns that
+  // fiction into fair-strike level and daily mark noise (the sp100-2026 XOM
+  // 3M strike read ~38 vol against a ~30 ATM, with ~98% of its day-to-day
+  // variance sourced beyond |k| = 0.25). Nodes beyond the band keep their true
+  // strikes but read the BAND-EDGE vol — flat-vol tails, the standard desk
+  // discipline for un-quoted wings — so the strip stays complete (no
+  // truncation bias) while the uncertified region loses its say. The span,
+  // node count, and truncation flags are untouched: this clamps reads, not
+  // the grid. `DerivFlags::WingClamped` records that tails were in effect.
+  //
+  //   0    -> the certified validation band, strip::kCertifiedWingHalfBand
+  //           (= 0.5, kept equal to RiskSurfaceValidationConfig{}.k_max).
+  //   > 0  -> explicit half-band; reads clamped to [-wing_clamp_k, +wing_clamp_k].
+  //   < 0  -> OFF: read the raw surface everywhere (pre-clamp behavior; the
+  //           escape hatch for a surface whose wings ARE quote-disciplined).
+  //   NaN  -> InvalidArgument.
+  double wing_clamp_k = 0.0;
   // Reserved — must be left at 0.
   double abs_price_tol = 0.0;
   double rel_price_tol = 0.0;

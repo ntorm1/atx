@@ -47,6 +47,15 @@ namespace atx::vol::strip {
 // invent it. 6σ covers ~1 - 2e-9 of a lognormal's mass per side.
 inline constexpr double kDefaultWidthSigmas = 6.0;
 
+// Default wing trust half-band for the variance strip's surface READS
+// (`DerivConfig::wing_clamp_k == 0`), in absolute log-forward-moneyness. MUST
+// stay equal to the risk-validation band `RiskSurfaceValidationConfig{}.k_max`
+// (detail/risk_surface_validation.hpp) — the clamp's whole claim is "the strip
+// trusts the surface exactly where the pipeline certified it", and the claim
+// dissolves if the two constants drift apart. static_asserted against the
+// validation config at the use site in derivatives.cpp.
+inline constexpr double kCertifiedWingHalfBand = 0.5;
+
 // Half-width in log-forward-moneyness: the tier/config floor, widened to the
 // tenor's own vol scale. Returns `floor_half_width` unchanged when σ_atm is
 // unusable (non-finite / non-positive), when T is unusable, or when

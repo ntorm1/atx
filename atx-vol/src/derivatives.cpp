@@ -14,6 +14,7 @@
 #include "atx/vol/black76.hpp"
 #include "atx/vol/detail/deriv_ref_bridge.hpp" // Task 9: SurfaceRef-native entry points
 #include "atx/vol/detail/legacy_surface.hpp" // Essvi/SviSurface (demoted, S4-T21)
+#include "atx/vol/detail/risk_surface_validation.hpp" // RiskSurfaceValidationConfig (wing-clamp band assert)
 #include "atx/vol/detail/rv_lognormal.hpp" // lognormal_call, truncated_expect, norm_cdf (Tasks 4-5)
 #include "atx/vol/portfolio_pricer.hpp" // Task 9: SurfaceRef (the borrowed-surface handle)
 #include "atx/vol/priced_surface.hpp" // E6: PricedSurface-native entry points
@@ -122,6 +123,25 @@ struct StripGrid {
 // guards above).
 [[nodiscard]] bool vol_of_vol_valid(const DerivConfig& cfg) noexcept {
   return cfg.vol_of_vol >= 0.0;
+}
+
+// Reject a NaN wing-clamp band. 0 selects the certified default and any
+// negative value disables the clamp, so NaN is the only unrepresentable input.
+[[nodiscard]] bool wing_clamp_valid(const DerivConfig& cfg) noexcept {
+  return !std::isnan(cfg.wing_clamp_k);
+}
+
+// Resolve the wing trust half-band: 0 -> the certified validation band,
+// > 0 -> the caller's own band, < 0 -> 0.0 (clamp off). The <= 0 encoding of
+// "off" lets every consumer test one condition (`band > 0.0`).
+[[nodiscard]] double resolve_wing_clamp(const DerivConfig& cfg) noexcept {
+  static_assert(strip::kCertifiedWingHalfBand == RiskSurfaceValidationConfig{}.k_max,
+                "the strip's default wing trust band must equal the band the fit "
+                "pipeline actually validates (risk_surface_validation.hpp)");
+  if (cfg.wing_clamp_k == 0.0) {
+    return strip::kCertifiedWingHalfBand;
+  }
+  return cfg.wing_clamp_k > 0.0 ? cfg.wing_clamp_k : 0.0;
 }
 
 // Aged variance blend (decimal units). Marked total variance over the original
@@ -778,6 +798,9 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   if (!vol_of_vol_valid(cfg)) {
     return Err(ErrorCode::InvalidArgument, "vol_of_vol must be >= 0");
   }
+  if (!wing_clamp_valid(cfg)) {
+    return Err(ErrorCode::InvalidArgument, "wing_clamp_k must not be NaN");
+  }
 
   // Grid bounds and node count: quality default, overridden by the config.
   // An explicit [k_min_log, k_max_log] PINS the span — the caller asked for
@@ -875,6 +898,14 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   const std::size_t n_half = (n + 1) / 2;
   double integral_half = 0.0;
 
+  // Wing trust band for the surface READS (see DerivConfig::wing_clamp_k): a
+  // node beyond the band prices at its true strike under the BAND-EDGE vol —
+  // flat-vol tails over the uncertified extrapolation region, never a
+  // truncated span. band <= 0 means the clamp is off.
+  const double wing_band = resolve_wing_clamp(cfg);
+  const bool wing_clamped =
+      wing_band > 0.0 && (grid.k_min_log < -wing_band || grid.k_max_log > wing_band);
+
   // Composite Simpson on   integral OTM(K) / (df * F * e^x) dx
   //                      == integral OTM(K) / (df * K) dx   since K = F * e^x.
   // Nodes with a non-finite / non-positive surface IV contribute zero; a bad
@@ -886,7 +917,8 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
     const double x = grid.k_min_log + dx * static_cast<double>(i);
     const double K = F * std::exp(x);
     const Side side = (x < 0.0) ? Side::Put : Side::Call;
-    const double sigma = surface.iv(x, T);
+    const double x_read = wing_band > 0.0 ? std::clamp(x, -wing_band, wing_band) : x;
+    const double sigma = surface.iv(x_read, T);
     const bool bad = !std::isfinite(sigma) || sigma <= 0.0;
     if (i == 0) {
       bad_first = bad;
@@ -936,6 +968,9 @@ Result<DerivQuote> var_swap_fair_strike(const SurfaceT& surface,
   if (bad_last || cover.right_short) {
     flags |= DerivFlags::StripTruncatedRight;
   }
+  if (wing_clamped) {
+    flags |= DerivFlags::WingClamped;
+  }
 
   DerivQuote out{};
   out.fair_strike_dec = k_var;
@@ -970,6 +1005,9 @@ Result<DerivQuote> vol_swap_fair_strike(const SurfaceT& surface,
   }
   if (!vol_of_vol_valid(cfg)) {
     return Err(ErrorCode::InvalidArgument, "vol_of_vol must be >= 0");
+  }
+  if (!wing_clamp_valid(cfg)) {
+    return Err(ErrorCode::InvalidArgument, "wing_clamp_k must not be NaN");
   }
 
   // K_vol ~= sqrt(2 pi / T) * C_ATMF / (F * df) — shared with

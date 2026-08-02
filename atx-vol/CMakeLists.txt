@@ -541,6 +541,14 @@ if(ATX_BUILD_EXAMPLES)
     target_link_libraries(atx-vol-strangle-varswap-driver
         PRIVATE atx::vol atx::core atx_warnings)
 
+    # Variance-strip diagnostic: per-session K_var at a constant tenor under the
+    # default config and a ladder of pinned log-strike spans, plus the wing IVs
+    # the strip reads — the instrument for attributing day-to-day fair-strike
+    # movement to surface regions. See examples/varswap_strip_diag.cpp.
+    add_executable(atx-vol-varswap-strip-diag examples/varswap_strip_diag.cpp)
+    target_link_libraries(atx-vol-varswap-strip-diag
+        PRIVATE atx::vol atx::core atx_warnings)
+
     # Projection-backed strategy-history database builder. The default template
     # is the requested 40-delta, three-calendar-month strangle, held to expiry
     # and delta-hedged at every stored close. Re-runs resume logical histories.

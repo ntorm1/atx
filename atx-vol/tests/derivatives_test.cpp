@@ -1,11 +1,15 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <vector>
 
+#include "atx/vol/black76.hpp"              // WingClamp oracle repricing
 #include "atx/vol/derivatives.hpp"
+#include "atx/vol/detail/strip_grid.hpp"    // strip::simpson_weight (WingClamp oracle)
 #include "atx/vol/detail/legacy_surface.hpp"  // EssviSurface (demoted, S4-T21)
 #include "atx/vol/priced_surface.hpp"  // E6: PricedSurface-native overloads
 #include "atx/vol/rates_curve.hpp"
@@ -612,6 +616,163 @@ TEST(ReservedValidation, DerivPrice_NonzeroCapDecOnVarSwap_ReturnsInvalidArgumen
   const auto q = deriv_price(surf, cs, c, cfg);
   ASSERT_FALSE(q.has_value());
   EXPECT_EQ(q.error().code(), ErrorCode::InvalidArgument);
+}
+
+// ── Wing clamp (uncertified-wing discipline) ──────────────────────────────
+//
+// The fit pipeline certifies a surface's no-arbitrage properties only on
+// |k| <= 0.5 (RiskSurfaceValidationConfig{}.k_min/k_max); beyond that band a
+// parametric eSSVI/SVI slice serves an UNBOUNDED linear-in-|k| extrapolation
+// that no quote ever disciplined. The strip's Standard span is ±1.5, so by
+// default ~2/3 of the integration span read pure extrapolation — on the
+// sp100-2026 XOM corpus that inflated the 3M fair strike from ~30 to ~38 vol
+// and put ~98% of its day-to-day mark variance in the fictional wings.
+//
+// `DerivConfig::wing_clamp_k` fixes the READS, not the span: nodes beyond the
+// trust band price at their true strikes under the BAND-EDGE vol (flat-vol
+// tails — no truncation bias), 0 selects the certified band, < 0 restores the
+// old unclamped behavior, and `DerivFlags::WingClamped` records that the strip
+// span exceeded the trust band so a mark's provenance is inspectable.
+
+// Steep-wing eSSVI surface: same phi/rho on both slices so the time-interp of
+// total variance stays exactly eSSVI-shaped at every k; ATM iv is sigma but
+// iv(-1.0) is ~2.1x sigma — a caricature of an undisciplined fitted wing.
+EssviSurface make_steep_wing_surface(double sigma, double T_lo, double T_hi) {
+  EssviSurface surf(2);
+  const EssviSlice s0{sigma * sigma * T_lo, 4.0, -0.7, T_lo};
+  const EssviSlice s1{sigma * sigma * T_hi, 4.0, -0.7, T_hi};
+  EXPECT_TRUE(surf.set_slice(0, s0).has_value());
+  EXPECT_TRUE(surf.set_slice(1, s1).has_value());
+  return surf;
+}
+
+// Hand Simpson replication of the strip with vol reads clamped to [-band, band]
+// on the exact grid the quote reports. Same quadrature convention on purpose:
+// the assertion is about WHICH vol each node reads, not about quadrature.
+double clamped_strip_oracle(const EssviSurface& surf, const CurveSet& cs, double T,
+                            const atx::vol::DerivQuote& grid_src, double band) {
+  const double F = cs.spot;          // flat curves: F == spot at every pillar
+  const double df = cs.yield.disc(T); // zero rates: 1.0
+  const std::size_t n = grid_src.strip_nodes_used;
+  const double k_lo = grid_src.strip_k_lo_used;
+  const double k_hi = grid_src.strip_k_hi_used;
+  const double dx = (k_hi - k_lo) / static_cast<double>(n - 1);
+  double integral = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const double x = k_lo + dx * static_cast<double>(i);
+    const double K = F * std::exp(x);
+    const double x_read = std::clamp(x, -band, band);
+    const double sigma = surf.iv(x_read, T);
+    const double price = atx::vol::black76_price(F, K, T, sigma, df,
+                                                 x < 0.0 ? atx::vol::Side::Put
+                                                         : atx::vol::Side::Call);
+    integral += atx::vol::strip::simpson_weight(i, n) * price / (df * K);
+  }
+  integral *= dx / 3.0;
+  return (2.0 / T) * integral;
+}
+
+TEST(WingClamp, DefaultClampReadsFlatBeyondCertifiedBand) {
+  const double sigma = 0.30;
+  const double T_test = 0.25;
+  const EssviSurface surf = make_steep_wing_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  // The wing really is steep and really is read by the unclamped strip.
+  ASSERT_GT(surf.iv(-1.0, T_test), 1.8 * sigma);
+
+  DerivConfig off = deriv_default_config();
+  off.wing_clamp_k = -1.0;  // old behavior: read the raw wing everywhere
+  const auto q_off = var_swap_fair_strike(surf, cs, T_test, off);
+  ASSERT_TRUE(q_off.has_value());
+  EXPECT_FALSE(has_flag(q_off->flags, DerivFlags::WingClamped));
+
+  const auto q_def = var_swap_fair_strike(surf, cs, T_test, deriv_default_config());
+  ASSERT_TRUE(q_def.has_value());
+
+  // Same span and node count — the clamp changes reads, never the grid.
+  EXPECT_EQ(q_def->strip_nodes_used, q_off->strip_nodes_used);
+  EXPECT_EQ(q_def->strip_k_lo_used, q_off->strip_k_lo_used);
+  EXPECT_EQ(q_def->strip_k_hi_used, q_off->strip_k_hi_used);
+
+  // Flat tails cut the fictional wing contribution, so the clamped strike is
+  // strictly below the raw one, and its provenance says so.
+  EXPECT_LT(q_def->fair_strike_dec, q_off->fair_strike_dec);
+  EXPECT_TRUE(has_flag(q_def->flags, DerivFlags::WingClamped));
+
+  // And it is exactly the certified-band flat-tail strip, node for node.
+  const double oracle = clamped_strip_oracle(surf, cs, T_test, *q_def, 0.5);
+  EXPECT_NEAR(q_def->fair_strike_dec, oracle, 1.0e-12);
+}
+
+TEST(WingClamp, FlatSmileStrikeUnchanged) {
+  const double sigma = 0.20;
+  const double T_test = 0.25;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivConfig off = deriv_default_config();
+  off.wing_clamp_k = -1.0;
+  const auto q_off = var_swap_fair_strike(surf, cs, T_test, off);
+  const auto q_def = var_swap_fair_strike(surf, cs, T_test, deriv_default_config());
+  ASSERT_TRUE(q_off.has_value());
+  ASSERT_TRUE(q_def.has_value());
+
+  // On a flat smile the band-edge vol IS the wing vol, so clamping moves
+  // nothing; the flag still records that tail nodes were read at the edge.
+  EXPECT_NEAR(q_def->fair_strike_dec, q_off->fair_strike_dec, 1.0e-9);
+  EXPECT_NEAR(q_def->fair_strike_dec, sigma * sigma, 5.0e-5);
+  EXPECT_TRUE(has_flag(q_def->flags, DerivFlags::WingClamped));
+}
+
+TEST(WingClamp, ExplicitBandTightensMonotonically) {
+  const double T_test = 0.25;
+  const EssviSurface surf = make_steep_wing_surface(0.30, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivConfig tight = deriv_default_config();
+  tight.wing_clamp_k = 0.25;
+  DerivConfig off = deriv_default_config();
+  off.wing_clamp_k = -1.0;
+
+  const auto q_tight = var_swap_fair_strike(surf, cs, T_test, tight);
+  const auto q_def = var_swap_fair_strike(surf, cs, T_test, deriv_default_config());
+  const auto q_off = var_swap_fair_strike(surf, cs, T_test, off);
+  ASSERT_TRUE(q_tight.has_value());
+  ASSERT_TRUE(q_def.has_value());
+  ASSERT_TRUE(q_off.has_value());
+
+  // On a monotone-steepening smile, a tighter trust band flattens more of the
+  // wing and can only lower the strike.
+  EXPECT_LT(q_tight->fair_strike_dec, q_def->fair_strike_dec);
+  EXPECT_LT(q_def->fair_strike_dec, q_off->fair_strike_dec);
+}
+
+TEST(WingClamp, NonFiniteBandRejected) {
+  const EssviSurface surf = make_flat_surface(0.20, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.wing_clamp_k = std::numeric_limits<double>::quiet_NaN();
+  const auto q = var_swap_fair_strike(surf, cs, 0.25, cfg);
+  ASSERT_FALSE(q.has_value());
+  EXPECT_EQ(q.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(WingClamp, FlagPropagatesThroughDerivPrice) {
+  const EssviSurface surf = make_steep_wing_surface(0.30, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivContract c{};
+  c.kind = DerivKind::VarSwap;
+  c.maturity_t = 0.25;
+  c.strike_dec = 0.09;
+  c.notional = 1.0;
+  c.rv_spec.n_obs_total = 63;
+
+  const auto q = deriv_price(surf, cs, c, deriv_default_config());
+  ASSERT_TRUE(q.has_value());
+  EXPECT_TRUE(has_flag(q->flags, DerivFlags::WingClamped));
 }
 
 }  // namespace

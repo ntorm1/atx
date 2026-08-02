@@ -252,6 +252,55 @@ process's streams, and be stoppable.
   `ATXVSA03`). The old "v1" / "v3" ordinals are gone from the headers — they
   named the same format both ways. Comment-only; no identifier changed.
 
+### CHANGED — the variance strip now reads flat-vol tails beyond the certified wing band (wing clamp)
+
+**What changed.** `var_swap_fair_strike` (and everything that prices through it:
+`deriv_price` on every swap kind, `deriv_greeks`, the backtest swap lane's daily
+marks) now clamps its SURFACE READS to a wing trust band. Strip nodes beyond the
+band keep their true strikes but price under the BAND-EDGE vol — flat-vol tails
+over the wings, never a truncated span, so the log-contract replication stays
+complete. The band is `DerivConfig::wing_clamp_k`: `0` (the default) selects the
+certified validation band `strip::kCertifiedWingHalfBand = 0.5` — the |k| ≤ 0.5
+band `RiskSurfaceValidationConfig` actually certifies, `static_assert`-tied so
+the two cannot drift — `> 0` is an explicit half-band, `< 0` restores the old
+unclamped reads, `NaN` is `InvalidArgument`. A new provenance flag
+`DerivFlags::WingClamped` (structural: "tails were in effect", set even when the
+smile is flat and the clamp moves nothing) records it on every quote. The strip
+span, node count, adaptive widening and truncation flags are untouched: this
+clamps *reads*, not the grid.
+
+**Why.** A parametric eSSVI/SVI slice serves an *unbounded linear-in-|k|*
+extrapolation at any k, no quote ever disciplines it beyond roughly the ATM
+region, and the fit pipeline certifies nothing outside |k| ≤ 0.5 — yet the
+Standard strip integrated it to ±1.5 with 1/K weighting. On the sp100-2026 XOM
+corpus that fiction read 82 vol at k = −1.0 (swinging ±22 vol pts/day), inflated
+the 3M fair strike to ~38 vol against a ~30 ATM and ~29.6 realized, and put
+~98% of the daily mark variance beyond |k| = 0.25 — the mechanism behind the
+XOM 2026 reference run's swap leg bleeding −$42k with ±$90k single-day marks
+and sign-flipping FD gamma. With the default clamp the same corpus prices
+~33.9 with ~3.5 vol pts/day of mark noise, in line with the ATM's own 3.3.
+
+**Effect on existing callers.** This moves K_var on ANY surface with wing
+structure beyond ±0.5 — deliberately. A flat or near-flat surface is unchanged
+(band-edge vol == wing vol), so the analytic `K_var == σ²` contracts all hold;
+a caller whose wings ARE quote-disciplined and who wants them integrated raw
+sets `wing_clamp_k = -1.0` (or any negative) and gets the pre-clamp number
+bit-for-bit. Gate: `WingClamp` (tests/derivatives_test.cpp), including a
+node-for-node flat-tail oracle at 1e-12.
+
+**The XOM 2026 reference run, re-taken under the clamp** (same corpus, gen 225,
+same window/config; artifacts in `xom-strangle-varswap-2026-wingclamp/`):
+strangle **+$1,501.64 — bit-identical**, the option lane never touches
+`DerivConfig`; variance swap **−$10,436.00** (was −$42,468.19); per-cycle swap
+P&L +$32,009 / −$35,471 / −$6,974 against strangle +$80,743 / −$50,173 /
+−$29,068 — the two legs finally live on the same scale. Daily swap-mark noise
+$18.0k (was $24.5k); what remains is the in-band sp100-2026 fit noise (ATM
+itself moves 3.3 vol pts/day on this corpus), which is the refit's job, not the
+pricer's. `swap_gamma`'s sign still flips day to day — that is a CONVENTION
+fact, not a defect: marks read the surface at fixed log-forward-moneyness, so
+the smile floats with a spot bump and a var swap's FD gamma is numerical noise
+around zero.
+
 ### NEW — strangle-vs-varswap comparison backtest + the XOM 2026 reference run (strangle-vs-varswap sprint, Tasks 1-5)
 
 **What shipped.** `strangle_varswap.hpp`/`.cpp` add
