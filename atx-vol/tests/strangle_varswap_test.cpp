@@ -1,17 +1,19 @@
-// atx-vol XOM strangle-vs-varswap comparison backtest — Task 1 gates.
+// atx-vol XOM strangle-vs-varswap comparison backtest — strategy gates.
 //
 // The OPTIONS leg of the comparison: a FIXED-EXPIRY, DAILY-RESTRIKE strangle.
 // One cycle picks a single expiry off the run's session grid and holds it; every
 // step inside the cycle closes both wings and reopens them at freshly resolved
 // +/-40 delta strikes on that step's surface, at the SAME expiry. The engine
 // settles the cycle at its expiry session and the next cycle opens on that same
-// step.
+// step. The SWAP leg is one equal-vega uncapped var swap per cycle, and the
+// SIGNALS are what the comparison reports per row.
 //
 // Gates:
 //   1. OpensFortyDeltaStrangleAtSnappedFixedExpiry — the inception pair sits at
 //      +/-40 delta on the hand-computed snapped session.
 //   2. RestrikesDailyAtFixedExpiry               — strikes move every step, the
-//      expiry does not, and the book never accumulates lots.
+//      expiry does not, the book never accumulates lots, and `strangle_vega`
+//      tracks the restruck pair.
 //   3. RollsIntoNewCycleAtExpiry                 — a new pair with a strictly
 //      LATER fixed expiry exists after the expiry session.
 //   4. HedgeSpecIsDeltaToZeroDaily               — the engine-owned hedge request.
@@ -19,6 +21,18 @@
 //      live strikes untouched (no fabricated strike, no reopen churn).
 //   6. FixesTheLastSessionWhenTheTenorOutrunsTheGrid — the short final cycle, and
 //      the exhausted grid that opens nothing at all.
+//   7. OpensEqualVegaVarSwapAtCycleStart         — one per cycle, fair-struck and
+//      sized to the strangle's entry vega.
+//   8. SwapLegDisabledMatchesOptionsOnly         — the swap lane is additive.
+//   9. SkipsSwapWhenVegaUnavailable              — no vega, no leg, never a
+//      fabricated quantity.
+//  10. SkipsSwapWhenCycleIsTooShortToAccrue      — the one-session tail cycle.
+//  11. SignalsMatchIndependentSwapGreeksOracle   — per-row swap greeks are the
+//      engine's own live contract, accrual and all.
+//  12. SignalsNaNWhenNoLiveSwap                  — an absent leg reports NOTHING,
+//      never 0.0.
+//  13. SkippedRestrikesCountsOnlyKeptStrikes     — the attribution counters mean
+//      exactly what they say.
 //
 // Fixture plumbing (synthetic eSSVI surfaces written as one-symbol archives per
 // date) mirrors backtest_swap_test.cpp. Per-step book state is read off
@@ -76,6 +90,10 @@ constexpr std::size_t kSessions = 7;
 constexpr double kTargetDelta = 0.40;
 constexpr double kContracts = 100.0;
 constexpr const char *kSymbol = "XOM";
+// The fixture's EXPLICIT spot path, at namespace scope because the Task 3 signal
+// oracle hand-computes the engine's realized-variance accrual off these very
+// numbers (r_i = ln(S_i/S_{i-1})) rather than reading it back off anything.
+constexpr double kSpots[kSessions] = {100.0, 106.0, 96.0, 103.0, 111.0, 94.0, 101.0};
 
 // A synthetic eSSVI PricedSurface (flat forward, genuine American premium via
 // q_eff=0.02), slices T in [0.05, 1.0]. Mirrors backtest_swap_test's make_surface.
@@ -158,12 +176,11 @@ struct Corpus {
 // simply absent that session.
 [[nodiscard]] Corpus make_corpus(const fs::path &dir,
                                  std::size_t dark_at = static_cast<std::size_t>(-1)) {
-  const double spots[kSessions] = {100.0, 106.0, 96.0, 103.0, 111.0, 94.0, 101.0};
   Corpus c;
   for (std::size_t d = 0; d < kSessions; ++d) {
     const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kStepNs;
     const bool dark = d == dark_at;
-    const PricedSurface s = make_surface(dark ? kDarkUid : kUid, spots[d], now);
+    const PricedSurface s = make_surface(dark ? kDarkUid : kUid, kSpots[d], now);
     char buf[16];
     std::snprintf(buf, sizeof buf, "2026-08-%02d", static_cast<int>(d) + 1);
     const std::string date = buf;
@@ -237,17 +254,26 @@ struct Corpus {
   return ba == bb;
 }
 
-// The `DerivContract` a swap lot IS on its OPEN date, rebuilt from the lot's own
-// terms under the engine's documented conventions: residual tenor over
-// `kNsPerYear`, and an `rv_spec` carrying the lot's schedule with NOTHING
-// realized — which is exactly an entry-day contract's state, because the engine
-// seeds a lot's fixing series on the first step AFTER it was opened. This is
-// backtest_swap_test's `reference_swap_mark` construction; nothing here reads
-// the strategy.
-[[nodiscard]] DerivContract entry_contract(const SwapLot &lot, std::int64_t ts_ns) noexcept {
+// The `DerivContract` a swap lot IS on the snapshot at `ts_ns`, rebuilt from the
+// lot's own terms under the engine's documented conventions: residual tenor over
+// `kNsPerYear`, and an `rv_spec` carrying the lot's schedule with the caller's
+// hand-computed accrual staged into it. This is backtest_swap_test's
+// `reference_swap_mark` construction; nothing here reads the strategy.
+//
+// `n_obs_done == 0` with a zero sum IS an entry-day (or seed-day) contract: the
+// engine's swap pass first sees a lot on the step AFTER it was opened, and that
+// step only seeds the fixing series.
+[[nodiscard]] DerivContract live_contract(const SwapLot &lot, std::int64_t ts_ns,
+                                          std::uint32_t n_obs_done,
+                                          double sum_sq_log_returns_done) noexcept {
   RealizedVarianceSpec rv{};
   rv.annualization = lot.annualization;
   rv.n_obs_total = lot.n_obs_total;
+  rv.n_obs_done = n_obs_done;
+  rv.sum_sq_log_returns_done = sum_sq_log_returns_done;
+  rv.rv_done_dec = n_obs_done == 0u ? 0.0
+                                    : lot.annualization * sum_sq_log_returns_done /
+                                          static_cast<double>(n_obs_done);
 
   DerivContract c;
   c.kind = lot.kind;
@@ -262,8 +288,10 @@ struct Corpus {
 // Independent greeks for that contract, against the very archive the engine
 // priced and through the same `SurfaceRef` bridge the engine's mark lane prices
 // through (`step_swap_lots` -> `deriv_price_on_ref`).
-[[nodiscard]] Result<DerivGreeks> entry_swap_greeks(const std::string &archive_path,
-                                                    const SwapLot &lot, std::int64_t ts_ns) {
+[[nodiscard]] Result<DerivGreeks> swap_greeks_at(const std::string &archive_path,
+                                                 const SwapLot &lot, std::int64_t ts_ns,
+                                                 std::uint32_t n_obs_done,
+                                                 double sum_sq_log_returns_done) {
   Result<MarketSnapshot> snap = MarketSnapshot::load(archive_path);
   if (!snap) {
     return atx::core::Err(snap.error());
@@ -271,10 +299,49 @@ struct Corpus {
   const SurfaceRef s = snap->find(lot.uid);
   if (s == nullptr) {
     return atx::core::Err(atx::core::ErrorCode::NotFound,
-                          "oracle: the swap lot's uid has no surface on its open date");
+                          "oracle: the swap lot's uid has no surface on that date");
   }
-  return detail::deriv_greeks_on_ref(s, entry_contract(lot, ts_ns), DerivConfig{},
-                                     DerivGreekBumps{});
+  return detail::deriv_greeks_on_ref(s,
+                                     live_contract(lot, ts_ns, n_obs_done, sum_sq_log_returns_done),
+                                     DerivConfig{}, DerivGreekBumps{});
+}
+
+[[nodiscard]] Result<DerivGreeks> entry_swap_greeks(const std::string &archive_path,
+                                                    const SwapLot &lot, std::int64_t ts_ns) {
+  return swap_greeks_at(archive_path, lot, ts_ns, /*n_obs_done=*/0u,
+                        /*sum_sq_log_returns_done=*/0.0);
+}
+
+// ── Task 3 oracles: the per-step signal columns ─────────────────────────────
+
+[[nodiscard]] const std::vector<double> *signal_series(const BacktestResult &r, const char *name) {
+  for (const auto &[series_name, values] : r.signals) {
+    if (series_name == name) {
+      return &values;
+    }
+  }
+  return nullptr;
+}
+
+// Relative agreement with a floor of 1.0 on the denominator, so a genuinely tiny
+// greek (a variance swap's delta) is compared on an absolute scale rather than
+// against a vanishing divisor.
+void expect_close(double got, double want, double rel, const char *what, std::size_t row) {
+  EXPECT_LE(std::fabs(got - want), rel * std::max(std::fabs(want), 1.0))
+      << what << " row " << row << ": got " << got << ", want " << want;
+}
+
+// Every swap-leg signal on `row` is NaN — the documented "no live swap" state.
+// EXACTLY NaN, never 0.0: a 0.0 there reads as a measured flat position.
+void expect_swap_signals_nan(const BacktestResult &r, std::size_t row) {
+  static constexpr const char *kSwapNames[] = {"swap_delta", "swap_gamma", "swap_vega",
+                                               "swap_theta", "swap_rho"};
+  for (const char *name : kSwapNames) {
+    const std::vector<double> *s = signal_series(r, name);
+    ASSERT_NE(s, nullptr) << name;
+    ASSERT_EQ(s->size(), r.size()) << name;
+    EXPECT_TRUE(std::isnan((*s)[row])) << name << " row " << row << ": " << (*s)[row];
+  }
 }
 
 // The option book's DOLLAR vega per 1.00 of vol: each lot's per-share American
@@ -426,12 +493,14 @@ TEST(StrangleVarswap, RestrikesDailyAtFixedExpiry) {
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
   const StrangleVarswapConfig scfg = make_config(c, 0.25);
   const std::int64_t expected_expiry = kBaseNow + 4LL * kStepNs;
+  const RunConfig rcfg;
 
   double prev_call_K = 0.0;
   double prev_put_K = 0.0;
+  double prev_strangle_vega = 0.0;
   for (std::size_t step = 0; step < 3u; ++step) {
     StrangleVsVarswapStrategy strat{scfg};
-    auto out = run_prefix(*clock, c, strat, step, RunConfig{});
+    auto out = run_prefix(*clock, c, strat, step, rcfg);
     ASSERT_TRUE(out.has_value()) << "step " << step << ": " << out.error().to_string();
     EXPECT_EQ(strat.unresolved_strike_steps(), 0u) << "step " << step;
     const PortfolioState &book = out->checkpoint.portfolio;
@@ -454,12 +523,28 @@ TEST(StrangleVarswap, RestrikesDailyAtFixedExpiry) {
     EXPECT_NEAR(lot_delta(c.dp[step].second, *call), kTargetDelta, 0.02) << "step " << step;
     EXPECT_NEAR(lot_delta(c.dp[step].second, *put), -kTargetDelta, 0.02) << "step " << step;
 
+    // Task 3 contract 2: `strangle_vega` describes THIS step's RESTRUCK book,
+    // priced on THIS step's surface. The oracle re-prices the engine's own post-
+    // step lots off the archive; it never reads the strategy. And because the
+    // strikes moved above, the value has to move with them — a signal computed
+    // once at cycle open (or carried from the previous step) fails here.
+    const std::vector<double> *sv = signal_series(out->rows, "strangle_vega");
+    ASSERT_NE(sv, nullptr) << "step " << step;
+    ASSERT_EQ(sv->size(), out->rows.size()) << "step " << step;
+    const double vega_oracle = book_option_vega(c.dp[step].second, book, rcfg.price);
+    ASSERT_TRUE(std::isfinite(vega_oracle)) << "step " << step;
+    ASSERT_GT(vega_oracle, 0.0) << "step " << step;
+    expect_close((*sv)[step], vega_oracle, 1.0e-9, "strangle_vega", step);
+
     if (step > 0u) {
       EXPECT_GT(std::fabs(call->contract.K - prev_call_K), 1.0e-6) << "step " << step;
       EXPECT_GT(std::fabs(put->contract.K - prev_put_K), 1.0e-6) << "step " << step;
+      EXPECT_GT(std::fabs((*sv)[step] - prev_strangle_vega), 1.0e-6 * prev_strangle_vega)
+          << "step " << step;
     }
     prev_call_K = call->contract.K;
     prev_put_K = put->contract.K;
+    prev_strangle_vega = (*sv)[step];
   }
 }
 
@@ -897,4 +982,266 @@ TEST(StrangleVarswap, SkipsSwapWhenCycleIsTooShortToAccrue) {
   // booked one, so both columns are untouched zeros on that row.
   EXPECT_TRUE(bits_equal(full->rows.swap_pv.back(), 0.0));
   EXPECT_TRUE(bits_equal(full->rows.swap_pnl.back(), 0.0));
+}
+
+// ── 11. Per-step swap greeks are the engine's own live contract ─────────────
+//
+// Contracts 1 and 4 of the Task 3 brief. The swap greeks are RECOMPUTED every
+// step against that step's snapshot and that step's ACCRUAL — not carried from
+// the cycle's entry — so the oracle here rebuilds the engine's accrual state by
+// hand off the fixture's spot path (the lot is first SEEN by the swap pass one
+// step after it is opened, and that step only seeds the series) and prices the
+// resulting contract through the same bridge the engine's mark lane uses. A
+// signal that staged the accrual one step early, or reused the entry contract,
+// or forgot the qty scaling, disagrees on at least one of these four rows.
+TEST(StrangleVarswap, SignalsMatchIndependentSwapGreeksOracle) {
+  const fs::path dir = fresh_dir("signals");
+  const Corpus c = make_corpus(dir);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const StrangleVarswapConfig scfg = make_config(c, 0.25);
+  const RunConfig rcfg;
+
+  StrangleVsVarswapStrategy strat{scfg};
+  auto out = run_backtest_incremental(*clock, strat, rcfg, nullptr);
+  ASSERT_TRUE(out.has_value()) << out.error().to_string();
+  const BacktestResult &r = out->rows;
+  ASSERT_EQ(r.size(), kSessions);
+
+  // Contract 4: every column Task 4's renderer reads exists under its exact name
+  // and is row-parallel to `date`.
+  static constexpr const char *kSignalNames[] = {
+      "swap_delta", "swap_gamma",    "swap_vega",         "swap_theta",
+      "swap_rho",   "strangle_vega", "skipped_restrikes", "skipped_swaps"};
+  for (const char *name : kSignalNames) {
+    const std::vector<double> *s = signal_series(r, name);
+    ASSERT_NE(s, nullptr) << name;
+    EXPECT_EQ(s->size(), r.date.size()) << name;
+    EXPECT_EQ(s->size(), r.ts_ns.size()) << name;
+  }
+  const std::vector<double> &sig_delta = *signal_series(r, "swap_delta");
+  const std::vector<double> &sig_gamma = *signal_series(r, "swap_gamma");
+  const std::vector<double> &sig_vega = *signal_series(r, "swap_vega");
+  const std::vector<double> &sig_theta = *signal_series(r, "swap_theta");
+  const std::vector<double> &sig_rho = *signal_series(r, "swap_rho");
+  const std::vector<double> &sig_strangle = *signal_series(r, "strangle_vega");
+
+  // Cycle 1's swap lot, read off the ENGINE's own book on its open date.
+  StrangleVsVarswapStrategy open_strat{scfg};
+  auto opened = run_prefix(*clock, c, open_strat, /*last_index=*/0u, rcfg);
+  ASSERT_TRUE(opened.has_value()) << opened.error().to_string();
+  ASSERT_EQ(opened->checkpoint.portfolio.swap_lots.size(), 1u);
+  const SwapLot swap1 = opened->checkpoint.portfolio.swap_lots.front();
+  ASSERT_EQ(swap1.expiry_ts_ns, kBaseNow + 4LL * kStepNs);
+  ASSERT_NE(swap1.qty, 0.0);
+
+  // The accrual the engine WILL have taken by each row, hand-computed from the
+  // fixture's spot path: row 0 opens the lot (the swap pass has never seen it),
+  // row 1 seeds the series at that row's spot and accrues nothing, and every row
+  // after that adds exactly one return.
+  const double ra = std::log(kSpots[2] / kSpots[1]);
+  const double rb = std::log(kSpots[3] / kSpots[2]);
+  struct AccrualRow {
+    std::size_t row;
+    std::uint32_t n_obs_done;
+    double sum_sq;
+  };
+  const AccrualRow kAccrued[] = {
+      {0u, 0u, 0.0},
+      {1u, 0u, 0.0},
+      {2u, 1u, ra * ra},
+      {3u, 2u, ra * ra + rb * rb},
+  };
+  for (const AccrualRow &a : kAccrued) {
+    const std::int64_t ts = kBaseNow + static_cast<std::int64_t>(a.row) * kStepNs;
+    const Result<DerivGreeks> g =
+        swap_greeks_at(c.dp[a.row].second, swap1, ts, a.n_obs_done, a.sum_sq);
+    ASSERT_TRUE(g.has_value()) << "row " << a.row << ": " << g.error().to_string();
+    // Not vacuously green: this really is a live, non-degenerate position.
+    ASSERT_TRUE(std::isfinite(g->vega)) << "row " << a.row;
+    ASSERT_NE(g->vega, 0.0) << "row " << a.row;
+    expect_close(sig_delta[a.row], swap1.qty * g->delta, 1.0e-12, "swap_delta", a.row);
+    expect_close(sig_gamma[a.row], swap1.qty * g->gamma, 1.0e-12, "swap_gamma", a.row);
+    expect_close(sig_vega[a.row], swap1.qty * g->vega, 1.0e-12, "swap_vega", a.row);
+    expect_close(sig_theta[a.row], swap1.qty * g->theta, 1.0e-12, "swap_theta", a.row);
+    expect_close(sig_rho[a.row], swap1.qty * g->rho, 1.0e-12, "swap_rho", a.row);
+  }
+
+  // Row 4 settles cycle 1's swap and opens cycle 2's on the SAME step, so the
+  // signals there must describe the new lot at its own entry state — not the
+  // settled lot's last accrual, and not a stale carry.
+  StrangleVsVarswapStrategy roll_strat{scfg};
+  auto rolled = run_prefix(*clock, c, roll_strat, /*last_index=*/4u, rcfg);
+  ASSERT_TRUE(rolled.has_value()) << rolled.error().to_string();
+  ASSERT_EQ(rolled->checkpoint.portfolio.swap_lots.size(), 1u);
+  const SwapLot swap2 = rolled->checkpoint.portfolio.swap_lots.front();
+  ASSERT_NE(swap2.id, swap1.id);
+  const Result<DerivGreeks> g4 = entry_swap_greeks(c.dp[4].second, swap2, kBaseNow + 4LL * kStepNs);
+  ASSERT_TRUE(g4.has_value()) << g4.error().to_string();
+  expect_close(sig_vega[4], swap2.qty * g4->vega, 1.0e-12, "swap_vega", 4u);
+  expect_close(sig_theta[4], swap2.qty * g4->theta, 1.0e-12, "swap_theta", 4u);
+
+  // EQUAL VEGA, now visible in the columns: on a cycle-open row the two legs
+  // carry the same first-order exposure by construction, which is what makes
+  // every later row of the comparison second-order.
+  expect_close(sig_vega[0], sig_strangle[0], 1.0e-12, "swap_vega vs strangle_vega", 0u);
+  expect_close(sig_vega[4], sig_strangle[4], 1.0e-12, "swap_vega vs strangle_vega", 4u);
+
+  // Both counters are emitted on every row and clean on this fixture.
+  const std::vector<double> &sig_skipped_restrikes = *signal_series(r, "skipped_restrikes");
+  const std::vector<double> &sig_skipped_swaps = *signal_series(r, "skipped_swaps");
+  for (std::size_t i = 0; i < r.size(); ++i) {
+    EXPECT_TRUE(bits_equal(sig_skipped_restrikes[i], 0.0)) << "row " << i;
+    EXPECT_TRUE(bits_equal(sig_skipped_swaps[i], 0.0)) << "row " << i;
+  }
+}
+
+// ── 12. No live swap ⇒ NaN, never 0.0 ───────────────────────────────────────
+//
+// Contract 3. Two arms, because a zero in a swap greek column is indistinguish-
+// able from a real flat position and both arms occur on ordinary runs: the leg
+// switched off entirely, and the ONE-LEGGED TAIL CYCLE that any corpus whose
+// calendar runs out before the tenor ends on.
+TEST(StrangleVarswap, SignalsNaNWhenNoLiveSwap) {
+  const RunConfig rcfg;
+
+  // Arm A — the swap leg is disabled, so no row ever carries a swap.
+  const fs::path off_dir = fresh_dir("signalsoff");
+  const Corpus off_c = make_corpus(off_dir);
+  auto off_clock = Clock::from_manifest(off_c.manifest);
+  ASSERT_TRUE(off_clock.has_value()) << off_clock.error().to_string();
+  StrangleVarswapConfig off_cfg = make_config(off_c, 0.25);
+  off_cfg.enable_swap_leg = false;
+
+  StrangleVsVarswapStrategy off_strat{off_cfg};
+  auto off = run_backtest_incremental(*off_clock, off_strat, rcfg, nullptr);
+  ASSERT_TRUE(off.has_value()) << off.error().to_string();
+  ASSERT_EQ(off->rows.size(), kSessions);
+  const std::vector<double> *off_strangle = signal_series(off->rows, "strangle_vega");
+  ASSERT_NE(off_strangle, nullptr);
+  for (std::size_t i = 0; i < off->rows.size(); ++i) {
+    expect_swap_signals_nan(off->rows, i);
+  }
+  // ... while the OPTIONS leg is still measured on every row it is live, so the
+  // NaNs above are the swap lane's own state and not a blanket "signals off".
+  for (std::size_t i = 0; i + 1u < off->rows.size(); ++i) {
+    EXPECT_TRUE(std::isfinite((*off_strangle)[i])) << "row " << i;
+    EXPECT_GT((*off_strangle)[i], 0.0) << "row " << i;
+  }
+
+  // Arm B — the one-legged tail. 140 calendar days: cycle 1 runs ref0 -> ref5 and
+  // carries a swap; cycle 2 opens on ref5 with a single session left, which is
+  // too short to accrue a return, so it runs options-only to the end. Rows 5 and
+  // 6 are therefore NORMAL data with no swap at all, not an error.
+  const fs::path dir = fresh_dir("signalstail");
+  const Corpus c = make_corpus(dir);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  StrangleVsVarswapStrategy strat{make_config(c, 140.0 / 365.25)};
+  auto out = run_backtest_incremental(*clock, strat, rcfg, nullptr);
+  ASSERT_TRUE(out.has_value()) << out.error().to_string();
+  const BacktestResult &r = out->rows;
+  ASSERT_EQ(r.size(), kSessions);
+  ASSERT_EQ(strat.skipped_swap_cycles(), 1u);
+
+  const std::vector<double> *vega = signal_series(r, "swap_vega");
+  const std::vector<double> *strangle = signal_series(r, "strangle_vega");
+  const std::vector<double> *skipped_swaps = signal_series(r, "skipped_swaps");
+  const std::vector<double> *skipped_restrikes = signal_series(r, "skipped_restrikes");
+  ASSERT_NE(vega, nullptr);
+  ASSERT_NE(strangle, nullptr);
+  ASSERT_NE(skipped_swaps, nullptr);
+  ASSERT_NE(skipped_restrikes, nullptr);
+
+  for (std::size_t i = 0; i <= 4u; ++i) {
+    EXPECT_TRUE(std::isfinite((*vega)[i])) << "row " << i;
+    EXPECT_NE((*vega)[i], 0.0) << "row " << i;
+  }
+  expect_swap_signals_nan(r, 5u);
+  expect_swap_signals_nan(r, 6u);
+  // The strangle is live on every row but the last, where the calendar runs out
+  // and the book goes flat — the same NaN convention, one leg over.
+  for (std::size_t i = 0; i <= 5u; ++i) {
+    EXPECT_TRUE(std::isfinite((*strangle)[i])) << "row " << i;
+  }
+  EXPECT_TRUE(std::isnan((*strangle)[6u]));
+  // The skip is REPORTED on the rows it affects rather than only at the end of
+  // the run: the counter steps exactly where the tail cycle opened one-legged.
+  for (std::size_t i = 0; i <= 4u; ++i) {
+    EXPECT_TRUE(bits_equal((*skipped_swaps)[i], 0.0)) << "row " << i;
+  }
+  EXPECT_EQ((*skipped_swaps)[5u], 1.0);
+  EXPECT_EQ((*skipped_swaps)[6u], 1.0);
+  for (std::size_t i = 0; i < r.size(); ++i) {
+    EXPECT_TRUE(bits_equal((*skipped_restrikes)[i], 0.0)) << "row " << i;
+  }
+}
+
+// ── 13. `skipped_restrikes` counts KEPT strikes, and nothing else ───────────
+//
+// The column has to mean one thing. A step that could not resolve the target
+// delta while a pair was LIVE really did skip a restrike — the old strikes were
+// kept. A step that could not resolve one while the book was EMPTY (inception,
+// or the step a settled cycle rolls on) skipped nothing: there were no strikes
+// to keep and the strangle simply does not exist that session. Reporting the
+// second as a skipped restrike would make the column a lie on exactly the runs
+// it is there to diagnose, so the two are counted apart.
+TEST(StrangleVarswap, SkippedRestrikesCountsOnlyKeptStrikes) {
+  const RunConfig rcfg;
+
+  // Arm A — the board is dark on INCEPTION: nothing was ever struck, so no
+  // restrike was skipped, even though the step is unresolved.
+  const fs::path dark_dir = fresh_dir("signalsdark0");
+  const Corpus dark_c = make_corpus(dark_dir, /*dark_at=*/0u);
+  auto dark_clock = Clock::from_manifest(dark_c.manifest);
+  ASSERT_TRUE(dark_clock.has_value()) << dark_clock.error().to_string();
+  StrangleVsVarswapStrategy dark_strat{make_config(dark_c, 0.25)};
+  auto dark = run_prefix(*dark_clock, dark_c, dark_strat, /*last_index=*/3u, rcfg);
+  ASSERT_TRUE(dark.has_value()) << dark.error().to_string();
+  ASSERT_EQ(dark->rows.size(), 4u);
+  EXPECT_EQ(dark_strat.unresolved_strike_steps(), 1u); // the step IS unresolved ...
+  EXPECT_EQ(dark_strat.skipped_restrikes(), 0u);       // ... but nothing was kept
+  EXPECT_EQ(dark_strat.unopened_strangle_steps(), 1u);
+  const std::vector<double> *dark_skips = signal_series(dark->rows, "skipped_restrikes");
+  ASSERT_NE(dark_skips, nullptr);
+  for (std::size_t i = 0; i < dark->rows.size(); ++i) {
+    EXPECT_TRUE(bits_equal((*dark_skips)[i], 0.0)) << "row " << i;
+  }
+  // The inception row has no strangle to measure either.
+  const std::vector<double> *dark_strangle = signal_series(dark->rows, "strangle_vega");
+  ASSERT_NE(dark_strangle, nullptr);
+  EXPECT_TRUE(std::isnan((*dark_strangle)[0]));
+  EXPECT_TRUE(std::isfinite((*dark_strangle)[1]));
+
+  // Arm B — the board goes dark MID-CYCLE with a live pair: the strikes really
+  // were kept, and the column steps on exactly that row.
+  const fs::path held_dir = fresh_dir("signalsdark2");
+  const Corpus held_c = make_corpus(held_dir, /*dark_at=*/2u);
+  auto held_clock = Clock::from_manifest(held_c.manifest);
+  ASSERT_TRUE(held_clock.has_value()) << held_clock.error().to_string();
+  StrangleVarswapConfig held_cfg = make_config(held_c, 0.25);
+  held_cfg.enable_swap_leg = false; // the swap lane fails closed on a dark session
+  RunConfig held_rcfg;
+  held_rcfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+
+  StrangleVsVarswapStrategy held_strat{held_cfg};
+  auto held = run_prefix(*held_clock, held_c, held_strat, /*last_index=*/3u, held_rcfg);
+  ASSERT_TRUE(held.has_value()) << held.error().to_string();
+  ASSERT_EQ(held->rows.size(), 4u);
+  EXPECT_EQ(held_strat.unresolved_strike_steps(), 1u);
+  EXPECT_EQ(held_strat.skipped_restrikes(), 1u);
+  EXPECT_EQ(held_strat.unopened_strangle_steps(), 0u);
+  const std::vector<double> *held_skips = signal_series(held->rows, "skipped_restrikes");
+  ASSERT_NE(held_skips, nullptr);
+  EXPECT_TRUE(bits_equal((*held_skips)[0], 0.0));
+  EXPECT_TRUE(bits_equal((*held_skips)[1], 0.0));
+  EXPECT_EQ((*held_skips)[2], 1.0);
+  EXPECT_EQ((*held_skips)[3], 1.0); // cumulative: the hole stays on the record
+  // The pair is held, but it cannot be VALUED on the dark session, so its vega
+  // is not reported as anything.
+  const std::vector<double> *held_strangle = signal_series(held->rows, "strangle_vega");
+  ASSERT_NE(held_strangle, nullptr);
+  EXPECT_TRUE(std::isfinite((*held_strangle)[1]));
+  EXPECT_TRUE(std::isnan((*held_strangle)[2]));
+  EXPECT_TRUE(std::isfinite((*held_strangle)[3]));
 }

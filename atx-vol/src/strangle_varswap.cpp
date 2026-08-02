@@ -29,6 +29,16 @@ constexpr double kInt64ExclusiveUpper = 0x1p63;
 constexpr std::ptrdiff_t kUint32Max =
     static_cast<std::ptrdiff_t>(std::numeric_limits<std::uint32_t>::max());
 
+constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+
+// The engine's swap MARK config (`swap_price_cfg`, backtest.cpp), transcribed.
+// The signals differentiate the marks the engine actually took, so they price
+// through the engine's config rather than `cfg_.deriv_cfg` — which is documented
+// as the ENTRY SOLVE's alone. At the default the two are the same object and the
+// distinction is moot; set a non-default entry config and the signals still
+// describe the position the run is being paid on.
+const DerivConfig kEngineSwapMarkCfg{};
+
 } // namespace
 
 StrangleVsVarswapStrategy::StrangleVsVarswapStrategy(StrangleVarswapConfig cfg)
@@ -152,17 +162,20 @@ DerivContract StrangleVsVarswapStrategy::swap_contract(const SwapLot &lot, std::
   return contract;
 }
 
-void StrangleVsVarswapStrategy::open_cycle_swap(const MarketSnapshot &base,
-                                                const ResolvedStrangle &wings, PortfolioState &book,
-                                                std::uint64_t &next_lot_id) {
-  // The strangle's ENTRY vega, in dollars per 1.00 of parallel vol: per-share
-  // American vega (positive on BOTH wings) x contracts x contract size, i.e. the
-  // very scaling the portfolio pricer applies to a position's greeks. Dropping
-  // the multiplier would size the swap 100x light.
-  double strangle_vega = 0.0;
+double
+StrangleVsVarswapStrategy::strangle_dollar_vega(const ResolvedStrangle &wings) const noexcept {
+  // Dropping the multiplier would size the swap 100x light and report a dollar
+  // vega 100x light beside it.
+  double total = 0.0;
   for (const FullGreekSeed &seed : wings.seeds) {
-    strangle_vega += seed.greeks().vega * cfg_.contracts * kMultiplier;
+    total += seed.greeks().vega * cfg_.contracts * kMultiplier;
   }
+  return total;
+}
+
+void StrangleVsVarswapStrategy::open_cycle_swap(const MarketSnapshot &base,
+                                                const ResolvedStrangle &wings, double strangle_vega,
+                                                PortfolioState &book, std::uint64_t &next_lot_id) {
   if (!(std::isfinite(strangle_vega) && strangle_vega != 0.0)) {
     ++skipped_swap_cycles_;
     return;
@@ -259,7 +272,21 @@ Status StrangleVsVarswapStrategy::on_step(const MarketSnapshot &base, std::size_
 Status StrangleVsVarswapStrategy::on_step(const MarketSnapshot &base, std::size_t /*step_index*/,
                                           PortfolioState &book, std::uint64_t &next_lot_id,
                                           const PriceOptions &price_options) {
+  ATX_TRY_VOID(step(base, book, next_lot_id, price_options));
+  // Only on success: an errored step aborts the whole run, and refreshing off a
+  // half-built book would be state nobody can use for state nobody will read.
+  refresh_signal_state(base, book);
+  return Ok();
+}
+
+Status StrangleVsVarswapStrategy::step(const MarketSnapshot &base, PortfolioState &book,
+                                       std::uint64_t &next_lot_id,
+                                       const PriceOptions &price_options) {
   last_entry_seeds_.clear();
+  // Nothing measured YET this step. Every path that resolves a pair overwrites
+  // this; every path that does not leaves the step reporting "not measured"
+  // rather than the previous step's vega.
+  last_strangle_vega_ = kNaN;
   if (!validated_) {
     ATX_TRY_VOID(validate_config());
     validated_ = true;
@@ -283,7 +310,16 @@ Status StrangleVsVarswapStrategy::on_step(const MarketSnapshot &base, std::size_
     // KEEP THE LIVE STRIKES. The alternative — closing without reopening, or
     // reopening at a fabricated strike — either flattens real exposure for a
     // data gap or books a position the surface never priced.
-    ++unresolved_strike_steps_;
+    //
+    // Which of the two counters this is depends on whether there is anything TO
+    // keep. `book.lots` holds the survivors the engine did not settle, so an
+    // empty book here means inception or a cycle roll: no strikes were held, and
+    // saying otherwise would put a fictitious hold on the record.
+    if (book.lots.empty()) {
+      ++unopened_strangle_steps_;
+    } else {
+      ++skipped_restrikes_;
+    }
     if (cycle_opened && cfg_.enable_swap_leg) {
       // The cycle is fixed regardless (its expiry comes off the calendar, not
       // the surface) but there is no entry vega to size a swap against, and the
@@ -310,15 +346,149 @@ Status StrangleVsVarswapStrategy::on_step(const MarketSnapshot &base, std::size_
     lot.entry_price = wings->mark[w]; // fill at the model mid
     book.lots.push_back(lot);
   }
+  // The book the engine will price this row IS this pair, so its dollar vega is
+  // both the comparison's `strangle_vega` signal and — on a cycle-open step —
+  // the quantity the swap is sized against.
+  last_strangle_vega_ = strangle_dollar_vega(*wings);
   // The swap opens ONCE, on the step that FIXES the cycle — never on a restrike,
   // because the swap-lot lane is append-only and held to expiry (there is no
   // unwind price for an OTC swap here), so a per-step reopen would pile up one
   // stale leg per session instead of expressing today's view.
   if (cycle_opened && cfg_.enable_swap_leg) {
-    open_cycle_swap(base, *wings, book, next_lot_id);
+    open_cycle_swap(base, *wings, last_strangle_vega_, book, next_lot_id);
   }
   last_entry_seeds_ = std::move(wings->seeds);
   return Ok();
+}
+
+const StrangleVsVarswapStrategy::SwapMirror *
+StrangleVsVarswapStrategy::find_mirror(std::uint64_t lot_id) const noexcept {
+  for (const SwapMirror &mirror : swap_mirrors_) {
+    if (mirror.lot_id == lot_id) {
+      return &mirror;
+    }
+  }
+  return nullptr;
+}
+
+void StrangleVsVarswapStrategy::refresh_signal_state(const MarketSnapshot &base,
+                                                     const PortfolioState &book) {
+  // Lots the engine settled this step took their terminal fixing and left the
+  // book before `on_step`; their accrual is finished business.
+  std::erase_if(swap_mirrors_, [&book](const SwapMirror &mirror) {
+    return std::none_of(book.swap_lots.begin(), book.swap_lots.end(),
+                        [&mirror](const SwapLot &lot) { return lot.id == mirror.lot_id; });
+  });
+  for (const SwapLot &lot : book.swap_lots) {
+    const auto found = std::find_if(swap_mirrors_.begin(), swap_mirrors_.end(),
+                                    [&lot](const SwapMirror &m) { return m.lot_id == lot.id; });
+    if (found == swap_mirrors_.end()) {
+      // FIRST SIGHT, and deliberately no fixing: the engine's swap pass will not
+      // see this lot until the next step, and that step is the one that seeds
+      // its series. Taking a fixing here would age every later mark by a session.
+      SwapMirror fresh;
+      fresh.lot_id = lot.id;
+      fresh.rv.annualization = lot.annualization;
+      fresh.rv.n_obs_total = lot.n_obs_total;
+      swap_mirrors_.push_back(fresh);
+      continue;
+    }
+    SwapMirror &mirror = *found;
+    const SurfaceRef surface = base.find(lot.uid);
+    if (surface == nullptr) {
+      mirror.desynced = true; // the engine has already failed the run on this
+      continue;
+    }
+    const double spot = surface->pricing().S;
+    if (!(spot > 0.0)) {
+      mirror.desynced = true;
+      continue;
+    }
+    if (!mirror.have_prev) {
+      mirror.prev_spot = spot; // the seed observation accrues nothing
+      mirror.have_prev = true;
+      continue;
+    }
+    if (mirror.rv.n_obs_done >= mirror.rv.n_obs_total) {
+      continue; // fully observed: the series is closed and `prev_spot` freezes
+    }
+    const double r = std::log(spot / mirror.prev_spot);
+    mirror.rv.sum_sq_log_returns_done += r * r;
+    mirror.rv.n_obs_done += 1u;
+    mirror.prev_spot = spot;
+    mirror.rv.rv_done_dec = mirror.rv.annualization * mirror.rv.sum_sq_log_returns_done /
+                            static_cast<double>(mirror.rv.n_obs_done);
+  }
+  live_swaps_.assign(book.swap_lots.begin(), book.swap_lots.end());
+  signal_ts_ns_ = base.ts_ns();
+  stepped_ = true;
+}
+
+std::vector<std::pair<std::string, double>>
+StrangleVsVarswapStrategy::signals(const MarketSnapshot &base) const {
+  // The cached accrual is as-of ONE snapshot. Handed any other, the swap greeks
+  // would value this row's fixings against someone else's market — report
+  // nothing instead. The engine never trips this: `record_signals(*base)` runs
+  // on the same snapshot `on_step` was just given.
+  const bool as_of = stepped_ && base.ts_ns() == signal_ts_ns_;
+
+  double delta = kNaN;
+  double gamma = kNaN;
+  double vega = kNaN;
+  double theta = kNaN;
+  double rho = kNaN;
+  if (as_of && !live_swaps_.empty()) {
+    double sum_delta = 0.0;
+    double sum_gamma = 0.0;
+    double sum_vega = 0.0;
+    double sum_theta = 0.0;
+    double sum_rho = 0.0;
+    bool priced = true;
+    for (const SwapLot &lot : live_swaps_) {
+      const SwapMirror *mirror = find_mirror(lot.id);
+      const SurfaceRef surface = base.find(lot.uid);
+      if (mirror == nullptr || mirror->desynced || surface == nullptr) {
+        priced = false;
+        break;
+      }
+      // The contract the engine's mark lane priced this row, rebuilt through the
+      // one helper that also built the entry solve's — residual tenor plus the
+      // fixings observed so far.
+      const Result<DerivGreeks> greeks =
+          detail::deriv_greeks_on_ref(surface, swap_contract(lot, base.ts_ns(), mirror->rv),
+                                      kEngineSwapMarkCfg, DerivGreekBumps{});
+      if (!greeks) {
+        priced = false; // never a PARTIAL total: one unpriced lot voids the set
+        break;
+      }
+      // Qty-scaled, exactly as the engine scales this lane's marks
+      // (`pv_scaled = lot.qty * quote.pv`), so these are position dollars.
+      sum_delta += lot.qty * greeks->delta;
+      sum_gamma += lot.qty * greeks->gamma;
+      sum_vega += lot.qty * greeks->vega;
+      sum_theta += lot.qty * greeks->theta;
+      sum_rho += lot.qty * greeks->rho;
+    }
+    if (priced) {
+      delta = sum_delta;
+      gamma = sum_gamma;
+      vega = sum_vega;
+      theta = sum_theta;
+      rho = sum_rho;
+    }
+  }
+
+  std::vector<std::pair<std::string, double>> out;
+  out.reserve(8);
+  out.emplace_back("swap_delta", delta);
+  out.emplace_back("swap_gamma", gamma);
+  out.emplace_back("swap_vega", vega);
+  out.emplace_back("swap_theta", theta);
+  out.emplace_back("swap_rho", rho);
+  out.emplace_back("strangle_vega", as_of ? last_strangle_vega_ : kNaN);
+  out.emplace_back("skipped_restrikes", static_cast<double>(skipped_restrikes_));
+  out.emplace_back("skipped_swaps", static_cast<double>(skipped_swap_cycles_));
+  return out;
 }
 
 } // namespace atx::vol
