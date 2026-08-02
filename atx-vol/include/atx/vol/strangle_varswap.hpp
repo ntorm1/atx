@@ -80,6 +80,11 @@ struct StrangleVarswapConfig {
   // non-default config here changes what the swap is STRUCK at, never how it is
   // subsequently valued. Left at the default the two agree exactly, which is
   // the only setting that opens the swap at a genuine zero PV.
+  //
+  // The `swap_*` SIGNALS follow the engine, not this field, so that they explain
+  // the marks the run is actually paid on. A non-default value here therefore
+  // also breaks the `strangle_vega == swap_vega` identity on a cycle-open row —
+  // the same one divergence, seen in the signal columns. See `signals()`.
   DerivConfig deriv_cfg{};
 };
 
@@ -124,10 +129,22 @@ public:
   //       declines the roll stencil inside one bump width of expiry.
   //   strangle_vega
   //       The option book's DOLLAR vega on this row's snapshot: the very
-  //       quantity the cycle's swap was sized against, so on a cycle-open row
-  //       that DID get a swap it equals `swap_vega` by construction. NaN on a
-  //       step that could not resolve (and therefore could not price) its wings,
-  //       and on a step with no live cycle.
+  //       quantity the cycle's swap was sized against. NaN on a step that could
+  //       not resolve (and therefore could not price) its wings, and on a step
+  //       with no live cycle.
+  //
+  //       ON A CYCLE-OPEN ROW THAT GOT A SWAP THIS EQUALS `swap_vega` — but that
+  //       identity is CONDITIONAL on `deriv_cfg` being left at its default, and
+  //       is not a property of the two columns in general. The swap's quantity
+  //       is solved under `deriv_cfg` (the entry solve's config, by that field's
+  //       own contract) while these signals price under the engine's mark config
+  //       (`swap_price_cfg`, backtest.cpp:2546, i.e. `DerivConfig{}`), because
+  //       what they are FOR is explaining the marks the run is paid on. Set a
+  //       non-default `deriv_cfg` and the two columns are computed through
+  //       different pricers, so they differ on the open row by however much
+  //       those pricers differ. That is not a defect of either column: it is the
+  //       same divergence `deriv_cfg`'s own documentation already warns opens
+  //       the swap at a non-zero PV.
   //   skipped_restrikes, skipped_swaps
   //       `skipped_restrikes()` and `skipped_swap_cycles()` as of this row —
   //       CUMULATIVE, so a hole in the schedule stays on the record and a
@@ -230,11 +247,24 @@ private:
     RealizedVarianceSpec rv{};
     double prev_spot{0.0};
     bool have_prev{false};
-    // Set when a fixing could not be taken (no surface, or a non-positive spot).
-    // The accrual is then permanently behind the engine's, so this lot's greeks
-    // report NaN forever rather than valuing a frozen series. Unreachable while
-    // the engine fails the whole run on the same condition; it exists so that
-    // softening that policy cannot turn into a silently wrong number here.
+    // Set when this mirror cannot be trusted to equal the engine's accrual, so
+    // the lot's greeks report NaN forever rather than a confident wrong number.
+    // Two causes:
+    //
+    //   * A RESTORED LOT. `run_backtest_incremental` reloads
+    //     `BacktestCheckpoint::portfolio` AND `::swap_accruals` (backtest.cpp
+    //     :2517, :2544) — but a strategy has no checkpoint of its own, so
+    //     resuming a segment with a freshly-constructed instance hands a
+    //     half-accrued swap to a strategy that has never seen a fixing for it.
+    //     Mirroring from scratch there would report the greeks of a swap with
+    //     ZERO realized variance: finite, plausible, and wrong for the whole
+    //     resumed segment. A lot that was already in the book when a step BEGAN
+    //     and has no mirror is therefore marked here instead — the accrual is
+    //     unreachable, and unreachable is reported as unknown.
+    //   * A fixing that could not be taken (no surface, or a non-positive spot).
+    //     Unreachable while the engine fails the whole run on the same
+    //     condition; it exists so that softening that policy cannot turn into a
+    //     silently wrong number here.
     bool desynced{false};
   };
 
@@ -299,8 +329,11 @@ private:
 
   // Take this snapshot's fixing into the mirrors, adopt lots the engine settled
   // out of / this step opened into the book, and stamp the snapshot the cached
-  // signal state is as-of.
-  void refresh_signal_state(const MarketSnapshot &base, const PortfolioState &book);
+  // signal state is as-of. `swap_ids_before_step` decides how a lot with no
+  // mirror is treated: one this step OPENED starts a clean accrual, one that was
+  // already in the book is a checkpoint restore whose accrual is unreachable.
+  void refresh_signal_state(const MarketSnapshot &base, const PortfolioState &book,
+                            std::span<const std::uint64_t> swap_ids_before_step);
 
   [[nodiscard]] const SwapMirror *find_mirror(std::uint64_t lot_id) const noexcept;
 
@@ -327,6 +360,10 @@ private:
   std::int64_t signal_ts_ns_ = 0;        // the snapshot the two above are as-of
   bool stepped_ = false;                 // ... and whether there has been one
   double last_strangle_vega_ = std::numeric_limits<double>::quiet_NaN();
+  // Scratch: the swap-lot ids the engine handed this step BEFORE the strategy
+  // touched the book. A member rather than a local so the per-step capture stops
+  // allocating after the first step.
+  std::vector<std::uint64_t> swap_ids_before_step_;
 };
 
 } // namespace atx::vol

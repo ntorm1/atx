@@ -287,11 +287,14 @@ struct Corpus {
 
 // Independent greeks for that contract, against the very archive the engine
 // priced and through the same `SurfaceRef` bridge the engine's mark lane prices
-// through (`step_swap_lots` -> `deriv_price_on_ref`).
+// through (`step_swap_lots` -> `deriv_price_on_ref`). `cfg` defaults to the
+// ENGINE's swap mark config (`swap_price_cfg`, backtest.cpp) — the one the
+// signals are specified to price through, whatever the strategy's entry config.
 [[nodiscard]] Result<DerivGreeks> swap_greeks_at(const std::string &archive_path,
                                                  const SwapLot &lot, std::int64_t ts_ns,
                                                  std::uint32_t n_obs_done,
-                                                 double sum_sq_log_returns_done) {
+                                                 double sum_sq_log_returns_done,
+                                                 const DerivConfig &cfg = DerivConfig{}) {
   Result<MarketSnapshot> snap = MarketSnapshot::load(archive_path);
   if (!snap) {
     return atx::core::Err(snap.error());
@@ -301,9 +304,8 @@ struct Corpus {
     return atx::core::Err(atx::core::ErrorCode::NotFound,
                           "oracle: the swap lot's uid has no surface on that date");
   }
-  return detail::deriv_greeks_on_ref(s,
-                                     live_contract(lot, ts_ns, n_obs_done, sum_sq_log_returns_done),
-                                     DerivConfig{}, DerivGreekBumps{});
+  return detail::deriv_greeks_on_ref(
+      s, live_contract(lot, ts_ns, n_obs_done, sum_sq_log_returns_done), cfg, DerivGreekBumps{});
 }
 
 [[nodiscard]] Result<DerivGreeks> entry_swap_greeks(const std::string &archive_path,
@@ -1084,6 +1086,17 @@ TEST(StrangleVarswap, SignalsMatchIndependentSwapGreeksOracle) {
   // EQUAL VEGA, now visible in the columns: on a cycle-open row the two legs
   // carry the same first-order exposure by construction, which is what makes
   // every later row of the comparison second-order.
+  //
+  // The identity is CONDITIONAL and this fixture meets the condition: the swap's
+  // quantity is solved under `cfg.deriv_cfg` while the signal prices under the
+  // ENGINE's mark config, so equality is claimed only while `deriv_cfg` is left
+  // at its default — which `make_config` does, pinned here so a future fixture
+  // change cannot silently invalidate the assertion below.
+  // `SignalsPriceTheEngineMarkUnderANonDefaultEntryConfig` covers the far side.
+  ASSERT_EQ(scfg.deriv_cfg.quality, DerivQuality::Standard);
+  ASSERT_EQ(scfg.deriv_cfg.engine, DerivEngine::Auto);
+  ASSERT_EQ(scfg.deriv_cfg.strip_nodes, 0u);
+  ASSERT_EQ(scfg.deriv_cfg.width_sigmas, 0.0);
   expect_close(sig_vega[0], sig_strangle[0], 1.0e-12, "swap_vega vs strangle_vega", 0u);
   expect_close(sig_vega[4], sig_strangle[4], 1.0e-12, "swap_vega vs strangle_vega", 4u);
 
@@ -1267,4 +1280,146 @@ TEST(StrangleVarswap, SkippedRestrikesCountsOnlyKeptStrikes) {
   EXPECT_TRUE(std::isfinite((*held_strangle)[1]));
   EXPECT_TRUE(std::isnan((*held_strangle)[2]));
   EXPECT_TRUE(std::isfinite((*held_strangle)[3]));
+}
+
+// ── 14. A RESTORED swap accrual is refused, not guessed ─────────────────────
+//
+// `run_backtest_incremental` restores `BacktestCheckpoint::portfolio` AND
+// `::swap_accruals`, so the ENGINE resumes a half-accrued swap exactly where it
+// left off. A strategy has no checkpoint of its own: resume with a fresh
+// instance and it inherits a live swap it has never taken a fixing for. Mirroring
+// that lot from scratch would report the greeks of a swap that had realized
+// NOTHING — finite, plausible, and wrong for as long as the lot lives. The
+// signal must say it does not know.
+TEST(StrangleVarswap, SignalsRefuseToValueARestoredSwapAccrual) {
+  const fs::path dir = fresh_dir("signalsresume");
+  const Corpus c = make_corpus(dir);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const StrangleVarswapConfig scfg = make_config(c, 0.25);
+  const RunConfig rcfg;
+
+  // Segment 1, refs 0..2, on its own strategy instance.
+  StrangleVsVarswapStrategy first{scfg};
+  auto seg1 = run_prefix(*clock, c, first, /*last_index=*/2u, rcfg);
+  ASSERT_TRUE(seg1.has_value()) << seg1.error().to_string();
+  ASSERT_EQ(seg1->rows.size(), 3u);
+  ASSERT_EQ(seg1->checkpoint.portfolio.swap_lots.size(), 1u);
+  const SwapLot restored = seg1->checkpoint.portfolio.swap_lots.front();
+  // The cut really is mid-accrual — the checkpoint carries realized variance
+  // that only the engine can see.
+  ASSERT_EQ(seg1->checkpoint.swap_accruals.size(), 1u);
+  const SwapAccrual cut = seg1->checkpoint.swap_accruals.front();
+  ASSERT_EQ(cut.lot_id, restored.id);
+  ASSERT_EQ(cut.rv.n_obs_done, 1u);
+  ASSERT_GT(cut.rv.sum_sq_log_returns_done, 0.0);
+  // Segment 1's own signals were finite, so the NaNs below are the resume
+  // boundary and nothing else.
+  const std::vector<double> *seg1_vega = signal_series(seg1->rows, "swap_vega");
+  ASSERT_NE(seg1_vega, nullptr);
+  EXPECT_TRUE(std::isfinite(seg1_vega->back()));
+
+  // What the naive mirror would have reported on the first resumed row versus
+  // what the contract is actually worth there. Not a rounding difference: a
+  // different contract. This is the number the column must NOT print.
+  const std::int64_t ts3 = kBaseNow + 3LL * kStepNs;
+  const double r23 = std::log(kSpots[3] / kSpots[2]);
+  const Result<DerivGreeks> naive =
+      swap_greeks_at(c.dp[3].second, restored, ts3, /*n_obs_done=*/0u, /*sum_sq=*/0.0);
+  const Result<DerivGreeks> truth =
+      swap_greeks_at(c.dp[3].second, restored, ts3, cut.rv.n_obs_done + 1u,
+                     cut.rv.sum_sq_log_returns_done + r23 * r23);
+  ASSERT_TRUE(naive.has_value()) << naive.error().to_string();
+  ASSERT_TRUE(truth.has_value()) << truth.error().to_string();
+  EXPECT_GT(std::fabs(naive->vega - truth->vega), 1.0e-6 * std::fabs(truth->vega));
+
+  // Segment 2 from the checkpoint, on a FRESH instance.
+  Result<Clock> sub = clock->between(c.dp[2].first, c.dp.back().first);
+  ASSERT_TRUE(sub.has_value()) << sub.error().to_string();
+  StrangleVsVarswapStrategy second{scfg};
+  auto seg2 = run_backtest_incremental(*sub, second, rcfg, &seg1->checkpoint);
+  ASSERT_TRUE(seg2.has_value()) << seg2.error().to_string();
+  ASSERT_EQ(seg2->rows.size(), 4u); // refs 3..6; the anchor is not re-recorded
+
+  // Row 0 (ref 3) carries the restored lot — alongside the one the fresh
+  // instance opens for its own first cycle on that same step, which is why the
+  // assertion is that the WHOLE set is NaN: one lot whose accrual is unreadable
+  // voids the row rather than contributing a plausible partial total. (Before
+  // this was fixed, this row printed five finite numbers, the restored lot's
+  // share of them computed off the `naive` contract above.)
+  expect_swap_signals_nan(seg2->rows, 0u);
+  const std::vector<double> *vega = signal_series(seg2->rows, "swap_vega");
+  ASSERT_NE(vega, nullptr);
+
+  // The refusal is scoped to the LOT, not latched on the strategy: the restored
+  // swap settles at ref 4 and the cycle the fresh instance opened for itself —
+  // whose every fixing it did see — is reported normally from there.
+  ASSERT_EQ(seg2->checkpoint.portfolio.swap_lots.size(), 0u);
+  EXPECT_TRUE(std::isfinite((*vega)[1])) << (*vega)[1];
+  EXPECT_NE((*vega)[1], 0.0);
+  EXPECT_TRUE(std::isfinite((*vega)[2])) << (*vega)[2];
+  EXPECT_NE((*vega)[2], 0.0);
+  // ... and the last row settles that second swap, so it is NaN for the ordinary
+  // no-live-swap reason.
+  expect_swap_signals_nan(seg2->rows, 3u);
+
+  // The OPTION leg is unaffected throughout: it is rebuilt from the base
+  // snapshot every step and owes nothing to a checkpoint.
+  const std::vector<double> *strangle = signal_series(seg2->rows, "strangle_vega");
+  ASSERT_NE(strangle, nullptr);
+  for (std::size_t i = 0; i + 1u < seg2->rows.size(); ++i) {
+    EXPECT_TRUE(std::isfinite((*strangle)[i])) << "row " << i;
+  }
+}
+
+// ── 15. The signals follow the ENGINE's mark config, not the entry config ───
+//
+// `deriv_cfg` is the ENTRY SOLVE's config by its own contract: it decides what
+// the swap is STRUCK at and what vega it is SIZED against. The engine marks the
+// lot under its own hard-coded default and can be reached by nobody, so the
+// signals price there too — that is what makes `swap_vega` explain the run's
+// `swap_pnl` rather than a counterfactual. The cost is that the equal-vega
+// identity between `swap_vega` and `strangle_vega` holds only while `deriv_cfg`
+// is left at its default, which is why the header states that condition and why
+// this gate exists to hold the mechanism in place.
+TEST(StrangleVarswap, SignalsPriceTheEngineMarkUnderANonDefaultEntryConfig) {
+  const fs::path dir = fresh_dir("signalscfg");
+  const Corpus c = make_corpus(dir);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const RunConfig rcfg;
+
+  StrangleVarswapConfig scfg = make_config(c, 0.25);
+  scfg.deriv_cfg.quality = DerivQuality::High; // a real pricer, a different grid
+
+  StrangleVsVarswapStrategy strat{scfg};
+  auto out = run_backtest_incremental(*clock, strat, rcfg, nullptr);
+  ASSERT_TRUE(out.has_value()) << out.error().to_string();
+  ASSERT_EQ(out->rows.size(), kSessions);
+  EXPECT_EQ(strat.skipped_swap_cycles(), 0u); // the entry solve still works
+
+  StrangleVsVarswapStrategy open_strat{scfg};
+  auto opened = run_prefix(*clock, c, open_strat, /*last_index=*/0u, rcfg);
+  ASSERT_TRUE(opened.has_value()) << opened.error().to_string();
+  ASSERT_EQ(opened->checkpoint.portfolio.swap_lots.size(), 1u);
+  const SwapLot swap = opened->checkpoint.portfolio.swap_lots.front();
+
+  const std::vector<double> *vega = signal_series(out->rows, "swap_vega");
+  const std::vector<double> *strangle = signal_series(out->rows, "strangle_vega");
+  ASSERT_NE(vega, nullptr);
+  ASSERT_NE(strangle, nullptr);
+
+  // The two pricers really do disagree on this contract, so the condition the
+  // header documents is a live one and not a theoretical caveat.
+  const Result<DerivGreeks> engine_greeks = entry_swap_greeks(c.dp[0].second, swap, kBaseNow);
+  const Result<DerivGreeks> entry_greeks =
+      swap_greeks_at(c.dp[0].second, swap, kBaseNow, 0u, 0.0, scfg.deriv_cfg);
+  ASSERT_TRUE(engine_greeks.has_value()) << engine_greeks.error().to_string();
+  ASSERT_TRUE(entry_greeks.has_value()) << entry_greeks.error().to_string();
+  EXPECT_NE(engine_greeks->vega, entry_greeks->vega);
+
+  // And the column is the ENGINE's number, to the same 1e-12 the default-config
+  // gate holds it to. The equal-vega identity is deliberately NOT asserted here.
+  expect_close((*vega)[0], swap.qty * engine_greeks->vega, 1.0e-12, "swap_vega", 0u);
+  EXPECT_TRUE(std::isfinite((*strangle)[0]));
 }

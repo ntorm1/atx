@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
+#include <span>
 #include <utility>
 
 #include "atx/core/error.hpp"                  // Ok, Err, ErrorCode, ATX_TRY_VOID
@@ -272,10 +274,18 @@ Status StrangleVsVarswapStrategy::on_step(const MarketSnapshot &base, std::size_
 Status StrangleVsVarswapStrategy::on_step(const MarketSnapshot &base, std::size_t /*step_index*/,
                                           PortfolioState &book, std::uint64_t &next_lot_id,
                                           const PriceOptions &price_options) {
+  // Captured BEFORE the strategy touches the book: a lot in `book.swap_lots`
+  // afterwards but not here is one this step OPENED, and a lot in both is one
+  // the engine carried in — from the previous step, or from a checkpoint.
+  swap_ids_before_step_.clear();
+  swap_ids_before_step_.reserve(book.swap_lots.size());
+  for (const SwapLot &lot : book.swap_lots) {
+    swap_ids_before_step_.push_back(lot.id);
+  }
   ATX_TRY_VOID(step(base, book, next_lot_id, price_options));
   // Only on success: an errored step aborts the whole run, and refreshing off a
   // half-built book would be state nobody can use for state nobody will read.
-  refresh_signal_state(base, book);
+  refresh_signal_state(base, book, swap_ids_before_step_);
   return Ok();
 }
 
@@ -371,8 +381,9 @@ StrangleVsVarswapStrategy::find_mirror(std::uint64_t lot_id) const noexcept {
   return nullptr;
 }
 
-void StrangleVsVarswapStrategy::refresh_signal_state(const MarketSnapshot &base,
-                                                     const PortfolioState &book) {
+void StrangleVsVarswapStrategy::refresh_signal_state(
+    const MarketSnapshot &base, const PortfolioState &book,
+    std::span<const std::uint64_t> swap_ids_before_step) {
   // Lots the engine settled this step took their terminal fixing and left the
   // book before `on_step`; their accrual is finished business.
   std::erase_if(swap_mirrors_, [&book](const SwapMirror &mirror) {
@@ -390,6 +401,13 @@ void StrangleVsVarswapStrategy::refresh_signal_state(const MarketSnapshot &base,
       fresh.lot_id = lot.id;
       fresh.rv.annualization = lot.annualization;
       fresh.rv.n_obs_total = lot.n_obs_total;
+      // ... UNLESS the lot was already in the book when this step began. Then it
+      // is not new at all: the engine restored it, and its realized variance
+      // with it, into a strategy that has never seen a fixing for it. A clean
+      // accrual would describe a swap that had realized nothing — see
+      // `SwapMirror::desynced`.
+      fresh.desynced = std::find(swap_ids_before_step.begin(), swap_ids_before_step.end(),
+                                 lot.id) != swap_ids_before_step.end();
       swap_mirrors_.push_back(fresh);
       continue;
     }
