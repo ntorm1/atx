@@ -129,6 +129,8 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/sr_tenor_grid.cpp
     src/earnings_forecast_loader.cpp
     src/earnings_repro.cpp
+    # strangle-vs-varswap
+    src/strangle_varswap.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
