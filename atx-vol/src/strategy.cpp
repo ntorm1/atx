@@ -1202,6 +1202,9 @@ Status DeclarativeStrategy::step_restrike(const MarketSnapshot &base, std::size_
   std::vector<FullGreekSeed> seeds;
   seeds.reserve(fresh.size());
   double options_vega = 0.0;
+  // Per-group entry dollar vega, for MatchGroupVega swap sizing. A tiny linear
+  // map: specs carry a handful of groups at most.
+  std::vector<std::pair<std::string, double>> group_vega;
   for (SizedLeg &sl : fresh) {
     Lot lot;
     lot.id = next_lot_id++;
@@ -1216,11 +1219,110 @@ Status DeclarativeStrategy::step_restrike(const MarketSnapshot &base, std::size_
     // Per-share American vega x qty x multiplier — the very scaling the
     // portfolio pricer applies, and the number a MatchGroupVega swap leg is
     // sized against. ONE definition, or the equal-vega claim is unfalsifiable.
-    options_vega += sl.leg.vega * sl.qty * sl.multiplier;
+    const double leg_vega = sl.leg.vega * sl.qty * sl.multiplier;
+    options_vega += leg_vega;
+    const auto found =
+        std::find_if(group_vega.begin(), group_vega.end(),
+                     [&sl](const auto &entry) { return entry.first == sl.leg.group; });
+    if (found == group_vega.end()) {
+      group_vega.emplace_back(sl.leg.group, leg_vega);
+    } else {
+      found->second += leg_vega;
+    }
   }
   last_options_vega_ = options_vega;
   last_entry_seeds_ = std::move(seeds);
+
+  // The swap lane opens ONCE, on the step that FIXES the cycle — never on a
+  // restrike, because the engine's swap-lot lane is append-only and held to
+  // expiry (there is no unwind price for an OTC swap here), so a per-step
+  // reopen would pile up one stale leg per session instead of expressing
+  // today's view. Every refusal is one skipped cycle, never a fabricated leg.
+  if (cycle_opened && !spec_.swap_legs.empty()) {
+    for (const SwapLegSpec &leg : spec_.swap_legs) {
+      const std::uint32_t uid = [&]() -> std::uint32_t {
+        if (leg.uid != 0) {
+          return leg.uid;
+        }
+        const std::optional<std::uint32_t> resolved = base.uid_of(leg.symbol);
+        return resolved.value_or(0);
+      }();
+      const SurfaceRef surface = (uid != 0) ? base.find(uid) : nullptr;
+      if (surface == nullptr) {
+        ++skipped_swap_cycles_; // the leg's own board is dark this session
+        continue;
+      }
+
+      double target_vega = 0.0;
+      switch (leg.size.kind) {
+      case SwapSizeSpec::Kind::MatchGroupVega: {
+        if (leg.size.group.empty()) {
+          target_vega = options_vega;
+        } else {
+          const auto found = std::find_if(
+              group_vega.begin(), group_vega.end(),
+              [&leg](const auto &entry) { return entry.first == leg.size.group; });
+          // The group exists (validated); its vega can still be degenerate,
+          // which the solve refuses below.
+          target_vega = (found != group_vega.end()) ? found->second
+                                                    : std::numeric_limits<double>::quiet_NaN();
+        }
+        break;
+      }
+      case SwapSizeSpec::Kind::TargetVega:
+        target_vega = leg.size.sign * leg.size.value;
+        break;
+      case SwapSizeSpec::Kind::FixedQty:
+        // The solve's vega contract is irrelevant here — the fair strike and
+        // every schedule/finiteness check are qty-independent — so it runs
+        // with a unit target and the requested qty is stamped on afterwards.
+        target_vega = 1.0;
+        break;
+      }
+
+      CycleSwapRequest req;
+      req.uid = uid;
+      req.kind = leg.kind;
+      req.cap_dec = leg.cap_dec;
+      req.notional = leg.notional;
+      req.annualization = leg.annualization;
+      req.open_ts_ns = base_ts;
+      req.expiry_ts_ns = cycle_expiry_ts_ns_;
+      req.session_ts = spec_.session_ts;
+      req.deriv_cfg = leg.deriv_cfg;
+
+      Result<SwapLot> lot = solve_cycle_swap(surface, req, target_vega);
+      if (!lot) {
+        ++skipped_swap_cycles_;
+        continue;
+      }
+      if (leg.size.kind == SwapSizeSpec::Kind::FixedQty) {
+        lot->qty = leg.size.value;
+      }
+      lot->id = next_lot_id++; // the watermark moves only once the lot is real
+      book.swap_lots.push_back(*lot);
+    }
+  }
   return Ok();
+}
+
+std::vector<std::pair<std::string, double>>
+DeclarativeStrategy::signals(const MarketSnapshot &base) const {
+  if (spec_.swap_legs.empty()) {
+    return {}; // no swap lane, no columns: existing specs keep their default
+  }
+  // The probe enforces the as-of discipline for its five columns itself;
+  // `options_vega` is guarded by the same condition — the cached vega is as-of
+  // ONE snapshot, and handed any other this row reports "not measured".
+  const bool as_of = probe_.stepped() && base.ts_ns() == last_step_ts_ns_;
+  std::vector<std::pair<std::string, double>> out;
+  out.reserve(8);
+  probe_.append_swap_greek_signals(base, out);
+  out.emplace_back("options_vega",
+                   as_of ? last_options_vega_ : std::numeric_limits<double>::quiet_NaN());
+  out.emplace_back("skipped_restrikes", static_cast<double>(skipped_restrikes_));
+  out.emplace_back("skipped_swaps", static_cast<double>(skipped_swap_cycles_));
+  return out;
 }
 
 Status DeclarativeStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,
@@ -1238,7 +1340,19 @@ Status DeclarativeStrategy::on_step(const MarketSnapshot &base, std::size_t step
       cycle_tenor_ns_ = *tenor;
       restrike_validated_ = true;
     }
-    return step_restrike(base, step_index, book, next_lot_id, price_options);
+    if (spec_.swap_legs.empty()) {
+      return step_restrike(base, step_index, book, next_lot_id, price_options);
+    }
+    // The probe brackets the step: ids captured BEFORE the strategy touches
+    // the book, mirrors refreshed only on SUCCESS (an errored step aborts the
+    // run, and refreshing off a half-built book would be state nobody can use).
+    probe_.capture_pre_step(book);
+    const Status stepped = step_restrike(base, step_index, book, next_lot_id, price_options);
+    if (!stepped) {
+      return stepped;
+    }
+    probe_.refresh(base, book);
+    return Ok();
   }
 
   last_entry_seeds_.clear();

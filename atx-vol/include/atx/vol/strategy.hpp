@@ -49,6 +49,7 @@
 #include "atx/vol/dispersion.hpp"       // DispersionUniverse, DispersionConfig, DispersionBook
 #include "atx/vol/portfolio_pricer.hpp" // OptionContract, kNsPerYear
 #include "atx/vol/priced_surface.hpp"   // PricedSurface
+#include "atx/vol/swap_leg.hpp"         // SwapSignalProbe, solve_cycle_swap (the swap lane)
 #include "atx/vol/types.hpp"            // Result, Status, Side
 
 namespace atx::vol {
@@ -578,6 +579,18 @@ public:
                                                      : QueryExecution::Configured;
   }
 
+  // Emitted ONLY when the spec carries swap legs (every other spec keeps the
+  // empty default — no new columns on existing runs). Eight columns, always
+  // all eight, per recorded row: the probe's swap_delta/gamma/vega/theta/rho
+  // (swap_leg.hpp owns their NaN discipline), `options_vega` (the option
+  // book's entry dollar vega as of this row's restrike — the number a
+  // MatchGroupVega leg was sized against; NaN on a kept-strikes/held/no-cycle
+  // step), and the CUMULATIVE `skipped_restrikes` / `skipped_swaps` counters
+  // (genuinely 0.0 before the first skip; never NaN — a renderer differences
+  // consecutive rows to find the session a hole opened on).
+  [[nodiscard]] std::vector<std::pair<std::string, double>>
+  signals(const MarketSnapshot &base) const override;
+
   [[nodiscard]] const StrategySpec &spec() const noexcept { return spec_; }
 
   // The per-name drops (`ResolveDrop`) from the most recent entry attempt (an
@@ -631,6 +644,10 @@ private:
   std::vector<ResolveDrop> last_dropped_;
   std::vector<FullGreekSeed> last_entry_seeds_;
   // ── FixedExpiryRestrike state (inert in every other mode) ────────────────
+  // The engine-accrual mirror behind the swap greek signal columns; wired only
+  // when the spec carries swap legs. One probe, one strategy, one thread —
+  // the probe's own rule (swap_leg.hpp).
+  SwapSignalProbe probe_;
   bool restrike_validated_{false};
   std::int64_t cycle_tenor_ns_{0};     // the legs' common tenor, set by validation
   std::int64_t cycle_expiry_ts_ns_{0}; // 0 = no live cycle

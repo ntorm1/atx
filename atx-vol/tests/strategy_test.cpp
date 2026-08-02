@@ -41,7 +41,9 @@
 #include "atx/vol/research/dispersion_backtest.hpp"
 #include "atx/vol/portfolio_pricer.hpp" // Portfolio, SurfaceSet, PortfolioPricer, Position
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
-#include "atx/vol/strategy.hpp"         // the DSL + DeclarativeStrategy/DispersionStrategy
+#include "atx/vol/detail/deriv_ref_bridge.hpp" // detail::deriv_greeks_on_ref (swap-lane oracle)
+#include "atx/vol/strategy.hpp"  // the DSL + DeclarativeStrategy/DispersionStrategy
+#include "atx/vol/swap_leg.hpp"  // swap_contract_for_lot
 #include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"   // SliceContext
 #include "atx/vol/types.hpp"            // Side, Result, Status, ErrorCode
@@ -2646,4 +2648,138 @@ TEST(StrategyRestrike, EveryNDaysHoldsBetweenRestrikeTicks) {
   ASSERT_EQ(book.lots.size(), 2u);
   EXPECT_NE(book.lots[0].id, day0_ids[0]);
   EXPECT_EQ(book.lots[0].cohort, 1u);
+}
+
+// ── Declarative swap-lane DSL: the swap lane + comparison signals ───────────
+
+namespace {
+
+[[nodiscard]] double signal_of(const std::vector<std::pair<std::string, double>> &signals,
+                               const char *name) {
+  for (const auto &[key, value] : signals) {
+    if (key == name) {
+      return value;
+    }
+  }
+  ADD_FAILURE() << "signal '" << name << "' is missing";
+  return std::numeric_limits<double>::quiet_NaN();
+}
+
+} // namespace
+
+TEST(StrategyRestrikeSwap, OpensOneFairStruckEqualVegaSwapPerCycle) {
+  const std::vector<std::int64_t> sessions = restrike_sessions();
+  auto snap0 = restrike_snap(0, "swap0");
+  auto snap1 = restrike_snap(1, "swap1");
+  ASSERT_TRUE(snap0.has_value());
+  ASSERT_TRUE(snap1.has_value());
+
+  StrategySpec spec = restrike_spec(sessions);
+  SwapLegSpec swap = var_swap_leg(); // MatchGroupVega, empty group = ALL option legs
+  spec.swap_legs.push_back(swap);
+  DeclarativeStrategy strat{std::move(spec)};
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+
+  ASSERT_TRUE(strat.on_step(*snap0, 0, book, next_lot_id, PriceOptions{}).has_value());
+  ASSERT_EQ(book.lots.size(), 2u);
+  ASSERT_EQ(book.swap_lots.size(), 1u);
+  const SwapLot &lot = book.swap_lots.front();
+  EXPECT_EQ(lot.id, 3u); // after the two wings: one shared id watermark
+  EXPECT_EQ(lot.uid, kUid);
+  EXPECT_GT(lot.strike_dec, 0.0);
+  EXPECT_EQ(lot.expiry_ts_ns, book.lots.front().expiry_ts_ns); // the cycle's expiry
+  EXPECT_GT(lot.n_obs_total, 0u);
+
+  // EQUAL VEGA, independently: qty x the swap's own entry vega reproduces the
+  // option book's entry dollar vega (per-share vega x qty x multiplier).
+  const SurfaceRef surface = snap0->find(kUid);
+  ASSERT_NE(surface, nullptr);
+  RealizedVarianceSpec staged{};
+  staged.annualization = lot.annualization;
+  staged.n_obs_total = lot.n_obs_total;
+  const Result<DerivGreeks> g = detail::deriv_greeks_on_ref(
+      surface, swap_contract_for_lot(lot, lot.start_ts_ns, staged), DerivConfig{},
+      DerivGreekBumps{});
+  ASSERT_TRUE(g.has_value());
+  const double options_vega = signal_of(strat.signals(*snap0), "options_vega");
+  ASSERT_TRUE(std::isfinite(options_vega));
+  EXPECT_GT(options_vega, 0.0);
+  EXPECT_NEAR(lot.qty * g->vega, options_vega, 1e-6 * options_vega);
+
+  // A restrike step inside the cycle opens NO second swap: the leg is
+  // per-CYCLE, and the engine's lane is append-only and held to expiry.
+  ASSERT_TRUE(strat.on_step(*snap1, 1, book, next_lot_id, PriceOptions{}).has_value());
+  ASSERT_EQ(book.swap_lots.size(), 1u);
+  EXPECT_EQ(book.swap_lots.front().id, 3u);
+  EXPECT_EQ(strat.skipped_swap_cycles(), 0u);
+}
+
+TEST(StrategyRestrikeSwap, SignalsCarryTheEightColumnsWithNaNDiscipline) {
+  const std::vector<std::int64_t> sessions = restrike_sessions();
+  auto snap0 = restrike_snap(0, "sig0");
+  auto snap1 = restrike_snap(1, "sig1");
+  ASSERT_TRUE(snap0.has_value());
+  ASSERT_TRUE(snap1.has_value());
+
+  StrategySpec spec = restrike_spec(sessions);
+  spec.swap_legs.push_back(var_swap_leg());
+  DeclarativeStrategy strat{std::move(spec)};
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+  ASSERT_TRUE(strat.on_step(*snap0, 0, book, next_lot_id, PriceOptions{}).has_value());
+
+  // As-of the stepped snapshot: all eight columns, the greeks + options_vega
+  // finite (the probe adopted the lot this step; a mid-flight accrual is a
+  // valid contract state), the counters genuinely 0.0.
+  const auto signals = strat.signals(*snap0);
+  ASSERT_EQ(signals.size(), 8u);
+  EXPECT_TRUE(std::isfinite(signal_of(signals, "swap_delta")));
+  EXPECT_TRUE(std::isfinite(signal_of(signals, "swap_gamma")));
+  EXPECT_TRUE(std::isfinite(signal_of(signals, "swap_vega")));
+  EXPECT_TRUE(std::isfinite(signal_of(signals, "swap_rho")));
+  EXPECT_TRUE(std::isfinite(signal_of(signals, "options_vega")));
+  EXPECT_EQ(signal_of(signals, "skipped_restrikes"), 0.0);
+  EXPECT_EQ(signal_of(signals, "skipped_swaps"), 0.0);
+
+  // Handed any OTHER snapshot the cached state measures nothing: NaN, never a
+  // confident number against someone else's market. Counters stay counters.
+  const auto wrong = strat.signals(*snap1);
+  ASSERT_EQ(wrong.size(), 8u);
+  EXPECT_TRUE(std::isnan(signal_of(wrong, "swap_vega")));
+  EXPECT_TRUE(std::isnan(signal_of(wrong, "options_vega")));
+  EXPECT_EQ(signal_of(wrong, "skipped_swaps"), 0.0);
+}
+
+TEST(StrategyRestrikeSwap, OneLeggedCycleCountsSkippedSwaps) {
+  // A grid of TWO sessions and a 0.25y tenor: the expiry falls back to the
+  // last session, whose fixing window holds a single session — too short to
+  // observe one return. The cycle runs options-only, and says so.
+  auto snap0 = restrike_snap(0, "oneleg0");
+  ASSERT_TRUE(snap0.has_value());
+  const std::vector<std::int64_t> sessions{kBaseNow, kBaseNow + kStep30Ns};
+
+  StrategySpec spec = restrike_spec(sessions);
+  spec.swap_legs.push_back(var_swap_leg());
+  DeclarativeStrategy strat{std::move(spec)};
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+  ASSERT_TRUE(strat.on_step(*snap0, 0, book, next_lot_id, PriceOptions{}).has_value());
+  ASSERT_EQ(book.lots.size(), 2u); // the options leg still runs
+  EXPECT_TRUE(book.swap_lots.empty());
+  EXPECT_EQ(strat.skipped_swap_cycles(), 1u);
+  EXPECT_EQ(signal_of(strat.signals(*snap0), "skipped_swaps"), 1.0);
+}
+
+TEST(StrategyRestrikeSwap, EmptySwapLegsEmitsNoSignals) {
+  const std::vector<std::int64_t> sessions = restrike_sessions();
+  auto snap0 = restrike_snap(0, "nosig0");
+  ASSERT_TRUE(snap0.has_value());
+
+  DeclarativeStrategy strat{restrike_spec(sessions)}; // no swap legs
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+  ASSERT_TRUE(strat.on_step(*snap0, 0, book, next_lot_id, PriceOptions{}).has_value());
+  // No swap lane, no signal columns — existing specs keep their empty default.
+  EXPECT_TRUE(strat.signals(*snap0).empty());
 }
