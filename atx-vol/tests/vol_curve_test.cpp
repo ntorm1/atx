@@ -29,6 +29,7 @@ using atx::vol::arb_check_butterfly_svi_mm;
 using atx::vol::black76_value_and_vega;
 using atx::vol::C8Curve;
 using atx::vol::CalibOpts;
+using atx::vol::ConvexRepairSpec;
 using atx::vol::CurveConfig;
 using atx::vol::fit_slice_curve;
 using atx::vol::FitObs;
@@ -249,4 +250,114 @@ TEST(VolCurve, C8ServedSlicePassesGridButterflyCheck) {
       [cv](double k) { return cv->w(k); }, T, -0.7, 0.7, 64u);
   ASSERT_TRUE(bf.has_value());
   EXPECT_TRUE(bf->empty());
+}
+
+// The 2026-08 SPY backfill failure mode in miniature: the previous slice's
+// total variance crosses the current fit only inside a narrow bump centered
+// on the oracle band edge k = -0.50 — a k the legacy repair lattice
+// (-0.60 + i * 0.01875) never samples. The bump peak (9e-8) also sits below
+// the legacy 1e-7 acceptance, so the legacy loop must serve an oracle-fatal
+// crossing; a ConvexRepairSpec pinned to the oracle's Balanced calendar grid
+// (65 pts over [-0.50, 0.50], which contains -0.50 exactly) with a 1e-9
+// tolerance must repair it.
+TEST(VolCurve, ConvexRepairSpecRepairsOffLatticeCalendarCrossing) {
+  constexpr double T = 0.10;
+  constexpr double F = 100.0;
+  constexpr double df = 0.999;
+  const std::vector<FitObs> obs = make_smile_obs(T, F, df, 15);
+
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::ConvexDense;
+
+  const auto base = fit_slice_curve(cfg, obs, F, T, df);
+  ASSERT_TRUE(base.has_value()) << base.error().to_string();
+  const IVolCurve& base_curve = **base;
+
+  // 1e-9 below baseline everywhere (floor inactive at nodes) except the bump:
+  // +9e-8 at k=-0.50, gone by the nearest legacy lattice points at
+  // -0.51875 / -0.4875 (exp(-(0.01875/3e-3)^2) ~ 1e-17).
+  const auto w_prev = [&base_curve](double k) {
+    const double z = (k + 0.50) / 3.0e-3;
+    return base_curve.w(k) - 1.0e-9 + 9.0e-8 * std::exp(-z * z);
+  };
+
+  const auto legacy = fit_slice_curve(cfg, obs, F, T, df, w_prev);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  const double legacy_crossing = w_prev(-0.50) - (*legacy)->w(-0.50);
+  EXPECT_GT(legacy_crossing, 1.0e-8)
+      << "fixture must reproduce the failure mode: legacy repair serves a "
+         "crossing the admission oracle rejects";
+
+  cfg.convex_repair = ConvexRepairSpec{};
+  cfg.convex_repair->k_min = -0.50;
+  cfg.convex_repair->k_max = 0.50;
+  cfg.convex_repair->grid_points = 65;
+  cfg.convex_repair->tolerance = 1.0e-9;
+  const auto strict = fit_slice_curve(cfg, obs, F, T, df, w_prev);
+  ASSERT_TRUE(strict.has_value()) << strict.error().to_string();
+  const double strict_crossing = w_prev(-0.50) - (*strict)->w(-0.50);
+  EXPECT_LE(strict_crossing, 1.0e-8)
+      << "strict repair must close the crossing at the oracle grid k";
+}
+
+// extra_node_ks must become exact QP floor nodes even at a k on NEITHER the
+// legacy lattice NOR the spec grid (here -0.517, outside the spec band):
+// this is the mechanism the pricer recovery rung uses to promote the
+// oracle's reported violation k's.
+TEST(VolCurve, ConvexRepairSpecExtraNodeKsBecomeExactFloorNodes) {
+  constexpr double T = 0.10;
+  constexpr double F = 100.0;
+  constexpr double df = 0.999;
+  const std::vector<FitObs> obs = make_smile_obs(T, F, df, 15);
+
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::ConvexDense;
+  const auto base = fit_slice_curve(cfg, obs, F, T, df);
+  ASSERT_TRUE(base.has_value()) << base.error().to_string();
+  const IVolCurve& base_curve = **base;
+
+  const auto w_prev = [&base_curve](double k) {
+    const double z = (k + 0.517) / 2.5e-3;
+    return base_curve.w(k) - 1.0e-9 + 9.0e-8 * std::exp(-z * z);
+  };
+
+  ConvexRepairSpec spec;
+  spec.k_min = -0.50;
+  spec.k_max = 0.50;
+  spec.grid_points = 65;
+  spec.tolerance = 1.0e-9;
+
+  cfg.convex_repair = spec; // grid alone cannot see k=-0.517 (outside band)
+  const auto miss = fit_slice_curve(cfg, obs, F, T, df, w_prev);
+  ASSERT_TRUE(miss.has_value()) << miss.error().to_string();
+  EXPECT_GT(w_prev(-0.517) - (*miss)->w(-0.517), 1.0e-8);
+
+  spec.extra_node_ks = {-0.517};
+  cfg.convex_repair = spec;
+  const auto hit = fit_slice_curve(cfg, obs, F, T, df, w_prev);
+  ASSERT_TRUE(hit.has_value()) << hit.error().to_string();
+  EXPECT_LE(w_prev(-0.517) - (*hit)->w(-0.517), 1.0e-8)
+      << "promoted node must carry the w_prev floor exactly";
+}
+
+TEST(VolCurve, ConvexRepairSpecInvalidSpecRejected) {
+  constexpr double T = 0.10;
+  constexpr double F = 100.0;
+  constexpr double df = 0.999;
+  const std::vector<FitObs> obs = make_smile_obs(T, F, df, 15);
+
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::ConvexDense;
+  cfg.convex_repair = ConvexRepairSpec{};
+  cfg.convex_repair->grid_points = 1; // inclusive grid needs >= 2 points
+  const auto one_point = fit_slice_curve(cfg, obs, F, T, df);
+  ASSERT_FALSE(one_point.has_value());
+  EXPECT_EQ(one_point.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+  cfg.convex_repair = ConvexRepairSpec{};
+  cfg.convex_repair->k_min = 0.5;
+  cfg.convex_repair->k_max = -0.5; // inverted band
+  const auto inverted = fit_slice_curve(cfg, obs, F, T, df);
+  ASSERT_FALSE(inverted.has_value());
+  EXPECT_EQ(inverted.error().code(), atx::core::ErrorCode::InvalidArgument);
 }

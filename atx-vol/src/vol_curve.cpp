@@ -375,8 +375,29 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
     constexpr double kCalendarTol = 1.0e-7;
     constexpr int kMaxCalendarRefits = 4;
 
+    const ConvexRepairSpec* repair =
+        cfg.convex_repair.has_value() ? &*cfg.convex_repair : nullptr;
+    if (repair != nullptr &&
+        !(std::isfinite(repair->k_min) && std::isfinite(repair->k_max) &&
+          repair->k_max > repair->k_min && repair->grid_points >= 2u &&
+          std::isfinite(repair->tolerance) && repair->tolerance >= 0.0)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "fit_slice_curve: invalid ConvexRepairSpec");
+    }
+    const double calendar_tol = repair != nullptr ? repair->tolerance : kCalendarTol;
+
     std::vector<double> required_k(calendar_floor_knots.begin(),
                                    calendar_floor_knots.end());
+    if (repair != nullptr && !repair->extra_node_ks.empty()) {
+      for (const double k : repair->extra_node_ks) {
+        if (std::isfinite(k)) {
+          required_k.push_back(k);
+        }
+      }
+      std::sort(required_k.begin(), required_k.end());
+      required_k.erase(std::unique(required_k.begin(), required_k.end()),
+                       required_k.end());
+    }
     ConvexFitOpts risk_opts = cfg.convex;
     risk_opts.bound_slope_below = true;
     for (int pass = 0; pass <= kMaxCalendarRefits; ++pass) {
@@ -394,16 +415,28 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
 
       std::vector<double> violations;
       violations.reserve(8);
-      const double dk = (kRiskCalendarMax - kRiskCalendarMin) /
-                        static_cast<double>(kRiskCalendarIntervals);
-      for (std::uint32_t gi = 0; gi <= kRiskCalendarIntervals; ++gi) {
-        const double k = kRiskCalendarMin + dk * static_cast<double>(gi);
+      const auto scan_k = [&](double k) {
         const double wp = w_prev(k);
         const double wc = fit.iv(k);
         const double w_curr = (std::isfinite(wc) && wc > 0.0) ? wc * wc * T : kNaN;
         if (std::isfinite(wp) && std::isfinite(w_curr) &&
-            wp - w_curr > kCalendarTol) {
+            wp - w_curr > calendar_tol) {
           violations.push_back(k);
+        }
+      };
+      if (repair == nullptr) {
+        const double dk = (kRiskCalendarMax - kRiskCalendarMin) /
+                          static_cast<double>(kRiskCalendarIntervals);
+        for (std::uint32_t gi = 0; gi <= kRiskCalendarIntervals; ++gi) {
+          scan_k(kRiskCalendarMin + dk * static_cast<double>(gi));
+        }
+      } else {
+        // The oracle's inclusive sample formula verbatim (fraction first):
+        // repair must check the exact doubles admission will evaluate.
+        for (std::uint32_t gi = 0; gi < repair->grid_points; ++gi) {
+          const double fraction = static_cast<double>(gi) /
+                                  static_cast<double>(repair->grid_points - 1u);
+          scan_k(repair->k_min + fraction * (repair->k_max - repair->k_min));
         }
       }
       if (violations.empty()) {
