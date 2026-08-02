@@ -221,7 +221,7 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 // ── SplineVolCurve (declared in vol_curve.hpp) ──────────────────────────────
 
-SplineVolCurve::SplineVolCurve(SplineVolParams p, double T, double F, double df) noexcept
+SplineVolCurve::SplineVolCurve(SplineVolParams p, double T, double F, double df)
     : IVolCurve(T, F, df), p_(std::move(p)), m2nd_(natural_spline_m(p_.z, p_.mult)) {}
 
 std::pair<double, double> SplineVolCurve::data_k_range() const noexcept {

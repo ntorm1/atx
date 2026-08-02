@@ -9,6 +9,7 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/arb.hpp" // butterfly gates + shared-k pair projection + independent shape check
 #include "atx/vol/c8_calib.hpp"    // c8_fit_slice_lm
+#include "atx/vol/counters.hpp"    // ConvexDense wing-anchor observability
 #include "atx/vol/essvi_calib.hpp" // essvi_fit_slice
 #include "atx/vol/svi_calib.hpp"   // svi_fit_slice, svi_project_mm
 
@@ -93,27 +94,49 @@ double IVolCurve::iv(double k_log) const noexcept {
 // ── ConvexDenseCurve ────────────────────────────────────────────────────────
 
 ConvexDenseCurve::ConvexDenseCurve(ConvexSliceFit fit) noexcept
-    : IVolCurve(fit.T, fit.F, fit.df), fit_(std::move(fit)) {
-  finite_k_.reserve(fit_.u.size() * 2u);
-  finite_w_.reserve(fit_.u.size() * 2u);
-  const auto append_anchor = [&](double k) {
-    const double sigma = fit_.iv(k);
-    if (std::isfinite(sigma) && sigma > 0.0) {
-      finite_k_.push_back(k);
-      finite_w_.push_back(sigma * sigma * T_);
-    }
-  };
-  for (std::size_t i = 0; i < fit_.u.size(); ++i) {
-    append_anchor(std::log(fit_.u[i] / F_));
-    if (i + 1u < fit_.u.size()) {
-      append_anchor(std::log(std::sqrt(fit_.u[i] * fit_.u[i + 1u]) / F_));
-    }
-  }
-}
+    : IVolCurve(fit.T, fit.F, fit.df), fit_(std::move(fit)) {}
 
 double ConvexDenseCurve::iv(double k_log) const noexcept {
   const double wk = w(k_log);
   return wk > 0.0 && T_ > 0.0 ? std::sqrt(wk / T_) : kNaN;
+}
+
+const ConvexDenseCurve::FiniteAnchors *ConvexDenseCurve::finite_anchors() const noexcept {
+  if (const FiniteAnchors *anchors =
+          finite_anchors_published_.load(std::memory_order_acquire)) {
+    return anchors;
+  }
+  try {
+    std::call_once(finite_anchors_once_, [this] {
+      auto anchors = std::make_unique<FiniteAnchors>();
+      anchors->k.reserve(fit_.u.size() * 2u);
+      anchors->w.reserve(fit_.u.size() * 2u);
+      const auto append_anchor = [this, &anchors](double k) {
+        ATX_VOL_COUNT(ConvexDenseWingAnchorIvEvaluations);
+        const double sigma = fit_.iv(k);
+        if (std::isfinite(sigma) && sigma > 0.0) {
+          anchors->k.push_back(k);
+          anchors->w.push_back(sigma * sigma * T_);
+        }
+      };
+      for (std::size_t i = 0; i < fit_.u.size(); ++i) {
+        append_anchor(std::log(fit_.u[i] / F_));
+        if (i + 1u < fit_.u.size()) {
+          append_anchor(std::log(std::sqrt(fit_.u[i] * fit_.u[i + 1u]) / F_));
+        }
+      }
+      const FiniteAnchors *const published = anchors.get();
+      finite_anchors_owner_ = std::move(anchors);
+      ATX_VOL_COUNT(ConvexDenseWingAnchorBuilds);
+      finite_anchors_published_.store(published, std::memory_order_release);
+    });
+  } catch (...) {
+    // w() is noexcept. A transient allocation/call_once failure therefore
+    // fails this evaluation as NaN; call_once leaves the flag unset so a later
+    // fallback can retry instead of terminating or observing partial state.
+    return nullptr;
+  }
+  return finite_anchors_published_.load(std::memory_order_acquire);
 }
 
 double ConvexDenseCurve::w(double k_log) const noexcept {
@@ -121,34 +144,37 @@ double ConvexDenseCurve::w(double k_log) const noexcept {
   if (s > 0.0 && std::isfinite(s) && T_ > 0.0) {
     return s * s * T_;
   }
-  if (finite_k_.empty()) {
+  ATX_VOL_COUNT(ConvexDenseWingFallbackEntries);
+  const FiniteAnchors *const anchors = finite_anchors();
+  if (anchors == nullptr || anchors->k.empty()) {
     return kNaN;
   }
-  if (finite_k_.size() == 1u) {
-    return finite_w_.front();
+  if (anchors->k.size() == 1u) {
+    return anchors->w.front();
   }
-  const auto it = std::lower_bound(finite_k_.begin(), finite_k_.end(), k_log);
+  const auto it = std::lower_bound(anchors->k.begin(), anchors->k.end(), k_log);
   std::size_t lo = 0u;
   std::size_t hi = 1u;
-  if (it == finite_k_.begin()) {
+  if (it == anchors->k.begin()) {
     lo = 0u;
     hi = 1u;
-  } else if (it == finite_k_.end()) {
-    hi = finite_k_.size() - 1u;
+  } else if (it == anchors->k.end()) {
+    hi = anchors->k.size() - 1u;
     lo = hi - 1u;
   } else {
-    hi = static_cast<std::size_t>(it - finite_k_.begin());
+    hi = static_cast<std::size_t>(it - anchors->k.begin());
     lo = hi - 1u;
   }
-  const double span = finite_k_[hi] - finite_k_[lo];
+  const double span = anchors->k[hi] - anchors->k[lo];
   if (!(span > 0.0)) {
-    return finite_w_[lo];
+    return anchors->w[lo];
   }
   // Roger Lee's moment bound is |dw/dk| <= 2. Stay just inside it so a
   // numerical wing cannot manufacture an infinite-moment surface.
   const double slope =
-      std::clamp((finite_w_[hi] - finite_w_[lo]) / span, -1.999, 1.999);
-  return std::max(1.0e-12, finite_w_[lo] + slope * (k_log - finite_k_[lo]));
+      std::clamp((anchors->w[hi] - anchors->w[lo]) / span, -1.999, 1.999);
+  return std::max(1.0e-12,
+                  anchors->w[lo] + slope * (k_log - anchors->k[lo]));
 }
 
 // ── EssviCurve / SviCurve ───────────────────────────────────────────────────

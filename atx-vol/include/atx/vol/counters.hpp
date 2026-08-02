@@ -148,6 +148,16 @@ enum class Counter : unsigned {
   // AmericanAvxPackDispatches (the resolved-price wrapper only).
   SurfaceGreekBatchDispatches,
   SurfaceGreekBatchLanes,
+  // Successful construction of a ConvexDense/SplineVol concrete curve from a
+  // mapped PricedSurfaceView record. Counts derived-state materializations, not
+  // queries or the lightweight per-slice synchronization slots.
+  SurfaceViewHeavyMaterializations,
+  // ConvexDense's numerical-wing fallback table. The table is intentionally
+  // absent on ordinary queries; these counters make accidental eager work and
+  // rare fallback coverage observable without timing-sensitive tests.
+  ConvexDenseWingAnchorBuilds,
+  ConvexDenseWingAnchorIvEvaluations,
+  ConvexDenseWingFallbackEntries,
   Count_
 };
 
@@ -188,6 +198,10 @@ inline constexpr const char *kNames[kCount] = {
     "cnt_alo_state_allocations",
     "cnt_surface_greek_batch_dispatches",
     "cnt_surface_greek_batch_lanes",
+    "cnt_surface_view_heavy_materializations",
+    "cnt_convex_dense_wing_anchor_builds",
+    "cnt_convex_dense_wing_anchor_iv_evaluations",
+    "cnt_convex_dense_wing_fallback_entries",
 };
 
 // A point-in-time copy of every counter. `enabled == false` is the sentinel a

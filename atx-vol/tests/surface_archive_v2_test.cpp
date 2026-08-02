@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +12,8 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <type_traits>
 #include <vector>
 
 #include "atx/vol/american.hpp"
@@ -72,6 +75,8 @@ using atx::vol::ValidationFailure;
 using atx::vol::VolCurveKind;
 using atx::vol::write_surface_archive;
 using atx::vol::write_surface_archive_v2;
+
+static_assert(std::is_nothrow_constructible_v<ConvexDenseCurve, ConvexSliceFit>);
 
 [[nodiscard]] bool bits_equal(double a, double b) noexcept {
   std::uint64_t ba = 0;
@@ -404,6 +409,140 @@ TEST(SurfaceArchiveV2, ViewBitIdentical_ConvexDense) {
   ASSERT_TRUE(v.has_value());
   EXPECT_EQ(v->kind_at(0), VolCurveKind::ConvexDense);
   expect_view_bit_identical(orig, *v);
+}
+
+TEST(SurfaceArchiveV2, ConvexViewMaterializesOnlyQueriedSlices) {
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    EXPECT_FALSE(atx::vol::counters::snapshot().enabled);
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  } else {
+    const PricedSurface orig = make_convex(12, 24, 61);
+    auto arch = SurfaceArchiveV2::open(build_v2(orig, "idx"));
+    ASSERT_TRUE(arch.has_value());
+
+    atx::vol::counters::reset();
+    auto view = arch->map_symbol("idx");
+    ASSERT_TRUE(view.has_value());
+    auto snapshot = atx::vol::counters::snapshot();
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::SurfaceViewHeavyMaterializations), 0u);
+
+    constexpr double kFirstT = 0.05;
+    EXPECT_TRUE(bits_equal(view->iv(100.0, kFirstT), orig.iv(100.0, kFirstT)));
+    snapshot = atx::vol::counters::snapshot();
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::SurfaceViewHeavyMaterializations), 1u);
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingAnchorBuilds), 0u)
+        << "an ordinary mapped query must not build the numerical-wing fallback table";
+    EXPECT_EQ(snapshot.get(
+                  atx::vol::counters::Counter::ConvexDenseWingAnchorIvEvaluations),
+              0u);
+
+    EXPECT_TRUE(bits_equal(view->iv(110.0, kFirstT), orig.iv(110.0, kFirstT)));
+    snapshot = atx::vol::counters::snapshot();
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::SurfaceViewHeavyMaterializations), 1u);
+
+    constexpr double kBracketedT = 0.10;
+    EXPECT_TRUE(bits_equal(view->iv(100.0, kBracketedT), orig.iv(100.0, kBracketedT)));
+    snapshot = atx::vol::counters::snapshot();
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::SurfaceViewHeavyMaterializations), 2u);
+
+    constexpr double kLastT = 2.35;
+    EXPECT_TRUE(bits_equal(view->iv(100.0, kLastT), orig.iv(100.0, kLastT)));
+    snapshot = atx::vol::counters::snapshot();
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::SurfaceViewHeavyMaterializations), 3u);
+  }
+}
+
+TEST(SurfaceArchiveV2, ConvexDenseWingFallbackBuildsAnchorsOnce) {
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    EXPECT_FALSE(atx::vol::counters::snapshot().enabled);
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  } else {
+    ConvexSliceFit fit;
+    fit.T = 0.25;
+    fit.F = 100.0;
+    fit.df = 1.0;
+    fit.u = {80.0, 100.0, 120.0};
+    fit.C = {25.0, 10.0, 9.99};
+    constexpr double kDeepRight = 100.0;
+    ASSERT_TRUE(std::isnan(fit.iv(kDeepRight)))
+        << "fixture must enter ConvexDenseCurve's numerical-wing fallback";
+
+    atx::vol::counters::reset();
+    const ConvexDenseCurve curve(std::move(fit));
+    EXPECT_EQ(atx::vol::counters::snapshot().get(
+                  atx::vol::counters::Counter::ConvexDenseWingAnchorBuilds),
+              0u)
+        << "construction must leave the fallback table absent";
+
+    constexpr std::size_t kWorkers = 8;
+    constexpr std::uint64_t kFallbackBits = 4634277297755232409ULL;
+    std::array<double, kWorkers> results{};
+    std::array<std::thread, kWorkers> workers{};
+    std::atomic<bool> start{false};
+    for (std::size_t worker = 0; worker < workers.size(); ++worker) {
+      workers[worker] = std::thread([&, worker] {
+        while (!start.load(std::memory_order_acquire)) {
+          std::this_thread::yield();
+        }
+        results[worker] = curve.w(kDeepRight);
+      });
+    }
+    start.store(true, std::memory_order_release);
+    for (std::thread &worker : workers) {
+      worker.join();
+    }
+    for (const double result : results) {
+      ASSERT_TRUE(std::isfinite(result));
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(result), kFallbackBits);
+    }
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(curve.w(kDeepRight)), kFallbackBits);
+
+    const auto snapshot = atx::vol::counters::snapshot();
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingAnchorBuilds), 1u);
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingAnchorIvEvaluations), 5u);
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingFallbackEntries),
+              kWorkers + 1u);
+  }
+}
+
+TEST(SurfaceArchiveV2, SplineViewConcurrentFirstUseMaterializesOnce) {
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    EXPECT_FALSE(atx::vol::counters::snapshot().enabled);
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  } else {
+    const PricedSurface orig = make_spline(13, 8);
+    auto arch = SurfaceArchiveV2::open(build_v2(orig, "spl"));
+    ASSERT_TRUE(arch.has_value());
+    auto view = arch->map_symbol("spl");
+    ASSERT_TRUE(view.has_value());
+    const PricedSurfaceView *const mapped = &*view;
+
+    constexpr std::size_t kWorkers = 8;
+    constexpr double kT = 0.05;
+    std::array<double, kWorkers> results{};
+    std::array<std::thread, kWorkers> workers{};
+    std::atomic<bool> start{false};
+    atx::vol::counters::reset();
+    for (std::size_t worker = 0; worker < workers.size(); ++worker) {
+      workers[worker] = std::thread([&, worker] {
+        while (!start.load(std::memory_order_acquire)) {
+          std::this_thread::yield();
+        }
+        results[worker] = mapped->iv(100.0, kT);
+      });
+    }
+    start.store(true, std::memory_order_release);
+    for (std::thread &worker : workers) {
+      worker.join();
+    }
+
+    const double expected = orig.iv(100.0, kT);
+    for (const double result : results) {
+      EXPECT_TRUE(bits_equal(result, expected));
+    }
+    const auto snapshot = atx::vol::counters::snapshot();
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::SurfaceViewHeavyMaterializations), 1u);
+  }
 }
 
 TEST(SurfaceArchiveV2, ViewBitIdentical_Linear) {

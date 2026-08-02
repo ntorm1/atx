@@ -5,6 +5,7 @@
 #include "atx/vol/american.hpp"       // american_price / greeks / delta / vega (free fns)
 #include "atx/vol/american_batch.hpp" // ResolvedAmericanPriceBatchRequest, american_price_batch_resolved
 #include "atx/vol/c8.hpp"            // C8Params, c8_slice_w
+#include "atx/vol/counters.hpp"      // mapped heavy-curve materialization counter
 #include "atx/vol/dense_slice.hpp"   // ConvexSliceFit
 #include "atx/vol/spline_curve.hpp"  // SplineVolParams
 #include "atx/vol/vol_curve.hpp"     // Convex/Spline/Essvi/Svi/C8/LinearVariance curves, VolCurveKind
@@ -22,6 +23,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <utility>
@@ -115,6 +117,12 @@ constexpr char kSurfaceRecordMagic[8] = {'A', 'T', 'X', 'V', 'S', 'R', '2', '0'}
 
 // ── construction / lifetime ──────────────────────────────────────────────────
 
+struct PricedSurfaceView::HeavyCurveSlot {
+  std::once_flag once{};
+  std::unique_ptr<IVolCurve> curve{};
+  std::atomic<const IVolCurve *> published{nullptr};
+};
+
 PricedSurfaceView::~PricedSurfaceView() = default;
 
 PricedSurfaceView::PricedSurfaceView(PricedSurfaceView &&other) noexcept
@@ -123,7 +131,7 @@ PricedSurfaceView::PricedSurfaceView(PricedSurfaceView &&other) noexcept
       col_borrow_(other.col_borrow_), col_payload_off_(other.col_payload_off_),
       col_node_count_(other.col_node_count_), n_slices_(other.n_slices_), pricing_(other.pricing_),
       term_rates_(other.term_rates_), query_pricing_tier_(other.query_pricing_tier_),
-      heavy_curves_(std::move(other.heavy_curves_)),
+      heavy_curve_slots_(std::move(other.heavy_curve_slots_)),
       instance_id_(std::exchange(other.instance_id_, allocate_view_instance_id())) {}
 
 PricedSurfaceView &PricedSurfaceView::operator=(PricedSurfaceView &&other) noexcept {
@@ -143,7 +151,7 @@ PricedSurfaceView &PricedSurfaceView::operator=(PricedSurfaceView &&other) noexc
   pricing_ = other.pricing_;
   term_rates_ = other.term_rates_;
   query_pricing_tier_ = other.query_pricing_tier_;
-  heavy_curves_ = std::move(other.heavy_curves_);
+  heavy_curve_slots_ = std::move(other.heavy_curve_slots_);
   instance_id_ = std::exchange(other.instance_id_, allocate_view_instance_id());
   return *this;
 }
@@ -270,11 +278,11 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
   }
   v.term_rates_ = term_rates;
 
-  // Validate EVERY slice's payload extent (the view reads parametric params in
-  // place, lazily, so their bounds must be checked on open too) and eagerly
-  // materialize the two derived-state kinds (ConvexDense / SplineVol) whose
-  // concrete evaluators (bit-identical to reconstruct) back slice_w. Parametric-
-  // only surfaces keep heavy_curves_ empty -> zero heap.
+  // Validate EVERY slice's payload extent (the view reads every kind in place,
+  // lazily, so bounds must be checked on open). Reserve concurrency-safe slots
+  // for derived-state kinds (ConvexDense / SplineVol), but do not copy nodes or
+  // construct their concrete evaluators until a slice is queried. Parametric-
+  // only surfaces keep heavy_curve_slots_ empty -> zero heap.
   bool any_heavy = false;
   for (std::size_t i = 0; i < v.n_slices_; ++i) {
     const auto kind = static_cast<VolCurveKind>(v.col_kind_[i]);
@@ -284,7 +292,7 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
     }
   }
   if (any_heavy) {
-    v.heavy_curves_.resize(v.n_slices_);
+    v.heavy_curve_slots_ = std::make_unique<HeavyCurveSlot[]>(v.n_slices_);
   }
   for (std::size_t i = 0; i < v.n_slices_; ++i) {
     const auto kind = static_cast<VolCurveKind>(v.col_kind_[i]);
@@ -324,19 +332,6 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
       if (nc == 0 || need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: convex payload out of bounds");
       }
-      ConvexSliceFit fit;
-      fit.T = v.col_T_[i];
-      fit.F = v.col_forward_[i];
-      fit.df = v.col_df_[i];
-      fit.rmse_price = load_pod<double>(p + 0);
-      fit.n_obs = static_cast<std::size_t>(load_pod<std::uint64_t>(p + 8));
-      fit.n_active = static_cast<std::size_t>(load_pod<std::uint64_t>(p + 16));
-      fit.u.resize(static_cast<std::size_t>(nc));
-      fit.C.resize(static_cast<std::size_t>(nc));
-      const std::size_t nb = static_cast<std::size_t>(nc) * sizeof(double);
-      std::memcpy(fit.u.data(), p + 24, nb);
-      std::memcpy(fit.C.data(), p + 24 + nb, nb);
-      v.heavy_curves_[i] = std::make_unique<ConvexDenseCurve>(std::move(fit));
       break;
     }
     case VolCurveKind::SplineVol: {
@@ -348,23 +343,9 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
       if (need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: spline payload out of bounds");
       }
-      SplineVolParams sp;
-      sp.atm_vol = load_pod<double>(p + 0);
-      sp.z_lo_valid = load_pod<double>(p + 8);
-      sp.z_hi_valid = load_pod<double>(p + 16);
       if (load_pod<std::uint32_t>(p + 24) != static_cast<std::uint32_t>(nc)) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: spline node count mismatch");
       }
-      sp.z.resize(static_cast<std::size_t>(nc));
-      sp.mult.resize(static_cast<std::size_t>(nc));
-      const std::size_t nb = static_cast<std::size_t>(nc) * sizeof(double);
-      std::memcpy(sp.z.data(), p + 32, nb);
-      std::memcpy(sp.mult.data(), p + 32 + nb, nb);
-      sp.mult_cap = load_pod<double>(p + 32 + 2 * nb);
-      sp.w_offset = load_pod<double>(p + 40 + 2 * nb);
-      sp.n_butterfly_viol = load_pod<std::uint32_t>(p + 48 + 2 * nb);
-      v.heavy_curves_[i] =
-          std::make_unique<SplineVolCurve>(std::move(sp), v.col_T_[i], v.col_forward_[i], v.col_df_[i]);
       break;
     }
     default:
@@ -377,6 +358,69 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
 }
 
 // ── surface-level math (bit-for-bit transcription of priced_surface/vol_curve) ─
+
+const IVolCurve *PricedSurfaceView::heavy_curve(std::size_t i) const noexcept {
+  if (!heavy_curve_slots_ || i >= n_slices_) {
+    return nullptr;
+  }
+  HeavyCurveSlot *slot = &heavy_curve_slots_[i];
+  // The acquire fast path makes steady-state curve evaluation one atomic load;
+  // std::call_once is paid only by racing first users. The builder owns the
+  // concrete curve locally until it is complete, then the release store safely
+  // publishes both the immutable curve and its slot-owned lifetime.
+  if (const IVolCurve *curve = slot->published.load(std::memory_order_acquire)) {
+    return curve;
+  }
+  try {
+    std::call_once(slot->once, [this, i, slot] {
+      const std::byte *p = record_.data() + col_payload_off_[i];
+      const std::size_t nc = static_cast<std::size_t>(col_node_count_[i]);
+      const std::size_t nb = nc * sizeof(double);
+      const auto kind = static_cast<VolCurveKind>(col_kind_[i]);
+      std::unique_ptr<IVolCurve> curve;
+      if (kind == VolCurveKind::ConvexDense) {
+        ConvexSliceFit fit;
+        fit.T = col_T_[i];
+        fit.F = col_forward_[i];
+        fit.df = col_df_[i];
+        fit.rmse_price = load_pod<double>(p + 0);
+        fit.n_obs = static_cast<std::size_t>(load_pod<std::uint64_t>(p + 8));
+        fit.n_active = static_cast<std::size_t>(load_pod<std::uint64_t>(p + 16));
+        fit.u.resize(nc);
+        fit.C.resize(nc);
+        std::memcpy(fit.u.data(), p + 24, nb);
+        std::memcpy(fit.C.data(), p + 24 + nb, nb);
+        curve = std::make_unique<ConvexDenseCurve>(std::move(fit));
+      } else if (kind == VolCurveKind::SplineVol) {
+        SplineVolParams sp;
+        sp.atm_vol = load_pod<double>(p + 0);
+        sp.z_lo_valid = load_pod<double>(p + 8);
+        sp.z_hi_valid = load_pod<double>(p + 16);
+        sp.z.resize(nc);
+        sp.mult.resize(nc);
+        std::memcpy(sp.z.data(), p + 32, nb);
+        std::memcpy(sp.mult.data(), p + 32 + nb, nb);
+        sp.mult_cap = load_pod<double>(p + 32 + 2 * nb);
+        sp.w_offset = load_pod<double>(p + 40 + 2 * nb);
+        sp.n_butterfly_viol = load_pod<std::uint32_t>(p + 48 + 2 * nb);
+        curve =
+            std::make_unique<SplineVolCurve>(std::move(sp), col_T_[i], col_forward_[i], col_df_[i]);
+      }
+      if (curve) {
+        const IVolCurve *const published = curve.get();
+        slot->curve = std::move(curve);
+        ATX_VOL_COUNT(SurfaceViewHeavyMaterializations);
+        slot->published.store(published, std::memory_order_release);
+      }
+    });
+  } catch (...) {
+    // Queries are noexcept. A transient allocation/call_once failure therefore
+    // fails this evaluation as NaN; call_once leaves the flag unset so a later
+    // query may retry instead of terminating the process or latching corruption.
+    return nullptr;
+  }
+  return slot->published.load(std::memory_order_acquire);
+}
 
 double PricedSurfaceView::slice_rate(std::size_t index) const noexcept {
   // Reproduces PricedSurface::create's per-slice slice_rates_[index] AND
@@ -504,9 +548,12 @@ double PricedSurfaceView::slice_w(std::size_t i, double k_log) const noexcept {
   }
   case VolCurveKind::ConvexDense:
   case VolCurveKind::SplineVol:
-    // Derived-state kinds: evaluated through the eager-materialized concrete curve
-    // (bit-identical to reconstruct).
-    return heavy_curves_[i] ? heavy_curves_[i]->w(k_log) : kNaN;
+    // Derived-state kinds: materialize the concrete curve exactly once, on this
+    // slice's first query. std::call_once publishes it to concurrent readers.
+    if (const IVolCurve *curve = heavy_curve(i)) {
+      return curve->w(k_log);
+    }
+    return kNaN;
   }
   return kNaN;
 }
