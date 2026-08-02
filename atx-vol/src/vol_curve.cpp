@@ -432,7 +432,11 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
         }
       } else {
         // The oracle's inclusive sample formula verbatim (fraction first):
-        // repair must check the exact doubles admission will evaluate.
+        // repair evaluates the same SOURCE expression, in the same order, that
+        // admission does. Not a bit-for-bit guarantee across TUs/compiler flags
+        // (FMA contraction can move an individual sample by an ulp) — the
+        // strict caller's 10x-tighter `tolerance` and exact-node promotion
+        // (`extra_node_ks`, ConvexRepairSpec) absorb any such drift.
         for (std::uint32_t gi = 0; gi < repair->grid_points; ++gi) {
           const double fraction = static_cast<double>(gi) /
                                   static_cast<double>(repair->grid_points - 1u);

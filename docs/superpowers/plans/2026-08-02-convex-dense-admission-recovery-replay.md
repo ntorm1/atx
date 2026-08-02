@@ -12,14 +12,16 @@ completed 2019 full-year data and the stratified sample are reported below;
 neither should be read as a verdict on the full 181-cell census, which
 remains only ~27% replayed (49/181 cells with full-census-level coverage).
 
-Full process detail, commands, and every gap/adaptation encountered:
-`.superpowers/sdd/2026-08-02-convex-dense-admission-recovery/task-4-report.md`.
+Full process detail, commands, and every gap/adaptation encountered are in
+the replay build logs: `C:/atx-data/logs/recovery-replay/` (see "Throwaway
+artifacts" below for the individual file list).
 
 ## What was replayed
 
 `atx-vol/tools/run_surface_db_backfill.py --phase build` (the actual
 production orchestrator, invoked directly rather than hand-copied from
-`orchestrator.log` — see the working report for why) against the read-only
+`orchestrator.log`; each invocation and its exit code/duration is recorded in
+`C:/atx-data/logs/recovery-replay/replay_manifest.csv`) against the read-only
 `C:/atx-data/opra-hive`, using `build-rel/bin/atx-vol-surface-db-build.exe`
 built from this branch (with the Task 1-3 strict-recovery fix, HEAD
 `b21737c`), writing into throwaway roots under
@@ -109,10 +111,10 @@ outside the allowed geometric-failure union {16, 32, 2048, 2064, 2080, 2096}.
 
 Bonus (informational, from the completed-but-not-sampled 2019 cells): one
 cell outside the formal 24-cell sample, `2019-08-01`, changed from mask 32
-to mask **48** (= 32|16 — calendar recovered, a butterfly violation now also
-shows on the same cell). 48's bits are entirely inside the allowed union, so
-this is **not** a regression by the brief's definition, but is flagged here
-for visibility.
+to mask **48** (= 32|16). The strict refit did not clear the calendar
+violation and additionally surfaced a butterfly violation — within the known
+mask family (not a regression by the brief's definition), but the one
+observed case of the mechanism degrading geometry.
 
 ## Bonus: full 2019 calendar year (49/181 census cells, not part of the formal sample)
 

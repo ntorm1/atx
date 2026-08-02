@@ -39,7 +39,9 @@ SymbolFitConfig seed_symbol_config(std::string_view symbol, FitPreset preset,
   if (!index_symbol.empty() && symbol == index_symbol) {
     // The recipe is recorded either way; `pin_curve` decides whether it is a hard
     // pin (one attempt, no recovery) or the family the auto route starts from
-    // with PricerFitter's two fallback ladders still live.
+    // with PricerFitter's two fallback ladders still live. A hard pin on this
+    // (ConvexDense) family remains eligible for the strict same-family
+    // admission-recovery refit; a hard pin naming any other family gets none.
     cfg.pin_curve = pin_curve_family;
     cfg.curve = CurveConfig{}; // default = the dense index recipe (node_cap 40)
   }

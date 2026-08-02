@@ -1434,16 +1434,25 @@ Status PricerFitter::fit(const OptionChain &chain,
   }
 
   // Strict convex-dense recovery — the rung after the last rung. Reached only
-  // when every ladder model was rejected and the digest names pure geometry
-  // (Butterfly/Calendar, optionally CarryGap). Root cause (2026-08 SPY
-  // backfill): the dense repair loop's fixed lattice + 1e-7 acceptance are
-  // strictly looser than this oracle's grid + 1e-8, so marginal sub-vol-tick
-  // crossings pass repair and die here. The refit pins repair to the oracle's
-  // exact calendar grid at 0.1x its tolerance and promotes the digest's
-  // reported violation k's to exact QP nodes; each round's new firsts feed
-  // the next round. Admitted fits never reach this block, so the hot path is
-  // unchanged.
-  if (!admission.publish_candidate && detail::should_attempt_strict_recovery(digest.failures)) {
+  // when the candidate was rejected and the digest names pure geometry
+  // (Butterfly/Calendar, optionally CarryGap), AND the caller either let the
+  // fitter auto-route (`auto_routed`) or explicitly pinned ConvexDense itself.
+  // A pin on a NON-dense family stays exactly what its contract promises —
+  // "pin (one attempt, no recovery)" (surface_db_build.cpp) / "skip both
+  // fallback ladders" (surface_db_seed.hpp) — this rung must not silently
+  // substitute ConvexDense underneath it. A ConvexDense pin, by contrast, is
+  // this rung's OWN family: it is a same-family strict refit (tighter repair
+  // + exact-node promotion of THAT candidate), never a family substitution,
+  // so it stays eligible under the pin. Root cause (2026-08 SPY backfill): the
+  // dense repair loop's fixed lattice + 1e-7 acceptance are strictly looser
+  // than this oracle's grid + 1e-8, so marginal sub-vol-tick crossings pass
+  // repair and die here. The refit pins repair to the oracle's exact calendar
+  // grid at 0.1x its tolerance and promotes the digest's reported violation
+  // k's to exact QP nodes; each round's new firsts feed the next round.
+  // Admitted fits never reach this block, so the hot path is unchanged.
+  if (!admission.publish_candidate &&
+      (auto_routed || rejected_primary_curve.kind == VolCurveKind::ConvexDense) &&
+      detail::should_attempt_strict_recovery(digest.failures)) {
     constexpr int kMaxStrictRecoveryRounds = 3;
     ConvexRepairSpec spec = detail::make_strict_repair_spec(validation_config);
     ValidationDigest round_digest = digest;

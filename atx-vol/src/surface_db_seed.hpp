@@ -33,7 +33,12 @@ namespace atx::vol {
 //
 // `pin_curve_family` decides whether the index recipe is stored as a hard PIN
 // (`pin_curve = true`, which makes `PricerFitter` skip both of its fallback
-// ladders for that symbol) or only as the preferred family. It has NO effect on a
+// ladders for that symbol) or only as the preferred family. Because the index
+// recipe pinned here is always ConvexDense, that hard pin still leaves the
+// symbol eligible for `PricerFitter`'s strict same-family admission-recovery
+// refit (never a family substitution); a hard pin naming any OTHER family
+// (not produced by this function, but by `PricerFitter`'s general pin
+// contract) gets no recovery at all. It has NO effect on a
 // non-index symbol, which is never pinned here. Explicit rather than defaulted:
 // the two callers deliberately disagree — `populate_universe_streaming` keeps the
 // historical pin (it has no operator knob and its seeding is a no-op inside

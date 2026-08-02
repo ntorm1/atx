@@ -421,7 +421,11 @@ struct ConvexRepairSpec {
   // Inclusive point count; k_i = k_min + (i / (grid_points - 1)) * (k_max -
   // k_min), the oracle's sample_k formula verbatim (fraction first — the
   // arithmetic ORDER is part of the contract, both sides must evaluate the
-  // same doubles).
+  // same SOURCE expression in the same order). This guarantees identical
+  // source, not a bit-for-bit identical result across TUs/compiler flags: FMA
+  // contraction can still move an individual sample by an ulp. That is fine
+  // here — the 10x tolerance margin (`tolerance` below vs. the oracle's) and
+  // exact-node promotion (`extra_node_ks`) absorb any such cross-TU drift.
   std::uint32_t grid_points{65};
   // Max accepted w_prev(k) - w_curr(k) at a grid k before promotion/refit.
   double tolerance{1.0e-7};
