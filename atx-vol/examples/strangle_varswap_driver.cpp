@@ -32,6 +32,17 @@
 // rather than an error. Every drop is reported — on stderr and in the TSV meta —
 // because a hole in the calendar changes what the run measured.
 //
+// DROPPING A SESSION IS A CLAIM ABOUT THE DATA, so the probe is careful about
+// what earns one. It is a TWO-STEP: open the partition ARCHIVE, then look the
+// SYMBOL up inside it. `SurfaceDb::map_surface` cannot be used for this, because
+// it folds a missing FILE and a missing SYMBOL into the same `NotFound`
+// (`SurfaceArchiveV2::open_file` returns `NotFound` for an absent path) — so a
+// database whose manifest lists partitions whose files are gone would read as
+// "this symbol has no surface on those dates", and the run would come back with
+// a quietly shortened window that looks like a fact about the market. The
+// archive-level split makes the two unambiguous: a failure to OPEN is always an
+// error, and only the archive's own directory probe can call a session dark.
+//
 // The probe pays for itself twice: the surviving refs become the clock, and the
 // surfaces' own `now_ts_ns` values become `StrangleVarswapConfig::session_ts`,
 // the grid the strategy snaps each cycle's expiry onto. An expiry that is not a
@@ -53,6 +64,7 @@
 #include "atx/vol/backtest.hpp"         // Clock, RunConfig, SnapshotCache, run_backtest
 #include "atx/vol/corpus.hpp"           // CorpusManifest, CorpusEntry (the filtered clock)
 #include "atx/vol/strangle_varswap.hpp" // StrangleVarswapConfig, StrangleVsVarswapStrategy
+#include "atx/vol/surface_archive.hpp"  // SurfaceArchiveV2 (the two-step session probe)
 #include "atx/vol/surface_db.hpp"       // SurfaceDb
 #include "atx/vol/tools/tearsheet.hpp"  // TearSheet, tearsheet, write_backtest_pnl_tsv
 #include "atx/vol/types.hpp"            // Result, Status, ErrorCode
@@ -193,27 +205,51 @@ struct SessionGrid {
 
 // Probe every ref of `full` for `symbol` and keep the ones that answer.
 //
-// A `NotFound` is the symbol having no surface in that partition — a dropped
-// session (see the file header). ANY OTHER error is the filesystem or the
-// archive failing and is propagated: silently treating an unreadable partition
-// as a dark one would turn a broken db into a quietly shorter backtest.
-[[nodiscard]] Result<SessionGrid> probe_sessions(const SurfaceDb &db, const Clock &full,
-                                                 const std::string &symbol) {
+// Only the SECOND step can call a session dark; see the file header for why the
+// two are split rather than taken from one `SurfaceDb::map_surface` call.
+[[nodiscard]] Result<SessionGrid> probe_sessions(const Clock &full, const std::string &symbol) {
   SessionGrid grid;
   CorpusManifest live;
   std::vector<std::int64_t> stamps;
   stamps.reserve(full.size());
   for (const SnapshotRef &ref : full.refs()) {
-    auto mapped = db.map_surface(ref.date, symbol);
-    if (!mapped) {
-      if (mapped.error().code() == ErrorCode::NotFound) {
+    // STEP 1 — THE PARTITION FILE. Every ref here came out of `db.partitions()`,
+    // so the manifest lists it BY CONSTRUCTION and `partition_listed` has
+    // nothing left to discriminate. The failure that IS live is the other half
+    // of the same manifest/disk disagreement the db API splits out
+    // (surface_db.hpp): the key is listed and the FILE is gone — a crash between
+    // `write_partition`'s rename and its manifest persist, a manifest restored
+    // from an older copy, a partially-copied root. EVERY failure to open is
+    // propagated, `NotFound` included, because "listed but absent" is a broken
+    // database and never a dark session.
+    //
+    // Probed BY PATH rather than through the db, so the bytes checked here are
+    // the exact file `MarketSnapshot::load` will open for this ref during the
+    // run — the probe verifies the thing the engine is about to depend on.
+    auto archive = SurfaceArchiveV2::open_mapped(ref.archive_path);
+    if (!archive) {
+      return atx::core::Err(archive.error().code(),
+                            "partition " + ref.date +
+                                " is listed by the db manifest but its archive did not open (" +
+                                ref.archive_path + "): " + archive.error().to_string() +
+                                " — the database is inconsistent, not this symbol's calendar");
+    }
+    // STEP 2 — THE SYMBOL. A `NotFound` from the archive's OWN directory probe
+    // is unambiguous: the file is open and holds no record under this name. That
+    // is the one condition that earns a dropped session. Name resolution matches
+    // the strategy's (`MarketSnapshot::uid_of`) — both canonicalize through
+    // `canonical_symbol` — so the probe keeps exactly the sessions the strategy
+    // can resolve, no more and no fewer.
+    auto surface = archive->map_symbol(symbol);
+    if (!surface) {
+      if (surface.error().code() == ErrorCode::NotFound) {
         grid.dark_dates.push_back(ref.date);
         continue;
       }
-      return atx::core::Err(mapped.error().code(), "probe " + symbol + " on " + ref.date + ": " +
-                                                       mapped.error().to_string());
+      return atx::core::Err(surface.error().code(), "probe " + symbol + " on " + ref.date + ": " +
+                                                        surface.error().to_string());
     }
-    stamps.push_back((*mapped)->pricing().now_ts_ns);
+    stamps.push_back(surface->pricing().now_ts_ns);
     live.dates.push_back(ref.date);
     CorpusEntry e;
     e.date = ref.date;
@@ -319,7 +355,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  auto grid = probe_sessions(*db, *windowed, args.symbol);
+  auto grid = probe_sessions(*windowed, args.symbol);
   if (!grid) {
     std::fprintf(stderr, "probe_sessions: %s\n", grid.error().to_string().c_str());
     return 1;

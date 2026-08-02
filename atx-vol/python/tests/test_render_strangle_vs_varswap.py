@@ -31,9 +31,39 @@ import sys
 import tempfile
 import unittest
 
+import pytest
+
 
 _ATX_VOL_ROOT = pathlib.Path(__file__).resolve().parents[2]
 _TOOL = _ATX_VOL_ROOT / "tools" / "render_strangle_vs_varswap.py"
+
+# The renderer imports matplotlib + pandas at MODULE scope, and this suite
+# declares neither: `atx-vol/python/pyproject.toml`'s test extra is
+# `["pytest>=7", "numpy>=1.23"]`. Executing it unconditionally would turn a
+# missing OPTIONAL dependency into a COLLECTION error, and a collection error in
+# one module reds the WHOLE `atx-vol-python` ctest lane — every other module in
+# this directory would report failure because a plotting library is absent.
+#
+# Skipping at module level is the policy the lane already applies one level up:
+# `_ctest_pytest_driver.py` exits `SKIP_RETURN_CODE` 77 when the compiled
+# extension is missing, so the lane reads as Skipped-with-a-reason rather than
+# red. An absent prerequisite is a skip; only a present one that misbehaves is a
+# failure.
+#
+# WIDENING THE SHARED TEST EXTRA IS DELIBERATELY NOT THE FIX. That list is the
+# install contract for every consumer of `pip install .[test]`, including the
+# scikit-build-core wheel build, and adding a plotting stack to it to serve one
+# module charges every other module for a dependency none of them import.
+# `pytest` is itself declared, so this guard adds no new dependency of its own.
+try:
+    import matplotlib  # noqa: F401
+    import pandas  # noqa: F401
+except ImportError as exc:  # pragma: no cover — depends on the host environment
+    pytest.skip(
+        "tools/render_strangle_vs_varswap.py needs matplotlib + pandas, which the "
+        f"atx-vol Python test extra does not declare: {exc}",
+        allow_module_level=True,
+    )
 
 _spec = importlib.util.spec_from_file_location("render_strangle_vs_varswap", _TOOL)
 if _spec is None or _spec.loader is None:
