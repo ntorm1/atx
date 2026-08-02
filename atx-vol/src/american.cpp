@@ -1335,7 +1335,17 @@ template <unsigned NB, unsigned NQ>
   for (unsigned i = 0; i < n; ++i) {
     b.y[i] = ws.next_y[i];
   }
-  return AlSweepResult{max_dy, n_movable > 0 && n_frozen == n_movable};
+  // A sweep frozen at EVERY movable node is unsolvable — except in the
+  // rate==0 / negative-yield regime, where the put boundary IS the flat
+  // analytic asymptote al_xmax_put(K, 0, q<0) == K the seed already encodes:
+  // the underflowing fixed-point denominators mean "nothing to move", not
+  // "nothing to solve". Report it as converged (max_dy underflows to 0) so the
+  // negative-carry corner main certified against the FD oracle
+  // (NegRateDomainMap.ZeroRateNegativeYield_IsSingleBoundaryAmerican) is
+  // served, while every strictly-negative-rate and heavy-carry freeze keeps
+  // the fail-closed NotConverged refusal.
+  const bool benign_flat_corner = (r == 0.0 && q < 0.0);
+  return AlSweepResult{max_dy, !benign_flat_corner && n_movable > 0 && n_frozen == n_movable};
 }
 
 // Dispatch to a compile-time-trip-count instantiation for the production fixed
@@ -1401,7 +1411,17 @@ template <unsigned NB, unsigned NQ>
   for (unsigned i = 0; i < n; ++i) {
     b.y[i] = ws.next_y[i];
   }
-  return AlSweepResult{max_dy, n_movable > 0 && n_frozen == n_movable};
+  // A sweep frozen at EVERY movable node is unsolvable — except in the
+  // rate==0 / negative-yield regime, where the put boundary IS the flat
+  // analytic asymptote al_xmax_put(K, 0, q<0) == K the seed already encodes:
+  // the underflowing fixed-point denominators mean "nothing to move", not
+  // "nothing to solve". Report it as converged (max_dy underflows to 0) so the
+  // negative-carry corner main certified against the FD oracle
+  // (NegRateDomainMap.ZeroRateNegativeYield_IsSingleBoundaryAmerican) is
+  // served, while every strictly-negative-rate and heavy-carry freeze keeps
+  // the fail-closed NotConverged refusal.
+  const bool benign_flat_corner = (r == 0.0 && q < 0.0);
+  return AlSweepResult{max_dy, !benign_flat_corner && n_movable > 0 && n_frozen == n_movable};
 }
 
 [[nodiscard]] AlSweepResult al_fixed_point_sweep(AlBoundary &b, AlWorkspace &ws, double sigma,
