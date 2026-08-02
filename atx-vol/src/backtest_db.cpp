@@ -1449,7 +1449,9 @@ namespace {
     }
   }
   if ((!result.gross_vega_abs.empty() && result.gross_vega_abs.size() != rows) ||
-      (!result.nav_liquidation.empty() && result.nav_liquidation.size() != rows)) {
+      (!result.nav_liquidation.empty() && result.nav_liquidation.size() != rows) ||
+      (!result.swap_pv.empty() && result.swap_pv.size() != rows) ||
+      (!result.swap_pnl.empty() && result.swap_pnl.size() != rows)) {
     return Err(ErrorCode::InvalidArgument,
                "backtest_db: optional backtest column row count mismatch");
   }
@@ -1507,6 +1509,17 @@ template <class T> void append_vector(std::vector<T> &dst, const std::vector<T> 
   if (result.n_open_lots.back() != static_cast<double>(checkpoint.portfolio.lots.size())) {
     return Err(ErrorCode::InvalidArgument, "backtest_db: checkpoint open-lot count mismatch");
   }
+  // The on-disk checkpoint format (three frozen sections, folded into
+  // `ra_schema_hash()`) carries no swap lane. Refuse a checkpoint that has one
+  // rather than dropping it: a resumed run would silently restart every swap
+  // lot's fixing series from zero. Extending the format is a schema decision —
+  // a new section plus a version gate plus fresh goldens — not a side effect of
+  // the engine gaining the lane. Decoded checkpoints never carry swap state, so
+  // this only ever fires on the write path.
+  if (!checkpoint.portfolio.swap_lots.empty() || !checkpoint.swap_accruals.empty()) {
+    return Err(ErrorCode::InvalidArgument,
+               "backtest_db: the stored checkpoint format does not persist the swap lane");
+  }
   std::unordered_set<std::uint64_t> lot_ids;
   for (const Lot &lot : checkpoint.portfolio.lots) {
     if (lot.id == 0 || lot.id >= checkpoint.next_lot_id || lot.contract.uid == 0 ||
@@ -1537,6 +1550,20 @@ template <class T> void append_vector(std::vector<T> &dst, const std::vector<T> 
       data.backtest.step_pnl_total.size() != data.backtest.size() - 1) {
     return Err(ErrorCode::InvalidArgument,
                "backtest_db: stored history must include one inception row");
+  }
+  // The frozen series registry has no swap columns, so storing a run that HAS a
+  // swap lane would drop its `swap_pv`/`swap_pnl` history on the floor. The
+  // `validate_checkpoint` guard (reached at the end of this function) catches a
+  // run still HOLDING swap lots; this catches the run whose swaps all settled
+  // before the last row, leaving a clean checkpoint. Zero-swap runs carry
+  // exactly 0.0 in both columns and store unchanged.
+  for (std::size_t i = 0; i < data.backtest.size(); ++i) {
+    const bool live = (i < data.backtest.swap_pv.size() && data.backtest.swap_pv[i] != 0.0) ||
+                      (i < data.backtest.swap_pnl.size() && data.backtest.swap_pnl[i] != 0.0);
+    if (live) {
+      return Err(ErrorCode::InvalidArgument,
+                 "backtest_db: the stored series schema does not carry the swap lane");
+    }
   }
   if (!valid_source_order(data.sources) || data.sources.size() != data.backtest.size()) {
     return Err(ErrorCode::InvalidArgument, "backtest_db: source/result row count mismatch");
@@ -1593,6 +1620,21 @@ Status append_backtest_results(BacktestResult &dst, const BacktestResult &src) {
   }
   append_vector(combined.gross_vega_abs, src.gross_vega_abs);
   append_vector(combined.nav_liquidation, src.nav_liquidation);
+  // The swap lane is NOT persisted (see the store-path guard above), so a
+  // DECODED prefix always reports it absent while a freshly computed
+  // continuation reports it present-and-zero. Concatenating those two would
+  // leave a column shorter than `date`. Carry the lane only when BOTH sides
+  // have it; otherwise the combined result reports it absent, exactly as a
+  // decoded result does. Nothing is lost: a run with a live swap lane cannot
+  // reach the store in the first place.
+  if (!combined.swap_pv.empty() && !src.swap_pv.empty() && !combined.swap_pnl.empty() &&
+      !src.swap_pnl.empty()) {
+    append_vector(combined.swap_pv, src.swap_pv);
+    append_vector(combined.swap_pnl, src.swap_pnl);
+  } else {
+    combined.swap_pv.clear();
+    combined.swap_pnl.clear();
+  }
   append_vector(combined.step_pnl_total, src.step_pnl_total);
   for (std::size_t i = 0; i < combined.signals.size(); ++i) {
     append_vector(combined.signals[i].second, src.signals[i].second);
