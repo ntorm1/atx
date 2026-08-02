@@ -1094,6 +1094,29 @@ TEST(StrangleVarswap, SignalsMatchIndependentSwapGreeksOracle) {
     EXPECT_TRUE(bits_equal(sig_skipped_restrikes[i], 0.0)) << "row " << i;
     EXPECT_TRUE(bits_equal(sig_skipped_swaps[i], 0.0)) << "row " << i;
   }
+
+  // Contract 4 at a STRIDE. Downsampling records every other session, so the
+  // series stay parallel to a SHORTER `date` — and the value on a recorded row
+  // still carries the fixings taken on the sessions that were not recorded. A
+  // signal that advanced its accrual per recorded row instead of per step would
+  // read the row below one return light.
+  RunConfig strided;
+  strided.record_every_n = 2u;
+  StrangleVsVarswapStrategy stride_strat{scfg};
+  const Result<BacktestResult> strided_rows = run_backtest(*clock, stride_strat, strided);
+  ASSERT_TRUE(strided_rows.has_value()) << strided_rows.error().to_string();
+  ASSERT_EQ(strided_rows->size(), 4u); // refs 0, 2, 4 and the always-recorded last
+  for (const char *name : kSignalNames) {
+    const std::vector<double> *s = signal_series(*strided_rows, name);
+    ASSERT_NE(s, nullptr) << name;
+    EXPECT_EQ(s->size(), strided_rows->date.size()) << name;
+  }
+  const std::vector<double> *strided_vega = signal_series(*strided_rows, "swap_vega");
+  ASSERT_NE(strided_vega, nullptr);
+  const Result<DerivGreeks> g2 =
+      swap_greeks_at(c.dp[2].second, swap1, kBaseNow + 2LL * kStepNs, /*n_obs_done=*/1u, ra * ra);
+  ASSERT_TRUE(g2.has_value()) << g2.error().to_string();
+  expect_close((*strided_vega)[1], swap1.qty * g2->vega, 1.0e-12, "strided swap_vega", 1u);
 }
 
 // ── 12. No live swap ⇒ NaN, never 0.0 ───────────────────────────────────────
