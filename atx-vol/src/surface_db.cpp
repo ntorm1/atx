@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -1429,6 +1430,120 @@ bool SurfaceDb::partition_listed(std::string_view key) const {
 }
 
 namespace {
+constexpr char kArchiveV2Magic[8] = {'A', 'T', 'X', 'V', 'S', 'A', '2', '0'};
+constexpr char kArchiveV2RecordMagic[8] = {'A', 'T', 'X', 'V', 'S', 'R', '2', '0'};
+
+[[nodiscard]] std::uint32_t archive_header_crc(ArchiveV2Header header) noexcept {
+  header.header_crc32c = 0;
+  std::array<std::byte, sizeof(ArchiveV2Header)> bytes{};
+  std::memcpy(bytes.data(), &header, sizeof header);
+  return crc32c(bytes.data(), bytes.size());
+}
+
+[[nodiscard]] Status read_archive_bytes(std::ifstream &in, std::uint64_t offset,
+                                        void *out, std::size_t size) {
+  if (offset > static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max()) ||
+      size > static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max())) {
+    return Err(ErrorCode::IoError, "SurfaceDb::session_ts: file offset is not seekable");
+  }
+  in.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+  if (!in) {
+    return Err(ErrorCode::IoError, "SurfaceDb::session_ts: seek failed");
+  }
+  const auto count = static_cast<std::streamsize>(size);
+  in.read(static_cast<char *>(out), count);
+  if (in.gcount() != count) {
+    return Err(ErrorCode::IoError, "SurfaceDb::session_ts: short read");
+  }
+  return Ok();
+}
+
+[[nodiscard]] Status validate_session_archive_header(const ArchiveV2Header &header,
+                                                     std::uint64_t file_size) {
+  const bool layout_ok = header.major == kArchiveV2Major && header.endian == 1u &&
+                         header.pointer_bits == 64u &&
+                         header.header_size == sizeof(ArchiveV2Header) &&
+                         header.lookup_slot_size == sizeof(ArchiveV2LookupSlot) &&
+                         header.dir_entry_size == sizeof(ArchiveV2DirEntry) &&
+                         header.surface_header_size == sizeof(ArchiveV2SurfaceHeader);
+  if (std::memcmp(header.magic, kArchiveV2Magic, sizeof(kArchiveV2Magic)) != 0 ||
+      !layout_ok) {
+    return Err(ErrorCode::ParseError, "SurfaceDb::session_ts: invalid archive header");
+  }
+  if (header.file_size != file_size) {
+    return Err(ErrorCode::ParseError, "SurfaceDb::session_ts: file size mismatch");
+  }
+  if (archive_header_crc(header) != header.header_crc32c) {
+    return Err(ErrorCode::ParseError, "SurfaceDb::session_ts: header checksum mismatch");
+  }
+  if (header.surface_count == 0u) {
+    return Err(ErrorCode::ParseError, "SurfaceDb::session_ts: partition has no surfaces");
+  }
+  const std::uint64_t directory_size =
+      static_cast<std::uint64_t>(header.surface_count) * sizeof(ArchiveV2DirEntry);
+  if (header.directory_offset > file_size ||
+      directory_size > file_size - header.directory_offset ||
+      header.directory_offset + directory_size > header.data_offset ||
+      header.data_offset > file_size) {
+    return Err(ErrorCode::ParseError, "SurfaceDb::session_ts: directory out of bounds");
+  }
+  return Ok();
+}
+
+[[nodiscard]] Result<std::int64_t> read_session_ts(std::string_view path) {
+  const std::filesystem::path archive_path{std::string(path)};
+  std::error_code ec;
+  if (!std::filesystem::exists(archive_path, ec) || ec) {
+    return Err(ErrorCode::NotFound, "SurfaceDb::session_ts: partition file not found");
+  }
+  std::ifstream in{archive_path, std::ios::binary | std::ios::ate};
+  if (!in) {
+    return Err(ErrorCode::IoError, "SurfaceDb::session_ts: cannot open partition file");
+  }
+  const std::streamsize sized = in.tellg();
+  if (sized < 0) {
+    return Err(ErrorCode::IoError, "SurfaceDb::session_ts: cannot size partition file");
+  }
+  const auto file_size = static_cast<std::uint64_t>(sized);
+  if (file_size < sizeof(ArchiveV2Header)) {
+    return Err(ErrorCode::ParseError, "SurfaceDb::session_ts: shorter than archive header");
+  }
+
+  ArchiveV2Header header{};
+  auto read = read_archive_bytes(in, 0u, &header, sizeof header);
+  if (!read) {
+    return Err(read.error());
+  }
+  auto valid = validate_session_archive_header(header, file_size);
+  if (!valid) {
+    return Err(valid.error());
+  }
+
+  ArchiveV2DirEntry entry{};
+  read = read_archive_bytes(in, header.directory_offset, &entry, sizeof entry);
+  if (!read) {
+    return Err(read.error());
+  }
+  if (entry.surface_offset < header.data_offset || entry.surface_offset > file_size ||
+      entry.surface_size < sizeof(ArchiveV2SurfaceHeader) ||
+      entry.surface_size > file_size - entry.surface_offset ||
+      (entry.surface_offset % kArchiveV2ColumnAlign) != 0u) {
+    return Err(ErrorCode::ParseError, "SurfaceDb::session_ts: surface record out of bounds");
+  }
+
+  ArchiveV2SurfaceHeader surface{};
+  read = read_archive_bytes(in, entry.surface_offset, &surface, sizeof surface);
+  if (!read) {
+    return Err(read.error());
+  }
+  if (std::memcmp(surface.magic, kArchiveV2RecordMagic,
+                  sizeof(kArchiveV2RecordMagic)) != 0 ||
+      surface.record_size != entry.surface_size || surface.n_slices != entry.n_slices) {
+    return Err(ErrorCode::ParseError, "SurfaceDb::session_ts: invalid surface record header");
+  }
+  return Ok(surface.now_ts_ns);
+}
+
 // F6 content identity of the partition file at `path`, from its 256-byte v2
 // header only (cheap — no full read); mirrors SnapshotCache::current_identity. A
 // missing / not-yet-v2 file yields the default identity ("unknown").
@@ -1442,14 +1557,24 @@ namespace {
   if (in.gcount() != static_cast<std::streamsize>(sizeof(header))) {
     return {};
   }
-  static constexpr char kMagic[8] = {'A', 'T', 'X', 'V', 'S', 'A', '2', '0'};
-  if (std::memcmp(header.magic, kMagic, sizeof(kMagic)) != 0 ||
+  if (std::memcmp(header.magic, kArchiveV2Magic, sizeof(kArchiveV2Magic)) != 0 ||
       header.header_size != sizeof(ArchiveV2Header)) {
     return {};
   }
   return archive_v2_identity_from_header(header);
 }
 } // namespace
+
+Result<std::int64_t> SurfaceDb::session_ts(std::string_view key) const {
+  auto canon = canonicalize_key(key);
+  if (!canon) {
+    return Err(canon.error());
+  }
+  if (manifest()->find_partition(*canon) == nullptr) {
+    return Err(ErrorCode::NotFound, "SurfaceDb::session_ts: partition not present");
+  }
+  return read_session_ts(partition_path(*canon));
+}
 
 Result<std::shared_ptr<const SurfaceArchiveV2>>
 SurfaceDb::cached_partition(std::string_view canonical_key) const {

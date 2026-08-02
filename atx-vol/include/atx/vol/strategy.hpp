@@ -264,7 +264,7 @@ struct SizedLeg {
 // log-moneyness bracket around F(T). |delta|(K) is monotone per side (call |delta|
 // falls in K, put |delta| rises in K), so bisection converges deterministically
 // (fixed bracket, fixed iteration cap). Widens the bracket [-1.5,1.5] -> [-3,3] ->
-// [-5,5] to catch extreme deltas; validates the repriced delta at the root.
+// [-5,5] to catch extreme deltas; validates the terminal canonical delta evaluation.
 // @return InvalidArgument if the target is outside (0,1) or unreachable.
 [[nodiscard]] Result<double> resolve_strike_by_delta(const SurfaceRef &s, double T, Side side,
                                                      double target_abs_delta);
@@ -276,37 +276,6 @@ struct SizedLeg {
 [[nodiscard]] Result<double> resolve_strike_by_delta(const SurfaceRef &s, double T, Side side,
                                                      double target_abs_delta,
                                                      const ResolutionOptions &options);
-
-// ── WS-P P4: batched N-name strike-from-delta resolve ──────────────────────
-// One 40Δ (or any target) strike to resolve per lane, each on its own surface —
-// the strategy-entry hot path for an N-name basket (a dispersion strangle resolves
-// call+put per name = 2N lanes). Instead of the per-name serial iterative solve
-// (bottleneck #4), the whole basket is resolved in ONE batched call: the lanes fan
-// out over the pricing executor (disjoint per-lane writes → bit-identical to the
-// serial `resolve_strike_by_delta` regardless of worker count) so an N-name entry
-// costs ~one lane's latency at ≥ (min(N, cores))× the serial wall.
-//
-// Each lane runs the identical Illinois/false-position solver `resolve_strike_by_
-// delta` uses (same `PricedSurface::delta` canonical evaluations, same
-// QueryExecution::Configured, same tolerance), so out[i] is bit-identical to
-// `resolve_strike_by_delta(*lanes[i].surface, lanes[i].T, lanes[i].side,
-// lanes[i].target_abs_delta)`. A null surface or a lane that fails to bracket
-// yields InvalidArgument in that slot without failing its neighbours.
-//
-// A single-thread SoA delta-wave (american_greeks_batch) is a further lever but
-// cannot be bit-identical to the correction-cache `PricedSurface::delta` path, so it
-// is deferred to its own economic-parity gate (see report; SIMD carry-forward).
-struct DeltaResolveLane {
-  const PricedSurface *surface{nullptr};
-  double T{0.0};
-  Side side{Side::Call};
-  double target_abs_delta{0.0};
-};
-
-// @param n_threads worker fan-out (0 = full pool; clamped to lane count). Output is
-//        bit-identical for any value.
-[[nodiscard]] std::vector<Result<double>>
-resolve_strikes_by_delta_batched(std::span<const DeltaResolveLane> lanes, unsigned n_threads = 0);
 
 // Resolve a `StrikeSelector` to a synthetic-model absolute strike K (AtmForward =
 // F(target_T); Delta = the solver; Moneyness = F * exp(value); AbsStrike = value).

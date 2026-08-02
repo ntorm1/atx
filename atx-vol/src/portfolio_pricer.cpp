@@ -469,6 +469,16 @@ struct ContractPnl {
   PriceStatus status{PriceStatus::ModelUnavailable};
 };
 
+// Successful target FullGreeks payload retained by the fused P&L solve until the
+// public caller-owned seed buffer is populated. T is the exact rolled tenor that
+// was passed to evaluate_batch, not a separately recomputed value.
+struct TargetRiskPx {
+  double T{0.0};
+  double iv{0.0};
+  AmericanGreeks greeks{};
+  PriceStatus status{PriceStatus::ModelUnavailable};
+};
+
 [[nodiscard]] bool degenerate(const OptionContract &c) noexcept {
   return !(std::isfinite(c.K) && c.K > 0.0 && std::isfinite(c.T) && c.T > 0.0);
 }
@@ -787,7 +797,8 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
   b_status.resize(n_unique);
 
   const std::span<const ContractGroup> groups = pp.groups();
-  const std::span<const PreparedPriceTile> tiles = pp.price_tiles();
+  const std::span<const PreparedPriceTile> price_tiles = pp.price_tiles();
+  const std::span<const PreparedGreekTile> greek_tiles = pp.greek_tiles();
   const std::span<const std::uint32_t> oci = pp.original_contract_index();
   const std::span<const double> kcol = pp.k();
   const std::span<const double> tcol = pp.t();
@@ -969,7 +980,20 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
     return;
   }
 
-  if (!want_greeks && simd::avx2_boundary_selected(resolved_price_isa)) {
+  if (want_greeks) {
+    // FullGreeks cost varies sharply by surface and option side. Dynamically
+    // assign immutable, book-determined (uid, side) tiles so worker speed and
+    // solve cost affect only ownership, never tile/pack membership. Each tile
+    // writes disjoint permuted scratch and original-index px slots; scatter and
+    // totals still reduce later in fixed position order.
+    pricing_executor().run_dynamic(greek_tiles.size(), n_threads, [&](std::size_t i, unsigned) {
+      const PreparedGreekTile &tile = greek_tiles[i];
+      solve_unseeded(tile.uid, tile.begin, tile.end);
+    });
+    return;
+  }
+
+  if (simd::avx2_boundary_selected(resolved_price_isa)) {
     // Any AVX2 Marks route (ForceAvx2 OR Auto→AVX2 now that WS-K ships it by
     // default) needs invariant pack membership. Each immutable tile (up to
     // kPreparedPriceTileLanes, a multiple of the four-lane pack) is one work unit;
@@ -977,16 +1001,15 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
     // changes only tile ownership, never the packs or final tail. Gating on
     // avx2_boundary_selected (the SAME predicate the boundary dispatch uses) closes
     // the latent Auto→AVX2 thread-count non-determinism the run_ranges split left.
-    pricing_executor().run_blocks(tiles.size(), n_threads, [&](std::size_t i) {
-      const PreparedPriceTile &tile = tiles[i];
+    pricing_executor().run_blocks(price_tiles.size(), n_threads, [&](std::size_t i) {
+      const PreparedPriceTile &tile = price_tiles[i];
       solve_span(tile.uid, tile.begin, tile.end);
     });
     return;
   }
 
-  // Preserve the established flattened-unique schedule for Auto/ForceScalar and
-  // every full-Greek route. This keeps default scalar scheduling and performance
-  // unchanged while still sharing the exact same solve body.
+  // Preserve the established flattened-unique schedule for scalar Marks. FullGreeks
+  // uses the immutable dynamic tile schedule above; P&L owns its separate path.
   pricing_executor().run_ranges(n_unique, n_threads, [&](std::size_t lo, std::size_t hi) {
     const std::uint32_t lo32 = static_cast<std::uint32_t>(lo);
     const std::uint32_t hi32 = static_cast<std::uint32_t>(hi);
@@ -1100,15 +1123,16 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
   }
 }
 
-// (Re)build the retained PreparedPortfolio only when the exact logical-book
-// version changes. The process-unique identity closes same-address ABA; the
-// revision detects every successful in-place retime with an O(1), allocation-
-// free comparison. The unique count is retained as a defensive invariant check.
+// Retain the PreparedPortfolio across an exact logical-book version. The
+// process-unique identity closes same-address ABA; the revision detects each
+// successful in-place retime. A tenor-only revision first attempts the validated,
+// allocation-free topology refresh and falls back to a full create on any structural
+// change. The unique count is retained as a defensive invariant check.
 // The Greek route/mask does not gate a rebuild:
 // PreparedPortfolio's permutation, groups, fixed raw-T tiles, reverse mapping,
 // and aligned columns derive purely from book metadata. Marks/Greeks, method,
-// preset, and ISA changes therefore reuse the same substrate. Emits
-// PreparedBuilds on an actual build so reuse is observable under counters.
+// preset, and ISA changes therefore reuse the same substrate. Emits PreparedBuilds
+// only on a full create so a successful tenor refresh is observable under counters.
 [[nodiscard]] Status ensure_prepared(const Portfolio &pf,
                                      std::optional<PreparedPortfolio> &prepared,
                                      std::uint64_t logical_id, std::uint64_t revision,
@@ -1116,6 +1140,11 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
                                      std::uint64_t &prepared_revision) {
   if (prepared.has_value() && prepared_logical_id == logical_id && prepared_revision == revision &&
       prepared->n_unique() == pf.n_contracts()) {
+    return atx::core::Ok();
+  }
+  if (prepared.has_value() && prepared_logical_id == logical_id &&
+      prepared->n_unique() == pf.n_contracts() && prepared->try_refresh_tenors(pf)) {
+    prepared_revision = revision;
     return atx::core::Ok();
   }
   Result<PreparedPortfolio> pp = PreparedPortfolio::create(pf, PriceOptions{});
@@ -1158,6 +1187,13 @@ struct PortfolioWorkspace::Impl {
   std::vector<Status> pnl_s_status;          // shifted-price batch status
   std::vector<double> pnl_junk;              // throwaway span for the batch's unused output
   std::vector<Status> pnl_junk_status;       // throwaway status span
+  // Opt-in target FullGreeks + Marks-fallback scratch. The exact successful
+  // target rows are retained in original contract order for seed export.
+  std::vector<AmericanGreeks> pnl_target_greeks;
+  std::vector<double> pnl_fallback_iv;
+  std::vector<double> pnl_fallback_price;
+  std::vector<Status> pnl_fallback_status;
+  std::vector<TargetRiskPx> pnl_target_risk;
   PnlTaylorSoa pnl_soa;                       // position-sized SoA scratch for the Taylor P&L kernel
   std::optional<PreparedPortfolio> prepared; // retained across snapshots (built once)
   std::uint64_t prepared_logical_id{0};      // exact book identity the substrate is for
@@ -1207,6 +1243,11 @@ void PortfolioWorkspace::reserve(std::size_t n_unique, std::size_t n_positions) 
   impl_->pnl_s_status.reserve(n_unique);
   impl_->pnl_junk.reserve(n_unique);
   impl_->pnl_junk_status.reserve(n_unique);
+  impl_->pnl_target_greeks.reserve(n_unique);
+  impl_->pnl_fallback_iv.reserve(n_unique);
+  impl_->pnl_fallback_price.reserve(n_unique);
+  impl_->pnl_fallback_status.reserve(n_unique);
+  impl_->pnl_target_risk.reserve(n_unique);
   // The Taylor P&L kernel runs one lane per POSITION (the pnl-explain frame is
   // position-indexed), so its SoA scratch follows the position count.
   impl_->pnl_soa.reserve(n_positions);
@@ -1648,7 +1689,12 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                        std::vector<AmericanGreeks> &b_greeks, std::vector<Status> &b_status,
                        std::vector<double> &s_tt, std::vector<double> &s_iv,
                        std::vector<double> &s_price, std::vector<Status> &s_status,
-                       std::vector<double> &s_junk, std::vector<Status> &s_junk_status) {
+                       std::vector<double> &s_junk, std::vector<Status> &s_junk_status,
+                       bool target_full_greeks,
+                       std::vector<AmericanGreeks> &target_greeks,
+                       std::vector<double> &fallback_iv, std::vector<double> &fallback_price,
+                       std::vector<Status> &fallback_status,
+                       std::vector<TargetRiskPx> &target_risk) {
   const std::size_t n_unique = pp.n_unique();
   const bool reuse_base = cached_base.size() == contracts.size();
   using EF = PricedSurface::EvalField;
@@ -1664,6 +1710,13 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
   s_status.resize(n_unique);
   s_junk.resize(n_unique);
   s_junk_status.resize(n_unique);
+  if (target_full_greeks) {
+    target_greeks.resize(n_unique);
+    fallback_iv.resize(n_unique);
+    fallback_price.resize(n_unique);
+    fallback_status.resize(n_unique);
+    target_risk.assign(contracts.size(), TargetRiskPx{});
+  }
 
   const std::span<const ContractGroup> groups = pp.groups();
   const std::span<const PreparedPriceTile> tiles = pp.price_tiles();
@@ -1775,21 +1828,66 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
         s_junk_status[p] = Err(sig_batch.error());
       }
     }
-    // Shifted surface at the rolled maturity T_t: American mark only (price_target).
-    PricedSurface::EvaluationSoA px_soa{std::span<double>(s_junk).subspan(s, gsz),
-                                        std::span<double>(s_price).subspan(s, gsz),
-                                        std::span<AmericanGreeks>{},
-                                        std::span<Status>(s_status).subspan(s, gsz),
-                                        {},
-                                        {}};
-    const Status px_batch = st->evaluate_batch(
-        kcol.subspan(s, gsz), std::span<double>(s_tt).subspan(s, gsz), scol.subspan(s, gsz),
-        EF::Price, /*analytic=*/false, px_soa, resolved_price_isa, query_execution);
-    if (!px_batch.has_value()) {
-      for (std::uint32_t p = s; p < e; ++p) {
-        s_junk[p] = kNaN;
-        s_price[p] = kNaN;
-        s_status[p] = Err(px_batch.error());
+    bool target_greek_batch_ok = false;
+    bool fallback_batch_ok = false;
+    if (target_full_greeks) {
+      // Evaluate the target mark and reusable target risk together. `s_tt` is
+      // both the batch input and the value retained for seed provenance.
+      PricedSurface::EvaluationSoA risk_soa{
+          std::span<double>(s_junk).subspan(s, gsz),
+          std::span<double>(s_price).subspan(s, gsz),
+          std::span<AmericanGreeks>(target_greeks).subspan(s, gsz),
+          std::span<Status>(s_status).subspan(s, gsz),
+          {},
+          {}};
+      const Status target_batch = st->evaluate_batch(
+          kcol.subspan(s, gsz), std::span<double>(s_tt).subspan(s, gsz),
+          scol.subspan(s, gsz), EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder,
+          analytic, risk_soa, resolved_price_isa, query_execution, PricedSurface::GreekNeeds{});
+      target_greek_batch_ok = target_batch.has_value();
+
+      bool fallback_needed = !target_greek_batch_ok;
+      if (!fallback_needed) {
+        for (std::uint32_t p = s; p < e; ++p) {
+          if (!s_status[p].has_value() || !std::isfinite(s_junk[p]) ||
+              !greeks_all_finite(target_greeks[p], PricedSurface::GreekNeeds{})) {
+            fallback_needed = true;
+            break;
+          }
+        }
+      }
+      if (fallback_needed) {
+        PricedSurface::EvaluationSoA fallback_soa{
+            std::span<double>(fallback_iv).subspan(s, gsz),
+            std::span<double>(fallback_price).subspan(s, gsz),
+            std::span<AmericanGreeks>{},
+            std::span<Status>(fallback_status).subspan(s, gsz),
+            {},
+            {}};
+        const Status fallback_batch = st->evaluate_batch(
+            kcol.subspan(s, gsz), std::span<double>(s_tt).subspan(s, gsz),
+            scol.subspan(s, gsz), EF::Price, /*analytic=*/false, fallback_soa,
+            resolved_price_isa, query_execution);
+        fallback_batch_ok = fallback_batch.has_value();
+      }
+    } else {
+      // Established P&L route: target American mark only.
+      PricedSurface::EvaluationSoA px_soa{std::span<double>(s_junk).subspan(s, gsz),
+                                          std::span<double>(s_price).subspan(s, gsz),
+                                          std::span<AmericanGreeks>{},
+                                          std::span<Status>(s_status).subspan(s, gsz),
+                                          {},
+                                          {}};
+      const Status px_batch = st->evaluate_batch(
+          kcol.subspan(s, gsz), std::span<double>(s_tt).subspan(s, gsz),
+          scol.subspan(s, gsz), EF::Price, /*analytic=*/false, px_soa,
+          resolved_price_isa, query_execution);
+      if (!px_batch.has_value()) {
+        for (std::uint32_t p = s; p < e; ++p) {
+          s_junk[p] = kNaN;
+          s_price[p] = kNaN;
+          s_status[p] = Err(px_batch.error());
+        }
       }
     }
 
@@ -1805,6 +1903,26 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
         out.status = PriceStatus::InvalidContract; // rolled past expiry
         continue;
       }
+      double target_price = 0.0;
+      bool target_mark_ok = false;
+      if (target_full_greeks) {
+        const bool full_target_ok =
+            target_greek_batch_ok && s_status[p].has_value() && std::isfinite(s_junk[p]) &&
+            greeks_all_finite(target_greeks[p], PricedSurface::GreekNeeds{});
+        if (full_target_ok) {
+          target_risk[orig] =
+              TargetRiskPx{T_t, s_junk[p], target_greeks[p], PriceStatus::Ok};
+          target_price = target_greeks[p].price;
+          target_mark_ok = true;
+        } else if (fallback_batch_ok && fallback_status[p].has_value() &&
+                   std::isfinite(fallback_price[p])) {
+          target_price = fallback_price[p];
+          target_mark_ok = true;
+        }
+      } else {
+        target_price = s_price[p];
+        target_mark_ok = s_status[p].has_value() && std::isfinite(target_price);
+      }
       const ContractPx *const cached = reuse_base ? &cached_base[orig] : nullptr;
       if (cached != nullptr && cached->status != PriceStatus::Ok) {
         out.status = cached->status;
@@ -1813,7 +1931,7 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
       const bool base_ok = cached != nullptr
                                ? std::isfinite(cached->fair_value)
                                : b_status[p].has_value() && std::isfinite(b_greeks[p].price);
-      if (!base_ok || !s_status[p].has_value() || !std::isfinite(s_price[p])) {
+      if (!base_ok || !target_mark_ok) {
         out.status = PriceStatus::NumericError;
         continue;
       }
@@ -1852,7 +1970,7 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
         continue;
       }
       out.price_base = cached != nullptr ? cached->fair_value : b_greeks[p].price;
-      out.price_target = s_price[p];
+      out.price_target = target_price;
       out.dS = dS;
       out.dvol = sig_t - sig_b;
       out.dt = dt;
@@ -2132,7 +2250,9 @@ Status PortfolioPricer::pnl_explain_into(const SurfaceSet &base, const SurfaceSe
   solve_pnl_uniques(*w.prepared, base, shifted, contracts, opts.analytic_greeks,
                     opts.resolved_price_isa, opts.query_execution, opts.n_threads, cached_base,
                     w.pnl, w.b_iv, w.b_price, w.b_greeks, w.b_status, w.pnl_tt, w.pnl_s_iv,
-                    w.pnl_s_price, w.pnl_s_status, w.pnl_junk, w.pnl_junk_status);
+                    w.pnl_s_price, w.pnl_s_status, w.pnl_junk, w.pnl_junk_status,
+                    /*target_full_greeks=*/false, w.pnl_target_greeks, w.pnl_fallback_iv,
+                    w.pnl_fallback_price, w.pnl_fallback_status, w.pnl_target_risk);
 
   // 19 per-row columns = 141 bytes/position (8 + 4 + 16*8 + 1). No FrameAllocations:
   // the output spans are caller-owned and the scratch was reserved.
@@ -2147,6 +2267,14 @@ Status PortfolioPricer::pnl_explain_into(const SurfaceSet &base, const SurfaceSe
 Result<PnlTotals> PortfolioPricer::pnl_totals(const SurfaceSet &base, const SurfaceSet &shifted,
                                               PortfolioWorkspace &ws,
                                               const PriceOptions &opts) const {
+  return pnl_totals_impl(base, shifted, ws, opts, /*target_full_greeks=*/false);
+}
+
+Result<PnlTotals> PortfolioPricer::pnl_totals_impl(const SurfaceSet &base,
+                                                   const SurfaceSet &shifted,
+                                                   PortfolioWorkspace &ws,
+                                                   const PriceOptions &opts,
+                                                   bool target_full_greeks) const {
   const std::span<const OptionContract> contracts = pf_.contracts();
   const std::span<const Position> positions = pf_.positions();
 
@@ -2186,7 +2314,9 @@ Result<PnlTotals> PortfolioPricer::pnl_totals(const SurfaceSet &base, const Surf
   solve_pnl_uniques(*w.prepared, base, shifted, contracts, opts.analytic_greeks,
                     opts.resolved_price_isa, opts.query_execution, opts.n_threads, cached_base,
                     w.pnl, w.b_iv, w.b_price, w.b_greeks, w.b_status, w.pnl_tt, w.pnl_s_iv,
-                    w.pnl_s_price, w.pnl_s_status, w.pnl_junk, w.pnl_junk_status);
+                    w.pnl_s_price, w.pnl_s_status, w.pnl_junk, w.pnl_junk_status,
+                    target_full_greeks, w.pnl_target_greeks, w.pnl_fallback_iv,
+                    w.pnl_fallback_price, w.pnl_fallback_status, w.pnl_target_risk);
 
   // No scatter, no per-row frame: reduce the weighted per-row decomposition over
   // positions in fixed input order — bit-identical to pnl_explain(...).total.
@@ -2218,6 +2348,63 @@ Result<PnlTotals> PortfolioPricer::pnl_totals_with_target_marks_into(
   const PortfolioWorkspace::Impl &w = *ws.impl_;
   scatter_target_mark_rows(pf_.positions(), pf_, w.pnl, opts.n_threads, out);
   // uint64 id + double mark + uint8 status + double prior-date vega proxy.
+  ATX_VOL_COUNT_N(FrameBytes, n * 25u);
+  return totals;
+}
+
+Result<PnlTotals> PortfolioPricer::pnl_totals_with_target_marks_and_full_greek_seeds_into(
+    const SurfaceSet &base, const SurfaceSet &shifted, TargetMarkView out,
+    std::vector<FullGreekSeed> &target_seeds, PortfolioWorkspace &ws,
+    const PriceOptions &opts) const {
+  const std::size_t n = pf_.positions().size();
+  if (out.id.size() != n || out.price_target.size() != n || out.status.size() != n ||
+      out.base_vega_proxy.size() != n) {
+    return Err(ErrorCode::InvalidArgument,
+               "pnl_totals_with_target_marks_and_full_greek_seeds_into: span/size mismatch");
+  }
+  if (target_mark_view_overlaps(out)) {
+    return Err(ErrorCode::InvalidArgument,
+               "pnl_totals_with_target_marks_and_full_greek_seeds_into: spans overlap");
+  }
+  if (opts.adjoint_greeks || !opts.greek_needs.full()) {
+    return Err(ErrorCode::InvalidArgument,
+               "pnl_totals_with_target_marks_and_full_greek_seeds_into: requires "
+               "non-adjoint full GreekNeeds");
+  }
+
+  // Clear only after every caller-owned output has passed validation. If the
+  // substrate solve itself fails, the seed handoff remains safely empty.
+  target_seeds.clear();
+  Result<PnlTotals> totals =
+      pnl_totals_impl(base, shifted, ws, opts, /*target_full_greeks=*/true);
+  if (!totals.has_value()) {
+    return Err(totals.error());
+  }
+
+  const PortfolioWorkspace::Impl &w = *ws.impl_;
+  const std::span<const OptionContract> contracts = pf_.contracts();
+  for (std::size_t i = 0; i < contracts.size(); ++i) {
+    const TargetRiskPx &risk = w.pnl_target_risk[i];
+    if (risk.status != PriceStatus::Ok) {
+      continue;
+    }
+    const OptionContract &contract = contracts[i];
+    const SurfaceRef surface = shifted.find(contract.uid);
+    if (surface == nullptr) {
+      continue;
+    }
+    target_seeds.push_back(FullGreekSeed{contract.uid,
+                                         contract.K,
+                                         risk.T,
+                                         contract.side,
+                                         surface->instance_id(),
+                                         opts.analytic_greeks,
+                                         opts.query_execution,
+                                         risk.iv,
+                                         risk.greeks});
+  }
+
+  scatter_target_mark_rows(pf_.positions(), pf_, w.pnl, opts.n_threads, out);
   ATX_VOL_COUNT_N(FrameBytes, n * 25u);
   return totals;
 }

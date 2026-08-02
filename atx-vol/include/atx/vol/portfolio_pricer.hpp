@@ -1083,6 +1083,20 @@ public:
                                     TargetMarkView out, PortfolioWorkspace &ws,
                                     const PriceOptions &opts = {}) const;
 
+  // Opt-in target-risk handoff. The P&L target leg is evaluated as FullGreeks,
+  // and every successful unique-contract lane is exported as an immutable seed
+  // whose T is the exact rolled tenor passed to that evaluation. A failed target
+  // Greek lane is repriced through the established Marks route so P&L/marks stay
+  // available, but it exports no seed. `target_seeds` is caller-owned, cleared
+  // after validation, and filled in unique-contract order; reserve
+  // n_contracts() entries alongside `ws.reserve(...)` for an allocation-stable
+  // warmed path. Only the non-adjoint, full-GreekNeeds route is accepted.
+  [[nodiscard]] Result<PnlTotals>
+  pnl_totals_with_target_marks_and_full_greek_seeds_into(
+      const SurfaceSet &base, const SurfaceSet &shifted, TargetMarkView out,
+      std::vector<FullGreekSeed> &target_seeds, PortfolioWorkspace &ws,
+      const PriceOptions &opts = {}) const;
+
   // L1 (AL-solve-wall sprint, fewer-solves): carry a retained base-risk bundle
   // across a book MEMBERSHIP SHRINK. When THIS pricer's book is a subset of `prev`'s
   // book (every unique (uid,K,T,side) of THIS book present in `prev`, at bit-exact
@@ -1117,6 +1131,10 @@ public:
   void retained_marks(const PortfolioWorkspace &ws, std::vector<RetainedMark> &out) const;
 
 private:
+  [[nodiscard]] Result<PnlTotals>
+  pnl_totals_impl(const SurfaceSet &base, const SurfaceSet &shifted, PortfolioWorkspace &ws,
+                  const PriceOptions &opts, bool target_full_greeks) const;
+
   Portfolio pf_;
 };
 

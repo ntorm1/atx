@@ -23,6 +23,7 @@ HOST_CTX = {
     "num_cpus": 16,
     "mhz_per_cpu": 2100,
     "library_build_type": "release",
+    "atx_build_isa": "sse2",
     "caches": [],
 }
 
@@ -103,6 +104,29 @@ class CollectRowsTest(unittest.TestCase):
 
 
 class GateBehaviourTest(unittest.TestCase):
+    def test_mismatched_build_isa_is_refused(self) -> None:
+        base = _doc(_agg_rows("price/backtest/cold", 200.0, 0.01))
+        new = _doc(_agg_rows("price/backtest/cold", 150.0, 0.01))
+        new["context"]["atx_build_isa"] = "avx2"
+
+        code, out = _run_main(base, new)
+
+        self.assertEqual(code, 1)
+        self.assertIn("BUILD ISA MISMATCH", out)
+        self.assertIn("sse2", out)
+        self.assertIn("avx2", out)
+
+    def test_missing_build_isa_is_refused(self) -> None:
+        base = _doc(_agg_rows("price/backtest/cold", 200.0, 0.01))
+        new = _doc(_agg_rows("price/backtest/cold", 200.0, 0.01))
+        del base["context"]["atx_build_isa"]
+
+        code, out = _run_main(base, new)
+
+        self.assertEqual(code, 1)
+        self.assertIn("BUILD ISA MISMATCH", out)
+        self.assertIn("missing", out)
+
     def test_self_compare_surfaces_fit_rows_and_passes(self) -> None:
         doc = _doc([
             _iter_row("fit/e2e/spy_real", 1031.4),

@@ -32,14 +32,12 @@ THREE CHOICES THAT ARE NOT ARBITRARY.
    would contain instants the run never visits, and the snap would anchor
    expiries onto sessions that are not in the run.
 
-   COST NOTE. ``SnapshotRef`` carries only ``date`` and ``archive_path``; there
-   is no bound timestamp on the ref, the clock, or the partition record
-   (``DbPartitionInfo.created_ts_ns`` is when the partition was WRITTEN, not the
-   market instant it observes). ``MarketSnapshot`` takes its ``ts_ns`` from its
-   surfaces' agreeing ``PricingContext.now_ts_ns``, and ``PricedSurface.pricing``
-   IS bound — so the grid is read with one ``SurfaceDb.load_surface`` per
-   session, which is the already-bound route to exactly the instant the engine
-   will use. One surface per session, ~145 sessions on the SP100 corpus.
+   COST NOTE. ``SnapshotRef`` carries only ``date`` and ``archive_path`` and
+   ``DbPartitionInfo.created_ts_ns`` is when the partition was WRITTEN, not the
+   market instant it observes. ``SurfaceDb.session_ts`` reads that instant from
+   the first directory record's fixed-size header, without reconstructing a
+   surface. ``MarketSnapshot`` later rejects a partition whose surfaces do not
+   all agree on that timestamp, so the fast pre-pass and engine share one value.
 
 3. The sources are PINNED to this worktree before ``atxvol`` is imported. The
    development box carries a scikit-build-core editable install whose
@@ -274,26 +272,25 @@ def universe_digest(names: Sequence[str]) -> str:
 # ── Session grid ────────────────────────────────────────────────────────────
 
 def _probe_surface(db, date: str, probe_symbols: Sequence[str]):
-    """The first of `probe_symbols` that this partition actually carries.
+    """Map the first of `probe_symbols` that this partition actually carries.
 
-    ``MarketSnapshot`` requires every surface in a partition to AGREE on
-    ``now_ts_ns`` and rejects the date otherwise, so any one of them answers the
-    session-instant question — which is why a session missing the index is still
-    readable through a constituent.
+    The reporting rate may come from any present universe surface. Mapping keeps
+    that one-off metadata read zero-copy instead of reconstructing an owned
+    surface that the backtest has not started consuming yet.
     """
     for symbol in probe_symbols:
         try:
-            return db.load_surface(date, symbol)
+            return db.map_surface(date, symbol)
         except av.AtxError:
             continue
     raise UsageError(
         f"partition {date}: none of the universe's symbols is in it, so its "
-        "session timestamp cannot be read. The db and the universe do not "
+        "reporting rate cannot be read. The db and the universe do not "
         "describe the same corpus."
     )
 
 
-def session_timestamps(db, clock, probe_symbols: Sequence[str]) -> list[int]:
+def session_timestamps(db, clock) -> list[int]:
     """The window's snapshot instants, ascending — see the module note (2).
 
     One entry per ref of the clock HANDED IN, so the grid is the run's own
@@ -301,8 +298,7 @@ def session_timestamps(db, clock, probe_symbols: Sequence[str]) -> list[int]:
     grid and the snap's `upper_bound` would otherwise return a wrong anchor as a
     success.
     """
-    stamps = [int(_probe_surface(db, ref.date, probe_symbols).pricing.now_ts_ns)
-              for ref in clock.refs]
+    stamps = [int(db.session_ts(ref.date)) for ref in clock.refs]
     ordered = sorted(set(stamps))
     if ordered != stamps:
         # Not fatal — resolution only requires ascending — but a corpus whose
@@ -323,9 +319,10 @@ def corpus_rate(db, clock, probe_symbols: Sequence[str], at_T: float) -> float:
     exists because the renderer's colophon falls back to the SPY run's
     hard-coded 0.043 when the metadata omits the key, and printing another run's
     rate as this one's is the class of thing the regime banner exists to prevent.
-    Kept out of `session_timestamps` (whose name promises one thing) and cheap:
-    it reads the FIRST session only, off the partition cache that function just
-    warmed.
+    Kept out of `session_timestamps` (whose name promises one thing). The
+    timestamp scan intentionally does not warm the partition cache; this maps a
+    first-session surface zero-copy, avoiding the old owned reconstruction that
+    cost about 20 ms only to read one reporting value.
     """
     return float(_probe_surface(db, clock.refs[0].date, probe_symbols).rate_at(at_T))
 
@@ -355,11 +352,12 @@ def strangle_config(names: Sequence[str], args) -> av.DispersionStrangleConfig:
     return cfg
 
 
-def run_config() -> av.RunConfig:
+def run_config(prefetch_depth: int = 1) -> av.RunConfig:
     cfg = av.RunConfig()
     # See the module note (1): required, not a preference.
     cfg.unpriced = av.UnpricedLotPolicy.EXCLUDE_AND_REPORT
     cfg.record_every_n = 1
+    cfg.prefetch_depth = prefetch_depth
     # `snapshot_cache` is left null on purpose: the engine then builds a PRIVATE
     # bounded cache sized off the prefetch depth. An explicit `SnapshotCache()`
     # is unbounded and would retain every session's whole board.
@@ -504,6 +502,7 @@ def track_meta(args, names, dates, cfg, run_cfg, sheet, result,
         "flat_rate": _g(rate),
         "unpriced_policy": run_cfg.unpriced.name,
         "record_every_n": str(run_cfg.record_every_n),
+        "prefetch_depth": str(run_cfg.prefetch_depth),
         "n_unpriced_lots_max": _g(max(result.n_unpriced_lots, default=0.0)),
         "n_unpriced_greeks_max": _g(max(result.n_unpriced_greeks, default=0.0)),
         "final_nav": _g17(result.nav[-1]) if len(result) else "0",
@@ -511,7 +510,8 @@ def track_meta(args, names, dates, cfg, run_cfg, sheet, result,
     }
 
 
-def write_tearsheet_tsv(path: str, sheet, result, names, dates, timing) -> int:
+def write_tearsheet_tsv(path: str, sheet, result, names, dates, timing,
+                        ledger_delta) -> int:
     """`key<TAB>value`, the TearSheet fold first, then the run-level facts.
 
     ``final_nav`` is NOT a TearSheet field — the fold reports `total_return`,
@@ -535,6 +535,7 @@ def write_tearsheet_tsv(path: str, sheet, result, names, dates, timing) -> int:
         ("backtest_wall_s", _g17(timing["wall_s"])),
         ("backtest_cpu_s", _g17(timing["cpu_s"])),
     ]
+    rows += [(key, str(int(value))) for key, value in ledger_delta.items()]
     with open(path, "w", encoding="utf-8", newline="\n") as handle:
         for key, value in rows:
             handle.write(f"{key}\t{value}\n")
@@ -568,6 +569,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="daily theta budget per constituent name")
     parser.add_argument("--hedge-band", type=float, default=0.0,
                         help="delta band below which the daily hedge does nothing")
+    parser.add_argument("--prefetch-depth", type=int, default=1,
+                        help="number of future snapshots allowed in flight (default: 1)")
     parser.add_argument("--label", default="sp100-projection-strangle",
                         help="run label, carried into the track header and the report")
     return parser
@@ -591,6 +594,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         for flag, value in (("--from", args.date_from), ("--to", args.date_to)):
             _check_iso_date(flag, value)
+        if args.prefetch_depth < 1:
+            raise UsageError("--prefetch-depth must be at least 1")
         names = read_universe(args.universe, args.index, _split_symbols(args.exclude))
     except UsageError as bad:
         print(f"error: {bad}", file=sys.stderr)
@@ -602,7 +607,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         db = av.SurfaceDb.open(args.db)
         clock = av.Clock.from_surface_db(db).between(args.date_from, args.date_to)
-        sessions = session_timestamps(db, clock, [index, *names])
+        sessions = session_timestamps(db, clock)
         rate = corpus_rate(db, clock, [index, *names], args.tenor_days / DAYS_PER_YEAR)
 
         cfg = strangle_config(names, args)
@@ -610,17 +615,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         spec.session_ts = sessions
         strategy = av.DeclarativeStrategy(spec)
 
-        run_cfg = run_config()
+        run_cfg = run_config(args.prefetch_depth)
         # perf_counter is the wall clock; process_time is user+system CPU of the
         # WHOLE process across all threads — run_backtest releases the GIL and
         # fans out over the pricing executor in-process, so the delta captures
         # the engine's parallel work (cpu/wall ~ effective core count).
+        av.reset_solve_ledger()
         wall_0 = time.perf_counter()
         cpu_0 = time.process_time()
         result = av.run_backtest(clock, strategy, run_cfg)
+        wall_1 = time.perf_counter()
+        cpu_1 = time.process_time()
+        ledger_delta = av.solve_ledger()
         timing = {
-            "wall_s": time.perf_counter() - wall_0,
-            "cpu_s": time.process_time() - cpu_0,
+            "wall_s": wall_1 - wall_0,
+            "cpu_s": cpu_1 - cpu_0,
         }
         sheet = av.tearsheet(result)
         dates = list(result.date)
@@ -634,7 +643,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         tearsheet_path = os.path.join(args.out, TEARSHEET_NAME)
         n_metrics = write_tearsheet_tsv(tearsheet_path, sheet, result, names, dates,
-                                        timing)
+                                        timing, ledger_delta)
 
         report_path = os.path.join(args.out, REPORT_NAME)
         report_dispersion.build_report(
@@ -668,6 +677,9 @@ def main(argv: Sequence[str] | None = None) -> int:
           f"{max(result.n_unpriced_greeks, default=0.0):.0f}")
     print(f"  backtest time         {timing['wall_s']:,.2f} s wall / "
           f"{timing['cpu_s']:,.2f} s cpu")
+    print("  solve ledger")
+    for key, value in ledger_delta.items():
+        print(f"    {key:<30} {value:,}")
     return EXIT_OK
 
 

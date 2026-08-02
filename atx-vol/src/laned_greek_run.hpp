@@ -12,18 +12,18 @@
 // be relaxed on the analytic route: view-batch was scalar, surface-batch was laned, so
 // the two disagreed by the documented ~1e-13 AVX2-transcendental delta.
 //
-// Rather than copy the block, both types now call `laned_greek_run` with two lambdas
-// that describe the ONLY thing that differs between them — how a query index resolves,
-// and how a lane that cannot be laned falls back to that type's own scalar routing.
+// Rather than copy the block, both types call `laned_greek_run` with two lambdas that
+// describe the ONLY thing that differs between them — how raw-T runs resolve, and how
+// a lane that cannot be laned falls back to that type's own scalar routing.
 // Once resolved to (S, K, T, sigma, r, q, side) the kernel path is byte-for-byte
 // identical, which is precisely why the archive bit-identity golden can be (and is)
 // re-tightened.
 //
-// DETERMINISM CONTRACT (unchanged from priced_surface.cpp's original block): pack
-// membership is fixed by the caller's entry order within the [begin, end) run and by
-// `kGreekChunk`, never by any pricing-executor thread partition. The laned kernels are
-// pack-composition invariant (a 1-lane pack returns exactly what a 4-lane pack returns),
-// pinned by PricedSurface.EvaluateBatchLanedGreeksPackCompositionInvariant.
+// DETERMINISM CONTRACT: pack membership is fixed by the caller's entry order across one
+// evaluate_batch call and by `kGreekChunk`, never by any pricing-executor thread
+// partition. The laned kernels are pack-composition invariant (a 1-lane pack returns
+// exactly what a 4-lane pack returns), pinned by
+// PricedSurface.EvaluateBatchLanedGreeksPackCompositionInvariant.
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/detail/counters.hpp" // ATX_VOL_COUNT(SurfaceFullGreekRoutes)
@@ -42,9 +42,9 @@ namespace atx::vol::detail {
 // view carries no accelerator and is always eligible).
 [[nodiscard]] inline bool laned_greek_route_selected(bool want_greeks, bool selective_only,
                                                      bool want_delta, bool want_vega, bool analytic,
-                                                     bool t_valid, AmericanMethod method,
+                                                     AmericanMethod method,
                                                      simd::SimdIsa isa) noexcept {
-  return want_greeks && !selective_only && !want_delta && !want_vega && analytic && t_valid &&
+  return want_greeks && !selective_only && !want_delta && !want_vega && analytic &&
          method == AmericanMethod::AndersenLake && simd::avx2_greeks_selected(isa);
 }
 
@@ -116,38 +116,41 @@ inline void normalize_unrequested_greeks(AmericanGreeks &g, GreekNeeds needs) no
   }
 }
 
-// Drive entries [begin, end) — a single raw-bit-equal-T run — through the laned analytic
-// Greek kernels, writing iv/price/greeks/status into `out`.
+// Drive one complete evaluate_batch request through the laned analytic Greek kernels,
+// writing iv/price/greeks/status into `out`. Valid lanes accumulate across raw-T runs;
+// each side flushes only when full or after the producer has visited the whole batch.
 //
-//   `resolve`  : (std::size_t e) -> ResolvedSurfacePoint  — the caller's own carry/bracket
-//                resolution for entry `e` (PricedSurface uses resolve_with_carry_and_bracket,
-//                PricedSurfaceView uses resolve_with_carry).
-//   `scalar_at`: (std::size_t e, Side sd) -> FusedResult  — the caller's exact scalar route
-//                for entry `e`, used for invalid resolutions and for the non-finite-lane
-//                failure fallback so both stay byte-identical to the unlaned path.
+//   `produce`  : (append) -> void — visits entries in caller order, preserving the caller's
+//                raw-T carry/bracket hoist, and calls append(e, resolved_point) once per entry.
+//   `scalar_at`: (ResolvedSurfacePoint, Side) -> FusedResult — the caller's exact scalar
+//                route, used for invalid resolutions and for the non-finite-lane failure
+//                fallback so both stay byte-identical to the unlaned path.
 //
 // `S`, `al` and `needs` are this surface's own pricing context — NOT the more expensive
 // defaults the higher-level american_greeks_batch forces — so the result matches this
 // surface's scalar `american_greeks_al(..., al_opts)` lane for lane.
-template <class ResolveFn, class ScalarFn>
-void laned_greek_run(double S, std::size_t begin, std::size_t end, std::span<const Side> side,
-                     const std::optional<AlOpts> &al, simd::SimdIsa isa, GreekNeeds needs,
-                     PricedSurface::EvaluationSoA out, ResolveFn &&resolve, ScalarFn &&scalar_at) {
+template <class ProduceFn, class ScalarFn>
+void laned_greek_run(double S, std::span<const Side> side, const std::optional<AlOpts> &al,
+                     simd::SimdIsa isa, GreekNeeds needs, PricedSurface::EvaluationSoA out,
+                     ProduceFn &&produce, ScalarFn &&scalar_at) {
   constexpr std::size_t kGreekChunk = 128;
   // Two homogeneous-per-side packs (the kernels are side-specific); each flushes when
-  // full. Buffers are per-side so a mixed put/call run lanes BOTH halves.
+  // full. Buffers are per-side so a mixed put/call batch lanes BOTH halves.
   double psS[kGreekChunk], psK[kGreekChunk], psT[kGreekChunk];
   double psSig[kGreekChunk], psR[kGreekChunk], psQ[kGreekChunk];
   AmericanGreeks psG[kGreekChunk];
+  PricedSurface::ResolvedSurfacePoint psPoint[kGreekChunk];
   std::size_t psIdx[kGreekChunk];
   std::size_t psN = 0;
   double csS[kGreekChunk], csK[kGreekChunk], csT[kGreekChunk];
   double csSig[kGreekChunk], csR[kGreekChunk], csQ[kGreekChunk];
   AmericanGreeks csG[kGreekChunk];
+  PricedSurface::ResolvedSurfacePoint csPoint[kGreekChunk];
   std::size_t csIdx[kGreekChunk];
   std::size_t csN = 0;
 
-  const auto scatter = [&](Side sd, std::size_t e, const AmericanGreeks &g) {
+  const auto scatter = [&](Side sd, std::size_t e, const PricedSurface::ResolvedSurfacePoint &p,
+                           const AmericanGreeks &g) {
     AmericanGreeks gg = g;
     normalize_unrequested_greeks(gg, needs);
     if (requested_greeks_finite(gg, needs)) {
@@ -162,7 +165,7 @@ void laned_greek_run(double S, std::size_t begin, std::size_t end, std::span<con
       // Byte-identical failure fallback: reproduce the caller's exact Err + poison (the
       // kernel exposes no per-lane ErrorCode). UNCHANGED — this is the non-finite-MARK
       // case that has always taken this route.
-      const auto fr = scalar_at(e, sd);
+      const auto fr = scalar_at(p, sd);
       out.iv[e] = fr.iv;
       out.price[e] = fr.price;
       out.greeks[e] = fr.greeks;
@@ -191,10 +194,12 @@ void laned_greek_run(double S, std::size_t begin, std::size_t end, std::span<con
     // Honor the K4 first-order tier exactly as the scalar route does: a reduced `needs`
     // skips the sigma+/-, r+/- and speed solves (a {delta} hedge caller pays ONE boundary
     // solve, not five) and leaves the unrequested greeks 0.
+    ATX_VOL_COUNT(SurfaceGreekBatchDispatches);
+    ATX_VOL_COUNT_N(SurfaceGreekBatchLanes, psN);
     (void)simd::american_put_greeks_batch(psS, psK, psT, psSig, psR, psQ, psN, al, psG, isa,
                                           needs.vega, needs.rho, needs.charm);
     for (std::size_t m = 0; m < psN; ++m) {
-      scatter(Side::Put, psIdx[m], psG[m]);
+      scatter(Side::Put, psIdx[m], psPoint[m], psG[m]);
     }
     psN = 0;
   };
@@ -202,16 +207,17 @@ void laned_greek_run(double S, std::size_t begin, std::size_t end, std::span<con
     if (csN == 0) {
       return;
     }
+    ATX_VOL_COUNT(SurfaceGreekBatchDispatches);
+    ATX_VOL_COUNT_N(SurfaceGreekBatchLanes, csN);
     (void)simd::american_call_greeks_batch(csS, csK, csT, csSig, csR, csQ, csN, al, csG, isa,
                                            needs.vega, needs.rho, needs.charm);
     for (std::size_t m = 0; m < csN; ++m) {
-      scatter(Side::Call, csIdx[m], csG[m]);
+      scatter(Side::Call, csIdx[m], csPoint[m], csG[m]);
     }
     csN = 0;
   };
 
-  for (std::size_t e = begin; e < end; ++e) {
-    const PricedSurface::ResolvedSurfacePoint p = resolve(e);
+  const auto append = [&](std::size_t e, const PricedSurface::ResolvedSurfacePoint &p) {
     if (p.valid && side[e] == Side::Put) {
       ATX_VOL_COUNT(SurfaceFullGreekRoutes); // one greek bundle, laned or patched
       psS[psN] = S;
@@ -220,6 +226,7 @@ void laned_greek_run(double S, std::size_t begin, std::size_t end, std::span<con
       psSig[psN] = p.sigma;
       psR[psN] = p.rate;
       psQ[psN] = p.q_eff;
+      psPoint[psN] = p;
       psIdx[psN] = e;
       out.iv[e] = p.sigma; // IV is free from the resolution (matches evaluate_resolved)
       if (++psN == kGreekChunk) {
@@ -233,6 +240,7 @@ void laned_greek_run(double S, std::size_t begin, std::size_t end, std::span<con
       csSig[csN] = p.sigma;
       csR[csN] = p.rate;
       csQ[csN] = p.q_eff;
+      csPoint[csN] = p;
       csIdx[csN] = e;
       out.iv[e] = p.sigma; // IV is free from the resolution (matches evaluate_resolved)
       if (++csN == kGreekChunk) {
@@ -240,13 +248,14 @@ void laned_greek_run(double S, std::size_t begin, std::size_t end, std::span<con
       }
     } else {
       // Invalid resolutions: exact scalar routing, byte-identical to the unlaned path.
-      const auto fr = scalar_at(e, side[e]);
+      const auto fr = scalar_at(p, side[e]);
       out.iv[e] = fr.iv;
       out.price[e] = fr.price;
       out.greeks[e] = fr.greeks;
       out.status[e] = fr.status;
     }
-  }
+  };
+  produce(append);
   flush_put();
   flush_call();
 }

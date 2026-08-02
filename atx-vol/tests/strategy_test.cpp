@@ -248,61 +248,17 @@ TEST(Strategy, StrikeFromDelta) {
   std::printf("[strategy] strike-from-delta worst |delta| error = %.2e\n", worst_err);
 }
 
-// WS-P P4: the batched N-name strike resolver fans a whole basket (call+put per
-// name = 2N lanes, distinct surfaces) over the pricing executor and is
-// BIT-IDENTICAL to the serial per-name resolve_strike_by_delta for any worker
-// count (disjoint per-lane writes; each lane runs the identical solver). A null /
-// failing lane fails only its own slot.
-TEST(Strategy, BatchedStrikeResolveBitIdenticalToSerial) {
-  std::vector<PricedSurface> surfs;
-  surfs.reserve(6);
-  for (int n = 0; n < 6; ++n) {
-    surfs.push_back(make_surface(kUid + static_cast<std::uint32_t>(n), 100.0, 100.0, kBaseNow,
-                                 0.01 * static_cast<double>(n))); // distinct smiles
-  }
-  const double T = 0.25;
-  std::vector<DeltaResolveLane> lanes;
-  std::vector<Result<double>> serial;
-  for (const PricedSurface &s : surfs) {
-    for (const Side side : {Side::Call, Side::Put}) {
-      lanes.push_back(DeltaResolveLane{&s, T, side, 0.40});
-      serial.push_back(resolve_strike_by_delta(s, T, side, 0.40));
-    }
-  }
+TEST(Strategy, StrikeFromDeltaDoesNotRepriceTerminalCandidate) {
+  namespace ledger = counters::ledger;
+  const PricedSurface s = make_surface(kUid, 100.0, 100.0, kBaseNow);
 
-  for (const unsigned nt : {1u, 2u, 4u, 0u}) {
-    const std::vector<Result<double>> batched = resolve_strikes_by_delta_batched(lanes, nt);
-    ASSERT_EQ(batched.size(), serial.size());
-    for (std::size_t i = 0; i < serial.size(); ++i) {
-      ASSERT_EQ(batched[i].has_value(), serial[i].has_value()) << "lane " << i << " nt=" << nt;
-      if (serial[i].has_value()) {
-        EXPECT_TRUE(close(*batched[i], *serial[i], 0.0)) // exact/bit-identical
-            << "lane " << i << " nt=" << nt << " batched=" << *batched[i]
-            << " serial=" << *serial[i];
-      }
-    }
-  }
+  ledger::reset();
+  const Result<double> strike = resolve_strike_by_delta(s, 0.50, Side::Put, 0.25);
+  ASSERT_TRUE(strike.has_value()) << strike.error().to_string();
+  const ledger::Counts measured = ledger::snapshot();
 
-  // Non-vacuous: every lane resolves and reprices to the 40Δ target.
-  const std::vector<Result<double>> batched = resolve_strikes_by_delta_batched(lanes, 0);
-  int ok = 0;
-  for (std::size_t i = 0; i < lanes.size(); ++i) {
-    if (!batched[i].has_value()) {
-      continue;
-    }
-    const auto g = lanes[i].surface->greeks(*batched[i], lanes[i].T, lanes[i].side);
-    ASSERT_TRUE(g.has_value());
-    EXPECT_NEAR(std::fabs(g->delta), 0.40, 1e-4) << "lane " << i;
-    ++ok;
-  }
-  EXPECT_GE(ok, 10);
-
-  // A null-surface lane fails only its own slot; its neighbour still resolves.
-  const std::vector<DeltaResolveLane> with_null = {DeltaResolveLane{nullptr, T, Side::Call, 0.40},
-                                                   lanes[0]};
-  const std::vector<Result<double>> rn = resolve_strikes_by_delta_batched(with_null, 0);
-  EXPECT_FALSE(rn[0].has_value());
-  EXPECT_TRUE(rn[1].has_value());
+  EXPECT_EQ(measured.get(ledger::Solve::AlBoundarySolves), 10u)
+      << "the terminal root evaluation must serve validation without an eleventh solve";
 }
 
 TEST(Strategy, AdaptiveStrikeResolutionAlwaysColdConfirmsAcrossGrid) {

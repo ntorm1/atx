@@ -12,7 +12,7 @@
 //   * NO per-open CRC (integrity is validate-on-demand — see SurfaceArchiveV2);
 //   * ZERO per-surface allocation for parametric surfaces (Essvi/Svi/C8 params
 //     and LinearVariance node arrays are read IN PLACE from the mapping);
-//   * a single, eager, one-time materialization of the two array/derived-state
+//   * lazy, once-per-queried-slice materialization of the two array/derived-state
 //     curve kinds (ConvexDense, SplineVol) whose evaluators need cached derived
 //     state (wing anchors / natural-spline 2nd-derivatives) — reused verbatim so
 //     the view is BIT-EXACT to the reconstruct path (§4 of docs/atxvsa2-format.md).
@@ -51,7 +51,6 @@
 #include <cstdint>
 #include <memory>
 #include <span>
-#include <vector>
 
 #include "atx/vol/american.hpp"       // AmericanGreeks, AmericanMethod, AlOpts
 #include "atx/vol/priced_surface.hpp" // PricedSurface (nested contract types), PricingContext
@@ -79,9 +78,10 @@ public:
 
   // Parse + validate one ATXVSA2 SurfaceRecord (`record` == the record's exact
   // byte extent) and build a view over it. `record` must remain mapped/alive for
-  // the view's whole lifetime — the view borrows into it, copying out only the
-  // ConvexDense/SplineVol node arrays it must materialize. ParseError on any
-  // framing / bounds / alignment / kind failure. This performs NO payload CRC.
+  // the view's whole lifetime — the view borrows into it, copying out a heavy
+  // slice's ConvexDense/SplineVol node arrays only when that slice is queried.
+  // ParseError on any framing / bounds / alignment / kind failure. This performs
+  // NO payload CRC.
   [[nodiscard]] static Result<PricedSurfaceView>
   create_over_record(std::span<const std::byte> record);
 
@@ -167,6 +167,7 @@ private:
   [[nodiscard]] double surface_w(double k_log, double T) const noexcept;
   // Per-slice total variance w(k_log) — dispatch on the mapped kind byte.
   [[nodiscard]] double slice_w(std::size_t i, double k_log) const noexcept;
+  [[nodiscard]] const IVolCurve *heavy_curve(std::size_t i) const noexcept;
 
   [[nodiscard]] ResolvedSurfacePoint resolve_with_carry(double K, double T,
                                                         ForwardCarry fc) const noexcept;
@@ -196,10 +197,12 @@ private:
   bool term_rates_{false};
   QueryPricingTier query_pricing_tier_{QueryPricingTier::LegacyCompatible};
 
-  // Materialized concrete curves for the two derived-state kinds (ConvexDense,
-  // SplineVol). Empty (no heap) for parametric-only surfaces; otherwise sized
-  // n_slices with a concrete curve at each heavy slice and nullptr elsewhere.
-  std::vector<std::unique_ptr<IVolCurve>> heavy_curves_{};
+  // Lazy concrete curves for the two derived-state kinds (ConvexDense,
+  // SplineVol). Empty (no heap) for parametric-only surfaces; otherwise one
+  // concurrency-safe slot per slice. Each heavy curve is constructed at most
+  // once, on that slice's first query.
+  struct HeavyCurveSlot;
+  mutable std::unique_ptr<HeavyCurveSlot[]> heavy_curve_slots_{};
 
   std::uint64_t instance_id_{0};
 };
