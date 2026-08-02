@@ -59,8 +59,8 @@ constexpr std::size_t kMaxGridPointsPerSlice = 4096;
 // node component is read once, in the adapter's own (already deterministic)
 // order, then sorted.
 [[nodiscard]] std::vector<double> build_slice_grid(const RiskSurfaceView &surface,
-                                                   std::size_t slice,
-                                                   const RiskSurfaceValidationConfig &config) {
+                                                    std::size_t slice,
+                                                    const RiskSurfaceValidationConfig &config) {
   std::vector<double> ks;
   ks.reserve(static_cast<std::size_t>(config.strike_grid_points) + 8u);
   for (std::uint32_t point = 0; point < config.strike_grid_points; ++point) {
@@ -86,7 +86,7 @@ constexpr std::size_t kMaxGridPointsPerSlice = 4096;
                        }),
            ks.end());
   if (ks.size() > kMaxGridPointsPerSlice) {
-    ks.resize(kMaxGridPointsPerSlice); // deterministic ascending-prefix truncation
+    ks.resize(kMaxGridPointsPerSlice);  // deterministic ascending-prefix truncation
   }
   return ks;
 }
