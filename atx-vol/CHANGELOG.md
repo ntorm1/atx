@@ -196,6 +196,15 @@ exists for.
 * **Loose dispersion result TSVs are off by default**, behind
   `DispersionRunConfig::emit_tsv_diagnostics` (spec key of the same name,
   default `false`). Retained-input and evidence TSVs are unaffected.
+* **`surface_insert_vol_slice(..., with_no_arb_check = true)` now actually
+  checks.** The parameter used to be accepted and discarded, leaving
+  `InsertedSliceHandle::no_arb_status == 0` unconditionally. It now runs a dense
+  butterfly/calendar sweep over the resolved slice and reports through
+  `no_arb_status` (`kNoArbStatusButterfly` / `kNoArbStatusCalendar` /
+  `kNoArbStatusNotEvaluated`) plus the `kFlagNoArbWarning` provenance bit. It is
+  a report, never a rejection — the handle is still returned, with the same
+  numeric contents. The default (`false`) path is unchanged and still costs
+  nothing, so no shipped caller's numbers move.
 
 ### NEW — embedding: a diagnostic sink and cooperative cancellation
 

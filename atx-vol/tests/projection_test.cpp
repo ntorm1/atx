@@ -377,6 +377,117 @@ TEST(VolProjection, InsertVolSlice_ForbidBeyondLastSlice_ReturnsOutOfRange) {
   EXPECT_EQ(h.error().code(), atx::vol::ErrorCode::OutOfRange);
 }
 
+// ── Opt-in no-arb sweep (`with_no_arb_check`) ───────────────────────────
+
+TEST(VolProjection, NoArbCheck_CleanSurface_ReportsCleanAndDoesNotAlterHandle) {
+  CurveSet cs = make_cs();
+  VolSurface sf = make_surface();  // monotone theta, phi = 1: arb-free
+  const auto tm = atx::vol::time_model_clock();
+  auto off = atx::vol::surface_insert_vol_slice(
+      sf, &cs, tm, 0.375, InterpMode::PiecewiseTotalVariance,
+      ProjExtrapPolicy::Forbid, /*with_no_arb_check=*/false);
+  auto on = atx::vol::surface_insert_vol_slice(
+      sf, &cs, tm, 0.375, InterpMode::PiecewiseTotalVariance,
+      ProjExtrapPolicy::Forbid, /*with_no_arb_check=*/true);
+  ASSERT_TRUE(off.has_value());
+  ASSERT_TRUE(on.has_value());
+  EXPECT_EQ(off->no_arb_status, 0u);
+  EXPECT_EQ(on->no_arb_status, 0u);
+  EXPECT_EQ(on->flags & atx::vol::kFlagNoArbWarning, 0u);
+  // The sweep is a REPORT, not a gate: everything else on the handle is
+  // bit-identical to the unchecked build.
+  EXPECT_EQ(on->flags, off->flags);
+  EXPECT_EQ(on->parent_lo_idx, off->parent_lo_idx);
+  EXPECT_EQ(on->parent_hi_idx, off->parent_hi_idx);
+  EXPECT_EQ(on->exact_slice_idx, off->exact_slice_idx);
+  EXPECT_EQ(on->alpha_T, off->alpha_T);
+  EXPECT_EQ(on->F, off->F);
+  EXPECT_EQ(on->tau_vol, off->tau_vol);
+}
+
+TEST(VolProjection, NoArbCheck_CalendarCrossingParents_SetsCalendarBit) {
+  // theta DECREASES across T: the two parent slices cross, so the derived
+  // slice sits inside a calendar-arb region.
+  VolSurface sf = VolSurface::create(7u, Parametrization::Essvi, 2).value();
+  EssviParams s0{};
+  s0.theta = 0.09;
+  s0.phi = 1.0;
+  s0.rho = 0.0;
+  s0.T = 0.25;
+  EssviParams s1 = s0;
+  s1.theta = 0.03;
+  s1.T = 1.00;
+  (void)sf.set_slice_essvi(0, s0);
+  (void)sf.set_slice_essvi(1, s1);
+  const auto tm = atx::vol::time_model_clock();
+
+  auto h = atx::vol::surface_insert_vol_slice(
+      sf, nullptr, tm, 0.50, InterpMode::PiecewiseTotalVariance,
+      ProjExtrapPolicy::Forbid, /*with_no_arb_check=*/true);
+  ASSERT_TRUE(h.has_value());
+  EXPECT_EQ(h->exact_slice_idx, -1);
+  EXPECT_NE(h->no_arb_status & atx::vol::kNoArbStatusCalendar, 0u);
+  EXPECT_NE(h->flags & atx::vol::kFlagNoArbWarning, 0u);
+  // Same surface, check not requested => status stays 0 (opt-in).
+  auto h_off = atx::vol::surface_insert_vol_slice(
+      sf, nullptr, tm, 0.50, InterpMode::PiecewiseTotalVariance,
+      ProjExtrapPolicy::Forbid);
+  ASSERT_TRUE(h_off.has_value());
+  EXPECT_EQ(h_off->no_arb_status, 0u);
+  EXPECT_EQ(h_off->flags & atx::vol::kFlagNoArbWarning, 0u);
+}
+
+TEST(VolProjection, NoArbCheck_SteepWingAtPillar_SetsButterflyBitOnly) {
+  // b = 4 is far past the Lee wing-slope bound: the Roper density goes
+  // negative in the wings. An exact-pillar handle IS one fitted slice, so the
+  // calendar bit must stay clear (that question belongs to arb_check_calendar
+  // on the surface).
+  SviParams steep{};
+  steep.a = 0.04;
+  steep.b = 4.0;
+  steep.rho = 0.0;
+  steep.m = 0.0;
+  steep.sigma = 0.1;
+  steep.T = 0.50;
+  SviParams steep_hi = steep;
+  steep_hi.a = 0.08;
+  steep_hi.T = 1.00;
+  VolSurface sf = make_svi_surface(steep, steep_hi);
+  const auto tm = atx::vol::time_model_clock();
+
+  auto h = atx::vol::surface_insert_vol_slice(
+      sf, nullptr, tm, 1.00, InterpMode::PiecewiseTotalVariance,
+      ProjExtrapPolicy::Forbid, /*with_no_arb_check=*/true);
+  ASSERT_TRUE(h.has_value());
+  EXPECT_GE(h->exact_slice_idx, 0);
+  EXPECT_NE(h->no_arb_status & atx::vol::kNoArbStatusButterfly, 0u);
+  EXPECT_EQ(h->no_arb_status & atx::vol::kNoArbStatusCalendar, 0u);
+  EXPECT_NE(h->flags & atx::vol::kFlagNoArbWarning, 0u);
+}
+
+TEST(VolProjection, NoArbCheck_DegenerateAtm_ReportsNotEvaluated) {
+  // Flat, zero total variance: there is no scale to build the k-grid from.
+  // The sweep says so instead of silently reporting "clean".
+  SviParams zero{};
+  zero.a = 0.0;
+  zero.b = 0.0;
+  zero.rho = 0.0;
+  zero.m = 0.0;
+  zero.sigma = 0.1;
+  zero.T = 0.25;
+  SviParams zero_hi = zero;
+  zero_hi.T = 1.00;
+  VolSurface sf = make_svi_surface(zero, zero_hi);
+  const auto tm = atx::vol::time_model_clock();
+
+  auto h = atx::vol::surface_insert_vol_slice(
+      sf, nullptr, tm, 0.50, InterpMode::PiecewiseTotalVariance,
+      ProjExtrapPolicy::Forbid, /*with_no_arb_check=*/true);
+  ASSERT_TRUE(h.has_value());
+  EXPECT_EQ(h->no_arb_status, atx::vol::kNoArbStatusNotEvaluated);
+  EXPECT_NE(h->flags & atx::vol::kFlagNoArbWarning, 0u);
+}
+
 // ── ShapeBlend (FLEX-style vol-multiple) interpolation ──────────────────
 
 TEST(VolProjection, ShapeBlendMatchesLinearWForIdenticalShapes) {
