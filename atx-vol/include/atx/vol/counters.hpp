@@ -142,6 +142,12 @@ enum class Counter : unsigned {
   // Retained Andersen-Lake state. Counts owning State allocations only; reset
   // and each residual price must leave this unchanged.
   AloStateAllocations,
+  // Calls and lanes submitted by the shared PricedSurface/PricedSurfaceView
+  // analytic-Greek accumulator to a side-specific batch entry point. These are
+  // deliberately separate from SurfaceFullGreekRoutes (bundles) and from
+  // AmericanAvxPackDispatches (the resolved-price wrapper only).
+  SurfaceGreekBatchDispatches,
+  SurfaceGreekBatchLanes,
   Count_
 };
 
@@ -180,6 +186,8 @@ inline constexpr const char *kNames[kCount] = {
     "cnt_full_greek_seed_reuse_lanes",
     "cnt_full_greek_seed_rejected_candidates",
     "cnt_alo_state_allocations",
+    "cnt_surface_greek_batch_dispatches",
+    "cnt_surface_greek_batch_lanes",
 };
 
 // A point-in-time copy of every counter. `enabled == false` is the sentinel a

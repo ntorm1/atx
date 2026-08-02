@@ -794,7 +794,7 @@ Result<double> PricedSurface::delta(double K, double T, Side side, QueryExecutio
   }
   // Delta-only fast path — same (S, sigma, r, q_eff, method, al_opts) plumbing as
   // greeks(), so this returns greeks().delta bit-identically at ~1-2 boundary solves
-  // instead of seventeen (see american_delta).
+  // instead of 7 unique boundaries (17 stencils), measured 7.07x (see american_delta).
   return delta_resolved(p, side, execution);
 }
 
@@ -1003,6 +1003,46 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
                "PricedSurface::evaluate_batch: query/output spans overlap");
   }
 
+  // Accumulate analytic-Greek lanes across the complete call. The producer retains the
+  // raw-bit-equal-T carry/bracket hoist; only the side-specific kernel flush moves from
+  // each expiry run to a full buffer or end-of-batch.
+  if (detail::laned_greek_route_selected(want_greeks, selective_only, want_delta, want_vega,
+                                         analytic, pricing_.method, resolved_price_isa) &&
+      (execution == QueryExecution::ColdReference || query_accelerator_ == nullptr)) {
+    detail::laned_greek_run(
+        pricing_.S, side, std::optional<AlOpts>{pricing_.al_opts}, resolved_price_isa, needs, out,
+        [&](const auto &append) {
+          std::size_t begin = 0;
+          while (begin < n) {
+            const double t = T[begin];
+            std::size_t end = begin + 1;
+            while (end < n &&
+                   std::bit_cast<std::uint64_t>(T[end]) == std::bit_cast<std::uint64_t>(t)) {
+              ++end;
+            }
+            const bool t_valid = std::isfinite(t) && (t > 0.0);
+            const ForwardCarry fc = t_valid ? interp_forward(t) : ForwardCarry{};
+            const CurveSurface::Bracket surface_bracket =
+                t_valid ? surface_.bracket(t) : CurveSurface::Bracket{};
+            for (std::size_t e = begin; e < end; ++e) {
+              ResolvedSurfacePoint p;
+              if (t_valid) {
+                p = resolve_with_carry_and_bracket(K[e], t, fc, surface_bracket);
+              } else {
+                p.K = K[e];
+                p.T = t;
+              }
+              append(e, p);
+            }
+            begin = end;
+          }
+        },
+        [&](const ResolvedSurfacePoint &p, Side sd) {
+          return evaluate_resolved(p, sd, fields, analytic, execution, needs);
+        });
+    return Ok();
+  }
+
   std::size_t i = 0;
   while (i < n) {
     const double t = T[i];
@@ -1094,61 +1134,6 @@ Status PricedSurface::evaluate_batch(std::span<const double> K, std::span<const 
       if (!batch_status.has_value()) {
         return batch_status;
       }
-      i = j;
-      continue;
-    }
-    // WS-P1 (P1a+P1b): laned ANALYTIC American Greeks under production Auto ISA, BOTH
-    // sides. Dispatch this run's valid PUT lanes through simd::american_put_greeks_batch
-    // and valid CALL lanes through simd::american_call_greeks_batch (the P1b call-native
-    // mirror), instead of the per-contract scalar american_greeks_al fan. THIS surface's
-    // al_opts is threaded through — the higher-level american_greeks_batch forces
-    // std::nullopt (a DIFFERENT, more expensive AlScheme than the reloaded surfaces'
-    // al_fast_opts), so it is NOT a byte-identical drop-in. Each kernel patches every
-    // non-early-exercise / non-finite lane through the exact scalar american_greeks_al
-    // (...,al_opts) — byte-identical to greeks_resolved's cold branch; genuine early-
-    // exercise lanes ride the 4-wide vector bundle.
-    //
-    // P1a GATE FLIP (PM-locked, economic-parity decision): the dispatch predicate is now
-    // simd::avx2_greeks_selected(isa), NOT the old resolved_price_isa == ForceAvx2. Under
-    // production Auto on an AVX2 host kShipAvx2Greeks is true, so this run's base-greek
-    // bundles (≈83% of dispersion solve volume — 1 straddle/name) now RIDE the laned
-    // kernel instead of silently falling to the scalar per-contract loop. The cost: the
-    // laned greeks differ from scalar by ~1e-13/greek (the AVX2 transcendentals in the
-    // stencil prices amplified by the FD denominators), so the historical evaluate_batch
-    // == per-entry-evaluate BIT-identity is RELAXED to a documented numeric tolerance
-    // (greeks are consumed at ~1e-6 economic precision; the shift is 10+ orders below a
-    // tick — sub-economic). The batch==scalar parity tests were re-gated to that
-    // tolerance. ForceScalar (and non-AVX2 hosts) keep the exact scalar loop; a single-
-    // contract evaluate() still uses scalar american_greeks_al, so per-entry vs batch now
-    // agree only within the gate, by design. Determinism: pack membership is fixed by the
-    // strike order within a single-thread [i,j) run, independent of any pricing-executor
-    // thread partition. Cold path only (mirror the marks arm's accelerator guard).
-    //
-    // WS-P1v: the pack/flush/scatter body now lives in ONE place —
-    // detail::laned_greek_run (src/laned_greek_run.hpp) — shared verbatim with
-    // PricedSurfaceView::evaluate_batch, which was a pure scalar per-entry Greek loop
-    // until this change. Only the resolution and the scalar-fallback routing differ
-    // between the two types; both are passed in as lambdas below.
-    if (detail::laned_greek_route_selected(want_greeks, selective_only, want_delta, want_vega,
-                                           analytic, t_valid, pricing_.method,
-                                           resolved_price_isa) &&
-        (execution == QueryExecution::ColdReference || query_accelerator_ == nullptr)) {
-      detail::laned_greek_run(
-          pricing_.S, i, j, side, std::optional<AlOpts>{pricing_.al_opts}, resolved_price_isa,
-          needs, out,
-          [&](std::size_t e) {
-            return resolve_with_carry_and_bracket(K[e], t, fc, surface_bracket);
-          },
-          [&](std::size_t e, Side sd) {
-            // FIX-3/F3-A: `needs` MUST be threaded. Without it the fallback recomputed
-            // the full default bundle and was then judged under full-bundle finiteness,
-            // i.e. a narrowed caller's lane could be vetoed on a column it never
-            // requested — FIX-1/F3's over-guard defect, reintroduced on the fallback
-            // path. It also restores surface/view parity: the view's identical lambda
-            // (priced_surface_view.cpp) has always passed `needs`.
-            return evaluate_resolved(resolve_with_carry_and_bracket(K[e], t, fc, surface_bracket),
-                                     sd, fields, analytic, execution, needs);
-          });
       i = j;
       continue;
     }

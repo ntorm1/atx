@@ -16,9 +16,10 @@
 #include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/calib.hpp" // FitObs
+#include "atx/vol/counters.hpp"
+#include "atx/vol/dense_slice.hpp"
 #include "atx/vol/detail/archive_util.hpp" // crc32c (C2 prior-salt fixture)
 #include "atx/vol/detail/surface_archive_payload.hpp"
-#include "atx/vol/dense_slice.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/priced_surface_view.hpp"
 #include "atx/vol/spline_curve.hpp" // SplineVolParams, fit_spline_vol_slice
@@ -470,6 +471,64 @@ TEST(SurfaceArchiveV2, EvaluateBatchBitIdentical) {
   expect_batch_bit_identical(spline, *v3, EF::Iv | EF::Price, false);
   expect_batch_bit_identical(spline, *v3, EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder,
                              false);
+}
+
+TEST(SurfaceArchiveV2, MixedTAnalyticGreekPackingMatchesOwnedSurface) {
+  if constexpr (!atx::vol::counters::counters_enabled()) {
+    EXPECT_FALSE(atx::vol::counters::snapshot().enabled);
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  } else {
+    if (!atx::vol::simd::have_avx2()) {
+      GTEST_SKIP() << "mixed-T analytic-Greek packing requires AVX2";
+    }
+    using EF = PricedSurface::EvalField;
+    const PricedSurface owned = make_essvi(1, 5);
+    auto archive = SurfaceArchiveV2::open(build_v2(owned, "e"));
+    ASSERT_TRUE(archive.has_value());
+    auto view = archive->map_symbol("e");
+    ASSERT_TRUE(view.has_value());
+
+    const std::array<double, 4> strikes{104.0, 108.0, 112.0, 116.0};
+    const std::array<double, 4> tenors{0.05, 0.11, 0.23, 0.41};
+    const std::array<Side, 4> sides{Side::Put, Side::Put, Side::Put, Side::Put};
+    const EF fields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder;
+    std::array<double, 4> owned_iv{}, view_iv{}, owned_price{}, view_price{};
+    std::array<AmericanGreeks, 4> owned_greeks{}, view_greeks{};
+    std::array<atx::vol::Status, 4> owned_status{}, view_status{};
+
+    atx::vol::counters::reset();
+    ASSERT_TRUE(owned
+                    .evaluate_batch(strikes, tenors, sides, fields, /*analytic=*/true,
+                                    PricedSurface::EvaluationSoA{
+                                        owned_iv, owned_price, owned_greeks, owned_status, {}, {}},
+                                    atx::vol::simd::SimdIsa::ForceAvx2)
+                    .has_value());
+    auto snapshot = atx::vol::counters::snapshot();
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::SurfaceFullGreekRoutes), strikes.size());
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::SurfaceGreekBatchDispatches), 1u);
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::SurfaceGreekBatchLanes), strikes.size());
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::BoundarySolves), 5u * strikes.size());
+
+    atx::vol::counters::reset();
+    ASSERT_TRUE(view->evaluate_batch(strikes, tenors, sides, fields, /*analytic=*/true,
+                                     PricedSurface::EvaluationSoA{
+                                         view_iv, view_price, view_greeks, view_status, {}, {}},
+                                     atx::vol::simd::SimdIsa::ForceAvx2)
+                    .has_value());
+    snapshot = atx::vol::counters::snapshot();
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::SurfaceFullGreekRoutes), strikes.size());
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::SurfaceGreekBatchDispatches), 1u);
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::SurfaceGreekBatchLanes), strikes.size());
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::BoundarySolves), 5u * strikes.size());
+
+    for (std::size_t i = 0; i < strikes.size(); ++i) {
+      ASSERT_TRUE(owned_status[i].has_value()) << i;
+      ASSERT_TRUE(view_status[i].has_value()) << i;
+      EXPECT_TRUE(bits_equal(owned_iv[i], view_iv[i])) << i;
+      EXPECT_TRUE(bits_equal(owned_price[i], view_price[i])) << i;
+      EXPECT_TRUE(greeks_bits_equal(owned_greeks[i], view_greeks[i])) << i;
+    }
+  }
 }
 
 // A big SplineVol fixture (its own record with many slices) — mirrors the

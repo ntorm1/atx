@@ -866,6 +866,42 @@ Status PricedSurfaceView::evaluate_batch(std::span<const double> K, std::span<co
                "PricedSurfaceView::evaluate_batch: query/output spans overlap");
   }
 
+  // Mirror PricedSurface exactly: preserve the raw-T carry hoist while retaining
+  // side-specific Greek lanes until a full buffer or the end of this batch.
+  if (detail::laned_greek_route_selected(want_greeks, selective_only, want_delta, want_vega,
+                                         analytic, pricing_.method, resolved_price_isa)) {
+    detail::laned_greek_run(
+        pricing_.S, side, std::optional<AlOpts>{pricing_.al_opts}, resolved_price_isa, needs, out,
+        [&](const auto &append) {
+          std::size_t begin = 0;
+          while (begin < n) {
+            const double t = T[begin];
+            std::size_t end = begin + 1;
+            while (end < n &&
+                   std::bit_cast<std::uint64_t>(T[end]) == std::bit_cast<std::uint64_t>(t)) {
+              ++end;
+            }
+            const bool t_valid = std::isfinite(t) && (t > 0.0);
+            const ForwardCarry fc = t_valid ? interp_forward(t) : ForwardCarry{};
+            for (std::size_t e = begin; e < end; ++e) {
+              ResolvedSurfacePoint p;
+              if (t_valid) {
+                p = resolve_with_carry(K[e], t, fc);
+              } else {
+                p.K = K[e];
+                p.T = t;
+              }
+              append(e, p);
+            }
+            begin = end;
+          }
+        },
+        [&](const ResolvedSurfacePoint &p, Side sd) {
+          return evaluate_resolved(p, sd, fields, analytic, needs);
+        });
+    return Ok();
+  }
+
   std::size_t i = 0;
   while (i < n) {
     const double t = T[i];
@@ -947,33 +983,6 @@ Status PricedSurfaceView::evaluate_batch(std::span<const double> K, std::span<co
       if (!batch_status.has_value()) {
         return batch_status;
       }
-      i = j;
-      continue;
-    }
-    // WS-P1v: the laned analytic-Greek route, shared verbatim with
-    // PricedSurface::evaluate_batch via detail::laned_greek_run. BEFORE this change the
-    // view evaluated Greeks one entry at a time through evaluate_resolved, so a book
-    // priced off a mapped `.atxvsa` record paid the scalar per-contract
-    // american_greeks_al fan while an identical freshly-fit PricedSurface rode the
-    // 4-lane AVX2 kernel. That asymmetry — not any real modelling difference — was why
-    // the SurfaceArchiveV2 `expect_batch_bit_identical` golden had to be relaxed on the
-    // analytic route by WS-P1a; sharing the driver restores exact surface==view batch
-    // agreement and the golden is re-tightened accordingly.
-    //
-    // The view carries NO QueryAccelerator (it is always the cold reference tier), so the
-    // accelerator half of PricedSurface's guard is unconditionally satisfied here. It also
-    // now carries the SAME GreekNeeds parameter as PricedSurface (WS-ZC1), so a reduced
-    // request skips the same boundary solves on both types and the default {} full bundle
-    // is exactly what the scalar greeks_resolved() it replaces computed.
-    if (detail::laned_greek_route_selected(want_greeks, selective_only, want_delta, want_vega,
-                                           analytic, t_valid, pricing_.method,
-                                           resolved_price_isa)) {
-      detail::laned_greek_run(
-          pricing_.S, i, j, side, std::optional<AlOpts>{pricing_.al_opts}, resolved_price_isa,
-          needs, out, [&](std::size_t e) { return resolve_with_carry(K[e], t, fc); },
-          [&](std::size_t e, Side sd) {
-            return evaluate_resolved(resolve_with_carry(K[e], t, fc), sd, fields, analytic, needs);
-          });
       i = j;
       continue;
     }

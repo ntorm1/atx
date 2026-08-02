@@ -971,6 +971,48 @@ TEST(PricedSurface, EvaluateBatchLanedGreeksPackCompositionInvariant) {
       std::array<double, 4>{0.03, 0.04, 0.05, 0.06});
 }
 
+TEST(PricedSurface, EvaluateBatchAnalyticGreeksAccumulatesAcrossDistinctT) {
+  if constexpr (!counters::counters_enabled()) {
+    EXPECT_FALSE(counters::snapshot().enabled);
+    GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
+  } else {
+    if (!simd::have_avx2()) {
+      GTEST_SKIP() << "mixed-T analytic-Greek packing requires AVX2";
+    }
+    const PricedSurface s = make_essvi_varycarry(1);
+    const EF fields = EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder;
+    constexpr std::size_t kValidLanes = 4;
+    // Deep-enough ITM puts under r > q keep all four lanes in the genuine
+    // early-exercise kernel instead of exercising only its scalar patch seam. The
+    // invalid-T tail must remain an immediate scalar error and stay out of the pack.
+    const std::array<double, 5> strikes{104.0, 108.0, 112.0, 116.0, 110.0};
+    const std::array<double, 5> tenors{0.11, 0.19, 0.31, 0.47, -0.20};
+    const std::array<Side, 5> sides{Side::Put, Side::Put, Side::Put, Side::Put, Side::Put};
+    std::array<double, 5> iv{};
+    std::array<double, 5> price{};
+    std::array<AmericanGreeks, 5> greeks{};
+    std::array<Status, 5> status{};
+
+    counters::reset();
+    ASSERT_TRUE(s.evaluate_batch(strikes, tenors, sides, fields, /*analytic=*/true,
+                                 PricedSurface::EvaluationSoA{iv, price, greeks, status, {}, {}},
+                                 simd::SimdIsa::ForceAvx2)
+                    .has_value());
+    for (std::size_t lane = 0; lane < kValidLanes; ++lane) {
+      ASSERT_TRUE(status[lane].has_value()) << lane;
+    }
+    EXPECT_FALSE(status.back().has_value());
+    EXPECT_TRUE(std::isnan(iv.back()));
+    EXPECT_TRUE(std::isnan(price.back()));
+
+    const counters::Snapshot snapshot = counters::snapshot();
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceFullGreekRoutes), kValidLanes);
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceGreekBatchDispatches), 1u);
+    EXPECT_EQ(snapshot.get(counters::Counter::SurfaceGreekBatchLanes), kValidLanes);
+    EXPECT_EQ(snapshot.get(counters::Counter::BoundarySolves), 5u * kValidLanes);
+  }
+}
+
 TEST(PricedSurface, PriceOnlyResolvedBatchPreservesMethodPresetAndLaneErrors) {
   const AlOpts custom{/*n_collocation=*/9, /*n_quadrature=*/32,
                       /*max_newton_iter=*/6, /*tol=*/3.0e-9};

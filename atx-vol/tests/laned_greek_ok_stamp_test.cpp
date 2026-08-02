@@ -98,9 +98,9 @@ struct RunOut {
 
   RunOut o;
   detail::laned_greek_run(
-      kS, 0, 1, side, std::optional<AlOpts>{al_fast_opts()}, simd::SimdIsa::Auto, needs, soa,
-      [&](std::size_t) { return p; },
-      [&](std::size_t, Side) {
+      kS, side, std::optional<AlOpts>{al_fast_opts()}, simd::SimdIsa::Auto, needs, soa,
+      [&](const auto &append) { append(0, p); },
+      [&](const PricedSurface::ResolvedSurfacePoint &, Side) {
         o.fallback_taken = true;
         PricedSurface::FusedResult fr;
         fr.price = kFallbackPrice;
@@ -283,9 +283,9 @@ TEST(LanedGreekOkStamp, F2B_OrdinaryLaneStillStampsOkBitIdentically) {
   PricedSurface::EvaluationSoA soa{iv, price, greeks, status, {}, {}};
   bool fallback = false;
   detail::laned_greek_run(
-      100.0, 0, 1, side, std::optional<AlOpts>{al_fast_opts()}, simd::SimdIsa::Auto, GreekNeeds{},
-      soa, [&](std::size_t) { return p; },
-      [&](std::size_t, Side) {
+      100.0, side, std::optional<AlOpts>{al_fast_opts()}, simd::SimdIsa::Auto, GreekNeeds{}, soa,
+      [&](const auto &append) { append(0, p); },
+      [&](const PricedSurface::ResolvedSurfacePoint &, Side) {
         fallback = true;
         PricedSurface::FusedResult fr;
         fr.price = kFallbackPrice;
