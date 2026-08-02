@@ -250,6 +250,14 @@ struct SnapshotCache::Impl {
   // resolves. Guarded by its own mutex, deliberately not `mutex`: the probe is called
   // BEFORE the cache lock precisely so the header read never serializes other cache
   // operations.
+  //
+  // GROWTH IS NOT BOUNDED BY `max_entries`, on purpose. This memo holds one path plus
+  // 24 bytes per DISTINCT archive ever probed, not per RETAINED snapshot — trimming it
+  // alongside `entries` would re-probe exactly the archives a forward-only walk is
+  // about to consume, which is the cost being removed. The bound is the clock length
+  // (one entry per session for `run_backtest`'s private cache, which is the only
+  // Sealed cache the engine builds and it dies with the run), and the memo holds no
+  // snapshot alive: an evicted entry frees its deserialized surfaces regardless.
   [[nodiscard]] ArchiveContentIdentity identity_for(const std::string &path) {
     if (backing != ArchiveBacking::Sealed) {
       return current_identity(path);
