@@ -874,7 +874,147 @@ LifecycleDecision lifecycle_decide(const LifecycleSpec &lifecycle, std::size_t s
   return LifecycleDecision{need, need && !book_empty};
 }
 
+std::int64_t select_fixed_cycle_expiry(std::span<const std::int64_t> sessions,
+                                       std::int64_t base_ts, std::int64_t tenor_ns) noexcept {
+  if (sessions.empty()) {
+    return 0;
+  }
+  const std::int64_t anchor = (base_ts > std::numeric_limits<std::int64_t>::max() - tenor_ns)
+                                  ? std::numeric_limits<std::int64_t>::max()
+                                  : base_ts + tenor_ns;
+  const auto at_or_after = std::lower_bound(sessions.begin(), sessions.end(), anchor);
+  // Past the end of the grid there is no session to hold the full tenor. Take
+  // the LAST one instead: a short final cycle that the run still observes
+  // settling beats an expiry the corpus never reaches.
+  const std::int64_t expiry = (at_or_after != sessions.end()) ? *at_or_after : sessions.back();
+  return expiry > base_ts ? expiry : 0;
+}
+
 // ── DeclarativeStrategy ─────────────────────────────────────────────────────
+
+namespace {
+
+// FixedExpiryRestrike / swap-lane configuration validation, run once on the
+// first on_step (the Status channel a constructor does not have). Everything
+// here is a CONFIGURATION error — fatal, `InvalidArgument`/`NotImplemented` —
+// as opposed to the soft, counted, data-driven failures the restrike step
+// handles. Returns the legs' common tenor in ns (the cycle tenor).
+[[nodiscard]] Result<std::int64_t> validate_restrike_spec(const StrategySpec &spec) {
+  if (!spec.swap_legs.empty() &&
+      spec.lifecycle.holding != LifecycleSpec::Holding::FixedExpiryRestrike) {
+    return Err(ErrorCode::NotImplemented,
+               "DeclarativeStrategy: swap_legs require the FixedExpiryRestrike lifecycle — a "
+               "swap lot cannot be erased, so no other holding mode can carry one");
+  }
+  if (spec.legs.empty()) {
+    return Err(ErrorCode::InvalidArgument,
+               "DeclarativeStrategy: FixedExpiryRestrike requires at least one option leg");
+  }
+  if (spec.session_ts.empty()) {
+    return Err(ErrorCode::InvalidArgument,
+               "DeclarativeStrategy: FixedExpiryRestrike requires session_ts to fix a cycle "
+               "expiry");
+  }
+  // A binary search over an unsorted grid still RETURNS an anchor — a wrong
+  // expiry reported as success — so an out-of-order calendar fails closed here.
+  if (!std::is_sorted(spec.session_ts.begin(), spec.session_ts.end())) {
+    return Err(ErrorCode::InvalidArgument,
+               "DeclarativeStrategy: session_ts must be sorted ascending");
+  }
+  if (spec.constraint.kind != CrossLegConstraint::Kind::None) {
+    return Err(ErrorCode::InvalidArgument,
+               "DeclarativeStrategy: cross-leg constraints are not part of the restrike mode; "
+               "size each leg directly");
+  }
+  if (spec.missing.policy != MissingNamePolicy::Error) {
+    return Err(ErrorCode::InvalidArgument,
+               "DeclarativeStrategy: the restrike mode has its own keep-strikes policy; "
+               "missing.policy must stay Error");
+  }
+
+  const double cycle_T = spec.legs.front().tenor.target_T;
+  for (std::size_t i = 0; i < spec.legs.size(); ++i) {
+    const LegSpec &leg = spec.legs[i];
+    if (!(std::isfinite(leg.tenor.target_T) && leg.tenor.target_T > 0.0)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "DeclarativeStrategy: restrike leg " + std::to_string(i) +
+                     " needs a finite positive tenor.target_T");
+    }
+    if (leg.tenor.target_T != cycle_T) {
+      return Err(ErrorCode::InvalidArgument,
+                 "DeclarativeStrategy: restrike legs must share ONE tenor (the cycle's); leg " +
+                     std::to_string(i) + " differs from leg 0");
+    }
+    if (leg.tenor.snap_to_listed || leg.tenor.snap_to_sessions) {
+      return Err(ErrorCode::InvalidArgument,
+                 "DeclarativeStrategy: the FixedExpiryRestrike lifecycle owns expiry snapping; "
+                 "leg " + std::to_string(i) + " must not set a snap flag");
+    }
+    if (leg.size.kind == SizeSpec::Kind::Weight) {
+      return Err(ErrorCode::InvalidArgument,
+                 "DeclarativeStrategy: Weight sizing needs a cross-leg constraint, which the "
+                 "restrike mode does not carry; size leg " + std::to_string(i) + " directly");
+    }
+  }
+  const double tenor_ns = std::round(cycle_T * kNsPerYear);
+  if (!(tenor_ns >= 1.0 && tenor_ns < kInt64ExclusiveUpper)) {
+    return Err(ErrorCode::InvalidArgument,
+               "DeclarativeStrategy: the cycle tenor is out of range");
+  }
+
+  for (std::size_t i = 0; i < spec.swap_legs.size(); ++i) {
+    const SwapLegSpec &leg = spec.swap_legs[i];
+    const std::string tag = "DeclarativeStrategy: swap leg " + std::to_string(i);
+    if (leg.symbol.empty() && leg.uid == 0) {
+      return Err(ErrorCode::InvalidArgument, tag + " needs a symbol or a nonzero uid");
+    }
+    if (!(std::isfinite(leg.notional) && leg.notional > 0.0)) {
+      return Err(ErrorCode::InvalidArgument, tag + " needs a finite positive notional");
+    }
+    if (!(std::isfinite(leg.annualization) && leg.annualization > 0.0)) {
+      return Err(ErrorCode::InvalidArgument, tag + " needs a finite positive annualization");
+    }
+    const bool capped =
+        leg.kind == DerivKind::CappedVarSwap || leg.kind == DerivKind::CappedVolSwap;
+    if (capped && !(std::isfinite(leg.cap_dec) && leg.cap_dec > 0.0)) {
+      return Err(ErrorCode::InvalidArgument, tag + " is a capped kind and needs cap_dec > 0");
+    }
+    if (!capped && leg.cap_dec != 0.0) {
+      return Err(ErrorCode::InvalidArgument, tag + " is uncapped and must keep cap_dec == 0");
+    }
+    switch (leg.size.kind) {
+    case SwapSizeSpec::Kind::FixedQty:
+      if (!(std::isfinite(leg.size.value) && leg.size.value != 0.0)) {
+        return Err(ErrorCode::InvalidArgument, tag + " FixedQty needs a finite nonzero value");
+      }
+      break;
+    case SwapSizeSpec::Kind::TargetVega:
+      if (!(std::isfinite(leg.size.value) && leg.size.value > 0.0)) {
+        return Err(ErrorCode::InvalidArgument, tag + " TargetVega needs a finite positive value");
+      }
+      if (!(std::isfinite(leg.size.sign) && leg.size.sign != 0.0)) {
+        return Err(ErrorCode::InvalidArgument, tag + " TargetVega needs a finite nonzero sign");
+      }
+      break;
+    case SwapSizeSpec::Kind::MatchGroupVega:
+      if (!leg.size.group.empty()) {
+        const bool known = std::any_of(spec.legs.begin(), spec.legs.end(),
+                                       [&leg](const LegSpec &option_leg) {
+                                         return option_leg.group == leg.size.group;
+                                       });
+        if (!known) {
+          return Err(ErrorCode::InvalidArgument,
+                     tag + " MatchGroupVega names group '" + leg.size.group +
+                         "', which no option leg carries");
+        }
+      }
+      break;
+    }
+  }
+  return Ok(static_cast<std::int64_t>(tenor_ns));
+}
+
+} // namespace
 
 Result<std::optional<DeclarativeStrategy::PendingCohort>>
 DeclarativeStrategy::prepare_cohort(const MarketSnapshot &base, std::uint64_t first_lot_id,
@@ -942,6 +1082,28 @@ Status DeclarativeStrategy::on_step(const MarketSnapshot &base, std::size_t step
 Status DeclarativeStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,
                                     PortfolioState &book, std::uint64_t &next_lot_id,
                                     const PriceOptions &price_options) {
+  // The restrike mode (and any spec carrying swap legs, which requires it) has
+  // its own per-step decision and never reaches lifecycle_decide below.
+  if (spec_.lifecycle.holding == LifecycleSpec::Holding::FixedExpiryRestrike ||
+      !spec_.swap_legs.empty()) {
+    if (!restrike_validated_) {
+      const Result<std::int64_t> tenor = validate_restrike_spec(spec_);
+      if (!tenor) {
+        return Err(tenor.error());
+      }
+      cycle_tenor_ns_ = *tenor;
+      restrike_validated_ = true;
+    }
+    // Interpreter lands in the next change (step_restrike); the validated stub
+    // deliberately opens nothing.
+    (void)base;
+    (void)step_index;
+    (void)book;
+    (void)next_lot_id;
+    (void)price_options;
+    return Ok();
+  }
+
   last_entry_seeds_.clear();
   const bool close_at_horizon = spec_.lifecycle.holding == LifecycleSpec::Holding::CloseAtHorizon;
   const std::int64_t base_ts = base.ts_ns();

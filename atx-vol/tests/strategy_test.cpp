@@ -2317,3 +2317,165 @@ TEST(TenorSnap, DefaultOffIsBitIdentical) {
   EXPECT_EQ(sized->front().leg.expiry_ts_ns, kBaseNow + raw);
   EXPECT_EQ(sized->front().leg.T, static_cast<double>(raw) / kNsPerYear);
 }
+
+// ── Declarative swap-lane DSL: grammar + validation gates ───────────────────
+//
+// FixedExpiryRestrike + swap_legs validation fires on the FIRST on_step (the
+// Status channel a constructor does not have), before any resolution work — so
+// these gates drive a real strategy against a real snapshot and assert the
+// exact refusal.
+
+namespace {
+
+[[nodiscard]] StrategySpec restrike_spec(std::vector<std::int64_t> sessions) {
+  StrategySpec spec;
+  spec.name = "restrike";
+  LegSpec leg;
+  leg.uid = kUid;
+  leg.tenor.target_T = 0.25;
+  leg.structure.kind = StructureSpec::Kind::Strangle;
+  leg.structure.call_leg = {StrikeSelector::Kind::Delta, 0.40};
+  leg.structure.put_leg = {StrikeSelector::Kind::Delta, 0.40};
+  leg.size = {SizeSpec::Kind::FixedContracts, 100.0, +1.0};
+  spec.legs.push_back(leg);
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryStep;
+  spec.lifecycle.holding = LifecycleSpec::Holding::FixedExpiryRestrike;
+  spec.session_ts = std::move(sessions);
+  return spec;
+}
+
+[[nodiscard]] SwapLegSpec var_swap_leg() {
+  SwapLegSpec leg;
+  leg.uid = kUid;
+  leg.kind = DerivKind::VarSwap;
+  leg.size.kind = SwapSizeSpec::Kind::MatchGroupVega;
+  return leg;
+}
+
+// Drive one on_step and hand back its Status; the book and watermark are
+// scratch (a validation refusal must not touch either, and these tests only
+// read the code).
+[[nodiscard]] Status first_step_status(StrategySpec spec, const MarketSnapshot &snap) {
+  DeclarativeStrategy strat{std::move(spec)};
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+  return strat.on_step(snap, 0, book, next_lot_id, PriceOptions{});
+}
+
+} // namespace
+
+TEST(SelectFixedCycleExpiry, CeilSnapsFallsBackToLastAndExhausts) {
+  const std::int64_t s[] = {100, 200, 300};
+  EXPECT_EQ(select_fixed_cycle_expiry(s, 90, 100), 200);  // ceil: anchor 190 -> 200
+  EXPECT_EQ(select_fixed_cycle_expiry(s, 90, 250), 300);  // anchor 340 past end -> last
+  EXPECT_EQ(select_fixed_cycle_expiry(s, 100, 100), 200); // exact anchor hit -> itself
+  EXPECT_EQ(select_fixed_cycle_expiry(s, 300, 100), 0);   // nothing after base
+  EXPECT_EQ(select_fixed_cycle_expiry(s, 500, 100), 0);   // base past the grid
+}
+
+TEST(StrategyRestrikeValidation, RejectsMismatchedLegTenors) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snap = snapshot_of({{"SPY", &surface}}, "restrike-val-tenor");
+  ASSERT_TRUE(snap.has_value());
+
+  StrategySpec spec = restrike_spec({kBaseNow, kBaseNow + kDayNs});
+  LegSpec second = spec.legs.front();
+  second.tenor.target_T = 0.50; // the cycle has ONE tenor; two is a config error
+  spec.legs.push_back(second);
+  const Status st = first_step_status(std::move(spec), *snap);
+  ASSERT_FALSE(st.has_value());
+  EXPECT_EQ(st.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(StrategyRestrikeValidation, RejectsLegSnapFlagsAndEmptyGrid) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snap = snapshot_of({{"SPY", &surface}}, "restrike-val-snap");
+  ASSERT_TRUE(snap.has_value());
+
+  // The lifecycle owns expiry snapping in this mode; a leg asking for its own
+  // snap is rejected, never silently ignored.
+  StrategySpec with_snap = restrike_spec({kBaseNow, kBaseNow + kDayNs});
+  with_snap.legs.front().tenor.snap_to_sessions = true;
+  const Status snap_st = first_step_status(std::move(with_snap), *snap);
+  ASSERT_FALSE(snap_st.has_value());
+  EXPECT_EQ(snap_st.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+  // No session grid, no cycle expiry to fix.
+  const Status grid_st = first_step_status(restrike_spec({}), *snap);
+  ASSERT_FALSE(grid_st.has_value());
+  EXPECT_EQ(grid_st.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(StrategyRestrikeValidation, RejectsSwapLegsOutsideRestrikeMode) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snap = snapshot_of({{"SPY", &surface}}, "restrike-val-mode");
+  ASSERT_TRUE(snap.has_value());
+
+  // A swap lot can never be erased (the lane is held to expiry), so only the
+  // cycle lifecycle can carry one; anything else is an honest NotImplemented.
+  StrategySpec spec = restrike_spec({kBaseNow, kBaseNow + kDayNs});
+  spec.lifecycle.holding = LifecycleSpec::Holding::HoldToExpiry;
+  spec.swap_legs.push_back(var_swap_leg());
+  const Status st = first_step_status(std::move(spec), *snap);
+  ASSERT_FALSE(st.has_value());
+  EXPECT_EQ(st.error().code(), atx::core::ErrorCode::NotImplemented);
+}
+
+TEST(StrategyRestrikeValidation, RejectsCappedKindWithoutCap) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snap = snapshot_of({{"SPY", &surface}}, "restrike-val-cap");
+  ASSERT_TRUE(snap.has_value());
+
+  StrategySpec spec = restrike_spec({kBaseNow, kBaseNow + kDayNs});
+  SwapLegSpec leg = var_swap_leg();
+  leg.kind = DerivKind::CappedVarSwap;
+  leg.cap_dec = 0.0; // a capped kind with no cap is a config error, not a 0 cap
+  spec.swap_legs.push_back(leg);
+  const Status capped_st = first_step_status(std::move(spec), *snap);
+  ASSERT_FALSE(capped_st.has_value());
+  EXPECT_EQ(capped_st.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+  // ... and the mirror image: a cap on an UNCAPPED kind is equally meaningless.
+  StrategySpec mirror = restrike_spec({kBaseNow, kBaseNow + kDayNs});
+  SwapLegSpec uncapped = var_swap_leg();
+  uncapped.cap_dec = 0.5;
+  mirror.swap_legs.push_back(uncapped);
+  const Status uncapped_st = first_step_status(std::move(mirror), *snap);
+  ASSERT_FALSE(uncapped_st.has_value());
+  EXPECT_EQ(uncapped_st.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(StrategyRestrikeValidation, RejectsUnknownMatchGroup) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snap = snapshot_of({{"SPY", &surface}}, "restrike-val-group");
+  ASSERT_TRUE(snap.has_value());
+
+  StrategySpec spec = restrike_spec({kBaseNow, kBaseNow + kDayNs});
+  SwapLegSpec leg = var_swap_leg();
+  leg.size.group = "no-such-group"; // no option leg carries this tag
+  spec.swap_legs.push_back(leg);
+  const Status st = first_step_status(std::move(spec), *snap);
+  ASSERT_FALSE(st.has_value());
+  EXPECT_EQ(st.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+TEST(StrategyRestrikeValidation, RejectsWeightSizingAndCrossLegConstraints) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snap = snapshot_of({{"SPY", &surface}}, "restrike-val-weight");
+  ASSERT_TRUE(snap.has_value());
+
+  // Weight sizing is meaningful only under a cross-leg constraint, and the
+  // constraint machinery is not part of the restrike mode's v1 scope — both
+  // are refused rather than silently resolved to something else.
+  StrategySpec weight = restrike_spec({kBaseNow, kBaseNow + kDayNs});
+  weight.legs.front().size.kind = SizeSpec::Kind::Weight;
+  const Status weight_st = first_step_status(std::move(weight), *snap);
+  ASSERT_FALSE(weight_st.has_value());
+  EXPECT_EQ(weight_st.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+  StrategySpec constrained = restrike_spec({kBaseNow, kBaseNow + kDayNs});
+  constrained.constraint = CrossLegConstraint{CrossLegConstraint::Kind::FlatVega, "a", "b"};
+  const Status constraint_st = first_step_status(std::move(constrained), *snap);
+  ASSERT_FALSE(constraint_st.has_value());
+  EXPECT_EQ(constraint_st.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
