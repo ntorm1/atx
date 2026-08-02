@@ -53,10 +53,61 @@ std::atomic<std::uint64_t> g_open_count{0};
 // this is the upper bound the subset actually shrinks.
 std::atomic<std::uint64_t> g_deserialized_bytes{0};
 
-// A forward-only run owns base, shifted, and at most one prefetched future.
-// Retaining three cache entries covers that working set without accumulating one
-// mapped archive per date. Caller-supplied caches remain reusable and unbounded.
-constexpr std::size_t kPrivateSnapshotCacheCapacity = 3u;
+// S6-T29 (plan 6.2). How many FUTURE snapshots the step loop keeps in flight
+// ahead of the step it is on. This is a pure I/O-SCHEDULING lever: it changes
+// only WHEN an archive's load is started, never which archives are loaded, in
+// what order the step loop consumes them, or any value derived from them — the
+// backtest still reads refs[i] at step i and the output is byte-identical at
+// every window (the NAV bit-parity legs in S6-T29 pin that on both ISAs).
+//
+// The value is CHOSEN BY MEASUREMENT, not by theory: S6-T29 A/B'd windows 1, 2
+// and 3 on the 135-session parity-full replay and recorded the numbers in its
+// report. Re-measure before changing it.
+//
+// Deliberately a constant and not a `RunConfig` field: `RunConfig` is a frozen
+// v1.0.0 aggregate pinned at 16 fields, and a scheduling knob does not justify
+// a public-API addition days after the 1.0.0 CHANGELOG. A `RunConfig` field is
+// the post-v1 route if operators ever need to tune this per run.
+constexpr std::size_t kPrefetchLookahead = 2u;
+
+// A forward-only run owns base, shifted, and at most `kPrefetchLookahead`
+// prefetched futures. Retaining that many cache entries covers the working set
+// without accumulating one mapped archive per date. Caller-supplied caches
+// remain reusable and unbounded.
+//
+// This tracks the window for WORKING-SET HYGIENE, not for correctness: a smaller
+// capacity does not re-open partitions, because `SnapshotCache::trim` only ever
+// evicts entries whose future is already READY (so an in-flight window slot is
+// never the victim) and the loop already holds a `shared_ptr` to the base and
+// shifted snapshots it has consumed. Verified by experiment — this test suite
+// still passes with the capacity pinned at the old 3 — so do not read a
+// correctness guarantee into the `+ 2`.
+constexpr std::size_t kPrivateSnapshotCacheCapacity = kPrefetchLookahead + 2u;
+
+// Start the loads for `refs[first, first + count)`, skipping indices past the
+// end. `cfg.prefetch_snapshots` gates the WHOLE window: OFF means NO prefetch at
+// any depth, exactly as in the depth-1 code this replaces. Prefetch failures are
+// propagated unchanged — `SnapshotCache::prefetch` only rejects an invalid
+// build policy (a missing/corrupt archive surfaces at the matching `load`), so a
+// deeper window cannot make a run fail earlier or differently than depth 1 did.
+[[nodiscard]] Status prefetch_window(SnapshotCache &cache, std::span<const SnapshotRef> refs,
+                                     std::size_t first, std::size_t count, const RunConfig &cfg) {
+  if (!cfg.prefetch_snapshots) {
+    return Ok();
+  }
+  for (std::size_t k = 0; k < count; ++k) {
+    const std::size_t idx = first + k;
+    if (idx >= refs.size()) {
+      break;
+    }
+    const Status status =
+        cache.prefetch(refs[idx].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
+    if (!status) {
+      return status;
+    }
+  }
+  return Ok();
+}
 
 // Contract residual T on the snapshot dated `base_ts`: (expiry - base.ts)/year.
 [[nodiscard]] double residual_T(std::int64_t expiry_ts_ns, std::int64_t base_ts_ns) noexcept {
@@ -1702,13 +1753,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   std::shared_ptr<const MarketSnapshot> base = std::move(*base_res);
   ATX_TRY_VOID(validate_snapshot_provenance(*base, cfg.surface_provenance_policy));
   ATX_TRY_VOID(validate_lot_economics(book.lots, "initial fixed book", base->ts_ns()));
-  if (cfg.prefetch_snapshots && refs.size() > 1) {
-    const Status prefetch_status = snapshot_cache->prefetch(
-        refs[1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
-    if (!prefetch_status) {
-      return Err(prefetch_status.error());
-    }
-  }
+  // Prime the look-ahead window: refs[1 .. 1+W).
+  ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, 1u, kPrefetchLookahead, cfg));
 
   double nav = 0.0;
 
@@ -1756,13 +1802,9 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
     ATX_TRY_VOID(validate_snapshot_provenance(*shifted, cfg.surface_provenance_policy));
     ATX_TRY_VOID(validate_step_ordering(*base, *shifted, refs[i - 1].date, refs[i].date));
-    if (cfg.prefetch_snapshots && i + 1 < refs.size()) {
-      const Status prefetch_status = snapshot_cache->prefetch(
-          refs[i + 1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
-      if (!prefetch_status) {
-        return Err(prefetch_status.error());
-      }
-    }
+    // Step i consumed refs[i], so extend the window by exactly one: refs[i + W].
+    // refs[i+1 .. i+W) are already in flight from earlier iterations.
+    ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, i + kPrefetchLookahead, 1u, cfg));
 
     // V1 solve ledger: per-step solve deltas when a StepTrace is armed (fixed-book
     // overload has no execute/entry work — just compute_step). Zero cost otherwise.
@@ -2220,13 +2262,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   }
   std::shared_ptr<const MarketSnapshot> base = std::move(*base_res);
   ATX_TRY_VOID(validate_snapshot_provenance(*base, cfg.surface_provenance_policy));
-  if (cfg.prefetch_snapshots && refs.size() > 1) {
-    const Status prefetch_status = snapshot_cache->prefetch(
-        refs[1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
-    if (!prefetch_status) {
-      return Err(prefetch_status.error());
-    }
-  }
+  // Prime the look-ahead window: refs[1 .. 1+W).
+  ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, 1u, kPrefetchLookahead, cfg));
 
   double nav = 0.0;
 
@@ -2309,13 +2346,9 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
     ATX_TRY_VOID(validate_snapshot_provenance(*shifted, cfg.surface_provenance_policy));
     ATX_TRY_VOID(validate_step_ordering(*base, *shifted, refs[i - 1].date, refs[i].date));
-    if (cfg.prefetch_snapshots && i + 1 < refs.size()) {
-      const Status prefetch_status = snapshot_cache->prefetch(
-          refs[i + 1].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy);
-      if (!prefetch_status) {
-        return Err(prefetch_status.error());
-      }
-    }
+    // Step i consumed refs[i], so extend the window by exactly one: refs[i + W].
+    // refs[i+1 .. i+W) are already in flight from earlier iterations.
+    ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, i + kPrefetchLookahead, 1u, cfg));
 
     // V1 solve ledger: record this step's per-unique solve deltas (pnl-base + target +
     // execute) when a StepTrace is armed. Spans to the end of the loop body, so it

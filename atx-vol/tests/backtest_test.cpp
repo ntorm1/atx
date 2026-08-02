@@ -712,6 +712,57 @@ TEST(Backtest, LoadOnce) {
   EXPECT_EQ(res->size(), static_cast<std::size_t>(n)); // inception + (n-1) steps
 }
 
+// S6-T29 (plan 6.2). The step loop keeps `kPrefetchLookahead` snapshot loads in
+// flight ahead of the step it is on, instead of the single `refs[i+1]` it used to.
+// The window is a pure I/O-SCHEDULING lever, so the contracts pinned here are:
+//   (1) `prefetch_snapshots=false` still means NO prefetch at ANY window depth —
+//       the flag gates the whole window, not merely its first slot; and
+//   (2) a deeper window still opens each partition EXACTLY once (no speculative
+//       load turns into a second open, and nothing the loop is about to consume
+//       gets evicted and re-fetched).
+// (2) is a REGRESSION GUARD, not a proof that the private cache's capacity must
+// track the window: this test also passes with the capacity pinned at its old 3,
+// because `SnapshotCache::trim` only evicts entries whose future is already
+// ready, so an in-flight window slot is never the victim. Measured, not assumed.
+// Output bit-parity ACROSS windows is pinned by the NAV determinism legs; the
+// same-output check below is the cheap in-suite witness of it.
+TEST(Backtest, PrefetchWindowIsGatedByTheFlagAndNeverThrashesThePrivateCache) {
+  const fs::path dir = fresh_dir("prefetch-window");
+  const int n = 8; // longer than the window + 2 so the capacity bound actually bites
+  const CorpusManifest man = make_evolving_corpus(dir, "SPX", n);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  ASSERT_EQ(clock->size(), static_cast<std::size_t>(n));
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs; // survives every date
+
+  // (2) Private cache: `cfg.snapshot_cache` left null, so the engine builds the
+  // bounded one whose capacity is derived from the window.
+  RunConfig windowed;
+  ASSERT_TRUE(windowed.prefetch_snapshots) << "this test is about the default-on path";
+  MarketSnapshot::reset_open_count();
+  auto with_window = run_backtest(*clock, survivor_book(expiry), windowed);
+  ASSERT_TRUE(with_window.has_value()) << with_window.error().to_string();
+  EXPECT_EQ(MarketSnapshot::open_count(), static_cast<std::uint64_t>(n))
+      << "the look-ahead window must not turn into extra archive opens";
+
+  // (1) Flag OFF gates the WHOLE window. A supplied cache exposes the counter.
+  RunConfig disabled;
+  disabled.prefetch_snapshots = false;
+  disabled.snapshot_cache = std::make_shared<SnapshotCache>();
+  MarketSnapshot::reset_open_count();
+  auto without = run_backtest(*clock, survivor_book(expiry), disabled);
+  ASSERT_TRUE(without.has_value()) << without.error().to_string();
+  EXPECT_EQ(disabled.snapshot_cache->stats().prefetches, 0u)
+      << "prefetch_snapshots=false must start no speculative load at any depth";
+  EXPECT_EQ(MarketSnapshot::open_count(), static_cast<std::uint64_t>(n));
+
+  // Scheduling only: prefetched and unprefetched runs agree bit for bit.
+  ASSERT_EQ(with_window->size(), without->size());
+  for (std::size_t i = 0; i < with_window->size(); ++i) {
+    EXPECT_DOUBLE_EQ(with_window->nav[i], without->nav[i]) << "nav row " << i;
+  }
+}
+
 TEST(Backtest, FixedBookDuplicateLotIdsFailBeforeArchiveLoadOrPricing) {
   const fs::path dir = fresh_dir("fixed-book-duplicate-id");
   const CorpusManifest manifest = make_evolving_corpus(dir, "SPX", 1);
