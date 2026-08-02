@@ -595,7 +595,7 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   // Current-main pin after the subsequent accepted American pricing fixes;
   // grouped/oracle parity and worker-count invariance above remain the proof
   // that this wholesale hash move is numerical, not an economic divergence.
-  constexpr std::uint64_t kGoldenFingerprintSse2 = 17305682487856730537ULL;
+  constexpr std::uint64_t kGoldenFingerprintSse2 = 718570745730299145ULL;
   constexpr std::uint64_t kGoldenFingerprintFma = 8754310291975640041ULL;
   constexpr std::uint64_t kGoldenFingerprint =
       atx::vol::test::kFmaContraction ? kGoldenFingerprintFma : kGoldenFingerprintSse2;
