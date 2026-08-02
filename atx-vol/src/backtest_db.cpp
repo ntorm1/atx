@@ -1492,6 +1492,24 @@ template <class T> void append_vector(std::vector<T> &dst, const std::vector<T> 
   dst.insert(dst.end(), src.begin(), src.end());
 }
 
+// True when a result carries a swap lane that actually DID something. A
+// zero-swap engine run fills both columns with exactly 0.0, which is
+// indistinguishable in meaning from the empty columns a decoded result has —
+// so "populated" here means "carries a non-zero value", not "non-empty".
+[[nodiscard]] bool result_has_swap_data(const BacktestResult &result) noexcept {
+  for (const double v : result.swap_pv) {
+    if (v != 0.0) {
+      return true;
+    }
+  }
+  for (const double v : result.swap_pnl) {
+    if (v != 0.0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 [[nodiscard]] Status validate_checkpoint(const BacktestCheckpoint &checkpoint,
                                          std::uint32_t next_cohort, const BacktestResult &result) {
   if (checkpoint.base_ts_ns <= 0 || checkpoint.next_lot_id == 0 || !finite(checkpoint.cash) ||
@@ -1602,6 +1620,21 @@ Status append_backtest_results(BacktestResult &dst, const BacktestResult &src) {
   if (!gross_shape_ok || !liquidation_shape_ok || dst.signals.size() != src.signals.size()) {
     return Err(ErrorCode::InvalidArgument, "backtest_db: appended optional columns differ");
   }
+  // A swap-lane SHAPE change is tolerated only when neither side has real swap
+  // data — that is the DB-extension case (a decoded prefix reports the lane
+  // absent, a freshly computed swap-free continuation reports it present and
+  // all-zero), and collapsing it to "absent" loses nothing. If EITHER side
+  // actually carries swap PnL, collapsing would destroy it AND disarm the
+  // store-path guard in validate_series_data, which only ever sees the combined
+  // result. Refuse instead.
+  const bool dst_swap_shape = !dst.swap_pv.empty() && !dst.swap_pnl.empty();
+  const bool src_swap_shape = !src.swap_pv.empty() && !src.swap_pnl.empty();
+  if (dst_swap_shape != src_swap_shape &&
+      (result_has_swap_data(dst) || result_has_swap_data(src))) {
+    return Err(ErrorCode::InvalidArgument,
+               "backtest_db: cannot append across a swap-lane shape change while either side "
+               "carries swap data (the stored schema does not persist the lane)");
+  }
   for (std::size_t i = 0; i < dst.signals.size(); ++i) {
     if (dst.signals[i].first != src.signals[i].first) {
       return Err(ErrorCode::InvalidArgument, "backtest_db: appended signal columns differ");
@@ -1620,15 +1653,10 @@ Status append_backtest_results(BacktestResult &dst, const BacktestResult &src) {
   }
   append_vector(combined.gross_vega_abs, src.gross_vega_abs);
   append_vector(combined.nav_liquidation, src.nav_liquidation);
-  // The swap lane is NOT persisted (see the store-path guard above), so a
-  // DECODED prefix always reports it absent while a freshly computed
-  // continuation reports it present-and-zero. Concatenating those two would
-  // leave a column shorter than `date`. Carry the lane only when BOTH sides
-  // have it; otherwise the combined result reports it absent, exactly as a
-  // decoded result does. Nothing is lost: a run with a live swap lane cannot
-  // reach the store in the first place.
-  if (!combined.swap_pv.empty() && !src.swap_pv.empty() && !combined.swap_pnl.empty() &&
-      !src.swap_pnl.empty()) {
+  // Both sides carry the lane => concatenate. Shapes differ => the check above
+  // has already proven neither side has real swap data, so collapsing to
+  // "absent" (what a decoded result reports) is information-preserving.
+  if (dst_swap_shape && src_swap_shape) {
     append_vector(combined.swap_pv, src.swap_pv);
     append_vector(combined.swap_pnl, src.swap_pnl);
   } else {

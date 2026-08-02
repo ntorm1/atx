@@ -35,6 +35,7 @@
 #include "atx/core/error.hpp"          // atx::core::Ok, ErrorCode
 #include "atx/vol/american.hpp"        // al_fast_opts, AmericanMethod
 #include "atx/vol/backtest.hpp"        // Clock, run_backtest, SwapLot, RunConfig
+#include "atx/vol/backtest_db.hpp"     // append_backtest_results
 #include "atx/vol/corpus.hpp"          // CorpusManifest, CorpusEntry, CorpusFitStatus
 #include "atx/vol/derivatives.hpp"     // DerivKind
 #include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
@@ -149,16 +150,21 @@ struct Corpus {
 
 // One archive per entry of `spots`, snapshots kStepNs apart. The spot path is
 // the caller's so the realized-variance accrual is hand-computable.
+//
+// `dark_from` is the first date index whose archive is written under a DIFFERENT
+// uid/symbol, i.e. the date the swap's name goes dark. Defaults past the end.
 [[nodiscard]] Corpus make_spot_corpus(const fs::path &dir, const std::string &symbol,
-                                      const std::vector<double> &spots) {
+                                      const std::vector<double> &spots,
+                                      std::size_t dark_from = static_cast<std::size_t>(-1)) {
   std::vector<std::pair<std::string, std::string>> dp;
   for (std::size_t d = 0; d < spots.size(); ++d) {
     const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kStepNs;
-    const PricedSurface s = make_surface(kUid, spots[d], spots[d], now);
+    const bool dark = d >= dark_from;
+    const PricedSurface s = make_surface(dark ? kMissingUid : kUid, spots[d], spots[d], now);
     char buf[16];
     std::snprintf(buf, sizeof buf, "2026-08-%02d", static_cast<int>(d) + 1);
     const std::string date = buf;
-    dp.emplace_back(date, write_one(dir, date, symbol, s));
+    dp.emplace_back(date, write_one(dir, date, dark ? "OTHER" : symbol, s));
   }
   Corpus c;
   c.dp = std::move(dp);
@@ -188,6 +194,53 @@ private:
   SwapLot proto_;
 };
 
+// Opens one swap lot at inception, then MISBEHAVES at `bad_step` in one of the
+// ways the transition check must reject. Each mode is a separate gate.
+class MisbehavingSwapStrategy : public IStrategy {
+public:
+  enum class Mode { EraseLot, MutateStrike, IdBelowWatermark };
+
+  MisbehavingSwapStrategy(SwapLot proto, Mode mode, std::size_t bad_step) noexcept
+      : proto_{proto}, mode_{mode}, bad_step_{bad_step} {}
+
+  Status on_step(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id) override {
+    if (step_index == 0) {
+      SwapLot lot = proto_;
+      lot.id = next_lot_id++;
+      lot.start_ts_ns = base.ts_ns();
+      book.swap_lots.push_back(lot);
+      return atx::core::Ok();
+    }
+    if (step_index != bad_step_) {
+      return atx::core::Ok();
+    }
+    switch (mode_) {
+    case Mode::EraseLot:
+      book.swap_lots.clear(); // an "early close" the engine has no price for
+      break;
+    case Mode::MutateStrike:
+      if (!book.swap_lots.empty()) {
+        book.swap_lots.front().strike_dec += 0.01; // restrike in place
+      }
+      break;
+    case Mode::IdBelowWatermark: {
+      SwapLot lot = proto_;
+      lot.id = 1u; // already issued at inception — a reused id
+      lot.start_ts_ns = base.ts_ns();
+      book.swap_lots.push_back(lot);
+      break;
+    }
+    }
+    return atx::core::Ok();
+  }
+
+private:
+  SwapLot proto_;
+  Mode mode_;
+  std::size_t bad_step_;
+};
+
 // A single-clip option strategy: opens ONE structure at inception and holds it.
 [[nodiscard]] StrategySpec single_clip(std::uint32_t uid, double target_T, Side side) {
   StrategySpec spec;
@@ -215,6 +268,62 @@ constexpr double kAnnualization = 252.0;
 constexpr double kStrikeDec = 0.04;
 constexpr double kNotional = 1000.0;
 constexpr double kQty = 2.0;
+
+// A minimally-valid hand-built BacktestResult covering rows
+// [first_index, first_index + n_rows): every mandatory series column sized to
+// the row count, with strictly ascending dates AND timestamps derived from the
+// absolute row index so two results concatenate in order (which is exactly what
+// `append_backtest_results` validates). Optionally carries the swap lane filled
+// with `swap_value`.
+[[nodiscard]] BacktestResult make_result(std::size_t first_index, std::size_t n_rows, bool swap,
+                                         double swap_value = 0.0) {
+  BacktestResult r;
+  const std::size_t n = n_rows;
+  for (std::size_t i = 0; i < n; ++i) {
+    const std::size_t idx = first_index + i;
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", static_cast<int>(idx) + 1);
+    r.date.emplace_back(buf);
+    r.ts_ns.push_back(kBaseNow + static_cast<std::int64_t>(idx) * kDayNs);
+  }
+  // The 25 mandatory series columns (kBacktestSeriesColumns order). Spelled with
+  // NON-const member pointers so the fill needs no const_cast; a column added to
+  // the frozen registry without being added here shows up immediately as
+  // `append_backtest_results` rejecting the fixture on a row-count mismatch.
+  std::vector<double> BacktestResult::*const mandatory[] = {&BacktestResult::pnl_total,
+                                                            &BacktestResult::pnl_delta,
+                                                            &BacktestResult::pnl_gamma,
+                                                            &BacktestResult::pnl_vega,
+                                                            &BacktestResult::pnl_vanna,
+                                                            &BacktestResult::pnl_volga,
+                                                            &BacktestResult::pnl_theta,
+                                                            &BacktestResult::pnl_rho,
+                                                            &BacktestResult::pnl_charm,
+                                                            &BacktestResult::pnl_unexplained,
+                                                            &BacktestResult::pnl_settlement,
+                                                            &BacktestResult::pnl_shares,
+                                                            &BacktestResult::financing,
+                                                            &BacktestResult::cost,
+                                                            &BacktestResult::nav,
+                                                            &BacktestResult::cash,
+                                                            &BacktestResult::gross_delta,
+                                                            &BacktestResult::gross_gamma,
+                                                            &BacktestResult::gross_vega,
+                                                            &BacktestResult::gross_theta,
+                                                            &BacktestResult::turnover_notional,
+                                                            &BacktestResult::turnover_vega,
+                                                            &BacktestResult::n_open_lots,
+                                                            &BacktestResult::n_unpriced_lots,
+                                                            &BacktestResult::n_unpriced_greeks};
+  for (std::vector<double> BacktestResult::*const member : mandatory) {
+    (r.*member).assign(n, 0.0);
+  }
+  if (swap) {
+    r.swap_pv.assign(n, swap_value);
+    r.swap_pnl.assign(n, swap_value);
+  }
+  return r;
+}
 
 [[nodiscard]] SwapLot var_swap_proto(std::uint32_t uid, std::int64_t expiry_ts_ns,
                                      std::uint32_t n_obs_total) noexcept {
@@ -437,6 +546,151 @@ TEST(BacktestSwap, MissingSurfaceForSwapLotErrors) {
   auto result = run_backtest(*clock, strat, cfg);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::NotFound);
-  EXPECT_NE(result.error().message().find("no surface for swap lot"), std::string::npos)
+  EXPECT_NE(result.error().message().find("no surface for held swap lot"), std::string::npos)
       << result.error().to_string();
+}
+
+// ── 5b. The EXPIRY-DAY surface is required too: the close is the last fixing ──
+TEST(BacktestSwap, MissingSurfaceOnExpiryDayErrors) {
+  const fs::path dir = fresh_dir("nosurface-expiry");
+  // The name goes dark on the LAST date — which is this lot's expiry. The lot
+  // marked fine on every earlier step, so only the terminal fixing is missing;
+  // settling anyway would divide a short Sigma r^2 by a short denominator.
+  const std::vector<double> spots = {100.0, 101.0, 99.0, 102.0};
+  const Corpus c = make_spot_corpus(dir, "SPX", spots, /*dark_from=*/3u);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 3LL * kStepNs; // the dark date
+  SwapOnlyStrategy strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/2u)};
+
+  RunConfig cfg;
+  auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::NotFound);
+  EXPECT_NE(result.error().message().find("no surface for settling swap lot"), std::string::npos)
+      << result.error().to_string();
+}
+
+// ── 6. A lot that reaches expiry with no observed return must not settle ─────
+TEST(BacktestSwap, ZeroObservationSettlementErrors) {
+  const fs::path dir = fresh_dir("zeroobs");
+  const std::vector<double> spots = {100.0, 101.0, 99.0};
+  const Corpus c = make_spot_corpus(dir, "SPX", spots);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  // Expiry on refs[1] — the very step that first SEES the lot, so its fixing
+  // series is seeded and immediately terminal with zero accrued returns. The
+  // estimator would be a fabricated 0.0 paying away the whole strike.
+  const std::int64_t expiry = kBaseNow + 1LL * kStepNs;
+  SwapOnlyStrategy strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/1u)};
+
+  RunConfig cfg;
+  auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::NotFound);
+  EXPECT_NE(result.error().message().find("no observed return"), std::string::npos)
+      << result.error().to_string();
+}
+
+// ── 7. Transition guards: a strategy may not erase or mutate a swap lot ──────
+TEST(BacktestSwap, StrategyErasingSwapLotErrors) {
+  const fs::path dir = fresh_dir("erase");
+  const std::vector<double> spots = {100.0, 101.0, 99.0, 102.0};
+  const Corpus c = make_spot_corpus(dir, "SPX", spots);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 9LL * kStepNs; // survives the corpus
+  MisbehavingSwapStrategy strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/8u),
+                                MisbehavingSwapStrategy::Mode::EraseLot, /*bad_step=*/2u};
+
+  RunConfig cfg;
+  auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(result.error().message().find("erased by strategy"), std::string::npos)
+      << result.error().to_string();
+}
+
+TEST(BacktestSwap, StrategyMutatingSurvivingSwapLotErrors) {
+  const fs::path dir = fresh_dir("mutate");
+  const std::vector<double> spots = {100.0, 101.0, 99.0, 102.0};
+  const Corpus c = make_spot_corpus(dir, "SPX", spots);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 9LL * kStepNs;
+  MisbehavingSwapStrategy strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/8u),
+                                MisbehavingSwapStrategy::Mode::MutateStrike, /*bad_step=*/2u};
+
+  RunConfig cfg;
+  auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(result.error().message().find("mutated surviving swap lot"), std::string::npos)
+      << result.error().to_string();
+}
+
+TEST(BacktestSwap, ReusedSwapLotIdErrors) {
+  const fs::path dir = fresh_dir("reuseid");
+  const std::vector<double> spots = {100.0, 101.0, 99.0, 102.0};
+  const Corpus c = make_spot_corpus(dir, "SPX", spots);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 9LL * kStepNs;
+  MisbehavingSwapStrategy strat{var_swap_proto(kUid, expiry, /*n_obs_total=*/8u),
+                                MisbehavingSwapStrategy::Mode::IdBelowWatermark, /*bad_step=*/2u};
+
+  RunConfig cfg;
+  auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_FALSE(result.has_value());
+  EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(result.error().message().find("duplicate swap lot id"), std::string::npos)
+      << result.error().to_string();
+}
+
+// ── 8. append_backtest_results must not launder the swap lane away ───────────
+TEST(BacktestSwap, AppendRefusesToLaunderSwapLaneAway) {
+  // The DB never persists the swap lane, so `append_backtest_results` sees a
+  // decoded prefix (lane ABSENT) meeting a fresh continuation (lane PRESENT).
+  // Collapsing that to "absent" is only safe when neither side has real swap
+  // data — otherwise it would both destroy the history and disarm the store
+  // guard, which only ever inspects the combined result.
+  const BacktestResult empty_lane_a = make_result(/*first_index=*/0u, /*n_rows=*/2u,
+                                                  /*swap=*/false);
+  const BacktestResult empty_lane_b = make_result(2u, 1u, /*swap=*/false);
+  const BacktestResult zero_lane_b = make_result(2u, 1u, /*swap=*/true, /*swap_value=*/0.0);
+  const BacktestResult live_lane_b = make_result(2u, 1u, /*swap=*/true, /*swap_value=*/12.5);
+
+  // (1) Both sides lack the lane => plain append, lane stays absent.
+  BacktestResult both_empty = empty_lane_a;
+  ASSERT_TRUE(append_backtest_results(both_empty, empty_lane_b).has_value());
+  EXPECT_EQ(both_empty.size(), 3u);
+  EXPECT_TRUE(both_empty.swap_pv.empty());
+
+  // (2) Shapes differ but the populated side is all-zero (the real DB-extension
+  //     case) => collapse to absent, and stay row-consistent.
+  BacktestResult mixed_zero = empty_lane_a;
+  ASSERT_TRUE(append_backtest_results(mixed_zero, zero_lane_b).has_value());
+  EXPECT_EQ(mixed_zero.size(), 3u);
+  EXPECT_TRUE(mixed_zero.swap_pv.empty());
+  EXPECT_TRUE(mixed_zero.swap_pnl.empty());
+
+  // (3) Shapes differ AND one side carries real swap PnL => refuse.
+  BacktestResult mixed_live = empty_lane_a;
+  const Status refused = append_backtest_results(mixed_live, live_lane_b);
+  ASSERT_FALSE(refused.has_value());
+  EXPECT_EQ(refused.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(refused.error().message().find("swap-lane shape change"), std::string::npos)
+      << refused.error().to_string();
+
+  // (4) Both sides carry the lane => genuine concatenation, nothing dropped.
+  BacktestResult both_live = make_result(0u, 1u, /*swap=*/true, /*swap_value=*/3.0);
+  ASSERT_TRUE(append_backtest_results(both_live, live_lane_b).has_value());
+  ASSERT_EQ(both_live.swap_pnl.size(), 2u);
+  EXPECT_EQ(both_live.swap_pnl[0], 3.0);
+  EXPECT_EQ(both_live.swap_pnl[1], 12.5);
 }

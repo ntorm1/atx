@@ -886,6 +886,28 @@ private:
                                               std::span<const Lot> after_option_lots,
                                               const ReusableLotIdIndex &after_option_index) {
   ATX_TRY_VOID(validate_swap_lot_economics(after, "post-strategy swap book", base_ts));
+  // NO EARLY CLOSE IN v1. Settled lots left the book in the swap pass, BEFORE
+  // `before_swaps` was captured, so any lot missing from `after` was erased by
+  // the strategy. Letting that through fabricates NAV: the lot's accumulated
+  // `prev_pv` stays in the running total with nothing to offset it, its accrual
+  // is orphaned (which then makes the checkpoint unresumable), and `swap_pv`
+  // drops by a mark that never settled — silent drift the reconciliation would
+  // only surface as an unexplained level shift.
+  for (const SwapLot &prior : before) {
+    bool survives = false;
+    for (const SwapLot &lot : after) {
+      if (lot.id == prior.id) {
+        survives = true;
+        break;
+      }
+    }
+    if (!survives) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest: swap lot id=" + std::to_string(prior.id) +
+                     " erased by strategy; early close unsupported in v1 (swaps are held to "
+                     "expiry)");
+    }
+  }
   for (std::size_t i = 0; i < after.size(); ++i) {
     const SwapLot &lot = after[i];
     for (std::size_t j = 0; j < i; ++j) {
@@ -1037,23 +1059,27 @@ struct SwapStepResult {
   for (std::size_t i = 0; i < book.swap_lots.size();) {
     const SwapLot &lot = book.swap_lots[i];
     const bool expiring = lot.expiry_ts_ns <= ts;
+    if (expiring && lot.expiry_ts_ns != ts) {
+      return Err(ErrorCode::NotFound, "run_backtest: swap lot id=" + std::to_string(lot.id) +
+                                          " expired without an exact observation (expiry=" +
+                                          std::to_string(lot.expiry_ts_ns) +
+                                          ", snapshot=" + std::to_string(ts) + ")");
+    }
+    // FAIL CLOSED ON BOTH SIDES OF EXPIRY. A held lot needs the surface to mark;
+    // a SETTLING lot needs it just as much, because the expiry close IS that
+    // contract's final fixing — settling without it would divide a short Sigma r^2
+    // by a denominator one observation light and call the answer terminal. The
+    // option lane refuses a settling lot with no surface for the same reason
+    // ("no surface for settling lot", compute_step); this mirrors it.
     const SurfaceRef surface = shifted.find(lot.uid);
-    if (surface == nullptr && !expiring) {
+    if (surface == nullptr) {
       return Err(ErrorCode::NotFound,
-                 "run_backtest: no surface for swap lot id=" + std::to_string(lot.id) +
-                     " uid=" + std::to_string(lot.uid));
+                 std::string("run_backtest: no surface for ") + (expiring ? "settling" : "held") +
+                     " swap lot id=" + std::to_string(lot.id) + " uid=" + std::to_string(lot.uid));
     }
     SwapAccrual &acc = accrual_for(accruals, lot);
-    if (surface != nullptr) {
-      ATX_TRY_VOID(observe_swap_fixing(acc, ts, surface->pricing().S));
-    }
+    ATX_TRY_VOID(observe_swap_fixing(acc, ts, surface->pricing().S));
     if (expiring) {
-      if (lot.expiry_ts_ns != ts) {
-        return Err(ErrorCode::NotFound, "run_backtest: swap lot id=" + std::to_string(lot.id) +
-                                            " expired without an exact observation (expiry=" +
-                                            std::to_string(lot.expiry_ts_ns) +
-                                            ", snapshot=" + std::to_string(ts) + ")");
-      }
       // `rv_done_dec` is the Sigma r^2 / n_done estimator, so a SHORT fixing
       // series still settles on the returns actually observed — but a series
       // with NO returns at all is not an estimate, it is a fabricated 0.0 that

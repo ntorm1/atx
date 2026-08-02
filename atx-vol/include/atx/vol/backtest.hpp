@@ -389,6 +389,15 @@ struct Lot {
 // with option lots, so the two id spaces never collide). A strategy opens one by
 // appending to `book.swap_lots` in `on_step`.
 //
+// NO EARLY CLOSE IN v1 — swaps are HELD TO EXPIRY. A strategy that ERASES a swap
+// lot from `book.swap_lots` gets InvalidArgument, not a close: there is no unwind
+// price for an OTC swap here and nowhere to book one, so an erased lot would
+// leave its last mark in NAV with nothing to offset it, orphan its accrual (which
+// makes the checkpoint unresumable), and drop `swap_pv` by a mark that never
+// settled. The engine removes a lot only by SETTLING it, which happens in the
+// swap pass before `on_step` ever sees the book — so every lot present when the
+// strategy is called must still be there when it returns.
+//
 // Running fixing/accrual state lives in the ENGINE (`SwapAccrual`), NEVER on the
 // lot — that is what makes the lot bit-comparable across a step.
 //
@@ -401,15 +410,23 @@ struct Lot {
 // FIXING SEED: the swap pass runs only inside the step loop, so the FIRST STEP
 // that sees a lot seeds its fixing series from that step's snapshot spot and
 // accrues no return. A lot opened at inception therefore seeds on refs[1] and
-// needs N+1 steps to accrue N returns. `start_ts_ns` is carried for provenance
-// and validation only; the engine seeds on first sight, not on that stamp.
+// needs N+1 steps to accrue N returns.
 //
-// SETTLEMENT reads the accrual alone (no surface): the terminal rate is
-// `rv_done_dec` — the Σr²/n_done estimator — square-rooted for the vol kinds and
-// capped for the capped ones, less `strike_dec`, times `qty * notional`. A clock
-// coarser than the fixing schedule therefore settles on the returns it actually
-// observed, which is a real estimate; a series with NO observed return is not,
-// and that degenerate case is NotFound rather than a strike-wide payout.
+// EVERY STEP A LOT IS ALIVE TAKES A FIXING, INCLUDING ITS EXPIRY DAY — the
+// expiry close IS that contract's final fixing. So an absent surface fails
+// closed on BOTH sides of expiry: NotFound for a held lot (it cannot be marked)
+// and NotFound for a settling one (it cannot take its terminal fixing, and
+// settling anyway would divide a short Σr² by a denominator one observation
+// light). This mirrors the option lane, which likewise refuses to settle a lot
+// whose surface is missing.
+//
+// SETTLEMENT needs no PRICING — the terminal rate is read off the accrual, not
+// solved: `rv_done_dec` (the Σr²/n_done estimator), square-rooted for the vol
+// kinds and capped for the capped ones, less `strike_dec`, times `qty *
+// notional`. A clock coarser than the fixing schedule therefore settles on the
+// returns it actually observed, which is a real estimate; a series with NO
+// observed return is not, and that degenerate case is NotFound rather than a
+// strike-wide payout.
 struct SwapLot {
   std::uint64_t id{0};
   std::uint32_t uid{0};
@@ -418,7 +435,10 @@ struct SwapLot {
   double cap_dec{0.0}; // > 0 required on a capped kind; must be 0 otherwise
   double notional{0.0};
   double qty{1.0};
-  std::int64_t start_ts_ns{0};  // first fixing seed timestamp (provenance)
+  // INFORMATIONAL ONLY — the engine seeds on FIRST SIGHT, never off this stamp.
+  // It is validated (must not be after `expiry_ts_ns`) and carried for
+  // provenance/reporting; changing it changes no engine arithmetic.
+  std::int64_t start_ts_ns{0};
   std::int64_t expiry_ts_ns{0}; // exact-match settlement, option convention
   std::uint32_t n_obs_total{0};
   double annualization{252.0};
@@ -950,10 +970,8 @@ struct BacktestContinuation {
 // date's spot as a fixing, (b) marks the lot through `deriv_price` against the
 // shifted surface, or (c) cash-settles it from the accrual when its expiry is
 // observed EXACTLY, on the same convention options settle on. An absent surface
-// for a live (unexpired) swap lot is NotFound — the lane fails closed exactly
-// as the hedge-share ledger does; a lot whose expiry is being settled needs no
-// surface at all (its terminal value is read off the accrual), so it settles
-// even if the name has gone dark.
+// for ANY live swap lot — held OR settling — is NotFound: the lane fails closed
+// exactly as the hedge-share ledger and the option settlement path do.
 [[nodiscard]] Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat,
                                                   const RunConfig &cfg = {});
 
