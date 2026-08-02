@@ -50,6 +50,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -402,6 +403,36 @@ private:
   std::vector<double> maturities_; // == slices_.size(), ascending T
 };
 
+// Producer-side override of the ConvexDense shared-k calendar-repair contract.
+// Default (`CurveConfig::convex_repair == nullopt`) keeps the historical fixed
+// lattice ([-0.60, 0.60], 64 intervals, 1e-7 acceptance) untouched, expression
+// for expression. A recovery caller (pricer_fitter's strict rung) pins the
+// repair loop to the admission oracle's exact inclusive sampling grid and a
+// tolerance strictly inside the oracle's, so a repaired fit can no longer pass
+// repair yet fail admission at a k the repair never sampled (the 2026-08 SPY
+// backfill failure mode: 181/1890 cells, all sub-vol-tick slack).
+// `extra_node_ks` are promoted to exact QP nodes before the first pass — the
+// same mechanism the repair loop uses for its own residual crossings — so the
+// oracle's reported violation k's can be pinned directly. Plain data on
+// purpose: vol_curve must not depend on detail/risk_surface_validation.hpp.
+struct ConvexRepairSpec {
+  double k_min{-0.60};
+  double k_max{0.60};
+  // Inclusive point count; k_i = k_min + (i / (grid_points - 1)) * (k_max -
+  // k_min), the oracle's sample_k formula verbatim (fraction first — the
+  // arithmetic ORDER is part of the contract, both sides must evaluate the
+  // same SOURCE expression in the same order). This guarantees identical
+  // source, not a bit-for-bit identical result across TUs/compiler flags: FMA
+  // contraction can still move an individual sample by an ulp. That is fine
+  // here — the 10x tolerance margin (`tolerance` below vs. the oracle's) and
+  // exact-node promotion (`extra_node_ks`) absorb any such cross-TU drift.
+  std::uint32_t grid_points{65};
+  // Max accepted w_prev(k) - w_curr(k) at a grid k before promotion/refit.
+  double tolerance{1.0e-7};
+  // Extra exact QP node locations seeded into required_k for every slice.
+  std::vector<double> extra_node_ks{};
+};
+
 // ── Curve configuration ─────────────────────────────────────────────────────
 //
 // A tagged bundle: the kind plus every per-kind knob. `ConvexFitOpts` and
@@ -412,6 +443,10 @@ struct CurveConfig {
   ConvexFitOpts convex{};  // ConvexDense knobs (lambda, node_cap, ...)
   CalibOpts parametric{};  // Essvi / Svi knobs (shared LM/IRLS/filter policy)
   SplineFitOpts spline{};  // SplineVol knobs (grid, lambda, mult_floor, min_obs)
+
+  // Strict calendar-repair override for the ConvexDense kind; nullopt (the
+  // default, and the only value the hot path ever sees) = legacy behavior.
+  std::optional<ConvexRepairSpec> convex_repair{};
 
   // Selector gate (Task I5), NOT a per-slice fit knob: when `true` on ANY
   // config in a `SelectorConfig::candidates` list passed to `select_curve`,
@@ -446,7 +481,9 @@ struct CurveConfig {
 // w(k) as a log-moneyness callback. ConvexDense first applies it at candidate
 // nodes, then checks a shared 64-interval k lattice and promotes every residual
 // breach to an exact constrained QP node until admitted. This preserves the
-// per-slice price cone while closing between-node calendar crossings.
+// per-slice price cone while closing between-node calendar crossings. The
+// shared-k lattice and acceptance tolerance are overridable per-fit via
+// `CurveConfig::convex_repair` (nullopt keeps this default legacy behavior).
 // eSSVI, SVI, and C8 use their native shape-preserving parameter projection on
 // the same lattice and then undergo an independent served-value butterfly check.
 // LinearVariance additionally accepts the previous curve's breakpoints in

@@ -1,4 +1,5 @@
 add_executable(atx-vol-tests
+    convex_recovery_test.cpp
     version_test.cpp
     log_sink_test.cpp
     black76_test.cpp

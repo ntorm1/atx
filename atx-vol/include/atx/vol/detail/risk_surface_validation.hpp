@@ -68,6 +68,24 @@ struct RiskSurfaceValidationConfig {
   double wing_slope_tolerance{1.0e-8};
 };
 
+namespace detail {
+// The oracle's inclusive uniform sample formula, exported so the producer-side
+// strict-recovery path can repair on the same SOURCE expression, in the same
+// order, that the oracle evaluates. Fraction first — reordering the arithmetic
+// can move a sample by an ulp, so both sides of the producer/oracle contract
+// must agree on expression order. This is not a bit-for-bit guarantee across
+// translation units or compiler flags (e.g. FMA contraction can still shift an
+// individual sample by an ulp); the strict-recovery caller's tolerance margin
+// (0.1x this config's, ConvexRepairSpec::tolerance) and exact-node promotion
+// (ConvexRepairSpec::extra_node_ks) are what actually absorb that drift.
+[[nodiscard]] inline double validation_grid_k(const RiskSurfaceValidationConfig &config,
+                                              std::uint32_t point,
+                                              std::uint32_t n_points) noexcept {
+  const double fraction = static_cast<double>(point) / static_cast<double>(n_points - 1u);
+  return config.k_min + fraction * (config.k_max - config.k_min);
+}
+} // namespace detail
+
 [[nodiscard]] RiskSurfaceView make_risk_surface_view(const CurveSurface &surface) noexcept;
 [[nodiscard]] RiskSurfaceView make_risk_surface_view(const VolaSession &surface) noexcept;
 [[nodiscard]] RiskSurfaceView make_risk_surface_view(const VolSurface &surface) noexcept;

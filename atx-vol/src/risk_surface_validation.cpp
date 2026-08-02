@@ -37,8 +37,7 @@ void hash_double(std::uint64_t &hash, double value) noexcept {
 
 [[nodiscard]] double sample_k(const RiskSurfaceValidationConfig &config, std::uint32_t point,
                               std::uint32_t n_points) noexcept {
-  const double fraction = static_cast<double>(point) / static_cast<double>(n_points - 1u);
-  return config.k_min + fraction * (config.k_max - config.k_min);
+  return detail::validation_grid_k(config, point, n_points);
 }
 
 // Defensive caps on the per-slice grid densification (oracle finding I-3):

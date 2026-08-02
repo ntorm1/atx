@@ -711,6 +711,35 @@ TEST_F(PricerFitterTest, FitStoresSurfaceAndGatesValueChain) {
   EXPECT_GT(fitter.surface()->diagnostics().n_slices, 0u);
 }
 
+// A clean, admitted fit must never enter the strict-recovery rung: the block
+// is rejection-gated, so the hot path pays nothing for it. Counter-observable
+// only in ATX_VOL_COUNTERS builds; the publication asserts run everywhere.
+// Fixture construction is copied from FitStoresSurfaceAndGatesValueChain (via
+// PricerFitterTest::SetUp) rather than shared, so this test stands alone.
+TEST(PricerFitter, AdmittedFitNeverEntersStrictRecovery) {
+  if constexpr (atx::vol::counters::counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+
+  const SynthPanelSpec spec = make_spy_synthetic_spec();
+  auto panel = make_synthetic_american_panel(spec);
+  ASSERT_TRUE(panel.has_value()) << panel.error().message();
+  auto chain = OptionChain::from_frame(panel->frame, spec.r, spec.spot);
+  ASSERT_TRUE(chain.has_value()) << chain.error().message();
+
+  PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast, .n_threads = 1}};
+  ASSERT_TRUE(fitter.fit(*chain).has_value());
+  EXPECT_TRUE(fitter.fitted());
+  ASSERT_NE(fitter.surface(), nullptr);
+  EXPECT_GT(fitter.surface()->diagnostics().n_slices, 0u);
+
+  if constexpr (atx::vol::counters::counters_enabled()) {
+    const atx::vol::counters::Snapshot snap = atx::vol::counters::snapshot();
+    EXPECT_EQ(snap.get(atx::vol::counters::Counter::RiskStrictRecoveryRounds), 0u);
+    EXPECT_EQ(snap.get(atx::vol::counters::Counter::RiskStrictRecoveryAdmitted), 0u);
+  }
+}
+
 TEST_F(PricerFitterTest, ValueChainRejectsDifferentChainInstanceWithSameLocalUid) {
   PricerFitter fitter{PricerConfig{.preset = FitPreset::Fast, .n_threads = 1}};
   ASSERT_TRUE(fitter.fit(*chain_).has_value());

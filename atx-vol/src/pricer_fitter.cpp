@@ -18,6 +18,8 @@
 #include "atx/vol/calib.hpp"            // build_observations_european
 #include "atx/vol/correction.hpp"       // AmericanCorrectionCaches (cached inversion hot path)
 #include "atx/vol/deamer.hpp"           // resolve_chain_forward
+#include "atx/vol/detail/convex_recovery.hpp"  // strict-recovery bridge (admission-rejection rung)
+#include "atx/vol/detail/counters.hpp"         // ATX_VOL_COUNT (RiskStrictRecoveryRounds/Admitted)
 #include "atx/vol/detail/parallel_for.hpp"     // atx_auto_worker_count
 #include "atx/vol/detail/prepared_fitting.hpp" // prepare_expiry (canonical refit preparation)
 #include "atx/vol/detail/pricing_executor.hpp" // persistent whole-chain task fan-out
@@ -1371,13 +1373,17 @@ Status PricerFitter::fit(const OptionChain &chain,
   AdmissionDecision admission = decide_risk_surface_admission(
       digest, quality_mode, candidate_generation_, prior, cfg_.fallback);
   report.attempts.push_back(std::move(attempt));
+  // Hoisted above the validation-rejection ladder (which mutates `in` on every
+  // successfully-built rung, admitted or not — see `in = std::move(retry_inputs)`
+  // below) so this always names the TRUE first-rejected primary, for both the
+  // ladder's own provenance stamp and the strict-recovery rung further below.
+  const CurveConfig rejected_primary_curve = in.curve;
 
   // A policy curve is only a prior. Validation rejection walks the same safe
   // model ladder as a construction failure; each rung must independently pass
   // the complete admission contract before it can replace the candidate.
   if (!admission.publish_candidate && auto_routed) {
-    const CurveConfig rejected_curve = in.curve;
-    for (const VolCurveKind rung0 : fallback_curve_rungs(rejected_curve.kind)) {
+    for (const VolCurveKind rung0 : fallback_curve_rungs(rejected_primary_curve.kind)) {
       // The risk path serves ConvexDense as its dense model, so its fallback
       // ladder must REACH the dense fit where the generic ladder names
       // LinearVariance — the same substitution routing already applies
@@ -1388,7 +1394,7 @@ Status PricerFitter::fit(const OptionChain &chain,
       // rejected primary's own family.
       const VolCurveKind rung =
           (rung0 == VolCurveKind::LinearVariance) ? VolCurveKind::ConvexDense : rung0;
-      if (rung == rejected_curve.kind)
+      if (rung == rejected_primary_curve.kind)
         continue;
       SessionInputs retry_inputs = in;
       retry_inputs.curve.kind = rung;
@@ -1419,7 +1425,7 @@ Status PricerFitter::fit(const OptionChain &chain,
         // The first rejected primary of this fit stays authoritative if both
         // ladders fired.
         if (!decision_->used_fallback) {
-          decision_->primary_curve = rejected_curve;
+          decision_->primary_curve = rejected_primary_curve;
         }
         decision_->used_fallback = true;
         decision_->curve = in.curve;
@@ -1430,6 +1436,93 @@ Status PricerFitter::fit(const OptionChain &chain,
         selection_->chosen = in.curve;
       }
       break;
+    }
+  }
+
+  // Strict convex-dense recovery — the rung after the last rung. Reached only
+  // when the candidate was rejected and the digest names pure geometry
+  // (Butterfly/Calendar, optionally CarryGap), AND the caller either let the
+  // fitter auto-route (`auto_routed`) or explicitly pinned ConvexDense itself.
+  // A pin on a NON-dense family stays exactly what its contract promises —
+  // "pin (one attempt, no recovery)" (surface_db_build.cpp) / "skip both
+  // fallback ladders" (surface_db_seed.hpp) — this rung must not silently
+  // substitute ConvexDense underneath it. A ConvexDense pin, by contrast, is
+  // this rung's OWN family: it is a same-family strict refit (tighter repair
+  // + exact-node promotion of THAT candidate), never a family substitution,
+  // so it stays eligible under the pin. Root cause (2026-08 SPY backfill): the
+  // dense repair loop's fixed lattice + 1e-7 acceptance are strictly looser
+  // than this oracle's grid + 1e-8, so marginal sub-vol-tick crossings pass
+  // repair and die here. The refit pins repair to the oracle's exact calendar
+  // grid at 0.1x its tolerance and promotes the digest's reported violation
+  // k's to exact QP nodes; each round's new firsts feed the next round.
+  // Admitted fits never reach this block, so the hot path is unchanged.
+  if (!admission.publish_candidate &&
+      (auto_routed || rejected_primary_curve.kind == VolCurveKind::ConvexDense) &&
+      detail::should_attempt_strict_recovery(digest.failures)) {
+    constexpr int kMaxStrictRecoveryRounds = 3;
+    ConvexRepairSpec spec = detail::make_strict_repair_spec(validation_config);
+    ValidationDigest round_digest = digest;
+    for (int round = 0; round < kMaxStrictRecoveryRounds; ++round) {
+      const std::vector<double> promoted =
+          detail::strict_promotion_ks(round_digest, validation_config);
+      const std::size_t before = spec.extra_node_ks.size();
+      spec.extra_node_ks.insert(spec.extra_node_ks.end(), promoted.begin(), promoted.end());
+      std::sort(spec.extra_node_ks.begin(), spec.extra_node_ks.end());
+      spec.extra_node_ks.erase(
+          std::unique(spec.extra_node_ks.begin(), spec.extra_node_ks.end()),
+          spec.extra_node_ks.end());
+      if (round > 0 && spec.extra_node_ks.size() == before) {
+        break; // no new violation k's — an identical refit cannot converge
+      }
+      SessionInputs strict_inputs = in;
+      strict_inputs.curve.kind = VolCurveKind::ConvexDense;
+      strict_inputs.curve.convex.node_cap = strict_inputs.calib.max_obs_per_slice;
+      strict_inputs.curve.convex_repair = spec;
+      ATX_VOL_COUNT(RiskStrictRecoveryRounds);
+      const auto strict_start = Clock::now();
+      Result<VolaSession> strict = VolaSession::build(chain.underlying(), strict_inputs);
+      timings_.risk_build_ms += elapsed_ms(strict_start);
+      if (!strict.has_value()) {
+        report.attempts.push_back(
+            failed_attempt_report(under, strict_inputs.curve, strict.error()));
+        break; // the strict QP itself failed — nothing further to promote
+      }
+      // Mirror the ladder above (`in = std::move(retry_inputs);` immediately
+      // after a successful build, before validate/admission): admission_attempt
+      // captures `in` by reference and stamps `in.curve` into the attempt
+      // report, so `in` must already name THIS round's strict candidate before
+      // validate_candidate/admission_attempt run, or every strict attempt's
+      // report entry — including the one that ends up published — records the
+      // stale pre-recovery curve instead of the curve actually measured.
+      in = std::move(strict_inputs);
+      ValidationDigest strict_digest = validate_candidate(*strict);
+      SurfaceBuildAttemptReport strict_attempt = admission_attempt(*strict, strict_digest);
+      AdmissionDecision strict_admission = decide_risk_surface_admission(
+          strict_digest, quality_mode, candidate_generation_, prior, cfg_.fallback);
+      report.attempts.push_back(std::move(strict_attempt));
+      if (strict_admission.publish_candidate) {
+        ATX_VOL_COUNT(RiskStrictRecoveryAdmitted);
+        // Same provenance contract as the ladder adoption above: the first
+        // rejected primary of this fit stays authoritative.
+        sess = std::move(*strict);
+        digest = strict_digest;
+        admission = strict_admission;
+        if (decision_.has_value()) {
+          if (!decision_->used_fallback) {
+            decision_->primary_curve = rejected_primary_curve;
+          }
+          decision_->used_fallback = true;
+          decision_->curve = in.curve;
+        }
+        if (selection_.has_value()) {
+          selection_->chosen = in.curve;
+        }
+        break;
+      }
+      if (!detail::should_attempt_strict_recovery(strict_digest.failures)) {
+        break; // the strict refit surfaced a non-geometric failure — stop
+      }
+      round_digest = strict_digest;
     }
   }
   risk_health_ = admission.health;
