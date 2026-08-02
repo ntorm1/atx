@@ -520,6 +520,85 @@ TEST(PortfolioPricer, BitIdenticalRetimePreservesWarmedPreparedSubstrate) {
   }
 }
 
+TEST(PortfolioPricer, UniformRetimeRefreshesWarmedPreparedTopologyWithoutRebuild) {
+  using atx::vol::counters::Counter;
+  using atx::vol::counters::counters_enabled;
+  const PricedSurface base = make_essvi(1, 5);
+  const PricedSurface shifted =
+      make_essvi(1, 5, 0.001, kS + 0.5, kR + 0.0005, kNow + 86'400'000'000'000LL);
+  const SurfaceSet base_set = set_of({&base});
+  const SurfaceSet shifted_set = set_of({&shifted});
+  const std::vector<Position> positions{
+      {1u, {1u, 90.0, 0.15, Side::Call}, +1.0, 100.0},
+      {2u, {1u, 100.0, 0.15, Side::Call}, +2.0, 100.0},
+      {3u, {1u, 95.0, 0.25, Side::Put}, -1.0, 100.0},
+      {4u, {1u, 105.0, 0.35, Side::Put}, +3.0, 100.0},
+      {5u, {1u, 105.0, 0.35, Side::Put}, -0.5, 100.0},
+  };
+  auto portfolio = Portfolio::create(positions);
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  PortfolioPricer pricer(std::move(*portfolio));
+  const std::size_t n = pricer.portfolio().n_positions();
+  const PriceOptions opts{.n_threads = 1u};
+
+  PortfolioWorkspace price_workspace;
+  FrameStore price_warmup(n, /*want_greeks=*/true);
+  ASSERT_TRUE(pricer
+                  .price_into(base_set, PriceFieldMask::FullGreeks, price_warmup.view(),
+                              price_workspace, opts)
+                  .has_value());
+  PortfolioWorkspace pnl_workspace;
+  PnlFrameStore pnl_warmup(n);
+  ASSERT_TRUE(pricer
+                  .pnl_explain_into(base_set, shifted_set, pnl_warmup.view(), pnl_workspace, opts)
+                  .has_value());
+
+  std::vector<double> next_t;
+  next_t.reserve(positions.size());
+  for (const Position& position : positions) {
+    next_t.push_back(position.contract.T - 0.01);
+  }
+  ASSERT_TRUE(pricer.retime(next_t).has_value());
+
+  if constexpr (atx::vol::counters::counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  FrameStore reused_price(n, /*want_greeks=*/true);
+  ASSERT_TRUE(pricer
+                  .price_into(base_set, PriceFieldMask::FullGreeks, reused_price.view(),
+                              price_workspace, opts)
+                  .has_value());
+  if constexpr (counters_enabled()) {
+    EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::PreparedBuilds), 0u)
+        << "uniform retime must refresh the retained topology, not rebuild it";
+    atx::vol::counters::reset();
+  }
+  PnlFrameStore reused_pnl(n);
+  ASSERT_TRUE(pricer
+                  .pnl_explain_into(base_set, shifted_set, reused_pnl.view(), pnl_workspace, opts)
+                  .has_value());
+  if constexpr (counters_enabled()) {
+    EXPECT_EQ(atx::vol::counters::snapshot().get(Counter::PreparedBuilds), 0u)
+        << "the P&L entry point must share the same retained-tenor refresh";
+  }
+
+  PortfolioWorkspace fresh_price_workspace;
+  FrameStore fresh_price(n, /*want_greeks=*/true);
+  ASSERT_TRUE(pricer
+                  .price_into(base_set, PriceFieldMask::FullGreeks, fresh_price.view(),
+                              fresh_price_workspace, opts)
+                  .has_value());
+  expect_frame_bit_identical(reused_price, fresh_price);
+
+  PortfolioWorkspace fresh_pnl_workspace;
+  PnlFrameStore fresh_pnl(n);
+  ASSERT_TRUE(pricer
+                  .pnl_explain_into(base_set, shifted_set, fresh_pnl.view(), fresh_pnl_workspace,
+                                    opts)
+                  .has_value());
+  expect_pnl_frame_bit_identical(reused_pnl, fresh_pnl);
+}
+
 TEST(PortfolioPricer, Retime_LaterDedupMismatch_LeavesPortfolioAndPricingUnchanged) {
   const PricedSurface surface = make_essvi(1, 5);
   const SurfaceSet surfaces = set_of({&surface});
@@ -633,11 +712,20 @@ TEST(PortfolioPricer, Retime_NonFirstMaturitiesChange_WarmedWorkspaceMatchesFres
   EXPECT_TRUE(bits_equal(pricer.portfolio().contracts()[2].T, 0.20));
   EXPECT_TRUE(bits_equal(pricer.portfolio().contracts()[3].T, 0.20));
 
+  if constexpr (atx::vol::counters::counters_enabled()) {
+    atx::vol::counters::reset();
+  }
   FrameStore warmed_result(n, /*want_greeks=*/true);
   ASSERT_TRUE(pricer
                   .price_into(surfaces, PriceFieldMask::FullGreeks, warmed_result.view(),
                               warmed_workspace, opts)
                   .has_value());
+  if constexpr (atx::vol::counters::counters_enabled()) {
+    EXPECT_EQ(atx::vol::counters::snapshot().get(
+                  atx::vol::counters::Counter::PreparedBuilds),
+              1u)
+        << "a retime that reorders contracts and changes equal-T runs must rebuild";
+  }
 
   PortfolioWorkspace fresh_into_workspace;
   FrameStore fresh_result(n, /*want_greeks=*/true);

@@ -1055,15 +1055,16 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
   }
 }
 
-// (Re)build the retained PreparedPortfolio only when the exact logical-book
-// version changes. The process-unique identity closes same-address ABA; the
-// revision detects every successful in-place retime with an O(1), allocation-
-// free comparison. The unique count is retained as a defensive invariant check.
+// Retain the PreparedPortfolio across an exact logical-book version. The
+// process-unique identity closes same-address ABA; the revision detects each
+// successful in-place retime. A tenor-only revision first attempts the validated,
+// allocation-free topology refresh and falls back to a full create on any structural
+// change. The unique count is retained as a defensive invariant check.
 // The Greek route/mask does not gate a rebuild:
 // PreparedPortfolio's permutation, groups, fixed raw-T tiles, reverse mapping,
 // and aligned columns derive purely from book metadata. Marks/Greeks, method,
-// preset, and ISA changes therefore reuse the same substrate. Emits
-// PreparedBuilds on an actual build so reuse is observable under counters.
+// preset, and ISA changes therefore reuse the same substrate. Emits PreparedBuilds
+// only on a full create so a successful tenor refresh is observable under counters.
 [[nodiscard]] Status ensure_prepared(const Portfolio &pf,
                                      std::optional<PreparedPortfolio> &prepared,
                                      std::uint64_t logical_id, std::uint64_t revision,
@@ -1071,6 +1072,11 @@ void reduce_price_totals(std::span<const Position> positions, const Portfolio &p
                                      std::uint64_t &prepared_revision) {
   if (prepared.has_value() && prepared_logical_id == logical_id && prepared_revision == revision &&
       prepared->n_unique() == pf.n_contracts()) {
+    return atx::core::Ok();
+  }
+  if (prepared.has_value() && prepared_logical_id == logical_id &&
+      prepared->n_unique() == pf.n_contracts() && prepared->try_refresh_tenors(pf)) {
+    prepared_revision = revision;
     return atx::core::Ok();
   }
   Result<PreparedPortfolio> pp = PreparedPortfolio::create(pf, PriceOptions{});

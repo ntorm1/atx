@@ -43,7 +43,9 @@
 //
 // ## Thread-safety
 //
-// Immutable after `create`; all accessors are const reads of value state.
+// Immutable while a pricing call consumes it. `try_refresh_tenors` requires exclusive
+// ownership; PortfolioWorkspace invokes it before any worker dispatch. All accessors
+// remain const reads during pricing.
 
 #include <cstddef>
 #include <cstdint>
@@ -175,6 +177,13 @@ class PreparedPortfolio {
   // allocation fails (never on a well-formed book).
   [[nodiscard]] static Result<PreparedPortfolio> create(const Portfolio& pf,
                                                         const PriceOptions& opts);
+
+  // Refresh only the tenor-dependent columns after an in-place Portfolio::retime.
+  // Returns false without mutation unless the exact execution permutation, (uid,side)
+  // groups, and raw-equal-T run boundaries remain valid. On success, updates `t_` and
+  // each price tile's raw-T stamp without allocating. Requires exclusive ownership;
+  // callers must fall back to `create` on false.
+  [[nodiscard]] bool try_refresh_tenors(const Portfolio& pf) noexcept;
 
   // Move-only: owns aligned column allocations.
   PreparedPortfolio(PreparedPortfolio&&) noexcept = default;

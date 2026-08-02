@@ -151,4 +151,70 @@ Result<PreparedPortfolio> PreparedPortfolio::create(const Portfolio& pf, const P
   return pp;
 }
 
+bool PreparedPortfolio::try_refresh_tenors(const Portfolio& pf) noexcept {
+  const std::span<const OptionContract> contracts = pf.contracts();
+  if (contracts.size() != n_ || k_.size() != n_ || t_.size() != n_ || uid_.size() != n_ ||
+      side_.size() != n_ || oci_.size() != n_) {
+    return false;
+  }
+
+  for (std::size_t p = 0; p < n_; ++p) {
+    const std::uint32_t orig = oci_[p];
+    if (orig >= contracts.size()) {
+      return false;
+    }
+    const OptionContract& c = contracts[orig];
+    if (c.uid != uid_.data()[p] || c.side != side_[p] ||
+        std::bit_cast<std::uint64_t>(c.K) != std::bit_cast<std::uint64_t>(k_.data()[p])) {
+      return false;
+    }
+    if (p == 0) {
+      continue;
+    }
+    const std::uint32_t prev_orig = oci_[p - 1u];
+    const OptionContract& prev = contracts[prev_orig];
+    const bool same_group = prev.uid == c.uid && prev.side == c.side;
+    if (same_group) {
+      const std::uint64_t prev_key = total_order_key(prev.T);
+      const std::uint64_t cur_key = total_order_key(c.T);
+      if (prev_key > cur_key || (prev_key == cur_key && prev_orig > orig)) {
+        return false;
+      }
+      const bool old_equal =
+          std::bit_cast<std::uint64_t>(t_.data()[p - 1u]) ==
+          std::bit_cast<std::uint64_t>(t_.data()[p]);
+      const bool next_equal = std::bit_cast<std::uint64_t>(prev.T) ==
+                              std::bit_cast<std::uint64_t>(c.T);
+      if (old_equal != next_equal) {
+        return false;
+      }
+    }
+  }
+
+  std::size_t covered = 0;
+  for (const PreparedPriceTile& tile : price_tiles_) {
+    if (tile.begin != covered || tile.begin >= tile.end || tile.end > n_) {
+      return false;
+    }
+    for (std::size_t p = tile.begin; p < tile.end; ++p) {
+      if (uid_.data()[p] != tile.uid || side_[p] != tile.side ||
+          std::bit_cast<std::uint64_t>(t_.data()[p]) != tile.t_bits) {
+        return false;
+      }
+    }
+    covered = tile.end;
+  }
+  if (covered != n_) {
+    return false;
+  }
+
+  for (std::size_t p = 0; p < n_; ++p) {
+    t_.data()[p] = contracts[oci_[p]].T;
+  }
+  for (PreparedPriceTile& tile : price_tiles_) {
+    tile.t_bits = std::bit_cast<std::uint64_t>(t_.data()[tile.begin]);
+  }
+  return true;
+}
+
 }  // namespace atx::vol

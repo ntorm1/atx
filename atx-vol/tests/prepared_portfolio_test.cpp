@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -163,6 +164,37 @@ TEST(PreparedPortfolio, ReversePermutationIsBijectionRecoveringContracts) {
     EXPECT_TRUE(bits_equal(pp->t()[p], c.T)) << p;
     EXPECT_EQ(pp->uid()[p], c.uid) << p;
     EXPECT_EQ(pp->side()[p], c.side) << p;
+  }
+}
+
+TEST(PreparedPortfolio, TenorRefreshRejectsEqualityMergeWithoutMutation) {
+  const std::vector<Position> positions{
+      {1u, {1u, 90.0, 0.10, Side::Call}, +1.0, 100.0},
+      {2u, {1u, 100.0, 0.20, Side::Call}, +1.0, 100.0},
+      {3u, {1u, 110.0, 0.30, Side::Call}, +1.0, 100.0},
+  };
+  auto pf = Portfolio::create(positions);
+  ASSERT_TRUE(pf.has_value()) << pf.error().to_string();
+  auto prepared = PreparedPortfolio::create(*pf, PriceOptions{});
+  ASSERT_TRUE(prepared.has_value()) << prepared.error().to_string();
+  const std::vector<double> original_t(prepared->t().begin(), prepared->t().end());
+  std::vector<std::uint64_t> original_tile_t;
+  original_tile_t.reserve(prepared->price_tiles().size());
+  for (const PreparedPriceTile& tile : prepared->price_tiles()) {
+    original_tile_t.push_back(tile.t_bits);
+  }
+
+  const std::array<double, 3> merged_t{0.10, 0.20, 0.20};
+  ASSERT_TRUE(pf->retime(merged_t).has_value());
+  EXPECT_FALSE(prepared->try_refresh_tenors(*pf));
+
+  ASSERT_EQ(prepared->t().size(), original_t.size());
+  for (std::size_t i = 0; i < original_t.size(); ++i) {
+    EXPECT_TRUE(bits_equal(prepared->t()[i], original_t[i])) << i;
+  }
+  ASSERT_EQ(prepared->price_tiles().size(), original_tile_t.size());
+  for (std::size_t i = 0; i < original_tile_t.size(); ++i) {
+    EXPECT_EQ(prepared->price_tiles()[i].t_bits, original_tile_t[i]) << i;
   }
 }
 
