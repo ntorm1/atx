@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -84,6 +86,78 @@ static_assert(std::is_nothrow_constructible_v<ConvexDenseCurve, ConvexSliceFit>)
   std::memcpy(&ba, &a, sizeof ba);
   std::memcpy(&bb, &b, sizeof bb);
   return ba == bb;
+}
+
+struct HistoricalConvexAnchors {
+  std::vector<double> k;
+  std::vector<double> w;
+};
+
+// Exact pre-Task10c ConvexDense numerical-wing table. Keep this independent of
+// ConvexDenseCurve so the sparse selector is held to the historical filtering,
+// lower_bound edge/equality, and Lee-slope arithmetic bit for bit.
+[[nodiscard]] HistoricalConvexAnchors historical_convex_anchors(const ConvexSliceFit &fit) {
+  HistoricalConvexAnchors anchors;
+  anchors.k.reserve(fit.u.size() * 2u);
+  anchors.w.reserve(fit.u.size() * 2u);
+  const auto append_anchor = [&](double k) {
+    const double sigma = fit.iv(k);
+    if (std::isfinite(sigma) && sigma > 0.0) {
+      anchors.k.push_back(k);
+      anchors.w.push_back(sigma * sigma * fit.T);
+    }
+  };
+  for (std::size_t i = 0; i < fit.u.size(); ++i) {
+    append_anchor(std::log(fit.u[i] / fit.F));
+    if (i + 1u < fit.u.size()) {
+      append_anchor(std::log(std::sqrt(fit.u[i] * fit.u[i + 1u]) / fit.F));
+    }
+  }
+  return anchors;
+}
+
+[[nodiscard]] double historical_convex_w(const ConvexSliceFit &fit, double k_log) {
+  constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+  const double sigma = fit.iv(k_log);
+  if (sigma > 0.0 && std::isfinite(sigma) && fit.T > 0.0) {
+    return sigma * sigma * fit.T;
+  }
+  const HistoricalConvexAnchors anchors = historical_convex_anchors(fit);
+  if (anchors.k.empty()) {
+    return kNaN;
+  }
+  if (anchors.k.size() == 1u) {
+    return anchors.w.front();
+  }
+  const auto it = std::lower_bound(anchors.k.begin(), anchors.k.end(), k_log);
+  std::size_t lo = 0u;
+  std::size_t hi = 1u;
+  if (it == anchors.k.begin()) {
+    lo = 0u;
+    hi = 1u;
+  } else if (it == anchors.k.end()) {
+    hi = anchors.k.size() - 1u;
+    lo = hi - 1u;
+  } else {
+    hi = static_cast<std::size_t>(it - anchors.k.begin());
+    lo = hi - 1u;
+  }
+  const double span = anchors.k[hi] - anchors.k[lo];
+  if (!(span > 0.0)) {
+    return anchors.w[lo];
+  }
+  const double slope = std::clamp((anchors.w[hi] - anchors.w[lo]) / span, -1.999, 1.999);
+  return std::max(1.0e-12, anchors.w[lo] + slope * (k_log - anchors.k[lo]));
+}
+
+[[nodiscard]] ConvexSliceFit deep_right_convex_fit() {
+  ConvexSliceFit fit;
+  fit.T = 0.25;
+  fit.F = 100.0;
+  fit.df = 1.0;
+  fit.u = {80.0, 100.0, 120.0};
+  fit.C = {25.0, 10.0, 9.99};
+  return fit;
 }
 
 [[nodiscard]] bool greeks_bits_equal(const AmericanGreeks &a, const AmericanGreeks &b) noexcept {
@@ -435,6 +509,10 @@ TEST(SurfaceArchiveV2, ConvexViewMaterializesOnlyQueriedSlices) {
     EXPECT_EQ(snapshot.get(
                   atx::vol::counters::Counter::ConvexDenseWingAnchorIvEvaluations),
               0u);
+    EXPECT_EQ(snapshot.get(
+                  atx::vol::counters::Counter::ConvexDenseWingCandidateIvEvaluations),
+              0u)
+        << "a successful direct-IV query must perform no fallback candidate inversions";
 
     EXPECT_TRUE(bits_equal(view->iv(110.0, kFirstT), orig.iv(110.0, kFirstT)));
     snapshot = atx::vol::counters::snapshot();
@@ -452,17 +530,122 @@ TEST(SurfaceArchiveV2, ConvexViewMaterializesOnlyQueriedSlices) {
   }
 }
 
-TEST(SurfaceArchiveV2, ConvexDenseWingFallbackBuildsAnchorsOnce) {
+TEST(SurfaceArchiveV2, ConvexDenseSparseWingFallbackMatchesHistoricalTableBits) {
+  const auto expect_queries = [](std::string_view fixture, const ConvexSliceFit &fit,
+                                 std::span<const double> queries) {
+    const ConvexDenseCurve curve(fit);
+    for (const double query : queries) {
+      SCOPED_TRACE(fixture);
+      SCOPED_TRACE(query);
+      const double direct = fit.iv(query);
+      ASSERT_FALSE(direct > 0.0 && std::isfinite(direct) && fit.T > 0.0)
+          << "fixture query must enter the numerical-wing fallback";
+      const double expected = historical_convex_w(fit, query);
+      const double actual = curve.w(query);
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(actual),
+                std::bit_cast<std::uint64_t>(expected));
+    }
+  };
+
+  const ConvexSliceFit ordinary = deep_right_convex_fit();
+  const std::array<double, 2> edge_queries{-100.0, 100.0};
+  ASSERT_EQ(historical_convex_anchors(ordinary).k.size(), 5u);
+  expect_queries("below and above every finite anchor", ordinary, edge_queries);
+
+  ConvexSliceFit finite_gap = ordinary;
+  finite_gap.C[1] = std::numeric_limits<double>::quiet_NaN();
+  const HistoricalConvexAnchors gap_anchors = historical_convex_anchors(finite_gap);
+  ASSERT_EQ(gap_anchors.k.size(), 2u)
+      << "NaN middle price must create a constructible non-finite anchor gap";
+  const std::array<double, 2> gap_queries{-0.05, 0.0};
+  expect_queries("interior gap and exact raw-candidate equality", finite_gap, gap_queries);
+
+  ConvexSliceFit zero_finite = ordinary;
+  zero_finite.T = 0.0;
+  ASSERT_TRUE(historical_convex_anchors(zero_finite).k.empty());
+  const std::array<double, 1> zero_query{0.0};
+  expect_queries("zero finite anchors", zero_finite, zero_query);
+
+  ConvexSliceFit empty;
+  empty.T = 0.25;
+  empty.F = 100.0;
+  empty.df = 1.0;
+  ASSERT_TRUE(historical_convex_anchors(empty).k.empty());
+  const std::array<double, 1> empty_query{0.0};
+  expect_queries("empty implicit candidate sequence", empty, empty_query);
+
+  ConvexSliceFit one_finite;
+  one_finite.T = 0.25;
+  one_finite.F = 100.0;
+  one_finite.df = 1.0;
+  one_finite.u = {100.0};
+  one_finite.C = {10.0};
+  ASSERT_EQ(historical_convex_anchors(one_finite).k.size(), 1u);
+  const std::array<double, 1> one_query{100.0};
+  expect_queries("one finite anchor", one_finite, one_query);
+
+  ConvexSliceFit duplicate;
+  duplicate.T = 0.25;
+  duplicate.F = 100.0;
+  duplicate.df = 1.0;
+  duplicate.u = {100.0, 100.0};
+  duplicate.C = {10.0, 10.0};
+  const HistoricalConvexAnchors duplicate_anchors = historical_convex_anchors(duplicate);
+  ASSERT_EQ(duplicate_anchors.k.size(), 3u);
+  ASSERT_EQ(duplicate_anchors.k.front(), duplicate_anchors.k.back());
+  const std::array<double, 1> duplicate_query{100.0};
+  expect_queries("duplicate candidate and zero-span pair", duplicate, duplicate_query);
+
+  ConvexSliceFit non_finite_candidate;
+  non_finite_candidate.T = 0.25;
+  non_finite_candidate.F = 100.0;
+  non_finite_candidate.df = 1.0;
+  non_finite_candidate.u = {80.0, 1.0e308};
+  non_finite_candidate.C = {25.0, 1.0e-8};
+  const std::array<double, 1> non_finite_candidate_query{-100.0};
+  if constexpr (atx::vol::counters::counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  expect_queries("non-finite implicit midpoint uses historical scan",
+                 non_finite_candidate, non_finite_candidate_query);
+  if constexpr (atx::vol::counters::counters_enabled()) {
+    const auto snapshot = atx::vol::counters::snapshot();
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingFallbackEntries), 1u);
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingReferenceScans), 1u);
+    EXPECT_EQ(snapshot.get(
+                  atx::vol::counters::Counter::ConvexDenseWingCandidateIvEvaluations),
+              3u);
+  }
+
+  ConvexSliceFit non_monotone;
+  non_monotone.T = 0.25;
+  non_monotone.F = 100.0;
+  non_monotone.df = 0.0;
+  non_monotone.u = {120.0, 80.0};
+  non_monotone.C = {10.0, 20.0};
+  constexpr double kNonMonotoneQuery = 0.0;
+  ASSERT_TRUE(std::isnan(non_monotone.iv(kNonMonotoneQuery)));
+  if constexpr (atx::vol::counters::counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  const ConvexDenseCurve non_monotone_curve(non_monotone);
+  EXPECT_TRUE(std::isnan(non_monotone_curve.w(kNonMonotoneQuery)));
+  if constexpr (atx::vol::counters::counters_enabled()) {
+    const auto snapshot = atx::vol::counters::snapshot();
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingFallbackEntries), 1u);
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingReferenceScans), 1u);
+    EXPECT_EQ(snapshot.get(
+                  atx::vol::counters::Counter::ConvexDenseWingCandidateIvEvaluations),
+              3u);
+  }
+}
+
+TEST(SurfaceArchiveV2, ConvexDenseWingFallbackIsSparseAndConcurrent) {
   if constexpr (!atx::vol::counters::counters_enabled()) {
     EXPECT_FALSE(atx::vol::counters::snapshot().enabled);
     GTEST_SKIP() << "ATX_VOL_COUNTERS off: rebuild with -DATX_VOL_COUNTERS=ON";
   } else {
-    ConvexSliceFit fit;
-    fit.T = 0.25;
-    fit.F = 100.0;
-    fit.df = 1.0;
-    fit.u = {80.0, 100.0, 120.0};
-    fit.C = {25.0, 10.0, 9.99};
+    ConvexSliceFit fit = deep_right_convex_fit();
     constexpr double kDeepRight = 100.0;
     ASSERT_TRUE(std::isnan(fit.iv(kDeepRight)))
         << "fixture must enter ConvexDenseCurve's numerical-wing fallback";
@@ -498,9 +681,16 @@ TEST(SurfaceArchiveV2, ConvexDenseWingFallbackBuildsAnchorsOnce) {
     EXPECT_EQ(std::bit_cast<std::uint64_t>(curve.w(kDeepRight)), kFallbackBits);
 
     const auto snapshot = atx::vol::counters::snapshot();
-    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingAnchorBuilds), 1u);
-    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingAnchorIvEvaluations), 5u);
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingAnchorBuilds), 0u);
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingAnchorIvEvaluations),
+              2u * (kWorkers + 1u));
+    EXPECT_EQ(snapshot.get(
+                  atx::vol::counters::Counter::ConvexDenseWingCandidateIvEvaluations),
+              2u * (kWorkers + 1u));
     EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingFallbackEntries),
+              kWorkers + 1u);
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingReferenceScans), 0u);
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::ConvexDenseWingRightSelections),
               kWorkers + 1u);
   }
 }
