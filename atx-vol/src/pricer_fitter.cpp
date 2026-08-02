@@ -1367,13 +1367,17 @@ Status PricerFitter::fit(const OptionChain &chain,
   AdmissionDecision admission = decide_risk_surface_admission(
       digest, quality_mode, candidate_generation_, prior, cfg_.fallback);
   report.attempts.push_back(std::move(attempt));
+  // Hoisted above the validation-rejection ladder (which mutates `in` on every
+  // successfully-built rung, admitted or not — see `in = std::move(retry_inputs)`
+  // below) so this always names the TRUE first-rejected primary, for both the
+  // ladder's own provenance stamp and the strict-recovery rung further below.
+  const CurveConfig rejected_primary_curve = in.curve;
 
   // A policy curve is only a prior. Validation rejection walks the same safe
   // model ladder as a construction failure; each rung must independently pass
   // the complete admission contract before it can replace the candidate.
   if (!admission.publish_candidate && auto_routed) {
-    const CurveConfig rejected_curve = in.curve;
-    for (const VolCurveKind rung0 : fallback_curve_rungs(rejected_curve.kind)) {
+    for (const VolCurveKind rung0 : fallback_curve_rungs(rejected_primary_curve.kind)) {
       // The risk path serves ConvexDense as its dense model, so its fallback
       // ladder must REACH the dense fit where the generic ladder names
       // LinearVariance — the same substitution routing already applies
@@ -1384,7 +1388,7 @@ Status PricerFitter::fit(const OptionChain &chain,
       // rejected primary's own family.
       const VolCurveKind rung =
           (rung0 == VolCurveKind::LinearVariance) ? VolCurveKind::ConvexDense : rung0;
-      if (rung == rejected_curve.kind)
+      if (rung == rejected_primary_curve.kind)
         continue;
       SessionInputs retry_inputs = in;
       retry_inputs.curve.kind = rung;
@@ -1415,7 +1419,7 @@ Status PricerFitter::fit(const OptionChain &chain,
         // The first rejected primary of this fit stays authoritative if both
         // ladders fired.
         if (!decision_->used_fallback) {
-          decision_->primary_curve = rejected_curve;
+          decision_->primary_curve = rejected_primary_curve;
         }
         decision_->used_fallback = true;
         decision_->curve = in.curve;
@@ -1468,6 +1472,14 @@ Status PricerFitter::fit(const OptionChain &chain,
             failed_attempt_report(under, strict_inputs.curve, strict.error()));
         break; // the strict QP itself failed — nothing further to promote
       }
+      // Mirror the ladder above (`in = std::move(retry_inputs);` immediately
+      // after a successful build, before validate/admission): admission_attempt
+      // captures `in` by reference and stamps `in.curve` into the attempt
+      // report, so `in` must already name THIS round's strict candidate before
+      // validate_candidate/admission_attempt run, or every strict attempt's
+      // report entry — including the one that ends up published — records the
+      // stale pre-recovery curve instead of the curve actually measured.
+      in = std::move(strict_inputs);
       ValidationDigest strict_digest = validate_candidate(*strict);
       SurfaceBuildAttemptReport strict_attempt = admission_attempt(*strict, strict_digest);
       AdmissionDecision strict_admission = decide_risk_surface_admission(
@@ -1477,14 +1489,12 @@ Status PricerFitter::fit(const OptionChain &chain,
         ATX_VOL_COUNT(RiskStrictRecoveryAdmitted);
         // Same provenance contract as the ladder adoption above: the first
         // rejected primary of this fit stays authoritative.
-        const CurveConfig rejected_primary = in.curve;
-        in = std::move(strict_inputs);
         sess = std::move(*strict);
         digest = strict_digest;
         admission = strict_admission;
         if (decision_.has_value()) {
           if (!decision_->used_fallback) {
-            decision_->primary_curve = rejected_primary;
+            decision_->primary_curve = rejected_primary_curve;
           }
           decision_->used_fallback = true;
           decision_->curve = in.curve;
