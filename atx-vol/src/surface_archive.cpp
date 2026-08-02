@@ -930,6 +930,21 @@ Result<SurfaceArchiveV2> SurfaceArchiveV2::open_copied(std::string_view path) {
   if (!mapping) {
     return tl::unexpected<atx::core::Error>(std::move(mapping).error());
   }
+  // NO `mapping->prefetch()` HERE — MEASURED, NOT ASSUMED (S6-T29, plan 6.1).
+  // The obvious optimization is a whole-mapping WILLNEED hint before the memcpy:
+  // the copy below reads every byte, so the hint wastes nothing, and it replaces
+  // one demand fault per 4 KB page with a single bulk request. It was implemented
+  // and A/B'd in one binary on one host over 24 interleaved pairs of the
+  // 135-session parity-full replay. It LOST: prefetch-on was slower in 17 of 24
+  // pairs (paired median +62 ms, +9.4% wall) and burned ~5% more total CPU.
+  // Cause: on a warm OS file cache — the steady state for a replay corpus — the
+  // pages are already resident, so PrefetchVirtualMemory only adds an eager
+  // page-table/working-set pass that the memcpy's cheap soft faults would have
+  // done anyway. The hint can only pay off on a genuinely COLD cache, which that
+  // host could not produce (no admin rights to drop the cache, and a
+  // memory-pressure evict would have disrupted 27 sibling worktrees), so the
+  // cold regime remains unmeasured rather than disproven. Numbers are in the
+  // S6-T29 report. Re-measure before reintroducing this.
   const auto *base = reinterpret_cast<const std::byte *>(mapping->base());
   const auto size = static_cast<std::size_t>(mapping->size());
   // reserve + insert, NOT `vector<std::byte> bytes(size)`: the sized constructor
@@ -953,6 +968,20 @@ Result<SurfaceArchiveV2> SurfaceArchiveV2::open_mapped(std::string_view path) {
   // archive's whole lifetime via the type-erased `owner` handed to `open_borrowed`
   // — every returned `PricedSurfaceView` (and the archive's own `bytes_` span)
   // borrows into these mapped pages, so the mapping MUST outlive them.
+  //
+  // NO `prefetch()` HERE either, and for a SECOND, independent reason (S6-T29 /
+  // plan 6.1 — see the measured result in `open_copied` above). This open's
+  // whole point is that a caller may materialize a SUBSET: the private snapshot
+  // caches that declare `ArchiveBacking::Sealed` are constructed with the book's
+  // or strategy's referenced uids (`backtest.cpp` ~1739 and ~2249), and the
+  // replay case those exist for prices ~11 names out of a whole-board partition.
+  // A whole-mapping WILLNEED would therefore fault in roughly an order of
+  // magnitude more bytes than the load reads — the opposite of what this open
+  // exists to do. Warming only the referenced record extents is the right hint
+  // here, but it needs a RANGE prefetch (`Mapping::prefetch_range(off, len)`,
+  // ideally batched — Win32 `PrefetchVirtualMemory` already takes an array of
+  // ranges), and adding that is a change to atx-tsdb's PUBLIC API, which S6-T29
+  // is explicitly not scoped to make. Recorded as the follow-up.
   auto mapping = atx::tsdb::Mapping::map_file_ro(std::string(path));
   if (!mapping) {
     return tl::unexpected<atx::core::Error>(std::move(mapping).error());
