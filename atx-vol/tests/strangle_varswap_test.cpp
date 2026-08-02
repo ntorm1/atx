@@ -823,3 +823,78 @@ TEST(StrangleVarswap, SkipsSwapWhenVegaUnavailable) {
   // fixture is not vacuously green on an empty book.
   EXPECT_EQ(dark->checkpoint.portfolio.lots.size(), 2u);
 }
+
+// ── 10. A cycle too short to accrue a return carries no swap ────────────────
+//
+// The GRID-END case, and it is reachable on any real corpus: once the tenor
+// anchor outruns the calendar, `select_cycle_expiry` falls back to the LAST
+// session, so a cycle opening on the penultimate one expires on the very next
+// session. Its fixing window holds exactly one session — which the engine spends
+// SEEDING the series — so it would observe no return at all. That lot is not
+// merely uninformative, it is unbookable twice over: `n_obs_total` would be 0,
+// which `validate_swap_lot_economics` rejects at the boundary, and the swap pass
+// hard-fails a lot that reaches expiry with an empty estimator, taking the whole
+// run down with it. The tail cycle therefore runs options-only, and says so.
+TEST(StrangleVarswap, SkipsSwapWhenCycleIsTooShortToAccrue) {
+  const fs::path dir = fresh_dir("swapshort");
+  const Corpus c = make_corpus(dir);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const RunConfig rcfg;
+
+  // 140 calendar days: the anchor from ref 0 lands strictly between session 4
+  // (day 120) and session 5 (day 150), so cycle 1 expires on ref 5. From ref 5
+  // the anchor is day 290 — past the last session (day 180) — so cycle 2 takes
+  // the LAST session, one step away. Deliberately NOT a tenor that lands exactly
+  // on a session: the ns rounding in `validate_config` could then flip the
+  // lower_bound to the next session and the fixture would test nothing.
+  const StrangleVarswapConfig scfg = make_config(c, 140.0 / 365.25);
+  const std::int64_t cycle1_expiry = kBaseNow + 5LL * kStepNs;
+  const std::int64_t cycle2_expiry = kBaseNow + 6LL * kStepNs;
+
+  // The LONG cycle first: it does carry a swap, so the skip below is specific to
+  // the short cycle rather than a blanket failure of the fixture.
+  StrangleVsVarswapStrategy long_strat{scfg};
+  auto held = run_prefix(*clock, c, long_strat, /*last_index=*/4u, rcfg);
+  ASSERT_TRUE(held.has_value()) << held.error().to_string();
+  EXPECT_EQ(long_strat.skipped_swap_cycles(), 0u);
+  ASSERT_EQ(held->checkpoint.portfolio.swap_lots.size(), 1u);
+  EXPECT_EQ(held->checkpoint.portfolio.swap_lots.front().expiry_ts_ns, cycle1_expiry);
+  // Sessions in (ref0, ref5] are refs 1..5; the first only seeds the series.
+  EXPECT_EQ(held->checkpoint.portfolio.swap_lots.front().n_obs_total, 4u);
+
+  // Ref 5 — cycle 1's swap settles on a FULLY observed series and cycle 2 opens
+  // on that same step with only one session left to expiry. No swap is appended.
+  StrangleVsVarswapStrategy tail_strat{scfg};
+  auto tail = run_prefix(*clock, c, tail_strat, /*last_index=*/5u, rcfg);
+  ASSERT_TRUE(tail.has_value()) << tail.error().to_string();
+  EXPECT_EQ(tail_strat.skipped_swap_cycles(), 1u);     // counted, never silent
+  EXPECT_EQ(tail_strat.unresolved_strike_steps(), 0u); // the surface was fine
+  EXPECT_TRUE(tail->checkpoint.portfolio.swap_lots.empty());
+  // The OPTION leg is live on the tail cycle: the strangle rolled into it
+  // normally, which is exactly what "runs options-only" has to mean.
+  ASSERT_EQ(tail->checkpoint.portfolio.lots.size(), 2u);
+  for (const Lot &lot : tail->checkpoint.portfolio.lots) {
+    EXPECT_EQ(lot.expiry_ts_ns, cycle2_expiry);
+  }
+  // Cycle 1's swap really did settle here rather than being dropped: its live
+  // mark is gone from the book while its settlement moved that row's swap_pnl.
+  ASSERT_EQ(tail->rows.size(), 6u);
+  EXPECT_TRUE(bits_equal(tail->rows.swap_pv.back(), 0.0));
+  EXPECT_NE(tail->rows.swap_pnl.back(), 0.0);
+
+  // And the run reaches the end of the calendar: the tail cycle settles its
+  // options at ref 6, nothing is left open, and no swap ever needed rescuing.
+  StrangleVsVarswapStrategy full_strat{scfg};
+  auto full = run_backtest_incremental(*clock, full_strat, rcfg, nullptr);
+  ASSERT_TRUE(full.has_value()) << full.error().to_string();
+  ASSERT_EQ(full->rows.size(), kSessions);
+  EXPECT_EQ(full_strat.skipped_swap_cycles(), 1u);
+  EXPECT_TRUE(full->checkpoint.portfolio.swap_lots.empty());
+  EXPECT_TRUE(full->checkpoint.portfolio.lots.empty());
+  EXPECT_EQ(full_strat.cycle_expiry_ts_ns(), 0);
+  // The final session carries no swap lane at all — the skipped cycle never
+  // booked one, so both columns are untouched zeros on that row.
+  EXPECT_TRUE(bits_equal(full->rows.swap_pv.back(), 0.0));
+  EXPECT_TRUE(bits_equal(full->rows.swap_pnl.back(), 0.0));
+}
