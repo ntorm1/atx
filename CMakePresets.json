@@ -68,10 +68,11 @@
       "name": "rel",
       "inherits": "dev",
       "displayName": "rel: Release (canonical acceptance / benchmarks)",
-      "description": "Optimized Release build in build-rel/ for throughput benchmarks and canonical acceptance numbers, on the dev toolchain (clang-cl + compiler cache + shared deps). Never the debug-checked test gate — use `dev` for that.",
+      "description": "Optimized Release build in build-rel/ for throughput benchmarks and canonical acceptance numbers, on the dev toolchain (clang-cl + compiler cache + shared deps). Never the debug-checked test gate — use `dev` for that. THIN-LTO (S6-T30, plan 6.3): CMAKE_INTERPROCEDURAL_OPTIMIZATION enables clang's -flto=thin across the TU-boundary-heavy solve chain, verified bit-identical against the pre-LTO NAV/section/fingerprint anchors (closeout Task 2). `dev`/`hygiene`/`vs` deliberately stay non-LTO: dev's fast-iterate build-time budget and its debug-checked determinism baseline are the point of that preset.",
       "binaryDir": "${sourceDir}/build-rel",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release"
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "ON"
       }
     },
     {
