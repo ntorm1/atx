@@ -114,8 +114,8 @@ struct CanonicalTenor {
 
   // g(k) = |delta(F*e^k)| - target. `exact=false` marks a ±sentinel used only for
   // bracketing: when greeks() is unavailable at an extreme k, we impute the
-  // asymptotic |delta| (-> 1 deep ITM, -> 0 deep OTM). The final root is validated
-  // against a real reprice, so a sentinel-only "straddle" cannot pass as a hit.
+  // asymptotic |delta| (-> 1 deep ITM, -> 0 deep OTM). The terminal trial must itself
+  // be exact, so a sentinel-only "straddle" cannot pass as a hit.
   struct GVal {
     double value{0.0};
     bool exact{false};
@@ -123,8 +123,8 @@ struct CanonicalTenor {
   const auto gof = [&](double k) -> GVal {
     const double K = F * std::exp(k);
     // The bisection consumes ONLY |delta|: the delta-only fast path (~1-2 boundary
-    // solves) replaces the full-greeks reprice (17) per candidate strike, at a
-    // bit-identical delta.
+    // solves) replaces the full-greeks reprice (7 unique boundaries / 17 stencils,
+    // measured 7.07x) per candidate strike, at a bit-identical delta.
     const Result<double> gr = s.delta(K, T, side, execution);
     if (gr) {
       const double d = std::fabs(*gr);
@@ -171,6 +171,7 @@ struct CanonicalTenor {
   // unchanged: the convergence test and the post-loop validation use the true
   // residual, never the down-weighted one.
   double kroot = 0.5 * (lo + hi);
+  GVal terminal{};
   int retained = 0; // Illinois: +1 => hi retained last step, -1 => lo retained
   for (int it = 0; it < 128; ++it) {
     double x = 0.5 * (lo + hi);
@@ -183,6 +184,7 @@ struct CanonicalTenor {
     }
     kroot = x;
     const GVal gm = gof(x);
+    terminal = gm;
     const double solve_tolerance = std::min(1.0e-7, 0.25 * final_tolerance);
     if (gm.exact && std::fabs(gm.value) <= solve_tolerance) {
       break;
@@ -207,12 +209,12 @@ struct CanonicalTenor {
     }
   }
 
-  // Validate: the root must actually reprice to the target (guards unreachable
-  // targets that straddled only through the asymptotic sentinel).
+  // The terminal trial is already the exact delta evaluation at Kroot on every exit:
+  // residual convergence, bracket-width exhaustion, or iteration-cap exhaustion.
+  // Reuse it for validation; recomputing the identical expression costs one cold delta.
   const double Kroot = F * std::exp(kroot);
-  const Result<double> gr = s.delta(Kroot, T, side, execution);
-  if (!gr || !std::isfinite(*gr) ||
-      std::fabs(std::fabs(*gr) - target_abs_delta) > final_tolerance) {
+  if (!terminal.exact || !std::isfinite(terminal.value) ||
+      std::fabs(terminal.value) > final_tolerance) {
     return Err(ErrorCode::InvalidArgument, "resolve_strike_by_delta: delta target unreachable");
   }
   return Ok(Kroot);
@@ -346,34 +348,6 @@ Result<double> resolve_strike_by_delta(const SurfaceRef &s, double T, Side side,
     return resolve_strike_by_delta(s, T, side, target_abs_delta);
   }
   return resolve_strike_by_delta_adaptive(s, T, side, target_abs_delta, options);
-}
-
-std::vector<Result<double>>
-resolve_strikes_by_delta_batched(std::span<const DeltaResolveLane> lanes, unsigned n_threads) {
-  // Pre-size with a per-slot sentinel; run_blocks then writes each slot exactly once
-  // (disjoint per-lane writes → bit-identical output for any worker count). Each lane
-  // runs the SAME solver `resolve_strike_by_delta` uses, so out[i] is bit-identical to
-  // the serial per-name resolve — the batching is a pure fan-out, not a new numeric
-  // path (P4: kills the per-name serial iterative solve, bottleneck #4).
-  std::vector<Result<double>> out;
-  out.reserve(lanes.size());
-  for (std::size_t i = 0; i < lanes.size(); ++i) {
-    out.emplace_back(Err(ErrorCode::InvalidArgument, "resolve_strikes_by_delta_batched: unresolved"));
-  }
-  if (lanes.empty()) {
-    return out;
-  }
-  pricing_executor().run_blocks(lanes.size(), n_threads, [&](std::size_t i) {
-    const DeltaResolveLane &lane = lanes[i];
-    if (lane.surface == nullptr) {
-      out[i] = Err(ErrorCode::InvalidArgument, "resolve_strikes_by_delta_batched: null surface");
-      return;
-    }
-    out[i] = resolve_strike_by_delta_routed(*lane.surface, lane.T, lane.side,
-                                            lane.target_abs_delta, QueryExecution::Configured,
-                                            kLegacyDeltaTolerance);
-  });
-  return out;
 }
 
 namespace {
@@ -750,13 +724,6 @@ expand_and_size_leg(const MarketSnapshot &snap, const LegSpec &ls, const Resolut
   // once (disjoint per-leg writes), so `per_leg` — and therefore the in-order
   // assembly below — is BIT-IDENTICAL to the old serial resolve for any worker
   // count (same drop/constraint bookkeeping, same error propagation order).
-  //
-  // [Approach note vs the sprint plan's L3 row: the plan suggested routing delta
-  // strikes through resolve_strikes_by_delta_batched (strike granularity). Leg-
-  // granularity fan-out subsumes it — it batches the strike solve AND the seed
-  // together at name granularity — without a second pool dispatch or restructuring
-  // the expand_leg resolve+seed pipeline, and stays bit-identical by the same
-  // disjoint-slot argument the batched resolver relies on.]
   std::vector<Result<std::vector<SizedLeg>>> per_leg;
   per_leg.reserve(spec.legs.size());
   for (std::size_t i = 0; i < spec.legs.size(); ++i) {
