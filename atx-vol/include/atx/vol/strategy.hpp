@@ -617,6 +617,13 @@ private:
   prepare_cohort(const MarketSnapshot &base, std::uint64_t first_lot_id,
                  const PriceOptions &price_options);
 
+  // The FixedExpiryRestrike per-step body (cycle fix, restrike/keep-strikes,
+  // the swap lane). Dispatched from `on_step` after one-time validation;
+  // existing lifecycles never enter it.
+  [[nodiscard]] Status step_restrike(const MarketSnapshot &base, std::size_t step_index,
+                                     PortfolioState &book, std::uint64_t &next_lot_id,
+                                     const PriceOptions &price_options);
+
   StrategySpec spec_;
   std::uint32_t cohort_counter_{0};
   std::int64_t front_expiry_{0};
@@ -625,7 +632,13 @@ private:
   std::vector<FullGreekSeed> last_entry_seeds_;
   // ── FixedExpiryRestrike state (inert in every other mode) ────────────────
   bool restrike_validated_{false};
-  std::int64_t cycle_tenor_ns_{0}; // the legs' common tenor, set by validation
+  std::int64_t cycle_tenor_ns_{0};     // the legs' common tenor, set by validation
+  std::int64_t cycle_expiry_ts_ns_{0}; // 0 = no live cycle
+  std::int64_t last_step_ts_ns_{0};    // the snapshot the last completed step ran on
+  // The option book's entry DOLLAR vega as of the last restrike — the number a
+  // MatchGroupVega swap leg is sized against, cached for the signal row. NaN on
+  // a step that kept strikes or held.
+  double last_options_vega_{std::numeric_limits<double>::quiet_NaN()};
   std::uint64_t skipped_restrikes_{0};
   std::uint64_t unopened_entry_steps_{0};
   std::uint64_t skipped_swap_cycles_{0};

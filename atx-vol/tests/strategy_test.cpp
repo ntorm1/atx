@@ -21,6 +21,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -2478,4 +2479,171 @@ TEST(StrategyRestrikeValidation, RejectsWeightSizingAndCrossLegConstraints) {
   const Status constraint_st = first_step_status(std::move(constrained), *snap);
   ASSERT_FALSE(constraint_st.has_value());
   EXPECT_EQ(constraint_st.error().code(), atx::core::ErrorCode::InvalidArgument);
+}
+
+// ── Declarative swap-lane DSL: the restrike option lane ─────────────────────
+//
+// These gates drive DeclarativeStrategy::on_step by hand over hand-built
+// consecutive snapshots (30 calendar days apart, so a 0.25y cycle spans ~3
+// sessions and every residual tenor stays inside the synthetic surface's
+// fitted pillar range [0.05, 1.0]).
+
+namespace {
+
+constexpr std::int64_t kStep30Ns = 30LL * kDayNs;
+constexpr std::uint32_t kRestrikeDarkUid = 4243;
+
+// Eight 30-day sessions starting at kBaseNow.
+[[nodiscard]] std::vector<std::int64_t> restrike_sessions() {
+  std::vector<std::int64_t> s;
+  for (int i = 0; i < 8; ++i) {
+    s.push_back(kBaseNow + i * kStep30Ns);
+  }
+  return s;
+}
+
+// Session `day_index`'s snapshot: uid kUid at a drifting spot — or, when
+// `dark`, a board written under a DIFFERENT symbol/uid so the strategy's name
+// is simply absent that session.
+[[nodiscard]] Result<MarketSnapshot> restrike_snap(int day_index, const char *tag,
+                                                   bool dark = false) {
+  const std::int64_t now = kBaseNow + day_index * kStep30Ns;
+  const double spot = 100.0 * (1.0 + 0.03 * day_index);
+  const PricedSurface s =
+      make_surface(dark ? kRestrikeDarkUid : kUid, spot, spot, now);
+  const fs::path dir = fresh_dir((std::string("restrike-") + tag).c_str());
+  char date[16];
+  std::snprintf(date, sizeof date, "2026-10-%02d", day_index + 1);
+  const std::string path = write_archive(dir, date, {{dark ? "OTHER" : "SPY", &s}});
+  return MarketSnapshot::load(path);
+}
+
+} // namespace
+
+TEST(StrategyRestrike, FixesOneExpiryAndRestrikesDailyAtIt) {
+  const std::vector<std::int64_t> sessions = restrike_sessions();
+  auto snap0 = restrike_snap(0, "fix0");
+  auto snap1 = restrike_snap(1, "fix1");
+  ASSERT_TRUE(snap0.has_value());
+  ASSERT_TRUE(snap1.has_value());
+
+  DeclarativeStrategy strat{restrike_spec(sessions)};
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+
+  ASSERT_TRUE(strat.on_step(*snap0, 0, book, next_lot_id, PriceOptions{}).has_value());
+  ASSERT_EQ(book.lots.size(), 2u);
+  const std::int64_t tenor_ns =
+      static_cast<std::int64_t>(std::round(0.25 * kNsPerYear));
+  const std::int64_t expected_expiry =
+      select_fixed_cycle_expiry(sessions, sessions.front(), tenor_ns);
+  ASSERT_GT(expected_expiry, sessions.front());
+  EXPECT_EQ(book.lots[0].id, 1u);
+  EXPECT_EQ(book.lots[1].id, 2u);
+  for (const Lot &lot : book.lots) {
+    EXPECT_EQ(lot.expiry_ts_ns, expected_expiry); // the cycle's ONE expiry, exact int64
+    EXPECT_EQ(lot.cohort, 1u);                    // cohort counts CYCLES
+    EXPECT_EQ(lot.qty, 100.0);
+    EXPECT_GT(lot.entry_price, 0.0);
+  }
+  EXPECT_NE(book.lots[0].contract.K, book.lots[1].contract.K); // a strangle, not a straddle
+  EXPECT_EQ(strat.entry_risk_seeds().size(), 2u);
+  const std::array<double, 2> day0_K{book.lots[0].contract.K, book.lots[1].contract.K};
+
+  ASSERT_TRUE(strat.on_step(*snap1, 1, book, next_lot_id, PriceOptions{}).has_value());
+  ASSERT_EQ(book.lots.size(), 2u); // restruck, never accumulated
+  EXPECT_EQ(book.lots[0].id, 3u);  // fresh lots each restrike...
+  EXPECT_EQ(book.lots[1].id, 4u);
+  for (const Lot &lot : book.lots) {
+    EXPECT_EQ(lot.expiry_ts_ns, expected_expiry); // ...at the SAME fixed expiry
+    EXPECT_EQ(lot.cohort, 1u);                    // still cycle 1
+  }
+  EXPECT_NE(book.lots[0].contract.K, day0_K[0]); // strikes moved with the spot
+  EXPECT_NE(book.lots[1].contract.K, day0_K[1]);
+  EXPECT_EQ(strat.skipped_restrikes(), 0u);
+  EXPECT_EQ(strat.unopened_entry_steps(), 0u);
+}
+
+TEST(StrategyRestrike, KeepsLiveStrikesWhenTheSurfaceCannotServeTheDelta) {
+  const std::vector<std::int64_t> sessions = restrike_sessions();
+  auto snap0 = restrike_snap(0, "keep0");
+  auto snap1 = restrike_snap(1, "keep1", /*dark=*/true);
+  ASSERT_TRUE(snap0.has_value());
+  ASSERT_TRUE(snap1.has_value());
+
+  DeclarativeStrategy strat{restrike_spec(sessions)};
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+  ASSERT_TRUE(strat.on_step(*snap0, 0, book, next_lot_id, PriceOptions{}).has_value());
+  ASSERT_EQ(book.lots.size(), 2u);
+  const PortfolioState held = book;
+
+  // The board goes dark mid-cycle: the live strikes are KEPT — no fabricated
+  // strike, no flattening for a data gap — and the hole is on the record.
+  ASSERT_TRUE(strat.on_step(*snap1, 1, book, next_lot_id, PriceOptions{}).has_value());
+  ASSERT_EQ(book.lots.size(), 2u);
+  EXPECT_EQ(book.lots[0], held.lots[0]);
+  EXPECT_EQ(book.lots[1], held.lots[1]);
+  EXPECT_EQ(strat.skipped_restrikes(), 1u);
+  EXPECT_EQ(strat.unopened_entry_steps(), 0u);
+}
+
+TEST(StrategyRestrike, CountsUnopenedStepsWhenNothingWasHeld) {
+  const std::vector<std::int64_t> sessions = restrike_sessions();
+  auto snap0 = restrike_snap(0, "unopened0", /*dark=*/true);
+  auto snap1 = restrike_snap(1, "unopened1");
+  ASSERT_TRUE(snap0.has_value());
+  ASSERT_TRUE(snap1.has_value());
+
+  DeclarativeStrategy strat{restrike_spec(sessions)};
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+
+  // Inception on a dark board: nothing to keep, so this is an UNOPENED step —
+  // a different fact about the position than a kept restrike, counted apart.
+  ASSERT_TRUE(strat.on_step(*snap0, 0, book, next_lot_id, PriceOptions{}).has_value());
+  EXPECT_TRUE(book.lots.empty());
+  EXPECT_EQ(strat.unopened_entry_steps(), 1u);
+  EXPECT_EQ(strat.skipped_restrikes(), 0u);
+
+  // The board returns: the cycle was fixed off the calendar regardless, and
+  // the strangle opens at THIS session's strikes.
+  ASSERT_TRUE(strat.on_step(*snap1, 1, book, next_lot_id, PriceOptions{}).has_value());
+  ASSERT_EQ(book.lots.size(), 2u);
+  EXPECT_EQ(strat.unopened_entry_steps(), 1u);
+}
+
+TEST(StrategyRestrike, EveryNDaysHoldsBetweenRestrikeTicks) {
+  const std::vector<std::int64_t> sessions = restrike_sessions();
+  auto snap0 = restrike_snap(0, "cad0");
+  auto snap1 = restrike_snap(1, "cad1");
+  auto snap2 = restrike_snap(2, "cad2");
+  ASSERT_TRUE(snap0.has_value());
+  ASSERT_TRUE(snap1.has_value());
+  ASSERT_TRUE(snap2.has_value());
+
+  StrategySpec spec = restrike_spec(sessions);
+  spec.lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
+  spec.lifecycle.entry_every_n = 2;
+  DeclarativeStrategy strat{std::move(spec)};
+  PortfolioState book;
+  std::uint64_t next_lot_id = 1;
+
+  ASSERT_TRUE(strat.on_step(*snap0, 0, book, next_lot_id, PriceOptions{}).has_value());
+  ASSERT_EQ(book.lots.size(), 2u);
+  const std::uint64_t day0_ids[2] = {book.lots[0].id, book.lots[1].id};
+
+  // Step 1 is off-tick: the book is HELD, not restruck — and holding is not a
+  // skipped restrike (nothing failed; the cadence simply says hold).
+  ASSERT_TRUE(strat.on_step(*snap1, 1, book, next_lot_id, PriceOptions{}).has_value());
+  ASSERT_EQ(book.lots.size(), 2u);
+  EXPECT_EQ(book.lots[0].id, day0_ids[0]);
+  EXPECT_EQ(book.lots[1].id, day0_ids[1]);
+  EXPECT_EQ(strat.skipped_restrikes(), 0u);
+
+  // Step 2 is a tick: fresh strikes, fresh ids, same cycle expiry.
+  ASSERT_TRUE(strat.on_step(*snap2, 2, book, next_lot_id, PriceOptions{}).has_value());
+  ASSERT_EQ(book.lots.size(), 2u);
+  EXPECT_NE(book.lots[0].id, day0_ids[0]);
+  EXPECT_EQ(book.lots[0].cohort, 1u);
 }

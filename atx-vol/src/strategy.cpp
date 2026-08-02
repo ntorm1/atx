@@ -955,6 +955,31 @@ namespace {
                  "DeclarativeStrategy: Weight sizing needs a cross-leg constraint, which the "
                  "restrike mode does not carry; size leg " + std::to_string(i) + " directly");
     }
+    if (leg.structure.kind == StructureSpec::Kind::RiskReversal) {
+      // Rejected HERE, not left to the resolver: the step treats resolution
+      // failures as soft keep-strikes data gaps, and a config error must never
+      // hide in a counter.
+      return Err(ErrorCode::InvalidArgument,
+                 "DeclarativeStrategy: RiskReversal is not in the restrike mode's scope (leg " +
+                     std::to_string(i) + ")");
+    }
+    // Selector values are validated up front for the same reason: after this,
+    // a strike-resolution failure at step time can only be data-driven.
+    const auto valid_selector = [](const StrikeSelector &sel) noexcept {
+      if (!std::isfinite(sel.value)) {
+        return false;
+      }
+      return sel.kind != StrikeSelector::Kind::Delta || (sel.value > 0.0 && sel.value < 1.0);
+    };
+    const bool strangle = leg.structure.kind == StructureSpec::Kind::Strangle;
+    const bool selectors_ok = strangle ? valid_selector(leg.structure.call_leg) &&
+                                             valid_selector(leg.structure.put_leg)
+                                       : valid_selector(leg.strike);
+    if (!selectors_ok) {
+      return Err(ErrorCode::InvalidArgument,
+                 "DeclarativeStrategy: restrike leg " + std::to_string(i) +
+                     " has a non-finite or out-of-range strike selector");
+    }
   }
   const double tenor_ns = std::round(cycle_T * kNsPerYear);
   if (!(tenor_ns >= 1.0 && tenor_ns < kInt64ExclusiveUpper)) {
@@ -1079,6 +1104,125 @@ Status DeclarativeStrategy::on_step(const MarketSnapshot &base, std::size_t step
   return on_step(base, step_index, book, next_lot_id, PriceOptions{});
 }
 
+Status DeclarativeStrategy::step_restrike(const MarketSnapshot &base, std::size_t step_index,
+                                          PortfolioState &book, std::uint64_t &next_lot_id,
+                                          const PriceOptions &price_options) {
+  constexpr double kRestrikeNaN = std::numeric_limits<double>::quiet_NaN();
+  last_entry_seeds_.clear();
+  // Nothing measured YET this step. Every path that commits a fresh book
+  // overwrites this; every path that does not leaves the step reporting "not
+  // measured" rather than the previous step's vega.
+  last_options_vega_ = kRestrikeNaN;
+  last_step_ts_ns_ = base.ts_ns();
+
+  const std::int64_t base_ts = base.ts_ns();
+  bool cycle_opened = false;
+  if (cycle_expiry_ts_ns_ <= base_ts) {
+    // Inception, or the engine settled the cycle before calling us (it erases
+    // expired lots strictly before on_step). Fix the next cycle's expiry.
+    cycle_expiry_ts_ns_ = select_fixed_cycle_expiry(spec_.session_ts, base_ts, cycle_tenor_ns_);
+    if (cycle_expiry_ts_ns_ <= base_ts) {
+      return Ok(); // the session grid is exhausted: no cycle left to open
+    }
+    ++cohort_counter_; // `Lot::cohort` counts CYCLES, not the clips inside one
+    cycle_opened = true;
+  }
+
+  // Restrike cadence: an off-tick step holds the book — that is the cadence
+  // speaking, not a failure, so no counter moves. A cycle-open step always
+  // opens regardless of the tick (its expiry came off the calendar).
+  if (!cycle_opened && spec_.lifecycle.entry == LifecycleSpec::Entry::EveryNDays) {
+    const unsigned n = (spec_.lifecycle.entry_every_n == 0) ? 1u : spec_.lifecycle.entry_every_n;
+    if (step_index % n != 0) {
+      return Ok();
+    }
+  }
+
+  // Resolve every option leg PINNED to the cycle expiry: the tenor handed to
+  // the resolver is re-derived from the exact anchor, and the committed lots
+  // carry the exact int64 expiry (settlement is an exact-match, and a
+  // re-rounded anchor a few ns off would never settle).
+  const double cycle_T =
+      static_cast<double>(static_cast<std::uint64_t>(cycle_expiry_ts_ns_) -
+                          static_cast<std::uint64_t>(base_ts)) /
+      kNsPerYear;
+  std::vector<SizedLeg> fresh;
+  bool resolved = true;
+  for (const LegSpec &ls : spec_.legs) {
+    LegSpec pinned = ls;
+    pinned.tenor = TenorSpec{cycle_T, false, false};
+    Result<std::vector<SizedLeg>> sized =
+        expand_and_size_leg(base, pinned, spec_.resolution, price_options, {});
+    if (!sized) {
+      // KEEP THE LIVE STRIKES. Selector/config errors were validated up front,
+      // so a failure here is data-driven (a dark board, an unreachable delta,
+      // an unpriceable wing) — and the alternative to keeping is either
+      // flattening real exposure for a data gap or booking a strike the
+      // surface never priced. Which counter this is depends on whether there
+      // is anything TO keep (see below).
+      resolved = false;
+      break;
+    }
+    for (SizedLeg &sl : *sized) {
+      if (!(std::isfinite(sl.leg.model_price) && sl.leg.model_price >= 0.0) ||
+          !sl.leg.full_greek_seed.has_value()) {
+        resolved = false; // a lot the engine boundary would reject; never a 0.0 fill
+        break;
+      }
+      fresh.push_back(std::move(sl));
+    }
+    if (!resolved) {
+      break;
+    }
+  }
+  if (!resolved) {
+    // `book.lots` holds the survivors the engine did not settle, so an empty
+    // book here means inception or a cycle roll: no strikes were held, and
+    // saying otherwise would put a fictitious hold on the record.
+    if (book.lots.empty()) {
+      ++unopened_entry_steps_;
+    } else {
+      ++skipped_restrikes_;
+    }
+    if (cycle_opened && !spec_.swap_legs.empty()) {
+      // The cycle is fixed regardless (its expiry comes off the calendar, not
+      // the surface) but there is no entry vega to size against, and a swap
+      // leg is a per-CYCLE instrument — a later session getting its board back
+      // does not retro-open it. This cycle runs one-legged, and says so.
+      skipped_swap_cycles_ += spec_.swap_legs.size();
+    }
+    return Ok();
+  }
+
+  // Close-and-reopen: the engine diffs the pre-step book against the post-step
+  // book and books the departed lots as a roll-close at today's marks (the
+  // expiry settle path ran earlier in its loop, so nothing here can reach it).
+  book.lots.clear();
+  book.lots.reserve(fresh.size());
+  std::vector<FullGreekSeed> seeds;
+  seeds.reserve(fresh.size());
+  double options_vega = 0.0;
+  for (SizedLeg &sl : fresh) {
+    Lot lot;
+    lot.id = next_lot_id++;
+    lot.contract = OptionContract{sl.leg.uid, sl.leg.K, sl.leg.T, sl.leg.side};
+    lot.qty = sl.qty;
+    lot.multiplier = sl.multiplier;
+    lot.expiry_ts_ns = cycle_expiry_ts_ns_; // the cycle's exact expiry, always
+    lot.cohort = cohort_counter_;
+    lot.entry_price = sl.leg.model_price; // fill at the model mid, priced once
+    book.lots.push_back(lot);
+    seeds.push_back(std::move(*sl.leg.full_greek_seed));
+    // Per-share American vega x qty x multiplier — the very scaling the
+    // portfolio pricer applies, and the number a MatchGroupVega swap leg is
+    // sized against. ONE definition, or the equal-vega claim is unfalsifiable.
+    options_vega += sl.leg.vega * sl.qty * sl.multiplier;
+  }
+  last_options_vega_ = options_vega;
+  last_entry_seeds_ = std::move(seeds);
+  return Ok();
+}
+
 Status DeclarativeStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,
                                     PortfolioState &book, std::uint64_t &next_lot_id,
                                     const PriceOptions &price_options) {
@@ -1094,14 +1238,7 @@ Status DeclarativeStrategy::on_step(const MarketSnapshot &base, std::size_t step
       cycle_tenor_ns_ = *tenor;
       restrike_validated_ = true;
     }
-    // Interpreter lands in the next change (step_restrike); the validated stub
-    // deliberately opens nothing.
-    (void)base;
-    (void)step_index;
-    (void)book;
-    (void)next_lot_id;
-    (void)price_options;
-    return Ok();
+    return step_restrike(base, step_index, book, next_lot_id, price_options);
   }
 
   last_entry_seeds_.clear();

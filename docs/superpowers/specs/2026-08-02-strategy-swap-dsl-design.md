@@ -158,8 +158,9 @@ Per-step flow for `FixedExpiryRestrike`:
 greek columns + `options_vega` (the option book's entry dollar vega as of this
 row's restrike, NaN on unresolved/no-cycle steps — the old `strangle_vega`
 under its lane-agnostic name) + cumulative `skipped_restrikes`, `skipped_swaps`.
-Counter accessors (`skipped_restrikes()`, `unopened_strangle_steps()`,
-`skipped_swap_cycles()`) exposed on the strategy for drivers and tests.
+Counter accessors (`skipped_restrikes()`, `unopened_entry_steps()` — the
+lane-agnostic name, superseding this spec's earlier `unopened_strangle_steps`
+— and `skipped_swap_cycles()`) exposed on the strategy for drivers and tests.
 
 ## 4. Parity gate (before any deletion)
 
