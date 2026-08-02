@@ -833,7 +833,26 @@ struct RunConfig {
   // cache is sized from this field; a CALLER-SUPPLIED cache is the caller's to
   // size, and an undersized one costs throughput but never correctness.
   // 0 is normalized to 1 (no look-ahead is expressed by prefetch_snapshots=false).
-  std::size_t prefetch_depth{1};
+  //
+  // WHY THE DEFAULT IS 2 AND NOT 1 (S6-T32, plan 6.7). Measured on the 135-session
+  // projected replay, one binary with the depth alternated inside a single session,
+  // 12 interleaved rounds over depths {1,2,4,8}, medians and win-counts only (this
+  // host has no frequency pinning and per-pair spreads reach ±40 %):
+  //
+  //     1 -> 2 : +15.2 % median, 11/12 rounds won
+  //     2 -> 4 :  +1.9 % median,  7/12   (a wash)
+  //     4 -> 8 :  +1.6 % median,  7/12   (a wash)
+  //
+  // The curve is a step, not a ramp: overlapping the FIRST load is where all of the
+  // win is, and nothing past depth 2 is distinguishable from noise. Depth 2 is
+  // therefore the cheapest default that takes it — one extra in-flight snapshot and
+  // one extra cache slot (`private_snapshot_cache_capacity` = depth + 2, so 4
+  // instead of 3), against a fifth of the replay's wall clock.
+  //
+  // A caller who cannot afford the extra resident snapshot sets 1 explicitly and
+  // gets exactly the old behavior; the OUTPUT does not move either way, which is
+  // what makes this a default worth changing inside a release.
+  std::size_t prefetch_depth{2};
 };
 
 // Drift pin (plan item 4.2). RunConfig has exactly SEVENTEEN fields. Adding,

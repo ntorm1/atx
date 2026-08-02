@@ -1496,7 +1496,10 @@ TEST(SurfaceDbDispersionBacktest, PrivateCachePathIsUsed) {
   SurfaceDbDispersionSpec base = run_spec(root, "2026-01-05", "2026-01-12");
   ASSERT_EQ(base.config.run.snapshot_cache, nullptr);
   ASSERT_TRUE(base.config.run.prefetch_snapshots);
-  ASSERT_EQ(base.config.run.prefetch_depth, 1u); // the RunConfig default this route inherits
+  // The RunConfig default this route inherits — 2 since S6-T32 measured the depth
+  // ladder on the 135-session replay (see RunConfig::prefetch_depth). The sweep
+  // below still drives 1 explicitly, so the depth-1 shape stays covered.
+  ASSERT_EQ(base.config.run.prefetch_depth, 2u);
 
   const auto run_at_depth = [&](std::size_t depth) -> Result<RunOutcome> {
     SurfaceDbDispersionSpec spec = base;
