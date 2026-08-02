@@ -4,6 +4,7 @@
 
 #include "atx/vol/rates_curve.hpp"
 #include "atx/vol/derivatives.hpp"
+#include "atx/vol/detail/legacy_surface.hpp"  // EssviSurface (demoted, S4-T21)
 #include "atx/vol/priced_surface.hpp"     // PricedSurface-native greeks overload
 #include "atx/vol/surface.hpp"
 #include "support/analytics_fixture.hpp"  // testkit::make_flat_surface (PricedSurface)

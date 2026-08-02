@@ -17,6 +17,7 @@
 
 #include <gtest/gtest.h>
 
+#include "atx/vol/detail/legacy_surface.hpp"  // EssviSurface (demoted, S4-T21)
 #include "atx/vol/rates_curve.hpp"
 #include "atx/vol/surface.hpp"
 

@@ -120,10 +120,6 @@
 #include <limits>
 #include <span>
 
-// The legacy calibration-grade surface containers were demoted to detail/
-// (S4-T21), but the deriv_greeks extern templates below still instantiate on
-// them — the vol-derivatives sprint's greeks lane predates the demotion.
-#include "atx/vol/detail/legacy_surface.hpp" // EssviSurface, SviSurface
 #include "atx/vol/rates_curve.hpp"
 #include "atx/vol/types.hpp"
 
@@ -632,12 +628,11 @@ deriv_greeks(const SurfaceT& surface, const CurveSet& curves,
              const DerivContract& contract, const DerivConfig& cfg = DerivConfig{},
              const DerivGreekBumps& bumps = DerivGreekBumps{});
 
-extern template Result<DerivGreeks> deriv_greeks<EssviSurface>(
-    const EssviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&,
-    const DerivGreekBumps&);
-extern template Result<DerivGreeks> deriv_greeks<SviSurface>(
-    const SviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&,
-    const DerivGreekBumps&);
+// Instantiated in derivatives.cpp for the demoted calibration-grade surface
+// containers (S4-T21, `detail/legacy_surface.hpp`), alongside the sibling
+// var_swap_fair_strike / vol_swap_fair_strike / deriv_price instantiations.
+// Internal callers include the detail header for the container types; this
+// public header deliberately does not name them.
 
 // ── E6 / AN-W: PricedSurface-native entry points ────────────────────────────
 //
