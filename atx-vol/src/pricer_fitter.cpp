@@ -18,6 +18,8 @@
 #include "atx/vol/calib.hpp"            // build_observations_european
 #include "atx/vol/correction.hpp"       // AmericanCorrectionCaches (cached inversion hot path)
 #include "atx/vol/deamer.hpp"           // resolve_chain_forward
+#include "atx/vol/detail/convex_recovery.hpp"  // strict-recovery bridge (admission-rejection rung)
+#include "atx/vol/detail/counters.hpp"         // ATX_VOL_COUNT (RiskStrictRecoveryRounds/Admitted)
 #include "atx/vol/detail/parallel_for.hpp"     // atx_auto_worker_count
 #include "atx/vol/detail/prepared_fitting.hpp" // prepare_expiry (canonical refit preparation)
 #include "atx/vol/detail/pricing_executor.hpp" // persistent whole-chain task fan-out
@@ -1424,6 +1426,78 @@ Status PricerFitter::fit(const OptionChain &chain,
         selection_->chosen = in.curve;
       }
       break;
+    }
+  }
+
+  // Strict convex-dense recovery — the rung after the last rung. Reached only
+  // when every ladder model was rejected and the digest names pure geometry
+  // (Butterfly/Calendar, optionally CarryGap). Root cause (2026-08 SPY
+  // backfill): the dense repair loop's fixed lattice + 1e-7 acceptance are
+  // strictly looser than this oracle's grid + 1e-8, so marginal sub-vol-tick
+  // crossings pass repair and die here. The refit pins repair to the oracle's
+  // exact calendar grid at 0.1x its tolerance and promotes the digest's
+  // reported violation k's to exact QP nodes; each round's new firsts feed
+  // the next round. Admitted fits never reach this block, so the hot path is
+  // unchanged.
+  if (!admission.publish_candidate && detail::should_attempt_strict_recovery(digest.failures)) {
+    constexpr int kMaxStrictRecoveryRounds = 3;
+    ConvexRepairSpec spec = detail::make_strict_repair_spec(validation_config);
+    ValidationDigest round_digest = digest;
+    for (int round = 0; round < kMaxStrictRecoveryRounds; ++round) {
+      const std::vector<double> promoted =
+          detail::strict_promotion_ks(round_digest, validation_config);
+      const std::size_t before = spec.extra_node_ks.size();
+      spec.extra_node_ks.insert(spec.extra_node_ks.end(), promoted.begin(), promoted.end());
+      std::sort(spec.extra_node_ks.begin(), spec.extra_node_ks.end());
+      spec.extra_node_ks.erase(
+          std::unique(spec.extra_node_ks.begin(), spec.extra_node_ks.end()),
+          spec.extra_node_ks.end());
+      if (round > 0 && spec.extra_node_ks.size() == before) {
+        break; // no new violation k's — an identical refit cannot converge
+      }
+      SessionInputs strict_inputs = in;
+      strict_inputs.curve.kind = VolCurveKind::ConvexDense;
+      strict_inputs.curve.convex.node_cap = strict_inputs.calib.max_obs_per_slice;
+      strict_inputs.curve.convex_repair = spec;
+      ATX_VOL_COUNT(RiskStrictRecoveryRounds);
+      const auto strict_start = Clock::now();
+      Result<VolaSession> strict = VolaSession::build(chain.underlying(), strict_inputs);
+      timings_.risk_build_ms += elapsed_ms(strict_start);
+      if (!strict.has_value()) {
+        report.attempts.push_back(
+            failed_attempt_report(under, strict_inputs.curve, strict.error()));
+        break; // the strict QP itself failed — nothing further to promote
+      }
+      ValidationDigest strict_digest = validate_candidate(*strict);
+      SurfaceBuildAttemptReport strict_attempt = admission_attempt(*strict, strict_digest);
+      AdmissionDecision strict_admission = decide_risk_surface_admission(
+          strict_digest, quality_mode, candidate_generation_, prior, cfg_.fallback);
+      report.attempts.push_back(std::move(strict_attempt));
+      if (strict_admission.publish_candidate) {
+        ATX_VOL_COUNT(RiskStrictRecoveryAdmitted);
+        // Same provenance contract as the ladder adoption above: the first
+        // rejected primary of this fit stays authoritative.
+        const CurveConfig rejected_primary = in.curve;
+        in = std::move(strict_inputs);
+        sess = std::move(*strict);
+        digest = strict_digest;
+        admission = strict_admission;
+        if (decision_.has_value()) {
+          if (!decision_->used_fallback) {
+            decision_->primary_curve = rejected_primary;
+          }
+          decision_->used_fallback = true;
+          decision_->curve = in.curve;
+        }
+        if (selection_.has_value()) {
+          selection_->chosen = in.curve;
+        }
+        break;
+      }
+      if (!detail::should_attempt_strict_recovery(strict_digest.failures)) {
+        break; // the strict refit surfaced a non-geometric failure — stop
+      }
+      round_digest = strict_digest;
     }
   }
   risk_health_ = admission.health;

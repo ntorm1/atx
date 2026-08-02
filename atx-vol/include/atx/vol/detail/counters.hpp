@@ -158,6 +158,12 @@ enum class Counter : unsigned {
   ConvexDenseWingAnchorBuilds,
   ConvexDenseWingAnchorIvEvaluations,
   ConvexDenseWingFallbackEntries,
+  // Strict convex-dense admission-recovery rung (pricer_fitter.cpp): fired only
+  // after the fallback ladder is exhausted with a pure-geometry rejection.
+  // Rounds counts every strict refit attempted; Admitted counts only those whose
+  // refit passed independent admission. A clean/admitted fit never bumps either.
+  RiskStrictRecoveryRounds,
+  RiskStrictRecoveryAdmitted,
   Count_
 };
 
@@ -202,6 +208,8 @@ inline constexpr const char *kNames[kCount] = {
     "cnt_convex_dense_wing_anchor_builds",
     "cnt_convex_dense_wing_anchor_iv_evaluations",
     "cnt_convex_dense_wing_fallback_entries",
+    "cnt_risk_strict_recovery_rounds",
+    "cnt_risk_strict_recovery_admitted",
 };
 
 // A point-in-time copy of every counter. `enabled == false` is the sentinel a
