@@ -6,7 +6,9 @@
     "zstd",
     "zlib-ng",
     "openssl",
-    "gtest"
+    "gtest",
+    "grpc",
+    "protobuf"
   ],
   "builtin-baseline": "9e9398f90a6c386bbd6ed89714ddb036b2e969eb"
 }
