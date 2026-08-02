@@ -178,6 +178,7 @@ add_executable(atx-vol-tests
     strangle_varswap_test.cpp        # Task 1: fixed-expiry daily-restrike strangle leg
     # declarative swap-lane DSL sprint
     swap_leg_test.cpp                # Task 1: swap-leg toolkit (contract bridge + signal probe)
+    strategy_restrike_parity_test.cpp # Task 6: old-vs-declarative parity (dies with the old class)
 )
 # backtest_bench_test.cpp was relocated to bench/backtest_throughput_bench.cpp
 # (it is a throughput benchmark, not a correctness gate).
