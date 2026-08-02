@@ -3554,6 +3554,178 @@ TEST(PortfolioPricerTargetMarks, RawMarksMatchWeightedPnlFrameForLongShortZeroAn
   EXPECT_TRUE(std::isfinite(marks.price_target[2]));
 }
 
+TEST(PortfolioPricerTargetRiskSeeds,
+     TargetMarksAndSeedsMatchFreshFullGreeksAtTheExactRolledTenor) {
+  const std::int64_t one_hour = static_cast<std::int64_t>(3600.0 * 1e9);
+  const PricedSurface base_surface = make_essvi(1, 5);
+  const PricedSurface target_surface =
+      make_essvi(1, 5, 0.0007, kS + 0.15, kR + 0.0004, kNow + one_hour);
+  const SurfaceSet base = set_of({&base_surface});
+  const SurfaceSet target = set_of({&target_surface});
+  const OptionContract duplicate{1, 100.0, 0.25, Side::Call};
+  const std::vector<Position> book{
+      {11, duplicate, 2.0, 100.0},
+      {12, duplicate, -3.0, 25.0},
+      {13, {1, 105.0, 0.30, Side::Put}, 1.5, 50.0},
+  };
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const PriceOptions options{.n_threads = 1,
+                             .analytic_greeks = true,
+                             .resolved_price_isa = simd::SimdIsa::ForceScalar};
+  PortfolioWorkspace workspace;
+  workspace.reserve(pricer.portfolio().n_contracts(), pricer.portfolio().n_positions());
+  TargetMarkStore marks(book.size());
+  std::vector<FullGreekSeed> target_seeds;
+  target_seeds.reserve(pricer.portfolio().n_contracts());
+
+  auto totals = pricer.pnl_totals_with_target_marks_and_full_greek_seeds_into(
+      base, target, marks.view(), target_seeds, workspace, options);
+  ASSERT_TRUE(totals.has_value()) << totals.error().to_string();
+  ASSERT_EQ(target_seeds.size(), pricer.portfolio().n_contracts());
+
+  TargetMarkStore legacy_marks(book.size());
+  PortfolioWorkspace legacy_workspace;
+  legacy_workspace.reserve(pricer.portfolio().n_contracts(), pricer.portfolio().n_positions());
+  auto legacy = pricer.pnl_totals_with_target_marks_into(
+      base, target, legacy_marks.view(), legacy_workspace, options);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  expect_pnl_totals_bit_identical(*totals, *legacy);
+  for (std::size_t i = 0; i < book.size(); ++i) {
+    EXPECT_EQ(marks.id[i], legacy_marks.id[i]) << i;
+    EXPECT_EQ(marks.status[i], legacy_marks.status[i]) << i;
+    EXPECT_TRUE(bits_equal(marks.price_target[i], legacy_marks.price_target[i])) << i;
+    EXPECT_TRUE(bits_equal(marks.base_vega_proxy[i], legacy_marks.base_vega_proxy[i])) << i;
+  }
+
+  const double dt = static_cast<double>(target_surface.pricing().now_ts_ns -
+                                        base_surface.pricing().now_ts_ns) /
+                    kNsPerYear;
+  std::vector<Position> target_book = book;
+  for (std::size_t i = 0; i < target_book.size(); ++i) {
+    target_book[i].contract.T = book[i].contract.T - dt;
+    const auto seed = std::find_if(target_seeds.begin(), target_seeds.end(), [&](const auto &s) {
+      return s.uid() == book[i].contract.uid && bits_equal(s.K(), book[i].contract.K) &&
+             s.side() == book[i].contract.side;
+    });
+    ASSERT_NE(seed, target_seeds.end()) << i;
+    EXPECT_TRUE(bits_equal(seed->T(), target_book[i].contract.T)) << i;
+    EXPECT_EQ(seed->surface_instance_id(), target_surface.instance_id()) << i;
+    EXPECT_EQ(seed->analytic_greeks(), options.analytic_greeks) << i;
+    EXPECT_EQ(seed->query_execution(), options.query_execution) << i;
+    EXPECT_TRUE(bits_equal(marks.price_target[i], seed->greeks().price)) << i;
+    EXPECT_EQ(marks.status[i], PriceStatus::Ok) << i;
+  }
+
+  auto target_portfolio = Portfolio::create(target_book);
+  ASSERT_TRUE(target_portfolio.has_value()) << target_portfolio.error().to_string();
+  const PortfolioPricer target_pricer(std::move(*target_portfolio));
+  FrameStore fresh(target_book.size(), /*want_greeks=*/true);
+  FrameStore seeded(target_book.size(), /*want_greeks=*/true);
+  PortfolioWorkspace fresh_workspace;
+  PortfolioWorkspace seeded_workspace;
+  ASSERT_TRUE(target_pricer
+                  .price_into(target, PriceFieldMask::FullGreeks, fresh.view(), fresh_workspace,
+                              options)
+                  .has_value());
+  ASSERT_TRUE(target_pricer
+                  .price_into(target, PriceFieldMask::FullGreeks, seeded.view(), seeded_workspace,
+                              options, target_seeds)
+                  .has_value());
+  expect_frame_bit_identical(seeded, fresh);
+
+  // The producer clears and refills caller-owned storage. Once both buffers have
+  // been reserved and warmed, a repeat keeps the seed allocation stable.
+  const FullGreekSeed *const warm_data = target_seeds.data();
+  const std::size_t warm_capacity = target_seeds.capacity();
+  auto repeated = pricer.pnl_totals_with_target_marks_and_full_greek_seeds_into(
+      base, target, marks.view(), target_seeds, workspace, options);
+  ASSERT_TRUE(repeated.has_value()) << repeated.error().to_string();
+  expect_pnl_totals_bit_identical(*repeated, *totals);
+  EXPECT_EQ(target_seeds.data(), warm_data);
+  EXPECT_EQ(target_seeds.capacity(), warm_capacity);
+}
+
+TEST(PortfolioPricerTargetRiskSeeds,
+     FailedFullGreeksLaneFallsBackToTheMarksRouteAndExportsNoSeed) {
+  constexpr double tiny_spot = 1.0e-160;
+  const PricedSurface base_surface = make_essvi(1, 3, 0.0, kS, kR, kNow, 0.02, true);
+  const PricedSurface target_surface =
+      make_essvi(1, 3, 0.0, tiny_spot, kR, kNow, 0.02, true);
+  const SurfaceSet base = set_of({&base_surface});
+  const SurfaceSet target = set_of({&target_surface});
+  const std::vector<Position> book{{1, {1, 100.0, 0.05, Side::Put}, 2.0, 100.0}};
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  const PriceOptions options{.n_threads = 1,
+                             .analytic_greeks = false,
+                             .resolved_price_isa = simd::SimdIsa::ForceScalar};
+  PortfolioWorkspace workspace;
+  workspace.reserve(1u, 1u);
+  TargetMarkStore marks(1u);
+  std::vector<FullGreekSeed> target_seeds;
+  target_seeds.reserve(1u);
+
+  auto totals = pricer.pnl_totals_with_target_marks_and_full_greek_seeds_into(
+      base, target, marks.view(), target_seeds, workspace, options);
+  ASSERT_TRUE(totals.has_value()) << totals.error().to_string();
+  ASSERT_EQ(marks.status[0], PriceStatus::Ok);
+  EXPECT_EQ(totals->n_ok, 1u);
+  EXPECT_TRUE(target_seeds.empty());
+
+  auto target_mark = target_surface.fair_value(book[0].contract.K, book[0].contract.T,
+                                               book[0].contract.side,
+                                               options.query_execution);
+  ASSERT_TRUE(target_mark.has_value()) << target_mark.error().to_string();
+  EXPECT_TRUE(bits_equal(marks.price_target[0], *target_mark));
+  auto failed_seed = target_surface.full_greek_seed(
+      book[0].contract.K, book[0].contract.T, book[0].contract.side,
+      options.analytic_greeks, options.query_execution);
+  EXPECT_FALSE(failed_seed.has_value());
+}
+
+TEST(PortfolioPricerTargetRiskSeeds, UnsupportedGreekRoutesAreRejectedBeforeOutputMutation) {
+  const PricedSurface base_surface = make_essvi(1, 3);
+  const PricedSurface target_surface = make_essvi(1, 3, 0.0005, kS + 0.1);
+  const SurfaceSet base = set_of({&base_surface});
+  const SurfaceSet target = set_of({&target_surface});
+  const std::vector<Position> book{{1, {1, 100.0, 0.15, Side::Call}, 1.0, 100.0}};
+  auto portfolio = Portfolio::create(book);
+  ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+  const PortfolioPricer pricer(std::move(*portfolio));
+  TargetMarkStore marks(1u);
+  marks.id[0] = 0xfeedbeefULL;
+  marks.price_target[0] = 1234.5;
+  marks.base_vega_proxy[0] = 678.25;
+  marks.status[0] = PriceStatus::InvalidContract;
+  auto sentinel = target_surface.full_greek_seed(100.0, 0.15, Side::Call, true);
+  ASSERT_TRUE(sentinel.has_value()) << sentinel.error().to_string();
+  std::vector<FullGreekSeed> target_seeds{*sentinel};
+  const FullGreekSeed *const sentinel_data = target_seeds.data();
+  PortfolioWorkspace workspace;
+
+  for (const PriceOptions options :
+       {PriceOptions{.n_threads = 1, .analytic_greeks = true, .adjoint_greeks = true},
+        PriceOptions{.n_threads = 1,
+                     .analytic_greeks = true,
+                     .greek_needs = PricedSurface::GreekNeeds{.vega = true,
+                                                              .rho = false,
+                                                              .charm = true}}}) {
+    const auto result = pricer.pnl_totals_with_target_marks_and_full_greek_seeds_into(
+        base, target, marks.view(), target_seeds, workspace, options);
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
+    EXPECT_EQ(target_seeds.size(), 1u);
+    EXPECT_EQ(target_seeds.data(), sentinel_data);
+    EXPECT_EQ(marks.id[0], 0xfeedbeefULL);
+    EXPECT_TRUE(bits_equal(marks.price_target[0], 1234.5));
+    EXPECT_TRUE(bits_equal(marks.base_vega_proxy[0], 678.25));
+    EXPECT_EQ(marks.status[0], PriceStatus::InvalidContract);
+  }
+}
+
 TEST(PortfolioPricerTargetMarks, InvalidViewIsRejectedBeforeAnyMutation) {
   const PricedSurface base_surface = make_essvi(1, 5);
   const PricedSurface target_surface = make_essvi(1, 5, 0.0005, kS + 0.1);
