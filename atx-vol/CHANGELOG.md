@@ -67,6 +67,14 @@ Nothing was deleted in the tiering itself; every relocation is a `git mv`.
   pipeline is `CurveSurface` (fit) → `PricedSurface`/`PricedSurfaceView` (serve)
   → `SurfaceSet` (portfolio), and public headers may no longer name the demoted
   containers even in prose.
+* **The templated `derivatives.hpp` entries are now instantiated for
+  `VolSurface`.** `var_swap_fair_strike`, `vol_swap_fair_strike`, `deriv_price`
+  and `deriv_greeks` are templates on the surface type whose bodies live in
+  `derivatives.cpp`; every instantiation used to be on a demoted container, so
+  these Tier-A declarations could only be linked against by including a
+  `detail/` header. `VolSurface` — which answers `iv(k_log, T)`, the template's
+  whole requirement — joins the instantiation set, and the demoted pair stays
+  for source compatibility. Purely additive: no existing call changes.
 
 ### BREAKING — error model: batch entries report how many lanes they wrote
 

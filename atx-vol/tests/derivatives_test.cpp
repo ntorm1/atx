@@ -10,6 +10,7 @@
 #include "atx/vol/priced_surface.hpp"  // E6: PricedSurface-native overloads
 #include "atx/vol/rates_curve.hpp"
 #include "atx/vol/surface.hpp"
+#include "atx/vol/vol_surface.hpp" // Tier-A instantiation set (closeout 1.2)
 #include "support/analytics_fixture.hpp" // E6: testkit::make_flat_surface
 
 // Vol-derivatives coverage, ported from the C ats-vol Sprint-22 tests:
@@ -109,6 +110,86 @@ TEST(VarStrip, FlatVol_HighQuality_RecoversSigmaSquaredTighter) {
   const auto q = var_swap_fair_strike(surf, cs, T_test, cfg);
   ASSERT_TRUE(q.has_value());
   EXPECT_LT(std::fabs(q->fair_strike_dec - sigma_atm * sigma_atm), 1.0e-5);
+}
+
+// ── Tier-A instantiation set: VolSurface (closeout 1.2) ──────────────────
+//
+// `VolSurface` is the Tier-A member of the supported `SurfaceT` set (see the
+// note above `deriv_price` in derivatives.hpp). These pin (a) that the
+// instantiations LINK — a Tier-A caller holding a VolSurface + CurveSet can
+// reach every templated entry without including a `detail/` header — and (b)
+// that VolSurface satisfies the template's contract numerically, by agreeing
+// with the demoted container on the same flat surface.
+
+// The same flat two-slice eSSVI stack as `make_flat_surface`, in the Tier-A
+// container: theta = sigma^2 * T, phi ~ 0, rho = 0.
+atx::vol::VolSurface make_flat_vol_surface(double sigma, double T_lo, double T_hi) {
+  atx::vol::VolSurface surf =
+      atx::vol::VolSurface::create(11u, atx::vol::Parametrization::Essvi, 2).value();
+  const double Ts[2] = {T_lo, T_hi};
+  for (std::uint16_t i = 0; i < 2; ++i) {
+    atx::vol::EssviParams s{};
+    s.theta = sigma * sigma * Ts[i];
+    s.phi = 1.0e-6;
+    s.rho = 0.0;
+    s.T = Ts[i];
+    s.expiry_id = i;
+    EXPECT_TRUE(surf.set_slice_essvi(i, s).has_value());
+  }
+  return surf;
+}
+
+TEST(DerivTierAInstantiation, VolSurfaceMatchesDemotedContainerOnFlatSurface) {
+  const double spot = 100.0;
+  const double sigma = 0.20;
+  const double T_test = 0.10;
+  const atx::vol::VolSurface vs = make_flat_vol_surface(sigma, 0.01, 1.00);
+  const EssviSurface legacy = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(spot, 0.01, 1.00);
+
+  EXPECT_LT(std::fabs(vs.iv(0.0, T_test) - sigma), 1.0e-7);
+
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = DerivQuality::Standard;
+
+  const auto q_vs = var_swap_fair_strike(vs, cs, T_test, cfg);
+  const auto q_legacy = var_swap_fair_strike(legacy, cs, T_test, cfg);
+  ASSERT_TRUE(q_vs.has_value());
+  ASSERT_TRUE(q_legacy.has_value());
+  EXPECT_LT(std::fabs(q_vs->fair_strike_dec - sigma * sigma), 5.0e-5);
+  EXPECT_DOUBLE_EQ(q_vs->fair_strike_dec, q_legacy->fair_strike_dec);
+
+  const auto v_vs = vol_swap_fair_strike(vs, cs, T_test, cfg);
+  const auto v_legacy = vol_swap_fair_strike(legacy, cs, T_test, cfg);
+  ASSERT_TRUE(v_vs.has_value());
+  ASSERT_TRUE(v_legacy.has_value());
+  EXPECT_DOUBLE_EQ(v_vs->fair_strike_dec, v_legacy->fair_strike_dec);
+}
+
+TEST(DerivTierAInstantiation, VolSurfacePricesAndDifferentiatesAContract) {
+  const double sigma = 0.20;
+  const atx::vol::VolSurface vs = make_flat_vol_surface(sigma, 0.01, 1.00);
+  const EssviSurface legacy = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+
+  DerivContract c{};
+  c.kind = DerivKind::VarSwap;
+  c.maturity_t = 0.25;
+  c.notional = 1.0e6;
+  c.strike_dec = sigma * sigma;
+
+  const auto p_vs = deriv_price(vs, cs, c);
+  const auto p_legacy = deriv_price(legacy, cs, c);
+  ASSERT_TRUE(p_vs.has_value());
+  ASSERT_TRUE(p_legacy.has_value());
+  EXPECT_DOUBLE_EQ(p_vs->pv, p_legacy->pv);
+
+  const auto g_vs = atx::vol::deriv_greeks(vs, cs, c);
+  const auto g_legacy = atx::vol::deriv_greeks(legacy, cs, c);
+  ASSERT_TRUE(g_vs.has_value());
+  ASSERT_TRUE(g_legacy.has_value());
+  EXPECT_DOUBLE_EQ(g_vs->pv, g_legacy->pv);
+  EXPECT_DOUBLE_EQ(g_vs->vega, g_legacy->vega);
 }
 
 // ── E2 / AN-P1-2: adaptive var-strip wings ───────────────────────────────

@@ -19,6 +19,7 @@
 #include "atx/vol/priced_surface.hpp" // E6: PricedSurface-native entry points
 #include "atx/vol/detail/strip_grid.hpp"
 #include "atx/vol/surface_parity.hpp" // SliceContext (E6 carry extraction)
+#include "atx/vol/vol_surface.hpp" // Tier-A calibration-grade surface container
 
 namespace atx::vol {
 
@@ -1370,6 +1371,42 @@ Status RealizedTracker::observe_dated(std::int64_t ts_ns, double spot) {
 }
 
 // ── Explicit instantiations (mirrors surface.cpp) ──────────────────────────
+//
+// SUPPORTED SET (v1 ruling, closeout item 1.2). `SurfaceT`'s whole requirement
+// is `iv(k_log, T)`, so the set is a linkage decision, not a modelling one.
+// Three entries, in the order a caller should reach for them:
+//
+//   1. `VolSurface` — the TIER-A calibration-grade surface container, and the
+//      only entry a Tier-A caller can name without reaching into `detail/`.
+//      This is what makes the templated overloads usable from the frozen API
+//      at all: before it, every instantiation was on a demoted type, so the
+//      declarations in `derivatives.hpp` were reachable only by including a
+//      `detail/` header — a Tier-A signature you could not link against.
+//   2. The two per-family containers demoted to `detail/legacy_surface.hpp` by
+//      S4-T21. Kept ONLY for source compatibility with callers that predate
+//      the demotion (in-tree: the deriv unit tests and their shared fixture).
+//      Not un-demoted by appearing here — a `detail/` type reached through a
+//      Tier-A function template is still a `detail/` type, and the tier
+//      manifest is what says so.
+//   3. Neither of the above, for the modern fitted pipeline: it produces a
+//      `PricedSurface` / `SurfaceRef`, which do NOT go through this list.
+//      Their entry points are the non-templated `PricedSurface`-native
+//      overloads below and `detail::deriv_price_on_ref`; both instantiate
+//      their own file-local log-moneyness adapters inside THIS translation
+//      unit, so they need nothing here.
+//
+// A caller with some other `SurfaceT` adds an instantiation beside these. New
+// code should not need to: it should hold a `PricedSurface` or a `SurfaceRef`.
+
+template Result<DerivQuote> var_swap_fair_strike<VolSurface>(
+    const VolSurface&, const CurveSet&, double, const DerivConfig&);
+template Result<DerivQuote> vol_swap_fair_strike<VolSurface>(
+    const VolSurface&, const CurveSet&, double, const DerivConfig&);
+template Result<DerivQuote> deriv_price<VolSurface>(
+    const VolSurface&, const CurveSet&, const DerivContract&, const DerivConfig&);
+template Result<DerivGreeks> deriv_greeks<VolSurface>(
+    const VolSurface&, const CurveSet&, const DerivContract&, const DerivConfig&,
+    const DerivGreekBumps&);
 
 template Result<DerivQuote> var_swap_fair_strike<EssviSurface>(
     const EssviSurface&, const CurveSet&, double, const DerivConfig&);
