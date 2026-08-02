@@ -22,6 +22,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/counters.hpp" // counters::ledger — V1 always-on solve ledger (per-step scrape)
+#include "atx/vol/detail/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref — swap-lot marks
 #include "atx/vol/phase_profile.hpp"
 #include "atx/vol/strategy.hpp"        // IStrategy
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive
@@ -488,6 +489,96 @@ private:
          lhs.cohort == rhs.cohort && same_double_bits(lhs.entry_price, rhs.entry_price);
 }
 
+[[nodiscard]] bool valid_deriv_kind(DerivKind kind) noexcept {
+  switch (kind) {
+  case DerivKind::VarSwap:
+  case DerivKind::VolSwap:
+  case DerivKind::CappedVarSwap:
+  case DerivKind::CappedVolSwap:
+    return true;
+  }
+  return false;
+}
+
+// True for the two kinds whose terminal value is a VOL (sqrt of the accrued
+// variance) rather than a variance, and true for the two whose `cap_dec` binds.
+[[nodiscard]] constexpr bool is_vol_kind(DerivKind kind) noexcept {
+  return kind == DerivKind::VolSwap || kind == DerivKind::CappedVolSwap;
+}
+[[nodiscard]] constexpr bool is_capped_kind(DerivKind kind) noexcept {
+  return kind == DerivKind::CappedVarSwap || kind == DerivKind::CappedVolSwap;
+}
+
+// Boundary validation for one swap lot. `base_ts` is present whenever the lot
+// must still be live (a strategy's post-step book, a checkpoint's), absent for a
+// pure structural check. Mirrors validate_lot_economics for the option lane; the
+// cap rule is `deriv_price`'s own contract, checked HERE so a malformed lot is
+// rejected at the engine boundary instead of failing on its first mark.
+[[nodiscard]] Status validate_swap_lot_economics(const SwapLot &lot, std::string_view owner,
+                                                 std::optional<std::int64_t> base_ts) {
+  const auto invalid = [&lot, owner](std::string_view field) {
+    return Err(ErrorCode::InvalidArgument, "run_backtest: swap lot id=" + std::to_string(lot.id) +
+                                               " in " + std::string{owner} + " has invalid " +
+                                               std::string{field});
+  };
+  if (lot.uid == 0u) {
+    return invalid("uid");
+  }
+  if (!valid_deriv_kind(lot.kind)) {
+    return invalid("kind");
+  }
+  if (!std::isfinite(lot.strike_dec) || lot.strike_dec < 0.0) {
+    return invalid("strike_dec");
+  }
+  if (!std::isfinite(lot.cap_dec) || lot.cap_dec < 0.0) {
+    return invalid("cap_dec");
+  }
+  if (is_capped_kind(lot.kind) != (lot.cap_dec > 0.0)) {
+    return invalid("cap_dec (required by a capped kind, forbidden otherwise)");
+  }
+  if (!std::isfinite(lot.notional) || lot.notional <= 0.0) {
+    return invalid("notional");
+  }
+  if (!std::isfinite(lot.qty)) {
+    return invalid("qty");
+  }
+  if (lot.n_obs_total == 0u) {
+    return invalid("n_obs_total");
+  }
+  if (!std::isfinite(lot.annualization) || lot.annualization <= 0.0) {
+    return invalid("annualization");
+  }
+  if (lot.start_ts_ns > lot.expiry_ts_ns) {
+    return invalid("start_ts_ns (must not be after expiry)");
+  }
+  if (base_ts.has_value() && lot.expiry_ts_ns <= *base_ts) {
+    return invalid("expiry_ts_ns (must be after base)");
+  }
+  return Ok();
+}
+
+[[nodiscard]] Status validate_swap_lot_economics(std::span<const SwapLot> lots,
+                                                 std::string_view owner,
+                                                 std::optional<std::int64_t> base_ts) {
+  for (const SwapLot &lot : lots) {
+    ATX_TRY_VOID(validate_swap_lot_economics(lot, owner, base_ts));
+  }
+  return Ok();
+}
+
+// A swap lot's ID is its identity key, exactly as an option lot's is: once
+// emitted every economic field is immutable, and a resize/restrike is expressed
+// as close-old plus open-new.
+[[nodiscard]] bool same_swap_lot_identity(const SwapLot &lhs, const SwapLot &rhs) noexcept {
+  return lhs.id == rhs.id && lhs.uid == rhs.uid && lhs.kind == rhs.kind &&
+         same_double_bits(lhs.strike_dec, rhs.strike_dec) &&
+         same_double_bits(lhs.cap_dec, rhs.cap_dec) &&
+         same_double_bits(lhs.notional, rhs.notional) && same_double_bits(lhs.qty, rhs.qty) &&
+         lhs.start_ts_ns == rhs.start_ts_ns && lhs.expiry_ts_ns == rhs.expiry_ts_ns &&
+         lhs.n_obs_total == rhs.n_obs_total &&
+         same_double_bits(lhs.annualization, rhs.annualization);
+}
+
 // Grow-only sorted ID index. Rebuild changes only the active prefix once storage
 // is warm and never reorders the authoritative lot vector, preserving reduction
 // and execution arithmetic order.
@@ -753,15 +844,119 @@ private:
                      std::to_string(position.uid));
     }
   }
+
+  ATX_TRY_VOID(validate_swap_lot_economics(checkpoint.portfolio.swap_lots, "checkpoint swap book",
+                                           checkpoint.base_ts_ns));
+  std::unordered_set<std::uint64_t> swap_ids;
+  swap_ids.reserve(checkpoint.portfolio.swap_lots.size());
+  for (const SwapLot &lot : checkpoint.portfolio.swap_lots) {
+    if (lot.id == 0u || lot.id >= checkpoint.next_lot_id || lot_ids.count(lot.id) != 0u) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest_incremental: checkpoint swap lot id=" + std::to_string(lot.id) +
+                     " has an invalid identity");
+    }
+    if (!swap_ids.insert(lot.id).second) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest_incremental: duplicate checkpoint swap lot id=" +
+                     std::to_string(lot.id));
+    }
+  }
+  // Accrual state is only meaningful against a live lot: an orphaned entry would
+  // silently resurrect a settled contract's fixing series onto a reused id.
+  std::unordered_set<std::uint64_t> accrual_ids;
+  accrual_ids.reserve(checkpoint.swap_accruals.size());
+  for (const SwapAccrual &accrual : checkpoint.swap_accruals) {
+    if (swap_ids.count(accrual.lot_id) == 0u || !accrual_ids.insert(accrual.lot_id).second) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest_incremental: checkpoint swap accrual lot_id=" +
+                     std::to_string(accrual.lot_id) + " is orphaned or duplicated");
+    }
+    if (accrual.rv.n_obs_done > accrual.rv.n_obs_total || !(accrual.rv.annualization > 0.0) ||
+        !std::isfinite(accrual.rv.sum_sq_log_returns_done) ||
+        !std::isfinite(accrual.rv.rv_done_dec) || !std::isfinite(accrual.prev_spot) ||
+        !std::isfinite(accrual.prev_pv) || (accrual.have_prev && !(accrual.prev_spot > 0.0))) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest_incremental: checkpoint swap accrual lot_id=" +
+                     std::to_string(accrual.lot_id) + " has invalid state");
+    }
+  }
   return Ok();
 }
 
-[[nodiscard]] Status validate_strategy_transition(std::span<const Lot> before,
-                                                  std::span<const Lot> after,
-                                                  std::uint64_t next_id_before,
-                                                  std::uint64_t next_id_after, std::int64_t base_ts,
-                                                  ReusableLotIdIndex &before_index,
-                                                  ReusableLotIdIndex &after_index) {
+// The swap lane's half of the transition check. Same three rules as the option
+// lane — surviving lots bit-identical, new ids inside the step's watermark
+// window, no duplicate ids — plus a cross-lane id check against the (already
+// rebuilt) option index, because both lanes draw from ONE `next_lot_id`.
+//
+// Linear scans rather than a sorted index: a swap book is tens of lots next to
+// the option book's thousands, and every loop here is bounded by `after.size()`.
+[[nodiscard]] Status validate_swap_transition(std::span<const SwapLot> before,
+                                              std::span<const SwapLot> after,
+                                              std::uint64_t next_id_before,
+                                              std::uint64_t next_id_after, std::int64_t base_ts,
+                                              std::span<const Lot> after_option_lots,
+                                              const ReusableLotIdIndex &after_option_index) {
+  ATX_TRY_VOID(validate_swap_lot_economics(after, "post-strategy swap book", base_ts));
+  // NO EARLY CLOSE IN v1. Settled lots left the book in the swap pass, BEFORE
+  // `before_swaps` was captured, so any lot missing from `after` was erased by
+  // the strategy. Letting that through fabricates NAV: the lot's accumulated
+  // `prev_pv` stays in the running total with nothing to offset it, its accrual
+  // is orphaned (which then makes the checkpoint unresumable), and `swap_pv`
+  // drops by a mark that never settled — silent drift the reconciliation would
+  // only surface as an unexplained level shift.
+  for (const SwapLot &prior : before) {
+    bool survives = false;
+    for (const SwapLot &lot : after) {
+      if (lot.id == prior.id) {
+        survives = true;
+        break;
+      }
+    }
+    if (!survives) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest: swap lot id=" + std::to_string(prior.id) +
+                     " erased by strategy; early close unsupported in v1 (swaps are held to "
+                     "expiry)");
+    }
+  }
+  for (std::size_t i = 0; i < after.size(); ++i) {
+    const SwapLot &lot = after[i];
+    for (std::size_t j = 0; j < i; ++j) {
+      if (after[j].id == lot.id) {
+        return Err(ErrorCode::InvalidArgument,
+                   "run_backtest: duplicate swap lot id=" + std::to_string(lot.id));
+      }
+    }
+    if (after_option_index.find(after_option_lots, lot.id).has_value()) {
+      return Err(ErrorCode::InvalidArgument, "run_backtest: swap lot id=" + std::to_string(lot.id) +
+                                                 " collides with an option lot");
+    }
+    const SwapLot *prior = nullptr;
+    for (const SwapLot &candidate : before) {
+      if (candidate.id == lot.id) {
+        prior = &candidate;
+        break;
+      }
+    }
+    if (prior != nullptr) {
+      if (!same_swap_lot_identity(*prior, lot)) {
+        return Err(ErrorCode::InvalidArgument,
+                   "run_backtest: mutated surviving swap lot id=" + std::to_string(lot.id));
+      }
+      continue;
+    }
+    if (lot.id < next_id_before || lot.id >= next_id_after) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest: reused or non-monotonic swap lot id=" + std::to_string(lot.id));
+    }
+  }
+  return Ok();
+}
+
+[[nodiscard]] Status validate_strategy_transition(
+    std::span<const Lot> before, std::span<const Lot> after, std::span<const SwapLot> before_swaps,
+    std::span<const SwapLot> after_swaps, std::uint64_t next_id_before, std::uint64_t next_id_after,
+    std::int64_t base_ts, ReusableLotIdIndex &before_index, ReusableLotIdIndex &after_index) {
   ATX_TRY_VOID(validate_lot_economics(after, "post-strategy book", base_ts));
   ATX_TRY_VOID(before_index.rebuild(before, "pre-strategy book"));
   ATX_TRY_VOID(after_index.rebuild(after, "post-strategy book"));
@@ -782,7 +977,155 @@ private:
                  "run_backtest: reused or non-monotonic lot id=" + std::to_string(lot.id));
     }
   }
+  return validate_swap_transition(before_swaps, after_swaps, next_id_before, next_id_after, base_ts,
+                                  after, after_index);
+}
+
+// ── Swap lane: accrual + mark + settlement ─────────────────────────────────
+
+// One step's swap-lane economics, in QTY-SCALED position dollars.
+struct SwapStepResult {
+  double swap_pnl{0.0};        // Σ (mark - prev mark) over live lots + settlements
+  double swap_pv{0.0};         // Σ live marks AFTER the pass (a state quantity)
+  double settlement_cash{0.0}; // Σ settled payoffs, to be added to the ledger
+};
+
+// The accrual for `lot`, seeded from the lot's contract terms on first sight.
+// First-sight order is `swap_lots` order, which the engine never reorders.
+[[nodiscard]] SwapAccrual &accrual_for(std::vector<SwapAccrual> &accruals, const SwapLot &lot) {
+  for (SwapAccrual &acc : accruals) {
+    if (acc.lot_id == lot.id) {
+      return acc;
+    }
+  }
+  SwapAccrual fresh;
+  fresh.lot_id = lot.id;
+  fresh.rv.annualization = lot.annualization;
+  fresh.rv.n_obs_total = lot.n_obs_total;
+  accruals.push_back(fresh);
+  return accruals.back();
+}
+
+// Take one dated fixing into `acc`. Ordering is validated FIRST and
+// unconditionally (a replayed or backdated snapshot mutates nothing); a fully
+// observed contract stops accruing AND stops advancing `prev_*`. See SwapAccrual
+// in backtest.hpp for why this transcribes RealizedTracker rather than using it.
+[[nodiscard]] Status observe_swap_fixing(SwapAccrual &acc, std::int64_t ts_ns, double spot) {
+  if (acc.have_prev && ts_ns <= acc.prev_ts_ns) {
+    return Err(ErrorCode::AlreadyExists,
+               "run_backtest: duplicate/backdated swap fixing for lot id=" +
+                   std::to_string(acc.lot_id) + " at ts=" + std::to_string(ts_ns));
+  }
+  if (!(spot > 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: swap fixing spot must be > 0 for lot id=" +
+                   std::to_string(acc.lot_id));
+  }
+  if (!acc.have_prev) {
+    acc.prev_spot = spot;
+    acc.prev_ts_ns = ts_ns;
+    acc.have_prev = true;
+    return Ok();
+  }
+  if (acc.rv.n_obs_done >= acc.rv.n_obs_total) {
+    return Ok(); // fully observed: the contract's fixing series is closed
+  }
+  const double r = std::log(spot / acc.prev_spot);
+  acc.rv.sum_sq_log_returns_done += r * r;
+  acc.rv.n_obs_done += 1u;
+  acc.prev_spot = spot;
+  acc.prev_ts_ns = ts_ns;
+  acc.rv.rv_done_dec = acc.rv.annualization * acc.rv.sum_sq_log_returns_done /
+                       static_cast<double>(acc.rv.n_obs_done);
   return Ok();
+}
+
+// The settled terminal rate: annualized realized VARIANCE for the var kinds, its
+// square root for the vol kinds, each capped where the product caps. Read purely
+// off the accrual — settlement needs no surface.
+[[nodiscard]] double swap_terminal_value(const SwapLot &lot, const SwapAccrual &acc) noexcept {
+  const double terminal =
+      is_vol_kind(lot.kind) ? std::sqrt(acc.rv.rv_done_dec) : acc.rv.rv_done_dec;
+  return is_capped_kind(lot.kind) ? std::min(terminal, lot.cap_dec) : terminal;
+}
+
+// Fix, mark and settle every swap lot against the newly loaded `shifted`
+// snapshot, in book order. Settled lots (and their accruals) are erased.
+//
+// Per lot, in order: resolve the surface (absent + UNEXPIRED => fail closed,
+// same policy as an unpriced hedge share); take today's fixing when a surface
+// is there; then EITHER settle (expiry observed exactly — an expiring lot
+// settles, it does not mark) OR mark through `deriv_price` at the residual
+// tenor. Crossing an expiry without an exact observation is NotFound, exactly as
+// it is for an option lot.
+[[nodiscard]] Result<SwapStepResult> step_swap_lots(const MarketSnapshot &shifted,
+                                                    PortfolioState &book,
+                                                    std::vector<SwapAccrual> &accruals,
+                                                    const DerivConfig &deriv_cfg) {
+  SwapStepResult out;
+  if (book.swap_lots.empty()) {
+    return Ok(out); // zero-swap books never price, allocate, or touch NAV
+  }
+  const std::int64_t ts = shifted.ts_ns();
+  for (std::size_t i = 0; i < book.swap_lots.size();) {
+    const SwapLot &lot = book.swap_lots[i];
+    const bool expiring = lot.expiry_ts_ns <= ts;
+    if (expiring && lot.expiry_ts_ns != ts) {
+      return Err(ErrorCode::NotFound, "run_backtest: swap lot id=" + std::to_string(lot.id) +
+                                          " expired without an exact observation (expiry=" +
+                                          std::to_string(lot.expiry_ts_ns) +
+                                          ", snapshot=" + std::to_string(ts) + ")");
+    }
+    // FAIL CLOSED ON BOTH SIDES OF EXPIRY. A held lot needs the surface to mark;
+    // a SETTLING lot needs it just as much, because the expiry close IS that
+    // contract's final fixing — settling without it would divide a short Sigma r^2
+    // by a denominator one observation light and call the answer terminal. The
+    // option lane refuses a settling lot with no surface for the same reason
+    // ("no surface for settling lot", compute_step); this mirrors it.
+    const SurfaceRef surface = shifted.find(lot.uid);
+    if (surface == nullptr) {
+      return Err(ErrorCode::NotFound,
+                 std::string("run_backtest: no surface for ") + (expiring ? "settling" : "held") +
+                     " swap lot id=" + std::to_string(lot.id) + " uid=" + std::to_string(lot.uid));
+    }
+    SwapAccrual &acc = accrual_for(accruals, lot);
+    ATX_TRY_VOID(observe_swap_fixing(acc, ts, surface->pricing().S));
+    if (expiring) {
+      // `rv_done_dec` is the Sigma r^2 / n_done estimator, so a SHORT fixing
+      // series still settles on the returns actually observed — but a series
+      // with NO returns at all is not an estimate, it is a fabricated 0.0 that
+      // would pay away the whole strike. A lot needs N+1 steps to accrue N
+      // returns (the first step it is seen seeds the series); refuse the
+      // degenerate case loudly instead of settling it.
+      if (acc.rv.n_obs_done == 0u) {
+        return Err(ErrorCode::NotFound,
+                   "run_backtest: swap lot id=" + std::to_string(lot.id) +
+                       " reached expiry with no observed return (a lot needs one step to seed "
+                       "its fixing series and one more per accrued return)");
+      }
+      const double payoff =
+          lot.qty * lot.notional * (swap_terminal_value(lot, acc) - lot.strike_dec);
+      out.settlement_cash += payoff;
+      out.swap_pnl += payoff - acc.prev_pv;
+      std::erase_if(accruals, [id = lot.id](const SwapAccrual &a) { return a.lot_id == id; });
+      book.swap_lots.erase(book.swap_lots.begin() + static_cast<std::ptrdiff_t>(i));
+      continue; // `i` now indexes the next lot
+    }
+    DerivContract contract;
+    contract.kind = lot.kind;
+    contract.maturity_t = residual_T(lot.expiry_ts_ns, ts);
+    contract.strike_dec = lot.strike_dec;
+    contract.cap_dec = lot.cap_dec;
+    contract.notional = lot.notional;
+    contract.rv_spec = acc.rv;
+    ATX_TRY(const DerivQuote quote, detail::deriv_price_on_ref(surface, contract, deriv_cfg));
+    const double pv_scaled = lot.qty * quote.pv;
+    out.swap_pnl += pv_scaled - acc.prev_pv;
+    out.swap_pv += pv_scaled;
+    acc.prev_pv = pv_scaled;
+    ++i;
+  }
+  return Ok(out);
 }
 
 // Book greeks + the count of positions the pricer could not value on THIS
@@ -1855,6 +2198,14 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
                "run_backtest: RunConfig::step_observer requires the strategy overload (the "
                "fixed-book run has no on_step)");
   }
+  // Fail closed rather than silently ignore: the swap lane settles into a cash
+  // ledger this overload does not have (its `cash` column is 0.0 by
+  // construction), so a swap lot here has nowhere honest to pay out.
+  if (!initial.swap_lots.empty()) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: PortfolioState::swap_lots requires the strategy overload (the "
+               "fixed-book run has no cash ledger to settle a swap into)");
+  }
   ATX_TRY_VOID(validate_lot_economics(initial.lots, "initial fixed book"));
   const std::span<const SnapshotRef> refs = clock.refs();
   if (refs.empty()) {
@@ -1903,6 +2254,10 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     out.gross_theta.push_back(g.theta);
     out.turnover_notional.push_back(0.0);
     out.turnover_vega.push_back(0.0);
+    // The swap lane is strategy-only (a non-empty swap_lots is rejected above),
+    // so these stay row-parallel and exactly zero.
+    out.swap_pv.push_back(0.0);
+    out.swap_pnl.push_back(0.0);
     out.n_open_lots.push_back(static_cast<double>(n_lots));
     out.n_unpriced_lots.push_back(n_unpriced);
     out.n_unpriced_greeks.push_back(n_unpriced_greeks);
@@ -2131,6 +2486,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   ReusableLotIdIndex before_lot_index;
   ReusableLotIdIndex after_lot_index;
   std::vector<Lot> before_lots;
+  std::vector<SwapLot> before_swap_lots;
 
   // ── Engine-internal cash + per-uid share ledger (B2/B3) ────────────────────
   double cash = resume != nullptr ? resume->cash : cfg.financing.initial_cash;
@@ -2142,6 +2498,12 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       hedge_ledger.add(position.uid, position.shares);
     }
   }
+  // Swap-lane fixing/accrual state, one entry per seeded swap lot. Restored
+  // verbatim on a resume so the first resumed mark reads the same running
+  // variance and the same prior mark the uninterrupted run would have.
+  std::vector<SwapAccrual> swap_accruals =
+      resume != nullptr ? resume->swap_accruals : std::vector<SwapAccrual>{};
+  const DerivConfig swap_price_cfg{}; // v1: the default deriv pricing config
 
   // Per-share execution half-spread under the friction model: the selected
   // `spread_kind` lane (0 when None) PLUS the C-4 impact lane. The two are
@@ -2164,42 +2526,44 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     return spread + mark * cfg.frictions.impact_fraction;
   };
 
-  const auto push_row = [&out](const std::string &date, std::int64_t ts, double p_total,
-                               double p_delta, double p_gamma, double p_vega, double p_vanna,
-                               double p_volga, double p_theta, double p_rho, double p_charm,
-                               double p_unexpl, double p_settle, double p_shares, double p_fin,
-                               double p_cost, double nav_v, double cash_v, double g_delta,
-                               const PriceTotals &g, double turn_notl, double turn_vega,
-                               std::size_t n_lots, double n_unpriced, double n_unpriced_greeks) {
-    out.date.push_back(date);
-    out.ts_ns.push_back(ts);
-    out.pnl_total.push_back(p_total);
-    out.pnl_delta.push_back(p_delta);
-    out.pnl_gamma.push_back(p_gamma);
-    out.pnl_vega.push_back(p_vega);
-    out.pnl_vanna.push_back(p_vanna);
-    out.pnl_volga.push_back(p_volga);
-    out.pnl_theta.push_back(p_theta);
-    out.pnl_rho.push_back(p_rho);
-    out.pnl_charm.push_back(p_charm);
-    out.pnl_unexplained.push_back(p_unexpl);
-    out.pnl_settlement.push_back(p_settle);
-    out.pnl_shares.push_back(p_shares);
-    out.financing.push_back(p_fin);
-    out.cost.push_back(p_cost);
-    out.nav.push_back(nav_v);
-    out.cash.push_back(cash_v);
-    out.gross_delta.push_back(g_delta); // NET book delta = option delta + hedge shares
-    out.gross_gamma.push_back(g.gamma);
-    out.gross_vega.push_back(g.vega);         // NET (signed); see backtest.hpp
-    out.gross_vega_abs.push_back(g.abs_vega); // C-3: the genuinely GROSS series
-    out.gross_theta.push_back(g.theta);
-    out.turnover_notional.push_back(turn_notl);
-    out.turnover_vega.push_back(turn_vega);
-    out.n_open_lots.push_back(static_cast<double>(n_lots));
-    out.n_unpriced_lots.push_back(n_unpriced);
-    out.n_unpriced_greeks.push_back(n_unpriced_greeks);
-  };
+  const auto push_row =
+      [&out](const std::string &date, std::int64_t ts, double p_total, double p_delta,
+             double p_gamma, double p_vega, double p_vanna, double p_volga, double p_theta,
+             double p_rho, double p_charm, double p_unexpl, double p_settle, double p_shares,
+             double p_fin, double p_cost, double nav_v, double cash_v, double g_delta,
+             const PriceTotals &g, double turn_notl, double turn_vega, double swap_pv_v,
+             double swap_pnl_v, std::size_t n_lots, double n_unpriced, double n_unpriced_greeks) {
+        out.date.push_back(date);
+        out.ts_ns.push_back(ts);
+        out.pnl_total.push_back(p_total);
+        out.pnl_delta.push_back(p_delta);
+        out.pnl_gamma.push_back(p_gamma);
+        out.pnl_vega.push_back(p_vega);
+        out.pnl_vanna.push_back(p_vanna);
+        out.pnl_volga.push_back(p_volga);
+        out.pnl_theta.push_back(p_theta);
+        out.pnl_rho.push_back(p_rho);
+        out.pnl_charm.push_back(p_charm);
+        out.pnl_unexplained.push_back(p_unexpl);
+        out.pnl_settlement.push_back(p_settle);
+        out.pnl_shares.push_back(p_shares);
+        out.financing.push_back(p_fin);
+        out.cost.push_back(p_cost);
+        out.nav.push_back(nav_v);
+        out.cash.push_back(cash_v);
+        out.gross_delta.push_back(g_delta); // NET book delta = option delta + hedge shares
+        out.gross_gamma.push_back(g.gamma);
+        out.gross_vega.push_back(g.vega);         // NET (signed); see backtest.hpp
+        out.gross_vega_abs.push_back(g.abs_vega); // C-3: the genuinely GROSS series
+        out.gross_theta.push_back(g.theta);
+        out.turnover_notional.push_back(turn_notl);
+        out.turnover_vega.push_back(turn_vega);
+        out.swap_pv.push_back(swap_pv_v);   // STATE: live swap marks at this row
+        out.swap_pnl.push_back(swap_pnl_v); // FLOW: block-summed like every other
+        out.n_open_lots.push_back(static_cast<double>(n_lots));
+        out.n_unpriced_lots.push_back(n_unpriced);
+        out.n_unpriced_greeks.push_back(n_unpriced_greeks);
+      };
 
   // ── F1(d) NAV-vs-liquidation reconciliation (RunConfig::reconcile_nav) ──────
   //
@@ -2218,6 +2582,10 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   // position that went unmarked, a settlement whose surface vanished, or a fill
   // priced away from the mark the book is carried at.
   double financing_noncash_total = resume != nullptr ? resume->cumulative_noncash_financing : 0.0;
+  // Σ of the LIVE swap lots' qty-scaled marks after the most recent swap pass —
+  // this row's `swap_pv` column, and the swap lane's liquidation term. Exactly
+  // 0.0 (and therefore liquidation-neutral) for a book with no swap lots.
+  double swap_pv_state = 0.0;
   const auto liquidation_value = [&](const MarketSnapshot &snap,
                                      const PriceTotals &book_totals) -> double {
     double shares_mtm = 0.0;
@@ -2228,7 +2596,10 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       }
       shares_mtm += n * s->pricing().S;
     }
-    return (cash - cfg.financing.initial_cash) + book_totals.pv + shares_mtm +
+    // A swap mark enters NAV as (mark - prev mark) and its settlement as
+    // (payoff - prev mark) with `payoff` also paid into cash, so carrying the
+    // live marks here closes the identity on both events.
+    return (cash - cfg.financing.initial_cash) + book_totals.pv + shares_mtm + swap_pv_state +
            financing_noncash_total;
   };
   const auto reconcile_row = [&](const std::string &date, double nav_v,
@@ -2520,8 +2891,9 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       ATX_TRY_VOID(cfg.step_observer(StepEvent{0, refs[0], *base, strat}));
     }
     before_lots.clear(); // empty => every opened lot is a fresh entry
-    ATX_TRY_VOID(validate_strategy_transition(before_lots, book.lots, next_id_before, next_id,
-                                              base->ts_ns(), before_lot_index, after_lot_index));
+    ATX_TRY_VOID(validate_strategy_transition(before_lots, book.lots, {}, book.swap_lots,
+                                              next_id_before, next_id, base->ts_ns(),
+                                              before_lot_index, after_lot_index));
     const HedgeSpec hedge_spec = strat.hedge_spec();
     ATX_TRY_VOID(validate_hedge_spec(hedge_spec));
     auto ex = execute(*base, before_lots, hedge_spec, nullptr);
@@ -2547,9 +2919,12 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     // deducted their friction from cash; stamp the same loss into row-0 PnL/NAV
     // so total return and attribution include every paid dollar.
     nav = -ex->cost;
+    // Swap columns are 0.0 at inception: the swap pass lives in the step loop,
+    // so a lot opened here has neither seeded a fixing nor taken a mark yet
+    // (entry economics v1 — a swap opens at zero cost).
     push_row(refs[0].date, base->ts_ns(), nav, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
              0.0, 0.0, ex->cost, nav, cash, g_delta, g->total, ex->turnover_notional,
-             ex->turnover_vega, book.lots.size(), static_cast<double>(ex->n_unpriced_hedges),
+             ex->turnover_vega, 0.0, 0.0, book.lots.size(), static_cast<double>(ex->n_unpriced_hedges),
              static_cast<double>(g->n_unpriced));
     ATX_TRY_VOID(reconcile_row(refs[0].date, nav, g->total, *base));
     record_signals(*base);
@@ -2562,7 +2937,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   double b_total = 0.0, b_delta = 0.0, b_gamma = 0.0, b_vega = 0.0, b_vanna = 0.0, b_volga = 0.0;
   double b_theta = 0.0, b_rho = 0.0, b_charm = 0.0, b_unexpl = 0.0, b_settle = 0.0;
   double b_shares = 0.0, b_fin = 0.0, b_cost = 0.0, b_turn_notl = 0.0, b_turn_vega = 0.0;
-  double b_nunpriced = 0.0;
+  double b_nunpriced = 0.0, b_swap_pnl = 0.0;
 
   // Deferred expiry settlements (ExcludeAndReport only); see the fixed-book loop.
   DeferredSettlementBook deferrals;
@@ -2685,6 +3060,15 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       }
     }
 
+    // 2b. Swap lane: fixings, marks and settlements against the shifted date.
+    //     Runs BEFORE the move-swap while `shifted` is still named, and is a
+    //     no-op — no pricing, no allocation, exactly 0.0 into every column — on
+    //     a book with no swap lots.
+    ATX_TRY(const SwapStepResult swap_step,
+            step_swap_lots(*shifted, book, swap_accruals, swap_price_cfg));
+    cash += swap_step.settlement_cash; // settled payoffs hit the ledger
+    swap_pv_state = swap_step.swap_pv; // live marks after this pass
+
     // 3. Adopt shifted as the next base; settle expiries into cash; drop them.
     base = std::move(shifted);
     for (const Lot &lot : book.lots) {
@@ -2714,6 +3098,9 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
 
     // 4-5. Strategy entries/rolls + hedge overlay on the new base.
     before_lots.assign(book.lots.begin(), book.lots.end()); // survivors before on_step
+    // Swap survivors likewise: settled lots left the book in the swap pass, so
+    // anything still here must come back from on_step bit-identical.
+    before_swap_lots.assign(book.swap_lots.begin(), book.swap_lots.end());
     const std::uint64_t next_id_before = next_id;
     Status st = [&]() {
       ATX_VOL_PROFILE_SCOPE(StrategyStep);
@@ -2728,7 +3115,8 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     if (cfg.step_observer) {
       ATX_TRY_VOID(cfg.step_observer(StepEvent{global_step_index, refs[i], *base, strat}));
     }
-    ATX_TRY_VOID(validate_strategy_transition(before_lots, book.lots, next_id_before, next_id,
+    ATX_TRY_VOID(validate_strategy_transition(before_lots, book.lots, before_swap_lots,
+                                              book.swap_lots, next_id_before, next_id,
                                               base->ts_ns(), before_lot_index, after_lot_index));
     const HedgeSpec hedge_spec = strat.hedge_spec();
     ATX_TRY_VOID(validate_hedge_spec(hedge_spec));
@@ -2742,6 +3130,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     double step_total = t.pnl_total;
     step_total += settlement;
     step_total += shares_pnl;
+    step_total += swap_step.swap_pnl; // exactly 0.0 without a swap lane
     step_total += financing;
     step_total -= ex->cost;
     nav += step_total;
@@ -2760,6 +3149,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     b_unexpl += t.pnl_unexplained;
     b_settle += settlement;
     b_shares += shares_pnl;
+    b_swap_pnl += swap_step.swap_pnl;
     b_fin += financing;
     b_cost += ex->cost;
     b_turn_notl += ex->turnover_notional;
@@ -2794,13 +3184,15 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       // loop's note on why they cannot live in `book.lots`.
       push_row(refs[i].date, base->ts_ns(), b_total, b_delta, b_gamma, b_vega, b_vanna, b_volga,
                b_theta, b_rho, b_charm, b_unexpl, b_settle, b_shares, b_fin, b_cost, nav, cash,
-               g_delta, g->total, b_turn_notl, b_turn_vega, book.lots.size() + deferrals.size(),
-               b_nunpriced, static_cast<double>(g->n_unpriced));
+               g_delta, g->total, b_turn_notl, b_turn_vega, swap_pv_state, b_swap_pnl,
+               book.lots.size() + deferrals.size(), b_nunpriced,
+               static_cast<double>(g->n_unpriced));
       ATX_TRY_VOID(reconcile_row(refs[i].date, nav, g->total, *base));
       record_signals(*base);
       b_total = b_delta = b_gamma = b_vega = b_vanna = b_volga = 0.0;
       b_theta = b_rho = b_charm = b_unexpl = b_settle = 0.0;
       b_shares = b_fin = b_cost = b_turn_notl = b_turn_vega = b_nunpriced = 0.0;
+      b_swap_pnl = 0.0;
     }
   }
 
@@ -2825,6 +3217,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     for (const auto &[uid, shares] : hedge_ledger.entries()) {
       checkpoint.hedge_shares.push_back(HedgeSharePosition{uid, shares});
     }
+    checkpoint.swap_accruals = std::move(swap_accruals);
     checkpoint.cash = cash;
     checkpoint.nav = nav;
     checkpoint.cumulative_noncash_financing = financing_noncash_total;

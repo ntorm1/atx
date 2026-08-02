@@ -5,6 +5,54 @@ that silently changes a NUMBER a caller already depends on belongs in this file.
 
 ## Unreleased
 
+### NEW — vol-derivatives production surface: capped/mid-life swaps, greeks, dated fixings, DerivBook (derivatives-production sprint, Tasks 1-10)
+
+**What shipped.** `derivatives.hpp` gains two capped product kinds
+(`DerivKind::CappedVarSwap`, `CappedVolSwap`) plus a mid-life dispatch for
+`VolSwap` contracts with `0 < n_done < n_total` (previously priced only at the
+two exact-aged endpoints, inception and full accrual). All three price their
+model leg against a lognormal distribution for the future realized-variance
+leg (Gauss-Hermite / split-domain Gauss-Legendre quadrature,
+`detail/rv_lognormal.hpp`): closed-form for the capped variance swap, kinked
+split-domain quadrature for the capped vol swap, plain Gauss-Hermite for the
+smooth mid-life sqrt payoff. A new `DerivConfig::vol_of_vol` knob (0 =
+auto-calibrate so the lognormal's `E[sqrt(W)]` reproduces the surface's own
+Carr-Lee `K_vol`) drives all three. `deriv_greeks` differentiates every
+product kind via sticky-strike finite differences, with the center's resolved
+strip grid and any auto-calibrated vol-of-vol pinned into every bump so a
+bumped evaluation cannot land on a different quadrature scheme than the
+center. `RealizedTracker::observe_dated` adds a strictly-ascending-timestamp
+fixing entry point for daily-fixing drivers. New `deriv_book.hpp` prices a
+book of swap positions against a `SurfaceSet` (additive companion to
+`portfolio_pricer.hpp`'s option book, combined via `combine_totals`), and
+`backtest.hpp`'s strategy-aware engine gains an additive variance/vol-swap
+lane (`PortfolioState::swap_lots`, held to expiry, no early close in v1).
+
+**Effect on existing callers.** Additive only. Every new type/field defaults
+to the prior behavior: `DerivKind::VarSwap`/`VolSwap` dispatch is unchanged,
+`DerivConfig::vol_of_vol = 0.0` auto-calibrates but that resolver is reachable
+only from the new capped/mid-life dispatch paths, and
+`PortfolioState::swap_lots` defaults empty (an empty-swap-lots book prices,
+accrues and settles exactly as it did before this lane existed). One field's
+OBSERVABLE SENTINEL does change: `DerivQuote::integration_error_est` was
+unconditionally `NaN` (documented as "this port does not yet run the
+Richardson half-step refinement"); `var_swap_fair_strike` now populates it
+with a real Richardson half-grid estimate (`|I_h - I_2h|/15`) whenever the
+resolved strip node count is `4m+1` — every quality-tier default and the E2
+adaptive-wing rescale land there. A caller gating on `(x == x)` to mean "not
+estimated" now sees a real number on those grids; a caller-pinned
+`strip_nodes` that isn't `4m+1` still leaves it `NaN`, unchanged.
+
+**Not shipped.** The RV distribution-affine / Monte-Carlo QE pricing engines
+and the discrete-monitoring full-Monte-Carlo correction remain reserved and
+actively return `NotImplemented`. CBOE variance-future marking
+(`DerivMarkingConvention::CboeVarianceFuture`) is declared but unenforced — no
+pricing path reads `DerivContract::marking` yet. `BacktestDb` refuses (rather
+than silently drops) a run, checkpoint, or append that actually carries swap
+data — its checkpoint and series schema predate the swap lane; schema support
+is a deferred follow-on. Swap-lot entry is frictionless (zero cost, no
+spread/impact) in v1, and `DerivBook` prices its positions single-threaded.
+
 ### BREAKING — `DispersionConfig::target_vega` is now dollars per VOL POINT (E1 / AN-P1-1)
 
 **What changed.** `build_dispersion_book` (the projected / surface dispersion

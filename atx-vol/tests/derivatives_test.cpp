@@ -248,6 +248,23 @@ TEST(VarStrip, PricedSurfaceOverloadRefusesTenorsOutsideTheFittedPillars) {
   EXPECT_TRUE(atx::vol::var_swap_fair_strike(ps, ctx.back().T).has_value());
 }
 
+// Richardson half-grid estimate: |I_h - I_2h|/15. Finite and small on a smooth
+// flat-vol integrand at every tier whose node count is 4m+1; and the estimate
+// must bound the actual flat-vol truth error at Standard.
+TEST(VarStrip, IntegrationErrorEstimate_FiniteAndBoundsFlatVolError) {
+  const double sigma = 0.20;
+  const EssviSurface surf = make_flat_surface(sigma, 0.01, 1.00);
+  const CurveSet cs = make_flat_curves(100.0, 0.01, 1.00);
+  DerivConfig cfg = deriv_default_config();
+  cfg.quality = DerivQuality::Standard;  // 257 = 4*64+1 nodes
+  const auto q = var_swap_fair_strike(surf, cs, 0.10, cfg);
+  ASSERT_TRUE(q.has_value());
+  ASSERT_TRUE(std::isfinite(q->integration_error_est)) << "estimate not populated";
+  EXPECT_GE(q->integration_error_est, 0.0);
+  // Estimate is in K_var units and should be tiny on a flat surface.
+  EXPECT_LT(q->integration_error_est, 1.0e-6);
+}
+
 // ── Aged dispatch (test_vol_deriv_aged.c) ────────────────────────────────
 
 // Mid-life variance swap with rv_done == K_var_future: the linear blend must
@@ -496,6 +513,42 @@ TEST(RealizedTracker, Observe_RejectsNonPositiveSpot) {
   EXPECT_FALSE(t.observe(-1.0).has_value());
 }
 
+TEST(RealizedTracker, ObserveDated_RefusesReplayAndBackdate) {
+  auto built = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(built.has_value());
+  RealizedTracker t = std::move(*built);
+  EXPECT_TRUE(t.observe_dated(1000, 100.0).has_value());
+  EXPECT_TRUE(t.observe_dated(2000, 101.0).has_value());
+  const auto after_two = t.snapshot();
+  EXPECT_EQ(after_two.n_obs_done, 1u);
+  // exact replay: refused, state untouched
+  EXPECT_FALSE(t.observe_dated(2000, 101.0).has_value());
+  // backdate: refused
+  EXPECT_FALSE(t.observe_dated(1500, 99.0).has_value());
+  const auto still = t.snapshot();
+  EXPECT_EQ(still.n_obs_done, after_two.n_obs_done);
+  EXPECT_EQ(t.last_fixing_ts_ns(), 2000);
+  // forward continues fine
+  EXPECT_TRUE(t.observe_dated(3000, 102.0).has_value());
+  EXPECT_EQ(t.snapshot().n_obs_done, 2u);
+}
+
+TEST(RealizedTracker, ObserveDated_MatchesUndatedArithmetic) {
+  auto a = RealizedTracker::create(252.0, 10u);
+  auto b = RealizedTracker::create(252.0, 10u);
+  ASSERT_TRUE(a.has_value());
+  ASSERT_TRUE(b.has_value());
+  const double spots[] = {100.0, 101.0, 99.0, 102.0};
+  ASSERT_TRUE(a->observe_batch(spots).has_value());
+  std::int64_t ts = 1;
+  for (const double s : spots) {
+    ASSERT_TRUE(b->observe_dated(ts++, s).has_value());
+  }
+  EXPECT_EQ(a->snapshot().n_obs_done, b->snapshot().n_obs_done);
+  EXPECT_DOUBLE_EQ(a->snapshot().sum_sq_log_returns_done,
+                   b->snapshot().sum_sq_log_returns_done);
+}
+
 // ── Reserved-field validation (test_deriv_reserved_validation.c) ─────────
 
 TEST(ReservedValidation, VarStrip_ZeroReserved_Succeeds) {
@@ -543,7 +596,7 @@ TEST(ReservedValidation, DerivPrice_NonzeroFlagsRequest_ReturnsNotImplemented) {
   EXPECT_EQ(q.error().code(), ErrorCode::NotImplemented);
 }
 
-TEST(ReservedValidation, DerivPrice_NonzeroCapDecOnVarSwap_ReturnsNotImplemented) {
+TEST(ReservedValidation, DerivPrice_NonzeroCapDecOnVarSwap_ReturnsInvalidArgument) {
   const EssviSurface surf = make_flat_surface(0.20, 0.10, 0.50);
   const CurveSet cs = make_flat_curves(100.0, 0.10, 0.50);
   const DerivConfig cfg = deriv_default_config();
@@ -553,11 +606,11 @@ TEST(ReservedValidation, DerivPrice_NonzeroCapDecOnVarSwap_ReturnsNotImplemented
   c.maturity_t = 0.30;
   c.strike_dec = 0.04;
   c.notional = 1.0;
-  c.cap_dec = 0.10;  // reserved
+  c.cap_dec = 0.10;  // cap_dec is capped-kinds-only; VarSwap must reject it
 
   const auto q = deriv_price(surf, cs, c, cfg);
   ASSERT_FALSE(q.has_value());
-  EXPECT_EQ(q.error().code(), ErrorCode::NotImplemented);
+  EXPECT_EQ(q.error().code(), ErrorCode::InvalidArgument);
 }
 
 }  // namespace

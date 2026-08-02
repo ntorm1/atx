@@ -23,6 +23,8 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/curve.cpp
     src/universe.cpp
     src/derivatives.cpp
+    src/deriv_book.cpp
+    src/detail/rv_lognormal.cpp
     src/vol_surface.cpp
     src/al_probe.cpp
     src/american.cpp

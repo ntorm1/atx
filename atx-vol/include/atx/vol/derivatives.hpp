@@ -10,13 +10,27 @@
 // (atx/vol/surface.hpp), the curve set (atx/vol/curve.hpp), and the Black-76
 // kernel (atx/vol/black76.hpp).
 //
-// What this port ships (matching the C's v22 first cut):
+// What this port ships (well past the C's v22 first cut -- the production
+// sprint below added the distribution engine, greeks, dated fixings and the
+// Richardson error estimate on top of it):
 //   - Realized-variance tracker (RealizedTracker): a scalar state machine that
 //     ingests spots and maintains the running Sigma r_i^2 and annualized
 //     decimal variance for daily mark-to-market on aged swaps.
+//   - Dated, idempotent fixings (RealizedTracker::observe_dated, Task 8): a
+//     timestamped observe for the backtest engine's daily-fixing driver.
+//     Enforces STRICTLY ASCENDING fixing timestamps -- a stale or replayed
+//     ts_ns returns AlreadyExists and mutates nothing, including
+//     last_fixing_ts_ns() -- so a re-delivered snapshot can never double-count
+//     a fixing.
 //   - Variance-swap fair strike via the model-free OTM option-strip formula
 //     K_var(T) = (2/T) integral OTM(K) / (df K^2) dK (Demeterfi-Derman-Kamal-Zou
-//     in log-strike form, composite Simpson).
+//     in log-strike form, composite Simpson), with a Richardson half-grid
+//     quadrature-error estimate (Task 1: |I_h - I_2h|/15, populating
+//     DerivQuote::integration_error_est) whenever the resolved node count is
+//     4m+1 -- every quality tier default and the E2 adaptive-wing rescale land
+//     there. The exact resolved log-strike grid is also recorded
+//     (strip_k_lo_used / strip_k_hi_used / strip_nodes_used) so a caller, or
+//     deriv_greeks' own bump pinning, can reproduce it exactly.
 //   - Volatility-swap fair strike via the Carr-Lee model-free straddle formula
 //     K_vol(T) ~= sqrt(2 pi / T) * C_ATMF(T) / (F * df).
 //   - Aged-trade dispatch: the variance leg blends accrued realized variance
@@ -24,11 +38,64 @@
 //     (n_done/n_total)*RV_done + (n_future/n_total)*K_var_future convention;
 //     the vol-swap dispatch handles inception (n_done == 0) and at-expiry
 //     (n_done == n_total).
+//   - Lognormal RV distribution engine (Task 2, detail/rv_lognormal.hpp:
+//     Gauss-Hermite for smooth payoffs, a split-domain Gauss-Legendre rule for
+//     kinked ones) plus a vol-of-vol knob (Task 3, DerivConfig::vol_of_vol):
+//     the future realized-variance leg is modeled as lognormal with mean
+//     K_var_future and log-stdev xi*sqrt(T), xi either the caller's own number
+//     or auto-calibrated so the lognormal's E[sqrt(W)] reproduces the
+//     surface's own Carr-Lee K_vol exactly (DerivQuote::vol_of_vol_used,
+//     DerivFlags::VolOfVolCalibrated). This is the one shared foundation the
+//     three distribution-model products below all price against.
+//   - Capped variance swap (Task 4, engine RvDistributionProxy or Auto):
+//     E[min(V,C)] for the blended variance V = a + b*W, modeling the future
+//     leg W as lognormal with mean K_var_future and log-stdev xi*sqrt(T) (xi
+//     from DerivConfig::vol_of_vol, explicit or auto-calibrated). The cap
+//     option value b*E[(W-K_c)+] comes from the closed-form
+//     atx::vol::detail::lognormal_call. A contract already accrued past the
+//     cap (a >= C) prices deterministically -- pinned, no model, no strip.
+//   - Capped volatility swap (Task 5, engine RvDistributionProxy or Auto):
+//     E[min(sqrt V, c)] for the same blended variance V = a + b*W, c a
+//     decimal VOL cap (C = c^2 its variance-units image). min(sqrt V, c) is
+//     KINKED in W, so unlike the capped variance swap this is not a
+//     closed-form call: the domain is split at the kink's standard-normal
+//     coordinate z*, the smooth piece integrated by
+//     atx::vol::detail::lognormal_truncated_expect (GL-64), and the tail
+//     probability above the kink closed analytically via
+//     atx::vol::detail::norm_cdf. Same pin/fully-aged/model-path structure as
+//     the capped variance swap.
+//   - Mid-life vol-swap dispatch (Task 6, engine Auto or RvDistributionProxy):
+//     E[sqrt(a + b*W)] for the intermediate age regime (0 < n_done <
+//     n_total), a = w_done*rv_done_dec, b = w_future, W lognormal at the
+//     strip's own mean and log-stdev xi*sqrt(T). sqrt(a+b*W) is SMOOTH (no
+//     kink, a/b >= 0), so this is priced by plain Gauss-Hermite
+//     (atx::vol::detail::lognormal_expect), not the capped pricers'
+//     split-domain quadrature. An explicit VolCarrLee engine on a mid-life
+//     contract is InvalidArgument (Carr-Lee cannot blend an accrued leg); an
+//     explicit RvDistributionProxy on an UNAGED contract runs this same
+//     formula end to end (a = 0, b = 1) instead of Carr-Lee; fully-aged is
+//     unaffected by engine (exact, no model needed).
+//   - Finite-difference greeks for every kind (Task 7, deriv_greeks): delta /
+//     gamma / vega / volga / vanna / theta / rho / charm, each bump repriced
+//     through deriv_price itself so a product's greeks and its mark can never
+//     come from two different engines. Spot bumps are sticky-strike (forwards
+//     scale, the surface is re-read at the original absolute strike); an
+//     auto-calibrated vol-of-vol is resolved once at the center and pinned
+//     into the bumps; fully-aged contracts skip bumping entirely.
 //
-// Reserved for follow-on work (return ErrorCode::NotImplemented, mirroring the
-// C's ATS_VOL_ERR_UNSUPPORTED): capped variance/volatility swaps, the RV
-// distribution / Monte-Carlo QE engines, and mid-life vol-swap dispatch
-// (intermediate n_done).
+// Reserved for follow-on work. Two flavors:
+//   - ACTIVELY REJECTED (return ErrorCode::NotImplemented, mirroring the C's
+//     ATS_VOL_ERR_UNSUPPORTED): the RV distribution-affine / Monte-Carlo QE
+//     pricing engines (DerivEngine::RvDistributionAffine / McQe), and the
+//     discrete-monitoring full-Monte-Carlo correction
+//     (DerivDiscreteCorrection::FullMc) -- checked up front by every pricer,
+//     regardless of aging state.
+//   - DECLARED, UNENFORCED: DerivMarkingConvention::CboeVarianceFuture. The
+//     enum value and the DerivContract::marking field it lives on both exist,
+//     but no pricing path reads `marking` yet -- a CboeVarianceFuture contract
+//     prices identically to an Otc one today rather than failing loud. A
+//     caller relying on CBOE variance-future conventions must not assume this
+//     field does anything yet.
 //
 // Conventions (unchanged from the C):
 //   - Decimal variance internally: 0.04 <-> 20 vol <-> 400 variance points.
@@ -41,12 +108,15 @@
 // retained verbatim so callers can gate on (x == x).
 //
 // Thread-safety: the pricing entries (var_swap_fair_strike,
-// vol_swap_fair_strike, deriv_price) are stateless pure functions of a fixed
-// surface + curve set — safe to call concurrently from any number of threads.
+// vol_swap_fair_strike, deriv_price, deriv_greeks) are stateless pure functions
+// of a fixed surface + curve set — safe to call concurrently from any number of
+// threads. `deriv_greeks` builds its bumped curve sets as function-local copies,
+// so it never writes through the caller's CurveSet.
 // RealizedTracker is "single thread (mutates internal state)": a daily update
 // takes exclusive access.
 
 #include <cstdint>
+#include <limits>
 #include <span>
 
 #include "atx/vol/curve.hpp"
@@ -61,20 +131,27 @@ class PricedSurface;
 
 // ── Enums ────────────────────────────────────────────────────────────────
 
-// Product kind. Capped variants are reserved (dispatch returns NotImplemented).
+// Product kind. CappedVarSwap is priced via the lognormal RV distribution
+// model (Task 4); CappedVolSwap via the same model's split-domain quadrature
+// (Task 5).
 enum class DerivKind : std::uint8_t {
   VarSwap = 1,
   VolSwap = 2,
-  CappedVarSwap = 3,  // reserved
-  CappedVolSwap = 4,  // reserved
+  CappedVarSwap = 3,
+  CappedVolSwap = 4,
 };
 
-// Pricing engine selector. Values >= RvDistributionProxy are reserved.
+// Pricing engine selector. Values >= RvDistributionAffine are reserved;
+// RvDistributionProxy is also reserved EXCEPT as the distribution-model
+// dispatch target for DerivKind::CappedVarSwap (Task 4),
+// DerivKind::CappedVolSwap (Task 5), and DerivKind::VolSwap (Task 6 --
+// mid-life always, plus an unaged contract priced end to end through the
+// model instead of Carr-Lee), all of which Auto also routes to as well.
 enum class DerivEngine : std::uint8_t {
   Auto = 0,
   StripLogContract = 1,
   VolCarrLee = 2,
-  RvDistributionProxy = 3,   // reserved
+  RvDistributionProxy = 3,   // CappedVarSwap/CappedVolSwap/VolSwap only; reserved otherwise
   RvDistributionAffine = 4,  // reserved
   McQe = 5,                  // reserved
 };
@@ -116,6 +193,23 @@ enum class DerivFlags : std::uint32_t {
   // and df = 1.0 was substituted (typical case: T == 0 at expiry). Callers
   // using PV must check for this.
   DfFallback = 1u << 8,
+  // Set when DerivConfig::vol_of_vol == 0 (auto-calibrate) and the auto path
+  // produced xi -- including the degenerate xi = 0 outcome (no Carr-Lee
+  // convexity on this surface/tenor). NOT set on an explicit cfg.vol_of_vol,
+  // and not set when no distribution model ran at all (this task ships the
+  // knob + resolver; Tasks 4-6 are the first callers that can raise it).
+  VolOfVolCalibrated = 1u << 9,
+  // Set when a capped product's cap option value was actually subtracted
+  // from the uncapped expectation (Task 4: the distribution-model path, or
+  // the pinned deterministic path). NOT set when the cap cannot bind at all
+  // (e.g. the fully-aged deterministic leg with accrued < cap -- there the
+  // capped and uncapped answers are identical by construction).
+  CapApplied = 1u << 10,
+  // Set when the accrued leg alone already reached or exceeded the cap
+  // (w_done*rv_done_dec >= cap_dec): the quote is pinned at
+  // df*N*(cap_dec - strike_dec) with no strip call and no T > 0 requirement
+  // (works at expiry). Always accompanied by CapApplied.
+  CapPinned = 1u << 11,
 };
 
 [[nodiscard]] constexpr DerivFlags operator|(DerivFlags a, DerivFlags b) noexcept {
@@ -171,6 +265,19 @@ public:
   // its error (mirrors ats_vol_realized_tracker_observe_batch).
   [[nodiscard]] Status observe_batch(std::span<const double> spots);
 
+  // Timestamped observe for daily-fixing drivers (the backtest). Same accrual
+  // arithmetic as observe(); additionally enforces STRICTLY ASCENDING fixing
+  // timestamps so a re-delivered snapshot cannot double-count a fixing:
+  // ts_ns <= last_fixing_ts_ns() returns AlreadyExists and mutates nothing.
+  // Ordering is validated FIRST -- a rejected call (stale or replayed ts)
+  // leaves every field (including last_fixing_ts_ns()) untouched, even when
+  // the underlying observe(spot) would itself have failed.
+  [[nodiscard]] Status observe_dated(std::int64_t ts_ns, double spot);
+
+  // Timestamp of the last accepted observe_dated() call, or
+  // numeric_limits<int64_t>::min() before the first one.
+  [[nodiscard]] std::int64_t last_fixing_ts_ns() const noexcept { return last_fixing_ts_ns_; }
+
   // Immutable spec view for use as a contract field (returned by value; the C
   // copied it out).
   [[nodiscard]] RealizedVarianceSpec snapshot() const noexcept { return rv_; }
@@ -186,17 +293,21 @@ private:
   double prev_spot_ = 0.0;
   bool have_prev_ = false;
   RealizedVarianceSpec rv_{};
+  std::int64_t last_fixing_ts_ns_ = std::numeric_limits<std::int64_t>::min();
 };
 
 // ── Contract / config / quote ────────────────────────────────────────────
 
-// A vol-derivative contract (AtsVolDerivContract). `cap_dec` is reserved; a
-// non-zero value on a VarSwap is rejected by deriv_price.
+// A vol-derivative contract (AtsVolDerivContract). `cap_dec` activates for
+// CappedVarSwap (annualized decimal VARIANCE cap, e.g. (2.5*0.20)^2 = 0.25)
+// and for CappedVolSwap (a decimal VOL cap instead, e.g. 2.5*0.20 = 0.50):
+// deriv_price requires cap_dec > 0 on a capped kind (else InvalidArgument)
+// and rejects a non-zero cap_dec on an uncapped kind (also InvalidArgument).
 struct DerivContract {
   DerivKind kind = DerivKind::VarSwap;
   double maturity_t = 0.0;   // years until expiry
   double strike_dec = 0.0;   // K_var or K_vol
-  double cap_dec = 0.0;      // reserved
+  double cap_dec = 0.0;      // capped kinds only; see above
   double notional = 0.0;     // N_var or N_vol
   RealizedVarianceSpec rv_spec{};
   DerivMarkingConvention marking = DerivMarkingConvention::Otc;
@@ -228,6 +339,20 @@ struct DerivConfig {
   //               got you the strip you asked for but permanently flagged it
   //               truncated.
   double width_sigmas = 0.0;
+  // Annualized lognormal vol of the FUTURE realized-variance leg (the
+  // "vol-of-vol" driving the RV distribution models Tasks 4-6 add: capped
+  // swaps and mid-life vol-swap dispatch need a distribution over the future
+  // variance, not just its mean, and this is the one free parameter of the
+  // lognormal RV model those engines assume).
+  //
+  //   0    -> auto-calibrate from the surface's OWN Carr-Lee convexity at the
+  //           contract tenor: pick xi so the lognormal E[sqrt(W)] reproduces
+  //           the Carr-Lee K_vol exactly (see resolve_vol_of_vol,
+  //           derivatives.cpp anon namespace). No convexity on the surface ->
+  //           xi = 0 (RV collapses to its own mean, i.e. no vol-of-vol).
+  //   > 0  -> used as-is; the caller's own calibration wins.
+  //   < 0  -> InvalidArgument (a vol-of-vol cannot be negative).
+  double vol_of_vol = 0.0;
   // Reserved — must be left at 0.
   double abs_price_tol = 0.0;
   double rel_price_tol = 0.0;
@@ -246,14 +371,89 @@ struct DerivQuote {
   double fair_strike_points = 0.0;        // var pts or vol pts
   double pv = 0.0;                        // contract PV today
   double undiscounted_expectation_dec = 0.0;
-  double uncapped_var_dec = 0.0;          // populated when the strip ran
+  // The strip's variance in decimal variance units. ITS MEANING IS PER-KIND,
+  // and the two readings are NOT interchangeable:
+  //   * var-swap dispatch, the unaged vol swap's best-effort Carr-Lee
+  //     diagnostic, and BOTH capped paths carry the strip's RAW FUTURE-LEG
+  //     value K_var(T) -- no accrued leg, no discrete correction, no cap
+  //     haircut. (`future_component_dec` beside it IS discrete-corrected and
+  //     weight-scaled; these two deliberately differ.)
+  //   * the MID-LIFE vol swap (the distribution model) carries the BLENDED
+  //     TOTAL variance a + b*m that it actually prices sqrt() of: a =
+  //     w_done*rv_done_dec, b = w_future, m the strip mean AFTER any
+  //     Diffusion1OverN correction. That is the model's own input, and the
+  //     number `convexity_adjustment_dec` beside it is formed from
+  //     (sqrt(a+b*m) - fair_strike_dec).
+  // 0.0 means NO STRIP RAN -- fully-aged legs, cap pins, and the standalone
+  // Carr-Lee vol-strike entry -- never "the strip integrated to zero".
+  double uncapped_var_dec = 0.0;
   double accrued_component_dec = 0.0;     // RV_done * n_done/n_total
   double future_component_dec = 0.0;      // K_var_future * n_future/n_total
-  double convexity_adjustment_dec = 0.0;  // sqrt(K_var) - K_vol (vol swap only)
-  // Strip-engine error estimate; NaN = not estimated (see file header). This
-  // port does not yet run the Richardson half-step refinement, so it stays NaN
-  // wherever the strip ran and 0.0 on the paths the C left at its memset zero.
+  // sqrt(K_var) - K_vol (uncapped vol swap); sqrt(a+b*m) - fair_strike_dec
+  // for a capped vol swap's model path (Task 5) -- the same "sqrt of the
+  // blended-variance mean minus the priced vol strike" diagnostic, just with
+  // the capped strike on the right. Left at the struct default 0.0 on paths
+  // that never build a sqrt(E[V]) to compare against: the capped-var-swap
+  // paths, and the capped-vol-swap pin/fully-aged paths -- those never form
+  // the a+b*m blend (no strip runs), so sqrt(a+b*m) is simply not computed
+  // there, not "computed and zero".
+  double convexity_adjustment_dec = 0.0;
+  // Strip-engine error estimate; NaN = not estimated (see file header).
+  // `var_swap_fair_strike` populates it via a Richardson half-grid estimate
+  // (|I_h - I_2h|/15) whenever the strip's node count is 4m+1 — every quality
+  // tier default, and the adaptive-wing rescale, land there; a caller-pinned
+  // `strip_nodes` that isn't 4m+1 leaves it NaN. Stays 0.0 on the paths the C
+  // left at its memset zero (e.g. the standalone vol-swap Carr-Lee entry,
+  // which runs no strip).
   double integration_error_est = 0.0;
+  // The vol-of-vol actually used to price this quote: DerivConfig::vol_of_vol
+  // resolved -- the caller's explicit xi, or the Carr-Lee auto-calibrated one
+  // (flagged VolOfVolCalibrated). Populated by exactly the paths that run a
+  // distribution model over the future variance: the mid-life vol swap and
+  // both capped kinds' model branches.
+  //
+  // NaN, not 0, when NO distribution model ran -- the var-swap strip, the
+  // unaged/fully-aged vol-swap branches, and the capped pin / fully-aged exits
+  // all leave it at the struct default (kQuietNaN, curve.hpp). A caller gates
+  // on (x == x) exactly as with integration_error_est above. 0.0 is a REAL
+  // resolved value (a surface with no Carr-Lee convexity calibrates to xi = 0,
+  // i.e. RV collapses to its own mean), never "not computed".
+  double vol_of_vol_used = kQuietNaN;
+  // Cap option value subtracted from the uncapped expectation to get the
+  // capped one. Units follow the product: for CappedVarSwap (Task 4) this is
+  // b*E[(W-K_c)+] in VARIANCE units, closed-form via
+  // atx::vol::detail::lognormal_call; for CappedVolSwap (Task 5) it is
+  // E[sqrt(V)] - E[min(sqrt(V),c)] in VOL units, the difference of two
+  // lognormal_truncated_expect calls over the same [-8,8] domain (the capped
+  // side additionally closes its tail analytically past the kink, so this is
+  // NOT a same-nodes-exact identity — expect ~1e-9, not machine epsilon,
+  // agreement against an independent smooth-integrand oracle). 0.0 for
+  // uncapped kinds, for a capped quote where the cap cannot bind (fully-aged,
+  // accrued < cap), AND for a pinned quote (accrued >= cap) -- the pin path
+  // deliberately skips the strip, so the true haircut against the (unpriced)
+  // uncapped expectation is never computed there; this is "not computed", not
+  // "computed and zero". NEVER NaN -- unlike vol_of_vol_used, a caller should
+  // not have to gate on (x == x) to read this one.
+  double cap_option_value_dec = 0.0;
+  // The EXACT log-strike grid the variance strip integrated on, as resolved
+  // after the quality tier, any caller pin, and the E2 adaptive-wing rescale
+  // have all had their say. Populated by `var_swap_fair_strike` whenever the
+  // strip actually runs, and carried through every dispatch path that runs one;
+  // left at NaN / 0 ("no strip ran") on the paths that never integrate --
+  // fully-aged legs, cap pins, and the standalone Carr-Lee vol strike.
+  //
+  // These exist so a caller can REPRODUCE a quote's grid exactly by feeding
+  // them back as DerivConfig::k_min_log / k_max_log / strip_nodes. That is what
+  // `deriv_greeks` does: the adaptive rescale rounds its node count with a
+  // ceil(), so a bumped surface can land on a DIFFERENT node count than the
+  // center, and the finite differences would then straddle a step
+  // discontinuity in the quadrature -- contaminating gamma/volga/vanna with an
+  // artifact of the grid rather than a property of the price. Pinning the
+  // center's grid into every bumped evaluation removes that failure mode by
+  // construction.
+  double strip_k_lo_used = kQuietNaN;
+  double strip_k_hi_used = kQuietNaN;
+  std::uint32_t strip_nodes_used = 0;
   DerivFlags flags = DerivFlags::None;
 };
 
@@ -304,11 +504,22 @@ vol_swap_fair_strike(const SurfaceT& surface, const CurveSet& curves, double T,
 // the future implied leg under the standard aged convention.
 //
 // Variance-swap dispatch handles all three age regimes through the linear
-// variance blend. Vol-swap dispatch supports n_done == 0 (pure future leg,
-// Carr-Lee) and n_done == n_total (pure realized leg, sqrt(rv_done_dec));
-// intermediate n_done returns NotImplemented (the unbiased mid-life
-// expectation needs a distribution engine this port does not ship). Capped
-// products return NotImplemented.
+// variance blend. Vol-swap dispatch handles all three age regimes too:
+// n_done == 0 (pure future leg, Carr-Lee by default) and n_done == n_total
+// (pure realized leg, sqrt(rv_done_dec)) are exact/closed-form; intermediate
+// n_done (Task 6) prices E[sqrt(a+b*W)] via the same lognormal RV
+// distribution model as the capped swaps (a = w_done*rv_done_dec, b =
+// w_future, W's mean from the strip at the residual maturity). An explicit
+// VolCarrLee engine on a mid-life vol swap is InvalidArgument (Carr-Lee
+// cannot blend an accrued leg); an explicit RvDistributionProxy on an unaged
+// vol swap runs the distribution model end to end (a = 0, b = 1) instead of
+// Carr-Lee, and on a fully-aged one is a no-op (the exact branch already has
+// nothing for the model to add).
+// CappedVarSwap and CappedVolSwap are both priced via the lognormal RV
+// distribution model (Tasks 4/5, engine Auto or RvDistributionProxy only --
+// StripLogContract/VolCarrLee on a capped kind return InvalidArgument):
+// CappedVarSwap in closed form (b*E[(W-K_c)+]), CappedVolSwap by split-domain
+// quadrature (E[min(sqrt(V),c)] is kinked, so no closed form applies).
 template <class SurfaceT>
 [[nodiscard]] Result<DerivQuote>
 deriv_price(const SurfaceT& surface, const CurveSet& curves,
@@ -328,6 +539,123 @@ extern template Result<DerivQuote> deriv_price<EssviSurface>(
     const EssviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&);
 extern template Result<DerivQuote> deriv_price<SviSurface>(
     const SviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&);
+
+// ── Finite-difference greeks ─────────────────────────────────────────────
+
+// Spot-based sensitivity block, same conventions as the option pipeline's
+// AmericanGreeks (portfolio_pricer.hpp): delta = dPV/dS, gamma = d2PV/dS2,
+// vega = dPV/dsigma (parallel surface shift, per 1.00 vol), volga = d2PV/dsigma2,
+// vanna = d2PV/dSdsigma, theta = dPV/dt (calendar, PV units per year, holding
+// the realized accrual fixed), rho = dPV/dr, charm = d2PV/dSdt. NaN = not
+// computed (see DerivGreekBumps::second_order and the theta note below).
+//
+// All sensitivities are NOTIONAL-scaled, because PV is: a var swap's delta is
+// dollars per 1.00 of spot on the whole contract, not per unit of variance.
+struct DerivGreeks {
+  double pv = 0.0;
+  double delta = 0.0, gamma = 0.0, vega = 0.0, volga = 0.0, vanna = 0.0;
+  double theta = 0.0, rho = 0.0, charm = 0.0;
+  DerivQuote quote{};  // the center (unbumped) quote
+};
+
+// Bump sizes for `deriv_greeks`. The defaults are the ones the whole test
+// matrix is calibrated against; they are exposed so a caller pricing a
+// pathologically short tenor can widen them.
+struct DerivGreekBumps {
+  double spot_rel = 1.0e-4;          // relative S bump (central)
+  double vol_abs = 1.0e-4;           // absolute parallel sigma bump (central)
+  double rate_abs = 1.0e-4;          // absolute zero-rate bump (one-sided)
+  double time_years = 1.0 / 365.25;  // theta roll (one-sided, T decreasing)
+  // vanna + charm, the only greeks needing evaluations of their own (4 spot x
+  // vol crosses + 2 rolled spot bumps = 6 extra repricings); both are NaN when
+  // this is off. gamma and volga fall out of the SAME stencils delta and vega
+  // already pay for, so they are always computed and this knob does not gate
+  // them.
+  bool second_order = true;
+};
+
+// Finite-difference greeks for any vol-derivative contract.
+//
+// Every bump reprices through `deriv_price`, so each product / age / cap
+// regime gets its greeks from exactly the path that produced its mark — a
+// capped swap differentiates its own cap model, a mid-life vol swap its own
+// distribution engine, and no greek can silently come from a different pricer
+// than the PV it hedges.
+//
+// Bump mechanics:
+//   - Spot is STICKY-STRIKE: `CurveSet::spot` and every `ForwardPoint::F`
+//     scale by (1 +/- h) while the surface is read at k + ln(1 +/- h), i.e. the
+//     vol is re-read at the ORIGINAL absolute strike. `curves.spot` is the
+//     divisor, so it must be > 0.
+//   - Vol is a PARALLEL additive shift of `iv(k,T)`; the curves are untouched.
+//   - Rate rebuilds the yield curve with every zero rate shifted by dr,
+//     sampled at the forward pillars' Ts plus the contract's own T. The
+//     FORWARD curve is deliberately held fixed: F is fitted independently
+//     upstream, so this reports the pure discounting exposure.
+//   - Theta rolls `contract.maturity_t` down by dt with the realized spec
+//     untouched, i.e. calendar time passes and nothing new is realized.
+//
+// THE CENTER'S NUMERICAL SCHEME IS PINNED INTO EVERY BUMP. Two things about
+// the pricing are resolved FROM THE SURFACE, so both move when the surface is
+// bumped — and a finite difference that lets them move is measuring a change of
+// scheme, not a derivative:
+//   - The STRIP GRID. The E2 adaptive-wing rescale sizes the span to the
+//     tenor's own sigma*sqrt(T) and rounds the node count with a ceil(), so a
+//     vol bump can push a bumped evaluation onto a different node count than
+//     the center. The differences would then straddle a step discontinuity in
+//     the quadrature and contaminate gamma / volga / vanna. The center's own
+//     resolved grid (DerivQuote::strip_k_lo_used / strip_k_hi_used /
+//     strip_nodes_used) is therefore pinned into all bumped evaluations through
+//     the ordinary explicit-pin config path, so every evaluation integrates the
+//     identical grid. Side effect, deliberate and harmless: with the span
+//     pinned, a vol-UP bump raises the width the truncation test measures
+//     against, so bumped quotes can carry StripTruncated* flags the center does
+//     not. The stencils read only PV, never flags.
+//   - The AUTO-CALIBRATED VOL-OF-VOL. When the center reports a
+//     `vol_of_vol_used`, that xi is pinned too; otherwise vega would
+//     double-count the drift of the calibration itself, mixing the model's
+//     response to the vol shift with the model re-parametrizing itself. A
+//     calibrated xi of exactly 0 is pinned as the smallest positive double
+//     rather than as 0, because 0 is the config's "auto-calibrate" selector —
+//     every consumer of xi reaches the same limit at a denormal as at zero, so
+//     this pins the value without re-selecting the auto path.
+// The center is then REPRICED under that pinned config and it is that value the
+// stencils difference; the `pv` and `quote` reported back are the original
+// center quote, priced exactly as `deriv_price` would have.
+//
+// FULLY-AGED CONTRACTS SKIP ALL BUMPING. Nothing is left to realize, so PV is a
+// fixed settlement amount under a pure discount, PV(t) = e^{-r(T-t)}*X. Every
+// market greek is exactly 0, and the two time greeks are analytic and mutually
+// consistent — dPV/dr = -(T-t)*PV and dPV/dt = +r*PV are one statement
+// differentiated two ways, so rho = -T*PV and theta = r*PV (r read off the
+// curve at maturity). At T == 0 the discount is gone and both are 0. The one
+// quote where this identity does not describe the PV is a DerivFlags::DfFallback
+// one (no discount factor resolved, df = 1 substituted); the flag on `quote` is
+// how a caller detects that.
+//
+// THETA/CHARM ARE NaN WHEN `maturity_t <= bumps.time_years`. The roll would
+// land at or past expiry, where an un-aged var/vol swap has no future leg left
+// to price (the pricers return InvalidArgument for T <= 0). Reporting "not
+// computed" beats failing the whole greek block over one stencil that cannot
+// exist.
+//
+// @return the error of the first failing evaluation — the center quote's, or a
+//         bumped one's (a bumped failure is a real failure: the same contract
+//         priced under a marginally different market must not be silently
+//         dropped). Plus InvalidArgument when a bump size is non-positive or
+//         `curves.spot` is not > 0.
+template <class SurfaceT>
+[[nodiscard]] Result<DerivGreeks>
+deriv_greeks(const SurfaceT& surface, const CurveSet& curves,
+             const DerivContract& contract, const DerivConfig& cfg = DerivConfig{},
+             const DerivGreekBumps& bumps = DerivGreekBumps{});
+
+extern template Result<DerivGreeks> deriv_greeks<EssviSurface>(
+    const EssviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&,
+    const DerivGreekBumps&);
+extern template Result<DerivGreeks> deriv_greeks<SviSurface>(
+    const SviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&,
+    const DerivGreekBumps&);
 
 // ── E6 / AN-W: PricedSurface-native entry points ────────────────────────────
 //
@@ -367,5 +695,25 @@ extern template Result<DerivQuote> deriv_price<SviSurface>(
 [[nodiscard]] Result<DerivQuote> deriv_price(const PricedSurface& surface,
                                              const DerivContract& contract,
                                              const DerivConfig& cfg = DerivConfig{});
+
+// Same contract as the templated `deriv_greeks` above, differentiating the
+// PricedSurface-native `deriv_price`. The fitted-range gate runs ONCE, on
+// `contract.maturity_t`: the theta roll then reuses that same carry CurveSet
+// with a shorter contract T rather than re-deriving carry, so a contract
+// sitting exactly on the front pillar rolls into the curve's flat-extrapolated
+// tail instead of failing OutOfRange.
+//
+// CAVEAT on a contract at or very near the FRONT fitted pillar: below it the
+// carry CurveSet clamps the forward flat while `PricedSurface::forward_at`
+// would keep extrapolating economically — the very divergence `carry_from`'s
+// range gate exists to refuse. The gate cannot see the rolled T, and theta
+// divides the resulting PV difference by dt (~1/365), so it AMPLIFIES that
+// divergence by ~365x. Theta on a front-pillar contract is therefore the one
+// output here to treat as indicative; price the roll against a surface whose
+// front pillar is genuinely shorter than the contract if it must be traded on.
+[[nodiscard]] Result<DerivGreeks> deriv_greeks(const PricedSurface& surface,
+                                               const DerivContract& contract,
+                                               const DerivConfig& cfg = DerivConfig{},
+                                               const DerivGreekBumps& bumps = DerivGreekBumps{});
 
 }  // namespace atx::vol

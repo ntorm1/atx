@@ -166,6 +166,7 @@
 // and forward/vol/route/interp factor PnL attribution. Do not build new features
 // on it; migrate those capabilities onto the PricedSurface path as they are needed.
 #include "atx/vol/calib_pool.hpp"
+#include "atx/vol/deriv_book.hpp"       // portfolio-layer swap-book pricing against a SurfaceSet
 #include "atx/vol/portfolio.hpp"        // DEPRECATED legacy VolSurface-bound portfolio + bulk
 #include "atx/vol/portfolio_pricer.hpp" // CANONICAL PricedSurface-native pricer + Taylor PnL explain
 #include "atx/vol/portfolio_risk.hpp"   // DEPRECATED legacy scenario / theoretical-leg risk

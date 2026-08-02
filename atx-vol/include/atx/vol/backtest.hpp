@@ -42,6 +42,7 @@
 #include <vector>
 
 #include "atx/vol/corpus.hpp"           // CorpusManifest
+#include "atx/vol/derivatives.hpp"      // DerivKind, RealizedVarianceSpec (the swap lane)
 #include "atx/vol/portfolio_pricer.hpp" // OptionContract, SurfaceSet, PriceOptions, PriceTotals
 #include "atx/vol/priced_surface.hpp"   // PricedSurface
 #include "atx/vol/query_pricing.hpp"    // QueryPricingTier
@@ -375,12 +376,124 @@ struct Lot {
   [[nodiscard]] bool operator==(const Lot &) const = default;
 };
 
-// The open book across all cohorts. Plain for B0 (no cash/shares ledger yet).
+// ── Vol-derivative (swap) lane ──────────────────────────────────────────────
+//
+// One OTC variance/volatility-swap lot. ADDITIVE to the option lane: a book with
+// no swap lots prices, accrues and settles exactly as it did before this lane
+// existed, and both swap result columns are exactly 0.0 (the engine early-outs
+// on an empty `PortfolioState::swap_lots` — no pricing, no allocation).
+//
+// IMMUTABLE once emitted by a strategy: the same transition check that pins
+// option lots bit-compares every field of a surviving swap lot, and a new lot's
+// `id` must come from the engine's monotonic `next_lot_id` watermark (shared
+// with option lots, so the two id spaces never collide). A strategy opens one by
+// appending to `book.swap_lots` in `on_step`.
+//
+// NO EARLY CLOSE IN v1 — swaps are HELD TO EXPIRY. A strategy that ERASES a swap
+// lot from `book.swap_lots` gets InvalidArgument, not a close: there is no unwind
+// price for an OTC swap here and nowhere to book one, so an erased lot would
+// leave its last mark in NAV with nothing to offset it, orphan its accrual (which
+// makes the checkpoint unresumable), and drop `swap_pv` by a mark that never
+// settled. The engine removes a lot only by SETTLING it, which happens in the
+// swap pass before `on_step` ever sees the book — so every lot present when the
+// strategy is called must still be there when it returns.
+//
+// Running fixing/accrual state lives in the ENGINE (`SwapAccrual`), NEVER on the
+// lot — that is what makes the lot bit-comparable across a step.
+//
+// ENTRY ECONOMICS v1: a swap opens at ZERO COST. There are no frictions on this
+// lane (no spread, no per-contract cost, no impact) and no premium moves at
+// entry — whether the strike is fair is the strategy's problem. The accrual's
+// `prev_pv` therefore starts at 0.0, so the WHOLE first mark (the entry PV
+// difference against the chosen strike) lands in that step's `swap_pnl`.
+//
+// FIXING SEED: the swap pass runs only inside the step loop, so the FIRST STEP
+// that sees a lot seeds its fixing series from that step's snapshot spot and
+// accrues no return. A lot opened at inception therefore seeds on refs[1] and
+// needs N+1 steps to accrue N returns.
+//
+// EVERY STEP A LOT IS ALIVE TAKES A FIXING, INCLUDING ITS EXPIRY DAY — the
+// expiry close IS that contract's final fixing. So an absent surface fails
+// closed on BOTH sides of expiry: NotFound for a held lot (it cannot be marked)
+// and NotFound for a settling one (it cannot take its terminal fixing, and
+// settling anyway would divide a short Σr² by a denominator one observation
+// light). This mirrors the option lane, which likewise refuses to settle a lot
+// whose surface is missing.
+//
+// SETTLEMENT needs no PRICING — the terminal rate is read off the accrual, not
+// solved: `rv_done_dec` (the Σr²/n_done estimator), square-rooted for the vol
+// kinds and capped for the capped ones, less `strike_dec`, times `qty *
+// notional`. A clock coarser than the fixing schedule therefore settles on the
+// returns it actually observed, which is a real estimate; a series with NO
+// observed return is not, and that degenerate case is NotFound rather than a
+// strike-wide payout.
+struct SwapLot {
+  std::uint64_t id{0};
+  std::uint32_t uid{0};
+  DerivKind kind{DerivKind::VarSwap};
+  double strike_dec{0.0};
+  double cap_dec{0.0}; // > 0 required on a capped kind; must be 0 otherwise
+  double notional{0.0};
+  double qty{1.0};
+  // INFORMATIONAL ONLY — the engine seeds on FIRST SIGHT, never off this stamp.
+  // It is validated (must not be after `expiry_ts_ns`) and carried for
+  // provenance/reporting; changing it changes no engine arithmetic.
+  std::int64_t start_ts_ns{0};
+  std::int64_t expiry_ts_ns{0}; // exact-match settlement, option convention
+  std::uint32_t n_obs_total{0};
+  double annualization{252.0};
+
+  [[nodiscard]] bool operator==(const SwapLot &) const = default;
+};
+
+// The open book across all cohorts. Plain for B0 (no cash/shares ledger yet);
+// `swap_lots` is the additive vol-derivative lane and defaults to empty.
 class PortfolioState {
 public:
   std::vector<Lot> lots;
+  std::vector<SwapLot> swap_lots;
 
   [[nodiscard]] bool operator==(const PortfolioState &) const = default;
+};
+
+// Engine-owned per-swap-lot running state: the fixing series and yesterday's
+// mark. A checkpointable POD, keyed to its lot by `lot_id`.
+//
+// The accrual arithmetic is `RealizedTracker`'s, transcribed rather than
+// delegated so the state stays a trivially serializable struct:
+//
+//   r = ln(S/prev_spot); sum_sq += r*r; ++n_done;
+//   rv_done_dec = annualization * sum_sq / n_done
+//
+// TWO DELIBERATE DEVIATIONS from `RealizedTracker::observe_dated`:
+//   * a fixing past `n_obs_total` is a NO-OP (the contract is fully observed and
+//     simply stops accruing — `prev_spot`/`prev_ts_ns` freeze too), where the
+//     tracker returns InvalidArgument. A backtest clock keeps delivering dates
+//     after the last fixing; that is not a caller error.
+//   * ordering is still validated FIRST and unconditionally: `ts_ns <=
+//     prev_ts_ns` on a seeded accrual returns AlreadyExists and mutates nothing,
+//     so a replayed snapshot date can never double-count a fixing.
+struct SwapAccrual {
+  std::uint64_t lot_id{0};
+  RealizedVarianceSpec rv{};
+  double prev_spot{0.0};
+  std::int64_t prev_ts_ns{0};
+  bool have_prev{false};
+  // Yesterday's QTY-SCALED mark (qty * DerivQuote::pv), 0.0 before the first
+  // mark. Qty-scaled so `swap_pnl` and `swap_pv` are both position dollars.
+  double prev_pv{0.0};
+
+  // RealizedVarianceSpec is a C-ABI mirror with no comparison operator, so this
+  // is spelled out rather than defaulted.
+  [[nodiscard]] bool operator==(const SwapAccrual &other) const noexcept {
+    return lot_id == other.lot_id && rv.annualization == other.rv.annualization &&
+           rv.n_obs_total == other.rv.n_obs_total && rv.n_obs_done == other.rv.n_obs_done &&
+           rv.sum_sq_log_returns_done == other.rv.sum_sq_log_returns_done &&
+           rv.rv_done_dec == other.rv.rv_done_dec &&
+           rv.include_dividend_adjustment == other.rv.include_dividend_adjustment &&
+           prev_spot == other.prev_spot && prev_ts_ns == other.prev_ts_ns &&
+           have_prev == other.have_prev && prev_pv == other.prev_pv;
+  }
 };
 
 // ── EXERCISE MODEL: what this engine does and does NOT simulate (WS-F F3) ────
@@ -764,6 +877,21 @@ struct BacktestResult {
   // `nav_liquidation`.
   std::vector<double> gross_vega_abs;
   std::vector<double> turnover_notional, turnover_vega; // traded |notional| / |vega| this step
+  // Vol-derivative (swap) lane. `swap_pv` is a STATE column: the sum of the LIVE
+  // swap lots' qty-scaled marks after this row's swap pass (a settled lot has
+  // left the book, so it contributes 0). `swap_pnl` is a FLOW column,
+  // block-summed like every other flow at `record_every_n > 1`: each live lot's
+  // (mark - prev mark) plus each settling lot's (payoff - prev mark).
+  //
+  // BOTH ARE EXACTLY 0.0 ON EVERY ROW of a book with no swap lots, and both are
+  // 0.0 on the inception row and throughout the fixed-book overload (which
+  // refuses swap lots outright). Row-parallel to `date` on any engine-produced
+  // result; EMPTY on a hand-built one, a TSV read or an archive decode — this
+  // pair is deliberately NOT part of the frozen `kBacktestSeriesColumns` /
+  // RunArchive registry, so `ra_schema_hash()` and every golden are untouched
+  // (and `backtest_db` refuses to persist a run that carries swap state at all
+  // rather than dropping it silently).
+  std::vector<double> swap_pv, swap_pnl;
   // Open lots at this row. USUALLY the size of the engine's book, but not by
   // definition: under `UnpricedLotPolicy::ExcludeAndReport` a lot whose expiry step
   // had no board is DEFERRED, and a deferred lot has left the engine's `lots`
@@ -851,6 +979,12 @@ struct BacktestCheckpoint {
   std::uint64_t next_lot_id{1};
   PortfolioState portfolio{};
   std::vector<HedgeSharePosition> hedge_shares{};
+  // One entry per swap lot the run has already seeded, in first-sight order. A
+  // resumed step reproduces its marks exactly because the fixing series, the
+  // running variance and yesterday's mark all travel here. Every `lot_id` must
+  // name a lot in `portfolio.swap_lots`; a lot opened but not yet seeded (a
+  // single-ref run) legitimately has no entry.
+  std::vector<SwapAccrual> swap_accruals{};
   double cash{0.0};
   double nav{0.0};
   double cumulative_noncash_financing{0.0};
@@ -871,6 +1005,11 @@ struct BacktestContinuation {
 // pnl_explain(base -> shifted); settle expiries observed exactly at shifted.ts;
 // record @ granularity; base = std::move(shifted); }. NotFound is returned when
 // the clock crosses a held lot's expiry without an exact timestamp observation.
+//
+// THE SWAP LANE IS NOT AVAILABLE HERE: a non-empty `initial.swap_lots` is
+// InvalidArgument, never a silent drop. A swap settles into a cash ledger this
+// overload does not have (its `cash` column is 0.0 by construction), so there is
+// no honest place for the payoff to land. Use the strategy overload.
 [[nodiscard]] Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
                                                   const RunConfig &cfg = {});
 
@@ -881,6 +1020,14 @@ struct BacktestContinuation {
 // recorded AFTER each step's entries. Settlement of expiring lots is engine-owned
 // (at intrinsic), identical to the fixed-book overload and subject to the same
 // exact-expiry-observation contract.
+//
+// This is the ONLY overload carrying the vol-derivative lane: a strategy may
+// append `SwapLot`s to `book.swap_lots`, and each step then (a) takes that
+// date's spot as a fixing, (b) marks the lot through `deriv_price` against the
+// shifted surface, or (c) cash-settles it from the accrual when its expiry is
+// observed EXACTLY, on the same convention options settle on. An absent surface
+// for ANY live swap lot — held OR settling — is NotFound: the lane fails closed
+// exactly as the hedge-share ledger and the option settlement path do.
 [[nodiscard]] Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat,
                                                   const RunConfig &cfg = {});
 

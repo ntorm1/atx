@@ -37,7 +37,9 @@ faithfully and mirror the upstream test tolerances.
 | C8 family | `c8.hpp`, `c8_calib.hpp` | SVI-JW backbone + ATM/wing curvature bumps (8p), basis, raw↔JW, Roper arb projection, IRLS-Newton calibrator |
 | CStar family | `cstar.hpp`, `cstar_calib.hpp` | C16M modal parametrization (base + 11 modal coeffs, C5/C8/C12/C16 tiers), block LM, calendar/butterfly arb |
 | Calibration pool | `calib_pool.hpp` | Cadence priority queue + deterministic multi-underlier fan-out (`std::jthread`) |
-| Vol derivatives | `derivatives.hpp` | Variance-swap strip, Carr–Lee vol swap, aged/marquee PnL, realized-vol tracker |
+| Vol derivatives | `derivatives.hpp` | Variance/vol-swap strip + Carr–Lee vol swap, aged-trade dispatch, capped variance/vol swaps + mid-life vol-swap dispatch (lognormal RV distribution engine, auto Carr–Lee-consistent vol-of-vol calibration), finite-difference greeks for every kind, dated idempotent fixings on the realized-vol tracker, Richardson strip quadrature-error estimate |
+| Vol-derivative book | `deriv_book.hpp` | Portfolio-layer pricing of variance/vol-swap position books against a `SurfaceSet` — the additive companion to `portfolio_pricer.hpp` for swap legs; SurfaceRef carry bridge (`detail/deriv_ref_bridge.hpp`), row-level failure + NaN-if-not-computed `PriceTotals` shared with the option pricer, `combine_totals` for one desk-level number; tenor hygiene is the caller's |
+| RV distribution kernel | `detail/rv_lognormal.hpp` | Gauss-Hermite (order 21) + split-domain Gauss-Legendre (order 64) quadrature, lognormal expectation / truncated-expectation / call / sqrt-moment identities backing the capped and mid-life vol-derivative pricers |
 | Profile registry | `profile.hpp` | Underlier classification, per-profile calib/filter knobs, optimization-level + refit cadence + tier priority |
 | Unified fit policy | `fit_policy.hpp` | Board/profile/session/event routing to an effective preset + curve; direct high-confidence routes and held-out ambiguity fallback |
 | Portfolio | `portfolio.hpp` | Leg/book/agg types, bulk pricer + select, portfolio pricing + 8-Greek aggregation by agg-mode |
@@ -376,6 +378,21 @@ engine checkpoints. The standard builder includes a theoretical 40-delta,
 three-calendar-month strangle held to expiry and delta-hedged at every stored
 close. See [docs/backtest-db.md](docs/backtest-db.md) for the storage contract,
 library API, and `atx-vol-backtest-db-build` workflow.
+
+**Variance/vol-swap lane (`backtest.hpp`).** The strategy-aware engine
+(`run_backtest(Clock, IStrategy, ...)`) additionally carries an OTC
+variance/vol-swap book (`PortfolioState::swap_lots`), additive to the option
+lane: a book with no swap lots prices, accrues and settles exactly as before
+the lane existed. Every step a lot is alive takes a dated fixing
+(`RealizedTracker::observe_dated`) against that step's spot; a lot settles at
+its exact-match expiry off the accrued realized rate, no re-pricing needed.
+No early close in v1 — a strategy that erases a live swap lot gets
+`InvalidArgument`, not a close. `swap_pv` / `swap_pnl` report per-row state and
+flow columns. **`BacktestDb` does not yet persist the swap lane** — its
+checkpoint and series schema predate it, so `atx-vol-backtest-db-build` and
+resumed/appended runs refuse (rather than silently drop) a result or
+checkpoint that actually carries swap data; a zero-swap run is unaffected.
+Schema support is deferred to a follow-on task.
 
 ## Build & test
 
