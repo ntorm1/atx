@@ -12,7 +12,7 @@
 #include <unordered_set>
 #include <utility>
 
-#include "atx/vol/backtest_series_columns.hpp"
+#include "atx/vol/detail/backtest_series_columns.hpp"
 #include "atx/vol/detail/archive_util.hpp"
 
 namespace atx::vol {

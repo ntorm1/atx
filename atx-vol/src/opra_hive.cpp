@@ -14,7 +14,7 @@
 #include "atx/core/error.hpp"        // Ok, Err, ErrorCode, Error
 #include "atx/core/io/parquet.hpp"   // read_parquet, ParquetTable
 #include "atx/vol/opra_panel.hpp"    // OpraLoadSpec, scan_opra_cbbo_table, load_opra_cbbo_from_scan
-#include "atx/vol/parallel_for.hpp"  // parallel_for_dynamic (W4.3 per-date fan-out)
+#include "atx/vol/detail/parallel_for.hpp"  // parallel_for_dynamic (W4.3 per-date fan-out)
 #include "opra_batch_detail.hpp"     // Civil kernel, memo_iso_to_ns, resolve_market_inputs
 
 namespace atx::vol {

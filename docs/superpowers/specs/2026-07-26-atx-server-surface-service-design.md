@@ -41,6 +41,9 @@ recovery — that must not ride into the codebase alongside the read path.
 - `atx-vol/include/atx/vol/surface_db.hpp` — `SurfaceDb` is a directory:
   `manifest.atxdb` (symbol table + partition index, CRC-validated, generation
   stamped, atomic rewrite) over `partitions/*.atxvsa` (ATXVSA v3 archives).
+  *[2026-08: naming since unified — these are **ATXVSA2** partitions (magic
+  `ATXVSA20`); the ordinal spellings "v1"/"v3" are retired. Authority:
+  `atx-vol/include/atx/vol/surface_archive.hpp`.]*
   `map_surface` gives a zero-copy `PricedSurfaceView` over an LRU-bounded
   partition mmap cache; `load_surface` gives an owned `PricedSurface`;
   `refresh()` picks up an external writer's generation bump. Const queries are

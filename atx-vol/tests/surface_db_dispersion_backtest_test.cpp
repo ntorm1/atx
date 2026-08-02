@@ -158,7 +158,7 @@
 #include "atx/vol/american.hpp"              // al_fast_opts, AmericanMethod
 #include "atx/vol/backtest.hpp"              // Clock, MarketSnapshot, FrictionModel
 #include "atx/vol/dispersion.hpp"            // DispersionSide, WeightingScheme, StrikeRule
-#include "atx/vol/dispersion_backtest.hpp"   // DispersionBacktestConfig
+#include "atx/vol/research/dispersion_backtest.hpp"   // DispersionBacktestConfig
 #include "atx/vol/dispersion_surface_db.hpp" // read_dispersion_backtest_config
 #include "atx/vol/priced_surface.hpp"        // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"              // HedgeSpec

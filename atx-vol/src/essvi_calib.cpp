@@ -17,7 +17,7 @@
 #include "atx/vol/detail/calib_shared.hpp"  // detail::outer_cap + shared LM constants
 #include "atx/vol/detail/resid_basis.hpp"  // dense C2 residual basis (shared with hot-path eval)
 #include "atx/vol/detail/robust.hpp"   // huber_weights_strided
-#include "atx/vol/parallel_for.hpp"    // parallel_for_dynamic, atx_auto_worker_count
+#include "atx/vol/detail/parallel_for.hpp"    // parallel_for_dynamic, atx_auto_worker_count
 #include "atx/vol/simd/essvi_batch.hpp"  // batched w + w-grad kernels (fit hot path)
 #include "atx/vol/vol_surface.hpp"     // essvi_backbone_w, essvi_w_grad3, essvi_phi_max
 
@@ -49,6 +49,13 @@ constexpr double kDefaultT = 1.0 / 365.25;
 // Keep the cube strictly interior so central differences and the reparam
 // clamps never collapse a step onto a box face.
 constexpr double kCubeEdge = 1.0e-6;
+
+// The hot-path total-variance positivity net `essvi_total_w` applies (must match
+// the 1e-12 floor in src/vol_surface.cpp, documented on the declaration in
+// vol_surface.hpp). Total variance AT this value is clamped, not fitted: the
+// evaluator substituted it for a non-positive backbone+residual sum. Anything at
+// or below it is economically zero vol and must never be scored as a valid fit.
+constexpr double kTotalWFloor = 1.0e-12;
 
 // Below this year-fraction a chain is treated as expired and skipped by the
 // surface driver (mirrors the C `T_MIN_FIT`: half an hour in year units).
@@ -415,7 +422,22 @@ bool lee_project(double& psi, double& p, double& lambda, const ThetaBand& band,
 // Lee/Roper density g(k) = (1 - k·w'/2w)² - (w'²/4)(¼ + 1/w) + w''/2 on the TOTAL
 // (backbone + residual) variance, min over a grid spanning the fitted range.
 // Central finite differences (matches arb.hpp's butterfly check). Returns a large
-// negative sentinel on a non-positive w (treated as a violation).
+// negative sentinel where total variance has COLLAPSED (treated as a violation).
+//
+// The collapse test is `w <= kTotalWFloor`, NOT `w <= 0`: `essvi_total_w` already
+// substitutes the 1e-12 hot-path net for any non-positive backbone+residual sum,
+// so a `w > 0` test can never fire and the whole guard is dead code. Worse, the
+// clamp makes a collapsed stencil perfectly FLAT — w == w(k±h) == 1e-12 — so
+// w' = w'' = 0 and the density reads g = +1, i.e. the most arb-free score
+// possible, while the slice serves ~1e-6 vol. Testing against the floor catches
+// both the clamped case and the (unclamped) sub-floor case; strictly above the
+// floor the formula is self-policing, because a genuinely tiny w with a non-zero
+// slope drives -(w'²/4)/w hugely negative on its own.
+//
+// A collapse is scored as a VIOLATION rather than an outright fit rejection, per
+// this file's convention: the caller's greedy coordinate projection then damps
+// the offending residual coefficient and retries, and falls back to a
+// backbone-only slice if no arb-free residual is reachable.
 [[nodiscard]] double dense_resid_min_g(const EssviParams& s, double kmax,
                                       double* k_worst = nullptr) noexcept {
   constexpr int kNg = 80;
@@ -426,7 +448,7 @@ bool lee_project(double& psi, double& p, double& lambda, const ThetaBand& band,
   for (int i = 0; i <= kNg; ++i) {
     const double k = klo + (khi - klo) * static_cast<double>(i) / kNg;
     const double w = essvi_total_w(s, k);
-    if (!(w > 0.0) || !std::isfinite(w)) {
+    if (!(w > kTotalWFloor) || !std::isfinite(w)) {
       if (k_worst != nullptr) {
         *k_worst = k;
       }
@@ -1192,8 +1214,7 @@ struct ChainFitResult {
     // worker id (race-free). Phase 2 walks the results in original chain order
     // and runs the SAME `consume` reduction, so slice order/count + FitDiag are
     // bit-identical to the serial path. A worker exception is recorded as a
-    // failed slot — an escape would std::terminate the jthread (calib_pool
-    // precedent).
+    // failed slot — an escape would std::terminate the jthread.
     std::vector<ChainFitResult> results(n_chains);
     std::vector<FitScratch> scratch(nt);
     parallel_for_dynamic(n_chains, nt, [&](std::size_t i, unsigned wid) {

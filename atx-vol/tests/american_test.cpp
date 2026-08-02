@@ -16,11 +16,11 @@
 #include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/correction.hpp"
-#include "atx/vol/counters.hpp"
-#include "atx/vol/curve.hpp"    // DividendEvent, forward_div_corrected (G2 dDiv)
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/detail/adjoint_greeks.hpp" // european_greeks_adjoint dP/dq (G2)
 #include "atx/vol/dividend.hpp" // hybrid_forward, hybrid_forward_div_jacobian (G2)
 #include "atx/vol/greeks.hpp"
+#include "atx/vol/rates_curve.hpp"    // DividendEvent, forward_div_corrected (G2 dDiv)
 #include "support/isa_golden_tol.hpp"
 #include "support/oracle_pde_golden.hpp"
 #include "support/oracle_pricer_pde.hpp"
@@ -225,6 +225,131 @@ TEST(AmericanDegenerateContract, GreeksErrorButVegaReturnsZeroSentinel) {
   }
 }
 
+// ── Degenerate-sigma agreement: FD bundle vs the pricer (plan 1.17) ────────
+//
+// andersen_lake_core answers the sigma <= 1e-8 corner with
+// sigma_zero_american_limit = max(df*(forward intrinsic), spot intrinsic), while
+// american_greeks_fd's fast-lane stencil evaluators (Pput/Pcall) and
+// american_delta's put_px answered the SAME corner with the bare spot intrinsic.
+// On a carry-dominant contract those differ by the whole discounted-forward
+// intrinsic, so the FD bundle's price silently disagreed with american_price on
+// identical inputs. Every route must serve the pricer's value, bit-for-bit.
+TEST(AmericanDegenerateSigma, GreeksFdPriceEqualsAmericanPrice_Put) {
+  // r = 0, q > 0: df*(K - F) = 9.5 while the spot intrinsic is 0 (S == K).
+  const double S = 100.0, K = 100.0, T = 1.0, sigma = 1.0e-9, r = 0.0, q = 0.10;
+  const double px = value_or_fail(
+      american_price(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake, std::nullopt));
+  EXPECT_GT(px, 9.0) << "test point must have a non-trivial discounted-forward intrinsic";
+  const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake,
+                                    std::nullopt,
+                                    /*warm_start=*/false);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  EXPECT_TRUE(bits_equal(g->price, px)) << "fd " << g->price << " vs price " << px;
+  // Warm-start path shares the same stencil evaluator; pin it too.
+  const auto gw = american_greeks_fd(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake,
+                                     std::nullopt,
+                                     /*warm_start=*/true);
+  ASSERT_TRUE(gw.has_value()) << gw.error().to_string();
+  EXPECT_TRUE(bits_equal(gw->price, px));
+}
+
+TEST(AmericanDegenerateSigma, GreeksFdPriceEqualsAmericanPrice_Call) {
+  // q = 0, r > 0: df*(F - K) = 9.5 while the spot intrinsic is 0 (S == K).
+  const double S = 100.0, K = 100.0, T = 1.0, sigma = 1.0e-9, r = 0.10, q = 0.0;
+  const double px = value_or_fail(
+      american_price(S, K, T, sigma, r, q, Side::Call, AmericanMethod::AndersenLake, std::nullopt));
+  EXPECT_GT(px, 9.0) << "test point must have a non-trivial discounted-forward intrinsic";
+  const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Call, AmericanMethod::AndersenLake,
+                                    std::nullopt,
+                                    /*warm_start=*/false);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  EXPECT_TRUE(bits_equal(g->price, px)) << "fd " << g->price << " vs price " << px;
+}
+
+// american_delta's put fast lane documents itself as BIT-IDENTICAL to
+// american_greeks_fd's put delta ("identical stencil, step, and guard chain"), so
+// its degenerate-sigma guard has to move with the bundle's.
+TEST(AmericanDegenerateSigma, DeltaMatchesGreeksFdDelta_Put) {
+  const double S = 100.0, K = 100.0, T = 1.0, sigma = 1.0e-9, r = 0.0, q = 0.10;
+  const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake,
+                                    std::nullopt,
+                                    /*warm_start=*/false);
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  const double d = value_or_fail(
+      american_delta(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake, std::nullopt));
+  EXPECT_TRUE(bits_equal(d, g->delta)) << "delta " << d << " vs fd delta " << g->delta;
+  // The sigma->0 put value is smooth in S here (df*(K-F) dominates the spot
+  // intrinsic on both spot stencils), so the delta is the carry-discounted -e^{-qT},
+  // NOT the exercise-region -1 the bare-intrinsic guard produced.
+  EXPECT_NEAR(d, -std::exp(-q * T), 1.0e-9);
+}
+
+// ── Wholly frozen boundary sweep (plan 1.7) ────────────────────────────────
+//
+// A collocation node whose fixed-point denominator D collapses is FROZEN at its
+// seed value, and the freeze skips the |Δy| update — so it contributes nothing to
+// the sweep's residual. A sweep that freezes EVERY node therefore reports
+// max|Δy| == 0 ("converged") after moving nothing, and the solve used to return
+// Ok carrying the raw Barone-Adesi-Whaley seed, i.e. a silently unsolved boundary.
+//
+// Reachable with a heavy-carry contract at a sigma just above the degenerate
+// short-circuit: xmax = K*min(1, r/q) pins the whole boundary an order below K,
+// and with sigma ~ 1e-7 every d_plus argument (tip and quadrature) underflows
+// norm_cdf to exactly zero, collapsing D at every node.
+TEST(AndersenLakeFrozenSweep, AllNodesFrozen_IsNotReportedAsConverged) {
+  using atx::vol::detail::al_boundary_jn_sweeps_to_converge;
+  using atx::vol::detail::AlSeedMode;
+  const double S = 100.0, K = 100.0, T = 1.0, sigma = 1.0e-7, r = 0.05, q = 0.50;
+  ASSERT_EQ(classify_spec(r, q, Side::Put), Regime::American);
+  ASSERT_GT(sigma, 1.0e-8); // above the degenerate guard: a real boundary solve runs
+
+  // Residual view: at tol == 0 a genuine sweep off a BAW seed can never report
+  // "converged", so a count of 1 is the frozen-node residual lie itself.
+  const int sweeps =
+      al_boundary_jn_sweeps_to_converge(K, T, sigma, r, q, std::nullopt, AlSeedMode::Baw, 0.0, 8);
+  EXPECT_EQ(sweeps, 8) << "a wholly frozen sweep must never be counted as converged";
+
+  // Every route that runs the boundary solve must report the failure, not a price
+  // off the seed.
+  const auto p = andersen_lake(S, K, T, sigma, r, q, Side::Put);
+  ASSERT_FALSE(p.has_value()) << "priced " << (p ? *p : 0.0) << " from an unsolved boundary";
+  EXPECT_EQ(p.error().code(), atx::core::ErrorCode::NotImplemented);
+
+  const auto g = american_greeks_fd(S, K, T, sigma, r, q, Side::Put, AmericanMethod::AndersenLake,
+                                    std::nullopt,
+                                    /*warm_start=*/false);
+  EXPECT_FALSE(g.has_value());
+
+  const double strikes[] = {100.0};
+  std::vector<double> px(1, 0.0);
+  EXPECT_FALSE(andersen_lake_put_slice(S, std::span<const double>(strikes), T, sigma, r, q,
+                                       std::span<double>(px), std::nullopt)
+                   .has_value());
+
+  // The retained pricer's failure channel is NaN, not an error code.
+  AloPricer pr(S, K, T, r, q, Side::Put);
+  EXPECT_TRUE(std::isnan(pr.price(sigma)));
+
+  // A call with the carry swapped freezes the same internal-put boundary.
+  const auto c = andersen_lake(S, K, T, sigma, /*r=*/0.50, /*q=*/0.05, Side::Call);
+  ASSERT_FALSE(c.has_value());
+  EXPECT_EQ(c.error().code(), atx::core::ErrorCode::NotImplemented);
+  EXPECT_FALSE(andersen_lake_call_slice(S, std::span<const double>(strikes), T, sigma,
+                                        /*r=*/0.50, /*q=*/0.05, std::span<double>(px), std::nullopt)
+                   .has_value());
+}
+
+// The frozen-sweep failure is confined to the degenerate-sigma corner: a normal
+// contract at the same carry still solves and prices.
+TEST(AndersenLakeFrozenSweep, HeavyCarryAtNormalSigma_StillPrices) {
+  const double S = 100.0, K = 100.0, T = 1.0, r = 0.05, q = 0.50;
+  for (double sigma : {0.005, 0.05, 0.20, 0.80}) {
+    const auto p = andersen_lake(S, K, T, sigma, r, q, Side::Put);
+    ASSERT_TRUE(p.has_value()) << "sigma=" << sigma << " : " << p.error().to_string();
+    EXPECT_GE(*p, std::max(K - S, 0.0));
+  }
+}
+
 // ── McDonald-Schroder put-call symmetry ─────────────────────────────────
 
 TEST(AndersenLake, McDonaldSchroderSymmetry_CallEqualsSwappedPut) {
@@ -241,8 +366,8 @@ TEST(AndersenLake, CanonicalAtmZeroCarry_PremiumMatchesReference) {
   const double S = 100.0, K = 100.0, T = 1.0, sigma = 0.25, r = 0.05, q = 0.05;
   const double expected_premium = 0.1069526779971959;
 
-  const AlOpts opts{/*n_collocation=*/32, /*n_quadrature=*/64,
-                    /*max_newton_iter=*/16, /*tol=*/1.0e-13};
+  const AlOpts opts{
+      .n_collocation = 32, .n_quadrature = 64, .max_newton_iter = 16, .tol = 1.0e-13};
   const double p = value_or_fail(andersen_lake(S, K, T, sigma, r, q, Side::Put, opts));
   const double euro = euro_put(S, K, T, sigma, r, q);
   EXPECT_LT(std::fabs((p - euro) - expected_premium), 1.0e-7);
@@ -2292,6 +2417,25 @@ TEST(AndersenLakePutSlice, InputValidation) {
                    .has_value());
 }
 
+// Empty slice: a zero-strike request is a valid no-op, exactly as the CALL slice
+// treats it (that one never indexes strikes[] outside the per-strike loops). The
+// put slice reaches the American arm with n == 0 whenever the degenerate/European
+// short-circuits do not fire, and used to read strikes[0] there — an out-of-bounds
+// read on an empty span — to pick its reference strike.
+TEST(AndersenLakePutSlice, EmptyStrikes_ReturnsOkWithoutReadingReferenceStrike) {
+  const std::span<const double> no_strikes{};
+  const std::span<double> no_out{};
+  // American arm (r > 0, non-degenerate T/sigma): the branch that reads strikes[0].
+  EXPECT_TRUE(andersen_lake_put_slice(100.0, no_strikes, 0.5, 0.2, 0.03, 0.0, no_out).has_value());
+  // The call slice's answer on the same empty request, for the consistency claim.
+  EXPECT_TRUE(andersen_lake_call_slice(100.0, no_strikes, 0.5, 0.2, 0.0, 0.03, no_out).has_value());
+  // Degenerate / European short-circuits already handled n == 0; keep them pinned.
+  EXPECT_TRUE(andersen_lake_put_slice(100.0, no_strikes, 0.0, 0.2, 0.03, 0.0, no_out).has_value());
+  EXPECT_TRUE(andersen_lake_put_slice(100.0, no_strikes, 0.5, 0.0, 0.03, 0.0, no_out).has_value());
+  EXPECT_TRUE(
+      andersen_lake_put_slice(100.0, no_strikes, 0.5, 0.2, -0.01, 0.02, no_out).has_value());
+}
+
 // ── Negative-rate regime classification (Task 1, P0.5) ──────────────────────
 //
 // The American pricer's no-early-exercise short-circuit was wrong under negative
@@ -2426,7 +2570,11 @@ TEST(BoundaryHoist, SpecializedMatchesGeneric) {
   // K2: (7,8) ql_fast marks rung — now al_fp_specialized. Decoupled premium (32)
   // stays generic; only the (nb=7, n_quad_fp=8) FP block is hoisted, so the
   // specialized kernel must be bit-identical to the generic runtime path here too.
-  const std::optional<AlOpts> qlfast = AlOpts{7, 8, 2, 1.0e-8, 32};
+  const std::optional<AlOpts> qlfast = AlOpts{.n_collocation = 7,
+                                              .n_quadrature = 8,
+                                              .n_quad_price = 32,
+                                              .max_newton_iter = 2,
+                                              .tol = 1.0e-8};
 
   const double S = 100.0;
   int checked = 0;
@@ -2491,7 +2639,12 @@ TEST(BoundaryHoist, HoistedBaryTableMatchesInlineFormula) {
   using atx::vol::detail::al_bary_hoist_audit;
   const std::optional<AlOpts> fast = al_fast_opts();          // {7,16}
   const std::optional<AlOpts> accurate = std::nullopt;        // {12,24}
-  const std::optional<AlOpts> qlfast = AlOpts{7, 8, 2, 1.0e-8, 32}; // {7,8}
+  const std::optional<AlOpts> qlfast = AlOpts{// {7,8}
+                                              .n_collocation = 7,
+                                              .n_quadrature = 8,
+                                              .n_quad_price = 32,
+                                              .max_newton_iter = 2,
+                                              .tol = 1.0e-8};
 
   std::size_t total_entries = 0;
   int audited = 0;
@@ -3366,27 +3519,34 @@ TEST(AlPresetLadder, NQuadPriceDecouple_BackwardCompatAndSeamEquivalent) {
   double max_decoupled_gap = 0.0;
   for (const C& c : grid) {
     // (1) default (tied) == explicit-tied-to-16.
-    const auto p_tied0 =
-        andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 16, 4, 1.0e-8});
-    const auto p_tied16 =
-        andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 16, 4, 1.0e-8, 16});
+    const AlOpts fp16{.n_collocation = 7, .n_quadrature = 16, .max_newton_iter = 4, .tol = 1.0e-8};
+    const AlOpts fp16_p16{.n_collocation = 7,
+                          .n_quadrature = 16,
+                          .n_quad_price = 16,
+                          .max_newton_iter = 4,
+                          .tol = 1.0e-8};
+    const auto p_tied0 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, fp16);
+    const auto p_tied16 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, fp16_p16);
     ASSERT_TRUE(p_tied0.has_value());
     ASSERT_TRUE(p_tied16.has_value());
     EXPECT_EQ(*p_tied0, *p_tied16) << "n_quad_price=0 must tie to n_quad_fp (backward compat)";
 
     // (2) decoupled public field == the A6 premium-override seam (both fp=8, price=32).
-    const auto p_field =
-        andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 8, 2, 1.0e-8, 32});
-    const auto p_seam =
-        andersen_lake_seeded(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 8, 2, 1.0e-8},
-                             Seed::Baw, /*n_quad_price=*/32);
+    const AlOpts fp8{.n_collocation = 7, .n_quadrature = 8, .max_newton_iter = 2, .tol = 1.0e-8};
+    const AlOpts fp8_p32{.n_collocation = 7,
+                         .n_quadrature = 8,
+                         .n_quad_price = 32,
+                         .max_newton_iter = 2,
+                         .tol = 1.0e-8};
+    const auto p_field = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, fp8_p32);
+    const auto p_seam = andersen_lake_seeded(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, fp8,
+                                             Seed::Baw, /*n_quad_price=*/32);
     ASSERT_TRUE(p_field.has_value());
     ASSERT_TRUE(p_seam.has_value());
     EXPECT_EQ(*p_field, *p_seam) << "public n_quad_price must match the andersen_lake_seeded seam";
 
     // (3) accumulate the decoupled-vs-tied gap (price=32 vs tied price=8).
-    const auto p_tied8 =
-        andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 8, 2, 1.0e-8});
+    const auto p_tied8 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, fp8);
     ASSERT_TRUE(p_tied8.has_value());
     max_decoupled_gap = std::max(max_decoupled_gap, std::abs(*p_field - *p_tied8));
   }
@@ -3415,16 +3575,60 @@ TEST(AlPresetLadder, SubMinimumQuadratureFloorsToEight) {
   double max_8_vs_24_gap = 0.0;
   for (const C& c : grid) {
     // n_quadrature 4 (< 8) and explicit 8 must resolve to the SAME scheme.
-    const auto p4 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 4, 6, 1.0e-8});
-    const auto p8 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 8, 6, 1.0e-8});
-    const auto p24 =
-        andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, AlOpts{7, 24, 6, 1.0e-8});
+    const auto with_fp = [](std::uint16_t fp) {
+      return AlOpts{.n_collocation = 7, .n_quadrature = fp, .max_newton_iter = 6, .tol = 1.0e-8};
+    };
+    const auto p4 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, with_fp(4));
+    const auto p8 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, with_fp(8));
+    const auto p24 = andersen_lake(c.S, c.K, c.T, c.sigma, c.r, c.q, c.side, with_fp(24));
     ASSERT_TRUE(p4.has_value() && p8.has_value() && p24.has_value());
     EXPECT_EQ(*p4, *p8) << "n_quadrature=4 must resolve to the 8-node scheme, not the 24 default";
     max_8_vs_24_gap = std::max(max_8_vs_24_gap, std::abs(*p8 - *p24));
   }
   EXPECT_GT(max_8_vs_24_gap, 0.0)
       << "the 8-node and 24-node schemes must genuinely differ (floor has teeth)";
+}
+
+// S4-T19 (plan item 4.2): AlOpts is a designated-init-only aggregate. The
+// compile-time half of that contract is the field-count pin in american.hpp;
+// this is the runtime half. It asserts the two properties positional init could
+// never give: a named initializer lands on the field its name says regardless of
+// declaration order, and an OMITTED field takes its own default member
+// initializer rather than a neighbour's value. The preset assertions are the
+// determinism gate for the `n_quad_price` move — both shipped presets must
+// resolve to exactly the values they carried before the reorder.
+TEST(AlOptsContract, DesignatedInitBindsByName) {
+  const AlOpts explicit_ql{.n_collocation = 7,
+                           .n_quadrature = 8,
+                           .n_quad_price = 32,
+                           .max_newton_iter = 2,
+                           .tol = 1.0e-8};
+  EXPECT_EQ(explicit_ql.n_collocation, 7);
+  EXPECT_EQ(explicit_ql.n_quadrature, 8);
+  EXPECT_EQ(explicit_ql.n_quad_price, 32);
+  EXPECT_EQ(explicit_ql.max_newton_iter, 2);
+  EXPECT_DOUBLE_EQ(explicit_ql.tol, 1.0e-8);
+
+  const AlOpts partial{.n_quadrature = 48};
+  EXPECT_EQ(partial.n_collocation, 12);
+  EXPECT_EQ(partial.n_quadrature, 48);
+  EXPECT_EQ(partial.n_quad_price, 0);
+  EXPECT_EQ(partial.max_newton_iter, 8);
+  EXPECT_DOUBLE_EQ(partial.tol, 1.0e-10);
+
+  const AlOpts def = atx::vol::al_default_opts();
+  EXPECT_EQ(def.n_collocation, 12);
+  EXPECT_EQ(def.n_quadrature, 24);
+  EXPECT_EQ(def.n_quad_price, 0);
+  EXPECT_EQ(def.max_newton_iter, 8);
+  EXPECT_DOUBLE_EQ(def.tol, 1.0e-10);
+
+  const AlOpts fast = al_fast_opts();
+  EXPECT_EQ(fast.n_collocation, 7);
+  EXPECT_EQ(fast.n_quadrature, 16);
+  EXPECT_EQ(fast.n_quad_price, 0);
+  EXPECT_EQ(fast.max_newton_iter, 4);
+  EXPECT_DOUBLE_EQ(fast.tol, 1.0e-8);
 }
 
 // ══ G2: carry sensitivities ∂P/∂q and ∂P/∂Div (gaps-review finding 2) ══════

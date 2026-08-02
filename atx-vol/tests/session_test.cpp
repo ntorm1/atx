@@ -6,20 +6,22 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/arb.hpp" // QuoteFlag (carry-skip diagnostics test)
 #include "atx/vol/calib.hpp"
-#include "atx/vol/counters.hpp"
-#include "atx/vol/curve.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/data.hpp"
 #include "atx/vol/detail/deam_pass_counter.hpp" // C1 duplicate-de-Am proof
 #include "atx/vol/opra_panel.hpp"               // OpraLoadSpec (C1 real-OPRA characterization)
 #include "atx/vol/panel.hpp"
 #include "atx/vol/query_pricing.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/s3.hpp"
 #include "atx/vol/session.hpp"
 #include "atx/vol/types.hpp"
@@ -164,6 +166,53 @@ using atx::vol::year_fraction;
 
 } // namespace
 
+// ── The SessionInputs construction contract (S4-T19, plan item 4.2) ─────────
+
+// SessionInputs is a designated-init-only aggregate. The compile-time half of
+// that contract is the field-count pin in session.hpp; this is the runtime half.
+// It asserts the two properties positional init could never give: a named
+// initializer lands on the field its name says regardless of declaration order,
+// and an OMITTED field takes its own default member initializer rather than a
+// neighbour's value. The default assertions double as the determinism gate for
+// `curve_pinned`, the field this task moved out of its append-only parking spot
+// and up beside the `curve` it qualifies.
+TEST(SessionInputsContract, DesignatedInitBindsByName) {
+  const SessionInputs defaults{};
+  EXPECT_DOUBLE_EQ(defaults.S, 0.0);
+  EXPECT_DOUBLE_EQ(defaults.r, 0.0);
+  EXPECT_TRUE(defaults.expiry_rate_T.empty());
+  EXPECT_TRUE(defaults.expiry_rates.empty());
+  EXPECT_TRUE(defaults.cash_divs.empty());
+  EXPECT_EQ(defaults.now_ts_ns, 0);
+  EXPECT_EQ(defaults.curve.kind, VolCurveKind::Essvi);
+  EXPECT_FALSE(defaults.curve_pinned);
+  EXPECT_DOUBLE_EQ(defaults.band_k, 1.0);
+  EXPECT_TRUE(defaults.use_correction_cache);
+  EXPECT_TRUE(defaults.score_parity);
+  EXPECT_TRUE(defaults.enforce_calendar_floor);
+  EXPECT_FALSE(defaults.use_deam_cache_for_fit);
+  EXPECT_EQ(defaults.fit_workers, 0u);
+  EXPECT_FALSE(defaults.collect_stage_timings);
+  EXPECT_EQ(defaults.interp, InterpMode::PiecewiseTotalVariance);
+  EXPECT_EQ(defaults.events, nullptr);
+
+  // `curve_pinned` sits directly beneath `curve` now; naming both binds both and
+  // leaves every neighbour on its own default.
+  const SessionInputs pinned{
+      .S = 100.0,
+      .r = 0.03,
+      .curve = atx::vol::CurveConfig{VolCurveKind::ConvexDense},
+      .curve_pinned = true,
+  };
+  EXPECT_DOUBLE_EQ(pinned.S, 100.0);
+  EXPECT_DOUBLE_EQ(pinned.r, 0.03);
+  EXPECT_EQ(pinned.curve.kind, VolCurveKind::ConvexDense);
+  EXPECT_TRUE(pinned.curve_pinned);
+  EXPECT_DOUBLE_EQ(pinned.band_k, 1.0);
+  EXPECT_TRUE(pinned.use_correction_cache);
+  EXPECT_EQ(pinned.now_ts_ns, 0);
+}
+
 TEST(VolaSession, Build_KnownTruthPanel_SucceedsWithFourArbFreeSlices) {
   const SynthPanelSpec spec = make_spec();
   Universe u;
@@ -220,6 +269,64 @@ TEST(VolaSession, Build_KnownTruthPanel_SucceedsWithFourArbFreeSlices) {
   for (std::size_t i = 1; i < exps.size(); ++i) {
     EXPECT_LT(exps[i - 1].T, exps[i].T);
   }
+}
+
+// ── 2.12: a built session must not retain a build-time cache BORROW ──────────
+//
+// SessionInputs::deam.caches is NON-OWNING: a pair of caller-owned
+// CorrectionCache pointers the fit and the certification pass read during
+// `build`. A built session never serves through them — every query goes through
+// its own corr_call_/corr_put_/query cache bank — yet build() moved the whole
+// SessionInputs in verbatim, so the borrow stayed reachable through the public
+// inputs() accessor for the session's entire life with no lifetime contract
+// attached. The warm-start chain (corpus.cpp) genuinely outlives it: each date
+// re-anchors its carried caches on the next date's freshly built pair,
+// destroying exactly what the previous date's still-held session points at.
+// build() already released the borrow when its stale gate REJECTED the supplied
+// caches; it now releases on every path.
+TEST(VolaSession, Build_DoesNotRetainCallerSuppliedCorrectionCacheBorrow) {
+  using atx::vol::AmericanCorrectionCaches;
+  using atx::vol::CorrectionCache;
+
+  const SynthPanelSpec spec = make_spec();
+  Universe u;
+  const Underlying *under = install(spec, u);
+  ASSERT_NE(under, nullptr);
+
+  std::optional<VolaSession> session;
+  {
+    // Caller-owned caches whose lifetime ends with this scope — precisely the
+    // shape the warm-start chain has. The box covers the panel; the fit is kept
+    // off them (use_deam_cache_for_fit = false) so this test isolates the
+    // lifetime question from any de-Am routing question.
+    auto call = CorrectionCache::build(/*n_k=*/16, /*n_T=*/8, /*n_s=*/12, spec.r, spec.r,
+                                       /*k_log_min=*/-0.5, /*k_log_max=*/0.5, /*T_min=*/0.05,
+                                       /*T_max=*/1.5, /*sigma_min=*/0.05, /*sigma_max=*/1.0,
+                                       Side::Call);
+    auto put = CorrectionCache::build(16, 8, 12, spec.r, spec.r, -0.5, 0.5, 0.05, 1.5, 0.05, 1.0,
+                                      Side::Put);
+    ASSERT_TRUE(call.has_value()) << call.error().to_string();
+    ASSERT_TRUE(put.has_value()) << put.error().to_string();
+
+    SessionInputs in = make_inputs(spec);
+    in.use_deam_cache_for_fit = false;
+    in.deam.caches = AmericanCorrectionCaches{&*call, &*put};
+
+    auto built = VolaSession::build(*under, in);
+    ASSERT_TRUE(built.has_value()) << built.error().to_string();
+    session.emplace(std::move(*built));
+  } // the supplied caches die here; the session must not still point at them
+
+  EXPECT_EQ(session->inputs().deam.caches.call, nullptr)
+      << "the session retained a borrowed call-side CorrectionCache past build()";
+  EXPECT_EQ(session->inputs().deam.caches.put, nullptr)
+      << "the session retained a borrowed put-side CorrectionCache past build()";
+
+  // And it still serves entirely off its own state.
+  const double T = under->chains.front().T;
+  EXPECT_GT(session->iv(spec.spot, T), 0.0);
+  const auto price = session->fair_value(spec.spot, T, Side::Call);
+  EXPECT_TRUE(price.has_value()) << price.error().to_string();
 }
 
 // C1 (perf, class accuracy-improving): the eSSVI session build must de-Americanize

@@ -20,7 +20,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/american.hpp"         // AmericanGreeks
-#include "atx/vol/pricing_executor.hpp" // WS-P P4: batched-basket strike resolve fan-out
+#include "atx/vol/detail/pricing_executor.hpp" // WS-P P4: batched-basket strike resolve fan-out
 
 namespace atx::vol {
 
@@ -985,8 +985,10 @@ Status DeclarativeStrategy::on_step(const MarketSnapshot &base, std::size_t step
   bool effective_book_empty = book.lots.empty();
   if (close_at_horizon) {
     // Identify every horizon close without mutating the live book. If this step
-    // also enters, the closes commit only after the new cohort is fully prepared.
-    // The engine's before/after
+    // also enters, the closes commit only after the new cohort is fully prepared;
+    // if the entry side finds nothing to open they still commit (see the no-trade
+    // branch below) — the close is an unconditional risk rule, not a leg of the
+    // entry. The engine's before/after
     // `book.lots` diff (src/backtest.cpp `execute`) books these as roll-closes
     // at today's marks — never settlement (the engine's own expiry settle runs
     // earlier in its loop, strictly before on_step, so a lot closed here never
@@ -1006,9 +1008,39 @@ Status DeclarativeStrategy::on_step(const MarketSnapshot &base, std::size_t step
   }
   Result<std::optional<PendingCohort>> prepared = prepare_cohort(base, next_lot_id, price_options);
   if (!prepared) {
+    // FATAL entry error: leave the book exactly as the step found it. A non-Ok
+    // on_step aborts the whole run (`run_backtest`, src/backtest.cpp), so no lot
+    // can be carried past its horizon through this path, and an untouched book is
+    // the one the failing step is diagnosed against.
     return Err(prepared.error());
   }
   if (!prepared->has_value()) {
+    // NO-TRADE is not NO-CLOSE. The entry side found nothing to open today (a
+    // DropRenormalize/Unavailable step, or an empty sizing) but the run CONTINUES,
+    // so a lot left here rides past its close horizon to expiry and settles at
+    // intrinsic — precisely the economics CloseAtHorizon exists to avoid. Commit
+    // the staged closes; `d.clear` is unreachable in this mode (lifecycle_decide
+    // never returns clear=true for CloseAtHorizon), so this is the whole close.
+    //
+    // CONSEQUENCE, by design: a committed close is a roll-close in the engine's
+    // before/after diff, and `execute` fails closed when a roll-close lot has no
+    // surface on this step ("run_backtest: no surface for roll-close lot", see
+    // src/backtest.cpp). The no-trade branch is reached exactly when names are
+    // dropping out of the board, so "cannot build the entry AND cannot price a
+    // held lot" is a correlated step, and such a run now returns Err where it
+    // used to complete (visible only under UnpricedLotPolicy::ExcludeAndReport —
+    // the Error policy already aborts on the unpriced held lot earlier in the
+    // same iteration). That is NOT a new class of failure: the !d.open branch
+    // above commits the same closes and has always reached the same engine
+    // contract on such a step. Suppressing it here — closing only lots that
+    // happen to be priceable today — would re-create the ride-to-settlement
+    // defect for precisely the lots whose data is deteriorating, and would make
+    // the close depend on whether the entry side happened to succeed. Pinned by
+    // Strategy.CloseAtHorizonClosingALotWithNoSurfaceFailsClosedInTheEngine,
+    // which asserts the no-trade and off-tick branches fail identically.
+    if (close_at_horizon) {
+      std::erase_if(book.lots, closes_at_horizon);
+    }
     return Ok();
   }
   PendingCohort &pending = **prepared;

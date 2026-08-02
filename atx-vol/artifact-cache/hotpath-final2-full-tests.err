@@ -1,3 +1,0 @@
-[EssviDeAm] RAW: max_iv_dev(|k|<=0.04)=2.411141 (24111.4 bps); longest tenor T=0.997 ATM fit=2.5692 vs truth=0.1620
-[EssviDeAm] COLD: dev_raw=2.411141 (24111.4 bps) dev_cold=0.000000 (0.0 bps); longest tenor ATM cold=0.1620 vs truth=0.1620
-[EssviDeAm] cached-vs-cold: max|d_iv|=0.000007 (0.07 bps) max|d_theta|=7.459e-07 max|d_rho|=5.226e-05

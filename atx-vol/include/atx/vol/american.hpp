@@ -33,6 +33,7 @@
 #include <span>
 #include <vector>
 
+#include "atx/vol/detail/aggregate_arity.hpp" // AlOpts field-count drift pin
 #include "atx/vol/types.hpp"
 
 namespace atx::vol {
@@ -46,11 +47,26 @@ struct CorrectionBlend;
 // Mirrors the C `AtsVolALOpts`. The public knobs are mapped internally to a
 // QuantLib-style accuracy preset (boundary nodes, fixed-point / premium
 // quadrature orders, and sweep counts).
+//
+// CONSTRUCTION CONTRACT (v1, plan item 4.2) — DESIGNATED INITIALIZERS ONLY:
+//
+//   AlOpts{.n_collocation = 7, .n_quadrature = 8, .n_quad_price = 32,
+//          .max_newton_iter = 2, .tol = 1.0e-8}
+//
+// Positional aggregate init (`AlOpts{7, 8, 2, 1.0e-8}`) is no longer a supported
+// form. `n_quad_price` used to be pinned to the END of the struct purely so
+// existing 4-argument positional initializers kept compiling — which made
+// declaration ORDER part of the public API and condemned every future knob to
+// live away from the field it belongs with. It now sits beside the fixed-point
+// order it decouples from, and the field-count `static_assert` below turns a
+// silent re-append into a compile error.
+//
+// Tier-A (frozen v1 surface): this reorder is the LAST layout change allowed.
+// After v1 the order is fixed and new knobs append at the end WITHOUT any
+// positional-compatibility promise — designated init is the only contract.
 struct AlOpts {
-  std::uint16_t n_collocation = 12;  // Chebyshev boundary nodes
-  std::uint16_t n_quadrature = 24;   // Gauss-Legendre fixed-point order
-  std::uint16_t max_newton_iter = 8; // total Jacobi-Newton + fixed-point sweeps
-  double tol = 1.0e-10;              // convergence tol on the boundary residual
+  std::uint16_t n_collocation = 12; // Chebyshev boundary nodes
+  std::uint16_t n_quadrature = 24;  // Gauss-Legendre fixed-point order
   // Premium (pricing) Gauss-Legendre order, DECOUPLED from the fixed-point order.
   // 0 (the default) ties it to n_quadrature — the historical behavior, so every
   // existing in-memory / serialized AlOpts resolves to the SAME scheme (K2,
@@ -62,12 +78,22 @@ struct AlOpts {
   // "ql_fast" rung (n_quadrature=8, n_quad_price=32) is ~1.8x cheaper than the
   // tied fast preset at equal accuracy. Quantized to {8,16,24,32,48,64}. See
   // docs/al-preset-ladder.md (QuantLib QdFpLegendreScheme; ALO SSRN 2547027).
-  // NOTE: appended last so 4-arg positional aggregate init (AlOpts{nb,nq,it,tol})
-  // is unchanged; the surface archive decomposes AlOpts field-by-field and does not
-  // (yet) persist this knob, so archived surfaces read it back as 0 (tied) — a
-  // populate tier that bakes a decoupled premium (C3) would extend the archive.
+  // NOTE: the surface archive decomposes AlOpts field-by-field, so this knob
+  // round-trips only through archives/manifests that carry `al_n_quad_price`;
+  // anything written before that column existed reads back as 0 (tied).
   std::uint16_t n_quad_price = 0;
+  std::uint16_t max_newton_iter = 8; // total Jacobi-Newton + fixed-point sweeps
+  double tol = 1.0e-10;              // convergence tol on the boundary residual
 };
+
+// Drift pin (plan item 4.2). AlOpts has exactly FIVE fields. Adding, removing or
+// splitting one breaks this line, which is the point: it forces whoever changes
+// the struct to read the construction contract above instead of appending a knob
+// "for compatibility" with positional initializers that are no longer part of
+// the API.
+static_assert(detail::aggregate_arity_is_v<AlOpts, 5>,
+              "AlOpts field count changed: update this pin, and confirm every "
+              "construction site still uses designated initializers.");
 
 // The C `ats_pricer_al_default_opts()`: {12, 24, 8, 1e-10}.
 //

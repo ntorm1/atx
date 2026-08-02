@@ -17,24 +17,24 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
-#include "atx/vol/american.hpp"   // american_price, american_price_cached, american_greeks
-#include "atx/vol/arb.hpp"        // arb_check_calendar (post-refit recheck)
-#include "atx/vol/correction.hpp" // CorrectionCache, AmericanCorrectionCaches
-#include "atx/vol/counters.hpp"   // counters::ledger — V2 per-board solve attribution
-#include "atx/vol/curve_fit.hpp"  // fit_curve_surface (curve-agnostic driver)
-#include "atx/vol/data.hpp"       // data_install
+#include "atx/vol/american.hpp"         // american_price, american_price_cached, american_greeks
+#include "atx/vol/arb.hpp"              // arb_check_calendar (post-refit recheck)
+#include "atx/vol/correction.hpp"       // CorrectionCache, AmericanCorrectionCaches
+#include "atx/vol/detail/counters.hpp"         // counters::ledger — V2 per-board solve attribution
+#include "atx/vol/curve_fit.hpp"        // fit_curve_surface (curve-agnostic driver)
+#include "atx/vol/data.hpp"             // data_install
 #include "atx/vol/detail/deam_pass_counter.hpp" // C1 proof: cert de-Am pass tally
-#include "atx/vol/dividend.hpp"                 // hybrid_forward (representative carry)
-#include "atx/vol/essvi_calib.hpp"              // essvi_fit_slice (warm-start refit)
-#include "atx/vol/event_vol.hpp"                // EventSchedule, count_events_at, implied_emove
-#include "atx/vol/parallel_for.hpp"             // bounded post-fit cache-bank fan-out
-#include "atx/vol/parity.hpp"                   // chain_parity (incremental diagnostic refresh)
-#include "atx/vol/prepared_fitting.hpp"         // CanonicalPreparedExpiry
-#include "atx/vol/projection.hpp"     // InterpMode, surface_insert_vol_slice, w_on_inserted_slice
-#include "atx/vol/surface_parity.hpp" // run_surface_parity, SurfaceParityInputs/Report
-#include "atx/vol/universe.hpp"       // Universe, Underlying, Uid, Chain
-#include "atx/vol/vol_surface.hpp"    // VolSurface
-#include "atx/vol/vol_time.hpp"       // ns_from_year_fraction (eMove solve)
+#include "atx/vol/dividend.hpp"         // hybrid_forward (representative carry)
+#include "atx/vol/essvi_calib.hpp"      // essvi_fit_slice (warm-start refit)
+#include "atx/vol/event_vol.hpp"        // EventSchedule, count_events_at, implied_emove
+#include "atx/vol/detail/parallel_for.hpp"     // bounded post-fit cache-bank fan-out
+#include "atx/vol/parity.hpp"           // chain_parity (incremental diagnostic refresh)
+#include "atx/vol/detail/prepared_fitting.hpp" // CanonicalPreparedExpiry
+#include "atx/vol/projection.hpp"       // InterpMode, surface_insert_vol_slice, w_on_inserted_slice
+#include "atx/vol/surface_parity.hpp"   // run_surface_parity, SurfaceParityInputs/Report
+#include "atx/vol/universe.hpp"         // Universe, Underlying, Uid, Chain
+#include "atx/vol/vol_surface.hpp"      // VolSurface
+#include "atx/vol/vol_time.hpp"         // ns_from_year_fraction (eMove solve)
 
 // DESIGN / PARITY NOTES
 // ---------------------
@@ -881,6 +881,23 @@ struct SessionCacheGeom {
   return correction.usable(side) && correction.contains(k_log, T, sigma);
 }
 
+// `SessionInputs::deam.caches` is a BUILD-TIME BORROW: a non-owning pair of
+// caller-owned CorrectionCache pointers the fit and the certification pass read.
+// A built session never serves through them — every query goes through its own
+// `corr_call_`/`corr_put_`/`query_cache_bank_` — yet build() moved the inputs in
+// verbatim, so the borrow stayed reachable on the public `inputs()` accessor for
+// the session's whole life, with no lifetime contract attached to it. The
+// warm-start chain (corpus.cpp) genuinely outlives it: each date re-anchors its
+// carried caches on the next date's freshly built pair, destroying exactly what
+// the previous date's still-held session points at.
+//
+// build() ALREADY released the borrow when its stale gate rejected the supplied
+// caches; releasing it on every path — after the last build-time reader, before
+// the inputs are stored — is what makes the stored session self-contained.
+void release_build_time_cache_borrow(SessionInputs &in) noexcept {
+  in.deam.caches = AmericanCorrectionCaches{};
+}
+
 } // namespace
 
 void VolaSession::build_fast_query_cache_bank(const Underlying &under) {
@@ -1337,6 +1354,7 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
     aggregate_input_diagnostics(slice_diag, cdiag);
     cdiag.n_carry_skipped_expiries = crep.n_carry_skipped;
     retain_fitted_term_rates(eff, crep.context);
+    release_build_time_cache_borrow(eff);
     VolaSession session{std::move(placeholder),
                         std::move(crep.context),
                         std::move(crep.per_expiry),
@@ -1514,6 +1532,7 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   diag.n_audit_starved_expiries = rep.n_audit_starved;
 
   retain_fitted_term_rates(eff, rep.context);
+  release_build_time_cache_borrow(eff);
   VolaSession session{std::move(rep.surface),
                       std::move(rep.context),
                       std::move(rep.per_expiry),

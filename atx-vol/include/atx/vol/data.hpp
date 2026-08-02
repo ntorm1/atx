@@ -58,10 +58,10 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/curve.hpp"    // DividendEvent
-#include "atx/vol/types.hpp"    // Result, Status, Side
-#include "atx/vol/universe.hpp" // Universe, Uid, Chain
-#include "atx/vol/vol_time.hpp" // TimeSpec (data_install's T convention)
+#include "atx/vol/rates_curve.hpp"     // DividendEvent
+#include "atx/vol/types.hpp"     // Result, Status, Side
+#include "atx/vol/universe.hpp"  // Universe, Uid, Chain
+#include "atx/vol/vol_time.hpp"  // TimeSpec (data_install's T convention)
 
 namespace atx::vol {
 

@@ -229,6 +229,14 @@ struct Underlying {
 // `contracts` sets the batch length; every other column must be the same
 // length (validated in `apply_quotes`). The C's `exch_masks` column is omitted:
 // `apply_quotes` never consumed it and the `Chain` SoA stores no venue mask.
+//
+// BORROW DIRECTION, stated because it is the opposite of most spans in this
+// library: these name CALLER storage, not universe storage. `apply_quotes` reads
+// each column element-wise and COPIES the values into its own `Chain` SoA — it
+// retains no pointer into the batch — so the columns need only stay alive and
+// unmodified for the duration of that one call, and the caller is free to reuse
+// or free the buffers immediately after it returns. Nothing here outlives the
+// call, so there is nothing to copy out.
 struct QuoteBatch {
   std::span<const ContractId> contracts;
   std::span<const double> bids;

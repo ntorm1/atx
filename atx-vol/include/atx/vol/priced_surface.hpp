@@ -49,6 +49,18 @@
 // concurrently on one published PricedSurface from any number of threads (the
 // underlying CurveSurface, transient caches, and cold fallback are
 // concurrent-const-safe).
+//
+// The one entry that reaches SHARED state is `with_query_pricing`: building a
+// multi-center accelerator fans its independent center builds through the
+// PROCESS-GLOBAL pricing pool (detail/pricing_executor.hpp) rather than spawning
+// its own threads. Two caller-facing consequences, both from that header's
+// Thread-safety section. First, that pool's topology must be set with
+// `configure_pricing_executor` BEFORE the first call that builds it — a
+// preparation is exactly such a call, and afterwards configuration is refused with
+// AlreadyExists. Second, a preparation issued from INSIDE another pool dispatch
+// runs fully inline instead of self-oversubscribing, and the result is
+// bit-identical either way. Serving from an already-prepared surface touches no
+// global state.
 
 #include <cstddef>
 #include <cstdint>
@@ -155,7 +167,7 @@ struct GreekNeeds {
 // A fitted, serialization-ready surface with optional transient query caches.
 // Move-only (owns a move-only `CurveSurface`). Construct via `create` (validating)
 // or receive one from `VolaSession::to_priced_surface` /
-// `SurfaceArchive::map_symbol`.
+// `SurfaceArchiveV2::reconstruct_symbol`.
 class PricedSurface {
 public:
   ~PricedSurface();
@@ -390,6 +402,14 @@ public:
   // ── Introspection ──────────────────────────────────────────────────────────
 
   [[nodiscard]] const CurveSurface &surface() const noexcept { return surface_; }
+  // BORROW of the per-slice carry vector this surface owns. `ctx_` is built once
+  // by the private constructor and never rewritten — query-tier preparation
+  // touches the transient caches, not the carry — so the span is valid for the
+  // surface's lifetime and is safe for concurrent const readers, exactly like the
+  // query entries above. `PricedSurface` is MOVE-ONLY, so the only invalidations
+  // are destruction and move-assignment (a plain move keeps the elements'
+  // addresses; a moved-from surface's span must not be read). Copy the contexts
+  // out if they must outlive the surface.
   [[nodiscard]] std::span<const SliceContext> context() const noexcept { return ctx_; }
   [[nodiscard]] const PricingContext &pricing() const noexcept { return pricing_; }
   [[nodiscard]] std::size_t n_slices() const noexcept { return surface_.n_slices(); }

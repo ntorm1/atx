@@ -1,4 +1,4 @@
-#include "atx/vol/listed_dispersion_pipeline.hpp"
+#include "atx/vol/research/listed_dispersion_pipeline.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -15,14 +15,15 @@
 
 #include "atx/core/error.hpp" // ATX_TRY, Err, Ok, ErrorCode
 #include "atx/core/hash.hpp"  // atx::core::hash_bytes
+#include "atx/vol/detail/log_emit.hpp"
 #include "atx/vol/contract_projection.hpp" // OptionProjectionSpec, ProjectedStrikeSpec, ProjectedOption
 #include "atx/vol/dispersion.hpp"         // DispersionUniverse, DispersionBook, MissingNameSpec, resolve_universe_uids
-#include "atx/vol/dispersion_workflow.hpp" // all_symbols, universe_at, UniverseRow, RunSpec
+#include "atx/vol/research/dispersion_workflow.hpp" // all_symbols, universe_at, UniverseRow, RunSpec
 #include "atx/vol/historical_projection.hpp" // RelativeOptionPosition, PreparedHistoricalProjection, projected_historical_var
 #include "atx/vol/opra_batch.hpp"        // OpraBatchResult, OpraBatchEntry, load_opra_daterange
 #include "atx/vol/portfolio_pricer.hpp"  // kNsPerYear, Position
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, FullGreekSeed
-#include "atx/vol/run_diagnostics.hpp"   // PhaseTimer (optional build-schedule phase timing, T9/O4)
+#include "atx/vol/research/run_diagnostics.hpp"   // PhaseTimer (optional build-schedule phase timing, T9/O4)
 
 namespace atx::vol {
 
@@ -277,8 +278,8 @@ build_listed_dispersion_schedule_audited(
       if (active_expiry == 0) {
         continue;
       }
-      std::fprintf(stderr, "roll deferred on %s: %s\n", ref.date.c_str(),
-                   selected.error().to_string().c_str());
+      detail::log_emitf(LogLevel::Warn, LogStream::Stderr, "roll deferred on %s: %s",
+                        ref.date.c_str(), selected.error().to_string().c_str());
       continue;
     }
     double requested_weight = 0.0;
@@ -294,8 +295,8 @@ build_listed_dispersion_schedule_audited(
       if (active_expiry == 0) {
         continue;
       }
-      std::fprintf(stderr, "roll deferred on %s: weight coverage %.6f\n", ref.date.c_str(),
-                   coverage);
+      detail::log_emitf(LogLevel::Warn, LogStream::Stderr,
+                        "roll deferred on %s: weight coverage %.6f", ref.date.c_str(), coverage);
       continue;
     }
     const auto build_start = PhaseTimer::now();
@@ -465,10 +466,12 @@ Result<ListedDispersionSchedule> project_listed_schedule(const ListedDispersionS
     build_cfg.surface_fingerprint = roll.legs.front().surface_fingerprint;
     ATX_TRY(ListedScheduleRoll projected_roll,
             build_listed_dispersion_roll(selection, cold_lookup, build_cfg));
-    std::printf("  roll %u %s: net_vega=%.10g gross_vega=%.10g index_K=%.6f (listed %.6f)\n",
-                projected_roll.cohort, projected_roll.roll_date.c_str(),
-                projected_roll.net_vega_per_vol_point, projected_roll.gross_vega_per_vol_point,
-                projected_roll.legs.front().strike, roll.legs.front().strike);
+    detail::log_emitf(LogLevel::Info, LogStream::Stdout,
+                      "  roll %u %s: net_vega=%.10g gross_vega=%.10g index_K=%.6f (listed %.6f)",
+                      projected_roll.cohort, projected_roll.roll_date.c_str(),
+                      projected_roll.net_vega_per_vol_point,
+                      projected_roll.gross_vega_per_vol_point,
+                      projected_roll.legs.front().strike, roll.legs.front().strike);
     projected.rolls.push_back(std::move(projected_roll));
   }
 

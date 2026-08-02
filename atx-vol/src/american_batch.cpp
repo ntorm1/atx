@@ -4,8 +4,8 @@
                                          // requested_greeks_finite} — the SINGLE Ok-stamp
                                          // definition FIX-1/2/3 established
 #include "atx/vol/american.hpp"          // andersen_lake, american_greeks_fd/al, classify_regime
-#include "atx/vol/counters.hpp"          // exact resolved-route diagnostics
-#include "atx/vol/pricing_executor.hpp"  // PricingExecutor
+#include "atx/vol/detail/counters.hpp"          // exact resolved-route diagnostics
+#include "atx/vol/detail/pricing_executor.hpp"  // PricingExecutor
 #include "atx/vol/simd/american_boundary_batch.hpp"
 #include "atx/vol/simd/cpu.hpp"
 
@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <new> // std::bad_alloc (per-lane noexcept containment)
 
 namespace atx::vol {
 
@@ -78,8 +79,8 @@ void write_masked(const simd::GreeksBatchSoA& out, std::size_t i,
 
 } // namespace
 
-Status american_price_batch(const AmericanBatchInput& in, PriceBatchOutput& out,
-                            PricingKernel& kernel, PricingWorkspace& ws) {
+Result<std::size_t> american_price_batch(const AmericanBatchInput& in, PriceBatchOutput& out,
+                                         PricingKernel& kernel, PricingWorkspace& ws) {
   if (!in.consistent()) {
     return Err(ErrorCode::InvalidArgument,
                "american_price_batch: input span length mismatch");
@@ -87,7 +88,7 @@ Status american_price_batch(const AmericanBatchInput& in, PriceBatchOutput& out,
   const std::size_t n = in.size();
   out.resize(n);
   if (n == 0) {
-    return Ok();
+    return Ok(n);
   }
 
   ws.reserve_lanes(n);
@@ -152,10 +153,10 @@ Status american_price_batch(const AmericanBatchInput& in, PriceBatchOutput& out,
     }
   }
 
-  return Ok();
+  return Ok(n);
 }
 
-Status american_price_batch_resolved(
+Result<std::size_t> american_price_batch_resolved(
     const ResolvedAmericanPriceBatchRequest& request) {
   if (!request.consistent()) {
     return Err(ErrorCode::InvalidArgument,
@@ -205,7 +206,7 @@ Status american_price_batch_resolved(
     for (std::size_t i = 0; i < n; ++i) {
       scalar_lane(i);
     }
-    return Ok();
+    return Ok(n);
   }
 
   // Compact only genuine single-boundary lanes into complete AVX-width packs;
@@ -265,12 +266,12 @@ Status american_price_batch_resolved(
   for (std::size_t j = 0; j < packed; ++j) {
     scalar_lane(pack_index[j]);
   }
-  return Ok();
+  return Ok(n);
 }
 
-Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields,
-                             simd::GreeksBatchSoA& greeks, PricingKernel& kernel,
-                             PricingWorkspace& ws) {
+Result<std::size_t> american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields,
+                                          simd::GreeksBatchSoA& greeks, PricingKernel& kernel,
+                                          PricingWorkspace& ws) {
   if (!in.consistent()) {
     return Err(ErrorCode::InvalidArgument,
                "american_greeks_batch: input span length mismatch");
@@ -278,7 +279,7 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
   const std::size_t n = in.size();
   ws.reserve_lanes(n);
   if (n == 0) {
-    return Ok();
+    return Ok(n);
   }
 
   // Each lane's Greeks come from the EXISTING scalar T9 route (no vectorized Greek
@@ -301,14 +302,30 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
   // Same derivation the K4 solve-skip selectors above use, so the columns that were
   // asked for are exactly the columns that are swept.
   const GreekNeeds needs{need_vega, need_rho, need_charm};
+  // SAFETY: the lane keeps its `noexcept` — it runs on PricingExecutor worker
+  // threads below, where an escaping exception is unrecoverable no matter what
+  // this lambda claims — and the claim is made TRUE by containing the throw. The
+  // Greek routes are NOT noexcept: american_greeks_al/fd construct the ~46 KB
+  // Andersen-Lake pricer state through make_unique and build Error message
+  // strings above any SSO buffer, so memory pressure raises std::bad_alloc. A
+  // lane that cannot be solved is exactly what the batch's per-lane failure
+  // vocabulary already expresses, so route it into the existing not-ok branch
+  // (NaN Greeks + LaneStatus::Unsupported) rather than killing the process. Only
+  // bad_alloc is caught: any other exception means a contract violation deeper
+  // in the call tree and should stay loud.
   const auto price_lane = [&](std::size_t i) noexcept {
     const Side side = in.side[i];
-    const Result<AmericanGreeks> g =
-        analytic ? american_greeks_al(in.S[i], in.K[i], in.T[i], in.sigma[i],
-                                      in.r[i], in.q[i], side, std::nullopt, need_vega,
-                                      need_rho, need_charm)
-                 : american_greeks_fd(in.S[i], in.K[i], in.T[i], in.sigma[i],
-                                      in.r[i], in.q[i], side);
+    const Result<AmericanGreeks> g = [&]() -> Result<AmericanGreeks> {
+      try {
+        return analytic ? american_greeks_al(in.S[i], in.K[i], in.T[i], in.sigma[i],
+                                             in.r[i], in.q[i], side, std::nullopt, need_vega,
+                                             need_rho, need_charm)
+                        : american_greeks_fd(in.S[i], in.K[i], in.T[i], in.sigma[i],
+                                             in.r[i], in.q[i], side);
+      } catch (const std::bad_alloc &) {
+        return Err(ErrorCode::Internal);
+      }
+    }();
     // FIX-5/I3: `has_value()` alone certified a bundle with a finite mark and a NaN
     // in a REQUESTED column as Ok — the pre-FIX-1 predicate, on the driver WS-Y made
     // public Python API (bindings/pricing.cpp, GreekFieldMask::All). Route both this
@@ -405,7 +422,7 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
     };
     run_side(Side::Put);
     run_side(Side::Call);
-    return Ok();
+    return Ok(n);
   }
 
   if (kernel.executor != nullptr) {
@@ -417,7 +434,7 @@ Status american_greeks_batch(const AmericanBatchInput& in, GreekFieldMask fields
     }
   }
 
-  return Ok();
+  return Ok(n);
 }
 
 } // namespace atx::vol

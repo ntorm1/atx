@@ -54,8 +54,8 @@
 #include "atx/vol/chain.hpp"         // OptionChain
 #include "atx/vol/corpus.hpp"        // CorpusBoard, corpus_board_from_opra
 #include "atx/vol/opra_batch.hpp"    // OpraBatchSpec, load_opra_daterange
-#include "atx/vol/parallel_for.hpp"  // parallel_for, atx_auto_worker_count
-#include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy
+#include "atx/vol/detail/parallel_for.hpp"  // parallel_for, atx_auto_worker_count
+#include "atx/vol/detail/prepared_policy.hpp" // PreparedObservationPolicy
 #include "atx/vol/pricer_fitter.hpp" // PricerFitter, PricerConfig, OutputField
 #include "atx/vol/session.hpp"       // FitPreset, SessionDiagnostics, SessionInputs
 #include "atx/vol/surface_parity.hpp" // CalendarRepair

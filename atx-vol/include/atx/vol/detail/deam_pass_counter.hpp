@@ -8,7 +8,7 @@
 // `build_observations_european`). C1 removes the second pass by reusing the
 // fit's own de-Am. This tiny facility lets the C1 proof test COUNT the two
 // passes and prove the reduction (fit + cert = 2 per slice -> fit only = 1),
-// without waiting on WS-V's richer solve ledger (`atx/vol/counters.hpp`, a
+// without waiting on WS-V's richer solve ledger (`atx/vol/detail/counters.hpp`, a
 // sibling worktree, not on this branch). Both counters are thread-safe relaxed
 // atomics incremented once per per-slice de-Am pass — negligible next to a de-Am
 // — and are namespaced apart from WS-V so the PM can fold this into V1's ledger

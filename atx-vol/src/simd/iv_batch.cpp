@@ -3,22 +3,42 @@
 #include "atx/vol/implied_vol.hpp"
 
 #include <limits>
+#include <new> // std::bad_alloc (per-lane noexcept containment)
 
 namespace atx::vol::simd {
 
 namespace {
 
+// SAFETY: `implied_vol` is NOT noexcept — a failing lane builds an Error whose
+// message string is longer than any SSO buffer, so it allocates and can raise
+// std::bad_alloc. `implied_vol_batch` is declared noexcept in the PUBLIC header,
+// which makes that a process-killing promise rather than a compiler hint.
+// Contain the throw at the lane granularity the header's contract already
+// speaks in: an unsolvable lane is reported (NaN, ok = 0), exactly like a
+// non-finite input or a non-converged root. Only bad_alloc is caught — any other
+// exception would be a contract violation deeper in the inverter and should stay
+// loud rather than be laundered into a lane failure.
+[[nodiscard]] Result<double> invert_lane(double price, double F, double K, double T, double df,
+                                         Side side) noexcept {
+    try {
+        return implied_vol(price, F, K, T, df, side);
+    } catch (const std::bad_alloc&) {
+        // No message: composing one is another allocation, which is what failed.
+        return atx::core::Err(atx::core::ErrorCode::Internal);
+    }
+}
+
 // Unpack a scalar implied_vol Result into the (iv, ok) SoA outputs: the value
 // with ok = 1 on success, NaN with ok = 0 on any failure (non-finite input,
-// out-of-band price, or non-convergence). This is the numerical source of truth
-// the AVX2 kernel patches through.
+// out-of-band price, non-convergence, or allocation failure). This is the
+// numerical source of truth the AVX2 kernel patches through.
 void iv_batch_scalar(const double* price, const double* F, const double* K,
                      const double* T, const double* df, const Side* side,
                      double* iv_out, std::uint8_t* ok_out,
                      std::size_t n) noexcept {
     for (std::size_t i = 0; i < n; ++i) {
         const Result<double> r =
-            implied_vol(price[i], F[i], K[i], T[i], df[i], side[i]);
+            invert_lane(price[i], F[i], K[i], T[i], df[i], side[i]);
         if (r) {
             iv_out[i] = *r;
             ok_out[i] = 1;

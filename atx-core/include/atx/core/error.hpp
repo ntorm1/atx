@@ -38,6 +38,13 @@ enum class ErrorCode : u16 {
   NotImplemented,
   IoError,
   ParseError,
+  // A cooperative cancellation was REQUESTED and honoured: the operation
+  // returned early at a checkpoint it had declared safe. Distinct from every
+  // code above because it is neither a defect (Internal) nor a resource
+  // failure (Unavailable) — it is the caller getting exactly what it asked
+  // for, and callers routinely want to treat it as success. Appended last so
+  // no existing enumerator's `u16` value moves.
+  Cancelled,
 };
 
 [[nodiscard]] constexpr std::string_view to_string(ErrorCode code) noexcept {
@@ -64,6 +71,8 @@ enum class ErrorCode : u16 {
     return "IoError";
   case ErrorCode::ParseError:
     return "ParseError";
+  case ErrorCode::Cancelled:
+    return "Cancelled";
   }
   return "Unrecognized"; // unreachable for valid enumerators
 }

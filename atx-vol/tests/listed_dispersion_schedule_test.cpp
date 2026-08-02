@@ -10,7 +10,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/american.hpp"
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/dispersion.hpp"
 #include "atx/vol/listed_dispersion.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"

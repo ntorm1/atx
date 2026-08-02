@@ -14,13 +14,14 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/detail/log_emit.hpp"
 #include "atx/vol/arb.hpp"              // arb_check_calendar, ArbViolation
 #include "atx/vol/calib.hpp"            // FitObs, FitDiag, CalibOpts
 #include "atx/vol/deamer.hpp"           // de_americanize_chain, european_equiv_iv, otm_side
 #include "atx/vol/essvi_calib.hpp"      // essvi_fit_slice
-#include "atx/vol/parallel_for.hpp"     // parallel_for_dynamic (per-chain prepass fan-out)
+#include "atx/vol/detail/parallel_for.hpp"     // parallel_for_dynamic (per-chain prepass fan-out)
 #include "atx/vol/parity.hpp"           // chain_parity, ParityInputs, ParityReport
-#include "atx/vol/prepared_fitting.hpp" // PreparedSlice legacy compatibility seam
+#include "atx/vol/detail/prepared_fitting.hpp" // PreparedSlice legacy compatibility seam
 #include "atx/vol/types.hpp"
 #include "atx/vol/universe.hpp"    // Underlying, Chain, chain_index
 #include "atx/vol/vol_surface.hpp" // VolSurface, EssviParams, Parametrization
@@ -29,7 +30,7 @@
 // -------------------
 // * Per-expiry pattern reuse. The de-Americanize -> prepared-slice -> eSSVI-fit
 //   path uses PreparedObservationPolicy::LegacyEssviCompatibility to preserve
-//   the historical `vola_parity.cpp` row population and arithmetic. The policy
+//   the historical single-expiry row population and arithmetic. The policy
 //   is explicit and isolated; new family-neutral consumers use Configured.
 //
 // * Model-IV read-back. Per-slice re-Am parity reads the model IV from the
@@ -327,9 +328,10 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
                                        prep_policy, &slots[i].prep_diag);
     } catch (...) {
       // A worker escape would std::terminate the jthread; record a failed slot
-      // (calib_pool/essvi parallel precedent). prepare_expiry uses Result, so
-      // this is defensive only.
-      slots[i].result.emplace(Err(ErrorCode::Internal, "run_surface_parity: prepare_expiry threw"));
+      // (the essvi parallel precedent). prepare_expiry uses Result, so this is
+      // defensive only.
+      slots[i].result.emplace(
+          Err(ErrorCode::Internal, "run_surface_parity: prepare_expiry threw"));
     }
   });
 
@@ -533,30 +535,30 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
   }
 
   if (profile) {
-    std::fprintf(stderr,
-                 "[ATX_VOL_PROFILE] slices=%zu carry=%.1f deam=%.1f fit=%.1f "
-                 "repair=%.1f parity=%.1f calendar=%.1f ms viol_pre=%zu "
-                 "(carry=forward/borrow solve; deam=per-strike invert; "
-                 "parity=re-Am score)\n",
-                 idx, ms_carry, ms_deam, ms_fit, ms_repair, ms_parity, ms_calendar,
-                 n_calendar_viol_pre);
+    detail::log_emitf(LogLevel::Info, LogStream::Stderr,
+                      "[ATX_VOL_PROFILE] slices=%zu carry=%.1f deam=%.1f fit=%.1f "
+                      "repair=%.1f parity=%.1f calendar=%.1f ms viol_pre=%zu "
+                      "(carry=forward/borrow solve; deam=per-strike invert; "
+                      "parity=re-Am score)",
+                      idx, ms_carry, ms_deam, ms_fit, ms_repair, ms_parity, ms_calendar,
+                      n_calendar_viol_pre);
   }
 
   SurfaceParityReport out{
-      std::move(surface),
-      std::move(expiry_T),
-      std::move(per_expiry),
-      std::move(context),
-      std::move(carry_diag),
-      std::move(input_certs),
-      worst,
-      calendar_arb_free,
-      idx,
-      n_calendar_viol_pre,
-      n_carry_skipped,
-      n_audit_starved,
+      .surface = std::move(surface),
+      .expiry_T = std::move(expiry_T),
+      .per_expiry = std::move(per_expiry),
+      .context = std::move(context),
+      .carry = std::move(carry_diag),
+      .input_certification = std::move(input_certs),
+      .expiry_reports = std::move(expiry_reports), // W3.4 (F4): ‖ under.chains, chain order
+      .worst_frac_within_bidask = worst,
+      .calendar_arb_free = calendar_arb_free,
+      .n_slices = idx,
+      .n_calendar_viol_pre = n_calendar_viol_pre,
+      .n_carry_skipped = n_carry_skipped,
+      .n_audit_starved = n_audit_starved,
   };
-  out.expiry_reports = std::move(expiry_reports); // W3.4 (F4): ‖ under.chains, chain order
   if (in.collect_stage_timings) {
     out.fit_timings.carry_solve_ms = ms_carry;
     out.fit_timings.observation_deam_ms = ms_deam;

@@ -51,7 +51,7 @@
 #include "atx/vol/s3.hpp"               // S3Params
 #include "atx/vol/spy_fixture.hpp"      // make_spy_synthetic_spec
 #include "atx/vol/strategy.hpp"         // DispersionStrategy
-#include "atx/vol/tearsheet.hpp"        // write_backtest_tsv
+#include "atx/vol/tools/tearsheet.hpp"        // write_backtest_tsv
 #include "atx/vol/universe.hpp"         // uid_for_symbol
 #include "atx/vol/vol_curve.hpp"        // CurveConfig, VolCurveKind
 #include "support/cached_artifacts.hpp" // cached_corpus

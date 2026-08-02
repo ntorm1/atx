@@ -26,6 +26,7 @@ using atx::vol::ProjectedMaturitySpec;
 using atx::vol::ProjectedOption;
 using atx::vol::ProjectedStrikeSpec;
 using atx::vol::Side;
+using atx::vol::SurfaceRef;
 using atx::vol::bench::apply_common;
 using atx::vol::bench::SynthMarket;
 
@@ -69,7 +70,7 @@ void run_scalar(benchmark::State &state, OptionProjectionOutput output_kind) {
   const OptionProjectionSpec spec = make_specs(1u).front();
   OptionProjectionConfig config;
   config.output = output_kind;
-  const auto *surface = market().base_set().find(spec.uid);
+  const SurfaceRef surface = market().base_set().find(spec.uid);
   ProjectedOption output;
   for (auto _ : state) {
     auto projected = atx::vol::project_option_contract(*surface, spec, config);

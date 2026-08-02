@@ -18,10 +18,10 @@
 #include "atx/vol/calib.hpp"            // build_observations_european
 #include "atx/vol/correction.hpp"       // AmericanCorrectionCaches (cached inversion hot path)
 #include "atx/vol/deamer.hpp"           // resolve_chain_forward
-#include "atx/vol/parallel_for.hpp"     // atx_auto_worker_count
-#include "atx/vol/prepared_fitting.hpp" // prepare_expiry (canonical refit preparation)
-#include "atx/vol/pricing_executor.hpp" // persistent whole-chain task fan-out
-#include "atx/vol/risk_surface_validation.hpp"
+#include "atx/vol/detail/parallel_for.hpp"     // atx_auto_worker_count
+#include "atx/vol/detail/prepared_fitting.hpp" // prepare_expiry (canonical refit preparation)
+#include "atx/vol/detail/pricing_executor.hpp" // persistent whole-chain task fan-out
+#include "atx/vol/detail/risk_surface_validation.hpp"
 
 namespace atx::vol {
 

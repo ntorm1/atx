@@ -75,7 +75,7 @@ $env:CMAKE_BUILD_PARALLEL_LEVEL = "2"
 $env:SKBUILD_CMAKE_DEFINE = "VCPKG_INSTALLED_DIR=<abs>/vcpkg_installed;FETCHCONTENT_BASE_DIR=<repo>/deps/py"
 
 python -m pip wheel . --no-deps -w dist -v
-python -m pip install dist\atxvol-0.1.0-cp312-cp312-win_amd64.whl
+python -m pip install dist\atxvol-1.0.0-cp312-cp312-win_amd64.whl
 ```
 
 Two steps rather than `pip install .` on purpose: `pip install .` **replaces
@@ -328,6 +328,34 @@ the reported count.
 the current values so an engine-side flip is reviewed, not discovered at a call
 site.
 
+### The two run-control knobs Python does not get
+
+`RunConfig` has **sixteen** fields in the engine (`backtest.hpp` pins the count
+with a `static_assert`). The binding hand-lists **fourteen**. The two it leaves
+out are the per-step run-control pair, and each omission is a decision recorded
+at the C++ declaration rather than an oversight:
+
+- **`step_observer` — there is no progress or observation hook in the Python API
+  at all.** Not a slower one, not a coarser one: none. `StepObserver` is a
+  `std::function<Status(const StepEvent &)>`, and every member of the `StepEvent`
+  it receives (`snapshot`, `strategy`, `ref`) is borrowed and valid only for the
+  duration of that one call. There is no honest pybind11 translation of that
+  lifetime, so nothing is exposed instead of exposing something that could hand
+  Python a dangling reference mid-run.
+- **`cancel` — a Python `run_backtest` cannot be asked to stop.** `CancelToken`
+  holds a raw pointer to a caller-owned `std::atomic<bool>`; there is no owner on
+  the Python side for that flag to belong to. The call runs to completion or
+  raises.
+
+The practical shape of this: a Python backtest is one blocking call that either
+returns a whole `BacktestResult` or raises `atxvol.AtxError`. Plan for the run
+length up front — there is no mid-run readout to watch and no way to interrupt
+it from inside the API. Long runs belong in a subprocess you can signal.
+
+Binding either knob means designing a new API (a lifetime-safe event object; an
+owned cancellation handle), so both are **post-v1 candidates**, deliberately not
+smuggled in as part of a documentation pass. The C++ path keeps both.
+
 The projection-specific `DispersionBacktestConfig` exposes the same material
 controls as C++: side, multiplier, risk limits, weighting and strike policies,
 hedge kind/cadence/band, and the nested `RunConfig`. Both
@@ -374,6 +402,25 @@ required. For older runs it falls back to `surface_pnl_track.tsv`,
 merges metadata from `run_spec.tsv`, the effective `run_config.tsv`,
 `surface_tearsheet.tsv`, and the archive or track metadata (closest to the
 numbers wins).
+
+`run_config.tsv` is not a diagnostic and is not gated by any verbosity flag.
+Neither is `quote_rejects.tsv`. Both are **provenance rather than commentary** —
+evidence about what the run *was*, not a report about how it went — and that
+classification is a ruling, not an accident: it is why they are written
+unconditionally and why they stay that way.
+
+Each has exactly one writer, and no route writes both. `run-backtest`
+(`run_backtest_command`, `tools/spy_dispersion_backtest.cpp:535`) writes
+`run_config.tsv`; `build-schedule` (`build_schedule_command`, same file, `:374`)
+writes `quote_rejects.tsv`.
+
+The render-safety claim attaches to `run_config.tsv` **alone**: it is the sole
+carrier of `friction_regime` for a run, which is exactly why the next section
+can refuse a run without it — suppress it and a pipeline that expects to render
+a report afterwards will fail. `quote_rejects.tsv` is the schedule-admission
+audit trail and has **no programmatic reader today**; it is kept because an
+admission decision nobody recorded is one nobody can audit, not because anything
+downstream parses it.
 
 Legacy loose TSV input is schema-aware: required economics must be present or
 the renderer refuses the run instead of folding binding-created zero

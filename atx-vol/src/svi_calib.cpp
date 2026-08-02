@@ -158,7 +158,9 @@ struct QeBasisScratch {
 // Build the weighted normal equations A^T W A x = A^T W w for the free
 // variables (`free_mask[i]` == true) at fixed (m, sigma), solve, and write the
 // free entries of `x` (pinned entries are read for the reduced rhs). Returns
-// the SSE at the resulting x. Mirrors `build_and_solve_normal`. The basis
+// the SSE at the resulting x, or +inf when the full 3x3 system is not
+// positive-definite — see the note on that branch. Mirrors
+// `build_and_solve_normal`. The basis
 // `ai = {1, u_i, v_i}` is READ from the pre-computed `sc` (see QeBasisScratch);
 // the H/g accumulation below is UNCHANGED — a scalar loop over i in the original
 // order, so the fit's summation is bit-for-bit what it was (values-only rule).
@@ -230,13 +232,21 @@ struct QeBasisScratch {
     }
   } else {
     // Full 3x3: back the Cholesky solve with atx-core (rhs == g here, since no
-    // variable is pinned). Degenerate matrix -> zero everything (matches the C).
+    // variable is pinned). A non positive-definite matrix means this (m, sigma)
+    // has NO linear least-squares solution — the design rows do not span the
+    // three coefficients (a single usable quote, coincident strikes, or an
+    // all-zero weight vector). Report it as an UNUSABLE candidate (+inf) and
+    // leave `x` alone. The C zeroed the coordinates and returned the ordinary
+    // finite SSE at that all-zero point; since every Nelder-Mead vertex is
+    // rank-deficient in the same way, that let the degenerate a = b = rho = 0
+    // point win the search and be returned Ok as a slice with identically zero
+    // total variance — which then displaced the SVI-MM fitter's healthy
+    // hardcoded seed.
     std::array<double, 3> sol{};
-    if (solve_spd_dense(H.data(), g.data(), 3, sol.data())) {
-      x = sol;
-    } else {
-      x = {0.0, 0.0, 0.0};
+    if (!solve_spd_dense(H.data(), g.data(), 3, sol.data())) {
+      return std::numeric_limits<double>::infinity();
     }
+    x = sol;
   }
 
   return svi_qe_sse(obs, sc, x);
@@ -244,6 +254,13 @@ struct QeBasisScratch {
 
 // Active-set bounded LSQ for (a, d_uv, c_uv) at fixed (m, sigma). Box:
 // 0 <= a <= a_max, 0 <= d_uv, c_uv <= duvc_max. Returns SSE; writes `out`.
+//
+// Returns +inf (and leaves `out` at the last iterate, which the caller MUST NOT
+// use) when the normal equations have no positive-definite solution at this
+// (m, sigma) — the objective is not a comparable number there, so the caller
+// must treat the vertex as unusable rather than score it. The final SSE
+// recompute below would otherwise launder the fallback point into an ordinary
+// finite score.
 // Mirrors `svi_blls_inner`. The rotated basis (u, v) depends only on (m, sigma,
 // k) — LOOP-INVARIANT across the ≤7 active-set passes below (the active set
 // only pins x entries / flips free_mask; it never touches the basis) — so it is
@@ -261,6 +278,10 @@ struct QeBasisScratch {
   const std::array<double, 3> lower{0.0, 0.0, 0.0};
 
   double sse = build_and_solve_normal(obs, sc, free_mask, x);
+  if (!std::isfinite(sse)) {
+    out = x;
+    return sse;
+  }
 
   for (int it = 0; it < 6; ++it) {
     int worst_idx = -1;
@@ -291,6 +312,10 @@ struct QeBasisScratch {
     x[uw] = worst_at_upper ? upper[uw] : lower[uw];
     free_mask[uw] = false;
     sse = build_and_solve_normal(obs, sc, free_mask, x);
+    if (!std::isfinite(sse)) {
+      out = x;
+      return sse;
+    }
   }
 
   // Final clamp + SSE recompute (the last solve may not have reached feasibility).
@@ -339,9 +364,13 @@ struct NmCtx {
 
 // Nelder-Mead simplex search over (m, sigma). Writes the best vertex back into
 // (*m, *sigma) and its inner linear optimum into `linear`. Mirrors `nm_search`.
+//
+// `out_best_sse` receives the winning vertex's objective. It is non-finite iff
+// EVERY vertex the simplex visited was unusable (see `svi_blls_inner`), in which
+// case `linear` is meaningless and the caller must not fit from it.
 void nm_search(const NmCtx &c, double &m, double &sigma, QeBasisScratch &sc,
                std::array<double, 3> &linear, std::uint16_t max_iter, double tol,
-               std::uint16_t &out_iters_used) {
+               std::uint16_t &out_iters_used, double &out_best_sse) {
   std::array<std::array<double, 2>, 3> v{};
   std::array<double, 3> f{};
   std::array<std::array<double, 3>, 3> lin{};
@@ -460,6 +489,7 @@ void nm_search(const NmCtx &c, double &m, double &sigma, QeBasisScratch &sc,
   sigma = best_sigma;
   linear = lin[ub];
   out_iters_used = iters_used;
+  out_best_sse = f[ub];
 }
 
 // ── Mingone admissible-polytope projector ────────────────────────────────
@@ -562,6 +592,18 @@ struct LmWorkspaceMm {
 // NOTE on the American-correction cache). Mirrors `svi_mm_sse`. The w_pred sweep
 // is one `simd::svi_total_w_batch` call into `ws.w_pred` (svi_total_w is
 // op-for-op svi_w_raw); the floor + Black-76 price loop stays scalar per strike.
+//
+// A candidate whose model price is non-finite ANYWHERE is POISONED — the whole
+// objective returns +inf, and every caller's accept test (`isfinite(new_sse) &&
+// new_sse < prev_sse`) then rejects it. Given finite quote geometry (F, K, df),
+// `black76_price` is non-finite only when sig_pred is, i.e. only when the
+// candidate's own total variance has overflowed, so a non-finite price is direct
+// evidence that the parameter step diverged. Skipping those rows instead (the
+// previous behavior) left the accumulator at its 0.0 seed once EVERY row was
+// poisoned, handing a diverging Inf/NaN step a perfect SSE of zero that beat the
+// finite incumbent and was accepted. Skipping also makes the objective
+// incomparable across candidates: two candidates that drop different rows are
+// scored on different data.
 [[nodiscard]] double svi_mm_sse(std::span<const FitObs> obs, double T, double a,
                                 double b, double rho, double m, double sigma,
                                 LmWorkspaceMm &ws) {
@@ -583,7 +625,7 @@ struct LmWorkspaceMm {
     const double sig_pred = std::sqrt(w_pred / T);
     const double p_pred = black76_price(o.F, o.K, T, sig_pred, o.df, o.side);
     if (!std::isfinite(p_pred)) {
-      continue;
+      return std::numeric_limits<double>::infinity();  // poisoned candidate
     }
     const double r = p_pred - o.mid;
     s += o.active_weight_w * r * r;
@@ -813,6 +855,7 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
   nm.m_max = k_max + 0.5 * (kspan + 0.1);
 
   std::array<double, 3> linear{};
+  double nm_best_sse = std::numeric_limits<double>::infinity();
   std::uint16_t outer_total_iters = 0;
   std::uint16_t inner_total_iters = 0;
 
@@ -851,10 +894,13 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
 
     std::uint16_t nm_iters_this_pass = 0;
     nm_search(nm, m_cur, sigma_cur, qe_scratch, linear, max_inner, tol,
-              nm_iters_this_pass);
+              nm_iters_this_pass, nm_best_sse);
     ++outer_total_iters;
     inner_total_iters =
         static_cast<std::uint16_t>(inner_total_iters + nm_iters_this_pass);
+    if (!std::isfinite(nm_best_sse)) {
+      break;  // nothing to refine: no vertex had a usable objective
+    }
 
     // Sigma-space residuals for this IRLS pass.
     for (std::size_t i = 0; i < n; ++i) {
@@ -908,6 +954,18 @@ Result<SviParams> svi_fit_slice(std::span<const FitObs> obs, double T, double F,
                                       : work[i].weight_w * (huber / r_norm);
       }
     }
+  }
+
+  // Reject rather than launder a rank-deficient fit. A non-finite winning
+  // objective means every (m, sigma) the simplex visited had unusable normal
+  // equations (see `svi_blls_inner`), so `linear` is the all-zero fallback, not
+  // a least-squares solution — mapping it yields a = b = rho = 0, a slice with
+  // identically zero total variance. Returning that as Ok let it displace the
+  // healthy hardcoded seed in `svi_mm_fit_slice`.
+  if (!std::isfinite(nm_best_sse)) {
+    return Err(ErrorCode::Unavailable,
+               "svi_fit_slice: no usable linear least-squares solution at any "
+               "(m, sigma) — rank-deficient observation set");
   }
 
   // Map (a, d_uv, c_uv) -> (a, b, rho).
@@ -977,6 +1035,12 @@ Result<SviParams> svi_mm_fit_slice(std::span<const FitObs> obs, double T,
   // Seed from the quasi-explicit fit on the ORIGINAL IV-domain weights (before
   // the price-domain weight overwrite below). svi_fit_slice copies the span, so
   // the caller's observations are untouched.
+  //
+  // The hardcoded values below are the FALLBACK seed and are only displaced by a
+  // seed the quasi-explicit fitter vouches for: on a rank-deficient observation
+  // set that fitter now returns Err rather than an a = b = rho = 0 slice, so the
+  // degenerate point can no longer outrank this one (the admissibility projector
+  // would otherwise pin b at its 1e-8 edge pad and start the LM on a flat smile).
   double a = 0.0;
   double b = 0.1;
   double rho = -0.20;
@@ -1119,6 +1183,30 @@ Result<SviParams> svi_mm_fit_slice(std::span<const FitObs> obs, double T,
       }
       const double sig_pred = std::sqrt(w_pred / T);
       const double p_pred = black76_price(o.F, o.K, T, sig_pred, o.df, o.side);
+      // Scoring a non-finite model price as a ZERO residual is the 1.8(a)
+      // defect class (see the svi_mm_sse note above): an observation the
+      // candidate CANNOT price is recorded as a perfect fit, which both hands
+      // that row full Huber weight and deflates rms_resid_px, shifting the
+      // threshold for every other row. It is left as a mask rather than turned
+      // into a fail-closed guard because the 1.8(a) fix already makes the
+      // damaging state unreachable, and the guard would be untestable:
+      //
+      //  * black76_price is non-finite here only if sig_pred is (F, K, df are
+      //    finite quote geometry and T > 0), i.e. only if w_pred is: v^2 IS
+      //    w_pred, so d1 = (ln(F/K) + w_pred/2)/sqrt(w_pred) stays finite for
+      //    every finite w_pred, and the floor above keeps w_pred positive.
+      //  * svi_w_raw is non-finite for SOME k but not all only if `b` has
+      //    escaped mm_project_default's Lee cap b*(1+|rho|) <= 4/T — which
+      //    every LM-accepted iterate and the projected seed have passed.
+      //  * If it is non-finite for ALL rows, sumwr2 stays 0, rms_resid_px is 0,
+      //    and the `rms_resid_px > 1e-12` gate below skips the whole reweight,
+      //    so the fabricated zeros never reach a Huber weight at all.
+      //
+      // Distorting the reweight therefore requires defeating the projector. If
+      // that cap is ever relaxed, restore fail-closed behaviour by leaving the
+      // outer loop on a non-finite `sse`: svi_mm_sse already returns +inf for
+      // exactly this condition. The final RMSE loop below carries the same mask
+      // and the same reasoning.
       const double r_px = std::isfinite(p_pred) ? (p_pred - o.mid) : 0.0;
       resid_scratch[i] = r_px;
       sumw += o.weight_w;
@@ -1459,7 +1547,7 @@ Status svi_calib_surface(VolSurface &surface, const Underlying &under,
     // Butterfly no-arb gate (moved here from the fit_slice_curve serving seam,
     // vol_curve.cpp). The quasi-explicit raw-SVI fit only promises w >= 0, NOT
     // the Martini-Mingone butterfly polytope. This driver writes the slice into a
-    // VolSurface that calib_pool serves DIRECTLY (VolSurface::w evaluates the
+    // VolSurface that a caller can serve DIRECTLY (VolSurface::w evaluates the
     // stored SVI slice via svi_total_w), so a smile stored here reaches
     // pricing/risk without ever passing through fit_slice_curve's gate. Enforce
     // admissibility at the source: on a violation, project onto the polytope (the
@@ -1557,7 +1645,7 @@ Status svi_mm_calib_surface(VolSurface &surface, const Underlying &under,
     // svi_mm_fit_slice projects every LM iterate onto the Mingone polytope, so a
     // converged SVI-MM slice is admissible by construction; this is defense-in-
     // depth making the served VolSurface admissible independent of the fit path
-    // (calib_pool serves it directly). A residual violation is repaired-or-dropped
+    // (a caller can serve it directly). A residual violation is repaired-or-dropped
     // rather than tallied-and-served.
     const auto adm_raw = arb_check_butterfly_svi_mm(slice, T);
     if (adm_raw.n_violations > 0) {

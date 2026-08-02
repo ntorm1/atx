@@ -16,7 +16,7 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/backtest.hpp"            // Clock (from_surface_db / between)
 #include "atx/vol/detail/archive_util.hpp" // canonicalize_symbol (manifest spelling)
-#include "atx/vol/dispersion_workflow.hpp" // read_universe (UniverseRow TSV)
+#include "atx/vol/research/dispersion_workflow.hpp" // read_universe (UniverseRow TSV)
 
 namespace atx::vol {
 

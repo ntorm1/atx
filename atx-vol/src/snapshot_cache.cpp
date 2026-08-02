@@ -99,7 +99,7 @@ using UidSubset = std::shared_ptr<const std::vector<std::uint32_t>>;
 // archive file yields the default (all-zero) identity so the actual load surfaces
 // the real error while the cache still keys deterministically. Called BEFORE the
 // cache mutex so the small header read never serializes other cache operations.
-// S4 clean break: partitions are ATXVSA2 (magic "ATXVSA20"); v1 is gone.
+// S4 clean break: partitions are ATXVSA2 (magic "ATXVSA20"); ATXVSA03 is gone.
 [[nodiscard]] ArchiveContentIdentity current_identity(const std::string &path) {
   std::ifstream in{path, std::ios::binary};
   if (!in) {

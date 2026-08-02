@@ -33,8 +33,9 @@
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/priced_surface.hpp"
+#include "atx/vol/detail/pricing_executor.hpp" // the bank build's dispatch seam (2.11)
 #include "atx/vol/surface_parity.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "support/isa_golden_tol.hpp" // golden_close (per-ISA FMA band)
@@ -904,8 +905,8 @@ TEST(PricedSurface, EvaluateBatchLanedGreeksPackCompositionInvariant) {
 }
 
 TEST(PricedSurface, PriceOnlyResolvedBatchPreservesMethodPresetAndLaneErrors) {
-  const AlOpts custom{/*n_collocation=*/9, /*n_quadrature=*/32,
-                      /*max_newton_iter=*/6, /*tol=*/3.0e-9};
+  const AlOpts custom{
+      .n_collocation = 9, .n_quadrature = 32, .max_newton_iter = 6, .tol = 3.0e-9};
   const std::array<AmericanMethod, 2> methods{AmericanMethod::AndersenLake, AmericanMethod::Baw};
   for (const AmericanMethod method : methods) {
     const PricedSurface s = make_essvi(2, 6, method, custom);
@@ -1723,6 +1724,66 @@ TEST(PricedSurfaceQueryPricing, CarryBankBuildsBoundedPairsAndServesBlendedJet) 
   ASSERT_TRUE(g.has_value());
   ASSERT_TRUE(ga.has_value());
   EXPECT_EQ(*g, *ga);
+}
+
+// ── 2.11: the carry bank is built on the ONE bounded pricing pool ────────────
+//
+// QueryAccelerator::build used to fan its (up to 16) carry centers out with one
+// std::async(std::launch::async) each — execution agents created outside the
+// PricingExecutor's core budget, oversubscribing whatever fit/pricing dispatch
+// enclosed the preparation, and turning thread exhaustion into a
+// std::system_error escaping a Result-returning function. It now dispatches
+// through pricing_executor().
+//
+// The property that must survive that swap is worker-count independence. Build
+// the SAME surface's bank twice: once at top level, where the pool really fans
+// out, and once from INSIDE an executor dispatch, where a plain run_blocks is
+// contractually FULLY INLINE — i.e. a one-context, serial build of every center
+// on the calling thread. The two banks must serve bit-identical values. (The
+// outer dispatch uses n well above the executor's inline threshold so it is a
+// real dispatch and the inner build genuinely takes the inline path.)
+TEST(PricedSurfaceQueryPricing, CarryBankIsIdenticalFannedOutOrBuiltInline) {
+  const auto build_bank = [] {
+    PricedSurface source = make_essvi_varycarry(96);
+    return std::move(source).with_query_pricing(QueryPricingTier::CarryBank);
+  };
+
+  auto fanned_out = build_bank();
+  ASSERT_TRUE(fanned_out.has_value()) << fanned_out.error().to_string();
+
+  std::optional<Result<PricedSurface>> nested;
+  std::array<unsigned, 32> touched{};
+  pricing_executor().run_blocks(touched.size(), /*n_threads=*/0, [&](std::size_t slot) {
+    touched[slot] = 1u;
+    if (slot == 0u) {
+      // Runs on the calling thread inside a live dispatch, so the bank's own
+      // run_blocks resolves to the inline (single-context) plan.
+      nested = build_bank();
+    }
+  });
+  ASSERT_TRUE(nested.has_value());
+  ASSERT_TRUE(nested->has_value()) << nested->error().to_string();
+
+  const PricedSurface &a = *fanned_out;
+  const PricedSurface &b = **nested;
+  ASSERT_EQ(a.query_cache_pair_count(), b.query_cache_pair_count());
+  ASSERT_GT(a.query_cache_pair_count(), 1u); // the fan-out path, not the single center
+
+  for (const double K : {88.0, 96.0, 101.0, 112.0}) {
+    for (const double T : {0.08, 0.225, 0.51, 0.94}) {
+      for (const Side side : {Side::Call, Side::Put}) {
+        EXPECT_EQ(a.query_pricing_route(K, T, side), b.query_pricing_route(K, T, side))
+            << K << " " << T;
+        const auto ga = a.greeks(K, T, side);
+        const auto gb = b.greeks(K, T, side);
+        ASSERT_EQ(ga.has_value(), gb.has_value()) << K << " " << T;
+        if (ga.has_value()) {
+          EXPECT_EQ(*ga, *gb) << "carry-bank Greeks moved with the build's worker count at K=" << K
+                              << " T=" << T;
+        }
+      }
+    }
+  }
 }
 
 TEST(PricedSurfaceQueryPricing, FastTierRejectsNonAndersenLakeSurface) {

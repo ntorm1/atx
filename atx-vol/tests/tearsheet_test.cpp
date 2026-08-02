@@ -40,9 +40,9 @@
 #include "atx/vol/portfolio_pricer.hpp" // OptionContract, kNsPerYear
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"         // DeclarativeStrategy, StrategySpec, DispersionStrategy
-#include "atx/vol/surface_archive.hpp"  // write_surface_archive_file, SurfaceArchiveItem
+#include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"   // SliceContext
-#include "atx/vol/tearsheet.hpp"        // TearSheet, tearsheet, write_backtest_tsv
+#include "atx/vol/tools/tearsheet.hpp"        // TearSheet, tearsheet, write_backtest_tsv
 #include "atx/vol/types.hpp"            // Side, Result, Status
 #include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
 #include "atx/vol/vol_surface.hpp"      // EssviParams
@@ -564,6 +564,25 @@ TEST(TearSheet, TsvRoundTrip) {
 
   std::printf("[tearsheet] tsv round-trip: %zu rows, %zu numeric cells bit-exact, %zu signal(s)\n",
               r.size(), checked, r.signals.size());
+
+  // Plan 4.6: the same writer over a SKEWED copy is a reported shape error, not
+  // an out-of-range read. `append_backtest_series_tsv` walks the columns in row
+  // lockstep, so this is the seam the invariant protects. Nothing is written.
+  BacktestResult skewed = r;
+  skewed.gross_vega.pop_back();
+  const std::string skew_path = (dir / "skewed.tsv").string();
+  const Status skew_st = write_backtest_tsv(skewed, skew_path);
+  ASSERT_FALSE(skew_st.has_value()) << "a skewed result must not be written";
+  EXPECT_EQ(skew_st.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(skew_st.error().message().find("gross_vega"), std::string::npos)
+      << skew_st.error().message();
+  EXPECT_FALSE(fs::exists(skew_path));
+
+  // A skewed SIGNAL series is caught on the same path (signals are dynamic
+  // columns of the same TSV).
+  BacktestResult skewed_sig = r;
+  skewed_sig.signals.front().second.pop_back();
+  EXPECT_FALSE(write_backtest_tsv(skewed_sig, (dir / "skewed_sig.tsv").string()).has_value());
 }
 
 // ── 4a. Worked Example A: 3m 25d put, delta-hedged daily, new clip each day ──

@@ -13,10 +13,11 @@
 #include "atx/core/error.hpp"
 #include "atx/vol/black76.hpp"
 #include "atx/vol/detail/deriv_ref_bridge.hpp" // Task 9: SurfaceRef-native entry points
+#include "atx/vol/detail/legacy_surface.hpp" // Essvi/SviSurface (demoted, S4-T21)
 #include "atx/vol/detail/rv_lognormal.hpp" // lognormal_call, truncated_expect, norm_cdf (Tasks 4-5)
 #include "atx/vol/portfolio_pricer.hpp" // Task 9: SurfaceRef (the borrowed-surface handle)
 #include "atx/vol/priced_surface.hpp" // E6: PricedSurface-native entry points
-#include "atx/vol/strip_grid.hpp"
+#include "atx/vol/detail/strip_grid.hpp"
 #include "atx/vol/surface_parity.hpp" // SliceContext (E6 carry extraction)
 
 namespace atx::vol {

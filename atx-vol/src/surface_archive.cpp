@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -30,6 +31,8 @@
 #include "atx/vol/vol_curve.hpp"   // IVolCurve, Convex/Essvi/SviCurve, CurveSurface
 #include "atx/vol/vol_surface.hpp" // EssviParams, SviParams
 
+#include "slice_payload_padding.hpp" // normalize_{svi,essvi,c8}_payload_padding
+
 namespace atx::vol {
 
 using atx::core::Err;
@@ -55,7 +58,7 @@ static_assert(std::is_trivially_copyable_v<AlOpts>,
 
 // schema_hash() folds sizeof(EssviParams)/sizeof(SviParams) so a reader built
 // against a different struct shape rejects the file. C8Params cannot join that
-// fold: its kind postdates the v3 fingerprint, and adding it would invalidate
+// fold: its kind postdates the ATXVSA03 fingerprint, and adding it would invalidate
 // every already-written archive that contains no C8 slice at all. Freeze the
 // layout here instead -- same protection, paid at compile time. If you change
 // C8Params, bump kV3Salt in schema_hash() and update this size.
@@ -146,11 +149,10 @@ SurfaceProvenance legacy_surface_provenance() noexcept {
 // ATXVSA2 (v2) — zero-copy mmap columnar format. Layout spec + research lineage:
 // atx-vol/docs/atxvsa2-format.md. Primary sources cited there (FlatBuffers
 // natural alignment; Cap'n Proto relative byte-offset segments; Apache Arrow
-// contiguous typed columns + mmap-first alignment). This is a CLEAN-BREAK sibling
-// to the v1 reader/writer (§0): distinct types, no dual-read. The v1 reader/writer
-// was isolated out of this product TU into src/surface_archive_v1.cpp (WS-G G2) so
-// atx::vol no longer links v1; only the shared legacy_surface_provenance() and the
-// internal-linkage provenance/buf helpers are defined in both TUs.
+// contiguous typed columns + mmap-first alignment). It was a CLEAN-BREAK sibling to
+// the ATXVSA03 reader/writer (§0): distinct types, no dual-read. ATXVSA03 is now
+// DELETED (release-v1 plan 3.6) — this is the only surface-archive format left, and
+// the ATXVSA03 magic/schema salt it rejects is all that remains of the old one.
 // ═══════════════════════════════════════════════════════════════════════════
 
 namespace {
@@ -159,7 +161,8 @@ constexpr char kArchiveV2MagicBytes[8] = {'A', 'T', 'X', 'V', 'S', 'A', '2', '0'
 constexpr char kSurfaceRecordMagicBytes[8] = {'A', 'T', 'X', 'V', 'S', 'R', '2', '0'};
 
 // v2 schema fingerprint: folds sizeof of every v2 on-disk struct + the serialized
-// POD slice structs + a v2-specific salt so a v1 file, a drifted-struct v2 file,
+// POD slice structs + an ATXVSA2-specific salt so an ATXVSA03 file, a
+// drifted-struct ATXVSA2 file,
 // and a different-build v2 file are all rejected (FlatBuffers-style hard schema
 // pin; we pay no vtable indirection because the schema is fixed).
 [[nodiscard]] std::uint64_t schema_hash_v2_salted(std::uint64_t salt) noexcept {
@@ -547,14 +550,22 @@ write_surface_archive_v2(std::span<const SurfaceArchiveItem> items,
         std::memcpy(p + 24 + nb, fit.C.data(), nb);
         break;
       }
+      // The three POD payloads are blitted whole and then have their PADDING
+      // re-zeroed: the struct's pad bytes are never written by any fitter, so a
+      // verbatim blit would store the producing thread's stack residue in the
+      // record (and in payload_crc32c / the archive's content identity), making
+      // the bytes of an identical fitted slice depend on the fit worker count.
+      // See src/slice_payload_padding.hpp.
       case VolCurveKind::Essvi: {
         const EssviParams &e = static_cast<const EssviCurve *>(sp.curve)->slice();
-        detail::write_archive_payload(p, e);
+        std::memcpy(p, &e, sizeof e);
+        detail::normalize_essvi_payload_padding(p);
         break;
       }
       case VolCurveKind::Svi: {
         const SviParams &vv = static_cast<const SviCurve *>(sp.curve)->slice();
-        detail::write_archive_payload(p, vv);
+        std::memcpy(p, &vv, sizeof vv);
+        detail::normalize_svi_payload_padding(p);
         break;
       }
       case VolCurveKind::LinearVariance: {
@@ -566,7 +577,8 @@ write_surface_archive_v2(std::span<const SurfaceArchiveItem> items,
       }
       case VolCurveKind::C8: {
         const C8Params &c8 = static_cast<const C8Curve *>(sp.curve)->slice();
-        detail::write_archive_payload(p, c8);
+        std::memcpy(p, &c8, sizeof c8);
+        detail::normalize_c8_payload_padding(p);
         break;
       }
       case VolCurveKind::SplineVol: {
@@ -919,6 +931,21 @@ Result<SurfaceArchiveV2> SurfaceArchiveV2::open_copied(std::string_view path) {
   if (!mapping) {
     return tl::unexpected<atx::core::Error>(std::move(mapping).error());
   }
+  // NO `mapping->prefetch()` HERE — MEASURED, NOT ASSUMED (S6-T29, plan 6.1).
+  // The obvious optimization is a whole-mapping WILLNEED hint before the memcpy:
+  // the copy below reads every byte, so the hint wastes nothing, and it replaces
+  // one demand fault per 4 KB page with a single bulk request. It was implemented
+  // and A/B'd in one binary on one host over 24 interleaved pairs of the
+  // 135-session parity-full replay. It LOST: prefetch-on was slower in 17 of 24
+  // pairs (paired median +62 ms, +9.4% wall) and burned ~5% more total CPU.
+  // Cause: on a warm OS file cache — the steady state for a replay corpus — the
+  // pages are already resident, so PrefetchVirtualMemory only adds an eager
+  // page-table/working-set pass that the memcpy's cheap soft faults would have
+  // done anyway. The hint can only pay off on a genuinely COLD cache, which that
+  // host could not produce (no admin rights to drop the cache, and a
+  // memory-pressure evict would have disrupted 27 sibling worktrees), so the
+  // cold regime remains unmeasured rather than disproven. Numbers are in the
+  // S6-T29 report. Re-measure before reintroducing this.
   const auto *base = reinterpret_cast<const std::byte *>(mapping->base());
   const auto size = static_cast<std::size_t>(mapping->size());
   // reserve + insert, NOT `vector<std::byte> bytes(size)`: the sized constructor
@@ -942,6 +969,20 @@ Result<SurfaceArchiveV2> SurfaceArchiveV2::open_mapped(std::string_view path) {
   // archive's whole lifetime via the type-erased `owner` handed to `open_borrowed`
   // — every returned `PricedSurfaceView` (and the archive's own `bytes_` span)
   // borrows into these mapped pages, so the mapping MUST outlive them.
+  //
+  // NO `prefetch()` HERE either, and for a SECOND, independent reason (S6-T29 /
+  // plan 6.1 — see the measured result in `open_copied` above). This open's
+  // whole point is that a caller may materialize a SUBSET: the private snapshot
+  // caches that declare `ArchiveBacking::Sealed` are constructed with the book's
+  // or strategy's referenced uids (`backtest.cpp` ~1739 and ~2249), and the
+  // replay case those exist for prices ~11 names out of a whole-board partition.
+  // A whole-mapping WILLNEED would therefore fault in roughly an order of
+  // magnitude more bytes than the load reads — the opposite of what this open
+  // exists to do. Warming only the referenced record extents is the right hint
+  // here, but it needs a RANGE prefetch (`Mapping::prefetch_range(off, len)`,
+  // ideally batched — Win32 `PrefetchVirtualMemory` already takes an array of
+  // ranges), and adding that is a change to atx-tsdb's PUBLIC API, which S6-T29
+  // is explicitly not scoped to make. Recorded as the follow-up.
   auto mapping = atx::tsdb::Mapping::map_file_ro(std::string(path));
   if (!mapping) {
     return tl::unexpected<atx::core::Error>(std::move(mapping).error());
@@ -978,19 +1019,47 @@ const ArchiveV2LookupSlot *SurfaceArchiveV2::find_slot(std::string_view symbol) 
   return nullptr;
 }
 
+namespace {
+// Strict order the writer sorts the directory in (`v2_plan_less`) and that
+// `open_impl` PROVES holds on every opened archive: memcmp over the shared
+// prefix, shorter symbol first on a tie. Heterogeneous so `std::lower_bound`
+// can probe the directory with a bare canonical symbol.
+[[nodiscard]] bool dir_symbol_less(const ArchiveV2DirEntry &e, std::string_view sym) noexcept {
+  const std::size_t n = std::min(static_cast<std::size_t>(e.symbol_len), sym.size());
+  if (n != 0) {
+    const int c = std::memcmp(e.symbol, sym.data(), n);
+    if (c != 0) {
+      return c < 0;
+    }
+  }
+  return static_cast<std::size_t>(e.symbol_len) < sym.size();
+}
+} // namespace
+
 Result<ArchiveV2DirEntry> SurfaceArchiveV2::find(std::string_view symbol) const {
   const ArchiveV2LookupSlot *s = find_slot(symbol);
   if (s == nullptr) {
     return Err(ErrorCode::NotFound, "SurfaceArchiveV2::find: symbol not present");
   }
-  ArchiveV2DirEntry de;
-  de.surface_offset = s->surface_offset;
-  de.surface_size = s->surface_size;
-  de.symbol_hash = s->symbol_hash;
-  de.uid = s->uid;
-  de.symbol_len = s->symbol_len;
-  std::memcpy(de.symbol, s->symbol, s->symbol_len);
-  return de;
+  // Return the STORED entry, never one assembled from the lookup slot: the slot
+  // carries no n_slices / kind_bits / payload_crc32c, so a hand-built entry reads
+  // back zeros for exactly the fields a framing-only consumer and the R-19 (F6)
+  // content-identity check depend on, while still comparing unequal to the
+  // `directory()` element it claims to be.
+  //
+  // The slot's symbol is already canonical and the directory is sorted by that
+  // same key, so one binary search resolves it (O(log n) on metadata parsed at
+  // open — no record body is touched).
+  const std::string_view canon(s->symbol, static_cast<std::size_t>(s->symbol_len));
+  const auto it = std::lower_bound(directory_.begin(), directory_.end(), canon, dir_symbol_less);
+  if (it == directory_.end() ||
+      std::string_view(it->symbol, static_cast<std::size_t>(it->symbol_len)) != canon) {
+    // Unreachable on an opened archive: `open_impl` verifies the lookup <-> directory
+    // bijection (strictly ascending symbols, occupied count == surface_count, and every
+    // directory entry resolving to a slot with identical offset/size/uid/hash).
+    return Err(ErrorCode::Internal, "SurfaceArchiveV2::find: lookup slot has no directory entry");
+  }
+  return *it;
 }
 
 namespace {
@@ -1131,6 +1200,21 @@ namespace {
   return elem * count <= rs - off; // count bounded by n_slices (u32) -> no overflow
 }
 
+// Is `k` a legal `std::lower_bound` key? Mirrors the view's identical guard in
+// priced_surface_view.cpp (which carries the full argument): `LinearVarianceCurve
+// ::w` brackets the node axis with lower_bound and indexes at `lo = hi - 1`, and
+// a NaN node — which compares false in every direction — is the one input that
+// slips past the wing guards AND drives lower_bound to index 0, underflowing that
+// subscript. Non-strict ascendance is exactly lower_bound's precondition.
+[[nodiscard]] bool linear_nodes_searchable(std::span<const double> k) noexcept {
+  for (std::size_t i = 0; i < k.size(); ++i) {
+    if (!std::isfinite(k[i]) || (i > 0 && k[i] < k[i - 1])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Rebuild an OWNED PricedSurface from one v2 record's byte extent — the inverse of
 // write_surface_archive_v2 and the deleted v1 `reconstruct`. Every field is read
 // via memcpy (never reinterpret_cast) so it is alignment-safe regardless of the
@@ -1193,6 +1277,12 @@ namespace {
   CurveSurface surface;
   std::vector<SliceContext> ctx;
   ctx.reserve(static_cast<std::size_t>(n));
+  // Payload extents must be MONOTONE and DISJOINT — see the identical guard in
+  // priced_surface_view.cpp, which carries the full argument. Isolated per-slice
+  // extent checks let every slice alias ONE offset, so a bounded record could
+  // demand n x its own size in node vectors. Checked BEFORE this slice's own
+  // materialization, so at most one slice's allocation precedes a rejection.
+  std::uint64_t prev_payload_end = 0;
   for (std::uint64_t i = 0; i < n; ++i) {
     std::uint8_t kind_byte = 0;
     std::memcpy(&kind_byte, base + h.col_kind_off + i, 1);
@@ -1210,14 +1300,22 @@ namespace {
     if ((poff % kArchiveV2ColumnAlign) != 0u || poff > rs) {
       return Err(ErrorCode::ParseError, "reconstruct_v2: slice payload misaligned/out of bounds");
     }
+    if (poff < prev_payload_end) {
+      return Err(ErrorCode::ParseError,
+                 "reconstruct_v2: slice payload extents overlap / not ascending");
+    }
     const std::uint64_t avail = rs - poff;
     const std::byte *p = base + poff;
     const std::size_t nb = static_cast<std::size_t>(nc) * sizeof(double);
 
+    // Payload bytes this slice's kind claims; `need <= avail` is enforced per
+    // case below, so `poff + need <= rs` never overflows.
+    std::uint64_t need = 0;
     std::unique_ptr<IVolCurve> curve;
     switch (kind) {
     case VolCurveKind::Essvi: {
-      if (sizeof(EssviParams) > avail) {
+      need = sizeof(EssviParams);
+      if (need > avail) {
         return Err(ErrorCode::ParseError, "reconstruct_v2: essvi payload out of bounds");
       }
       EssviParams e{};
@@ -1226,7 +1324,8 @@ namespace {
       break;
     }
     case VolCurveKind::Svi: {
-      if (sizeof(SviParams) > avail) {
+      need = sizeof(SviParams);
+      if (need > avail) {
         return Err(ErrorCode::ParseError, "reconstruct_v2: svi payload out of bounds");
       }
       SviParams sv{};
@@ -1235,7 +1334,8 @@ namespace {
       break;
     }
     case VolCurveKind::C8: {
-      if (sizeof(C8Params) > avail) {
+      need = sizeof(C8Params);
+      if (need > avail) {
         return Err(ErrorCode::ParseError, "reconstruct_v2: c8 payload out of bounds");
       }
       C8Params c8{};
@@ -1244,7 +1344,7 @@ namespace {
       break;
     }
     case VolCurveKind::LinearVariance: {
-      const std::uint64_t need = 2ull * static_cast<std::uint64_t>(nc) * sizeof(double);
+      need = 2ull * static_cast<std::uint64_t>(nc) * sizeof(double);
       if (nc == 0 || need > avail) {
         return Err(ErrorCode::ParseError, "reconstruct_v2: linear payload out of bounds");
       }
@@ -1252,11 +1352,14 @@ namespace {
       std::vector<double> w(nc);
       std::memcpy(k.data(), p, nb);
       std::memcpy(w.data(), p + nb, nb);
+      if (!linear_nodes_searchable(k)) {
+        return Err(ErrorCode::ParseError, "reconstruct_v2: linear node k's not ascending/finite");
+      }
       curve = std::make_unique<LinearVarianceCurve>(T, fwd, df, std::move(k), std::move(w));
       break;
     }
     case VolCurveKind::ConvexDense: {
-      const std::uint64_t need = 24ull + 2ull * static_cast<std::uint64_t>(nc) * sizeof(double);
+      need = 24ull + 2ull * static_cast<std::uint64_t>(nc) * sizeof(double);
       if (nc == 0 || need > avail) {
         return Err(ErrorCode::ParseError, "reconstruct_v2: convex payload out of bounds");
       }
@@ -1281,7 +1384,7 @@ namespace {
     case VolCurveKind::SplineVol: {
       // atm_vol,z_lo,z_hi f64x3 | n u32 | pad u32 | z[n] | mult[n] | mult_cap f64 |
       // w_offset f64 | viol u32 (mult_cap + w_offset are LIVE in w(); review C1).
-      const std::uint64_t need = 52ull + 16ull * static_cast<std::uint64_t>(nc);
+      need = 52ull + 16ull * static_cast<std::uint64_t>(nc);
       if (need > avail) {
         return Err(ErrorCode::ParseError, "reconstruct_v2: spline payload out of bounds");
       }
@@ -1309,6 +1412,7 @@ namespace {
     default:
       return Err(ErrorCode::ParseError, "reconstruct_v2: unknown curve kind");
     }
+    prev_payload_end = poff + need;
     surface.push(std::move(curve));
 
     SliceContext sc;

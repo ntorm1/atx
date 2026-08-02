@@ -61,7 +61,7 @@
 #include "atx/vol/session.hpp"           // FitPreset
 #include "atx/vol/surface_archive.hpp"   // write_surface_archive_v2_file
 #include "atx/vol/surface_db.hpp"        // SurfaceDb, symbol_config_from_preset
-#include "atx/vol/surface_db_populate.hpp"  // populate_surface_db (U1-U4 + E2)
+#include "atx/vol/tools/surface_db_populate.hpp"  // populate_surface_db (U1-U4 + E2)
 #include "atx/vol/vol_curve.hpp"         // CurveConfig
 
 namespace {

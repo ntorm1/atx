@@ -41,12 +41,12 @@
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/chain.hpp"
-#include "atx/vol/curve.hpp"
 #include "atx/vol/data.hpp"
 #include "atx/vol/market_env.hpp"
 #include "atx/vol/panel.hpp"
 #include "atx/vol/pricer_fitter.hpp"
 #include "atx/vol/priced_surface.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/session.hpp"
 #include "atx/vol/spy_fixture.hpp"
 #include "atx/vol/types.hpp"

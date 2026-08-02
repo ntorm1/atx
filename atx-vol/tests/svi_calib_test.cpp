@@ -11,7 +11,7 @@
 #include "atx/vol/arb.hpp"          // arb_check_butterfly_svi_mm
 #include "atx/vol/black76.hpp"      // black76_price, black76_value_and_vega
 #include "atx/vol/calib.hpp"        // FitObs, CalibOpts, calib_default_opts
-#include "atx/vol/curve.hpp"        // CurveSet, ForwardPoint
+#include "atx/vol/rates_curve.hpp"  // CurveSet, ForwardPoint
 #include "atx/vol/svi_calib.hpp"    // fitters + JW conversions
 #include "atx/vol/universe.hpp"     // Underlying, Chain, chain_index
 #include "atx/vol/vol_surface.hpp"  // VolSurface, SviParams, Parametrization
@@ -310,21 +310,160 @@ TEST(SviMmCalib, FixedFixtureFit_IsBitIdentical) {
   const auto res = svi_mm_fit_slice(std::span<const FitObs>(obs), T, 100.0, opts);
   ASSERT_TRUE(res.has_value());
   const SviParams f = res.value();
-  // The optimizer contracts arithmetic differently under /O2, so pin the exact
-  // result independently for each supported build mode.
-#ifdef NDEBUG
-  EXPECT_EQ(f.a, 0.012000000001690282);
-  EXPECT_EQ(f.b, 0.05999999999705314);
-  EXPECT_EQ(f.rho, -0.30000000000920224);
-  EXPECT_EQ(f.m, -0.019999999998324022);
-  EXPECT_EQ(f.sigma, 0.17999999997839097);
-#else
-  EXPECT_EQ(f.a, 0.01200000000168963);
-  EXPECT_EQ(f.b, 0.059999999997054999);
-  EXPECT_EQ(f.rho, -0.30000000000922628);
-  EXPECT_EQ(f.m, -0.019999999998334177);
-  EXPECT_EQ(f.sigma, 0.17999999997839855);
-#endif
+  // Goldens re-captured for plan item 2.5 (Black-76 put leg switched from the
+  // 1−Φ(d) complement to Φ(−d)). 20 of these 41 strikes are puts, and the LM's
+  // residual/Jacobian pass prices them with `black76_value_and_vega`, so the
+  // per-observation residuals move by an ulp and the search settles on a
+  // marginally different point of the same FP-noise floor. The shift is ~2e-15
+  // relative — three orders below the fitter's own tol_param — and neither
+  // vector is nearer the noiseless generating params (0.012, 0.06, -0.30,
+  // -0.02, 0.18) than the other: both sit ~1e-11 away. This pin exists to catch
+  // ACCIDENTAL drift from refactors that claim to be numerically neutral, so a
+  // deliberate numerical change re-baselines it rather than failing it.
+  // Previous: 0.01200000000168963, 0.059999999997054999, -0.30000000000922628,
+  //           -0.019999999998334177, 0.17999999997839855.
+  EXPECT_EQ(f.a, 0.012000000001691179);
+  EXPECT_EQ(f.b, 0.059999999997051592);
+  EXPECT_EQ(f.rho, -0.30000000000921206);
+  EXPECT_EQ(f.m, -0.019999999998325333);
+  EXPECT_EQ(f.sigma, 0.17999999997837973);
+}
+
+// Plan item 1.8(a) — a candidate parameter step whose model prices are not
+// finite must poison the SSE, not have those rows silently dropped.
+//
+// `svi_mm_sse` skipped every observation whose Black-76 price came back
+// non-finite. A Black-76 price is non-finite only when sigma_pred is — i.e. only
+// when the candidate's total variance has overflowed — so the rows that got
+// skipped were exactly the evidence that the candidate is garbage. With ALL rows
+// skipped the accumulator stays at its 0.0 seed, the diverging step scores a
+// perfect SSE of zero, and the LM accepts it.
+//
+// An SSE that drops rows is also not comparable across candidates: two
+// candidates that drop different rows are being scored on different data sets.
+//
+// Fixture: a clean synthetic price-domain smile with one overflowing quote mid.
+// The weighted normal-equation gradient J^T W r then overflows to -inf, the
+// damped solve returns a non-finite step, and the projected iterate has
+// non-finite total variance.
+TEST(SviMmCalib, DivergingStepWithNonFinitePrices_IsRejected) {
+  const double T = 0.5;
+  std::vector<FitObs> obs =
+      build_obs_from_svi(41, -0.40, 0.40, 0.012, 0.060, -0.30, -0.02, 0.18, T);
+  obs[20].mid = 1.0e306;  // overflows J^T W r -> non-finite LM step
+
+  CalibOpts opts = calib_default_opts();
+  opts.morozov_stop = false;
+  opts.wing_floor_alpha = 0.0;
+
+  const auto res = svi_mm_fit_slice(std::span<const FitObs>(obs), T, 100.0, opts);
+  ASSERT_TRUE(res.has_value());
+  const SviParams f = res.value();
+
+  // The diverging step must have been rejected and the fit left on a finite
+  // candidate (here the quasi-explicit seed).
+  EXPECT_TRUE(std::isfinite(f.a)) << "a = " << f.a;
+  EXPECT_TRUE(std::isfinite(f.b)) << "b = " << f.b;
+  EXPECT_TRUE(std::isfinite(f.rho)) << "rho = " << f.rho;
+  EXPECT_TRUE(std::isfinite(f.m)) << "m = " << f.m;
+  EXPECT_TRUE(std::isfinite(f.sigma)) << "sigma = " << f.sigma;
+  // ...and it must still price to finite, strictly positive total variance.
+  for (int i = -40; i <= 40; ++i) {
+    const double k = 0.01 * static_cast<double>(i);
+    const double w = svi_w(f.a, f.b, f.rho, f.m, f.sigma, k);
+    ASSERT_TRUE(std::isfinite(w)) << "w(" << k << ") = " << w;
+    EXPECT_GT(w, 0.0) << "k = " << k;
+  }
+}
+
+// Plan item 1.8(b) — a rank-deficient (non positive-definite) quasi-explicit
+// normal matrix must not be laundered into an Ok(a = b = rho = 0) slice.
+//
+// `build_and_solve_normal` zeroed the free coordinates when the 3x3 Cholesky
+// reported a non-PD matrix, and `svi_blls_inner` then recomputed a perfectly
+// ordinary finite SSE at that all-zero point. Every Nelder-Mead vertex scored
+// the same way, so the degenerate point won the search and `svi_fit_slice`
+// returned Ok with a = b = rho = 0 — a slice with identically zero total
+// variance.
+//
+// Fixture: every quote on the same strike. The design rows (1, u_i, v_i) are
+// then identical, so the weighted normal matrix is rank 1 at every (m, sigma).
+[[nodiscard]] std::vector<FitObs> build_single_strike_obs(std::size_t n, double k,
+                                                          double w, double T) {
+  std::vector<FitObs> obs(n);
+  const double F = 100.0;
+  const double K = F * std::exp(k);
+  const double sig = std::sqrt(w / T);
+  const Side side = (K >= F) ? Side::Call : Side::Put;
+  for (FitObs& o : obs) {
+    o.k = k;
+    o.sigma_mkt = sig;
+    o.w_mkt = w;
+    o.K = K;
+    o.F = F;
+    o.df = 1.0;
+    o.mid = black76_price(F, K, T, sig, 1.0, side);
+    o.spread = 0.01 * o.mid;
+    o.vega = black76_value_and_vega(F, K, T, sig, 1.0, side).vega;
+    o.side = side;
+    o.weight_w = 1.0;
+    o.active_weight_w = 1.0;
+  }
+  return obs;
+}
+
+TEST(SviCalib, RankDeficientNormalMatrix_DoesNotReturnDegenerateSlice) {
+  const double T = 0.5;
+  // One usable quote: the design rows cannot determine three linear
+  // coefficients, so the weighted 3x3 normal matrix is rank 1 at every
+  // (m, sigma) the Nelder-Mead visits.
+  const std::vector<FitObs> obs = build_single_strike_obs(1, 0.05, 0.02, T);
+
+  const auto res =
+      svi_fit_slice(std::span<const FitObs>(obs), T, 100.0, calib_default_opts());
+  if (res.has_value()) {
+    const SviParams f = res.value();
+    ADD_FAILURE() << "returned Ok on a rank-deficient fit: a=" << f.a
+                  << " b=" << f.b << " rho=" << f.rho << " m=" << f.m
+                  << " sigma=" << f.sigma;
+  } else {
+    EXPECT_EQ(res.error().code(), ErrorCode::Unavailable);
+  }
+
+  // Same defect via zeroed weights: every design row drops out of the
+  // accumulation, so the normal matrix is identically zero.
+  std::vector<FitObs> zero_weight =
+      build_obs_from_svi(11, -0.20, 0.20, 0.012, 0.060, -0.30, -0.02, 0.18, T);
+  for (FitObs& o : zero_weight) {
+    o.weight_w = 0.0;
+    o.active_weight_w = 0.0;
+  }
+  const auto zres = svi_fit_slice(std::span<const FitObs>(zero_weight), T, 100.0,
+                                  calib_default_opts());
+  if (zres.has_value()) {
+    const SviParams f = zres.value();
+    ADD_FAILURE() << "returned Ok on a zero normal matrix: a=" << f.a
+                  << " b=" << f.b << " rho=" << f.rho;
+  }
+}
+
+// ...and the SVI-MM fitter, which seeds from `svi_fit_slice`, must fall back to
+// its hardcoded seed rather than start the LM from the degenerate a=b=rho=0
+// point (which the admissibility projector then pins at the b = 1e-8 edge).
+TEST(SviMmCalib, RankDeficientSeed_FallsBackToHealthySeed) {
+  const double T = 0.5;
+  const std::vector<FitObs> obs = build_single_strike_obs(1, 0.05, 0.02, T);
+
+  const auto res = svi_mm_fit_slice(std::span<const FitObs>(obs), T, 100.0,
+                                    calib_default_opts());
+  ASSERT_TRUE(res.has_value());
+  const SviParams f = res.value();
+
+  // The healthy fallback seed is b = 0.1 / rho = -0.20 / sigma = 0.10; the
+  // degenerate a=b=rho=0 seed collapses b onto the projector's 1e-8 edge pad,
+  // leaving a flat slice with no smile at all.
+  EXPECT_GT(f.b, 1.0e-4) << "b collapsed onto the admissibility edge pad";
+  EXPECT_GT(svi_w(f.a, f.b, f.rho, f.m, f.sigma, obs[0].k), 0.0);
 }
 
 TEST(SviMmCalib, FittedSlice_IsAlwaysAdmissible_EvenFromWideData) {
@@ -621,8 +760,8 @@ TEST(SviMmCalibSurface, FitsSyntheticSlice_Admissible) {
 }
 
 // C-1 regression (WS-C): a butterfly-arbitrage SVI smile must NEVER be served by
-// the surface driver. `calib_pool` builds a Parametrization::Svi VolSurface via
-// this driver and serves it DIRECTLY (VolSurface::w -> svi_total_w), bypassing
+// the surface driver. A caller can build a Parametrization::Svi VolSurface via
+// this driver and serve it DIRECTLY (VolSurface::w -> svi_total_w), bypassing
 // the fit_slice_curve butterfly gate. The driver must therefore repair-or-drop a
 // violating slice at the source, not merely tally it.
 TEST(SviCalibSurface, ButterflyInadmissibleFit_IsRepairedOrDropped_NeverServed) {

@@ -144,6 +144,48 @@ TEST(SimdBlack76Batch, ValueVegaMatchesScalarAcrossGrid) {
   EXPECT_LT(max_vega, 1e-5);
 }
 
+// Plan item 2.5, vector leg. The grid test above bounds the batch/scalar gap
+// ABSOLUTELY (1e-6), which is blind to a wing premium of ~1e-17: the value+vega
+// kernel used to keep the 1−Φ(d) complement on the put leg, so it zeroed (or
+// sign-flipped) exactly the prices the absolute tolerance cannot see. Now that
+// the scalar reference prices puts from Φ(−d), the batch must follow — assert
+// RELATIVE agreement plus the premium's sign on wing lanes chosen so the
+// complement form is demonstrably wrong there.
+TEST(SimdBlack76Batch, ValueVegaDeepOtmPut_MatchesScalarRelativelyAndStaysNonNegative) {
+  // Two full 4-lane groups so the AVX2 vector path (not the scalar tail)
+  // computes every lane. Lanes 0-3 are the A8 finding's wing (complement -> 0);
+  // lanes 4-7 sit where the two complements round to the same double and the
+  // complement price goes NEGATIVE.
+  const std::vector<double> F{100.0, 200.0, 150.0, 100.0, 100.0, 100.0, 100.0, 100.0};
+  const std::vector<double> K{50.0, 100.0, 75.0, 48.0, 72.0, 72.0, 68.0, 92.0};
+  const std::vector<double> T{0.1, 0.1, 0.12, 0.1, 0.25, 1.0, 0.1, 0.002};
+  const std::vector<double> sigma{0.20, 0.22, 0.20, 0.20, 0.08, 0.04, 0.15, 0.25};
+  const std::vector<double> df{0.995, 0.99, 0.99, 0.995, 1.0, 1.0, 1.0, 1.0};
+  const std::vector<Side> sd(8, Side::Put);
+  const std::size_t n = F.size();
+  std::vector<double> price(n, -1.0);
+  std::vector<double> vega(n, -1.0);
+  simd::black76_value_vega_batch(F.data(), K.data(), T.data(), sigma.data(),
+                                 df.data(), sd.data(), price.data(), vega.data(), n);
+  double max_rel = 0.0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const Black76ValueVega want =
+        black76_value_and_vega(F[i], K[i], T[i], sigma[i], df[i], sd[i]);
+    ASSERT_GT(want.price, 0.0) << "i=" << i; // a genuine, tiny wing premium
+    EXPECT_GE(price[i], 0.0) << "i=" << i << " price=" << price[i];
+    const double rel = std::abs(price[i] - want.price) / want.price;
+    max_rel = std::max(max_rel, rel);
+    // 1e-11, not the price kernel's 1e-12: lanes 4-7 sit shallower in the wing,
+    // where K·Φ(−d2) − F·Φ(−d1) still cancels ~2 decades, amplifying the vector
+    // Cody-erfc Φ's own error against libm erfc. That is a Φ-accuracy floor,
+    // not a formula difference — the complement form misses by ≥ 100% relative
+    // (measured 1.0 and 72.5 on these lanes), 11 orders outside this bound.
+    EXPECT_LT(rel, 1e-11)
+        << "i=" << i << " got=" << price[i] << " want=" << want.price;
+  }
+  std::printf("[SimdBlack76Batch] value+vega deep-OTM-put max_rel=%.3e\n", max_rel);
+}
+
 // The scalar tail (n % 4 != 0) must be handled for every residue class.
 TEST(SimdBlack76Batch, HandlesEveryTailResidue) {
   const Batch full = make_grid();

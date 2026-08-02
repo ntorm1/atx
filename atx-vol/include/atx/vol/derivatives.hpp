@@ -6,9 +6,10 @@
 //
 // Ported from the C `ats-vol` library (ats_vol_derivatives.{h,c},
 // ats_vol_var_strip.c, ats_vol_vol_carr_lee.c, ats_vol_realized_tracker.c —
-// Sprint 22). The pricing layer sits on top of the fitted vol surface
-// (atx/vol/surface.hpp), the curve set (atx/vol/curve.hpp), and the Black-76
-// kernel (atx/vol/black76.hpp).
+// Sprint 22). The pricing layer sits on top of a fitted vol surface (any type
+// answering `iv(k_log, T)`, or a `PricedSurface` through the E6 overloads), the
+// curve set (atx/vol/rates_curve.hpp), and the Black-76 kernel
+// (atx/vol/black76.hpp).
 //
 // What this port ships (well past the C's v22 first cut -- the production
 // sprint below added the distribution engine, greeks, dated fixings and the
@@ -119,8 +120,7 @@
 #include <limits>
 #include <span>
 
-#include "atx/vol/curve.hpp"
-#include "atx/vol/surface.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/types.hpp"
 
 namespace atx::vol {
@@ -457,28 +457,13 @@ struct DerivQuote {
   DerivFlags flags = DerivFlags::None;
 };
 
-// ── Unit conversions ─────────────────────────────────────────────────────
-
-[[nodiscard]] constexpr double var_dec_to_points(double var_dec) noexcept {
-  return 1.0e4 * var_dec;
-}
-[[nodiscard]] constexpr double var_points_to_dec(double var_points) noexcept {
-  return 1.0e-4 * var_points;
-}
-[[nodiscard]] constexpr double vol_dec_to_points(double vol_dec) noexcept {
-  return 1.0e2 * vol_dec;
-}
-[[nodiscard]] constexpr double vol_points_to_dec(double vol_points) noexcept {
-  return 1.0e-2 * vol_points;
-}
-
 // ── Fair-strike resolvers ────────────────────────────────────────────────
 
 // Variance-swap fair strike via OTM option-strip integration (engine
 // STRIP_LOG_CONTRACT). Pure future expectation; ignores any rv_spec accrual.
 //
-// `SurfaceT` is the fitted surface (EssviSurface or SviSurface); only its
-// `iv(k_log, T)` query is used. The forward is resolved from `curves.forward`
+// `SurfaceT` is any fitted-surface type answering `iv(k_log, T)` — that query is
+// the whole requirement. The forward is resolved from `curves.forward`
 // (linear interpolation in T, clamped) and the discount factor from
 // `curves.yield`.
 //
@@ -525,20 +510,13 @@ template <class SurfaceT>
 deriv_price(const SurfaceT& surface, const CurveSet& curves,
             const DerivContract& contract, const DerivConfig& cfg = DerivConfig{});
 
-// Only the two shipped surface parametrizations are instantiated (mirrors
-// surface.cpp). Keeps the template bodies out of this header.
-extern template Result<DerivQuote> var_swap_fair_strike<EssviSurface>(
-    const EssviSurface&, const CurveSet&, double, const DerivConfig&);
-extern template Result<DerivQuote> var_swap_fair_strike<SviSurface>(
-    const SviSurface&, const CurveSet&, double, const DerivConfig&);
-extern template Result<DerivQuote> vol_swap_fair_strike<EssviSurface>(
-    const EssviSurface&, const CurveSet&, double, const DerivConfig&);
-extern template Result<DerivQuote> vol_swap_fair_strike<SviSurface>(
-    const SviSurface&, const CurveSet&, double, const DerivConfig&);
-extern template Result<DerivQuote> deriv_price<EssviSurface>(
-    const EssviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&);
-extern template Result<DerivQuote> deriv_price<SviSurface>(
-    const SviSurface&, const CurveSet&, const DerivContract&, const DerivConfig&);
+// The three templates above have NO definition in this header — the bodies live
+// in derivatives.cpp, which explicitly instantiates them for the two legacy
+// per-family surface containers demoted to `detail/legacy_surface.hpp` by S4-T21
+// (plan 4.4). A caller that names one of those containers therefore links today
+// exactly as it did before; a caller that supplies a NEW `SurfaceT` needs an
+// instantiation added alongside them. New code should not do that — it should
+// use the PricedSurface-native overloads below.
 
 // ── Finite-difference greeks ─────────────────────────────────────────────
 
@@ -659,8 +637,8 @@ extern template Result<DerivGreeks> deriv_greeks<SviSurface>(
 
 // ── E6 / AN-W: PricedSurface-native entry points ────────────────────────────
 //
-// The templates above are stranded on the LEGACY calibration-grade surface types
-// (`EssviSurface` / `SviSurface`, surface.hpp). The modern fitted pipeline
+// The templates above are stranded on the LEGACY calibration-grade surface
+// containers (now `detail/legacy_surface.hpp`). The modern fitted pipeline
 // produces a `PricedSurface`, so reaching `var_swap_fair_strike` from it meant
 // hand-converting slices — which is why this whole module was reachable only
 // from its own unit test.

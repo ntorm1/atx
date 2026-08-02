@@ -23,13 +23,13 @@
 #include <vector>
 
 #include "atx/vol/backtest.hpp"              // BacktestResult
-#include "atx/vol/backtest_driver.hpp"       // RunOutcome, EngineRunStats
-#include "atx/vol/dispersion_backtest.hpp"   // DispersionBacktestConfig
+#include "atx/vol/research/backtest_driver.hpp"       // RunOutcome, EngineRunStats
+#include "atx/vol/research/dispersion_backtest.hpp"   // DispersionBacktestConfig
 #include "atx/vol/dispersion_surface_db.hpp" // SurfaceDbDispersionSpec, the one-call entry
-#include "atx/vol/dispersion_workflow.hpp"   // read_universe, all_symbols
-#include "atx/vol/run_report.hpp"            // MetaKv, write_* emitters
+#include "atx/vol/research/dispersion_workflow.hpp"   // read_universe, all_symbols
+#include "atx/vol/tools/run_report.hpp"            // MetaKv, write_* emitters
 #include "atx/vol/surface_db.hpp"            // SurfaceDb (meta: root + generation)
-#include "atx/vol/tearsheet.hpp"             // TearSheet
+#include "atx/vol/tools/tearsheet.hpp"             // TearSheet
 #include "atx/vol/types.hpp"                 // Result, Status
 
 using namespace atx::vol;

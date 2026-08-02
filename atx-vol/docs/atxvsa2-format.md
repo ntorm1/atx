@@ -1,4 +1,11 @@
-# ATXVSA2 — zero-copy mmap columnar surface-archive format (v2)
+# ATXVSA2 — zero-copy mmap columnar surface-archive format
+
+Naming: this format is **ATXVSA2**, after its on-disk magic `ATXVSA20`
+(`major == kArchiveV2Major == 4`). The format it replaced is **ATXVSA03**, after
+its magic (`major == 3`). Neither is called "v1" or "v3" any more — the ordinals
+collided three ways (magic digits, the `major` field, sequence position) and the
+same format ended up named both. `surface_archive.hpp` states the rule; the `_v2`
+in `write_surface_archive_v2` is the `2` in the magic.
 
 Status: **wave-1 design + implementation** (WS-S / S1–S3 of the
 `2026-07-18-atx-vol-backtest-hotpath-throughput-sprint`). This document is the
@@ -14,7 +21,7 @@ the sprint §3 research-first mandate.
 
 ## 0. Why a new format (the three bottlenecks it kills)
 
-The v1 archive (ATXVSA v3, `major==3`, magic `ATXVSA03`) deserializes by
+The ATXVSA03 archive (`major == 3`, magic `ATXVSA03`) deserializes by
 `reconstruct`: it CRC-32Cs the **whole blob** on every open, `make_unique`s a
 polymorphic `IVolCurve` per slice, and copies each node array into fresh
 `std::vector`s — *for every surface, even when the caller wants a subset*. Each
@@ -155,7 +162,7 @@ re-pack (no numeric change). `n = node_count`.
 **`mult_cap` and `w_offset` are load-bearing** — both are live eval-time terms of
 `SplineVolCurve::w()` (`mult_cap` clamps the served multiple; `w_offset` is the
 calendar-cone additive total-variance lift). Dropping them (the pre-review v2
-layout, and v1's ATXVSA v3, both did) silently misprices any SplineVol slice with
+layout, and ATXVSA03, both did) silently misprices any SplineVol slice with
 a clamping multiple or a projected offset — the view rebuilds them as their 0.0
 struct defaults. They are serialized here so the view is bit-exact; the change
 bumped `schema_hash_v2`'s salt (minor→1) so any older v2 file is rejected.
@@ -248,9 +255,9 @@ to a `PricedSurface` reconstructed from the same bytes.
   **`open` verifies header + metadata + framing bounds only.** Per-record CRC is
   checked **only** by the explicit `validate_symbol` / `validate_all` API — never
   on the price path. This is the lazy-CRC win (#5).
-- **Durable atomic publish (C3 / SE-P2-1, SE-P2-2).** All three writers
-  (`write_surface_archive_v2_file`, v1 `write_surface_archive_file`, and the
-  SurfaceDb `write_manifest_file_atomic`) publish through the one shared primitive
+- **Durable atomic publish (C3 / SE-P2-1, SE-P2-2).** Both writers
+  (`write_surface_archive_v2_file` and the SurfaceDb
+  `write_manifest_file_atomic`) publish through the one shared primitive
   `detail::flush_and_publish_file(tmp, dst)`: exclusively reserve a **unique
   same-directory temp**, write payload, close, **fsync the temp**
   (`FlushFileBuffers`), then **rename** with **bounded retry + exponential

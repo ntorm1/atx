@@ -29,9 +29,10 @@
 // ATXVSA2 (v2) zero-copy suite. The economic-correctness gate: a PricedSurfaceView
 // over the mapped v2 record serves BIT-IDENTICAL theo (iv / total variance /
 // fair_value / greeks / delta / vega / evaluate_batch) to the ORIGINAL
-// PricedSurface (which the v1 reconstruct path also reproduces bit-for-bit). Plus
-// subset-map isolation, lazy-CRC validate-on-demand, big-fixture alignment, and
-// clean-break cross-format rejection.
+// PricedSurface. Plus subset-map isolation, lazy-CRC validate-on-demand,
+// big-fixture alignment, and clean-break rejection of a legacy v1 file.
+
+#include "slice_param_padding.hpp" // test::repad — padding-only mutation of the POD slice params
 
 namespace {
 
@@ -59,7 +60,6 @@ using atx::vol::PricedSurfaceView;
 using atx::vol::PricingContext;
 using atx::vol::Side;
 using atx::vol::SliceContext;
-using atx::vol::SurfaceArchive;
 using atx::vol::SurfaceArchiveItem;
 using atx::vol::SurfaceArchiveV2;
 using atx::vol::SurfaceProvenance;
@@ -69,7 +69,6 @@ using atx::vol::SviCurve;
 using atx::vol::SviParams;
 using atx::vol::ValidationFailure;
 using atx::vol::VolCurveKind;
-using atx::vol::write_surface_archive;
 using atx::vol::write_surface_archive_v2;
 
 [[nodiscard]] bool bits_equal(double a, double b) noexcept {
@@ -113,7 +112,14 @@ constexpr double kR = 0.043;
   return p;
 }
 
-[[nodiscard]] PricedSurface make_essvi(std::uint32_t uid, int n) {
+// Padding-controlled copies of the blitted POD slice params: `repad(p, byte)`
+// differs from `p` in its PADDING and nowhere else, which is what lets
+// `SliceParamPaddingDoesNotReachTheRecord` below pin "the record is a function
+// of the VALUES, not of the pad". Shared with the v1 writer's analogue test.
+// See tests/slice_param_padding.hpp and src/slice_payload_padding.hpp.
+using atx::vol::test::repad;
+
+[[nodiscard]] PricedSurface make_essvi(std::uint32_t uid, int n, unsigned char pad = 0x00) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   for (int i = 0; i < n; ++i) {
@@ -128,7 +134,7 @@ constexpr double kR = 0.043;
     e.T = T;
     e.F = kS;
     e.expiry_id = static_cast<std::uint16_t>(i);
-    cs.push(std::make_unique<EssviCurve>(e, std::exp(-kR * T)));
+    cs.push(std::make_unique<EssviCurve>(repad(e, pad), std::exp(-kR * T)));
     ctx.push_back(SliceContext{T, kS, 0.0, 0.02, 250, 7});
   }
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
@@ -136,7 +142,7 @@ constexpr double kR = 0.043;
   return std::move(*ps);
 }
 
-[[nodiscard]] PricedSurface make_svi(std::uint32_t uid, int n) {
+[[nodiscard]] PricedSurface make_svi(std::uint32_t uid, int n, unsigned char pad = 0x00) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   for (int i = 0; i < n; ++i) {
@@ -150,7 +156,7 @@ constexpr double kR = 0.043;
     v.T = T;
     v.F = kS;
     v.expiry_id = static_cast<std::uint16_t>(i);
-    cs.push(std::make_unique<SviCurve>(v, std::exp(-kR * T)));
+    cs.push(std::make_unique<SviCurve>(repad(v, pad), std::exp(-kR * T)));
     ctx.push_back(SliceContext{T, kS, 0.0, 0.02, 180, 4});
   }
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
@@ -209,7 +215,7 @@ constexpr double kR = 0.043;
   return std::move(*ps);
 }
 
-[[nodiscard]] PricedSurface make_c8(std::uint32_t uid, int n) {
+[[nodiscard]] PricedSurface make_c8(std::uint32_t uid, int n, unsigned char pad = 0x00) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   for (int i = 0; i < n; ++i) {
@@ -224,7 +230,7 @@ constexpr double kR = 0.043;
     c8.q_L = 0.0002 * T;
     c8.q_R = -0.0001 * T;
     c8.expiry_id = static_cast<std::uint16_t>(i);
-    cs.push(std::make_unique<C8Curve>(c8, std::exp(-kR * T)));
+    cs.push(std::make_unique<C8Curve>(repad(c8, pad), std::exp(-kR * T)));
     ctx.push_back(SliceContext{T, kS, 0.0, 0.02, 120, 5});
   }
   auto ps = PricedSurface::create(std::move(cs), std::move(ctx), make_pricing(uid));
@@ -543,6 +549,50 @@ TEST(SurfaceArchiveV2, MapAllAndProvenance) {
   EXPECT_EQ(arch->find("ZZZ").has_value(), false);
 }
 
+// ── find() must hand back the archive's REAL directory entry ──────────────────
+//
+// `find` is documented as "resolve `symbol` to its directory entry", and callers
+// may legitimately feed the result straight into `map_entry`/`reconstruct_entry`
+// or compare it against `directory()`. Anything less than the stored entry is a
+// silent lie: the lookup slot carries no n_slices/kind_bits/payload_crc32c, so a
+// hand-assembled entry reads back zeros for exactly the fields a framing-only
+// consumer (and the F6 content-identity check) depends on.
+TEST(SurfaceArchiveV2, FindReturnsTheStoredDirectoryEntry) {
+  auto arch = SurfaceArchiveV2::open(build_multi()); // 6 mixed-kind surfaces
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  const std::span<const atx::vol::ArchiveV2DirEntry> dir = arch->directory();
+  ASSERT_EQ(dir.size(), 6u);
+
+  for (const atx::vol::ArchiveV2DirEntry &want : dir) {
+    const std::string sym(want.symbol, want.symbol_len);
+    auto got = arch->find(sym);
+    ASSERT_TRUE(got.has_value()) << sym << ": " << got.error().to_string();
+    // Field-wise first so a failure names what was dropped, then the whole
+    // 80-byte record (no padding: 8+8+8+4+2+2+2+2+4+32+8) for completeness.
+    EXPECT_EQ(got->surface_offset, want.surface_offset) << sym;
+    EXPECT_EQ(got->surface_size, want.surface_size) << sym;
+    EXPECT_EQ(got->symbol_hash, want.symbol_hash) << sym;
+    EXPECT_EQ(got->uid, want.uid) << sym;
+    EXPECT_EQ(got->n_slices, want.n_slices) << sym;
+    EXPECT_EQ(got->kind_bits, want.kind_bits) << sym;
+    EXPECT_EQ(got->payload_crc32c, want.payload_crc32c) << sym;
+    EXPECT_EQ(got->symbol_len, want.symbol_len) << sym;
+    EXPECT_EQ(0, std::memcmp(&*got, &want, sizeof(atx::vol::ArchiveV2DirEntry))) << sym;
+    // The entry is usable exactly like a `directory()` one.
+    EXPECT_TRUE(arch->map_entry(*got).has_value()) << sym;
+  }
+
+  // Case-insensitive probe resolves to the same stored entry, and an absent
+  // symbol is still NotFound.
+  auto lower = arch->find("bbb");
+  ASSERT_TRUE(lower.has_value()) << lower.error().to_string();
+  EXPECT_GT(lower->n_slices, 0u);
+  EXPECT_EQ(lower->uid, 102u);
+  auto absent = arch->find("ZZZ");
+  ASSERT_FALSE(absent.has_value());
+  EXPECT_EQ(absent.error().code(), ErrorCode::NotFound);
+}
+
 // ── Subset-map isolation: mapping one symbol must not read another's bytes ─────
 
 TEST(SurfaceArchiveV2, SubsetMapIsolation) {
@@ -612,15 +662,17 @@ TEST(SurfaceArchiveV2, RejectsHeaderCorruption) {
 }
 
 TEST(SurfaceArchiveV2, CleanBreakCrossFormatRejection) {
-  // v1 bytes are not a v2 archive, and vice versa — no dual read (§0).
-  const PricedSurface ps = make_essvi(1, 3);
-  const std::array<SurfaceArchiveItem, 1> v1_items{SurfaceArchiveItem{"sym", &ps}};
-  auto v1 = write_surface_archive(v1_items);
-  ASSERT_TRUE(v1.has_value());
-  EXPECT_FALSE(SurfaceArchiveV2::open(std::vector<std::byte>(*v1)).has_value());
-
-  std::vector<std::byte> v2 = build_v2(ps, "sym");
-  EXPECT_FALSE(SurfaceArchive::open(std::move(v2)).has_value());
+  // An ATXVSA03 file is not an ATXVSA2 archive — no dual read (§0). Its writer is
+  // gone (release-v1 plan 3.6), so the fixture is the v1 FRAMING this reader must
+  // still refuse when it meets a legacy file on disk: a v1-sized header block
+  // stamped with the v1 magic. Long enough to clear v2's minimum-size check, so the
+  // rejection is genuinely the magic/version gate and not a short-buffer accident.
+  std::vector<std::byte> v1(sizeof(atx::vol::ArchiveHeader), std::byte{0});
+  static_assert(sizeof(atx::vol::ArchiveHeader) > sizeof(atx::vol::ArchiveV2Header),
+                "the v1 header block must clear v2's minimum-size check");
+  constexpr char kV1Magic[8] = {'A', 'T', 'X', 'V', 'S', 'A', '0', '3'};
+  std::memcpy(v1.data(), kV1Magic, sizeof kV1Magic);
+  EXPECT_FALSE(SurfaceArchiveV2::open(std::move(v1)).has_value());
 }
 
 // ── instance_id: never-reused, move transfers, distinct per view ──────────────
@@ -635,6 +687,87 @@ TEST(SurfaceArchiveV2, InstanceIdSemantics) {
   const std::uint64_t id = a->instance_id();
   PricedSurfaceView moved = std::move(*a);
   EXPECT_EQ(moved.instance_id(), id); // move transfers identity
+}
+
+// ── Moved-from views are inert (lifetime hardening) ──────────────────────────
+//
+// A move STEALS `heavy_curves_` (the materialized ConvexDense/SplineVol curves)
+// but used to leave `record_` / the column pointers / `n_slices_` intact. The
+// moved-from view therefore still reported n_slices() > 0 and still ANSWERED
+// queries — and on a ConvexDense/SplineVol surface `slice_w` indexed the now
+// EMPTY `heavy_curves_` vector out of bounds (UB), while on a parametric surface
+// it silently served a second, unowned "live" view of the same record. A
+// moved-from view is now structurally empty and every query fails closed.
+namespace {
+// ASSERT (not EXPECT) on the emptiness flag: it is the single gate every query
+// guard reads, so if it does not hold the queries below are exactly the UB this
+// test exists to pin — bail out instead of executing it.
+void expect_moved_from_view_inert(PricedSurfaceView &corpse, double K, double T) {
+  ASSERT_EQ(corpse.n_slices(), 0u);
+  EXPECT_FALSE(corpse.resolve(K, T).valid);
+  EXPECT_TRUE(std::isnan(corpse.iv(K, T)));
+  EXPECT_TRUE(std::isnan(corpse.total_variance(K, T)));
+  EXPECT_EQ(corpse.forward_at(T), 0.0);
+  EXPECT_EQ(corpse.q_eff_at(T), 0.0);
+  EXPECT_EQ(corpse.rate_at(T), 0.0);
+  EXPECT_FALSE(corpse.fair_value(K, T, Side::Call).has_value());
+  EXPECT_FALSE(corpse.greeks(K, T, Side::Call).has_value());
+  EXPECT_FALSE(corpse.delta(K, T, Side::Call).has_value());
+  EXPECT_FALSE(corpse.vega(K, T, Side::Call).has_value());
+  EXPECT_FALSE(corpse.full_greek_seed(K, T, Side::Call, /*analytic=*/true).has_value());
+
+  // The batch seam fails closed per lane rather than reading the released borrow.
+  const std::array<double, 1> Ks{K};
+  const std::array<double, 1> Ts{T};
+  const std::array<Side, 1> sides{Side::Call};
+  std::array<double, 1> iv{};
+  std::array<double, 1> px{};
+  std::array<AmericanGreeks, 1> gk{};
+  std::array<atx::vol::Status, 1> st{};
+  const atx::vol::Status rc = corpse.evaluate_batch(
+      Ks, Ts, sides, PricedSurfaceView::EvalField::Iv | PricedSurfaceView::EvalField::Price,
+      /*analytic=*/false,
+      PricedSurfaceView::EvaluationSoA{iv, px, gk, st, {}, {}});
+  EXPECT_TRUE(rc.has_value()) << rc.error().to_string();
+  EXPECT_FALSE(st[0].has_value());
+}
+} // namespace
+
+TEST(SurfaceArchiveV2, MovedFromView_HeavyCurveSurface_IsInert) {
+  const PricedSurface orig = make_convex(11, 5, 21); // ConvexDense => heavy_curves_
+  auto arch = SurfaceArchiveV2::open(build_v2(orig, "idx"));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  auto v = arch->map_symbol("idx");
+  ASSERT_TRUE(v.has_value()) << v.error().to_string();
+
+  constexpr double kK = 100.0;
+  constexpr double kT = 0.25;
+  const double live_iv = v->iv(kK, kT);
+  ASSERT_TRUE(std::isfinite(live_iv));
+
+  PricedSurfaceView moved = std::move(*v);
+  expect_moved_from_view_inert(*v, kK, kT);
+  // The destination is fully functional and bit-identical to the pre-move view.
+  EXPECT_TRUE(bits_equal(moved.iv(kK, kT), live_iv));
+  EXPECT_EQ(moved.n_slices(), orig.n_slices());
+}
+
+TEST(SurfaceArchiveV2, MoveAssignedFromView_HeavyCurveSurface_IsInert) {
+  const PricedSurface orig = make_spline(13, 4);
+  auto arch = SurfaceArchiveV2::open(build_v2(orig, "spl"));
+  ASSERT_TRUE(arch.has_value()) << arch.error().to_string();
+  auto src = arch->map_symbol("spl");
+  auto dst = arch->map_symbol("spl");
+  ASSERT_TRUE(src.has_value() && dst.has_value());
+
+  constexpr double kK = 100.0;
+  constexpr double kT = 0.25;
+  const double live_iv = src->iv(kK, kT);
+  ASSERT_TRUE(std::isfinite(live_iv));
+
+  *dst = std::move(*src);
+  expect_moved_from_view_inert(*src, kK, kT);
+  EXPECT_TRUE(bits_equal(dst->iv(kK, kT), live_iv));
 }
 
 // ── Corpus reproducibility: content-derived created_ts_ns ─────────────────────
@@ -1031,4 +1164,41 @@ TEST(SurfaceArchiveV2, ReemitByteIdenticalIsIdempotent) {
   const std::vector<std::byte> c = reemit_via_reconstruct(b);
   ASSERT_EQ(a.size(), c.size());
   EXPECT_EQ(0, std::memcmp(a.data(), c.data(), a.size()));
+}
+
+// ── The record is a function of the VALUES, never of the struct padding ──────
+//
+// `EssviParams`/`SviParams`/`C8Params` are blitted into the record whole, so the
+// record used to inherit their PADDING as well as their members. No fitter ever
+// writes those pad bytes — a fit builds its result as `SviParams out{}` and
+// assigns members, and clang-cl does not materialize the zero-initialization of
+// padding bits — so the pad carries whatever the producing thread's stack last
+// left at that address. Blitted verbatim it reached the record, `payload_crc32c`
+// and (via the directory mirror) the archive's content identity, which made the
+// stored bytes of an IDENTICAL fitted slice depend on which thread fitted it —
+// i.e. on the fit worker count. That is what
+// `SurfaceDbPopulate.CarryOverIsByteIdenticalAcrossWorkerCounts` observes end to
+// end; this is the same defect pinned at the writer, one kind at a time.
+//
+// Two surfaces that differ ONLY in the padding of their slice params must
+// serialize to identical bytes.
+void expect_padding_blind(const PricedSurface &clean, const PricedSurface &dirty,
+                          const char *what) {
+  const SurfaceProvenance prov = make_provenance();
+  const std::array<SurfaceArchiveItem, 1> clean_items{SurfaceArchiveItem{"SYM", &clean, prov}};
+  const std::array<SurfaceArchiveItem, 1> dirty_items{SurfaceArchiveItem{"SYM", &dirty, prov}};
+  auto a = write_surface_archive_v2(clean_items, pinned_opts());
+  auto b = write_surface_archive_v2(dirty_items, pinned_opts());
+  ASSERT_TRUE(a.has_value()) << what;
+  ASSERT_TRUE(b.has_value()) << what;
+  ASSERT_EQ(a->size(), b->size()) << what;
+  EXPECT_EQ(0, std::memcmp(a->data(), b->data(), a->size()))
+      << what << ": archive bytes depend on the slice params' padding, so the same "
+                 "fitted surface stores differently depending on the producing thread";
+}
+
+TEST(SurfaceArchiveV2, SliceParamPaddingDoesNotReachTheRecord) {
+  expect_padding_blind(make_svi(3, 4, 0x00), make_svi(3, 4, 0xAB), "svi");
+  expect_padding_blind(make_essvi(3, 4, 0x00), make_essvi(3, 4, 0xAB), "essvi");
+  expect_padding_blind(make_c8(3, 4, 0x00), make_c8(3, 4, 0xAB), "c8");
 }

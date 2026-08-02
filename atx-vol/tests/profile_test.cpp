@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -40,6 +41,7 @@ using atx::vol::ProfileVerdict;
 using atx::vol::PricingRoute;
 using atx::vol::ResidualBasisKind;
 using atx::vol::tick_size;
+using atx::vol::ticker_seed_profile;
 using atx::vol::Underlying;
 
 // ── Classifier-input fixtures (mirror the C helpers) ──────────────────────
@@ -334,6 +336,52 @@ TEST(ProfileRegistry, TickSize_Lattice_MatchesOpra) {
   EXPECT_NEAR(tick_size(-1.0, false), 0.05, 1e-12);
   EXPECT_NEAR(tick_size(std::numeric_limits<double>::quiet_NaN(), true), 0.05,
               1e-12);
+}
+
+// ── 4.3 error model: the seed lookup answers with an optional ─────────────
+//
+// `ticker_seed_profile` used to be `bool` + a `ProfileKind&` out-param, so the
+// unseeded answer was "false, and whatever you happened to leave in out_kind" —
+// a shape that only works if every caller remembers not to read the out-param.
+// It had no test at all. It now returns `std::optional<ProfileKind>`: absence is
+// the type, not a convention, and there is no slot to misread.
+
+TEST(TickerSeedProfile, SeededTickersAnswerWithTheirKind) {
+  EXPECT_EQ(ticker_seed_profile("SPY"), std::optional{ProfileKind::IndexEtfUltraLiquid});
+  EXPECT_EQ(ticker_seed_profile("TLT"), std::optional{ProfileKind::IndexEtfUltraLiquid});
+  EXPECT_EQ(ticker_seed_profile("NVDA"), std::optional{ProfileKind::MegaCapEvent});
+  EXPECT_EQ(ticker_seed_profile("MSFT"), std::optional{ProfileKind::MegaCapEvent});
+  EXPECT_EQ(ticker_seed_profile("JPM"), std::optional{ProfileKind::LiquidSingleName});
+  // MRNA is the HTB placeholder that deliberately routes to LIQUID (matches C).
+  EXPECT_EQ(ticker_seed_profile("MRNA"), std::optional{ProfileKind::LiquidSingleName});
+}
+
+TEST(TickerSeedProfile, UnseededAndEmptyTickersAnswerNullopt) {
+  // The absence branch: previously reachable only as `false` beside an
+  // untouched out-param, and never asserted anywhere in the tree.
+  EXPECT_FALSE(ticker_seed_profile("ZZZZ").has_value());
+  EXPECT_FALSE(ticker_seed_profile("").has_value());
+  EXPECT_FALSE(ticker_seed_profile("spy").has_value()) << "the table is case-sensitive";
+  EXPECT_FALSE(ticker_seed_profile("SPY ").has_value()) << "no trimming, exact match only";
+  EXPECT_FALSE(ticker_seed_profile("SP").has_value()) << "no prefix match";
+}
+
+// Provenance, not score: a seeded verdict reports kTickerSeedConfidence, but
+// testing the confidence for equality would misclassify any board whose vote
+// ratio lands on that value. The seed lookup is the provenance channel and its
+// two answers must not drift apart from classify_underlier_with_ticker's.
+TEST(TickerSeedProfile, AgreesWithTheTickerAwareClassifier) {
+  Underlying under{};
+  for (const std::string_view ticker : {"SPY", "AAPL", "XOM", "ZZZZ", ""}) {
+    const std::optional<ProfileKind> seed = ticker_seed_profile(ticker);
+    const ProfileVerdict verdict = classify_underlier_with_ticker(under, ticker);
+    if (seed.has_value()) {
+      EXPECT_EQ(verdict.kind, *seed) << ticker;
+      EXPECT_DOUBLE_EQ(verdict.confidence, atx::vol::kTickerSeedConfidence) << ticker;
+    } else {
+      EXPECT_EQ(verdict.kind, classify_underlier(under).kind) << ticker;
+    }
+  }
 }
 
 }  // namespace

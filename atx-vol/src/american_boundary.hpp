@@ -186,7 +186,17 @@ struct AlWorkspace {
 
 // Boundary solve status (S-independence seam). Ok => bnd/ws hold a converged
 // boundary ready for al_put_price_from_boundary.
-enum class AlSolveStatus { Ok, Collapsed, TableMissing };
+//
+// NotConverged is the "sweep could not move the boundary at all" corner: every
+// movable collocation node's fixed-point denominator D underflowed, so each node
+// was frozen at its seed and — because a frozen node skips the |Δy| update — the
+// sweep reported residual 0. That is indistinguishable from convergence in the
+// residual alone, which is exactly why it needs its own status: the alternative is
+// serving the analytic (Barone-Adesi-Whaley) SEED as if it were a solved boundary.
+// Non-Ok means bnd/ws must NOT be priced from; every caller already treats any
+// non-Ok as a failure (error, NaN, or scalar-fallback), so this enumerator does not
+// change how an existing failure is handled — it adds a case that used to be Ok.
+enum class AlSolveStatus { Ok, Collapsed, TableMissing, NotConverged };
 
 // ── Declarations (definitions live in american.cpp, namespace amer) ──────
 

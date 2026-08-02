@@ -16,7 +16,7 @@
 #include "atx/vol/curve_fit.hpp"       // fit_curve_surface, CurveSurfaceReport
 #include "atx/vol/dividend.hpp"        // hybrid_forward, HybridDivParams
 #include "atx/vol/opra_panel.hpp"      // load_opra_cbbo_parquet, OpraLoadSpec
-#include "atx/vol/parallel_for.hpp"    // atx_auto_worker_count
+#include "atx/vol/detail/parallel_for.hpp"    // atx_auto_worker_count
 #include "atx/vol/surface_parity.hpp"  // SurfaceParityInputs, SliceContext, CalendarRepair
 #include "atx/vol/types.hpp"           // Side
 #include "atx/vol/universe.hpp"        // Underlying, Chain, chain_index, Universe, data_install

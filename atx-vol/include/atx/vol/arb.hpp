@@ -48,8 +48,8 @@
 #include <span>
 #include <vector>
 
-#include "atx/vol/curve.hpp"
 #include "atx/vol/c8.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/types.hpp"
 #include "atx/vol/universe.hpp"
 #include "atx/vol/vol_curve.hpp"
@@ -113,6 +113,13 @@ struct ArbViolation {
 // that total variance w(k, T) is monotone non-decreasing in T at each point.
 // An empty result means "no calendar arbitrage". No-op (empty) when the
 // surface carries fewer than two slices or `n_grid == 0`.
+//
+// A grid point where `VolSurface::w` is non-finite is SKIPPED: no violation is
+// recorded for it, and it does not become the baseline the next slice is
+// compared against — the last finite (w, T) does, so a violation straddling
+// the unusable slice is still reported, carrying the maturities of the two
+// FINITE slices it spans. There is no status channel for "this slice was not
+// evaluatable"; callers that need to know must probe `w` themselves.
 [[nodiscard]] Result<std::vector<ArbViolation>>
 arb_check_calendar(const VolSurface &s, double k_min, double k_max,
                    std::uint32_t n_grid);
@@ -199,7 +206,8 @@ struct TotalSurfaceArbCounts {
 // sampling `VolSurface::w` (which includes the wing residual). Unlike the
 // butterfly check this never fails on `k_max <= k_min` — each block is guarded
 // internally and simply contributes zero. Mirrors
-// `ats_arb_check_total_surface_all`.
+// `ats_arb_check_total_surface_all`. Non-finite grid points are skipped on both
+// axes, with the same baseline rule the calendar check documents above.
 [[nodiscard]] Result<TotalSurfaceArbCounts>
 arb_check_total_surface_all(const VolSurface &s, double k_min, double k_max,
                             std::uint32_t n_grid);
@@ -289,27 +297,30 @@ struct CalendarPairProjection {
                                                 double k_max,
                                                 std::uint32_t n_grid);
 
-// Total-surface eSSVI calendar projection (Sprint 15 Phase C): for each pair
-// where the TOTAL (backbone + residual) curr dips below prev, lift curr by a
-// constant level shift `c = max_k(w_total_prev - w_total_curr)_+` added to
-// every residual coefficient. This is valid only for a partition-of-unity
-// residual basis (C2_BSPLINE); other bases are skipped and left to
-// `arb_repair_calendar_residual`. `max_theta_bump` is reserved (the
-// partition-of-unity path performs no theta bump). No-op for a non-eSSVI
-// surface.
-// @return InvalidArgument if `k_max <= k_min` (after the no-op guards).
-[[nodiscard]] Status arb_project_calendar_essvi_total(VolSurface &s,
-                                                      double k_min, double k_max,
-                                                      std::uint32_t n_grid,
-                                                      double max_theta_bump);
-
 // Repair total-surface calendar arb by damping residuals on the lower-T slice
 // of any residual-induced crossing: bisect a multiplicative damper
 // alpha in [0, 1] on the lower slice's residual coefficients until
-// monotonicity holds (alpha = 0 collapses it to backbone, always monotone with
-// the next backbone once `arb_project_calendar_essvi` has run). Up to 5 outer
-// sweeps. No-op for a non-eSSVI surface.
+// monotonicity holds (alpha = 0 collapses it to the backbone, which
+// `arb_project_calendar_essvi` makes monotone against the next slice's
+// BACKBONE). Up to 5 outer sweeps. No-op for a non-eSSVI surface.
+//
+// TRANSACTIONAL: the sweeps run on a private copy of the slices, so on ANY
+// non-Ok return `s` is exactly what was passed in.
 // @return InvalidArgument if `k_max <= k_min` (after the no-op guards).
+// @return Unavailable if the alpha = 0 endpoint does not repair some pair, i.e.
+//         the lower slice's backbone still crosses the next slice's TOTAL
+//         variance. Damping the lower slice cannot fix that pair.
+//
+//         Running `arb_project_calendar_essvi` over the same grid first is
+//         NECESSARY BUT NOT SUFFICIENT to rule this out: that projection compares
+//         backbone against backbone, while this test compares the lower backbone
+//         against the upper TOTAL. Residual coefficients are unconstrained in
+//         sign, so a NEGATIVE residual on the higher-T slice puts its total below
+//         its backbone and can trip this status even after a successful
+//         projection. Callers that must not abort on it (the `run_surface_parity`
+//         repair modes propagate it) have to map it to a counted/reported
+//         outcome — the surface is then honestly un-repaired rather than
+//         silently stripped of the lower slice's residual layer.
 [[nodiscard]] Status arb_repair_calendar_residual(VolSurface &s, double k_min,
                                                   double k_max,
                                                   std::uint32_t n_grid);

@@ -1,8 +1,11 @@
 #pragma once
 
 // C8 parametric volatility family — evaluator, compact-support bump basis, the
-// SVI Jump-Wings <-> raw-SVI reparametrization, the eSSVI warm-start seed, the
-// Roper no-arbitrage projection, and the standalone `C8Surface` container.
+// SVI Jump-Wings <-> raw-SVI reparametrization, the eSSVI warm-start seed, and
+// the Roper no-arbitrage projection. (The standalone per-family container that
+// stacked C8 slices by ascending T was demoted to
+// `detail/legacy_c8_surface.hpp` by S4-T21 / plan 4.4 — the canonical pipeline
+// is CurveSurface -> PricedSurface / PricedSurfaceView -> SurfaceSet.)
 //
 // Ported from the C `ats-vol` library (ats_vol_c8.{h,c}, ats_vol_c8_basis.c,
 // ats_vol_c8_jw.c, ats_vol_c8_arb.c, ats_vol_c8_internal.h). The C8 slice is an
@@ -28,11 +31,9 @@
 // container factory through `Result<T>`. Numeric constants (basis shapes, the
 // 1/7 level-preserving knot, window placements, arb grid) are ported EXACTLY.
 //
-// Thread-safety: every free function is a pure function of its arguments (no
-// globals, no allocation) — safe to call concurrently. `C8Surface` is a plain
-// value type; concurrent reads (w / iv) against one instance are safe, and the
-// `set_slice` mutator must not race any other access (the C "many readers OR
-// one writer" contract).
+// Thread-safety: every entry here is a pure function of its arguments (no
+// globals, no allocation) — safe to call concurrently. `c8_arb_project` is the
+// one mutator, and it mutates only the caller's own slice.
 
 #include <array>
 #include <cstddef>
@@ -210,52 +211,5 @@ c8_jw_to_raw_jac(const C8Jw& jw, double T, double sigma_floor) noexcept;
 // the smallest surviving fraction is written to `s.arb_damping_factor`. Always
 // succeeds (all bumps zero = pure JW backbone is arb-free). Mutates `s`.
 void c8_arb_project(C8Params& s) noexcept;
-
-// ── C8Surface: standalone fitted-surface container ────────────────────────
-//
-// Holds one surface's C8 slices, sorted by ascending T, and answers w(k, T) /
-// iv(k, T) by LINEAR-IN-TOTAL-VARIANCE time interpolation across the two
-// bracketing slices — mirroring `VolSurface`'s blend logic and its Sprint-26
-// no-extrapolation guards (a query past the longest slice, or more than 50%
-// below the shortest, returns NaN).
-//
-// Precondition (documented, not verified — matches the C): slices are written
-// in ascending-T order.
-class C8Surface {
- public:
-  // Construct an empty surface for `cap_slices` slices (reserved). Returns
-  // InvalidArgument when cap_slices == 0.
-  [[nodiscard]] static Result<C8Surface> create(std::uint32_t uid,
-                                                std::size_t cap_slices);
-
-  // Write the slice at `idx`, growing the active count to idx+1 when idx is at
-  // or past the current high-water mark. OutOfRange if idx >= capacity().
-  [[nodiscard]] Status set_slice(std::size_t idx, const C8Params& slice);
-
-  [[nodiscard]] std::uint32_t uid() const noexcept { return uid_; }
-  [[nodiscard]] std::size_t n_slices() const noexcept { return slices_.size(); }
-  [[nodiscard]] std::size_t capacity() const noexcept { return cap_slices_; }
-  [[nodiscard]] std::span<const C8Params> slices() const noexcept {
-    return slices_;
-  }
-
-  // Total variance w = sigma^2*T at (k_log, T), linear-in-w across the two
-  // bracketing slices. T floored to kTMinEval for bracketing. NaN when there
-  // are no slices, when T exceeds the last slice's T, or when T (post-floor)
-  // sits more than 50% below the first slice's T.
-  [[nodiscard]] double w(double k_log, double T) const noexcept;
-
-  // Implied vol sqrt(w(k_log, T) / T), dividing by the CALLER's un-floored T
-  // (matches the C). NaN wherever w() is NaN / non-positive.
-  [[nodiscard]] double iv(double k_log, double T) const noexcept;
-
- private:
-  // Constructed only via create(); Rule of Zero otherwise (movable/copyable).
-  C8Surface() = default;
-
-  std::uint32_t uid_{};
-  std::vector<C8Params> slices_{};
-  std::size_t cap_slices_{};
-};
 
 }  // namespace atx::vol

@@ -38,7 +38,7 @@
 #include "atx/vol/corpus.hpp"        // CorpusBoard
 #include "atx/vol/fit_policy.hpp"    // FitDecision
 #include "atx/vol/opra_batch.hpp"    // OpraBatchSpec, load_opra_daterange, corpus_board_from_opra
-#include "atx/vol/parallel_for.hpp"  // parallel_for, atx_auto_worker_count
+#include "atx/vol/detail/parallel_for.hpp"  // parallel_for, atx_auto_worker_count
 #include "atx/vol/pricer_fitter.hpp" // PricerFitter, PricerConfig, OutputField
 #include "atx/vol/profile.hpp"       // ProfileKind
 #include "atx/vol/session.hpp"       // FitPreset, SessionDiagnostics

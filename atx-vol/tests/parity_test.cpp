@@ -5,7 +5,7 @@
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/black76.hpp"
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/parity.hpp"
 #include "atx/vol/types.hpp"
 

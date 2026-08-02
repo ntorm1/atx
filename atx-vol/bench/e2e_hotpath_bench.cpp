@@ -29,7 +29,7 @@
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/chain.hpp"
 #include "atx/vol/corpus.hpp"
-#include "atx/vol/counters.hpp"       // counters::timing — stage attribution (M3)
+#include "atx/vol/detail/counters.hpp"       // counters::timing — stage attribution (M3)
 #include "atx/vol/data.hpp"           // year_fraction (synthetic attribution panel)
 #include "atx/vol/panel.hpp"          // SynthPanelSpec, make_synthetic_american_panel
 #include "atx/vol/priced_surface.hpp" // PricedSurface (deserialized price stage)
@@ -37,7 +37,7 @@
 #include "atx/vol/query_pricing.hpp"
 #include "atx/vol/s3.hpp"             // S3Params (synthetic truth)
 #include "atx/vol/strategy.hpp"
-#include "atx/vol/surface_archive.hpp" // write_surface_archive / SurfaceArchive
+#include "atx/vol/surface_archive.hpp" // write_surface_archive_v2 / SurfaceArchiveV2
 #include "atx/vol/types.hpp"           // Side
 
 #include "bench_util.hpp"
@@ -599,10 +599,10 @@ benchmark::internal::Benchmark *register_corpus_scale(const char *name,
 //
 // Stage definitions (each timed from the driver's vantage):
 //   fit         — PricerFitter::fit(chain): OptionChain -> FittedSurface.
-//   serialize   — snapshot (VolaSession::to_priced_surface) + write_surface_archive:
+//   serialize   — snapshot (VolaSession::to_priced_surface) + write_surface_archive_v2:
 //                 the fit output packed to on-disk bytes (memcpy-bound).
-//   deserialize — SurfaceArchive::open + map_all_with_provenance: bytes -> a
-//                 ready-to-price PricedSurface (v1 whole-blob CRC + reconstruct).
+//   deserialize — SurfaceArchiveV2::open + reconstruct_all_with_provenance: bytes ->
+//                 an owned ready-to-price PricedSurface (framing + per-record parse).
 //   price       — american price+greeks over a (K,T,side) grid on the deserialized
 //                 surface (the pricing/greeks the backtest hot loop pays per step).
 //
@@ -715,7 +715,7 @@ struct AttributionReport {
       item.symbol = "SYNTH";
       item.surface = &*snapshot;
       Result<std::vector<std::byte>> serialized =
-          write_surface_archive(std::span<const SurfaceArchiveItem>(&item, 1));
+          write_surface_archive_v2(std::span<const SurfaceArchiveItem>(&item, 1));
       if (!serialized.has_value()) {
         return report;
       }
@@ -725,11 +725,14 @@ struct AttributionReport {
     std::optional<PricedSurface> ready;
     {
       timing::ScopedStageTimer t(report.acc, timing::Stage::Deserialize);
-      Result<SurfaceArchive> archive = SurfaceArchive::open(std::move(bytes));
+      Result<SurfaceArchiveV2> archive = SurfaceArchiveV2::open(std::move(bytes));
       if (!archive.has_value()) {
         return report;
       }
-      Result<std::vector<ArchivedSurface>> all = archive->map_all_with_provenance();
+      // reconstruct_*, not map_*: the stage must yield an OWNED PricedSurface that
+      // outlives this scope's archive (a PricedSurfaceView borrows the archive's
+      // bytes). Same measured work as the v1 whole-board reconstruct it replaces.
+      Result<std::vector<ArchivedSurface>> all = archive->reconstruct_all_with_provenance();
       if (!all.has_value() || all->empty()) {
         return report;
       }

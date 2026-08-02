@@ -1,0 +1,494 @@
+#pragma once
+
+// ATXDEFS1 — a pre-parsed on-disk cache for the listed contract-definition
+// table (`ListedDefinitionTable`).
+//
+// WHY. `definitions_parse` — the single call to `read_listed_definitions_file`
+// at the head of both `build-schedule` and `run-backtest` — is the dominant
+// phase of the listed-dispersion backtest. Measured on the shared Wave E fixture
+// at commit fd52934 (a 730,526,177-byte `definitions.tsv`), it is 85-89% of the
+// two subcommands' combined wall time even after the Wave E parse passes. The
+// parsed table is a pure function of the definitions bytes, so it can be
+// materialised once and reloaded.
+//
+// THE FAILURE MODE THIS FORMAT EXISTS TO PREVENT is serving a table that does
+// not correspond to the file on disk. Every read is therefore FAIL-CLOSED: any
+// header mismatch, key mismatch, CRC failure, short read or truncation returns
+// `Err` and the caller falls through to a full parse. There is no partial serve
+// and no "probably fine" path. A cache MISS is always correct; a cache HIT is
+// only ever produced when five independent identity fields and two CRCs agree.
+//
+// ── The cache key ───────────────────────────────────────────────────────────
+//
+// `ListedDefinitionsCacheKey` folds five things:
+//
+//   (a) content_hash    — `atx::core::hash_bytes` over the FULL byte content of
+//                         the source `definitions.tsv`.
+//   (b) source_size     — that content's byte length.
+//   (c) format_version  — `kDefinitionsCacheFormat`, the ATXDEFS1 wire version.
+//   (d) parser_revision — `kDefinitionsParserRevision` (see below).
+//   (e) abi_fold        — a sizeof/offsetof fold over the fixed-width encoded
+//                         wire-row schema, so a column addition, type change or
+//                         reorder can never be misread. This is the same
+//                         protection `RunArchiveHeader::schema_hash` gives the
+//                         RunArchive.
+//
+// WHAT THE KEY DELIBERATELY EXCLUDES, AND WHY. It contains NO `run_spec.tsv`, no
+// `universe_schedule.tsv` and no swept knob. This is not an oversight — it is
+// the reason this cache does not lean on `RunDir::run_identity_hash`. That hash
+// folds `run_spec.tsv`, and the swept knobs of a parameter sweep live in exactly
+// that file, so a key built on it would miss at EVERY sweep point while the
+// definitions bytes never changed. `run_identity_hash` is simultaneously too
+// wide (it folds inputs the parsed table does not depend on) and too narrow (it
+// deliberately does not fold `definitions.tsv`'s content at all — see
+// `RunDir::run_identity_hash` and the pin
+// `RunDir.RunIdentityIsDeliberatelyBlindToDefinitionsContent`). Widening it was
+// still worth doing for the merge-write guard; that is a different job.
+//
+// NOTE for a possible follow-up: `definitions_cache_key(...).content_hash` is
+// exactly the value `run_identity_hash` would need in order to close its
+// documented `definitions.tsv` gap, and on the read path it is computed from
+// bytes that are already resident. Folding it there would close that gap at no
+// extra I/O. That is a separate change and is NOT done here.
+//
+// ── kDefinitionsParserRevision ──────────────────────────────────────────────
+//
+// A hand-bumped integer. ANY semantic change to `parse_listed_definitions` or
+// `ListedDefinitionTable::create` MUST increment it, because such a change makes
+// previously-written blobs describe a table the current code would no longer
+// produce from the same bytes — the one way this cache could serve a stale
+// answer without any byte on disk having changed. The content hash cannot see
+// this: the source bytes are identical, only their meaning moved.
+//
+// Two changes already in this branch are exactly that class, and each would have
+// required a bump had this cache predated them:
+//   * Wave E Task 4 — `ListedDefinitionTable::create` replaced a per-row
+//     `end_of_day_ns` recomputation with a compare-then-refresh `trade_end` memo
+//     and made `fingerprint()` lazy (commit ba06428 and its parents).
+//   * Wave E Task 5 — `parse_listed_definitions` replaced `split(line, '\t')`
+//     with a single forward scan over nine field boundaries and dropped the
+//     materialised line index (commit 18ee3cb, guard fix 2d5b74f).
+// Both were behaviour-preserving as it happens; the revision does not ask
+// whether a change WAS observable, it asks whether it COULD be. Bump on any
+// touch to either function's semantics.
+//
+// ── Cross-process stability of the key ──────────────────────────────────────
+//
+// `atx::core::hash_bytes`'s header comment is conservative about stability
+// across process restarts. Measured on this build, two separate processes hash
+// the fixture's 730,526,177-byte `definitions.tsv` to the same
+// 0xf3a3de5a76bec10e, and the codebase already depends on that property:
+// `RunDir::run_identity_hash` persists a fold of `fingerprint_text` values into
+// `run.atxrun` and compares them across invocations. Were it ever NOT stable,
+// the consequence here is a permanent MISS — never a bad serve — because the
+// reader recomputes the hash from the current bytes with the current binary and
+// requires field-for-field equality.
+//
+// ── Format ──────────────────────────────────────────────────────────────────
+//
+// ATXDEFS1 is its OWN FILE, not a RunArchive section: the RunArchive schema is
+// frozen (`ra_schema_hash() == 0xdcce47781ac8390d`, `kRaMinor == 0`) and this
+// format has nothing to do with a run's result set.
+//
+//   [0, 128)                                  ListedDefinitionsCacheHeader
+//   [string_table_offset, +string_table_size) string table
+//   [column_block_offset, +column_block_size) typed column arrays, 8-B aligned
+//
+// String table:  u64 n_entries, u64 offsets[n_entries + 1], char blob[].
+// `offsets` are blob-relative, non-decreasing, and `offsets[n_entries]` is the
+// blob length. `trade_date` and `raw_symbol` share ONE deduplicated table and
+// are stored per row as u32 codes into it — on the fixture the ~6.5M rows carry
+// only ~49 distinct trade dates and a few hundred thousand distinct symbols.
+//
+// Column block, in descending-alignment order, each array 8-B aligned:
+//   i64 definition_ts_ns[n]   i64 expiry_ts_ns[n]   f64 multiplier[n]
+//   u64 source_fingerprint[n] u32 instrument_id[n]  u32 trade_date_code[n]
+//   u32 raw_symbol_code[n]    u8  flags[n]   (bit0 monthly, bit1 deliverable)
+//
+// Struct discipline mirrors `run_archive.hpp`: fields ordered by descending
+// alignment so there is no internal padding, trivially copyable + standard
+// layout, and sizeof PLUS every load-bearing offsetof pinned by static_assert.
+// This is an on-disk ABI — a field reorder that preserved sizeof would still
+// silently corrupt readers. Host little-endian LP64 only.
+//
+// ── Thread-safety (plan 4.7) ────────────────────────────────────────────────
+//
+// There is NO in-process cache object here and no shared mutable state: every
+// entry point below is a free function over its arguments plus the filesystem.
+// `definitions_cache_abi_fold` and `definitions_cache_key` are pure recomputations
+// (no memo, no static), so they are safe to call from any number of threads.
+//
+// The SHARED RESOURCE is the cache directory, and the rules follow from the
+// fail-closed reader rather than from any lock:
+//
+//   * CONCURRENT READS are safe. `read_definitions_cache` only opens and reads,
+//     and a file replaced under it fails one of the guards and returns a MISS.
+//   * A READ RACING A PUBLISH is safe for the same reason. Publication is a
+//     rename over the destination, so a reader sees either the whole old file or
+//     the whole new one; anything else trips the header CRC, the payload CRC or a
+//     bounds check and is reported as a miss, never as a partial serve.
+//   * CONCURRENT PUBLISHES OF THE SAME KEY ARE NOT SERIALIZED, and this is the one
+//     sharp edge worth naming. `write_definitions_cache` stages through a FIXED
+//     `<cache_path>.tmp`, so two writers aimed at one cache path interleave into
+//     one temp file. Because the path is content-addressed they are by
+//     construction writing the SAME bytes, and any torn image the race could
+//     publish is rejected by the reader's CRCs as a miss — so the failure mode is
+//     a wasted parse, not a wrong table. It is still not a supported concurrency
+//     pattern: give concurrent producers distinct cache directories, or let one
+//     warm the cache.
+//   * The rename itself already retries with backoff for the Windows case where a
+//     reader holds the destination open; on final failure the temp is preserved
+//     and the previous good file is left intact.
+//
+// `read_listed_definitions_cached` additionally emits one HIT/MISS record per
+// consulted call and charges the caller's `PhaseTimer`. The record travels
+// through the diagnostic sink (`atx/vol/log.hpp`): a host that installs one
+// captures it, and with none installed it lands on stderr exactly as it always
+// did. Neither is synchronized: concurrent calls interleave their records, and a
+// `PhaseTimer` must not be shared across threads.
+
+#include "atx/vol/listed_opra.hpp" // ListedDefinitionTable, ListedContractDefinition
+#include "atx/vol/types.hpp"       // Result / Status
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <tuple>
+#include <type_traits>
+
+namespace atx::vol {
+
+// Forward-declared so the seam can accept the CLI's phase timer by pointer
+// without this header pulling in run_diagnostics.hpp. Defined in
+// atx/vol/research/run_diagnostics.hpp; the .cpp includes it for the definition. Same
+// convention as `build_listed_dispersion_schedule`'s optional `PhaseTimer *`.
+class PhaseTimer;
+
+// ── Encoded payload ABI ──────────────────────────────────────────────────────
+//
+// ATXDEFS1 is column-major. Runtime `ListedContractDefinition` rows contain
+// `std::string` objects and are never copied to disk; their object layout is
+// therefore neither the wire schema nor a portable target for `offsetof`.
+// `ListedDefinitionsCacheWireRowSchema` is the fixed-width, schema-only row
+// projection of the encoded columns in their exact on-disk order. No instance of
+// it is serialized. Its standard-layout offsets provide a compact ABI
+// description for static assertions and `definitions_cache_abi_fold`.
+//
+// String fields are represented by u32 dictionary codes. The two runtime bools
+// are represented by bits in `flags`. The physical file stores one array per
+// field below, in this order, with each array 8-byte aligned.
+struct ListedDefinitionsCacheWireRowSchema {
+  std::int64_t definition_ts_ns{};
+  std::int64_t expiry_ts_ns{};
+  double multiplier{};
+  std::uint64_t source_fingerprint{};
+  std::uint32_t instrument_id{};
+  std::uint32_t trade_date_code{};
+  std::uint32_t raw_symbol_code{};
+  std::uint8_t flags{};
+};
+
+inline constexpr std::uint8_t kDefinitionsCacheMonthlyFlag = 0x1u;
+inline constexpr std::uint8_t kDefinitionsCacheDeliverableFlag = 0x2u;
+inline constexpr std::uint8_t kDefinitionsCacheKnownFlags =
+    kDefinitionsCacheMonthlyFlag | kDefinitionsCacheDeliverableFlag;
+
+static_assert(std::is_trivially_copyable_v<ListedDefinitionsCacheWireRowSchema>);
+static_assert(std::is_standard_layout_v<ListedDefinitionsCacheWireRowSchema>);
+static_assert(alignof(ListedDefinitionsCacheWireRowSchema) == 8);
+static_assert(sizeof(ListedDefinitionsCacheWireRowSchema) == 48);
+static_assert(offsetof(ListedDefinitionsCacheWireRowSchema, definition_ts_ns) == 0);
+static_assert(offsetof(ListedDefinitionsCacheWireRowSchema, expiry_ts_ns) == 8);
+static_assert(offsetof(ListedDefinitionsCacheWireRowSchema, multiplier) == 16);
+static_assert(offsetof(ListedDefinitionsCacheWireRowSchema, source_fingerprint) == 24);
+static_assert(offsetof(ListedDefinitionsCacheWireRowSchema, instrument_id) == 32);
+static_assert(offsetof(ListedDefinitionsCacheWireRowSchema, trade_date_code) == 36);
+static_assert(offsetof(ListedDefinitionsCacheWireRowSchema, raw_symbol_code) == 40);
+static_assert(offsetof(ListedDefinitionsCacheWireRowSchema, flags) == 44);
+
+// The wire pins alone cannot detect a runtime field that the encoder forgot to
+// model. Keep a separate aggregate-shape pin for `ListedContractDefinition`.
+// The designated initializer pins member names and declaration order (including
+// swaps between same-typed fields); the structured binding pins the member count,
+// and the type assertions pin every member type. Together they turn any runtime
+// shape drift into a build error without relying on `std::string` object layout.
+inline void definitions_cache_payload_shape_pin(const ListedContractDefinition &row) noexcept {
+  using OrderedRuntimeShape = decltype(ListedContractDefinition{
+      .trade_date = std::string{},
+      .instrument_id = std::uint32_t{},
+      .raw_symbol = std::string{},
+      .definition_ts_ns = std::int64_t{},
+      .expiry_ts_ns = std::int64_t{},
+      .multiplier = double{},
+      .standard_monthly = bool{},
+      .standard_deliverable = bool{},
+      .source_fingerprint = std::uint64_t{},
+  });
+  static_assert(std::is_same_v<OrderedRuntimeShape, ListedContractDefinition>);
+
+  const auto &[trade_date, instrument_id, raw_symbol, definition_ts_ns, expiry_ts_ns, multiplier,
+               standard_monthly, standard_deliverable, source_fingerprint] = row;
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(trade_date)>, std::string>);
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(instrument_id)>, std::uint32_t>);
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(raw_symbol)>, std::string>);
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(definition_ts_ns)>, std::int64_t>);
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(expiry_ts_ns)>, std::int64_t>);
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(multiplier)>, double>);
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(standard_monthly)>, bool>);
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(standard_deliverable)>, bool>);
+  static_assert(std::is_same_v<std::remove_cvref_t<decltype(source_fingerprint)>, std::uint64_t>);
+  static_cast<void>(std::tie(trade_date, instrument_id, raw_symbol, definition_ts_ns, expiry_ts_ns,
+                             multiplier, standard_monthly, standard_deliverable,
+                             source_fingerprint));
+}
+
+// File magic, no NUL.
+inline constexpr char kDefinitionsCacheMagic[8] = {'A', 'T', 'X', 'D', 'E', 'F', 'S', '1'};
+
+inline constexpr std::uint16_t kDefinitionsCacheMajor = 1;
+
+// RESERVED, and deliberately inert (review M3). It is stamped into the header
+// and pinned by `WrittenHeaderCarriesTheDeclaredIdentity`, but the reader does
+// NOT check it and it is NOT folded into the key — a minor bump is by
+// definition backward-compatible, so rejecting on it would turn a compatible
+// blob into a miss. `major` is the field that gates compatibility. If a future
+// minor ever carries meaning, it must be added to the key at the same time.
+inline constexpr std::uint16_t kDefinitionsCacheMinor = 0;
+
+// Wire version, folded into the key. Bump on ANY layout change.
+inline constexpr std::uint32_t kDefinitionsCacheFormat = 1;
+
+// Semantic revision of `parse_listed_definitions` + `ListedDefinitionTable::
+// create`. See the file-level note: bump on ANY semantic touch to either.
+inline constexpr std::uint32_t kDefinitionsParserRevision = 1;
+
+// Column-array alignment inside the payload.
+inline constexpr std::uint64_t kDefinitionsCacheAlign = 8;
+
+// ── The key ─────────────────────────────────────────────────────────────────
+struct ListedDefinitionsCacheKey {
+  std::uint64_t content_hash{};
+  std::uint64_t source_size{};
+  std::uint32_t format_version{};
+  std::uint32_t parser_revision{};
+  std::uint64_t abi_fold{};
+
+  [[nodiscard]] bool operator==(const ListedDefinitionsCacheKey &) const = default;
+};
+
+// sizeof/offsetof fold over `ListedDefinitionsCacheWireRowSchema`, including the
+// two flag assignments. Deterministic for a given wire schema; a column addition,
+// removal, reorder or type change moves it, so a blob written for a different
+// encoded shape can never be decoded as the current shape. Not constexpr only
+// because `hash_bytes` is not.
+[[nodiscard]] std::uint64_t definitions_cache_abi_fold() noexcept;
+
+// The key for a source `definitions.tsv` whose full byte content is
+// `source_bytes`. The caller is expected to already hold those bytes (the parse
+// path reads the whole file before parsing), so this costs one memory-bandwidth
+// pass, not a second I/O. Measured on the fixture: ~58 ms over 730 MB (~12 GB/s)
+// against an 8-15 s parse.
+[[nodiscard]] ListedDefinitionsCacheKey definitions_cache_key(std::string_view source_bytes);
+
+// ── On-disk header (offset 0, 128 B, all fields naturally aligned) ──────────
+struct ListedDefinitionsCacheHeader {
+  char magic[8]{};                      //   0  "ATXDEFS1", no NUL
+  std::uint64_t file_size{};            //   8  total bytes, must equal the real size
+  std::uint64_t content_hash{};         //  16  key (a)
+  std::uint64_t source_size{};          //  24  key (b)
+  std::uint64_t abi_fold{};             //  32  key (e)
+  std::uint64_t table_fingerprint{};    //  40  ListedDefinitionTable::fingerprint()
+  std::uint64_t n_rows{};               //  48
+  std::uint64_t string_table_offset{};  //  56
+  std::uint64_t string_table_size{};    //  64
+  std::uint64_t column_block_offset{};  //  72
+  std::uint64_t column_block_size{};    //  80
+  std::uint32_t format_version{};       //  88  key (c)
+  std::uint32_t parser_revision{};      //  92  key (d)
+  std::uint32_t header_crc32c{};        //  96  over the header with THIS field = 0
+  std::uint32_t payload_crc32c{};       // 100  over [header_size, file_size)
+  std::uint16_t major{};                // 104  kDefinitionsCacheMajor
+  std::uint16_t minor{};                // 106  kDefinitionsCacheMinor
+  std::uint16_t header_size{};          // 108  sizeof(ListedDefinitionsCacheHeader)
+  std::uint16_t endian{};               // 110  1 = little
+  std::uint16_t pointer_bits{};         // 112  64
+  std::uint16_t reserved_u16{};         // 114
+  std::uint8_t reserved[12]{};          // 116  pad to 128; covered by header_crc32c
+};
+static_assert(sizeof(ListedDefinitionsCacheHeader) == 128,
+              "ListedDefinitionsCacheHeader layout drift");
+static_assert(alignof(ListedDefinitionsCacheHeader) == 8);
+static_assert(std::is_trivially_copyable_v<ListedDefinitionsCacheHeader>);
+static_assert(std::is_standard_layout_v<ListedDefinitionsCacheHeader>);
+
+// Per-field offsets pinned explicitly, not just sizeof: a reorder that preserved
+// sizeof would still silently corrupt readers.
+static_assert(offsetof(ListedDefinitionsCacheHeader, magic) == 0);
+static_assert(offsetof(ListedDefinitionsCacheHeader, file_size) == 8);
+static_assert(offsetof(ListedDefinitionsCacheHeader, content_hash) == 16);
+static_assert(offsetof(ListedDefinitionsCacheHeader, source_size) == 24);
+static_assert(offsetof(ListedDefinitionsCacheHeader, abi_fold) == 32);
+static_assert(offsetof(ListedDefinitionsCacheHeader, table_fingerprint) == 40);
+static_assert(offsetof(ListedDefinitionsCacheHeader, n_rows) == 48);
+static_assert(offsetof(ListedDefinitionsCacheHeader, string_table_offset) == 56);
+static_assert(offsetof(ListedDefinitionsCacheHeader, string_table_size) == 64);
+static_assert(offsetof(ListedDefinitionsCacheHeader, column_block_offset) == 72);
+static_assert(offsetof(ListedDefinitionsCacheHeader, column_block_size) == 80);
+static_assert(offsetof(ListedDefinitionsCacheHeader, format_version) == 88);
+static_assert(offsetof(ListedDefinitionsCacheHeader, parser_revision) == 92);
+static_assert(offsetof(ListedDefinitionsCacheHeader, header_crc32c) == 96);
+static_assert(offsetof(ListedDefinitionsCacheHeader, payload_crc32c) == 100);
+static_assert(offsetof(ListedDefinitionsCacheHeader, major) == 104);
+static_assert(offsetof(ListedDefinitionsCacheHeader, minor) == 106);
+static_assert(offsetof(ListedDefinitionsCacheHeader, header_size) == 108);
+static_assert(offsetof(ListedDefinitionsCacheHeader, endian) == 110);
+static_assert(offsetof(ListedDefinitionsCacheHeader, pointer_bits) == 112);
+static_assert(offsetof(ListedDefinitionsCacheHeader, reserved_u16) == 114);
+static_assert(offsetof(ListedDefinitionsCacheHeader, reserved) == 116);
+
+// ── The reconstructed-table fingerprint check ───────────────────────────────
+//
+// GUARD 4 of the reader recomputes `ListedDefinitionTable::fingerprint()` on the
+// decoded table and requires it to equal the value the writer stamped. It is by
+// far the most expensive step on the read path — `fingerprint()` is lazy, so on
+// a freshly decoded table it pays for a full `serialize_listed_definitions`:
+// 1.4-3.8 s AND a ~730 MB transient allocation on the production fixture, on top
+// of the 300 MB image and the ~1 GB row vector.
+//
+// It is DEFAULT OFF in Release and FORCED ON in the tests that isolate it.
+// The three arguments that decide this:
+//
+//  1. The one failure mode it genuinely catches — an encoder that silently drops
+//     a field added to `ListedContractDefinition` — is now a BUILD ERROR (see
+//     the shape pins at the top of this header). Runtime detection of a defect
+//     the compiler refuses to build is the wrong instrument, and it was the only
+//     mode CRC + abi_fold + content-hash + the round-trip test did not already
+//     cover.
+//  2. The anti-tamper argument does not survive contact. `fingerprint()` is a
+//     PUBLIC, UNKEYED, deterministic function, so anyone able to rewrite the
+//     payload and restamp the two CRCs can restamp the fingerprint too. The
+//     threat model it encodes — an adversary who repairs exactly two of three
+//     recomputable hashes — is arbitrary.
+//  3. The reader is not left bare. `ListedDefinitionTable::create` runs
+//     UNCONDITIONALLY on every decoded row set and re-validates non-empty
+//     trade_date, nonzero instrument_id, non-empty raw_symbol,
+//     definition_ts_ns > 0, expiry_ts_ns > definition_ts_ns, finite positive
+//     multiplier, nonzero source_fingerprint, definition_ts_ns <= trade_end and
+//     the absence of duplicate keys — a substantial semantic re-validation,
+//     independent of the CRCs, on every read.
+//
+// The check is NOT deleted, because it remains the strongest available proof
+// that a decoded blob still MEANS the table that was written, and
+// `CacheRejectsTamperedPayloadEvenWithRepairedCrcs` pins it with the flag On.
+// Define `ATX_DEFS_CACHE_VERIFY_FINGERPRINT=1` to make it the build-wide
+// default, or pass `On` explicitly.
+enum class DefinitionsCacheFingerprintCheck : std::uint8_t { Off = 0, On = 1 };
+
+inline constexpr DefinitionsCacheFingerprintCheck kDefinitionsCacheFingerprintDefault =
+#if defined(ATX_DEFS_CACHE_VERIFY_FINGERPRINT) && (ATX_DEFS_CACHE_VERIFY_FINGERPRINT != 0)
+    DefinitionsCacheFingerprintCheck::On;
+#else
+    DefinitionsCacheFingerprintCheck::Off;
+#endif
+
+// ── Writer / reader ─────────────────────────────────────────────────────────
+
+// Build the whole ATXDEFS1 image in memory, write it to `<cache_path>.tmp`,
+// fsync THAT to stable storage, then rename over `cache_path` with bounded
+// retry. Mirrors `write_run_archive_file` (src/run_archive.cpp), which itself
+// mirrors commit 86f2210: without the fsync a crash after the rename could leave
+// a correctly-named cache file holding garbage while the rename had already
+// destroyed the previous good one.
+//
+// COST NOTE: this stamps `table.fingerprint()`, which is LAZY — on a table whose
+// fingerprint has not been asked for yet this call is what pays for the
+// canonical serialization. That cost belongs to the write path, not to the
+// format.
+[[nodiscard]] Status write_definitions_cache(std::string_view cache_path,
+                                             const ListedDefinitionTable &table,
+                                             const ListedDefinitionsCacheKey &key);
+
+// Load a table from `cache_path`, or `Err` — FAIL-CLOSED, never a partial serve.
+// A hit requires ALL of:
+//   * the file is at least `sizeof(ListedDefinitionsCacheHeader)` bytes;
+//   * magic / major / endian / pointer_bits / header_size agree;
+//   * `header_crc32c` validates over the header with that field zeroed;
+//   * every one of the five key fields equals `expected` field-for-field;
+//   * `file_size` equals the file's real length and every offset/size pair lies
+//     inside it, with the string offsets non-decreasing and terminated;
+//   * `payload_crc32c` validates over [header_size, file_size);
+//   * the decoded rows survive `ListedDefinitionTable::create`;
+//   * IF `check == On`, the reconstructed table's own `fingerprint()` equals
+//     `table_fingerprint` (see the note above for why that is not the default).
+// Any failure is an `Err` the caller treats as a miss.
+[[nodiscard]] Result<ListedDefinitionTable>
+read_definitions_cache(std::string_view cache_path, const ListedDefinitionsCacheKey &expected,
+                       DefinitionsCacheFingerprintCheck check = kDefinitionsCacheFingerprintDefault);
+
+// Cache file name for a key, inside `cache_dir`. Content-addressed, so two
+// different `definitions.tsv` bodies never contend for one path.
+[[nodiscard]] std::string definitions_cache_filename(const ListedDefinitionsCacheKey &key);
+
+// The seam: read `tsv_path`'s bytes ONCE, derive the key from them, try the
+// cache in `cache_dir`, and on any miss parse those same bytes and (best-effort)
+// publish the result.
+//
+// ── Task 8 disclosure: the costs of opting in (controller ruling) ───────────
+//
+// Wired into the CLI as an OPT-IN, OFF BY DEFAULT flag (`--cache DIR` /
+// `ATX_VOL_CACHE`, see `tools/spy_dispersion_backtest.cpp`). Two independent
+// measurements (the implementer and a re-reviewer, on different machines)
+// recommended AGAINST enabling this cache "as currently built" — read the
+// numbers before turning it on:
+//
+//   * a HIT is a median 1.274x faster than not caching (n=3, sign 3/3,
+//     one-sided sign test p=0.125 — WEAK, not a strong claim);
+//   * the run that POPULATES the cache (a MISS that publishes) is a median
+//     1.856x SLOWER than not caching at all — the cache is not free to warm;
+//   * peak working set on that populating run is roughly 3 GB against a
+//     730 MB `definitions.tsv` (vs. ~1.9-2.9 GB for a HIT depending on
+//     `DefinitionsCacheFingerprintCheck`);
+//   * the cache directory has NO EVICTION POLICY and grows WITHOUT BOUND,
+//     roughly 300 MB per distinct `definitions.tsv` ever seen (review finding
+//     M5, deliberately left open — out of scope for this cache).
+//
+// `detail::read_whole_file` (the shared `fread` slurp both this seam and
+// `read_listed_definitions_file` use) is separately worth a measured ~17x over
+// the `istreambuf_iterator` form it replaced, with NO new on-disk format and NO
+// stale-serve surface — that is the cheaper alternative this cache competes
+// against. Do not cite a number from here without its paired cost.
+//
+// A PUBLISH FAILURE IS NEVER AN ERROR — a read-only or full cache directory is a
+// logged miss, not a failed run. The returned table is byte-for-byte the table
+// `read_listed_definitions_file(tsv_path)` would have returned, on both the hit
+// and the miss path.
+//
+// An EMPTY `cache_dir` disables the cache entirely and this degenerates to
+// `read_listed_definitions_file`. When disabled, the cache is never consulted,
+// so `timer` receives no `definitions_cache` charge at all — "disabled" is not
+// a miss.
+//
+// Every call where `cache_dir` is non-empty logs exactly one HIT or MISS line
+// to stderr, with the rejecting guard's message on a miss. Without it a key
+// that stopped matching — the documented consequence of `hash_bytes` not being
+// stable across processes — would be a permanent 100% miss that still writes a
+// ~300 MB blob every run, and nothing but wall time would say so (review I6).
+//
+// `timer` (optional, review I6 — "the other half"): when non-null and the
+// cache is consulted, charges a `definitions_cache` phase covering exactly the
+// `read_definitions_cache` lookup call — the guard chain on a hit, or the
+// rejecting guard on a miss. `count` is 1 for a HIT, 0 for a MISS: the shape
+// Task 8's brief specifies, so a reader of the `diagnostics` RunArchive section
+// can tell a cached run from a fast-but-uncached one without grepping stderr.
+// The slurp (shared with the direct path) and a miss's subsequent parse/publish
+// are deliberately NOT included in this phase's wall time — they are costs a
+// no-cache run pays too, and blurring them in here would make "the cache's own
+// cost" unreadable. A null timer (the default) is economically identical to
+// today.
+[[nodiscard]] Result<ListedDefinitionTable> read_listed_definitions_cached(
+    std::string_view tsv_path, std::string_view cache_dir,
+    DefinitionsCacheFingerprintCheck check = kDefinitionsCacheFingerprintDefault,
+    PhaseTimer *timer = nullptr);
+
+} // namespace atx::vol

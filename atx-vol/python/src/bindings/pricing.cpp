@@ -64,7 +64,9 @@ py::array_t<double> price_batch(const DoubleArray &f_array, const DoubleArray &k
   const std::span<double> out{output.mutable_data(), static_cast<std::size_t>(output.size())};
   {
     py::gil_scoped_release release;
-    atxvol::python::unwrap(black76_price_batch(f, k, t, sigma, df, sides, out));
+    // 4.3: the batch reports its lane count through the Result; the binding
+    // already sized `output` from `f`, so only the rejection half is consumed.
+    static_cast<void>(atxvol::python::unwrap(black76_price_batch(f, k, t, sigma, df, sides, out)));
   }
   return output;
 }
@@ -93,7 +95,8 @@ iv_batch(const DoubleArray &price_array, const DoubleArray &f_array, const Doubl
   const std::span<double> out{output.mutable_data(), static_cast<std::size_t>(output.size())};
   {
     py::gil_scoped_release release;
-    atxvol::python::unwrap(implied_vol_batch(price, f, k, t, df, sides, out, statuses));
+    static_cast<void>(
+        atxvol::python::unwrap(implied_vol_batch(price, f, k, t, df, sides, out, statuses)));
   }
   return {std::move(output), atxvol::python::to_status_array(statuses)};
 }
@@ -258,7 +261,7 @@ american_price_batch_py(const DoubleArray &s_array, const DoubleArray &k_array,
     in.side = book.side;
     out.resize(book.n);
     ws.reserve_lanes(book.n);
-    atxvol::python::unwrap(american_price_batch(in, out, kernel, ws));
+    static_cast<void>(atxvol::python::unwrap(american_price_batch(in, out, kernel, ws)));
     if (book.n > 0) {
       std::copy(out.price.begin(), out.price.end(), price_p);
     }
@@ -302,7 +305,8 @@ py::dict american_greeks_batch_py(const DoubleArray &s_array, const DoubleArray 
     in.q = book.q;
     in.side = book.side;
     ws.reserve_lanes(book.n);
-    atxvol::python::unwrap(american_greeks_batch(in, GreekFieldMask::All, soa, kernel, ws));
+    static_cast<void>(
+        atxvol::python::unwrap(american_greeks_batch(in, GreekFieldMask::All, soa, kernel, ws)));
   }
   py::dict out;
   out["delta"] = std::move(delta);
@@ -333,9 +337,11 @@ american_iv_batch_py(const DoubleArray &price_array, double spot, const DoubleAr
   const std::span<double> out{ivs.mutable_data(), static_cast<std::size_t>(ivs.size())};
   {
     py::gil_scoped_release release;
-    atxvol::python::unwrap(american_implied_vol_batch(price, spot, k, t, r, q, side, out,
-                                                      statuses, method, tol, max_iter, opts,
-                                                      nullptr, warm_start_chain));
+    // 4.3: the batch reports its lane count through the Result; the binding
+    // already sized `ivs` from `K`, so only the rejection half is consumed.
+    static_cast<void>(atxvol::python::unwrap(american_implied_vol_batch(
+        price, spot, k, t, r, q, side, out, statuses, method, tol, max_iter, opts, nullptr,
+        warm_start_chain)));
   }
   return {std::move(ivs), atxvol::python::to_status_array(statuses)};
 }
@@ -403,7 +409,18 @@ void bind_pricing(py::module_ &m) {
 
   py::class_<AlOpts>(m, "AlOpts")
       .def(py::init<>())
-      .def(py::init<std::uint16_t, std::uint16_t, std::uint16_t, double>(),
+      // Spelled as a factory lambda, not `py::init<...>`: pybind's variadic init
+      // brace-constructs an aggregate POSITIONALLY, which is exactly the binding
+      // AlOpts no longer offers (american.hpp construction contract). The Python
+      // signature and keyword names are unchanged; only the C++ side now binds by
+      // field name, so a future AlOpts field cannot silently rebind these four.
+      .def(py::init([](std::uint16_t n_collocation, std::uint16_t n_quadrature,
+                       std::uint16_t max_newton_iter, double tol) {
+             return AlOpts{.n_collocation = n_collocation,
+                           .n_quadrature = n_quadrature,
+                           .max_newton_iter = max_newton_iter,
+                           .tol = tol};
+           }),
            py::arg("n_collocation"), py::arg("n_quadrature"), py::arg("max_newton_iter"),
            py::arg("tol"))
       .def_readwrite("n_collocation", &AlOpts::n_collocation)

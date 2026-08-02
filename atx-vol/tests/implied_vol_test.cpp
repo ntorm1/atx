@@ -1,11 +1,12 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
 #include <string>
 
 #include "atx/vol/black76.hpp"
 #include "atx/vol/implied_vol.hpp"
-#include "atx/vol/types.hpp" // kIvMin
+#include "atx/vol/types.hpp" // kIvMin, kIvResidNoiseFloor
 
 // Implied-vol round-trip coverage, ported from the C ats-vol test_pricer_iv.c:
 // price with B76, invert, expect σ recovered to near-machine precision across
@@ -106,6 +107,113 @@ TEST(ImpliedVol, RejectNonPositiveInputs) {
   EXPECT_EQ(
       implied_vol(5.0, 100.0, 100.0, 0.0, 0.99, Side::Call).error().code(),
       ErrorCode::InvalidArgument);
+}
+
+// Item 1.5: a true IV below the floor must REPORT the floor, not fail.
+//
+// types.hpp documents kIvMin as "the unified IV floor ... BOTH the reported floor
+// of every inverter and the lower bound of the American IV search bracket, so no
+// representable IV sits below it and there is no bracket-vs-report
+// discontinuity". The Halley loop clamps σ into [kIvMin, kIvMax] after every
+// step but tested the PRE-clamp `step` for termination, so a sub-floor quote
+// pinned σ at kIvMin while `|step|` stayed large: the vol-step test never fired
+// and the loop exhausted kIvMaxIter into a spurious Unavailable — the exact
+// bracket-vs-report discontinuity the floor is documented to prevent.
+//
+// The grid stays at-the-money on purpose: away from ATM a sub-floor quote's time
+// value falls under the no-arb noise floor and is handled earlier by the
+// at-intrinsic clamp (already correct), so only ATM actually drives the solver
+// into the floor.
+TEST(ImpliedVol, TrueVolBelowFloor_ClampsToFloor) {
+  const double df = 0.99;
+  const double sigmas[] = {1.0e-3, 2.0e-3, 4.9e-3}; // all < kIvMin = 0.005
+  for (double F : {100.0, 5000.0})
+    for (double T : {0.05, 0.25, 1.0})
+      for (double sig : sigmas)
+        for (Side side : {Side::Call, Side::Put}) {
+          const double K = F;
+          const double price = black76_price(F, K, T, sig, df, side);
+          const auto iv = implied_vol(price, F, K, T, df, side);
+          ASSERT_TRUE(iv.has_value())
+              << "F=" << F << " T=" << T << " sig=" << sig
+              << " side=" << (side == Side::Call ? "C" : "P") << ": " << iv.error().to_string();
+          EXPECT_DOUBLE_EQ(*iv, atx::vol::kIvMin) << "F=" << F << " T=" << T << " sig=" << sig;
+        }
+}
+
+// Boundary: a quote priced exactly AT the floor inverts to the floor.
+TEST(ImpliedVol, TrueVolAtFloor_ReturnsFloor) {
+  const double F = 100.0, K = 100.0, T = 0.25, df = 0.99;
+  for (Side side : {Side::Call, Side::Put}) {
+    const double price = black76_price(F, K, T, atx::vol::kIvMin, df, side);
+    const auto iv = implied_vol(price, F, K, T, df, side);
+    ASSERT_TRUE(iv.has_value()) << iv.error().to_string();
+    EXPECT_GE(*iv, atx::vol::kIvMin); // the floor is a hard lower bound
+    EXPECT_NEAR(*iv, atx::vol::kIvMin, 1.0e-12);
+  }
+}
+
+// The other side of the boundary must be untouched: a true IV just ABOVE the
+// floor still round-trips to its own value, never collapsing onto the floor.
+TEST(ImpliedVol, TrueVolJustAboveFloor_RoundTripsUnchanged) {
+  const double F = 100.0, K = 100.0, T = 0.25, df = 0.99;
+  const double sigmas[] = {5.001e-3, 6.0e-3, 1.0e-2, 5.0e-2};
+  for (double sig : sigmas)
+    for (Side side : {Side::Call, Side::Put}) {
+      const double price = black76_price(F, K, T, sig, df, side);
+      const auto iv = implied_vol(price, F, K, T, df, side);
+      ASSERT_TRUE(iv.has_value()) << "sig=" << sig << ": " << iv.error().to_string();
+      EXPECT_NEAR(*iv, sig, 1.0e-12) << "sig=" << sig;
+      EXPECT_GT(*iv, atx::vol::kIvMin) << "sig=" << sig;
+    }
+}
+
+// ── Plan item 2.5: the Halley loop prices the put leg with Φ(−d) ──────────
+//
+// The inverter carries its own inlined Black-76 evaluation (it needs d1/d2 and
+// φ(d1) for the Halley derivatives anyway). That evaluation used the 1−Φ(d)
+// complement on the put leg while `black76_price` — the function every caller
+// used to PRODUCE the quote — uses Φ(−d), so the inverter was solving a
+// marginally different model than the one it is documented to invert.
+//
+// This pins the contract that closes the gap: the returned IV must reprice
+// through `black76_price` to within the inverter's own documented residual
+// noise floor, kIvResidNoiseFloor·ε·df·max(F,K). That bound is what the loop's
+// price-residual exit test claims it achieved, and it only holds if the loop's
+// price_model IS `black76_price`. The grid is put-heavy and reaches into the
+// wing, which is where the two forms diverge.
+TEST(ImpliedVol, PutLeg_RepricesToBlack76PriceWithinTheResidualNoiseFloor) {
+  const double Fs[] = {100.0, 5000.0};
+  const double k_logs[] = {-0.5, -0.25, -0.1, 0.0, 0.1, 0.25, 0.5};
+  const double Ts[] = {0.02, 0.1, 0.5, 2.0};
+  const double sigmas[] = {0.08, 0.20, 0.45};
+  const double df = 0.98;
+
+  for (double F : Fs)
+    for (double kl : k_logs)
+      for (double T : Ts)
+        for (double sig : sigmas) {
+          const double K = F * std::exp(kl);
+          for (Side side : {Side::Call, Side::Put}) {
+            const double price = black76_price(F, K, T, sig, df, side);
+            const double intr = (side == Side::Call)
+                                    ? df * std::fmax(F - K, 0.0)
+                                    : df * std::fmax(K - F, 0.0);
+            // Sub-tick quotes clamp to kIvMin rather than solving.
+            if (price - intr < 1.0e-4 * F) continue;
+            const auto iv = implied_vol(price, F, K, T, df, side);
+            ASSERT_TRUE(iv.has_value())
+                << "F=" << F << " K=" << K << " T=" << T << " sig=" << sig
+                << ": " << iv.error().to_string();
+            const double reprice = black76_price(F, K, T, *iv, df, side);
+            const double noise_floor = atx::vol::kIvResidNoiseFloor *
+                                       std::numeric_limits<double>::epsilon() *
+                                       df * std::fmax(F, K);
+            EXPECT_LE(std::fabs(reprice - price), noise_floor)
+                << "F=" << F << " K=" << K << " T=" << T << " sig=" << sig
+                << " put=" << (side == Side::Put);
+          }
+        }
 }
 
 TEST(ImpliedVol, Sr2017Seed_ConvergesOnChainGrid) {

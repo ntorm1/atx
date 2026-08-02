@@ -6,6 +6,7 @@
 #include <cstdio>
 
 #include "atx/vol/c8.hpp"
+#include "atx/vol/detail/legacy_c8_surface.hpp"  // C8Surface (demoted, S4-T21)
 #include "atx/vol/vol_surface.hpp"  // EssviParams, essvi_backbone_w
 
 // Coverage for the C8 parametric volatility family — evaluator, compact-support

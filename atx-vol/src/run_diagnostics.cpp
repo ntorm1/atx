@@ -1,12 +1,12 @@
 // run_diagnostics — the `diagnostics` RunArchive section encoder (PhaseTimer
 // itself is header-only in run_diagnostics.hpp). Mirrors write_diagnostics
-// (examples/spy_dispersion_backtest.cpp): the phase rows in the timer's
+// (tools/spy_dispersion_backtest.cpp): the phase rows in the timer's
 // pre-declared order, then a `total` row. Columns are staged in kDiagnosticsCols
 // registry order (subcommand DictStr, phase DictStr, wall_ms F64, count I64) and
 // every synthesized array is parked in the section's type-erased `storage`, so a
 // returned section's spans stay valid for its lifetime (the Task 5 encoder rule).
 
-#include "atx/vol/run_diagnostics.hpp"
+#include "atx/vol/research/run_diagnostics.hpp"
 
 #include <chrono>
 #include <cstddef>

@@ -7,20 +7,23 @@
 #
 # Scope: the full ats-vol port (Black-76 + Greeks, implied vol, eSSVI/SVI/C8/
 # CStar calibrators, Andersen-Lake/BAW American pricers, curves, universe,
-# portfolio/risk, vol derivatives, surface archive) PLUS a Vola-Dynamics
+# portfolio/risk on the PricedSurface stack, vol derivatives, surface archive)
+# PLUS a Vola-Dynamics
 # American-equity parity layer: de-Americanization (american_iv, deamer), hybrid
 # dividends + borrow (dividend), exact S3 curve (s3), fit metrics / reduced-χ²
 # (fit_metrics), parity metrics (parity), panel fixtures (panel), and the
-# single-/multi-expiry parity harness (vola_parity, surface_parity). See
+# multi-expiry parity harness (surface_parity). See
 # README.md and docs/superpowers/specs/2026-07-04-atx-vol-vola-parity-design.md.
 
 add_library(atx-vol ${ATX_LIB_TYPE}
     src/version.cpp
+    src/log.cpp
+    src/instrumentation_abi.cpp
     src/black76.cpp
     src/greeks.cpp
     src/implied_vol.cpp
     src/surface.cpp
-    src/curve.cpp
+    src/rates_curve.cpp
     src/universe.cpp
     src/derivatives.cpp
     src/deriv_book.cpp
@@ -53,20 +56,9 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/run_diagnostics.cpp
     src/surface_db.cpp
     src/batch.cpp
-    src/portfolio_price.cpp
-    src/bulk.cpp
-    src/portfolio_greeks.cpp
-    # F2 quarantine: src/calib_pool.cpp (calibrate_pool + CadenceQueue) has NO
-    # production caller — the corpus/populate hot path deliberately bypasses it
-    # (see corpus_board_fit.hpp / corpus.cpp). It is compiled into the test target
-    # ONLY (atx-vol/tests/CMakeLists.txt) so the shipped atx::vol library no longer
-    # carries this unreachable multi-underlier universe-refit driver on its attack
-    # surface. Re-add here (and drop the header's test-only guard) when a live
-    # universe-refit driver is wired.
     src/projection.cpp
     src/contract_projection.cpp
     src/historical_projection.cpp
-    src/portfolio_risk.cpp
     src/american_iv.cpp
     src/dividend.cpp
     src/s3.cpp
@@ -77,7 +69,6 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/deamer.cpp
     src/parity.cpp
     src/panel.cpp
-    src/vola_parity.cpp
     src/surface_parity.cpp
     src/opra_panel.cpp
     src/opra_batch.cpp
@@ -158,17 +149,107 @@ file(GLOB ATX_VOL_SIMD_AVX2 CONFIGURE_DEPENDS
 set_source_files_properties(${ATX_VOL_SIMD_AVX2}
     PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma")
 
+# ---- Generated version header (plan 5.3) ------------------------------------
+# `project(atx VERSION ...)` is the single source of truth for the atx-vol
+# version. It reaches C++ through exactly one generated file, which the Tier-A
+# atx/vol/version.hpp includes; no header or .cpp restates the number.
+#
+# Generated into its OWN root (generated-include/) rather than into the source
+# include/ tree, so `git status` stays clean and two build dirs at different
+# versions cannot fight over one file. The install rule that ships it lives with
+# the rest of the packaging in cmake/atx-vol-install.cmake; the INSTALL_INTERFACE
+# include dir below already covers it, because it installs to the same
+# atx/vol/detail/ prefix the source-tree detail headers land in.
+set(ATX_VOL_GENERATED_INCLUDE "${CMAKE_CURRENT_BINARY_DIR}/generated-include")
+# cmake/atx-vol-install.cmake needs this path to ship the generated header, and it
+# is include()d at ROOT scope (after every add_subdirectory, because the export set
+# spans modules), so hand the value up one level explicitly -- a plain set() here
+# is invisible there.
+set(ATX_VOL_GENERATED_INCLUDE "${ATX_VOL_GENERATED_INCLUDE}" PARENT_SCOPE)
+# Relative to THIS directory, not CMAKE_SOURCE_DIR: atx-vol/python/CMakeLists.txt
+# add_subdirectory()s the monorepo from its own project(), so CMAKE_SOURCE_DIR is
+# not always the repo root, but atx-vol/../cmake always is the right place.
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/atx-vol-version.hpp.in"
+    "${ATX_VOL_GENERATED_INCLUDE}/atx/vol/detail/version_generated.hpp"
+    @ONLY)
+
 target_include_directories(atx-vol
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${ATX_VOL_GENERATED_INCLUDE}>
         $<INSTALL_INTERFACE:include>
 )
 
 target_compile_features(atx-vol PUBLIC cxx_std_20)
 
+# ---- Public-surface tiering (S4-T18 / plan 4.1) ------------------------------
+# `include/atx/vol/` above is the SHIPPED public surface: Tier-A (the frozen v1
+# API, and exactly what the `atx/vol/vol.hpp` umbrella includes) plus Tier-B
+# (public but advanced — reachable by explicit include, deliberately outside the
+# umbrella). `include/atx/vol/detail/` is internal machinery with no stability
+# promise.
+#
+# Two header homes sit OUTSIDE that surface, each behind its own target so the
+# separation is expressed in the build graph and not only in a directory name:
+#
+#   atx-vol-tools    — CLI-support headers (surface-db build/admin/populate/exit
+#                      codes, the run-report writers, the tearsheet). Consumed by
+#                      tools/*_main.cpp and the acceptance examples, not by a
+#                      library consumer.
+#   atx-vol-research — dispersion RUN ORCHESTRATION (the run/workflow/pipeline
+#                      drivers and the run-archive artifacts they emit). The
+#                      dispersion VOCABULARY (dispersion.hpp, listed_*.hpp)
+#                      stays on the public surface; only the drivers move.
+#
+# MINIMAL SHAPE, AND IT STAYED THAT WAY. Both are INTERFACE targets that own an
+# include root only — the implementing translation units still compile into
+# atx-vol, so atx-vol carries the include roots PUBLIC. S4-T18 left a note here
+# saying plan 5.6 would split those .cpp into real static libraries and demote
+# these two edges to PRIVATE. 5.6 (S5-T27) promoted the tool EXECUTABLES instead
+# (the ATX_BUILD_TOOLS block at the bottom of this file) and deliberately did NOT
+# do the split. Two measured reasons, so the next reader does not re-plan it from
+# the old note:
+#
+#   1. Flipping THIS edge to PRIVATE would change nothing a consumer can observe.
+#      atx-vol links atx-vol-research PUBLIC, and atx-vol-research links
+#      atx-vol-tools INTERFACE (below), so the tools include root reaches every
+#      `atx::vol` consumer through research regardless. Containing the tools
+#      headers means demoting the RESEARCH edge too — and the research headers
+#      are shipped, so that is a distribution-surface decision, not a build tidy.
+#   2. The .cpp cannot simply move down a layer. The research tier's own public
+#      headers include the tools headers (research/dispersion_run.hpp and
+#      research/backtest_driver.hpp both name TearSheet), while the tools sources
+#      call back into the core library — so "tools as a lower static library" is a
+#      two-way edge, not a tier. It needs a real decomposition, not a target move.
+#
+# Both remain open. Neither is a defect in what ships: the reachability is stated
+# here and in cmake/atx-vol-install.cmake, and it is wider-than-ideal rather than
+# wrong.
+add_library(atx-vol-tools INTERFACE)
+add_library(atx::vol::tools ALIAS atx-vol-tools)
+target_include_directories(atx-vol-tools
+    INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/tools/include>
+        $<INSTALL_INTERFACE:include>
+)
+
+add_library(atx-vol-research INTERFACE)
+add_library(atx::vol::research ALIAS atx-vol-research)
+target_include_directories(atx-vol-research
+    INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/research/include>
+        $<INSTALL_INTERFACE:include>
+)
+# The run drivers report through the tearsheet / run-report writers, so research
+# sits ABOVE tools in the tier order. Nothing may point the other way.
+target_link_libraries(atx-vol-research INTERFACE atx-vol-tools)
+
 target_link_libraries(atx-vol
     PUBLIC
         atx::core
+        atx-vol-tools
+        atx-vol-research
     PRIVATE
         atx::tsdb  # read-only mmap (tsdb::Mapping) for the S2 zero-read surface open
         atx_warnings
@@ -176,7 +257,7 @@ target_link_libraries(atx-vol
 
 # ---- Algorithm counters (P0.2) ----
 # PUBLIC so the library AND every consumer (bench/tests that include
-# atx/vol/counters.hpp) agree on the macro's value — the header's inline atomic
+# atx/vol/detail/counters.hpp) agree on the macro's value — the header's inline atomic
 # storage is guarded by it, so a split view would be an ODR hazard. OFF by
 # default: the definition is absent and the macros compile to nothing.
 if(ATX_VOL_COUNTERS)
@@ -184,27 +265,6 @@ if(ATX_VOL_COUNTERS)
 endif()
 if(ATX_VOL_PROFILE)
     target_compile_definitions(atx-vol PUBLIC ATX_VOL_PROFILE)
-endif()
-
-# ---- v1 archive read/write — isolated OUT of the product library (WS-G G2) ----
-# The legacy ATXVSA (v1) SurfaceArchive reader + write_surface_archive[_file] writer
-# live in src/surface_archive_v1.cpp, NOT in atx::vol, so the product library links
-# only the v2 (ATXVSA2 zero-copy) format (parent adjudication A). No product src/ TU
-# calls v1 — the sole consumers are the throwaway migrator, a few round-trip/format
-# tests, and two archive benches; each links this small static lib. It links atx::vol
-# for the shared curve / priced-surface / detail symbols + the one shared external
-# symbol legacy_surface_provenance() (dependency direction v1 -> vol, NEVER the
-# reverse — no link cycle, and vol.lib stays provably v1-free). Built only when a
-# dev consumer group is on.
-if(ATX_BUILD_TESTS OR ATX_BUILD_BENCH OR ATX_BUILD_EXAMPLES)
-    add_library(atx-vol-archive-v1 STATIC src/surface_archive_v1.cpp)
-    add_library(atx::vol-archive-v1 ALIAS atx-vol-archive-v1)
-    target_link_libraries(atx-vol-archive-v1
-        PUBLIC
-            atx::vol
-        PRIVATE
-            atx_warnings
-    )
 endif()
 
 if(ATX_BUILD_TESTS)
@@ -254,6 +314,9 @@ if(ATX_BUILD_EXAMPLES)
     # dependency; known-truth accuracy oracle). See examples/spy_surface_bench.cpp.
     add_executable(spy_surface_bench examples/spy_surface_bench.cpp)
     target_link_libraries(spy_surface_bench PRIVATE atx::vol atx::core atx_warnings)
+    # S5-T24: the deterministic SPY known-truth fixture is the Tier-B public
+    # header atx/vol/spy_fixture.hpp, so this example no longer needs tests/ as
+    # an extra quoted-include root (S4-T18 had put it there).
 
     add_executable(spy_diag examples/spy_diag.cpp)
     target_link_libraries(spy_diag PRIVATE atx::vol atx::core atx_warnings)
@@ -308,11 +371,11 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(vol_breadth_bench examples/vol_breadth_bench.cpp)
     target_link_libraries(vol_breadth_bench PRIVATE atx::vol atx::core atx_warnings)
 
-    # Surface-archive (v3) deserialization throughput: fit -> serialize -> reload,
-    # reporting ns/surface for single-symbol random access + full map_all, plus the
-    # hardware vs table CRC-32C rate. See examples/surface_archive_bench.cpp.
+    # Surface-archive (ATXVSA2) deserialization throughput: fit -> serialize -> reload,
+    # reporting ns/surface for single-symbol random access + full reconstruct_all.
+    # See examples/surface_archive_bench.cpp.
     add_executable(surface_archive_bench examples/surface_archive_bench.cpp)
-    target_link_libraries(surface_archive_bench PRIVATE atx::vol atx::core atx-vol-archive-v1 atx_warnings)
+    target_link_libraries(surface_archive_bench PRIVATE atx::vol atx::core atx_warnings)
 
     # PricedSurface-native portfolio pricer + Taylor PnL-explain throughput: mixed
     # multi-underlying book, kernel-floor vs price() overhead, thread scaling +
@@ -356,9 +419,6 @@ if(ATX_BUILD_EXAMPLES)
     # the gap into strike/tenor granularity vs fit-vs-market fidelity).
     add_executable(spy_strangle_tradeable examples/spy_strangle_tradeable.cpp)
     target_link_libraries(spy_strangle_tradeable PRIVATE atx::vol atx::core atx_warnings)
-
-    add_executable(atxvol_spy_dispersion_backtest examples/spy_dispersion_backtest.cpp)
-    target_link_libraries(atxvol_spy_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
 
     # Point-in-time Databento OPRA definition export consumed by the strict
     # listed-dispersion workflow. Network access and cost are explicitly gated.
@@ -466,20 +526,6 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(spy_dispersion_pnl examples/spy_dispersion_pnl.cpp)
     target_link_libraries(spy_dispersion_pnl PRIVATE atx::vol atx::core atx_warnings)
 
-    # bt-hotpath WS-S (S3): THROWAWAY one-shot v1 .atxvsa -> v2 .atxvsa2 migrator.
-    # Wave 2 (S4) runs it over the committed fixtures, then v1 read is deleted.
-    add_executable(migrate_atxvsa_v1_to_v2 tools/migrate_atxvsa_v1_to_v2.cpp)
-    target_link_libraries(migrate_atxvsa_v1_to_v2 PRIVATE atx::vol atx::core atx-vol-archive-v1 atx_warnings)
-
-    # Surface-db production build CLI (Task 6): the one-call build_surface_db
-    # driver wrapped in a hand-rolled arg loop -- create-or-open a SurfaceDb,
-    # load an OPRA hive v2 window, auto-generate per-symbol fit configs, and
-    # cell-aware-streaming-populate every (symbol, date) surface. Resumable/
-    # idempotent (re-run over an unchanged hive fits zero). See
-    # tools/surface_db_build_main.cpp and docs/surface-db-build.md.
-    add_executable(atx-vol-surface-db-build tools/surface_db_build_main.cpp)
-    target_link_libraries(atx-vol-surface-db-build PRIVATE atx::vol atx::core atx_warnings)
-
     # Projection-backed strategy-history database builder. The default template
     # is the requested 40-delta, three-calendar-month strangle, held to expiry
     # and delta-hedged at every stored close. Re-runs resume logical histories.
@@ -490,15 +536,6 @@ if(ATX_BUILD_EXAMPLES)
     # outcomes -> purged walk-forward validation -> immutable ResearchDb Trial.
     add_executable(atx-vol-quant-research tools/quant_research_main.cpp)
     target_link_libraries(atx-vol-quant-research PRIVATE atx::vol atx::core atx_warnings)
-
-    # Surface-db MANAGEMENT/INSPECTION CLI: info / partitions / symbols / config
-    # / query / verify over a built database, so verifying one needs no Python
-    # binding. Thin shell over the surface_db_admin library
-    # (atx/vol/surface_db_admin.hpp); gate test: SurfaceDbAdmin
-    # (tests/surface_db_admin_test.cpp). Same ATX_BUILD_EXAMPLES gate as the
-    # build CLI above. See tools/surface_db_main.cpp and docs/surface-db-build.md.
-    add_executable(atx-vol-surface-db tools/surface_db_main.cpp)
-    target_link_libraries(atx-vol-surface-db PRIVATE atx::vol atx::core atx_warnings)
 
     # Earnings-censored atmCen reproduction (Task 7): thin CLI over the shared
     # run_earnings_repro library pipeline (atx/vol/earnings_repro.hpp) -- OPRA
@@ -525,4 +562,57 @@ if(ATX_BUILD_EXAMPLES)
     # tools/earnings_validation.cpp.
     add_executable(earnings-validation tools/earnings_validation.cpp)
     target_link_libraries(earnings-validation PRIVATE atx::vol atx::core atx_warnings)
+endif()
+
+# ---- Shipped operator CLIs (plan 5.6) ---------------------------------------
+# THE TOOLS TIER. These three binaries are part of the v1 distribution: they are
+# installed into <prefix>/bin by cmake/atx-vol-install.cmake and are ON by
+# default (the ATX_BUILD_TOOLS option in the root CMakeLists states why). All
+# three were previously gated behind ATX_BUILD_EXAMPLES, which is OFF by default
+# and describes demonstrations — so the shipped tooling was, until now, built by
+# nothing except an explicitly opted-in developer build.
+#
+# WHAT IS AND IS NOT IN THIS TIER. A tool here is something an OPERATOR runs
+# against real artifacts: build a surface database, inspect one, drive the listed
+# dispersion workflow end to end. The acceptance drivers, benchmarks and worked
+# demonstrations above stay on the examples gate even when their source sits in
+# tools/ (earnings-validation is the one such case: a research cohort harness
+# over a checked-in truth CSV, not an operator binary).
+#
+# EXECUTABLE NAMES ARE DELIBERATELY UNCHANGED by the promotion, including the
+# odd one out (`atxvol_spy_dispersion_backtest`). The name is load-bearing for
+# consumers this build does not compile: bench/corpus_occupancy_probe.ps1 invokes
+# the exe by path, python/tests/test_dispersion_runarchive_e2e.py locates it by
+# filename, and python/tests/test_dispersion_e2e_discovery.py asserts the usage
+# banner text line by line. Renaming is a separable change with its own blast
+# radius; the promotion does not need it.
+if(ATX_BUILD_TOOLS)
+    # Surface-db production build CLI (Task 6): the one-call build_surface_db
+    # driver wrapped in a hand-rolled arg loop -- create-or-open a SurfaceDb,
+    # load an OPRA hive v2 window, auto-generate per-symbol fit configs, and
+    # cell-aware-streaming-populate every (symbol, date) surface. Resumable/
+    # idempotent (re-run over an unchanged hive fits zero). See
+    # tools/surface_db_build_main.cpp and docs/surface-db-build.md.
+    add_executable(atx-vol-surface-db-build tools/surface_db_build_main.cpp)
+    target_link_libraries(atx-vol-surface-db-build PRIVATE atx::vol atx::core atx_warnings)
+
+    # Surface-db MANAGEMENT/INSPECTION CLI: info / partitions / symbols / config
+    # / query / verify over a built database, so verifying one needs no Python
+    # binding. Thin shell over the surface_db_admin library
+    # (atx/vol/tools/surface_db_admin.hpp); gate test: SurfaceDbAdmin
+    # (tests/surface_db_admin_test.cpp). See tools/surface_db_main.cpp and
+    # docs/surface-db-build.md.
+    add_executable(atx-vol-surface-db tools/surface_db_main.cpp)
+    target_link_libraries(atx-vol-surface-db PRIVATE atx::vol atx::core atx_warnings)
+
+    # The listed SPY-dispersion workflow CLI: build-corpus / build-schedule /
+    # run-backtest / project-schedule / run-projected-backtest /
+    # run-surface-backtest / run-projected-var / verify / runarchive dump. Each
+    # subcommand is a process boundary over the run directory; three dispatch
+    # straight into library entry points and the rest compose named library seams
+    # (the split table is in the source, and dispersion_run.hpp is its authority).
+    # This is the binary the RunArchive artifacts and the Python renderer
+    # (python/src/atxvol/report/dispersion.py) are written for.
+    add_executable(atxvol_spy_dispersion_backtest tools/spy_dispersion_backtest.cpp)
+    target_link_libraries(atxvol_spy_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
 endif()

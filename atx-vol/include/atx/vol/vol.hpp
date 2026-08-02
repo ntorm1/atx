@@ -48,10 +48,10 @@
 //   // 3. Snapshot: distil the live fit into a small, cache-free PricedSurface —
 //   //    its cold served theo is bit-identical to the session (override path).
 //   PricedSurface ps = sess.to_priced_surface().value();
-//   // 4. Archive: serialize -> reload with ZERO theo drift (ATXVSA v3 round-trip).
-//   auto bytes = write_surface_archive(std::array{SurfaceArchiveItem{"SPY", &ps}}).value();
-//   PricedSurface reloaded = SurfaceArchive::open(std::move(bytes)).value()
-//                                .map_symbol("SPY").value();
+//   // 4. Archive: serialize -> reload with ZERO theo drift (ATXVSA2 round-trip).
+//   auto bytes = write_surface_archive_v2(std::array{SurfaceArchiveItem{"SPY", &ps}}).value();
+//   PricedSurface reloaded = SurfaceArchiveV2::open(std::move(bytes)).value()
+//                                .reconstruct_symbol("SPY").value();
 //   // 5. Book: dedup contracts, mark the portfolio, and Taylor-explain a reprice.
 //   Portfolio pf = Portfolio::create(positions).value();               // uid == ps.uid()
 //   PortfolioPricer pricer{ std::move(pf) };
@@ -60,9 +60,44 @@
 //   PnlFrame   explain   = pricer.pnl_explain(base, shifted).value();  // delta/gamma/...
 //
 // CANONICAL portfolio engine: portfolio_pricer.hpp (the PricedSurface-native
-// PortfolioPricer above). `portfolio.hpp` / `portfolio_risk.hpp` are the
-// DEPRECATED legacy VolSurface/Universe-bound engine (banner-marked below); do not
-// build new features on them.
+// PortfolioPricer above) — and, since S4-T22 (plan 4.5), the library's ONLY
+// portfolio engine. The legacy VolSurface/Universe-bound C-port pair that used
+// to sit beside it was DELETED rather than shipped deprecated: v1 ships nothing
+// deprecated. Its scenario and attribution capabilities are on this stack as
+// `scenario_grid.hpp` and `pnl_attribution.hpp`.
+//
+// ── WHAT THIS FILE IS, EXACTLY (S4-T18 / plan 3.8 + 4.1) ─────────────────────
+//
+// This umbrella is the TIER-A SET and nothing else: the API atx-vol is willing
+// to freeze for v1. That is a contract, not a convention —
+// `tests/vol_umbrella_test.cpp` parses the include list below and fails if it
+// drifts from the Tier-A manifest in either direction, if it reaches into a
+// non-shipped tier, or if a Tier-A header acquires a non-Tier-A dependency.
+// Add an include here only by promoting a header to Tier-A in that manifest.
+//
+// Tier-A is CLOSED UNDER INCLUSION: if a header listed below includes another
+// `atx/vol/` header, that one is listed too. So a few entries are here because
+// they are named in a frozen signature rather than because callers reach for
+// them directly (query_pricing.hpp, adjusted_greeks.hpp, priced_surface_view.hpp,
+// surface_policy.hpp). Freezing a signature freezes its vocabulary; hiding that
+// would make the promise unenforceable.
+//
+// The four tiers that are NOT here, and where to find them:
+//
+//   Tier-B  include/atx/vol/*.hpp  — public and includable, outside the freeze.
+//           Advanced calibrators (svi/essvi/cstar/c8_calib), the SoA + SIMD
+//           batch kernels (batch.hpp, american_batch.hpp, simd/), the
+//           listed-dispersion domain vocabulary, OPRA hive/batch loaders,
+//           harness panels and fixtures, and the earnings-reproduction harness.
+//   detail  include/atx/vol/detail/ — internal machinery, no stability promise.
+//   tools   tools/include/atx/vol/tools/  (target atx-vol-tools) — surface-db
+//           CLI support, run-report writers, the tearsheet.
+//   research research/include/atx/vol/research/ (target atx-vol-research) —
+//           dispersion run orchestration and the run artifacts it emits.
+//   tests   tests/support/ — test fixtures, among them analytics_fixture,
+//           opra_fixture, spy_fit_fixture and breadth_fit_fixture.
+//           spy_fixture.hpp is NOT among them any more: it was promoted to
+//           Tier-B include/atx/vol/.
 //
 // ── Coordinate + pricing conventions (used everywhere in the library) ──────────
 //
@@ -93,21 +128,18 @@
 #include "atx/vol/american_iv.hpp" // American -> implied-vol inversion
 #include "atx/vol/correction.hpp"  // Chebyshev CorrectionCache (Black-76 + correction)
 
-// ── SoA batch / vectorized kernels ──────────────────────────────────────────
-#include "atx/vol/batch.hpp"
-
 // ── Surfaces (hot-path evaluator + calibration-grade slice types) ───────────
-#include "atx/vol/surface.hpp"     // Surface<>, Svi/Essvi slice, svi_w/essvi_w
+#include "atx/vol/surface.hpp"     // Svi/Essvi slice params, svi_w/essvi_w
 #include "atx/vol/vol_surface.hpp" // VolSurface, EssviParams/SviParams, evaluators
 
-// ── Calibration families ────────────────────────────────────────────────────
+// ── Calibration vocabulary ──────────────────────────────────────────────────
+//
+// The per-family CALIBRATORS (svi_calib, essvi_calib, cstar/cstar_calib,
+// c8_calib) are Tier-B — include them directly when you drive a family by hand.
+// What is frozen here is the shared calibration vocabulary every fit speaks,
+// plus the C8 curve family the arb validator and the curve registry name.
 #include "atx/vol/c8.hpp"
-#include "atx/vol/c8_calib.hpp"
 #include "atx/vol/calib.hpp" // CalibOpts, FitObs/FitDiag, build_observations
-#include "atx/vol/cstar.hpp"
-#include "atx/vol/cstar_calib.hpp"
-#include "atx/vol/essvi_calib.hpp" // eSSVI per-slice + surface drivers
-#include "atx/vol/svi_calib.hpp"
 
 // ── Static-arbitrage validators + repair ────────────────────────────────────
 #include "atx/vol/arb.hpp"
@@ -117,75 +149,72 @@
 #include "atx/vol/dividend.hpp"    // hybrid forward + PCP borrow
 #include "atx/vol/fit_metrics.hpp" // reduced-chi2 / error bars
 #include "atx/vol/parity.hpp"      // re-Americanized fair-value-in-bid-ask
-#include "atx/vol/s3.hpp"          // S3/SSVI shape reference
 
 // ── Configurable curve family + auto-selection ──────────────────────────────
 #include "atx/vol/curve_fit.hpp"      // fit_curve_surface (curve-agnostic driver)
 #include "atx/vol/curve_selector.hpp" // select_curve (out-of-sample curve/config search)
+#include "atx/vol/dense_slice.hpp"    // densified convex slice fit
 #include "atx/vol/fit_policy.hpp"     // profile/session/event -> effective preset + curve
+#include "atx/vol/spline_curve.hpp"   // SpiderRock-parity cubic-spline curve
 #include "atx/vol/vol_curve.hpp"      // IVolCurve family, CurveSurface, CurveConfig, VolCurveKind
 
 // ── Whole-surface build + the composable session facade ─────────────────────
 #include "atx/vol/chain.hpp"          // OptionChain, OptionId (unique-id chain handle)
 #include "atx/vol/market_env.hpp"     // MarketEnv (spot / rate-curve / divs / valuation ts)
 #include "atx/vol/pricer_fitter.hpp"  // PricerFitter, FittedSurface, OutputField, ChainValuation
+#include "atx/vol/profile.hpp"        // board profile -> routing features
 #include "atx/vol/session.hpp"        // VolaSession, SessionInputs, FitPreset
 #include "atx/vol/surface_parity.hpp" // run_surface_parity, CalendarRepair
-#include "atx/vol/vola_parity.hpp"    // single-expiry parity harness
+#include "atx/vol/surface_policy.hpp" // risk-admission policy (archive + db gate)
 
 // ── Surface queries / projection / derivatives ──────────────────────────────
-#include "atx/vol/contract_projection.hpp"   // relative template -> concrete theo option
-#include "atx/vol/curve.hpp"                 // CurveSet, DividendEvent
-#include "atx/vol/derivatives.hpp"           // vol-derivative analytics
-#include "atx/vol/historical_projection.hpp" // historical relative-template risk / VaR
-#include "atx/vol/phase_profile.hpp"         // compile-time opt-in phase timers
-#include "atx/vol/projection.hpp"            // eval at non-listed T/K, delta anchors
+#include "atx/vol/contract_projection.hpp" // relative template -> concrete theo option
+#include "atx/vol/derivatives.hpp"         // vol-derivative analytics
+#include "atx/vol/projection.hpp"          // eval at non-listed T/K, delta anchors
+#include "atx/vol/query_pricing.hpp"       // the query knobs every priced path takes
+#include "atx/vol/rates_curve.hpp"         // CurveSet, DividendEvent
 
-// ── Data model (universe, panels, real OPRA loader, archive) ─────────────────
-#include "atx/vol/data.hpp"            // QuoteFrame, data_install
-#include "atx/vol/listed_opra.hpp"     // strict listed-contract definition join
-#include "atx/vol/occ_ess.hpp"         // OCC non-standard deliverable authority
-#include "atx/vol/opra_panel.hpp"      // real Databento OPRA cbbo loader
-#include "atx/vol/panel.hpp"           // synthetic + CSV panels
-#include "atx/vol/priced_surface.hpp"  // PricedSurface (serialization-ready priced surface)
-#include "atx/vol/spy_fixture.hpp"     // deterministic SPY index known-truth fixture
-#include "atx/vol/surface_archive.hpp" // fitted priced-surface archive (v3)
-#include "atx/vol/universe.hpp"        // Universe, Underlying, Chain, Uid
+// ── Data model (universe, corpus, real OPRA loader, archive, db) ────────────
+#include "atx/vol/corpus.hpp"              // date x symbol fitted-surface corpus
+#include "atx/vol/data.hpp"                // QuoteFrame, data_install
+#include "atx/vol/opra_panel.hpp"          // real Databento OPRA cbbo loader
+#include "atx/vol/priced_surface.hpp"      // PricedSurface (serialization-ready priced surface)
+#include "atx/vol/priced_surface_view.hpp" // zero-copy view over archived bytes
+#include "atx/vol/surface_archive.hpp"     // fitted priced-surface archive (ATXVSA2)
+#include "atx/vol/surface_db.hpp"          // partitioned surface database
+#include "atx/vol/universe.hpp"            // Universe, Underlying, Chain, Uid
 
 // ── Portfolio / risk analytics ──────────────────────────────────────────────
 //
-// CANONICAL portfolio path: `portfolio_pricer.hpp` (PricedSurface-native
-// `PortfolioPricer` — dedup + American mark + American cold-FD Greeks + Taylor
-// PnL-explain over N underlyings). New code should use it.
+// The sole portfolio path: dedup + American mark + American cold-FD Greeks +
+// Taylor PnL-explain over N underlyings, with by-underlier / by-expiry
+// aggregation via `reduce_risk_buckets` / `reduce_pnl_risk_buckets`. Its
+// scenario and attribution post-processes are `scenario_grid.hpp` (2-D
+// spot x vol P&L matrix) and `pnl_attribution.hpp` (the level/skew/curvature
+// vol split); relative option templates resolve to concrete contracts through
+// `contract_projection.hpp`.
 //
-// The `portfolio.hpp` / `portfolio_risk.hpp` pair below is the DEPRECATED legacy
-// VolSurface/Universe-bound engine. It is retained (not deleted) only because it
-// still carries capabilities the canonical pricer does not yet cover — stock/cash
-// legs, by-uid/by-expiry/by-group aggregation, chain-moneyness/strike bulk
-// selection, the multi-shock scenario engine, theoretical/delta-coordinate legs,
-// and forward/vol/route/interp factor PnL attribution. Do not build new features
-// on it; migrate those capabilities onto the PricedSurface path as they are needed.
-#include "atx/vol/calib_pool.hpp"
+// S4-T22 promoted the two post-processes into Tier-A. They were the Sprint-3
+// "fold-or-keep" leftovers — test/bench-consumed only — but deleting the legacy
+// engine made them the library's ONLY scenario and attribution risk, and a
+// frozen portfolio API that cannot reach either through the one include would
+// be freezing the wrong shape. Both are pure serial post-processes over frozen
+// vocabulary (Position / SurfaceSet / AmericanGreeks) and add no dependency.
+#include "atx/vol/adjusted_greeks.hpp"  // AdjustedGreeks (named in the pricer's API)
 #include "atx/vol/deriv_book.hpp"       // portfolio-layer swap-book pricing against a SurfaceSet
-#include "atx/vol/portfolio.hpp"        // DEPRECATED legacy VolSurface-bound portfolio + bulk
-#include "atx/vol/portfolio_pricer.hpp" // CANONICAL PricedSurface-native pricer + Taylor PnL explain
-#include "atx/vol/portfolio_risk.hpp"   // DEPRECATED legacy scenario / theoretical-leg risk
-#include "atx/vol/profile.hpp"
+#include "atx/vol/pnl_attribution.hpp"  // spot/vol-axis P&L attribution over the book
+#include "atx/vol/portfolio_pricer.hpp" // PricedSurface-native pricer + Taylor PnL explain
+#include "atx/vol/scenario_grid.hpp"    // 2-D spot x vol scenario P&L matrix
 
-// Traditional listed-options dispersion workflow.
-#include "atx/vol/backtest.hpp"
-#include "atx/vol/backtest_db.hpp"
-#include "atx/vol/backtest_db_build.hpp"
-#include "atx/vol/backtest_template.hpp"
-#include "atx/vol/dispersion.hpp"
-#include "atx/vol/dispersion_backtest.hpp"
+// ── Backtest engine + strategy vocabulary ───────────────────────────────────
+//
+// The dispersion RUN ORCHESTRATION (run/workflow/pipeline drivers, run archive)
+// is not here — it is atx-vol-research. What is frozen is the engine and the
+// vocabulary a strategy is written in.
+#include "atx/vol/backtest.hpp"            // Clock, RunConfig, run_backtest, BacktestResult
+#include "atx/vol/dispersion.hpp"          // dispersion book / basket vocabulary
 #include "atx/vol/dispersion_strangle.hpp" // strangle DSL over the dispersion book
-#include "atx/vol/dispersion_workflow.hpp"
-#include "atx/vol/listed_dispersion.hpp"
-#include "atx/vol/listed_dispersion_reconciliation.hpp"
-#include "atx/vol/listed_dispersion_schedule.hpp"
-#include "atx/vol/listed_dispersion_strategy.hpp"
-#include "atx/vol/strategy.hpp" // StrategySpec, LifecycleSpec, resolve_strike_by_delta
+#include "atx/vol/strategy.hpp"            // StrategySpec, LifecycleSpec, resolve_strike_by_delta
 
 // ── Surface analytics (E5 / AN-W) ───────────────────────────────────────────
 //
@@ -200,22 +229,17 @@
 // effectively unshippable through the one-include public API: a caller who
 // included `atx/vol/vol.hpp` could not name `AnalyticsConfig`,
 // `compute_surface_analytics`, `risk_neutral_density`, `EventSchedule`,
-// `fit_earnings_term` or the vol-time clock at all. `vol_umbrella_test.cpp` now
-// names a symbol from EACH of the headers below, so dropping one fails a test
-// instead of silently shrinking the public surface again.
+// `fit_earnings_term` or the vol-time clock at all. `vol_umbrella_test.cpp`
+// names a symbol from EACH of the headers below, so dropping one fails to
+// COMPILE instead of silently shrinking the public surface again.
 //
 // Delta-convention note (AN-P2-6): `analytics.hpp` documents the three
 // "25-delta strike" conventions that exist in this library and exposes the
 // choice as `AnalyticsConfig::delta_convention` (`DeltaConvention`,
 // single-sourced from `projection.hpp`). It defaults to `American` — the
 // shipped behaviour.
-#include "atx/vol/analytics.hpp"         // SurfaceAnalytics, RND/BKM, var swap, implied corr
-#include "atx/vol/dense_slice.hpp"       // densified convex slice fit
+#include "atx/vol/analytics.hpp"        // SurfaceAnalytics, RND/BKM, var swap, implied corr
 #include "atx/vol/earnings_term_fit.hpp" // joint {eMove, st, lt, decay} censored term fit
-#include "atx/vol/event_vol.hpp"         // EventSchedule, censoring, implied_emove_joint
-#include "atx/vol/sr_tenor_grid.hpp"     // SpiderRock 12-point native tenor grid
-#include "atx/vol/vol_time.hpp"          // hybrid business/vol-time clock
-
-// ── Reporting artifacts ─────────────────────────────────────────────────────
-#include "atx/vol/run_report.hpp" // run-directory metric / series writers
-#include "atx/vol/tearsheet.hpp"  // TearSheet performance summary (+ benchmark-relative)
+#include "atx/vol/event_vol.hpp"        // EventSchedule, censoring, implied_emove_joint
+#include "atx/vol/sr_tenor_grid.hpp"    // SpiderRock 12-point native tenor grid
+#include "atx/vol/vol_time.hpp"         // hybrid business/vol-time clock

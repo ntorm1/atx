@@ -1,4 +1,4 @@
-#include "atx/vol/surface_db_populate.hpp"
+#include "atx/vol/tools/surface_db_populate.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -23,7 +23,7 @@
 #include "atx/vol/detail/archive_util.hpp"  // canonicalize_symbol (carry-over key match)
 #include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
 #include "atx/vol/dispersion.hpp"           // with_uid
-#include "atx/vol/parallel_for.hpp"         // atx_auto_worker_count (fit_workers=0 auto)
+#include "atx/vol/detail/parallel_for.hpp"         // atx_auto_worker_count (fit_workers=0 auto)
 #include "atx/vol/pricer_fitter.hpp"        // PricerConfig
 #include "atx/vol/session.hpp"              // SessionInputs
 #include "atx/vol/universe.hpp"             // uid_for_symbol
@@ -476,6 +476,28 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       }
     } mark_done{date_remaining, boards_outstanding, progress_mu, progress_cv, test_hooks};
 
+    // ── Plan 5.5 safe point: the TOP of a FIT TASK (review B I-2) ─────────────
+    //
+    // Breaking the drain loop does NOT reach the queued fits: the fit-runner
+    // jthread is joined at the enclosing scope's exit, so without this poll every
+    // remaining queued board still fits to completion after the stop. That costs
+    // the whole dominant cost of the run, and each of those fits parks a surface
+    // in a slot the (stopped) drain will never release — the R-03 streaming
+    // memory bound, inverted. With the poll the queue drains at one relaxed load
+    // per task.
+    //
+    // `mark_done` above is deliberately constructed FIRST, so a skipped board
+    // still retires from `remaining[r]` and `boards_outstanding` and still wakes
+    // the drain: the date accounting cannot notice the difference.
+    //
+    // Skipping leaves a default `FitSlot`, which the drain reads as a failed fit.
+    // That is why the drain re-polls after its wait (below) instead of writing
+    // the partition it was about to write: a date holding skipped boards must
+    // never be committed, or a resume would skip cells that were never attempted.
+    if (cfg.cancel.stop_requested()) {
+      return Err(ErrorCode::Cancelled, "populate_surface_db: cancelled before a queued board fit");
+    }
+
     // W-EX: everything from here down runs on a fit WORKER, and every line of it
     // -- the config translation, the test hook, the fit itself and the slot move
     // -- can throw. See `fit_slot_from_worker_exception` for why the answer is a
@@ -583,6 +605,10 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
   // exit cannot deadlock even when the drain returns early on a write error.
   Status fit_status = Ok();
   bool scheduler_ended_with_unfinished_tasks = false;
+  // Plan 5.5: set by the drain loop's cancellation check. Declared out here, and
+  // acted on only after the enclosing scope below has joined the fit runner, so
+  // the stop can never race the workers it stops.
+  bool cancelled = false;
   {
     detail::FitSchedulerTestHooks scheduler_hooks;
     const detail::FitSchedulerTestHooks *scheduler_hooks_ptr = nullptr;
@@ -654,6 +680,29 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       if (range.skip) {
         continue;
       }
+      // Plan 5.5 safe point: the TOP of a date, before this date is waited on and
+      // long before its partition is written. Every earlier date is already
+      // atomically committed (archive tmp+rename + generation-bumped manifest),
+      // so the database left behind is valid and a re-run simply resumes from it.
+      //
+      // BREAK rather than return, for ORDERING — not for safety. Returning from
+      // here would be memory-safe: `std::jthread`'s destructor joins on EVERY
+      // exit path including `return` (this same loop already does
+      // `return Err(w.error())` on a partition-write failure below), and every
+      // object the worker closure captures — `slots`, `remaining`, `progress_mu`,
+      // `progress_cv`, `fit_status` — is declared outside this scope and outlives
+      // it. There is no use-after-free hazard here to guard against.
+      //
+      // What the break buys is that the stop leaves through the SINGLE post-join
+      // reporting point below, where `Cancelled` is ordered AHEAD of the
+      // scheduler-incomplete check: a cancelled run leaves tasks unfinished by
+      // construction, and reporting that as an `Internal` scheduler defect would
+      // turn the caller's own request into a spurious bug report. One exit keeps
+      // that ordering in one place instead of restating it at each stop site.
+      if (cfg.cancel.stop_requested()) {
+        cancelled = true;
+        break;
+      }
       // Block until every enabled fit in this date completes OR the scheduler
       // returns. The second condition is essential: setup/launch failure can
       // return without invoking any task, so no MarkDone exists to retire the
@@ -666,6 +715,28 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
           scheduler_ended_with_unfinished_tasks = true;
           break;
         }
+      }
+      // Plan 5.5 safe point 2 of 2 (review B I-2): a stop requested WHILE this
+      // date was in flight means some of its boards skipped their fit, so its
+      // slots are not a complete date. Committing the partition here would write
+      // cells that were never attempted and bump the generation over them, and a
+      // resume under `skip_existing` would then skip them for good. The first
+      // poll cannot cover this: it ran before the wait. Same break, same
+      // post-join reporting point.
+      //
+      // This load cannot miss a stop a worker already saw: the worker's
+      // `MarkDone` publishes through `progress_mu`, which this thread acquired in
+      // the wait above, so the worker's poll happens-before this one and
+      // read-read coherence forbids reading the older value.
+      //
+      // CONSERVATIVE BY ONE DATE, deliberately. A date whose boards all DID fit
+      // before the stop arrived is refused here too, and is re-fitted on resume.
+      // That is the same cost the top-of-date poll already pays for every LATER
+      // date, and it errs on the recoverable side: committing cells that were
+      // never attempted is not something a resume can undo.
+      if (cfg.cancel.stop_requested()) {
+        cancelled = true;
+        break;
       }
 
       const std::size_t range_n = range.end - range.begin;
@@ -1114,6 +1185,28 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
         slots[pos] = FitSlot{};
       }
     }
+  }
+  // Plan 5.5 (review B I-2), the R-03 memory bound on the stop path. The drain
+  // releases each date's fitted surfaces as it writes that date; a stop breaks
+  // out of it, so every date it never reached still holds its own. The fit runner
+  // has been joined by the scope above, so no worker can still be writing a slot
+  // and releasing them here is race-free. What actually CAPS the peak is the
+  // fit-task poll: no queued fit produces a surface after the stop, so RSS stops
+  // growing where the stop was seen instead of climbing to O(all remaining dates)
+  // while the join waits. This returns what was already in hand.
+  if (cancelled) {
+    slots.clear();
+    slots.shrink_to_fit();
+  }
+  // Plan 5.5: the fit runner has been joined by the scope above, so every worker
+  // is stopped and every date that DID complete is already committed. Reported
+  // before the scheduler check below: a cancelled run leaves tasks unfinished BY
+  // CONSTRUCTION, and calling that an Internal scheduler defect would turn the
+  // caller's own request into a spurious bug report.
+  if (cancelled) {
+    return Err(ErrorCode::Cancelled,
+               "populate_surface_db: cancelled between dates (database left consistent; re-run to "
+               "resume)");
   }
   if (scheduler_ended_with_unfinished_tasks && fit_status) {
     return Err(ErrorCode::Internal,

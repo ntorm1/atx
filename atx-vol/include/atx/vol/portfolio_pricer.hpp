@@ -5,10 +5,11 @@
 // The v3 curve framework's serialization currency is `PricedSurface` (a fitted,
 // cache-free surface of any curve kind whose `greeks(K,T,side)` reproduce a
 // session's cold served theo bit-for-bit — see priced_surface.hpp). This module
-// is the portfolio layer built directly on it, replacing the legacy
-// `portfolio.hpp` (a faithful C `ats-vol` port bound to
-// VolSurface/Universe/MarketBinding/CorrectionCache) for the new-surface world.
-// The two coexist: portfolio.hpp is untouched; nothing here depends on it.
+// is the portfolio layer built directly on it, and since S4-T22 (plan 4.5) it is
+// the library's ONLY portfolio engine: the legacy VolSurface/Universe-bound C
+// `ats-vol` port that used to sit beside it was deleted rather than shipped
+// deprecated in v1. Its scenario and attribution capabilities live on this stack
+// as `scenario_grid.hpp` and `pnl_attribution.hpp`.
 //
 // ## What it does
 //
@@ -64,12 +65,27 @@
 //
 // ## Thread-safety
 //
-// Except for `retime`, a `PortfolioPricer` is immutable after construction;
-// `price` / `pnl_explain` are const, and the `PricedSurface` inputs are
-// concurrent-const-safe, so one pricer may be queried from many threads. Every
-// concurrent in-place call must use a distinct PortfolioWorkspace and output
-// view. `retime` requires exclusive access to the pricer and every workspace
-// that has priced it; a later call rebuilds each workspace's retained substrate.
+// Except for `retime`, a `PortfolioPricer` holds NO mutable state: it is
+// immutable after construction, `price` / `pnl_explain` are const AND hold no
+// shared scratch (each call owns its workspace), and the `PricedSurface` inputs
+// are concurrent-const-safe — so one pricer may genuinely be queried from many
+// threads at once, by either API. Every concurrent in-place call must use a
+// distinct PortfolioWorkspace and output view. `retime` requires exclusive
+// access to the pricer and every workspace that has priced it; a later call
+// rebuilds each workspace's retained substrate.
+//
+// THE SHARED RESOURCE UNDERNEATH (plan 4.7). "Many threads at once" does not mean
+// many pools: every internal fan-out here — the tile pass, the per-unique range
+// pass, the scatter, and the same three inside `pnl_explain` — dispatches onto the
+// PROCESS-GLOBAL pricing pool (detail/pricing_executor.hpp) rather than creating
+// threads. So concurrent `price` calls SHARE one core budget instead of
+// oversubscribing the machine, `n_threads` is a request clamped down to that pool,
+// and a call issued from inside another pool dispatch runs inline — none of which
+// changes any result, because the block partition fixes which index lands in which
+// slot at any worker count. The one caller-facing ordering rule comes from that
+// header: choose the pool's topology with `configure_pricing_executor` BEFORE the
+// first pricing call, since that call is what builds the pool and configuration
+// afterwards is refused with AlreadyExists and applies nothing.
 
 #include <cstddef>
 #include <cstdint>
@@ -185,6 +201,20 @@ public:
   [[nodiscard]] std::size_t n_contracts() const noexcept { return contracts_.size(); }
   [[nodiscard]] std::size_t n_underlyings() const noexcept { return uids_.size(); }
 
+  // These three BORROW vectors the `Portfolio` owns; the book is the owner and the
+  // spans are not. They are built once by `create` and the book never grows or
+  // shrinks afterwards, so a live span keeps its extent for the book's lifetime.
+  // INVALIDATION: destroying the book, or assigning over it (this type is
+  // COPYABLE as well as movable — a span taken from one book never names the
+  // copy's storage). `retime` is the one mutator and it does NOT reallocate (it
+  // is documented allocation-free and preserves the dedup/group mapping), so a
+  // span survives it while its CONTENTS change — which is the reason to hold the
+  // book rather than the span. THREADING: `Portfolio` is not internally
+  // synchronized; `retime` is a writer and needs exclusive access, while the const
+  // accessors are safe for concurrent readers once no writer is active (the
+  // library-wide many-readers-or-one-writer contract, and the same rule the
+  // pricer's Thread-safety section above states for in-place pricing). Copy out
+  // (`std::vector<Position>{sp.begin(), sp.end()}`) to outlive the book.
   [[nodiscard]] std::span<const Position> positions() const noexcept { return positions_; }
   [[nodiscard]] std::span<const OptionContract> contracts() const noexcept { return contracts_; }
   [[nodiscard]] std::span<const std::uint32_t> uids() const noexcept { return uids_; }
@@ -940,6 +970,15 @@ public:
   // registered surface are ModelUnavailable; degenerate contracts are
   // InvalidContract/NumericError; the rest are priced. @return the frame (the
   // call itself fails only never — an empty book gives an empty frame).
+  //
+  // CONCURRENCY / COST. This convenience overload owns a PER-CALL workspace, so
+  // any number of threads may call it on one pricer concurrently. The price is
+  // that it retains no substrate between calls: each call rebuilds the
+  // PreparedPortfolio and re-sizes its scratch (negligible next to the ~17
+  // Andersen-Lake boundary solves per unique contract this call already spends,
+  // and next to the output frame it allocates anyway). A caller that wants the
+  // cross-snapshot substrate reuse — a per-bar hot loop — must use `price_into`
+  // with its own retained PortfolioWorkspace.
   [[nodiscard]] Result<PriceFrame> price(const SurfaceSet &surfaces,
                                          const PriceOptions &opts = {}) const;
 
@@ -987,6 +1026,9 @@ public:
   // Taylor PnL-explain between a base and a shifted surface per underlying. The
   // time-roll dt is taken from the two surfaces' valuation timestamps; when they
   // match (dt=0) the theta/charm terms vanish (pure vol/spot/rate explain).
+  // Per-call workspace, with the same concurrency/cost contract as `price` above:
+  // safe from many threads at once, retains nothing between calls; a hot loop
+  // belongs on `pnl_explain_into` / `pnl_totals` with a caller-owned workspace.
   [[nodiscard]] Result<PnlFrame> pnl_explain(const SurfaceSet &base, const SurfaceSet &shifted,
                                              const PriceOptions &opts = {}) const;
 
@@ -1076,19 +1118,6 @@ public:
 
 private:
   Portfolio pf_;
-  // H4 (WS-H): retained workspace for the RETURNING convenience API (price() /
-  // pnl_explain()). Without it each returning call built a one-shot local
-  // PortfolioWorkspace, so ensure_prepared re-ran PreparedPortfolio::create (a
-  // stable_sort + tile partition over the uniques) and re-resized the scratch SoA
-  // EVERY call, silently losing the cross-snapshot reuse the _into variants keep.
-  // Reused across calls, ensure_prepared rebuilds only on an actual book change.
-  // NOT for concurrent returning-API calls on the SAME pricer (the shared scratch
-  // would race) — the caller-owned-workspace _into variants remain the
-  // concurrent-safe / allocation-transparent path. A unique_ptr (not a value) so
-  // PortfolioPricer stays trivially/noexcept-movable and a moved-from pricer stays
-  // callable (the returning API lazily re-creates it on next use). mutable: the
-  // returning wrappers are const but legitimately reuse this private scratch.
-  mutable std::unique_ptr<PortfolioWorkspace> returning_ws_;
 };
 
 } // namespace atx::vol

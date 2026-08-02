@@ -48,12 +48,12 @@
 #include <string>
 #include <vector>
 
-#include "atx/vol/american.hpp"   // american_price, AmericanMethod
-#include "atx/vol/curve.hpp"      // DividendEvent
-#include "atx/vol/data.hpp"       // QuoteFrame, QuoteRow, iso_to_ns, build_expiry_inputs
-#include "atx/vol/dividend.hpp"   // hybrid_forward, HybridDivParams
-#include "atx/vol/s3.hpp"         // S3Params, s3_iv
-#include "atx/vol/types.hpp"      // Result, Side
+#include "atx/vol/american.hpp"    // american_price, AmericanMethod
+#include "atx/vol/data.hpp"        // QuoteFrame, QuoteRow, iso_to_ns, build_expiry_inputs
+#include "atx/vol/dividend.hpp"    // hybrid_forward, HybridDivParams
+#include "atx/vol/rates_curve.hpp" // DividendEvent
+#include "atx/vol/s3.hpp"          // S3Params, s3_iv
+#include "atx/vol/types.hpp"       // Result, Side
 
 namespace atx::vol {
 

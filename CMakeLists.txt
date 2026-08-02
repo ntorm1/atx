@@ -1,7 +1,15 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(atx
-    VERSION 0.1.0
+    # THE single source of truth for the atx-vol library version (plan 5.3).
+    # Everything downstream DERIVES from this field and nothing restates it:
+    #   * atx/vol/detail/version_generated.hpp is configure_file'd from
+    #     PROJECT_VERSION_{MAJOR,MINOR,PATCH} / PROJECT_VERSION,
+    #   * atx/vol/version.hpp publishes ATX_VOL_VERSION* + kVersion* from that,
+    #   * atx-vol/src/version.cpp returns it (it used to carry its own literal),
+    #   * the installed atx-volConfigVersion.cmake is written from PROJECT_VERSION.
+    # Version.Query_MatchesTheCMakeProjectVersion fails if any of them drifts.
+    VERSION 1.0.0
     DESCRIPTION "ATX monorepo: core + engine"
     LANGUAGES C CXX
 )
@@ -99,13 +107,58 @@ set_property(GLOBAL PROPERTY JOB_POOLS atx_link=4)
 set(CMAKE_JOB_POOL_LINK atx_link)
 
 # ---- First-party library linkage ------------------------------------------
+#
+# ══ THE SHARED-LIBRARY POLICY FOR atx-vol v1 (plan 5.2) ═════════════════════
+#
+# atx-vol 1.x IS DISTRIBUTED STATIC-ONLY, and there is deliberately no
+# `ATX_VOL_API` export macro. That is a decision, not an omission, and it is
+# made on evidence rather than on effort:
+#
+#   * A DLL build of the atx libraries LINKS today (ATX_SHARED_LIBS below), but
+#     it is not CORRECT. Every instrumentation plane atx-vol carries is a
+#     header-inline global -- the always-on solve ledger and lightweight sampler
+#     in atx/vol/detail/counters.hpp, the phase timers in
+#     atx/vol/detail/phase_profile.hpp -- and on Windows a C++17 inline variable
+#     gets ONE INSTANCE PER IMAGE: the test exe scrapes its own copy while the
+#     DLL increments the DLL's. This is not speculative; it was measured on
+#     2026-07-22 and is why the `dev-shared` preset's own description says it is
+#     NEVER THE TEST GATE (SolveLedger / BacktestExec observer suites fail
+#     deterministically there).
+#   * CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS cannot fix that. It auto-exports, but a
+#     DATA symbol still has to be declared __declspec(dllimport) in the CONSUMER
+#     to bind to the exporting image rather than to a local copy -- CMake's own
+#     documentation says so. Declaring it is exactly the ATX_VOL_API plumbing,
+#     across every such global, plus the discipline to keep it right forever.
+#
+# So the honest v1 position is: STATIC is the shipped, supported, tested
+# configuration; the DLL build stays as a developer link-speed convenience and
+# is NOT distributable. `cmake --install` refuses it (cmake/atx-vol-install.cmake)
+# rather than producing a prefix whose counters silently read zero.
+#
+# BUILD_SHARED_LIBS -- the knob a packager reaches for by reflex -- is NOT this
+# project's switch and never was: ATX_LIB_TYPE below is driven only by
+# ATX_SHARED_LIBS. Honouring it silently would hand back static archives while
+# the caller believed it had asked for DLLs, so it is refused with the reason.
+if(BUILD_SHARED_LIBS)
+    message(FATAL_ERROR
+        "BUILD_SHARED_LIBS is not the atx switch and is ignored by these libraries: "
+        "the atx-vol 1.x package is distributed STATIC-ONLY (see the shared-library "
+        "policy above this check, and atx-vol/README.md). If you want the DLL build "
+        "for local link speed, configure -DATX_SHARED_LIBS=ON and understand that it "
+        "is a developer configuration only -- it duplicates the header-inline "
+        "instrumentation globals per image, so it is not a supported gate and "
+        "`cmake --install` will refuse it. Unset BUILD_SHARED_LIBS to continue.")
+endif()
+
 # STATIC by default (canonical/CI, self-contained exes). ATX_SHARED_LIBS=ON (set by
-# the `dev` preset) builds the atx libraries as DLLs: each test exe then links a thin
-# import lib instead of embedding a full copy of the engine -> much faster relinks and
-# far smaller per-worktree build dirs (one engine DLL vs ~14 static copies). clang-cl +
-# WINDOWS_EXPORT_ALL_SYMBOLS auto-exports; the DLLs land in bin/ beside the exes that
-# load them, so ctest/applocal need no extra wiring.
-option(ATX_SHARED_LIBS "Build atx libraries as shared DLLs (dev: faster links, smaller artifacts)" OFF)
+# the `dev-shared` preset) builds the atx libraries as DLLs: each test exe then links
+# a thin import lib instead of embedding a full copy of the engine -> much faster
+# relinks and far smaller per-worktree build dirs (one engine DLL vs ~14 static
+# copies). clang-cl + WINDOWS_EXPORT_ALL_SYMBOLS auto-exports; the DLLs land in bin/
+# beside the exes that load them, so ctest/applocal need no extra wiring. Read the
+# policy block above before reaching for it: it is a link-speed tool, not a build
+# whose test results or install output mean anything.
+option(ATX_SHARED_LIBS "Build atx libraries as shared DLLs (dev-only: faster links, smaller artifacts; NOT distributable)" OFF)
 if(ATX_SHARED_LIBS)
     set(ATX_LIB_TYPE SHARED)
     set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
@@ -124,6 +177,14 @@ endif()
 include(FetchContent)
 
 # spdlog: logging backend (bundles fmt).
+# SPDLOG_INSTALL defaults to "am I the top-level project", i.e. OFF here, which
+# left spdlog::spdlog unexportable — it is PUBLIC on atx-core (atx/core/log.hpp
+# names it), so the atx-vol package cannot install without it. Turning spdlog's
+# OWN install machinery on is the honest fix: it ships its headers, its static
+# lib and a real spdlogConfig.cmake into the same prefix, which the generated
+# atx-volConfig.cmake then find_dependency()s. Install rules only; no compile or
+# link change to any atx target. See cmake/atx-vol-install.cmake.
+set(SPDLOG_INSTALL ON CACHE BOOL "" FORCE)
 FetchContent_Declare(
     spdlog
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
@@ -163,7 +224,13 @@ FetchContent_GetProperties(Eigen3)
 if(NOT eigen3_POPULATED)
     FetchContent_Populate(Eigen3)
     add_library(eigen INTERFACE)
-    target_include_directories(eigen SYSTEM INTERFACE ${eigen3_SOURCE_DIR})
+    # Both halves are needed: the BUILD_INTERFACE path is where the headers are
+    # while we compile, and the INSTALL_INTERFACE one is where they land in an
+    # install prefix (cmake/atx-vol-install.cmake copies them there). A bare
+    # absolute path here is also what install(EXPORT) refuses outright.
+    target_include_directories(eigen SYSTEM INTERFACE
+        $<BUILD_INTERFACE:${eigen3_SOURCE_DIR}>
+        $<INSTALL_INTERFACE:include>)
     add_library(Eigen3::Eigen ALIAS eigen)
 endif()
 
@@ -249,11 +316,33 @@ endif()
 # ---- atx-vol algorithm counters (P0.2; opt-in, compile-time) ----
 # When ON, atx-vol is compiled with -DATX_VOL_COUNTERS so the pricer/cache/
 # portfolio hot paths increment the header-only atomic counters in
-# atx/vol/counters.hpp; the bench targets dump them into the JSON. Default OFF:
+# atx/vol/detail/counters.hpp; the bench targets dump them into the JSON. Default OFF:
 # ATX_VOL_COUNT(...) expands to ((void)0) — zero runtime cost, zero ABI change.
 # The definition is attached to the atx-vol target in atx-vol/CMakeLists.txt.
 option(ATX_VOL_COUNTERS "Instrument atx-vol pricing hot paths with opt-in algorithm counters" OFF)
 option(ATX_VOL_PROFILE "Instrument atx-vol phase wall times with compile-time opt-in timers" OFF)
+
+# ---- atx-vol operator CLIs (plan 5.6; ON by default) ------------------------
+# The three SHIPPED tools -- atx-vol-surface-db-build, atx-vol-surface-db and the
+# dispersion-backtest CLI -- live in atx-vol/tools/ and install into <prefix>/bin
+# with the package (cmake/atx-vol-install.cmake). ON by default because they are
+# part of what atx-vol IS at v1: a library plus the operator binaries that build,
+# inspect and replay its artifacts. That is the whole difference from
+# ATX_BUILD_EXAMPLES (OFF by default, atx-core/CMakeLists.txt), which gates
+# demonstrations and acceptance drivers that ship nowhere.
+#
+# OFF must keep the default library build whole: nothing under src/ or include/
+# is conditional on it, so -DATX_BUILD_TOOLS=OFF drops exactly three executables
+# and their install rules, and no library, test or example target changes.
+#
+# DEFAULTED OFF WHEN EMBEDDED, exactly like ATX_BUILD_TESTS below and the install
+# block at the bottom of this file. atx-vol/python/CMakeLists.txt builds the wheel
+# by add_subdirectory()ing this repo from its own project(), and a wheel build
+# has no use for three operator binaries it cannot ship -- a plain ON would have
+# made every `pip wheel` compile and link them. Top-level -- every ordinary build
+# of this repo, and every preset -- is ON.
+option(ATX_BUILD_TOOLS "Build the atx-vol operator CLIs (installed with the package)"
+       ${PROJECT_IS_TOP_LEVEL})
 
 # Only configure tests / GoogleTest when this is the top-level project.
 option(ATX_BUILD_TESTS "Build ATX tests" ${PROJECT_IS_TOP_LEVEL})
@@ -284,4 +373,14 @@ add_subdirectory(atx-options-engine)
 add_subdirectory(atx-impl)
 if(ATX_BUILD_UI)
     add_subdirectory(atx-ui)
+endif()
+
+# ---- Distribution package: install + export the atx-vol tree (plan 5.1) ----
+# LAST, after every add_subdirectory: the export set spans modules (atx-vol,
+# atx-core, atx-tsdb and the vendored header-only deps), and install(TARGETS)
+# needs every one of them to already exist. Gate it off for a consumer that
+# add_subdirectory()s this repo — install rules from an embedded copy would
+# fight the embedding project's own.
+if(PROJECT_IS_TOP_LEVEL)
+    include(cmake/atx-vol-install.cmake)
 endif()

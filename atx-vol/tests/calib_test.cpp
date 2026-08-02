@@ -14,7 +14,7 @@
 #include "atx/vol/arb.hpp"     // QuoteFlag, to_u8
 #include "atx/vol/black76.hpp" // black76_price, black76_value_and_vega
 #include "atx/vol/calib.hpp"
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/universe.hpp" // Chain, chain_index
 
 // Shared calibration-infrastructure coverage, ported from the C ats-vol tests

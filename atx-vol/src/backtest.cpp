@@ -20,10 +20,13 @@
 #include <utility>
 #include <vector>
 
+#include "step_mark_memo.hpp" // detail::StepMarkMemo — the L2 settlement mark memo
+
 #include "atx/core/error.hpp"
-#include "atx/vol/counters.hpp" // counters::ledger — V1 always-on solve ledger (per-step scrape)
+#include "atx/vol/detail/backtest_series_columns.hpp" // the 25 {name, member} series columns
+#include "atx/vol/detail/counters.hpp"      // counters::ledger — V1 always-on solve ledger (per-step scrape)
 #include "atx/vol/detail/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref — swap-lot marks
-#include "atx/vol/phase_profile.hpp"
+#include "atx/vol/detail/phase_profile.hpp"
 #include "atx/vol/strategy.hpp"        // IStrategy
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive
 #include "atx/vol/surface_db.hpp"      // SurfaceDb, DbPartitionInfo, kSurfaceDbPartitionDir/Ext
@@ -199,84 +202,9 @@ private:
 };
 
 // L2 (AL-solve-wall sprint): per-step per-(unique-contract, base-surface) mark memo.
-// A book-greeks pass at a base date POPULATES it (via PortfolioPricer::retained_marks);
-// the NEXT step's settlement (same base date, the expiring lot still priced by that
-// pass) READS the lot's base mark instead of re-solving it. Keyed by bit-exact
-// (uid,K,T,side) and validated against the uid's base-surface instance id, so a
-// stale/mismatched entry fails closed to a fresh solve. Reset+repopulated on every
-// populated step (holds ONE date). The served mark is bit-identical to the
-// settlement solve (FullGreeks mark == Marks mark, L2 crux gate).
-class StepMarkMemo {
-public:
-  void populate_from(const PortfolioPricer &pricer, const PortfolioWorkspace &ws,
-                     const MarketSnapshot &snap) {
-    pricer.retained_marks(ws, marks_scratch_);
-    entries_.clear();
-    entries_.reserve(marks_scratch_.size());
-    for (const RetainedMark &m : marks_scratch_) {
-      if (m.status != PriceStatus::Ok) {
-        continue; // only Ok marks are servable; a failed one must re-solve / fail closed
-      }
-      const SurfaceRef s = snap.find(m.uid);
-      const std::uint64_t inst = s != nullptr ? s->instance_id() : 0u;
-      entries_[key_of(m.uid, m.K, m.T, m.side)] = Val{inst, m.mark};
-    }
-  }
-
-  [[nodiscard]] std::optional<double> find(std::uint32_t uid, double K, double T, Side side,
-                                           std::uint64_t base_surface_instance) const {
-    const auto it = entries_.find(key_of(uid, K, T, side));
-    if (it == entries_.end() || it->second.instance != base_surface_instance) {
-      return std::nullopt;
-    }
-    return it->second.mark;
-  }
-
-  // Reusable settlement scratch (grow-only; keeps compute_step allocation-free after
-  // warm even on settlement steps).
-  [[nodiscard]] std::vector<Lot> &solve_scratch() {
-    solve_lots_.clear();
-    return solve_lots_;
-  }
-  [[nodiscard]] std::vector<double> &served_scratch(std::size_t n) {
-    served_.assign(n, std::numeric_limits<double>::quiet_NaN());
-    return served_;
-  }
-
-private:
-  struct Key {
-    std::uint32_t uid;
-    std::uint64_t kbits;
-    std::uint64_t tbits;
-    std::uint8_t side;
-    bool operator==(const Key &) const noexcept = default;
-  };
-  struct KeyHash {
-    [[nodiscard]] std::size_t operator()(const Key &k) const noexcept {
-      std::size_t h = std::hash<std::uint32_t>{}(k.uid);
-      const auto mix = [&h](std::uint64_t v) {
-        h ^= std::hash<std::uint64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-      };
-      mix(k.kbits);
-      mix(k.tbits);
-      mix(static_cast<std::uint64_t>(k.side));
-      return h;
-    }
-  };
-  struct Val {
-    std::uint64_t instance;
-    double mark;
-  };
-  [[nodiscard]] static Key key_of(std::uint32_t uid, double K, double T, Side side) noexcept {
-    return Key{uid, std::bit_cast<std::uint64_t>(K), std::bit_cast<std::uint64_t>(T),
-               static_cast<std::uint8_t>(side)};
-  }
-
-  std::unordered_map<Key, Val, KeyHash> entries_;
-  std::vector<RetainedMark> marks_scratch_;
-  std::vector<Lot> solve_lots_;
-  std::vector<double> served_;
-};
+// Defined in `src/step_mark_memo.hpp` so its admission contract has a direct unit
+// test; used unqualified here exactly as when it lived in this file.
+using detail::StepMarkMemo;
 
 [[nodiscard]] bool same_double_bits(double lhs, double rhs) noexcept {
   return std::bit_cast<std::uint64_t>(lhs) == std::bit_cast<std::uint64_t>(rhs);
@@ -1644,6 +1572,35 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
   return "Unknown";
 }
 
+// Every economic quantity a step produces is scaled by
+// `dt = (shifted.ts_ns - base.ts_ns) / kNsPerYear`. A `Clock` is ordered by DATE
+// STRING, but that timestamp comes from the ARCHIVE's `now_ts_ns` — a different
+// thing entirely — so a mislabelled or misordered partition hands the loop a
+// NEGATIVE dt. Nothing downstream can tell that apart from a real step:
+// `exp(r*dt)` shrinks the cash balance instead of growing it, the borrow bleed
+// becomes a rebate, the shares-carry term flips sign, and the run still reports
+// a full set of plausible rows and no error. Fail closed on the step that would
+// compute it, naming both dates.
+//
+// EQUAL timestamps are accepted deliberately: dt == 0 makes every dt-scaled term
+// an exact no-op (`cash * (exp(0) - 1)` is 0.0 for every finite r), so there is
+// no sign to flip and nothing to protect the caller from. Refusing a
+// degenerate-but-harmless corpus would be a stricter contract than the defect
+// warrants. Kept next to `validate_snapshot_provenance` so both run_backtest
+// overloads word it the same.
+[[nodiscard]] Status validate_step_ordering(const MarketSnapshot &base,
+                                            const MarketSnapshot &shifted,
+                                            const std::string &base_date,
+                                            const std::string &shifted_date) {
+  if (shifted.ts_ns() < base.ts_ns()) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest: snapshot timestamps run backwards over the step " + base_date +
+                   " -> " + shifted_date + " (ts_ns " + std::to_string(base.ts_ns()) + " -> " +
+                   std::to_string(shifted.ts_ns()) + ")");
+  }
+  return Ok();
+}
+
 // Validate after every cache load, not only while constructing a snapshot. That
 // placement means a preloaded or previously cached compatibility snapshot cannot
 // bypass a stricter policy selected by a later backtest run.
@@ -2185,6 +2142,76 @@ ReusableTargetMarkFrame::find_ok(std::uint64_t id) const noexcept {
   return Match{raw_mark, base_vega_proxy};
 }
 
+// ── BacktestResult column-shape invariant (plan item 4.6) ───────────────────
+//
+// See the contract on `BacktestResult::validate`. Pure read: the check never
+// touches a value, so a validated result is bit-identical to an unvalidated one.
+namespace {
+
+[[nodiscard]] Status column_shape_error(std::string_view column, std::size_t got,
+                                        std::size_t rows) {
+  std::string msg{"BacktestResult column '"};
+  msg += column;
+  msg += "' has ";
+  msg += std::to_string(got);
+  msg += " rows but 'date' has ";
+  msg += std::to_string(rows);
+  msg += "; every column is empty or exactly row-parallel";
+  return Err(ErrorCode::InvalidArgument, std::move(msg));
+}
+
+// Empty-or-row-parallel, the invariant every column but `step_pnl_total` obeys.
+template <class T>
+[[nodiscard]] Status check_column(std::string_view name, const std::vector<T> &col,
+                                  std::size_t rows) {
+  if (!col.empty() && col.size() != rows) {
+    return column_shape_error(name, col.size(), rows);
+  }
+  return Ok();
+}
+
+} // namespace
+
+Status BacktestResult::validate() const {
+  const std::size_t rows = date.size();
+
+  ATX_TRY_VOID(check_column("ts_ns", ts_ns, rows));
+
+  // The 25 canonical F64 series columns, driven off the SAME {name, member}
+  // table both serializers iterate. One list: a column cannot reach the wire
+  // without also entering this check.
+  for (const BacktestSeriesColumn &column : backtest_series_columns()) {
+    ATX_TRY_VOID(check_column(column.name, this->*column.member, rows));
+  }
+
+  // The two documented empty-or-row-parallel extras, deliberately absent from
+  // the frozen wire registry (see their member comments).
+  ATX_TRY_VOID(check_column("gross_vega_abs", gross_vega_abs, rows));
+  ATX_TRY_VOID(check_column("nav_liquidation", nav_liquidation, rows));
+
+  // `step_pnl_total` is EXEMPT: length == refs-1 by contract, not parallel to
+  // the downsampled `date`.
+
+  for (std::size_t i = 0; i < signals.size(); ++i) {
+    const std::string &name = signals[i].first;
+    if (name.empty()) {
+      return Err(ErrorCode::InvalidArgument,
+                 "BacktestResult signal " + std::to_string(i) +
+                     " has an empty name; both serializers emit one column per signal");
+    }
+    for (std::size_t j = 0; j < i; ++j) {
+      if (signals[j].first == name) {
+        return Err(ErrorCode::InvalidArgument,
+                   "BacktestResult has duplicate signal name '" + name +
+                       "'; the emitted series header would be ambiguous");
+      }
+    }
+    ATX_TRY_VOID(check_column("signal '" + name + "'", signals[i].second, rows));
+  }
+
+  return Ok();
+}
+
 Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
                                     const RunConfig &cfg) {
   ATX_VOL_PROFILE_SCOPE(BacktestTotal);
@@ -2346,6 +2373,15 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
       cfg.unpriced == UnpricedLotPolicy::ExcludeAndReport ? &deferrals : nullptr;
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
+    // Plan 5.5 safe point: the TOP of the step, before this step's snapshot load
+    // and before any row is appended. `out` is abandoned along with the error, so
+    // no partially-filled result can reach a caller, a writer, or validate() —
+    // the run returns no BacktestResult at all. Neither run_backtest overload
+    // performs any file I/O, so nothing on disk is touched either way.
+    if (cfg.cancel.stop_requested()) {
+      return Err(ErrorCode::Cancelled, "run_backtest: cancelled before step " +
+                                           std::to_string(i) + " (" + refs[i].date + ")");
+    }
     auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier,
                                             cfg.query_cache_build_policy);
     if (!shifted_res) {
@@ -2353,6 +2389,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     }
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
     ATX_TRY_VOID(validate_snapshot_provenance(*shifted, cfg.surface_provenance_policy));
+    ATX_TRY_VOID(validate_step_ordering(*base, *shifted, refs[i - 1].date, refs[i].date));
     if (cfg.prefetch_snapshots) {
       // The window is [i+1, i+depth]; step i-1 already covered through i+depth-1,
       // so exactly one ref newly enters it here.
@@ -2428,6 +2465,9 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     }
   }
 
+  // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
+  // cannot change a value the run produced.
+  ATX_TRY_VOID(out.validate());
   return Ok(std::move(out));
 }
 
@@ -2945,6 +2985,15 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       cfg.unpriced == UnpricedLotPolicy::ExcludeAndReport ? &deferrals : nullptr;
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
+    // Plan 5.5 safe point: the TOP of the step, before this step's snapshot load
+    // and before any row is appended. `out` is abandoned along with the error, so
+    // no partially-filled result can reach a caller, a writer, or validate() —
+    // the run returns no BacktestResult at all. Neither run_backtest overload
+    // performs any file I/O, so nothing on disk is touched either way.
+    if (cfg.cancel.stop_requested()) {
+      return Err(ErrorCode::Cancelled, "run_backtest: cancelled before step " +
+                                           std::to_string(i) + " (" + refs[i].date + ")");
+    }
     const std::size_t global_step_index = global_step_base + i;
     auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier,
                                             cfg.query_cache_build_policy);
@@ -2953,6 +3002,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     }
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
     ATX_TRY_VOID(validate_snapshot_provenance(*shifted, cfg.surface_provenance_policy));
+    ATX_TRY_VOID(validate_step_ordering(*base, *shifted, refs[i - 1].date, refs[i].date));
     if (cfg.prefetch_snapshots) {
       // The window is [i+1, i+depth]; step i-1 already covered through i+depth-1,
       // so exactly one ref newly enters it here.
@@ -2994,10 +3044,29 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     if (cfg.financing.finance_premium) {
       // Backing-agnostic (WS-ZC1): index 0 is the first archive-order surface whether
       // this snapshot owns its surfaces or borrows mapped views.
-      const double r = base->surface_at(0).pricing().r; // base-date rate
-      const double growth = std::exp(r * dt);
-      financing += cash * (growth - 1.0); // cash carry on the pre-step balance
-      cash *= growth;                     // apply to the ledger
+      //
+      // A subset-miss load legally yields a snapshot owning ZERO surfaces, so there
+      // may be no base-date rate to accrue at. Disposition follows the hedge-share
+      // ledger's rule immediately below: a FLAT slot carries no economics — with
+      // cash == 0.0 both `cash * (growth - 1.0)` and `cash *= growth` are exact
+      // no-ops for every finite r, so skipping is bit-identical — while a LIVE
+      // balance is a valuation failure. Silently skipping THAT would delete a step
+      // of financing from NAV permanently (the flow is never recovered when the
+      // board returns) and report it nowhere, so it fails closed.
+      const SurfaceRef base_rate_surface = base->surface_at(0);
+      if (base_rate_surface == nullptr) {
+        if (cash != 0.0) {
+          return Err(ErrorCode::NotFound,
+                     "run_backtest: no base surface on " + refs[i - 1].date +
+                         " to source the premium-financing rate (cash=" +
+                         std::to_string(cash) + ")");
+        }
+      } else {
+        const double r = base_rate_surface->pricing().r; // base-date rate
+        const double growth = std::exp(r * dt);
+        financing += cash * (growth - 1.0); // cash carry on the pre-step balance
+        cash *= growth;                     // apply to the ledger
+      }
     }
     for (const auto &[uid, n] : hedge_ledger.entries()) {
       const SurfaceRef bs = base->find(uid);
@@ -3196,6 +3265,9 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     }
   }
 
+  // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
+  // cannot change a value the run produced.
+  ATX_TRY_VOID(out.validate());
   BacktestCheckpoint checkpoint;
   if (capture_checkpoint) {
     // `BacktestCheckpoint` carries the book, the share ledger and the cash/NAV

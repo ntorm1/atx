@@ -107,7 +107,17 @@ target_link_libraries(atx-core
         atx_warnings
         atx_sqlite3
         atx_miniz
-        databento::databento
+        # BUILD_LOCAL_INTERFACE (plan 5.1): identical inside this buildsystem,
+        # invisible to install(EXPORT). A PRIVATE dep of a STATIC library is
+        # still recorded as $<LINK_ONLY:...> in the export interface, and
+        # databento cannot go there: it is added EXCLUDE_FROM_ALL so its own
+        # install rules never run, and its PUBLIC interface would drag
+        # date::date / httplib / nlohmann_json / OpenSSL into the atx-vol
+        # package for a client atx-vol never reaches (nothing under atx-vol/
+        # includes atx/external/). The atx/external/ headers still ship and
+        # name no databento type; calling into them from an installed consumer
+        # is what does not link. See cmake/atx-vol-install.cmake.
+        $<BUILD_LOCAL_INTERFACE:databento::databento>
         zstd::libzstd
 )
 

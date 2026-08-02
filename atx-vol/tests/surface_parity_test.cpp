@@ -4,12 +4,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "atx/vol/arb.hpp"
-#include "atx/vol/curve.hpp"
 #include "atx/vol/data.hpp"
 #include "atx/vol/panel.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/s3.hpp"
 #include "atx/vol/surface_parity.hpp"
 #include "atx/vol/types.hpp"
@@ -97,6 +98,53 @@ struct PanelBuild {
 }
 
 }  // namespace
+
+// ── The SurfaceParityReport construction contract (S4-T19, plan item 4.2) ────
+
+// SurfaceParityReport is a designated-init-only aggregate. It is the one struct
+// in this item that really WAS built positionally: `run_surface_parity` filled a
+// 12-element prefix and then assigned `expiry_reports` afterwards, which is why
+// that field was parked at the end. The compile-time half of the new contract is
+// the field-count pin in surface_parity.hpp; this is the runtime half — a named
+// initializer lands on the field its name says, and an OMITTED field takes its
+// own default member initializer rather than a neighbour's value.
+TEST(SurfaceParityReportContract, DesignatedInitBindsByName) {
+  auto surface = atx::vol::VolSurface::create(/*uid=*/7u, atx::vol::Parametrization::Essvi,
+                                              /*cap_slices=*/2);
+  ASSERT_TRUE(surface.has_value()) << surface.error().to_string();
+
+  const SurfaceParityReport rep{
+      .surface = std::move(*surface),
+      .expiry_T = {0.25, 0.75},
+      // ‖ under.chains in CHAIN order — a DIFFERENT alignment from expiry_T, so
+      // the two sizes are allowed to disagree. Naming one must not touch the
+      // other, which is exactly what the old positional prefix could not promise.
+      .expiry_reports = std::vector<atx::vol::ExpiryFitReport>(3),
+      .worst_frac_within_bidask = 0.91,
+      .calendar_arb_free = true,
+      .n_slices = 2,
+      .n_carry_skipped = 1,
+  };
+
+  EXPECT_EQ(rep.surface.uid(), 7u);
+  ASSERT_EQ(rep.expiry_T.size(), std::size_t{2});
+  EXPECT_DOUBLE_EQ(rep.expiry_T[0], 0.25);
+  EXPECT_DOUBLE_EQ(rep.expiry_T[1], 0.75);
+  EXPECT_EQ(rep.expiry_reports.size(), std::size_t{3});
+  EXPECT_DOUBLE_EQ(rep.worst_frac_within_bidask, 0.91);
+  EXPECT_TRUE(rep.calendar_arb_free);
+  EXPECT_EQ(rep.n_slices, std::size_t{2});
+  EXPECT_EQ(rep.n_carry_skipped, std::size_t{1});
+
+  EXPECT_TRUE(rep.per_expiry.empty());
+  EXPECT_TRUE(rep.context.empty());
+  EXPECT_TRUE(rep.carry.empty());
+  EXPECT_TRUE(rep.input_certification.empty());
+  EXPECT_EQ(rep.n_calendar_viol_pre, std::size_t{0});
+  EXPECT_EQ(rep.n_audit_starved, std::size_t{0});
+  EXPECT_FALSE(rep.fit_timings.collected);
+  EXPECT_DOUBLE_EQ(rep.fit_timings.total_wall_ms, 0.0);
+}
 
 TEST(SurfaceParity, FourExpiryPanel_Essvi_InterpolatesAndCalendarArbFree) {
   const PanelBuild pb = make_panel_build();

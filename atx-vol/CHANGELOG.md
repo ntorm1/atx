@@ -3,7 +3,254 @@
 Breaking behavioural changes are recorded here with their migration. Anything
 that silently changes a NUMBER a caller already depends on belongs in this file.
 
-## Unreleased
+## 1.0.0
+
+The first release with a stability promise. Everything below happened during the
+production-v1 release sprint, on the way from an internal library to one that
+installs into a prefix and can be depended on.
+
+**What 1.0.0 actually promises** is a *tier*, not the tree: the 56 headers
+`atx/vol/vol.hpp` includes are frozen for 1.x, and the manifest that says which
+those are is machine-checked (`kTierA` in `atx-vol/tests/vol_umbrella_test.cpp`).
+Everything else — Tier-B, `detail/`, `tools/`, `research/` — is public-but-
+unfrozen or internal. The full policy, with the counts and the tests that
+enforce it, is the *API stability policy* section of `README.md`. Read it before
+depending on a header: this release moved a lot of them, deliberately, precisely
+so the frozen set could be small and honest.
+
+Because that reshaping is the release, **this section is mostly breaking
+changes**. They are grouped by what a caller has to do about them.
+
+### BREAKING — the public surface was tiered, and headers moved
+
+Nothing was deleted in the tiering itself; every relocation is a `git mv`.
+
+* **12 headers demoted to `detail/`** (`#include "atx/vol/X.hpp"` →
+  `"atx/vol/detail/X.hpp"`): `parallel_for`, `pricing_executor`, `counters`,
+  `phase_profile`, `prepared_fitting`, `prepared_policy`, `prepared_portfolio`,
+  `strip_grid`, `run_archive_schema`, `backtest_series_columns`,
+  `risk_surface_validation`. `listed_quote_key` was demoted and then **returned
+  to Tier-B**, because `listed_opra.hpp` names `ListedQuoteKey` in a public
+  signature — a caller could not use that parameter without naming a type the
+  tier says carries no promise.
+* **6 headers → `atx-vol-tools`** (`"atx/vol/X.hpp"` → `"atx/vol/tools/X.hpp"`):
+  `run_report`, `surface_db_admin`, `surface_db_build`, `surface_db_exit_codes`,
+  `surface_db_populate`, `tearsheet`.
+* **9 headers → `atx-vol-research`** (`"atx/vol/X.hpp"` →
+  `"atx/vol/research/X.hpp"`): `backtest_driver`, `dispersion_backtest`,
+  `dispersion_run`, `dispersion_workflow`, `listed_definitions_cache`,
+  `listed_dispersion_pipeline`, `listed_dispersion_reconciliation`,
+  `run_archive`, `run_diagnostics`. The split line is **driver vs vocabulary**:
+  headers that *compose* a research run moved; the dispersion domain vocabulary
+  they are written in stayed public.
+* **`atx/vol/curve.hpp` → `atx/vol/rates_curve.hpp`** (Tier-A). No symbol
+  renamed; the rates vocabulary just collided visually with the vol-smile family
+  (`vol_curve.hpp` / `spline_curve.hpp`).
+* **`spy_fixture.hpp`** moved the other way — out of `tests/support/` and onto
+  the public surface as Tier-B `atx/vol/spy_fixture.hpp` — because the shipped
+  Python module and a bench reached into `tests/` for it.
+* **The umbrella is now exactly Tier-A.** 7 headers joined it (`adjusted_greeks`,
+  `corpus`, `priced_surface_view`, `query_pricing`, `spline_curve`, `surface_db`,
+  `surface_policy`) and 14 left it for Tier-B (`batch`, `c8_calib`, `cstar`,
+  `cstar_calib`, `essvi_calib`, `svi_calib`, `historical_projection`,
+  `listed_dispersion`, `listed_dispersion_schedule`,
+  `listed_dispersion_strategy`, `listed_opra`, `occ_ess`, `panel`, `s3`).
+  Reaching those 14 now needs a direct include. `curve_selector` and
+  `dense_slice` are deliberately NOT in the joined set — both were in the
+  umbrella throughout 0.1.0 and describe no change for an upgrading caller — and
+  `portfolio` / `portfolio_risk` are not in the Tier-B set, because they were
+  **removed outright rather than demoted** (see REMOVED below).
+* **`Surface<Slice>`, `SviSurface`, `EssviSurface`, `C8Surface`, `CStarSurface`**
+  moved to `detail/legacy_surface.hpp`, `detail/legacy_c8_surface.hpp`,
+  `detail/legacy_cstar_surface.hpp`. The **namespace did not change** — they are
+  still `atx::vol::` — so the migration is one added include. The canonical
+  pipeline is `CurveSurface` (fit) → `PricedSurface`/`PricedSurfaceView` (serve)
+  → `SurfaceSet` (portfolio), and public headers may no longer name the demoted
+  containers even in prose.
+
+### BREAKING — error model: batch entries report how many lanes they wrote
+
+Ten `Status`-returning batch entries now return `Result<std::size_t>`, carrying
+the number of lanes written and defined only on success. `Result<T>` itself is
+unchanged (`tl::expected<T, atx::core::Error>`); error codes and messages are
+byte-identical.
+
+`black76_price_batch`, `black76_price_from_lnfk_batch`,
+`black76_value_and_vega_batch`, `implied_vol_batch`, `black76_greeks_batch`,
+`essvi_w_batch` (`batch.hpp`); `american_price_batch`,
+`american_price_batch_resolved`, `american_greeks_batch`
+(`american_batch.hpp`); `american_implied_vol_batch` (`american_iv.hpp`,
+Tier-A).
+
+*Migration.* Inline uses (`if (f(...))`, `ASSERT_TRUE(f(...))`) bind unchanged —
+both types are `expected`. Only declaration-form sites move:
+`const Status st = f(...)` → `const Result<std::size_t> st = f(...)`, and
+forwarding sites change `return st;` → `return Err(st.error());`. Output spans
+and the per-lane `std::span<Status>` channel are untouched.
+
+Two smaller shape changes: `configure_pricing_executor` returns
+`[[nodiscard]] Status` instead of a discardable `bool`, and
+`ticker_seed_profile` returns `std::optional<ProfileKind>` instead of taking an
+out-param (`if (ticker_seed_profile(t, kind))` → `if (const auto k =
+ticker_seed_profile(t); k.has_value())`).
+
+### BREAKING — positional aggregate initialisation is no longer supported
+
+`AlOpts`, `RunConfig`, `SessionInputs` and `SurfaceParityReport` were reordered
+and pinned with a field-count `static_assert`. **Use designated initializers.**
+`AlOpts{3, 3, 1, 1.0e-1}` is now wrong — `n_quad_price` moved from last to
+third. Each of the four headers states that this is the last layout change
+allowed; post-1.0 knobs append at the end with no positional promise. Python is
+unaffected: keyword names, arity and signature are unchanged.
+
+`RunConfig`'s pin moved **15 → 16** later in the same sprint when `cancel` was
+added (see *Embedding* below). It was INSERTED beside `step_observer`, its
+semantic group — not appended — which is precisely the freedom the new convention
+buys and the old one forbade. Named initialisation is unaffected by construction;
+a positional one would have rebound, which is why none is allowed to exist.
+
+### REMOVED
+
+* **The deprecated `VolSurface`-bound portfolio engine**: `portfolio.hpp`,
+  `portfolio_risk.hpp` and 34 symbols (`PortfolioLeg`, `LegKind`, `AggMode`,
+  `bulk_price`, `scenario_pnl`, `project_compare`, …). Replacements, honestly:
+  multi-shock scenarios → `scenario_grid.hpp`; theoretical legs →
+  `contract_projection.hpp`; factor attribution → `pnl_attribution.hpp`; `ByUid`
+  aggregation → `reduce_risk_buckets`. **Stock/cash legs, bulk selection, and
+  the ByUidExpiry / ByGroupId aggregation views have no canonical counterpart.**
+  Deleting the header also resolved a latent ODR conflict: `atx::vol::LaneStatus`
+  had two different definitions, and the `american_batch.hpp` one survives.
+  `scenario_grid.hpp` and `pnl_attribution.hpp` were promoted to Tier-A.
+* **The `SurfaceArchive` v1 writer/reader** (`write_surface_archive[_file]`,
+  `class SurfaceArchive`, `SurfaceArchiveWriteOpts`,
+  `archive_identity_from_header`) and the `atx-vol-archive-v1` library.
+  ATXVSA2 is the only shipped surface-archive format. The retired format's
+  on-disk record declarations are kept as reference — `RunDir::run_identity_hash`
+  still recognises such a file by its magic. Note this header used to declare
+  symbols a plain `atx::vol` link could not resolve.
+* `calib_pool.hpp` (`calibrate_pool`, `CadenceQueue`); `vola_parity.hpp`;
+  `arb_project_calendar_essvi_total`; the four `derivatives.hpp` unit
+  constexprs (`var_dec_to_points`, `var_points_to_dec`, `vol_dec_to_points`,
+  `vol_points_to_dec`); `dispersion_build_schedule`, `dispersion_run_backtest`,
+  `dispersion_verify`, `DispersionVerifyReport`.
+
+### Numbers that moved
+
+These change results without changing a signature — the category this file
+exists for.
+
+* **Deep-OTM put premia.** Black-76 puts are priced from `Φ(-d)` instead of
+  `1 - Φ(d)` in `black76_aux`, `black76_value_and_vega`, `black76_greeks`, the
+  implied-vol Halley loop and the AVX2 kernels. Far-wing values move; they were
+  catastrophically cancelling to zero or negative.
+* **AVX2 P&L.** The vector kernel adopts the scalar association tree, so
+  `total == sum(terms)` holds and a position's P&L no longer depends on its
+  batch index — a contract `simd/pnl_batch.hpp` already claimed.
+* **Archive bytes and content identity are now reproducible.** Slice-params
+  padding is no longer memcpy'd into archive records, so the same fitted slice
+  produces the same `payload_crc32c` every time. Archives written by earlier
+  builds are not byte-reproducible by this one.
+* **`VolSurface::iv` returns NaN** for non-finite or non-positive `T` (was
+  `+inf`).
+* **A moved-from `PricedSurfaceView` is structurally empty** and answers no
+  queries; it previously answered and could index out of bounds.
+* **Vol-time is fail-closed.** `trading_hours_between`, `vol_time_years`,
+  `time_to_expiry_years` and `tenor_years` return `Result<double>` instead of
+  `double`, and `VolTimeCalendar` requires an explicit coverage window
+  (`us_default()` covers 2024-01-01..2028-12-31). Out-of-window queries are
+  `ErrorCode::OutOfRange` rather than a silently credited 7.5h session.
+* **`all_symbols` / `universe_at`** lost their `index_symbol = "SPY"` default;
+  the argument is required.
+* **Corrupt archives that used to be accepted now fail with `ParseError`** —
+  the LinearVariance node axis is validated and slice payload extents must be
+  monotone and disjoint. Backtests fail closed on backwards snapshot timestamps.
+* **`PortfolioPricer`'s returning `price()` / `pnl_explain()` are genuinely
+  concurrent-const-safe** (per-call workspace), at the cost of the cross-call
+  cached workspace.
+* **`BacktestResult::validate()`** is new and enforced at `run_backtest` and the
+  three TSV/CSV writers: every column must be empty or exactly `size()` long. A
+  producer handed a skewed result now returns `InvalidArgument`.
+* **Loose dispersion result TSVs are off by default**, behind
+  `DispersionRunConfig::emit_tsv_diagnostics` (spec key of the same name,
+  default `false`). Retained-input and evidence TSVs are unaffected.
+
+### NEW — embedding: a diagnostic sink and cooperative cancellation
+
+The two things a library has to offer before a host can embed it: give up the
+process's streams, and be stoppable.
+
+* **`atx/vol/log.hpp` (Tier-B) — diagnostic sink.** `install_log_sink(sink, user)`
+  routes every diagnostic atx-vol emits to a callback carrying a `LogLevel`, a
+  `LogStream` and one newline-free line. **All 13 library stream writes across 5
+  source files now go through it**; no `fprintf`/`printf`/`cerr`/`cout` to a
+  process stream remains in library code.
+  **With no sink installed, output is byte-identical to 1.0.0-pre**: the same
+  text on the same stream, so this is not a behavioural change for any existing
+  consumer. The stream is carried on the record rather than derived from the
+  level, precisely so the two Info-level sites that historically wrote to
+  *different* streams both stay unchanged.
+  The callback must not throw (the emit path is `noexcept`), must not re-enter
+  atx-vol, and **must tolerate concurrent invocation** — pricing-pool workers
+  emit, so records arrive on threads the host never created, and record order
+  across threads is not defined. Install once, before the first emitting call.
+* **`ErrorCode::Cancelled` (atx-core)** — appended last, so no existing
+  enumerator's `u16` value moved.
+* **Cooperative cancellation on the four long-running entries.** A `CancelToken`
+  (`atx/vol/types.hpp`) is a non-owning view of a caller-owned
+  `std::atomic<bool>`; a default-constructed one never cancels and costs one
+  branch per poll. Plumbed as `RunConfig::cancel` (**this is the 15 → 16 field
+  above**), `CorpusConfig::cancel`, `SurfaceDbPopulateConfig::cancel`, and — for
+  the run-dir-only entry that has no caller-supplied config — a defaulted
+  trailing parameter on `dispersion_run_projected_var`.
+  Cancellation is a **clean early return with `ErrorCode::Cancelled`, never a
+  partial write**. Each entry polls at the top of a loop iteration, before that
+  iteration writes anything: `run_backtest` returns no result at all (and writes
+  no files in any case); `build_corpus` leaves no manifest, so the corpus never
+  claims to be complete; `populate_surface_db` leaves a **valid database holding
+  a prefix of the dates**, because each date is committed atomically with a
+  generation-bumped manifest — stop a long backfill and re-run to resume;
+  `dispersion_run_projected_var` writes its artifacts only after the work it
+  cancels, so the run dir is untouched. The two fan-out entries (`build_corpus`,
+  `populate_surface_db`) additionally poll at the **top of each fit task**, so a
+  stop drains the queued fits instead of running them to completion — the cancel
+  shortens the run rather than only declining to publish its index. A fit already
+  **in flight** is never abandoned: the call returns once the boards already
+  running finish.
+
+### Packaging, versioning and ABI
+
+* **`find_package(atx-vol)` works from an install prefix.**
+  `cmake --install <build> --prefix P` ships headers, static archives and
+  `atx-volConfig.cmake`; the exported targets are `atx::vol`, `atx::core`,
+  `atx::tsdb`, `atx::vol-tools`, `atx::vol-research`, with `atx::vol::tools` /
+  `atx::vol::research` recreated so in-tree source compiles against the install
+  unchanged. `Result<T>` is still `tl::expected<T, atx::core::Error>` and
+  `tl-expected` installs into the same prefix.
+* **The version is single-sourced** from `project(atx VERSION ...)` through a
+  generated `atx/vol/detail/version_generated.hpp`. `atx::vol::version()` no
+  longer carries its own literal. New: `ATX_VOL_VERSION_{MAJOR,MINOR,PATCH}`,
+  `ATX_VOL_VERSION_STRING`, `ATX_VOL_VERSION_NUM(a,b,c)` and `ATX_VOL_VERSION`
+  for preprocessor feature-gating, plus `atx::vol::kVersionString`.
+* **Package compatibility is now `SameMajorVersion`** (was `SameMinorVersion`,
+  correct only while the version was 0.y.z). A `find_package(atx-vol 1.0)`
+  consumer accepts any 1.z.
+* **atx-vol 1.x is distributed static-only**, with no `ATX_VOL_API` export
+  macro — see the *Linkage and distribution policy* section of `README.md` for
+  why (header-inline instrumentation globals get one instance per image on
+  Windows). `BUILD_SHARED_LIBS` now fails configure with the reason instead of
+  being silently ignored, and `cmake --install` refuses a shared build.
+* **The `ATX_VOL_COUNTERS` / `ATX_VOL_PROFILE` ODR trap is closed.** Those
+  options change the definition of inline entities in
+  `atx/vol/detail/counters.hpp` and `atx/vol/detail/phase_profile.hpp`; a
+  consumer that disagreed with the library used to silently read a plane nobody
+  wrote. The configuration is now part of an inline namespace name, so a
+  mismatch fails to **link**, naming both sides. No struct layout changed and no
+  computed value moves. `ATX_VOL_PROFILE_CONCAT[_INNER]` are renamed
+  `ATX_VOL_PROFILE_DETAIL_CONCAT[_INNER]` and defined in both configurations.
+* **Archive format naming is unified on the on-disk magic**: the live format is
+  **ATXVSA2** (magic `ATXVSA20`) and the retired one is **ATXVSA03** (magic
+  `ATXVSA03`). The old "v1" / "v3" ordinals are gone from the headers — they
+  named the same format both ways. Comment-only; no identifier changed.
 
 ### NEW — vol-derivatives production surface: capped/mid-life swaps, greeks, dated fixings, DerivBook (derivatives-production sprint, Tasks 1-10)
 

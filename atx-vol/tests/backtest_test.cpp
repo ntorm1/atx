@@ -13,10 +13,17 @@
 //   5. Granularity      — coarse recorded nav/attribution == fine at samples.
 //   6. ExpirySettlement — exact expiry observation settles at intrinsic and drops.
 
+#include "atx/vol/log.hpp"
+#include "atx/vol/research/listed_definitions_cache.hpp" // host-integration emitting path
+
+#include "log_sink_probe.hpp" // CapturingSink / ScopedSink / StreamCapture
+
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic> // plan 5.5 cancellation flag
+#include <fstream> // host-integration definitions fixture
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -35,17 +42,17 @@
 #include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp" // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/counters.hpp"
-#include "atx/vol/dispersion_backtest.hpp" // DispersionCostModel, dispersion_effective_frictions
+#include "atx/vol/detail/counters.hpp"
+#include "atx/vol/research/dispersion_backtest.hpp" // DispersionCostModel, dispersion_effective_frictions
 #include "atx/vol/portfolio_pricer.hpp"    // OptionContract
-#include "atx/vol/priced_surface.hpp"      // PricedSurface, PricingContext
-#include "atx/vol/strategy.hpp"            // IStrategy
-#include "atx/vol/surface_archive.hpp"     // write_surface_archive_file, SurfaceArchiveItem
-#include "atx/vol/surface_parity.hpp"      // SliceContext
-#include "atx/vol/types.hpp"               // Side, Result, Status
-#include "atx/vol/vol_curve.hpp"           // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"         // EssviParams
-#include "support/isa_golden_tol.hpp"      // golden_isa_accum_tol (per-ISA FMA band)
+#include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
+#include "atx/vol/strategy.hpp"         // IStrategy
+#include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file, SurfaceArchiveItem
+#include "atx/vol/surface_parity.hpp"   // SliceContext
+#include "atx/vol/types.hpp"            // Side, Result, Status
+#include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
+#include "support/isa_golden_tol.hpp"   // golden_isa_accum_tol (per-ISA FMA band)
+#include "atx/vol/vol_surface.hpp"      // EssviParams
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -451,6 +458,243 @@ void expect_result_bit_identical(const BacktestResult &a, const BacktestResult &
 
 } // namespace
 
+// ── 0. The RunConfig construction contract (S4-T19, plan item 4.2) ──────────
+
+// RunConfig is a designated-init-only aggregate. The compile-time half of that
+// contract is the field-count pin in backtest.hpp; this is the runtime half. It
+// asserts the two properties positional init could never give: a named
+// initializer lands on the field its name says regardless of declaration order,
+// and an OMITTED field takes its own default member initializer rather than a
+// neighbour's value. The default assertions double as the determinism gate for
+// the three fields this task moved (query_cache_build_policy, step_observer,
+// surface_provenance_policy) — a default-constructed RunConfig must still be the
+// exact policy bundle it was before the reorder.
+TEST(RunConfigContract, DesignatedInitBindsByName) {
+  const RunConfig defaults{};
+  EXPECT_EQ(defaults.price.n_threads, 0u);
+  EXPECT_TRUE(defaults.price.analytic_greeks);
+  EXPECT_EQ(defaults.query_pricing_tier, QueryPricingTier::LegacyCompatible);
+  EXPECT_EQ(defaults.query_cache_build_policy, QueryCacheBuildPolicy::Eager);
+  EXPECT_EQ(defaults.record_every_n, 1u);
+  EXPECT_FALSE(static_cast<bool>(defaults.step_observer));
+  // Plan 5.5: the default token is the NOT-CANCELLABLE one. This is the
+  // determinism assertion for the 15->16 field insertion — a default RunConfig
+  // must still describe a run that cannot stop early.
+  EXPECT_FALSE(defaults.cancel.stop_possible());
+  EXPECT_FALSE(defaults.cancel.stop_requested());
+  EXPECT_EQ(defaults.unpriced, UnpricedLotPolicy::Error);
+  EXPECT_EQ(defaults.surface_provenance_policy, SurfaceProvenancePolicy::Compatibility);
+  EXPECT_EQ(defaults.snapshot_cache, nullptr);
+  EXPECT_TRUE(defaults.prefetch_snapshots);
+  EXPECT_TRUE(defaults.settlement_mark_memo);
+  EXPECT_FALSE(defaults.reconcile_nav);
+  EXPECT_FALSE(defaults.book_entry_fill_slippage);
+  EXPECT_DOUBLE_EQ(defaults.reconcile_nav_tol, 1.0e-6);
+
+  // Naming the three formerly-appended fields binds them, and only them.
+  const RunConfig named{
+      .query_cache_build_policy = QueryCacheBuildPolicy::ReuseOnly,
+      .surface_provenance_policy = SurfaceProvenancePolicy::RequireAdmittedRisk,
+  };
+  EXPECT_EQ(named.query_cache_build_policy, QueryCacheBuildPolicy::ReuseOnly);
+  EXPECT_EQ(named.surface_provenance_policy, SurfaceProvenancePolicy::RequireAdmittedRisk);
+  EXPECT_EQ(named.query_pricing_tier, QueryPricingTier::LegacyCompatible);
+  EXPECT_EQ(named.unpriced, UnpricedLotPolicy::Error);
+  EXPECT_EQ(named.record_every_n, 1u);
+  EXPECT_DOUBLE_EQ(named.reconcile_nav_tol, 1.0e-6);
+
+  // Plan 5.5: `cancel` was INSERTED between step_observer and unpriced rather
+  // than appended, so this is the assertion that the insertion did not rebind a
+  // neighbour. Naming only `cancel` must set only `cancel` — its two textual
+  // neighbours keep their own defaults.
+  const std::atomic<bool> flag{false};
+  const RunConfig with_cancel{.cancel = CancelToken{flag}};
+  EXPECT_TRUE(with_cancel.cancel.stop_possible());
+  EXPECT_FALSE(with_cancel.cancel.stop_requested());
+  EXPECT_FALSE(static_cast<bool>(with_cancel.step_observer));
+  EXPECT_EQ(with_cancel.unpriced, UnpricedLotPolicy::Error);
+  EXPECT_EQ(with_cancel.record_every_n, 1u);
+}
+
+// ── 0b. Cooperative cancellation (S5-T26, plan item 5.5) ───────────────────
+//
+// `run_backtest` is the one cancellable entry that touches NO files: it builds a
+// BacktestResult in memory and hands it back. So "no corrupted artifacts" here
+// is proved differently from the corpus/populate entries — there is nothing on
+// disk to inspect, and the property that matters instead is that a cancelled run
+// yields NO result at all (never a short one a caller might mistake for a
+// complete run), and that cancellation leaves no residue that could perturb a
+// later run.
+
+// GATE. A cancelled run must report Cancelled specifically — not Internal, not
+// Unavailable, not a generic failure — because a host has to distinguish "you
+// asked me to stop" from "something broke" by CODE, never by message text.
+TEST(BacktestCancellation, FixedBookRunReturnsCancelledAndNoResult) {
+  const fs::path dir = fresh_dir("cancel-fixed");
+  const int n = 5;
+  const CorpusManifest man = make_evolving_corpus(dir, "SPX", n);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  std::atomic<bool> stop{true}; // already requested: stops before step 1
+  RunConfig cfg{};
+  cfg.cancel = CancelToken{stop};
+
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;
+  auto res = run_backtest(*clock, survivor_book(expiry), cfg);
+
+  ASSERT_FALSE(res.has_value()) << "a cancelled run must not return a BacktestResult";
+  EXPECT_EQ(res.error().code(), ErrorCode::Cancelled);
+  EXPECT_NE(res.error().code(), ErrorCode::Internal);
+}
+
+// GATE. The mid-run case, and the one that would catch a check placed after the
+// row append: cancel from the step observer at step 2 and assert the run is
+// abandoned. The observer also proves the stop is COOPERATIVE — it is honoured at
+// the next step boundary, not by tearing down the current step.
+TEST(BacktestCancellation, StrategyRunStopsAtTheNextStepBoundary) {
+  const fs::path dir = fresh_dir("cancel-strategy");
+  const int n = 6;
+  const CorpusManifest man = make_evolving_corpus(dir, "SPX", n);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  std::atomic<bool> stop{false};
+  std::size_t steps_seen = 0;
+  RunConfig cfg{};
+  cfg.cancel = CancelToken{stop};
+  cfg.step_observer = [&](const StepEvent &) -> Status {
+    ++steps_seen;
+    if (steps_seen == 2u) {
+      stop.store(true, std::memory_order_relaxed);
+    }
+    return atx::core::Ok();
+  };
+
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;
+  OpenThenCloseStrategy strat{expiry};
+  auto res = run_backtest(*clock, strat, cfg);
+
+  ASSERT_FALSE(res.has_value());
+  EXPECT_EQ(res.error().code(), ErrorCode::Cancelled);
+  // The stop was requested during step 2 and honoured at the top of a later
+  // step, so the run must have ended EARLY — never having observed all n steps.
+  EXPECT_LT(steps_seen, static_cast<std::size_t>(n));
+  EXPECT_GE(steps_seen, 2u);
+}
+
+// GATE, and the determinism half of plan item 5.5. A token that is PRESENT but
+// never set must produce a bit-identical run to one with no token at all. This is
+// what makes "cancellation adds no timing-dependent state to published artifacts"
+// checkable rather than merely asserted: same NAV column, bit for bit.
+TEST(BacktestCancellation, AnUntriggeredTokenIsBitIdenticalToNoToken) {
+  const fs::path dir = fresh_dir("cancel-noop");
+  const int n = 5;
+  const CorpusManifest man = make_evolving_corpus(dir, "SPX", n);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs;
+
+  auto plain = run_backtest(*clock, survivor_book(expiry), RunConfig{});
+  ASSERT_TRUE(plain.has_value()) << plain.error().to_string();
+
+  std::atomic<bool> never{false};
+  RunConfig cfg{};
+  cfg.cancel = CancelToken{never};
+  ASSERT_TRUE(cfg.cancel.stop_possible()); // negative control: the token is live
+  auto tokened = run_backtest(*clock, survivor_book(expiry), cfg);
+  ASSERT_TRUE(tokened.has_value()) << tokened.error().to_string();
+
+  expect_result_bit_identical(*plain, *tokened);
+}
+
+// ── 0c. EXIT CRITERION: a host embedding atx-vol (S5-T26) ──────────────────
+//
+// The sprint's exit criterion for items 5.4 + 5.5 is a single demonstration that
+// a HOST can do both things a host needs: take ownership of every diagnostic the
+// library emits, and stop a running backtest. Testing them separately (as the
+// suites above do) proves each mechanism; this proves they compose, which is the
+// thing an embedder actually depends on.
+//
+// The host below:
+//   1. installs a sink and redirects BOTH process streams, so any library write
+//      that escapes the sink is caught rather than silently scrolling past;
+//   2. drives a real emitting library path and takes delivery of the record;
+//   3. runs a backtest and cancels it from its own step observer;
+//   4. asserts the run stopped with Cancelled, and that across the whole episode
+//      NOTHING reached stdout or stderr.
+TEST(HostIntegration, CapturesAllLibraryOutputAndCancelsARunningBacktest) {
+  const fs::path dir = fresh_dir("host-integration");
+  const int n = 8;
+  const CorpusManifest man = make_evolving_corpus(dir, "SPX", n);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  // A definitions TSV whose cache lookup must MISS — a genuine routed library
+  // diagnostic for the host to capture.
+  const fs::path defs = dir / "definitions.tsv";
+  {
+    std::ofstream out{defs, std::ios::binary};
+    out << "host-integration-probe\n";
+  }
+
+  atx::vol::testing::CapturingSink sink;
+  std::atomic<bool> stop{false};
+  std::size_t steps_seen = 0;
+  Result<BacktestResult> run = Err(ErrorCode::Unknown, "not run");
+
+  std::string leaked_stdout;
+  std::string leaked_stderr;
+  {
+    atx::vol::testing::StreamCapture out_capture{
+        stdout, atx::vol::testing::sink_scratch_file("host-stdout")};
+    atx::vol::testing::StreamCapture err_capture{
+        stderr, atx::vol::testing::sink_scratch_file("host-stderr")};
+    {
+      const atx::vol::testing::ScopedSink installed{sink};
+
+      // (2) a real emitting path
+      static_cast<void>(
+          read_listed_definitions_cached(defs.string(), (dir / "defcache").string()));
+
+      // (3) a running backtest, cancelled by the host mid-flight
+      RunConfig cfg{};
+      cfg.cancel = CancelToken{stop};
+      cfg.step_observer = [&](const StepEvent &) -> Status {
+        ++steps_seen;
+        if (steps_seen == 3u) {
+          stop.store(true, std::memory_order_relaxed);
+        }
+        return atx::core::Ok();
+      };
+      OpenThenCloseStrategy strat{kBaseNow + 120 * kDayNs};
+      run = run_backtest(*clock, strat, cfg);
+    }
+    leaked_stdout = out_capture.release();
+    leaked_stderr = err_capture.release();
+  }
+
+  // (4a) the backtest stopped, and said so precisely.
+  ASSERT_FALSE(run.has_value()) << "the host cancelled the run but got a result back";
+  EXPECT_EQ(run.error().code(), ErrorCode::Cancelled);
+  EXPECT_LT(steps_seen, static_cast<std::size_t>(n)) << "the run did not stop early";
+
+  // (4b) the host received the library's diagnostics...
+  const std::vector<atx::vol::testing::Record> records = sink.snapshot();
+  bool saw_definitions_record = false;
+  for (const atx::vol::testing::Record &r : records) {
+    if (r.message.rfind("listed definitions cache:", 0) == 0) {
+      saw_definitions_record = true;
+    }
+    EXPECT_EQ(r.message.find('\n'), std::string::npos) << "records must be single lines";
+  }
+  EXPECT_TRUE(saw_definitions_record) << "the host did not receive a known library diagnostic";
+
+  // ...and the process streams stayed completely silent throughout.
+  EXPECT_EQ(leaked_stdout, "") << "library output escaped to stdout";
+  EXPECT_EQ(leaked_stderr, "") << "library output escaped to stderr";
+}
+
 // ── 1. Load-once ────────────────────────────────────────────────────────────
 TEST(Backtest, LoadOnce) {
   const fs::path dir = fresh_dir("loadonce");
@@ -466,6 +710,57 @@ TEST(Backtest, LoadOnce) {
   ASSERT_TRUE(res.has_value()) << res.error().to_string();
   EXPECT_EQ(MarketSnapshot::open_count(), static_cast<std::uint64_t>(n));
   EXPECT_EQ(res->size(), static_cast<std::size_t>(n)); // inception + (n-1) steps
+}
+
+// S6-T29 (plan 6.2). The step loop keeps `kPrefetchLookahead` snapshot loads in
+// flight ahead of the step it is on, instead of the single `refs[i+1]` it used to.
+// The window is a pure I/O-SCHEDULING lever, so the contracts pinned here are:
+//   (1) `prefetch_snapshots=false` still means NO prefetch at ANY window depth —
+//       the flag gates the whole window, not merely its first slot; and
+//   (2) a deeper window still opens each partition EXACTLY once (no speculative
+//       load turns into a second open, and nothing the loop is about to consume
+//       gets evicted and re-fetched).
+// (2) is a REGRESSION GUARD, not a proof that the private cache's capacity must
+// track the window: this test also passes with the capacity pinned at its old 3,
+// because `SnapshotCache::trim` only evicts entries whose future is already
+// ready, so an in-flight window slot is never the victim. Measured, not assumed.
+// Output bit-parity ACROSS windows is pinned by the NAV determinism legs; the
+// same-output check below is the cheap in-suite witness of it.
+TEST(Backtest, PrefetchWindowIsGatedByTheFlagAndNeverThrashesThePrivateCache) {
+  const fs::path dir = fresh_dir("prefetch-window");
+  const int n = 8; // longer than the window + 2 so the capacity bound actually bites
+  const CorpusManifest man = make_evolving_corpus(dir, "SPX", n);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  ASSERT_EQ(clock->size(), static_cast<std::size_t>(n));
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs; // survives every date
+
+  // (2) Private cache: `cfg.snapshot_cache` left null, so the engine builds the
+  // bounded one whose capacity is derived from the window.
+  RunConfig windowed;
+  ASSERT_TRUE(windowed.prefetch_snapshots) << "this test is about the default-on path";
+  MarketSnapshot::reset_open_count();
+  auto with_window = run_backtest(*clock, survivor_book(expiry), windowed);
+  ASSERT_TRUE(with_window.has_value()) << with_window.error().to_string();
+  EXPECT_EQ(MarketSnapshot::open_count(), static_cast<std::uint64_t>(n))
+      << "the look-ahead window must not turn into extra archive opens";
+
+  // (1) Flag OFF gates the WHOLE window. A supplied cache exposes the counter.
+  RunConfig disabled;
+  disabled.prefetch_snapshots = false;
+  disabled.snapshot_cache = std::make_shared<SnapshotCache>();
+  MarketSnapshot::reset_open_count();
+  auto without = run_backtest(*clock, survivor_book(expiry), disabled);
+  ASSERT_TRUE(without.has_value()) << without.error().to_string();
+  EXPECT_EQ(disabled.snapshot_cache->stats().prefetches, 0u)
+      << "prefetch_snapshots=false must start no speculative load at any depth";
+  EXPECT_EQ(MarketSnapshot::open_count(), static_cast<std::uint64_t>(n));
+
+  // Scheduling only: prefetched and unprefetched runs agree bit for bit.
+  ASSERT_EQ(with_window->size(), without->size());
+  for (std::size_t i = 0; i < with_window->size(); ++i) {
+    EXPECT_DOUBLE_EQ(with_window->nav[i], without->nav[i]) << "nav row " << i;
+  }
 }
 
 TEST(Backtest, FixedBookDuplicateLotIdsFailBeforeArchiveLoadOrPricing) {
@@ -2685,6 +2980,39 @@ TEST(Backtest, SubsetDeserializeFixedBookParity) {
               subset_res->size());
 }
 
+// ── BacktestResult column-shape invariant (S4-T22 / plan item 4.6) ──────────
+//
+// `BacktestResult` is ~30 parallel public columns that nothing checked. A
+// column one row short of `date` used to index OUT OF RANGE inside the
+// tearsheet fold and both serializers instead of reporting a shape error;
+// benchmark_stats_test.cpp's fixture comment documented exactly that hazard.
+// `validate()` is the enforcement point, and these tests are its contract.
+
+namespace {
+
+// An n-row result with every row-parallel column populated — the shape the
+// engine emits.
+[[nodiscard]] BacktestResult make_shape_fixture(std::size_t n) {
+  BacktestResult r;
+  for (std::size_t i = 0; i < n; ++i) {
+    r.date.push_back("d" + std::to_string(i));
+    r.ts_ns.push_back(static_cast<std::int64_t>(i));
+  }
+  const std::vector<double> col(n, 1.0);
+  for (std::vector<double> *c :
+       {&r.pnl_total, &r.pnl_delta, &r.pnl_gamma, &r.pnl_vega, &r.pnl_vanna, &r.pnl_volga,
+        &r.pnl_theta, &r.pnl_rho, &r.pnl_charm, &r.pnl_unexplained, &r.pnl_settlement,
+        &r.pnl_shares, &r.financing, &r.cost, &r.nav, &r.cash, &r.gross_delta, &r.gross_gamma,
+        &r.gross_vega, &r.gross_theta, &r.gross_vega_abs, &r.turnover_notional, &r.turnover_vega,
+        &r.n_open_lots, &r.n_unpriced_lots, &r.n_unpriced_greeks, &r.nav_liquidation}) {
+    *c = col;
+  }
+  r.signals.emplace_back("sig", col);
+  return r;
+}
+
+} // namespace
+
 // ── Look-ahead DEPTH is a scheduling knob, never an economic one ──────────────
 //
 // `RunConfig::prefetch_depth` exists so the independent, parallelizable snapshot
@@ -2852,6 +3180,85 @@ private:
 }
 
 } // namespace
+
+// THE red test: a result skewed by ONE row in ONE column is caught, and the
+// error names the column and both lengths so the report is actionable.
+TEST(BacktestResultShape, SkewedColumnIsRejected) {
+  BacktestResult r = make_shape_fixture(3);
+  ASSERT_TRUE(r.validate().has_value()) << r.validate().error().to_string();
+
+  r.nav.pop_back(); // 2 rows of nav against 3 rows of date
+  const Status skewed = r.validate();
+  ASSERT_FALSE(skewed.has_value()) << "a skewed column must not validate";
+  EXPECT_EQ(skewed.error().code(), ErrorCode::InvalidArgument);
+  const std::string msg = skewed.error().message();
+  EXPECT_NE(msg.find("nav"), std::string::npos) << msg;
+  EXPECT_NE(msg.find('2'), std::string::npos) << msg;
+  EXPECT_NE(msg.find('3'), std::string::npos) << msg;
+
+  // A column LONGER than `date` is the same defect from the other side.
+  BacktestResult longer = make_shape_fixture(3);
+  longer.cost.push_back(0.0);
+  const Status over = longer.validate();
+  ASSERT_FALSE(over.has_value());
+  EXPECT_NE(over.error().message().find("cost"), std::string::npos) << over.error().message();
+
+  // The int64 column is checked like every other one.
+  BacktestResult ts = make_shape_fixture(3);
+  ts.ts_ns.pop_back();
+  const Status ts_bad = ts.validate();
+  ASSERT_FALSE(ts_bad.has_value());
+  EXPECT_NE(ts_bad.error().message().find("ts_ns"), std::string::npos)
+      << ts_bad.error().message();
+}
+
+// EMPTY-or-row-parallel, not all-or-nothing: a fixture that fills only the
+// columns a fold reads is a legal partial result, and an empty result is legal.
+TEST(BacktestResultShape, EmptyColumnsAreLegalPartialResults) {
+  BacktestResult sparse;
+  for (std::size_t i = 0; i < 4; ++i) {
+    sparse.date.push_back("d" + std::to_string(i));
+    sparse.ts_ns.push_back(static_cast<std::int64_t>(i));
+  }
+  sparse.pnl_total = {0.0, 1.0, 2.0, 3.0};
+  sparse.nav = {0.0, 1.0, 3.0, 6.0};
+  EXPECT_TRUE(sparse.validate().has_value()) << sparse.validate().error().to_string();
+
+  const BacktestResult empty;
+  EXPECT_TRUE(empty.validate().has_value()) << empty.validate().error().to_string();
+
+  // ... but a non-empty column of the WRONG length is still rejected, which is
+  // the whole point of admitting empties.
+  sparse.cost = {0.0, 1.0};
+  EXPECT_FALSE(sparse.validate().has_value());
+}
+
+// `step_pnl_total` is exempt by contract (full-resolution, length == refs-1,
+// deliberately not parallel to the downsampled `date`); signals are not.
+TEST(BacktestResultShape, StepSeriesIsExemptAndSignalsAreChecked) {
+  BacktestResult stride = make_shape_fixture(3);
+  stride.step_pnl_total = std::vector<double>(11, 0.5); // stride-4 run over 12 refs
+  EXPECT_TRUE(stride.validate().has_value()) << stride.validate().error().to_string();
+
+  BacktestResult skewed_signal = make_shape_fixture(3);
+  skewed_signal.signals.emplace_back("short", std::vector<double>(2, 0.0));
+  const Status sig = skewed_signal.validate();
+  ASSERT_FALSE(sig.has_value()) << "a skewed signal series must not validate";
+  EXPECT_EQ(sig.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(sig.error().message().find("short"), std::string::npos) << sig.error().message();
+
+  // Both writers append one dynamic column per signal, so a duplicate name
+  // emits an ambiguous header — reject it here rather than on the wire.
+  BacktestResult dup = make_shape_fixture(3);
+  dup.signals.emplace_back("sig", std::vector<double>(3, 0.0));
+  const Status dup_st = dup.validate();
+  ASSERT_FALSE(dup_st.has_value());
+  EXPECT_NE(dup_st.error().message().find("sig"), std::string::npos) << dup_st.error().message();
+
+  BacktestResult unnamed = make_shape_fixture(3);
+  unnamed.signals.emplace_back("", std::vector<double>(3, 0.0));
+  EXPECT_FALSE(unnamed.validate().has_value());
+}
 
 // The delta hedge wants to trade BBB on the date its board is absent. Under
 // ExcludeAndReport the uid's fill is SKIPPED (its ledger position is left

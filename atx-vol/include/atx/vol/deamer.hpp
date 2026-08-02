@@ -64,12 +64,12 @@
 #include <span>
 #include <vector>
 
-#include "atx/vol/american.hpp"   // AmericanMethod, AlOpts
-#include "atx/vol/correction.hpp" // CorrectionCache, AmericanCorrectionCaches
-#include "atx/vol/curve.hpp"      // DividendEvent
-#include "atx/vol/dividend.hpp"   // HybridDivParams, hybrid_forward, PCP borrow
-#include "atx/vol/types.hpp"      // Side, Result / ErrorCode (atx::core)
-#include "atx/vol/universe.hpp"   // Chain, chain_index
+#include "atx/vol/american.hpp"    // AmericanMethod, AlOpts
+#include "atx/vol/correction.hpp"  // CorrectionCache, AmericanCorrectionCaches
+#include "atx/vol/dividend.hpp"    // HybridDivParams, hybrid_forward, PCP borrow
+#include "atx/vol/rates_curve.hpp" // DividendEvent
+#include "atx/vol/types.hpp"       // Side, Result / ErrorCode (atx::core)
+#include "atx/vol/universe.hpp"    // Chain, chain_index
 
 namespace atx::vol {
 
@@ -385,6 +385,11 @@ struct DeAmOptions {
   // Optional per-side hot-path caches for the per-strike chain driver. Carry
   // inference deliberately stays uncached and uses carry_al_opts so query-cache
   // approximation error cannot bias the term forward.
+  //
+  // NON-OWNING: the caller owns the caches and must keep them alive for the whole
+  // call that reads these options. It is a per-CALL borrow, never a handle a
+  // long-lived object may retain — `VolaSession::build` releases it before the
+  // resolved inputs are stored, so `VolaSession::inputs().deam.caches` is empty.
   AmericanCorrectionCaches caches{};
 };
 

@@ -1,0 +1,85 @@
+@PACKAGE_INIT@
+
+# ---- atx-vol package configuration (plan 5.1) -------------------------------
+#
+# Provides the imported targets
+#
+#   atx::vol             the library
+#   atx::vol::tools      CLI-support include root  (alias of atx::vol-tools)
+#   atx::vol::research   run-orchestration include root (alias of atx::vol-research)
+#   atx::core            the error/vocabulary layer atx::vol re-exports
+#   atx::tsdb            the mmap store atx::vol links privately
+#
+# WHAT A CONSUMER MUST SUPPLY. atx::vol re-exports atx::core (the public
+# `Result<T>` in atx/vol/types.hpp IS atx::core::Result), and atx::core exposes
+# Arrow / Parquet PUBLICLY -- atx/core/io/parquet.hpp names Arrow types. Those
+# two, plus zstd, come from vcpkg and are NOT redistributed inside this prefix,
+# so they are resolved here with find_dependency and the consumer has to put
+# their vcpkg tree on CMAKE_PREFIX_PATH (or use the vcpkg toolchain), exactly
+# as it would for any library with an Arrow-exposing public header. Failing
+# HERE with a clear "could not find Arrow" is the point: the alternative is a
+# consumer that configures cleanly and then dies with unresolved externals.
+#
+# Everything else atx::vol needs is redistributed IN this prefix and is found
+# below off ${PACKAGE_PREFIX_DIR}: tl::expected (the public error type -- see
+# `include/tl/expected.hpp` here), spdlog, xsimd; Eigen and ankerl's
+# unordered_dense are re-exported as atx::eigen / atx::unordered_dense, which
+# are include-root shims over the vendored headers this prefix also carries
+# (they are third-party code under an atx:: name only because they ride this
+# package's export set -- see cmake/atx-vol-install.cmake for provenance).
+
+include(CMakeFindDependencyMacro)
+
+# Redistributed dependencies live in THIS prefix; look there first so a
+# consumer that only set `atx-vol_DIR` still resolves them.
+#
+# SAVED and RESTORED around the block. CMAKE_PREFIX_PATH is directory-scoped, so
+# a bare `list(APPEND ...)` here permanently changes where the CALLER looks for
+# every subsequent find_package it makes -- including packages that have nothing
+# to do with atx-vol. A package config may widen the search for its OWN
+# dependencies; it must not redirect its caller's.
+set(_atx_vol_saved_prefix_path "${CMAKE_PREFIX_PATH}")
+list(APPEND CMAKE_PREFIX_PATH "${PACKAGE_PREFIX_DIR}")
+
+find_dependency(tl-expected)
+find_dependency(spdlog)
+find_dependency(xsimd)
+
+find_dependency(Arrow CONFIG)
+find_dependency(Parquet CONFIG)
+find_dependency(zstd CONFIG)
+
+set(CMAKE_PREFIX_PATH "${_atx_vol_saved_prefix_path}")
+unset(_atx_vol_saved_prefix_path)
+
+include("${CMAKE_CURRENT_LIST_DIR}/atx-volTargets.cmake")
+
+# NOT PART OF THE SUPPORTED SURFACE. The targets file also defines
+# `atx::warnings`, `atx::sqlite3` and `atx::miniz`, because atx::vol and
+# atx::core reach them through `$<LINK_ONLY:>` and an export set must name every
+# target it references. They are INTERNAL build-configuration targets and
+# linking one directly is unsupported: `atx::warnings` carries
+# `/W4 /permissive- /WX` as INTERFACE_COMPILE_OPTIONS, so a consumer who links
+# it inherits -Werror on their own code; `atx::sqlite3` and `atx::miniz` carry
+# vendored-build defines. `$<LINK_ONLY:>` is what keeps those usage requirements
+# off a consumer of atx::vol -- reaching around it re-introduces them. Link
+# `atx::vol` (plus `atx::vol::tools` / `atx::vol::research` for the side include
+# roots) and nothing else.
+
+# In-tree the two side include roots are `atx::vol::tools` / `atx::vol::research`
+# (atx-vol/CMakeLists.txt). An export NAMESPACE cannot produce a third `::`
+# level, so the exported spellings are atx::vol-tools / atx::vol-research and
+# the in-tree names are recreated here -- source that compiles against the build
+# tree compiles against the install unchanged.
+if(NOT TARGET atx::vol::tools)
+    add_library(atx::vol::tools INTERFACE IMPORTED)
+    set_target_properties(atx::vol::tools PROPERTIES
+        INTERFACE_LINK_LIBRARIES atx::vol-tools)
+endif()
+if(NOT TARGET atx::vol::research)
+    add_library(atx::vol::research INTERFACE IMPORTED)
+    set_target_properties(atx::vol::research PROPERTIES
+        INTERFACE_LINK_LIBRARIES atx::vol-research)
+endif()
+
+check_required_components(atx-vol)

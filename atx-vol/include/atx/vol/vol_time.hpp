@@ -51,6 +51,34 @@
 // 07-05). It does NOT model early closes (half-days) or ad-hoc emergency
 // closures — those would need a data-override extension.
 //
+// ## Coverage window (fail-closed, plan item 1.10)
+//
+// A closure table is only meaningful over the span it was actually populated
+// for, so a calendar CARRIES that span: `[first_covered_day(),
+// last_covered_day()]`, inclusive, in the same days-since-epoch numbering.
+// Outside it the closure set is simply unknown — and "unknown" must never be
+// read as "open". `trading_hours_between` therefore FAILS CLOSED
+// (`ErrorCode::OutOfRange`) as soon as an uncovered day would accrue trading
+// time, and `vol_time_years` / `time_to_expiry_years` propagate that error;
+// the alternative is a silent full-session credit for every uncovered closure
+// (Memorial Day 2020 accrued a full 7.5h session before this guard existed),
+// which corrupts every vol-time number derived from it without a single
+// visible symptom.
+//
+// The test is "would this day contribute", not "does the interval lie inside
+// the window", and it is applied per-day at the accrual site. That is what
+// keeps it correct for a caller-supplied session window of ANY width: the
+// session loop walks one padding day beyond each end of the interval, and an
+// extended-hours `VolTimeParams` whose close crosses a UTC midnight makes such
+// a padding day genuinely accrue. A window-vs-interval precheck would wave
+// those two days through.
+//
+// `us_default()`'s window is exactly 2024-01-01 .. 2028-12-31, the span its
+// table enumerates. It is deliberately not wider: the pre-2007 US DST rule
+// differs from the modern one this module implements, so even a hypothetical
+// "no closures" answer would be wrong for early dates. Widening the window is
+// a change to the table, not to a caller.
+//
 // ## Session window / DST
 //
 // The regular session is `[session_open_hour_et, session_open_hour_et +
@@ -73,6 +101,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "atx/vol/types.hpp"  // Result, ErrorCode (fail-closed coverage window)
+
 namespace atx::vol {
 
 // Tunable knobs for the hybrid clock. Defaults are SpiderRock VolTimeCalc's
@@ -90,22 +120,60 @@ struct VolTimeParams {
 // Immutable named-holiday calendar: a sorted set of full-closure civil dates,
 // each expressed as days-since-epoch (1970-01-01 = 0) under plain
 // proleptic-Gregorian civil-date numbering (no timezone attached to the day
-// number itself). `us_default()` carries the NYSE full-closure table for
-// 2024-2028 inclusive.
+// number itself), PLUS the inclusive day window that set is complete over.
+// `us_default()` carries the NYSE full-closure table for 2024-2028 inclusive
+// and declares exactly that window.
 class VolTimeCalendar {
  public:
   // Sorts and de-duplicates `holiday_days` (order/duplicates in the input are
   // not significant).
-  explicit VolTimeCalendar(std::vector<std::int32_t> holiday_days);
+  //
+  // The window is a REQUIRED constructor argument, not an inferred one: a
+  // table's completeness is knowledge only its author has (an empty holiday
+  // list over a covered week and an unpopulated table are indistinguishable
+  // from the data alone), and a calendar that cannot say what it covers is
+  // precisely the defect this window exists to close.
+  //
+  // @param holiday_days      full-closure days-since-epoch (any order)
+  // @param first_covered_day first day the table is complete over (inclusive)
+  // @param last_covered_day  last day the table is complete over (inclusive);
+  //                          an empty window (`last < first`) covers nothing
+  //                          and makes every vol-time query fail closed
+  explicit VolTimeCalendar(std::vector<std::int32_t> holiday_days,
+                           std::int32_t first_covered_day, std::int32_t last_covered_day);
 
+  // True iff `day_since_epoch` is a LISTED full closure.
+  //
+  // CAVEAT — `false` is NOT "this day is open". It is "this day is not in the
+  // table", which is also the answer for every day OUTSIDE `covers()`, where the
+  // table says nothing at all. Any caller whose result MOVES with that answer
+  // (accruing session time, counting a trading day, stepping a tenor) must gate
+  // it on `covers(day_since_epoch)` first and fail closed when the day is not
+  // covered — see `trading_hours_between` (accrual site) and
+  // `advance_trading_days` (sr_tenor_grid.hpp, counting site). Reading an
+  // out-of-window `false` as "open" is exactly how Memorial Day 2020 accrued a
+  // full 7.5h session (plan item 1.10) and how the trading-day stepper landed
+  // tenors on real NYSE closures.
   [[nodiscard]] bool is_holiday(std::int32_t day_since_epoch) const noexcept;
 
-  // NYSE full-closure calendar, 2024-2028 inclusive. Built once (function-local
-  // static) on first call.
+  // Inclusive bounds of the window this calendar's closure set is complete
+  // over (days-since-epoch, same numbering as `is_holiday`).
+  [[nodiscard]] std::int32_t first_covered_day() const noexcept;
+  [[nodiscard]] std::int32_t last_covered_day() const noexcept;
+
+  // True iff `day_since_epoch` lies inside the covered window, i.e. iff
+  // `is_holiday(day_since_epoch)` is a KNOWN answer rather than a default-false
+  // one. A `false` here is what makes the vol-time entry points fail closed.
+  [[nodiscard]] bool covers(std::int32_t day_since_epoch) const noexcept;
+
+  // NYSE full-closure calendar, 2024-2028 inclusive (that is also its covered
+  // window). Built once (function-local static) on first call.
   [[nodiscard]] static const VolTimeCalendar& us_default();
 
  private:
   std::vector<std::int32_t> days_;  // sorted, unique
+  std::int32_t first_covered_day_;
+  std::int32_t last_covered_day_;
 };
 
 // Day-of-week for a proleptic-Gregorian days-since-epoch index (Howard
@@ -149,37 +217,57 @@ enum class SettlementSession : std::uint8_t {
 
 // Trading hours (fractional) accrued in `[start_ns, end_ns)`, under the ET
 // session window in `p`, skipping weekends and `cal` holidays. Returns 0 if
-// `end_ns <= start_ns`.
+// `end_ns <= start_ns` (a degenerate interval reads no calendar day at all, so
+// it is answerable regardless of coverage).
+//
+// FAILS CLOSED with `ErrorCode::OutOfRange` as soon as a day that would accrue
+// trading time falls outside `cal`'s covered window. The check sits at the
+// ACCRUAL site, so the coverage-checked set is exactly the contributing set for
+// any `p` — including an extended-hours session window whose close spills past
+// a UTC midnight and therefore makes a neighbouring day contribute. Days that
+// contribute nothing (weekends, listed closures, and days the interval simply
+// does not overlap) are never checked: their status cannot move the answer.
+//
+// Also fails closed (`ErrorCode::OutOfRange`) on an interval spanning more than
+// ~20 years — the day loop's static bound. Nothing this clock serves prices a
+// horizon that long, and the loop used to CLAMP there and answer anyway, which
+// reported every session past year ~20 as non-trading time.
 //
 // @param start_ns  interval start, epoch nanoseconds (UTC)
 // @param end_ns    interval end, epoch nanoseconds (UTC), exclusive
 // @param p         session-window parameters (open hour / span, ET)
-// @param cal       holiday calendar
-// @return          fractional trading hours in [0, (end_ns-start_ns)/3600e9]
-[[nodiscard]] double trading_hours_between(std::int64_t start_ns, std::int64_t end_ns,
-                                           const VolTimeParams& p,
-                                           const VolTimeCalendar& cal) noexcept;
+// @param cal       holiday calendar (supplies the covered window)
+// @return          fractional trading hours in [0, (end_ns-start_ns)/3600e9],
+//                  or `ErrorCode::OutOfRange` outside `cal`'s window
+[[nodiscard]] Result<double> trading_hours_between(std::int64_t start_ns, std::int64_t end_ns,
+                                                   const VolTimeParams& p,
+                                                   const VolTimeCalendar& cal);
 
 // SpiderRock VolTimeCalc master formula: converts a wall-clock interval to
 // volatility-time years. Total wall hours = (expiry_ns - now_ns)/3600e9;
 // non-trading hours = total - trading (via `trading_hours_between`). Returns 0
-// for `expiry_ns <= now_ns`.
+// for `expiry_ns <= now_ns`, and propagates `trading_hours_between`'s
+// out-of-coverage error otherwise.
 //
 // @param now_ns     evaluation instant, epoch nanoseconds (UTC)
 // @param expiry_ns  option expiry instant, epoch nanoseconds (UTC)
 // @param p          hybrid-clock parameters (alpha, annual hour budgets)
-// @param cal        holiday calendar
-// @return           T_vol in years, >= 0
-[[nodiscard]] double vol_time_years(std::int64_t now_ns, std::int64_t expiry_ns,
-                                    const VolTimeParams& p,
-                                    const VolTimeCalendar& cal) noexcept;
+// @param cal        holiday calendar (supplies the covered window)
+// @return           T_vol in years, >= 0, or `ErrorCode::OutOfRange` outside
+//                   `cal`'s covered window
+[[nodiscard]] Result<double> vol_time_years(std::int64_t now_ns, std::int64_t expiry_ns,
+                                            const VolTimeParams& p, const VolTimeCalendar& cal);
 
 // ── Production T convention ─────────────────────────────────────────────────
 
 // Calendar-365 year length in nanoseconds (365.25 * 86400s) — the CANONICAL
 // copy of this constant in atx-vol (`portfolio_pricer.hpp`'s `kNsPerYear` and
-// a literal in curve.cpp mirror the same value; they are not aliased to this
-// one, out of scope here). `data.cpp`'s `year_fraction` delegates to
+// a literal in `forward_div_corrected`, rates_curve.cpp, mirror the same value;
+// they are not aliased to this one, out of scope here). Both mirrors still exist
+// at HEAD: the S4-T22 portfolio-engine deletion left `kNsPerYear` in place (it
+// belongs to the canonical `PortfolioPricer`, not the engine that was removed),
+// and S4-T21's rename carried the rates TU from `curve.cpp` to `rates_curve.cpp`
+// without touching the literal. `data.cpp`'s `year_fraction` delegates to
 // `time_to_expiry_years` (default `TimeSpec`) rather than re-deriving it, so
 // `Calendar365` and the legacy ISO-string `year_fraction` can never drift
 // apart.
@@ -195,7 +283,7 @@ enum class SettlementSession : std::uint8_t {
 // values (earnings-repro ATM vols, surface-archive CRCs, backtest PnL, fitted
 // slices) — far beyond the ~dozen-pin budget the A9 task set for an in-batch
 // change — AND it would desync this copy from the mirrored 365.25 in
-// portfolio_pricer.hpp/curve.cpp (explicitly out of scope), creating a NEW
+// portfolio_pricer.hpp/rates_curve.cpp (explicitly out of scope), creating a NEW
 // internal inconsistency worse than the naming one. A deliberate re-derivation is
 // a standalone coordinated sweep (change all three mirrored constants together,
 // or rename the convention to Julian365, then full-corpus repin), tracked for the
@@ -230,18 +318,23 @@ struct TimeSpec {
 //
 // `spec.convention == Calendar365` (the default): returns
 // `(to_ns - from_ns) / kCalendarYearNs`, BIT-IDENTICAL to `year_fraction`'s
-// result for the same instant pair (same expression, same constant).
+// result for the same instant pair (same expression, same constant). This
+// branch reads no calendar and is INFALLIBLE — it never returns an error, so
+// every default-`TimeSpec` caller is unconditionally in the success arm.
 // `spec.convention == VolTime`: returns `vol_time_years(from_ns, to_ns,
-// spec.vol_time, VolTimeCalendar::us_default())`.
+// spec.vol_time, VolTimeCalendar::us_default())`, INCLUDING its
+// `ErrorCode::OutOfRange` failure outside the 2024-2028 covered window.
 //
 // @param from_ns  evaluation instant, epoch nanoseconds (UTC)
 // @param to_ns    maturity instant, epoch nanoseconds (UTC)
 // @param spec     governing time convention
 // @return         year-fraction (Calendar365: may be negative for to_ns <
 //                 from_ns, matching `year_fraction`; VolTime: >= 0, 0 for
-//                 to_ns <= from_ns, matching `vol_time_years`)
-[[nodiscard]] double time_to_expiry_years(std::int64_t from_ns, std::int64_t to_ns,
-                                          const TimeSpec& spec) noexcept;
+//                 to_ns <= from_ns, matching `vol_time_years`), or
+//                 `ErrorCode::OutOfRange` on the VolTime branch outside the
+//                 default calendar's covered window
+[[nodiscard]] Result<double> time_to_expiry_years(std::int64_t from_ns, std::int64_t to_ns,
+                                                  const TimeSpec& spec);
 
 // Inverse of `time_to_expiry_years` under the DEFAULT Calendar365 convention
 // only: reconstructs an absolute instant `from_ns + round(years *

@@ -223,6 +223,15 @@ public:
     return std::make_unique<LinearVarianceCurve>(T_, F_, df_, k_, w_);
   }
 
+  // BORROW the node vectors this curve owns (the constructor MOVES them in, so
+  // the caller's storage is not retained). A fitted curve is immutable — the
+  // Thread-safety note above — so both spans are valid for the curve object's
+  // lifetime and concurrent const readers are safe. The practical lifetime bound
+  // is the OWNER of the curve, not the accessor: these curves normally live
+  // behind a `std::unique_ptr<IVolCurve>` inside a `CurveSurface` slice, so the
+  // spans die with that surface (or with the `PricedSurface` holding it), and
+  // `clone()` produces INDEPENDENT node storage — a span from the original never
+  // names the clone's. Copy the nodes out to outlive the curve.
   [[nodiscard]] std::span<const double> k_nodes() const noexcept { return k_; }
   [[nodiscard]] std::span<const double> w_nodes() const noexcept { return w_; }
 
@@ -314,9 +323,10 @@ private:
 // An ascending-T stack of polymorphic slices with ONE linear-in-total-variance
 // time interpolation. A query at T locates T among the slice T's, interpolates
 // total variance linearly across the two bracketing slices (never in sigma), and
-// applies the same no-extrapolation guards as `VolSurface`/`Surface<>`: a query
-// past the last slice, or more than 50% below the first, returns NaN. Slices must
-// be pushed in ascending T (the fit driver guarantees it).
+// applies the same Sprint-26 no-extrapolation guards `VolSurface` and the demoted
+// per-family containers do: a query past the last slice, or more than 50% below
+// the first, returns NaN. Slices must be pushed in ascending T (the fit driver
+// guarantees it).
 class CurveSurface {
 public:
   CurveSurface() = default;

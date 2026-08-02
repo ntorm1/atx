@@ -24,10 +24,10 @@
 #include <utility>
 
 #include "atx/vol/american.hpp"           // AmericanGreeks
-#include "atx/vol/counters.hpp"           // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
+#include "atx/vol/detail/counters.hpp"           // ATX_VOL_COUNT (opt-in P0.2; no-op when OFF)
 #include "atx/vol/detail/adjoint_greeks.hpp" // WS-P P3: american_greeks_adjoint A/B route
-#include "atx/vol/prepared_portfolio.hpp" // PreparedPortfolio (grouped exec substrate)
-#include "atx/vol/pricing_executor.hpp"   // pricing_executor(): the persistent P1.4 pool
+#include "atx/vol/detail/prepared_portfolio.hpp" // PreparedPortfolio (grouped exec substrate)
+#include "atx/vol/detail/pricing_executor.hpp"   // pricing_executor(): the persistent P1.4 pool
 #include "atx/vol/simd/american_boundary_batch.hpp" // simd::avx2_boundary_selected (invariant tile-schedule gate)
 #include "atx/vol/simd/pnl_batch.hpp"     // simd::pnl_taylor_explain_batch (wiring finding 1)
 
@@ -541,6 +541,31 @@ struct ContractPnl {
   return dw_dk / (2.0 * sigma * T);
 }
 
+// The I6 skew-adjusted-delta lane guard: this contract's (already omega-blended)
+// VegaSlope, or nullopt when it is NOT finite.
+//
+// `skew_adjusted_delta` makes `delta + vega_slope * vega` the published delta
+// column AND `PriceTotals::delta`, and `reduce_price_totals` sums Ok lanes on
+// STATUS alone. `priced_surface_skew_slope` legitimately returns NaN on a lane
+// whose central FD stencil steps off the servable/representable strike axis (a
+// deep wing) even though the MARK and every Greek on that lane are perfectly
+// finite -- so an unchecked slope let one such lane NaN the whole book's delta
+// while still reading Ok. A nullopt therefore demotes the lane to NumericError at
+// the caller's Ok-stamp, exactly as a non-finite requested Greek does: the lane is
+// NaN-isolated and excluded from every total. Deliberately NOT a silent fallback
+// to the UNADJUSTED delta -- that would publish a different economic quantity than
+// the caller requested under a column it cannot distinguish, the same reason
+// PriceTotals reports NaN rather than 0.0 for a statistic it did not compute.
+[[nodiscard]] std::optional<double> finite_vega_slope(const SurfaceRef &surf, double K, double T,
+                                                      const StickyParams &sticky) noexcept {
+  const double slope = priced_surface_skew_slope(surf, K, T);
+  const double vega_slope = vega_slope_from_skew_slope(slope, surf.pricing().S, sticky);
+  if (!std::isfinite(vega_slope)) {
+    return std::nullopt;
+  }
+  return vega_slope;
+}
+
 [[nodiscard]] bool same_bits(double a, double b) noexcept {
   return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
 }
@@ -675,19 +700,32 @@ stage_full_greek_seeds(const SurfaceSet &surfaces, std::span<const OptionContrac
       continue;
     }
 
+    // I6 lane guard (S1-T1/1.4): a seed whose skew slope is non-finite is REJECTED
+    // as a candidate rather than staged, so the contract falls through to the
+    // ordinary solve and is re-guarded at that stamp — the same treatment this
+    // stage already gives a seed with a non-finite Greek. `seed_route_matches`
+    // already required a registered surface for every candidate that reaches here.
+    double seed_vega_slope = 0.0; // a no-op multiplier when the flag is off
+    if (skew_adjusted_delta) {
+      const SurfaceRef surface = surfaces.find(contract.uid);
+      if (surface != nullptr) {
+        const std::optional<double> slope =
+            finite_vega_slope(*surface, contract.K, contract.T, sticky);
+        if (!slope.has_value()) {
+          counts.rejected_candidates += static_cast<std::uint64_t>(std::distance(first, last));
+          continue;
+        }
+        seed_vega_slope = *slope;
+      }
+    }
+
     ContractPx &out = staged[contract_index];
     out = ContractPx{};
     out.fair_value = seed_g.price;
     out.g = seed_g;
     out.iv = representative.iv();
     out.status = PriceStatus::Ok;
-    if (skew_adjusted_delta) {
-      const SurfaceRef surface = surfaces.find(contract.uid);
-      if (surface != nullptr) {
-        const double slope = priced_surface_skew_slope(*surface, contract.K, contract.T);
-        out.vega_slope = vega_slope_from_skew_slope(slope, surface->pricing().S, sticky);
-      }
-    }
+    out.vega_slope = seed_vega_slope;
     accepted[contract_index] = std::uint8_t{1};
     ++counts.accepted_unique;
   }
@@ -864,28 +902,48 @@ void solve_uniques(const PreparedPortfolio &pp, const SurfaceSet &surfaces,
           out.status = PriceStatus::NumericError;
           continue;
         }
+        // S1-T1/1.4: the VegaSlope is part of the REQUESTED delta under
+        // skew_adjusted_delta, so it is swept finite BEFORE the Ok-stamp exactly
+        // like the Greek columns above — a NaN slope demotes the lane instead of
+        // riding an Ok status into the book's delta total.
+        double adjoint_vega_slope = 0.0; // a no-op multiplier when the flag is off
+        if (skew_adjusted_delta) {
+          const std::optional<double> slope = finite_vega_slope(*surf, kcol[p], tcol[p], sticky);
+          if (!slope.has_value()) {
+            out.status = PriceStatus::NumericError;
+            continue;
+          }
+          adjoint_vega_slope = *slope;
+        }
         b_greeks[p] = gg;
         out.fair_value = gg.price;
         out.g = gg;
+        out.vega_slope = adjoint_vega_slope;
         out.status = PriceStatus::Ok;
-        if (skew_adjusted_delta) {
-          const double slope = priced_surface_skew_slope(*surf, kcol[p], tcol[p]);
-          out.vega_slope = vega_slope_from_skew_slope(slope, surf->pricing().S, sticky);
-        }
         continue;
       }
       if (!b_status[p].has_value() || !greeks_all_finite(b_greeks[p], greek_needs)) {
         out.status = PriceStatus::NumericError;
         continue;
       }
+      // S1-T1/1.4: sweep the VegaSlope finite BEFORE the Ok-stamp (see the adjoint
+      // arm above) — under skew_adjusted_delta it is a REQUESTED input to the
+      // published delta, so a non-finite one must quarantine its lane, not poison
+      // the book.
+      double lane_vega_slope = 0.0; // a no-op multiplier when the flag is off
+      if (skew_adjusted_delta) {
+        const std::optional<double> slope = finite_vega_slope(*surf, kcol[p], tcol[p], sticky);
+        if (!slope.has_value()) {
+          out.status = PriceStatus::NumericError;
+          continue;
+        }
+        lane_vega_slope = *slope;
+      }
       // greeks().price IS the American fair_value (bit-identical, cold-FD invariant).
       out.fair_value = b_greeks[p].price;
       out.g = b_greeks[p];
+      out.vega_slope = lane_vega_slope;
       out.status = PriceStatus::Ok;
-      if (skew_adjusted_delta) {
-        const double slope = priced_surface_skew_slope(*surf, kcol[p], tcol[p]);
-        out.vega_slope = vega_slope_from_skew_slope(slope, surf->pricing().S, sticky);
-      }
     }
   };
 
@@ -1342,14 +1400,21 @@ Result<PriceFrame> PortfolioPricer::price(const SurfaceSet &surfaces,
 
   PriceFrameView view{f.id,    f.uid, f.pv,    f.price, f.iv,    f.delta,  f.gamma, f.vega,
                       f.theta, f.rho, f.vanna, f.volga, f.charm, f.status, &f.total};
-  // H4: reuse the retained workspace so a per-bar returning-API caller keeps the
-  // PreparedPortfolio + scratch SoA across calls (rebuilt only on a book change),
-  // instead of paying a fresh build + realloc every call. Lazily created (and
-  // re-created after a move leaves it null).
-  if (returning_ws_ == nullptr) {
-    returning_ws_ = std::make_unique<PortfolioWorkspace>();
-  }
-  if (Status s = price_into(surfaces, fields, view, *returning_ws_, opts); !s.has_value()) {
+  // The workspace is PER CALL. H4 hung a `mutable unique_ptr<PortfolioWorkspace>`
+  // off the pricer so a per-bar returning-API caller kept the PreparedPortfolio +
+  // scratch SoA across calls — but BOTH returning overloads are const, and
+  // portfolio_pricer.hpp promises a const pricer may be queried from many threads,
+  // so that shared scratch was a data race (the lazy creation, the retained
+  // substrate, and every per-unique SoA slot) on exactly the API the contract
+  // declared safe. A per-call workspace restores the contract with no
+  // synchronization and no per-thread retention: its construction is negligible
+  // next to the ~17 Andersen-Lake boundary solves per unique contract this call
+  // spends, and this overload already allocates the whole output frame. Hot,
+  // single-threaded, per-bar callers keep the substrate reuse by using
+  // `price_into` with their own workspace — the documented allocation-transparent
+  // path.
+  PortfolioWorkspace call_ws;
+  if (Status s = price_into(surfaces, fields, view, call_ws, opts); !s.has_value()) {
     return Err(s.error());
   }
 
@@ -1665,9 +1730,28 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                                             std::span<Status>(b_status).subspan(s, gsz),
                                             {},
                                             {}};
-      (void)sb->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
-                               EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic,
-                               base_soa, resolved_price_isa, query_execution, base_needs);
+      // S1-T1/1.3: the batch-level Status is NOT discardable. `b_*` / `s_*` are the
+      // workspace's RETAINED scratch — resized across snapshots, never cleared — and
+      // the consumer loop below gates each lane on exactly those slots. A failed
+      // evaluate_batch can return having written only part of the span (it bails out
+      // of its equal-T run the moment a resolved sub-batch fails), so every lane it
+      // did not reach still holds the PREVIOUS snapshot's IV/mark/greeks and its
+      // PREVIOUS Ok status — which the loop below would then republish as this
+      // snapshot's mark, stamped Ok. Poison the whole group span exactly as
+      // solve_uniques does on the price path, so every lane in it falls to
+      // NumericError instead.
+      const Status base_batch =
+          sb->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
+                             EF::Iv | EF::Price | EF::FirstOrder | EF::SecondOrder, analytic,
+                             base_soa, resolved_price_isa, query_execution, base_needs);
+      if (!base_batch.has_value()) {
+        for (std::uint32_t p = s; p < e; ++p) {
+          b_iv[p] = kNaN;
+          b_price[p] = kNaN;
+          b_greeks[p].price = kNaN;
+          b_status[p] = Err(base_batch.error());
+        }
+      }
     }
     // Shifted surface at the COMMON base maturity T_b: iv only (sig_t).
     PricedSurface::EvaluationSoA sig_soa{std::span<double>(s_iv).subspan(s, gsz),
@@ -1676,9 +1760,21 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                                          std::span<Status>(s_junk_status).subspan(s, gsz),
                                          {},
                                          {}};
-    (void)st->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz),
-                             EF::Iv, /*analytic=*/false, sig_soa, resolved_price_isa,
-                             query_execution);
+    // Same poisoning contract as the base leg. `s_junk_status` is deliberately
+    // never read (this leg's only consumed output is sig_t = s_iv[p]), so poisoning
+    // s_iv is what actually demotes the lane; the junk columns are poisoned too so
+    // no slot of the retained scratch survives a failed batch holding last
+    // snapshot's value.
+    const Status sig_batch =
+        st->evaluate_batch(kcol.subspan(s, gsz), tcol.subspan(s, gsz), scol.subspan(s, gsz), EF::Iv,
+                           /*analytic=*/false, sig_soa, resolved_price_isa, query_execution);
+    if (!sig_batch.has_value()) {
+      for (std::uint32_t p = s; p < e; ++p) {
+        s_iv[p] = kNaN;
+        s_junk[p] = kNaN;
+        s_junk_status[p] = Err(sig_batch.error());
+      }
+    }
     // Shifted surface at the rolled maturity T_t: American mark only (price_target).
     PricedSurface::EvaluationSoA px_soa{std::span<double>(s_junk).subspan(s, gsz),
                                         std::span<double>(s_price).subspan(s, gsz),
@@ -1686,9 +1782,16 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                                         std::span<Status>(s_status).subspan(s, gsz),
                                         {},
                                         {}};
-    (void)st->evaluate_batch(kcol.subspan(s, gsz), std::span<double>(s_tt).subspan(s, gsz),
-                             scol.subspan(s, gsz), EF::Price, /*analytic=*/false, px_soa,
-                             resolved_price_isa, query_execution);
+    const Status px_batch = st->evaluate_batch(
+        kcol.subspan(s, gsz), std::span<double>(s_tt).subspan(s, gsz), scol.subspan(s, gsz),
+        EF::Price, /*analytic=*/false, px_soa, resolved_price_isa, query_execution);
+    if (!px_batch.has_value()) {
+      for (std::uint32_t p = s; p < e; ++p) {
+        s_junk[p] = kNaN;
+        s_price[p] = kNaN;
+        s_status[p] = Err(px_batch.error());
+      }
+    }
 
     for (std::uint32_t p = s; p < e; ++p) {
       const std::uint32_t orig = oci[p];
@@ -2152,11 +2255,10 @@ Result<PnlFrame> PortfolioPricer::pnl_explain(const SurfaceSet &base, const Surf
                     f.pnl_delta, f.pnl_gamma, f.pnl_vega,  f.pnl_volga,       f.pnl_vanna,
                     f.pnl_theta, f.pnl_rho,   f.pnl_charm, f.pnl_unexplained, f.d_spot,
                     f.d_vol,     f.d_time,    f.d_rate,    f.status,          &f.total};
-  // H4: reuse the retained workspace (see price()); rebuilt only on a book change.
-  if (returning_ws_ == nullptr) {
-    returning_ws_ = std::make_unique<PortfolioWorkspace>();
-  }
-  if (Status s = pnl_explain_into(base, shifted, view, *returning_ws_, opts); !s.has_value()) {
+  // Per-call workspace — same reasoning as price(): this const overload must be
+  // safe to call concurrently on one pricer, so it may share no scratch.
+  PortfolioWorkspace call_ws;
+  if (Status s = pnl_explain_into(base, shifted, view, call_ws, opts); !s.has_value()) {
     return Err(s.error());
   }
   f.book_logical_id_ = pf_.logical_id_;

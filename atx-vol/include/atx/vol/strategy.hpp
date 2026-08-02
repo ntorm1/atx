@@ -16,6 +16,23 @@
 // through `pnl_explain`. `HedgeSpec` is executed by B2. Listed strikes, expiries,
 // quotes, and fills belong to the existing `listed_opra.hpp` workflow (see the
 // `spy_strangle_tradeable` example), not this declarative interpreter.
+//
+// ## Thread-safety (plan 4.7)
+//
+// A `StrategySpec` is inert DATA and is concurrent-const-safe. An `IStrategy`
+// IMPLEMENTATION is not: it carries mutable lifecycle state (cohort counters, the
+// front cohort's expiry, halt/limit state) and per-step diagnostic buffers that
+// `on_step` rewrites, so ONE strategy instance is driven by ONE engine loop on ONE
+// thread. Every accessor here — `entry_risk_seeds`, `dropped_on_last_entry`,
+// `risk_events`, `signals`, and the mutators `set_risk_limits` / `halt_from_step`
+// — is meant for that thread, between steps. Running two independent strategy
+// instances concurrently is fine; sharing one is not.
+//
+// The engine's own fan-out inside a step (leg pricing, dispersion book builds)
+// goes through the PROCESS-GLOBAL pricing pool (detail/pricing_executor.hpp), so
+// concurrent backtests share one core budget rather than each spawning a pool.
+// That header's caller-facing rule holds here too: set the pool's topology with
+// `configure_pricing_executor` before the first pricing call builds it.
 
 #include <cstddef>
 #include <cstdint>
@@ -417,6 +434,16 @@ public:
   // Full-risk seeds produced for lots opened by the most recent on_step call.
   // The engine consumes this view immediately; the default keeps existing
   // strategies source-compatible and safely falls back to ordinary pricing.
+  //
+  // BORROW, AND A SINGLE-STEP ONE. The span names a buffer the STRATEGY owns, not
+  // the caller — and every shipped override rebuilds that buffer inside `on_step`
+  // (clear, then move a fresh vector in), so the NEXT `on_step` invalidates it.
+  // "The engine consumes this view immediately" is therefore a requirement, not a
+  // description: read or copy the seeds before stepping again, and never store
+  // the span across a step or past the strategy's own lifetime. Destroying the
+  // strategy invalidates it as well. A strategy is stepped by ONE thread — it
+  // carries mutable lifecycle state and `on_step` is its writer — so this
+  // accessor is safe to read only from that thread, between steps.
   [[nodiscard]] virtual std::span<const FullGreekSeed> entry_risk_seeds() const noexcept {
     return {};
   }
@@ -484,7 +511,10 @@ public:
   // `on_step` that ran `open_cohort`) under `spec.missing.policy ==
   // DropRenormalize` — the "document per-name failures" hook. Cleared then
   // repopulated at each entry attempt; empty under policy Error or before the
-  // first entry.
+  // first entry. Same borrow rule as `entry_risk_seeds` above: the span names
+  // this strategy's own buffer, the next `on_step` rewrites it (which can
+  // reallocate), and destroying the strategy invalidates it. Copy the drops out
+  // if a diagnostic sink keeps them beyond the current step.
   [[nodiscard]] std::span<const ResolveDrop> dropped_on_last_entry() const noexcept {
     return last_dropped_;
   }
@@ -645,6 +675,13 @@ public:
 
   // Every clamp/halt applied, in step order. Empty when no limit was configured
   // or none bound — so a halt is never silent, and neither is a clamp.
+  //
+  // BORROW of this strategy's own append-only log. Unlike the per-step seeds
+  // above it ACCUMULATES across the run, but it is appended to (`push_back`)
+  // inside `on_step`, so any step that records an event can reallocate and
+  // invalidate an outstanding span. Re-call the accessor after stepping rather
+  // than holding one across steps; destroying the strategy invalidates it too.
+  // Read it from the stepping thread, and copy the events out to keep them.
   [[nodiscard]] std::span<const RiskEvent> risk_events() const noexcept { return risk_events_; }
 
 private:

@@ -95,7 +95,8 @@ of the spectral collocation `R(y*; K,T,σ,r,q) = 0` (node grid Chebyshev-in-√t
 premium is a Gauss-Legendre quadrature). Crucially, **`y*` is spot-independent** — S
 enters only the premium integrand and the European leg, not the boundary equation.
 
-Reused (already-linkable) seams — `atx/vol/src/american_boundary.hpp`, namespace `amer`:
+Reused (already-linkable) seams — `atx-vol/src/american_boundary.hpp` (a private
+source-tree header, not an installed `atx/vol/` include), namespace `amer`:
 - `al_solve_put_boundary(K,T,σ,r,q, sch, bnd, ws)` → converged `bnd.y*` + bound workspace.
 - `al_put_price_from_boundary(bnd, ws, S,K,T,σ,r,q)` → `P` from a *supplied* boundary
   (identical euro+premium+clamp path as a cold solve). This is our `g3` and the

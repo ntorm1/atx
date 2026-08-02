@@ -141,6 +141,13 @@ public:
   [[nodiscard]] static Result<PreparedOptionProjection>
   create(std::span<const OptionProjectionSpec> specs);
 
+  // BORROW of the template vector this plan owns (a COPY of the `specs` handed to
+  // `create`, so the caller's input storage is not retained). Valid for the
+  // plan's lifetime: the plan is immutable after `create` — no member function
+  // rebuilds `specs_` — so only destroying the plan or assigning over it (copy or
+  // move) invalidates the span, and a span taken from one plan never names a
+  // copy's storage. Concurrent const readers are safe (`project_into` is const and
+  // writes only the caller's `output`). Copy out to outlive the plan.
   [[nodiscard]] std::span<const OptionProjectionSpec> specs() const noexcept { return specs_; }
   [[nodiscard]] std::size_t size() const noexcept { return specs_.size(); }
   [[nodiscard]] std::uint64_t fingerprint() const noexcept { return fingerprint_; }

@@ -1,12 +1,14 @@
 // Parity gate for the vectorized (AVX2) Taylor P&L-explain batch kernel.
 //
-// pnl_taylor_explain_batch dispatches to the 4-lane AVX2+FMA path when the host
+// pnl_taylor_explain_batch dispatches to the 4-lane AVX2 path when the host
 // supports it (this CI/dev box does). These tests assert that the vectorized
 // result reproduces an independent scalar reference of the exact decomposition
 // PortfolioPricer::pnl_explain uses — across a broad grid of Greek/shock rows
 // (positive/negative/zero, with and without a position weight), every scalar-tail
 // residue (n % 4), and the "components sum to total" invariant. The math is pure
-// arithmetic (FMA vs plain sum for the total), so parity holds to ~1e-12.
+// per-position arithmetic with no reduction across positions, so the vector kernel
+// owes the scalar loop BIT-identity, not a tolerance: a position's P&L must not
+// depend on the dispatched route or on its index within the batch (item 2.6).
 
 #include "atx/vol/simd/pnl_batch.hpp"
 
@@ -123,9 +125,11 @@ struct Outs {
   }
 };
 
-// Combined absolute+relative closeness. Pure arithmetic (the AVX2 path groups the
-// second-order products differently and sums `total` as an FMA chain), so the gate
-// is a tight relative bound with an absolute floor for the cancellation lanes.
+// Combined absolute+relative closeness: the ORIGINAL, deliberately route-agnostic
+// gate — a tight relative bound with an absolute floor for the cancellation lanes.
+// Kept as-is (rather than tightened to ==) so these grids still pass on a future
+// kernel that legitimately re-associates; the bit-identity contract is asserted
+// separately by the three 2.6 tests below.
 void expect_close(double got, double want, const char* col, std::size_t i) {
   constexpr double kAbs = 1e-7;
   constexpr double kRel = 1e-12;
@@ -163,6 +167,34 @@ void check_against_reference(const Book& b, bool weighted) {
         << "sum!=total i=" << i << " sum=" << sum << " total=" << o.total[i];
   }
   EXPECT_LT(max_sum_err, 1e-6);
+}
+
+// RAII: restore Auto dispatch after a test pins the ISA (mirrors simd_american_test).
+struct IsaGuard {
+  ~IsaGuard() { set_simd_isa_override(SimdIsa::Auto); }
+};
+
+// Bitwise compare every output column of two runs over the same rows.
+void expect_bit_identical(const Outs& got, const Outs& want, std::size_t n,
+                          const char* what) {
+  for (std::size_t i = 0; i < n; ++i) {
+    ASSERT_EQ(got.delta_pnl[i], want.delta_pnl[i]) << what << " col=delta i=" << i;
+    ASSERT_EQ(got.gamma_pnl[i], want.gamma_pnl[i]) << what << " col=gamma i=" << i;
+    ASSERT_EQ(got.vega_pnl[i], want.vega_pnl[i]) << what << " col=vega i=" << i;
+    ASSERT_EQ(got.volga_pnl[i], want.volga_pnl[i]) << what << " col=volga i=" << i;
+    ASSERT_EQ(got.vanna_pnl[i], want.vanna_pnl[i]) << what << " col=vanna i=" << i;
+    ASSERT_EQ(got.theta_pnl[i], want.theta_pnl[i]) << what << " col=theta i=" << i;
+    ASSERT_EQ(got.rho_pnl[i], want.rho_pnl[i]) << what << " col=rho i=" << i;
+    ASSERT_EQ(got.charm_pnl[i], want.charm_pnl[i]) << what << " col=charm i=" << i;
+    ASSERT_EQ(got.total[i], want.total[i]) << what << " col=total i=" << i;
+  }
+}
+
+Outs run_at(const Book& b, bool weighted, std::size_t n) {
+  Outs o(n);
+  PnlExplainOutputs out = o.view();
+  pnl_taylor_explain_batch(make_inputs(b, weighted), out, n);
+  return o;
 }
 
 TEST(SimdPnlBatch, MatchesScalarWeighted) {
@@ -203,6 +235,91 @@ TEST(SimdPnlBatch, ZeroLengthIsNoOp) {
 TEST(SimdPnlBatch, Avx2AvailabilityReported) {
   // Documents which path the parity ran on (informational; scalar is also valid).
   SUCCEED() << "have_avx2=" << (have_avx2() ? 1 : 0);
+}
+
+// ── 2.6: one association tree, whatever the route or the batch index ──────
+//
+// pnl_batch.hpp:60-62 documents the eight component columns as summing, per
+// position, to `total`. With qty == nullptr the position weight is exactly 1.0, so
+// the scaling multiply is exact and that contract sharpens into a BIT-EXACT
+// identity: `total` must BE the left-to-right eight-term sum of the very numbers
+// stored in the component columns. RED before the fix on the AVX2 route, which
+// accumulated `total` as an FMA chain over the (coefficient, move) products — every
+// term entering the sum unrounded, so `total` was not the sum of the rounded
+// components it stored beside it.
+TEST(SimdPnlBatch, UnweightedRoute_TotalIsExactlyTheComponentSum) {
+  const Book b = make_book();
+  const std::size_t n = b.size();
+  for (const SimdIsa mode : {SimdIsa::ForceScalar, SimdIsa::ForceAvx2}) {
+    if (mode == SimdIsa::ForceAvx2 && !have_avx2()) {
+      continue;
+    }
+    IsaGuard g;
+    set_simd_isa_override(mode);
+    const Outs o = run_at(b, /*weighted=*/false, n);
+    for (std::size_t i = 0; i < n; ++i) {
+      const double sum = o.delta_pnl[i] + o.gamma_pnl[i] + o.vega_pnl[i] +
+                         o.volga_pnl[i] + o.vanna_pnl[i] + o.theta_pnl[i] +
+                         o.rho_pnl[i] + o.charm_pnl[i];
+      ASSERT_EQ(sum, o.total[i])
+          << "isa=" << static_cast<int>(mode) << " i=" << i << " sum=" << sum
+          << " total=" << o.total[i];
+    }
+  }
+}
+
+// A position's P&L must not depend on WHERE it sits in the batch. The AVX2 route
+// splits a batch into 4-lane vector bodies plus an n % 4 scalar tail, so the same
+// row has to produce the same bits either way. RED before the fix: the vector body
+// grouped the second-order products differently from the scalar tail (½γ·(dS·dS)
+// vs ((½γ)·dS)·dS, and the FMA-chain total), so a row's P&L moved when the batch
+// length changed under it.
+TEST(SimdPnlBatch, SameRow_VectorBodyAndScalarTail_BitIdentical) {
+  if (!have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on this host";
+  }
+  IsaGuard g;
+  set_simd_isa_override(SimdIsa::ForceAvx2);
+
+  const Book b = make_book();
+  const std::size_t n_all = b.size();
+  ASSERT_EQ(n_all % 4, 0u) << "the book must be a whole number of vector packs";
+  const Outs body = run_at(b, /*weighted=*/true, n_all);
+
+  // n = 4k + j leaves the LAST j rows on the scalar tail; sweeping n over two full
+  // packs covers every residue class for every row position within a pack.
+  for (std::size_t n = 1; n <= 11; ++n) {
+    const Outs o = run_at(b, /*weighted=*/true, n);
+    ASSERT_NO_FATAL_FAILURE(expect_bit_identical(o, body, n, "body-vs-tail"));
+  }
+}
+
+// The plan's exit criterion: a scalar-vs-AVX2 P&L identity. The scalar loop is the
+// documented numerical source of truth (pnl_batch.cpp), so the vector kernel owes
+// it bit-identity, not just a tolerance — the decomposition is pure multiplies and
+// adds with no reduction across positions, so there is nothing to trade away.
+TEST(SimdPnlBatch, Avx2Route_IsBitIdenticalToScalarRoute) {
+  if (!have_avx2()) {
+    GTEST_SKIP() << "no AVX2 on this host";
+  }
+  const Book b = make_book();
+  const std::size_t n = b.size();
+  for (const bool weighted : {false, true}) {
+    Outs scalar_run(n);
+    Outs avx2_run(n);
+    {
+      IsaGuard g;
+      set_simd_isa_override(SimdIsa::ForceScalar);
+      scalar_run = run_at(b, weighted, n);
+    }
+    {
+      IsaGuard g;
+      set_simd_isa_override(SimdIsa::ForceAvx2);
+      avx2_run = run_at(b, weighted, n);
+    }
+    ASSERT_NO_FATAL_FAILURE(expect_bit_identical(
+        avx2_run, scalar_run, n, weighted ? "weighted" : "unweighted"));
+  }
 }
 
 } // namespace

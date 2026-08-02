@@ -15,12 +15,12 @@
 #include "atx/core/io/parquet_writer.hpp"
 #include "atx/vol/american.hpp"     // american_price
 #include "atx/vol/chain.hpp"        // OptionChain
-#include "atx/vol/curve.hpp"        // YieldCurve
 #include "atx/vol/data.hpp"         // QuoteFrame
 #include "atx/vol/market_env.hpp"   // MarketEnv
 #include "atx/vol/panel.hpp"        // make_synthetic_american_panel
 #include "atx/vol/pricer_fitter.hpp"   // PricerFitter
 #include "atx/vol/opra_hive.hpp"       // OpraHiveSpec, load_opra_hive (shared date gate)
+#include "atx/vol/rates_curve.hpp"  // YieldCurve
 #include "atx/vol/spy_fixture.hpp"     // make_spy_synthetic_spec
 #include "atx/vol/surface_archive.hpp" // SurfaceArchive
 
@@ -750,14 +750,14 @@ TEST(OpraBatch, TermRatesReachFitLiveQueryAndArchivedQuery) {
   auto priced = session.to_priced_surface();
   ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
   atx::vol::SurfaceArchiveItem item{"SPY", &*priced};
-  atx::vol::SurfaceArchiveWriteOpts write;
+  atx::vol::ArchiveV2WriteOpts write;
   write.created_ts_ns = 1;
-  auto bytes = atx::vol::write_surface_archive(
+  auto bytes = atx::vol::write_surface_archive_v2(
       std::span<const atx::vol::SurfaceArchiveItem>(&item, 1u), write);
   ASSERT_TRUE(bytes.has_value()) << bytes.error().to_string();
-  auto archive = atx::vol::SurfaceArchive::open(std::move(*bytes));
+  auto archive = atx::vol::SurfaceArchiveV2::open(std::move(*bytes));
   ASSERT_TRUE(archive.has_value()) << archive.error().to_string();
-  auto reloaded = archive->map_symbol("SPY");
+  auto reloaded = archive->reconstruct_symbol("SPY");
   ASSERT_TRUE(reloaded.has_value()) << reloaded.error().to_string();
   EXPECT_NEAR(reloaded->rate_at(expiry.T), env.rate_at(expiry.T), 1.0e-14);
   const auto archived = reloaded->fair_value(strike, expiry.T, atx::vol::Side::Call);

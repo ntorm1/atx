@@ -1,4 +1,4 @@
-#include "atx/vol/run_report.hpp"
+#include "atx/vol/tools/run_report.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -73,6 +73,9 @@ namespace {
 
 Status write_backtest_series_csv(const BacktestResult &r, const MetaKv &meta,
                                  std::string_view path) {
+  // Plan 4.6: the row loop below indexes every column at the same row, so a
+  // skewed result used to read out of range instead of reporting a shape error.
+  ATX_TRY_VOID(r.validate());
   // Fixed column order (must match the header string below): the double
   // columns after date/ts_ns, in the pinned order from run_report.hpp.
   const std::pair<const char *, const std::vector<double> *> dbl_cols[] = {

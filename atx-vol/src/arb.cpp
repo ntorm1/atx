@@ -11,7 +11,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/c8.hpp"
-#include "atx/vol/curve.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/universe.hpp"
 #include "atx/vol/vol_curve.hpp"
 #include "atx/vol/vol_surface.hpp"
@@ -314,6 +314,19 @@ Result<std::vector<ArbViolation>> arb_check_calendar(const VolSurface &s,
     for (std::size_t i = 0; i < n; ++i) {
       const double T = slice_T_at(s, i);
       const double w = s.w(k, T);
+      // A non-finite w is UNCOMPARABLE: not a violation, and — the defect this
+      // guards — not a BASELINE either. Assigning it to w_prev DISCARDED the
+      // last usable comparison point: the next slice's `w + 1e-12 < NaN` is
+      // false (NaN compares unordered), so the crossing that SPANS the unusable
+      // slice was never tested and the surface came back clean. Skipping keeps
+      // the last FINITE (w, T) as the baseline, so that crossing is reported
+      // and carries the maturities of the two finite slices it actually spans.
+      // Reporting nothing for the offending slice itself matches the
+      // CurveSurface overload below, which already continues past a non-finite
+      // w on either side ("wing coverage gap — nothing to compare").
+      if (!std::isfinite(w)) {
+        continue;
+      }
       if (w + 1.0e-12 < w_prev) {
         ArbViolation v{};
         v.k_log = k;
@@ -521,6 +534,11 @@ Result<TotalSurfaceArbCounts> arb_check_total_surface_all(const VolSurface &s,
       for (std::size_t i = 0; i < n; ++i) {
         const double T = slice_T_at(s, i);
         const double w = s.w(k, T);
+        // Uncomparable, not a baseline — see arb_check_calendar. Without it a
+        // NaN slice cost the count every crossing that spans it.
+        if (!std::isfinite(w)) {
+          continue;
+        }
         if (w + 1.0e-12 < w_prev) {
           ++counts.n_calendar;
         }
@@ -877,79 +895,6 @@ Status arb_project_calendar_essvi(VolSurface &s, double k_min, double k_max,
   return write_back_essvi(s, slices);
 }
 
-Status arb_project_calendar_essvi_total(VolSurface &s, double k_min,
-                                        double k_max, std::uint32_t n_grid,
-                                        double max_theta_bump) {
-  (void)max_theta_bump;  // reserved — partition-of-unity path uses no theta bump
-  if (s.param() != Parametrization::Essvi) {
-    return Ok();
-  }
-  const std::size_t n = s.n_slices();
-  if (n < 2 || n_grid == 0) {
-    return Ok();
-  }
-  if (!(k_max > k_min)) {
-    return Err(ErrorCode::InvalidArgument,
-               "arb_project_calendar_essvi_total: require k_max > k_min");
-  }
-
-  const auto src = s.essvi_slices();
-  std::vector<EssviParams> slices(src.begin(), src.end());
-
-  // Absolute pad on the level shift; the downstream check uses 1e-12 tolerance.
-  constexpr double kSafetyC = 1.0e-9;
-  std::uint32_t ng = n_grid;
-  for (int pass = 0; pass < 6; ++pass) {
-    const double dk = (k_max - k_min) / static_cast<double>(ng);
-    bool touched = false;
-    for (std::size_t i = 1; i < n; ++i) {
-      const EssviParams &prev = slices[i - 1];
-      EssviParams &curr = slices[i];
-      // The constant-shift trick requires a partition-of-unity basis.
-      if (curr.resid_basis_kind != ResidualBasisKind::C2Bspline) {
-        continue;
-      }
-      if (!(curr.resid_scale > 0.0)) {
-        continue;
-      }
-      if (curr.resid_n_basis == 0) {
-        continue;
-      }
-
-      double max_def = 0.0;
-      for (std::uint32_t gi = 0; gi <= ng; ++gi) {
-        const double k = k_min + static_cast<double>(gi) * dk;
-        const double w_total_prev = essvi_total_w(prev, k);
-        const double w_total_curr = essvi_total_w(curr, k);
-        if (!std::isfinite(w_total_prev) || !std::isfinite(w_total_curr)) {
-          continue;
-        }
-        const double def = w_total_prev - w_total_curr;
-        if (def > max_def) {
-          max_def = def;
-        }
-      }
-      if (max_def > 0.0) {
-        const double c_shift = max_def + kSafetyC;
-        const int n_b = static_cast<int>(curr.resid_n_basis);
-        const int n_b_clamped = (n_b > kEssviResidN) ? kEssviResidN : n_b;
-        for (int j = 0; j < n_b_clamped; ++j) {
-          curr.resid_coef[static_cast<std::size_t>(j)] += c_shift;
-        }
-        touched = true;
-      }
-    }
-    if (!touched && pass > 0) {
-      break;
-    }
-    ng *= 4;
-    if (ng > 65536) {
-      break;
-    }
-  }
-  return write_back_essvi(s, slices);
-}
-
 Status arb_repair_calendar_residual(VolSurface &s, double k_min, double k_max,
                                     std::uint32_t n_grid) {
   if (s.param() != Parametrization::Essvi) {
@@ -980,10 +925,33 @@ Status arb_repair_calendar_residual(VolSurface &s, double k_min, double k_max,
           0.0) {
         continue;
       }
-      // Bisect the residual damper: alpha = 0 (backbone-only) is always
-      // feasible once arb_project_calendar_essvi has enforced backbone
-      // monotonicity.
-      double a_lo = 0.0;  // feasible
+      // VERIFY the bisection's lower endpoint instead of assuming it. alpha = 0
+      // collapses `lo` to its backbone; if that still sits above `hi` the crossing
+      // is not repairable by damping `lo`, yet the bisection below would converge
+      // on a_lo = 0, commit it (erasing `lo`'s whole residual layer) and report Ok
+      // on a surface that is still calendar-arbitrageable.
+      //
+      // Running `arb_project_calendar_essvi` first is NECESSARY BUT NOT SUFFICIENT
+      // to rule this out, and the difference is not academic: that projection
+      // enforces BACKBONE-vs-BACKBONE monotonicity (it evaluates
+      // `essvi_backbone_w` on both slices — see its k-loop), while the test here
+      // is `lo`'s backbone against `hi`'s TOTAL, `essvi_total_w(hi)`. Residual
+      // coefficients are unconstrained in sign, so wherever `hi` carries a
+      // NEGATIVE residual, `w_total(hi) < w_backbone(hi)` and this deficit can be
+      // positive even though the projection ran and succeeded. That makes the
+      // status below reachable on the shipped `run_surface_parity` ordering
+      // (project, then repair) — see arb.hpp and
+      // ArbRepairCalendarResidual.ProjectedBackbonesStillTripTheGuardOnANegativeUpperResidual.
+      if (total_calendar_deficit_with_alpha(lo, hi, 0.0, k_min, k_max, n_grid) > 0.0) {
+        // TRANSACTIONAL, like every repair in this file: the sweeps mutate the
+        // local `slices` copy and only `write_back_essvi` commits, so returning
+        // here leaves the caller's surface exactly as it was passed in.
+        return Err(ErrorCode::Unavailable,
+                   "arb_repair_calendar_residual: lower slice's backbone still crosses the "
+                   "next slice's total variance at alpha=0 (residual damping cannot repair "
+                   "this pair)");
+      }
+      double a_lo = 0.0;  // feasible (verified above)
       double a_hi = 1.0;  // infeasible
       for (int it = 0; it < 20; ++it) {
         const double a_mid = 0.5 * (a_lo + a_hi);

@@ -1,7 +1,7 @@
 // PreparedPortfolio implementation — build the stable, aligned, grouped execution
 // substrate over a Portfolio's unique contracts. See prepared_portfolio.hpp.
 
-#include "atx/vol/prepared_portfolio.hpp"
+#include "atx/vol/detail/prepared_portfolio.hpp"
 
 #include <algorithm>
 #include <bit>

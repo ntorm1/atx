@@ -1,6 +1,6 @@
 #pragma once
 
-// Volatility-surface per-slice evaluators + time-axis interpolation.
+// Volatility-surface per-slice closed-form evaluators.
 //
 // Ported from the C `ats-vol` library (ats_vol_svi.c, ats_vol_essvi.c,
 // ats_vol_surface.c / ats_vol_surface.h). Two closed-form per-slice
@@ -14,39 +14,22 @@
 //
 // where k = log(K/F) is log-moneyness.
 //
-// A Surface<Slice> caches a small, fixed-capacity set of fitted slices
-// sorted by ascending T and answers w(k, T) / sigma(k, T) queries by
-// interpolating LINEARLY IN TOTAL VARIANCE across the two bracketing
-// slices — never in sigma directly, which avoids the sigma-coordinate
-// blow-up at small T (matches industry practice; see the C's
-// ats_vol_surface.c file header).
+// Scope note: this header ships ONLY the two per-slice evaluators (plus the
+// eSSVI gradient). The legacy per-family container that stacked these slices
+// by ascending T was demoted to `detail/legacy_surface.hpp` by S4-T21 (plan
+// 4.4): the canonical pipeline is CurveSurface (fit) -> PricedSurface /
+// PricedSurfaceView (serve) -> SurfaceSet (portfolio). Calibration
+// (IRLS/LM/Newton fitting), arbitrage repair/projection, the Mingone cube
+// reparametrization, the mmap surface archive, and the C8/CStar
+// parametrizations are out of scope — see the porting task notes /
+// atx-vol/README.md. The eSSVI slice here is deliberately the base
+// 3-parameter Gatheral-Jacquier form only: the Sprint-15 asymmetric-rho
+// blend (rho_R/rho_scale) and the Sprint-11/12 wing residual
+// (resid_coef/resid_scale/basis) are calibration-adjacent extensions
+// layered on top of it and are not ported.
 //
-// Extrapolation in T is never permitted: a query whose T exceeds the
-// longest slice, or sits more than 50% below the shortest slice's T,
-// returns NaN by design rather than silently fabricating a sigma (see the
-// Sprint 26 note in the C's ats_vol_surface.c — this guard exists because
-// silent short-T extrapolation historically produced multi-hundred-percent
-// phantom vols when short-dated slices were starved of fit data).
-//
-// Scope note: this port covers ONLY the two per-slice evaluators and the
-// surface time interpolation. Calibration (IRLS/LM/Newton fitting),
-// arbitrage repair/projection, the Mingone cube reparametrization, the
-// mmap surface archive, and the C8/CStar parametrizations are out of
-// scope — see the porting task notes / atx-vol/README.md. The eSSVI slice
-// here is deliberately the base 3-parameter Gatheral-Jacquier form only:
-// the Sprint-15 asymmetric-rho blend (rho_R/rho_scale) and the Sprint-11/12
-// wing residual (resid_coef/resid_scale/basis) are calibration-adjacent
-// extensions layered on top of it and are not ported.
-//
-// Thread-safety: Surface<Slice> is a plain value type with no state shared
-// across instances. Concurrent reads (w/iv queries) against the same
-// instance from multiple threads are safe. set_slice() mutates and must
-// not be called concurrently with any other access to the same instance
-// — this mirrors the C's documented "many readers OR one writer" contract
-// for AtsVolSurface.
-
-#include <cstddef>
-#include <vector>
+// Thread-safety: every entry here is a pure function of its arguments over
+// plain value types — safe to call concurrently from any number of threads.
 
 #include "atx/vol/types.hpp"
 
@@ -56,7 +39,7 @@ namespace atx::vol {
 
 // w(k) = a + b * (rho*(k-m) + sqrt((k-m)^2 + sigma^2)).
 //
-// `T` (year-fraction to expiry) is carried on the slice only so a Surface
+// `T` (year-fraction to expiry) is carried on the slice only so a container
 // can time-interpolate across slices; svi_w() itself is a pure function of
 // (slice shape params, k_log) and does not read T.
 struct SviSlice {
@@ -104,65 +87,5 @@ struct EssviGrad {
 };
 [[nodiscard]] EssviGrad essvi_w_grad(const EssviSlice& slice,
                                      double k_log) noexcept;
-
-// ── Surface: fixed-capacity cache of fitted per-slice params ────────────
-//
-// `Slice` is SviSlice or EssviSlice (the only two instantiations provided
-// by surface.cpp). Slots are addressed 0..capacity()-1; `capacity` mirrors
-// the C's `ats_vol_surface_create(..., cap_slices)` arena preallocation.
-// The active slice count grows to the highest index written by
-// set_slice(), exactly as the C's `n_slices` high-water mark does.
-//
-// Precondition (not verified — matches the C, which documents but does not
-// itself check this): slices must be written in ascending-T order for the
-// time interpolation below to be well-defined.
-template <class Slice>
-class Surface {
- public:
-  // `cap_slices` must be > 0; capacity is fixed for the life of the object.
-  explicit Surface(std::size_t cap_slices) : slices_(cap_slices) {}
-
-  // Write the slice at `idx`, growing the active slice count if `idx` is
-  // at or past the current high-water mark. Returns ErrorCode::OutOfRange
-  // if `idx >= capacity()` (mirrors the C's ATS_VOL_ERR_INVALID on a
-  // cap_slices overrun in ats_vol_surface_set_slice_{svi,essvi}).
-  [[nodiscard]] Status set_slice(std::size_t idx, const Slice& slice);
-
-  [[nodiscard]] std::size_t n_slices() const noexcept { return n_slices_; }
-  [[nodiscard]] std::size_t capacity() const noexcept {
-    return slices_.size();
-  }
-
-  // Total variance w = sigma^2 * T at (k_log, T), linearly interpolated in
-  // w across the two bracketing slices' T. T is floored to kTMinEval
-  // before bracketing/interpolating (matches the C).
-  //
-  // Returns NaN when: there are no slices; T (after the kTMinEval floor)
-  // sits more than 50% below the first slice's T; or T exceeds the last
-  // slice's T. Querying exactly at a slice's T (including the first or
-  // last) evaluates that slice directly with no interpolation.
-  [[nodiscard]] double w(double k_log, double T) const noexcept;
-
-  // Implied vol sigma = sqrt(w(k_log, T) / T) — note T here is the
-  // caller's original argument, NOT the internally-floored value used by
-  // w()'s bracket search (matches the C's ats_vol_surface_iv exactly,
-  // including the degenerate case where an original T <= 0 divides a
-  // finite w by a non-positive number). NaN wherever w() is NaN or the
-  // interpolated w is non-finite / non-positive.
-  [[nodiscard]] double iv(double k_log, double T) const noexcept;
-
- private:
-  [[nodiscard]] static double eval_w(const Slice& slice,
-                                     double k_log) noexcept;
-
-  std::vector<Slice> slices_;
-  std::size_t n_slices_ = 0;
-};
-
-using SviSurface = Surface<SviSlice>;
-using EssviSurface = Surface<EssviSlice>;
-
-extern template class Surface<SviSlice>;
-extern template class Surface<EssviSlice>;
 
 }  // namespace atx::vol

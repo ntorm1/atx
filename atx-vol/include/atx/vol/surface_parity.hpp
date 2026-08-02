@@ -1,13 +1,12 @@
 #pragma once
 
 // MULTI-EXPIRY de-Americanized volatility-SURFACE parity — the calendar +
-// time-interpolation acceptance layer above the single-expiry harness
-// (vola_parity.hpp).
+// time-interpolation acceptance layer.
 //
-// Where `run_expiry_parity` proves the Vola Dynamics workflow for ONE expiry
-// (de-Americanize -> fit a 3-parameter eSSVI slice -> re-Americanize -> score),
-// this module lifts that to a whole `Underlying`: it de-Americanizes and fits
-// EVERY expiry chain, assembles the fitted slices into one ascending-T eSSVI
+// The Vola Dynamics workflow for ONE expiry is de-Americanize -> fit a
+// 3-parameter eSSVI slice -> re-Americanize -> score. This module lifts that to
+// a whole `Underlying`: it de-Americanizes and fits EVERY expiry chain,
+// assembles the fitted slices into one ascending-T eSSVI
 // `VolSurface`, and then proves the two properties a surface (as opposed to a
 // bag of independent slices) must additionally satisfy:
 //
@@ -19,15 +18,13 @@
 //      interpolation. This is the "interpolation parity with Vola" property;
 //      the acceptance test checks it against the s3_iv reference directly.
 //
-// ## Reuse of the single-expiry pattern
+// ## The per-expiry pattern
 //
-// The per-expiry work mirrors `vola_parity.cpp` exactly: de_americanize_chain
-// -> rebuild the aligned observation set on the de-Am forward / q_eff ->
-// essvi_fit_slice -> the natural-form `EssviParams` slice. `run_surface_parity`
-// re-does that per chain (vola_parity returns only metrics, never the slice) so
-// it can WRITE each fitted slice into the surface. The q_eff bridge
-// (q_eff = r - ln(F/S)/T) is used throughout, exactly as in the single-expiry
-// harness.
+// Each expiry runs de_americanize_chain -> rebuild the aligned observation set
+// on the de-Am forward / q_eff -> essvi_fit_slice -> the natural-form
+// `EssviParams` slice. `run_surface_parity` keeps the fitted slice (rather than
+// metrics alone) so it can WRITE each one into the surface. The q_eff bridge
+// (q_eff = r - ln(F/S)/T) is used throughout.
 //
 // Stateless and pure — a single call owns only its local scratch; the returned
 // report OWNS the fitted `VolSurface` by value (move it out). Safe to call
@@ -41,10 +38,11 @@
 #include "atx/core/error.hpp"          // ErrorCode (ExpiryFitReport)
 #include "atx/vol/calib.hpp"           // CalibOpts
 #include "atx/vol/correction.hpp"      // AmericanCorrectionCaches (cert-carry resolve)
-#include "atx/vol/curve.hpp"           // DividendEvent
 #include "atx/vol/deamer.hpp"          // DeAmOptions
+#include "atx/vol/detail/aggregate_arity.hpp" // SurfaceParityReport field-count drift pin
 #include "atx/vol/parity.hpp"          // ParityReport
-#include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy
+#include "atx/vol/detail/prepared_policy.hpp" // PreparedObservationPolicy
+#include "atx/vol/rates_curve.hpp"     // DividendEvent
 #include "atx/vol/types.hpp"           // Result
 #include "atx/vol/universe.hpp"        // Underlying
 #include "atx/vol/vol_surface.hpp"     // VolSurface
@@ -324,11 +322,30 @@ struct EssviInputCertification {
 
 // The whole-surface acceptance bundle. `surface` OWNS the fitted eSSVI surface
 // (movable); the vectors are parallel per fitted slice (ascending T).
+//
+// CONSTRUCTION CONTRACT (v1, plan item 4.2) — DESIGNATED INITIALIZERS ONLY.
+// `run_surface_parity` used to build this POSITIONALLY, initializing a prefix
+// that stopped at `n_audit_starved` and then assigning the trailing members —
+// which is why `expiry_reports` was pinned at the end with a comment explaining
+// that the trailing `{}` kept the positional prefix from tripping
+// -Wmissing-field-initializers. That whole arrangement is gone: the single
+// construction site names every field, `expiry_reports` has joined the other
+// per-expiry vectors, and the field-count `static_assert` below makes a silent
+// re-append a compile error.
+//
+// Every member EXCEPT `surface` carries a default member initializer, without
+// which naming a later field in a designated initializer would warn under
+// /W4 /WX. `surface` cannot: `VolSurface`'s default constructor is private
+// (factory-only), which is also why it must be named first at every site.
+//
+// surface_parity.hpp is Tier-A (frozen v1 surface): this reorder is the LAST
+// layout change allowed here. After v1 the order is fixed and new fields append
+// at the end WITHOUT any positional-compatibility promise.
 struct SurfaceParityReport {
-  VolSurface surface;                   // fitted eSSVI surface (move it out)
-  std::vector<double> expiry_T;         // per fitted slice, strictly ascending
-  std::vector<ParityReport> per_expiry; // re-Americanized metrics per expiry
-  std::vector<SliceContext> context;    // per-slice re-pricing context (‖ expiry_T)
+  VolSurface surface;                     // fitted eSSVI surface (move it out)
+  std::vector<double> expiry_T{};         // per fitted slice, strictly ascending
+  std::vector<ParityReport> per_expiry{}; // re-Americanized metrics per expiry
+  std::vector<SliceContext> context{};    // per-slice re-pricing context (‖ expiry_T)
   // Perf C1: the carry diagnostics the FIT's `resolve_chain_forward` produced
   // for this slice (‖ context), resolved with `in.deam` — including whatever
   // caches it carried. `VolaSession::build`'s certification layer reuses these
@@ -336,11 +353,15 @@ struct SurfaceParityReport {
   // `SessionInputs::deam.caches`); otherwise it falls back to its own
   // cache-free recompute so certification stays bit-identical to the
   // historical serial pass (perf C1 review fix).
-  std::vector<CarryDiagnostics> carry;
+  std::vector<CarryDiagnostics> carry{};
   // Perf C1: per-fitted-slice de-Am input certification captured by the fit,
   // ‖ context/carry. Empty unless populated by run_surface_parity; consumed by
   // VolaSession::build to skip the second (certification) de-Am pass.
-  std::vector<EssviInputCertification> input_certification;
+  std::vector<EssviInputCertification> input_certification{};
+  // W3.4 (F4): per-expiry build outcome for EVERY chain walked. Always populated.
+  // NOTE the different alignment from the vectors above: this one is ‖
+  // under.chains, in CHAIN order, not the fitted-slice order.
+  std::vector<ExpiryFitReport> expiry_reports{};
   double worst_frac_within_bidask{0.0}; // min over expiries of frac in bid-ask
   bool calendar_arb_free{false};        // arb.hpp calendar check on the surface
   std::size_t n_slices{0};              // fitted slice count (== expiry_T.size())
@@ -352,13 +373,17 @@ struct SurfaceParityReport {
   // the usable-observation floor (it would have fit but for audit drops) —
   // the audit-created analogue of a carry skip, surfaced the same way.
   std::size_t n_audit_starved{0};
-  // W3.4 (F4): per-expiry build outcome for EVERY chain walked (‖ under.chains,
-  // in chain order — NOT the fitted-slice order). Always populated. The trailing
-  // `{}` gives it a default member initializer so the positional aggregate init
-  // below (which stops at n_audit_starved) does not trip -Wmissing-field-init.
-  std::vector<ExpiryFitReport> expiry_reports{};
   SurfaceFitStageTimings fit_timings{};
 };
+
+// Drift pin (plan item 4.2). SurfaceParityReport has exactly FOURTEEN fields.
+// Adding, removing or splitting one breaks this line, which is the point: it
+// forces whoever changes the struct to read the construction contract above
+// instead of appending a field "for compatibility" with a positional
+// initializer that no longer exists.
+static_assert(detail::aggregate_arity_is_v<SurfaceParityReport, 14>,
+              "SurfaceParityReport field count changed: update this pin, and confirm "
+              "run_surface_parity still initializes it by field name.");
 
 // De-Americanize + fit each expiry chain of `under`, assemble an ascending-T
 // eSSVI `VolSurface`, run the calendar no-arbitrage check on it, and score

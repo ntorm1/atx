@@ -1,5 +1,5 @@
 // Unit + end-to-end tests for the listed SPY-dispersion library seam
-// (atx/vol/dispersion_run.hpp) extracted out of examples/spy_dispersion_backtest.cpp.
+// (atx/vol/research/dispersion_run.hpp) extracted out of tools/spy_dispersion_backtest.cpp.
 //
 // Coverage:
 //   1. DispersionCorpusPolicy defaults assemble the byte-identical pinned
@@ -15,12 +15,14 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <span>
@@ -33,10 +35,14 @@
 #include "atx/vol/backtest.hpp"            // Clock, MarketSnapshot
 #include "atx/vol/corpus.hpp"              // CorpusManifest, CorpusEntry, write_manifest_file
 #include "atx/vol/dispersion.hpp"          // DispersionConfig, build_dispersion_book
-#include "atx/vol/dispersion_backtest.hpp" // DispersionBacktestConfig, dispersion_config_from
-#include "atx/vol/dispersion_run.hpp"
-#include "atx/vol/dispersion_workflow.hpp" // universe_at, utc_date_from_ns
+#include "atx/vol/research/dispersion_backtest.hpp" // DispersionBacktestConfig, dispersion_config_from
+#include "atx/vol/research/dispersion_run.hpp"
+#include "atx/vol/research/dispersion_workflow.hpp" // universe_at, utc_date_from_ns
+#include "atx/vol/listed_dispersion_schedule.hpp" // build_listed_dispersion_roll (S3-T16 fixture)
+#include "atx/vol/listed_opra.hpp"         // ListedDefinitionTable, write_listed_definitions_file
+#include "atx/vol/occ_ess.hpp"             // read_occ_ess_report_file
 #include "atx/vol/priced_surface.hpp"      // PricedSurface, PricingContext
+#include "atx/vol/research/run_archive.hpp"         // RunDir, RunArchive (S3-T16 .atxrun default path)
 #include "atx/vol/surface_archive.hpp"     // write_surface_archive_v2_file
 #include "atx/vol/surface_parity.hpp"      // SliceContext
 #include "atx/vol/vol_curve.hpp"           // CurveSurface, EssviCurve
@@ -180,7 +186,10 @@ std::string reconciliation_text() {
   return text;
 }
 
-std::string backtest_text() {
+// `second_total` is the second session's P&L (and therefore its NAV): the
+// default reproduces the reconciliation the marks fixture above implies, and
+// "0" gives the flat run a no-move marks fixture implies.
+std::string backtest_text(std::string_view second_total = "200") {
   const std::vector<std::string_view> fields = {
       "date",         "ts_ns",           "pnl_total",     "pnl_delta",      "pnl_gamma",
       "pnl_vega",     "pnl_vanna",       "pnl_volga",     "pnl_theta",      "pnl_rho",
@@ -217,7 +226,7 @@ std::string backtest_text() {
     line.push_back('\n');
     return line;
   };
-  return header + row("2026-07-10", "100", "0") + row("2026-07-11", "200", "200");
+  return header + row("2026-07-10", "100", "0") + row("2026-07-11", "200", second_total);
 }
 
 } // namespace
@@ -494,12 +503,15 @@ struct PvFixture {
 // symbol in `pv_symbols()`, so both the first-session basket and the last-session
 // basket resolve against every date — which is what makes the anchor choice show
 // up as a different BOOK rather than as an error.
+// `include_spy = false` leaves SPY out of every archive (it stays in the
+// manifest label only). That is what makes an index-symbol routing defect
+// OBSERVABLE: a route that takes a hardcoded "SPY" index leg then cannot resolve
+// a uid for it at all, instead of quietly resolving the wrong surface.
 [[nodiscard]] PvFixture make_pv_fixture(std::string_view leaf,
                                         const std::vector<PvUniverseBlock> &blocks,
-                                        const std::string &extra_spec = {},
-                                        std::size_t n_dates = 5,
+                                        const std::string &extra_spec = {}, std::size_t n_dates = 5,
                                         std::size_t n_unused_surfaces = 0,
-                                        bool symbol_derived_uids = false) {
+                                        bool symbol_derived_uids = false, bool include_spy = true) {
   PvFixture fixture;
   fixture.dir = make_run_dir(leaf);
   const fs::path archive_dir = fixture.dir / "surfaces";
@@ -541,11 +553,14 @@ struct PvFixture {
                      (40.0 + static_cast<double>(i)) * drift, now,
                      0.01 + 0.0001 * static_cast<double>(i) + bump));
     }
-    std::vector<SurfaceArchiveItem> items = {SurfaceArchiveItem{"SPY", &index},
-                                             SurfaceArchiveItem{"AAA", &aaa},
-                                             SurfaceArchiveItem{"BBB", &bbb},
-                                             SurfaceArchiveItem{"CCC", &ccc}};
+    std::vector<SurfaceArchiveItem> items;
     items.reserve(4u + n_unused_surfaces);
+    if (include_spy) {
+      items.push_back(SurfaceArchiveItem{"SPY", &index});
+    }
+    items.push_back(SurfaceArchiveItem{"AAA", &aaa});
+    items.push_back(SurfaceArchiveItem{"BBB", &bbb});
+    items.push_back(SurfaceArchiveItem{"CCC", &ccc});
     for (std::size_t i = 0u; i < n_unused_surfaces; ++i) {
       items.push_back(SurfaceArchiveItem{unused_symbols[i], &unused_surfaces[i]});
     }
@@ -652,11 +667,20 @@ struct PvFixture {
           PvUniverseBlock{"2026-10-03", {{"AAA", 0.75}, {"CCC", 0.25}}}};
 }
 
+// S3-T16. The run-spec line every test below adds because it READS a loose
+// result TSV back. The tables are diagnostics now — a run that does not ask for
+// them does not get them — so a fixture that asserts on their CONTENT has to
+// declare that it wants them. Named rather than inlined so the reason is stated
+// once and every consumer points at it.
+const std::string kEmitTsvDiagnostics = tsv_row({"emit_tsv_diagnostics", "true"});
+
 } // namespace
 
 TEST(DispersionDividends, ExactCorpusInputsPersistAndReachSurfaceAndListedRunConfigs) {
+  // The gate below compares the two runs' `surface_backtest.tsv` rows, so both
+  // fixtures declare the diagnostic tables (S3-T16).
   const std::string financing_keys =
-      tsv_row({"financing_shares_carry", "1"});
+      tsv_row({"financing_shares_carry", "1"}) + kEmitTsvDiagnostics;
   const PvFixture without =
       make_pv_fixture("f1_without_dividends", pv_reconstituting_blocks(),
                       financing_keys, 5u, 0u, /*symbol_derived_uids=*/true);
@@ -879,48 +903,6 @@ TEST(DispersionReferenceRunDirScan, AnAgedOutCorpusYieldsNothingAndSaysWhy) {
   fs::remove_all(root, error);
 }
 
-// ── REV-TAIL I-1 — the three LIBRARY-ONLY entry points ────────────────────────
-//
-// `dispersion_build_schedule`, `dispersion_run_backtest` and `dispersion_verify`
-// have no production caller: the shipped subcommands of the same name keep their
-// own bodies -- `build_schedule_command` and `run_backtest_command` publish
-// run.atxrun sections (each via `RunDir::write_run_archive`,
-// spy_dispersion_backtest.cpp:337 and :483) and `verify_command` READS one
-// (`RunDir(run_dir).verify()`, :359) -- because the
-// three library twins write the loose result files the RunArchive cutover
-// replaced. That is a DELIBERATE split and is documented at dispersion_run.hpp's
-// declaration block.
-//
-// What was NOT true is the sentence that block used to carry: that each is
-// "covered directly off the filesystem by dispersion_run_test.cpp". This file
-// called none of them, so ~500 lines of reserve were held in the tree on the
-// strength of a coverage claim with nothing behind it. This is that coverage,
-// written to be honest about what it is: it does not pretend to exercise the
-// economics, it pins that each entry point is LINKED, REACHABLE, and FAILS
-// CLOSED naming its missing input rather than succeeding vacuously on an empty
-// directory. A reserve nobody calls at least cannot rot into a silent no-op.
-TEST(DispersionLibraryOnlyEntryPoints, EachIsReachableAndFailsClosedNamingTheMissingSpec) {
-  const fs::path run = make_run_dir("library_only_empty");
-
-  const Status build_schedule = dispersion_build_schedule(run);
-  ASSERT_FALSE(build_schedule) << "dispersion_build_schedule accepted an empty run directory";
-  EXPECT_NE(build_schedule.error().to_string().find("run_spec"), std::string::npos)
-      << "the error must name the input it could not read: " << build_schedule.error().to_string();
-
-  const Status run_backtest = dispersion_run_backtest(run);
-  ASSERT_FALSE(run_backtest) << "dispersion_run_backtest accepted an empty run directory";
-  EXPECT_NE(run_backtest.error().to_string().find("run_spec"), std::string::npos)
-      << "the error must name the input it could not read: " << run_backtest.error().to_string();
-
-  const Result<DispersionVerifyReport> verify = dispersion_verify(run);
-  ASSERT_FALSE(verify) << "dispersion_verify passed an empty run directory";
-  EXPECT_NE(verify.error().to_string().find("run_spec"), std::string::npos)
-      << "the error must name the input it could not read: " << verify.error().to_string();
-
-  std::error_code error;
-  fs::remove_all(run, error);
-}
-
 // ── REV-TAIL I-3 — the four keys that parsed, validated, and did nothing ──────
 //
 // `dispersion_run_surface_backtest` (dispersion_run.cpp:2407, whose strict read
@@ -1016,8 +998,8 @@ TEST(DispersionBacktestConfigFrom, AgreesWithTheEngineRunConfigBuilderOnEveryKno
 // The composition through `listed_selection_config_from` is deliberate: what
 // matters economically is not that a POD field was copied but that the declared
 // policy is the one `select_listed_dispersion` runs under, and the composition
-// below is exactly what both `build_schedule_command` and the library
-// `dispersion_build_schedule` now perform.
+// below is exactly what `build_schedule_command` — since S3-T17 the only
+// schedule route — performs.
 TEST(DispersionScheduleSpecFrom, EveryDeclaredScheduleKnobReachesTheSelectionPolicy) {
   RunSpec spec;
   spec.target_dte_days = 41.0;
@@ -1134,7 +1116,8 @@ TEST(DispersionProjectedVarFixture, AnchorTimestampsLandOnTheNamedDates) {
 }
 
 TEST(DispersionProjectedVar, C1_BookIsResolvedAndSizedAtTheAsOfSnapshotNotTheFirst) {
-  const PvFixture fixture = make_pv_fixture("pv_c1_asof", pv_reconstituting_blocks());
+  const PvFixture fixture =
+      make_pv_fixture("pv_c1_asof", pv_reconstituting_blocks(), kEmitTsvDiagnostics);
   ASSERT_EQ(fixture.dates.size(), 5u);
 
   const Status ran = dispersion_run_projected_var(fixture.dir);
@@ -1245,7 +1228,7 @@ TEST(DispersionProjectedVar, P1_LoadsAnchorOnceAndSubsetsHistoricalArchives) {
 
 TEST(DispersionProjectedVar, C14_FailedRerunInvalidatesThePreviousGeneration) {
   const PvFixture fixture =
-      make_pv_fixture("pv_c14_failed_rerun", pv_reconstituting_blocks());
+      make_pv_fixture("pv_c14_failed_rerun", pv_reconstituting_blocks(), kEmitTsvDiagnostics);
   ASSERT_TRUE(dispersion_run_projected_var(fixture.dir));
   ASSERT_TRUE(verify_projected_var_artifacts(fixture.dir, fixture.dates.size()));
 
@@ -1257,6 +1240,107 @@ TEST(DispersionProjectedVar, C14_FailedRerunInvalidatesThePreviousGeneration) {
 
   std::error_code error;
   fs::remove_all(fixture.dir, error);
+}
+
+// ── Cooperative cancellation (plan item 5.5; S5 fix round 1, review B I-3) ──
+//
+// `dispersion_run_projected_var` is the fourth advertised cancellable entry and
+// it shipped with NO cancellation coverage: every other call in this file uses
+// the DEFAULTED token, so a regression that dropped `cancel` from the scenario
+// lambda's captures would have been caught by nothing. The pair below mirrors
+// the one each of the other three entries already carries (BacktestCancellation,
+// CorpusCancellation, SurfaceDbPopulateCancellation).
+
+// GATE. Cancelled specifically, and the run directory is left EXACTLY as it was
+// found — not merely missing the summary. The poll sits at the top of a snapshot
+// BATCH inside the scenario lambda and every artifact is published after that
+// lambda returns, so "never a partial write" means "no new file at all" here.
+TEST(DispersionRunCancellation, CancelledProjectedVarLeavesTheRunDirUntouched) {
+  const PvFixture fixture =
+      make_pv_fixture("pv_cancel_stop", pv_reconstituting_blocks(), kEmitTsvDiagnostics);
+  const auto listing = [](const fs::path &root) {
+    std::vector<std::string> names;
+    std::error_code error;
+    for (const fs::directory_entry &entry : fs::recursive_directory_iterator(root, error)) {
+      names.push_back(fs::relative(entry.path(), root, error).generic_string());
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+  };
+  const std::vector<std::string> before = listing(fixture.dir);
+  ASSERT_FALSE(before.empty()) << "the fixture wrote nothing, so the comparison below is vacuous";
+
+  std::atomic<bool> stop{true}; // requested up front: stops at the first batch
+  const Status ran = dispersion_run_projected_var(fixture.dir, CancelToken{stop});
+  ASSERT_FALSE(ran.has_value()) << "a cancelled projected-VaR run must not report success";
+  EXPECT_EQ(ran.error().code(), ErrorCode::Cancelled);
+
+  for (const char *artifact :
+       {"projected_var.tsv", "projected_risk_scenarios.tsv", "projected_risk_legs.tsv"}) {
+    EXPECT_FALSE(fs::exists(fixture.dir / artifact)) << artifact << " survived a cancelled run";
+  }
+  EXPECT_EQ(listing(fixture.dir), before)
+      << "a cancelled projected-VaR run left something behind in the run directory";
+
+  // And the directory is still usable: a plain re-run publishes the full triple.
+  stop.store(false, std::memory_order_relaxed);
+  const Status resumed = dispersion_run_projected_var(fixture.dir, CancelToken{stop});
+  ASSERT_TRUE(resumed.has_value())
+      << (resumed.has_value() ? std::string{} : resumed.error().to_string());
+  for (const char *artifact :
+       {"projected_var.tsv", "projected_risk_scenarios.tsv", "projected_risk_legs.tsv"}) {
+    EXPECT_TRUE(fs::exists(fixture.dir / artifact)) << artifact << " missing after the re-run";
+  }
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+// GATE, determinism half. A live-but-never-set token must not move a published
+// number. `projections_per_second` is wall-clock telemetry and is excluded by
+// NAME rather than by position, so a column insertion cannot silently widen the
+// exclusion.
+TEST(DispersionRunCancellation, AnUntriggeredTokenChangesNothing) {
+  const PvFixture plain =
+      make_pv_fixture("pv_cancel_plain", pv_reconstituting_blocks(), kEmitTsvDiagnostics);
+  ASSERT_TRUE(dispersion_run_projected_var(plain.dir));
+
+  std::atomic<bool> never{false};
+  const CancelToken token{never};
+  ASSERT_TRUE(token.stop_possible()); // negative control: the token is live
+
+  const PvFixture tokened =
+      make_pv_fixture("pv_cancel_tokened", pv_reconstituting_blocks(), kEmitTsvDiagnostics);
+  const Status ran = dispersion_run_projected_var(tokened.dir, token);
+  ASSERT_TRUE(ran.has_value()) << (ran.has_value() ? std::string{} : ran.error().to_string());
+
+  for (const char *artifact : {"projected_risk_scenarios.tsv", "projected_risk_legs.tsv"}) {
+    EXPECT_EQ(read_tsv_rows(plain.dir / artifact), read_tsv_rows(tokened.dir / artifact))
+        << artifact << " differs between a tokened and an untokened run";
+  }
+
+  const std::vector<std::vector<std::string>> plain_rows =
+      read_tsv_rows(plain.dir / "projected_var.tsv");
+  const std::vector<std::vector<std::string>> tokened_rows =
+      read_tsv_rows(tokened.dir / "projected_var.tsv");
+  ASSERT_GE(plain_rows.size(), 2u);
+  ASSERT_EQ(plain_rows.size(), tokened_rows.size());
+  const std::size_t rate_col = column_of(plain_rows.front(), "projections_per_second");
+  ASSERT_NE(rate_col, static_cast<std::size_t>(-1));
+  for (std::size_t row = 0; row < plain_rows.size(); ++row) {
+    ASSERT_EQ(plain_rows[row].size(), tokened_rows[row].size());
+    for (std::size_t col = 0; col < plain_rows[row].size(); ++col) {
+      if (col == rate_col) {
+        continue; // wall-clock telemetry, non-deterministic by construction
+      }
+      EXPECT_EQ(plain_rows[row][col], tokened_rows[row][col])
+          << "projected_var.tsv row " << row << " column " << plain_rows.front()[col];
+    }
+  }
+
+  std::error_code error;
+  fs::remove_all(plain.dir, error);
+  fs::remove_all(tokened.dir, error);
 }
 
 // Guard against a vacuous parity gate: if `weighting` and `strike` did not move
@@ -1322,6 +1406,7 @@ TEST(DispersionProjectedVar, C15_RouteHonorsTheTypedSideMultiplierWeightingAndSt
   knobs += tsv_row({"weighting", "equal_vega"});
   knobs += tsv_row({"strike", "fixed_moneyness"});
   knobs += tsv_row({"strike_log_moneyness", "-0.05"});
+  knobs += kEmitTsvDiagnostics; // the parity check reads projected_risk_legs.tsv
   const PvFixture fixture = make_pv_fixture("pv_c15_parity", pv_unequal_weight_blocks(), knobs);
 
   const Status ran = dispersion_run_projected_var(fixture.dir);
@@ -1407,8 +1492,8 @@ TEST(DispersionProjectedVar, C15_RouteHonorsTheTypedIndexSymbol) {
   // AAA is the index leg here; SPY is a member of nothing.
   const std::vector<PvUniverseBlock> blocks = {
       PvUniverseBlock{"2026-10-01", {{"BBB", 0.5}, {"CCC", 0.5}}}};
-  const PvFixture fixture =
-      make_pv_fixture("pv_c15_index_symbol", blocks, tsv_row({"index_symbol", "AAA"}));
+  const PvFixture fixture = make_pv_fixture(
+      "pv_c15_index_symbol", blocks, tsv_row({"index_symbol", "AAA"}) + kEmitTsvDiagnostics);
 
   const Status ran = dispersion_run_projected_var(fixture.dir);
   ASSERT_TRUE(ran.has_value())
@@ -1478,8 +1563,9 @@ namespace {
 TEST(DispersionBenchmarkJoin, C6_AMatchingBenchmarkJoinsOnDateAndReportsEveryObservation) {
   // The strategy's return observations are steps 1..N-1 — `date[1..]` — so a
   // benchmark that covers exactly those sessions must be accepted whole.
-  PvFixture fixture = make_pv_fixture("c6_exact", pv_reconstituting_blocks(),
-                                      tsv_row({"benchmark_series", "benchmark.tsv"}));
+  PvFixture fixture =
+      make_pv_fixture("c6_exact", pv_reconstituting_blocks(),
+                      tsv_row({"benchmark_series", "benchmark.tsv"}) + kEmitTsvDiagnostics);
   ASSERT_EQ(fixture.dates.size(), 5u);
   const std::vector<std::string> return_dates(fixture.dates.begin() + 1, fixture.dates.end());
   write_file(fixture.dir / "benchmark.tsv", pv_benchmark_body(return_dates));
@@ -1518,6 +1604,310 @@ TEST(DispersionBenchmarkJoin, C6_AShiftedEqualLengthBenchmarkIsRejectedNotSilent
   // cannot tell which file to fix.
   EXPECT_NE(message.find(fixture.dates[1]), std::string::npos) << message;
   EXPECT_NE(message.find(fixture.dates[0]), std::string::npos) << message;
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+// ── The spec's `index_symbol` reaches the file-oriented entry points ──────────
+//
+// `all_symbols`/`universe_at` carried an `index_symbol = "SPY"` DEFAULT, and the
+// corpus build, the schedule build and the replay's reconciliation all took it
+// while the configured symbol sat in scope. A run whose index leg is not SPY
+// therefore fetched, resolved and reconciled against SPY without a word — the
+// same defect class as REVIEW C-15, which had already been fixed once on the
+// projected-VaR route only. The default is now GONE from both declarations, so
+// the compiler is what finds a site that forgets to thread the symbol; these
+// tests pin the two entry points whose routing is observable off the filesystem.
+
+namespace {
+
+// A source spec + universe schedule for a run whose index leg is `index_symbol`.
+// The OPRA root EXISTS but is EMPTY, so every (date, symbol) load misses: the
+// corpus produces nothing and the only thing under test is WHICH symbols the
+// build asked for, which `input_inventory.tsv` records verbatim.
+struct IndexRoutingCorpusFixture {
+  fs::path root;
+  fs::path spec_path;
+  fs::path run_dir;
+};
+
+[[nodiscard]] IndexRoutingCorpusFixture
+make_index_routing_corpus_fixture(std::string_view leaf, std::string_view index_symbol,
+                                  std::string_view date) {
+  IndexRoutingCorpusFixture fixture;
+  fixture.root = make_run_dir(leaf);
+  fixture.spec_path = fixture.root / "source" / "run_spec.tsv";
+  fixture.run_dir = fixture.root / "run";
+  std::error_code error;
+  fs::create_directories(fixture.root / "source", error);
+  fs::create_directories(fixture.root / "opra", error);
+  fs::create_directories(fixture.run_dir, error);
+
+  write_file(fixture.root / "source" / "universe_schedule.tsv",
+             "effective_date\tsymbol\traw_weight\tsource\tas_of\n" +
+                 tsv_row({date, "AAA", "0.5", "test", date}) +
+                 tsv_row({date, "BBB", "0.5", "test", date}));
+
+  std::string spec;
+  spec += tsv_row({"date_lo", date});
+  spec += tsv_row({"date_hi", date});
+  spec += tsv_row({"opra_root", (fixture.root / "opra").string()});
+  spec += tsv_row({"universe_schedule", "universe_schedule.tsv"});
+  spec += tsv_row({"min_names", "2"});
+  spec += tsv_row({"index_symbol", index_symbol});
+  write_file(fixture.spec_path, spec);
+  return fixture;
+}
+
+// The distinct symbols `input_inventory.tsv` records the build as having asked
+// the OPRA loader for, sorted.
+[[nodiscard]] std::vector<std::string> requested_symbols(const fs::path &inventory_path) {
+  const std::vector<std::vector<std::string>> rows = read_tsv_rows(inventory_path);
+  std::vector<std::string> symbols;
+  if (rows.empty()) {
+    return symbols;
+  }
+  const std::size_t symbol_col = column_of(rows.front(), "symbol");
+  if (symbol_col == static_cast<std::size_t>(-1)) {
+    return symbols;
+  }
+  for (std::size_t r = 1; r < rows.size(); ++r) {
+    if (symbol_col < rows[r].size() &&
+        std::find(symbols.begin(), symbols.end(), rows[r][symbol_col]) == symbols.end()) {
+      symbols.push_back(rows[r][symbol_col]);
+    }
+  }
+  std::sort(symbols.begin(), symbols.end());
+  return symbols;
+}
+
+} // namespace
+
+TEST(DispersionIndexRouting, CorpusBuildFetchesTheConfiguredIndexLegNotSpy) {
+  const IndexRoutingCorpusFixture fixture =
+      make_index_routing_corpus_fixture("index_routing_corpus_qqq", "QQQ", "2026-07-10");
+
+  // The build itself cannot admit anything from an empty OPRA root; its Status
+  // is deliberately not asserted. What must hold either way is the symbol set it
+  // requested, which it records before it can know whether a source exists.
+  const Status built =
+      dispersion_build_corpus(fixture.spec_path, fixture.run_dir, DispersionCorpusPolicy{});
+  static_cast<void>(built);
+
+  EXPECT_EQ(requested_symbols(fixture.run_dir / "input_inventory.tsv"),
+            (std::vector<std::string>{"AAA", "BBB", "QQQ"}))
+      << "the corpus build did not fetch the configured index leg QQQ — it took the "
+         "`index_symbol = \"SPY\"` default of `all_symbols` while `index_symbol` was in scope, so "
+         "the whole corpus is built against the wrong index";
+
+  std::error_code error;
+  fs::remove_all(fixture.root, error);
+}
+
+// The SPY-index control: the same route, the same fixture shape, index left at
+// SPY. This is what pins that threading the symbol changed NOTHING for a SPY
+// run — without it the test above would also pass on a build that simply always
+// echoed `index_symbol` and had stopped seeding the fetch set at all.
+TEST(DispersionIndexRouting, CorpusBuildWithASpyIndexIsUnchanged) {
+  const IndexRoutingCorpusFixture fixture =
+      make_index_routing_corpus_fixture("index_routing_corpus_spy", "SPY", "2026-07-10");
+
+  const Status built =
+      dispersion_build_corpus(fixture.spec_path, fixture.run_dir, DispersionCorpusPolicy{});
+  static_cast<void>(built);
+
+  EXPECT_EQ(requested_symbols(fixture.run_dir / "input_inventory.tsv"),
+            (std::vector<std::string>{"AAA", "BBB", "SPY"}));
+
+  std::error_code error;
+  fs::remove_all(fixture.root, error);
+}
+
+// ── The reconciliation tolerance gates reject a non-finite side ──────────────
+//
+// `close_to` was `if (std::abs(actual - expected) > tolerance) fail;`. Every
+// comparison against a NaN is false, so a gate whose recomputed side had gone
+// non-finite PASSED — the reconciler agreed with the artifact it exists to
+// check, and published the NaN. `dec()` already refuses a literal "nan"/"inf"
+// cell, so the way a non-finite number actually reaches a gate is arithmetic:
+// below, one lot's `quantity * multiplier` overflows to +Inf and its mark does
+// not move, and `Inf * 0.0` is NaN.
+
+namespace {
+
+// Four legs, entry and held marks IDENTICAL on every one, so every P&L is
+// exactly zero — except SPY2, whose quantity x multiplier is 1e307 * 100 and
+// therefore +Inf. Every cell is individually well-formed and finite.
+[[nodiscard]] std::string overflowing_marks_text() {
+  std::string text =
+      tsv_row({"date", "valuation_ts_ns", "role", "cohort", "symbol", "uid", "instrument_id",
+               "raw_symbol", "expiry_ts_ns", "strike", "side", "quantity", "multiplier", "status",
+               "raw_bid", "raw_ask", "raw_mid", "model_mark", "model_in_spread"});
+  struct Leg {
+    std::string_view raw, symbol, uid, iid, side, quantity, mark;
+  };
+  const Leg legs[] = {
+      {"AAPL3", "AAPL", "2", "3", "C", "1", "5"},
+      {"AAPL4", "AAPL", "2", "4", "P", "1", "5"},
+      {"SPY1", "SPY", "1", "1", "C", "-1", "10"},
+      {"SPY2", "SPY", "1", "2", "P", "1e307", "9"},
+  };
+  for (const std::string_view role : {"Entry", "Held"}) {
+    const std::string_view date = role == "Entry" ? "2026-07-10" : "2026-07-11";
+    const std::string_view ts = role == "Entry" ? "100" : "200";
+    for (const Leg &leg : legs) {
+      text += tsv_row({date, ts, role, "1", leg.symbol, leg.uid, leg.iid, leg.raw, "100000", "100",
+                       leg.side, leg.quantity, "100", "Ok", leg.mark, leg.mark, leg.mark, leg.mark,
+                       "1"});
+    }
+  }
+  return text;
+}
+
+// What a run of `overflowing_marks_text()` reconciles to if the arithmetic is
+// taken at face value: nothing moved, so every P&L and NAV is zero on both
+// dates and all four lots are quoted.
+[[nodiscard]] std::string flat_reconciliation_text() {
+  std::string text =
+      tsv_row({"date", "valuation_ts_ns", "held_cohort", "model_option_pnl", "quote_mid_pnl",
+               "model_minus_quote_pnl", "model_nav", "quote_mid_nav", "quote_mid_coverage",
+               "n_held_lots", "n_quote_mid_lots"});
+  text += tsv_row({"2026-07-10", "100", "1", "0", "0", "0", "0", "0", "1", "4", "4"});
+  text += tsv_row({"2026-07-11", "200", "1", "0", "0", "0", "0", "0", "1", "4", "4"});
+  return text;
+}
+
+// `schedule_text()` plus a THIRD straddle pair, ZZZ, carrying zero vega per unit
+// vol on both legs and a zero straddle target. Everything else stays internally
+// consistent — the recomputed per-contract vega, achieved leg vega, weight sum,
+// basket/index target, net and gross vega all still agree with their persisted
+// columns — so the roll passes every other check and the only thing wrong with
+// it is that `pair_target / pair_vega` is 0/0.
+[[nodiscard]] std::string zero_vega_pair_schedule_text() {
+  std::string text = "ATX_LISTED_DISPERSION_SCHEDULE\t1\n";
+  text += tsv_row({"roll_date", "valuation_ts_ns", "cohort", "expiry_ts_ns",
+                   "gross_index_vega_target", "net_vega", "gross_vega", "n_names", "is_index",
+                   "symbol", "uid", "instrument_id", "raw_symbol", "strike", "side", "quantity",
+                   "multiplier", "raw_bid", "raw_ask", "raw_mid", "model_mark", "delta_per_share",
+                   "vega_per_unit_vol", "vega_per_contract_per_vol_point", "normalized_weight",
+                   "target_straddle_vega", "achieved_leg_vega", "source_fingerprint",
+                   "surface_fingerprint"});
+  const auto leg = [&](std::string_view is_index, std::string_view symbol, std::string_view uid,
+                       std::string_view iid, std::string_view raw, std::string_view side,
+                       std::string_view quantity, std::string_view unit_vega,
+                       std::string_view contract_vega, std::string_view weight,
+                       std::string_view target, std::string_view achieved) {
+    text += tsv_row({"2026-07-10", "100", "1", "100000", "100", "0", "200", "2", is_index, symbol,
+                     uid, iid, raw, "100", side, quantity, "100", "9", "11", "10", "10", "0",
+                     unit_vega, contract_vega, weight, target, achieved, iid, "99"});
+  };
+  leg("1", "SPY", "1", "1", "SPY1", "C", "-1", "50", "50", "0", "-100", "-50");
+  leg("1", "SPY", "1", "2", "SPY2", "P", "-1", "50", "50", "0", "-100", "-50");
+  leg("0", "AAPL", "2", "3", "AAPL3", "C", "1", "50", "50", "0.5", "100", "50");
+  leg("0", "AAPL", "2", "4", "AAPL4", "P", "1", "50", "50", "0.5", "100", "50");
+  leg("0", "ZZZ", "5", "5", "ZZZ5", "C", "1", "0", "0", "0.5", "0", "0");
+  leg("0", "ZZZ", "5", "6", "ZZZ6", "P", "1", "0", "0", "0.5", "0", "0");
+  return text;
+}
+
+} // namespace
+
+TEST(DispersionReferenceReconcile, AZeroVegaStraddlePairIsRejectedRatherThanDividedBy) {
+  const fs::path run = make_run_dir("recon_zero_pair_vega");
+  write_file(run / "trade_schedule.tsv", zero_vega_pair_schedule_text());
+
+  const auto records = reconcile_dispersion_reference(run, /*schedule_only=*/true);
+
+  ASSERT_FALSE(records) << "a straddle pair with zero vega was accepted: `expected_quantity = "
+                           "pair_target / pair_vega` is 0/0 there, and the gate it feeds cannot "
+                           "reject the NaN it produces";
+  EXPECT_NE(records.error().to_string().find("pair vega"), std::string::npos)
+      << "the reconciler must name the unusable divisor rather than report the NaN it computed "
+         "from it as a downstream tolerance failure: "
+      << records.error().to_string();
+
+  std::error_code error;
+  fs::remove_all(run, error);
+}
+
+TEST(DispersionReferenceReconcile, ANonFiniteRecomputedPnlFailsTheToleranceGate) {
+  const fs::path run = make_run_dir("recon_nan_gate");
+  write_file(run / "trade_schedule.tsv", schedule_text());
+  write_file(run / "contract_marks.tsv", overflowing_marks_text());
+  write_file(run / "reconciliation.tsv", flat_reconciliation_text());
+  write_file(run / "backtest.tsv", backtest_text(/*second_total=*/"0"));
+
+  const auto records = reconcile_dispersion_reference(run, /*schedule_only=*/false);
+
+  ASSERT_FALSE(records)
+      << "a reconciliation whose recomputed model P&L is NaN was accepted: every tolerance gate "
+         "compares with `>`, which is false against a NaN, so the reconciler agreed with the "
+         "artifact it exists to check and published "
+      << records->size() << " record(s)";
+  EXPECT_NE(records.error().to_string().find("model option P&L"), std::string::npos)
+      << "the failure must name the gate that caught it: " << records.error().to_string();
+
+  std::error_code error;
+  fs::remove_all(run, error);
+}
+
+// ── S3-T17: the loose-TSV diagnostics flag, on a route that still has one ────
+//
+// S3-T16 pinned this contract on `dispersion_run_backtest`, the library twin of
+// the shipped `run-backtest`. S3-T17 deleted that twin (plan item 3.7 — the CLI
+// body is the COLLAPSED form, composed from the library's own seams, and the
+// twin had diverged from it on reconciliation and on the OPRA join), so the
+// contract is re-homed here onto `dispersion_run_projected_var`: one of the two
+// library entry points the flag still gates, and one whose loose triple is its
+// ONLY output, which makes both directions observable straight off the
+// filesystem.
+//
+// BOTH DIRECTIONS ARE THE POINT, and neither alone is the contract. A gate that
+// only checks "the flag turns them on" cannot see a default that quietly keeps
+// writing them; a gate that only checks "the default writes nothing" cannot see
+// a knob that has gone inert. Every other test in this file that reads a loose
+// result table declares `kEmitTsvDiagnostics` and therefore observes only the
+// second half.
+
+namespace {
+
+// The three loose result tables `dispersion_run_projected_var` gates.
+constexpr const char *kProjectedResultTsvs[] = {"projected_var.tsv", "projected_risk_scenarios.tsv",
+                                                "projected_risk_legs.tsv"};
+
+} // namespace
+
+TEST(DispersionDiagnosticsFlag, ADefaultProjectedVarRunEmitsNoLooseResultTsvs) {
+  const PvFixture fixture = make_pv_fixture("s3t17_default_no_tsv", pv_reconstituting_blocks());
+
+  const Status ran = dispersion_run_projected_var(fixture.dir);
+  ASSERT_TRUE(ran.has_value()) << (ran.has_value() ? std::string{} : ran.error().to_string());
+
+  for (const char *leaf : kProjectedResultTsvs) {
+    EXPECT_FALSE(fs::exists(fixture.dir / leaf))
+        << leaf
+        << " was written by a run whose spec never asked for it. The loose result tables are "
+           "diagnostics now and `emit_tsv_diagnostics` defaults OFF";
+  }
+
+  std::error_code error;
+  fs::remove_all(fixture.dir, error);
+}
+
+TEST(DispersionDiagnosticsFlag, TheFlagTurnsTheLooseResultTsvsBackOn) {
+  const PvFixture fixture =
+      make_pv_fixture("s3t17_flag_on", pv_reconstituting_blocks(), kEmitTsvDiagnostics);
+
+  const Status ran = dispersion_run_projected_var(fixture.dir);
+  ASSERT_TRUE(ran.has_value()) << (ran.has_value() ? std::string{} : ran.error().to_string());
+
+  for (const char *leaf : kProjectedResultTsvs) {
+    EXPECT_TRUE(fs::exists(fixture.dir / leaf))
+        << leaf
+        << " is missing from a run that DECLARED `emit_tsv_diagnostics true`. A diagnostics knob "
+           "that cannot be turned on is not a knob";
+  }
 
   std::error_code error;
   fs::remove_all(fixture.dir, error);

@@ -29,7 +29,7 @@
 #include "atx/vol/detail/archive_util.hpp" // durable transactional index publication
 #include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
 #include "atx/vol/dispersion.hpp"           // with_uid
-#include "atx/vol/parallel_for.hpp"         // ScopedElasticWorkerBudget (T1 live inner budget)
+#include "atx/vol/detail/parallel_for.hpp"         // ScopedElasticWorkerBudget (T1 live inner budget)
 #include "atx/vol/priced_surface.hpp"       // PricedSurface
 #include "atx/vol/session.hpp"              // VolaSession::to_priced_surface
 #include "atx/vol/universe.hpp"             // uid_for_symbol
@@ -337,8 +337,8 @@ namespace {
 // -> PricerFitter::fit -> VolaSession::to_priced_surface, incl. uid-eligible
 // curve/quality bookkeeping) moved to corpus_board_fit.{hpp,cpp} (T5) so
 // `populate_surface_db` reuses the EXACT same path instead of duplicating it.
-// See corpus_board_fit.hpp for the extracted contract; NOTE (why not
-// calibrate_pool) lives there too.
+// See corpus_board_fit.hpp for the extracted contract; the NOTE on why the
+// corpus fits one board at a time lives there too.
 
 // The per-date archive file path for `date` under `out_dir` (deterministic,
 // forward-slash normalized).
@@ -772,6 +772,26 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
         [&boards, &slots, &cfg, admission, n, &order_sd, &chains, outer_budget, &unfinished_tasks,
          hooks](std::size_t chain_idx) -> Status {
           const TaskDone chain_done{unfinished_tasks, hooks, chain_idx};
+          // ── Plan 5.5 safe point: the TOP of a FIT TASK (review B I-1) ────
+          //
+          // The fan-out is the dominant cost of a build, so the stop has to be
+          // visible HERE or a cancel cannot shorten the run at all: the date loop
+          // below is the archive-writing stage and by the time it runs every
+          // board has already been fit. With this poll the queue drains at one
+          // relaxed load per remaining task.
+          //
+          // Reported as an ordinary per-index task FAILURE rather than as `Ok()`
+          // with an empty slot, because that is the channel the scheduler already
+          // has: `run_bounded_fit_tasks` records the LOWEST-index failing Status
+          // and returns it, and `schedule_status` is checked below BEFORE the
+          // first archive is written. Returning `Ok()` would be marginally
+          // cheaper and is deliberately not done — it would let a caller who
+          // cleared the flag between the fan-out and the date loop publish a
+          // manifest over silently unfitted boards.
+          if (cfg.cancel.stop_requested()) {
+            return Err(ErrorCode::Cancelled,
+                       "build_corpus: cancelled during the fit fan-out (no manifest written)");
+          }
           WarmCacheExport carried; // prior-date caches carried down this symbol's chain
           const std::pair<std::size_t, std::size_t> range = chains[chain_idx];
           for (std::size_t p = range.first; p < range.second; ++p) {
@@ -850,6 +870,15 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
         [&boards, &slots, &cfg, admission, n, outer_budget, &unfinished_tasks,
          hooks](std::size_t index) -> Status {
           const TaskDone board_done{unfinished_tasks, hooks, index};
+          // Plan 5.5 safe point: the TOP of a FIT TASK. Same poll, same reason
+          // and same reporting channel as the chain arm above (review B I-1) —
+          // and this is the arm production actually drives, so it is the one that
+          // makes a cancelled build stop fitting rather than finish fitting and
+          // then decline to index the result.
+          if (cfg.cancel.stop_requested()) {
+            return Err(ErrorCode::Cancelled,
+                       "build_corpus: cancelled during the fit fan-out (no manifest written)");
+          }
           PricerConfig fit_config = cfg.fit_template;
           // Auto or explicit multi-worker outer scheduling owns the machine
           // budget. Keep each non-eSSVI board's expiry preparation serial so the
@@ -941,6 +970,20 @@ build_corpus_core(std::span<const CorpusBoard> boards, std::string_view out_dir,
   std::size_t i = 0;
   while (i < n) {
     const std::string &date = boards[order[i]].date;
+    // Plan 5.5 safe point 2 of 2: the TOP of a DATE, before this date's archive
+    // is written. This is the MANIFEST GUARD — the fit-task poll above is what
+    // shortens the run; this one catches a stop requested after the fan-out
+    // already finished, and is what makes "a cancelled build never publishes an
+    // index" true on every path. The manifest and quality report are published
+    // only after the loop completes, so returning here leaves per-date archives
+    // with no index — the same state an interrupted build leaves, and one the
+    // build path already overwrites on re-run. Cancelling between dates can never
+    // tear a date: each archive is published tmp+rename, and this check precedes
+    // the write.
+    if (cfg.cancel.stop_requested()) {
+      return Err(ErrorCode::Cancelled,
+                 "build_corpus: cancelled before date " + date + " (no manifest written)");
+    }
     std::size_t j = i;
     while (j < n && boards[order[j]].date == date) {
       ++j;

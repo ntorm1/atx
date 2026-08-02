@@ -20,9 +20,9 @@
 //   time        = pnl_theta + pnl_charm
 //   unexplained = PnlFrame.pnl_unexplained        (the Taylor residual, verbatim)
 //
-// It SUBSUMES (does not delete) the deprecated `project_compare` / `scenario_pnl`
-// European stack's vol vocabulary {level(ATF), skew, curvature, higher} on the new
-// PricedSurface world, and is built entirely on the PUBLIC
+// It carries the {level(ATF), skew, curvature, higher} vol vocabulary of the
+// legacy European risk stack — the stack S4-T22 deleted, having established this
+// module as its canonical replacement — and is built entirely on the PUBLIC
 // `PortfolioPricer::pnl_explain` frame plus a cheap pivot-sampling pass — it touches
 // no pricer / executor / risk internals.
 //

@@ -155,12 +155,23 @@ ATX_FORCE_INLINE int greeks_block(const double *F, const double *K, const double
   const __m256d phi = norm_pdf_pd(d1);   // φ(d1), shared across Greeks
 
   // Prices (call & put); side blend selects per lane.
-  const __m256d cNd1 = _mm256_sub_pd(one, Nd1);
-  const __m256d cNd2 = _mm256_sub_pd(one, Nd2);
+  //
+  // Plan item 2.5: the put PRICE is computed from Φ(−d1), Φ(−d2) directly —
+  // negate the args, the Cody erfc kernel is symmetric and accurate for
+  // negatives — matching the scalar black76_greeks, which moved to the same
+  // form. The 1−Φ(d) complement cancels catastrophically deep in the put wing
+  // (d ≫ 0 ⇒ Φ(d) rounds to exactly 1.0 ⇒ 1−Φ(d) = 0.0), zeroing a genuine
+  // premium or, when both complements land on the same multiple u of ε,
+  // returning the NEGATIVE df·(K−F)·u. Put DELTA keeps the complement, again
+  // mirroring the scalar: 1−Φ(d1) is bounded by 1 and never changes sign, so
+  // its cancellation costs at most ~ε absolute.
+  __m256d Nm1, Nm2;
+  norm_cdf_erfc_pd2(_mm256_sub_pd(zero, d1), _mm256_sub_pd(zero, d2), Nm1, Nm2);
+  const __m256d cNd1 = _mm256_sub_pd(one, Nd1); // put delta only
   const __m256d call =
       _mm256_mul_pd(dfv, _mm256_sub_pd(_mm256_mul_pd(Fv, Nd1), _mm256_mul_pd(Kv, Nd2)));
   const __m256d put =
-      _mm256_mul_pd(dfv, _mm256_sub_pd(_mm256_mul_pd(Kv, cNd2), _mm256_mul_pd(Fv, cNd1)));
+      _mm256_mul_pd(dfv, _mm256_sub_pd(_mm256_mul_pd(Kv, Nm2), _mm256_mul_pd(Fv, Nm1)));
   const __m256d smask = side_blend_mask(side, i);
   const __m256d price = _mm256_blendv_pd(call, put, smask);
 

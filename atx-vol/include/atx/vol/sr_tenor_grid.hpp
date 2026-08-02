@@ -63,18 +63,28 @@ struct SrTenorGrid {
 // day advances) -- this mirrors `nEarnCnt_Nd`'s definition, which counts
 // trading DAYS, not trading hours.
 //
-// `n == 0` returns `now_ns` unchanged (zero-day advance). Precondition:
-// `n >= 0` (asserted in debug; a negative `n` degrades safely to a no-op in
-// release, since the internal countdown loop below never executes for
-// `n <= 0`).
+// `n == 0` returns `now_ns` unchanged (zero-day advance): it reads no calendar
+// day at all, so it is answerable regardless of `cal`'s coverage.
+//
+// FAILS CLOSED with `ErrorCode::OutOfRange` as soon as a day that would be
+// COUNTED as a trading day falls outside `cal`'s covered window (see
+// `VolTimeCalendar::covers` in vol_time.hpp). `is_holiday` answers false both
+// for "not a listed closure" and for "outside the populated range", so beyond
+// the window every real closure would read as open and the returned instant
+// would land one or more days early -- silently. Weekends are exempt from the
+// check: their status comes from the day number, never from the table.
 //
 // @param now_ns  evaluation instant, epoch nanoseconds (UTC)
 // @param n       number of NYSE trading days to advance (>= 0)
 // @param cal     holiday calendar (weekends are always skipped regardless)
 // @return        epoch nanoseconds of the `n`-th trading day after `now_ns`,
-//                same intraday time-of-day as `now_ns`
-[[nodiscard]] std::int64_t advance_trading_days(std::int64_t now_ns, int n,
-                                                const VolTimeCalendar& cal) noexcept;
+//                same intraday time-of-day as `now_ns`;
+//                `ErrorCode::InvalidArgument` for `n < 0`;
+//                `ErrorCode::OutOfRange` when a counted day leaves `cal`'s
+//                window, or when `cal` closes every day in the stepped window
+//                so the `n`-th trading day does not exist there
+[[nodiscard]] Result<std::int64_t> advance_trading_days(std::int64_t now_ns, int n,
+                                                        const VolTimeCalendar& cal);
 
 // Year-fraction of a fixed-trading-day tenor from `now_ns`: advances `now_ns`
 // by `n_trading_days` NYSE trading days (`advance_trading_days`, against
@@ -86,11 +96,23 @@ struct SrTenorGrid {
 // horizon spans (which varies with how many weekends/holidays it crosses),
 // then whatever convention (Calendar365 or VolTime) `spec` selects.
 //
+// Returns `Result<double>` to PROPAGATE both fail-closed coverage errors: the
+// long end of the grid is 504 trading days (~2 years), so a snapshot anchored
+// late in the default calendar's 2024-2028 window resolves an expiry beyond it.
+// Swallowing that into a NaN would poison the censored-term fit downstream with
+// no signal. Note this bites on EVERY convention, `Calendar365` included: the
+// year-fraction convention reads no calendar, but the expiry INSTANT it is
+// applied to is produced by `advance_trading_days`, whose day-stepping needs the
+// closure table. Only `time_to_expiry_years`'s own error is convention-specific.
+//
 // @param now_ns          evaluation instant, epoch nanoseconds (UTC)
 // @param n_trading_days  tenor horizon, NYSE trading days (>= 0)
 // @param spec            governing time convention (default: Calendar365)
-// @return                year-fraction to the tenor's expiry instant
-[[nodiscard]] double tenor_years(std::int64_t now_ns, int n_trading_days,
-                                 const TimeSpec& spec) noexcept;
+// @return                year-fraction to the tenor's expiry instant;
+//                        `ErrorCode::OutOfRange` when the trading-day walk (any
+//                        convention) or the `VolTime` clock leaves the default
+//                        calendar's covered window
+[[nodiscard]] Result<double> tenor_years(std::int64_t now_ns, int n_trading_days,
+                                         const TimeSpec& spec);
 
 }  // namespace atx::vol

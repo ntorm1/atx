@@ -1,10 +1,11 @@
 add_executable(atx-vol-tests
     version_test.cpp
+    log_sink_test.cpp
     black76_test.cpp
     greeks_test.cpp
     implied_vol_test.cpp
     surface_test.cpp
-    curve_test.cpp
+    rates_curve_test.cpp
     universe_test.cpp
     ingest_scale_test.cpp
     derivatives_test.cpp
@@ -38,20 +39,11 @@ add_executable(atx-vol-tests
     data_test.cpp
     run_archive_test.cpp
     run_diagnostics_test.cpp
-    surface_archive_test.cpp
     surface_db_test.cpp
     batch_test.cpp
-    portfolio_test.cpp
-    bulk_test.cpp
-    # F2 quarantine: calib_pool has no production caller, so its TU lives with its
-    # test rather than in the shipped atx::vol library. Both are gated by the
-    # ATX_VOL_CALIB_POOL_TEST_ONLY define below (the header #errors without it).
-    ../src/calib_pool.cpp
-    calib_pool_test.cpp
     projection_test.cpp
     contract_projection_test.cpp
     historical_projection_test.cpp
-    portfolio_risk_test.cpp
     american_iv_test.cpp
     dividend_test.cpp
     s3_test.cpp
@@ -62,7 +54,6 @@ add_executable(atx-vol-tests
     deamer_test.cpp
     parity_test.cpp
     panel_test.cpp
-    vola_parity_test.cpp
     surface_parity_test.cpp
     opra_panel_test.cpp
     opra_hive_test.cpp
@@ -196,7 +187,6 @@ target_link_libraries(atx-vol-tests
     PRIVATE
         atx::vol
         atx::core
-        atx-vol-archive-v1  # WS-G G2: v1 archive read/write pulled from the isolated TU
         GTest::gtest_main
         atx_warnings
         atx-test-scratch    # FIX-3/F3-B: per-process temp root (was a listed source in F2-A)
@@ -209,12 +199,6 @@ target_link_libraries(atx-vol-tests
 if(WIN32)
     target_link_libraries(atx-vol-tests PRIVATE psapi)
 endif()
-
-# F2 quarantine: unlocks atx/vol/calib_pool.hpp (test-only guard) for both the
-# relocated ../src/calib_pool.cpp TU and calib_pool_test.cpp. Any production TU
-# that includes the header without this define is a hard compile error, so the
-# dead driver cannot silently re-enter the shipped library.
-target_compile_definitions(atx-vol-tests PRIVATE ATX_VOL_CALIB_POOL_TEST_ONLY)
 
 # AMZN-earnings correctness gate (amzn_earnings_test.cpp) shares the report's fit
 # via the header-only examples/amzn_earnings_fit.hpp — add examples/ as a PRIVATE
@@ -235,6 +219,22 @@ target_compile_definitions(atx-vol-tests PRIVATE
 # build input, so nothing else would notice a renamed key or a bad token.
 target_compile_definitions(atx-vol-tests PRIVATE
     "ATX_SP100_DISPERSION_CONFIG=\"${CMAKE_CURRENT_SOURCE_DIR}/../examples/sp100_dispersion_config.tsv\"")
+
+# S4-T18 (plan 3.8 + 4.1): vol_umbrella_test.cpp is the public-surface tiering
+# CONTRACT test — besides including the umbrella it READS it back off disk and
+# checks that its include list is exactly the Tier-A manifest. Bake the two
+# paths in (same mechanism as ATX_AMZN_FIXTURE above) so the contract holds
+# regardless of the ctest working directory.
+target_compile_definitions(atx-vol-tests PRIVATE
+    "ATX_VOL_INCLUDE_ROOT=\"${CMAKE_CURRENT_SOURCE_DIR}/../include\""
+    "ATX_VOL_UMBRELLA_HPP=\"${CMAKE_CURRENT_SOURCE_DIR}/../include/atx/vol/vol.hpp\"")
+
+# Plan 5.3: version_test.cpp compares the SHIPPED version against the build
+# system's declaration, so it needs `project(atx VERSION ...)` verbatim. Baked in
+# from ${PROJECT_VERSION} rather than restated, so this line can never become the
+# fourth place the version is written down.
+target_compile_definitions(atx-vol-tests PRIVATE
+    "ATX_VOL_CMAKE_PROJECT_VERSION=\"${PROJECT_VERSION}\"")
 
 # Precompiled header (opt-in: ATX_USE_PCH; ON in the ninja/dev/rel presets, OFF
 # in `hygiene`). GoogleTest is #included by ~79 of the test TUs and is by far the

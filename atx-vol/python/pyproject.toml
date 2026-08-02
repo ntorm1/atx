@@ -7,7 +7,12 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "atxvol"
-version = "0.1.0"
+# The wheel's declared version. It MIRRORS `project(atx VERSION ...)` in the root
+# CMakeLists -- the C++ single source of truth (plan 5.3) -- because a PEP 621
+# table cannot read a CMake variable. `atxvol.__version__` comes from the compiled
+# `atx::vol::version()`, and tests/test_atxvol.py asserts the two agree, so this
+# line cannot drift from the library without a red test.
+version = "1.0.0"
 description = "Python bindings for the atx-vol options and volatility library"
 readme = "README.md"
 requires-python = ">=3.10"

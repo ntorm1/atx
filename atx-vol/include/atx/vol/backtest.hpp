@@ -43,6 +43,7 @@
 
 #include "atx/vol/corpus.hpp"           // CorpusManifest
 #include "atx/vol/derivatives.hpp"      // DerivKind, RealizedVarianceSpec (the swap lane)
+#include "atx/vol/detail/aggregate_arity.hpp" // RunConfig field-count drift pin
 #include "atx/vol/portfolio_pricer.hpp" // OptionContract, SurfaceSet, PriceOptions, PriceTotals
 #include "atx/vol/priced_surface.hpp"   // PricedSurface
 #include "atx/vol/query_pricing.hpp"    // QueryPricingTier
@@ -94,6 +95,14 @@ public:
   // names the available range so the caller can self-serve the correction.
   [[nodiscard]] Result<Clock> between(std::string_view date_lo, std::string_view date_hi) const;
 
+  // BORROW of the timeline vector this `Clock` owns — including the `date` and
+  // `archive_path` strings inside each `SnapshotRef`. A clock is immutable once a
+  // `from_*` factory has returned it (nothing rewrites `refs_`), so the span is
+  // valid for the clock's lifetime and concurrent const readers are safe.
+  // INVALIDATION: destroying the clock, or assigning over it — the type is
+  // COPYABLE as well as movable, and a span taken from one clock never names the
+  // copy's storage. A step loop that outlives the clock (or that stores refs past
+  // a rebuild) must copy them out, not keep this span.
   [[nodiscard]] std::span<const SnapshotRef> refs() const noexcept { return refs_; }
   [[nodiscard]] std::size_t size() const noexcept { return refs_.size(); }
 
@@ -194,12 +203,24 @@ public:
   // reconstructed surfaces (WS-ZC1).
   [[nodiscard]] bool borrows_views() const noexcept { return !views_.empty(); }
 
-  // Backing-agnostic surface access (archive order). Always non-empty after a
-  // successful load, whichever backing was chosen.
+  // Backing-agnostic surface access (archive order), whichever backing was chosen.
+  //
+  // NOT always non-empty (this used to claim it was): `load`'s subset-miss path —
+  // a requested uid subset that matched no directory entry — deliberately keeps an
+  // EMPTY SurfaceSet rather than falling back to a whole-board read, so a
+  // successfully loaded snapshot can legally own zero surfaces. Callers that want
+  // "the date's first surface" must check `n_surfaces()` (or the null handle below)
+  // before using it.
   [[nodiscard]] std::size_t n_surfaces() const noexcept {
     return views_.empty() ? surfaces_.size() : views_.size();
   }
+  // Out of range (which includes EVERY index of a zero-surface snapshot) yields a
+  // NULL handle — `ref == nullptr`, checkable exactly like `find()`'s result —
+  // instead of indexing an empty backing out of bounds.
   [[nodiscard]] SurfaceRef surface_at(std::size_t i) const noexcept {
+    if (i >= n_surfaces()) {
+      return SurfaceRef{};
+    }
     return views_.empty() ? SurfaceRef{&surfaces_[i]} : SurfaceRef{&views_[i]};
   }
 
@@ -678,6 +699,18 @@ struct StepEvent {
 // the Python surface stays unchanged. The omission is a decision, not drift.
 using StepObserver = std::function<Status(const StepEvent &)>;
 
+// CONSTRUCTION CONTRACT (v1, plan item 4.2) — DESIGNATED INITIALIZERS ONLY.
+// Set fields by name (`RunConfig cfg{}; cfg.unpriced = ...;` or a designated
+// initializer); never `RunConfig{a, b, c, ...}`. Three fields here used to carry
+// an "appended for positional aggregate source compatibility" note, meaning they
+// were parked at the end of the struct — away from the knob each belongs with —
+// solely so positional initializers kept compiling. They now live in their
+// natural groups, and the field-count `static_assert` below makes a silent
+// re-append a compile error.
+//
+// backtest.hpp is Tier-A (frozen v1 surface): this reorder is the LAST layout
+// change allowed here. After v1 the order is fixed and new knobs append at the
+// end WITHOUT any positional-compatibility promise.
 struct RunConfig {
   // Pricer thread fan-out. Default 0 => use all hardware cores (clamped to the
   // book's unique-contract count). Output is bit-identical to any thread count
@@ -692,9 +725,31 @@ struct RunConfig {
   // that contract by default; faster cached query tiers are an explicit
   // backtest-level accuracy/latency choice and never alter the archive bytes.
   QueryPricingTier query_pricing_tier{QueryPricingTier::LegacyCompatible};
-  FrictionModel frictions{};   // execution frictions (B2; default: frictionless)
-  FinancingConfig financing{}; // cash/borrow ledger (B2; default: off => B1-identity)
-  unsigned record_every_n{1};  // positive; persist every Nth step (1 = every step)
+  // How the tier above is materialized. ReuseOnly consumes a prepared fast
+  // snapshot but loads a separately-keyed cold snapshot on a fast miss. Eager
+  // preserves the historical requested-tier behavior.
+  QueryCacheBuildPolicy query_cache_build_policy{QueryCacheBuildPolicy::Eager};
+  FrictionModel frictions{};          // execution frictions (B2; default: frictionless)
+  FinancingConfig financing{};        // cash/borrow ledger (B2; default: off => B1-identity)
+  unsigned record_every_n{1}; // positive; persist every Nth step (1 = every step)
+  // Per-step observation hook. Empty by default => zero cost beyond one
+  // predictable branch per step and byte-identical output. Fires on EVERY step
+  // regardless of `record_every_n` above (recorded rows are downsampled; these
+  // events are not). Ignored by no overload: the fixed-book (B0) overload has no
+  // strategy, so setting this there is a fail-closed InvalidArgument, never a
+  // silent drop.
+  StepObserver step_observer{};
+  // Cooperative cancellation, polled at the TOP of each step before any of that
+  // step's work (plan item 5.5). Default-constructed => never cancels, one
+  // predictable branch per step, byte-identical output.
+  //
+  // On a requested stop `run_backtest` returns `ErrorCode::Cancelled` and NO
+  // BacktestResult: the run is abandoned before the result is handed back, so a
+  // partially-filled result can never reach a caller, a writer, or validate().
+  // Nothing on disk is touched either way — `run_backtest` performs no file I/O.
+  // Sits beside `step_observer` because both are per-step run control the caller
+  // owns; the referenced flag must outlive the call.
+  CancelToken cancel{};
   // Policy for held P&L/Greek valuation only. Strategy close execution always
   // requires an economically valid mark regardless of this setting.
   //
@@ -705,19 +760,15 @@ struct RunConfig {
   // only as a count in `n_unpriced_lots`). A production QIS default must fail
   // closed; callers that genuinely want the lenient arithmetic now opt in.
   UnpricedLotPolicy unpriced{UnpricedLotPolicy::Error};
+  // The admission half of the same fail-closed story. Strict production backtests
+  // opt in; the default deliberately preserves legacy archives.
+  SurfaceProvenancePolicy surface_provenance_policy{SurfaceProvenancePolicy::Compatibility};
   // A null cache creates a private per-run cache. Supplying one permits archive
   // reuse across backtest and reconciliation passes. Private one-pass caches retain
   // at most the current/base/look-ahead working set. Look-ahead overlaps the next
   // archive open/map with pricing and strategy work on the current step.
   std::shared_ptr<SnapshotCache> snapshot_cache{};
   bool prefetch_snapshots{true};
-  // Appended for positional aggregate source compatibility. ReuseOnly consumes
-  // a prepared fast snapshot but loads a separately-keyed cold snapshot on a
-  // fast miss. Eager preserves the historical requested-tier behavior.
-  QueryCacheBuildPolicy query_cache_build_policy{QueryCacheBuildPolicy::Eager};
-  // Appended for positional aggregate source compatibility. Strict production
-  // backtests opt in; the default deliberately preserves legacy archives.
-  SurfaceProvenancePolicy surface_provenance_policy{SurfaceProvenancePolicy::Compatibility};
   // L2 (AL-solve-wall sprint, fewer-solves): serve an expiring lot's base
   // settlement mark from the per-step mark memo (populated by the prior step's
   // book-greeks pass at the SAME base date) instead of re-solving it. The memo'd
@@ -761,11 +812,6 @@ struct RunConfig {
   // flows summed in different orders, so the honest floor is rounding
   // (~|cash|*eps per row), not zero. Must be finite and positive.
   double reconcile_nav_tol{1.0e-6};
-  // Appended for positional aggregate source compatibility. Empty by default =>
-  // zero cost beyond one predictable branch per step and byte-identical output.
-  // Ignored by no overload: the fixed-book (B0) overload has no strategy, so
-  // setting this there is a fail-closed InvalidArgument, never a silent drop.
-  StepObserver step_observer{};
   // Snapshot look-ahead DEPTH: how many future steps' snapshots may be in flight
   // at once. 1 is the historical single-step look-ahead — at step i exactly one
   // load (i+1) overlaps step i's economics, so if a load costs more than a step's
@@ -788,6 +834,24 @@ struct RunConfig {
   // 0 is normalized to 1 (no look-ahead is expressed by prefetch_snapshots=false).
   std::size_t prefetch_depth{1};
 };
+
+// Drift pin (plan item 4.2). RunConfig has exactly SIXTEEN fields. Adding,
+// removing or splitting one breaks this line, which is the point: it forces
+// whoever changes the struct to read the construction contract above instead of
+// appending a knob "for compatibility" with positional initializers that are no
+// longer part of the API.
+//
+// 15 -> 16 (plan item 5.5): `cancel` was INSERTED beside `step_observer`, its
+// semantic group, not appended at the end. That is exactly the move the old
+// convention forbade and this one requires — and it is safe only because there
+// are no positional initializers left in-tree to rebind.
+//
+// 16 -> 17 (main merge): `prefetch_depth` appended — the pipelined snapshot
+// look-ahead depth main's backtest-replay work introduced; output is
+// bit-identical at any depth (`BacktestPrefetchDepth` pins it).
+static_assert(detail::aggregate_arity_is_v<RunConfig, 17>,
+              "RunConfig field count changed: update this pin, and confirm every "
+              "construction site still initializes by field name.");
 
 // Reusable caller-owned handoff from a step's P&L target solve to the strategy
 // execution ledger. Storage grows to the largest observed book and never
@@ -956,6 +1020,41 @@ struct BacktestResult {
   std::vector<std::pair<std::string, std::vector<double>>> signals;
 
   [[nodiscard]] std::size_t size() const noexcept { return date.size(); }
+
+  // ── Column-shape invariant (plan item 4.6) ────────────────────────────────
+  //
+  // Everything above is a parallel column set over `size()` rows, and nothing
+  // used to enforce that. A result whose `nav` was one row shorter than `date`
+  // indexed OUT OF RANGE inside the tearsheet fold and both serializers rather
+  // than reporting a shape error — benchmark_stats_test.cpp documented the
+  // hazard in a comment and worked around it by filling every column by hand.
+  // `validate` is the enforcement point.
+  //
+  // The invariant is EMPTY-OR-ROW-PARALLEL, per column:
+  //
+  //   * a row-parallel column is either EMPTY (that column was not produced) or
+  //     EXACTLY `size()` long. A different NON-ZERO length is the silent
+  //     misalignment this rejects; it is never a legal partial result.
+  //   * this is already the documented contract of `gross_vega_abs` and
+  //     `nav_liquidation`. 4.6 makes it universal and checked, which also keeps
+  //     legitimately sparse results legal — a fixture that fills the columns a
+  //     fold reads and leaves the rest empty stays valid.
+  //   * every `signals` series is empty-or-row-parallel too, and signal names
+  //     must be non-empty and unique: both serializers append one dynamic
+  //     column per signal, so a duplicate name emits an ambiguous header.
+  //   * `step_pnl_total` is EXEMPT. It is the full-resolution per-step series
+  //     (length == refs-1) and is deliberately NOT parallel to the downsampled
+  //     `date`, exactly as its own comment states.
+  //
+  // Enforcement, not just availability: both `run_backtest` overloads validate
+  // before returning Ok, so no engine-produced result can be skewed; the TSV and
+  // CSV writers validate on entry, so no hand-built or decoded one reaches those
+  // wires. `encode_backtest_section` (the RunArchive encoder) has no error channel
+  // and is NOT checked; its production callers pass a `run_backtest` result that
+  // already was. The check is a pure read — it never touches a value.
+  //
+  // @return InvalidArgument naming the first offending column and both lengths.
+  [[nodiscard]] Status validate() const;
 };
 
 // One entry in the engine's insertion-ordered delta-hedge share ledger. Order is

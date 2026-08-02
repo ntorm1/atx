@@ -26,13 +26,13 @@
 #include <vector>
 
 #include "atx/vol/backtest.hpp"            // Clock, RunConfig, SnapshotCache
-#include "atx/vol/backtest_driver.hpp"     // run_timed (the timed-run + tearsheet + stats spine)
+#include "atx/vol/research/backtest_driver.hpp"     // run_timed (the timed-run + tearsheet + stats spine)
 #include "atx/vol/dispersion.hpp"          // MissingNamePolicy, MissingNameSpec
 #include "atx/vol/dispersion_strangle.hpp" // DispersionStrangleConfig, make_dispersion_strangle_spec
-#include "atx/vol/run_report.hpp"          // MetaKv, write_* emitters, EngineRunStats
+#include "atx/vol/tools/run_report.hpp"          // MetaKv, write_* emitters, EngineRunStats
 #include "atx/vol/strategy.hpp"            // DeclarativeStrategy
 #include "atx/vol/surface_db.hpp"          // SurfaceDb
-#include "atx/vol/tearsheet.hpp"           // TearSheet
+#include "atx/vol/tools/tearsheet.hpp"           // TearSheet
 #include "atx/vol/types.hpp"               // Result, Status
 
 using namespace atx::vol;

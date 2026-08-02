@@ -65,6 +65,23 @@ Grid make_grid() {
   return g;
 }
 
+// ── 2.10: the noexcept boundary is a promise, not a hint ─────────────────────
+//
+// simd/iv_batch.hpp declares implied_vol_batch noexcept, but each lane calls the
+// scalar `implied_vol`, which is not noexcept: a failing lane composes an Error
+// message longer than any SSO buffer, so it allocates. Under memory pressure the
+// escaping std::bad_alloc was std::terminate. The lane now contains bad_alloc and
+// reports the documented (NaN, ok == 0) failure instead.
+//
+// Allocation failure is not injectable from a unit test, so this pins the half
+// that IS machine-checkable: the declaration. Silently "fixing" the mismatch by
+// dropping noexcept — an ABI-visible change to a public entry point — breaks the
+// build here rather than passing unnoticed.
+static_assert(noexcept(simd::implied_vol_batch(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                               nullptr, nullptr, 0U)),
+              "implied_vol_batch's noexcept is a public contract: contain the throw, do not drop "
+              "the specifier");
+
 TEST(SimdImpliedVolBatch, RoundTripMatchesInputAndScalar) {
   const Grid g = make_grid();
   const std::size_t n = g.size();

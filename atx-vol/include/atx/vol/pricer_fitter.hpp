@@ -22,6 +22,15 @@
 // Thread-safety: `fit` mutates (stores the surface) and needs exclusive access.
 // `value_chain` is const and internally parallel; concurrent `value_chain` calls
 // on one fitter are safe (all state read is immutable after `fit`).
+//
+// "Internally parallel" means it dispatches onto the PROCESS-GLOBAL pricing pool
+// (detail/pricing_executor.hpp), not onto threads the fitter owns: concurrent
+// `value_chain` calls therefore share one core budget rather than each spawning a
+// fan, `cfg.n_threads` is a request clamped down to that pool, and a call issued
+// from inside another pool dispatch runs inline — with the result unchanged in
+// every case. The pool's ordering rule reaches callers here too: set its topology
+// with `configure_pricing_executor` before the first pricing or fitting call
+// builds it, after which configuration is refused with AlreadyExists.
 
 #include <cstddef>
 #include <cstdint>
@@ -34,10 +43,10 @@
 #include "atx/core/error.hpp"          // Error
 #include "atx/vol/american.hpp"        // AmericanGreeks
 #include "atx/vol/chain.hpp"           // OptionChain, OptionId
-#include "atx/vol/curve.hpp"           // DividendEvent
 #include "atx/vol/curve_selector.hpp"  // SelectorConfig, SelectorResult
 #include "atx/vol/fit_policy.hpp"      // FitContext, FitPolicyConfig, FitDecision
-#include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy
+#include "atx/vol/detail/prepared_policy.hpp" // PreparedObservationPolicy
+#include "atx/vol/rates_curve.hpp"     // DividendEvent
 #include "atx/vol/session.hpp"         // VolaSession, FitPreset, SessionDiagnostics
 #include "atx/vol/surface_policy.hpp"  // explicit mark/risk purpose and quality policy
 #include "atx/vol/types.hpp"           // Result, Status, Side
@@ -110,6 +119,11 @@ struct ChainValuation {
 // least one rung and no rung repeats its own primary. `FitDecision::used_fallback`
 // and `::primary_curve` record what happened. Exposed so the routing contract is
 // inspectable, not just observable after a failure.
+//
+// BORROW with NO lifetime bound, unusually for this library: the returned span
+// names a function-local `static constexpr` ladder with process lifetime, so it
+// is immortal, never invalidated, and safe to hold or read from any thread. It is
+// also read-only and never aliases caller storage. Nothing here needs copying out.
 [[nodiscard]] std::span<const VolCurveKind> fallback_curve_rungs(VolCurveKind primary) noexcept;
 
 // ── Independent-failure merge seam ──────────────────────────────────────────
@@ -413,6 +427,20 @@ public:
   // silently substituted for it). A mark-only request (explicit outputs or the
   // legacy HFT mapping) receives its market surface. Purpose-specific state is
   // always available via risk_surface() / market_mark_surface().
+  //
+  // BORROW, AND NOT A SHARE. These three return the RAW pointer out of a
+  // `std::shared_ptr<const FittedSurface>` the fitter holds; the fitter (via that
+  // shared_ptr) is the owner and the pointer carries no ownership of its own. It
+  // is valid only while the fitter still serves that generation: `fit` and
+  // `refit_risk_slice` atomically REPUBLISH, rebinding the shared_ptr, and once
+  // the last share drops the surface is destroyed under any raw pointer still
+  // held. A caller that must keep a surface alive across a refit — or hand one to
+  // another thread — takes `bundle()` instead, which copies the shared_ptrs and
+  // pins that exact generation. THREADING follows the header's contract above:
+  // `fit`/`refit_risk_slice` are writers needing exclusive access, so read these
+  // only when no publish can be racing; the pointed-to `FittedSurface` is itself
+  // immutable once published and safe for concurrent readers. Destroying the
+  // fitter invalidates every raw pointer it handed out.
   [[nodiscard]] const FittedSurface *surface() const noexcept;
   [[nodiscard]] const FittedSurface *risk_surface() const noexcept { return risk_surface_.get(); }
   [[nodiscard]] const FittedSurface *market_mark_surface() const noexcept {

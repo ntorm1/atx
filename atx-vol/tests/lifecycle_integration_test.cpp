@@ -6,8 +6,8 @@
 //     -> PricerFitter::fit             (ConvexDense — the index recipe)
 //        -> FittedSurface::session
 //           -> VolaSession::to_priced_surface()          (PricedSurface snapshot)
-//              -> write_surface_archive / SurfaceArchive::open / map_symbol
-//                 (serialize -> reload, BIT-identical theo round-trip)
+//              -> write_surface_archive_v2 / SurfaceArchiveV2::open /
+//                 reconstruct_symbol (serialize -> reload, BIT-identical theo)
 //                 -> SurfaceSet + Portfolio + PortfolioPricer::price
 //                    -> PortfolioPricer::pnl_explain      (Taylor spot-move explain)
 //
@@ -48,7 +48,7 @@
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext, SliceContext
 #include "atx/vol/session.hpp"           // VolaSession, FitPreset
 #include "atx/vol/spy_fixture.hpp"       // make_spy_synthetic_spec
-#include "atx/vol/surface_archive.hpp"   // write_surface_archive, SurfaceArchive
+#include "atx/vol/surface_archive.hpp"   // write_surface_archive_v2, SurfaceArchiveV2
 #include "atx/vol/types.hpp"             // Side
 #include "atx/vol/vol_curve.hpp"         // CurveConfig, VolCurveKind, CurveSurface
 #include "support/isa_golden_tol.hpp"    // golden_accum_close (per-ISA FMA band)
@@ -113,12 +113,14 @@ TEST(LifecycleIntegration, ChainToFitToArchiveToPortfolioToPnl) {
   ASSERT_TRUE(live_ps.has_value()) << live_ps.error().to_string();
 
   const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &*live_ps}};
-  auto built = write_surface_archive(items);
+  auto built = write_surface_archive_v2(items);
   ASSERT_TRUE(built.has_value()) << built.error().to_string();
 
-  auto opened = SurfaceArchive::open(std::move(*built));
+  auto opened = SurfaceArchiveV2::open(std::move(*built));
   ASSERT_TRUE(opened.has_value()) << opened.error().to_string();
-  auto recon_res = opened->map_symbol("SPY");
+  // reconstruct_symbol (owned), not map_symbol (borrowed view): the rest of this
+  // test hands `reloaded` to a SurfaceSet of `const PricedSurface*`.
+  auto recon_res = opened->reconstruct_symbol("SPY");
   ASSERT_TRUE(recon_res.has_value()) << recon_res.error().to_string();
   const PricedSurface& reloaded = *recon_res;
 

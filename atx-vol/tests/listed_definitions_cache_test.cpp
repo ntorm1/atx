@@ -12,13 +12,13 @@
 //   POSITIVE CONTROL — the assertion holds by construction; it locks a value in
 //                      place but cannot demonstrate the guard can fail.
 
-#include "atx/vol/listed_definitions_cache.hpp"
+#include "atx/vol/research/listed_definitions_cache.hpp"
 
 #include "atx/core/hash.hpp"              // hash_bytes (independent wire ABI fold)
 #include "atx/vol/data.hpp"               // iso_to_ns
 #include "atx/vol/detail/archive_util.hpp" // crc32c (independent CRC recompute)
 #include "atx/vol/listed_opra.hpp"
-#include "atx/vol/run_diagnostics.hpp"     // PhaseTimer (definitions_cache hit/miss phase, review I6)
+#include "atx/vol/research/run_diagnostics.hpp"     // PhaseTimer (definitions_cache hit/miss phase, review I6)
 
 #include <gtest/gtest.h>
 

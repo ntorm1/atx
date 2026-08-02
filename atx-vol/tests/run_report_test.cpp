@@ -25,7 +25,7 @@
 #include <vector>
 
 #include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
-#include "atx/vol/run_report.hpp"
+#include "atx/vol/tools/run_report.hpp"
 #include "atx/vol/surface_archive.hpp" // SurfaceArchiveItem
 #include "atx/vol/surface_db.hpp"      // SurfaceDb
 #include "atx/vol/vol_curve.hpp"       // CurveSurface, EssviCurve
@@ -221,6 +221,27 @@ TEST(RunReport, SeriesCsvRoundTrips) {
 
   // Signal column (last cell) round-trips too.
   EXPECT_TRUE(bits_equal(std::stod(row1.back()), 2.5));
+
+  std::error_code ec2;
+  fs::remove_all(dir, ec2);
+}
+
+// Plan 4.6: the row loop indexes every column at the same row, so a skewed
+// result used to read OUT OF RANGE. It is now a reported shape error, and
+// nothing is written.
+TEST(RunReport, SeriesCsvRejectsSkewedResult) {
+  const fs::path dir = fresh_dir("series_skew");
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  const std::string path = (dir / "series.csv").string();
+
+  BacktestResult r = make_tiny_result();
+  r.nav.pop_back(); // one row short of `date`
+  const Status st = write_backtest_series_csv(r, MetaKv{}, path);
+  ASSERT_FALSE(st.has_value()) << "a skewed result must not be written";
+  EXPECT_EQ(st.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(st.error().message().find("nav"), std::string::npos) << st.error().message();
+  EXPECT_FALSE(fs::exists(path));
 
   std::error_code ec2;
   fs::remove_all(dir, ec2);

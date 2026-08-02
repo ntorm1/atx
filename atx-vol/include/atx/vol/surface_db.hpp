@@ -1,7 +1,9 @@
 #pragma once
 
-// surface_db — the on-disk symbol/partition MANIFEST for a directory of ATXVSA
-// v3 surface archives (surface_archive.hpp), plus the per-symbol fit
+// surface_db — the on-disk symbol/partition MANIFEST for a directory of ATXVSA2
+// surface archives (surface_archive.hpp — magic "ATXVSA20"; that header owns the
+// format naming, and this line used to say "ATXVSA v3", which named the RETIRED
+// format), plus the per-symbol fit
 // configuration a production pipeline needs to fit "this underlying, this
 // way" without hand-assembling `SessionInputs` at every call site.
 //
@@ -42,8 +44,9 @@
 // ── Schema hash / endianness ──────────────────────────────────────────────────
 //
 // Same discipline as the archive: the header stores a compile-time
-// fingerprint folded from the `sizeof` of every on-disk record + a v1 format
-// salt, so a reader built against a different struct shape refuses the file
+// fingerprint folded from the `sizeof` of every on-disk record + an ATXVDB01
+// format salt (this manifest's own magic — a third, unrelated "v1"), so a reader
+// built against a different struct shape refuses the file
 // (ParseError) instead of mis-reading it. Records are host byte order; the
 // header stamps endian = 1 (little) / pointer_bits = 64. Little-endian LP64
 // hosts only.
@@ -462,6 +465,17 @@ public:
 
   [[nodiscard]] const DbManifestHeader &header() const noexcept { return header_; }
   [[nodiscard]] std::uint64_t generation() const noexcept { return header_.generation; }
+  // `symbols()`, `partitions()` and `find_partition()`'s pointer BORROW the two
+  // decoded record vectors this manifest owns (decoded at `open` from the bytes
+  // it took by value; the caller's byte buffer is not retained). A `DbManifest`
+  // is IMMUTABLE — the class declares no mutator and its only constructor is the
+  // private default one `open` fills — so the views are valid for the manifest's
+  // lifetime, nothing invalidates them short of destroying it or assigning over
+  // it, and the "all queries const + thread-safe" claim above extends to holding
+  // these views across concurrent readers. Note that a manifest REFRESH produces
+  // a NEW `DbManifest`: views taken from the previous generation keep pointing at
+  // the old object and must be re-taken, not reused. Copy the records out
+  // (`std::vector<DbSymbolRecord>{sp.begin(), sp.end()}`) to outlive the manifest.
   [[nodiscard]] std::span<const DbSymbolRecord> symbols() const noexcept { return symbols_; }
   [[nodiscard]] std::span<const DbPartitionRecord> partitions() const noexcept {
     return partitions_;

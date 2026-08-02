@@ -6,13 +6,13 @@
 #include <vector>
 
 #include "atx/vol/black76.hpp"
-#include "atx/vol/curve.hpp"
 #include "atx/vol/dividend.hpp"
+#include "atx/vol/rates_curve.hpp"
 #include "atx/vol/types.hpp"
 
 // Coverage for the hybrid dividend forward + European put-call-parity borrow
 // implication (atx/vol/dividend.hpp). The escrowed-cash reference is
-// forward_div_corrected (curve.hpp); Black-76 supplies co-terminal
+// forward_div_corrected (rates_curve.hpp); Black-76 supplies co-terminal
 // call/put prices that satisfy European PCP exactly for the inversion test.
 
 namespace {

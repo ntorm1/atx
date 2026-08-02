@@ -55,11 +55,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 #include "atx/vol/arb.hpp"         // FilterOpts (reused, not redefined)
 #include "atx/vol/calib.hpp"       // CalibOpts, OptimizationLevel, CalibLossKind
-#include "atx/vol/curve.hpp"       // kFwdLowTDefaultYears
+#include "atx/vol/rates_curve.hpp" // kFwdLowTDefaultYears
 #include "atx/vol/types.hpp"       // Result, ErrorCode
 #include "atx/vol/universe.hpp"    // Underlying, Chain, chain_index
 #include "atx/vol/vol_surface.hpp" // Parametrization, ResidualBasisKind
@@ -92,7 +93,7 @@ inline constexpr std::uint32_t kUflagHtb = 0x01u;
 // ── Pricing route (research §8) ──────────────────────────────────────────
 //
 // `PricingRoute` is defined in types.hpp (the shared vocabulary header) so this
-// config header and portfolio.hpp's per-lane diagnostic agree on one type.
+// config header and every per-lane pricing diagnostic agree on one type.
 
 // ── Profile struct ───────────────────────────────────────────────────────
 //
@@ -222,12 +223,16 @@ struct ProfileVerdict {
 // Confidence reported for a verdict that came from the compiled-in seed table.
 inline constexpr double kTickerSeedConfidence = 0.95;
 
-// True when `ticker` matches a compiled-in seed entry, writing the seeded kind to
-// `out_kind`. Exposed because callers need the seed's PROVENANCE, not the score a
+// The seeded kind when `ticker` matches a compiled-in seed entry, `std::nullopt`
+// otherwise. Exposed because callers need the seed's PROVENANCE, not the score a
 // seeded verdict happens to carry: `confidence` ranks how strongly a board voted,
 // so testing it for equality against `kTickerSeedConfidence` would misclassify any
 // board whose vote ratio ever lands on that value.
-[[nodiscard]] bool ticker_seed_profile(std::string_view ticker, ProfileKind &out_kind) noexcept;
+//
+// 4.3 — this was `bool` + a `ProfileKind&` out-param, whose "not seeded" answer
+// was `false` beside whatever the caller had left in the out slot. Absence is now
+// the return type, so there is no slot to misread.
+[[nodiscard]] std::optional<ProfileKind> ticker_seed_profile(std::string_view ticker) noexcept;
 
 // Ticker-aware classifier (Sprint 24): when `ticker` matches a compiled-in seed
 // entry, return the seed kind with confidence `kTickerSeedConfidence` and skip

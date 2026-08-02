@@ -7,7 +7,7 @@
 // contract they read from and write to. It is deliberately distinct from
 // (and complementary to) `surface.hpp`, which carries only the minimal
 // 3-parameter Gatheral-Jacquier evaluator (`SviSlice`/`EssviSlice`,
-// `svi_w`/`essvi_w`, `Surface<>`) used on the pure pricing hot path.
+// `svi_w`/`essvi_w`) used on the pure pricing hot path.
 //
 // Ported from the C `ats-vol` library (ats_vol_svi.c, ats_vol_essvi.c,
 // ats_vol_surface.c/.h). Relative to `surface.hpp`, the eSSVI slice here
@@ -41,8 +41,8 @@
 // ── Time interpolation ───────────────────────────────────────────────────
 // `VolSurface` answers w(k, T) / iv(k, T) by interpolating LINEARLY IN TOTAL
 // VARIANCE across the two bracketing slices by T (never in sigma directly),
-// with the same Sprint-26 no-extrapolation guards as `Surface<>`: a query
-// past the longest slice, or more than 50% below the shortest, returns NaN.
+// with the Sprint-26 no-extrapolation guards: a query past the longest slice,
+// or more than 50% below the shortest, returns NaN.
 //
 // Thread-safety: `VolSurface` is a plain value type with no cross-instance
 // shared state. Concurrent reads (w/iv/find_exact_T/iv_on_slice) against one
@@ -224,6 +224,40 @@ struct EssviCube {
 //
 // Precondition (documented, not verified — matches the C): slices are
 // written in ascending-T order.
+//
+// ── WHERE THIS TYPE SITS, AND WHERE IT DOES NOT (S4-T21 / plan 4.4) ──────
+//
+// The canonical surface pipeline is CurveSurface (fit) -> PricedSurface /
+// PricedSurfaceView (serve) -> SurfaceSet (portfolio). `VolSurface` is NOT on
+// it, and it is NOT the archive wire type either. What it IS is the LEGACY
+// calibration-grade container, and it is very much alive:
+//
+//   * the eSSVI / raw-SVI calibrators fill it (`essvi_calib.hpp`,
+//     `svi_calib.hpp`);
+//   * `VolaSession` holds one BY VALUE and serves from it on the default eSSVI
+//     route — `session.cpp` says it outright: "the fitted slices live in the
+//     VolSurface, not a CurveSurface";
+//   * `arb.hpp`, `projection.hpp`, `surface_parity.hpp` and
+//     `adjusted_greeks.hpp` all read one. (This list named the deprecated
+//     VolSurface-bound portfolio engine as a fifth reader; S4-T22 deleted that
+//     engine outright, so the reader set is the four headers above.)
+//
+// On the archive: the ATXVSA record carries per-slice PARAMS, not this
+// container. `EssviParams` / `SviParams` are written and read back as trivially
+// copyable PODs, with their `sizeof` folded into the archive schema hash
+// (`src/surface_archive.cpp`, `src/priced_surface_view.cpp`); `VolSurface`
+// itself appears on neither the write nor the read side. Reconstructing an
+// archived surface yields a `PricedSurface`, never one of these.
+//
+// So: load-bearing on the legacy route, frozen in scope. Do not build new
+// features on it — new work targets the canonical pipeline, and a fitted
+// `VolaSession` distils into a `PricedSurface` via `to_priced_surface()`.
+//
+// Construction is factory-only: the default constructor is private, so a
+// `VolSurface` member of an aggregate cannot carry a default member
+// initializer and must be named FIRST at every designated-initializer site —
+// see `SurfaceParityReport` (surface_parity.hpp) and its field-count pin in
+// `detail/aggregate_arity.hpp`.
 class VolSurface {
  public:
   // Fit-quality summary the calibrator stamps onto the surface.
@@ -261,6 +295,18 @@ class VolSurface {
   [[nodiscard]] std::size_t n_slices() const noexcept;
   [[nodiscard]] std::size_t capacity() const noexcept { return cap_slices_; }
 
+  // Both BORROW a slice vector this surface owns; only the vector matching
+  // `param()` is ever non-empty. INVALIDATION is subtler than "any mutation":
+  // `create` RESERVES `cap_slices` up front and `set_slice_*` refuses an index at
+  // or past that capacity, so the growth `resize` can never reallocate — an
+  // outstanding span keeps a valid data pointer across a `set_slice_*`, but its
+  // EXTENT goes stale the moment the active count grows past it. Re-call the
+  // accessor after any `set_slice_*` rather than reusing a span across one.
+  // Destroying the surface, or assigning over it (this is a plain value type:
+  // copyable and movable — a span from one surface never names a copy's
+  // storage), invalidates the pointer too. Concurrent const readers are safe;
+  // `set_slice_*` is the writer under the many-readers-or-one-writer contract
+  // stated at the top of this header. Copy the slices out to outlive the surface.
   [[nodiscard]] std::span<const EssviParams> essvi_slices() const noexcept {
     return essvi_;
   }
@@ -281,7 +327,10 @@ class VolSurface {
   [[nodiscard]] double w(double k_log, double T) const noexcept;
 
   // Implied vol sigma = sqrt(w(k_log, T) / T) — divides by the CALLER's
-  // un-floored T (matches the C). NaN wherever w() is NaN / non-positive.
+  // un-floored T (matches the C). NaN wherever w() is NaN / non-positive, AND
+  // for any T that is not finite and positive: w() floors T to kTMinEval, so a
+  // T <= 0 query against a very short first slice still yields a finite
+  // variance, and dividing it by the raw T would report +inf as an implied vol.
   [[nodiscard]] double iv(double k_log, double T) const noexcept;
 
   // Index of the slice whose T equals `T_query` within a one-second tick

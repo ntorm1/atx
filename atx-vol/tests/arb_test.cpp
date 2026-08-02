@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -38,6 +39,7 @@ using atx::vol::arb_project_calendar_essvi_pair;
 using atx::vol::arb_project_calendar_svi;
 using atx::vol::arb_project_calendar_svi_pair;
 using atx::vol::arb_project_calendar_c8_pair;
+using atx::vol::arb_repair_calendar_residual;
 using atx::vol::black76_price;
 using atx::vol::c8_slice_w;
 using atx::vol::C8Curve;
@@ -49,6 +51,7 @@ using atx::vol::CurveSurface;
 using atx::vol::ErrorCode;
 using atx::vol::EssviParams;
 using atx::vol::EssviCurve;
+using atx::vol::essvi_backbone_w;
 using atx::vol::essvi_total_w;
 using atx::vol::filter_default_opts;
 using atx::vol::FilterOpts;
@@ -57,6 +60,7 @@ using atx::vol::Parametrization;
 using atx::vol::prefit_filter_underlier;
 using atx::vol::QuoteBatch;
 using atx::vol::QuoteFlag;
+using atx::vol::ResidualBasisKind;
 using atx::vol::Side;
 using atx::vol::svi_total_w;
 using atx::vol::SviParams;
@@ -89,6 +93,22 @@ using atx::vol::VolSurface;
   return surf;
 }
 
+// The same two-slice eSSVI stack with a POSITIVE right-wing HINGE_QUAD residual
+// on the shorter-dated slice (`resid_scale` 0.1 puts k >= 0.04 outside the dead
+// band). `th0` vs `th1` therefore decides whether the crossing survives the
+// residual damper: th0 < th1 is repairable (only the residual crosses), th0 >
+// th1 is not (the backbones themselves cross, which alpha = 0 cannot fix).
+[[nodiscard]] VolSurface make_essvi_2slice_resid(double th0, double th1, double wing_coef) {
+  VolSurface surf = make_essvi_2slice(th0, 0.25, th1, 1.0);
+  EssviParams s0 = surf.essvi_slices()[0];
+  s0.resid_scale = 0.1;
+  s0.resid_basis_kind = ResidualBasisKind::HingeQuad;
+  s0.resid_n_basis = 5;
+  s0.resid_coef[3] = wing_coef; // right-wing hinge
+  (void)surf.set_slice_essvi(0, s0);
+  return surf;
+}
+
 [[nodiscard]] VolSurface make_svi_2slice(const SviParams &s0,
                                          const SviParams &s1) {
   auto res = VolSurface::create(1u, Parametrization::Svi, 2);
@@ -102,6 +122,30 @@ using atx::vol::VolSurface;
   auto res = VolSurface::create(1u, Parametrization::Svi, 1);
   VolSurface surf = std::move(res).value();
   (void)surf.set_slice_svi(0, s0);
+  return surf;
+}
+
+// Three FLAT (b = 0) SVI slices at T = 0.25 / 0.5 / 1.0, whose total variance is
+// the `a` coefficient verbatim at every k. Passing a NaN for one slice makes
+// `VolSurface::w` non-finite at that maturity while the others stay clean, which
+// is the shape plan item 2.7's calendar-poisoning defect needs. Flat slices also
+// keep the butterfly scan silent (w' = w'' = 0 => g = 1), so the calendar count
+// is the only thing under test.
+[[nodiscard]] VolSurface make_svi_3slice_flat(double w0, double w1, double w2) {
+  auto res = VolSurface::create(1u, Parametrization::Svi, 3);
+  VolSurface surf = std::move(res).value();
+  const double Ts[3] = {0.25, 0.5, 1.0};
+  const double ws[3] = {w0, w1, w2};
+  for (std::size_t i = 0; i < 3; ++i) {
+    SviParams s{};
+    s.a = ws[i];
+    s.b = 0.0;
+    s.rho = 0.0;
+    s.m = 0.0;
+    s.sigma = 0.1;
+    s.T = Ts[i];
+    (void)surf.set_slice_svi(i, s);
+  }
   return surf;
 }
 
@@ -197,6 +241,57 @@ TEST(ArbCalendar, EmptyOrSingleSlice_NoOpEmpty) {
   const auto res = arb_check_calendar(surf, -0.2, 0.2, 8);
   ASSERT_TRUE(res.has_value());
   EXPECT_TRUE(res.value().empty());
+}
+
+// ── Plan item 2.7: a non-finite slice must not hide the crossing it spans ──
+//
+// `w_prev` was updated unconditionally, so a NaN total variance at slice i
+// BECAME the comparison baseline, discarding the last usable one. Slice i+1's
+// `w + 1e-12 < NaN` is then false (NaN compares unordered), so the crossing
+// that SPANS the unusable slice was never tested — here a drop as blatant as
+// w(T=0.25) = 0.16 against w(T=1.0) = 0.04 came back as a clean surface.
+//
+// Contract: a non-finite w is UNCOMPARABLE — not a violation, and not a
+// baseline. The point is skipped and the last FINITE (w, T) stays the baseline,
+// so the spanning crossing is reported and carries the maturities of the two
+// finite slices. That is exactly how the CurveSurface overload already treats
+// it ("wing coverage gap on one side — nothing to compare"), and it reports
+// nothing for the offending slice itself.
+TEST(ArbCalendar, NonFiniteMiddleSlice_StillFlagsTheLaterCrossing) {
+  const VolSurface surf = make_svi_3slice_flat(
+      0.16, std::numeric_limits<double>::quiet_NaN(), 0.04);
+  const auto res = arb_check_calendar(surf, -0.2, 0.2, 8);
+  ASSERT_TRUE(res.has_value());
+  const auto &v = res.value();
+  // Exactly one per sampled k: the poisoned slice contributes none of its own.
+  ASSERT_EQ(v.size(), 8u);
+  for (const ArbViolation &viol : v) {
+    EXPECT_EQ(viol.kind, ArbViolation::Kind::Calendar);
+    EXPECT_EQ(viol.T1, 0.25);  // the last FINITE slice, not the NaN one at 0.5
+    EXPECT_EQ(viol.T2, 1.0);
+    EXPECT_NEAR(viol.slack, 0.12, 1.0e-15);
+  }
+}
+
+// Front-of-stack boundary for the skip above. A NaN FIRST slice was never the
+// bug — there is no earlier finite baseline for it to discard, so the old code
+// found this crossing too. It is pinned because the SKIP is what could break
+// it: leaving w_prev at its -inf seed must not manufacture a violation, and
+// T_prev must not carry the maturity of the slice that was skipped. The
+// reported pair is therefore (0.5, 1.0), never (0.25, 1.0).
+TEST(ArbCalendar, NonFiniteFirstSlice_StillFlagsTheLaterCrossing) {
+  const VolSurface surf = make_svi_3slice_flat(
+      std::numeric_limits<double>::quiet_NaN(), 0.16, 0.04);
+  const auto res = arb_check_calendar(surf, -0.2, 0.2, 8);
+  ASSERT_TRUE(res.has_value());
+  const auto &v = res.value();
+  ASSERT_EQ(v.size(), 8u);
+  for (const ArbViolation &viol : v) {
+    EXPECT_EQ(viol.kind, ArbViolation::Kind::Calendar);
+    EXPECT_EQ(viol.T1, 0.5);
+    EXPECT_EQ(viol.T2, 1.0);
+    EXPECT_NEAR(viol.slack, 0.12, 1.0e-15);
+  }
 }
 
 // ── Calendar check (CurveSurface: ConvexDense/SVI served path) ─────────────
@@ -498,6 +593,17 @@ TEST(ArbTotalSurface, CalendarViolationsCounted) {
   EXPECT_EQ(res.value().n_butterfly, 0u);
 }
 
+// Plan item 2.7, count-only mirror: `arb_check_total_surface_all` carries the
+// same unconditional `w_prev = w` and suffered the same blinding.
+TEST(ArbTotalSurface, NonFiniteMiddleSlice_StillCountsTheLaterCrossing) {
+  const VolSurface surf = make_svi_3slice_flat(
+      0.16, std::numeric_limits<double>::quiet_NaN(), 0.04);
+  const auto res = arb_check_total_surface_all(surf, -0.2, 0.2, 8);
+  ASSERT_TRUE(res.has_value());
+  EXPECT_EQ(res.value().n_calendar, 8u);
+  EXPECT_EQ(res.value().n_butterfly, 0u);
+}
+
 // ── SVI-MM admissibility ──────────────────────────────────────────────────
 
 TEST(ArbSviMm, AdmissibleSlice_NoViolations) {
@@ -673,6 +779,92 @@ TEST(ArbProjectCalendarEssvi, IdempotentOnAlreadyMonotone) {
   const double theta_before = surf.essvi_slices()[1].theta;
   ASSERT_TRUE(arb_project_calendar_essvi(surf, -0.3, 0.3, 32).has_value());
   EXPECT_NEAR(surf.essvi_slices()[1].theta, theta_before, 1.0e-15);
+}
+
+TEST(ArbRepairCalendarResidual, FeasibleAtAlphaZero_DampsResidualToMonotone) {
+  // Backbones are monotone (0.04 -> 0.05); only slice0's wing residual crosses.
+  // The damper must scale it down, NOT erase it, and must land monotone.
+  VolSurface surf = make_essvi_2slice_resid(0.04, 0.05, 0.05);
+  const EssviParams before = surf.essvi_slices()[0];
+  const EssviParams hi = surf.essvi_slices()[1];
+  ASSERT_GT(essvi_total_w(before, 0.2), essvi_total_w(hi, 0.2)); // crossing exists
+
+  ASSERT_TRUE(arb_repair_calendar_residual(surf, -0.2, 0.2, 32).has_value());
+
+  const EssviParams after = surf.essvi_slices()[0];
+  EXPECT_GT(after.resid_scale, 0.0); // damped, not collapsed to backbone
+  EXPECT_EQ(after.resid_basis_kind, before.resid_basis_kind);
+  EXPECT_GT(after.resid_coef[3], 0.0);
+  EXPECT_LT(after.resid_coef[3], before.resid_coef[3]);
+  for (int i = 0; i <= 32; ++i) {
+    const double k = -0.2 + 0.4 * static_cast<double>(i) / 32.0;
+    EXPECT_LE(essvi_total_w(after, k), essvi_total_w(hi, k) + 1.0e-12) << "k=" << k;
+  }
+}
+
+TEST(ArbRepairCalendarResidual, InfeasibleAtAlphaZero_ErrsAndKeepsResidualIntact) {
+  // slice0's BACKBONE alone (theta 0.16) already exceeds slice1's (0.04), so
+  // alpha = 0 -- the endpoint the bisection ASSUMES feasible -- does not repair
+  // the crossing. Committing it would zero slice0's residual layer and report
+  // success on a surface that is still calendar-arbitrageable.
+  VolSurface surf = make_essvi_2slice_resid(0.16, 0.04, 0.02);
+  const EssviParams before = surf.essvi_slices()[0];
+
+  const auto st = arb_repair_calendar_residual(surf, -0.2, 0.2, 32);
+  ASSERT_FALSE(st.has_value()) << "unrepairable calendar arb reported as repaired";
+  EXPECT_EQ(st.error().code(), ErrorCode::Unavailable);
+
+  // Transactional: the input surface is byte-for-byte what the caller passed in.
+  const EssviParams after = surf.essvi_slices()[0];
+  EXPECT_EQ(after.resid_scale, before.resid_scale);
+  EXPECT_EQ(after.resid_basis_kind, before.resid_basis_kind);
+  EXPECT_EQ(after.resid_n_basis, before.resid_n_basis);
+  for (std::size_t j = 0; j < before.resid_coef.size(); ++j) {
+    EXPECT_EQ(after.resid_coef[j], before.resid_coef[j]) << "coef " << j;
+  }
+}
+
+// Review fix round 1 (I-2). The Unavailable status is REACHABLE on the shipped
+// `run_surface_parity` ordering (project, then repair), because the two passes
+// compare different quantities: `arb_project_calendar_essvi` enforces backbone
+// vs backbone, while the alpha = 0 guard tests the lower backbone against the
+// upper TOTAL. A negative residual on the higher-T slice separates the two, so a
+// successful projection does not imply a feasible alpha = 0.
+TEST(ArbRepairCalendarResidual, ProjectedBackbonesStillTripTheGuardOnANegativeUpperResidual) {
+  VolSurface surf = make_essvi_2slice_resid(0.04, 0.05, 0.02); // monotone backbones
+  {
+    EssviParams upper = surf.essvi_slices()[1];
+    upper.resid_scale = 0.1;
+    upper.resid_basis_kind = ResidualBasisKind::HingeQuad;
+    upper.resid_n_basis = 5;
+    upper.resid_coef[3] = -0.04; // NEGATIVE right wing: w_total(hi) < w_backbone(hi)
+    ASSERT_TRUE(surf.set_slice_essvi(1, upper).has_value());
+  }
+
+  // Run the projection exactly as run_surface_parity does, and confirm it
+  // delivers what it promises: backbone-vs-backbone monotonicity on this grid.
+  ASSERT_TRUE(arb_project_calendar_essvi(surf, -0.2, 0.2, 32).has_value());
+  const EssviParams lo = surf.essvi_slices()[0];
+  const EssviParams hi = surf.essvi_slices()[1];
+  for (int i = 0; i <= 32; ++i) {
+    const double k = -0.2 + 0.4 * static_cast<double>(i) / 32.0;
+    ASSERT_LE(essvi_backbone_w(lo, k), essvi_backbone_w(hi, k) + 1.0e-12) << "k=" << k;
+  }
+  // ...yet the upper slice's TOTAL dips under the lower slice's BACKBONE, which is
+  // what the alpha = 0 endpoint is measured against.
+  ASSERT_GT(essvi_backbone_w(lo, 0.2), essvi_total_w(hi, 0.2));
+
+  const auto st = arb_repair_calendar_residual(surf, -0.2, 0.2, 32);
+  ASSERT_FALSE(st.has_value()) << "projection ran, so the guard was expected to fire anyway";
+  EXPECT_EQ(st.error().code(), ErrorCode::Unavailable);
+
+  // Still transactional on this path.
+  const EssviParams after = surf.essvi_slices()[0];
+  EXPECT_EQ(after.resid_scale, lo.resid_scale);
+  EXPECT_EQ(after.resid_basis_kind, lo.resid_basis_kind);
+  for (std::size_t j = 0; j < lo.resid_coef.size(); ++j) {
+    EXPECT_EQ(after.resid_coef[j], lo.resid_coef[j]) << "coef " << j;
+  }
 }
 
 TEST(ArbProjectCalendarPair, EssviClosesSharedGridAndPreservesButterfly) {

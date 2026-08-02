@@ -30,6 +30,43 @@
 // PricingKernel::isa is a call-local dispatch choice. Concurrent batch calls may
 // select different ISAs without reading or mutating the legacy process-global
 // override used by the coarse SIMD boundary API.
+//
+// ## Error model (4.3)
+//
+// The three entries below report through `Result<std::size_t>` — the library's
+// one error channel — carrying the LANE COUNT they wrote on success. Outputs
+// stay caller-owned and reusable across snapshots (`PriceBatchOutput`,
+// `GreeksBatchSoA`, the resolved request's spans), because sizing them once and
+// refilling them is the whole point of the SoA shape; the value in the Result is
+// therefore the count, never a freshly allocated container. That count is the
+// length of the per-lane diagnostic channels (`PriceBatchOutput::status`,
+// `PricingWorkspace::lane_status_view()`), which are only meaningful when the
+// call succeeded.
+//
+// A lane that the MODEL could not price is not a call failure: it stays in the
+// per-lane channel (NaN + `LaneStatus::Unsupported`, or the scalar pricer's own
+// Error in the resolved entry's `status[i]`). Only argument-shape rejections
+// travel through the Result.
+//
+// ## Thread-safety (plan 4.7)
+//
+// The batch entries hold no shared mutable state of their own: each call reads the
+// caller's input columns and writes the caller's output columns plus the
+// `PricingWorkspace` it was handed. So concurrent batch calls are safe PROVIDED
+// each one owns its own workspace and output views — a workspace is single-owner
+// scratch (`reserve_lanes` rewrites it on every call), never a shared buffer.
+//
+// The one piece of shared state a batch call can reach is the PROCESS-GLOBAL
+// pricing pool, and only when the caller opts in by setting
+// `PricingKernel::executor`. That pointer names the persistent pool from
+// `detail/pricing_executor.hpp` (normally the `pricing_executor()` singleton);
+// read that header's Thread-safety section for the pool's own rules. The two that
+// bind a caller here: the pool's topology must be chosen with
+// `configure_pricing_executor` BEFORE any pricing call builds it (afterwards the
+// call is refused with AlreadyExists and changes nothing), and a batch call issued
+// from INSIDE another pool dispatch runs its lanes inline rather than
+// self-oversubscribing. Passing a null executor (the default) keeps the fan
+// serial and touches no global state at all.
 
 #include <cstddef>
 #include <cstdint>
@@ -200,6 +237,17 @@ class PricingWorkspace {
   }
 
   // Per-lane Greek-path diagnostics after american_greeks_batch (length n).
+  //
+  // BORROW of this workspace's own diagnostic vectors — the workspace is the
+  // owner. INVALIDATION: `reserve_lanes` `assign`s both vectors on EVERY call
+  // (not only when it grows the scratch), so it can reallocate and always resets
+  // the contents; a batch call that reserves therefore invalidates any span taken
+  // before it. Re-call the accessor after each batch rather than caching one, and
+  // copy the lane diagnostics out if a report keeps them past the next batch.
+  // Destroying the workspace invalidates them too. THREADING: a workspace is
+  // single-owner scratch — the batch entries write it — so each concurrent batch
+  // call needs its OWN `PricingWorkspace`, and these views are read from the
+  // thread that ran the batch, between calls.
   [[nodiscard]] std::span<const LaneStatus> lane_status_view() const noexcept {
     return lane_status;
   }
@@ -252,22 +300,23 @@ enum class GreekFieldMask : std::uint32_t {
 // early-exercise lanes into a homogeneous internal-put pack and dispatches it
 // through simd::american_put_boundary_batch (T13); every other lane patches to the
 // exact scalar andersen_lake. Public output order is preserved (out[i] pairs with
-// input lane i). Returns InvalidArgument on a span-length mismatch.
-[[nodiscard]] Status american_price_batch(const AmericanBatchInput& in,
-                                           PriceBatchOutput& out,
-                                           PricingKernel& kernel,
-                                           PricingWorkspace& ws);
+// input lane i). Returns the number of lanes written, or InvalidArgument on a
+// span-length mismatch.
+[[nodiscard]] Result<std::size_t> american_price_batch(const AmericanBatchInput& in,
+                                                       PriceBatchOutput& out,
+                                                       PricingKernel& kernel,
+                                                       PricingWorkspace& ws);
 
 // Price an exact resolved equal-T run into caller-owned output spans. BAW remains
 // scalar; Andersen-Lake passes the request's exact option engagement through the
 // configured boundary kernel and every scalar patch. `isa` remains a call-local
 // request; `pack_dispatch` reports only whether a containing pack was sent to
 // AVX2, not the low-level kernel's opaque per-lane patch decision.
-// Returns InvalidArgument for request span-shape errors or any overlap between
-// input/output spans or between nonempty output spans. Validation completes
-// before counters or writes. Model failures are retained independently in
-// `status[i]` with price[i] = NaN.
-[[nodiscard]] Status american_price_batch_resolved(
+// Returns the number of lanes written, or InvalidArgument for request span-shape
+// errors or any overlap between input/output spans or between nonempty output
+// spans. Validation completes before counters or writes. Model failures are
+// retained independently in `status[i]` with price[i] = NaN.
+[[nodiscard]] Result<std::size_t> american_price_batch_resolved(
     const ResolvedAmericanPriceBatchRequest& request);
 
 // American Greeks for a book into the SoA columns of `greeks` (only the fields in
@@ -280,11 +329,11 @@ enum class GreekFieldMask : std::uint32_t {
 // bit-identical scalar bundle. `fields` also drives the K4 first-order solve-skip
 // (need_vega = Vega|Volga|Vanna, need_rho = Rho, need_charm = Charm). Per-lane
 // status/route land in the workspace (ws.lane_status_view()/lane_route_view()). Returns
-// InvalidArgument on a span-length mismatch.
-[[nodiscard]] Status american_greeks_batch(const AmericanBatchInput& in,
-                                           GreekFieldMask fields,
-                                           simd::GreeksBatchSoA& greeks,
-                                           PricingKernel& kernel,
-                                           PricingWorkspace& ws);
+// the number of lanes written, or InvalidArgument on a span-length mismatch.
+[[nodiscard]] Result<std::size_t> american_greeks_batch(const AmericanBatchInput& in,
+                                                        GreekFieldMask fields,
+                                                        simd::GreeksBatchSoA& greeks,
+                                                        PricingKernel& kernel,
+                                                        PricingWorkspace& ws);
 
 } // namespace atx::vol

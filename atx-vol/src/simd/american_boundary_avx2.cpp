@@ -16,7 +16,7 @@
 #include "american_boundary_avx2_kernel.hpp"
 
 #include "atx/vol/american.hpp" // andersen_lake
-#include "atx/vol/counters.hpp" // BoundarySolves / AlBoundarySolves — per-contract ledger
+#include "atx/vol/detail/counters.hpp" // BoundarySolves / AlBoundarySolves — per-contract ledger
 
 #include <cstddef>
 #include <limits>

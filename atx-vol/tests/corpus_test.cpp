@@ -56,7 +56,7 @@
 #include "atx/vol/data.hpp"                 // iso_to_ns, year_fraction
 #include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
 #include "atx/vol/dispersion.hpp"           // DispersionUniverse, DroppedName
-#include "atx/vol/dispersion_run.hpp"       // format_corpus_phase_line (T-I4 probe gate)
+#include "atx/vol/research/dispersion_run.hpp"       // format_corpus_phase_line (T-I4 probe gate)
 #include "atx/vol/market_env.hpp"           // MarketEnv
 #include "atx/vol/panel.hpp"                // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/priced_surface.hpp"       // PricedSurface
@@ -596,6 +596,100 @@ void expect_view_batch_reproduces_fresh_fit(const PricedSurface &fresh, const Pr
 }
 
 } // namespace
+
+// ── 0b. Cooperative cancellation (S5-T26, plan item 5.5) ───────────────────
+//
+// `build_corpus` publishes the manifest and quality report only after EVERY date
+// has been written, so the safety argument for cancelling it is about what the
+// index does and does not claim: a cancelled build must never leave a manifest,
+// because the manifest is the assertion that the corpus is complete.
+
+// GATE. Cancelled specifically, no manifest published, and — the half that makes
+// this more than a status check — a plain re-run into the SAME directory
+// afterwards succeeds and yields what an uninterrupted build would have. That is
+// the "safely re-runnable" claim, tested rather than asserted.
+TEST(CorpusCancellation, CancelledBuildPublishesNoManifestAndTheRerunSucceeds) {
+  const fs::path out = fresh_out_dir("cancel");
+  const std::vector<std::string> dates = {"2026-06-17", "2026-06-18"};
+
+  // Counts fits STARTED, deterministically and with no wall-clock in any
+  // assertion: `on_inner_fit_workers` is called from inside a board's own fit
+  // (corpus.cpp `resolve_inner_budget`), so a board whose fit task returned
+  // before reaching `fit_board` contributes nothing to it.
+  std::atomic<std::size_t> fits_started{0};
+  CorpusFitTestHooks hooks;
+  hooks.on_inner_fit_workers = [&fits_started](std::size_t, std::size_t, unsigned) {
+    fits_started.fetch_add(1u, std::memory_order_relaxed);
+  };
+
+  std::atomic<bool> stop{true}; // requested up front: stops before the first date
+  CorpusConfig cfg;
+  cfg.cancel = CancelToken{stop};
+  cfg.test_hooks = &hooks;
+
+  auto cancelled = build_corpus(make_mixed_boards(dates), out.string(), cfg);
+  ASSERT_FALSE(cancelled.has_value()) << "a cancelled build must not return a manifest";
+  EXPECT_EQ(cancelled.error().code(), ErrorCode::Cancelled);
+
+  // The fan-out DRAINS instead of running to completion (review B I-1). When the
+  // only poll sat at the top of a DATE it was strictly downstream of every fit,
+  // so a cancelled build paid 100% of its dominant cost and then declined to
+  // write the manifest. The positive control after the re-run below is what
+  // keeps this zero from being vacuous.
+  EXPECT_EQ(fits_started.load(std::memory_order_relaxed), 0u)
+      << "a cancelled build still fitted boards: the stop is not reaching the fit fan-out";
+
+  std::error_code ec;
+  EXPECT_FALSE(fs::exists(out / "manifest.tsv", ec))
+      << "a cancelled build published a manifest — the corpus would claim to be complete";
+
+  // Re-run with the flag clear, into the same directory.
+  stop.store(false, std::memory_order_relaxed);
+  auto resumed = build_corpus(make_mixed_boards(dates), out.string(), cfg);
+  ASSERT_TRUE(resumed.has_value()) << resumed.error().to_string();
+  // POSITIVE CONTROL for the zero above: same fixture, same hook, no stop.
+  EXPECT_GT(fits_started.load(std::memory_order_relaxed), 0u)
+      << "the fit probe never fired at all, so the zero asserted above proves nothing";
+  EXPECT_TRUE(fs::exists(out / "manifest.tsv", ec));
+  EXPECT_EQ(resumed->n_boards, 4u);
+  EXPECT_EQ(resumed->n_ok, 4u);
+  EXPECT_EQ(resumed->n_failed, 0u);
+  ASSERT_EQ(resumed->dates.size(), 2u);
+
+  // And it matches a build that was never cancelled at all — the interrupted
+  // attempt left nothing behind that changes the outcome.
+  const fs::path reference = fresh_out_dir("cancel-reference");
+  auto clean = build_corpus(make_mixed_boards(dates), reference.string());
+  ASSERT_TRUE(clean.has_value()) << clean.error().to_string();
+  EXPECT_EQ(resumed->n_boards, clean->n_boards);
+  EXPECT_EQ(resumed->n_ok, clean->n_ok);
+  EXPECT_EQ(resumed->dates, clean->dates);
+}
+
+// GATE, determinism half. A live-but-never-set token must not change the built
+// corpus in any way.
+TEST(CorpusCancellation, AnUntriggeredTokenChangesNothing) {
+  const std::vector<std::string> dates = {"2026-06-17"};
+
+  const fs::path plain_dir = fresh_out_dir("cancel-plain");
+  auto plain = build_corpus(make_mixed_boards(dates), plain_dir.string());
+  ASSERT_TRUE(plain.has_value()) << plain.error().to_string();
+
+  std::atomic<bool> never{false};
+  CorpusConfig cfg;
+  cfg.cancel = CancelToken{never};
+  ASSERT_TRUE(cfg.cancel.stop_possible()); // negative control: the token is live
+
+  const fs::path tokened_dir = fresh_out_dir("cancel-tokened");
+  auto tokened = build_corpus(make_mixed_boards(dates), tokened_dir.string(), cfg);
+  ASSERT_TRUE(tokened.has_value()) << tokened.error().to_string();
+
+  EXPECT_EQ(tokened->n_boards, plain->n_boards);
+  EXPECT_EQ(tokened->n_ok, plain->n_ok);
+  EXPECT_EQ(tokened->n_failed, plain->n_failed);
+  EXPECT_EQ(tokened->dates, plain->dates);
+  EXPECT_EQ(tokened->n_skipped, plain->n_skipped);
+}
 
 // ── 1. Layout + curve-family mix ────────────────────────────────────────────
 TEST(Corpus, BuildCorpus_MultiDateMultiSymbol_LaysOutOneArchivePerDate) {

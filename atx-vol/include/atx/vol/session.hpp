@@ -52,15 +52,16 @@
 #include "atx/vol/american.hpp"        // AmericanGreeks (query return)
 #include "atx/vol/calib.hpp"           // CalibOpts
 #include "atx/vol/correction.hpp"      // CorrectionCache, AmericanCorrectionCaches
-#include "atx/vol/curve.hpp"           // DividendEvent
 #include "atx/vol/data.hpp"            // QuoteFrame (from_frame input)
 #include "atx/vol/deamer.hpp"          // DeAmOptions
+#include "atx/vol/detail/aggregate_arity.hpp" // SessionInputs field-count drift pin
 #include "atx/vol/event_vol.hpp"       // EventSchedule (SessionInputs::events), implied_emove
 #include "atx/vol/parity.hpp"          // ParityReport
-#include "atx/vol/prepared_policy.hpp" // PreparedObservationPolicy
+#include "atx/vol/detail/prepared_policy.hpp" // PreparedObservationPolicy
 #include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext (to_priced_surface)
 #include "atx/vol/projection.hpp"      // InterpMode (SessionInputs::interp, ShapeBlend eval)
 #include "atx/vol/query_pricing.hpp"   // QueryPricingTier
+#include "atx/vol/rates_curve.hpp"     // DividendEvent
 #include "atx/vol/surface_parity.hpp"  // SliceContext, run_surface_parity
 #include "atx/vol/types.hpp"           // Result, Side
 #include "atx/vol/universe.hpp"        // Underlying (build input)
@@ -76,13 +77,30 @@ class PricerFitter;
 // Market/pricing snapshot a session is built from. Maps 1:1 onto
 // `SurfaceParityInputs` when driving `run_surface_parity`; the same fields are
 // retained so the const queries can re-price off the fitted surface.
+//
+// CONSTRUCTION CONTRACT (v1, plan item 4.2) — DESIGNATED INITIALIZERS ONLY.
+// Build one with `make_session_inputs` / `apply_fit_preset` or set fields by
+// name; never `SessionInputs{a, b, c, ...}`. `curve_pinned` used to carry an
+// "appended for positional aggregate source compatibility" note, meaning it was
+// parked at the very end — two screens away from the `curve` field it is a
+// qualifier ON — solely so positional initializers kept compiling. It now sits
+// directly beneath `curve`, and the field-count `static_assert` below makes a
+// silent re-append a compile error.
+//
+// session.hpp is Tier-A (frozen v1 surface): this reorder is the LAST layout
+// change allowed here. After v1 the order is fixed and new knobs append at the
+// end WITHOUT any positional-compatibility promise.
 struct SessionInputs {
   double S{0.0}; // spot (> 0); the OpraPanel implied_spot when built from a frame
   double r{0.0}; // continuously-compounded rate (finite)
-  std::vector<double> expiry_rate_T;    // empty => legacy scalar r
-  std::vector<double> expiry_rates;     // aligned with expiry_rate_T
-  std::vector<DividendEvent> cash_divs; // discrete cash-dividend schedule
-  std::int64_t now_ts_ns{0};            // valuation timestamp (epoch ns)
+  // The three vectors carry an explicit `{}` so that EVERY member has a default
+  // member initializer: without one, naming any later field in a designated
+  // initializer trips -Wmissing-field-initializers, and this struct's contract is
+  // designated init. Value-identical to the implicit default construction.
+  std::vector<double> expiry_rate_T{};    // empty => legacy scalar r
+  std::vector<double> expiry_rates{};     // aligned with expiry_rate_T
+  std::vector<DividendEvent> cash_divs{}; // discrete cash-dividend schedule
+  std::int64_t now_ts_ns{0};              // valuation timestamp (epoch ns)
   DeAmOptions deam{};                   // borrow-implication + pricer method / AL opts
   CalibOpts calib{};                    // per-slice curve-fit policy
   // Curve family to fit. Essvi (default) is byte-identical to the historical
@@ -93,6 +111,13 @@ struct SessionInputs {
   // eSSVI/SVI knobs in curve.parametric (calib mirrors curve.parametric for the
   // default path).
   CurveConfig curve{VolCurveKind::Essvi};
+  // Qualifies `curve` above: true only when the caller selected `curve`
+  // explicitly and the fitter will not substitute another family. A pinned
+  // non-eSSVI LegacyCompatible/Cold surface may omit a correction cache when
+  // neither fit nor queries can read it; an auto-routed surface retains the cache
+  // because its fallback ladder can still publish eSSVI. Runtime policy only; not
+  // archived.
+  bool curve_pinned{false};
   double band_k{1.0}; // minimum-edge band multiplier (parity)
   // Build a per-side Chebyshev correction cache over the chain's (k, T, sigma)
   // box and route every American inversion / re-pricing through the fast cached
@@ -195,14 +220,16 @@ struct SessionInputs {
   // still used as a fallback for any slice that was never stamped
   // (`expiry_ns == 0`) -- see `solve_implied_emove`'s doc (session.cpp).
   TimeSpec time{};
-  // Appended for positional aggregate source compatibility. True only when the
-  // caller selected `curve` explicitly and the fitter will not substitute
-  // another family. A pinned non-eSSVI LegacyCompatible/Cold surface may omit a
-  // correction cache when neither fit nor queries can read it; an auto-routed
-  // surface retains the cache because its fallback ladder can still publish
-  // eSSVI. Runtime policy only; not archived.
-  bool curve_pinned{false};
 };
+
+// Drift pin (plan item 4.2). SessionInputs has exactly TWENTY-THREE fields.
+// Adding, removing or splitting one breaks this line, which is the point: it
+// forces whoever changes the struct to read the construction contract above
+// instead of appending a knob "for compatibility" with positional initializers
+// that are no longer part of the API.
+static_assert(detail::aggregate_arity_is_v<SessionInputs, 23>,
+              "SessionInputs field count changed: update this pin, and confirm every "
+              "construction site still initializes by field name.");
 
 // ── Named calibration presets ─────────────────────────────────────────────
 //
@@ -621,7 +648,22 @@ public:
   [[nodiscard]] Result<PricedSurface> to_priced_surface() const;
 
   // ── Introspection ──────────────────────────────────────────────────────────
-
+  //
+  // BORROW CONTRACT for every view this section hands out — `surface()`,
+  // `curve_override()`, `expiries()`, `parity()`, `slice_diagnostics()`,
+  // `diagnostics()` and `inputs()`. The SESSION owns all of that storage; the
+  // views own none of it, and each is valid exactly as long as this session
+  // object is. INVALIDATION is simple here because the session is immutable after
+  // construction (Thread-safety, above: `build`/`from_frame` are the only
+  // mutating entries and each returns a FRESH session rather than rewriting one),
+  // so nothing short of destroying the session invalidates a view — with one
+  // consequence worth stating: a refit produces a NEW session, so views taken
+  // from the old one keep naming the old object and must be re-taken. The session
+  // is MOVE-ONLY (Ownership, above), so there is no copy whose storage a stale
+  // view could be confused with; a plain move keeps element addresses valid, and
+  // a moved-from session's views must not be read. Because the state is
+  // immutable, holding these views across concurrent const readers is safe.
+  // Anything that must outlive the session gets copied out, not borrowed.
   [[nodiscard]] const VolSurface &surface() const noexcept { return surface_; }
 
   // The optional polymorphic-surface override (ConvexDense / Svi / C8):
@@ -650,6 +692,11 @@ public:
   // Effective, fully-resolved fit inputs retained by the session. Quality
   // scoring uses these so a direct/fallback OOS refit sees the same preset,
   // quote filter, dividends, carry, and pricer policy as the shipped surface.
+  //
+  // `deam.caches` is always EMPTY here: those pointers are a build-time borrow of
+  // caller-owned CorrectionCaches with no lifetime contract past `build`, so the
+  // session releases them rather than publishing a pointer it cannot vouch for.
+  // The session's own caches are `correction_caches()` / `correction_caches_at`.
   [[nodiscard]] const SessionInputs &inputs() const noexcept { return in_; }
 
   // ── Term carry accessors (the query re-pricing forward / effective yield) ──

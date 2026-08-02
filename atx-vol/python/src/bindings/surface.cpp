@@ -8,6 +8,7 @@
 #include <pybind11/stl.h>
 
 #include "atx/vol/batch.hpp"
+#include "atx/vol/detail/legacy_surface.hpp" // Svi/EssviSurface (demoted, S4-T21)
 #include "atx/vol/surface.hpp"
 #include "atx/vol/vol_surface.hpp"
 #include "result.hpp"
@@ -27,9 +28,9 @@ py::array_t<double> essvi_batch(const EssviSlice &slice, const DoubleArray &k_ar
   py::array_t<double> output(k_array.size());
   {
     py::gil_scoped_release release;
-    atxvol::python::unwrap(essvi_w_batch(
+    static_cast<void>(atxvol::python::unwrap(essvi_w_batch(
         slice, k,
-        std::span<double>{output.mutable_data(), static_cast<std::size_t>(output.size())}));
+        std::span<double>{output.mutable_data(), static_cast<std::size_t>(output.size())})));
   }
   return output;
 }

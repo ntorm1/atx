@@ -81,9 +81,9 @@ enum class CorpusDividendTreatment : std::uint8_t {
   EscrowedForward = 0,
 };
 
-// Per-board fit outcome, mirroring calib_pool.hpp's FitStatus but kept local so
-// this header carries no calibrator-pool dependency (the corpus never drives
-// calibrate_pool — see corpus.cpp for why).
+// Per-board fit outcome. Kept local to this header so it carries no calibrator
+// dependency: the corpus fits one board at a time through the blessed
+// PricerFitter path (see corpus.cpp for why).
 enum class CorpusFitStatus : std::uint8_t {
   Ok = 0,      // fit + snapshot succeeded; the surface is in its date's archive
   Failed = 1,  // chain build / fit / snapshot failed (see `error_code`)
@@ -351,6 +351,29 @@ struct CorpusConfig {
   bool warm_start_chain{false};
   // Options forwarded verbatim to every per-date archive write (ATXVSA2, S4).
   ArchiveV2WriteOpts write_opts{};
+  // Cooperative cancellation (plan item 5.5). Default-constructed => never
+  // cancels. Polled in TWO places, which is what makes a stop shorten the build
+  // rather than only change what it publishes:
+  //   * at the TOP OF EACH FIT TASK in the across-board fan-out — the dominant
+  //     cost of a build — so the queued boards drain at one relaxed load each
+  //     instead of fitting to completion;
+  //   * at the TOP OF EACH DATE in the write loop, before that date's archive is
+  //     written — the manifest guard, which also covers a stop requested after
+  //     the fan-out had already finished.
+  //
+  // A fit already IN FLIGHT is not abandoned: the stop is seen when a task is
+  // claimed, so the call returns once the boards already running finish.
+  //
+  // On a requested stop `build_corpus` returns `ErrorCode::Cancelled` and the
+  // manifest and quality report — the corpus's index, written only after every
+  // date completes — are never published. What remains on disk is per-date
+  // archive files with no manifest: byte-for-byte the state an interrupted build
+  // already leaves, which the build path is already required to overwrite. No
+  // date is ever half-written, because the check sits before that date's write
+  // and each archive is published tmp+rename.
+  //
+  // The referenced flag must outlive the build call.
+  CancelToken cancel{};
   // Test-only; null in production. Non-owning — the pointee must outlive the
   // build call. See CorpusFitTestHooks.
   const CorpusFitTestHooks *test_hooks{nullptr};

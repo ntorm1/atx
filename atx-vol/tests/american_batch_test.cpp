@@ -17,7 +17,7 @@
 #include "atx/vol/american_batch.hpp"
 
 #include "atx/vol/american.hpp"
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/simd/cpu.hpp"
 
 #include <atomic>
@@ -453,8 +453,10 @@ TEST(ResolvedAmericanPriceBatch, ExactMethodsOptionsMixedSidesAndLaneErrors) {
   const std::vector<Case> cases{
       {AmericanMethod::AndersenLake, std::optional<AlOpts>{al_fast_opts()}},
       {AmericanMethod::AndersenLake,
-       std::optional<AlOpts>{AlOpts{/*n_collocation=*/9, /*n_quadrature=*/32,
-                                    /*max_newton_iter=*/6, /*tol=*/3.0e-9}}},
+       std::optional<AlOpts>{AlOpts{.n_collocation = 9,
+                                    .n_quadrature = 32,
+                                    .max_newton_iter = 6,
+                                    .tol = 3.0e-9}}},
       {AmericanMethod::Baw, std::optional<AlOpts>{al_fast_opts()}},
   };
 
@@ -512,7 +514,7 @@ TEST(ResolvedAmericanPriceBatch, ValidatesEveryNonOwningSpan) {
       .status = status,
       .pack_dispatch = {},
   };
-  const Status result = american_price_batch_resolved(request);
+  const Result<std::size_t> result = american_price_batch_resolved(request);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
 }
@@ -545,7 +547,7 @@ TEST(ResolvedAmericanPriceBatch, RejectsShiftedSigmaPriceOverlapBeforeWritesOrCo
   if constexpr (counters::counters_enabled()) {
     counters::reset();
   }
-  const Status result = american_price_batch_resolved(request);
+  const Result<std::size_t> result = american_price_batch_resolved(request);
   ASSERT_FALSE(result.has_value());
   EXPECT_EQ(result.error().code(), ErrorCode::InvalidArgument);
   EXPECT_EQ(sigma_and_price, before);
@@ -888,7 +890,10 @@ INSTANTIATE_TEST_SUITE_P(
     Presets, ResolvedAmericanPriceBatchEngagedOpts,
     ::testing::Values(ResolvedAlOptsCase{"explicit_default", al_default_opts()},
                       ResolvedAlOptsCase{"fast", al_fast_opts()},
-                      ResolvedAlOptsCase{"custom", AlOpts{9, 32, 6, 3.0e-9}}),
+                      ResolvedAlOptsCase{"custom", AlOpts{.n_collocation = 9,
+                                                          .n_quadrature = 32,
+                                                          .max_newton_iter = 6,
+                                                          .tol = 3.0e-9}}),
     [](const ::testing::TestParamInfo<ResolvedAlOptsCase>& info) { return info.param.name; });
 
 struct AlSchemeMappingCase {
@@ -1027,23 +1032,51 @@ TEST_P(AmericanBoundaryBatchSchemeMapping, NormalAndStressGridsMatchForceScalar)
 INSTANTIATE_TEST_SUITE_P(
     SchemeBoundaries, AmericanBoundaryBatchSchemeMapping,
     ::testing::Values(
-        AlSchemeMappingCase{"n6_q8_i1_tight", AlOpts{6, 8, 1, 1.0e-14}},
-        AlSchemeMappingCase{"n7_q16_i32_loose", AlOpts{7, 16, 32, 1.0e-4}},
-        AlSchemeMappingCase{"n12_q24_i1_loose", AlOpts{12, 24, 1, 1.0e-4}},
-        AlSchemeMappingCase{"n16_q32_i32_tight", AlOpts{16, 32, 32, 1.0e-14}},
-        AlSchemeMappingCase{"n6_q48_i32_mid", AlOpts{6, 48, 32, 1.0e-9}},
-        AlSchemeMappingCase{"n7_q64_i1_mid", AlOpts{7, 64, 1, 1.0e-9}},
-        AlSchemeMappingCase{"n12_q8_i32_tight", AlOpts{12, 8, 32, 1.0e-14}},
-        AlSchemeMappingCase{"n16_q16_i1_loose", AlOpts{16, 16, 1, 1.0e-4}},
-        AlSchemeMappingCase{"n6_q24_i1_mid", AlOpts{6, 24, 1, 1.0e-9}},
-        AlSchemeMappingCase{"n7_q32_i32_tight", AlOpts{7, 32, 32, 1.0e-14}},
-        AlSchemeMappingCase{"n12_q48_i1_loose", AlOpts{12, 48, 1, 1.0e-4}},
-        AlSchemeMappingCase{"n16_q64_i32_mid", AlOpts{16, 64, 32, 1.0e-9}},
+        AlSchemeMappingCase{
+            "n6_q8_i1_tight",
+            AlOpts{.n_collocation = 6, .n_quadrature = 8, .max_newton_iter = 1, .tol = 1.0e-14}},
+        AlSchemeMappingCase{
+            "n7_q16_i32_loose",
+            AlOpts{.n_collocation = 7, .n_quadrature = 16, .max_newton_iter = 32, .tol = 1.0e-4}},
+        AlSchemeMappingCase{
+            "n12_q24_i1_loose",
+            AlOpts{.n_collocation = 12, .n_quadrature = 24, .max_newton_iter = 1, .tol = 1.0e-4}},
+        AlSchemeMappingCase{
+            "n16_q32_i32_tight",
+            AlOpts{.n_collocation = 16, .n_quadrature = 32, .max_newton_iter = 32, .tol = 1.0e-14}},
+        AlSchemeMappingCase{
+            "n6_q48_i32_mid",
+            AlOpts{.n_collocation = 6, .n_quadrature = 48, .max_newton_iter = 32, .tol = 1.0e-9}},
+        AlSchemeMappingCase{
+            "n7_q64_i1_mid",
+            AlOpts{.n_collocation = 7, .n_quadrature = 64, .max_newton_iter = 1, .tol = 1.0e-9}},
+        AlSchemeMappingCase{
+            "n12_q8_i32_tight",
+            AlOpts{.n_collocation = 12, .n_quadrature = 8, .max_newton_iter = 32, .tol = 1.0e-14}},
+        AlSchemeMappingCase{
+            "n16_q16_i1_loose",
+            AlOpts{.n_collocation = 16, .n_quadrature = 16, .max_newton_iter = 1, .tol = 1.0e-4}},
+        AlSchemeMappingCase{
+            "n6_q24_i1_mid",
+            AlOpts{.n_collocation = 6, .n_quadrature = 24, .max_newton_iter = 1, .tol = 1.0e-9}},
+        AlSchemeMappingCase{
+            "n7_q32_i32_tight",
+            AlOpts{.n_collocation = 7, .n_quadrature = 32, .max_newton_iter = 32, .tol = 1.0e-14}},
+        AlSchemeMappingCase{
+            "n12_q48_i1_loose",
+            AlOpts{.n_collocation = 12, .n_quadrature = 48, .max_newton_iter = 1, .tol = 1.0e-4}},
+        AlSchemeMappingCase{
+            "n16_q64_i32_mid",
+            AlOpts{.n_collocation = 16, .n_quadrature = 64, .max_newton_iter = 32, .tol = 1.0e-9}},
         // K2 ql_fast marks rung: nb=7, fp=8, 2 sweeps, DECOUPLED premium p=32. The
         // AVX2 batch's intended ship tier — a low sweep budget makes it the most
         // seed-sensitive production scheme, so it pins the 4-wide BAW seed's economic
         // parity vs the specialized scalar (7,8) baseline (kernel-stage1.md).
-        AlSchemeMappingCase{"n7_q8_i2_p32_qlfast", AlOpts{7, 8, 2, 1.0e-8, 32}}),
+        AlSchemeMappingCase{"n7_q8_i2_p32_qlfast", AlOpts{.n_collocation = 7,
+                                                         .n_quadrature = 8,
+                                                         .n_quad_price = 32,
+                                                         .max_newton_iter = 2,
+                                                         .tol = 1.0e-8}}),
     [](const ::testing::TestParamInfo<AlSchemeMappingCase>& info) {
       return info.param.name;
     });
@@ -1796,6 +1829,150 @@ TEST(AmericanGreeksBatch, I3_AnalyticRoutePutAndCallStampsAgree) {
     EXPECT_TRUE(std::isfinite(gm[i])) << "lane " << i << " gamma";
     EXPECT_TRUE(std::isfinite(th[i])) << "lane " << i << " theta";
   }
+}
+
+// ── 4.3 error model: the three entries report through Result<std::size_t> ──
+//
+// All three used to return `Status` beside an out-param (`PriceBatchOutput&`, a
+// request struct's output spans, a `GreeksBatchSoA&`), so the only thing a
+// caller could learn from the return was "not Ok". Nothing read the messages,
+// which is how three distinct boundary rejections could have collapsed into one
+// without a failing test. Pin the exact Error each carries, and the lane count a
+// success carries.
+
+TEST(AmericanBatchErrorModel, EveryEntryCarriesItsExactRejectionThroughResult) {
+  IsaGuard g;
+  const std::vector<double> full(4, 1.0);
+  const std::vector<double> shorter(3, 1.0);
+  const std::vector<Side> sides(4, Side::Put);
+  AmericanBatchInput ragged{full, shorter, full, full, full, full, sides}; // K shorter
+  PricingKernel kernel;
+  PricingWorkspace ws;
+
+  PriceBatchOutput out;
+  const Result<std::size_t> priced = american_price_batch(ragged, out, kernel, ws);
+  ASSERT_FALSE(priced.has_value());
+  EXPECT_EQ(priced.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(priced.error().message(), "american_price_batch: input span length mismatch");
+
+  simd::GreeksBatchSoA soa;
+  const Result<std::size_t> greeked =
+      american_greeks_batch(ragged, GreekFieldMask::All, soa, kernel, ws);
+  ASSERT_FALSE(greeked.has_value());
+  EXPECT_EQ(greeked.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(greeked.error().message(), "american_greeks_batch: input span length mismatch");
+
+  // The resolved entry has TWO distinct rejections; both stay distinguishable.
+  const std::vector<double> strikes{90.0, 100.0};
+  const std::vector<double> one_sigma{0.2};
+  const std::vector<Side> two_sides{Side::Put, Side::Call};
+  std::vector<double> prices(2);
+  std::vector<Status> status(2);
+  const Result<std::size_t> ragged_request =
+      american_price_batch_resolved(ResolvedAmericanPriceBatchRequest{
+          .S = 100.0,
+          .T = 0.5,
+          .r = 0.04,
+          .q = 0.01,
+          .K = strikes,
+          .sigma = one_sigma,
+          .side = two_sides,
+          .method = AmericanMethod::AndersenLake,
+          .al_opts = std::optional<AlOpts>{al_fast_opts()},
+          .isa = simd::SimdIsa::Auto,
+          .price = prices,
+          .status = status,
+          .pack_dispatch = {},
+      });
+  ASSERT_FALSE(ragged_request.has_value());
+  EXPECT_EQ(ragged_request.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(ragged_request.error().message(),
+            "american_price_batch_resolved: input/output span length mismatch");
+
+  std::vector<double> sigma_and_price{0.20, 0.30, 777.0};
+  const Result<std::size_t> overlapping =
+      american_price_batch_resolved(ResolvedAmericanPriceBatchRequest{
+          .S = 100.0,
+          .T = 0.73,
+          .r = 0.04,
+          .q = 0.06,
+          .K = strikes,
+          .sigma = std::span<const double>{sigma_and_price.data(), 2},
+          .side = two_sides,
+          .method = AmericanMethod::AndersenLake,
+          .al_opts = std::optional<AlOpts>{al_fast_opts()},
+          .isa = simd::SimdIsa::Auto,
+          .price = std::span<double>{sigma_and_price.data() + 1, 2},
+          .status = status,
+          .pack_dispatch = {},
+      });
+  ASSERT_FALSE(overlapping.has_value());
+  EXPECT_EQ(overlapping.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_EQ(overlapping.error().message(),
+            "american_price_batch_resolved: input/output spans overlap");
+}
+
+TEST(AmericanBatchErrorModel, EveryEntryCarriesTheLaneCountItWrote) {
+  IsaGuard g;
+  const Book b = make_book();
+  const std::size_t n = b.size();
+  PricingKernel kernel;
+  kernel.isa = simd::SimdIsa::ForceScalar;
+  PricingWorkspace ws;
+
+  PriceBatchOutput out;
+  const Result<std::size_t> priced = american_price_batch(b.view(), out, kernel, ws);
+  ASSERT_TRUE(priced.has_value());
+  EXPECT_EQ(*priced, n);
+  EXPECT_EQ(*priced, out.size());
+
+  std::vector<double> dl(n), gm(n), vg(n), th(n), rh(n), vn(n), vl(n), ch(n), px(n);
+  simd::GreeksBatchSoA soa;
+  soa.delta = dl.data();
+  soa.gamma = gm.data();
+  soa.vega = vg.data();
+  soa.theta = th.data();
+  soa.rho = rh.data();
+  soa.vanna = vn.data();
+  soa.volga = vl.data();
+  soa.charm = ch.data();
+  soa.price = px.data();
+  const Result<std::size_t> greeked =
+      american_greeks_batch(b.view(), GreekFieldMask::All, soa, kernel, ws);
+  ASSERT_TRUE(greeked.has_value());
+  EXPECT_EQ(*greeked, n);
+  EXPECT_EQ(*greeked, ws.lane_status_view().size());
+
+  const std::vector<double> strikes{90.0, 100.0, 110.0};
+  const std::vector<double> sigma{0.20, 0.25, 0.30};
+  const std::vector<Side> sides{Side::Put, Side::Put, Side::Call};
+  std::vector<double> prices(3);
+  std::vector<Status> status(3);
+  const Result<std::size_t> resolved =
+      american_price_batch_resolved(ResolvedAmericanPriceBatchRequest{
+          .S = 100.0,
+          .T = 0.5,
+          .r = 0.04,
+          .q = 0.01,
+          .K = strikes,
+          .sigma = sigma,
+          .side = sides,
+          .method = AmericanMethod::AndersenLake,
+          .al_opts = std::optional<AlOpts>{al_fast_opts()},
+          .isa = simd::SimdIsa::ForceScalar,
+          .price = prices,
+          .status = status,
+          .pack_dispatch = {},
+      });
+  ASSERT_TRUE(resolved.has_value());
+  EXPECT_EQ(*resolved, strikes.size());
+
+  // An empty book is a well-formed zero-lane call, not a rejection.
+  AmericanBatchInput empty;
+  PriceBatchOutput empty_out;
+  const Result<std::size_t> none = american_price_batch(empty, empty_out, kernel, ws);
+  ASSERT_TRUE(none.has_value());
+  EXPECT_EQ(*none, 0u);
 }
 
 } // namespace

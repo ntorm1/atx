@@ -12,9 +12,9 @@
 #include "atx/vol/american.hpp"
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp"
-#include "atx/vol/dispersion_run.hpp" // make_listed_replay_run_config (F5 guard, FIX-F N2)
+#include "atx/vol/research/dispersion_run.hpp" // make_listed_replay_run_config (F5 guard, FIX-F N2)
 #include "atx/vol/listed_dispersion.hpp"
-#include "atx/vol/listed_dispersion_reconciliation.hpp" // ListedReconciliationConfig (shared tol)
+#include "atx/vol/research/listed_dispersion_reconciliation.hpp" // ListedReconciliationConfig (shared tol)
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/listed_dispersion_strategy.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
@@ -1026,28 +1026,30 @@ TEST(ListedDispersionStrategy, AStrategyThatCannotEnumerateItsNamesStillLoadsThe
 
 // F5 review follow-up. The engine never subsets a caller-SUPPLIED cache — it
 // cannot know what else the caller will serve from it — so any driver that
-// supplies its own cache silently opted out of F5. `dispersion_run_backtest`
-// does exactly that (it shares one cache between the replay and the
-// reconciliation pass), which left F5 inert on the listed `run-backtest`: the
-// very path whose premise motivated the task.
+// supplies its own cache silently opted out of F5. The listed replay does
+// exactly that (it shares one cache between the replay and the reconciliation
+// pass), which left F5 inert on the listed `run-backtest`: the very path whose
+// premise motivated the task.
 //
 // The fix is at the CALL SITE, not in the engine: a caller that knows its
 // referenced set constructs the cache with it.
 //
-// FIX-F N2 — this guard used to REBUILD that construction inline, under the
-// comment "verbatim the construction dispersion_run_backtest performs". A
-// comment cannot fail: reverting the production subsetting left the entire
-// `atx_vol` label green, which is exactly the blind spot that let F5 ship inert
-// on this path to begin with. Every branch below now runs the config that
-// `dispersion_run_backtest` itself runs, by calling the same
+// FIX-F N2 — this guard used to REBUILD that construction inline, under a
+// "verbatim the construction the listed replay performs" comment. A comment
+// cannot fail: reverting the production subsetting left the entire `atx_vol`
+// label green, which is exactly the blind spot that let F5 ship inert on this
+// path to begin with. Every branch below now runs the config the shipped
+// `run_backtest_command` (spy_dispersion_backtest.cpp) runs, by calling the same
 // `make_listed_replay_run_config`, so a revert of the subsetting turns this
-// test red.
+// test red. (S3-T17 deleted the library twin that used to be the other caller;
+// the shipped command is now the only one, which makes this guard the ONLY
+// executable statement of the construction.)
 TEST(ListedDispersionStrategy, ASuppliedCacheSubsetsOnlyWhenTheCallerNamesTheUids) {
   const F2Fixture fx = make_wide_fixture("f5-supplied-cache", /*n_filler=*/6);
   auto clock = Clock::from_manifest(fx.manifest);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
 
-  // The spec defaults `dispersion_run_backtest` reaches this function with: the
+  // The spec defaults the shipped listed replay reaches this function with: the
   // engine config is F4's, and only the cache is under test here.
   const DispersionRunConfig run_config{};
 

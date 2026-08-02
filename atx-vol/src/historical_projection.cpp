@@ -8,7 +8,7 @@
 
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"
-#include "atx/vol/parallel_for.hpp"
+#include "atx/vol/detail/parallel_for.hpp"
 
 namespace atx::vol {
 

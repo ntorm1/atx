@@ -19,11 +19,12 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/detail/log_emit.hpp"
 #include "atx/vol/calib.hpp"  // build_observations_european, ObsSet, FitObs
 #include "atx/vol/deamer.hpp" // resolve_chain_forward, european_equiv_iv, otm_side, DeAmOptions
-#include "atx/vol/parallel_for.hpp"     // parallel_for (block-partition fan-out)
+#include "atx/vol/detail/parallel_for.hpp"     // parallel_for (block-partition fan-out)
 #include "atx/vol/parity.hpp"           // chain_parity, ParityInputs, ParityReport
-#include "atx/vol/prepared_fitting.hpp" // canonical configured preparation
+#include "atx/vol/detail/prepared_fitting.hpp" // canonical configured preparation
 #include "atx/vol/universe.hpp"         // Chain, chain_index
 
 namespace atx::vol {
@@ -105,7 +106,7 @@ enum class SlicePrepOutcome : std::uint8_t {
 // AT MOST one worker (its own chain index) and read only after every worker has
 // joined (parallel_for's scope-exit barrier) — no cross-thread reduction, pure
 // const reads of `under`/`in`, disjoint writes into `slot[i]`. Bit-identical for
-// any worker count (the value_chain / calibrate_pool determinism pattern).
+// any worker count (the value_chain / parallel_for determinism pattern).
 struct ChainPrepass {
   bool usable = false;
   // Carry resolution failed (or produced a degenerate forward): the chain is
@@ -761,9 +762,10 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         // fit defect (e.g. SplineVol ill-conditioning on boards eSSVI fits). No
         // behavioural change; getenv runs only on the already-failed branch.
         if (slice_debug_enabled()) {
-          std::fprintf(stderr, "[slice-drop] kind=%d T=%.4f F=%.2f obs=%zu err=%s\n",
-                       static_cast<int>(cfg.kind), T, F, prepared.fit_observations().size(),
-                       slice_res.error().to_string().c_str());
+          detail::log_emitf(LogLevel::Warn, LogStream::Stderr,
+                            "[slice-drop] kind=%d T=%.4f F=%.2f obs=%zu err=%s",
+                            static_cast<int>(cfg.kind), T, F, prepared.fit_observations().size(),
+                            slice_res.error().to_string().c_str());
         }
         // W3.4 (F4): record the fit failure and, under the completeness contract,
         // propagate a HARD fit error (e.g. a non-converged QP `Internal`) instead
@@ -912,13 +914,14 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     if (!profile) {
       return Ok(std::move(out));
     }
-    std::fprintf(stderr,
-                 "[ATX_VOL_PROFILE] curve_fit_total=%.3fms prepass_wall=%.3fms "
-                 "forward_borrow_sum=%.3fms obs_eu_sum=%.3fms fit_slice_sum=%.3fms "
-                 "chain_parity_sum=%.3fms usable=%zu "
-                 "slices=%zu quotes=%zu workers=%u\n",
-                 elapsed_ms(t_fit0, ProfileClock::now()), ms_prepass, ms_forward_borrow, ms_obs_eu,
-                 ms_fit_slice, ms_chain_parity, n_usable, out.n_slices, n_quotes, in.fit_workers);
+    detail::log_emitf(LogLevel::Info, LogStream::Stderr,
+                      "[ATX_VOL_PROFILE] curve_fit_total=%.3fms prepass_wall=%.3fms "
+                      "forward_borrow_sum=%.3fms obs_eu_sum=%.3fms fit_slice_sum=%.3fms "
+                      "chain_parity_sum=%.3fms usable=%zu "
+                      "slices=%zu quotes=%zu workers=%u",
+                      elapsed_ms(t_fit0, ProfileClock::now()), ms_prepass, ms_forward_borrow,
+                      ms_obs_eu, ms_fit_slice, ms_chain_parity, n_usable, out.n_slices, n_quotes,
+                      in.fit_workers);
   }
   return Ok(std::move(out));
 }

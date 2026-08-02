@@ -67,9 +67,16 @@ struct PutPackBoundary {
 };
 
 // Solve a pack of up-to-4 puts. `bnd`/`ws` are caller-owned scratch (>=4 each) whose
-// geometry `out` borrows. `eligible[l]` (out) is false for a degenerate / non-American
-// / collapse lane the caller must patch to scalar; `ref` (out) is the first eligible
-// lane index, or -1 if none (then `out` is not filled and the caller patches all 4).
+// geometry `out` borrows. `eligible[l]` (out) is false for a lane the caller must
+// patch to scalar: a degenerate / non-American / collapse lane, OR — decided during
+// the sweeps, not up front — a lane whose sweep froze at EVERY movable collocation
+// node, which is the scalar solve's NotConverged corner (see step 3).
+// `ref` (out) is the first lane eligible BEFORE the sweeps — the pack's geometry
+// reference — or -1 if none (then `out` is not filled and the caller patches all 4).
+// It is deliberately NOT re-derived when a sweep later drops a lane: the geometry
+// `out` borrows from `bnd[ref]` (collocation nodes, barycentric weights, quadrature
+// tables) is scheme-fixed and identical in every lane, so it stays valid for the
+// surviving lanes, and both callers only ever test `ref < 0`.
 // NOT force-inline: the K3 greeks kernel calls this 5x + price 13x per pack; forcing
 // all 18 into one frame overflows the Debug stack. Plain `inline` (ODR across the two
 // *_avx2.cpp TUs) lets Debug keep them as real calls with reused frames.
@@ -350,9 +357,18 @@ inline void solve_put_boundary_pack_avx2(
     };
 
     // ── 3. Vector sweeps: one JN/FP pass → per-lane max|Δy| ───────────
+    //
+    // `all_frozen_out` mirrors the scalar AlSweepResult::all_frozen (american.cpp,
+    // item 1.7): a lane in which EVERY movable node (tau > 0) had its fixed-point
+    // denominator D collapse, so the sweep moved nothing. Its max|Δy| is 0 not
+    // because the boundary converged but because there was no equation to solve, and
+    // the two states must not be confused — otherwise the pack prices that lane off
+    // its own BAW seed while the scalar route reports NotConverged.
     __m256d nextY[amer::kAlMaxNodes];
-    auto do_sweep = [&](bool newton) {
+    auto do_sweep = [&](bool newton, __m256d& all_frozen_out) {
         __m256d maxdy = zero;
+        __m256d n_movable = zero;
+        __m256d n_frozen = zero;
         nextY[0] = Y[0];
         for (unsigned nodei = 1; nodei < nb; ++nodei) {
             const __m256d tau = TAU[nodei];
@@ -392,17 +408,34 @@ inline void solve_put_boundary_pack_avx2(
             dy = _mm256_and_pd(dy, _mm256_and_pd(tau_gt, Dvalid));
             dy = _mm256_and_pd(dy, active);
             maxdy = _mm256_max_pd(maxdy, dy);
+            // Movable / frozen tallies, matching al_jn_sweep_impl's n_movable and
+            // n_frozen. Node counts are <= kAlMaxNodes, exact in double.
+            n_movable = _mm256_add_pd(n_movable, _mm256_and_pd(one, tau_gt));
+            n_frozen = _mm256_add_pd(n_frozen,
+                                     _mm256_and_pd(one, _mm256_andnot_pd(Dvalid, tau_gt)));
             const __m256d val = k_sel(tau_gt, k_sel(Dvalid, y_new, Y[nodei]), zero);
             nextY[nodei] = k_sel(active, val, Y[nodei]);
         }
         for (unsigned j = 0; j < nb; ++j) {
             Y[j] = nextY[j];
         }
+        all_frozen_out = _mm256_and_pd(_mm256_cmp_pd(n_movable, zero, _CMP_GT_OQ),
+                                       _mm256_cmp_pd(n_frozen, n_movable, _CMP_EQ_OQ));
         return maxdy;
     };
 
+    // Lanes whose sweep froze at every movable node. Recorded BEFORE the tol test,
+    // exactly as al_solve_put_boundary orders the two checks — a frozen sweep's
+    // maxdy is 0 and would otherwise read as an immediate convergence — and masked
+    // by the PRE-update `active` so a lane that already converged (and whose Y is
+    // therefore held fixed) cannot be retro-flagged by a later lockstep sweep.
+    __m256d frozen_fail = zero;
     for (std::uint16_t k = 0; k < sch.n_iter_jn; ++k) {
-        const __m256d maxdy = do_sweep(/*newton=*/true);
+        __m256d all_frozen = zero;
+        const __m256d maxdy = do_sweep(/*newton=*/true, all_frozen);
+        const __m256d froze_now = _mm256_and_pd(all_frozen, active);
+        frozen_fail = _mm256_or_pd(frozen_fail, froze_now);
+        active = _mm256_andnot_pd(froze_now, active);
         active = _mm256_andnot_pd(_mm256_cmp_pd(maxdy, TOL, _CMP_LE_OQ), active);
         if (_mm256_movemask_pd(active) == 0) {
             break;
@@ -410,11 +443,25 @@ inline void solve_put_boundary_pack_avx2(
     }
     if (_mm256_movemask_pd(active) != 0) {
         for (std::uint16_t k = 0; k < sch.n_iter_fp; ++k) {
-            const __m256d maxdy = do_sweep(/*newton=*/false);
+            __m256d all_frozen = zero;
+            const __m256d maxdy = do_sweep(/*newton=*/false, all_frozen);
+            const __m256d froze_now = _mm256_and_pd(all_frozen, active);
+            frozen_fail = _mm256_or_pd(frozen_fail, froze_now);
+            active = _mm256_andnot_pd(froze_now, active);
             active = _mm256_andnot_pd(_mm256_cmp_pd(maxdy, TOL, _CMP_LE_OQ), active);
             if (_mm256_movemask_pd(active) == 0) {
                 break;
             }
+        }
+    }
+
+    // Fold the frozen-sweep failures into `eligible`: the vector kernel has no error
+    // channel, so the lane is handed to the caller's scalar patch, which runs the
+    // same solve and returns its NotConverged. Both routes then agree.
+    const int frozen_bits = _mm256_movemask_pd(frozen_fail);
+    for (std::size_t l = 0; l < n; ++l) {
+        if ((frozen_bits & (1 << static_cast<int>(l))) != 0) {
+            eligible[l] = false;
         }
     }
 

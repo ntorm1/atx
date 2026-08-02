@@ -23,7 +23,7 @@
 
 #include "atx/vol/american.hpp"         // AmericanGreeks, american_price, AlOpts
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
-#include "atx/vol/pricing_executor.hpp" // pricing_executor(): the shared P1.4 pool
+#include "atx/vol/detail/pricing_executor.hpp" // pricing_executor(): the shared P1.4 pool
 
 #include "american_boundary.hpp" // amer:: boundary seam (A7 spot-axis reuse)
 
@@ -412,8 +412,9 @@ Result<ScenarioGridResult> scenario_grid(const std::vector<Position> &book, cons
             }
             return;
           }
-          // Collapsed / table-missing: fall through so the lane takes american_price's
-          // own error handling (Err -> NaN -> fallback), unchanged.
+          // Collapsed / table-missing / frozen-sweep NotConverged: fall through so the
+          // lane takes american_price's own error handling (Err -> NaN -> fallback),
+          // unchanged.
         }
 
         // Cold arm: the pre-A7 path, one `american_price` per Exact cell of this column.

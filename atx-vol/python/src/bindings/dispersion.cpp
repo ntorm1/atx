@@ -27,8 +27,8 @@
 
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/dispersion.hpp"
-#include "atx/vol/dispersion_backtest.hpp"
-#include "atx/vol/dispersion_workflow.hpp"
+#include "atx/vol/research/dispersion_backtest.hpp"
+#include "atx/vol/research/dispersion_workflow.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/listed_dispersion_strategy.hpp"
 #include "atx/vol/strategy.hpp"
@@ -116,22 +116,27 @@ void bind_dispersion(py::module_ &m) {
       },
       py::arg("path"), "Read a point-in-time universe_schedule.tsv.");
 
+  // `index_symbol` is a C++ REQUIRED argument (its "SPY" default was removed
+  // because four library call sites silently took it) but stays an OPTIONAL
+  // Python keyword defaulted to "SPY", so this module's API is unchanged —
+  // matching how `make_dispersion_backtest_strategy` is already bound below.
   m.def(
       "universe_at",
-      [](const std::vector<UniverseRow> &rows, const std::string &date) {
+      [](const std::vector<UniverseRow> &rows, const std::string &date,
+         const std::string &index_symbol) {
         return atxvol::python::unwrap(
-            universe_at(std::span<const UniverseRow>{rows}, date));
+            universe_at(std::span<const UniverseRow>{rows}, date, index_symbol));
       },
-      py::arg("rows"), py::arg("date"),
-      "Snap the universe as of `date`: SPY is the index leg, every other symbol "
-      "whose effective_date <= date is a basket name.");
+      py::arg("rows"), py::arg("date"), py::arg("index_symbol") = "SPY",
+      "Snap the universe as of `date`: `index_symbol` is the index leg, every "
+      "other symbol whose effective_date <= date is a basket name.");
 
   m.def(
       "all_symbols",
-      [](const std::vector<UniverseRow> &rows) {
-        return all_symbols(std::span<const UniverseRow>{rows});
+      [](const std::vector<UniverseRow> &rows, const std::string &index_symbol) {
+        return all_symbols(std::span<const UniverseRow>{rows}, index_symbol);
       },
-      py::arg("rows"));
+      py::arg("rows"), py::arg("index_symbol") = "SPY");
 
   // ── Projection route ──
   py::enum_<WeightingScheme>(m, "WeightingScheme")

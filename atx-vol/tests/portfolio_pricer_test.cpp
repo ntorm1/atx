@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -24,6 +25,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -31,7 +33,7 @@
 #include "atx/vol/american.hpp" // american_greeks_fd — G1 kernel-defect probe
 #include "atx/vol/black76.hpp"
 #include "atx/vol/detail/adjoint_greeks.hpp" // american_greeks_adjoint — FIX-5/I1 probe
-#include "atx/vol/counters.hpp"
+#include "atx/vol/detail/counters.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/simd/cpu.hpp"  // simd::have_avx2 — ship-gate route expectations
@@ -4699,4 +4701,297 @@ TEST(PortfolioPricer, G2_RiskBuckets_And_Carry_ThreadCountInvariant) {
     }
     EXPECT_TRUE(totals_bits_equal(g1, g4));
   }
+}
+
+// ── S1-T1 / 1.1: the RETURNING convenience overloads are concurrent-const-safe ──
+//
+// portfolio_pricer.hpp's thread-safety contract promises "one pricer may be
+// queried from many threads" because `price` / `pnl_explain` are const. H4 then
+// added a lazily-created `mutable unique_ptr<PortfolioWorkspace> returning_ws_`
+// that BOTH const overloads created and mutated, so two concurrent const calls on
+// one pricer raced on the shared scratch (the lazy creation itself, the retained
+// PreparedPortfolio, and every per-unique SoA slot) — a data race, i.e. UB, not a
+// merely stale number. These two tests hammer the returning overloads from several
+// threads and require each thread's result to be BIT-IDENTICAL to the serial one.
+//
+// A race is not deterministically assertable on this platform: pre-fix these fail
+// intermittently (or produce garbage/crash under the sanitizers) rather than every
+// run. The load-bearing, reviewer-verifiable half of the fix is structural — the
+// shared mutable member is GONE and each returning call owns its workspace.
+namespace {
+
+constexpr unsigned kConcurrentQueryThreads = 8;
+constexpr int kConcurrentQueryIters = 24;
+
+} // namespace
+
+TEST(PortfolioPricer, Price_ReturningOverloadQueriedFromManyThreads_MatchesSerialFrame) {
+  const PricedSurface s1 = make_essvi(1, 3);
+  const PricedSurface s2 = make_essvi(2, 3);
+  const SurfaceSet surfaces = set_of({&s1, &s2});
+  auto pf = Portfolio::create(two_by_three_book());
+  ASSERT_TRUE(pf.has_value()) << pf.error().to_string();
+  const PortfolioPricer pricer(std::move(*pf));
+
+  const auto serial = pricer.price(surfaces);
+  ASSERT_TRUE(serial.has_value()) << serial.error().to_string();
+
+  std::vector<PriceFrame> observed(kConcurrentQueryThreads);
+  std::atomic<int> failures{0};
+  {
+    std::vector<std::jthread> workers;
+    workers.reserve(kConcurrentQueryThreads);
+    for (unsigned t = 0; t < kConcurrentQueryThreads; ++t) {
+      workers.emplace_back([&pricer, &surfaces, &observed, &failures, t] {
+        for (int iter = 0; iter < kConcurrentQueryIters; ++iter) {
+          auto frame = pricer.price(surfaces);
+          if (!frame.has_value()) {
+            failures.fetch_add(1, std::memory_order_relaxed);
+            return;
+          }
+          observed[t] = std::move(*frame);
+        }
+      });
+    }
+  }
+
+  ASSERT_EQ(failures.load(std::memory_order_relaxed), 0);
+  for (unsigned t = 0; t < kConcurrentQueryThreads; ++t) {
+    SCOPED_TRACE(t);
+    expect_frame_bit_identical(observed[t], *serial);
+  }
+}
+
+TEST(PortfolioPricer, PnlExplain_ReturningOverloadQueriedFromManyThreads_MatchesSerialFrame) {
+  const PnlSurfaces surf;
+  const SurfaceSet base = surf.base();
+  const SurfaceSet shifted = surf.shifted();
+  auto pf = Portfolio::create(pnl_multi_book());
+  ASSERT_TRUE(pf.has_value()) << pf.error().to_string();
+  const PortfolioPricer pricer(std::move(*pf));
+
+  const auto serial = pricer.pnl_explain(base, shifted);
+  ASSERT_TRUE(serial.has_value()) << serial.error().to_string();
+
+  std::vector<PnlFrame> observed(kConcurrentQueryThreads);
+  std::atomic<int> failures{0};
+  {
+    std::vector<std::jthread> workers;
+    workers.reserve(kConcurrentQueryThreads);
+    for (unsigned t = 0; t < kConcurrentQueryThreads; ++t) {
+      workers.emplace_back([&pricer, &base, &shifted, &observed, &failures, t] {
+        for (int iter = 0; iter < kConcurrentQueryIters; ++iter) {
+          auto frame = pricer.pnl_explain(base, shifted);
+          if (!frame.has_value()) {
+            failures.fetch_add(1, std::memory_order_relaxed);
+            return;
+          }
+          observed[t] = std::move(*frame);
+        }
+      });
+    }
+  }
+
+  ASSERT_EQ(failures.load(std::memory_order_relaxed), 0);
+  for (unsigned t = 0; t < kConcurrentQueryThreads; ++t) {
+    SCOPED_TRACE(t);
+    expect_pnl_frame_bit_identical(observed[t], *serial);
+  }
+}
+
+// ── S1-T1 / 1.4: a non-finite VegaSlope must not poison the whole book's delta ──
+//
+// `PriceOptions::skew_adjusted_delta` publishes `delta + VegaSlope * vega` as the
+// delta column AND as `PriceTotals::delta`. `priced_surface_skew_slope` returns
+// NaN whenever its central FD stencil (k_log +/- 1e-4, mapped back through the
+// surface's own forward) lands where `total_variance` declines to serve -- and
+// `solve_span` computed `vega_slope` AFTER stamping the lane Ok and never checked
+// it. `reduce_price_totals` gates on STATUS alone, so ONE deep-wing NaN slope
+// NaN'd the entire book's delta while every lane still read Ok: the same "no NaN
+// enters a total" breach the four existing Ok-stamps (G1 / FIX-1 / FIX-3 / FIX-5)
+// exist to prevent, reached through the one column those stamps do not cover.
+//
+// Trigger: a strike at DBL_MAX. The contract is NOT degenerate (finite, > 0) and
+// prices cleanly -- a call struck there is worth 0 and every FD Greek is 0 -- but
+// the slope's upper stencil point is `K * exp(+1e-4)`, which overflows the double
+// strike axis, so `total_variance(+inf, T)` is NaN and the slope is NaN.
+//
+// Behaviour chosen for the poisoned lane: DEMOTE IT TO NumericError, not "fall
+// back to the unadjusted delta". That is what this file already does with every
+// other non-finite requested output (solve_span's four Ok-stamps), it keeps the
+// lane NaN-isolated out of the totals, and it never silently publishes a
+// different economic quantity (the RAW delta) under a column the caller asked to
+// be skew-adjusted -- the same reasoning PriceTotals uses for NaN-not-0.0.
+TEST(PortfolioPricer, SkewAdjustedDelta_NonFiniteVegaSlopeLaneDemotedAndTotalsStayFinite) {
+  constexpr double kWingK = (std::numeric_limits<double>::max)();
+  const PricedSurface surface = make_essvi(1, 3);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 100.0, 0.15, Side::Call}, +5.0, 100.0},  // healthy lane
+      {/*id*/ 2, {1, kWingK, 0.15, Side::Call}, +3.0, 100.0}, // NaN skew slope
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value()) << pf.error().to_string();
+  const PortfolioPricer pricer(std::move(*pf));
+
+  // Precondition: WITHOUT the skew flag the wing lane prices fine, so anything the
+  // adjusted run does to it is attributable to the slope and to nothing else.
+  const auto raw = pricer.price(surfaces);
+  ASSERT_TRUE(raw.has_value()) << raw.error().to_string();
+  ASSERT_EQ(raw->size(), 2u);
+  ASSERT_EQ(raw->status[0], PriceStatus::Ok);
+  ASSERT_EQ(raw->status[1], PriceStatus::Ok);
+  ASSERT_EQ(raw->total.n_ok, 2u);
+
+  const auto adjusted = pricer.price(surfaces, PriceOptions{.skew_adjusted_delta = true});
+  ASSERT_TRUE(adjusted.has_value()) << adjusted.error().to_string();
+  const PriceFrame &f = *adjusted;
+  ASSERT_EQ(f.size(), 2u);
+
+  EXPECT_EQ(f.status[0], PriceStatus::Ok);
+  // Pre-fix: Ok, with a NaN delta column and a NaN book delta.
+  EXPECT_EQ(f.status[1], PriceStatus::NumericError);
+  EXPECT_EQ(f.total.n_ok, 1u);
+
+  // The healthy position's aggregate risk survives intact.
+  EXPECT_TRUE(std::isfinite(f.delta[0]));
+  EXPECT_TRUE(std::isfinite(f.total.delta));
+  EXPECT_TRUE(std::isfinite(f.total.vega));
+  EXPECT_TRUE(std::isfinite(f.total.gamma));
+  EXPECT_TRUE(std::isfinite(f.total.pv));
+  EXPECT_TRUE(bits_equal(f.total.delta, f.delta[0]));
+  // ... and the demoted lane is NaN-isolated exactly like every other error lane.
+  EXPECT_FALSE(std::isfinite(f.delta[1]));
+  EXPECT_FALSE(std::isfinite(f.pv[1]));
+}
+
+// The healthy-input half: a book with no pathological wing must be bit-identical
+// under `skew_adjusted_delta` before and after the demotion guard, i.e. the guard
+// only ever fires on a lane whose slope is genuinely non-finite. Pinned against an
+// independently recomputed VegaSlope oracle (h = 1e-4 in k_log, the documented
+// stencil) so a drift in either direction is caught.
+TEST(PortfolioPricer, SkewAdjustedDelta_HealthyBook_LanesUnchangedByTheFiniteGuard) {
+  const PricedSurface surface = make_essvi(1, 3);
+  const SurfaceSet surfaces = set_of({&surface});
+  const std::vector<Position> book{
+      {/*id*/ 1, {1, 92.0, 0.15, Side::Put}, -4.0, 100.0},
+      {/*id*/ 2, {1, 100.0, 0.25, Side::Call}, +6.0, 100.0},
+      {/*id*/ 3, {1, 108.0, 0.35, Side::Call}, +2.0, 100.0},
+  };
+  auto pf = Portfolio::create(book);
+  ASSERT_TRUE(pf.has_value()) << pf.error().to_string();
+  const PortfolioPricer pricer(std::move(*pf));
+
+  const auto raw = pricer.price(surfaces);
+  const auto adjusted = pricer.price(surfaces, PriceOptions{.skew_adjusted_delta = true});
+  ASSERT_TRUE(raw.has_value() && adjusted.has_value());
+  ASSERT_EQ(adjusted->total.n_ok, 3u);
+
+  constexpr double kFdStep = 1e-4;
+  for (std::size_t i = 0; i < book.size(); ++i) {
+    SCOPED_TRACE(i);
+    const OptionContract &c = book[i].contract;
+    ASSERT_EQ(adjusted->status[i], PriceStatus::Ok);
+    // Independent oracle for VegaSlope = (1 - omega) * (-dSigma/dk / S), omega = 0.
+    const double F = surface.forward_at(c.T);
+    const double k_log = std::log(c.K / F);
+    const double sigma = std::sqrt(surface.total_variance(c.K, c.T) / c.T);
+    const double w_plus = surface.total_variance(F * std::exp(k_log + kFdStep), c.T);
+    const double w_minus = surface.total_variance(F * std::exp(k_log - kFdStep), c.T);
+    const double skew_slope = ((w_plus - w_minus) / (2.0 * kFdStep)) / (2.0 * sigma * c.T);
+    const double vega_slope = -skew_slope / surface.pricing().S;
+    ASSERT_TRUE(std::isfinite(vega_slope));
+    const double w = book[i].qty * book[i].multiplier;
+    EXPECT_TRUE(close(adjusted->delta[i], raw->delta[i] + w * vega_slope * (raw->vega[i] / w)));
+    // Every non-delta column is untouched by the adjustment.
+    EXPECT_TRUE(bits_equal(adjusted->pv[i], raw->pv[i]));
+    EXPECT_TRUE(bits_equal(adjusted->vega[i], raw->vega[i]));
+    EXPECT_TRUE(bits_equal(adjusted->gamma[i], raw->gamma[i]));
+  }
+}
+
+// ── S1-T1 / 1.3: a reused workspace must never republish the prior snapshot ────
+//
+// The P&L unique solve `(void)`-discarded all three of its `evaluate_batch`
+// statuses while `b_*` / `s_*` are the workspace's RETAINED scratch — resized
+// across snapshots, never cleared. The consumer loop gates every lane on exactly
+// those slots (`b_status[p]`, `isfinite(b_greeks[p].price)`, `s_status[p]`,
+// `isfinite(s_price[p])`, `isfinite(s_iv[p])`), so a batch that failed after
+// writing only part of its span left the untouched lanes holding the PREVIOUS
+// snapshot's mark, IV and Ok status — and the loop stamped them Ok as THIS
+// snapshot's marks. Each leg now poisons its whole group span on a batch-level
+// failure, exactly as solve_uniques does on the price path.
+//
+// HONEST SCOPE. A batch-level failure is not reachable from a public input on
+// this code as it stands: `PricedSurface::evaluate_batch` /
+// `PricedSurfaceView::evaluate_batch` return an error Status only from their own
+// span-shape / overlap validation (or from `american_price_batch_resolved`, whose
+// error set is the same), and the P&L solve builds those spans itself from
+// equal-length subspans of its own buffers. Per-lane model failures travel in the
+// per-lane status column, not the batch Status. So this test cannot be a
+// RED->GREEN regression for the poisoning itself; it pins the REACHABLE half of
+// the same invariant — that a lane which was Ok on the previous snapshot of a
+// REUSED workspace is never republished with that snapshot's numbers — and the
+// fresh-vs-reused bit-identity below is what would catch any stale slot leaking
+// through, including a partially poisoned one.
+TEST(PortfolioPricer, PnlExplainInto_ReusedWorkspaceAcrossSnapshots_NeverRepublishesPriorMarks) {
+  const PnlSurfaces snapshot1;
+  auto pf = Portfolio::create(pnl_multi_book());
+  ASSERT_TRUE(pf.has_value()) << pf.error().to_string();
+  const PortfolioPricer pricer(std::move(*pf));
+  const std::size_t n = pricer.portfolio().n_positions();
+
+  // Snapshot 2 moves every level AND drops uid 2's shifted surface, so uid 2's
+  // lanes — Ok with real numbers in snapshot 1 — must go ModelUnavailable here.
+  const std::int64_t two_hours = static_cast<std::int64_t>(2.0 * 3600.0 * 1e9);
+  const PricedSurface b1 = make_essvi(1, 5, 0.0010);
+  const PricedSurface b2 = make_essvi(2, 5, 0.0010);
+  const PricedSurface b3 = make_essvi(3, 5, 0.0010);
+  const PricedSurface t1 = make_essvi(1, 5, 0.0021, kS + 0.7, kR + 0.001, kNow + two_hours);
+  const PricedSurface t3 = make_essvi(3, 5, 0.0021, kS + 0.7, kR + 0.001, kNow + two_hours);
+  const SurfaceSet base2 = set_of({&b1, &b2, &b3});
+  const SurfaceSet shifted2 = set_of({&t1, &t3});
+
+  PortfolioWorkspace reused_ws;
+  reused_ws.reserve(pricer.portfolio().n_contracts(), n);
+  PnlFrameStore first(n);
+  ASSERT_TRUE(
+      pricer.pnl_explain_into(snapshot1.base(), snapshot1.shifted(), first.view(), reused_ws)
+          .has_value());
+
+  // Every uid-2 lane really did carry finite snapshot-1 numbers, so a republish
+  // would be observable.
+  std::size_t uid2_lanes = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    if (pricer.portfolio().positions()[i].contract.uid != 2u) {
+      continue;
+    }
+    ++uid2_lanes;
+    ASSERT_EQ(first.status[i], PriceStatus::Ok) << i;
+    ASSERT_TRUE(std::isfinite(first.pv_target[i])) << i;
+  }
+  ASSERT_GT(uid2_lanes, 0u);
+
+  PnlFrameStore second(n);
+  ASSERT_TRUE(pricer.pnl_explain_into(base2, shifted2, second.view(), reused_ws).has_value());
+
+  // A cold workspace can hold no prior snapshot at all, so it is the oracle for
+  // "no retained slot leaked into this pass".
+  PortfolioWorkspace fresh_ws;
+  PnlFrameStore fresh(n);
+  ASSERT_TRUE(pricer.pnl_explain_into(base2, shifted2, fresh.view(), fresh_ws).has_value());
+  expect_pnl_frame_bit_identical(second, fresh);
+
+  for (std::size_t i = 0; i < n; ++i) {
+    SCOPED_TRACE(i);
+    if (pricer.portfolio().positions()[i].contract.uid != 2u) {
+      continue;
+    }
+    EXPECT_EQ(second.status[i], PriceStatus::ModelUnavailable);
+    EXPECT_FALSE(std::isfinite(second.pv_target[i]));
+    EXPECT_FALSE(std::isfinite(second.pnl_total[i]));
+  }
+  EXPECT_TRUE(std::isfinite(second.total.pnl_total));
+  EXPECT_EQ(second.total.n_ok, fresh.total.n_ok);
+  EXPECT_LT(second.total.n_ok, first.total.n_ok);
 }

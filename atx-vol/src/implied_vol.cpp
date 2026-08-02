@@ -264,7 +264,8 @@ template <bool Trace>
                                               Side side, int *iters, int *exit_reason) {
   if constexpr (Trace) {
     *iters = 0;
-    *exit_reason = -1; // -1 none, 0 price-residual test, 1 vol-step test
+    // -1 none, 0 price-residual test, 1 vol-step test, 2 IV-below-floor clamp
+    *exit_reason = -1;
   }
   if (!std::isfinite(price) || !std::isfinite(F) || !std::isfinite(K) ||
       !std::isfinite(T) || !std::isfinite(df)) {
@@ -309,13 +310,17 @@ template <bool Trace>
     const double inv_v = 1.0 / v;
     const double d1 = (ln_fk + 0.5 * v * v) * inv_v;
     const double d2 = d1 - v;
-    const double n_d1 = norm_cdf(d1);
-    const double n_d2 = norm_cdf(d2);
     const double phi_d1 = norm_pdf(d1);
 
+    // The inlined Black-76 evaluation must be the SAME model `black76_price`
+    // is, or the loop converges on a root of a marginally different function
+    // than the one that produced the quote. That means Φ(−d) on the put leg:
+    // the 1−Φ(d) complement it used cancels catastrophically once d1, d2 ≫ 0
+    // and can even go negative (see the note in black76.cpp's black76_aux).
     const double price_model =
-        (side == Side::Call) ? df * (F * n_d1 - K * n_d2)
-                             : df * (K * (1.0 - n_d2) - F * (1.0 - n_d1));
+        (side == Side::Call)
+            ? df * (F * norm_cdf(d1) - K * norm_cdf(d2))
+            : df * (K * norm_cdf(-d2) - F * norm_cdf(-d1));
 
     const double fval = price_model - price;
     if (std::fabs(fval) < price_noise) {
@@ -323,6 +328,28 @@ template <bool Trace>
         *exit_reason = 0;
       }
       return Ok(sigma);
+    }
+
+    // A true IV below the floor REPORTS the floor (types.hpp: kIvMin is "the
+    // unified IV floor ... BOTH the reported floor of every inverter and the
+    // lower bound of the American IV search bracket, so no representable IV sits
+    // below it and there is no bracket-vs-report discontinuity").
+    //
+    // The Black price is strictly increasing in σ, so a residual still positive
+    // (beyond the noise floor tested just above) with σ pinned at kIvMin proves
+    // the root lies below the floor. Terminating here is not just an early exit,
+    // it is the only correct exit: the clamp below absorbs every further step
+    // while the termination test sees the PRE-clamp `step`, which stays large —
+    // so σ would sit motionless at kIvMin until the loop exhausted kIvMaxIter and
+    // reported a spurious Unavailable, the exact bracket-vs-report discontinuity
+    // the documented floor exists to prevent. σ is clamped into [kIvMin, kIvMax]
+    // at the seed and after every step, so `<=` here is an exact test for "at the
+    // floor" without relying on floating-point equality.
+    if (sigma <= kIvMin && fval > 0.0) {
+      if constexpr (Trace) {
+        *exit_reason = 2;
+      }
+      return Ok(kIvMin);
     }
 
     const double vega = df * F * phi_d1 * sqrt_t;
@@ -369,7 +396,8 @@ Result<double> implied_vol(double price, double F, double K, double T,
 // Test/measurement seam (not in the public header). Same inversion as
 // implied_vol, additionally reporting the number of Halley steps computed
 // (`iters`) and which termination test fired (`exit_reason`: 0 = price-residual,
-// 1 = vol-step, -1 = none/error). Used by the K1 convergence tests.
+// 1 = vol-step, 2 = IV-below-floor clamp, -1 = none/error). Used by the K1
+// convergence tests.
 Result<double> implied_vol_traced(double price, double F, double K, double T, double df, Side side,
                                   int &iters, int &exit_reason) {
   return implied_vol_impl<true>(price, F, K, T, df, side, &iters, &exit_reason);

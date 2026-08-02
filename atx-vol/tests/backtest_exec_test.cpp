@@ -29,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <new>
 #include <span>
@@ -41,15 +42,17 @@
 #include "atx/vol/american.hpp"          // al_fast_opts, AmericanMethod, AmericanGreeks
 #include "atx/vol/backtest.hpp"          // Clock, run_backtest, RunConfig, FrictionModel, ...
 #include "atx/vol/corpus.hpp"            // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/counters.hpp"          // counters::ledger — L1 solve-economy gate
+#include "atx/vol/detail/counters.hpp"          // counters::ledger — L1 solve-economy gate
 #include "atx/vol/portfolio_pricer.hpp"  // OptionContract, kNsPerYear
 #include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext
 #include "atx/vol/strategy.hpp"          // DeclarativeStrategy, StrategySpec, HedgeSpec
-#include "atx/vol/surface_archive.hpp"   // write_surface_archive_file, SurfaceArchiveItem
+#include "atx/vol/surface_archive.hpp"   // write_surface_archive_v2_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"    // SliceContext
 #include "atx/vol/types.hpp"             // Side, Result, Status
 #include "atx/vol/vol_curve.hpp"         // CurveSurface, EssviCurve
 #include "atx/vol/vol_surface.hpp"       // EssviParams
+
+#include "../src/step_mark_memo.hpp"  // detail::StepMarkMemo — L2 memo admission gate
 
 using namespace atx::vol;
 namespace fs = std::filesystem;
@@ -1191,7 +1194,158 @@ namespace {
   return cfg;
 }
 
+// Trades nothing and names a uid the corpus does not hold, so the engine's private
+// snapshot cache subsets on it and EVERY date loads through the subset-miss path
+// into a legal zero-surface snapshot.
+class AbsentNameStrategy final : public IStrategy {
+ public:
+  explicit AbsentNameStrategy(std::uint32_t uid) noexcept : uids_{uid} {}
+  Status on_step(const MarketSnapshot&, std::size_t, PortfolioState&, std::uint64_t&) override {
+    return atx::core::Ok();
+  }
+  [[nodiscard]] std::span<const std::uint32_t> referenced_uids() const noexcept override {
+    return uids_;
+  }
+
+ private:
+  std::array<std::uint32_t, 1> uids_;
+};
+
 }  // namespace
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Zero-surface snapshot + finance_premium (plan 1.12).
+//
+// `MarketSnapshot::load`'s subset-miss path LEGALLY yields a snapshot owning no
+// surfaces (a book/strategy naming only uids absent from this partition — the load
+// deliberately keeps an empty SurfaceSet instead of falling back to a whole-board
+// read). The cash-carry accrual then sourced its base-date rate from
+// `base->surface_at(0)`, an unbounded index into an empty backing, and the null
+// `SurfaceRef` that produced dereferenced null in `pricing()`.
+//
+// There is no rate to accrue at on such a date, so the engine follows the step
+// loop's own missing-data convention: a FLAT balance carries no economics (the
+// hedge-share ledger's `n != 0.0` rule), a LIVE one is a valuation failure that
+// must fail closed rather than silently drop a step of financing out of NAV.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(BacktestExec, ZeroSurfaceSnapshotWithLiveCashAndFinancePremiumFailsClosed) {
+  const fs::path dir = fresh_dir("zero-surface-live-cash");
+  const Clock clock = offset_clock(dir, "SPX", {0, 20});
+  AbsentNameStrategy strat{kUid + 1000u};  // no such uid in the archive
+
+  RunConfig cfg;
+  cfg.price.n_threads = 1u;
+  cfg.prefetch_snapshots = false;
+  cfg.financing.finance_premium = true;
+  cfg.financing.initial_cash = 1.0e6;  // a LIVE balance: the accrual has economics
+
+  const auto r = run_backtest(clock, strat, cfg);
+  ASSERT_FALSE(r.has_value()) << "a live cash balance carried across a date with no base surface "
+                                 "must fail closed, not read surface_at(0) out of bounds";
+  EXPECT_EQ(r.error().code(), ErrorCode::NotFound);
+}
+
+TEST(BacktestExec, ZeroSurfaceSnapshotWithZeroCashAndFinancePremiumCarriesNothing) {
+  const fs::path dir = fresh_dir("zero-surface-flat-cash");
+  const Clock clock = offset_clock(dir, "SPX", {0, 20});
+  AbsentNameStrategy strat{kUid + 1000u};
+
+  RunConfig cfg;
+  cfg.price.n_threads = 1u;
+  cfg.prefetch_snapshots = false;
+  cfg.financing.finance_premium = true;
+  cfg.financing.initial_cash = 0.0;  // flat: `cash * (growth - 1)` is 0.0 at any rate
+
+  const auto r = run_backtest(clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  ASSERT_EQ(r->size(), 2u);
+  for (std::size_t i = 0; i < r->size(); ++i) {
+    EXPECT_TRUE(bits_equal(r->financing[i], 0.0)) << "financing row " << i;
+    EXPECT_TRUE(bits_equal(r->cash[i], 0.0)) << "cash row " << i;
+    // `==`, not bit-equality: row 0's NAV is `-ex->cost` over a zero cost, i.e. a
+    // NEGATIVE zero. The sign of zero carries no economics.
+    EXPECT_EQ(r->nav[i], 0.0) << "nav row " << i;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Non-monotone snapshot timestamps (plan 2.4).
+//
+// A `Clock` is ordered by DATE STRING, but every economic quantity in a step is
+// driven by `dt = (shifted.ts_ns - base.ts_ns) / kNsPerYear`, and that timestamp
+// comes from the ARCHIVE's `now_ts_ns` — a different thing entirely. A
+// mislabelled or misordered partition therefore hands the step loop a negative
+// dt, and nothing checked it: `exp(r*dt)` shrinks the cash balance instead of
+// growing it, the borrow bleed becomes a rebate, and the shares-carry term flips
+// sign. Every one of those is a plausible number, so the run reports a full set
+// of rows and no error at all.
+//
+// It must fail closed with a clear error instead. Both overloads validate it:
+// the fixed-book run has no financing, but it derives residual T, settlement and
+// expiry drops from the same timestamps.
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(BacktestExec, BackwardsSnapshotTimestampsFailClosed) {
+  const fs::path dir = fresh_dir("backwards-ts-strategy");
+  // Date strings ascend (2026-08-01, 2026-08-02); their archives' valuation
+  // stamps do NOT — day 20 then day 0.
+  const Clock clock = offset_clock(dir, "SPX", {20, 0});
+  NoopStrategy strat;
+
+  RunConfig cfg = det_config();
+  cfg.financing.finance_premium = true;
+  cfg.financing.initial_cash = 1.0e6; // a live balance: the accrual has economics
+
+  const auto r = run_backtest(clock, strat, cfg);
+  ASSERT_FALSE(r.has_value()) << "a step whose snapshot timestamps run backwards must fail "
+                                 "closed, not accrue a sign-flipped carry";
+  EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+}
+
+TEST(BacktestExec, BackwardsSnapshotTimestampsFailClosedOnTheFixedBookRun) {
+  const fs::path dir = fresh_dir("backwards-ts-fixed");
+  const Clock clock = offset_clock(dir, "SPX", {20, 0});
+
+  const auto r = run_backtest(clock, PortfolioState{}, det_config());
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().code(), ErrorCode::InvalidArgument);
+}
+
+// Non-vacuity: the SAME fixture in the right order runs, so the rejections above
+// are attributable to the ordering and not to the corpus.
+TEST(BacktestExec, ForwardSnapshotTimestampsStillRun) {
+  const fs::path dir = fresh_dir("forward-ts");
+  const Clock clock = offset_clock(dir, "SPX", {0, 20});
+  NoopStrategy strat;
+
+  RunConfig cfg = det_config();
+  cfg.financing.finance_premium = true;
+  cfg.financing.initial_cash = 1.0e6;
+
+  const auto r = run_backtest(clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  EXPECT_EQ(r->size(), 2u);
+  EXPECT_GT(r->financing[1], 0.0) << "a forward step accrues a POSITIVE carry on a long balance";
+}
+
+// The boundary is deliberate: only a BACKWARDS step is refused. Two snapshots
+// sharing a timestamp give dt == 0, and every term the step scales by dt is then
+// an exact no-op (`cash * (exp(0) - 1)` is 0.0 for every finite r), so there is
+// no sign to flip and nothing to protect the caller from. Rejecting it would
+// turn a degenerate-but-harmless corpus into a hard failure.
+TEST(BacktestExec, EqualSnapshotTimestampsAreAcceptedAndCarryNothing) {
+  const fs::path dir = fresh_dir("equal-ts");
+  const Clock clock = offset_clock(dir, "SPX", {0, 0});
+  NoopStrategy strat;
+
+  RunConfig cfg = det_config();
+  cfg.financing.finance_premium = true;
+  cfg.financing.initial_cash = 1.0e6;
+
+  const auto r = run_backtest(clock, strat, cfg);
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  ASSERT_EQ(r->size(), 2u);
+  EXPECT_TRUE(bits_equal(r->financing[1], 0.0));
+}
 
 // Gate: the survivor's expiry-day cost drops 11 -> 6 s/u; warm and no-churn steps
 // are unchanged. Same fixed book as solve_ledger_test's expiry-day scenario.
@@ -1578,6 +1732,57 @@ TEST(BacktestExec, L2SettlementMarkMemoDropsExpirySolve) {
   std::printf("[btexec] L2 settlement memo: expiry al 7->6, dup=%llu (on)/%llu (off), memo on==off\n",
               static_cast<unsigned long long>(dup(total_on)),
               static_cast<unsigned long long>(dup(total_off)));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// L2 memo admission gate (plan 1.11) — NaN is the settlement path's IN-BAND
+// "must solve" sentinel, so a NaN mark must never be admitted to the memo.
+//
+// compute_step's L2 settlement branch seeds `served[i]` with NaN, serves a memo
+// hit into it, and then treats `std::isnan(served[i])` as "this lot was a memo
+// MISS, take its mark from the batched solve frame". A memo that admitted a
+// non-finite Ok-status mark collides with that sentinel: the lot is served (so it
+// is NEVER pushed into `to_solve`) yet reads as a miss, which dereferences the
+// null `sf_ptr` when it is the only expiring lot, and desyncs `solve_ix` against
+// the solve frame when it is not.
+//
+// The marks that trip this cannot be produced through the public pricing stack —
+// every Ok-stamp in portfolio_pricer.cpp sweeps `isfinite(price)` first — so the
+// gate is driven directly through `populate_from_marks` (see step_mark_memo.hpp).
+// ─────────────────────────────────────────────────────────────────────────────
+TEST(BacktestExec, L2MarkMemoNonFiniteOkMarkIsNotServed) {
+  const PricedSurface s = make_surface(kUid, 100.0, 100.0, kBaseNow, 0.0);
+  const PricedSurface* ptrs[] = {&s};
+  auto set = SurfaceSet::create(std::span<const PricedSurface* const>{ptrs});
+  ASSERT_TRUE(set.has_value()) << set.error().to_string();
+  const std::uint64_t inst = set->find(kUid)->instance_id();
+
+  constexpr double kQNaN = std::numeric_limits<double>::quiet_NaN();
+  constexpr double kInf = std::numeric_limits<double>::infinity();
+  const std::vector<RetainedMark> marks{
+      // A finite Ok mark — the positive control: still served.
+      RetainedMark{kUid, 100.0, 0.25, Side::Call, 3.25, PriceStatus::Ok},
+      // Ok-status but non-finite: must be a memo MISS, not a served NaN/Inf.
+      RetainedMark{kUid, 95.0, 0.25, Side::Put, kQNaN, PriceStatus::Ok},
+      RetainedMark{kUid, 90.0, 0.25, Side::Put, kInf, PriceStatus::Ok},
+      RetainedMark{kUid, 85.0, 0.25, Side::Put, -kInf, PriceStatus::Ok},
+      // Already excluded by status; pinned so the new filter did not replace it.
+      RetainedMark{kUid, 105.0, 0.25, Side::Call, 4.0, PriceStatus::NumericError},
+  };
+
+  detail::StepMarkMemo memo;
+  memo.populate_from_marks(marks, *set);
+
+  const auto served = [&](double K, Side side) { return memo.find(kUid, K, 0.25, side, inst); };
+  ASSERT_TRUE(served(100.0, Side::Call).has_value())
+      << "positive control: a finite Ok mark must still be served from the memo";
+  EXPECT_TRUE(bits_equal(*served(100.0, Side::Call), 3.25));
+  EXPECT_FALSE(served(95.0, Side::Put).has_value())
+      << "a NaN Ok mark was admitted — it collides with the settlement miss sentinel "
+         "(null sf_ptr deref / desynced solve_ix)";
+  EXPECT_FALSE(served(90.0, Side::Put).has_value()) << "+Inf Ok mark admitted";
+  EXPECT_FALSE(served(85.0, Side::Put).has_value()) << "-Inf Ok mark admitted";
+  EXPECT_FALSE(served(105.0, Side::Call).has_value()) << "non-Ok mark admitted";
 }
 
 // L2 strategy-path bit-identity: over a daily-cohort strangle that settles cohorts

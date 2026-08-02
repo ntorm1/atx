@@ -10,7 +10,11 @@ The upstream `ats-vol` (~65k LOC of C across ~90 translation units) has been
 ported in full to idiomatic, tested C++20, and then extended with a
 Vola-Dynamics American-equity parity layer (see below), a composable
 `VolaSession` handle, and a cached high-performance pricing hot path. It passes
-**584 GoogleTest cases across 118 suites** under `/W4 /permissive- /WX` (clang-cl).
+**2,618 GoogleTest cases across 377 suites** under `/W4 /permissive- /WX`
+(clang-cl). That number is *measured*, not maintained — re-derive it with
+`build/bin/atx-vol-tests.exe --gtest_list_tests` rather than trusting the prose,
+which is how a count in a README stops rotting silently (see *Build & test* for
+the ctest-side number and what the difference is).
 The C library's arena / SoA-slab / thread-local / hand-written-AVX2 machinery is
 re-expressed with `std::vector` + Rule of Zero + `atx::core` (error vocabulary,
 linear algebra, hashing) rather than transliterated; the numerics are ported
@@ -25,9 +29,9 @@ faithfully and mirror the upstream test tolerances.
 | Greeks | `greeks.hpp` | Analytic B76 delta/gamma/vega/theta/rho/vanna/volga/charm |
 | Implied vol | `implied_vol.hpp` | Stefanica–Radoicic (2017) seed + Halley inversion → `Result<double>` |
 | American pricers | `american.hpp`, `correction.hpp` | Andersen–Lake (Gauss-Legendre + Chebyshev boundary), BAW, American Greeks, Chebyshev American-minus-European correction cache, Crank–Nicolson PDE oracle |
-| Surface eval | `surface.hpp` | Lightweight SVI / eSSVI per-slice evaluators + total-variance time interpolation |
+| Surface eval | `surface.hpp` | Lightweight SVI / eSSVI per-slice closed-form evaluators |
 | Surface (calibration-grade) | `vol_surface.hpp` | `VolSurface` (tagged eSSVI/SVI + full slice params), backbone/residual/total eval, grad3/grad4, Mingone reparam, φ_max |
-| Curves | `curve.hpp` | Yield (Fritsch–Carlson) / forward / dividend / borrow (HTB) curve set |
+| Rates curves | `rates_curve.hpp` | Yield (Fritsch–Carlson) / forward / dividend / borrow (HTB) curve set |
 | Universe | `universe.hpp` | Ticker↔uid interning, SoA per-(uid,expiry) chain registry, quote ingest, LRU eviction |
 | Arbitrage | `arb.hpp` | Calendar + butterfly (Roper density) checks, SVI-MM admissibility, calendar projection/repair, quote pre-fit filters |
 | Robust math | `detail/robust.hpp` | Huber loss/weight, strided Huber weights, order-statistic quantile |
@@ -42,11 +46,11 @@ faithfully and mirror the upstream test tolerances.
 | RV distribution kernel | `detail/rv_lognormal.hpp` | Gauss-Hermite (order 21) + split-domain Gauss-Legendre (order 64) quadrature, lognormal expectation / truncated-expectation / call / sqrt-moment identities backing the capped and mid-life vol-derivative pricers |
 | Profile registry | `profile.hpp` | Underlier classification, per-profile calib/filter knobs, optimization-level + refit cadence + tier priority |
 | Unified fit policy | `fit_policy.hpp` | Board/profile/session/event routing to an effective preset + curve; direct high-confidence routes and held-out ambiguity fallback |
-| Portfolio | `portfolio.hpp` | Leg/book/agg types, bulk pricer + select, portfolio pricing + 8-Greek aggregation by agg-mode |
-| Portfolio risk | `portfolio_risk.hpp` | Scenario/shock revaluation, plan/resolve/explain (PnL attribution) |
+| Scenario risk | `scenario_grid.hpp` | 2-D (spot% × vol) second-order Taylor P&L matrix over a `PortfolioPricer` book — one deduped full-Greeks solve, every cell reconstructed analytically |
+| PnL attribution | `pnl_attribution.hpp` | Additive base→shifted decomposition into the Vola vocabulary (spot / ATF / skew / curvature / 2nd-order vol / rates / time / unexplained) |
 | Projection | `projection.hpp` | Projection spine: forward-T interp, coord conversion, inserted-slice eval, delta-solve, project-compare |
 | Contract projection | `contract_projection.hpp` | Relative maturity/strike definitions to absolute-expiry American contracts, marks, and Greeks; prepared deterministic batch API |
-| Surface archive | `surface_archive.hpp` | ATSVSA binary format writer/reader, CRC-32C, schema-hash guard, symbol lookup, concurrent-read-safe |
+| Surface archive | `surface_archive.hpp` | ATXVSA2 (magic `ATXVSA20`) binary format writer/reader, CRC-32C, schema-hash guard, symbol lookup, concurrent-read-safe |
 | Data ingestion | `data.hpp` | SpiderRock quote-frame model, install-into-universe path, ISO/year-fraction kernels |
 | Batch kernels | `batch.hpp` | Scalar-backed batch B76 price/vega/from-lnfk, IV, Greeks, eSSVI-w (batch == scalar, bit-exact) |
 | American IV | `american_iv.hpp` | Invert an American premium → implied vol (safeguarded Newton on the American pricer); the de-Americanization primitive |
@@ -56,7 +60,7 @@ faithfully and mirror the upstream test tolerances.
 | Parity metrics | `parity.hpp` | Re-Americanized fair-value-within-bid-ask fraction, mid-RMSE (vol & price), reduced-χ², edge band |
 | S3 / SSVI curve | `s3.hpp` | Exact Vola S3 shape curve in normalized-strike form, wings `C±`, analytic Roper `g`, ATF butterfly bound |
 | Panel fixtures | `panel.hpp` | Known-truth synthetic American-equity chain generator + exception-free CSV chain loader |
-| Parity harness | `vola_parity.hpp`, `surface_parity.hpp` | Single- and multi-expiry de-Am → fit → re-Am → metrics; interpolation + calendar-arb parity |
+| Parity harness | `surface_parity.hpp` | Multi-expiry de-Am → fit → re-Am → metrics; interpolation + calendar-arb parity |
 | Composable session | `session.hpp` | `VolaSession` — build once from a snapshot, then query `iv`/`fair_value`/`greeks`/`diagnostics` at any `(K,T)`; owns a per-side `CorrectionCache` hot path |
 | Unified library layer | `chain.hpp`, `pricer_fitter.hpp` | `OptionChain` (id-addressed board, tick-to-quote update) → `PricerFitter` (fit + owns `unique_ptr<FittedSurface>`) → deterministic multi-threaded `value_chain` with per-field output flags |
 | Real-data loader | `opra_panel.hpp` | Databento OPRA cbbo-1m (NBBO) Parquet → `QuoteFrame`, OSI/OCC symbol parser, front-PCP spot implication |
@@ -77,7 +81,7 @@ fourteen-board breadth corpus and million-row quote results are documented in
 A second layer brings the library to feature + fit parity with the Vola Dynamics
 analytics library for **American equity options**, following Klassen's published
 methodology (*Arbitrage-Free Parametric Volatility Surfaces and Real-Time
-Fitting*, 2017). See `docs/superpowers/specs/2026-07-04-atx-vol-vola-parity-design.md`
+Fitting*, 2017). See [the Vola-parity design](../docs/superpowers/specs/2026-07-04-atx-vol-vola-parity-design.md)
 for the full gap analysis.
 
 **The pipeline (Vola's workflow).** American quotes are light exotics, so all
@@ -116,8 +120,8 @@ American chain → de-Americanize (imply borrow per term via American PCP,
 - **Parity metrics** (`parity.hpp`): fraction of re-Americanized fair values
   inside the bid-ask, mid-RMSE, reduced-χ².
 
-**Acceptance harness** (`vola_parity.hpp`, `surface_parity.hpp`; suites
-`VolaParity`, `SurfaceParity`). On a known-truth synthetic American-equity panel
+**Acceptance harness** (`surface_parity.hpp`; suite
+`SurfaceParity`). On a known-truth synthetic American-equity panel
 (discrete cash dividend + borrow + skewed smile), the full pipeline:
 recovers the injected borrow and forward; fits within bid-ask
 (**fair-value-within-bid-ask ≥ 0.95**, mid-vol-RMSE ≤ 5e-3, reduced-χ² ≤ 2);
@@ -187,7 +191,7 @@ fields wanted via `OutputField {ModelPrice, ModelIV, BidIV, AskIV, MidIV, Greeks
 the cold bid/ask/mid American-IV inversions are embarrassingly parallel, fanned
 out across `std::jthread` workers with a static block partition so the result is
 **bit-identical for any thread count** (disjoint output slots, pure const reads —
-the `calibrate_pool` determinism pattern). Model price/IV/Greeks flow through the
+the `parallel_for` determinism pattern). Model price/IV/Greeks flow through the
 fitted surface's cached hot path; every number is bit-consistent with the
 `VolaSession` scalar queries (the facade adds ownership + parallelism, never a
 different number).
@@ -259,8 +263,10 @@ Two findings the SPY slice forced, both documented rather than papered over:
   event wings, so it stays off (matching the pre-existing `profile.cpp` note). Ultra-short
   (< ~1wk) and the deepest tails (|k| > 1.5) are separate regimes, reported separately.
 
-A deterministic **synthetic** SPY known-truth oracle (`include/atx/vol/spy_fixture.hpp`,
-`examples/spy_surface_bench`) complements the real slice: with no quote noise the fit
+A deterministic **synthetic** SPY known-truth oracle (`atx/vol/spy_fixture.hpp` —
+Tier-B and installed, so a consumer can build the same board without vendoring a
+copy of the test tree — plus `examples/spy_surface_bench`) complements the real
+slice: with no quote noise the fit
 recovers the truth exactly (0.0 bp ATM, 100% in-bid-ask, calendar-arb-free) — a zero-bias
 round-trip check, where the real slice supplies the noisy-data accuracy number above.
 
@@ -296,7 +302,7 @@ quality (98.5%→20.4%, χ² →749) — kept opt-in for callers that require th
 wing guarantee. Deep-wing (|k|→3, ~20σ, no quotes) strict no-arb without a θ-bump
 needs a φ-slope term-structure constraint and stays deferred; Vola's
 calendar-coupled joint mode with per-term error bars remains the richer target.
-See `docs/superpowers/specs/2026-07-04-atx-vol-sota-hft-roadmap.md`.
+See [the SOTA/HFT roadmap](../docs/superpowers/specs/2026-07-04-atx-vol-sota-hft-roadmap.md).
 
 **Fixtures.** Beyond the real OPRA path above, the repo commits no vendor
 option-chain data, so the acceptance suites use the known-truth synthetic
@@ -308,8 +314,13 @@ synthetic numbers falsifiable.
 **Deferred (documented, no impact on the shipped acceptance path).** A native
 discrete-cash-dividend PDE American pricer (the escrowed-forward Andersen-Lake
 path is self-consistent and used for both generation and re-Americanization);
-the eSSVI asymmetric-ρ / Fengler / candidate-selection research knobs; a
-multi-underlier de-Americanized surface driver over the calibration pool.
+the eSSVI asymmetric-ρ / Fengler / candidate-selection research knobs. The
+third item used to read "a multi-underlier de-Americanized surface driver over
+the calibration pool"; the pool it named (`calib_pool.hpp`, `calibrate_pool` /
+`CadenceQueue`) was deleted unbuilt at v1 (CHANGELOG, *REMOVED*). Whole-panel
+multi-underlier work now lands on `corpus.hpp`, which fans fits out across
+(date, symbol) boards — so the deferred item is the *de-Americanized* driver, not
+a missing pool.
 
 ## Folded into atx-core
 
@@ -331,7 +342,7 @@ which change the numerical results of the shipped paths:
 - **SIMD vectorization — batch-across-contracts AVX2 is SHIPPED (Auto-ON marks);
   in-solve vectorization is not.** The American-boundary **marks** batch and the
   laned analytic-greeks bundle ship **AVX2-ON under the default `ATX_SIMD_ISA=Auto`**
-  (`kShipAvx2Boundary` / `kShipAvx2Greeks`, `simd/american_boundary_batch.cpp`): on
+  (`kShipAvx2Boundary` / `kShipAvx2Greeks`, `src/simd/american_boundary_batch.cpp`): on
   an AVX2 host the default marks are the 4-lane boundary pack (≈2.5–3.1× on the dev
   box, quiet-window A/B ratified), **~1e-13 USD** from the scalar oracle
   (economically nil — 10+ orders below a tick) and thread-count-invariant via the
@@ -402,11 +413,23 @@ Wired into the top-level atx CMake as `atx-vol` (alias `atx::vol`), linking
 ```powershell
 cmake --preset dev
 cmake --build build --target atx-vol-tests
-ctest --test-dir build -R "Black76|Greeks|ImpliedVol|Surface|Curve|Universe|Arb|Essvi|Svi|C8|CStar|American|Correction|Portfolio|Bulk|Batch|Data|Profile|Cadence|Deriv|Realized|VolProjection|CurveProjection|CalibratePool|SurfaceArchive"
+ctest --test-dir build -R "Black76|Greeks|ImpliedVol|Surface|Curve|Universe|Arb|Essvi|Svi|C8|CStar|American|Correction|Portfolio|Bulk|Batch|Data|Profile|Cadence|Deriv|Realized|VolProjection|CurveProjection|SurfaceArchive"
 ```
 
-Or run the full suite directly: `build/bin/atx-vol-tests.exe` (556 tests). The
-Vola-parity harness alone: `atx-vol-tests.exe --gtest_filter='VolaParity.*:SurfaceParity.*:VolaSession.*:OpraPanel.*:DeAmer.*:Parity.*:AmericanIv.*:HybridDiv.*:S3.*:FitMetrics.*:Panel.*'`.
+Or run the full suite directly: `build/bin/atx-vol-tests.exe`. Two counts are
+published here, each with the command that produces it, because they are not the
+same population and a single hand-written number would hide that:
+
+| Count | Command | What it counts |
+|---|---|---|
+| **2,618** cases / **377** suites | `build/bin/atx-vol-tests.exe --gtest_list_tests` | GoogleTest cases in the atx-vol test binary |
+| **2,625** registered tests | `ctest --test-dir build -N -L atx_vol` | the 2,618 above, discovered by `gtest_discover_tests`, **plus 7** lanes that are not GoogleTest cases: six Python driver/report tests and the `atx-vol-pricing-forcescalar` scalar-ISA leg (`tests/CMakeLists.txt`) |
+
+Both were measured at the commit that wrote this section, against `cmake --preset
+dev`. Re-run the commands rather than trusting the digits: nothing regenerates
+them, so a stale number here is a documentation defect, not a test failure.
+
+The Vola-parity harness alone: `atx-vol-tests.exe --gtest_filter='SurfaceParity.*:VolaSession.*:OpraPanel.*:DeAmer.*:Parity.*:AmericanIv.*:HybridDiv.*:S3.*:FitMetrics.*:Panel.*'`.
 
 Real-data OPRA parity + throughput benchmark (opt-in examples):
 
@@ -416,6 +439,206 @@ cmake --build build --target opra_dbn_to_parquet opra_parity_bench
 build/bin/opra_dbn_to_parquet.exe   # cached DBN -> Parquet (no API spend)
 build/bin/opra_parity_bench.exe     # de-Am + fit + parity + cold-vs-cached timing
 ```
+
+### Operator CLIs (`ATX_BUILD_TOOLS`, ON by default)
+
+Three binaries ship with the package and install into `<prefix>/bin`:
+
+| Binary | What it is for |
+|---|---|
+| `atx-vol-surface-db-build` | Build a production SurfaceDb from an OPRA hive window: load, auto-generate per-symbol fit configs, cell-aware streaming populate. Resumable and idempotent. See `docs/surface-db-build.md` |
+| `atx-vol-surface-db` | Inspect and manage a built database: `info` / `partitions` / `symbols` / `config` / `query` / `verify` — no Python binding required |
+| `atxvol_spy_dispersion_backtest` | The listed SPY-dispersion workflow: `build-corpus`, `build-schedule`, `run-backtest`, `project-schedule`, `run-projected-backtest`, `run-surface-backtest`, `run-projected-var`, `verify`, `runarchive dump` |
+
+**`atxvol_spy_dispersion_backtest` is spelled deliberately.** It does not match
+its `atx-vol-*` siblings, and that is a decision, not an oversight: external
+operator scripts invoke it by that name, so renaming it at v1 would break callers
+outside this repository to buy consistency inside it. Expect the name to stay.
+
+They are ON by default because they are part of what atx-vol *is* at v1 — a
+library plus the binaries that build, inspect and replay its artifacts.
+`-DATX_BUILD_TOOLS=OFF` drops exactly these three executables and their install
+rules; no library, test or example target changes. The default follows
+`PROJECT_IS_TOP_LEVEL`, so a project that `add_subdirectory()`s this repo (the
+Python wheel build does) does not pay to link operator binaries it cannot ship.
+
+Their sources live in `atx-vol/tools/`. That directory is the tools tier, not a
+synonym for "scripts": the acceptance drivers, benchmarks and worked
+demonstrations stay behind `ATX_BUILD_EXAMPLES` (OFF by default).
+
+## Configuration registry: the `ATX_*` environment variables
+
+atx-vol reads **ten** `ATX_*` environment variables in shipped code — nine from
+the library, one from a tool. None is required, and **none of them changes a
+fitted, priced or archived value.** The ones that touch parallelism select how
+much of the machine is used, and every atx-vol fan-out is documented
+bit-identical for any worker count; the rest decide only whether a diagnostic is
+printed. So an unset environment is a complete, correct configuration, which is
+the property that makes this table short.
+
+| Knob | Effect | Default | Scope | v1 status |
+|---|---|---|---|---|
+| `ATX_VOL_FIT_WORKERS` | Resolves the auto (`0`) worker count for `parallel_for` fan-outs. An explicitly requested non-zero count is honoured as-is and is *not* capped by it | `hardware_concurrency()` (min 1) | library — `detail/parallel_for.hpp` | **keep** |
+| `ATX_SIMD_ISA` | Seeds the process-global SIMD override at load: `Auto`, `ForceScalar` or `ForceAvx2`. An in-process `set_simd_isa_override()` still wins | `Auto` | library — `src/simd/cpu.cpp` | **keep** |
+| `ATX_VOL_FIT_ECORE_TIER` | Arms the E-core second scheduling tier. `2` arms it *without* the below-normal priority drop; any other non-zero value arms it *with* the drop | unset = off | library — `src/fit_scheduler.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_CORPUS_DATE_BATCH` | Dates per corpus fan-out call. Scheduling only — output bytes do not depend on it | `8` | library — `src/dispersion_run.cpp` | **keep**, belongs in a config struct |
+| `ATX_VOL_CORPUS_PHASE_TIMING` | Prints the corpus build's phase split. Collection is unconditional and cheap; only the report is gated | unset = off | library — `src/dispersion_run.cpp` | **keep** |
+| `ATX_VOL_PROFILE` | Prints per-phase fit timings from `curve_fit` and `surface_parity`. **Not** the CMake option of the same name — see the collision note below | unset = off | library — `src/curve_fit.cpp`, `src/surface_parity.cpp` | **keep**, rename candidate |
+| `ATX_SLICE_DEBUG` | Prints `curve_fit`'s per-slice fit-preparation outcome (why a chain did or did not become a fittable slice) | unset = off | library — `src/curve_fit.cpp` | **keep** |
+| `ATX_VOL_ZC_BORROW` | `0` forces the owned-reconstruct archive path instead of the zero-copy borrow. Read once per process, so it cannot make a run non-deterministic | unset = borrow allowed | library — `src/backtest.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_ZC_BACKING` | `map` or `copy` overrides the caller-declared `ArchiveBacking` on the borrow path. Read once per process | unset = the caller's choice stands | library — `src/backtest.cpp` | **keep**, deprecation candidate |
+| `ATX_VOL_CACHE` | Default for the dispersion CLI's `--cache DIR`; an explicit `--cache` overrides it. Empty means disabled, which is the default behaviour | unset = disabled | tool — `tools/spy_dispersion_backtest.cpp` | **keep** |
+
+**Nothing is deleted at v1, because nothing here is dead.** Every row has a live
+read site and a live effect; the two knobs with real *consumers* outside their
+own source are load-bearing:
+
+- `ATX_SIMD_ISA` is set by a **registered test**: `tests/CMakeLists.txt` runs a
+  scalar leg with `ENVIRONMENT "ATX_SIMD_ISA=ForceScalar"`, which is how the
+  scalar patch-paths stay honest against the AVX2-ON marks. Deleting the env seam
+  would delete that leg.
+- `ATX_VOL_FIT_WORKERS` is the documented answer to nested parallelism —
+  `scripts/atx-build.ps1` and `bench/README.md` both prescribe it, and a bench
+  baseline records `ATX_VOL_FIT_WORKERS=1` as part of its method. A config struct
+  cannot reach a test process that `ctest -jN` spawns, which is the exact problem
+  it exists to solve. This is the case where an environment variable is the right
+  mechanism rather than a shortcut.
+
+The remaining seven library knobs are diagnostics and measurement levers whose
+only documented users are sprint/bench recipes. They are proposed **keep** for
+v1 on the narrow grounds that each is off by default, each is read once, and none
+can change a result — but two follow-ups are worth naming rather than leaving
+implicit:
+
+- `ATX_VOL_CORPUS_DATE_BATCH` is the one knob that is genuinely *library
+  behaviour configured from the environment* rather than a diagnostic. It should
+  become a field on the corpus build config, with the environment read (if kept
+  at all) as a fallback at the CLI seam.
+- `ATX_VOL_ZC_BORROW` / `ATX_VOL_ZC_BACKING` / `ATX_VOL_FIT_ECORE_TIER` exist to
+  A/B a decision inside one binary without a rebuild. That is a legitimate use,
+  but each keeps an alternative code path alive for it; the E-core tier's own
+  measurements are what set its default to off. Whether v1 wants to carry three
+  such paths is a judgement call, not a defect.
+
+**`ATX_VOL_PROFILE` means two unrelated things, and the collision is real.** As a
+**CMake option** (`-DATX_VOL_PROFILE=ON`) it compiles the library with the
+`ATX_VOL_PROFILE` macro defined, arming the compile-time phase-timer plane
+(`detail/phase_profile.hpp`). As an **environment variable** it is read at
+runtime by `curve_fit.cpp` and `surface_parity.cpp` to turn on two unrelated
+timing printouts, and it works whether or not the macro was ever defined. Neither
+mechanism observes the other. Renaming the environment side (say to
+`ATX_VOL_FIT_TIMING`) is the fix; it is a behaviour change for anyone setting the
+current name, so it is recorded here rather than done silently.
+
+Out of scope for this table, deliberately: `DATABENTO_API_KEY`, read by the
+Databento definition-export example and the OPRA puller scripts (not an `ATX_*`
+name, and gated behind a network/cost opt-in), and the 17 further `ATX_*` names
+read only by tests and benchmarks, neither of which ships.
+
+## API stability policy (1.x)
+
+The version is single-sourced from `project(atx VERSION ...)` and reaches C++ as
+`atx::vol::version()`, `atx::vol::kVersion{Major,Minor,Patch,String}` and the
+`ATX_VOL_VERSION*` macros (`atx/vol/version.hpp`). Feature-gate with the numeric
+form, which is preprocessor-usable:
+
+```cpp
+#if ATX_VOL_VERSION >= ATX_VOL_VERSION_NUM(1, 1, 0)
+  // ... 1.1 API ...
+#endif
+```
+
+**What 1.0.0 freezes is a tier, not the whole tree.** The tiers are physical —
+each is a directory and, where it matters, its own CMake target — so "is this
+frozen?" is answered by where the header lives, not by judgement:
+
+| Tier | Where | Count | Promise |
+|---|---|---|---|
+| **Tier-A** | exactly the headers `atx/vol/vol.hpp` includes | 56 | **Frozen for 1.x.** Closed under inclusion |
+| **Tier-B** | other headers directly under `include/atx/vol/`, plus `simd/` | 23 + 9 | Public and supported to include; **not** frozen |
+| `detail/` | `include/atx/vol/detail/` | 25 (+1 generated) | **No stability promise.** Installed because Tier-A reaches it |
+| `tools/` | `tools/include/atx/vol/tools/` — target `atx::vol::tools` | 6 | CLI support. Not part of the shipped library surface |
+| `research/` | `research/include/atx/vol/research/` — target `atx::vol::research` | 9 | Run orchestration. Not part of the shipped library surface |
+
+Only the Tier-A count is machine-checked (below). The other four are prose and
+therefore rot: Tier-B and `detail/` were each one short by the time this table was
+next read, because `log.hpp` and `detail/log_emit.hpp` landed after it was
+written. Re-derive them from the tree rather than editing a digit —
+`grep -c '^#include "atx/vol/' include/atx/vol/vol.hpp` is Tier-A; each remaining
+row is `ls` over the directory the row names, minus (for Tier-B) Tier-A and
+`vol.hpp` itself. The `+1 generated` on `detail/` is
+`detail/version_generated.hpp`, configure_file'd from `project(atx VERSION ...)`,
+so an install prefix carries 26 there and the source tree 25.
+
+*Closed under inclusion* is the load-bearing rule: a header named in a frozen
+signature is frozen whether or not callers reach for it directly, so if a Tier-A
+header includes another `atx/vol/` header, that header is Tier-A too. The only
+permitted escape is downward into `detail/` or `simd/`, which promise nothing.
+
+Tier-B is where the advanced per-family calibrators, the SoA/SIMD batch kernels,
+the listed-dispersion vocabulary and the harness panels/fixtures live. They are
+public and you may include them; they are simply outside what 1.x will not break.
+
+**The manifest is `kTierA` in `atx-vol/tests/vol_umbrella_test.cpp`**, and it is
+machine-checked, not documentation. Four contract tests fail the build on drift:
+`UmbrellaIsExactlyTierA` (the umbrella's include list *is* the manifest, reported
+as two directed differences so a shrunk API and a widened promise are told
+apart), `UmbrellaAdmitsNoNonShippedTier`, `TierAIsClosedUnderInclusion`, and
+`DemotedSurfaceContainersAreNotNamedInPublicHeaders`. Promoting or demoting a
+header means editing that array in the same commit as the header move.
+
+The package advertises `COMPATIBILITY SameMajorVersion`, which is the same
+statement in CMake: a `find_package(atx-vol 1.0)` consumer accepts any 1.z,
+because Tier-A is what it compiled against and Tier-A does not move in 1.x.
+
+**Known limit, stated rather than implied.** `tools/` and `research/` are
+path- and umbrella-separated but not *link*-separated: `atx-vol` links both
+include roots PUBLIC, so a plain `atx::vol` consumer can still include them by
+name. Plan item 5.6 (S5-T27) **evaluated that isolation and declined it** — do
+not read this paragraph as an outstanding task. `atx-vol-research` links
+`atx-vol-tools` INTERFACE, so containing the tools include root means demoting
+the *research* edge as well, and the research headers are shipped: that is a
+distribution-surface decision, not a build tidy, and it is deferred past v1. The
+authority is the note in `atx-vol/CMakeLists.txt` beside the two targets, which
+records both measured reasons.
+
+## Linkage and distribution policy (v1)
+
+**atx-vol 1.x ships static-only, and there is no `ATX_VOL_API` export macro.**
+That is a decision made on evidence, not an unfinished item.
+
+A DLL build of the atx libraries (`-DATX_SHARED_LIBS=ON`, the `dev-shared`
+preset) links and runs, but it is not *correct* for this library. Every
+instrumentation plane atx-vol carries is a header-inline global — the always-on
+solve ledger and the lightweight sampler in `atx/vol/detail/counters.hpp`, the
+phase timers in `atx/vol/detail/phase_profile.hpp` — and on Windows a C++17
+inline variable gets **one instance per image**. The consumer scrapes its own
+copy while the DLL increments the DLL's. This was measured on 2026-07-22 and is
+why `dev-shared`'s own preset description says it is never the test gate.
+
+`CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS` does not fix it: a **data** symbol still has
+to be declared `__declspec(dllimport)` in the consumer to bind to the exporting
+image rather than to a local copy. Declaring it is precisely the `ATX_VOL_API`
+plumbing, on every such global, forever. v1 does not take that on.
+
+What follows from the policy:
+
+| Configuration | Status |
+|---|---|
+| `ATX_SHARED_LIBS=OFF` (default) | Supported, tested, shipped — static archives |
+| `ATX_SHARED_LIBS=ON` | Developer link-speed convenience only; **not** a gate, **not** distributable |
+| `BUILD_SHARED_LIBS` | Not this project's switch. Configure **fails** with the reason rather than silently handing back static archives |
+| `cmake --install` of a shared build | **Refused** at install time, rather than producing a prefix whose counters read zero |
+
+The consumer-facing consequence is small: `find_package(atx-vol)` gives static
+archives, and the exported targets carry the link interface they need. Nothing
+in the public API depends on the library being shared.
+
+The same reasoning is why the opt-in `ATX_VOL_COUNTERS` / `ATX_VOL_PROFILE`
+instrumentation names its build configuration in an inline namespace: a
+consumer compiled with a different view of those options than the library now
+fails to **link**, naming the mismatch, instead of silently reading a plane
+nobody writes. See the header comments in `atx/vol/detail/counters.hpp`.
 
 ## Conventions
 

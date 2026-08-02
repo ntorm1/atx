@@ -2,7 +2,7 @@
 // verify and fence a database that `atx-vol-surface-db-build` produced, with no
 // Python in the loop. Eight subcommands (`info`, `partitions`, `symbols`,
 // `config`, `query`, `verify`, `enable`, `disable`), each a parse -> one library
-// call -> print shell over atx/vol/surface_db_admin.hpp. All logic lives in that
+// call -> print shell over atx/vol/tools/surface_db_admin.hpp. All logic lives in that
 // library; nothing here decides anything about the database.
 //
 // SIX OF THE EIGHT ARE READ-ONLY. `enable` / `disable` write the manifest, and
@@ -139,8 +139,8 @@
 
 #include "atx/vol/session.hpp"               // FitPreset
 #include "atx/vol/surface_db.hpp"            // SurfaceDb
-#include "atx/vol/surface_db_admin.hpp"      // describe_*, query_surface, verify_db
-#include "atx/vol/surface_db_exit_codes.hpp" // kSurfaceDbVerifyExit* (shared with the build CLI)
+#include "atx/vol/tools/surface_db_admin.hpp"      // describe_*, query_surface, verify_db
+#include "atx/vol/tools/surface_db_exit_codes.hpp" // kSurfaceDbVerifyExit* (shared with the build CLI)
 #include "atx/vol/surface_policy.hpp"        // to_string(SurfacePurpose/FitQualityMode/SurfaceState)
 #include "atx/vol/types.hpp"                 // Result, Status
 #include "atx/vol/vol_curve.hpp"             // to_string(VolCurveKind)
@@ -156,7 +156,7 @@ namespace {
 // comments claimed the contract and nothing enforced it: either tool could have
 // renumbered onto the other with a green build and a green test run.
 //
-// Both vocabularies now live in `atx/vol/surface_db_exit_codes.hpp`, which
+// Both vocabularies now live in `atx/vol/tools/surface_db_exit_codes.hpp`, which
 // `static_assert`s that 3 and 5 (the build CLI's) never collide with 4 (this
 // one's) and that 0/1/2 agree. NOTHING IS RESTATED HERE — not even an alias — so
 // that the shared header is the only place either number can be changed; the call

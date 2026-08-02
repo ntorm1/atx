@@ -44,7 +44,7 @@
 #include "atx/vol/priced_surface.hpp"  // PricedSurface
 #include "atx/vol/session.hpp"         // FitPreset
 #include "atx/vol/strategy.hpp"        // DeclarativeStrategy, StrategySpec, resolve_strike_by_delta
-#include "atx/vol/tearsheet.hpp"       // TearSheet, tearsheet, write_backtest_tsv
+#include "atx/vol/tools/tearsheet.hpp"       // TearSheet, tearsheet, write_backtest_tsv
 #include "atx/vol/types.hpp"           // Side, Result, Status
 
 using namespace atx::vol;
@@ -195,7 +195,7 @@ class BacktestReal : public ::testing::Test {
     // separate ctest processes under the parallel gate (ctest -L atx_vol -j16),
     // and a shared fixed path let one test's SetUp/TearDown remove_all() delete
     // the archive out from under the other's in-flight run_backtest (flaky
-    // "SurfaceArchive::open_file: file not found"). The PID suffix isolates them.
+    // "SurfaceArchiveV2::open_file: file not found"). The PID suffix isolates them.
     out_dir_ = fs::temp_directory_path() /
                ("atx-backtest-real-corpus-" + std::to_string(::_getpid()));
     std::error_code ec;

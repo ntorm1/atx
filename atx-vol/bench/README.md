@@ -67,7 +67,7 @@ rows therefore always emit `unique_contracts_per_s`, `positions_per_s`,
 
 ## Algorithm counters (`ATX_VOL_COUNTERS`, P0.2)
 
-An opt-in, compile-time facility (`atx/vol/counters.hpp`) that counts boundary
+An opt-in, compile-time facility (`atx/vol/detail/counters.hpp`) that counts boundary
 solves, Newton/fixed-point sweeps, premium-quadrature evals, norm_cdf/log/exp
 calls, correction-cache hits/clamps/fallbacks, frame allocations/bytes, and worker
 launches. **Default OFF: `ATX_VOL_COUNT(...)` expands to `((void)0)` — zero runtime
@@ -262,18 +262,24 @@ Three measurement targets landed for the backtest hot-path sprint (the loop
 the quiet-window protocol on `rel-avx2` and named `-avx2-` (enforced).
 
 - **M1 — `atx-vol-surface-archive-bench`** (`surface_archive_bench.cpp`): the
-  previously-missing ATXVSA-v3 serialize/deserialize measurement.
-  - `surface_archive/serialize/{essvi,convexdense}/count:{1,4,16,50,100}` —
-    `write_surface_archive` in memory; `items_per_second` == surfaces/s (µs/surface
-    = 1e6 / surfaces_per_s), `bytes_per_second` == partition write MB/s,
-    `bytes_per_surface` exposes the 4096-B blob-pad amplification WS-S kills.
-  - `surface_archive/deserialize/<payload>/<mode>/count:N` — three v1 modes:
-    `open_reconstruct_all` (open + `map_all_with_provenance`, the whole-board
-    "bytes -> ready-to-price" the backtest pays every step), `reconstruct_all`
-    (map_all on a pre-opened archive, isolating reconstruct from open), and
-    `reconstruct_one` (`map_symbol` one symbol — the WS-S subset-map baseline).
-    WS-S appends the v2 zero-copy modes (`mmap_open`, `subset_map_zero_copy`) via
-    the typed extension seam in the TU.
+  previously-missing serialize/deserialize measurement. ATXVSA2-only since the
+  retired **ATXVSA03** format's writer/reader were deleted (release-v1 plan
+  3.5/3.6); its rows (`serialize`, `open_reconstruct_all`, `reconstruct_all`,
+  `reconstruct_one`) are gone with them, so those numbers in the checked-in
+  baselines below are HISTORY, not a comparand. (This paragraph used to call
+  ATXVSA03 "v1"; the ordinal spellings are retired — see
+  `atx-vol/include/atx/vol/surface_archive.hpp`.)
+  - `surface_archive/serialize_v2/{essvi,convexdense}/count:{1,4,16,50,100}` —
+    `write_surface_archive_v2` in memory; `items_per_second` == surfaces/s (µs/surface
+    = 1e6 / surfaces_per_s), `bytes_per_second` == partition write MB/s, and
+    `bytes_per_surface` the per-surface payload weight.
+  - `surface_archive/deserialize/<payload>/<mode>/count:N` — five modes. Three rebuild
+    OWNED surfaces: `open_reconstruct_all_v2` (open + `reconstruct_all_with_provenance`,
+    the whole-board "bytes -> ready-to-price" the backtest pays every step),
+    `reconstruct_all_v2` (the same on a pre-opened archive, isolating reconstruct from
+    open), and `reconstruct_one_v2` (`reconstruct_symbol` on one symbol). Two build
+    zero-copy views over the same bytes: `mmap_open` (open + `map_all`) and
+    `subset_map_zero_copy` (`map_symbol`), so owned-vs-view is a same-run ratio.
   - Baseline: `i7-1260p-clang18-avx2-surface-archive.json`.
 - **M2 — universe case in `atx-vol-reloc-bench`** (`backtest_throughput_bench.cpp`):
   `backtest/universe_strangle_hedged/steps` — kUnivN=10 names × daily 40Δ Strangle

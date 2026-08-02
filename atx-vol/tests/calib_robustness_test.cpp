@@ -13,8 +13,8 @@
 #include "atx/vol/c8_calib.hpp"     // c8_fit_slice_lm, c8_calib_slice
 #include "atx/vol/calib.hpp"        // CalibOpts, calib_default_opts, FitObs
 #include "atx/vol/correction.hpp"   // CorrectionCache
-#include "atx/vol/curve.hpp"        // CurveSet, ForwardPoint
 #include "atx/vol/essvi_calib.hpp"  // essvi_fit_slice, essvi_calib_surface_sequential
+#include "atx/vol/rates_curve.hpp"  // CurveSet, ForwardPoint
 #include "atx/vol/svi_calib.hpp"    // svi_calib_surface, svi_mm_calib_surface
 #include "atx/vol/universe.hpp"     // Underlying, Chain, chain_index
 #include "atx/vol/vol_curve.hpp"    // fit_slice_curve, CurveConfig, C8Curve

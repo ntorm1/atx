@@ -3,9 +3,16 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <vector>
 
+#include "atx/core/error.hpp"
+
 namespace atx::vol {
+
+using atx::core::Err;
+using atx::core::ErrorCode;
+using atx::core::Ok;
 
 namespace {
 
@@ -17,6 +24,15 @@ constexpr std::int64_t kNsPerDay = 24LL * kNsPerHour;
 // handful of years (~1200 days for a 3y LEAPS), so a day-loop bound an order
 // of magnitude above 5 years is generous headroom against a pathological
 // caller-supplied span while never touching legitimate use.
+//
+// A span past the bound is REPORTED, not clamped. Clamping made the loop stop
+// accruing at ~year 20 and answer anyway: the rest of the span was then reported
+// as pure non-trading time, so `vol_time_years` returned a T_vol wrong by whole
+// years -- a plausible number with no diagnostic, the same silent-truncation
+// class this sprint is closing everywhere else. The bound is not widened
+// instead, because nothing this module serves prices a >20y horizon: an option
+// that far out is a caller error, and 7324 iterations of session math per query
+// is already 20x the widest real use.
 constexpr std::int64_t kMaxLoopDays = 20 * 366 + 4;  // ~20 years
 
 struct CivilDate {
@@ -132,8 +148,11 @@ std::int64_t settlement_instant_ns(std::int32_t et_day_since_epoch,
   return et_local_to_utc_ns(static_cast<std::int64_t>(et_day_since_epoch), hour_et);
 }
 
-VolTimeCalendar::VolTimeCalendar(std::vector<std::int32_t> holiday_days)
-    : days_(std::move(holiday_days)) {
+VolTimeCalendar::VolTimeCalendar(std::vector<std::int32_t> holiday_days,
+                                 std::int32_t first_covered_day, std::int32_t last_covered_day)
+    : days_(std::move(holiday_days)),
+      first_covered_day_(first_covered_day),
+      last_covered_day_(last_covered_day) {
   std::sort(days_.begin(), days_.end());
   days_.erase(std::unique(days_.begin(), days_.end()), days_.end());
 }
@@ -141,6 +160,29 @@ VolTimeCalendar::VolTimeCalendar(std::vector<std::int32_t> holiday_days)
 bool VolTimeCalendar::is_holiday(std::int32_t day_since_epoch) const noexcept {
   return std::binary_search(days_.begin(), days_.end(), day_since_epoch);
 }
+
+std::int32_t VolTimeCalendar::first_covered_day() const noexcept { return first_covered_day_; }
+
+std::int32_t VolTimeCalendar::last_covered_day() const noexcept { return last_covered_day_; }
+
+bool VolTimeCalendar::covers(std::int32_t day_since_epoch) const noexcept {
+  return day_since_epoch >= first_covered_day_ && day_since_epoch <= last_covered_day_;
+}
+
+// Coverage window of the NYSE closure table in `us_default()` below:
+// 2024-01-01 through 2028-12-31, inclusive. These live HERE, adjacent to the
+// table, because they are one fact with it: extending the table without
+// extending the window silently keeps the new years fail-closed, and extending
+// the window without the table reinstates exactly the silent-full-session bug
+// the window exists to prevent. Change both in the same edit.
+//
+// The window is not widened backwards past 2024 "because closures are rare":
+// `is_dst` implements the MODERN (2007+) US DST rule only, so pre-2007
+// session boundaries would be off by an hour on top of the missing closures.
+constexpr std::int32_t kUsDefaultFirstCoveredDay =
+    static_cast<std::int32_t>(days_from_civil(2024, 1, 1));
+constexpr std::int32_t kUsDefaultLastCoveredDay =
+    static_cast<std::int32_t>(days_from_civil(2028, 12, 31));
 
 const VolTimeCalendar& VolTimeCalendar::us_default() {
   static const VolTimeCalendar cal = [] {
@@ -174,15 +216,15 @@ const VolTimeCalendar& VolTimeCalendar::us_default() {
     add(2028, 6, 19); add(2028, 7, 4);  add(2028, 9, 4);  add(2028, 11, 23);
     add(2028, 12, 25);
 
-    return VolTimeCalendar(std::move(days));
+    return VolTimeCalendar(std::move(days), kUsDefaultFirstCoveredDay, kUsDefaultLastCoveredDay);
   }();
   return cal;
 }
 
-double trading_hours_between(std::int64_t start_ns, std::int64_t end_ns,
-                             const VolTimeParams& p, const VolTimeCalendar& cal) noexcept {
+Result<double> trading_hours_between(std::int64_t start_ns, std::int64_t end_ns,
+                                     const VolTimeParams& p, const VolTimeCalendar& cal) {
   if (end_ns <= start_ns) {
-    return 0.0;
+    return Ok(0.0);
   }
 
   const double open_hour = p.session_open_hour_et;
@@ -192,19 +234,31 @@ double trading_hours_between(std::int64_t start_ns, std::int64_t end_ns,
   // [start_ns, end_ns). The ET/UTC offset is at most 5h, so padding the UTC
   // day-index range by one full day on each side is always sufficient; days
   // outside the true overlap contribute exactly 0 once intersected below.
-  std::int64_t z_lo = day_index(start_ns) - 1;
-  std::int64_t z_hi = day_index(end_ns) + 1;
+  //
+  // The int32 narrowing is total, not a bet: |day_index(ns)| <= INT64_MAX /
+  // 86400e9 ~= 106752 for every representable `ns`, three orders of magnitude
+  // inside int32.
+  const auto z_first = static_cast<std::int32_t>(day_index(start_ns));
+  const auto z_last = static_cast<std::int32_t>(day_index(end_ns));
+  const std::int64_t z_lo = static_cast<std::int64_t>(z_first) - 1;
+  const std::int64_t z_hi = static_cast<std::int64_t>(z_last) + 1;
   if (z_hi - z_lo > kMaxLoopDays) {
-    z_hi = z_lo + kMaxLoopDays;  // defensive bound; see kMaxLoopDays comment
+    // FAIL CLOSED rather than clamp: see kMaxLoopDays. A truncated loop answers
+    // with a T_vol short by every session past the bound.
+    return Err(ErrorCode::OutOfRange,
+               "trading_hours_between: interval spans " + std::to_string(z_hi - z_lo) +
+                   " days, past the " + std::to_string(kMaxLoopDays) +
+                   "-day (~20 year) bound this clock is defined over");
   }
 
   double trading_ns = 0.0;
   for (std::int64_t z = z_lo; z <= z_hi; ++z) {
-    if (is_weekend_day(static_cast<std::int32_t>(z))) {
-      continue;
+    const auto z32 = static_cast<std::int32_t>(z);
+    if (is_weekend_day(z32)) {
+      continue;  // a Saturday is a Saturday at any date, table or no table
     }
-    if (cal.is_holiday(static_cast<std::int32_t>(z))) {
-      continue;
+    if (cal.is_holiday(z32)) {
+      continue;  // a LISTED closure is positive information at any date
     }
 
     const std::int64_t sess_open = et_local_to_utc_ns(z, open_hour);
@@ -213,6 +267,23 @@ double trading_hours_between(std::int64_t start_ns, std::int64_t end_ns,
     const std::int64_t lo = std::max(start_ns, sess_open);
     const std::int64_t hi = std::min(end_ns, sess_close);
     if (hi > lo) {
+      // FAIL CLOSED here, at the CONTRIBUTION site, so the coverage-checked set
+      // is exactly the contributing set for ANY `p`. Gating on the interval's
+      // own day span [z_first, z_last] instead would leave the two padding days
+      // unchecked, and that is only safe while a session cannot spill across a
+      // UTC midnight -- i.e. while `session_open_hour_et + session_span_hours
+      // <= 19` ET. Both are caller-supplied and unvalidated, so an
+      // extended-hours configuration would silently accrue an UNCOVERED day's
+      // trading time: precisely the "unknown day read as open" defect this
+      // guard exists to close. Cheap, too -- two integer compares on the days
+      // that actually accrue.
+      if (!cal.covers(z32)) {
+        return Err(ErrorCode::OutOfRange,
+                   "trading_hours_between: day " + std::to_string(z32) +
+                       " accrues trading time but lies outside the calendar's covered window [" +
+                       std::to_string(cal.first_covered_day()) + ", " +
+                       std::to_string(cal.last_covered_day()) + "] (days since 1970-01-01)");
+      }
       // Each term is at most one session's worth of ns (~2.7e13), far below
       // double's exact-integer range (2^53), so this widening is exact; the
       // running sum stays exact too for any realistic (or even the
@@ -220,35 +291,35 @@ double trading_hours_between(std::int64_t start_ns, std::int64_t end_ns,
       trading_ns += static_cast<double>(hi - lo);
     }
   }
-  return trading_ns / (3600.0 * 1.0e9);
+  return Ok(trading_ns / (3600.0 * 1.0e9));
 }
 
-double vol_time_years(std::int64_t now_ns, std::int64_t expiry_ns, const VolTimeParams& p,
-                      const VolTimeCalendar& cal) noexcept {
+Result<double> vol_time_years(std::int64_t now_ns, std::int64_t expiry_ns, const VolTimeParams& p,
+                              const VolTimeCalendar& cal) {
   if (expiry_ns <= now_ns) {
-    return 0.0;
+    return Ok(0.0);
   }
-  const double trading_h = trading_hours_between(now_ns, expiry_ns, p, cal);
+  ATX_TRY(const double trading_h, trading_hours_between(now_ns, expiry_ns, p, cal));
   const double total_h =
       static_cast<double>(expiry_ns - now_ns) / (3600.0 * 1.0e9);
   const double nontrading_h = total_h - trading_h;
 
-  return trading_h * (p.alpha / p.trading_hours_per_year) +
-         nontrading_h * ((1.0 - p.alpha) / p.nontrading_hours_per_year);
+  return Ok(trading_h * (p.alpha / p.trading_hours_per_year) +
+            nontrading_h * ((1.0 - p.alpha) / p.nontrading_hours_per_year));
 }
 
-double time_to_expiry_years(std::int64_t from_ns, std::int64_t to_ns,
-                            const TimeSpec& spec) noexcept {
+Result<double> time_to_expiry_years(std::int64_t from_ns, std::int64_t to_ns,
+                                    const TimeSpec& spec) {
   switch (spec.convention) {
     case TimeConvention::Calendar365:
-      return static_cast<double>(to_ns - from_ns) / kCalendarYearNs;
+      return Ok(static_cast<double>(to_ns - from_ns) / kCalendarYearNs);
     case TimeConvention::VolTime:
       return vol_time_years(from_ns, to_ns, spec.vol_time, VolTimeCalendar::us_default());
   }
   // Unreachable (switch is exhaustive over TimeConvention's two enumerators;
   // -Wswitch enforces it stays that way). A trailing return keeps this a
   // well-formed function for compilers that cannot prove switch exhaustiveness.
-  return static_cast<double>(to_ns - from_ns) / kCalendarYearNs;
+  return Ok(static_cast<double>(to_ns - from_ns) / kCalendarYearNs);
 }
 
 std::int64_t ns_from_year_fraction(std::int64_t from_ns, double years) noexcept {

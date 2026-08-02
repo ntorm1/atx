@@ -64,3 +64,17 @@ TEST(ErrorTest, StatusOk) {
   const Status s = Ok();
   EXPECT_TRUE(s.has_value());
 }
+
+// `Cancelled` is the code cooperative cancellation returns, so a host has to be
+// able to tell it apart from a real failure BY CODE — never by sniffing message
+// text. Pins both halves of that: the enumerator is distinct from the failure
+// codes it would otherwise be confused with, and to_string names it (a missing
+// `case` would silently fall through to "Unrecognized").
+TEST(ErrorTest, CancelledIsADistinctNamedCode) {
+  EXPECT_EQ(atx::core::to_string(ErrorCode::Cancelled), "Cancelled");
+  EXPECT_NE(ErrorCode::Cancelled, ErrorCode::Internal);
+  EXPECT_NE(ErrorCode::Cancelled, ErrorCode::Unavailable);
+
+  const Error e{ErrorCode::Cancelled, "backtest: cancelled at step 3"};
+  EXPECT_EQ(e.to_string(), "Cancelled: backtest: cancelled at step 3");
+}

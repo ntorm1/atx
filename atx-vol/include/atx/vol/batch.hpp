@@ -25,12 +25,26 @@
 // all per-lane spans have equal length and returns InvalidArgument otherwise
 // (agent profile §4: validate at the boundary).
 //
+// ## Error model (4.3)
+//
+// Every entry reports through `Result<std::size_t>` — the library's one error
+// channel — carrying the LANE COUNT it wrote on success. The outputs stay
+// caller-owned spans: these are the pricing hot path's SoA kernels and the
+// documented allocation-free contract below is load-bearing, so the value in
+// the Result is the count, never a freshly allocated container.
+//
+// The lane count is what a caller needs to walk the parallel per-lane channels
+// (`implied_vol_batch`'s `status_out`) and it is only defined when the call
+// succeeded, which is exactly the property the old `Status` + "recompute n from
+// an input span" shape could not express.
+//
 // Every output must be byte-disjoint from all inputs and other outputs. The
 // boundary rejects overlap with InvalidArgument before writing because a
 // four-lane load/store kernel cannot safely honor arbitrary span aliasing.
 // Calls over disjoint storage are allocation-free except for Error payloads on
 // failed IV lanes and are safe to run concurrently.
 
+#include <cstddef>
 #include <span>
 
 #include "atx/vol/black76.hpp"
@@ -48,11 +62,12 @@ namespace atx::vol {
 // All spans must share one length; degenerate lanes (T <= 0 / sigma <= 0)
 // collapse to discounted intrinsic exactly as the scalar kernel does.
 //
-// @return InvalidArgument if the span lengths differ or output overlaps input.
-[[nodiscard]] Status black76_price_batch(std::span<const double> F, std::span<const double> K,
-                                         std::span<const double> T, std::span<const double> sigma,
-                                         std::span<const double> df, std::span<const Side> side,
-                                         std::span<double> price_out);
+// @return the number of lanes written, or InvalidArgument if the span lengths
+//         differ or output overlaps input.
+[[nodiscard]] Result<std::size_t>
+black76_price_batch(std::span<const double> F, std::span<const double> K, std::span<const double> T,
+                    std::span<const double> sigma, std::span<const double> df,
+                    std::span<const Side> side, std::span<double> price_out);
 
 // ── Black-76 price from precomputed log-moneyness (SoA, shared slice) ─────
 //
@@ -60,14 +75,13 @@ namespace atx::vol {
 // shared across all lanes (one expiry slice); `F`, `K`, `sigma`, `ln_fk`, and
 // `side` are per-lane. Each lane calls `black76_price_from_lnfk`.
 //
-// @return InvalidArgument if the per-lane span lengths differ or output
-//         overlaps input.
-[[nodiscard]] Status black76_price_from_lnfk_batch(std::span<const double> F,
-                                                   std::span<const double> K, double T,
-                                                   double sqrt_t, std::span<const double> sigma,
-                                                   double df, std::span<const double> ln_fk,
-                                                   std::span<const Side> side,
-                                                   std::span<double> price_out);
+// @return the number of lanes written, or InvalidArgument if the per-lane span
+//         lengths differ or output overlaps input.
+[[nodiscard]] Result<std::size_t>
+black76_price_from_lnfk_batch(std::span<const double> F, std::span<const double> K, double T,
+                              double sqrt_t, std::span<const double> sigma, double df,
+                              std::span<const double> ln_fk, std::span<const Side> side,
+                              std::span<double> price_out);
 
 // ── Black-76 fused value + vega (SoA, shared T) ──────────────────────────
 //
@@ -79,9 +93,9 @@ namespace atx::vol {
 // (the default) is the sentinel for "compute sqrt(T) internally", exactly as
 // the scalar kernel.
 //
-// @return InvalidArgument if the per-lane span lengths differ or either output
-//         overlaps an input or the other output.
-[[nodiscard]] Status
+// @return the number of lanes written, or InvalidArgument if the per-lane span
+//         lengths differ or either output overlaps an input or the other output.
+[[nodiscard]] Result<std::size_t>
 black76_value_and_vega_batch(std::span<const double> F, std::span<const double> K, double T,
                              std::span<const double> sigma, std::span<const double> df,
                              std::span<const Side> side, std::span<double> value_out,
@@ -94,15 +108,16 @@ black76_value_and_vega_batch(std::span<const double> F, std::span<const double> 
 // scalar `implied_vol`; on success it writes the IV to `iv_out[i]` and Ok() to
 // `status_out[i]`, and on failure it writes NaN to `iv_out[i]` and the
 // scalar's Error to `status_out[i]`. The function's own return reports only
-// argument validation — Ok() means the spans were well-formed; inspect
-// `status_out` for per-lane outcomes.
+// argument validation — a lane count means the spans were well-formed; inspect
+// `status_out[0 .. count)` for per-lane outcomes.
 //
-// @return InvalidArgument if lengths differ or outputs overlap inputs/each
-//         other.
-[[nodiscard]] Status implied_vol_batch(std::span<const double> price, std::span<const double> F,
-                                       std::span<const double> K, std::span<const double> T,
-                                       std::span<const double> df, std::span<const Side> side,
-                                       std::span<double> iv_out, std::span<Status> status_out);
+// @return the number of lanes written, or InvalidArgument if lengths differ or
+//         outputs overlap inputs/each other.
+[[nodiscard]] Result<std::size_t>
+implied_vol_batch(std::span<const double> price, std::span<const double> F,
+                  std::span<const double> K, std::span<const double> T, std::span<const double> df,
+                  std::span<const Side> side, std::span<double> iv_out,
+                  std::span<Status> status_out);
 
 // ── Analytic Black-76 Greeks (SoA in, AoS Greeks out) ────────────────────
 //
@@ -118,13 +133,15 @@ black76_value_and_vega_batch(std::span<const double> F, std::span<const double> 
 // `black76_greeks(F, K, T, sigma, r, df, side)` — the numerical source of
 // truth it calls — so the (r, df) order is uniform across atx-vol.
 //
-// @return InvalidArgument if lengths differ, a non-empty `price_out` does not
-//         match the input length, or outputs overlap inputs/each other.
-[[nodiscard]] Status black76_greeks_batch(std::span<const double> F, std::span<const double> K,
-                                          std::span<const double> T, std::span<const double> sigma,
-                                          std::span<const double> r, std::span<const double> df,
-                                          std::span<const Side> side, std::span<Greeks> greeks_out,
-                                          std::span<double> price_out = {});
+// @return the number of lanes written, or InvalidArgument if lengths differ, a
+//         non-empty `price_out` does not match the input length, or outputs
+//         overlap inputs/each other.
+[[nodiscard]] Result<std::size_t>
+black76_greeks_batch(std::span<const double> F, std::span<const double> K,
+                     std::span<const double> T, std::span<const double> sigma,
+                     std::span<const double> r, std::span<const double> df,
+                     std::span<const Side> side, std::span<Greeks> greeks_out,
+                     std::span<double> price_out = {});
 
 // ── eSSVI total variance over a k-grid (single slice, SoA) ───────────────
 //
@@ -133,8 +150,10 @@ black76_value_and_vega_batch(std::span<const double> F, std::span<const double> 
 // essvi_w(slice, k_log[i])` — the base 3-parameter Gatheral-Jacquier backbone,
 // the exact symmetric-no-residual form the C fast path evaluated.
 //
-// @return InvalidArgument if lengths differ or output overlaps input.
-[[nodiscard]] Status essvi_w_batch(const EssviSlice &slice, std::span<const double> k_log,
-                                   std::span<double> w_out);
+// @return the number of lanes written, or InvalidArgument if lengths differ or
+//         output overlaps input.
+[[nodiscard]] Result<std::size_t> essvi_w_batch(const EssviSlice &slice,
+                                                std::span<const double> k_log,
+                                                std::span<double> w_out);
 
 } // namespace atx::vol

@@ -306,7 +306,7 @@ def test_schema_py_not_stale_vs_cpp_header():
       what stops the misleading header from coming back.
     """
     atx_vol = pathlib.Path(__file__).resolve().parents[2]  # .../atx-vol
-    header = atx_vol / "include" / "atx" / "vol" / "run_archive_schema.hpp"
+    header = atx_vol / "include" / "atx" / "vol" / "detail" / "run_archive_schema.hpp"
     generator = atx_vol / "tools" / "gen_runarchive_schema.py"
     if header.exists() and generator.exists():
         proc = subprocess.run(
@@ -367,7 +367,7 @@ def test_schema_py_not_stale_vs_cpp_header():
 # `--header` / `--out`.
 
 _ATX_VOL = pathlib.Path(__file__).resolve().parents[2]
-_CPP_HEADER = _ATX_VOL / "include" / "atx" / "vol" / "run_archive_schema.hpp"
+_CPP_HEADER = _ATX_VOL / "include" / "atx" / "vol" / "detail" / "run_archive_schema.hpp"
 _GENERATOR = _ATX_VOL / "tools" / "gen_runarchive_schema.py"
 _SCHEMA_PY = _ATX_VOL / "python" / "src" / "atxvol" / "report" / "_schema.py"
 

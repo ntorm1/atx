@@ -14,7 +14,7 @@
 #include "atx/vol/correction.hpp"
 #include "atx/vol/curve_fit.hpp"
 #include "atx/vol/essvi_calib.hpp"
-#include "atx/vol/prepared_fitting.hpp"
+#include "atx/vol/detail/prepared_fitting.hpp"
 #include "atx/vol/surface_parity.hpp"
 #include "atx/vol/universe.hpp"
 #include "atx/vol/vol_curve.hpp"

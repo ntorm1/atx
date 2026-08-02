@@ -4,8 +4,8 @@
 // (corpus.cpp) and `populate_surface_db` (surface_db_populate.cpp): fit ONE
 // board through the blessed atx-vol path (OptionChain::from_frame ->
 // PricerFitter::fit -> VolaSession::to_priced_surface). See corpus.cpp's
-// original design note (corpus.hpp / corpus.cpp) for why this does not go
-// through calib_pool.hpp's calibrate_pool.
+// original design note (corpus.hpp / corpus.cpp) for why the corpus fits one
+// board at a time rather than fanning out across a whole universe.
 //
 // Private, src/-only header: NOT installed, NOT part of the public
 // atx/vol/ API surface. Both TUs that need this logic live inside the

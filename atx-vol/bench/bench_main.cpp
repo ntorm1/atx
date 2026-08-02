@@ -49,7 +49,7 @@
 
 #include <benchmark/benchmark.h>
 
-#include "atx/vol/pricing_executor.hpp"
+#include "atx/vol/detail/pricing_executor.hpp"
 
 #include "bench_util.hpp"
 
@@ -248,8 +248,16 @@ int main(int argc, char **argv) {
 
   // (3) quiet-window protocol — preamble note, P-core pinning, turbo warmup.
   b::print_quiet_window_preamble();
-  atx::vol::configure_pricing_executor(
-      atx::vol::ExecutorConfig{atx::vol::Topology::PerformanceCores});
+  // 4.3: the hook reports its refusal instead of returning a bool nobody read.
+  // A refusal here means something built the pool before main() got to it, so
+  // this run is NOT pinned and its numbers are not citable under (a) — say so on
+  // stderr rather than measuring an unpinned box while claiming otherwise.
+  if (const atx::vol::Status pinned = atx::vol::configure_pricing_executor(
+          atx::vol::ExecutorConfig{atx::vol::Topology::PerformanceCores});
+      !pinned.has_value()) {
+    std::fprintf(stderr, "[atx-bench] P-core pinning NOT applied: %s\n",
+                 pinned.error().to_string().c_str());
+  }
   b::turbo_warmup();
 
   // (4) standard Google Benchmark run (mirrors BENCHMARK_MAIN()).

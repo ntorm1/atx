@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <string>
@@ -12,9 +13,9 @@
 #include "atx/vol/arb.hpp"           // arb_check_total_surface_all
 #include "atx/vol/black76.hpp"       // black76_price, black76_value_and_vega
 #include "atx/vol/calib.hpp"         // CalibOpts, FitObs, build_observations
-#include "atx/vol/curve.hpp"         // CurveSet, ForwardPoint
 #include "atx/vol/essvi_calib.hpp"   // the unit under test
-#include "atx/vol/parallel_for.hpp"  // atx_auto_worker_count (env-cap determinism)
+#include "atx/vol/detail/parallel_for.hpp"  // atx_auto_worker_count (env-cap determinism)
+#include "atx/vol/rates_curve.hpp"   // CurveSet, ForwardPoint
 #include "atx/vol/universe.hpp"      // Underlying, Chain, chain_index
 #include "atx/vol/vol_surface.hpp"   // EssviParams, VolSurface, essvi_reparam_to_natural
 
@@ -248,6 +249,79 @@ TEST(EssviFitSlice, EmptyObservations_ReturnsInvalidArgument) {
   const auto res = essvi_fit_slice(obs, 0.5, 100.0, calib_default_opts());
   ASSERT_FALSE(res.has_value());
   EXPECT_EQ(res.error().code(), ErrorCode::InvalidArgument);
+}
+
+// Plan item 1.6 — the dense-residual butterfly guard must reject a window whose
+// TOTAL variance has collapsed onto the hot-path positivity floor.
+//
+// `essvi_total_w` floors w at 1e-12 whenever the residual layer drives it
+// non-positive, so a guard testing `w > 0` can never fire. A fully clamped
+// stencil is then perfectly flat (w == w(k±h) == 1e-12), which makes the
+// Lee/Roper density read g = +1 — "arb-free" — and the greedy projection accepts
+// a residual that serves ~1e-6 vol.
+//
+// Fixture: a near-expiry (1 hour) slice quoted at 2 % vol — total variance
+// ~4.6e-8 — with a near-money quote gap, fit under a calendar-monotone theta
+// floor set by a much fatter prior expiry. The residual layer must cancel a
+// backbone ~40x the quoted level, and at that variance scale the g formula is
+// dominated by (1 - k·w'/2w)² so a collapsed core still scores non-negative.
+TEST(EssviFitSlice, DenseResidualCollapsedWindow_IsNotServedAsNearZeroVol) {
+  const double T = 1.0 / (365.25 * 24.0);  // ~1 hour to expiry
+  const double F = 100.0;
+  const double vol = 0.02;
+  const double theta_true = vol * vol * T;
+  const EssviParams truth = backbone(theta_true, 1.5, -0.30, T);
+
+  // Wing-ish quotes only: |k| in [0.02, 0.05], no at-the-money row.
+  std::vector<FitObs> obs;
+  for (int i = 0; i < 8; ++i) {
+    const double k = (i < 4) ? -(0.02 + 0.03 * (3 - i) / 3.0)
+                             : (0.02 + 0.03 * (i - 4) / 3.0);
+    const double w = essvi_backbone_w(truth, k);
+    FitObs o{};
+    o.k = k;
+    o.w_mkt = w;
+    o.sigma_mkt = std::sqrt(w / T);
+    o.weight_w = 1.0;
+    o.active_weight_w = 1.0;
+    o.F = F;
+    o.K = F * std::exp(k);
+    o.df = 1.0;
+    o.vega = 20.0;
+    o.spread = 0.05;
+    obs.push_back(o);
+  }
+
+  CalibOpts opts = calib_default_opts();
+  opts.residual_disable = false;
+  opts.residual_basis_kind = atx::vol::ResidualBasisKind::C2Bspline;
+  // The previous (fatter) expiry pins this slice's ATM total variance 40x above
+  // its own quotes — the seam essvi_calib_surface_sequential drives.
+  const double theta_floor = 40.0 * theta_true;
+
+  const auto res = essvi_fit_slice(obs, T, F, opts, nullptr, theta_floor);
+  ASSERT_TRUE(res.has_value());
+
+  // Sweep the guard's own evaluation window (+/- 1.15 * kmax).
+  const double kmax = 0.05;
+  double min_w = std::numeric_limits<double>::infinity();
+  double k_at_min = 0.0;
+  for (int i = 0; i <= 200; ++i) {
+    const double k =
+        -1.15 * kmax + 2.30 * kmax * static_cast<double>(i) / 200.0;
+    const double w = atx::vol::essvi_total_w(*res, k);
+    if (w < min_w) {
+      min_w = w;
+      k_at_min = k;
+    }
+  }
+
+  // No point may sit at (or below) the hot-path positivity floor: that is the
+  // clamped state the guard exists to reject.
+  EXPECT_GT(min_w, 1.0e-12) << "collapsed onto the w floor at k = " << k_at_min;
+  // ...and the served vol must be an economically real number, not ~1 bp.
+  EXPECT_GT(std::sqrt(min_w / T), 0.01)
+      << "serves " << std::sqrt(min_w / T) << " vol at k = " << k_at_min;
 }
 
 // ── Warm-start (tick-to-quote incremental refit) ─────────────────────────

@@ -15,9 +15,9 @@
 
 #include "atx/core/io/parquet.hpp"
 #include "atx/core/io/parquet_writer.hpp"
-#include "atx/vol/curve.hpp"    // YieldCurve
-#include "atx/vol/data.hpp"     // year_fraction, find_expiry_inputs, ExpiryInputs
-#include "atx/vol/vol_time.hpp" // TimeSpec, TimeConvention, vol_time_years
+#include "atx/vol/data.hpp"      // year_fraction, find_expiry_inputs, ExpiryInputs
+#include "atx/vol/rates_curve.hpp"     // YieldCurve
+#include "atx/vol/vol_time.hpp"  // TimeSpec, TimeConvention, vol_time_years
 
 // Loader/parser coverage for the OPRA cbbo-1m (NBBO) Parquet ingestion path.
 //
@@ -55,8 +55,12 @@ using atx::vol::YieldCurve;
 // THE FIX: it removes the ~0.8-trading-day front-T understatement.
 [[nodiscard]] inline double pm_year_fraction(const std::string &snap_iso,
                                              const std::string &expiry_iso) {
-  return atx::vol::time_to_expiry_years(
-      iso_to_ns(snap_iso), expiry_instant_ns(expiry_iso, SettlementSession::Pm), TimeSpec{});
+  // Default `TimeSpec{}` is Calendar365, which reads no calendar and therefore
+  // cannot hit the fail-closed coverage window (vol_time.hpp) — hence the
+  // unconditional unwrap.
+  return *atx::vol::time_to_expiry_years(iso_to_ns(snap_iso),
+                                         expiry_instant_ns(expiry_iso, SettlementSession::Pm),
+                                         TimeSpec{});
 }
 
 // ── Shared fixture builders (P2-2 / P2-3) ──────────────────────────────────
@@ -881,9 +885,13 @@ TEST(OpraPanel, VolTimeConvention_ChangesPcpSpotAndTermRateStamping) {
   // The loader routes the TRUE 16:00 ET PM expiry instant (G1) through VolTime.
   const std::int64_t short_ns = expiry_instant_ns("2026-08-01", SettlementSession::Pm);
   const std::int64_t long_ns = expiry_instant_ns("2027-11-01", SettlementSession::Pm);
-  const auto &us_cal = VolTimeCalendar::us_default();
-  const double vt_short = vol_time_years(now_ns, short_ns, VolTimeParams{}, us_cal);
-  const double vt_long = vol_time_years(now_ns, long_ns, VolTimeParams{}, us_cal);
+  const auto& us_cal = VolTimeCalendar::us_default();
+  const auto vt_short_res = vol_time_years(now_ns, short_ns, VolTimeParams{}, us_cal);
+  const auto vt_long_res = vol_time_years(now_ns, long_ns, VolTimeParams{}, us_cal);
+  ASSERT_TRUE(vt_short_res.has_value()) << vt_short_res.error().to_string();
+  ASSERT_TRUE(vt_long_res.has_value()) << vt_long_res.error().to_string();
+  const double vt_short = *vt_short_res;
+  const double vt_long = *vt_long_res;
 
   const auto *vol_short = atx::vol::find_expiry_inputs(vol->frame, "XOM", "2026-08-01");
   const auto *vol_long = atx::vol::find_expiry_inputs(vol->frame, "XOM", "2027-11-01");
@@ -947,9 +955,10 @@ TEST(OpraPanel, VolTimePanelInstallsConsistentChainT_NoThreadingRequired) {
   for (std::size_t i = 0; i < 2; ++i) {
     // Chain::T is now the VolTime year-fraction to the TRUE 16:00 ET expiry
     // instant (G1) — the same instant the loader's own PCP/rate math used.
-    const double expected_T = vol_time_years(
+    const auto expected_T = vol_time_years(
         now_ns, expiry_instant_ns(expiries[i], SettlementSession::Pm), VolTimeParams{}, us_cal);
-    EXPECT_DOUBLE_EQ((*under)->chains[i].T, expected_T) << expiries[i];
+    ASSERT_TRUE(expected_T.has_value()) << expected_T.error().to_string();
+    EXPECT_DOUBLE_EQ((*under)->chains[i].T, *expected_T) << expiries[i];
     EXPECT_NE((*under)->chains[i].T, year_fraction(snap, expiries[i])) << expiries[i];
   }
 }

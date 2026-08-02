@@ -9,7 +9,7 @@ than a convention:
 
 * The block between ``# --- BEGIN GENERATED`` and ``# --- END GENERATED`` is
   written by ``atx-vol/tools/gen_runarchive_schema.py`` from
-  ``atx-vol/include/atx/vol/run_archive_schema.hpp``. Do not hand-edit it; edit
+  ``atx-vol/include/atx/vol/detail/run_archive_schema.hpp``. Do not hand-edit it; edit
   the header and regenerate.
 * Everything OUTSIDE those markers — this docstring and the ``COLUMN_NOTES``
   table at the bottom — is hand-maintained and is preserved verbatim across

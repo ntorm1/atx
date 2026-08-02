@@ -5,6 +5,7 @@
 #include <type_traits>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/detail/legacy_surface.hpp"  // Surface<Slice> (demoted, S4-T21)
 
 namespace atx::vol {
 

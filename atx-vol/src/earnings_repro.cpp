@@ -145,7 +145,12 @@ Result<EarningsReproResult> run_earnings_repro(const VolaSession &sess, const Ev
     if (cfg.clock_days_per_year > 0.0) {
       out.tenor_T[i] = static_cast<double>(SrTenorGrid::kTradingDays[i]) / cfg.clock_days_per_year;
     } else {
-      out.tenor_T[i] = tenor_years(now_ns, SrTenorGrid::kTradingDays[i], cfg.time);
+      // Propagates the VolTime coverage error (vol_time.hpp): the 504-trading-day
+      // tenor reaches ~2y past `now_ns`, so a late-window snapshot resolves off
+      // the end of the default calendar. A poisoned tenor_T would silently
+      // corrupt the censored-term fit that consumes it.
+      ATX_TRY(const double tenor_T, tenor_years(now_ns, SrTenorGrid::kTradingDays[i], cfg.time));
+      out.tenor_T[i] = tenor_T;
     }
   }
 

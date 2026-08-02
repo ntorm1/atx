@@ -88,7 +88,9 @@ struct Contract {
 // against. Strictly finer than the nullopt ACCURATE preset (12/24/48): more
 // boundary nodes, a finer fixed-point quadrature, a deeper sweep budget, a
 // tighter tol.
-[[nodiscard]] AlOpts reference_opts() noexcept { return AlOpts{16, 48, 32, 1.0e-12}; }
+[[nodiscard]] AlOpts reference_opts() noexcept {
+  return AlOpts{.n_collocation = 16, .n_quadrature = 48, .max_newton_iter = 32, .tol = 1.0e-12};
+}
 
 [[nodiscard]] double price_or_nan(const Contract& c, const std::optional<AlOpts>& opts) noexcept {
   const atx::vol::Result<double> r =
@@ -430,7 +432,11 @@ void american_boundary_batch_avx2(benchmark::State& state) {
 // ratio is the HONEST best-scalar-vs-avx2 at the tier that actually ships, not the
 // accurate (12,24,48) gate above. n_quad_price=32 exercises the decoupled premium.
 [[nodiscard]] const std::optional<AlOpts>& qlfast_opts() {
-  static const std::optional<AlOpts> o = AlOpts{7, 8, 2, 1.0e-8, 32};
+  static const std::optional<AlOpts> o = AlOpts{.n_collocation = 7,
+                                                .n_quadrature = 8,
+                                                .n_quad_price = 32,
+                                                .max_newton_iter = 2,
+                                                .tol = 1.0e-8};
   return o;
 }
 void american_boundary_batch_scalar_qlfast(benchmark::State& state) {

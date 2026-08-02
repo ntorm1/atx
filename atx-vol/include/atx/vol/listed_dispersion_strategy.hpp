@@ -114,6 +114,15 @@ public:
   // so the engine can subset-deserialize each date instead of loading the whole
   // board. Computed once at `create` in ascending uid order (deterministic, and
   // independent of roll/leg order in the artifact).
+  //
+  // BORROW of a vector this strategy owns. Unlike `entry_risk_seeds` (whose
+  // single-step borrow rule is stated on the `IStrategy` base) this one is
+  // STABLE: it is computed once at `create` and no `on_step` rewrites it, so the
+  // span is valid for the strategy's whole run and the engine may hold it across
+  // steps. Destroying the strategy, or moving it, invalidates it — the engine
+  // reads it from the stepping thread like every other accessor here. Same rule
+  // applies to `schedule()`'s reference and `last_mark_divergences()`'s vector
+  // reference, except that the divergence list IS cleared and rebuilt every step.
   [[nodiscard]] std::span<const std::uint32_t> referenced_uids() const noexcept override {
     return referenced_uids_;
   }

@@ -14,7 +14,7 @@
 #include <pybind11/stl.h>
 
 #include "atx/vol/backtest.hpp"
-#include "atx/vol/tearsheet.hpp"
+#include "atx/vol/tools/tearsheet.hpp"
 #include "backtest_util.hpp"
 #include "result.hpp"
 

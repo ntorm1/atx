@@ -21,6 +21,14 @@ class OccEssReport {
 public:
   OccEssReport() = default;
 
+  // `trade_date()` and `special_symbols()` BORROW storage this report owns; the
+  // report is the owner, the view is not. A report is immutable once
+  // `parse_occ_ess_report` has returned it (the parser is its only friend and no
+  // member function writes), so both views stay valid for the report's lifetime
+  // and concurrent const readers are safe. Destroying the report, or assigning
+  // over it (the type is copyable AND movable), invalidates them — and a view
+  // taken from one report never names a copy's storage. Copy out
+  // (`std::vector<std::string>{sp.begin(), sp.end()}`) to outlive the report.
   [[nodiscard]] std::string_view trade_date() const noexcept { return trade_date_; }
   [[nodiscard]] std::span<const std::string> special_symbols() const noexcept {
     return special_symbols_;

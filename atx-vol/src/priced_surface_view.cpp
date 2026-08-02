@@ -117,14 +117,23 @@ constexpr char kSurfaceRecordMagic[8] = {'A', 'T', 'X', 'V', 'S', 'R', '2', '0'}
 
 PricedSurfaceView::~PricedSurfaceView() = default;
 
-PricedSurfaceView::PricedSurfaceView(PricedSurfaceView &&other) noexcept
-    : record_(other.record_), col_kind_(other.col_kind_), col_T_(other.col_T_),
-      col_forward_(other.col_forward_), col_qeff_(other.col_qeff_), col_df_(other.col_df_),
-      col_borrow_(other.col_borrow_), col_payload_off_(other.col_payload_off_),
-      col_node_count_(other.col_node_count_), n_slices_(other.n_slices_), pricing_(other.pricing_),
-      term_rates_(other.term_rates_), query_pricing_tier_(other.query_pricing_tier_),
-      heavy_curves_(std::move(other.heavy_curves_)),
-      instance_id_(std::exchange(other.instance_id_, allocate_view_instance_id())) {}
+// MOVED-FROM CONTRACT. A move transfers the ONLY owner of the materialized
+// heavy curves, so the source must not keep answering queries off the record it
+// no longer co-owns: `slice_w` would index the emptied `heavy_curves_` out of
+// bounds on a ConvexDense/SplineVol slice, and on a parametric surface the
+// source would silently remain a second live view of the same mapping. Both
+// moves therefore RELEASE the source's borrows (record span + every column
+// pointer) and zero `n_slices_`, which is the one flag the query guards read —
+// a moved-from view is structurally empty and every query fails closed
+// (resolve()/evaluate_batch() below). Destruction and re-assignment stay valid.
+//
+// Every member carries a default member initializer, so the empty body leaves
+// `*this` in exactly the structurally-empty state the assignment below produces
+// for a moved-from source; delegating to the assignment keeps the release list
+// single-sourced (two hand-maintained copies would silently drift).
+PricedSurfaceView::PricedSurfaceView(PricedSurfaceView &&other) noexcept {
+  *this = std::move(other);
+}
 
 PricedSurfaceView &PricedSurfaceView::operator=(PricedSurfaceView &&other) noexcept {
   if (this == &other) {
@@ -145,6 +154,20 @@ PricedSurfaceView &PricedSurfaceView::operator=(PricedSurfaceView &&other) noexc
   query_pricing_tier_ = other.query_pricing_tier_;
   heavy_curves_ = std::move(other.heavy_curves_);
   instance_id_ = std::exchange(other.instance_id_, allocate_view_instance_id());
+  // Release the source's borrows. `n_slices_ = 0` is the flag every query guard
+  // reads; the nulled pointers make any missed guard a loud fault rather than a
+  // silent read of a record this view no longer co-owns.
+  other.record_ = {};
+  other.col_kind_ = nullptr;
+  other.col_T_ = nullptr;
+  other.col_forward_ = nullptr;
+  other.col_qeff_ = nullptr;
+  other.col_df_ = nullptr;
+  other.col_borrow_ = nullptr;
+  other.col_payload_off_ = nullptr;
+  other.col_node_count_ = nullptr;
+  other.n_slices_ = 0;
+  other.heavy_curves_.clear(); // a moved-from vector is only "valid but unspecified"
   return *this;
 }
 
@@ -162,6 +185,31 @@ namespace {
   }
   const std::uint64_t bytes = elem * count; // count bounded by n_slices (u32) -> no overflow
   return bytes <= record_size - off;
+}
+
+// Is `k[0..n)` a legal `std::lower_bound` key? The LinearVariance node axis is
+// searched on the `noexcept` query path (`slice_w`, and `LinearVarianceCurve::w`
+// on the owned path) and the bracket it returns is used as `lo = hi - 1`.
+//
+// The two wing guards there (`k_log <= k[0]`, `k_log >= k[n-1]`) already pin the
+// returned index into [1, n-1] for any ORDERED axis: `first` can only reach 0 by
+// probing index 0 and finding `k[0] >= k_log`, and can only reach n by probing
+// index n-1 and finding `k[n-1] < k_log` — both excluded by the guards. A NaN
+// node breaks exactly that: it compares false in every direction, so the guards
+// fall through AND lower_bound walks to the front and returns 0, making
+// `lo = hi - 1` == SIZE_MAX and `k[lo]`/`w[lo]` an out-of-bounds read.
+//
+// Ascendance is required NON-STRICTLY: sorted-with-duplicates is exactly
+// lower_bound's precondition, `w()` already handles a zero-width bracket
+// (`!(span > 0.0)` -> `w[lo]`), and demanding strictness could reject an archive
+// a fitter legitimately wrote with two coincident nodes.
+[[nodiscard]] bool linear_nodes_searchable(std::span<const double> k) noexcept {
+  for (std::size_t i = 0; i < k.size(); ++i) {
+    if (!std::isfinite(k[i]) || (i > 0 && k[i] < k[i - 1])) {
+      return false;
+    }
+  }
+  return true;
 }
 
 } // namespace
@@ -286,6 +334,16 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
   if (any_heavy) {
     v.heavy_curves_.resize(v.n_slices_);
   }
+  // Payload extents must also be MONOTONE and DISJOINT (SE-2.2). Each extent was
+  // only ever bounds-checked in isolation, so aliasing every slice onto ONE
+  // offset passed every check against the same bytes and let an n-slice record
+  // demand n x its own size in node vectors (a ~1 MB record has room for ~19k
+  // slice columns, each able to claim ~1 MB of nodes). The writer lays payloads
+  // out in slice order, each align_up'd past the previous extent, so requiring
+  // `poff >= end(previous)` restores exactly the writer's geometry — and makes
+  // the record's size the allocation bound again. Checked BEFORE this slice's
+  // own materialization, so at most one slice's allocation precedes a rejection.
+  std::uint64_t prev_payload_end = 0;
   for (std::size_t i = 0; i < v.n_slices_; ++i) {
     const auto kind = static_cast<VolCurveKind>(v.col_kind_[i]);
     const std::uint64_t poff = v.col_payload_off_[i];
@@ -293,34 +351,53 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
     if ((poff % kArchiveV2ColumnAlign) != 0u || poff > rs) {
       return Err(ErrorCode::ParseError, "PricedSurfaceView: slice payload misaligned/out of bounds");
     }
+    if (poff < prev_payload_end) {
+      return Err(ErrorCode::ParseError,
+                 "PricedSurfaceView: slice payload extents overlap / not ascending");
+    }
     const std::uint64_t avail = rs - poff;
     const std::byte *p = base + poff;
+    // Payload bytes this slice's kind claims; `need <= avail` is enforced per
+    // case below, so `poff + need <= rs` never overflows.
+    std::uint64_t need = 0;
     switch (kind) {
     case VolCurveKind::Essvi:
-      if (sizeof(EssviParams) > avail) {
+      need = sizeof(EssviParams);
+      if (need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: essvi payload out of bounds");
       }
       break;
     case VolCurveKind::Svi:
-      if (sizeof(SviParams) > avail) {
+      need = sizeof(SviParams);
+      if (need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: svi payload out of bounds");
       }
       break;
     case VolCurveKind::C8:
-      if (sizeof(C8Params) > avail) {
+      need = sizeof(C8Params);
+      if (need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: c8 payload out of bounds");
       }
       break;
     case VolCurveKind::LinearVariance: {
-      const std::uint64_t need = 2ull * nc * sizeof(double);
+      need = 2ull * nc * sizeof(double);
       if (nc == 0 || need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: linear payload out of bounds");
+      }
+      // SAFETY: the same typed view `slice_w` takes over this payload — `poff` was
+      // just checked 8-B aligned and the record base is 8-B aligned, and the k[]
+      // extent is inside `need <= avail`.
+      const std::span<const double> k_nodes{reinterpret_cast<const double *>(p),
+                                            static_cast<std::size_t>(nc)};
+      if (!linear_nodes_searchable(k_nodes)) {
+        return Err(ErrorCode::ParseError,
+                   "PricedSurfaceView: linear node k's not ascending/finite");
       }
       break;
     }
     case VolCurveKind::ConvexDense: {
       // rmse_price f64 | n_obs u64 | n_active u64 | u[n] f64 | C[n] f64.
-      const std::uint64_t need = 24ull + 2ull * nc * sizeof(double);
+      need = 24ull + 2ull * nc * sizeof(double);
       if (nc == 0 || need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: convex payload out of bounds");
       }
@@ -344,7 +421,7 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
       // mult_cap f64 | w_offset f64 | viol u32.  mult_cap (served-multiple clamp)
       // and w_offset (calendar-cone additive lift) are LIVE in SplineVolCurve::w();
       // dropping them silently misprices (review C1).
-      const std::uint64_t need = 52ull + 16ull * nc;
+      need = 52ull + 16ull * nc;
       if (need > avail) {
         return Err(ErrorCode::ParseError, "PricedSurfaceView: spline payload out of bounds");
       }
@@ -370,6 +447,7 @@ PricedSurfaceView::create_over_record(std::span<const std::byte> record) {
     default:
       return Err(ErrorCode::ParseError, "PricedSurfaceView: unknown curve kind");
     }
+    prev_payload_end = poff + need;
   }
 
   v.instance_id_ = allocate_view_instance_id();
@@ -575,7 +653,9 @@ PricedSurfaceView::ResolvedSurfacePoint PricedSurfaceView::resolve(double K,
   ResolvedSurfacePoint p;
   p.K = K;
   p.T = T;
-  if (!valid_query(K, T)) {
+  // n_slices_ == 0 is the moved-from (released-borrow) state: interp_forward
+  // would dereference the nulled columns, so fail closed instead.
+  if (!valid_query(K, T) || n_slices_ == 0) {
     return p;
   }
   return resolve_with_carry(K, T, interp_forward(T));
@@ -866,6 +946,11 @@ Status PricedSurfaceView::evaluate_batch(std::span<const double> K, std::span<co
                "PricedSurfaceView::evaluate_batch: query/output spans overlap");
   }
 
+  // A moved-from view released its column borrows (n_slices_ == 0). Treat every
+  // maturity as invalid so the batch fails closed lane-by-lane, exactly as the
+  // scalar resolve() guard does, instead of reading the nulled columns.
+  const bool mapped = n_slices_ != 0;
+
   std::size_t i = 0;
   while (i < n) {
     const double t = T[i];
@@ -873,7 +958,7 @@ Status PricedSurfaceView::evaluate_batch(std::span<const double> K, std::span<co
     while (j < n && std::bit_cast<std::uint64_t>(T[j]) == std::bit_cast<std::uint64_t>(t)) {
       ++j;
     }
-    const bool t_valid = std::isfinite(t) && (t > 0.0);
+    const bool t_valid = mapped && std::isfinite(t) && (t > 0.0);
     const ForwardCarry fc = t_valid ? interp_forward(t) : ForwardCarry{};
     // The view is always cold (no accelerator), so the price-only resolved-batch
     // fast path is always eligible — matching PricedSurface's default-tier path.
@@ -912,9 +997,9 @@ Status PricedSurfaceView::evaluate_batch(std::span<const double> K, std::span<co
             .status = out.status.subspan(begin, run_size),
             .pack_dispatch = {},
         };
-        const Status batch = american_price_batch_resolved(request);
+        const Result<std::size_t> batch = american_price_batch_resolved(request);
         if (!batch.has_value()) {
-          return batch;
+          return Err(batch.error());
         }
         for (std::size_t e = begin; e < end; ++e) {
           if (!out.status[e].has_value()) {

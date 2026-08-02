@@ -15,7 +15,7 @@
 // metadata CRC validate on open, and per-section payload CRC is LAZY
 // (validate_section / validate_all only — never on the read path).
 
-#include "atx/vol/run_archive.hpp"
+#include "atx/vol/research/run_archive.hpp"
 
 #include <algorithm>
 #include <array>
@@ -49,11 +49,11 @@
 #include "atx/core/hash.hpp"               // hash_bytes / hash_combine (RunDir identity)
 #include "atx/tsdb/mapping.hpp"            // tsdb::Mapping (read-only mmap seam)
 #include "atx/vol/backtest.hpp"            // BacktestResult, Clock (Task 5 encoders / RunDir)
-#include "atx/vol/backtest_series_columns.hpp" // backtest_series_columns() (T6 single source)
+#include "atx/vol/detail/backtest_series_columns.hpp" // backtest_series_columns() (T6 single source)
 #include "atx/vol/corpus.hpp"              // CorpusManifest, read_manifest_file (RunDir::clock)
 #include "atx/vol/detail/archive_util.hpp" // crc32c, crc32c_update, align_up
-#include "atx/vol/dispersion_workflow.hpp" // RunSpec, read_run_spec (Task 5 meta / RunDir::spec)
-#include "atx/vol/listed_dispersion_reconciliation.hpp"
+#include "atx/vol/research/dispersion_workflow.hpp" // RunSpec, read_run_spec (Task 5 meta / RunDir::spec)
+#include "atx/vol/research/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_schedule.hpp"
 #include "atx/vol/surface_archive.hpp" // ArchiveContentIdentity (F6 identity)
 #include "atx/vol/version.hpp"         // semantic producer version dependency
@@ -517,12 +517,14 @@ Status write_run_archive_file(std::string_view path, std::span<const RaSectionDa
 
 // ── Section encoders (Task 5): library type → staged RaSectionData ───────────
 //
-// RaColumnData is non-owning, so every array an encoder SYNTHESIZES (dict
-// codes, string/label tables, flattened per-leg columns, NA-substituted
-// doubles) lives in an EncoderArena parked on the returned section's
-// type-erased `storage`. Columns that already exist as columnar vectors on the
-// source object (the BacktestResult series) are spanned in place instead — the
-// caller keeps that source alive across the write, per the RaColumnData rule.
+// RaColumnData is non-owning, so every array an encoder produces — synthesized
+// (dict codes, string/label tables, flattened per-leg columns, NA-substituted
+// doubles) or copied straight off a source object's columnar vector (the
+// BacktestResult series) — lives in an EncoderArena parked on the returned
+// section's type-erased `storage`. A staged section is therefore a self-
+// contained VALUE: it outlives its source and is immune to source mutation, so
+// the "encode, let the source go out of scope, then write" shape is well
+// defined. No encoder spans caller memory in place.
 
 namespace {
 
@@ -651,19 +653,19 @@ RaSectionData encode_backtest_section(std::string name, const BacktestResult &r)
     dates.add(d);
   }
   sec.columns.emplace_back("date", dates.finish(*arena));
-  sec.columns.emplace_back("ts_ns", RaColumnData::of_i64(r.ts_ns));
+  sec.columns.emplace_back("ts_ns", arena_i64(*arena, r.ts_ns));
 
   // The 25 F64 columns come from the single source of truth shared with the TSV
   // writer (backtest_series_columns.hpp) — pinned by the static_assert above to
   // the frozen kBacktestCols registry order, so value-equality with the TSV is
   // guaranteed and the emitted column set can never drift from the schema hash.
   for (const auto &col : backtest_series_columns()) {
-    sec.columns.emplace_back(std::string(col.name), RaColumnData::of_f64(r.*col.member));
+    sec.columns.emplace_back(std::string(col.name), arena_f64(*arena, r.*col.member));
   }
   // Per-signal series are appended dynamically after the registry columns,
   // exactly like the TSV writer appends them after the fixed header.
   for (const auto &sig : r.signals) {
-    sec.columns.emplace_back(sig.first, RaColumnData::of_f64(sig.second));
+    sec.columns.emplace_back(sig.first, arena_f64(*arena, sig.second));
   }
   sec.storage = std::move(arena);
   return sec;
@@ -1509,7 +1511,7 @@ Result<std::uint64_t> RunDir::run_identity_hash() const {
   // makes the next route recompute a DIFFERENT identity, so the merge-write below
   // starts FRESH and silently drops the earlier route's sections, with no error.
   // build_schedule_command writes trade_schedule.tsv five lines before its own
-  // write_run_archive for exactly this reason (examples/spy_dispersion_backtest
+  // write_run_archive for exactly this reason (tools/spy_dispersion_backtest
   // .cpp); moving the archive write above it breaks the pipeline's section union.
   // Pinned by RunDir.MergeWriteDropsCarriedSectionsWhenAFoldedInputAppearsLate.
   //
@@ -1525,7 +1527,7 @@ Result<std::uint64_t> RunDir::run_identity_hash() const {
   // against the OLD definitions were carried forward. (3) surface_manifest.tsv and
   // (4) input_inventory.tsv are NOT derived from the definitions bytes at all:
   // build_corpus_command COPIES definitions.tsv into the run dir without ever
-  // reading it (fs::copy_file, examples/spy_dispersion_backtest.cpp) and persists
+  // reading it (fs::copy_file, tools/spy_dispersion_backtest.cpp) and persists
   // the fixed relative literal "definitions.tsv" into run_spec.tsv; and
   // write_input_inventory (same file) derives every column — source_fingerprint
   // and market_input_fingerprint included — solely from the OpraBatchResult quote

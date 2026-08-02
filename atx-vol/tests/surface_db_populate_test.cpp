@@ -34,21 +34,21 @@
 
 #include "atx/vol/american.hpp" // AlOpts, al_fast_opts, al_default_opts
 #include "atx/vol/corpus.hpp"
-#include "atx/vol/counters.hpp" // F1: AlBoundarySolves ledger (fast-AL tier quantification)
+#include "atx/vol/detail/counters.hpp" // F1: AlBoundarySolves ledger (fast-AL tier quantification)
 #include "atx/vol/data.hpp" // iso_to_ns, year_fraction
 #include "atx/vol/market_env.hpp"
 #include "atx/vol/opra_batch.hpp" // load_opra_daterange, corpus_board_from_opra (F-c real hive)
 #include "atx/vol/panel.hpp" // SynthPanelSpec, make_synthetic_american_panel
 #include "atx/vol/priced_surface.hpp"
 #include "atx/vol/priced_surface_view.hpp" // PricedSurfaceView (S5 map_surface)
-#include "atx/vol/run_report.hpp" // MetaKv
+#include "atx/vol/tools/run_report.hpp" // MetaKv
 #include "atx/vol/s3.hpp"         // S3Params
 #include "atx/vol/session.hpp"    // FitPreset
 #include "atx/vol/surface_archive.hpp"
 #include "atx/vol/surface_db.hpp"
-#include "atx/vol/surface_db_build.hpp" // is_total_fit_failure (FIX-D exit-code shape)
+#include "atx/vol/tools/surface_db_build.hpp" // is_total_fit_failure (FIX-D exit-code shape)
 #include "atx/vol/detail/fit_scheduler.hpp" // performance_core_count (C4 wave-2 scaling diagnostic)
-#include "atx/vol/surface_db_populate.hpp"
+#include "atx/vol/tools/surface_db_populate.hpp"
 #include "atx/vol/types.hpp"
 #include "atx/vol/vol_curve.hpp"
 
@@ -257,6 +257,159 @@ void expect_view_matches_reconstruct(const PricedSurfaceView &view,
 }
 
 } // namespace
+
+// ── Cooperative cancellation (S5-T26, plan item 5.5) ───────────────────────
+//
+// populate is the entry whose write-safety argument is STRUCTURAL rather than
+// "we stop before writing anything": `write_partition` atomically commits a
+// date's archive (tmp+rename) together with a generation-bumped manifest, so
+// every date that finished is durable and consistent. Cancelling therefore leaves
+// a VALID database holding a PREFIX of the requested dates — and that is the
+// property worth testing, because it is the one an operator relies on when they
+// stop a long backfill and restart it.
+
+// GATE. A genuine MID-RUN cancel: the flag is set from `after_partition_write`,
+// so the stop lands between two dates with one date already committed. Asserts
+// the status, that the committed prefix is intact and loadable, and that a
+// re-run resumes to a complete database.
+TEST(SurfaceDbPopulateCancellation, StopsBetweenDatesLeavingAValidResumableDb) {
+  const auto root = test_root("cancel_midrun");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const std::vector<CorpusBoard> boards = make_boards(); // kDate0 + kDate1, AAA/BBB
+  std::atomic<bool> stop{false};
+  std::vector<std::string> written;
+
+  PopulateTestHooks hooks;
+  hooks.after_partition_write = [&](const std::string &date) {
+    written.push_back(date);
+    stop.store(true, std::memory_order_relaxed); // stop before the NEXT date
+  };
+
+  SurfaceDbPopulateConfig cfg;
+  cfg.cancel = CancelToken{stop};
+
+  auto cancelled = populate_surface_db(*db, boards, cfg, &hooks);
+  ASSERT_FALSE(cancelled.has_value()) << "a cancelled populate must not report success";
+  EXPECT_EQ(cancelled.error().code(), ErrorCode::Cancelled);
+  // Specifically NOT the scheduler-incomplete Internal: a cancelled run leaves
+  // tasks unfinished by construction, and reporting that as a defect would turn
+  // the caller's own request into a spurious bug report.
+  EXPECT_NE(cancelled.error().code(), ErrorCode::Internal);
+
+  ASSERT_EQ(written.size(), 1u) << "the stop should have landed after exactly one date";
+  const std::string committed = written.front();
+
+  // The committed prefix is a REAL, loadable partition — not a torn file.
+  for (const char *sym : {"AAA", "BBB"}) {
+    auto owned = db->load_surface(committed, sym);
+    EXPECT_TRUE(owned.has_value())
+        << "committed date " << committed << "/" << sym << " did not survive the cancel: "
+        << (owned ? std::string{} : owned.error().to_string());
+  }
+
+  // Re-run with the flag clear and no hooks: the database completes.
+  stop.store(false, std::memory_order_relaxed);
+  auto resumed = populate_surface_db(*db, boards, SurfaceDbPopulateConfig{});
+  ASSERT_TRUE(resumed.has_value()) << (resumed ? "" : resumed.error().to_string());
+
+  std::size_t n_loaded = 0;
+  for (const char *date : {kDate0, kDate1}) {
+    for (const char *sym : {"AAA", "BBB"}) {
+      auto owned = db->load_surface(date, sym);
+      EXPECT_TRUE(owned.has_value())
+          << date << "/" << sym << ": " << (owned ? std::string{} : owned.error().to_string());
+      n_loaded += owned.has_value() ? 1u : 0u;
+    }
+  }
+  EXPECT_EQ(n_loaded, 4u) << "the resumed run did not produce a complete database";
+}
+
+// GATE, the fan-out half (S5 fix round 1, review B I-2). A stop must reach the
+// fit QUEUE, not only the writer: breaking the drain loop leaves the fit-runner
+// jthread to be joined, and without a poll inside the task every already-queued
+// board still fits to completion — the run costs the same wall time as not
+// stopping it, and each of those fits parks a surface in a slot the stopped
+// drain will never release (the R-03 memory bound, inverted).
+//
+// `before_board_fit` runs on the fit worker immediately before a board's fit
+// begins and AFTER that task's cancellation poll, so counting it counts fits
+// STARTED. `on_board_fit_done` fires from the task's scope exit whether or not it
+// fitted, so counting it counts tasks RETIRED — together they say the queue
+// drained rather than being abandoned. Nothing here reads a clock.
+TEST(SurfaceDbPopulateCancellation, AStopBeforeTheFanOutDrainsTheQueuedFits) {
+  const auto root = test_root("cancel_queue_drain");
+  auto db = SurfaceDb::create(root.string());
+  ASSERT_TRUE(db.has_value());
+
+  const std::vector<CorpusBoard> boards = make_boards(); // kDate0 + kDate1, AAA/BBB
+  std::atomic<std::size_t> fits_started{0};
+  std::atomic<std::size_t> tasks_retired{0};
+  std::vector<std::string> written;
+
+  PopulateTestHooks hooks;
+  hooks.before_board_fit = [&](const std::string &, const std::string &) {
+    fits_started.fetch_add(1u, std::memory_order_relaxed);
+  };
+  hooks.on_board_fit_done = [&](std::size_t) {
+    tasks_retired.fetch_add(1u, std::memory_order_relaxed);
+  };
+  hooks.after_partition_write = [&](const std::string &date) { written.push_back(date); };
+
+  std::atomic<bool> stop{true}; // requested up front: every board is still queued
+  SurfaceDbPopulateConfig cfg;
+  cfg.cancel = CancelToken{stop};
+
+  auto cancelled = populate_surface_db(*db, boards, cfg, &hooks);
+  ASSERT_FALSE(cancelled.has_value()) << "a cancelled populate must not report success";
+  EXPECT_EQ(cancelled.error().code(), ErrorCode::Cancelled);
+
+  EXPECT_EQ(fits_started.load(std::memory_order_relaxed), 0u)
+      << "the queued fits still ran: the stop reaches the writer but not the fan-out";
+  EXPECT_EQ(tasks_retired.load(std::memory_order_relaxed), boards.size())
+      << "the bounded fit queue did not drain";
+  EXPECT_TRUE(written.empty())
+      << "a date whose boards never reached their fit was committed anyway — a resume under "
+         "skip_existing would skip cells that were never attempted";
+
+  // POSITIVE CONTROL for the zero above: same database, same fixture, same hooks,
+  // no stop. Without it a probe that never fires would make this test vacuous.
+  stop.store(false, std::memory_order_relaxed);
+  auto resumed = populate_surface_db(*db, boards, cfg, &hooks);
+  ASSERT_TRUE(resumed.has_value()) << (resumed ? "" : resumed.error().to_string());
+  EXPECT_EQ(fits_started.load(std::memory_order_relaxed), boards.size())
+      << "the fit probe never fired at all, so the zero asserted above proves nothing";
+  EXPECT_EQ(written.size(), 2u) << "the resumed run did not write both dates";
+}
+
+// GATE, determinism half. A live-but-never-set token must leave the populate
+// result identical to one built with no token at all.
+TEST(SurfaceDbPopulateCancellation, AnUntriggeredTokenChangesNothing) {
+  const std::vector<CorpusBoard> boards = make_boards();
+
+  const auto plain_root = test_root("cancel_plain");
+  auto plain_db = SurfaceDb::create(plain_root.string());
+  ASSERT_TRUE(plain_db.has_value());
+  auto plain = populate_surface_db(*plain_db, boards, SurfaceDbPopulateConfig{});
+  ASSERT_TRUE(plain.has_value()) << (plain ? "" : plain.error().to_string());
+
+  std::atomic<bool> never{false};
+  SurfaceDbPopulateConfig cfg;
+  cfg.cancel = CancelToken{never};
+  ASSERT_TRUE(cfg.cancel.stop_possible()); // negative control: the token is live
+
+  const auto tokened_root = test_root("cancel_tokened");
+  auto tokened_db = SurfaceDb::create(tokened_root.string());
+  ASSERT_TRUE(tokened_db.has_value());
+  auto tokened = populate_surface_db(*tokened_db, boards, cfg);
+  ASSERT_TRUE(tokened.has_value()) << (tokened ? "" : tokened.error().to_string());
+
+  EXPECT_EQ(tokened->n_ok, plain->n_ok);
+  EXPECT_EQ(tokened->n_failed, plain->n_failed);
+  EXPECT_EQ(tokened->n_boards, plain->n_boards);
+  EXPECT_EQ(tokened->n_dates_written, plain->n_dates_written);
+}
 
 TEST(SurfaceDbPopulate, MapSurfaceViewReproducesReconstructedFitOutput) {
   const auto root = test_root("v2view");

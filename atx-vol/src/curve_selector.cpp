@@ -19,7 +19,7 @@
 #include "atx/vol/deamer.hpp"      // resolve_chain_forward
 #include "atx/vol/fit_metrics.hpp" // slice_fit_metrics, SliceFitMetrics
 #include "atx/vol/fit_policy.hpp"  // FitAdmissionPolicy
-#include "atx/vol/prepared_fitting.hpp"
+#include "atx/vol/detail/prepared_fitting.hpp"
 #include "atx/vol/universe.hpp"
 
 namespace atx::vol {

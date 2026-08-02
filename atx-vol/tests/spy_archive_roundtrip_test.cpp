@@ -1,11 +1,12 @@
 // SPY real-OPRA archive round-trip — the end-to-end accuracy guarantee.
 //
-// Proves the headline: a fitted surface can be serialized to the ATXVSA v3 binary
+// Proves the headline: a fitted surface can be serialized to the ATXVSA2 binary
 // archive, deserialized, slotted back into the pricer, and reproduce the SAME theo
 // values on the real SPY OPRA board. The chain is:
 //
 //   OPRA board -> VolaSession(ConvexDense) -> to_priced_surface()
-//              -> write_surface_archive -> SurfaceArchive::open -> map_symbol("SPY")
+//              -> write_surface_archive_v2 -> SurfaceArchiveV2::open
+//              -> reconstruct_symbol("SPY")
 //              -> PricedSurface that prices BIT-IDENTICALLY to the live session.
 //
 // Two assertions carry the guarantee:
@@ -86,13 +87,15 @@ TEST(SpyArchiveRoundTrip, ConvexDense_Serialize_Reload_ReproducesTheoAndAccuracy
   ASSERT_TRUE(priced.has_value()) << priced.error().to_string();
 
   const std::array<SurfaceArchiveItem, 1> items{SurfaceArchiveItem{"SPY", &*priced}};
-  auto built = write_surface_archive(items);
+  auto built = write_surface_archive_v2(items);
   ASSERT_TRUE(built.has_value()) << built.error().to_string();
   const std::size_t archive_bytes = built->size();
 
-  auto opened = SurfaceArchive::open(std::move(*built));
+  auto opened = SurfaceArchiveV2::open(std::move(*built));
   ASSERT_TRUE(opened.has_value()) << opened.error().to_string();
-  auto recon_res = opened->map_symbol("SPY");
+  // Owned reconstruct: the gate below compares the REBUILT PricedSurface's served
+  // theo against the live session, which is what the v1 map_symbol here produced.
+  auto recon_res = opened->reconstruct_symbol("SPY");
   ASSERT_TRUE(recon_res.has_value()) << recon_res.error().to_string();
   const PricedSurface& recon = *recon_res;
 

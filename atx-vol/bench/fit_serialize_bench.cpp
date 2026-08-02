@@ -56,7 +56,7 @@
 #include "atx/vol/panel.hpp"             // make_synthetic_american_panel, SynthPanelSpec
 #include "atx/vol/s3.hpp"                // S3Params
 #include "atx/vol/surface_db.hpp"        // SurfaceDb
-#include "atx/vol/surface_db_populate.hpp" // populate_surface_db (U1 streaming)
+#include "atx/vol/tools/surface_db_populate.hpp" // populate_surface_db (U1 streaming)
 
 #include "bench_util.hpp" // stat_cv (shared CV helper)
 

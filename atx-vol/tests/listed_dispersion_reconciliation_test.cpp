@@ -11,7 +11,7 @@
 
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/corpus.hpp"
-#include "atx/vol/listed_dispersion_reconciliation.hpp"
+#include "atx/vol/research/listed_dispersion_reconciliation.hpp"
 #include "atx/vol/listed_dispersion_strategy.hpp"
 #include "atx/vol/portfolio_pricer.hpp"
 #include "atx/vol/priced_surface.hpp"

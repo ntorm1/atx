@@ -4,7 +4,7 @@
 // record mapped in place (WS-S / S2 of the backtest hot-path throughput sprint).
 //
 // Where `PricedSurface` OWNS its fitted curves (polymorphic `unique_ptr` slices)
-// and is produced by the v1 archive's `reconstruct` (per-surface whole-blob
+// and is produced by a `reconstruct` (per-surface whole-blob
 // CRC-32C + `make_unique`/vector-copy per slice), a `PricedSurfaceView` answers
 // the SAME queries — resolve / fair_value / greeks / delta / vega / evaluate /
 // evaluate_batch — directly over the mapped columnar bytes, with:
@@ -33,6 +33,12 @@
 // outliving the mapping dangles. The view is move-only (it owns the materialized
 // heavy curves and a never-reused `instance_id`). It is immutable after
 // construction and concurrent-const-safe, exactly like `PricedSurface`.
+//
+// A MOVED-FROM view is left structurally EMPTY: it releases its record/column
+// borrows, reports `n_slices() == 0`, and every query fails closed (`resolve`
+// invalid, `iv`/`total_variance` NaN, the carry accessors 0, the `Result`
+// queries InvalidArgument, `evaluate_batch` an error status per lane). It
+// remains safe to destroy and to move-assign into.
 //
 // ## Reusing PricedSurface's query vocabulary
 //
