@@ -40,7 +40,7 @@
 
 #include "atx/vol/backtest.hpp"            // Clock, run_backtest, BacktestResult
 #include "atx/vol/dispersion.hpp"          // DispersionUniverse, DispersionMember
-#include "atx/vol/dispersion_backtest.hpp" // make_dispersion_ladder_config, make_..._strategy
+#include "atx/vol/research/dispersion_backtest.hpp" // make_dispersion_ladder_config, make_..._strategy
 #include "atx/vol/types.hpp"
 
 #include "bench_util.hpp"

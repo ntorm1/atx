@@ -11,7 +11,7 @@
 
 #include <gtest/gtest.h>
 
-#include "atx/vol/backtest_series_columns.hpp"
+#include "atx/vol/detail/backtest_series_columns.hpp"
 
 namespace atx::vol {
 namespace {
