@@ -26,11 +26,6 @@ namespace {
 // checking against INT64_MAX after conversion would itself risk UB.
 constexpr double kInt64ExclusiveUpper = 0x1p63;
 
-// `SwapLot::n_obs_total`'s ceiling, named so the fixing-count narrowing reads as
-// a range check rather than a cast.
-constexpr std::ptrdiff_t kUint32Max =
-    static_cast<std::ptrdiff_t>(std::numeric_limits<std::uint32_t>::max());
-
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
 } // namespace
@@ -151,92 +146,32 @@ StrangleVsVarswapStrategy::strangle_dollar_vega(const ResolvedStrangle &wings) c
 void StrangleVsVarswapStrategy::open_cycle_swap(const MarketSnapshot &base,
                                                 const ResolvedStrangle &wings, double strangle_vega,
                                                 PortfolioState &book, std::uint64_t &next_lot_id) {
-  if (!(std::isfinite(strangle_vega) && strangle_vega != 0.0)) {
-    ++skipped_swap_cycles_;
-    return;
-  }
-
-  // The fixing schedule the ENGINE will actually observe. The swap pass runs on
-  // the SHIFTED snapshot, so the first session after this one merely SEEDS the
-  // series and accrues nothing; every session after that through expiry adds one
-  // return. `n_obs_total` is therefore one FEWER than the count of sessions in
-  // (open, expiry] — set it to the raw count and the lot reaches its expiry an
-  // observation short, with every intermediate mark over-weighting the future
-  // leg against the residual maturity it is priced at.
-  const std::vector<std::int64_t> &sessions = cfg_.session_ts;
-  const auto after_open = std::upper_bound(sessions.begin(), sessions.end(), base.ts_ns());
-  const auto after_expiry = std::upper_bound(sessions.begin(), sessions.end(), cycle_expiry_ts_ns_);
-  const std::ptrdiff_t in_window = after_expiry - after_open;
-  if (in_window < 2 || in_window - 1 > kUint32Max) {
-    // A one-session cycle observes NO return at all: `n_obs_total` would be 0,
-    // which the engine boundary rejects outright, and the lot would reach expiry
-    // with an empty estimator — a NotFound that aborts the whole run. A cycle
-    // too short to carry a variance swap runs options-only instead. The upper
-    // bound is unreachable on any real calendar and exists so the narrowing
-    // below can never wrap a schedule into a smaller, wrong one.
-    ++skipped_swap_cycles_;
-    return;
-  }
-
   const SurfaceRef surface = base.find(wings.uid);
   if (surface == nullptr) {
     ++skipped_swap_cycles_; // defence in depth: resolve_wings already found it
     return;
   }
 
-  SwapLot lot;
-  lot.uid = wings.uid;
-  lot.kind = DerivKind::VarSwap;
-  lot.strike_dec = 0.0; // solved below; 0 also makes the probe quote's PV harmless
-  lot.cap_dec = 0.0;    // UNCAPPED: `cap_dec` must be 0 on an uncapped kind
-  lot.notional = kSwapNotional;
-  lot.qty = 0.0; // solved below
-  lot.start_ts_ns = base.ts_ns();
-  lot.expiry_ts_ns = cycle_expiry_ts_ns_;
-  lot.n_obs_total = static_cast<std::uint32_t>(in_window - 1);
-  lot.annualization = kSwapAnnualization;
+  // The solve owns the fixing-schedule count, the fair strike and the
+  // equal-vega qty (swap_leg.hpp); every refusal is one skipped cycle here.
+  CycleSwapRequest req;
+  req.uid = wings.uid;
+  req.kind = DerivKind::VarSwap;
+  req.cap_dec = 0.0; // UNCAPPED: `cap_dec` must be 0 on an uncapped kind
+  req.notional = kSwapNotional;
+  req.annualization = kSwapAnnualization;
+  req.open_ts_ns = base.ts_ns();
+  req.expiry_ts_ns = cycle_expiry_ts_ns_;
+  req.session_ts = cfg_.session_ts;
+  req.deriv_cfg = cfg_.deriv_cfg;
 
-  // Nothing is realized at entry — the engine seeds this lot's series one step
-  // from now — so the solve prices a purely forward-looking contract.
-  RealizedVarianceSpec rv{};
-  rv.annualization = kSwapAnnualization;
-  rv.n_obs_total = lot.n_obs_total;
-
-  // The fair strike is read off a quote rather than from the PricedSurface-native
-  // `var_swap_fair_strike`, DELIBERATELY: `DerivQuote::fair_strike_dec` IS the
-  // strike that prices this contract to PV = 0, and taking it from the same
-  // `deriv_price_on_ref` bridge the engine's mark lane prices through is the only
-  // way the two agree. The native entry derives its carry from the fitted pillar
-  // list while the bridge derives it from the handle; striking against one and
-  // marking against the other would open the swap at a non-zero PV, and the whole
-  // of that artifact would land in the first step's `swap_pnl` (a swap opens at
-  // zero cost, so its first mark carries the entire entry difference).
-  const Result<DerivQuote> fair = detail::deriv_price_on_ref(
-      surface, swap_contract_for_lot(lot, lot.start_ts_ns, rv), cfg_.deriv_cfg);
-  if (!fair || !(std::isfinite(fair->fair_strike_dec) && fair->fair_strike_dec > 0.0)) {
+  Result<SwapLot> lot = solve_cycle_swap(surface, req, strangle_vega);
+  if (!lot) {
     ++skipped_swap_cycles_;
     return;
   }
-  lot.strike_dec = fair->fair_strike_dec;
-
-  const Result<DerivGreeks> greeks = detail::deriv_greeks_on_ref(
-      surface, swap_contract_for_lot(lot, lot.start_ts_ns, rv), cfg_.deriv_cfg, DerivGreekBumps{});
-  if (!greeks || !(std::isfinite(greeks->vega) && greeks->vega != 0.0)) {
-    ++skipped_swap_cycles_; // never a garbage qty: no vega, no leg
-    return;
-  }
-
-  // EQUAL VEGA. Both quantities are dollars per 1.00 of vol on their own leg, so
-  // the ratio is a pure number and the sign carries: a long-vega strangle sizes a
-  // long (variance-receiving) swap.
-  const double qty = strangle_vega / greeks->vega;
-  if (!std::isfinite(qty)) {
-    ++skipped_swap_cycles_;
-    return;
-  }
-  lot.qty = qty;
-  lot.id = next_lot_id++; // the watermark moves only once the lot is real
-  book.swap_lots.push_back(lot);
+  lot->id = next_lot_id++; // the watermark moves only once the lot is real
+  book.swap_lots.push_back(*lot);
 }
 
 Status StrangleVsVarswapStrategy::on_step(const MarketSnapshot &base, std::size_t step_index,

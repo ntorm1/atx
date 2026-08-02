@@ -31,9 +31,11 @@
 #include <utility>
 #include <vector>
 
-#include "atx/vol/american.hpp"         // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest.hpp"         // SwapLot, PortfolioState, MarketSnapshot
-#include "atx/vol/derivatives.hpp"      // DerivContract, DerivKind, RealizedVarianceSpec
+#include "atx/core/error.hpp"                  // ErrorCode
+#include "atx/vol/american.hpp"                // al_fast_opts, AmericanMethod
+#include "atx/vol/backtest.hpp"                // SwapLot, PortfolioState, MarketSnapshot
+#include "atx/vol/derivatives.hpp"             // DerivContract, DerivKind, RealizedVarianceSpec
+#include "atx/vol/detail/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref, deriv_greeks_on_ref
 #include "atx/vol/portfolio_pricer.hpp" // kNsPerYear
 #include "atx/vol/priced_surface.hpp"   // PricedSurface, PricingContext
 #include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file
@@ -161,6 +163,104 @@ struct Five {
   }
   f.complete = seen == 5 && out.size() == 5;
   return f;
+}
+
+// ── solve_cycle_swap gates ──────────────────────────────────────────────────
+
+// A 5-session grid: open at sessions[0], expiry at sessions[4] leaves 4
+// sessions in (open, expiry], and the first of those merely SEEDS the engine's
+// fixing series — so the contract observes 3 returns.
+[[nodiscard]] CycleSwapRequest make_request(std::span<const std::int64_t> sessions) {
+  CycleSwapRequest req;
+  req.uid = kUid;
+  req.kind = DerivKind::VarSwap;
+  req.cap_dec = 0.0;
+  req.notional = 1.0;
+  req.annualization = 252.0;
+  req.open_ts_ns = sessions.front();
+  req.expiry_ts_ns = sessions.back();
+  req.session_ts = sessions;
+  req.deriv_cfg = DerivConfig{};
+  return req;
+}
+
+TEST(SwapLeg, SolveCycleSwapStrikesFairAndSizesToTargetVega) {
+  const fs::path dir = fresh_dir("solve");
+  const PricedSurface s0 = make_surface(kUid, 100.0, kBaseNow);
+  const Result<MarketSnapshot> snap = MarketSnapshot::load(write_one(dir, "2026-08-01", s0));
+  ASSERT_TRUE(snap.has_value());
+  const SurfaceRef surface = snap->find(kUid);
+  ASSERT_NE(surface, nullptr);
+
+  std::vector<std::int64_t> sessions;
+  for (int i = 0; i < 5; ++i) {
+    sessions.push_back(kBaseNow + i * kStepNs);
+  }
+  const CycleSwapRequest req = make_request(sessions);
+  constexpr double kTarget = 2500.0;
+
+  const Result<SwapLot> lot = solve_cycle_swap(surface, req, kTarget);
+  ASSERT_TRUE(lot.has_value()) << lot.error().to_string();
+  EXPECT_EQ(lot->id, 0u); // the caller's watermark, untouched by the solve
+  EXPECT_EQ(lot->uid, kUid);
+  EXPECT_EQ(lot->kind, DerivKind::VarSwap);
+  EXPECT_GT(lot->strike_dec, 0.0);
+  EXPECT_EQ(lot->cap_dec, 0.0);
+  EXPECT_EQ(lot->n_obs_total, 3u); // sessions in (open, expiry] minus the seed
+  EXPECT_EQ(lot->start_ts_ns, sessions.front());
+  EXPECT_EQ(lot->expiry_ts_ns, sessions.back());
+
+  // Independent oracle: the very greeks the solve differentiated. qty * entry
+  // vega must reproduce the target — that is what "equal vega" MEANS.
+  RealizedVarianceSpec staged{};
+  staged.annualization = 252.0;
+  staged.n_obs_total = lot->n_obs_total;
+  const Result<DerivGreeks> g = detail::deriv_greeks_on_ref(
+      surface, swap_contract_for_lot(*lot, lot->start_ts_ns, staged), req.deriv_cfg,
+      DerivGreekBumps{});
+  ASSERT_TRUE(g.has_value());
+  EXPECT_NEAR(lot->qty * g->vega, kTarget, 1e-6 * kTarget);
+
+  // ... and the fair strike prices the entry to zero PV under the same bridge.
+  const Result<DerivQuote> q = detail::deriv_price_on_ref(
+      surface, swap_contract_for_lot(*lot, lot->start_ts_ns, staged), req.deriv_cfg);
+  ASSERT_TRUE(q.has_value());
+  EXPECT_NEAR(q->pv, 0.0, 1e-12);
+}
+
+TEST(SwapLeg, SolveCycleSwapRefusesAOneSessionCycle) {
+  const fs::path dir = fresh_dir("short");
+  const PricedSurface s0 = make_surface(kUid, 100.0, kBaseNow);
+  const Result<MarketSnapshot> snap = MarketSnapshot::load(write_one(dir, "2026-08-01", s0));
+  ASSERT_TRUE(snap.has_value());
+  const SurfaceRef surface = snap->find(kUid);
+  ASSERT_NE(surface, nullptr);
+
+  // Expiry ONE session after open: the single in-window session seeds and the
+  // series would observe no return at all — n_obs_total 0, which the engine
+  // boundary rejects. The solve refuses instead of fabricating a schedule.
+  const std::int64_t sessions[] = {kBaseNow, kBaseNow + kStepNs};
+  CycleSwapRequest req = make_request(sessions);
+  const Result<SwapLot> lot = solve_cycle_swap(surface, req, 2500.0);
+  ASSERT_FALSE(lot.has_value());
+  EXPECT_EQ(lot.error().code(), atx::core::ErrorCode::Unavailable);
+}
+
+TEST(SwapLeg, SolveCycleSwapRefusesNonFiniteTargetVega) {
+  const fs::path dir = fresh_dir("badvega");
+  const PricedSurface s0 = make_surface(kUid, 100.0, kBaseNow);
+  const Result<MarketSnapshot> snap = MarketSnapshot::load(write_one(dir, "2026-08-01", s0));
+  ASSERT_TRUE(snap.has_value());
+  const SurfaceRef surface = snap->find(kUid);
+  ASSERT_NE(surface, nullptr);
+
+  std::vector<std::int64_t> sessions;
+  for (int i = 0; i < 5; ++i) {
+    sessions.push_back(kBaseNow + i * kStepNs);
+  }
+  const CycleSwapRequest req = make_request(sessions);
+  EXPECT_FALSE(solve_cycle_swap(surface, req, kNaN).has_value());
+  EXPECT_FALSE(solve_cycle_swap(surface, req, 0.0).has_value());
 }
 
 TEST(SwapLeg, ContractForLotCarriesResidualTenorAndStagedRv) {

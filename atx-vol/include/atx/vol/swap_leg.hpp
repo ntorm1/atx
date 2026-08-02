@@ -35,12 +35,13 @@
 // loop on ONE thread — exactly `IStrategy`'s own rule (strategy.hpp).
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "atx/vol/backtest.hpp"    // SwapLot, PortfolioState, MarketSnapshot
-#include "atx/vol/derivatives.hpp" // DerivContract, RealizedVarianceSpec
+#include "atx/vol/derivatives.hpp" // DerivContract, DerivConfig, RealizedVarianceSpec
 
 namespace atx::vol {
 
@@ -53,6 +54,51 @@ namespace atx::vol {
 // forward-looking contract.
 [[nodiscard]] DerivContract swap_contract_for_lot(const SwapLot &lot, std::int64_t base_ts,
                                                   const RealizedVarianceSpec &rv) noexcept;
+
+// One cycle's swap-leg entry solve, as a request. The lot's terms except the
+// two the solve OWNS: `strike_dec` (struck fair on the open snapshot) and
+// `qty` (sized to the caller's target vega).
+struct CycleSwapRequest {
+  std::uint32_t uid{0};
+  DerivKind kind{DerivKind::VarSwap};
+  double cap_dec{0.0}; // > 0 required on a capped kind; must be 0 otherwise
+  // Sizing rides entirely on `qty`, so notional stays a constant the reader
+  // (and any equal-vega assertion) can check by eye.
+  double notional{1.0};
+  double annualization{252.0}; // trading-day variance convention
+  std::int64_t open_ts_ns{0};
+  std::int64_t expiry_ts_ns{0};
+  // The run's session grid, SORTED ASCENDING — the fixing schedule the ENGINE
+  // will actually observe, from which the solve counts `n_obs_total`.
+  std::span<const std::int64_t> session_ts;
+  // ENTRY SOLVE ONLY (fair strike + vega). The engine marks and settles a live
+  // swap under its own hard-coded default DerivConfig (`swap_price_cfg`,
+  // backtest.cpp), which no strategy can reach — so a non-default config here
+  // changes what the swap is STRUCK at, never how it is subsequently valued.
+  // Left at the default the two agree exactly, which is the only setting that
+  // opens the swap at a genuine zero PV.
+  DerivConfig deriv_cfg{};
+};
+
+// Solve one cycle's swap leg on the open snapshot's surface: count the fixing
+// schedule off `session_ts`, strike FAIR through the same `deriv_price_on_ref`
+// bridge the engine's mark lane prices through (the only construction that
+// opens at genuine zero PV — the PricedSurface-native fair-strike entry
+// derives its carry differently, and striking against one while marking
+// against the other would land the whole artifact in the first step's
+// `swap_pnl`), then size `qty = target_vega / (swap entry vega)` so the leg's
+// dollar vega equals `target_vega` (sign carries: a long-vega target sizes a
+// long, variance-receiving swap).
+//
+// FAIL-SOFT BY CONTRACT: every cause that cannot produce a usable lot returns
+// Err(Unavailable, <cause>) and mutates nothing — a non-finite/zero target, a
+// cycle too short to observe one return (its single in-window session is spent
+// seeding), a schedule that cannot fit `n_obs_total`, a failed or non-positive
+// fair strike, failed or non-finite/zero entry vega, a non-finite qty. The
+// caller counts refusals and reports them; it never guesses. `lot.id` is left
+// 0 for the caller's monotonic watermark.
+[[nodiscard]] Result<SwapLot> solve_cycle_swap(const SurfaceRef &surface,
+                                               const CycleSwapRequest &req, double target_vega);
 
 // Strategy-side mirror of the engine's swap accruals, driving the five
 // `swap_*` greek signal columns. Usage, per `on_step`:
