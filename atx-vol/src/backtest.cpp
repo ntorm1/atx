@@ -65,9 +65,10 @@ std::atomic<std::uint64_t> g_deserialized_bytes{0};
 // happened to work at depth 4 and still reloaded at depth 8. See the eviction-order
 // comment in snapshot_cache.cpp.
 //
-// `BacktestPrefetchDepth` pins this by asserting `MarketSnapshot::open_count() ==
-// refs.size()` at several depths — the assertion that fails if either the order or
-// this capacity regresses, since a reload does not change the ECONOMICS.
+// `Backtest.PrefetchDepthIsBitIdenticalToSingleStepLookAhead` pins this by asserting
+// `MarketSnapshot::open_count() == refs.size()` at several depths — the assertion that
+// fails if either the order or this capacity regresses, since a reload does not change
+// the ECONOMICS.
 [[nodiscard]] constexpr std::size_t private_snapshot_cache_capacity(std::size_t depth) noexcept {
   return depth + 2u;
 }

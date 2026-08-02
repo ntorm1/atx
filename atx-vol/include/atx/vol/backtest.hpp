@@ -823,8 +823,9 @@ struct RunConfig {
   // OUTPUT IS UNAFFECTED AT ANY DEPTH. Depth changes only WHEN a snapshot is
   // deserialized, never which bytes it deserializes from nor the order the
   // economics consume them: the loop still loads refs[i] at step i, and every
-  // load is a pure function of one archive's bytes. `BacktestPrefetchDepth`
-  // pins that bit-identity.
+  // load is a pure function of one archive's bytes.
+  // `Backtest.PrefetchDepthIsBitIdenticalToSingleStepLookAhead` pins that
+  // bit-identity.
   //
   // A depth of D needs a snapshot cache retaining at least D+2 entries (base +
   // shifted + D in flight) or the LRU drops a completed prefetch before its step
@@ -835,7 +836,7 @@ struct RunConfig {
   std::size_t prefetch_depth{1};
 };
 
-// Drift pin (plan item 4.2). RunConfig has exactly SIXTEEN fields. Adding,
+// Drift pin (plan item 4.2). RunConfig has exactly SEVENTEEN fields. Adding,
 // removing or splitting one breaks this line, which is the point: it forces
 // whoever changes the struct to read the construction contract above instead of
 // appending a knob "for compatibility" with positional initializers that are no
@@ -846,9 +847,13 @@ struct RunConfig {
 // convention forbade and this one requires — and it is safe only because there
 // are no positional initializers left in-tree to rebind.
 //
-// 16 -> 17 (main merge): `prefetch_depth` appended — the pipelined snapshot
-// look-ahead depth main's backtest-replay work introduced; output is
-// bit-identical at any depth (`BacktestPrefetchDepth` pins it).
+// 16 -> 17 (main merge): `prefetch_depth` APPENDED at the end — the pipelined
+// snapshot look-ahead depth main's backtest-replay work introduced. Appending is
+// the form this convention prescribes for a new knob, and it is what supersedes
+// the branch's earlier `kPrefetchLookahead` file-scope constant in backtest.cpp.
+// Output is bit-identical at any depth
+// (`Backtest.PrefetchDepthIsBitIdenticalToSingleStepLookAhead` pins it), so the
+// addition moves no number a caller already depends on.
 static_assert(detail::aggregate_arity_is_v<RunConfig, 17>,
               "RunConfig field count changed: update this pin, and confirm every "
               "construction site still initializes by field name.");

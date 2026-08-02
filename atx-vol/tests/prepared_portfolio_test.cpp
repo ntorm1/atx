@@ -497,11 +497,38 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   // economic-parity and thread-invariance gates above stayed green (differences are
   // inside the documented tolerance), so only the hash of the legitimately-shifted
   // marks moved. The FMA/rel-avx2 pin was RE-VERIFIED unchanged on the merged tree.
-  // Merge of main (2026-08-02): the merged tree prices this fixture exactly as
-  // the release branch did (h4 reproduces the branch pin bit-for-bit), so the
-  // branch's SSE2 pin is restored over main's; grouped/oracle parity and
-  // worker-count invariance above remain the proof either way.
+  // CONFIG-KEYED PIN (merge of main, 2026-08-02; controller ruling, closeout Task 0).
+  // The two SSE2 values above were never rival captures of different trees — they are
+  // this ONE tree's Release and Debug values, and the file has been oscillating between
+  // them. Read the two paragraphs above literally: the 2026-07-20 re-pin says its SSE2
+  // number was "measured on the `rel` preset", the 2026-07-21 re-pin says its number
+  // moved "on the SSE2/dev route". Each re-pin therefore fixed one preset and silently
+  // broke the other, because `kFmaContraction` keys on ISA alone and this fixture also
+  // diverges Debug-vs-Release (Release reassociates and contracts the andersen_lake
+  // arithmetic; a whole-frame FNV hash has no tolerance band, so one last-place bit
+  // rehashes everything). The axis is now explicit.
+  //
+  // Precedent for keying on config: the NAV determinism anchors are already per-preset,
+  // `american_test.cpp:2686` splits BoundaryHoist's ATM put on NDEBUG, and
+  // `multiname_pipeline_test.cpp:923` splits its E1 baselines the same way.
+  //
+  // PROVENANCE — measured on THIS tree (branch feat/vol-v1-release, 56df9cc, 2026-08-02),
+  // twice per preset, with the grouped==independent-oracle parity and worker-count
+  // invariance gates above green in every case:
+  //     dev      (Debug,   SSE2) -> 718570745730299145
+  //     rel      (Release, SSE2) -> 17305682487856730537
+  //     rel-avx2 (Release, FMA)  -> 8754310291975640041
+  //
+  // The FMA branch carries ONE value deliberately: `rel-avx2` is the only preset that
+  // injects /arch:AVX2 (CMakePresets.json:84-85) and it inherits `rel`, so __FMA__
+  // implies NDEBUG in the shipped preset set and a Debug+FMA cell is unreachable. If a
+  // Debug+AVX2 preset is ever added, SPLIT this branch and capture it — do not let it
+  // fall through to a Release-captured number.
+#if defined(NDEBUG)
+  constexpr std::uint64_t kGoldenFingerprintSse2 = 17305682487856730537ULL;
+#else
   constexpr std::uint64_t kGoldenFingerprintSse2 = 718570745730299145ULL;
+#endif
   constexpr std::uint64_t kGoldenFingerprintFma = 8754310291975640041ULL;
   constexpr std::uint64_t kGoldenFingerprint =
       atx::vol::test::kFmaContraction ? kGoldenFingerprintFma : kGoldenFingerprintSse2;

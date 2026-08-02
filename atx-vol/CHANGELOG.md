@@ -109,6 +109,29 @@ semantic group — not appended — which is precisely the freedom the new conve
 buys and the old one forbade. Named initialisation is unaffected by construction;
 a positional one would have rebound, which is why none is allowed to exist.
 
+It then moved **16 → 17** when the release branch merged `main` (2026-08-02),
+which brought the backtest-replay work's `RunConfig::prefetch_depth`
+(`std::size_t`, default `1`). This one is **appended at the end**, the form the
+convention prescribes for a new knob. Two notes a caller may care about:
+
+* **It changes no output at any value.** `prefetch_depth` is purely an I/O
+  schedule — how many future snapshots may be in flight — never which bytes are
+  deserialised nor the order the economics consume them.
+  `Backtest.PrefetchDepthIsBitIdenticalToSingleStepLookAhead` pins that
+  bit-identity, and the SPY-dispersion NAV determinism legs reproduce their
+  anchors bit-exactly across the merge that introduced it.
+* **The default is `1`, i.e. the historical single-step look-ahead.** A run that
+  wants the deeper pipeline must ask for it. `0` is normalised to `1` — "no
+  look-ahead" is expressed by `prefetch_snapshots = false`, not by a zero depth.
+  A caller-supplied `snapshot_cache` must retain at least `depth + 2` entries or
+  the LRU drops a completed prefetch before its step reaches it (costing
+  throughput, never correctness); `run_backtest`'s private cache is sized from
+  the field automatically.
+
+Python is unaffected by both moves: the binding is a hand-kept `def_readwrite`
+list, so arity and keyword names are unchanged and `prefetch_depth` is simply not
+exposed yet.
+
 ### REMOVED
 
 * **The deprecated `VolSurface`-bound portfolio engine**: `portfolio.hpp`,

@@ -712,8 +712,10 @@ TEST(Backtest, LoadOnce) {
   EXPECT_EQ(res->size(), static_cast<std::size_t>(n)); // inception + (n-1) steps
 }
 
-// S6-T29 (plan 6.2). The step loop keeps `kPrefetchLookahead` snapshot loads in
-// flight ahead of the step it is on, instead of the single `refs[i+1]` it used to.
+// S6-T29 (plan 6.2). The step loop keeps `RunConfig::prefetch_depth` snapshot loads
+// in flight ahead of the step it is on, instead of the single `refs[i+1]` it used to.
+// (T29 shipped this as a file-scope `kPrefetchLookahead = 2` constant; the merge with
+// main superseded that constant with the config field, whose default is 1.)
 // The window is a pure I/O-SCHEDULING lever, so the contracts pinned here are:
 //   (1) `prefetch_snapshots=false` still means NO prefetch at ANY window depth —
 //       the flag gates the whole window, not merely its first slot; and
