@@ -252,6 +252,83 @@ process's streams, and be stoppable.
   `ATXVSA03`). The old "v1" / "v3" ordinals are gone from the headers — they
   named the same format both ways. Comment-only; no identifier changed.
 
+### FIXED — calendar level repairs no longer fabricate slice levels from extrapolated-wing crossings (fit fidelity budget + tradeable-overlap band)
+
+**The defect.** Every parametric calendar repair — `arb_project_calendar_svi_pair`
+/ `_essvi_pair` / `_c8_pair` at the `fit_slice_curve` serving seam, and the
+surface-level `arb_project_calendar_svi` / `_essvi` in `run_surface_parity`'s
+`CalendarRepair::Project` branch — closed w(k)-crossings by shifting or scaling
+the longer slice's LEVEL (`a` / `theta`) by the WORST-CASE deficit over a fixed
+k-band (±0.6 at the pair seam, **±3.0** in the Project branch). For slices
+quoted to |k| ≲ 0.1–0.3 (every weekly and most mid-tenor chains), nearly that
+whole band is extrapolation on BOTH slices: the closed forms' wings there are
+unidentified by any quote, so the "crossing" was fiction — and the repair
+converted it into a real ATM error, slice after slice, since each repaired slice
+becomes the next pair's floor. The result passed every downstream gate
+(shape-preserving shifts keep butterflies clean; calendar is clean by
+construction; risk admission checks geometry, not fidelity to quotes) and was
+stored. On the sp100-2026 database this served XOM 2026-02-18 mid-tenors at up
+to **+25 vol pts over their own quotes** (43d ATM: quotes 28.4, served 53.4; the
+SVI `a` shifted 0.0091 → 0.0331 by a k=±0.6 wing deficit), and — because the
+fitted wing shapes flip day to day — produced the ±8–11 pt one-day ATM
+spike-reverts on XOM/CVX that surfaced as artificial P&L spikes in the
+strangle-vs-varswap backtest.
+
+**The fix, structural.**
+1. **Pair projections act only on the tradeable overlap** of the two slices'
+   data-supported k-ranges (∩ the risk band) — the exact rule
+   `SplineVolCurve::project_calendar` already applied; the parametric branches
+   now follow it. `fit_curve_surface` tracks each committed slice's observation
+   k-range and hands it to the next pair (`prev_data_k_range`, previously
+   populated only for SplineVol). A crossing with no traded witness no longer
+   moves any level.
+2. **Every level repair carries a fidelity budget**
+   (`kCalendarRepairMaxAtmShiftFrac = 0.10` of the slice's pre-repair ATM total
+   variance, floor `1e-6`): a repair that would move the ATM further returns
+   `Unavailable` and leaves the slice/surface untouched (all five projectors are
+   now transactional). Failure flows into the existing honest paths: the slice
+   is dropped (soft) or the risk candidate walks the family ladder.
+3. **`CalendarRepair::Project` repairs over the certified band** (±0.5,
+   `static_assert`-tied to both `RiskSurfaceValidationConfig` and
+   `strip::kCertifiedWingHalfBand`), not the ±3.0 diagnostic grid — repair now
+   covers exactly what admission checks. The ±3.0 grid remains as the
+   `calendar_arb_free` DIAGNOSTIC and may now honestly report unrepaired wing
+   crossings.
+4. **The SVI fallback ladder reaches the dense rung** (`kFromSvi` gains
+   `LinearVariance`, which the risk path substitutes with `ConvexDense`) — the
+   one family list that did not descend to the direct-variance curve its own
+   contract promises. Invisible while the fabricated repair force-admitted
+   every SVI candidate; load-bearing now that rejection is honest.
+
+**Effect on existing callers.** Numbers move wherever a calendar repair used to
+fire on out-of-overlap or beyond-budget crossings — deliberately: those numbers
+were fabrications. Boards whose parametric candidates genuinely cannot
+reconcile quotes with in-band calendar monotonicity now serve the dense model
+via the ladder (XOM 2026-02-18 does exactly this) or drop the offending slice.
+Re-fit of the poisoned XOM cell: every tenor within ~1 vol pt of its own
+quotes (worst tenor was +25.0). Gates: `ArbProjectCalendarPair.*Refuses*`,
+`ArbProjectCalendarSvi/Essvi.Refuses*`,
+`VolCurve.SviPairProjectionActsOnlyOnTheTradeableOverlap` /
+`SviPairProjectionStillRepairsInsideTheOverlap`.
+
+**Databases built before this fix carry the fabricated levels** — the carry-over
+fingerprint does not cover the fitter, so a resume will NOT repair them (see
+"Re-running at the corrected --r does NOT repair the database" in
+docs/surface-db-build.md for the identical mechanism). Rebuild affected
+symbols' partitions from the hive, or rebuild into a fresh root.
+
+**Validated on a full XOM+CVX 2026 rebuild** (release binary, fresh root
+`scratch-fitfix-2026`, 140 sessions): CVX 140/140, XOM 137/140 with three
+honestly-rejected boards (2026-02-13 / 02-18 / 06-11: butterfly- or
+calendar-inadmissible on every ladder rung; the backtest engine's documented
+dark-day drop handles them). Daily 3M ATM fit noise: XOM 3.28 → **0.93**
+vol pts/day, CVX 5.28 → **0.92** — both now indistinguishable from AAPL/MSFT —
+with the spike-revert autocorrelation gone (lag-1 −0.50 → −0.17) and the
+largest one-day ATM move 11.6 → 2.6 pts. The strangle-vs-varswap reference
+run's legs land on the same scale (strangle −$1,434, swap −$6,065 over the
+window). An AAPL one-cell control rebuild serves IVs identical to ~1e-10:
+surfaces whose repairs never fired are numerically untouched.
+
 ### CHANGED — the variance strip now reads flat-vol tails beyond the certified wing band (wing clamp)
 
 **What changed.** `var_swap_fair_strike` (and everything that prices through it:

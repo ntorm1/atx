@@ -15,6 +15,8 @@
 
 #include "atx/core/error.hpp"
 #include "atx/vol/detail/log_emit.hpp"
+#include "atx/vol/detail/risk_surface_validation.hpp" // RiskSurfaceValidationConfig (repair band tie)
+#include "atx/vol/detail/strip_grid.hpp"              // strip::kCertifiedWingHalfBand (band tie)
 #include "atx/vol/arb.hpp"              // arb_check_calendar, ArbViolation
 #include "atx/vol/calib.hpp"            // FitObs, FitDiag, CalibOpts
 #include "atx/vol/deamer.hpp"           // de_americanize_chain, european_equiv_iv, otm_side
@@ -54,12 +56,31 @@ using atx::core::Ok;
 
 namespace {
 
-// Calendar no-arb sampling grid (spec: +/-3 over ~25 steps).
+// Calendar no-arb sampling grid (spec: +/-3 over ~25 steps). DIAGNOSTIC ONLY:
+// `calendar_arb_free` keeps reporting the strict wing state over this grid.
 constexpr double kArbKMin = -3.0;
 constexpr double kArbKMax = 3.0;
 constexpr std::uint32_t kArbNGrid = 25;
 constexpr double kMonotoneKMin = -0.7;
 constexpr double kMonotoneKMax = 0.7;
+
+// REPAIR domain for CalendarRepair::Project — exactly the independent risk
+// oracle's admission band (RiskSurfaceValidationConfig, +-0.50), which is also
+// the strip's certified wing band. Until 2026-08 the Project repair ran over
+// the +-3.0 DIAGNOSTIC grid above: 6x beyond any band a gate certifies, where
+// both slices' eSSVI wings are pure extrapolation — so it closed
+// extrapolation-vs-extrapolation "crossings" by scaling slice ATM total
+// variance, fabricating served levels (the sp100-2026 XOM/CVX defect, +8..25
+// ATM vol pts). Repair now covers exactly what admission checks; crossings
+// beyond the certified band remain visible in the +-3 diagnostic and are
+// deliberately not "repaired" by moving levels.
+constexpr double kRepairKMax = RiskSurfaceValidationConfig{}.k_max;
+constexpr double kRepairKMin = -kRepairKMax;
+static_assert(kRepairKMin == RiskSurfaceValidationConfig{}.k_min,
+              "Project repair band must equal the risk-admission band");
+static_assert(kRepairKMax == strip::kCertifiedWingHalfBand,
+              "Project repair band must equal the certified wing band the "
+              "variance strip trusts (detail/strip_grid.hpp)");
 
 // W3.4 (F4): an EXPECTED slice failure is a genuinely thin / data-shaped outcome
 // (`NotFound` = fewer than the usable-row floor; `Unavailable` = non-positive
@@ -470,12 +491,18 @@ Result<SurfaceParityReport> run_surface_parity(const Underlying &under,
     // Backbone theta-bump restores calendar monotonicity of the eSSVI backbone;
     // the residual damper is a no-op for a backbone-only slice but keeps the
     // pass correct if a residual basis is ever fit here. Both are no-ops on a
-    // non-eSSVI surface. Repair over the SAME grid the check samples so the
-    // post-repair check is guaranteed clean. (MonotoneFit needs no post-hoc
-    // pass — its theta floor already enforced ATM monotonicity during the fit.)
+    // non-eSSVI surface. Repair covers the CERTIFIED band only (kRepairK*):
+    // the +-3 diagnostic count above may include wing-extrapolation crossings
+    // this pass deliberately leaves alone, so gate the repair on violations
+    // WITHIN its own domain. (MonotoneFit needs no post-hoc pass — its theta
+    // floor already enforced ATM monotonicity during the fit.)
     const double t_rep = time_stages ? now_ns() : 0.0;
-    ATX_TRY_VOID(arb_project_calendar_essvi(surface, kArbKMin, kArbKMax, kArbNGrid));
-    ATX_TRY_VOID(arb_repair_calendar_residual(surface, kArbKMin, kArbKMax, kArbNGrid));
+    ATX_TRY(const std::vector<ArbViolation> in_band_viols,
+            arb_check_calendar(surface, kRepairKMin, kRepairKMax, kArbNGrid));
+    if (!in_band_viols.empty()) {
+      ATX_TRY_VOID(arb_project_calendar_essvi(surface, kRepairKMin, kRepairKMax, kArbNGrid));
+      ATX_TRY_VOID(arb_repair_calendar_residual(surface, kRepairKMin, kRepairKMax, kArbNGrid));
+    }
     if (time_stages)
       ms_repair = now_ns() - t_rep;
   } else if (in.repair == CalendarRepair::MonotoneFit) {

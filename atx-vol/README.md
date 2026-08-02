@@ -296,11 +296,20 @@ crosses in total variance (55 crossings on the 18-slice XOM surface over k∈[�
 26 inside |k|≤0.6). `FitPreset::Robust` / `CalendarRepair::MonotoneFit` — a
 θ-floor + active-set one-sided w-floor calendar-constrained fit — clears the
 near-money window **|k|≤0.6: 26 → 0 at held quality** (fair-value-in-bid-ask
-98.5%→98.5%, reduced χ² 0.207→0.209, vol-RMSE 0.0190→0.0191). Contrast the
-post-hoc θ-bump projection (`CalendarRepair::Project`): strictly arb-free over the
-full |k|≤3 grid but it lifts a crossing slice's ATM level off market and collapses
-quality (98.5%→20.4%, χ² →749) — kept opt-in for callers that require the strict
-wing guarantee. Deep-wing (|k|→3, ~20σ, no quotes) strict no-arb without a θ-bump
+98.5%→98.5%, reduced χ² 0.207→0.209, vol-RMSE 0.0190→0.0191). The post-hoc
+θ-bump projection (`CalendarRepair::Project`) used to be strictly arb-free over
+the full |k|≤3 grid at the cost of lifting a crossing slice's ATM level off
+market (98.5%→20.4%, χ² →749 measured on this very surface) — and the risk
+pipeline pinned it for every fit, which is how the sp100-2026 database served
+XOM/CVX mid-tenor ATMs up to +25 vol pts over their own quotes (see
+CHANGELOG "calendar level repairs no longer fabricate slice levels"). Project
+now repairs over the certified ±0.5 band only, every calendar level repair
+(both surface projectors and the eSSVI/SVI/C8 pair projections at the
+`fit_slice_curve` seam, which also restrict to the two slices' tradeable
+overlap) is bounded by a fidelity budget (10% of the slice's pre-repair ATM
+total variance) and refuses beyond it, and a refused parametric candidate
+walks the family ladder to the dense model instead of serving fabricated
+levels. Deep-wing (|k|→3, ~20σ, no quotes) strict no-arb without a θ-bump
 needs a φ-slope term-structure constraint and stays deferred; Vola's
 calendar-coupled joint mode with per-term error bars remains the richer target.
 See [the SOTA/HFT roadmap](../docs/superpowers/specs/2026-07-04-atx-vol-sota-hft-roadmap.md).

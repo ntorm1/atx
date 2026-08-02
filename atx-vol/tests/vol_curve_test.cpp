@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
@@ -95,6 +96,58 @@ TEST(VolCurve, SviServedSliceIsButterflyAdmissible) {
   const auto& sp = static_cast<const SviCurve*>(cv)->slice();
   const auto adm = arb_check_butterfly_svi_mm(sp, T);
   EXPECT_EQ(adm.n_violations, 0u);
+}
+
+TEST(VolCurve, SviPairProjectionActsOnlyOnTheTradeableOverlap) {
+  // The sp100-2026 XOM/CVX poison, distilled: the previous slice's total
+  // variance TOWERS over the current slice only OUTSIDE both slices' quoted
+  // ranges (an extrapolated-wing "crossing" no traded strike witnesses). The
+  // pair projection must ignore it: the served slice's ATM level stays the
+  // fit's own level, not the fit plus a wing-fiction-sized shift.
+  constexpr double T = 0.5;
+  constexpr double F = 100.0;
+  constexpr double df = 0.99;
+  const std::vector<FitObs> obs = make_smile_obs(T, F, df, 15);  // k in [-0.20, 0.20]
+
+  // Below the current slice everywhere the quotes live (|k| <= 0.30), towering
+  // beyond it. w_cur(0) ~ 0.0242; w_prev(+-0.6) ~ 0.151.
+  const std::function<double(double)> w_prev = [](double k) {
+    return 0.001 + 0.5 * std::max(0.0, std::fabs(k) - 0.30);
+  };
+
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::Svi;
+  const auto curve = fit_slice_curve(cfg, obs, F, T, df, w_prev,
+                                     /*calendar_floor_knots=*/{},
+                                     /*prev_data_k_range=*/{-0.22, 0.22});
+  ASSERT_TRUE(curve.has_value()) << curve.error().to_string();
+  // ATM total variance ~ 0.22^2 * 0.5 = 0.0242 from the quotes. The pre-fix
+  // code adds the k=+-0.6 deficit (~0.11) to `a`, landing near 0.13.
+  const double w_atm = (*curve)->w(0.0);
+  EXPECT_LT(w_atm, 0.05) << "ATM level moved by an out-of-overlap wing deficit";
+  EXPECT_GT(w_atm, 0.015);
+}
+
+TEST(VolCurve, SviPairProjectionStillRepairsInsideTheOverlap) {
+  // A genuine SMALL crossing at quoted strikes must still be repaired: the
+  // floor sits ~3% above the fit's ATM total variance at k=0.
+  constexpr double T = 0.5;
+  constexpr double F = 100.0;
+  constexpr double df = 0.99;
+  const std::vector<FitObs> obs = make_smile_obs(T, F, df, 15);
+
+  const std::function<double(double)> w_prev = [](double) { return 0.0250; };
+
+  CurveConfig cfg;
+  cfg.kind = VolCurveKind::Svi;
+  const auto curve = fit_slice_curve(cfg, obs, F, T, df, w_prev,
+                                     /*calendar_floor_knots=*/{},
+                                     /*prev_data_k_range=*/{-0.22, 0.22});
+  ASSERT_TRUE(curve.has_value()) << curve.error().to_string();
+  for (int i = 0; i <= 20; ++i) {
+    const double k = -0.20 + 0.40 * static_cast<double>(i) / 20.0;
+    EXPECT_GE((*curve)->w(k), 0.0250 - 1.0e-7) << "k=" << k;
+  }
 }
 
 TEST(VolCurve, SviProjectMmRepairsLeeViolation) {

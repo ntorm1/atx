@@ -628,6 +628,12 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
   // re-derives nothing the pre-pass already computed.
   double ms_fit_slice = 0.0;
   double ms_chain_parity = 0.0;
+  // Data-supported k-range of the most recently COMMITTED slice's observations
+  // — the previous-slice half of fit_slice_curve's tradeable pair band. Starts
+  // unbounded (first slice has no pair anyway).
+  std::pair<double, double> last_committed_obs_k{
+      -std::numeric_limits<double>::infinity(),
+      std::numeric_limits<double>::infinity()};
   for (std::size_t ci = 0; ci < under.chains.size(); ++ci) {
     ChainPrepass &pre = prepass[ci];
     if (!pre.usable) {
@@ -685,8 +691,13 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       if (const auto *linear = dynamic_cast<const LinearVarianceCurve *>(prev); linear != nullptr) {
         calendar_floor_knots = linear->k_nodes();
       }
-      // The SplineVol calendar projection acts only on the tradeable overlap of
-      // the two slices' data ranges; hand it the previous spline slice's range.
+      // Every parametric calendar projection acts only on the tradeable overlap
+      // of the two slices' data ranges (fit_slice_curve's tradeable_pair_band);
+      // hand it the previous COMMITTED slice's observation range, tracked at
+      // commit below. A crossing outside both slices' quoted ranges is
+      // extrapolation-vs-extrapolation and must not move the level.
+      prev_data_k_range = last_committed_obs_k;
+      // The SplineVol projection keeps its own, spline-specific range source.
       if (const auto *sp = dynamic_cast<const SplineVolCurve *>(prev); sp != nullptr) {
         prev_data_k_range = sp->data_k_range();
       }
@@ -856,6 +867,21 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
     out.surface.push(std::move(*slice_res));
     out.context.push_back(SliceContext{T, F, pre.borrow, q_eff, prepared.fit_observations().size(),
                                        static_cast<std::size_t>(prepared.n_dropped())});
+    {
+      // Record this committed slice's quoted k-range for the NEXT pair's
+      // tradeable-overlap calendar projection.
+      double lo = std::numeric_limits<double>::infinity();
+      double hi = -std::numeric_limits<double>::infinity();
+      for (const FitObs &o : prepared.fit_observations()) {
+        if (std::isfinite(o.k)) {
+          lo = std::min(lo, o.k);
+          hi = std::max(hi, o.k);
+        }
+      }
+      if (lo <= hi) {
+        last_committed_obs_k = {lo, hi};
+      }
+    }
     out.per_expiry.push_back(parity);
     if (parity.n > 0) {
       worst = std::min(worst, parity.frac_fv_within_bidask);

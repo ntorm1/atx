@@ -7,6 +7,7 @@
 #include <functional>
 #include <limits>
 #include <span>
+#include <string> // budget-refusal diagnostics (std::to_string)
 #include <vector>
 
 #include "atx/core/error.hpp"
@@ -670,19 +671,34 @@ Result<CalendarPairProjection> arb_project_calendar_essvi_pair(
     double k_min, double k_max, std::uint32_t n_grid) {
   ATX_TRY(CalendarPairProjection out,
           validate_pair_projection_inputs(w_prev, k_min, k_max, n_grid));
+  // TRANSACTIONAL: iterate on a private copy; `current` is committed only on
+  // the Ok paths, so a budget refusal (or any other failure) leaves the
+  // caller's slice exactly as passed in.
+  EssviParams trial = current;
   const SharedGridGap before = shared_grid_gap(
-      w_prev, [&](double k) { return essvi_total_w(current, k); },
+      w_prev, [&](double k) { return essvi_total_w(trial, k); },
       k_min, k_max, n_grid);
   if (!before.finite) {
     return Err(ErrorCode::Unavailable,
                "eSSVI calendar pair projection: non-finite candidate");
   }
   out.max_deficit_before = before.max_deficit;
+  // Fidelity budget: the scale multiplies the slice's ATM total variance
+  // exactly (theta and the residual coefficients scale together), so the
+  // cumulative scale is capped at 1 + budget/w_atm — see
+  // kCalendarRepairMaxAtmShiftFrac (arb.hpp) for why exceeding it is
+  // fabrication, not repair.
+  const double w_atm = essvi_total_w(trial, 0.0);
+  const double budget_w = std::max(kCalendarRepairMaxAtmShiftFrac * w_atm,
+                                   kCalendarRepairMinBudgetW);
+  const double max_scale =
+      (w_atm > 0.0) ? 1.0 + budget_w / w_atm : 1.0 + kCalendarRepairMaxAtmShiftFrac;
   for (std::uint32_t pass = 0; pass < 6; ++pass) {
     const SharedGridGap gap = shared_grid_gap(
-        w_prev, [&](double k) { return essvi_total_w(current, k); },
+        w_prev, [&](double k) { return essvi_total_w(trial, k); },
         k_min, k_max, n_grid);
     if (gap.finite && gap.max_deficit <= kCalendarPairTol) {
+      current = trial;
       return Ok(out);
     }
     if (!gap.finite || !std::isfinite(gap.max_ratio) ||
@@ -691,22 +707,29 @@ Result<CalendarPairProjection> arb_project_calendar_essvi_pair(
                  "eSSVI calendar pair projection: invalid scale");
     }
     const double scale = gap.max_ratio * (1.0 + 1.0e-9);
-    current.theta *= scale;
-    for (double &coef : current.resid_coef) {
+    if (out.scale * scale > max_scale) {
+      return Err(ErrorCode::Unavailable,
+                 "eSSVI calendar pair projection: required ATM level scale " +
+                     std::to_string(out.scale * scale) +
+                     " exceeds the fidelity budget " + std::to_string(max_scale) +
+                     " (the crossing is not repairable by a level shift)");
+    }
+    trial.theta *= scale;
+    for (double &coef : trial.resid_coef) {
       coef *= scale;
     }
-    current.phi = std::min(current.phi,
-                           essvi_phi_max(current.theta, current.rho));
+    trial.phi = std::min(trial.phi, essvi_phi_max(trial.theta, trial.rho));
     out.scale *= scale;
     ++out.passes;
   }
   const SharedGridGap final_gap = shared_grid_gap(
-      w_prev, [&](double k) { return essvi_total_w(current, k); },
+      w_prev, [&](double k) { return essvi_total_w(trial, k); },
       k_min, k_max, n_grid);
   if (!final_gap.finite || final_gap.max_deficit > kCalendarPairTol) {
     return Err(ErrorCode::Unavailable,
                "eSSVI calendar pair projection did not converge");
   }
+  current = trial;
   return Ok(out);
 }
 
@@ -724,8 +747,33 @@ Result<CalendarPairProjection> arb_project_calendar_svi_pair(
   }
   out.max_deficit_before = before.max_deficit;
   if (before.max_deficit > kCalendarPairTol) {
-    current.a += before.max_deficit + 1.0e-9;
+    // Fidelity budget: the parallel `a` shift moves the slice's ATM total
+    // variance by exactly the deficit. A deficit beyond the budget is not a
+    // repair — refuse and leave the slice untouched (transactional; nothing
+    // was mutated yet on this path). See kCalendarRepairMaxAtmShiftFrac.
+    const double w_atm = svi_total_w(current, 0.0);
+    const double budget_w = std::max(kCalendarRepairMaxAtmShiftFrac * w_atm,
+                                     kCalendarRepairMinBudgetW);
+    if (before.max_deficit > budget_w) {
+      return Err(ErrorCode::Unavailable,
+                 "SVI calendar pair projection: required ATM level shift " +
+                     std::to_string(before.max_deficit) +
+                     " exceeds the fidelity budget " + std::to_string(budget_w) +
+                     " (the crossing is not repairable by a level shift)");
+    }
+    // Trial-shift so the non-convergence path below is transactional too.
+    SviParams trial = current;
+    trial.a += before.max_deficit + 1.0e-9;
+    const SharedGridGap shifted = shared_grid_gap(
+        w_prev, [&](double k) { return svi_total_w(trial, k); },
+        k_min, k_max, n_grid);
+    if (!shifted.finite || shifted.max_deficit > kCalendarPairTol) {
+      return Err(ErrorCode::Unavailable,
+                 "SVI calendar pair projection did not converge");
+    }
+    current = trial;
     out.passes = 1;
+    return Ok(out);
   }
   const SharedGridGap final_gap = shared_grid_gap(
       w_prev, [&](double k) { return svi_total_w(current, k); },
@@ -742,19 +790,28 @@ Result<CalendarPairProjection> arb_project_calendar_c8_pair(
     double k_min, double k_max, std::uint32_t n_grid) {
   ATX_TRY(CalendarPairProjection out,
           validate_pair_projection_inputs(w_prev, k_min, k_max, n_grid));
+  // TRANSACTIONAL: iterate on a private copy; committed only on success.
+  C8Params trial = current;
   const SharedGridGap before = shared_grid_gap(
-      w_prev, [&](double k) { return c8_slice_w(current, k); },
+      w_prev, [&](double k) { return c8_slice_w(trial, k); },
       k_min, k_max, n_grid);
   if (!before.finite) {
     return Err(ErrorCode::Unavailable,
                "C8 calendar pair projection: non-finite candidate");
   }
   out.max_deficit_before = before.max_deficit;
+  // Fidelity budget on the CUMULATIVE parallel level shift — see
+  // kCalendarRepairMaxAtmShiftFrac (arb.hpp).
+  const double w_atm = c8_slice_w(trial, 0.0);
+  const double budget_w = std::max(kCalendarRepairMaxAtmShiftFrac * w_atm,
+                                   kCalendarRepairMinBudgetW);
+  double total_shift = 0.0;
   for (std::uint32_t pass = 0; pass < 6; ++pass) {
     const SharedGridGap gap = shared_grid_gap(
-        w_prev, [&](double k) { return c8_slice_w(current, k); },
+        w_prev, [&](double k) { return c8_slice_w(trial, k); },
         k_min, k_max, n_grid);
     if (gap.finite && gap.max_deficit <= kCalendarPairTol) {
+      current = trial;
       return Ok(out);
     }
     if (!gap.finite || !std::isfinite(gap.max_deficit) ||
@@ -767,18 +824,27 @@ Result<CalendarPairProjection> arb_project_calendar_c8_pair(
     // bump coefficients stay unchanged. This is the minimum shape-preserving
     // move, analogous to the raw-SVI `a` projection above.
     const double shift = gap.max_deficit + 1.0e-9;
-    current.v += shift;
-    current.v_min += shift;
-    c8_arb_project(current);
+    if (total_shift + shift > budget_w) {
+      return Err(ErrorCode::Unavailable,
+                 "C8 calendar pair projection: required ATM level shift " +
+                     std::to_string(total_shift + shift) +
+                     " exceeds the fidelity budget " + std::to_string(budget_w) +
+                     " (the crossing is not repairable by a level shift)");
+    }
+    trial.v += shift;
+    trial.v_min += shift;
+    c8_arb_project(trial);
+    total_shift += shift;
     ++out.passes;
   }
   const SharedGridGap final_gap = shared_grid_gap(
-      w_prev, [&](double k) { return c8_slice_w(current, k); },
+      w_prev, [&](double k) { return c8_slice_w(trial, k); },
       k_min, k_max, n_grid);
   if (!final_gap.finite || final_gap.max_deficit > kCalendarPairTol) {
     return Err(ErrorCode::Unavailable,
                "C8 calendar pair projection did not converge");
   }
+  current = trial;
   return Ok(out);
 }
 
@@ -801,6 +867,15 @@ Status arb_project_calendar_svi(VolSurface &s, double k_min, double k_max,
   const auto src = s.svi_slices();
   std::vector<SviParams> slices(src.begin(), src.end());
 
+  // Per-slice cumulative-shift fidelity budget, sized off the slice's
+  // PRE-REPAIR ATM total variance — see kCalendarRepairMaxAtmShiftFrac.
+  std::vector<double> budget_w(n);
+  std::vector<double> shifted_w(n, 0.0);
+  for (std::size_t i = 0; i < n; ++i) {
+    budget_w[i] = std::max(kCalendarRepairMaxAtmShiftFrac * svi_total_w(slices[i], 0.0),
+                           kCalendarRepairMinBudgetW);
+  }
+
   constexpr double kSafety = 1.0e-9;  // absorbed in w-space against FP noise
   std::uint32_t ng = n_grid;
   for (int pass = 0; pass < 6; ++pass) {
@@ -818,7 +893,18 @@ Status arb_project_calendar_svi(VolSurface &s, double k_min, double k_max,
         }
       }
       if (max_def > 0.0) {
+        if (shifted_w[i] + max_def + kSafety > budget_w[i]) {
+          return Err(ErrorCode::Unavailable,
+                     "arb_project_calendar_svi: slice " + std::to_string(i) +
+                         " (T=" + std::to_string(curr.T) +
+                         ") needs a cumulative ATM level shift of " +
+                         std::to_string(shifted_w[i] + max_def) +
+                         ", beyond the fidelity budget " +
+                         std::to_string(budget_w[i]) +
+                         " (not repairable by a level shift)");
+        }
         curr.a += max_def + kSafety;
+        shifted_w[i] += max_def + kSafety;
         touched = true;
       }
     }
@@ -850,6 +936,18 @@ Status arb_project_calendar_essvi(VolSurface &s, double k_min, double k_max,
   const auto src = s.essvi_slices();
   std::vector<EssviParams> slices(src.begin(), src.end());
 
+  // Per-slice cumulative-scale fidelity budget, sized off the slice's
+  // PRE-REPAIR theta — see kCalendarRepairMaxAtmShiftFrac.
+  std::vector<double> max_scale(n);
+  std::vector<double> applied_scale(n, 1.0);
+  for (std::size_t i = 0; i < n; ++i) {
+    const double th = slices[i].theta;
+    max_scale[i] =
+        (th > 0.0) ? 1.0 + std::max(kCalendarRepairMaxAtmShiftFrac,
+                                    kCalendarRepairMinBudgetW / th)
+                   : 1.0 + kCalendarRepairMaxAtmShiftFrac;
+  }
+
   constexpr double kSafety = 1.0 + 1.0e-9;  // multiplicative pad
   std::uint32_t ng = n_grid;
   for (int pass = 0; pass < 6; ++pass) {
@@ -875,7 +973,19 @@ Status arb_project_calendar_essvi(VolSurface &s, double k_min, double k_max,
         }
       }
       if (max_ratio > 1.0) {
-        curr.theta *= max_ratio * kSafety;
+        const double step = max_ratio * kSafety;
+        if (applied_scale[i] * step > max_scale[i]) {
+          return Err(ErrorCode::Unavailable,
+                     "arb_project_calendar_essvi: slice " + std::to_string(i) +
+                         " (T=" + std::to_string(curr.T) +
+                         ") needs a cumulative ATM level scale of " +
+                         std::to_string(applied_scale[i] * step) +
+                         ", beyond the fidelity budget " +
+                         std::to_string(max_scale[i]) +
+                         " (not repairable by a level scale)");
+        }
+        curr.theta *= step;
+        applied_scale[i] *= step;
         // Re-clamp phi to the butterfly ceiling at the new theta.
         const double phi_hi = essvi_phi_max(curr.theta, curr.rho);
         if (curr.phi > phi_hi) {

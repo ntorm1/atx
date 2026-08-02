@@ -260,11 +260,29 @@ struct CalendarPairProjection {
   double max_deficit_before{};
 };
 
+// Fidelity budget for every calendar LEVEL repair below (the eSSVI / SVI / C8
+// pair projections and the surface-level theta / `a` projectors): a repair may
+// raise a slice's ATM total variance by at most this fraction of its pre-repair
+// value (`kCalendarRepairMinBudgetW` is an absolute floor guarding degenerate
+// near-zero slices). A crossing that needs more than that is not repaired by a
+// level shift — it is FABRICATED: the served slice's level no longer resembles
+// the quotes it was fit to, and it silently passes every downstream geometry
+// gate because the shift is shape-preserving. Measured on the sp100-2026
+// database, extrapolated-wing deficits demanded +83%..+263% ATM shifts on XOM
+// mid-tenor slices, turning a 29-vol ATM into a served 53. Beyond budget the
+// projection returns Unavailable and leaves the slice/surface untouched
+// (transactional); callers drop the slice or walk their family ladder, both of
+// which are honest outcomes.
+inline constexpr double kCalendarRepairMaxAtmShiftFrac = 0.10;
+inline constexpr double kCalendarRepairMinBudgetW = 1.0e-6;
+
 // Project one longer-dated parametric candidate above an arbitrary previously
 // admitted w(k) curve on a shared lattice. Each projection stays in the model's
 // shape-safe parameterization; callers must then run the independent butterfly
 // checker above before publication. Failure to close the calendar gap returns
-// Unavailable rather than an unchecked candidate.
+// Unavailable rather than an unchecked candidate — including a gap whose
+// closure would exceed the fidelity budget above; on EVERY non-Ok return
+// `current` is exactly what was passed in (transactional).
 [[nodiscard]] Result<CalendarPairProjection> arb_project_calendar_essvi_pair(
     EssviParams &current, const std::function<double(double)> &w_prev,
     double k_min, double k_max, std::uint32_t n_grid);
@@ -282,8 +300,11 @@ struct CalendarPairProjection {
 // shape-preserving parallel shift) until w(k, T_{i-1}) <= w(k, T_i) at every
 // sampled k. Iterative with 4x grid refinement per pass (bounded at 6 passes /
 // 65536 grid points). Idempotent on an already-monotone surface; no-op for a
-// surface that is not SVI / SVI-MM parametrized.
-// @return InvalidArgument if `k_max <= k_min` (after the no-op guards).
+// surface that is not SVI / SVI-MM parametrized. TRANSACTIONAL: runs on a
+// private copy; on any non-Ok return `s` is untouched.
+// @return InvalidArgument if `k_max <= k_min` (after the no-op guards);
+//         Unavailable if any slice's cumulative shift would exceed the
+//         fidelity budget (`kCalendarRepairMaxAtmShiftFrac`).
 [[nodiscard]] Status arb_project_calendar_svi(VolSurface &s, double k_min,
                                               double k_max,
                                               std::uint32_t n_grid);
@@ -291,8 +312,11 @@ struct CalendarPairProjection {
 // eSSVI calendar projection on the BACKBONE only: bump theta_i up by the
 // minimum multiplier max_k(w_back_{i-1} / w_back_i) that restores backbone
 // monotonicity, then re-clamp phi_i to the butterfly ceiling at the new theta.
-// Same 6-pass / grid-refine loop. No-op for a non-eSSVI surface.
-// @return InvalidArgument if `k_max <= k_min` (after the no-op guards).
+// Same 6-pass / grid-refine loop. No-op for a non-eSSVI surface. TRANSACTIONAL:
+// runs on a private copy; on any non-Ok return `s` is untouched.
+// @return InvalidArgument if `k_max <= k_min` (after the no-op guards);
+//         Unavailable if any slice's cumulative scale would exceed the
+//         fidelity budget (`kCalendarRepairMaxAtmShiftFrac`).
 [[nodiscard]] Status arb_project_calendar_essvi(VolSurface &s, double k_min,
                                                 double k_max,
                                                 std::uint32_t n_grid);

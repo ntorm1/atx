@@ -26,6 +26,39 @@ constexpr double kRiskCalendarMax = 0.60;
 constexpr std::uint32_t kRiskCalendarIntervals = 64;
 constexpr std::uint32_t kRiskShapeIntervals = 256;
 
+// The tradeable pair band for a parametric calendar projection: the risk band
+// intersected with BOTH slices' data-supported k ranges (the current slice's
+// from its own observations, the previous slice's from `prev_data_k_range`) —
+// the same overlap rule SplineVolCurve::project_calendar already applies. A
+// crossing outside this band has no traded witness on either slice: it lives
+// in the closed forms' extrapolated wings, where the fit parameters are
+// unidentified by data, and projecting the slice's LEVEL over it converts that
+// extrapolation noise into ATM error (the sp100-2026 XOM/CVX defect: worst-case
+// wing deficits at k=+-0.6, on slices quoted to |k|<~0.1, were added to `a`
+// slice after slice, serving 53-vol ATMs against 29-vol quotes).
+struct PairBand {
+  double lo{0.0};
+  double hi{0.0};
+  bool usable{false};
+};
+[[nodiscard]] PairBand tradeable_pair_band(std::span<const FitObs> obs,
+                                           std::pair<double, double> prev_range) noexcept {
+  double obs_lo = std::numeric_limits<double>::infinity();
+  double obs_hi = -std::numeric_limits<double>::infinity();
+  for (const FitObs &o : obs) {
+    if (std::isfinite(o.k)) {
+      obs_lo = std::min(obs_lo, o.k);
+      obs_hi = std::max(obs_hi, o.k);
+    }
+  }
+  PairBand band;
+  band.lo = std::max({kRiskCalendarMin, obs_lo, prev_range.first});
+  band.hi = std::min({kRiskCalendarMax, obs_hi, prev_range.second});
+  band.usable =
+      std::isfinite(band.lo) && std::isfinite(band.hi) && band.hi - band.lo > 1.0e-9;
+  return band;
+}
+
 [[nodiscard]] Status validate_parametric_risk_shape(const IVolCurve &curve,
                                                     double k_min, double k_max) {
   ATX_TRY(const std::vector<ArbViolation> violations,
@@ -435,11 +468,13 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
   case VolCurveKind::Essvi: {
     ATX_TRY(EssviParams slice, essvi_fit_slice(obs_eu, T, F, cfg.parametric));
     if (w_prev) {
-      ATX_TRY(const CalendarPairProjection projection,
-              arb_project_calendar_essvi_pair(
-                  slice, w_prev, kRiskCalendarMin, kRiskCalendarMax,
-                  kRiskCalendarIntervals));
-      (void)projection;
+      const PairBand band = tradeable_pair_band(obs_eu, prev_data_k_range);
+      if (band.usable) {
+        ATX_TRY(const CalendarPairProjection projection,
+                arb_project_calendar_essvi_pair(slice, w_prev, band.lo, band.hi,
+                                                kRiskCalendarIntervals));
+        (void)projection;
+      }
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<EssviCurve>(slice, df);
     ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
@@ -463,11 +498,13 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       }
     }
     if (w_prev) {
-      ATX_TRY(const CalendarPairProjection projection,
-              arb_project_calendar_svi_pair(
-                  slice, w_prev, kRiskCalendarMin, kRiskCalendarMax,
-                  kRiskCalendarIntervals));
-      (void)projection;
+      const PairBand band = tradeable_pair_band(obs_eu, prev_data_k_range);
+      if (band.usable) {
+        ATX_TRY(const CalendarPairProjection projection,
+                arb_project_calendar_svi_pair(slice, w_prev, band.lo, band.hi,
+                                              kRiskCalendarIntervals));
+        (void)projection;
+      }
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<SviCurve>(slice, df);
     // FT-C2: scan the full quoted range +/- 0.5, not the fixed [-0.6, 0.6] band —
@@ -615,11 +652,13 @@ Result<std::unique_ptr<IVolCurve>> fit_slice_curve(const CurveConfig &cfg,
       }
     }
     if (w_prev) {
-      ATX_TRY(const CalendarPairProjection projection,
-              arb_project_calendar_c8_pair(
-                  fitted, w_prev, kRiskCalendarMin, kRiskCalendarMax,
-                  kRiskCalendarIntervals));
-      (void)projection;
+      const PairBand band = tradeable_pair_band(obs_eu, prev_data_k_range);
+      if (band.usable) {
+        ATX_TRY(const CalendarPairProjection projection,
+                arb_project_calendar_c8_pair(fitted, w_prev, band.lo, band.hi,
+                                             kRiskCalendarIntervals));
+        (void)projection;
+      }
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<C8Curve>(fitted, df);
     ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
@@ -701,11 +740,18 @@ Result<std::unique_ptr<IVolCurve>> refit_slice_curve(
     slice.expiry_id = warm->slice().expiry_id;
     slice.expiry_ns = warm->slice().expiry_ns;
     if (w_prev) {
-      ATX_TRY(const CalendarPairProjection projection,
-              arb_project_calendar_essvi_pair(
-                  slice, w_prev, kRiskCalendarMin, kRiskCalendarMax,
-                  kRiskCalendarIntervals));
-      (void)projection;
+      // The refit seam carries no previous-slice data range; restrict to the
+      // CURRENT slice's own quoted range (still a strict improvement over the
+      // fixed band — see tradeable_pair_band).
+      const PairBand band = tradeable_pair_band(
+          obs_eu, {-std::numeric_limits<double>::infinity(),
+                   std::numeric_limits<double>::infinity()});
+      if (band.usable) {
+        ATX_TRY(const CalendarPairProjection projection,
+                arb_project_calendar_essvi_pair(slice, w_prev, band.lo, band.hi,
+                                                kRiskCalendarIntervals));
+        (void)projection;
+      }
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<EssviCurve>(slice, df);
     ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
@@ -715,11 +761,15 @@ Result<std::unique_ptr<IVolCurve>> refit_slice_curve(
     ATX_TRY(SviParams slice,
             svi_fit_slice(obs_eu, T, F, cfg.parametric, diag));
     if (w_prev) {
-      ATX_TRY(const CalendarPairProjection projection,
-              arb_project_calendar_svi_pair(
-                  slice, w_prev, kRiskCalendarMin, kRiskCalendarMax,
-                  kRiskCalendarIntervals));
-      (void)projection;
+      const PairBand band = tradeable_pair_band(
+          obs_eu, {-std::numeric_limits<double>::infinity(),
+                   std::numeric_limits<double>::infinity()});
+      if (band.usable) {
+        ATX_TRY(const CalendarPairProjection projection,
+                arb_project_calendar_svi_pair(slice, w_prev, band.lo, band.hi,
+                                              kRiskCalendarIntervals));
+        (void)projection;
+      }
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<SviCurve>(slice, df);
     ATX_TRY_VOID(validate_parametric_risk_shape(*curve));
@@ -769,11 +819,15 @@ Result<std::unique_ptr<IVolCurve>> refit_slice_curve(
     fitted.expiry_ns = warm->slice().expiry_ns;
     c8_arb_project(fitted);
     if (w_prev) {
-      ATX_TRY(const CalendarPairProjection projection,
-              arb_project_calendar_c8_pair(
-                  fitted, w_prev, kRiskCalendarMin, kRiskCalendarMax,
-                  kRiskCalendarIntervals));
-      (void)projection;
+      const PairBand band = tradeable_pair_band(
+          obs_eu, {-std::numeric_limits<double>::infinity(),
+                   std::numeric_limits<double>::infinity()});
+      if (band.usable) {
+        ATX_TRY(const CalendarPairProjection projection,
+                arb_project_calendar_c8_pair(fitted, w_prev, band.lo, band.hi,
+                                             kRiskCalendarIntervals));
+        (void)projection;
+      }
     }
     std::unique_ptr<IVolCurve> curve = std::make_unique<C8Curve>(fitted, df);
     ATX_TRY_VOID(validate_parametric_risk_shape(*curve));

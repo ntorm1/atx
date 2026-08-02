@@ -692,7 +692,7 @@ TEST(ArbProjectCalendarSvi, RestoresMonotonicity) {
   s0.sigma = 0.1;
   s0.T = 0.25;
   SviParams s1{};
-  s1.a = 0.02;  // lower than s0 at every k => calendar crossing
+  s1.a = 0.098;  // SLIGHTLY lower than s0 at every k => small calendar crossing
   s1.b = 0.1;
   s1.rho = 0.0;
   s1.m = 0.0;
@@ -709,7 +709,7 @@ TEST(ArbProjectCalendarSvi, RestoresMonotonicity) {
   const auto after = arb_check_calendar(surf, -0.3, 0.3, 32);
   ASSERT_TRUE(after.has_value());
   EXPECT_TRUE(after.value().empty());
-  EXPECT_GT(surf.svi_slices()[1].a, 0.02);  // longer slice's `a` was bumped up
+  EXPECT_GT(surf.svi_slices()[1].a, 0.098);  // longer slice's `a` was bumped up
 }
 
 TEST(ArbProjectCalendarSvi, IdempotentOnAlreadyMonotone) {
@@ -719,7 +719,7 @@ TEST(ArbProjectCalendarSvi, IdempotentOnAlreadyMonotone) {
   s0.sigma = 0.1;
   s0.T = 0.25;
   SviParams s1{};
-  s1.a = 0.02;
+  s1.a = 0.098;
   s1.b = 0.1;
   s1.sigma = 0.1;
   s1.T = 1.0;
@@ -761,7 +761,8 @@ TEST(ArbProjectCalendarSvi, KMaxNotAboveKMin_ReturnsInvalidArgument) {
 }
 
 TEST(ArbProjectCalendarEssvi, RestoresMonotonicity) {
-  VolSurface surf = make_essvi_2slice(0.16, 0.25, 0.04, 1.0);
+  // A SMALL inversion (ratio ~1.07, inside the repair fidelity budget).
+  VolSurface surf = make_essvi_2slice(0.16, 0.25, 0.15, 1.0);
   const auto before = arb_check_calendar(surf, -0.3, 0.3, 32);
   ASSERT_TRUE(before.has_value());
   EXPECT_FALSE(before.value().empty());
@@ -771,7 +772,37 @@ TEST(ArbProjectCalendarEssvi, RestoresMonotonicity) {
   const auto after = arb_check_calendar(surf, -0.3, 0.3, 32);
   ASSERT_TRUE(after.has_value());
   EXPECT_TRUE(after.value().empty());
-  EXPECT_GT(surf.essvi_slices()[1].theta, 0.04);  // theta bumped up
+  EXPECT_GT(surf.essvi_slices()[1].theta, 0.15);  // theta bumped up
+}
+
+TEST(ArbProjectCalendarEssvi, RefusesPerSliceScaleBeyondFidelityBudget) {
+  // Closing theta 0.16 -> 0.04 needs a 4x ATM scale on the longer slice. That
+  // is the level-fabrication defect (sp100-2026 XOM/CVX): refuse, transactional.
+  VolSurface surf = make_essvi_2slice(0.16, 0.25, 0.04, 1.0);
+  const auto st = arb_project_calendar_essvi(surf, -0.3, 0.3, 32);
+  ASSERT_FALSE(st.has_value());
+  EXPECT_EQ(st.error().code(), ErrorCode::Unavailable);
+  EXPECT_EQ(surf.essvi_slices()[0].theta, 0.16);
+  EXPECT_EQ(surf.essvi_slices()[1].theta, 0.04);
+}
+
+TEST(ArbProjectCalendarSvi, RefusesLevelShiftBeyondFidelityBudget) {
+  // Same budget contract on the SVI surface projector's `a` shift.
+  SviParams s0{};
+  s0.a = 0.10;
+  s0.b = 0.1;
+  s0.sigma = 0.1;
+  s0.T = 0.25;
+  SviParams s1{};
+  s1.a = 0.02;
+  s1.b = 0.1;
+  s1.sigma = 0.1;
+  s1.T = 1.0;
+  VolSurface surf = make_svi_2slice(s0, s1);
+  const auto st = arb_project_calendar_svi(surf, -0.3, 0.3, 32);
+  ASSERT_FALSE(st.has_value());
+  EXPECT_EQ(st.error().code(), ErrorCode::Unavailable);
+  EXPECT_EQ(surf.svi_slices()[1].a, 0.02);
 }
 
 TEST(ArbProjectCalendarEssvi, IdempotentOnAlreadyMonotone) {
@@ -874,8 +905,10 @@ TEST(ArbProjectCalendarPair, EssviClosesSharedGridAndPreservesButterfly) {
   previous.rho = -0.3;
   previous.T = 0.25;
   previous.F = 100.0;
+  // A SMALL crossing (ratio ~1.07, inside the repair fidelity budget): the
+  // projection must close it with a shape-preserving level scale.
   EssviParams current = previous;
-  current.theta = 0.025;
+  current.theta = 0.084;
   current.T = 0.50;
   const std::function<double(double)> floor =
       [previous](double k) { return essvi_total_w(previous, k); };
@@ -894,6 +927,37 @@ TEST(ArbProjectCalendarPair, EssviClosesSharedGridAndPreservesButterfly) {
   EXPECT_TRUE(shape->empty());
 }
 
+TEST(ArbProjectCalendarPair, EssviRefusesLevelScaleBeyondFidelityBudget) {
+  // The XOM-2026 defect shape: closing this gap needs a ~3.6x ATM level scale
+  // — pure fabrication relative to the slice's own fit. The projection must
+  // REFUSE (Unavailable) and leave the slice untouched, not publish a slice
+  // whose ATM level no longer resembles its own quotes.
+  EssviParams previous{};
+  previous.theta = 0.09;
+  previous.phi = 0.8;
+  previous.rho = -0.3;
+  previous.T = 0.25;
+  previous.F = 100.0;
+  EssviParams current = previous;
+  current.theta = 0.025;
+  current.T = 0.50;
+  const EssviParams before = current;
+  const std::function<double(double)> floor =
+      [previous](double k) { return essvi_total_w(previous, k); };
+
+  const auto projection =
+      arb_project_calendar_essvi_pair(current, floor, -0.6, 0.6, 64);
+  ASSERT_FALSE(projection.has_value());
+  EXPECT_EQ(projection.error().code(), ErrorCode::Unavailable);
+  // Transactional: the refused slice is byte-unchanged.
+  EXPECT_EQ(current.theta, before.theta);
+  EXPECT_EQ(current.phi, before.phi);
+  EXPECT_EQ(current.rho, before.rho);
+  for (std::size_t j = 0; j < before.resid_coef.size(); ++j) {
+    EXPECT_EQ(current.resid_coef[j], before.resid_coef[j]) << "coef " << j;
+  }
+}
+
 TEST(ArbProjectCalendarPair, SviUsesShapePreservingLevelShift) {
   SviParams previous{};
   previous.a = 0.08;
@@ -902,8 +966,10 @@ TEST(ArbProjectCalendarPair, SviUsesShapePreservingLevelShift) {
   previous.m = 0.0;
   previous.sigma = 0.20;
   previous.T = 0.25;
+  // A SMALL crossing (shift ~2% of the slice's ATM total variance, inside the
+  // repair fidelity budget): repaired by the parallel `a` level shift.
   SviParams current = previous;
-  current.a = 0.01;
+  current.a = 0.078;
   current.T = 0.50;
   const double b_before = current.b;
   const std::function<double(double)> floor =
@@ -924,6 +990,36 @@ TEST(ArbProjectCalendarPair, SviUsesShapePreservingLevelShift) {
   EXPECT_TRUE(shape->empty());
 }
 
+TEST(ArbProjectCalendarPair, SviRefusesLevelShiftBeyondFidelityBudget) {
+  // The exact defect that poisoned the sp100-2026 XOM/CVX cells: the required
+  // `a` shift (0.07) is ~230% of the slice's own ATM total variance. Committing
+  // it rewrites the slice's level far outside anything its quotes support. The
+  // projection must refuse and leave the slice untouched.
+  SviParams previous{};
+  previous.a = 0.08;
+  previous.b = 0.10;
+  previous.rho = -0.25;
+  previous.m = 0.0;
+  previous.sigma = 0.20;
+  previous.T = 0.25;
+  SviParams current = previous;
+  current.a = 0.01;
+  current.T = 0.50;
+  const SviParams before = current;
+  const std::function<double(double)> floor =
+      [previous](double k) { return svi_total_w(previous, k); };
+
+  const auto projection =
+      arb_project_calendar_svi_pair(current, floor, -0.6, 0.6, 64);
+  ASSERT_FALSE(projection.has_value());
+  EXPECT_EQ(projection.error().code(), ErrorCode::Unavailable);
+  EXPECT_EQ(current.a, before.a);
+  EXPECT_EQ(current.b, before.b);
+  EXPECT_EQ(current.rho, before.rho);
+  EXPECT_EQ(current.m, before.m);
+  EXPECT_EQ(current.sigma, before.sigma);
+}
+
 TEST(ArbProjectCalendarPair, C8LevelShiftThenRevalidatesBumps) {
   C8Params current{};
   current.T = 0.50;
@@ -934,8 +1030,11 @@ TEST(ArbProjectCalendarPair, C8LevelShiftThenRevalidatesBumps) {
   current.p = 0.20;
   current.c = 0.18;
   current.kappa = -0.001;
+  // A SMALL crossing (level shift a few % of the slice's ATM total variance,
+  // inside the repair fidelity budget; the fixture's minimum w is ~v_min=0.022,
+  // so the flat floor must sit within budget of THAT).
   const std::function<double(double)> floor =
-      [](double) { return 0.06; };
+      [](double) { return 0.0240; };
 
   const auto projection =
       arb_project_calendar_c8_pair(current, floor, -0.6, 0.6, 64);
@@ -949,6 +1048,32 @@ TEST(ArbProjectCalendarPair, C8LevelShiftThenRevalidatesBumps) {
   const auto shape = arb_check_butterfly(served, -0.6, 0.6, 256);
   ASSERT_TRUE(shape.has_value());
   EXPECT_TRUE(shape->empty());
+}
+
+TEST(ArbProjectCalendarPair, C8RefusesLevelShiftBeyondFidelityBudget) {
+  // Closing a flat 0.06 floor over a ~0.025 slice needs a >100% ATM level
+  // shift: fabrication, not repair. Refuse and leave the slice untouched.
+  C8Params current{};
+  current.T = 0.50;
+  current.F = 100.0;
+  current.v = 0.025;
+  current.v_min = 0.022;
+  current.psi = -0.004;
+  current.p = 0.20;
+  current.c = 0.18;
+  current.kappa = -0.001;
+  const C8Params before = current;
+  const std::function<double(double)> floor =
+      [](double) { return 0.06; };
+
+  const auto projection =
+      arb_project_calendar_c8_pair(current, floor, -0.6, 0.6, 64);
+  ASSERT_FALSE(projection.has_value());
+  EXPECT_EQ(projection.error().code(), ErrorCode::Unavailable);
+  EXPECT_EQ(current.v, before.v);
+  EXPECT_EQ(current.v_min, before.v_min);
+  EXPECT_EQ(current.psi, before.psi);
+  EXPECT_EQ(current.kappa, before.kappa);
 }
 
 // ── Quote pre-fit filters (mirrors test_prefit_filter.c) ──────────────────

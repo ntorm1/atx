@@ -39,7 +39,13 @@ using atx::core::Ok;
 std::span<const VolCurveKind> fallback_curve_rungs(VolCurveKind primary) noexcept {
   static constexpr VolCurveKind kFromC8[]{VolCurveKind::Essvi, VolCurveKind::LinearVariance};
   static constexpr VolCurveKind kFromEssvi[]{VolCurveKind::Svi, VolCurveKind::LinearVariance};
-  static constexpr VolCurveKind kFromSvi[]{VolCurveKind::Essvi};
+  // Svi descends to the direct-variance rung like every other family — the
+  // ladder's own contract above. It was the one list without it, which was
+  // invisible while the calendar level-projection silently "repaired" any SVI
+  // candidate into admissibility; with that fabrication refused (fidelity
+  // budget, arb.hpp), a board whose SVI and eSSVI candidates both carry
+  // in-band calendar crossings must reach the dense model to serve at all.
+  static constexpr VolCurveKind kFromSvi[]{VolCurveKind::Essvi, VolCurveKind::LinearVariance};
   static constexpr VolCurveKind kFromConvex[]{VolCurveKind::Svi, VolCurveKind::Essvi};
   static constexpr VolCurveKind kFromLinear[]{VolCurveKind::Essvi};
   // SplineVol is not in default_selector_candidates() v1 (task-3 constraint),
