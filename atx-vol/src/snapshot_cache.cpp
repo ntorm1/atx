@@ -232,7 +232,47 @@ struct SnapshotCache::Impl {
     retained_entries.store(static_cast<std::uint64_t>(entries.size()), std::memory_order_relaxed);
   }
 
+  // 6.6: the identity probe, memoized when — and ONLY when — the backing says it may
+  // be. `current_identity` is a file open + 256-byte read on EVERY load and EVERY
+  // prefetch, so a forward-only replay pays it twice per archive and the surface-db
+  // route pays it once more per step; it is also the reason `prefetch_window` may not
+  // rescan its window (see backtest.cpp).
+  //
+  // Under `Sealed` the caller has DECLARED the corpus read-only for this cache's
+  // lifetime (that declaration is what licenses handing out mappings into those files
+  // at all), so an archive's content identity is a pure function of its path and the
+  // repeat probes can only reproduce the first answer. Under `Mutable` nothing is
+  // memoized: probing every call IS the R-19 rewrite-detection contract, and
+  // `SnapshotCacheEvictsStaleEntryWhenArchiveRewrittenSameLength` pins it.
+  //
+  // A FAILED probe (the default, all-zero identity — unreadable, or not yet an
+  // archive) is never memoized, so a Sealed partition that appears later still
+  // resolves. Guarded by its own mutex, deliberately not `mutex`: the probe is called
+  // BEFORE the cache lock precisely so the header read never serializes other cache
+  // operations.
+  [[nodiscard]] ArchiveContentIdentity identity_for(const std::string &path) {
+    if (backing != ArchiveBacking::Sealed) {
+      return current_identity(path);
+    }
+    {
+      std::lock_guard lock{identity_mutex};
+      const auto found = identity_memo.find(path);
+      if (found != identity_memo.end()) {
+        return found->second;
+      }
+    }
+    const ArchiveContentIdentity identity = current_identity(path);
+    if (identity == ArchiveContentIdentity{}) {
+      return identity;
+    }
+    std::lock_guard lock{identity_mutex};
+    identity_memo.emplace(path, identity);
+    return identity;
+  }
+
   mutable std::mutex mutex;
+  std::mutex identity_mutex;
+  std::unordered_map<std::string, ArchiveContentIdentity> identity_memo;
   EntryMap entries;
   std::list<SnapshotCacheKey> recency; // least-recently-used at front
   std::optional<std::size_t> max_entries;
@@ -282,7 +322,7 @@ Status SnapshotCache::prefetch(std::string archive_path, QueryPricingTier query_
   }
   const SnapshotCacheKey requested_key = cache_key(archive_path, query_pricing_tier, impl_->backing);
   // R-19: read the archive's content identity before the lock (small header read).
-  const ArchiveContentIdentity identity = current_identity(requested_key.path);
+  const ArchiveContentIdentity identity = impl_->identity_for(requested_key.path);
   std::lock_guard lock{impl_->mutex};
   SnapshotCacheKey effective_key = requested_key;
   auto found = impl_->evict_if_stale(impl_->entries.find(effective_key), identity);
@@ -332,7 +372,7 @@ Result<SnapshotPtr> SnapshotCache::load(std::string_view archive_path,
   }
   const SnapshotCacheKey requested_key = cache_key(archive_path, query_pricing_tier, impl_->backing);
   // R-19: read the archive's content identity before the lock (small header read).
-  const ArchiveContentIdentity identity = current_identity(requested_key.path);
+  const ArchiveContentIdentity identity = impl_->identity_for(requested_key.path);
   SnapshotCacheKey effective_key = requested_key;
   std::shared_future<SnapshotResult> future;
   std::uint64_t generation = 0u;
