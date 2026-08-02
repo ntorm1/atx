@@ -2054,6 +2054,12 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   for (const ArchiveV2DirEntry &e : dir) {
     syms.emplace_back(std::string(e.symbol, e.symbol_len), e.uid);
   }
+  // 6.6: SORTED BY SYMBOL so `uid_of` is a binary search instead of a scan of the
+  // whole directory. The order is not observable anywhere else — `syms_` has exactly
+  // one reader (`uid_of`) — and sorting is paid once per archive load against a
+  // lookup that a strategy runs per leg per step.
+  std::sort(syms.begin(), syms.end(),
+            [](const auto &a, const auto &b) { return a.first < b.first; });
 
   // The snapshot co-owns `archive` — the Mapping every borrowed view reads — so the
   // mapping outlives the views, which outlive nothing else. See MarketSnapshot's
@@ -2082,12 +2088,19 @@ std::optional<std::uint32_t> MarketSnapshot::uid_of(std::string_view symbol) con
   // universe authored in lower case would fail to resolve. `canonical_symbol` is
   // the single source of truth shared with `uid_for_symbol` (the write side).
   const std::string query = canonical_symbol(symbol);
-  for (const auto &[sym, uid] : syms_) {
-    if (sym == query) {
-      return uid;
-    }
+  // `syms_` is sorted by symbol at load (see MarketSnapshot::load), so this is a
+  // binary search. A duplicate symbol in the directory would make `lower_bound` pick
+  // the FIRST of the run; the scan this replaces picked the first too, so a
+  // (malformed) archive with a repeated symbol still resolves to the same uid.
+  const auto it = std::lower_bound(
+      syms_.begin(), syms_.end(), query,
+      [](const std::pair<std::string, std::uint32_t> &a, const std::string &q) {
+        return a.first < q;
+      });
+  if (it == syms_.end() || it->first != query) {
+    return std::nullopt;
   }
-  return std::nullopt;
+  return it->second;
 }
 
 // ── Driver ──────────────────────────────────────────────────────────────────

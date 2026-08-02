@@ -15,12 +15,11 @@
 
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <limits>
 #include <optional>
 #include <span>
-#include <unordered_map>
 #include <vector>
 
 #include "atx/vol/backtest.hpp"         // Lot, MarketSnapshot
@@ -47,8 +46,7 @@ public:
   // The admission gate itself, taking the marks as data so a test can drive it with
   // a mark the live pricer will not produce (see the file header).
   void populate_from_marks(std::span<const RetainedMark> marks, const SurfaceSet &surfaces) {
-    entries_.clear();
-    entries_.reserve(marks.size());
+    begin_generation(marks.size());
     for (const RetainedMark &m : marks) {
       if (m.status != PriceStatus::Ok) {
         continue; // only Ok marks are servable; a failed one must re-solve / fail closed
@@ -66,17 +64,17 @@ public:
       }
       const SurfaceRef s = surfaces.find(m.uid);
       const std::uint64_t inst = s != nullptr ? s->instance_id() : 0u;
-      entries_[key_of(m.uid, m.K, m.T, m.side)] = Val{inst, m.mark};
+      insert(key_of(m.uid, m.K, m.T, m.side), Val{inst, m.mark});
     }
   }
 
   [[nodiscard]] std::optional<double> find(std::uint32_t uid, double K, double T, Side side,
                                            std::uint64_t base_surface_instance) const {
-    const auto it = entries_.find(key_of(uid, K, T, side));
-    if (it == entries_.end() || it->second.instance != base_surface_instance) {
+    const Slot *slot = probe(key_of(uid, K, T, side));
+    if (slot == nullptr || slot->val.instance != base_surface_instance) {
       return std::nullopt;
     }
-    return it->second.mark;
+    return slot->val.mark;
   }
 
   // Reusable settlement scratch (grow-only; keeps compute_step allocation-free after
@@ -98,28 +96,93 @@ private:
     std::uint8_t side;
     bool operator==(const Key &) const noexcept = default;
   };
-  struct KeyHash {
-    [[nodiscard]] std::size_t operator()(const Key &k) const noexcept {
-      std::size_t h = std::hash<std::uint32_t>{}(k.uid);
-      const auto mix = [&h](std::uint64_t v) {
-        h ^= std::hash<std::uint64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-      };
-      mix(k.kbits);
-      mix(k.tbits);
-      mix(static_cast<std::uint64_t>(k.side));
-      return h;
-    }
-  };
   struct Val {
     std::uint64_t instance;
     double mark;
   };
+  // 6.6: one dense slot vector, stamped with the populate generation, replaces the
+  // node-based `unordered_map` this used to be. `clear()` + `reserve()` on that map
+  // FREED every node each step and heap-allocated one per admitted mark on the next
+  // — an allocate/free pair per lot per step, on the step loop. Bumping a counter
+  // retires the whole table instead, so a warm memo is allocation-free: the slot
+  // vector is grow-only and steady-state populate touches nothing but slots whose
+  // stamp is already stale.
+  struct Slot {
+    std::uint64_t gen{0u}; // 0 == never written; `generation_` starts at 1
+    Key key{};
+    Val val{};
+  };
+  [[nodiscard]] static std::uint64_t hash_of(const Key &k) noexcept {
+    std::uint64_t h = 0x9e3779b97f4a7c15ULL ^ static_cast<std::uint64_t>(k.uid);
+    const auto mix = [&h](std::uint64_t v) {
+      h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    };
+    mix(k.kbits);
+    mix(k.tbits);
+    mix(static_cast<std::uint64_t>(k.side));
+    // splitmix64 finalizer: `mix` alone leaves the low bits of a strike/tenor pair
+    // poorly diffused, and the bucket index is exactly those low bits.
+    h ^= h >> 30;
+    h *= 0xbf58476d1ce4e5b9ULL;
+    h ^= h >> 27;
+    h *= 0x94d049bb133111ebULL;
+    h ^= h >> 31;
+    return h;
+  }
   [[nodiscard]] static Key key_of(std::uint32_t uid, double K, double T, Side side) noexcept {
     return Key{uid, std::bit_cast<std::uint64_t>(K), std::bit_cast<std::uint64_t>(T),
                static_cast<std::uint8_t>(side)};
   }
 
-  std::unordered_map<Key, Val, KeyHash> entries_;
+  // Retire every live entry in O(1) and size the table for `n` admissions. Capacity is
+  // a power of two >= 2n (max load factor 0.5, so linear probing stays short) and
+  // never shrinks. Growing MUST also retire the old contents, which it does for free:
+  // a fresh vector's slots are all gen 0 != generation_.
+  void begin_generation(std::size_t n) {
+    ++generation_;
+    std::size_t want = 8u;
+    while (want < 2u * n) {
+      want *= 2u;
+    }
+    if (table_.size() < want) {
+      table_.assign(want, Slot{});
+    }
+    mask_ = table_.size() - 1u;
+  }
+  // Last write wins on a duplicate key, exactly as `entries_[k] = v` did.
+  void insert(const Key &k, const Val &v) {
+    std::size_t i = static_cast<std::size_t>(hash_of(k)) & mask_;
+    for (;;) {
+      Slot &s = table_[i];
+      if (s.gen != generation_ || s.key == k) {
+        s.gen = generation_;
+        s.key = k;
+        s.val = v;
+        return;
+      }
+      i = (i + 1u) & mask_;
+    }
+  }
+  [[nodiscard]] const Slot *probe(const Key &k) const noexcept {
+    if (table_.empty()) {
+      return nullptr;
+    }
+    std::size_t i = static_cast<std::size_t>(hash_of(k)) & mask_;
+    for (;;) {
+      const Slot &s = table_[i];
+      if (s.gen != generation_) {
+        return nullptr; // stale/never-written slot terminates the probe run
+      }
+      if (s.key == k) {
+        return &s;
+      }
+      i = (i + 1u) & mask_;
+    }
+  }
+
+  std::vector<Slot> table_;
+  std::size_t mask_{0u};
+  std::uint64_t generation_{0u};
   std::vector<RetainedMark> marks_scratch_;
   std::vector<Lot> solve_lots_;
   std::vector<double> served_;
