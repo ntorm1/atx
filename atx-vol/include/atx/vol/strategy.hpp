@@ -399,6 +399,11 @@ public:
   // reads it each step and trades the shares ledger to satisfy it. Default: None
   // (no hedge), so a strategy that ignores it runs exactly as in B1.
   [[nodiscard]] virtual HedgeSpec hedge_spec() const { return {}; }
+  // Explicit opt-in for target-risk/execute fusion. Returning true promises that
+  // hedge_spec() is pure and remains unchanged across on_step, so the engine may
+  // inspect it before the step and reuse that route decision afterward. The
+  // conservative default preserves existing custom-strategy call semantics.
+  [[nodiscard]] virtual bool target_risk_fusion_safe() const noexcept { return false; }
   // Economic route required by the strategy's decision policy. The engine
   // rejects a fast prepared tier when it cannot satisfy a ColdReference
   // requirement, preventing confirmed decisions from leaking into fast marks.
@@ -442,6 +447,7 @@ public:
   }
 
   [[nodiscard]] HedgeSpec hedge_spec() const override { return spec_.hedge; }
+  [[nodiscard]] bool target_risk_fusion_safe() const noexcept override { return true; }
   [[nodiscard]] QueryExecution required_economic_execution() const noexcept override {
     return spec_.resolution.fast_screen_cold_confirm ? QueryExecution::ColdReference
                                                      : QueryExecution::Configured;
@@ -600,6 +606,7 @@ public:
   // (surface missing / ATM straddle unusable), in that order. Empty under Error.
   [[nodiscard]] std::vector<DroppedName> dropped_on(const MarketSnapshot &base) const;
   [[nodiscard]] HedgeSpec hedge_spec() const override { return hedge_; }
+  [[nodiscard]] bool target_risk_fusion_safe() const noexcept override { return true; }
 
   // X3. Install the pre-sizing risk gate. Default-constructed limits (all zero =
   // unlimited) leave on_step bit-identical to the ungated path.

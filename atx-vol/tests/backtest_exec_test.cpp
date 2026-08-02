@@ -804,6 +804,10 @@ TEST(BacktestExec, HedgeLedgerAllocationIsStepInvariant) {
     DeclarativeStrategy strat{spec};
     RunConfig cfg;
     cfg.price.n_threads = 1;
+    // This gate isolates the hedge ledger/scratch. A narrowed Greek request
+    // deliberately stays on the established non-fused route, so target-risk
+    // handoff storage is not misattributed to the hedge overlay.
+    cfg.price.greek_needs.rho = false;
     cfg.prefetch_snapshots = false;
     atx_b3_alloc::g_count.store(0, std::memory_order_relaxed);
     atx_b3_alloc::g_armed.store(true, std::memory_order_relaxed);
@@ -1032,6 +1036,90 @@ TEST(BacktestExec, StrategyLoopHedgeAndCohorts_Deterministic) {
   std::printf("[btexec] B5a strategy hedge+cohorts (B3+B4): %d names x %d dates hedged; bit-identical "
               "over 2 runs and 1-vs-4 threads\n",
               kNames, kDates);
+}
+
+TEST(BacktestExec, DailyTargetRiskFusionPreservesEconomicsAndMatchesFreshExecuteRisk) {
+  const fs::path dir = fresh_dir("target-risk-fusion");
+  constexpr int kDates = 6;
+  const Corpus corpus = make_corpus(dir, "SPX", kDates);
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const StrategySpec spec = single_clip(
+      kUid, 0.5, Side::Put, StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0},
+      HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 0.0});
+  const auto run = [&](bool adjoint_greeks) {
+    DeclarativeStrategy strategy{spec};
+    RunConfig config;
+    config.price.n_threads = 1u;
+    config.price.analytic_greeks = true;
+    config.price.adjoint_greeks = adjoint_greeks;
+    config.prefetch_snapshots = false;
+    return run_backtest_incremental(*clock, strategy, config, nullptr);
+  };
+
+  if constexpr (atx::vol::counters::counters_enabled()) {
+    atx::vol::counters::reset();
+  }
+  auto fused = run(false);
+  ASSERT_TRUE(fused.has_value()) << fused.error().to_string();
+  if constexpr (atx::vol::counters::counters_enabled()) {
+    const auto snapshot = atx::vol::counters::snapshot();
+    EXPECT_GT(snapshot.get(atx::vol::counters::Counter::FullGreekSeedReuseLanes), 0u)
+        << "the fused target bundle must be accepted by execute";
+    EXPECT_EQ(snapshot.get(atx::vol::counters::Counter::FullGreekSeedRejectedCandidates), 0u);
+  }
+  auto legacy = run(true); // unsupported by fusion: established target-Marks route
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+  const BacktestResult &fused_rows = fused->rows;
+  const BacktestResult &legacy_rows = legacy->rows;
+  ASSERT_EQ(fused_rows.size(), static_cast<std::size_t>(kDates));
+  ASSERT_EQ(fused_rows.size(), legacy_rows.size());
+
+  for (std::size_t i = 0; i < fused_rows.size(); ++i) {
+    // The old rolled-tenor subtraction may differ by one ulp from the absolute-
+    // expiry residual, so P&L parity is economic rather than a false bit claim.
+    EXPECT_NEAR(fused_rows.pnl_total[i], legacy_rows.pnl_total[i], 1e-8) << i;
+    EXPECT_NEAR(fused_rows.nav[i], legacy_rows.nav[i], 1e-8) << i;
+    // The absolute residual tenor can move a hedge share by rounding and carry
+    // that ulp into cumulative cash/share P&L; require economic hedge-track parity.
+    EXPECT_NEAR(fused_rows.cash[i], legacy_rows.cash[i], 1e-8) << i;
+    EXPECT_NEAR(fused_rows.pnl_shares[i], legacy_rows.pnl_shares[i], 1e-8) << i;
+    EXPECT_TRUE(bits_equal(fused_rows.gross_delta[i], legacy_rows.gross_delta[i])) << i;
+    EXPECT_TRUE(bits_equal(fused_rows.cost[i], legacy_rows.cost[i])) << i;
+    EXPECT_TRUE(bits_equal(fused_rows.turnover_notional[i], legacy_rows.turnover_notional[i]))
+        << i;
+  }
+
+  ASSERT_EQ(fused->checkpoint.portfolio.lots.size(), 1u);
+  const Lot &lot = fused->checkpoint.portfolio.lots.front();
+  for (int d = 0; d < kDates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    const double exact_T = static_cast<double>(lot.expiry_ts_ns - now) / kNsPerYear;
+    const double spot = 100.0 * (1.0 + 0.004 * static_cast<double>(d));
+    const PricedSurface surface =
+        make_surface(kUid, spot, spot, now, 0.001 * static_cast<double>(d));
+    const PricedSurface *surfaces[] = {&surface};
+    auto set = SurfaceSet::create(std::span<const PricedSurface *const>{surfaces});
+    ASSERT_TRUE(set.has_value()) << set.error().to_string();
+    const std::vector<Position> positions{
+        Position{lot.id,
+                 OptionContract{lot.contract.uid, lot.contract.K, exact_T, lot.contract.side},
+                 lot.qty, lot.multiplier}};
+    auto portfolio = Portfolio::create(positions);
+    ASSERT_TRUE(portfolio.has_value()) << portfolio.error().to_string();
+    const PortfolioPricer pricer(std::move(*portfolio));
+    PortfolioWorkspace workspace;
+    const PriceOptions options{.n_threads = 1u, .analytic_greeks = true};
+    const auto fresh =
+        pricer.price_totals(*set, PriceFieldMask::FullGreeks, workspace, options);
+    ASSERT_TRUE(fresh.has_value()) << fresh.error().to_string();
+    const std::size_t row = static_cast<std::size_t>(d);
+    EXPECT_TRUE(bits_equal(fused_rows.gross_gamma[row], fresh->gamma)) << row;
+    EXPECT_TRUE(bits_equal(fused_rows.gross_vega[row], fresh->vega)) << row;
+    EXPECT_TRUE(bits_equal(fused_rows.gross_vega_abs[row], fresh->abs_vega)) << row;
+    EXPECT_TRUE(bits_equal(fused_rows.gross_theta[row], fresh->theta)) << row;
+  }
 }
 
 // ── B5b. Fixed-book composed subset-deser + batched settlement determinism (B1 + B2) ─

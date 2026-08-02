@@ -104,6 +104,7 @@ public:
                  std::uint64_t &next_lot_id, const PriceOptions &price_options) override;
 
   [[nodiscard]] HedgeSpec hedge_spec() const override { return strategy_template_.hedge; }
+  [[nodiscard]] bool target_risk_fusion_safe() const noexcept override { return true; }
   [[nodiscard]] QueryExecution required_economic_execution() const noexcept override {
     return strategy_template_.projection.query_execution;
   }

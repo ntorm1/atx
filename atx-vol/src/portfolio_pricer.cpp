@@ -1136,6 +1136,9 @@ struct PortfolioWorkspace::Impl {
   std::vector<double> pnl_fallback_price;
   std::vector<Status> pnl_fallback_status;
   std::vector<TargetRiskPx> pnl_target_risk;
+  // Optional exact shifted tenors, compacted from caller position order into
+  // original unique-contract order before the target-risk solve.
+  std::vector<double> pnl_exact_target_T;
   PnlTaylorSoa pnl_soa;                       // position-sized SoA scratch for the Taylor P&L kernel
   std::optional<PreparedPortfolio> prepared; // retained across snapshots (built once)
   std::uint64_t prepared_logical_id{0};      // exact book identity the substrate is for
@@ -1190,6 +1193,7 @@ void PortfolioWorkspace::reserve(std::size_t n_unique, std::size_t n_positions) 
   impl_->pnl_fallback_price.reserve(n_unique);
   impl_->pnl_fallback_status.reserve(n_unique);
   impl_->pnl_target_risk.reserve(n_unique);
+  impl_->pnl_exact_target_T.reserve(n_unique);
   // The Taylor P&L kernel runs one lane per POSITION (the pnl-explain frame is
   // position-indexed), so its SoA scratch follows the position count.
   impl_->pnl_soa.reserve(n_positions);
@@ -1629,7 +1633,8 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
                        std::vector<AmericanGreeks> &target_greeks,
                        std::vector<double> &fallback_iv, std::vector<double> &fallback_price,
                        std::vector<Status> &fallback_status,
-                       std::vector<TargetRiskPx> &target_risk) {
+                       std::vector<TargetRiskPx> &target_risk,
+                       std::span<const double> exact_target_T) {
   const std::size_t n_unique = pp.n_unique();
   const bool reuse_base = cached_base.size() == contracts.size();
   using EF = PricedSurface::EvalField;
@@ -1683,7 +1688,12 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
     const double dS = st->pricing().S - sb->pricing().S;
     const double dr = st->pricing().r - sb->pricing().r;
     for (std::uint32_t p = s; p < e; ++p) {
-      s_tt[p] = tcol[p] - dt; // T_t = T_b - dt (bit-identical to the ungrouped subtraction)
+      // The strategy replay derives residual T from the absolute expiry and the
+      // shifted timestamp. That result is not generally bit-identical to T_b-dt,
+      // so the opt-in handoff must evaluate and mint against the caller's exact bits.
+      s_tt[p] = exact_target_T.empty()
+                    ? tcol[p] - dt
+                    : exact_target_T[oci[p]];
     }
 
     // WS-P2 rho tier: the ONLY consumer of this bundle's `rho` is the Taylor term
@@ -1735,6 +1745,12 @@ void solve_pnl_uniques(const PreparedPortfolio &pp, const SurfaceSet &base,
     bool target_greek_batch_ok = false;
     bool fallback_batch_ok = false;
     if (target_full_greeks) {
+      // The target FullGreeks evaluation is the one bundle the following execute
+      // frame reuses. Attribute it here; a fully seeded execute returns before its
+      // ordinary solve_span and therefore spends/records no second bundle.
+      counters::ledger::bump(analytic ? counters::ledger::Solve::GreeksBundlesAnalytic
+                                      : counters::ledger::Solve::GreeksBundlesFd,
+                             gsz);
       // Evaluate the target mark and reusable target risk together. `s_tt` is
       // both the batch input and the value retained for seed provenance.
       PricedSurface::EvaluationSoA risk_soa{
@@ -2148,7 +2164,7 @@ Status PortfolioPricer::pnl_explain_into(const SurfaceSet &base, const SurfaceSe
                     w.pnl, w.b_iv, w.b_price, w.b_greeks, w.b_status, w.pnl_tt, w.pnl_s_iv,
                     w.pnl_s_price, w.pnl_s_status, w.pnl_junk, w.pnl_junk_status,
                     /*target_full_greeks=*/false, w.pnl_target_greeks, w.pnl_fallback_iv,
-                    w.pnl_fallback_price, w.pnl_fallback_status, w.pnl_target_risk);
+                    w.pnl_fallback_price, w.pnl_fallback_status, w.pnl_target_risk, {});
 
   // 19 per-row columns = 141 bytes/position (8 + 4 + 16*8 + 1). No FrameAllocations:
   // the output spans are caller-owned and the scratch was reserved.
@@ -2163,14 +2179,15 @@ Status PortfolioPricer::pnl_explain_into(const SurfaceSet &base, const SurfaceSe
 Result<PnlTotals> PortfolioPricer::pnl_totals(const SurfaceSet &base, const SurfaceSet &shifted,
                                               PortfolioWorkspace &ws,
                                               const PriceOptions &opts) const {
-  return pnl_totals_impl(base, shifted, ws, opts, /*target_full_greeks=*/false);
+  return pnl_totals_impl(base, shifted, ws, opts, /*target_full_greeks=*/false, {});
 }
 
 Result<PnlTotals> PortfolioPricer::pnl_totals_impl(const SurfaceSet &base,
                                                    const SurfaceSet &shifted,
                                                    PortfolioWorkspace &ws,
                                                    const PriceOptions &opts,
-                                                   bool target_full_greeks) const {
+                                                   bool target_full_greeks,
+                                                   std::span<const double> exact_target_T) const {
   const std::span<const OptionContract> contracts = pf_.contracts();
   const std::span<const Position> positions = pf_.positions();
 
@@ -2212,7 +2229,8 @@ Result<PnlTotals> PortfolioPricer::pnl_totals_impl(const SurfaceSet &base,
                     w.pnl, w.b_iv, w.b_price, w.b_greeks, w.b_status, w.pnl_tt, w.pnl_s_iv,
                     w.pnl_s_price, w.pnl_s_status, w.pnl_junk, w.pnl_junk_status,
                     target_full_greeks, w.pnl_target_greeks, w.pnl_fallback_iv,
-                    w.pnl_fallback_price, w.pnl_fallback_status, w.pnl_target_risk);
+                    w.pnl_fallback_price, w.pnl_fallback_status, w.pnl_target_risk,
+                    exact_target_T);
 
   // No scatter, no per-row frame: reduce the weighted per-row decomposition over
   // positions in fixed input order — bit-identical to pnl_explain(...).total.
@@ -2251,7 +2269,7 @@ Result<PnlTotals> PortfolioPricer::pnl_totals_with_target_marks_into(
 Result<PnlTotals> PortfolioPricer::pnl_totals_with_target_marks_and_full_greek_seeds_into(
     const SurfaceSet &base, const SurfaceSet &shifted, TargetMarkView out,
     std::vector<FullGreekSeed> &target_seeds, PortfolioWorkspace &ws,
-    const PriceOptions &opts) const {
+    const PriceOptions &opts, std::span<const double> target_position_T) const {
   const std::size_t n = pf_.positions().size();
   if (out.id.size() != n || out.price_target.size() != n || out.status.size() != n ||
       out.base_vega_proxy.size() != n) {
@@ -2267,17 +2285,47 @@ Result<PnlTotals> PortfolioPricer::pnl_totals_with_target_marks_and_full_greek_s
                "pnl_totals_with_target_marks_and_full_greek_seeds_into: requires "
                "non-adjoint full GreekNeeds");
   }
+  if (!target_position_T.empty()) {
+    if (target_position_T.size() != n) {
+      return Err(ErrorCode::InvalidArgument,
+                 "pnl_totals_with_target_marks_and_full_greek_seeds_into: target tenor count "
+                 "mismatch");
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+      if (!(std::isfinite(target_position_T[i]) && target_position_T[i] > 0.0)) {
+        return Err(ErrorCode::InvalidArgument,
+                   "pnl_totals_with_target_marks_and_full_greek_seeds_into: target tenors must "
+                   "be finite and positive");
+      }
+      const std::size_t contract_index = pf_.pos_contract_ix_[i];
+      const std::size_t first_position = pf_.first_position_ix_[contract_index];
+      if (std::bit_cast<std::uint64_t>(target_position_T[first_position]) !=
+          std::bit_cast<std::uint64_t>(target_position_T[i])) {
+        return Err(ErrorCode::InvalidArgument,
+                   "pnl_totals_with_target_marks_and_full_greek_seeds_into: deduplicated "
+                   "positions have different target tenors");
+      }
+    }
+  }
 
   // Clear only after every caller-owned output has passed validation. If the
   // substrate solve itself fails, the seed handoff remains safely empty.
   target_seeds.clear();
-  Result<PnlTotals> totals =
-      pnl_totals_impl(base, shifted, ws, opts, /*target_full_greeks=*/true);
+  PortfolioWorkspace::Impl &w = *ws.impl_;
+  std::span<const double> exact_target_T;
+  if (!target_position_T.empty()) {
+    w.pnl_exact_target_T.resize(pf_.contracts_.size());
+    for (std::size_t i = 0; i < pf_.contracts_.size(); ++i) {
+      w.pnl_exact_target_T[i] = target_position_T[pf_.first_position_ix_[i]];
+    }
+    exact_target_T = w.pnl_exact_target_T;
+  }
+  Result<PnlTotals> totals = pnl_totals_impl(base, shifted, ws, opts,
+                                             /*target_full_greeks=*/true, exact_target_T);
   if (!totals.has_value()) {
     return Err(totals.error());
   }
 
-  const PortfolioWorkspace::Impl &w = *ws.impl_;
   const std::span<const OptionContract> contracts = pf_.contracts();
   for (std::size_t i = 0; i < contracts.size(); ++i) {
     const TargetRiskPx &risk = w.pnl_target_risk[i];

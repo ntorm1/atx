@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <bit>
+#include <cassert>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -173,6 +174,11 @@ public:
     return alive_;
   }
 
+  [[nodiscard]] std::vector<double> &reset_target_tenor_scratch(std::size_t size) {
+    target_tenors_.resize(size);
+    return target_tenors_;
+  }
+
 private:
   [[nodiscard]] bool same_book(const std::vector<Lot> &lots) const noexcept {
     if (!pricer_.has_value() || key_.size() != lots.size()) {
@@ -192,6 +198,7 @@ private:
 
   std::vector<Lot> key_;
   std::vector<double> tenors_;
+  std::vector<double> target_tenors_;
   std::vector<Lot> alive_;
   std::optional<PortfolioPricer> pricer_;
   PortfolioWorkspace workspace_;
@@ -475,6 +482,16 @@ private:
                "run_backtest: hedge band must be finite and nonnegative");
   }
   return Ok();
+}
+
+// The target-risk producer emits the same FullGreeks bundle execute() needs only
+// on this exact route. Daily cadence guarantees a risk frame is consumed on every
+// step; None/AtEntry retain the established target-Marks path.
+[[nodiscard]] bool can_fuse_target_risk(const HedgeSpec &spec,
+                                        const PriceOptions &opts) noexcept {
+  return spec.kind == HedgeSpec::Kind::DeltaToZero &&
+         spec.cadence == HedgeSpec::Cadence::Daily && !opts.adjoint_greeks &&
+         opts.greek_needs.full();
 }
 
 // A lot ID is the executor's identity key. Once emitted, every economic field is
@@ -992,8 +1009,12 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
              const std::vector<Lot> &lots, const PriceOptions &opts, RetainedBookPricer &retained,
              ReusableTargetMarkFrame *target_marks = nullptr, RetainedBookPricer *settle = nullptr,
              ReusablePriceFrame *settle_frame = nullptr, StepMarkMemo *mark_memo = nullptr,
-             bool memo_enabled = false, DeferredSettlementBook *deferrals = nullptr) {
+             bool memo_enabled = false, DeferredSettlementBook *deferrals = nullptr,
+             std::vector<FullGreekSeed> *target_risk_seeds = nullptr) {
   ATX_VOL_PROFILE_SCOPE(StepPnl);
+  if (target_risk_seeds != nullptr) {
+    target_risk_seeds->clear();
+  }
   std::vector<Lot> &alive = retained.reset_alive_scratch(lots.size());
   // B2: batch the expiry-settlement base marks (bottleneck #3). When a settlement
   // pricer is supplied, expiring lots are collected and their base marks come from
@@ -1223,11 +1244,25 @@ compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
     // scratch buffer while it holds this reference.
     ATX_TRY(PortfolioPricer * pricer, retained.prepare(alive, base.ts_ns()));
     PortfolioWorkspace &workspace = retained.workspace();
-    Result<PnlTotals> totals =
-        target_marks != nullptr
-            ? pricer->pnl_totals_with_target_marks_into(base.set(), shifted.set(),
-                                                        target_marks->write_view(), workspace, opts)
-            : pricer->pnl_totals(base.set(), shifted.set(), workspace, opts);
+    Result<PnlTotals> totals;
+    if (target_risk_seeds != nullptr) {
+      if (target_marks == nullptr) {
+        return Err(ErrorCode::Internal,
+                   "run_backtest: target-risk handoff requires a target-mark frame");
+      }
+      std::vector<double> &target_tenors = retained.reset_target_tenor_scratch(alive.size());
+      for (std::size_t i = 0; i < alive.size(); ++i) {
+        target_tenors[i] = residual_T(alive[i].expiry_ts_ns, shifted.ts_ns());
+      }
+      totals = pricer->pnl_totals_with_target_marks_and_full_greek_seeds_into(
+          base.set(), shifted.set(), target_marks->write_view(), *target_risk_seeds, workspace,
+          opts, target_tenors);
+    } else if (target_marks != nullptr) {
+      totals = pricer->pnl_totals_with_target_marks_into(
+          base.set(), shifted.set(), target_marks->write_view(), workspace, opts);
+    } else {
+      totals = pricer->pnl_totals(base.set(), shifted.set(), workspace, opts);
+    }
     if (!totals) {
       return Err(totals.error());
     }
@@ -2124,6 +2159,8 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       resume != nullptr ? resume->next_lot_id : std::uint64_t{1}; // monotonic strategy lot ids
   ReusablePriceFrame risk_frame;
   ReusableTargetMarkFrame target_marks;
+  std::vector<FullGreekSeed> target_risk_seeds;
+  std::vector<FullGreekSeed> execute_seed_candidates;
   RetainedBookPricer retained_pricer;
   RetainedBookPricer settle_pricer; // B2: retained batched-settlement pricer
   ReusablePriceFrame settle_frame;  // B2: retained Marks frame for settlement
@@ -2279,7 +2316,8 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
   // ⇒ cost/turnover 0 and cash/shares untouched.
   const auto execute = [&](const MarketSnapshot &base_snap, const std::vector<Lot> &before_lots,
                            const HedgeSpec &hedge_spec,
-                           const ReusableTargetMarkFrame *close_marks) -> Result<ExecResult> {
+                           const ReusableTargetMarkFrame *close_marks,
+                           std::span<const FullGreekSeed> target_seeds) -> Result<ExecResult> {
     ATX_VOL_PROFILE_SCOPE(Execution);
     ExecResult ex;
     bool entry_happened = false;
@@ -2303,9 +2341,50 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
       risk_frame.resize(pricer->portfolio().n_positions());
       const std::span<const FullGreekSeed> entry_seeds =
           entry_happened ? strat.entry_risk_seeds() : std::span<const FullGreekSeed>{};
+      const std::size_t capacity = pricer->portfolio().n_positions();
+      // A malformed strategy candidate set always fails closed before combining
+      // with target seeds, including when every target-risk lane failed to mint.
+      std::span<const FullGreekSeed> seeds =
+          entry_seeds.size() <= capacity ? entry_seeds : std::span<const FullGreekSeed>{};
+      if (!target_seeds.empty() && entry_seeds.size() <= capacity) {
+        execute_seed_candidates.clear();
+        // Entry seeds describe fresh final-book lots, so preserve all of them.
+        const std::size_t target_budget = capacity - entry_seeds.size();
+        execute_seed_candidates.reserve(capacity);
+        if (target_seeds.size() <= target_budget) {
+          execute_seed_candidates.insert(execute_seed_candidates.end(), target_seeds.begin(),
+                                         target_seeds.end());
+        } else if (target_budget > 0) {
+          // A roll may remove old target-book contracts while adding new entries.
+          // Compact only when the unfiltered union would exceed the position-sized
+          // staging bound; price_into still revalidates exact seed provenance.
+          const std::span<const OptionContract> contracts = pricer->portfolio().contracts();
+          for (const FullGreekSeed &candidate : target_seeds) {
+            const bool matched = std::any_of(
+                contracts.begin(), contracts.end(), [&](const OptionContract &contract) {
+                  return candidate.uid() == contract.uid &&
+                         std::bit_cast<std::uint64_t>(candidate.K()) ==
+                             std::bit_cast<std::uint64_t>(contract.K) &&
+                         std::bit_cast<std::uint64_t>(candidate.T()) ==
+                             std::bit_cast<std::uint64_t>(contract.T) &&
+                         candidate.side() == contract.side;
+                });
+            if (matched) {
+              execute_seed_candidates.push_back(candidate);
+              if (execute_seed_candidates.size() == target_budget) {
+                break;
+              }
+            }
+          }
+        }
+        execute_seed_candidates.insert(execute_seed_candidates.end(), entry_seeds.begin(),
+                                       entry_seeds.end());
+        seeds = execute_seed_candidates;
+      }
+      assert(seeds.size() <= capacity);
       ATX_TRY_VOID(pricer->price_into(base_snap.set(), PriceFieldMask::FullGreeks,
                                       risk_frame.view(), retained_pricer.workspace(), cfg.price,
-                                      entry_seeds));
+                                      seeds));
       ex.book_greeks = summarize_price_frame(risk_frame.frame);
       current_risk = &risk_frame.frame;
     }
@@ -2524,7 +2603,7 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
                                               base->ts_ns(), before_lot_index, after_lot_index));
     const HedgeSpec hedge_spec = strat.hedge_spec();
     ATX_TRY_VOID(validate_hedge_spec(hedge_spec));
-    auto ex = execute(*base, before_lots, hedge_spec, nullptr);
+    auto ex = execute(*base, before_lots, hedge_spec, nullptr, {});
     if (!ex) {
       return Err(ex.error());
     }
@@ -2590,10 +2669,19 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
     // no trace is armed — never on the shipping hot path.
     counters::ledger::StepScope step_ledger_scope;
 
-    // 1. PnL of the current book (resolved on base) forward to shifted (unchanged B1).
+    // 1. PnL of the current book (resolved on base) forward to shifted. Only a
+    // guaranteed daily hedge consumes a risk frame every step, so generic None /
+    // AtEntry strategies keep the established target-Marks route exactly.
+    bool target_risk_requested = false;
+    if (strat.target_risk_fusion_safe()) {
+      const HedgeSpec pre_step_hedge_spec = strat.hedge_spec();
+      ATX_TRY_VOID(validate_hedge_spec(pre_step_hedge_spec));
+      target_risk_requested = can_fuse_target_risk(pre_step_hedge_spec, cfg.price);
+    }
     auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer, &target_marks,
                              &settle_pricer, &settle_frame, &mark_memo, cfg.settlement_mark_memo,
-                             deferrals_ptr);
+                             deferrals_ptr,
+                             target_risk_requested ? &target_risk_seeds : nullptr);
     if (!step) {
       return Err(step.error());
     }
@@ -2732,7 +2820,11 @@ run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig
                                               base->ts_ns(), before_lot_index, after_lot_index));
     const HedgeSpec hedge_spec = strat.hedge_spec();
     ATX_TRY_VOID(validate_hedge_spec(hedge_spec));
-    auto ex = execute(*base, before_lots, hedge_spec, &target_marks);
+    const std::span<const FullGreekSeed> execute_target_seeds =
+        target_risk_requested && can_fuse_target_risk(hedge_spec, cfg.price)
+            ? std::span<const FullGreekSeed>{target_risk_seeds}
+            : std::span<const FullGreekSeed>{};
+    auto ex = execute(*base, before_lots, hedge_spec, &target_marks, execute_target_seeds);
     if (!ex) {
       return Err(ex.error());
     }
