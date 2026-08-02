@@ -371,7 +371,22 @@ struct DerivQuote {
   double fair_strike_points = 0.0;        // var pts or vol pts
   double pv = 0.0;                        // contract PV today
   double undiscounted_expectation_dec = 0.0;
-  double uncapped_var_dec = 0.0;          // populated when the strip ran
+  // The strip's variance in decimal variance units. ITS MEANING IS PER-KIND,
+  // and the two readings are NOT interchangeable:
+  //   * var-swap dispatch, the unaged vol swap's best-effort Carr-Lee
+  //     diagnostic, and BOTH capped paths carry the strip's RAW FUTURE-LEG
+  //     value K_var(T) -- no accrued leg, no discrete correction, no cap
+  //     haircut. (`future_component_dec` beside it IS discrete-corrected and
+  //     weight-scaled; these two deliberately differ.)
+  //   * the MID-LIFE vol swap (the distribution model) carries the BLENDED
+  //     TOTAL variance a + b*m that it actually prices sqrt() of: a =
+  //     w_done*rv_done_dec, b = w_future, m the strip mean AFTER any
+  //     Diffusion1OverN correction. That is the model's own input, and the
+  //     number `convexity_adjustment_dec` beside it is formed from
+  //     (sqrt(a+b*m) - fair_strike_dec).
+  // 0.0 means NO STRIP RAN -- fully-aged legs, cap pins, and the standalone
+  // Carr-Lee vol-strike entry -- never "the strip integrated to zero".
+  double uncapped_var_dec = 0.0;
   double accrued_component_dec = 0.0;     // RV_done * n_done/n_total
   double future_component_dec = 0.0;      // K_var_future * n_future/n_total
   // sqrt(K_var) - K_vol (uncapped vol swap); sqrt(a+b*m) - fair_strike_dec
@@ -391,13 +406,18 @@ struct DerivQuote {
   // left at its memset zero (e.g. the standalone vol-swap Carr-Lee entry,
   // which runs no strip).
   double integration_error_est = 0.0;
-  // The vol-of-vol actually used to price this quote (DerivConfig::vol_of_vol
-  // resolved: the explicit value, or the auto-calibrated xi). NaN, not 0 --
-  // this task adds the config knob and the resolver but wires no distribution
-  // model into a pricing path yet, so every quote built by THIS task's code
-  // leaves it at the struct default (kQuietNaN, curve.hpp) and a caller can
-  // gate on (x == x) exactly as with integration_error_est above. Tasks 4-6
-  // populate a real value once a distribution model actually runs.
+  // The vol-of-vol actually used to price this quote: DerivConfig::vol_of_vol
+  // resolved -- the caller's explicit xi, or the Carr-Lee auto-calibrated one
+  // (flagged VolOfVolCalibrated). Populated by exactly the paths that run a
+  // distribution model over the future variance: the mid-life vol swap and
+  // both capped kinds' model branches.
+  //
+  // NaN, not 0, when NO distribution model ran -- the var-swap strip, the
+  // unaged/fully-aged vol-swap branches, and the capped pin / fully-aged exits
+  // all leave it at the struct default (kQuietNaN, curve.hpp). A caller gates
+  // on (x == x) exactly as with integration_error_est above. 0.0 is a REAL
+  // resolved value (a surface with no Carr-Lee convexity calibrates to xi = 0,
+  // i.e. RV collapses to its own mean), never "not computed".
   double vol_of_vol_used = kQuietNaN;
   // Cap option value subtracted from the uncapped expectation to get the
   // capped one. Units follow the product: for CappedVarSwap (Task 4) this is

@@ -6,8 +6,10 @@
 // the accrual at an exactly-observed expiry — all without touching a single
 // number the option lane produces.
 //
-// Five gates:
+// Gates:
 //   1. VarSwapAccruesAndSettlesExactly       — hand-computed accrual + payoff.
+//   1b. DailySwapMarksMatchIndependentDerivPriceOracle — each LIVE daily mark
+//                                              against a hand-built contract.
 //   2. OptionOnlyBookHasZeroSwapColumns      — zero-swap books: columns exactly
 //                                              0.0 and NAV == Sigma pnl_total.
 //   3. CheckpointResumeReproducesSwapMarks   — split run == one-shot run, bitwise.
@@ -26,25 +28,28 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "atx/core/error.hpp"          // atx::core::Ok, ErrorCode
-#include "atx/vol/american.hpp"        // al_fast_opts, AmericanMethod
-#include "atx/vol/backtest.hpp"        // Clock, run_backtest, SwapLot, RunConfig
-#include "atx/vol/backtest_db.hpp"     // append_backtest_results
-#include "atx/vol/corpus.hpp"          // CorpusManifest, CorpusEntry, CorpusFitStatus
-#include "atx/vol/derivatives.hpp"     // DerivKind
-#include "atx/vol/priced_surface.hpp"  // PricedSurface, PricingContext
-#include "atx/vol/strategy.hpp"        // IStrategy, DeclarativeStrategy, StrategySpec
-#include "atx/vol/surface_archive.hpp" // write_surface_archive_v2_file
-#include "atx/vol/surface_parity.hpp"  // SliceContext
-#include "atx/vol/types.hpp"           // Side, Result, Status
-#include "atx/vol/vol_curve.hpp"       // CurveSurface, EssviCurve
-#include "atx/vol/vol_surface.hpp"     // EssviParams
+#include "atx/core/error.hpp"                  // atx::core::Ok, ErrorCode
+#include "atx/vol/american.hpp"                // al_fast_opts, AmericanMethod
+#include "atx/vol/backtest.hpp"                // Clock, run_backtest, SwapLot, RunConfig
+#include "atx/vol/backtest_db.hpp"             // append_backtest_results
+#include "atx/vol/corpus.hpp"                  // CorpusManifest, CorpusEntry, CorpusFitStatus
+#include "atx/vol/derivatives.hpp"             // DerivKind, DerivContract, DerivConfig, DerivQuote
+#include "atx/vol/detail/deriv_ref_bridge.hpp" // detail::deriv_price_on_ref
+#include "atx/vol/portfolio_pricer.hpp"        // kNsPerYear, SurfaceRef
+#include "atx/vol/priced_surface.hpp"          // PricedSurface, PricingContext
+#include "atx/vol/strategy.hpp"                // IStrategy, DeclarativeStrategy, StrategySpec
+#include "atx/vol/surface_archive.hpp"         // write_surface_archive_v2_file
+#include "atx/vol/surface_parity.hpp"          // SliceContext
+#include "atx/vol/types.hpp"                   // Side, Result, Status
+#include "atx/vol/vol_curve.hpp"               // CurveSurface, EssviCurve
+#include "atx/vol/vol_surface.hpp"             // EssviParams
 
 using namespace atx::vol;
 using atx::core::ErrorCode;
@@ -340,6 +345,50 @@ constexpr double kQty = 2.0;
   return lot;
 }
 
+// The INDEPENDENT oracle for one live daily swap mark.
+//
+// Built from the engine's DOCUMENTED conventions, never from `step_swap_lots`:
+//   * residual tenor = (expiry_ts_ns - snapshot_ts_ns) / kNsPerYear, in YEARS
+//     (portfolio_pricer.hpp's Julian-year constant, the one every residual-T
+//     site in the engine divides by);
+//   * `rv_spec` = the accrual state AFTER this snapshot's own fixing, per
+//     SwapAccrual's transcribed RealizedTracker arithmetic:
+//     rv_done_dec = annualization * Sigma r^2 / n_done (0 before any return);
+//   * every other field is the lot's own term, unscaled.
+//
+// It is priced through the SAME entry the mark lane prices through, and the
+// mark is qty-scaled the same way, so the ONLY thing this can disagree with the
+// engine about is how a `SwapLot` becomes a `DerivContract` — which is exactly
+// the divergence a telescoping-sum gate is blind to.
+[[nodiscard]] double reference_swap_mark(const PricedSurface &surface, std::int64_t ts_ns,
+                                         const SwapLot &lot, std::uint32_t n_obs_done,
+                                         double sum_sq_log_returns_done) {
+  RealizedVarianceSpec rv{};
+  rv.annualization = lot.annualization;
+  rv.n_obs_total = lot.n_obs_total;
+  rv.n_obs_done = n_obs_done;
+  rv.sum_sq_log_returns_done = sum_sq_log_returns_done;
+  rv.rv_done_dec = n_obs_done == 0u ? 0.0
+                                    : lot.annualization * sum_sq_log_returns_done /
+                                          static_cast<double>(n_obs_done);
+
+  DerivContract contract;
+  contract.kind = lot.kind;
+  contract.maturity_t = static_cast<double>(lot.expiry_ts_ns - ts_ns) / kNsPerYear;
+  contract.strike_dec = lot.strike_dec;
+  contract.cap_dec = lot.cap_dec;
+  contract.notional = lot.notional;
+  contract.rv_spec = rv;
+
+  const Result<DerivQuote> quote =
+      detail::deriv_price_on_ref(SurfaceRef{&surface}, contract, DerivConfig{});
+  EXPECT_TRUE(quote.has_value()) << (quote.has_value() ? std::string{} : quote.error().to_string());
+  if (!quote.has_value()) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  return lot.qty * quote->pv;
+}
+
 } // namespace
 
 // ── 1. Accrual + settlement are exactly the hand computation ────────────────
@@ -407,6 +456,67 @@ TEST(BacktestSwap, VarSwapAccruesAndSettlesExactly) {
   EXPECT_EQ(acc.rv.n_obs_total, 2u);
   EXPECT_LT(std::fabs(acc.rv.sum_sq_log_returns_done - ra * ra), 1.0e-15);
   EXPECT_LT(std::fabs(acc.rv.rv_done_dec - kAnnualization * ra * ra), 1.0e-13);
+}
+
+// ── 1b. Every LIVE daily mark is the independently-priced value ─────────────
+//
+// Gate 1's telescoping identity (Sigma swap_pnl == settlement payoff) is BLIND
+// to a wrong daily mark: consecutive marks cancel by construction, so a units
+// slip in the residual tenor, a stale/mis-staged `rv_spec` snapshot, or a
+// mis-wired `DerivContract` field would leave that sum — and the settlement —
+// exactly right while distorting every intermediate NAV row. This pins the
+// marks themselves against a contract rebuilt from first principles.
+TEST(BacktestSwap, DailySwapMarksMatchIndependentDerivPriceOracle) {
+  const fs::path dir = fresh_dir("markoracle");
+  const std::vector<double> spots = {100.0, 101.0, 99.0, 102.0};
+  const Corpus c = make_spot_corpus(dir, "SPX", spots);
+  auto clock = Clock::from_manifest(c.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 3LL * kStepNs; // exactly the last snapshot
+  const SwapLot proto = var_swap_proto(kUid, expiry, /*n_obs_total=*/2u);
+  SwapOnlyStrategy strat{proto};
+
+  RunConfig cfg;
+  auto result = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(result.has_value()) << result.error().to_string();
+  const BacktestResult &r = *result;
+  ASSERT_EQ(r.size(), 4u);
+  ASSERT_EQ(r.swap_pv.size(), r.size());
+
+  // Row 1 is the SEED step — the swap pass first sees the lot here, so its
+  // fixing series is seeded at spots[1] with NOTHING accrued (n_done = 0,
+  // Sigma r^2 = 0). The mark is the pure future leg over a 60-day residual.
+  const std::int64_t ts1 = kBaseNow + 1LL * kStepNs;
+  const PricedSurface surface1 = make_surface(kUid, spots[1], spots[1], ts1);
+  const double ref1 = reference_swap_mark(surface1, ts1, proto, /*n_obs_done=*/0u,
+                                          /*sum_sq_log_returns_done=*/0.0);
+
+  // Row 2 carries ONE accrued return, so it exercises the aged blend: the mark
+  // must read the accrual as of THIS snapshot's own fixing — not the previous
+  // step's (stale) and not the terminal one's (look-ahead) — over a 30-day
+  // residual, i.e. half of row 1's. A units error in either quantity moves the
+  // two rows differently and cannot hide.
+  const std::int64_t ts2 = kBaseNow + 2LL * kStepNs;
+  const double ra = std::log(spots[2] / spots[1]);
+  const PricedSurface surface2 = make_surface(kUid, spots[2], spots[2], ts2);
+  const double ref2 = reference_swap_mark(surface2, ts2, proto, /*n_obs_done=*/1u,
+                                          /*sum_sq_log_returns_done=*/ra * ra);
+
+  // A zero reference would make the comparison vacuous; both legs must price.
+  ASSERT_NE(ref1, 0.0);
+  ASSERT_NE(ref2, 0.0);
+  ASSERT_EQ(ref1, ref1); // not NaN: the oracle's own deriv_price call succeeded
+  ASSERT_EQ(ref2, ref2);
+
+  // Both sides run the identical strip/quadrature on the identical surface, so
+  // this is an EXACT double comparison, not a tolerance.
+  EXPECT_EQ(r.swap_pv[1], ref1);
+  EXPECT_EQ(r.swap_pv[2], ref2);
+  // The first mark carries the whole entry PV, so swap_pnl[1] is pinned too;
+  // row 2's increment is then pinned by both marks being pinned.
+  EXPECT_EQ(r.swap_pnl[1], ref1);
+  EXPECT_EQ(r.swap_pnl[2], ref2 - ref1);
 }
 
 // ── 2. Zero-swap books are untouched ───────────────────────────────────────
