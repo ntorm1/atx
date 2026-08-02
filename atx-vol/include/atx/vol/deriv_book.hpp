@@ -14,23 +14,50 @@
 //
 // For each position, in input order:
 //   1. resolve `uid` through `SurfaceSet::find`;
-//   2. snapshot that surface's own carry at the contract tenor as a
-//      single-tenor `CurveSet` (see detail/deriv_ref_bridge.hpp);
+//   2. snapshot that surface's own carry at the contract tenor (and, on the
+//      greek path, at the theta-roll tenor) as a `CurveSet` — see
+//      detail/deriv_ref_bridge.hpp;
 //   3. mark it through `deriv_price` (and, unless `greeks=false`, differentiate
 //      it through `deriv_greeks`) — the same pricers the standalone
 //      derivatives API uses, so a book mark and a single-contract mark of the
 //      same contract are the same number;
 //   4. scale by `qty` and accumulate into the totals block.
 //
+// ## TENOR HYGIENE IS THE CALLER'S — there is no fitted-range gate
+//
+// The `PricedSurface`-native `deriv_price` / `deriv_greeks` overloads REFUSE
+// (`OutOfRange`) a tenor outside the surface's fitted pillar range: past the end
+// pillars a strip's forward clamps flat while the surface keeps extrapolating
+// economically, the two disagree, and `K_var` is biased with no signal at all.
+//
+// THIS API does not apply that gate. It must behave identically for an owned
+// surface and for a memory-mapped `PricedSurfaceView`, and only the former can
+// expose its pillar list (see detail/deriv_ref_bridge.hpp). So a position whose
+// `maturity_t` falls outside its surface's fitted range is priced against
+// flat-extrapolated carry and comes back `Ok` with a SILENTLY biased fair strike
+// — no flag, no status. A caller that does not already constrain its book to
+// fitted tenors (a backtest driving contracts off the same surfaces it fitted
+// does) must screen `maturity_t` against `PricedSurface::context()` itself.
+//
 // ## Failure is a ROW property, never the call's
 //
 // A missing surface marks that row `ModelUnavailable`; a malformed contract
 // (the pricers' InvalidArgument) marks it `InvalidContract`; any other pricing
-// failure marks it `NumericError`. A failed row is NaN-filled and EXCLUDED from
-// the totals — excluded, not zeroed, so a book total never quietly absorbs a
-// position nobody could price. `price_deriv_book` itself returns an error only
-// for a structurally impossible request; an empty book is valid and yields an
-// empty frame with zeroed totals.
+// failure — a reserved engine or correction mode (NotImplemented), unresolvable
+// carry (OutOfRange), a numeric blow-up — marks it `NumericError`. A failed row
+// is NaN-filled and EXCLUDED from the totals — excluded, not zeroed, so a book
+// total never quietly absorbs a position nobody could price. `price_deriv_book`
+// itself returns an error only for a structurally impossible request; an empty
+// book is valid and yields an empty frame with zeroed totals.
+//
+// TWO CONDITIONS REPORT `InvalidContract` WITHOUT THE CONTRACT ITSELF BEING AT
+// FAULT, deliberately: a non-finite `DerivPosition::qty` (rejected here, at the
+// boundary, before it can scale a good mark into a NaN on an otherwise-Ok lane),
+// and a surface whose `pricing().S` is not > 0 (the greek path's bump validator
+// rejects that as InvalidArgument). `PriceStatus` is a shared four-value
+// vocabulary the option pipeline also switches on, so widening it for two
+// lane-input faults would hand every existing consumer a new case to handle;
+// `InvalidContract` — "this lane's inputs are malformed" — is the honest fit.
 //
 // ## NaN = not computed (the PriceTotals convention)
 //

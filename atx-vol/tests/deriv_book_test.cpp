@@ -1,10 +1,19 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdint>
 #include <limits>
+#include <memory>
+#include <vector>
 
+#include "atx/vol/american.hpp" // al_fast_opts, AmericanMethod
 #include "atx/vol/deriv_book.hpp"
+#include "atx/vol/derivatives.hpp" // deriv_greeks (PricedSurface overload) — the reference
 #include "atx/vol/portfolio_pricer.hpp"
+#include "atx/vol/priced_surface.hpp"    // PricedSurface, PricingContext
+#include "atx/vol/surface_parity.hpp"    // SliceContext
+#include "atx/vol/vol_curve.hpp"         // CurveSurface, EssviCurve
+#include "atx/vol/vol_surface.hpp"       // EssviParams
 #include "support/analytics_fixture.hpp" // testkit::make_flat_surface (PricedSurface)
 
 // Task 9: DerivBook — portfolio-layer pricing of vol-derivative (swap) books
@@ -15,13 +24,76 @@
 namespace {
 
 using atx::vol::combine_totals;
+using atx::vol::CurveSurface;
 using atx::vol::DerivContract;
+using atx::vol::DerivDiscreteCorrection;
+using atx::vol::DerivGreekBumps;
 using atx::vol::DerivKind;
 using atx::vol::DerivPosition;
+using atx::vol::EssviCurve;
+using atx::vol::EssviParams;
 using atx::vol::price_deriv_book;
+using atx::vol::PricedSurface;
 using atx::vol::PriceStatus;
 using atx::vol::PriceTotals;
+using atx::vol::PricingContext;
+using atx::vol::SliceContext;
 using atx::vol::SurfaceSet;
+
+// A surface carrying BOTH a genuine downside skew AND a genuine term structure
+// of forwards: every slice gets its own F(T) = S*e^{(r-q)T}, so
+// `PricedSurface::forward_at` actually MOVES with T.
+//
+// Neither testkit builder does this. `make_flat_surface` has no skew at all, and
+// both testkit builders pin every slice's `SliceContext::forward` to one
+// constant `fwd` — so `interp_forward`'s log-blend of two equal pillars is that
+// same constant and `forward_at(T) == forward_at(T - dt)` identically, no matter
+// what `fwd`/S imply about carry. With no forward roll and no skew there is
+// nothing for a forward-roll theta term to be, so a test built on them would
+// pass vacuously. (`FixtureActuallyRollsItsForward` below asserts the property
+// rather than trusting this comment.)
+[[nodiscard]] PricedSurface make_carry_skew_surface(std::uint32_t uid, double S, double sigma,
+                                                    double q) {
+  CurveSurface cs;
+  std::vector<SliceContext> ctx;
+  std::uint16_t i = 0;
+  for (const double T : atx::vol::testkit::fixture_tenors()) {
+    const double F = S * std::exp((atx::vol::testkit::kFixtureRate - q) * T);
+    EssviParams e{};
+    e.theta = sigma * sigma * T; // w proportional to T => the k-smile is T-invariant
+    e.phi = 1.5;                 // curvature
+    e.rho = -0.6;                // downside skew: dsigma/dk < 0 at the money
+    e.psi = 0.5;
+    e.p = 0.5;
+    e.lambda = 0.5;
+    e.T = T;
+    e.F = F;
+    e.expiry_id = i;
+    cs.push(std::make_unique<EssviCurve>(e, std::exp(-atx::vol::testkit::kFixtureRate * T)));
+    ctx.push_back(SliceContext{T, F, 0.0, q, 250, 7});
+    ++i;
+  }
+  PricingContext pc;
+  pc.S = S;
+  pc.r = atx::vol::testkit::kFixtureRate;
+  pc.now_ts_ns = atx::vol::testkit::kFixtureNow;
+  pc.method = atx::vol::AmericanMethod::AndersenLake;
+  pc.al_opts = atx::vol::al_fast_opts();
+  pc.uid = uid;
+  return atx::vol::testkit::unwrap_surface(
+      PricedSurface::create(std::move(cs), std::move(ctx), pc));
+}
+
+// An unaged 1e6-notional var swap struck at 0.
+[[nodiscard]] DerivContract var_swap_at(double T) {
+  DerivContract c{};
+  c.kind = DerivKind::VarSwap;
+  c.maturity_t = T;
+  c.notional = 1e6;
+  c.rv_spec.annualization = 252.0;
+  c.rv_spec.n_obs_total = 88u;
+  return c;
+}
 
 TEST(DerivBook, PricesVarAndVolSwapAgainstSurfaceSet) {
   const atx::vol::PricedSurface ps = atx::vol::testkit::make_flat_surface(7, 100.0, 100.0, 0.30);
@@ -206,6 +278,116 @@ TEST(DerivBook, CarrySnapshotReproducesDiscountAndItsRoll) {
   EXPECT_NEAR(f->rows[0].greeks.theta, r * pv, 2e-2 * std::fabs(r * pv));
   // vega of a var swap = dK_var/dsigma * df * N = 2*sigma*df*N.
   EXPECT_NEAR(f->rows[0].greeks.vega, 2.0 * sigma * df * N, 2e-2 * 2.0 * sigma * df * N);
+}
+
+// Guards the premise of the theta test below: if this fixture ever loses its
+// forward term structure or its skew, the reference comparison would still pass
+// while measuring nothing.
+TEST(DerivBook, FixtureActuallyRollsItsForward) {
+  const PricedSurface ps = make_carry_skew_surface(7, 100.0, 0.30, 0.02);
+  const double T = 0.35;
+  const double dt = DerivGreekBumps{}.time_years;
+  const double f_now = ps.forward_at(T);
+  const double f_rolled = ps.forward_at(T - dt);
+  ASSERT_GT(f_now, 0.0);
+  ASSERT_GT(f_rolled, 0.0);
+  EXPECT_NE(f_now, f_rolled);
+  // And the smile is genuinely skewed, so mis-centering the strip on that
+  // forward gap actually moves K_var.
+  EXPECT_LT(ps.iv(f_now * std::exp(0.1), T), ps.iv(f_now * std::exp(-0.1), T));
+  // For contrast: testkit's builder pins one constant forward across slices.
+  const PricedSurface flat = atx::vol::testkit::make_flat_surface(8, 100.0, 100.0, 0.30);
+  EXPECT_DOUBLE_EQ(flat.forward_at(T), flat.forward_at(T - dt));
+}
+
+// THE forward-carry gate on the bridge's carry snapshot.
+//
+// The PricedSurface-native `deriv_greeks` is the REFERENCE: its carry CurveSet
+// holds every fitted pillar, so its theta roll reads the surface's own forward
+// at the rolled tenor. The bridge must agree. It only does so because the
+// snapshot carries a second forward pillar at (T - dt); with a lone pillar at T,
+// `resolve_forward` clamps and the rolled repricing reads F(T) while the smile
+// is anchored at F(T - dt) — the strip's k = 0 lands at k = (r - q)*dt on a
+// SKEWED smile and K_var picks up a bias that theta then divides by dt.
+TEST(DerivBook, BridgeThetaMatchesPricedSurfaceReference) {
+  const double T = 0.35;
+  const PricedSurface ps = make_carry_skew_surface(7, 100.0, 0.30, 0.02);
+  const DerivContract c = var_swap_at(T);
+
+  const auto reference = atx::vol::deriv_greeks(ps, c);
+  ASSERT_TRUE(reference.has_value()) << reference.error().to_string();
+  ASSERT_TRUE(std::isfinite(reference->theta));
+
+  const PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+  DerivPosition p{};
+  p.id = 1;
+  p.uid = 7;
+  p.contract = c;
+  const DerivPosition book[] = {p};
+  const auto f = price_deriv_book(*ss, book);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  ASSERT_EQ(f->rows[0].status, PriceStatus::Ok);
+
+  // The mark is the same pricer on the same carry: agree tightly.
+  EXPECT_NEAR(f->rows[0].pv, reference->pv, 1e-6 * std::fabs(reference->pv));
+  // Theta is what the second forward pillar buys. Both paths resolve F through a
+  // CurveSet built from the SAME surface with the SAME log-linear blend, so the
+  // agreement is structural, not coincidental.
+  EXPECT_NEAR(f->rows[0].greeks.theta, reference->theta, 2e-2 * std::fabs(reference->theta) + 1e-6);
+  // The other market greeks ride the same carry and must match too.
+  EXPECT_NEAR(f->rows[0].greeks.vega, reference->vega, 1e-6 * std::fabs(reference->vega));
+  EXPECT_NEAR(f->rows[0].greeks.rho, reference->rho, 1e-6 * std::fabs(reference->rho));
+  EXPECT_NEAR(f->rows[0].greeks.delta, reference->delta, 1e-6 * std::fabs(reference->delta) + 1e-9);
+}
+
+// The NumericError branch of the status mapping: a reserved discrete-correction
+// mode is NotImplemented — a well-formed contract the engine will not price —
+// and must NOT be conflated with InvalidContract. Run as an A/B against the same
+// book under the default config so the surface and contract are proven fine.
+TEST(DerivBook, ReservedCorrectionModeMarksRowNumericError) {
+  const PricedSurface ps = atx::vol::testkit::make_flat_surface(7, 100.0, 100.0, 0.30);
+  const PricedSurface *arr[] = {&ps};
+  auto ss = SurfaceSet::create(arr);
+  ASSERT_TRUE(ss.has_value());
+  DerivPosition good{};
+  good.id = 1;
+  good.uid = 7;
+  good.contract = var_swap_at(0.35);
+  DerivPosition orphan = good;
+  orphan.id = 2;
+  orphan.uid = 999;
+  const DerivPosition book[] = {good, orphan};
+
+  // A: default config — the good lane prices.
+  const auto ok = price_deriv_book(*ss, book);
+  ASSERT_TRUE(ok.has_value()) << ok.error().to_string();
+  ASSERT_EQ(ok->rows.size(), 2u);
+  EXPECT_EQ(ok->rows[0].status, PriceStatus::Ok);
+  EXPECT_EQ(ok->rows[1].status, PriceStatus::ModelUnavailable);
+  EXPECT_EQ(ok->n_ok(), 1u);
+
+  // B: same book, reserved correction mode — the SAME lane is now NumericError.
+  atx::vol::DerivConfig cfg{};
+  cfg.discrete_correction_mode = DerivDiscreteCorrection::FullMc;
+  const auto f = price_deriv_book(*ss, book, cfg);
+  ASSERT_TRUE(f.has_value()) << f.error().to_string();
+  ASSERT_EQ(f->rows.size(), 2u);
+  EXPECT_EQ(f->rows[0].status, PriceStatus::NumericError);
+  EXPECT_TRUE(std::isnan(f->rows[0].pv));
+  EXPECT_TRUE(std::isnan(f->rows[0].fair_strike_dec));
+  EXPECT_TRUE(std::isnan(f->rows[0].greeks.vega));
+  EXPECT_TRUE(std::isnan(f->rows[0].greeks.quote.pv));
+  // The other lane keeps its own independent verdict, and nothing reaches totals.
+  EXPECT_EQ(f->rows[1].status, PriceStatus::ModelUnavailable);
+  EXPECT_EQ(f->n_ok(), 0u);
+  EXPECT_EQ(f->totals.pv, 0.0);
+  EXPECT_EQ(f->totals.n_ok, 0u);
+  // Marks-only takes the same mapping (deriv_price rejects it identically).
+  const auto m = price_deriv_book(*ss, book, cfg, /*greeks=*/false);
+  ASSERT_TRUE(m.has_value());
+  EXPECT_EQ(m->rows[0].status, PriceStatus::NumericError);
 }
 
 TEST(DerivBook, CombineTotalsAddsFieldsAndCounts) {

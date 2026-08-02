@@ -17,12 +17,19 @@
 // PricedSurface-native E6 overloads are. All surface-adapter machinery stays in
 // that one TU; `deriv_book.cpp` sees only these two ordinary functions.
 //
-// CARRY. Each call derives a single-tenor `CurveSet` from the handle itself:
-// `spot = pricing().S`, ONE forward pillar `(T, forward_at(T))`, and a flat
-// zero curve at `rate_at(T)`. `SurfaceRef` exposes no fitted-pillar list (no
-// `context()`), so the E6 `carry_from` fitted-range gate is unavailable here;
-// the handle's own economic forward/rate extrapolation is used instead and the
-// caller owns that choice. See the definition for the exact contract.
+// CARRY. Each call derives a `CurveSet` from the handle itself: `spot =
+// pricing().S`, a forward pillar at `(T, forward_at(T))` — plus one at the
+// theta-roll tenor `(T - dt, forward_at(T - dt))` when the caller is about to
+// roll, so the rolled repricing reads the surface's own forward at its own
+// residual tenor — and a zero curve flat in RATE at `rate_at(T)`.
+//
+// NO FITTED-RANGE GATE is applied, unlike the E6 `carry_from`. That is a CHOICE,
+// not a limitation: an owned handle could reach `owned()->context()`, but a
+// view-backed `PricedSurfaceView` exposes no pillar list, so gating would make
+// the two `SurfaceRef` forms behave DIFFERENTLY on the same surface. Uniform
+// behaviour wins; the tenor-hygiene obligation it hands the caller is documented
+// on the public API in deriv_book.hpp. See the definition in
+// `src/derivatives.cpp` for the exact contract.
 //
 // Thread-safety: both are stateless pure functions of a borrowed surface, safe
 // to call concurrently from any number of threads (the CurveSet they build is

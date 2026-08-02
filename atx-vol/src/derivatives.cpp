@@ -1550,36 +1550,65 @@ namespace {
 // silently drops theta's r*PV discount-roll term. The second pillar costs one
 // vector element and makes the roll exact.
 //
-// 1e-3 is small enough that every roll the greek stencil can take (dt = 1/365.25
-// on a contract with T > dt) lands INSIDE the interpolated range; below the
-// pillar the clamp holds df at e^{-r*1e-3*T}, which differs from 1 by ~1e-5 at
-// equity rates and one-year tenors.
+// 1e-3 puts the floor pillar far enough below any roll the greek stencil takes
+// that `disc` interpolates rather than clamps. The one exception is a contract
+// with T in (dt, ~1.001*dt) -- i.e. within a tenth of a percent of the roll size
+// itself -- where T - dt falls under the floor and df clamps at e^{-r*1e-3*T}.
+// On a contract expiring in about a day that differs from the exact
+// e^{-r*(T-dt)} by well under 1e-6: theta is then microscopically off, never
+// dropped, and the term it exists to capture is itself ~0 there.
 constexpr double kFlatYieldFloorFrac = 1.0e-3;
 
-// The borrowed surface's OWN carry at ONE tenor, expressed as a CurveSet so the
-// strip resolves forward and discount exactly as it does on every other path.
+// The borrowed surface's OWN carry, expressed as a CurveSet so the strip
+// resolves forward and discount exactly as it does on every other path.
 //
-// ONE forward pillar is deliberate: `resolve_forward` clamps outside the pillar
-// range, so a single-pillar curve returns `forward_at(T)` for ANY query tenor,
-// and the adapter below therefore reads its vol at the SAME absolute strike the
-// strip prices at, unconditionally. The price paid is that a theta roll holds
-// the forward fixed (only the discount and the surface's own term structure
-// move); `SurfaceRef` exposes no fitted-pillar list to interpolate a rolled
-// forward from, so this is the honest snapshot rather than a guess.
+// `roll_dt` is the theta roll the caller is about to take (0 when it takes
+// none). It exists because the curve must carry a forward pillar at the ROLLED
+// tenor as well. `resolve_forward` clamps outside the pillar range, so with a
+// lone pillar at T a repricing at T - dt would read F(T) while the surface's
+// smile stays anchored at its own F(T - dt): the strip's k = 0 would then land
+// at k = ln(F(T)/F(T-dt)) = (r - q)*dt ON THE SMILE instead of at its ATM point.
+// On a skewed name that MIS-CENTERING biases K_var by about
+// 2*sigma*(dsigma/dk)*(r-q)*dt, which theta promptly divides by dt -- a
+// first-order error in theta, comparable to and opposing the discount-roll term.
+// Two pillars make the rolled repricing read the surface's own forward at its
+// own residual tenor, which is exactly what the multi-pillar E6 `carry_from`
+// gives the PricedSurface path.
 //
-// UNLIKE the E6 `carry_from`, there is NO fitted-range gate: a `SurfaceRef` has
-// no `context()` to gate against, and `forward_at`/`rate_at` extrapolate
-// economically at any tenor. The caller owns that choice.
-[[nodiscard]] Result<CurveSet> carry_from_ref(const SurfaceRef& ref, double T) {
+// (An earlier revision justified the lone pillar by claiming it was needed to
+// keep the adapter's vol read and the strip's strike on the same K. That was
+// WRONG: both resolve F through this same CurveSet, so they agree at ANY pillar
+// count -- which is precisely why the E6 path has always been free to carry
+// every fitted pillar.)
+//
+// UNLIKE the E6 `carry_from`, no fitted-range gate is applied. Not because it is
+// impossible -- an owned handle could reach `owned()->context()` -- but because a
+// view-backed `PricedSurfaceView` exposes no pillar list, so gating would make
+// the two `SurfaceRef` forms behave DIFFERENTLY on the same surface. Uniform
+// behaviour is chosen instead, and the resulting tenor-hygiene obligation is
+// documented on the caller-facing API (deriv_book.hpp).
+[[nodiscard]] Result<CurveSet> carry_from_ref(const SurfaceRef& ref, double T, double roll_dt) {
   CurveSet cs;
   cs.spot = ref.pricing().S;
 
-  ForwardPoint fp;
-  fp.T = T;
-  fp.F = ref.forward_at(T);
-  fp.q_eff = ref.q_eff_at(T);
-  const ForwardPoint pts[] = {fp};
-  cs.forward.set(pts);
+  // Ascending in T -- `resolve_forward`'s documented precondition. A roll that
+  // would land at or before the valuation date contributes no pillar; the
+  // greek stencil skips theta/charm on exactly that condition (`can_roll`), and
+  // the at-expiry path never reads a forward at all.
+  ForwardPoint pts[2];
+  std::size_t n_pts = 0;
+  const double t_rolled = T - roll_dt;
+  if (roll_dt > 0.0 && t_rolled > 0.0) {
+    pts[n_pts].T = t_rolled;
+    pts[n_pts].F = ref.forward_at(t_rolled);
+    pts[n_pts].q_eff = ref.q_eff_at(t_rolled);
+    ++n_pts;
+  }
+  pts[n_pts].T = T;
+  pts[n_pts].F = ref.forward_at(T);
+  pts[n_pts].q_eff = ref.q_eff_at(T);
+  ++n_pts;
+  cs.forward.set(std::span<const ForwardPoint>{pts, n_pts});
 
   // T <= 0 is the at-expiry case: `deriv_df_at_T` short-circuits df = 1 there
   // and never consults the curve, so a default (empty) YieldCurve -- which
@@ -1625,7 +1654,8 @@ Result<DerivQuote> deriv_price_on_ref(const SurfaceRef& ref, const DerivContract
   if (!ref.valid()) {
     return Err(ErrorCode::InvalidArgument, "deriv: null surface handle");
   }
-  ATX_TRY(const CurveSet curves, carry_from_ref(ref, contract.maturity_t));
+  // No roll happens in pricing, so the carry needs no rolled forward pillar.
+  ATX_TRY(const CurveSet curves, carry_from_ref(ref, contract.maturity_t, 0.0));
   const SurfaceRefStripView view{&ref, &curves, contract.maturity_t};
   return deriv_price(view, curves, contract, cfg);
 }
@@ -1635,10 +1665,19 @@ Result<DerivGreeks> deriv_greeks_on_ref(const SurfaceRef& ref, const DerivContra
   if (!ref.valid()) {
     return Err(ErrorCode::InvalidArgument, "deriv: null surface handle");
   }
-  // The carry snapshot is taken ONCE, at the contract's own maturity; every
-  // bumped evaluation (including the theta roll) reuses it, so a stencil never
-  // differences two differently-derived carries.
-  ATX_TRY(const CurveSet curves, carry_from_ref(ref, contract.maturity_t));
+  // The carry snapshot is taken ONCE, at the contract's own maturity, and every
+  // bumped evaluation reuses it, so a stencil never differences two
+  // differently-derived carries. It is told the roll up front so it can carry a
+  // forward pillar at the rolled tenor too -- see `carry_from_ref`.
+  //
+  // NOTE for a future cross rate x time stencil: `rate_shift_curves` rebuilds
+  // the yield curve from the FORWARD pillars' tenors plus the contract's own, so
+  // it inherits this curve's rolled pillar and stays flat in rate. When there is
+  // no roll (T <= dt) it rebuilds a single pillar -- a flat-DISCOUNT curve -- which
+  // is harmless today because the rate bump prices the UNROLLED T only. A stencil
+  // that ever reprices at both r + dr and T - dt must re-establish the second
+  // pillar there.
+  ATX_TRY(const CurveSet curves, carry_from_ref(ref, contract.maturity_t, bumps.time_years));
   const SurfaceRefStripView view{&ref, &curves, contract.maturity_t};
   return deriv_greeks(view, curves, contract, cfg, bumps);
 }
