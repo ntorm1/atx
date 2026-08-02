@@ -130,8 +130,6 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/sr_tenor_grid.cpp
     src/earnings_forecast_loader.cpp
     src/earnings_repro.cpp
-    # strangle-vs-varswap
-    src/strangle_varswap.cpp
     # declarative swap-lane DSL
     src/swap_leg.cpp
 )
@@ -531,23 +529,19 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(spy_dispersion_pnl examples/spy_dispersion_pnl.cpp)
     target_link_libraries(spy_dispersion_pnl PRIVATE atx::vol atx::core atx_warnings)
 
-    # XOM strangle-vs-varswap comparison driver: one fixed-expiry, daily-restriked
-    # 40Δ strangle against one uncapped variance swap struck fair and sized to
-    # that strangle's entry vega, both on ONE SurfaceDb clock, delta-hedged daily
-    # -> the track.tsv the Python renderer tools/render_strangle_vs_varswap.py
-    # turns into the comparison report. Strategy gate: StrangleVarswap
-    # (tests/strangle_varswap_test.cpp); render gate:
+    # The strangle-vs-varswap comparison, DECLARATIVE: one fixed-expiry,
+    # daily-restriked 40Δ strangle against one uncapped variance swap struck
+    # fair and sized to the strangle's entry vega, both on ONE SurfaceDb clock,
+    # delta-hedged daily — expressed as a ~20-line StrategySpec
+    # (FixedExpiryRestrike + one MatchGroupVega swap leg) and emitting the
+    # track.tsv the Python renderer tools/render_strangle_vs_varswap.py turns
+    # into the comparison report. It replaced the bespoke
+    # StrangleVsVarswapStrategy + 600-line driver behind a track-parity gate
+    # (XOM 2026: per-row nav within 7e-9 dollars, swap columns bit-identical).
+    # Strategy gates: StrategyRestrike*/SwapLeg (tests/strategy_test.cpp,
+    # tests/swap_leg_test.cpp); render gate:
     # python/tests/test_render_strangle_vs_varswap.py (the atx-vol-python lane).
-    # See examples/strangle_varswap_driver.cpp.
-    add_executable(atx-vol-strangle-varswap-driver examples/strangle_varswap_driver.cpp)
-    target_link_libraries(atx-vol-strangle-varswap-driver
-        PRIVATE atx::vol atx::core atx_warnings)
-
-    # The DECLARATIVE strangle-vs-varswap comparison: the same analysis as the
-    # driver above expressed as a ~20-line StrategySpec (FixedExpiryRestrike +
-    # one MatchGroupVega swap leg). Parity gate: StrategyRestrikeParity
-    # (tests/strategy_restrike_parity_test.cpp). See
-    # examples/varswap_compare_example.cpp.
+    # See examples/varswap_compare_example.cpp.
     add_executable(atx-vol-varswap-compare-example examples/varswap_compare_example.cpp)
     target_link_libraries(atx-vol-varswap-compare-example
         PRIVATE atx::vol atx::core atx_warnings)

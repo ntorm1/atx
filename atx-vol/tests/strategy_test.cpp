@@ -2783,3 +2783,199 @@ TEST(StrategyRestrikeSwap, EmptySwapLegsEmitsNoSignals) {
   // No swap lane, no signal columns — existing specs keep their empty default.
   EXPECT_TRUE(strat.signals(*snap0).empty());
 }
+
+// ── Ported from the retired strangle_varswap suite ──────────────────────────
+//
+// The two gates whose coverage lived only in the bespoke strategy's tests:
+// the ENGINE-driven cycle roll (settle at the fixed expiry, refix on that same
+// step, exhaust the grid) with an independent delta oracle on the resolved
+// strikes, and the swap greek signals matched against an independently
+// hand-staged accrual + deriv_greeks_on_ref — never read off the strategy.
+
+namespace {
+
+// `n` DAILY sessions (make_corpus's grid) starting at kBaseNow.
+[[nodiscard]] std::vector<std::int64_t> daily_sessions(int n) {
+  std::vector<std::int64_t> s;
+  for (int d = 0; d < n; ++d) {
+    s.push_back(kBaseNow + static_cast<std::int64_t>(d) * kDayNs);
+  }
+  return s;
+}
+
+// A 5-session, 30-day-step corpus on an EXPLICIT drifting spot path (the swap
+// oracle hand-computes the engine's accrual off these very numbers).
+constexpr double kOracleSpots[5] = {100.0, 106.0, 96.0, 103.0, 111.0};
+
+struct OracleCorpus {
+  CorpusManifest manifest;
+  std::vector<std::int64_t> sessions;
+  std::vector<std::string> archives; // per-session path, for the oracle reload
+};
+
+[[nodiscard]] OracleCorpus make_oracle_corpus(const char *tag) {
+  const fs::path dir = fresh_dir(tag);
+  OracleCorpus c;
+  for (int d = 0; d < 5; ++d) {
+    const std::int64_t now = kBaseNow + d * kStep30Ns;
+    const PricedSurface s = make_surface(kUid, kOracleSpots[d], kOracleSpots[d], now);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-09-%02d", d + 1);
+    const std::string date = buf;
+    const std::string path = write_archive(dir, date, {{"SPY", &s}});
+    c.manifest.dates.push_back(date);
+    CorpusEntry e;
+    e.date = date;
+    e.symbol = "SPY";
+    e.status = CorpusFitStatus::Ok;
+    e.archive_path = path;
+    c.manifest.entries.push_back(std::move(e));
+    c.sessions.push_back(now);
+    c.archives.push_back(path);
+  }
+  return c;
+}
+
+[[nodiscard]] const std::vector<double> *signal_series(const BacktestResult &r, const char *name) {
+  for (const auto &sig : r.signals) {
+    if (sig.first == name) {
+      return &sig.second;
+    }
+  }
+  return nullptr;
+}
+
+} // namespace
+
+TEST(StrategyRestrike, EngineRollsIntoNewCycleAtExpiryAndServesTheTargetDelta) {
+  const Corpus corpus = make_corpus(7, "restrike-roll");
+  const std::vector<std::int64_t> sessions = daily_sessions(7);
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  // ~3.5-day cycles on a 7-day grid: cycle 1 fixes day 4 (ceil-snap), cycle 2
+  // fixes on day 4 and, its anchor outrunning the grid, takes the LAST session.
+  const auto spec_of = [&sessions]() {
+    StrategySpec spec = restrike_spec(sessions);
+    spec.legs.front().tenor.target_T = 3.5 / 365.25;
+    return spec;
+  };
+  RunConfig rcfg; // Error policy: every session is bright, nothing to exclude
+
+  // Mid-cycle prefix (day 3): cycle 1's book, restruck daily at ONE expiry.
+  {
+    DeclarativeStrategy strat{spec_of()};
+    auto prefix = clock->between(corpus.manifest.dates[0], corpus.manifest.dates[3]);
+    ASSERT_TRUE(prefix.has_value());
+    auto run = run_backtest_incremental(*prefix, strat, rcfg, nullptr);
+    ASSERT_TRUE(run.has_value()) << run.error().to_string();
+    const PortfolioState &book = run->checkpoint.portfolio;
+    ASSERT_EQ(book.lots.size(), 2u);
+    for (const Lot &lot : book.lots) {
+      EXPECT_EQ(lot.expiry_ts_ns, sessions[4]);
+      EXPECT_EQ(lot.cohort, 1u);
+    }
+    // INDEPENDENT delta oracle: reload day 3's archive and ask the very
+    // surface the engine priced against what these strikes' deltas are.
+    auto snap = MarketSnapshot::load(corpus.manifest.entries[3].archive_path);
+    ASSERT_TRUE(snap.has_value());
+    const SurfaceRef s = snap->find(kUid);
+    ASSERT_NE(s, nullptr);
+    for (const Lot &lot : book.lots) {
+      const Result<double> d = s->delta(lot.contract.K, lot.contract.T, lot.contract.side);
+      ASSERT_TRUE(d.has_value());
+      EXPECT_NEAR(std::fabs(*d), 0.40, 1e-3);
+    }
+  }
+
+  // Second-cycle prefix (day 5): the engine settled cycle 1 on day 4, the
+  // strategy refixed on that same step, and the new book carries a strictly
+  // LATER fixed expiry.
+  {
+    DeclarativeStrategy strat{spec_of()};
+    auto prefix = clock->between(corpus.manifest.dates[0], corpus.manifest.dates[5]);
+    ASSERT_TRUE(prefix.has_value());
+    auto run = run_backtest_incremental(*prefix, strat, rcfg, nullptr);
+    ASSERT_TRUE(run.has_value()) << run.error().to_string();
+    const PortfolioState &book = run->checkpoint.portfolio;
+    ASSERT_EQ(book.lots.size(), 2u);
+    for (const Lot &lot : book.lots) {
+      EXPECT_EQ(lot.expiry_ts_ns, sessions[6]); // the grid ends before the anchor
+      EXPECT_EQ(lot.cohort, 2u);
+    }
+  }
+
+  // Full run: the tail cycle settles on the last session and the exhausted
+  // grid opens nothing after it. 12 lots were issued over the run's 6 open
+  // steps (2 wings x {day0..day3 in cycle 1, day4..day5 in cycle 2}).
+  {
+    DeclarativeStrategy strat{spec_of()};
+    auto run = run_backtest_incremental(*clock, strat, rcfg, nullptr);
+    ASSERT_TRUE(run.has_value()) << run.error().to_string();
+    EXPECT_TRUE(run->checkpoint.portfolio.lots.empty());
+    EXPECT_EQ(run->checkpoint.next_lot_id, 13u);
+    EXPECT_EQ(strat.skipped_restrikes(), 0u);
+    EXPECT_EQ(strat.unopened_entry_steps(), 0u);
+  }
+}
+
+TEST(StrategyRestrikeSwap, SignalsMatchIndependentSwapGreeksOracle) {
+  const OracleCorpus corpus = make_oracle_corpus("restrike-swaporacle");
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  StrategySpec spec = restrike_spec(corpus.sessions); // 0.25y -> expiry = session 4
+  spec.swap_legs.push_back(var_swap_leg());
+  RunConfig rcfg;
+
+  // The lot's terms, off a prefix the engine itself validated (never off the
+  // strategy): opened day 0, expiring session 4, 3 observable returns.
+  SwapLot lot;
+  {
+    DeclarativeStrategy strat{spec};
+    auto prefix = clock->between(corpus.manifest.dates[0], corpus.manifest.dates[2]);
+    ASSERT_TRUE(prefix.has_value());
+    auto run = run_backtest_incremental(*prefix, strat, rcfg, nullptr);
+    ASSERT_TRUE(run.has_value()) << run.error().to_string();
+    ASSERT_EQ(run->checkpoint.portfolio.swap_lots.size(), 1u);
+    lot = run->checkpoint.portfolio.swap_lots.front();
+    EXPECT_EQ(lot.expiry_ts_ns, corpus.sessions[4]);
+    EXPECT_EQ(lot.n_obs_total, 3u);
+  }
+
+  // Full run, rows recorded every step; the oracle targets row 2 (day 2).
+  DeclarativeStrategy strat{spec};
+  auto run = run_backtest_incremental(*clock, strat, rcfg, nullptr);
+  ASSERT_TRUE(run.has_value()) << run.error().to_string();
+  const BacktestResult &rows = run->rows;
+  ASSERT_GE(rows.size(), 3u);
+  ASSERT_EQ(rows.date[2], corpus.manifest.dates[2]);
+  const std::vector<double> *vega_col = signal_series(rows, "swap_vega");
+  const std::vector<double> *delta_col = signal_series(rows, "swap_delta");
+  ASSERT_NE(vega_col, nullptr);
+  ASSERT_NE(delta_col, nullptr);
+  ASSERT_EQ(vega_col->size(), rows.size());
+
+  // The accrual as of day 2, hand-computed from the EXPLICIT spot path: the
+  // engine seeds on day 1 (accrues nothing) and takes its first return on
+  // day 2 — r = ln(S2/S1) — exactly one observation done.
+  RealizedVarianceSpec rv{};
+  rv.annualization = lot.annualization;
+  rv.n_obs_total = lot.n_obs_total;
+  const double r1 = std::log(kOracleSpots[2] / kOracleSpots[1]);
+  rv.sum_sq_log_returns_done = r1 * r1;
+  rv.n_obs_done = 1;
+  rv.rv_done_dec = rv.annualization * rv.sum_sq_log_returns_done / 1.0;
+
+  auto snap = MarketSnapshot::load(corpus.archives[2]);
+  ASSERT_TRUE(snap.has_value());
+  const SurfaceRef s = snap->find(kUid);
+  ASSERT_NE(s, nullptr);
+  const Result<DerivGreeks> g = detail::deriv_greeks_on_ref(
+      s, swap_contract_for_lot(lot, corpus.sessions[2], rv), DerivConfig{}, DerivGreekBumps{});
+  ASSERT_TRUE(g.has_value()) << g.error().to_string();
+  EXPECT_NEAR((*vega_col)[2], lot.qty * g->vega,
+              1e-9 * std::max(1.0, std::fabs(lot.qty * g->vega)));
+  EXPECT_NEAR((*delta_col)[2], lot.qty * g->delta,
+              1e-9 * std::max(1.0, std::fabs(lot.qty * g->delta)));
+}

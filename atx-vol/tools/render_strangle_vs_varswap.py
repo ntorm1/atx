@@ -119,6 +119,11 @@ def series(df: pd.DataFrame, name: str, default: float = float("nan")) -> pd.Ser
     """
     if name in df.columns:
         return pd.to_numeric(df[name], errors="coerce").astype(float)
+    # The declarative DSL emits the lane-agnostic name for the option book's
+    # entry dollar vega; tracks from the retired bespoke driver carry the old
+    # one. Same measurement, either spelling.
+    if name == "strangle_vega" and "options_vega" in df.columns:
+        return pd.to_numeric(df["options_vega"], errors="coerce").astype(float)
     return pd.Series(np.full(len(df), default, dtype=float), index=df.index, name=name)
 
 

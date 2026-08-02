@@ -252,6 +252,51 @@ process's streams, and be stoppable.
   `ATXVSA03`). The old "v1" / "v3" ordinals are gone from the headers — they
   named the same format both ways. Comment-only; no identifier changed.
 
+### REMOVED / NEW — the bespoke strangle-vs-varswap strategy is now a declarative spec (swap-lane DSL sprint)
+
+**Removed.** `StrangleVsVarswapStrategy` + `StrangleVarswapConfig`
+(`strangle_varswap.hpp/.cpp`), the 600-line
+`atx-vol-strangle-varswap-driver`, and their test suite. The class was a
+one-analysis special: its cycle lifecycle, swap sizing and signal mirror were
+generic machinery trapped in bespoke code.
+
+**New, in its place — the grammar now expresses the whole analysis:**
+
+* `LifecycleSpec::Holding::FixedExpiryRestrike` — a cycle fixes ONE expiry
+  (ceil-snapped onto `StrategySpec::session_ts`; the legs' shared
+  `tenor.target_T` is the cycle tenor) and every entry tick restrikes the
+  option legs at it; keep-strikes on soft resolution failures with the
+  `skipped_restrikes` / `unopened_entry_steps` counters; `Entry` is the
+  restrike cadence.
+* `StrategySpec::swap_legs` (`SwapLegSpec` + `SwapSizeSpec`:
+  `FixedQty` / `TargetVega` / `MatchGroupVega`) — one fair-struck swap leg per
+  cycle, opened on the cycle-open step only, every refusal counted in
+  `skipped_swap_cycles`. Empty `swap_legs` is bit-identical to the old
+  grammar (the additive-lane rule).
+* `swap_leg.hpp` — the reusable toolkit: `swap_contract_for_lot` (the engine's
+  `SwapLot`→`DerivContract` transcription), `solve_cycle_swap` (fixing-count +
+  bridge-priced fair strike + vega-targeted qty, fail-soft by contract), and
+  `SwapSignalProbe` (the engine-accrual mirror behind the
+  `swap_delta/gamma/vega/theta/rho` signal columns, NaN discipline included).
+* `DeclarativeStrategy::signals` — emitted only when the spec carries swap
+  legs: the probe's five columns + `options_vega` (the old `strangle_vega`,
+  renamed lane-agnostic; `tools/render_strangle_vs_varswap.py` reads either
+  spelling) + cumulative `skipped_restrikes` / `skipped_swaps`.
+
+**Migration.** `examples/varswap_compare_example.cpp` is the old driver's
+replacement: the full comparison as a ~20-line spec. Old config fields map
+1:1 (`target_abs_delta` → the strangle selectors, `tenor_years` →
+`tenor.target_T`, `contracts` → `FixedContracts`, `enable_swap_leg` → the
+`swap_legs` vector).
+
+**Why the numbers are trustworthy.** The deletion sat behind a track-parity
+gate: old vs new through the same engine on the full XOM 2026 fixed-db window
+(137 sessions, both legs, delta-hedged) — per-row `nav`/`pnl_total` within
+7e-9 dollars, `swap_pv`/`swap_pnl` bit-identical, identical lot-id watermarks
+and skip counters; plus synthetic-corpus parity including a dark-session
+keep-strikes run. The example reproduces the reference track to the cent
+(combined −7499.69 / swap −6065.38 / strangle −1434.31).
+
 ### FIXED — calendar level repairs no longer fabricate slice levels from extrapolated-wing crossings (fit fidelity budget + tradeable-overlap band)
 
 **The defect.** Every parametric calendar repair — `arb_project_calendar_svi_pair`

@@ -15,7 +15,7 @@
 //      it never saw open (a checkpoint restore): desynced forever, NaN forever.
 //
 // Fixture plumbing (synthetic eSSVI surfaces written as one-symbol archives)
-// mirrors strangle_varswap_test.cpp.
+// mirrors backtest_swap_test.cpp.
 
 #include <gtest/gtest.h>
 
@@ -58,7 +58,7 @@ constexpr std::uint32_t kUid = 11;
 constexpr const char *kSymbol = "XOM";
 constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
 
-// Synthetic eSSVI PricedSurface, the strangle_varswap_test recipe verbatim.
+// Synthetic eSSVI PricedSurface, the backtest_swap_test recipe verbatim.
 [[nodiscard]] PricedSurface make_surface(std::uint32_t uid, double S, std::int64_t now_ts) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
