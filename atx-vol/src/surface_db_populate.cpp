@@ -23,7 +23,7 @@
 #include "atx/vol/detail/archive_util.hpp"  // canonicalize_symbol (carry-over key match)
 #include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
 #include "atx/vol/dispersion.hpp"           // with_uid
-#include "atx/vol/parallel_for.hpp"         // atx_auto_worker_count (fit_workers=0 auto)
+#include "atx/vol/detail/parallel_for.hpp"         // atx_auto_worker_count (fit_workers=0 auto)
 #include "atx/vol/pricer_fitter.hpp"        // PricerConfig
 #include "atx/vol/session.hpp"              // SessionInputs
 #include "atx/vol/universe.hpp"             // uid_for_symbol

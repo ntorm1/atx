@@ -14,9 +14,9 @@
 #include <string>
 #include <string_view>
 
-#include "atx/vol/backtest_driver.hpp"     // RunOutcome (result + tearsheet + EngineRunStats)
+#include "atx/vol/research/backtest_driver.hpp"     // RunOutcome (result + tearsheet + EngineRunStats)
 #include "atx/vol/dispersion.hpp"          // DispersionUniverse / DispersionMember
-#include "atx/vol/dispersion_backtest.hpp" // DispersionBacktestConfig
+#include "atx/vol/research/dispersion_backtest.hpp" // DispersionBacktestConfig
 #include "atx/vol/surface_db.hpp"          // SurfaceDb (manifest symbol table)
 #include "atx/vol/types.hpp" // Result / Status / ErrorCode (atx-vol's Result include)
 

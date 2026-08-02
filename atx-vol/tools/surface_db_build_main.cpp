@@ -147,7 +147,7 @@
 #include <string_view>
 #include <vector>
 
-#include "atx/vol/counters.hpp"            // counters::ledger (ATX_VOL_SOLVE_LEDGER dump)
+#include "atx/vol/detail/counters.hpp"            // counters::ledger (ATX_VOL_SOLVE_LEDGER dump)
 #include "atx/vol/opra_hive.hpp"           // OpraHiveSpec
 #include "atx/vol/session.hpp"             // FitPreset
 #include "atx/vol/tools/surface_db_build.hpp"    // SurfaceDbBuildSpec, build_surface_db, write_build_report_csv

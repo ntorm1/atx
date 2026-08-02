@@ -36,7 +36,7 @@
 
 #include "atx/vol/backtest.hpp"
 #include "atx/vol/backtest_template.hpp"
-#include "atx/vol/run_archive.hpp"
+#include "atx/vol/research/run_archive.hpp"
 #include "atx/vol/surface_archive.hpp"
 #include "atx/vol/types.hpp"
 

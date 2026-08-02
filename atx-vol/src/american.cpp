@@ -2440,7 +2440,11 @@ AlOpts al_fast_opts() noexcept {
 }
 
 // docs/al-preset-ladder.md §4 `ql_fast`: l = 8 fixed-point, p = 32 premium, 2 sweeps.
-AlOpts al_bulk_opts() noexcept { return AlOpts{7, 8, 2, 1.0e-8, /*n_quad_price=*/32}; }
+AlOpts al_bulk_opts() noexcept {
+  return AlOpts{
+      .n_collocation = 7, .n_quadrature = 8, .n_quad_price = 32, .max_newton_iter = 2,
+      .tol = 1.0e-8};
+}
 
 Result<double> andersen_lake(double S, double K, double T, double sigma, double r, double q,
                              Side side, const std::optional<AlOpts> &opts) {
