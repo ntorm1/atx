@@ -73,6 +73,14 @@ enum class OptionProjectionOutput : std::uint8_t {
   FullGreeks = 2,
 };
 
+// Delta-strike resolution policy. FastScreenColdConfirm may use a prepared
+// marks tier only to propose a strike; every successful result is validated by
+// the cold-reference American delta and falls back to the robust cold solver.
+enum class OptionDeltaSolvePolicy : std::uint8_t {
+  Direct = 0,
+  FastScreenColdConfirm = 1,
+};
+
 enum class OptionProjectionStatus : std::uint8_t {
   Ok = 0,
   InvalidSpec = 1,
@@ -94,6 +102,7 @@ struct OptionProjectionConfig {
   // Route every American pricing query through the same execution policy used
   // by the surrounding backtest. Appended for aggregate-source compatibility.
   QueryExecution query_execution{QueryExecution::Configured};
+  OptionDeltaSolvePolicy delta_solve_policy{OptionDeltaSolvePolicy::Direct};
 };
 
 // Immutable economic identity resolved at one historical valuation. `contract.T`

@@ -269,6 +269,115 @@ struct DeltaSolution {
   return Ok(DeltaSolution{forward * std::exp(root), root_residual.delta, evaluations});
 }
 
+[[nodiscard]] std::uint16_t add_evaluations(std::uint16_t left, std::uint16_t right) noexcept {
+  const unsigned sum = static_cast<unsigned>(left) + static_cast<unsigned>(right);
+  return static_cast<std::uint16_t>(
+      std::min(sum, static_cast<unsigned>(std::numeric_limits<std::uint16_t>::max())));
+}
+
+[[nodiscard]] Result<DeltaSolution> solve_american_delta_screened(const SurfaceRef &surface,
+                                                                  double T, Side side,
+                                                                  double target_abs_delta,
+                                                                  double tolerance) {
+  const auto cold_fallback = [&](std::uint16_t prior_evaluations) -> Result<DeltaSolution> {
+    Result<DeltaSolution> cold = solve_american_delta(surface, T, side, target_abs_delta, tolerance,
+                                                      QueryExecution::ColdReference);
+    if (cold) {
+      cold->evaluations = add_evaluations(cold->evaluations, prior_evaluations);
+    }
+    return cold;
+  };
+  const QueryPricingTier tier = surface.query_pricing_tier();
+  if (tier != QueryPricingTier::RepresentativeFast && tier != QueryPricingTier::CarryBank) {
+    return cold_fallback(0u);
+  }
+
+  // The prepared route is only a cheap proposal. Its own root need not meet the
+  // cold target; a loose screen tolerance avoids spending work polishing an
+  // approximation that is always cold-confirmed below.
+  constexpr double screen_tolerance = 1.0e-4;
+  Result<DeltaSolution> screen = solve_american_delta(surface, T, side, target_abs_delta,
+                                                      screen_tolerance, QueryExecution::Configured);
+  if (!screen) {
+    return cold_fallback(0u);
+  }
+
+  const double forward = surface.forward_at(T);
+  if (!finite_positive(forward) || !finite_positive(screen->strike)) {
+    return cold_fallback(screen->evaluations);
+  }
+  struct DeltaPoint {
+    double k{0.0};
+    double residual{0.0};
+    double delta{0.0};
+  };
+  std::uint16_t evaluations = screen->evaluations;
+  const auto point = [&](double k, QueryExecution execution) -> Result<DeltaPoint> {
+    evaluations = add_evaluations(evaluations, 1u);
+    const double strike = forward * std::exp(k);
+    if (!finite_positive(strike)) {
+      return Err(ErrorCode::OutOfRange, "contract projection: adaptive strike overflow");
+    }
+    ATX_TRY(const double delta, surface.delta(strike, T, side, execution));
+    if (!std::isfinite(delta)) {
+      return Err(ErrorCode::Unavailable, "contract projection: adaptive delta unavailable");
+    }
+    return Ok(DeltaPoint{k, std::fabs(delta) - target_abs_delta, delta});
+  };
+
+  const double screen_k = std::log(screen->strike / forward);
+  Result<DeltaPoint> current = point(screen_k, QueryExecution::ColdReference);
+  if (!current) {
+    return cold_fallback(evaluations);
+  }
+  if (std::fabs(current->residual) <= tolerance) {
+    return Ok(DeltaSolution{screen->strike, current->delta, evaluations});
+  }
+
+  DeltaPoint previous{};
+  bool have_previous = false;
+  constexpr double max_log_strike_step = 0.05;
+  constexpr unsigned max_refine_iterations = 8u;
+  for (unsigned iteration = 0u; iteration < max_refine_iterations; ++iteration) {
+    double slope = 0.0;
+    if (have_previous && current->k != previous.k) {
+      slope = (current->residual - previous.residual) / (current->k - previous.k);
+    } else {
+      constexpr double h = 1.0e-3;
+      const Result<DeltaPoint> left = point(current->k - h, QueryExecution::Configured);
+      const Result<DeltaPoint> right = point(current->k + h, QueryExecution::Configured);
+      if (!left || !right) {
+        break;
+      }
+      slope = (right->residual - left->residual) / (2.0 * h);
+    }
+    if (!(std::isfinite(slope) && std::fabs(slope) > 1.0e-12)) {
+      break;
+    }
+    const double step =
+        std::clamp(-current->residual / slope, -max_log_strike_step, max_log_strike_step);
+    if (!(std::isfinite(step) && std::fabs(step) > 1.0e-12)) {
+      break;
+    }
+    Result<DeltaPoint> next = point(current->k + step, QueryExecution::ColdReference);
+    if (!next) {
+      break;
+    }
+    if (std::fabs(next->residual) <= tolerance) {
+      return Ok(DeltaSolution{forward * std::exp(next->k), next->delta, evaluations});
+    }
+    previous = *current;
+    have_previous = true;
+    current = std::move(next);
+  }
+  return cold_fallback(evaluations);
+}
+
+[[nodiscard]] bool valid_delta_solve_policy(OptionDeltaSolvePolicy policy) noexcept {
+  return policy == OptionDeltaSolvePolicy::Direct ||
+         policy == OptionDeltaSolvePolicy::FastScreenColdConfirm;
+}
+
 [[nodiscard]] std::uint64_t definition_fingerprint(const ProjectedOptionDefinition &definition) {
   std::uint64_t words[] = {
       definition.contract.uid,
@@ -367,7 +476,8 @@ Result<ProjectedOption> project_option_contract(const SurfaceRef &surface,
                                                 const OptionProjectionConfig &config) {
   if (!valid_spec(spec) || surface.uid() != spec.uid ||
       !(std::isfinite(config.delta_tolerance) && config.delta_tolerance > 0.0 &&
-        config.delta_tolerance <= 1.0e-3)) {
+        config.delta_tolerance <= 1.0e-3) ||
+      !valid_delta_solve_policy(config.delta_solve_policy)) {
     return Err(ErrorCode::InvalidArgument, "contract projection: invalid spec/config/surface uid");
   }
   const std::int64_t valuation = surface.pricing().now_ts_ns;
@@ -389,9 +499,16 @@ Result<ProjectedOption> project_option_contract(const SurfaceRef &surface,
     strike = forward;
     break;
   case ProjectedStrikeKind::Delta: {
-    ATX_TRY(const DeltaSolution solution,
-            solve_american_delta(surface, residual_t, spec.side, spec.strike.value,
-                                 config.delta_tolerance, config.query_execution));
+    Result<DeltaSolution> solved =
+        config.delta_solve_policy == OptionDeltaSolvePolicy::FastScreenColdConfirm
+            ? solve_american_delta_screened(surface, residual_t, spec.side, spec.strike.value,
+                                            config.delta_tolerance)
+            : solve_american_delta(surface, residual_t, spec.side, spec.strike.value,
+                                   config.delta_tolerance, config.query_execution);
+    if (!solved) {
+      return Err(solved.error());
+    }
+    const DeltaSolution &solution = *solved;
     strike = solution.strike;
     achieved_delta = solution.achieved_delta;
     delta_evaluations = solution.evaluations;
@@ -506,7 +623,8 @@ Status PreparedOptionProjection::project_into(const SurfaceSet &surfaces,
                                               const OptionProjectionConfig &config) const {
   if (output.size() != specs_.size() ||
       !(std::isfinite(config.delta_tolerance) && config.delta_tolerance > 0.0 &&
-        config.delta_tolerance <= 1.0e-3)) {
+        config.delta_tolerance <= 1.0e-3) ||
+      !valid_delta_solve_policy(config.delta_solve_policy)) {
     return Err(ErrorCode::InvalidArgument, "contract projection: invalid output/config");
   }
   const auto project_index = [&](std::size_t execution_index) {

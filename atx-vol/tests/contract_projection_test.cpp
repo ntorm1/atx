@@ -172,6 +172,30 @@ TEST(ContractProjection, PriceOptionsRouteCanForceColdOnPreparedFastSurface) {
   EXPECT_EQ(projected->greeks.vega, cold->vega);
 }
 
+TEST(ContractProjection, FastDeltaScreenIsAlwaysColdConfirmed) {
+  PricedSurface source = make_surface(2u, 120.0, timestamp(2026, 7, 10));
+  auto prepared = std::move(source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(prepared) << (prepared ? std::string{} : prepared.error().to_string());
+  const PricedSurface fast = std::move(*prepared);
+
+  OptionProjectionConfig config;
+  config.output = OptionProjectionOutput::DefinitionOnly;
+  config.delta_tolerance = 1.0e-7;
+  config.query_execution = QueryExecution::ColdReference;
+  config.delta_solve_policy = OptionDeltaSolvePolicy::FastScreenColdConfirm;
+  const auto projected = project_option_contract(
+      fast, spec(2u, Side::Call, ProjectedMaturitySpec::days(45), ProjectedStrikeSpec::delta(0.40)),
+      config);
+  ASSERT_TRUE(projected) << (projected ? std::string{} : projected.error().to_string());
+  const auto cold_delta =
+      fast.delta(projected->definition.contract.K, projected->definition.contract.T, Side::Call,
+                 QueryExecution::ColdReference);
+  ASSERT_TRUE(cold_delta) << (cold_delta ? std::string{} : cold_delta.error().to_string());
+  EXPECT_NEAR(std::fabs(*cold_delta), 0.40, config.delta_tolerance);
+  EXPECT_EQ(*cold_delta, projected->achieved_delta);
+  EXPECT_GT(projected->delta_evaluations, 0u);
+}
+
 TEST(ContractProjection, PreparedBatchIsInputOrderedAndThreadInvariant) {
   const std::int64_t now = timestamp(2026, 7, 10);
   std::vector<PricedSurface> surfaces;

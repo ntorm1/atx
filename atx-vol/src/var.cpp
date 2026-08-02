@@ -1,0 +1,1327 @@
+#include "atx/vol/var.hpp"
+
+#include <algorithm>
+#include <bit>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <exception>
+#include <limits>
+#include <new>
+#include <optional>
+#include <string>
+#include <tuple>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "atx/core/error.hpp"
+#include "atx/core/hash.hpp"
+#include "atx/vol/detail/pricing_executor.hpp"
+#include "atx/vol/surface_db.hpp"
+#include "atx/vol/universe.hpp"
+
+namespace atx::vol {
+namespace {
+
+using atx::core::Err;
+using atx::core::ErrorCode;
+using atx::core::Ok;
+
+constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+
+[[nodiscard]] bool finite_positive(double value) noexcept {
+  return std::isfinite(value) && value > 0.0;
+}
+
+[[nodiscard]] bool valid_side(Side side) noexcept {
+  return side == Side::Call || side == Side::Put;
+}
+
+[[nodiscard]] bool valid_query_execution(QueryExecution execution) noexcept {
+  return execution == QueryExecution::Configured || execution == QueryExecution::ColdReference;
+}
+
+[[nodiscard]] bool valid_evaluation_config(const VarEvaluationConfig &config) noexcept {
+  return std::isfinite(config.delta_tolerance) && config.delta_tolerance > 0.0 &&
+         config.delta_tolerance <= 1.0e-3 && valid_query_execution(config.projection_execution) &&
+         valid_query_execution(config.valuation_execution) &&
+         (config.projection_solve_policy == OptionDeltaSolvePolicy::Direct ||
+          config.projection_solve_policy == OptionDeltaSolvePolicy::FastScreenColdConfirm);
+}
+
+[[nodiscard]] std::uint64_t nonzero_hash(const void *data, std::size_t size) noexcept {
+  const std::uint64_t hash = atx::core::hash_bytes(data, size);
+  return hash == 0u ? 1u : hash;
+}
+
+[[nodiscard]] std::uint64_t stock_definition_fingerprint(std::uint32_t uid) noexcept {
+  const std::uint64_t words[] = {0x5354'4f43'4b00'0001ull, uid};
+  return nonzero_hash(words, sizeof words);
+}
+
+[[nodiscard]] std::uint32_t checked_u32(std::size_t value) noexcept {
+  return value > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())
+             ? std::numeric_limits<std::uint32_t>::max()
+             : static_cast<std::uint32_t>(value);
+}
+
+template <class F>
+void run_balanced_ranges(std::size_t count, unsigned requested_threads, F &&body) {
+  if (count == 0u) {
+    return;
+  }
+  PricingExecutor &executor = pricing_executor();
+  const unsigned capacity = executor.size() + 1u;
+  unsigned ranges = requested_threads == 0u ? capacity : std::min(requested_threads, capacity);
+  if (ranges == 0u) {
+    ranges = 1u;
+  }
+  if (static_cast<std::size_t>(ranges) > count) {
+    ranges = static_cast<unsigned>(count);
+  }
+  const std::size_t quotient = count / static_cast<std::size_t>(ranges);
+  const std::size_t remainder = count % static_cast<std::size_t>(ranges);
+  executor.run_blocks(ranges, ranges, [&](std::size_t range_index) {
+    const std::size_t lo = range_index * quotient + std::min(range_index, remainder);
+    const std::size_t hi = lo + quotient + (range_index < remainder ? 1u : 0u);
+    body(lo, hi);
+  });
+}
+
+[[nodiscard]] VarScenarioStatus scenario_status_for(VarLegStatus status) noexcept {
+  switch (status) {
+  case VarLegStatus::Ok:
+    return VarScenarioStatus::Ok;
+  case VarLegStatus::SurfaceUnavailable:
+  case VarLegStatus::ProvenanceRejected:
+    return VarScenarioStatus::MarketUnavailable;
+  case VarLegStatus::TimestampMismatch:
+    return VarScenarioStatus::TimestampMismatch;
+  case VarLegStatus::ProjectionUnavailable:
+  case VarLegStatus::PricingError:
+  case VarLegStatus::InvalidDelta:
+  case VarLegStatus::InvalidValue:
+  case VarLegStatus::ExpiredBeforeShift:
+    return VarScenarioStatus::LegFailure;
+  }
+  return VarScenarioStatus::LegFailure;
+}
+
+void poison_leg(VarLegFrame &frame, VarLegStatus status, VarLegKind kind,
+                std::uint32_t uid) noexcept {
+  frame = {};
+  frame.kind = kind;
+  frame.status = status;
+  frame.uid = uid;
+  frame.units = kNaN;
+  frame.base_spot = kNaN;
+  frame.shifted_spot = kNaN;
+  frame.base_mark = kNaN;
+  frame.shifted_mark = kNaN;
+  frame.base_delta = kNaN;
+  frame.dollar_delta = kNaN;
+  frame.base_value = kNaN;
+  frame.shifted_value = kNaN;
+  frame.pnl = kNaN;
+  frame.strike = kNaN;
+  frame.base_time_to_expiry = kNaN;
+  frame.shifted_time_to_expiry = kNaN;
+}
+
+void poison_scenario(VarScenarioFrame &frame, const VarScenario &scenario, VarScenarioStatus status,
+                     std::size_t n_legs) noexcept {
+  frame = {};
+  frame.base_ts_ns = scenario.base_ts_ns;
+  frame.shifted_ts_ns = scenario.shifted_ts_ns;
+  frame.status = status;
+  frame.base_value = kNaN;
+  frame.shifted_value = kNaN;
+  frame.pnl = kNaN;
+  frame.dollar_delta = kNaN;
+  frame.n_failed = checked_u32(n_legs);
+}
+
+[[nodiscard]] bool admitted_risk_surface(const SurfaceProvenance *provenance) noexcept {
+  return provenance != nullptr && !provenance->legacy_format &&
+         provenance->purpose == SurfacePurpose::Risk && provenance->served_generation != 0u &&
+         (provenance->state == SurfaceState::Healthy ||
+          provenance->state == SurfaceState::Degraded);
+}
+
+[[nodiscard]] Result<std::vector<std::uint32_t>>
+required_uids(std::span<const VarPosition> positions) {
+  if (positions.empty()) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR: empty portfolio");
+  }
+  std::vector<std::pair<std::uint32_t, std::string>> keyed;
+  keyed.reserve(positions.size());
+  for (const VarPosition &position : positions) {
+    const std::string &symbol =
+        std::visit([](const auto &leg) -> const std::string & { return leg.underlier; }, position);
+    const std::string canonical = canonical_symbol(symbol);
+    if (canonical.empty()) {
+      return Err(ErrorCode::InvalidArgument, "historical VaR: empty underlier");
+    }
+    keyed.emplace_back(uid_for_symbol(canonical), canonical);
+  }
+  std::sort(keyed.begin(), keyed.end());
+  for (std::size_t index = 1; index < keyed.size(); ++index) {
+    if (keyed[index - 1u].first == keyed[index].first &&
+        keyed[index - 1u].second != keyed[index].second) {
+      return Err(ErrorCode::InvalidArgument, "historical VaR: underlier uid collision");
+    }
+  }
+  std::vector<std::uint32_t> result;
+  result.reserve(keyed.size());
+  for (const auto &[uid, symbol] : keyed) {
+    static_cast<void>(symbol);
+    if (result.empty() || result.back() != uid) {
+      result.push_back(uid);
+    }
+  }
+  return Ok(std::move(result));
+}
+
+[[nodiscard]] Status validate_snapshot(const MarketSnapshot &snapshot,
+                                       std::span<const std::uint32_t> uids,
+                                       SurfaceProvenancePolicy provenance_policy) {
+  for (const std::uint32_t uid : uids) {
+    if (snapshot.find(uid) == nullptr) {
+      return Err(ErrorCode::NotFound, "historical VaR: required surface unavailable");
+    }
+    if (provenance_policy == SurfaceProvenancePolicy::RequireAdmittedRisk &&
+        !admitted_risk_surface(snapshot.provenance(uid))) {
+      return Err(ErrorCode::InvalidArgument,
+                 "historical VaR: required surface is not admitted for risk");
+    }
+  }
+  return Ok();
+}
+
+struct SnapshotLoad {
+  std::optional<MarketSnapshot> snapshot{};
+  VarLegStatus failure{VarLegStatus::SurfaceUnavailable};
+};
+
+struct NormalizedVarLeg {
+  VarLegKind kind{VarLegKind::Option};
+  std::uint32_t uid{0};
+  std::string underlier{};
+  ProjectedMaturitySpec maturity{};
+  Side side{Side::Call};
+  double multiplier{1.0};
+  double target_dollar_delta{0.0};
+  double target_abs_delta{0.0};
+  // Constant for year-fraction/calendar-day maturities; zero selects the
+  // calendar-aware projection fallback.
+  std::int64_t expiry_offset_ns{0};
+  std::uint64_t fingerprint{0};
+  // Earliest leg with the same historical pricing definition. Quantity is
+  // deliberately excluded: duplicate contracts share marks/Greeks, then scale
+  // independently to their own reference dollar delta.
+  std::size_t pricing_leader{0u};
+};
+
+struct VarOptionGroup {
+  std::uint32_t uid{0u};
+  std::size_t begin{0u};
+  std::size_t end{0u};
+};
+
+struct OptionAnchorKey {
+  std::uint32_t uid{0u};
+  ProjectedMaturitySpec maturity{};
+  double target_abs_delta{0.0};
+  Side side{Side::Call};
+  double multiplier{0.0};
+
+  [[nodiscard]] bool operator==(const OptionAnchorKey &) const = default;
+};
+
+struct OptionAnchorKeyHash {
+  [[nodiscard]] std::size_t operator()(const OptionAnchorKey &key) const noexcept {
+    std::size_t hash = static_cast<std::size_t>(key.uid);
+    hash = atx::core::hash_combine(hash, static_cast<std::size_t>(key.maturity.kind));
+    hash = atx::core::hash_combine(
+        hash, static_cast<std::size_t>(std::bit_cast<std::uint64_t>(key.maturity.year_fraction)));
+    hash = atx::core::hash_combine(hash, static_cast<std::size_t>(key.maturity.calendar_count));
+    hash = atx::core::hash_combine(hash, static_cast<std::size_t>(key.maturity.expiry_ts_ns));
+    hash = atx::core::hash_combine(
+        hash, static_cast<std::size_t>(std::bit_cast<std::uint64_t>(key.target_abs_delta)));
+    hash = atx::core::hash_combine(hash, static_cast<std::size_t>(key.side));
+    return atx::core::hash_combine(
+        hash, static_cast<std::size_t>(std::bit_cast<std::uint64_t>(key.multiplier)));
+  }
+};
+
+[[nodiscard]] OptionAnchorKey option_anchor_key(const VarOptionPosition &position) {
+  return OptionAnchorKey{uid_for_symbol(canonical_symbol(position.underlier)),
+                         position.time_to_expiry, position.target_abs_delta, position.side,
+                         position.multiplier};
+}
+
+[[nodiscard]] SnapshotLoad load_snapshot(const SnapshotRef &ref,
+                                         std::span<const std::uint32_t> uids,
+                                         const VarRunConfig &config) {
+  Result<MarketSnapshot> loaded = MarketSnapshot::load(ref.archive_path, config.query_pricing_tier,
+                                                       uids, config.archive_backing);
+  if (!loaded) {
+    return {};
+  }
+  const Status validation = validate_snapshot(*loaded, uids, config.provenance_policy);
+  if (!validation) {
+    SnapshotLoad result;
+    result.failure = validation.error().code() == ErrorCode::NotFound
+                         ? VarLegStatus::SurfaceUnavailable
+                         : VarLegStatus::ProvenanceRejected;
+    return result;
+  }
+  SnapshotLoad result;
+  result.snapshot.emplace(std::move(*loaded));
+  result.failure = VarLegStatus::Ok;
+  return result;
+}
+
+} // namespace
+
+struct PreparedVarPortfolio::Impl {
+  std::vector<NormalizedVarLeg> legs{};
+  std::vector<VarReferenceLeg> reference_legs{};
+  std::vector<std::size_t> grouped_option_indices{};
+  std::vector<std::size_t> option_slot_by_leg{};
+  std::vector<VarOptionGroup> option_groups{};
+  double reference_value{0.0};
+  double reference_dollar_delta{0.0};
+  std::int64_t reference_ts_ns{0};
+  std::uint64_t fingerprint{0};
+};
+
+namespace {
+
+[[nodiscard]] Result<NormalizedVarLeg> prepare_option(const VarOptionPosition &position,
+                                                      const SurfaceSet &reference_surfaces,
+                                                      const VarEvaluationConfig &config,
+                                                      VarReferenceLeg &reference) {
+  const std::string symbol = canonical_symbol(position.underlier);
+  if (symbol.empty() || !valid_side(position.side) || !std::isfinite(position.quantity) ||
+      position.quantity == 0.0 || !finite_positive(position.multiplier) ||
+      !(std::isfinite(position.target_abs_delta) && position.target_abs_delta > 0.0 &&
+        position.target_abs_delta < 1.0) ||
+      position.time_to_expiry.kind == ProjectedMaturityKind::AbsoluteExpiry) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR: invalid option position");
+  }
+  const std::uint32_t uid = uid_for_symbol(symbol);
+  const SurfaceRef surface = reference_surfaces.find(uid);
+  if (surface == nullptr) {
+    return Err(ErrorCode::NotFound, "historical VaR: reference option surface unavailable");
+  }
+  const double spot = surface.pricing().S;
+  if (!finite_positive(spot) || surface.pricing().now_ts_ns <= 0) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR: invalid reference option market");
+  }
+
+  OptionProjectionSpec spec;
+  spec.uid = uid;
+  spec.maturity = position.time_to_expiry;
+  spec.strike = ProjectedStrikeSpec::delta(position.target_abs_delta);
+  spec.side = position.side;
+  spec.multiplier = position.multiplier;
+  OptionProjectionConfig projection_config;
+  projection_config.output = OptionProjectionOutput::Mark;
+  projection_config.delta_tolerance = config.delta_tolerance;
+  projection_config.n_threads = 1u;
+  projection_config.query_execution = config.projection_execution;
+  projection_config.delta_solve_policy = config.projection_solve_policy;
+  ATX_TRY(ProjectedOption projected, project_option_contract(surface, spec, projection_config));
+  if (!finite_positive(projected.forward) || !finite_positive(projected.definition.contract.K) ||
+      !std::isfinite(projected.model_mark) || !std::isfinite(projected.achieved_delta) ||
+      std::fabs(projected.achieved_delta) <= config.delta_tolerance) {
+    return Err(ErrorCode::Unavailable, "historical VaR: reference option projection invalid");
+  }
+  const double log_moneyness = std::log(projected.definition.contract.K / projected.forward);
+  const double target_dollar_delta =
+      position.quantity * position.multiplier * projected.achieved_delta * spot;
+  const double reference_value = position.quantity * position.multiplier * projected.model_mark;
+  if (!std::isfinite(log_moneyness) || !std::isfinite(target_dollar_delta) ||
+      !std::isfinite(reference_value)) {
+    return Err(ErrorCode::Unavailable, "historical VaR: reference option normalization invalid");
+  }
+
+  reference.kind = VarLegKind::Option;
+  reference.uid = uid;
+  reference.underlier = symbol;
+  reference.reference_units = position.quantity;
+  reference.reference_spot = spot;
+  reference.reference_mark = projected.model_mark;
+  reference.reference_delta = projected.achieved_delta;
+  reference.target_dollar_delta = target_dollar_delta;
+  reference.target_abs_delta = position.target_abs_delta;
+  reference.log_moneyness = log_moneyness;
+
+  NormalizedVarLeg leg;
+  leg.kind = VarLegKind::Option;
+  leg.uid = uid;
+  leg.underlier = symbol;
+  leg.maturity = position.time_to_expiry;
+  leg.side = position.side;
+  leg.multiplier = position.multiplier;
+  leg.target_dollar_delta = target_dollar_delta;
+  leg.target_abs_delta = position.target_abs_delta;
+  if (position.time_to_expiry.kind == ProjectedMaturityKind::YearFraction ||
+      position.time_to_expiry.kind == ProjectedMaturityKind::CalendarDays) {
+    leg.expiry_offset_ns = projected.definition.expiry_ts_ns - surface.pricing().now_ts_ns;
+  }
+  leg.fingerprint = projected.definition.fingerprint;
+  return Ok(std::move(leg));
+}
+
+[[nodiscard]] Result<NormalizedVarLeg> prepare_stock(const VarStockPosition &position,
+                                                     const SurfaceSet &reference_surfaces,
+                                                     VarReferenceLeg &reference) {
+  const std::string symbol = canonical_symbol(position.underlier);
+  if (symbol.empty() || !std::isfinite(position.shares) || position.shares == 0.0) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR: invalid stock position");
+  }
+  const std::uint32_t uid = uid_for_symbol(symbol);
+  const SurfaceRef surface = reference_surfaces.find(uid);
+  if (surface == nullptr) {
+    return Err(ErrorCode::NotFound, "historical VaR: reference stock surface unavailable");
+  }
+  const double spot = surface.pricing().S;
+  const double target_dollar_delta = position.shares * spot;
+  if (!finite_positive(spot) || surface.pricing().now_ts_ns <= 0 ||
+      !std::isfinite(target_dollar_delta)) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR: invalid reference stock market");
+  }
+
+  reference.kind = VarLegKind::Stock;
+  reference.uid = uid;
+  reference.underlier = symbol;
+  reference.reference_units = position.shares;
+  reference.reference_spot = spot;
+  reference.reference_mark = spot;
+  reference.reference_delta = 1.0;
+  reference.target_dollar_delta = target_dollar_delta;
+  reference.target_abs_delta = 0.0;
+  reference.log_moneyness = 0.0;
+
+  NormalizedVarLeg leg;
+  leg.kind = VarLegKind::Stock;
+  leg.uid = uid;
+  leg.underlier = symbol;
+  leg.multiplier = 1.0;
+  leg.target_dollar_delta = target_dollar_delta;
+  leg.target_abs_delta = 0.0;
+  leg.fingerprint = stock_definition_fingerprint(uid);
+  return Ok(std::move(leg));
+}
+
+[[nodiscard]] Result<NormalizedVarLeg>
+reuse_option_anchor(const VarOptionPosition &position, const NormalizedVarLeg &prototype,
+                    const VarReferenceLeg &prototype_reference, VarReferenceLeg &reference) {
+  if (!std::isfinite(position.quantity) || position.quantity == 0.0) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR: invalid option position");
+  }
+  NormalizedVarLeg leg = prototype;
+  const double target_dollar_delta = position.quantity * leg.multiplier *
+                                     prototype_reference.reference_delta *
+                                     prototype_reference.reference_spot;
+  if (!std::isfinite(target_dollar_delta)) {
+    return Err(ErrorCode::Unavailable, "historical VaR: duplicate option normalization invalid");
+  }
+  leg.target_dollar_delta = target_dollar_delta;
+  reference = prototype_reference;
+  reference.reference_units = position.quantity;
+  reference.target_dollar_delta = target_dollar_delta;
+  return Ok(std::move(leg));
+}
+
+struct ResolvedVarContract {
+  OptionContract contract{};
+  std::int64_t expiry_ts_ns{0};
+  double base_delta{0.0};
+  std::uint64_t fingerprint{0};
+};
+
+[[nodiscard]] bool resolve_var_contract(const NormalizedVarLeg &leg, const SurfaceRef &base,
+                                        const VarScenario &scenario,
+                                        const VarEvaluationConfig &config,
+                                        ResolvedVarContract &resolved) {
+  ProjectedMaturitySpec maturity = leg.maturity;
+  if (leg.expiry_offset_ns > 0 &&
+      leg.expiry_offset_ns <= std::numeric_limits<std::int64_t>::max() - scenario.base_ts_ns) {
+    const std::int64_t expiry = scenario.base_ts_ns + leg.expiry_offset_ns;
+    maturity = ProjectedMaturitySpec::absolute(expiry);
+  }
+
+  OptionProjectionSpec spec;
+  spec.uid = leg.uid;
+  spec.maturity = maturity;
+  spec.strike = ProjectedStrikeSpec::delta(leg.target_abs_delta);
+  spec.side = leg.side;
+  spec.multiplier = leg.multiplier;
+  OptionProjectionConfig projection_config;
+  projection_config.output = OptionProjectionOutput::DefinitionOnly;
+  projection_config.delta_tolerance = config.delta_tolerance;
+  projection_config.n_threads = 1u;
+  projection_config.query_execution = config.projection_execution;
+  projection_config.delta_solve_policy = config.projection_solve_policy;
+  const Result<ProjectedOption> projected = project_option_contract(base, spec, projection_config);
+  if (!projected) {
+    return false;
+  }
+  resolved.contract = projected->definition.contract;
+  resolved.expiry_ts_ns = projected->definition.expiry_ts_ns;
+  resolved.base_delta = projected->achieved_delta;
+  resolved.fingerprint = projected->definition.fingerprint;
+  return std::isfinite(resolved.base_delta) &&
+         std::fabs(std::fabs(resolved.base_delta) - leg.target_abs_delta) <= config.delta_tolerance;
+}
+
+[[nodiscard]] VarLegStatus evaluate_option_leg(const NormalizedVarLeg &leg,
+                                               const VarScenario &scenario,
+                                               const VarEvaluationConfig &config,
+                                               VarLegFrame &frame) {
+  const SurfaceRef base = scenario.base_surfaces->find(leg.uid);
+  const SurfaceRef shifted = scenario.shifted_surfaces->find(leg.uid);
+  if (base == nullptr || shifted == nullptr) {
+    poison_leg(frame, VarLegStatus::SurfaceUnavailable, leg.kind, leg.uid);
+    return frame.status;
+  }
+  if (base.pricing().now_ts_ns != scenario.base_ts_ns ||
+      shifted.pricing().now_ts_ns != scenario.shifted_ts_ns) {
+    poison_leg(frame, VarLegStatus::TimestampMismatch, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const double base_spot = base.pricing().S;
+  const double shifted_spot = shifted.pricing().S;
+  if (!finite_positive(base_spot) || !finite_positive(shifted_spot)) {
+    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
+    return frame.status;
+  }
+
+  ResolvedVarContract resolved;
+  if (!resolve_var_contract(leg, base, scenario, config, resolved)) {
+    poison_leg(frame, VarLegStatus::ProjectionUnavailable, leg.kind, leg.uid);
+    return frame.status;
+  }
+
+  const OptionContract &contract = resolved.contract;
+  const PricedSurface::FusedResult base_evaluation =
+      base.evaluate(contract.K, contract.T, contract.side, PricedSurface::EvalField::Price, false,
+                    config.valuation_execution);
+  if (!base_evaluation.status || !std::isfinite(base_evaluation.price)) {
+    poison_leg(frame, VarLegStatus::PricingError, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const double base_delta = resolved.base_delta;
+  if (!std::isfinite(base_delta) || std::fabs(base_delta) <= config.delta_tolerance) {
+    poison_leg(frame, VarLegStatus::InvalidDelta, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const Result<VarSizingResult> sizing = resolve_var_sizing(
+      VarSizingInput{leg.target_dollar_delta, base_spot, base_delta, leg.multiplier});
+  const double shifted_time =
+      static_cast<double>(resolved.expiry_ts_ns - scenario.shifted_ts_ns) / kNsPerYear;
+  if (!sizing) {
+    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
+    return frame.status;
+  }
+  if (!finite_positive(shifted_time)) {
+    poison_leg(frame, VarLegStatus::ExpiredBeforeShift, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const PricedSurface::FusedResult shifted_evaluation =
+      shifted.evaluate(contract.K, shifted_time, contract.side, PricedSurface::EvalField::Price,
+                       false, config.valuation_execution);
+  if (!shifted_evaluation.status || !std::isfinite(shifted_evaluation.price)) {
+    poison_leg(frame, VarLegStatus::PricingError, leg.kind, leg.uid);
+    return frame.status;
+  }
+
+  const double base_value = sizing->units * leg.multiplier * base_evaluation.price;
+  const double shifted_value = sizing->units * leg.multiplier * shifted_evaluation.price;
+  const double pnl = shifted_value - base_value;
+  const double allowed_error =
+      config.delta_tolerance * std::max(1.0, std::fabs(leg.target_dollar_delta));
+  if (!std::isfinite(base_value) || !std::isfinite(shifted_value) || !std::isfinite(pnl) ||
+      std::fabs(sizing->achieved_dollar_delta - leg.target_dollar_delta) > allowed_error) {
+    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
+    return frame.status;
+  }
+
+  frame = {};
+  frame.kind = VarLegKind::Option;
+  frame.status = VarLegStatus::Ok;
+  frame.uid = leg.uid;
+  frame.units = sizing->units;
+  frame.base_spot = base_spot;
+  frame.shifted_spot = shifted_spot;
+  frame.base_mark = base_evaluation.price;
+  frame.shifted_mark = shifted_evaluation.price;
+  frame.base_delta = base_delta;
+  frame.dollar_delta = sizing->achieved_dollar_delta;
+  frame.base_value = base_value;
+  frame.shifted_value = shifted_value;
+  frame.pnl = pnl;
+  frame.strike = contract.K;
+  frame.base_time_to_expiry = contract.T;
+  frame.shifted_time_to_expiry = shifted_time;
+  frame.definition_fingerprint = resolved.fingerprint;
+  return frame.status;
+}
+
+[[nodiscard]] VarLegStatus reuse_option_pricing(const NormalizedVarLeg &leg,
+                                                const VarLegFrame &leader,
+                                                const VarEvaluationConfig &config,
+                                                VarLegFrame &frame) noexcept {
+  if (leader.status != VarLegStatus::Ok) {
+    poison_leg(frame, leader.status, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const Result<VarSizingResult> sizing = resolve_var_sizing(
+      VarSizingInput{leg.target_dollar_delta, leader.base_spot, leader.base_delta, leg.multiplier});
+  if (!sizing) {
+    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const double base_value = sizing->units * leg.multiplier * leader.base_mark;
+  const double shifted_value = sizing->units * leg.multiplier * leader.shifted_mark;
+  const double pnl = shifted_value - base_value;
+  const double allowed_error =
+      config.delta_tolerance * std::max(1.0, std::fabs(leg.target_dollar_delta));
+  if (!std::isfinite(base_value) || !std::isfinite(shifted_value) || !std::isfinite(pnl) ||
+      std::fabs(sizing->achieved_dollar_delta - leg.target_dollar_delta) > allowed_error) {
+    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
+    return frame.status;
+  }
+
+  frame = leader;
+  frame.units = sizing->units;
+  frame.dollar_delta = sizing->achieved_dollar_delta;
+  frame.base_value = base_value;
+  frame.shifted_value = shifted_value;
+  frame.pnl = pnl;
+  return frame.status;
+}
+
+[[nodiscard]] VarLegStatus evaluate_stock_leg(const NormalizedVarLeg &leg,
+                                              const VarScenario &scenario,
+                                              VarLegFrame &frame) noexcept {
+  const SurfaceRef base = scenario.base_surfaces->find(leg.uid);
+  const SurfaceRef shifted = scenario.shifted_surfaces->find(leg.uid);
+  if (base == nullptr || shifted == nullptr) {
+    poison_leg(frame, VarLegStatus::SurfaceUnavailable, leg.kind, leg.uid);
+    return frame.status;
+  }
+  if (base.pricing().now_ts_ns != scenario.base_ts_ns ||
+      shifted.pricing().now_ts_ns != scenario.shifted_ts_ns) {
+    poison_leg(frame, VarLegStatus::TimestampMismatch, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const double base_spot = base.pricing().S;
+  const double shifted_spot = shifted.pricing().S;
+  if (!finite_positive(base_spot) || !finite_positive(shifted_spot)) {
+    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const Result<VarSizingResult> sizing =
+      resolve_var_sizing(VarSizingInput{leg.target_dollar_delta, base_spot, 1.0, 1.0});
+  if (!sizing) {
+    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const double base_value = sizing->units * base_spot;
+  const double shifted_value = sizing->units * shifted_spot;
+  const double pnl = shifted_value - base_value;
+  if (!std::isfinite(base_value) || !std::isfinite(shifted_value) || !std::isfinite(pnl)) {
+    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
+    return frame.status;
+  }
+
+  frame = {};
+  frame.kind = VarLegKind::Stock;
+  frame.status = VarLegStatus::Ok;
+  frame.uid = leg.uid;
+  frame.units = sizing->units;
+  frame.base_spot = base_spot;
+  frame.shifted_spot = shifted_spot;
+  frame.base_mark = base_spot;
+  frame.shifted_mark = shifted_spot;
+  frame.base_delta = 1.0;
+  frame.dollar_delta = sizing->achieved_dollar_delta;
+  frame.base_value = base_value;
+  frame.shifted_value = shifted_value;
+  frame.pnl = pnl;
+  frame.definition_fingerprint = leg.fingerprint;
+  return frame.status;
+}
+
+template <class PreparedState>
+void evaluate_scenario(const PreparedState &impl, const VarScenario &scenario,
+                       VarScenarioFrame &frame, std::span<VarLegFrame> leg_frames,
+                       const VarEvaluationConfig &config) {
+  frame = {};
+  frame.base_ts_ns = scenario.base_ts_ns;
+  frame.shifted_ts_ns = scenario.shifted_ts_ns;
+  frame.status = VarScenarioStatus::Ok;
+  std::size_t aggregate_fingerprint = static_cast<std::size_t>(impl.fingerprint);
+  VarScenarioStatus failure_status = VarScenarioStatus::Ok;
+
+  for (std::size_t index = 0; index < impl.legs.size(); ++index) {
+    const NormalizedVarLeg &leg = impl.legs[index];
+    VarLegFrame &leg_frame = leg_frames[index];
+    VarLegStatus status = VarLegStatus::Ok;
+    if (leg.kind == VarLegKind::Option && leg.pricing_leader != index) {
+      status = reuse_option_pricing(leg, leg_frames[leg.pricing_leader], config, leg_frame);
+    } else if (leg.kind == VarLegKind::Option) {
+      status = evaluate_option_leg(leg, scenario, config, leg_frame);
+    } else {
+      status = evaluate_stock_leg(leg, scenario, leg_frame);
+    }
+    if (status != VarLegStatus::Ok) {
+      ++frame.n_failed;
+      if (failure_status == VarScenarioStatus::Ok) {
+        failure_status = scenario_status_for(status);
+      }
+      continue;
+    }
+    ++frame.n_ok;
+    frame.base_value += leg_frame.base_value;
+    frame.shifted_value += leg_frame.shifted_value;
+    frame.pnl += leg_frame.pnl;
+    frame.dollar_delta += leg_frame.dollar_delta;
+    aggregate_fingerprint =
+        atx::core::hash_combine(aggregate_fingerprint, leg_frame.definition_fingerprint);
+  }
+  if (frame.n_failed != 0u) {
+    frame.status = failure_status;
+    frame.base_value = kNaN;
+    frame.shifted_value = kNaN;
+    frame.pnl = kNaN;
+    frame.dollar_delta = kNaN;
+    return;
+  }
+  frame.definition_fingerprint = static_cast<std::uint64_t>(aggregate_fingerprint);
+  if (frame.definition_fingerprint == 0u) {
+    frame.definition_fingerprint = 1u;
+  }
+}
+
+struct VarBatchScratch {
+  std::vector<double> strike{};
+  std::vector<double> base_time{};
+  std::vector<double> shifted_time{};
+  std::vector<Side> side{};
+  std::vector<double> shifted_iv{};
+  std::vector<double> base_price{};
+  std::vector<double> shifted_price{};
+  std::vector<double> base_delta{};
+  std::vector<double> base_spot{};
+  std::vector<double> shifted_spot{};
+  std::vector<std::uint64_t> fingerprint{};
+  std::vector<Status> base_status{};
+  std::vector<Status> shifted_status{};
+  std::vector<VarLegFrame> fallback_frames{};
+};
+
+template <class PreparedState>
+[[nodiscard]] VarBatchScratch make_var_batch_scratch(const PreparedState &impl) {
+  const std::size_t count = impl.grouped_option_indices.size();
+  VarBatchScratch scratch;
+  scratch.strike.resize(count);
+  scratch.base_time.resize(count);
+  scratch.shifted_time.resize(count);
+  scratch.side.resize(count);
+  scratch.shifted_iv.resize(count);
+  scratch.base_price.resize(count);
+  scratch.shifted_price.resize(count);
+  scratch.base_delta.resize(count);
+  scratch.base_spot.resize(count);
+  scratch.shifted_spot.resize(count);
+  scratch.fingerprint.resize(count);
+  scratch.base_status.resize(count);
+  scratch.shifted_status.resize(count);
+  scratch.fallback_frames.resize(impl.legs.size());
+  for (std::size_t slot = 0u; slot < count; ++slot) {
+    scratch.side[slot] = impl.legs[impl.grouped_option_indices[slot]].side;
+  }
+  return scratch;
+}
+
+template <class PreparedState>
+void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &scenario,
+                               VarScenarioFrame &frame, VarBatchScratch &scratch,
+                               const VarEvaluationConfig &config) {
+  const auto fallback = [&] {
+    evaluate_scenario(impl, scenario, frame, scratch.fallback_frames, config);
+  };
+  constexpr auto price_field = PricedSurface::EvalField::Price;
+  for (const VarOptionGroup &group : impl.option_groups) {
+    const SurfaceRef base = scenario.base_surfaces->find(group.uid);
+    const SurfaceRef shifted = scenario.shifted_surfaces->find(group.uid);
+    if (base == nullptr || shifted == nullptr || base.pricing().now_ts_ns != scenario.base_ts_ns ||
+        shifted.pricing().now_ts_ns != scenario.shifted_ts_ns ||
+        !finite_positive(base.pricing().S) || !finite_positive(shifted.pricing().S)) {
+      fallback();
+      return;
+    }
+    for (std::size_t slot = group.begin; slot < group.end; ++slot) {
+      const NormalizedVarLeg &leg = impl.legs[impl.grouped_option_indices[slot]];
+      ResolvedVarContract resolved;
+      if (!resolve_var_contract(leg, base, scenario, config, resolved)) {
+        fallback();
+        return;
+      }
+      const double shifted_time =
+          static_cast<double>(resolved.expiry_ts_ns - scenario.shifted_ts_ns) / kNsPerYear;
+      if (!finite_positive(shifted_time)) {
+        fallback();
+        return;
+      }
+      scratch.strike[slot] = resolved.contract.K;
+      scratch.base_time[slot] = resolved.contract.T;
+      scratch.shifted_time[slot] = shifted_time;
+      scratch.base_spot[slot] = base.pricing().S;
+      scratch.shifted_spot[slot] = shifted.pricing().S;
+      scratch.base_delta[slot] = resolved.base_delta;
+      scratch.fingerprint[slot] = resolved.fingerprint;
+    }
+
+    const std::size_t count = group.end - group.begin;
+    const auto doubles = [begin = group.begin, count](std::vector<double> &values) {
+      return std::span<double>{values}.subspan(begin, count);
+    };
+    const auto const_doubles = [begin = group.begin, count](const std::vector<double> &values) {
+      return std::span<const double>{values}.subspan(begin, count);
+    };
+    const std::span<const Side> sides{scratch.side.data() + group.begin, count};
+    PricedSurface::EvaluationSoA base_output;
+    base_output.iv = doubles(scratch.shifted_iv);
+    base_output.price = doubles(scratch.base_price);
+    base_output.status = std::span<Status>{scratch.base_status}.subspan(group.begin, count);
+    const Status base_batch = base.evaluate_batch(
+        const_doubles(scratch.strike), const_doubles(scratch.base_time), sides, price_field, false,
+        base_output, simd::SimdIsa::Auto, config.valuation_execution);
+    if (!base_batch) {
+      fallback();
+      return;
+    }
+
+    PricedSurface::EvaluationSoA shifted_output;
+    shifted_output.iv = doubles(scratch.shifted_iv);
+    shifted_output.price = doubles(scratch.shifted_price);
+    shifted_output.status = std::span<Status>{scratch.shifted_status}.subspan(group.begin, count);
+    const Status shifted_batch = shifted.evaluate_batch(
+        const_doubles(scratch.strike), const_doubles(scratch.shifted_time), sides, price_field,
+        false, shifted_output, simd::SimdIsa::Auto, config.valuation_execution);
+    if (!shifted_batch) {
+      fallback();
+      return;
+    }
+  }
+
+  frame = {};
+  frame.base_ts_ns = scenario.base_ts_ns;
+  frame.shifted_ts_ns = scenario.shifted_ts_ns;
+  frame.status = VarScenarioStatus::Ok;
+  std::size_t aggregate_fingerprint = static_cast<std::size_t>(impl.fingerprint);
+  VarScenarioStatus failure_status = VarScenarioStatus::Ok;
+  for (std::size_t index = 0u; index < impl.legs.size(); ++index) {
+    const NormalizedVarLeg &leg = impl.legs[index];
+    VarLegStatus status = VarLegStatus::Ok;
+    double base_value = 0.0;
+    double shifted_value = 0.0;
+    double pnl = 0.0;
+    double dollar_delta = 0.0;
+    std::uint64_t fingerprint = 0u;
+    if (leg.kind == VarLegKind::Stock) {
+      VarLegFrame stock_frame;
+      status = evaluate_stock_leg(leg, scenario, stock_frame);
+      if (status == VarLegStatus::Ok) {
+        base_value = stock_frame.base_value;
+        shifted_value = stock_frame.shifted_value;
+        pnl = stock_frame.pnl;
+        dollar_delta = stock_frame.dollar_delta;
+        fingerprint = stock_frame.definition_fingerprint;
+      }
+    } else {
+      const std::size_t slot = impl.option_slot_by_leg[index];
+      if (!scratch.base_status[slot] || !scratch.shifted_status[slot] ||
+          !std::isfinite(scratch.base_price[slot]) || !std::isfinite(scratch.shifted_price[slot])) {
+        status = VarLegStatus::PricingError;
+      } else if (!std::isfinite(scratch.base_delta[slot]) ||
+                 std::fabs(scratch.base_delta[slot]) <= config.delta_tolerance) {
+        status = VarLegStatus::InvalidDelta;
+      } else {
+        const Result<VarSizingResult> sizing =
+            resolve_var_sizing(VarSizingInput{leg.target_dollar_delta, scratch.base_spot[slot],
+                                              scratch.base_delta[slot], leg.multiplier});
+        if (!sizing) {
+          status = VarLegStatus::InvalidValue;
+        } else {
+          dollar_delta = sizing->achieved_dollar_delta;
+          base_value = sizing->units * leg.multiplier * scratch.base_price[slot];
+          shifted_value = sizing->units * leg.multiplier * scratch.shifted_price[slot];
+        }
+        pnl = shifted_value - base_value;
+        const double allowed_error =
+            config.delta_tolerance * std::max(1.0, std::fabs(leg.target_dollar_delta));
+        if (status == VarLegStatus::Ok &&
+            (!std::isfinite(dollar_delta) || !std::isfinite(base_value) ||
+             !std::isfinite(shifted_value) || !std::isfinite(pnl) ||
+             std::fabs(dollar_delta - leg.target_dollar_delta) > allowed_error)) {
+          status = VarLegStatus::InvalidValue;
+        }
+        fingerprint = scratch.fingerprint[slot];
+      }
+    }
+    if (status != VarLegStatus::Ok) {
+      ++frame.n_failed;
+      if (failure_status == VarScenarioStatus::Ok) {
+        failure_status = scenario_status_for(status);
+      }
+      continue;
+    }
+    ++frame.n_ok;
+    frame.base_value += base_value;
+    frame.shifted_value += shifted_value;
+    frame.pnl += pnl;
+    frame.dollar_delta += dollar_delta;
+    aggregate_fingerprint = atx::core::hash_combine(aggregate_fingerprint, fingerprint);
+  }
+  if (frame.n_failed != 0u) {
+    frame.status = failure_status;
+    frame.base_value = kNaN;
+    frame.shifted_value = kNaN;
+    frame.pnl = kNaN;
+    frame.dollar_delta = kNaN;
+    return;
+  }
+  frame.definition_fingerprint = static_cast<std::uint64_t>(aggregate_fingerprint);
+  if (frame.definition_fingerprint == 0u) {
+    frame.definition_fingerprint = 1u;
+  }
+}
+
+void fill_loaded_failure(std::span<const VarReferenceLeg> reference_legs, VarScenarioFrame &frame,
+                         std::span<VarLegFrame> output, VarLegStatus status,
+                         std::int64_t base_ts_ns, std::int64_t shifted_ts_ns) noexcept {
+  VarScenario scenario;
+  scenario.base_ts_ns = base_ts_ns;
+  scenario.shifted_ts_ns = shifted_ts_ns;
+  poison_scenario(frame, scenario, scenario_status_for(status), reference_legs.size());
+  for (std::size_t index = 0; index < output.size(); ++index) {
+    poison_leg(output[index], status, reference_legs[index].kind, reference_legs[index].uid);
+  }
+}
+
+} // namespace
+
+Result<VarSizingResult> resolve_var_sizing(const VarSizingInput &input) {
+  if (!std::isfinite(input.target_dollar_delta) || !finite_positive(input.spot) ||
+      !std::isfinite(input.unit_delta) || input.unit_delta == 0.0 ||
+      std::fabs(input.unit_delta) > 1.0 || !finite_positive(input.multiplier)) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR: invalid dollar-delta sizing input");
+  }
+  const double denominator = input.multiplier * input.unit_delta * input.spot;
+  const double units = input.target_dollar_delta / denominator;
+  const double achieved_dollar_delta = units * denominator;
+  if (!std::isfinite(denominator) || denominator == 0.0 || !std::isfinite(units) ||
+      !std::isfinite(achieved_dollar_delta)) {
+    return Err(ErrorCode::OutOfRange, "historical VaR: dollar-delta sizing overflow");
+  }
+  return Ok(VarSizingResult{units, achieved_dollar_delta});
+}
+
+const char *to_string(VarLegStatus status) noexcept {
+  switch (status) {
+  case VarLegStatus::Ok:
+    return "Ok";
+  case VarLegStatus::SurfaceUnavailable:
+    return "SurfaceUnavailable";
+  case VarLegStatus::TimestampMismatch:
+    return "TimestampMismatch";
+  case VarLegStatus::ProjectionUnavailable:
+    return "ProjectionUnavailable";
+  case VarLegStatus::PricingError:
+    return "PricingError";
+  case VarLegStatus::InvalidDelta:
+    return "InvalidDelta";
+  case VarLegStatus::InvalidValue:
+    return "InvalidValue";
+  case VarLegStatus::ProvenanceRejected:
+    return "ProvenanceRejected";
+  case VarLegStatus::ExpiredBeforeShift:
+    return "ExpiredBeforeShift";
+  }
+  return "Unknown";
+}
+
+const char *to_string(VarScenarioStatus status) noexcept {
+  switch (status) {
+  case VarScenarioStatus::Ok:
+    return "Ok";
+  case VarScenarioStatus::MarketUnavailable:
+    return "MarketUnavailable";
+  case VarScenarioStatus::TimestampMismatch:
+    return "TimestampMismatch";
+  case VarScenarioStatus::LegFailure:
+    return "LegFailure";
+  }
+  return "Unknown";
+}
+
+PreparedVarPortfolio::PreparedVarPortfolio() : impl_(std::make_unique<Impl>()) {}
+PreparedVarPortfolio::~PreparedVarPortfolio() = default;
+PreparedVarPortfolio::PreparedVarPortfolio(PreparedVarPortfolio &&) noexcept = default;
+PreparedVarPortfolio &PreparedVarPortfolio::operator=(PreparedVarPortfolio &&) noexcept = default;
+
+Result<PreparedVarPortfolio> PreparedVarPortfolio::create(std::span<const VarPosition> positions,
+                                                          const SurfaceSet &reference_surfaces,
+                                                          const VarEvaluationConfig &config) {
+  if (positions.empty() || !valid_evaluation_config(config) ||
+      positions.size() > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR: invalid portfolio/config");
+  }
+  PreparedVarPortfolio prepared;
+  prepared.impl_->legs.reserve(positions.size());
+  prepared.impl_->reference_legs.reserve(positions.size());
+  std::vector<std::pair<std::uint32_t, std::string>> uid_symbols;
+  uid_symbols.reserve(positions.size());
+  std::vector<std::uint64_t> fingerprint_words;
+  fingerprint_words.reserve(positions.size() * 4u);
+  std::unordered_map<OptionAnchorKey, std::size_t, OptionAnchorKeyHash> option_anchors;
+  option_anchors.reserve(positions.size());
+
+  for (std::size_t position_index = 0u; position_index < positions.size(); ++position_index) {
+    const VarPosition &position = positions[position_index];
+    VarReferenceLeg reference;
+    Result<NormalizedVarLeg> normalized =
+        Err(ErrorCode::Internal, "historical VaR: position normalization not attempted");
+    if (const auto *option = std::get_if<VarOptionPosition>(&position); option != nullptr) {
+      const OptionAnchorKey key = option_anchor_key(*option);
+      const auto prototype = option_anchors.find(key);
+      if (prototype == option_anchors.end()) {
+        normalized = prepare_option(*option, reference_surfaces, config, reference);
+        if (normalized) {
+          normalized->pricing_leader = position_index;
+          option_anchors.emplace(key, position_index);
+        }
+      } else {
+        normalized =
+            reuse_option_anchor(*option, prepared.impl_->legs[prototype->second],
+                                prepared.impl_->reference_legs[prototype->second], reference);
+      }
+    } else {
+      normalized =
+          prepare_stock(std::get<VarStockPosition>(position), reference_surfaces, reference);
+      if (normalized) {
+        normalized->pricing_leader = position_index;
+      }
+    }
+    if (!normalized) {
+      return Err(normalized.error());
+    }
+    const SurfaceRef surface = reference_surfaces.find(normalized->uid);
+    if (surface == nullptr) {
+      return Err(ErrorCode::NotFound, "historical VaR: normalized reference surface unavailable");
+    }
+    const std::int64_t timestamp = surface.pricing().now_ts_ns;
+    if (prepared.impl_->reference_ts_ns == 0) {
+      prepared.impl_->reference_ts_ns = timestamp;
+    } else if (prepared.impl_->reference_ts_ns != timestamp) {
+      return Err(ErrorCode::InvalidArgument,
+                 "historical VaR: reference surfaces disagree on timestamp");
+    }
+    uid_symbols.emplace_back(normalized->uid, normalized->underlier);
+    prepared.impl_->reference_value +=
+        reference.reference_units * reference.reference_mark * normalized->multiplier;
+    prepared.impl_->reference_dollar_delta += reference.target_dollar_delta;
+    fingerprint_words.push_back(normalized->fingerprint);
+    fingerprint_words.push_back(std::bit_cast<std::uint64_t>(normalized->target_dollar_delta));
+    fingerprint_words.push_back(std::bit_cast<std::uint64_t>(normalized->target_abs_delta));
+    fingerprint_words.push_back(static_cast<std::uint64_t>(normalized->kind));
+    prepared.impl_->reference_legs.push_back(std::move(reference));
+    prepared.impl_->legs.push_back(std::move(*normalized));
+  }
+  prepared.impl_->grouped_option_indices.reserve(prepared.impl_->legs.size());
+  prepared.impl_->option_slot_by_leg.assign(prepared.impl_->legs.size(),
+                                            std::numeric_limits<std::size_t>::max());
+  for (std::size_t index = 0u; index < prepared.impl_->legs.size(); ++index) {
+    if (prepared.impl_->legs[index].kind == VarLegKind::Option &&
+        prepared.impl_->legs[index].pricing_leader == index) {
+      prepared.impl_->grouped_option_indices.push_back(index);
+    }
+  }
+  std::stable_sort(
+      prepared.impl_->grouped_option_indices.begin(), prepared.impl_->grouped_option_indices.end(),
+      [&](std::size_t left, std::size_t right) {
+        const NormalizedVarLeg &lhs = prepared.impl_->legs[left];
+        const NormalizedVarLeg &rhs = prepared.impl_->legs[right];
+        return std::tie(lhs.uid, lhs.expiry_offset_ns) < std::tie(rhs.uid, rhs.expiry_offset_ns);
+      });
+  for (std::size_t slot = 0u; slot < prepared.impl_->grouped_option_indices.size(); ++slot) {
+    prepared.impl_->option_slot_by_leg[prepared.impl_->grouped_option_indices[slot]] = slot;
+  }
+  for (std::size_t index = 0u; index < prepared.impl_->legs.size(); ++index) {
+    const NormalizedVarLeg &leg = prepared.impl_->legs[index];
+    if (leg.kind == VarLegKind::Option && leg.pricing_leader != index) {
+      const std::size_t leader_slot = prepared.impl_->option_slot_by_leg[leg.pricing_leader];
+      if (leader_slot == std::numeric_limits<std::size_t>::max()) {
+        return Err(ErrorCode::Internal, "historical VaR: duplicate option leader unavailable");
+      }
+      prepared.impl_->option_slot_by_leg[index] = leader_slot;
+    }
+  }
+  for (std::size_t begin = 0u; begin < prepared.impl_->grouped_option_indices.size();) {
+    const std::uint32_t uid =
+        prepared.impl_->legs[prepared.impl_->grouped_option_indices[begin]].uid;
+    std::size_t end = begin + 1u;
+    while (end < prepared.impl_->grouped_option_indices.size() &&
+           prepared.impl_->legs[prepared.impl_->grouped_option_indices[end]].uid == uid) {
+      ++end;
+    }
+    prepared.impl_->option_groups.push_back(VarOptionGroup{uid, begin, end});
+    begin = end;
+  }
+  std::sort(uid_symbols.begin(), uid_symbols.end());
+  for (std::size_t index = 1; index < uid_symbols.size(); ++index) {
+    if (uid_symbols[index - 1u].first == uid_symbols[index].first &&
+        uid_symbols[index - 1u].second != uid_symbols[index].second) {
+      return Err(ErrorCode::InvalidArgument, "historical VaR: underlier uid collision");
+    }
+  }
+  if (!std::isfinite(prepared.impl_->reference_value) ||
+      !std::isfinite(prepared.impl_->reference_dollar_delta) ||
+      prepared.impl_->reference_ts_ns <= 0) {
+    return Err(ErrorCode::Unavailable, "historical VaR: invalid reference aggregate");
+  }
+  prepared.impl_->fingerprint =
+      nonzero_hash(fingerprint_words.data(), fingerprint_words.size() * sizeof(std::uint64_t));
+  return Ok(std::move(prepared));
+}
+
+std::size_t PreparedVarPortfolio::size() const noexcept { return impl_->legs.size(); }
+double PreparedVarPortfolio::reference_value() const noexcept { return impl_->reference_value; }
+double PreparedVarPortfolio::reference_dollar_delta() const noexcept {
+  return impl_->reference_dollar_delta;
+}
+std::int64_t PreparedVarPortfolio::reference_ts_ns() const noexcept {
+  return impl_->reference_ts_ns;
+}
+std::uint64_t PreparedVarPortfolio::fingerprint() const noexcept { return impl_->fingerprint; }
+std::span<const VarReferenceLeg> PreparedVarPortfolio::reference_legs() const noexcept {
+  return impl_->reference_legs;
+}
+
+Status PreparedVarPortfolio::replay_into(std::span<const VarScenario> scenarios,
+                                         std::span<VarScenarioFrame> frames,
+                                         std::span<VarLegFrame> leg_frames,
+                                         const VarEvaluationConfig &config) const {
+  if (scenarios.empty() || frames.size() != scenarios.size() || !valid_evaluation_config(config) ||
+      impl_->legs.empty() ||
+      scenarios.size() > std::numeric_limits<std::size_t>::max() / impl_->legs.size() ||
+      (!leg_frames.empty() && leg_frames.size() != scenarios.size() * impl_->legs.size())) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR: invalid replay input/output/config");
+  }
+  std::int64_t previous_base = 0;
+  for (const VarScenario &scenario : scenarios) {
+    if (scenario.base_ts_ns <= 0 || scenario.shifted_ts_ns <= scenario.base_ts_ns ||
+        scenario.base_surfaces == nullptr || scenario.shifted_surfaces == nullptr ||
+        (previous_base != 0 && scenario.base_ts_ns <= previous_base)) {
+      return Err(ErrorCode::InvalidArgument, "historical VaR: invalid/unsorted scenario");
+    }
+    previous_base = scenario.base_ts_ns;
+  }
+
+  try {
+    run_balanced_ranges(scenarios.size(), config.n_threads, [&](std::size_t lo, std::size_t hi) {
+      VarBatchScratch batch_scratch;
+      if (leg_frames.empty()) {
+        batch_scratch = make_var_batch_scratch(*impl_);
+      }
+      for (std::size_t scenario_index = lo; scenario_index < hi; ++scenario_index) {
+        if (leg_frames.empty()) {
+          evaluate_scenario_batched(*impl_, scenarios[scenario_index], frames[scenario_index],
+                                    batch_scratch, config);
+        } else {
+          const std::span<VarLegFrame> output =
+              leg_frames.subspan(scenario_index * impl_->legs.size(), impl_->legs.size());
+          evaluate_scenario(*impl_, scenarios[scenario_index], frames[scenario_index], output,
+                            config);
+        }
+      }
+    });
+  } catch (const std::bad_alloc &) {
+    return Err(ErrorCode::Unavailable, "historical VaR: worker allocation failed");
+  } catch (const std::exception &) {
+    return Err(ErrorCode::Internal, "historical VaR: worker failed");
+  }
+  return Ok();
+}
+
+Result<VarRiskStatistics> historical_var_statistics(std::span<const VarScenarioFrame> frames,
+                                                    double confidence) {
+  if (frames.empty() || !std::isfinite(confidence) || confidence <= 0.0 || confidence >= 1.0) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR statistics: invalid input");
+  }
+  struct LossRecord {
+    double loss{0.0};
+    std::size_t scenario_index{0};
+  };
+  std::vector<LossRecord> losses;
+  losses.reserve(frames.size());
+  for (std::size_t index = 0; index < frames.size(); ++index) {
+    const VarScenarioFrame &frame = frames[index];
+    if (frame.status == VarScenarioStatus::Ok && frame.n_failed == 0u && frame.n_ok != 0u &&
+        frame.definition_fingerprint != 0u && std::isfinite(frame.pnl)) {
+      losses.push_back(LossRecord{-frame.pnl, index});
+    }
+  }
+  if (losses.empty()) {
+    return Err(ErrorCode::Unavailable, "historical VaR statistics: no successful scenarios");
+  }
+  std::sort(losses.begin(), losses.end(), [](const LossRecord &left, const LossRecord &right) {
+    return std::tie(left.loss, left.scenario_index) < std::tie(right.loss, right.scenario_index);
+  });
+  const std::size_t rank =
+      static_cast<std::size_t>(std::ceil(confidence * static_cast<double>(losses.size())));
+  const std::size_t index = std::min(losses.size() - 1u, rank == 0u ? 0u : rank - 1u);
+  double tail_sum = 0.0;
+  for (std::size_t tail = index; tail < losses.size(); ++tail) {
+    tail_sum += losses[tail].loss;
+  }
+  VarRiskStatistics result;
+  result.confidence = confidence;
+  result.value_at_risk = losses[index].loss;
+  result.expected_shortfall = tail_sum / static_cast<double>(losses.size() - index);
+  result.n_scenarios = losses.size();
+  return Ok(result);
+}
+
+Result<HistoricalVarResult> run_historical_var(const SurfaceDb &db,
+                                               std::span<const VarPosition> positions,
+                                               const VarRunConfig &config) {
+  if (!valid_evaluation_config(config.evaluation) || !std::isfinite(config.confidence) ||
+      config.confidence <= 0.0 || config.confidence >= 1.0) {
+    return Err(ErrorCode::InvalidArgument, "historical VaR: invalid run config");
+  }
+  ATX_TRY(std::vector<std::uint32_t> uids, required_uids(positions));
+  ATX_TRY(Clock full_clock, Clock::from_surface_db(db));
+  const std::span<const SnapshotRef> all_refs = full_clock.refs();
+  const std::string reference_date =
+      config.reference_date.empty() ? all_refs.back().date : config.reference_date;
+  const auto reference_it =
+      std::find_if(all_refs.begin(), all_refs.end(),
+                   [&](const SnapshotRef &ref) { return ref.date == reference_date; });
+  if (reference_it == all_refs.end()) {
+    return Err(ErrorCode::NotFound, "historical VaR: reference date not present");
+  }
+  Result<MarketSnapshot> reference_snapshot = MarketSnapshot::load(
+      reference_it->archive_path, config.query_pricing_tier, uids, config.archive_backing);
+  if (!reference_snapshot) {
+    return Err(reference_snapshot.error());
+  }
+  ATX_TRY_VOID(validate_snapshot(*reference_snapshot, uids, config.provenance_policy));
+  for (const VarPosition &position : positions) {
+    const std::string &symbol =
+        std::visit([](const auto &leg) -> const std::string & { return leg.underlier; }, position);
+    const std::optional<std::uint32_t> archive_uid = reference_snapshot->uid_of(symbol);
+    if (!archive_uid.has_value() || *archive_uid != uid_for_symbol(symbol)) {
+      return Err(ErrorCode::NotFound,
+                 "historical VaR: reference underlier missing or has noncanonical uid");
+    }
+  }
+  ATX_TRY(PreparedVarPortfolio prepared,
+          PreparedVarPortfolio::create(positions, reference_snapshot->set(), config.evaluation));
+
+  const std::string date_begin =
+      config.date_begin.empty() ? all_refs.front().date : config.date_begin;
+  const std::string date_end = config.date_end.empty() ? all_refs.back().date : config.date_end;
+  ATX_TRY(Clock window, full_clock.between(date_begin, date_end));
+  if (window.size() < 2u) {
+    return Err(ErrorCode::InvalidArgument,
+               "historical VaR: date range needs at least two observations");
+  }
+  const std::span<const SnapshotRef> refs = window.refs();
+  const std::size_t scenario_count = refs.size() - 1u;
+  if (prepared.size() != 0u &&
+      scenario_count > std::numeric_limits<std::size_t>::max() / prepared.size()) {
+    return Err(ErrorCode::OutOfRange, "historical VaR: scenario/leg output size overflows");
+  }
+
+  HistoricalVarResult result;
+  result.reference_date = reference_date;
+  result.reference_ts_ns = prepared.reference_ts_ns();
+  result.reference_value = prepared.reference_value();
+  result.reference_dollar_delta = prepared.reference_dollar_delta();
+  result.n_legs = prepared.size();
+  result.base_dates.reserve(scenario_count);
+  result.shifted_dates.reserve(scenario_count);
+  result.frames.resize(scenario_count);
+  for (std::size_t index = 0; index < scenario_count; ++index) {
+    result.base_dates.push_back(refs[index].date);
+    result.shifted_dates.push_back(refs[index + 1u].date);
+  }
+  if (config.retain_leg_frames) {
+    result.leg_frames.resize(scenario_count * prepared.size());
+  }
+
+  try {
+    run_balanced_ranges(
+        scenario_count, config.evaluation.n_threads, [&](std::size_t lo, std::size_t hi) {
+          SnapshotLoad base = load_snapshot(refs[lo], uids, config);
+          for (std::size_t scenario_index = lo; scenario_index < hi; ++scenario_index) {
+            SnapshotLoad shifted = load_snapshot(refs[scenario_index + 1u], uids, config);
+            std::span<VarLegFrame> output =
+                result.leg_frames.empty() ? std::span<VarLegFrame>{}
+                                          : std::span<VarLegFrame>{result.leg_frames}.subspan(
+                                                scenario_index * prepared.size(), prepared.size());
+            if (!base.snapshot.has_value() || !shifted.snapshot.has_value()) {
+              const VarLegStatus failure =
+                  !base.snapshot.has_value() ? base.failure : shifted.failure;
+              const std::int64_t base_ts =
+                  base.snapshot.has_value() ? base.snapshot->ts_ns() : std::int64_t{0};
+              const std::int64_t shifted_ts =
+                  shifted.snapshot.has_value() ? shifted.snapshot->ts_ns() : std::int64_t{0};
+              fill_loaded_failure(prepared.reference_legs(), result.frames[scenario_index], output,
+                                  failure, base_ts, shifted_ts);
+            } else {
+              const VarScenario scenario{base.snapshot->ts_ns(), &base.snapshot->set(),
+                                         shifted.snapshot->ts_ns(), &shifted.snapshot->set()};
+              VarEvaluationConfig serial = config.evaluation;
+              serial.n_threads = 1u;
+              const Status replay = prepared.replay_into(
+                  std::span<const VarScenario>{&scenario, 1u},
+                  std::span<VarScenarioFrame>{&result.frames[scenario_index], 1u}, output, serial);
+              if (!replay) {
+                fill_loaded_failure(prepared.reference_legs(), result.frames[scenario_index],
+                                    output, VarLegStatus::InvalidValue, scenario.base_ts_ns,
+                                    scenario.shifted_ts_ns);
+              }
+            }
+            base = std::move(shifted);
+          }
+        });
+  } catch (const std::bad_alloc &) {
+    return Err(ErrorCode::Unavailable, "historical VaR: replay allocation failed");
+  } catch (const std::exception &) {
+    return Err(ErrorCode::Internal, "historical VaR: replay worker failed");
+  }
+
+  if (config.failure_policy == VarScenarioFailurePolicy::RejectRun) {
+    for (std::size_t index = 0; index < result.frames.size(); ++index) {
+      if (result.frames[index].status != VarScenarioStatus::Ok) {
+        return Err(ErrorCode::Unavailable, "historical VaR: scenario " + result.base_dates[index] +
+                                               " -> " + result.shifted_dates[index] + " failed (" +
+                                               to_string(result.frames[index].status) + ")");
+      }
+    }
+  }
+  ATX_TRY(result.risk, historical_var_statistics(result.frames, config.confidence));
+  return Ok(std::move(result));
+}
+
+} // namespace atx::vol
