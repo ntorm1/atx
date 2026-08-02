@@ -543,6 +543,15 @@ if(ATX_BUILD_EXAMPLES)
     target_link_libraries(atx-vol-strangle-varswap-driver
         PRIVATE atx::vol atx::core atx_warnings)
 
+    # The DECLARATIVE strangle-vs-varswap comparison: the same analysis as the
+    # driver above expressed as a ~20-line StrategySpec (FixedExpiryRestrike +
+    # one MatchGroupVega swap leg). Parity gate: StrategyRestrikeParity
+    # (tests/strategy_restrike_parity_test.cpp). See
+    # examples/varswap_compare_example.cpp.
+    add_executable(atx-vol-varswap-compare-example examples/varswap_compare_example.cpp)
+    target_link_libraries(atx-vol-varswap-compare-example
+        PRIVATE atx::vol atx::core atx_warnings)
+
     # Variance-strip diagnostic: per-session K_var at a constant tenor under the
     # default config and a ladder of pinned log-strike spans, plus the wing IVs
     # the strip reads — the instrument for attributing day-to-day fair-strike
