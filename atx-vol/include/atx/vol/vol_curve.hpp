@@ -40,14 +40,16 @@
 // ## Thread-safety
 //
 // A fitted `IVolCurve` / `CurveSurface` is logically immutable after construction;
-// concurrent `w`/`iv` reads are safe. ConvexDense's numerical-wing fallback is a
-// stateless sparse search over its immutable fit nodes.
+// concurrent `w`/`iv` reads are safe. ConvexDense's numerical-wing fallback cache
+// is constructed once and safely published on its first actual fallback.
 // `fit_slice_curve` is a pure function of its inputs.
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <vector>
 
@@ -160,7 +162,21 @@ public:
   [[nodiscard]] const ConvexSliceFit &fit() const noexcept { return fit_; }
 
 private:
+  struct FiniteAnchors {
+    std::vector<double> k;
+    std::vector<double> w;
+  };
+
+  [[nodiscard]] const FiniteAnchors *finite_anchors() const noexcept;
+
   ConvexSliceFit fit_;
+  // Finite total-variance anchors used only when price-to-IV inversion becomes
+  // ill-conditioned at a deep intrinsic/zero-price wing. They turn a numerical
+  // inversion boundary into a controlled Lee-slope wing, never a NaN. Ordinary
+  // queries never touch the synchronization state or pay the anchor inversions.
+  mutable std::once_flag finite_anchors_once_{};
+  mutable std::unique_ptr<FiniteAnchors> finite_anchors_owner_{};
+  mutable std::atomic<const FiniteAnchors *> finite_anchors_published_{nullptr};
 };
 
 // eSSVI backbone (3 DoF, or 4 with asymmetric rho). Owns an EssviParams slice.

@@ -101,196 +101,43 @@ double ConvexDenseCurve::iv(double k_log) const noexcept {
   return wk > 0.0 && T_ > 0.0 ? std::sqrt(wk / T_) : kNaN;
 }
 
-namespace {
-
-struct ConvexWingAnchor {
-  double k{0.0};
-  double w{0.0};
-};
-
-[[nodiscard]] double convex_wing_candidate(const ConvexSliceFit &fit,
-                                           std::size_t candidate) noexcept {
-  const std::size_t node = candidate / 2u;
-  if ((candidate % 2u) == 0u) {
-    return std::log(fit.u[node] / fit.F);
+const ConvexDenseCurve::FiniteAnchors *ConvexDenseCurve::finite_anchors() const noexcept {
+  if (const FiniteAnchors *anchors =
+          finite_anchors_published_.load(std::memory_order_acquire)) {
+    return anchors;
   }
-  return std::log(std::sqrt(fit.u[node] * fit.u[node + 1u]) / fit.F);
-}
-
-[[nodiscard]] bool evaluate_convex_wing_anchor(const ConvexSliceFit &fit,
-                                               std::size_t candidate,
-                                               ConvexWingAnchor &anchor) noexcept {
-  ATX_VOL_COUNT(ConvexDenseWingAnchorIvEvaluations);
-  ATX_VOL_COUNT(ConvexDenseWingCandidateIvEvaluations);
-  const double k = convex_wing_candidate(fit, candidate);
-  const double sigma = fit.iv(k);
-  if (!std::isfinite(sigma) || !(sigma > 0.0)) {
-    return false;
-  }
-  anchor = ConvexWingAnchor{k, sigma * sigma * fit.T};
-  return true;
-}
-
-[[nodiscard]] double extrapolate_convex_wing(const ConvexWingAnchor &lo,
-                                             const ConvexWingAnchor &hi,
-                                             double k_log) noexcept {
-  const double span = hi.k - lo.k;
-  if (!(span > 0.0)) {
-    return lo.w;
-  }
-  // Roger Lee's moment bound is |dw/dk| <= 2. Stay just inside it so a
-  // numerical wing cannot manufacture an infinite-moment surface.
-  const double slope = std::clamp((hi.w - lo.w) / span, -1.999, 1.999);
-  return std::max(1.0e-12, lo.w + slope * (k_log - lo.k));
-}
-
-// Preserve the pre-Task10c table algorithm locally for malformed implicit
-// candidate sequences. This path may allocate, so contain every exception to
-// honor ConvexDenseCurve::w's noexcept contract.
-[[nodiscard]] double reference_convex_wing(const ConvexSliceFit &fit,
-                                           double k_log) noexcept {
-  ATX_VOL_COUNT(ConvexDenseWingReferenceScans);
   try {
-    std::vector<ConvexWingAnchor> anchors;
-    anchors.reserve(fit.u.size() * 2u);
-    const auto append_anchor = [&](std::size_t candidate) {
-      ConvexWingAnchor anchor;
-      if (evaluate_convex_wing_anchor(fit, candidate, anchor)) {
-        anchors.push_back(anchor);
+    std::call_once(finite_anchors_once_, [this] {
+      auto anchors = std::make_unique<FiniteAnchors>();
+      anchors->k.reserve(fit_.u.size() * 2u);
+      anchors->w.reserve(fit_.u.size() * 2u);
+      const auto append_anchor = [this, &anchors](double k) {
+        ATX_VOL_COUNT(ConvexDenseWingAnchorIvEvaluations);
+        const double sigma = fit_.iv(k);
+        if (std::isfinite(sigma) && sigma > 0.0) {
+          anchors->k.push_back(k);
+          anchors->w.push_back(sigma * sigma * T_);
+        }
+      };
+      for (std::size_t i = 0; i < fit_.u.size(); ++i) {
+        append_anchor(std::log(fit_.u[i] / F_));
+        if (i + 1u < fit_.u.size()) {
+          append_anchor(std::log(std::sqrt(fit_.u[i] * fit_.u[i + 1u]) / F_));
+        }
       }
-    };
-    for (std::size_t i = 0; i < fit.u.size(); ++i) {
-      append_anchor(i * 2u);
-      if (i + 1u < fit.u.size()) {
-        append_anchor(i * 2u + 1u);
-      }
-    }
-    if (anchors.empty()) {
-      return kNaN;
-    }
-    if (anchors.size() == 1u) {
-      return anchors.front().w;
-    }
-    const bool has_nan_k = std::any_of(anchors.begin(), anchors.end(),
-                                       [](const ConvexWingAnchor &anchor) {
-                                         return std::isnan(anchor.k);
-                                       });
-    const bool sorted = std::is_sorted(
-        anchors.begin(), anchors.end(),
-        [](const ConvexWingAnchor &lhs, const ConvexWingAnchor &rhs) {
-          return lhs.k < rhs.k;
-        });
-    if (has_nan_k || !sorted) {
-      // ConvexSliceFit requires ascending finite nodes. Preserve the historical
-      // table only while lower_bound's partition precondition still holds;
-      // malformed retained anchors otherwise fail safe instead of invoking UB.
-      return kNaN;
-    }
-    const auto it = std::lower_bound(
-        anchors.begin(), anchors.end(), k_log,
-        [](const ConvexWingAnchor &anchor, double query) { return anchor.k < query; });
-    std::size_t lo = 0u;
-    std::size_t hi = 1u;
-    if (it == anchors.begin()) {
-      lo = 0u;
-      hi = 1u;
-      ATX_VOL_COUNT(ConvexDenseWingLeftSelections);
-    } else if (it == anchors.end()) {
-      hi = anchors.size() - 1u;
-      lo = hi - 1u;
-      ATX_VOL_COUNT(ConvexDenseWingRightSelections);
-    } else {
-      hi = static_cast<std::size_t>(it - anchors.begin());
-      lo = hi - 1u;
-      ATX_VOL_COUNT(ConvexDenseWingInteriorSelections);
-    }
-    return extrapolate_convex_wing(anchors[lo], anchors[hi], k_log);
+      const FiniteAnchors *const published = anchors.get();
+      finite_anchors_owner_ = std::move(anchors);
+      ATX_VOL_COUNT(ConvexDenseWingAnchorBuilds);
+      finite_anchors_published_.store(published, std::memory_order_release);
+    });
   } catch (...) {
-    return kNaN;
+    // w() is noexcept. A transient allocation/call_once failure therefore
+    // fails this evaluation as NaN; call_once leaves the flag unset so a later
+    // fallback can retry instead of terminating or observing partial state.
+    return nullptr;
   }
+  return finite_anchors_published_.load(std::memory_order_acquire);
 }
-
-[[nodiscard]] bool next_convex_wing_anchor_right(const ConvexSliceFit &fit,
-                                                 std::size_t candidate_count,
-                                                 std::size_t &cursor,
-                                                 ConvexWingAnchor &anchor) noexcept {
-  while (cursor < candidate_count) {
-    const std::size_t candidate = cursor;
-    ++cursor;
-    if (evaluate_convex_wing_anchor(fit, candidate, anchor)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-[[nodiscard]] bool next_convex_wing_anchor_left(const ConvexSliceFit &fit,
-                                                std::size_t &cursor,
-                                                ConvexWingAnchor &anchor) noexcept {
-  while (cursor > 0u) {
-    --cursor;
-    if (evaluate_convex_wing_anchor(fit, cursor, anchor)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-[[nodiscard]] double sparse_convex_wing(const ConvexSliceFit &fit,
-                                        double k_log) noexcept {
-  constexpr std::size_t kMaxNodeCount =
-      std::numeric_limits<std::size_t>::max() / 2u + 1u;
-  if (fit.u.size() > kMaxNodeCount) {
-    return reference_convex_wing(fit, k_log);
-  }
-  const std::size_t candidate_count =
-      fit.u.empty() ? 0u : fit.u.size() * 2u - 1u;
-
-  std::size_t boundary = candidate_count;
-  double previous = 0.0;
-  for (std::size_t candidate = 0; candidate < candidate_count; ++candidate) {
-    const double k = convex_wing_candidate(fit, candidate);
-    if (!std::isfinite(k) || (candidate > 0u && k < previous)) {
-      return reference_convex_wing(fit, k_log);
-    }
-    if (boundary == candidate_count && !(k < k_log)) {
-      boundary = candidate;
-    }
-    previous = k;
-  }
-
-  std::size_t left_cursor = boundary;
-  std::size_t right_cursor = boundary;
-  ConvexWingAnchor left;
-  ConvexWingAnchor right;
-  const bool have_left = next_convex_wing_anchor_left(fit, left_cursor, left);
-  const bool have_right =
-      next_convex_wing_anchor_right(fit, candidate_count, right_cursor, right);
-
-  if (!have_left) {
-    if (!have_right) {
-      return kNaN;
-    }
-    ConvexWingAnchor next_right;
-    if (!next_convex_wing_anchor_right(fit, candidate_count, right_cursor, next_right)) {
-      return right.w;
-    }
-    ATX_VOL_COUNT(ConvexDenseWingLeftSelections);
-    return extrapolate_convex_wing(right, next_right, k_log);
-  }
-  if (!have_right) {
-    ConvexWingAnchor next_left;
-    if (!next_convex_wing_anchor_left(fit, left_cursor, next_left)) {
-      return left.w;
-    }
-    ATX_VOL_COUNT(ConvexDenseWingRightSelections);
-    return extrapolate_convex_wing(next_left, left, k_log);
-  }
-  ATX_VOL_COUNT(ConvexDenseWingInteriorSelections);
-  return extrapolate_convex_wing(left, right, k_log);
-}
-
-} // namespace
 
 double ConvexDenseCurve::w(double k_log) const noexcept {
   const double s = fit_.iv(k_log);
@@ -298,7 +145,36 @@ double ConvexDenseCurve::w(double k_log) const noexcept {
     return s * s * T_;
   }
   ATX_VOL_COUNT(ConvexDenseWingFallbackEntries);
-  return sparse_convex_wing(fit_, k_log);
+  const FiniteAnchors *const anchors = finite_anchors();
+  if (anchors == nullptr || anchors->k.empty()) {
+    return kNaN;
+  }
+  if (anchors->k.size() == 1u) {
+    return anchors->w.front();
+  }
+  const auto it = std::lower_bound(anchors->k.begin(), anchors->k.end(), k_log);
+  std::size_t lo = 0u;
+  std::size_t hi = 1u;
+  if (it == anchors->k.begin()) {
+    lo = 0u;
+    hi = 1u;
+  } else if (it == anchors->k.end()) {
+    hi = anchors->k.size() - 1u;
+    lo = hi - 1u;
+  } else {
+    hi = static_cast<std::size_t>(it - anchors->k.begin());
+    lo = hi - 1u;
+  }
+  const double span = anchors->k[hi] - anchors->k[lo];
+  if (!(span > 0.0)) {
+    return anchors->w[lo];
+  }
+  // Roger Lee's moment bound is |dw/dk| <= 2. Stay just inside it so a
+  // numerical wing cannot manufacture an infinite-moment surface.
+  const double slope =
+      std::clamp((anchors->w[hi] - anchors->w[lo]) / span, -1.999, 1.999);
+  return std::max(1.0e-12,
+                  anchors->w[lo] + slope * (k_log - anchors->k[lo]));
 }
 
 // ── EssviCurve / SviCurve ───────────────────────────────────────────────────

@@ -152,21 +152,12 @@ enum class Counter : unsigned {
   // mapped PricedSurfaceView record. Counts derived-state materializations, not
   // queries or the lightweight per-slice synchronization slots.
   SurfaceViewHeavyMaterializations,
-  // Legacy Task10(b) table counters retained so benchmark JSON indices remain
-  // stable. Task10(c) has no retained anchor table: AnchorBuilds stays zero and
-  // AnchorIvEvaluations mirrors CandidateIvEvaluations for old readers.
+  // ConvexDense's numerical-wing fallback table. The table is intentionally
+  // absent on ordinary queries; these counters make accidental eager work and
+  // rare fallback coverage observable without timing-sensitive tests.
   ConvexDenseWingAnchorBuilds,
   ConvexDenseWingAnchorIvEvaluations,
   ConvexDenseWingFallbackEntries,
-  // Stateless Task10(c) sparse numerical-wing selector. Candidate evaluations
-  // are fit.iv calls made only after the ordinary direct-IV query failed.
-  ConvexDenseWingCandidateIvEvaluations,
-  // Malformed/non-finite implicit candidate sequences use the exact historical
-  // full-table algorithm locally for that fallback call.
-  ConvexDenseWingReferenceScans,
-  ConvexDenseWingLeftSelections,
-  ConvexDenseWingRightSelections,
-  ConvexDenseWingInteriorSelections,
   Count_
 };
 
@@ -211,11 +202,6 @@ inline constexpr const char *kNames[kCount] = {
     "cnt_convex_dense_wing_anchor_builds",
     "cnt_convex_dense_wing_anchor_iv_evaluations",
     "cnt_convex_dense_wing_fallback_entries",
-    "cnt_convex_dense_wing_candidate_iv_evaluations",
-    "cnt_convex_dense_wing_reference_scans",
-    "cnt_convex_dense_wing_left_selections",
-    "cnt_convex_dense_wing_right_selections",
-    "cnt_convex_dense_wing_interior_selections",
 };
 
 // A point-in-time copy of every counter. `enabled == false` is the sentinel a
