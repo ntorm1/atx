@@ -10,13 +10,27 @@
 // (atx/vol/surface.hpp), the curve set (atx/vol/curve.hpp), and the Black-76
 // kernel (atx/vol/black76.hpp).
 //
-// What this port ships (matching the C's v22 first cut):
+// What this port ships (well past the C's v22 first cut -- the production
+// sprint below added the distribution engine, greeks, dated fixings and the
+// Richardson error estimate on top of it):
 //   - Realized-variance tracker (RealizedTracker): a scalar state machine that
 //     ingests spots and maintains the running Sigma r_i^2 and annualized
 //     decimal variance for daily mark-to-market on aged swaps.
+//   - Dated, idempotent fixings (RealizedTracker::observe_dated, Task 8): a
+//     timestamped observe for the backtest engine's daily-fixing driver.
+//     Enforces STRICTLY ASCENDING fixing timestamps -- a stale or replayed
+//     ts_ns returns AlreadyExists and mutates nothing, including
+//     last_fixing_ts_ns() -- so a re-delivered snapshot can never double-count
+//     a fixing.
 //   - Variance-swap fair strike via the model-free OTM option-strip formula
 //     K_var(T) = (2/T) integral OTM(K) / (df K^2) dK (Demeterfi-Derman-Kamal-Zou
-//     in log-strike form, composite Simpson).
+//     in log-strike form, composite Simpson), with a Richardson half-grid
+//     quadrature-error estimate (Task 1: |I_h - I_2h|/15, populating
+//     DerivQuote::integration_error_est) whenever the resolved node count is
+//     4m+1 -- every quality tier default and the E2 adaptive-wing rescale land
+//     there. The exact resolved log-strike grid is also recorded
+//     (strip_k_lo_used / strip_k_hi_used / strip_nodes_used) so a caller, or
+//     deriv_greeks' own bump pinning, can reproduce it exactly.
 //   - Volatility-swap fair strike via the Carr-Lee model-free straddle formula
 //     K_vol(T) ~= sqrt(2 pi / T) * C_ATMF(T) / (F * df).
 //   - Aged-trade dispatch: the variance leg blends accrued realized variance
@@ -24,6 +38,15 @@
 //     (n_done/n_total)*RV_done + (n_future/n_total)*K_var_future convention;
 //     the vol-swap dispatch handles inception (n_done == 0) and at-expiry
 //     (n_done == n_total).
+//   - Lognormal RV distribution engine (Task 2, detail/rv_lognormal.hpp:
+//     Gauss-Hermite for smooth payoffs, a split-domain Gauss-Legendre rule for
+//     kinked ones) plus a vol-of-vol knob (Task 3, DerivConfig::vol_of_vol):
+//     the future realized-variance leg is modeled as lognormal with mean
+//     K_var_future and log-stdev xi*sqrt(T), xi either the caller's own number
+//     or auto-calibrated so the lognormal's E[sqrt(W)] reproduces the
+//     surface's own Carr-Lee K_vol exactly (DerivQuote::vol_of_vol_used,
+//     DerivFlags::VolOfVolCalibrated). This is the one shared foundation the
+//     three distribution-model products below all price against.
 //   - Capped variance swap (Task 4, engine RvDistributionProxy or Auto):
 //     E[min(V,C)] for the blended variance V = a + b*W, modeling the future
 //     leg W as lognormal with mean K_var_future and log-stdev xi*sqrt(T) (xi
@@ -60,9 +83,19 @@
 //     auto-calibrated vol-of-vol is resolved once at the center and pinned
 //     into the bumps; fully-aged contracts skip bumping entirely.
 //
-// Reserved for follow-on work (return ErrorCode::NotImplemented, mirroring the
-// C's ATS_VOL_ERR_UNSUPPORTED): the RV distribution-affine / Monte-Carlo QE
-// engines.
+// Reserved for follow-on work. Two flavors:
+//   - ACTIVELY REJECTED (return ErrorCode::NotImplemented, mirroring the C's
+//     ATS_VOL_ERR_UNSUPPORTED): the RV distribution-affine / Monte-Carlo QE
+//     pricing engines (DerivEngine::RvDistributionAffine / McQe), and the
+//     discrete-monitoring full-Monte-Carlo correction
+//     (DerivDiscreteCorrection::FullMc) -- checked up front by every pricer,
+//     regardless of aging state.
+//   - DECLARED, UNENFORCED: DerivMarkingConvention::CboeVarianceFuture. The
+//     enum value and the DerivContract::marking field it lives on both exist,
+//     but no pricing path reads `marking` yet -- a CboeVarianceFuture contract
+//     prices identically to an Otc one today rather than failing loud. A
+//     caller relying on CBOE variance-future conventions must not assume this
+//     field does anything yet.
 //
 // Conventions (unchanged from the C):
 //   - Decimal variance internally: 0.04 <-> 20 vol <-> 400 variance points.
