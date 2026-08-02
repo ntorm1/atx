@@ -252,6 +252,63 @@ process's streams, and be stoppable.
   `ATXVSA03`). The old "v1" / "v3" ordinals are gone from the headers — they
   named the same format both ways. Comment-only; no identifier changed.
 
+### NEW — strangle-vs-varswap comparison backtest + the XOM 2026 reference run (strangle-vs-varswap sprint, Tasks 1-5)
+
+**What shipped.** `strangle_varswap.hpp`/`.cpp` add
+`StrangleVsVarswapStrategy`, an `IStrategy` that runs one fixed-expiry,
+daily-restriked 40Δ strangle against one uncapped variance swap struck fair and
+sized to that strangle's **entry** vega, both on a single clock and
+delta-hedged daily. Equal vega is enforced in DOLLAR terms (per-share vega ×
+contracts × multiplier) at each cycle open, and the swap's strike comes from
+the `deriv_price` bridge's `fair_strike_dec` — not the `PricedSurface`
+`var_swap_fair_strike` — so strike and engine mark share one carry and the swap
+opens at a bitwise `+0.0` PV. Per-step `swap_delta/gamma/vega/theta/rho`,
+`strangle_vega` and cumulative `skipped_restrikes`/`skipped_swaps` counters ride
+out as strategy signals. `examples/strangle_varswap_driver.cpp` (target
+`atx-vol-strangle-varswap-driver`, `ATX_BUILD_EXAMPLES`) drives it over a
+`SurfaceDb` and writes `track.tsv`; `tools/render_strangle_vs_varswap.py`
+renders the five-panel comparison report.
+
+**Effect on existing callers.** Additive only — a new header, a new example
+target, a new Python tool, and one new test module. No library type, engine
+path or existing test changed; `write_backtest_pnl_tsv`'s frozen column set is
+deliberately *not* widened (its `{name, order}` is `static_assert`-pinned to the
+RunArchive registry that feeds `ra_schema_hash()`), so `swap_pv`/`swap_pnl`
+reach the TSV as signal columns instead and the schema hash is untouched.
+
+**Operational contracts worth knowing.** A live variance swap makes the engine
+fail the whole run closed on any missing board — `unpriced = ExcludeAndReport`
+governs option lots only and is no escape for the swap lane. The driver
+therefore probes every partition in the window and builds its clock from the
+sessions where the symbol's surface exists; a partition the manifest lists whose
+*archive will not open* is reported as an inconsistent database (exit 1), not as
+a dark session, so a broken db can never silently shorten a measured window. The
+final cycle of a corpus whose calendar the tenor outruns may legitimately run
+one-legged (`skipped_swaps ≥ 1`, no swap lot). `swap_theta` is legitimately NaN
+within one bump width of expiry while the swap is live, so liveness is read off
+`swap_vega`.
+
+**The reference run** (`XOM`, `sp100-2026` gen 225, 2026-01-02 → 2026-07-24,
+139 sessions, 1 dark, three 91d cycles) is recorded for provenance:
+strangle **+$1,501.64**, variance swap **−$42,468.19**, combined
+**−$40,966.55**. The equal-vega identity held to 0 ULP at all three cycle opens,
+`reconcile_nav` held on every row, and the leg split closes back to NAV to
+1.5e-11.
+
+**Read that run's economics with the corpus in mind.** The two legs' daily P&Ls
+are essentially *uncorrelated* on this data (ρ = +0.038), and the swap's path is
+the *noisier* of the two (daily σ $24,478 vs $21,739). That is a property of the
+corpus, not of the strategy: each leg is independently reproducible from the raw
+surface — the strangle from the 40Δ/ATM implied-vol move (R² = 0.69) and the
+swap from a 1/K²-weighted replication of the variance strip (R² = 0.81) — but in
+this corpus those two regions of the surface are themselves only ρ = +0.24
+related, because the deep put wing carries ~27 vol points/day of fit noise
+(vs 3.3 at ATM) that is *anti*-correlated with the ATM move (ρ = −0.39), and
+every strike's daily IV change has lag-1 autocorrelation ≈ −0.5 — the signature
+of independent per-day fit noise rather than a coherent vol path. A variance
+swap integrates exactly that region. Treat the sp100-2026 wings as unfit for
+strip-sensitive P&L attribution until they are refit.
+
 ### NEW — vol-derivatives production surface: capped/mid-life swaps, greeks, dated fixings, DerivBook (derivatives-production sprint, Tasks 1-10)
 
 **What shipped.** `derivatives.hpp` gains two capped product kinds

@@ -44,6 +44,7 @@ faithfully and mirror the upstream test tolerances.
 | Vol derivatives | `derivatives.hpp` | Variance/vol-swap strip + Carr–Lee vol swap, aged-trade dispatch, capped variance/vol swaps + mid-life vol-swap dispatch (lognormal RV distribution engine, auto Carr–Lee-consistent vol-of-vol calibration), finite-difference greeks for every kind, dated idempotent fixings on the realized-vol tracker, Richardson strip quadrature-error estimate |
 | Vol-derivative book | `deriv_book.hpp` | Portfolio-layer pricing of variance/vol-swap position books against a `SurfaceSet` — the additive companion to `portfolio_pricer.hpp` for swap legs; SurfaceRef carry bridge (`detail/deriv_ref_bridge.hpp`), row-level failure + NaN-if-not-computed `PriceTotals` shared with the option pricer, `combine_totals` for one desk-level number; tenor hygiene is the caller's |
 | RV distribution kernel | `detail/rv_lognormal.hpp` | Gauss-Hermite (order 21) + split-domain Gauss-Legendre (order 64) quadrature, lognormal expectation / truncated-expectation / call / sqrt-moment identities backing the capped and mid-life vol-derivative pricers |
+| Strangle-vs-varswap strategy | `strangle_varswap.hpp` | `IStrategy` comparing one fixed-expiry, daily-restriked 40Δ strangle against one uncapped variance swap struck fair and sized to that strangle's **entry** vega (dollar terms, `contracts × multiplier`), both on a single clock and delta-hedged daily; per-step `swap_*`/`strangle_vega` greek signals + cumulative `skipped_restrikes`/`skipped_swaps` schedule-hole counters. Drives `examples/strangle_varswap_driver.cpp` → `tools/render_strangle_vs_varswap.py` |
 | Profile registry | `profile.hpp` | Underlier classification, per-profile calib/filter knobs, optimization-level + refit cadence + tier priority |
 | Unified fit policy | `fit_policy.hpp` | Board/profile/session/event routing to an effective preset + curve; direct high-confidence routes and held-out ambiguity fallback |
 | Scenario risk | `scenario_grid.hpp` | 2-D (spot% × vol) second-order Taylor P&L matrix over a `PortfolioPricer` book — one deduped full-Greeks solve, every cell reconstructed analytically |
@@ -404,6 +405,43 @@ checkpoint and series schema predate it, so `atx-vol-backtest-db-build` and
 resumed/appended runs refuse (rather than silently drop) a result or
 checkpoint that actually carries swap data; a zero-swap run is unaffected.
 Schema support is deferred to a follow-on task.
+
+### Strangle vs. variance swap (`strangle_varswap.hpp`)
+
+The acceptance driver for that lane runs one fixed-expiry, daily-restriked 40Δ
+strangle against one uncapped variance swap struck fair and sized to the
+strangle's *entry* vega, on a single `SurfaceDb` clock, delta-hedged daily. It
+is an **examples-gate** target, so configure with `-DATX_BUILD_EXAMPLES=ON`:
+
+```powershell
+cmake --preset dev -DATX_BUILD_EXAMPLES=ON
+cmake --build build --target atx-vol-strangle-varswap-driver
+
+build/bin/atx-vol-strangle-varswap-driver.exe `
+    --db C:/atx-data/surface-db/sp100-2026 --symbol XOM `
+    --from 2026-01-01 --to 2026-12-31 --out <outdir>
+python atx-vol/tools/render_strangle_vs_varswap.py <outdir>/track.tsv <outdir>/report.html
+```
+
+The driver **probes every partition** in the window before stepping and builds
+its clock from the sessions where the symbol's surface actually exists: a live
+variance swap makes the engine fail the whole run closed on a missing board, so
+a dark session cannot be stepped over. A partition the manifest lists whose
+archive will not open is a *broken database*, not a dark session, and aborts
+(exit 1) rather than silently shortening the window. `reconcile_nav` is on, so
+every row's NAV is audited against an independently recomputed liquidation
+value. `swap_pv`/`swap_pnl` ride out as signal columns, so `track.tsv` keeps the
+one frozen `write_backtest_pnl_tsv` schema.
+
+**Reading the report.** `pnl_total` is the *whole* step total, so the strangle
+leg is `pnl_total − swap_pnl` and the two legs sum back to `nav` by
+construction. Swap liveness is read off `swap_vega`, never `swap_theta` —
+`swap_theta` is legitimately NaN within one bump width of expiry while the swap
+is still live. `DerivGreeks::theta` holds the realized accrual fixed
+(`derivatives.hpp`), so a variance swap's reported theta carries only the
+term-structure/discount effect and **not** its carry; it need not share the
+option book's theta sign, and on a backwardated variance term structure it is
+routinely positive while `gross_theta` is negative.
 
 ## Build & test
 
