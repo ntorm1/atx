@@ -110,7 +110,6 @@ public:
   }
 
   [[nodiscard]] HedgeSpec hedge_spec() const override { return hedge_; }
-  [[nodiscard]] bool target_risk_fusion_safe() const noexcept override { return true; }
   // F5 (BT-T2): the schedule enumerates every uid this strategy will ever touch,
   // so the engine can subset-deserialize each date instead of loading the whole
   // board. Computed once at `create` in ascending uid order (deterministic, and

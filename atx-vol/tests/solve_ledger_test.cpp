@@ -9,20 +9,21 @@
 // never perturbs the timing of the solve it counts.
 //
 // What this file pins (§2 cost model of the solve-wall sprint):
-//   * Daily-hedged no-churn day = 5 AL solve-equivs / unique (the target FullGreeks
-//                     bundle is handed to execute, so it is solved exactly once).
-//   * Unsupported None/AtEntry routes retain 6 (1 target mark + 5 book greeks).
-//   * Fixed-book expiry day = 6 AL solve-equivs / surviving unique after L1/L2:
-//                     base risk crosses the membership shrink and settlement marks
-//                     come from the memo. This is not the strategy-fusion route.
+//   * No-churn day  = 6 AL solve-equivs / unique  (0 pnl-base + 1 target mark
+//                     + 5 execute/book-greeks bundle) — the base-risk stamp survives.
+//   * Expiry day    = 11 AL solve-equivs / unique  (5 pnl-base + 1 mark + 5 bundle)
+//                     — a membership change (settlement shrinks the alive set)
+//                     kills the stamp, so the pnl-base bundle re-solves.
 //   * Duplicate marks: the per-step target/settlement Marks solves L2 drives to 0.
 //
-// The detailed expiry section below preserves the historical 11 -> 7 -> 6
-// progression while asserting the established 6/unit composite result.
+// These EXACT numbers are the regression baseline: L1 moves 11 -> <=6 (pnl-base
+// reuse across the membership change), L2 drives the duplicate marks to 0. A later
+// test re-asserts these same counters with the improved expected values.
 //
 // The scenarios are the smallest faithful realizations of the model. A SINGLE
-// surviving unit (the fixed-book survivor "A") pays 6 on both the expiry and
-// following no-churn steps of the SAME run after L1/L2.
+// surviving unit (the fixed-book survivor "A") pays 11 on the one expiry step and
+// 6 on the following no-churn step of the SAME run, so both headline numbers are
+// pinned against identical risk with only the stamp state changed between them.
 
 #include <gtest/gtest.h>
 
@@ -257,20 +258,18 @@ TEST(SolveLedger, IvNewtonItersCountsInversionResiduals) {
   EXPECT_GT(led::snapshot().get(led::Solve::IvNewtonIters), 1u);
 }
 
-// ── 2. Daily-hedged no-churn day = 5 solve-equivs / unique ──────────────────
+// ── 2. No-churn day = 6 solve-equivs / unique ────────────────────────────────
 //
 // single_clip opens one ATM put at inception and holds it. Every later step the
 // book is unchanged, so compute_step's pnl-base reuses the previous step's stamped
-// risk (0 bundles). The P&L target is evaluated once as FullGreeks (5 solves) and
-// execute consumes its exact-tenor seed without another bundle.
-TEST(SolveLedger, DailyHedgedNoChurnDayIsFiveSolvesPerUnit) {
+// risk (0 bundles); the only work is the 1 target Marks solve + the 5-solve
+// book-greeks bundle = 6. Pinned per-step via an armed StepTrace.
+TEST(SolveLedger, NoChurnDayIsSixSolvesPerUnit) {
   const fs::path dir = fresh_dir("no-churn");
   const Clock clock = make_clock(dir, "SPX", {0, 1, 2, 3, 4});
 
-  StrategySpec spec =
-      single_clip(kUid, 0.25, Side::Put, StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0});
-  spec.hedge = HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 0.0};
-  DeclarativeStrategy strategy{spec};
+  DeclarativeStrategy strategy{
+      single_clip(kUid, 0.25, Side::Put, StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0})};
   RunConfig config = deterministic_config();
 
   led::reset();
@@ -283,41 +282,10 @@ TEST(SolveLedger, DailyHedgedNoChurnDayIsFiveSolvesPerUnit) {
   ASSERT_EQ(trace.size(), 4u);
   for (std::size_t k = 0; k < trace.size(); ++k) {
     const led::Counts &step = trace.steps()[k];
-    EXPECT_EQ(al(step), 5u) << "no-churn step " << k << " should be 5 solves/unit";
-    EXPECT_EQ(analytic(step), 1u) << "step " << k << ": one fused target/execute bundle";
+    EXPECT_EQ(al(step), 6u) << "no-churn step " << k << " should be 6 solves/unit";
+    EXPECT_EQ(analytic(step), 1u) << "step " << k << ": pnl-base reused, only the book bundle";
     EXPECT_EQ(fd(step), 0u) << "backtest default is analytic greeks";
-    EXPECT_EQ(marks(step), 0) << "step " << k << ": no standalone target mark";
-  }
-}
-
-TEST(SolveLedger, UnsupportedHedgeConfigsRetainTheSixSolveMarksPath) {
-  const fs::path dir = fresh_dir("unsupported-target-risk-fusion");
-  const Clock clock = make_clock(dir, "SPX", {0, 1, 2, 3, 4});
-  const std::vector<HedgeSpec> unsupported{
-      HedgeSpec{HedgeSpec::Kind::None, HedgeSpec::Cadence::Daily, 0.0},
-      HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::AtEntry, 0.0},
-  };
-
-  for (std::size_t case_ix = 0; case_ix < unsupported.size(); ++case_ix) {
-    SCOPED_TRACE(case_ix);
-    StrategySpec spec = single_clip(
-        kUid, 0.25, Side::Put, StrikeSelector{StrikeSelector::Kind::AtmForward, 0.0});
-    spec.hedge = unsupported[case_ix];
-    DeclarativeStrategy strategy{spec};
-    RunConfig config = deterministic_config();
-
-    led::reset();
-    led::StepTrace trace;
-    const auto result = run_backtest(clock, strategy, config);
-    ASSERT_TRUE(result.has_value()) << result.error().to_string();
-    ASSERT_EQ(trace.size(), 4u);
-    for (std::size_t k = 0; k < trace.size(); ++k) {
-      const led::Counts &step = trace.steps()[k];
-      EXPECT_EQ(al(step), 6u) << "unsupported step " << k;
-      EXPECT_EQ(analytic(step), 1u) << "book-greeks bundle remains separate";
-      EXPECT_EQ(fd(step), 0u);
-      EXPECT_EQ(marks(step), 1) << "target leg remains Marks-only";
-    }
+    EXPECT_EQ(marks(step), 1) << "step " << k << ": exactly one (duplicate) target mark";
   }
 }
 

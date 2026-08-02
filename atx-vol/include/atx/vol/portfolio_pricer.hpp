@@ -1043,12 +1043,7 @@ public:
 
   // Opt-in target-risk handoff. The P&L target leg is evaluated as FullGreeks,
   // and every successful unique-contract lane is exported as an immutable seed
-  // whose T is the exact rolled tenor passed to that evaluation. The optional
-  // `target_position_T` span supplies that tenor in position order; when present
-  // it must have n_positions() finite, positive entries, and positions deduplicated
-  // to the same contract must carry bit-identical values. Those exact bits are used for BOTH
-  // the target mark and FullGreeks seed instead of recomputing T as T_base - dt.
-  // An empty span preserves the established rolled-tenor calculation. A failed target
+  // whose T is the exact rolled tenor passed to that evaluation. A failed target
   // Greek lane is repriced through the established Marks route so P&L/marks stay
   // available, but it exports no seed. `target_seeds` is caller-owned, cleared
   // after validation, and filled in unique-contract order; reserve
@@ -1058,7 +1053,7 @@ public:
   pnl_totals_with_target_marks_and_full_greek_seeds_into(
       const SurfaceSet &base, const SurfaceSet &shifted, TargetMarkView out,
       std::vector<FullGreekSeed> &target_seeds, PortfolioWorkspace &ws,
-      const PriceOptions &opts = {}, std::span<const double> target_position_T = {}) const;
+      const PriceOptions &opts = {}) const;
 
   // L1 (AL-solve-wall sprint, fewer-solves): carry a retained base-risk bundle
   // across a book MEMBERSHIP SHRINK. When THIS pricer's book is a subset of `prev`'s
@@ -1096,8 +1091,7 @@ public:
 private:
   [[nodiscard]] Result<PnlTotals>
   pnl_totals_impl(const SurfaceSet &base, const SurfaceSet &shifted, PortfolioWorkspace &ws,
-                  const PriceOptions &opts, bool target_full_greeks,
-                  std::span<const double> exact_target_T = {}) const;
+                  const PriceOptions &opts, bool target_full_greeks) const;
 
   Portfolio pf_;
   // H4 (WS-H): retained workspace for the RETURNING convenience API (price() /
