@@ -37,8 +37,7 @@ void hash_double(std::uint64_t &hash, double value) noexcept {
 
 [[nodiscard]] double sample_k(const RiskSurfaceValidationConfig &config, std::uint32_t point,
                               std::uint32_t n_points) noexcept {
-  const double fraction = static_cast<double>(point) / static_cast<double>(n_points - 1u);
-  return config.k_min + fraction * (config.k_max - config.k_min);
+  return detail::validation_grid_k(config, point, n_points);
 }
 
 // Defensive caps on the per-slice grid densification (oracle finding I-3):
@@ -60,8 +59,8 @@ constexpr std::size_t kMaxGridPointsPerSlice = 4096;
 // node component is read once, in the adapter's own (already deterministic)
 // order, then sorted.
 [[nodiscard]] std::vector<double> build_slice_grid(const RiskSurfaceView &surface,
-                                                    std::size_t slice,
-                                                    const RiskSurfaceValidationConfig &config) {
+                                                   std::size_t slice,
+                                                   const RiskSurfaceValidationConfig &config) {
   std::vector<double> ks;
   ks.reserve(static_cast<std::size_t>(config.strike_grid_points) + 8u);
   for (std::uint32_t point = 0; point < config.strike_grid_points; ++point) {
@@ -87,7 +86,7 @@ constexpr std::size_t kMaxGridPointsPerSlice = 4096;
                        }),
            ks.end());
   if (ks.size() > kMaxGridPointsPerSlice) {
-    ks.resize(kMaxGridPointsPerSlice);  // deterministic ascending-prefix truncation
+    ks.resize(kMaxGridPointsPerSlice); // deterministic ascending-prefix truncation
   }
   return ks;
 }

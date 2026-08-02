@@ -68,6 +68,19 @@ struct RiskSurfaceValidationConfig {
   double wing_slope_tolerance{1.0e-8};
 };
 
+namespace detail {
+// The oracle's inclusive uniform sample formula, exported so the producer-side
+// strict-recovery path can repair on EXACTLY the doubles the oracle evaluates.
+// Fraction first — reordering the arithmetic can move a sample by an ulp, and
+// both sides of the producer/oracle contract must agree bit-for-bit.
+[[nodiscard]] inline double validation_grid_k(const RiskSurfaceValidationConfig &config,
+                                              std::uint32_t point,
+                                              std::uint32_t n_points) noexcept {
+  const double fraction = static_cast<double>(point) / static_cast<double>(n_points - 1u);
+  return config.k_min + fraction * (config.k_max - config.k_min);
+}
+} // namespace detail
+
 [[nodiscard]] RiskSurfaceView make_risk_surface_view(const CurveSurface &surface) noexcept;
 [[nodiscard]] RiskSurfaceView make_risk_surface_view(const VolaSession &surface) noexcept;
 [[nodiscard]] RiskSurfaceView make_risk_surface_view(const VolSurface &surface) noexcept;
