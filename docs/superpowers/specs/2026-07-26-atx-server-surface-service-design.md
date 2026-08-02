@@ -1,8 +1,17 @@
 # atx-server — Surface Service Foundation — Design
 
 Date: 2026-07-26
-Status: Draft — awaiting user review
+Status: **SUPERSEDED** by `2026-08-02-atx-server-rpc-foundation-design.md`
 Scope: new `atx-proto/` + `atx-server/` subprojects; no change to `atx-ui` in this spec
+
+> **Superseded 2026-08-02.** This document specified gRPC as the transport. gRPC
+> was never installed — the vcpkg build ran out of memory and was abandoned, and
+> `C:/atx-cache/vcpkg_installed/x64-windows` contains no gRPC libraries and no
+> `grpc_cpp_plugin.exe`. The replacement spec keeps the catalog, realm,
+> entitlement, encoder, and blob designs essentially unchanged, and substitutes
+> length-prefixed protobuf over raw TCP for the transport. Read the replacement,
+> not this. This is retained for the SpiderRock mapping in §3 and the design
+> rationale it records.
 
 ## 1. Goal
 
