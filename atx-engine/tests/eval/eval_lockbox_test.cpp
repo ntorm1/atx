@@ -186,6 +186,7 @@ TEST(EvalLockbox, SealedReadTrapsResultForm) {
 //  SealedReadTraps (ATX_ASSERT form) — the trapping accessor aborts on a sealed
 //  read (the PIT seal nothing upstream may cross). Death test.
 // =============================================================================
+#ifndef NDEBUG
 TEST(EvalLockboxDeathTest, SealedReadTrapsAssertForm) {
   const Panel panel = make_panel(/*dates*/ 100, /*insts*/ 4, 0x2u);
   auto r = reserve_lockbox(panel, /*frac*/ 0.20, /*embargo_len*/ 3);
@@ -196,6 +197,7 @@ TEST(EvalLockboxDeathTest, SealedReadTrapsAssertForm) {
   // Reading at lockbox_begin via the trapping accessor must abort.
   EXPECT_DEATH((void)sp.field_cross_section_or_trap(close, res.lockbox_begin), ".*");
 }
+#endif
 
 // =============================================================================
 //  IdentityRoundTrips — the same reservation on the same panel reproduces byte-

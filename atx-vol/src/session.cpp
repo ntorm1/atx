@@ -708,8 +708,8 @@ struct FixedCacheCarry {
   k_min -= chain ? 0.15 : 0.05;
   k_max += chain ? 0.15 : 0.05;
   const double T_min = chain ? std::min(0.9 * T_lo, 0.0055) : (0.9 * T_lo);
-  const double T_max =
-      chain ? ((T_hi > T_lo) ? (1.25 * T_hi) : (1.6 * T_lo)) : ((T_hi > T_lo) ? (1.1 * T_hi) : (1.5 * T_lo));
+  const double T_max = chain ? ((T_hi > T_lo) ? (1.25 * T_hi) : (1.6 * T_lo))
+                             : ((T_hi > T_lo) ? (1.1 * T_hi) : (1.5 * T_lo));
   constexpr double kSigMin = 0.05;
   // PR-C1: the sigma ceiling stays 1.5. Widening it to cover a high-vol board
   // (earnings / meme / 0DTE panic) was implemented and MEASURED to be net-negative:
@@ -1055,6 +1055,33 @@ void apply_fit_preset(SessionInputs &in, FitPreset preset) noexcept {
     // de-Am rows shift < ~1e-3 IV (well inside RMSE). Robust remains the final-
     // fit / certification / oracle preset. Gated vs Robust on real OPRA boards.
     in.deam.al_opts = al_fast_opts();
+    in.deam.iv_tol = 1.0e-5;
+    in.deam.n_atm = 3;
+    in.use_deam_cache_for_fit = true;
+    in.calendar_repair = CalendarRepair::MonotoneFit;
+    break;
+  case FitPreset::Bulk:
+    // Perf 2b throughput tier (session.hpp FitPreset::Bulk). Populate's body with
+    // ONE substitution: the fit's own Andersen-Lake rung drops from al_fast_opts
+    // {7,16,4} to the ladder's `ql_fast` al_bulk_opts {7,8,2, premium 32}, which is
+    // 4x less fixed-point sweep work per boundary solve at the same measured price
+    // accuracy class (~1.0e-3 vs 9.7e-4). `serve_al_opts` pins the BAKED pricing
+    // config back to al_fast_opts, because n_quad_price does not survive any of the
+    // three AlOpts record formats (deamer.hpp DeAmOptions::serve_al_opts) — so the
+    // stored surface serves queries exactly as a Populate build's does.
+    in.deam.al_opts = al_bulk_opts();
+    // The CARRY solve too. Phase-2b step-1 measurement: of the ~940k fast-tier AL
+    // boundary solves a 102-symbol `populate` date runs, ~66% are the PCP borrow /
+    // carry fixed point, not the per-strike de-Am inversion — so leaving
+    // `carry_al_opts` at al_fast_opts caps the achievable win at ~1.1x no matter what
+    // the de-Am rung is. Its own contract makes it the safer of the two to lower: the
+    // carry is an aggregate over n_atm co-terminal pairs whose accepted answer is
+    // gated on dispersion + leave-one-out agreement across pairs
+    // (max_carry_dispersion / max_carry_leave_one_out), and it is an economically
+    // ~1e-4 input, so per-leg AL price noise at ~1e-3 is averaged and then
+    // consistency-checked rather than served.
+    in.deam.carry_al_opts = al_bulk_opts();
+    in.deam.serve_al_opts = al_fast_opts();
     in.deam.iv_tol = 1.0e-5;
     in.deam.n_atm = 3;
     in.use_deam_cache_for_fit = true;
@@ -1436,9 +1463,8 @@ Result<VolaSession> VolaSession::build(const Underlying &under, const SessionInp
   // SessionDiagnostics for how the (method, code) pair reads.
   EmoveMethod emove_method = EmoveMethod::TwoPillar;
   EmoveFitCode emove_fit_code = EmoveFitCode::Ok;
-  diag.implied_emove =
-      solve_implied_emove(eff.events.get(), eff.now_ts_ns, rep.surface.essvi_slices(),
-                          &emove_method, &emove_fit_code);
+  diag.implied_emove = solve_implied_emove(
+      eff.events.get(), eff.now_ts_ns, rep.surface.essvi_slices(), &emove_method, &emove_fit_code);
   diag.emove_method = emove_method;
   diag.emove_fit_code = emove_fit_code;
 
@@ -1721,7 +1747,9 @@ Result<PricedSurface> VolaSession::to_priced_surface() const {
   pc.r = in_.r;
   pc.now_ts_ns = in_.now_ts_ns;
   pc.method = in_.deam.method;
-  pc.al_opts = in_.deam.al_opts.value_or(al_fast_opts());
+  // Perf 2b: the SERVE rung, which is `al_opts` unless a tier pinned a separate one
+  // (DeAmOptions::serve_al_opts). Empty => historical behaviour, bit-for-bit.
+  pc.al_opts = in_.deam.serve_al_opts.value_or(in_.deam.al_opts.value_or(al_fast_opts()));
   pc.uid = surface_.uid();
 
   CurveSurface cs;
@@ -1948,7 +1976,8 @@ Status VolaSession::fair_value_ladder(double T, std::span<const double> strikes,
   }
   flush_cached_price_batch(cached_calls, Side::Call, in_.S, T, fc.rate, fc.q_eff, call_correction,
                            out);
-  flush_cached_price_batch(cached_puts, Side::Put, in_.S, T, fc.rate, fc.q_eff, put_correction, out);
+  flush_cached_price_batch(cached_puts, Side::Put, in_.S, T, fc.rate, fc.q_eff, put_correction,
+                           out);
   return Ok();
 }
 
@@ -2084,10 +2113,9 @@ Status VolaSession::evaluate_ladder(double T, std::span<const double> strikes,
     const bool serve_cached = cache_serves(correction, side, k, T, sigma);
     if (!greeks_out.empty()) {
       const auto result =
-          serve_cached
-              ? american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction)
-              : american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, in_.deam.method,
-                                   in_.deam.al_opts);
+          serve_cached ? american_greeks(in_.S, K, T, sigma, fc.rate, fc.q_eff, side, correction)
+                       : american_greeks_fd(in_.S, K, T, sigma, fc.rate, fc.q_eff, side,
+                                            in_.deam.method, in_.deam.al_opts);
       if (result.has_value()) {
         greeks_out[i] = *result;
         if (!price_out.empty()) {
@@ -2195,6 +2223,7 @@ Result<FitDiag> VolaSession::apply_prepared_essvi_refit(std::size_t slice_idx,
   parity_inputs.r = prepared.rate;
   parity_inputs.q_eff = prepared.q_eff;
   parity_inputs.T = context.T;
+  parity_inputs.exercise_style = prepared.slice.provenance().exercise_style;
   parity_inputs.method = in_.deam.method;
   parity_inputs.al_opts = in_.deam.al_opts;
   parity_inputs.band_k = in_.band_k;

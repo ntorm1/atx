@@ -5,6 +5,7 @@
 #include <optional>
 #include <span>
 
+#include "al_probe.hpp"          // env-gated AL hot-path zone timers (Perf 2b step 1)
 #include "american_boundary.hpp" // amer:: seam
 #include "atx/core/math.hpp"     // atx::core::clamp
 #include "atx/vol/black76.hpp"   // black76_price (European legs)
@@ -119,6 +120,7 @@ constexpr const char *kDoubleContinuationMsg =
                                       std::span<const double> sigmas, double T, double r, double q,
                                       std::span<double> price_out, const SigmaInterpOptions &sopts,
                                       const std::optional<AlOpts> &opts, SigmaSliceStats *stats) {
+  const alprobe::Scope probe_zone(alprobe::Zone::SliceSigma);
   const std::size_t n = strikes.size();
   const amer::AlScheme sch = amer::scheme_from_opts(opts);
 
@@ -217,6 +219,7 @@ namespace detail {
 bool SigmaBoundaryInterp::build(double Kp_ref, double T, double rp, double qp, double sigma_lo,
                                 double sigma_hi, std::uint16_t n_sigma,
                                 const amer::AlScheme &sch) noexcept {
+  const alprobe::Scope probe_zone(alprobe::Zone::SigmaInterpBuild);
   ok_ = false;
   if (!(T > 1.0e-12) || !(sigma_hi > sigma_lo) || n_sigma < 2 || n_sigma > kSigmaMax) {
     return false;

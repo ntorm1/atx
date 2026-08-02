@@ -378,6 +378,15 @@ which change the numerical results of the shipped paths:
   archive's optional curve-set / profile / AL-correction-cache blob sections are
   not emitted (those types are not part of atx-vol's archived surface).
 
+## Backtest database
+
+`BacktestDb` persists projection-backed cookie-cutter strategy histories in
+checksummed binary partitions and resumes append-only daily updates from exact
+engine checkpoints. The standard builder includes a theoretical 40-delta,
+three-calendar-month strangle held to expiry and delta-hedged at every stored
+close. See [docs/backtest-db.md](docs/backtest-db.md) for the storage contract,
+library API, and `atx-vol-backtest-db-build` workflow.
+
 ## Build & test
 
 Wired into the top-level atx CMake as `atx-vol` (alias `atx::vol`), linking

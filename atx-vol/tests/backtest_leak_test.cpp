@@ -4,8 +4,10 @@
 // deliberate SURFACE GAP (one date's archive omits one underlier) and observes an
 // accounting path that used to succeed silently:
 //
-//   1. HedgeAtMissingSurfaceFailsClosed        — `spot_of` returned 0.0, so the
-//      daily delta hedge FLATTENED residual shares for free (cash unchanged).
+//   1. HedgeAtMissingSurface{Skips,FailsClosed} — `spot_of` returned 0.0, so the
+//      daily delta hedge FLATTENED residual shares for free (cash unchanged). The
+//      position must survive the gap under either policy: skipped-and-counted
+//      under ExcludeAndReport, aborted under Error.
 //   2. UnmarkedHedgeSharesFailClosed           — the shares-PnL/financing loop
 //      `continue`d over a missing base/shifted surface, so shares held across the
 //      gap were unmarked and their move vanished from NAV.
@@ -196,9 +198,18 @@ private:
 // A book long/short options on BBB with a DAILY delta-to-zero hedge accumulates
 // BBB hedge shares. On the gap date BBB has no surface, so `spot_of` used to
 // return 0.0 and the hedge FLATTENED every residual share for free: cash moved by
-// `shares * 0.0 == 0`, the ledger went to zero, and the run reported Ok. The
-// engine must fail closed exactly as a roll-close with a missing mark does.
-TEST(BacktestLeak, HedgeAtMissingSurfaceFailsClosedInsteadOfFreeFlatten) {
+// `shares * 0.0 == 0`, the ledger went to zero, and the run reported Ok.
+//
+// F1(a) closed that with a hard error under BOTH policies. SP100 task 2 splits
+// the two policies apart, because a real corpus loses a name's board on a handful
+// of sessions and a whole run cannot die on one of them:
+//
+//   * ExcludeAndReport — the uid's fill is SKIPPED for that step and counted. The
+//     LEAK PROPERTY IS UNCHANGED and is what this gate still measures: the share
+//     position must survive the gap intact, never be zeroed for free. It rides
+//     the gap unhedged (and unmarked, which the row already reports).
+//   * Error            — still aborts. Covered by the companion gate below.
+TEST(BacktestLeak, HedgeAtMissingSurfaceSkipsInsteadOfFreeFlatten) {
   const fs::path dir = fresh_dir("f1a-hedge-gap");
   constexpr int kDates = 5;
   constexpr int kGap = 3;
@@ -212,11 +223,42 @@ TEST(BacktestLeak, HedgeAtMissingSurfaceFailsClosedInsteadOfFreeFlatten) {
                     /*close_step=*/0};
 
   RunConfig cfg;
-  cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport; // the leak's reachable mode
+  cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
   const auto r = run_backtest(*clock, strat, cfg);
-  ASSERT_FALSE(r.has_value()) << "hedge silently flattened residual shares at spot 0.0; "
-                              << "nav[last]=" << (r.has_value() ? r->nav.back() : 0.0);
-  EXPECT_NE(r.error().to_string().find("hedge"), std::string::npos) << r.error().to_string();
+  ASSERT_TRUE(r.has_value()) << r.error().to_string();
+  ASSERT_EQ(r->size(), static_cast<std::size_t>(kDates));
+
+  // `gross_delta` is the option-book delta plus the WHOLE share ledger. BBB is the
+  // only name in the book, and on the gap row its option delta is excluded, so the
+  // row reads exactly the retained hedge shares. A free flatten would read 0.0.
+  EXPECT_NEAR(r->gross_delta[kGap - 1], 0.0, 1e-6) << "band 0: the pre-gap row is flat";
+  EXPECT_GT(std::abs(r->gross_delta[kGap]), 1.0)
+      << "hedge silently flattened residual shares at spot 0.0";
+  // The skip is reported, never silent.
+  EXPECT_GT(r->n_unpriced_lots[kGap], 0.0);
+}
+
+// The strict policy still aborts on the very same fixture — nothing about the
+// tolerated path above opened a hole in the fail-closed one.
+TEST(BacktestLeak, HedgeAtMissingSurfaceFailsClosedUnderErrorPolicy) {
+  const fs::path dir = fresh_dir("f1a-hedge-gap-strict");
+  constexpr int kDates = 5;
+  constexpr int kGap = 3;
+  const GapCorpus corpus = make_gap_corpus(dir, kDates, kGap);
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t expiry = kBaseNow + 200LL * kDayNs;
+  GapStrategy strat{kUidB, 150.0, expiry,
+                    HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 0.0},
+                    /*close_step=*/0};
+
+  RunConfig cfg;
+  cfg.unpriced = UnpricedLotPolicy::Error;
+  const auto r = run_backtest(*clock, strat, cfg);
+  ASSERT_FALSE(r.has_value()) << "nav[last]=" << (r.has_value() ? r->nav.back() : 0.0);
+  EXPECT_EQ(r.error().code(), ErrorCode::NotFound);
+  EXPECT_NE(r.error().to_string().find("no surface"), std::string::npos) << r.error().to_string();
 }
 
 // ── F1(b) BT-P1-3 companion: shares held across a gap must not go unmarked ──

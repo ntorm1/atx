@@ -286,6 +286,8 @@ std::vector<std::string> split_csv(std::string_view csv) {
     return "hft";
   case FitPreset::Populate:
     return "populate";
+  case FitPreset::Bulk:
+    return "bulk";
   }
   return "unknown"; // unreachable for valid enumerators
 }

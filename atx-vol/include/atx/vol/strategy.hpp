@@ -59,9 +59,18 @@ namespace atx::vol {
 // surface. This creates a synthetic model contract, not a listed OPRA contract.
 // `snap_to_listed=true` fails with NotImplemented; use the listed OPRA workflow
 // in `listed_opra.hpp` when contract identity and tradeable quotes are required.
+// `snap_to_sessions` snaps the synthetic expiry onto `StrategySpec::session_ts`
+// instead: the raw `valuation + round(target_T * kNsPerYear)` anchor is pulled
+// back onto the GREATEST session at or before it, and `T` is recomputed from the
+// snapped anchor. A hold-to-expiry cohort then always lands on a timestamp the
+// run actually observes (a raw anchor can fall on a weekend/holiday, which makes
+// settlement unobservable). A raw anchor beyond the last session is left
+// UNSNAPPED — that cohort out-lives the corpus and is liquidation-marked at run
+// end. Requires a non-empty `StrategySpec::session_ts`; never a silent no-op.
 struct TenorSpec {
   double target_T{30.0 / 365.25}; // e.g. 0.25 (3m), 0.75 (9m)
   bool snap_to_listed{false};     // true is rejected; never silently ignored
+  bool snap_to_sessions{false};   // snap the synthetic expiry onto session_ts
 };
 
 // WHICH strike, per leg-side.
@@ -186,6 +195,33 @@ struct StrategySpec {
   // Appended after the original aggregate fields so existing positional
   // StrategySpec initializers keep their pre-adaptive meaning.
   ResolutionOptions resolution{};
+  // The run clock's snapshot timestamps, SORTED ASCENDING. Consumed ONLY by legs
+  // with `tenor.snap_to_sessions` (empty is fine for every other spec). The
+  // builders are corpus-agnostic, so the CALLER fills this from its `Clock`
+  // refs after assembling the spec.
+  std::vector<std::int64_t> session_ts;
+  // Treat "the scaled hedge group's symbol is not in this snapshot" as a NO-ENTRY
+  // day instead of a run-ending error. Applies to the leg whose `group` equals
+  // `constraint.group_b` — the index leg of a dispersion spec, the one leg the
+  // structure cannot be built without — and ONLY to `NotFound`, i.e. that symbol
+  // is absent from the snapshot. Every other failure on that leg (a degenerate
+  // fit, a configuration error) still propagates, and basket-name handling under
+  // `missing.policy` is untouched.
+  //
+  // READ `constraint.group_b` LITERALLY before setting this. It is "the index" for
+  // `Kind::FlatVega`, which is what `make_dispersion_strangle_spec` builds. For
+  // `Kind::VegaNeutralBasket` the group_b DEFAULT is "basket", so on such a spec
+  // this flag would turn ONE missing basket name into a whole-entry skip — the
+  // opposite of what `MissingNamePolicy::DropRenormalize` is for.
+  //
+  // Motivation: a real corpus loses its index board on a handful of sessions (an
+  // arb-violating snapshot minute the fitter must reject), and a year-to-date run
+  // has to drop those entry days rather than abort. `resolve_spec_with_policy`
+  // then returns an EMPTY sized book with the skip recorded in `dropped`, which
+  // `DeclarativeStrategy` already reads as "open nothing this step"; existing
+  // cohorts are untouched. Default false preserves the pre-existing hard error,
+  // and the flag is independent of `missing.policy`.
+  bool skip_entry_on_missing_index{false};
 };
 
 // ── Resolution primitives ───────────────────────────────────────────────────
@@ -303,7 +339,12 @@ expand_leg(const MarketSnapshot &snap, const LegSpec &leg, const ResolutionOptio
 // `CrossLegConstraint` (FlatVega / VegaNeutralBasket scale one group's gross vega
 // onto another's). Deterministic; emits legs in spec order (call before put).
 // EXACTLY resolve_spec_with_policy under policy Error (any leg failure is fatal,
-// `spec.missing` is ignored).
+// `spec.missing` is ignored) — with ONE exception, and only when the caller has
+// opted into it: `spec.skip_entry_on_missing_index` is honored here too (the
+// resolution body is shared), so a NotFound on the `constraint.group_b` leg yields
+// an EMPTY book rather than an error. This overload has no `dropped` sink, so on
+// this path the skip is SILENT; use `resolve_spec_with_policy` if you need the
+// reason. Default false leaves the "any leg failure is fatal" contract exact.
 [[nodiscard]] Result<std::vector<SizedLeg>> resolve_spec(const MarketSnapshot &snap,
                                                          const StrategySpec &spec);
 [[nodiscard]] Result<std::vector<SizedLeg>> resolve_spec(const MarketSnapshot &snap,
@@ -335,6 +376,12 @@ struct ResolveDrop {
 //    vegas and the hedge renormalizes automatically.
 // `dropped`, if non-null, is cleared then populated on every call (even one that
 // ultimately errors out, e.g. via the hedge-leg or min_names guard above).
+//
+// Under EITHER policy, `spec.skip_entry_on_missing_index` (default false) turns a
+// NotFound on the `constraint.group_b` leg into an EMPTY result — no legs, no
+// error — with the skip recorded in `*dropped`. Callers that treat a non-error
+// result as "there is a book" must check for empty; `DeclarativeStrategy` already
+// does. Nothing else about either policy changes.
 [[nodiscard]] Result<std::vector<SizedLeg>>
 resolve_spec_with_policy(const MarketSnapshot &snap, const StrategySpec &spec,
                          std::vector<ResolveDrop> *dropped = nullptr);

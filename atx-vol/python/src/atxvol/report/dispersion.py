@@ -250,9 +250,50 @@ def _regime(spec: Mapping[str, str], source: str) -> tuple[str, str, str, str]:
     return key, tone, badge, gloss
 
 
+# The masthead this renderer was written for: the SPY listed-options dispersion
+# proxy. It stays the DEFAULT so every existing caller renders byte-identically,
+# but it is no longer the only thing this file can say — see `build_report`.
+DEFAULT_TITLE = "SPY Listed-Options Dispersion"
+DEFAULT_EYEBROW = "atx-vol · surface replay · traditional dispersion proxy"
+DEFAULT_STANDFIRST = (
+    "A short SPY at-the-money straddle against long constituent ATM straddles, "
+    "sized vega-flat at entry on served American vegas, delta-hedged daily at the "
+    "close and rolled on a common listed monthly expiry. Prices and Greeks are "
+    "replayed from cached atx-vol American fitted surfaces — no re-fit occurs "
+    "inside the backtest."
+)
+
+
+def _attribution_caption(sheet) -> str:
+    """Describe the attribution this run ACTUALLY produced, not a remembered one.
+
+    The caption used to assert, unconditionally, that "long gamma and long vega
+    are where the alpha sits, theta is the carry paid for it". That is the SPY
+    proxy's signature and it is a claim about numbers — on a run whose gamma
+    attribution is negative the same page's own table refutes its caption, which
+    is precisely the read-a-figure-without-its-assumptions failure this renderer
+    exists to prevent. So the sentence is now derived from the signs it is
+    describing.
+    """
+    def side(value: float, name: str) -> str:
+        if value > 0:
+            return f"{name} contributes"
+        if value < 0:
+            return f"{name} costs"
+        return f"{name} is flat"
+
+    return (
+        f"The dispersion signature for this run: {side(sheet.attr_gamma, 'gamma')}, "
+        f"{side(sheet.attr_vega, 'vega')}, {side(sheet.attr_theta, 'theta')}, and delta is "
+        "hedge slippage — small because the book is re-flattened at every close."
+    )
+
+
 def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
             path: str, label: str, *, columns_present: frozenset[str] | None = None,
-            source: str = "in-memory BacktestResult") -> str:
+            source: str = "in-memory BacktestResult",
+            title: str | None = None, eyebrow: str | None = None,
+            standfirst: str | None = None) -> str:
     # Before anything is computed, let alone written: no regime, no report.
     regime, regime_tone, regime_badge, regime_gloss = _regime(spec, label or "this run")
     # The short tag repeated on every headline tile, so no number can be read
@@ -286,15 +327,11 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
     delta_band_text = f"{delta_band:.10g}"
 
     report = Report(
-        title="SPY Listed-Options Dispersion",
-        eyebrow="atx-vol · surface replay · traditional dispersion proxy",
-        standfirst=(
-            "A short SPY at-the-money straddle against long constituent ATM straddles, "
-            "sized vega-flat at entry on served American vegas, delta-hedged daily at the "
-            "close and rolled on a common listed monthly expiry. Prices and Greeks are "
-            "replayed from cached atx-vol American fitted surfaces — no re-fit occurs "
-            "inside the backtest."
-        ),
+        # All three are TEXT (components.Report escapes them), so a
+        # caller-supplied masthead cannot inject markup into the document.
+        title=title if title is not None else DEFAULT_TITLE,
+        eyebrow=eyebrow if eyebrow is not None else DEFAULT_EYEBROW,
+        standfirst=standfirst if standfirst is not None else DEFAULT_STANDFIRST,
         meta=(
             ("Regime", regime),
             ("Window", f"{date_lo} → {date_hi}"),
@@ -317,9 +354,14 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
             # otherwise corrupts — or injects into — the document.
             f"<b>Run</b> {esc(label)}" if label else "<b>Run</b> spy_dispersion_backtest",
             f"<b>Source</b> {esc(source)}",
+            # The weight-coverage clause is OMITTED when the run has no such
+            # floor, rather than printed as "≥ ?" — an unfilled placeholder reads
+            # as a broken template, and a sizing rule that is not weight-based
+            # (a per-name theta budget, say) has no value to put there.
             f"<b>Data</b> {esc(spec.get('opra_root', 'OPRA'))} · flat rate "
-            f"{num('flat_rate', 0.043):.3f} · min names {esc(spec.get('min_names', '?'))} · "
-            f"weight coverage ≥ {esc(spec.get('min_weight_coverage', '?'))}",
+            f"{num('flat_rate', 0.043):.3f} · min names {esc(spec.get('min_names', '?'))}"
+            + (f" · weight coverage ≥ {esc(spec['min_weight_coverage'])}"
+               if spec.get("min_weight_coverage") else ""),
             "<b>Report</b> rendered by atxvol.report from the engine's persisted series — "
             "metrics folded by atx-vol's own tearsheet",
         ),
@@ -450,11 +492,7 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
                 title="Cumulative attribution by axis",
                 subtitle="Running sum of each axis, in dollars, on one shared scale.",
                 legend=legend,
-                caption=(
-                    "This is the dispersion signature: long gamma and long vega are where "
-                    "the alpha sits, theta is the carry paid for it, and delta is hedge "
-                    "slippage — small because the book is re-flattened at every close."
-                ),
+                caption=_attribution_caption(sheet),
                 table=Table(
                     [Column("Axis"), Column("Cumulative $", tone="sign"),
                      Column("Share of total")],
@@ -587,7 +625,9 @@ def _render(result, sheet, spec: Mapping[str, str], counters: Mapping[str, str],
 
 
 # Backwards-compatible entry point for an in-memory run.
-def build_report(result, sheet, meta: Mapping[str, str], path: str) -> str:
+def build_report(result, sheet, meta: Mapping[str, str], path: str, *,
+                 title: str | None = None, eyebrow: str | None = None,
+                 standfirst: str | None = None) -> str:
     """Render a `BacktestResult` + `TearSheet` + metadata mapping.
 
     `meta` must carry `friction_regime`; this entry point is held to exactly the
@@ -595,5 +635,18 @@ def build_report(result, sheet, meta: Mapping[str, str], path: str) -> str:
     refuses first). An in-memory caller is not a licence to publish an
     unqualified headline — it is the same number in the same document. The
     refusal is an `atxvol.AtxError` with `code == ErrorCode.INVALID_ARGUMENT`.
+
+    THE MASTHEAD IS THE CALLER'S. `title` / `eyebrow` / `standfirst` default to
+    the SPY listed-options proxy this file was written for, so every existing
+    caller is byte-unchanged — but a caller running a DIFFERENT strategy must
+    override them. This whole renderer is built on the rule that a reader must
+    never meet a figure without the assumptions that produced it: it hard-refuses
+    a track with no `friction_regime`, captions every tile with the regime and
+    names it in the chart title. A masthead that describes someone else's
+    strategy breaks that rule at the one line a reader is guaranteed to read, and
+    a `<title>` is what a circulated HTML file is filed under.
+
+    All three are escaped by `components.Report`, so they are text, not markup.
     """
-    return _render(result, sheet, dict(meta), {}, path, meta.get("strategy", ""))
+    return _render(result, sheet, dict(meta), {}, path, meta.get("strategy", ""),
+                   title=title, eyebrow=eyebrow, standfirst=standfirst)

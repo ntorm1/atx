@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -47,8 +48,12 @@ struct CanonicalTenor {
   return -static_cast<double>(static_cast<std::uint64_t>(rhs) - static_cast<std::uint64_t>(lhs));
 }
 
+// The synthetic expiry anchor for `requested_T`, optionally snapped onto the
+// run's session grid (see TenorSpec::snap_to_sessions). `sessions` must be
+// sorted ascending; it is read, never copied.
 [[nodiscard]] Result<CanonicalTenor> canonicalize_tenor(std::int64_t valuation_ts_ns,
-                                                        double requested_T) {
+                                                        double requested_T, bool snap_to_sessions,
+                                                        std::span<const std::int64_t> sessions) {
   if (!(std::isfinite(requested_T) && requested_T > 0.0)) {
     return Err(ErrorCode::InvalidArgument, "expand_leg: tenor T must be finite and positive");
   }
@@ -67,7 +72,31 @@ struct CanonicalTenor {
     return Err(ErrorCode::InvalidArgument, "expand_leg: tenor expiry overflows timestamp");
   }
   const std::int64_t expiry_ts_ns = valuation_ts_ns + delta_ns;
-  return Ok(CanonicalTenor{expiry_ts_ns, static_cast<double>(delta_ns) / kNsPerYear});
+  const CanonicalTenor raw{expiry_ts_ns, static_cast<double>(delta_ns) / kNsPerYear};
+  if (!snap_to_sessions) {
+    return Ok(raw);
+  }
+  if (sessions.empty()) {
+    return Err(ErrorCode::InvalidArgument, "expand_leg: snap_to_sessions requires session_ts");
+  }
+  if (expiry_ts_ns > sessions.back()) {
+    // The cohort out-lives the corpus: there is no session to snap onto and none
+    // is needed — it never reaches settlement inside the run and is
+    // liquidation-marked at run end. Intentionally left on the raw anchor.
+    return Ok(raw);
+  }
+  const auto after = std::upper_bound(sessions.begin(), sessions.end(), expiry_ts_ns);
+  if (after == sessions.begin()) {
+    return Err(ErrorCode::InvalidArgument, "expand_leg: snapped expiry is not after valuation");
+  }
+  const std::int64_t snapped_ts_ns = *(after - 1); // greatest session <= raw expiry
+  if (snapped_ts_ns <= valuation_ts_ns) {
+    return Err(ErrorCode::InvalidArgument, "expand_leg: snapped expiry is not after valuation");
+  }
+  // T is re-derived from the SNAPPED anchor so the contract key the engine books
+  // and the greeks the leg is sized on describe the same expiry.
+  return Ok(CanonicalTenor{snapped_ts_ns,
+                           timestamp_delta_ns(snapped_ts_ns, valuation_ts_ns) / kNsPerYear});
 }
 
 [[nodiscard]] Result<double> resolve_strike_by_delta_routed(const SurfaceRef &s, double T,
@@ -418,9 +447,14 @@ Result<double> resolve_strike(const SurfaceRef &s, const TenorSpec &tenor, Side 
 
 // ── LegSpec -> ResolvedLeg(s) ───────────────────────────────────────────────
 
-Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot &snap, const LegSpec &leg,
-                                            const ResolutionOptions &options,
-                                            const PriceOptions &price_options) {
+namespace {
+
+// The `expand_leg` body, plus the run's session grid for `snap_to_sessions` legs
+// (`sessions` is borrowed from the enclosing StrategySpec — never copied, and
+// empty for the spec-free public overloads).
+[[nodiscard]] Result<std::vector<ResolvedLeg>>
+expand_leg_impl(const MarketSnapshot &snap, const LegSpec &leg, const ResolutionOptions &options,
+                const PriceOptions &price_options, std::span<const std::int64_t> sessions) {
   const Status tenor_status = validate_model_tenor(leg.tenor);
   if (!tenor_status) {
     return Err(tenor_status.error());
@@ -437,7 +471,8 @@ Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot &snap, const Le
   if (surf == nullptr) {
     return Err(ErrorCode::NotFound, "expand_leg: no surface for leg's uid");
   }
-  const Result<CanonicalTenor> canonical = canonicalize_tenor(snap.ts_ns(), leg.tenor.target_T);
+  const Result<CanonicalTenor> canonical =
+      canonicalize_tenor(snap.ts_ns(), leg.tenor.target_T, leg.tenor.snap_to_sessions, sessions);
   if (!canonical) {
     return Err(canonical.error());
   }
@@ -538,6 +573,16 @@ Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot &snap, const Le
   return Ok(std::move(out));
 }
 
+} // namespace
+
+Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot &snap, const LegSpec &leg,
+                                            const ResolutionOptions &options,
+                                            const PriceOptions &price_options) {
+  // No enclosing spec here, so no session grid: a leg that asks to snap is
+  // rejected by canonicalize_tenor rather than silently left unsnapped.
+  return expand_leg_impl(snap, leg, options, price_options, {});
+}
+
 Result<std::vector<ResolvedLeg>> expand_leg(const MarketSnapshot &snap, const LegSpec &leg,
                                             const ResolutionOptions &options) {
   return expand_leg(snap, leg, options, PriceOptions{});
@@ -568,13 +613,12 @@ namespace {
 // `resolve_spec` used inline pre-S1-3/T2, factored out so both `resolve_spec`
 // and `resolve_spec_with_policy` share one implementation (errors — code AND
 // message — are bit-identical to the pre-refactor inline form).
-[[nodiscard]] Result<std::vector<SizedLeg>> expand_and_size_leg(const MarketSnapshot &snap,
-                                                                const LegSpec &ls,
-                                                                const ResolutionOptions &options,
-                                                                const PriceOptions &price_options) {
+[[nodiscard]] Result<std::vector<SizedLeg>>
+expand_and_size_leg(const MarketSnapshot &snap, const LegSpec &ls, const ResolutionOptions &options,
+                    const PriceOptions &price_options, std::span<const std::int64_t> sessions) {
   constexpr double kMult = 100.0;
 
-  Result<std::vector<ResolvedLeg>> exp = expand_leg(snap, ls, options, price_options);
+  Result<std::vector<ResolvedLeg>> exp = expand_leg_impl(snap, ls, options, price_options, sessions);
   if (!exp) {
     return Err(exp.error());
   }
@@ -656,11 +700,27 @@ namespace {
   // This is a configuration/capability error, never missing market data. Reject
   // the whole spec before DropRenormalize can turn an explicitly requested
   // listed contract into a silent model-contract substitution or name drop.
+  bool any_snaps_to_sessions = false;
   for (const LegSpec &leg : spec.legs) {
     const Status tenor_status = validate_model_tenor(leg.tenor);
     if (!tenor_status) {
       return Err(tenor_status.error());
     }
+    any_snaps_to_sessions = any_snaps_to_sessions || leg.tenor.snap_to_sessions;
+  }
+  // The session grid is consumed by a binary search, which on an unsorted range
+  // still RETURNS an anchor — a wrong expiry, a wrong T and therefore a wrong
+  // strike, reported as success. That is the only silent-wrong-answer path in a
+  // feature whose whole point is fail-closed calendar handling, so an out-of-order
+  // grid is rejected here, in the same configuration pre-pass and with the same
+  // never-droppable status as `snap_to_listed`: `InvalidArgument` is outside
+  // DropRenormalize's {NotFound, Unavailable} set, so a misordered calendar can
+  // never be laundered into a name drop. Checked only when some leg actually reads
+  // the grid (the flag is gathered by the loop above at zero extra cost), so a
+  // spec that carries `session_ts` it never consumes pays nothing.
+  if (any_snaps_to_sessions && !std::is_sorted(spec.session_ts.begin(), spec.session_ts.end())) {
+    return Err(ErrorCode::InvalidArgument,
+               "resolve_spec: session_ts must be sorted ascending for snap_to_sessions legs");
   }
   const bool drop_policy = missing.policy == MissingNamePolicy::DropRenormalize;
 
@@ -703,9 +763,13 @@ namespace {
     per_leg.emplace_back(Err(ErrorCode::Internal, "resolve_spec: leg not resolved"));
   }
   if (!spec.legs.empty()) {
+    // Borrowed by every lane: the grid is read-only during the fan-out, so no
+    // per-leg copy of the run's session timestamps is made.
+    const std::span<const std::int64_t> sessions{spec.session_ts};
     pricing_executor().run_blocks(
         spec.legs.size(), price_options.n_threads, [&](std::size_t i) {
-          per_leg[i] = expand_and_size_leg(snap, spec.legs[i], spec.resolution, price_options);
+          per_leg[i] =
+              expand_and_size_leg(snap, spec.legs[i], spec.resolution, price_options, sessions);
         });
   }
 
@@ -716,6 +780,25 @@ namespace {
     Result<std::vector<SizedLeg>> &leg_sized = per_leg[leg_ix];
     if (!leg_sized) {
       const ErrorCode code = leg_sized.error().code();
+      // SP100 task 2: an opted-in ENTRY SKIP when the scaled hedge group's symbol
+      // (the dispersion index) is simply not in this snapshot. Checked BEFORE the
+      // policy branch below because it is independent of `missing.policy`: it is
+      // about the index leg, not about dropping basket names. Keyed strictly on
+      // NotFound — "no such symbol here" — so a degenerate fit (Unavailable) or a
+      // configuration error on the same leg still propagates verbatim.
+      //
+      // The skip is expressed as an EMPTY sized book, the channel
+      // `DeclarativeStrategy::prepare_cohort` already reads as "open nothing this
+      // step", with the reason recorded in `dropped` so it is never silent.
+      if (spec.skip_entry_on_missing_index && has_constraint && ls.group == gb &&
+          code == ErrorCode::NotFound) {
+        if (dropped != nullptr) {
+          dropped->push_back(ResolveDrop{ls.symbol, "index leg absent from this snapshot; entry "
+                                                    "skipped: " +
+                                                        leg_sized.error().message()});
+        }
+        return Ok(std::vector<SizedLeg>{});
+      }
       const bool droppable_market_failure =
           code == ErrorCode::NotFound || code == ErrorCode::Unavailable;
       if (!drop_policy || !droppable_market_failure) {

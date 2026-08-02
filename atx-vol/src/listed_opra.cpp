@@ -521,6 +521,9 @@ listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_n
   quotes.reserve(filtering ? wanted.size() : panel.frame.rows.size());
   for (std::size_t i = 0; i < panel.frame.rows.size(); ++i) {
     const QuoteRow &row = panel.frame.rows[i];
+    if (row.bid_size < 0 || row.ask_size < 0 || row.volume < 0 || row.open_interest < 0) {
+      return Err(ErrorCode::InvalidArgument, "listed OPRA join: negative liquidity count");
+    }
     const std::uint32_t instrument_id = panel.source_instrument_ids[i];
     const auto identity = std::lower_bound(
         panel.source_identities.begin(), panel.source_identities.end(), instrument_id,
@@ -533,8 +536,8 @@ listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_n
     }
     // ── Leg-key filter, stage 1 (see listed_opra.hpp for the full contract) ──
     //
-    // Placed AFTER the panel-wide identity gate — which therefore stays
-    // panel-wide — and BEFORE definitions.find, the OSI parse and quote
+    // Placed AFTER the panel-wide liquidity and identity gates — which therefore
+    // stay panel-wide — and BEFORE definitions.find, the OSI parse and quote
     // construction, which is the whole cost this skips.
     //
     // It keys on raw_symbol only, for two reasons. (1) The full key needs the
@@ -631,6 +634,14 @@ listed_quotes_from_opra(std::string_view trade_date, std::int64_t valuation_ts_n
     quote.side = row.side;
     quote.bid = row.bid;
     quote.ask = row.ask;
+    quote.bid_size = row.bid_size;
+    quote.ask_size = row.ask_size;
+    quote.volume = row.volume;
+    quote.open_interest = row.open_interest;
+    quote.bid_size_available = panel.bid_size_available;
+    quote.ask_size_available = panel.ask_size_available;
+    quote.volume_available = panel.volume_available;
+    quote.open_interest_available = panel.open_interest_available;
     quote.quote_ts_ns = row.ts_ns == 0 ? valuation_ts_ns : row.ts_ns;
     quote.multiplier = definition->multiplier;
     quote.standard_monthly = definition->standard_monthly;

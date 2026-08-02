@@ -133,11 +133,13 @@ TEST(Conviction, AllPerfectIsOne) {
 
 // 9. Fail-closed: a NaN dsr.dsr aborts (the debug finite guard). Cast to void —
 //    the result is [[nodiscard]] and the call aborts before returning.
+#ifndef NDEBUG
 TEST(ConvictionDeathTest, NanDsrAborts) {
   const DsrResult bad = dsr_with(std::numeric_limits<double>::quiet_NaN());
   const PboResult ok = pbo_with(0.2);
   EXPECT_DEATH((void)conviction(bad, ok, 1.0, ExplainFlag::Explained), ".*");
 }
+#endif
 
 // 10. (T7 NEW-2) Weight-sum tolerance: the convex-combination precondition
 //     (w_dsr + w_pbo + w_stability == 1) is asserted in DEBUG. The combine

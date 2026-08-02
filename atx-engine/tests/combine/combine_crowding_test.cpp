@@ -226,6 +226,7 @@ TEST(Crowding, TwoRuns_ByteIdentical) {
 
 // ---- 8: death test — a size mismatch aborts (programmer-error precondition) ----
 
+#ifndef NDEBUG
 TEST(CrowdingDeathTest, SizeMismatch_Aborts) {
   const usize T = 8U;
   const std::vector<f64> s = ramp(T);
@@ -236,6 +237,7 @@ TEST(CrowdingDeathTest, SizeMismatch_Aborts) {
   const CrowdingConfig cfg{};
   EXPECT_DEATH((void)decorrelate_weights(weights, pool, 0U, T, capacity, cfg), ".*");
 }
+#endif
 
 
 }  // namespace atxtest_combine_crowding_test

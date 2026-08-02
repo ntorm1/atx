@@ -359,7 +359,8 @@ void prepare_fit_slice_into_slot(const Chain &chain, const SurfaceParityInputs &
   slot.chain_bids = chain.bids;
   slot.chain_asks = chain.asks;
   slot.chain_ts = chain.ts_ns;
-  source_quote_lookup(chain, slot.prepared->fit_observations(), slot.source_mids, slot.source_flags);
+  source_quote_lookup(chain, slot.prepared->fit_observations(), slot.source_mids,
+                      slot.source_flags);
   slot.usable = true;
 }
 
@@ -606,7 +607,8 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
       fb_carry.source = pre.carry_source;
       pre.carry = std::move(fb_carry);
       pre.carry_available = true;
-      prepare_fit_slice_into_slot(under.chains[i], in, cfg.kind, use_fit_cache, time_stages, i, pre);
+      prepare_fit_slice_into_slot(under.chains[i], in, cfg.kind, use_fit_cache, time_stages, i,
+                                  pre);
     });
   }
 
@@ -781,8 +783,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         out.expiry_reports.push_back(rep);
         if (in.fail_board_on_hard_slice_error && !prep_error_is_expected(fit_code)) {
           return Err(fit_code, "fit_curve_surface: expiry " + std::to_string(ci) +
-                                   " slice fit failed (hard): " +
-                                   slice_res.error().to_string());
+                                   " slice fit failed (hard): " + slice_res.error().to_string());
         }
         continue;
       }
@@ -814,6 +815,7 @@ Result<CurveSurfaceReport> fit_curve_surface(const Underlying &under, const Surf
         pin.r = pre.rate;
         pin.q_eff = q_eff;
         pin.T = T;
+        pin.exercise_style = prepared.provenance().exercise_style;
         pin.method = in.deam.method;
         pin.al_opts = in.deam.al_opts;
         pin.band_k = in.band_k;

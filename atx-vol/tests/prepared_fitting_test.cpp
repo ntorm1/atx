@@ -26,6 +26,7 @@ using atx::vol::CalibOpts;
 using atx::vol::Chain;
 using atx::vol::chain_index;
 using atx::vol::CurveConfig;
+using atx::vol::ExerciseStyle;
 using atx::vol::ObservationKey;
 using atx::vol::ObservationRejectionReason;
 using atx::vol::PreparedBoard;
@@ -169,6 +170,50 @@ TEST(PreparedFitting, ConfiguredPopulationIsDeterministicAndFamilyAgnostic) {
   EXPECT_EQ(accepted_keys(*second), essvi_keys);
 }
 
+TEST(PreparedFitting, EuropeanChainUsesRawBlack76ObservationsWithoutDeAmericanization) {
+  Chain chain = make_chain();
+  chain.exercise_style = ExerciseStyle::European;
+
+  const auto prepared = PreparedSlice::create(chain, configured_inputs());
+  ASSERT_TRUE(prepared.has_value()) << prepared.error().to_string();
+  ASSERT_FALSE(prepared->fit_observations().empty());
+  for (const auto &row : prepared->fit_observations()) {
+    EXPECT_NEAR(row.sigma_mkt, 0.24, 1.0e-10);
+    EXPECT_NEAR(row.score_sigma_mkt, 0.24, 1.0e-10);
+  }
+  const auto &audit = prepared->deam_audit();
+  EXPECT_EQ(audit.n_deam_rows, prepared->fit_observations().size());
+  EXPECT_EQ(audit.n_deam_accepted, audit.n_deam_rows);
+  EXPECT_EQ(audit.accurate.n_proposed, audit.n_deam_rows);
+  EXPECT_EQ(audit.accurate.n_audited, audit.n_deam_rows);
+  EXPECT_EQ(audit.accurate.n_reference_reprices, audit.n_deam_rows);
+  EXPECT_EQ(audit.accurate.n_accepted, audit.n_deam_rows);
+  EXPECT_EQ(audit.n_rejected_residual, std::uint32_t{0});
+  EXPECT_TRUE(atx::vol::deam_inversion_certified(
+      audit, configured_inputs().calib.max_certified_deam_drop_fraction));
+  EXPECT_EQ(prepared->provenance().exercise_style, ExerciseStyle::European);
+}
+
+TEST(PreparedFitting, LegacyPolicyAlsoBypassesDeAmericanizationForEuropeanChain) {
+  Chain chain = make_chain();
+  chain.exercise_style = ExerciseStyle::European;
+  PreparedSliceInputs inputs = configured_inputs();
+  inputs.policy = PreparedObservationPolicy::LegacyEssviCompatibility;
+
+  const auto prepared = PreparedSlice::create(chain, inputs);
+  ASSERT_TRUE(prepared.has_value()) << prepared.error().to_string();
+  ASSERT_FALSE(prepared->fit_observations().empty());
+  for (const auto &row : prepared->fit_observations()) {
+    EXPECT_NEAR(row.sigma_mkt, 0.24, 1.0e-10);
+  }
+  const auto &audit = prepared->deam_audit();
+  EXPECT_EQ(audit.n_deam_rows, prepared->fit_observations().size());
+  EXPECT_EQ(audit.n_deam_accepted, audit.n_deam_rows);
+  EXPECT_TRUE(
+      atx::vol::deam_inversion_certified(audit, inputs.calib.max_certified_deam_drop_fraction));
+  EXPECT_EQ(prepared->provenance().policy, PreparedObservationPolicy::LegacyEssviCompatibility);
+}
+
 TEST(PreparedFitting, ConfiguredPopulationRetainsStableRejectedKeysAndReasons) {
   const Chain chain = make_chain();
   const auto prepared = PreparedSlice::create(chain, configured_inputs());
@@ -224,7 +269,7 @@ TEST(PreparedFitting, LegacyVegaZeroRowNoiseSigmaMatchesConfiguredFallback) {
   const double q_eff = r - std::log(F / 100.0) / T;
   std::vector<double> strikes;
   for (int i = 0; i < 40; ++i) {
-    strikes.push_back(80.0 + 15.0 * static_cast<double>(i));  // out to K=665
+    strikes.push_back(80.0 + 15.0 * static_cast<double>(i)); // out to K=665
   }
   const Chain chain = make_american_board(strikes, T, r, q, 0.05);
 
@@ -248,7 +293,8 @@ TEST(PreparedFitting, LegacyVegaZeroRowNoiseSigmaMatchesConfiguredFallback) {
       // 1.0, NOT 0.0. Pre-fix: noise_sigma == 0.0 (RED).
       EXPECT_DOUBLE_EQ(o.noise_sigma, 1.0)
           << "Legacy vega<=0 noise_sigma must match the Configured builder's 1.0 "
-             "fallback (K=" << o.K << ")";
+             "fallback (K="
+          << o.K << ")";
     }
   }
   ASSERT_GT(n_vega_zero, 0) << "fixture must produce at least one vega==0 row";
@@ -333,7 +379,8 @@ TEST(PreparedFitting, LegacySharedBoundaryDeamMatchesScalarWithinEconomicBound) 
   // (selection is independent of the de-Am route), so the fit rows line up 1:1 and
   // differ only in the de-Am IV, which must hold the bound row-for-row.
   ASSERT_EQ(batch->fit_observations().size(), scalar->fit_observations().size());
-  ASSERT_GE(batch->fit_observations().size(), scalar->fit_observations().size()); // in-band >= prior
+  ASSERT_GE(batch->fit_observations().size(),
+            scalar->fit_observations().size()); // in-band >= prior
   double worst_e2e = 0.0;
   for (std::size_t i = 0; i < batch->fit_observations().size(); ++i) {
     const atx::vol::FitObs &b = batch->fit_observations()[i];

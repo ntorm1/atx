@@ -1,0 +1,402 @@
+# Point-in-time options research bridge
+
+`atx-options-engine` is the typed boundary between the listed-options data and
+research plane in `atx-vol` and the generic cross-sectional portfolio stack in
+`atx-engine`.
+
+It exists to prevent an options backtest from quietly treating a contract like
+one share of stock. The library does not implement another ranker, optimizer,
+execution simulator, or portfolio ledger. It prepares option-domain inputs for
+the existing engine components and preserves their conservative next-slice
+execution contract.
+
+## Implemented XS-1 research slice
+
+`OptionResearchPanel::create` accepts sparse point-in-time observations and
+produces:
+
+- a canonical date-by-contract `Dataset`;
+- a stable 64-bit contract catalog mapped to caller-owned `SymbolTable`
+  identities (the bridge never fabricates instrument IDs);
+- an explicit tradability mask and non-tradable reason;
+- separate definition, feature, execution, and outcome-label lineage;
+- bid/ask, displayed sizes, interval volume, lagged open interest, ADV, return
+  volatility, vega, and caller-supplied margin in contract units.
+
+Construction fails closed when:
+
+- research clocks do not satisfy
+  `observed <= available <= decision < execution < label_end`;
+- a tradable quote does not satisfy
+  `definition_available <= quote_event <= quote_available <= decision`;
+- a stable contract ID maps to changing underlier, expiry, strike, side, or
+  multiplier metadata;
+- a quote is crossed, non-positive, missing displayed size, missing risk, or
+  missing margin while marked `Tradable`;
+- distinct contracts alias the same caller-owned engine instrument ID;
+- a nonstandard deliverable is not marked `UnsupportedContract`;
+- any required source identity is absent;
+- decision/contract keys are duplicated; or
+- configured row or dense-cell bounds would be exceeded.
+
+Rows are canonicalized by `(decision_ts_ns, contract_id)`. Contracts are
+canonicalized by permanent ID. Caller order therefore cannot change the dense
+panel, catalog, universe, or target order. Future `forward_pnl` labels never
+enter the decision `Dataset`; they are exposed only through the separately
+typed `OptionOutcomeLabel` evaluation view.
+
+## Units and target construction
+
+All quantities at this boundary are listed contracts:
+
+| Value | Unit |
+|---|---|
+| `bid`, `ask`, `mark` | dollars per option unit |
+| premium exposure | `mark * multiplier * contracts` dollars |
+| displayed size, interval volume, ADV, open interest | contracts |
+| vega | supplied per listed contract |
+| initial and maintenance margin | dollars per listed contract |
+| commission in the later execution stage | must be configured per contract |
+
+`ListedOptionQuote` carries per-field availability flags, so an observed zero
+display or activity count remains distinct from a source schema that did not
+provide volume or open interest. The current cbbo-1m loader marks bid/ask sizes
+available and volume/open interest unavailable; it rejects sizes outside the
+nonnegative `int32` range before narrowing.
+
+`make_option_target_book` maps catalog-aligned engine weights to whole-contract
+targets. It supports premium-notional and equal-/weighted-vega sizing, truncates
+fractional contracts toward zero, caps position ownership by a lagged-ADV
+fraction and a hard per-contract limit, and then applies a deterministic margin
+policy. Input weights must have L1 norm no greater than one, making
+`gross_budget` an actual upper bound rather than an unconstrained scale factor.
+Values within eight floating-point ulps of a whole contract are first snapped
+to that integer, preventing representation noise in normalized rank weights
+from creating asymmetric one-contract books.
+
+The initial margin gate is deliberately named a conservative
+independent-contract research schedule. It provides no spread offsets or
+portfolio netting and is not represented as OCC STANS, SPAN, or a broker's
+portfolio-margin calculation. Callers can either reject the full target batch or
+proportionally clamp it before receiving a result. Expected failures never
+mutate caller-owned holdings or cash.
+
+The ADV fraction is a position-capacity control, not an order participation
+model. Displayed quote size is not consumed during target construction. A
+target is an intent, not a fill. The replay stage must consume future observed
+liquidity, prevent two orders from reusing it, and retain or cancel any
+remainder under its time-in-force rules.
+
+## Implemented XS-2 Consolidated-L1 replay kernel
+
+`OptionExecutionReplay` turns whole-contract target orders into an exact cash,
+position, fill, fee, and final-order ledger. It is deliberately labeled
+`ConsolidatedL1`: OPRA/CBBO evidence does not reveal a national queue, hidden
+size, venue allocation, or complex-auction availability.
+
+The kernel enforces:
+
+- `decision < order arrival < fill`, with fills only on a strictly later quote
+  event;
+- one canonical total event order independent of caller input order;
+- price priority followed by arrival, caller priority sequence, and order ID;
+- separate bid and ask liquidity pools;
+- one selected participant's displayed size rather than fictitious aggregate
+  NBBO depth;
+- a counterfactual debit ledger: unchanged size at the same
+  `(participant, price)` cannot be consumed twice, and a displayed-size
+  increase exposes only the increment;
+- explicit per-side update evidence, so a bid-only update cannot replenish a
+  consumed ask;
+- whole-contract partial fills, explicit `FirstFutureQuoteOrCancel`, DAY, and
+  synthetic GTC leaves, cancel-plus-new ordering, and a conservative
+  cutoff-before-quote tie-break;
+- strict quote status, staleness, locked-market, definition-clock,
+  caller-supplied contract-cutoff, source-lineage, and duplicate-key
+  validation;
+- internally exact `Decimal` cash, premium, slippage, adverse-basis-point, and
+  component fee accounting for the configured counterfactual fills, with
+  checked multiplier and quantity arithmetic;
+- effective-dated, lineage-bearing simple-order tick schedules. Quotes and
+  limits must be on their active grid; adverse buys round up and sells round
+  down without a floating-point money seam. An order's rule must be known at
+  decision time, and delayed quote evidence that straddles a rule transition
+  fails closed;
+- effective-dated fee rows with knowledge time, non-overlap, per-contract,
+  per-order, clearing, regulatory, commission, rebate, and sell-premium lanes;
+- configured Strict, Calibrated, and Stress scenarios. Calibrated runs require
+  a frozen calibration identity; Strict and Stress cannot consume more than
+  25% of displayed size;
+- a bounded PIMPL workspace. All successful-run vectors are reserved by
+  `create`; the replay path performs no dynamic allocation after workspace
+  initialization. A global-allocation-instrumented contract test pins this
+  property;
+- a preallocated intrusive pairing heap and logarithmic effective-row lookup,
+  avoiding quadratic same-contract insertion and fee-revision scans without
+  partitioning capacity per contract.
+
+`option_replay_required_workspace_bytes` exposes the exact reserved payload
+budget used by `create`. A successful `run` returns spans borrowed from that
+workspace; callers must serialize or copy them before the next run.
+
+Every executable run requires a frozen raw-capture sequence-validation
+identity. Native `(source, channel, monotone epoch, sequence, packet)`
+duplicates, epoch re-entry, and availability regressions are rejected. The
+returned summary binds the compiled model and ordering versions, calibration
+and sequence identities, exact liquidity/adverse parameters, quote-age and
+locked-market policies, and replay horizon. The view also exposes the complete
+canonical fee and tick rows, including rows that produced no fill.
+
+The quote update contract is intentionally conservative. At the same selected
+participant and price:
+
+```text
+historical display 4 -> strategy consumes 4 -> historical display remains 4
+modeled remaining  4 ->                    0 ->                         0
+
+historical display later increases to 6 -> modeled increment available is 2
+```
+
+Changing selected participant or price starts a new displayed pool. Non-firm,
+missing, crossed, halted, stale, and disallowed locked states provide no
+executable liquidity. A configured adverse price that breaches the order limit
+produces no fill; it is never clamped to the limit.
+
+A one-sided absolute row is context only for its unchanged side: it cannot
+refresh that side's evidence clock, trigger opposite-side matching, or change
+displayed size. Contradictory price, participant, or raw-size context fails the
+run.
+
+The fee schedule key is an externally governed scenario key. For real invoice
+fidelity it must encode the venue, product/class, penny class, account
+origin/capacity, handling mode, liquidity role, auction/routing flags, premium
+band, quantity tier, and contra category applicable to that execution. The
+current kernel assumes configured taker/removing-liquidity charges; it does not
+infer an execution venue from OPRA.
+
+The focused Debug benchmark includes a 100,000-order single-contract book in
+addition to wide and repeated-partial-fill cases. The concentrated case
+currently completes in about one second on the development host (about
+100,000 fills per second); this is a regression baseline, not a production
+Release claim.
+
+## Implemented XS-3A persistent execution session
+
+`OptionExecutionSession` carries execution and account state across decision
+frontiers. It preloads the immutable market stream once, then merges it with a
+bounded dynamic event heap for future-effective orders, cancellations, and DAY
+expiries. This prevents prefix replay from resetting working leaves or
+replenishing already consumed historical liquidity.
+
+The session protocol is:
+
+```text
+start -> advance_to -> observe -> apply_commands -> ... -> finish
+```
+
+`advance_to` settles all loaded, sequence-attested evidence available at or
+before a strictly increasing frontier. This does not prove independent channel
+completeness without source watermarks. The caller must acknowledge every
+frontier exactly once, including with an empty command batch. Commands are
+decided at the observed frontier and become effective strictly later, so a new
+order cannot backfill the quote that caused its decision.
+
+Frontier views expose cumulative and new fills, an append-only lifecycle
+transition ledger, current order state, internally exact modeled
+positions/cash, and per-contract scheduled, working, pending-cancel, and
+projected exposure. Pending-cancel leaves remain exposed and can receive
+eligible modeled fills until the cancel becomes available. This is a synthetic
+deterministic lifecycle informed by FIX's pending-cancel distinction; it does
+not model venue acknowledgments, rejects, native replace, or transport state.
+
+Command baskets are canonicalized and validated atomically. Validation errors
+are retryable. Processing failures poison the session rather than expose a
+partially advanced frontier. Nonzero positions at contract expiry fail closed
+until authoritative settlement and exercise/assignment modeling is added.
+Here `expiry_ts_ns` is a caller-supplied synthetic trading cutoff, not a claim
+about product-specific last trading, expiration, or settlement.
+
+Current GTC means only that an order remains open until explicit cancel, replay
+end, or the synthetic contract cutoff inside one replay. Exchange session
+calendars, carried-order restatements, Done-for-Day, disconnect policies, and
+cross-session GTC/GTD behavior are deferred.
+
+`option_execution_session_required_workspace_bytes` exposes the bounded payload
+budget. Successful lifecycle calls allocate no memory after `create`. Dynamic
+order storage uses the same intrusive global pairing heap as batch replay, so
+all configured orders may concentrate in one contract. Epoch-stamped
+touched-contract staging avoids a full catalog scan for every command batch.
+Admission reserves ledger capacity for acceptance and mandatory submit/cancel
+outcomes. A 10,000-frontier, 10,000-command Debug benchmark currently processes
+more than 20,000 frontiers per second on the development host; this is a
+regression baseline, not a Release capacity claim. A separate 10,000-contract,
+10,000-empty-frontier case guards against accidentally restoring a full catalog
+scan per command batch.
+
+## Implemented XS-3B adaptive target coordinator
+
+`OptionAdaptiveCoordinator` runs the point-in-time panel in explicit date
+order. At each date it advances the persistent session, transforms that date's
+signal row with `WeightPolicy`, builds whole-contract option targets, inspects
+every signed nonterminal order leaf, and atomically applies one future-effective
+cancel/order basket.
+
+Targets are absolute and derive from filled positions. Reconciliation then
+accounts for scheduled, working, partially filled, and pending-cancel leaves.
+Compatible same-side leaves are retained and only the residual is submitted.
+Offsetting, opposite, or excess leaves are canceled; replacements wait for a
+later decision frontier. Once any leg is unsafe or pending cancel, the default
+whole-basket barrier cancels every other non-pending active leaf and suppresses
+all new submissions until a later decision observes the outcomes. This reduces
+linked-basket leg drift but is not atomic complex execution. Scheduled orders
+cannot be canceled before modeled arrival.
+
+The coordinator, Rank/winsorization/group-neutralization scratch path, target
+sizer, and order materializer allocate only during `create` on successful runs.
+`option_adaptive_coordinator_required_workspace_bytes` gives the exact
+coordinator-owned payload bound, separate from the execution-session workspace.
+Bounded decision summaries carry deterministic, non-cryptographic regression
+fingerprints for signals, reconciliation state, raw/reconciled targets, and
+commands. The order-independent run fingerprint covers the model,
+configuration, capacities, panel values/lineage, canonical replay catalog,
+replay record selection, and fee/tick definitions. These fingerprints are not
+a cryptographic content attestation, immutable provenance manifest, or
+per-contract audit ledger.
+
+Before replay starts, the coordinator canonicalizes caller-permuted contract
+inputs, reconciles permanent ID, engine ID, multiplier, expiry, standard
+deliverable, and definition lineage. It reconstructs replay quotes in canonical
+availability/order-key order and requires every tradable panel BBO to equal the
+latest state available at that decision by source identity, clocks, prices, and
+displayed sizes. This prevents sizing and limit formation from silently using a
+superseded catalog or quote snapshot.
+
+The focused benchmark contains 128 x 256 and 1,024 x 64 dense stable-target
+fixtures plus a 64 x 128 cancel/replace-churn fixture. Run
+`atx-options-engine-bench --benchmark_filter=AdaptiveCoordinator` in the desired
+build configuration and retain the executable/toolchain/CPU/commit metadata
+with any reported result; no development-host number is presented as portable
+capacity.
+
+## Implemented XS-4 full-reprice pretrade risk and segmented producer
+
+`OptionPreTradeRiskEngine` evaluates filled, projected, and adversarial
+fill-subset exposure using per-contract cash Greeks and authoritative
+full-reprice scenario P&L. Pending cancels remain live. It reports both
+account-wide and single-underlier losses, prevents cross-underlier scenario
+credit, and distinguishes ordinary acceptance, reduce-only acceptance,
+cancel-only state, and rejection of new orders. The reducer allocates only at
+`create`.
+
+`compile_option_scenario_cube` is the first producer of that evidence. It
+accepts a canonical decision-only active catalog whose rows explicitly declare
+candidate, filled-position, working-order, and pending-cancel roles. It
+requires a lifecycle-source attestation whose PIT clocks, identity, and four
+role counts match that catalog. It validates surface, definition, quote, and
+scenario-manifest point-in-time clocks, quote age/status, admitted risk
+provenance, and separate market-mark lineage and value, then emits a dense
+scenario-by-active-contract panel. Every scenario contains an explicit shock
+for every active underlier. American and European exercise styles take
+distinct full-pricing routes, large shocks never use a Taylor substitute, and
+a scenario crossing expiry uses exact intrinsic.
+
+The one-decision contract is intentional: callers include new-trade candidates
+plus every filled, working, or pending-cancel contract, but not the historical
+union of expired/inactive names. This changes scenario storage from a
+horizon-wide `dates x union contracts x scenarios` allocation to
+`active contracts x scenarios` per segment. A move-owned generated-panel
+factory avoids expanding every dense P&L cell into an intermediate row object.
+
+Canonical scenario and risk SHA-256 digests bind manifest semantics, clocks,
+lifecycle roles, surface and quote identities, base Greeks, floor-hit policy,
+and scenario values. The revision-2 surface rule is explicitly
+`FrozenStickyStrike`; floor hits are counted and rejected by default. Shocked
+marks are not represented as independently admitted calibrated surfaces, and
+the producer does not infer betas, correlations, constituents, or regulatory
+margin. See
+[the scenario-cube design note](docs/full-reprice-scenario-cube-design-2026-07-27.md)
+for exact units, methodology boundaries, and limitations.
+
+## Intended pipeline
+
+For each decision timestamp:
+
+1. Build the one-decision active catalog from candidates plus all contracts
+   with filled or live-order state, then compile its full-reprice
+   `OptionRiskPanel` from the point-in-time risk-surface snapshot.
+2. Read the signal row from `OptionPanelField::Signal`. Non-tradable and absent
+   cells are `NaN`. The coordinator's safe default holds their filled position,
+   emits no new orders anywhere in that decision, retains only leaves that
+   reduce absolute exposure, and cancels exposure-increasing or mixed leaves.
+   Missing cells also activate the default linked-basket barrier, which cancels
+   every active leaf; independent-contract scope can retain already-admitted
+   risk-reducing leaves. Liquidation and decision rejection are separate
+   explicit policies.
+3. Pass that row and `OptionResearchPanel::universe()` to
+   `atx::engine::loop::WeightPolicy` for rank/z-score transforms,
+   neutralization, gross exposure, and name caps.
+4. Pass the resulting weights and current whole-contract holdings to
+   `make_option_target_book`.
+5. Let `OptionAdaptiveCoordinator` inspect signed live leaves, evaluate
+   full-reprice projected/worst-fill risk, and form a cancel-first residual. The
+   one-shot `make_option_order_batch` helper is not working-order-aware and must
+   not be called directly in an adaptive loop.
+6. Apply the coordinator's future-effective order/cancel basket to its
+   preallocated `OptionExecutionSession`.
+7. Consume `OptionFill`, `OptionOrderAudit`, `OptionCancelAudit`,
+   `OptionPositionSnapshot`, and `OptionReplaySummary` before reusing the
+   workspace.
+
+The engine's generic stock `WeightPolicy::reconcile` must not be used directly
+for options: it divides equity by the mark as if the instrument were one share
+and does not know the contract multiplier, vega, or margin.
+
+The persistent session and adaptive coordinator now provide the incremental
+execution boundary. Precomputing every future order would still ignore partial
+fills and is not an acceptable substitute.
+
+## Research basis
+
+The design follows the fidelity boundaries documented by the primary data and
+market sources:
+
+- [Databento MBP-1](https://databento.com/docs/schemas-and-data-formats/mbp-1?historical=python&live=raw)
+  distinguishes event and receive timestamps and carries displayed BBO size.
+- [Databento symbology](https://databento.com/docs/standards-and-conventions/symbology)
+  warns that publisher instrument IDs may be remapped or reused; the bridge
+  therefore requires a caller-supplied permanent contract ID.
+- [Databento point-in-time corporate actions](https://databento.com/docs/venues-and-datasets/corporate-actions)
+  motivates separate definition availability and immutable lineage.
+- [OCC corporate-action information](https://www.theocc.com/clearance-and-settlement/corporate-action-information-submission-form)
+  remains authoritative for adjusted option deliverables. Adjusted deliverables
+  are currently explicit `UnsupportedContract` rows.
+- [NautilusTrader backtesting](https://nautilustrader.io/docs/latest/concepts/backtesting/)
+  and [order-book modeling](https://nautilustrader.io/docs/latest/concepts/order_book/)
+  make the L1/L2/L3 fidelity boundary explicit: displayed top-of-book data
+  cannot justify synthetic depth or queue position.
+- [FINRA Rule 4210](https://www.finra.org/rules-guidance/rulebooks/finra-rules/4210?page=1)
+  and the [OCC margin methodology](https://www.theocc.com/risk-management/margin-methodology)
+  motivate describing the current deterministic margin input honestly rather
+  than claiming production portfolio margin.
+- [Goyal and Saretto](https://www.cis.upenn.edu/~mkearns/finread/CrossOptions.pdf)
+  motivates executable cross-sectional option portfolios rather than isolated
+  signal returns.
+- [Execution replay research note](docs/execution-replay-research-2026-07-26.md)
+  defines the evidence grades, OPRA/venue fidelity boundary, fee lanes,
+  calibration gates, and claims this engine must reject.
+- [Adaptive execution-session research note](docs/adaptive-execution-session-research-2026-07-26.md)
+  pins the incremental state machine, pending-cancel exposure, command barrier,
+  allocation contract, and next coordinator boundary.
+
+## Explicitly deferred
+
+The next evidence-plane milestone is immutable per-session segment persistence
+plus coordinator/session continuation across changing active catalogs. The
+scenario manifest then needs separately versioned sticky-forward-moneyness,
+skew, curvature, term, idiosyncratic-gap, and point-in-time
+dispersion-correlation producers.
+
+Production completeness also requires adjusted deliverables, official
+settlement, exercise/assignment, stock/futures hedge replay, borrow/locates,
+venue-native simple and complex books, auction participation, calibrated
+cross-impact, and a broker- or clearing-calibrated margin model.

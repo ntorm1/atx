@@ -618,6 +618,18 @@ public:
   [[nodiscard]] Status upsert_symbol(
       std::string_view symbol, const SymbolFitConfig &cfg,
       std::optional<SurfaceProvenance> provenance = std::nullopt);
+
+  // Batch twin of upsert_symbol: N entries, ONE atomic manifest rewrite and ONE
+  // generation++ (a duplicate canonical name within the batch: the LAST entry
+  // wins, mirroring N sequential upserts). An entry's nullopt provenance keeps
+  // the stored provenance, exactly like upsert_symbol. A batch whose every
+  // entry leaves its stored record BYTE-IDENTICAL persists nothing and the
+  // generation does not move — the universe populate re-seeds its configs on
+  // every invocation, so the resume path must be a zero-write no-op instead of
+  // N full-manifest rewrites (O(N^2) bytes per build at N symbols; the reason
+  // this exists). Validation is all-or-nothing: any invalid entry rejects the
+  // whole batch with the on-disk manifest untouched. An empty span is Ok.
+  [[nodiscard]] Status upsert_symbols(std::span<const DbSymbolEntry> upserts);
   [[nodiscard]] Status remove_symbol(std::string_view symbol); // NotFound if absent
 
   // Re-read the manifest from disk iff its generation advanced past the

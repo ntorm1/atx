@@ -117,8 +117,7 @@ inline constexpr std::size_t kMaxStrikesPerChain = 0x4000u;     // 16384
 //   side       -> bit  0
 
 [[nodiscard]] constexpr ContractId make_contract_id(Uid uid, ExpiryId expiry,
-                                                    std::uint16_t strike_idx,
-                                                    Side side) noexcept {
+                                                    std::uint16_t strike_idx, Side side) noexcept {
   const auto side_bit = static_cast<ContractId>(static_cast<std::uint8_t>(side)) & 0x1ull;
   return (static_cast<ContractId>(uid & 0x00FF'FFFFu) << 33) |
          (static_cast<ContractId>(expiry & 0xFFFFu) << 17) |
@@ -162,8 +161,13 @@ inline constexpr std::size_t kMaxStrikesPerChain = 0x4000u;     // 16384
 struct Chain {
   Uid uid = kInvalidUid;
   ExpiryId expiry_id = 0u;
-  std::int64_t expiry_ns = 0;                                 // expiry instant, UTC ns since epoch
-  double T = 0.0;                                             // year-fraction to expiry (set at clock-sync)
+  std::int64_t expiry_ns = 0; // expiry instant, UTC ns since epoch
+  double T = 0.0;             // year-fraction to expiry (set at clock-sync)
+  // Contract semantics are chain-wide. American remains the compatibility
+  // default for the equity/ETF universe; cash-index loaders must tag European
+  // chains explicitly so observation preparation never invents an early-
+  // exercise premium and then tries to remove it.
+  ExerciseStyle exercise_style = ExerciseStyle::American;
 
   // Optional source-side ATM IV anchor (Sprint 26). NaN / absent unless a
   // loader surfaces it.
@@ -196,11 +200,11 @@ struct Chain {
 // are handed out by `Universe::get_underlying`.
 struct Underlying {
   Uid uid = kInvalidUid;
-  std::string ticker;         // exact interned ticker (reverse-lookup store)
-  double spot = 0.0;          // last reference spot
+  std::string ticker; // exact interned ticker (reverse-lookup store)
+  double spot = 0.0;  // last reference spot
   std::int64_t spot_ts_ns = 0;
-  std::vector<Chain> chains;  // one per expiry; `expiry_id` indexes this
-  std::uint32_t flags = 0u;   // ATS_VOL_UFLAG_* bitfield (e.g. HTB)
+  std::vector<Chain> chains; // one per expiry; `expiry_id` indexes this
+  std::uint32_t flags = 0u;  // ATS_VOL_UFLAG_* bitfield (e.g. HTB)
 
   // O(1) idempotency index for `add_expiry`: expiry_ns -> the chain's current
   // `ExpiryId` (== its index into `chains`). Kept in lock-step with `chains`:
@@ -253,9 +257,9 @@ struct QuoteBatch {
 // not filter on quote economics (non-finite / crossed / min-obs live at the
 // calibration layer, not here).
 struct QuoteDropTally {
-  std::uint64_t unknown_uid = 0u;          // contract id decodes to no known uid
-  std::uint64_t expiry_out_of_range = 0u;  // expiry index past the uid's chains
-  std::uint64_t strike_out_of_range = 0u;  // strike index past the chain's strikes
+  std::uint64_t unknown_uid = 0u;         // contract id decodes to no known uid
+  std::uint64_t expiry_out_of_range = 0u; // expiry index past the uid's chains
+  std::uint64_t strike_out_of_range = 0u; // strike index past the chain's strikes
 
   // Sum of all drop reasons; equals UniverseStats::n_quotes_dropped.
   [[nodiscard]] std::uint64_t total() const noexcept {
@@ -268,7 +272,7 @@ struct QuoteDropTally {
 struct UniverseStats {
   std::uint32_t n_underlyings = 0u;
   std::uint32_t n_chains = 0u;
-  std::uint64_t n_strikes = 0u;      // summed across all chains
+  std::uint64_t n_strikes = 0u; // summed across all chains
   std::uint64_t n_quotes_applied = 0u;
   std::uint64_t n_quotes_dropped = 0u; // unknown contract id (== drops.total())
   QuoteDropTally drops;                // per-reason breakdown of n_quotes_dropped
@@ -281,7 +285,7 @@ struct UniverseStats {
 struct EvictionOptions {
   std::uint64_t cap_bytes = 4ull * 1024ull * 1024ull * 1024ull; // 4 GB
   std::int64_t min_residency_ns = 60ll * 1'000'000'000ll;       // 60 s
-  std::int64_t now_ns = 0;                                       // reference timestamp
+  std::int64_t now_ns = 0;                                      // reference timestamp
 };
 
 // Outcome of one `evict_lru` sweep (AtsVolEvictionStats).

@@ -34,6 +34,17 @@ struct ListedOptionQuote {
   Side side{Side::Call};
   double bid{0.0};
   double ask{0.0};
+  // Counts retain QuoteRow's source units exactly. Zero is a valid observed
+  // count; the availability flags distinguish it from a source that did not
+  // carry the field. Negative counts are rejected by the OPRA join boundary.
+  std::int32_t bid_size{0};
+  std::int32_t ask_size{0};
+  std::int32_t volume{0};
+  std::int32_t open_interest{0};
+  bool bid_size_available{false};
+  bool ask_size_available{false};
+  bool volume_available{false};
+  bool open_interest_available{false};
   std::int64_t quote_ts_ns{0};
   double multiplier{100.0};
   bool standard_monthly{false};

@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -341,7 +342,7 @@ inline constexpr std::uint64_t kFnv1a64OffsetBasis = 0xcbf29ce484222325ull;
 [[nodiscard]] bool symbol_record_enums_valid(const DbSymbolRecord &rec) noexcept {
   DbSurfacePolicyRecord surface_policy{};
   std::memcpy(&surface_policy, rec.reserved, sizeof surface_policy);
-  return rec.preset <= static_cast<std::uint8_t>(FitPreset::Populate) && // C3: Populate=4 is new max
+  return rec.preset <= static_cast<std::uint8_t>(FitPreset::Bulk) && // Perf 2b: Bulk=5 is new max
          rec.curve_kind <= 4 && rec.calendar_repair <= 2 &&
          rec.convex_loss <= 1 && rec.essvi_rho_mode <= 2 && rec.optimization_level <= 4 &&
          rec.residual_basis_kind <= 5 && rec.loss_kind <= 1 && rec.anchor_kind <= 2 &&
@@ -1130,6 +1131,74 @@ Status SurfaceDb::upsert_symbol(std::string_view symbol, const SymbolFitConfig &
     entries.push_back(DbSymbolEntry{canon, cfg, provenance});
   }
 
+  return persist_locked(std::move(entries), decode_partitions(snap->partitions()));
+}
+
+Status SurfaceDb::upsert_symbols(std::span<const DbSymbolEntry> upserts) {
+  if (upserts.empty()) {
+    return Ok(); // vacuous batch: nothing to validate, nothing to persist
+  }
+  // Canonicalize + name-validate every entry up front (before the lock), and
+  // resolve the batch's LAST-WINS rule: `last_of[canon]` is the index of the
+  // entry that survives for that name.
+  std::vector<std::string> canon(upserts.size());
+  std::map<std::string, std::size_t> last_of;
+  for (std::size_t i = 0; i < upserts.size(); ++i) {
+    canon[i] = detail::canonicalize_symbol(upserts[i].symbol, kSurfaceDbKeyMax);
+    if (canon[i].empty()) {
+      return Err(ErrorCode::InvalidArgument, "SurfaceDb::upsert_symbols: empty canonical symbol");
+    }
+    last_of[canon[i]] = i;
+  }
+
+  std::lock_guard<std::mutex> lock(*mu_);
+  const std::shared_ptr<const DbManifest> snap = snapshot_;
+
+  // Walk the stored records once: an untouched record round-trips verbatim; a
+  // record named in the batch is replaced in place (nullopt provenance keeps the
+  // stored one — upsert_symbol semantics). `changed` tracks whether ANY replaced
+  // record's ENCODED bytes actually moved: the re-seed path hands this function
+  // the exact configs already stored, and rewriting a byte-identical manifest N
+  // symbols wide on every resume is the O(N^2) cost this batch API exists to
+  // delete. DbSymbolRecord is a fixed-layout, zero-initialized POD, so memcmp is
+  // the precise "would this write change the file" predicate.
+  std::vector<DbSymbolEntry> entries;
+  entries.reserve(snap->symbols().size() + last_of.size());
+  bool changed = false;
+  std::size_t n_replaced = 0;
+  for (const DbSymbolRecord &rec : snap->symbols()) {
+    const std::string_view rec_sym(rec.symbol, rec.symbol_len);
+    const auto it = last_of.find(std::string(rec_sym));
+    if (it == last_of.end()) {
+      entries.push_back(
+          DbSymbolEntry{rec_sym, decode_symbol_record(rec), decode_symbol_provenance(rec)});
+      continue;
+    }
+    const DbSymbolEntry &up = upserts[it->second];
+    std::optional<SurfaceProvenance> prov =
+        up.provenance.has_value() ? up.provenance : decode_symbol_provenance(rec);
+    const DbSymbolRecord next = encode_symbol_record(rec_sym, up.config, prov);
+    if (std::memcmp(&next, &rec, sizeof rec) != 0) {
+      changed = true;
+    }
+    entries.push_back(DbSymbolEntry{rec_sym, up.config, std::move(prov)});
+    ++n_replaced;
+    it->second = static_cast<std::size_t>(-1); // consumed by the replace walk
+  }
+  // Append genuinely new symbols in batch order (each name's surviving entry).
+  if (n_replaced < last_of.size()) {
+    for (std::size_t i = 0; i < upserts.size(); ++i) {
+      const auto it = last_of.find(canon[i]);
+      if (it->second != i) {
+        continue; // superseded within the batch, or already consumed above
+      }
+      entries.push_back(DbSymbolEntry{canon[i], upserts[i].config, upserts[i].provenance});
+      changed = true;
+    }
+  }
+  if (!changed) {
+    return Ok(); // every entry byte-identical to its stored record: zero-write
+  }
   return persist_locked(std::move(entries), decode_partitions(snap->partitions()));
 }
 

@@ -22,6 +22,10 @@ and verifies it entirely from the command line — see
 [Managing and verifying a built database](#atx-vol-surface-db--managing-and-verifying-a-built-database).
 **No Python is involved in verification.**
 
+To *consume* a built database — replay an index-vs-names dispersion book straight
+off its stored surfaces — see
+[surface-db-dispersion-backtest.md](surface-db-dispersion-backtest.md).
+
 ## OPRA hive v2 — the on-disk layout it reads
 
 ```
@@ -41,8 +45,30 @@ and verifies it entirely from the command line — see
   loader does **one materialized read per date file** and splits by `underlying`
   in memory (one IO pass per date regardless of universe size); per-symbol
   row-group pruning is a documented future optimization, not built now.
-- Snapshot minute is the fixed **19:55:00Z** hive convention (uniform with the
-  existing corpus; the DST rationale is documented in the pull tool).
+- Snapshot minute is **whatever that date file's own `ts` column says**, and it
+  is *not* uniform. The production hive is pulled ET-anchored at **15:55
+  America/New_York** (`pull_opra_hive.py --snap-et 15:55`), which is
+  `T19:55:00Z` under EDT and `T20:55:00Z` under EST: of its 244 sessions,
+  **161 are 19:55Z and 83 are 20:55Z** (every session from 2025-11-03 through
+  2026-03-06). `ts` is constant within a date file and is the snapshot instant
+  of record; the build CLI's `--snapshot-suffix` is a *claim* about it, and the
+  loader now compares the two and fails the cell with a load error naming both
+  values rather than silently applying the operator's. A build range must
+  therefore never straddle a DST transition — see
+  [Multi-year backfill](#multi-year-backfill) for the chunking rule, the
+  measured blast radius of a wrong minute, and the orchestrator's own
+  `assert_snapshot_minute_uniform` guard.
+
+  > This line previously read *"the fixed **19:55:00Z** hive convention"*. That
+  > was false for the production hive and it pointed a reader straight at the
+  > silent-suffix failure mode, so it is corrected rather than annotated. **No
+  > landed data is affected**: Task 7 verified every hive file's `ts` sits at
+  > the expected 15:55 ET instant, and Task 8 verified every build invocation's
+  > `--snapshot-suffix` equals the expected minute for every session in its
+  > range (two independent oracles plus a cross-check against the pull-side
+  > `_absent/*.json` minute stamps, 0 mismatches). Those compose to
+  > suffix == file `ts` for all 244 sessions: the loader gap was a **missing
+  > guard, not a realized corruption**.
 
 This replaces the old per-symbol tree `<root>/<symbol>/<date>.parquet` (one file
 per `(symbol, date)`). To convert an existing per-symbol tree, see
@@ -1671,7 +1697,7 @@ Five guards now stack, and they are complementary rather than redundant:
 | zero-cell `FAILED` verdict | "this **run of verify** read nothing" over a database that holds partitions — all symbols disabled, an empty `--symbols`, or a window that matched nothing. Needs no flag. |
 | nothing-stored **warning** | "this run of verify read cells and the database holds **none** of them" — `cells_ok 0` with every cell `absent`. Needs no flag; **stderr only, exit 0**, because a deliberate narrowing onto known-absent cells produces the same shape. See [When the walk finds nothing stored](#when-the-walk-finds-nothing-stored). |
 | `--min-cells N` | "this **database** is smaller than I expected" — including one that was never built. Counts every cell the walk *looked at*, absent ones included, so it is a statement about the **grid** and is fully satisfied by a grid of pure holes. |
-| `--max-absent N` | "this database is **missing more cells** than I expected" — the only guard that can see a stored surface that was destroyed, because nothing on disk records that it ever existed. A statement about the **holes** in that grid, and the only one that turns the two rows above into a non-zero exit. |
+| `--max-absent N` | "this database is **missing more cells** than I expected" — the only guard that can see a stored surface that was destroyed, because nothing on disk records that it ever existed. A statement about the **holes** in that grid, and the only one that turns the two rows above into a non-zero exit. **Its resolution depends on the scope you verify**: the orchestrator's generated default catches a tenth to a quarter of a destroyed partition at chunk scope, but can miss 1–3 whole destroyed partitions across a full year — see [Operator notes](#operator-notes). |
 
 **Keep `--min-cells` in every script**, and `--max-absent` beside it once you know
 your absent count. `--min-cells` is no longer the *only* thing between a broken
@@ -1825,3 +1851,227 @@ The build CLI only **reads** a hive; two Python tools produce and maintain it:
   degrade-to-top-N-by-weight, `--dry-run`, DBN cache, atomic writes, spend log.
   One `get_range` per date over the union of missing parents; output is the
   merged date file (per the resume/merge rule above).
+
+## Multi-year backfill
+
+The [scale seam](#scale-posture) — **one db root per year** — is what a backfill
+drives, via `atx-vol/tools/run_surface_db_backfill.py`, which partitions the
+window by year and appends `-<year>` to `--db-prefix`. Measured at SP100 scale:
+`sp100-2025` = 104 partitions / 10,283 surfaces / 69.6 MiB, `sp100-2026` = 140 /
+13,922 / 83.8 MiB. **Partition count must equal hive session count per year.**
+
+```bash
+$ python atx-vol/tools/run_surface_db_backfill.py \
+    --universe atx-vol/data/universe/sp100_2026-07.csv \
+    --hive C:/atx-data/opra-hive --db-prefix C:/atx-data/surface-db/sp100 \
+    --from 2026-01-02 --to 2026-07-24 --phase build --chunk-sessions 4 \
+    --build-exe build-rel/bin/atx-vol-surface-db-build.exe \
+    --admin-exe build-rel/bin/atx-vol-surface-db.exe \
+    --log-dir <log-dir> --index SPY --fit-workers 0
+$ # --dry-run first: prints the resolved --db and every chunk's --r /
+$ # --snapshot-suffix without spawning. Then --phase verify with the SAME
+$ # --from/--to: verify_thresholds() sizes off the sessions in that window
+$ # that are PRESENT IN THE HIVE, and phase_verify passes that subset's
+$ # bounds down to `verify` as --from/--to (not the range you typed -- the
+$ # two differ when an endpoint is a holiday or is not yet pulled), so the
+$ # walk counts the same sessions the thresholds were sized off. Any window
+$ # length is safe, including a single session.
+```
+
+### The snapshot instant is ET-anchored; the loader takes ONE per invocation
+
+The policy instant is **15:55 America/New_York** — `T19:55:00Z` under EDT,
+`T20:55:00Z` under EST. A hive pulled with `--snap-et 15:55` is therefore **not**
+uniform: the 244-session 2025-08 .. 2026-07 hive is 161 EDT / 83 EST, the EST run
+being 2025-11-03 .. 2026-03-06. (The
+[hive-layout note above](#opra-hive-v2--the-on-disk-layout-it-reads) once called
+19:55:00Z a fixed convention — that described a single-summer corpus and has been
+corrected.) `OpraHiveSpec` carries exactly one `--snapshot-suffix` and applies it
+across the whole `--from`/`--to` range, **so a chunk may never straddle a DST
+transition.** `chunk_sessions()` enforces it by grouping on
+`(month, snapshot-minute)`, which is also what makes `--r` (resolved from the
+chunk's first session's month) valid for the whole chunk.
+
+**A wrong suffix used to fail silently.** Measured on a 5-session EST fixture
+built with the EDT default: **exit 0, `n_load_errors 0`, every date written**,
+and the damage is one arbitrage-rejected slice plus ~1e-3 relative IV drift on
+the survivors — an hour is a large fraction of a short tenor's remaining `T`.
+That hazard is now closed from **both** ends, and neither guard existed when the
+production roots were built:
+
+- **Loader (C-1).** `panel_from_scan` takes the snapshot instant from the date
+  file's own `ts` column and rejects a `--snapshot-suffix` that disagrees with
+  it, with a per-cell load error naming both instants. A wrong minute is now a
+  loud failure per cell instead of an invisible re-stamping.
+- **Orchestrator (I-7).** `build_build_command` calls
+  `assert_snapshot_minute_uniform(chunk, snap_et)`, which checks every session
+  in the chunk *and every calendar day in the `--from`/`--to` range* — the
+  latter because the C++ CLI re-derives its own date list from the hive between
+  those bounds, so the set that must be minute-uniform is the range, not the
+  list. A straddling range raises before anything is spawned.
+
+The manual procedure those replace — *audit every `cmd=` line of
+`orchestrator.log` against `pull_opra_hive.snapshot_minute_utc()`* — is still a
+good belt-and-braces check on an old log, but it is no longer the only thing
+standing between an operator and a silently mis-stamped year.
+
+### Coverage is a set identity, not a row-group or symbol count
+
+The completeness invariant for a hive date is
+**`underlyings_on_disk ∪ absent_latched == universe`**, disjoint — `absent_latched`
+being `<hive>/_absent/<date>.json`, which the pull tool writes for requested names
+the provider returned no rows for. A count-based check is wrong: OPRA shards its
+multicast by underlying symbol range, so one line missing for one minute drops an
+**alphabetically contiguous block**. `2025-11-24` at 95 of 102 underlyings with
+`BLK, BMY, BRK.B, BX, C, CAT, CL` latched is legitimately complete (95 + 7 = 102),
+yet a `row_groups >= 100` threshold calls it a defect. Parquet may also split a
+large underlying across row groups, so a complete 102-name date lands in 102–105.
+Likewise an **early close** (13:00 ET, e.g. `2025-11-28`, `2025-12-24`) has no
+15:55 ET snapshot and is correctly absent from hive *and* db — exclude it from
+every expected-session count rather than counting it as a hole.
+
+`verify`'s `--max-absent` reads those same sidecars: a latched cell can never
+hold a surface, so it is credited against the ceiling rather than charged to it
+(see [Operator notes](#operator-notes)).
+
+#### The settled-empty latch — `<hive>/_empty/<date>.json`
+
+A second, date-level latch with the same shape and the same purpose: *do not pay
+twice for an answer you already have.* When a minute-mismatch repull gets a
+**zero-row response** for a whole date, `pull_opra_hive.py` keeps the existing
+date file (it must never be replaced by nothing), drops the empty response from
+the DBN cache — an empty response is not a cacheable *answer* — and records
+`{minute_utc, digest}` in `<hive>/_empty/<date>.json`. Later resumes see the
+latch and **skip the date without contacting the provider, for $0**. The skip is
+applied at plan time — the same point `_absent` is applied — so a settled date is
+also out of the free preflight's estimate, out of the `--cap` arithmetic and out
+of the degrade/exit-`3` decision, rather than being priced for spend that will
+never occur.
+
+That matters because "the provider returned nothing" is not the same as
+"transient". The documented cause is a **snapshot minute that landed after an
+early close**, and that response is empty *forever* — without the latch every
+resume re-bills the same date for the same nothing.
+
+Recovery is deliberately operator-initiated, never automatic. Any of:
+
+| To do this | Do |
+|---|---|
+| Retry because you believe the provider recovered | `--retry-empty` (**costs money**) |
+| Retry one date | delete `<hive>/_empty/<date>.json` |
+| Fix an early-close cause | change `--snap-et`/`--snap-utc` — a latch covers exactly one snapshot minute, so a different minute re-pulls with no flag |
+
+The latch is keyed on `(minute_utc, digest)` — the same identity as the DBN cache
+entry it stands in for, `sha256(date|sorted(requested))[:12]` — so a different
+snapshot minute or a different requested symbol set is a different question and
+is never answered from it. A pull that returns real rows retires the latch. The
+orchestrator never passes `--retry-empty`: nothing inside an automated run may
+re-bill a settled date.
+
+### Operator notes
+
+- **Use a Release binary** (`scripts/atx-build.ps1 -Preset rel build …`; cap
+  parallelism with `--parallel N`, never `-j`, which binds the wrapper's `-Jobs`).
+  ~14 s per 104-symbol date at `--preset populate` — a 140-session year is
+  ~33 min. A Debug binary is ~15x slower.
+- **`--chunk-sessions` is a batching/RSS knob only**: `--r` resolves per month,
+  config is idempotent, and populate rewrites each date's partition
+  independently, so it cannot perturb a fitted value. Peak commit ~130 MB per
+  process regardless of symbol count.
+- **`verify`'s thresholds are now two independent knobs, and both are
+  overridable.** `--min-cell-fraction` (default `0.95`) sizes `--min-cells`,
+  which is a *grid-size* floor — `cells_checked` counts holes, so it moves only
+  when whole partitions are missing. It used to be generated as the
+  complement of a 0.7 floor — 3183 / 4284, ~10x looser than reality and
+  therefore inert. It is the **only** automated detector for a destroyed
+  surface, so pass an absolute `--max-absent <observed>` when you want it
+  pinned exactly, per
+  [the operator checklist](#absence-is-not-a-failure--the-cells-the-database-never-stored).
+- **`--max-absent`'s default is a tail bound, not a flat rate — so a short
+  resume-verify is trustworthy.** It is
+  `latched_absent + ceil(mu + 3*sigma)` where `mu = 0.04 x n_symbols x
+  n_sessions` and `sigma = sqrt(mu x 0.96)`, i.e. an upper tail bound on a
+  `Binomial(n_symbols x n_sessions, 0.04)` absence count, plus the cells the
+  hive's own absent-latch sidecars (`<hive>/_absent/<date>.json`) say can never
+  hold a surface for exactly the sessions in scope. Whole-year that gives **493**
+  for `sp100-2025` (485 tail + 8 latched) and **690** for `sp100-2026` (642 +
+  48), against observed absent counts of 325 / 358. It was
+  `ceil(0.04 x n_symbols x n_sessions)` — a **year-averaged rate
+  applied to concentrated absences**, which granted the same 4.08 cells per
+  session at every window length while the landed roots run 0–12 absent per
+  session. A short resume-verify therefore returned `verdict ABSENT` / exit `4`
+  on known-good data: 14 of 104 one-session windows and **12 of 101 four-session
+  windows** of `sp100-2025`, and `--chunk-sessions` defaults to 4. The `sqrt`
+  term is what fixes it — the per-session allowance is ~10 cells at one session
+  and converges toward 4.08 across a year — so **there is no minimum safe
+  resume-verify window**; verify whatever range you resumed.
+- **That default is only meaningful on a large universe.** The tail term scales
+  as `sqrt(expected)`, so its share of the grid *grows* as the grid shrinks:
+  7.1 % of the cells at 102 x 4 and 10.8 % at 102 x 1, but 11.2 % at 20 x 4,
+  **20 %** at 5 x 4 and **66.7 %** at 3 x 1. `phase_verify` takes `n_symbols`
+  from whatever `--universe` you pass, so a pilot or a deliberately narrowed run
+  gets a ceiling that tolerates a fifth to two-thirds of its own grid going
+  missing before it says anything — a real destruction there has to take almost
+  everything before it trips.
+  Not reachable on the SP100 path (102 symbols); on a small universe pass an
+  absolute `--max-absent <observed>` and do not rely on the default.
+- **A whole-year `verify` can miss a fully destroyed partition. Verify at the
+  scope you resumed.** The tail bound buys its zero false alarms at short windows
+  by loosening the whole-year ceiling — 425 → **493** on `sp100-2025`, 572 →
+  **690** on `sp100-2026` — and destruction does not arrive one cell at a time. A
+  partition is rewritten as a whole file, so it arrives in units of up to 102
+  cells. Against the landed roots' own absent counts (325 / 358):
+
+  | Scope | Fully destroyed partitions that still exit `0` |
+  | --- | --- |
+  | `sp100-2025`, whole year | **1** (pre-fix: 0 — a single-partition loss used to fire) |
+  | `sp100-2026`, whole year | **3** (pre-fix: 2) |
+  | any 4-session chunk, either root | **0** — the ceiling fires at 9–26 destroyed cells, a tenth to a quarter of one partition |
+
+  The 400-cell destruction contract still holds at every scope on both roots, and
+  the chunk scope — the one `run_surface_db_backfill.py --phase verify` runs by
+  default, at `--chunk-sessions 4` — got **much stronger**, where the old flat
+  ceiling could not be trusted at that scope at all. That is the trade, and it is
+  a good one. But it runs the wrong way for exactly the check an operator is most
+  tempted to run on its own, so: **verify at chunk scope, and treat a clean
+  whole-year `verify` as necessary rather than sufficient.** A whole-year run is
+  the right aggregate health check; it is not a destruction check for a range you
+  did not just build. Re-verify that range in chunks instead.
+
+  The known closure is a **per-partition** absent ceiling inside the C++
+  `verify`: destruction is concentrated per partition by construction, so a
+  per-partition bound catches what a whole-DB bound cannot, at every window
+  length at once. That is a follow-up, not shipped here. Two things to know
+  before starting it — the C++ *already* emits the per-partition data (`absent
+  <KEY> <SYM>` lines on stdout), so an interim Python-side count is reachable
+  without touching C++; but that list is capped at
+  `kSurfaceDbVerifyMaxFailures = 32`
+  (`atx-vol/include/atx/vol/surface_db_admin.hpp:296`) and `build_verify_command`
+  never passes `--max-failures`, so on the landed roots 325 / 358 absences are
+  elided from it today. A stdout parse would need the flag raised first.
+- **Both thresholds are sized off the sessions in `--from`/`--to` that are
+  actually present in the hive, and `phase_verify` passes the bounds of THAT
+  subset down to `verify` as `--from`/`--to`** — not the range you typed. The
+  two differ whenever an endpoint is not itself a hive-present session (a
+  holiday `--from`, or a partial backfill whose hive stops short of `--to`), and
+  it is the sized set that has to be counted. That pairing is load-bearing on a
+  resume: `verify` walks every partition in the root unless a range restricts
+  it, so sizing `--max-absent` off a 17-session resume while counting
+  `cells_absent` over all 140 partitions compares two different populations and
+  returns `verdict ABSENT` / exit `4` on a database with nothing wrong with it.
+  If you invoke the admin binary by hand rather than through the orchestrator,
+  **pass `--from`/`--to` whenever your `--max-absent` was computed for a
+  sub-range.**
+- **`year_summary_<year>_<from>_<to>.csv`** is the year summary. It is keyed on
+  the range the invocation actually built, because the old year-keyed
+  `year_summary_<year>.csv` was truncate-written per process invocation and a
+  resumed sub-range therefore *replaced* the whole-year aggregate with just that
+  sub-range — which is what happened to `year_summary_2026.csv`, now describing
+  17 of 140 sessions. `config.*` counters are no longer summed across chunks
+  (they are a per-invocation snapshot: 102 x 29 chunks read 2958), and a
+  bisected parent's partial report is deduped against its children's.
+  Repaired aggregates regenerated from the per-chunk reports live beside the
+  originals in `t8-2025/` and `t8-2026/` with a `PROVENANCE.txt` each; the
+  per-chunk `--report` CSVs and the database remain the authority.
+- Single-writer rule holds: no admin subcommand against a root while a build is
+  writing it. Parallel years into **distinct** roots is fine.

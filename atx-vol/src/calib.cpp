@@ -12,6 +12,7 @@
 #include <utility>
 #include <vector>
 
+#include "al_probe.hpp"        // env-gated shared-boundary engagement events (Perf 2b step 1)
 #include "atx/core/error.hpp"
 #include "atx/vol/american_iv.hpp" // american_implied_vol (de-Americanization)
 #include "atx/vol/arb.hpp"         // QuoteFlag, has_flag (kill-mask filter step)
@@ -374,6 +375,53 @@ void finalize_route_diag(InversionRouteDiagnostics &diag, std::vector<double> re
   diag.max_residual_half_spreads = residuals.back();
 }
 
+// European contracts need no de-Americanization, but risk admission still
+// requires evidence that every IV carried into the fit reprices its source mid
+// inside the configured economic budget. Record the exact Black-76 inversion
+// and its explicit forward reprice on the accurate route. This deliberately
+// uses the existing audit ledger so downstream certification has one contract
+// for both direct-European and American-to-European observation paths.
+void audit_direct_european_inversions(const Chain &chain, double F, double T, double df,
+                                      const CalibOpts &opts, ObsSet &set) {
+  DeAmAuditDiagnostics audit;
+  InversionRouteDiagnostics &route = audit.accurate;
+  std::vector<double> residuals;
+  residuals.reserve(set.obs.size());
+  std::vector<FitObs> accepted;
+  accepted.reserve(set.obs.size());
+
+  for (const FitObs &row : set.obs) {
+    ++audit.n_deam_rows;
+    ++route.n_proposed;
+    ++route.n_audited;
+    ++route.n_reference_reprices;
+
+    const std::size_t quote_index =
+        chain_index(static_cast<std::uint16_t>(row.source_strike_index), row.side);
+    const double source_mid = chain.mids[quote_index];
+    const double spread = chain.asks[quote_index] - chain.bids[quote_index];
+    const double repriced = black76_price(F, row.K, T, row.sigma_mkt, df, row.side);
+    const double normalized = std::fabs(repriced - source_mid) / (0.5 * spread);
+    if (std::isfinite(normalized)) {
+      residuals.push_back(normalized);
+    }
+    if (std::isfinite(normalized) && normalized <= opts.max_inversion_residual_half_spreads) {
+      ++route.n_accepted;
+      ++audit.n_deam_accepted;
+      accepted.push_back(row);
+      continue;
+    }
+
+    ++audit.n_rejected_residual;
+    ++set.n_dropped;
+    set.provenance[row.source_strike_index].rejection = ObsRejectionReason::RawIvFailure;
+  }
+
+  finalize_route_diag(route, std::move(residuals));
+  set.obs = std::move(accepted);
+  set.deam_audit = std::move(audit);
+}
+
 inline constexpr std::uint16_t kSharedSigmaNodes = 9u;
 inline constexpr std::size_t kSharedMinSideRows = 16u;
 inline constexpr std::size_t kSharedMinAcceptedRows = 12u;
@@ -590,6 +638,7 @@ void prepare_shared_boundary_side(std::vector<FitObs> &observations,
   //     only tighten that domain, never widen it, which holds or improves the
   //     nine-node density and hence accuracy. The domain is still certified by
   //     the unchanged sentinel block below.
+  alprobe::bump(alprobe::Event::SharedSideConsidered);
   std::size_t side_rows = 0u;
   double min_seed = std::numeric_limits<double>::infinity();
   double max_seed = 0.0;
@@ -607,11 +656,15 @@ void prepare_shared_boundary_side(std::vector<FitObs> &observations,
   const detail::InternalPutRates rates = detail::internal_put_rates(side, r, q_eff);
   const double internal_rate = rates.rp;
   if (side_rows < kSharedMinSideRows || !(T >= kSharedMinT) || !(internal_rate > 0.0)) {
+    alprobe::bump(alprobe::Event::SharedSideGuardSkip);
+    alprobe::bump(alprobe::Event::SharedRowsFallback, side_rows);
     return;
   }
   const double sigma_lo = std::max(kSharedMinSigma, 0.35 * min_seed);
   const double sigma_hi = std::min(kObsIvMax, max_seed * (1.0 + 1.0e-12));
   if (!(sigma_hi > sigma_lo) || sigma_hi / sigma_lo > 20.0) {
+    alprobe::bump(alprobe::Event::SharedSideGuardSkip);
+    alprobe::bump(alprobe::Event::SharedRowsFallback, side_rows);
     return;
   }
   const double internal_yield = rates.qp;
@@ -620,6 +673,8 @@ void prepare_shared_boundary_side(std::vector<FitObs> &observations,
   if (!interp.build(S, T, internal_rate, internal_yield, sigma_lo, sigma_hi, kSharedSigmaNodes,
                     scheme)) {
     diag.n_shared_scalar_fallback_lanes += static_cast<std::uint32_t>(side_rows);
+    alprobe::bump(alprobe::Event::SharedSideBuildFail);
+    alprobe::bump(alprobe::Event::SharedRowsFallback, side_rows);
     return;
   }
   diag.n_shared_boundary_solves += kSharedSigmaNodes;
@@ -635,8 +690,13 @@ void prepare_shared_boundary_side(std::vector<FitObs> &observations,
   if (!certified) {
     invalidate_shared_side(observations, side);
     diag.n_shared_scalar_fallback_lanes += static_cast<std::uint32_t>(side_rows);
+    alprobe::bump(alprobe::Event::SharedSideRejected);
+    alprobe::bump(alprobe::Event::SharedRowsFallback, side_rows);
     return;
   }
+  alprobe::bump(alprobe::Event::SharedSideCertified);
+  alprobe::bump(alprobe::Event::SharedRowsLaned, accepted);
+  alprobe::bump(alprobe::Event::SharedRowsFallback, side_rows - accepted);
   diag.n_shared_boundary_lanes += static_cast<std::uint32_t>(accepted);
   diag.n_shared_scalar_fallback_lanes += static_cast<std::uint32_t>(side_rows - accepted);
   if (side == Side::Call) {
@@ -940,6 +1000,13 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T, double
     return Err(ErrorCode::InvalidArgument,
                "build_observations: max_weight must be finite and positive");
   }
+  if (chain.exercise_style == ExerciseStyle::European &&
+      (!std::isfinite(opts.max_inversion_residual_half_spreads) ||
+       opts.max_inversion_residual_half_spreads < 0.0)) {
+    return Err(ErrorCode::InvalidArgument,
+               "build_observations: European inversion residual budget must be finite and "
+               "non-negative");
+  }
 
   const std::size_t n = chain.n_strikes();
   constexpr std::size_t kMaxIndexedStrikes =
@@ -981,6 +1048,9 @@ Result<ObsSet> build_observations(const Chain &chain, double F, double T, double
   out.n_dropped = n_drop;
   if (out.provenance.size() != n) {
     return Err(ErrorCode::Internal, "build_observations: preferred-row provenance is incomplete");
+  }
+  if (chain.exercise_style == ExerciseStyle::European) {
+    audit_direct_european_inversions(chain, F, T, df, opts, out);
   }
   if (out.obs.size() < kMinObs) {
     return Err(ErrorCode::NotFound, "build_observations: fewer than 5 observations survived");

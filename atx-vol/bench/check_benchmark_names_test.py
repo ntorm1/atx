@@ -53,7 +53,8 @@ fit/e2e/100name/iterations:1/real_time
         )[1].split("void publish_fit_counters", maxsplit=1)[0]
         registration = source.split("const int kRegistered", maxsplit=1)[1]
 
-        self.assertIn("config.fit_workers = 1u;", fit_body)
+        self.assertIn("config.fit_workers = bench_fit_workers();", fit_body)
+        self.assertIn("constexpr unsigned kGateDefault = 1u;", source)
         self.assertIn("config.n_threads = 0u;", fit_body)
         self.assertIn(
             "fitter.value_chain(*chain, OutputField::Prices, 0u);",

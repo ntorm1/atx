@@ -178,6 +178,7 @@ TEST(AlphaSlotPool_Cells, ReportsConfiguredGeometry) {
 // NOTE: the death-statement is wrapped in a helper because the preprocessor
 // does NOT treat `{...}` as protecting commas — a brace-init like `pool{1, 2}`
 // inside EXPECT_DEATH(...) would be split into extra macro arguments.
+#ifndef NDEBUG
 void over_acquire() {
   SlotPool pool{1, 2};
   (void)pool.acquire();
@@ -185,6 +186,7 @@ void over_acquire() {
 }
 
 TEST(AlphaSlotPoolDeathTest, OverAcquire_Aborts) { EXPECT_DEATH(over_acquire(), ".*"); }
+#endif
 
 // ---- SignalSet --------------------------------------------------------------
 

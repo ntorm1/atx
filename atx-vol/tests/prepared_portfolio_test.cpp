@@ -497,7 +497,10 @@ TEST(PreparedPortfolio, GroupedPriceEqualsIndependentOracleAndPinnedFingerprint)
   // economic-parity and thread-invariance gates above stayed green (differences are
   // inside the documented tolerance), so only the hash of the legitimately-shifted
   // marks moved. The FMA/rel-avx2 pin was RE-VERIFIED unchanged on the merged tree.
-  constexpr std::uint64_t kGoldenFingerprintSse2 = 718570745730299145ULL;
+  // Current-main pin after the subsequent accepted American pricing fixes;
+  // grouped/oracle parity and worker-count invariance above remain the proof
+  // that this wholesale hash move is numerical, not an economic divergence.
+  constexpr std::uint64_t kGoldenFingerprintSse2 = 17305682487856730537ULL;
   constexpr std::uint64_t kGoldenFingerprintFma = 8754310291975640041ULL;
   constexpr std::uint64_t kGoldenFingerprint =
       atx::vol::test::kFmaContraction ? kGoldenFingerprintFma : kGoldenFingerprintSse2;

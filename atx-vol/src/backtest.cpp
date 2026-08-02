@@ -53,58 +53,49 @@ std::atomic<std::uint64_t> g_open_count{0};
 // this is the upper bound the subset actually shrinks.
 std::atomic<std::uint64_t> g_deserialized_bytes{0};
 
-// S6-T29 (plan 6.2). How many FUTURE snapshots the step loop keeps in flight
-// ahead of the step it is on. This is a pure I/O-SCHEDULING lever: it changes
-// only WHEN an archive's load is started, never which archives are loaded, in
-// what order the step loop consumes them, or any value derived from them — the
-// backtest still reads refs[i] at step i and the output is byte-identical at
-// every window (the NAV bit-parity legs in S6-T29 pin that on both ISAs).
+// Bounded-cache capacity for a look-ahead of `depth`: exactly the live working set
+// of a forward-only run — `base` + `shifted` + `depth` snapshots in flight.
 //
-// The value is CHOSEN BY MEASUREMENT, not by theory: S6-T29 A/B'd windows 1, 2
-// and 3 on the 135-session parity-full replay and recorded the numbers in its
-// report. Re-measure before changing it.
+// This is derivable rather than tuned only because SnapshotCache's bounded mode
+// evicts in INSERTION order, so the eviction victim is always the lowest-indexed
+// entry, which a forward-only walk has already passed. Under the recency order it
+// used to keep, the victim was instead an unconsumed prefetch (sequential
+// flooding), and no capacity of the form depth + k was reliably safe: depth + 3
+// happened to work at depth 4 and still reloaded at depth 8. See the eviction-order
+// comment in snapshot_cache.cpp.
 //
-// Deliberately a constant and not a `RunConfig` field: `RunConfig` is a frozen
-// v1.0.0 aggregate pinned at 16 fields, and a scheduling knob does not justify
-// a public-API addition days after the 1.0.0 CHANGELOG. A `RunConfig` field is
-// the post-v1 route if operators ever need to tune this per run.
-constexpr std::size_t kPrefetchLookahead = 2u;
+// `BacktestPrefetchDepth` pins this by asserting `MarketSnapshot::open_count() ==
+// refs.size()` at several depths — the assertion that fails if either the order or
+// this capacity regresses, since a reload does not change the ECONOMICS.
+[[nodiscard]] constexpr std::size_t private_snapshot_cache_capacity(std::size_t depth) noexcept {
+  return depth + 2u;
+}
 
-// A forward-only run owns base, shifted, and at most `kPrefetchLookahead`
-// prefetched futures. Retaining that many cache entries covers the working set
-// without accumulating one mapped archive per date. Caller-supplied caches
-// remain reusable and unbounded.
-//
-// This tracks the window for WORKING-SET HYGIENE, not for correctness: a smaller
-// capacity does not re-open partitions, because `SnapshotCache::trim` only ever
-// evicts entries whose future is already READY (so an in-flight window slot is
-// never the victim) and the loop already holds a `shared_ptr` to the base and
-// shifted snapshots it has consumed. Verified by experiment — this test suite
-// still passes with the capacity pinned at the old 3 — so do not read a
-// correctness guarantee into the `+ 2`.
-constexpr std::size_t kPrivateSnapshotCacheCapacity = kPrefetchLookahead + 2u;
+// Look-ahead depth actually used: 0 is normalized to 1, because "no look-ahead"
+// is expressed by prefetch_snapshots == false, not by a zero depth.
+[[nodiscard]] constexpr std::size_t effective_prefetch_depth(const RunConfig &cfg) noexcept {
+  return cfg.prefetch_depth == 0u ? 1u : cfg.prefetch_depth;
+}
 
-// Start the loads for `refs[first, first + count)`, skipping indices past the
-// end. `cfg.prefetch_snapshots` gates the WHOLE window: OFF means NO prefetch at
-// any depth, exactly as in the depth-1 code this replaces. Prefetch failures are
-// propagated unchanged — `SnapshotCache::prefetch` only rejects an invalid
-// build policy (a missing/corrupt archive surfaces at the matching `load`), so a
-// deeper window cannot make a run fail earlier or differently than depth 1 did.
+// Issue the look-ahead prefetches for `refs[first .. first+count)`, skipping past
+// the end of the clock. Callers issue this TWICE per run and once per step: an
+// initial fill of the whole window before the loop, then exactly the ONE ref that
+// newly enters the window at each step. Deliberately NOT a per-step rescan of the
+// whole window — `SnapshotCache::prefetch` reads the candidate archive's identity
+// header on every call (a small file open + read) to fail closed on an archive
+// rewritten in place, so rescanning would multiply that probe by the depth for no
+// added look-ahead. One call per ref per run keeps the probe count exactly what
+// the single-step look-ahead already paid.
+//
+// A prefetch error is propagated, not swallowed: it means the cache could not be
+// asked (an invalid build policy), which is a programming error, and the load that
+// would follow is going to fail anyway.
 [[nodiscard]] Status prefetch_window(SnapshotCache &cache, std::span<const SnapshotRef> refs,
                                      std::size_t first, std::size_t count, const RunConfig &cfg) {
-  if (!cfg.prefetch_snapshots) {
-    return Ok();
-  }
-  for (std::size_t k = 0; k < count; ++k) {
-    const std::size_t idx = first + k;
-    if (idx >= refs.size()) {
-      break;
-    }
-    const Status status = cache.prefetch(refs[idx].archive_path, cfg.query_pricing_tier,
-                                         cfg.query_cache_build_policy);
-    if (!status) {
-      return status;
-    }
+  const std::size_t last = first + count < refs.size() ? first + count : refs.size();
+  for (std::size_t k = first; k < last; ++k) {
+    ATX_TRY_VOID(
+        cache.prefetch(refs[k].archive_path, cfg.query_pricing_tier, cfg.query_cache_build_policy));
   }
   return Ok();
 }
@@ -540,6 +531,13 @@ public:
   // 0.0, which made `cash -= shares_to_trade * 0.0` flatten a residual share
   // position for FREE and left the ledger at zero with no error and no flag.
   //
+  // SP100 task 2: `spot_of` now answers Result<optional<double>>. `nullopt` means
+  // "this uid has no board on this base and the caller's policy tolerates it": the
+  // uid's fill is SKIPPED — its ledger position is left exactly as it was, which is
+  // the whole point, since zeroing it at spot 0.0 is the original bug — and
+  // `n_skipped` is bumped so the row can report the exclusion. Err still aborts, so
+  // `UnpricedLotPolicy::Error` keeps the pre-change control flow verbatim.
+  //
   // Steady-state allocation-free: the per-uid delta aggregate and the dedup set are
   // held as DENSE, generation-STAMPED vectors (not node-based unordered_map/set that
   // reallocate a node per key on every clear()+reinsert). A per-pass `generation_`
@@ -548,7 +546,7 @@ public:
   template <typename SpotOf>
   [[nodiscard]] Status hedge_daily(const std::vector<Lot> &lots, const PriceFrame &frame,
                                    double band, double hedge_slippage_bps, SpotOf &&spot_of,
-                                   double &cash, double &cost) {
+                                   double &cash, double &cost, std::uint32_t &n_skipped) {
     ++generation_;
     order_.clear(); // vector clear keeps capacity (no per-element deallocation)
     // 1. Aggregate Ok option delta per uid in ONE frame pass (frame order per uid).
@@ -585,11 +583,15 @@ public:
       const double net = option_delta + get(uid);
       if (std::fabs(net) > band) {
         const double shares_to_trade = -net;
-        const Result<double> spot_res = spot_of(uid);
+        const Result<std::optional<double>> spot_res = spot_of(uid);
         if (!spot_res) {
           return Err(spot_res.error());
         }
-        const double spot = *spot_res;
+        if (!spot_res->has_value()) {
+          ++n_skipped; // no board, tolerated: leave the ledger and cash untouched
+          continue;
+        }
+        const double spot = **spot_res;
         cost += std::fabs(shares_to_trade) * spot * (hedge_slippage_bps / 1.0e4);
         cash -= shares_to_trade * spot;
         add(uid, shares_to_trade);
@@ -615,8 +617,8 @@ private:
     return s;
   }
 
-  std::vector<std::pair<std::uint32_t, double>> shares_;   // insertion order (traded uids)
-  std::unordered_map<std::uint32_t, std::size_t> index_;   // uid -> slot in shares_
+  std::vector<std::pair<std::uint32_t, double>> shares_; // insertion order (traded uids)
+  std::unordered_map<std::uint32_t, std::size_t> index_; // uid -> slot in shares_
 
   // Per-step hedge scratch — dense, generation-stamped, allocation-free in steady state.
   std::unordered_map<std::uint32_t, std::size_t> scratch_index_; // uid -> dense scratch slot
@@ -626,6 +628,61 @@ private:
   std::vector<std::uint32_t> order_;    // uid iteration order (dedup)
   std::uint64_t generation_{0};
 };
+
+[[nodiscard]] Status validate_checkpoint(const BacktestCheckpoint &checkpoint,
+                                         std::size_t continuation_ref_count) {
+  if (checkpoint.base_ts_ns <= 0) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest_incremental: checkpoint base_ts_ns must be positive");
+  }
+  if (checkpoint.next_lot_id == 0u) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest_incremental: checkpoint next_lot_id must be positive");
+  }
+  if (!std::isfinite(checkpoint.cash) || !std::isfinite(checkpoint.nav) ||
+      !std::isfinite(checkpoint.cumulative_noncash_financing)) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest_incremental: checkpoint accounting state must be finite");
+  }
+  if (continuation_ref_count > 0u &&
+      checkpoint.completed_step_index >
+          std::numeric_limits<std::size_t>::max() - (continuation_ref_count - 1u)) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest_incremental: checkpoint global step index would overflow");
+  }
+
+  ATX_TRY_VOID(validate_lot_economics(checkpoint.portfolio.lots, "checkpoint portfolio",
+                                      checkpoint.base_ts_ns));
+  std::unordered_set<std::uint64_t> lot_ids;
+  lot_ids.reserve(checkpoint.portfolio.lots.size());
+  for (const Lot &lot : checkpoint.portfolio.lots) {
+    if (lot.id == 0u || lot.id >= checkpoint.next_lot_id || lot.contract.uid == 0u) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest_incremental: checkpoint lot id=" + std::to_string(lot.id) +
+                     " has an invalid identity");
+    }
+    if (!lot_ids.insert(lot.id).second) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest_incremental: duplicate checkpoint lot id=" + std::to_string(lot.id));
+    }
+  }
+
+  std::unordered_set<std::uint32_t> share_uids;
+  share_uids.reserve(checkpoint.hedge_shares.size());
+  for (const HedgeSharePosition &position : checkpoint.hedge_shares) {
+    if (position.uid == 0u || !std::isfinite(position.shares)) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest_incremental: checkpoint hedge shares require a real uid and "
+                 "finite quantity");
+    }
+    if (!share_uids.insert(position.uid).second) {
+      return Err(ErrorCode::InvalidArgument,
+                 "run_backtest_incremental: duplicate checkpoint hedge uid=" +
+                     std::to_string(position.uid));
+    }
+  }
+  return Ok();
+}
 
 [[nodiscard]] Status validate_strategy_transition(std::span<const Lot> before,
                                                   std::span<const Lot> after,
@@ -734,9 +791,9 @@ struct ReusablePriceFrame {
   }
 
   [[nodiscard]] PriceFrameView marks_view() noexcept {
-    return PriceFrameView{frame.id, frame.uid, frame.pv,     frame.price, frame.iv, {}, {}, {},
-                          {},       {},        {},           {},          {},       frame.status,
-                          &frame.total};
+    return PriceFrameView{frame.id, frame.uid, frame.pv, frame.price,  frame.iv,
+                          {},       {},        {},       {},           {},
+                          {},       {},        {},       frame.status, &frame.total};
   }
 };
 
@@ -797,17 +854,73 @@ struct StepPnl {
   // position (input order) for the Error-policy diagnostic; 0 when none.
   std::uint32_t n_unpriced{0};
   std::uint32_t first_unpriced_uid{0};
+  // ExcludeAndReport only: settlement events this step could not price at their
+  // exact expiry observation — a lot newly deferred, a deferred lot still waiting,
+  // or a deferred lot finally settling. Reported alongside `n_unpriced` in the
+  // row's exclusion tally (the F1(b) hedge-share precedent); never non-zero under
+  // `Error`, which still fails closed at the first absent settlement board.
+  std::uint32_t n_deferred{0};
+  // Intrinsic proceeds of the deferred lots that settled THIS step, for the cash
+  // ledger. The fixed-book overload has no cash ledger and ignores it.
+  double deferred_settle_cash{0.0};
 };
 
-[[nodiscard]] Result<StepPnl> compute_step(const MarketSnapshot &base,
-                                           const MarketSnapshot &shifted,
-                                           const std::vector<Lot> &lots, const PriceOptions &opts,
-                                           RetainedBookPricer &retained,
-                                           ReusableTargetMarkFrame *target_marks = nullptr,
-                                           RetainedBookPricer *settle = nullptr,
-                                           ReusablePriceFrame *settle_frame = nullptr,
-                                           StepMarkMemo *mark_memo = nullptr,
-                                           bool memo_enabled = false) {
+// WS-F F1 tolerance extension (SP100 task 2). One lot whose EXACT expiry step had
+// no shifted-side board under `UnpricedLotPolicy::ExcludeAndReport`: there is no
+// observed spot to settle it against, and dropping it would delete a real
+// position, so the lot leaves `book.lots` and waits here for the first later step
+// whose board is back.
+//
+// `base_mark` freezes the deferral step's base mark — the exact mark the
+// non-deferred settlement would have explained against. When the deferral step's
+// BASE board was absent too there is no such mark (`base_mark_known == false`) and
+// the eventual settlement contributes NOTHING to the P&L explain: that step's move
+// is the excluded, never-recovered P&L this policy already documents. The cash
+// ledger still books the intrinsic either way.
+struct DeferredSettlement {
+  Lot lot{};
+  double base_mark{0.0};
+  bool base_mark_known{false};
+};
+
+// The deferral book, held ACROSS steps by each run loop. Entries are kept sorted
+// by lot id, so every traversal — and therefore the settlement accumulation order
+// and the reported counts — depends only on lot identity, never on insertion
+// order or on any unordered-container layout. Empty and never consulted under
+// `UnpricedLotPolicy::Error` (the run loops pass a null pointer there, which keeps
+// the strict path's control flow bit-identical to the pre-change engine).
+class DeferredSettlementBook {
+public:
+  [[nodiscard]] bool empty() const noexcept { return entries_.empty(); }
+  [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
+  [[nodiscard]] std::span<const DeferredSettlement> entries() const noexcept {
+    return {entries_.data(), entries_.size()};
+  }
+
+  void insert(const Lot &lot, double base_mark, bool base_mark_known) {
+    const auto at = std::lower_bound(entries_.begin(), entries_.end(), lot.id,
+                                     [](const DeferredSettlement &d, std::uint64_t id) {
+                                       return d.lot.id < id;
+                                     });
+    entries_.insert(at, DeferredSettlement{lot, base_mark, base_mark_known});
+  }
+
+  // Scratch for the survivors of one resolution pass; `commit` swaps it in, which
+  // preserves the id ordering because the pass walks `entries_` in that order.
+  [[nodiscard]] std::vector<DeferredSettlement> &retain_scratch() noexcept { return scratch_; }
+  void commit() noexcept { entries_.swap(scratch_); }
+
+private:
+  std::vector<DeferredSettlement> entries_;
+  std::vector<DeferredSettlement> scratch_;
+};
+
+[[nodiscard]] Result<StepPnl>
+compute_step(const MarketSnapshot &base, const MarketSnapshot &shifted,
+             const std::vector<Lot> &lots, const PriceOptions &opts, RetainedBookPricer &retained,
+             ReusableTargetMarkFrame *target_marks = nullptr, RetainedBookPricer *settle = nullptr,
+             ReusablePriceFrame *settle_frame = nullptr, StepMarkMemo *mark_memo = nullptr,
+             bool memo_enabled = false, DeferredSettlementBook *deferrals = nullptr) {
   ATX_VOL_PROFILE_SCOPE(StepPnl);
   std::vector<Lot> &alive = retained.reset_alive_scratch(lots.size());
   // B2: batch the expiry-settlement base marks (bottleneck #3). When a settlement
@@ -821,9 +934,45 @@ struct StepPnl {
   const bool batch_settle = settle != nullptr && settle_frame != nullptr;
   std::vector<Lot> *expiring = batch_settle ? &settle->reset_alive_scratch(lots.size()) : nullptr;
   double settlement = 0.0;
+  std::uint32_t n_deferred = 0;
+  double deferred_settle_cash = 0.0;
+
+  // Deferred settlements carried in from EARLIER steps, walked in LOT-ID order: a
+  // lot settles at intrinsic against THIS step's shifted spot the first time its
+  // board is back, and is otherwise counted and carried forward untouched. Runs
+  // BEFORE the partition loop so a lot deferred on this very step is counted once,
+  // here on the step it settles or waits — never twice on the step it deferred.
+  // On a clean step the book is empty and nothing below changes, bit-for-bit.
+  if (deferrals != nullptr && !deferrals->empty()) {
+    std::vector<DeferredSettlement> &kept = deferrals->retain_scratch();
+    kept.clear();
+    for (const DeferredSettlement &pending : deferrals->entries()) {
+      ++n_deferred;
+      const SurfaceRef ss = shifted.find(pending.lot.contract.uid);
+      if (ss == nullptr) {
+        kept.push_back(pending); // still no board: stays open, counted, unchanged
+        continue;
+      }
+      const double S = ss->pricing().S;
+      const double K = pending.lot.contract.K;
+      const double intrinsic =
+          (pending.lot.contract.side == Side::Call) ? std::max(0.0, S - K) : std::max(0.0, K - S);
+      const double weight = pending.lot.qty * pending.lot.multiplier;
+      if (pending.base_mark_known) {
+        settlement += weight * (intrinsic - pending.base_mark);
+      }
+      deferred_settle_cash += weight * intrinsic;
+    }
+    deferrals->commit();
+  }
+
   for (const Lot &lot : lots) {
     if (lot.expiry_ts_ns <= shifted.ts_ns()) {
       if (lot.expiry_ts_ns != shifted.ts_ns()) {
+        // UNCHANGED under BOTH policies: an expiry that passed between sessions was
+        // never observed at all, so there is no settlement instant to defer TO. That
+        // is a calendar bug (see `TenorSpec::snap_to_sessions`), not missing market
+        // data, and it keeps failing closed.
         return Err(
             ErrorCode::NotFound,
             "run_backtest: no exact expiry observation for lot id=" + std::to_string(lot.id) +
@@ -833,7 +982,40 @@ struct StepPnl {
       const SurfaceRef bs = base.find(lot.contract.uid);
       const SurfaceRef ss = shifted.find(lot.contract.uid);
       if (bs == nullptr || ss == nullptr) {
-        return Err(ErrorCode::NotFound, "run_backtest: no surface for settling lot");
+        if (deferrals == nullptr) {
+          return Err(ErrorCode::NotFound, "run_backtest: no surface for settling lot");
+        }
+        ++n_deferred;
+        if (ss != nullptr) {
+          // The settlement SPOT is observed; only the base mark this step would have
+          // explained against is missing (the lot was already unpriced on the prior
+          // step). Settle here with a ZERO explain contribution — that unrecovered
+          // move is exactly what ExcludeAndReport documents — and fall out of the
+          // partition, so the caller erases the lot as a normal expiry and its cash
+          // ledger books the intrinsic off this same (present) board.
+          continue;
+        }
+        // No settlement spot at all. Freeze the base mark when the base board is
+        // there and carry the lot until some later step's board returns.
+        double frozen_mark = 0.0;
+        bool frozen_known = false;
+        if (bs != nullptr) {
+          const double T_base = residual_T(lot.expiry_ts_ns, base.ts_ns());
+          const Result<double> mark =
+              bs->fair_value(lot.contract.K, T_base, lot.contract.side, opts.query_execution);
+          if (mark) {
+            frozen_mark = *mark;
+            frozen_known = true;
+          }
+          // A present board that fails to SOLVE is a numeric failure, not missing
+          // market data, and the non-deferred settlement path returns that Err under
+          // both policies. Here it is folded into "no mark" instead: a run that has
+          // already opted into the lenient policy for this lot should not be killed
+          // by a solve on a lot it can no longer value anyway. The two cases are
+          // indistinguishable downstream — the count fires either way.
+        }
+        deferrals->insert(lot, frozen_mark, frozen_known);
+        continue;
       }
       if (expiring != nullptr) {
         expiring->push_back(lot); // base mark supplied by the batched pass below
@@ -884,9 +1066,8 @@ struct StepPnl {
                          std::to_string(lot.id));
         }
         if (sf.status[i] != PriceStatus::Ok) {
-          return Err(ErrorCode::NotFound,
-                     "run_backtest: no valid base mark for settling lot id=" +
-                         std::to_string(lot.id));
+          return Err(ErrorCode::NotFound, "run_backtest: no valid base mark for settling lot id=" +
+                                              std::to_string(lot.id));
         }
         const SurfaceRef ss = shifted.find(lot.contract.uid);
         const double S = ss->pricing().S;
@@ -1001,7 +1182,7 @@ struct StepPnl {
   if (target_marks != nullptr) {
     ATX_TRY_VOID(target_marks->seal());
   }
-  return Ok(StepPnl{t, settlement, n_unpriced, first_unpriced_uid});
+  return Ok(StepPnl{t, settlement, n_unpriced, first_unpriced_uid, n_deferred, deferred_settle_cash});
 }
 
 // The Error-policy message for a step that has `n_unpriced` held lots with no
@@ -1170,24 +1351,51 @@ Result<Clock> Clock::from_surface_db(const SurfaceDb &db) {
   return Ok(std::move(clock));
 }
 
+Result<Clock> Clock::between(std::string_view date_lo, std::string_view date_hi) const {
+  // Rendered once and shared by both failure messages: the window a caller CAN
+  // ask for. An empty clock is unreachable through either factory (both reject
+  // an empty source), but `Clock` is default-constructible, so this stays total
+  // rather than indexing front()/back() on an empty vector.
+  const std::string available =
+      refs_.empty() ? std::string{"<none>"} : (refs_.front().date + ".." + refs_.back().date);
+  if (date_lo > date_hi) {
+    return Err(ErrorCode::InvalidArgument, "Clock::between: date_lo '" + std::string{date_lo} +
+                                               "' > date_hi '" + std::string{date_hi} +
+                                               "' (available " + available + ")");
+  }
+  Clock out;
+  // Lexicographic == chronological for the canonical ISO date keys, and refs_ is
+  // already ascending, so a linear filter preserves the ordering contract.
+  for (const SnapshotRef &r : refs_) {
+    const std::string_view d{r.date};
+    if (d >= date_lo && d <= date_hi) {
+      out.refs_.push_back(r);
+    }
+  }
+  if (out.refs_.empty()) {
+    return Err(ErrorCode::InvalidArgument, "Clock::between: no snapshots in [" +
+                                               std::string{date_lo} + ", " + std::string{date_hi} +
+                                               "] (available " + available + ")");
+  }
+  return Ok(std::move(out));
+}
+
 // ── MarketSnapshot ──────────────────────────────────────────────────────────
 
 MarketSnapshot::MarketSnapshot(std::shared_ptr<const SurfaceArchiveV2> archive,
                                std::vector<PricedSurface> &&surfaces,
                                std::vector<PricedSurfaceView> &&views,
                                std::vector<SurfaceProvenance> &&provenance, SurfaceSet &&set,
-                               std::int64_t ts,
+                               std::int64_t ts, ArchiveContentIdentity source_identity,
                                std::vector<std::pair<std::string, std::uint32_t>> &&syms) noexcept
     : archive_{std::move(archive)}, surfaces_{std::move(surfaces)}, views_{std::move(views)},
-      provenance_{std::move(provenance)}, set_{std::move(set)}, ts_ns_{ts},
-      syms_{std::move(syms)} {}
+      provenance_{std::move(provenance)}, set_{std::move(set)}, source_identity_{source_identity},
+      ts_ns_{ts}, syms_{std::move(syms)} {}
 
 std::uint64_t MarketSnapshot::open_count() noexcept { return g_open_count.load(); }
 void MarketSnapshot::reset_open_count() noexcept { g_open_count.store(0); }
 
-std::uint64_t MarketSnapshot::deserialized_bytes() noexcept {
-  return g_deserialized_bytes.load();
-}
+std::uint64_t MarketSnapshot::deserialized_bytes() noexcept { return g_deserialized_bytes.load(); }
 void MarketSnapshot::reset_deserialized_bytes() noexcept { g_deserialized_bytes.store(0); }
 
 Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
@@ -1287,6 +1495,19 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
     // read amplification (67% of backtest wall in the profile) is eliminated. The
     // owned path reconstructs and drops this archive before returning, so it never
     // holds a mapping past the load.
+    //
+    // MEASURED AND KEPT for the WHOLE-BOARD path too, against the intuition that a
+    // reader touching every record should prefer one buffered read. It should not,
+    // here: the reconstruct reads the mapped bytes DIRECTLY, so a read's kernel copy
+    // into a 1.8 MB owned buffer is work with no consumer, while the mapping's
+    // first-touch faults are served from the page cache. Interleaved on the
+    // 135-session projected replay (median wall, 5 reps): mmap 295 ms vs buffered
+    // read 315 ms at look-ahead depth 8, and 368 ms vs 503 ms at depth 1 — mmap
+    // ahead at every depth, and further ahead the less the loads overlap. Cold
+    // (page cache evicted between reps) it also held: 431-464 ms vs 464-501 ms.
+    // An explicit PrefetchVirtualMemory populate of the whole mapping was measured
+    // too and is NOT used: 427-444 ms cold and 298-308 ms warm, inside the noise of
+    // plain mmap, so it buys nothing for the extra call.
     return SurfaceArchiveV2::open_mapped(archive_path);
   }();
   if (!arch) {
@@ -1299,6 +1520,7 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // view reads — for its whole lifetime. See the lifetime note on MarketSnapshot's
   // members.
   auto archive = std::make_shared<const SurfaceArchiveV2>(std::move(*arch));
+  const ArchiveContentIdentity source_identity = archive->identity();
 
   const std::span<const ArchiveV2DirEntry> dir = archive->directory();
   std::vector<PricedSurface> surfaces;
@@ -1480,9 +1702,9 @@ Result<MarketSnapshot> MarketSnapshot::load(std::string_view archive_path,
   // The snapshot co-owns `archive` — the Mapping every borrowed view reads — so the
   // mapping outlives the views, which outlive nothing else. See MarketSnapshot's
   // member lifetime note.
-  return MarketSnapshot{std::move(archive),   std::move(surfaces), std::move(views),
-                        std::move(provenance), std::move(*set),    ts,
-                        std::move(syms)};
+  return MarketSnapshot{std::move(archive),    std::move(surfaces), std::move(views),
+                        std::move(provenance), std::move(*set),     ts,
+                        source_identity,       std::move(syms)};
 }
 
 const SurfaceProvenance *MarketSnapshot::provenance(std::uint32_t uid) const noexcept {
@@ -1670,9 +1892,9 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   BacktestResult out;
   PortfolioState book = std::move(initial);
   RetainedBookPricer retained_pricer;
-  RetainedBookPricer settle_pricer;      // B2: retained batched-settlement pricer
-  ReusablePriceFrame settle_frame;       // B2: retained Marks frame for settlement
-  StepMarkMemo mark_memo;                // L2: per-step settlement-mark memo
+  RetainedBookPricer settle_pricer; // B2: retained batched-settlement pricer
+  ReusablePriceFrame settle_frame;  // B2: retained Marks frame for settlement
+  StepMarkMemo mark_memo;           // L2: per-step settlement-mark memo
   ReusableLotIdIndex initial_lot_index;
   ATX_TRY_VOID(initial_lot_index.rebuild(book.lots, "initial fixed book"));
 
@@ -1740,11 +1962,12 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   // used exactly as the caller configured it; the Sealed win is taken on the cache
   // this function constructs and exclusively owns, which is the replay path the
   // optimization was built for and the one no caller can observe.
+  const std::size_t prefetch_depth = effective_prefetch_depth(cfg);
   const std::shared_ptr<SnapshotCache> snapshot_cache =
-      cfg.snapshot_cache ? cfg.snapshot_cache
-                         : std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity,
-                                                           std::move(book_uids),
-                                                           ArchiveBacking::Sealed);
+      cfg.snapshot_cache
+          ? cfg.snapshot_cache
+          : std::make_shared<SnapshotCache>(private_snapshot_cache_capacity(prefetch_depth),
+                                            std::move(book_uids), ArchiveBacking::Sealed);
   auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
                                        cfg.query_cache_build_policy);
   if (!base_res) {
@@ -1753,8 +1976,11 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   std::shared_ptr<const MarketSnapshot> base = std::move(*base_res);
   ATX_TRY_VOID(validate_snapshot_provenance(*base, cfg.surface_provenance_policy));
   ATX_TRY_VOID(validate_lot_economics(book.lots, "initial fixed book", base->ts_ns()));
-  // Prime the look-ahead window: refs[1 .. 1+W).
-  ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, 1u, kPrefetchLookahead, cfg));
+  if (cfg.prefetch_snapshots) {
+    // Initial fill of the whole look-ahead window; each later step adds only the
+    // one ref that newly enters it.
+    ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, 1u, prefetch_depth, cfg));
+  }
 
   double nav = 0.0;
 
@@ -1782,7 +2008,14 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
   // step, reproducing the per-step columns bit-for-bit. `nav` is unaffected — it
   // already accumulates every step below.
   double b_total = 0.0, b_delta = 0.0, b_gamma = 0.0, b_vega = 0.0, b_vanna = 0.0, b_volga = 0.0;
-  double b_theta = 0.0, b_rho = 0.0, b_charm = 0.0, b_unexpl = 0.0, b_settle = 0.0, b_nunpriced = 0.0;
+  double b_theta = 0.0, b_rho = 0.0, b_charm = 0.0, b_unexpl = 0.0, b_settle = 0.0,
+         b_nunpriced = 0.0;
+
+  // Deferred expiry settlements (ExcludeAndReport only). A null pointer under
+  // Error keeps `compute_step` on its pre-change fail-closed path verbatim.
+  DeferredSettlementBook deferrals;
+  DeferredSettlementBook *const deferrals_ptr =
+      cfg.unpriced == UnpricedLotPolicy::ExcludeAndReport ? &deferrals : nullptr;
 
   for (std::size_t i = 1; i < refs.size(); ++i) {
     // Plan 5.5 safe point: the TOP of the step, before this step's snapshot load
@@ -1802,9 +2035,11 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
     ATX_TRY_VOID(validate_snapshot_provenance(*shifted, cfg.surface_provenance_policy));
     ATX_TRY_VOID(validate_step_ordering(*base, *shifted, refs[i - 1].date, refs[i].date));
-    // Step i consumed refs[i], so extend the window by exactly one: refs[i + W].
-    // refs[i+1 .. i+W) are already in flight from earlier iterations.
-    ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, i + kPrefetchLookahead, 1u, cfg));
+    if (cfg.prefetch_snapshots) {
+      // The window is [i+1, i+depth]; step i-1 already covered through i+depth-1,
+      // so exactly one ref newly enters it here.
+      ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, i + prefetch_depth, 1u, cfg));
+    }
 
     // V1 solve ledger: per-step solve deltas when a StepTrace is armed (fixed-book
     // overload has no execute/entry work — just compute_step). Zero cost otherwise.
@@ -1815,7 +2050,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     // held lots the pricer could not value this step.
     auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer,
                              /*target_marks=*/nullptr, &settle_pricer, &settle_frame, &mark_memo,
-                             cfg.settlement_mark_memo);
+                             cfg.settlement_mark_memo, deferrals_ptr);
     if (!step) {
       return Err(step.error());
     }
@@ -1827,7 +2062,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     const double settlement = step->settlement;
 
     const double step_total = t.pnl_total + settlement;
-    nav += step_total; // cumulative every step, regardless of recording
+    nav += step_total;                        // cumulative every step, regardless of recording
     out.step_pnl_total.push_back(step_total); // full-res per-step series (metrics)
 
     // Accrue this step's flow into the pending block (flushed on the next record).
@@ -1842,7 +2077,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
     b_charm += t.pnl_charm;
     b_unexpl += t.pnl_unexplained;
     b_settle += settlement;
-    b_nunpriced += static_cast<double>(step->n_unpriced);
+    // Deferred settlement events join the row's exclusion count (F1(b) precedent).
+    b_nunpriced += static_cast<double>(step->n_unpriced) + static_cast<double>(step->n_deferred);
 
     // Adopt the shifted snapshot as the next base (no reload) and drop expiries.
     base = std::move(shifted);
@@ -1862,9 +2098,13 @@ Result<BacktestResult> run_backtest(const Clock &clock, PortfolioState initial,
         return Err(ErrorCode::NotFound, unpriced_greeks_error_message(
                                             g->n_unpriced, g->first_unpriced_uid, refs[i].date));
       }
+      // A deferred lot is OPEN — it holds real exposure the run never settled — so
+      // it counts toward n_open_lots even though it has left `book.lots` (it is
+      // past its expiry, which every book-facing invariant and pricer forbids).
       push_row(refs[i].date, base->ts_ns(), b_total, b_delta, b_gamma, b_vega, b_vanna, b_volga,
-               b_theta, b_rho, b_charm, b_unexpl, b_settle, nav, g->total, book.lots.size(),
-               b_nunpriced, static_cast<double>(g->n_unpriced));
+               b_theta, b_rho, b_charm, b_unexpl, b_settle, nav, g->total,
+               book.lots.size() + deferrals.size(), b_nunpriced,
+               static_cast<double>(g->n_unpriced));
       b_total = b_delta = b_gamma = b_vega = b_vanna = b_volga = 0.0;
       b_theta = b_rho = b_charm = b_unexpl = b_settle = b_nunpriced = 0.0;
     }
@@ -1883,15 +2123,23 @@ struct ExecResult {
   double turnover_notional{0.0};
   double turnover_vega{0.0};
   std::optional<BookGreeks> book_greeks{};
+  // ExcludeAndReport only: hedge fills the overlay skipped because the uid has no
+  // board on this base. Joins the row's exclusion tally (F1(b) precedent).
+  std::uint32_t n_unpriced_hedges{0};
 };
 
-Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const RunConfig &cfg) {
+[[nodiscard]] static Result<BacktestContinuation>
+run_backtest_strategy_impl(const Clock &clock, IStrategy &strat, const RunConfig &cfg,
+                           const BacktestCheckpoint *resume, bool capture_checkpoint) {
   ATX_VOL_PROFILE_SCOPE(BacktestTotal);
   ATX_TRY_VOID(validate_run_config(cfg));
   ATX_TRY_VOID(validate_run_query_route(cfg));
   const std::span<const SnapshotRef> refs = clock.refs();
   if (refs.empty()) {
     return Err(ErrorCode::InvalidArgument, "run_backtest: empty clock");
+  }
+  if (resume != nullptr) {
+    ATX_TRY_VOID(validate_checkpoint(*resume, refs.size()));
   }
   const QueryExecution required_execution = strat.required_economic_execution();
   if (!valid_query_execution(required_execution)) {
@@ -1907,25 +2155,33 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
                "fast query tier");
   }
   const std::size_t stride = cfg.record_every_n;
+  const std::size_t global_step_base =
+      resume != nullptr ? resume->completed_step_index : std::size_t{0};
 
   BacktestResult out;
-  PortfolioState book{};
-  std::uint64_t next_id = 1; // monotonic lot ids the strategy consumes
+  PortfolioState book = resume != nullptr ? resume->portfolio : PortfolioState{};
+  std::uint64_t next_id =
+      resume != nullptr ? resume->next_lot_id : std::uint64_t{1}; // monotonic strategy lot ids
   ReusablePriceFrame risk_frame;
   ReusableTargetMarkFrame target_marks;
   RetainedBookPricer retained_pricer;
-  RetainedBookPricer settle_pricer;      // B2: retained batched-settlement pricer
-  ReusablePriceFrame settle_frame;       // B2: retained Marks frame for settlement
-  StepMarkMemo mark_memo;                // L2: per-step settlement-mark memo
+  RetainedBookPricer settle_pricer; // B2: retained batched-settlement pricer
+  ReusablePriceFrame settle_frame;  // B2: retained Marks frame for settlement
+  StepMarkMemo mark_memo;           // L2: per-step settlement-mark memo
   ReusableLotIdIndex before_lot_index;
   ReusableLotIdIndex after_lot_index;
   std::vector<Lot> before_lots;
 
   // ── Engine-internal cash + per-uid share ledger (B2/B3) ────────────────────
-  double cash = cfg.financing.initial_cash;
+  double cash = resume != nullptr ? resume->cash : cfg.financing.initial_cash;
   // B3: O(1) get/add/sum + allocation-free daily hedge pass (was a linear-scan
   // `shares` vector + a per-uid whole-frame delta rescan). Bit-identical output.
   HedgeLedger hedge_ledger;
+  if (resume != nullptr) {
+    for (const HedgeSharePosition &position : resume->hedge_shares) {
+      hedge_ledger.add(position.uid, position.shares);
+    }
+  }
 
   // Per-share execution half-spread under the friction model: the selected
   // `spread_kind` lane (0 when None) PLUS the C-4 impact lane. The two are
@@ -2001,7 +2257,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   // deviation is a genuine accounting leak: excluded held-lot PnL, a share
   // position that went unmarked, a settlement whose surface vanished, or a fill
   // priced away from the mark the book is carried at.
-  double financing_noncash_total = 0.0;
+  double financing_noncash_total = resume != nullptr ? resume->cumulative_noncash_financing : 0.0;
   const auto liquidation_value = [&](const MarketSnapshot &snap,
                                      const PriceTotals &book_totals) -> double {
     double shares_mtm = 0.0;
@@ -2025,11 +2281,10 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     out.nav_liquidation.push_back(liq);
     const double drift = liq - nav_v;
     if (!(std::fabs(drift) <= cfg.reconcile_nav_tol)) {
-      return Err(ErrorCode::Internal,
-                 "run_backtest: NAV reconciliation failed on " + date + " (nav=" +
-                     std::to_string(nav_v) + ", liquidation=" + std::to_string(liq) +
-                     ", drift=" + std::to_string(drift) +
-                     ", tol=" + std::to_string(cfg.reconcile_nav_tol) + ")");
+      return Err(ErrorCode::Internal, "run_backtest: NAV reconciliation failed on " + date +
+                                          " (nav=" + std::to_string(nav_v) + ", liquidation=" +
+                                          std::to_string(liq) + ", drift=" + std::to_string(drift) +
+                                          ", tol=" + std::to_string(cfg.reconcile_nav_tol) + ")");
     }
     return Ok();
   };
@@ -2122,9 +2377,10 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       double model_mark = mark;
       if (cfg.book_entry_fill_slippage) {
         if (current_risk == nullptr || current_risk->status[lot_index] != PriceStatus::Ok) {
-          return Err(ErrorCode::NotFound,
-                     "run_backtest: no model mark to price entry fill slippage against for lot id=" +
-                         std::to_string(lot.id) + " uid=" + std::to_string(lot.contract.uid));
+          return Err(
+              ErrorCode::NotFound,
+              "run_backtest: no model mark to price entry fill slippage against for lot id=" +
+                  std::to_string(lot.id) + " uid=" + std::to_string(lot.contract.uid));
         }
         model_mark = current_risk->price[lot_index];
       }
@@ -2215,18 +2471,25 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       ATX_VOL_PROFILE_SCOPE(HedgeRisk);
       // F1(a): no surface for a uid the hedge wants to trade => hard error. The
       // pre-F1 lambda returned 0.0 here and the pass filled at spot 0.0.
+      //
+      // SP100 task 2: under ExcludeAndReport that uid's fill is skipped instead —
+      // its share position is LEFT IN PLACE (unhedged and still marked-to-nothing,
+      // which the row reports) rather than flattened for free. Error is untouched.
       ATX_TRY_VOID(hedge_ledger.hedge_daily(
           book.lots, *current_risk, hedge_spec.band, cfg.frictions.hedge_slippage_bps,
-          [&base_snap](std::uint32_t uid) -> Result<double> {
+          [&base_snap, &cfg](std::uint32_t uid) -> Result<std::optional<double>> {
             const SurfaceRef surface = base_snap.find(uid);
             if (surface == nullptr) {
-              return Err(ErrorCode::NotFound,
-                         "run_backtest: no surface for delta hedge on uid=" + std::to_string(uid) +
-                             " (share fill would price at spot 0.0)");
+              if (cfg.unpriced == UnpricedLotPolicy::Error) {
+                return Err(ErrorCode::NotFound,
+                           "run_backtest: no surface for delta hedge on uid=" +
+                               std::to_string(uid) + " (share fill would price at spot 0.0)");
+              }
+              return Ok(std::optional<double>{});
             }
-            return Ok(surface->pricing().S);
+            return Ok(std::optional<double>{surface->pricing().S});
           },
-          cash, ex.cost));
+          cash, ex.cost, ex.n_unpriced_hedges));
     }
 
     cash -= ex.cost; // realized frictions hit cash at fill
@@ -2247,12 +2510,14 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   // reused across books whose referenced sets differ, and a subset snapshot
   // cached under one book would be missing another's uids.
   const std::span<const std::uint32_t> strategy_uids = strat.referenced_uids();
+  const std::size_t prefetch_depth = effective_prefetch_depth(cfg);
+  const std::size_t private_capacity = private_snapshot_cache_capacity(prefetch_depth);
   const std::shared_ptr<SnapshotCache> snapshot_cache =
       cfg.snapshot_cache ? cfg.snapshot_cache
       : strategy_uids.empty()
-          ? std::make_shared<SnapshotCache>(kPrivateSnapshotCacheCapacity, ArchiveBacking::Sealed)
+          ? std::make_shared<SnapshotCache>(private_capacity, ArchiveBacking::Sealed)
           : std::make_shared<SnapshotCache>(
-                kPrivateSnapshotCacheCapacity,
+                private_capacity,
                 std::vector<std::uint32_t>(strategy_uids.begin(), strategy_uids.end()),
                 ArchiveBacking::Sealed);
   auto base_res = snapshot_cache->load(refs[0].archive_path, cfg.query_pricing_tier,
@@ -2262,14 +2527,24 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   }
   std::shared_ptr<const MarketSnapshot> base = std::move(*base_res);
   ATX_TRY_VOID(validate_snapshot_provenance(*base, cfg.surface_provenance_policy));
-  // Prime the look-ahead window: refs[1 .. 1+W).
-  ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, 1u, kPrefetchLookahead, cfg));
+  if (resume != nullptr && base->ts_ns() != resume->base_ts_ns) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest_incremental: clock anchor timestamp does not match checkpoint "
+               "(clock=" +
+                   std::to_string(base->ts_ns()) +
+                   ", checkpoint=" + std::to_string(resume->base_ts_ns) + ")");
+  }
+  if (cfg.prefetch_snapshots) {
+    // Initial fill of the whole look-ahead window; each later step adds only the
+    // one ref that newly enters it.
+    ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, 1u, prefetch_depth, cfg));
+  }
 
-  double nav = 0.0;
+  double nav = resume != nullptr ? resume->nav : 0.0;
 
   // Inception (row 0): open positions AS OF refs[0], book entry frictions + premium
   // + the opening hedge into cash; PnL columns are zero; record post-trade cash.
-  {
+  if (resume == nullptr) {
     const std::uint64_t next_id_before = next_id;
     Status st = [&]() {
       ATX_VOL_PROFILE_SCOPE(StrategyStep);
@@ -2293,9 +2568,9 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     if (!ex) {
       return Err(ex.error());
     }
-    Result<BookGreeks> g = ex->book_greeks.has_value()
-                               ? Ok(*ex->book_greeks)
-                               : book_greeks(*base, book.lots, cfg.price, retained_pricer, &mark_memo);
+    Result<BookGreeks> g = ex->book_greeks.has_value() ? Ok(*ex->book_greeks)
+                                                       : book_greeks(*base, book.lots, cfg.price,
+                                                                     retained_pricer, &mark_memo);
     if (!g) {
       return Err(g.error());
     }
@@ -2314,7 +2589,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     nav = -ex->cost;
     push_row(refs[0].date, base->ts_ns(), nav, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
              0.0, 0.0, ex->cost, nav, cash, g_delta, g->total, ex->turnover_notional,
-             ex->turnover_vega, book.lots.size(), 0.0, static_cast<double>(g->n_unpriced));
+             ex->turnover_vega, book.lots.size(), static_cast<double>(ex->n_unpriced_hedges),
+             static_cast<double>(g->n_unpriced));
     ATX_TRY_VOID(reconcile_row(refs[0].date, nav, g->total, *base));
     record_signals(*base);
   }
@@ -2328,6 +2604,11 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   double b_shares = 0.0, b_fin = 0.0, b_cost = 0.0, b_turn_notl = 0.0, b_turn_vega = 0.0;
   double b_nunpriced = 0.0;
 
+  // Deferred expiry settlements (ExcludeAndReport only); see the fixed-book loop.
+  DeferredSettlementBook deferrals;
+  DeferredSettlementBook *const deferrals_ptr =
+      cfg.unpriced == UnpricedLotPolicy::ExcludeAndReport ? &deferrals : nullptr;
+
   for (std::size_t i = 1; i < refs.size(); ++i) {
     // Plan 5.5 safe point: the TOP of the step, before this step's snapshot load
     // and before any row is appended. `out` is abandoned along with the error, so
@@ -2338,6 +2619,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
       return Err(ErrorCode::Cancelled, "run_backtest: cancelled before step " +
                                            std::to_string(i) + " (" + refs[i].date + ")");
     }
+    const std::size_t global_step_index = global_step_base + i;
     auto shifted_res = snapshot_cache->load(refs[i].archive_path, cfg.query_pricing_tier,
                                             cfg.query_cache_build_policy);
     if (!shifted_res) {
@@ -2346,9 +2628,11 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     std::shared_ptr<const MarketSnapshot> shifted = std::move(*shifted_res);
     ATX_TRY_VOID(validate_snapshot_provenance(*shifted, cfg.surface_provenance_policy));
     ATX_TRY_VOID(validate_step_ordering(*base, *shifted, refs[i - 1].date, refs[i].date));
-    // Step i consumed refs[i], so extend the window by exactly one: refs[i + W].
-    // refs[i+1 .. i+W) are already in flight from earlier iterations.
-    ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, i + kPrefetchLookahead, 1u, cfg));
+    if (cfg.prefetch_snapshots) {
+      // The window is [i+1, i+depth]; step i-1 already covered through i+depth-1,
+      // so exactly one ref newly enters it here.
+      ATX_TRY_VOID(prefetch_window(*snapshot_cache, refs, i + prefetch_depth, 1u, cfg));
+    }
 
     // V1 solve ledger: record this step's per-unique solve deltas (pnl-base + target +
     // execute) when a StepTrace is armed. Spans to the end of the loop body, so it
@@ -2358,7 +2642,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
 
     // 1. PnL of the current book (resolved on base) forward to shifted (unchanged B1).
     auto step = compute_step(*base, *shifted, book.lots, cfg.price, retained_pricer, &target_marks,
-                             &settle_pricer, &settle_frame, &mark_memo, cfg.settlement_mark_memo);
+                             &settle_pricer, &settle_frame, &mark_memo, cfg.settlement_mark_memo,
+                             deferrals_ptr);
     if (!step) {
       return Err(step.error());
     }
@@ -2428,8 +2713,8 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
         continue;
       }
       const double Sb = bs->pricing().S;
-      shares_pnl += n * (ss->pricing().S - Sb);                      // shares held over the step
-      const double short_amt = std::max(0.0, -n);                    // |min(shares,0)|
+      shares_pnl += n * (ss->pricing().S - Sb);   // shares held over the step
+      const double short_amt = std::max(0.0, -n); // |min(shares,0)|
       const double borrow = -cfg.financing.borrow_rate * short_amt * Sb * dt; // 0 when rate 0
       financing += borrow;
       financing_noncash_step += borrow;
@@ -2485,6 +2770,15 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
           (lot.contract.side == Side::Call) ? std::max(0.0, S - K) : std::max(0.0, K - S);
       cash += lot.qty * lot.multiplier * intrinsic; // intrinsic settle proceeds
     }
+    // Deferred lots whose board came back this step settle at THIS step's spot;
+    // `compute_step` summed their intrinsic in lot-id order. Their board was absent
+    // when they expired, so the loop above can never have booked them twice: it
+    // skips exactly the uids the deferral was triggered by. Guarded rather than
+    // unconditional so the strict path does not even execute a `+= 0.0`, which
+    // would map a -0.0 balance to +0.0: Error stays bit-identical.
+    if (deferrals_ptr != nullptr) {
+      cash += step->deferred_settle_cash;
+    }
     std::erase_if(book.lots, [&base](const Lot &l) { return l.expiry_ts_ns <= base->ts_ns(); });
 
     // 4-5. Strategy entries/rolls + hedge overlay on the new base.
@@ -2492,7 +2786,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     const std::uint64_t next_id_before = next_id;
     Status st = [&]() {
       ATX_VOL_PROFILE_SCOPE(StrategyStep);
-      return strat.on_step(*base, i, book, next_id, cfg.price);
+      return strat.on_step(*base, global_step_index, book, next_id, cfg.price);
     }();
     if (!st) {
       return Err(st.error());
@@ -2501,7 +2795,7 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     // independent of record_every_n; an Err aborts here, mid-step, so no partial
     // row is recorded.
     if (cfg.step_observer) {
-      ATX_TRY_VOID(cfg.step_observer(StepEvent{i, refs[i], *base, strat}));
+      ATX_TRY_VOID(cfg.step_observer(StepEvent{global_step_index, refs[i], *base, strat}));
     }
     ATX_TRY_VOID(validate_strategy_transition(before_lots, book.lots, next_id_before, next_id,
                                               base->ts_ns(), before_lot_index, after_lot_index));
@@ -2539,17 +2833,20 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
     b_cost += ex->cost;
     b_turn_notl += ex->turnover_notional;
     b_turn_vega += ex->turnover_vega;
-    // F1(b): unpriced hedge-share positions join the row's exclusion count.
-    b_nunpriced += static_cast<double>(step->n_unpriced) + static_cast<double>(n_unpriced_shares);
+    // F1(b): unpriced hedge-share positions join the row's exclusion count, and
+    // (SP100 task 2) so do skipped hedge fills and deferred settlement events.
+    b_nunpriced += static_cast<double>(step->n_unpriced) + static_cast<double>(n_unpriced_shares) +
+                   static_cast<double>(step->n_deferred) +
+                   static_cast<double>(ex->n_unpriced_hedges);
     financing_noncash_total += financing_noncash_step;
 
     // 7. Record @ granularity: book greeks (net delta incl. shares) + B2 columns.
     const bool is_last = (i + 1 == refs.size());
     const bool record = ((i % stride) == 0) || is_last;
     if (record) {
-      Result<BookGreeks> g = ex->book_greeks.has_value()
-                                 ? Ok(*ex->book_greeks)
-                                 : book_greeks(*base, book.lots, cfg.price, retained_pricer, &mark_memo);
+      Result<BookGreeks> g = ex->book_greeks.has_value() ? Ok(*ex->book_greeks)
+                                                         : book_greeks(*base, book.lots, cfg.price,
+                                                                       retained_pricer, &mark_memo);
       if (!g) {
         return Err(g.error());
       }
@@ -2562,10 +2859,12 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
                                             g->n_unpriced, g->first_unpriced_uid, refs[i].date));
       }
       const double g_delta = g->total.delta + hedge_ledger.sum();
+      // Deferred lots are open exposure the run never settled; see the fixed-book
+      // loop's note on why they cannot live in `book.lots`.
       push_row(refs[i].date, base->ts_ns(), b_total, b_delta, b_gamma, b_vega, b_vanna, b_volga,
                b_theta, b_rho, b_charm, b_unexpl, b_settle, b_shares, b_fin, b_cost, nav, cash,
-               g_delta, g->total, b_turn_notl, b_turn_vega, book.lots.size(), b_nunpriced,
-               static_cast<double>(g->n_unpriced));
+               g_delta, g->total, b_turn_notl, b_turn_vega, book.lots.size() + deferrals.size(),
+               b_nunpriced, static_cast<double>(g->n_unpriced));
       ATX_TRY_VOID(reconcile_row(refs[i].date, nav, g->total, *base));
       record_signals(*base);
       b_total = b_delta = b_gamma = b_vega = b_vanna = b_volga = 0.0;
@@ -2577,7 +2876,51 @@ Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const 
   // Plan 4.6: the engine may not emit a skewed column set. Pure read, so this
   // cannot change a value the run produced.
   ATX_TRY_VOID(out.validate());
-  return Ok(std::move(out));
+  BacktestCheckpoint checkpoint;
+  if (capture_checkpoint) {
+    // `BacktestCheckpoint` carries the book, the share ledger and the cash/NAV
+    // scalars — it has no slot for a deferred settlement, and silently dropping one
+    // would delete a real position's proceeds across the resume boundary. Fail
+    // closed rather than lose it; a caller that hits this can finish the segment on
+    // a clock whose last session has the missing board back.
+    if (!deferrals.empty()) {
+      return Err(ErrorCode::NotImplemented,
+                 "run_backtest_incremental: " + std::to_string(deferrals.size()) +
+                     " settlement(s) deferred by UnpricedLotPolicy::ExcludeAndReport cannot be "
+                     "carried in a checkpoint");
+    }
+    checkpoint.base_ts_ns = base->ts_ns();
+    checkpoint.completed_step_index = global_step_base + (refs.size() - 1u);
+    checkpoint.next_lot_id = next_id;
+    checkpoint.portfolio = std::move(book);
+    checkpoint.hedge_shares.reserve(hedge_ledger.entries().size());
+    for (const auto &[uid, shares] : hedge_ledger.entries()) {
+      checkpoint.hedge_shares.push_back(HedgeSharePosition{uid, shares});
+    }
+    checkpoint.cash = cash;
+    checkpoint.nav = nav;
+    checkpoint.cumulative_noncash_financing = financing_noncash_total;
+  }
+  return Ok(BacktestContinuation{std::move(out), std::move(checkpoint)});
+}
+
+Result<BacktestResult> run_backtest(const Clock &clock, IStrategy &strat, const RunConfig &cfg) {
+  auto continuation = run_backtest_strategy_impl(clock, strat, cfg, nullptr, false);
+  if (!continuation) {
+    return Err(continuation.error());
+  }
+  return Ok(std::move(continuation->rows));
+}
+
+Result<BacktestContinuation> run_backtest_incremental(const Clock &clock, IStrategy &strat,
+                                                      const RunConfig &cfg,
+                                                      const BacktestCheckpoint *resume) {
+  if (cfg.record_every_n != 1u) {
+    return Err(ErrorCode::InvalidArgument,
+               "run_backtest_incremental: record_every_n must be 1 because checkpoint state "
+               "does not persist pending stride blocks");
+  }
+  return run_backtest_strategy_impl(clock, strat, cfg, resume, true);
 }
 
 } // namespace atx::vol

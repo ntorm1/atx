@@ -23,8 +23,13 @@ struct DispersionSpecs {
 [[nodiscard]] DispersionSpecs make_specs(const DispersionBacktestConfig &config) {
   DispersionSpecs specs;
   specs.dispersion = dispersion_config_from(config);
-  specs.lifecycle.entry = LifecycleSpec::Entry::EveryNDays;
-  specs.lifecycle.holding = LifecycleSpec::Holding::RollAtHorizon;
+  // Read from the config rather than hardcoded here: with EveryNDays/RollAtHorizon
+  // pinned, this "reusable orchestration" could express exactly ONE book shape, and
+  // the overlapping-clip ladder was reachable only by hand-rolling a StrategySpec
+  // that bypasses `build_dispersion_book` entirely. Both fields default to the
+  // values that were hardcoded, so every existing caller is unchanged.
+  specs.lifecycle.entry = config.entry;
+  specs.lifecycle.holding = config.holding;
   specs.lifecycle.entry_every_n = config.entry_every_n;
   specs.lifecycle.roll_at_T = config.roll_dte_days / 365.25;
   specs.hedge.kind = config.hedge_kind;
@@ -118,6 +123,22 @@ DispersionStrategy make_dispersion_backtest_strategy(std::vector<UniverseRow> sc
                               std::move(resolver)};
   strategy.set_risk_limits(config.limits);
   return strategy;
+}
+
+DispersionBacktestConfig make_dispersion_ladder_config(double target_dte_days,
+                                                       double gross_index_vega,
+                                                       std::size_t min_names) {
+  DispersionBacktestConfig config;
+  config.target_dte_days = target_dte_days;
+  config.gross_index_vega = gross_index_vega;
+  config.min_names = min_names;
+  config.entry = LifecycleSpec::Entry::EveryStep;
+  config.holding = LifecycleSpec::Holding::HoldToExpiry;
+  // `entry_every_n` is read only under Entry::EveryNDays; pinned to 1 anyway so a
+  // reader of a dumped config cannot mistake the inherited default of 21 for a
+  // cadence this shape honours.
+  config.entry_every_n = 1u;
+  return config;
 }
 
 Result<BacktestResult> run_dispersion_backtest(const Clock &clock, DispersionUniverse universe,

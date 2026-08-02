@@ -151,6 +151,7 @@ TEST(Correlation, AllNaNReturnsZero) {
   EXPECT_EQ(pairwise_complete_corr(a, b), 0.0);
 }
 
+#ifndef NDEBUG
 TEST(Correlation, MismatchedLengthAbortsInDebug) {
   // The equal-length precondition fires ATX_ASSERT (-> std::abort) in a debug
   // build; EXPECT_DEATH captures it. Documents the contract: the release build
@@ -160,6 +161,7 @@ TEST(Correlation, MismatchedLengthAbortsInDebug) {
   const std::vector<f64> b{1.0, 2.0}; // shorter -> contract violation
   EXPECT_DEATH({ (void)pairwise_complete_corr(a, b); }, ".*");
 }
+#endif
 
 // ===========================================================================
 //  AlphaGate::admit — floor gates

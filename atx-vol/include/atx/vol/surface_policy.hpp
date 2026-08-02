@@ -203,6 +203,7 @@ struct LegacyPresetMapping {
     return {FitQualityMode::Latency, SurfacePurpose::Risk};
   case FitPreset::Accurate:
     return {FitQualityMode::Accuracy, SurfacePurpose::Risk};
+  case FitPreset::Bulk: // Perf 2b: same quality contract as Populate, cheaper AL rung
   case FitPreset::Populate:
     // C3 bulk-populate tier (F3): a Robust-GRADE risk request — Balanced quality
     // mode (MonotoneFit, parity, audited inversions, carry confidence) with the

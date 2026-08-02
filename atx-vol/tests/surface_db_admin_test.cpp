@@ -42,6 +42,7 @@
 #include "atx/vol/tools/surface_db_admin.hpp"      // the unit under test
 #include "atx/vol/tools/surface_db_build.hpp"      // build_surface_db, generate_symbol_configs
 #include "atx/vol/types.hpp"
+#include "atx/vol/vol_curve.hpp"             // VolCurveKind
 
 namespace atx::vol {
 namespace {
@@ -1146,22 +1147,46 @@ TEST(SurfaceDbAdmin, VerifyDbDetectsInPlacePayloadCorruption) {
 
 // ── the ATM probe branch ────────────────────────────────────────────────────
 
-// A stored surface whose forward curve is degenerate (spot AND every slice forward
-// rewritten to 0) but whose record CRC is REPAIRED, so the bytes are perfectly
-// self-consistent. Mapping proves nothing about it; only the ATM evaluation can
-// tell it apart from a healthy cell. This is the one thing that makes `verify`
-// more than a map-only walk, and it must be reported as its own failure kind, not
-// as a checksum fault.
+// A stored surface whose SMILE is degenerate (the total-variance intercept `a`
+// of every SVI slice rewritten to a wildly negative constant) but whose record
+// CRC is REPAIRED, so the bytes are perfectly self-consistent. S, r, and every
+// slice's T/forward/qeff are all left untouched, so `PricedSurfaceView`'s
+// semantic reconstruct-equivalence checks (cb7fe2e, [SE-P1-1]) — which reject a
+// non-positive spot or forward at MAP time — stay silent: mapping proves
+// nothing about it. Only the ATM evaluation, where `svi_total_w` goes negative
+// and `sigma = sqrt(w/T)` is NaN, can tell it apart from a healthy cell. This is
+// the one thing that makes `verify` more than a map-only walk, and it must be
+// reported as its own failure kind, not as a checksum fault.
+//
+// (This fixture used to zero spot + every slice forward instead, which is what
+// `map_surface` itself now rejects post-cb7fe2e — correctly: that commit closed
+// exactly the reconstruct/view parity gap SE-P1-1 tracks. Corrupting the smile
+// instead of the forward curve keeps this test on the ATM-probe path it exists
+// to cover, without weakening the new, correct, earlier validation.)
 TEST(SurfaceDbAdmin, VerifyDbFlagsNonFiniteAtmProbe) {
   const AdminFixture f = make_fixture("verify_nonfinite");
   build_healthy_db(f);
   edit_record(f, "2026-07-06", "BBB", [](std::span<std::byte> rec) {
     ArchiveV2SurfaceHeader h{};
     std::memcpy(&h, rec.data(), sizeof h);
-    const double zero = 0.0;
-    std::memcpy(rec.data() + offsetof(ArchiveV2SurfaceHeader, S), &zero, sizeof zero);
+    ASSERT_EQ(h.n_slices, 2u) << "fixture shape changed; the payload_off buffer below assumes 2";
+    std::uint64_t payload_off[2] = {};
+    std::memcpy(payload_off, rec.data() + h.col_payload_off_off, sizeof payload_off);
     for (std::uint32_t i = 0; i < h.n_slices; ++i) {
-      std::memcpy(rec.data() + h.col_forward_off + i * sizeof(double), &zero, sizeof zero);
+      // Must actually be Svi for `a` (SviParams's first field, byte 0 of the
+      // per-slice payload) to land where this writes — assert it so a future
+      // change to the fitted curve family fails loudly here instead of quietly
+      // scribbling over an unrelated byte and making this test meaningless.
+      const auto kind = static_cast<VolCurveKind>(
+          *reinterpret_cast<const std::uint8_t *>(rec.data() + h.col_kind_off + i));
+      ASSERT_EQ(kind, VolCurveKind::Svi);
+    }
+    // svi_total_w(k) == a + b*(rho*(k-m) + sqrt((k-m)^2 + sigma^2)); `a` alone
+    // dominates for any realistically-fitted b/sigma, driving w negative at
+    // every k — no need to reverse-engineer the fitted b/rho/m/sigma values.
+    const double bogus_a = -1.0e9;
+    for (const std::uint64_t off : payload_off) {
+      std::memcpy(rec.data() + off, &bogus_a, sizeof bogus_a);
     }
     repair_record_crc(rec);
   });
@@ -1173,11 +1198,15 @@ TEST(SurfaceDbAdmin, VerifyDbFlagsNonFiniteAtmProbe) {
   const Status crc = archive->validate_symbol("BBB");
   EXPECT_TRUE(crc.has_value()) << (crc ? "" : crc.error().to_string());
 
-  // It still maps — the failure is only reachable by EVALUATING it.
+  // It still maps, and the forward curve is untouched — the failure is only
+  // reachable by EVALUATING the smile.
   const auto mapped = db.map_surface("2026-07-06", "BBB");
   ASSERT_TRUE(mapped.has_value()) << (mapped ? "" : mapped.error().to_string());
   const double fwd = mapped->view.forward_at(kSurfaceDbVerifyProbeT);
-  EXPECT_FALSE(std::isfinite(fwd) && fwd > 0.0) << "fwd=" << fwd;
+  ASSERT_TRUE(std::isfinite(fwd) && fwd > 0.0)
+      << "fwd=" << fwd << " — the forward curve must stay healthy; only the smile is corrupted";
+  const double iv = mapped->view.iv(fwd, kSurfaceDbVerifyProbeT);
+  EXPECT_FALSE(std::isfinite(iv) && iv > 0.0) << "iv=" << iv;
 
   const auto rep = verify_db(db, DbVerifySpec{});
   ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
@@ -1205,6 +1234,82 @@ TEST(SurfaceDbAdmin, VerifyDbFlagsNonFiniteAtmProbe) {
                                      kSurfaceDbVerifyProbeT),
                                  kSurfaceDbVerifyProbeT);
   EXPECT_TRUE(aaa.has_value()) << (aaa ? "" : aaa.error().to_string());
+}
+
+// The OTHER half of the same branch (surface_db_admin.cpp's
+// `!std::isfinite(forward) || forward <= 0.0 || !usable_iv(iv)`): a cell whose
+// EVALUATED forward itself is non-finite, not just its smile. Post-cb7fe2e every
+// per-slice forward is validated at map time (S>0, forward[i]>0, both finite —
+// see the test above), so this cannot be reached by corrupting a column value
+// directly; it has to come from something reconstruct-equivalence does NOT
+// bound: the effective yield `qeff[i]`, required only to be FINITE
+// (priced_surface_view.cpp's semantic-validation loop), never magnitude-checked.
+//
+// `qeff` only feeds `forward` through interp_forward's EXTRAPOLATION branches
+// (`forward = S * exp((rate - qeff) * T)`, priced_surface_view.cpp). The
+// INTERIOR branch (what the test above's probe_T lands in) computes forward as
+// `interpolate_positive_log(fwd_lo, fwd_hi, alpha)` — a convex combination of
+// two already-bounded logs (term_carry.hpp) that can never overflow — so this
+// case deliberately probes OUTSIDE the fitted tenor bracket to reach the
+// exp()-based formula the interior path never uses.
+TEST(SurfaceDbAdmin, VerifyDbFlagsNonFiniteExtrapolatedForward) {
+  const AdminFixture f = make_fixture("verify_nonfinite_fwd");
+  build_healthy_db(f);
+  double front_T = 0.0;
+  edit_record(f, "2026-07-06", "BBB", [&front_T](std::span<std::byte> rec) {
+    ArchiveV2SurfaceHeader h{};
+    std::memcpy(&h, rec.data(), sizeof h);
+    ASSERT_GT(h.n_slices, 0u);
+    std::memcpy(&front_T, rec.data() + h.col_T_off, sizeof front_T);
+    // Blow up the FRONT slice's qeff. exp((rate - qeff) * T) overflows to +inf
+    // for any T bounded away from 0 once `qeff` is this large — no need to know
+    // the fitted rate/qeff/T values, they are swamped either way.
+    const double bogus_qeff = -1.0e10;
+    std::memcpy(rec.data() + h.col_qeff_off, &bogus_qeff, sizeof bogus_qeff);
+    repair_record_crc(rec);
+  });
+  const SurfaceDb db = open_db(f);
+
+  // BYTE-VALID and MAPS cleanly — qeff's magnitude is invisible to both the
+  // checksum and the reconstruct-equivalence parse check.
+  const auto archive = db.open_partition("2026-07-06");
+  ASSERT_TRUE(archive.has_value()) << (archive ? "" : archive.error().to_string());
+  const Status crc = archive->validate_symbol("BBB");
+  EXPECT_TRUE(crc.has_value()) << (crc ? "" : crc.error().to_string());
+  const auto mapped = db.map_surface("2026-07-06", "BBB");
+  ASSERT_TRUE(mapped.has_value()) << (mapped ? "" : mapped.error().to_string());
+
+  // Probing EXACTLY the front slice's own T takes interp_forward's exact-match
+  // return (the stored, untouched forward column — no exp() involved) and stays
+  // healthy...
+  const double fwd_at_node = mapped->view.forward_at(front_T);
+  EXPECT_TRUE(std::isfinite(fwd_at_node) && fwd_at_node > 0.0) << "fwd_at_node=" << fwd_at_node;
+  // ...but anything SHORTER than the front slice extrapolates through the
+  // corrupted qeff and overflows.
+  const double probe_T = front_T / 2.0;
+  const double fwd = mapped->view.forward_at(probe_T);
+  EXPECT_FALSE(std::isfinite(fwd) && fwd > 0.0) << "fwd=" << fwd;
+
+  DbVerifySpec spec;
+  spec.probe_T = probe_T; // steer verify_db's own ATM probe into the same extrapolation
+  const auto rep = verify_db(db, spec);
+  ASSERT_TRUE(rep.has_value()) << (rep ? "" : rep.error().to_string());
+  EXPECT_FALSE(rep->ok());
+  EXPECT_EQ(rep->cells_checked, std::size_t{9});
+  EXPECT_EQ(rep->cells_ok, std::size_t{8});
+  EXPECT_EQ(rep->cells_unmappable, std::size_t{0});
+  EXPECT_EQ(rep->cells_non_finite, std::size_t{1});
+  EXPECT_EQ(rep->cells_checksum, std::size_t{0}); // the bytes are fine; the FORWARD is not
+  ASSERT_EQ(rep->failures.size(), std::size_t{1});
+  EXPECT_EQ(rep->failures.front().key, "2026-07-06");
+  EXPECT_EQ(rep->failures.front().symbol, "BBB");
+  EXPECT_EQ(rep->failures.front().kind, DbCellFailure::NonFinite);
+  EXPECT_FALSE(rep->failures.front().detail.empty());
+
+  // query_surface agrees: it must not print a number for what verify_db rejects.
+  const auto q = query_surface(db, "2026-07-06", "BBB", 100.0, probe_T);
+  ASSERT_FALSE(q.has_value()) << "query_surface must reject what verify_db rejects";
+  EXPECT_EQ(q.error().code(), ErrorCode::Internal);
 }
 
 // A genuinely FRESH database (no partitions at all) verifies vacuously ok — the

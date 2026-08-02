@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdio>
+#include <exception> // std::exception (fit-worker exception boundary)
 #include <fstream>
 #include <iterator> // make_move_iterator (FIX-E disabled-carry append)
 #include <limits>
@@ -22,6 +23,7 @@
 #include "atx/vol/detail/archive_util.hpp"  // canonicalize_symbol (carry-over key match)
 #include "atx/vol/detail/fit_scheduler.hpp" // run_bounded_fit_tasks
 #include "atx/vol/dispersion.hpp"           // with_uid
+#include "atx/vol/parallel_for.hpp"         // atx_auto_worker_count (fit_workers=0 auto)
 #include "atx/vol/pricer_fitter.hpp"        // PricerConfig
 #include "atx/vol/session.hpp"              // SessionInputs
 #include "atx/vol/universe.hpp"             // uid_for_symbol
@@ -79,6 +81,40 @@ struct SymbolAccum {
   double oos_sum{0.0};
   std::uint32_t oos_count{0};
 };
+
+// ── W-EX: the fit worker's own exception boundary ───────────────────────────
+// A throw out of `fit_board` (bad_alloc from a fit under memory pressure is the
+// live case) used to leave the worker's slot DEFAULT-CONSTRUCTED and travel to
+// `run_bounded_fit_tasks`'s catch(...), which collapses it to
+// Err(Internal, "task threw an exception") and sinks the WHOLE populate --
+// every remaining date included -- with the exception's own message discarded.
+// That is not the semantics this file gives every other fit failure: a board
+// whose fit fails records `n_failed`, keeps its reason
+// (`FailedCell{date, symbol, code, detail}`) and does NOT abort the date.
+//
+// So an exception is turned into exactly that shape, here, on the worker: a
+// FAILED slot carrying the exception text. The cell is named in `failed_cells`,
+// its siblings and every later date still build, and the CLI's exit code is
+// decided by the ordinary predicates (`is_total_fit_failure` fires only if
+// NOTHING fitted). Nothing reaches the scheduler's catch, so nothing can reach
+// std::terminate through the jthread bodies underneath it either.
+//
+// noexcept, and every step inside it is: the message build is itself wrapped,
+// because the failure being reported may well BE the allocator saying no --
+// having the reporting path throw a second bad_alloc is precisely how this
+// process used to die with no output at all.
+[[nodiscard]] FitSlot fit_slot_from_worker_exception(const char *what) noexcept {
+  FitSlot slot;
+  slot.status = CorpusFitStatus::Failed;
+  slot.error_code = ErrorCode::Internal;
+  try {
+    slot.error_message = "fit worker exception: ";
+    slot.error_message += (what != nullptr && what[0] != '\0') ? what : "non-std exception";
+  } catch (...) { // NOLINT: reporting an allocation failure must not allocate-or-die
+    slot.error_message.clear();
+  }
+  return slot;
+}
 
 struct DateRange {
   std::size_t begin{0u};
@@ -421,9 +457,20 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
           } catch (...) { // NOLINT: a throwing test hook must not terminate
           }
         }
-        {
-          std::lock_guard<std::mutex> lock(progress_mu);
-          --counter;
+        // W-EX: this destructor is implicitly noexcept AND can run during stack
+        // unwinding, so anything that throws in it is an immediate
+        // std::terminate -- the 0xC000001D shape, with no message on either
+        // stream. `mutex::lock()` is the one call here that can (system_error on
+        // a kernel-level failure), so it is contained. A drain that then misses
+        // this decrement still wakes on `scheduler_complete` and reports the
+        // unfinished-tasks error, which is a diagnosable failure rather than a
+        // dead process.
+        try {
+          {
+            std::lock_guard<std::mutex> lock(progress_mu);
+            --counter;
+          }
+        } catch (...) { // NOLINT: see above
         }
         progress_cv.notify_all();
       }
@@ -451,87 +498,97 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
       return Err(ErrorCode::Cancelled, "populate_surface_db: cancelled before a queued board fit");
     }
 
-    const CorpusBoard &board = boards[order[pos]];
-    const SymbolFitConfig &resolved = resolved_cfgs[pos];
-    PricerConfig pc = pricer_config_for_symbol(resolved);
-    // Decision point 1 of 2 -- CLAIM. Per-board slice of the shared budget
-    // resolved against the live outstanding count (0 = auto, outer-serial mode).
-    // This one sizes the pre-build phases the fitter runs off `PricerConfig`:
-    // notably the held-out curve selection (pricer_fitter.cpp's `select_curve`).
-    pc.fit_workers = offer_inner_fit_workers(board.symbol);
-    if (test_hooks != nullptr && test_hooks->before_board_fit) {
-      test_hooks->before_board_fit(board.date, board.symbol);
+    // W-EX: everything from here down runs on a fit WORKER, and every line of it
+    // -- the config translation, the test hook, the fit itself and the slot move
+    // -- can throw. See `fit_slot_from_worker_exception` for why the answer is a
+    // failed CELL rather than a failed BUILD.
+    try {
+      const CorpusBoard &board = boards[order[pos]];
+      const SymbolFitConfig &resolved = resolved_cfgs[pos];
+      PricerConfig pc = pricer_config_for_symbol(resolved);
+      // Decision point 1 of 2 -- CLAIM. Per-board slice of the shared budget
+      // resolved against the live outstanding count (0 = auto, outer-serial mode).
+      // This one sizes the pre-build phases the fitter runs off `PricerConfig`:
+      // notably the held-out curve selection (pricer_fitter.cpp's `select_curve`).
+      pc.fit_workers = offer_inner_fit_workers(board.symbol);
+      if (test_hooks != nullptr && test_hooks->before_board_fit) {
+        test_hooks->before_board_fit(board.date, board.symbol);
+      }
+      // F4 (C2 warm-start chain — deliberately OFF for populate). fit_board's
+      // `out_caches` is left nullptr here (no cross-date correction-cache carry),
+      // unlike build_corpus's per-symbol chain (corpus.cpp). This is NOT an
+      // oversight: every populate board is a v2 RISK request (map_legacy_fit_preset
+      // -> {Balanced,Risk}; is_v2_request() true), and the risk pipeline pins
+      // `use_correction_cache = false` (pricer_fitter.cpp apply_risk_policy) because
+      // a served risk surface is priced by the ACCURATE cold Andersen-Lake path, not
+      // by an interpolated correction cache. With the cache disabled the fit builds
+      // NONE, so fit_board's `out_caches` would come back empty every board and the
+      // chain would carry nothing — engaging it would add per-symbol chain
+      // bookkeeping and P-core chain-sharding for zero reuse (and, if the cache were
+      // force-built solely to warm the chain, it would spend hundreds of ms per board
+      // on an artifact the served path never reads). The determinism gate is also
+      // preserved trivially: nullptr caches => byte-identical across worker budgets.
+      // Re-engaging it is only worthwhile if a future mark-grade populate tier turns
+      // `use_correction_cache` back on for the SERVED surface (report M1/F4).
+      // Decision point 2 of 2 -- DRAIN-TIME, for a board ALREADY CLAIMED and STILL
+      // RUNNING. `session_overlay` is invoked by PricerFitter::fit on the fitting
+      // thread immediately before each `VolaSession::build` REQUEST it issues — the
+      // mark build and the risk build on populate's v2 dual path
+      // (pricer_fitter.cpp: the mark overlay before the async mark launch, then the
+      // risk overlay after `apply_risk_policy`/`select_curve`) — and `in.fit_workers`
+      // is what every fan-out inside that build reads (`run_deam_prepass` and the
+      // calendar-repair fan-out in curve_fit.cpp, the slice fan-out in session.cpp,
+      // the per-chain prepass in surface_parity.cpp). Re-asking here is what lets a
+      // board that was claimed while the pool was saturated widen to the whole
+      // budget once its siblings have retired. `apply_symbol_config` is applied
+      // FIRST so the live budget wins over anything the per-symbol preset sets, and
+      // `apply_risk_policy` (which pricer_fitter re-asserts after this overlay) does
+      // not touch `fit_workers`, so the value survives to the build.
+      //
+      // ── THE TRIGGER, stated plainly ─────────────────────────────────────────
+      // The trigger is the STRAGGLER BOARD'S OWN fitting thread reaching the next
+      // surface-build request of the fit it is already inside. Nothing else: not a
+      // sibling completing, not the drain thread, not a timer. Inner fan-out workers
+      // never re-offer — only the board's own thread does.
+      //
+      // WHEN THE TRIGGER DOES NOT FIRE, the width does not move. Three cases, all
+      // bounded and all real:
+      //   (a) the board is already past its last overlay — i.e. inside the risk
+      //       `VolaSession::build`. Trunk's `parallel_for`/`parallel_for_dynamic`
+      //       resolve their width ONCE at entry and never re-ask, so a build that
+      //       started at width 1 stays at width 1 for its whole duration however
+      //       long the pool has been idle. Finer (per-inner-task) reclaim needs an
+      //       ELASTIC fan-out primitive, which does not exist on this trunk; the
+      //       one that does exist lives on the unmerged `feat/pipeline-t` branch,
+      //       and duplicating it here would collide with that branch on a shared
+      //       concurrency primitive. That is the reason the granularity here is a
+      //       build request rather than an inner task.
+      //   (b) the fallback ladder retries a build: the overlay is contractually
+      //       applied once per request and a ladder rung does not re-invoke it, so
+      //       a rung inherits the width its request resolved.
+      //   (c) `inner_budget <= 1` (the documented outer-serial mode): every offer
+      //       is 0 = auto and the reclaim is a no-op by construction.
+      //
+      // ── RESIDUAL, documented where the reclaim code is read ─────────────────
+      // The U2 LPT claim order sorts boards by frame rows DESCENDING, so the single
+      // most expensive board is claimed FIRST — while the pool is maximally
+      // saturated. Its claim offer, and usually both of its overlay offers, are
+      // therefore resolved against a full pool and it commonly runs its ENTIRE fit
+      // at width 1. This is the same residual WS-T recorded for the corpus arm
+      // (there: the straggler's largest expiry always runs at width 1), one level
+      // coarser. It is accepted, not hidden: the reclaim's real yield is the drain
+      // tail — every board whose build request lands after the queue has emptied —
+      // not the LPT head. Do not read the gate below as a claim about the head.
+      slots[pos] = fit_board(board, pc, /*admission=*/nullptr,
+                             [&resolved, &board, &offer_inner_fit_workers](SessionInputs &in) {
+                               apply_symbol_config(resolved, in);
+                               in.fit_workers = offer_inner_fit_workers(board.symbol);
+                             });
+    } catch (const std::exception &e) {
+      slots[pos] = fit_slot_from_worker_exception(e.what());
+    } catch (...) {
+      slots[pos] = fit_slot_from_worker_exception(nullptr);
     }
-    // F4 (C2 warm-start chain — deliberately OFF for populate). fit_board's
-    // `out_caches` is left nullptr here (no cross-date correction-cache carry),
-    // unlike build_corpus's per-symbol chain (corpus.cpp). This is NOT an
-    // oversight: every populate board is a v2 RISK request (map_legacy_fit_preset
-    // -> {Balanced,Risk}; is_v2_request() true), and the risk pipeline pins
-    // `use_correction_cache = false` (pricer_fitter.cpp apply_risk_policy) because
-    // a served risk surface is priced by the ACCURATE cold Andersen-Lake path, not
-    // by an interpolated correction cache. With the cache disabled the fit builds
-    // NONE, so fit_board's `out_caches` would come back empty every board and the
-    // chain would carry nothing — engaging it would add per-symbol chain
-    // bookkeeping and P-core chain-sharding for zero reuse (and, if the cache were
-    // force-built solely to warm the chain, it would spend hundreds of ms per board
-    // on an artifact the served path never reads). The determinism gate is also
-    // preserved trivially: nullptr caches => byte-identical across worker budgets.
-    // Re-engaging it is only worthwhile if a future mark-grade populate tier turns
-    // `use_correction_cache` back on for the SERVED surface (report M1/F4).
-    // Decision point 2 of 2 -- DRAIN-TIME, for a board ALREADY CLAIMED and STILL
-    // RUNNING. `session_overlay` is invoked by PricerFitter::fit on the fitting
-    // thread immediately before each `VolaSession::build` REQUEST it issues — the
-    // mark build and the risk build on populate's v2 dual path
-    // (pricer_fitter.cpp: the mark overlay before the async mark launch, then the
-    // risk overlay after `apply_risk_policy`/`select_curve`) — and `in.fit_workers`
-    // is what every fan-out inside that build reads (`run_deam_prepass` and the
-    // calendar-repair fan-out in curve_fit.cpp, the slice fan-out in session.cpp,
-    // the per-chain prepass in surface_parity.cpp). Re-asking here is what lets a
-    // board that was claimed while the pool was saturated widen to the whole
-    // budget once its siblings have retired. `apply_symbol_config` is applied
-    // FIRST so the live budget wins over anything the per-symbol preset sets, and
-    // `apply_risk_policy` (which pricer_fitter re-asserts after this overlay) does
-    // not touch `fit_workers`, so the value survives to the build.
-    //
-    // ── THE TRIGGER, stated plainly ─────────────────────────────────────────
-    // The trigger is the STRAGGLER BOARD'S OWN fitting thread reaching the next
-    // surface-build request of the fit it is already inside. Nothing else: not a
-    // sibling completing, not the drain thread, not a timer. Inner fan-out workers
-    // never re-offer — only the board's own thread does.
-    //
-    // WHEN THE TRIGGER DOES NOT FIRE, the width does not move. Three cases, all
-    // bounded and all real:
-    //   (a) the board is already past its last overlay — i.e. inside the risk
-    //       `VolaSession::build`. Trunk's `parallel_for`/`parallel_for_dynamic`
-    //       resolve their width ONCE at entry and never re-ask, so a build that
-    //       started at width 1 stays at width 1 for its whole duration however
-    //       long the pool has been idle. Finer (per-inner-task) reclaim needs an
-    //       ELASTIC fan-out primitive, which does not exist on this trunk; the
-    //       one that does exist lives on the unmerged `feat/pipeline-t` branch,
-    //       and duplicating it here would collide with that branch on a shared
-    //       concurrency primitive. That is the reason the granularity here is a
-    //       build request rather than an inner task.
-    //   (b) the fallback ladder retries a build: the overlay is contractually
-    //       applied once per request and a ladder rung does not re-invoke it, so
-    //       a rung inherits the width its request resolved.
-    //   (c) `inner_budget <= 1` (the documented outer-serial mode): every offer
-    //       is 0 = auto and the reclaim is a no-op by construction.
-    //
-    // ── RESIDUAL, documented where the reclaim code is read ─────────────────
-    // The U2 LPT claim order sorts boards by frame rows DESCENDING, so the single
-    // most expensive board is claimed FIRST — while the pool is maximally
-    // saturated. Its claim offer, and usually both of its overlay offers, are
-    // therefore resolved against a full pool and it commonly runs its ENTIRE fit
-    // at width 1. This is the same residual WS-T recorded for the corpus arm
-    // (there: the straggler's largest expiry always runs at width 1), one level
-    // coarser. It is accepted, not hidden: the reclaim's real yield is the drain
-    // tail — every board whose build request lands after the queue has emptied —
-    // not the LPT head. Do not read the gate below as a claim about the head.
-    slots[pos] = fit_board(board, pc, /*admission=*/nullptr,
-                           [&resolved, &board, &offer_inner_fit_workers](SessionInputs &in) {
-                             apply_symbol_config(resolved, in);
-                             in.fit_workers = offer_inner_fit_workers(board.symbol);
-                           });
     return Ok();
   };
 
@@ -582,15 +639,33 @@ Result<SurfaceDbPopulateStats> populate_surface_db(SurfaceDb &db,
     std::jthread fit_runner;
     try {
       fit_runner = std::jthread([&] {
-        // C4 wave-2: pin outer workers to the discovered P-cores
-        // (byte-identical to the unpinned path — pinning only steers WHICH
-        // logical CPU a worker runs on).
-        Status completed = detail::run_bounded_fit_tasks(
-            fit_positions.size(), worker_budget, fit_task, outer_affinity, scheduler_hooks_ptr);
-        {
-          std::lock_guard<std::mutex> lock(progress_mu);
-          fit_status = std::move(completed);
-          scheduler_complete = true;
+        // W-EX: an exception escaping a jthread BODY is std::terminate, and this
+        // body is not exception-free: `run_bounded_fit_tasks` itself is total,
+        // but `mutex::lock()` below can throw system_error and the std::function
+        // call can throw bad_alloc. Contain it and publish it through the SAME
+        // channel a scheduler failure uses, so the drain wakes, the earlier
+        // dates stay durable, and the caller gets an Err instead of a dead
+        // process. `scheduler_complete` must be set on EVERY path out of here or
+        // the per-date drain waits forever.
+        try {
+          // C4 wave-2: pin outer workers to the discovered P-cores
+          // (byte-identical to the unpinned path — pinning only steers WHICH
+          // logical CPU a worker runs on).
+          Status completed = detail::run_bounded_fit_tasks(
+              fit_positions.size(), worker_budget, fit_task, outer_affinity, scheduler_hooks_ptr);
+          {
+            std::lock_guard<std::mutex> lock(progress_mu);
+            fit_status = std::move(completed);
+            scheduler_complete = true;
+          }
+        } catch (...) { // NOLINT: nothing may escape a jthread body
+          try {
+            std::lock_guard<std::mutex> lock(progress_mu);
+            fit_status = Err(ErrorCode::Internal,
+                             "populate_surface_db: fit runner threw an exception");
+            scheduler_complete = true;
+          } catch (...) { // NOLINT: last resort; a mutex this broken fails the drain too
+          }
         }
         // Wake every date waiter even when allocation/setup/transactional
         // worker launch failed before a single fit_task entered MarkDone.
@@ -1237,29 +1312,32 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
   //    is left on the preset's auto-selector (pin_curve=false), which picks the
   //    parsimonious backbone the board's microstructure warrants. A symbol already in
   //    the manifest is left untouched (a resumed run / operator override wins).
-  for (std::size_t i = 0; i < boards.size(); ++i) {
-    const std::string &sym = boards[i].symbol;
-    bool first = true;
-    for (std::size_t j = 0; j < i; ++j) {
-      if (boards[j].symbol == sym) {
-        first = false;
-        break;
+  {
+    std::set<std::string_view> seen;
+    std::vector<DbSymbolEntry> seeds;
+    seeds.reserve(boards.size());
+    for (const CorpusBoard &b : boards) {
+      if (!seen.insert(b.symbol).second || db.symbol_config(b.symbol).has_value()) {
+        continue;
       }
+      // Seeding recipe shared bit-for-bit with generate_symbol_configs (Task 4):
+      // the preset's config, dense-index-pinned for the index leg. The pin stays
+      // TRUE here on purpose: this seeding is a no-op inside `build_surface_db`
+      // (generate_symbol_configs has already configured every symbol, so the
+      // has_value() check above skips them all), and `UniversePopulateSpec` carries
+      // no operator knob — so flipping it would silently change the contract for
+      // direct callers of this driver without any way to opt back. The operator's
+      // choice lives on AutoConfigSpec::pin_curve_family, one stage up.
+      seeds.push_back(DbSymbolEntry{b.symbol,
+                                    seed_symbol_config(b.symbol, spec.preset, spec.index_symbol,
+                                                       /*pin_curve_family=*/true),
+                                    std::nullopt});
     }
-    if (!first || db.symbol_config(sym).has_value()) {
-      continue;
-    }
-    // Seeding recipe shared bit-for-bit with generate_symbol_configs (Task 4):
-    // the preset's config, dense-index-pinned for the index leg. The pin stays
-    // TRUE here on purpose: this seeding is a no-op inside `build_surface_db`
-    // (generate_symbol_configs has already configured every symbol, so the
-    // has_value() check above skips them all), and `UniversePopulateSpec` carries
-    // no operator knob — so flipping it would silently change the contract for
-    // direct callers of this driver without any way to opt back. The operator's
-    // choice lives on AutoConfigSpec::pin_curve_family, one stage up.
-    const SymbolFitConfig c = seed_symbol_config(sym, spec.preset, spec.index_symbol,
-                                                 /*pin_curve_family=*/true);
-    const Status up = db.upsert_symbol(sym, c);
+    // ONE manifest rewrite for the whole seed set (upsert_symbols): the per-symbol
+    // upsert loop re-encoded and atomically rewrote the full manifest once per NEW
+    // symbol — O(N^2) manifest bytes and N fsync+rename cycles on a fresh
+    // N-symbol build. Byte-identical seeds persist nothing at all.
+    const Status up = db.upsert_symbols(seeds);
     if (!up) {
       return Err(up.error());
     }
@@ -1407,7 +1485,17 @@ populate_universe_streaming(SurfaceDb &db, std::span<const CorpusBoard> boards,
   if (!kept.empty()) {
     SurfaceDbPopulateConfig pcfg;
     pcfg.fallback = fallback_cfg;
-    pcfg.n_threads = spec.fit_workers;
+    // `UniversePopulateSpec::fit_workers` documents 0 = AUTO (honors
+    // ATX_VOL_FIT_WORKERS), but `SurfaceDbPopulateConfig::n_threads` defines 0 as
+    // OUTER-SERIAL — forwarding the raw 0 silently fit whole universes one board
+    // at a time (measured: a 102-cell sp100 date at 46 s outer-serial vs 21 s with
+    // an explicit budget; the inner fan-out alone cannot occupy the pool because
+    // each board's slice work is mostly serial). Resolve the auto sentinel HERE,
+    // at the boundary where the two contracts meet. Worker count is a PERF-only
+    // knob: every fit is byte-identical for any budget
+    // (SharedWorkerBudgetKeepsOutputByteIdentical et al.), so this changes wall
+    // time, never bytes. Gate: UniverseStreamingFitWorkersZeroResolvesAutoBudget.
+    pcfg.n_threads = spec.fit_workers != 0u ? spec.fit_workers : atx_auto_worker_count();
     pcfg.skip_existing = false;
     pcfg.carry_over = std::move(carry_over);
     // FIX-D fix-2 (I-3): the frame that RAN the gate is the frame that attests.

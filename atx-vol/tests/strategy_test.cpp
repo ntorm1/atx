@@ -13,6 +13,10 @@
 //                         drops cohorts as they cross expiry.
 //   5. DispersionParity — a DispersionStrategy opens a vega-neutral book and its
 //                         recorded implied_corr matches dispersion_signal.
+//   6. DispersionLifecycle — run_dispersion_backtest honours the lifecycle fields
+//                         on DispersionBacktestConfig: the ladder shape
+//                         (EveryStep+HoldToExpiry) accumulates a cohort per step
+//                         while the default rolling shape stays at one clip.
 
 #include <gtest/gtest.h>
 
@@ -1511,6 +1515,91 @@ TEST(Strategy, DispersionGrossVegaLimitIsDollarsPerVolPointAtNonHistoricalMultip
               retired, kMultiplier);
 }
 
+// ── 6. Dispersion lifecycle is a config parameter, not a constant ───────────
+// `make_dispersion_backtest_strategy` used to hardcode EveryNDays/RollAtHorizon,
+// so the library orchestration could express exactly ONE book shape. This gate
+// pins BOTH shapes through the same `run_dispersion_backtest` entry point and
+// asserts they differ in the way the lifecycle says they should:
+//
+//   default (EveryNDays/RollAtHorizon) — one clip; the book returns to clip size
+//     after each roll, so n_open_lots never exceeds one cohort.
+//   ladder  (EveryStep/HoldToExpiry)   — a fresh cohort per step, none closed at
+//     a horizon, so n_open_lots is exactly (step+1) cohorts for a tenor long
+//     enough that nothing has expired yet.
+//
+// The default-config half is the NEGATIVE CONTROL: it is the behaviour the old
+// hardcoded strategy had, and it must still hold, so a regression that made the
+// lifecycle fields inert would fail the ladder half while leaving this one green
+// (and one that wired them backwards fails this one). Neither assertion alone
+// distinguishes "configurable" from "hardcoded to the other value".
+TEST(Strategy, DispersionLifecycleIsConfigurableAndLadderAccumulatesCohorts) {
+  constexpr std::size_t kLadderDates = 6;
+  constexpr std::size_t kLadderNames = 2;
+  // One lot per straddle leg: (index + names) * 2. Fixed by build_dispersion_book.
+  constexpr double kClipLots = static_cast<double>(1 + kLadderNames) * 2.0;
+  // 90 calendar days at one day per step: with only 6 steps nothing reaches
+  // expiry, so every entered cohort is still open on the last row. That is what
+  // makes the expected count exact rather than a lower bound.
+  constexpr double kTenorDays = 90.0;
+
+  const fs::path dir = fresh_dir("dispersion-ladder");
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (std::size_t d = 0; d < kLadderDates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    const double drift = 1.0 + 0.002 * static_cast<double>(d);
+    const PricedSurface idx = make_surface(1, 500.0 * drift, 500.0 * drift, now, 0.00);
+    const PricedSurface n0 = make_surface(2, 100.0 * drift, 100.0 * drift, now, 0.02);
+    const PricedSurface n1 = make_surface(3, 120.0 * drift, 120.0 * drift, now, 0.03);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-11-%02d", static_cast<int>(d + 1));
+    const std::string date = buf;
+    dp.emplace_back(date, write_archive(dir, date, {{"IDX", &idx}, {"NM0", &n0}, {"NM1", &n1}}));
+  }
+  auto clock = Clock::from_manifest(make_manifest(dp));
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  DispersionUniverse u;
+  u.index = DispersionMember{"IDX", 1, 0.0};
+  u.names.push_back(DispersionMember{"NM0", 2, 0.5});
+  u.names.push_back(DispersionMember{"NM1", 3, 0.5});
+
+  // The helper is the documented way to build the ladder shape; assert it sets
+  // what it claims rather than trusting the run to imply it, so a helper that
+  // silently stopped setting the lifecycle would be caught here and not only via
+  // the (slower, more indirect) book-count assertion below.
+  const DispersionBacktestConfig ladder =
+      make_dispersion_ladder_config(kTenorDays, 10'000.0, kLadderNames);
+  EXPECT_EQ(ladder.entry, LifecycleSpec::Entry::EveryStep);
+  EXPECT_EQ(ladder.holding, LifecycleSpec::Holding::HoldToExpiry);
+  EXPECT_EQ(ladder.target_dte_days, kTenorDays);
+
+  DispersionBacktestConfig rolling; // inherited defaults = the old hardcoded pair
+  rolling.min_names = kLadderNames;
+  rolling.target_dte_days = kTenorDays;
+  ASSERT_EQ(rolling.entry, LifecycleSpec::Entry::EveryNDays);
+  ASSERT_EQ(rolling.holding, LifecycleSpec::Holding::RollAtHorizon);
+
+  auto ladder_run = run_dispersion_backtest(*clock, u, ladder);
+  ASSERT_TRUE(ladder_run.has_value()) << ladder_run.error().to_string();
+  auto rolling_run = run_dispersion_backtest(*clock, u, rolling);
+  ASSERT_TRUE(rolling_run.has_value()) << rolling_run.error().to_string();
+  ASSERT_EQ(ladder_run->size(), kLadderDates);
+  ASSERT_EQ(rolling_run->size(), kLadderDates);
+
+  for (std::size_t i = 0; i < kLadderDates; ++i) {
+    EXPECT_EQ(ladder_run->n_open_lots[i], static_cast<double>(i + 1) * kClipLots)
+        << "ladder row " << i;
+    EXPECT_LE(rolling_run->n_open_lots[i], kClipLots) << "rolling row " << i;
+  }
+  // The whole point of the parameter: the shapes must actually diverge. Without
+  // this, both loops above would still pass if the ladder collapsed to one clip
+  // on a one-date clock.
+  EXPECT_GT(ladder_run->n_open_lots.back(), rolling_run->n_open_lots.back());
+
+  std::printf("[strategy] ladder n_open_lots back=%.0f vs rolling=%.0f (clip=%.0f)\n",
+              ladder_run->n_open_lots.back(), rolling_run->n_open_lots.back(), kClipLots);
+}
+
 TEST(Strategy, DispersionHonorsPriceOptionsAndPublishesExactEntrySeeds) {
   const fs::path dir = fresh_dir("dispersion-price-options-seeds");
   const PricedSurface idx = make_surface(1, 500.0, 500.0, kBaseNow, 0.00);
@@ -2097,4 +2186,178 @@ TEST(Backtest, FixedBookRejectsStepObserver) {
       << "message was: " << res.error().message();
 
   std::printf("[backtest] fixed-book + step_observer -> %s\n", res.error().to_string().c_str());
+}
+
+// ── Session-snapped synthetic expiry (TenorSpec::snap_to_sessions) ──────────
+// The synthetic expiry `valuation + round(T * kNsPerYear)` can land on a day the
+// run's clock never observes (a weekend/holiday), which makes a held-to-expiry
+// cohort unsettleable. With `snap_to_sessions` the canonical expiry is pulled
+// back onto the greatest session at or before the raw expiry, and T is recomputed
+// from the snapped anchor so the contract key and the greeks agree.
+
+namespace {
+
+// A 5-on/2-off weekday-shaped session grid: `n_days` calendar days from `start`,
+// keeping day d only when (d % 7) < 5.
+[[nodiscard]] std::vector<std::int64_t> weekday_sessions(std::int64_t start, int n_days) {
+  std::vector<std::int64_t> out;
+  for (int d = 0; d < n_days; ++d) {
+    if (d % 7 < 5) {
+      out.push_back(start + static_cast<std::int64_t>(d) * kDayNs);
+    }
+  }
+  return out;
+}
+
+// The raw (unsnapped) expiry offset canonicalize_tenor computes for `T`.
+[[nodiscard]] std::int64_t raw_tenor_offset(double T) {
+  return static_cast<std::int64_t>(std::round(T * kNsPerYear));
+}
+
+// A one-leg spec (AbsStrike call at `T`) carrying `sessions` as the run's grid.
+[[nodiscard]] StrategySpec snap_spec(double T, bool snap, std::vector<std::int64_t> sessions) {
+  StrategySpec spec;
+  LegSpec leg = fixed_call(kUid, T);
+  leg.tenor.snap_to_sessions = snap;
+  spec.legs.push_back(std::move(leg));
+  spec.session_ts = std::move(sessions);
+  return spec;
+}
+
+} // namespace
+
+TEST(TenorSnap, SnapsToGreatestSessionAtOrBeforeRawExpiry) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "tenor-snap-gap");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  // 33 calendar days lands in a weekend gap (33 % 7 == 5); the greatest session
+  // at or before it is day 32.
+  constexpr double kT = 33.0 / 365.25;
+  ASSERT_EQ(raw_tenor_offset(kT), 33 * kDayNs) << "fixture assumption: raw expiry is day 33";
+
+  const auto sized = resolve_spec(*snapshot, snap_spec(kT, /*snap=*/true,
+                                                       weekday_sessions(kBaseNow, 60)));
+  ASSERT_TRUE(sized.has_value()) << sized.error().to_string();
+  ASSERT_EQ(sized->size(), 1u);
+  EXPECT_EQ(sized->front().leg.expiry_ts_ns, kBaseNow + 32 * kDayNs);
+  EXPECT_EQ(sized->front().leg.T, static_cast<double>(32 * kDayNs) / kNsPerYear);
+}
+
+TEST(TenorSnap, ExactSessionHitIsUnchanged) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "tenor-snap-exact");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  // 32 calendar days IS a session (32 % 7 == 4): snapping is the identity.
+  constexpr double kT = 32.0 / 365.25;
+  const std::int64_t raw = raw_tenor_offset(kT);
+  ASSERT_EQ(raw, 32 * kDayNs) << "fixture assumption: raw expiry is day 32";
+
+  const auto sized = resolve_spec(*snapshot, snap_spec(kT, /*snap=*/true,
+                                                       weekday_sessions(kBaseNow, 60)));
+  ASSERT_TRUE(sized.has_value()) << sized.error().to_string();
+  ASSERT_EQ(sized->size(), 1u);
+  EXPECT_EQ(sized->front().leg.expiry_ts_ns, kBaseNow + raw);
+  EXPECT_EQ(sized->front().leg.T, static_cast<double>(raw) / kNsPerYear);
+}
+
+TEST(TenorSnap, BeyondCalendarStaysUnsnapped) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "tenor-snap-beyond");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  // The grid ends at day 18; a 90-day tenor out-lives the corpus, so the expiry
+  // stays raw (that cohort is liquidation-marked at run end, never settled).
+  const std::vector<std::int64_t> sessions = weekday_sessions(kBaseNow, 21);
+  ASSERT_EQ(sessions.back(), kBaseNow + 18 * kDayNs);
+  constexpr double kT = 90.0 / 365.25;
+  const std::int64_t raw = raw_tenor_offset(kT);
+
+  const auto sized = resolve_spec(*snapshot, snap_spec(kT, /*snap=*/true, sessions));
+  ASSERT_TRUE(sized.has_value()) << sized.error().to_string();
+  ASSERT_EQ(sized->size(), 1u);
+  EXPECT_EQ(sized->front().leg.expiry_ts_ns, kBaseNow + raw);
+  EXPECT_EQ(sized->front().leg.T, static_cast<double>(raw) / kNsPerYear);
+}
+
+TEST(TenorSnap, SnappedAtOrBeforeValuationIsInvalidArgument) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "tenor-snap-underflow");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  // Raw expiry is day 1, inside the grid's span, but the only session at or
+  // before it is the valuation itself -> there is no future expiry to book.
+  const std::vector<std::int64_t> sessions = {kBaseNow, kBaseNow + 3 * kDayNs};
+  const auto sized = resolve_spec(*snapshot, snap_spec(1.0 / 365.25, /*snap=*/true, sessions));
+  ASSERT_FALSE(sized.has_value());
+  EXPECT_EQ(sized.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(sized.error().message().find("snapped expiry is not after valuation"),
+            std::string::npos)
+      << "message was: " << sized.error().message();
+}
+
+TEST(TenorSnap, SnapWithoutSessionsIsInvalidArgument) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "tenor-snap-no-sessions");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  // Never a silent no-op: an unsatisfiable snap request is a configuration error.
+  const auto sized = resolve_spec(*snapshot, snap_spec(33.0 / 365.25, /*snap=*/true, {}));
+  ASSERT_FALSE(sized.has_value());
+  EXPECT_EQ(sized.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(sized.error().message().find("session_ts"), std::string::npos)
+      << "message was: " << sized.error().message();
+}
+
+TEST(TenorSnap, UnsortedSessionsIsInvalidArgument) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "tenor-snap-unsorted");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  constexpr double kT = 33.0 / 365.25;
+  std::vector<std::int64_t> sessions = weekday_sessions(kBaseNow, 60);
+  // The RIGHT timestamps in the WRONG order. The binary search would still
+  // return an anchor, silently — a wrong expiry, a wrong T and therefore a wrong
+  // strike, with no error anywhere. That is the one silent-wrong-answer hole in
+  // a fail-closed calendar feature, so it must be rejected up front.
+  std::swap(sessions[3], sessions[9]);
+
+  const auto sized = resolve_spec(*snapshot, snap_spec(kT, /*snap=*/true, sessions));
+  ASSERT_FALSE(sized.has_value()) << "an unsorted grid must never resolve";
+  EXPECT_EQ(sized.error().code(), ErrorCode::InvalidArgument);
+  EXPECT_NE(sized.error().message().find("session_ts"), std::string::npos)
+      << "message was: " << sized.error().message();
+
+  // A leg that never reads the grid is not this guard's business: the same
+  // unsorted vector resolves normally when nothing snaps.
+  const auto not_snapping = resolve_spec(*snapshot, snap_spec(kT, /*snap=*/false, sessions));
+  ASSERT_TRUE(not_snapping.has_value()) << not_snapping.error().to_string();
+
+  // Control: the guard is about ORDER, not contents — sorted, the same grid
+  // resolves to the expected snapped anchor.
+  std::sort(sessions.begin(), sessions.end());
+  const auto ok = resolve_spec(*snapshot, snap_spec(kT, /*snap=*/true, sessions));
+  ASSERT_TRUE(ok.has_value()) << ok.error().to_string();
+  ASSERT_EQ(ok->size(), 1u);
+  EXPECT_EQ(ok->front().leg.expiry_ts_ns, kBaseNow + 32 * kDayNs);
+}
+
+TEST(TenorSnap, DefaultOffIsBitIdentical) {
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  auto snapshot = snapshot_of({{"SPY", &surface}}, "tenor-snap-default-off");
+  ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
+
+  // snap_to_sessions defaults false: a populated session grid must not move the
+  // expiry off the hand-computed raw offset (day 33, a non-session).
+  constexpr double kT = 33.0 / 365.25;
+  const std::int64_t raw = raw_tenor_offset(kT);
+  ASSERT_FALSE(TenorSpec{}.snap_to_sessions) << "snapping must be opt-in";
+
+  const auto sized =
+      resolve_spec(*snapshot, snap_spec(kT, /*snap=*/false, weekday_sessions(kBaseNow, 60)));
+  ASSERT_TRUE(sized.has_value()) << sized.error().to_string();
+  ASSERT_EQ(sized->size(), 1u);
+  EXPECT_EQ(sized->front().leg.expiry_ts_ns, kBaseNow + raw);
+  EXPECT_EQ(sized->front().leg.T, static_cast<double>(raw) / kNsPerYear);
 }

@@ -253,6 +253,19 @@ struct SurfaceDbBuildReport {
   std::size_t n_dates_missing{0};
   std::size_t n_load_errors{0};
   std::size_t n_coverage_holes{0};
+  // Coarse wall-clock phase split of `build_surface_db`, in seconds. DIAGNOSTIC
+  // ONLY — nothing in the pipeline branches on these, so recording them cannot
+  // perturb a fit. (The one timing-sensitive knob anywhere near this path is
+  // `SelectorConfig::time_budget_ms`, which defaults to 0 = disabled and is not
+  // set by this build path; that is why a 15x-faster binary still selects the
+  // same curve families.) Recorded because the three phases scale on completely
+  // different axes — `load` is per DATE FILE, `config` is per NEW SYMBOL and
+  // runs SERIALLY, `populate` is per CELL and is fanned out over `fit_workers` —
+  // so one wall-clock number cannot say which phase a slow build is spending
+  // itself on, and the three answers imply different fixes.
+  double t_load_s{0.0};     // phase 2: load_opra_hive (parquet read + panel build)
+  double t_config_s{0.0};   // phase 4: generate_symbol_configs (per-symbol select_curve)
+  double t_populate_s{0.0}; // phase 5: populate_universe_streaming (fit + write)
 };
 
 // ── Bounding the failed-cell list for display ───────────────────────────────

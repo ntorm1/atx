@@ -13,7 +13,7 @@
 
 #include "atx/core/error.hpp"        // Ok, Err, ErrorCode, Error
 #include "atx/core/io/parquet.hpp"   // read_parquet, ParquetTable
-#include "atx/vol/opra_panel.hpp"    // OpraLoadSpec, load_opra_cbbo_from_table
+#include "atx/vol/opra_panel.hpp"    // OpraLoadSpec, scan_opra_cbbo_table, load_opra_cbbo_from_scan
 #include "atx/vol/detail/parallel_for.hpp"  // parallel_for_dynamic (W4.3 per-date fan-out)
 #include "opra_batch_detail.hpp"     // Civil kernel, memo_iso_to_ns, resolve_market_inputs
 
@@ -299,8 +299,26 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec& spec, const OpraBatch
   // EMPTY-AND-UNKNOWN when it could not be computed (no/!string `underlying`
   // column) — in which case nothing is a hole and every cell goes to the seam, so
   // a schema-broken file still surfaces its real error on every cell.
+  //
+  // ── P-01: ONE column scan + row index per DATE, not per symbol ─────────────
+  // `scan_opra_cbbo_table` (opra_panel.hpp) materializes each column once and
+  // indexes the rows by `underlying`, so each symbol below costs O(ITS rows)
+  // instead of O(the table's) -- the per-symbol seam used to re-materialize
+  // every column and re-walk every other underlying's rows, 102 times on a
+  // 102-name date, and (worse) size every retained buffer for the whole table.
+  // Scanning once also makes the loads independent of each other, which is what
+  // lets `n_threads` stay a pure perf knob.
+  //
+  // The 8-column check the per-symbol seam did lives in the scan, so a
+  // schema-broken date reports the SAME error on every cell it would have before
+  // -- `spec.path` is the date file, identical for every symbol of the date.
+  // ORDER IS LOAD-BEARING: the hole check stays AHEAD of the scan's error, so a
+  // file that is both schema-broken and missing a requested symbol still reads
+  // that symbol as a hole and the rest as defects (the header's contract; gated
+  // by OpraHive.SchemaBrokenFileStillReportsHoleAndDefectSeparately).
   const auto split_table = [&](const io::ParquetTable& tbl, const DateReadTask& task,
                                const std::vector<std::string>* present) {
+    const Result<OpraTableScan> scan = scan_opra_cbbo_table(tbl, task.path);
     for (const SymbolLoad& sl : task.loads) {
       OpraBatchEntry& entry = result.entries[sl.slot];
       if (present != nullptr &&
@@ -309,16 +327,26 @@ Result<OpraBatchResult> load_opra_hive(const OpraHiveSpec& spec, const OpraBatch
         entry.panel = Err(coverage_hole_error(entry.symbol));
         continue;
       }
-      entry.panel = load_opra_cbbo_from_table(tbl, sl.load);
+      if (!scan.has_value()) {
+        entry.panel = Err(scan.error());
+        continue;
+      }
+      entry.panel = load_opra_cbbo_from_scan(*scan, sl.load);
     }
   };
 
   parallel_for_dynamic(tasks.size(), spec.n_threads, [&](std::size_t k) {
-    const DateReadTask& task = tasks[k];
+    DateReadTask& task = tasks[k];
     if (task.table.has_value()) {
       // Discovery mode: holes were already finalized serially in phase B from the
       // pre-pass symbol set, so every queued load here is a symbol the file has.
       split_table(*task.table, task, nullptr);
+      // P-01: release this date's decoded table the moment its panels exist,
+      // rather than holding every date's table until the whole window is done.
+      // Each task is claimed by exactly one worker and nothing reads `task`
+      // afterwards, so this is a private write. (`split_table` has returned, so
+      // the reference it took is dead.)
+      task.table.reset();
       return;
     }
     Result<io::ParquetTable> fresh = io::read_parquet(task.path);

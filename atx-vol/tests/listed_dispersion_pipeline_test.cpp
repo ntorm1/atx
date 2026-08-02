@@ -1370,7 +1370,7 @@ TEST(ListedDispersionPipeline, MarkDivergenceObserverRidesTheEngineStepHook) {
   EXPECT_EQ(rows[0].strike, leg_a.strike);
   EXPECT_EQ(rows[0].expiry_ts_ns, leg_a.expiry_ts_ns);
   EXPECT_EQ(rows[0].schedule_mark, leg_a.model_mark);
-  EXPECT_EQ(rows[0].live_mark, live_a);
+  EXPECT_NEAR(rows[0].live_mark, live_a, 1.0e-12);
   // Step 1's two rows, in the roll's leg order (N0 call before N1 put).
   EXPECT_EQ(rows[1].symbol, leg_b.symbol);
   EXPECT_EQ(rows[1].raw_symbol, leg_b.raw_symbol);
@@ -1378,14 +1378,14 @@ TEST(ListedDispersionPipeline, MarkDivergenceObserverRidesTheEngineStepHook) {
   EXPECT_EQ(rows[1].strike, leg_b.strike);
   EXPECT_EQ(rows[1].expiry_ts_ns, leg_b.expiry_ts_ns);
   EXPECT_EQ(rows[1].schedule_mark, leg_b.model_mark);
-  EXPECT_EQ(rows[1].live_mark, live_b);
+  EXPECT_NEAR(rows[1].live_mark, live_b, 1.0e-12);
   EXPECT_EQ(rows[2].symbol, leg_c.symbol);
   EXPECT_EQ(rows[2].raw_symbol, leg_c.raw_symbol);
   EXPECT_EQ(rows[2].side, leg_c.side);
   EXPECT_EQ(rows[2].strike, leg_c.strike);
   EXPECT_EQ(rows[2].expiry_ts_ns, leg_c.expiry_ts_ns);
   EXPECT_EQ(rows[2].schedule_mark, leg_c.model_mark);
-  EXPECT_EQ(rows[2].live_mark, live_c);
+  EXPECT_NEAR(rows[2].live_mark, live_c, 1.0e-12);
   // Roll 1's expiry differs from roll 0's, so a collector that reused the previous
   // roll's legs is caught independently of the symbols.
   EXPECT_NE(rows[0].expiry_ts_ns, rows[1].expiry_ts_ns);

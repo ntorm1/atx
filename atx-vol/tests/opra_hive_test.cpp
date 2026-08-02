@@ -1,9 +1,12 @@
 #include "support/synthetic_opra_hive.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <span>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -75,15 +78,6 @@ TEST(SyntheticHive, V2FileLoadsPerSymbolThroughTableSeam) {
   fs::remove_all(tmp);
 }
 
-// ── load_opra_hive: the date-partitioned OPRA hive v2 loader (Task 3) ─────────
-//
-// These exercise the centerpiece loader against the Task 2 synthetic hive-v2
-// fixture. Exact counts are for the default SyntheticHiveSpec (36 quotes per
-// (symbol, date) panel; symbols AAA/BBB/CCC). Where a pristine gap-free grid is
-// wanted, a 3-CONTIGUOUS-date fixture is used so the calendar enumeration has no
-// holes; the default (07-01/02/06) fixture is used where a missing date is under
-// test.
-
 namespace {
 namespace ahv = atx::vol;
 
@@ -99,6 +93,202 @@ namespace ahv = atx::vol;
   return nullptr;
 }
 } // namespace
+
+// ── P-01: the per-underlying row index must be a PURE I/O restructure ─────────
+//
+// `scan_opra_cbbo_table` materializes each column once per DATE and indexes the
+// rows by `underlying`, so a per-symbol split visits only its own rows instead of
+// re-walking (and re-sizing every buffer for) the whole table. That is a claim
+// about COST, and it is only admissible if the panel is bit-for-bit what the
+// full-table scan produced -- the loader feeds the fitter, and a single reordered
+// or dropped quote row moves every fitted surface downstream.
+//
+// The reference here is not a re-implementation: setting `indexed = false` on the
+// very same scan selects the pre-P-01 code path exactly -- every loop walks
+// [0, n_rows) and skips on the filter, every buffer is reserved for the whole
+// table. So this compares the two paths over identical decoded bytes.
+//
+// The comparison is exhaustive on purpose. `source_fingerprint` alone already
+// folds in the frame uid, the snapshot stamp and every row's uid / expiry /
+// strike / side / bid / ask / sizes / instrument id, so it would catch a
+// reordering; the per-field row walk is there so a failure says WHICH field
+// moved rather than "a hash differs".
+TEST(OpraHive, IndexedScanPanelIsIdenticalToTheFullScanPanel) {
+  namespace io = atx::core::io;
+  const fs::path root = fs::temp_directory_path() / "atx_opra_hive_scan_parity";
+  fs::remove_all(root);
+  tsupport::SyntheticHiveSpec fx;
+  fx.dates = {"2026-07-01"};
+  tsupport::write_synthetic_hive_v2(root, fx); // AAA/BBB/CCC in ONE table
+  const std::string path = (root / "date=2026-07-01" / "data.parquet").string();
+
+  const auto table = io::read_parquet(path);
+  ASSERT_TRUE(table.has_value()) << table.error().to_string();
+
+  const auto scan = ahv::scan_opra_cbbo_table(*table, path);
+  ASSERT_TRUE(scan.has_value()) << scan.error().to_string();
+  ASSERT_TRUE(scan->indexed) << "a 3-underlying table must be indexable";
+
+  // The index partitions the table: every row appears in exactly one group, and
+  // ASCENDING within it. The ascending property is what makes the two paths visit
+  // rows in the same relative order, so it is asserted rather than assumed.
+  std::size_t indexed_rows = 0;
+  for (const char *sym : {"AAA", "BBB", "CCC"}) {
+    const std::span<const std::uint32_t> g = scan->rows_for(sym);
+    EXPECT_FALSE(g.empty()) << sym;
+    for (std::size_t i = 1; i < g.size(); ++i) {
+      ASSERT_LT(g[i - 1], g[i]) << sym << " group is not ascending";
+    }
+    indexed_rows += g.size();
+  }
+  EXPECT_EQ(indexed_rows, scan->n_rows);
+  EXPECT_TRUE(scan->rows_for("ZZZ").empty());
+
+  // The pre-P-01 path, over the same decoded bytes.
+  ahv::OpraTableScan full = *scan;
+  full.indexed = false;
+
+  for (const char *sym : {"AAA", "BBB", "CCC"}) {
+    ahv::OpraLoadSpec spec;
+    spec.path = path;
+    spec.underlying = sym;
+    spec.snapshot_iso = "2026-07-01T19:55:00Z";
+    spec.r = 0.03;
+
+    const auto fast = ahv::load_opra_cbbo_from_scan(*scan, spec);
+    const auto reference = ahv::load_opra_cbbo_from_scan(full, spec);
+    ASSERT_TRUE(fast.has_value()) << sym << ": " << fast.error().to_string();
+    ASSERT_TRUE(reference.has_value()) << sym << ": " << reference.error().to_string();
+
+    EXPECT_EQ(fast->source_fingerprint, reference->source_fingerprint) << sym;
+    EXPECT_EQ(fast->n_contracts, reference->n_contracts) << sym;
+    EXPECT_EQ(fast->n_expiries, reference->n_expiries) << sym;
+    EXPECT_EQ(fast->n_dropped, reference->n_dropped) << sym;
+    EXPECT_EQ(fast->implied_spot, reference->implied_spot) << sym; // bitwise, not NEAR
+    EXPECT_EQ(fast->snapshot_iso, reference->snapshot_iso) << sym;
+    EXPECT_EQ(fast->source_schema_version, reference->source_schema_version) << sym;
+    EXPECT_EQ(fast->provenance_complete, reference->provenance_complete) << sym;
+    EXPECT_EQ(fast->source_instrument_ids, reference->source_instrument_ids) << sym;
+    ASSERT_EQ(fast->source_identities.size(), reference->source_identities.size()) << sym;
+    for (std::size_t i = 0; i < fast->source_identities.size(); ++i) {
+      EXPECT_EQ(fast->source_identities[i].instrument_id,
+                reference->source_identities[i].instrument_id)
+          << sym << " #" << i;
+      EXPECT_EQ(fast->source_identities[i].raw_symbol, reference->source_identities[i].raw_symbol)
+          << sym << " #" << i;
+    }
+
+    EXPECT_EQ(fast->frame.uid, reference->frame.uid) << sym;
+    EXPECT_EQ(fast->frame.spot, reference->frame.spot) << sym;
+    EXPECT_EQ(fast->frame.snapshot_ts_ns, reference->frame.snapshot_ts_ns) << sym;
+    EXPECT_EQ(fast->frame.uid_strs, reference->frame.uid_strs) << sym;
+    ASSERT_EQ(fast->frame.rows.size(), reference->frame.rows.size()) << sym;
+    for (std::size_t i = 0; i < fast->frame.rows.size(); ++i) {
+      const auto &a = fast->frame.rows[i];
+      const auto &b = reference->frame.rows[i];
+      EXPECT_EQ(a.uid, b.uid) << sym << " row " << i;
+      EXPECT_EQ(a.expiry_iso, b.expiry_iso) << sym << " row " << i;
+      EXPECT_EQ(a.strike, b.strike) << sym << " row " << i;
+      EXPECT_EQ(a.side, b.side) << sym << " row " << i;
+      EXPECT_EQ(a.bid, b.bid) << sym << " row " << i;
+      EXPECT_EQ(a.ask, b.ask) << sym << " row " << i;
+      EXPECT_EQ(a.bid_size, b.bid_size) << sym << " row " << i;
+      EXPECT_EQ(a.ask_size, b.ask_size) << sym << " row " << i;
+      EXPECT_EQ(a.expiry_ns, b.expiry_ns) << sym << " row " << i;
+      EXPECT_EQ(a.settle, b.settle) << sym << " row " << i;
+    }
+  }
+
+  // A symbol the table does not carry must produce the seam's exact zero-match
+  // Err on BOTH paths -- opra_hive.cpp classifies coverage holes on that text.
+  {
+    ahv::OpraLoadSpec spec;
+    spec.path = path;
+    spec.underlying = "ZZZ";
+    spec.snapshot_iso = "2026-07-01T19:55:00Z";
+    spec.r = 0.03;
+    const auto fast = ahv::load_opra_cbbo_from_scan(*scan, spec);
+    const auto reference = ahv::load_opra_cbbo_from_scan(full, spec);
+    ASSERT_FALSE(fast.has_value());
+    ASSERT_FALSE(reference.has_value());
+    EXPECT_EQ(fast.error().code(), reference.error().code());
+    EXPECT_EQ(fast.error().to_string(), reference.error().to_string());
+  }
+
+  fs::remove_all(root);
+}
+
+// The whole-hive statement of the same claim: `load_opra_hive` (which now scans
+// once per date and splits through the index) must produce the same panels the
+// per-symbol file loader does. `load_opra_daterange` over the v1 layout is the
+// independent reference -- a different on-disk layout, a different code path, the
+// same rows -- so this is not the indexed path checking its own homework.
+TEST(OpraHive, ScanSplitStillMatchesThePerSymbolFileLoader) {
+  const fs::path root = fs::temp_directory_path() / "atx_opra_hive_scan_v1_parity";
+  fs::remove_all(root);
+  tsupport::SyntheticHiveSpec fx;
+  fx.dates = {"2026-07-01", "2026-07-02"};
+  tsupport::write_synthetic_hive_v2(root / "v2", fx);
+  tsupport::write_synthetic_hive_v1(root / "v1", fx);
+
+  ahv::OpraHiveSpec hspec;
+  hspec.root_dir = (root / "v2").string();
+  hspec.date_lo = "2026-07-01";
+  hspec.date_hi = "2026-07-02";
+  hspec.symbols = {"AAA", "BBB", "CCC"};
+  hspec.r = 0.03;
+  const auto hive = ahv::load_opra_hive(hspec);
+  ASSERT_TRUE(hive.has_value()) << hive.error().to_string();
+  ASSERT_EQ(hive->n_loaded, std::size_t{6});
+
+  for (const std::string &date : fx.dates) {
+    for (const std::string &sym : fx.symbols) {
+      const ahv::OpraBatchEntry *cell = find_cell(*hive, sym, date);
+      ASSERT_NE(cell, nullptr) << sym << "/" << date;
+      ASSERT_TRUE(cell->panel.has_value()) << sym << "/" << date;
+
+      ahv::OpraLoadSpec fspec;
+      fspec.path = (root / "v1" / sym / (date + ".parquet")).string();
+      fspec.underlying = sym;
+      fspec.snapshot_iso = date + hspec.snapshot_suffix;
+      fspec.r = hspec.r;
+      const auto file_panel = ahv::load_opra_cbbo_parquet(fspec);
+      ASSERT_TRUE(file_panel.has_value()) << sym << "/" << date;
+
+      EXPECT_EQ(cell->panel->n_contracts, file_panel->n_contracts) << sym << "/" << date;
+      EXPECT_EQ(cell->panel->n_dropped, file_panel->n_dropped) << sym << "/" << date;
+      EXPECT_EQ(cell->panel->implied_spot, file_panel->implied_spot) << sym << "/" << date;
+
+      // Quote-for-quote, as a SET. The two layouts store the same quotes in
+      // different physical order -- v2 sorts each date file by
+      // (underlying, symbol), v1 writes generation order -- so row INDEX is not
+      // comparable across them and only the contents are. (Within one layout the
+      // order IS pinned, and that is what the indexed-vs-full-scan test above
+      // asserts exactly.)
+      const auto key_sorted = [](const std::vector<atx::vol::QuoteRow> &rows) {
+        std::vector<std::tuple<std::string, double, int, double, double>> out;
+        out.reserve(rows.size());
+        for (const auto &r : rows) {
+          out.emplace_back(r.expiry_iso, r.strike, static_cast<int>(r.side), r.bid, r.ask);
+        }
+        std::sort(out.begin(), out.end());
+        return out;
+      };
+      EXPECT_EQ(key_sorted(cell->panel->frame.rows), key_sorted(file_panel->frame.rows))
+          << sym << "/" << date;
+    }
+  }
+  fs::remove_all(root);
+}
+
+// ── load_opra_hive: the date-partitioned OPRA hive v2 loader (Task 3) ─────────
+//
+// These exercise the centerpiece loader against the Task 2 synthetic hive-v2
+// fixture. Exact counts are for the default SyntheticHiveSpec (36 quotes per
+// (symbol, date) panel; symbols AAA/BBB/CCC). Where a pristine gap-free grid is
+// wanted, a 3-CONTIGUOUS-date fixture is used so the calendar enumeration has no
+// holes; the default (07-01/02/06) fixture is used where a missing date is under
+// test.
 
 // 3 symbols x 3 contiguous dates -> a pristine 9-cell grid, all loaded, ordered
 // date-major then symbol-major.

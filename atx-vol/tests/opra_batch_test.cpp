@@ -69,13 +69,24 @@ using atx::vol::YieldCurve;
 // explicit parquet path so the loader can imply the spot via put-call parity.
 // The mids are planted so C - P = fwd - strike (r = 0): the implied forward, and
 // thus the implied spot (df = 1), is `fwd`.
+//
+// The `ts` column carries `<date>T19:55:00Z`, derived from the file's own name
+// (the v1 layout is `<symbol>/<date>.parquet`) at both loaders' default
+// `snapshot_suffix`. Since FIX-C-1 the panel loader takes the snapshot instant
+// FROM the file and rejects a `snapshot_iso` that disagrees with it, so a fixture
+// whose `ts` is an unrelated placeholder while the loader stamps
+// `date + snapshot_suffix` is not a valid date file at all -- it asserts two
+// different snapshot instants at once. Deriving it keeps every case
+// self-consistent and leaves every T unchanged: the stamp the math uses is the
+// same string as before, only the previously-inert `ts` column moved to agree.
 void write_pair(const fs::path &path, const std::string &symbol, const std::string &yymmdd,
                 double strike, double fwd, bool with_instrument_ids = false) {
   const double put_mid = 5.0;
   const double call_mid = put_mid + (fwd - strike);
   const auto to_px = [](double d) { return static_cast<i64>(std::llround(d * 1e9)); };
+  const i64 snap_ns = atx::vol::iso_to_ns(path.stem().string() + "T19:55:00Z");
 
-  std::vector<i64> ts_col = {1780000000000000000LL, 1780000000000000000LL};
+  std::vector<i64> ts_col = {snap_ns, snap_ns};
   std::vector<std::string> und_col = {symbol, symbol};
   std::vector<std::string> sym_col = {osi_sym(symbol, yymmdd, 'C', strike),
                                       osi_sym(symbol, yymmdd, 'P', strike)};

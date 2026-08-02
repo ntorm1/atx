@@ -149,9 +149,35 @@ struct SnapshotCache::Impl {
 
   using EntryMap = std::unordered_map<SnapshotCacheKey, Entry, SnapshotCacheKeyHash>;
 
-  void touch(EntryMap::iterator entry) {
-    recency.splice(recency.end(), recency, entry->second.recency);
-  }
+  // EVICTION ORDER IS INSERTION ORDER (FIFO), NOT RECENCY (LRU) — deliberately.
+  //
+  // This cache's bounded mode exists for FORWARD-ONLY one-pass sweeps: a backtest
+  // walks the clock once and never asks for a date again. Ranking that traversal by
+  // recency is the classic sequential-flooding pathology — for a pure scan the
+  // most-recently-USED entry is the most-unneeded one, so promoting each snapshot as
+  // it is consumed ranks the dates already behind the cursor ABOVE the read-ahead
+  // entries the next steps are about to need, and the eviction victim becomes a
+  // completed prefetch. The run then reloads an archive it had already deserialized.
+  // Measured on the 135-session projected replay before this change: 263 snapshot
+  // loads for 135 sessions at look-ahead depth 4, wall time roughly doubled, and the
+  // output bit-identical throughout — a pure pessimization nothing but a profile
+  // could see. The database-buffer-pool literature's remedy for a scan is exactly
+  // this: don't let the scan's own references drive replacement.
+  //
+  // Under insertion order the front of `recency` is the LOWEST-indexed live entry,
+  // which for a forward-only walk is always behind the cursor and therefore safe to
+  // drop; the caller still holds `base` by shared_ptr, so evicting its map entry
+  // frees nothing it is using. That makes the working-set capacity derivable rather
+  // than a coincidence: base + shifted + `depth` in flight = depth + 2, exactly what
+  // `private_snapshot_cache_capacity` returns.
+  //
+  // Nothing is lost for the UNBOUNDED (reusable) mode, whose `trim` returns before
+  // ever consulting this order.
+  //
+  // `promote_on_use` is intentionally ABSENT rather than a no-op function: leaving a
+  // do-nothing touch() at each former call site would read as "recency is
+  // maintained here" to the next reader, which is the belief this comment exists to
+  // correct.
 
   // R-19 (F6): must hold `mutex`. If `found` is a live entry whose stored content
   // identity no longer matches `identity` (the archive at this key's path was
@@ -271,7 +297,6 @@ Status SnapshotCache::prefetch(std::string archive_path, QueryPricingTier query_
   }
   if (found != impl_->entries.end()) {
     impl_->hits.fetch_add(1u, std::memory_order_relaxed);
-    impl_->touch(found);
     impl_->trim(effective_key);
     return atx::core::Ok();
   }
@@ -328,7 +353,6 @@ Result<SnapshotPtr> SnapshotCache::load(std::string_view archive_path,
       future = found->second.future;
       ++found->second.active_loads;
       generation = found->second.generation;
-      impl_->touch(found);
     } else {
       impl_->loads.fetch_add(1u, std::memory_order_relaxed);
       future = start_load(effective_key.path, effective_key.query_pricing_tier,
@@ -353,7 +377,6 @@ Result<SnapshotPtr> SnapshotCache::load(std::string_view archive_path,
       if (found->second.active_loads > 0u) {
         --found->second.active_loads;
       }
-      impl_->touch(found);
     }
     impl_->trim(effective_key);
   };

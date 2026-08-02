@@ -381,6 +381,7 @@ TEST(RollingPanel, View_NoRowsAppended_EmptyView) {
 //  Bounds — out-of-range view() access aborts (ATX_ASSERT precondition).
 // =====================================================================
 
+#ifndef NDEBUG
 TEST(RollingPanelDeathTest, View_RowOutOfRange_Aborts) {
   std::array<InstrumentId, 1> uni{inst(1)};
   RollingPanel<8> panel{std::span<const InstrumentId>{uni}, 4};
@@ -402,6 +403,7 @@ TEST(RollingPanelDeathTest, View_InstrumentOutOfRange_Aborts) {
   // Universe has 1 instrument; column index 1 is out of range.
   EXPECT_DEATH({ (void)view.close(0, 1); }, ".*");
 }
+#endif
 
 
 }  // namespace atxtest_rolling_panel_test

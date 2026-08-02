@@ -164,6 +164,7 @@ TEST(MarketData, MakeBar_LateBar_KnowledgeAfterEvent_Allowed) {
 // --------------------------------------------------------------------------
 //  Bitemporal invariant VIOLATION aborts in debug (knowledge before event).
 // --------------------------------------------------------------------------
+#ifndef NDEBUG
 TEST(MarketData, MakeBar_KnowledgeBeforeEvent_Aborts) {
   const Symbol sym{8};
   const Timestamp close = Timestamp::from_unix_nanos(6'000'000);
@@ -173,6 +174,7 @@ TEST(MarketData, MakeBar_KnowledgeBeforeEvent_Aborts) {
   // A fact cannot be known before it is true.
   EXPECT_DEATH({ (void)make_market_bar(sym, bar, earlier); }, "");
 }
+#endif
 
 // --------------------------------------------------------------------------
 //  Tick arm: construction, tag, and accessor.
@@ -207,6 +209,7 @@ TEST(MarketData, MakeTick_DelistedFinal_RoundTrips) {
   EXPECT_TRUE(mp.delisted_final);
 }
 
+#ifndef NDEBUG
 TEST(MarketData, MakeTick_KnowledgeBeforeEvent_Aborts) {
   const Symbol sym{55};
   const Timestamp ts = Timestamp::from_unix_nanos(7'000'000);
@@ -215,6 +218,7 @@ TEST(MarketData, MakeTick_KnowledgeBeforeEvent_Aborts) {
 
   EXPECT_DEATH({ (void)make_market_tick(sym, tick, earlier); }, "");
 }
+#endif
 
 
 }  // namespace atxtest_market_test

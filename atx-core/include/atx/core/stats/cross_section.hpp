@@ -24,11 +24,10 @@
 //   scale_to_unit_l2(v)      — L2-normalize so the Euclidean norm == 1.
 //
 // Allocation:
-//   rank and winsorize need a sorted view that is independent of the input,
-//   so each uses a local std::vector<f64> (rank also a std::vector<usize>) of
-//   size n. This O(n) scratch is documented at the call site and means those
-//   two functions are NOT noexcept. zscore / demean / scale_to_unit / the L2
-//   variant allocate nothing and are noexcept.
+//   rank and winsorize expose noexcept caller-scratch overloads. Their
+//   compatibility overloads allocate one local O(n) vector and delegate.
+//   zscore / demean / scale_to_unit / the L2 variant allocate nothing and are
+//   noexcept.
 //
 // Numerics:
 //   zscore uses POPULATION std (divide by n, not n-1) so a degenerate constant
@@ -39,15 +38,15 @@
 //
 // Thread-safety: pure functions of their inputs; no shared state.
 
-#include <algorithm> // std::sort, std::clamp, std::stable_sort
+#include <algorithm> // std::sort, std::clamp, std::copy
 #include <cmath>     // std::sqrt, std::fabs, std::floor
+#include <numeric>   // std::iota
 #include <span>      // std::span
 #include <vector>    // std::vector (documented scratch for rank/winsorize)
 
-#include "atx/core/macro.hpp"     // ATX_ASSERT
-#include "atx/core/simd.hpp"      // atx::core::simd::mean
-#include "atx/core/stats/algo.hpp" // atx::core::stats::argsort (rank tie-break)
-#include "atx/core/types.hpp"     // atx::f64, atx::usize
+#include "atx/core/macro.hpp" // ATX_ASSERT
+#include "atx/core/simd.hpp"  // atx::core::simd::mean
+#include "atx/core/types.hpp" // atx::f64, atx::usize
 
 namespace atx::core::stats {
 
@@ -73,14 +72,16 @@ namespace detail {
 /// @param q       Quantile in [0,1].
 /// @return        The order statistic at the nearest rank to q.
 [[nodiscard]] inline f64 quantile_sorted(std::span<const f64> sorted, f64 q) noexcept {
-    ATX_ASSERT(!sorted.empty());
-    ATX_ASSERT(q >= 0.0 && q <= 1.0);
-    const usize n = sorted.size();
-    if (n == 1U) { return sorted[0]; }
-    const f64 pos = std::floor(q * static_cast<f64>(n - 1U) + 0.5); // round-half-up
-    const auto idx = static_cast<usize>(pos);
-    // pos in [0, n-1] because q in [0,1]; clamp defensively against fp drift.
-    return sorted[(idx < n) ? idx : (n - 1U)];
+  ATX_ASSERT(!sorted.empty());
+  ATX_ASSERT(q >= 0.0 && q <= 1.0);
+  const usize n = sorted.size();
+  if (n == 1U) {
+    return sorted[0];
+  }
+  const f64 pos = std::floor(q * static_cast<f64>(n - 1U) + 0.5); // round-half-up
+  const auto idx = static_cast<usize>(pos);
+  // pos in [0, n-1] because q in [0,1]; clamp defensively against fp drift.
+  return sorted[(idx < n) ? idx : (n - 1U)];
 }
 
 } // namespace detail
@@ -96,35 +97,58 @@ namespace detail {
 /// positions they occupy (e.g. ranks 1 and 2 → 1.5). For n==1 the output is
 /// 0.0 (there is no spread to normalize against).
 ///
-/// SAFETY/ALLOC: uses two local std::vectors of size n (an argsort permutation
-/// of usize and an averaged-rank buffer of f64). O(n) scratch is inherent to
-/// tie-averaging; hence this function is NOT noexcept.
+/// The scratch overload performs no allocation. `order` is overwritten with the
+/// ascending permutation and must have the same size as `in`.
+inline void rank(std::span<const f64> in, std::span<f64> out, std::span<usize> order) noexcept {
+  ATX_ASSERT(in.size() == out.size());
+  ATX_ASSERT(in.size() == order.size());
+  const usize n = in.size();
+  if (n == 0U) {
+    return;
+  }
+  if (n == 1U) {
+    out[0] = 0.0;
+    return;
+  }
+
+  std::iota(order.begin(), order.end(), usize{0U});
+  std::sort(order.begin(), order.end(), [in](usize left, usize right) noexcept {
+    if (in[left] < in[right]) {
+      return true;
+    }
+    if (in[right] < in[left]) {
+      return false;
+    }
+    return left < right;
+  });
+
+  const f64 denom = static_cast<f64>(n - 1U);
+  usize lo = 0U;
+  while (lo < n) {
+    usize hi = lo + 1U;
+    while (hi < n && in[order[hi]] == in[order[lo]]) {
+      ++hi;
+    }
+    const f64 avg_pos = (static_cast<f64>(lo) + static_cast<f64>(hi - 1U)) * 0.5;
+    const f64 norm = avg_pos / denom;
+    for (usize p = lo; p < hi; ++p) {
+      out[order[p]] = norm;
+    }
+    lo = hi;
+  }
+}
+
+/// SAFETY/ALLOC: the compatibility overload allocates one local permutation
+/// vector of size n, then delegates to the scratch implementation.
 ///
 /// @param in   Values to rank (not modified).
 /// @param out  Output ranks in [0,1]; out.size() == in.size().
 /// @pre out.size() == in.size().
 inline void rank(std::span<const f64> in, std::span<f64> out) {
-    ATX_ASSERT(in.size() == out.size());
-    const usize n = in.size();
-    if (n == 0U) { return; }
-    if (n == 1U) { out[0] = 0.0; return; }
-
-    std::vector<usize> order(n); // documented O(n) ascending permutation scratch
-    argsort(in, std::span<usize>{order});
-
-    // Walk the sorted order, grouping equal values into ties. Each member of a
-    // tie run spanning sorted positions [lo, hi) gets the average position
-    // (lo + hi - 1)/2, then normalized by (n-1) into [0,1].
-    const f64 denom = static_cast<f64>(n - 1U);
-    usize     lo    = 0U;
-    while (lo < n) {
-        usize hi = lo + 1U;
-        while (hi < n && in[order[hi]] == in[order[lo]]) { ++hi; }
-        const f64 avg_pos = (static_cast<f64>(lo) + static_cast<f64>(hi - 1U)) * 0.5;
-        const f64 norm    = avg_pos / denom;
-        for (usize p = lo; p < hi; ++p) { out[order[p]] = norm; }
-        lo = hi;
-    }
+  ATX_ASSERT(in.size() == out.size());
+  const usize n = in.size();
+  std::vector<usize> order(n);
+  rank(in, out, std::span<usize>{order});
 }
 
 // ============================================================
@@ -141,24 +165,30 @@ inline void rank(std::span<const f64> in, std::span<f64> out) {
 /// @param out  Output z-scores; out.size() == in.size().
 /// @pre out.size() == in.size().
 inline void zscore(std::span<const f64> in, std::span<f64> out) noexcept {
-    ATX_ASSERT(in.size() == out.size());
-    const usize n = in.size();
-    if (n == 0U) { return; }
+  ATX_ASSERT(in.size() == out.size());
+  const usize n = in.size();
+  if (n == 0U) {
+    return;
+  }
 
-    const f64 mean = simd::mean(in);
-    f64       var  = 0.0;
-    for (const f64 x : in) {
-        const f64 d = x - mean;
-        var += d * d;
+  const f64 mean = simd::mean(in);
+  f64 var = 0.0;
+  for (const f64 x : in) {
+    const f64 d = x - mean;
+    var += d * d;
+  }
+  var /= static_cast<f64>(n);
+  const f64 sd = std::sqrt(var);
+  if (sd == 0.0) {
+    for (f64 &o : out) {
+      o = 0.0;
     }
-    var /= static_cast<f64>(n);
-    const f64 sd = std::sqrt(var);
-    if (sd == 0.0) {
-        for (f64& o : out) { o = 0.0; }
-        return;
-    }
-    const f64 inv = 1.0 / sd;
-    for (usize i = 0U; i < n; ++i) { out[i] = (in[i] - mean) * inv; }
+    return;
+  }
+  const f64 inv = 1.0 / sd;
+  for (usize i = 0U; i < n; ++i) {
+    out[i] = (in[i] - mean) * inv;
+  }
 }
 
 // ============================================================
@@ -172,10 +202,14 @@ inline void zscore(std::span<const f64> in, std::span<f64> out) noexcept {
 ///
 /// @param v  Values to center (mutated). v.size() may be 0.
 inline void demean(std::span<f64> v) noexcept {
-    const usize n = v.size();
-    if (n == 0U) { return; }
-    const f64 mean = simd::mean(std::span<const f64>{v});
-    for (f64& x : v) { x -= mean; }
+  const usize n = v.size();
+  if (n == 0U) {
+    return;
+  }
+  const f64 mean = simd::mean(std::span<const f64>{v});
+  for (f64 &x : v) {
+    x -= mean;
+  }
 }
 
 // ============================================================
@@ -192,25 +226,38 @@ inline void demean(std::span<f64> v) noexcept {
 /// 100 down to 4 (the 0.8-quantile order statistic), not to an interpolated
 /// value biased upward by the outlier itself.
 ///
-/// SAFETY/ALLOC: uses a local std::vector<f64> of size n to hold the sorted
-/// copy whose quantiles define the band; hence this function is NOT noexcept.
+/// The scratch overload performs no allocation. `sorted` is overwritten with a
+/// sorted copy and must have the same size as `v`.
+inline void winsorize(std::span<f64> v, f64 lo_q, f64 hi_q, std::span<f64> sorted) noexcept {
+  ATX_ASSERT(lo_q >= 0.0 && lo_q <= hi_q && hi_q <= 1.0);
+  ATX_ASSERT(v.size() == sorted.size());
+  const usize n = v.size();
+  if (n == 0U) {
+    return;
+  }
+
+  std::copy(v.begin(), v.end(), sorted.begin());
+  std::sort(sorted.begin(), sorted.end());
+  const std::span<const f64> s{sorted};
+  const f64 lo = detail::quantile_sorted(s, lo_q);
+  const f64 hi = detail::quantile_sorted(s, hi_q);
+  for (f64 &x : v) {
+    x = std::clamp(x, lo, hi);
+  }
+}
+
+/// SAFETY/ALLOC: the compatibility overload allocates one local sorted-copy
+/// vector of size n, then delegates to the scratch implementation.
 ///
 /// @param v     Values to winsorize (mutated). v.size() may be 0.
 /// @param lo_q  Lower quantile in [0, hi_q].
 /// @param hi_q  Upper quantile in [lo_q, 1].
 /// @pre 0 <= lo_q <= hi_q <= 1.
 inline void winsorize(std::span<f64> v, f64 lo_q, f64 hi_q) {
-    ATX_ASSERT(lo_q >= 0.0 && lo_q <= hi_q && hi_q <= 1.0);
-    const usize n = v.size();
-    if (n == 0U) { return; }
-
-    std::vector<f64> sorted(v.begin(), v.end()); // documented O(n) sort scratch
-    std::sort(sorted.begin(), sorted.end());
-    const std::span<const f64> s{sorted};
-    const f64 lo = detail::quantile_sorted(s, lo_q);
-    const f64 hi = detail::quantile_sorted(s, hi_q);
-    // lo <= hi because lo_q <= hi_q and the sorted quantile is monotone in q.
-    for (f64& x : v) { x = std::clamp(x, lo, hi); }
+  ATX_ASSERT(lo_q >= 0.0 && lo_q <= hi_q && hi_q <= 1.0);
+  const usize n = v.size();
+  std::vector<f64> sorted(n);
+  winsorize(v, lo_q, hi_q, std::span<f64>{sorted});
 }
 
 // ============================================================
@@ -224,11 +271,17 @@ inline void winsorize(std::span<f64> v, f64 lo_q, f64 hi_q) {
 ///
 /// @param v  Values to normalize (mutated). v.size() may be 0.
 inline void scale_to_unit(std::span<f64> v) noexcept {
-    f64 l1 = 0.0;
-    for (const f64 x : v) { l1 += std::fabs(x); }
-    if (l1 == 0.0) { return; }
-    const f64 inv = 1.0 / l1;
-    for (f64& x : v) { x *= inv; }
+  f64 l1 = 0.0;
+  for (const f64 x : v) {
+    l1 += std::fabs(x);
+  }
+  if (l1 == 0.0) {
+    return;
+  }
+  const f64 inv = 1.0 / l1;
+  for (f64 &x : v) {
+    x *= inv;
+  }
 }
 
 // ============================================================
@@ -242,11 +295,17 @@ inline void scale_to_unit(std::span<f64> v) noexcept {
 ///
 /// @param v  Values to normalize (mutated). v.size() may be 0.
 inline void scale_to_unit_l2(std::span<f64> v) noexcept {
-    f64 ss = 0.0;
-    for (const f64 x : v) { ss += x * x; }
-    if (ss == 0.0) { return; }
-    const f64 inv = 1.0 / std::sqrt(ss);
-    for (f64& x : v) { x *= inv; }
+  f64 ss = 0.0;
+  for (const f64 x : v) {
+    ss += x * x;
+  }
+  if (ss == 0.0) {
+    return;
+  }
+  const f64 inv = 1.0 / std::sqrt(ss);
+  for (f64 &x : v) {
+    x *= inv;
+  }
 }
 
 } // namespace atx::core::stats

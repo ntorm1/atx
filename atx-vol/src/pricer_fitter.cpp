@@ -1093,10 +1093,30 @@ Status PricerFitter::fit(const OptionChain &chain,
     // per-mode carry anchors (n_atm/max_borrow_pairs) and the validation oracle —
     // stays fully accurate. Accuracy mode never permits it (its contract IS the
     // reference AL). Non-Populate presets are byte-identical to the prior pin.
-    const auto risk_deam_al = (cfg_.preset == FitPreset::Populate &&
-                               quality_mode != FitQualityMode::Accuracy)
-                                  ? al_fast_opts()
-                                  : al_default_opts();
+    //
+    // Perf 2b: FitPreset::Bulk is Populate's tier with the cheaper `ql_fast` rung
+    // (session.hpp). It takes the SAME authorization on the same grounds and, like
+    // Populate, only where the quality mode is not Accuracy. It additionally pins
+    // the BAKED serve rung back to al_fast_opts, because al_bulk_opts uses the
+    // decoupled `n_quad_price` axis and no AlOpts record format persists it — see
+    // DeAmOptions::serve_al_opts. Every other preset is byte-identical to the
+    // prior pin.
+    const bool cheap_deam_authorized = quality_mode != FitQualityMode::Accuracy;
+    const auto risk_deam_al =
+        (cfg_.preset == FitPreset::Bulk && cheap_deam_authorized)     ? al_bulk_opts()
+        : (cfg_.preset == FitPreset::Populate && cheap_deam_authorized) ? al_fast_opts()
+                                                                       : al_default_opts();
+    if (cfg_.preset == FitPreset::Bulk && cheap_deam_authorized) {
+      // The CARRY rung as well, and it is the one that carries the win: Phase-2b
+      // step-1 measured ~66% of a `populate` date's fast-tier AL boundary solves
+      // inside the PCP borrow fixed point, not the per-strike de-Am inversion, so
+      // lowering only the de-Am rung caps the speedup at ~1.1x. Set HERE and not only
+      // in apply_fit_preset because this policy runs AFTER
+      // apply_fit_preset(risk_preset = Robust), which re-pins carry_al_opts
+      // unconditionally. Why the carry tolerates it: session.cpp's FitPreset::Bulk.
+      in.deam.carry_al_opts = al_bulk_opts();
+      in.deam.serve_al_opts = al_fast_opts();
+    }
     if (quality_mode == FitQualityMode::Accuracy) {
       in.deam.al_opts = risk_deam_al; // == al_default_opts() for Accuracy
       in.use_correction_cache = false;

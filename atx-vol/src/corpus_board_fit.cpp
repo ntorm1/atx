@@ -13,6 +13,7 @@
 #include <string>
 #include <utility>
 
+#include "al_probe.hpp"               // env-gated AL hot-path zone timers (Perf 2b step 1)
 #include "atx/vol/arb.hpp"            // arb_check_calendar
 #include "atx/vol/chain.hpp"          // OptionChain
 #include "atx/vol/curve_selector.hpp" // SelectorResult, CandidateScore, score_curve_oos
@@ -251,6 +252,7 @@ FitSlot fit_board(const CorpusBoard &board, const PricerConfig &tmpl,
                   const CorpusAdmissionPolicy *admission,
                   const std::function<void(SessionInputs &)> &session_overlay,
                   WarmCacheExport *out_caches) {
+  const alprobe::Scope probe_zone(alprobe::Zone::BoardFit);
   FitSlot slot{};
   slot.quality.n_raw_quotes = saturated_u32(board.frame.rows.size());
   slot.quality.n_two_sided = count_two_sided_quotes(board.frame);

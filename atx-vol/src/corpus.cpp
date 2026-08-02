@@ -2150,7 +2150,7 @@ void append_optional_u32(std::string &out, const std::optional<std::uint32_t> &v
 }
 
 [[nodiscard]] bool to_fit_preset(std::uint32_t v, FitPreset &out) noexcept {
-  if (v > static_cast<std::uint32_t>(FitPreset::Populate)) { // C3: Populate=4 is the new max
+  if (v > static_cast<std::uint32_t>(FitPreset::Bulk)) { // Perf 2b: Bulk=5 is the new max
     return false;
   }
   out = static_cast<FitPreset>(v);

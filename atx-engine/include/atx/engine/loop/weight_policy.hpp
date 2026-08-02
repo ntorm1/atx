@@ -125,8 +125,8 @@
 //  call. That is acceptable because both run at REBALANCE cadence (not per bar):
 //  the rebalance is already the heavy decision step. core::container::fixed_vector
 //  is deliberately NOT used — its capacity is a compile-time template parameter
-//  and the universe size is a runtime value. A caller-provided-scratch overload
-//  (to make these allocation-free) is a tracked deferred residual in the ledger.
+//  and the universe size is a runtime value. `WeightPolicyScratch` provides the
+//  fully caller-buffered path used by bounded date-major coordinators.
 //
 //  Both methods are const: a WeightPolicy is a pure configuration object (the
 //  policy knobs) and holds no mutable state.
@@ -173,6 +173,29 @@ namespace atx::engine {
 //  (Raw=2) so existing serialized values keep their meaning.
 // ===========================================================================
 enum class Transform : atx::u8 { Rank, ZScore, Raw }; // closed; no `default` in switches
+
+// Caller-owned storage for the fully allocation-free WeightPolicy overload.
+// reserve() is a cold-path operation; subsequent transformations with
+// universe.size() <= the reserved capacity do not allocate.
+struct WeightPolicyScratch {
+  std::vector<atx::f64> weights;
+  std::vector<atx::usize> live_indices;
+  std::vector<atx::f64> dense;
+  std::vector<atx::f64> transform;
+  std::vector<atx::usize> rank_order;
+  std::vector<atx::f64> winsorized_order;
+  std::vector<atx::u32> groups;
+
+  void reserve(atx::usize capacity) {
+    weights.reserve(capacity);
+    live_indices.reserve(capacity);
+    dense.reserve(capacity);
+    transform.reserve(capacity);
+    rank_order.reserve(capacity);
+    winsorized_order.reserve(capacity);
+    groups.reserve(capacity);
+  }
+};
 
 // ===========================================================================
 //  WeightPolicy — signal -> target weights + trade list. Pure configuration.
@@ -234,9 +257,10 @@ struct WeightPolicy {
   ///     internally each call.
   ///   * Intended use: declare the four buffers ONCE above a date loop and pass
   ///     them on each call.  After warmup (the first date whose live count hits
-  ///     the run high-water mark) NO buffer allocates again — amortized O(1)
-  ///     allocations per alpha, NOT per date, eliminating ~4 allocs ×
-  ///     n_dates × n_alphas from the hot path.
+  ///     the run high-water mark) none of these four buffers allocates again.
+  ///     Rank, winsorization, and group demeaning still use compatibility
+  ///     scratch inside this overload; callers requiring a strict no-allocation
+  ///     path must use `WeightPolicyScratch` below.
   ///
   /// WHY a 4th buffer (`transform_tmp`): apply_transform (Rank/ZScore) is an
   /// out-of-place primitive — it writes into a scratch and SWAPS it into
@@ -253,14 +277,38 @@ struct WeightPolicy {
   /// `live_idx_out` and `dense_out` are cleared (then rebuilt from the compact
   /// scan) each call, matching the "fresh compact" semantics of the original.
   ///
-  /// NOT noexcept: apply_transform's assign may allocate on a growing live count.
+  /// NOT noexcept: compatibility scratch and growing buffers may allocate.
   ///
   /// `group_map` has the same meaning as the allocating overload.
   void to_target_weights(SignalView signal, const Universe &universe,
-                         std::vector<atx::f64> &weights_out,
-                         std::vector<atx::usize> &live_idx_out,
-                         std::vector<atx::f64> &dense_out,
-                         std::vector<atx::f64> &transform_tmp,
+                         std::vector<atx::f64> &weights_out, std::vector<atx::usize> &live_idx_out,
+                         std::vector<atx::f64> &dense_out, std::vector<atx::f64> &transform_tmp,
+                         std::span<const atx::u32> group_map = {}) const {
+    std::vector<atx::usize> rank_order;
+    std::vector<atx::f64> winsorized_order;
+    std::vector<atx::u32> groups;
+    to_target_weights(signal, universe, weights_out, live_idx_out, dense_out, transform_tmp,
+                      rank_order, winsorized_order, groups, group_map);
+  }
+
+  /// Fully caller-buffered overload. Once all buffers have capacity >=
+  /// universe.size(), a successful call performs no dynamic allocation,
+  /// including Rank, winsorization, and group demeaning.
+  void to_target_weights(SignalView signal, const Universe &universe, WeightPolicyScratch &scratch,
+                         std::span<const atx::u32> group_map = {}) const {
+    to_target_weights(signal, universe, scratch.weights, scratch.live_indices, scratch.dense,
+                      scratch.transform, scratch.rank_order, scratch.winsorized_order,
+                      scratch.groups, group_map);
+  }
+
+  /// Expanded scratch seam retained as a value-free adapter for systems that
+  /// store their buffers independently.
+  void to_target_weights(SignalView signal, const Universe &universe,
+                         std::vector<atx::f64> &weights_out, std::vector<atx::usize> &live_idx_out,
+                         std::vector<atx::f64> &dense_out, std::vector<atx::f64> &transform_tmp,
+                         std::vector<atx::usize> &rank_order_tmp,
+                         std::vector<atx::f64> &winsorized_order_tmp,
+                         std::vector<atx::u32> &groups_tmp,
                          std::span<const atx::u32> group_map = {}) const {
     ATX_ASSERT(signal.values.size() == universe.size());
 
@@ -297,16 +345,17 @@ struct WeightPolicy {
     // Clamp tail outliers BEFORE transforming so a single extreme score cannot
     // dominate the standardization (material for ZScore; near-no-op for Rank).
     ATX_ASSERT(winsorize_limit >= 0.0 && winsorize_limit <= 0.5);
+    winsorized_order_tmp.resize(dense_out.size());
     atx::core::stats::winsorize(std::span<atx::f64>{dense_out}, winsorize_limit,
-                                1.0 - winsorize_limit);
+                                1.0 - winsorize_limit, std::span<atx::f64>{winsorized_order_tmp});
 
-    apply_transform(dense_out, transform_tmp);
+    apply_transform(dense_out, transform_tmp, rank_order_tmp);
     // P4-8 GROUP-neutralize (CsDemeanG / §0-H semantics): demean WITHIN each group
     // before the global dollar-neutralize so the book carries no per-group net
     // exposure. Inert when industry_neutral is off (the default). After this each
     // group sums to ~0, so the subsequent global demean is a ~no-op.
     if (industry_neutral) {
-      group_demean(dense_out, live_idx_out, group_map);
+      group_demean(dense_out, live_idx_out, group_map, groups_tmp);
     }
     if (dollar_neutral) {
       atx::core::stats::demean(std::span<atx::f64>{dense_out}); // Sigma dense = 0
@@ -396,7 +445,8 @@ private:
   /// reused `dense` shrank to capacity k and re-allocated on the next date when
   /// k < n). `tmp` is resized to the live count via assign(k, 0.0); after warmup
   /// (a date whose live count equals the run max) NEITHER buffer allocates again.
-  void apply_transform(std::vector<atx::f64> &dense, std::vector<atx::f64> &tmp) const {
+  void apply_transform(std::vector<atx::f64> &dense, std::vector<atx::f64> &tmp,
+                       std::vector<atx::usize> &rank_order) const {
     if (transform == Transform::Raw) {
       return; // identity: keep the winsorized raw scores untouched
     }
@@ -406,7 +456,9 @@ private:
     tmp.assign(dense.size(), 0.0);
     switch (transform) {
     case Transform::Rank:
-      atx::core::stats::rank(std::span<const atx::f64>{dense}, std::span<atx::f64>{tmp});
+      rank_order.resize(dense.size());
+      atx::core::stats::rank(std::span<const atx::f64>{dense}, std::span<atx::f64>{tmp},
+                             std::span<atx::usize>{rank_order});
       break;
     case Transform::ZScore:
       atx::core::stats::zscore(std::span<const atx::f64>{dense}, std::span<atx::f64>{tmp});
@@ -445,11 +497,10 @@ private:
   /// call each group sums to ~0. group_map is universe-aligned and asserted to
   /// cover the universe by the caller when industry_neutral is on.
   void group_demean(std::vector<atx::f64> &dense, const std::vector<atx::usize> &live_idx,
-                    std::span<const atx::u32> group_map) const {
+                    std::span<const atx::u32> group_map, std::vector<atx::u32> &groups) const {
     const atx::usize live = dense.size();
     // Distinct live group ids, ascending — the deterministic enumeration order.
-    std::vector<atx::u32> groups;
-    groups.reserve(live);
+    groups.clear();
     for (atx::usize k = 0; k < live; ++k) {
       groups.push_back(group_map[live_idx[k]]);
     }
@@ -567,7 +618,8 @@ private:
   void recenter_after_truncate(std::vector<atx::f64> &dense) const noexcept {
     for (atx::usize iter = 0; iter < kRecenterIters; ++iter) {
       atx::core::stats::demean(std::span<atx::f64>{dense}); // Sigma(dense) -> 0 exactly
-      truncate_renorm(dense); // re-settle: reclip + restore Sigma|dense| == gross_leverage (reads `truncation`)
+      truncate_renorm(
+          dense); // re-settle: reclip + restore Sigma|dense| == gross_leverage (reads `truncation`)
     }
   }
 
@@ -618,8 +670,8 @@ private:
 //  from `base` (configure them there). kTruncateIters in `base` is untouched.
 // ===========================================================================
 struct EmaDecayPolicy {
-  WeightPolicy base{};       // the stateless inner pipeline (delegated to)
-  atx::f64 ema_alpha = 1.0;  // 1.0 = identity / inert pass-through; (0,1) decays
+  WeightPolicy base{};      // the stateless inner pipeline (delegated to)
+  atx::f64 ema_alpha = 1.0; // 1.0 = identity / inert pass-through; (0,1) decays
 
   /// Default: identity policy (default base, ema_alpha == 1.0, empty decay state).
   EmaDecayPolicy() = default;
@@ -640,9 +692,8 @@ struct EmaDecayPolicy {
   /// vector of universe size (allocates once per call; the stateless `base` does too
   /// — this is the rebalance cadence, not a hot loop). See the header for the cold-
   /// start, inert-default, and dollar-neutral-drift contracts.
-  [[nodiscard]] std::vector<atx::f64>
-  to_target_weights(SignalView signal, const Universe &universe,
-                    std::span<const atx::u32> group_map = {}) {
+  [[nodiscard]] std::vector<atx::f64> to_target_weights(SignalView signal, const Universe &universe,
+                                                        std::span<const atx::u32> group_map = {}) {
     ATX_ASSERT(ema_alpha > 0.0 && ema_alpha <= 1.0);
     std::vector<atx::f64> raw = base.to_target_weights(signal, universe, group_map);
 

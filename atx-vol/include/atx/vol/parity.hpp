@@ -3,9 +3,9 @@
 // American-equity PARITY metrics — the Vola Dynamics acceptance layer.
 //
 // Given a fitted volatility surface (evaluated by the caller into a span of
-// model vols) and a chain of American market quotes, this module
-// re-Americanizes the fitted vols into model American fair values and measures
-// how well they reproduce the market:
+// model vols) and a chain of market quotes, this module prices the fitted vols
+// with the chain's exercise convention and measures how well they reproduce the
+// market:
 //
 //   - the fraction of model fair values landing inside the bid-ask spread,
 //   - RMSE of the fair value vs the mid (price space),
@@ -29,11 +29,10 @@
 //
 // `model_iv` and `market_iv` are paired element-wise with the strike/bid/ask/
 // mid/side arrays (the SAME (strike, side) selection). Both live in EUROPEAN
-// (Black-76) vol space: `market_iv` is the de-Americanized, European-equivalent
-// market vol, and `model_iv` is the fitted surface vol at that `k`. The
-// re-Americanization step, `american_price(model_iv, …)`, turns the European
-// model vol back into an American fair value that is directly comparable to the
-// American market quote. See the PORT NOTES in parity.cpp.
+// (Black-76) vol space: for American chains `market_iv` is the de-Americanized,
+// European-equivalent market vol; for European chains it is the raw implied
+// vol. Fair values use Black-76 for European chains and re-Americanization for
+// American chains. See the PORT NOTES in parity.cpp.
 //
 // ## Thread-safety
 //
@@ -57,41 +56,43 @@ namespace atx::vol {
 
 // Pricing/market context shared by every quote in the chain.
 struct ParityInputs {
-    double S;                 // spot
-    double r;                 // rate
-    double q_eff;             // effective carry so forward = S*exp((r-q_eff)*T)
-    double T;
-    AmericanMethod method = AmericanMethod::AndersenLake;
-    std::optional<AlOpts> al_opts = std::nullopt;
-    double band_k = 1.0;      // error-bar band multiplier for minimum-edge
-    std::size_t n_curve_params = 0; // dof for reduced chi-square
-    // Optional per-side hot-path caches for the re-Americanization pricing.
-    // Default-empty => cold Andersen-Lake (pre-cache behavior). Using the SAME
-    // caches the de-Americanization used keeps the round-trip self-consistent.
-    AmericanCorrectionCaches caches{};
+  double S;     // spot
+  double r;     // rate
+  double q_eff; // effective carry so forward = S*exp((r-q_eff)*T)
+  double T;
+  ExerciseStyle exercise_style = ExerciseStyle::American;
+  AmericanMethod method = AmericanMethod::AndersenLake;
+  std::optional<AlOpts> al_opts = std::nullopt;
+  double band_k = 1.0;            // error-bar band multiplier for minimum-edge
+  std::size_t n_curve_params = 0; // dof for reduced chi-square
+  // Optional per-side hot-path caches for the re-Americanization pricing.
+  // Default-empty => cold Andersen-Lake (pre-cache behavior). Using the SAME
+  // caches the de-Americanization used keeps the round-trip self-consistent.
+  AmericanCorrectionCaches caches{};
 };
 
 // The parity acceptance bundle.
 struct ParityReport {
-    double frac_fv_within_bidask;   // fraction of quotes whose model American fair value in [bid,ask]
-    double rmse_mid_price;          // RMSE(model fair value - mid) in price
-    double rmse_mid_vol;            // RMSE(model vol - market-implied vol) in vol pts
-    double chi2_reduced;            // from fit_metrics::reduced_chi_square (vol space, error-bar weighted)
-    double frac_within_edge_band;   // fraction with |model_vol - mkt_vol| < band_k*err_bar (no statistical edge)
-    double mean_edge_vol;           // mean signed edge in vol pts
-    std::size_t n;                  // quotes scored
-    std::size_t n_within;           // count within bid-ask
-    // SpiderRock-style surface/quote band-violation stats for this expiry
-    // (model price vs bid/ask): miss counts, worst premium violation, signed bias.
-    BandViolationStats band{};
+  double frac_fv_within_bidask; // fraction of quotes whose model American fair value in [bid,ask]
+  double rmse_mid_price;        // RMSE(model fair value - mid) in price
+  double rmse_mid_vol;          // RMSE(model vol - market-implied vol) in vol pts
+  double chi2_reduced; // from fit_metrics::reduced_chi_square (vol space, error-bar weighted)
+  double
+      frac_within_edge_band; // fraction with |model_vol - mkt_vol| < band_k*err_bar (no statistical edge)
+  double mean_edge_vol; // mean signed edge in vol pts
+  std::size_t n;        // quotes scored
+  std::size_t n_within; // count within bid-ask
+  // SpiderRock-style surface/quote band-violation stats for this expiry
+  // (model price vs bid/ask): miss counts, worst premium violation, signed bias.
+  BandViolationStats band{};
 };
 
-// Score a chain of American quotes against a fitted surface.
+// Score a chain of quotes against a fitted surface.
 //
 // model_iv[i] and market_iv[i] correspond to the SAME (strike,side) selection as
 // the strike/bid/ask/mid arrays; caller supplies parallel spans. market_iv is the
-// de-Americanized (European-equivalent) market vol; model_iv is the fitted surface
-// vol at that k. Fair value re-Americanizes model_iv: american_price(model_iv).
+// European-equivalent market vol; model_iv is the fitted surface vol at that k.
+// Fair value uses the exercise style declared in ParityInputs.
 //
 // Contract:
 //   - All eight spans must share the same length; a mismatch -> InvalidArgument.
@@ -102,11 +103,11 @@ struct ParityReport {
 //     if the surviving count does not exceed the dof, that call's error is
 //     propagated (a reduced chi-square is undefined without a positive
 //     denominator).
-[[nodiscard]] atx::core::Result<ParityReport> chain_parity(
-    std::span<const double> strike, std::span<const double> bid,
-    std::span<const double> ask, std::span<const double> mid,
-    std::span<const Side>   side, std::span<const double> model_iv,
-    std::span<const double> market_iv, const ParityInputs& in) noexcept;
+[[nodiscard]] atx::core::Result<ParityReport>
+chain_parity(std::span<const double> strike, std::span<const double> bid,
+             std::span<const double> ask, std::span<const double> mid, std::span<const Side> side,
+             std::span<const double> model_iv, std::span<const double> market_iv,
+             const ParityInputs &in) noexcept;
 
 // Convenience overload: evaluate the fitted surface on the fly.
 //
@@ -119,12 +120,11 @@ struct ParityReport {
 // Not `noexcept`: it allocates the model-vol buffer and may invoke a
 // caller-provided callable that can throw.
 template <class SurfaceFn>
-  requires std::invocable<SurfaceFn&, double, double>
-[[nodiscard]] atx::core::Result<ParityReport> chain_parity(
-    std::span<const double> strike, std::span<const double> bid,
-    std::span<const double> ask, std::span<const double> mid,
-    std::span<const Side>   side, SurfaceFn&& model_vol_at,
-    std::span<const double> market_iv, const ParityInputs& in) {
+  requires std::invocable<SurfaceFn &, double, double>
+[[nodiscard]] atx::core::Result<ParityReport>
+chain_parity(std::span<const double> strike, std::span<const double> bid,
+             std::span<const double> ask, std::span<const double> mid, std::span<const Side> side,
+             SurfaceFn &&model_vol_at, std::span<const double> market_iv, const ParityInputs &in) {
   // Evaluate the surface at each strike's log-moneyness. A non-positive strike
   // or forward yields a non-finite k_log; the resulting non-finite model vol is
   // screened out downstream, so no guard is needed here.
@@ -135,8 +135,8 @@ template <class SurfaceFn>
     const double k_log = std::log(k / fwd);
     model_iv.push_back(static_cast<double>(model_vol_at(k_log, in.T)));
   }
-  return chain_parity(strike, bid, ask, mid, side,
-                      std::span<const double>{model_iv}, market_iv, in);
+  return chain_parity(strike, bid, ask, mid, side, std::span<const double>{model_iv}, market_iv,
+                      in);
 }
 
-}  // namespace atx::vol
+} // namespace atx::vol

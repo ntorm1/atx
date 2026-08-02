@@ -1232,6 +1232,29 @@ TEST(Backtest, ArchivedSnapshotDefaultsColdAndPreparesEverySurfaceForRequestedTi
   }
 }
 
+TEST(Backtest, MarketSnapshotRetainsArchiveIdentityAcrossBackingAndMove) {
+  const fs::path dir = fresh_dir("snapshot-source-identity");
+  const PricedSurface surface = make_surface(kUid, 100.0, 100.0, kBaseNow);
+  const std::string path = write_one(dir, "2026-08-01", "SPX", surface);
+  const auto archive = SurfaceArchiveV2::open_file(path);
+  ASSERT_TRUE(archive) << archive.error().to_string();
+  const ArchiveContentIdentity expected = archive->identity();
+
+  auto borrowed = MarketSnapshot::load(path);
+  ASSERT_TRUE(borrowed) << borrowed.error().to_string();
+  ASSERT_TRUE(borrowed->borrows_views());
+  EXPECT_EQ(borrowed->source_identity(), expected);
+  MarketSnapshot moved_borrowed = std::move(*borrowed);
+  EXPECT_EQ(moved_borrowed.source_identity(), expected);
+
+  auto owned = MarketSnapshot::load(path, QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(owned) << owned.error().to_string();
+  ASSERT_FALSE(owned->borrows_views());
+  EXPECT_EQ(owned->source_identity(), expected);
+  MarketSnapshot moved_owned = std::move(*owned);
+  EXPECT_EQ(moved_owned.source_identity(), expected);
+}
+
 TEST(Backtest, MarketSnapshotPreservesSameBlobProvenanceByDirectoryUid) {
   const fs::path dir = fresh_dir("snapshot-provenance-pairing");
   std::error_code ec;
@@ -1520,7 +1543,7 @@ TEST(Backtest, SnapshotCacheEvictsStaleEntryWhenArchiveRewrittenSameLength) {
 
   // Rewrite the SAME path with different blob content but identical framing.
   write_forward(101.0);
-  ASSERT_EQ(fs::file_size(path), size_v1);  // same byte length: only the CRC moved
+  ASSERT_EQ(fs::file_size(path), size_v1); // same byte length: only the CRC moved
 
   auto second = cache.load(path);
   ASSERT_TRUE(second.has_value()) << second.error().to_string();
@@ -1551,8 +1574,7 @@ TEST(Backtest, ReuseOnlyFastMissLoadsColdAndLaterReusesEagerFastSnapshot) {
       cache.load(path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
   ASSERT_TRUE(cold_on_miss.has_value()) << cold_on_miss.error().to_string();
   ASSERT_EQ((*cold_on_miss)->n_surfaces(), 1u);
-  EXPECT_EQ((*cold_on_miss)->surface_at(0).query_pricing_tier(),
-            QueryPricingTier::ColdReference);
+  EXPECT_EQ((*cold_on_miss)->surface_at(0).query_pricing_tier(), QueryPricingTier::ColdReference);
   EXPECT_EQ((*cold_on_miss)->surface_at(0).query_cache_pair_count(), 0u);
   EXPECT_EQ(MarketSnapshot::open_count(), 1u);
 
@@ -1604,8 +1626,7 @@ TEST(Backtest, ConcurrentReuseOnlyFastMissesCoalesceOnOneColdSnapshot) {
     ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
     first = first == nullptr ? snapshot->get() : first;
     EXPECT_EQ(snapshot->get(), first);
-    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(),
-              QueryPricingTier::ColdReference);
+    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(), QueryPricingTier::ColdReference);
   }
   EXPECT_EQ(MarketSnapshot::open_count(), 1u);
   EXPECT_EQ(cache.stats().loads, 1u);
@@ -1715,8 +1736,7 @@ TEST(Backtest, ReuseOnlyRunUsesColdOnMissAndPreparedFastAfterExplicitPreload) {
     auto snapshot = fresh_config.snapshot_cache->load(
         ref.archive_path, QueryPricingTier::RepresentativeFast, QueryCacheBuildPolicy::ReuseOnly);
     ASSERT_TRUE(snapshot.has_value()) << snapshot.error().to_string();
-    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(),
-              QueryPricingTier::ColdReference);
+    EXPECT_EQ((*snapshot)->surface_at(0).query_pricing_tier(), QueryPricingTier::ColdReference);
     EXPECT_EQ((*snapshot)->surface_at(0).query_cache_pair_count(), 0u);
   }
   EXPECT_EQ(fresh_config.snapshot_cache->stats().loads, fresh_stats.loads);
@@ -2258,8 +2278,7 @@ TEST(Backtest, Granularity) {
   EXPECT_NEAR(col_sum(rc->pnl_settlement), col_sum(rf->pnl_settlement),
               tol * (std::fabs(col_sum(rf->pnl_settlement)) + 1.0));
   // Σ recorded pnl_total reconstructs the final NAV at either stride.
-  EXPECT_NEAR(col_sum(rc->pnl_total), rf->nav.back(),
-              tol * (std::fabs(rf->nav.back()) + 1.0));
+  EXPECT_NEAR(col_sum(rc->pnl_total), rf->nav.back(), tol * (std::fabs(rf->nav.back()) + 1.0));
 
   // Every coarse row lands on a fine timestamp; its STATE columns match that fine
   // row bit-for-bit, and its block-summed pnl_total equals the fine NAV increment
@@ -2274,7 +2293,7 @@ TEST(Backtest, Granularity) {
       }
     }
     ASSERT_LT(fi, rf->size()) << "no fine row at coarse ts row " << j;
-    EXPECT_TRUE(bits_equal(rc->nav[j], rf->nav[fi])) << j;              // cumulative state
+    EXPECT_TRUE(bits_equal(rc->nav[j], rf->nav[fi])) << j;               // cumulative state
     EXPECT_TRUE(bits_equal(rc->gross_vega[j], rf->gross_vega[fi])) << j; // recorded-row state
     if (j > 0) {
       const double block = rf->nav[fi] - rf->nav[prev_fi];
@@ -2778,7 +2797,7 @@ TEST(Backtest, DefaultPolicyIsBitIdenticalToBaseline) {
   const CorpusManifest man = make_evolving_corpus(dir, "SPX", 5);
   auto clock = Clock::from_manifest(man);
   ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
-  const std::int64_t expiry = kBaseNow + 120 * kDayNs;    // survives every date
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs; // survives every date
   // WS-F F1(c) flipped the default to Error; this corpus never loses a surface,
   // so the default and the explicit lenient policy must still agree bit-for-bit.
   auto res = run_backtest(*clock, survivor_book(expiry)); // default: Error (post-F1c)
@@ -2824,7 +2843,7 @@ TEST(Backtest, SubsetDeserializeLoadsOnlyReferencedUids) {
   }
   std::vector<SurfaceArchiveItem> items;
   for (std::uint32_t i = 0; i < 4; ++i) {
-    static const char* kNames[] = {"AAA", "BBB", "CCC", "DDD"};
+    static const char *kNames[] = {"AAA", "BBB", "CCC", "DDD"};
     items.push_back(SurfaceArchiveItem{kNames[i], &surfaces[i]});
   }
   ASSERT_TRUE(write_surface_archive_v2_file(path, items).has_value());
@@ -2861,7 +2880,8 @@ TEST(Backtest, SubsetDeserializeLoadsOnlyReferencedUids) {
   ASSERT_TRUE(wv.has_value());
   ASSERT_TRUE(sv.has_value());
   EXPECT_TRUE(bits_equal(*wv, *sv)) << "subset reconstruct must match whole-board bit-for-bit";
-  std::printf("[b1] subset-deser: 2 of 4 surfaces loaded; uid_of resolves all; marks bit-identical\n");
+  std::printf(
+      "[b1] subset-deser: 2 of 4 surfaces loaded; uid_of resolves all; marks bit-identical\n");
 }
 
 // P-9: a requested subset with no matching uid is a normal missing-name date,
@@ -2918,16 +2938,16 @@ TEST(Backtest, SubsetDeserializeFixedBookParity) {
     for (std::uint32_t i = 0; i < 4; ++i) {
       const double S =
           (100.0 + 5.0 * static_cast<double>(i)) * (1.0 + 0.003 * static_cast<double>(d));
-      surfaces.push_back(make_surface(kUid + i, S, S, now,
-                                      0.001 * static_cast<double>(d) + 0.002 * static_cast<double>(i)));
+      surfaces.push_back(make_surface(
+          kUid + i, S, S, now, 0.001 * static_cast<double>(d) + 0.002 * static_cast<double>(i)));
     }
     char buf[16];
     std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
     const std::string path = (dir / (std::string(buf) + ".atxvsa")).string();
     std::vector<SurfaceArchiveItem> items;
     for (std::uint32_t i = 0; i < 4; ++i) {
-      static const char* kNames[] = {"AAA", "BBB", "CCC", "DDD"};
-    items.push_back(SurfaceArchiveItem{kNames[i], &surfaces[i]});
+      static const char *kNames[] = {"AAA", "BBB", "CCC", "DDD"};
+      items.push_back(SurfaceArchiveItem{kNames[i], &surfaces[i]});
     }
     ASSERT_TRUE(write_surface_archive_v2_file(path, items).has_value());
     dp.emplace_back(buf, path);
@@ -2989,6 +3009,174 @@ namespace {
   }
   r.signals.emplace_back("sig", col);
   return r;
+}
+
+} // namespace
+
+// ── Look-ahead DEPTH is a scheduling knob, never an economic one ──────────────
+//
+// `RunConfig::prefetch_depth` exists so the independent, parallelizable snapshot
+// loads can pipeline against the strictly sequential economics. That is only worth
+// having if a deeper window cannot move a number, so this is the gate the speedup
+// rests on: every depth must reproduce the single-step look-ahead BIT-FOR-BIT.
+//
+// The open count is asserted alongside the values, and it is the half that would
+// catch a silently WASTED window. A run whose cache is too small for its depth
+// still produces identical numbers — it just evicts each completed prefetch before
+// its own step arrives and reloads the archive, which is a pure pessimization that
+// a values-only assertion cannot see. Pinning `open_count == refs.size()` at every
+// depth says each archive was opened exactly once, so the look-ahead was actually
+// consumed rather than thrown away and redone.
+//
+// THE CLOCK MUST BE LONG ENOUGH TO FORCE EVICTION, and this is the trap an earlier
+// version of this test fell into: with 9 dates the deepest windows here have a
+// capacity (depth + 2) LARGER than the whole corpus, so nothing is ever evicted, no
+// reload is possible, and the open-count assertion passes no matter what the
+// eviction order is. Verified by negative control — reintroducing the promote-on-use
+// that caused the reloads left the 9-date version GREEN. The corpus is therefore
+// sized well past the largest capacity under test (24 > 12 + 2) so every depth here
+// actually evicts, and the deepest depth still runs its window past the end of the
+// clock so the clamp is exercised too.
+TEST(Backtest, PrefetchDepthIsBitIdenticalToSingleStepLookAhead) {
+  const fs::path dir = fresh_dir("prefetch-depth");
+  const std::size_t kDates = 24u;
+  const CorpusManifest man = make_evolving_corpus(dir, "SPX", static_cast<int>(kDates));
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  ASSERT_EQ(clock->refs().size(), kDates);
+
+  // 4 is included on purpose: it is the depth at which the reload defect was first
+  // measured on the production replay, and the depth whose LRU arithmetic happened
+  // to be safe at some other capacities. 30 exceeds the clock.
+  const std::size_t depths[] = {1u, 2u, 3u, 4u, 8u, 12u, 30u};
+
+  // ── Strategy overload: whole-board loads (its private cache carries no uid
+  // subset, because a strategy's touched names are not known before on_step).
+  const auto run_strategy = [&](std::size_t depth) -> BacktestResult {
+    DeclarativeStrategy strategy{daily_two_leg_roll_spec()};
+    RunConfig config;
+    config.price.n_threads = 1u; // isolate the load pipeline from pricer fan-out
+    config.prefetch_depth = depth;
+    MarketSnapshot::reset_open_count();
+    auto result = run_backtest(*clock, strategy, config);
+    EXPECT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+    EXPECT_EQ(MarketSnapshot::open_count(), kDates)
+        << "depth " << depth << ": each archive must open exactly once";
+    return result.has_value() ? std::move(*result) : BacktestResult{};
+  };
+  const BacktestResult strategy_reference = run_strategy(1u);
+  ASSERT_EQ(strategy_reference.size(), kDates);
+  for (const std::size_t depth : depths) {
+    const BacktestResult deep = run_strategy(depth);
+    SCOPED_TRACE("strategy overload, prefetch_depth=" + std::to_string(depth));
+    expect_result_bit_identical(strategy_reference, deep);
+  }
+
+  // ── Fixed-book overload: subset-deserialize (its private cache DOES carry the
+  // book's uids), so its loader is a different one and needs its own coverage.
+  const std::int64_t expiry = kBaseNow + 120 * kDayNs; // survives the whole clock
+  const auto run_fixed = [&](std::size_t depth) -> BacktestResult {
+    RunConfig config;
+    config.price.n_threads = 1u;
+    config.prefetch_depth = depth;
+    MarketSnapshot::reset_open_count();
+    auto result = run_backtest(*clock, survivor_book(expiry), config);
+    EXPECT_TRUE(result.has_value()) << (result ? "" : result.error().to_string());
+    EXPECT_EQ(MarketSnapshot::open_count(), kDates)
+        << "depth " << depth << ": each archive must open exactly once";
+    return result.has_value() ? std::move(*result) : BacktestResult{};
+  };
+  const BacktestResult fixed_reference = run_fixed(1u);
+  ASSERT_EQ(fixed_reference.size(), kDates);
+  for (const std::size_t depth : depths) {
+    const BacktestResult deep = run_fixed(depth);
+    SCOPED_TRACE("fixed-book overload, prefetch_depth=" + std::to_string(depth));
+    expect_result_bit_identical(fixed_reference, deep);
+  }
+
+  // A zero depth is normalized to the single-step look-ahead rather than
+  // disabling look-ahead: "none" is spelled prefetch_snapshots=false.
+  RunConfig zero;
+  zero.price.n_threads = 1u;
+  zero.prefetch_depth = 0u;
+  MarketSnapshot::reset_open_count();
+  auto zero_res = run_backtest(*clock, survivor_book(expiry), zero);
+  ASSERT_TRUE(zero_res.has_value()) << zero_res.error().to_string();
+  EXPECT_EQ(MarketSnapshot::open_count(), kDates);
+  expect_result_bit_identical(fixed_reference, *zero_res);
+}
+
+// ── WS-F F1 tolerance extension (SP100 sprint task 2) ────────────────────────
+//
+// `UnpricedLotPolicy::ExcludeAndReport` used to cover only HELD valuation (step
+// P&L, book Greeks) and hedge-share MTM. Two fail-closed paths still aborted the
+// whole run on a single absent board — the daily delta hedge's share fill and
+// expiry settlement — which makes a real corpus (SPY fit-rejected on 18 of 140
+// 2026 sessions) unrunnable end-to-end. These gates pin the extended tolerance
+// and, just as importantly, that `Error` stays fully fail-closed.
+namespace {
+
+constexpr std::uint32_t kUidB = 8; // second name; kUid (7) is the always-present one
+
+// A two-name daily corpus: "AAA" (kUid) on every date, "BBB" (kUidB) on every
+// date whose 0-based index is NOT in `absent_b` — the fit-rejected-board shape.
+// Spots drift so hedging and settlement are non-degenerate.
+[[nodiscard]] CorpusManifest make_two_name_corpus(const fs::path &dir, int n_dates,
+                                                  const std::vector<int> &absent_b) {
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  std::vector<std::pair<std::string, std::string>> dp;
+  for (int d = 0; d < n_dates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    const double sa = 100.0 * (1.0 + 0.004 * static_cast<double>(d));
+    const double sb = 200.0 * (1.0 + 0.006 * static_cast<double>(d));
+    const PricedSurface a = make_surface(kUid, sa, sa, now, 0.001 * static_cast<double>(d));
+    const PricedSurface b = make_surface(kUidB, sb, sb, now, 0.002 * static_cast<double>(d));
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
+    const std::string date = buf;
+    const std::string path = (dir / (date + ".atxvsa")).string();
+    std::vector<SurfaceArchiveItem> items;
+    items.push_back(SurfaceArchiveItem{"AAA", &a});
+    if (std::find(absent_b.begin(), absent_b.end(), d) == absent_b.end()) {
+      items.push_back(SurfaceArchiveItem{"BBB", &b});
+    }
+    const Status st = write_surface_archive_v2_file(path, items);
+    EXPECT_TRUE(st.has_value()) << (st.has_value() ? std::string{} : st.error().to_string());
+    dp.emplace_back(date, path);
+  }
+  return make_manifest(dp, "AAA");
+}
+
+// Opens one long call on each name at step 0 and never trades again; the two
+// lots may carry different expiries so settlement can be exercised on one name
+// while the other keeps the book (and therefore the hedge) alive.
+class TwoNameOpenAndHoldStrategy final : public IStrategy {
+public:
+  TwoNameOpenAndHoldStrategy(std::int64_t expiry_a, std::int64_t expiry_b, HedgeSpec hedge) noexcept
+      : expiry_a_{expiry_a}, expiry_b_{expiry_b}, hedge_{hedge} {}
+
+  Status on_step(const MarketSnapshot & /*base*/, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id) override {
+    if (step_index == 0u) {
+      book.lots.push_back(Lot{next_lot_id++, OptionContract{kUid, 100.0, 0.0, Side::Call}, +5.0,
+                              100.0, expiry_a_, 0u, 1.0});
+      book.lots.push_back(Lot{next_lot_id++, OptionContract{kUidB, 200.0, 0.0, Side::Call}, +5.0,
+                              100.0, expiry_b_, 0u, 1.0});
+    }
+    return atx::core::Ok();
+  }
+
+  [[nodiscard]] HedgeSpec hedge_spec() const override { return hedge_; }
+
+private:
+  std::int64_t expiry_a_{0};
+  std::int64_t expiry_b_{0};
+  HedgeSpec hedge_{};
+};
+
+[[nodiscard]] HedgeSpec daily_delta_to_zero() noexcept {
+  return HedgeSpec{HedgeSpec::Kind::DeltaToZero, HedgeSpec::Cadence::Daily, 0.0};
 }
 
 } // namespace
@@ -3070,4 +3258,252 @@ TEST(BacktestResultShape, StepSeriesIsExemptAndSignalsAreChecked) {
   BacktestResult unnamed = make_shape_fixture(3);
   unnamed.signals.emplace_back("", std::vector<double>(3, 0.0));
   EXPECT_FALSE(unnamed.validate().has_value());
+}
+
+// The delta hedge wants to trade BBB on the date its board is absent. Under
+// ExcludeAndReport the uid's fill is SKIPPED (its ledger position is left
+// untouched) and the skip is counted; AAA hedges normally and the run finishes.
+TEST(UnpricedTolerance, HedgeSkipsAbsentUidAndCountsUnderExcludeAndReport) {
+  const fs::path dir = fresh_dir("unpriced-hedge-skip");
+  const CorpusManifest man = make_two_name_corpus(dir, 4, {2});
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t far = kBaseNow + 120 * kDayNs;
+  TwoNameOpenAndHoldStrategy strat{far, far, daily_delta_to_zero()};
+  RunConfig cfg;
+  cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  cfg.price.n_threads = 1u;
+  auto res = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), 4u);
+
+  // Row 2 is the gap date. Its exclusion tally is exactly three: the held BBB
+  // lot the step P&L could not explain (shifted board absent), the BBB hedge
+  // SHARE position held across the step (F1(b)), and the BBB hedge TRADE the
+  // overlay skipped (this change). Row 3 steps OFF the gap date, so the lot and
+  // the shares are still unpriced (base board absent) but the hedge, which
+  // trades on the NEW base, is fine: two.
+  EXPECT_EQ(res->n_unpriced_lots[0], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[1], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[2], 3.0);
+  EXPECT_EQ(res->n_unpriced_lots[3], 2.0);
+
+  // The skip LEAVES the position: `gross_delta` is the option-book delta plus the
+  // whole share ledger, so on the gap row it is exactly BBB's retained hedge
+  // shares (BBB's option delta is excluded, AAA nets to zero). Had the overlay
+  // flattened BBB at spot 0.0 — the pre-F1 bug this policy must not reintroduce —
+  // the ledger would read zero and this row would net out.
+  EXPECT_NEAR(res->gross_delta[1], 0.0, 1e-6);
+  EXPECT_GT(std::abs(res->gross_delta[2]), 1.0);
+  EXPECT_NEAR(res->gross_delta[3], 0.0, 1e-6);
+}
+
+// Same fixture under the strict policy: the run must still abort. (The abort
+// lands on the step-P&L guard, which is strictly EARLIER in the step than the
+// hedge overlay: for the overlay to want an absent uid at all that uid must
+// carry either an unpriced held lot or a live share position, and both of those
+// fail closed first. The hedge's own guard is therefore unreachable under Error
+// — what matters here is that nothing about this change opened a hole in it.)
+TEST(UnpricedTolerance, HedgeAbsentUidStillAbortsUnderError) {
+  const fs::path dir = fresh_dir("unpriced-hedge-error");
+  const CorpusManifest man = make_two_name_corpus(dir, 4, {2});
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t far = kBaseNow + 120 * kDayNs;
+  TwoNameOpenAndHoldStrategy strat{far, far, daily_delta_to_zero()};
+  RunConfig cfg;
+  cfg.unpriced = UnpricedLotPolicy::Error;
+  cfg.price.n_threads = 1u;
+  auto res = run_backtest(*clock, strat, cfg);
+  ASSERT_FALSE(res.has_value()) << "Error must stay fully fail-closed on an absent board";
+  EXPECT_EQ(res.error().code(), ErrorCode::NotFound);
+  // Pin WHICH guard fires, so the ordering argument above is a property and not
+  // just prose: this test would otherwise still pass if the intended guard were
+  // deleted and some other one happened to catch the same fixture.
+  EXPECT_NE(res.error().message().find("held lot(s) have no surface this step"), std::string::npos)
+      << "message was: " << res.error().message();
+}
+
+// A lot whose exact expiry step has no board is DEFERRED, not fatal: it is
+// counted on the gap step, stays open, and settles at intrinsic against the
+// first later step whose board is back.
+TEST(UnpricedTolerance, SettlementDefersAcrossAOneSessionGap) {
+  const fs::path dir = fresh_dir("unpriced-settle-defer");
+  const CorpusManifest man = make_two_name_corpus(dir, 4, {2});
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t far = kBaseNow + 120 * kDayNs;
+  const std::int64_t expiry_b = kBaseNow + 2 * kDayNs; // EXACTLY the gap date
+  TwoNameOpenAndHoldStrategy strat{far, expiry_b, HedgeSpec{}};
+  RunConfig cfg;
+  cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  cfg.price.n_threads = 1u;
+  auto res = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), 4u);
+
+  // The deferred lot is still open (it holds real economic exposure) through the
+  // gap row and leaves the book only when it actually settles.
+  EXPECT_EQ(res->n_open_lots[0], 2.0);
+  EXPECT_EQ(res->n_open_lots[1], 2.0);
+  EXPECT_EQ(res->n_open_lots[2], 2.0);
+  EXPECT_EQ(res->n_open_lots[3], 1.0);
+
+  // Counted on the deferral step AND on the step it finally settles.
+  EXPECT_EQ(res->n_unpriced_lots[0], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[1], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[2], 1.0);
+  EXPECT_EQ(res->n_unpriced_lots[3], 1.0);
+
+  // No settlement on the gap row; the whole settlement lands on the row whose
+  // board came back, priced at THAT row's spot.
+  EXPECT_TRUE(bits_equal(res->pnl_settlement[2], 0.0));
+  EXPECT_NE(res->pnl_settlement[3], 0.0);
+  EXPECT_TRUE(std::isfinite(res->nav[3]));
+
+  // The deferral path is serial control flow, but the sprint's standing rule is
+  // bit-identity across thread counts and this is the GAPPY path the change
+  // creates — the clean-data parity gate below cannot speak for it.
+  RunConfig wide = cfg;
+  wide.price.n_threads = 4u;
+  TwoNameOpenAndHoldStrategy strat4{far, expiry_b, HedgeSpec{}};
+  auto res4 = run_backtest(*clock, strat4, wide);
+  ASSERT_TRUE(res4.has_value()) << res4.error().to_string();
+  expect_result_bit_identical(*res, *res4);
+}
+
+// The other half of the absent-board settlement case: the expiry step OBSERVES a
+// settlement spot (its board is back) but the step's BASE board is gone, so there
+// is no mark to explain the settlement against. This is the one path in the engine
+// where cash and NAV deliberately disagree — the lot settles into cash at full
+// intrinsic while the explain lane books exactly zero — and it is reachable in the
+// real corpus (index board rejected on session k-1, back on session k, a cohort
+// expiring exactly on k). Pinned here so a regression that dropped the CASH too
+// cannot pass as "the explain was already zero".
+TEST(UnpricedTolerance, SettlementWithoutABaseMarkBooksCashButNoExplain) {
+  const fs::path dir = fresh_dir("unpriced-settle-no-base-mark");
+  const CorpusManifest man = make_two_name_corpus(dir, 4, {1}); // board gone the day BEFORE expiry
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t far = kBaseNow + 120 * kDayNs;
+  const std::int64_t expiry_b = kBaseNow + 2 * kDayNs; // board is BACK on the expiry date
+  TwoNameOpenAndHoldStrategy strat{far, expiry_b, HedgeSpec{}};
+  RunConfig cfg;
+  cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  cfg.price.n_threads = 1u;
+  auto res = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), 4u);
+
+  // The lot settles ON its expiry row — it is never deferred, because the spot it
+  // settles against IS observed — so it leaves the book there and stays gone.
+  EXPECT_EQ(res->n_open_lots[0], 2.0);
+  EXPECT_EQ(res->n_open_lots[1], 2.0);
+  EXPECT_EQ(res->n_open_lots[2], 1.0);
+  EXPECT_EQ(res->n_open_lots[3], 1.0);
+
+  // Row 1: the held lot the step could not explain (shifted board absent).
+  // Row 2: the settlement whose explain lane was dropped. Never silent.
+  EXPECT_EQ(res->n_unpriced_lots[0], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[1], 1.0);
+  EXPECT_EQ(res->n_unpriced_lots[2], 1.0);
+  EXPECT_EQ(res->n_unpriced_lots[3], 0.0);
+
+  // The explain lane is bit-zero on EVERY row: this settlement contributed none,
+  // and nothing else in the fixture expires.
+  for (std::size_t i = 0; i < res->size(); ++i) {
+    EXPECT_TRUE(bits_equal(res->pnl_settlement[i], 0.0)) << "row " << i;
+  }
+
+  // ...but the CASH ledger receives the full intrinsic, computed here from the
+  // fixture's own spot expression rather than from the engine. Nothing else moves
+  // cash on that step: no entries after inception, no hedge, no frictions, no
+  // financing.
+  const double spot_b_at_expiry = 200.0 * (1.0 + 0.006 * 2.0);
+  const double intrinsic = std::max(0.0, spot_b_at_expiry - 200.0); // long 200 call
+  ASSERT_GT(intrinsic, 0.0) << "fixture must settle IN THE MONEY or the gate is vacuous";
+  EXPECT_DOUBLE_EQ(res->cash[2] - res->cash[1], 5.0 * 100.0 * intrinsic);
+  EXPECT_DOUBLE_EQ(res->cash[3], res->cash[2]);
+}
+
+// Same fixture under the strict policy: an absent board at an exact expiry is
+// still a hard error naming the settling lot.
+TEST(UnpricedTolerance, SettlementAbsentStillAbortsUnderError) {
+  const fs::path dir = fresh_dir("unpriced-settle-error");
+  const CorpusManifest man = make_two_name_corpus(dir, 4, {2});
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t far = kBaseNow + 120 * kDayNs;
+  const std::int64_t expiry_b = kBaseNow + 2 * kDayNs;
+  TwoNameOpenAndHoldStrategy strat{far, expiry_b, HedgeSpec{}};
+  RunConfig cfg;
+  cfg.unpriced = UnpricedLotPolicy::Error;
+  cfg.price.n_threads = 1u;
+  auto res = run_backtest(*clock, strat, cfg);
+  ASSERT_FALSE(res.has_value()) << "Error must stay fully fail-closed at settlement";
+  EXPECT_EQ(res.error().code(), ErrorCode::NotFound);
+  EXPECT_NE(res.error().message().find("no surface for settling lot"), std::string::npos)
+      << "message was: " << res.error().message();
+}
+
+// The board never comes back: the deferred lot never settles, is counted on
+// EVERY step from the gap on, and is still open at the end of the run.
+TEST(UnpricedTolerance, NeverReturningSurfaceStaysOpenAndCounted) {
+  const fs::path dir = fresh_dir("unpriced-settle-never");
+  const CorpusManifest man = make_two_name_corpus(dir, 5, {2, 3, 4});
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t far = kBaseNow + 120 * kDayNs;
+  const std::int64_t expiry_b = kBaseNow + 2 * kDayNs;
+  TwoNameOpenAndHoldStrategy strat{far, expiry_b, HedgeSpec{}};
+  RunConfig cfg;
+  cfg.unpriced = UnpricedLotPolicy::ExcludeAndReport;
+  cfg.price.n_threads = 1u;
+  auto res = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(res.has_value()) << res.error().to_string();
+  ASSERT_EQ(res->size(), 5u);
+
+  for (std::size_t i = 0; i < res->size(); ++i) {
+    EXPECT_EQ(res->n_open_lots[i], 2.0) << "row " << i;
+    EXPECT_TRUE(bits_equal(res->pnl_settlement[i], 0.0)) << "row " << i;
+  }
+  EXPECT_EQ(res->n_unpriced_lots[0], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[1], 0.0);
+  EXPECT_EQ(res->n_unpriced_lots[2], 1.0);
+  EXPECT_EQ(res->n_unpriced_lots[3], 1.0);
+  EXPECT_EQ(res->n_unpriced_lots[4], 1.0);
+}
+
+// Regression guard: on gap-free data the two policies must produce the SAME
+// bits — the deferral machinery may not perturb the clean path — and the run
+// must stay thread-count invariant.
+TEST(UnpricedTolerance, ErrorPolicyPathIsBitIdenticalOnCleanData) {
+  const fs::path dir = fresh_dir("unpriced-clean-parity");
+  const CorpusManifest man = make_two_name_corpus(dir, 4, {});
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+
+  const std::int64_t far = kBaseNow + 120 * kDayNs;
+  const std::int64_t expiry_b = kBaseNow + 2 * kDayNs; // settles normally mid-run
+  const auto run = [&](UnpricedLotPolicy policy, unsigned n_threads) -> BacktestResult {
+    TwoNameOpenAndHoldStrategy strat{far, expiry_b, daily_delta_to_zero()};
+    RunConfig cfg;
+    cfg.unpriced = policy;
+    cfg.price.n_threads = n_threads;
+    auto res = run_backtest(*clock, strat, cfg);
+    EXPECT_TRUE(res.has_value()) << (res.has_value() ? std::string{} : res.error().to_string());
+    return res.has_value() ? std::move(*res) : BacktestResult{};
+  };
+  const BacktestResult strict = run(UnpricedLotPolicy::Error, 1u);
+  ASSERT_EQ(strict.size(), 4u);
+  // The fixture must actually exercise settlement, or the guard is vacuous.
+  EXPECT_NE(strict.pnl_settlement[2], 0.0);
+  expect_result_bit_identical(strict, run(UnpricedLotPolicy::ExcludeAndReport, 1u));
+  expect_result_bit_identical(strict, run(UnpricedLotPolicy::Error, 4u));
 }

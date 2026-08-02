@@ -66,7 +66,9 @@ TEST(EarningsReproSmoke, NvdaRealBoard_TwelveFiniteAtmCenI_FiniteNonnegativeEmov
   OpraLoadSpec load;
   load.path = kNvdaParquet;
   load.underlying = "NVDA";
-  load.snapshot_iso = "2026-02-10T14:00:00Z";
+  // This optional external fixture may be refreshed in place. Leave the
+  // override empty so the loader uses the file's authoritative stamped instant.
+  load.snapshot_iso.clear();
   load.r = 0.043;
   const auto panel = load_opra_cbbo_parquet(load);
   ASSERT_TRUE(panel.has_value()) << panel.error().to_string();

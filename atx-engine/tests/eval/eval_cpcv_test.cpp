@@ -42,6 +42,7 @@ TEST(EvalCpcv, Deterministic_TwoRunsEqual) {
   ASSERT_EQ(a.size(), b.size());
   for (std::size_t i=0;i<a.size();++i){ EXPECT_EQ(a[i].train_idx, b[i].train_idx); EXPECT_EQ(a[i].test_idx, b[i].test_idx); }
 }
+#ifndef NDEBUG
 TEST(EvalCpcvDeathTest, ApplyInsideFitWindowAborts) {
   // The fit/apply firewall idiom (generalized from phase4_integration_test.cpp): applying a fitted
   // object at a date < its fit_end must abort. CPCV makes this structurally impossible per fold.
@@ -53,6 +54,7 @@ TEST(EvalCpcvDeathTest, NegativeEmbargoAborts) {
   // discarded; cast to void to keep the /WX build clean (-Wunused-result).
   EXPECT_DEATH((void)cpcv_folds(spans_h(60,1), CpcvConfig{6,2,-0.1}), ".*");
 }
+#endif
 
 
 }  // namespace atxtest_eval_cpcv_test

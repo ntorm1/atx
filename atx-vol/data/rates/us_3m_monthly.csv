@@ -1,0 +1,73 @@
+# us_3m_monthly.csv -- monthly continuously-compounded approximation of the
+# 3-month US T-bill rate, one row per calendar month, `month,r` (r is a flat
+# decimal carry rate, e.g. 0.0430 = 4.30%).
+#
+# Consumed by atx-vol/tools/run_surface_db_backfill.py's rate_for_date(): the
+# orchestrator looks up each build chunk's carry rate by the chunk's starting
+# session's calendar month and passes it as the build CLI's --r (which MUST
+# match the rate the hive's quotes were priced under -- see
+# tools/surface_db_build_main.cpp's --r doc). A date outside this table is a
+# fail-closed ValueError, never a silently-coerced default.
+#
+# OPERATOR-REFINABLE: these are hand-set approximate values (a smoothed read of
+# the 2022-2026 3M T-bill path), not a market-data feed. 2026 is anchored to
+# this repo's own production choice, --r 0.043 (see python/tests/
+# test_surface_db_build.py's "production database was built at --r 0.043").
+# Extend this table (new trailing rows) before backfilling a month past its
+# last entry; do not extrapolate.
+month,r
+2022-01,0.0015
+2022-02,0.0030
+2022-03,0.0050
+2022-04,0.0080
+2022-05,0.0100
+2022-06,0.0150
+2022-07,0.0230
+2022-08,0.0270
+2022-09,0.0320
+2022-10,0.0390
+2022-11,0.0430
+2022-12,0.0430
+2023-01,0.0460
+2023-02,0.0470
+2023-03,0.0480
+2023-04,0.0500
+2023-05,0.0520
+2023-06,0.0520
+2023-07,0.0530
+2023-08,0.0540
+2023-09,0.0545
+2023-10,0.0545
+2023-11,0.0540
+2023-12,0.0535
+2024-01,0.0535
+2024-02,0.0535
+2024-03,0.0535
+2024-04,0.0535
+2024-05,0.0535
+2024-06,0.0530
+2024-07,0.0525
+2024-08,0.0510
+2024-09,0.0480
+2024-10,0.0460
+2024-11,0.0450
+2024-12,0.0435
+2025-01,0.0430
+2025-02,0.0430
+2025-03,0.0430
+2025-04,0.0430
+2025-05,0.0435
+2025-06,0.0430
+2025-07,0.0435
+2025-08,0.0430
+2025-09,0.0430
+2025-10,0.0430
+2025-11,0.0430
+2025-12,0.0430
+2026-01,0.0430
+2026-02,0.0430
+2026-03,0.0430
+2026-04,0.0430
+2026-05,0.0430
+2026-06,0.0430
+2026-07,0.0430

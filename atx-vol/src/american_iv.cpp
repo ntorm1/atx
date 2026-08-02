@@ -8,6 +8,7 @@
 #include <span>
 #include <utility>
 
+#include "al_probe.hpp" // env-gated AL hot-path zone timers (Perf 2b step 1)
 #include "atx/core/error.hpp"
 #include "atx/vol/american.hpp"
 #include "atx/vol/correction.hpp" // CorrectionCache, american_price_cached hot path
@@ -212,6 +213,7 @@ Result<double> american_implied_vol_impl(double price, double S, double K, doubl
                                          std::uint16_t max_iter, const std::optional<AlOpts> &opts,
                                          const Correction *correction, double warm_start,
                                          PolishTrace *trace = nullptr) {
+  const alprobe::Scope probe_zone(alprobe::Zone::AmericanIv);
   counters::lightweight::AmericanIvSample telemetry_sample;
   // Route price + vega through the cached hot path when the cache matches side.
   const bool use_cache = cache_usable(correction, side);

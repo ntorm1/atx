@@ -14,6 +14,7 @@
 //   atx-vol-surface-db-build --db <root> --hive <root>
 //       --from YYYY-MM-DD --to YYYY-MM-DD
 //       [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045]
+//       [--snapshot-suffix T19:55:00Z]
 //       [--deep-selection] [--retry-disabled] [--pin-curve-family true|false]
 //       [--fit-workers N] [--report out.csv] [--max-failures N]
 //       [--allow-coverage-regression] [--strict]
@@ -24,10 +25,34 @@
 //   --symbols       CSV universe; OMIT (or empty) to discover every underlying
 //                   in the window (rectangular date x union grid, visible holes).
 //   --index         designated index leg, pinned to the dense index recipe.
-//   --preset        fast | accurate | robust | hft | populate (default populate).
+//   --preset        fast | accurate | robust | hft | populate | bulk (default
+//                   populate). `bulk` is the Perf-2b opt-in throughput tier: the
+//                   Populate quality contract on the cheaper `ql_fast` AL rung.
 //   --r             flat continuously-compounded carry rate (default 0.0). MUST
 //                   match the rate the hive's quotes were priced under, or every
 //                   put-call-parity forward is wrong and every fit fails.
+//   --snapshot-suffix  per-date snapshot stamp suffix, `T HH:MM:SSZ` (default
+//                   "T19:55:00Z", byte-identical to the prior unconditional
+//                   default when omitted). Threaded straight into
+//                   OpraHiveSpec::snapshot_suffix (atx/vol/opra_hive.hpp), which
+//                   the loader concatenates onto each date to form the load
+//                   spec's snapshot_iso (opra_hive.cpp) -- the instant the
+//                   T-to-expiry math treats every quote as observed at
+//                   (opra_panel.cpp). Task 4 addendum §B: an ET-anchored
+//                   multi-year backfill (pull_opra_hive.py --snap-et) lands at
+//                   19:55Z on EDT dates and 20:55Z on EST dates, so a build
+//                   whose window sits entirely on the EST side of a DST
+//                   transition must pass --snapshot-suffix T20:55:00Z. Since
+//                   FIX-C-1 that is no longer a SILENT hazard: the loader
+//                   compares this stamp against each hive file's own `ts` column
+//                   (the snapshot instant of record) and fails the cell with a
+//                   load error naming both values, rather than stamping every
+//                   quote an hour off and exiting 0. Same strict-
+//                   parsing discipline as --r: must match `^T\d{2}:\d{2}:\d{2}Z$`
+//                   (is_valid_snapshot_suffix, surface_db_build_cli.hpp) or it
+//                   is a hard usage error (exit 2) -- a silently-accepted
+//                   malformed stamp would be exactly the trap --r's own strict
+//                   parser exists to close, one field over.
 //   --deep-selection  run the full held-out select_curve OOS search per symbol.
 //   --retry-disabled  re-attempt the symbols whose STORED config is disabled,
 //                   instead of skipping them. Without it, a fail-closed disable is
@@ -117,17 +142,29 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <exception> // std::exception (main's exception boundary)
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "atx/vol/counters.hpp"            // counters::ledger (ATX_VOL_SOLVE_LEDGER dump)
 #include "atx/vol/opra_hive.hpp"           // OpraHiveSpec
 #include "atx/vol/session.hpp"             // FitPreset
 #include "atx/vol/tools/surface_db_build.hpp"    // SurfaceDbBuildSpec, build_surface_db, write_build_report_csv
 #include "atx/vol/tools/surface_db_populate.hpp" // PopulateSymbolStats
 #include "atx/vol/types.hpp"               // Result, Status
 
+#include "surface_db_build_cli.hpp" // is_valid_snapshot_suffix (Task 4 addendum §B)
+
 using namespace atx::vol;
+
+// Perf Phase 2b step-1 characterization plane (atx-vol/src/al_probe.hpp). Forward
+// declared rather than included: the probe is a library-private src/-only header and
+// the tools/ target has no reason to gain src/ on its include path for one symbol.
+// Off unless ATX_VOL_AL_PROBE is set, so this is a no-op on every production run.
+namespace atx::vol::alprobe {
+void dump(std::FILE *out) noexcept;
+} // namespace atx::vol::alprobe
 
 namespace {
 
@@ -148,6 +185,7 @@ void print_usage(std::FILE *out) {
                "usage: atx-vol-surface-db-build --db <root> --hive <root> "
                "--from YYYY-MM-DD --to YYYY-MM-DD\n"
                "         [--symbols A,B,C] [--index SPY] [--preset populate] [--r 0.045] "
+               "[--snapshot-suffix T19:55:00Z] "
                "[--deep-selection] [--retry-disabled] [--pin-curve-family true|false] "
                "[--fit-workers N] [--report out.csv] "
                "[--max-failures N] [--allow-coverage-regression] [--strict]\n");
@@ -258,6 +296,10 @@ bool parse_preset(std::string_view name, FitPreset &out) {
     out = FitPreset::Hft;
   } else if (name == "populate") {
     out = FitPreset::Populate;
+  } else if (name == "bulk") {
+    // Perf Phase 2b opt-in throughput tier (session.hpp FitPreset::Bulk). NOT the
+    // default: `populate` remains the reproducible production tier.
+    out = FitPreset::Bulk;
   } else {
     return false;
   }
@@ -324,6 +366,15 @@ void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
   std::printf("n_load_errors %zu\n", r.n_load_errors);
   std::printf("n_coverage_holes %zu\n", r.n_coverage_holes);
 
+  // Coarse phase split, so a slow build says WHICH phase is slow without
+  // attaching a profiler. The three scale on different axes: `load` per date
+  // file, `config` per NEW symbol (serial), `populate` per cell (fanned out over
+  // --fit-workers). A resumed run reports a near-zero config phase because every
+  // symbol is already stored, which is itself the useful signal.
+  std::printf("timing.load_s %.3f\n", r.t_load_s);
+  std::printf("timing.config_s %.3f\n", r.t_config_s);
+  std::printf("timing.populate_s %.3f\n", r.t_populate_s);
+
   // Every symbol the database is currently NOT serving (fail-closed; never
   // silently served) — the ones this run disabled AND the ones it found already
   // stored disabled. Printed on every run, not just the one that first stored the
@@ -376,9 +427,8 @@ void print_report(const SurfaceDbBuildReport &r, std::size_t max_failed_cells) {
   }
 }
 
-} // namespace
-
-int main(int argc, char **argv) {
+// The build body. `main` below is a thin exception boundary over it.
+int run_build_cli(int argc, char **argv) {
   SurfaceDbBuildSpec spec;
   std::string preset_name = "populate"; // matches the SurfaceDbBuildSpec default (Populate)
   std::string report_path;
@@ -428,6 +478,17 @@ int main(int argc, char **argv) {
       if (!missing_value && !parse_finite_double(text, spec.hive.r)) {
         std::fprintf(stderr,
                      "atx-vol-surface-db-build: --r expects a finite number, got '%.*s'\n",
+                     static_cast<int>(text.size()), text.data());
+        print_usage(stderr);
+        return 2;
+      }
+    } else if (a == "--snapshot-suffix") {
+      const std::string_view text = nv();
+      // Validate AND apply in one seam (surface_db_build_cli.hpp) so the
+      // ASSIGNMENT is unit-testable, not just the format check -- FIX-I-1.
+      if (!missing_value && !apply_snapshot_suffix_flag(text, spec.hive)) {
+        std::fprintf(stderr,
+                     "atx-vol-surface-db-build: --snapshot-suffix expects 'THH:MM:SSZ', got '%.*s'\n",
                      static_cast<int>(text.size()), text.data());
         print_usage(stderr);
         return 2;
@@ -497,7 +558,7 @@ int main(int argc, char **argv) {
   if (!parse_preset(preset_name, preset)) {
     std::fprintf(stderr,
                  "atx-vol-surface-db-build: unknown --preset '%s' "
-                 "(fast|accurate|robust|hft|populate)\n",
+                 "(fast|accurate|robust|hft|populate|bulk)\n",
                  preset_name.c_str());
     print_usage(stderr);
     return 2;
@@ -512,6 +573,28 @@ int main(int argc, char **argv) {
                  report.error().to_string().c_str());
     return 1;
   }
+
+  // Perf attribution seam (same env-gated shape as ATX_VOL_PROFILE): dump the
+  // always-on solve ledger so an operator can see where a build's CPU went
+  // (AL boundary solves / premium evals / IV Newton iterations) without a
+  // profiler. stderr, one `ledger.<name> <count>` line per counter — the stdout
+  // report shape is pinned by tests and stays untouched.
+  {
+    char env_buf[8];
+    std::size_t env_sz = 0;
+    if (getenv_s(&env_sz, env_buf, sizeof(env_buf), "ATX_VOL_SOLVE_LEDGER") == 0 && env_sz > 0) {
+      const counters::ledger::Counts c = counters::ledger::snapshot();
+      for (unsigned i = 0; i < counters::ledger::kCount; ++i) {
+        std::fprintf(stderr, "ledger.%s %llu\n", counters::ledger::kNames[i],
+                     static_cast<unsigned long long>(c.v[i]));
+      }
+    }
+  }
+
+  // Companion plane to the ledger: the ledger counts EVENTS, this one attributes
+  // CYCLES to the Andersen-Lake zones (and records the normalized state each cold
+  // boundary solve is queried at). No-op unless ATX_VOL_AL_PROBE is set.
+  atx::vol::alprobe::dump(stderr);
 
   print_report(*report, max_failed_cells);
 
@@ -1024,4 +1107,41 @@ int main(int argc, char **argv) {
   // operator asked for and did not get. A script that reads the file must not see
   // a green exit for a build whose report never landed.
   return build_exit_code(*report, report_write_failed, strict);
+}
+
+} // namespace
+
+// Exception boundary. The build body returns Result/exit codes rather than
+// throwing, but it calls into Arrow/parquet and the STL, which DO throw — and an
+// exception escaping main is std::terminate, i.e. the process dies on
+// STATUS_STACK_BUFFER_OVERRUN (0xC0000409) having printed NOTHING to either
+// stream. That is exactly how a 102-symbol build failed during this sprint: no
+// message, no report CSV, and an exit code that reads like a corrupted binary
+// rather than "the allocator said no". An operator (or the orchestrator, which
+// only sees the exit code) then has nothing to act on.
+//
+// Catching it costs nothing on the success path and converts that silent death
+// into a named, greppable failure with a distinct exit code (3).
+int main(int argc, char **argv) {
+  try {
+    return run_build_cli(argc, argv);
+  } catch (const std::exception &e) {
+    std::fprintf(stderr, "FATAL: unhandled exception: %s\n", e.what());
+    std::fprintf(stderr,
+                 "  The build did NOT complete and no report was written. The loader materialises "
+                 "every (symbol, date) panel of the window before any fit starts, so peak memory "
+                 "scales with symbols x sessions -- retry with fewer --chunk-sessions or a smaller "
+                 "--symbols set.\n"
+                 "  NOTE on std::bad_alloc specifically: this used to fire on a 102-symbol date at "
+                 "a ~123 MB working set with GB of RAM free, because each per-symbol panel "
+                 "RESERVED its row buffer for the whole DATE FILE's row count and kept it -- ~4.8 "
+                 "GB of committed, never-touched address space, so the process hit the system "
+                 "COMMIT limit rather than its own footprint. That is fixed (P-01: the loader "
+                 "scans and indexes each date once and sizes every buffer for the symbol's own "
+                 "rows). A bad_alloc here now means a genuinely too-large window.\n");
+    return 3;
+  } catch (...) {
+    std::fprintf(stderr, "FATAL: unhandled non-std exception; build did not complete\n");
+    return 3;
+  }
 }

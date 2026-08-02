@@ -95,6 +95,14 @@ add_executable(atx-vol-tests
     listed_dispersion_pipeline_test.cpp
     dispersion_workflow_test.cpp
     backtest_test.cpp
+    backtest_incremental_test.cpp
+    backtest_template_test.cpp
+    backtest_db_test.cpp
+    backtest_db_build_test.cpp
+    research_db_test.cpp
+    research_validation_test.cpp
+    strategy_pipeline_test.cpp
+    quant_pipeline_test.cpp
     strategy_test.cpp
     dispersion_strangle_test.cpp
     backtest_exec_test.cpp
@@ -105,6 +113,7 @@ add_executable(atx-vol-tests
     backtest_real_test.cpp
     spy_strangle_backtest_test.cpp
     surface_db_backtest_test.cpp
+    surface_db_dispersion_backtest_test.cpp
     surface_db_populate_test.cpp
     surface_db_build_test.cpp
     surface_db_admin_test.cpp
@@ -119,6 +128,8 @@ add_executable(atx-vol-tests
     # Sub-Sprint A (Agent A) — appended targets:
     american_bindkey_test.cpp        # A4 (R-30) retained-geometry bind-key guardrail
     american_negrate_domain_test.cpp # A5 negative-rate / double-boundary domain map
+    # Perf Phase 2b (surface-db sprint) — appended target:
+    american_bulk_rung_test.cpp      # al_bulk_opts (ql_fast) rung + FitPreset::Bulk tier
     # Wave-B iv-kernel (Agent K) — appended targets:
     scalar_erfc_test.cpp             # K3-prep: scalar Cody erfc ULP + round-trip gate
     iv_seed_test.cpp                 # K2: Choi-2023 tighter seed accuracy + Halley-step gate
@@ -188,9 +199,21 @@ endif()
 # via the header-only examples/amzn_earnings_fit.hpp — add examples/ as a PRIVATE
 # quoted-include root (mirrors how bench adds ../tests) — and bake the committed
 # fixture's absolute path so the test finds it regardless of the ctest CWD.
-target_include_directories(atx-vol-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../examples)
+# Task 4 (sp100-surface-db sprint): surface_db_build_test.cpp's
+# SurfaceDbBuildCli suite includes tools/surface_db_build_cli.hpp -- the
+# --snapshot-suffix validator seam pulled out of surface_db_build_main.cpp's
+# arg loop -- so add tools/ as a PRIVATE quoted-include root too (same pattern
+# as the examples/ root two lines above).
+target_include_directories(atx-vol-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../examples
+                                                  ${CMAKE_CURRENT_SOURCE_DIR}/../tools)
 target_compile_definitions(atx-vol-tests PRIVATE
     "ATX_AMZN_FIXTURE=\"${CMAKE_CURRENT_SOURCE_DIR}/data/amzn_earnings_2018/amzn_opra_cbbo1m_2018-04-26T1945Z.parquet\"")
+# Same baked-absolute-path trick for the SHIPPED example config that operators
+# copy (examples/sp100_dispersion_config.tsv). surface_db_dispersion_backtest_test
+# parses the REAL file so an edit to it cannot rot unnoticed; the file is not a
+# build input, so nothing else would notice a renamed key or a bad token.
+target_compile_definitions(atx-vol-tests PRIVATE
+    "ATX_SP100_DISPERSION_CONFIG=\"${CMAKE_CURRENT_SOURCE_DIR}/../examples/sp100_dispersion_config.tsv\"")
 
 # S4-T18 (plan 3.8 + 4.1): vol_umbrella_test.cpp is the public-surface tiering
 # CONTRACT test — besides including the umbrella it READS it back off disk and

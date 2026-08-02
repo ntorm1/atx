@@ -290,3 +290,52 @@ def test_invalid_config_surfaces_as_atxerror():
     cfg.target_abs_delta = 1.5
     with pytest.raises(av.AtxError):
         av.make_dispersion_strangle_spec(cfg)
+
+
+def test_session_snap_fields_round_trip():
+    """The three session-snap fields are read/write from Python and default off."""
+    tenor = av.TenorSpec()
+    assert not tenor.snap_to_sessions
+    tenor.snap_to_sessions = True
+    assert tenor.snap_to_sessions
+
+    spec = av.StrategySpec()
+    assert list(spec.session_ts) == []
+    sessions = [BASE_TS, BASE_TS + DAY_NS, BASE_TS + 3 * DAY_NS]
+    spec.session_ts = sessions
+    assert list(spec.session_ts) == sessions
+
+    cfg = d4_config()
+    assert not cfg.snap_expiry_to_sessions
+    cfg.snap_expiry_to_sessions = True
+    assert cfg.snap_expiry_to_sessions
+
+
+def test_snap_expiry_propagates_onto_every_leg():
+    """The builder copies the flag onto every leg and stays corpus-agnostic."""
+    off = av.make_dispersion_strangle_spec(d4_config())
+    assert not any(leg.tenor.snap_to_sessions for leg in off.legs)
+
+    cfg = d4_config()
+    cfg.snap_expiry_to_sessions = True
+    on = av.make_dispersion_strangle_spec(cfg)
+    assert len(on.legs) == len(NAMES) + 1
+    assert all(leg.tenor.snap_to_sessions for leg in on.legs)
+    # session_ts is the CALLER's job: the builder never invents a calendar.
+    assert list(on.session_ts) == []
+
+
+def test_skip_entry_on_missing_index_round_trips_and_propagates():
+    """The entry-skip opt-in is read/write, defaults off, and reaches the spec."""
+    spec = av.StrategySpec()
+    assert not spec.skip_entry_on_missing_index
+    spec.skip_entry_on_missing_index = True
+    assert spec.skip_entry_on_missing_index
+
+    cfg = d4_config()
+    assert not cfg.skip_entry_on_missing_index
+    assert not av.make_dispersion_strangle_spec(cfg).skip_entry_on_missing_index
+
+    cfg.skip_entry_on_missing_index = True
+    assert cfg.skip_entry_on_missing_index
+    assert av.make_dispersion_strangle_spec(cfg).skip_entry_on_missing_index

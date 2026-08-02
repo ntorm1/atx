@@ -348,6 +348,22 @@ struct PopulateTestHooks {
 // n_failed and does NOT abort the date (document per-name failures, don't
 // silently drop). A date with zero successful fits writes NO partition.
 //
+// W-EX — A FIT THAT THROWS IS A FAILED CELL, NOT A FAILED BUILD. A C++ exception
+// escaping the per-board fit (std::bad_alloc under memory pressure is the live
+// case) is caught ON THE WORKER and recorded as exactly the failure above:
+// `n_failed`, and a `FailedCell` whose `code` is `Internal` and whose `detail`
+// is `"fit worker exception: <what()>"`. The date, its other symbols and every
+// later date are unaffected, and this function still returns Ok. It used to
+// travel to the bounded scheduler's catch(...), which discarded the message and
+// returned Err(Internal) for the WHOLE call -- abandoning work that had not even
+// been scheduled yet -- and the destructor / jthread bodies the unwind passed
+// through are implicitly noexcept, so one shape of it killed the process
+// outright with nothing printed on either stream. No path from a fit to
+// std::terminate remains: the worker boundary, `MarkDone`'s destructor, the
+// fit-runner jthread body and the bounded scheduler are each closed
+// independently. Gate:
+// SurfaceDbPopulate.WorkerExceptionFailsOnlyItsOwnCellAndTheBuildContinues.
+//
 // THE COVERAGE GUARD (REV-R3, review C-02/F-02). A date's write is REFUSED when
 // its candidate item list is not a SUPERSET of the symbols the existing partition
 // already holds — because the write is whole-file, so every stored symbol missing

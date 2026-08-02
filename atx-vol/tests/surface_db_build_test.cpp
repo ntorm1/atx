@@ -33,6 +33,7 @@
 #include <gtest/gtest.h>
 
 #include "atx/vol/corpus.hpp"           // CorpusBoard
+#include "atx/vol/data.hpp"             // iso_to_ns (snapshot-stamp assertions)
 #include "atx/vol/opra_batch.hpp"       // corpus_board_from_opra
 #include "atx/vol/opra_hive.hpp"        // OpraHiveSpec, load_opra_hive
 #include "atx/vol/profile.hpp"          // ProfileKind (FitContext::profile_override)
@@ -43,6 +44,8 @@
 #include "atx/vol/surface_policy.hpp"      // has_output, SurfacePurpose
 #include "atx/vol/types.hpp"
 #include "atx/vol/vol_curve.hpp" // VolCurveKind
+
+#include "surface_db_build_cli.hpp" // is_valid_snapshot_suffix (Task 4 addendum §B seam)
 
 namespace atx::vol {
 namespace {
@@ -1756,6 +1759,164 @@ TEST(SurfaceDbBuildExitCode, TheCodesThemselvesAreAContract) {
       << "4 belongs to atx-vol-surface-db verify; the two tools share one vocabulary";
 }
 
+// ── SurfaceDbBuildCli: the --snapshot-suffix usage-error seam (Task 4 addendum
+// §B) ─────────────────────────────────────────────────────────────────────────
+//
+// `tools/surface_db_build_main.cpp` never set `OpraHiveSpec::snapshot_suffix`
+// before this task, so every build used the header's default "T19:55:00Z"
+// (include/atx/vol/opra_hive.hpp:111) regardless of which snapshot minute the
+// hive was actually pulled at -- wrong for any EST-period chunk of an
+// ET-anchored (--snap-et) multi-year backfill, whose files are stamped 20:55Z.
+//
+// This suite (`SurfaceDbBuildExitCode` above) tests `build_exit_code`, a pure
+// function over a `SurfaceDbBuildReport` -- it has never covered `main()`'s arg
+// loop, and neither this binary nor any other in the tree spawns the real
+// `atx-vol-surface-db-build` process to check a usage-error exit code (grepped
+// for CreateProcess/_popen/std::system/subprocess against atx-vol/tests: the
+// only hit, process_scratch_test.cpp, spawns ITSELF for an unrelated
+// scratch-isolation probe). So there is no existing "spawn the exe" pattern to
+// follow for this flag, and pulling the arg loop's other validators
+// (parse_finite_double et al.) out to a header would be actual restructuring
+// of a file this task does not otherwise touch. The addendum's own escape
+// hatch applies instead: "if parse logic is testable via a seam, use it" --
+// `is_valid_snapshot_suffix` (tools/surface_db_build_cli.hpp) IS that seam,
+// same discipline as --r's parse_finite_double, tested directly here with no
+// subprocess. The CLI's actual rejection (usage error, exit 2, one-line
+// diagnostic on stderr) is wired from this same predicate in
+// surface_db_build_main.cpp -- end-to-end wiring is exercised by the pilot
+// tasks per the addendum, not by this unit test.
+TEST(SurfaceDbBuildCli, SnapshotSuffixAcceptsTheDocumentedFormat) {
+  EXPECT_TRUE(is_valid_snapshot_suffix("T19:55:00Z")) << "the unchanged default must still parse";
+  EXPECT_TRUE(is_valid_snapshot_suffix("T20:55:00Z")) << "EST-period chunks stamp 20:55Z";
+  EXPECT_TRUE(is_valid_snapshot_suffix("T00:00:00Z"));
+}
+
+// ── FIX-I-1: the flag's WIRING, not only its format ──────────────────────────
+//
+// The two tests above pin `is_valid_snapshot_suffix` and nothing else, and the
+// comment block above admits it: "end-to-end wiring is exercised by the pilot
+// tasks per the addendum, not by this unit test". That admission was the hole.
+// Deleting the assignment the arg loop performed once the value validated --
+// `spec.hive.snapshot_suffix = std::string(text)` -- passed the ENTIRE C++ and
+// Python suite, silently pinning every build to the header's 19:55Z default,
+// which is the wrong stamp for all 83 EST sessions of the production hive. The
+// only gate that ever checked it (`t8-gates/audit_suffix.py`) audits command
+// lines, lives outside the repo, and will never run again.
+//
+// The assignment now lives in the same header seam as the validator
+// (`apply_snapshot_suffix_flag`), so this asserts it directly: a valid value
+// REACHES the spec, and a rejected one leaves the spec untouched (the CLI prints
+// usage and exits 2, as before).
+TEST(SurfaceDbBuildCli, SnapshotSuffixFlagAppliesTheValidatedValueToTheSpec) {
+  OpraHiveSpec hive;
+  ASSERT_EQ(hive.snapshot_suffix, std::string{"T19:55:00Z"})
+      << "the header default this flag exists to override";
+
+  EXPECT_TRUE(apply_snapshot_suffix_flag("T20:55:00Z", hive));
+  EXPECT_EQ(hive.snapshot_suffix, std::string{"T20:55:00Z"})
+      << "a validated --snapshot-suffix MUST reach OpraHiveSpec::snapshot_suffix; "
+         "without this assertion, deleting the assignment passes the whole suite";
+
+  // Rejected values are a usage error (exit 2) and must not half-apply.
+  EXPECT_FALSE(apply_snapshot_suffix_flag("T20:5500Z", hive));
+  EXPECT_EQ(hive.snapshot_suffix, std::string{"T20:55:00Z"});
+  EXPECT_FALSE(apply_snapshot_suffix_flag("", hive));
+  EXPECT_EQ(hive.snapshot_suffix, std::string{"T20:55:00Z"});
+}
+
+TEST(SurfaceDbBuildCli, SnapshotSuffixRejectsMalformedValue) {
+  EXPECT_FALSE(is_valid_snapshot_suffix("")) << "an absent value must not silently pass";
+  EXPECT_FALSE(is_valid_snapshot_suffix("19:55:00Z")) << "missing the leading T";
+  EXPECT_FALSE(is_valid_snapshot_suffix("T19:55:00")) << "missing the trailing Z";
+  EXPECT_FALSE(is_valid_snapshot_suffix("T1955:00Z")) << "missing the first colon";
+  EXPECT_FALSE(is_valid_snapshot_suffix("T19:5500Z")) << "missing the second colon";
+  EXPECT_FALSE(is_valid_snapshot_suffix("T19:55:00Z ")) << "trailing junk must not be truncated away";
+  EXPECT_FALSE(is_valid_snapshot_suffix("Tab:cd:efZ")) << "non-digit fields";
+  EXPECT_FALSE(is_valid_snapshot_suffix("t19:55:00z")) << "case-sensitive: only upper-case T/Z";
+}
+
+// ── FIX-C-1 / FIX-I-1: the suffix reaches the PANEL, and a wrong one is loud ──
+//
+// The layer below the flag. `OpraHiveSpec::snapshot_suffix` is concatenated onto
+// each date (`opra_hive.cpp:144`) to form `OpraLoadSpec::snapshot_iso`, and that
+// stamp used to drive every time-to-expiry computation while the hive file's OWN
+// `ts` column -- the instant of record, constant per file by the frozen v2 schema
+// -- sat in scope and was never compared to it. A valid-but-wrong stamp therefore
+// produced exit 0, `n_load_errors 0`, every date written, and a ~1e-3 relative IV
+// drift with `frame.snapshot_ts_ns` still reading correct in every diagnostic.
+//
+// Two assertions here, over a hive stamped at the EST-side 20:55Z minute (what
+// `pull_opra_hive.py --snap-et 15:55` writes for a winter session):
+//   1. the MATCHING suffix loads and the minute lands on the panel + the frame;
+//   2. the DEFAULT 19:55Z suffix -- exactly the review's failure scenario, an
+//      operator repairing three EST dates who omits the flag -- fails every cell
+//      with a load error naming both instants, instead of silently mis-stamping.
+// (2) is also the second, cheaper wiring test for I-1: with the assignment
+// deleted from the arg loop, case (1) below would load with the 19:55Z default
+// and fail.
+TEST(OpraHiveSnapshotStamp, MatchingSuffixLoadsAndStampsTheFilesOwnMinute) {
+  const fs::path root = fresh_dir("snapshot_stamp_est");
+  tsupport::SyntheticHiveSpec fx;
+  fx.dates = {"2026-01-05"};                  // EST session: 15:55 ET == 20:55Z
+  fx.snapshot_hour_utc = 20U;
+  fx.snapshot_minute_utc = 55U;
+  tsupport::write_synthetic_hive_v2(root, fx);
+
+  OpraHiveSpec hspec;
+  hspec.root_dir = root.string();
+  hspec.date_lo = "2026-01-05";
+  hspec.date_hi = "2026-01-05";
+  hspec.symbols = {"AAA", "BBB", "CCC"};
+  hspec.r = 0.03;
+  hspec.snapshot_suffix = "T20:55:00Z";
+
+  const auto hive = load_opra_hive(hspec);
+  ASSERT_TRUE(hive.has_value()) << hive.error().to_string();
+  ASSERT_EQ(hive->n_loaded, std::size_t{3});
+  EXPECT_EQ(hive->n_error, std::size_t{0});
+  for (const OpraBatchEntry& entry : hive->entries) {
+    ASSERT_TRUE(entry.panel.has_value()) << entry.symbol << ": " << entry.panel.error().to_string();
+    EXPECT_EQ(entry.panel->snapshot_iso, std::string{"2026-01-05T20:55:00Z"})
+        << "the spec's suffix must reach the panel's stamp";
+    EXPECT_EQ(entry.panel->frame.snapshot_ts_ns, iso_to_ns("2026-01-05T20:55:00Z"));
+    EXPECT_GT(entry.panel->n_contracts, 0U);
+  }
+  fs::remove_all(root);
+}
+
+TEST(OpraHiveSnapshotStamp, SuffixDisagreeingWithTheFilesTsIsALoadErrorNotASilentMisStamp) {
+  const fs::path root = fresh_dir("snapshot_stamp_mismatch");
+  tsupport::SyntheticHiveSpec fx;
+  fx.dates = {"2026-01-05"};
+  fx.snapshot_hour_utc = 20U;                 // the file says 20:55Z ...
+  fx.snapshot_minute_utc = 55U;
+  tsupport::write_synthetic_hive_v2(root, fx);
+
+  OpraHiveSpec hspec;
+  hspec.root_dir = root.string();
+  hspec.date_lo = "2026-01-05";
+  hspec.date_hi = "2026-01-05";
+  hspec.symbols = {"AAA", "BBB", "CCC"};
+  hspec.r = 0.03;
+  // ... and the build is left on the header's default 19:55Z. Well-formed, so
+  // `is_valid_snapshot_suffix` accepts it; an hour wrong, so every T is wrong.
+  ASSERT_EQ(hspec.snapshot_suffix, std::string{"T19:55:00Z"});
+
+  const auto hive = load_opra_hive(hspec);
+  ASSERT_TRUE(hive.has_value()) << hive.error().to_string();
+  EXPECT_EQ(hive->n_loaded, std::size_t{0}) << "a mis-stamped cell must not be served";
+  EXPECT_EQ(hive->n_error, std::size_t{3});
+  EXPECT_EQ(hive->n_coverage_holes, std::size_t{0})
+      << "a stamp mismatch is a defect, not a sparse-universe hole";
+  for (const OpraBatchEntry& entry : hive->entries) {
+    ASSERT_FALSE(entry.panel.has_value()) << entry.symbol;
+    const std::string msg = entry.panel.error().to_string();
+    EXPECT_NE(msg.find("T19:55:00Z"), std::string::npos) << msg;  // the claim
+    EXPECT_NE(msg.find("T20:55:00Z"), std::string::npos) << msg;  // the truth
+  }
+  fs::remove_all(root);
+}
+
 // ── The CROSS-BINARY half of that contract (REV-R5, review I-4) ──────────────
 //
 // The test above pins the build CLI's five constants and its message names the
@@ -2092,23 +2253,37 @@ TEST(BuildSurfaceDb, EverySymbolFailingSelectionIsTotalConfigFailure) {
   EXPECT_FALSE(is_total_config_failure(*good));
 }
 
-// The production trap, end to end at the library level: the synthetic hive is
-// priced at a NON-ZERO rate (SyntheticHiveSpec::r == 0.03), so building it with
-// the CLI's old hard-wired r = 0.0 fails every single fit while the build itself
-// still returns Ok — exactly the silent green exit `--r` and this predicate close.
-// The same build with the MATCHING r fits everything.
-TEST(BuildSurfaceDb, ZeroCarryAgainstNonZeroHiveIsTotalFailure) {
+// The production trap, end to end at the library level — REWRITTEN when the
+// classify_regime rate==0 fix landed. The synthetic hive is priced at a NON-ZERO
+// rate (SyntheticHiveSpec::r == 0.03); building it with r = 0.0 used to fail
+// every single fit, but only by ACCIDENT: at r=0 the PCP borrow iterate lands at
+// q_eff = -eps, and the old regime table lumped (rate==0, yield<0) into the
+// double-continuation Unsupported cell, NaN-killing every carry solve. That cell
+// is really single-boundary American (see american.hpp's classify_regime and
+// NegRateDomainMap.ZeroRateNegativeYield_IsSingleBoundaryAmerican), so a
+// mis-specified carry now CONVERGES — the borrow solve absorbs the wrong r into
+// the implied borrow and the fits land in band.
+//
+// What this test now pins: (1) the wrong-carry build succeeds and is NOT a
+// total fit failure — the old tripwire is gone and nothing may resurrect it by
+// accident; (2) the matching-carry build still fits everything. The RESIDUAL
+// OPERATOR HAZARD is documented here on purpose: a forgotten `--r` no longer
+// announces itself as a dead build — the surfaces store a wrong carry
+// DECOMPOSITION (r=0 with the difference pushed into borrow) even though they
+// reprice the market in band. The guard against that is operational (pass the
+// correct `--r`; it is a claim about the market), not this predicate.
+TEST(BuildSurfaceDb, ZeroCarryAgainstNonZeroHiveConvergesSinceRegimeFix) {
   const tsupport::SyntheticHiveSpec fx; // r = 0.03
   ASSERT_GT(fx.r, 0.0) << "fixture must embed a non-zero carry for this test to mean anything";
   const BuildFixture f = make_build_fixture("carry_mismatch", fx);
 
   SurfaceDbBuildSpec spec = build_spec(f, fx);
-  spec.hive.r = 0.0; // the pre---r CLI default: wrong for this hive
+  spec.hive.r = 0.0; // mis-specified for this hive; converges since the regime fix
   const auto bad = build_surface_db(spec);
-  ASSERT_TRUE(bad.has_value()) << (bad ? "" : bad.error().to_string()); // still Ok — the trap
+  ASSERT_TRUE(bad.has_value()) << (bad ? "" : bad.error().to_string());
   EXPECT_GT(bad->coverage.cells_to_fit, 0u);
-  EXPECT_EQ(bad->coverage.cells_ok, 0u);
-  EXPECT_TRUE(is_total_fit_failure(*bad));
+  EXPECT_GT(bad->coverage.cells_ok, 0u) << "r=0 fits must converge post regime fix";
+  EXPECT_FALSE(is_total_fit_failure(*bad)) << "the accidental r=0 tripwire must stay gone";
 
   // Same hive, same db root, correct carry: the build converges.
   const BuildFixture g = make_build_fixture("carry_match", fx);

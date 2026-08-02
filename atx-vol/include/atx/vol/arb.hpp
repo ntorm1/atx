@@ -133,9 +133,14 @@ arb_check_calendar(const VolSurface &s, double k_min, double k_max,
 arb_check_calendar(const CurveSurface &s, double k_min, double k_max,
                    std::uint32_t n_grid);
 
-// Independent per-curve Lee/Roper density check used after parameter-space
-// calendar projection. Unlike a model's own admissibility predicate, this
-// samples the final IVolCurve values that downstream consumers receive.
+// Independent per-curve butterfly check used after parameter-space calendar
+// projection. Smooth parametric families retain the Lee/Roper density scan over
+// the final IVolCurve values that downstream consumers receive. ConvexDense is
+// represented by a convex piecewise-linear call price, whose density contains
+// atoms at its knots and is not C2-smooth in total variance; it is checked in its
+// native representation instead by requiring non-decreasing call-price slopes
+// over the exact in-domain QP nodes plus the requested-domain endpoints. Price
+// bounds remain the separate `arb_check_price_bounds` responsibility.
 [[nodiscard]] Result<std::vector<ArbViolation>>
 arb_check_butterfly(const IVolCurve &curve, double k_min, double k_max,
                     std::uint32_t n_grid);

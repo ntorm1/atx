@@ -26,10 +26,12 @@ constexpr double kCalendarDaysPerYear = 365.25;
 
 // One long strangle LegSpec on `symbol`, group "basket", TargetTheta sized.
 [[nodiscard]] LegSpec make_name_leg(const std::string &symbol, double target_T,
-                                    double target_abs_delta, double theta_per_name_daily) {
+                                    double target_abs_delta, double theta_per_name_daily,
+                                    bool snap_to_sessions) {
   LegSpec leg;
   leg.symbol = symbol;
   leg.tenor.target_T = target_T;
+  leg.tenor.snap_to_sessions = snap_to_sessions;
   leg.structure.kind = StructureSpec::Kind::Strangle;
   leg.structure.call_leg = StrikeSelector{StrikeSelector::Kind::Delta, target_abs_delta};
   leg.structure.put_leg = StrikeSelector{StrikeSelector::Kind::Delta, target_abs_delta};
@@ -41,10 +43,12 @@ constexpr double kCalendarDaysPerYear = 365.25;
 // The short index strangle LegSpec, group "index", TargetVega sized (the
 // FlatVega constraint rescales this leg's qty at resolve time).
 [[nodiscard]] LegSpec make_index_leg(const std::string &symbol, double target_T,
-                                     double target_abs_delta, double index_base_vega) {
+                                     double target_abs_delta, double index_base_vega,
+                                     bool snap_to_sessions) {
   LegSpec leg;
   leg.symbol = symbol;
   leg.tenor.target_T = target_T;
+  leg.tenor.snap_to_sessions = snap_to_sessions;
   leg.structure.kind = StructureSpec::Kind::Strangle;
   leg.structure.call_leg = StrikeSelector{StrikeSelector::Kind::Delta, target_abs_delta};
   leg.structure.put_leg = StrikeSelector{StrikeSelector::Kind::Delta, target_abs_delta};
@@ -139,11 +143,11 @@ Result<StrategySpec> make_dispersion_strangle_spec(const DispersionStrangleConfi
   spec.name = "mag7_dispersion_strangle";
   spec.legs.reserve(cfg.names.size() + 1);
   for (const std::string &name : cfg.names) {
-    spec.legs.push_back(
-        make_name_leg(name, target_T, cfg.target_abs_delta, cfg.theta_per_name_daily));
+    spec.legs.push_back(make_name_leg(name, target_T, cfg.target_abs_delta,
+                                      cfg.theta_per_name_daily, cfg.snap_expiry_to_sessions));
   }
-  spec.legs.push_back(
-      make_index_leg(cfg.index_symbol, target_T, cfg.target_abs_delta, cfg.index_base_vega));
+  spec.legs.push_back(make_index_leg(cfg.index_symbol, target_T, cfg.target_abs_delta,
+                                     cfg.index_base_vega, cfg.snap_expiry_to_sessions));
 
   spec.constraint.kind = CrossLegConstraint::Kind::FlatVega;
   spec.constraint.group_a = "basket";
@@ -161,6 +165,9 @@ Result<StrategySpec> make_dispersion_strangle_spec(const DispersionStrangleConfi
 
   spec.missing = cfg.missing;
   spec.hedge = cfg.hedge;
+  // The index leg IS the constraint's scaled group ("index" == group_b above), so
+  // the spec-level flag lands on exactly the leg this config names.
+  spec.skip_entry_on_missing_index = cfg.skip_entry_on_missing_index;
 
   return Ok(std::move(spec));
 }

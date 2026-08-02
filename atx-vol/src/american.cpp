@@ -10,6 +10,7 @@
 #include <memory>
 #include <vector>
 
+#include "al_probe.hpp"           // env-gated AL hot-path zone timers (Perf 2b step 1)
 #include "american_boundary.hpp" // amer:: seam (structs + boundary-solve decls)
 #include "atx/core/math.hpp"
 #include "atx/vol/black76.hpp"
@@ -915,6 +916,11 @@ struct AlPremiumCache {
 }
 
 void al_seed_boundary(AlBoundary &b, double sigma, double r, double q) noexcept {
+  const alprobe::Scope probe_zone(b.n == 7 ? alprobe::Zone::AlSeedBaw
+                                           : alprobe::Zone::AlSeedBawAcc);
+  // Every AL boundary solve, from any of the four entry paths, passes through here
+  // exactly once, so this is where the normalized query state is sampled.
+  alprobe::record_boundary_state(b.T, sigma, r, q, b.K, b.n);
   ATX_VOL_COUNT(BoundarySolves); // one cold boundary seed (BAW re-seed per node)
   counters::ledger::bump(counters::ledger::Solve::AlBoundarySolves); // V1 always-on gate metric
   counters::lightweight::record_boundary_solves();
@@ -984,6 +990,7 @@ void al_seed_boundary_qdplus(AlBoundary &b, double sigma, double r, double q) no
 // AloPricer::reset does the same and then retains it across every sigma residual.
 void al_bind_geometry_static(const AlBoundary &bnd, AlWorkspace &ws, double r,
                              double q) noexcept {
+  const alprobe::Scope probe_zone(alprobe::Zone::AlBindGeoStatic);
   if (!ws.specialize || !al_fp_specialized(bnd.n, ws.n_quad_fp)) {
     ws.geo_static_bound = false;
     return; // generic path recomputes inline; no geometry needed
@@ -1073,6 +1080,7 @@ void al_bind_geometry_static(const AlBoundary &bnd, AlWorkspace &ws, double r,
 // contract; the sigma-bind math itself is r/q-independent.
 void al_bind_geometry_sigma(const AlBoundary &bnd, AlWorkspace &ws, double sigma,
                             [[maybe_unused]] double r, [[maybe_unused]] double q) noexcept {
+  const alprobe::Scope probe_zone(alprobe::Zone::AlBindGeoSigma);
   if (!ws.specialize || !al_fp_specialized(bnd.n, ws.n_quad_fp)) {
     return;
   }
@@ -1334,6 +1342,8 @@ template <unsigned NB, unsigned NQ>
 // schemes; the generic <0,0> is both the arbitrary-AlOpts path and the reference.
 [[nodiscard]] AlSweepResult al_jacobi_newton_sweep(AlBoundary &b, AlWorkspace &ws, double sigma,
                                                    double r, double q) noexcept {
+  const alprobe::Scope probe_zone(b.n == 7 ? alprobe::Zone::AlSweepJn
+                                           : alprobe::Zone::AlSweepJnAcc);
   ATX_VOL_COUNT(JacobiNewtonSweeps);
   if (ws.specialize) {
     if (b.n == 7 && ws.n_quad_fp == 8) {
@@ -1396,6 +1406,8 @@ template <unsigned NB, unsigned NQ>
 
 [[nodiscard]] AlSweepResult al_fixed_point_sweep(AlBoundary &b, AlWorkspace &ws, double sigma,
                                                  double r, double q) noexcept {
+  const alprobe::Scope probe_zone(b.n == 7 ? alprobe::Zone::AlSweepFp
+                                           : alprobe::Zone::AlSweepFpAcc);
   ATX_VOL_COUNT(FixedPointSweeps);
   if (ws.specialize) {
     if (b.n == 7 && ws.n_quad_fp == 8) {
@@ -1477,6 +1489,7 @@ template <unsigned NP>
 [[nodiscard]] double al_put_premium(const AlBoundary &b, const AlWorkspace &ws, double S,
                                     double sigma, double r, double q,
                                     const AlPremiumCache *pc = nullptr) noexcept {
+  const alprobe::Scope probe_zone(alprobe::Zone::AlPremiumQuad);
   // Reuse the precompute only when it was bound for exactly this (boundary, nq,
   // sigma, r, q); any miss uses the bit-identical inline path.
   const AlPremiumCache *use =
@@ -1489,6 +1502,13 @@ template <unsigned NP>
       return al_put_premium_impl<16>(b, ws, S, sigma, r, q, use);
     case 24:
       return al_put_premium_impl<24>(b, ws, S, sigma, r, q, use);
+    case 32:
+      // Perf 2b: 32 was the one Gauss-Legendre order gl_find offers that had no
+      // compile-time trip count here, so every rung using the decoupled `ql_fast` /
+      // `fast_p32` premium order (docs/al-preset-ladder.md §4) silently paid the
+      // generic runtime-trip-count path. Same single body as every other case, so
+      // this is a pure specialization and bit-identical to what it replaces.
+      return al_put_premium_impl<32>(b, ws, S, sigma, r, q, use);
     case 48:
       return al_put_premium_impl<48>(b, ws, S, sigma, r, q, use);
     default:
@@ -1554,6 +1574,7 @@ void al_bind_premium(const AlBoundary &b, const AlWorkspace &ws, double sigma, d
                                                        const AlPremiumCache &pc, double S, double K,
                                                        double T, double sigma, double r,
                                                        double q) noexcept {
+  const alprobe::Scope probe_zone(alprobe::Zone::AlPriceFromBoundary);
   const bool hit = al_premium_cache_matches(pc, bnd, ws, sigma, r, q);
   const double euro = hit ? black76_price(S * pc.euro_fwd, K, T, sigma, pc.euro_df, Side::Put)
                           : euro_put_sk(S, K, T, sigma, r, q);
@@ -1593,6 +1614,7 @@ namespace amer {
                                                   double q, const AlScheme &sch, AlBoundary &bnd,
                                                   AlWorkspace &ws,
                                                   bool specialize) noexcept { // default in header
+  const alprobe::Scope probe_zone(alprobe::Zone::AlBoundarySolveCold);
   al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
   if (!(bnd.xmax > 0.0)) {
     // Negative-rate/carry corner: AL cannot run. Flagged unsupported.
@@ -1698,6 +1720,7 @@ namespace amer {
                                                        double q, const AlScheme &sch,
                                                        const AlBoundary &seed, AlBoundary &bnd,
                                                        AlWorkspace &ws) noexcept {
+  const alprobe::Scope probe_zone(alprobe::Zone::AlBoundarySolveWarm);
   al_init_nodes(bnd, sch.n_boundary, T, K, r, q);
   if (!(bnd.xmax > 0.0)) {
     return AlSolveStatus::Collapsed;
@@ -1767,6 +1790,7 @@ namespace amer {
 [[nodiscard]] double al_put_price_from_boundary(const AlBoundary &bnd, const AlWorkspace &ws,
                                                 double S, double K, double T, double sigma,
                                                 double r, double q) noexcept {
+  const alprobe::Scope probe_zone(alprobe::Zone::AlPriceFromBoundary);
   const double euro = euro_put_sk(S, K, T, sigma, r, q);
   const double prem = al_put_premium(bnd, ws, S, sigma, r, q);
   double price = euro + prem;
@@ -2304,6 +2328,7 @@ AloPricer::AloPricer(AloPricer &&) noexcept = default;
 AloPricer &AloPricer::operator=(AloPricer &&) noexcept = default;
 
 double AloPricer::price(double sigma) noexcept {
+  const alprobe::Scope probe_zone(alprobe::Zone::AloPricerPrice);
   assert(st_ != nullptr);
   if (st_ == nullptr) {
     return std::numeric_limits<double>::quiet_NaN();
@@ -2413,6 +2438,9 @@ AlOpts al_default_opts() noexcept {
 AlOpts al_fast_opts() noexcept {
   return AlOpts{.n_collocation = 7, .n_quadrature = 16, .max_newton_iter = 4, .tol = 1.0e-8};
 }
+
+// docs/al-preset-ladder.md §4 `ql_fast`: l = 8 fixed-point, p = 32 premium, 2 sweeps.
+AlOpts al_bulk_opts() noexcept { return AlOpts{7, 8, 2, 1.0e-8, /*n_quad_price=*/32}; }
 
 Result<double> andersen_lake(double S, double K, double T, double sigma, double r, double q,
                              Side side, const std::optional<AlOpts> &opts) {

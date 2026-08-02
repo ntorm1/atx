@@ -1,0 +1,173 @@
+{
+  "coordinate_system": {
+    "plot_bounds_px": {
+      "bottom": 1048,
+      "left": 151,
+      "right": 1286,
+      "top": 68
+    },
+    "x": {
+      "anchors": [
+        {
+          "pixel": 201,
+          "value": -10.0
+        },
+        {
+          "pixel": 370,
+          "value": -8.0
+        },
+        {
+          "pixel": 538,
+          "value": -6.0
+        },
+        {
+          "pixel": 707,
+          "value": -4.0
+        },
+        {
+          "pixel": 875,
+          "value": -2.0
+        },
+        {
+          "pixel": 1044,
+          "value": 0.0
+        },
+        {
+          "pixel": 1212,
+          "value": 2.0
+        }
+      ],
+      "intercept": -12.388295605083592,
+      "max_anchor_residual": 0.0033934220371900636,
+      "name": "normalized_strike",
+      "slope_per_pixel": 0.011869429803029139
+    },
+    "y": {
+      "anchors": [
+        {
+          "pixel": 1048,
+          "value": 0.0
+        },
+        {
+          "pixel": 875,
+          "value": 0.1
+        },
+        {
+          "pixel": 701,
+          "value": 0.2
+        },
+        {
+          "pixel": 528,
+          "value": 0.3
+        },
+        {
+          "pixel": 354,
+          "value": 0.4
+        },
+        {
+          "pixel": 181,
+          "value": 0.5
+        }
+      ],
+      "intercept": 0.6042659528098615,
+      "max_anchor_residual": 0.0001810914678095632,
+      "name": "implied_volatility",
+      "slope_per_pixel": -0.0005765109077459098
+    }
+  },
+  "extraction": {
+    "fit": {
+      "center": "median purple pixel per column; bounded gaps linearly interpolated",
+      "color_rule": "red-green >= 12 and blue-green >= 12",
+      "columns_px": [
+        201,
+        1285
+      ]
+    },
+    "market": {
+      "band": "joined vertical green run at a local stem/marker peak",
+      "center": "interior horizontal marker cluster nearest the fitted centerline",
+      "color_rule": "green-red >= 20 and green-blue >= 10",
+      "maximum_joined_gap_px": 4,
+      "peak_minimum_span_px": 5,
+      "peak_radius_px": 2
+    }
+  },
+  "limitations": [
+    "The PNG is a raster rendering; coordinates are digitized approximations, not original quotes.",
+    "A one-pixel uncertainty is about 0.01187 NS horizontally and 0.000577 volatility vertically.",
+    "Dense overlapping green markers and error bars cannot always be separated into original observations.",
+    "Extreme clipped error bars inherit the visible plot boundary, not an unobserved off-plot endpoint.",
+    "Normalized strike cannot be converted back to strike without the source forward and ATF volatility."
+  ],
+  "metrics": {
+    "fit_interpolated_columns": 107,
+    "fit_ns_range": [
+      -10.002540214674735,
+      2.8639216918088515
+    ],
+    "fit_rows": 1085,
+    "fit_vol_range": [
+      0.12576189938075638,
+      0.5644867001753937
+    ],
+    "green_mask_pixels": 21180,
+    "market_band_contains_fit_rows": 157,
+    "market_center_median_abs_fit_gap": 0.0014412772693647713,
+    "market_center_p95_abs_fit_gap": 0.007462613416933217,
+    "market_center_rmse_fit_gap": 0.03594509063774939,
+    "market_center_vol_range": [
+      0.0716417929183959,
+      0.5290419554769414
+    ],
+    "market_ns_range": [
+      -9.682065609992948,
+      2.1754947632331625
+    ],
+    "market_rows": 163,
+    "purple_mask_pixels": 1723,
+    "x_resolution_per_pixel": 0.011869429803029139,
+    "y_resolution_per_pixel": 0.0005765109077459098
+  },
+  "outputs": [
+    {
+      "filename": "figure1_fit.tsv",
+      "rows": 1085,
+      "schema": [
+        "ns",
+        "vol",
+        "pixel_x",
+        "pixel_y",
+        "interpolated"
+      ],
+      "sha256": "f3daf32595086ac5a2232bc71ac06ebfd0b9166958489ee8b22e5627ba130ce2"
+    },
+    {
+      "filename": "figure1_market.tsv",
+      "rows": 163,
+      "schema": [
+        "ns",
+        "vol_center",
+        "vol_low",
+        "vol_high",
+        "pixel_x",
+        "pixel_center_y",
+        "pixel_top_y",
+        "pixel_bottom_y"
+      ],
+      "sha256": "8609b5c396b8195017f896e8a6415e2a35ff4a85d2a88e821f687b190b194881"
+    }
+  ],
+  "schema_version": 1,
+  "source": {
+    "dimensions_px": [
+      1318,
+      1139
+    ],
+    "document_url": "https://voladynamics.com/pdf/VolaDynamics_WilmottProfile_Jan2020.pdf",
+    "figure": 1,
+    "filename": "figure-01.png",
+    "sha256": "edfab349342204eea1952a0ecb78dd00527839b09843451d55a61b6c0676cd4c",
+    "title": "SPX 20190826-153000 C13pm: T=0.0678, i=11, chi=0.057, avE5=1.1"
+  }
+}

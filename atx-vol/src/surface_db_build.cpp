@@ -1,6 +1,7 @@
 #include "atx/vol/tools/surface_db_build.hpp"
 
 #include <algorithm>
+#include <chrono> // coarse build-phase wall clock (diagnostic only)
 #include <cstddef>
 #include <cstdio>
 #include <filesystem>
@@ -46,6 +47,12 @@ SymbolFitConfig seed_symbol_config(std::string_view symbol, FitPreset preset,
 }
 
 namespace {
+
+// Seconds elapsed since `begin` on the steady clock. Used only to fill the
+// diagnostic `SurfaceDbBuildReport::t_*_s` fields.
+[[nodiscard]] double phase_seconds_since(std::chrono::steady_clock::time_point begin) noexcept {
+  return std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+}
 
 // A board can be selected on only when its underlying carries at least one
 // expiry with >= 2 strikes: a single point cannot pin or select a curve (the
@@ -202,6 +209,14 @@ Result<AutoConfigReport> generate_symbol_configs(SurfaceDb &db, std::span<const 
   }
 
   AutoConfigReport report;
+  // Selected configs accumulate here and land in ONE upsert_symbols batch after
+  // the loop: the per-symbol upsert re-encoded and atomically rewrote the whole
+  // manifest once per symbol — O(N^2) manifest bytes on a fresh N-symbol build.
+  // Each entry's string_view references the `chosen` map key, which outlives the
+  // batch call. The batch is also all-or-nothing, so a failed write no longer
+  // leaves a partially-configured manifest behind.
+  std::vector<DbSymbolEntry> pending;
+  pending.reserve(chosen.size());
   for (const auto &[symbol, board_ptr] : chosen) {
     ++report.n_symbols;
 
@@ -245,11 +260,9 @@ Result<AutoConfigReport> generate_symbol_configs(SurfaceDb &db, std::span<const 
     // recipe is a hard pin is `spec.pin_curve_family` here too — the index leg is
     // exactly where an unrecovered single attempt cost production cells.
     if (!spec.index_symbol.empty() && symbol == spec.index_symbol) {
-      const SymbolFitConfig cfg =
-          seed_symbol_config(symbol, spec.preset, spec.index_symbol, spec.pin_curve_family);
-      if (const Status up = db.upsert_symbol(symbol, cfg); !up.has_value()) {
-        return Err(up.error());
-      }
+      pending.push_back(DbSymbolEntry{
+          symbol, seed_symbol_config(symbol, spec.preset, spec.index_symbol, spec.pin_curve_family),
+          std::nullopt});
       ++report.n_configured;
       continue;
     }
@@ -260,18 +273,18 @@ Result<AutoConfigReport> generate_symbol_configs(SurfaceDb &db, std::span<const 
       // top-level call still succeeds so one bad board never sinks the build.
       cfg = symbol_config_from_preset(spec.preset);
       cfg.enabled = false;
-      if (const Status up = db.upsert_symbol(symbol, cfg); !up.has_value()) {
-        return Err(up.error());
-      }
+      pending.push_back(DbSymbolEntry{symbol, cfg, std::nullopt});
       ++report.n_disabled_failed;
       report.failed_symbols.push_back(symbol);
       continue;
     }
 
-    if (const Status up = db.upsert_symbol(symbol, cfg); !up.has_value()) {
-      return Err(up.error());
-    }
+    pending.push_back(DbSymbolEntry{symbol, cfg, std::nullopt});
     ++report.n_configured;
+  }
+
+  if (const Status up = db.upsert_symbols(pending); !up.has_value()) {
+    return Err(up.error());
   }
 
   std::sort(report.failed_symbols.begin(), report.failed_symbols.end());
@@ -300,10 +313,12 @@ Result<SurfaceDbBuildReport> build_surface_db(const SurfaceDbBuildSpec &spec) {
 
   // 2. Load the hive window. A missing/un-pulled window is Ok (no boards); the
   //    ONLY top-level Err here is a malformed hive spec (empty root, bad dates).
+  const auto t_load_begin = std::chrono::steady_clock::now();
   Result<OpraBatchResult> loaded = load_opra_hive(spec.hive);
   if (!loaded) {
     return Err(loaded.error());
   }
+  const double t_load_s = phase_seconds_since(t_load_begin);
 
   // 3. One board per SUCCESSFULLY loaded cell; missing/corrupt cells are tallied
   //    and never fit. The date counters are DISTINCT dates (a date is "loaded"
@@ -337,11 +352,13 @@ Result<SurfaceDbBuildReport> build_surface_db(const SurfaceDbBuildSpec &spec) {
   //    BEFORE the populate so its richer per-board family pin is in place; the
   //    populate's own seeding then finds every symbol already configured. An
   //    empty board set is an all-zero report (Ok).
+  const auto t_config_begin = std::chrono::steady_clock::now();
   Result<AutoConfigReport> cfg = generate_symbol_configs(db, boards, spec.auto_config);
   if (!cfg) {
     return Err(cfg.error());
   }
   report.config = std::move(*cfg);
+  const double t_config_s = phase_seconds_since(t_config_begin);
 
   // 5. Cell-aware streaming populate. The index leg / preset / worker budget come
   //    from this spec; an empty board set is a graceful all-zero no-op.
@@ -350,12 +367,16 @@ Result<SurfaceDbBuildReport> build_surface_db(const SurfaceDbBuildSpec &spec) {
   pspec.preset = spec.preset;
   pspec.fit_workers = spec.fit_workers;
   pspec.allow_coverage_regression = spec.allow_coverage_regression; // REV-R3
+  const auto t_populate_begin = std::chrono::steady_clock::now();
   Result<UniversePopulateCoverage> cov = populate_universe_streaming(db, boards, pspec);
   if (!cov) {
     return Err(cov.error());
   }
   report.coverage = std::move(*cov);
 
+  report.t_load_s = t_load_s;
+  report.t_config_s = t_config_s;
+  report.t_populate_s = phase_seconds_since(t_populate_begin);
   return Ok(std::move(report));
 }
 

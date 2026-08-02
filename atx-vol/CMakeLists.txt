@@ -27,6 +27,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/universe.cpp
     src/derivatives.cpp
     src/vol_surface.cpp
+    src/al_probe.cpp
     src/american.cpp
     src/american_batch.cpp
     src/detail/adjoint_greeks.cpp
@@ -93,6 +94,7 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/dispersion.cpp
     src/dispersion_strangle.cpp
     src/dispersion_backtest.cpp
+    src/dispersion_surface_db.cpp
     src/backtest_driver.cpp
     src/dispersion_workflow.cpp
     src/listed_dispersion.cpp
@@ -105,6 +107,13 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/dispersion_run.cpp
     src/listed_dispersion_pipeline.cpp
     src/backtest.cpp
+    src/backtest_template.cpp
+    src/backtest_db.cpp
+    src/backtest_db_build.cpp
+    src/research_db.cpp
+    src/research_validation.cpp
+    src/strategy_pipeline.cpp
+    src/quant_pipeline.cpp
     src/snapshot_cache.cpp
     src/strategy.cpp
     src/dispersion_strategy.cpp
@@ -258,6 +267,21 @@ endif()
 
 if(ATX_BUILD_TESTS)
     add_subdirectory(tests)
+
+    # Focused TDD gate for the bounded SPX/Wilmott research CLI. The example TU
+    # is compiled with its main suppressed so the test exercises the exact
+    # forward-estimation and scoring implementation shipped by the executable.
+    add_executable(spx-wilmott-repro-tests
+        tests/spx_wilmott_repro_test.cpp
+        examples/spx_wilmott_repro.cpp)
+    target_compile_definitions(spx-wilmott-repro-tests PRIVATE
+        ATX_SPX_WILMOTT_REPRO_NO_MAIN)
+    target_include_directories(spx-wilmott-repro-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/examples)
+    target_link_libraries(spx-wilmott-repro-tests PRIVATE
+        atx::vol atx::core GTest::gtest_main atx_warnings)
+    add_test(NAME SpxWilmottReproUnit COMMAND spx-wilmott-repro-tests)
+    set_tests_properties(SpxWilmottReproUnit PROPERTIES LABELS atx_vol_fast)
 endif()
 
 # ---- Benchmarks (Google Benchmark; opt-in via the shared ATX_BUILD_BENCH) ----
@@ -273,6 +297,14 @@ endif()
 # slice, de-Americanizes + fits the surface, and reports fit quality + cold-vs-
 # cached throughput. Links atx::vol (+ atx::core transitively).
 if(ATX_BUILD_EXAMPLES)
+    # Reproduce Vola Dynamics' 2019-08-26 SPX first-monthly smile from a paid
+    # Databento CBBO snapshot. Research comparison only: no proprietary C13pm
+    # compatibility is claimed or persisted.
+    add_executable(spx_wilmott_repro examples/spx_wilmott_repro.cpp)
+    target_include_directories(spx_wilmott_repro PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/examples)
+    target_link_libraries(spx_wilmott_repro PRIVATE atx::vol atx::core atx_warnings)
+
     add_executable(opra_parity_bench examples/opra_parity_bench.cpp)
     target_link_libraries(opra_parity_bench PRIVATE atx::vol atx::core atx_warnings)
 
@@ -471,6 +503,17 @@ if(ATX_BUILD_EXAMPLES)
     add_executable(mag7_dispersion_backtest examples/mag7_dispersion_backtest.cpp)
     target_link_libraries(mag7_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
 
+    # Surface-db dispersion route example: a SurfaceDb root + a date window ->
+    # run_surface_db_dispersion_backtest (the one-call entry point in
+    # atx/vol/dispersion_surface_db.hpp: open db -> Clock::from_surface_db ->
+    # Clock::between -> universe_from_surface_db or read_universe -> run_timed)
+    # -> series.csv / strategy_metrics.csv / engine_metrics.csv. A thin argv +
+    # artifact shell; every branch of the run itself is gated by
+    # SurfaceDbDispersionBacktest (tests/surface_db_dispersion_backtest_test.cpp).
+    # See examples/surface_db_dispersion_backtest.cpp.
+    add_executable(surface_db_dispersion_backtest examples/surface_db_dispersion_backtest.cpp)
+    target_link_libraries(surface_db_dispersion_backtest PRIVATE atx::vol atx::core atx_warnings)
+
     # WS-D acceptance driver: the vega-flat SPY dispersion PnL-track backtest
     # (long top-N 40Δ strangles vs a short SPY strangle, net-vega-zero at entry,
     # daily clip, daily delta-hedge, held to expiry) -> the pnl_track.tsv the
@@ -480,6 +523,17 @@ if(ATX_BUILD_EXAMPLES)
     # (tests/spy_dispersion_pnl_report_test.py). See examples/spy_dispersion_pnl.cpp.
     add_executable(spy_dispersion_pnl examples/spy_dispersion_pnl.cpp)
     target_link_libraries(spy_dispersion_pnl PRIVATE atx::vol atx::core atx_warnings)
+
+    # Projection-backed strategy-history database builder. The default template
+    # is the requested 40-delta, three-calendar-month strangle, held to expiry
+    # and delta-hedged at every stored close. Re-runs resume logical histories.
+    add_executable(atx-vol-backtest-db-build tools/backtest_db_build_main.cpp)
+    target_link_libraries(atx-vol-backtest-db-build PRIVATE atx::vol atx::core atx_warnings)
+
+    # Point-in-time signal miner: BacktestDb diagnostics -> next-observation
+    # outcomes -> purged walk-forward validation -> immutable ResearchDb Trial.
+    add_executable(atx-vol-quant-research tools/quant_research_main.cpp)
+    target_link_libraries(atx-vol-quant-research PRIVATE atx::vol atx::core atx_warnings)
 
     # Earnings-censored atmCen reproduction (Task 7): thin CLI over the shared
     # run_earnings_repro library pipeline (atx/vol/earnings_repro.hpp) -- OPRA

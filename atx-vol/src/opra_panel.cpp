@@ -15,19 +15,19 @@
 #include <utility>
 #include <vector>
 
-#include "atx/core/datetime.hpp"       // time::Timestamp
-#include "atx/core/error.hpp"          // Ok, Err, ErrorCode, ATX_TRY
-#include "atx/core/hash.hpp"           // hash_bytes
-#include "atx/core/io/parquet.hpp"     // read_parquet, ParquetTable, DType
-#include "atx/vol/data.hpp"            // QuoteFrame/Row, build_uid_list, iso_to_ns
-#include "atx/vol/dividend.hpp"        // imply_forward_atm_pcp, CoTermQuote
-#include "atx/vol/vol_time.hpp"        // TimeSpec, time_to_expiry_years
+#include "atx/core/datetime.hpp"   // time::Timestamp
+#include "atx/core/error.hpp"      // Ok, Err, ErrorCode, ATX_TRY
+#include "atx/core/hash.hpp"       // hash_bytes
+#include "atx/core/io/parquet.hpp" // read_parquet, ParquetTable, DType
+#include "atx/vol/data.hpp"        // QuoteFrame/Row, build_uid_list, iso_to_ns
+#include "atx/vol/dividend.hpp"    // imply_forward_atm_pcp, CoTermQuote
+#include "atx/vol/vol_time.hpp"    // TimeSpec, time_to_expiry_years
 
 namespace atx::vol {
 
-using atx::core::Ok;
 using atx::core::Err;
 using atx::core::ErrorCode;
+using atx::core::Ok;
 
 namespace {
 
@@ -63,8 +63,8 @@ constexpr double kPxScale = 1e-9;
 
 // Day-of-month of the `nth` (1-based) Sunday of month `mm` in year `yy`.
 [[nodiscard]] int nth_sunday(int yy, int mm, int nth) noexcept {
-  const int first_wd = civil_weekday(yy, mm, 1);       // 0 = Sunday
-  const int first_sunday = 1 + ((7 - first_wd) % 7);   // first Sunday's day-of-month
+  const int first_wd = civil_weekday(yy, mm, 1);     // 0 = Sunday
+  const int first_sunday = 1 + ((7 - first_wd) % 7); // first Sunday's day-of-month
   return first_sunday + 7 * (nth - 1);
 }
 
@@ -74,15 +74,15 @@ constexpr double kPxScale = 1e-9;
 // alone (2nd-Sun-Mar = EDT, 1st-Sun-Nov = EST). Pure integer arithmetic.
 [[nodiscard]] bool us_eastern_is_dst(int yy, int mm, int dd) noexcept {
   if (mm < 3 || mm > 11) {
-    return false;  // Dec, Jan, Feb -> EST
+    return false; // Dec, Jan, Feb -> EST
   }
   if (mm > 3 && mm < 11) {
-    return true;  // Apr .. Oct -> EDT
+    return true; // Apr .. Oct -> EDT
   }
   if (mm == 3) {
-    return dd >= nth_sunday(yy, 3, 2);  // on/after the 2nd Sunday
+    return dd >= nth_sunday(yy, 3, 2); // on/after the 2nd Sunday
   }
-  return dd < nth_sunday(yy, 11, 1);    // mm == 11: before the 1st Sunday
+  return dd < nth_sunday(yy, 11, 1); // mm == 11: before the 1st Sunday
 }
 
 [[nodiscard]] std::string_view trim(std::string_view s) noexcept {
@@ -99,9 +99,9 @@ constexpr double kPxScale = 1e-9;
 
 // Parse a full-width unsigned decimal field into `out`. Returns false unless the
 // entire span was consumed as digits.
-[[nodiscard]] bool parse_field(std::string_view s, int& out) noexcept {
-  const char* first = s.data();
-  const char* last = s.data() + s.size();
+[[nodiscard]] bool parse_field(std::string_view s, int &out) noexcept {
+  const char *first = s.data();
+  const char *last = s.data() + s.size();
   const std::from_chars_result res = std::from_chars(first, last, out);
   return res.ec == std::errc{} && res.ptr == last;
 }
@@ -193,8 +193,8 @@ source_fingerprint(const QuoteFrame &frame, std::span<const std::uint32_t> instr
 
 // Record the first row's `ts` as epoch nanoseconds, tolerating either the real
 // Timestamp column or an Int64(ns) column. 0 when absent/empty.
-[[nodiscard]] std::int64_t first_ts_ns(const io::ParquetTable& table) {
-  const io::ColumnInfo* col = table.schema().find("ts");
+[[nodiscard]] std::int64_t first_ts_ns(const io::ParquetTable &table) {
+  const io::ColumnInfo *col = table.schema().find("ts");
   if (col == nullptr || table.num_rows() <= 0) {
     return 0;
   }
@@ -215,6 +215,25 @@ source_fingerprint(const QuoteFrame &frame, std::span<const std::uint32_t> instr
   return 0;
 }
 
+// Format an epoch-ns instant as `YYYY-MM-DDTHH:MM:SSZ`. Used only to spell BOTH
+// sides of a snapshot-stamp mismatch in the same comparable form (FIX-C-1's
+// error text) -- `ns_to_iso_date` alone drops the time-of-day, which is exactly
+// the field a wrong `--snapshot-suffix` gets wrong.
+[[nodiscard]] std::string ns_to_iso_instant(std::int64_t ns) {
+  constexpr std::int64_t kDayNs = 86400LL * 1000000000LL;
+  std::int64_t rem = ns % kDayNs;
+  if (rem < 0) {
+    rem += kDayNs;
+  }
+  const std::int64_t secs = rem / 1000000000LL;
+  const auto pad2 = [](std::int64_t v) {
+    std::string s = std::to_string(v);
+    return s.size() < 2 ? "0" + s : s;
+  };
+  return ns_to_iso_date(ns) + "T" + pad2(secs / 3600) + ":" + pad2((secs / 60) % 60) + ":" +
+         pad2(secs % 60) + "Z";
+}
+
 // Imply the underlying spot from put-call parity on the earliest expiry that
 // carries at least one co-terminal call/put pair with both mids > 0. `rate_at`
 // yields the continuously-compounded rate at a maturity T (a flat scalar, or a
@@ -222,8 +241,9 @@ source_fingerprint(const QuoteFrame &frame, std::span<const std::uint32_t> instr
 // `time` governs every year-fraction below (default Calendar365 is
 // BIT-IDENTICAL to the historical `year_fraction`-derived T).
 template <typename RateFn>
-[[nodiscard]] Result<double> imply_spot_from_pcp(const QuoteFrame& frame, RateFn rate_at,
-                                                 const TimeSpec& time) {
+[[nodiscard]] Result<double> imply_spot_from_pcp(const QuoteFrame &frame, RateFn rate_at,
+                                                 const TimeSpec &time,
+                                                 SettlementSession settlement) {
   const std::int64_t snapshot_ns = iso_to_ns(frame.snapshot_iso);
   struct MidPair {
     double call_mid = -1.0;
@@ -232,12 +252,12 @@ template <typename RateFn>
   // Keyed on the ISO expiry string, which sorts chronologically, so ascending
   // map iteration visits the front expiry first.
   std::map<std::string, std::map<double, MidPair>> by_expiry;
-  for (const QuoteRow& row : frame.rows) {
+  for (const QuoteRow &row : frame.rows) {
     const double mid = 0.5 * (row.bid + row.ask);
     if (!(mid > 0.0)) {
       continue;
     }
-    MidPair& pair = by_expiry[row.expiry_iso][row.strike];
+    MidPair &pair = by_expiry[row.expiry_iso][row.strike];
     if (row.side == Side::Call) {
       pair.call_mid = mid;
     } else {
@@ -254,10 +274,10 @@ template <typename RateFn>
   // Small local: back out one expiry's PCP forward from its co-terminal pairs.
   // `out_gap` receives the nearest-ATM |call_mid - put_mid| of the chosen ref
   // strike — the conditioning proxy the fallback below minimizes across expiries.
-  const auto forward_for_expiry = [&](const std::string& expiry, double t_front,
-                                      double& out_gap) -> Result<double> {
+  const auto forward_for_expiry = [&](const std::string &expiry, double t_front,
+                                      double &out_gap) -> Result<double> {
     std::vector<CoTermQuote> quotes;
-    for (const auto& [strike, pair] : by_expiry.at(expiry)) {
+    for (const auto &[strike, pair] : by_expiry.at(expiry)) {
       if (pair.call_mid > 0.0 && pair.put_mid > 0.0) {
         quotes.push_back(CoTermQuote{strike, pair.call_mid, pair.put_mid});
       }
@@ -272,7 +292,7 @@ template <typename RateFn>
     // ATM reference: the strike whose call/put mids are closest (C == P at F).
     double s_ref = quotes.front().strike;
     double best = std::numeric_limits<double>::infinity();
-    for (const CoTermQuote& q : quotes) {
+    for (const CoTermQuote &q : quotes) {
       const double gap = std::fabs(q.call_mid - q.put_mid);
       if (gap < best) {
         best = gap;
@@ -296,23 +316,22 @@ template <typename RateFn>
   // least one well-conditioned (T > 3/365) co-terminal pair: the earliest such
   // expiry sets the spot and we return immediately. Healthy names (AAPL/SPY) all
   // qualify here, so their implied spot is unchanged.
-  for (const auto& [expiry, strikes] : by_expiry) {
+  for (const auto &[expiry, strikes] : by_expiry) {
     (void)strikes;
-    // TRUE 16:00 ET PM-settled expiry instant (OPRA equity/ETF universe), so the
+    // Use the explicitly selected product settlement instant so the
     // front-expiry PCP back-out discounts at the same intraday T data_install uses.
     // A VolTime coverage failure (vol_time.hpp) aborts the whole spot
     // implication -- skipping the expiry instead would quietly pick a different,
     // farther-dated reference and report a spot the caller never asked for.
     ATX_TRY(const double t_front,
-            time_to_expiry_years(snapshot_ns, expiry_instant_ns(expiry, SettlementSession::Pm),
-                                 time));
+            time_to_expiry_years(snapshot_ns, expiry_instant_ns(expiry, settlement), time));
     if (!(t_front > kMinSpotT)) {
-      continue;  // 0DTE / same-week: too ill-conditioned for a PCP spot back-out
+      continue; // 0DTE / same-week: too ill-conditioned for a PCP spot back-out
     }
     double gap = 0.0;
     const Result<double> spot = forward_for_expiry(expiry, t_front, gap);
     if (spot.has_value()) {
-      return spot;  // this expiry yielded a usable forward; done
+      return spot; // this expiry yielded a usable forward; done
     }
   }
 
@@ -326,15 +345,14 @@ template <typename RateFn>
   constexpr double kMinSpotTFallback = 1.0 / 365.0;
   double best_spot = std::numeric_limits<double>::quiet_NaN();
   double best_gap = std::numeric_limits<double>::infinity();
-  for (const auto& [expiry, strikes] : by_expiry) {
+  for (const auto &[expiry, strikes] : by_expiry) {
     (void)strikes;
-    // TRUE 16:00 ET PM-settled expiry instant (OPRA equity/ETF universe), so the
+    // Use the explicitly selected product settlement instant so the
     // front-expiry PCP back-out discounts at the same intraday T data_install uses.
     ATX_TRY(const double t_front,
-            time_to_expiry_years(snapshot_ns, expiry_instant_ns(expiry, SettlementSession::Pm),
-                                 time));
+            time_to_expiry_years(snapshot_ns, expiry_instant_ns(expiry, settlement), time));
     if (!(t_front > kMinSpotTFallback)) {
-      continue;  // sub-1-day: PCP forward back-out too ill-conditioned even here
+      continue; // sub-1-day: PCP forward back-out too ill-conditioned even here
     }
     double gap = 0.0;
     const Result<double> spot = forward_for_expiry(expiry, t_front, gap);
@@ -350,14 +368,27 @@ template <typename RateFn>
              "no well-conditioned co-terminal expiry to imply spot; pass spot_override");
 }
 
-// The table-driven core shared by the file loader and the in-memory-table seam
-// (load_opra_cbbo_from_table): everything AFTER the OPRA cbbo-1m table is
-// materialized — column extraction, row filtering, OSI parse, PCP spot
-// implication, frame assembly. Both public entry points delegate here, so the
-// two paths are byte-identical on the same rows. `spec.path` is NOT read here
+// Materialize every column the panel core reads, once, and index the rows by
+// `underlying` (P-01). Permissive about the OPTIONAL columns in exactly the way
+// `panel_from_scan` is: `symbol`, `bid_px`, `ask_px`, `bid_sz`, `ask_sz` are
+// required (their absence fails at the same ATX_TRY, with the same code and
+// text, that the per-row path used to), while `underlying` and `instrument_id`
+// are optional. The public `scan_opra_cbbo_table` adds the hive-v2 8-column
+// pre-check on top.
+[[nodiscard]] Result<OpraTableScan> scan_table(const io::ParquetTable &table);
+
+// The scan-driven core shared by the file loader and both in-memory-table seams:
+// everything AFTER the OPRA cbbo-1m table is materialized — row filtering, OSI
+// parse, PCP spot implication, frame assembly. Every public entry point delegates
+// here, so they are byte-identical on the same rows. `spec.path` is NOT read here
 // (the table is already decoded); it is unused by this core.
-[[nodiscard]] Result<OpraPanel> panel_from_table(const io::ParquetTable& table,
-                                                 const OpraLoadSpec& spec);
+[[nodiscard]] Result<OpraPanel> panel_from_scan(const OpraTableScan &scan,
+                                                const OpraLoadSpec &spec);
+
+// `scan_table` + `panel_from_scan`, for the entry points that hold a table
+// rather than a scan.
+[[nodiscard]] Result<OpraPanel> panel_from_table(const io::ParquetTable &table,
+                                                 const OpraLoadSpec &spec);
 
 } // namespace
 
@@ -384,8 +415,8 @@ Result<OsiSymbol> parse_osi_symbol(std::string_view sym) {
   const Side side = (cp == 'P' || cp == 'p') ? Side::Put : Side::Call;
 
   std::int64_t strike_milli = 0;
-  const char* sfirst = fixed.data() + 7;
-  const char* slast = fixed.data() + kFixedLen;
+  const char *sfirst = fixed.data() + 7;
+  const char *slast = fixed.data() + kFixedLen;
   const std::from_chars_result sres = std::from_chars(sfirst, slast, strike_milli);
   if (sres.ec != std::errc{} || sres.ptr != slast) {
     return Err(ErrorCode::ParseError, "OSI strike field not numeric");
@@ -398,7 +429,12 @@ Result<OsiSymbol> parse_osi_symbol(std::string_view sym) {
   OsiSymbol out;
   out.root = std::string(trim(sym.substr(0, n - kFixedLen)));
   out.expiry_iso.reserve(10);
-  out.expiry_iso.append("20").append(fixed.substr(0, 2)).append("-").append(fixed.substr(2, 2)).append("-").append(fixed.substr(4, 2));
+  out.expiry_iso.append("20")
+      .append(fixed.substr(0, 2))
+      .append("-")
+      .append(fixed.substr(2, 2))
+      .append("-")
+      .append(fixed.substr(4, 2));
   out.side = side;
   out.strike = strike;
   return Ok(std::move(out));
@@ -425,7 +461,7 @@ bool osi_root_matches_ticker(std::string_view root, std::string_view ticker) noe
   return i == root.size();
 }
 
-Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
+Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec &spec) {
   // ── Projected read (W4.3) ─────────────────────────────────────────────────
   // Decode ONLY the columns panel construction consumes (verified against every
   // table access in this file): ts, symbol, bid_px/ask_px/bid_sz/ask_sz, plus
@@ -436,13 +472,12 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
   // values and row count are byte-identical to a full read, so fitted surfaces
   // are unchanged — only the decoded-byte count drops.
   static constexpr std::array<std::string_view, 8> kOpraWanted = {
-      "ts",     "symbol", "bid_px",        "ask_px",
-      "bid_sz", "ask_sz", "instrument_id", "underlying"};
+      "ts", "symbol", "bid_px", "ask_px", "bid_sz", "ask_sz", "instrument_id", "underlying"};
   auto scan_res = io::LazyParquet::scan(spec.path);
   if (!scan_res.has_value()) {
     return Err(ErrorCode::InvalidArgument, scan_res.error().to_string());
   }
-  const io::Schema& file_schema = scan_res.value().schema();
+  const io::Schema &file_schema = scan_res.value().schema();
   std::vector<std::string_view> projection;
   projection.reserve(kOpraWanted.size());
   for (const std::string_view name : kOpraWanted) {
@@ -450,8 +485,7 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
       projection.push_back(name);
     }
   }
-  auto table_res =
-      io::read_parquet(spec.path, std::span<const std::string_view>{projection});
+  auto table_res = io::read_parquet(spec.path, std::span<const std::string_view>{projection});
   if (!table_res.has_value()) {
     return Err(ErrorCode::InvalidArgument, table_res.error().to_string());
   }
@@ -461,33 +495,91 @@ Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec) {
 
 namespace {
 
-Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoadSpec& spec) {
-  const io::Schema& schema = table.schema();
-  const std::size_t n_rows =
-      static_cast<std::size_t>(std::max<std::int64_t>(0, table.num_rows()));
+Result<OpraTableScan> scan_table(const io::ParquetTable &table) {
+  const io::Schema &schema = table.schema();
+  OpraTableScan scan;
+  scan.n_rows = static_cast<std::size_t>(std::max<std::int64_t>(0, table.num_rows()));
 
-  ATX_TRY(const auto symbols, table.strings("symbol"));
+  ATX_TRY(auto symbols, table.strings("symbol"));
+  scan.symbols = std::move(symbols);
   ATX_TRY(const auto bid_px, table.column_view<std::int64_t>("bid_px"));
+  scan.bid_px = bid_px;
   ATX_TRY(const auto ask_px, table.column_view<std::int64_t>("ask_px"));
+  scan.ask_px = ask_px;
   ATX_TRY(const auto bid_sz, table.column_view<std::int64_t>("bid_sz"));
+  scan.bid_sz = bid_sz;
   ATX_TRY(const auto ask_sz, table.column_view<std::int64_t>("ask_sz"));
-  ATX_TRY(const auto bid_null, table.null_mask("bid_px"));
-  ATX_TRY(const auto ask_null, table.null_mask("ask_px"));
+  scan.ask_sz = ask_sz;
+  ATX_TRY(auto bid_null, table.null_mask("bid_px"));
+  scan.bid_null = std::move(bid_null);
+  ATX_TRY(auto ask_null, table.null_mask("ask_px"));
+  scan.ask_null = std::move(ask_null);
 
-  std::span<const std::int64_t> instrument_ids;
-  const bool has_instrument_id = schema.find("instrument_id") != nullptr;
-  if (has_instrument_id) {
-    ATX_TRY(auto ids, table.column_view<std::int64_t>("instrument_id"));
-    instrument_ids = ids;
-  } else if (spec.provenance_mode == OpraProvenanceMode::Strict) {
-    return Err(ErrorCode::InvalidArgument, "strict OPRA provenance requires 'instrument_id'");
+  scan.has_instrument_id = schema.find("instrument_id") != nullptr;
+  if (scan.has_instrument_id) {
+    ATX_TRY(const auto ids, table.column_view<std::int64_t>("instrument_id"));
+    scan.instrument_ids = ids;
   }
 
-  std::vector<std::string_view> underlyings;
-  const bool has_underlying = schema.find("underlying") != nullptr;
-  if (has_underlying) {
+  scan.has_underlying = schema.find("underlying") != nullptr;
+  if (scan.has_underlying) {
     ATX_TRY(auto u, table.strings("underlying"));
-    underlyings = std::move(u);
+    scan.underlyings = std::move(u);
+  }
+  scan.first_ts_ns = first_ts_ns(table);
+
+  // ── The per-underlying row index ─────────────────────────────────────────
+  // One hashed pass assigns each row a group, a prefix sum turns the group
+  // counts into offsets, and a second ASCENDING pass fills the row ids. The
+  // ascending fill is load-bearing: it is what makes a split visit its rows in
+  // the same order a full-table scan would, which is what keeps an indexed panel
+  // byte-identical (row order feeds the frame, and the frame feeds the source
+  // fingerprint). Guarded on a 32-bit row count so `rows` stays 4 bytes/row; a
+  // table past that simply gets no index and takes the full-scan path.
+  if (scan.has_underlying &&
+      scan.n_rows <= static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+    std::vector<std::uint32_t> slot(scan.n_rows);
+    std::vector<std::uint32_t> counts;
+    scan.slot_of.reserve(128u);
+    for (std::size_t i = 0; i < scan.n_rows; ++i) {
+      const auto [it, inserted] =
+          scan.slot_of.try_emplace(scan.underlyings[i], static_cast<std::uint32_t>(counts.size()));
+      if (inserted) {
+        counts.push_back(0u);
+      }
+      slot[i] = it->second;
+      ++counts[it->second];
+    }
+    scan.offsets.assign(counts.size() + 1u, 0u);
+    for (std::size_t g = 0; g < counts.size(); ++g) {
+      scan.offsets[g + 1u] = scan.offsets[g] + counts[g];
+    }
+    std::vector<std::uint32_t> cursor(scan.offsets.begin(), scan.offsets.end() - 1);
+    scan.rows.resize(scan.n_rows);
+    for (std::size_t i = 0; i < scan.n_rows; ++i) {
+      scan.rows[cursor[slot[i]]++] = static_cast<std::uint32_t>(i);
+    }
+    scan.indexed = true;
+  }
+  return Ok(std::move(scan));
+}
+
+Result<OpraPanel> panel_from_scan(const OpraTableScan &scan, const OpraLoadSpec &spec) {
+  const std::size_t n_rows = scan.n_rows;
+  const std::span<const std::string_view> symbols{scan.symbols};
+  const std::span<const std::int64_t> bid_px = scan.bid_px;
+  const std::span<const std::int64_t> ask_px = scan.ask_px;
+  const std::span<const std::int64_t> bid_sz = scan.bid_sz;
+  const std::span<const std::int64_t> ask_sz = scan.ask_sz;
+  const std::span<const std::uint8_t> bid_null{scan.bid_null};
+  const std::span<const std::uint8_t> ask_null{scan.ask_null};
+  const std::span<const std::int64_t> instrument_ids = scan.instrument_ids;
+  const std::span<const std::string_view> underlyings{scan.underlyings};
+  const bool has_instrument_id = scan.has_instrument_id;
+  const bool has_underlying = scan.has_underlying;
+
+  if (!has_instrument_id && spec.provenance_mode == OpraProvenanceMode::Strict) {
+    return Err(ErrorCode::InvalidArgument, "strict OPRA provenance requires 'instrument_id'");
   }
 
   const std::string_view filter = spec.underlying;
@@ -500,43 +592,67 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
                "underlying filter '" + std::string(filter) +
                    "' requested but parquet has no 'underlying' column");
   }
+
+  // P-01: the rows THIS call visits. With a filter and an index that is the
+  // filter's own group; otherwise it is every row and the loops below are
+  // exactly the pre-index full scan. `selected` is ascending, so both forms
+  // visit rows in the same relative order.
+  const bool indexed = !filter.empty() && scan.indexed;
+  const std::span<const std::uint32_t> selected =
+      indexed ? scan.rows_for(filter) : std::span<const std::uint32_t>{};
+  const std::size_t n_visit = indexed ? selected.size() : n_rows;
+  const auto row_at = [indexed, selected](std::size_t t) noexcept -> std::size_t {
+    return indexed ? static_cast<std::size_t>(selected[t]) : t;
+  };
+
   if (has_underlying) {
-    std::vector<std::string_view> distinct;
-    bool filter_present = false;
-    for (std::size_t i = 0; i < n_rows; ++i) {
-      const std::string_view und = underlyings[i];
-      if (und.empty()) {
-        continue;
+    if (indexed) {
+      // The index answers "is the filter present" in O(1); an empty group is
+      // the zero-match case, reported with the exact text the full scan used.
+      // The mixed-symbol branch below is unreachable here because `indexed`
+      // requires a non-empty filter.
+      if (selected.empty()) {
+        return Err(ErrorCode::InvalidArgument,
+                   "underlying '" + std::string(filter) + "' not found in parquet");
       }
-      if (!filter.empty() && und == filter) {
-        filter_present = true;
-      }
-      if (std::find(distinct.begin(), distinct.end(), und) == distinct.end()) {
-        distinct.push_back(und);
-      }
-    }
-    if (filter.empty() && distinct.size() > 1) {
-      std::string list;
-      for (std::size_t j = 0; j < distinct.size(); ++j) {
-        if (j != 0) {
-          list.push_back(',');
+    } else {
+      std::vector<std::string_view> distinct;
+      bool filter_present = false;
+      for (std::size_t i = 0; i < n_rows; ++i) {
+        const std::string_view und = underlyings[i];
+        if (und.empty()) {
+          continue;
         }
-        list.append(distinct[j]);
+        if (!filter.empty() && und == filter) {
+          filter_present = true;
+        }
+        if (std::find(distinct.begin(), distinct.end(), und) == distinct.end()) {
+          distinct.push_back(und);
+        }
       }
-      return Err(ErrorCode::InvalidArgument,
-                 "mixed-symbol parquet: found {" + list +
-                     "}; set OpraLoadSpec.underlying to select one");
-    }
-    if (!filter.empty() && !filter_present) {
-      return Err(ErrorCode::InvalidArgument,
-                 "underlying '" + std::string(filter) + "' not found in parquet");
+      if (filter.empty() && distinct.size() > 1) {
+        std::string list;
+        for (std::size_t j = 0; j < distinct.size(); ++j) {
+          if (j != 0) {
+            list.push_back(',');
+          }
+          list.append(distinct[j]);
+        }
+        return Err(ErrorCode::InvalidArgument, "mixed-symbol parquet: found {" + list +
+                                                   "}; set OpraLoadSpec.underlying to select one");
+      }
+      if (!filter.empty() && !filter_present) {
+        return Err(ErrorCode::InvalidArgument,
+                   "underlying '" + std::string(filter) + "' not found in parquet");
+      }
     }
   }
 
   bool provenance_complete = has_instrument_id;
   std::map<std::uint32_t, std::string> source_mappings;
   if (has_instrument_id) {
-    for (std::size_t i = 0; i < n_rows; ++i) {
+    for (std::size_t t = 0; t < n_visit; ++t) {
+      const std::size_t i = row_at(t);
       const std::string_view und = has_underlying ? underlyings[i] : std::string_view{};
       if (!filter.empty() && und != filter) {
         continue;
@@ -566,29 +682,84 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
   // Snapshot stamp is hoisted above the row loop so the loop can drop expired /
   // same-day contracts by year-fraction. (snapshot_ts_ns / snapshot_iso depend only
   // on the table + spec, never on the kept rows.)
-  const std::int64_t snapshot_ts_ns = first_ts_ns(table);
+  const std::int64_t snapshot_ts_ns = scan.first_ts_ns;
   std::string snapshot_iso = spec.snapshot_iso;
   if (snapshot_iso.empty()) {
     snapshot_iso = ns_to_iso_date(snapshot_ts_ns);
   }
-  const std::int64_t snapshot_iso_ns = iso_to_ns(snapshot_iso);
+  const std::int64_t snapshot_spec_ns = iso_to_ns(snapshot_iso);
+  // FIX-C-1 (snapshot stamp). The hive schema stamps ONE `ts` per date file and
+  // that column IS the instant the quotes were snapshotted at -- the ground
+  // truth for every T-to-expiry computation below (the same-day-expiry drop, the
+  // term-curve rate lookup, the PCP forward) and for the panel's source
+  // fingerprint. An operator-supplied `OpraLoadSpec::snapshot_iso` (the build
+  // CLI's `--snapshot-suffix`, applied uniformly across a whole `--from`/`--to`
+  // range) is a CLAIM about that instant, not the instant itself, and an
+  // ET-anchored hive carries two of them: 19:55Z under EDT, 20:55Z under EST.
+  //
+  // Before this guard a valid-but-wrong stamp was silently PREFERRED over the
+  // file: exit 0, `n_load_errors 0`, every date written, ~1e-3 relative IV drift,
+  // a butterfly-arbitrage slice rejection, and `frame.snapshot_ts_ns` still
+  // reading correct in every diagnostic (it is stamped from the file below), so
+  // nothing in the output could show it. The two values were both in scope here
+  // and never compared.
+  //
+  // So: when a stamp NAMES AN INSTANT it must AGREE with the file, and the value
+  // that drives the math is taken from the FILE. Not a behaviour change for a
+  // correct build -- the two are equal by the check, which is what makes this
+  // re-gateable bit-for-bit against the pilot baselines. Two cases cannot
+  // arbitrate and keep their pre-existing behaviour verbatim:
+  //   * a file with no readable `ts` (`first_ts_ns == 0`: no column, empty
+  //     table) -- there is nothing to compare against;
+  //   * a bare `YYYY-MM-DD` stamp, which is NOT a claim about the minute but the
+  //     legacy midnight-UTC valuation convention (a great many synthetic panel
+  //     fixtures pass one against a placeholder `ts`). Every production stamp is
+  //     an instant: `opra_hive.cpp:144` and `opra_batch.cpp:308` both build
+  //     `date + snapshot_suffix`, and `OpraHiveSpec::snapshot_suffix` defaults to
+  //     `T19:55:00Z` -- so the review's own failure scenario (an operator repairs
+  //     three EST dates and OMITS `--snapshot-suffix`, taking the 19:55Z default
+  //     against 20:55Z files) is checked, and so is every wrong-but-well-formed
+  //     value the format validator lets through.
+  const bool stamp_names_an_instant =
+      spec.snapshot_iso.size() > 10 &&
+      (spec.snapshot_iso[10] == 'T' || spec.snapshot_iso[10] == ' ');
+  if (stamp_names_an_instant && snapshot_ts_ns != 0 && snapshot_spec_ns != snapshot_ts_ns) {
+    return Err(ErrorCode::InvalidArgument,
+               "snapshot stamp '" + snapshot_iso + "' (" + std::to_string(snapshot_spec_ns) +
+                   " ns) disagrees with the file's own stamped ts '" +
+                   ns_to_iso_instant(snapshot_ts_ns) + "' (" + std::to_string(snapshot_ts_ns) +
+                   " ns) (from '" + spec.path +
+                   "'): the file's ts is the snapshot instant, so every "
+                   "time-to-expiry would be wrong by their difference");
+  }
+  const std::int64_t snapshot_iso_ns =
+      stamp_names_an_instant && snapshot_ts_ns != 0 ? snapshot_ts_ns : snapshot_spec_ns;
 
+  // P-01: sized for the rows this call VISITS, not for the table. These two
+  // vectors are moved into the returned panel and stay live for the rest of the
+  // build, so an n_rows-sized reservation for a symbol owning ~1% of the rows is
+  // not slack — it is ~47 MB of committed address space per symbol, retained,
+  // and 102 of them is the ~4.8 GB commit spike that made 102-name builds die of
+  // bad_alloc at a 123 MB working set.
   std::vector<QuoteRow> rows;
-  rows.reserve(n_rows);
+  rows.reserve(n_visit);
   std::vector<std::uint32_t> kept_instrument_ids;
-  kept_instrument_ids.reserve(n_rows);
+  kept_instrument_ids.reserve(n_visit);
   std::map<std::uint32_t, std::string> kept_mappings;
   std::size_t n_dropped = 0;
   std::string first_underlying;
   std::string first_root;
+  const SettlementSession settlement = spec.expiry_close == ExpiryCloseConvention::UsIndexAmOpen
+                                           ? SettlementSession::Am
+                                           : SettlementSession::Pm;
 
-  for (std::size_t i = 0; i < n_rows; ++i) {
+  for (std::size_t t = 0; t < n_visit; ++t) {
+    const std::size_t i = row_at(t);
     const std::string_view und = has_underlying ? underlyings[i] : std::string_view{};
     if (!filter.empty() && und != filter) {
       continue; // filtered out (not a drop)
     }
-    if (bid_px[i] == kUnsetPx || ask_px[i] == kUnsetPx || bid_null[i] != 0 ||
-        ask_null[i] != 0) {
+    if (bid_px[i] == kUnsetPx || ask_px[i] == kUnsetPx || bid_null[i] != 0 || ask_null[i] != 0) {
       ++n_dropped;
       continue;
     }
@@ -597,15 +768,11 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
       ++n_dropped;
       continue;
     }
-    // TRUE PM-settled expiry instant (16:00 ET). The entire OPRA equity/ETF
-    // universe is PM-settled, so every row is stamped Pm (an AM-settled index
-    // loader would pass SettlementSession::Am). This instant — not the legacy
-    // midnight-UTC `iso_to_ns` — is what T, the drop filter, and every
-    // downstream consumer see (G1, gaps finding 3). Always-on on the OPRA path
-    // (merge decision 2026-07-20): the true instant is a correctness fix, not an
-    // opt-in; main's ExpiryCloseConvention flag is superseded here.
-    const std::int64_t expiry_instant =
-        expiry_instant_ns(osi->expiry_iso, SettlementSession::Pm);
+    // Use the explicitly selected product settlement instant. Historical OPRA
+    // definitions can omit settlement and exercise metadata, so callers must
+    // choose the policy rather than infer it from the feed. This instant is what
+    // T, the drop filter, and every downstream consumer see.
+    const std::int64_t expiry_instant = expiry_instant_ns(osi->expiry_iso, settlement);
     // Drop only genuinely EXPIRED contracts: T <= 0 against the TRUE expiry
     // instant. Same-session (0DTE) contracts are now KEPT — before 16:00 ET they
     // carry a small positive intraday T (e.g. a 15:55 ET snapshot leaves ~5 min),
@@ -693,10 +860,18 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
     row.expiry_iso = std::move(osi->expiry_iso);
     row.strike = osi->strike;
     row.side = osi->side;
-    row.settle = SettlementSession::Pm;   // OPRA equity/ETF universe: PM-settled
-    row.expiry_ns = expiry_instant;       // TRUE 16:00 ET instant -> data_install T
+    row.settle = settlement;
+    row.exercise_style = spec.exercise_style;
+    row.expiry_ns = expiry_instant;
     row.bid = bid;
     row.ask = ask;
+    constexpr std::int64_t kMaxQuoteCount =
+        static_cast<std::int64_t>((std::numeric_limits<std::int32_t>::max)());
+    if (bid_sz[i] < 0 || ask_sz[i] < 0 || bid_sz[i] > kMaxQuoteCount ||
+        ask_sz[i] > kMaxQuoteCount) {
+      return Err(ErrorCode::OutOfRange,
+                 "OPRA displayed size exceeds nonnegative int32 contract range");
+    }
     row.bid_size = static_cast<std::int32_t>(bid_sz[i]);
     row.ask_size = static_cast<std::int32_t>(ask_sz[i]);
     rows.push_back(std::move(row));
@@ -732,8 +907,7 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
   // the curve — keeping it BIT-IDENTICAL to the pre-P2-3 behavior (this is the
   // SPY/XOM held-quality invariant).
   if (spec.yc_pillar_t.size() != spec.yc_pillar_r.size()) {
-    return Err(ErrorCode::InvalidArgument,
-               "OpraLoadSpec.yc_pillar_t/_r length mismatch");
+    return Err(ErrorCode::InvalidArgument, "OpraLoadSpec.yc_pillar_t/_r length mismatch");
   }
   const bool has_term_curve = spec.yc_pillar_t.size() >= 2;
   YieldCurve yield;
@@ -744,9 +918,7 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
   // The scalar rate the flat / single-pillar path uses: the sole supplied
   // pillar's rate, else spec.r (the historical scalar, verbatim).
   const double flat_r = spec.yc_pillar_r.empty() ? spec.r : spec.yc_pillar_r.front();
-  const auto rate_at = [&](double T) -> double {
-    return has_term_curve ? yield.zero(T) : flat_r;
-  };
+  const auto rate_at = [&](double T) -> double { return has_term_curve ? yield.zero(T) : flat_r; };
 
   QuoteFrame frame;
   frame.uid = std::move(frame_uid);
@@ -774,7 +946,7 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
   // on the no-pillars flat path (rate_source stays NaN, ExpiryInputs.rate
   // absent) so that path's frame is byte-for-byte the historical one.
   if (!spec.yc_pillar_t.empty()) {
-    for (QuoteRow& row : frame.rows) {
+    for (QuoteRow &row : frame.rows) {
       // Use the row's TRUE stamped expiry instant (16:00 ET), so the term-curve
       // rate is queried at the same T `data_install` will assign to Chain::T.
       ATX_TRY(const double T, time_to_expiry_years(snapshot_iso_ns, row.expiry_ns, spec.time));
@@ -806,17 +978,16 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
       }
       list.append(frame.uid_strs[j]);
     }
-    return Err(ErrorCode::InvalidArgument,
-               "underlying '" + std::string(filter) +
-                   "': rows resolved to more than one uid {" + list +
-                   "} (frame uid and row uids disagree)");
+    return Err(ErrorCode::InvalidArgument, "underlying '" + std::string(filter) +
+                                               "': rows resolved to more than one uid {" + list +
+                                               "} (frame uid and row uids disagree)");
   }
   build_expiry_inputs(frame);
 
   const std::size_t n_contracts = frame.rows.size();
 
   std::vector<std::string_view> distinct_expiries;
-  for (const QuoteRow& row : frame.rows) {
+  for (const QuoteRow &row : frame.rows) {
     if (std::find(distinct_expiries.begin(), distinct_expiries.end(), row.expiry_iso) ==
         distinct_expiries.end()) {
       distinct_expiries.push_back(row.expiry_iso);
@@ -828,7 +999,7 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
   if (spec.spot_override > 0.0) {
     implied_spot = spec.spot_override;
   } else {
-    ATX_TRY(const double s, imply_spot_from_pcp(frame, rate_at, spec.time));
+    ATX_TRY(const double s, imply_spot_from_pcp(frame, rate_at, spec.time, settlement));
     implied_spot = s;
   }
   frame.spot = implied_spot;
@@ -844,6 +1015,11 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
   panel.source_fingerprint = source_fingerprint(panel.frame, kept_instrument_ids, kept_mappings,
                                                 panel.source_schema_version);
   panel.provenance_complete = provenance_complete;
+  panel.bid_size_available = true;
+  panel.ask_size_available = true;
+  // cbbo-1m has no interval-volume or open-interest columns.
+  panel.volume_available = false;
+  panel.open_interest_available = false;
   panel.source_instrument_ids = std::move(kept_instrument_ids);
   panel.source_identities.reserve(kept_mappings.size());
   for (auto &[instrument_id, raw_symbol] : kept_mappings) {
@@ -855,27 +1031,56 @@ Result<OpraPanel> panel_from_table(const io::ParquetTable& table, const OpraLoad
   return Ok(std::move(panel));
 }
 
+Result<OpraPanel> panel_from_table(const io::ParquetTable &table, const OpraLoadSpec &spec) {
+  ATX_TRY(const OpraTableScan scan, scan_table(table));
+  return panel_from_scan(scan, spec);
+}
+
+// The 8 canonical hive-v2 columns. Shared by the per-symbol table seam and the
+// per-table scan entry point so both reject the same file with the same words.
+[[nodiscard]] Status require_hive_columns(const io::ParquetTable &table, std::string_view path) {
+  static constexpr std::array<std::string_view, 8> kRequiredColumns = {
+      "ts", "underlying", "symbol", "instrument_id", "bid_px", "ask_px", "bid_sz", "ask_sz"};
+  const io::Schema &schema = table.schema();
+  for (const std::string_view name : kRequiredColumns) {
+    if (schema.find(name) == nullptr) {
+      return Err(ErrorCode::InvalidArgument, "OPRA table missing required column '" +
+                                                 std::string(name) + "' (from '" +
+                                                 std::string(path) + "')");
+    }
+  }
+  return Ok();
+}
+
 } // namespace
 
-Result<OpraPanel> load_opra_cbbo_from_table(const io::ParquetTable& table,
-                                            const OpraLoadSpec& spec) {
+Result<OpraPanel> load_opra_cbbo_from_table(const io::ParquetTable &table,
+                                            const OpraLoadSpec &spec) {
   // The in-memory-table seam requires the full canonical OPRA schema — the 8
   // columns the hive v2 date partition guarantees. A missing column is a
   // contract violation reported up front with the column name and spec.path
   // context, rather than the opaque deep column_view failure the raw core would
   // otherwise surface to a caller that never touched a file.
-  static constexpr std::array<std::string_view, 8> kRequiredColumns = {
-      "ts",     "underlying", "symbol", "instrument_id",
-      "bid_px", "ask_px",     "bid_sz", "ask_sz"};
-  const io::Schema& schema = table.schema();
-  for (const std::string_view name : kRequiredColumns) {
-    if (schema.find(name) == nullptr) {
-      return Err(ErrorCode::InvalidArgument,
-                 "OPRA table missing required column '" + std::string(name) +
-                     "' (from '" + spec.path + "')");
-    }
-  }
+  ATX_TRY_VOID(require_hive_columns(table, spec.path));
   return panel_from_table(table, spec);
+}
+
+Result<OpraTableScan> scan_opra_cbbo_table(const io::ParquetTable &table,
+                                           std::string_view path_for_errors) {
+  ATX_TRY_VOID(require_hive_columns(table, path_for_errors));
+  return scan_table(table);
+}
+
+Result<OpraPanel> load_opra_cbbo_from_scan(const OpraTableScan &scan, const OpraLoadSpec &spec) {
+  // An empty filter has no group to look up: `panel_from_scan` would silently
+  // fall back to the full-table path, which is a whole-table load wearing a
+  // per-symbol call's clothes. Reject it here rather than serve it.
+  if (spec.underlying.empty()) {
+    return Err(ErrorCode::InvalidArgument,
+               "load_opra_cbbo_from_scan requires OpraLoadSpec.underlying (from '" + spec.path +
+                   "')");
+  }
+  return panel_from_scan(scan, spec);
 }
 
 } // namespace atx::vol

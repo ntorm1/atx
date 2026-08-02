@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "atx/core/error.hpp"
+#include "atx/vol/black76.hpp"
 #include "atx/vol/chain.hpp"
 #include "atx/vol/detail/counters.hpp"
 #include "atx/vol/data.hpp"
@@ -82,6 +83,33 @@ atx::vol::Result<OptionChain> make_chain_from_spec(const SynthPanelSpec &spec) {
   auto panel = make_synthetic_american_panel(spec);
   if (!panel.has_value()) {
     return atx::core::Err(panel.error());
+  }
+  return OptionChain::from_frame(panel->frame, spec.r, spec.spot);
+}
+
+atx::vol::Result<OptionChain> make_european_chain_from_spec(const SynthPanelSpec &spec) {
+  auto panel = make_synthetic_american_panel(spec);
+  if (!panel.has_value()) {
+    return atx::core::Err(panel.error());
+  }
+  const std::size_t rows_per_expiry = 2u * spec.strikes.size();
+  if (rows_per_expiry == 0u || panel->frame.rows.size() != rows_per_expiry * spec.expiries.size() ||
+      panel->truth_iv.size() != panel->frame.rows.size() ||
+      panel->truth_forward.size() != spec.expiries.size()) {
+    return atx::core::Err(atx::core::ErrorCode::Internal,
+                          "European fixture dimensions are inconsistent");
+  }
+  for (std::size_t row_index = 0; row_index < panel->frame.rows.size(); ++row_index) {
+    const std::size_t expiry_index = row_index / rows_per_expiry;
+    const double T = spec.expiries[expiry_index].T;
+    const double df = std::exp(-spec.r * T);
+    atx::vol::QuoteRow &row = panel->frame.rows[row_index];
+    const double mid = atx::vol::black76_price(panel->truth_forward[expiry_index], row.strike, T,
+                                               panel->truth_iv[row_index], df, row.side);
+    const double half_spread = std::max(spec.min_half_spread, spec.half_spread_frac * mid);
+    row.bid = std::max(0.0, mid - half_spread);
+    row.ask = mid + half_spread;
+    row.exercise_style = atx::vol::ExerciseStyle::European;
   }
   return OptionChain::from_frame(panel->frame, spec.r, spec.spot);
 }
@@ -1813,6 +1841,33 @@ TEST_F(PricerFitterTest, RiskEssviRungServesOnlyAuditedInversions) {
   const auto &diag = session.diagnostics();
   EXPECT_GT(diag.n_iv_proposed, std::size_t{0});
   EXPECT_EQ(diag.n_iv_audited, diag.n_iv_proposed);
+  EXPECT_TRUE(diag.inversion_certified);
+}
+
+TEST(PricerFitterRisk, EuropeanConvexDenseSurfaceUsesDirectInversionCertificate) {
+  const SynthPanelSpec spec = make_spy_synthetic_spec();
+  const auto chain = make_european_chain_from_spec(spec);
+  ASSERT_TRUE(chain.has_value()) << chain.error().to_string();
+
+  PricerConfig config;
+  config.quality_mode = atx::vol::FitQualityMode::Latency;
+  config.outputs = atx::vol::SurfaceOutputs::Risk;
+  config.risk_admission = atx::vol::RiskAdmission::Required;
+  config.fallback = atx::vol::SurfaceFallback::None;
+  atx::vol::CurveConfig curve;
+  curve.kind = atx::vol::VolCurveKind::ConvexDense;
+  config.curve = curve;
+
+  PricerFitter fitter{config};
+  const auto fitted = fitter.fit(*chain);
+  ASSERT_TRUE(fitted.has_value()) << fitted.error().to_string();
+  const atx::vol::SurfaceBundle bundle = fitter.bundle();
+  ASSERT_NE(bundle.risk, nullptr);
+  EXPECT_EQ(bundle.risk_health.state, atx::vol::SurfaceState::Healthy);
+  const auto &diag = bundle.risk->session().diagnostics();
+  EXPECT_GT(diag.n_iv_proposed, std::size_t{0});
+  EXPECT_EQ(diag.n_iv_audited, diag.n_iv_proposed);
+  EXPECT_EQ(diag.n_iv_rejected_residual, std::size_t{0});
   EXPECT_TRUE(diag.inversion_certified);
 }
 

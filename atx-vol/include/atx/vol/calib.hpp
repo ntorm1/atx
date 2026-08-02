@@ -401,12 +401,13 @@ struct DeAmAuditDiagnostics {
   std::uint32_t n_forced_far_wing{0};
   std::uint32_t n_accurate_fallback{0};
   std::uint32_t n_rejected_residual{0};
-  // Row-level ledger for the de-Am inversion stage (route counters can double
-  // count a fallback row across two routes; these never do). `n_deam_rows`
-  // counts fit rows entering the inversion stage; `n_deam_accepted` counts
-  // rows surviving into the European observation set. The difference is the
-  // tolerated node drops (failed inversion / over-budget residual /
-  // non-finite restatement) that certification caps by fraction.
+  // Row-level ledger for the fit's price-to-IV inversion stage (route counters
+  // can double count a fallback row across two routes; these never do). For an
+  // American contract this is the de-Am inversion; for an already-European
+  // contract it is the direct Black-76 inversion plus explicit Black-76
+  // reprice. `n_deam_rows` counts rows entering that certification stage and
+  // `n_deam_accepted` counts rows surviving into the European observation set.
+  // The historical field names remain stable for persisted diagnostics.
   std::uint32_t n_deam_rows{0};
   std::uint32_t n_deam_accepted{0};
   // W3.1 shared-boundary route. Boundary work is constant per eligible side
@@ -471,6 +472,9 @@ struct ObsSet {
 //         arrays are shorter than 2·n_strikes (malformed chain);
 //         NotFound (maps the C ERR_NO_DATA) if fewer than 5 rows survive;
 //         otherwise Ok with the surviving observations and the drop count.
+// For an explicitly European chain, every surviving Black-76 IV is repriced
+// against its raw midpoint and recorded in `ObsSet::deam_audit`; a row outside
+// `max_inversion_residual_half_spreads` is dropped before the usable-row floor.
 [[nodiscard]] Result<ObsSet> build_observations(const Chain &chain, double F, double T, double df,
                                                 const CalibOpts &opts);
 
@@ -559,12 +563,12 @@ shared_boundary_deam_batch(std::span<FitObs> rows, double S, double r, double F,
                            AmericanMethod method = AmericanMethod::AndersenLake,
                            DeAmAuditDiagnostics *audit = nullptr);
 
-// Inversion certificate over one slice's de-Americanization audit (charter
+// Inversion certificate over one slice's price-to-IV audit (charter
 // §5.3/§8.1: "a cache or shortcut may propose an answer; it may not certify
 // its own answer"; residual budgets bind on ACCEPTED nodes). True iff
 //   1. every route accepted no more proposals than it audited — a method with
 //      no cold-reference audit (e.g. AmericanMethod::Baw) can never certify;
-//   2. at least one row entered the de-Am stage and at least one survived; and
+//   2. at least one row entered the certification stage and at least one survived; and
 //   3. the dropped-row fraction (failed inversion / over-budget residual —
 //      dropped nodes never reach the fit set) is within `max_drop_fraction`.
 // Fail-closed on a non-finite or negative budget.

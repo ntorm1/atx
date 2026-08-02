@@ -20,7 +20,9 @@ Cases (per the task brief):
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import json
 import pathlib
 import sys
 from unittest import mock
@@ -114,10 +116,13 @@ class FakeHistorical:
         return [c for c in self.calls if c[0] == "get_range"]
 
 
-def _decoded(underlyings, *, bid_px=100) -> pd.DataFrame:
+def _decoded(underlyings, *, bid_px=100, ts="2026-07-20T19:55:00") -> pd.DataFrame:
     """A decoded 8-column frame (post-DBN) for merge/plan helpers.
 
-    ``underlyings`` may be an iterable of names or a ``{name: bid_px}`` map."""
+    ``underlyings`` may be an iterable of names or a ``{name: bid_px}`` map.
+    ``ts`` is the constant snapshot stamp the whole date file is written with
+    (default matches the fixed 19:55Z minute used throughout this file's other
+    fixtures); override it to simulate a file written at a different minute."""
     if isinstance(underlyings, dict):
         items = list(underlyings.items())
     else:
@@ -126,7 +131,7 @@ def _decoded(underlyings, *, bid_px=100) -> pd.DataFrame:
     for u, bp in items:
         rows.append(
             {
-                "ts": pd.Timestamp("2026-07-20T19:55:00"),
+                "ts": pd.Timestamp(ts),
                 "underlying": u,
                 "symbol": _osi(u),
                 "instrument_id": 1,
@@ -155,6 +160,15 @@ def test_plan_missing_partial_file_leaves_only_missing_symbol(tmp_path):
     ph.merge_date_file(None, _decoded(["SPY"]), tgt)
     plan = ph.plan_missing(tmp_path, ["SPY", "AAPL"], ["2026-07-20"])
     assert plan == {"2026-07-20": ["AAPL"]}
+    # FIX-I-9. `repull_dates` is the ONLY switch that selects pull()'s one
+    # data-destroying code path (full replace instead of union), and
+    # `MissingPlan` subclasses dict so `plan == {...}` cannot see it. Without
+    # this assertion an unconditional `plan.repull_dates.add(date)` next to
+    # every `plan[date] = miss` passes the whole suite -- and then every
+    # already-paid symbol on every partially-filled hive date is wiped on the
+    # next resume. A partial file at the RIGHT minute is a top-up, never a
+    # replace.
+    assert plan.repull_dates == set()
 
 
 def test_plan_missing_complete_file_drops_the_date(tmp_path):
@@ -169,6 +183,11 @@ def test_plan_missing_force_repulls_every_requested_symbol(tmp_path):
     ph.merge_date_file(None, _decoded(["SPY", "AAPL"]), tgt)
     plan = ph.plan_missing(tmp_path, ["SPY", "AAPL"], ["2026-07-20"], force=True)
     assert plan == {"2026-07-20": ["SPY", "AAPL"]}
+    # FIX-I-9: --force re-requests every symbol but does NOT flag a repull --
+    # pull() honours --force through merge_date_file's `force=` arm, which
+    # preserves untouched underlyings. Flagging it here would silently upgrade
+    # every --force top-up into a whole-file replacement.
+    assert plan.repull_dates == set()
 
 
 def test_plan_missing_handles_multi_underlying_row_group(tmp_path):
@@ -397,3 +416,671 @@ def test_pull_result_realized_estimate_and_cell_counts(tmp_path):
     assert res.unmapped_rows == 0
     no_options = [m for m in res.manifest if m["status"] == "no_options"]
     assert [m["symbol"] for m in no_options] == ["AAPL"]
+
+
+# ── ET-anchored snapshot minute (DST-aware) ────────────────────────────────────
+
+def test_snap_et_maps_est_and_edt_correctly():
+    # 2022-01-03 is EST: 15:55 ET == 20:55 UTC. 2022-07-01 is EDT: 15:55 ET == 19:55 UTC.
+    assert ph.snapshot_minute_utc("2022-01-03", "15:55") == "20:55"
+    assert ph.snapshot_minute_utc("2022-07-01", "15:55") == "19:55"
+
+
+def test_snap_and_snap_et_mutually_exclusive():
+    # The tool's flag is --snap-utc (the brief's "--snap" shorthand); --snap-et
+    # must be mutually exclusive with it and exit 2 (argparse's usual error) when
+    # both are given.
+    with pytest.raises(SystemExit) as exc:
+        ph.build_parser().parse_args(
+            ["--symbols-file", "x.txt", "--start", "2026-07-20", "--end", "2026-07-21",
+             "--snap-utc", "19:55", "--snap-et", "15:55"]
+        )
+    assert exc.value.code == 2
+
+
+# ── Resume minute check (plan_missing) ─────────────────────────────────────────
+
+def test_plan_missing_repulls_on_minute_mismatch(tmp_path):
+    # Existing date file stamped at 19:55Z; the plan expects 20:55Z for that date
+    # (e.g. an EST session under --snap-et) -> the whole date is "missing" again,
+    # with its full symbol set, and flagged for a full replace (not a union).
+    tgt = tmp_path / "date=2026-07-20" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["SPY", "AAPL"], ts="2026-07-20T19:55:00"), tgt)
+
+    plan = ph.plan_missing(tmp_path, ["SPY", "AAPL"], ["2026-07-20"],
+                           expected_minute={"2026-07-20": "20:55"})
+    assert plan == {"2026-07-20": ["SPY", "AAPL"]}
+    assert plan.repull_dates == {"2026-07-20"}
+
+
+def test_plan_missing_subtracts_absent_sidecar(tmp_path):
+    # Date file holds {A} only; the sidecar (for the SAME expected minute) says B
+    # is a known-absent underlying (e.g. no listed options that day) -> the
+    # request for {A, B} has nothing left missing.
+    tgt = tmp_path / "date=2026-07-20" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["A"]), tgt)
+    absent_dir = tmp_path / "_absent"
+    absent_dir.mkdir()
+    (absent_dir / "2026-07-20.json").write_text(json.dumps(
+        {"minute_utc": "19:55", "symbols": ["B"], "asof": "2026-07-20T00:00:00+00:00"}
+    ))
+
+    plan = ph.plan_missing(tmp_path, ["A", "B"], ["2026-07-20"],
+                           expected_minute={"2026-07-20": "19:55"})
+    assert plan == {}
+    assert plan.repull_dates == set()  # FIX-I-9: matching minute -> never a replace
+
+
+def test_sidecar_ignored_when_minute_differs(tmp_path):
+    # The on-disk file's ts (20:55) matches the expected minute (no repull), but
+    # the sidecar was recorded at a DIFFERENT minute (19:55, e.g. a stale EDT-era
+    # entry) -> it must NOT mask B for a 20:55 request.
+    tgt = tmp_path / "date=2026-07-20" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["A"], ts="2026-07-20T20:55:00"), tgt)
+    absent_dir = tmp_path / "_absent"
+    absent_dir.mkdir()
+    (absent_dir / "2026-07-20.json").write_text(json.dumps(
+        {"minute_utc": "19:55", "symbols": ["B"], "asof": "2026-07-20T00:00:00+00:00"}
+    ))
+
+    plan = ph.plan_missing(tmp_path, ["A", "B"], ["2026-07-20"],
+                           expected_minute={"2026-07-20": "20:55"})
+    assert plan == {"2026-07-20": ["B"]}
+    assert plan.repull_dates == set()  # FIX-I-9: a stale sidecar is not a minute mismatch
+
+
+# ── Absent-symbol sidecar (write side, through pull()) ─────────────────────────
+
+def test_absent_sidecar_written_after_pull(tmp_path):
+    out = tmp_path / "hive"
+    plan = {"2026-07-20": ["SPY", "AAPL"]}
+    frames = {"2026-07-20": _raw_df(["SPY"])}  # AAPL comes back with zero rows
+    root_to_sym = {"SPY": "SPY", "AAPL": "AAPL"}
+    fake = FakeHistorical(frames=frames)
+
+    ph.pull(fake, plan, out, snap_hm="19:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader)
+
+    sidecar = out / "_absent" / "2026-07-20.json"
+    assert sidecar.exists()
+    data = json.loads(sidecar.read_text())
+    assert data["symbols"] == ["AAPL"]
+    assert data["minute_utc"] == "19:55"
+    assert "asof" in data
+
+
+def test_force_clears_sidecar(tmp_path):
+    # A prior sidecar claims {B, C} absent. --force repulls A/B/C fresh; the
+    # fake provider now has data for C (the old record was stale) but still none
+    # for B -> the rewritten sidecar reflects ONLY this run's findings ({B}), not
+    # a merge with the stale prior entry.
+    out = tmp_path / "hive"
+    absent_dir = out / "_absent"
+    absent_dir.mkdir(parents=True)
+    (absent_dir / "2026-07-20.json").write_text(json.dumps(
+        {"minute_utc": "19:55", "symbols": ["B", "C"], "asof": "2026-07-20T00:00:00+00:00"}
+    ))
+    plan = {"2026-07-20": ["A", "B", "C"]}
+    frames = {"2026-07-20": _raw_df(["A", "C"])}  # B still absent; C now has data
+    root_to_sym = {"A": "A", "B": "B", "C": "C"}
+    fake = FakeHistorical(frames=frames)
+
+    ph.pull(fake, plan, out, snap_hm="19:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, force=True)
+
+    sidecar = out / "_absent" / "2026-07-20.json"
+    data = json.loads(sidecar.read_text())
+    assert data["symbols"] == ["B"]
+    assert data["minute_utc"] == "19:55"
+
+
+# ── Fix-round regression tests (code review: Critical 1, Important 2/3/4) ──────
+
+def test_pull_replaces_full_file_on_minute_mismatch_not_force_merge(tmp_path):
+    """Critical-1 regression. Existing file holds {AAPL, SPY} stamped at
+    19:55Z. A repull-flagged pull (simulating a detected minute mismatch, e.g.
+    a DST-boundary re-run) requests {AAPL, SPY} at a NEW minute (20:55Z) but
+    the fresh provider response only has SPY (AAPL comes back with zero rows
+    this time). The old bug: a force-style merge only replaces underlyings
+    PRESENT in the new frame, so AAPL@19:55 would survive untouched, leaving
+    the file holding two different snapshot instants at once (AAPL@19:55 +
+    SPY@20:55) -- a corrupted, permanently-mismatching file (the mismatch
+    check would flag it forever, but the sidecar branch is unreachable because
+    the mismatch branch `continue`s first). The fix: a repull-flagged date is
+    a genuine full replacement -- the resulting file must hold ONLY what this
+    pull actually returned (SPY), at the new minute, with AAPL simply absent
+    (correctly re-queued as missing on the next resume, not stale)."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
+
+    plan = {date: ["AAPL", "SPY"]}
+    frames = {date: _raw_df(["SPY"])}  # AAPL: zero rows this time
+    root_to_sym = {"AAPL": "AAPL", "SPY": "SPY"}
+    fake = FakeHistorical(frames=frames)
+
+    ph.pull(fake, plan, out, snap_hm="20:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates={date})
+
+    tbl = pq.read_table(tgt).to_pandas()
+    assert set(tbl["underlying"]) == {"SPY"}  # AAPL@19:55 must NOT survive
+    tss = tbl["ts"].unique()
+    assert len(tss) == 1                      # single constant ts -- no mixed file
+    ts = pd.Timestamp(tss[0])
+    assert (ts.hour, ts.minute) == (20, 55)   # the NEW minute, not the stale 19:55
+
+
+def test_repull_with_an_empty_provider_response_keeps_the_existing_date_file(tmp_path):
+    """FIX-C-2 regression. A repull-flagged date is a genuine FULL replacement
+    (``existing=None`` -- see the test above for why a force-merge is wrong
+    here), so an empty fresh response used to write a 0-row parquet OVER the
+    existing file. Three things broke at once and none of them were recoverable:
+
+      1. paid, real (if wrongly stamped) data was destroyed;
+      2. ``_date_file_snap_ts`` on a 0-row file returns ``None``, which
+         ``plan_missing`` fails OPEN on, so every symbol is re-planned -- and
+         re-BILLED -- on every resume from then on, forever;
+      3. with ``have_ts`` gone the date can never re-enter the repull path, so
+         the minute-mismatch detector is permanently blind to it.
+
+    The trigger conjunction is not hypothetical: a minute mismatch (Task 7 hit
+    78 at once) plus a zero-row response (a provider hiccup, a snapshot minute
+    after an early close, a sharded symbol set -- Task 7's 504 workaround was
+    half-universe sequential pulls, which multiplies partial responses).
+
+    An empty response must never destroy existing data: keep the file, log
+    loudly, and leave the date planned for the next resume."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
+
+    plan = {date: ["AAPL", "SPY"]}
+    frames = {date: _raw_df([])}          # provider returns nothing for the date
+    fake = FakeHistorical(frames=frames)
+
+    res = ph.pull(fake, plan, out, snap_hm="20:55", root_to_sym={"AAPL": "AAPL", "SPY": "SPY"},
+                  store_loader=_fake_loader, repull_dates={date})
+
+    tbl = pq.read_table(tgt).to_pandas()
+    assert set(tbl["underlying"]) == {"AAPL", "SPY"}   # (1) paid data survives
+    assert len(tbl["ts"].unique()) == 1
+    assert res.boards_written == 0                     # nothing was actually obtained
+
+    # (2)+(3) the file is still readable as a stamped date file, so the next
+    # resume re-detects the mismatch and re-plans it as a REPULL -- not as a
+    # fail-open "everything is missing" (which is what re-bills forever).
+    assert ph._date_file_snap_ts(tgt) == pd.Timestamp(f"{date}T19:55:00")
+    nxt = ph.plan_missing(out, ["AAPL", "SPY"], [date], expected_minute={date: "20:55"})
+    assert nxt == {date: ["AAPL", "SPY"]}
+    assert nxt.repull_dates == {date}
+
+    # ... and nothing was latched absent on the strength of an empty response.
+    assert not (out / "_absent" / f"{date}.json").exists()
+
+
+def test_empty_repull_response_is_not_cached_so_the_next_run_can_actually_repull(tmp_path):
+    """FIX-N-1. FIX-C-2 stopped the empty response DESTROYING the date file, and
+    told the operator "the date stays planned; re-run once the window/provider is
+    healthy". That sentence was false. ``pull()`` writes the raw provider
+    response to ``<hive>/_dbn/<date>_<hm>_<digest>.dbn.zst`` BEFORE the guard
+    runs, and the digest is ``sha256(date|sorted(miss))[:12]`` -- so the next
+    resume re-plans the SAME symbol set, computes the SAME digest, finds the
+    cache, replays the EMPTY store, and never contacts the provider at all.
+
+    The date is then wedged forever: every resume prints EMPTY-REPULL and exits
+    0, the file stays stamped at the old minute, and FIX-C-1 turns it into a
+    permanent load error so the partition is never built. Nothing in the
+    orchestrator can see it either (``EMPTY-REPULL`` is not parsed, and
+    ``parse_minute_mismatch_dates`` is dead code).
+
+    This test is the one the fix round did not write: it calls ``pull()`` a
+    SECOND time, which is the only way the cache short-circuit is observable."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
+    root_to_sym = {"AAPL": "AAPL", "SPY": "SPY"}
+
+    # PULL 1 -- provider hiccups and returns nothing for the repull-flagged date.
+    sick = FakeHistorical(frames={date: _raw_df([])})
+    ph.pull(sick, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates={date})
+    assert len(sick.get_range_calls()) == 1, "the empty response cost exactly one call"
+    assert set(pq.read_table(tgt).to_pandas()["underlying"]) == {"AAPL", "SPY"}, \
+        "FIX-C-2: the paid rows still survive"
+
+    # An empty response is not a cacheable answer -- nothing may be left behind
+    # that would let a later run mistake it for a real one.
+    assert sorted(p.name for p in (out / "_dbn").glob("*.dbn.zst")) == [], \
+        "the empty response must not stay in the DBN cache"
+
+    # The date is still planned as a repull, exactly as the stderr line claims.
+    nxt = ph.plan_missing(out, ["AAPL", "SPY"], [date], expected_minute={date: "20:55"})
+    assert nxt == {date: ["AAPL", "SPY"]} and nxt.repull_dates == {date}
+
+    # PULL 2 -- the operator re-runs once the provider is healthy, as instructed.
+    # FIX-IMPORTANT-2: recovery is now explicitly operator-initiated
+    # (`--retry-empty`), because an unconditional re-pull on every resume is a
+    # recurring charge for a date that may be empty FOREVER. See
+    # `test_a_permanently_empty_date_costs_nothing_on_a_resume` below.
+    healthy = FakeHistorical(frames={date: _raw_df(["AAPL", "SPY"])})
+    ph.pull(healthy, dict(nxt), out, snap_hm="20:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates=nxt.repull_dates, retry_empty=True)
+    assert len(healthy.get_range_calls()) == 1, \
+        "the re-run must actually reach the provider -- this is the whole recovery"
+
+    tbl = pq.read_table(tgt).to_pandas()
+    assert set(tbl["underlying"]) == {"AAPL", "SPY"}
+    tss = tbl["ts"].unique()
+    assert len(tss) == 1
+    assert (pd.Timestamp(tss[0]).hour, pd.Timestamp(tss[0]).minute) == (20, 55), \
+        "the date is repaired to the correct minute, not stuck stale at 19:55"
+    # ... and the successful pull retires the latch, so the date is not left
+    # carrying a stale "settled empty" marker it would trip over later.
+    assert not (out / "_empty" / f"{date}.json").exists()
+
+
+def test_empty_repull_does_not_re_bill_inside_the_same_run(tmp_path):
+    """FIX-N-1's spend rider. Dropping the cache entry must make a LATER
+    explicitly-invoked run able to fetch -- it must NOT trigger an automatic
+    retry inside the current run. The guard `continue`s immediately, so the date
+    is billed exactly once per invocation no matter what."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
+
+    sick = FakeHistorical(frames={date: _raw_df([])})
+    res = ph.pull(sick, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55",
+                  root_to_sym={"AAPL": "AAPL", "SPY": "SPY"}, store_loader=_fake_loader,
+                  repull_dates={date})
+    assert len(sick.get_range_calls()) == 1, "exactly one billed call per invocation"
+    assert res.boards_written == 0
+
+
+def test_a_permanently_empty_date_costs_nothing_on_a_resume(tmp_path):
+    """FIX-IMPORTANT-2. FIX-N-1 dropped the cached empty DBN so a later run could
+    re-pull -- but `nr == 0` ("the provider returned nothing") is not the same as
+    "transient". FIX-C-2's own comment lists *a snapshot minute that landed after
+    an early close* among the causes of an empty response, and that cause is not
+    transient at all: the provider returns 0 rows at that window every time,
+    forever. Every explicit resume therefore unlinked the cache and called
+    `get_range` again -- a $0-forever path turned into pay-per-resume, which is
+    the recurring-charge loop FIX-C-2 exists to prevent, reintroduced for a
+    narrower input class.
+
+    The system already solved this once: the absent-latch. A confirmed absence is
+    recorded in a sidecar so later runs know it is settled and skip it. Same shape
+    here -- `<out>/_empty/<date>.json` records (minute, digest) as SETTLED, and a
+    resume skips the date without contacting the provider.
+
+    Three sick runs must bill exactly ONE call in total, not three."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
+    root_to_sym = {"AAPL": "AAPL", "SPY": "SPY"}
+
+    billed = []
+    for run_i in range(3):
+        sick = FakeHistorical(frames={date: _raw_df([])})
+        res = ph.pull(sick, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55",
+                      root_to_sym=root_to_sym, store_loader=_fake_loader,
+                      repull_dates={date})
+        billed.append(len(sick.get_range_calls()))
+        assert res.boards_written == 0
+        assert res.cells_failed == 2, "the cells are still reported unfilled, not silently ok"
+        if run_i == 0:
+            assert (out / "_empty" / f"{date}.json").exists(), \
+                "the settled-empty result must be latched, following _absent's conventions"
+
+    assert billed == [1, 0, 0], \
+        f"a permanently-empty date must be billed once, not once per resume (got {billed})"
+
+    # FIX-C-2 still holds throughout: the paid rows were never replaced.
+    assert set(pq.read_table(tgt).to_pandas()["underlying"]) == {"AAPL", "SPY"}
+    # ... and the date is still visibly unrepaired, so nothing has been silently
+    # marked complete: it re-plans as a repull on every future resume.
+    nxt = ph.plan_missing(out, ["AAPL", "SPY"], [date], expected_minute={date: "20:55"})
+    assert nxt == {date: ["AAPL", "SPY"]} and nxt.repull_dates == {date}
+
+
+def test_the_empty_latch_is_operator_clearable_and_never_self_clears(tmp_path):
+    """FIX-IMPORTANT-2's recovery contract. Nothing inside a run may cause an
+    automatic re-bill, so the latch must survive any number of resumes -- but the
+    operator who believes the provider has recovered needs an explicit way to
+    force a fresh pull. Two of them, both explicit: `--retry-empty`, and deleting
+    the sidecar by hand (exactly like `_absent`)."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
+    root_to_sym = {"AAPL": "AAPL", "SPY": "SPY"}
+    plan = {date: ["AAPL", "SPY"]}
+
+    sick = FakeHistorical(frames={date: _raw_df([])})
+    ph.pull(sick, plan, out, snap_hm="20:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates={date})
+    latch = out / "_empty" / f"{date}.json"
+    assert latch.exists()
+
+    # (a) --retry-empty re-pulls, and a still-empty answer re-latches rather than
+    #     leaving the date open to bill again on the next plain resume.
+    still_sick = FakeHistorical(frames={date: _raw_df([])})
+    ph.pull(still_sick, plan, out, snap_hm="20:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates={date}, retry_empty=True)
+    assert len(still_sick.get_range_calls()) == 1, "--retry-empty must reach the provider"
+    assert latch.exists(), "a still-empty answer must stay latched, not re-open the date"
+
+    quiet = FakeHistorical(frames={date: _raw_df([])})
+    ph.pull(quiet, plan, out, snap_hm="20:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates={date})
+    assert quiet.get_range_calls() == [], "and a plain resume after it is still free"
+
+    # (b) deleting the sidecar by hand is the other supported escape hatch.
+    latch.unlink()
+    healthy = FakeHistorical(frames={date: _raw_df(["AAPL", "SPY"])})
+    ph.pull(healthy, plan, out, snap_hm="20:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates={date})
+    assert len(healthy.get_range_calls()) == 1
+    assert not latch.exists(), "a successful pull retires the latch"
+
+
+def test_the_empty_latch_does_not_apply_at_a_different_snapshot_minute(tmp_path):
+    """FIX-IMPORTANT-2, keyed the way `_absent` is keyed. The real-world cause of
+    a permanently-empty response is a snapshot minute that landed after an early
+    close, and the real-world FIX is to move the snapshot minute. So the latch
+    holds exactly one minute's verdict: re-running at a different `--snap`
+    invalidates it automatically and the date re-pulls with no flag at all.
+
+    (This is also what makes a DST-transition minute change safe.)"""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T18:55:00"), tgt)
+    root_to_sym = {"AAPL": "AAPL", "SPY": "SPY"}
+
+    sick = FakeHistorical(frames={date: _raw_df([])})
+    ph.pull(sick, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates={date})
+    assert len(sick.get_range_calls()) == 1
+
+    # Same date, same symbols, EARLIER minute -- a different question entirely.
+    moved = FakeHistorical(frames={date: _raw_df(["AAPL", "SPY"])})
+    ph.pull(moved, {date: ["AAPL", "SPY"]}, out, snap_hm="19:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, repull_dates={date})
+    assert len(moved.get_range_calls()) == 1, \
+        "a latch is one minute's verdict -- it must not suppress a different minute"
+    assert set(pq.read_table(tgt).to_pandas()["underlying"]) == {"AAPL", "SPY"}
+
+
+def test_the_empty_latch_does_not_apply_to_a_different_symbol_set(tmp_path):
+    """The latch is a $0 stand-in for the cache entry it replaces, so it carries
+    the same identity that entry did: `sha256(date|sorted(miss))[:12]`. A run
+    asking a genuinely different question (a grown universe) must not be answered
+    from a latch recorded for a narrower one."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL"], ts=f"{date}T19:55:00"), tgt)
+
+    sick = FakeHistorical(frames={date: _raw_df([])})
+    ph.pull(sick, {date: ["AAPL"]}, out, snap_hm="20:55", root_to_sym={"AAPL": "AAPL"},
+            store_loader=_fake_loader, repull_dates={date})
+    assert len(sick.get_range_calls()) == 1
+
+    wider = FakeHistorical(frames={date: _raw_df(["AAPL", "SPY"])})
+    ph.pull(wider, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55",
+            root_to_sym={"AAPL": "AAPL", "SPY": "SPY"}, store_loader=_fake_loader,
+            repull_dates={date})
+    assert len(wider.get_range_calls()) == 1, \
+        "a different requested symbol set is a different question"
+
+
+def test_a_settled_empty_date_is_dropped_from_the_plan_before_preflight_prices_it(tmp_path):
+    """MINOR-B. `_absent` is applied inside `plan_missing`, so its cells never
+    reach `preflight`. `_empty` was applied only inside `pull`, so a settled date
+    was STILL in the plan when `preflight` ran: priced into the estimate, counted
+    against `--cap`, and able to move both the degrade decision and the
+    `blocked` -> exit 3 floor -- for spend that provably never occurs.
+
+    The direction is conservative (over-estimate, never overspend), so this is a
+    correctness tidy rather than a spend hazard. But both consequences are real,
+    and they are what this test pins: a near-cap plan dropped a REAL symbol to
+    make room for cells that were then skipped, and a plan that fits once the
+    settled date is removed could still hard-stop at exit 3.
+
+    The first half also pins a consequence that is NOT merely conservative: the
+    latch is keyed on the requested set, and `pull` sees the POST-degrade set, so
+    a degrade triggered partly by the settled date's own cells changes the digest
+    and the latch stops matching -- the date is re-billed. Applying the latch to
+    the pre-degrade plan (where `plan_missing` re-plans a repull date as the whole
+    universe, so the identity is stable) is what keeps the $0 skip intact.
+
+    Both halves seed the latch with its own documented identity --
+    `sha256(date|sorted(miss))[:12]` at the run's snapshot minute -- recomputed
+    here rather than borrowed from the tool. Frames are provided for BOTH dates so
+    that a regression re-pulls (and fails an assertion) instead of retry-laddering.
+    """
+    settled, live = "2026-07-20", "2026-07-21"
+    syms = ["SPY", "AAPL", "MSFT"]
+    frames = {settled: _raw_df(syms), live: _raw_df(syms)}
+
+    def _seed(root: pathlib.Path) -> None:
+        digest = hashlib.sha256(
+            (settled + "|" + ",".join(sorted(syms))).encode()).hexdigest()[:12]
+        ph._write_empty_latch(root, settled, "19:55", digest, len(syms))
+
+    def _args(root: pathlib.Path, cap: float):
+        symfile = root.parent / f"syms_{root.name}.tsv"
+        symfile.write_text("symbol\traw_weight\nSPY\t0.0\nAAPL\t0.5\nMSFT\t0.3\n")
+        return ph.build_parser().parse_args(
+            ["--universe", str(symfile), "--start", settled, "--end", live,
+             "--out", str(root), "--cap", str(cap), "--min-degrade-names", "1"])
+
+    # (1) cap $45. Six cells x $10 = $60 is over cap, so the degrade drops MSFT --
+    # even though half those cells are settled and cost nothing. With the settled
+    # date out of the plan it is three cells = $30, under cap, nothing dropped.
+    root = tmp_path / "a"
+    _seed(root)
+    fake = FakeHistorical(unit=10.0, frames=frames)
+    assert ph.run(_args(root, 45.0), client=fake, store_loader=_fake_loader) == 0
+    assert [c for c in fake.calls if c[0] == "get_cost" and c[2][:10] == settled] == [], \
+        "a settled-empty date must not be priced by the preflight at all"
+    pulled = fake.get_range_calls()
+    assert [c[2][:10] for c in pulled] == [live], \
+        "the $0 guarantee still holds: no provider call for the settled date"
+    assert len(pulled[0][1]) == len(syms), \
+        "unspendable cells must not push a real symbol out of the kept set"
+
+    # (2) cap $25. Unchanged, the settled date's own cells push the plan below the
+    # degrade floor and the run hard-stops at exit 3 -- on a plan that can afford
+    # every cell it will actually pull.
+    root_b = tmp_path / "b"
+    _seed(root_b)
+    fake_b = FakeHistorical(unit=10.0, frames=frames)
+    assert ph.run(_args(root_b, 25.0), client=fake_b, store_loader=_fake_loader) == 0, \
+        "exit 3 on a plan whose only over-cap cells are provably unspendable"
+
+
+def test_a_failed_unlink_prints_its_own_branch_not_the_mapping_branchs_text(tmp_path, capsys):
+    """MINOR-1. When `nr == 0` AND `unlink` raises `OSError`, `dropped_cache`
+    stayed False and control fell into the `nr > 0` wording, printing "the
+    provider DID return 0 row(s) that mapped to none of the requested
+    underlyings" -- self-contradictory and false. Reachable on Windows:
+    `PermissionError` IS an `OSError`, and a handle held by an AV scanner or a
+    concurrent pull is the ordinary way to get one.
+
+    N-1's original sin was stderr that was not true of the branch that ran, so
+    the failed-unlink case gets its own text."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
+
+    real_unlink = pathlib.Path.unlink
+
+    def refuse(self, *a, **kw):
+        if self.suffix == ".zst":
+            raise PermissionError(13, "held by another process")
+        return real_unlink(self, *a, **kw)
+
+    sick = FakeHistorical(frames={date: _raw_df([])})
+    with mock.patch.object(pathlib.Path, "unlink", refuse):
+        ph.pull(sick, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55",
+                root_to_sym={"AAPL": "AAPL", "SPY": "SPY"}, store_loader=_fake_loader,
+                repull_dates={date})
+
+    err = capsys.readouterr().err
+    assert "mapped to none of the requested underlyings" not in err, \
+        "the failed-unlink case must not borrow the nr > 0 branch's diagnosis"
+    assert "could NOT be removed from the DBN cache" in err, \
+        "it must say what actually happened -- the unlink failed"
+    assert "held by another process" in err, "and carry the OS's own reason"
+    # It is not fatal, and the un-droppable cache is itself the $0 guarantee for
+    # the next resume -- so the guidance must point at the file, not at a re-pull.
+    assert len(list((out / "_dbn").glob("*.dbn.zst"))) == 1
+    quiet = FakeHistorical(frames={date: _raw_df([])})
+    ph.pull(quiet, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55",
+            root_to_sym={"AAPL": "AAPL", "SPY": "SPY"}, store_loader=_fake_loader,
+            repull_dates={date})
+    assert quiet.get_range_calls() == [], "the surviving cache still makes the resume free"
+
+
+def test_retry_empty_is_exposed_on_the_cli_and_defaults_off(tmp_path):
+    """The escape hatch has to be reachable without editing source, and it must
+    never be the default -- a flag that re-bills must be typed."""
+    ap = ph.build_parser()
+    base = ["--universe", "u.csv"]
+    assert ap.parse_args(base).retry_empty is False
+    assert ap.parse_args(base + ["--retry-empty"]).retry_empty is True
+
+
+def test_a_non_empty_response_that_decodes_to_nothing_stays_cached(tmp_path):
+    """FIX-N-1, the other side of the line. The cache is dropped because an
+    EMPTY PROVIDER RESPONSE is not an answer -- not because the decoded frame
+    came out empty. A response that DID return rows which then all failed the
+    underlying mapping / want-set filter decodes identically every time, so
+    dropping its cache would buy a guaranteed re-bill with a guaranteed
+    identical outcome on every future resume. Keep it cached; the operator's
+    problem there is the symbol mapping, not the provider."""
+    out = tmp_path / "hive"
+    date = "2026-01-02"
+    tgt = out / f"date={date}" / ph.DATE_FILE
+    ph.merge_date_file(None, _decoded(["AAPL", "SPY"], ts=f"{date}T19:55:00"), tgt)
+
+    # Rows come back, but under a root this run's universe does not map.
+    fake = FakeHistorical(frames={date: _raw_df(["ZZZZ"])})
+    ph.pull(fake, {date: ["AAPL", "SPY"]}, out, snap_hm="20:55",
+            root_to_sym={"AAPL": "AAPL", "SPY": "SPY"}, store_loader=_fake_loader,
+            repull_dates={date})
+
+    assert set(pq.read_table(tgt).to_pandas()["underlying"]) == {"AAPL", "SPY"}
+    assert len(list((out / "_dbn").glob("*.dbn.zst"))) == 1, \
+        "a response with rows in it is a real answer and stays cached"
+
+
+def test_plan_missing_treats_mixed_ts_file_as_mismatch(tmp_path):
+    """Critical-1 belt-and-braces regression. A file whose row groups do NOT
+    all agree on `ts` (e.g. a straggler from before this fix, or any other
+    corruption) must be treated as a mismatch even when the FIRST row group
+    happens to agree with the expected minute -- row group order is not a
+    guarantee of "the truth", so `_date_file_snap_ts` must scan every row
+    group, not just the first."""
+    tgt = tmp_path / "date=2026-07-20" / ph.DATE_FILE
+    tgt.parent.mkdir(parents=True, exist_ok=True)
+    frame_a = _decoded(["AAPL"], ts="2026-07-20T19:55:00")  # row group 0: matches "want"
+    frame_b = _decoded(["SPY"], ts="2026-07-20T20:55:00")   # row group 1: does NOT
+    combined = pd.concat([frame_a, frame_b], ignore_index=True)
+    writer = pq.ParquetWriter(tgt, ph.ARROW_SCHEMA)
+    for _sym, grp in combined.groupby("underlying", sort=True):
+        writer.write_table(pa.Table.from_pandas(grp[ph.COLUMNS], schema=ph.ARROW_SCHEMA,
+                                                 preserve_index=False))
+    writer.close()
+
+    plan = ph.plan_missing(tmp_path, ["AAPL", "SPY"], ["2026-07-20"],
+                           expected_minute={"2026-07-20": "19:55"})
+    assert plan == {"2026-07-20": ["AAPL", "SPY"]}
+    assert plan.repull_dates == {"2026-07-20"}
+
+
+def test_run_with_snap_et_threads_per_date_minute_through_preflight_and_pull(tmp_path):
+    """Important-3(b): a real run()-level test (replacing the earlier ad hoc
+    smoke script) proving --snap-et's per-date {date: "HH:MM"} map threads all
+    the way through preflight() -> pull() -> the stamped ts, the DBN cache
+    name, and the manifest filename."""
+    symfile = tmp_path / "syms.txt"
+    symfile.write_text("SPY\nAAPL\n")
+    out = tmp_path / "hive"
+    date = "2026-01-02"  # EST session: 15:55 ET == 20:55 UTC
+
+    args = ph.build_parser().parse_args([
+        "--symbols-file", str(symfile), "--start", date, "--end", date,
+        "--out", str(out), "--cap", "1000", "--snap-et", "15:55",
+    ])
+    frames = {date: _raw_df(["SPY", "AAPL"])}
+    fake = FakeHistorical(unit=0.001, frames=frames)
+
+    rc = ph.run(args, client=fake, store_loader=_fake_loader)
+    assert rc == 0
+
+    date_file = out / f"date={date}" / ph.DATE_FILE
+    tbl = pq.read_table(date_file).to_pandas()
+    ts = pd.Timestamp(tbl["ts"].iloc[0])
+    assert (ts.hour, ts.minute) == (20, 55)  # EST: 15:55 ET == 20:55Z
+
+    dbn_files = list((out / "_dbn").glob(f"{date}_2055_*.dbn.zst"))
+    assert len(dbn_files) == 1  # resolved per-date minute embedded in the cache name
+
+    manifests = list(out.glob("manifest_hive_*"))
+    assert len(manifests) == 1
+    assert "1555" in manifests[0].name  # labeled by the stable ET time, not the UTC minute
+
+
+def test_empty_session_does_not_record_sidecar(tmp_path):
+    """Important-2 regression. A WHOLE-session zero-row response (every
+    requested symbol, not just one) is a bad-window/holiday signature -- e.g.
+    a real XNYS early close (Jul 3, day after Thanksgiving, Christmas Eve, all
+    13:00 ET closes) where a 15:55 ET snapshot window falls after the session
+    ended -- not genuine per-name absence. It must NOT be recorded in the
+    sidecar (which would permanently latch the date "complete" and silently
+    hide it from every future resume, recoverable only via --force)."""
+    out = tmp_path / "hive"
+    plan = {"2026-07-03": ["SPY", "AAPL"]}
+    frames = {"2026-07-03": _raw_df([])}  # nothing at all in the snapshot window
+    root_to_sym = {"SPY": "SPY", "AAPL": "AAPL"}
+    fake = FakeHistorical(frames=frames)
+
+    ph.pull(fake, plan, out, snap_hm="19:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader)
+
+    sidecar = out / "_absent" / "2026-07-03.json"
+    assert not sidecar.exists()
+
+
+def test_force_sidecar_preserves_entries_for_symbols_not_requested_this_round(tmp_path):
+    """Important-4 regression. A prior sidecar claims {B, C} absent. A --force
+    pull this round requests only {A, B} -- C is NOT part of this invocation
+    (e.g. the cap-degrade filter dropped it before pull() ever saw it). The
+    rewritten sidecar must re-confirm B (still absent) but leave C's record
+    completely untouched: this call never re-checked C, so force must not
+    erase that memory (which would re-queue -- and re-bill -- C later)."""
+    out = tmp_path / "hive"
+    absent_dir = out / "_absent"
+    absent_dir.mkdir(parents=True)
+    (absent_dir / "2026-07-20.json").write_text(json.dumps(
+        {"minute_utc": "19:55", "symbols": ["B", "C"], "asof": "2026-07-20T00:00:00+00:00"}
+    ))
+    plan = {"2026-07-20": ["A", "B"]}  # C is NOT requested this round
+    frames = {"2026-07-20": _raw_df(["A"])}  # B still absent; A has data
+    root_to_sym = {"A": "A", "B": "B", "C": "C"}
+    fake = FakeHistorical(frames=frames)
+
+    ph.pull(fake, plan, out, snap_hm="19:55", root_to_sym=root_to_sym,
+            store_loader=_fake_loader, force=True)
+
+    sidecar = out / "_absent" / "2026-07-20.json"
+    data = json.loads(sidecar.read_text())
+    assert set(data["symbols"]) == {"B", "C"}  # B re-confirmed; C preserved untouched

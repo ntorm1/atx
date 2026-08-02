@@ -23,18 +23,29 @@ What changed from v1 (per design §3 / §7)
     the UNION (atomic tmp + rename) via ``merge_date_file``.
   * ``--force`` re-pulls and rewrites the requested symbols (other underlyings
     already in the file are preserved).
-Everything else is carried over verbatim: key handling, XNYS calendar, the fixed
-19:55:00Z snapshot minute, the FREE ``get_cost`` preflight + retry/sampling, the
-$-cap degrade (index leg + top-N by weight, BLOCK below floor), the DBN cache +
-quarantine, and spend accounting.
+Everything else is carried over verbatim: key handling, XNYS calendar, the FREE
+``get_cost`` preflight + retry/sampling, the $-cap degrade (index leg + top-N by
+weight, BLOCK below floor), the DBN cache + quarantine, and spend accounting.
 
 Snapshot minute / DST note
 --------------------------
-The window is a FIXED UTC minute (default 19:55:00Z) for the whole run, matching
-the existing hive and the atx-core databento_bulk_opra C++ precedent. 19:55Z ==
-15:55 America/New_York during EDT and == 14:55 ET during EST; a fixed UTC minute
-keeps the hive uniform across the DST boundary (see the v1 tool for the full
-rationale).
+``--snap-utc`` (default, unchanged from v1) is a FIXED UTC minute (default
+19:55:00Z) for the whole run, matching the existing hive and the atx-core
+databento_bulk_opra C++ precedent. 19:55Z == 15:55 America/New_York during EDT
+and == 14:55 ET during EST -- a fixed UTC minute keeps the file-naming/manifest
+scheme uniform, but the ET *market-clock* time it lands on DRIFTS an hour across
+the DST boundary.
+
+``--snap-et HH:MM`` (opt-in, mutually exclusive with ``--snap-utc``) instead
+fixes the ET market-clock time and lets the UTC minute vary per session via
+``zoneinfo`` (e.g. 15:55 ET == 19:55Z in EDT, 20:55Z in EST) -- the correct
+choice for a multi-year backfill (2022-2026 crosses many DST transitions) where
+staying anchored to the same point in the trading session matters more than a
+uniform UTC clock minute. The per-date resolved minute still flows into the DBN
+cache name and the date file's stamped ``ts``; a resume additionally checks that
+stamp against the expected instant for that date and re-pulls (replacing, not
+unioning) on a mismatch (e.g. a DST-boundary re-run, or switching snapshot
+conventions between runs).
 
 Cost discipline (hard cap — design §7 guardrail)
 ------------------------------------------------
@@ -50,6 +61,13 @@ Cost discipline (hard cap — design §7 guardrail)
   4. Resumable / idempotent: a present date file's symbols are skipped (no API
      call, no spend); the raw per-day DBN is cached under <root>/_dbn/ so a crash
      after download but before split never re-bills. Running the tool twice costs $0.
+     Two sidecars carry that guarantee where there is no data to cache:
+     <root>/_absent/<date>.json latches SYMBOLS the provider confirmed had no
+     rows, and <root>/_empty/<date>.json latches a whole DATE whose response was
+     empty (the permanent case being a snapshot minute after an early close,
+     which returns nothing forever). Both are skipped on resume for $0; both are
+     cleared explicitly by the operator (--retry-empty / --force / deleting the
+     file), never automatically inside a run.
 
 API key comes from $DATABENTO_API_KEY or a .env file (default search: ./.env then
 C:/atx/.env, or --env-file). The key is never printed or logged.
@@ -58,21 +76,25 @@ Usage:
   python pull_opra_hive.py \
       --universe atx-vol/data/universe/spy_top50_2026-01-01.csv \
       --start 2026-07-20 --end 2026-07-21 \
-      --out C:/atx-data/opra-hive [--snap-utc 19:55] [--cap 100] [--dry-run]
+      --out C:/atx-data/opra-hive [--snap-utc 19:55 | --snap-et 15:55] \
+      [--cap 100] [--dry-run]
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import datetime as dt
 import hashlib
 import io
+import json
 import os
 import pathlib
 import sys
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -180,8 +202,35 @@ def to_parent(sym: str) -> str:
     return sym.replace(".", "") + ".OPT"
 
 
-def snap_window(date: str, snap_hm: str) -> tuple[str, str]:
-    hh, mm = snap_hm.split(":")
+# ── ET-anchored snapshot minute (DST-aware) ─────────────────────────────────────
+# ``--snap-et`` (opt-in, mutually exclusive with the legacy ``--snap-utc``) fixes
+# the snapshot to a market-clock time (e.g. 15:55 America/New_York) instead of a
+# fixed UTC minute. The UTC instant that maps to then varies with DST across a
+# multi-year backfill (2022-2026 crosses many transitions) -- a fixed-UTC-minute
+# hive would otherwise anchor to a DRIFTING ET time across the DST boundary,
+# which is the actual correctness bug this flag exists to fix.
+ET = ZoneInfo("America/New_York")
+
+
+def snapshot_minute_utc(date_str: str, et_hhmm: str) -> str:
+    """UTC HH:MM of `et_hhmm` America/New_York on `date_str` (DST-aware)."""
+    h, mnt = (int(x) for x in et_hhmm.split(":"))
+    d = dt.date.fromisoformat(date_str)
+    local = dt.datetime(d.year, d.month, d.day, h, mnt, tzinfo=ET)
+    u = local.astimezone(dt.timezone.utc)
+    return f"{u.hour:02d}:{u.minute:02d}"
+
+
+def snap_window(date: str, snap_hm: "str | dict[str, str]") -> tuple[str, str]:
+    """Build the one-minute [start, end) window for ``date``.
+
+    ``snap_hm`` is either a single "HH:MM" (legacy: one fixed UTC minute for the
+    whole run) or a ``{date: "HH:MM"}`` map (per-date minute, e.g. from
+    ``--snap-et``); resolved here so every call site (``get_cost_retry`` via
+    ``preflight``, and ``pull``'s ``get_range``) gets the right per-date window
+    without having to know which mode is active."""
+    hm = snap_hm[date] if isinstance(snap_hm, dict) else snap_hm
+    hh, mm = hm.split(":")
     start = f"{date}T{hh}:{mm}:00"
     end_minute = int(hh) * 60 + int(mm) + 1
     end = f"{date}T{end_minute // 60:02d}:{end_minute % 60:02d}:00"
@@ -189,7 +238,7 @@ def snap_window(date: str, snap_hm: str) -> tuple[str, str]:
 
 
 def get_cost_retry(client, parents: list[str], date: str,
-                   snap_hm: str, attempts: int = 4) -> float:
+                   snap_hm: "str | dict[str, str]", attempts: int = 4) -> float:
     start, end = snap_window(date, snap_hm)
     for attempt in range(attempts):
         try:
@@ -246,22 +295,300 @@ def date_file_underlyings(path: pathlib.Path) -> set[str]:
     return syms
 
 
+# Sentinel: the file holds MORE THAN ONE distinct ``ts`` value across its row
+# groups -- itself a violation of the one-constant-ts-per-date invariant the
+# C++ loader chain (first_ts_ns -> snapshot_ts_ns -> corpus fingerprint) relies
+# on. Distinct from ``None`` ("can't tell" -- no row groups / no ts column,
+# pre-existing fail-open behavior, unchanged) so `plan_missing` can force a
+# mismatch/repull for a mixed file without silently matching an arbitrary row
+# group's value, and without touching the None-fail-open path at all.
+_MIXED_SNAP_TS = object()
+
+
+def _date_file_snap_ts(path: pathlib.Path):
+    """Cheaply read the date file's stamped ``ts`` -- normally one constant
+    instant for the whole session (``decode_date_frame`` stamps every row the
+    same). Scans EVERY row group's footer statistics (min==max means a single
+    value -- no data read needed for a well-formed file); only falls back to
+    reading a row group's own ``ts`` column when its footer stats are absent or
+    span more than one value. Returns:
+      * a ``pd.Timestamp`` when exactly one distinct value is present across
+        the whole file (the healthy case).
+      * ``_MIXED_SNAP_TS`` when MORE THAN ONE distinct value is found anywhere
+        in the file -- always treated as a mismatch by the caller, never
+        silently matched against whichever row group happened to be read
+        first (row groups are NOT guaranteed to be in any particular order
+        relative to "the truth").
+      * ``None`` when nothing can be determined (no row groups, or no ``ts``
+        column) -- unchanged pre-existing fail-open behavior."""
+    pf = pq.ParquetFile(path)
+    md = pf.metadata
+    if md.num_row_groups == 0:
+        return None
+    idx = pf.schema_arrow.get_field_index("ts")
+    if idx < 0:
+        return None
+    seen: set = set()
+    for rg in range(md.num_row_groups):
+        st = md.row_group(rg).column(idx).statistics
+        if st is not None and st.has_min_max and st.min == st.max:
+            seen.add(pd.Timestamp(st.min))
+        else:
+            tbl = pf.read_row_group(rg, columns=["ts"])
+            seen.update(pd.Timestamp(v) for v in tbl.column(0).to_pylist())
+        if len(seen) > 1:
+            return _MIXED_SNAP_TS
+    if len(seen) != 1:
+        return None
+    return next(iter(seen))
+
+
+# ── Absent-symbol sidecar (<out>/_absent/<date>.json) ───────────────────────────
+# Remembers, per date and snapshot minute, which requested underlyings came back
+# with zero rows (e.g. genuinely no listed options that session) so a resume
+# doesn't re-queue -- and re-bill -- the same permanently-absent name forever.
+# Read/write are best-effort and atomic: a missing or corrupt sidecar is treated
+# as "no record" (never crashes a resume; the next pull rewrites it).
+def _absent_sidecar_path(out_root: pathlib.Path, date: str) -> pathlib.Path:
+    return out_root / "_absent" / f"{date}.json"
+
+
+def _load_absent_sidecar(out_root: pathlib.Path, date: str) -> Optional[dict]:
+    path = _absent_sidecar_path(out_root, date)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or "minute_utc" not in data or "symbols" not in data:
+        return None
+    return data
+
+
+def _write_absent_sidecar(out_root: pathlib.Path, date: str, minute_utc: str,
+                          symbols: list[str]) -> None:
+    """Atomic tmp + ``os.replace``, matching ``_write_date_file``'s pattern."""
+    path = _absent_sidecar_path(out_root, date)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "minute_utc": minute_utc,
+        "symbols": sorted(symbols),
+        "asof": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _merge_absent_sidecar(out_root: pathlib.Path, date: str, minute_utc: str,
+                          requested_symbols: list[str], zero_row_symbols: list[str],
+                          force: bool) -> None:
+    """Record this pull's zero-row requested symbols for ``date``.
+
+    ``force`` (true for an explicit ``--force`` OR a minute-mismatch repull --
+    see ``pull``'s ``sidecar_force``) makes this call authoritative for every
+    symbol in ``requested_symbols`` -- each is either re-confirmed absent (in
+    ``zero_row_symbols``) or dropped from the sidecar (it came back with data
+    this time). Critically, a prior entry for a symbol NOT in
+    ``requested_symbols`` this round (e.g. one the cap-degrade filter dropped
+    before ``pull()`` ever saw it this session) is left untouched: this call
+    never re-checked it, so ``force`` must not erase that memory and cause it
+    to be re-queued -- and re-billed -- on a later run. Without ``force``,
+    entries only accumulate (nothing already recorded is ever dropped this
+    way); a prior record for a DIFFERENT minute (e.g. a pre-DST-transition
+    entry) is discarded rather than merged, since a sidecar holds exactly one
+    minute's data. Nothing is written when there's nothing new to say and no
+    force (existing sidecar, if any, is left completely untouched)."""
+    prior = _load_absent_sidecar(out_root, date)
+    prior_syms = (set(prior.get("symbols", []))
+                 if prior and prior.get("minute_utc") == minute_utc else set())
+    if force:
+        untouched = prior_syms - set(requested_symbols)
+        new_syms = untouched | set(zero_row_symbols)
+    else:
+        if not zero_row_symbols:
+            return
+        new_syms = prior_syms | set(zero_row_symbols)
+    _write_absent_sidecar(out_root, date, minute_utc, sorted(new_syms))
+
+
+# ── Settled-empty latch (<out>/_empty/<date>.json) ──────────────────────────────
+# FIX-IMPORTANT-2. Remembers, per date, that the provider answered a specific
+# question -- (snapshot minute, requested symbol set) -- with ZERO rows, so a
+# resume treats it as SETTLED and skips it instead of paying to ask again.
+#
+# This is the absent-latch's shape applied one level up. `_absent` latches "this
+# SYMBOL had no data that session"; this latches "this whole DATE returned
+# nothing at that minute". Same one-JSON-per-date layout, same atomic
+# tmp + os.replace write, same corrupt-tolerant read, same "a sidecar holds
+# exactly one minute's verdict" rule -- deliberately NOT a parallel mechanism.
+#
+# It cannot be folded into `_absent` itself: a settled-empty date is (by
+# construction) a minute-mismatch REPULL date, and `plan_missing` `continue`s out
+# of the repull branch BEFORE sidecar subtraction runs, so an `_absent` entry
+# would never be consulted. It must also stay OUT of `_absent` semantically --
+# recording "every symbol is absent" would latch the date complete forever, which
+# is exactly what the EMPTY-SESSION branch below refuses to do.
+#
+# The identity is the CACHE ENTRY's identity, because this latch is a $0
+# stand-in for the cached empty response that FIX-N-1 deletes: (minute_utc,
+# digest) where digest is `sha256(date|sorted(miss))[:12]`. So a different
+# snapshot minute or a different requested symbol set is a different question and
+# re-pulls automatically -- which matters, because the real-world cause of a
+# permanently-empty answer is a snapshot minute that landed after an early close,
+# and the real-world fix for that is to move the snapshot minute.
+def _empty_latch_path(out_root: pathlib.Path, date: str) -> pathlib.Path:
+    return out_root / "_empty" / f"{date}.json"
+
+
+def _load_empty_latch(out_root: pathlib.Path, date: str) -> Optional[dict]:
+    path = _empty_latch_path(out_root, date)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or "minute_utc" not in data or "digest" not in data:
+        return None
+    return data
+
+
+def _is_settled_empty(out_root: pathlib.Path, date: str, minute_utc: str, digest: str) -> bool:
+    latch = _load_empty_latch(out_root, date)
+    return bool(latch and latch.get("minute_utc") == minute_utc
+                and latch.get("digest") == digest)
+
+
+def _write_empty_latch(out_root: pathlib.Path, date: str, minute_utc: str,
+                       digest: str, n_requested: int) -> None:
+    """Atomic tmp + ``os.replace``, matching ``_write_absent_sidecar``."""
+    path = _empty_latch_path(out_root, date)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "minute_utc": minute_utc,
+        "digest": digest,
+        "n_requested": n_requested,
+        "asof": dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _clear_empty_latch(out_root: pathlib.Path, date: str) -> None:
+    """Best-effort: a latch we cannot remove is never worth failing a pull for
+    (worst case the operator deletes it by hand, which is a documented step)."""
+    try:
+        _empty_latch_path(out_root, date).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _request_digest(date: str, miss) -> str:
+    """The identity of one (date, requested-set) question: the DBN cache
+    entry's own key, and therefore the settled-empty latch's. Single definition
+    so the planner and ``pull`` cannot drift into asking different questions."""
+    return hashlib.sha256((date + "|" + ",".join(sorted(miss))).encode()).hexdigest()[:12]
+
+
+def settled_empty_dates(out_root, plan: dict[str, list[str]],
+                        minute_for_date: dict[str, str]) -> list[str]:
+    """MINOR-B. The dates of ``plan`` whose exact question -- (snapshot minute,
+    requested set) -- is already latched settled-empty, i.e. the dates ``pull``
+    would skip for $0 without contacting the provider.
+
+    ``_absent`` is applied inside ``plan_missing``, so its cells never reach
+    ``preflight``. ``_empty`` was consulted only inside ``pull``, so a settled
+    date was still in the plan when ``preflight`` ran: priced into
+    ``total_cost``, counted against ``--cap``, and able to move both the
+    degrade decision and the ``blocked`` -> exit 3 floor -- for spend that
+    provably never occurs. The direction was conservative (over-estimate, never
+    overspend, ~$0.001 per date at the observed unit cost), but a near-cap plan
+    could drop real symbols to make room for a date that is then skipped. This
+    is the missing half of "following ``_absent``'s conventions": with it, both
+    latches leave the plan before it is priced.
+
+    Read-only -- it never clears a latch. ``pull``'s own gate stays exactly
+    where it is (above the cache read and ``get_range``), so the $0 guarantee
+    does not depend on this call and direct ``pull`` callers are unaffected."""
+    out_root = pathlib.Path(out_root)
+    out: list[str] = []
+    for date, miss in plan.items():
+        hm = minute_for_date.get(date)
+        if not miss or hm is None:
+            continue
+        if _is_settled_empty(out_root, date, hm, _request_digest(date, list(miss))):
+            out.append(date)
+    return sorted(out)
+
+
+class MissingPlan(dict):
+    """``plan_missing``'s return value: a plain ``dict[str, list[str]]`` (date ->
+    missing symbols) for full backward compatibility with existing equality
+    assertions (``dict.__eq__`` ignores subclass/extra attributes), PLUS
+    ``repull_dates``: the subset of keys whose on-disk file failed the minute
+    check and must be REPLACED, not unioned, when pulled (see ``pull``'s
+    ``date_force``)."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.repull_dates: set[str] = set()
+
+
 def plan_missing(out_root, symbols: list[str], dates: list[str],
-                 force: bool = False) -> dict[str, list[str]]:
+                 force: bool = False,
+                 expected_minute: Optional[dict[str, str]] = None) -> MissingPlan:
     """Map each date to the requested symbols not yet on disk (universe order).
 
     Empty/absent date file -> all requested symbols. Partial file -> only the
     underlyings missing from its footer. Complete file -> date omitted. With
-    ``force`` every requested symbol is (re)planned for every date."""
+    ``force`` every requested symbol is (re)planned for every date.
+
+    ``expected_minute`` (optional, ``{date: "HH:MM"}`` UTC) opts a caller into
+    two DST-correctness features, both no-ops when omitted (so existing direct
+    callers/tests that don't pass it see byte-identical behavior):
+      * Resume minute check: if the on-disk file's stamped ``ts`` does not equal
+        `date + expected_minute[date]` -- OR the file itself holds more than
+        one distinct ``ts`` (``_date_file_snap_ts``'s ``_MIXED_SNAP_TS``, e.g.
+        a prior partial repull that predates this fix) -- the date is fully
+        re-planned (all requested symbols) and added to ``repull_dates`` --
+        pull() replaces (not unions) that date's file, discarding whatever was
+        on disk rather than force-merging into it.
+      * Absent-symbol sidecar subtraction: for a date that DOES match, symbols
+        recorded absent in ``<out>/_absent/<date>.json`` for that SAME minute
+        are dropped from the missing set (never re-queued/re-billed)."""
     out_root = pathlib.Path(out_root)
-    plan: dict[str, list[str]] = {}
+    plan = MissingPlan()
     for date in dates:
         target = out_root / f"date={date}" / DATE_FILE
+        want_hm = expected_minute.get(date) if expected_minute else None
         if force or not target.exists():
             plan[date] = list(symbols)
             continue
+        if want_hm is not None:
+            have_ts = _date_file_snap_ts(target)
+            want_ts = pd.Timestamp(f"{date}T{want_hm}:00")
+            mixed = have_ts is _MIXED_SNAP_TS
+            if mixed or (have_ts is not None and have_ts != want_ts):
+                have_hm = "mixed" if mixed else f"{have_ts.hour:02d}:{have_ts.minute:02d}"
+                print(f"MINUTE-MISMATCH {date} have={have_hm} want={want_hm} — repull",
+                      file=sys.stderr)
+                plan[date] = list(symbols)
+                plan.repull_dates.add(date)
+                continue
         have = date_file_underlyings(target)
         miss = [s for s in symbols if s not in have]
+        if want_hm is not None and miss:
+            absent = _load_absent_sidecar(out_root, date)
+            if absent is not None and absent.get("minute_utc") == want_hm:
+                absent_syms = set(absent.get("symbols", []))
+                miss = [s for s in miss if s not in absent_syms]
         if miss:
             plan[date] = miss
     return plan
@@ -385,7 +712,7 @@ class Preflight:
 
 
 def preflight(client, plan: dict[str, list[str]], symbols: list[str],
-              weight: dict[str, float], *, snap_hm: str, cap: float,
+              weight: dict[str, float], *, snap_hm: "str | dict[str, str]", cap: float,
               sample_days: int, index_symbol: str,
               min_degrade_names: int) -> Preflight:
     """FREE cost estimate for the missing cells, degrading the kept set under the
@@ -455,13 +782,37 @@ class PullResult:
     rows_returned: int = 0    # raw decoded rows, pre-mapping/want filters (row-level)
 
 
-def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: str,
+def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: "str | dict[str, str]",
          root_to_sym: dict[str, str], unit_cost: float = 0.0, force: bool = False,
-         store_loader: Optional[Callable] = None) -> PullResult:
+         store_loader: Optional[Callable] = None,
+         repull_dates: Optional[set] = None,
+         retry_empty: bool = False) -> PullResult:
     """Pull every planned date: one ``get_range`` over the union of its missing
     parents, decode to one frame, merge into the date file. Resumable: a cached
     DBN is decoded without an API call; a present date file's symbols are already
-    excluded upstream by ``plan_missing``."""
+    excluded upstream by ``plan_missing``.
+
+    ``snap_hm`` is either one fixed "HH:MM" (legacy, applied to every date) or a
+    ``{date: "HH:MM"}`` map (``--snap-et``'s per-date, DST-aware minute); either
+    way the RESOLVED per-date minute flows into the DBN cache name, the
+    ``get_range`` window, and the frame's stamped ``ts``.
+
+    ``repull_dates`` (from ``plan_missing``'s minute-mismatch check) marks dates
+    whose on-disk file is stamped with the WRONG snapshot instant for the whole
+    file, not just for the requested symbols. Those dates get a genuine full
+    replacement (``existing=None`` into ``merge_date_file`` -- the file is
+    written from scratch, containing only this call's own frame), never a
+    force-style merge: a force merge only replaces underlyings present in the
+    fresh frame, which would silently leave any OLD-minute row behind for a
+    symbol this call didn't get data for this time (zero rows, a cap-degrade
+    drop, ...), corrupting the one-ts-per-date invariant the C++ loader chain
+    relies on. Omitted/None for callers that don't opt into the minute check
+    (byte-identical to the old force-only behavior).
+
+    ``retry_empty`` (FIX-IMPORTANT-2) is the operator's explicit escape hatch
+    from the settled-empty latch: it clears the latch for any date it covers and
+    re-pulls, which COSTS MONEY. Default False, and nothing inside a run ever
+    sets it -- recovery from a settled-empty date is operator-initiated only."""
     store_loader = store_loader or _default_store_loader
     out_root = pathlib.Path(out_root)
     dbn_dir = out_root / "_dbn"
@@ -471,17 +822,47 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: str,
     realized_estimate = 0.0
     cells_requested = cells_failed = rows_returned = 0
     failed: list[str] = []
+    repull_dates = repull_dates or set()
     ordered = sorted(plan)
 
     for i, date in enumerate(ordered):
         miss = list(plan[date])
         if not miss:
             continue
+        hm = snap_hm[date] if isinstance(snap_hm, dict) else snap_hm
         cells_requested += len(miss)
         want = set(miss)
         parents = [to_parent(s) for s in miss]
-        digest = hashlib.sha256((date + "|" + ",".join(sorted(miss))).encode()).hexdigest()[:12]
-        dbn_path = dbn_dir / f"{date}_{snap_hm.replace(':', '')}_{digest}.dbn.zst"
+        digest = _request_digest(date, miss)
+        dbn_path = dbn_dir / f"{date}_{hm.replace(':', '')}_{digest}.dbn.zst"
+
+        # FIX-IMPORTANT-2. A settled-empty date is skipped BEFORE any provider
+        # contact -- this is the $0 guarantee, and it has to sit above both the
+        # cache read and `get_range`.
+        if _is_settled_empty(out_root, date, hm, digest):
+            if not (force or retry_empty):
+                print(f"EMPTY-LATCHED {date}: the provider already answered this exact "
+                      f"request (minute {hm}, {len(miss)} boards) with 0 rows, and that is "
+                      f"recorded as settled in _empty/{date}.json -- SKIPPED, no provider "
+                      f"call, $0. This is the permanent case (e.g. a snapshot minute after "
+                      f"an early close returns 0 rows forever), so retrying it on every "
+                      f"resume would bill the same date again for the same answer. To force "
+                      f"a fresh pull: re-run with --retry-empty, delete "
+                      f"_empty/{date}.json, or move the snapshot minute (a latch is one "
+                      f"minute's verdict and does not apply to another).", file=sys.stderr)
+                cells_failed += len(miss)
+                continue
+            # Operator-initiated recovery only. Drop the latch AND any cached
+            # empty response, so this run genuinely re-asks instead of replaying.
+            _clear_empty_latch(out_root, date)
+            try:
+                dbn_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            print(f"EMPTY-RETRY {date}: clearing the settled-empty latch on operator "
+                  f"request ({'--force' if force else '--retry-empty'}) -- this date WILL "
+                  f"be billed again.", file=sys.stderr)
+
         store = None
         tag = ""
         if dbn_path.exists():
@@ -504,7 +885,7 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: str,
         if store is None:
             for attempt in range(6):
                 try:
-                    start, end = snap_window(date, snap_hm)
+                    start, end = snap_window(date, hm)
                     store = client.timeseries.get_range(
                         dataset=DATASET, symbols=parents, schema=SCHEMA,
                         start=start, end=end, stype_in="parent")
@@ -524,14 +905,180 @@ def pull(client, plan: dict[str, list[str]], out_root, *, snap_hm: str,
             os.replace(dbn_tmp, dbn_path)
             tag = "pulled"
 
-        frame, nu, nr = decode_date_frame(store, date, snap_hm, root_to_sym, want)
+        frame, nu, nr = decode_date_frame(store, date, hm, root_to_sym, want)
         unmapped += nu
         rows_returned += nr
         target = out_root / f"date={date}" / DATE_FILE
-        existing = target if target.exists() else None
+        is_repull = date in repull_dates
+        if is_repull and len(frame) == 0:
+            # FIX-C-2. A repull is a genuine FULL replacement (see below), so an
+            # empty fresh response would write a 0-row parquet OVER the existing
+            # file. That destroys paid data -- and it is not even recoverable by
+            # re-running, because a 0-row file makes `_date_file_snap_ts` return
+            # None, `plan_missing` fails OPEN on None (re-planning and re-BILLING
+            # every symbol on every future resume, against dates that are now
+            # metered), and with no readable `ts` the date can never re-enter the
+            # repull path at all -- the minute-mismatch detector goes permanently
+            # blind to it. "Replace with nothing" was never the intent of the
+            # repull exception to merge_date_file's never-overwrite rule.
+            #
+            # An empty response is a provider hiccup / a snapshot minute that
+            # landed after an early close / a symbol set the provider sharded
+            # away -- all transient, none of them evidence that the stored rows
+            # are wrong. So keep the file exactly as it is, say so loudly, and
+            # leave the date planned: its on-disk `ts` is untouched, so the very
+            # next resume re-detects MINUTE-MISMATCH and re-queues the repull.
+            #
+            # FIX-N-1. That last sentence was FALSE until this unlink existed.
+            # The raw response is cached above (`store.to_file` -> os.replace)
+            # BEFORE this guard, under a digest of `date|sorted(miss)`. A resume
+            # re-plans the identical symbol set for the identical date, so it
+            # recomputes the identical digest, hits `dbn_path.exists()`, replays
+            # the EMPTY store from disk, and never calls `get_range` at all. The
+            # date was wedged permanently: every resume printed this same line
+            # and exited 0 (the date is deliberately not in `failed_dates`), the
+            # file stayed stamped at the stale minute, and FIX-C-1 turned it into
+            # a per-cell load error forever after, so the partition was never
+            # built. Nothing upstream could see it either -- `EMPTY-REPULL` is
+            # not parsed by the orchestrator and `parse_minute_mismatch_dates`
+            # is not called by anything.
+            #
+            # An empty response is not a cacheable ANSWER, so it does not get to
+            # occupy the cache slot for a real one. Two properties this must
+            # keep, in tension:
+            #
+            #   * It must NOT re-bill inside this run. The `continue` below is
+            #     the whole guarantee: the date is dropped for this invocation,
+            #     billed exactly once, no automatic retry. Deleting the cache
+            #     only restores the ABILITY of a later, explicitly-invoked run
+            #     to fetch -- it never itself causes a fetch.
+            #   * It must only fire on an EMPTY PROVIDER RESPONSE (`nr == 0`),
+            #     not merely an empty decoded frame. A response that did return
+            #     rows which then all failed the underlying mapping or the
+            #     want-set filter will decode identically every single time, so
+            #     dropping ITS cache would buy a guaranteed re-bill for a
+            #     guaranteed identical outcome on every future resume -- the
+            #     exact forever-re-billing loop FIX-C-2 exists to prevent. That
+            #     case keeps its cache; its problem is the symbol map, not the
+            #     provider.
+            #
+            # The stderr line below is written to be TRUE of whichever branch
+            # ran -- the previous wording promised a recovery the code did not
+            # implement, and an operator who believes a false recovery promise
+            # concludes the tool is broken rather than that a file needs
+            # deleting.
+            # FIX-IMPORTANT-2. `nr == 0` separates "the provider returned
+            # nothing" from "rows came back and were all filtered out", which is
+            # the right axis -- but "returned nothing" is NOT the same as
+            # "transient", and FIX-N-1 treated it as if it were. The comment
+            # above names the counter-example itself: a snapshot minute that
+            # landed after an early close returns 0 rows at that window EVERY
+            # TIME, forever. Unlinking the cache made every subsequent resume
+            # call `get_range` again, so a $0-forever path became pay-per-resume
+            # -- the recurring-charge loop FIX-C-2 exists to prevent, narrowed
+            # rather than removed.
+            #
+            # So: still drop the cache (an empty response is not a cacheable
+            # ANSWER and must not occupy the slot for a real one), but LATCH the
+            # result as settled, exactly as `_absent` latches a confirmed absent
+            # symbol. The gate at the top of this loop then makes every later
+            # resume free, and recovery stays explicitly operator-initiated
+            # (`--retry-empty`, `--force`, deleting the sidecar, or moving the
+            # snapshot minute). Nothing here can cause an automatic re-bill.
+            #
+            # MINOR-1. Three reachable states, three texts. The failed-`unlink`
+            # case used to fall through into the `nr > 0` wording and print "the
+            # provider DID return 0 row(s) that mapped to none of the requested
+            # underlyings" -- self-contradictory, and false. It is reachable on
+            # Windows: `PermissionError` is an `OSError`, and an AV scanner or a
+            # concurrent pull holding the handle is the ordinary way to get one.
+            # N-1's original sin was stderr that was not true of the branch that
+            # actually ran; that must not be re-committed here.
+            unlink_error = None
+            if nr == 0:
+                try:
+                    dbn_path.unlink(missing_ok=True)
+                except OSError as exc:  # noqa: BLE001
+                    # Never fatal: a cache file we cannot remove costs a wedged
+                    # date, but raising here would abandon the rest of the plan.
+                    unlink_error = str(exc)[:70]
+                _write_empty_latch(out_root, date, hm, digest, len(miss))
+            if nr == 0 and unlink_error is None:
+                recovery = (f"The date stays planned, its empty response was NOT cached, and "
+                            f"the empty ANSWER is latched as settled in _empty/{date}.json so "
+                            f"every later resume skips it for $0 instead of re-billing the "
+                            f"same date for the same nothing. To force a fresh pull once you "
+                            f"believe the provider has recovered: --retry-empty, or delete "
+                            f"that sidecar. If the cause is an early close, move the snapshot "
+                            f"minute instead -- the latch only covers minute {hm}.")
+            elif nr == 0:
+                recovery = (f"The date stays planned and the empty ANSWER is latched as "
+                            f"settled in _empty/{date}.json, so later resumes are $0. The "
+                            f"empty response itself could NOT be removed from the DBN cache "
+                            f"({unlink_error}) -- it is still at _dbn/{dbn_path.name}, which "
+                            f"is harmless (it only makes the skip doubly free) but means a "
+                            f"--retry-empty must be able to delete it to actually re-pull. "
+                            f"Delete both files by hand if it stays locked.")
+            else:
+                recovery = (f"The date stays planned, but the provider DID return {nr} row(s) "
+                            f"that mapped to none of the requested underlyings, so the response "
+                            f"is kept at _dbn/{dbn_path.name} and a resume will replay it rather "
+                            f"than re-bill for the same answer. Fix the symbol mapping, or "
+                            f"delete that file to force a fresh pull.")
+            print(f"EMPTY-REPULL {date}: 0/{len(miss)} requested boards returned at {hm} on a "
+                  f"repull-flagged (minute-mismatch) date -- the existing date file is KEPT "
+                  f"rather than replaced by an empty one (writing it would destroy paid data, "
+                  f"blind the mismatch detector, and re-bill this date on every resume). "
+                  f"{recovery}",
+                  file=sys.stderr)
+            cells_failed += len(miss)
+            continue
+        if is_repull:
+            # Minute mismatch: the file's stamped ts is flat-out wrong for the
+            # WHOLE date, not just for the requested symbols. A force-style
+            # merge_date_file call would only replace underlyings present in
+            # `frame` (this pull's actual return), preserving anything ELSE
+            # already on disk -- so a requested-but-zero-row symbol, a
+            # cap-degrade drop, or any name outside the current universe would
+            # silently keep its OLD-minute rows, leaving the file holding two
+            # different snapshot instants at once (violating the
+            # one-constant-ts-per-date invariant the C++ loader chain --
+            # first_ts_ns -> snapshot_ts_ns -> corpus fingerprint -- relies on,
+            # and defeating `_date_file_snap_ts`'s mismatch check forever:
+            # the mismatch branch `continue`s before sidecar subtraction ever
+            # runs, so there is no other path back to a clean file). Treat the
+            # date as if no file existed at all: a genuine full replacement
+            # with only what THIS pull actually returned.
+            existing = None
+        else:
+            existing = target if target.exists() else None
         merge_date_file(existing, frame, target, force=force)
+        # FIX-IMPORTANT-2. This date produced real rows, so any settled-empty
+        # latch it carries is stale and must not be left to suppress a future
+        # legitimate pull of the same question.
+        _clear_empty_latch(out_root, date)
 
         written = set(frame["underlying"].unique().tolist())
+        zero_row_syms = [s for s in miss if s not in written]
+        sidecar_force = force or is_repull
+        if not written and len(miss) > 1:
+            # A whole-session zero-row response (every requested symbol, not
+            # just one) is a bad-window/holiday signature -- e.g. an XNYS
+            # early close (Jul 3, day after Thanksgiving, Christmas Eve: 13:00
+            # ET close) where a 15:55 ET cbbo-1m window falls after the
+            # session ended -- NOT genuine per-name absence. Recording it
+            # would latch the date "complete" forever (plan_missing would
+            # subtract every symbol via the sidecar on every future resume,
+            # recoverable only via --force). Skip the sidecar write entirely
+            # and log loudly instead so the orchestrator can see the date was
+            # skipped-empty and may need a --snap adjustment or a deliberate
+            # re-check, not silent amnesia.
+            print(f"EMPTY-SESSION {date}: 0/{len(miss)} requested boards returned at "
+                  f"{hm} -- likely an early-close/holiday session outside the snapshot "
+                  f"window, not per-name absence; absent-symbol sidecar NOT recorded "
+                  f"(will re-check next resume)", file=sys.stderr)
+        else:
+            _merge_absent_sidecar(out_root, date, hm, miss, zero_row_syms, sidecar_force)
         for s in miss:
             if s in written:
                 recs = int((frame["underlying"] == s).sum())
@@ -567,7 +1114,15 @@ def build_parser() -> argparse.ArgumentParser:
                      help="plain one-symbol-per-line list (weights unknown -> no degrade ranking)")
     ap.add_argument("--start", default="2026-07-01")
     ap.add_argument("--end", default="2026-07-31")
-    ap.add_argument("--snap-utc", default="19:55", help="HH:MM UTC snapshot minute (default 19:55)")
+    snap = ap.add_mutually_exclusive_group()
+    snap.add_argument("--snap-utc", default="19:55",
+                      help="HH:MM UTC snapshot minute (default 19:55; FIXED for the whole run "
+                      "-- drifts against market-clock time across a DST boundary)")
+    snap.add_argument("--snap-et", default=None,
+                      help="HH:MM America/New_York snapshot time (mutually exclusive with "
+                      "--snap-utc); DST-aware -- the UTC minute is computed per session via "
+                      "zoneinfo, so it stays anchored to the same market-clock time across DST "
+                      "transitions (e.g. 15:55 ET == 19:55Z in EDT, 20:55Z in EST)")
     ap.add_argument("--out", type=pathlib.Path, default=pathlib.Path("C:/atx-data/opra-hive"))
     ap.add_argument("--cap", type=float, default=100.0, help="hard $ cap (design §7)")
     ap.add_argument("--sample-days", type=int, default=3,
@@ -579,6 +1134,15 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--env-file", default="", help="path to a .env holding DATABENTO_API_KEY")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--force", action="store_true", help="rewrite requested symbols on disk")
+    ap.add_argument("--retry-empty", action="store_true",
+                    help="COSTS MONEY. Clear the settled-empty latches "
+                         "(<out>/_empty/<date>.json) for the dates in range and re-pull them. "
+                         "A date whose provider response was empty is latched as settled so "
+                         "resumes skip it for $0 -- the permanent case (a snapshot minute "
+                         "after an early close) would otherwise re-bill forever. Pass this "
+                         "only when you believe the provider has recovered; if the cause was "
+                         "an early close, change --snap-et/--snap-utc instead (a latch covers "
+                         "exactly one snapshot minute and does not apply to another).")
     return ap
 
 
@@ -593,15 +1157,62 @@ def run(args, client=None, store_loader: Optional[Callable] = None) -> int:
     if not dates:
         raise SystemExit(f"no trading sessions in [{args.start}, {args.end}]")
 
-    print(f"universe={len(symbols)} sessions={len(dates)} [{dates[0]}..{dates[-1]}] "
-          f"dataset={DATASET} schema={SCHEMA} snap={args.snap_utc}Z out={args.out}")
+    # ``--snap-et`` opts into a per-date, DST-aware UTC minute; the legacy
+    # ``--snap-utc`` path passes ``args.snap_utc`` straight through as a plain
+    # string everywhere pull()/preflight() take ``snap_hm``, exactly as before
+    # this feature existed (byte-identical for existing callers). Either way,
+    # `minute_for_date` is threaded into ``plan_missing`` so the resume minute
+    # check + absent-symbol sidecar are active for both modes -- a no-op for a
+    # well-behaved existing caller (same minute every run, no sidecar yet).
+    if args.snap_et:
+        minute_for_date = {d: snapshot_minute_utc(d, args.snap_et) for d in dates}
+        snap_arg = minute_for_date
+        snap_label = args.snap_et
+        snap_desc = f"{args.snap_et} ET (DST-aware)"
+    else:
+        minute_for_date = {d: args.snap_utc for d in dates}
+        snap_arg = args.snap_utc
+        snap_label = args.snap_utc
+        snap_desc = f"{args.snap_utc}Z"
 
-    plan = plan_missing(args.out, symbols, dates, force=args.force)
+    print(f"universe={len(symbols)} sessions={len(dates)} [{dates[0]}..{dates[-1]}] "
+          f"dataset={DATASET} schema={SCHEMA} snap={snap_desc} out={args.out}")
+
+    plan = plan_missing(args.out, symbols, dates, force=args.force,
+                        expected_minute=minute_for_date)
+    repull_dates = getattr(plan, "repull_dates", set())
+
+    # MINOR-B. Apply the settled-empty latch HERE, where `_absent` is already
+    # applied (inside `plan_missing`), so a date the provider has permanently
+    # answered with nothing is out of the plan BEFORE `preflight` prices it,
+    # counts it against `--cap`, or lets it move the degrade/exit-3 decisions.
+    # `pull`'s own gate is unchanged and still the $0 guarantee; this only
+    # stops a provably-unspendable date from distorting the spend arithmetic.
+    # `--force` / `--retry-empty` are the operator's re-pull routes and must
+    # reach `pull`'s clear-and-re-ask branch, so neither drops anything here.
+    settled: list[str] = []
+    if not (args.force or getattr(args, "retry_empty", False)):
+        settled = settled_empty_dates(args.out, plan, minute_for_date)
+        for date in settled:
+            n_cells = len(plan.pop(date))
+            print(f"EMPTY-LATCHED {date}: settled in _empty/{date}.json for this exact "
+                  f"request (minute {minute_for_date[date]}, {n_cells} boards) -- dropped "
+                  f"from the plan BEFORE preflight, so it is not priced, not counted "
+                  f"against --cap and cannot influence the degrade decision. No provider "
+                  f"call, $0. To re-pull: --retry-empty, delete _empty/{date}.json, or "
+                  f"move the snapshot minute (a latch is one minute's verdict).",
+                  file=sys.stderr)
+
     n_missing = sum(len(v) for v in plan.values())
     print(f"cells: total={len(symbols) * len(dates)} to_pull={n_missing} "
-          f"(over {len(plan)} sessions){' [FORCE]' if args.force else ''}")
+          f"(over {len(plan)} sessions){' [FORCE]' if args.force else ''}"
+          f"{f' [{len(settled)} settled-empty date(s) skipped]' if settled else ''}")
     if n_missing == 0:
-        print("ALL boards already on disk — nothing to pull, $0.00.")
+        # Keep the leading sentence verbatim: `run_surface_db_backfill.
+        # parse_estimate_line` reads "ALL boards already on disk" as its $0.00
+        # short-circuit (no ESTIMATE line is printed on this path).
+        print("ALL boards already on disk — nothing to pull, $0.00."
+              + (f" ({len(settled)} settled-empty date(s) skipped for $0.)" if settled else ""))
         return 0
 
     if client is None:
@@ -611,7 +1222,7 @@ def run(args, client=None, store_loader: Optional[Callable] = None) -> int:
         client = db.Historical(key=key)
 
     print("\nFREE preflight (metadata.get_cost — no egress):")
-    pf = preflight(client, plan, symbols, weight, snap_hm=args.snap_utc, cap=args.cap,
+    pf = preflight(client, plan, symbols, weight, snap_hm=snap_arg, cap=args.cap,
                    sample_days=args.sample_days, index_symbol=args.index_symbol,
                    min_degrade_names=args.min_degrade_names)
     print(f"\nESTIMATE (remaining spend): ${pf.total_cost:.4f} = "
@@ -630,12 +1241,15 @@ def run(args, client=None, store_loader: Optional[Callable] = None) -> int:
     keepset = set(pf.keep)
     pull_plan = {d: [s for s in plan[d] if s in keepset] for d in plan}
     pull_plan = {d: v for d, v in pull_plan.items() if v}
+    pull_repull_dates = repull_dates & set(pull_plan)
 
-    res = pull(client, pull_plan, args.out, snap_hm=args.snap_utc, root_to_sym=root_to_sym,
-               unit_cost=pf.unit_cost, force=args.force, store_loader=store_loader)
+    res = pull(client, pull_plan, args.out, snap_hm=snap_arg, root_to_sym=root_to_sym,
+               unit_cost=pf.unit_cost, force=args.force, store_loader=store_loader,
+               repull_dates=pull_repull_dates,
+               retry_empty=getattr(args, "retry_empty", False))
 
     args.out.mkdir(parents=True, exist_ok=True)
-    mpath = args.out / f"manifest_hive_{args.start}_{args.end}_{args.snap_utc.replace(':', '')}.csv"
+    mpath = args.out / f"manifest_hive_{args.start}_{args.end}_{snap_label.replace(':', '')}.csv"
     pd.DataFrame(res.manifest).to_csv(mpath, index=False)
     print(f"\nDONE boards_written={res.boards_written} dates_written={res.dates_written} "
           f"unmapped_rows={res.unmapped_rows} failed_sessions={len(res.failed_dates)}")

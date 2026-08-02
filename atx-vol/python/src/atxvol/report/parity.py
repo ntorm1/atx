@@ -430,7 +430,9 @@ def _assemble(projected_label, dates, ticks, l_daily, p_daily, l_nav, p_nav,
         standfirst=(
             "One frozen trade schedule, priced two ways: against listed OPRA marks and "
             "against the same legs projected onto historical fitted surfaces at ATM-forward "
-            "strikes with cold marks. This report sets the two P&amp;L tracks side by side — "
+            # Plain `&`: `Report.standfirst` is an escaped TEXT channel, so a
+            # pre-escaped entity here would now render as a literal "&amp;".
+            "strikes with cold marks. This report sets the two P&L tracks side by side — "
             "how tightly they agree, where they part, and why the projected route is marked "
             "cold rather than fast."
         ),

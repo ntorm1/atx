@@ -30,8 +30,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "atx/vol/data.hpp"  // QuoteFrame
@@ -79,9 +81,13 @@ enum class OpraProvenanceMode : std::uint8_t {
 //                     the correct time-to-expiry for near-dated slices (a 1-DTE
 //                     earnings expiry becomes ~1.0 day out, not ~4 hours). Opt-in
 //                     so existing loads keep their exact expiry instants.
+//   UsIndexAmOpen   â€” standard cash-index monthlies settle at 09:30 ET. This
+//                     requires explicit product policy because historical OPRA
+//                     definitions may carry only an expiry date.
 enum class ExpiryCloseConvention : std::uint8_t {
   MidnightUtc = 0,
   UsEquityPmClose = 1,
+  UsIndexAmOpen = 2,
 };
 
 // One date-scoped Databento source identity. Raw OSI text is dictionary-owned
@@ -164,21 +170,20 @@ struct OpraMarketInputProvenance {
 // counterpart and there must not be: a normaliser invents a third namespace that
 // callers can key by, and it would allocate on a path that runs once per kept
 // quote row (millions per hive load). This is allocation-free.
-[[nodiscard]] bool osi_root_matches_ticker(std::string_view root,
-                                           std::string_view ticker) noexcept;
+[[nodiscard]] bool osi_root_matches_ticker(std::string_view root, std::string_view ticker) noexcept;
 
 // Load spec for `load_opra_cbbo_parquet`.
 struct OpraLoadSpec {
-  std::string path;        // parquet file to read
-  std::string underlying;  // keep rows whose `underlying` equals this
-                           // (empty = keep all, frame uid = first seen).
-                           // ALSO the loaded frame's identity: on a filtered load
-                           // this exact string becomes `frame.uid` AND every
-                           // `QuoteRow::uid` (see the uid-namespace note on
-                           // load_opra_cbbo_parquet step 4).
-  std::string snapshot_iso; // "YYYY-MM-DD" or full datetime; stamped on the frame
-  double r = 0.0;           // continuously-compounded rate for the spot implication
-  double spot_override = 0.0; // if > 0, use this spot instead of implying from PCP
+  std::string path;                     // parquet file to read
+  std::string underlying;               // keep rows whose `underlying` equals this
+                                        // (empty = keep all, frame uid = first seen).
+                                        // ALSO the loaded frame's identity: on a filtered load
+                                        // this exact string becomes `frame.uid` AND every
+                                        // `QuoteRow::uid` (see the uid-namespace note on
+                                        // load_opra_cbbo_parquet step 4).
+  std::string snapshot_iso;             // "YYYY-MM-DD" or full datetime; stamped on the frame
+  double r = 0.0;                       // continuously-compounded rate for the spot implication
+  double spot_override = 0.0;           // if > 0, use this spot instead of implying from PCP
   std::vector<DividendEvent> cash_divs; // optional discrete divs, carried on the frame
 
   // Optional term-structure yield curve (P2-3). When non-empty, these
@@ -198,6 +203,9 @@ struct OpraLoadSpec {
   // DST-correct 16:00-ET close onto each expiry so near-dated slices carry their
   // true (PM-settled) time-to-expiry.
   ExpiryCloseConvention expiry_close{ExpiryCloseConvention::MidnightUtc};
+  // American preserves the historical equity/ETF path. Cash-index loaders
+  // explicitly select European; do not infer it from an absent CFI value.
+  ExerciseStyle exercise_style{ExerciseStyle::American};
   FitContext fit_context{};
   OpraMarketInputProvenance market_input_provenance{};
   // T convention governing every year-fraction this loader computes: the PCP
@@ -217,19 +225,25 @@ struct OpraLoadSpec {
 
 // Result of loading one OPRA cbbo-1m slice.
 struct OpraPanel {
-  QuoteFrame frame;         // ready for data_install (flat r, or the spec's term
-                            // yield-curve pillars when supplied)
-  double implied_spot = 0.0; // spot used (override or PCP-implied)
-  std::string snapshot_iso;  // the stamp applied to the frame
-  std::size_t n_contracts = 0; // rows kept
-  std::size_t n_expiries = 0;  // distinct expiries kept
-  std::size_t n_dropped = 0;   // rows skipped (bad symbol / unset px / crossed)
+  QuoteFrame frame;                       // ready for data_install (flat r, or the spec's term
+                                          // yield-curve pillars when supplied)
+  double implied_spot = 0.0;              // spot used (override or PCP-implied)
+  std::string snapshot_iso;               // the stamp applied to the frame
+  std::size_t n_contracts = 0;            // rows kept
+  std::size_t n_expiries = 0;             // distinct expiries kept
+  std::size_t n_dropped = 0;              // rows skipped (bad symbol / unset px / crossed)
   std::uint32_t source_schema_version{1}; // 1=legacy, 2=instrument_id
   // Content hash of the source rows/identities only; intentionally
   // TimeSpec-independent (see opra_panel.cpp's `source_fingerprint`) -- two
   // panels loaded from the same rows under different T conventions share it.
   std::uint64_t source_fingerprint{0};
   bool provenance_complete{false};
+  // Column-presence metadata. A numeric zero is a valid observed count and
+  // must not be conflated with a source that did not carry the field.
+  bool bid_size_available{false};
+  bool ask_size_available{false};
+  bool volume_available{false};
+  bool open_interest_available{false};
   std::vector<std::uint32_t> source_instrument_ids;      // aligned with frame.rows
   std::vector<OpraInstrumentIdentity> source_identities; // id ascending
   FitContext fit_context{};
@@ -287,7 +301,7 @@ struct OpraPanel {
 //         term-pillar length mismatch, or a frame-assembly (install
 //         precondition) failure; Unavailable when no co-terminal pair exists to
 //         imply the spot and no override was supplied.
-[[nodiscard]] Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec& spec);
+[[nodiscard]] Result<OpraPanel> load_opra_cbbo_parquet(const OpraLoadSpec &spec);
 
 // Load an OPRA cbbo-1m slice from an ALREADY-MATERIALIZED in-memory table.
 //
@@ -314,7 +328,104 @@ struct OpraPanel {
 // Thread-safety: a pure function over borrowed inputs. It mutates no shared
 // state and returns an owning panel; concurrent calls on distinct arguments are
 // safe, and `table` is only read.
-[[nodiscard]] Result<OpraPanel>
-load_opra_cbbo_from_table(const atx::core::io::ParquetTable& table, const OpraLoadSpec& spec);
+[[nodiscard]] Result<OpraPanel> load_opra_cbbo_from_table(const atx::core::io::ParquetTable &table,
+                                                          const OpraLoadSpec &spec);
+
+// ── P-01: one column scan + one row index per TABLE, not per underlying ──────
+//
+// A hive v2 date file is ONE table holding EVERY underlying's rows, and the seam
+// above builds ONE underlying's panel out of it. Called per symbol, that costs
+// O(rows of the TABLE) each time — every column is re-materialized (`strings()`
+// and `null_mask()` each build a fresh n_rows-long vector) and every row of every
+// other underlying is re-visited and skipped. On a 102-name production date that
+// is 102 passes over ~208k rows, and it is why `load` scaled super-linearly in
+// symbol count (0.49 s at 10 names, 4.46 s at 102).
+//
+// The memory shape was worse than the time. Every per-symbol scratch buffer was
+// sized for the WHOLE table — `rows.reserve(n_rows)` on a ~224-byte QuoteRow is
+// a ~47 MB reservation for a symbol that owns ~2k rows — and the over-reserved
+// vector is then MOVED into the returned panel, so it stays live for the rest of
+// the build. 102 names => ~4.8 GB of COMMITTED (untouched, so never resident)
+// address space, which is exactly the intermittent `std::bad_alloc` that killed
+// 102-symbol builds while their working set was 123 MB and the box had GB free:
+// the process hit the system COMMIT limit, not its own RSS.
+//
+// `OpraTableScan` moves that work to once per table. It materializes each column
+// once and builds a per-`underlying` row index, so a split visits only its own
+// rows and sizes every buffer for them. Time becomes O(table) + O(rows of the
+// symbol); the panel costs its own rows and nothing more.
+//
+// LIFETIME: the string/column views BORROW `table`. A scan must not outlive the
+// table it was built from, and the table must not be mutated meanwhile (it
+// cannot be — `ParquetTable` is immutable once read).
+//
+// Thread-safety: building a scan touches only its own storage and reads `table`;
+// scans of DISTINCT tables are independent, and a built scan is immutable, so
+// any number of threads may split off one concurrently.
+struct OpraTableScan {
+  std::size_t n_rows{0};
+  std::int64_t first_ts_ns{0}; // the table's first `ts`, in epoch ns (0 if absent)
+
+  // Column views. `symbols`/`underlyings` borrow the table's string buffers; the
+  // int64 spans alias its numeric buffers; the null masks are owned copies (the
+  // reader has no aliasing accessor for validity).
+  std::vector<std::string_view> symbols;
+  std::vector<std::string_view> underlyings; // empty when `has_underlying` is false
+  std::span<const std::int64_t> bid_px, ask_px, bid_sz, ask_sz;
+  std::span<const std::int64_t> instrument_ids; // empty when !has_instrument_id
+  std::vector<std::uint8_t> bid_null, ask_null;
+  bool has_underlying{false};
+  bool has_instrument_id{false};
+
+  // Per-`underlying` row index, present iff `has_underlying` (and the table fits
+  // a 32-bit row id). `rows` holds every row id grouped by underlying and
+  // ASCENDING within each group, so a split visits its rows in the same order a
+  // full-table scan would — which is what makes an indexed panel byte-identical
+  // to an unindexed one.
+  bool indexed{false};
+  std::unordered_map<std::string_view, std::uint32_t> slot_of; // underlying -> group
+  std::vector<std::uint32_t> offsets;                          // slot_of.size() + 1
+  std::vector<std::uint32_t> rows;
+
+  [[nodiscard]] std::span<const std::uint32_t>
+  rows_for(std::string_view underlying) const noexcept {
+    if (!indexed) {
+      return {};
+    }
+    const auto it = slot_of.find(underlying);
+    if (it == slot_of.end()) {
+      return {};
+    }
+    const std::uint32_t lo = offsets[it->second];
+    const std::uint32_t hi = offsets[it->second + 1u];
+    return std::span<const std::uint32_t>{rows.data() + lo, static_cast<std::size_t>(hi - lo)};
+  }
+};
+
+// Scan an already-materialized hive-v2 OPRA table once: validate the 8 canonical
+// columns, materialize them, and index the rows by `underlying`.
+//
+// `path_for_errors` is used ONLY for message context and matches
+// `load_opra_cbbo_from_table`'s `spec.path` role byte-for-byte, so a caller that
+// scans once per date and reports the scan's error on every cell of that date
+// produces exactly the errors the per-symbol seam would have.
+//
+// @return InvalidArgument if a required column is absent or is not of the
+//         expected type.
+[[nodiscard]] Result<OpraTableScan> scan_opra_cbbo_table(const atx::core::io::ParquetTable &table,
+                                                         std::string_view path_for_errors);
+
+// Build ONE underlying's panel from a scan. Byte-identical to
+// `load_opra_cbbo_from_table(table, spec)` over the same table and spec — the
+// index only changes WHICH rows are visited, never their order or contents — but
+// costs O(rows of `spec.underlying`) rather than O(rows of the table).
+//
+// `spec.underlying` must be set: an empty filter has no group to look up and is
+// rejected as InvalidArgument (use the table seam for a whole-table load). A
+// symbol the table does not carry returns the seam's exact zero-match Err,
+// `"underlying '<sym>' not found in parquet"`, so a coverage-hole classifier
+// keyed on that message is unaffected.
+[[nodiscard]] Result<OpraPanel> load_opra_cbbo_from_scan(const OpraTableScan &scan,
+                                                         const OpraLoadSpec &spec);
 
 } // namespace atx::vol

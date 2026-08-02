@@ -59,6 +59,14 @@ struct SyntheticHiveSpec {
   // strip can manufacture, and the one the loader must refuse rather than merge
   // into the vanilla chain. Empty (default) = every symbol is its own root.
   std::vector<std::string> adjusted_root_symbols{};
+  // The UTC wall-clock minute every row's `ts` is stamped at. The default 19:55
+  // is the EDT-side 15:55 ET pre-close minute, so every pre-existing fixture is
+  // byte-for-byte unchanged; 20:55 writes the EST-side hive the ET-anchored pull
+  // produces for a winter session. A test needs both in order to exercise the
+  // `--snapshot-suffix` wiring at all: the suffix a hive load applies is only
+  // observable against a file whose OWN `ts` says which minute is right.
+  unsigned snapshot_hour_utc{19U};
+  unsigned snapshot_minute_utc{55U};
 };
 
 namespace detail {
@@ -87,7 +95,7 @@ struct SynthRow {
   std::string date;       // "YYYY-MM-DD" trade date (the v2 hive partition value)
   std::string underlying; // plain symbol, e.g. "AAA"
   std::string symbol;     // OSI/OCC 21-char, e.g. "AAA   260729C00100000"
-  atx::i64 ts_ns{0};      // "<date>T19:55:00Z" as unix nanoseconds
+  atx::i64 ts_ns{0};      // "<date>T<spec minute>Z" (default 19:55:00Z) as unix nanos
   atx::i64 bid_px{0};     // round(0.98 * mid * 1e9)
   atx::i64 ask_px{0};     // round(1.02 * mid * 1e9)
 };
@@ -141,7 +149,9 @@ inline void append_symbol_date_rows(const std::string &symbol, const std::string
 
   const Date trade = parse_iso_date(date);
   const atx::i64 ts_ns =
-      timestamp_from_utc(trade.year, trade.month, trade.day, 19U, 55U, 0U, 0U).unix_nanos();
+      timestamp_from_utc(trade.year, trade.month, trade.day, spec.snapshot_hour_utc,
+                         spec.snapshot_minute_utc, 0U, 0U)
+          .unix_nanos();
 
   // The root this symbol's contracts trade under. Normally the dot-stripped
   // ticker; with `adjusted_root_symbols` it also carries the OCC trailing-digit

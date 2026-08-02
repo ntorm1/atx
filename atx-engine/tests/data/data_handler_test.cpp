@@ -340,6 +340,7 @@ TEST(DataHandler, TieBreak_EqualTs_AscendingSourceIdx_Deterministic) {
 // ============================================================================
 //  Monotonicity assert: an unsorted source aborts on the re-arming step()
 // ============================================================================
+#ifndef NDEBUG
 TEST(DataHandler, UnsortedSource_BackwardKnowledgeTs_Aborts) {
   // Source 0's second row goes BACKWARD in knowledge_ts (1'000 -> 500). The merge
   // asserts source monotonicity when it re-arms the heap with the next row.
@@ -355,6 +356,7 @@ TEST(DataHandler, UnsortedSource_BackwardKnowledgeTs_Aborts) {
   // the std::abort(); ".*" matches whatever (if anything) reaches stderr.
   EXPECT_DEATH({ (void)feed.step(); }, ".*");
 }
+#endif
 
 
 }  // namespace atxtest_data_handler_test

@@ -9,6 +9,7 @@
 
 #include "atx/vol/american.hpp"
 #include "atx/vol/american_iv.hpp"
+#include "atx/vol/black76.hpp"
 #include "atx/vol/detail/counters.hpp" // counters::ledger — always-on AL boundary-solve gate
 #include "atx/vol/deamer.hpp"
 #include "atx/vol/dividend.hpp"
@@ -40,6 +41,7 @@ using atx::vol::DeAmResult;
 using atx::vol::DividendEvent;
 using atx::vol::ErrorCode;
 using atx::vol::european_equiv_iv;
+using atx::vol::ExerciseStyle;
 using atx::vol::hybrid_forward;
 using atx::vol::HybridDivParams;
 using atx::vol::imply_term_borrow;
@@ -196,13 +198,12 @@ TEST(DeAmer, ToleranceLadderKeepsPcpResidualWithinEconomicBound) {
       const double sig = 0.25;
       const double call = value_or_fail(american_price(sc.S, K, sc.T, sig, sc.r, q_eff, Side::Call,
                                                        AmericanMethod::AndersenLake));
-      const double put = value_or_fail(american_price(sc.S, K, sc.T, sig, sc.r, q_eff, Side::Put,
-                                                      AmericanMethod::AndersenLake));
+      const double put = value_or_fail(
+          american_price(sc.S, K, sc.T, sig, sc.r, q_eff, Side::Put, AmericanMethod::AndersenLake));
       const auto res = imply_term_borrow(call, put, sc.S, K, sc.T, sc.r, sc.divs, sc.expiry_ns,
                                          sc.now_ns, sc.hyb);
-      ASSERT_TRUE(res.has_value())
-          << "b_true=" << b_true << " K=" << K << ": "
-          << (res ? std::string{} : res.error().to_string());
+      ASSERT_TRUE(res.has_value()) << "b_true=" << b_true << " K=" << K << ": "
+                                   << (res ? std::string{} : res.error().to_string());
       EXPECT_LT(res->rmse_pcp, kEconomicBound) << "b_true=" << b_true << " K=" << K;
       EXPECT_NEAR(res->borrow, b_true, kEconomicBound) << "b_true=" << b_true << " K=" << K;
     }
@@ -232,6 +233,94 @@ TEST(DeAmer, CarrySolveUsesItsOwnAndersenLakePreset) {
   EXPECT_NEAR(resolved->forward, expected->forward, 1.0e-10);
 }
 
+TEST(DeAmer, EuropeanChainForwardUsesRawParityWithoutAmericanBoundarySolves) {
+  namespace led = atx::vol::counters::ledger;
+
+  constexpr double spot = 100.0;
+  constexpr double rate = 0.02;
+  constexpr double maturity = 0.25;
+  constexpr double forward = 101.25;
+  constexpr double sigma = 0.22;
+  const double df = std::exp(-rate * maturity);
+
+  Chain chain;
+  chain.exercise_style = ExerciseStyle::European;
+  chain.T = maturity;
+  chain.expiry_ns = years_to_ns(maturity);
+  chain.strikes = {96.0, 98.0, 100.0, 102.0, 104.0};
+  const std::size_t two_n = 2u * chain.strikes.size();
+  chain.bids.assign(two_n, 0.0);
+  chain.asks.assign(two_n, 0.0);
+  chain.mids.assign(two_n, 0.0);
+  for (std::size_t i = 0; i < chain.strikes.size(); ++i) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const std::size_t index = chain_index(static_cast<std::uint16_t>(i), side);
+      const double mid =
+          atx::vol::black76_price(forward, chain.strikes[i], maturity, sigma, df, side);
+      chain.mids[index] = mid;
+      chain.bids[index] = mid - 0.01;
+      chain.asks[index] = mid + 0.01;
+    }
+  }
+
+  DeAmOptions opts;
+  opts.n_atm = chain.strikes.size();
+  opts.max_borrow_pairs = chain.strikes.size();
+  led::reset();
+  const auto resolved = resolve_chain_forward(chain, spot, rate, {}, 0, opts);
+  const std::uint64_t boundary_solves = led::snapshot().get(led::Solve::AlBoundarySolves);
+
+  ASSERT_TRUE(resolved.has_value()) << (resolved ? std::string{} : resolved.error().to_string());
+  EXPECT_NEAR(resolved->forward, forward, 1.0e-10);
+  EXPECT_EQ(boundary_solves, std::uint64_t{0});
+  EXPECT_EQ(resolved->carry.n_solved, chain.strikes.size());
+}
+
+TEST(DeAmer, EuropeanChainDeAmericanizationIsRawBlack76PassThrough) {
+  namespace led = atx::vol::counters::ledger;
+
+  constexpr double spot = 100.0;
+  constexpr double rate = 0.02;
+  constexpr double maturity = 0.25;
+  constexpr double forward = 101.25;
+  constexpr double sigma = 0.22;
+  const double df = std::exp(-rate * maturity);
+
+  Chain chain;
+  chain.exercise_style = ExerciseStyle::European;
+  chain.T = maturity;
+  chain.expiry_ns = years_to_ns(maturity);
+  chain.strikes = {96.0, 98.0, 100.0, 102.0, 104.0};
+  const std::size_t two_n = 2u * chain.strikes.size();
+  chain.bids.assign(two_n, 0.0);
+  chain.asks.assign(two_n, 0.0);
+  chain.mids.assign(two_n, 0.0);
+  for (std::size_t i = 0; i < chain.strikes.size(); ++i) {
+    for (const Side side : {Side::Call, Side::Put}) {
+      const std::size_t index = chain_index(static_cast<std::uint16_t>(i), side);
+      const double mid = black76_price(forward, chain.strikes[i], maturity, sigma, df, side);
+      chain.mids[index] = mid;
+      chain.bids[index] = mid - 0.01;
+      chain.asks[index] = mid + 0.01;
+    }
+  }
+
+  DeAmOptions opts;
+  opts.n_atm = chain.strikes.size();
+  opts.max_borrow_pairs = chain.strikes.size();
+  led::reset();
+  const auto result = de_americanize_chain(chain, spot, rate, {}, 0, opts);
+  const std::uint64_t boundary_solves = led::snapshot().get(led::Solve::AlBoundarySolves);
+
+  ASSERT_TRUE(result.has_value()) << (result ? std::string{} : result.error().to_string());
+  EXPECT_EQ(boundary_solves, std::uint64_t{0});
+  EXPECT_EQ(result->n_used, chain.strikes.size());
+  ASSERT_EQ(result->iv.size(), chain.strikes.size());
+  for (const double recovered : result->iv) {
+    EXPECT_NEAR(recovered, sigma, 1.0e-8);
+  }
+}
+
 // R-27: default-constructed DeAmOptions moved every library caller to the
 // fast-AL / 5-pair carry solve, and carry is unaudited by design. This pins that
 // even in a HIGH-DIVIDEND regime (F/S ~= 0.90, driven by a large mid-life cash
@@ -259,8 +348,8 @@ TEST(DeAmer, HighDividendCarryHoldsFastVsAccurateWithinEconomicBound) {
     return resolve_chain_forward(chain, sc.S, sc.r, sc.divs, sc.now_ns, opts);
   };
 
-  const auto fast = resolve_with(al_fast_opts());      // the default carry preset
-  const auto accurate = resolve_with(std::nullopt);    // cold accurate Andersen-Lake
+  const auto fast = resolve_with(al_fast_opts());   // the default carry preset
+  const auto accurate = resolve_with(std::nullopt); // cold accurate Andersen-Lake
   ASSERT_TRUE(fast.has_value()) << (fast ? std::string{} : fast.error().to_string());
   ASSERT_TRUE(accurate.has_value()) << (accurate ? std::string{} : accurate.error().to_string());
 
@@ -286,8 +375,7 @@ TEST(DeAmer, WarmStartCarryCutsBoundarySolvesConvergedRootUnchanged) {
   const double b_true = 0.021;
   // A full near-ATM ladder so the ascending-|K-S| chain has neighbours to warm
   // from (single-pair solves share the first pair's cold seed and can't chain).
-  const std::vector<double> strikes{92.0, 94.0,  96.0,  98.0, 100.0,
-                                    102.0, 104.0, 106.0, 108.0};
+  const std::vector<double> strikes{92.0, 94.0, 96.0, 98.0, 100.0, 102.0, 104.0, 106.0, 108.0};
   const Chain chain = make_synthetic_chain(sc, b_true, strikes);
 
   const auto resolve_with = [&](bool warm) {
@@ -387,8 +475,8 @@ TEST(DeAmer, AuditBatchMatchesPerRowVerdictAndCutsBoundarySolves) {
   // Batched audit (P3): one σ-interpolant shared by the whole side.
   std::vector<atx::core::Result<IvRepricingAudit>> batch(n);
   led::reset();
-  const auto st = audit_european_equiv_iv_batch(S, T, r, q_eff, side, strikes, sigmas, mids, spreads,
-                                                budget, batch);
+  const auto st = audit_european_equiv_iv_batch(S, T, r, q_eff, side, strikes, sigmas, mids,
+                                                spreads, budget, batch);
   const std::uint64_t solves_batch = led::snapshot().get(led::Solve::AlBoundarySolves);
   ASSERT_TRUE(st.has_value()) << (st ? std::string{} : st.error().to_string());
 
@@ -413,13 +501,14 @@ TEST(DeAmer, AuditBatchMatchesPerRowVerdictAndCutsBoundarySolves) {
   EXPECT_EQ(solves_per_row, static_cast<std::uint64_t>(n)); // one cold solve per row
   EXPECT_LE(solves_batch, 8u);                              // n_σ interpolant node solves
   EXPECT_LT(solves_batch, solves_per_row);
-  std::printf(
-      "[deamer-audit-batch] AL boundary solves/side: per-row=%llu batch=%llu (ratio %.3f); "
-      "pass=%zu fail=%zu\n",
-      static_cast<unsigned long long>(solves_per_row),
-      static_cast<unsigned long long>(solves_batch),
-      solves_per_row ? static_cast<double>(solves_batch) / static_cast<double>(solves_per_row) : 0.0,
-      n_pass, n_fail);
+  std::printf("[deamer-audit-batch] AL boundary solves/side: per-row=%llu batch=%llu (ratio %.3f); "
+              "pass=%zu fail=%zu\n",
+              static_cast<unsigned long long>(solves_per_row),
+              static_cast<unsigned long long>(solves_batch),
+              solves_per_row
+                  ? static_cast<double>(solves_batch) / static_cast<double>(solves_per_row)
+                  : 0.0,
+              n_pass, n_fail);
 }
 
 // P3 integration: de_americanize_chain routes EVERY approximate-proposal row's

@@ -92,13 +92,11 @@ enum class ExpiryInputField : std::uint8_t {
 
 [[nodiscard]] constexpr ExpiryInputField operator|(ExpiryInputField a,
                                                    ExpiryInputField b) noexcept {
-  return static_cast<ExpiryInputField>(static_cast<std::uint8_t>(a) |
-                                       static_cast<std::uint8_t>(b));
+  return static_cast<ExpiryInputField>(static_cast<std::uint8_t>(a) | static_cast<std::uint8_t>(b));
 }
 [[nodiscard]] constexpr ExpiryInputField operator&(ExpiryInputField a,
                                                    ExpiryInputField b) noexcept {
-  return static_cast<ExpiryInputField>(static_cast<std::uint8_t>(a) &
-                                       static_cast<std::uint8_t>(b));
+  return static_cast<ExpiryInputField>(static_cast<std::uint8_t>(a) & static_cast<std::uint8_t>(b));
 }
 constexpr ExpiryInputField &operator|=(ExpiryInputField &a, ExpiryInputField b) noexcept {
   a = a | b;
@@ -125,8 +123,8 @@ inline constexpr double kDataNaN = std::numeric_limits<double>::quiet_NaN();
 // the feed did not surface the column. They are diagnostics only — never fit
 // against them (they tie back to the oracle's own surface).
 struct QuoteRow {
-  std::string uid;                 // optional per-row uid ("" -> frame default)
-  std::string expiry_iso;          // "YYYY-MM-DD"
+  std::string uid;        // optional per-row uid ("" -> frame default)
+  std::string expiry_iso; // "YYYY-MM-DD"
   double strike = 0.0;
   Side side = Side::Call;
   double bid = 0.0;
@@ -136,10 +134,10 @@ struct QuoteRow {
   double last = 0.0;
   std::int32_t volume = 0;
   std::int32_t open_interest = 0;
-  double iv_source = 0.0;          // feed-reported IV (diagnostics)
-  double fv_source = kDataNaN;     // feed fair value/theo; NaN if absent
-  double under_spot = 0.0;         // optional per-row underlying price
-  std::int64_t ts_ns = 0;          // optional row timestamp
+  double iv_source = 0.0;      // feed-reported IV (diagnostics)
+  double fv_source = kDataNaN; // feed fair value/theo; NaN if absent
+  double under_spot = 0.0;     // optional per-row underlying price
+  std::int64_t ts_ns = 0;      // optional row timestamp
 
   // Sprint-25 SpiderRock source-input plane (NaN when absent).
   double rate_source = kDataNaN;    // SR `rate`   — annualized zero rate
@@ -155,6 +153,10 @@ struct QuoteRow {
   // entire single-name/ETF universe; AM = 09:30 ET is reserved for cash-settled
   // index series. Default PM.
   SettlementSession settle = SettlementSession::Pm;
+  // Exercise semantics for this contract. The default preserves the historical
+  // single-name/ETF path; index loaders must source this from explicit product
+  // policy because historical OPRA definitions do not reliably populate CFI.
+  ExerciseStyle exercise_style = ExerciseStyle::American;
   // The TRUE expiry instant in UTC epoch-ns when a dated-contract loader has
   // stamped it (16:00/09:30 ET per `settle`, via `expiry_instant_ns`). 0 means
   // "derive at install from `expiry_iso`": `data_install` then falls back to the
@@ -174,8 +176,8 @@ struct QuoteRow {
 // entry per (uid, expiry_iso).
 struct ExpiryInputs {
   std::string uid;
-  std::string expiry_iso;   // "YYYY-MM-DD"
-  double T_vol = kDataNaN;   // SR `years`
+  std::string expiry_iso;  // "YYYY-MM-DD"
+  double T_vol = kDataNaN; // SR `years`
   double rate = kDataNaN;
   double sdiv = kDataNaN;
   double ddiv = kDataNaN;
@@ -191,8 +193,8 @@ struct ExpiryInputs {
 // universe layer holds no curve). `divs` is carried for a faithful snapshot
 // representation and is consumed by the curve layer, not by install.
 struct QuoteFrame {
-  std::string uid;                 // first/default uid
-  std::string snapshot_iso;        // "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS.ffffff"
+  std::string uid;          // first/default uid
+  std::string snapshot_iso; // "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS.ffffff"
   std::int64_t snapshot_ts_ns = 0;
   double spot = 0.0;
   std::int64_t spot_ts_ns = 0;
@@ -200,10 +202,10 @@ struct QuoteFrame {
   std::vector<std::string> uid_strs; // distinct uids (built by build_uid_list)
   std::vector<QuoteRow> rows;
 
-  std::vector<double> yc_pillar_t;   // yield-curve pillar year-fractions
-  std::vector<double> yc_pillar_r;   // yield-curve pillar zero rates
+  std::vector<double> yc_pillar_t; // yield-curve pillar year-fractions
+  std::vector<double> yc_pillar_r; // yield-curve pillar zero rates
 
-  std::vector<DividendEvent> divs;   // discrete cash-dividend schedule
+  std::vector<DividendEvent> divs; // discrete cash-dividend schedule
   std::vector<ExpiryInputs> expiry_inputs;
 
   // The T convention this frame was BUILT under — the frame's single source of
@@ -233,8 +235,7 @@ struct QuoteFrame {
 // stays the legacy Calendar365-only, ISO-string entry point; production T
 // callers that need the opt-in VolTime convention set `QuoteFrame::time` (or
 // call `time_to_expiry_years` directly) instead.
-[[nodiscard]] double year_fraction(std::string_view from_iso,
-                                   std::string_view to_iso) noexcept;
+[[nodiscard]] double year_fraction(std::string_view from_iso, std::string_view to_iso) noexcept;
 
 // Civil date "YYYY-MM-DD" for an epoch-nanoseconds instant (the inline
 // civil-from-days install uses to key the source-input table). Truncates to
@@ -249,9 +250,9 @@ struct QuoteFrame {
 // by ~0.8 trading day and hard-drops same-session (0DTE) contracts. ET->UTC via
 // `settlement_instant_ns` (modern-DST, vol_time.hpp). Returns 0 on parse failure
 // (matching `iso_to_ns`).
-[[nodiscard]] std::int64_t expiry_instant_ns(
-    std::string_view expiry_iso,
-    SettlementSession settle = SettlementSession::Pm) noexcept;
+[[nodiscard]] std::int64_t
+expiry_instant_ns(std::string_view expiry_iso,
+                  SettlementSession settle = SettlementSession::Pm) noexcept;
 
 // ── Frame helpers ───────────────────────────────────────────────────────────
 
@@ -272,8 +273,7 @@ void build_expiry_inputs(QuoteFrame &frame);
 // (`ats_vol_data_snapshot_find_expiry_inputs`). Returns nullptr when the frame
 // carries no inputs or the cell is absent. The pointer is a non-owning borrow,
 // valid while `frame.expiry_inputs` is unmodified.
-[[nodiscard]] const ExpiryInputs *find_expiry_inputs(const QuoteFrame &frame,
-                                                     std::string_view uid,
+[[nodiscard]] const ExpiryInputs *find_expiry_inputs(const QuoteFrame &frame, std::string_view uid,
                                                      std::string_view expiry_iso) noexcept;
 
 // ── Install ─────────────────────────────────────────────────────────────────
@@ -308,9 +308,9 @@ void build_expiry_inputs(QuoteFrame &frame);
 // (AtsVolSpiderRockLoadSpec). Retained so the deferred entry point has a stable
 // signature; a future port fills a `QuoteFrame` from it.
 struct SpiderRockLoadSpec {
-  std::string parquet_path;             // Apache Parquet fixture/source path
-  std::vector<std::string> symbols;     // underlier symbols to load
-  std::string snapshot_time;            // "HH:MM" or "HH:MM:SS"; matched at 5m granularity
+  std::string parquet_path;         // Apache Parquet fixture/source path
+  std::vector<std::string> symbols; // underlier symbols to load
+  std::string snapshot_time;        // "HH:MM" or "HH:MM:SS"; matched at 5m granularity
 };
 
 // PORT NOTE (deferred): the C `ats_vol_data_load_spiderrock_parquet`
