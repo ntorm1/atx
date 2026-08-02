@@ -130,6 +130,8 @@ add_library(atx-vol ${ATX_LIB_TYPE}
     src/sr_tenor_grid.cpp
     src/earnings_forecast_loader.cpp
     src/earnings_repro.cpp
+    # strangle-vs-varswap
+    src/strangle_varswap.cpp
 )
 add_library(atx::vol ALIAS atx-vol)
 
@@ -526,6 +528,18 @@ if(ATX_BUILD_EXAMPLES)
     # (tests/spy_dispersion_pnl_report_test.py). See examples/spy_dispersion_pnl.cpp.
     add_executable(spy_dispersion_pnl examples/spy_dispersion_pnl.cpp)
     target_link_libraries(spy_dispersion_pnl PRIVATE atx::vol atx::core atx_warnings)
+
+    # XOM strangle-vs-varswap comparison driver: one fixed-expiry, daily-restriked
+    # 40Δ strangle against one uncapped variance swap struck fair and sized to
+    # that strangle's entry vega, both on ONE SurfaceDb clock, delta-hedged daily
+    # -> the track.tsv the Python renderer tools/render_strangle_vs_varswap.py
+    # turns into the comparison report. Strategy gate: StrangleVarswap
+    # (tests/strangle_varswap_test.cpp); render gate:
+    # python/tests/test_render_strangle_vs_varswap.py (the atx-vol-python lane).
+    # See examples/strangle_varswap_driver.cpp.
+    add_executable(atx-vol-strangle-varswap-driver examples/strangle_varswap_driver.cpp)
+    target_link_libraries(atx-vol-strangle-varswap-driver
+        PRIVATE atx::vol atx::core atx_warnings)
 
     # Projection-backed strategy-history database builder. The default template
     # is the requested 40-delta, three-calendar-month strangle, held to expiry
