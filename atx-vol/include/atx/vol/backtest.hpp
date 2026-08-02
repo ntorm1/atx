@@ -698,6 +698,9 @@ public:
   // seals allocate only when the largest observed frame grows.
   [[nodiscard]] Status seal();
   [[nodiscard]] std::optional<Match> find_ok(std::uint64_t id) const noexcept;
+  // Rows preserve the input portfolio order. This diagnostic scans only the
+  // active prefix, so warmed storage from a larger prior book is ignored.
+  [[nodiscard]] std::optional<std::size_t> first_non_ok_index() const noexcept;
 
   [[nodiscard]] std::size_t size() const noexcept { return active_size_; }
   [[nodiscard]] std::size_t storage_size() const noexcept { return id_.size(); }
