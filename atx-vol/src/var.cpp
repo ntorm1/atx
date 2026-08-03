@@ -480,236 +480,6 @@ struct ResolvedVarContract {
          std::fabs(std::fabs(resolved.base_delta) - leg.target_abs_delta) <= config.delta_tolerance;
 }
 
-[[nodiscard]] VarLegStatus evaluate_option_leg(const NormalizedVarLeg &leg,
-                                               const VarScenario &scenario,
-                                               const VarEvaluationConfig &config,
-                                               VarLegFrame &frame) {
-  const SurfaceRef base = scenario.base_surfaces->find(leg.uid);
-  const SurfaceRef shifted = scenario.shifted_surfaces->find(leg.uid);
-  if (base == nullptr || shifted == nullptr) {
-    poison_leg(frame, VarLegStatus::SurfaceUnavailable, leg.kind, leg.uid);
-    return frame.status;
-  }
-  if (base.pricing().now_ts_ns != scenario.base_ts_ns ||
-      shifted.pricing().now_ts_ns != scenario.shifted_ts_ns) {
-    poison_leg(frame, VarLegStatus::TimestampMismatch, leg.kind, leg.uid);
-    return frame.status;
-  }
-  const double base_spot = base.pricing().S;
-  const double shifted_spot = shifted.pricing().S;
-  if (!finite_positive(base_spot) || !finite_positive(shifted_spot)) {
-    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
-    return frame.status;
-  }
-
-  ResolvedVarContract resolved;
-  if (!resolve_var_contract(leg, base, scenario, config, resolved)) {
-    poison_leg(frame, VarLegStatus::ProjectionUnavailable, leg.kind, leg.uid);
-    return frame.status;
-  }
-
-  const OptionContract &contract = resolved.contract;
-  const PricedSurface::FusedResult base_evaluation =
-      base.evaluate(contract.K, contract.T, contract.side, PricedSurface::EvalField::Price, false,
-                    config.valuation_execution);
-  if (!base_evaluation.status || !std::isfinite(base_evaluation.price)) {
-    poison_leg(frame, VarLegStatus::PricingError, leg.kind, leg.uid);
-    return frame.status;
-  }
-  const double base_delta = resolved.base_delta;
-  if (!std::isfinite(base_delta) || std::fabs(base_delta) <= config.delta_tolerance) {
-    poison_leg(frame, VarLegStatus::InvalidDelta, leg.kind, leg.uid);
-    return frame.status;
-  }
-  const Result<VarSizingResult> sizing = resolve_var_sizing(
-      VarSizingInput{leg.target_dollar_delta, base_spot, base_delta, leg.multiplier});
-  const double shifted_time =
-      static_cast<double>(resolved.expiry_ts_ns - scenario.shifted_ts_ns) / kNsPerYear;
-  if (!sizing) {
-    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
-    return frame.status;
-  }
-  if (!finite_positive(shifted_time)) {
-    poison_leg(frame, VarLegStatus::ExpiredBeforeShift, leg.kind, leg.uid);
-    return frame.status;
-  }
-  const PricedSurface::FusedResult shifted_evaluation =
-      shifted.evaluate(contract.K, shifted_time, contract.side, PricedSurface::EvalField::Price,
-                       false, config.valuation_execution);
-  if (!shifted_evaluation.status || !std::isfinite(shifted_evaluation.price)) {
-    poison_leg(frame, VarLegStatus::PricingError, leg.kind, leg.uid);
-    return frame.status;
-  }
-
-  const double base_value = sizing->units * leg.multiplier * base_evaluation.price;
-  const double shifted_value = sizing->units * leg.multiplier * shifted_evaluation.price;
-  const double pnl = shifted_value - base_value;
-  const double allowed_error =
-      config.delta_tolerance * std::max(1.0, std::fabs(leg.target_dollar_delta));
-  if (!std::isfinite(base_value) || !std::isfinite(shifted_value) || !std::isfinite(pnl) ||
-      std::fabs(sizing->achieved_dollar_delta - leg.target_dollar_delta) > allowed_error) {
-    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
-    return frame.status;
-  }
-
-  frame = {};
-  frame.kind = VarLegKind::Option;
-  frame.status = VarLegStatus::Ok;
-  frame.uid = leg.uid;
-  frame.units = sizing->units;
-  frame.base_spot = base_spot;
-  frame.shifted_spot = shifted_spot;
-  frame.base_mark = base_evaluation.price;
-  frame.shifted_mark = shifted_evaluation.price;
-  frame.base_delta = base_delta;
-  frame.dollar_delta = sizing->achieved_dollar_delta;
-  frame.base_value = base_value;
-  frame.shifted_value = shifted_value;
-  frame.pnl = pnl;
-  frame.strike = contract.K;
-  frame.base_time_to_expiry = contract.T;
-  frame.shifted_time_to_expiry = shifted_time;
-  frame.definition_fingerprint = resolved.fingerprint;
-  return frame.status;
-}
-
-[[nodiscard]] VarLegStatus reuse_option_pricing(const NormalizedVarLeg &leg,
-                                                const VarLegFrame &leader,
-                                                const VarEvaluationConfig &config,
-                                                VarLegFrame &frame) noexcept {
-  if (leader.status != VarLegStatus::Ok) {
-    poison_leg(frame, leader.status, leg.kind, leg.uid);
-    return frame.status;
-  }
-  const Result<VarSizingResult> sizing = resolve_var_sizing(
-      VarSizingInput{leg.target_dollar_delta, leader.base_spot, leader.base_delta, leg.multiplier});
-  if (!sizing) {
-    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
-    return frame.status;
-  }
-  const double base_value = sizing->units * leg.multiplier * leader.base_mark;
-  const double shifted_value = sizing->units * leg.multiplier * leader.shifted_mark;
-  const double pnl = shifted_value - base_value;
-  const double allowed_error =
-      config.delta_tolerance * std::max(1.0, std::fabs(leg.target_dollar_delta));
-  if (!std::isfinite(base_value) || !std::isfinite(shifted_value) || !std::isfinite(pnl) ||
-      std::fabs(sizing->achieved_dollar_delta - leg.target_dollar_delta) > allowed_error) {
-    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
-    return frame.status;
-  }
-
-  frame = leader;
-  frame.units = sizing->units;
-  frame.dollar_delta = sizing->achieved_dollar_delta;
-  frame.base_value = base_value;
-  frame.shifted_value = shifted_value;
-  frame.pnl = pnl;
-  return frame.status;
-}
-
-[[nodiscard]] VarLegStatus evaluate_stock_leg(const NormalizedVarLeg &leg,
-                                              const VarScenario &scenario,
-                                              VarLegFrame &frame) noexcept {
-  const SurfaceRef base = scenario.base_surfaces->find(leg.uid);
-  const SurfaceRef shifted = scenario.shifted_surfaces->find(leg.uid);
-  if (base == nullptr || shifted == nullptr) {
-    poison_leg(frame, VarLegStatus::SurfaceUnavailable, leg.kind, leg.uid);
-    return frame.status;
-  }
-  if (base.pricing().now_ts_ns != scenario.base_ts_ns ||
-      shifted.pricing().now_ts_ns != scenario.shifted_ts_ns) {
-    poison_leg(frame, VarLegStatus::TimestampMismatch, leg.kind, leg.uid);
-    return frame.status;
-  }
-  const double base_spot = base.pricing().S;
-  const double shifted_spot = shifted.pricing().S;
-  if (!finite_positive(base_spot) || !finite_positive(shifted_spot)) {
-    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
-    return frame.status;
-  }
-  const Result<VarSizingResult> sizing =
-      resolve_var_sizing(VarSizingInput{leg.target_dollar_delta, base_spot, 1.0, 1.0});
-  if (!sizing) {
-    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
-    return frame.status;
-  }
-  const double base_value = sizing->units * base_spot;
-  const double shifted_value = sizing->units * shifted_spot;
-  const double pnl = shifted_value - base_value;
-  if (!std::isfinite(base_value) || !std::isfinite(shifted_value) || !std::isfinite(pnl)) {
-    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
-    return frame.status;
-  }
-
-  frame = {};
-  frame.kind = VarLegKind::Stock;
-  frame.status = VarLegStatus::Ok;
-  frame.uid = leg.uid;
-  frame.units = sizing->units;
-  frame.base_spot = base_spot;
-  frame.shifted_spot = shifted_spot;
-  frame.base_mark = base_spot;
-  frame.shifted_mark = shifted_spot;
-  frame.base_delta = 1.0;
-  frame.dollar_delta = sizing->achieved_dollar_delta;
-  frame.base_value = base_value;
-  frame.shifted_value = shifted_value;
-  frame.pnl = pnl;
-  frame.definition_fingerprint = leg.fingerprint;
-  return frame.status;
-}
-
-template <class PreparedState>
-void evaluate_scenario(const PreparedState &impl, const VarScenario &scenario,
-                       VarScenarioFrame &frame, std::span<VarLegFrame> leg_frames,
-                       const VarEvaluationConfig &config) {
-  frame = {};
-  frame.base_ts_ns = scenario.base_ts_ns;
-  frame.shifted_ts_ns = scenario.shifted_ts_ns;
-  frame.status = VarScenarioStatus::Ok;
-  std::size_t aggregate_fingerprint = static_cast<std::size_t>(impl.fingerprint);
-  VarScenarioStatus failure_status = VarScenarioStatus::Ok;
-
-  for (std::size_t index = 0; index < impl.legs.size(); ++index) {
-    const NormalizedVarLeg &leg = impl.legs[index];
-    VarLegFrame &leg_frame = leg_frames[index];
-    VarLegStatus status = VarLegStatus::Ok;
-    if (leg.kind == VarLegKind::Option && leg.pricing_leader != index) {
-      status = reuse_option_pricing(leg, leg_frames[leg.pricing_leader], config, leg_frame);
-    } else if (leg.kind == VarLegKind::Option) {
-      status = evaluate_option_leg(leg, scenario, config, leg_frame);
-    } else {
-      status = evaluate_stock_leg(leg, scenario, leg_frame);
-    }
-    if (status != VarLegStatus::Ok) {
-      ++frame.n_failed;
-      if (failure_status == VarScenarioStatus::Ok) {
-        failure_status = scenario_status_for(status);
-      }
-      continue;
-    }
-    ++frame.n_ok;
-    frame.base_value += leg_frame.base_value;
-    frame.shifted_value += leg_frame.shifted_value;
-    frame.pnl += leg_frame.pnl;
-    frame.dollar_delta += leg_frame.dollar_delta;
-    aggregate_fingerprint =
-        atx::core::hash_combine(aggregate_fingerprint, leg_frame.definition_fingerprint);
-  }
-  if (frame.n_failed != 0u) {
-    frame.status = failure_status;
-    frame.base_value = kNaN;
-    frame.shifted_value = kNaN;
-    frame.pnl = kNaN;
-    frame.dollar_delta = kNaN;
-    return;
-  }
-  frame.definition_fingerprint = static_cast<std::uint64_t>(aggregate_fingerprint);
-  if (frame.definition_fingerprint == 0u) {
-    frame.definition_fingerprint = 1u;
-  }
-}
-
 struct VarBatchScratch {
   std::vector<double> strike{};
   std::vector<double> base_time{};
@@ -852,6 +622,344 @@ template <class PreparedState>
   return true;
 }
 
+// Resolve+cold-confirm every slot in `group` (delegating to
+// resolve_group_contracts_cross_sectional) and additionally fill
+// scratch.shifted_time/base_spot/shifted_spot for its leader slots.
+// evaluate_scenario_batched's cross-sectional branch and evaluate_scenario's
+// cross-sectional resolution phase both call this ONE function on the same
+// per-group inputs, so the aggregate and retained-leg routes resolve to the
+// identical strikes -- the property this task exists to establish. Returns
+// false under the same conditions resolve_group_contracts_cross_sectional
+// does, and also when a resolved leg has already expired by the shifted date
+// (the scalar path's ExpiredBeforeShift check, applied here at whole-group
+// granularity since the caller downgrades the whole scenario on failure).
+template <class PreparedState>
+[[nodiscard]] bool
+resolve_group_window_cross_sectional(const PreparedState &impl, const VarOptionGroup &group,
+                                     const SurfaceRef &base, const SurfaceRef &shifted,
+                                     const VarScenario &scenario, const VarEvaluationConfig &config,
+                                     VarBatchScratch &scratch) {
+  if (!resolve_group_contracts_cross_sectional(impl, group, base, scenario, config, scratch)) {
+    return false;
+  }
+  for (std::size_t slot = group.begin; slot < group.end; ++slot) {
+    const double shifted_time =
+        static_cast<double>(scratch.solve_expiry[slot] - scenario.shifted_ts_ns) / kNsPerYear;
+    if (!finite_positive(shifted_time)) {
+      return false;
+    }
+    scratch.shifted_time[slot] = shifted_time;
+    scratch.base_spot[slot] = base.pricing().S;
+    scratch.shifted_spot[slot] = shifted.pricing().S;
+  }
+  return true;
+}
+
+// Shared tail of evaluate_option_leg/evaluate_option_leg_resolved: prices
+// scalar base/shifted marks at the already-resolved `contract`, sizes to the
+// leg's target dollar delta, and fills `frame`. Neither caller has resolved
+// (or re-resolves) the contract here -- that is entirely their own
+// responsibility; this function trusts `contract`/`base_delta`/`fingerprint`
+// as given.
+[[nodiscard]] VarLegStatus
+finish_option_leg(const NormalizedVarLeg &leg, const SurfaceRef &base, const SurfaceRef &shifted,
+                  double base_spot, double shifted_spot, const OptionContract &contract,
+                  double base_delta, double shifted_time, std::uint64_t fingerprint,
+                  const VarEvaluationConfig &config, VarLegFrame &frame) {
+  const PricedSurface::FusedResult base_evaluation =
+      base.evaluate(contract.K, contract.T, contract.side, PricedSurface::EvalField::Price, false,
+                    config.valuation_execution);
+  if (!base_evaluation.status || !std::isfinite(base_evaluation.price)) {
+    poison_leg(frame, VarLegStatus::PricingError, leg.kind, leg.uid);
+    return frame.status;
+  }
+  if (!std::isfinite(base_delta) || std::fabs(base_delta) <= config.delta_tolerance) {
+    poison_leg(frame, VarLegStatus::InvalidDelta, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const Result<VarSizingResult> sizing = resolve_var_sizing(
+      VarSizingInput{leg.target_dollar_delta, base_spot, base_delta, leg.multiplier});
+  if (!sizing) {
+    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
+    return frame.status;
+  }
+  if (!finite_positive(shifted_time)) {
+    poison_leg(frame, VarLegStatus::ExpiredBeforeShift, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const PricedSurface::FusedResult shifted_evaluation =
+      shifted.evaluate(contract.K, shifted_time, contract.side, PricedSurface::EvalField::Price,
+                       false, config.valuation_execution);
+  if (!shifted_evaluation.status || !std::isfinite(shifted_evaluation.price)) {
+    poison_leg(frame, VarLegStatus::PricingError, leg.kind, leg.uid);
+    return frame.status;
+  }
+
+  const double base_value = sizing->units * leg.multiplier * base_evaluation.price;
+  const double shifted_value = sizing->units * leg.multiplier * shifted_evaluation.price;
+  const double pnl = shifted_value - base_value;
+  const double allowed_error =
+      config.delta_tolerance * std::max(1.0, std::fabs(leg.target_dollar_delta));
+  if (!std::isfinite(base_value) || !std::isfinite(shifted_value) || !std::isfinite(pnl) ||
+      std::fabs(sizing->achieved_dollar_delta - leg.target_dollar_delta) > allowed_error) {
+    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
+    return frame.status;
+  }
+
+  frame = {};
+  frame.kind = VarLegKind::Option;
+  frame.status = VarLegStatus::Ok;
+  frame.uid = leg.uid;
+  frame.units = sizing->units;
+  frame.base_spot = base_spot;
+  frame.shifted_spot = shifted_spot;
+  frame.base_mark = base_evaluation.price;
+  frame.shifted_mark = shifted_evaluation.price;
+  frame.base_delta = base_delta;
+  frame.dollar_delta = sizing->achieved_dollar_delta;
+  frame.base_value = base_value;
+  frame.shifted_value = shifted_value;
+  frame.pnl = pnl;
+  frame.strike = contract.K;
+  frame.base_time_to_expiry = contract.T;
+  frame.shifted_time_to_expiry = shifted_time;
+  frame.definition_fingerprint = fingerprint;
+  return frame.status;
+}
+
+[[nodiscard]] VarLegStatus evaluate_option_leg(const NormalizedVarLeg &leg,
+                                               const VarScenario &scenario,
+                                               const VarEvaluationConfig &config,
+                                               VarLegFrame &frame) {
+  const SurfaceRef base = scenario.base_surfaces->find(leg.uid);
+  const SurfaceRef shifted = scenario.shifted_surfaces->find(leg.uid);
+  if (base == nullptr || shifted == nullptr) {
+    poison_leg(frame, VarLegStatus::SurfaceUnavailable, leg.kind, leg.uid);
+    return frame.status;
+  }
+  if (base.pricing().now_ts_ns != scenario.base_ts_ns ||
+      shifted.pricing().now_ts_ns != scenario.shifted_ts_ns) {
+    poison_leg(frame, VarLegStatus::TimestampMismatch, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const double base_spot = base.pricing().S;
+  const double shifted_spot = shifted.pricing().S;
+  if (!finite_positive(base_spot) || !finite_positive(shifted_spot)) {
+    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
+    return frame.status;
+  }
+
+  ResolvedVarContract resolved;
+  if (!resolve_var_contract(leg, base, scenario, config, resolved)) {
+    poison_leg(frame, VarLegStatus::ProjectionUnavailable, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const double shifted_time =
+      static_cast<double>(resolved.expiry_ts_ns - scenario.shifted_ts_ns) / kNsPerYear;
+  return finish_option_leg(leg, base, shifted, base_spot, shifted_spot, resolved.contract,
+                           resolved.base_delta, shifted_time, resolved.fingerprint, config, frame);
+}
+
+// Retained-leg counterpart to evaluate_scenario_batched's aggregate path
+// under CrossSectionalColdConfirm: consumes the SAME resolved strike/
+// base_time/shifted_time/base_delta/fingerprint slot data that
+// resolve_group_window_cross_sectional already produced for this leg's
+// group, so the two routes price the identical contract. There is no
+// internal resolve_var_contract call -- the market/timestamp/spot guards and
+// the cross-sectional cold-confirm already ran once per group in
+// evaluate_scenario's resolution phase before this is ever reached.
+[[nodiscard]] VarLegStatus
+evaluate_option_leg_resolved(const NormalizedVarLeg &leg, double strike, double base_time,
+                             double shifted_time, double base_delta, std::uint64_t fingerprint,
+                             const VarScenario &scenario, const VarEvaluationConfig &config,
+                             VarLegFrame &frame) {
+  const SurfaceRef base = scenario.base_surfaces->find(leg.uid);
+  const SurfaceRef shifted = scenario.shifted_surfaces->find(leg.uid);
+  const OptionContract contract{leg.uid, strike, base_time, leg.side};
+  return finish_option_leg(leg, base, shifted, base.pricing().S, shifted.pricing().S, contract,
+                           base_delta, shifted_time, fingerprint, config, frame);
+}
+
+[[nodiscard]] VarLegStatus reuse_option_pricing(const NormalizedVarLeg &leg,
+                                                const VarLegFrame &leader,
+                                                const VarEvaluationConfig &config,
+                                                VarLegFrame &frame) noexcept {
+  if (leader.status != VarLegStatus::Ok) {
+    poison_leg(frame, leader.status, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const Result<VarSizingResult> sizing = resolve_var_sizing(
+      VarSizingInput{leg.target_dollar_delta, leader.base_spot, leader.base_delta, leg.multiplier});
+  if (!sizing) {
+    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const double base_value = sizing->units * leg.multiplier * leader.base_mark;
+  const double shifted_value = sizing->units * leg.multiplier * leader.shifted_mark;
+  const double pnl = shifted_value - base_value;
+  const double allowed_error =
+      config.delta_tolerance * std::max(1.0, std::fabs(leg.target_dollar_delta));
+  if (!std::isfinite(base_value) || !std::isfinite(shifted_value) || !std::isfinite(pnl) ||
+      std::fabs(sizing->achieved_dollar_delta - leg.target_dollar_delta) > allowed_error) {
+    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
+    return frame.status;
+  }
+
+  frame = leader;
+  frame.units = sizing->units;
+  frame.dollar_delta = sizing->achieved_dollar_delta;
+  frame.base_value = base_value;
+  frame.shifted_value = shifted_value;
+  frame.pnl = pnl;
+  return frame.status;
+}
+
+[[nodiscard]] VarLegStatus evaluate_stock_leg(const NormalizedVarLeg &leg,
+                                              const VarScenario &scenario,
+                                              VarLegFrame &frame) noexcept {
+  const SurfaceRef base = scenario.base_surfaces->find(leg.uid);
+  const SurfaceRef shifted = scenario.shifted_surfaces->find(leg.uid);
+  if (base == nullptr || shifted == nullptr) {
+    poison_leg(frame, VarLegStatus::SurfaceUnavailable, leg.kind, leg.uid);
+    return frame.status;
+  }
+  if (base.pricing().now_ts_ns != scenario.base_ts_ns ||
+      shifted.pricing().now_ts_ns != scenario.shifted_ts_ns) {
+    poison_leg(frame, VarLegStatus::TimestampMismatch, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const double base_spot = base.pricing().S;
+  const double shifted_spot = shifted.pricing().S;
+  if (!finite_positive(base_spot) || !finite_positive(shifted_spot)) {
+    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const Result<VarSizingResult> sizing =
+      resolve_var_sizing(VarSizingInput{leg.target_dollar_delta, base_spot, 1.0, 1.0});
+  if (!sizing) {
+    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
+    return frame.status;
+  }
+  const double base_value = sizing->units * base_spot;
+  const double shifted_value = sizing->units * shifted_spot;
+  const double pnl = shifted_value - base_value;
+  if (!std::isfinite(base_value) || !std::isfinite(shifted_value) || !std::isfinite(pnl)) {
+    poison_leg(frame, VarLegStatus::InvalidValue, leg.kind, leg.uid);
+    return frame.status;
+  }
+
+  frame = {};
+  frame.kind = VarLegKind::Stock;
+  frame.status = VarLegStatus::Ok;
+  frame.uid = leg.uid;
+  frame.units = sizing->units;
+  frame.base_spot = base_spot;
+  frame.shifted_spot = shifted_spot;
+  frame.base_mark = base_spot;
+  frame.shifted_mark = shifted_spot;
+  frame.base_delta = 1.0;
+  frame.dollar_delta = sizing->achieved_dollar_delta;
+  frame.base_value = base_value;
+  frame.shifted_value = shifted_value;
+  frame.pnl = pnl;
+  frame.definition_fingerprint = leg.fingerprint;
+  return frame.status;
+}
+
+template <class PreparedState>
+void evaluate_scenario(const PreparedState &impl, const VarScenario &scenario,
+                       VarScenarioFrame &frame, std::span<VarLegFrame> leg_frames,
+                       const VarEvaluationConfig &config,
+                       VarBatchScratch *batch_scratch = nullptr) {
+  const bool cross_sectional =
+      batch_scratch != nullptr &&
+      config.projection_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+  if (cross_sectional) {
+    for (const VarOptionGroup &group : impl.option_groups) {
+      const SurfaceRef base = scenario.base_surfaces->find(group.uid);
+      const SurfaceRef shifted = scenario.shifted_surfaces->find(group.uid);
+      const bool resolved = base != nullptr && shifted != nullptr &&
+                            base.pricing().now_ts_ns == scenario.base_ts_ns &&
+                            shifted.pricing().now_ts_ns == scenario.shifted_ts_ns &&
+                            finite_positive(base.pricing().S) &&
+                            finite_positive(shifted.pricing().S) &&
+                            resolve_group_window_cross_sectional(impl, group, base, shifted,
+                                                                 scenario, config, *batch_scratch);
+      if (!resolved) {
+        // SAFETY: mirrors evaluate_scenario_batched's fallback() (Task 5) --
+        // CrossSectionalColdConfirm has no scalar analog in
+        // resolve_var_contract/project_option_contract (treated identically
+        // to FastScreenColdConfirm for a batch of one, per
+        // OptionDeltaSolvePolicy's own docs in contract_projection.hpp). ANY
+        // group failing to resolve/cold-confirm, or expiring before the
+        // shifted date, downgrades the WHOLE scenario to the scalar
+        // FastScreenColdConfirm route so the aggregate and retained-leg
+        // routes report identical per-leg statuses on failure. This re-runs
+        // every leg from scratch; it never touches a frame this call already
+        // wrote for an earlier group.
+        VarEvaluationConfig fallback_config = config;
+        fallback_config.projection_solve_policy = OptionDeltaSolvePolicy::FastScreenColdConfirm;
+        evaluate_scenario(impl, scenario, frame, leg_frames, fallback_config);
+        return;
+      }
+    }
+  }
+
+  frame = {};
+  frame.base_ts_ns = scenario.base_ts_ns;
+  frame.shifted_ts_ns = scenario.shifted_ts_ns;
+  frame.status = VarScenarioStatus::Ok;
+  std::size_t aggregate_fingerprint = static_cast<std::size_t>(impl.fingerprint);
+  VarScenarioStatus failure_status = VarScenarioStatus::Ok;
+
+  for (std::size_t index = 0; index < impl.legs.size(); ++index) {
+    const NormalizedVarLeg &leg = impl.legs[index];
+    VarLegFrame &leg_frame = leg_frames[index];
+    VarLegStatus status = VarLegStatus::Ok;
+    if (leg.kind == VarLegKind::Option && leg.pricing_leader != index) {
+      status = reuse_option_pricing(leg, leg_frames[leg.pricing_leader], config, leg_frame);
+    } else if (leg.kind == VarLegKind::Option) {
+      if (cross_sectional) {
+        const std::size_t slot = impl.option_slot_by_leg[index];
+        status = evaluate_option_leg_resolved(
+            leg, batch_scratch->strike[slot], batch_scratch->base_time[slot],
+            batch_scratch->shifted_time[slot], batch_scratch->base_delta[slot],
+            batch_scratch->fingerprint[slot], scenario, config, leg_frame);
+      } else {
+        status = evaluate_option_leg(leg, scenario, config, leg_frame);
+      }
+    } else {
+      status = evaluate_stock_leg(leg, scenario, leg_frame);
+    }
+    if (status != VarLegStatus::Ok) {
+      ++frame.n_failed;
+      if (failure_status == VarScenarioStatus::Ok) {
+        failure_status = scenario_status_for(status);
+      }
+      continue;
+    }
+    ++frame.n_ok;
+    frame.base_value += leg_frame.base_value;
+    frame.shifted_value += leg_frame.shifted_value;
+    frame.pnl += leg_frame.pnl;
+    frame.dollar_delta += leg_frame.dollar_delta;
+    aggregate_fingerprint =
+        atx::core::hash_combine(aggregate_fingerprint, leg_frame.definition_fingerprint);
+  }
+  if (frame.n_failed != 0u) {
+    frame.status = failure_status;
+    frame.base_value = kNaN;
+    frame.shifted_value = kNaN;
+    frame.pnl = kNaN;
+    frame.dollar_delta = kNaN;
+    return;
+  }
+  frame.definition_fingerprint = static_cast<std::uint64_t>(aggregate_fingerprint);
+  if (frame.definition_fingerprint == 0u) {
+    frame.definition_fingerprint = 1u;
+  }
+}
+
 template <class PreparedState>
 void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &scenario,
                                VarScenarioFrame &frame, VarBatchScratch &scratch,
@@ -886,20 +994,10 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
       return;
     }
     if (cross_sectional) {
-      if (!resolve_group_contracts_cross_sectional(impl, group, base, scenario, config, scratch)) {
+      if (!resolve_group_window_cross_sectional(impl, group, base, shifted, scenario, config,
+                                                scratch)) {
         fallback();
         return;
-      }
-      for (std::size_t slot = group.begin; slot < group.end; ++slot) {
-        const double shifted_time =
-            static_cast<double>(scratch.solve_expiry[slot] - scenario.shifted_ts_ns) / kNsPerYear;
-        if (!finite_positive(shifted_time)) {
-          fallback();
-          return;
-        }
-        scratch.shifted_time[slot] = shifted_time;
-        scratch.base_spot[slot] = base.pricing().S;
-        scratch.shifted_spot[slot] = shifted.pricing().S;
       }
     } else {
       for (std::size_t slot = group.begin; slot < group.end; ++slot) {
@@ -1272,10 +1370,23 @@ Status PreparedVarPortfolio::replay_into(std::span<const VarScenario> scenarios,
     previous_base = scenario.base_ts_ns;
   }
 
+  const bool cross_sectional =
+      config.projection_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
   try {
     run_balanced_ranges(scenarios.size(), config.n_threads, [&](std::size_t lo, std::size_t hi) {
+      // Scenarios are mathematically independent, and run_balanced_ranges
+      // hands each worker a contiguous, non-overlapping scenario subrange (a
+      // scenario is never split across workers). So a fresh VarBatchScratch
+      // built once per range and reused across that range's scenarios cannot
+      // leak state between scenarios -- and since solve_american_delta_batch
+      // is itself pack/composition-invariant (Task 3's
+      // EvaluateBatchLanedGreeksPackCompositionInvariant), the strikes/deltas
+      // it resolves do not depend on how the scenario set was partitioned
+      // across threads. That is exactly the thread-count bit-invariance the
+      // aggregate route already relied on, and now the retained-leg route
+      // shares it too.
       VarBatchScratch batch_scratch;
-      if (leg_frames.empty()) {
+      if (leg_frames.empty() || cross_sectional) {
         batch_scratch = make_var_batch_scratch(*impl_);
       }
       for (std::size_t scenario_index = lo; scenario_index < hi; ++scenario_index) {
@@ -1286,7 +1397,7 @@ Status PreparedVarPortfolio::replay_into(std::span<const VarScenario> scenarios,
           const std::span<VarLegFrame> output =
               leg_frames.subspan(scenario_index * impl_->legs.size(), impl_->legs.size());
           evaluate_scenario(*impl_, scenarios[scenario_index], frames[scenario_index], output,
-                            config);
+                            config, cross_sectional ? &batch_scratch : nullptr);
         }
       }
     });

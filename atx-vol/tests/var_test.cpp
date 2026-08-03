@@ -808,6 +808,204 @@ TEST(Var, CrossSectionalRowFailureFallsBackToScalarLegStatuses) {
   EXPECT_EQ(cross_aggregate_frames[0].n_ok, fast_aggregate_frames[0].n_ok);
 }
 
+TEST(Var, CrossSectionalReplayIsBitInvariantAcrossThreadCountsAndLegOutputIsOptional) {
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2));
+  ASSERT_TRUE(reference.valid());
+  const std::vector<VarPosition> positions = {
+      option("SPY", Side::Call, 1.25, 0.40),
+      option("SPY", Side::Put, -0.75, 0.30),
+      stock("SPY", 7.0),
+  };
+  const auto cross_config = [](unsigned n_threads) {
+    VarEvaluationConfig config = evaluation_config(n_threads);
+    config.projection_solve_policy = OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+    return config;
+  };
+  auto prepared = PreparedVarPortfolio::create(positions, reference.set(), cross_config(1));
+  ASSERT_TRUE(prepared) << (prepared ? std::string{} : prepared.error().to_string());
+
+  std::vector<std::unique_ptr<OneSurfaceSnapshot>> bases;
+  std::vector<std::unique_ptr<OneSurfaceSnapshot>> shifts;
+  const std::array<double, 4> base_spots{96.0, 103.0, 89.0, 111.0};
+  const std::array<double, 4> shifted_spots{99.0, 101.0, 94.0, 107.0};
+  for (std::size_t i = 0; i < base_spots.size(); ++i) {
+    bases.push_back(std::make_unique<OneSurfaceSnapshot>(
+        uid, base_spots[i], timestamp(2026, 1, 5 + static_cast<unsigned>(i))));
+    shifts.push_back(std::make_unique<OneSurfaceSnapshot>(
+        uid, shifted_spots[i], timestamp(2026, 1, 6 + static_cast<unsigned>(i))));
+    ASSERT_TRUE(bases.back()->valid() && shifts.back()->valid());
+  }
+
+  std::vector<VarScenario> scenarios;
+  scenarios.reserve(base_spots.size());
+  for (std::size_t i = 0; i < base_spots.size(); ++i) {
+    scenarios.push_back(VarScenario{bases[i]->surface().pricing().now_ts_ns, &bases[i]->set(),
+                                    shifts[i]->surface().pricing().now_ts_ns, &shifts[i]->set()});
+  }
+
+  std::vector<VarScenarioFrame> serial_frames(scenarios.size());
+  std::vector<VarScenarioFrame> parallel_frames(scenarios.size());
+  std::vector<VarScenarioFrame> aggregate_only_frames(scenarios.size());
+  std::vector<VarLegFrame> serial_legs(scenarios.size() * positions.size());
+  std::vector<VarLegFrame> parallel_legs(scenarios.size() * positions.size());
+  ASSERT_TRUE(prepared->replay_into(scenarios, serial_frames, serial_legs, cross_config(1)));
+  ASSERT_TRUE(prepared->replay_into(scenarios, parallel_frames, parallel_legs, cross_config(4)));
+  ASSERT_TRUE(prepared->replay_into(scenarios, aggregate_only_frames, std::span<VarLegFrame>{},
+                                    cross_config(4)));
+
+  for (std::size_t i = 0; i < scenarios.size(); ++i) {
+    expect_bit_identical(parallel_frames[i], serial_frames[i]);
+    expect_economically_equal(aggregate_only_frames[i], serial_frames[i]);
+  }
+  for (std::size_t i = 0; i < serial_legs.size(); ++i) {
+    expect_bit_identical(parallel_legs[i], serial_legs[i]);
+  }
+}
+
+TEST(Var, CrossSectionalAggregateMatchesRetainedLegOutput) {
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2));
+  ASSERT_TRUE(reference.valid());
+
+  PricedSurface base_source = make_surface(uid, 97.0, timestamp(2026, 1, 5), 1.15);
+  PricedSurface shifted_source = make_surface(uid, 103.0, timestamp(2026, 1, 6), 0.90);
+  auto base_fast = std::move(base_source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  auto shifted_fast =
+      std::move(shifted_source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(base_fast && shifted_fast);
+  const std::array<const PricedSurface *, 1> base_pointers{&*base_fast};
+  const std::array<const PricedSurface *, 1> shifted_pointers{&*shifted_fast};
+  auto base_set = SurfaceSet::create(base_pointers);
+  auto shifted_set = SurfaceSet::create(shifted_pointers);
+  ASSERT_TRUE(base_set && shifted_set);
+
+  const std::array<double, 8> targets{0.10, 0.20, 0.30, 0.40, 0.55, 0.65, 0.75, 0.85};
+  std::vector<VarPosition> positions;
+  positions.reserve(targets.size());
+  for (std::size_t index = 0u; index < targets.size(); ++index) {
+    positions.push_back(
+        option("SPY", index % 2u == 0u ? Side::Call : Side::Put, 1.0, targets[index]));
+  }
+  VarEvaluationConfig config = evaluation_config(1);
+  config.projection_solve_policy = OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+  auto prepared = PreparedVarPortfolio::create(positions, reference.set(), config);
+  ASSERT_TRUE(prepared) << (prepared ? std::string{} : prepared.error().to_string());
+
+  const std::vector<VarScenario> scenarios = {
+      {base_fast->pricing().now_ts_ns, &*base_set, shifted_fast->pricing().now_ts_ns,
+       &*shifted_set},
+  };
+  std::vector<VarScenarioFrame> retained_frames(1u);
+  std::vector<VarScenarioFrame> aggregate_frames(1u);
+  std::vector<VarLegFrame> legs(positions.size());
+  ASSERT_TRUE(prepared->replay_into(scenarios, retained_frames, legs, config));
+  ASSERT_TRUE(prepared->replay_into(scenarios, aggregate_frames, {}, config));
+  EXPECT_EQ(aggregate_frames[0].status, retained_frames[0].status);
+  EXPECT_EQ(aggregate_frames[0].n_ok, retained_frames[0].n_ok);
+  EXPECT_EQ(aggregate_frames[0].n_failed, retained_frames[0].n_failed);
+  const double value_scale = std::max(
+      {1.0, std::fabs(retained_frames[0].base_value), std::fabs(retained_frames[0].shifted_value)});
+  EXPECT_LE(std::fabs(aggregate_frames[0].base_value - retained_frames[0].base_value),
+            1.0e-7 * value_scale);
+  EXPECT_LE(std::fabs(aggregate_frames[0].shifted_value - retained_frames[0].shifted_value),
+            1.0e-7 * value_scale);
+  EXPECT_LE(std::fabs(aggregate_frames[0].pnl - retained_frames[0].pnl), 1.0e-7 * value_scale);
+  EXPECT_LE(std::fabs(aggregate_frames[0].dollar_delta - retained_frames[0].dollar_delta),
+            1.0e-9 * std::max(1.0, std::fabs(retained_frames[0].dollar_delta)));
+  ASSERT_EQ(retained_frames[0].status, VarScenarioStatus::Ok);
+  for (std::size_t index = 0u; index < legs.size(); ++index) {
+    ASSERT_EQ(legs[index].status, VarLegStatus::Ok);
+    EXPECT_NEAR(std::fabs(legs[index].base_delta), targets[index], config.delta_tolerance);
+  }
+}
+
+TEST(Var, CrossSectionalRetainedLegsAreColdConfirmedPerLeg) {
+  const std::uint32_t uid = uid_for_symbol("SPY");
+  const OneSurfaceSnapshot reference(uid, 100.0, timestamp(2026, 1, 2));
+  ASSERT_TRUE(reference.valid());
+
+  PricedSurface base_source = make_surface(uid, 97.0, timestamp(2026, 1, 5), 1.15);
+  PricedSurface shifted_source = make_surface(uid, 103.0, timestamp(2026, 1, 6), 0.90);
+  auto base_fast = std::move(base_source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  auto shifted_fast =
+      std::move(shifted_source).with_query_pricing(QueryPricingTier::RepresentativeFast);
+  ASSERT_TRUE(base_fast && shifted_fast);
+  const std::array<const PricedSurface *, 1> base_pointers{&*base_fast};
+  const std::array<const PricedSurface *, 1> shifted_pointers{&*shifted_fast};
+  auto base_set = SurfaceSet::create(base_pointers);
+  auto shifted_set = SurfaceSet::create(shifted_pointers);
+  ASSERT_TRUE(base_set && shifted_set);
+
+  const std::array<double, 8> targets{0.10, 0.20, 0.30, 0.40, 0.55, 0.65, 0.75, 0.85};
+  std::vector<Side> sides;
+  std::vector<VarPosition> positions;
+  positions.reserve(targets.size());
+  sides.reserve(targets.size());
+  for (std::size_t index = 0u; index < targets.size(); ++index) {
+    const Side side = index % 2u == 0u ? Side::Call : Side::Put;
+    sides.push_back(side);
+    positions.push_back(option("SPY", side, 1.0, targets[index]));
+  }
+  VarEvaluationConfig config = evaluation_config(1);
+  config.projection_solve_policy = OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+  auto prepared = PreparedVarPortfolio::create(positions, reference.set(), config);
+  ASSERT_TRUE(prepared) << (prepared ? std::string{} : prepared.error().to_string());
+
+  const std::vector<VarScenario> scenarios = {
+      {base_fast->pricing().now_ts_ns, &*base_set, shifted_fast->pricing().now_ts_ns,
+       &*shifted_set},
+  };
+  std::vector<VarScenarioFrame> retained_frames(1u);
+  std::vector<VarLegFrame> legs(positions.size());
+  ASSERT_TRUE(prepared->replay_into(scenarios, retained_frames, legs, config));
+  ASSERT_EQ(retained_frames[0].status, VarScenarioStatus::Ok);
+
+  for (std::size_t index = 0u; index < legs.size(); ++index) {
+    ASSERT_EQ(legs[index].status, VarLegStatus::Ok);
+    const auto cold_delta = base_fast->delta(legs[index].strike, legs[index].base_time_to_expiry,
+                                             sides[index], QueryExecution::ColdReference);
+    ASSERT_TRUE(cold_delta) << (cold_delta ? std::string{} : cold_delta.error().to_string());
+    EXPECT_LE(std::fabs(std::fabs(*cold_delta) - targets[index]), config.delta_tolerance);
+  }
+}
+
+// Not brief-named; added to close a coverage gap found during self-review.
+// The three brief tests above only exercise the CrossSectionalColdConfirm
+// retained-leg route on happy paths -- none reaches evaluate_scenario's new
+// group-level market/timestamp guard or its downgrade-to-scalar fallback.
+// Without that guard running before evaluate_option_leg_resolved, a missing
+// surface would dereference a null SurfaceRef instead of reporting
+// SurfaceUnavailable; this pins the guard/fallback wiring itself, mirroring
+// CrossSectionalRowFailureFallsBackToScalarLegStatuses's aggregate-route
+// coverage for the retained-leg route.
+TEST(Var, CrossSectionalRetainedLegFallbackHandlesMarketUnavailable) {
+  const std::uint32_t spy_uid = uid_for_symbol("SPY");
+  const std::uint32_t aapl_uid = uid_for_symbol("AAPL");
+  const OneSurfaceSnapshot reference(spy_uid, 100.0, timestamp(2026, 1, 2));
+  ASSERT_TRUE(reference.valid());
+
+  const std::vector<VarPosition> positions = {option("SPY", Side::Call, 1.0)};
+  VarEvaluationConfig cross_config = evaluation_config(1);
+  cross_config.projection_solve_policy = OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
+  auto prepared = PreparedVarPortfolio::create(positions, reference.set(), cross_config);
+  ASSERT_TRUE(prepared) << (prepared ? std::string{} : prepared.error().to_string());
+
+  const OneSurfaceSnapshot wrong_base(aapl_uid, 190.0, timestamp(2026, 1, 5));
+  const OneSurfaceSnapshot wrong_shifted(aapl_uid, 191.0, timestamp(2026, 1, 6));
+  ASSERT_TRUE(wrong_base.valid() && wrong_shifted.valid());
+  const std::vector<VarScenario> scenarios = {
+      {wrong_base.surface().pricing().now_ts_ns, &wrong_base.set(),
+       wrong_shifted.surface().pricing().now_ts_ns, &wrong_shifted.set()}};
+  std::vector<VarScenarioFrame> frames(1u);
+  std::vector<VarLegFrame> legs(1u);
+  ASSERT_TRUE(prepared->replay_into(scenarios, frames, legs, cross_config));
+  EXPECT_EQ(frames[0].status, VarScenarioStatus::MarketUnavailable);
+  EXPECT_EQ(frames[0].n_ok, 0u);
+  EXPECT_EQ(frames[0].n_failed, 1u);
+  EXPECT_EQ(legs[0].status, VarLegStatus::SurfaceUnavailable);
+}
+
 TEST(Var, HistoricalStatisticsUseNearestRankLossAndInclusiveExpectedShortfall) {
   const std::array<double, 5> pnl{10.0, 5.0, 0.0, -5.0, -10.0};
   std::vector<VarScenarioFrame> frames(pnl.size());
