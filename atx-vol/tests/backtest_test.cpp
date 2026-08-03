@@ -49,6 +49,7 @@
 #include "atx/vol/strategy.hpp"         // IStrategy
 #include "atx/vol/surface_archive.hpp"  // write_surface_archive_v2_file, SurfaceArchiveItem
 #include "atx/vol/surface_parity.hpp"   // SliceContext
+#include "atx/vol/tools/tearsheet.hpp"  // write_backtest_tsv (mark-domain column gate)
 #include "atx/vol/types.hpp"            // Side, Result, Status
 #include "atx/vol/vol_curve.hpp"        // CurveSurface, EssviCurve
 #include "support/isa_golden_tol.hpp"   // golden_isa_accum_tol (per-ISA FMA band)
@@ -82,14 +83,22 @@ constexpr std::uint32_t kUid = 7;
 // A synthetic eSSVI PricedSurface: flat forward `fwd`, genuine American premium
 // (q_eff = 0.02), slices spanning T in [0.05, 1.0]. `vol_bump` shifts the whole
 // term's ATM variance. Mirrors pnl_greeks_consistency's make_essvi.
+//
+// `n_slices` TRUNCATES the term structure to its first N pillars, which is how the
+// MarkDomain gates build a date whose `tenor_domain()` cannot cover a long-dated
+// lot. The default (7) is the full curve every other test has always built.
 [[nodiscard]] PricedSurface make_surface(std::uint32_t uid, double S, double fwd,
                                          std::int64_t now_ts, double vol_bump = 0.0,
-                                         AmericanMethod method = AmericanMethod::AndersenLake) {
+                                         AmericanMethod method = AmericanMethod::AndersenLake,
+                                         std::size_t n_slices = 7u) {
   CurveSurface cs;
   std::vector<SliceContext> ctx;
   const double Ts[] = {0.05, 0.10, 0.20, 0.35, 0.50, 0.75, 1.00};
   int i = 0;
   for (const double T : Ts) {
+    if (static_cast<std::size_t>(i) >= n_slices) {
+      break;
+    }
     const double coherent_fwd = fwd * std::exp((kR - 0.02) * T);
     EssviParams e{};
     e.theta = 0.04 + 0.005 * static_cast<double>(i) + vol_bump;
@@ -190,6 +199,93 @@ make_manifest(const std::vector<std::pair<std::string, std::string>> &date_paths
   }
   return make_manifest(dp, symbol);
 }
+
+// ── MarkDomain fixtures (mark-domain robustness, task 2) ────────────────────
+
+// An N-date corpus identical to `make_evolving_corpus` EXCEPT that the surface on
+// date `truncated_date` carries only its first `truncated_slices` fitted pillars.
+// A lot whose residual maturity sits past that date's last pillar is then served
+// by `CurveSurface`'s silent flat-total-variance long end — the exact fiction
+// `MarkDomainPolicy` governs — while every other date prices it normally.
+//
+// `without_truncated` is the SAME corpus with that date simply absent: the
+// four-step control clock a CarryLastMark run must reproduce, since carrying
+// across a date and skipping it are the same economics.
+struct TruncatedCorpus {
+  CorpusManifest manifest;
+  CorpusManifest without_truncated;
+};
+
+[[nodiscard]] TruncatedCorpus make_truncated_corpus(const fs::path &dir, const std::string &symbol,
+                                                    int n_dates, int truncated_date,
+                                                    std::size_t truncated_slices) {
+  std::vector<std::pair<std::string, std::string>> all;
+  std::vector<std::pair<std::string, std::string>> without;
+  for (int d = 0; d < n_dates; ++d) {
+    const std::int64_t now = kBaseNow + static_cast<std::int64_t>(d) * kDayNs;
+    const double S = 100.0 * (1.0 + 0.004 * static_cast<double>(d));
+    const double vbump = 0.001 * static_cast<double>(d);
+    const bool truncated = (d == truncated_date);
+    const PricedSurface s = make_surface(kUid, S, S, now, vbump, AmericanMethod::AndersenLake,
+                                         truncated ? truncated_slices : 7u);
+    char buf[16];
+    std::snprintf(buf, sizeof buf, "2026-08-%02d", d + 1);
+    const std::string date = buf;
+    const std::string path = write_one(dir, date, symbol, s);
+    all.emplace_back(date, path);
+    if (!truncated) {
+      without.emplace_back(date, path);
+    }
+  }
+  return TruncatedCorpus{make_manifest(all, symbol), make_manifest(without, symbol)};
+}
+
+// Opens a two-leg strangle on `kUid` at step 0 — entry price == the live model
+// mark, so the entry books no fill slippage and `reconcile_nav` starts closed —
+// and then never touches the book again. The lots outlive the clock, so nothing
+// settles and the whole run is pure mark-to-market.
+class HoldStrangleStrategy final : public IStrategy {
+public:
+  explicit HoldStrangleStrategy(std::int64_t expiry) noexcept : expiry_{expiry} {}
+
+  Status on_step(const MarketSnapshot &base, std::size_t step_index, PortfolioState &book,
+                 std::uint64_t &next_lot_id) override {
+    if (step_index != 0u) {
+      return atx::core::Ok();
+    }
+    const SurfaceRef s = base.find(kUid);
+    if (s == nullptr) {
+      return atx::core::Err(atx::core::ErrorCode::NotFound, "HoldStrangleStrategy: no surface");
+    }
+    const double T =
+        (static_cast<double>(expiry_) - static_cast<double>(base.ts_ns())) / kNsPerYear;
+    struct Leg {
+      double K;
+      Side side;
+      double qty;
+    };
+    const Leg legs[] = {{95.0, Side::Call, +5.0}, {105.0, Side::Put, -3.0}};
+    for (const Leg &leg : legs) {
+      const auto fv = s->fair_value(leg.K, T, leg.side);
+      if (!fv) {
+        return atx::core::Err(fv.error());
+      }
+      Lot lot;
+      lot.id = next_lot_id++;
+      lot.contract = OptionContract{kUid, leg.K, T, leg.side};
+      lot.qty = leg.qty;
+      lot.multiplier = 100.0;
+      lot.expiry_ts_ns = expiry_;
+      lot.cohort = 0u;
+      lot.entry_price = *fv;
+      book.lots.push_back(lot);
+    }
+    return atx::core::Ok();
+  }
+
+private:
+  std::int64_t expiry_{0};
+};
 
 // A two-lot book (long call, short put) that survives past `expiry`.
 [[nodiscard]] PortfolioState survivor_book(std::int64_t expiry) {
@@ -484,6 +580,10 @@ TEST(RunConfigContract, DesignatedInitBindsByName) {
   EXPECT_FALSE(defaults.cancel.stop_requested());
   EXPECT_EQ(defaults.unpriced, UnpricedLotPolicy::Error);
   EXPECT_EQ(defaults.surface_provenance_policy, SurfaceProvenancePolicy::Compatibility);
+  // The 17->18 field insertion: the default must still be the LEGACY silent
+  // extrapolation, or a default-constructed RunConfig would change every run's
+  // numbers rather than only reporting on them.
+  EXPECT_EQ(defaults.mark_domain, MarkDomainPolicy::Extrapolate);
   EXPECT_EQ(defaults.snapshot_cache, nullptr);
   EXPECT_TRUE(defaults.prefetch_snapshots);
   EXPECT_TRUE(defaults.settlement_mark_memo);
@@ -3531,4 +3631,223 @@ TEST(UnpricedTolerance, ErrorPolicyPathIsBitIdenticalOnCleanData) {
   EXPECT_NE(strict.pnl_settlement[2], 0.0);
   expect_result_bit_identical(strict, run(UnpricedLotPolicy::ExcludeAndReport, 1u));
   expect_result_bit_identical(strict, run(UnpricedLotPolicy::Error, 4u));
+}
+
+// ── Mark-domain policy (MarkDomainPolicy) ───────────────────────────────────
+//
+// A `CurveSurface` query past the last fitted pillar is SERVED, silently, by the
+// flat-total-variance long end. A long-dated book replayed across a session whose
+// long slice is missing therefore keeps producing plausible marks that are pure
+// model fiction. These gates cover the three dispositions.
+//
+// The fixture is a 5-date corpus whose MIDDLE date (index 2, "2026-08-03") is
+// truncated to its first four pillars (T <= 0.35) while the book's residual
+// maturity is ~0.70y, so exactly that one date must extrapolate.
+
+namespace {
+constexpr int kMarkDomainDates = 5;
+constexpr int kMarkDomainTruncatedDate = 2;
+constexpr std::size_t kMarkDomainTruncatedSlices = 4u; // pillars up to T = 0.35
+// ~0.70y residual: inside the full curve's [0.05, 1.0], outside the truncated
+// date's [0.05, 0.35], and far enough out that nothing settles in-window.
+constexpr std::int64_t kMarkDomainExpiryDays = 256;
+} // namespace
+
+// Extrapolate is the DEFAULT and it changes nothing: setting it explicitly
+// reproduces a default run bit-for-bit. What it adds is visibility — the run now
+// reports which rows touched an out-of-domain mark instead of hiding it.
+TEST(MarkDomain, ExtrapolateCountsButMatchesLegacy) {
+  const fs::path dir = fresh_dir("markdomain-extrapolate");
+  const TruncatedCorpus corpus = make_truncated_corpus(
+      dir, "SPY", kMarkDomainDates, kMarkDomainTruncatedDate, kMarkDomainTruncatedSlices);
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + kMarkDomainExpiryDays * kDayNs;
+
+  RunConfig defaults;
+  EXPECT_EQ(defaults.mark_domain, MarkDomainPolicy::Extrapolate);
+  auto legacy = run_backtest(*clock, survivor_book(expiry), defaults);
+  ASSERT_TRUE(legacy.has_value()) << legacy.error().to_string();
+
+  RunConfig named;
+  named.mark_domain = MarkDomainPolicy::Extrapolate;
+  auto counted = run_backtest(*clock, survivor_book(expiry), named);
+  ASSERT_TRUE(counted.has_value()) << counted.error().to_string();
+  expect_result_bit_identical(*legacy, *counted);
+
+  // The counter columns: one count per LOT whose base OR target query left the
+  // fitted domain. A one-session hole is seen twice — once as the step whose
+  // TARGET could not serve the maturity (row 2) and once as the step whose BASE
+  // could not (row 3) — which is the honest reading of "this step's P&L touched
+  // an extrapolated mark".
+  ASSERT_EQ(counted->size(), static_cast<std::size_t>(kMarkDomainDates));
+  ASSERT_EQ(counted->n_extrapolated_marks.size(), counted->size());
+  ASSERT_EQ(counted->n_carried_marks.size(), counted->size());
+  const std::vector<double> expected_extrapolated = {0.0, 0.0, 2.0, 2.0, 0.0};
+  for (std::size_t i = 0; i < counted->size(); ++i) {
+    EXPECT_DOUBLE_EQ(counted->n_extrapolated_marks[i], expected_extrapolated[i]) << "row " << i;
+    EXPECT_DOUBLE_EQ(counted->n_carried_marks[i], 0.0) << "row " << i; // never carried here
+  }
+
+  // Not a counter that always fires: the same book over the UNtruncated corpus of
+  // the same shape reports zero on every row.
+  const fs::path clean_dir = fresh_dir("markdomain-extrapolate-clean");
+  const CorpusManifest clean = make_evolving_corpus(clean_dir, "SPY", kMarkDomainDates);
+  auto clean_clock = Clock::from_manifest(clean);
+  ASSERT_TRUE(clean_clock.has_value()) << clean_clock.error().to_string();
+  auto clean_run = run_backtest(*clean_clock, survivor_book(expiry), RunConfig{});
+  ASSERT_TRUE(clean_run.has_value()) << clean_run.error().to_string();
+  for (std::size_t i = 0; i < clean_run->size(); ++i) {
+    EXPECT_DOUBLE_EQ(clean_run->n_extrapolated_marks[i], 0.0) << "row " << i;
+  }
+
+  // Both TSV emitters (they share one series writer) append the pair as the
+  // RIGHTMOST columns — after the frozen 25-column block, which is untouched.
+  const std::string tsv_path = (dir / "series.tsv").string();
+  ASSERT_TRUE(write_backtest_tsv(*counted, tsv_path).has_value());
+  std::ifstream in(tsv_path, std::ios::binary);
+  ASSERT_TRUE(in.good());
+  std::string header;
+  ASSERT_TRUE(static_cast<bool>(std::getline(in, header)));
+  EXPECT_NE(header.find("\tn_unpriced_greeks\tn_extrapolated_marks\tn_carried_marks"),
+            std::string::npos)
+      << header;
+  std::string row;
+  for (std::size_t i = 0; i <= kMarkDomainTruncatedDate; ++i) {
+    ASSERT_TRUE(static_cast<bool>(std::getline(in, row)));
+  }
+  EXPECT_NE(row.find("\t2\t0"), std::string::npos) << row; // the truncated row's counters
+}
+
+// CarryLastMark holds the lot's last in-domain mark across the truncated session
+// (zero P&L, flat NAV, zero attribution — the lots leave the pricer batch
+// entirely) and books the WHOLE accumulated move on the first session that can
+// serve them again. The economic claim: carrying across a date and DELETING that
+// date from the clock are the same run, so the final NAV must match a control
+// clock built over the same snapshots with the truncated date absent. Throughout,
+// `reconcile_nav` is on — NAV, the book Greeks and the liquidation value all read
+// the carried marks, so it must never trip.
+TEST(MarkDomain, CarryHoldsAndCatchesUp) {
+  const fs::path dir = fresh_dir("markdomain-carry");
+  const TruncatedCorpus corpus = make_truncated_corpus(
+      dir, "SPY", kMarkDomainDates, kMarkDomainTruncatedDate, kMarkDomainTruncatedSlices);
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  auto control_clock = Clock::from_manifest(corpus.without_truncated);
+  ASSERT_TRUE(control_clock.has_value()) << control_clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + kMarkDomainExpiryDays * kDayNs;
+
+  RunConfig cfg;
+  cfg.mark_domain = MarkDomainPolicy::CarryLastMark;
+  cfg.reconcile_nav = true;
+  HoldStrangleStrategy strat{expiry};
+  auto carried = run_backtest(*clock, strat, cfg);
+  ASSERT_TRUE(carried.has_value()) << carried.error().to_string();
+  ASSERT_EQ(carried->size(), static_cast<std::size_t>(kMarkDomainDates));
+
+  // The truncated row: both lots frozen, no P&L on ANY axis, NAV flat.
+  constexpr std::size_t kFrozen = 2;
+  EXPECT_DOUBLE_EQ(carried->n_carried_marks[kFrozen], 2.0);
+  EXPECT_DOUBLE_EQ(carried->pnl_total[kFrozen], 0.0);
+  EXPECT_DOUBLE_EQ(carried->pnl_delta[kFrozen], 0.0);
+  EXPECT_DOUBLE_EQ(carried->pnl_gamma[kFrozen], 0.0);
+  EXPECT_DOUBLE_EQ(carried->pnl_vega[kFrozen], 0.0);
+  EXPECT_DOUBLE_EQ(carried->pnl_vanna[kFrozen], 0.0);
+  EXPECT_DOUBLE_EQ(carried->pnl_volga[kFrozen], 0.0);
+  EXPECT_DOUBLE_EQ(carried->pnl_theta[kFrozen], 0.0);
+  EXPECT_DOUBLE_EQ(carried->pnl_rho[kFrozen], 0.0);
+  EXPECT_DOUBLE_EQ(carried->pnl_charm[kFrozen], 0.0);
+  EXPECT_DOUBLE_EQ(carried->pnl_unexplained[kFrozen], 0.0);
+  EXPECT_DOUBLE_EQ(carried->nav[kFrozen], carried->nav[kFrozen - 1]);
+  // The row's book Greeks are the carried ones, not the extrapolated ones.
+  EXPECT_DOUBLE_EQ(carried->gross_vega[kFrozen], carried->gross_vega[kFrozen - 1]);
+  EXPECT_DOUBLE_EQ(carried->gross_delta[kFrozen], carried->gross_delta[kFrozen - 1]);
+  // The catch-up row books the whole gap, and it lands in the residual.
+  EXPECT_NE(carried->pnl_total[kFrozen + 1], 0.0);
+  EXPECT_DOUBLE_EQ(carried->pnl_unexplained[kFrozen + 1], carried->pnl_total[kFrozen + 1]);
+  // Nothing is carried once the surface is back.
+  EXPECT_DOUBLE_EQ(carried->n_carried_marks[kFrozen + 1], 0.0);
+  // The counter columns are policy-independent measurements.
+  EXPECT_DOUBLE_EQ(carried->n_extrapolated_marks[kFrozen], 2.0);
+  EXPECT_DOUBLE_EQ(carried->n_extrapolated_marks[kFrozen + 1], 2.0);
+
+  // reconcile_nav is on, so the run only returned Ok because every row's
+  // independently recomputed liquidation value agreed with NAV. Assert the
+  // published series too, so a future loosening of the tolerance cannot hide it.
+  ASSERT_EQ(carried->nav_liquidation.size(), carried->size());
+  for (std::size_t i = 0; i < carried->size(); ++i) {
+    EXPECT_NEAR(carried->nav_liquidation[i], carried->nav[i], 1.0e-9)
+        << "row " << i << " (" << carried->date[i] << ")";
+  }
+
+  // The control: the same corpus with the truncated date simply absent.
+  RunConfig control_cfg;
+  control_cfg.reconcile_nav = true;
+  HoldStrangleStrategy control_strat{expiry};
+  auto control = run_backtest(*control_clock, control_strat, control_cfg);
+  ASSERT_TRUE(control.has_value()) << control.error().to_string();
+  ASSERT_EQ(control->size(), static_cast<std::size_t>(kMarkDomainDates - 1));
+  EXPECT_NEAR(carried->nav.back(), control->nav.back(),
+              1.0e-6 * (std::fabs(control->nav.back()) + 1.0));
+
+  // And it is a real difference: the DEFAULT policy over the same clock marks the
+  // truncated session by extrapolation and lands somewhere else.
+  HoldStrangleStrategy naive_strat{expiry};
+  auto naive = run_backtest(*clock, naive_strat, RunConfig{});
+  ASSERT_TRUE(naive.has_value()) << naive.error().to_string();
+  EXPECT_NE(naive->pnl_total[kFrozen], 0.0)
+      << "fixture did not actually exercise the extrapolated mark";
+}
+
+// Error refuses to produce the number at all, naming the step date, the offending
+// lot, and the fitted domain it fell out of.
+TEST(MarkDomain, ErrorAborts) {
+  const fs::path dir = fresh_dir("markdomain-error");
+  const TruncatedCorpus corpus = make_truncated_corpus(
+      dir, "SPY", kMarkDomainDates, kMarkDomainTruncatedDate, kMarkDomainTruncatedSlices);
+  auto clock = Clock::from_manifest(corpus.manifest);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + kMarkDomainExpiryDays * kDayNs;
+
+  RunConfig cfg;
+  cfg.mark_domain = MarkDomainPolicy::Error;
+  auto r = run_backtest(*clock, survivor_book(expiry), cfg);
+  ASSERT_FALSE(r.has_value()) << "an out-of-domain mark reached a P&L number";
+  const std::string msg = r.error().to_string();
+  EXPECT_NE(msg.find("2026-08-03"), std::string::npos) << msg; // the truncated date
+  EXPECT_NE(msg.find("uid=7"), std::string::npos) << msg;
+  EXPECT_NE(msg.find("max_T=0.35"), std::string::npos) << msg;
+
+  // The same policy over a corpus with no truncation runs clean.
+  const fs::path clean_dir = fresh_dir("markdomain-error-clean");
+  const CorpusManifest clean = make_evolving_corpus(clean_dir, "SPY", kMarkDomainDates);
+  auto clean_clock = Clock::from_manifest(clean);
+  ASSERT_TRUE(clean_clock.has_value()) << clean_clock.error().to_string();
+  auto ok = run_backtest(*clean_clock, survivor_book(expiry), cfg);
+  EXPECT_TRUE(ok.has_value()) << (ok.has_value() ? std::string{} : ok.error().to_string());
+}
+
+// CarryLastMark needs a per-row reprice to resolve the carry, so a record stride
+// is refused up front rather than silently freezing a stale valuation, and it
+// cannot cross a checkpoint (there is no slot for the carried marks).
+TEST(MarkDomain, CarryRejectsUnsupportedRunShapes) {
+  const fs::path dir = fresh_dir("markdomain-carry-shape");
+  const CorpusManifest man = make_evolving_corpus(dir, "SPY", 3);
+  auto clock = Clock::from_manifest(man);
+  ASSERT_TRUE(clock.has_value()) << clock.error().to_string();
+  const std::int64_t expiry = kBaseNow + kMarkDomainExpiryDays * kDayNs;
+
+  RunConfig strided;
+  strided.mark_domain = MarkDomainPolicy::CarryLastMark;
+  strided.record_every_n = 2;
+  auto r = run_backtest(*clock, survivor_book(expiry), strided);
+  ASSERT_FALSE(r.has_value());
+  EXPECT_EQ(r.error().code(), atx::core::ErrorCode::InvalidArgument);
+
+  RunConfig carry;
+  carry.mark_domain = MarkDomainPolicy::CarryLastMark;
+  HoldStrangleStrategy strat{expiry};
+  auto inc = run_backtest_incremental(*clock, strat, carry, nullptr);
+  ASSERT_FALSE(inc.has_value());
+  EXPECT_EQ(inc.error().code(), atx::core::ErrorCode::NotImplemented);
 }

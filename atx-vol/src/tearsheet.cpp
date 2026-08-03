@@ -8,6 +8,7 @@
 #include <ios>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -323,6 +324,22 @@ void append_backtest_series_tsv(std::string& out, const BacktestResult& r) {
   // below; per-signal series are appended after the fixed columns.
   const auto dbl_cols = backtest_series_columns();
 
+  // Mark-domain accounting (MarkDomainPolicy), appended AFTER the frozen block.
+  // Deliberately not in `backtest_series_columns` — that table is pinned to the
+  // RunArchive registry whose fold is `ra_schema_hash()`, and these two columns
+  // are report-only (the `gross_vega_abs` / swap-lane precedent). They are
+  // empty-or-row-parallel, so a hand-built result or a decoded archive that never
+  // carried them emits a stable 0.0 rather than changing the column SET.
+  struct ExtraColumn {
+    std::string_view name;
+    const std::vector<double>* col;
+  };
+  const ExtraColumn extra_cols[] = {
+      {"n_extrapolated_marks", &r.n_extrapolated_marks},
+      {"n_carried_marks", &r.n_carried_marks},
+  };
+  const std::size_t rows = r.size();
+
   out.reserve(out.size() + r.size() * 640 + 256);
 
   char buf[64];
@@ -337,6 +354,10 @@ void append_backtest_series_tsv(std::string& out, const BacktestResult& r) {
     out += '\t';
     out += col.name;
   }
+  for (const auto& col : extra_cols) {
+    out += '\t';
+    out += col.name;
+  }
   for (const auto& sig : r.signals) {
     out += '\t';
     out += sig.first;
@@ -344,7 +365,7 @@ void append_backtest_series_tsv(std::string& out, const BacktestResult& r) {
   out += '\n';
 
   // ── Data rows ──
-  for (std::size_t i = 0; i < r.size(); ++i) {
+  for (std::size_t i = 0; i < rows; ++i) {
     out += r.date[i];
     out += '\t';
     const int len = std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(r.ts_ns[i]));
@@ -352,6 +373,10 @@ void append_backtest_series_tsv(std::string& out, const BacktestResult& r) {
     for (const auto& col : dbl_cols) {
       out += '\t';
       put_double((r.*col.member)[i]);
+    }
+    for (const auto& col : extra_cols) {
+      out += '\t';
+      put_double(col.col->size() == rows ? (*col.col)[i] : 0.0);
     }
     for (const auto& sig : r.signals) {
       out += '\t';
