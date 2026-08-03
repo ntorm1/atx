@@ -47,7 +47,8 @@ constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
          config.delta_tolerance <= 1.0e-3 && valid_query_execution(config.projection_execution) &&
          valid_query_execution(config.valuation_execution) &&
          (config.projection_solve_policy == OptionDeltaSolvePolicy::Direct ||
-          config.projection_solve_policy == OptionDeltaSolvePolicy::FastScreenColdConfirm);
+          config.projection_solve_policy == OptionDeltaSolvePolicy::FastScreenColdConfirm ||
+          config.projection_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm);
 }
 
 [[nodiscard]] std::uint64_t nonzero_hash(const void *data, std::size_t size) noexcept {
@@ -724,6 +725,14 @@ struct VarBatchScratch {
   std::vector<Status> base_status{};
   std::vector<Status> shifted_status{};
   std::vector<VarLegFrame> fallback_frames{};
+  // CrossSectionalColdConfirm-only columns (unused, but resized once, when
+  // the policy is Direct/FastScreenColdConfirm).
+  std::vector<double> solve_t{};
+  std::vector<double> solve_target{};
+  std::vector<std::int64_t> solve_expiry{};
+  std::vector<std::uint16_t> solve_evaluations{};
+  std::vector<Status> solve_status{};
+  AmericanDeltaBatchScratch delta_scratch{};
 };
 
 template <class PreparedState>
@@ -744,10 +753,103 @@ template <class PreparedState>
   scratch.base_status.resize(count);
   scratch.shifted_status.resize(count);
   scratch.fallback_frames.resize(impl.legs.size());
+  scratch.solve_t.resize(count);
+  scratch.solve_target.resize(count);
+  scratch.solve_expiry.resize(count);
+  scratch.solve_evaluations.resize(count);
+  scratch.solve_status.resize(count);
   for (std::size_t slot = 0u; slot < count; ++slot) {
     scratch.side[slot] = impl.legs[impl.grouped_option_indices[slot]].side;
   }
   return scratch;
+}
+
+// Fill scratch.strike/base_time/base_delta/fingerprint for every leader slot
+// of `group` via ONE solve_american_delta_batch call on `base` (cold, per the
+// solver's own contract); scratch.solve_expiry carries each slot's resolved
+// absolute expiry back to the caller, which computes shifted_time itself
+// (mirrors the scalar branch below, where resolve_var_contract's caller does
+// the same). Returns false when any row fails to resolve/cold-confirm --
+// caller preserves the existing fallback() semantics (the whole scenario
+// re-runs on the scalar path; partial group results are never salvaged) --
+// true when every row in the group is resolved.
+template <class PreparedState>
+[[nodiscard]] bool resolve_group_contracts_cross_sectional(
+    const PreparedState &impl, const VarOptionGroup &group, const SurfaceRef &base,
+    const VarScenario &scenario, const VarEvaluationConfig &config, VarBatchScratch &scratch) {
+  const std::size_t count = group.end - group.begin;
+  for (std::size_t slot = group.begin; slot < group.end; ++slot) {
+    const NormalizedVarLeg &leg = impl.legs[impl.grouped_option_indices[slot]];
+    std::int64_t expiry = 0;
+    if (leg.expiry_offset_ns > 0 &&
+        leg.expiry_offset_ns <= std::numeric_limits<std::int64_t>::max() - scenario.base_ts_ns) {
+      expiry = scenario.base_ts_ns + leg.expiry_offset_ns;
+    } else {
+      const Result<std::int64_t> resolved_expiry =
+          resolve_projected_expiry(scenario.base_ts_ns, leg.maturity);
+      if (!resolved_expiry) {
+        return false;
+      }
+      expiry = *resolved_expiry;
+    }
+    const double t = static_cast<double>(expiry - scenario.base_ts_ns) / kNsPerYear;
+    if (!finite_positive(t)) {
+      return false;
+    }
+    scratch.solve_t[slot] = t;
+    scratch.solve_target[slot] = leg.target_abs_delta;
+    scratch.solve_expiry[slot] = expiry;
+  }
+
+  const auto doubles = [begin = group.begin, count](std::vector<double> &values) {
+    return std::span<double>{values}.subspan(begin, count);
+  };
+  const auto const_doubles = [begin = group.begin, count](const std::vector<double> &values) {
+    return std::span<const double>{values}.subspan(begin, count);
+  };
+  const std::span<const Side> sides =
+      std::span<const Side>{scratch.side}.subspan(group.begin, count);
+  const std::span<std::uint16_t> evaluations =
+      std::span<std::uint16_t>{scratch.solve_evaluations}.subspan(group.begin, count);
+  const std::span<Status> row_status =
+      std::span<Status>{scratch.solve_status}.subspan(group.begin, count);
+
+  const Status solved = solve_american_delta_batch(
+      base, const_doubles(scratch.solve_t), sides, const_doubles(scratch.solve_target),
+      config.delta_tolerance, scratch.delta_scratch, doubles(scratch.strike),
+      doubles(scratch.base_delta), evaluations, row_status);
+  if (!solved) {
+    return false;
+  }
+
+  for (std::size_t slot = group.begin; slot < group.end; ++slot) {
+    if (!row_status[slot - group.begin]) {
+      return false;
+    }
+    const NormalizedVarLeg &leg = impl.legs[impl.grouped_option_indices[slot]];
+    // Defense in depth: solve_american_delta_batch already cold-confirms
+    // every accepted row to `config.delta_tolerance` internally (batch
+    // passes accept at tolerance/2 against the laned delta; the scalar
+    // fallback tail re-solves any unconverged row at the full tolerance
+    // against the SAME scalar cold oracle CORRECTNESS GATE 1 requires -- see
+    // AmericanDeltaBatchScratch's documented contract in
+    // contract_projection.hpp). Re-checking here is cheap and guards the
+    // gate even if that contract ever regresses.
+    if (!std::isfinite(scratch.base_delta[slot]) ||
+        std::fabs(std::fabs(scratch.base_delta[slot]) - leg.target_abs_delta) >
+            config.delta_tolerance) {
+      return false;
+    }
+    scratch.base_time[slot] = scratch.solve_t[slot];
+    ProjectedOptionDefinition definition;
+    definition.contract =
+        OptionContract{leg.uid, scratch.strike[slot], scratch.solve_t[slot], leg.side};
+    definition.valuation_ts_ns = scenario.base_ts_ns;
+    definition.expiry_ts_ns = scratch.solve_expiry[slot];
+    definition.multiplier = leg.multiplier;
+    scratch.fingerprint[slot] = projected_definition_fingerprint(definition);
+  }
+  return true;
 }
 
 template <class PreparedState>
@@ -755,9 +857,25 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
                                VarScenarioFrame &frame, VarBatchScratch &scratch,
                                const VarEvaluationConfig &config) {
   const auto fallback = [&] {
-    evaluate_scenario(impl, scenario, frame, scratch.fallback_frames, config);
+    // SAFETY: CrossSectionalColdConfirm has no scalar analog in
+    // evaluate_scenario/resolve_var_contract -- the scalar
+    // project_option_contract entry point treats it identically to
+    // FastScreenColdConfirm for a batch of one (OptionDeltaSolvePolicy's own
+    // docs in contract_projection.hpp). This downgrade executes ONLY on the
+    // failure path (a group-solve or market-availability failure for this
+    // scenario, status granularity only); it re-derives the same per-leg
+    // VarLegStatus values FastScreenColdConfirm would have produced and never
+    // touches the accepted route's own results or statuses.
+    VarEvaluationConfig fallback_config = config;
+    if (fallback_config.projection_solve_policy ==
+        OptionDeltaSolvePolicy::CrossSectionalColdConfirm) {
+      fallback_config.projection_solve_policy = OptionDeltaSolvePolicy::FastScreenColdConfirm;
+    }
+    evaluate_scenario(impl, scenario, frame, scratch.fallback_frames, fallback_config);
   };
   constexpr auto price_field = PricedSurface::EvalField::Price;
+  const bool cross_sectional =
+      config.projection_solve_policy == OptionDeltaSolvePolicy::CrossSectionalColdConfirm;
   for (const VarOptionGroup &group : impl.option_groups) {
     const SurfaceRef base = scenario.base_surfaces->find(group.uid);
     const SurfaceRef shifted = scenario.shifted_surfaces->find(group.uid);
@@ -767,26 +885,44 @@ void evaluate_scenario_batched(const PreparedState &impl, const VarScenario &sce
       fallback();
       return;
     }
-    for (std::size_t slot = group.begin; slot < group.end; ++slot) {
-      const NormalizedVarLeg &leg = impl.legs[impl.grouped_option_indices[slot]];
-      ResolvedVarContract resolved;
-      if (!resolve_var_contract(leg, base, scenario, config, resolved)) {
+    if (cross_sectional) {
+      if (!resolve_group_contracts_cross_sectional(impl, group, base, scenario, config, scratch)) {
         fallback();
         return;
       }
-      const double shifted_time =
-          static_cast<double>(resolved.expiry_ts_ns - scenario.shifted_ts_ns) / kNsPerYear;
-      if (!finite_positive(shifted_time)) {
-        fallback();
-        return;
+      for (std::size_t slot = group.begin; slot < group.end; ++slot) {
+        const double shifted_time =
+            static_cast<double>(scratch.solve_expiry[slot] - scenario.shifted_ts_ns) / kNsPerYear;
+        if (!finite_positive(shifted_time)) {
+          fallback();
+          return;
+        }
+        scratch.shifted_time[slot] = shifted_time;
+        scratch.base_spot[slot] = base.pricing().S;
+        scratch.shifted_spot[slot] = shifted.pricing().S;
       }
-      scratch.strike[slot] = resolved.contract.K;
-      scratch.base_time[slot] = resolved.contract.T;
-      scratch.shifted_time[slot] = shifted_time;
-      scratch.base_spot[slot] = base.pricing().S;
-      scratch.shifted_spot[slot] = shifted.pricing().S;
-      scratch.base_delta[slot] = resolved.base_delta;
-      scratch.fingerprint[slot] = resolved.fingerprint;
+    } else {
+      for (std::size_t slot = group.begin; slot < group.end; ++slot) {
+        const NormalizedVarLeg &leg = impl.legs[impl.grouped_option_indices[slot]];
+        ResolvedVarContract resolved;
+        if (!resolve_var_contract(leg, base, scenario, config, resolved)) {
+          fallback();
+          return;
+        }
+        const double shifted_time =
+            static_cast<double>(resolved.expiry_ts_ns - scenario.shifted_ts_ns) / kNsPerYear;
+        if (!finite_positive(shifted_time)) {
+          fallback();
+          return;
+        }
+        scratch.strike[slot] = resolved.contract.K;
+        scratch.base_time[slot] = resolved.contract.T;
+        scratch.shifted_time[slot] = shifted_time;
+        scratch.base_spot[slot] = base.pricing().S;
+        scratch.shifted_spot[slot] = shifted.pricing().S;
+        scratch.base_delta[slot] = resolved.base_delta;
+        scratch.fingerprint[slot] = resolved.fingerprint;
+      }
     }
 
     const std::size_t count = group.end - group.begin;
