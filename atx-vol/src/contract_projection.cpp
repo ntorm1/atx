@@ -6,14 +6,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
 #include <string>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include "atx/core/datetime.hpp"
 #include "atx/core/error.hpp"
 #include "atx/core/hash.hpp"
 #include "atx/vol/detail/parallel_for.hpp"
+#include "atx/vol/simd/cpu.hpp"
 
 namespace atx::vol {
 namespace {
@@ -311,6 +314,29 @@ struct DeltaSolution {
   return cold_fallback(evaluations);
 }
 
+// Bounded batch-pass budget for solve_american_delta_batch: pass 0 (seed
+// evaluation), pass 1 (Newton), passes 2.. (secant refinement).
+constexpr std::size_t kMaxBatchDeltaPasses = 6;
+
+// TASK-4 SEAM: the scalar-fallback tail of solve_american_delta_batch. Rows
+// land here when a pass errored, produced a non-finite delta, hit a degenerate
+// Newton/secant update, or exhausted the batch pass budget. Task 4 replaces
+// this placeholder with the robust per-row cold scalar solver
+// (solve_american_delta at QueryExecution::ColdReference) plus the per-row
+// failure taxonomy; until then every routed row keeps the status recorded at
+// routing time (the propagated pass error or a placeholder Unavailable) and
+// NaN strike/achieved-delta outputs.
+void solve_batch_fallback_tail([[maybe_unused]] const SurfaceRef &surface,
+                               [[maybe_unused]] std::span<const double> T,
+                               [[maybe_unused]] std::span<const Side> side,
+                               [[maybe_unused]] std::span<const double> target_abs_delta,
+                               [[maybe_unused]] double tolerance,
+                               [[maybe_unused]] std::span<const std::uint32_t> fallback_rows,
+                               [[maybe_unused]] std::span<double> strike_out,
+                               [[maybe_unused]] std::span<double> achieved_delta_out,
+                               [[maybe_unused]] std::span<std::uint16_t> evaluations_out,
+                               [[maybe_unused]] std::span<Status> row_status_out) {}
+
 [[nodiscard]] bool valid_delta_solve_policy(OptionDeltaSolvePolicy policy) noexcept {
   return policy == OptionDeltaSolvePolicy::Direct ||
          policy == OptionDeltaSolvePolicy::FastScreenColdConfirm ||
@@ -410,6 +436,254 @@ std::uint64_t projected_definition_fingerprint(const ProjectedOptionDefinition &
   };
   const std::uint64_t hash = atx::core::hash_bytes(words, sizeof words);
   return hash == 0u ? 1u : hash;
+}
+
+void AmericanDeltaBatchScratch::resize(std::size_t n) {
+  k_log.resize(n);
+  strike.resize(n);
+  residual.resize(n);
+  prev_k.resize(n);
+  prev_residual.resize(n);
+  forward.resize(n);
+  sigma.resize(n);
+  signed_d1.resize(n);
+  iv.resize(n);
+  price.resize(n);
+  greeks.resize(n);
+  pass_status.resize(n);
+  active.clear();
+  active.reserve(n);
+  active_strike.clear();
+  active_strike.reserve(n);
+  active_t.clear();
+  active_t.reserve(n);
+  active_side.clear();
+  active_side.reserve(n);
+}
+
+Status solve_american_delta_batch(const SurfaceRef &surface, std::span<const double> T,
+                                  std::span<const Side> side,
+                                  std::span<const double> target_abs_delta, double tolerance,
+                                  AmericanDeltaBatchScratch &scratch, std::span<double> strike_out,
+                                  std::span<double> achieved_delta_out,
+                                  std::span<std::uint16_t> evaluations_out,
+                                  std::span<Status> row_status_out) {
+  const std::size_t n = T.size();
+  if (surface == nullptr || n == 0u || side.size() != n || target_abs_delta.size() != n ||
+      strike_out.size() != n || achieved_delta_out.size() != n || evaluations_out.size() != n ||
+      row_status_out.size() != n) {
+    return Err(ErrorCode::InvalidArgument,
+               "contract projection: batch delta solve span/size mismatch");
+  }
+  if (!(std::isfinite(tolerance) && tolerance > 0.0 && tolerance <= 1.0e-3)) {
+    return Err(ErrorCode::InvalidArgument, "contract projection: invalid delta target/tolerance");
+  }
+
+  scratch.resize(n);
+  // TASK-4 SEAM input: stable-ordered ids of rows the batch passes could not
+  // finish; empty (never allocates) on the happy path.
+  std::vector<std::uint32_t> fallback_rows;
+  const auto route_to_fallback = [&](std::uint32_t row, Status status) {
+    strike_out[row] = kNaN;
+    achieved_delta_out[row] = kNaN;
+    row_status_out[row] = std::move(status);
+    fallback_rows.push_back(row);
+  };
+
+  // Seed (curve reads only, no boundary solves): the Black-style inverse-delta
+  // seed with two smile-refresh iterations, mirroring solve_american_delta.
+  for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(n); ++i) {
+    strike_out[i] = kNaN;
+    achieved_delta_out[i] = kNaN;
+    evaluations_out[i] = 0u;
+    row_status_out[i] = Ok();
+    const double target = target_abs_delta[i];
+    if (!(target > 0.0 && target < 1.0)) {
+      row_status_out[i] =
+          Err(ErrorCode::InvalidArgument, "contract projection: invalid delta target/tolerance");
+      continue;
+    }
+    const double t = T[i];
+    const double forward = surface.forward_at(t);
+    double sigma = surface.iv(forward, t);
+    if (!finite_positive(forward) || !finite_positive(sigma)) {
+      row_status_out[i] =
+          Err(ErrorCode::Unavailable, "contract projection: no surface at maturity");
+      continue;
+    }
+    const double carry_discount = std::exp(-surface.q_eff_at(t) * t);
+    const double probability = std::clamp(target / carry_discount, 1.0e-8, 1.0 - 1.0e-8);
+    const double signed_d1 =
+        side[i] == Side::Call ? inverse_normal_cdf(probability) : -inverse_normal_cdf(probability);
+    const double sqrt_t = std::sqrt(t);
+    double seed_k = 0.0;
+    for (int iteration = 0; iteration < 2; ++iteration) {
+      seed_k = -signed_d1 * sigma * sqrt_t + 0.5 * sigma * sigma * t;
+      const double smile_sigma = surface.iv(forward * std::exp(seed_k), t);
+      if (finite_positive(smile_sigma)) {
+        sigma = smile_sigma;
+      }
+    }
+    const double seed_strike = forward * std::exp(seed_k);
+    if (!finite_positive(seed_strike)) {
+      route_to_fallback(
+          i, Err(ErrorCode::Unavailable, "contract projection: batch delta seed strike invalid"));
+      continue;
+    }
+    scratch.forward[i] = forward;
+    scratch.sigma[i] = sigma;
+    scratch.signed_d1[i] = signed_d1;
+    scratch.k_log[i] = seed_k;
+    scratch.strike[i] = seed_strike;
+    scratch.active.push_back(i);
+  }
+
+  // One laned cold pass over the active rows: stable compaction (ascending row
+  // ids, contiguous bit-identical-T runs preserved), one dense evaluate_batch
+  // on the FirstOrder bundle with the reduced GreekNeeds — the exact request
+  // shape detail::laned_greek_route_selected admits to the AVX2 laned Greek
+  // kernels (no selective Delta/Vega bits) — then freeze / route / retain.
+  const auto run_pass = [&]() -> Status {
+    const std::size_t m = scratch.active.size();
+    scratch.active_strike.clear();
+    scratch.active_t.clear();
+    scratch.active_side.clear();
+    for (const std::uint32_t row : scratch.active) {
+      scratch.active_strike.push_back(scratch.strike[row]);
+      scratch.active_t.push_back(T[row]);
+      scratch.active_side.push_back(side[row]);
+    }
+    const PricedSurface::EvaluationSoA out{
+        .iv = std::span<double>(scratch.iv.data(), m),
+        .price = std::span<double>(scratch.price.data(), m),
+        .greeks = std::span<AmericanGreeks>(scratch.greeks.data(), m),
+        .status = std::span<Status>(scratch.pass_status.data(), m)};
+    const Status evaluated = surface.evaluate_batch(
+        std::span<const double>(scratch.active_strike.data(), m),
+        std::span<const double>(scratch.active_t.data(), m),
+        std::span<const Side>(scratch.active_side.data(), m), PricedSurface::EvalField::FirstOrder,
+        /*analytic=*/true, out, simd::SimdIsa::Auto, QueryExecution::ColdReference,
+        GreekNeeds{.vega = false, .rho = false, .charm = false});
+    if (!evaluated) {
+      return evaluated;
+    }
+    std::size_t keep = 0;
+    for (std::size_t j = 0; j < m; ++j) {
+      const std::uint32_t row = scratch.active[j];
+      evaluations_out[row] = add_evaluations(evaluations_out[row], 1u);
+      if (!scratch.pass_status[j]) {
+        route_to_fallback(row, Err(scratch.pass_status[j].error()));
+        continue;
+      }
+      const double delta = scratch.greeks[j].delta;
+      if (!std::isfinite(delta)) {
+        route_to_fallback(
+            row, Err(ErrorCode::Unavailable, "contract projection: batch delta unavailable"));
+        continue;
+      }
+      const double residual = std::fabs(delta) - target_abs_delta[row];
+      // Half-tolerance internal acceptance: the margin absorbs the documented
+      // laned-vs-scalar kernel gap so the SCALAR cold oracle holds at the full
+      // tolerance. Load-bearing for Task 4's oracle guarantee — never relax.
+      if (std::fabs(residual) <= 0.5 * tolerance) {
+        strike_out[row] = scratch.strike[row];
+        achieved_delta_out[row] = delta;
+        row_status_out[row] = Ok();
+        continue;
+      }
+      scratch.residual[row] = residual;
+      scratch.active[keep++] = row;
+    }
+    scratch.active.resize(keep);
+    return Ok();
+  };
+
+  // Pass 0: evaluate every seeded row.
+  if (!scratch.active.empty()) {
+    const Status pass = run_pass();
+    if (!pass) {
+      return pass;
+    }
+  }
+
+  // Pass 1: one safeguarded Newton step per row off the closed-form Black
+  // delta slope (same formula as the scalar solver's bracketing step).
+  if (!scratch.active.empty()) {
+    constexpr double inv_sqrt_two_pi = 0.39894228040143267794;
+    std::size_t keep = 0;
+    for (const std::uint32_t row : scratch.active) {
+      const double t = T[row];
+      const double carry_discount = std::exp(-surface.q_eff_at(t) * t);
+      const double signed_d1 = scratch.signed_d1[row];
+      const double density = inv_sqrt_two_pi * std::exp(-0.5 * signed_d1 * signed_d1);
+      const double slope_magnitude = carry_discount * density / (scratch.sigma[row] * std::sqrt(t));
+      const double slope = side[row] == Side::Call ? -slope_magnitude : slope_magnitude;
+      const double step = std::clamp(-scratch.residual[row] / slope, -0.50, 0.50);
+      const double next_k = scratch.k_log[row] + step;
+      const double next_strike = scratch.forward[row] * std::exp(next_k);
+      if (!std::isfinite(step) || !finite_positive(next_strike)) {
+        route_to_fallback(row, Err(ErrorCode::Unavailable,
+                                   "contract projection: batch delta Newton step degenerate"));
+        continue;
+      }
+      scratch.prev_k[row] = scratch.k_log[row];
+      scratch.prev_residual[row] = scratch.residual[row];
+      scratch.k_log[row] = next_k;
+      scratch.strike[row] = next_strike;
+      scratch.active[keep++] = row;
+    }
+    scratch.active.resize(keep);
+    if (!scratch.active.empty()) {
+      const Status pass = run_pass();
+      if (!pass) {
+        return pass;
+      }
+    }
+  }
+
+  // Passes 2..kMaxBatchDeltaPasses: secant refinement from (prev_k,
+  // prev_residual) and the current point; the active set shrinks and stays
+  // stably ordered.
+  for (std::size_t pass_index = 2; pass_index < kMaxBatchDeltaPasses && !scratch.active.empty();
+       ++pass_index) {
+    std::size_t keep = 0;
+    for (const std::uint32_t row : scratch.active) {
+      const double residual_gap = scratch.residual[row] - scratch.prev_residual[row];
+      const double slope = residual_gap / (scratch.k_log[row] - scratch.prev_k[row]);
+      const double step = std::clamp(-scratch.residual[row] / slope, -0.25, 0.25);
+      const double next_k = scratch.k_log[row] + step;
+      const double next_strike = scratch.forward[row] * std::exp(next_k);
+      if (!std::isfinite(slope) || std::fabs(residual_gap) < 1.0e-14 || !std::isfinite(step) ||
+          !finite_positive(next_strike)) {
+        route_to_fallback(row, Err(ErrorCode::Unavailable,
+                                   "contract projection: batch delta secant step degenerate"));
+        continue;
+      }
+      scratch.prev_k[row] = scratch.k_log[row];
+      scratch.prev_residual[row] = scratch.residual[row];
+      scratch.k_log[row] = next_k;
+      scratch.strike[row] = next_strike;
+      scratch.active[keep++] = row;
+    }
+    scratch.active.resize(keep);
+    if (scratch.active.empty()) {
+      break;
+    }
+    const Status pass = run_pass();
+    if (!pass) {
+      return pass;
+    }
+  }
+
+  // Rows still active after the pass budget go to the Task-4 scalar tail.
+  for (const std::uint32_t row : scratch.active) {
+    route_to_fallback(row, Err(ErrorCode::Unavailable,
+                               "contract projection: batch delta solve did not converge"));
+  }
+  scratch.active.clear();
+  solve_batch_fallback_tail(surface, T, side, target_abs_delta, tolerance, fallback_rows,
+                            strike_out, achieved_delta_out, evaluations_out, row_status_out);
+  return Ok();
 }
 
 ProjectedMaturitySpec ProjectedMaturitySpec::years(double value) noexcept {

@@ -1,10 +1,14 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "atx/core/datetime.hpp"
@@ -304,6 +308,254 @@ TEST(ContractProjection, ResolveProjectedExpiryMatchesProjectedDefinitionExpiry)
   EXPECT_FALSE(resolve_projected_expiry(now, ProjectedMaturitySpec::months(0)));
   EXPECT_FALSE(resolve_projected_expiry(0, ProjectedMaturitySpec::days(30)));
   EXPECT_FALSE(resolve_projected_expiry(now, ProjectedMaturitySpec::absolute(now)));
+}
+
+// ── solve_american_delta_batch (cross-sectional solver core) ─────────────────
+
+// Row grid for the batch-delta tests: targets x sides x maturities, ordered so
+// rows sharing a maturity are contiguous (bit-identical T runs feed the laned
+// evaluate_batch ladder-reuse path).
+struct BatchDeltaGrid {
+  std::vector<double> T;
+  std::vector<Side> side;
+  std::vector<double> target;
+  std::vector<ProjectedMaturitySpec> maturity;
+};
+
+BatchDeltaGrid make_batch_delta_grid(std::int64_t now) {
+  BatchDeltaGrid grid;
+  for (const ProjectedMaturitySpec &maturity :
+       {ProjectedMaturitySpec::days(30), ProjectedMaturitySpec::months(3),
+        ProjectedMaturitySpec::years(0.5)}) {
+    const auto expiry = resolve_projected_expiry(now, maturity);
+    if (!expiry) {
+      ADD_FAILURE() << "grid expiry: " << expiry.error().to_string();
+      continue;
+    }
+    const double t = static_cast<double>(*expiry - now) / kNsPerYear;
+    for (const Side side : {Side::Call, Side::Put}) {
+      for (const double target : {0.10, 0.25, 0.40, 0.55, 0.75}) {
+        grid.T.push_back(t);
+        grid.side.push_back(side);
+        grid.target.push_back(target);
+        grid.maturity.push_back(maturity);
+      }
+    }
+  }
+  return grid;
+}
+
+struct BatchDeltaOutputs {
+  std::vector<double> strike;
+  std::vector<double> achieved;
+  std::vector<std::uint16_t> evaluations;
+  std::vector<Status> row_status;
+
+  explicit BatchDeltaOutputs(std::size_t n)
+      : strike(n, 0.0), achieved(n, 0.0), evaluations(n, 0u), row_status(n) {}
+};
+
+TEST(ContractProjection, BatchDeltaSolveIsColdConfirmedAgainstScalarDeltaOracle) {
+  const std::int64_t now = timestamp(2026, 7, 10);
+  const PricedSurface surface = make_surface(2u, 120.0, now);
+  const BatchDeltaGrid grid = make_batch_delta_grid(now);
+  const std::size_t n = grid.T.size();
+  ASSERT_GE(n, 24u);
+
+  constexpr double tolerance = 1.0e-7;
+  AmericanDeltaBatchScratch scratch;
+  BatchDeltaOutputs out(n);
+  const Status solved =
+      solve_american_delta_batch(surface, grid.T, grid.side, grid.target, tolerance, scratch,
+                                 out.strike, out.achieved, out.evaluations, out.row_status);
+  ASSERT_TRUE(solved) << (solved ? std::string{} : solved.error().to_string());
+  for (std::size_t i = 0; i < n; ++i) {
+    ASSERT_TRUE(out.row_status[i]) << "row " << i << ": " << out.row_status[i].error().to_string();
+    ASSERT_TRUE(std::isfinite(out.strike[i])) << "row " << i;
+    EXPECT_GT(out.strike[i], 0.0) << "row " << i;
+    EXPECT_GE(out.evaluations[i], 1u) << "row " << i;
+    // The accepting pass held the half-tolerance internal margin on its own
+    // (laned) delta; the CORRECTNESS GATE below is the independent SCALAR cold
+    // oracle at the full tolerance.
+    EXPECT_LE(std::fabs(std::fabs(out.achieved[i]) - grid.target[i]), 0.5 * tolerance)
+        << "row " << i;
+    if (grid.side[i] == Side::Call) {
+      EXPECT_GT(out.achieved[i], 0.0) << "row " << i;
+    } else {
+      EXPECT_LT(out.achieved[i], 0.0) << "row " << i;
+    }
+    const auto oracle =
+        surface.delta(out.strike[i], grid.T[i], grid.side[i], QueryExecution::ColdReference);
+    ASSERT_TRUE(oracle) << "row " << i << ": " << oracle.error().to_string();
+    EXPECT_LE(std::fabs(std::fabs(*oracle) - grid.target[i]), tolerance) << "row " << i;
+  }
+}
+
+TEST(ContractProjection, BatchDeltaSolveMatchesDirectProjectionEconomically) {
+  const std::int64_t now = timestamp(2026, 7, 10);
+  const PricedSurface surface = make_surface(2u, 120.0, now);
+  const BatchDeltaGrid grid = make_batch_delta_grid(now);
+  const std::size_t n = grid.T.size();
+
+  constexpr double tolerance = 1.0e-7;
+  AmericanDeltaBatchScratch scratch;
+  BatchDeltaOutputs out(n);
+  const Status solved =
+      solve_american_delta_batch(surface, grid.T, grid.side, grid.target, tolerance, scratch,
+                                 out.strike, out.achieved, out.evaluations, out.row_status);
+  ASSERT_TRUE(solved) << (solved ? std::string{} : solved.error().to_string());
+
+  OptionProjectionConfig direct_config;
+  direct_config.output = OptionProjectionOutput::DefinitionOnly;
+  direct_config.delta_tolerance = tolerance;
+  direct_config.query_execution = QueryExecution::ColdReference;
+  direct_config.delta_solve_policy = OptionDeltaSolvePolicy::Direct;
+  for (std::size_t i = 0; i < n; ++i) {
+    ASSERT_TRUE(out.row_status[i]) << "row " << i << ": " << out.row_status[i].error().to_string();
+    const auto direct = project_option_contract(
+        surface,
+        spec(2u, grid.side[i], grid.maturity[i], ProjectedStrikeSpec::delta(grid.target[i])),
+        direct_config);
+    ASSERT_TRUE(direct) << "row " << i << ": " << direct.error().to_string();
+    EXPECT_EQ(direct->definition.contract.T, grid.T[i]) << "row " << i;
+    const double direct_strike = direct->definition.contract.K;
+    // Both roots satisfy the same cold tolerance; bound route drift without
+    // demanding bit equality.
+    EXPECT_LE(std::fabs(out.strike[i] - direct_strike), 1.0e-4 * direct_strike) << "row " << i;
+  }
+}
+
+TEST(ContractProjection, BatchDeltaSolveRowsAreCompositionInvariantAndRepeatable) {
+  const std::int64_t now = timestamp(2026, 7, 10);
+  const PricedSurface surface = make_surface(2u, 120.0, now);
+  const BatchDeltaGrid grid = make_batch_delta_grid(now);
+  const std::size_t n = grid.T.size();
+
+  constexpr double tolerance = 1.0e-7;
+  AmericanDeltaBatchScratch scratch;
+  BatchDeltaOutputs first(n);
+  const Status first_solved =
+      solve_american_delta_batch(surface, grid.T, grid.side, grid.target, tolerance, scratch,
+                                 first.strike, first.achieved, first.evaluations, first.row_status);
+  ASSERT_TRUE(first_solved) << (first_solved ? std::string{} : first_solved.error().to_string());
+
+  // Steady-state reuse allocates nothing: every scratch column keeps its
+  // capacity across the second full solve on the same workspace.
+  const std::vector<std::size_t> capacities = {scratch.k_log.capacity(),
+                                               scratch.strike.capacity(),
+                                               scratch.residual.capacity(),
+                                               scratch.prev_k.capacity(),
+                                               scratch.prev_residual.capacity(),
+                                               scratch.forward.capacity(),
+                                               scratch.sigma.capacity(),
+                                               scratch.signed_d1.capacity(),
+                                               scratch.iv.capacity(),
+                                               scratch.price.capacity(),
+                                               scratch.greeks.capacity(),
+                                               scratch.pass_status.capacity(),
+                                               scratch.active.capacity(),
+                                               scratch.active_strike.capacity(),
+                                               scratch.active_t.capacity(),
+                                               scratch.active_side.capacity()};
+
+  BatchDeltaOutputs second(n);
+  const Status second_solved = solve_american_delta_batch(
+      surface, grid.T, grid.side, grid.target, tolerance, scratch, second.strike, second.achieved,
+      second.evaluations, second.row_status);
+  ASSERT_TRUE(second_solved) << (second_solved ? std::string{} : second_solved.error().to_string());
+  const std::vector<std::size_t> reused_capacities = {scratch.k_log.capacity(),
+                                                      scratch.strike.capacity(),
+                                                      scratch.residual.capacity(),
+                                                      scratch.prev_k.capacity(),
+                                                      scratch.prev_residual.capacity(),
+                                                      scratch.forward.capacity(),
+                                                      scratch.sigma.capacity(),
+                                                      scratch.signed_d1.capacity(),
+                                                      scratch.iv.capacity(),
+                                                      scratch.price.capacity(),
+                                                      scratch.greeks.capacity(),
+                                                      scratch.pass_status.capacity(),
+                                                      scratch.active.capacity(),
+                                                      scratch.active_strike.capacity(),
+                                                      scratch.active_t.capacity(),
+                                                      scratch.active_side.capacity()};
+  EXPECT_EQ(capacities, reused_capacities);
+
+  for (std::size_t i = 0; i < n; ++i) {
+    ASSERT_TRUE(first.row_status[i]) << "row " << i;
+    ASSERT_TRUE(second.row_status[i]) << "row " << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(first.strike[i]),
+              std::bit_cast<std::uint64_t>(second.strike[i]))
+        << "row " << i;
+    EXPECT_EQ(std::bit_cast<std::uint64_t>(first.achieved[i]),
+              std::bit_cast<std::uint64_t>(second.achieved[i]))
+        << "row " << i;
+    EXPECT_EQ(first.evaluations[i], second.evaluations[i]) << "row " << i;
+  }
+
+  // Any contiguous sub-span solved as its own batch reproduces the full-batch
+  // per-row strikes bit for bit (pack-composition invariance of the laned
+  // kernels, pinned by PricedSurface.EvaluateBatchLanedGreeksPackCompositionInvariant).
+  for (const auto &[begin, end] :
+       {std::pair<std::size_t, std::size_t>{0u, 10u}, std::pair<std::size_t, std::size_t>{10u, 22u},
+        std::pair<std::size_t, std::size_t>{7u, 8u}, std::pair<std::size_t, std::size_t>{0u, n}}) {
+    const std::size_t m = end - begin;
+    AmericanDeltaBatchScratch sub_scratch;
+    BatchDeltaOutputs sub(m);
+    const Status sub_solved = solve_american_delta_batch(
+        surface, std::span<const double>(grid.T).subspan(begin, m),
+        std::span<const Side>(grid.side).subspan(begin, m),
+        std::span<const double>(grid.target).subspan(begin, m), tolerance, sub_scratch, sub.strike,
+        sub.achieved, sub.evaluations, sub.row_status);
+    ASSERT_TRUE(sub_solved) << (sub_solved ? std::string{} : sub_solved.error().to_string());
+    for (std::size_t j = 0; j < m; ++j) {
+      ASSERT_TRUE(sub.row_status[j]) << "sub-span [" << begin << "," << end << ") row " << j;
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(sub.strike[j]),
+                std::bit_cast<std::uint64_t>(first.strike[begin + j]))
+          << "sub-span [" << begin << "," << end << ") row " << j;
+      EXPECT_EQ(std::bit_cast<std::uint64_t>(sub.achieved[j]),
+                std::bit_cast<std::uint64_t>(first.achieved[begin + j]))
+          << "sub-span [" << begin << "," << end << ") row " << j;
+    }
+  }
+}
+
+TEST(ContractProjection, BatchDeltaSolveRejectsStructurallyInvalidSpans) {
+  const PricedSurface surface = make_surface(2u, 120.0, timestamp(2026, 7, 10));
+  const std::vector<double> T = {0.25, 0.25};
+  const std::vector<Side> side = {Side::Call, Side::Put};
+  const std::vector<double> target = {0.40, 0.25};
+  AmericanDeltaBatchScratch scratch;
+  std::vector<double> strike(2, 123.5);
+  std::vector<double> achieved(2, 321.25);
+  std::vector<std::uint16_t> evaluations(2, 7u);
+  std::vector<Status> row_status(2);
+  const auto untouched = [&] {
+    return strike[0] == 123.5 && strike[1] == 123.5 && achieved[0] == 321.25 &&
+           achieved[1] == 321.25 && evaluations[0] == 7u && evaluations[1] == 7u &&
+           static_cast<bool>(row_status[0]) && static_cast<bool>(row_status[1]);
+  };
+
+  // Mismatched input span length.
+  EXPECT_FALSE(solve_american_delta_batch(surface, T, std::span<const Side>(side.data(), 1u),
+                                          target, 1.0e-7, scratch, strike, achieved, evaluations,
+                                          row_status));
+  EXPECT_TRUE(untouched());
+  // Mismatched output span length.
+  EXPECT_FALSE(solve_american_delta_batch(surface, T, side, target, 1.0e-7, scratch,
+                                          std::span<double>(strike.data(), 1u), achieved,
+                                          evaluations, row_status));
+  EXPECT_TRUE(untouched());
+  // Empty batch.
+  EXPECT_FALSE(solve_american_delta_batch(surface, {}, {}, {}, 1.0e-7, scratch, {}, {}, {}, {}));
+  // Invalid tolerance: zero and above the 1e-3 cap (same predicate as the
+  // scalar solver).
+  EXPECT_FALSE(solve_american_delta_batch(surface, T, side, target, 0.0, scratch, strike, achieved,
+                                          evaluations, row_status));
+  EXPECT_TRUE(untouched());
+  EXPECT_FALSE(solve_american_delta_batch(surface, T, side, target, 2.0e-3, scratch, strike,
+                                          achieved, evaluations, row_status));
+  EXPECT_TRUE(untouched());
 }
 
 TEST(ContractProjection, ProjectedDefinitionFingerprintHelperMatchesProjection) {
