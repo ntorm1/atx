@@ -46,6 +46,8 @@ FitPreset parse_preset(std::string_view n) {
   if (n == "accurate") return FitPreset::Accurate;
   if (n == "robust") return FitPreset::Robust;
   if (n == "hft") return FitPreset::Hft;
+  if (n == "populate") return FitPreset::Populate;
+  if (n == "bulk") return FitPreset::Bulk;
   return FitPreset::Fast;
 }
 
@@ -259,6 +261,8 @@ int main(int argc, char **argv) {
   std::string symbols_csv = "SPY,AAPL,XOM";
   std::string index_symbol = "SPY";
   std::string preset_name = "fast";
+  std::string path_template; // empty = OpraBatchSpec default "{symbol}/{date}.parquet"
+  std::string snapshot_suffix; // empty = OpraBatchSpec default "T19:55:00Z"
   double r = 0.043;
   for (int i = 1; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -268,6 +272,8 @@ int main(int argc, char **argv) {
     else if (a == "--symbols") symbols_csv = nv();
     else if (a == "--index-symbol") index_symbol = nv();
     else if (a == "--preset") preset_name = nv();
+    else if (a == "--path-template") path_template = nv();
+    else if (a == "--snapshot-suffix") snapshot_suffix = nv();
     else if (a == "--r") r = std::strtod(nv(), nullptr);
   }
 
@@ -279,6 +285,8 @@ int main(int argc, char **argv) {
   spec.date_lo = date;
   spec.date_hi = date;
   spec.root_dir = opra_root;
+  if (!path_template.empty()) spec.path_template = path_template;
+  if (!snapshot_suffix.empty()) spec.snapshot_suffix = snapshot_suffix;
   spec.r = r;
   const Result<OpraBatchResult> batch = load_opra_daterange(spec);
   if (!batch) {

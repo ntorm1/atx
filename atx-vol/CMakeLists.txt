@@ -552,6 +552,13 @@ if(ATX_BUILD_EXAMPLES)
     target_link_libraries(atx-vol-spy-leaps-strangle
         PRIVATE atx::vol atx::core atx_warnings)
 
+    # Day-over-day mark-continuity probe against SurfaceDb roots: fixed-strike
+    # vs fixed-moneyness iv, carry terms, and bracketing pillar ivs, one TSV
+    # row per (date, strike). See examples/spy_mark_continuity.cpp.
+    add_executable(atx-vol-spy-mark-continuity examples/spy_mark_continuity.cpp)
+    target_link_libraries(atx-vol-spy-mark-continuity
+        PRIVATE atx::vol atx::core atx_warnings)
+
     # Variance-strip diagnostic: per-session K_var at a constant tenor under the
     # default config and a ladder of pinned log-strike spans, plus the wing IVs
     # the strip reads — the instrument for attributing day-to-day fair-strike
