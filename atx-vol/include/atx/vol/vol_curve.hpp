@@ -334,12 +334,17 @@ private:
 // ── Unified surface container ───────────────────────────────────────────────
 //
 // An ascending-T stack of polymorphic slices with ONE linear-in-total-variance
-// time interpolation. A query at T locates T among the slice T's, interpolates
-// total variance linearly across the two bracketing slices (never in sigma), and
-// applies the same Sprint-26 no-extrapolation guards `VolSurface` and the demoted
-// per-family containers do: a query past the last slice, or more than 50% below
-// the first, returns NaN. Slices must be pushed in ascending T (the fit driver
-// guarantees it).
+// time interpolation. A query at T locates T among the slice T's and
+// interpolates total variance linearly across the two bracketing slices (never
+// in sigma). Outside the fitted pillars the surface EXTRAPOLATES rather than
+// failing: below the front slice, implied vol is held flat at the front curve's
+// smile and total variance scales linearly (w = w_front * T/T_front); at or
+// past the last slice, total variance is held FLAT at the last slice's value.
+// Both branches are silent — no NaN, no error (see `CurveSurface::w`,
+// vol_curve.cpp:323-347). A caller that needs to know whether a query left the
+// fitted domain should use `PricedSurface::extrapolates_tenor` /
+// `PricedSurfaceView::extrapolates_tenor` rather than inferring it from a NaN
+// result. Slices must be pushed in ascending T (the fit driver guarantees it).
 class CurveSurface {
 public:
   CurveSurface() = default;

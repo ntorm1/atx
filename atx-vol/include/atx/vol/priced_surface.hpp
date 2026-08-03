@@ -434,6 +434,26 @@ public:
   // The curve kind of slice `i` (ascending T). Precondition: i < n_slices().
   [[nodiscard]] VolCurveKind kind_at(std::size_t i) const noexcept;
 
+  // The fitted maturity domain [min_T, max_T]: the pillars the surface was
+  // actually calibrated on. A query T outside this range is still served (see
+  // `extrapolates_tenor`) but is not a genuinely fitted point.
+  struct TenorDomain {
+    double min_T{0.0}; // first fitted pillar (0 when empty)
+    double max_T{0.0}; // last fitted pillar  (0 when empty)
+    [[nodiscard]] bool empty() const noexcept { return !(max_T > 0.0); }
+    // A maturity the surface can serve without tenor extrapolation.
+    [[nodiscard]] bool contains(double T) const noexcept {
+      return !empty() && T >= min_T && T <= max_T;
+    }
+  };
+  // The fitted domain, from ctx_'s first/last pillar. Empty (min_T == max_T ==
+  // 0) when the surface carries no slices (a moved-from surface).
+  [[nodiscard]] TenorDomain tenor_domain() const noexcept;
+  // True when a query at T would be served by the flat-TV long-end branch or
+  // the scaled short-end branch of CurveSurface::w (vol_curve.cpp:323-347),
+  // i.e. T falls outside [min_T, max_T] or the surface is empty.
+  [[nodiscard]] bool extrapolates_tenor(double T) const noexcept;
+
 private:
   PricedSurface(CurveSurface &&surface, std::vector<SliceContext> &&ctx,
                 const PricingContext &pricing, std::vector<double> &&slice_rates,

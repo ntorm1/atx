@@ -1199,4 +1199,15 @@ VolCurveKind PricedSurface::kind_at(std::size_t i) const noexcept {
   return surface_.slices()[i]->kind();
 }
 
+PricedSurface::TenorDomain PricedSurface::tenor_domain() const noexcept {
+  if (ctx_.empty()) {
+    return TenorDomain{};
+  }
+  return TenorDomain{ctx_.front().T, ctx_.back().T};
+}
+
+bool PricedSurface::extrapolates_tenor(double T) const noexcept {
+  return !tenor_domain().contains(T);
+}
+
 } // namespace atx::vol
