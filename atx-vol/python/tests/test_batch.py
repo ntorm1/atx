@@ -132,6 +132,35 @@ def test_american_batch_rejects_a_float_side_column():
                                 np.full(len(strike), -1.5))
 
 
+def test_american_batch_broadcasts_one_side():
+    # 5.1 widened the shared `side` decoder: a bare `Side` broadcasts across the
+    # batch on every binding that takes a side column, not only the new Black-76
+    # ones. Pure widening — the per-lane column must be unaffected — so pin both
+    # spellings against each other rather than only asserting the new one runs.
+    spot, strike, t, sigma, r, q, _ = _book(16)
+    column = np.full(len(strike), int(av.Side.PUT), dtype=np.int32)
+
+    broadcast_p, broadcast_s = av.american_price_batch(spot, strike, t, sigma, r, q, av.Side.PUT,
+                                                       isa=av.SimdIsa.FORCE_SCALAR)
+    column_p, column_s = av.american_price_batch(spot, strike, t, sigma, r, q, column,
+                                                  isa=av.SimdIsa.FORCE_SCALAR)
+    assert broadcast_p.tobytes() == column_p.tobytes()
+    assert broadcast_s.tobytes() == column_s.tobytes()
+
+    bg = av.american_greeks_batch(spot, strike, t, sigma, r, q, av.Side.PUT,
+                                  isa=av.SimdIsa.FORCE_SCALAR)
+    cg = av.american_greeks_batch(spot, strike, t, sigma, r, q, column,
+                                  isa=av.SimdIsa.FORCE_SCALAR)
+    for name in ("delta", "gamma", "vega", "theta", "price", "status"):
+        assert bg[name].tobytes() == cg[name].tobytes()
+
+    # A broadcast Side must not be confusable with the mixed book: the same call
+    # with the real mixed column has to differ.
+    mixed_p, _ = av.american_price_batch(spot, strike, t, sigma, r, q,
+                                         _book(16)[6], isa=av.SimdIsa.FORCE_SCALAR)
+    assert mixed_p.tobytes() != broadcast_p.tobytes()
+
+
 def test_american_greeks_batch_matches_the_scalar_fd_loop():
     spot, strike, t, sigma, r, q, side = _book(32)
     got = av.american_greeks_batch(spot, strike, t, sigma, r, q, side,
